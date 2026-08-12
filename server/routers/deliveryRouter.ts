@@ -1,23 +1,29 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { cashierProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure, workordersCashierProcedure } from "../trpc";
+import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure, workordersCashierProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
   createDeliveryParty,
+  addDeliveryPartyMember,
   dispatchInvoiceToDelivery,
   dispatchToDelivery,
   getDeliveryParty,
   getDeliveryPartyStatement,
+  getDeliveryPartyFinancials,
   getPartyStoreInTransit,
   listConsignmentsForParty,
   listCourierAccounts,
+  listDeliveryPartyMembers,
   listDeliveryParties,
   listOpenConsignments,
   listPartyRemittances,
   listReadyForDispatch,
+  payDeliveryFee,
   recordDeliveryRemittance,
   recoverDeliveryWriteOff,
+  removeDeliveryPartyMember,
+  reassignDeliveryConsignment,
   returnConsignment,
   setDeliveryPartyActive,
   settleDeliveryBalance,
@@ -53,8 +59,9 @@ function scopedBranchOf(ctx: { user: { role?: string; branchId?: number | null }
 // partyId بلا التحقّق أن الجهة تخصّ فرع القارئ ⇒ تسريب بيانات جهات فروع أخرى. نتحقّق من الملكية:
 // غير المرتفعين (scopedBranchId != null) لا يقرؤون جهة فرعٍ آخر (الجهات ذات الفرع null مشتركة ⇒ مسموحة).
 async function assertPartyInScope(partyId: number, scopedBranchId: number | null) {
-  if (scopedBranchId == null) return; // admin/manager عابرو الفروع
   const party = await getDeliveryParty(partyId);
+  if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+  if (scopedBranchId == null) return; // الأدمن عابر الفروع
   if (party && party.branchId != null && Number(party.branchId) !== scopedBranchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "جهة التوصيل تخصّ فرعاً آخر" });
   }
@@ -75,8 +82,67 @@ export const deliveryRouter = router({
       return getDeliveryParty(input.id);
     }),
 
+  partyFinancials: deliveryReadProcedure
+    .input(z.object({ partyId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return getDeliveryPartyFinancials(input.partyId);
+    }),
+
   // حسابات المناديب (دور courier) لربطها بجهة — لمنتقي الربط في نموذج الجهة (مدير).
-  courierAccounts: managerProcedure.query(() => listCourierAccounts()),
+  courierAccounts: managerProcedure.query(({ ctx }) => listCourierAccounts(scopedBranchOf(ctx))),
+
+  partyMembers: deliveryReadProcedure
+    .input(z.object({ partyId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return listDeliveryPartyMembers(input.partyId);
+    }),
+
+  addPartyMember: deliveryManagerProcedure
+    .input(z.object({
+      partyId: z.number().int().positive(),
+      userId: z.number().int().positive(),
+      memberRole: z.enum(["DRIVER", "MANAGER", "ACCOUNTANT"]),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const res = await addDeliveryPartyMember(input, actorOf(ctx));
+      await logAudit(ctx, { action: "delivery.party.member.add", entityType: "deliveryParty", entityId: input.partyId, newValue: input });
+      return res;
+    }),
+
+  removePartyMember: deliveryManagerProcedure
+    .input(z.object({ partyId: z.number().int().positive(), userId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const res = await removeDeliveryPartyMember(input);
+      await logAudit(ctx, { action: "delivery.party.member.remove", entityType: "deliveryParty", entityId: input.partyId, newValue: input });
+      return res;
+    }),
+
+  reassignConsignment: deliveryManagerProcedure
+    .input(z.object({
+      partyId: z.number().int().positive(),
+      consignmentId: z.number().int().positive(),
+      assignedUserId: z.number().int().positive().nullish(),
+      clientRequestId: z.string().trim().min(8).max(100),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const res = await retryOnDeadlock(() => reassignDeliveryConsignment(input, actorOf(ctx)));
+      await logAudit(ctx, { action: "delivery.consignment.reassign", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { partyId: input.partyId, assignedUserId: input.assignedUserId ?? null } });
+      return res;
+    }),
+
+  payFee: deliveryCashierProcedure
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      shiftId: z.number().int().positive(),
+      amount: moneyStr.nullish(),
+      clientRequestId: z.string().trim().min(8).max(100),
+    }))
+    .mutation(({ input, ctx }) => payDeliveryFee(input, actorOf(ctx))),
 
   createParty: managerProcedure
     .input(
@@ -95,7 +161,14 @@ export const deliveryRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createDeliveryParty(input, actorOf(ctx));
+      const scopedBranchId = scopedBranchOf(ctx);
+      if (ctx.user.role !== "admin" && scopedBranchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مسند لهذا المدير" });
+      }
+      const safeInput = ctx.user.role === "admin"
+        ? input
+        : { ...input, branchId: scopedBranchId };
+      const res = await createDeliveryParty(safeInput, actorOf(ctx));
       await logAudit(ctx, { action: "delivery.party.create", entityType: "deliveryParty", entityId: res.id, newValue: { name: input.name, partyType: input.partyType } });
       return res;
     }),
@@ -118,7 +191,12 @@ export const deliveryRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await updateDeliveryParty(input, actorOf(ctx));
+      const scopedBranchId = scopedBranchOf(ctx);
+      await assertPartyInScope(input.id, scopedBranchId);
+      const safeInput = ctx.user.role === "admin" || input.branchId === undefined
+        ? input
+        : { ...input, branchId: scopedBranchId };
+      const res = await updateDeliveryParty(safeInput, actorOf(ctx));
       await logAudit(ctx, { action: "delivery.party.update", entityType: "deliveryParty", entityId: input.id, newValue: { id: input.id } });
       return res;
     }),
@@ -126,6 +204,7 @@ export const deliveryRouter = router({
   setPartyActive: managerProcedure
     .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.id, scopedBranchOf(ctx));
       const res = await setDeliveryPartyActive(input.id, input.isActive, actorOf(ctx));
       await logAudit(ctx, { action: "delivery.party.setActive", entityType: "deliveryParty", entityId: input.id, newValue: { isActive: input.isActive } });
       return res;
@@ -138,7 +217,7 @@ export const deliveryRouter = router({
     .input(z.object({ partyId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
-      return listOpenConsignments(input.partyId);
+      return listOpenConsignments(input.partyId, ctx.user.role === "admin" ? null : ctx.user.branchId);
     }),
 
   consignments: deliveryReadProcedure
@@ -188,7 +267,8 @@ export const deliveryRouter = router({
         recipientName: z.string().max(255).nullish(),
         recipientPhone: z.string().max(20).nullish(),
         deliveryAddress: z.string().max(1000).nullish(),
-        clientRequestId: z.string().max(64).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
+        assignedUserId: z.number().int().positive().nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -216,7 +296,8 @@ export const deliveryRouter = router({
         recipientName: z.string().max(255).nullish(),
         recipientPhone: z.string().max(20).nullish(),
         deliveryAddress: z.string().max(1000).nullish(),
-        clientRequestId: z.string().max(64).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
+        assignedUserId: z.number().int().positive().nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -255,16 +336,16 @@ export const deliveryRouter = router({
             });
           }),
         countedCash: moneyStr,
-        clientRequestId: z.string().max(64).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
       }),
     )
     .mutation(async ({ input, ctx }) => {
       // IDOR كتابة (F7): كاشير فرعٍ لا يُوَرِّد على جهة فرعٍ آخر.
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
-      const res = await retryOnDup(() =>
+      const res = await retryOnDeadlock(() => retryOnDup(() =>
         recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, countedCash: input.countedCash, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
-      );
+      ));
       await logAudit(ctx, { action: "delivery.remit", entityType: "deliveryRemittance", entityId: res.remittanceId, newValue: { partyId: input.partyId, collectedTotal: res.collectedTotal, feesTotal: res.feesTotal, netRemitted: res.netRemitted, shortfallTotal: res.shortfallTotal } });
       return res;
     }),
@@ -286,7 +367,7 @@ export const deliveryRouter = router({
   returnConsignment: storeFulfillProcedure
     .input(z.object({
       consignmentId: z.number().int().positive(),
-      clientRequestId: z.string().max(64).nullish(),
+      clientRequestId: z.string().trim().min(8).max(64),
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه ردّ العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
@@ -312,7 +393,7 @@ export const deliveryRouter = router({
         amount: moneyStr,
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
         notes: z.string().max(500).nullish(),
-        clientRequestId: z.string().max(64).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -338,10 +419,11 @@ export const deliveryRouter = router({
         amount: moneyStr,
         reason: z.string().min(3).max(500),
         consignmentId: z.number().int().positive().nullish(),
-        clientRequestId: z.string().max(64).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       const res = await retryOnDeadlock(() => writeOffDeliveryShortfall({ branchId, partyId: input.partyId, amount: input.amount, reason: input.reason, consignmentId: input.consignmentId, clientRequestId: input.clientRequestId }, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.writeOff", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount, reason: input.reason, consignmentId: input.consignmentId ?? null } });
@@ -359,10 +441,11 @@ export const deliveryRouter = router({
         amount: moneyStr,
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
         notes: z.string().max(500).nullish(),
-        clientRequestId: z.string().max(64).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       // retryOnDup (مراجعة نهائية ١٠/٨): كنظير settle — إعادة محاولة idempotent على سباق المفتاح.
       const res = await retryOnDup(() => recoverDeliveryWriteOff({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx)));

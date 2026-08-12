@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
-import { confirmCourierDelivery, createDeliveryParty, failCourierDelivery, listMyDeliveries, resolveCourierPartyId, setDeliveryPartyActive, updateDeliveryParty } from "../deliveryService";
+import { confirmConsignmentDelivery, confirmCourierDelivery, createDeliveryParty, failCourierDelivery, listMyDeliveries, resolveCourierPartyId, setDeliveryPartyActive, transitionConsignmentParcel, updateDeliveryParty } from "../deliveryService";
 import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
 import { dispatchOnlineOrder } from "../storeAdmin/dispatchOnlineOrder";
 import { adjustCustomerBalance } from "../ledgerService";
@@ -25,6 +25,7 @@ const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 
 const TABLES = [
   "idempotencyKeys", "creditApprovals", "accountingEntries", "receipts",
+  "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
   "onlineOrderItems", "onlineOrders",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
@@ -357,8 +358,21 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     // قيد SALE بلا أجرة الشحن — وعاء العمولة يستثنيها بنيوياً.
     const revRows = await db().select({ v: s.accountingEntries.revenue }).from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, res.invoiceId));
     expect(revRows.reduce((t, r) => t + Number(r.v), 0)).toBe(20);
-    // تأكيد المندوب: العهدة = البضاعة وحدها (أجرته قبضها لنفسه).
-    await confirmCourierDelivery({ onlineOrderId: o.orderId }, { userId: 3 });
+    // طلب المتجر الجديد يستخدم سجل الطرد الموحّد ودورة الحالات نفسها.
+    const cn = (await db().select().from(s.deliveryConsignments).where(and(
+      eq(s.deliveryConsignments.sourceType, "ONLINE_ORDER"),
+      eq(s.deliveryConsignments.sourceId, o.orderId),
+    )))[0];
+    for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+      await transitionConsignmentParcel(
+        { consignmentId: Number(cn.id), toStatus, clientRequestId: `online-${cn.id}-${toStatus}` },
+        { userId: 3 },
+      );
+    }
+    await confirmConsignmentDelivery(
+      { consignmentId: Number(cn.id), clientRequestId: `online-${cn.id}-delivered` },
+      { userId: 3 },
+    );
     expect(await partyBalance(partyA)).toBe("20.00");
     expect((await invoice(res.invoiceId)).status).toBe("PAID");
     await reconcileClean();

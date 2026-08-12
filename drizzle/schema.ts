@@ -5980,6 +5980,50 @@ export const deliveryParties = mysqlTable(
 export type DeliveryParty = typeof deliveryParties.$inferSelect;
 export type InsertDeliveryParty = typeof deliveryParties.$inferInsert;
 
+/**
+ * Portal membership for a delivery party.  The legacy deliveryParties.userId
+ * column remains during the compatibility window, but authorization and
+ * company multi-user access are driven by this append-only-friendly mapping.
+ */
+export const deliveryPartyMembers = mysqlTable(
+  "deliveryPartyMembers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    partyId: bigint("partyId", { mode: "number" })
+      .notNull()
+      .references(() => deliveryParties.id, { onDelete: "cascade" }),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
+    memberRole: mysqlEnum("memberRole", [
+      "DRIVER",
+      "MANAGER",
+      "ACCOUNTANT",
+    ])
+      .default("DRIVER")
+      .notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    partyUserUq: unique("uq_delivery_party_member").on(
+      table.partyId,
+      table.userId,
+    ),
+    // One portal identity cannot silently act for two delivery parties.
+    userUq: unique("uq_delivery_party_member_user").on(table.userId),
+    partyActiveIdx: index("idx_delivery_party_member_active").on(
+      table.partyId,
+      table.isActive,
+    ),
+  }),
+);
+export type DeliveryPartyMember = typeof deliveryPartyMembers.$inferSelect;
+export type InsertDeliveryPartyMember =
+  typeof deliveryPartyMembers.$inferInsert;
+
 /* ============================ الصيرفة (الصرّاف / مكتب التحويل) — exchange-house (٣٠/٦) ============================
  * طرف مالي وسيط: نُودِع لديه نقداً، ونُسدّد عبره الموردين، ونحفظ رصيداً لنا — بمحفظتين (دينار + دولار).
  * اتفاقية الإشارة: موجب = الصيرفة مدينة لنا (أموالنا محفوظة لديها) — نظير deliveryParties (عهدة)،
@@ -6184,7 +6228,18 @@ export const deliveryConsignments = mysqlTable(
       .notNull()
       .references(() => invoices.id),
     workOrderId: bigint("workOrderId", { mode: "number" }),
-    // العميل النهائي (المستلم). الفاتورة نفسها customerId=NULL (الطرف المقابل = جهة التوصيل، عهدة لا AR).
+    sourceType: mysqlEnum("sourceType", [
+      "WORK_ORDER",
+      "ONLINE_ORDER",
+      "INVOICE",
+    ])
+      .default("INVOICE")
+      .notNull(),
+    sourceId: bigint("sourceId", { mode: "number" }).notNull(),
+    // A company may have many portal users; a parcel can be narrowed to one
+    // driver while managers/accountants retain party-wide visibility.
+    assignedUserId: int("assignedUserId").references(() => users.id),
+    // العميل النهائي (المستلم). فاتورة أمر الشغل تبقى منسوبةً للعميل، وجهة التوصيل تحمل العهدة.
     endCustomerId: bigint("endCustomerId", { mode: "number" }).references(
       () => customers.id,
     ),
@@ -6212,6 +6267,27 @@ export const deliveryConsignments = mysqlTable(
     recipientName: varchar("recipientName", { length: 255 }),
     recipientPhone: varchar("recipientPhone", { length: 20 }),
     deliveryAddress: text("deliveryAddress"),
+    parcelStatus: mysqlEnum("parcelStatus", [
+      "ASSIGNED",
+      "ACCEPTED",
+      "PICKED_UP",
+      "OUT_FOR_DELIVERY",
+      "DELIVERED",
+      "FAILED",
+      "RETURNED",
+    ])
+      .default("ASSIGNED")
+      .notNull(),
+    moneyStatus: mysqlEnum("moneyStatus", [
+      "NOT_APPLICABLE",
+      "UNSETTLED",
+      "PARTIAL",
+      "SETTLED",
+      "CANCELLED",
+      "WRITTEN_OFF",
+    ])
+      .default("UNSETTLED")
+      .notNull(),
     status: mysqlEnum("consignmentStatus", [
       "DISPATCHED",
       "DELIVERED",
@@ -6226,11 +6302,21 @@ export const deliveryConsignments = mysqlTable(
     ),
     dispatchedBy: int("dispatchedBy").references(() => users.id),
     dispatchedAt: timestamp("dispatchedAt").defaultNow().notNull(),
+    acceptedAt: timestamp("acceptedAt"),
+    pickedUpAt: timestamp("pickedUpAt"),
+    outForDeliveryAt: timestamp("outForDeliveryAt"),
     settledAt: timestamp("settledAt"),
     // ٨/٨ — ختمُ تسليم المندوب الذاتيّ (شاشة «توصيلاتي») لإرساليات الاستقبال: إفصاحٌ تشغيليّ
     // بحت («المندوب يقول: سلّمتُ»). لا يمسّ status/collectedAmount/remittanceId/settledAt/العهدة/
     // الدفتر — المال يُسوَّى عند توريد المندوب (recordDeliveryRemittance) كما هو دون تغيير.
     courierDeliveredAt: timestamp("courierDeliveredAt"),
+    // Null until the COD is recognized as cash in the courier's custody.
+    // Legacy rows receive a cut-over stamp to avoid charging the same cash a
+    // second time when their physical-delivery evidence is added later.
+    custodyRecognizedAt: timestamp("custodyRecognizedAt"),
+    failedAt: timestamp("failedAt"),
+    failureReason: varchar("failureReason", { length: 500 }),
+    returnedAt: timestamp("returnedAt"),
     notes: text("notes"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -6246,6 +6332,19 @@ export const deliveryConsignments = mysqlTable(
     // اِستقبال (تكامل التوصيل، ٤/٨): يربط أوامر الشغل بإرساليّاتها — كان العمود مكتوباً فقط
     // بلا فهرس، وصار الآن مقروءاً بانتظام (LEFT JOIN من قائمة أوامر الشغل).
     workOrderIdx: index("idx_consignment_workorder").on(table.workOrderId),
+    sourceUq: unique("uq_consignment_source").on(
+      table.sourceType,
+      table.sourceId,
+    ),
+    parcelQueueIdx: index("idx_consignment_parcel_queue").on(
+      table.partyId,
+      table.parcelStatus,
+      table.assignedUserId,
+    ),
+    moneyQueueIdx: index("idx_consignment_money_queue").on(
+      table.partyId,
+      table.moneyStatus,
+    ),
     // حارس بنيوي: فاتورة واحدة ⇒ إرسالية واحدة (لا ازدواج عهدة على نفس البيع).
     invoiceUq: unique("uq_consignment_invoice").on(table.invoiceId),
   }),
@@ -6253,6 +6352,153 @@ export const deliveryConsignments = mysqlTable(
 export type DeliveryConsignment = typeof deliveryConsignments.$inferSelect;
 export type InsertDeliveryConsignment =
   typeof deliveryConsignments.$inferInsert;
+
+/** Immutable allocation of one remittance to one consignment. */
+export const deliveryRemittanceLines = mysqlTable(
+  "deliveryRemittanceLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    remittanceId: bigint("remittanceId", { mode: "number" })
+      .notNull()
+      .references(() => deliveryRemittances.id, { onDelete: "cascade" }),
+    consignmentId: bigint("consignmentId", { mode: "number" })
+      .notNull()
+      .references(() => deliveryConsignments.id),
+    grossApplied: decimal("grossApplied", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    feeOffset: decimal("feeOffset", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    cashReceived: decimal("cashReceived", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    writtenOffAmount: decimal("writtenOffAmount", {
+      precision: 15,
+      scale: 2,
+    })
+      .default("0")
+      .notNull(),
+    legacySnapshot: boolean("legacySnapshot").default(false).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    allocationUq: unique("uq_delivery_remittance_line").on(
+      table.remittanceId,
+      table.consignmentId,
+    ),
+    consignmentIdx: index("idx_delivery_remittance_line_cn").on(
+      table.consignmentId,
+      table.createdAt,
+    ),
+  }),
+);
+export type DeliveryRemittanceLine =
+  typeof deliveryRemittanceLines.$inferSelect;
+
+/**
+ * Rebuildable operational ledger.  Amounts are positive; entryType defines
+ * their meaning. currentBalance is retained only as a checked cache.
+ */
+export const deliveryLedgerEntries = mysqlTable(
+  "deliveryLedgerEntries",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventKey: varchar("eventKey", { length: 160 }).notNull().unique(),
+    partyId: bigint("partyId", { mode: "number" })
+      .notNull()
+      .references(() => deliveryParties.id),
+    consignmentId: bigint("consignmentId", { mode: "number" }).references(
+      () => deliveryConsignments.id,
+    ),
+    remittanceId: bigint("remittanceId", { mode: "number" }).references(
+      () => deliveryRemittances.id,
+    ),
+    // Legacy shared-party balances may not be attributable to one branch.
+    // Every new operational entry is still written with its source branch.
+    branchId: bigint("branchId", { mode: "number" }).references(
+      () => branches.id,
+    ),
+    entryType: mysqlEnum("entryType", [
+      "COD_ASSIGNED",
+      "COD_COLLECTED",
+      "COD_REMITTED",
+      "COD_RELEASED",
+      "COD_WRITTEN_OFF",
+      "COD_RECOVERED",
+      "FEE_EARNED",
+      "FEE_PAID",
+      "FEE_OFFSET",
+      "FEE_REFUNDED",
+    ]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    notes: varchar("notes", { length: 500 }),
+    createdBy: int("createdBy").references(() => users.id),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    partyTimeIdx: index("idx_delivery_ledger_party_time").on(
+      table.partyId,
+      table.occurredAt,
+    ),
+    consignmentIdx: index("idx_delivery_ledger_cn").on(table.consignmentId),
+    remittanceIdx: index("idx_delivery_ledger_remit").on(table.remittanceId),
+  }),
+);
+export type DeliveryLedgerEntry = typeof deliveryLedgerEntries.$inferSelect;
+
+/** Mandatory transition history for chain-of-custody reconstruction. */
+export const deliveryEvents = mysqlTable(
+  "deliveryEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventKey: varchar("eventKey", { length: 160 }).notNull().unique(),
+    consignmentId: bigint("consignmentId", { mode: "number" })
+      .notNull()
+      .references(() => deliveryConsignments.id),
+    eventType: varchar("eventType", { length: 60 }).notNull(),
+    fromParcelStatus: varchar("fromParcelStatus", { length: 30 }),
+    toParcelStatus: varchar("toParcelStatus", { length: 30 }),
+    fromMoneyStatus: varchar("fromMoneyStatus", { length: 30 }),
+    toMoneyStatus: varchar("toMoneyStatus", { length: 30 }),
+    payload: json("payload"),
+    actorUserId: int("actorUserId").references(() => users.id),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    consignmentTimeIdx: index("idx_delivery_event_cn_time").on(
+      table.consignmentId,
+      table.occurredAt,
+    ),
+  }),
+);
+export type DeliveryEvent = typeof deliveryEvents.$inferSelect;
+
+/** Transactional outbox row written beside every delivery event. */
+export const deliveryOutbox = mysqlTable(
+  "deliveryOutbox",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    eventId: bigint("eventId", { mode: "number" })
+      .notNull()
+      .references(() => deliveryEvents.id, { onDelete: "cascade" }),
+    topic: varchar("topic", { length: 100 }).notNull(),
+    payload: json("payload").notNull(),
+    attempts: int("attempts").default(0).notNull(),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    processedAt: timestamp("processedAt"),
+    lastError: varchar("lastError", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    pendingIdx: index("idx_delivery_outbox_pending").on(
+      table.processedAt,
+      table.availableAt,
+    ),
+  }),
+);
+export type DeliveryOutboxRow = typeof deliveryOutbox.$inferSelect;
 
 /** إعدادات الضريبة (صفّ singleton واحد id=1): افتراضي تفعيل الضريبة على الفاتورة الجديدة +
  *  نسبتها + الرقم الضريبي للشركة (يُطبَع على الفاتورة). العراق VAT=0% افتراضياً — enabledByDefault

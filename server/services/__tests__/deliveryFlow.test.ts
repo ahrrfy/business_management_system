@@ -13,11 +13,13 @@ import { getDb } from "../../db";
 import { openShift } from "../shiftService";
 import { createWorkOrder } from "../workOrderService";
 import {
+  confirmConsignmentDelivery,
   createDeliveryParty,
   dispatchToDelivery,
   recordDeliveryRemittance,
   returnConsignment,
   settleDeliveryBalance,
+  transitionConsignmentParcel,
   writeOffDeliveryShortfall,
 } from "../deliveryService";
 import {
@@ -28,6 +30,7 @@ import {
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts",
+  "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
   "workOrderMaterials", "workOrderImages", "workOrders",
@@ -56,12 +59,13 @@ async function seed() {
   await d.insert(s.users).values([
     { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_cashier", name: "كاشير", email: "c@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "local_courier", name: "مندوب", email: "d@t.test", role: "courier", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل التوصيل", phone: "+9647700000000" }]);
   await d.insert(s.products).values([{ id: 1, name: "كتاب مطبوع" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "BK-1", costPrice: "0.00" }]);
   await d.insert(s.branchStock).values([{ variantId: 1, branchId: 1, quantity: 100 }]);
-  const { id: partyId } = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "مندوب", defaultFee: "1500", branchId: 1 }, MANAGER);
+  const { id: partyId } = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "مندوب", defaultFee: "1500", userId: 3, branchId: 1 }, MANAGER);
   return { partyId };
 }
 
@@ -97,7 +101,7 @@ async function allReconcileClean() {
 /** ينشئ طلباً بعربون نقدي ويجعله READY. يُرجِع معرّفه. */
 async function readyWorkOrder(
   shiftOpen: boolean,
-  feeCollection: "COURIER" | "COUNTER" | "SHOP" = "SHOP",
+  feeCollection: "COURIER" | "COUNTER" | "SHOP" = "COURIER",
 ): Promise<number> {
   const wo = await createWorkOrder(
     {
@@ -122,6 +126,19 @@ async function readyWorkOrder(
   return woId;
 }
 
+async function deliver(consignmentId: number) {
+  for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+    await transitionConsignmentParcel(
+      { consignmentId, toStatus, clientRequestId: `flow-${consignmentId}-${toStatus}` },
+      { userId: 3 },
+    );
+  }
+  await confirmConsignmentDelivery(
+    { consignmentId, clientRequestId: `flow-${consignmentId}-delivered` },
+    { userId: 3 },
+  );
+}
+
 describe("delivery COD — money path", () => {
   beforeEach(async () => {
     await reset();
@@ -136,30 +153,33 @@ describe("delivery COD — money path", () => {
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     expect(disp.codAmount).toBe("8000.00");
     const inv = await invoice(disp.invoiceId);
-    expect(inv.customerId).toBeNull(); // فاتورة COD بلا عميل (عهدة لا AR)
+    expect(inv.customerId).toBe(1);
     expect(inv.paidAmount).toBe("2000.00"); // العربون فقط
-    expect(await partyBalance(partyId)).toBe("8000.00"); // عهدة = cod
-    expect(await entryCount("DELIVERY_DISPATCH", partyId)).toBe(1);
+    expect(await partyBalance(partyId)).toBe("0.00"); // لا عهدة قبل تحصيل العميل
+    expect(await entryCount("DELIVERY_DISPATCH", partyId)).toBe(0);
     expect(await entryCount("SALE")).toBe(1);
     // الإرسال لا يلمس درج الوردية إلا بالعربون (2000) — لا نقد COD في الدرج.
     expect(await drawerNet(shift.shiftId)).toBe(2000);
-    expect((await reconcileCustomerBalances())).toEqual([]); // العميل بلا AR
+    expect((await reconcileCustomerBalances())).toEqual([]);
     await allReconcileClean();
 
-    // الترحيل: تحصيل 8000 كاملاً، الأجرة 1500.
+    await deliver(disp.consignmentId);
+    expect(await partyBalance(partyId)).toBe("8000.00");
+    expect(await entryCount("DELIVERY_DISPATCH", partyId)).toBe(1);
+
+    // الترحيل: توريد 8000 كاملة؛ أجرة COURIER قبضها المندوب مباشرة من العميل.
     const consignmentId = disp.consignmentId;
-    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "6500", lines: [{ consignmentId, collectedAmount: "8000" }] }, CASHIER);
+    const rem = await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "8000", lines: [{ consignmentId, collectedAmount: "8000" }] }, CASHIER);
     expect(rem.collectedTotal).toBe("8000.00");
-    expect(rem.feesTotal).toBe("1500.00");
-    expect(rem.netRemitted).toBe("6500.00");
+    expect(rem.feesTotal).toBe("0.00");
+    expect(rem.netRemitted).toBe("8000.00");
     expect(rem.status).toBe("BALANCED");
     expect(await partyBalance(partyId)).toBe("0.00"); // عهدة صُفّيت
     const inv2 = await invoice(disp.invoiceId);
     expect(inv2.paidAmount).toBe("10000.00");
     expect(inv2.status).toBe("PAID");
-    // صافي الدرج = العربون 2000 + (8000 − 1500) = 8500.
-    expect(await drawerNet(shift.shiftId)).toBe(8500);
-    expect(await entryCount("DELIVERY_FEE", partyId)).toBe(1);
+    expect(await drawerNet(shift.shiftId)).toBe(10000);
+    expect(await entryCount("DELIVERY_FEE", partyId)).toBe(0);
     expect(await entryCount("DELIVERY_REMIT", partyId)).toBe(1);
     await allReconcileClean();
   });
@@ -169,16 +189,17 @@ describe("delivery COD — money path", () => {
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    await deliver(disp.consignmentId);
 
-    // تحصيل جزئي 5000 من 8000 ⇒ عجز 3000 يبقى عهدة، بلا أجرة (لم يُسلَّم بالكامل).
+    // توريد جزئي 5000 من 8000 ⇒ 3000 تبقى عهدة.
     const rem = await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "5000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
-    expect(rem.status).toBe("SHORT");
-    expect(rem.shortfallTotal).toBe("3000.00");
+    expect(rem.status).toBe("BALANCED");
+    expect(rem.shortfallTotal).toBe("0.00");
     expect(rem.feesTotal).toBe("0.00");
     expect(await partyBalance(partyId)).toBe("3000.00");
     const inv = await invoice(disp.invoiceId);
-    expect(inv.status).toBe("PARTIALLY_PAID");
-    expect(inv.paidAmount).toBe("7000.00"); // 2000 عربون + 5000
+    expect(inv.status).toBe("PAID");
+    expect(inv.paidAmount).toBe("10000.00"); // قبض العميل ثبت عند التسليم
     await allReconcileClean();
 
     // شطب المدير للعجز 3000 — **موجَّهاً بالإرسالية** (حوكمة ٩/٨: عجز إرساليةٍ حيّة لا يُشطَب
@@ -202,6 +223,7 @@ describe("delivery COD — money path", () => {
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    await deliver(disp.consignmentId);
     const beforeInvoice = await invoice(disp.invoiceId);
     const beforeReceipts = await db().select().from(s.receipts);
 
@@ -226,6 +248,7 @@ describe("delivery COD — money path", () => {
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(true);
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
+    await deliver(disp.consignmentId);
     // حوكمة ٩/٨: عهدةُ إرساليةٍ مفتوحة لا تُسوَّى بمبلغٍ حرّ (تُورَّد بالإرسالية كي تُقيَّد فاتورتها).
     await recordDeliveryRemittance({ branchId: 1, partyId, countedCash: "5000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "5000" }] }, CASHIER);
     expect(await partyBalance(partyId)).toBe("3000.00");
@@ -253,7 +276,7 @@ describe("delivery COD — money path", () => {
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await readyWorkOrder(false); // بلا عربون لتبسيط الرد
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
-    expect(await partyBalance(partyId)).toBe("10000.00");
+    expect(await partyBalance(partyId)).toBe("0.00");
     const stockBefore = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))).limit(1))[0];
 
     await returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-1" });
@@ -273,8 +296,8 @@ describe("delivery COD — money path", () => {
     const b = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500", clientRequestId: "disp-1" }, CASHIER);
     expect(b.consignmentId).toBe(a.consignmentId);
     expect(await entryCount("SALE")).toBe(1);
-    expect(await entryCount("DELIVERY_DISPATCH", partyId)).toBe(1);
-    expect(await partyBalance(partyId)).toBe("8000.00");
+    expect(await entryCount("DELIVERY_DISPATCH", partyId)).toBe(0);
+    expect(await partyBalance(partyId)).toBe("0.00");
   });
 
   // ─── ردّ عربون الإرجاع — إسناد الدرج الفعليّ (بلاغ مالك ٢/٨/٢٦، مرآة إصلاح returnService.ts) ───

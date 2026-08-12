@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { Banknote, CheckCircle2, Info, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
+import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
@@ -16,6 +17,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 type MyDeliveries = RouterOutputs["courier"]["myDeliveries"];
 type DeliveryRow = MyDeliveries["toDeliver"][number];
@@ -31,7 +34,7 @@ function rowKey(row: DeliveryRow): string {
 }
 
 export default function MyDeliveries() {
-  const q = trpc.courier.myDeliveries.useQuery(undefined, { refetchInterval: 60_000 });
+  const q = trpc.courier.myDeliveries.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
   const utils = trpc.useUtils();
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   const [failTarget, setFailTarget] = useState<DeliveryRow | null>(null);
@@ -50,7 +53,7 @@ export default function MyDeliveries() {
     onSettled: () => setConfirmingKey(null),
   });
 
-  // إرسالية استقبال: ختمٌ تشغيليّ بحت (لا مال) — التسوية عند توريدك للمتجر.
+  // ختم التسليم يثبت التحصيل في عهدة الجهة؛ التوريد للدرج يتم لاحقاً عند الموظف.
   const confirmCnM = trpc.courier.confirmConsignmentDelivery.useMutation({
     onSuccess: (res) => {
       notify.ok(`تم تسجيل تسليم ${res.consignmentNumber}`);
@@ -69,18 +72,36 @@ export default function MyDeliveries() {
     onError: (e) => notify.err(e),
   });
 
+  const transitionM = trpc.courier.parcelTransition.useMutation({
+    onSuccess: () => {
+      notify.ok("تم تحديث حالة الطرد");
+      setFailTarget(null);
+      void utils.courier.myDeliveries.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  function transitionParcel(row: DeliveryRow, toStatus: "ASSIGNED" | "ACCEPTED" | "PICKED_UP" | "OUT_FOR_DELIVERY" | "FAILED", reason?: string) {
+    transitionM.mutate({
+      consignmentId: row.id,
+      toStatus,
+      reason: reason ?? null,
+      clientRequestId: crypto.randomUUID(),
+    });
+  }
+
   async function doConfirm(row: DeliveryRow) {
-    // إرسالية استقبال: ختمٌ تشغيليّ فقط — النقد يُسوَّى عند توريدك للمتجر، لا هنا.
+    // التسليم يحوّل COD المحصّل إلى عهدة الجهة حتى توريده للمتجر.
     if (row.kind === "consignment") {
       const ok = await confirm({
         variant: "info",
         title: "تأكيد التسليم",
-        description: `أكّد تسليم الإرسالية ${row.orderNumber} للزبون. سيُسجَّل أنك سلّمتها؛ تسوية المبلغ تبقى عند توريدك للمتجر.`,
+        description: `أكّد تسليم الإرسالية ${row.orderNumber} للزبون وتحصيل مبلغها. سيُسجَّل المبلغ في عهدة جهة التوصيل حتى توريده للمتجر.`,
         confirmText: "تم التسليم",
       });
       if (!ok) return;
       setConfirmingKey(rowKey(row));
-      confirmCnM.mutate({ consignmentId: row.id });
+      confirmCnM.mutate({ consignmentId: row.id, clientRequestId: crypto.randomUUID() });
       return;
     }
     // طلب متجر: تأكيد + تحصيل COD يرفع عهدتك.
@@ -104,6 +125,8 @@ export default function MyDeliveries() {
 
   const data = q.data;
   const linked = data?.linked ?? false;
+  const readOnly = data?.memberRole === "ACCOUNTANT";
+  const ownScope = data?.memberRole === "DRIVER";
 
   return (
     <div className="space-y-4 p-4 md:p-6" dir="rtl">
@@ -123,15 +146,24 @@ export default function MyDeliveries() {
         />
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <StatCard label="نقدٌ بذمّتي" value={`${money(data!.custodyBalance)} د.ع`} icon={Banknote} tone={Number(data!.custodyBalance) > 0 ? "warning" : "positive"} />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard label={ownScope ? "نقد محصل بذمتي" : "نقد محصل بذمة الجهة"} value={`${money(data!.financialSummary?.cashInCustody ?? data!.custodyBalance)} د.ع`} icon={Banknote} tone={Number(data!.custodyBalance) > 0 ? "warning" : "positive"} />
+            <StatCard label="مطلوب تحصيله" value={`${money(data!.financialSummary?.codOutstanding)} د.ع`} icon={Banknote} tone="info" />
+            <StatCard label="أجرة مكتسبة" value={`${money(data!.financialSummary?.feeEarned)} د.ع`} icon={Banknote} tone="positive" />
+            <StatCard label={ownScope ? "أجرة مستحقة لي" : "أجرة مستحقة للجهة"} value={`${money(data!.financialSummary?.feeDue)} د.ع`} icon={Banknote} tone={Number(data!.financialSummary?.feeDue ?? 0) > 0 ? "warning" : "positive"} />
             <StatCard label="قيد التوصيل" value={data!.toDeliver.length} icon={Truck} tone="info" />
             <StatCard label="سُلّمت" value={data!.delivered.length} icon={PackageCheck} tone="positive" />
           </div>
 
+          {data!.financialSummary?.hasFinancialAnomaly && (
+            <p className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs font-medium text-destructive">
+              يوجد انحراف مالي يحتاج مراجعة المدير: أحد أرصدة العهدة أو الأجرة أصبح سالباً. أوقِف التسوية اليدوية حتى المطابقة.
+            </p>
+          )}
+
           {Number(data!.custodyBalance) > 0 && (
             <p className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
-              لديك <b>{money(data!.custodyBalance)} د.ع</b> بذمّتك — سلّمها إلى المتجر لتسوية عهدتك.
+              توجد عهدة COD مسجّلة بقيمة <b>{money(data!.custodyBalance)} د.ع</b> — راجع الطلبات وسلّم النقد المحصّل إلى المتجر لتسويتها.
             </p>
           )}
 
@@ -145,9 +177,11 @@ export default function MyDeliveries() {
                 <DeliveryCard
                   key={rowKey(row)}
                   row={row}
-                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending}
+                  busy={confirmingKey === rowKey(row) || confirmM.isPending || confirmCnM.isPending || failM.isPending || transitionM.isPending}
                   onConfirm={() => doConfirm(row)}
                   onFail={() => setFailTarget(row)}
+                  onTransition={(status) => transitionParcel(row, status)}
+                  readOnly={readOnly}
                 />
               ))
             )}
@@ -189,7 +223,9 @@ export default function MyDeliveries() {
           row={failTarget}
           pending={failM.isPending}
           onCancel={() => !failM.isPending && setFailTarget(null)}
-          onConfirm={(reason) => failM.mutate({ onlineOrderId: failTarget.id, reason })}
+          onConfirm={(reason) => failTarget.kind === "consignment"
+            ? transitionParcel(failTarget, "FAILED", reason)
+            : failM.mutate({ onlineOrderId: failTarget.id, reason })}
         />
       )}
     </div>
@@ -212,7 +248,16 @@ function SourceTag({ kind }: { kind: DeliveryRow["kind"] }) {
   );
 }
 
-function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onFail: () => void }) {
+const PARCEL_LABEL: Record<string, string> = {
+  ASSIGNED: "مسند",
+  ACCEPTED: "مقبول",
+  PICKED_UP: "مستلم من الفرع",
+  OUT_FOR_DELIVERY: "خرج للتوصيل",
+  FAILED: "متعذر",
+  DELIVERED: "تم التسليم",
+};
+
+function DeliveryCard({ row, busy, onConfirm, onFail, onTransition, readOnly }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onFail: () => void; onTransition: (status: "ASSIGNED" | "ACCEPTED" | "PICKED_UP" | "OUT_FOR_DELIVERY") => void; readOnly: boolean }) {
   const phone = row.customerPhone;
   const waMsg = `مرحباً${row.customerName ? " " + row.customerName : ""}، أنا مندوب توصيل الرؤية العربية بخصوص طلبك ${row.orderNumber}. أنا في الطريق إليك.`;
   return (
@@ -222,6 +267,7 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
           <div className="flex items-center gap-2">
             <span className="font-bold tracking-wider" dir="ltr">{row.orderNumber}</span>
             <SourceTag kind={row.kind} />
+            {row.kind === "consignment" && <Badge variant={row.status === "FAILED" ? "danger" : "info"}>{PARCEL_LABEL[row.status] ?? row.status}</Badge>}
           </div>
           <div className="truncate text-sm text-muted-foreground">{row.customerName ?? "عميل"}</div>
         </div>
@@ -242,7 +288,28 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
         </div>
       )}
 
+      {row.kind === "consignment" && (row.acceptedAt || row.pickedUpAt || row.outForDeliveryAt || row.failureReason) && (
+        <div className="mb-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          {row.acceptedAt && <span>قُبل: {fmtDateTime(row.acceptedAt)}</span>}
+          {row.pickedUpAt && <span>استُلم: {fmtDateTime(row.pickedUpAt)}</span>}
+          {row.outForDeliveryAt && <span>خرج: {fmtDateTime(row.outForDeliveryAt)}</span>}
+          {row.failureReason && <span className="text-destructive">السبب: {row.failureReason}</span>}
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
+        {!readOnly && row.kind === "consignment" && row.status === "ASSIGNED" && (
+          <Button variant="outline" size="sm" onClick={() => onTransition("ACCEPTED")} disabled={busy}>قبول الطلب</Button>
+        )}
+        {!readOnly && row.kind === "consignment" && row.status === "ACCEPTED" && (
+          <Button variant="outline" size="sm" onClick={() => onTransition("PICKED_UP")} disabled={busy}>استلمت الطرد</Button>
+        )}
+        {!readOnly && row.kind === "consignment" && row.status === "PICKED_UP" && (
+          <Button variant="outline" size="sm" onClick={() => onTransition("OUT_FOR_DELIVERY")} disabled={busy}>خرج للتوصيل</Button>
+        )}
+        {!readOnly && row.kind === "consignment" && row.status === "FAILED" && (
+          <Button variant="outline" size="sm" onClick={() => onTransition("ASSIGNED")} disabled={busy}>إعادة المحاولة</Button>
+        )}
         {phone && (
           <>
             <a
@@ -261,7 +328,7 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
         )}
         {/* «تعذّر التسليم» يعكس بيع الطلب ⇒ لطلبات المتجر فقط (لها مسار عكسٍ خاصّ). إرساليات
             الاستقبال تُعالَج تعذُّراتها بيد الموظّف عبر إرجاع الإرسالية، فلا زرّ عكسٍ للمندوب هنا. */}
-        {row.kind === "online" && (
+        {!readOnly && (row.kind === "online" || (row.kind === "consignment" && row.status !== "FAILED")) && (
           <button
             onClick={onFail}
             disabled={busy}
@@ -270,14 +337,14 @@ function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy
             <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
           </button>
         )}
-        <button
+        {!readOnly && (row.kind !== "consignment" || row.status === "OUT_FOR_DELIVERY") && <button
           onClick={onConfirm}
           disabled={busy}
           className={`${row.kind === "consignment" ? "ms-auto " : ""}flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50`}
         >
           {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4" />}
           {row.kind === "consignment" ? "تم التسليم" : "تم التسليم والتحصيل"}
-        </button>
+        </button>}
       </div>
     </div>
   );
@@ -300,7 +367,9 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
           تعذّر تسليم <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
         </div>
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          سيُلغى الطلب وتُعاد بضاعته للمخزون وتُصفّى ذمّة العميل (لم يُحصَّل أيّ مبلغ). لا يمكن التراجع.
+          {row.kind === "consignment"
+            ? "سيُسجَّل تعذّر المحاولة مع السبب، ويبقى الطرد قابلاً لإعادة المحاولة أو الإرجاع من الإدارة. لن يُلغى البيع أو يتحرك المخزون الآن."
+            : "سيُلغى طلب المتجر وتُعاد بضاعته للمخزون وتُصفّى ذمّة العميل. لا يمكن التراجع."}
         </p>
         <div className="mb-2 flex flex-wrap gap-1.5">
           {REASONS.map((r) => (
@@ -314,7 +383,7 @@ function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pe
           onChange={(e) => setReason(e.target.value)}
           placeholder="سبب تعذّر التسليم…"
           rows={2}
-          className="mb-4 w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm outline-none focus:border-rose-400"
+          className="mb-4 w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         />
         <div className="flex items-center justify-end gap-2">
           <button onClick={onCancel} disabled={pending} className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50">تراجع</button>

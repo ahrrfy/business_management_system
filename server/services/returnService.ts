@@ -6,7 +6,7 @@ import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
-import { adjustCustomerBalance, adjustDeliveryBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
+import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
 import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
@@ -613,38 +613,23 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         codAmount: deliveryConsignments.codAmount,
         collectedAmount: deliveryConsignments.collectedAmount,
         status: deliveryConsignments.status,
+        parcelStatus: deliveryConsignments.parcelStatus,
+        moneyStatus: deliveryConsignments.moneyStatus,
       })
       .from(deliveryConsignments)
       .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
       .for("update")
       .limit(1);
     const cn = cnRows[0];
-    if (cn && (cn.status === "DISPATCHED" || cn.status === "PARTIAL")) {
-      const outstanding = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
-      const relief = Decimal.min(returnedTotal, outstanding);
-      if (relief.gt(0)) {
-        await adjustDeliveryBalance(tx, Number(cn.partyId), relief.neg());
-        await postEntry(tx, {
-          entryType: "DELIVERY_REMIT",
-          dedupeKey: `DELIVERY_RETURN_RELIEF:INV:${input.invoiceId}:${toDbMoney(newReturnedTotal)}`,
-          branchId: Number(inv.branchId),
-          invoiceId: input.invoiceId,
-          deliveryPartyId: Number(cn.partyId),
-          amount: relief,
-          notes: `عكس عهدةٍ عن بضاعةٍ عادت — مرتجع فاتورة (إرسالية ${cn.number})`,
-        });
-        // COD الفعّال يُخفَّض فلا يُطالَب المندوب بتحصيل ما رجع؛ والإرسالية تُقفل إن صفر المتبقّي.
-        const newCod = round2(money(cn.codAmount).minus(relief));
-        await tx
-          .update(deliveryConsignments)
-          .set({
-            codAmount: toDbMoney(newCod),
-            ...(newCod.lte(money(cn.collectedAmount))
-              ? { status: "DELIVERED" as const, settledAt: new Date() }
-              : {}),
-          })
-          .where(eq(deliveryConsignments.id, Number(cn.id)));
-      }
+    if (cn && (
+      !["DELIVERED", "RETURNED"].includes(cn.parcelStatus)
+      || cn.moneyStatus === "UNSETTLED"
+      || cn.moneyStatus === "PARTIAL"
+    )) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `الفاتورة مرتبطة بإرسالية مفتوحة ${cn.number}. أعد الإرسالية أولاً أو ورّد تحصيلها قبل تسجيل مرتجع المبيعات.`,
+      });
     }
 
     // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = الفاتورة).

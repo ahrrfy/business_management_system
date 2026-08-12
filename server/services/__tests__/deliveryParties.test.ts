@@ -9,15 +9,18 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
+  addDeliveryPartyMember,
   createDeliveryParty,
   getDeliveryParty,
+  listCourierAccounts,
   listDeliveryParties,
+  removeDeliveryPartyMember,
   setDeliveryPartyActive,
   updateDeliveryParty,
 } from "../deliveryService";
 import { reconcileDeliveryFloat } from "../reconcileService";
 
-const TABLES = ["accountingEntries", "deliveryConsignments", "deliveryRemittances", "deliveryParties", "branches", "users"];
+const TABLES = ["accountingEntries", "deliveryConsignments", "deliveryRemittances", "deliveryPartyMembers", "invoices", "deliveryParties", "branches", "users"];
 
 function db() {
   const d = getDb();
@@ -34,9 +37,15 @@ async function reset() {
 
 async function seed() {
   const d = db();
-  await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
+  await d.insert(s.branches).values([
+    { id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" },
+    { id: 2, name: "الفرع الثاني", code: "B2", type: "SALES" },
+  ]);
   await d.insert(s.users).values([
     { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "courier_active", name: "مندوب نشط", email: "c@t.test", role: "courier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "courier_disabled", name: "مندوب معطّل", email: "d@t.test", role: "courier", loginMethod: "local", branchId: 1, isActive: false },
+    { id: 4, openId: "courier_branch_2", name: "مندوب الفرع الثاني", email: "b2@t.test", role: "courier", loginMethod: "local", branchId: 2 },
   ]);
 }
 
@@ -79,5 +88,74 @@ describe("Slice 1 — delivery parties", () => {
     await createDeliveryParty({ partyType: "INDIVIDUAL", name: "مندوب بلا عهدة" }, { userId: 1, branchId: 1 });
     const issues = await reconcileDeliveryFloat();
     expect(issues).toEqual([]);
+  });
+
+  it("الجهة المشتركة تظهر مع جهات الفرع والحساب المعطّل لا يظهر ولا يُربط", async () => {
+    const shared = await createDeliveryParty({ partyType: "COMPANY", name: "شركة مشتركة", branchId: null }, { userId: 1, branchId: 1 });
+    const local = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "مندوب الفرع", branchId: 1 }, { userId: 1, branchId: 1 });
+    const ids = (await listDeliveryParties({ branchId: 1, activeOnly: true })).map((p) => Number(p.id));
+    expect(ids).toEqual(expect.arrayContaining([shared.id, local.id]));
+    expect((await listCourierAccounts(1)).map((u) => u.id)).toEqual([2]);
+    await expect(updateDeliveryParty({ id: local.id, userId: 3 }, { userId: 1, branchId: 1 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(updateDeliveryParty({ id: local.id, userId: 4 }, { userId: 1, branchId: 1, role: "manager" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("يمنع فك حساب الجهة أو نقله ما دامت لها إرسالية مفتوحة", async () => {
+    const { id } = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "مندوب مربوط", userId: 2, branchId: 1 }, { userId: 1, branchId: 1 });
+    await db().insert(s.invoices).values({
+      id: 1, invoiceNumber: "INV-OPEN", sourceType: "WORKORDER", branchId: 1,
+      subtotal: "1000.00", total: "1000.00", createdBy: 1,
+    });
+    await db().insert(s.deliveryConsignments).values({
+      consignmentNumber: "CN-OPEN", branchId: 1, partyId: id, invoiceId: 1,
+      sourceType: "INVOICE", sourceId: 1,
+      codAmount: "1000.00", status: "DISPATCHED", dispatchedBy: 1,
+    });
+    await expect(updateDeliveryParty({ id, userId: null }, { userId: 1, branchId: 1 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("يعرض وصول البوابة للشركة عبر العضويات حتى بلا رابط الحساب القديم", async () => {
+    const { id } = await createDeliveryParty(
+      { partyType: "COMPANY", name: "شركة متعددة المستخدمين", branchId: 1 },
+      { userId: 1, branchId: 1 },
+    );
+    await addDeliveryPartyMember(
+      { partyId: id, userId: 2, memberRole: "MANAGER" },
+      { userId: 1, branchId: 1 },
+    );
+
+    const party = (await listDeliveryParties({ branchId: 1, activeOnly: true }))
+      .find((row) => Number(row.id) === id);
+    expect(party?.userId).toBeNull();
+    expect(party?.hasPortalAccess).toBe(true);
+    expect(party?.drivers).toEqual([]);
+  });
+
+  it("يفصل رابط الحساب والعضوية معاً ثم يسمح بإعادة استخدام الحساب", async () => {
+    const first = await createDeliveryParty(
+      { partyType: "INDIVIDUAL", name: "الجهة الأولى", userId: 2, branchId: 1 },
+      { userId: 1, branchId: 1 },
+    );
+    await updateDeliveryParty({ id: first.id, userId: null }, { userId: 1, branchId: 1 });
+
+    const stale = await db().select({ id: s.deliveryPartyMembers.id })
+      .from(s.deliveryPartyMembers)
+      .where(eq(s.deliveryPartyMembers.userId, 2));
+    expect(stale).toEqual([]);
+    await expect(createDeliveryParty(
+      { partyType: "INDIVIDUAL", name: "الجهة الثانية", userId: 2, branchId: 1 },
+      { userId: 1, branchId: 1 },
+    )).resolves.toMatchObject({ id: expect.any(Number) });
+  });
+
+  it("إزالة العضو الأساسي تفصل الرابط القديم ولا تترك وصولاً خفياً", async () => {
+    const party = await createDeliveryParty(
+      { partyType: "INDIVIDUAL", name: "مندوب قابل للفصل", userId: 2, branchId: 1 },
+      { userId: 1, branchId: 1 },
+    );
+    await expect(removeDeliveryPartyMember({ partyId: party.id, userId: 2 }))
+      .resolves.toEqual({ removed: true });
+    expect((await getDeliveryParty(party.id))?.userId).toBeNull();
+    expect(await db().select().from(s.deliveryPartyMembers).where(eq(s.deliveryPartyMembers.userId, 2))).toEqual([]);
   });
 });

@@ -1,11 +1,12 @@
 // التحوّلات (محاسبة العهدة) — ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
 //
-// READY → DELIVERED + إرسالية: فاتورة (customerId=NULL) + SALE + عهدة COD على الجهة (D3).
+// READY → DELIVERED + إرسالية: فاتورة عميل + SALE + عهدة COD على الجهة (D3).
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull, notLike, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
+  deliveryPartyMembers,
   invoiceItems,
   invoices,
   productUnits,
@@ -15,20 +16,21 @@ import {
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
-import { adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
-import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { openShiftIdTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
-import { assertFloatLimit } from "./parties";
+import { assertFloatLimitTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
 
-/** READY → DELIVERED + إرسالية: فاتورة (customerId=NULL) + SALE + عهدة COD على الجهة (D3). */
+/** READY → DELIVERED + إرسالية: فاتورة عميل + SALE + عهدة COD على الجهة (D3). */
 export interface DispatchInput {
   workOrderId: number;
   partyId: number;
@@ -37,6 +39,7 @@ export interface DispatchInput {
   recipientPhone?: string | null;
   deliveryAddress?: string | null;
   clientRequestId?: string | null;
+  assignedUserId?: number | null;
 }
 
 export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTxActor) {
@@ -47,6 +50,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       deliveryFee: input.deliveryFee == null ? null : toDbMoney(round2(money(input.deliveryFee))),
       recipientName: input.recipientName ?? null,
       recipientPhone: input.recipientPhone ?? null,
+      assignedUserId: input.assignedUserId ?? null,
       deliveryAddress: input.deliveryAddress ?? null,
     });
     if (input.clientRequestId) {
@@ -85,6 +89,29 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
+    let assignedUserId = input.assignedUserId ?? null;
+    if (assignedUserId == null && party.partyType === "INDIVIDUAL") {
+      assignedUserId = party.userId != null ? Number(party.userId) : null;
+      if (assignedUserId == null) {
+        const driver = (await tx.select({ userId: deliveryPartyMembers.userId }).from(deliveryPartyMembers).where(and(
+          eq(deliveryPartyMembers.partyId, input.partyId),
+          eq(deliveryPartyMembers.memberRole, "DRIVER"),
+          eq(deliveryPartyMembers.isActive, true),
+        )).limit(1))[0];
+        assignedUserId = driver?.userId != null ? Number(driver.userId) : null;
+      }
+    }
+    if (assignedUserId != null) {
+      const driver = (await tx.select({ id: deliveryPartyMembers.id }).from(deliveryPartyMembers).where(and(
+        eq(deliveryPartyMembers.partyId, input.partyId),
+        eq(deliveryPartyMembers.userId, assignedUserId),
+        eq(deliveryPartyMembers.memberRole, "DRIVER"),
+        eq(deliveryPartyMembers.isActive, true),
+      )).limit(1))[0];
+      if (!driver && Number(party.userId) !== assignedUserId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "السائق المختار ليس عضواً نشطاً في جهة التوصيل" });
+      }
+    }
     if (party.branchId != null && Number(party.branchId) !== Number(wo.branchId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع أمر الشغل" });
     }
@@ -141,9 +168,10 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // مراجعة PR #495 — سقف عهدة المندوب: كان يُقرأ في مسار إسناد الفاتورة وحده، فبقي هذا المسار
     // (أوامر الشغل الجاهزة) يرفع `currentBalance` بلا حدّ. الفحص هنا **قبل** أيّ كتابة (فاتورة/
     // مخزون/عهدة) وتحت قفل صفّ الجهة أعلاه ⇒ الرفض لا يترك فاتورةً يتيمة.
-    if (codAmount.gt(0)) assertFloatLimit(party, codAmount);
+    if (codAmount.gt(0)) await assertFloatLimitTx(tx, party, codAmount);
 
-    // فاتورة COD: customerId=NULL (الطرف المقابل = جهة التوصيل، عهدة لا AR ⇒ مطابقة AR/الائتمان سليمة).
+    // الفاتورة تبقى منسوبة إلى عميل أمر الشغل كي تظهر في كشفه وأعمار الذمم. جهة التوصيل
+    // هي حائز النقد/الطرد، وليست بديلاً عن هوية العميل على المستند التجاري.
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const invStatus = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(depositPaid));
     const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
@@ -170,7 +198,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       sourceId: `WO-${wo.id}`,
       shiftId: dispatchShiftId,
       branchId: Number(wo.branchId),
-      customerId: null,
+      customerId: wo.customerId ?? null,
       priceTier: "RETAIL",
       subtotal: salePrice.toFixed(2),
       taxAmount: "0.00",
@@ -204,17 +232,21 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       });
     }
 
-    // SALE: الإيراد يُعترف عند الإرسال (D3). customerId=NULL على القيد أيضاً.
+    // SALE: حافظ على هوية العميل كي يبقى القيد والفاتورة وكشف العميل مترابطة.
     await postEntry(tx, {
       entryType: "SALE",
       dedupeKey: `SALE:${invoiceId}`,
       branchId: Number(wo.branchId),
       invoiceId,
+      customerId: wo.customerId ?? null,
       revenue: salePrice,
       cost: costTotal,
       profit: round2(salePrice.minus(costTotal)),
       amount: salePrice,
     });
+    if (wo.customerId != null && codAmount.gt(0)) {
+      await adjustCustomerBalance(tx, Number(wo.customerId), codAmount);
+    }
 
     // ربط إيصال العربون بالفاتورة (كان workOrderId-only) — append-only على القيد كـdeliverWorkOrder.
     // ش٠ (V3): بهويّته الصريحة (depositReceiptId) — الالتقاط الظنّي كان يتصادم مع إيصال أجرة COUNTER.
@@ -239,13 +271,16 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     //   تبتلع الأجرة صامتةً: إرسالية تُنشَأ DELIVERED فوراً فلا يراها مسار التوريد أبداً).
     // ما عدا ذلك (COURIER بـCOD موجب) لا يمرّ بدفترنا إطلاقاً؛ وSHOP بـCOD موجب يُخصَم مصروفاً
     // عند التوريد كما كان.
-    const settleFeeNow = fee.gt(0) && feeCollection !== "COURIER" && (feeCollection === "COUNTER" || !codPositive);
+    // Phase 2: fees are earned only after physical delivery.
     const cnRes = await tx.insert(deliveryConsignments).values({
       consignmentNumber,
       branchId: Number(wo.branchId),
       partyId: input.partyId,
       invoiceId,
       workOrderId: Number(wo.id),
+      sourceType: "WORK_ORDER",
+      sourceId: Number(wo.id),
+      assignedUserId,
       endCustomerId: wo.customerId ?? null,
       codAmount: toDbMoney(codAmount),
       collectedAmount: "0",
@@ -256,70 +291,41 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
       deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
       feeCollection,
-      feeSettledAt: settleFeeNow ? new Date() : null,
-      // codAmount=0 (مدفوع كامل بالعربون) ⇒ إرسالية تسليم فقط بلا عهدة.
-      status: codPositive ? "DISPATCHED" : "DELIVERED",
+      feeSettledAt: null,
+      parcelStatus: "ASSIGNED",
+      moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
+      // COD=0 يعني «لا عهدة مالية»، لا يعني أن الطرد وصل. كل طرد يبدأ تشغيلياً
+      // DISPATCHED ويبقى ظاهراً للمندوب حتى ختم التسليم الفعلي.
+      status: "DISPATCHED",
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
     });
     const consignmentId = extractInsertId(cnRes);
 
-    // صرف الأجرة للمندوب نقداً من الدرج (إيصال OUT) ⇒ الدرج يُطابِق فعلاً عند الإغلاق.
-    // COUNTER: تبرئة أمانةٍ مقبوضة (بلا مصروف — تمرير). SHOP: مصروفٌ حقيقيّ تتحمّله المكتبة.
-    if (settleFeeNow) {
-      const { shiftId, cashBucket } = await shiftIdForCashTx(
-        tx,
-        { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role },
-        Number(wo.branchId),
-        "صرف أجرة توصيل",
-        "RECEPTION",
-      );
-      const feeOut = await tx.insert(receipts).values({
-        branchId: Number(wo.branchId),
-        shiftId,
-        invoiceId,
-        direction: "OUT",
-        amount: toDbMoney(fee),
-        paymentMethod: "CASH",
-        cashBucket,
-        status: "COMPLETED",
-        partyType: "OTHER",
-        referenceNumber: consignmentNumber,
-        description: `أجرة توصيل إرسالية ${consignmentNumber}`,
-        createdBy: actor.userId,
-      });
-      const feeReceiptId = extractInsertId(feeOut);
-      await postEntry(tx, {
-        entryType: feeCollection === "COUNTER" ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
-        dedupeKey: `DELIVERY_FEE_DISPATCH:${consignmentId}`,
-        branchId: Number(wo.branchId),
-        invoiceId,
-        deliveryPartyId: input.partyId,
-        receiptId: feeReceiptId,
-        // تدقيق ٦/٨ (ث٨): إشارةُ التبرئة **سالبة** — الوارد (workOrder/create) موجبٌ، فبقاؤها
-        // موجبةً هنا يجعل Σ(DELIVERY_FEE_HELD) لكل مستندٍ = ضعفَ الأجرة بدل صفر، فيستحيل
-        // على أيّ تقريرٍ أن يجيب «كم أمانةً قُبضت ولم تُبرَّأ؟». الثابت: Σ = 0 ⇔ مُبرَّأة.
-        amount: feeCollection === "COUNTER" ? fee.neg() : fee,
-        // COUNTER تمرير: قبضناها ودفعناها ⇒ صفر أثرٍ على الأرباح. SHOP تحمُّلٌ فعليّ ⇒ مصروف.
-        ...(feeCollection === "SHOP" ? { cost: fee, profit: fee.neg() } : {}),
-        notes: `أجرة توصيل ${consignmentNumber}`,
-      });
-    }
-
+    await appendDeliveryEvent(tx, {
+      eventKey: `CN:${consignmentId}:ASSIGNED`,
+      consignmentId,
+      eventType: "ASSIGNED",
+      toParcelStatus: "ASSIGNED",
+      toMoneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
+      actorUserId: actor.userId,
+      payload: { partyId: input.partyId, sourceType: "WORK_ORDER", sourceId: Number(wo.id) },
+    });
     if (codPositive) {
-      await adjustDeliveryBalance(tx, input.partyId, codAmount);
-      await postEntry(tx, {
-        entryType: "DELIVERY_DISPATCH",
-        dedupeKey: `DELIVERY_DISPATCH:${consignmentId}`,
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `CN:${consignmentId}:COD_ASSIGNED`,
+        partyId: input.partyId,
+        consignmentId,
         branchId: Number(wo.branchId),
-        invoiceId,
-        deliveryPartyId: input.partyId,
-        amount: codAmount,
-        notes: `إرسالية ${consignmentNumber}`,
+        entryType: "COD_ASSIGNED",
+        amount: toDbMoney(codAmount),
+        actorUserId: actor.userId,
       });
     }
 
-    await tx.update(workOrders).set({ status: "DELIVERED", invoiceId, deliveredAt: new Date() }).where(eq(workOrders.id, Number(wo.id)));
+    // Assignment is not customer delivery. The READY row is excluded from
+    // the assignment queue by its consignment, and closes only at delivery.
+    await tx.update(workOrders).set({ invoiceId }).where(eq(workOrders.id, Number(wo.id)));
     if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.dispatch", input.clientRequestId, consignmentId, payloadHash);
 
     return { consignmentId, consignmentNumber, invoiceId, invoiceNumber, codAmount: codAmount.toFixed(2), deliveryFee: fee.toFixed(2) };

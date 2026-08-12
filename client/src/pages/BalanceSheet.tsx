@@ -63,6 +63,7 @@ export default function BalanceSheet() {
       { label: "ما نَدين به للصرّافين", v: p.exchangeCredit },
       // ١٠/٨ — أجرة توصيل قُبضت في الدرج أمانةً للمندوب ولم تُصرف له بعد (نقدها ضمن «النقد»).
       { label: "أمانات أجور توصيل معلّقة", v: p.deliveryFeeHeldLiability },
+      { label: "أجور توصيل مكتسبة غير مدفوعة", v: p.deliveryFeeDueLiability },
     ].filter((r) => D(r.v).gt(0));
     return { assets, liabilities };
   }, [p]);

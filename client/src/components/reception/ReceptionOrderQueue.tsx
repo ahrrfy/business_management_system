@@ -161,7 +161,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
         parties={(parties.data ?? []) as DispatchParty[]}
         pending={dispatch.isPending}
         onClose={() => setDispatchTarget(null)}
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone }) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
           const ord = dispatchTarget!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           // نافذة الملصق تُفتح متزامنةً مع نقرة التأكيد (قبل await الإرسال) — نمط DeliveryHub بالضبط.
@@ -175,6 +175,7 @@ export default function ReceptionOrderQueue({ branchId }: { branchId: number }) 
               recipientPhone: recipientPhone || undefined,
               deliveryAddress: ord.deliveryAddress ?? undefined,
               clientRequestId: crypto.randomUUID(),
+              assignedUserId,
             });
             void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
             printDeliverySlip(ord, party, r);

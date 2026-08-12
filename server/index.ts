@@ -630,6 +630,7 @@ async function startServer() {
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
   let stopNativePushOutboxWorker: (() => void) | null = null;
+  let stopDeliveryOutboxWorker: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
@@ -649,6 +650,11 @@ async function startServer() {
     const nativePush = await import("./services/nativePushOutboxWorker");
     nativePush.startNativePushOutboxWorker();
     stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
+
+    // أحداث التوصيل: إشعارات أعضاء الشركة/السائقين من outbox ذرّي قابل لإعادة المحاولة.
+    const { startDeliveryOutboxWorker, stopDeliveryOutboxWorker: stopDeliveryWorker } = await import("./services/delivery/outboxWorker");
+    startDeliveryOutboxWorker();
+    stopDeliveryOutboxWorker = stopDeliveryWorker;
 
     // ش٢ (ق٤): كنّاس مسوّدات المحطة — يطوي الفارغة المنقضية (٢٤س بلا نشاط) ليلاً وعلى الإقلاع؛
     // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
@@ -693,6 +699,7 @@ async function startServer() {
     }, 10_000);
     try {
       stopNativePushOutboxWorker?.();
+      stopDeliveryOutboxWorker?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       await closeControlDb();

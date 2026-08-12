@@ -1,6 +1,6 @@
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
@@ -44,12 +44,19 @@ type Detail = NonNullable<RouterOutputs["workOrders"]["get"]>;
 type Status = "RECEIVED" | "IN_PROGRESS" | "READY" | "DELIVERED";
 type DeliverTarget = { id: number; orderNumber: string; title: string; salePrice: string; deposit: string };
 
+function workOrderStatusLabel(o: Pick<WO, "status" | "consignmentId" | "courierDeliveredAt">): string {
+  if (o.status === "DELIVERED" && o.consignmentId) {
+    return o.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل";
+  }
+  return STATUS_LABEL[o.status] ?? o.status;
+}
+
 // ── المراحل (أعمدة الكانبان) — مطابقة لحالات النظام الحقيقية ──
 const STATUSES: { key: Status; label: string; hint: string; hue: number }[] = [
   { key: "RECEIVED", label: "مُستلَم", hint: "بانتظار البدء", hue: 72 },
   { key: "IN_PROGRESS", label: "قيد التنفيذ", hint: "تحت الإنتاج الآن", hue: 250 },
   { key: "READY", label: "جاهز للتسليم", hint: "جاهز — بانتظار العميل", hue: 293 },
-  { key: "DELIVERED", label: "مُسلَّم", hint: "اكتمل وصدرت الفاتورة", hue: 155 },
+  { key: "DELIVERED", label: "مُغلق/مُرسل", hint: "فاتورة أو إرسالية توصيل", hue: 155 },
 ];
 const STATUS_LABEL: Record<string, string> = {
   RECEIVED: "مُستلَم", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
@@ -74,7 +81,7 @@ const COLUMNS: { key: ColKey; label: string; hint: string; hue: number; status: 
   { key: "READY", label: "جاهز للتسليم", hint: "جاهز — بانتظار العميل", hue: 293, status: "READY", match: (o) => o.status === "READY" },
   // «مُسلَّم» تُجلب باستعلام منفصل محدود بالأحدث (DELIVERED_LIMIT) — التاريخ يتراكم بلا سقف،
   // والعدّاد الحقيقي يأتي من workOrders.counts لا من طول القائمة.
-  { key: "DELIVERED", label: "مُسلَّم", hint: "اكتمل وصدرت الفاتورة — يُعرض الأحدث", hue: 155, status: "DELIVERED", match: (o) => o.status === "DELIVERED" },
+  { key: "DELIVERED", label: "مُغلق/مُرسل", hint: "استلام مباشر أو خرج للتوصيل — يُعرض الأحدث", hue: 155, status: "DELIVERED", match: (o) => o.status === "DELIVERED" },
 ];
 
 const CHANNELS: Record<string, { label: string; icon: string }> = {
@@ -710,7 +717,7 @@ function Drawer({
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", alignItems: "center" }}>
-                <span className="wob-meta-pill" style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})`, display: "inline-flex", alignItems: "center", gap: 6 }}><span className="inline-block size-2 rounded-full" style={{ background: `oklch(0.45 0.17 ${hue})` }} />{STATUS_LABEL[d.status]}</span>
+                <span className="wob-meta-pill" style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})`, display: "inline-flex", alignItems: "center", gap: 6 }}><span className="inline-block size-2 rounded-full" style={{ background: `oklch(0.45 0.17 ${hue})` }} />{workOrderStatusLabel(d)}</span>
                 {pri && <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>}
                 {di && <span className={`wob-due wob-${di.state}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{di.state === "late" ? <Timer aria-hidden className="size-3.5" /> : <Calendar aria-hidden className="size-3.5" />} {di.text}</span>}
               </div>
@@ -870,7 +877,11 @@ function Drawer({
                 appearance="solid"
                 className="wob-wa-lg"
               />
-              {next ? (next !== "DELIVERED" || canDeliver) && (
+              {next === "DELIVERED" && d.hasDelivery && canDeliver ? (
+                <Link href="/delivery" className="wob-btn wob-btn-primary" style={{ flex: 1 }}>
+                  <Truck aria-hidden className="size-4 inline-block align-text-bottom me-1" /> إسناد للتوصيل
+                </Link>
+              ) : next ? (next !== "DELIVERED" || canDeliver) && (
                 <button className="wob-btn wob-btn-primary" style={{ flex: 1 }} disabled={busy}
                   onClick={() => (next === "DELIVERED" ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
               ) : (
@@ -955,7 +966,7 @@ function OrdersTable({
             className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
             style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})` }}
           >
-            {STATUS_LABEL[o.status] ?? o.status}
+            {workOrderStatusLabel(o)}
           </span>
         );
       },
@@ -1005,8 +1016,27 @@ function OrdersTable({
     },
     {
       id: "assignee",
-      header: "المسؤول",
+      header: "فني التنفيذ",
       cell: ({ row }) => row.original.assigneeName ?? <span className="text-muted-foreground">غير مُسنَد</span>,
+    },
+    {
+      id: "delivery",
+      header: "التوصيل",
+      cell: ({ row }) => {
+        const o = row.original;
+        if (!o.hasDelivery) return <span className="text-muted-foreground">استلام مباشر</span>;
+        if (!o.consignmentId) {
+          return <span className={o.status === "READY" ? "font-bold text-stock-low" : "text-muted-foreground"}>
+            {o.status === "READY" ? "بانتظار الإسناد" : "لم يُرسل"}
+          </span>;
+        }
+        return (
+          <span className="whitespace-nowrap">
+            {(o as WO & { courierDeliveredAt?: Date | null }).courierDeliveredAt ? "وصل للعميل" : "مع جهة التوصيل"}
+            {o.deliveryPartyName ? ` — ${o.deliveryPartyName}` : ""}
+          </span>
+        );
+      },
     },
     {
       id: "actions",
@@ -1023,7 +1053,9 @@ function OrdersTable({
           { key: "print-thermal", kind: "print", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
           { key: "print-label", kind: "print", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
         ];
-        if (next && (next !== "DELIVERED" || canDeliver)) {
+        if (next === "DELIVERED" && o.hasDelivery && canDeliver) {
+          actions.push({ key: "dispatch", kind: "approve", label: "إسناد للتوصيل", icon: Truck, href: "/delivery" });
+        } else if (next && (next !== "DELIVERED" || canDeliver)) {
           actions.push({ key: "advance", kind: next === "DELIVERED" ? "pay" : "approve", label: ADV_LABEL[next], onSelect: () => onAdvance(o, next) });
         }
         if (isManager && !isFinal) {
@@ -1067,6 +1099,7 @@ const DELIVERED_LIMIT = 50;
 
 // ─────────────── الصفحة ───────────────
 export default function WorkOrders() {
+  const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const isManager = me.data?.role === "admin" || me.data?.role === "manager";
@@ -1130,6 +1163,7 @@ export default function WorkOrders() {
     utils.workOrders.get.invalidate(),
     utils.workOrders.timeline.invalidate(),
     utils.inventory.movements.invalidate(),
+    utils.delivery.readyForDispatch.invalidate(),
   ]);
   // التفاؤل على استعلام النشطة فقط — الانتقال إلى «مُسلَّم» يمرّ بحوار التسليم ثم invalidateAll.
   const optimisticMove = (id: number, to: Status) =>
@@ -1232,6 +1266,11 @@ export default function WorkOrders() {
     else if (to === "DELIVERED") {
       // مرآة الخادم: deliver محصور بالكاشير/المدير (أو منح workorders=FULL صريح) — لا نفتح حوار تسليم سيفشل بـ403.
       if (!canDeliver) { notify.warn("التسليم من صلاحية الكاشير/المدير", "تقديم الأمر إلى «مُسلَّم» يُصدر فاتورة نهائية — يتولّاه الكاشير أو المدير."); return; }
+      if (order.hasDelivery) {
+        notify.warn("هذا طلب توصيل", "يجب إنشاء إرسالية واختيار الجهة من إدارة التوصيل.");
+        navigate("/delivery");
+        return;
+      }
       setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice, deposit: order.deposit ?? "0" });
     }
   }
@@ -1318,7 +1357,7 @@ export default function WorkOrders() {
                 { key: "priority", header: "الأولوية", map: (r) => PRIORITIES[r.priority ?? "NORMAL"]?.label ?? "" },
                 { key: "receptionChannel", header: "القناة", map: (r) => CHANNELS[r.receptionChannel ?? "WALK_IN"]?.label ?? "" },
                 { key: "assigneeName", header: "المسؤول", map: (r) => r.assigneeName ?? "" },
-                { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+                { key: "status", header: "الحالة", map: (r) => workOrderStatusLabel(r) },
               ],
             })}><FileText aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تصدير Excel</button>
           <Link href="/pos?mode=RECEPTION" className="wob-btn wob-btn-primary">شاشة الاستقبال الموحدة</Link>

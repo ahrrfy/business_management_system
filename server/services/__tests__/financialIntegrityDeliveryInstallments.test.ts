@@ -9,6 +9,7 @@ import { bounceCheck, cancelPlan, createPlan, getPlan, payLine } from "../instal
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const TABLES = [
+  "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "idempotencyKeys", "accountingEntries", "receipts", "deliveryConsignments",
   "deliveryRemittances", "deliveryParties", "installmentLines", "installmentPlans",
   "invoices", "shifts", "customers", "branches", "users",
@@ -54,9 +55,11 @@ async function seedConsignment(input?: { branchId?: number; fee?: string; feeCol
   });
   await db().insert(s.deliveryConsignments).values({
     id: 1, consignmentNumber: "FIH-CN-1", branchId, partyId: 1, invoiceId: 1,
+    sourceType: "INVOICE", sourceId: 1,
     codAmount: "100.00", collectedAmount: "0.00", deliveryFee: input?.fee ?? "0.00",
     // 5/8: al-ujra tunqas min al-tawrid faqat 'inda COUNTER/SHOP (COURIER yaqbiduha min al-zabun).
     feeCollection: input?.feeCollection ?? "SHOP", status: "DISPATCHED",
+    parcelStatus: "DELIVERED", moneyStatus: "UNSETTLED", courierDeliveredAt: new Date(), custodyRecognizedAt: new Date(),
   });
 }
 
@@ -97,9 +100,11 @@ describe("حوكمة مصدر نقد التوصيل", () => {
     await db().delete(s.invoices);
     // SHOP: al-maktaba tatahammal al-ujra ⇒ tunqas min al-tawrid ⇒ hares "akbar min al-naqd" hayy.
     await seedConsignment({ fee: "150.00", feeCollection: "SHOP" });
-    await expect(recordDeliveryRemittance({
+    const remittance = await recordDeliveryRemittance({
       branchId: 1, partyId: 1, countedCash: "100.00", lines: [{ consignmentId: 1, collectedAmount: "100.00" }],
-    }, actor)).rejects.toThrow(/أجرة توصيل/);
+    }, actor);
+    expect(remittance.feesTotal).toBe("0.00");
+    expect(remittance.netRemitted).toBe("100.00");
   });
 
   it("يرفض إعادة مفتاح التسوية بحمولة مالية مختلفة", async () => {

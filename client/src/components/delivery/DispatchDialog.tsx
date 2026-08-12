@@ -27,6 +27,9 @@ export interface DispatchParty {
   name: string;
   partyType: "INDIVIDUAL" | "COMPANY";
   defaultFee: string;
+  userId?: number | null;
+  hasPortalAccess?: boolean;
+  drivers?: Array<{ userId: number; name: string }>;
 }
 
 export interface DispatchConfirmArgs {
@@ -34,6 +37,7 @@ export interface DispatchConfirmArgs {
   fee: string;
   recipientName: string;
   recipientPhone: string;
+  assignedUserId?: number;
 }
 
 /**
@@ -56,6 +60,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
   const [fee, setFee] = useState<string>("0");
   const [recipientName, setRecipientName] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
+  const [assignedUserId, setAssignedUserId] = useState("");
   const selectedParty = parties.find((p) => String(p.id) === partyId);
 
   useMemo(() => {
@@ -64,6 +69,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
       setFee("0");
       setRecipientName(order.customerName?.trim() || "");
       setRecipientPhone(order.deliveryPhone?.trim() || order.customerPhone?.trim() || "");
+      setAssignedUserId("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order?.id]);
@@ -73,6 +79,7 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
 
   const pickParty = (id: string) => {
     setPartyId(id);
+    setAssignedUserId("");
     const p = parties.find((x) => String(x.id) === id);
     if (p) setFee(String(Number(p.defaultFee ?? 0)));
   };
@@ -81,7 +88,13 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
   // ثانياً فوقها (نمط DeliveryHub الأصلي — راجع تعليقه التاريخي هناك).
   const submit = () => {
     if (!partyId) { notify.err("اختر جهة التوصيل"); return; }
-    onConfirm({ partyId: Number(partyId), fee: fee || "0", recipientName: recipientName.trim(), recipientPhone: recipientPhone.trim() });
+    onConfirm({
+      partyId: Number(partyId),
+      fee: fee || "0",
+      recipientName: recipientName.trim(),
+      recipientPhone: recipientPhone.trim(),
+      assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
+    });
   };
 
   return (
@@ -94,7 +107,9 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
             <label className="mb-1.5 block text-sm font-bold">جهة التوصيل</label>
             <AppSelect value={partyId} onValueChange={pickParty} placeholder="— اختر —" className="h-11">
               {parties.map((p) => (
-                <option key={p.id} value={p.id}>{p.name} ({p.partyType === "COMPANY" ? "شركة" : "مندوب"})</option>
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.partyType === "COMPANY" ? "شركة" : "مندوب"}){p.hasPortalAccess === false ? " — بلا حساب بوابة" : ""}
+                </option>
               ))}
             </AppSelect>
           </div>
@@ -118,6 +133,27 @@ export function DispatchDialog({ order, parties, pending, onClose, onConfirm }: 
           {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(order.deposit ?? "0")} د.ع</span></div>}
           <div className="flex justify-between border-t pt-1 font-bold"><span>مبلغ التحصيل (COD)</span><span dir="ltr" className="tabular-nums">{fmt(String(cod))} د.ع</span></div>
         </div>
+        {selectedParty?.partyType === "COMPANY" && (selectedParty.drivers?.length ?? 0) > 0 && (
+          <div className="mb-3">
+            <label className="mb-1.5 block text-sm font-bold">السائق داخل الشركة</label>
+            <AppSelect
+              value={assignedUserId}
+              onValueChange={setAssignedUserId}
+              placeholder="طابور الشركة — يطالب به أول سائق"
+              className="h-11"
+            >
+              <option value="">طابور الشركة — يطالب به أول سائق</option>
+              {selectedParty.drivers?.map((driver) => (
+                <option key={driver.userId} value={driver.userId}>{driver.name}</option>
+              ))}
+            </AppSelect>
+          </div>
+        )}
+        {selectedParty?.hasPortalAccess === false && (
+          <p className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+            هذه الجهة بلا حساب بوابة؛ سيُسجَّل الإسناد إدارياً لكنها لن ترى الطلب في «توصيلاتي» حتى تربط حساباً بها.
+          </p>
+        )}
         <p className="mb-4 flex items-start gap-1.5 text-xs text-destructive">
           <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
           <span>ستُصدَر فاتورة وتُسجَّل {fmt(String(cod))} د.ع ذمّةً على «{selectedParty?.name ?? "المندوب"}». لا رجعة.</span>

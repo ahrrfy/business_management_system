@@ -25,12 +25,17 @@ import { checkoutReception } from "../receptionCheckoutService";
 import { createWorkOrder } from "../workOrder/create";
 import { deliverWorkOrder } from "../workOrder/deliver";
 import { cancelWorkOrder } from "../workOrder/cancel";
-import { createDeliveryParty } from "../deliveryService";
+import {
+  confirmConsignmentDelivery,
+  createDeliveryParty,
+  transitionConsignmentParcel,
+} from "../deliveryService";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { recordDeliveryRemittance } from "../delivery/remittance";
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts",
+  "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
   "workOrderMaterials", "workOrderImages", "workOrders",
@@ -60,6 +65,7 @@ async function seed() {
   await d.insert(s.users).values([
     { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_recep", name: "موظف خدمة", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "local_courier", name: "مندوب", email: "c@t.test", role: "courier", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل مسجَّل", phone: "+9647700000001", currentBalance: "0.00" }]);
   await d.insert(s.products).values([{ id: 1, name: "دفتر" }]);
@@ -135,21 +141,24 @@ describe("I13 — إيصال العربون بهويّته لا بالصدفة (
     expect(String(depositRefund!.amount)).toBe("2000.00");
   });
 
-  it("التسليم يربط إيصال العربون بالفاتورة ويُبقي إيصال الأجرة غير مربوط", async () => {
+  it("طلب التوصيل لا يُغلق بالتسليم المباشر ولا يخلط إيصال العربون بإيصال الأجرة", async () => {
     await openReceptionShift();
     const workOrderId = await orderWithDepositAndCounterFee();
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, workOrderId));
 
-    const res = await deliverWorkOrder(
+    await expect(deliverWorkOrder(
       { workOrderId, payment: { amount: "8000", method: "CASH" } },
       CASHIER,
-    );
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     const rcpts = await receiptsOf(workOrderId);
     const dep = rcpts.find((r) => r.amount === "2000.00" && r.direction === "IN");
     const fee = rcpts.find((r) => r.amount === "3000.00" && r.direction === "IN");
-    expect(Number(dep?.invoiceId)).toBe(res.invoiceId); // العربون ارتبط بالفاتورة
-    expect(fee?.invoiceId).toBeNull(); // الأمانة تبقى مستقلّة — تُبرَّأ عند الإرسال لا هنا
+    expect(dep?.invoiceId).toBeNull();
+    expect(fee?.invoiceId).toBeNull();
+    const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId)))[0];
+    expect(wo.status).toBe("READY");
+    expect(wo.invoiceId).toBeNull();
   });
 });
 
@@ -181,10 +190,10 @@ describe("V4 — سلّةٌ واحدة ⇒ درجٌ واحد (الوردية ا�
 });
 
 describe("I21 — توريد المندوب يُغلق ذمّة العميل المسجَّل (V14)", () => {
-  it("فاتورة آجلة بعميل ⇒ إسناد ⇒ توريد كامل ⇒ paidAmount كامل وcurrentBalance يعود صفراً", async () => {
+  it("فاتورة آجلة بعميل ⇒ إسناد ⇒ تسليم مثبت ⇒ توريد كامل ⇒ paidAmount كامل وcurrentBalance يعود صفراً", async () => {
     await openReceptionShift(); // درج المستلم للتوريد
     const { id: partyId } = await createDeliveryParty(
-      { partyType: "INDIVIDUAL", name: "مندوب", defaultFee: "0", branchId: 1 }, MANAGER,
+      { partyType: "INDIVIDUAL", name: "مندوب", userId: 3, defaultFee: "0", branchId: 1 }, MANAGER,
     );
     // فاتورة آجلة قائمة (كما ينتجها بيع استقبالٍ آجل): الذمّة على العميل ١٠٬٠٠٠.
     await db().insert(s.invoices).values({
@@ -200,6 +209,23 @@ describe("I21 — توريد المندوب يُغلق ذمّة العميل ا�
       { invoiceId: 501, partyId, deliveryFee: "0", clientRequestId: "slice0-i21-d" }, CASHIER,
     );
     expect(dispatched.codAmount).toBe("10000.00");
+
+    await transitionConsignmentParcel(
+      { consignmentId: dispatched.consignmentId, toStatus: "ACCEPTED", clientRequestId: "slice0-i21-accept" },
+      { userId: 3 },
+    );
+    await transitionConsignmentParcel(
+      { consignmentId: dispatched.consignmentId, toStatus: "PICKED_UP", clientRequestId: "slice0-i21-pickup" },
+      { userId: 3 },
+    );
+    await transitionConsignmentParcel(
+      { consignmentId: dispatched.consignmentId, toStatus: "OUT_FOR_DELIVERY", clientRequestId: "slice0-i21-out" },
+      { userId: 3 },
+    );
+    await confirmConsignmentDelivery(
+      { consignmentId: dispatched.consignmentId, clientRequestId: "slice0-i21-delivered" },
+      { userId: 3 },
+    );
 
     await recordDeliveryRemittance({
       branchId: 1, partyId,

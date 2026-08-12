@@ -387,6 +387,20 @@ const PROCEDURES = {
     roles: [],
     branch: "scoped",
   },
+  deliveryManagerProcedure: {
+    authority: "module-gate",
+    module: "store",
+    level: "FULL",
+    roles: ["manager"],
+    branch: "required",
+  },
+  deliveryCashierProcedure: {
+    authority: "module-gate",
+    module: "store",
+    level: "FULL",
+    roles: ["cashier", "manager"],
+    branch: "required",
+  },
   suppliersReadProcedure: {
     authority: "module-map",
     module: "suppliers",

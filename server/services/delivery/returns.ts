@@ -1,14 +1,15 @@
 // إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون.
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../../drizzle/schema";
+import { deliveryConsignments, deliveryParties, invoiceItemBundleComponents, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
 import { adjustCustomerBalance, adjustDeliveryBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { computeExpectedCash, resolveBranchCashShiftTx } from "../shiftService";
 import { withTx } from "../tx";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
 
 /** إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون. مقيَّد بـDISPATCHED (collected==0). */
@@ -17,6 +18,7 @@ export async function returnConsignment(
   actor: DeliveryTxActor & { clientRequestId?: string | null; refundShiftId?: number | null },
 ) {
   return withTx(async (tx) => {
+    const payloadHash = idempotencyHash({ consignmentId, refundShiftId: actor.refundShiftId ?? null });
     // مراجعة PR #495 (عزل الفرع) — الإرجاع صار `cashierProcedure` بقرار المالك ٦/٨، وبخلاف
     // remit/settle لا يمرّ بـassertPartyInScope في الراوتر (الجهة تُعرَف من الإرسالية لا من
     // المدخل) ⇒ كاشير فرعٍ كان يعكس فاتورة فرعٍ آخر ومخزونَه ويُنقص عهدة مندوبه ويردّ عربوناً
@@ -38,12 +40,25 @@ export async function returnConsignment(
       }
     }
     if (actor.clientRequestId) {
-      const existingId = await findIdempotentRefId(tx, "delivery.return", actor.clientRequestId);
-      if (existingId != null) return { consignmentId, reversed: true as const, idempotentReplay: true as const };
+      const existingId = await checkIdempotency(tx, "delivery.return", actor.clientRequestId, payloadHash);
+      if (existingId != null) {
+        if (Number(existingId) !== Number(consignmentId)) throw new TRPCError({ code: "CONFLICT", message: "مفتاح الإرجاع مرتبط بإرسالية أخرى" });
+        return { consignmentId, reversed: true as const, idempotentReplay: true as const };
+      }
     }
     const cn = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, consignmentId)).for("update").limit(1))[0];
     if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
-    if (cn.status !== "DISPATCHED") throw new TRPCError({ code: "BAD_REQUEST", message: "يُرجَع فقط إرسالٌ لم يُحصَّل منه شيء (للجزئي استعمل المرتجعات)" });
+    const replayAfterLock = await checkIdempotency(tx, "delivery.return", actor.clientRequestId, payloadHash);
+    if (replayAfterLock != null) return { consignmentId, reversed: true as const, idempotentReplay: true as const };
+    if (cn.status !== "DISPATCHED" || cn.moneyStatus === "PARTIAL" || cn.moneyStatus === "SETTLED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "يُرجَع فقط طرد لم يُحصَّل منه شيء؛ بعد التحصيل استعمل مرتجعات البيع" });
+    }
+    if (cn.parcelStatus === "DELIVERED" || cn.parcelStatus === "RETURNED") {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطرد مسلّم للعميل؛ نفّذ مرتجع بيع موثقاً بدل إرجاع الشحنة" });
+    }
+    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطرد بعهدة السائق؛ سجّل تعذّر التوصيل وعودته للفرع قبل إرجاع البيع" });
+    }
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, Number(cn.partyId))).for("update").limit(1))[0];
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1))[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
@@ -138,15 +153,43 @@ export async function returnConsignment(
     });
     await tx.update(invoices).set({ status: "RETURNED", returnedTotal: toDbMoney(total) }).where(eq(invoices.id, Number(cn.invoiceId)));
 
-    // عكس العهدة بالـCOD القائم (collected==0 ⇒ = codAmount).
+    // تحرير التعرض التشغيلي. في المرحلة الثانية لا ترتفع العهدة النقدية عند
+    // الإسناد. أما الصفوف المرحّلة فتحمل custodyRecognizedAt لأن رصيدها القديم
+    // كان تعرّضاً مُسجلاً في currentBalance؛ نعكس منه ما بقي فعلاً، ثم نحرر
+    // الباقي كتعرّض غير محصّل حتى تبقى معادلتا العهدة والتعرض متوازنتين.
     const outstanding = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
     if (outstanding.gt(0)) {
-      await adjustDeliveryBalance(tx, Number(cn.partyId), outstanding.neg());
-      await postEntry(tx, {
-        entryType: "DELIVERY_REMIT", dedupeKey: `DELIVERY_RETURN:${consignmentId}`,
-        branchId: Number(cn.branchId), invoiceId: Number(cn.invoiceId), deliveryPartyId: Number(cn.partyId),
-        amount: outstanding, notes: `عكس عهدة — إرجاع ${cn.consignmentNumber}`,
-      });
+      const cachedCustody = money(party?.currentBalance ?? "0");
+      const legacyCustody = cn.custodyRecognizedAt == null
+        ? money(0)
+        : round2(outstanding.lt(cachedCustody) ? outstanding : cachedCustody);
+      if (legacyCustody.gt(0)) {
+        await adjustDeliveryBalance(tx, Number(cn.partyId), legacyCustody.neg());
+        await appendDeliveryLedgerEntry(tx, {
+          eventKey: `CN:${consignmentId}:COD_REMITTED:LEGACY_RETURN`,
+          partyId: Number(cn.partyId),
+          consignmentId,
+          branchId: Number(cn.branchId),
+          entryType: "COD_REMITTED",
+          amount: toDbMoney(legacyCustody),
+          actorUserId: actor.userId,
+          notes: `عكس عهدة مرحّلة بعد إرجاع ${cn.consignmentNumber}`,
+        });
+      }
+
+      const exposureToRelease = round2(outstanding.minus(legacyCustody));
+      if (exposureToRelease.gt(0)) {
+        await appendDeliveryLedgerEntry(tx, {
+          eventKey: `CN:${consignmentId}:COD_RELEASED:RETURN`,
+          partyId: Number(cn.partyId),
+          consignmentId,
+          branchId: Number(cn.branchId),
+          entryType: "COD_RELEASED",
+          amount: toDbMoney(exposureToRelease),
+          actorUserId: actor.userId,
+          notes: `تحرير تحصيل متوقع بعد إرجاع ${cn.consignmentNumber}`,
+        });
+      }
     }
 
     // رد العربون نقداً إن وُجد (paidAmount على فاتورة COD = العربون).
@@ -243,8 +286,32 @@ export async function returnConsignment(
       });
     }
 
-    await tx.update(deliveryConsignments).set({ status: "RETURNED", settledAt: new Date() }).where(eq(deliveryConsignments.id, consignmentId));
-    if (actor.clientRequestId) await recordIdempotencyKey(tx, "delivery.return", actor.clientRequestId, consignmentId);
+    const returnedAt = new Date();
+    await tx.update(deliveryConsignments).set({
+      status: "RETURNED",
+      parcelStatus: "RETURNED",
+      moneyStatus: "CANCELLED",
+      returnedAt,
+      settledAt: returnedAt,
+    }).where(eq(deliveryConsignments.id, consignmentId));
+    if (cn.workOrderId != null) {
+      await tx.update(workOrders).set({ status: "CANCELLED" }).where(eq(workOrders.id, Number(cn.workOrderId)));
+    }
+    if (cn.sourceType === "ONLINE_ORDER") {
+      await tx.update(onlineOrders).set({ status: "CANCELLED" }).where(eq(onlineOrders.id, Number(cn.sourceId)));
+    }
+    await appendDeliveryEvent(tx, {
+      eventKey: `CN:${consignmentId}:RETURNED:${actor.clientRequestId ?? "legacy"}`,
+      consignmentId,
+      eventType: "RETURNED",
+      fromParcelStatus: cn.parcelStatus,
+      toParcelStatus: "RETURNED",
+      fromMoneyStatus: cn.moneyStatus,
+      toMoneyStatus: "CANCELLED",
+      actorUserId: actor.userId,
+      payload: { invoiceId: Number(cn.invoiceId) },
+    });
+    if (actor.clientRequestId) await recordIdempotencyKey(tx, "delivery.return", actor.clientRequestId, consignmentId, payloadHash);
     void party;
     return {
       consignmentId,

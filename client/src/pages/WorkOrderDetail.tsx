@@ -135,6 +135,7 @@ export default function WorkOrderDetail() {
       utils.workOrders.get.invalidate({ workOrderId }),
       utils.workOrders.list.invalidate(),
       utils.inventory.movements.invalidate(),
+      utils.delivery.readyForDispatch.invalidate(),
     ]);
   };
 
@@ -158,6 +159,9 @@ export default function WorkOrderDetail() {
   if (wo.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
   if (!wo.data) return <div className="p-10 text-center text-muted-foreground">طلب الخدمة غير موجود.</div>;
   const data = wo.data;
+  const displayStatus = data.status === "DELIVERED" && data.consignmentId
+    ? (data.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل")
+    : (STATUS_LABEL[data.status] ?? data.status);
 
   const fmt = fmtAr;
   // الرصيد المستحق = سعر البيع − العربون المقبوض، عبر decimal.js (لا Number() على المال، §٥) —
@@ -284,7 +288,7 @@ export default function WorkOrderDetail() {
           <CardTitle className="text-base flex items-center justify-between gap-2">
             <span className="truncate">{data.title}</span>
             <span className={`text-xs rounded-full px-2.5 py-0.5 font-medium shrink-0 ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
-              {STATUS_LABEL[data.status] ?? data.status}
+              {displayStatus}
             </span>
           </CardTitle>
         </CardHeader>
@@ -461,7 +465,12 @@ export default function WorkOrderDetail() {
             {markReady.isPending ? "جارٍ…" : "وضع علامة جاهز"}
           </Button>
         )}
-        {data.status === "READY" && (
+        {data.status === "READY" && data.hasDelivery && (
+          <Button asChild>
+            <Link href="/delivery"><Truck aria-hidden className="me-1 size-4" /> إسناد للتوصيل</Link>
+          </Button>
+        )}
+        {data.status === "READY" && !data.hasDelivery && (
           <Button
             onClick={async () => {
               const payAmountD = D(payAmount || "0");

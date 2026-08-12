@@ -1,16 +1,12 @@
 // قراءات الشاشة: الجاهز للإرسال، الإرساليات المفتوحة/كاملة، سجل التوريدات، كشف حساب جهة.
 //
-// عزل الفرع (مراجعة نهائية ١٠/٨ — قرارٌ متعمَّد لا ثغرة): دوالّ القراءة بالمعرّف (open/consignments/
-// remittances/statement/storeInTransit) تُرشِّح بـ`partyId` وحده **عمداً**. حدُّ العزل هو **ملكية
-// الجهة** (`assertPartyInScope` في الراوتر): جهةٌ مملوكةٌ لفرعٍ (`branchId != null`) لا يقرؤها غير
-// فرعها؛ والجهةُ المشتركة (`branchId = null`) مرئيّةٌ للجميع **بحكم كونها مشتركة**. المندوب عابرٌ
-// لفروع طلباته بالتصميم (راجع courier.ts)، وشاشةُ التسوية يجب أن تُظهر **كلّ** ما يحمله المندوب عبر
-// الفروع وإلّا استحال توريدُ جهةٍ مشتركةٍ كوحدة. لذا ترشيحُ هذه القراءات بفرع القارئ **يكسر** التوريد
-// عبر-الفرعي المشروع — وليس تحسيناً أمنياً. (الجهة المملوكة لفرعٍ لا تتلقّى إرسالية فرعٍ آخر أصلاً:
-// كلّ مسارات الإسناد تمرّ بـ`assertPartyInScope` على فرع الفاعل.)
+// عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
+// لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
+// للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, deliveryParties, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { getDeliveryFinancialSummary } from "./lifecycle";
 
 /** أوامر الشغل الجاهزة (READY) القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
 export async function listReadyForDispatch(branchId: number | null) {
@@ -18,7 +14,11 @@ export async function listReadyForDispatch(branchId: number | null) {
   if (!db) return [];
   // هذه شاشة «الإرسال للتوصيل» فقط؛ الاستلام المباشر يبقى في طابور خدمة العملاء
   // ولا يجوز أن يظهر هنا كأنه شحنة قابلة للإسناد.
-  const conds = [eq(workOrders.status, "READY"), eq(workOrders.hasDelivery, true)];
+  const conds = [
+    eq(workOrders.status, "READY"),
+    eq(workOrders.hasDelivery, true),
+    sql`NOT EXISTS (SELECT 1 FROM deliveryConsignments dc WHERE dc.workOrderId = ${workOrders.id})`,
+  ];
   if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
   return db
     .select({
@@ -40,14 +40,13 @@ export async function listReadyForDispatch(branchId: number | null) {
     .from(workOrders)
     .leftJoin(customers, eq(workOrders.customerId, customers.id))
     .where(and(...conds))
-    .orderBy(desc(workOrders.id))
-    .limit(200);
+    .orderBy(desc(workOrders.id));
 }
 
 /** الإرساليات المفتوحة (DISPATCHED/PARTIAL) لجهة — لشاشة التسوية.
  *  ٩/٨: + feeCollection/feeSettledAt (الشاشة كانت تخصم كل الأجور فتحسب صافياً يخالف الخادم
  *  فتستحيل تسوية إرساليات COURIER/المصروفة سلفاً — طريق مسدود) + ختم تأكيد المندوب. */
-export async function listOpenConsignments(partyId: number) {
+export async function listOpenConsignments(partyId: number, branchId?: number | null) {
   const db = getDb();
   if (!db) return [];
   return db
@@ -62,6 +61,8 @@ export async function listOpenConsignments(partyId: number) {
       feeCollection: deliveryConsignments.feeCollection,
       feeSettledAt: deliveryConsignments.feeSettledAt,
       courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
+      parcelStatus: deliveryConsignments.parcelStatus,
+      moneyStatus: deliveryConsignments.moneyStatus,
       status: deliveryConsignments.status,
       endCustomerId: deliveryConsignments.endCustomerId,
       customerName: customers.name,
@@ -71,7 +72,12 @@ export async function listOpenConsignments(partyId: number) {
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
-    .where(and(eq(deliveryConsignments.partyId, partyId), sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`))
+    .where(and(
+      eq(deliveryConsignments.partyId, partyId),
+      eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+      sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`,
+      branchId == null ? undefined : eq(deliveryConsignments.branchId, branchId),
+    ))
     .orderBy(deliveryConsignments.dispatchedAt);
 }
 
@@ -80,7 +86,7 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
   const db = getDb();
   if (!db) return [];
   const conds = [eq(deliveryConsignments.partyId, partyId)];
-  if (openOnly) conds.push(sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`);
+  if (openOnly) conds.push(sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`);
   return db
     .select({
       id: deliveryConsignments.id,
@@ -93,6 +99,11 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
       deliveryFee: deliveryConsignments.deliveryFee,
       feeCollection: deliveryConsignments.feeCollection,
       status: deliveryConsignments.status,
+      parcelStatus: deliveryConsignments.parcelStatus,
+      moneyStatus: deliveryConsignments.moneyStatus,
+      assignedUserId: deliveryConsignments.assignedUserId,
+      assignedUserName: users.name,
+      failureReason: deliveryConsignments.failureReason,
       customerName: customers.name,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
@@ -106,9 +117,9 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
     .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
     .leftJoin(deliveryRemittances, eq(deliveryConsignments.remittanceId, deliveryRemittances.id))
+    .leftJoin(users, eq(deliveryConsignments.assignedUserId, users.id))
     .where(and(...conds))
-    .orderBy(desc(deliveryConsignments.id))
-    .limit(300);
+    .orderBy(desc(deliveryConsignments.id));
 }
 
 /** سجل توريدات جهة (٩/٨): كان أثر التوريد الوحيد إيصالاً حرارياً يُطبع مرة واحدة — سلسلة
@@ -201,6 +212,57 @@ export async function getDeliveryPartyStatement(partyId: number, from?: string, 
     currentBalance: party.currentBalance,
     entries,
   };
+}
+
+export async function getDeliveryPartyFinancials(partyId: number) {
+  const db = getDb();
+  if (!db) return null;
+  const party = (await db.select({ id: deliveryParties.id, name: deliveryParties.name }).from(deliveryParties).where(eq(deliveryParties.id, partyId)).limit(1))[0];
+  if (!party) return null;
+  const [summary, ledger, allocations, events] = await Promise.all([
+    getDeliveryFinancialSummary(partyId),
+    db.select({
+      id: deliveryLedgerEntries.id,
+      eventKey: deliveryLedgerEntries.eventKey,
+      consignmentId: deliveryLedgerEntries.consignmentId,
+      remittanceId: deliveryLedgerEntries.remittanceId,
+      branchId: deliveryLedgerEntries.branchId,
+      entryType: deliveryLedgerEntries.entryType,
+      amount: deliveryLedgerEntries.amount,
+      notes: deliveryLedgerEntries.notes,
+      occurredAt: deliveryLedgerEntries.occurredAt,
+    }).from(deliveryLedgerEntries).where(eq(deliveryLedgerEntries.partyId, partyId)).orderBy(desc(deliveryLedgerEntries.id)).limit(300),
+    db.select({
+      id: deliveryRemittanceLines.id,
+      remittanceId: deliveryRemittanceLines.remittanceId,
+      remittanceNumber: deliveryRemittances.remittanceNumber,
+      consignmentId: deliveryRemittanceLines.consignmentId,
+      consignmentNumber: deliveryConsignments.consignmentNumber,
+      grossApplied: deliveryRemittanceLines.grossApplied,
+      feeOffset: deliveryRemittanceLines.feeOffset,
+      cashReceived: deliveryRemittanceLines.cashReceived,
+      writtenOffAmount: deliveryRemittanceLines.writtenOffAmount,
+      createdAt: deliveryRemittanceLines.createdAt,
+    }).from(deliveryRemittanceLines)
+      .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryRemittanceLines.consignmentId))
+      .innerJoin(deliveryRemittances, eq(deliveryRemittances.id, deliveryRemittanceLines.remittanceId))
+      .where(eq(deliveryConsignments.partyId, partyId))
+      .orderBy(desc(deliveryRemittanceLines.id)).limit(300),
+    db.select({
+      id: deliveryEvents.id,
+      consignmentId: deliveryEvents.consignmentId,
+      eventType: deliveryEvents.eventType,
+      fromParcelStatus: deliveryEvents.fromParcelStatus,
+      toParcelStatus: deliveryEvents.toParcelStatus,
+      fromMoneyStatus: deliveryEvents.fromMoneyStatus,
+      toMoneyStatus: deliveryEvents.toMoneyStatus,
+      occurredAt: deliveryEvents.occurredAt,
+    }).from(deliveryEvents)
+      .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryEvents.consignmentId))
+      .where(eq(deliveryConsignments.partyId, partyId))
+      .orderBy(desc(deliveryEvents.id)).limit(300),
+  ]);
+  return { party, summary, ledger, allocations, events };
 }
 
 // ش١ (٥/٨): listReceptionInvoiceQueue انتقلت إلى server/services/reception/queries.ts
