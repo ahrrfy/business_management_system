@@ -1,7 +1,7 @@
 // الحجوزات — واجهة R-م٣ (النواة). قائمة الحجوزات + حوار حجز جديد (استعلام منتج + بنود) + إلغاء/تمديد.
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -80,10 +80,11 @@ const CLOSEABLE: ReservationStatus[] = ["ACTIVE", "PARTIALLY_FULFILLED"];
 interface ReservationsHubProps {
   embedded?: boolean;
   fixedBranchId?: number;
+  currentShiftId?: number | null;
   onClose?: () => void;
 }
 
-export default function ReservationsHub({ embedded = false, fixedBranchId, onClose }: ReservationsHubProps) {
+export default function ReservationsHub({ embedded = false, fixedBranchId, currentShiftId, onClose }: ReservationsHubProps) {
   const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
   const role = (me.data?.role ?? "user") as RoleKey;
@@ -119,12 +120,16 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
   const [convertReference, setConvertReference] = useState("");
   const [convertAvailabilitySnapshot, setConvertAvailabilitySnapshot] = useState<ReservationAvailabilitySnapshot | null>(null);
   const [convertAvailabilityWarning, setConvertAvailabilityWarning] = useState<string | null>(null);
+  const [isConversionBusy, setIsConversionBusy] = useState(false);
+  const activeConvertTargetIdRef = useRef<number | null>(null);
   const [cancelTarget, setCancelTarget] = useState<ReservationRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [extendTarget, setExtendTarget] = useState<ReservationRow | null>(null);
   const [extendHours, setExtendHours] = useState("24");
 
   const closeConversionDialog = useCallback(() => {
+    activeConvertTargetIdRef.current = null;
+    setIsConversionBusy(false);
     setConvertTarget(null);
     setConvertAmount("");
     setConvertReference("");
@@ -159,7 +164,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
     {
       enabled: convertTarget != null,
       // يرصد إلغاء/تحرير الحجز أو تغير ATP أثناء بقاء الحوار مفتوحاً؛ التحقق الحاسم يُعاد عند التأكيد.
-      refetchInterval: convertTarget != null ? 10_000 : false,
+      refetchInterval: convertTarget != null && !isConversionBusy ? 10_000 : false,
       refetchOnWindowFocus: true,
     },
   );
@@ -171,11 +176,12 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
   }, [convertAvailabilitySnapshot, convertDetail.data, convertTarget]);
 
   useEffect(() => {
-    if (!convertTarget || !convertDetail.data) return;
+    if (!convertTarget || !convertDetail.data || isConversionBusy) return;
     const closedMessage = reservationConversionClosedMessage(convertDetail.data);
     if (closedMessage) {
       closeConversionDialog();
       notify.err(closedMessage);
+      void utils.reservations.list.invalidate();
       return;
     }
     const expiresAtMs = new Date(convertDetail.data.expiresAt).getTime();
@@ -186,7 +192,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
       void utils.reservations.list.invalidate();
     }, Math.max(1, expiresAtMs - Date.now() + 25));
     return () => window.clearTimeout(timer);
-  }, [closeConversionDialog, convertDetail.data, convertTarget, utils.reservations.list]);
+  }, [closeConversionDialog, convertDetail.data, convertTarget, isConversionBusy, utils.reservations.list]);
 
   const cancel = trpc.reservations.cancel.useMutation({
     onSuccess: () => {
@@ -218,6 +224,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
         void utils.reservations.list.invalidate();
         return;
       }
+      setIsConversionBusy(false);
       notify.err(e);
       // إن خرج مخزون فعلي في السباق الأخير، تعيد القراءة إظهار النقص داخل الحوار بدلاً من خطأ مبهم.
       void convertDetail.refetch();
@@ -225,6 +232,8 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
   });
 
   function onConvert(r: ReservationRow) {
+    activeConvertTargetIdRef.current = Number(r.id);
+    setIsConversionBusy(false);
     setConvertTarget(r);
     setConvertAmount("");
     setConvertMethod("CASH");
@@ -251,36 +260,53 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
       ? { amount, method: convertMethod, reference: convertMethod === "CASH" ? null : convertReference.trim() }
       : null;
 
-    const fresh = await convertDetail.refetch();
-    if (fresh.error || !fresh.data) {
+    const targetId = Number(convertTarget.id);
+    setIsConversionBusy(true);
+    try {
+      const fresh = await convertDetail.refetch();
+      if (activeConvertTargetIdRef.current !== targetId) return;
+      if (fresh.error || !fresh.data) {
+        setIsConversionBusy(false);
+        notify.err("تعذّر التحقق من الحجز الآن؛ تحقّق من الاتصال وأعد المحاولة.");
+        return;
+      }
+      const closedMessage = reservationConversionClosedMessage(fresh.data);
+      if (closedMessage) {
+        closeConversionDialog();
+        notify.err(closedMessage);
+        void utils.reservations.list.invalidate();
+        return;
+      }
+      const shortages = findReservationStockShortages(fresh.data);
+      if (shortages.length) {
+        setIsConversionBusy(false);
+        notify.warn(
+          "المخزون الفعلي لم يعد يغطي الحجز",
+          `${shortages.map((row) => row.productName).join("، ")} — لم تُنشأ فاتورة ناقصة.`,
+        );
+        return;
+      }
+      const drops = findReservationAvailabilityDrops(convertAvailabilitySnapshot, fresh.data);
+      if (drops.length) {
+        // تثبيت اللقطة الجديدة يجعل الضغط التالي إقراراً واعياً؛ انخفاض ATP لا يحجب صاحب الحجز
+        // ما دام الرصيد الفعلي يغطيه، لكنه لا يمر بصمت أيضاً.
+        setIsConversionBusy(false);
+        setConvertAvailabilitySnapshot(captureReservationAvailability(fresh.data));
+        setConvertAvailabilityWarning("انخفض المتاح العام بعد فتح الحوار. أولوية هذا الحجز محفوظة؛ راجع البنود ثم أكّد مرة أخرى.");
+        notify.warn("انخفض المتاح منذ فتح الحوار", "أولوية الحجز محفوظة. راجع التحذير ثم اضغط تأكيد الطلب مرة أخرى.");
+        return;
+      }
+      convert.mutate({
+        reservationId: targetId,
+        // في الاستقبال null صريح يمنع الخادم من التقاط وردية RETAIL موازية بالخطأ.
+        shiftId: embedded ? currentShiftId ?? null : currentShiftId ?? undefined,
+        payment,
+      });
+    } catch {
+      if (activeConvertTargetIdRef.current !== targetId) return;
+      setIsConversionBusy(false);
       notify.err("تعذّر التحقق من الحجز الآن؛ تحقّق من الاتصال وأعد المحاولة.");
-      return;
     }
-    const closedMessage = reservationConversionClosedMessage(fresh.data);
-    if (closedMessage) {
-      closeConversionDialog();
-      notify.err(closedMessage);
-      void utils.reservations.list.invalidate();
-      return;
-    }
-    const shortages = findReservationStockShortages(fresh.data);
-    if (shortages.length) {
-      notify.warn(
-        "المخزون الفعلي لم يعد يغطي الحجز",
-        `${shortages.map((row) => row.productName).join("، ")} — لم تُنشأ فاتورة ناقصة.`,
-      );
-      return;
-    }
-    const drops = findReservationAvailabilityDrops(convertAvailabilitySnapshot, fresh.data);
-    if (drops.length) {
-      // تثبيت اللقطة الجديدة يجعل الضغط التالي إقراراً واعياً؛ انخفاض ATP لا يحجب صاحب الحجز
-      // ما دام الرصيد الفعلي يغطيه، لكنه لا يمر بصمت أيضاً.
-      setConvertAvailabilitySnapshot(captureReservationAvailability(fresh.data));
-      setConvertAvailabilityWarning("انخفض المتاح العام بعد فتح الحوار. أولوية هذا الحجز محفوظة؛ راجع البنود ثم أكّد مرة أخرى.");
-      notify.warn("انخفض المتاح منذ فتح الحوار", "أولوية الحجز محفوظة. راجع التحذير ثم اضغط تأكيد الطلب مرة أخرى.");
-      return;
-    }
-    convert.mutate({ reservationId: Number(convertTarget.id), payment });
   }
   // حوارا الإلغاء/التمديد بحوارات النظام (Dialog) بدل window.prompt.
   function onCancel(r: ReservationRow) {
@@ -609,7 +635,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
         />
       )}
 
-      <Dialog open={convertTarget != null} onOpenChange={(open) => !open && !convert.isPending && closeConversionDialog()}>
+      <Dialog open={convertTarget != null} onOpenChange={(open) => !open && !isConversionBusy && !convert.isPending && closeConversionDialog()}>
         <DialogContent className="sm:max-w-lg" dir="rtl">
           <DialogHeader>
             <DialogTitle>تحويل الحجز إلى طلب</DialogTitle>
@@ -705,13 +731,13 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
             ) : null}
           </div>
           <DialogFooter className="gap-2 sm:gap-2">
-            <Button variant="outline" onClick={closeConversionDialog} disabled={convert.isPending}>إلغاء</Button>
+            <Button variant="outline" onClick={closeConversionDialog} disabled={isConversionBusy || convert.isPending}>إلغاء</Button>
             <Button
               onClick={() => void submitConversion()}
-              disabled={convert.isPending || convertDetail.isFetching || convertAvailabilitySnapshot == null || conversionStockShortages.length > 0}
+              disabled={isConversionBusy || convert.isPending || convertDetail.isFetching || convertAvailabilitySnapshot == null || conversionStockShortages.length > 0}
             >
               <ShoppingCart className="size-4 me-1" aria-hidden />
-              {convert.isPending ? "جارٍ الإتمام…" : convertDetail.isFetching ? "جارٍ التحقق…" : "تأكيد الطلب"}
+              {convert.isPending ? "جارٍ الإتمام…" : isConversionBusy || convertDetail.isFetching ? "جارٍ التحقق…" : "تأكيد الطلب"}
             </Button>
           </DialogFooter>
         </DialogContent>

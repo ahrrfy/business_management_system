@@ -273,6 +273,7 @@ export const reservationsRouter = router({
     .input(
       z.object({
         reservationId: z.number().int().positive(),
+        shiftId: z.number().int().positive().nullish(),
         payment: z
           .object({
             amount: positiveMoneyString,

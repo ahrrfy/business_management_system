@@ -875,6 +875,7 @@ export async function createSaleInTx(
     // تخفيف، ونُضيف: قنوات ORDER/WORKORDER (بأي دفع) + بيع POS آجل لعميلٍ محدَّد (البيع الآجل من
     // الاستقبال). الريلات الصنفية أدناه (تكلفة>0 + سقف + غير مُفتتَح + استثناء الأمانة) تبقى نافذة.
     const openingBaseEligible =
+      input.strictStock !== true &&
       !input.allowNegativeStock &&
       (
         input.sourceType === "ORDER" ||
@@ -931,7 +932,7 @@ export async function createSaleInTx(
           // **استثناء بضاعة الأمانة (§٥-ج، مرآة حارس وضع الافتتاح أعلاه):** لا بيع بالسالب لصنف
           // أمانة حتى عبر الأوفلاين — بيعُ ما لم يُودَع يُلفّق التزاماً للمودِع (AP) لوحداتٍ لم تصل
           // (استحقاق PURCHASE يتيم أدناه). يُرفض بـCONFLICT فيرتدّ ويُعلَّق لمراجعة المدير كالمسار الحيّ.
-          allowNegative: (input.allowNegativeStock ?? false) && !consignByVariant.has(vid),
+          allowNegative: input.strictStock !== true && (input.allowNegativeStock ?? false) && !consignByVariant.has(vid),
           allowNegativeUnopened: openingAllow,
         });
         // معلومة استشارية للمحاولة الفائزة فقط (لا تُعاد في replay الـidempotency — لا حالة دائمة عليها).

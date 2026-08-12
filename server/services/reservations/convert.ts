@@ -2,7 +2,7 @@
 // and reservation lifecycle transition commit or roll back together.
 import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
-import { productUnits, reservationEvents, reservationLines, reservations } from "../../../drizzle/schema";
+import { productUnits, reservationEvents, reservationLines, reservations, shifts } from "../../../drizzle/schema";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
 import { logger } from "../../logger";
 import type { PaymentMethod } from "../sale/types";
@@ -13,6 +13,8 @@ import { adjustReservedStock } from "./stock";
 
 export interface ConvertReservationInput {
   reservationId: number;
+  /** وردية مساحة العمل النشطة إن عُرفَت في الواجهة (الاستقبال يمرّر RECEPTION صراحةً). */
+  shiftId?: number | null;
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
 }
 
@@ -47,10 +49,36 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
     const remaining = lines.filter((line) => line.baseQuantity - line.fulfilledBase > 0);
     if (!remaining.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا كميات متبقّية للتحويل" });
 
-    // اربط الفاتورة دائماً بالوردية الحالية للقابض إن وُجدت، لا بالنقد فقط. بذلك تحمل إعادة
-    // الطباعة رقم الوردية الحقيقي حتى للدفع بالبطاقة/التحويل أو البيع الآجل الذي أنشأه الكاشير.
-    // النقد يبقى صارماً: لا معاملة درج بلا وردية.
-    const shiftId = await openShiftIdTx(tx, actor.userId, Number(res.branchId));
+    // مساحة الاستقبال قد تتعايش مع وردية RETAIL للفاعل نفسه؛ لذلك تمرّر الواجهة معرّف مساحة العمل
+    // الفعلي. نتحقق منه تحت القفل (المستخدم/الفرع/OPEN) ولا نثق بالمدخل حتى للمدير. عند غيابه فقط
+    // نستعمل قاعدة RETAIL الافتراضية للتدفق المستقل.
+    let shiftId: number | null;
+    if (input.shiftId === null) {
+      // null صريح من مساحة عمل مضمّنة يعني «لا وردية في هذه المساحة»؛ لا نستبدله سراً
+      // بورديّة RETAIL أخرى للموظف نفسه.
+      shiftId = null;
+    } else if (input.shiftId !== undefined) {
+      const requestedShift = (await tx
+        .select({ id: shifts.id, userId: shifts.userId, branchId: shifts.branchId, status: shifts.status })
+        .from(shifts)
+        .where(eq(shifts.id, input.shiftId))
+        .for("update")
+        .limit(1))[0];
+      if (
+        !requestedShift ||
+        requestedShift.status !== "OPEN" ||
+        Number(requestedShift.userId) !== Number(actor.userId) ||
+        Number(requestedShift.branchId) !== Number(res.branchId)
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "وردية مساحة العمل أُغلقت أو لا تخص الموظف والفرع الحاليين — أعد فتح المساحة",
+        });
+      }
+      shiftId = Number(requestedShift.id);
+    } else {
+      shiftId = await openShiftIdTx(tx, actor.userId, Number(res.branchId));
+    }
     if (input.payment?.method === "CASH" && Number(input.payment.amount) > 0) {
       if (shiftId == null) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "افتح وردية أولاً لتحصيل دفعة نقدية عند التحويل" });
@@ -89,6 +117,9 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
       })),
       payment: input.payment ?? null,
       notes: `محوّل من الحجز ${res.reservationNumber}`,
+      // الحجز وعدٌ لعميل محدد: لا يرث سماح السالب المؤقت لـORDER في وضع الافتتاح. يفحص
+      // applyMovement الرصيد تحت قفله وفي ترتيب نواة البيع، فيغلق سباق refetch→commit أيضاً.
+      strictStock: true,
     }, actor);
 
     for (const line of saleLines) {
