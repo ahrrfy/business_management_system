@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { TablePager } from "@/components/table/TablePager";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -63,15 +64,26 @@ export default function GiftsHub() {
   const [mode, setMode] = useState<Mode>("list");
 
   // ── فلاتر سجلّ السندات (list) — كلّها خادمية عبر gifts.list؛ لا فلترة محلية تُخفي صفحات الخادم ──
-  const [dirFilter, setDirFilter] = useState<DirFilter>("ALL");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
-  const [listBranchId, setListBranchId] = useState<number | "">(""); // للمرتفعين فقط
-  const [listFrom, setListFrom] = useState("");
-  const [listTo, setListTo] = useState("");
-  const [query, setQuery] = useState("");
+  // فلاتر في querystring — تعيش مع فتح تفاصيل السند والرجوع، ويمكن مشاركتها رابطاً (نمط بقيّة القاعدة).
+  const [listFilters, setListFilters, resetListFilters] = useUrlFilters({
+    dir: "ALL", status: "ALL", branch: "", from: "", to: "", q: "", page: "0",
+  });
+  const dirFilter = (listFilters.dir || "ALL") as DirFilter;
+  const statusFilter = (listFilters.status || "ALL") as StatusFilter;
+  const listBranchId: number | "" = listFilters.branch === "" ? "" : Number(listFilters.branch);
+  const listFrom = listFilters.from;
+  const listTo = listFilters.to;
+  const query = listFilters.q;
   const qDebounced = useDebouncedValue(query.trim(), 300);
-  const [page, setPage] = useState(0);
-  useEffect(() => { setPage(0); }, [dirFilter, statusFilter, listBranchId, listFrom, listTo, qDebounced]);
+  const page = Number(listFilters.page) || 0;
+  const setDirFilter = (v: DirFilter) => setListFilters({ dir: v, page: "0" });
+  const setStatusFilter = (v: StatusFilter) => setListFilters({ status: v, page: "0" });
+  const setListBranchId = (v: number | "") => setListFilters({ branch: v === "" ? "" : String(v), page: "0" });
+  const setListFrom = (v: string) => setListFilters({ from: v, page: "0" });
+  const setListTo = (v: string) => setListFilters({ to: v, page: "0" });
+  const setQuery = (v: string) => setListFilters({ q: v, page: "0" });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setListFilters({ page: String(typeof updater === "function" ? updater(page) : updater) });
 
   // ── حالة النموذج (مشتركة بين الوارد والصادر) ──
   const [formBranchId, setFormBranchId] = useState<number | null>(null);
@@ -368,7 +380,7 @@ export default function GiftsHub() {
             loading={list.isLoading}
             search={{ value: query, onChange: setQuery, placeholder: "رقم السند، السبب أو رقم عرض المورّد…" }}
             activeFilterCount={[dirFilter !== "ALL", statusFilter !== "ALL", listBranchId !== "", listFrom, listTo].filter(Boolean).length}
-            onResetFilters={() => { setQuery(""); setDirFilter("ALL"); setStatusFilter("ALL"); setListBranchId(""); setListFrom(""); setListTo(""); }}
+            onResetFilters={resetListFilters}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
             onPrint={() => window.print()}

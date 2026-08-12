@@ -16,6 +16,7 @@ import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useMemo, useState } from "react";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 
@@ -43,11 +44,18 @@ export default function Suppliers() {
   // الحذف النهائيّ: suppliers.delete = managerProcedure (أدمن/مدير) — عمليةٌ لا رجعة فيها لتنظيف
   // أخطاء الإدخال الأوّليّ، والحارس الخادميّ يرفض أيّ مورّدٍ له حركة (يوجّه للتعطيل).
   const canDelete = me.data?.role === "admin" || me.data?.role === "manager";
-  const [q, setQ] = useState("");
-  const [includeInactive, setIncludeInactive] = useState(false);
+  // فلاتر في querystring — تعيش مع فتح تفاصيل المورّد والرجوع، ويمكن مشاركتها رابطاً.
+  const [filters, setFilters, resetFilters] = useUrlFilters({ q: "", inactive: "", kind: "", page: "0" });
+  const q = filters.q;
+  const includeInactive = filters.inactive === "1";
   // بضاعة الأمانة (٢٠/٧): فلتر نوع الطرف — الكل / موردون اعتياديون / مودِعو أمانة.
-  const [kind, setKind] = useState<"" | "REGULAR" | "CONSIGNOR">("");
-  const [page, setPage] = useState(0);
+  const kind = (filters.kind || "") as "" | "REGULAR" | "CONSIGNOR";
+  const page = Number(filters.page) || 0;
+  const setQ = (v: string) => setFilters({ q: v, page: "0" });
+  const setIncludeInactive = (v: boolean) => setFilters({ inactive: v ? "1" : "", page: "0" });
+  const setKind = (v: "" | "REGULAR" | "CONSIGNOR") => setFilters({ kind: v, page: "0" });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setFilters({ page: String(typeof updater === "function" ? updater(page) : updater) });
   const [importOpen, setImportOpen] = useState(false);
   const importMut = trpc.imports.suppliers.useMutation();
   const limit = 50;
@@ -156,7 +164,7 @@ export default function Suppliers() {
               placeholder: "بحث (اسم/هاتف/مدينة/رقم قديم)",
             }}
             activeFilterCount={[kind, includeInactive ? "1" : ""].filter(Boolean).length}
-            onResetFilters={() => { setQ(""); setKind(""); setIncludeInactive(false); setPage(0); }}
+            onResetFilters={resetFilters}
             filters={
               <>
                 {/* FilterField يُظهر التسمية بصرياً — aria-label على radiogroup لا يُرى (نمط PR #559/#566). */}

@@ -16,6 +16,7 @@ import { D, fmt, round2 } from "@/lib/money";
 import { POS_METHODS, type PaymentMethod } from "@/lib/paymentMethod";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearch } from "wouter";
 
@@ -60,8 +61,12 @@ export default function Returns() {
   const [manualRefund, setManualRefund] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
-  const [q, setQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("");
+  // فلاتر في querystring — تعيش مع فتح تفاصيل الفاتورة والرجوع، ويمكن مشاركتها رابطاً (نمط بقيّة القاعدة).
+  const [filters, setFilters, resetFilters] = useUrlFilters({ q: "", status: "" });
+  const q = filters.q;
+  const statusFilter = filters.status;
+  const setQ = (v: string) => setFilters({ q: v });
+  const setStatusFilter = (v: string) => setFilters({ status: v });
   // #5 (تدقيق التثبيت): idempotency للمرتجع — الشاشة كانت ترسل create.mutate بلا clientRequestId
   // (بخلاف SalesReturnNew) ⇒ على شبكة جوّال متذبذبة (CGNAT): commit ينجح لكن الاستجابة تنتهي مهلتها،
   // فيضغط المستخدم مرّةً ثانية ⇒ مرتجع مكرَّر (RETURN restock مكرَّر + adjustCustomerBalance مكرَّر
@@ -325,7 +330,7 @@ export default function Returns() {
               barcode: true,
             }}
             activeFilterCount={statusFilter ? 1 : 0}
-            onResetFilters={() => { setQ(""); setStatusFilter(""); }}
+            onResetFilters={resetFilters}
             filters={
               // FilterField يُظهر التسمية بصرياً — aria-label وحده لا يُرى (نمط PR #559/#566).
               // قيمة «ALL» الحارسة: Radix يرفض بند القيمة الفارغة فلا يمكن الرجوع لـ«كل الحالات» بدونها.

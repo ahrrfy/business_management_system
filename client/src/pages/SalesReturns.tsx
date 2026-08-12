@@ -10,9 +10,10 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "wouter";
 
 // حسم النوع صراحةً: returns.list يُعيد {rows,total} ⇒ صفّ الجدول/التصدير = عنصر rows.
@@ -29,16 +30,28 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function SalesReturns() {
-  const [customerId, setCustomerId] = useState<number | "">("");
-  const [branchId, setBranchId] = useState<number | "">("");
-  const [createdBy, setCreatedBy] = useState<number | "">("");
-  // فلتر الفترة خادمي (entryDate) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // فلاتر في querystring — تعيش مع فتح تفاصيل الفاتورة والرجوع، ويمكن مشاركتها رابطاً.
+  // كل القيم نصوص؛ ""=افتراضي يُحذف من الـURL. Numeric filters تُحوَّل عند الاستخدام.
+  const [filters, setFilters, resetFilters] = useUrlFilters({
+    customerId: "", branchId: "", createdBy: "", dateFrom: "", dateTo: "", q: "", page: "0",
+  });
+  const customerId = filters.customerId === "" ? ("" as const) : Number(filters.customerId);
+  const branchId = filters.branchId === "" ? ("" as const) : Number(filters.branchId);
+  const createdBy = filters.createdBy === "" ? ("" as const) : Number(filters.createdBy);
+  const dateFrom = filters.dateFrom;
+  const dateTo = filters.dateTo;
+  const q = filters.q;
   // بحث خادمي برقم الفاتورة (ممهَّل — لا طلب لكل حرف).
-  const [q, setQ] = useState("");
   const dq = useDebouncedValue(q, 250);
-  const [page, setPage] = useState(0);
+  const page = Number(filters.page) || 0;
+  const setCustomerId = (v: number | "") => setFilters({ customerId: v === "" ? "" : String(v), page: "0" });
+  const setBranchId = (v: number | "") => setFilters({ branchId: v === "" ? "" : String(v), page: "0" });
+  const setCreatedBy = (v: number | "") => setFilters({ createdBy: v === "" ? "" : String(v), page: "0" });
+  const setDateFrom = (v: string) => setFilters({ dateFrom: v, page: "0" });
+  const setDateTo = (v: string) => setFilters({ dateTo: v, page: "0" });
+  const setQ = (v: string) => setFilters({ q: v, page: "0" });
+  const setPage = (updater: number | ((p: number) => number)) =>
+    setFilters({ page: String(typeof updater === "function" ? updater(page) : updater) });
 
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
@@ -73,22 +86,9 @@ export default function SalesReturns() {
   const noteText = (n: string | null | undefined) =>
     n && !n.startsWith("saleReturn:") && !n.startsWith("sale.return:") ? n : "—";
 
-  const setFilter = (fn: (v: number | "") => void, v: number | "") => {
-    fn(v);
-    setPage(0);
-  };
-
-  // اتساق مع بقية ListToolbar: عدّ الفلاتر النشطة (باستثناء q — يظهر في مربع البحث) + إعادة الضبط.
-  const activeFilterCount = [customerId, branchId, createdBy, dateFrom, dateTo].filter(Boolean).length;
-  const resetFilters = () => {
-    setCustomerId("");
-    setBranchId("");
-    setCreatedBy("");
-    setDateFrom("");
-    setDateTo("");
-    setQ("");
-    setPage(0);
-  };
+  // اتساق مع بقية ListToolbar: عدّ الفلاتر النشطة (باستثناء q — يظهر في مربع البحث).
+  // resetFilters و setPage=0 يتكفّل بهما useUrlFilters + setters الجديدة أعلاه.
+  const activeFilterCount = [filters.customerId, filters.branchId, filters.createdBy, filters.dateFrom, filters.dateTo].filter(Boolean).length;
 
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
@@ -111,7 +111,7 @@ export default function SalesReturns() {
             loading={list.isLoading}
             search={{
               value: q,
-              onChange: (v) => { setQ(v); setPage(0); },
+              onChange: setQ,
               placeholder: "بحث برقم الفاتورة",
               barcode: true,
             }}
@@ -126,7 +126,7 @@ export default function SalesReturns() {
                   <EntityPicker
                     type="SALE_RETURN"
                     selectedId={customerId === "" ? null : Number(customerId)}
-                    onSelect={(id) => setFilter(setCustomerId, id ?? "")}
+                    onSelect={(id) => setCustomerId(id ?? "")}
                     placeholder="— كل العملاء —"
                     clearLabel="عرض كل العملاء"
                   />
@@ -135,7 +135,7 @@ export default function SalesReturns() {
                   <select
                     className={selectCls}
                     value={branchId}
-                    onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}
+                    onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
                   >
                     <option value="">— كل الفروع —</option>
                     {(branches.data ?? []).map((b) => (
@@ -148,7 +148,7 @@ export default function SalesReturns() {
                     size="sm"
                     className="h-8 w-44"
                     value={createdBy === "" ? "ALL" : String(createdBy)}
-                    onValueChange={(v) => setFilter(setCreatedBy, v === "ALL" ? "" : Number(v))}
+                    onValueChange={(v) => setCreatedBy(v === "ALL" ? "" : Number(v))}
                   >
                     <option value="ALL">— كل المنفّذين —</option>
                     {(performers.data ?? []).map((p) => (
@@ -157,10 +157,10 @@ export default function SalesReturns() {
                   </AppSelect>
                 </FilterField>
                 <FilterField label="من تاريخ">
-                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} />
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
                 </FilterField>
                 <FilterField label="إلى تاريخ">
-                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} />
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
                 </FilterField>
               </>
             }
