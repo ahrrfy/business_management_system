@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { RowActions } from "@/components/list";
+import { FilterField, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -342,25 +342,22 @@ export default function Vouchers() {
           )}
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
-          <div className="space-y-1">
-            <Label>النوع</Label>
+          <FilterField label="النوع">
             <select className={selectCls} value={f.type} onChange={(e) => applyFilter({ type: e.target.value })}>
               <option value="">الكل</option>
               <option value="RECEIPT">قبض</option>
               <option value="PAYMENT">صرف</option>
             </select>
-          </div>
-          <div className="space-y-1">
-            <Label>الطرف</Label>
+          </FilterField>
+          <FilterField label="الطرف">
             <select className={selectCls} value={f.party} onChange={(e) => applyFilter({ party: e.target.value })}>
               <option value="">الكل</option>
               <option value="CUSTOMER">عميل</option>
               <option value="SUPPLIER">مورّد</option>
               <option value="OTHER">أخرى</option>
             </select>
-          </div>
-          <div className="space-y-1">
-            <Label>طريقة الدفع</Label>
+          </FilterField>
+          <FilterField label="طريقة الدفع">
             <select className={selectCls} value={f.method} onChange={(e) => applyFilter({ method: e.target.value })}>
               <option value="">الكل</option>
               <option value="CASH">نقدي</option>
@@ -371,18 +368,16 @@ export default function Vouchers() {
               <option value="WALLET">محفظة</option>
               <option value="EXCHANGE">صيرفة</option>
             </select>
-          </div>
-          <div className="space-y-1">
-            <Label>الاعتماد</Label>
+          </FilterField>
+          <FilterField label="الاعتماد">
             <select className={selectCls} value={f.approval} onChange={(e) => applyFilter({ approval: e.target.value })}>
               <option value="">الكل</option>
               <option value="APPROVED">مُعتمَد</option>
               <option value="PENDING_APPROVAL">بانتظار الاعتماد</option>
               <option value="REJECTED">مَرفوض</option>
             </select>
-          </div>
-          <div className="space-y-1">
-            <Label>حالة السند</Label>
+          </FilterField>
+          <FilterField label="حالة السند">
             <AppSelect
               value={f.status || "all"}
               onValueChange={(v) => applyFilter({ status: v === "all" ? "" : v })}
@@ -392,10 +387,9 @@ export default function Vouchers() {
               <option value="COMPLETED">مكتمل</option>
               <option value="REVERSED">مُلغى</option>
             </AppSelect>
-          </div>
+          </FilterField>
           {canFilterBranch && (
-            <div className="space-y-1">
-              <Label>الفرع</Label>
+            <FilterField label="الفرع">
               <AppSelect
                 value={f.branch || "all"}
                 onValueChange={(v) => applyFilter({ branch: v === "all" ? "" : v })}
@@ -406,34 +400,30 @@ export default function Vouchers() {
                   <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>
                 ))}
               </AppSelect>
-            </div>
+            </FilterField>
           )}
-          <div className="space-y-1">
-            <Label>الفئة</Label>
+          <FilterField label="الفئة">
             <select className={selectCls} value={f.cat} onChange={(e) => applyFilter({ cat: e.target.value })}>
               <option value="">الكل</option>
               {(categories.data ?? []).map((c) => (
                 <option key={Number(c.id)} value={String(c.id)}>{c.name}</option>
               ))}
             </select>
-          </div>
-          <div className="space-y-1">
-            <Label>من تاريخ</Label>
+          </FilterField>
+          <FilterField label="من تاريخ">
             <Input type="date" dir="ltr" value={f.from} onChange={(e) => applyFilter({ from: e.target.value })} />
-          </div>
-          <div className="space-y-1">
-            <Label>إلى تاريخ</Label>
+          </FilterField>
+          <FilterField label="إلى تاريخ">
             <Input type="date" dir="ltr" value={f.to} onChange={(e) => applyFilter({ to: e.target.value })} />
-          </div>
-          <div className="space-y-1 md:col-span-3 lg:col-span-5">
-            <Label>بحث (رقم/وصف/اسم مُستفيد)</Label>
+          </FilterField>
+          <FilterField label="بحث (رقم/وصف/اسم مُستفيد)" className="md:col-span-3 lg:col-span-5">
             <Input
               type="search"
               value={f.q}
               onChange={(e) => applyFilter({ q: e.target.value })}
               placeholder="رقم السند، الوصف، المستفيد، المرجع أو رقم الفاتورة…"
             />
-          </div>
+          </FilterField>
         </CardContent>
       </Card>
 
