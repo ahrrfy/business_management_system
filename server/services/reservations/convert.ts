@@ -20,6 +20,7 @@ export interface ConvertReservationResult {
   reservationId: number;
   invoiceId: number;
   invoiceNumber: string;
+  shiftId: number | null;
   total: string;
   status: "PENDING" | "PARTIALLY_PAID" | "PAID";
   idempotentReplay?: boolean;
@@ -46,9 +47,11 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
     const remaining = lines.filter((line) => line.baseQuantity - line.fulfilledBase > 0);
     if (!remaining.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا كميات متبقّية للتحويل" });
 
-    let shiftId: number | null = null;
+    // اربط الفاتورة دائماً بالوردية الحالية للقابض إن وُجدت، لا بالنقد فقط. بذلك تحمل إعادة
+    // الطباعة رقم الوردية الحقيقي حتى للدفع بالبطاقة/التحويل أو البيع الآجل الذي أنشأه الكاشير.
+    // النقد يبقى صارماً: لا معاملة درج بلا وردية.
+    const shiftId = await openShiftIdTx(tx, actor.userId, Number(res.branchId));
     if (input.payment?.method === "CASH" && Number(input.payment.amount) > 0) {
-      shiftId = await openShiftIdTx(tx, actor.userId, Number(res.branchId));
       if (shiftId == null) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "افتح وردية أولاً لتحصيل دفعة نقدية عند التحويل" });
       }
@@ -109,6 +112,7 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
         reservationId: input.reservationId,
         invoiceId: sale.invoiceId,
         invoiceNumber: sale.invoiceNumber,
+        shiftId: sale.shiftId ?? null,
         total: sale.total,
         status: sale.status,
         idempotentReplay: sale.idempotentReplay,

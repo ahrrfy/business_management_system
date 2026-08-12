@@ -3,8 +3,10 @@
 // (requireModule) لا بمجرّد الدور، فمديرٌ صلاحيته reservations=NONE/READ لا يتجاوز.
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { and, asc, desc, eq, gte, like, lt, or, type SQL } from "drizzle-orm";
-import { products, productUnits, productVariants, reservationLines, reservations } from "../../drizzle/schema";
+import { and, asc, desc, eq, gte, inArray, like, lt, or, type SQL } from "drizzle-orm";
+import {
+  branchStock, products, productUnits, productVariants, reservationLines, reservations, reservationStock,
+} from "../../drizzle/schema";
 import { positiveMoneyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { utcDayStart, utcNextDayStart } from "../services/businessDay";
@@ -143,6 +145,25 @@ export const reservationsRouter = router({
         .where(eq(reservationLines.reservationId, input.id))
         .orderBy(asc(reservationLines.id));
 
+      // لقطة الاستعداد للتحويل: ATP تحذيري، أمّا الحارس الصارم فهو الرصيد الفعلي المتاح لصاحب
+      // الحجز. نعيد الرقمين كي تميّز الواجهة انخفاض المتاح بسبب حجوزات لاحقة (لا يحجب الأولوية)
+      // من خروج فعلي جعل تنفيذ الحجز نفسه مستحيلاً.
+      const variantIds = Array.from(new Set(rawLines.map((line) => Number(line.variantId))));
+      const [onHandRows, reservedRows] = variantIds.length
+        ? await Promise.all([
+            db
+              .select({ variantId: branchStock.variantId, quantity: branchStock.quantity })
+              .from(branchStock)
+              .where(and(eq(branchStock.branchId, Number(head.branchId)), inArray(branchStock.variantId, variantIds))),
+            db
+              .select({ variantId: reservationStock.variantId, reservedBase: reservationStock.reservedBase })
+              .from(reservationStock)
+              .where(and(eq(reservationStock.branchId, Number(head.branchId)), inArray(reservationStock.variantId, variantIds))),
+          ])
+        : [[], []];
+      const onHandByVariant = new Map(onHandRows.map((row) => [Number(row.variantId), Number(row.quantity)]));
+      const reservedByVariant = new Map(reservedRows.map((row) => [Number(row.variantId), Number(row.reservedBase)]));
+
       let total = money(0);
       let hasUnpriced = false;
       const lines = rawLines.map((l) => {
@@ -150,11 +171,14 @@ export const reservationsRouter = router({
         // كمية عرض بوحدة الحجز (ليست مالاً) — القسمة على المعامل تعكس تحويل الإنشاء.
         const qty = factor.gt(0) ? money(l.baseQuantity).div(factor) : money(l.baseQuantity);
         const lineTotal = l.quotedUnitPrice != null ? round2(qty.mul(money(l.quotedUnitPrice))) : null;
+        const variantId = Number(l.variantId);
+        const currentOnHandBase = onHandByVariant.get(variantId) ?? 0;
+        const currentReservedBase = reservedByVariant.get(variantId) ?? 0;
         if (lineTotal != null) total = total.add(lineTotal);
         else hasUnpriced = true;
         return {
           id: Number(l.id),
-          variantId: Number(l.variantId),
+          variantId,
           productUnitId: Number(l.productUnitId),
           productName: l.productName,
           variantName: l.variantName,
@@ -164,6 +188,9 @@ export const reservationsRouter = router({
           quantity: qty.toNumber(),
           baseQuantity: Number(l.baseQuantity),
           fulfilledBase: Number(l.fulfilledBase),
+          currentOnHandBase,
+          currentReservedBase,
+          currentAvailableBase: currentOnHandBase - currentReservedBase,
           quotedUnitPrice: l.quotedUnitPrice,
           lineTotal: lineTotal != null ? toDbMoney(lineTotal) : null,
         };

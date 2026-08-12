@@ -1,8 +1,8 @@
 // الحجوزات — واجهة R-م٣ (النواة). قائمة الحجوزات + حوار حجز جديد (استعلام منتج + بنود) + إلغاء/تمديد.
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
-import { useEffect, useState } from "react";
-import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -31,6 +32,14 @@ import type { InvoiceLine } from "@/components/invoice/types";
 import { cn } from "@/lib/utils";
 import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import { printReservationTicket } from "@/lib/printing/reservationTicket";
+import {
+  captureReservationAvailability,
+  findReservationAvailabilityDrops,
+  findReservationStockShortages,
+  reservationConversionClosedMessage,
+  reservationConversionErrorClosesDialog,
+  type ReservationAvailabilitySnapshot,
+} from "@/lib/reservationConversionGuard";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -108,10 +117,20 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
   const [convertAmount, setConvertAmount] = useState("");
   const [convertMethod, setConvertMethod] = useState<CheckoutMethod>("CASH");
   const [convertReference, setConvertReference] = useState("");
+  const [convertAvailabilitySnapshot, setConvertAvailabilitySnapshot] = useState<ReservationAvailabilitySnapshot | null>(null);
+  const [convertAvailabilityWarning, setConvertAvailabilityWarning] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<ReservationRow | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [extendTarget, setExtendTarget] = useState<ReservationRow | null>(null);
   const [extendHours, setExtendHours] = useState("24");
+
+  const closeConversionDialog = useCallback(() => {
+    setConvertTarget(null);
+    setConvertAmount("");
+    setConvertReference("");
+    setConvertAvailabilitySnapshot(null);
+    setConvertAvailabilityWarning(null);
+  }, []);
 
   // أي تغيير فلتر يعيد الترقيم لأول صفحة (وإلا صفحة خارج النطاق ⇒ قائمة فارغة مضللة).
   useEffect(() => { setPage(0); }, [status, q, from, to, sort, effectiveBranch]);
@@ -137,8 +156,37 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
   );
   const convertDetail = trpc.reservations.get.useQuery(
     { id: Number(convertTarget?.id ?? 0) },
-    { enabled: convertTarget != null },
+    {
+      enabled: convertTarget != null,
+      // يرصد إلغاء/تحرير الحجز أو تغير ATP أثناء بقاء الحوار مفتوحاً؛ التحقق الحاسم يُعاد عند التأكيد.
+      refetchInterval: convertTarget != null ? 10_000 : false,
+      refetchOnWindowFocus: true,
+    },
   );
+
+  useEffect(() => {
+    if (convertTarget && convertDetail.data && convertAvailabilitySnapshot == null) {
+      setConvertAvailabilitySnapshot(captureReservationAvailability(convertDetail.data));
+    }
+  }, [convertAvailabilitySnapshot, convertDetail.data, convertTarget]);
+
+  useEffect(() => {
+    if (!convertTarget || !convertDetail.data) return;
+    const closedMessage = reservationConversionClosedMessage(convertDetail.data);
+    if (closedMessage) {
+      closeConversionDialog();
+      notify.err(closedMessage);
+      return;
+    }
+    const expiresAtMs = new Date(convertDetail.data.expiresAt).getTime();
+    if (!Number.isFinite(expiresAtMs)) return;
+    const timer = window.setTimeout(() => {
+      closeConversionDialog();
+      notify.err("انتهت مدّة الحجز أثناء فتح الحوار؛ أُغلق التحويل ولم تُنشأ فاتورة.");
+      void utils.reservations.list.invalidate();
+    }, Math.max(1, expiresAtMs - Date.now() + 25));
+    return () => window.clearTimeout(timer);
+  }, [closeConversionDialog, convertDetail.data, convertTarget, utils.reservations.list]);
 
   const cancel = trpc.reservations.cancel.useMutation({
     onSuccess: () => {
@@ -160,12 +208,20 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
   const convert = trpc.reservations.convert.useMutation({
     onSuccess: (r) => {
       notify.ok(`أُنشئت الفاتورة ${r.invoiceNumber}`);
-      setConvertTarget(null);
-      setConvertAmount("");
-      setConvertReference("");
+      closeConversionDialog();
       utils.reservations.list.invalidate();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      if (reservationConversionErrorClosesDialog(e)) {
+        closeConversionDialog();
+        notify.err("انتهى الحجز أو تغيّرت حالته قبل اكتمال التحويل؛ لم تُنشأ فاتورة.");
+        void utils.reservations.list.invalidate();
+        return;
+      }
+      notify.err(e);
+      // إن خرج مخزون فعلي في السباق الأخير، تعيد القراءة إظهار النقص داخل الحوار بدلاً من خطأ مبهم.
+      void convertDetail.refetch();
+    },
   });
 
   function onConvert(r: ReservationRow) {
@@ -173,8 +229,10 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
     setConvertAmount("");
     setConvertMethod("CASH");
     setConvertReference("");
+    setConvertAvailabilitySnapshot(null);
+    setConvertAvailabilityWarning(null);
   }
-  function submitConversion() {
+  async function submitConversion() {
     if (!convertTarget) return;
     const amount = convertAmount.trim();
     if (amount && (!Number.isFinite(Number(amount)) || Number(amount) <= 0)) {
@@ -192,6 +250,36 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
     const payment = amount
       ? { amount, method: convertMethod, reference: convertMethod === "CASH" ? null : convertReference.trim() }
       : null;
+
+    const fresh = await convertDetail.refetch();
+    if (fresh.error || !fresh.data) {
+      notify.err("تعذّر التحقق من الحجز الآن؛ تحقّق من الاتصال وأعد المحاولة.");
+      return;
+    }
+    const closedMessage = reservationConversionClosedMessage(fresh.data);
+    if (closedMessage) {
+      closeConversionDialog();
+      notify.err(closedMessage);
+      void utils.reservations.list.invalidate();
+      return;
+    }
+    const shortages = findReservationStockShortages(fresh.data);
+    if (shortages.length) {
+      notify.warn(
+        "المخزون الفعلي لم يعد يغطي الحجز",
+        `${shortages.map((row) => row.productName).join("، ")} — لم تُنشأ فاتورة ناقصة.`,
+      );
+      return;
+    }
+    const drops = findReservationAvailabilityDrops(convertAvailabilitySnapshot, fresh.data);
+    if (drops.length) {
+      // تثبيت اللقطة الجديدة يجعل الضغط التالي إقراراً واعياً؛ انخفاض ATP لا يحجب صاحب الحجز
+      // ما دام الرصيد الفعلي يغطيه، لكنه لا يمر بصمت أيضاً.
+      setConvertAvailabilitySnapshot(captureReservationAvailability(fresh.data));
+      setConvertAvailabilityWarning("انخفض المتاح العام بعد فتح الحوار. أولوية هذا الحجز محفوظة؛ راجع البنود ثم أكّد مرة أخرى.");
+      notify.warn("انخفض المتاح منذ فتح الحوار", "أولوية الحجز محفوظة. راجع التحذير ثم اضغط تأكيد الطلب مرة أخرى.");
+      return;
+    }
     convert.mutate({ reservationId: Number(convertTarget.id), payment });
   }
   // حوارا الإلغاء/التمديد بحوارات النظام (Dialog) بدل window.prompt.
@@ -253,6 +341,12 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
 
   const rows = list.data?.rows ?? [];
   const hasMore = list.data?.hasMore ?? false;
+  const conversionAvailabilityDrops = convertDetail.data
+    ? findReservationAvailabilityDrops(convertAvailabilitySnapshot, convertDetail.data)
+    : [];
+  const conversionStockShortages = convertDetail.data
+    ? findReservationStockShortages(convertDetail.data)
+    : [];
 
   return (
     <div className={cn("space-y-4", embedded && "h-full overflow-y-auto bg-background p-4")}>
@@ -515,7 +609,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
         />
       )}
 
-      <Dialog open={convertTarget != null} onOpenChange={(open) => !open && !convert.isPending && setConvertTarget(null)}>
+      <Dialog open={convertTarget != null} onOpenChange={(open) => !open && !convert.isPending && closeConversionDialog()}>
         <DialogContent className="sm:max-w-lg" dir="rtl">
           <DialogHeader>
             <DialogTitle>تحويل الحجز إلى طلب</DialogTitle>
@@ -524,6 +618,25 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-1">
+            {conversionStockShortages.length ? (
+              <Alert variant="destructive">
+                <TriangleAlert aria-hidden />
+                <AlertTitle>المخزون الفعلي لم يعد يغطي الحجز</AlertTitle>
+                <AlertDescription>
+                  {conversionStockShortages.map((row) => `${row.productName}: المتبقي ${row.remainingBase}، الفعلي ${row.currentOnHandBase}`).join(" — ")}
+                  . لن تُنشأ فاتورة ناقصة؛ عالج الرصيد أولاً.
+                </AlertDescription>
+              </Alert>
+            ) : conversionAvailabilityDrops.length || convertAvailabilityWarning ? (
+              <Alert className="border-warning/30 bg-warning/5">
+                <TriangleAlert className="text-warning" aria-hidden />
+                <AlertTitle>انخفض المتاح بعد فتح الحوار</AlertTitle>
+                <AlertDescription>
+                  {convertAvailabilityWarning ?? "أولوية هذا الحجز محفوظة؛ انخفاض ATP بسبب حجوزات أخرى لا يمنع التحويل ما دام المخزون الفعلي يغطيه."}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
             {/* «ماذا حجزتُ لك؟» — بنود الحجز والإجمالي قبل استلام المبلغ. */}
             <div className="space-y-1.5">
               <Label>بنود الحجز</Label>
@@ -592,10 +705,13 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
             ) : null}
           </div>
           <DialogFooter className="gap-2 sm:gap-2">
-            <Button variant="outline" onClick={() => setConvertTarget(null)} disabled={convert.isPending}>إلغاء</Button>
-            <Button onClick={submitConversion} disabled={convert.isPending}>
+            <Button variant="outline" onClick={closeConversionDialog} disabled={convert.isPending}>إلغاء</Button>
+            <Button
+              onClick={() => void submitConversion()}
+              disabled={convert.isPending || convertDetail.isFetching || convertAvailabilitySnapshot == null || conversionStockShortages.length > 0}
+            >
               <ShoppingCart className="size-4 me-1" aria-hidden />
-              {convert.isPending ? "جارٍ الإتمام…" : "تأكيد الطلب"}
+              {convert.isPending ? "جارٍ الإتمام…" : convertDetail.isFetching ? "جارٍ التحقق…" : "تأكيد الطلب"}
             </Button>
           </DialogFooter>
         </DialogContent>
