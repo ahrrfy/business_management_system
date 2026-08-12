@@ -76,7 +76,10 @@ export async function extendReservation(id: number, hours: number, actor: Actor)
     // مراجعة Codex P2: مدّد من الأبعد (الانتهاء الحاليّ أو الآن) — لا تقصّر حجزاً مدّته المتبقّية أطول.
     const base = Math.max(Date.now(), new Date(res.expiresAt).getTime());
     const newExpiry = new Date(base + hours * 3_600_000);
-    await tx.update(reservations).set({ expiresAt: newExpiry }).where(eq(reservations.id, id));
+    await tx
+      .update(reservations)
+      .set({ expiresAt: newExpiry, nearExpiryNotifiedAt: null })
+      .where(eq(reservations.id, id));
     await tx.insert(reservationEvents).values({
       reservationId: id, eventType: "EXTEND", note: `تمديد ${hours} ساعة`, userId: actor.userId,
     });

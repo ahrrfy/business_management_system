@@ -105,10 +105,12 @@ class SystemSettingsMappersTest {
                 "businessHoursJson" to mapOf("monday" to listOf("09:00", "17:00")),
                 "throttlePerMinute" to 25,
                 "campaignApprovalThreshold" to 1000,
+                "flowReservationNearExpiry" to true,
             ),
         )
         assertTrue(mapped.hasBusinessHours)
         assertEquals(25, mapped.throttlePerMinute)
+        assertTrue(mapped.flowReservationNearExpiry)
         assertNull(mapped.welcomeReply)
         assertFalse(mapped.toString().contains("monday"))
     }

@@ -1238,7 +1238,14 @@
       "idx": 177,
       "version": "5",
       "when": 1787879430000,
-      "tag": "0177_repair_reception_schema_drift",
+      "tag": "0177_reservation_near_expiry_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "5",
+      "when": 1787879431000,
+      "tag": "0178_repair_reception_schema_drift",
       "breakpoints": true
     }
   ]

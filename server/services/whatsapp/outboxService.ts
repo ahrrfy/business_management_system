@@ -23,13 +23,16 @@
  * فشل الإرسال الفعلي، فلا يراه `checkCircuitBreaker` (broadcastDispatch.ts) أبداً.
  */
 import { TRPCError } from "@trpc/server";
-import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
 import {
   channelIntegrations,
   conversationMessages,
   conversations,
+  customers,
+  reservations,
   waBroadcastRecipients,
+  waHubSettings,
   waOutbox,
   type WaOutbox,
 } from "../../../drizzle/schema";
@@ -67,6 +70,7 @@ export interface EnqueueOutboxInput {
   branchId: number;
   conversationId?: number | null;
   toPhoneE164?: string | null;
+  customerId?: number | null;
   kind: "SESSION_TEXT" | "TEMPLATE" | "MEDIA" | "MEDIA_FETCH";
   payloadJson: Record<string, unknown>;
   templateName?: string | null;
@@ -75,6 +79,15 @@ export interface EnqueueOutboxInput {
   campaignId?: number | null;
   taskId?: number | null;
   createdBy?: number | null;
+  /** يعيد صف dedupe نهائياً إلى QUEUED بعد أن يثبت المستدعي أن الحدث صالح الآن (تنبيه الحجز فقط). */
+  reviveTerminalDuplicate?: boolean;
+}
+
+export interface EnqueueOutboxResult {
+  id: number;
+  isNew: boolean;
+  status: WaOutbox["status"];
+  revived: boolean;
 }
 
 // ── enqueue ──────────────────────────────────────────────────────────────────
@@ -87,35 +100,56 @@ export interface EnqueueOutboxInput {
  *  فتُصبح القيمة المخزَّنة أحدث بأقلّ من ثانية من لحظة الإدراج الفعلية ⇒ فحص «هل الموعد حان؟» اللاحق
  *  (claimRowForDispatch/claimDueBatch، كلاهما SQL-side بـNOW()) قد يراها مستقبلية ظُلماً في محاولة
  *  الإرسال الفورية (enqueueAndDispatch). `NOW()` من MySQL نفسه يُطابق أي `NOW()` لاحق تماماً. */
-export async function enqueueOutbox(input: EnqueueOutboxInput, tx?: Tx): Promise<{ id: number; isNew: boolean }> {
+export async function enqueueOutbox(input: EnqueueOutboxInput, tx?: Tx): Promise<EnqueueOutboxResult> {
   if (!input.dedupeKey.trim()) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "dedupeKey مطلوب لضمان عدم الإرسال المزدوج." });
   }
-  const run = async (t: Tx): Promise<{ id: number; isNew: boolean }> => {
+  const run = async (t: Tx): Promise<EnqueueOutboxResult> => {
+    const values = {
+      branchId: input.branchId,
+      dedupeKey: input.dedupeKey,
+      conversationId: input.conversationId ?? null,
+      toPhoneE164: input.toPhoneE164 ?? null,
+      customerId: input.customerId ?? null,
+      kind: input.kind,
+      payloadJson: input.payloadJson,
+      templateName: input.templateName ?? null,
+      templateLang: input.templateLang ?? null,
+      status: "QUEUED" as const,
+      nextAttemptAt: input.scheduledAt ?? sql`NOW()`,
+      scheduledAt: input.scheduledAt ?? null,
+      campaignId: input.campaignId ?? null,
+      taskId: input.taskId ?? null,
+      createdBy: input.createdBy ?? null,
+    };
     try {
-      const res = await t.insert(waOutbox).values({
-        branchId: input.branchId,
-        dedupeKey: input.dedupeKey,
-        conversationId: input.conversationId ?? null,
-        toPhoneE164: input.toPhoneE164 ?? null,
-        kind: input.kind,
-        payloadJson: input.payloadJson,
-        templateName: input.templateName ?? null,
-        templateLang: input.templateLang ?? null,
-        status: "QUEUED",
-        nextAttemptAt: input.scheduledAt ?? sql`NOW()`,
-        scheduledAt: input.scheduledAt ?? null,
-        campaignId: input.campaignId ?? null,
-        taskId: input.taskId ?? null,
-        createdBy: input.createdBy ?? null,
-      });
-      return { id: extractInsertId(res), isNew: true };
+      const res = await t.insert(waOutbox).values(values);
+      return { id: extractInsertId(res), isNew: true, status: "QUEUED", revived: false };
     } catch (e) {
       if (isDupEntry(e)) {
         const existing = (
-          await t.select({ id: waOutbox.id }).from(waOutbox).where(eq(waOutbox.dedupeKey, input.dedupeKey)).limit(1)
+          await t
+            .select({ id: waOutbox.id, status: waOutbox.status })
+            .from(waOutbox)
+            .where(eq(waOutbox.dedupeKey, input.dedupeKey))
+            .limit(1)
         )[0];
-        if (existing) return { id: Number(existing.id), isNew: false };
+        if (existing) {
+          const terminal = existing.status === "FAILED" || existing.status === "CANCELLED";
+          if (terminal && input.reviveTerminalDuplicate) {
+            await t
+              .update(waOutbox)
+              .set({
+                ...values,
+                attempts: 0,
+                wamid: null,
+                lastError: null,
+              })
+              .where(and(eq(waOutbox.id, existing.id), inArray(waOutbox.status, ["FAILED", "CANCELLED"])));
+            return { id: Number(existing.id), isNew: false, status: "QUEUED", revived: true };
+          }
+          return { id: Number(existing.id), isNew: false, status: existing.status, revived: false };
+        }
       }
       throw e;
     }
@@ -124,7 +158,7 @@ export async function enqueueOutbox(input: EnqueueOutboxInput, tx?: Tx): Promise
 }
 
 /** enqueue ثم محاولة إرسال فورية غير متزامنة (لا تنتظر النتيجة — الكنّاس يلتقط أي فشل خلال دقيقة). */
-export async function enqueueAndDispatch(input: EnqueueOutboxInput): Promise<{ id: number; isNew: boolean }> {
+export async function enqueueAndDispatch(input: EnqueueOutboxInput): Promise<EnqueueOutboxResult> {
   const res = await enqueueOutbox(input);
   setImmediate(() => {
     void dispatchOutboxRow(res.id).catch((e) => {
@@ -185,6 +219,23 @@ export async function getActiveWaIntegration(branchId: number): Promise<ActiveWa
     phoneNumberId: row.phoneNumberId,
     apiBaseUrl: row.apiBaseUrl,
   };
+}
+
+/** إعادة تحقق رخيصة من أن التكامل المخبّأ ما زال هو التكامل النشط للفرع، بلا فك التوكن من جديد. */
+export async function isActiveWaIntegrationId(branchId: number, integrationId: number): Promise<boolean> {
+  const db = getDb();
+  if (!db) return false;
+  const row = (await db
+    .select({ id: channelIntegrations.id })
+    .from(channelIntegrations)
+    .where(and(
+      eq(channelIntegrations.id, integrationId),
+      eq(channelIntegrations.branchId, branchId),
+      eq(channelIntegrations.channel, "WHATSAPP"),
+      eq(channelIntegrations.status, "ACTIVE"),
+    ))
+    .limit(1))[0];
+  return Boolean(row);
 }
 
 /** فحص رخيص للكنّاس: هل يوجد تكامل واتساب نشط على أي فرع؟ لا ⇒ خروج فوري (صفر أثر بلا تفعيل). */
@@ -368,11 +419,73 @@ async function applyFailure(row: WaOutbox, classification: GraphErrorClassificat
 
 // ── المعالجة (بعد الالتقاط) ───────────────────────────────────────────────────
 
-async function processClaimedRow(row: WaOutbox): Promise<void> {
+async function cancelClaimedRow(row: WaOutbox, reason: string): Promise<void> {
+  await requireDb()
+    .update(waOutbox)
+    .set({ status: "CANCELLED", lastError: reason.slice(0, 500) })
+    .where(and(eq(waOutbox.id, row.id), eq(waOutbox.status, "SENDING")));
+}
+
+export type DispatchClaimedOutcome = "PROCESSED" | "CANCELLED" | "SKIPPED";
+
+async function processClaimedRow(row: WaOutbox): Promise<Exclude<DispatchClaimedOutcome, "SKIPPED">> {
+  const deliveryGuard = (row.payloadJson as {
+    deliveryGuard?: { type?: unknown; reservationId?: unknown; expiresAt?: unknown };
+  } | null)?.deliveryGuard;
+  if (deliveryGuard?.type === "RESERVATION_NEAR_EXPIRY") {
+    const reservationId = Number(deliveryGuard.reservationId);
+    const expiresAt = new Date(String(deliveryGuard.expiresAt ?? ""));
+    const guardIsValid = Number.isSafeInteger(reservationId) && reservationId > 0 && !Number.isNaN(expiresAt.getTime());
+    const reservation = guardIsValid
+      ? (await requireDb()
+        .select({ id: reservations.id })
+        .from(reservations)
+        .where(and(
+          eq(reservations.id, reservationId),
+          eq(reservations.status, "ACTIVE"),
+          inArray(reservations.channel, ["PHONE", "WHATSAPP"]),
+          eq(reservations.expiresAt, expiresAt),
+          gt(reservations.expiresAt, sql`NOW()`),
+          lt(reservations.expiresAt, sql`DATE_ADD(NOW(), INTERVAL 4 HOUR)`),
+        ))
+        .limit(1))[0]
+      : null;
+    if (!reservation) {
+      await cancelClaimedRow(row, "أُلغي الإرسال لأن الحجز لم يعد قريب الانتهاء أو تغيّر موعده.");
+      return "CANCELLED";
+    }
+    const settings = (await requireDb()
+      .select({ enabled: waHubSettings.flowReservationNearExpiry })
+      .from(waHubSettings)
+      .where(eq(waHubSettings.id, 1))
+      .limit(1))[0];
+    if (!settings?.enabled) {
+      await cancelClaimedRow(row, "أُلغي الإرسال لأن تدفق تنبيه قرب انتهاء الحجز معطّل.");
+      return "CANCELLED";
+    }
+  }
+
+  if (row.customerId != null) {
+    const customer = (await requireDb()
+      .select({ waConsent: customers.waConsent })
+      .from(customers)
+      .where(eq(customers.id, row.customerId))
+      .limit(1))[0];
+    if (!customer || customer.waConsent === "OPTED_OUT") {
+      await cancelClaimedRow(
+        row,
+        customer
+          ? "أُلغي الإرسال لأن العميل ألغى موافقة واتساب."
+          : "أُلغي الإرسال لأن سجل العميل لم يعد موجوداً.",
+      );
+      return "CANCELLED";
+    }
+  }
+
   const integration = await getActiveWaIntegration(row.branchId);
   if (!integration) {
     await applyFailure(row, "permanent", "لا تكامل واتساب نشطاً لهذا الفرع.");
-    return;
+    return "PROCESSED";
   }
   const graphIntegration: GraphIntegration = {
     accessToken: integration.accessToken,
@@ -384,7 +497,7 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
   if (row.kind === "SESSION_TEXT" || row.kind === "MEDIA") {
     if (!(await isWithinFreeWindow(row.conversationId))) {
       await applyFailure(row, "permanent", GRAPH_ERROR_AR[131047] ?? "نافذة المحادثة مغلقة — استخدم قالباً معتمداً.", 131047);
-      return;
+      return "PROCESSED";
     }
   }
 
@@ -395,7 +508,7 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
     } else {
       await applyFailure(row, result.permanent ? "permanent" : "retryable", result.detail);
     }
-    return;
+    return "PROCESSED";
   }
 
   // PDF document media: render the immutable payload snapshot, upload it to
@@ -413,7 +526,7 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
         "permanent",
         error instanceof Error ? `تعذّر إنشاء ملف PDF: ${error.message}` : "تعذّر إنشاء ملف PDF.",
       );
-      return;
+      return "PROCESSED";
     }
     const uploaded = await uploadMedia(
       graphIntegration,
@@ -423,7 +536,7 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
     );
     if (!uploaded.ok) {
       await applyFailure(row, uploaded.classification, uploaded.detail, uploaded.code);
-      return;
+      return "PROCESSED";
     }
     const sendResult =
       row.kind === "MEDIA"
@@ -448,12 +561,12 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
     } else {
       await applyFailure(row, sendResult.classification, sendResult.detail, sendResult.code);
     }
-    return;
+    return "PROCESSED";
   }
 
   if (row.kind === "MEDIA") {
     await applyFailure(row, "permanent", "حمولة الوسائط الصادرة غير صالحة.");
-    return;
+    return "PROCESSED";
   }
 
   // SESSION_TEXT / TEMPLATE
@@ -486,6 +599,7 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
     // بدوره لمستلم الحملة (syncCampaignRecipientIfAny) فيراه checkCircuitBreaker.
     await applyFailure(row, sendResult.classification, sendResult.detail, sendResult.code);
   }
+  return "PROCESSED";
 }
 
 // ── الالتقاط + نقاط الدخول ────────────────────────────────────────────────────
@@ -517,17 +631,18 @@ async function claimRowForDispatch(id: number): Promise<WaOutbox | null> {
 /** يُنفَّذ بعد أن يكون الصفّ SENDING فعلاً (من claimRowForDispatch أو من التقاط دفعة الكنّاس) — لا
  *  يُعيد الالتقاط، فقط يُعالج. مُصدَّرة ليستعملها outboxSweeper بعد SELECT...FOR UPDATE SKIP LOCKED
  *  الدفعي (يُشارك نفس منطق الإرسال/التصنيف/الباكوف دون تكرار — «صمّم التقسيم الداخلي كيف شئت»). */
-export async function dispatchClaimedRow(id: number): Promise<void> {
+export async function dispatchClaimedRow(id: number): Promise<DispatchClaimedOutcome> {
   const db = requireDb();
   const row = (await db.select().from(waOutbox).where(eq(waOutbox.id, id)).limit(1))[0];
-  if (!row || row.status !== "SENDING") return; // تأمين إضافي — لا يُفترض حدوثه في الاستعمال الطبيعي.
+  if (!row || row.status !== "SENDING") return "SKIPPED"; // تأمين إضافي — لا يُفترض حدوثه في الاستعمال الطبيعي.
   try {
-    await processClaimedRow(row);
+    return await processClaimedRow(row);
   } catch (e) {
     logger.error({ err: e, outboxId: id }, "wa-outbox: dispatch threw an unexpected error");
     // خطأ غير متوقّع (لا SendResult ولا MediaFetchResult) ⇒ نعامله retryable حتى لا يعلق الصفّ
     // SENDING للأبد (بلا هذه المعالجة، استثناء برمجي يُسقِط الصفّ من كل دورات الكنّاس التالية).
     await applyFailure(row, "retryable", e instanceof Error ? e.message : "خطأ غير متوقّع أثناء الإرسال.");
+    return "PROCESSED";
   }
 }
 

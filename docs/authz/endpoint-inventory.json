@@ -66,7 +66,7 @@
     },
     "expressRoutes": 16,
     "expressMounts": 11,
-    "jobs": 14,
+    "jobs": 15,
     "routerFiles": 90,
     "proposedPermissions": 720,
     "proposedDomains": {
@@ -6945,7 +6945,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/integrationRouter.ts:88"
+      "loc": "server/routers/integrationRouter.ts:90"
     },
     {
       "surface": "trpc",
@@ -6962,7 +6962,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: delete",
       "flags": "ADMIN_ONLY|SENSITIVE_ACTION",
-      "loc": "server/routers/integrationRouter.ts:175"
+      "loc": "server/routers/integrationRouter.ts:177"
     },
     {
       "surface": "trpc",
@@ -6979,7 +6979,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/integrationRouter.ts:149"
+      "loc": "server/routers/integrationRouter.ts:151"
     },
     {
       "surface": "trpc",
@@ -6996,7 +6996,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/integrationRouter.ts:162"
+      "loc": "server/routers/integrationRouter.ts:164"
     },
     {
       "surface": "trpc",
@@ -7013,7 +7013,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/integrationRouter.ts:93"
+      "loc": "server/routers/integrationRouter.ts:95"
     },
     {
       "surface": "trpc",
@@ -7030,7 +7030,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/integrationRouter.ts:195"
+      "loc": "server/routers/integrationRouter.ts:197"
     },
     {
       "surface": "trpc",
@@ -7047,7 +7047,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/integrationRouter.ts:218"
+      "loc": "server/routers/integrationRouter.ts:220"
     },
     {
       "surface": "trpc",
@@ -7064,7 +7064,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/integrationRouter.ts:96"
+      "loc": "server/routers/integrationRouter.ts:98"
     },
     {
       "surface": "trpc",
@@ -7081,7 +7081,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/integrationRouter.ts:135"
+      "loc": "server/routers/integrationRouter.ts:137"
     },
     {
       "surface": "trpc",
@@ -7098,7 +7098,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/integrationRouter.ts:232"
+      "loc": "server/routers/integrationRouter.ts:234"
     },
     {
       "surface": "trpc",
@@ -7115,7 +7115,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/integrationRouter.ts:240"
+      "loc": "server/routers/integrationRouter.ts:242"
     },
     {
       "surface": "trpc",
@@ -14876,12 +14876,17 @@
     {
       "kind": "cron",
       "file": "server/services/reservations/sweeper.ts",
-      "line": 35
+      "line": 46
+    },
+    {
+      "kind": "cron",
+      "file": "server/services/reservations/sweeper.ts",
+      "line": 62
     },
     {
       "kind": "cron",
       "file": "server/services/whatsapp/outboxSweeper.ts",
-      "line": 96
+      "line": 126
     }
   ]
 }

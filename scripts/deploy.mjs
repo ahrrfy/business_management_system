@@ -1039,7 +1039,7 @@ async function deploy(expectedHead) {
       run("pnpm", ["db:migrate:safe"]);
       run("node", [
         "scripts/ci-apply-extra-migrations.mjs",
-        "--only=drizzle/migrations/0177_repair_reception_schema_drift.sql",
+        "--only=drizzle/migrations/0178_repair_reception_schema_drift.sql",
       ]);
     });
     step("6/10 التحقق من مخطط قاعدة البيانات", () =>

@@ -706,6 +706,7 @@ private fun WhatsAppHubEditor(settings: WhatsAppHubSettings, capabilities: Syste
         ToggleLine("جاهزية الطلب", draft.flowOrderReady) { draft = draft.copy(flowOrderReady = it) }
         ToggleLine("شكر الشراء", draft.flowPurchaseThanks) { draft = draft.copy(flowPurchaseThanks = it) }
         ToggleLine("سحب الأمانات", draft.flowConsignmentWithdraw) { draft = draft.copy(flowConsignmentWithdraw = it) }
+        ToggleLine("قرب انتهاء الحجز", draft.flowReservationNearExpiry) { draft = draft.copy(flowReservationNearExpiry = it) }
         ToggleLine("استبيان الرضا عند الحل", draft.csatOnResolve) { draft = draft.copy(csatOnResolve = it) }
         ToggleLine("إيقاف الأتمتة بالكامل", draft.killSwitch) { draft = draft.copy(killSwitch = it) }
         OutlinedTextField(draft.throttlePerMinute.toString(), { draft = draft.copy(throttlePerMinute = it.toIntOrNull() ?: 0) }, label = { Text("الحد في الدقيقة") })

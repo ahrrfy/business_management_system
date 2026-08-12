@@ -112,7 +112,7 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/extras/0169_invoice_status_superseded.sql",
   // 12/8/2026: repair schema-push/baselined databases that missed the
   // reception delivery-disclosure columns and critical queue/payment indexes.
-  "drizzle/migrations/0177_repair_reception_schema_drift.sql",
+  "drizzle/migrations/0178_repair_reception_schema_drift.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

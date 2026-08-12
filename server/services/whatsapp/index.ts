@@ -39,6 +39,7 @@ export type { ListTemplatesFilter, SyncTemplatesResult, WaTemplateIntegration } 
 export {
   baghdadYmdCompact,
   checkAutomationGate,
+  createFlowNotifyCycleCache,
   flowNotify,
   getWaHubSettings,
   isOutsideBusinessHours,
@@ -49,6 +50,7 @@ export type {
   AutomationGateResult,
   BusinessHoursConfig,
   FlowNotifyInput,
+  FlowNotifyCycleCache,
   FlowNotifyResult,
   FlowNotifySkipReason,
 } from "./flowNotify";

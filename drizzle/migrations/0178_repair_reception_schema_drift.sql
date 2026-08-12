@@ -1,4 +1,4 @@
--- Journaled repair for databases created through schema push/baseline paths where the
+-- Journaled repair 0178 for databases created through schema push/baseline paths where the
 -- reception disclosure columns or its critical lookup indexes were recorded
 -- as present in code but never materialised in MySQL. Every statement is
 -- idempotent and therefore safe in the post-migration reconciliation pass.

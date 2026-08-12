@@ -694,6 +694,7 @@ interface AutomationDraft {
   flowOrderReady: boolean;
   flowPurchaseThanks: boolean;
   flowConsignmentWithdraw: boolean;
+  flowReservationNearExpiry: boolean;
   csatOnResolve: boolean;
   throttlePerMinute: string;
   campaignApprovalThreshold: string;
@@ -732,6 +733,7 @@ function draftFromServer(d: WaHubSettingsData): AutomationDraft {
     flowOrderReady: d.flowOrderReady,
     flowPurchaseThanks: d.flowPurchaseThanks,
     flowConsignmentWithdraw: d.flowConsignmentWithdraw,
+    flowReservationNearExpiry: d.flowReservationNearExpiry,
     csatOnResolve: d.csatOnResolve,
     throttlePerMinute: String(d.throttlePerMinute),
     campaignApprovalThreshold: String(d.campaignApprovalThreshold),
@@ -791,11 +793,12 @@ function KillSwitchCard() {
   );
 }
 
-const FLOW_KEYS: { key: "flowArReminder" | "flowOrderReady" | "flowPurchaseThanks" | "flowConsignmentWithdraw" | "csatOnResolve"; label: string }[] = [
+const FLOW_KEYS: { key: "flowArReminder" | "flowOrderReady" | "flowPurchaseThanks" | "flowConsignmentWithdraw" | "flowReservationNearExpiry" | "csatOnResolve"; label: string }[] = [
   { key: "flowArReminder", label: "تذكير ذمم آجلة (AR/AP)" },
   { key: "flowOrderReady", label: "إشعار جاهزية الطلب" },
   { key: "flowPurchaseThanks", label: "شكر الشراء" },
   { key: "flowConsignmentWithdraw", label: "إشعار سحب بضاعة أمانة" },
+  { key: "flowReservationNearExpiry", label: "تنبيه قرب انتهاء الحجز" },
   { key: "csatOnResolve", label: "استبيان رضا (CSAT) عند إغلاق المحادثة" },
 ];
 
@@ -853,6 +856,7 @@ function AutomationSettingsCard() {
       flowOrderReady: draft.flowOrderReady,
       flowPurchaseThanks: draft.flowPurchaseThanks,
       flowConsignmentWithdraw: draft.flowConsignmentWithdraw,
+      flowReservationNearExpiry: draft.flowReservationNearExpiry,
       csatOnResolve: draft.csatOnResolve,
     });
   }
