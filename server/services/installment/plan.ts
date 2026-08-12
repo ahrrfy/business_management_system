@@ -26,6 +26,16 @@ export async function createPlan(input: CreatePlanInput, actor: Actor): Promise<
   if (down.isNegative()) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الدفعة الأولى لا يمكن أن تكون سالبة" });
   }
+  // قرار المالك (١٢/٨) — «لا دينار بلا مسار وبلا سند وبلا قيد»: الدفعة الأولى نقدٌ يدخل، فيجب تسجيلها
+  // **سندَ قبضٍ فعليّاً** (إيصال IN + قيد PAYMENT_IN + مسارٌ منسوب) قبل الخطة، ثمّ تُبنى الخطة على المتبقّي.
+  // كان يُرفَض للفاتورة المرتبطة فقط (أدناه) بينما يُخزَّن صامتاً للخطة المستقلّة (invoiceId=null) — دينارٌ
+  // بلا سند. الآن يُرفَض **لكلّ** خطةٍ تحت الإنفاذ، فلا تُخزَّن دفعةٌ أولى بلا سند من أيّ قناة.
+  if (input.enforceFinancialIntegrity && !down.isZero()) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "الدفعة الأولى يجب تسجيلها سندَ قبضٍ نقديٍّ فعليّاً أولاً (لا دينار بلا سند)، ثمّ إنشاء الخطة على المتبقّي.",
+    });
+  }
   if (!input.lines || input.lines.length === 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الخطة تحتاج قسطاً واحداً على الأقل" });
   }
@@ -95,12 +105,7 @@ export async function createPlan(input: CreatePlanInput, actor: Actor): Promise<
           message: `إجمالي الخطة (${toDbMoney(total)}) يجب أن يساوي متبقي الفاتورة (${toDbMoney(outstanding)})`,
         });
       }
-      if (input.enforceFinancialIntegrity && !down.isZero()) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: "الدفعة الأولى لفاتورة مرتبطة يجب تسجيلها كدفعة فعلية أولاً، ثم إنشاء الخطة على المتبقي",
-        });
-      }
+      // (رفض الدفعة الأولى بلا سند صار حارساً موحَّداً في صدر الدالة — لكلّ خطة لا للمرتبطة فقط.)
       if (input.enforceFinancialIntegrity) {
         const activePlan = (
           await tx

@@ -112,6 +112,33 @@ describe("createPlan", () => {
     expect(await customerBalance()).toBe("900000.00");
   });
 
+  // قرار المالك (١٢/٨) — «لا دينار بلا سند»: الدفعة الأولى تحت الإنفاذ تُرفَض لكلّ خطة (لا للمرتبطة فقط)،
+  // فتُسجَّل سندَ قبضٍ فعليّاً قبل الخطة بدل تخزينها صامتاً على الخطة المستقلّة.
+  it("دفعةٌ أولى تحت الإنفاذ لخطةٍ مستقلّة (بلا فاتورة) ⇒ تُرفَض (لا دينار بلا سند)", async () => {
+    await expect(seedPlan({ enforceFinancialIntegrity: true, downPayment: "10000.00" })).rejects.toThrow(
+      /الدفعة الأولى يجب تسجيلها سندَ قبض/,
+    );
+  });
+
+  it("دفعةٌ أولى تحت الإنفاذ لخطةٍ مرتبطةٍ بفاتورة ⇒ تُرفَض أيضاً (نفس الحارس الموحَّد)", async () => {
+    await expect(seedPlan({ enforceFinancialIntegrity: true, invoiceId: 6, downPayment: "10000.00" })).rejects.toThrow(
+      /الدفعة الأولى يجب تسجيلها سندَ قبض/,
+    );
+  });
+
+  it("دفعةٌ أولى = صفر تحت الإنفاذ لخطةٍ مستقلّة ⇒ مسموح (لا مبلغ بلا سند)", async () => {
+    const { planId } = await seedPlan({
+      enforceFinancialIntegrity: true,
+      downPayment: "0.00",
+      totalAmount: "80000.00",
+      lines: [
+        { dueDate: ymd(10), amount: "30000.00", kind: "CASH" },
+        { dueDate: ymd(40), amount: "50000.00", kind: "CASH" },
+      ],
+    });
+    expect((await getPlan(planId)).status).toBe("ACTIVE");
+  });
+
   it("مجموع لا يطابق ⇒ BAD_REQUEST برسالة تُسمّي الفرق", async () => {
     await expect(
       seedPlan({ totalAmount: "90000.00", downPayment: "10000.00", lines: [{ dueDate: ymd(10), amount: "30000.00", kind: "CASH" }] }),
