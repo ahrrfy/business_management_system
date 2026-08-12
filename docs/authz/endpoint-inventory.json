@@ -7,7 +7,7 @@
       "query": 416
     },
     "byAuthority": {
-      "module-gate": 374,
+      "module-gate": 373,
       "module-map": 261,
       "admin": 74,
       "raw-role": 55,
@@ -15,6 +15,7 @@
       "self-assignment": 14,
       "platform": 5,
       "device-bootstrap": 1,
+      "composite": 1,
       "token": 1
     },
     "bySensitivity": {
@@ -64,7 +65,7 @@
     },
     "expressRoutes": 15,
     "expressMounts": 9,
-    "jobs": 11,
+    "jobs": 12,
     "routerFiles": 90,
     "proposedPermissions": 712,
     "proposedDomains": {
@@ -3560,7 +3561,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:238"
+      "loc": "server/routers/customerRouter.ts:242"
     },
     {
       "surface": "trpc",
@@ -3577,7 +3578,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: remove",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/customerRouter.ts:316"
+      "loc": "server/routers/customerRouter.ts:320"
     },
     {
       "surface": "trpc",
@@ -3594,7 +3595,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:302"
+      "loc": "server/routers/customerRouter.ts:306"
     },
     {
       "surface": "trpc",
@@ -3611,7 +3612,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:265"
+      "loc": "server/routers/customerRouter.ts:269"
     },
     {
       "surface": "trpc",
@@ -3628,7 +3629,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:270"
+      "loc": "server/routers/customerRouter.ts:274"
     },
     {
       "surface": "trpc",
@@ -3645,7 +3646,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:281"
+      "loc": "server/routers/customerRouter.ts:285"
     },
     {
       "surface": "trpc",
@@ -3653,16 +3654,16 @@
       "proposedPermission": "crm.customer.create",
       "name": "create",
       "kind": "mutation",
-      "procedure": "customersCashierProcedure",
-      "authority": "module-gate",
+      "procedure": "customersReceptionCreateProcedure",
+      "authority": "composite",
       "module": "crm",
       "level": "FULL",
-      "roles": "cashier|manager|sales_rep",
-      "branch": "required",
+      "roles": "cashier|manager|sales_rep|print_operator",
+      "branch": "scoped",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:142"
+      "loc": "server/routers/customerRouter.ts:146"
     },
     {
       "surface": "trpc",
@@ -3679,7 +3680,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:230"
+      "loc": "server/routers/customerRouter.ts:234"
     },
     {
       "surface": "trpc",
@@ -3696,7 +3697,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: delete",
       "flags": "RAW_ROLE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/customerRouter.ts:248"
+      "loc": "server/routers/customerRouter.ts:252"
     },
     {
       "surface": "trpc",
@@ -3815,7 +3816,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/customerRouter.ts:181"
+      "loc": "server/routers/customerRouter.ts:185"
     },
     {
       "surface": "trpc",
@@ -10785,7 +10786,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/reservationsRouter.ts:192"
+      "loc": "server/routers/reservationsRouter.ts:217"
     },
     {
       "surface": "trpc",
@@ -10802,7 +10803,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:219"
+      "loc": "server/routers/reservationsRouter.ts:244"
     },
     {
       "surface": "trpc",
@@ -10819,7 +10820,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:155"
+      "loc": "server/routers/reservationsRouter.ts:180"
     },
     {
       "surface": "trpc",
@@ -10836,7 +10837,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE|HANDLER_ROLE_CHECK|RAW_ROLE_GATE",
-      "loc": "server/routers/reservationsRouter.ts:205"
+      "loc": "server/routers/reservationsRouter.ts:230"
     },
     {
       "surface": "trpc",
@@ -10853,7 +10854,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:88"
+      "loc": "server/routers/reservationsRouter.ts:110"
     },
     {
       "surface": "trpc",
@@ -10870,7 +10871,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:36"
+      "loc": "server/routers/reservationsRouter.ts:56"
     },
     {
       "surface": "trpc",
@@ -14674,6 +14675,11 @@
       "kind": "interval",
       "file": "server/services/nativePushOutboxWorker.ts",
       "line": 275
+    },
+    {
+      "kind": "cron",
+      "file": "server/services/reservations/sweeper.ts",
+      "line": 35
     },
     {
       "kind": "cron",
