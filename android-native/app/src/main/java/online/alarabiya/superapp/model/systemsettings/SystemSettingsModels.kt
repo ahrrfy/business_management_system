@@ -158,6 +158,7 @@ data class WhatsAppHubSettings(
     val flowOrderReady: Boolean = false,
     val flowPurchaseThanks: Boolean = false,
     val flowConsignmentWithdraw: Boolean = false,
+    val flowReservationNearExpiry: Boolean = false,
     val csatOnResolve: Boolean = false,
     val killSwitch: Boolean = false,
 ) {

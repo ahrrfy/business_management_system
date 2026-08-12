@@ -5521,6 +5521,9 @@ export const waOutbox = mysqlTable(
     dedupeKey: varchar("dedupeKey", { length: 190 }).notNull(),
     conversationId: bigint("conversationId", { mode: "number" }),
     toPhoneE164: varchar("toPhoneE164", { length: 20 }),
+    // لقطة منطقية (بلا FK عمداً) لتطبيق إلغاء الموافقة عند التسليم؛ حذف العميل يجب أن يُلغي الصف
+    // لا أن يمحو الهوية بـSET NULL فيتعذّر على العامل معرفة أن مصدر الرسالة لم يعد موجوداً.
+    customerId: bigint("customerId", { mode: "number" }),
     // SESSION_TEXT = رَدّ حُرّ ضِمن نافِذة ٢٤ساعة، TEMPLATE = قالِب مُعتمَد، MEDIA = إرسال وَسائط،
     // MEDIA_FETCH = جَلب مُؤجَّل لِوَسائط وارِدة (رَوابط Graph تَنتهي بِسُرعة).
     kind: mysqlEnum("kind", [
@@ -5561,6 +5564,10 @@ export const waOutbox = mysqlTable(
     pickIdx: index("idx_wa_outbox_pick").on(t.status, t.nextAttemptAt),
     wamidIdx: index("idx_wa_outbox_wamid").on(t.wamid),
     campaignIdx: index("idx_wa_outbox_campaign").on(t.campaignId, t.status),
+    customerStatusIdx: index("idx_wa_outbox_customer_status").on(
+      t.customerId,
+      t.status,
+    ),
   }),
 );
 export type WaOutbox = typeof waOutbox.$inferSelect;
@@ -5834,6 +5841,9 @@ export const waHubSettings = mysqlTable("waHubSettings", {
   flowOrderReady: boolean("flowOrderReady").default(false).notNull(),
   flowPurchaseThanks: boolean("flowPurchaseThanks").default(false).notNull(),
   flowConsignmentWithdraw: boolean("flowConsignmentWithdraw")
+    .default(false)
+    .notNull(),
+  flowReservationNearExpiry: boolean("flowReservationNearExpiry")
     .default(false)
     .notNull(),
   csatOnResolve: boolean("csatOnResolve").default(false).notNull(),
@@ -7147,6 +7157,8 @@ export const reservations = mysqlTable(
       .default("ACTIVE")
       .notNull(),
     expiresAt: timestamp("expiresAt").notNull(),
+    // أثر دائم يمنع تكرار تنبيه قرب الانتهاء. يُصفَّر عند تمديد الحجز كي يُنبَّه عن الموعد الجديد.
+    nearExpiryNotifiedAt: timestamp("nearExpiryNotifiedAt"),
     // عربون الحجز (R-م٥): إيصال IN مربوط قبل الفاتورة (نمط workOrders.deposit). NULL حتى يُدفع.
     depositReceiptId: bigint("depositReceiptId", { mode: "number" }),
     // الفاتورة المنفِّذة عند التحويل لبيع (R-م٤). NULL حتى التحويل الكامل.
@@ -7170,6 +7182,12 @@ export const reservations = mysqlTable(
     phoneIdx: index("idx_reservation_phone").on(t.contactPhone),
     // كنّاس الانتهاء التلقائي: مسح (status ∧ expiresAt) بلا full scan.
     expiresIdx: index("idx_reservation_expires").on(t.status, t.expiresAt),
+    nearExpiryIdx: index("idx_reservation_near_expiry").on(
+      t.status,
+      t.channel,
+      t.nearExpiryNotifiedAt,
+      t.expiresAt,
+    ),
   }),
 );
 export type Reservation = typeof reservations.$inferSelect;

@@ -4,7 +4,7 @@
  * يمنع تراكب دورة بطيئة مع الدورة التالية (دفعة كبيرة من إعادات المحاولة قد لا تُنجَز خلال دقيقة).
  */
 import cron, { type ScheduledTask } from "node-cron";
-import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { waOutbox } from "../../../drizzle/schema";
 import { logger } from "../../logger";
 import { isMultiTenantModeActive } from "../../db";
@@ -17,11 +17,16 @@ import { dispatchClaimedRow, hasAnyActiveWaIntegration } from "./outboxService";
 import { retryFailedWaEvents } from "./webhookProcessor";
 
 const BATCH_LIMIT = 25;
+/** يمنع سيل الوسائط الواردة من احتكار العامل: 20 للوسائط كحد أقصى وتبقى 5 خانات للصادر. */
+const MEDIA_BATCH_LIMIT = 20;
+/** تنظيف محدود للصفوف المحمية التي بطلت أهليتها؛ لا تُحسب من حصة طلبات Graph لكنها تبقى محدودة. */
+const OUTBOUND_INSPECTION_LIMIT = 100;
 
 /** يلتقط دفعة الصفوف المستحقّة (QUEUED + الموعد حان) بقفل SKIP LOCKED — يمنع تضارب مع dispatchOutboxRow
  *  المباشر المتزامن (كلاهما يمرّ عبر SELECT...FOR UPDATE فلا يفوز بصفٍّ إلا كاتب واحد؛ SKIP LOCKED
  *  هنا يمنع كذلك دورتَي كنّاس متراكبتين من الانتظار على قفل بعضهما بلا فائدة). */
-async function claimDueBatch(): Promise<number[]> {
+async function claimDueBatch(limit: number, lane: "MEDIA_FETCH" | "OUTBOUND"): Promise<number[]> {
+  if (limit <= 0) return [];
   return withTx(async (tx) => {
     const rows = await tx
       .select({ id: waOutbox.id })
@@ -29,9 +34,12 @@ async function claimDueBatch(): Promise<number[]> {
       .where(and(
         eq(waOutbox.status, "QUEUED"),
         or(isNull(waOutbox.nextAttemptAt), lte(waOutbox.nextAttemptAt, sql`NOW()`)),
+        lane === "MEDIA_FETCH"
+          ? eq(waOutbox.kind, "MEDIA_FETCH")
+          : ne(waOutbox.kind, "MEDIA_FETCH"),
       ))
       .orderBy(asc(waOutbox.id))
-      .limit(BATCH_LIMIT)
+      .limit(limit)
       .for("update", { skipLocked: true });
     if (rows.length === 0) return [];
     const ids = rows.map((r) => Number(r.id));
@@ -57,12 +65,34 @@ export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
   // كتم المفتاح — يخالف §٣-٧/§١٢ («يجمّد كل إرسال آلي فوراً» / «يوقف الكنّاس عن الالتقاط»).
   // retryFailedWaEvents (معالجة أحداث webhook **الواردة**) ليست إرسالاً آلياً صادراً ⇒ تبقى تعمل
   // عمداً حتى مع تفعيل المفتاح، كي لا تُفقد رسائل العملاء الواردة أثناء الإيقاف.
-  const killSwitchOn = (await getWaHubSettings()).killSwitch;
-  let ids: number[] = [];
+  const settings = await getWaHubSettings();
+  const killSwitchOn = settings.killSwitch;
+  // الوسائط واردة وليست إرسالاً آلياً: تُقدَّم على الصادر وتحصل على سعة العامل الكاملة حتى لو كان
+  // throttle منخفضاً أو kill switch مفعّلاً. ما يتبقى من سقف الدورة يُمنح للصادر ضمن حد الإرسال.
+  const mediaIds = await claimDueBatch(MEDIA_BATCH_LIMIT, "MEDIA_FETCH");
+  for (const id of mediaIds) await dispatchClaimedRow(id);
+
+  let outboundIds: number[] = [];
   if (!killSwitchOn) {
-    ids = await claimDueBatch();
-    for (const id of ids) {
-      await dispatchClaimedRow(id);
+    // إعداد مركز واتساب حدّ شامل للصادر الآلي؛ سقف 25 يحمي دورة العامل حتى لو ضُبطت قيمة أكبر.
+    const throttle = Math.max(1, Math.min(BATCH_LIMIT, Number(settings.throttlePerMinute) || 1));
+    const remainingCapacity = Math.max(0, BATCH_LIMIT - mediaIds.length);
+    const sendLimit = Math.min(throttle, remainingCapacity);
+    let consumedSendQuota = 0;
+    let inspected = 0;
+    while (consumedSendQuota < sendLimit && inspected < OUTBOUND_INSPECTION_LIMIT) {
+      const ids = await claimDueBatch(
+        Math.min(sendLimit - consumedSendQuota, OUTBOUND_INSPECTION_LIMIT - inspected),
+        "OUTBOUND",
+      );
+      if (ids.length === 0) break;
+      outboundIds.push(...ids);
+      for (const id of ids) {
+        inspected++;
+        const outcome = await dispatchClaimedRow(id);
+        // حراس المصدر/الموافقة قد يلغون الصف بلا Graph؛ ننظفه ولا نحرق به حصة إرسال هذه الدقيقة.
+        if (outcome === "PROCESSED") consumedSendQuota++;
+      }
     }
   }
   // إعادة محاولة أحداث webhook الفاشلة (سباق ترتيب: حالة سبقت رسالتها) — بعد الصندوق الصادر،
@@ -81,7 +111,7 @@ export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
       logger.error({ err: e }, "wa-outbox sweep: dripRunningBroadcasts threw — تُجوهل (لا تُفشل النبضة)");
     }
   }
-  return { claimed: ids.length };
+  return { claimed: mediaIds.length + outboundIds.length };
 }
 
 let cronTask: ScheduledTask | null = null;

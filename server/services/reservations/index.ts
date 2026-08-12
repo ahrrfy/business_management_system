@@ -4,7 +4,14 @@ export type { CreateReservationInput, CreateReservationResult, ReservationLineIn
 export { convertReservationToSale } from "./convert";
 export type { ConvertReservationInput, ConvertReservationResult } from "./convert";
 export { cancelReservation, extendReservation, expireDueReservations, releaseReservation } from "./lifecycle";
-export { startReservationsSweeper, stopReservationsSweeper, sweepExpiredReservationsOnce } from "./sweeper";
+export { notifyNearExpiryReservations } from "./nearExpiry";
+export type { NotifyNearExpiryOptions, NotifyNearExpiryResult } from "./nearExpiry";
+export {
+  notifyNearExpiryReservationsOnce,
+  startReservationsSweeper,
+  stopReservationsSweeper,
+  sweepExpiredReservationsOnce,
+} from "./sweeper";
 export { listReservations } from "./list";
 export type { ListFilter, ListScope } from "./list";
 export { adjustReservedStock, readAvailability } from "./stock";

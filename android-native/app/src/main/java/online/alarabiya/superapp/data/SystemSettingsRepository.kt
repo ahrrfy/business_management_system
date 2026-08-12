@@ -156,6 +156,7 @@ class SystemSettingsRepository(private val api: TrpcClient) : SystemSettingsData
                 .put("flowOrderReady", settings.flowOrderReady)
                 .put("flowPurchaseThanks", settings.flowPurchaseThanks)
                 .put("flowConsignmentWithdraw", settings.flowConsignmentWithdraw)
+                .put("flowReservationNearExpiry", settings.flowReservationNearExpiry)
                 .put("csatOnResolve", settings.csatOnResolve)
                 .put("killSwitch", settings.killSwitch),
         )
