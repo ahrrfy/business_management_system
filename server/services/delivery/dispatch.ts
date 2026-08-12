@@ -67,7 +67,9 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     const wo = (await tx.select().from(workOrders).where(eq(workOrders.id, input.workOrderId)).for("update").limit(1))[0];
     if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشغل غير موجود" });
-    const elevated = actor.role === "admin" || actor.role === "manager";
+    // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران الفروع (owner مُطبَّع ⇒ admin)؛
+    // المدير صار مقيَّداً بفرعه فيَخضع لفحص المطابقة أدناه (كان `|| manager` يُعفيه).
+    const elevated = actor.role === "admin";
     if (!elevated && actor.branchId != null && Number(wo.branchId) !== actor.branchId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إرسال أمر فرعٍ آخر" });
     }

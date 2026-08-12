@@ -112,7 +112,9 @@ export async function dispatchInvoiceInTx(
 
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1))[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
-    const elevated = actor.role === "admin" || actor.role === "manager";
+    // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران الفروع (owner مُطبَّع ⇒ admin)؛
+    // المدير صار مقيَّداً بفرعه فيَخضع لفحص المطابقة أدناه (كان `|| manager` يُعفيه).
+    const elevated = actor.role === "admin";
     if (!elevated && actor.branchId != null && Number(inv.branchId) !== actor.branchId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إسناد فاتورة فرعٍ آخر" });
     }

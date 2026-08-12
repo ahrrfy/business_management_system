@@ -34,7 +34,7 @@ const selectCls =
 export default function AbcAnalysis() {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
-  const canPickBranch = role === "admin" || role === "manager";
+  const canPickBranch = role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً
 
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");

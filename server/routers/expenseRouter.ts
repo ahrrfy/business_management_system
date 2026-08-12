@@ -126,11 +126,10 @@ export const expenseRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      // F4 (تدقيق ١٤/٦/٢٦): قبل الإصلاح كان `ctx.user.branchId ?? input.branchId` يسمح
-      // لكاشير بـbranchId=null أن يحقن أي input.branchId (مصروف في فرع آخر = تلويث
-      // الصندوق والقيد). الآن: غير المرتفعين يُجبَرون على فرعهم؛ admin/manager
-      // يحترمان input.branchId. نمط مطابق لـinventoryRouter.adjust (M1).
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // F4 (تدقيق ١٤/٦/٢٦) + عزل مدير الفرع (قرار المالك ١٢/٨): كان `ctx.user.branchId ?? input.branchId`
+      // يسمح بحقن أي فرع (تلويث الصندوق والقيد). المالك/الأدمن وحدهما يحترمان input.branchId؛ مدير
+      // الفرع وغيره يُجبَرون على فرعهم المُسنَد. نمط مطابق لـinventoryRouter.adjust.
+      const elevated = ctx.user.role === "admin";
       let branchId = input.branchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {

@@ -55,9 +55,10 @@ import { assertSafeBannerCtaUrl } from "../lib/bannerSafety";
 
 const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]);
 
-/** الفرع المُسنَد للفاعل (مرتفع admin/manager ⇒ null بلا قيد؛ غيره ⇒ فرعه). */
+/** الفرع المُسنَد للفاعل (قرار المالك ١٢/٨: عزل مدير الفرع): المالك/الأدمن فقط ⇒ null بلا قيد
+ *  (owner مُطبَّع ⇒ admin)؛ مدير الفرع وغيره ⇒ فرعهم المُسنَد. */
 function actorScopedBranch(user: { role: string; branchId: number | null }): number | null {
-  const elevated = user.role === "admin" || user.role === "manager";
+  const elevated = user.role === "admin";
   return elevated ? null : (user.branchId != null ? Number(user.branchId) : null);
 }
 

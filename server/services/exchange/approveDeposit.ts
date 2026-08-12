@@ -13,7 +13,7 @@ import { requireDb, withTx, type Actor } from "../tx";
 import { lockHouse, toDbRate } from "./helpers";
 
 /** إيداعات الدولار المعلّقة (بانتظار اعتماد ثانٍ) — طابور الاعتماد للراوتر/الواجهة. */
-export async function listPendingExchangeDeposits(exchangeHouseId?: number) {
+export async function listPendingExchangeDeposits(exchangeHouseId?: number, restrictBranchId?: number | null) {
   const db = requireDb();
   const conds = [
     eq(exchangeTransactions.status, "PENDING_APPROVAL"),
@@ -21,6 +21,8 @@ export async function listPendingExchangeDeposits(exchangeHouseId?: number) {
     eq(exchangeTransactions.currency, "USD"),
   ];
   if (exchangeHouseId != null) conds.push(eq(exchangeTransactions.exchangeHouseId, exchangeHouseId));
+  // عزل مدير الفرع (قرار المالك ١٢/٨): يُمرَّر فرع المدير فيرى طابور فرعه فقط؛ المالك/الأدمن null = كلّ الفروع.
+  if (restrictBranchId != null) conds.push(eq(exchangeTransactions.branchId, restrictBranchId));
   return db
     .select({
       id: exchangeTransactions.id,
@@ -65,6 +67,10 @@ export async function approveExchangeDeposit(
     // فصل المهام: المعتمِد ≠ المُنشئ (admin مُستثنى).
     if (actor.role !== "admin" && txn.createdBy != null && Number(txn.createdBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد إيداعٍ أنشأته بنفسك — يلزم شخصٌ آخر (فصل المهام)." });
+    }
+    // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران؛ المدير لا يعتمد إيداع فرعٍ آخر.
+    if (actor.role !== "admin" && txn.branchId != null && Number(txn.branchId) !== Number(actor.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "عملية الصيرفة تخصّ فرعاً آخر" });
     }
 
     const houseId = Number(txn.exchangeHouseId);

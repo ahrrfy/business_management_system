@@ -258,11 +258,23 @@ export const exchangeRouter = router({
   // اعتماد ثانٍ (SOD، تدقيق ٢٥/٧) لإيداع الدولار المباشر المعلّق: طابور المعلّقات + الاعتماد.
   pendingDeposits: treasuryManagerReadProcedure
     .input(z.object({ exchangeHouseId: z.number().int().positive().optional() }).optional())
-    .query(async ({ input }) => listPendingExchangeDeposits(input?.exchangeHouseId)),
+    .query(async ({ input, ctx }) => {
+      // عزل مدير الفرع (قرار المالك ١٢/٨): المدير يرى طابور فرعه فقط؛ المالك/الأدمن null = كلّ الفروع.
+      // غير الأدمن بلا فرع مُسنَد ⇒ رفضٌ صريح بدل الفلترة على فرع 0 (طابور فارغٌ زوراً — P2 Codex).
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const restrictBranchId = ctx.user.role === "admin" ? null : Number(ctx.user.branchId);
+      return listPendingExchangeDeposits(input?.exchangeHouseId, restrictBranchId);
+    }),
 
   approveDeposit: treasuryManagerProcedure
     .input(z.object({ txnId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
+      // عزل مدير الفرع (قرار المالك ١٢/٨): غير الأدمن بلا فرع مُسنَد يُرفَض صراحةً (لا يعتمد على فرع 0 — P2 Codex).
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
       const branchId = ctx.user.branchId == null ? 0 : Number(ctx.user.branchId);
       const res = await approveExchangeDeposit(input.txnId, actorOf(ctx, branchId));
       await logAudit(ctx, {

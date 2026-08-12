@@ -29,7 +29,7 @@ import { logAudit } from "../services/auditService";
 /** عزل الفرع (نمط deliveryRouter.effectiveBranch): المرتفعون يعبرون بـbranchId صريح؛
  *  غيرهم يُجبَرون على فرعهم، وغيابه = FORBIDDEN. */
 function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number | null } }, requested?: number | null) {
-  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+  const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
   if (elevated) return requested ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
 }
@@ -371,7 +371,7 @@ export const receptionRouter = router({
       if (input.collectNow && input.collectNow.method !== "CASH" && !input.collectNow.reference?.trim()) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
       }
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }

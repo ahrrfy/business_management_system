@@ -105,13 +105,12 @@ describe("F7 #2 — IDOR كتابة عبر الفروع في عهدة التوص
     }
   });
 
-  it("مدير (مرتفع) يعبُر الفروع على التسوية", async () => {
+  it("مدير الفرع لا يعبُر الفروع على التسوية (قرار المالك ١٢/٨)", async () => {
     await db().insert(s.deliveryParties).values({ id: 1, name: "مندوب ف٢", partyType: "INDIVIDUAL", branchId: 2, currentBalance: "500.00" });
-    try {
-      await caller("manager", 1, 1).delivery.settle({ partyId: 1, amount: "100.00" } as any);
-    } catch (e: any) {
-      expect(String(e?.message)).not.toMatch(/جهة التوصيل تخصّ فرعاً آخر/);
-    }
+    // مدير ف١ لا يسوّي جهة ف٢: التسوية تُحلّ على فرعه ١ فتُرفَض جهة ف٢ (كان يعبُر — سياسة ٢٣/٧ المُلغاة).
+    await expect(
+      caller("manager", 1, 1).delivery.settle({ partyId: 1, amount: "100.00" } as any),
+    ).rejects.toThrow(/فرع/);
   });
 });
 

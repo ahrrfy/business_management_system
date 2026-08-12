@@ -22,8 +22,9 @@ export async function returnConsignment(
     // المدخل) ⇒ كاشير فرعٍ كان يعكس فاتورة فرعٍ آخر ومخزونَه ويُنقص عهدة مندوبه ويردّ عربوناً
     // من أحد أدراجه بمجرّد تمرير مُعرّف إرسالية. الحارس **قبل** إعادة التشغيل idempotent وقبل
     // أيّ كتابة (قراءة خفيفة بلا قفل — القفل الحقيقيّ أدناه يعيد قراءة الصفّ كاملاً).
-    const scopedBranch =
-      actor.role === "admin" || actor.role === "manager" ? null : (actor.branchId ?? null);
+    // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران الفروع (owner مُطبَّع ⇒ admin)؛
+    // المدير صار مقيَّداً بفرعه (كان `|| manager` يعكس إرسالية فرعٍ آخر ويردّ عربوناً من أدراجه).
+    const scopedBranch = actor.role === "admin" ? null : (actor.branchId ?? null);
     if (scopedBranch != null) {
       const own = (
         await tx

@@ -124,7 +124,7 @@ export const shiftRouter = router({
       // G4 (تدقيق ١٤/٦/٢٦): قبل: `?? input.branchId` يسمح لكاشير بـbranchId=null بفتح وردية
       // على أي فرع. الآن: غير-elevated يُجبَر على فرعه (FORBIDDEN لو null)؛ admin/manager
       // يحترمان input.branchId (لافتتاح ورديات نيابةً عند الحاجة).
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
       let actorBranchId = input.branchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
@@ -172,7 +172,7 @@ export const shiftRouter = router({
       // سياسة #14: نمرّر دور الفاعل + فرعه ليفرض closeShift فحص الملكية/الفرع.
       // G4: استبدال `?? -1` الذي كان يُمرَّر للخدمة فيرفع رسالة مضلّلة (لا تطابُق فرع)
       // بدل سبب الحقيقي (لا فرع مُسنَد). FORBIDDEN صريح للأدوار غير المرتفعة.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
@@ -229,7 +229,7 @@ export const shiftRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }

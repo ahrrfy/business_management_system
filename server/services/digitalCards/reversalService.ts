@@ -167,6 +167,10 @@ export async function approveReversal(
     .where(eq(invoices.id, input.invoiceId))
     .for("update");
   if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير لا يعكس بيع فرعٍ آخر.
+  if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخصّ فرعاً آخر" });
+  }
 
   const details = await lockDetails(tx, input.invoiceId, input.detailIds);
   const sell = sumMoney(details.map((d) => d.sellPriceSnapshot));
@@ -389,6 +393,10 @@ export async function lossRefund(
     .where(eq(invoices.id, input.invoiceId))
     .for("update");
   if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير لا يعكس بيع فرعٍ آخر.
+  if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخصّ فرعاً آخر" });
+  }
 
   // البنود يجب أن تكون **معلّقة بطلبٍ سابق** — لا يُعتمَد ردٌّ لم يُطلَب.
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");

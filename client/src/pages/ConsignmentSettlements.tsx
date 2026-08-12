@@ -38,7 +38,7 @@ export default function ConsignmentSettlements() {
   // الأدمن/المدير بلا فرع مُسنَد يلزمه اختيارٌ صريح قبل تفعيل زرّ التسوية (نمط PR #288 في
   // Reception.tsx) بدل فرعٍ ١ صامت يُنسَب إليه صرفٌ فعليّ من صندوقه.
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
-  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
+  const isElevatedRole = me.data?.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
   const noAssignedBranch = me.data != null && me.data.branchId == null;
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   const branchId = Number(me.data?.branchId ?? pickedBranch ?? 1);

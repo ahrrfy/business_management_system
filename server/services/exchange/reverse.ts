@@ -86,6 +86,10 @@ export async function reverseExchangeTransaction(
     const [txn] = await tx.select().from(exchangeTransactions).where(eq(exchangeTransactions.id, txnId)).for("update").limit(1);
     if (!txn) throw new TRPCError({ code: "NOT_FOUND", message: "عملية الصيرفة غير موجودة" });
     if (txn.status === "REVERSED") throw new TRPCError({ code: "BAD_REQUEST", message: "العملية معكوسة سابقاً" });
+    // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير لا يعكس عملية فرعٍ آخر.
+    if (actor.role !== "admin" && txn.branchId != null && Number(txn.branchId) !== Number(actor.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "عملية الصيرفة تخصّ فرعاً آخر" });
+    }
     if (txn.type === "OPENING") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعكَس الرصيد الافتتاحي — عدّله بعمليةٍ صريحة" });
     }

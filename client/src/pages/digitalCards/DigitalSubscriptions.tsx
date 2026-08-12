@@ -21,7 +21,7 @@ export default function DigitalSubscriptions() {
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
   const me = trpc.auth.me.useQuery();
-  const canPickBranch = me.data?.role === "admin" || me.data?.role === "manager";
+  const canPickBranch = me.data?.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
   const [f, setF, resetF] = useUrlFilters({ branch: "", q: "" });
 
   const list = trpc.digitalCards.subscriptions.list.useQuery({

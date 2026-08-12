@@ -24,10 +24,10 @@ export function actorOf(ctx: Ctx): Actor {
   };
 }
 
-/** نفس تعريف `branchScopedProcedure`: admin/manager يعبُران الفروع، وغيرهما محبوسٌ بفرعه.
- *  محسوبٌ محلياً لأن `moduleProcedure` (بوّابات الكتابة) لا تحقن scopedBranchId في السياق. */
+/** عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران الفروع (owner مُطبَّع ⇒ admin)؛
+ *  مدير الفرع وغيره محبوسون بفرعهم. محسوبٌ محلياً لأن `moduleProcedure` لا تحقن scopedBranchId. */
 export function scopedBranchOf(ctx: Ctx): number | null {
-  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+  const elevated = ctx.user.role === "admin";
   return elevated ? null : Number(ctx.user.branchId);
 }
 

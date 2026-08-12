@@ -2,7 +2,7 @@
  * عزل الفرع في shifts.report (H2 — تدقيق ٢٧/٧): كان الحارس ميتاً لأنّه يقرأ `report.branchId`
  * (جذر) = undefined بينما فرعُ الوردية مُعشَّشٌ تحت `report.shift.branchId` — فيمرّ دائماً ⇒
  * أيّ مستخدمٍ بـ treasury:READ يقرأ Z-report أيّ فرعٍ بمعرفة shiftId (IDOR ماليّ). الإصلاح يقرأ
- * المسار الصحيح المُنمَّط، فيُحصَر غيرُ المرتفعين بفرعهم ويمرّ المرتفعون (admin/manager).
+ * المسار الصحيح المُنمَّط، فيُحصَر غيرُ العابرين بفرعهم (بما فيهم مدير الفرع — قرار المالك ١٢/٨) ويعبُر المالك/الأدمن.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -64,8 +64,14 @@ describe("shifts.report — عزل الفرع (H2)", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("المدير (مرتفع، scopedBranchId=null) يقرأ تقرير أيّ فرع — مرورٌ حرّ", async () => {
-    const report = await caller("manager", 1).shifts.report({ shiftId: 20 });
+  it("مدير فرع ١ ممنوعٌ من قراءة تقرير وردية فرع ٢ (عزل مدير الفرع — قرار المالك ١٢/٨ يعكس ٢٣/٧)", async () => {
+    await expect(
+      caller("manager", 1).shifts.report({ shiftId: 20 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("الأدمن يقرأ تقرير أيّ فرع — مرورٌ حرّ (عابرُ الفروع)", async () => {
+    const report = await caller("admin", 1).shifts.report({ shiftId: 20 });
     expect(report).not.toBeNull();
     expect(report!.shift.branchId).toBe(2);
   });

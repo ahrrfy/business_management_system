@@ -154,7 +154,7 @@ function saveQueueDraft(queue: QueueItem[]): void {
 
 export default function BarcodeLabels() {
   const me = trpc.auth.me.useQuery();
-  const canPickBranch = me.data?.role === "admin" || me.data?.role === "manager";
+  const canPickBranch = me.data?.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
   // منتقي فرع صريح (نمط PR #288): افتراضي فرع المستخدم إن مُسنَد؛ وإلا يلزم اختياراً صريحاً —
   // كان `?? 1` صامتاً يعرض مخزون الفرع ١ لأدمن بلا فرع مُسنَد فيُظهر «= المخزون» رقماً خاطئاً.
   const [pickedBranch, setPickedBranch] = useState<number | "">("");

@@ -307,10 +307,12 @@ describe("globalSearch — عزل الفرع", () => {
     expect(invs[0].title).toBe("INV-2606-1001");
   });
 
-  it("المدير يرى فواتير كل الفروع", async () => {
+  it("مدير الفرع يرى فواتير فرعه فقط (قرار المالك ١٢/٨)", async () => {
+    // عزل مدير الفرع: مدير ف«main» مقصورٌ بفرعه ⇒ يرى فاتورة main فقط (لا فاتورة sales). كان يرى الفرعين (٢٣/٧).
     const out = await globalSearch({ query: "INV-2606", branchId: refs.branchMain, role: "manager" });
     const invs = out.filter((r) => r.type === "INVOICE");
-    expect(invs).toHaveLength(2);
+    expect(invs).toHaveLength(1);
+    expect(invs[0].title).toBe("INV-2606-1001");
   });
 
   it("المنتجات/العملاء/الموردين عبور الفروع دائماً (master data)", async () => {

@@ -158,6 +158,10 @@ export async function approveWriteoff(
   if (Number(intent.writeoffRequestedBy) === actor.userId && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد الشطب من طلبه — يلزم مديرٌ آخر" });
   }
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير لا يشطب نيّة فرعٍ آخر.
+  if (actor.role !== "admin" && Number(intent.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "النيّة تخصّ فرعاً آخر" });
+  }
 
   const items = await issuedItems(tx, input.intentId);
   if (items.length === 0) {

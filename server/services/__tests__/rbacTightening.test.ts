@@ -73,54 +73,41 @@ async function userById(id: number) {
 
 beforeEach(async () => { await reset(); await seed(); });
 
-// ─── (1) inventory: مدير الفرع لا يَعبر ──────────────────────────────
-// عزل المدير في المخزون تغيَّر (قرار المالك ٢٣/٧): «قراءة الكل، كتابة فرعه» بدل «قراءة فرعه» السابقة
-// (تحصين ٢٣/٦). القراءة عبر الفروع صارت مسموحةً للمدير (إشراف)؛ الكتابة (تحويل/تسوية) على فرعه —
-// مُغطّاةٌ في inventoryBranchScope.test.ts.
-describe("inventory — المدير يَقرأ كلَّ الفروع (قراءة الكل — قرار المالك ٢٣/٧)", () => {
-  it("stockByBranch: مدير ف١ يَقرأ ف٢ ⇒ يَعمل (قراءة الكل — إشراف)", async () => {
+// ─── (1) inventory: مدير الفرع يقرأ فرعه فقط (قرار المالك ١٢/٨ يعكس ٢٣/٧) ─────────
+// ١٢/٨: عزل مدير الفرع — لا عبورَ بين الفروع إطلاقاً (قراءةً ولا كتابةً). المالك/الأدمن وحدهما يعبُران.
+// (سابقاً ٢٣/٧: «قراءة الكل، كتابة فرعه»؛ أُلغي.) الكتابة مُغطّاةٌ في inventoryBranchScope.test.ts +
+// managerBranchIsolation.test.ts.
+describe("inventory — مدير الفرع يقرأ فرعه فقط (قرار المالك ١٢/٨)", () => {
+  it("stockByBranch: مدير ف١ يطلب ف٢ ⇒ يُقصَر على فرعه ف١ (لا يعبُر)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2))); // مدير ف١
     const rows = await caller.inventory.stockByBranch({ branchId: 2 });
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((r) => Number(r.branchId) === 2)).toBe(true);
+    expect(rows.every((r) => Number(r.branchId) === 1)).toBe(true);
   });
 
-  it("stockByBranch: مدير ف١ يَطلب ف١ ⇒ يَعمل", async () => {
+  it("stockByBranch: مدير ف١ يطلب ف١ ⇒ يَعمل (فرعه)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2)));
     const rows = await caller.inventory.stockByBranch({ branchId: 1 });
     expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => Number(r.branchId) === 1)).toBe(true);
+  });
+
+  it("stockByBranch: مدير ف٢ يطلب ف١ ⇒ يُقصَر على فرعه ف٢ (لا يعبُر)", async () => {
+    const caller = appRouter.createCaller(makeCtx(await userById(3))); // مدير ف٢
+    const rows = await caller.inventory.stockByBranch({ branchId: 1 });
+    expect(rows.every((r) => Number(r.branchId) === 2)).toBe(true);
   });
 
   it("stockByBranch: admin يَعبر أيّ فرع", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
     const rows = await caller.inventory.stockByBranch({ branchId: 2 });
     expect(rows.length).toBeGreaterThan(0);
-  });
-
-  it("movements: مدير ف١ يَقرأ حركات ف٢ ⇒ يَعمل (قراءة الكل)", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userById(2)));
-    const rows = await caller.inventory.movements({ branchId: 2, limit: 10 });
-    expect(Array.isArray(rows)).toBe(true);
-  });
-
-  it("onHand: مدير ف٢ يَقرأ ف١ ⇒ يَعمل (قراءة الكل)", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userById(3))); // مدير ف٢
-    const rows = await caller.inventory.onHand({ branchId: 1 });
-    expect(rows.length).toBeGreaterThan(0);
-  });
-
-  it("movementsRich: مدير ف٢ يَقرأ ف١ ⇒ يَعمل (قراءة الكل)", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userById(3)));
-    const res = await caller.inventory.movementsRich({ branchId: 1, limit: 10, offset: 0 });
-    expect(res).toBeDefined();
-    expect(Array.isArray(res.rows)).toBe(true);
+    expect(rows.every((r) => Number(r.branchId) === 2)).toBe(true);
   });
 
   it("الكاشير لا يَختار branchId ⇒ يُجبَر على فرعه (sanity — السلوك الموجود)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(4))); // كاشير ف١
     // حتى لو مرّر branchId=2، scopedBranchId=1 يَجبره. النتيجة: مخزون ف١.
     const rows = await caller.inventory.stockByBranch({ branchId: 2 });
-    // الفلتر مُحَوَّل لـ branchId=1 (فرعه)، لا ف٢.
     expect(rows.every((r) => Number(r.branchId) === 1)).toBe(true);
   });
 });

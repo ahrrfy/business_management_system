@@ -159,9 +159,9 @@ export const productionRouter = router({
         .optional()
     )
     .query(({ input, ctx }) => {
-      // علة (تدقيق ٣/٨): branchId كان يُحترم للأدمن فقط والواجهة تعرضه للمدير أيضاً فيتجاهله الخادم صامتاً.
-      // admin/manager يحترمان المُرسَل (نمط consignments.list)؛ غير المرتفع مقصور بفرعه المُسنَد.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن وحدهما يحترمان branchId المُرسَل (تقارير عبر-الفروع)؛
+      // مدير الفرع وغيره مقصورون بفرعهم المُسنَد.
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       const branchId = elevated ? input?.branchId : Number(ctx.user.branchId ?? 0) || undefined;
       return listProductionsFiltered({
         branchId,
@@ -211,7 +211,7 @@ export const productionRouter = router({
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع (تدقيق ١٧/٧): createProduction كان يستعمل input.branchId مباشرةً (ترقيم/استهلاك/إنتاج)
       // ⇒ دورٌ مُنح inventory=FULL (غير مدير) يُنتج/يستهلك في فرعٍ آخر. غير admin/manager يُجبَر على فرعه.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }

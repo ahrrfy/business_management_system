@@ -61,7 +61,7 @@ export const giftsRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return { rows: [], total: 0, hasMore: false, nextCursor: null as number | null };
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       const scopedBranchId = elevated ? null : Number(ctx.user.branchId);
       const branch = scopedBranchId ?? (elevated ? input?.branchId : undefined);
 
@@ -134,7 +134,7 @@ export const giftsRouter = router({
   get: giftsRead
     .input(z.object({ giftId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       const scopedBranchId = elevated ? null : Number(ctx.user.branchId);
       const gift = await getGiftVoucher({ scopedBranchId }, input.giftId);
       if (!gift) throw new TRPCError({ code: "NOT_FOUND", message: "سند الهدية غير موجود" });
@@ -145,7 +145,7 @@ export const giftsRouter = router({
   report: reportViewerProcedure
     .input(z.object({ from: z.string(), to: z.string(), branchId: z.number().int().positive().optional() }))
     .query(({ input, ctx }) => {
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       const branchId = elevated ? input.branchId ?? null : Number(ctx.user.branchId);
       return giftsReport({ from: input.from, to: input.to, branchId });
     }),
@@ -167,7 +167,7 @@ export const giftsRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المرتفع محصور بفرعه؛ المرتفع يحدّد الفرع صراحةً.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
       if (branchId == null) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد الفرع لاستلام الهدية" });
       const actor = { userId: ctx.user.id, branchId, role: ctx.user.role };
@@ -196,7 +196,7 @@ export const giftsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
       if (branchId == null) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد الفرع للهدية" });
       const actor = { userId: ctx.user.id, branchId, role: ctx.user.role };

@@ -44,7 +44,7 @@ export default function ContractPrices() {
   // فرع المستخدم المُسنَد يُستعمَل صامتاً؛ الأدمن/المدير بلا فرع يختار صراحةً قبل تفعيل البحث
   // (بدل فرعٍ ١ صامت يُبنى عليه معاينة سعر/مخزون من فرعٍ قد لا يقصده).
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
-  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
+  const isElevatedRole = me.data?.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
   const noAssignedBranch = me.data != null && me.data.branchId == null;
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   const branchId = Number(me.data?.branchId ?? pickedBranch ?? 1);

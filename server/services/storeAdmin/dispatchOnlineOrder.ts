@@ -62,7 +62,9 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
   const order = (await db.select().from(onlineOrders).where(eq(onlineOrders.id, input.onlineOrderId)).limit(1))[0];
   if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
 
-  const elevated = actor.role === "admin" || actor.role === "manager";
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير
+  // مقيَّدٌ بفرعه — يسري على فحص فرع الطلب وفرع جهة التوصيل أدناه معاً.
+  const elevated = actor.role === "admin";
   if (!elevated && Number(order.branchId) !== actor.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
   }

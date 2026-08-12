@@ -65,7 +65,7 @@ export const purchaseRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return {};
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       if (!elevated && ctx.user.branchId == null) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
       const items = Array.from(new Map(input.items.map((item) => [`${item.variantId}:${item.productUnitId}`, item])).values());
@@ -128,10 +128,10 @@ export const purchaseRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع (تدقيق ١٧/٧، AUTHZ-2): createPurchaseOrder كان يستعمل input.branchId في الترقيم
-      // والتخزين لا actor.branchId ⇒ دور purchasing في فرع SALES يُنشئ أمراً على MAIN بتمرير branchId
-      // مغاير. غير admin/manager يُجبَر على فرعه المُسنَد ويُتجاهَل input.branchId (نمط saleRouter).
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل الفرع (تدقيق ١٧/٧، AUTHZ-2 + عزل مدير الفرع ١٢/٨): createPurchaseOrder كان يستعمل input.branchId
+      // في الترقيم والتخزين لا actor.branchId. المالك/الأدمن وحدهما يعبُران الفروع؛ مدير الفرع وغيره
+      // يُجبَرون على فرعهم المُسنَد ويُتجاهَل input.branchId.
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء أمر شراء" });
       }
@@ -158,7 +158,7 @@ export const purchaseRouter = router({
         const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update").limit(1);
         if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
         // عزل الفرع: مطابق لـassertPurchaseBranch في purchaseService (غير المرتفع محصور بفرعه).
-        const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+        const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
         if (!elevated && Number(po.branchId) !== Number(ctx.user.branchId)) {
           throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع اعتماد أمر شراء فرع آخر" });
         }

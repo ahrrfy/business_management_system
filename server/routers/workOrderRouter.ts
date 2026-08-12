@@ -612,7 +612,7 @@ export const workOrderRouter = router({
     .query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return [];
-    const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+    const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً
     let targetBranch: number | null = null;
     if (elevated && input?.branchId != null) targetBranch = Number(input.branchId);
     else if (ctx.user.branchId != null) targetBranch = Number(ctx.user.branchId);
@@ -641,6 +641,10 @@ export const workOrderRouter = router({
         await db.select({ id: workOrders.id, branchId: workOrders.branchId }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
       )[0];
       if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
+      // عزل مدير الفرع (قرار المالك ١٢/٨): لا يُسنِد مديرٌ طلبَ فرعٍ آخر (المالك/الأدمن يعبُران الفروع).
+      if (ctx.user.role !== "admin" && Number(wo.branchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
+      }
       if (input.assignedTo != null) {
         const u = (
           await db.select({ id: users.id, isActive: users.isActive, branchId: users.branchId }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
@@ -697,18 +701,22 @@ export const workOrderRouter = router({
         if (order.paymentReceiptUrl) assertValidImageDataUrl(order.paymentReceiptUrl);
       }
 
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      if (!elevated && ctx.user.branchId == null) {
+      // عزل مدير الفرع (قرار المالك ١٢/٨): عبور الفروع للمالك/الأدمن فقط. **فصلٌ عن السلطة**: سلطة تكلفة
+      // العمالة تبقى للمدير (لا الفرع) — نمط create (P1، مراجعة Codex).
+      const crossBranch = ctx.user.role === "admin";
+      if (!crossBranch && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مسند لهذا المستخدم" });
       }
-      if (!elevated && Number(ctx.user.branchId) !== input.branchId) {
+      if (!crossBranch && Number(ctx.user.branchId) !== input.branchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع تنفيذ استقبال لفرع آخر" });
       }
-      if (!elevated && input.workOrders.some((order) => money(order.laborCost ?? "0").gt(0))) {
+      // سلطة مديرية (لا فرع): تحديد تكلفة العمالة + اعتماد التسعير تحت التكلفة ذاتياً — تبقى للمدير/الأدمن.
+      const managerial = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!managerial && input.workOrders.some((order) => money(order.laborCost ?? "0").gt(0))) {
         throw new TRPCError({ code: "FORBIDDEN", message: "تكلفة العمالة يحددها المدير فقط" });
       }
 
-      const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      const effectiveBranchId = crossBranch ? input.branchId : Number(ctx.user.branchId);
       if (input.customerId != null && input.workOrders.length > 0) {
         await assertWorkOrderCustomerReady(input.customerId);
       }
@@ -727,9 +735,9 @@ export const workOrderRouter = router({
           result = await retryOnDeadlock(() => checkoutReception({
             ...checkoutInput,
             branchId: effectiveBranchId,
-            priceOverrideApproved: elevated || approvedBy != null,
+            priceOverrideApproved: managerial || approvedBy != null,
             // ش٦ (§٩.٣): هويّة المُقِرّ — المدير المصادِق، أو الفاعل المرتفع نفسه.
-            priceApprovedBy: approvedBy ?? (elevated ? ctx.user.id : null),
+            priceApprovedBy: approvedBy ?? (managerial ? ctx.user.id : null),
           }, actor));
           break;
         } catch (error: any) {
@@ -844,8 +852,11 @@ export const workOrderRouter = router({
           message: "تكلفة العمالة قيمة إدارية موثّقة وليست مدخلاً للكاشير — يحددها المدير من مسار التكلفة",
         });
       }
+      // عزل مدير الفرع (قرار المالك ١٢/٨): إنشاء الأمر/قبض العربون بفرع المستخدم؛ المالك/الأدمن وحدهما
+      // يعبُران الفروع. (elevated أعلاه يبقى لسلطة تكلفة العمالة — المدير يحدّدها — لا للفرع.)
+      const crossBranch = ctx.user.role === "admin";
       let effectiveBranchId = input.branchId;
-      if (!elevated) {
+      if (!crossBranch) {
         if (ctx.user.branchId == null) {
           throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
         }
@@ -920,7 +931,7 @@ export const workOrderRouter = router({
       return withTx(async (tx) => {
         const wo = (await tx.select({ branchId: workOrders.branchId }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1))[0];
         if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
-        const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+        const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
         if (!elevated && Number(wo.branchId) !== ctx.user.branchId) {
           throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
         }

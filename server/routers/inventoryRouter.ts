@@ -80,7 +80,7 @@ async function listStockTransfersFiltered(a: {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
   const limit = Math.min(a.limit ?? 30, 100);
-  const elevated = a.actor.role === "admin" || a.actor.role === "manager";
+  const elevated = a.actor.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
 
   let scopeBranch: number | null;
   if (elevated) {
@@ -330,7 +330,7 @@ export const inventoryRouter = router({
   transfersPendingIncoming: inventoryReadProcedure
     .input(z.object({ branchId: z.number().int().positive().nullish() }).optional())
     .query(({ input, ctx }) => {
-      const elevated = ["admin", "manager"].includes(ctx.user.role); // قراءة عبر الفروع مسموحة للمدير (قرار المالك ٢٣/٧)
+      const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨ يُلغي سماح ٢٣/٧): المالك/الأدمن فقط
       const own = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
       const scope = elevated ? (input?.branchId ?? null) : own;
       if (!elevated && scope == null) return 0;

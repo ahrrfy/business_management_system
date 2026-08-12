@@ -26,9 +26,10 @@ async function loadWorkOrder(tx: any, workOrderId: number) {
   return rows[0];
 }
 
-/** عزل الفرع: أي عملية مال على طلب الخدمة تُجبر فرع الموظّف (غير المدير). يُمرَّر actor.role من الراوتر. */
+/** عزل الفرع: أيّ عملية مال على طلب الخدمة تُجبَر فرع الفاعل. عزل مدير الفرع (قرار المالك ١٢/٨):
+ *  المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير صار مقيَّداً بفرعه. يُمرَّر actor.role من الراوتر. */
 function assertWorkOrderBranch(wo: { branchId: number | string }, actor: Actor & { role?: string }) {
-  const elevated = actor.role === "admin" || actor.role === "manager";
+  const elevated = actor.role === "admin";
   if (elevated) return;
   if (Number(wo.branchId) !== actor.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });

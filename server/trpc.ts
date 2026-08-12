@@ -6,6 +6,7 @@ import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { isCurrentNativeClient } from "./auth/deviceProof";
 import { isCryptoReady } from "./services/cryptoService";
+import { canCrossBranches } from "./lib/branchAuthority";
 import { logger } from "./logger";
 
 const t = initTRPC.context<TrpcContext>().create({
@@ -164,6 +165,10 @@ export const platformAdminProcedure = t.procedure.use(requirePlatformAdmin);
 // ─── تفويض الأدوار (RBAC) ───────────────────────────────────────────────
 const FORBIDDEN_MSG = "صلاحيات غير كافية لهذا الإجراء.";
 
+// canCrossBranches: مصدر الحقيقة في server/lib/branchAuthority.ts (وحدة ورقة بلا دورات استيراد).
+// نُعيد تصديره هنا ليستورده كودُ الراوترات من "../trpc" كالمعتاد. قرار المالك ١٢/٨: عزل مدير الفرع.
+export { canCrossBranches };
+
 function requireRole(...allowed: string[]) {
   return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
@@ -235,9 +240,9 @@ export const managerProcedure = t.procedure.use(requireRole("manager"));
 export const reportViewerProcedure = t.procedure
   .use(requireModuleGate(["manager", "accountant", "auditor"], "reports", "READ"))
   .use(async ({ ctx, getRawInput, next }) => {
-    // عزل الفرع: admin يعبُر أي فرع؛ غير الأدمن يُرفَض إن طلب فرعاً غير فرعه (أثر forensic صريح
-    // بدل قصٍّ صامت) — مرآةٌ لِمنطق managerBranchScopedProcedure الذي كان يحرس هذه التقارير.
-    if (!ctx.user || ctx.user.role === "admin") return next({ ctx });
+    // عزل الفرع: المالك/الأدمن يعبُران أي فرع؛ غير العابر (بما فيه مدير الفرع) يُرفَض إن طلب فرعاً
+    // غير فرعه (أثر forensic صريح بدل قصٍّ صامت) — مرآةٌ لِمنطق managerBranchScopedProcedure.
+    if (!ctx.user || canCrossBranches(ctx.user)) return next({ ctx });
     const raw = (await getRawInput()) as { branchId?: number | string } | undefined;
     const requestedBranch = raw?.branchId;
     if (requestedBranch !== undefined && Number(requestedBranch) !== Number(ctx.user.branchId)) {
@@ -246,7 +251,7 @@ export const reportViewerProcedure = t.procedure
     return next({ ctx });
   });
 export const managerBranchScopedProcedure = managerProcedure.use(async ({ ctx, getRawInput, next }) => {
-  if (ctx.user.role === "admin") return next({ ctx });
+  if (canCrossBranches(ctx.user)) return next({ ctx });
   // G7 (تدقيق ٢٣/٦/٢٦): `input` في middleware يَأتي parsed بعد `.input()` فقط. هذا middleware
   // يُسجَّل قبل `.input()` ⇒ `input` كان `undefined` دائماً والفحص يَمرّ صامتاً ⇒ المدير يَطلب
   // فرع آخر فيُعاد له بيانات فرعه (لا تَسريب فعلي بفضل scopedBranchId في الـhandler، لكن لا
@@ -260,11 +265,15 @@ export const managerBranchScopedProcedure = managerProcedure.use(async ({ ctx, g
 });
 // G3 (تدقيق ١٩/٦/٢٦): الكاشير والمخزن **يجب** أن يكون لهما فرع مُسنَد — لا معنى
 // لتشغيل وردية/استلام بضاعة بلا فرع. كان غياب الفحص يتفاعل مع `?? 1` في الراوترات
-// فيصبح المستخدم بلا فرع يكتب صامتاً على الفرع رقم ١ (IDOR). المدير/الأدمن مستثنيان
-// لأن لهما حالات شرعية للعمل عبر الفروع.
+// فيصبح المستخدم بلا فرع يكتب صامتاً على الفرع رقم ١ (IDOR). **المالك/الأدمن وحدهما**
+// مستثنيان (عبور الفروع)؛ مدير الفرع صار مقيَّداً بفرعه — قرار المالك ١٢/٨/٢٦.
 const requireOwnBranch = t.middleware(async ({ ctx, next }) => {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-  if (ctx.user.role === "admin" || ctx.user.role === "manager") return next({ ctx: { ...ctx, user: ctx.user } });
+  // المالك/الأدمن يعبُران الفروع. قرار المالك ١٢/٨: مدير الفرع لم يعُد عابراً — يسقط لفحص «فرعٌ مُسنَد»
+  // كالكاشير. **فرضُ فرعه في الكتابة يتمّ داخل الـhandler** (elevated=admin في كل مسار) لا هنا؛ لا نرفض
+  // input.branchId الأجنبيّ في هذه البوّابة حفاظاً على سلوك «القصر الصامت على الفرع» القائم للكاشير/المخزن
+  // (رفضٌ هنا كان يكسر تدفّقاتٍ مشروعة تمرّر branchId الجهاز — كاشير الأوفلاين/فتح الوردية).
+  if (canCrossBranches(ctx.user)) return next({ ctx: { ...ctx, user: ctx.user } });
   if (ctx.user.branchId == null) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
   }
@@ -316,16 +325,21 @@ export function canViewReports(user: { role: string; permissionsOverride?: unkno
 // `[]` صامتاً (المستخدم يرى «لا بيانات» بدل «ممنوع») ⇒ لا أثر forensic + سلوك مضلّل.
 // الآن: المسار آمن، والـauthz failure يُسجَّل في pino عبر errorFormatter (F5).
 export const branchScopedProcedure = protectedProcedure.use(({ ctx, next }) => {
-  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-  if (!elevated && ctx.user.branchId == null) {
+  // قرار المالك (١٢/٨/٢٦): عزل مدير الفرع. **فصلُ مُسنَدَين** كانا مدموجَين في «elevated» واحد:
+  //   • crossBranch (عبور الفروع) = المالك/الأدمن فقط ⇒ scopedBranchId=null (كلّ الفروع).
+  //     كان المدير هنا ⇒ يرى كلّ الفروع؛ الآن يُقيَّد بفرعه المُسنَد (scopedBranchId=فرعه).
+  //   • supervisor (يرى كلّ سجلّات فرعه لا ما أنشأه هو فقط) = المالك/الأدمن **والمدير**.
+  const crossBranch = canCrossBranches(ctx.user);
+  const supervisor = crossBranch || ctx.user.role === "manager";
+  if (!crossBranch && ctx.user.branchId == null) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
   }
-  const scopedBranchId = elevated ? null : Number(ctx.user.branchId);
+  const scopedBranchId = crossBranch ? null : Number(ctx.user.branchId);
   // ─── عزل سجلّات الموظف («يرى ما يخصّه فقط») — سياسة المالك (٢٤/٦/٢٦) ───
-  // غير المرتفعين (كاشير/مندوب/فني…) يرون ما أنشأوه فقط في القوائم الترانزاكشنية
-  // (فواتير/عروض/مصروفات/حركات مخزون/أوامر شغل). admin|manager = null = كل بيانات الفرع.
-  // (نفس مجموعة elevated في عزل الفرع ⇒ اتّساق.) لا يشمل الكتالوج المشترك (منتجات/عملاء/موردون).
-  const scopedOwnerId = elevated ? null : Number(ctx.user.id);
+  // غير المشرفين (كاشير/مندوب/فني…) يرون ما أنشأوه فقط في القوائم الترانزاكشنية
+  // (فواتير/عروض/مصروفات/حركات مخزون/أوامر شغل). المالك/الأدمن/المدير = null = كلّ سجلّات النطاق
+  // (المدير مشرفُ فرعه فيرى سجلّات موظّفيه داخل فرعه). لا يشمل الكتالوج المشترك (منتجات/عملاء/موردون).
+  const scopedOwnerId = supervisor ? null : Number(ctx.user.id);
   return next({ ctx: { ...ctx, scopedBranchId, scopedOwnerId } });
 });
 
@@ -382,8 +396,21 @@ export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manage
 export const inventoryManagerProcedure = moduleProcedure(["manager"], "inventory", "FULL");
 /** إنقاذ مخزني شديد الحساسية: بوابة inventory:FULL ثم admin و2FA مركزياً. */
 export const inventoryAdminProcedure = inventoryManagerProcedure.use(requireAdmin);
-/** طلبات الإقفال الشهري: مديرٌ ذو reports:FULL، مع احترام السحب والمنح الصريحين. */
-export const reportsManagerProcedure = moduleProcedure(["manager"], "reports", "FULL");
+/** طلبات الإقفال الشهري/السنوي: مديرٌ ذو reports:FULL (مع احترام السحب/المنح الصريحين). عمليةٌ **شركةٌ
+ *  لا فرع** ⇒ بلا requireOwnBranch (كان moduleProcedure يُلزم فرعاً بعد عزل مدير الفرع ١٢/٨، فيُرفَض
+ *  مديرٌ بلا فرع من إقفالٍ لا يخصّ فرعاً بعينه — قرار المالك ١٢/٨ يخصّ عمليات الفرع لا الإقفال الشركيّ). */
+export const reportsManagerProcedure = protectedProcedure
+  .use(requireModuleGate(["manager"], "reports", "FULL"))
+  .use(async ({ ctx, next }) => {
+    // الأدوار القياسية (admin/manager) تعبُر بلا فرع — الإقفال شركيٌّ لا يخصّ فرعاً (متّسقٌ مع قرار
+    // المالك ١٢/٨: العزل لعمليات الفرع لا للإقفال الشركيّ)؛ دورٌ غير قياسيّ مُنِح reports:FULL صراحةً
+    // يبقى مقيَّداً بفرعٍ مُسنَد (تصميم #565 — منحُ التقارير لا يوسّع الحدَّ الفرعيّ لغير المدير).
+    if (ctx.user.role === "admin" || ctx.user.role === "manager") return next({ ctx });
+    if (ctx.user.branchId == null) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+    }
+    return next({ ctx });
+  });
 /** اعتماد/رفض الإقفال: بوابة reports:FULL ثم admin و2FA مركزياً. */
 export const reportsAdminProcedure = reportsManagerProcedure.use(requireAdmin);
 // أسماء توافقية للراوترات القائمة؛ سلطة ملف العميل انتقلت فعلياً إلى وحدة CRM.

@@ -502,10 +502,10 @@ export const reportsRouter = router({
       z.object({ branchId: z.number().int().positive().optional() }).optional(),
     )
     .query(async ({ input, ctx }) => {
-      // عزل الفرع: غير المرتفعين (cashier/warehouse) يُجبَرون على فرعهم.
-      // G3 (تدقيق ١٤/٦/٢٦): استبدل `?? -1` برميٍ صريح. كان -1 يجعل المؤشّرات تُحسب بـ
-      // WHERE branchId=-1 فترجع أصفاراً صامتاً (المستخدم يرى لوحة فارغة بدل «ممنوع»).
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل الفرع (قرار المالك ١٢/٨: عزل مدير الفرع): المالك/الأدمن وحدهما يعبُران الفروع (branchId
+      // اختياريّ لهما)؛ مدير الفرع وغيره يُجبَرون على فرعهم المُسنَد — كان `|| manager` يُريه كلَّ الفروع.
+      // G3 (تدقيق ١٤/٦/٢٦): استبدل `?? -1` برميٍ صريح (تجنّب الأصفار الصامتة).
+      const elevated = ctx.user.role === "admin";
       let effectiveBranchId: number | null;
       if (elevated) {
         effectiveBranchId = input?.branchId ?? null;

@@ -54,9 +54,8 @@ const INTENT_LABEL: Record<string, string> = {
 export default function DigitalDashboard() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
-  const canPickBranch =
-    me.data?.role === "admin" ||
-    (me.data?.role === "manager" && me.data?.branchId == null);
+  // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يختاران فرعاً (owner مُطبَّع ⇒ admin).
+  const canPickBranch = me.data?.role === "admin";
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
 
   const [range, setRange] = useState<RangeKey>("today");

@@ -167,9 +167,15 @@ describe("contacts.search — بحث موحّد", () => {
     expect(branch2Res.rows).toHaveLength(1);
     expect(branch2Res.rows[0].branchId).toBe(2);
 
+    // عزل مدير الفرع (قرار المالك ١٢/٨ يعكس ٢٣/٧): المدير مقصورٌ بفرعه؛ الأدمن وحده يعبُر الفروع.
     const managerCaller = await callerFor(2);
     const managerRes = await searchContacts(managerCaller, { q: "مندوب مشترك الاسم", kinds: ["delivery"] });
-    expect(managerRes.rows).toHaveLength(2);
+    expect(managerRes.rows).toHaveLength(1);
+    expect(managerRes.rows[0].branchId).toBe(1);
+
+    const adminCaller = await callerFor(1);
+    const adminRes = await searchContacts(adminCaller, { q: "مندوب مشترك الاسم", kinds: ["delivery"] });
+    expect(adminRes.rows).toHaveLength(2);
   });
 
   it("فلتر kinds يقصر الأنواع المُعادة", async () => {
@@ -417,10 +423,11 @@ describe("contacts.contact360 — عزل الفرع للمحادثات/المه�
     expect(adminRes.openTasks).toHaveLength(1);
     expect(adminRes.conversations).toHaveLength(1);
 
+    // عزل مدير الفرع (قرار المالك ١٢/٨ يعكس ٢٣/٧): المدير مقصورٌ بفرعه فلا يرى مهمّة/محادثة الفرع ٢.
     const managerCaller = await callerFor(2);
     const managerRes = await managerCaller.contacts.contact360({ kind: "customer", id: customerId });
-    expect(managerRes.openTasks).toHaveLength(1);
-    expect(managerRes.conversations).toHaveLength(1);
+    expect(managerRes.openTasks).toHaveLength(0);
+    expect(managerRes.conversations).toHaveLength(0);
   });
 
   it("كاشير الفرع ١ يرى محادثة/مهمة عميل موجودتين على فرعه هو", async () => {

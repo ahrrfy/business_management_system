@@ -27,9 +27,10 @@ function transferCostSnapshot(notes: string | null | undefined): string | null {
   return match ? money(match[1]).toFixed(2) : null;
 }
 
-/** admin/manager يتصرّفان على أي فرع؛ البقية مقيّدون بفرعهم المُسنَد. */
+/** المالك/الأدمن فقط يتصرّفان على أيّ فرع (owner مُطبَّع ⇒ admin)؛ مدير الفرع وغيره مقيَّدون بفرعهم
+ *  المُسنَد — قرار المالك ١٢/٨ (عزل مدير الفرع: لا استلام/إلغاء تحويلٍ من فرعٍ ليس فرعه). */
 function isElevated(actor: TransferActor): boolean {
-  return actor.role === "admin" || actor.role === "manager";
+  return actor.role === "admin";
 }
 
 function assertBranchActor(actor: TransferActor, branchId: number, message: string): void {

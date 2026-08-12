@@ -35,7 +35,7 @@ import {
 
 /** نفس حارس IDOR في catalogRouter: غير المرتفعين محصورون بفرعهم المُسنَد. */
 function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
-  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+  const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران
   if (elevated) return requested;
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : requested;
 }
@@ -47,16 +47,19 @@ function scopeActor(
   ctx: { user: { id: number; role: string; branchId?: number | null } },
   requestedBranchId: number,
 ) {
-  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+  // عزل مدير الفرع (قرار المالك ١٢/٨): عبور الفروع للمالك/الأدمن فقط. **فصلٌ عن السلطة** (P2 Codex):
+  // canApprove (سلطة اعتماد التسعير تحت التكلفة) تبقى للمدير — لا الفرع.
+  const crossBranch = ctx.user.role === "admin";
   let effectiveBranchId = requestedBranchId;
-  if (!elevated) {
+  if (!crossBranch) {
     if (ctx.user.branchId == null) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
     }
     effectiveBranchId = Number(ctx.user.branchId);
   }
+  const canApprove = ctx.user.role === "admin" || ctx.user.role === "manager";
   return {
-    elevated,
+    canApprove,
     effectiveBranchId,
     actor: { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role },
   };
@@ -173,22 +176,23 @@ export const offlineRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع — مرآة saleRouter.create حرفياً (منع IDOR): غير المرتفع يُجبَر على فرعه.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      // عزل الفرع — مرآة saleRouter.create (منع IDOR): غير العابر يُجبَر على فرعه. **فصلٌ عن السلطة** (P2 Codex):
+      // عبور الفروع للمالك/الأدمن فقط؛ سلطة اعتماد التسعير تحت التكلفة (canApprove) تبقى للمدير.
+      const crossBranch = ctx.user.role === "admin";
       let effectiveBranchId = input.branchId;
-      if (!elevated) {
+      if (!crossBranch) {
         if (ctx.user.branchId == null) {
           throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
         }
         effectiveBranchId = Number(ctx.user.branchId);
       }
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
-      // سلطة تحت-التكلفة: المدير/الأدمن المرحِّل يملكها ذاتياً؛ الكاشير عبر managerApproval
-      // مُتحقَّق (مرآة saleRouter.create — SALES-01/02).
+      // سلطة تحت-التكلفة: المدير/الأدمن المرحِّل يملكها ذاتياً؛ الكاشير عبر managerApproval مُتحقَّق.
+      const canApprove = ctx.user.role === "admin" || ctx.user.role === "manager";
       const { managerApproval, ...replayInput } = input;
       let approvedBy: number | null = null;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
-      const priceOverrideApprovedBy: number | null = approvedBy ?? (elevated ? ctx.user.id : null);
+      const priceOverrideApprovedBy: number | null = approvedBy ?? (canApprove ? ctx.user.id : null);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await replayOfflineSale(
@@ -271,11 +275,11 @@ export const offlineRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const { effectiveBranchId, actor, elevated } = scopeActor(ctx, input.branchId);
+      const { effectiveBranchId, actor, canApprove } = scopeActor(ctx, input.branchId);
       const { managerApproval, ...replayInput } = input;
       let approvedBy: number | null = null;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
-      const priceOverrideApproved = (approvedBy ?? (elevated ? ctx.user.id : null)) != null;
+      const priceOverrideApproved = (approvedBy ?? (canApprove ? ctx.user.id : null)) != null;
       return runReplay(
         () =>
           replayOfflinePrintSale(
@@ -351,11 +355,11 @@ export const offlineRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const { effectiveBranchId, actor, elevated } = scopeActor(ctx, input.branchId);
+      const { effectiveBranchId, actor, canApprove } = scopeActor(ctx, input.branchId);
       const { managerApproval, ...replayInput } = input;
       let approvedBy: number | null = null;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
-      const priceOverrideApproved = (approvedBy ?? (elevated ? ctx.user.id : null)) != null;
+      const priceOverrideApproved = (approvedBy ?? (canApprove ? ctx.user.id : null)) != null;
       return runReplay(
         () =>
           replayOfflineReception(

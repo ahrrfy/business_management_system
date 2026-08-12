@@ -18,6 +18,7 @@ import { logger } from "../../logger";
 import { type Actor, requireDb, withTx } from "../tx";
 import { checkAutomationGate, enqueueAndDispatch } from "../whatsapp";
 import { assertTaskActorScope, assertTaskAssigneeOrElevated, assertTaskBranch, loadTask } from "./helpers";
+import { canCrossBranches } from "../../lib/branchAuthority";
 
 type TaskEventType = "COMMENT" | "STATUS" | "ASSIGN" | "LINK" | "SYSTEM" | "CSAT";
 type TaskActor = Actor & { role?: string };
@@ -75,12 +76,14 @@ export async function assignTask(taskId: number, assignedTo: number | null, acto
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إعادة إسناد مهمة مغلقة (محلولة أو ملغاة)" });
     if (assignedTo != null) {
       const u = (await tx
-        .select({ id: users.id, branchId: users.branchId, role: users.role, isActive: users.isActive })
+        .select({ id: users.id, branchId: users.branchId, role: users.role, isActive: users.isActive, isOwner: users.isOwner })
         .from(users)
         .where(eq(users.id, assignedTo))
         .limit(1))[0];
       if (!u || !u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
-      const elevatedAssignee = u.role === "admin" || u.role === "manager";
+      // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن وحدهما عابرا الفروع؛ مدير الفرع مقيَّدٌ بفرعه.
+      // المُسنَد إليه صفٌّ خام غير مُطبَّع ⇒ نستشير isOwner صراحةً عبر canCrossBranches (P2 مراجعة Codex).
+      const elevatedAssignee = canCrossBranches({ role: u.role, isOwner: u.isOwner });
       if (!elevatedAssignee && Number(u.branchId) !== Number(task.branchId)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد المهمة إلى موظف من فرع آخر" });
       }
