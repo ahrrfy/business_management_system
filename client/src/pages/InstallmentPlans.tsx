@@ -563,7 +563,6 @@ function CreatePlanDialog({
   const [customer, setCustomer] = useState<SmartCustomerValue>(EMPTY_CUSTOMER);
   const [branchId, setBranchId] = useState<number | null>(null);
   const [total, setTotal] = useState("");
-  const [down, setDown] = useState("");
   const [count, setCount] = useState(3);
   const [firstDue, setFirstDue] = useState(addDays(todayYmd(), 30));
   const [intervalDays, setIntervalDays] = useState(30);
@@ -584,7 +583,6 @@ function CreatePlanDialog({
   function resetForm() {
     setCustomer(EMPTY_CUSTOMER);
     setTotal("");
-    setDown("");
     setCount(3);
     setFirstDue(addDays(todayYmd(), 30));
     setIntervalDays(30);
@@ -592,12 +590,12 @@ function CreatePlanDialog({
     setLines([]);
   }
 
-  /** توليد أسطر متساوية: الباقي بعد الدفعة الأولى ÷ العدد، والسطر الأخير يمتصّ فرق التقريب ⇒ Σ مطابق دائماً. */
+  /** توليد أسطر متساوية: الإجمالي ÷ العدد، والسطر الأخير يمتصّ فرق التقريب ⇒ Σ مطابق دائماً. */
   function generateLines() {
     const n = Math.max(1, Math.min(60, Math.floor(count)));
-    const remaining = D(total).minus(D(down || "0"));
+    const remaining = D(total);
     if (remaining.lte(0)) {
-      notify.err("الإجمالي بعد الدفعة الأولى يجب أن يكون موجباً");
+      notify.err("إجمالي الخطة يجب أن يكون موجباً");
       return;
     }
     const per = remaining.div(n).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
@@ -617,7 +615,7 @@ function CreatePlanDialog({
   }
 
   const linesSum = useMemo(() => lines.reduce((acc, l) => acc.plus(D(l.amount || "0")), D(0)), [lines]);
-  const scheduled = linesSum.plus(D(down || "0"));
+  const scheduled = linesSum;
   const diff = D(total || "0").minus(scheduled);
   const sumMatches = total !== "" && lines.length > 0 && diff.isZero();
   const datesAscending = lines.every((l, i) => i === 0 || l.dueDate >= lines[i - 1].dueDate);
@@ -635,7 +633,6 @@ function CreatePlanDialog({
       customerId: customer.customerId,
       branchId: effectiveBranch,
       totalAmount: D(total).toFixed(2),
-      downPayment: down ? D(down).toFixed(2) : undefined,
       notes: notes.trim() || undefined,
       lines: lines.map((l) => ({
         dueDate: l.dueDate,
@@ -681,9 +678,10 @@ function CreatePlanDialog({
               <Label>إجمالي الخطة (د.ع) *</Label>
               <MoneyInput value={total} onChange={setTotal} ariaLabel="إجمالي الخطة" />
             </div>
-            <div className="space-y-1">
-              <Label>الدفعة الأولى (د.ع)</Label>
-              <MoneyInput value={down} onChange={setDown} ariaLabel="الدفعة الأولى" />
+            <div className="space-y-1 sm:col-span-2">
+              <p className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                لدفعةٍ أولى: سجّلها <span className="font-medium">سندَ قبضٍ نقديٍّ</span> أولاً (لا دينار بلا سند)، ثم أنشئ الخطة على المتبقّي — الخطة تُجدوَل على الإجمالي أعلاه بالكامل.
+              </p>
             </div>
           </div>
 
@@ -760,8 +758,7 @@ function CreatePlanDialog({
                 className={`rounded-md border p-2 text-sm tabular-nums ${sumMatches ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-destructive/40 bg-destructive/5 text-destructive"}`}
                 role="status"
               >
-                مجموع الأقساط <span dir="ltr">{fmt(linesSum.toFixed(2))}</span> + الدفعة الأولى{" "}
-                <span dir="ltr">{fmt(down || "0")}</span> = <span dir="ltr">{fmt(scheduled.toFixed(2))}</span>
+                مجموع الأقساط <span dir="ltr">{fmt(scheduled.toFixed(2))}</span>
                 {sumMatches ? (
                   <span className="ms-2 font-semibold">يطابق الإجمالي</span>
                 ) : (
