@@ -1,9 +1,11 @@
-import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "@shared/const";
+import { NOT_ADMIN_ERR_MSG, TWO_FACTOR_REQUIRED_ROLES, UNAUTHED_ERR_MSG } from "@shared/const";
 import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
-import { canSeeCost as _canSeeCost, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, canUseStation, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
+import { isCurrentNativeClient } from "./auth/deviceProof";
+import { isCryptoReady } from "./services/cryptoService";
 import { logger } from "./logger";
 
 const t = initTRPC.context<TrpcContext>().create({
@@ -42,17 +44,90 @@ export const router = t.router;
 export const middleware = t.middleware;
 export const publicProcedure = t.procedure;
 
-const requireUser = t.middleware(async ({ ctx, next }) => {
+/**
+ * Credential-free bootstrap boundary for the native Android client. This does not authenticate
+ * a user or grant a session; it only prevents browsers and obsolete clients from minting device
+ * registration challenges outside the current signed-device protocol.
+ */
+const requireNativeBootstrapClient = t.middleware(async ({ ctx, next }) => {
+  if (!isCurrentNativeClient(ctx.req)) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+  return next({ ctx });
+});
+
+export const nativeBootstrapProcedure = t.procedure.use(requireNativeBootstrapClient);
+
+// ─── M9 (تدقيق ٣/٨): إلزام 2FA خادمياً للمدير/المشرف ─────────────────────────
+// كانت راية `mustEnroll2FA` توجيهاً واجهياً فقط (ForceTwoFactorEnroll يحجب الشاشة)، فعميلٌ
+// غير قياسيّ أو استدعاء API مباشر يتجاهلها ويعمل بكامل الصلاحية بلا عاملٍ ثانٍ. الآن يُحجب أي
+// إجراء (عدا مسارات التفعيل) لدور مُلزَم لم يُفعّل 2FA — خادمياً — عبر البوّابات الأربع أدناه.
+//
+// 🛟 بوّابات إنقاذ الأدمن (منع القفل الدائم خارج الحساب):
+//   ١) مسارات التفعيل/الحالة مُستثناة دائماً ⇒ الحساب يُصلِح نفسه بالتفعيل بلا أي وصولٍ آخر.
+//   ٢) `isCryptoReady()=false` (لا مفتاح تشفير) ⇒ لا إنفاذ (لا يمكن تفعيل 2FA أصلاً).
+//   ٣) مفتاح إيقافٍ بيئيّ `TWO_FACTOR_ENFORCEMENT=off` ⇒ يُعطّل الإنفاذ كلياً (مخرج المالك عند طارئ).
+//   + إنقاذ الأدمن القائم `users.resetTwoFactor` (أدمن يصفّر 2FA لمستخدمٍ آخر).
+// المسارات المُستثناة تطابق ما يستدعيه ForceTwoFactorEnroll (setupStart/Confirm) + قراءة الحالة.
+const TWO_FACTOR_EXEMPT_PATHS = new Set<string>([
+  "auth.twoFactorSetupStart",
+  "auth.twoFactorSetupConfirm",
+  "auth.twoFactorStatus",
+]);
+
+/** هل يجب على هذا المستخدم تفعيل 2FA قبل استعمال النظام؟ (يطابق `mustEnroll2FA` في authRouter.me). */
+export function twoFactorEnrollmentRequired(user: { role: string; totpEnabledAt?: Date | string | null }): boolean {
+  if (process.env.TWO_FACTOR_ENFORCEMENT === "off") return false; // بوّابة إنقاذ ٣
+  if (!isCryptoReady()) return false; // بوّابة إنقاذ ٢
+  if (!TWO_FACTOR_REQUIRED_ROLES.includes(user.role)) return false;
+  return !user.totpEnabledAt;
+}
+
+/** يرمي FORBIDDEN إن كان الإجراء غير مُستثنى ودورُ المستخدم مُلزَمٌ بـ2FA ولم يُفعّلها. */
+function assertTwoFactorEnrolled(user: { role: string; totpEnabledAt?: Date | string | null }, path: string): void {
+  if (TWO_FACTOR_EXEMPT_PATHS.has(path)) return; // بوّابة إنقاذ ١
+  if (twoFactorEnrollmentRequired(user)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "يلزم تفعيل المصادقة الثنائية (2FA) للمتابعة — سياسة إلزامية للمدير/المشرف.",
+    });
+  }
+}
+
+const requireUser = t.middleware(async ({ ctx, next, path }) => {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  assertTwoFactorEnrolled(ctx.user, path);
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
 export const protectedProcedure = t.procedure.use(requireUser);
 
-const requireAdmin = t.middleware(async ({ ctx, next }) => {
+/**
+ * Self-service boundary for the mobile workspace. Handlers using this
+ * procedure must derive the subject from ctx.user and must not accept a
+ * caller-supplied user or employee identifier.
+ */
+export const selfServiceProcedure = protectedProcedure;
+
+/**
+ * Permission-aware aggregation boundary for the super-app BFF. It does not
+ * grant a module permission by itself: every handler must resolve the current
+ * user's permission map and keep all records branch-scoped.
+ */
+export const superAppProcedure = protectedProcedure;
+
+/**
+ * بوابة خدمة ذاتية لمكلّف جرد بحساب النظام. لا تمنح هذه البوابة وصولاً عاماً
+ * إلى وحدة المخزون؛ كل handler يستعملها ملزم بربط القراءة/الكتابة بـ userId
+ * للتكليف نفسه (مثال: countPortalRouter.mine).
+ */
+export const stocktakeAssignmentProcedure = protectedProcedure;
+
+const requireAdmin = t.middleware(async ({ ctx, next, path }) => {
   if (!ctx.user || ctx.user.role !== "admin") {
     throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
   }
+  assertTwoFactorEnrolled(ctx.user, path);
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
 
@@ -70,11 +145,12 @@ export const platformAdminProcedure = t.procedure.use(requirePlatformAdmin);
 const FORBIDDEN_MSG = "صلاحيات غير كافية لهذا الإجراء.";
 
 function requireRole(...allowed: string[]) {
-  return t.middleware(async ({ ctx, next }) => {
+  return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     if (ctx.user.role !== "admin" && !allowed.includes(ctx.user.role)) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
+    assertTwoFactorEnrolled(ctx.user, path);
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
 }
@@ -104,7 +180,7 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
  * كالإلغاءات) — هذا هو معنى «كامل» المعروض للمالك في المصفوفة، والمنح قرار أدمن.
  */
 function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, minLevel: AccessLevel) {
-  return t.middleware(async ({ ctx, next }) => {
+  return t.middleware(async ({ ctx, next, path }) => {
     if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
       | Record<string, AccessLevel>
@@ -113,6 +189,7 @@ function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, m
     if (!moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles)) {
       throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
     }
+    assertTwoFactorEnrolled(ctx.user, path);
     return next({ ctx: { ...ctx, user: ctx.user } });
   });
 }
@@ -246,6 +323,30 @@ export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos"
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
 export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
+// عرض/طباعة فاتورةٍ واحدة (طلب المالك — خدمة العملاء تطبع/تعيد طباعة فواتيرها): يسمح بـsales≥READ
+// **أو** صلاحية الاستقبال (workorders:FULL). مشغّل الاستقبال يُنشئ الفواتير فيطبعها، بلا فتح وحدة
+// المبيعات كاملةً (عروض الأسعار تبقى محميّة على salesReadProcedure). محميّة بالفرع (branchScoped +
+// فلتر الفرع داخل الاستعلام يُرجِع null لفاتورة فرعٍ آخر ⇒ لا IDOR). دورٌ-محايد: يعمل لأيّ دور استقبال.
+export function invoiceViewScopeForUser(
+  user: { role: string; permissionsOverride?: unknown },
+): "sales" | "reception" | null {
+  if (user.role === "admin") return "sales";
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  const map = resolvePermissions(user.role as RoleKey, override);
+  if (map.sales === "FULL" || map.sales === "READ") return "sales";
+  if (map.workorders === "FULL") return "reception";
+  return null;
+}
+
+export const invoiceViewProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (!invoiceViewScopeForUser(ctx.user)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    }
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  }),
+);
 // purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».
 export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));
 export const purchasesManagerProcedure = moduleProcedure(["manager", "purchasing"], "purchases", "FULL");
@@ -254,9 +355,15 @@ export const purchasesWarehouseProcedure = moduleProcedure(["warehouse", "manage
 export const inventoryReadProcedure = branchScopedProcedure.use(requireModule("inventory", "READ"));
 export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manager"], "inventory", "FULL");
 export const inventoryManagerProcedure = moduleProcedure(["manager"], "inventory", "FULL");
+/** إنقاذ مخزني شديد الحساسية: بوابة inventory:FULL ثم admin و2FA مركزياً. */
+export const inventoryAdminProcedure = inventoryManagerProcedure.use(requireAdmin);
 // أسماء توافقية للراوترات القائمة؛ سلطة ملف العميل انتقلت فعلياً إلى وحدة CRM.
 export const customersReadProcedure = protectedProcedure.use(requireModule("crm", "READ"));
-export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep"], "crm", "FULL");
+// print_operator (٧/٨): مرآة POS_STATION_GATES.RECEPTION بالضبط (shared/permissions.ts) — نفس
+// الدور الذي يفتح محطة الاستقبال فعلياً (كاشير/مدير/فنّي المطبعة) يحتاج إنشاء عميلٍ من طلب قناة
+// (واتساب/انستغرام/تيك توك/اتصال) دون رفض FORBIDDEN — كان مفقوداً هنا رغم وجوده في CHANNEL_READ_ROLES
+// وبوّابة محطة الاستقبال، فيرى الموظّف القناة ولا يقدر يحفظ عميلها.
+export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep", "print_operator"], "crm", "FULL");
 export const customersManagerProcedure = moduleProcedure(["manager"], "crm", "FULL");
 
 // CRM هو مالك رحلة العميل؛ تبقى وحدات المبيعات/القنوات/الخزينة مزوّدات أحداث عبر حدود واضحة.
@@ -345,7 +452,26 @@ export const commissionsReadProcedure = protectedProcedure.use(requireModule("co
 //   • AdminRead: قائمة manager/accountant/auditor عبر البوّابة الموحّدة ⇒ الكاشير محجوب
 //     (قالبه READ لا يضعه في القائمة، ولا يعبُر إلا بمنح **صريح** — قرار أدمن واعٍ).
 // الكتابة (إنشاء/تعديل مزوّد أو محفظة أو بطاقة، ونشر السعر) مديرية حصراً — §١١ من وثيقة التصميم.
-export const digitalCardsPosProcedure = branchScopedProcedure.use(requireModule("digital_cards", "READ"));
+/**
+ * Digital-card selling is a RETAIL-POS operation. A print/reception cashier
+ * may share the cashier base template (including digital_cards=READ), but must
+ * not be able to invoke the retail sale endpoints directly.
+ */
+const requireDigitalCardsRetailStation = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
+    | Record<string, AccessLevel>
+    | null
+    | undefined;
+  if (!canUseStation("RETAIL", ctx.user.role, override)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+export const digitalCardsPosProcedure = branchScopedProcedure
+  .use(requireModule("digital_cards", "READ"))
+  .use(requireDigitalCardsRetailStation);
 export const digitalCardsAdminReadProcedure = branchScopedProcedure.use(
   requireModuleGate(["manager", "accountant", "auditor"], "digital_cards", "READ")
 );

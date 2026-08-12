@@ -18,19 +18,24 @@
  * لا تستخدم parseFloat/Number على الأموال (الجمع داخل calcTotals + decimal.js).
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useRoute } from "wouter";
 
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
-import { D, round2, toBase } from "@/lib/money";
+import { confirm } from "@/lib/confirm";
+import { D, round2, toBase, fmt } from "@/lib/money";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { Textarea } from "@/components/ui/textarea";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
-import { AlertTriangle, Lock } from "lucide-react";
+import { AlertTriangle, Lock, FileWarning } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -64,6 +69,13 @@ const INVOICE_TYPE = "SALE" as const;
 /** موافقة مدير لتجاوز حدّ الائتمان (بريد + كلمة مرور). */
 type Approval = { email: string; password: string };
 
+/** تنسيق تاريخ (بقيم UTC — التواريخ يومية مخزَّنة عند منتصف ليل UTC) إلى YYYY-MM-DD أو "". */
+function toYmdUtc(v: unknown): string {
+  const d = v instanceof Date ? v : v ? new Date(v as string) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
 export default function SalesInvoiceNew() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
@@ -76,6 +88,74 @@ export default function SalesInvoiceNew() {
     undefined,
     () => createInitialState(INVOICE_TYPE, defaultBranchId)
   );
+
+  // ── تصحيح الفاتورة (0168) — نفس شاشة البيع في وضع التصحيح (نمط المعيار: مسار + query + هيدرة مرّة) ──
+  // كلّ ما يخصّ التصحيح محجوبٌ خلف isCorrection ⇒ تدفّق الإنشاء يبقى مطابقاً حرفاً بحرف حين لا تصحيح.
+  const [corrMatch, corrParams] = useRoute("/invoices/:id/correct");
+  const correctInvoiceId = corrMatch && corrParams?.id ? Number(corrParams.id) : null;
+  const isCorrection = correctInvoiceId != null && correctInvoiceId > 0;
+  const original = trpc.sales.get.useQuery({ invoiceId: correctInvoiceId ?? 0 }, { enabled: isCorrection });
+  const originalPaid = useMemo(() => D(original.data?.paidAmount ?? "0"), [original.data?.paidAmount]);
+  const [reason, setReason] = useState("");
+  const [overpayHandling, setOverpayHandling] = useState<"CREDIT" | "CASH_REFUND">("CASH_REFUND");
+  const [collectNow, setCollectNow] = useState("");
+  const correctionHydratedRef = useRef(false);
+  // مُعرَّف هنا (لا لاحقاً) كي تتمكّن هيدرة التصحيح من تثبيته ⇒ لا تطمس تهيئةُ الضريبة الافتراضية ضريبةَ الأصل.
+  const taxDefaultsAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!isCorrection || correctionHydratedRef.current || !original.data) return;
+    const d = original.data;
+    if (d.customerId) dispatch({ type: "SET_ENTITY", id: d.customerId });
+    if (d.priceTier) dispatch({ type: "SET_FIELD", field: "tier", value: d.priceTier as PriceTier });
+    // خصمٌ إجماليّ (كمبلغ صريح — الأصل يخزّنه مبلغاً لا نسبة).
+    if (D(d.discountAmount ?? "0").gt(0)) {
+      dispatch({ type: "SET_FIELD", field: "globalDiscountType", value: "amount" });
+      dispatch({ type: "SET_FIELD", field: "globalDiscount", value: String(d.discountAmount) });
+    }
+    // ضريبةٌ على مستوى الفاتورة — نحمِلها من الأصل ونُثبّت الرايةَ كي لا تطمسها تهيئةُ الافتراضيات.
+    if (D(d.taxRatePercent ?? "0").gt(0) || D(d.taxAmount ?? "0").gt(0)) {
+      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: true });
+      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: String(d.taxRatePercent ?? "0") });
+    } else {
+      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: false });
+    }
+    taxDefaultsAppliedRef.current = true; // منع useEffect الافتراضيات من إعادة الكتابة فوق ضريبة الأصل.
+    // أجرة التوصيل / التوصيل المجّانيّ (إفصاح) — تُحمَل كما الأصل.
+    if (d.deliveryFree) {
+      dispatch({ type: "SET_FIELD", field: "shippingFree", value: true });
+      if (D(d.deliveryWaivedAmount ?? "0").gt(0))
+        dispatch({ type: "SET_FIELD", field: "shipping", value: String(d.deliveryWaivedAmount) });
+    } else if (D(d.deliveryFee ?? "0").gt(0)) {
+      dispatch({ type: "SET_FIELD", field: "shipping", value: String(d.deliveryFee) });
+    }
+    if (d.notes) dispatch({ type: "SET_FIELD", field: "notes", value: d.notes });
+    const dueYmd = toYmdUtc(d.dueDate);
+    if (dueYmd) dispatch({ type: "SET_FIELD", field: "dueDate", value: dueYmd });
+    // نفس تحويل duplicateInvoice: بنود الفاتورة → InvoiceLine حرفياً (الكمية كاملةً — مصدر التصحيح).
+    dispatch({
+      type: "ADD_ITEMS",
+      items: d.items.map((it): InvoiceLine => ({
+        productId: it.productId ?? 0,
+        variantId: it.variantId,
+        productUnitId: it.productUnitId ?? 0,
+        name: it.productName ?? "",
+        sku: it.sku ?? "",
+        barcode: null,
+        unit: it.unitName ?? "",
+        qty: D(it.quantity).toNumber(),
+        conversionFactor: D(it.quantity).gt(0) ? D(it.baseQuantity).div(D(it.quantity)).toString() : "1",
+        stockBase: 0,
+        price: it.unitPrice,
+        costBase: "0",
+        discount: D(it.discountAmount ?? 0).gt(0) ? String(it.discountAmount) : "0",
+        discountType: "amount",
+        note: "",
+        ...(it.isGift ? { isGift: true as const } : {}),
+      })),
+    });
+    correctionHydratedRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCorrection, original.data]);
 
   // بذرة «نسخ لفاتورة جديدة» (من قائمة الفواتير): sessionStorage تُقرأ مرة واحدة عند التركيب
   // ثم تُحذف فوراً (read-once) كي لا تُزرع مجدداً عند العودة للصفحة. الأسطر بشكل InvoiceLine حرفياً.
@@ -112,11 +192,10 @@ export default function SalesInvoiceNew() {
   }, [me.data?.branchId]);
 
   // تهيئة تفعيل/نسبة الضريبة من إعدادات النظام (مرّة واحدة فقط، فاتورة جديدة) — يبقى المستخدم
-  // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم).
-  const taxDefaultsAppliedRef = useRef(false);
+  // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم). المرجع مُعرَّف أعلاه.
   const taxSettingsQuery = trpc.system.getTaxSettings.useQuery();
-  // «وضع الافتتاح» (ش٥): هذه الشاشة تمرّ بقناة POS نفسها (sourceType الافتراضي) ⇒ بيعٌ مسدّد بالكامل نقداً أو بالبطاقة
-  // منها يستفيد من السالب المشروط أيضاً — لافتة توضيحية كي لا يبدو ذلك سلوكاً غريباً.
+  // «وضع الافتتاح» (ش٥ + توسعة ١٠/٨): هذه الشاشة تمرّ بقناة POS نفسها ⇒ يستفيد من السالب المشروط
+  // بيعُها المسدَّد كاملاً نقداً/بطاقةً **وكذلك الآجل لعميلٍ محدَّد** (يُسجَّل ذمّةً) — لافتة توضيحية.
   const openingModeQuery = trpc.system.getOpeningMode.useQuery(undefined, { staleTime: 60_000 });
   useEffect(() => {
     if (!taxDefaultsAppliedRef.current && taxSettingsQuery.data) {
@@ -202,6 +281,23 @@ export default function SalesInvoiceNew() {
     },
   });
 
+  // تصحيح الفاتورة (0168): إعادة إصدارٍ مصحّحة عبر sales.reissue (عكس + repost خادميّ ذرّيّ).
+  const reissue = trpc.sales.reissue.useMutation({
+    onSuccess: (r) => {
+      utils.sales.list.invalidate();
+      notify.ok("تم تصحيح الفاتورة", `صدرت فاتورةٌ مصحّحة ${r.correctedInvoiceNumber}${Number(r.overpay) > 0 ? ` — فرقٌ زائد ${r.overpay} (${r.overpayHandled === "CREDIT" ? "رصيد دائن" : "استرداد نقديّ"})` : ""}`);
+      setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+      navigate(`/invoices/${r.correctedInvoiceId}`);
+    },
+    onError: (e) => {
+      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير"))) {
+        setCreditPrompt(e.message);
+        return;
+      }
+      notify.err(e);
+    },
+  });
+
   /**
    * المبلغ المدفوع نقداً وفق شروط الدفع:
    *  • نقداً (CASH): القيمة المُدخَلة، أو الإجمالي الكامل إن تُركت فارغة.
@@ -231,10 +327,30 @@ export default function SalesInvoiceNew() {
         variantId: l.variantId,
         productUnitId: l.productUnitId,
         quantity: D(l.qty).toString(),
-        unitPriceOverride: round2(D(l.price)).toFixed(2),
-        discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
-        discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+        // الهدية: نُعلن النيّة فقط ولا نُرسل سعراً/خصماً — الخادم يُصفّرهما بنفسه ويُرحّل التكلفة
+        // قيدَ GIFT_OUT. إرسال سعرٍ هنا يفتح باب «هديةٍ بسعر» لو انحرفت الشاشة يوماً.
+        ...(l.isGift
+          ? { isGift: true as const }
+          : {
+              unitPriceOverride: round2(D(l.price)).toFixed(2),
+              discountPercent: l.discountType === "percent" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+              discountAmount: l.discountType === "amount" ? round2(D(l.discount || "0")).toFixed(2) : undefined,
+            }),
       })),
+      // أجرة التوصيل (0152) — ثلاث حالات صريحة لا اثنتان:
+      //   مدفوع  ⇒ deliveryFee > 0 (إيرادُ شحنٍ يدخل الإجمالي)
+      //   مجّانيّ ⇒ deliveryFree=true + القيمة المُتنازَل عنها (بلا إيراد ولا إجمالي)
+      //   بلا توصيل ⇒ لا شيء يُرسَل إطلاقاً
+      ...(state.shippingFree
+        ? {
+            deliveryFree: true as const,
+            ...(D(state.shipping || "0").gt(0)
+              ? { deliveryWaivedAmount: round2(D(state.shipping)).toFixed(2) }
+              : {}),
+          }
+        : D(totals.shipping).gt(0)
+          ? { deliveryFee: totals.shipping }
+          : {}),
       // خصم إجمالي كمبلغ (calcTotals يحوّل النسبة إلى مبلغ). يُرسَل فقط إن كان موجباً.
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
@@ -253,9 +369,57 @@ export default function SalesInvoiceNew() {
     };
   }
 
+  /** حمولة تصحيح الفاتورة (sales.reissue): تعيد استعمال أسطر buildPayload؛ المدفوع سابقاً محمولٌ
+   *  خادمياً، فـadditionalPayment للنقص المُحصَّل الآن وoverpayHandling للفائض. */
+  function buildCorrectionPayload(approval?: Approval) {
+    const base = buildPayload(approval);
+    const diff = D(totals.grandTotal).minus(originalPaid); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
+    const collect = D(collectNow.trim() || "0");
+    // أجرة التوصيل تُحسَب هنا (لا من `base` الذي نوعُه اتحادٌ بسبب حقول التوصيل الشرطية).
+    // إفصاح «التوصيل المجّانيّ» لا يُحمَل في تصحيح v1 (علَمٌ إفصاحيّ لا ماليّ).
+    const deliveryFee =
+      !state.shippingFree && D(totals.shipping).gt(0) ? totals.shipping : null;
+    return {
+      originalInvoiceId: correctInvoiceId!,
+      customerId: base.customerId ?? null,
+      priceTier: base.priceTier,
+      lines: base.lines,
+      invoiceDiscount: base.invoiceDiscount ?? null,
+      deliveryFee,
+      taxRatePercent: base.taxRatePercent,
+      dueDate: state.dueDate || null,
+      notes: base.notes ?? null,
+      reason: reason.trim(),
+      clientRequestId,
+      ...(diff.gt(0) && collect.gt(0)
+        ? { additionalPayment: { amount: round2(collect).toFixed(2), method: state.paymentMethod } }
+        : {}),
+      ...(diff.lt(0) ? { overpayHandling } : {}),
+      ...(approval ? { managerApproval: approval } : {}),
+    };
+  }
+
+  /** تحقّق التصحيح — رسالة عربية أو null. */
+  function validateCorrection(): string | null {
+    if (reason.trim().length < 3) return "اكتب سبب التصحيح (٣ أحرف على الأقل).";
+    const diff = D(totals.grandTotal).minus(originalPaid);
+    const collect = D(collectNow.trim() || "0");
+    if (diff.gt(0)) {
+      if (collect.gt(diff)) return `المُحصَّل الآن (${collect.toFixed(2)}) يتجاوز الفرق المستحقّ (${diff.toFixed(2)}).`;
+      if (diff.minus(collect).gt(0) && !state.entityId) return "المتبقّي بعد المُحصَّل الآن ذمّة — اختر عميلاً أو حصّل الفرق كاملاً.";
+    }
+    if (diff.lt(0) && overpayHandling === "CREDIT" && !state.entityId) return "الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو اختر استرداداً نقدياً.";
+    return null;
+  }
+
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
+    // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
+    // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
+    if (state.shippingFree && !D(state.shipping || "0").gt(0)) {
+      return "أدخِل قيمة أجرة التوصيل قبل جعله مجّانياً — تُطبَع للزبون وتُحصى في التقارير.";
+    }
     for (const l of state.items) {
       if (!D(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
       if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;
@@ -264,12 +428,15 @@ export default function SalesInvoiceNew() {
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
     }
     // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
-    const paid = D(computePaidStr());
-    const remaining = D(totals.grandTotal).minus(paid);
-    if (remaining.gt(0) && !state.entityId)
-      return "هناك مبلغ آجل (ذمة) — اختر عميلاً لتسجيل الذمة عليه.";
-    if (remaining.lt(0) && state.paymentMethod !== "CASH")
-      return "الدفع غير النقدي لا يمكن أن يتجاوز إجمالي الفاتورة.";
+    // في وضع التصحيح: الدفع محمولٌ خادمياً وتحقّقه في validateCorrection ⇒ نتخطّى منطق الدفع هنا.
+    if (!isCorrection) {
+      const paid = D(computePaidStr());
+      const remaining = D(totals.grandTotal).minus(paid);
+      if (remaining.gt(0) && !state.entityId)
+        return "هناك مبلغ آجل (ذمة) — اختر عميلاً لتسجيل الذمة عليه.";
+      if (remaining.lt(0) && state.paymentMethod !== "CASH")
+        return "الدفع غير النقدي لا يمكن أن يتجاوز إجمالي الفاتورة.";
+    }
     if (D(totals.grandTotal).lt(0)) return "الإجمالي النهائي لا يمكن أن يكون سالباً.";
     // سياسة #14: لا نسبة ضريبة سالبة (الخادم يرفضها أيضاً — نمنعها هنا برسالة أوضح).
     if (state.taxEnabled && D(state.taxRatePercent || "0").lt(0))
@@ -297,7 +464,13 @@ export default function SalesInvoiceNew() {
       return;
     }
     try {
-      create.mutate(buildPayload(approval));
+      if (isCorrection) {
+        const cErr = validateCorrection();
+        if (cErr) { notify.warn(cErr); return; }
+        reissue.mutate(buildCorrectionPayload(approval));
+      } else {
+        create.mutate(buildPayload(approval));
+      }
     } catch {
       releaseReservedPrintWindow();
       printAfterSaveRef.current = false;
@@ -377,7 +550,7 @@ export default function SalesInvoiceNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
       case "paste": {
         const items = takeInvoiceItems();
@@ -397,11 +570,24 @@ export default function SalesInvoiceNew() {
     }
   }
 
+  // حارس فقد البيانات (نمط ExpenseNew.tsx): بند واحد فأكثر أو عميل مُحدَّد أو ملاحظة مكتوبة تكفي
+  // لاعتبار الفاتورة "قيد الإدخال" — يعترض تحديث/إغلاق التبويب فقط (beforeunload)، أما Esc/F12
+  // الداخليان فيُحرَسان أدناه بتأكيدٍ صريح (وليس هذا الهوك، الذي لا يعترض تنقّل SPA الداخلي).
+  const isDirty = useMemo(
+    () => state.items.length > 0 || state.entityId != null || state.notes.trim() !== "",
+    [state.items, state.entityId, state.notes],
+  );
+  useUnsavedGuard(isDirty);
+
   /* ─── اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc) ───────────────────── */
   const containerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) =>
       !!el && (el as HTMLElement).matches?.("input, textarea, select, [contenteditable='true']");
+    // هل حوار تأكيدٍ (ConfirmHost) مفتوح فعلاً؟ — يمنع إعادة إطلاق تأكيد «مسح/مغادرة» جديد أثناء
+    // إغلاق تأكيدٍ سابق بنفس ضغطة Esc (نمط anyOverlayOpen في useSaveShortcuts.ts).
+    const confirmDialogOpen = () =>
+      typeof document !== "undefined" && !!document.querySelector('[role="alertdialog"][data-state="open"]');
 
     const onKey = (e: KeyboardEvent) => {
       // أثناء فتح حوار الموافقة: Esc يغلقه فقط.
@@ -438,24 +624,40 @@ export default function SalesInvoiceNew() {
       }
       if (e.key === "F12") {
         e.preventDefault();
-        handleReset();
+        if (confirmDialogOpen()) return;
+        if (!isDirty) { handleReset(); return; }
+        void confirm({
+          variant: "warning",
+          title: "مسح الفاتورة الحالية",
+          description: "توجد بيانات لم تُحفَظ في هذه الفاتورة (بنود/عميل/ملاحظات). المسح سيُفقدها نهائياً. متابعة؟",
+          confirmText: "مسح",
+        }).then((ok) => { if (ok) handleReset(); });
         return;
       }
       if (e.key === "Escape" && !isTypingTarget(e.target) && !bulkOpen) {
         e.preventDefault();
-        navigate("/invoices");
+        if (confirmDialogOpen()) return;
+        if (!isDirty) { navigate("/invoices"); return; }
+        void confirm({
+          variant: "warning",
+          title: "مغادرة الفاتورة الحالية",
+          description: "توجد بيانات لم تُحفَظ في هذه الفاتورة (بنود/عميل/ملاحظات). المغادرة ستُفقدها. متابعة؟",
+          confirmText: "مغادرة",
+        }).then((ok) => { if (ok) navigate("/invoices"); });
         return;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, bulkOpen, creditPrompt, create.isPending]);
+  }, [state, bulkOpen, creditPrompt, create.isPending, isDirty]);
 
   const typeInfo = INVOICE_TYPES[INVOICE_TYPE];
 
+  // بندٌ بسعر صفر **غير** موسومٍ هديةً = خطأ إدخال (سعر ناقص) يستحقّ التنبيه. أمّا الهدية فمجّانيّتها
+  // مقصودة ومصنَّفة (تُرحَّل تكلفتها مصروفَ هدايا) ⇒ لا تُنذَر.
   const hasZeroPriceLine = useMemo(
-    () => state.items.some((l) => D(l.price).lte(0)),
+    () => state.items.some((l) => !l.isGift && D(l.price).lte(0)),
     [state.items]
   );
 
@@ -463,7 +665,11 @@ export default function SalesInvoiceNew() {
     <div ref={containerRef} dir="rtl" className="flex h-full flex-col gap-3">
       {/* شريط العنوان */}
       <PageHeader
-        title={`${typeInfo.label} متقدّمة`}
+        title={
+          isCorrection
+            ? `تصحيح الفاتورة${original.data?.invoiceNumber ? ` ${original.data.invoiceNumber}` : ""}`
+            : `${typeInfo.label} متقدّمة`
+        }
         icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-6 text-primary" />; })()}
         actions={
           <div className="flex items-center gap-3 text-xs">
@@ -488,8 +694,8 @@ export default function SalesInvoiceNew() {
         <div className="flex items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
           <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
           <span>
-            وضع الافتتاح فعّال حتى نهاية يوم {openingModeQuery.data.endsAtYmd} — البيع المسدّد بالكامل نقداً أو بالبطاقة
-            لصنف غير مجرود افتتاحياً يُسجَّل ولو نفد رصيده (ينزل بالسالب)؛ الآجل وغير النقدي صارمان.
+            وضع الافتتاح فعّال حتى نهاية يوم {openingModeQuery.data.endsAtYmd} — منتجٌ غير مجرود افتتاحياً يُسجَّل ولو نفد
+            رصيده (ينزل بالسالب): بسدادٍ كامل نقداً/بطاقةً، أو آجلاً لعميلٍ محدَّد (يُسجَّل ذمّةً كاملة). البيع بلا عميلٍ يبقى صارماً.
           </span>
         </div>
       )}
@@ -511,6 +717,9 @@ export default function SalesInvoiceNew() {
             tier={state.tier}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
+            /* هدايا الفاتورة (0149): مفتاح «هدية» لكلّ سطر — يُصفّر قيمته في الفاتورة وتُرحَّل
+               تكلفته مصروفَ هدايا في الدفتر (قيد GIFT_OUT) لا خسارةَ بيعٍ مبهمة. */
+            allowGiftLines
             /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
             taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
@@ -528,20 +737,38 @@ export default function SalesInvoiceNew() {
         </div>
 
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          {/* الشحن/المصاريف الأخرى غير مدعومة في sales.create ⇒ نُخفيها لئلّا تُضخّم
-              الإجمالي المعروض و«ادفع الكل» بمبلغ لا يُحفظ (خسارة مالية صامتة). */}
+          {/* أجرة التوصيل صارت مدعومة في sales.create (تُحفَظ في `invoices.deliveryFee` وتدخل
+              قيد SALE إيراداً بلا تكلفة، ويعكسها المرتجع الكامل) ⇒ أُظهرت مع مفتاح «مجاني».
+              «مصاريف أخرى» تبقى مخفيّة: الخادم لا يحفظها، وإظهارها يُضخّم الإجمالي المعروض
+              و«ادفع الكل» بمبلغٍ لا يُحفَظ (خسارة مالية صامتة). */}
           <TotalsPanel
+            shippingLabel="أجرة التوصيل"
+            allowFreeShipping
             items={state.items}
             state={state}
             dispatch={dispatch}
-            showShipping={false}
+            showShipping
             showOtherExpenses={false}
             showTaxToggle
           />
+          {isCorrection && (
+            <CorrectionPanel
+              original={original.data ?? null}
+              originalPaid={originalPaid}
+              grandTotal={totals.grandTotal}
+              reason={reason}
+              setReason={setReason}
+              collectNow={collectNow}
+              setCollectNow={setCollectNow}
+              overpayHandling={overpayHandling}
+              setOverpayHandling={setOverpayHandling}
+              hasCustomer={state.entityId != null}
+            />
+          )}
           <ActionButtons
             invoiceType={INVOICE_TYPE}
             items={state.items}
-            saving={create.isPending}
+            saving={isCorrection ? reissue.isPending : create.isPending}
             pasteAvailable={pasteAvailable}
             onAction={handleAction}
           />
@@ -594,14 +821,140 @@ export default function SalesInvoiceNew() {
             <Button
               type="button"
               variant="destructive"
-              disabled={create.isPending}
+              disabled={isCorrection ? reissue.isPending : create.isPending}
               onClick={handleApprove}
             >
-              {create.isPending ? "جارٍ الاعتماد…" : "اعتماد وإتمام البيع"}
+              {(isCorrection ? reissue.isPending : create.isPending)
+                ? "جارٍ الاعتماد…"
+                : isCorrection
+                  ? "اعتماد وإتمام التصحيح"
+                  : "اعتماد وإتمام البيع"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/** سطر ملخّصٍ صغير (وصف ⟷ قيمة) داخل لوحة التصحيح. */
+function CorrRow({ label, value, className }: { label: string; value: string; className?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={className ?? "font-semibold tabular-nums"} dir="ltr">{value}</span>
+    </div>
+  );
+}
+
+interface CorrectionPanelProps {
+  original: { invoiceNumber?: string | null } | null;
+  originalPaid: ReturnType<typeof D>;
+  grandTotal: string;
+  reason: string;
+  setReason: (v: string) => void;
+  collectNow: string;
+  setCollectNow: (v: string) => void;
+  overpayHandling: "CREDIT" | "CASH_REFUND";
+  setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void;
+  hasCustomer: boolean;
+}
+
+/**
+ * لوحة تصحيح الفاتورة — تظهر فقط في وضع التصحيح (isCorrection). تعرض السبب الإلزاميّ، وفرق
+ * المال بين المدفوع سابقاً وإجمالي التصحيح، وتفرّع حسب اتجاه الفرق:
+ *   نقص (الإجمالي > المدفوع) ⇒ «المُحصَّل الآن» + تنبيه إن بقي جزءٌ ذمّةً بلا عميل.
+ *   فائض (الإجمالي < المدفوع) ⇒ خيار «استرداد نقديّ» أو «رصيد دائن» (الأخير يلزمه عميل).
+ * لا منطقَ ماليّ هنا — كلّه عرضٌ وتحقّقٌ عميليّ يُماثل validateCorrection؛ الخادم هو الحكم.
+ */
+function CorrectionPanel({
+  original,
+  originalPaid,
+  grandTotal,
+  reason,
+  setReason,
+  collectNow,
+  setCollectNow,
+  overpayHandling,
+  setOverpayHandling,
+  hasCustomer,
+}: CorrectionPanelProps) {
+  const diff = D(grandTotal).minus(originalPaid); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
+  const isShort = diff.gt(0);
+  const isOver = diff.lt(0);
+  const collect = D(collectNow || "0");
+  const remainingCredit = isShort ? diff.minus(collect) : D("0");
+
+  return (
+    <div dir="rtl" className="space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-3 text-sm">
+      <div className="flex items-center gap-2 font-bold text-primary">
+        <FileWarning aria-hidden className="size-4 shrink-0" />
+        <span>تصحيح موثَّق{original?.invoiceNumber ? ` — ${original.invoiceNumber}` : ""}</span>
+      </div>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        يُلغى الأصل بالكامل (عكسٌ دفتريّ) وتُصدَر فاتورةٌ جديدةٌ مربوطةٌ بالتعديلات، والأصل يُوسَم «مُصحَّحة».
+      </p>
+
+      <div className="space-y-1">
+        <Label className="text-xs font-semibold">
+          سبب التصحيح <span className="text-destructive">*</span>
+        </Label>
+        <Textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={2}
+          placeholder="مثال: صُحِّحت الكمية بعد مراجعة الطلب"
+          className="text-sm"
+        />
+      </div>
+
+      <div className="space-y-1 rounded-md border bg-card p-2 text-xs">
+        <CorrRow label="مدفوعٌ على الأصل" value={fmt(originalPaid.toString())} />
+        <CorrRow label="إجمالي بعد التصحيح" value={fmt(grandTotal)} />
+        <div className="my-1 h-px bg-border" />
+        {diff.isZero() ? (
+          <div className="font-semibold text-money-positive">لا فرق ماليّ — التصحيح متوازن.</div>
+        ) : isShort ? (
+          <CorrRow label="فرقٌ مستحقّ (نقص)" value={fmt(diff.toString())} className="font-bold tabular-nums text-money-negative" />
+        ) : (
+          <CorrRow label="فائضٌ للزبون" value={fmt(diff.abs().toString())} className="font-bold tabular-nums text-money-positive" />
+        )}
+      </div>
+
+      {isShort && (
+        <div className="space-y-1">
+          <Label className="text-xs font-semibold">المُحصَّل الآن</Label>
+          <MoneyInput value={collectNow} onChange={setCollectNow} placeholder="0" ariaLabel="المبلغ المُحصَّل الآن" />
+          {remainingCredit.gt(0) && (
+            <p className={`text-xs ${hasCustomer ? "text-muted-foreground" : "text-destructive"}`}>
+              {hasCustomer
+                ? `المتبقّي ${fmt(remainingCredit.toString())} يُسجَّل ذمّةً على العميل.`
+                : `المتبقّي ${fmt(remainingCredit.toString())} ذمّة — اختر عميلاً أو حصِّل الفرق كاملاً.`}
+            </p>
+          )}
+        </div>
+      )}
+
+      {isOver && (
+        <div className="space-y-1.5">
+          <Label className="text-xs font-semibold">معالجة الفائض</Label>
+          <RadioGroup
+            value={overpayHandling}
+            onValueChange={(v) => setOverpayHandling(v as "CREDIT" | "CASH_REFUND")}
+            className="gap-2"
+          >
+            <label className="flex cursor-pointer items-center gap-2 text-xs">
+              <RadioGroupItem value="CASH_REFUND" /> استرداد نقديّ من الدرج
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 text-xs">
+              <RadioGroupItem value="CREDIT" /> رصيدٌ دائنٌ للعميل
+            </label>
+          </RadioGroup>
+          {overpayHandling === "CREDIT" && !hasCustomer && (
+            <p className="text-xs text-destructive">الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو استرداداً نقدياً.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

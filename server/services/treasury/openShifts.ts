@@ -10,6 +10,7 @@ export interface OpenShiftCard {
   branchName: string;
   userId: number;
   userName: string;
+  shiftType: string;
   openingBalance: string;
   expectedCash: string; // محسوب لحظياً
   cashIn: string;
@@ -38,6 +39,7 @@ export async function getOpenShifts(
         b.name AS branchName,
         s.userId AS userId,
         u.name AS userName,
+        s.shiftType AS shiftType,
         CAST(s.openingBalance AS CHAR) AS openingBalance,
         s.openedAt AS openedAt,
         CAST(COALESCE((
@@ -69,6 +71,7 @@ export async function getOpenShifts(
       branchName: String(r.branchName ?? ""),
       userId: Number(r.userId),
       userName: String(r.userName ?? ""),
+      shiftType: String(r.shiftType ?? "RETAIL"),
       openingBalance: toDbMoney(opening),
       expectedCash: toDbMoney(opening.plus(cIn).minus(cOut)),
       cashIn: toDbMoney(cIn),

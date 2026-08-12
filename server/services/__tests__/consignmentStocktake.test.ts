@@ -6,7 +6,7 @@ import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
 import { createSupplier } from "../supplierService";
 import { computeNetSalesByUser } from "../commissions/base";
-import { approveStocktake, createStocktakeSession, decideStocktakeItem, forceStocktakeReview } from "../stocktakeService";
+import { approveStocktake, approveStocktakeItems, createStocktakeSession, decideStocktakeItem, forceStocktakeReview } from "../stocktakeService";
 
 /**
  * بضاعة الأمانة — ش٤ تحسين: عجز/زيادة الجرد لصنف أمانة (قرار المالك ٥ + design §٢-هـ).
@@ -14,9 +14,9 @@ import { approveStocktake, createStocktakeSession, decideStocktakeItem, forceSto
  *   بلا invoiceId كأنه بِيع بلا إيراد) ⇒ يرفع رصيد المودِع، ويبقى **خارج وعاء العمولة**.
  *   زيادة صنف أمانة = تُستبعَد من قيد OVER (بضاعة المودِع الزائدة ليست ربحنا) بلا استحقاق.
  */
-const actor = { userId: 1, branchId: 1 };
+const actor = { userId: 1, branchId: 1, role: "admin" }; // userId 1 = admin (مُستثنى من SOD الاعتماد)
 const TABLES = [
-  "stocktakeDecisions", "stocktakeCounts", "stocktakeItems", "stocktakeAssignments", "stocktakeSessions",
+  "stocktakeItemReviewEvents", "stocktakeDecisions", "stocktakeCountOperations", "stocktakeCounts", "stocktakeItems", "stocktakeAssignments", "stocktakeSessions",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",
   "consignmentNoteLines", "consignmentNotes",
   "branchStock", "productPrices", "productUnits", "productVariants", "productImages", "products",
@@ -77,6 +77,7 @@ describe("بضاعة الأمانة — عجز/زيادة الجرد (ش٤ تح�
     await insertCount(r.sessionId, variantId, r.assignments[0].assignmentId, 7); // عجز 3 × 400 = 1200
     await forceStocktakeReview(r.sessionId, actor);
     await decideStocktakeItem({ sessionId: r.sessionId, variantId, action: "ADJUST", reason: "LOSS_THEFT" }, actor);
+    await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [variantId] }, actor);
 
     const ok = await approveStocktake(r.sessionId, actor);
     expect(ok.shortExpense).toBe("1200.00"); // خسارة المكتبة كاملةً (لا تُخصم بالاستحقاق)
@@ -118,6 +119,7 @@ describe("بضاعة الأمانة — عجز/زيادة الجرد (ش٤ تح�
     await insertCount(r.sessionId, variantId, r.assignments[0].assignmentId, 13); // زيادة 3
     await forceStocktakeReview(r.sessionId, actor);
     await decideStocktakeItem({ sessionId: r.sessionId, variantId, action: "ADJUST", reason: "ENTRY_ERROR" }, actor);
+    await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [variantId] }, actor);
 
     const ok = await approveStocktake(r.sessionId, actor);
     expect(ok.overGain).toBe("0.00"); // مستبعدة من الربح

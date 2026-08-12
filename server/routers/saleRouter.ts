@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, isNotNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
@@ -7,25 +8,49 @@ import { z } from "zod";
 import {
   customers,
   accountingEntries,
+  auditLogs,
+  deliveryConsignments,
+  deliveryParties,
   invoiceItems,
   invoices,
+  onlineOrders,
   productUnits,
   productVariants,
   products,
   receipts,
   shifts,
+  workOrders,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logger } from "../logger";
 import { users } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
-import { logAudit } from "../services/auditService";
-import { cancelSale, createSale, processPayment } from "../services/saleService";
-import { canSeeCostForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import { logAudit, logAuditTx } from "../services/auditService";
+import { cancelSale, correctSale, createSale, processPayment } from "../services/saleService";
+import { assertNoInTransitConsignment } from "../services/delivery/guards";
+import { canSeeCostForUser, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { withTx } from "../services/tx";
+
+// فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
+// الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
+// الأصلي أيضاً، من دون توسيع كشف فواتير الموظفين الآخرين.
+const workOrderInvoiceCustomer = alias(customers, "workOrderInvoiceCustomer");
+// ١٠/٨ — توصيل قناة المتجر: طلب المتجر بلا إرسالية (عهدته عند تأكيد المندوب) — بدونه كانت
+// فاتورة متجرٍ بيد مندوب تظهر «بلا توصيل» في القائمة والفلتر. جهة الطلب لها alias مستقل.
+const onlineDeliveryParty = alias(deliveryParties, "onlineDeliveryParty");
+// حالة توصيل موحَّدة للعرض/الفلتر: الإرسالية أولاً، وإلا اشتقاق من حالة طلب المتجر المُسنَد.
+const unifiedConsignmentStatus = sql<string | null>`COALESCE(${deliveryConsignments.status},
+  CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN
+    CASE ${onlineOrders.status}
+      WHEN 'SHIPPED' THEN 'DISPATCHED'
+      WHEN 'DELIVERED' THEN 'DELIVERED'
+      WHEN 'CANCELLED' THEN CASE WHEN ${onlineOrders.cancelReason} IS NOT NULL THEN 'RETURNED' END
+    END
+  END)`;
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -146,13 +171,21 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 const lineSchema = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
-  quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)"),
+  // تدقيق ٣/٨: سقف علويّ (١ مليون) — بلا حدّ، كمية بـ٢٠ خانة تفيض MAX_SAFE_INTEGER/BIGINT بعد
+  // ×conversionFactor في convertToBaseQuantity (اتساقٌ مع سقف openingStock). أطول من ٧ خانات صحيحة مرفوض.
+  quantity: z
+    .string()
+    .regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)")
+    .refine((s) => Number(s) > 0 && Number(s) <= 1_000_000, "الكمية خارج المدى المسموح"),
   unitPriceOverride: nonNegMoneyString.optional(),
   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
   discountAmount: nonNegMoneyString.optional(),
   // promotions v2 (٨/٧/٢٦): معرّف العرض الذي عرضه POS للعميل — الخادم يتحقّق (idempotent)
   // ويُخزّن promotionId + promotionDiscount على invoiceItem. إن اختلف عن حلّ الخادم ⇒ يعامل كيدوي.
   promotionId: z.number().int().positive().optional(),
+  // هدايا الفاتورة (0149): وسمُ سطرٍ مُهدىً. الخادم يُصفّر سعره وخصمه بنفسه ويُرحّل تكلفته قيدَ
+  // GIFT_OUT — فالشاشة تُعلن النيّة فقط، ولا تُملي مبلغاً.
+  isGift: z.boolean().optional(),
 });
 
 // مخطط فلترة قائمة المبيعات — مشترك بين list و listSummary (نفس الفلاتر حتماً).
@@ -160,18 +193,37 @@ const lineSchema = z.object({
 // إن مُرّر cursor، يُقيَّد `id < cursor` ويُتجاهل offset؛ وإلّا يبقى OFFSET للتوافق.
 const salesListInput = z
   .object({
-    limit: z.number().default(50),
-    offset: z.number().default(0),
+    // تدقيق ٣/٨: سقف صريح — كانت `z.number()` عارية تصل `.limit()` بلا قصّ (paginateKeyset لا يقصّها)
+    // ⇒ `limit: 1e8` يحاول جلب ملايين الصفوف للذاكرة (DoS)، وقيمة سالبة/عشرية ⇒ خطأ MySQL/500.
+    limit: z.number().int().positive().max(500).default(50),
+    offset: z.number().int().min(0).max(1_000_000).default(0),
     cursor: z.number().int().positive().optional(),
     // فلترة خادمية بالفترة (invoiceDate) والحالة والعميل.
     from: ymd.optional(),
     to: ymd.optional(),
-    status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
+    status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED", "SUPERSEDED"]).optional(),
+    sourceType: z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]).optional(),
+    balanceState: z.enum(["DEPOSIT_DUE", "OUTSTANDING", "UNPAID", "SETTLED"]).optional(),
     customerId: z.number().int().positive().optional(),
     salespersonId: z.number().int().positive().optional(),
+    // فلترة بطريقة الدفع (invoices.paymentMethod — نفس مصدر عمود «طريقة الدفع» في الشاشة).
+    // الحاجة التشغيلية: مطابقة يوم البطاقات مع كشف جهاز الدفع تتطلّب حصر فواتير CARD.
+    // ش٥ (V19): TELECOM في **فلتر القراءة** فقط — الكتابة (create/pay) تبقى بلا رصيد زين
+    // (مقصورٌ على محطة الاستقبال خلف ضوابطها)، لكن فواتيرها تُفلتَر وتُقرأ من هنا.
+    paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]).optional(),
+    // فرع صريح للمرتفعين (admin/manager عابرَي الفروع) — يُفعَّل فقط حين scopedBranchId فارغ؛
+    // غير المرتفع يبقى محصوراً بفرعه مهما أرسل (انظر buildSalesListConds).
+    branchId: z.number().int().positive().optional(),
+    // فلترة بفواتير وردية بعينها — لتحقيق فروقات الوردية النقدية من سجلّ الورديات (Shifts.tsx).
+    shiftId: z.number().int().positive().optional(),
     // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
     // (سقف ٢٠٠) ⇒ فاتورة أقدم تُعطي «لا نتائج» وهي موجودة. خادميّ ⇒ يطال كل المطابق للفلتر.
     q: z.string().trim().min(1).optional(),
+    // فلتر التوصيل (٩/٨): فاتورة COD بيد مندوب كانت تظهر «معلّقة/عميل نقدي» كأي بيع، ولا سبيل
+    // لمحاسبٍ لحصر «فواتير بيد المناديب غير المحصَّلة» من أي شاشة. OPEN=بالطريق، SETTLED=سُلِّمت
+    // أو أُغلقت بشطب موجَّه، RETURNED=أُرجعت، ANY=لها إرسالية، NONE=بلا توصيل.
+    delivery: z.enum(["ANY", "OPEN", "SETTLED", "RETURNED", "NONE"]).optional(),
+    deliveryPartyId: z.number().int().positive().optional(),
   })
   .optional();
 
@@ -182,13 +234,54 @@ type SalesListInput = z.infer<typeof salesListInput>;
 export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null, scopedOwnerId: number | null = null) {
   const conds = [];
   if (scopedBranchId) conds.push(eq(invoices.branchId, scopedBranchId));
-  // عزل الموظف: غير المرتفعين يرون فواتيرهم فقط (createdBy = هم). admin/manager = null = الكل.
-  if (scopedOwnerId != null) conds.push(eq(invoices.createdBy, scopedOwnerId));
+  // فلتر الفرع الصريح — else حتماً: العزل الحاكم (scopedBranchId) مقدَّم دائماً، فلا يستطيع
+  // غير المرتفع توسيع نطاقه بإرسال branchId مغاير (يُتجاهَل مدخله بصمت ويبقى محصوراً بفرعه).
+  else if (input?.branchId) conds.push(eq(invoices.branchId, input.branchId));
+  // عزل الموظف: يرى الموظف فواتيره التي أنشأها، وفواتير أوامر الشغل التي استقبلها
+  // ولو أصدرها/أرسلها لاحقاً كاشير آخر. علاقة workOrders.invoiceId فريدة 1:1، لذلك
+  // لا توسّع هذا الاستثناء إلى أي فاتورة لا تخص طلبه ولا تكرّر صفوف القائمة.
+  // كل مستهلك لهذا الشرط يضم leftJoin(workOrders, workOrders.invoiceId = invoices.id).
+  if (scopedOwnerId != null) {
+    const ownerOrReceptionOrder = or(
+      eq(invoices.createdBy, scopedOwnerId),
+      eq(workOrders.createdBy, scopedOwnerId),
+    );
+    // مدخلا or ثابتان هنا، لكن تعريف Drizzle العام يسمح بقائمة فارغة.
+    conds.push(ownerOrReceptionOrder!);
+  }
   // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
   if (input?.from) conds.push(gte(invoices.invoiceDate, localDayStart(input.from)));
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
+  if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
+  if (input?.paymentMethod) conds.push(eq(invoices.paymentMethod, input.paymentMethod));
+  if (input?.balanceState === "DEPOSIT_DUE") {
+    conds.push(inArray(invoices.sourceType, ["ORDER", "WORKORDER"]));
+    conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+  } else if (input?.balanceState === "OUTSTANDING") {
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  } else if (input?.balanceState === "UNPAID") {
+    conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) = 0`);
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  } else if (input?.balanceState === "SETTLED") {
+    conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) <= 0`);
+    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+  }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+  if (input?.shiftId) conds.push(eq(invoices.shiftId, input.shiftId));
+  // ⚠️ فلترا التوصيل يتطلّبان join على deliveryConsignments **وonlineOrders** في كل مستهلك
+  // لهذه الشروط (list وlistPage وlistSummary) — uq_consignment_invoice + طلبٌ واحد لكل فاتورة
+  // (online-dispatch:{orderId} idempotent) ⇒ leftJoin لا يضاعف الصفوف والمجاميع تبقى صحيحة.
+  // ١٠/٨: قناة المتجر بلا إرسالية — تُشتقّ حالتها من الطلب المُسنَد (unifiedConsignmentStatus).
+  if (input?.delivery === "ANY") conds.push(sql`(${deliveryConsignments.id} IS NOT NULL OR ${onlineOrders.deliveryPartyId} IS NOT NULL)`);
+  else if (input?.delivery === "NONE") conds.push(sql`(${deliveryConsignments.id} IS NULL AND ${onlineOrders.deliveryPartyId} IS NULL)`);
+  else if (input?.delivery === "OPEN") conds.push(sql`${unifiedConsignmentStatus} IN ('DISPATCHED','PARTIAL')`);
+  else if (input?.delivery === "SETTLED") conds.push(sql`${unifiedConsignmentStatus} IN ('DELIVERED','WRITTEN_OFF')`);
+  else if (input?.delivery === "RETURNED") conds.push(sql`${unifiedConsignmentStatus} = 'RETURNED'`);
+  if (input?.deliveryPartyId) conds.push(sql`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId}) = ${input.deliveryPartyId}`);
   // المدير/الأدمن يستطيعان اختيار موظف؛ الموظف العادي يبقى مُجبَراً على نفسه.
   if (scopedOwnerId == null && input?.salespersonId) conds.push(eq(invoices.createdBy, input.salespersonId));
   if (input?.q) {
@@ -219,7 +312,18 @@ export const saleRouter = router({
         lines: z.array(lineSchema).min(1),
         invoiceDiscount: z.string().optional(),
         taxRatePercent: z.string().optional(),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        // أجرة التوصيل: إيرادُ شحنٍ بلا تكلفةٍ ولا مخزون، يدخل إجمالي الفاتورة ويُعكَس كاملاً عند
+        // الإرجاع الكامل (`returnService`). كان المحرّك يدعمه (`createSale`) بينما الراوتر لا يقبله،
+        // فبقيت خانة الشحن مخفيّةً في شاشة الفاتورة المتقدّمة. «توصيل مجاني» = صفر (أو تركُه فارغاً).
+        deliveryFee: nonNegMoneyString.optional(),
+        // إفصاح التوصيل المجّاني (0152): يميّز «أُهديت أجرته» عن «بلا توصيل». بلا أثر ماليّ.
+        deliveryFree: z.boolean().optional(),
+        deliveryWaivedAmount: nonNegMoneyString.optional(),
+        payment: z.object({
+          amount: positiveMoneyString,
+          method,
+          reference: z.string().trim().min(1).max(100).optional(),
+        }).optional(),
         // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
         // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
@@ -273,6 +377,9 @@ export const saleRouter = router({
             if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
             // SALES-01/02: أثر تدقيقي صريح للبيع تحت التكلفة (لا يُكتفى بعدّ الأسطر).
             if (res.priceOverride) await logAudit(ctx, { action: "sale.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
+            // هدايا الفاتورة (0149): أثرٌ تدقيقيّ صريح — مَن أهدى وبأيّ فاتورة وبكم **تكلفة** (لا سعر،
+            // فالسعر صفر). نظير `gifts.outbound` في سند الهدية المستقلّ ⇒ الإهداء من الشاشتين مُتعقَّب.
+            if (res.giftCost) await logAudit(ctx, { action: "sale.gift", entityType: "invoice", entityId: res.invoiceId, newValue: { giftCost: res.giftCost, byRole: ctx.user.role, approvedByUserId: priceOverrideApprovedBy } });
             // «وضع الافتتاح» (ش٢): أثر تدقيقي لكل بيعٍ أنزل صنفاً تحت الصفر — يقع مرّة واحدة على
             // المحاولة الفائزة (replay لا يعيد negativeDips). مصدر الحقيقة الدائم = حركة المخزون بملاحظتها.
             if (res.negativeDips?.length) await logAudit(ctx, { action: "sale.openingNegative", entityType: "invoice", entityId: res.invoiceId, newValue: { dips: res.negativeDips } });
@@ -302,9 +409,13 @@ export const saleRouter = router({
   pay: salesCashierProcedure
     .input(z.object({
       // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
-      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, shiftId: z.number().int().positive().optional(),
+      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, reference: z.string().trim().max(100).nullish(), shiftId: z.number().int().positive().optional(),
       // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
       clientRequestId: z.string().min(1).max(80).optional(),
+    }).superRefine((input, ctx) => {
+      if (input.method !== "CASH" && !input.reference?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
     }))
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُرفض دفعه على فاتورة فرع آخر (منع IDOR).
@@ -331,7 +442,14 @@ export const saleRouter = router({
       }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+          // حارس «الإرسالية بالطريق» (مراجعة عدائية ٩/٨): كان في مسار الاستقبال وحده بينما هذه
+          // النقطة — الباب الثاني لنفس الفاتورة — تقبل تسديداً كاونترياً لفاتورةٍ كامل متبقّيها
+          // عهدةُ COD بيد مندوب ⇒ عهدة شبح لا مخرج لها إلا شطبٌ يزوّر خسارة. داخل preInsertCheck
+          // (بعد قفل الفاتورة FOR UPDATE) لنفس علّة TOCTOU الموثّقة في delivery/guards.ts.
+          const res = await processPayment(
+            { ...input, enforceBranchId, preInsertCheck: (tx) => assertNoInTransitConsignment(tx, input.invoiceId) },
+            { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role },
+          );
           await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
           return res;
         } catch (e: any) {
@@ -341,6 +459,299 @@ export const saleRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الدفعة (تكرار)" });
+    }),
+
+  // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
+  // /simplify ٣٠/٦: list = listPage().rows ⇒ كاتب واحد للاستعلام، صفر تَكرار.
+  correct: salesManagerProcedure
+    .input(
+      z.object({
+        invoiceId: z.number().int().positive(),
+        notes: z.string().max(5_000).optional(),
+        dueDate: ymd.nullable().optional(),
+        receiptMethods: z
+          .array(
+            z.object({
+              receiptId: z.number().int().positive(),
+              method,
+            }),
+          )
+          .max(50)
+          .optional(),
+        reason: z.string().trim().min(3, "اكتب سبب التعديل").max(500),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      return withTx(async (tx) => {
+        const inv = (
+          await tx
+            .select()
+            .from(invoices)
+            .where(eq(invoices.id, input.invoiceId))
+            .for("update")
+            .limit(1)
+        )[0];
+        if (!inv)
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "الفاتورة غير موجودة",
+          });
+
+        const invoiceReceipts = await tx
+          .select({
+            id: receipts.id,
+            paymentMethod: receipts.paymentMethod,
+            cashBucket: receipts.cashBucket,
+            shiftId: receipts.shiftId,
+            status: receipts.status,
+          })
+          .from(receipts)
+          .where(eq(receipts.invoiceId, input.invoiceId))
+          .for("update");
+
+        const requestedMethods = new Map<number, z.infer<typeof method>>();
+        for (const receipt of input.receiptMethods ?? []) {
+          if (requestedMethods.has(receipt.receiptId)) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "تكرر سند الدفع في طلب التعديل",
+            });
+          }
+          requestedMethods.set(receipt.receiptId, receipt.method);
+        }
+        const receiptIds = new Set(
+          invoiceReceipts.map((receipt) => Number(receipt.id)),
+        );
+        for (const receiptId of Array.from(requestedMethods.keys())) {
+          if (!receiptIds.has(receiptId)) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message: "سند الدفع لا يتبع هذه الفاتورة",
+            });
+          }
+        }
+
+        const oldFields = {
+          notes: inv.notes ?? null,
+          dueDate: inv.dueDate ? String(inv.dueDate).slice(0, 10) : null,
+          paymentMethod: inv.paymentMethod ?? null,
+          receipts: invoiceReceipts.map((receipt) => ({
+            receiptId: Number(receipt.id),
+            method: receipt.paymentMethod,
+            cashBucket: receipt.cashBucket,
+          })),
+        };
+
+        const nextNotes =
+          input.notes === undefined
+            ? (inv.notes ?? null)
+            : input.notes.trim() || null;
+        const nextDueDate =
+          input.dueDate === undefined
+            ? inv.dueDate
+              ? String(inv.dueDate).slice(0, 10)
+              : null
+            : input.dueDate;
+        const nextReceipts = invoiceReceipts.map((receipt) => ({
+          ...receipt,
+          nextMethod:
+            requestedMethods.get(Number(receipt.id)) ?? receipt.paymentMethod,
+        }));
+        const receiptMethodChanged = nextReceipts.some(
+          (receipt) => receipt.nextMethod !== receipt.paymentMethod,
+        );
+        const headerChanged =
+          nextNotes !== (inv.notes ?? null) ||
+          nextDueDate !==
+            (inv.dueDate ? String(inv.dueDate).slice(0, 10) : null);
+        if (!headerChanged && !receiptMethodChanged) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لم يتغير أي حقل في الفاتورة",
+          });
+        }
+
+        for (const receipt of nextReceipts) {
+          if (receipt.nextMethod === receipt.paymentMethod) continue;
+          // لا يجوز إنشاء حركة درج نقدي بلا وردية؛ إن كانت دفعة البطاقة الأصلية
+          // مرتبطة بورديّة الفاتورة نستخدمها عند التصحيح، وإلا يلزم تسجيلها عبر
+          // مسار خزينة مناسب بدلاً من توليد نقدٍ يتيم في التقارير.
+          if (
+            receipt.nextMethod === "CASH" &&
+            receipt.shiftId == null &&
+            inv.shiftId == null
+          ) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "لا يمكن تحويل الدفعة إلى نقدي بلا وردية مرتبطة بالفاتورة",
+            });
+          }
+          // طريقة الدفع هي مصدر تقارير الصندوق والبطاقات. لذلك تُعدّل في سند القبض
+          // نفسه، لا في شارة الفاتورة فقط. النقد يبقى مرتبطاً بدرج الكاشير إن وُجد.
+          await tx
+            .update(receipts)
+            .set({
+              paymentMethod: receipt.nextMethod,
+              cashBucket: receipt.nextMethod === "CASH" ? "DRAWER" : null,
+              shiftId:
+                receipt.nextMethod === "CASH"
+                  ? (receipt.shiftId ?? inv.shiftId)
+                  : receipt.shiftId,
+            })
+            .where(eq(receipts.id, receipt.id));
+        }
+
+        // invoices.paymentMethod حقل عرض مختصر فقط؛ مصدر الحقيقة للدفعات هو receipts.
+        // في الدفع المختلط نحتفظ بآخر طريقة قبض، كما يفعل تسجيل الدفعة الاعتيادي.
+        const lastReceipt = nextReceipts.at(-1);
+        const nextPaymentMethod =
+          lastReceipt?.nextMethod ?? inv.paymentMethod ?? null;
+        await tx
+          .update(invoices)
+          .set({
+            notes: nextNotes,
+            dueDate: nextDueDate
+              ? new Date(`${nextDueDate}T00:00:00.000Z`)
+              : null,
+            paymentMethod: nextPaymentMethod,
+          })
+          .where(eq(invoices.id, input.invoiceId));
+
+        const newFields = {
+          notes: nextNotes,
+          dueDate: nextDueDate,
+          paymentMethod: nextPaymentMethod,
+          receipts: nextReceipts.map((receipt) => ({
+            receiptId: Number(receipt.id),
+            method: receipt.nextMethod,
+            cashBucket: receipt.nextMethod === "CASH" ? "DRAWER" : null,
+          })),
+        };
+        await logAuditTx(tx, ctx, {
+          action: "sale.invoiceCorrect",
+          entityType: "invoice",
+          entityId: input.invoiceId,
+          oldValue: oldFields,
+          newValue: { reason: input.reason, fields: newFields },
+        });
+
+        return { invoiceId: input.invoiceId };
+      });
+    }),
+
+  /**
+   * تصحيح الفاتورة الكامل (0168) — «عكسٌ كامل + إعادة إصدار» بفاتورةٍ جديدة مربوطة (SUPERSEDED).
+   * يختلف عن `correct` أعلاه (تصحيحٌ بيانيّ محدود: ملاحظات/استحقاق/طريقة الدفع بلا مسّ البنود/الدفتر).
+   * هذا يعكس قيود SALE/COGS/المخزون/الذمم ثم يُعيد إصدارها بالبنود/الأسعار/الكميات المصحّحة.
+   * مديريّ فقط (قرار المالك §١٠، مرآة المرتجع). موافقة المدير تُغطّي تجاوز الائتمان/البيع تحت التكلفة.
+   * التفصيل: docs/invoice-correction-design-2026-08-10.md. الخدمة correctSale (مُتحقَّقةٌ باختبارات).
+   */
+  reissue: salesManagerProcedure
+    .input(
+      z.object({
+        originalInvoiceId: z.number().int().positive(),
+        customerId: z.number().int().positive().nullish(),
+        contactName: z.string().trim().max(255).nullish(),
+        contactPhone: z.string().trim().max(32).nullish(),
+        priceTier: tier.nullish(),
+        lines: z.array(lineSchema).min(1),
+        invoiceDiscount: nonNegMoneyString.nullish(),
+        deliveryFee: nonNegMoneyString.nullish(),
+        taxRatePercent: z.string().nullish(),
+        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").nullish(),
+        notes: z.string().max(5000).nullish(),
+        // دفعةٌ إضافية تُحصَّل الآن عند زيادة المصحّح على المقبوض سلفاً (نقص).
+        additionalPayment: z.object({
+          amount: positiveMoneyString,
+          method,
+          reference: z.string().trim().min(1).max(100).nullish(),
+        }).nullish(),
+        // الفرق الزائد (المصحّح < المقبوض): رصيد دائن للعميل أو استرداد نقديّ (قرار المالك الهجين).
+        overpayHandling: z.enum(["CREDIT", "CASH_REFUND"]).optional(),
+        overpayRefundShiftId: z.number().int().positive().nullish(),
+        reason: z.string().trim().min(3, "اكتب سبب التصحيح").max(500),
+        clientRequestId: z.string().min(1).max(80).optional(),
+        // موافقة مدير لتجاوز حدّ الائتمان أو البيع تحت التكلفة في السطور المصحّحة.
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0, role: ctx.user.role };
+      let approvedBy: number | null = null;
+      const { managerApproval, reason: _reason, ...correctionInput } = input;
+      if (managerApproval) {
+        approvedBy = await verifyManagerApproval(managerApproval, ctx, actor.branchId);
+      }
+      const priceOverrideApprovedBy: number | null = approvedBy ?? (elevated ? ctx.user.id : null);
+      const effectiveInput = {
+        ...correctionInput,
+        creditApproved: approvedBy != null,
+        managerOverrideByUserId: approvedBy ?? undefined,
+        priceOverrideApproved: priceOverrideApprovedBy != null,
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await correctSale(effectiveInput, actor);
+          if (!res.idempotentReplay) {
+            await logAudit(ctx, {
+              action: "sale.reissue",
+              entityType: "invoice",
+              entityId: res.originalInvoiceId,
+              oldValue: { originalInvoiceId: res.originalInvoiceId },
+              newValue: {
+                reason: input.reason,
+                correctedInvoiceId: res.correctedInvoiceId,
+                correctedInvoiceNumber: res.correctedInvoiceNumber,
+                total: res.total,
+                overpay: res.overpay,
+                overpayHandled: res.overpayHandled ?? null,
+                creditApprovedBy: approvedBy,
+              },
+            });
+          }
+          return res;
+        } catch (e: any) {
+          if (isDupEntry(e) && attempt < 2) continue;
+          if (e instanceof TRPCError) throw e;
+          logger.error(
+            { err: { message: e?.message, code: e?.code, sqlMessage: e?.sqlMessage, sql: e?.sql }, userId: actor.userId, originalInvoiceId: input.originalInvoiceId },
+            "sale.reissue فشل بخطأ غير متوقّع (السبب الجذري أدناه)",
+          );
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تصحيح الفاتورة" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام التصحيح (تكرار)" });
+    }),
+
+  /** سجل تصحيحات الفاتورة للمدير/المالك فقط. */
+  correctionHistory: salesManagerProcedure
+    .input(z.object({ invoiceId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return [];
+      return db
+        .select({
+          id: auditLogs.id,
+          action: auditLogs.action,
+          oldValue: auditLogs.oldValue,
+          newValue: auditLogs.newValue,
+          createdAt: auditLogs.createdAt,
+          userName: users.name,
+        })
+        .from(auditLogs)
+        .leftJoin(users, eq(auditLogs.userId, users.id))
+        .where(
+          and(
+            eq(auditLogs.entityType, "invoice"),
+            eq(auditLogs.entityId, String(input.invoiceId)),
+            // التصحيح البيانيّ الخفيف (sale.invoiceCorrect) + التصحيح الكامل عكس/إعادة إصدار
+            // (sale.reissue) — كلاهما يظهر في سجلّ الفاتورة كي لا يختفي أخطرُهما أثراً.
+            inArray(auditLogs.action, ["sale.invoiceCorrect", "sale.reissue"]),
+          ),
+        )
+        .orderBy(desc(auditLogs.id));
     }),
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
@@ -363,19 +774,42 @@ export const saleRouter = router({
             id: invoices.id,
             invoiceNumber: invoices.invoiceNumber,
             sourceType: invoices.sourceType,
+            // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
+            branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
-            customerName: customers.name,
+            // فاتورة COD لا تحمل العميل كطرف مدين، لكن نعرض عميل أمر الخدمة الأصلي
+            // كي لا تختفي طلبات واتساب تحت «عميل نقدي». ١٠/٨ (بلاغ المالك «كلها تظهر نقدي»):
+            // + الزبون العابر (contactName) ومستلم الإرسالية — فاتورة توصيلٍ هاتفية كانت
+            // تسقط على «عميل نقدي» رغم أن اسمه وهاتفه محفوظان.
+            customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
+            customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,
+            // التوصيل (٩/٨): شارة «توصيل — بيد فلان» وفلترها في شاشة الفواتير. صفّ واحد كحدّ
+            // أقصى لكل فاتورة (uq_consignment_invoice) ⇒ لا مضاعفة صفوف.
+            consignmentId: deliveryConsignments.id,
+            // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
+            consignmentNumber: sql<string | null>`COALESCE(${deliveryConsignments.consignmentNumber}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN ${onlineOrders.orderNumber} END)`,
+            consignmentStatus: unifiedConsignmentStatus,
+            deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId})`,
+            deliveryPartyName: sql<string | null>`COALESCE(${deliveryParties.name}, ${onlineDeliveryParty.name})`,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+          .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
+          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+          .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
+          .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
+          .leftJoin(onlineDeliveryParty, eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId))
           .where(where)
           .orderBy(desc(invoices.id))
           .limit(lim)
@@ -404,19 +838,37 @@ export const saleRouter = router({
             id: invoices.id,
             invoiceNumber: invoices.invoiceNumber,
             sourceType: invoices.sourceType,
+            // branchId يُعرَض في عمود «الفرع» لدى المرتفعين حين الفلتر «كل الفروع» (التسمية من branches.list واجهياً).
+            branchId: invoices.branchId,
             invoiceDate: invoices.invoiceDate,
             total: invoices.total,
             paidAmount: invoices.paidAmount,
+            returnedTotal: invoices.returnedTotal,
             status: invoices.status,
             paymentMethod: invoices.paymentMethod,
-            customerName: customers.name,
+            customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
+            customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name})`,
+            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
             deviceId: invoices.posDeviceId,
+            // التوصيل (٩/٨) — مرآة list حرفياً (نفس الشروط تتطلّب نفس الـjoin).
+            consignmentId: deliveryConsignments.id,
+            // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
+            consignmentNumber: sql<string | null>`COALESCE(${deliveryConsignments.consignmentNumber}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN ${onlineOrders.orderNumber} END)`,
+            consignmentStatus: unifiedConsignmentStatus,
+            deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId})`,
+            deliveryPartyName: sql<string | null>`COALESCE(${deliveryParties.name}, ${onlineDeliveryParty.name})`,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+          .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
+          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+          .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
+          .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
+          .leftJoin(onlineDeliveryParty, eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId))
           .where(where)
           .orderBy(desc(invoices.id))
           .limit(lim)
@@ -464,10 +916,14 @@ export const saleRouter = router({
               THEN CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           })
           .from(invoices)
-          // join إلزاميّ: buildSalesListConds قد يُشير لـcustomers.searchNorm عند البحث بـq.
+          // join إلزاميّ: buildSalesListConds قد يُشير لـcustomers.searchNorm عند البحث بـq
+          // ولـdeliveryConsignments عند فلتر التوصيل (٩/٨).
           // leftJoin على مفتاح أجنبيّ أحاديّ ⇒ لا يُضاعف صفوف الفواتير ⇒ المجاميع تبقى صحيحة،
           // وcount يبقى مطابقاً تماماً لعدد صفوف list (نفس الشروط ونفس الجداول).
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+          .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+          .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
           .where(conds.length ? and(...conds) : undefined)
       )[0];
       return {
@@ -478,7 +934,9 @@ export const saleRouter = router({
       };
     }),
 
-  get: salesReadProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  // عرض/طباعة فاتورة: بوّابة invoiceViewProcedure (sales≥READ أو صلاحية الاستقبال workorders:FULL) —
+  // تُتيح لمشغّل الاستقبال إعادة طباعة فواتيره من طابور المحطة بلا فتح وحدة المبيعات كاملةً. محميّة بالفرع أدناه.
+  get: invoiceViewProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (
@@ -488,10 +946,12 @@ export const saleRouter = router({
           invoiceNumber: invoices.invoiceNumber,
           sourceType: invoices.sourceType,
           branchId: invoices.branchId,
-          customerId: invoices.customerId,
-          customerName: customers.name,
-          customerPhone: customers.phone,
-          customerBalance: customers.currentBalance,
+          // العميل هنا مرجع عرضٍ وتشغيل لفاتورة COD فقط؛ الطرف المالي يبقى جهة التوصيل.
+          // ١٠/٨: + الزبون العابر ومستلم الإرسالية (مرآة list — «عميل نقدي» للمجهول حقاً فقط).
+          customerId: sql<number | null>`COALESCE(${invoices.customerId}, ${workOrders.customerId})`,
+          customerName: sql<string | null>`COALESCE(${customers.name}, ${workOrderInvoiceCustomer.name}, NULLIF(${invoices.contactName}, ''), NULLIF(${deliveryConsignments.recipientName}, ''))`,
+          customerPhone: sql<string | null>`COALESCE(${customers.phone}, ${workOrderInvoiceCustomer.phone}, NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
+          customerBalance: sql<string | null>`COALESCE(${customers.currentBalance}, ${workOrderInvoiceCustomer.currentBalance})`,
           priceTier: invoices.priceTier,
           invoiceDate: invoices.invoiceDate,
           dueDate: invoices.dueDate,
@@ -515,19 +975,59 @@ export const saleRouter = router({
           deviceId: invoices.posDeviceId,
           cancelledByName: invoices.cancelledByNameSnapshot,
           cancelledAt: invoices.cancelledAt,
+          // إفصاح التوصيل (0152): الأجرة المقبوضة، وهل أُهديت، وقيمة ما تُنوزِل عنه — تُعرَض
+          // في الشاشة وتُطبَع، فيميّز الزبون «توصيل مجّاني» عن «بلا توصيل».
+          deliveryFee: invoices.deliveryFee,
+          deliveryFree: invoices.deliveryFree,
+          deliveryWaivedAmount: invoices.deliveryWaivedAmount,
+          // إفصاح توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا على الفاتورة (تمريرٌ
+          // لا إيراد) — نُرجعها للعرض/الطباعة فقط كي تُظهر الفاتورة «يدفع الزبون شاملاً التوصيل».
+          // ١٠/٨ — قناة المتجر (تمرير كامل): الأجرة = shippingCost على الطلب، للفواتير الجديدة
+          // فقط (invoices.deliveryFee=0)؛ القديمة شحنُها داخل total فعرضُها «شاملاً» يضاعفه.
+          courierName: sql<string | null>`COALESCE(${deliveryParties.name}, ${onlineDeliveryParty.name})`,
+          courierFee: sql<string | null>`COALESCE(${deliveryConsignments.deliveryFee}, CASE WHEN CAST(${invoices.deliveryFee} AS DECIMAL(15,2)) > 0 THEN NULL ELSE ${onlineOrders.shippingCost} END)`,
+          courierFeeCollection: sql<"COURIER" | "COUNTER" | "SHOP" | null>`COALESCE(${deliveryConsignments.feeCollection}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN 'COURIER' END)`,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          // ٩/٨: حالة الإرسالية وتوقيتاها — «وين طلبي؟» كان ينقطع خيطه هنا (الرقم بلا حالة).
+          consignmentStatus: unifiedConsignmentStatus,
+          consignmentDispatchedAt: deliveryConsignments.dispatchedAt,
+          consignmentSettledAt: deliveryConsignments.settledAt,
+          deliveryPartyId: sql<number | null>`COALESCE(${deliveryConsignments.partyId}, ${onlineOrders.deliveryPartyId})`,
+          workOrderCreatedBy: workOrders.createdBy,
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
+        .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
         .leftJoin(users, eq(invoices.createdBy, users.id))
         .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
+        .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
+        .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
+        .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
+        .leftJoin(onlineDeliveryParty, eq(onlineDeliveryParty.id, onlineOrders.deliveryPartyId))
         .where(eq(invoices.id, input.invoiceId))
         .limit(1)
     )[0];
     if (!inv) return null;
     // عزل الفرع: لا تكشف وجود فاتورة فرع آخر لغير المدير.
     if (ctx.scopedBranchId && inv.branchId !== ctx.scopedBranchId) return null;
-    // عزل المالك: الكاشير/المندوب لا يستطيع فتح فاتورة زميل عبر رابط مباشر.
-    if (ctx.scopedOwnerId != null && Number(inv.createdBy) !== ctx.scopedOwnerId) return null;
+    // لا يفتح الكاشير فاتورة زميل عبر رابط مباشر، لكنه يفتح الفاتورة الناتجة من
+    // أمر خدمة العملاء الذي أنشأه حتى إن قام موظف آخر بالإرسال أو التسليم.
+    const invoiceViewScope = invoiceViewScopeForUser(ctx.user);
+    if (invoiceViewScope === "reception") {
+      // Reception operators may reprint the branch reception queue, but the fallback must never
+      // become a read path into retail invoices or the wider sales module.
+      if (inv.shiftType !== "RECEPTION") return null;
+    } else if (
+      invoiceViewScope === "sales"
+      && ctx.scopedOwnerId != null
+      && Number(inv.createdBy) !== ctx.scopedOwnerId
+      && Number(inv.workOrderCreatedBy) !== ctx.scopedOwnerId
+    ) {
+      return null;
+    } else if (!invoiceViewScope) {
+      return null;
+    }
     const items = await db
       .select({
         id: invoiceItems.id,
@@ -540,7 +1040,11 @@ export const saleRouter = router({
         unitCost: invoiceItems.unitCost,
         discountAmount: invoiceItems.discountAmount,
         total: invoiceItems.total,
+        // هدايا الفاتورة (0149): تُوسَم في شاشة الفاتورة وطباعتها — «مجاناً» لا «صفر» (الصفر
+        // يُقرأ خطأَ إدخالٍ، والوسم يُثبت أنّ المجّانيّة قرارٌ مسجَّلٌ بتكلفةٍ مُرحَّلة في الدفتر).
+        isGift: invoiceItems.isGift,
         productId: products.id,
+
         productName: products.name,
         sku: productVariants.sku,
         variantName: productVariants.variantName,
@@ -559,6 +1063,7 @@ export const saleRouter = router({
         paymentMethod: receipts.paymentMethod,
         status: receipts.status,
         createdAt: receipts.createdAt,
+        referenceNumber: receipts.referenceNumber,
         // attachment-upload (٥/٧): سند مربوط بهذه الفاتورة (اختياري) — رقمه + مرفقه إن وُجدا.
         voucherNumber: receipts.voucherNumber,
         attachmentUrl: receipts.attachmentUrl,
@@ -585,14 +1090,16 @@ export const saleRouter = router({
       total: inv.total,
       branchId: inv.branchId,
     }).qrPayload;
+    // حقل تفويض داخلي للاستعلام فقط؛ لا يكون جزءاً من عقد تفاصيل الفاتورة.
+    const { workOrderCreatedBy: _workOrderCreatedBy, ...invoiceForView } = inv;
 
     // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
     if (!canSeeCostForUser(ctx.user)) {
-      const { costTotal: _c, ...invNoCost } = inv;
+      const { costTotal: _c, ...invNoCost } = invoiceForView;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
       return { ...invNoCost, items: itemsNoCost, payments, returns, qrPayload };
     }
-    return { ...inv, items, payments, returns, qrPayload };
+    return { ...invoiceForView, items, payments, returns, qrPayload };
   }),
 
   // إلغاء فاتورة بيع كاملاً (قرار مالك ١٢/٨) — عكسٌ كامل + إرجاع مخزون + استرداد بجهة صرفٍ مُصرَّحة.

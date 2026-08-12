@@ -2,11 +2,14 @@
 // منتقي المتغيّر يعيد استعمال trpc.catalog.posList (نفس بحث الكاشير/حركات المخزون) + فلتر فرع + فترة اختيارية.
 // عرض: ترويسة المتغيّر + مؤشّرات (رصيد افتتاحي/ختامي) + جدول (تاريخ/نوع/كمية بإشارة/رصيد/مرجع) + تصدير/طباعة.
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { ArrowUpRight } from "lucide-react";
 import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -73,9 +76,14 @@ export default function ItemLedger() {
   const [pickedBranch, setPickedBranch] = useState<number | "">("");
   const branchId = canPickBranch ? (pickedBranch === "" ? undefined : Number(pickedBranch)) : myBranch;
 
-  // المتغيّر المختار + بحث المنتقي.
+  // المتغيّر المختار + بحث المنتقي. `?variantId=` في العنوان (من StockStatus/المنتجات) يفتح
+  // بطاقة الصنف مباشرةً — كائنٌ جزئيّ يكفي لبوّابة `picked` (المستهلَكة أدناه كعلمٍ منطقيّ فقط؛
+  // بيانات العرض الفعلية تُقرأ من `ledger.data.variant` القادم من الخادم بالمعرّف نفسه).
   const [search, setSearch] = useState("");
-  const [picked, setPicked] = useState<PosRow | null>(null);
+  const [picked, setPicked] = useState<PosRow | null>(() => {
+    const v = Number(new URLSearchParams(window.location.search).get("variantId"));
+    return Number.isInteger(v) && v > 0 ? ({ variantId: v } as PosRow) : null;
+  });
 
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
 
@@ -301,7 +309,17 @@ export default function ItemLedger() {
               <div className="font-semibold">{variant.label}</div>
               <div className="text-xs text-muted-foreground font-mono" dir="ltr">{variant.sku}</div>
             </div>
-            <div className="text-xs text-muted-foreground">{branchLabel} · {periodLabel}</div>
+            <div className="flex items-center gap-3">
+              <div className="text-xs text-muted-foreground">{branchLabel} · {periodLabel}</div>
+              {/* رابطٌ صحيح لشاشة «حركات المخزون» بنفس المتغيّر (بديلاً عن رابطٍ سابقٍ كان يشير
+                  لمركز المخزون العام في شاشة أخرى — /inventory بلا تبويب الحركات). */}
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/inventory-movements?variantId=${picked.variantId}`}>
+                  عرض في حركات المخزون
+                  <ArrowUpRight aria-hidden className="size-3.5" />
+                </Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}

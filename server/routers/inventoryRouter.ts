@@ -1,13 +1,15 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
+import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { alias } from "drizzle-orm/mysql-core";
 
 // استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
 const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 import { z } from "zod";
-import { branches, branchStock, inventoryMovements, productVariants, products, users } from "../../drizzle/schema";
+import { branches, branchStock, inventoryMovements, productVariants, products, stockAdjustmentRequests, stockTransfers, users } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { createAppNotification } from "../services/appNotificationService";
 import { logAudit } from "../services/auditService";
 import {
   cancelStockTransfer,
@@ -19,6 +21,7 @@ import {
 } from "../services/transferService";
 import { countReorderAlerts, createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
 import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
+import { signedMoveQty } from "../services/inventoryService";
 import {
   requestStockAdjustment,
   approveStockAdjustment,
@@ -55,6 +58,91 @@ const TRANSFER_REASONS = {
 } as const;
 type TransferReason = keyof typeof TRANSFER_REASONS;
 const TRANSFER_REASON_KEYS = Object.keys(TRANSFER_REASONS) as [TransferReason, ...TransferReason[]];
+
+/**
+ * سجلّ سندات التحويل ببحثٍ برقم السند + مدى تاريخ — امتدادٌ محليّ لـ`listStockTransfers`
+ * (transferService.ts مملوكٌ لجلسةٍ أخرى اليوم فلا نلمسه). يُستدعى فقط حين يُرسِل العميل
+ * q/fromDate/toDate؛ خلاف ذلك يبقى المسار القديم `listStockTransfers` كما هو بلا أثرٍ جانبيّ.
+ * نطاق العزل مطابقٌ حرفياً لـ`listStockTransfers` (isElevated/scopeBranch/dir) كي لا ينحرف
+ * سلوك التصفية بالفرع/الاتجاه بين المسارين.
+ */
+async function listStockTransfersFiltered(a: {
+  actor: { userId: number; role: string; branchId: number | null };
+  branchId?: number | null;
+  direction?: "in" | "out" | "all";
+  status?: "IN_TRANSIT" | "RECEIVED" | "CANCELLED" | "all";
+  cursor?: number | null;
+  limit?: number;
+  q?: string;
+  fromDate?: string;
+  toDate?: string;
+}) {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const limit = Math.min(a.limit ?? 30, 100);
+  const elevated = a.actor.role === "admin" || a.actor.role === "manager";
+
+  let scopeBranch: number | null;
+  if (elevated) {
+    scopeBranch = a.branchId ?? null;
+  } else {
+    if (a.actor.branchId == null) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+    scopeBranch = Number(a.actor.branchId);
+  }
+
+  const conds: any[] = [];
+  if (scopeBranch != null) {
+    const dir = a.direction ?? "all";
+    if (dir === "in") conds.push(eq(stockTransfers.toBranchId, scopeBranch));
+    else if (dir === "out") conds.push(eq(stockTransfers.fromBranchId, scopeBranch));
+    else conds.push(or(eq(stockTransfers.fromBranchId, scopeBranch), eq(stockTransfers.toBranchId, scopeBranch)));
+  }
+  if (a.status && a.status !== "all") conds.push(eq(stockTransfers.status, a.status));
+  if (a.cursor) conds.push(lt(stockTransfers.id, a.cursor));
+  const q = a.q?.trim();
+  if (q) {
+    const pat = `%${escLike(q)}%`;
+    conds.push(sql`${stockTransfers.transferNumber} LIKE ${pat} ESCAPE '!'`);
+  }
+  if (a.fromDate) {
+    const from = new Date(a.fromDate);
+    if (!isNaN(from.getTime())) conds.push(gte(stockTransfers.createdAt, from));
+  }
+  if (a.toDate) {
+    // شامل لليوم كامل — نمط movementsRich (Date.UTC حتميّ بمعزل عن TZ العملية).
+    const to = new Date(a.toDate);
+    if (!isNaN(to.getTime())) {
+      const next = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate() + 1));
+      conds.push(lt(stockTransfers.createdAt, next));
+    }
+  }
+
+  const fromB = sql`(SELECT name FROM branches WHERE id = ${stockTransfers.fromBranchId})`;
+  const rows = await db
+    .select({
+      id: stockTransfers.id,
+      transferNumber: stockTransfers.transferNumber,
+      fromBranchId: stockTransfers.fromBranchId,
+      toBranchId: stockTransfers.toBranchId,
+      status: stockTransfers.status,
+      reason: stockTransfers.reason,
+      totalSentBase: stockTransfers.totalSentBase,
+      totalReceivedBase: stockTransfers.totalReceivedBase,
+      createdAt: stockTransfers.createdAt,
+      receivedAt: stockTransfers.receivedAt,
+      fromBranchName: fromB.mapWith(String).as("fromBranchName"),
+      toBranchName: sql`(SELECT name FROM branches WHERE id = ${stockTransfers.toBranchId})`.mapWith(String).as("toBranchName"),
+      linesCount: sql`(SELECT COUNT(*) FROM stockTransferLines WHERE transferId = ${stockTransfers.id})`.mapWith(Number).as("linesCount"),
+    })
+    .from(stockTransfers)
+    .where(conds.length ? and(...conds) : undefined)
+    .orderBy(desc(stockTransfers.id))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  return { rows: page, nextCursor: hasMore ? Number(page[page.length - 1].id) : null };
+}
 
 export const inventoryRouter = router({
   transfer: inventoryWarehouseProcedure
@@ -196,18 +284,36 @@ export const inventoryRouter = router({
         status: z.enum(["IN_TRANSIT", "RECEIVED", "CANCELLED", "all"]).optional(),
         cursor: z.number().int().positive().nullish(),
         limit: z.number().int().min(1).max(100).optional(),
+        // بحث برقم السند + مدى تاريخ (اختياريان) — عند غيابهما يبقى المسار القديم كما هو حرفياً.
+        q: z.string().max(60).optional(),
+        fromDate: z.string().optional(),
+        toDate: z.string().optional(),
       })
     )
-    .query(({ input, ctx }) =>
-      listStockTransfers({
-        actor: { userId: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId) },
+    .query(({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId) };
+      if (input.q?.trim() || input.fromDate || input.toDate) {
+        return listStockTransfersFiltered({
+          actor,
+          branchId: input.branchId,
+          direction: input.dir,
+          status: input.status,
+          cursor: input.cursor,
+          limit: input.limit,
+          q: input.q,
+          fromDate: input.fromDate,
+          toDate: input.toDate,
+        });
+      }
+      return listStockTransfers({
+        actor,
         branchId: input.branchId,
         direction: input.dir,
         status: input.status,
         cursor: input.cursor,
         limit: input.limit,
-      })
-    ),
+      });
+    }),
 
   /** تفاصيل سند بأسطره — بنفس نطاق عزل القائمة (السند يخصّ أحد فرعَي المستخدم غير المرفوع). */
   transferGet: inventoryReadProcedure
@@ -318,6 +424,27 @@ export const inventoryRouter = router({
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
       );
       await logAudit(ctx, { action: "inventory.adjustRequest", entityType: "stockAdjustmentRequest", entityId: res.requestId, newValue: { variantId: input.variantId, branchId, target: input.targetQuantity } });
+      const db = getDb();
+      if (db) {
+        const candidates = await db
+          .select({ id: users.id, role: users.role, permissionsOverride: users.permissionsOverride })
+          .from(users)
+          .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), and(eq(users.role, "manager"), eq(users.branchId, branchId)))));
+        await Promise.all(candidates.filter((user) =>
+          user.id !== ctx.user.id &&
+          resolvePermissions(user.role as RoleKey, (user.permissionsOverride ?? null) as Record<string, AccessLevel> | null).inventory === "FULL"
+        ).map((user) => createAppNotification({
+          userId: user.id,
+          kind: "APPROVAL_REQUIRED",
+          title: "تسوية مخزون بانتظار قرار",
+          body: `طلب #${res.requestId} · الفرع ${branchId}`,
+          route: "/mobile#approvals",
+          eventKey: `stock-adjustment:${res.requestId}:approval:${user.id}`,
+          entityType: "stockAdjustmentRequest",
+          entityId: res.requestId,
+          requiresAction: true,
+        }).catch(() => undefined)));
+      }
       return { requestId: res.requestId, status: "PENDING_APPROVAL" as const };
     }),
 
@@ -327,6 +454,23 @@ export const inventoryRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await approveStockAdjustment(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
       await logAudit(ctx, { action: "inventory.adjustApprove", entityType: "stockAdjustmentRequest", entityId: input.id, newValue: { movementId: res.movementId, delta: res.delta } });
+      const db = getDb();
+      const [request] = db
+        ? await db.select({ createdBy: stockAdjustmentRequests.createdBy }).from(stockAdjustmentRequests).where(eq(stockAdjustmentRequests.id, input.id)).limit(1)
+        : [];
+      if (request?.createdBy) {
+        await createAppNotification({
+          userId: request.createdBy,
+          kind: "APPROVAL_REQUIRED",
+          title: "تم اعتماد تسوية المخزون",
+          body: `الطلب #${input.id}`,
+          route: "/inventory",
+          eventKey: `stock-adjustment:${input.id}:approved`,
+          entityType: "stockAdjustmentRequest",
+          entityId: input.id,
+          push: false,
+        }).catch(() => undefined);
+      }
       return res;
     }),
 
@@ -335,6 +479,23 @@ export const inventoryRouter = router({
     .mutation(async ({ input, ctx }) => {
       await rejectStockAdjustment(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role }, input.reason);
       await logAudit(ctx, { action: "inventory.adjustReject", entityType: "stockAdjustmentRequest", entityId: input.id, newValue: { reason: input.reason } });
+      const db = getDb();
+      const [request] = db
+        ? await db.select({ createdBy: stockAdjustmentRequests.createdBy }).from(stockAdjustmentRequests).where(eq(stockAdjustmentRequests.id, input.id)).limit(1)
+        : [];
+      if (request?.createdBy) {
+        await createAppNotification({
+          userId: request.createdBy,
+          kind: "APPROVAL_REQUIRED",
+          title: "تم تحديث طلب تسوية المخزون",
+          body: `الطلب #${input.id}`,
+          route: "/inventory",
+          eventKey: `stock-adjustment:${input.id}:rejected`,
+          entityType: "stockAdjustmentRequest",
+          entityId: input.id,
+          push: false,
+        }).catch(() => undefined);
+      }
       return { ok: true };
     }),
 
@@ -364,7 +525,13 @@ export const inventoryRouter = router({
           q: z.string().optional(),
           lowOnly: z.boolean().default(false),
           negativeOnly: z.boolean().default(false),
+          // فلترة بالفئة (نمط catalog.adminList): رقم = فئة محدّدة، 0 = «بلا فئة» (categoryId NULL)، غياب = الكل.
+          categoryId: z.number().int().min(0).optional(),
           limit: z.number().int().positive().max(1000).default(300),
+          // ترقيم offset — الشكل المُعاد يبقى مصفوفةً صرفة (توافق عكسي: StocktakeNew واختبارات onHand
+          // تعتمد المصفوفة). صفحة مكتملة (rows.length === limit) = مؤشّر «هناك المزيد» للعميل —
+          // نفس تقريب paginateKeyset في وضع offset، بلا COUNT ثانٍ كامل.
+          offset: z.number().int().min(0).default(0),
         })
         .optional()
     )
@@ -391,6 +558,9 @@ export const inventoryRouter = router({
       if (input?.negativeOnly) {
         conds.push(sql`${branchStock.quantity} < 0`);
       }
+      if (input?.categoryId != null) {
+        conds.push(input.categoryId === 0 ? isNull(products.categoryId) : eq(products.categoryId, input.categoryId));
+      }
 
       const rows = await db
         .select({
@@ -412,7 +582,8 @@ export const inventoryRouter = router({
         .innerJoin(products, eq(products.id, productVariants.productId))
         .where(and(...conds))
         .orderBy(asc(products.name), asc(productVariants.sku))
-        .limit(input?.limit ?? 300);
+        .limit(input?.limit ?? 300)
+        .offset(input?.offset ?? 0);
 
       return rows.map((r) => ({
         ...r,
@@ -479,6 +650,9 @@ export const inventoryRouter = router({
           fromDate: z.string().optional(),
           toDate: z.string().optional(),
           referenceType: z.string().max(24).optional(),
+          // فلتر منشئ الحركة — مطابقة جزئية على اسم المستخدم (لا معرّفاً رقمياً: users.list
+          // adminProcedure حصراً، وهذه الشاشة يفتحها مخزن/كاشير أيضاً فلا يصحّ الاعتماد عليه).
+          createdByName: z.string().max(120).optional(),
           limit: z.number().int().positive().max(500).default(200),
           offset: z.number().int().min(0).default(0),
           // S3 (٣٠/٦): cursor (id) اختياري لـkeyset — يُتجاوز COUNT الكامل عند تمريره.
@@ -499,6 +673,11 @@ export const inventoryRouter = router({
       if (i.movementType) conds.push(eq(inventoryMovements.movementType, i.movementType));
       if (i.variantId) conds.push(eq(inventoryMovements.variantId, i.variantId));
       if (i.referenceType) conds.push(eq(inventoryMovements.referenceType, i.referenceType));
+      const createdByName = i.createdByName?.trim();
+      if (createdByName) {
+        const pat = `%${escLike(createdByName)}%`;
+        conds.push(sql`${users.name} LIKE ${pat} ESCAPE '!'`);
+      }
       const search = i.q?.trim();
       if (search) {
         const pat = `%${escLike(search)}%`;
@@ -575,6 +754,8 @@ export const inventoryRouter = router({
           .innerJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
           .innerJoin(products, eq(products.id, productVariants.productId))
           .innerJoin(branches, eq(branches.id, inventoryMovements.branchId))
+          // leftJoin مطلوب فقط لأن createdByName قد يُصفّي على users.name (أعلاه) — بلا أثر إن غاب.
+          .leftJoin(users, eq(users.id, inventoryMovements.createdBy))
           .where(baseWhere);
         return Number(countRows[0]?.c ?? 0);
       });
@@ -587,6 +768,9 @@ export const inventoryRouter = router({
           relatedBranchId: r.relatedBranchId == null ? null : Number(r.relatedBranchId),
           referenceId: r.referenceId == null ? null : Number(r.referenceId),
           createdBy: r.createdBy == null ? null : Number(r.createdBy),
+          // تدقيق ١١/٨ (S2): الكمية الموقَّعة من مصدر الحقيقة الخادميّ (signedMoveQty — نفس الكاردكس/الجرد)،
+          // تشمل اتجاه ADJUST المستنبَط من علامة «(فرق ±D)» في notes. للعرض/الطباعة/التصدير الموقَّع بلا تخمينٍ عميليّ.
+          signedQty: signedMoveQty(r.movementType, r.quantity, r.notes),
         })),
         total,
         hasMore,
@@ -619,7 +803,15 @@ export const inventoryRouter = router({
       if (branchId == null && ctx.user.role !== "admin") {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
-      return listReorderAlerts({ branchId, limit: input?.limit, offset: input?.offset });
+      const limit = input?.limit ?? 200;
+      const offset = input?.offset ?? 0;
+      // العدد الكامل (بنفس نطاق الفرع) — يكشف الاقتطاع الصامت عند تجاوز limit بدل لافتة كاذبة
+      // «كل شيء ظاهر» فيما يبقى النقص مخفياً (كان limit الافتراضي 200 يقتطع بصمت).
+      const [rows, total] = await Promise.all([
+        listReorderAlerts({ branchId, limit, offset }),
+        countReorderAlerts({ branchId }),
+      ]);
+      return { rows, total, hasMore: offset + rows.length < total };
     }),
 
   /** تحديث عتبتَي الحد الأدنى/إعادة الطلب لمتغيّر — المدير/المخزن (التحقّق داخل الخدمة). */

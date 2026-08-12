@@ -5,6 +5,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import SupplierPicker from "@/components/voucher/SupplierPicker";
 import { BalanceBadge } from "@/components/BalanceBadge";
 import { PageHeader } from "@/components/PageHeader";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,28 +14,34 @@ import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { FormError } from "@/components/form/FormError";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printVoucherReceipt, printVoucherA4 } from "@/lib/printing/voucherPrint";
 import { trpc } from "@/lib/trpc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
+import { cn } from "@/lib/utils";
 import { AlertTriangle, Building2, Hourglass, Info, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
+// قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء (يبقى بالمخطط للسجلات التاريخية).
 const METHODS = [
   { value: "CASH", label: "نقدي" },
   { value: "CARD", label: "بطاقة" },
-  { value: "CHECK", label: "صكّ" },
   { value: "TRANSFER", label: "تحويل" },
   { value: "WALLET", label: "محفظة" },
 ] as const;
 type MethodValue = typeof METHODS[number]["value"];
 
 const METHOD_LABEL_MAP: Record<MethodValue, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صكّ", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 
 export interface VoucherFormProps {
@@ -72,7 +79,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const [description, setDescription] = useState("");
   const [referenceNumber, setReferenceNumber] = useState("");
   const [cardLastFour, setCardLastFour] = useState("");
-  const [checkNumber, setCheckNumber] = useState("");
   // vouchers-pro:
   const [voucherCategoryId, setVoucherCategoryId] = useState<number | "">("");
   const [counterpartyName, setCounterpartyName] = useState("");
@@ -105,14 +111,28 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
 
   // attachment-upload (٥/٧): فواتير العميل المُختار — لربط سند القبض/الصرف بفاتورة مُحدَّدة (اختياري).
   // fail-soft: خطأ الاستعلام (مَثلاً دورٌ مخصّص بلا صلاحية sales) لا يُعطّل حفظ السند — فقط يُخفي المُنتقي.
+  // البحث خادميّ (q + balanceState=OUTSTANDING أي المتبقّي > 0 وغير الملغاة/المرتجعة) — كان «آخر ٥٠»
+  // فقط فلا تُوجَد فاتورة أقدم وهي مستحقّة.
+  const [invoiceQ, setInvoiceQ] = useState("");
+  const invoiceBarcodeInput = useBarcodeInput((code) => setInvoiceQ(code));
+  const debouncedInvoiceQ = useDebouncedValue(invoiceQ.trim(), 250);
   const customerInvoices = trpc.sales.list.useQuery(
-    { customerId: customerId ?? undefined, limit: 50 },
+    {
+      customerId: customerId ?? undefined,
+      q: debouncedInvoiceQ || undefined,
+      balanceState: "OUTSTANDING",
+      limit: 50,
+    },
     { enabled: partyType === "CUSTOMER" && customerId != null, staleTime: 30_000, retry: false },
   );
-  const outstandingInvoiceOptions = useMemo(() => {
-    const rows = customerInvoices.data ?? [];
-    return rows.filter((r) => r.status === "PENDING" || r.status === "CONFIRMED" || r.status === "PARTIALLY_PAID");
-  }, [customerInvoices.data]);
+  const outstandingInvoiceOptions = customerInvoices.data ?? [];
+  // تثبيت الفاتورة المُختارة إن ضيّق البحث القائمة بعد اختيارها — كي لا يفرغ المُنتقي صامتاً.
+  const [selectedInvoiceLabel, setSelectedInvoiceLabel] = useState("");
+  const selectedInList = invoiceId != null && outstandingInvoiceOptions.some((inv) => Number(inv.id) === invoiceId);
+  /** المتبقّي = الإجمالي − المدفوع − المُرتجَع (درس PR #286 — تجاهل المُرتجَع يُظهر متبقّياً وهمياً). */
+  function invoiceRemaining(inv: { total: string | null; paidAmount: string | null; returnedTotal: string | null }): string {
+    return D(inv.total ?? 0).minus(D(inv.paidAmount ?? 0)).minus(D(inv.returnedTotal ?? 0)).toFixed(2);
+  }
 
   // وردية النقد + شارة الخزينة الإدارية.
   const openShift = trpc.shifts.current.useQuery({ branchId }, { enabled: !!branchId });
@@ -149,19 +169,21 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     { enabled: !!partyKeyForRecent, staleTime: 30_000 },
   );
 
-  // تَحذير «المبلغ يَتجاوز الرصيد» (P1-7).
+  // تَحذير «المبلغ يَتجاوز الرصيد» (P1-7). الاتجاهات وفق BalanceBadge:
+  //   عميل: موجب = «لنا عليه» (AR)، سالب = «له علينا» (دفع/دُفع له زيادة).
+  //   مورّد: موجب = «له علينا» (AP)، سالب = «لنا عليه» (دفعنا له زيادة).
   const balanceWarn = useMemo(() => {
     if (amountNum <= 0) return null;
     if (partyType === "CUSTOMER" && customerData.data) {
       const b = Number(customerData.data.currentBalance ?? 0);
       if (direction === "IN" && amountNum > b) {
-        return `يَتجاوز رصيد العميل المُتبقّي (${fmt(b)}) — سيُصبح للعميل رصيدٌ دائن (لنا عليه).`;
+        return `يَتجاوز رصيد العميل المُتبقّي (${fmt(b)}) — سيُصبح للعميل رصيدٌ دائن (له علينا).`;
       }
     }
     if (partyType === "SUPPLIER" && supplierData.data) {
       const b = Number(supplierData.data.currentBalance ?? 0);
       if (direction === "OUT" && amountNum > b) {
-        return `يَتجاوز رَصيد المورّد المُستحق (${fmt(b)}) — سيُصبح للمورّد رَصيد مَدين (نَحن دافعون زيادة).`;
+        return `يَتجاوز رَصيد المورّد المُستحق (له علينا ${fmt(b)}) — سيُصبح المورّد مديناً (لنا عليه: دفعنا زيادة).`;
       }
     }
     return null;
@@ -176,7 +198,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       } else {
         notify.ok(`تَمّ إنشاء ${isReceipt ? "سند القبض" : "سند الصرف"} ${res.voucherNumber}`);
       }
-      await utils.vouchers.list.invalidate();
+      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
       // طباعة فورية إن طُلبت
       if (pendingPrintRef) {
         await tryPrintAfterCreate(res.receiptId);
@@ -246,9 +268,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     if (method === "CARD" && !/^\d{4}$/.test(cardLastFour.trim())) {
       return "آخر ٤ من البطاقة إلزامي لطريقة الدفع «بطاقة» (٤ أرقام).";
     }
-    if (method === "CHECK" && !checkNumber.trim()) {
-      return "رقم الصكّ إلزامي لطريقة الدفع «صكّ».";
-    }
     return "";
   }
 
@@ -265,7 +284,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       partyId,
       description: description.trim(),
       referenceNumber: referenceNumber.trim() || null,
-      checkNumber: method === "CHECK" ? (checkNumber.trim() || null) : null,
+      // لا صكوك في الإنشاء (قرار المالك) — الحقل يبقى بالعقد للسجلات التاريخية فقط.
+      checkNumber: null,
       cardLastFour: method === "CARD" ? (cardLastFour.trim() || null) : null,
       voucherCategoryId: voucherCategoryId === "" ? null : Number(voucherCategoryId),
       counterpartyName: counterpartyName.trim() || null,
@@ -285,10 +305,45 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     create.mutate(buildPayload());
   }
 
-  // اختصارات لوحة المفاتيح (P2-13): Ctrl+S = حفظ، Ctrl+Enter = حفظ+طباعة، Esc = إلغاء.
+  // حارس فقدان البيانات (نمط ExpenseNew): dirty عند إدخال فعليّ فقط — العميل المُمرَّر من URL
+  // (seededCustomerId) لا يُحسب إدخالاً كي لا يظهر تحذير كاذب فور فتح الشاشة.
+  const isDirty =
+    amount.trim() !== "" ||
+    description.trim() !== "" ||
+    counterpartyName.trim() !== "" ||
+    internalNote.trim() !== "" ||
+    referenceNumber.trim() !== "" ||
+    attachmentImages.length > 0 ||
+    supplierId != null ||
+    (customerId != null && customerId !== seededCustomerId);
+  useUnsavedGuard(isDirty);
+
+  // Esc/زر الإلغاء: تأكيد قبل مغادرة نموذج غير محفوظ (كان Esc يُغادر فوراً فيمسح المُدخلات).
+  const leaveBusyRef = useRef(false);
+  async function requestCancel() {
+    if (create.isPending) return;
+    if (!isDirty) { navigate("/vouchers"); return; }
+    // Esc داخل حوار التأكيد نفسه يصل لهذا المعالج أيضاً — الحارس يمنع فتح حوارٍ ثانٍ.
+    if (leaveBusyRef.current) return;
+    leaveBusyRef.current = true;
+    try {
+      const ok = await confirm({
+        variant: "warning",
+        title: "مغادرة السند",
+        description: "توجد بيانات غير محفوظة في النموذج — ستُفقد عند المغادرة. هل تتابع؟",
+        confirmText: "مغادرة",
+        cancelText: "بقاء",
+      });
+      if (ok) navigate("/vouchers");
+    } finally {
+      leaveBusyRef.current = false;
+    }
+  }
+
+  // اختصارات لوحة المفاتيح (P2-13): Ctrl+S = حفظ، Ctrl+Enter = حفظ+طباعة، Esc = إلغاء (بتأكيد).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { navigate("/vouchers"); return; }
+      if (e.key === "Escape") { void requestCancel(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
         submit("thermal");
@@ -300,7 +355,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [amount, method, partyType, customerId, supplierId, branchId, voucherCategoryId, attachmentUrl, invoiceId, voucherDate]);
+  }, [amount, method, partyType, customerId, supplierId, branchId, voucherCategoryId, attachmentUrl, invoiceId, voucherDate, isDirty, description, counterpartyName, internalNote, referenceNumber, attachmentImages]);
 
   // مَعاينة قَيد الدفتر (P1-10) — صفّان بسيطان مَدين/دائن.
   const ledgerPreview = useMemo(() => {
@@ -334,9 +389,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           ? "إيرادات/تحصيلات مستقلّة بلا فاتورة (مثل: دفعة من عميل بلا تخصيص، إيرادات متفرّقة، استرداد من مورّد)."
           : "مصاريف/مدفوعات مستقلّة بلا فاتورة (مثل: راتب موظف، إيجار، صيانة، دفعة لمورّد)."}
         actions={
-          <Link href="/vouchers">
-            <Button variant="outline" size="sm">→ القائمة</Button>
-          </Link>
+          <Button variant="outline" size="sm" onClick={() => void requestCancel()}>
+            → القائمة
+          </Button>
         }
       />
 
@@ -386,7 +441,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               </select>
             </div>
 
-            {(method === "TRANSFER" || method === "CARD" || method === "CHECK" || method === "WALLET") && (
+            {(method === "TRANSFER" || method === "CARD" || method === "WALLET") && (
               <div className="space-y-1">
                 <Label>
                   الرقم المرجعي {method === "TRANSFER" ? "*" : "(اختياري)"}
@@ -412,13 +467,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 />
               </div>
             )}
-            {method === "CHECK" && (
-              <div className="space-y-1">
-                <Label>رقم الصكّ *</Label>
-                <Input value={checkNumber} onChange={(e) => setCheckNumber(e.target.value)} placeholder="رقم الصك على الورقة" dir="ltr" />
-              </div>
-            )}
-
             <div className="space-y-1 md:col-span-2">
               <Label>فئة السند {direction === "OUT" ? "(مصروف)" : "(إيراد)"}</Label>
               <select
@@ -471,29 +519,59 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               <>
                 <CustomerPicker
                   customerId={customerId}
-                  onCustomerChange={(id) => { setCustomerId(id); setInvoiceId(null); }}
+                  onCustomerChange={(id) => {
+                    setCustomerId(id);
+                    setInvoiceId(null);
+                    setInvoiceQ("");
+                    setSelectedInvoiceLabel("");
+                  }}
                   balance={customerData.data?.currentBalance}
                 />
                 {customerId != null && (
                   <div className="space-y-1">
                     <Label>ربط بفاتورة (اختياري)</Label>
-                    <select
-                      className={selectCls}
-                      value={invoiceId ?? ""}
-                      onChange={(e) => setInvoiceId(e.target.value === "" ? null : Number(e.target.value))}
+                    <div className="relative">
+                      <Input
+                        type="search"
+                        value={invoiceQ}
+                        onChange={(e) => setInvoiceQ(e.target.value)}
+                        onKeyDown={(e) => invoiceBarcodeInput.handleKeyDown(e, setInvoiceQ)}
+                        placeholder="ابحث برقم الفاتورة… (كل الفواتير المستحقّة، لا آخر ٥٠ فقط)"
+                        className={barcodeSearchInputClass}
+                      />
+                      <BarcodeSearchCue />
+                    </div>
+                    <AppSelect
+                      value={invoiceId != null ? String(invoiceId) : "0"}
+                      onValueChange={(v) => {
+                        const id = v === "0" ? null : Number(v);
+                        setInvoiceId(id);
+                        if (id != null) {
+                          const inv = outstandingInvoiceOptions.find((o) => Number(o.id) === id);
+                          if (inv) {
+                            setSelectedInvoiceLabel(`فاتورة #${inv.invoiceNumber} — متبقٍّ ${fmt(invoiceRemaining(inv))} د.ع`);
+                          }
+                        } else {
+                          setSelectedInvoiceLabel("");
+                        }
+                      }}
+                      aria-label="ربط السند بفاتورة"
                     >
-                      <option value="">— بلا ربط —</option>
-                      {outstandingInvoiceOptions.map((inv) => {
-                        const remaining = D(inv.total).minus(D(inv.paidAmount)).toFixed(2);
-                        return (
-                          <option key={Number(inv.id)} value={Number(inv.id)}>
-                            فاتورة #{inv.invoiceNumber} — متبقٍّ {fmt(remaining)} د.ع
-                          </option>
-                        );
-                      })}
-                    </select>
+                      <option value="0">— بلا ربط —</option>
+                      {/* الفاتورة المُختارة تبقى ظاهرة حتى لو ضيّق البحث القائمة عنها. */}
+                      {invoiceId != null && !selectedInList && (
+                        <option value={String(invoiceId)}>{selectedInvoiceLabel || `فاتورة مُختارة #${invoiceId}`}</option>
+                      )}
+                      {outstandingInvoiceOptions.map((inv) => (
+                        <option key={Number(inv.id)} value={String(inv.id)}>
+                          فاتورة #{inv.invoiceNumber} — متبقٍّ {fmt(invoiceRemaining(inv))} د.ع
+                        </option>
+                      ))}
+                    </AppSelect>
                     <p className="text-[11px] text-muted-foreground">
-                      يَظهر هذا السند في سجلّ دفعات الفاتورة المُختارة (تتبّع تسديد دَين مُحدَّد).
+                      {customerInvoices.isFetching
+                        ? "جارٍ جلب الفواتير المستحقّة…"
+                        : "يَظهر هذا السند في سجلّ دفعات الفاتورة المُختارة (تتبّع تسديد دَين مُحدَّد). المتبقّي = الإجمالي − المدفوع − المُرتجَع."}
                     </p>
                   </div>
                 )}
@@ -668,9 +746,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           <Printer aria-hidden className="size-4 ms-1" />
           حفظ + طباعة A4
         </Button>
-        <Link href="/vouchers">
-          <Button variant="outline" disabled={create.isPending}>إلغاء (Esc)</Button>
-        </Link>
+        <Button variant="outline" disabled={create.isPending} onClick={() => void requestCancel()}>
+          إلغاء (Esc)
+        </Button>
         {customerData.data && partyType === "CUSTOMER" && (
           <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
             رصيد العميل قبل السند:

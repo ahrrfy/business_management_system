@@ -1,6 +1,12 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, gt, sql } from "drizzle-orm";
-import { invoices, receipts, shifts, users } from "../../drizzle/schema";
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import {
+  expenses,
+  invoices,
+  receipts,
+  shifts,
+  users,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
 import type { Tx } from "../db";
@@ -59,7 +65,6 @@ function validateCountedBreakdown(
   }
   return total;
 }
-
 
 /** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION/PRINT_SERVICES). */
 export async function openShift(
@@ -164,7 +169,10 @@ export async function openShift(
       };
     } catch (e: any) {
       if (isDupEntry(e)) {
-        throw new TRPCError({ code: "CONFLICT", message: "لديك وردية مفتوحة بالفعل في هذا الفرع" });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "لديك وردية مفتوحة بالفعل في هذا الفرع",
+        });
       }
       throw e;
     }
@@ -172,7 +180,11 @@ export async function openShift(
 }
 
 /** Expected cash = opening balance + cash received − cash refunded during the shift. */
-async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: string) {
+export async function computeExpectedCash(
+  tx: Tx,
+  shiftId: number,
+  openingBalance: string,
+) {
   const rows = await tx
     .select({
       cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
@@ -184,7 +196,9 @@ async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: stri
     // SHIFT-EXPECTED (تدقيق ٢/٧): لا نفلتر بـreceiptStatus — الإلغاء يَعكس بنمط «وسم الأصل REVERSED +
     // إيصال تعويضيّ IN مكتمل»، فحصْر المكتمل يَحذف الأصل ويُبقي التعويض ⇒ عكسٌ مزدوج. جمع كل حالات
     // DRAWER يُصافر الزوج (الأصل + تعويضه) صحيحاً. البطاقات الحيّة تتبع الصيغة نفسها (بلا فلتر حالة).
-    .where(and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER")));
+    .where(
+      and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER")),
+    );
   const cashIn = money(rows[0]?.cashIn ?? "0");
   const cashOut = money(rows[0]?.cashOut ?? "0");
   return money(openingBalance).plus(cashIn).minus(cashOut);
@@ -214,23 +228,38 @@ export async function closeShift(
   actor: Actor & { role?: string },
 ) {
   return withTx(async (tx) => {
-    const rows = await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1);
+    const rows = await tx
+      .select()
+      .from(shifts)
+      .where(eq(shifts.id, input.shiftId))
+      .for("update")
+      .limit(1);
     const sh = rows[0];
-    if (!sh) throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
+    if (!sh)
+      throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
 
     const role = actor.role ?? "cashier";
     if (role === "admin") {
       // مرور حر — للمعالجة العابرة للفروع.
     } else if (role === "manager") {
       if (Number(sh.branchId) !== actor.branchId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إغلاق وردية فرع آخر" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا يمكنك إغلاق وردية فرع آخر",
+        });
       }
     } else {
       if (Number(sh.userId) !== actor.userId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إغلاق وردية موظّف آخر" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا يمكنك إغلاق وردية موظّف آخر",
+        });
       }
       if (Number(sh.branchId) !== actor.branchId) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إغلاق وردية فرع آخر" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "لا يمكنك إغلاق وردية فرع آخر",
+        });
       }
     }
 
@@ -248,13 +277,19 @@ export async function closeShift(
         reconciliationStatus: sh.reconciliationStatus,
         varianceReasonCode: sh.varianceReasonCode,
         varianceReason: sh.varianceReason,
-        requiresManagerReview: money(sh.variance ?? "0").abs().gte(MATERIAL_SHIFT_VARIANCE_IQD),
+        requiresManagerReview: money(sh.variance ?? "0")
+          .abs()
+          .gte(MATERIAL_SHIFT_VARIANCE_IQD),
         treasuryReturn: null,
         alreadyClosed: true as const,
       };
     }
 
-    const expected = await computeExpectedCash(tx, input.shiftId, sh.openingBalance);
+    const expected = await computeExpectedCash(
+      tx,
+      input.shiftId,
+      sh.openingBalance,
+    );
     const counted = money(input.countedCash);
     const variance = counted.minus(expected);
     const hasVariance = variance.abs().gt(VARIANCE_EPSILON);
@@ -262,7 +297,9 @@ export async function closeShift(
     const reason = (input.varianceReason ?? "").trim();
     const reasonCode = input.varianceReasonCode ?? null;
     const varianceApproverId =
-      role === "manager" || role === "admin" ? actor.userId : input.managerApprovedByUserId ?? null;
+      role === "manager" || role === "admin"
+        ? actor.userId
+        : (input.managerApprovedByUserId ?? null);
 
     // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً. بوابة API لا تسمح بإغلاق
     // الوردية مع أي فرق، حتى بموافقة مدير: يجب تصحيح الفاتورة/المرتجع أو تسجيل الحركة
@@ -283,13 +320,21 @@ export async function closeShift(
     // (drawer→0) — لا تسليم جزئيّ/يدويّ. هذا يُبقي لوحة الخزينة متّسقة مع سحب العهدة عند الفتح: صافي
     // أثر الخزينة للوردية = المعدود − عهدة الافتتاح = المبيعات النقدية − المدفوعات النقدية. يُنفَّذ **بعد**
     // computeExpectedCash أعلاه (إيصال الإرجاع OUT بـshiftId هذا لا يدخل حساب المتوقَّع لأنه بعده).
-    let treasuryReturn: { handoverNumber: string; outReceiptId: number; inReceiptId: number } | null = null;
+    let treasuryReturn: {
+      handoverNumber: string;
+      outReceiptId: number;
+      inReceiptId: number;
+    } | null = null;
     if (counted.gt(0)) {
       // استيراد كسول لتجنّب حلقة (cashHandover → ledger → period).
       const { settleShiftReturnTx } = await import("./cashHandoverService");
       treasuryReturn = await settleShiftReturnTx(
         tx,
-        { shiftId: input.shiftId, branchId: Number(sh.branchId), amount: toDbMoney(counted) },
+        {
+          shiftId: input.shiftId,
+          branchId: Number(sh.branchId),
+          amount: toDbMoney(counted),
+        },
         { ...actor, role: actor.role ?? "cashier" },
       );
     }
@@ -328,10 +373,10 @@ export async function closeShift(
       countedCash: toDbMoney(counted),
       variance: toDbMoney(variance),
       reconciliationStatus: !hasVariance
-        ? "MATCHED" as const
+        ? ("MATCHED" as const)
         : varianceApproverId
-          ? "MANAGER_APPROVED" as const
-          : "EXPLAINED" as const,
+          ? ("MANAGER_APPROVED" as const)
+          : ("EXPLAINED" as const),
       varianceReasonCode: hasVariance ? reasonCode : null,
       varianceReason: hasVariance ? reason : null,
       requiresManagerReview: isMaterialVariance,
@@ -340,33 +385,465 @@ export async function closeShift(
   });
 }
 
-/** Z-report data: payment breakdown + sales totals for the shift. */
+type CashReconciliationCategory =
+  | "opening"
+  | "cashSales"
+  | "priorInvoiceCollections"
+  | "otherCashIn"
+  | "cashRefunds"
+  | "expenses"
+  | "cashDrops"
+  | "otherCashOut";
+
+export interface ShiftCashReconciliationItem {
+  category: CashReconciliationCategory | "treasuryHandover";
+  receiptId: number | null;
+  documentType:
+    | "SHIFT"
+    | "INVOICE"
+    | "EXPENSE"
+    | "WORK_ORDER"
+    | "RESERVATION"
+    | "VOUCHER"
+    | "RECEIPT";
+  documentId: number | string;
+  invoiceId: number | null;
+  invoiceNumber: string | null;
+  invoiceShiftId: number | null;
+  expenseId: number | null;
+  workOrderId: number | null;
+  reservationId: number | null;
+  voucherNumber: string | null;
+  referenceNumber: string | null;
+  description: string | null;
+  direction: "IN" | "OUT" | null;
+  amount: string;
+  createdBy: number | null;
+  createdByName: string | null;
+  timestamp: Date;
+  cashBucket: "DRAWER" | "TREASURY" | null;
+  shiftId: number | null;
+  receiptStatus: "PENDING" | "COMPLETED" | "FAILED" | "REVERSED" | null;
+  approvalStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED" | null;
+  pairedTreasuryReceiptId: number | null;
+  pairedTreasuryReceiptStatus:
+    | "PENDING"
+    | "COMPLETED"
+    | "FAILED"
+    | "REVERSED"
+    | null;
+}
+
+/** Z-report data: invoice headline + a receipt-level cash reconciliation for the shift. */
 export async function getShiftReport(shiftId: number) {
   const db = getDb();
   if (!db) return null;
-  const sh = (await db.select().from(shifts).where(eq(shifts.id, shiftId)).limit(1))[0];
+  const sh = (
+    await db.select().from(shifts).where(eq(shifts.id, shiftId)).limit(1)
+  )[0];
   if (!sh) return null;
 
-  const payments = await db
+  const receiptRows = await db
     .select({
-      method: receipts.paymentMethod,
+      id: receipts.id,
+      invoiceId: receipts.invoiceId,
+      workOrderId: receipts.workOrderId,
+      reservationId: receipts.reservationId,
+      branchId: receipts.branchId,
+      shiftId: receipts.shiftId,
       direction: receipts.direction,
-      total: sql<string>`COALESCE(SUM(${receipts.amount}), 0)`,
-      count: sql<number>`COUNT(*)`,
+      amount: receipts.amount,
+      paymentMethod: receipts.paymentMethod,
+      cashBucket: receipts.cashBucket,
+      referenceNumber: receipts.referenceNumber,
+      voucherNumber: receipts.voucherNumber,
+      description: receipts.description,
+      status: receipts.status,
+      approvalStatus: receipts.approvalStatus,
+      createdBy: receipts.createdBy,
+      createdAt: receipts.createdAt,
+      createdByName: users.name,
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceShiftId: invoices.shiftId,
     })
     .from(receipts)
-    // العهدة الوسيطة: إيصال الإرجاع التلقائيّ (CH- OUT بكامل المعدود) يُكتب على الوردية عند الإغلاق
-    // لكنه تفريغ الدرج للخزينة لا صرفٌ تشغيليّ — استبعاده من تفكيك Z كي لا يظهر «نقدي صادر» متضخماً
-    // ويختلّ ثابت المطابقة (الافتتاحيّ + الوارد − الصادر = المعدود). computeExpectedCash يسبقه فلا يتأثّر.
-    .where(and(eq(receipts.shiftId, shiftId), sql`(${receipts.referenceNumber} IS NULL OR ${receipts.referenceNumber} NOT LIKE 'CH-%')`))
-    .groupBy(receipts.paymentMethod, receipts.direction);
+    .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+    .leftJoin(users, eq(receipts.createdBy, users.id))
+    .where(eq(receipts.shiftId, shiftId));
+
+  // reportsDayCloseService يصنّف المصروف المرتبط عبر expenses.receiptId. نجلب الرابط منفصلاً
+  // كي يبقى كل إيصال سطراً واحداً حتى لو وُجدت بيانات مصروف مكرّرة/تالفة على الإيصال نفسه.
+  const receiptIds = receiptRows.map((row) => Number(row.id));
+  const expenseRows =
+    receiptIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: expenses.id,
+            receiptId: expenses.receiptId,
+            description: expenses.description,
+            referenceNumber: expenses.referenceNumber,
+          })
+          .from(expenses)
+          .where(inArray(expenses.receiptId, receiptIds));
+  const expenseByReceipt = new Map<number, (typeof expenseRows)[number]>();
+  for (const expense of expenseRows) {
+    if (
+      expense.receiptId != null &&
+      !expenseByReceipt.has(Number(expense.receiptId))
+    ) {
+      expenseByReceipt.set(Number(expense.receiptId), expense);
+    }
+  }
+
+  // لا تكفي بادئة CH/CD وحدها: قد تكون مرجعاً تجارياً مشروعاً. نعدّ الحركة تحويلاً داخلياً
+  // فقط إذا كان OUT نقد/درج غير مرتبط بمستند وله IN نقد/خزينة مطابق في الفرع والمرجع والمبلغ.
+  const transferCandidates = receiptRows.filter((row) => {
+    const reference = row.referenceNumber ?? "";
+    return (
+      row.direction === "OUT" &&
+      row.paymentMethod === "CASH" &&
+      row.cashBucket === "DRAWER" &&
+      (reference.startsWith("CH-") || reference.startsWith("CD-")) &&
+      row.invoiceId == null &&
+      row.workOrderId == null &&
+      row.reservationId == null &&
+      row.voucherNumber == null &&
+      !expenseByReceipt.has(Number(row.id))
+    );
+  });
+  const transferReferences = Array.from(
+    new Set(
+      transferCandidates
+        .map((row) => row.referenceNumber)
+        .filter((v): v is string => Boolean(v)),
+    ),
+  );
+  const treasuryPairs =
+    transferReferences.length === 0
+      ? []
+      : await db
+          .select({
+            id: receipts.id,
+            branchId: receipts.branchId,
+            referenceNumber: receipts.referenceNumber,
+            amount: receipts.amount,
+            status: receipts.status,
+          })
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.branchId, Number(sh.branchId)),
+              eq(receipts.direction, "IN"),
+              eq(receipts.paymentMethod, "CASH"),
+              eq(receipts.cashBucket, "TREASURY"),
+              inArray(receipts.referenceNumber, transferReferences),
+            ),
+          );
+  const treasuryPairsByKey = new Map<
+    string,
+    (typeof treasuryPairs)[number][]
+  >();
+  for (const pair of treasuryPairs) {
+    if (!pair.referenceNumber) continue;
+    const key = `${Number(pair.branchId)}:${pair.referenceNumber}:${toDbMoney(money(pair.amount))}`;
+    const matches = treasuryPairsByKey.get(key) ?? [];
+    matches.push(pair);
+    treasuryPairsByKey.set(key, matches);
+  }
+  const pairedTransferByReceipt = new Map<
+    number,
+    (typeof treasuryPairs)[number]
+  >();
+  for (const candidate of transferCandidates) {
+    const key = `${Number(candidate.branchId)}:${candidate.referenceNumber}:${toDbMoney(money(candidate.amount))}`;
+    // مطابقة واحد-لواحد: لا يجوز لإيصال خزينة واحد أن «يُثبت» سحبَين متكرّرين بنفس المرجع/المبلغ.
+    const pair = treasuryPairsByKey.get(key)?.shift();
+    if (pair) pairedTransferByReceipt.set(Number(candidate.id), pair);
+  }
+
+  const owner =
+    sh.userId == null
+      ? null
+      : ((
+          await db
+            .select({ name: users.name })
+            .from(users)
+            .where(eq(users.id, Number(sh.userId)))
+            .limit(1)
+        )[0] ?? null);
+
+  const openingItem: ShiftCashReconciliationItem = {
+    category: "opening",
+    receiptId: null,
+    documentType: "SHIFT",
+    documentId: shiftId,
+    invoiceId: null,
+    invoiceNumber: null,
+    invoiceShiftId: null,
+    expenseId: null,
+    workOrderId: null,
+    reservationId: null,
+    voucherNumber: null,
+    referenceNumber: null,
+    description: "رصيد افتتاح الوردية",
+    direction: null,
+    amount: toDbMoney(money(sh.openingBalance)),
+    createdBy: sh.userId == null ? null : Number(sh.userId),
+    createdByName: owner?.name ?? null,
+    timestamp: sh.openedAt,
+    cashBucket: "DRAWER",
+    shiftId,
+    receiptStatus: null,
+    approvalStatus: null,
+    pairedTreasuryReceiptId: null,
+    pairedTreasuryReceiptStatus: null,
+  };
+
+  const makeItem = (
+    row: (typeof receiptRows)[number],
+    category:
+      | Exclude<CashReconciliationCategory, "opening">
+      | "treasuryHandover",
+  ): ShiftCashReconciliationItem => {
+    const expense = expenseByReceipt.get(Number(row.id));
+    const pair = pairedTransferByReceipt.get(Number(row.id));
+    const documentType = expense
+      ? "EXPENSE"
+      : row.invoiceId != null
+        ? "INVOICE"
+        : row.workOrderId != null
+          ? "WORK_ORDER"
+          : row.reservationId != null
+            ? "RESERVATION"
+            : row.voucherNumber != null
+              ? "VOUCHER"
+              : "RECEIPT";
+    const documentId = expense
+      ? Number(expense.id)
+      : row.invoiceId != null
+        ? Number(row.invoiceId)
+        : row.workOrderId != null
+          ? Number(row.workOrderId)
+          : row.reservationId != null
+            ? Number(row.reservationId)
+            : (row.voucherNumber ?? Number(row.id));
+    return {
+      category,
+      receiptId: Number(row.id),
+      documentType,
+      documentId,
+      invoiceId: row.invoiceId == null ? null : Number(row.invoiceId),
+      invoiceNumber: row.invoiceNumber ?? null,
+      invoiceShiftId:
+        row.invoiceShiftId == null ? null : Number(row.invoiceShiftId),
+      expenseId: expense ? Number(expense.id) : null,
+      workOrderId: row.workOrderId == null ? null : Number(row.workOrderId),
+      reservationId:
+        row.reservationId == null ? null : Number(row.reservationId),
+      voucherNumber: row.voucherNumber ?? null,
+      referenceNumber: row.referenceNumber ?? expense?.referenceNumber ?? null,
+      description: row.description ?? expense?.description ?? null,
+      direction: row.direction,
+      amount: toDbMoney(money(row.amount)),
+      createdBy: row.createdBy == null ? null : Number(row.createdBy),
+      createdByName: row.createdByName ?? null,
+      timestamp: row.createdAt,
+      cashBucket: row.cashBucket,
+      shiftId: row.shiftId == null ? null : Number(row.shiftId),
+      receiptStatus: row.status,
+      approvalStatus: row.approvalStatus,
+      pairedTreasuryReceiptId: pair ? Number(pair.id) : null,
+      pairedTreasuryReceiptStatus: pair?.status ?? null,
+    };
+  };
+
+  const breakdown: Record<
+    CashReconciliationCategory,
+    ShiftCashReconciliationItem[]
+  > = {
+    opening: [openingItem],
+    cashSales: [],
+    priorInvoiceCollections: [],
+    otherCashIn: [],
+    cashRefunds: [],
+    expenses: [],
+    cashDrops: [],
+    otherCashOut: [],
+  };
+  const treasuryHandovers: ShiftCashReconciliationItem[] = [];
+
+  for (const row of receiptRows) {
+    if (row.paymentMethod !== "CASH" || row.cashBucket !== "DRAWER") continue;
+    const pairedTransfer = pairedTransferByReceipt.get(Number(row.id));
+    if (pairedTransfer && row.referenceNumber?.startsWith("CH-")) {
+      treasuryHandovers.push(makeItem(row, "treasuryHandover"));
+      continue;
+    }
+    if (row.direction === "IN") {
+      if (row.invoiceId != null && Number(row.invoiceShiftId) === shiftId) {
+        breakdown.cashSales.push(makeItem(row, "cashSales"));
+      } else if (row.invoiceId != null) {
+        breakdown.priorInvoiceCollections.push(
+          makeItem(row, "priorInvoiceCollections"),
+        );
+      } else {
+        breakdown.otherCashIn.push(makeItem(row, "otherCashIn"));
+      }
+      continue;
+    }
+    if (pairedTransfer && row.referenceNumber?.startsWith("CD-")) {
+      breakdown.cashDrops.push(makeItem(row, "cashDrops"));
+    } else if (
+      row.invoiceId != null &&
+      row.voucherNumber == null &&
+      !expenseByReceipt.has(Number(row.id))
+    ) {
+      breakdown.cashRefunds.push(makeItem(row, "cashRefunds"));
+    } else if (
+      row.voucherNumber != null ||
+      expenseByReceipt.has(Number(row.id))
+    ) {
+      breakdown.expenses.push(makeItem(row, "expenses"));
+    } else {
+      breakdown.otherCashOut.push(makeItem(row, "otherCashOut"));
+    }
+  }
+
+  const sumItems = (items: ShiftCashReconciliationItem[]) =>
+    items.reduce((total, item) => total.plus(money(item.amount)), money("0"));
+  const reconciliationAmounts = {
+    opening: sumItems(breakdown.opening),
+    cashSales: sumItems(breakdown.cashSales),
+    priorInvoiceCollections: sumItems(breakdown.priorInvoiceCollections),
+    otherCashIn: sumItems(breakdown.otherCashIn),
+    cashRefunds: sumItems(breakdown.cashRefunds),
+    expenses: sumItems(breakdown.expenses),
+    cashDrops: sumItems(breakdown.cashDrops),
+    otherCashOut: sumItems(breakdown.otherCashOut),
+  };
+  const formulaExpectedCash = reconciliationAmounts.opening
+    .plus(reconciliationAmounts.cashSales)
+    .plus(reconciliationAmounts.priorInvoiceCollections)
+    .plus(reconciliationAmounts.otherCashIn)
+    .minus(reconciliationAmounts.cashRefunds)
+    .minus(reconciliationAmounts.expenses)
+    .minus(reconciliationAmounts.cashDrops)
+    .minus(reconciliationAmounts.otherCashOut);
+  const storedExpectedCash =
+    sh.expectedCash == null ? null : money(sh.expectedCash);
+  const expectedCash =
+    sh.status === "CLOSED" && storedExpectedCash != null
+      ? storedExpectedCash
+      : formulaExpectedCash;
+
+  // تفكيك وسائل الدفع القديم يبقى للتوافق، لكن من نفس صفوف الإيصالات. نستبعد CH المثبت
+  // فقط؛ CD يبقى OUT مرة واحدة. لا نستبعد أي مرجع تجاري لمجرد أنه يبدأ بـCH-.
+  const paymentGroups = new Map<
+    string,
+    {
+      method: (typeof receiptRows)[number]["paymentMethod"];
+      direction: "IN" | "OUT";
+      total: ReturnType<typeof money>;
+      count: number;
+    }
+  >();
+  for (const row of receiptRows) {
+    if (
+      pairedTransferByReceipt.has(Number(row.id)) &&
+      row.referenceNumber?.startsWith("CH-")
+    )
+      continue;
+    const key = `${row.paymentMethod}:${row.direction}`;
+    const current = paymentGroups.get(key) ?? {
+      method: row.paymentMethod,
+      direction: row.direction,
+      total: money("0"),
+      count: 0,
+    };
+    current.total = current.total.plus(money(row.amount));
+    current.count += 1;
+    paymentGroups.set(key, current);
+  }
+  const payments = Array.from(paymentGroups.values()).map((group) => ({
+    method: group.method,
+    direction: group.direction,
+    total: toDbMoney(group.total),
+    count: group.count,
+  }));
 
   const inv = (
     await db
-      .select({ count: sql<number>`COUNT(*)`, total: sql<string>`COALESCE(SUM(${invoices.total}), 0)` })
+      .select({
+        count: sql<number>`COUNT(*)`,
+        total: sql<string>`COALESCE(SUM(${invoices.total}), 0)`,
+      })
       .from(invoices)
       .where(eq(invoices.shiftId, shiftId))
   )[0];
+
+  // إفصاح فواتير تسليم الطلبات (مراجعة ٥/٨): «مبيعاتي» في وردية الاستقبال تشمل فواتير
+  // WORKORDER تُثبَّت لحظة التسليم بينما جزءٌ من قيمتها (العربون) قُبض في ورديةٍ سابقة —
+  // نُبرزها كسطرٍ منفصل كي لا يُقرأ الإجمالي وكأن نقده كلَّه في هذا الدرج. لا يغيّر المطابقة
+  // (expectedCash يعتمد الإيصالات لا الفواتير) — شفافية عرضٍ فقط.
+  const woInv = (
+    await db
+      .select({
+        count: sql<number>`COUNT(*)`,
+        total: sql<string>`COALESCE(SUM(${invoices.total}), 0)`,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.shiftId, shiftId),
+          eq(invoices.sourceType, "WORKORDER"),
+        ),
+      )
+  )[0];
+
+  // ش٤ (I14): «عرابين على طلباتٍ لم تُثبَّت» — مالٌ في هذا الدرج مقبوضٌ على مسوّداتٍ ما زالت
+  // OPEN (صفوف COLLECTION HELD على هذه الوردية، صافي ردودها). المسوّدة المموّلة **لا تمنع
+  // الإغلاق** (المال في receipts والدرج متّسق) — السطر إفصاحٌ يفسّر وجود نقدٍ بلا فاتورة.
+  // (استعلامٌ مضمَّن لا استيراد من reception/deposits — يمنع دورة استيراد deposits⇄shiftService.
+  //  أسماء أعمدة DB الحرفية: orderPayKind/orderPayStatus — فخّ raw SQL الموثَّق.)
+  // دلالة الدرج (مراجعة ش٤): تُطرح ردود **هذه الوردية** فقط (ردُّ درجٍ آخر يخصّ Z درجِه)،
+  // ويُضمّ REFUNDED (قُبض هنا فعلاً) — وإلا تحوّر Z المؤرشف رجعياً وفقد تفسير درجه التاريخيّ.
+  const heldRes = await db.execute(sql`
+    SELECT COUNT(DISTINCT op.draftId) AS c,
+           CAST(COALESCE(SUM(op.amount - COALESCE(rf.s, 0)), 0) AS CHAR) AS t
+    FROM orderPayments op
+    LEFT JOIN (
+      SELECT parentPaymentId, SUM(amount) AS s
+      FROM orderPayments
+      WHERE orderPayKind = 'REFUND' AND shiftId = ${shiftId}
+      GROUP BY parentPaymentId
+    ) rf ON rf.parentPaymentId = op.id
+    WHERE op.shiftId = ${shiftId} AND op.orderPayKind = 'COLLECTION' AND op.orderPayStatus IN ('HELD','REFUNDED')
+  `);
+  const heldData =
+    (heldRes as unknown as [Array<{ c: number | string; t: string }>])[0] ??
+    heldRes;
+  const heldRow = Array.isArray(heldData) ? heldData[0] : undefined;
+  const heldDeposits = {
+    count: Number(heldRow?.c ?? 0),
+    total: String(heldRow?.t ?? "0.00"),
+  };
+
+  // توصيل (١٠/٨) — إفصاح Z: توريدات المناديب وأجور التوصيل كانت تذوب في «نقدي وارد/صادر»
+  // فيتضخّم وارد الوردية بلا تمييز بين مبيعات الدرج وتحصيل عُهدٍ قديمة، ويستحيل تتبّع «أين
+  // دخل توريد فلان؟» إلا بفتح الإيصالات واحداً واحداً. بصمات المراجع: توريد DR-، تسوية/استرداد
+  // DLV-SETTLE-/DLV-RECOVER-، أجور الإرسال CN- (OUT) وأمانات DLV-FEE- (OUT). إفصاح عرضٍ فقط —
+  // لا يمسّ expectedCash ولا المطابقة.
+  const dlvRows = await db
+    .select({
+      inCount: sql<number>`SUM(CASE WHEN ${receipts.direction} = 'IN' AND (${receipts.referenceNumber} LIKE 'DR-%' OR ${receipts.referenceNumber} LIKE 'DLV-SETTLE-%' OR ${receipts.referenceNumber} LIKE 'DLV-RECOVER-%') THEN 1 ELSE 0 END)`,
+      inTotal: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND (${receipts.referenceNumber} LIKE 'DR-%' OR ${receipts.referenceNumber} LIKE 'DLV-SETTLE-%' OR ${receipts.referenceNumber} LIKE 'DLV-RECOVER-%') THEN ${receipts.amount} ELSE 0 END), 0)`,
+      outCount: sql<number>`SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} LIKE 'DR-%' OR ${receipts.referenceNumber} LIKE 'CN-%' OR ${receipts.referenceNumber} LIKE 'DLV-FEE-%') THEN 1 ELSE 0 END)`,
+      outTotal: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} LIKE 'DR-%' OR ${receipts.referenceNumber} LIKE 'CN-%' OR ${receipts.referenceNumber} LIKE 'DLV-FEE-%') THEN ${receipts.amount} ELSE 0 END), 0)`,
+    })
+    .from(receipts)
+    .where(eq(receipts.shiftId, shiftId));
+  const dlv = dlvRows[0];
 
   // أوفلاين (ش٤) — «مبيعات مُزامنة لاحقاً»: فواتير أوفلاينية رُحِّلت **بعد** إغلاق الوردية
   // (createdAt > closedAt). تفسّر زيادة الدرج عند العدّ (النقد قُبض قبل الإغلاق والفاتورة
@@ -375,7 +852,10 @@ export async function getShiftReport(shiftId: number) {
   if (sh.closedAt) {
     const late = (
       await db
-        .select({ count: sql<number>`COUNT(*)`, total: sql<string>`COALESCE(SUM(${invoices.total}), 0)` })
+        .select({
+          count: sql<number>`COUNT(*)`,
+          total: sql<string>`COALESCE(SUM(${invoices.total}), 0)`,
+        })
         .from(invoices)
         .where(
           and(
@@ -385,16 +865,98 @@ export async function getShiftReport(shiftId: number) {
           ),
         )
     )[0];
-    lateSynced = { count: Number(late?.count ?? 0), total: late?.total ?? "0.00" };
+    lateSynced = {
+      count: Number(late?.count ?? 0),
+      total: late?.total ?? "0.00",
+    };
   }
 
   return {
     shift: sh,
     payments,
+    expectedCash: toDbMoney(expectedCash),
     invoiceCount: Number(inv?.count ?? 0),
     salesTotal: inv?.total ?? "0.00",
+    woInvoicesCount: Number(woInv?.count ?? 0),
+    woInvoicesTotal: woInv?.total ?? "0.00",
+    heldDepositsCount: heldDeposits.count,
+    heldDepositsTotal: heldDeposits.total,
+    // إجمالي رؤوس الفواتير معلومات مبيعات خام، وليس نقداً ولا يدخل معادلة الدرج.
+    invoiceSummary: {
+      count: Number(inv?.count ?? 0),
+      grossTotal: inv?.total ?? "0.00",
+      basis: "INVOICE_TOTAL_BY_SHIFT" as const,
+      usedInCashReconciliation: false as const,
+    },
+    cashReconciliation: {
+      opening: toDbMoney(reconciliationAmounts.opening),
+      cashSales: toDbMoney(reconciliationAmounts.cashSales),
+      priorInvoiceCollections: toDbMoney(
+        reconciliationAmounts.priorInvoiceCollections,
+      ),
+      otherCashIn: toDbMoney(reconciliationAmounts.otherCashIn),
+      cashRefunds: toDbMoney(reconciliationAmounts.cashRefunds),
+      expenses: toDbMoney(reconciliationAmounts.expenses),
+      cashDrops: toDbMoney(reconciliationAmounts.cashDrops),
+      otherCashOut: toDbMoney(reconciliationAmounts.otherCashOut),
+      expectedCash: toDbMoney(formulaExpectedCash),
+      storedExpectedCash:
+        storedExpectedCash == null ? null : toDbMoney(storedExpectedCash),
+      matchesStoredExpectedCash:
+        storedExpectedCash == null
+          ? null
+          : formulaExpectedCash.eq(storedExpectedCash),
+      equation: [
+        {
+          key: "opening",
+          operation: "ADD",
+          amount: toDbMoney(reconciliationAmounts.opening),
+        },
+        {
+          key: "cashSales",
+          operation: "ADD",
+          amount: toDbMoney(reconciliationAmounts.cashSales),
+        },
+        {
+          key: "priorInvoiceCollections",
+          operation: "ADD",
+          amount: toDbMoney(reconciliationAmounts.priorInvoiceCollections),
+        },
+        {
+          key: "otherCashIn",
+          operation: "ADD",
+          amount: toDbMoney(reconciliationAmounts.otherCashIn),
+        },
+        {
+          key: "cashRefunds",
+          operation: "SUBTRACT",
+          amount: toDbMoney(reconciliationAmounts.cashRefunds),
+        },
+        {
+          key: "expenses",
+          operation: "SUBTRACT",
+          amount: toDbMoney(reconciliationAmounts.expenses),
+        },
+        {
+          key: "cashDrops",
+          operation: "SUBTRACT",
+          amount: toDbMoney(reconciliationAmounts.cashDrops),
+        },
+        {
+          key: "otherCashOut",
+          operation: "SUBTRACT",
+          amount: toDbMoney(reconciliationAmounts.otherCashOut),
+        },
+      ] as const,
+      breakdown,
+      excludedTreasuryHandovers: treasuryHandovers,
+    },
     lateSyncedCount: lateSynced.count,
     lateSyncedTotal: lateSynced.total,
+    deliveryInCount: Number(dlv?.inCount ?? 0),
+    deliveryInTotal: String(dlv?.inTotal ?? "0.00"),
+    deliveryOutCount: Number(dlv?.outCount ?? 0),
+    deliveryOutTotal: String(dlv?.outTotal ?? "0.00"),
   };
 }
 
@@ -402,10 +964,18 @@ export async function getShiftReport(shiftId: number) {
  * The user's currently open shift in a branch, if any. حين يُمرَّر shiftType يُفلتَر بدقّة عليه
  * (بوّابة RECEPTION تَطلب وردية استقبال صراحةً)؛ بدونه يُرجِع أيّ وردية مفتوحة (توافق رجعي).
  */
-export async function getOpenShift(userId: number, branchId: number, shiftType?: ShiftType) {
+export async function getOpenShift(
+  userId: number,
+  branchId: number,
+  shiftType?: ShiftType,
+) {
   const db = getDb();
   if (!db) return null;
-  const conds = [eq(shifts.userId, userId), eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")];
+  const conds = [
+    eq(shifts.userId, userId),
+    eq(shifts.branchId, branchId),
+    eq(shifts.status, "OPEN"),
+  ];
   if (shiftType) conds.push(eq(shifts.shiftType, shiftType));
   const rows = await db
     .select()
@@ -438,9 +1008,18 @@ export async function openShiftIdTx(
   const open = await tx
     .select({ id: shifts.id, shiftType: shifts.shiftType })
     .from(shifts)
-    .where(and(eq(shifts.userId, userId), eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")));
+    .where(
+      and(
+        eq(shifts.userId, userId),
+        eq(shifts.branchId, branchId),
+        eq(shifts.status, "OPEN"),
+      ),
+    );
   if (open.length === 0) return null;
-  const chosen = open.length === 1 ? open[0] : open.find((s) => s.shiftType === preferredType);
+  const chosen =
+    open.length === 1
+      ? open[0]
+      : open.find((s) => s.shiftType === preferredType);
   if (!chosen) return null;
   const id = Number(chosen.id);
   // قفل صفّ الوردية ثم إعادة فحص الحالة: closeShift يأخذ نفس القفل، فلا تُصدَر receipts
@@ -453,6 +1032,76 @@ export async function openShiftIdTx(
     .limit(1);
   if (!locked[0] || locked[0].status !== "OPEN") return null;
   return id;
+}
+
+/**
+ * يحلّ الوردية "الفعليّة" لعملية نقدٍ صادرة من درج فرعٍ (مرتجع نقديّ) حين يكون الفاعل (غالباً
+ * مديراً — المرتجعات salesManagerProcedure) شخصاً مختلفاً عن الكاشير الذي يُشغّل الدرج الحقيقيّ.
+ * بخلاف openShiftIdTx (يبحث عن وردية *الفاعل* نفسه)، هذه تبحث عن وردية *الفرع* المفتوحة أيّاً كان
+ * صاحبها — الدرج مورد فرعٍ لا مستخدم. ربط إيصال الاسترداد بوردية الفاعل حين تختلف عن وردية الكاشير
+ * الذي سلّم النقد فعلياً كان يُخفي المرتجع عن Z-report صاحب الدرج الحقيقيّ، فيظهر له عند الإغلاق
+ * عجزٌ لا يفهم سببه (النقد خرج من درجه، والنظام حسبه — إن حسبه أصلاً — على وردية غير ورديته).
+ *
+ * - وردية واحدة مفتوحة بالفرع ⇒ تُستعمل تلقائياً (الحالة الشائعة، بلا احتكاك؛ ونتيجتها مطابقة
+ *   لِما كان عليه openShiftIdTx حين يتصادف الفاعل والكاشير الفعليّ — لا تغيير سلوكيّ هناك).
+ * - صفر ⇒ يرمي PRECONDITION_FAILED (لا درج مفتوح يُسترَدّ منه نقد).
+ * - أكثر من واحدة (مثلاً RETAIL+RECEPTION معاً، أو كاشيران) ⇒ يتطلّب explicitShiftId (اختيارٌ
+ *   صريح لأيّ درجٍ خرج منه النقد فعلياً)؛ بدونه يرمي برسالة تُبلغ عن التعدّد.
+ *
+ * يُعيد openingBalance مع shiftId — المستدعي (مرتجعٌ نقديّ) يحتاجه ليحسب computeExpectedCash
+ * ويتحقّق أنّ الدرج المستهدَف يحمل فعلاً هذا المبلغ الآن (نمط cashDropService: لا يُسحَب أكثر ممّا فيه).
+ */
+export async function resolveBranchCashShiftTx(
+  tx: Tx,
+  branchId: number,
+  explicitShiftId?: number | null,
+): Promise<{ shiftId: number; openingBalance: string }> {
+  const open = await tx
+    .select({ id: shifts.id, openingBalance: shifts.openingBalance })
+    .from(shifts)
+    .where(and(eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")));
+
+  let chosen: { id: number | string | bigint; openingBalance: string };
+  if (explicitShiftId != null) {
+    const match = open.find((s) => Number(s.id) === Number(explicitShiftId));
+    if (!match) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "الوردية المحدَّدة لاستقبال الاسترداد النقدي غير مفتوحة في هذا الفرع",
+      });
+    }
+    chosen = match;
+  } else if (open.length === 0) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "لا توجد وردية مفتوحة في هذا الفرع لاسترداد نقدي — افتح وردية أولاً",
+    });
+  } else if (open.length > 1) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `أكثر من وردية مفتوحة في هذا الفرع (${open.length}) — حدّد أيّ درجٍ خرج منه النقد فعلياً`,
+    });
+  } else {
+    chosen = open[0];
+  }
+
+  const id = Number(chosen.id);
+  // قفل صفّ الوردية ثم إعادة فحص الحالة (نمط openShiftIdTx — يمنع سباقاً مع closeShift المتزامن).
+  const locked = await tx
+    .select({ status: shifts.status })
+    .from(shifts)
+    .where(eq(shifts.id, id))
+    .for("update")
+    .limit(1);
+  if (!locked[0] || locked[0].status !== "OPEN") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "الوردية المستهدَفة أُغلقت للتوّ — أعد المحاولة",
+    });
+  }
+  return { shiftId: id, openingBalance: chosen.openingBalance };
 }
 
 /**
@@ -486,8 +1135,17 @@ export async function requireOpenShiftIdTx(
  * يَحلّ دور الفاعل: من actor.role إن مُرّر، وإلا يَقرأه من DB (مرّة واحدة). نُقِل من
  * voucherService للاستعمال المُشترَك بين خدمات المعاملات النقدية (مصاريف/سندات/أوامر شغل).
  */
-export async function resolveActorRoleTx(tx: Tx, userId: number): Promise<string> {
-  const u = (await tx.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1))[0];
+export async function resolveActorRoleTx(
+  tx: Tx,
+  userId: number,
+): Promise<string> {
+  const u = (
+    await tx
+      .select({ role: users.role })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1)
+  )[0];
   return u?.role ?? "";
 }
 
@@ -519,9 +1177,17 @@ export async function shiftIdForCashTx(
     // الأدوار الإدارية: إن وُجدت وردية مفتوحة (تغطية كاشير) ⇒ استَعملها (DRAWER)؛
     // وإلّا shiftId=null + bucket=TREASURY (مشروع، يَظهر في تقرير الخزينة الإدارية).
     const sid = await openShiftIdTx(tx, actor.userId, branchId, preferredType);
-    return sid ? { shiftId: sid, cashBucket: "DRAWER" } : { shiftId: null, cashBucket: "TREASURY" };
+    return sid
+      ? { shiftId: sid, cashBucket: "DRAWER" }
+      : { shiftId: null, cashBucket: "TREASURY" };
   }
   // cashier/warehouse/غيرهم: وردية إلزامية (حماية النقد اليتيم الحقيقي).
-  const sid = await requireOpenShiftIdTx(tx, actor.userId, branchId, label, preferredType);
+  const sid = await requireOpenShiftIdTx(
+    tx,
+    actor.userId,
+    branchId,
+    label,
+    preferredType,
+  );
   return { shiftId: sid, cashBucket: "DRAWER" };
 }

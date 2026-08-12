@@ -9,12 +9,15 @@ import {
   createCustomerNote,
   deleteCustomerNote,
   dueTodayCustomerNotes,
+  dueTodayCustomerNotesPage,
   listCustomerNotes,
+  listCustomerNotesPage,
   resolveCustomerNote,
   updateCustomerNote,
 } from "../customerNoteService";
 
 const actor = { userId: 1, branchId: 1 };
+const BRANCH_SCOPE = { branchId: 1 } as const;
 
 const TABLES = ["customerNotes", "customers", "users", "branches"];
 
@@ -94,7 +97,7 @@ describe("listCustomerNotes", () => {
     const b = await createCustomerNote({ customerId: 1, note: "الثانية" }, actor);
     await createCustomerNote({ customerId: 2, note: "لعميل آخر" }, actor);
 
-    const rows = await listCustomerNotes({ customerId: 1, includeResolved: true });
+    const rows = await listCustomerNotes({ customerId: 1, includeResolved: true }, BRANCH_SCOPE);
     expect(rows).toHaveLength(2);
     expect(rows[0].id).toBe(b.id);
     expect(rows[1].id).toBe(a.id);
@@ -106,9 +109,36 @@ describe("listCustomerNotes", () => {
     await resolveCustomerNote(a.id, true, actor);
     await createCustomerNote({ customerId: 1, note: "الثانية" }, actor);
 
-    const rows = await listCustomerNotes({ customerId: 1, includeResolved: false });
+    const rows = await listCustomerNotes({ customerId: 1, includeResolved: false }, BRANCH_SCOPE);
     expect(rows).toHaveLength(1);
     expect(rows[0].note).toBe("الثانية");
+  });
+  it("paginates and counts in SQL beyond the former 500-row ceiling, including q/date filters", async () => {
+    await db().insert(s.customerNotes).values(
+      Array.from({ length: 510 }, (_, index) => ({
+        customerId: 1,
+        note: index % 100 === 0 ? `needle-${index}` : `bulk-${index}`,
+        followUpDate: null,
+        isResolved: false,
+        createdBy: 1,
+        branchId: 1,
+        createdAt: new Date(index % 2 === 0 ? "2026-08-10T12:00:00.000Z" : "2026-08-09T12:00:00.000Z"),
+      })),
+    );
+
+    const tail = await listCustomerNotesPage(
+      { customerId: 1, includeResolved: true, limit: 50, offset: 500 },
+      BRANCH_SCOPE,
+    );
+    expect(tail.total).toBe(510);
+    expect(tail.rows).toHaveLength(10);
+
+    const filtered = await listCustomerNotesPage(
+      { customerId: 1, includeResolved: true, q: "needle", from: "2026-08-10", to: "2026-08-10", limit: 20 },
+      BRANCH_SCOPE,
+    );
+    expect(filtered.total).toBe(6);
+    expect(filtered.rows).toHaveLength(6);
   });
 });
 
@@ -119,7 +149,7 @@ describe("dueTodayCustomerNotes", () => {
     await createCustomerNote({ customerId: 1, note: "مستقبلية", followUpDate: todayStr(5) }, actor);
     await createCustomerNote({ customerId: 1, note: "بلا تاريخ" }, actor);
 
-    const rows = await dueTodayCustomerNotes();
+    const rows = await dueTodayCustomerNotes(BRANCH_SCOPE);
     expect(rows.map((r) => r.note)).toEqual(["متأخرة", "اليوم"]);
     expect(rows[0].customerName).toBe("أحمد");
   });
@@ -127,8 +157,58 @@ describe("dueTodayCustomerNotes", () => {
   it("يستثني الملاحظات المُنجَزة حتى لو تاريخها اليوم", async () => {
     const r = await createCustomerNote({ customerId: 1, note: "اليوم لكن مُنجَزة", followUpDate: todayStr(0) }, actor);
     await resolveCustomerNote(r.id, true, actor);
-    const rows = await dueTodayCustomerNotes();
+    const rows = await dueTodayCustomerNotes(BRANCH_SCOPE);
     expect(rows).toHaveLength(0);
+  });
+  it("switches at Baghdad midnight, keeps branch isolation, and exposes every due row beyond 200", async () => {
+    await db().insert(s.branches).values({ id: 2, name: "Branch two", code: "B2", type: "SALES" });
+    await db().insert(s.users).values({ id: 2, openId: "u2", name: "Manager two", role: "manager", branchId: 2 });
+    await db().insert(s.customerNotes).values([
+      { customerId: 1, note: "boundary-own", followUpDate: "2026-08-11", createdBy: 1, branchId: 1 },
+      { customerId: 1, note: "boundary-other", followUpDate: "2026-08-11", createdBy: 2, branchId: 2 },
+    ]);
+
+    const before = await dueTodayCustomerNotesPage({}, BRANCH_SCOPE, new Date("2026-08-10T20:59:59.999Z"));
+    expect(before).toMatchObject({ rows: [], total: 0 });
+
+    const after = await dueTodayCustomerNotesPage({}, BRANCH_SCOPE, new Date("2026-08-10T21:00:00.000Z"));
+    expect(after.total).toBe(1);
+    expect(after.rows.map((row) => row.note)).toEqual(["boundary-own"]);
+
+    await db().insert(s.customerNotes).values(
+      Array.from({ length: 225 }, (_, index) => ({
+        customerId: 1,
+        note: `dense-${index}`,
+        followUpDate: "2026-08-11",
+        createdBy: 1,
+        branchId: 1,
+      })),
+    );
+    const page = await dueTodayCustomerNotesPage(
+      { limit: 100, offset: 200 },
+      BRANCH_SCOPE,
+      new Date("2026-08-10T21:00:00.000Z"),
+    );
+    expect(page.total).toBe(226);
+    expect(page.rows).toHaveLength(26);
+    expect(page.rows.every((row) => row.branchId === 1)).toBe(true);
+
+    const allPagedIds: number[] = [];
+    for (let offset = 0; offset < page.total; offset += 75) {
+      const current = await dueTodayCustomerNotesPage(
+        { limit: 75, offset },
+        BRANCH_SCOPE,
+        new Date("2026-08-10T21:00:00.000Z"),
+      );
+      expect(current.total).toBe(226);
+      allPagedIds.push(...current.rows.map((row) => row.id));
+    }
+    expect(allPagedIds).toHaveLength(226);
+    expect(new Set(allPagedIds).size).toBe(226);
+
+    const legacy = await dueTodayCustomerNotes(BRANCH_SCOPE, new Date("2026-08-10T21:00:00.000Z"));
+    expect(legacy).toHaveLength(200);
+    expect(legacy.some((row) => row.note === "boundary-other")).toBe(false);
   });
 });
 

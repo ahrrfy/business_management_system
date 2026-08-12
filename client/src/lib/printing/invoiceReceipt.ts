@@ -8,6 +8,7 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
   CHECK: "صك",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
+  TELECOM: "رصيد زين",
 };
 
 export interface InvoiceReceiptSource {
@@ -15,6 +16,9 @@ export interface InvoiceReceiptSource {
   invoiceDate: DateInput;
   customerName?: string | null;
   salespersonName?: string | null;
+  /** G3 (١١/٨): رقم الوردية التي أُنشئت عليها الفاتورة — يُطبع في ترويسة إيصال إعادة الطباعة
+   *  ليوثّق أصل المعاملة (invoices.shiftId). */
+  shiftId?: number | null;
   subtotal: string | number;
   discountAmount?: string | number | null;
   taxAmount?: string | number | null;
@@ -22,6 +26,11 @@ export interface InvoiceReceiptSource {
   paidAmount?: string | number | null;
   returnedTotal?: string | number | null;
   paymentMethod?: string | null;
+  /** ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا الفاتورة — إفصاحٌ للزبون على
+   *  الإيصال المُعاد طبعه (يُصوَّر ويُرسَل). عرضٌ فقط — لا يمسّ الإجمالي/الإيراد. */
+  courierName?: string | null;
+  courierFee?: string | number | null;
+  courierFeeCollection?: "COURIER" | "COUNTER" | "SHOP" | null;
   items: {
     productName?: string | null;
     variantName?: string | null;
@@ -29,6 +38,8 @@ export interface InvoiceReceiptSource {
     quantity: string | number;
     unitPrice: string | number;
     total: string | number;
+    /** هدايا الفاتورة (0149): يُوسَم الاسم بـ«هدية» في الإيصال الحراريّ (السعر صفر أصلاً). */
+    isGift?: boolean | null;
   }[];
 }
 
@@ -46,11 +57,13 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     time: fmtTime(d.invoiceDate),
     cashierName: d.salespersonName ?? null,
     customerName: d.customerName ?? null,
+    shiftId: d.shiftId ?? null,
     items: d.items.map((item) => ({
       name: [
-        item.productName ?? "صنف",
+        item.productName ?? "منتج",
         item.variantName || null,
         item.unitName ? `(${item.unitName})` : null,
+        item.isGift ? "هدية مجاناً" : null,
       ].filter(Boolean).join(" — "),
       quantity: D(item.quantity).toNumber(),
       price: item.unitPrice,
@@ -63,5 +76,8 @@ export function invoiceToReceipt(d: InvoiceReceiptSource): ReceiptBrowserData {
     paid: paid.toString(),
     credit: credit.gt(0) ? credit.toString() : null,
     paymentMethod: d.paymentMethod ? (PAYMENT_METHOD_LABEL[d.paymentMethod] ?? d.paymentMethod) : null,
+    delivery: d.courierName && Number(d.courierFee ?? 0) > 0
+      ? { partyName: d.courierName, fee: d.courierFee ?? "0", feeCollection: d.courierFeeCollection ?? "COURIER" }
+      : null,
   };
 }

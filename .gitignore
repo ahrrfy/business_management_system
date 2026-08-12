@@ -5,6 +5,7 @@
 # Build outputs
 dist/
 build/
+.runtime/
 
 # Environment variables — استثناء كل ‎.env.* بقوّة (يشمل ‎.env.production الشائع)
 # مع استثناء صريح للقوالب المنشورة فقط. سدّ فخّ التزام أسرار حيّة (تدقيق ١٤/٦/٢٦).
@@ -56,6 +57,22 @@ backups/
 # ومفتاح التوقيع وحُزَم البناء (keystore/AAB/APK لا تُلتزم — أسرار + مخرجات بناء محلّية).
 twa/*
 !twa/twa-manifest.json
+
+# Native Android — commit source and wrapper only; never commit local SDK state,
+# signing material, Firebase credentials, or generated artifacts.
+android-native/.gradle/
+android-native/.kotlin/
+android-native/**/build/
+android-native/local.properties
+android-native/app/google-services.json
+android-native/**/*.jks
+android-native/**/*.keystore
+android-native/**/*.apk
+android-native/**/*.aab
+android-native/**/*.idsig
+
+# Local emulator/screenshots/test evidence generated during native QA.
+/artifacts/
 
 # Image studio — أصول @imgly ML (استضافة ذاتية، تُهيَّأ مرّة، ~40MB، لا تُلتزم)
 client/public/imgly-assets/

@@ -13,6 +13,9 @@ import * as s from "../../../drizzle/schema";
 import {
   ALL_ROLES,
   ROLE_TEMPLATES,
+  SECTION_CASHIER_ROLES,
+  canUseStation,
+  diffFromTemplate,
   moduleAccessAllowed,
   type PermissionMap,
 } from "@shared/permissions";
@@ -21,7 +24,7 @@ import { resolveCustomRole } from "../../context";
 import { canSeeCostForUser } from "../../trpc";
 import { getDb } from "../../db";
 import { createRole, setRoleActive } from "../roleService";
-import { createUser, setUserActive } from "../userService";
+import { createUser, setUserActive, updateUser } from "../userService";
 
 /** مواصفة بوّابة حقيقية (مرآة تعريفها في trpc.ts) — module + minLevel + الأدوار المسموحة. */
 type Gate = { name: string; module: string; level: "FULL" | "READ"; allowed: readonly string[] };
@@ -129,6 +132,21 @@ describe("تكافؤ RBAC — المسار «خارج القائمة» (المن
   });
 });
 
+describe("RBAC — digital-card POS station guard", () => {
+  it("allows a retail cashier and rejects print/reception cashiers", () => {
+    const section = (key: string) => SECTION_CASHIER_ROLES.find((role) => role.key === key)!;
+    const retail = diffFromTemplate("cashier", section("retail_cashier").permissions);
+    const print = diffFromTemplate("cashier", section("print_cashier").permissions);
+    const reception = diffFromTemplate("cashier", section("reception_clerk").permissions);
+
+    // This is the exact RETAIL predicate used by digitalCardsPosProcedure,
+    // following its digital_cards=READ module check.
+    expect(canUseStation("RETAIL", "cashier", retail)).toBe(true);
+    expect(canUseStation("RETAIL", "cashier", print)).toBe(false);
+    expect(canUseStation("RETAIL", "cashier", reception)).toBe(false);
+  });
+});
+
 describe("تكافؤ RBAC — عزل الأقسام للأدوار المبذورة (عبر resolveCustomRole الحقيقيّ)", () => {
   async function resolvedUserOf(customRoleId: number) {
     const { userId } = await createUser(
@@ -157,6 +175,27 @@ describe("تكافؤ RBAC — عزل الأقسام للأدوار المبذو�
     expect(decide(SECTION_GATES.posCashier, u.role, u.permissionsOverride)).toBe(true);
     expect(decide(SECTION_GATES.salesCashier, u.role, u.permissionsOverride)).toBe(false);
     expect(decide(SECTION_GATES.workordersCashier, u.role, u.permissionsOverride)).toBe(false);
+  });
+
+  it("الاستثناء الفردي فوق الدور المخصّص يمنح أو يسحب الوحدة للحساب وحده", async () => {
+    const restricted = await createRole(
+      { label: "مقيّد", baseRole: "cashier", permissions: { ...ROLE_TEMPLATES.cashier, sales: "NONE", workorders: "NONE" } }, actor,
+    );
+    const sales = await createRole(
+      { label: "بيع", baseRole: "cashier", permissions: { ...ROLE_TEMPLATES.cashier, pos: "NONE", workorders: "NONE" } }, actor,
+    );
+    const granted = await createUser({ name: "منح", username: "grant", password: PW, customRoleId: restricted.id }, actor);
+    const revoked = await createUser({ name: "سحب", username: "revoke", password: PW, customRoleId: sales.id }, actor);
+
+    await updateUser({ userId: granted.userId, permissionsOverride: { sales: "FULL" } }, actor);
+    await updateUser({ userId: revoked.userId, permissionsOverride: { sales: "NONE" } }, actor);
+
+    const grantUser = (await db().select().from(s.users).where(sql`id = ${granted.userId}`).limit(1))[0] as any;
+    const revokeUser = (await db().select().from(s.users).where(sql`id = ${revoked.userId}`).limit(1))[0] as any;
+    await resolveCustomRole(grantUser);
+    await resolveCustomRole(revokeUser);
+    expect(decide(SECTION_GATES.salesCashier, grantUser.role, grantUser.permissionsOverride)).toBe(true);
+    expect(decide(SECTION_GATES.salesCashier, revokeUser.role, revokeUser.permissionsOverride)).toBe(false);
   });
 });
 

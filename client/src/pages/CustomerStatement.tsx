@@ -14,11 +14,13 @@ import { exportRows } from "@/lib/export";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { Search, X as XIcon } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
+import { invoiceStatusLabel, priceTierLabel, sourceTypeLabel } from "@/lib/labels";
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
 const ymd = (d: Date) =>
@@ -54,6 +56,11 @@ const STATUS_LABEL: Record<string, string> = {
   RETURNED: "مرتجعة",
   CONFIRMED: "مؤكّدة",
 };
+/** حالة سند القبض/الصرف كما يعيدها كشف الحساب (COMPLETED/REVERSED فقط بعد فلترة الخادم). */
+const RECEIPT_STATUS_LABEL: Record<string, string> = {
+  COMPLETED: "مكتملة",
+  REVERSED: "معكوسة",
+};
 const STATUS_CLS: Record<string, string> = {
   PENDING: "badge-status-pending",
   PARTIALLY_PAID: "badge-status-pending",
@@ -63,7 +70,7 @@ const STATUS_CLS: Record<string, string> = {
   CONFIRMED: "bg-muted text-muted-foreground",
 };
 const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 
 export default function CustomerStatement() {
@@ -79,14 +86,30 @@ export default function CustomerStatement() {
     const qs = p.toString();
     navigate(qs ? `${loc}?${qs}` : loc, { replace: true });
   };
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // فترة الكشف + فلتر الفواتير محفوظان في الرابط (useUrlFilters) — رابطٌ للكشف بفترته المحدَّدة
+  // يبقى صالحاً بعد إعادة تحميل الصفحة أو مشاركته، لا يُعاد لـ«الكل» صامتاً. id يبقى بآليته الحالية
+  // (useSearch/navigate أعلاه) — لا تعارض: write() في useUrlFilters يقرأ الرابط الحيّ عند كل كتابة.
+  const [periodF, setPeriodF] = useUrlFilters({ from: "", to: "", filter: "ALL" });
+  const from = periodF.from;
+  const to = periodF.to;
+  const invoiceFilter = periodF.filter as "ALL" | "DEPOSIT_DUE" | "OUTSTANDING" | "SETTLED";
+  const setFrom = (v: string) => setPeriodF({ from: v });
+  const setTo = (v: string) => setPeriodF({ to: v });
+  const setInvoiceFilter = (v: string) => setPeriodF({ filter: v });
 
   const index = trpc.reports.customersIndex.useQuery();
   const stmt = trpc.reports.customerStatement.useQuery(
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!customerId }
   );
+  const shownInvoices = useMemo(() => (stmt.data?.invoices ?? []).filter((i) => {
+    const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
+    const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
+    if (invoiceFilter === "DEPOSIT_DUE") return active && (i.sourceType === "ORDER" || i.sourceType === "WORKORDER") && D(i.paidAmount).gt(0) && remaining.gt(0);
+    if (invoiceFilter === "OUTSTANDING") return active && remaining.gt(0);
+    if (invoiceFilter === "SETTLED") return active && remaining.lte(0);
+    return true;
+  }), [stmt.data?.invoices, invoiceFilter]);
 
   // دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُبنى مرّة ويُشارَك بين الطباعة وتصدير Excel.
   const ledger = useMemo(() => {
@@ -289,7 +312,7 @@ export default function CustomerStatement() {
                   <div className="text-lg font-semibold">{stmt.data.customer.name}</div>
                   <div className="text-xs"><CopyInline value={stmt.data.customer.phone} /></div>
                   <div className="text-xs text-muted-foreground">
-                    {stmt.data.customer.customerType} · فئة سعرية {stmt.data.customer.defaultPriceTier}
+                    {stmt.data.customer.customerType} · فئة سعرية {priceTierLabel(stmt.data.customer.defaultPriceTier)}
                     {stmt.data.customer.creditLimit && Number(stmt.data.customer.creditLimit) > 0
                       ? ` · سقف ائتمان ${fmt(stmt.data.customer.creditLimit)}`
                       : ""}
@@ -306,6 +329,14 @@ export default function CustomerStatement() {
                   />
                   <StatBalance label="الرصيد الحالي" value={stmt.data.summary.currentBalance} />
                 </div>
+                {/* ش٤ (I11): سطر إفصاح العرابين المحتجزة — مالٌ مقبوضٌ بإيصالٍ لم يُطبَّق على فاتورةٍ
+                    ولا يمسّ الرصيد الجاري؛ بدونه يسأل العميل «أين عربوني؟» والكشف صامت. */}
+                {Number(stmt.data.summary.heldDepositsTotal ?? 0) > 0 && (
+                  <div className="mt-2 rounded-md border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)] px-3 py-2 text-xs font-bold text-[var(--sem-info)]">
+                    عربون قيد الاحتجاز — غير مُطبَّق على فاتورة: {fmt(stmt.data.summary.heldDepositsTotal)} د.ع
+                    <span className="ms-2 font-semibold text-muted-foreground">(يُخصَم من الطلب عند تثبيته أو يُستردّ بسنده)</span>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -320,7 +351,15 @@ export default function CustomerStatement() {
 
           <Card>
             <CardContent className="p-0">
-              <div className="p-3 border-b bg-muted/30 text-sm font-medium">الفواتير</div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-muted/30 p-3">
+                <span className="text-sm font-medium">الفواتير</span>
+                <select className="h-8 rounded-md border bg-background px-2 text-xs" value={invoiceFilter} onChange={(e) => setInvoiceFilter(e.target.value as typeof invoiceFilter)}>
+                  <option value="ALL">كل الفواتير</option>
+                  <option value="DEPOSIT_DUE">عربون — متبقّي للتحصيل</option>
+                  <option value="OUTSTANDING">عليها مبلغ متبقٍ</option>
+                  <option value="SETTLED">مسوّاة بالكامل</option>
+                </select>
+              </div>
               <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
@@ -348,25 +387,29 @@ export default function CustomerStatement() {
                       <td className="p-2" colSpan={2} />
                     </tr>
                   )}
-                  {stmt.data.invoices.map((i) => {
+                  {shownInvoices.map((i) => {
                     // §٥ + REP-06: المتبقّي = total − (المدفوع + المُرتجَع) بدقّة Decimal (لا Number float).
                     // إغفال returnedTotal كان يُظهر متبقّياً موجباً لفاتورة مُرتجَعة جزئياً سُدِّد صافيها.
                     const remaining = positiveDiff(i.total, D(i.paidAmount).plus(i.returnedTotal).toFixed(2)).toFixed(2);
                     const returned = D(i.returnedTotal);
+                    const depositDue = i.status !== "CANCELLED" && i.status !== "RETURNED"
+                      && (i.sourceType === "ORDER" || i.sourceType === "WORKORDER")
+                      && D(i.paidAmount).gt(0) && D(remaining).gt(0);
                     return (
-                      <tr key={i.id} className="border-t">
+                      <tr key={i.id} className={`border-t ${depositDue ? "bg-[var(--sem-warn-bg)] shadow-[inset_-3px_0_0_var(--sem-warn)]" : ""}`}>
                         <td className="p-2"><CopyInline value={i.invoiceNumber} /></td>
                         <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(i.invoiceDate)}</td>
                         <td className="p-2 text-xs" dir="ltr">{i.dueDate ? String(i.dueDate).slice(0, 10) : "—"}</td>
-                        <td className="p-2 text-xs">{i.sourceType}</td>
+                        <td className="p-2 text-xs">{sourceTypeLabel(i.sourceType)}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.total)}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.paidAmount)}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{returned.isZero() ? "—" : fmt(returned.toFixed(2))}</td>
                         <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
                         <td className="p-2">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[i.status] ?? "bg-muted"}`}>
-                            {STATUS_LABEL[i.status] ?? i.status}
+                            {STATUS_LABEL[i.status] ?? invoiceStatusLabel(i.status)}
                           </span>
+                          {depositDue && <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>}
                         </td>
                         <td className="p-2 text-center">
                           <Link href={`/invoices/${i.id}`}>
@@ -376,8 +419,8 @@ export default function CustomerStatement() {
                       </tr>
                     );
                   })}
-                  {stmt.data.invoices.length === 0 && (
-                    <TableEmptyRow colSpan={10} message="لا فواتير لهذا العميل." />
+                  {shownInvoices.length === 0 && (
+                    <TableEmptyRow colSpan={10} message="لا فواتير مطابقة لهذا الفلتر." />
                   )}
                 </tbody>
               </table>
@@ -387,6 +430,10 @@ export default function CustomerStatement() {
 
           <Card>
             <CardContent className="p-0">
+              {/* stmt.data.payments مُقيَّدة بالفترة (from/to) خادمياً فعلاً — getCustomerStatement
+                  (server/services/reports/arAging.ts) يُطبِّق نفس شرط from/to على الإيصالات
+                  والتحصيلات المندوبيّة (COD) ومرتجعات البيع (RETURN) الثلاثة، لا الفواتير وحدها.
+                  تحقّقٌ صريح (لا تُطبَّق فلترة عميل إضافية هنا كي لا نُكرّر منطقاً صحيحاً أصلاً). */}
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">الدفعات والاستردادات</div>
               <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
@@ -422,7 +469,8 @@ export default function CustomerStatement() {
                       </td>
                       <td className="p-2 text-xs">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
                       <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
-                      <td className="p-2 text-xs">{p.status}</td>
+                      {/* حالة السند (receipts.status): COMPLETED/REVERSED — ليست حالة فاتورة فلا تصلح invoiceStatusLabel. */}
+                      <td className="p-2 text-xs">{RECEIPT_STATUS_LABEL[p.status] ?? p.status}</td>
                     </tr>
                   ))}
                   {stmt.data.payments.length === 0 && (

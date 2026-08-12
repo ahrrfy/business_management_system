@@ -10,12 +10,30 @@ const COMPANY_NAME = "المكتبة العربية للطباعة والقرط�
 /** تحويل رقم عراقي (07XX-XXX-XXXX أو 07XXXXXXXXX) إلى صيغة دولية +964 */
 export function toIraqiIntl(phone: string | null | undefined): string | null {
   if (!phone) return null;
+  const trimmed = phone.trim();
   const digits = phone.replace(/\D/g, "");
+  // E.164 صريح لدعم العملاء/المورّدين خارج العراق (+966، +971…)، حتى 15 رقماً.
+  if (trimmed.startsWith("+") && digits.length >= 8 && digits.length <= 15) return `+${digits}`;
+  // بادئة الاتصال الدولي 00.
+  if (digits.startsWith("00") && digits.length >= 10 && digits.length <= 17) return `+${digits.slice(2)}`;
   if (digits.startsWith("9647")) return `+${digits}`;
   if (digits.startsWith("07") && digits.length === 11) return `+964${digits.slice(1)}`;
   if (digits.startsWith("7") && digits.length === 10) return `+964${digits}`;
   // رقم دولي موجود
   if (digits.startsWith("964")) return `+${digits}`;
+  return null;
+}
+
+/**
+ * يختار أول رقم واتساب صالح من المرشّحات بالترتيب الممرّر.
+ * الاستعمال المقصود: whatsapp الصريح، ثم هاتف العملية/المستلم، ثم الهاتف الرئيسي والبدائل.
+ */
+export function preferredWhatsAppPhone(
+  ...candidates: Array<string | null | undefined>
+): string | null {
+  for (const candidate of candidates) {
+    if (toIraqiIntl(candidate)) return candidate?.trim() || null;
+  }
   return null;
 }
 
@@ -42,14 +60,45 @@ export function sanitizeForWhatsApp(text: string): string {
     .replace(/\n{3,}/g, "\n\n");  // منع تراكم الأسطر الفارغة بعد إزالة سطرٍ كان إيموجي فقط
 }
 
-/** فتح واتساب مع رسالة جاهزة. إذا لم يكن هناك رقم، يفتح wa.me بدون رقم (المستخدم يختار المحادثة) */
-export function openWhatsApp(phone: string | null | undefined, message: string): void {
+export type WhatsAppLinks = { appUrl: string; webUrl: string };
+
+/**
+ * يبني رابط التطبيق الأصلي + رابط ويب احتياطي. `whatsapp://` يفتح WhatsApp/Business
+ * مباشرةً حسب التطبيق المسجّل في الهاتف، و`wa.me` يغطي المتصفح أو غياب التطبيق.
+ */
+export function buildWhatsAppLinks(phone: string | null | undefined, message: string): WhatsAppLinks {
   const intl = toIraqiIntl(phone);
   const encoded = encodeURIComponent(sanitizeForWhatsApp(message).trim());
-  const url = intl
-    ? `https://wa.me/${intl.replace("+", "")}?text=${encoded}`
-    : `https://wa.me/?text=${encoded}`;
-  window.open(url, "_blank", "noopener,noreferrer");
+  const digits = intl?.replace("+", "") ?? "";
+  return {
+    appUrl: digits
+      ? `whatsapp://send?phone=${digits}&text=${encoded}`
+      : `whatsapp://send?text=${encoded}`,
+    webUrl: digits
+      ? `https://wa.me/${digits}?text=${encoded}`
+      : `https://wa.me/?text=${encoded}`,
+  };
+}
+
+/** فتح محادثة واتساب مباشرة على الهاتف، مع رجوع آمن إلى wa.me إن لم يكن التطبيق مثبتاً. */
+export function openWhatsApp(phone: string | null | undefined, message: string): void {
+  const { appUrl, webUrl } = buildWhatsAppLinks(phone, message);
+  const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+  if (!mobile) {
+    window.open(webUrl, "_blank", "noopener,noreferrer");
+    return;
+  }
+
+  let leftPage = false;
+  const markLeft = () => { leftPage = true; };
+  window.addEventListener("pagehide", markLeft, { once: true });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") leftPage = true;
+  }, { once: true });
+  window.location.assign(appUrl);
+  window.setTimeout(() => {
+    if (!leftPage && document.visibilityState === "visible") window.location.assign(webUrl);
+  }, 900);
 }
 
 // ─────────────────────────────────────────────
@@ -341,6 +390,29 @@ export function buildOnlineOrderFollowupMessage(d: OnlineOrderFollowupData): str
   return L.join("\n");
 }
 
+export interface PrintPricingMessageData {
+  /** "صغير المقاس (٤ألف×٦ …) · ملوّن · وجهان · ١٠٠ نسخة × ٢ صفحة" أو "عريض ١×٢ م × ٣ قطعة (٦ م²)". */
+  jobDescription: string;
+  lines: Array<{ label: string; detail?: string | null; amount: string | number }>;
+  totalCost: string | number;
+  suggestedPrice: string | number;
+  unitPrice: string | number;
+}
+
+/**
+ * رسالة عرض سعر طباعة سريع من حاسبة التسعير — مخرج عملي يُرسَل مباشرةً للعميل عبر wa.me بلا
+ * إنشاء عرض سعر رسمي (لا ربط كتالوجيّ لأصنافٍ حرّة التسعير هنا). بلا إيموجي، نمط buildQuotationMessage.
+ */
+export function buildPrintPricingMessage(d: PrintPricingMessageData): string {
+  const L: string[] = [`*تسعير طباعة رقمية*`, COMPANY_NAME, `التاريخ: ${today()}`, "", d.jobDescription, ""];
+  for (const l of d.lines) L.push(`  • ${l.label}${l.detail ? ` (${l.detail})` : ""}: ${fmtMoney(l.amount)} د.ع.`);
+  L.push("", `إجمالي الكلفة: ${fmtMoney(d.totalCost)} د.ع.`);
+  L.push(`*السعر المقترح: ${fmtMoney(d.suggestedPrice)} د.ع.*`);
+  L.push(`سعر الوحدة الواحدة: ${fmtMoney(d.unitPrice)} د.ع.`);
+  L.push("", "هذا تقديرٌ أوّليّ — للتأكيد والحجز تواصلوا معنا.", COMPANY_NAME);
+  return L.join("\n");
+}
+
 export interface WorkOrderStatusMessageData {
   orderNumber: string;
   title: string;
@@ -383,6 +455,32 @@ export function buildWorkOrderStatusMessage(d: WorkOrderStatusMessageData): stri
   if (d.status === "READY" && d.amountDue != null && Number(d.amountDue) > 0) {
     L.push(`الرصيد المستحق عند الاستلام: ${fmtMoney(d.amountDue)} د.ع.`);
   }
+  L.push("", `للاستفسار تواصلوا معنا — ${COMPANY_NAME}`);
+  return L.join("\n");
+}
+
+export interface OperationalContactMessageData {
+  partyName?: string | null;
+  entityLabel: string;
+  reference?: string | null;
+  title?: string | null;
+  status?: string | null;
+  dueAt?: string | Date | null;
+  nextAction?: string | null;
+}
+
+/** رسالة تشغيلية عامة للكيانات التي لا تحتاج قالب مستند كامل (حجز/مهمة/جهة/متابعة). */
+export function buildOperationalContactMessage(d: OperationalContactMessageData): string {
+  const L: string[] = [
+    `*متابعة ${d.entityLabel}${d.reference ? ` #${d.reference}` : ""}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.partyName) L.push(`مرحباً ${d.partyName}،`);
+  if (d.title) L.push(d.title);
+  if (d.status) L.push(`الحالة الحالية: ${d.status}`);
+  if (d.dueAt) L.push(`الموعد: ${fmtDate(d.dueAt)}`);
+  if (d.nextAction) L.push("", d.nextAction);
   L.push("", `للاستفسار تواصلوا معنا — ${COMPANY_NAME}`);
   return L.join("\n");
 }

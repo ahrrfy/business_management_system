@@ -1,4 +1,4 @@
-// بند 12أ (٧/٧): شاشة الأقساط والشيكات الآجلة — تبويب «الأقساط» في محور العملاء.
+// بند 12أ (٧/٧): شاشة الأقساط والصكوك الآجلة — تبويب «الأقساط» في محور العملاء.
 //
 // الخطة = جدولة تحصيل فوق ذمّة العميل القائمة (لا قيد عند الإنشاء)؛ سداد كل قسط يُنشئ
 // سند قبض حقيقياً بالمسار الموحَّد (قد يعلَّق على اعتماد مدير ثانٍ للمبالغ الكبيرة — Maker-Checker).
@@ -9,6 +9,7 @@ import {
   CalendarPlus,
   CheckCircle2,
   CircleDollarSign,
+  Download,
   FileText,
   Landmark,
   Plus,
@@ -19,11 +20,14 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { exportRows } from "@/lib/export";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -32,6 +36,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { RowActions } from "@/components/list";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
 import {
   Dialog,
   DialogContent,
@@ -56,7 +61,7 @@ const PLAN_STATUS_AR: Record<string, { label: string; cls: string }> = {
 const LINE_STATUS_AR: Record<string, { label: string; cls: string }> = {
   PENDING: { label: "معلَّق", cls: "bg-amber-500/15 text-amber-800" },
   PAID: { label: "مسدَّد", cls: "bg-emerald-100 text-emerald-700" },
-  BOUNCED: { label: "شيك مرتجع", cls: "bg-destructive/15 text-destructive" },
+  BOUNCED: { label: "صك مرتجع", cls: "bg-destructive/15 text-destructive" },
   CANCELLED: { label: "ملغى", cls: "bg-muted text-muted-foreground" },
 };
 
@@ -84,19 +89,29 @@ export default function InstallmentPlans() {
   const [branchFilter, setBranchFilter] = useState<number | undefined>(undefined);
   const [statusFilter, setStatusFilter] = useState<"" | "ACTIVE" | "COMPLETED" | "CANCELLED">("");
   const [customerFilter, setCustomerFilter] = useState<SmartCustomerValue>(EMPTY_CUSTOMER);
+  // بحث برقم خطة/رقم صك + مدى تاريخ الإنشاء — installmentRouter.list يدعمهما فعلياً (بحثٌ محدود
+  // بأوّل ٢٠٠ خطة مطابقة لبقية الفلاتر — راجع تعليق الراوتر).
+  const [q, setQ] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [offset, setOffset] = useState(0);
   const LIMIT = 50;
+  // نافذة «المستحقّ قريباً» قابلة للضبط — الخادم يدعم حتى ٩٠ يوماً (installments.dueSoon).
+  const [dueSoonDays, setDueSoonDays] = useState(7);
 
   const listInput = {
     branchId: isAdmin ? branchFilter : undefined,
     status: statusFilter || undefined,
     customerId: customerFilter.customerId ?? undefined,
+    q: q.trim() || undefined,
+    from: from || undefined,
+    to: to || undefined,
     limit: LIMIT,
     offset,
   };
   const list = trpc.installments.list.useQuery(listInput, { staleTime: 15_000 });
   const due = trpc.installments.dueSoon.useQuery(
-    { branchId: isAdmin ? branchFilter : undefined, days: 7 },
+    { branchId: isAdmin ? branchFilter : undefined, days: dueSoonDays },
     { staleTime: 15_000 },
   );
 
@@ -111,8 +126,8 @@ export default function InstallmentPlans() {
   return (
     <div className="space-y-4 p-4">
       <PageHeader
-        title="الأقساط والشيكات الآجلة"
-        description="جدولة تحصيل ذمّة العميل بدفعات نقدية أو شيكات آجلة — سداد كل قسط يُنشئ سند قبض حقيقياً."
+        title="الأقساط"
+        description="جدولة تحصيل ذمّة العميل بدفعات نقدية مجدولة — سداد كل قسط يُنشئ سند قبض حقيقياً."
         actions={
           <Button onClick={() => setCreateOpen(true)} className="gap-1.5">
             <Plus className="size-4" aria-hidden /> خطة أقساط جديدة
@@ -124,6 +139,8 @@ export default function InstallmentPlans() {
       <DueSoonSection
         rows={due.data ?? []}
         isLoading={due.isLoading}
+        days={dueSoonDays}
+        onDaysChange={setDueSoonDays}
         onPay={(r) => setPayTarget({ lineId: r.lineId, seq: r.seq, amount: r.amount, kind: r.kind, checkNumber: r.checkNumber })}
       />
 
@@ -165,8 +182,56 @@ export default function InstallmentPlans() {
             placeholder="فلترة بعميل معيّن…"
           />
         </div>
+        <div className="min-w-48 space-y-1">
+          <Label className="text-xs">بحث (رقم خطة/رقم صك)</Label>
+          <Input
+            value={q}
+            onChange={(e) => { setQ(e.target.value); setOffset(0); }}
+            placeholder="مثال: 42 أو رقم الصك…"
+            className="h-9"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">أُنشئت من</Label>
+          <Input type="date" dir="ltr" value={from} onChange={(e) => { setFrom(e.target.value); setOffset(0); }} className="h-9" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">أُنشئت إلى</Label>
+          <Input type="date" dir="ltr" value={to} onChange={(e) => { setTo(e.target.value); setOffset(0); }} className="h-9" />
+        </div>
         <Button variant="outline" size="sm" onClick={() => list.refetch()} className="gap-1.5">
           <RotateCcw className="size-3.5" aria-hidden /> تحديث
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
+          onClick={() =>
+            void fetchAllPaged<PlanRow>(
+              (pageOffset, pageLimit) =>
+                utils.installments.list
+                  .fetch({ ...listInput, limit: pageLimit, offset: pageOffset })
+                  .then((r) => ({ rows: r.rows, total: r.hasMore ? undefined : pageOffset + r.rows.length })),
+              { pageSize: 200 },
+            ).then((rows) =>
+              exportRows(rows, {
+                filename: "خطط-الأقساط",
+                title: "خطط الأقساط",
+                columns: [
+                  { key: "id", header: "رقم الخطة" },
+                  { key: "customerName", header: "العميل" },
+                  { key: "totalAmount", header: "الإجمالي", money: true, map: (r) => Number(r.totalAmount) },
+                  { key: "downPayment", header: "الدفعة الأولى", money: true, map: (r) => Number(r.downPayment) },
+                  { key: "paidAmount", header: "المدفوع", money: true, map: (r) => Number(r.paidAmount) },
+                  { key: "status", header: "الحالة", map: (r) => PLAN_STATUS_AR[r.status]?.label ?? r.status },
+                  { key: "nextDueDate", header: "القسط القادم", map: (r) => r.nextDueDate ?? "" },
+                  { key: "createdAt", header: "أُنشئت", map: (r) => (r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 10) : "") },
+                ],
+              }),
+            )
+          }
+        >
+          <Download className="size-3.5" aria-hidden /> تصدير Excel
         </Button>
       </div>
 
@@ -217,19 +282,53 @@ export default function InstallmentPlans() {
 
 /* ============================ المستحقّ قريباً ============================ */
 
-function DueSoonSection({ rows, isLoading, onPay }: { rows: DueRow[]; isLoading: boolean; onPay: (r: DueRow) => void }) {
+function DueSoonSection({
+  rows,
+  isLoading,
+  days,
+  onDaysChange,
+  onPay,
+}: {
+  rows: DueRow[];
+  isLoading: boolean;
+  /** نافذة «المستحقّ قريباً» بالأيام — الخادم يقبل حتى ٩٠ (installments.dueSoon). */
+  days: number;
+  onDaysChange: (days: number) => void;
+  onPay: (r: DueRow) => void;
+}) {
   if (isLoading) return null;
-  if (rows.length === 0) return null;
   const overdue = rows.filter((r) => r.daysOverdue > 0).length;
   return (
     <Card className="border-amber-300/60">
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <AlarmClock className="size-4 text-amber-600" aria-hidden />
-          المستحقّ قريباً ({rows.length} قسطاً{overdue > 0 ? ` — منها ${overdue} متأخّر` : ""})
-        </CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <AlarmClock className="size-4 text-amber-600" aria-hidden />
+            المستحقّ قريباً ({rows.length} قسطاً{overdue > 0 ? ` — منها ${overdue} متأخّر` : ""})
+          </CardTitle>
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            خلال
+            <AppSelect
+              value={String(days)}
+              onValueChange={(v) => onDaysChange(Number(v))}
+              className="h-7 w-24 text-xs"
+              size="sm"
+              aria-label="نافذة المستحقّ قريباً بالأيام"
+            >
+              <option value="3">٣ أيام</option>
+              <option value="7">٧ أيام</option>
+              <option value="14">١٤ يوماً</option>
+              <option value="30">٣٠ يوماً</option>
+              <option value="60">٦٠ يوماً</option>
+              <option value="90">٩٠ يوماً</option>
+            </AppSelect>
+          </label>
+        </div>
       </CardHeader>
       <CardContent className="p-0">
+        {rows.length === 0 ? (
+          <p className="p-4 text-sm text-muted-foreground text-center">لا أقساط مستحقّة خلال {days} يوماً.</p>
+        ) : (
         <ScrollTableShell bordered={false} maxHeightClass="max-h-64">
           <Table>
             <TableHeader>
@@ -266,7 +365,7 @@ function DueSoonSection({ rows, isLoading, onPay }: { rows: DueRow[]; isLoading:
                     {r.kind === "CHECK" ? (
                       <span className="inline-flex items-center gap-1">
                         <Landmark className="size-3 text-muted-foreground" aria-hidden />
-                        شيك {r.checkNumber ?? ""}{r.bankName ? ` — ${r.bankName}` : ""}
+                        صك {r.checkNumber ?? ""}{r.bankName ? ` — ${r.bankName}` : ""}
                       </span>
                     ) : (
                       "نقدي"
@@ -275,6 +374,20 @@ function DueSoonSection({ rows, isLoading, onPay }: { rows: DueRow[]; isLoading:
                   <TableCell className="text-center">
                     <RowActions
                       mode="inline"
+                      contact={{
+                        phone: r.customerPhone,
+                        label: `واتساب ${r.customerName}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "قسط",
+                          reference: `${r.planId}-${r.seq}`,
+                          partyName: r.customerName,
+                          title: `القسط المستحق: ${fmt(r.amount)} د.ع`,
+                          dueAt: r.dueDate,
+                          status: r.daysOverdue > 0 ? `متأخر ${r.daysOverdue} يوماً` : "قريب الاستحقاق",
+                          nextAction: "يرجى تأكيد موعد السداد.",
+                        }),
+                        gate: { module: "treasury", level: "READ" },
+                      }}
                       actions={[{
                         key: "pay",
                         kind: "pay",
@@ -290,6 +403,7 @@ function DueSoonSection({ rows, isLoading, onPay }: { rows: DueRow[]; isLoading:
             </TableBody>
           </Table>
         </ScrollTableShell>
+        )}
       </CardContent>
     </Card>
   );
@@ -326,7 +440,7 @@ function PlansTable({
         <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
           <CalendarPlus className="size-10 text-muted-foreground" aria-hidden />
           <p className="text-lg font-semibold">لا خطط أقساط بعد</p>
-          <p className="text-sm text-muted-foreground">أنشئ خطة لجدولة تحصيل ذمّة عميل بدفعات نقدية أو شيكات آجلة.</p>
+          <p className="text-sm text-muted-foreground">أنشئ خطة لجدولة تحصيل ذمّة عميل بدفعات نقدية مجدولة.</p>
         </CardContent>
       </Card>
     );
@@ -378,7 +492,30 @@ function PlansTable({
                     {p.createdAt ? fmtDateTime(p.createdAt as unknown as string) : "—"}
                   </TableCell>
                   <TableCell className="text-center">
-                    <Button size="sm" variant="ghost" onClick={() => onDetail(p.id)}>عرض</Button>
+                    <RowActions
+                      mode="inline"
+                      contact={{
+                        phone: p.customerPhone,
+                        label: `واتساب ${p.customerName}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "خطة أقساط",
+                          reference: String(p.id),
+                          partyName: p.customerName,
+                          title: `إجمالي الخطة: ${fmt(p.totalAmount)} د.ع`,
+                          dueAt: p.nextDueDate,
+                          status: PLAN_STATUS_AR[p.status]?.label ?? p.status,
+                          nextAction: p.nextDueDate ? "يرجى تأكيد موعد القسط القادم." : undefined,
+                        }),
+                        gate: { module: "treasury", level: "READ" },
+                      }}
+                      actions={[{
+                        key: "detail",
+                        kind: "view",
+                        label: "عرض",
+                        onSelect: () => onDetail(p.id),
+                        gate: { module: "treasury", level: "READ" },
+                      }]}
+                    />
                   </TableCell>
                 </TableRow>
               ))}
@@ -406,9 +543,6 @@ function PlansTable({
 interface DraftLine {
   dueDate: string;
   amount: string;
-  kind: "CASH" | "CHECK";
-  checkNumber: string;
-  bankName: string;
 }
 
 function CreatePlanDialog({
@@ -429,7 +563,6 @@ function CreatePlanDialog({
   const [customer, setCustomer] = useState<SmartCustomerValue>(EMPTY_CUSTOMER);
   const [branchId, setBranchId] = useState<number | null>(null);
   const [total, setTotal] = useState("");
-  const [down, setDown] = useState("");
   const [count, setCount] = useState(3);
   const [firstDue, setFirstDue] = useState(addDays(todayYmd(), 30));
   const [intervalDays, setIntervalDays] = useState(30);
@@ -450,7 +583,6 @@ function CreatePlanDialog({
   function resetForm() {
     setCustomer(EMPTY_CUSTOMER);
     setTotal("");
-    setDown("");
     setCount(3);
     setFirstDue(addDays(todayYmd(), 30));
     setIntervalDays(30);
@@ -458,12 +590,12 @@ function CreatePlanDialog({
     setLines([]);
   }
 
-  /** توليد أسطر متساوية: الباقي بعد الدفعة الأولى ÷ العدد، والسطر الأخير يمتصّ فرق التقريب ⇒ Σ مطابق دائماً. */
+  /** توليد أسطر متساوية: الإجمالي ÷ العدد، والسطر الأخير يمتصّ فرق التقريب ⇒ Σ مطابق دائماً. */
   function generateLines() {
     const n = Math.max(1, Math.min(60, Math.floor(count)));
-    const remaining = D(total).minus(D(down || "0"));
+    const remaining = D(total);
     if (remaining.lte(0)) {
-      notify.err("الإجمالي بعد الدفعة الأولى يجب أن يكون موجباً");
+      notify.err("إجمالي الخطة يجب أن يكون موجباً");
       return;
     }
     const per = remaining.div(n).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
@@ -473,9 +605,6 @@ function CreatePlanDialog({
       next.push({
         dueDate: addDays(firstDue, i * Math.max(1, intervalDays)),
         amount: (i === n - 1 ? last : per).toFixed(2),
-        kind: "CASH",
-        checkNumber: "",
-        bankName: "",
       });
     }
     setLines(next);
@@ -486,17 +615,15 @@ function CreatePlanDialog({
   }
 
   const linesSum = useMemo(() => lines.reduce((acc, l) => acc.plus(D(l.amount || "0")), D(0)), [lines]);
-  const scheduled = linesSum.plus(D(down || "0"));
+  const scheduled = linesSum;
   const diff = D(total || "0").minus(scheduled);
   const sumMatches = total !== "" && lines.length > 0 && diff.isZero();
   const datesAscending = lines.every((l, i) => i === 0 || l.dueDate >= lines[i - 1].dueDate);
-  const checksValid = lines.every((l) => l.kind !== "CHECK" || l.checkNumber.trim() !== "");
   const canSubmit =
     customer.customerId != null &&
     effectiveBranch != null &&
     sumMatches &&
     datesAscending &&
-    checksValid &&
     lines.every((l) => l.dueDate && D(l.amount || "0").gt(0)) &&
     !create.isPending;
 
@@ -506,14 +633,10 @@ function CreatePlanDialog({
       customerId: customer.customerId,
       branchId: effectiveBranch,
       totalAmount: D(total).toFixed(2),
-      downPayment: down ? D(down).toFixed(2) : undefined,
       notes: notes.trim() || undefined,
       lines: lines.map((l) => ({
         dueDate: l.dueDate,
         amount: D(l.amount).toFixed(2),
-        kind: l.kind,
-        checkNumber: l.kind === "CHECK" ? l.checkNumber.trim() : undefined,
-        bankName: l.bankName.trim() || undefined,
       })),
     });
   }
@@ -555,9 +678,10 @@ function CreatePlanDialog({
               <Label>إجمالي الخطة (د.ع) *</Label>
               <MoneyInput value={total} onChange={setTotal} ariaLabel="إجمالي الخطة" />
             </div>
-            <div className="space-y-1">
-              <Label>الدفعة الأولى (د.ع)</Label>
-              <MoneyInput value={down} onChange={setDown} ariaLabel="الدفعة الأولى" />
+            <div className="space-y-1 sm:col-span-2">
+              <p className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                لدفعةٍ أولى: سجّلها <span className="font-medium">سندَ قبضٍ نقديٍّ</span> أولاً (لا دينار بلا سند)، ثم أنشئ الخطة على المتبقّي — الخطة تُجدوَل على الإجمالي أعلاه بالكامل.
+              </p>
             </div>
           </div>
 
@@ -597,7 +721,7 @@ function CreatePlanDialog({
               </Button>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              تُولَّد أسطر متساوية قابلة للتحرير سطراً-سطراً (تاريخ/مبلغ/نقدي أو شيك) — السطر الأخير يمتصّ فرق التقريب.
+              تُولَّد أسطر متساوية قابلة للتحرير سطراً-سطراً (تاريخ/مبلغ) — السطر الأخير يمتصّ فرق التقريب.
             </p>
           </div>
 
@@ -611,9 +735,6 @@ function CreatePlanDialog({
                       <TableHead className="text-center">#</TableHead>
                       <TableHead className="text-center">الاستحقاق</TableHead>
                       <TableHead className="text-center">المبلغ</TableHead>
-                      <TableHead className="text-center">النوع</TableHead>
-                      <TableHead className="text-center">رقم الشيك</TableHead>
-                      <TableHead className="text-center">المصرف</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -626,35 +747,6 @@ function CreatePlanDialog({
                         <TableCell>
                           <MoneyInput value={l.amount} onChange={(v) => updateLine(i, { amount: v })} className="h-8 w-32" ariaLabel={`مبلغ القسط ${i + 1}`} />
                         </TableCell>
-                        <TableCell>
-                          <select
-                            value={l.kind}
-                            onChange={(e) => updateLine(i, { kind: e.target.value as DraftLine["kind"] })}
-                            className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
-                          >
-                            <option value="CASH">نقدي</option>
-                            <option value="CHECK">شيك آجل</option>
-                          </select>
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={l.checkNumber}
-                            onChange={(e) => updateLine(i, { checkNumber: e.target.value })}
-                            disabled={l.kind !== "CHECK"}
-                            placeholder={l.kind === "CHECK" ? "إلزامي" : "—"}
-                            className="h-8 w-28"
-                            dir="ltr"
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={l.bankName}
-                            onChange={(e) => updateLine(i, { bankName: e.target.value })}
-                            disabled={l.kind !== "CHECK"}
-                            placeholder={l.kind === "CHECK" ? "اسم المصرف" : "—"}
-                            className="h-8 w-32"
-                          />
-                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -666,8 +758,7 @@ function CreatePlanDialog({
                 className={`rounded-md border p-2 text-sm tabular-nums ${sumMatches ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-destructive/40 bg-destructive/5 text-destructive"}`}
                 role="status"
               >
-                مجموع الأقساط <span dir="ltr">{fmt(linesSum.toFixed(2))}</span> + الدفعة الأولى{" "}
-                <span dir="ltr">{fmt(down || "0")}</span> = <span dir="ltr">{fmt(scheduled.toFixed(2))}</span>
+                مجموع الأقساط <span dir="ltr">{fmt(scheduled.toFixed(2))}</span>
                 {sumMatches ? (
                   <span className="ms-2 font-semibold">يطابق الإجمالي</span>
                 ) : (
@@ -675,7 +766,6 @@ function CreatePlanDialog({
                 )}
               </div>
               {!datesAscending && <p className="text-xs text-destructive">تواريخ الأقساط يجب أن تكون متصاعدة.</p>}
-              {!checksValid && <p className="text-xs text-destructive">كل قسط شيك يحتاج رقم شيك.</p>}
             </div>
           )}
 
@@ -717,7 +807,7 @@ function PlanDetailDialog({
 
   const bounce = trpc.installments.bounce.useMutation({
     onSuccess: async (res) => {
-      notify.ok(res.reversed ? "سُجِّل ارتجاع الشيك وعُكِس التحصيل (رُدَّ رصيد العميل)" : "سُجِّل ارتجاع الشيك");
+      notify.ok(res.reversed ? "سُجِّل ارتجاع الصك وعُكِس التحصيل (رُدَّ رصيد العميل)" : "سُجِّل ارتجاع الصك");
       setBounceTarget(null);
       setBounceNote("");
       await plan.refetch();
@@ -782,7 +872,7 @@ function PlanDetailDialog({
                       <TableCell className="text-center text-xs tabular-nums" dir="ltr">{l.dueDate}</TableCell>
                       <TableCell className="text-left font-semibold tabular-nums" dir="ltr">{fmt(l.amount)}</TableCell>
                       <TableCell className="text-center text-xs">
-                        {l.kind === "CHECK" ? `شيك ${l.checkNumber ?? ""}${l.bankName ? ` — ${l.bankName}` : ""}` : "نقدي"}
+                        {l.kind === "CHECK" ? `صك ${l.checkNumber ?? ""}${l.bankName ? ` — ${l.bankName}` : ""}` : "نقدي"}
                       </TableCell>
                       <TableCell className="text-center"><StatusBadge map={LINE_STATUS_AR} value={l.status} /></TableCell>
                       <TableCell className="text-right text-xs text-muted-foreground">
@@ -793,6 +883,20 @@ function PlanDetailDialog({
                       <TableCell className="text-center whitespace-nowrap">
                         <RowActions
                           mode="inline"
+                          contact={{
+                            phone: p.customerPhone,
+                            label: `واتساب ${p.customerName}`,
+                            message: buildOperationalContactMessage({
+                              entityLabel: "قسط",
+                              reference: `${p.id}-${l.seq}`,
+                              partyName: p.customerName,
+                              title: `قيمة القسط: ${fmt(l.amount)} د.ع`,
+                              dueAt: l.dueDate,
+                              status: LINE_STATUS_AR[l.status]?.label ?? l.status,
+                              nextAction: "يرجى تأكيد حالة السداد.",
+                            }),
+                            gate: { module: "treasury", level: "READ" },
+                          }}
                           actions={[
                             {
                               key: "pay",
@@ -842,11 +946,11 @@ function PlanDetailDialog({
         <Dialog open={bounceTarget != null} onOpenChange={(o) => { if (!o) { setBounceTarget(null); setBounceNote(""); } }}>
           <DialogContent className="z-[100] sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>ارتجاع شيك — القسط رقم {bounceTarget?.seq}</DialogTitle>
+              <DialogTitle>ارتجاع صك — القسط رقم {bounceTarget?.seq}</DialogTitle>
               <DialogDescription>
                 {bounceTarget?.status === "PAID"
-                  ? "الشيك مُحصَّل — سيُصدَر إيصال صرف معاكس (خزينة) ويُستعاد رصيد العميل بمقدار القسط، ثم يُوسم «شيك مرتجع» قابلاً للسداد لاحقاً."
-                  : "يُوسم القسط «شيك مرتجع» بلا أي حركة مالية (الشيك لم يُحصَّل أصلاً)، ويبقى قابلاً للسداد لاحقاً."}
+                  ? "الصك مُحصَّل — سيُصدَر إيصال صرف معاكس (خزينة) ويُستعاد رصيد العميل بمقدار القسط، ثم يُوسم «صك مرتجع» قابلاً للسداد لاحقاً."
+                  : "يُوسم القسط «صك مرتجع» بلا أي حركة مالية (الصك لم يُحصَّل أصلاً)، ويبقى قابلاً للسداد لاحقاً."}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-1">
@@ -905,9 +1009,9 @@ function PayLineDialog({
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
-  const [method, setMethod] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">(
-    target.kind === "CHECK" ? "CHECK" : "CASH",
-  );
+  // الصكوك أُزيلت من طرق السداد (٤/٨، قرار مالك «لا استثناء») — حتى قسطٍ مجدوَل أصلاً كصكٍّ
+  // (بيانات قديمة سابقة للقرار) يُحصَّل الآن نقداً أو ببديل آخر، لا صكّاً جديداً.
+  const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">("CASH");
   const [note, setNote] = useState("");
   const [attachment, setAttachment] = useState<ImageItem[]>([]);
   const thresholds = trpc.vouchers.thresholds.useQuery(undefined, { staleTime: 300_000 });
@@ -937,7 +1041,7 @@ function PayLineDialog({
           <DialogTitle>سداد القسط رقم {target.seq}</DialogTitle>
           <DialogDescription>
             المبلغ <span dir="ltr" className="font-bold tabular-nums">{fmt(target.amount)}</span> د.ع — يُنشأ سند قبض حقيقي يُحرّك ذمّة العميل والدفتر.
-            {target.kind === "CHECK" && target.checkNumber && <> (شيك رقم <span dir="ltr">{target.checkNumber}</span>)</>}
+            {target.kind === "CHECK" && target.checkNumber && <> (صك رقم <span dir="ltr">{target.checkNumber}</span>)</>}
           </DialogDescription>
         </DialogHeader>
 
@@ -950,7 +1054,6 @@ function PayLineDialog({
               className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="CASH">نقدي</option>
-              <option value="CHECK">شيك (تحصيل الشيك)</option>
               <option value="TRANSFER">تحويل</option>
               <option value="CARD">بطاقة</option>
               <option value="WALLET">محفظة</option>
@@ -968,7 +1071,7 @@ function PayLineDialog({
               maxItems={1}
               maxSizeMB={2}
               singlePrimary={false}
-              hint="صورة وصل التحصيل / الشيك — تُضغط تلقائياً قبل الحفظ."
+              hint="صورة وصل التحصيل — تُضغط تلقائياً قبل الحفظ."
             />
           </div>
           {needsApproval && (

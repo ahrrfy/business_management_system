@@ -180,13 +180,27 @@ export async function postpaidDues(db: DB) {
   };
 }
 
-/* ────────── ٤) صحة الأسعار ────────── */
+/* ────────── ٤) جاهزية البيع ────────── */
 
 /**
- * بطاقات فعّالة بلا سعر نافذ في فرعٍ ما — كل واحدةٍ منها بيعٌ ضائع.
- * منطق الجاهزية مطابقٌ لـ`posCards.listCards` (لا سعر ⇒ NO_PRICE، سريانٌ مُغلق ⇒ STALE_PRICE).
+ * كل عرض فعّال يجب أن يمرّ بحراس السعر والربط والرصيد نفسها قبل أن نعدّه جاهزاً للبيع.
+ * صلاحية السعر تطابق `posCards.listCards`، ثم تضاف حراس PREPAID التي يفرضها `intent.prepare`.
  */
-export async function priceHealth(db: DB, branchId: number | null) {
+export type DigitalSaleReadiness =
+  | "READY"
+  | "NO_PRICE"
+  | "STALE_PRICE"
+  | "NO_WALLET"
+  | "WALLET_MISMATCH"
+  | "WALLET_INACTIVE"
+  | "INSUFFICIENT_BALANCE";
+
+/**
+ * جاهزية البيع الفعلية، لا وجود السعر فقط. هذا التقرير يجب أن يطابق الحراس التي سيصطدم بها
+ * الكاشير في `prepare`: ربط المحفظة ونطاقها وحالتها وكفاية رصيد كرت واحد، إضافةً إلى صلاحية
+ * السعر. لا نُخرج الحصة أو رصيد المحفظة؛ نعيد سبب المنع القابل للمعالجة فقط.
+ */
+export async function priceHealth(db: DB, branchId: number | null, now = new Date()) {
   const conds = [
     eq(digitalOfferingBranches.isActive, true),
     eq(digitalOfferings.isActive, true),
@@ -200,9 +214,20 @@ export async function priceHealth(db: DB, branchId: number | null) {
       branchName: branches.name,
       offeringId: digitalOfferings.id,
       offeringName: products.name,
+      providerId: digitalProviders.id,
       providerName: suppliers.name,
+      settlementMode: digitalProviders.settlementMode,
+      walletId: digitalOfferingBranches.walletId,
+      walletProviderId: digitalWallets.providerId,
+      walletBranchId: digitalWallets.branchId,
+      walletActive: digitalWallets.isActive,
+      walletBalance: digitalWallets.currentBalance,
+      walletReserved: digitalWallets.reservedBalance,
       priceVersionId: digitalCurrentPrices.priceVersionId,
+      providerShare: digitalPriceVersions.providerShare,
+      validFrom: digitalPriceVersions.validFrom,
       validUntil: digitalPriceVersions.validUntil,
+      priceValidityHours: digitalOfferings.priceValidityHours,
     })
     .from(digitalOfferingBranches)
     .innerJoin(digitalOfferings, eq(digitalOfferingBranches.offeringId, digitalOfferings.id))
@@ -218,25 +243,69 @@ export async function priceHealth(db: DB, branchId: number | null) {
       ),
     )
     .leftJoin(digitalPriceVersions, eq(digitalCurrentPrices.priceVersionId, digitalPriceVersions.id))
+    .leftJoin(digitalWallets, eq(digitalOfferingBranches.walletId, digitalWallets.id))
     .where(and(...conds))
     .orderBy(asc(digitalOfferingBranches.branchId), asc(digitalOfferings.id));
 
-  const items = rows.map((r) => ({
-    branchId: Number(r.branchId),
-    branchName: r.branchName,
-    offeringId: Number(r.offeringId),
-    offeringName: r.offeringName,
-    providerName: r.providerName,
-    availability: (r.priceVersionId == null
-      ? "NO_PRICE"
-      : r.validUntil != null
-        ? "STALE_PRICE"
-        : "READY") as "READY" | "STALE_PRICE" | "NO_PRICE",
-  }));
+  const items = rows.map((r) => {
+    let availability: DigitalSaleReadiness = "READY";
+
+    if (r.settlementMode === "PREPAID") {
+      if (r.walletId == null || r.walletProviderId == null || r.walletBranchId == null) {
+        availability = "NO_WALLET";
+      } else if (
+        Number(r.walletProviderId) !== Number(r.providerId) ||
+        Number(r.walletBranchId) !== Number(r.branchId)
+      ) {
+        availability = "WALLET_MISMATCH";
+      } else if (!r.walletActive) {
+        availability = "WALLET_INACTIVE";
+      }
+    }
+
+    if (availability === "READY") {
+      if (r.priceVersionId == null || r.providerShare == null) {
+        availability = "NO_PRICE";
+      } else if (r.validUntil != null) {
+        availability = "STALE_PRICE";
+      } else if (r.priceValidityHours != null && r.validFrom != null) {
+        const ageHours = (now.getTime() - new Date(r.validFrom).getTime()) / 3_600_000;
+        if (ageHours > r.priceValidityHours) availability = "STALE_PRICE";
+      }
+    }
+
+    if (
+      availability === "READY" &&
+      r.settlementMode === "PREPAID" &&
+      r.walletBalance != null &&
+      r.walletReserved != null &&
+      r.providerShare != null &&
+      money(r.walletBalance).minus(money(r.walletReserved)).lt(money(r.providerShare))
+    ) {
+      availability = "INSUFFICIENT_BALANCE";
+    }
+
+    return {
+      branchId: Number(r.branchId),
+      branchName: r.branchName,
+      offeringId: Number(r.offeringId),
+      offeringName: r.offeringName,
+      providerId: Number(r.providerId),
+      providerName: r.providerName,
+      availability,
+    };
+  });
+  const blockerCounts = items.reduce<Record<string, number>>((acc, item) => {
+    if (item.availability !== "READY") {
+      acc[item.availability] = (acc[item.availability] ?? 0) + 1;
+    }
+    return acc;
+  }, {});
   return {
     total: items.length,
     ready: items.filter((i) => i.availability === "READY").length,
     needsAttention: items.filter((i) => i.availability !== "READY"),
+    blockerCounts,
   };
 }
 

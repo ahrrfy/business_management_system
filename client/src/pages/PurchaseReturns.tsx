@@ -6,11 +6,15 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
+import { notify } from "@/lib/notify";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { buildOperationalContactMessage } from "@/lib/whatsapp";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 /* ═══════════ سجلّ مرتجعات المشتريات ═══════════
@@ -25,25 +29,31 @@ const selectCls =
 
 export default function PurchaseReturns() {
   const utils = trpc.useUtils();
-  const [supplierId, setSupplierId] = useState<number | "">("");
-  const [branchId, setBranchId] = useState<number | "">("");
-  // فلتر الفترة خادمي (entryDate) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // فلاتر خادمية محفوظة في querystring (نمط Invoices.tsx/Purchases.tsx) — تعيش مع فتح
+  // التفاصيل والرجوع، وتُشارَك رابطاً. أسماء from/to لفترة entryDate.
+  const [f, setF, resetF] = useUrlFilters({ supplierId: "", branchId: "", from: "", to: "", q: "" });
   const [page, setPage] = useState(0);
-  const [query, setQuery] = useState("");
 
   // البحث خادمي الآن (q ممهَّل): مورد/ملاحظة/رقم قيد/أمر شراء عبر كل النتائج لا الصفحة فقط.
-  const dq = useDebouncedValue(query, 250);
-  const listInput = {
-    supplierId: supplierId ? Number(supplierId) : undefined,
-    branchId: branchId ? Number(branchId) : undefined,
-    from: dateFrom || undefined,
-    to: dateTo || undefined,
-    q: dq.trim() || undefined,
-  };
+  const dq = useDebouncedValue(f.q, 250);
+  const listInput = useMemo(
+    () => ({
+      supplierId: f.supplierId ? Number(f.supplierId) : undefined,
+      branchId: f.branchId ? Number(f.branchId) : undefined,
+      from: f.from || undefined,
+      to: f.to || undefined,
+      q: dq.trim() || undefined,
+    }),
+    [f.supplierId, f.branchId, f.from, f.to, dq],
+  );
+  // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
+  const activeFilterCount = [f.supplierId, f.branchId, f.from || f.to].filter(Boolean).length;
 
   const suppliers = trpc.suppliers.list.useQuery();
+  const supplierContacts = useMemo(
+    () => new Map((suppliers.data ?? []).map((s) => [Number(s.id), s])),
+    [suppliers.data],
+  );
   const branches = trpc.branches.list.useQuery();
   const list = trpc.purchaseReturns.list.useQuery({ ...listInput, limit: PAGE, offset: page * PAGE });
 
@@ -68,13 +78,43 @@ export default function PurchaseReturns() {
   // البحث خادمي ⇒ الصفوف المعروضة هي نتائج الخادم مباشرةً (لا تصفية محلّية تُخفي صفحات أخرى).
   const visibleRows = rows;
 
-  const setFilter = (fn: (v: number | "") => void, v: number | "") => {
-    fn(v);
-    setPage(0);
-  };
+  // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر).
+  useEffect(() => { setPage(0); }, [listInput]);
 
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
+
+  // طباعة مستند المرتجع مباشرة من السجل: لا جدول بنود مخزّن لكل مرتجع (المرتجع يُسجَّل قيداً
+  // إجمالياً واحداً في الدفتر — لا جدول تفصيلي لكل سطر)؛ نطبع مستنداً موجزاً موثِّقاً بالمبلغ
+  // الكلّي والمرجعية عبر قالب التقارير العام (نمط سند — لا فاتورة بنود مفصّلة).
+  function printReturn(r: (typeof visibleRows)[number]) {
+    const ok = printReportDoc({
+      title: "مستند مرتجع شراء",
+      docNum: `#${r.id}`,
+      docDate: fmtDate(r.entryDate),
+      headerExtra: [
+        { label: "المورد", value: supplierName(r.supplierId) },
+        { label: "الفرع", value: branchName(r.branchId) },
+      ],
+      meta: [
+        {
+          title: "تفاصيل المرتجع",
+          fields: [
+            { label: "أمر الشراء المرجعي", value: r.purchaseOrderId ? `#${r.purchaseOrderId}` : "بلا مرجع" },
+            { label: "الملاحظات", value: noteText(r.notes) },
+          ],
+        },
+      ],
+      columns: [
+        { key: "desc", label: "البيان" },
+        { key: "amount", label: "القيمة (د.ع)", align: "left" },
+      ],
+      rows: [{ desc: "قيمة البضاعة المُرتجَعة للمورد", amount: `${fmt(returned(r.amount))} د.ع` }],
+      summary: [{ label: "إجمالي المرتجع", value: `${fmt(returned(r.amount))} د.ع`, large: true, bold: true }],
+      showIndex: false,
+    });
+    if (!ok) notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+  }
 
   return (
     <div className="space-y-4">
@@ -92,13 +132,15 @@ export default function PurchaseReturns() {
             title="المرتجعات"
             count={total}
             loading={list.isLoading}
-            search={{ value: query, onChange: (v) => { setQuery(v); setPage(0); }, placeholder: "بحث (مورد/رقم قيد/أمر شراء/ملاحظة)…" }}
+            search={{ value: f.q, onChange: (v) => setF({ q: v }), placeholder: "بحث (مورد/رقم قيد/أمر شراء/ملاحظة)…" }}
+            activeFilterCount={activeFilterCount}
+            onResetFilters={resetF}
             filters={
               <>
                 <select
                   className={selectCls}
-                  value={supplierId}
-                  onChange={(e) => setFilter(setSupplierId, e.target.value ? Number(e.target.value) : "")}
+                  value={f.supplierId}
+                  onChange={(e) => setF({ supplierId: e.target.value })}
                 >
                   <option value="">— كل الموردين —</option>
                   {(suppliers.data ?? []).map((s) => (
@@ -110,16 +152,16 @@ export default function PurchaseReturns() {
                 </select>
                 <select
                   className={selectCls}
-                  value={branchId}
-                  onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}
+                  value={f.branchId}
+                  onChange={(e) => setF({ branchId: e.target.value })}
                 >
                   <option value="">— كل الفروع —</option>
                   {(branches.data ?? []).map((b) => (
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </select>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} title="إلى تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} title="من تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} title="إلى تاريخ" />
               </>
             }
             exportSpec={{
@@ -175,7 +217,28 @@ export default function PurchaseReturns() {
                   <td className="p-2 text-center">
                     <RowActions
                       mode="auto"
+                      contact={{
+                        whatsapp: supplierContacts.get(Number(r.supplierId))?.whatsapp,
+                        phone: supplierContacts.get(Number(r.supplierId))?.phone,
+                        label: `واتساب ${supplierName(r.supplierId)}`,
+                        message: buildOperationalContactMessage({
+                          entityLabel: "مرتجع شراء",
+                          reference: String(r.id),
+                          partyName: supplierName(r.supplierId),
+                          title: `قيمة المرتجع: ${fmt(returned(r.amount))} د.ع`,
+                          dueAt: r.entryDate,
+                          nextAction: "يرجى تأكيد استلام المرتجع وتسوية الحساب.",
+                        }),
+                        gate: { module: "purchases", level: "READ" },
+                      }}
                       actions={[
+                        {
+                          key: "print",
+                          kind: "print",
+                          label: "طباعة مستند المرتجع",
+                          onSelect: () => printReturn(r),
+                          gate: { roles: ["manager", "purchasing"], module: "purchases", level: "FULL" },
+                        },
                         {
                           key: "po",
                           kind: "view",
@@ -208,7 +271,7 @@ export default function PurchaseReturns() {
               {!list.isLoading && !list.isError && visibleRows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="p-6 text-center text-muted-foreground">
-                    {total === 0 && !supplierId && !branchId && !dateFrom && !dateTo && !dq.trim()
+                    {total === 0 && !f.supplierId && !f.branchId && !f.from && !f.to && !dq.trim()
                       ? "لا مرتجعات مشتريات بعد."
                       : "لا مرتجعات مطابقة. غيّر البحث أو الفلتر."}
                   </td>

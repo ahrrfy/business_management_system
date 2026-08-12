@@ -72,7 +72,7 @@ export async function printGiftVoucherA4(d: GiftVoucherPrintData): Promise<boole
 
   const table = docTableV2(
     [
-      { key: "name", label: "الصنف", width: 250 },
+      { key: "name", label: "المنتج", width: 250 },
       { key: "sku", label: "SKU", width: 120 },
       { key: "unit", label: "الوحدة", width: 90 },
       { key: "qty", label: "الكمية", width: 90, emphasize: true },

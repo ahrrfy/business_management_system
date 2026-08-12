@@ -68,7 +68,7 @@ export function fullEmployeeName(e: {
 
 /* ===== الرواتب ===== */
 export const PAYROLL_STATUSES = [
-  { key: "draft", label: "مسودة" },
+  { key: "draft", label: "مسوّدة" },
   { key: "approved", label: "معتمد" },
   { key: "paid", label: "مدفوع" },
 ] as const;

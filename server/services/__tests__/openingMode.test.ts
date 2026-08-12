@@ -16,6 +16,9 @@ const TABLES = [
   "openingModeSettings",
   "inventoryMovements",
   "branchStock",
+  "purchaseOrderItems",
+  "purchaseOrders",
+  "suppliers",
   "productVariants",
   "products",
   "users",
@@ -40,6 +43,7 @@ async function seedBase() {
     { id: 2, name: "المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([{ id: 1, openId: "u_admin", name: "المدير", role: "admin", branchId: 1 }]);
+  await d.insert(s.suppliers).values({ id: 1, name: "مورّد الاختبار" });
   await d.insert(s.products).values({ id: 1, name: "دفتر ٦٠ ورقة" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "NB-60", costPrice: "500.00" });
 }
@@ -252,5 +256,97 @@ describe("مؤشر تقدّم الافتتاح «X من Y مُفتتَح»", () 
     const b1 = progress.find((p) => p.branchId === 1)!;
     expect(b1.totalVariants).toBe(1); // الصنف العادي فقط (variant 1) — الأمانة خارج المقام
     expect(b1.openedVariants).toBe(0); // الأمانة المُفتتَحة خارج البسط أيضاً
+  });
+
+  it("يستبعد المتغيّر المرتبط بأمر شراء غير ملغى من مقام وبسط فرعه فقط", async () => {
+    const d = db();
+    await d.insert(s.productVariants).values([
+      { id: 2, productId: 1, sku: "NB-DRAFT", costPrice: "500.00" },
+      { id: 3, productId: 1, sku: "NB-CONFIRMED", costPrice: "500.00" },
+      { id: 4, productId: 1, sku: "NB-CANCELLED", costPrice: "500.00" },
+    ]);
+
+    await d.insert(s.purchaseOrders).values([
+      {
+        id: 1,
+        poNumber: "PO-DRAFT-B1",
+        supplierId: 1,
+        branchId: 1,
+        subtotal: "500.00",
+        total: "500.00",
+        status: "DRAFT",
+      },
+      {
+        id: 2,
+        poNumber: "PO-CONFIRMED-B2",
+        supplierId: 1,
+        branchId: 2,
+        subtotal: "500.00",
+        total: "500.00",
+        status: "CONFIRMED",
+      },
+      {
+        id: 3,
+        poNumber: "PO-CANCELLED-B1",
+        supplierId: 1,
+        branchId: 1,
+        subtotal: "500.00",
+        total: "500.00",
+        status: "CANCELLED",
+      },
+    ]);
+    await d.insert(s.purchaseOrderItems).values([
+      {
+        id: 1,
+        purchaseOrderId: 1,
+        variantId: 2,
+        quantity: "1",
+        baseQuantity: 1,
+        unitPrice: "500.00",
+        total: "500.00",
+      },
+      {
+        id: 2,
+        purchaseOrderId: 2,
+        variantId: 3,
+        quantity: "1",
+        baseQuantity: 1,
+        unitPrice: "500.00",
+        total: "500.00",
+      },
+      {
+        id: 3,
+        purchaseOrderId: 3,
+        variantId: 4,
+        quantity: "1",
+        baseQuantity: 1,
+        unitPrice: "500.00",
+        total: "500.00",
+      },
+    ]);
+
+    // افتُتحت المتغيّرات الأربعة في الفرعين؛ المرتبط بشراء غير ملغى لا يُحسب
+    // لا في الإجمالي ولا في المفتتح، بينما الأمر الملغى لا يستبعده.
+    await d.insert(s.branchStock).values(
+      [1, 2].flatMap((branchId) =>
+        [1, 2, 3, 4].map((variantId) => ({
+          branchId,
+          variantId,
+          quantity: 1,
+          openedAt: new Date(),
+        })),
+      ),
+    );
+
+    const progress = await getOpeningProgress();
+    const b1 = progress.find((p) => p.branchId === 1)!;
+    const b2 = progress.find((p) => p.branchId === 2)!;
+
+    // فرع 1 يستبعد DRAFT فقط؛ CONFIRMED يخص فرع 2، وCANCELLED لا يستبعد.
+    expect(b1.totalVariants).toBe(3);
+    expect(b1.openedVariants).toBe(3);
+    // فرع 2 يستبعد CONFIRMED فقط؛ DRAFT يخص فرع 1.
+    expect(b2.totalVariants).toBe(3);
+    expect(b2.openedVariants).toBe(3);
   });
 });

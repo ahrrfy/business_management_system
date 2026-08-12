@@ -107,7 +107,20 @@ export interface SalesInvoiceV2Data {
     /** حصة السطر من الضريبة (Line-tax). إن كانت صفرية، تُعرَض «—». */
     taxAmount?: string | number | null;
     total: string | number;
+    /** هدايا الفاتورة (0149): سطرٌ مُهدىً — يُطبَع «مجاناً» ووسمُ «هدية» بجانب الاسم. */
+    isGift?: boolean | null;
   }[];
+
+  /** إفصاح التوصيل (0152): الأجرة المقبوضة (>0 ⇒ سطر «أجرة التوصيل»). */
+  deliveryFee?: string | number | null;
+  /** true ⇒ يُطبَع «التوصيل: مجاناً» — يميّزه عن غياب التوصيل أصلاً. */
+  deliveryFree?: boolean | null;
+  /** قيمة الأجرة المُتنازَل عنها — تُطبَع «مجاناً — قيمته X» ليرى الزبون مقدار ما أُهدي له. */
+  deliveryWaivedAmount?: string | number | null;
+  /** ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية لا على `invoices.deliveryFee`
+   *  (تمريرٌ لا إيراد). عرضٌ فقط — لا يدخل «الإجمالي المستحق للمكتبة»، لكن يُظهر «المجموع النهائي
+   *  الذي يدفعه الزبون شاملاً التوصيل» كي تُصوَّر الفاتورة وتُرسَل للزبون. */
+  courierDelivery?: { partyName: string; fee: string | number; feeCollection: "COURIER" | "COUNTER" | "SHOP" } | null;
 
   subtotal: string | number;
   discountAmount?: string | number | null;
@@ -163,20 +176,22 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
   ]);
 
   const cols: DocTableCol[] = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: 58 },
     { key: 'qty',  label: 'الكمية', width: 52 },
     { key: 'price', label: 'السعر', width: 74 },
     { key: 'tax', label: 'الضريبة', width: 62, color: B.orange },
     { key: 'total', label: 'الإجمالي', width: 88, emphasize: true },
   ];
+  // الهدية تُطبَع «مجاناً» لا «0»: الصفر على مستندٍ رسميّ يُقرأ خطأَ تسعيرٍ أو سهواً، والوسم
+  // يُثبت للزبون (وللمراجع) أنّ المجّانيّة قرارٌ مقصود — وتكلفتها مُرحَّلة مصروفَ هدايا في الدفتر.
   const rows = d.items.map((it) => ({
-    name: it.productName,
+    name: it.isGift ? `${it.productName} (هدية)` : it.productName,
     unit: it.unitName ?? '',
     qty:  fmtQty(it.quantity),
-    price: fmtIQD(it.unitPrice),
+    price: it.isGift ? 'مجاناً' : fmtIQD(it.unitPrice),
     tax:  Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
-    total: fmtIQD(it.total),
+    total: it.isGift ? 'مجاناً' : fmtIQD(it.total),
   }));
   const table = docTableV2(cols, rows);
 
@@ -189,6 +204,38 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
       { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
       ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'الخصم', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
       ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
+      // إفصاح التوصيل (0152) — ثلاث حالات: أجرةٌ مقبوضة، أو توصيلٌ مُهدىً (بقيمته إن عُرِفت)،
+      // أو لا سطر إطلاقاً حين لا توصيل. الصفر الصامت كان يخلط الحالتين الأخيرتين.
+      ...(Number(d.deliveryFee ?? 0) > 0
+        ? [{ label: 'أجرة التوصيل', value: fmtIQD(d.deliveryFee), sign: '+' as const }]
+        : d.deliveryFree
+          ? [{
+              label: 'التوصيل',
+              value: Number(d.deliveryWaivedAmount ?? 0) > 0
+                ? `مجاناً (قيمته ${fmtIQD(d.deliveryWaivedAmount)})`
+                : 'مجاناً',
+              color: B.orange,
+            }]
+          : []),
+      // ٨/٨ — توصيل الاستقبال (COURIER/COD): الأجرة على الإرسالية (تمريرٌ لا إيراد) ⇒ لا تدخل
+      // «الإجمالي المستحق»، لكن تظهر أجرةً + «المجموع النهائي الذي يدفعه الزبون شاملاً التوصيل».
+      ...(d.courierDelivery && Number(d.courierDelivery.fee ?? 0) > 0 && Number(d.deliveryFee ?? 0) === 0
+        ? [
+            {
+              label: `أجرة التوصيل (${
+                d.courierDelivery.feeCollection === 'COUNTER' ? 'مقبوضة في الاستقبال'
+                : d.courierDelivery.feeCollection === 'SHOP' ? 'على المكتبة'
+                : `يقبضها ${d.courierDelivery.partyName} من الزبون`
+              })`,
+              value: fmtIQD(d.courierDelivery.fee),
+              sign: '+' as const,
+              color: B.orange,
+            },
+            ...(d.courierDelivery.feeCollection !== 'SHOP'
+              ? [{ label: 'المجموع النهائي (يدفعه الزبون شاملاً التوصيل)', value: fmtIQD(Number(d.total) + Number(d.courierDelivery.fee)) }]
+              : []),
+          ]
+        : []),
     ],
     grandTotal: { label: 'الإجمالي المستحق', value: fmtIQD(d.total) },
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
@@ -206,7 +253,7 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
   const tafqit = tafqitLine(formatArabicMoneyWords(d.total));
 
   const sig = signaturesBlock({
-    qrSvg: d.qrSvg ?? true,
+    qrSvg: d.qrSvg ?? null,
     qrCaption: d.qrCaption ?? 'امسح للتحقق من مطابقة بيانات الفاتورة',
     items: [
       { kind: 'sig', label: 'توقيع المستلم' },
@@ -297,7 +344,7 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
   ]);
 
   const cols: DocTableCol[] = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: 58 },
     { key: 'qty', label: 'الكمية', width: 52 },
     { key: 'price', label: 'السعر', width: 74 },
@@ -340,7 +387,7 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
   const tafqit = tafqitLine(formatArabicMoneyWords(d.total));
 
   const sig = signaturesBlock({
-    qrSvg: d.qrSvg ?? true,
+    qrSvg: d.qrSvg ?? null,
     qrCaption: d.qrCaption ?? 'امسح للتحقق من مطابقة بيانات الفاتورة',
     items: [
       { kind: 'sig', label: 'استلام المخزن' },
@@ -510,6 +557,8 @@ export interface QuotationV2Data {
   total: string | number;
 
   terms?: string | null;
+  /** SVG جاهز من qr.ts — QR حقيقي قابل للمسح ببيانات العرض. لا placeholder زائف عند غيابه. */
+  qrSvg?: string | null;
   settings?: CompanySettings;
 }
 
@@ -544,7 +593,7 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
   ]);
 
   const cols: DocTableCol[] = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: 58 },
     { key: 'qty', label: 'الكمية', width: 52 },
     { key: 'price', label: 'السعر', width: 74 },
@@ -576,16 +625,14 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
     <div style="font-size:10.75px;color:#000;line-height:1.7">${esc(termsText)}</div>
   </div>`;
 
-  const sigs = `<div style="display:flex;justify-content:space-between;margin-top:24px;gap:20px">
-    <div style="text-align:center;width:220px">
-      <div style="height:22px"></div>
-      <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:10.25px;color:#000;font-weight:600">توقيع العميل بالموافقة على العرض</div>
-    </div>
-    <div style="text-align:center;width:220px">
-      <div style="height:22px"></div>
-      <div style="border-top:1px solid ${B.ink};padding-top:5px;font-size:10.25px;color:#000;font-weight:600">الممثل التجاري</div>
-    </div>
-  </div>`;
+  const sigs = `<div style="margin-top:24px">${signaturesBlock({
+    qrSvg: d.qrSvg ?? null,
+    qrCaption: d.qrSvg ? 'امسح للتحقق من بيانات العرض' : null,
+    items: [
+      { kind: 'sig', label: 'توقيع العميل بالموافقة على العرض', width: 200 },
+      { kind: 'sig', label: 'الممثل التجاري', width: 200 },
+    ],
+  })}</div>`;
 
   const body = `${pageBodyOpen()}${header}${cards}${table}${totals}${termsBox}${sigs}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF ${d.quoteNumber}` })}`;
   return openPrintWindow(wrapA4Doc(`عرض سعر ${d.quoteNumber}`, body));
@@ -605,6 +652,7 @@ export interface WorkOrderV2Data {
 
   customerName?: string | null;
   customerPhone?: string | null;
+  employeeName?: string | null;
 
   jobType?: string | null;
   jobSpecs?: string | null;
@@ -647,6 +695,7 @@ export function printWorkOrderV2(d: WorkOrderV2Data): boolean {
       title: 'تفاصيل العمل',
       variant: 'gray',
       fields: [
+        ...(d.employeeName ? [{ label: 'الموظف', value: d.employeeName }] : []),
         ...(d.jobType ? [{ label: 'نوع العمل', value: d.jobType }] : []),
         ...(d.jobSpecs ? [{ label: 'المواصفات', value: d.jobSpecs }] : []),
       ],
@@ -929,7 +978,7 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
   const tafqit = tafqitLine(formatArabicMoneyWords(d.amount));
 
   const sig = signaturesBlock({
-    qrSvg: d.qrSvg ?? true,
+    qrSvg: d.qrSvg ?? null,
     qrCaption: 'للتحقق من صحة السند',
     qrSize: 52,
     spaceHeight: 28,
@@ -1021,7 +1070,7 @@ export function printWarehouseSlipV2(d: WarehouseSlipV2Data): boolean {
 
   const cols: DocTableCol[] = [
     { key: 'seq', label: '#', width: 36 },
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: 70 },
     { key: 'qty', label: 'الكمية', width: 60, emphasize: true },
     { key: 'check', label: 'تم', width: 40 },

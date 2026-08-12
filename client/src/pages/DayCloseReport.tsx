@@ -2,14 +2,16 @@
 //   المتوقَّع (من الدفتر) مقابل المعدود (نقد الإغلاق) مقابل الفرق (drift = variance الوردية).
 // تسليمات الخزينة تُعرَض منفصلةً (لا تُطرَح من المتوقَّع) — راجع reportsDayCloseService للتعليل.
 import { useState } from "react";
-import { CheckCircle2, AlertTriangle, Wallet, Building2, Clock, ArrowLeftRight } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Wallet, Building2, Clock, ArrowLeftRight, ChevronLeft, ChevronRight } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 
 type DC = RouterOutputs["reports"]["dayCloseReconciliation"];
@@ -92,6 +94,54 @@ export default function DayCloseReport() {
     });
   }
 
+  // طباعة A4 — نفس أعمدة الشاشة/التصدير (تفصيل كل وردية)، ولا اقتطاع (اليوم الواحد محدودُ الورديات أصلاً).
+  function onPrint() {
+    if (!dc) return;
+    const opened = printReportDoc({
+      title: "مطابقة إقفال اليوم للنقد",
+      headerExtra: [
+        { label: "التاريخ", value: fmtDate(date) },
+        { label: "الفرع", value: branchLabel },
+      ],
+      note: NOTE,
+      orientation: "landscape",
+      columns: [
+        { key: "shiftId", label: "الوردية" },
+        { key: "branch", label: "الفرع" },
+        { key: "cashier", label: "الكاشير" },
+        { key: "status", label: "الحالة" },
+        { key: "expected", label: "المتوقَّع", align: "left" },
+        { key: "counted", label: "المعدود", align: "left" },
+        { key: "drift", label: "الفرق", align: "left" },
+        { key: "handovers", label: "سُلّم للخزينة", align: "left" },
+      ],
+      rows: dc.shifts.map((r) => ({
+        shiftId: `#${r.shiftId}`,
+        branch: r.branchName ?? "—",
+        cashier: r.userName ?? "—",
+        status: r.status === "CLOSED" ? "مغلقة" : "مفتوحة",
+        expected: fmtAr(r.expected),
+        counted: r.counted == null ? "—" : fmtAr(r.counted),
+        drift: r.drift == null ? "—" : fmtAr(r.drift),
+        handovers: fmtAr(r.handoversCash),
+      })),
+      summary: [
+        { label: "المعدود عند الإغلاق", value: formatIqd(dc.totals.counted) },
+        { label: "الفرق (فائض/عجز)", value: formatIqd(dc.totals.drift), large: true, bold: true },
+      ],
+    });
+    if (!opened) alert("حجب المتصفح نافذة الطباعة. اسمح بالنوافذ المنبثقة ثم أعد المحاولة.");
+  }
+
+  // تنقّل سريع ليوم سابق/تالٍ (لا يتجاوز اليوم — نفس سقف منتقي التاريخ أدناه).
+  function shiftDay(deltaDays: number) {
+    const d = new Date(`${date}T00:00:00Z`);
+    if (isNaN(d.getTime())) return;
+    d.setUTCDate(d.getUTCDate() + deltaDays);
+    const next = d.toISOString().slice(0, 10);
+    setDate(next > todayUtc() ? todayUtc() : next);
+  }
+
   return (
     <ReportShell
       title="مطابقة إقفال اليوم للنقد"
@@ -99,7 +149,9 @@ export default function DayCloseReport() {
       note={NOTE}
       kpis={kpis}
       onExport={onExport}
+      onPrint={onPrint}
       exportDisabled={!dc || dc.shifts.length === 0}
+      printDisabled={!dc || dc.shifts.length === 0}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1">
@@ -111,6 +163,15 @@ export default function DayCloseReport() {
               max={todayUtc()}
               onChange={(e) => setDate(e.target.value || todayUtc())}
             />
+          </div>
+          {/* تنقّل سريع ليوم سابق/تالٍ. */}
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" title="اليوم السابق" aria-label="اليوم السابق" onClick={() => shiftDay(-1)}>
+              <ChevronRight aria-hidden className="size-3.5" />
+            </Button>
+            <Button variant="outline" size="sm" title="اليوم التالي" aria-label="اليوم التالي" disabled={date >= todayUtc()} onClick={() => shiftDay(1)}>
+              <ChevronLeft aria-hidden className="size-3.5" />
+            </Button>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
@@ -198,6 +259,28 @@ function ReconciliationHero({ dc }: { dc: DC }) {
             منها سُلّم للخزينة: <span className="font-semibold tabular-nums text-foreground" dir="ltr">{fmtAr(dc.totals.handoversCash)}</span>
             {"  —  "}المتبقّي فعلاً في الأدراج: <span className="font-semibold tabular-nums text-foreground" dir="ltr">{fmtAr(dc.totals.retainedInDrawer)}</span>
           </p>
+        )}
+
+        {/* ش٦ — سطرا الاستقبال: عرابين معلّقة (لقطة حاضرة) + الخصم اليدويّ لكل موظف */}
+        {dc.receptionExtras.fundedDrafts.count > 0 && (
+          <p className="mt-2 border-t pt-2 text-center text-xs text-[var(--sem-warn)]">
+            طلبات محفوظة عليها عرابين لم تُثبَّت بعد:{" "}
+            <span className="font-bold tabular-nums" dir="ltr">{dc.receptionExtras.fundedDrafts.count}</span>
+            {" طلباً بمجموع "}
+            <span className="font-bold tabular-nums" dir="ltr">{fmtAr(dc.receptionExtras.fundedDrafts.heldNet)}</span>
+            {" د.ع (مال زبائن محتجزٌ بلا فاتورة — لقطة الآن لا اليوم)"}
+          </p>
+        )}
+        {dc.receptionExtras.discountByUser.length > 0 && (
+          <div className="mt-2 border-t pt-2 text-center text-xs text-muted-foreground">
+            <span className="font-bold">الخصم اليدويّ اليوم لكل موظف: </span>
+            {dc.receptionExtras.discountByUser.map((u, i) => (
+              <span key={u.userId ?? i} className="mx-1 inline-block whitespace-nowrap">
+                {u.userName}: <span className="font-semibold tabular-nums text-foreground" dir="ltr">{fmtAr(u.manualDiscount)}</span>
+                {" "}({u.avgRatePct}% من {u.invoiceCount} فاتورة)
+              </span>
+            ))}
+          </div>
         )}
       </CardContent>
     </Card>

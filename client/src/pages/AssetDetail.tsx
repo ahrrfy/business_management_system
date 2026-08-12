@@ -374,8 +374,8 @@ export default function AssetDetail() {
             <div className="space-y-1">
               <Label htmlFor="disposeKind">النوع</Label>
               <select id="disposeKind" className={selectCls} value={dKind} onChange={(e) => setDKind(e.target.value as "retired" | "disposed")}>
-                <option value="retired">إخراج من الخدمة (retired)</option>
-                <option value="disposed">استبعاد ببيع/خردة (disposed)</option>
+                <option value="retired">إخراج من الخدمة</option>
+                <option value="disposed">استبعاد ببيع/خردة</option>
               </select>
             </div>
             <div className="grid grid-cols-2 gap-3">

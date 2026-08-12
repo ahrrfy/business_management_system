@@ -1,5 +1,5 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import { diffFromTemplate, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { applyPermissionOverrides, diffFromTemplate, resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { User } from "../drizzle/schema";
 import { getSessionContext } from "./auth/session";
 import { loadActiveCustomRole } from "./services/roleService";
@@ -25,10 +25,21 @@ export type TrpcContext = {
   platformAdmin: PlatformAdmin | null;
 };
 
+/** Normalize the one persisted company owner to the effective admin contract. */
+export function normalizeOwnerAuthority(user: AuthUser): AuthUser {
+  if (!user.isOwner) return user;
+  user.role = "admin" as User["role"];
+  user.permissionsOverride = null;
+  user.customRoleLabel = null;
+  user.customRoleKey = null;
+  user.roleLockedByInactiveCustomRole = false;
+  return user;
+}
+
 /**
  * يحلّ الدور المخصّص (إن وُجد) إلى آلية الصلاحيات القائمة:
  *  role ← baseRole (للبوّابات الخشنة + قاعدة requireModule)،
- *  permissionsOverride ← فرق خريطة الدور عن قالب baseRole (resolvePermissions يعيد بناء الخريطة).
+ *  permissionsOverride ← خريطة الدور المخصّص، ثم استثناء المستخدم الفردي إن وُجد.
  * هكذا تعمل كل البوّابات (requireRole/requireModule/canSeeCost) بلا أي تغيير، وتنتشر تعديلات
  * الدور لحظياً (يُقرأ الدور طازجاً كل طلب). إن عُطِّل الدور/حُذف ⇒ نرجع للدور المخزَّن (baseRole) بأمان.
  */
@@ -49,7 +60,15 @@ export async function resolveCustomRole(user: AuthUser): Promise<void> {
     return;
   }
   user.role = role.baseRole as RoleKey as User["role"];
-  user.permissionsOverride = diffFromTemplate(role.baseRole as RoleKey, role.permissions as PermissionMap);
+  const baseRole = role.baseRole as RoleKey;
+  // الدور المخصّص هو الأساس، وعمود المستخدم يحمل فقط الفروق الفردية عنه. نعيد تحويل
+  // النتيجة إلى فرق عن قالب baseRole كي تبقى كل بوابات النظام الحالية كما هي.
+  const customPermissions = resolvePermissions(baseRole, diffFromTemplate(baseRole, role.permissions as PermissionMap));
+  const effectivePermissions = applyPermissionOverrides(
+    customPermissions,
+    user.permissionsOverride as PermissionMap | null,
+  );
+  user.permissionsOverride = diffFromTemplate(baseRole, effectivePermissions);
   user.customRoleLabel = role.label;
   user.customRoleKey = role.key;
 }
@@ -63,7 +82,15 @@ export async function createContext(
     const sessionCtx = await getSessionContext(opts.req);
     user = sessionCtx.user as AuthUser | null;
     sessionId = sessionCtx.sessionId;
-    if (user) await resolveCustomRole(user);
+    if (user?.isOwner) {
+      // The persisted owner flag is the system authority invariant. Normalize
+      // the request context before any router/middleware sees it so a stale
+      // base/custom role or restrictive override cannot split owner access
+      // between the mobile BFF and the underlying operational APIs.
+      normalizeOwnerAuthority(user);
+    } else if (user) {
+      await resolveCustomRole(user);
+    }
   } catch {
     user = null;
     sessionId = null;

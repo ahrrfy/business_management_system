@@ -8,7 +8,9 @@ import {
   type AccountFieldsValue,
 } from "@/components/form/AccountFields";
 import { trpc } from "@/lib/trpc";
-import { useEffect, useState } from "react";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { ROLE_OPTIONS } from "@/lib/roles";
 
@@ -18,6 +20,10 @@ export default function UserNew() {
 
   const [account, setAccount] = useState<AccountFieldsValue>(emptyAccountValue);
   const patch = (p: Partial<AccountFieldsValue>) => setAccount((a) => ({ ...a, ...p }));
+  // لقطة القيم «غير المعدَّلة يدوياً» (تتحرّك مع افتراضي الفرع التلقائي أدناه) — أساس حارس فقد
+  // البيانات؛ لا تُقارَن الحالة الخام بـemptyAccountValue الثابتة كي لا يُنذر الحارس زوراً بمجرّد
+  // امتلاء فرع المستخدم تلقائياً.
+  const baselineRef = useRef<AccountFieldsValue>(emptyAccountValue);
   const [error, setError] = useState("");
   const [createdInfo, setCreatedInfo] = useState<{
     name: string; email: string; username?: string; password: string; phone?: string;
@@ -33,9 +39,17 @@ export default function UserNew() {
   useEffect(() => {
     if (me?.data?.branchId && account.branchId === "") {
       setAccount((a) => ({ ...a, branchId: me.data!.branchId as number }));
+      // يُحدَّث الأساس بنفس التصحيح (لا حالة المستخدم الحيّة) — تلقائي لا تعديل يدوي.
+      baselineRef.current = { ...baselineRef.current, branchId: me.data!.branchId as number };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me?.data]);
+
+  const isDirty = JSON.stringify(account) !== JSON.stringify(baselineRef.current);
+  // الحارس يُعطَّل بعد النجاح (شاشة مشاركة بيانات الدخول) — لا داعي للتحذير من فقد بياناتٍ حُفظت فعلاً.
+  // createdInfo (لا مرجع) يكفي: الحقول نفسها لا تتغيّر بعد النجاح، والشاشة تعرض بطاقة المشاركة بدلاً
+  // من النموذج (JSX مبكر أدناه) فلا يبقى الحارس مسجَّلاً على نموذجٍ غير معروض أصلاً.
+  useUnsavedGuard(isDirty && !createdInfo);
 
   const create = trpc.users.create.useMutation({
     onSuccess: (_, vars) => {
@@ -87,6 +101,11 @@ export default function UserNew() {
     });
   }
 
+  // Ctrl/⌘+S ⇒ حفظ. بلا onCancel/Esc عمداً — AccountFields مكتظّ بـ<select> أصلية (الدور/الفرع)
+  // وEsc يتعارض مع إغلاقها (نفس تحذير الهوك). يبقى فعّالاً حتى بعد النجاح (createdInfo) — الحفظ
+  // حينها لا معنى له فعلياً لأن الحقول مخفية خلف بطاقة المشاركة، فلا ضرر من تفعيله دائماً.
+  useSaveShortcuts({ onSave: () => buildAndSubmit(), enabled: !create.isPending });
+
   // عرض بطاقة المشاركة بعد الإنشاء
   if (createdInfo) {
     return (
@@ -123,19 +142,25 @@ export default function UserNew() {
         <Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
       </div>
 
-      <AccountFields value={account} onChange={patch} showName showJobData />
+      {/* عنصر نموذج حقيقي يلفّ حقول الحفظ الفعلية (كان غائباً — يمنع حفظ متصفح/تعبئة تلقائية ويكسر
+          دلالة Enter-to-submit، نمط UserEdit.tsx). AccountFields مكوّن مشترك خارج ملكيتي (يُستعمله
+          أيضاً EmployeeNew) فيُلَفّ من هنا لا يُعدَّل هو نفسه. */}
+      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); buildAndSubmit(); }}>
+        <AccountFields value={account} onChange={patch} showName showJobData />
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+        {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={() => buildAndSubmit()} disabled={create.isPending}>
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ المستخدم"}
-        </Button>
-        <Link href="/users"><Button variant="ghost">إلغاء</Button></Link>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        بعد الحفظ تظهر بطاقة لمشاركة بيانات الدخول عبر واتساب أو نسخها — ومنها يمكنك إضافة مستخدم آخر.
-      </p>
+        <div className="flex flex-wrap gap-2">
+          {/* type="submit" وبلا onClick مباشر — onSubmit في <form> وحده مصدر الإرسال. */}
+          <Button type="submit" disabled={create.isPending}>
+            {create.isPending ? "جارٍ الحفظ…" : "حفظ المستخدم"}
+          </Button>
+          <Link href="/users"><Button type="button" variant="ghost">إلغاء</Button></Link>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          بعد الحفظ تظهر بطاقة لمشاركة بيانات الدخول عبر واتساب أو نسخها — ومنها يمكنك إضافة مستخدم آخر.
+        </p>
+      </form>
     </div>
   );
 }

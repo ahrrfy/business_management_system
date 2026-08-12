@@ -9,6 +9,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -25,9 +26,10 @@ const TX_TYPE: Record<string, string> = {
   ADJUSTMENT: "تعديل",
   SALE_CONSUMPTION: "استهلاك بيع",
   SALE_REVERSAL: "عكس بيع",
+  WRITEOFF: "كرت صدر دون إكمال البيع",
 };
 const TX_STATUS: Record<string, string> = {
-  ACTIVE: "نافذة",
+  ACTIVE: "معتمدة",
   PENDING_APPROVAL: "بانتظار الاعتماد",
   REVERSED: "مرفوضة",
 };
@@ -135,7 +137,7 @@ export function WalletAdjustDialog({ wallet, onClose }: { wallet: WalletRow | nu
         <DialogHeader>
           <DialogTitle>طلب تعديل رصيد — {wallet?.name}</DialogTitle>
           <DialogDescription>
-            التعديل اليدويّ باب تغطية العجز، فلا يُنفَّذ بفاعلٍ واحد: الطلب هنا، والاعتماد من مديرٍ آخر.
+            هذا الطلب لا يغيّر الرصيد. ينفّذه مدير آخر بعد المراجعة؛ مالك النظام يستطيع اعتماد طلبه بصفته المرجع النهائي.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -241,6 +243,7 @@ export function WalletReconcileDialog({ wallet, onClose }: { wallet: WalletRow |
 /** كشف حساب المحفظة + اعتماد/رفض طلبات التعديل المعلّقة. */
 export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow | null; onClose: () => void }) {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
   const q = trpc.digitalCards.wallets.statement.useQuery(
     { walletId: wallet?.id ?? 0 },
     { enabled: wallet != null },
@@ -278,6 +281,8 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
                 <th className="p-2 text-start">المبلغ</th>
                 <th className="p-2 text-start">الرصيد بعدها</th>
                 <th className="p-2 text-start">الحالة</th>
+                <th className="p-2 text-start">من قام بها</th>
+                <th className="p-2 text-start">التاريخ والوقت</th>
                 <th className="p-2 text-start">ملاحظة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -293,6 +298,17 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
                     {r.status === "PENDING_APPROVAL" ? "—" : fmtAr(r.balanceAfter)}
                   </td>
                   <td className="p-2 text-muted-foreground">{TX_STATUS[r.status] ?? r.status}</td>
+                  <td className="p-2">
+                    <p className="font-medium">{r.createdByName || `حساب #${r.createdBy}`}</p>
+                    {r.createdByUsername && <p className="text-xs text-muted-foreground" dir="ltr">@{r.createdByUsername}</p>}
+                    {r.approvedBy && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        اعتمدها {r.approvedByName || `حساب #${r.approvedBy}`}
+                        {r.approvedByUsername ? <span dir="ltr"> {`@${r.approvedByUsername}`}</span> : null}
+                      </p>
+                    )}
+                  </td>
+                  <td className="p-2 whitespace-nowrap text-muted-foreground" dir="ltr">{fmtDateTime(r.createdAt)}</td>
                   <td className="p-2 text-muted-foreground">{r.notes || "—"}</td>
                   <td className="p-2 text-center">
                     {r.status === "PENDING_APPROVAL" ? (
@@ -304,8 +320,10 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
                             kind: "approve",
                             label: "اعتماد",
                             gate: { roles: ["manager"], module: "digital_cards", level: "FULL" },
-                            disabled: approve.isPending,
-                            disabledReason: "جارٍ اعتماد الحركة",
+                            disabled: approve.isPending || (!me.data?.isOwner && Number(r.createdBy) === Number(me.data?.id)),
+                            disabledReason: !me.data?.isOwner && Number(r.createdBy) === Number(me.data?.id)
+                              ? "طلبك يحتاج مديراً آخر؛ مالك النظام وحده مستثنى"
+                              : "جارٍ اعتماد الحركة",
                             onSelect: () => approve.mutate({ transactionId: r.id }),
                           },
                           {
@@ -324,8 +342,8 @@ export function WalletStatementDialog({ wallet, onClose }: { wallet: WalletRow |
                   </td>
                 </tr>
               ))}
-              {q.isLoading && <tr><td colSpan={6}><LoadingState /></td></tr>}
-              {!q.isLoading && rows.length === 0 && <TableEmptyRow colSpan={6} message="لا حركات بعد." />}
+              {q.isLoading && <tr><td colSpan={8}><LoadingState /></td></tr>}
+              {!q.isLoading && rows.length === 0 && <TableEmptyRow colSpan={8} message="لا حركات بعد." />}
             </tbody>
           </table>
         </ScrollTableShell>

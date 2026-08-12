@@ -178,6 +178,22 @@ describe("inventory.movementsRich", () => {
     expect(["الرئيسي", "المبيعات"]).toContain(rows[0].branchName);
   });
 
+  it("(د1ب) signedQty يعطي الاتجاه الصحيح — بما فيه ADJUST من علامة «(فرق ±D)» (تدقيق ١١/٨)", async () => {
+    await db().insert(s.inventoryMovements).values([
+      { variantId: 1, branchId: 1, movementType: "IN", quantity: 4, referenceType: "MANUAL_IN", createdBy: 1 },
+      { variantId: 1, branchId: 1, movementType: "OUT", quantity: 2, referenceType: "INVOICE", createdBy: 1 },
+      { variantId: 1, branchId: 1, movementType: "ADJUST", quantity: 3, referenceType: "ADJUST", notes: "تسوية: من 10 إلى 7 (فرق -3)", createdBy: 1 },
+      { variantId: 1, branchId: 1, movementType: "ADJUST", quantity: 5, referenceType: "ADJUST", notes: "تسوية (فرق +5)", createdBy: 1 },
+    ]);
+    const admin = appRouter.createCaller(makeCtx(await userRow(1)));
+    const { rows } = await admin.inventory.movementsRich({});
+    const byNote = (frag: string) => rows.find((r) => (r.notes ?? "").includes(frag))!;
+    expect(byNote("(فرق -3)").signedQty).toBe(-3); // ADJUST نقص ⇒ سالب
+    expect(byNote("(فرق +5)").signedQty).toBe(5); // ADJUST زيادة ⇒ موجب
+    expect(rows.find((r) => r.movementType === "IN")!.signedQty).toBe(4); // وارد ⇒ موجب
+    expect(rows.find((r) => r.movementType === "OUT")!.signedQty).toBe(-2); // صادر ⇒ سالب
+  });
+
   it("(د2) فلترة بنوع الحركة", async () => {
     await seedMovements();
     const admin = appRouter.createCaller(makeCtx(await userRow(1)));

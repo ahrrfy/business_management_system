@@ -14,6 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
+import { assertBaseUnitStable } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { postCostRevaluation } from "./costRevaluation";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
@@ -247,6 +248,8 @@ export interface UpdateVariantRow {
   colorHex?: string | null;
   size?: string | null;
   costPrice: string;
+  /** سبب تغيير التكلفة (priceSanity L1.7) — إلزاميّ للتغيّرات الكبيرة، يُلتقَط في أثر product.costChange. */
+  costChangeReason?: string | null;
   /** سعر خاص لمفرد وحدة الأساس لهذا المتغيّر — فارغ ⇒ يتبع سعر القالب المشترك. */
   baseRetail?: string;
   minStock?: number;
@@ -461,6 +464,10 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
     const baseUnits = input.unitTemplate.filter((u) => u.isBaseUnit).length;
     if (baseUnits !== 1) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد وحدة أساس واحدة فقط في قالب الوحدات" });
     if (input.unitTemplate.some((u) => !u.unitName.trim())) throw new TRPCError({ code: "BAD_REQUEST", message: "كل وحدة في القالب تحتاج اسماً" });
+    // Codex جولة٧ P1: ارفض اسمَ وحدةٍ مكرّراً في القالب — `upsertVariantUnits` يطابق بالاسم فيُعالج المكرّر
+    // مرّتين (يُدرِج/يُحدِّث الصفّ نفسه) فقد يُفقَد الأساس أو يلتبس، متجاوزاً حارس ثبات الأساس.
+    const tplNames = input.unitTemplate.map((u) => u.unitName.trim());
+    if (new Set(tplNames).size !== tplNames.length) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم وحدةٍ مكرّرٌ في قالب الوحدات" });
     // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١ (كان الحارس واجهياً فقط).
     assertValidUnitFactors(input.unitTemplate);
     if (input.variants.some((v) => !v.sku.trim())) throw new TRPCError({ code: "BAD_REQUEST", message: "كل متغيّر يحتاج SKU" });
@@ -513,6 +520,8 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       .where(eq(products.id, input.productId));
 
     let added = 0;
+    // تدقيق ١١/٨ (#2): اسم وحدة الأساس الجديدة (القالب مشترك) — الحارس يفحص كل متغيّرٍ قائمٍ به رصيد/حركة.
+    const newBaseName = input.unitTemplate.find((u) => u.isBaseUnit)!.unitName;
     for (const v of input.variants) {
       const vals = {
         sku: v.sku.trim(),
@@ -529,13 +538,19 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       const colorHexPatch = v.colorHex !== undefined ? { colorHex: v.colorHex?.trim() || null } : {};
       let variantId: number;
       if (v.id) {
-        const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
+        // .for("update"): نقفل صفّ المتغيّر قبل قراءة التكلفة القديمة وتحديثها، فيتسلسل تعديلان متزامنان
+        // ولا يُسجَّل «قبل» بائتٌ في أثر التكلفة (Codex — تعديلان 100→150 ثمّ 150→200 لا 100→200).
+        const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1).for("update"))[0];
         if (!owned) throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
         variantId = v.id;
+        // تدقيق ١١/٨ (#2 — بعد ٣ جولات مراجعة Codex): وحدة الأساس **ثابتةٌ** لمتغيّرٍ قائم — يُرفَض تبديلها
+        // أو إعادة تسميتها (مسار القالب يُدرِج صفّاً جديداً ويُعطّل القديم عند تغيّر الاسم ⇒ تفسيرٌ مقلوبٌ
+        // للكمّيات أو مراجع وحدةٍ متدلّية في العروض/الطلبات). مقارنةٌ ساكنةٌ بلا قفل — التصحيح بمتغيّرٍ جديد.
+        await assertBaseUnitStable(tx, variantId, { by: "name", unitName: newBaseName });
         await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
         // H3 (تدقيق ٢٧/٧): تغيّر التكلفة على صنفٍ له رصيد يُعيد تقييم المخزون ⇒ قيد إعادة تقييم يفسّر
         // حركة حقوق الملكية في قائمة الدخل ويمرّ على حارس الفترة (صفريّ الأثر إن كان الفرق/الرصيد صفراً).
-        await postCostRevaluation(tx, variantId, owned.costPrice, vals.costPrice, actor);
+        await postCostRevaluation(tx, variantId, owned.costPrice, vals.costPrice, actor, v.costChangeReason);
       } else {
         const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals, colorHex: v.colorHex?.trim() || null });
         variantId = extractInsertId(res);

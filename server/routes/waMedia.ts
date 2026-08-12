@@ -8,7 +8,9 @@
  * (YAGNI، كما تنصّ المواصفة).
  */
 import { Router, type Request, type Response } from "express";
+import { resolvePermissions, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { getUserFromRequest } from "../auth/session";
+import { resolveCustomRole } from "../context";
 import { logger } from "../logger";
 import { getMediaForServing } from "../services/whatsapp/mediaService";
 
@@ -53,12 +55,35 @@ export function waMediaRouter(): Router {
     }
     if (!user) return res.status(401).json({ error: "يلزم تسجيل الدخول." });
 
+    // تفويض (تدقيق ٣/٨): كان أي مستخدم مصادَق مهما كان دوره يعدّ messageId التسلسلي فيسحب كل
+    // وسائط محادثات واتساب داخل الشركة (PII عملاء) — IDOR أفقي. نطابق الآن بوّابة الـinbox في
+    // conversationRouter بالضبط: وحدة «channels» READ + عزل الفرع على conversations.branchId.
+    // resolveCustomRole يحلّ الدور المخصّص (getUserFromRequest يعيد صفّ users الخام بلا حلّ).
+    const authUser = user as typeof user & { customRoleLabel?: string | null };
+    await resolveCustomRole(authUser);
+    const role = authUser.role as string;
+    const elevated = role === "admin" || role === "manager";
+    if (role !== "admin") {
+      const map: PermissionMap = resolvePermissions(
+        role as RoleKey,
+        (authUser.permissionsOverride as PermissionMap | null) ?? null
+      );
+      if ((map.channels ?? "NONE") === "NONE") {
+        return res.status(403).json({ error: "لا صلاحية لعرض وسائط المحادثات." });
+      }
+    }
+
     const messageId = Number(req.params.messageId);
     if (!Number.isInteger(messageId) || messageId <= 0) return res.status(404).end();
 
     try {
       const media = await getMediaForServing(messageId);
       if (!media) return res.status(404).end();
+      // عزل الفرع: غير المرتفع (كاشير/مندوب…) يقرأ وسائط فرعه فقط. 404 (لا 403) كي لا يكشف وجود
+      // الوسائط في فرع آخر — مطابقٌ لـassertConversationBranch في conversationRouter.
+      if (!elevated && media.branchId != null && Number(authUser.branchId) !== media.branchId) {
+        return res.status(404).end();
+      }
       const bytes = Buffer.from(media.bytesBase64, "base64");
       const { contentType, disposition } = resolveMediaHeaders(media.mimeType);
       res.setHeader("Content-Type", contentType);

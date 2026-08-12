@@ -34,6 +34,7 @@ import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { cancelContractsByInvoiceItems } from "./subscriptionService";
 
 export type ReversalOutcome = "REVERSED" | "LOSS_REFUND";
 
@@ -280,6 +281,7 @@ export async function approveReversal(
     .update(digitalSaleDetails)
     .set({ fulfillmentStatus: "REVERSED" })
     .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
+  await cancelContractsByInvoiceItems(tx, details.map((detail) => Number(detail.invoiceItemId)));
 
   await auditLog(tx, actor, "digitalCards.reversal.approved", input.invoiceId, {
     details: details.length,
@@ -344,7 +346,7 @@ export async function rejectLossRefund(
   assertManager(actor);
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
   const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
-  if (requesters.size === 1 && requesters.has(actor.userId) && actor.role !== "admin") {
+  if (requesters.size === 1 && requesters.has(actor.userId) && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يبتّ في الطلب من قدّمه — يلزم مديرٌ آخر" });
   }
 
@@ -390,9 +392,9 @@ export async function lossRefund(
 
   // البنود يجب أن تكون **معلّقة بطلبٍ سابق** — لا يُعتمَد ردٌّ لم يُطلَب.
   const details = await lockDetails(tx, input.invoiceId, input.detailIds, "LOSS_REFUND_PENDING");
-  // فصل المهام: المُعتمِد ≠ الطالب. admin مُستثنى للتصحيح الإداريّ (اصطلاح الوحدة).
+  // فصل المهام: المُعتمِد ≠ الطالب. مالك النظام وحده مستثنى بصفته المرجع النهائي.
   const requesters = new Set(details.map((d) => Number(d.lossRefundRequestedBy)));
-  if (requesters.size === 1 && requesters.has(actor.userId) && actor.role !== "admin") {
+  if (requesters.size === 1 && requesters.has(actor.userId) && !actor.isOwner) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يعتمد ردّ الخسارة من طلبه — يلزم مديرٌ آخر" });
   }
   const reason = details[0]?.lossRefundReason ?? "";
@@ -421,6 +423,7 @@ export async function lossRefund(
       lossRefundApprovedAt: new Date(),
     })
     .where(inArray(digitalSaleDetails.id, details.map((d) => Number(d.id))));
+  await cancelContractsByInvoiceItems(tx, details.map((detail) => Number(detail.invoiceItemId)));
 
   await auditLog(tx, actor, "digitalCards.reversal.lossRefund", input.invoiceId, {
     details: details.length,
@@ -442,7 +445,18 @@ export async function lossRefund(
 /* ────────── قراءات ────────── */
 
 /** بنود فاتورةٍ قابلة للعكس (ISSUED فقط) — تُغذّي شاشة القرار. */
-export async function reversibleDetails(db: DB, invoiceId: number) {
+export async function reversibleDetails(db: DB, invoiceId: number, branchId?: number | null) {
+  if (branchId != null) {
+    const [invoice] = await db
+      .select({ branchId: invoices.branchId })
+      .from(invoices)
+      .where(eq(invoices.id, invoiceId))
+      .limit(1);
+    if (!invoice) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (Number(invoice.branchId) !== branchId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخص فرعاً آخر" });
+    }
+  }
   return db
     .select({
       id: digitalSaleDetails.id,
@@ -456,7 +470,11 @@ export async function reversibleDetails(db: DB, invoiceId: number) {
       lossRefundReason: digitalSaleDetails.lossRefundReason,
     })
     .from(digitalSaleDetails)
-    .where(eq(digitalSaleDetails.invoiceId, invoiceId))
+    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
+    .where(and(
+      eq(digitalSaleDetails.invoiceId, invoiceId),
+      ...(branchId == null ? [] : [eq(invoices.branchId, branchId)]),
+    ))
     .orderBy(asc(digitalSaleDetails.id));
 }
 

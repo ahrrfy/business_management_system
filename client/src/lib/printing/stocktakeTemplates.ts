@@ -5,46 +5,51 @@
  * ٢. printCountSheets — «قوائم عدّ ورقية» صفحة لكل عامل (page-break)، عمياء تماماً: بلا أرصدة دفترية.
  * كل القيم المالية تصل مُحتسبة سلفاً (decimal.js في الشاشات) — القالب يعرض فقط ولا يجري حساباً مالياً.
  */
-import { BRAND as B, esc, fmt, fmtC, openPrintWindow, CAIRO_FONT } from './brand';
-import { fmtDate, fmtDateTime } from '../date';
-import { wrapA4Doc, docHeader, docMeta, docTable, docFooter } from './docHtml';
-import { code128Svg } from './barcode';
+import {
+  BRAND as B,
+  esc,
+  fmt,
+  fmtC,
+  openPrintWindow,
+  CAIRO_FONT,
+} from "./brand";
+import { fmtDate, fmtDateTime } from "../date";
+import { wrapA4Doc, docHeader, docMeta, docTable, docFooter } from "./docHtml";
+import { code128Svg } from "./barcode";
 
 // ─── تسميات مشتركة (تُستورد أيضاً في شاشات الجرد) ────────────────────────────
 
 export const STOCKTAKE_REASON_LABEL: Record<string, string> = {
-  UNSPECIFIED: 'غير محدد',
-  DAMAGE: 'تلف / كسر',
-  LOSS_THEFT: 'فقدان / سرقة',
-  ENTRY_ERROR: 'خطأ إدخال',
-  PRINT_WASTE: 'هدر تشغيل مطبعة',
+  UNSPECIFIED: "غير محدد",
+  DAMAGE: "تلف / كسر",
+  LOSS_THEFT: "فقدان / سرقة",
+  ENTRY_ERROR: "خطأ إدخال",
+  PRINT_WASTE: "هدر تشغيل مطبعة",
 };
 
 export const STOCKTAKE_SCOPE_LABEL: Record<string, string> = {
-  FULL: 'جرد شامل للفرع',
-  MOVING: 'المنتجات المتحركة',
-  CATEGORY: 'حسب الفئة',
-  MANUAL: 'منتجات مختارة',
+  FULL: "جرد شامل للفرع",
+  MOVING: "المنتجات المتحركة",
+  CATEGORY: "حسب الفئة",
+  MANUAL: "منتجات مختارة",
 };
 
 export const STOCKTAKE_STATUS_LABEL: Record<string, string> = {
-  COUNTING: 'قيد العدّ',
-  REVIEW: 'قيد المراجعة',
-  APPROVED: 'معتمدة ومُسوّاة',
-  CANCELLED: 'ملغاة',
+  COUNTING: "قيد العدّ",
+  REVIEW: "قيد المراجعة",
+  APPROVED: "معتمدة ومُسوّاة",
+  CANCELLED: "ملغاة",
 };
 
 // ─── أدوات تنسيق محلية (عرض فقط) ─────────────────────────────────────────────
 
-const dOnly = (v?: string | Date | null): string =>
-  fmtDate(v);
+const dOnly = (v?: string | Date | null): string => fmtDate(v);
 
-const dts = (v?: string | Date | null): string =>
-  fmtDateTime(v);
+const dts = (v?: string | Date | null): string => fmtDateTime(v);
 
 /** كمية صحيحة مُشارة (+/−) — للعرض فقط. */
 const signedInt = (n: number): string =>
-  n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(Math.abs(n))}` : '0';
+  n > 0 ? `+${fmt(n)}` : n < 0 ? `−${fmt(Math.abs(n))}` : "0";
 
 /** مبلغ مُشار (+/−) — قيمة decimal نصية محسوبة سلفاً؛ التحويل هنا للعرض فقط. */
 const signedMoney = (v: string | number | null | undefined): string => {
@@ -97,6 +102,7 @@ export interface StocktakeReasonRow {
 }
 
 export interface StocktakeReportPrintData {
+  sessionType?: "NORMAL" | "OPENING";
   code: string;
   name: string;
   branchName: string;
@@ -146,58 +152,97 @@ export interface StocktakeReportPrintData {
 }
 
 export function printStocktakeReport(d: StocktakeReportPrintData): void {
+  const isOpening = d.sessionType === "OPENING";
   // ── بيانات الجلسة (docMeta) ──
   const sessionFields = [
-    { label: 'الجلسة', value: d.name },
-    { label: 'الفرع', value: d.branchName },
-    { label: 'النطاق', value: d.scopeLabel },
-    { label: 'طريقة العدّ', value: d.blind ? 'جرد أعمى' : 'عدّ مكشوف' },
-    { label: 'عمّال الجرد', value: d.workerNames.length ? d.workerNames.join('، ') : '—' },
+    { label: "الجلسة", value: d.name },
+    { label: "الفرع", value: d.branchName },
+    { label: "النطاق", value: d.scopeLabel },
+    { label: "طريقة العدّ", value: d.blind ? "جرد أعمى" : "عدّ مكشوف" },
+    {
+      label: "عمّال الجرد",
+      value: d.workerNames.length ? d.workerNames.join("، ") : "—",
+    },
   ];
   const datesFields = [
-    { label: 'أنشأها', value: `${d.createdByName ?? '—'} · ${dOnly(d.createdAt)}` },
-    { label: 'تسليم العدّ', value: dts(d.submittedAt) },
     {
-      label: 'التوقيع الأول',
-      value: d.firstSignByName ? `${d.firstSignByName} · ${dts(d.firstSignAt)}` : '—',
+      label: "أنشأها",
+      value: `${d.createdByName ?? "—"} · ${dOnly(d.createdAt)}`,
+    },
+    { label: "تسليم العدّ", value: dts(d.submittedAt) },
+    {
+      label: "التوقيع الأول",
+      value: d.firstSignByName
+        ? `${d.firstSignByName} · ${dts(d.firstSignAt)}`
+        : "—",
     },
     {
-      label: 'الاعتماد النهائي',
-      value: d.approvedByName ? `${d.approvedByName} · ${dts(d.approvedAt)}` : '—',
+      label: "الاعتماد النهائي",
+      value: d.approvedByName
+        ? `${d.approvedByName} · ${dts(d.approvedAt)}`
+        : "—",
     },
-    { label: 'حدّ التسوية المباشرة', value: `${fmt(d.thresholdPct)}٪ أو ${fmtC(d.thresholdValue)}` },
     {
-      label: 'حدّ التوقيع المزدوج',
-      value: d.dualThreshold != null && d.dualThreshold !== '' ? fmtC(d.dualThreshold) : '—',
+      label: isOpening ? "سياسة التقييم" : "حدّ التسوية المباشرة",
+      value: isOpening
+        ? "تكلفة وحدة الأساس · توقيعان إلزاميان"
+        : `${fmt(d.thresholdPct)}٪ أو ${fmtC(d.thresholdValue)}`,
+    },
+    {
+      label: "حدّ التوقيع المزدوج",
+      value:
+        d.dualThreshold != null && d.dualThreshold !== ""
+          ? fmtC(d.dualThreshold)
+          : "—",
     },
   ];
 
   // ── ملخص الإحصاءات ──
-  const statCard = (label: string, value: string, color = B.greenDark): string =>
+  const statCard = (
+    label: string,
+    value: string,
+    color = B.greenDark,
+  ): string =>
     `<div style="flex:1;background:${B.bg};border:1px solid ${B.border};border-radius:4px;padding:2.5mm;text-align:center;">
       <div style="font-size:8px;color:${B.textMuted};margin-bottom:1mm;">${esc(label)}</div>
       <div style="font-size:12px;font-weight:800;color:${color};" dir="ltr">${esc(value)}</div>
     </div>`;
   const statsRow = `<div style="display:flex;gap:2mm;margin-bottom:4mm;">
-    ${statCard('منتجات معدودة', fmt(d.stats.counted))}
-    ${statCard('مطابقة', fmt(d.stats.matched), B.green)}
-    ${statCard('زيادة', fmt(d.stats.over), '#3B82F6')}
-    ${statCard('نقص', fmt(d.stats.short), '#DC2626')}
-    ${statCard('صافي قيمة التسوية', signedMoney(d.stats.netValue))}
+    ${statCard("منتجات معدودة", fmt(d.stats.counted))}
+    ${statCard(isOpening ? "بلا تغيير عن السابق" : "مطابقة", fmt(d.stats.matched), B.green)}
+    ${statCard(isOpening ? "تغيير موجب" : "زيادة", fmt(d.stats.over), "#3B82F6")}
+    ${statCard(isOpening ? "تغيير سالب" : "نقص", fmt(d.stats.short), "#DC2626")}
+    ${statCard(isOpening ? "قيمة التغيير بالتكلفة" : "صافي قيمة التسوية", signedMoney(d.stats.netValue))}
   </div>`;
 
   // ── أولاً: جدول الفروقات المُسوّاة ──
   const adjCols = [
-    { key: 'name', label: 'المنتج' },
-    { key: 'book', label: 'الدفتري', width: '14mm', align: 'center' as const },
-    { key: 'counted', label: 'المعدود المصحَّح', width: '18mm', align: 'center' as const },
-    { key: 'diff', label: 'الفرق ±', width: '13mm', align: 'center' as const, bold: true },
-    { key: 'value', label: 'قيمة الفرق', width: '21mm', align: 'left' as const },
-    { key: 'reason', label: 'السبب', width: '20mm' },
-    { key: 'decision', label: 'القرار', width: '34mm' },
+    { key: "name", label: "المنتج" },
+    { key: "book", label: "الدفتري", width: "14mm", align: "center" as const },
+    {
+      key: "counted",
+      label: "المعدود المصحَّح",
+      width: "18mm",
+      align: "center" as const,
+    },
+    {
+      key: "diff",
+      label: "الفرق ±",
+      width: "13mm",
+      align: "center" as const,
+      bold: true,
+    },
+    {
+      key: "value",
+      label: "قيمة الفرق",
+      width: "21mm",
+      align: "left" as const,
+    },
+    { key: "reason", label: "السبب", width: "20mm" },
+    { key: "decision", label: "القرار", width: "34mm" },
   ];
   const adjRows = d.adjusted.map((r) => ({
-    name: `${r.productName}${r.variantName ? ` — ${r.variantName}` : ''}${r.baseUnit ? ` (${r.baseUnit})` : ''}${r.sku ? ` · ${r.sku}` : ''}`,
+    name: `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}${r.baseUnit ? ` (${r.baseUnit})` : ""}${r.sku ? ` · ${r.sku}` : ""}`,
     book: fmt(r.bookQty),
     counted: fmt(r.adjustedQty),
     diff: signedInt(r.diff),
@@ -208,49 +253,73 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
   const adjTotalsStrip = d.adjusted.length
     ? `<div style="display:flex;justify-content:space-between;align-items:center;background:${B.green};color:#fff;
         border-radius:0 0 4px 4px;padding:2.5mm 3mm;font-size:10px;font-weight:700;margin-top:-4mm;margin-bottom:4mm;">
-        <span>صافي قيمة التسوية (بالتكلفة)</span>
+        <span>${isOpening ? "قيمة التغيير الافتتاحي بالتكلفة" : "صافي قيمة التسوية (بالتكلفة)"}</span>
         <span><span style="opacity:.85;font-size:9px;">الكمية: <span dir="ltr">${esc(signedInt(d.adjustedNetQty))}</span></span>
           &nbsp;·&nbsp; <span dir="ltr" style="font-size:11px;">${esc(signedMoney(d.adjustedNetValue))}</span></span>
       </div>`
-    : '';
+    : "";
   const adjustedSection = d.adjusted.length
     ? docTable(adjCols, adjRows) + adjTotalsStrip
     : `<p style="background:${B.bg};border:1px dashed ${B.border};border-radius:4px;padding:3mm;
-        margin-bottom:4mm;font-size:9.5px;color:${B.textMuted};text-align:center;">لا تسويات — الجرد مطابق.</p>`;
+        margin-bottom:4mm;font-size:9.5px;color:${B.textMuted};text-align:center;">${isOpening ? "لا تغييرات افتتاحية — الرصيد السابق مطابق." : "لا تسويات — الجرد مطابق."}</p>`;
 
   // ── ثانياً: فروقات أُبقي رصيدها الدفتري ──
   const keptSection = d.kept.length
     ? secTitle(`ثانياً — فروقات أُبقي رصيدها الدفتري (${fmt(d.kept.length)})`) +
       docTable(
         [
-          { key: 'name', label: 'المنتج' },
-          { key: 'diff', label: 'الفرق ±', width: '16mm', align: 'center' as const, bold: true },
-          { key: 'decision', label: 'القرار', width: '70mm' },
+          { key: "name", label: "المنتج" },
+          {
+            key: "diff",
+            label: "الفرق ±",
+            width: "16mm",
+            align: "center" as const,
+            bold: true,
+          },
+          { key: "decision", label: "القرار", width: "70mm" },
         ],
         d.kept.map((r) => ({
-          name: `${r.productName}${r.variantName ? ` — ${r.variantName}` : ''}`,
+          name: `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
           diff: signedInt(r.diff),
           decision: r.decisionLabel,
         })),
       )
-    : '';
+    : "";
 
   // ── ثالثاً: المنتجات المطابقة ──
   const matchedSection =
-    secTitle(`${d.kept.length ? 'ثالثاً' : 'ثانياً'} — المنتجات المطابقة (${fmt(d.stats.matched)})`) +
+    secTitle(
+      `${d.kept.length ? "ثالثاً" : "ثانياً"} — ${isOpening ? "بلا تغيير عن الرصيد السابق" : "المنتجات المطابقة"} (${fmt(d.stats.matched)})`,
+    ) +
     `<p style="font-size:8.5px;line-height:1.9;color:${B.textMuted};margin-bottom:4mm;">
-      ${esc(d.matchedNames.length ? d.matchedNames.join(' · ') : '—')}
+      ${esc(d.matchedNames.length ? d.matchedNames.join(" · ") : "—")}
     </p>`;
 
   // ── تحليل الانكماش حسب السبب ──
   const reasonSection = d.byReason.length
-    ? secTitle('تحليل الفروقات حسب السبب (الانكماش)') +
+    ? secTitle("تحليل الفروقات حسب السبب (الانكماش)") +
       docTable(
         [
-          { key: 'reason', label: 'السبب' },
-          { key: 'items', label: 'منتجات', width: '16mm', align: 'center' as const },
-          { key: 'qty', label: 'صافي الكمية', width: '22mm', align: 'center' as const },
-          { key: 'value', label: 'صافي القيمة', width: '28mm', align: 'left' as const, bold: true },
+          { key: "reason", label: "السبب" },
+          {
+            key: "items",
+            label: "منتجات",
+            width: "16mm",
+            align: "center" as const,
+          },
+          {
+            key: "qty",
+            label: "صافي الكمية",
+            width: "22mm",
+            align: "center" as const,
+          },
+          {
+            key: "value",
+            label: "صافي القيمة",
+            width: "28mm",
+            align: "left" as const,
+            bold: true,
+          },
         ],
         d.byReason.map((r) => ({
           reason: r.reasonLabel,
@@ -260,69 +329,92 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
         })),
         false,
       )
-    : '';
+    : "";
 
   // ── القيد المحاسبي + مؤشر IRA ──
-  const hasLedger = Number(d.ledger.shortExpense ?? 0) > 0 || Number(d.ledger.overGain ?? 0) > 0;
+  const hasLedger =
+    Number(d.ledger.shortExpense ?? 0) > 0 ||
+    Number(d.ledger.overGain ?? 0) > 0;
   const ledgerBox = `<div style="flex:1.4;background:${B.bg};border:1px solid ${B.border};border-radius:4px;padding:3mm;">
     <div style="font-size:9.5px;font-weight:800;margin-bottom:2mm;">القيد المحاسبي الآلي
       (مرجع <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span>)</div>
-    ${hasLedger
-      ? `${Number(d.ledger.shortExpense ?? 0) > 0
-          ? `<div style="display:flex;justify-content:space-between;font-size:9.5px;margin-bottom:1mm;">
+    ${
+      hasLedger
+        ? `${
+            Number(d.ledger.shortExpense ?? 0) > 0
+              ? `<div style="display:flex;justify-content:space-between;font-size:9.5px;margin-bottom:1mm;">
               <span>مصروف عجز مخزون (مدين)</span>
               <span dir="ltr" style="font-family:monospace;font-weight:800;color:#DC2626;">${esc(fmtC(d.ledger.shortExpense))}</span>
             </div>`
-          : ''}
-        ${Number(d.ledger.overGain ?? 0) > 0
-          ? `<div style="display:flex;justify-content:space-between;font-size:9.5px;margin-bottom:1mm;">
+              : ""
+          }
+        ${
+          Number(d.ledger.overGain ?? 0) > 0
+            ? `<div style="display:flex;justify-content:space-between;font-size:9.5px;margin-bottom:1mm;">
               <span>تسوية زيادة مخزون (دائن)</span>
               <span dir="ltr" style="font-family:monospace;font-weight:800;color:${B.green};">${esc(fmtC(d.ledger.overGain))}</span>
             </div>`
-          : ''}`
-      : `<div style="font-size:9px;color:${B.textMuted};">لا قيد محاسبياً — لا فروقات مُسوّاة بقيمة.</div>`}
+            : ""
+        }`
+        : `<div style="font-size:9px;color:${B.textMuted};">لا قيد محاسبياً — لا فروقات مُسوّاة بقيمة.</div>`
+    }
     <div style="font-size:7.5px;color:${B.textMuted};margin-top:1.5mm;">
       العجز يظهر مصروفاً صريحاً في الدفتر — لا يُدفن في التسوية، فتبقى الأرباح صادقة.</div>
   </div>`;
   const iraBox = `<div style="flex:1;background:${B.greenMist};border:1px solid ${B.greenLight};border-radius:4px;padding:3mm;text-align:center;">
     <div style="font-size:8.5px;color:${B.textMuted};margin-bottom:1mm;">مؤشر دقة المخزون (IRA) لهذه الجلسة</div>
-    <div style="font-size:16px;font-weight:900;color:${B.greenDark};" dir="ltr">${d.ira.pct != null ? esc(`${fmt(d.ira.pct)}٪`) : '—'}</div>
+    <div style="font-size:16px;font-weight:900;color:${B.greenDark};" dir="ltr">${d.ira.pct != null ? esc(`${fmt(d.ira.pct)}٪`) : "—"}</div>
     <div style="font-size:8px;color:${B.textMuted};margin-top:0.5mm;">مطابقة ${esc(fmt(d.ira.matched))} من ${esc(fmt(d.ira.counted))} معدودة</div>
   </div>`;
-  const ledgerIraRow = `<div style="display:flex;gap:3mm;margin-bottom:4mm;">${ledgerBox}${iraBox}</div>`;
+  const ledgerIraRow = isOpening
+    ? `<div style="background:${B.greenMist};border:1px solid ${B.greenLight};border-radius:4px;padding:3mm;margin-bottom:4mm;">
+        <div style="font-size:10px;font-weight:800;color:${B.greenDark};">الأثر المحاسبي والنقدي: صفر</div>
+        <div style="font-size:8.5px;color:${B.textMuted};margin-top:1mm;">ثُبتت الكميات بحركات OPENING فقط؛ لا قيد عجز/زيادة، ولا قبض أو صرف أو أثر صندوق أو مصرف أو ذمم. مؤشر IRA والانكماش غير مطبقين على التأسيس الافتتاحي.</div>
+      </div>`
+    : `<div style="display:flex;gap:3mm;margin-bottom:4mm;">${ledgerBox}${iraBox}</div>`;
 
   // ── ملاحظة التنفيذ ──
   const footnote = `<p style="background:${B.bg};border:1px solid ${B.border};border-radius:4px;padding:3mm;
     margin-bottom:5mm;font-size:8.5px;line-height:1.8;color:${B.textMuted};">
-    نُفّذت التسوية بحركات ADJUST ذرّية بمرجع <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span>
-    في سجلّ حركات المخزون، وحُدِّثت الأرصدة لحظة الاعتماد.
-    الحدّ المعتمد للتسوية المباشرة: ${esc(fmt(d.thresholdPct))}٪ أو ${esc(fmtC(d.thresholdValue))}.
-    الحركات الواقعة بعد عدّ أي منتج صُحِّحت آلياً قبل احتساب الفرق.
+    ${
+      isOpening
+        ? `ثُبتت الأرصدة الافتتاحية بحركات OPENING ذرّية بمرجع <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span>، بلا قيد عجز/زيادة أو أثر على الأرباح أو النقد.`
+        : `نُفّذت التسوية بحركات ADJUST ذرّية بمرجع <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span> في سجلّ حركات المخزون، وحُدِّثت الأرصدة لحظة الاعتماد. الحدّ المعتمد للتسوية المباشرة: ${esc(fmt(d.thresholdPct))}٪ أو ${esc(fmtC(d.thresholdValue))}.`
+    }
   </p>`;
 
   // ── ثلاث خانات توقيع ──
-  const sigBox = (title: string, who: string, when?: string): string => `<div style="text-align:center;">
+  const sigBox = (
+    title: string,
+    who: string,
+    when?: string,
+  ): string => `<div style="text-align:center;">
     <div style="font-size:9.5px;font-weight:800;">${esc(title)}</div>
     <div style="font-size:8.5px;color:${B.textMuted};margin-top:1mm;">${esc(who)}</div>
-    ${when ? `<div style="font-size:7.5px;color:${B.textFaint};margin-top:0.5mm;">${esc(when)}</div>` : ''}
+    ${when ? `<div style="font-size:7.5px;color:${B.textFaint};margin-top:0.5mm;">${esc(when)}</div>` : ""}
     <div style="margin-top:9mm;border-top:1px solid #000;padding-top:1mm;font-size:8px;color:${B.textMuted};">التوقيع</div>
   </div>`;
   const signatures = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8mm;margin-bottom:6mm;">
-    ${sigBox('عدّ وأعدّ', d.workerNames.length ? d.workerNames.join('، ') : '—', dts(d.submittedAt))}
-    ${sigBox('توقيع أول (راجع ودقّق)', d.firstSignByName ?? d.approvedByName ?? '—', d.firstSignByName ? dts(d.firstSignAt) : d.approvedByName ? dts(d.approvedAt) : undefined)}
-    ${sigBox('توقيع نهائي (اعتمد)', d.approvedByName ?? '—', d.approvedByName ? dts(d.approvedAt) : undefined)}
+    ${sigBox("عدّ وأعدّ", d.workerNames.length ? d.workerNames.join("، ") : "—", dts(d.submittedAt))}
+    ${sigBox("توقيع أول (راجع ودقّق)", d.firstSignByName ?? d.approvedByName ?? "—", d.firstSignByName ? dts(d.firstSignAt) : d.approvedByName ? dts(d.approvedAt) : undefined)}
+    ${sigBox("توقيع نهائي (اعتمد)", d.approvedByName ?? "—", d.approvedByName ? dts(d.approvedAt) : undefined)}
   </div>`;
 
   const body = [
-    docHeader('محضر جرد وتسوية', d.code, dOnly(d.approvedAt ?? d.createdAt), [
-      { label: 'الفرع', value: d.branchName },
-    ]),
+    docHeader(
+      isOpening ? "محضر تأسيس أرصدة افتتاحية" : "محضر جرد وتسوية",
+      d.code,
+      dOnly(d.approvedAt ?? d.createdAt),
+      [{ label: "الفرع", value: d.branchName }],
+    ),
     docMeta([
-      { title: 'بيانات الجلسة', fields: sessionFields },
-      { title: 'التواريخ والحدود', fields: datesFields },
+      { title: "بيانات الجلسة", fields: sessionFields },
+      { title: "التواريخ والحدود", fields: datesFields },
     ]),
     statsRow,
-    secTitle(`أولاً — الفروقات المُسوّاة (${fmt(d.adjusted.length)})`),
+    secTitle(
+      `أولاً — ${isOpening ? "التغييرات الافتتاحية المثبتة" : "الفروقات المُسوّاة"} (${fmt(d.adjusted.length)})`,
+    ),
     adjustedSection,
     keptSection,
     matchedSection,
@@ -331,9 +423,11 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
     footnote,
     signatures,
     docFooter(),
-  ].join('');
+  ].join("");
 
-  openPrintWindow(wrapA4Doc(`محضر جرد ${d.code}`, body));
+  openPrintWindow(
+    wrapA4Doc(`${isOpening ? "محضر تأسيس أرصدة" : "محضر جرد"} ${d.code}`, body),
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -371,50 +465,66 @@ export function printCountSheets(d: CountSheetsPrintData): void {
   const emptyBox = `<div style="height:7mm;border:1px solid #999;border-radius:1.5mm;"></div>`;
   const noteLine = `<div style="height:7mm;border-bottom:1px dashed #aaa;"></div>`;
 
-  const pages = d.sheets.map((sh, ai) => {
-    const rows = sh.items.map((it, i) => {
-      let barCell = '—';
-      if (it.barcode) {
-        try {
-          barCell = code128Svg(it.barcode, { moduleWidth: 0.9, height: 24, quietZone: 4, showText: true }).svg;
-        } catch {
-          barCell = `<span style="font-family:monospace;font-size:8px;" dir="ltr">${esc(it.barcode)}</span>`;
-        }
-      }
-      return `<tr>
+  const pages = d.sheets
+    .map((sh, ai) => {
+      const rows = sh.items
+        .map((it, i) => {
+          let barCell = "—";
+          if (it.barcode) {
+            try {
+              barCell = code128Svg(it.barcode, {
+                moduleWidth: 0.9,
+                height: 24,
+                quietZone: 4,
+                showText: true,
+              }).svg;
+            } catch {
+              barCell = `<span style="font-family:monospace;font-size:8px;" dir="ltr">${esc(it.barcode)}</span>`;
+            }
+          }
+          return `<tr>
         <td style="${td}text-align:center;color:#555;font-size:8px;width:7mm;">${fmt(i + 1)}</td>
         <td style="${td}font-weight:700;">${esc(it.productName)}</td>
-        <td style="${td}color:#333;width:22mm;">${esc(it.variantName ?? '—')}</td>
-        <td style="${td}width:20mm;"><span style="font-family:monospace;font-size:8px;" dir="ltr">${esc(it.sku ?? '—')}</span></td>
+        <td style="${td}color:#333;width:22mm;">${esc(it.variantName ?? "—")}</td>
+        <td style="${td}width:20mm;"><span style="font-family:monospace;font-size:8px;" dir="ltr">${esc(it.sku ?? "—")}</span></td>
         <td style="${td}text-align:center;width:36mm;">${barCell}</td>
-        <td style="${td}text-align:center;width:14mm;font-size:8.5px;">${esc(it.baseUnit ?? '—')}</td>
+        <td style="${td}text-align:center;width:14mm;font-size:8.5px;">${esc(it.baseUnit ?? "—")}</td>
         <td style="${td}width:19mm;">${emptyBox}</td>
         <td style="${td}width:19mm;">${emptyBox}</td>
         <td style="${td}width:26mm;">${noteLine}</td>
       </tr>`;
-    }).join('');
+        })
+        .join("");
 
-    // ثلاث خانات توقيع — سلسلة عهدة الورقة: عدّ ← استلم وأدخل البيانات ← دقّق (مرجع jrd-countsheet.jsx).
-    const sigBoxes = ['عدّ (العامل)', 'استلم وأدخل البيانات', 'راجع ودقّق (المشرف)'].map((k, i) => `<div style="text-align:center;">
+      // ثلاث خانات توقيع — سلسلة عهدة الورقة: عدّ ← استلم وأدخل البيانات ← دقّق (مرجع jrd-countsheet.jsx).
+      const sigBoxes = [
+        "عدّ (العامل)",
+        "استلم وأدخل البيانات",
+        "راجع ودقّق (المشرف)",
+      ]
+        .map(
+          (k, i) => `<div style="text-align:center;">
       <div style="font-size:9.5px;font-weight:800;">${esc(k)}</div>
       ${i === 0 ? `<div style="font-size:8.5px;color:#555;margin-top:1mm;">${esc(sh.workerName)}</div>` : `<div style="font-size:8.5px;color:#555;margin-top:1mm;">&nbsp;</div>`}
       <div style="margin-top:9mm;border-top:1px solid #000;padding-top:1mm;font-size:8px;color:#555;">الاسم والتوقيع</div>
-    </div>`).join('');
+    </div>`,
+        )
+        .join("");
 
-    return `<div style="width:210mm;min-height:297mm;background:#fff;color:#000;direction:rtl;
+      return `<div style="width:210mm;min-height:297mm;background:#fff;color:#000;direction:rtl;
       font-family:'Cairo',sans-serif;padding:12mm 14mm;box-sizing:border-box;
-      ${ai < total - 1 ? 'page-break-after:always;' : ''}">
+      ${ai < total - 1 ? "page-break-after:always;" : ""}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;
         border-bottom:2px solid #000;padding-bottom:3mm;">
         <div>
           <p style="font-size:13px;font-weight:800;margin:0;">الرؤية العربية — قائمة عدّ ميداني</p>
           <p style="font-size:9px;color:#333;margin:1mm 0 0 0;">
-            ${esc(d.branchName)} · جلسة <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span> · ${esc(dateStr)}${d.name ? ` · ${esc(d.name)}` : ''}
+            ${esc(d.branchName)} · جلسة <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span> · ${esc(dateStr)}${d.name ? ` · ${esc(d.name)}` : ""}
           </p>
         </div>
         <div style="text-align:left;">
           <p style="font-size:10.5px;font-weight:800;margin:0;">العامل: ${esc(sh.workerName)}</p>
-          <p style="font-size:9px;color:#333;margin:0.5mm 0 0 0;">المنطقة: ${esc(sh.zone ?? '—')} · ورقة ${fmt(ai + 1)} من ${fmt(total)}</p>
+          <p style="font-size:9px;color:#333;margin:0.5mm 0 0 0;">المنطقة: ${esc(sh.zone ?? "—")} · ورقة ${fmt(ai + 1)} من ${fmt(total)}</p>
           <p style="font-size:7.5px;color:#555;margin:0.5mm 0 0 0;">رمز الدخول (PIN) لا يُطبع — يُسلَّم للعامل مباشرة</p>
         </div>
       </div>
@@ -441,7 +551,8 @@ export function printCountSheets(d: CountSheetsPrintData): void {
         أي منتج غير موجود اكتب «0» · الكميات بوحدة الأساس المذكورة.
       </p>
     </div>`;
-  }).join('');
+    })
+    .join("");
 
   const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <title>قوائم عدّ — ${esc(d.code)}</title>

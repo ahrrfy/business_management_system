@@ -17,11 +17,12 @@
 //     **بلا قيد دفتر ولا أثر ماليّ** حتى يعتمده مديرٌ آخر (SOD)؛ عدّه كان سيَخصم من البطاقة مالاً لم يخرج.
 //     (في مسار الدرج يُستبعَد ضمناً لأنّ السند المعلَّق يأخذ shiftId=NULL؛ البطاقة ليست مربوطة بوردية
 //      فنُصرّح بالشرط.) الأصل REVERSED يبقى approvalStatus='APPROVED' فيَتصافى مع تعويضيّه — سليم.
-import { and, sql } from "drizzle-orm";
+import { and, sql, type SQL } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { getDb } from "../db";
 import { cardReconciliations, receipts } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
+import { escLike } from "../lib/sqlLike";
 import { money, toDbMoney } from "./money";
 import { withTx } from "./tx";
 import { utcTodayStart } from "./businessDay";
@@ -53,9 +54,13 @@ function resolveBranch(scope: CardScope, inputBranchId?: number | null): number 
   return inputBranchId ?? null;
 }
 
-/** شرط SQL الأساس لكل صفوف حساب البطاقة (بطاقة + معتمَد).
+/** ش٥ — نوع الحساب المشتقّ: بطاقة/بنك أو رصيد زين (نواة واحدة معمَّمة لا مرآة منسوخة). */
+export type CardAccountKind = "CARD" | "TELECOM";
+
+/** شرط SQL الأساس لكل صفوف الحساب المشتقّ (طريقة الدفع بنوع الحساب + معتمَد).
  *  ⚠️ اسم عمود DB لـapprovalStatus هو `receiptApprovalStatus` (mysqlEnum أوّل معامل = اسم العمود). */
-const CARD_WHERE = sql`r.paymentMethod = 'CARD' AND r.receiptApprovalStatus = 'APPROVED'`;
+const accountWhere = (kind: CardAccountKind) =>
+  sql`r.paymentMethod = ${kind} AND r.receiptApprovalStatus = 'APPROVED'`;
 /** المبلغ الموقَّع (IN موجب، OUT سالب) — decimal(15,2) دقيق في SQL. */
 const SIGNED = sql`CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END`;
 
@@ -82,8 +87,12 @@ export interface CardSummary {
   } | null;
 }
 
-export async function getCardSummary(input: { branchId?: number }, scope: CardScope): Promise<CardSummary> {
+export async function getCardSummary(
+  input: { branchId?: number; accountKind?: CardAccountKind },
+  scope: CardScope,
+): Promise<CardSummary> {
   const db = getDb();
+  const kind: CardAccountKind = input.accountKind ?? "CARD";
   const branchId = resolveBranch(scope, input.branchId);
   const empty: CardSummary = {
     branchId,
@@ -107,7 +116,7 @@ export async function getCardSummary(input: { branchId?: number }, scope: CardSc
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' AND r.createdAt >= ${todayStart} THEN r.amount ELSE 0 END), 0) AS CHAR) AS todayOut,
         COUNT(*) AS cnt
       FROM receipts r
-      WHERE ${CARD_WHERE} ${branchClause(branchId)}
+      WHERE ${accountWhere(kind)} ${branchClause(branchId)}
     `),
   );
   const r = rows[0] ?? {};
@@ -125,7 +134,7 @@ export async function getCardSummary(input: { branchId?: number }, scope: CardSc
                CAST(difference AS CHAR) AS difference,
                createdAt
         FROM cardReconciliations
-        WHERE branchId = ${branchId}
+        WHERE branchId = ${branchId} AND accountKind = ${kind}
         ORDER BY asOfDate DESC, id DESC
         LIMIT 1
       `),
@@ -156,7 +165,7 @@ export async function getCardSummary(input: { branchId?: number }, scope: CardSc
 
 // ───────────────────────────── الحركات ─────────────────────────────
 
-export type CardMovementSource = "SALE" | "INVOICE_PAYMENT" | "VOUCHER" | "WORK_ORDER" | "OTHER";
+export type CardMovementSource = "SALE" | "INVOICE_PAYMENT" | "VOUCHER" | "WORK_ORDER" | "DRAFT_DEPOSIT" | "OTHER";
 
 export interface CardMovementRow {
   receiptId: number;
@@ -193,10 +202,24 @@ export interface CardMovementsResult {
 const MOVEMENTS_MAX = 500;
 
 export async function getCardMovements(
-  input: { branchId?: number; from?: string; to?: string; direction?: "IN" | "OUT"; limit?: number; offset?: number },
+  input: {
+    branchId?: number;
+    from?: string;
+    to?: string;
+    direction?: "IN" | "OUT";
+    /** بحث نصّي: الوصف/المرجع/رقم السند/اسم الطرف الحرّ/آخر ٤ أرقام (أعمدة receipts فقط — بلا join إضافي). */
+    q?: string;
+    /** نوع مصدر الحركة (VOUCHER/INVOICE_PAYMENT/WORK_ORDER/OTHER) — مشتقّ من voucherNumber/invoiceId/workOrderId. */
+    sourceType?: Exclude<CardMovementSource, "SALE">;
+    /** ش٥ — نوع الحساب المشتقّ (بطاقة افتراضاً / رصيد زين). */
+    accountKind?: CardAccountKind;
+    limit?: number;
+    offset?: number;
+  },
   scope: CardScope,
 ): Promise<CardMovementsResult> {
   const db = getDb();
+  const kind: CardAccountKind = input.accountKind ?? "CARD";
   const branchId = resolveBranch(scope, input.branchId);
   const base: CardMovementsResult = { rows: [], count: 0, totalIn: "0.00", totalOut: "0.00", net: "0.00", hasMore: false, branchId };
   if (!db) return base;
@@ -207,11 +230,34 @@ export async function getCardMovements(
   // to شامل ليومه كاملاً (< بداية اليوم التالي).
   const toClause = input.to ? sql`AND r.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)` : sql``;
   const dirClause = input.direction ? sql`AND r.direction = ${input.direction}` : sql``;
-  // نطاق الحساب **بلا** فلتر الاتجاه — عليه يُحسَب الرصيد الجاري كي يبقى صحيحاً (الرصيد بعد كل حركة
-  // يشمل الاتجاهين). فلتر الاتجاه يُطبَّق على الصفوف المعروضة فقط (في الاستعلام الخارجي أدناه).
-  const streamFilter = sql`${CARD_WHERE} ${branchClause(branchId)} ${fromClause} ${toClause}`;
-  // فلتر العرض (يشمل الاتجاه) — للإجماليات/العدّ والصفوف المعروضة.
-  const filter = sql`${streamFilter} ${dirClause}`;
+  // مطابق لاشتقاق `source` في التطبيع أدناه (voucherNumber ⇒ VOUCHER، وإلا invoiceId ⇒ INVOICE_PAYMENT،
+  // وإلا workOrderId ⇒ WORK_ORDER، وإلا عربون مسوّدة (orderPayments) ⇒ DRAFT_DEPOSIT، وإلا OTHER).
+  const isDraftDep = sql`EXISTS (SELECT 1 FROM orderPayments op WHERE op.receiptId = r.id)`;
+  const sourceClause =
+    input.sourceType === "VOUCHER" ? sql`AND r.voucherNumber IS NOT NULL`
+    : input.sourceType === "INVOICE_PAYMENT" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NOT NULL`
+    : input.sourceType === "WORK_ORDER" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NOT NULL`
+    : input.sourceType === "DRAFT_DEPOSIT" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NULL AND ${isDraftDep}`
+    : input.sourceType === "OTHER" ? sql`AND r.voucherNumber IS NULL AND r.invoiceId IS NULL AND r.workOrderId IS NULL AND NOT ${isDraftDep}`
+    : sql``;
+  const qClause = input.q
+    ? (() => {
+        const pat = `%${escLike(input.q.trim())}%`;
+        return sql`AND (
+          r.description LIKE ${pat} ESCAPE '!'
+          OR r.referenceNumber LIKE ${pat} ESCAPE '!'
+          OR r.voucherNumber LIKE ${pat} ESCAPE '!'
+          OR r.counterpartyName LIKE ${pat} ESCAPE '!'
+          OR r.cardLastFour LIKE ${pat} ESCAPE '!'
+        )`;
+      })()
+    : sql``;
+  // نطاق الحساب **بلا** فلتر الاتجاه/البحث/النوع — عليه يُحسَب الرصيد الجاري كي يبقى صحيحاً (الرصيد
+  // بعد كل حركة يشمل كل الحركات فعلياً بصرف النظر عمّا يُعرَض). فلاتر العرض تُطبَّق على الصفوف
+  // المعروضة/الإجماليات فقط (streamFilter+ أدناه، والاستعلام الخارجي).
+  const streamFilter = sql`${accountWhere(kind)} ${branchClause(branchId)} ${fromClause} ${toClause}`;
+  // فلتر العرض (يشمل الاتجاه/البحث/النوع) — للإجماليات/العدّ والصفوف المعروضة.
+  const filter = sql`${streamFilter} ${dirClause} ${qClause} ${sourceClause}`;
 
   // إجماليات النطاق (كل الصفوف المطابقة، لا الصفحة فقط).
   const totRows = rowsOf(
@@ -236,7 +282,7 @@ export async function getCardMovements(
       await db.execute(sql`
         SELECT CAST(COALESCE(SUM(${SIGNED}), 0) AS CHAR) AS bal
         FROM receipts r
-        WHERE ${CARD_WHERE} AND r.branchId = ${branchId} AND r.createdAt < ${input.from}
+        WHERE ${accountWhere(kind)} AND r.branchId = ${branchId} AND r.createdAt < ${input.from}
       `),
     );
     opening = money(opRows[0]?.bal ?? 0);
@@ -246,6 +292,27 @@ export async function getCardMovements(
   const runningExpr = branchId != null
     ? sql`CAST(SUM(${SIGNED}) OVER (ORDER BY r.createdAt, r.id ROWS UNBOUNDED PRECEDING) AS CHAR)`
     : sql`NULL`;
+
+  // نفس فلاتر العرض (اتجاه/بحث/نوع) لكن بأسماء أعمدة الاستعلام الخارجي x (بعد الفرز على النافذة) —
+  // تُطبَّق هنا لا على streamFilter الداخلي كي يبقى الرصيد الجاري صحيحاً (يُحسَب على النطاق كاملاً).
+  const outerConds: SQL[] = [];
+  if (input.direction) outerConds.push(sql`x.direction = ${input.direction}`);
+  if (input.sourceType === "VOUCHER") outerConds.push(sql`x.voucherNumber IS NOT NULL`);
+  else if (input.sourceType === "INVOICE_PAYMENT") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NOT NULL`);
+  else if (input.sourceType === "WORK_ORDER") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NOT NULL`);
+  else if (input.sourceType === "DRAFT_DEPOSIT") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NULL AND x.isDraftDeposit = 1`);
+  else if (input.sourceType === "OTHER") outerConds.push(sql`x.voucherNumber IS NULL AND x.invoiceId IS NULL AND x.workOrderId IS NULL AND x.isDraftDeposit = 0`);
+  if (input.q) {
+    const pat = `%${escLike(input.q.trim())}%`;
+    outerConds.push(sql`(
+      x.description LIKE ${pat} ESCAPE '!'
+      OR x.referenceNumber LIKE ${pat} ESCAPE '!'
+      OR x.voucherNumber LIKE ${pat} ESCAPE '!'
+      OR x.counterpartyName LIKE ${pat} ESCAPE '!'
+      OR x.cardLastFour LIKE ${pat} ESCAPE '!'
+    )`);
+  }
+  const outerWhere = outerConds.length ? sql`WHERE ${sql.join(outerConds, sql` AND `)}` : sql``;
 
   const rows = rowsOf(
     await db.execute(sql`
@@ -264,6 +331,7 @@ export async function getCardMovements(
           r.voucherNumber AS voucherNumber,
           r.invoiceId AS invoiceId,
           r.workOrderId AS workOrderId,
+          CASE WHEN ${isDraftDep} THEN 1 ELSE 0 END AS isDraftDeposit,
           r.receiptStatus AS receiptStatus,
           r.voucherPartyType AS partyType,
           r.partyId AS partyId,
@@ -279,7 +347,7 @@ export async function getCardMovements(
         LEFT JOIN users u ON u.id = r.createdBy
         WHERE ${streamFilter}
       ) x
-      ${input.direction ? sql`WHERE x.direction = ${input.direction}` : sql``}
+      ${outerWhere}
       ORDER BY x.createdAt DESC, x.receiptId DESC
       LIMIT ${limit} OFFSET ${offset}
     `),
@@ -294,6 +362,7 @@ export async function getCardMovements(
     if (voucherNumber != null) source = "VOUCHER";
     else if (invoiceId != null) source = "INVOICE_PAYMENT";
     else if (workOrderId != null) source = "WORK_ORDER";
+    else if (Number(r.isDraftDeposit ?? 0) === 1) source = "DRAFT_DEPOSIT"; // ش٤: عربون طلب محفوظ (orderPayments)
     // ملاحظة: إيصال البيع النقديّ اللحظيّ يُكتب بـinvoiceId ⇒ يظهر INVOICE_PAYMENT؛ التمييز الدقيق
     // «بيع مقابل تسديد دفعة» غير جوهريّ للمطابقة (كلاهما دخل بطاقة على الفاتورة).
     const partyName =
@@ -349,14 +418,17 @@ export interface CardReconciliationRow {
 }
 
 export async function listCardReconciliations(
-  input: { branchId?: number; limit?: number },
+  input: { branchId?: number; limit?: number; accountKind?: CardAccountKind },
   scope: CardScope,
 ): Promise<CardReconciliationRow[]> {
   const db = getDb();
   if (!db) return [];
+  const kind: CardAccountKind = input.accountKind ?? "CARD";
   const branchId = resolveBranch(scope, input.branchId);
   const limit = input.limit && input.limit > 0 && input.limit <= 200 ? Math.floor(input.limit) : 50;
-  const branchFilter = branchId != null ? sql`WHERE cr.branchId = ${branchId}` : sql``;
+  const branchFilter = branchId != null
+    ? sql`WHERE cr.accountKind = ${kind} AND cr.branchId = ${branchId}`
+    : sql`WHERE cr.accountKind = ${kind}`;
   const rows = rowsOf(
     await db.execute(sql`
       SELECT
@@ -396,6 +468,8 @@ export async function listCardReconciliations(
 
 export interface CreateReconciliationInput {
   branchId?: number;
+  /** ش٥ — نوع الحساب المُطابَق (بطاقة افتراضاً / رصيد زين). */
+  accountKind?: CardAccountKind;
   asOfDate: string; // YYYY-MM-DD
   statementBalance: string;
   statementLabel?: string;
@@ -430,6 +504,7 @@ export async function createCardReconciliation(
     throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ المطابقة غير صالح (الصيغة YYYY-MM-DD)" });
   }
   const statementBalance = money(input.statementBalance);
+  const kind: CardAccountKind = input.accountKind ?? "CARD";
 
   return withTx(async (tx) => {
     // رصيد النظام حتى نهاية يوم asOfDate (شامل) — نفس ثابت الرصيد.
@@ -437,7 +512,7 @@ export async function createCardReconciliation(
       await tx.execute(sql`
         SELECT CAST(COALESCE(SUM(${SIGNED}), 0) AS CHAR) AS bal
         FROM receipts r
-        WHERE ${CARD_WHERE} AND r.branchId = ${branchId}
+        WHERE ${accountWhere(kind)} AND r.branchId = ${branchId}
           AND r.createdAt < DATE_ADD(${asOf}, INTERVAL 1 DAY)
       `),
     );
@@ -446,6 +521,7 @@ export async function createCardReconciliation(
 
     const res = await tx.insert(cardReconciliations).values({
       branchId,
+      accountKind: kind,
       asOfDate: asOf,
       systemBalance: toDbMoney(systemBalance),
       statementBalance: toDbMoney(statementBalance),

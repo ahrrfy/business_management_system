@@ -9,7 +9,7 @@
  * ويطبّق **نفس محرّك العروض** (`resolvePromotionForLine`) المستعمل في نقطة البيع — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, gt, inArray, isNull, like, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   branchStock,
   branches,
@@ -24,6 +24,7 @@ import {
   promotions,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { escLike } from "../lib/sqlLike";
 import { decodeDataUrl, productImageUrl } from "../imageRoute";
 import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
@@ -88,6 +89,8 @@ export interface StorefrontProduct {
   colors?: { name: string; hex: string; inStock: boolean }[];
   /** وحدات البيع التي أتاحها المدير للمتجر؛ تُستخدم لاختيار «بند/كارتون» في صفحة المنتج. */
   storeUnits?: StorefrontUnitOption[];
+  /** متغيّرات المنتج الفعلية. صفحة المتجر تختار واحداً منها قبل إضافة الصنف للسلة. */
+  variants?: StorefrontVariantOption[];
 }
 
 export interface StorefrontUnitOption {
@@ -99,6 +102,16 @@ export interface StorefrontUnitOption {
   promotionName: string | null;
   inStock: boolean;
   stockLeft: number | null;
+}
+
+export interface StorefrontVariantOption {
+  variantId: number;
+  label: string;
+  color: string | null;
+  colorHex: string | null;
+  size: string | null;
+  inStock: boolean;
+  units: StorefrontUnitOption[];
 }
 
 /** عتبة «كمية محدودة» — الكمية تُكشَف للزبون فقط عندها فأقلّ (ندرة، لا تسريب مخزون كامل). */
@@ -127,6 +140,10 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number)
       productId: products.id,
       productUnitId: productUnits.id,
       variantId: productVariants.id,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      size: productVariants.size,
       productName: products.name,
       brand: products.brand,
       category: categories.name,
@@ -169,6 +186,7 @@ function toPublicProductImage(imageId: number | null | undefined, value: string 
 
 function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
+  variantName: string | null; color: string | null; colorHex: string | null; size: string | null;
   category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
   imageId?: number | null; imageUrl: string | null; isBundle: boolean | null; stockQty: number | null;
 }): StorefrontProduct {
@@ -327,8 +345,14 @@ export async function storefrontCatalog(opts: {
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
   const s = String(opts.search ?? "").trim();
   if (s) {
-    const p = `%${s}%`;
-    const searchCond = or(like(products.name, p), like(products.brand, p), like(productUnits.barcode, p));
+    // تدقيق ٣/٨: تهريب `%`/`_` (escLike + ESCAPE '!') كبقية مسارات البحث — كان بحث «%» يطابق كل
+    // شيء ويفرض مسحاً كاملاً (اتساق/أداء؛ القيمة مربوطة أصلاً فلا حقن).
+    const p = `%${escLike(s)}%`;
+    const searchCond = or(
+      sql`${products.name} LIKE ${p} ESCAPE '!'`,
+      sql`${products.brand} LIKE ${p} ESCAPE '!'`,
+      sql`${productUnits.barcode} LIKE ${p} ESCAPE '!'`,
+    );
     if (searchCond) conds.push(searchCond);
   }
   const rows = await safeSelect(db, branchId)
@@ -393,23 +417,44 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
     .where(and(sellable, eq(products.id, productId)))
     .orderBy(asc(productUnits.conversionFactor));
   if (!rows.length) return null;
-  // The public page currently represents one concrete variant. Keep all selectable
-  // sale units on that same variant so a unit click cannot silently switch SKU/color.
-  const primaryVariantId = Number(rows[0].variantId);
-  const unitRows = rows.filter((row) => Number(row.variantId) === primaryVariantId);
-  const options = unitRows.map(toStorefront);
+  const options = rows.map(toStorefront);
   await applyStorefrontPromotions(options, branchId);
-  const item = options[0];
-  item.storeUnits = options.map((option, index) => ({
-    productUnitId: option.productUnitId,
-    unitName: option.unitName,
-    conversionFactor: String(unitRows[index].conversionFactor),
-    price: option.price,
-    salePrice: option.salePrice,
-    promotionName: option.promotionName,
-    inStock: option.inStock,
-    stockLeft: option.stockLeft,
-  }));
+  // المتجر يعرض منتجاً واحداً، لكن الطلب يجب أن يحمل المتغيّر المحدد فعلياً
+  // (لون/قياس) لا أول SKU صامتاً. كل متغيّر يحتفظ بوحدات بيعه الخاصة.
+  const byVariant = new Map<number, StorefrontVariantOption>();
+  for (const option of options) {
+    const source = rows.find((row) => Number(row.productUnitId) === option.productUnitId)!;
+    const variantId = option.variantId;
+    let variant = byVariant.get(variantId);
+    if (!variant) {
+      const parts = [source.variantName, source.color, source.size].map((v) => v?.trim()).filter(Boolean) as string[];
+      variant = {
+        variantId,
+        label: Array.from(new Set(parts)).join(" — ") || "الخيار الافتراضي",
+        color: source.color?.trim() || null,
+        colorHex: normalizeHex(source.colorHex) ?? resolveColorHex(source.color ?? "") ?? null,
+        size: source.size?.trim() || null,
+        inStock: false,
+        units: [],
+      };
+      byVariant.set(variantId, variant);
+    }
+    variant.inStock ||= option.inStock;
+    variant.units.push({
+      productUnitId: option.productUnitId,
+      unitName: option.unitName,
+      conversionFactor: String(source.conversionFactor),
+      price: option.price,
+      salePrice: option.salePrice,
+      promotionName: option.promotionName,
+      inStock: option.inStock,
+      stockLeft: option.stockLeft,
+    });
+  }
+  const item = options.find((option) => option.inStock) ?? options[0];
+  const primaryVariant = byVariant.get(item.variantId)!;
+  item.storeUnits = primaryVariant.units;
+  item.variants = Array.from(byVariant.values());
   await attachSoldCounts(db, [item]);
   await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);

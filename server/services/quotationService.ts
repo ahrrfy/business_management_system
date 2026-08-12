@@ -491,6 +491,7 @@ export async function getQuotation(quotationId: number) {
       productName: products.name,
       sku: productVariants.sku,
       variantName: productVariants.variantName,
+      costBase: productVariants.costPrice,
       unitName: productUnits.unitName,
       conversionFactor: productUnits.conversionFactor,
       barcode: productUnits.barcode,

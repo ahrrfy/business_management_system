@@ -1,4 +1,5 @@
-// بند 12أ (٧/٧): راوتر الأقساط والشيكات الآجلة.
+// بند 12أ (٧/٧): راوتر الأقساط. الصكوك أُزيلت من الإنشاء/السداد (٤/٨، قرار مالك «لا استثناء») —
+// bounceCheck يبقى لارتجاع صكوكٍ قديمة مجدولة قبل هذا القرار فقط (لا مسار حيّ ينشئ صكاً جديداً).
 //
 // الصلاحيات — مرآة voucherRouter عمداً: سداد القسط يُنشئ **سند قبض حقيقياً** (createVoucher)
 // فيَحمل نفس بوّابته (treasuryManagerProcedure = manager/accountant + منح صريح، **لا كاشير**
@@ -6,6 +7,7 @@
 // treasuryManagerReadProcedure. عزل الفروع بنمط voucherRouter حرفياً: غير الأدمن المُسنَد
 // لفرع يُقيَّد بفرعه قراءةً وكتابةً؛ admin (أو مدير بلا فرع) يعبُر.
 import { TRPCError } from "@trpc/server";
+import { like } from "drizzle-orm";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -17,15 +19,20 @@ import {
   listPlans,
   payLine,
 } from "../services/installmentService";
+import { installmentLines } from "../../drizzle/schema";
+import { requireDb } from "../services/tx";
+import { escLike } from "../lib/sqlLike";
 import { router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 
 const moneyStr = z
   .string()
   .regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان عشريتان كحدّ أقصى)");
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
-const lineKind = z.enum(["CASH", "CHECK"]);
 const planStatus = z.enum(["ACTIVE", "COMPLETED", "CANCELLED"]);
-const payMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+// الصكوك أُزيلت من الإنشاء والسداد (قرار مالك ٤/٨: «لا استثناء» — مطابقةً لسياسة النظام العامة
+// «لا تعامل بالصكوك»). القيمة تبقى في installmentService/DB لقراءة السجلات القديمة وارتجاعها
+// (bounceCheck) فقط — لا مسار حيّ ينشئ خطّاً أو سنداً جديداً بصك بعد اليوم.
+const payMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
 
 type CtxUser = { id: number; role: string; branchId?: number | null };
 
@@ -50,9 +57,6 @@ export const installmentRouter = router({
             z.object({
               dueDate: ymd,
               amount: moneyStr,
-              kind: lineKind,
-              checkNumber: z.string().max(60).nullish(),
-              bankName: z.string().max(100).nullish(),
             }),
           )
           .min(1, "قسط واحد على الأقل")
@@ -67,7 +71,9 @@ export const installmentRouter = router({
       if (restrict == null && ctx.user.role !== "admin" && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء خطة" });
       }
-      const res = await createPlan({ ...input, enforceFinancialIntegrity: true }, {
+      // كل الأقساط الجديدة نقدية (لا صكوك — راجع تعليق payMethod أعلاه).
+      const lines = input.lines.map((l) => ({ ...l, kind: "CASH" as const }));
+      const res = await createPlan({ ...input, lines, enforceFinancialIntegrity: true }, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? input.branchId),
         role: ctx.user.role,
@@ -159,7 +165,12 @@ export const installmentRouter = router({
       return res;
     }),
 
-  /** قائمة الخطط بفلاتر — عزل فرع بنمط voucherRouter.list. */
+  /** قائمة الخطط بفلاتر — عزل فرع بنمط voucherRouter.list.
+   *  `q` (رقم خطة/رقم صك) و`from`/`to` (مدى تاريخ الإنشاء) غير مدعومَين في listPlans (خدمة
+   *  installmentService.ts خارج نطاق هذه الشريحة) — عند طلبهما نجلب صفحة واسعة (٢٠٠ = سقف الخدمة
+   *  الأقصى) بنفس فلاتر الفرع/العميل/الحالة القائمة، نُصفّي فوقها هنا، ثم نُرقّم يدوياً. أثرٌ جانبيّ
+   *  مقصود: بحثٌ محدود بأوّل ٢٠٠ خطة مطابقة للفلاتر الأساسية (كافٍ لحجم العمل الحاليّ؛ يتطلّب امتداد
+   *  listPlans لحجمٍ أكبر). بلا q/from/to السلوك مطابق تماماً للسابق (تفويض مباشر لـlistPlans). */
   list: treasuryManagerReadProcedure
     .input(
       z
@@ -167,6 +178,9 @@ export const installmentRouter = router({
           branchId: z.number().int().positive().optional(),
           customerId: z.number().int().positive().optional(),
           status: planStatus.optional(),
+          q: z.string().max(120).optional(),
+          from: ymd.optional(),
+          to: ymd.optional(),
           limit: z.number().int().positive().max(200).default(50),
           offset: z.number().int().min(0).default(0),
         })
@@ -174,8 +188,43 @@ export const installmentRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const restrict = restrictionFor(ctx.user);
-      const scoped = restrict != null ? { ...(input ?? {}), branchId: restrict } : (input ?? {});
-      return listPlans(scoped);
+      const branchId = restrict ?? input?.branchId;
+      const customerId = input?.customerId;
+      const status = input?.status;
+      const q = input?.q?.trim();
+      const from = input?.from;
+      const to = input?.to;
+      const limit = input?.limit ?? 50;
+      const offset = input?.offset ?? 0;
+
+      if (!q && !from && !to) {
+        return listPlans({ branchId, customerId, status, limit, offset });
+      }
+
+      const superset = await listPlans({ branchId, customerId, status, limit: 200, offset: 0 });
+      let rows = superset.rows;
+
+      if (q) {
+        const db = requireDb();
+        const lineMatches = await db
+          .select({ planId: installmentLines.planId })
+          .from(installmentLines)
+          .where(like(installmentLines.checkNumber, `%${escLike(q)}%`))
+          .limit(500);
+        const matchedPlanIds = new Set(lineMatches.map((l) => Number(l.planId)));
+        const qLower = q.toLowerCase();
+        rows = rows.filter(
+          (r) =>
+            matchedPlanIds.has(r.id) ||
+            String(r.id).includes(q) ||
+            r.customerName?.toLowerCase().includes(qLower),
+        );
+      }
+      if (from) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) >= from);
+      if (to) rows = rows.filter((r) => new Date(r.createdAt).toISOString().slice(0, 10) <= to);
+
+      const page = rows.slice(offset, offset + limit);
+      return { rows: page, hasMore: offset + limit < rows.length };
     }),
 
   /** تفاصيل خطة بأقساطها — عزل فرع بنمط voucherRouter.get (داخل الخدمة). */

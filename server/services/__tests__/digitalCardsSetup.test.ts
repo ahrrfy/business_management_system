@@ -13,14 +13,16 @@ import { offeringService, providerService, walletService } from "../digitalCards
  */
 
 const actor = { userId: 1, branchId: 1 };
+const defaultWallets = new Map<number, Map<number, number>>();
 
 const TABLES = [
-  "digitalOfferingBranches", "digitalOfferings", "digitalWallets", "digitalProviders",
+  "digitalOfferingBranches", "digitalOfferings", "digitalWalletTransactions", "digitalWallets", "digitalProviders",
   "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "products",
   "auditLogs", "suppliers", "categories", "users", "branches",
 ];
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set for tests"); return d; }
+const insertId = (r: any): number => Number(r?.[0]?.insertId ?? r?.insertId);
 
 async function seedBase() {
   await db().insert(s.branches).values([
@@ -47,11 +49,24 @@ async function mkProvider(opts: { name: string; settlementMode: "PREPAID" | "POS
       settlementCycle: "ON_DEMAND",
     }, actor),
   );
+  if (opts.settlementMode === "PREPAID") {
+    const byBranch = new Map<number, number>();
+    for (const branchId of [1, 2]) {
+      const { walletId } = await withTx((tx) => walletService.createWallet(tx, {
+        providerId,
+        branchId,
+        code: `AUTO-${providerId}-${branchId}`,
+        name: `AUTO-${providerId}-${branchId}`,
+      }, actor));
+      byBranch.set(branchId, walletId);
+    }
+    defaultWallets.set(providerId, byBranch);
+  }
   return { providerId, supplierId };
 }
 
 function offeringInput(providerId: number, over: Partial<Parameters<typeof offeringService.createOffering>[1]> = {}) {
-  return {
+  const input = {
     providerId,
     offeringType: "TELECOM_CARD",
     name: "كارت آسياسيل ١٠ آلاف",
@@ -61,14 +76,21 @@ function offeringInput(providerId: number, over: Partial<Parameters<typeof offer
     branches: [{ branchId: 1 }],
     ...over,
   } as Parameters<typeof offeringService.createOffering>[1];
+  input.branches = input.branches.map((branch) => {
+    if (Object.prototype.hasOwnProperty.call(branch, "walletId")) return branch;
+    const walletId = defaultWallets.get(providerId)?.get(branch.branchId);
+    return walletId == null ? branch : { ...branch, walletId };
+  });
+  return input;
 }
 
 beforeEach(async () => {
+  defaultWallets.clear();
   await truncateTables(TABLES);
   await seedBase();
 });
 
-describe("ش٣ — المزوّد", () => {
+describe.sequential("ش٣ — المزوّد", () => {
   it("ينشئ مزوّداً مرتبطاً بمورّد ويخزّن حقول التسوية", async () => {
     const { providerId, supplierId } = await mkProvider({ name: "آسياسيل", settlementMode: "PREPAID" });
     const row = await providerService.getProvider(db(), providerId);
@@ -111,9 +133,18 @@ describe("ش٣ — المزوّد", () => {
       .where(eq(s.auditLogs.action, "digitalCards.provider.update"));
     expect(logs).toHaveLength(1);
   });
+
+  it("يثبّت نمط التسوية بعد الإنشاء حمايةً للأرصدة والذمم", async () => {
+    const { providerId } = await mkProvider({ name: "مزود ثابت", settlementMode: "PREPAID" });
+    await expect(withTx((tx) => providerService.updateProvider(tx, {
+      id: providerId,
+      settlementMode: "POSTPAID",
+    }, actor))).rejects.toThrow(/لا يمكن تغيير طريقة تسوية المزوّد/);
+    expect((await providerService.getProvider(db(), providerId)).settlementMode).toBe("PREPAID");
+  });
 });
 
-describe("ش٣ — المحفظة", () => {
+describe.sequential("ش٣ — المحفظة", () => {
   it("تُنشأ برصيد صفر ومحجوز صفر لمزوّد مسبق الدفع", async () => {
     const { providerId } = await mkProvider({ name: "آسياسيل", settlementMode: "PREPAID" });
     const { walletId } = await withTx((tx) =>
@@ -144,9 +175,37 @@ describe("ش٣ — المحفظة", () => {
     );
     expect(ok.walletId).toBeGreaterThan(0);
   });
+
+  it("لا يعطّل محفظة ذات رصيد أو حركة معلقة", async () => {
+    const { providerId } = await mkProvider({ name: "محفظة محمية", settlementMode: "PREPAID" });
+    const walletId = defaultWallets.get(providerId)!.get(1)!;
+
+    await db().update(s.digitalWallets).set({ currentBalance: "100" }).where(eq(s.digitalWallets.id, walletId));
+    await expect(withTx((tx) => walletService.updateWallet(tx, { id: walletId, isActive: false }, actor)))
+      .rejects.toThrow(/وفيها رصيد/);
+
+    await db().update(s.digitalWallets).set({ currentBalance: "0", reservedBalance: "25" }).where(eq(s.digitalWallets.id, walletId));
+    await expect(withTx((tx) => walletService.updateWallet(tx, { id: walletId, isActive: false }, actor)))
+      .rejects.toThrow(/رصيد محجوز/);
+
+    await db().update(s.digitalWallets).set({ reservedBalance: "0" }).where(eq(s.digitalWallets.id, walletId));
+    await db().insert(s.digitalWalletTransactions).values({
+      walletId,
+      branchId: 1,
+      type: "ADJUSTMENT",
+      direction: "IN",
+      amount: "10",
+      balanceAfter: "0",
+      transactionNumber: "PENDING-SAFE",
+      status: "PENDING_APPROVAL",
+      createdBy: actor.userId,
+    });
+    await expect(withTx((tx) => walletService.updateWallet(tx, { id: walletId, isActive: false }, actor)))
+      .rejects.toThrow(/تنتظر الاعتماد/);
+  });
 });
 
-describe("ش٣ — العرض (البطاقة)", () => {
+describe.sequential("ش٣ — العرض (البطاقة)", () => {
   it("ينشئ منتجاً خدمياً تلقائياً موسوماً DIGITAL_CARD بوحدة أساس واحدة", async () => {
     const { providerId } = await mkProvider({ name: "آسياسيل", settlementMode: "PREPAID" });
     const r = await withTx((tx) => offeringService.createOffering(tx, offeringInput(providerId), actor));
@@ -179,6 +238,62 @@ describe("ش٣ — العرض (البطاقة)", () => {
     expect(current).toHaveLength(0);
   });
 
+  it("يعرض الجهاز والمحفظة المسندين للبطاقة أو الاشتراك في كل فرع", async () => {
+    const { providerId } = await mkProvider({ name: "انتشار", settlementMode: "PREPAID" });
+    const mainWalletId = defaultWallets.get(providerId)!.get(1)!;
+    const salesWalletId = defaultWallets.get(providerId)!.get(2)!;
+    await db().update(s.digitalWallets)
+      .set({ code: "DEV-MAIN", name: "محفظة الجهاز الرئيسي" })
+      .where(eq(s.digitalWallets.id, mainWalletId));
+    await db().update(s.digitalWallets)
+      .set({ code: "DEV-SALES", name: "محفظة جهاز المبيعات" })
+      .where(eq(s.digitalWallets.id, salesWalletId));
+
+    const created = await withTx((tx) => offeringService.createOffering(tx, offeringInput(providerId, {
+      name: "اشتراك تعليمي شهري",
+      offeringType: "EDUCATIONAL_SUBSCRIPTION",
+      requiresStudentData: true,
+      subscriptionDurationDays: 30,
+      branches: [
+        { branchId: 1, walletId: mainWalletId },
+        { branchId: 2, walletId: salesWalletId },
+      ],
+    }), actor));
+
+    const [offering] = (await offeringService.listOfferings(db(), {}))
+      .filter((row) => row.id === created.offeringId);
+    expect(offering.settlementMode).toBe("PREPAID");
+    expect(offering.assignments).toEqual([
+      {
+        offeringId: created.offeringId,
+        branchId: 1,
+        branchName: "الفرع الرئيسي",
+        walletId: mainWalletId,
+        deviceCode: "DEV-MAIN",
+        walletName: "محفظة الجهاز الرئيسي",
+        walletIsActive: true,
+      },
+      {
+        offeringId: created.offeringId,
+        branchId: 2,
+        branchName: "فرع المبيعات",
+        walletId: salesWalletId,
+        deviceCode: "DEV-SALES",
+        walletName: "محفظة جهاز المبيعات",
+        walletIsActive: true,
+      },
+    ]);
+
+    const scoped = await offeringService.listOfferings(db(), { branchId: 2 });
+    expect(scoped).toHaveLength(1);
+    expect(scoped[0].assignments).toHaveLength(1);
+    expect(scoped[0].assignments[0]).toMatchObject({
+      branchId: 2,
+      deviceCode: "DEV-SALES",
+      walletName: "محفظة جهاز المبيعات",
+    });
+  });
+
   it("يرفض ربط محفظة بعرض لمزوّد آجل", async () => {
     const { providerId: prepaidId } = await mkProvider({ name: "آسياسيل", settlementMode: "PREPAID" });
     const { walletId } = await withTx((tx) =>
@@ -202,6 +317,55 @@ describe("ش٣ — العرض (البطاقة)", () => {
         branches: [{ branchId: 1, walletId }],
       }), actor)),
     ).rejects.toThrow(/لا تنتمي للفرع/);
+  });
+
+  it("يفرض محفظة في عروض الدفع المسبق", async () => {
+    const { providerId } = await mkProvider({ name: "المسبق", settlementMode: "PREPAID" });
+    await expect(withTx((tx) => offeringService.createOffering(tx, offeringInput(providerId, {
+      branches: [{ branchId: 1, walletId: null }],
+    }), actor))).rejects.toThrow(/لا يعمل بلا محفظة/);
+
+    const walletId = defaultWallets.get(providerId)!.get(1)!;
+    const created = await withTx((tx) => offeringService.createOffering(tx, offeringInput(providerId, {
+      branches: [{ branchId: 1, walletId }],
+    }), actor));
+    expect((await offeringService.getOffering(db(), created.offeringId)).branches[0].walletId).toBe(walletId);
+  });
+
+  it("يرفض محفظة مزوّد آخر أو محفظة معطلة ولو كان الفرع صحيحاً", async () => {
+    const { providerId } = await mkProvider({ name: "المزوّد الأول", settlementMode: "PREPAID" });
+    const { providerId: otherProviderId } = await mkProvider({ name: "المزوّد الآخر", settlementMode: "PREPAID" });
+    const otherWalletId = defaultWallets.get(otherProviderId)!.get(1)!;
+    await expect(withTx((tx) => offeringService.createOffering(tx, offeringInput(providerId, {
+      branches: [{ branchId: 1, walletId: otherWalletId }],
+    }), actor))).rejects.toThrow(/لا تتبع المزوّد/);
+
+    const walletId = defaultWallets.get(providerId)!.get(1)!;
+    await db().update(s.digitalWallets).set({ isActive: false }).where(eq(s.digitalWallets.id, walletId));
+    await expect(withTx((tx) => offeringService.createOffering(tx, offeringInput(providerId, {
+      branches: [{ branchId: 1, walletId }],
+    }), actor))).rejects.toThrow(/معطّلة/);
+  });
+
+  it("يرفض ربط العرض الرقمي بمنتج أمانة لمنع تكرار ذمة المورّد", async () => {
+    const { providerId } = await mkProvider({ name: "مزود آجل", settlementMode: "POSTPAID" });
+    const consignorId = await mkSupplier("مودع أمانة");
+    const productId = insertId(await db().insert(s.products).values({
+      name: "خدمة أمانة تالفة البيانات",
+      productType: "DIGITAL_CARD",
+      isService: true,
+      isConsignment: true,
+      consignorId,
+    }));
+    const variantId = insertId(await db().insert(s.productVariants).values({
+      productId, sku: "BAD-CONSIGN-DIGITAL", costPrice: "100",
+    }));
+    await db().insert(s.productUnits).values({
+      variantId, unitName: "بطاقة", conversionFactor: "1", isBaseUnit: true,
+    });
+    await expect(withTx((tx) => offeringService.createOffering(tx, offeringInput(providerId, {
+      productId,
+    }), actor))).rejects.toThrow(/منتج أمانة/);
   });
 
   it("يرفض عرضاً بلا فرع", async () => {
@@ -229,7 +393,10 @@ describe("ش٣ — العرض (البطاقة)", () => {
 
     await withTx((tx) => offeringService.updateOffering(tx, {
       id: r.offeringId, name: "كارت آسياسيل ٢٥ ألفاً", minimumMargin: "250",
-      branches: [{ branchId: 1, isFavorite: true }, { branchId: 2 }],
+      branches: [
+        { branchId: 1, walletId: defaultWallets.get(providerId)!.get(1)!, isFavorite: true },
+        { branchId: 2, walletId: defaultWallets.get(providerId)!.get(2)! },
+      ],
     }, actor));
 
     const o = await offeringService.getOffering(db(), r.offeringId);

@@ -14,7 +14,9 @@ import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
-import { useEffect, useState } from "react";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 
 /**
@@ -87,6 +89,16 @@ export default function CustomerEdit() {
   const [openingDir, setOpeningDir] = useState<"OWED_TO_US" | "OWED_BY_US">("OWED_TO_US");
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  // لقطة الحالة الأوّلية (بعد تحميل البيانات) — يقارَن بها الوضع الحاليّ لاكتشاف تعديلٍ حقيقيّ
+  // (نمط EmployeeNew.tsx): null قبل التحميل ⇒ useUnsavedGuard لا يحذّر على شاشةٍ لم تُعدَّل بعد.
+  const initialSnapshotRef = useRef<string | null>(null);
+
+  function dirtySnapshot(): string {
+    return JSON.stringify([
+      name, phone, phone2, phone3, whatsapp, customerType, defaultPriceTier,
+      city, district, address, creditMode, creditLimit, notes, openingAmount, openingDir,
+    ]);
+  }
 
   useEffect(() => {
     if (detail.data && !loaded) {
@@ -113,6 +125,16 @@ export default function CustomerEdit() {
       setLoaded(true);
     }
   }, [detail.data, loaded]);
+
+  // اللقطة تُلتقَط بعد اكتمال setState أعلاه (تأثير منفصل تالٍ لتحديث الحالة فعلياً).
+  useEffect(() => {
+    if (loaded && initialSnapshotRef.current == null) {
+      initialSnapshotRef.current = dirtySnapshot();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
+  const isDirty = initialSnapshotRef.current != null && dirtySnapshot() !== initialSnapshotRef.current;
 
   const invalidate = () =>
     Promise.all([
@@ -208,22 +230,24 @@ export default function CustomerEdit() {
     });
   }
 
-  // اختصارات: Ctrl+S حفظ، Esc رجوع للقائمة (نظير شاشة الإضافة).
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        navigate("/customers");
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        submit();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, phone, phone2, phone3, whatsapp, customerType, defaultPriceTier, city, district, address, creditMode, creditLimit, notes, openingAmount, openingDir, isElevated]);
+  /** Esc: رجوع مباشر إن لم يُعدَّل شيء، وإلا تأكيدٌ صريح قبل تجاهل التعديلات (بدل مغادرة صامتة). */
+  async function handleCancel() {
+    if (isDirty) {
+      const ok = await confirm({
+        variant: "warning",
+        title: "تجاهل التعديلات؟",
+        description: "لديك تعديلات غير محفوظة على بيانات هذا العميل. إن غادرت الآن ستُفقد.",
+        confirmText: "تجاهل ومغادرة",
+      });
+      if (!ok) return;
+    }
+    navigate("/customers");
+  }
+
+  // اختصارات: Ctrl+S حفظ، Esc رجوع للقائمة (بتأكيدٍ إن كان هناك تعديل غير محفوظ).
+  useSaveShortcuts({ onSave: submit, onCancel: () => void handleCancel(), enabled: !update.isPending });
+  // حارس فقد البيانات عند تحديث/إغلاق التبويب/مغادرة خارجية.
+  useUnsavedGuard(isDirty);
 
   const wa = whatsappLink(whatsapp || phone);
 
@@ -245,7 +269,12 @@ export default function CustomerEdit() {
       <PageHeader
         title="تعديل عميل"
         description="حدّث بيانات العميل وفئة سعره وسقف ائتمانه."
-        actions={<Link href="/customers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+        actions={
+          // زرّ لا رابط: يمرّ بنفس تأكيد Esc (handleCancel) — نقرة الفأرة لا تتجاوز تحذير فقد البيانات.
+          <button type="button" onClick={() => void handleCancel()} className="text-sm text-muted-foreground hover:underline">
+            ← رجوع للقائمة
+          </button>
+        }
       />
 
       <Card>
@@ -307,16 +336,16 @@ export default function CustomerEdit() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <Label htmlFor="ph1">
-                  Phone 1 <span className="text-[10px] text-primary mr-1">رئيسي</span>
+                  الهاتف ١ <span className="text-[10px] text-primary mr-1">رئيسي</span>
                 </Label>
                 <IntlPhoneInput id="ph1" value={phone} onChange={setPhone} />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="ph2">Phone 2</Label>
+                <Label htmlFor="ph2">الهاتف ٢</Label>
                 <IntlPhoneInput id="ph2" value={phone2} onChange={setPhone2} />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="ph3">Phone 3</Label>
+                <Label htmlFor="ph3">الهاتف ٣</Label>
                 <IntlPhoneInput id="ph3" value={phone3} onChange={setPhone3} />
               </div>
               <div className="space-y-1">
@@ -457,7 +486,7 @@ export default function CustomerEdit() {
               </div>
               <div className="md:col-span-2">
                 <p className="text-[11px] text-sky-800">
-                  يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الجاري
+                  يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الحالي
                   دون المساس بأي حركةٍ لاحقة. اتركه فارغاً لإزالة الرصيد الافتتاحي. لا يتغيّر شيء إن لم تُعدّله.
                 </p>
               </div>
@@ -515,9 +544,7 @@ export default function CustomerEdit() {
             {activate.isPending ? "…" : "إعادة تفعيل"}
           </Button>
         )}
-        <Link href="/customers">
-          <Button variant="ghost" title="Esc">رجوع</Button>
-        </Link>
+        <Button variant="ghost" title="Esc" onClick={() => void handleCancel()}>رجوع</Button>
       </div>
     </div>
   );

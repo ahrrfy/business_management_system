@@ -5,7 +5,7 @@ import { verifySession } from "../auth/session";
 import { ensureTenantDb, isMultiTenantModeActive } from "../db";
 import { logger } from "../logger";
 import { runWithCompany } from "./context";
-import { resolveCompanyByCode } from "./registry";
+import { resolveCompanyByCode, resolveCompanyById } from "./registry";
 
 /**
  * وسيط Express يحدّد الشركة الحالية من كوكي جلسة المستخدم (`app_session_id`) قبل أي
@@ -27,6 +27,14 @@ export function tenancyMiddleware() {
     const session = await verifySession(cookies[COOKIE_NAME]).catch(() => null);
     if (!session?.companyId) return next();
     try {
+      // تدقيق ٣/٨: افحص أن الشركة ما زالت مفعّلة قبل توجيه الطلب لقاعدتها. كان تجمّع الاتصال
+      // (_tenantPools) يُخزَّن لعمر العملية بلا إعادة فحص isActive عند إصابة الكاش ⇒ جلسة قائمة
+      // (JWT بـcompanyId) تستمرّ بالوصول الكامل لشركةٍ معطَّلة حتى انتهاء الكوكي (حتى ٣٠ يوماً مع
+      // «تذكّرني») فيصبح مفتاح الإيقاف عديم الأثر عليها. resolveCompanyById يعيد null للمعطَّلة/
+      // المحذوفة (كاش ٣٠ث) ⇒ نافذة التعطيل ≤٣٠ث بدل عمر الكوكي؛ null ⇒ بلا سياق ⇒ getDb() اللاحق
+      // يجعل الطلب غير مصادَق (لا 500، لا تسريب على قاعدة خاطئة).
+      const active = await resolveCompanyById(session.companyId);
+      if (!active) return next();
       const db = await ensureTenantDb(session.companyId);
       runWithCompany(session.companyId, db, () => next());
     } catch (e) {

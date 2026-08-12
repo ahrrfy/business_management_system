@@ -130,6 +130,9 @@ export async function getPurchaseRegister(opts: {
   from: string;
   to: string;
   branchId?: number;
+  supplierId?: number;
+  /** بحث نصّي حرّ — رقم الأمر/اسم المورّد/اسم المنتج. */
+  q?: string;
   limit?: number;
   offset?: number;
 }): Promise<PurchaseRegisterResult> {
@@ -139,6 +142,19 @@ export async function getPurchaseRegister(opts: {
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 2000);
   const offset = Math.max(opts.offset ?? 0, 0);
   const branchPo = opts.branchId ? sql`AND po.branchId = ${opts.branchId}` : sql``;
+  const supplierCond = opts.supplierId ? sql`AND po.supplierId = ${opts.supplierId}` : sql``;
+  const q = opts.q?.trim();
+  // EXISTS بدل الاعتماد على JOIN موردين/منتجات — استعلام الإجماليات أدناه لا ينضمّ لهما.
+  const qCond = q
+    ? sql`AND (
+        po.poNumber LIKE ${`%${q}%`}
+        OR EXISTS (SELECT 1 FROM suppliers s2 WHERE s2.id = po.supplierId AND s2.name LIKE ${`%${q}%`})
+        OR EXISTS (
+          SELECT 1 FROM productVariants pv2 JOIN products p2 ON p2.id = pv2.productId
+          WHERE pv2.id = poi.variantId AND p2.name LIKE ${`%${q}%`}
+        )
+      )`
+    : sql``;
 
   // تفصيل بنود أوامر الشراء — كل البنود عدا الملغاة (CANCELLED) ضمن النطاق.
   // الترتيب: الأحدث أولاً (orderDate desc) ثم بند الـid (desc) لاستقرار الترقيم.
@@ -162,6 +178,8 @@ export async function getPurchaseRegister(opts: {
       WHERE po.poStatus <> 'CANCELLED'
         AND DATE(po.orderDate) >= ${opts.from} AND DATE(po.orderDate) <= ${opts.to}
         ${branchPo}
+        ${supplierCond}
+        ${qCond}
       ORDER BY po.orderDate DESC, poi.id DESC
       LIMIT ${limit} OFFSET ${offset}
     `),
@@ -190,6 +208,8 @@ export async function getPurchaseRegister(opts: {
       WHERE po.poStatus <> 'CANCELLED'
         AND DATE(po.orderDate) >= ${opts.from} AND DATE(po.orderDate) <= ${opts.to}
         ${branchPo}
+        ${supplierCond}
+        ${qCond}
     `),
   )[0] ?? { cnt: 0, amount: "0" };
 

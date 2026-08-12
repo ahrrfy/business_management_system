@@ -141,6 +141,31 @@ describe("sales.listSummary — مجاميع الفلترة", () => {
     expect(round2s(sum.dueAmount)).toBe(round2s(expTotal.minus(expPaid)));
   });
 
+  it("فلتر عربون ومتَبقّي يعرض الطلبات المدفوعة جزئياً فقط ويطابق المجاميع", async () => {
+    const depositOrder = await sale("5", "20.00"); // ORDER: إجمالي 50، عربون 20
+    await sale("2"); // ORDER بلا عربون
+    await sale("3", "30.00"); // ORDER مسوّى بالكامل
+    await createSale({
+      branchId: 1,
+      customerId: 1,
+      sourceType: "POS",
+      shiftId: seedShiftId,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }],
+      payment: { amount: "20.00", method: "CASH" },
+    }, actor); // POS جزئي: ليس عربون طلب
+
+    const c = caller();
+    const rows = await c.sales.list({ balanceState: "DEPOSIT_DUE" });
+    const sum = await c.sales.listSummary({ balanceState: "DEPOSIT_DUE" });
+
+    expect(rows.map((r) => r.id)).toEqual([depositOrder.invoiceId]);
+    expect(rows[0].returnedTotal).toBe("0.00");
+    expect(sum.count).toBe(1);
+    expect(round2s(sum.totalAmount)).toBe("50.00");
+    expect(round2s(sum.paidAmount)).toBe("20.00");
+    expect(round2s(sum.dueAmount)).toBe("30.00");
+  });
+
   it("returnedTotal يُخصم من المتبقي، والملغاة تساهم بصفر فيه وتبقى ضمن totalAmount", async () => {
     const d1 = await sale("4"); // 40.00 بلا دفعة
     const d2 = await sale("2"); // 20.00 بلا دفعة

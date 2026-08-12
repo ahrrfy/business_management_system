@@ -84,7 +84,7 @@ export default function CashOrphanReport() {
         { key: "createdAt", header: "التاريخ", map: (r) => ymdOf(r.createdAt) },
         { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
         { key: "category", header: "الفئة", map: (r) => (r.category === "TREASURY" ? "خزينة إدارية" : "يتيم حقيقي") },
-        { key: "cashBucket", header: "الدلو", map: (r) => r.cashBucket ?? "" },
+        { key: "cashBucket", header: "مكان النقد", map: (r) => (r.cashBucket === "DRAWER" ? "درج" : r.cashBucket === "TREASURY" ? "خزينة" : "") },
         { key: "source", header: "النوع", map: (r) => SOURCE_LABEL[r.source] ?? r.source },
         { key: "sourceId", header: "رقم المستند", map: (r) => r.sourceId ?? r.receiptId },
         { key: "voucherNumber", header: "رقم السند", map: (r) => r.voucherNumber ?? "" },
@@ -93,7 +93,7 @@ export default function CashOrphanReport() {
         { key: "partyType", header: "نوع الطرف", map: (r) => (r.partyType ? PARTY_LABEL[r.partyType] ?? r.partyType : "") },
         { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
         { key: "createdByName", header: "أنشأها", map: (r) => r.createdByName ?? "" },
-        { key: "createdByRole", header: "الدور", map: (r) => r.createdByRole ?? "" },
+        { key: "createdByRole", header: "الدور", map: (r) => (r.createdByRole ? ROLE_LABEL[r.createdByRole]?.label ?? r.createdByRole : "") },
       ],
     });
   }
@@ -128,7 +128,7 @@ export default function CashOrphanReport() {
         direction: DIR_LABEL[r.direction] ?? r.direction,
         amount: fmtAr(r.amount),
         description: r.description ?? "",
-        createdBy: r.createdByName ? `${r.createdByName}${r.createdByRole ? ` (${r.createdByRole})` : ""}` : "—",
+        createdBy: r.createdByName ? `${r.createdByName}${r.createdByRole ? ` (${ROLE_LABEL[r.createdByRole]?.label ?? r.createdByRole})` : ""}` : "—",
       })),
       showIndex: true,
       summary: [
@@ -142,7 +142,7 @@ export default function CashOrphanReport() {
   return (
     <ReportShell
       title="النقد خارج وردية الكاشير — سجلّ إداري + يتيم تاريخي"
-      description="معاملات نقدية بـshiftId=NULL مفصولة: خزينة إدارية (admin/manager — متوقَّعة) ومتيتم حقيقي (سجلات قديمة/خَلل)."
+      description="معاملات نقدية بـshiftId=NULL مفصولة: خزينة إدارية (admin/manager — متوقَّعة) ونقد يتيم حقيقي (سجلات قديمة/خَلل)."
       note={NOTE}
       kpis={kpis}
       onExport={onExport}

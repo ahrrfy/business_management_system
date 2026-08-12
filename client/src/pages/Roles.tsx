@@ -3,13 +3,16 @@ import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { RowActions } from "@/components/list/RowActions";
 import { ListToolbar } from "@/components/list/ListToolbar";
+import { FilterField } from "@/components/list/FilterField";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
 import { ROLES } from "@/lib/permissionsModel";
 import { trpc } from "@/lib/trpc";
+import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { Link } from "wouter";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 const roleLabel = (key: string) => ROLES.find((r) => r.key === key)?.label ?? key;
 
@@ -22,11 +25,23 @@ export default function Roles() {
   const builtin = list.data?.builtin ?? [];
   const custom = list.data?.custom ?? [];
   const counts = list.data?.counts ?? {};
-  const [query, setQuery] = useState("");
+
+  // فلاتر الشاشة محفوظة في الرابط (useUrlFilters) — نمط Users.tsx نفسه. status: ""=الكل،
+  // "active"=نشط، "inactive"=معطَّل. قائمة الأدوار المخصّصة تُجلب دائماً كاملةً (includeInactive)
+  // فالفلترة محلية بحتة (لا استعلام إضافي).
+  const [f, setF, resetF] = useUrlFilters({ q: "", status: "" });
+  const query = f.q;
+  const status = f.status;
   const visibleCustom = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ar");
-    return q ? custom.filter((r) => [r.label, r.description, roleLabel(r.baseRole)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : custom;
-  }, [custom, query]);
+    return custom.filter((r) => {
+      if (status === "active" && !r.isActive) return false;
+      if (status === "inactive" && r.isActive) return false;
+      if (!q) return true;
+      return [r.label, r.description, roleLabel(r.baseRole)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q));
+    });
+  }, [custom, query, status]);
+  const activeFilterCount = status ? 1 : 0;
 
   async function doDelete(id: number, label: string, count: number) {
     if (count > 0) return;
@@ -49,8 +64,24 @@ export default function Roles() {
             title="الأدوار المخصّصة"
             count={visibleCustom.length}
             loading={list.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "اسم الدور أو الفئة الأساسية…" }}
-            onResetFilters={() => setQuery("")}
+            search={{ value: query, onChange: (v) => setF({ q: v }), placeholder: "اسم الدور أو الفئة الأساسية…" }}
+            filters={
+              <FilterField label="الحالة">
+                <AppSelect
+                  size="sm"
+                  value={status || "ALL"}
+                  onValueChange={(v) => setF({ status: v === "ALL" ? "" : v })}
+                  aria-label="الحالة"
+                  className="h-8 w-auto min-w-28"
+                >
+                  <option value="ALL">الكل</option>
+                  <option value="active">نشط</option>
+                  <option value="inactive">معطَّل</option>
+                </AppSelect>
+              </FilterField>
+            }
+            activeFilterCount={activeFilterCount}
+            onResetFilters={() => resetF()}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
             onPrint={() => window.print()}

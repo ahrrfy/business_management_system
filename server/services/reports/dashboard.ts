@@ -36,6 +36,11 @@ export async function getMyOpenTasksCount(userId: number): Promise<number> {
 }
 
 export interface DashboardMetricsResult {
+  /** Explicit provenance health so fallback zeroes are never mistaken for measurements. */
+  health: {
+    status: "ok" | "degraded";
+    sourceErrors: string[];
+  };
   lowStockCount: number;
   overdueAR: { count: number; total: string };
   /** نبض المبيعات: مبيعات أمس مقابل معدّل آخر ٧ أيام + اتجاه (بطاقة شريط المقاييس، ٥/٧). */
@@ -96,6 +101,7 @@ export async function getDashboardMetrics(
   const db = getDb();
   if (!db) {
     return {
+      health: { status: "degraded", sourceErrors: ["database"] },
       lowStockCount: 0,
       overdueAR: { count: 0, total: toDbMoney(money(0)) },
       salesPulse: { yesterday: toDbMoney(money(0)), avg7d: toDbMoney(money(0)), direction: "flat", changePct: 0 },
@@ -103,6 +109,7 @@ export async function getDashboardMetrics(
     };
   }
   const branchId = opts.branchId ?? null;
+  const sourceErrors: string[] = [];
   const branchFilterStock = branchId == null ? sql`` : sql`AND bs.branchId = ${branchId}`;
   const branchFilterInv = branchId == null ? sql`` : sql`AND i.branchId = ${branchId}`;
   const branchFilterAe = branchId == null ? sql`` : sql`AND ae.branchId = ${branchId}`;
@@ -167,6 +174,7 @@ export async function getDashboardMetrics(
       promisedToday += openingQueue.filter((r) => r.isPromiseDue).length;
     }
   } catch {
+    sourceErrors.push("receivableReminders");
     // فشل استعلام queue لا يجب أن يُسقط لوحة التحكم — نُعيد أصفاراً وتظهر بقية البطاقات.
   }
 
@@ -229,10 +237,12 @@ export async function getDashboardMetrics(
     }
     salesPulse = { yesterday: toDbMoney(yday), avg7d: toDbMoney(avg), direction, changePct };
   } catch {
+    sourceErrors.push("salesPulse");
     // فشل استعلام نبض المبيعات لا يجب أن يُسقط لوحة التحكم — نُبقي الأصفار الافتراضية.
   }
 
   return {
+    health: { status: sourceErrors.length ? "degraded" : "ok", sourceErrors },
     lowStockCount,
     overdueAR: {
       count: Number(arRow?.c ?? 0),

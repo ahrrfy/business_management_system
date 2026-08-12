@@ -14,7 +14,7 @@ export interface FilterFieldProps {
 export function FilterField({ label, children, className }: FilterFieldProps) {
   return (
     <label className={cn("flex min-w-0 flex-col gap-1", className)}>
-      <span className="px-0.5 text-[11px] font-medium text-muted-foreground">{label}</span>
+      <span className="px-0.5 text-xs font-semibold text-muted-foreground">{label}</span>
       {children}
     </label>
   );

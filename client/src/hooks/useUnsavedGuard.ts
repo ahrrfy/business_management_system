@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { noteInteraction } from "@/lib/interactionDraft";
 
 /**
  * حارس فقدان البيانات — يعترض إغلاق التبويب/التحديث/المغادرة الخارجية حين يحمل النموذج
@@ -14,6 +15,8 @@ import { useEffect } from "react";
 export function useUnsavedGuard(isDirty: boolean): void {
   useEffect(() => {
     if (!isDirty) return;
+    // يبلّغ مدير تحديث PWA أيضاً؛ الحارس لا يقتصر دوره على beforeunload.
+    noteInteraction();
     function handler(e: BeforeUnloadEvent) {
       e.preventDefault();
       // مطلوب في بعض المتصفّحات كي يظهر حوار التأكيد.

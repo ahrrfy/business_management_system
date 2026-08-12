@@ -1,6 +1,7 @@
 import path from "node:path";
 import "dotenv/config";
 import { defineConfig } from "vitest/config";
+import { defaultTestDatabaseUrl } from "./scripts/lib/test-db-name.mjs";
 
 export default defineConfig({
   resolve: {
@@ -29,7 +30,7 @@ export default defineConfig({
       // يُصِب قاعدة `erp` الحقيقية — الاتصال كان بقاعدة `erp_test` الفارغة على نفس الحاوية
       // فقط، لكن مجرّد الوصول لتلك الحاوية يخرق الخط الأحمر). CI يضبط TEST_DATABASE_URL
       // صراحةً دائماً (راجع .github/workflows/ci.yml) فلا يتأثّر بهذا التغيير.
-      DATABASE_URL: process.env.TEST_DATABASE_URL ?? "mysql://root:testpw@127.0.0.1:3310/erp_test",
+      DATABASE_URL: process.env.TEST_DATABASE_URL ?? defaultTestDatabaseUrl(import.meta.dirname),
       JWT_SECRET: process.env.JWT_SECRET ?? "test_secret",
       // barcodeService.getSecret يرمي صراحةً بلا هذا المتغيّر ⇒ أيّ إجراء يُولّد باركود/QR
       // (customers.get، المنتجات، الفواتير، أوامر الشغل…) كان **غير قابل للاختبار** أصلاً:

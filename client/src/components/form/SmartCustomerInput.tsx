@@ -1,5 +1,6 @@
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { BalanceBadge } from "@/components/BalanceBadge";
 import { trpc } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
 import { cn } from "@/lib/utils";
@@ -35,6 +36,10 @@ export interface SmartCustomerInputProps {
   onChange: (v: SmartCustomerValue) => void;
   placeholder?: string;
   className?: string;
+  /** وضع «الاسم فقط» (طلب المالك): حين يُدار الهاتف خارجياً (قناة واتساب/اتصال عبر حقل ١١ خانة
+   *  منفصل)، يعرض هذا المكوّن حقلَ **اسمٍ واحداً** نظيفاً (بمسافات) بلا بحثٍ ولا حقلٍ ثانٍ مكرّر —
+   *  يزيل ازدواج «حقلين بنفس الاسم». المطابقة بالهاتف تتمّ خارجياً في شاشة الاستقبال. */
+  nameOnly?: boolean;
 }
 
 interface CustomerSummary {
@@ -44,11 +49,18 @@ interface CustomerSummary {
   orderCount?: number | null;
   lastOrderAt?: string | null;
   totalSpent?: string | null;
+  /** الرصيد الجاري (مقنَّع خادمياً لغير المدير — يعود "0" فيُخفي BalanceBadge). */
+  currentBalance?: string | null;
   isVip?: boolean;
   isFrequent?: boolean;
 }
 
-export function SmartCustomerInput({ value, onChange, placeholder, className }: SmartCustomerInputProps) {
+const looksLikePhone = (text: string) => {
+  const compact = text.replace(/[\s()+-]/g, "");
+  return /^\d{6,15}$/.test(compact);
+};
+
+export function SmartCustomerInput({ value, onChange, placeholder, className, nameOnly }: SmartCustomerInputProps) {
   const [q, setQ] = useState(value.name || "");
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -76,6 +88,15 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
 
   const suggestions = (summary.data ?? []) as CustomerSummary[];
 
+  useEffect(() => {
+    if (!value.isNew || !value.phone) return;
+    const digits = value.phone.replace(/\D/g, "");
+    const exact = suggestions.find((candidate) => (candidate.phone ?? "").replace(/\D/g, "") === digits);
+    if (exact) selectCustomer(exact);
+  // selectCustomer intentionally uses the current onChange; suggestions are the trigger.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestions, value.isNew, value.phone]);
+
   const noMatch = enabled && !summary.isLoading && suggestions.length === 0;
 
   function selectCustomer(c: CustomerSummary) {
@@ -85,7 +106,8 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
   }
 
   function selectAsNew() {
-    onChange({ customerId: null, name: trimmed, phone: null, isNew: true });
+    const phone = looksLikePhone(trimmed) ? trimmed : null;
+    onChange({ customerId: null, name: trimmed, phone, isNew: true });
     setOpen(false);
   }
 
@@ -113,6 +135,17 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
     );
   };
 
+  /**
+   * ما يُعرَض في حقل «اسم العميل» للعميل الجديد: فارغٌ ما دام الاسم مطابقاً للرقم (أي أنّ
+   * المستخدم كتب رقماً ولم يُسمِّ بعد)، وإلّا الاسم نفسه.
+   *
+   * مُستخرَجٌ خارج JSX عمداً: تركُه تعبيراً داخل `value={…}` يجعل ذكرَ `value.phone` فيه —
+   * وهو مجرّد **مقارنة** لا قيمةُ الحقل — يُطابق إشارةَ الهاتف في
+   * `scripts/check-form-inputs.mjs` فيُبلَّغ حقلُ الاسم زوراً كحقل هاتفٍ خام. الاستخراج
+   * يزيل الإشارة المضلِّلة بلا إضعاف الحارس وبلا أي تغيير سلوكيّ.
+   */
+  const displayedNewCustomerName = value.name === value.phone ? "" : value.name;
+
   return (
     <div ref={wrapRef} className={cn("relative", className)}>
       <div className="relative">
@@ -122,15 +155,21 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
             const v = e.target.value;
             setQ(v);
             setOpen(true);
-            // أيّ تعديل يفقد ربط العميل القائم؛ يبقى الاسم فقط كـ«جديد محتمل».
-            if (value.customerId) {
-              onChange({ customerId: null, name: v, phone: null, isNew: v.trim().length > 0 });
-            } else {
-              onChange({ customerId: null, name: v, phone: null, isNew: v.trim().length > 0 });
-            }
+            // أي تعديل يصبح مسوّدة فعلية للحفظ. الرقم يُحفظ كهاتف لا كاسم صامت.
+            // nameOnly (قناة): الهاتف مُدار خارجياً (حقل ١١ خانة) ⇒ لا نلتقطه من هذا الحقل بل نُبقيه؛
+            // ويبقى **البحث الذكيّ فعّالاً** فالكتابة تجد العملاء السابقين وتربطهم (يمنع ازدواج العميل).
+            const typed = v.trim();
+            const extPhone = value.phone;
+            const phone = nameOnly ? extPhone : looksLikePhone(typed) ? typed : null;
+            onChange({
+              customerId: null,
+              name: v,
+              phone,
+              isNew: typed.length > 0 || (nameOnly === true && !!extPhone),
+            });
           }}
           onFocus={() => setOpen(true)}
-          placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على الزبائن السابقين"}
+          placeholder={placeholder || "ابحث بالاسم أو الرقم — يتعرّف على العملاء السابقين"}
           aria-autocomplete="list"
           aria-expanded={open}
         />
@@ -193,9 +232,13 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
         </div>
       )}
 
-      {/* بطاقة إحصائيّة للعميل المختار. */}
+      {/* بطاقة إحصائيّة للعميل المختار. G2 (١١/٨): شارة الرصيد الجاري تُعرض عبر BalanceBadge
+          الموحَّد — «لنا عليه ٤٥٠٠ د.ع» أو «له علينا» بلونٍ دلاليّ. مقنَّع خادمياً لغير المدير
+          (maskCustomerSensitive في server/lib/redact.ts:63 يعيد "0") ⇒ BalanceBadge لا يعرض
+          الشارة عند 0 (بلا showZero)، فالكاشير آمنٌ من رؤية أرقام الذمم. */}
       {selectedExisting && selectedStats && (
-        <div className="mt-2 rounded-md border bg-muted/30 p-2 flex flex-wrap gap-3 text-xs">
+        <div className="mt-2 rounded-md border bg-muted/30 p-2 flex flex-wrap items-center gap-3 text-xs">
+          <BalanceBadge amount={selectedStats.currentBalance} entityType="customer" />
           <span><span className="text-muted-foreground">الطلبات:</span> <span dir="ltr">{selectedStats.orderCount ?? 0}</span></span>
           {selectedStats.lastOrderAt && (
             <span>
@@ -211,9 +254,27 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
         </div>
       )}
 
+      {/* الصندوق الرئيسي يلتقط رقماً أو اسماً — لا كليهما معاً. إن كتب المستخدم رقماً (فصار
+          الرقم هو نفسه المعروض كـname بلا تمييز) نعرض حقلاً ثانياً صريحاً لاسم العميل، حتى لا
+          يُحفظ عميلٌ جديد باسم هو رقم هاتفه فعلياً. */}
+      {!nameOnly && value.isNew && !value.customerId && value.phone && (
+        <div className="mt-2 space-y-1">
+          <label htmlFor="smart-customer-name" className="text-[11px] font-medium text-muted-foreground">
+            اسم العميل (اختياري)
+          </label>
+          <Input
+            id="smart-customer-name"
+            value={displayedNewCustomerName}
+            onChange={(e) => onChange({ ...value, name: e.target.value || value.phone! })}
+            placeholder="اكتب اسم العميل"
+            className="h-8 text-xs"
+          />
+        </div>
+      )}
+
       {value.isNew && !value.customerId && trimmed && (
         <div className="mt-2 text-[11px] text-primary">
-          سيُحفظ «{trimmed}» تلقائياً كعميل جديد عند حفظ الأمر.
+          سيُحفظ «{value.name}» تلقائياً كعميل جديد عند حفظ الأمر.
         </div>
       )}
     </div>

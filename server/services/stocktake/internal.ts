@@ -1,9 +1,17 @@
 // أدوات مشتركة خاصة بحزمة الجرد (لا تُصدَّر من نقطة الدخول العامة): تقطيع الدفعات، ترويسة الجلسة،
 // حارس صلاحية الفرع، وقفل صفّ الجلسة. مصدر واحد يستعمله بقية الوحدات ⇒ لا تكرار ولا تباعد.
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
-import { branches, stocktakeSessions, users } from "../../../drizzle/schema";
+import {
+  branches,
+  products,
+  productVariants,
+  stocktakeCounts,
+  stocktakeItems,
+  stocktakeSessions,
+  users,
+} from "../../../drizzle/schema";
 import type { DB, Tx } from "../../db";
 
 /** قراءة تعمل على القاعدة أو داخل معاملة (الاعتماد يعيد الحساب داخل tx). */
@@ -80,7 +88,55 @@ async function lockSession(tx: Tx, sessionId: number) {
   return s;
 }
 
+export type StocktakeProgress = { total: number; counted: number };
+
+/**
+ * تعريف التقدم المركزي لكل مسارات الجرد: صنف داخل stocktakeItems وله FIRST/RECOUNT.
+ * البدء من النطاق يمنع العدّات الشاذة خارجه، والـJOIN الصريح يتجنب انحراف EXISTS
+ * المترابط الذي ظهر في خطة MySQL الإنتاجية.
+ */
+async function loadStocktakeProgressMap(db: DbLike, sessionIds: number[]): Promise<Map<number, StocktakeProgress>> {
+  const ids = Array.from(new Set(sessionIds.map(Number).filter((id) => Number.isFinite(id) && id > 0)));
+  const out = new Map<number, StocktakeProgress>();
+  if (!ids.length) return out;
+  const rows = await db
+    .select({
+      sessionId: stocktakeItems.sessionId,
+      total: sql<number>`COUNT(DISTINCT ${stocktakeItems.id})`,
+      counted: sql<number>`COUNT(DISTINCT CASE WHEN ${stocktakeCounts.id} IS NOT NULL THEN ${stocktakeItems.id} END)`,
+    })
+    .from(stocktakeItems)
+    .leftJoin(
+      stocktakeCounts,
+      and(
+        eq(stocktakeCounts.sessionId, stocktakeItems.sessionId),
+        eq(stocktakeCounts.variantId, stocktakeItems.variantId),
+        inArray(stocktakeCounts.kind, ["FIRST", "RECOUNT"]),
+      ),
+    )
+    .innerJoin(productVariants, eq(stocktakeItems.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(and(inArray(stocktakeItems.sessionId, ids), eq(products.isService, false)))
+    .groupBy(stocktakeItems.sessionId);
+  for (const row of rows) {
+    const total = Number(row.total);
+    out.set(Number(row.sessionId), { total, counted: Math.min(total, Number(row.counted)) });
+  }
+  return out;
+}
+
+async function loadStocktakeProgress(db: DbLike, sessionId: number): Promise<StocktakeProgress> {
+  return (await loadStocktakeProgressMap(db, [sessionId])).get(sessionId) ?? { total: 0, counted: 0 };
+}
+
 
 // تصدير داخلي للحزمة فقط (تستهلكه بقية وحدات stocktake) — لا يُعاد تصديره من البرميل
 // stocktakeService.ts ⇒ يبقى خارج الواجهة العامة.
-export { chunk, loadSessionHeader, assertBranchAccess, lockSession };
+export {
+  chunk,
+  loadSessionHeader,
+  assertBranchAccess,
+  lockSession,
+  loadStocktakeProgress,
+  loadStocktakeProgressMap,
+};

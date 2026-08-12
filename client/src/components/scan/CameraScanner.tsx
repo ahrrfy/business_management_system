@@ -1,40 +1,61 @@
 /**
- * CameraScanner — مسح QR/باركود بكاميرا الجهاز (هاتف/ويب كام).
+ * CameraScanner — ماسح باركود/QR بكاميرا الهاتف.
  *
- * يستعمل BarcodeDetector (مدعوم في Chrome/Edge/Android) لفكّ الكود من بثّ الكاميرا.
- * تدهور سلس: إن لم يدعمه المتصفح أو تعذّرت الكاميرا ⇒ يعرض رسالة + إدخال يدوي للكود.
- *
- * overlay مستقلّ (لا Radix Dialog) لتفادي تعارض النوافذ المتداخلة داخل CommandPalette.
+ * يبدأ بمحرّك BarcodeDetector الأصلي حيث يتاح، ثم يستخدم ZXing تلقائياً في
+ * Safari/iOS والمتصفحات التي لا تدعمه. لا تُرسل صور الكاميرا إلى الخادم.
  */
-import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CameraOff, Flashlight, FlashlightOff, ScanLine, X } from "lucide-react";
+import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** يُستدعى بالنصّ المفكوك من الكود. */
+  /** يُستدعى بالنص المفكوك من الباركود أو QR. */
   onDetect: (code: string) => void;
 }
 
-function ManualEntry({ onSubmit }: { onSubmit: (v: string) => void }) {
-  const [v, setV] = useState("");
+type FallbackControls = {
+  stop: () => void;
+  switchTorch?: (on: boolean) => Promise<void>;
+};
+
+type NativeBarcodeDetector = {
+  detect: (source: ImageBitmapSource) => Promise<Array<{ rawValue?: string }>>;
+};
+
+type NativeBarcodeDetectorCtor = new (options: { formats: string[] }) => NativeBarcodeDetector;
+
+function cameraErrorMessage(error: unknown): string {
+  const name = error instanceof DOMException ? error.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "لم يُسمح باستخدام الكاميرا. افتح إعدادات المتصفح واسمح بالكاميرا لهذا الموقع ثم حاول مجدداً.";
+  }
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
+    return "لم نعثر على كاميرا خلفية مناسبة. جرّب إغلاق التطبيقات الأخرى التي تستخدم الكاميرا.";
+  }
+  return "تعذّر تشغيل الماسح. تأكّد من فتح الرابط عبر HTTPS ومن منح إذن الكاميرا.";
+}
+
+function ManualEntry({ onSubmit }: { onSubmit: (value: string) => void }) {
+  const [value, setValue] = useState("");
   return (
     <form
       className="mt-4 flex w-full max-w-sm items-center gap-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const t = v.trim();
-        if (t) onSubmit(t);
+      onSubmit={(event) => {
+        event.preventDefault();
+        const code = normalizeBarcodeScannerInput(value);
+        if (code) onSubmit(code);
       }}
     >
       <input
         dir="ltr"
-        value={v}
-        onChange={(e) => setV(e.target.value)}
-        placeholder="أو اكتب الكود يدوياً (EMP-1 / INV-… / باركود)"
-        className="h-9 flex-1 rounded-md border border-white/30 bg-white/10 px-3 text-sm text-white placeholder:text-white/50 focus:outline-none focus:ring-1 focus:ring-white/60"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        placeholder="اكتب رقم الباركود يدوياً"
+        className="h-10 flex-1 rounded-lg border border-white/30 bg-white/10 px-3 text-sm text-white placeholder:text-white/55 focus:outline-none focus:ring-2 focus:ring-white/60"
       />
-      <button type="submit" className="h-9 rounded-md bg-white px-3 text-sm font-medium text-black hover:bg-white/90">
+      <button type="submit" className="h-10 rounded-lg bg-white px-4 text-sm font-bold text-black active:bg-white/90">
         فتح
       </button>
     </form>
@@ -44,95 +65,224 @@ function ManualEntry({ onSubmit }: { onSubmit: (v: string) => void }) {
 export function CameraScanner({ open, onClose, onDetect }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const onDetectRef = useRef(onDetect);
+  const controlsRef = useRef<FallbackControls | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const detectedRef = useRef(false);
   onDetectRef.current = onDetect;
+
   const [error, setError] = useState("");
+  const [engine, setEngine] = useState<"starting" | "native" | "zxing">("starting");
+  const [torchAvailable, setTorchAvailable] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+
+  const stopMedia = useCallback(() => {
+    controlsRef.current?.stop();
+    controlsRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setTorchAvailable(false);
+    setTorchOn(false);
+  }, []);
+
+  const deliver = useCallback(
+    (raw: string) => {
+      const code = raw.trim();
+      if (!code || detectedRef.current) return;
+      detectedRef.current = true;
+      stopMedia();
+      onDetectRef.current(code);
+    },
+    [stopMedia],
+  );
 
   useEffect(() => {
     if (!open) return;
-    let stream: MediaStream | null = null;
-    let raf = 0;
     let stopped = false;
+    let nativeRaf = 0;
+    detectedRef.current = false;
     setError("");
-    const AnyWin = window as any;
-    const hasDetector = "BarcodeDetector" in window;
+    setEngine("starting");
 
-    async function start() {
-      try {
-        if (!navigator.mediaDevices?.getUserMedia) {
-          setError("الكاميرا غير متاحة في هذا المتصفح — استخدم ماسحاً ليزرياً أو الإدخال اليدوي.");
-          return;
-        }
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        // سباق: قد يُغلَق الماسح (cleanup) أثناء انتظار إذن الكاميرا ⇒ أوقف البثّ فوراً ولا تُسرّبه.
-        if (stopped) {
-          stream.getTracks().forEach((t) => t.stop());
-          stream = null;
-          return;
-        }
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play().catch(() => {});
-        }
-        if (!hasDetector) {
-          setError("متصفّحك لا يدعم فكّ الباركود تلقائياً — وجّه الكود واكتبه يدوياً، أو استخدم ماسحاً ليزرياً.");
-          return;
-        }
-        const detector = new AnyWin.BarcodeDetector({
-          formats: ["qr_code", "code_128", "ean_13", "ean_8", "code_39", "upc_a", "upc_e"],
-        });
-        const tick = async () => {
-          if (stopped) return;
-          const video = videoRef.current;
-          if (video && video.readyState >= 2) {
-            try {
-              const codes = await detector.detect(video);
-              if (codes && codes.length) {
-                const value = String(codes[0].rawValue ?? "").trim();
-                if (value) {
-                  onDetectRef.current(value);
-                  return;
-                }
-              }
-            } catch {
-              /* تجاهل أخطاء الإطار المفرد */
-            }
-          }
-          raf = requestAnimationFrame(tick);
-        };
-        raf = requestAnimationFrame(tick);
-      } catch {
-        setError("تعذّر فتح الكاميرا — تأكّد من منح الإذن، أو استخدم الإدخال اليدوي.");
+    const stop = () => {
+      if (nativeRaf) cancelAnimationFrame(nativeRaf);
+      stopMedia();
+    };
+
+    const setTorchCapability = (stream: MediaStream | null) => {
+      const track = stream?.getVideoTracks()[0];
+      const capabilities = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { torch?: boolean };
+      setTorchAvailable(Boolean(capabilities.torch));
+    };
+
+    const startNative = async (Detector: NativeBarcodeDetectorCtor) => {
+      // بعض المتصفحات تعرض BarcodeDetector لكنها لا تقبل جميع الصيغ؛ ننشئه
+      // أولاً حتى نستطيع الانتقال إلى ZXing قبل حجز الكاميرا عند حدوث ذلك.
+      const detector = new Detector({
+        formats: ["code_128", "code_39", "code_93", "codabar", "ean_13", "ean_8", "itf", "upc_a", "upc_e", "qr_code"],
+      });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+      });
+      if (stopped) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
       }
-    }
-    void start();
+      streamRef.current = stream;
+      setTorchCapability(stream);
+      const video = videoRef.current;
+      if (!video) return;
+      video.srcObject = stream;
+      await video.play();
+      setEngine("native");
+      const scanFrame = async () => {
+        if (stopped || detectedRef.current) return;
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          try {
+            const codes = await detector.detect(video);
+            const value = codes[0]?.rawValue;
+            if (value) {
+              deliver(value);
+              return;
+            }
+          } catch {
+            // إطار غير صالح أو ضبابي؛ نستمر حتى يستقر التركيز.
+          }
+        }
+        nativeRaf = requestAnimationFrame(scanFrame);
+      };
+      nativeRaf = requestAnimationFrame(scanFrame);
+    };
 
+    const startFallback = async () => {
+      const { BrowserMultiFormatReader } = await import("@zxing/browser");
+      if (stopped || !videoRef.current) return;
+      const reader = new BrowserMultiFormatReader(undefined, {
+        delayBetweenScanAttempts: 90,
+        delayBetweenScanSuccess: 250,
+      });
+      const controls = await reader.decodeFromConstraints(
+        {
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+        },
+        videoRef.current,
+        (result) => {
+          if (result) deliver(result.getText());
+        },
+      );
+      if (stopped) {
+        controls.stop();
+        return;
+      }
+      controlsRef.current = controls;
+      streamRef.current = videoRef.current?.srcObject instanceof MediaStream ? videoRef.current.srcObject : null;
+      setTorchCapability(streamRef.current);
+      setEngine("zxing");
+    };
+
+    const start = async () => {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        setError("يتطلب المسح بالكاميرا رابطاً آمناً (HTTPS) ومتصفحاً يدعم الكاميرا.");
+        return;
+      }
+      try {
+        const Detector = (window as Window & { BarcodeDetector?: NativeBarcodeDetectorCtor }).BarcodeDetector;
+        if (Detector) {
+          try {
+            await startNative(Detector);
+            return;
+          } catch (nativeError) {
+            // لا نكرر طلب الإذن، لكن ندعم المتصفحات التي تعلن BarcodeDetector
+            // ثم تفشل في تهيئته أو في أحد صيغ الباركود المطلوبة.
+            const name = nativeError instanceof DOMException ? nativeError.name : "";
+            if (["NotAllowedError", "SecurityError", "NotFoundError", "OverconstrainedError"].includes(name)) {
+              throw nativeError;
+            }
+            stopMedia();
+          }
+        }
+        await startFallback();
+      } catch (scanError) {
+        if (!stopped) setError(cameraErrorMessage(scanError));
+      }
+    };
+
+    void start();
     return () => {
       stopped = true;
-      if (raf) cancelAnimationFrame(raf);
-      if (stream) stream.getTracks().forEach((t) => t.stop());
+      stop();
     };
-  }, [open]);
+  }, [deliver, open, stopMedia]);
+
+  const toggleTorch = async () => {
+    try {
+      const next = !torchOn;
+      if (controlsRef.current?.switchTorch) await controlsRef.current.switchTorch(next);
+      else {
+        const track = streamRef.current?.getVideoTracks()[0];
+        if (!track) return;
+        await track.applyConstraints({ advanced: [{ torch: next } as MediaTrackConstraintSet] });
+      }
+      setTorchOn(next);
+    } catch {
+      notifyTorchUnsupported();
+    }
+  };
+
+  const notifyTorchUnsupported = () => {
+    setTorchAvailable(false);
+    setTorchOn(false);
+  };
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/90 p-4" dir="rtl">
+    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/90 p-4" dir="rtl" role="dialog" aria-modal="true" aria-label="مسح الباركود بالكاميرا">
       <button
         type="button"
         onClick={onClose}
-        className="absolute top-4 left-4 rounded-full p-1.5 text-white/80 hover:bg-white/10 hover:text-white"
-        aria-label="إغلاق"
+        className="absolute left-4 top-4 rounded-full p-2 text-white/85 active:bg-white/15"
+        aria-label="إغلاق الماسح"
       >
         <X className="size-6" />
       </button>
-      <div className="mb-3 text-sm text-white">وجّه الكاميرا نحو الباركود / رمز QR</div>
-      <video
-        ref={videoRef}
-        className="max-h-[60vh] max-w-full rounded-lg border border-white/20"
-        playsInline
-        muted
-      />
-      {error && <div className="mt-3 max-w-sm text-center text-sm text-amber-300">{error}</div>}
-      <ManualEntry onSubmit={(v) => onDetectRef.current(v)} />
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
+        <ScanLine className="size-4" /> وجّه الباركود داخل الإطار
+      </div>
+      <div className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/25 bg-black">
+        <video ref={videoRef} className="block max-h-[62vh] w-full object-cover" playsInline muted />
+        <div className="pointer-events-none absolute inset-[12%] rounded-xl border-2 border-white/80 shadow-[0_0_0_999px_rgba(0,0,0,0.28)]" />
+        <div className="pointer-events-none absolute inset-x-[16%] top-1/2 h-0.5 bg-primary shadow-[0_0_16px_rgba(255,255,255,0.9)]" />
+        {torchAvailable && (
+          <button
+            type="button"
+            onClick={() => void toggleTorch()}
+            className="absolute bottom-3 left-3 rounded-full bg-black/65 p-3 text-white backdrop-blur active:bg-black/85"
+            aria-label={torchOn ? "إطفاء فلاش الكاميرا" : "تشغيل فلاش الكاميرا"}
+          >
+            {torchOn ? <FlashlightOff className="size-5" /> : <Flashlight className="size-5" />}
+          </button>
+        )}
+      </div>
+      {error ? (
+        <div className="mt-4 flex max-w-md items-start gap-2 rounded-xl border border-white/20 bg-white/10 p-3 text-center text-sm leading-relaxed text-white">
+          <CameraOff className="mt-0.5 size-4 shrink-0" /> {error}
+        </div>
+      ) : (
+        <p className="mt-3 text-center text-xs text-white/70">
+          {engine === "starting" ? "جارٍ فتح الكاميرا…" : engine === "zxing" ? "قارئ الكاميرا متوافق مع iPhone" : "قارئ الكاميرا جاهز"}
+        </p>
+      )}
+      <ManualEntry onSubmit={deliver} />
     </div>
   );
 }

@@ -20,6 +20,7 @@ import { D, fmtAr, round2, toBase } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import {
   ActionButtons,
@@ -100,12 +101,42 @@ export default function PurchaseNew() {
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
 
+  const insightItems = useMemo(
+    () => Array.from(new Map(state.items.map((item) => [
+      `${item.variantId}:${item.productUnitId}`,
+      { variantId: item.variantId, productUnitId: item.productUnitId },
+    ])).values()),
+    [state.items],
+  );
+  const priceInsights = trpc.purchases.priceInsights.useQuery(
+    { branchId: state.branchId, supplierId: state.entityId ?? undefined, items: insightItems },
+    { enabled: state.branchId > 0 && insightItems.length > 0 },
+  );
+
+  // حارس فقدان البيانات (نمط CustomerNew/ExpenseNew): dirty عند إدخال فعليّ فقط (مورّد/بنود/شحن/كمرك/ملاحظات)
+  // — شاشة فارغة حديثة الفتح لا تُحسب إدخالاً كي لا يظهر تحذير كاذب.
+  const isDirty =
+    state.entityId != null ||
+    state.items.length > 0 ||
+    state.notes.trim() !== "" ||
+    shippingCost.trim() !== "" ||
+    customsCost.trim() !== "";
+  useUnsavedGuard(isDirty);
+
   /* ─── mutation ─────────────────────────────────────────────────── */
+  // «حفظ مسوّدة» يميَّز عن «حفظ واعتماد» بالتوجيه بعد النجاح: المسوّدة تعود للقائمة (لا تُستلَم
+  // إلا بعد اعتمادها من هناك)، والمعتمَد ينتقل مباشرةً لشاشة الاستلام.
+  const savingDraftRef = useRef(false);
   const create = trpc.purchases.createOrder.useMutation({
     onSuccess: async (r) => {
       await utils.purchases.list.invalidate();
-      notify.ok("تم إنشاء أمر الشراء — انتقال للاستلام");
-      navigate(`/purchases/${r.purchaseOrderId}/receive`);
+      if (savingDraftRef.current) {
+        notify.ok("حُفظ أمر الشراء مسوّدة — اعتمده من قائمة المشتريات لاستلامه لاحقاً");
+        navigate("/purchases");
+      } else {
+        notify.ok("تم إنشاء أمر الشراء — انتقال للاستلام");
+        navigate(`/purchases/${r.purchaseOrderId}/receive`);
+      }
     },
     onError: (e) => notify.err(e),
   });
@@ -121,8 +152,12 @@ export default function PurchaseNew() {
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
     const goodsIqd = round2(sourceSubtotal.times(rate));
     const taxIqd = round2(D(totals.totalTax).times(rate));
-    const grand = round2(goodsIqd.plus(taxIqd).plus(sum));
-    const uplift = goodsIqd.gt(0) ? goodsIqd.plus(sum).dividedBy(goodsIqd) : D(1);
+    // قرار المالك (٥/٨/٢٦): **الإجمالي = البضاعة + الضريبة فقط** — الشحن خارجه (مصروفُ شركةٍ لا
+    // ذمّةُ مورّد). كان يُجمَع هنا فيعرض للمستخدم إجمالياً لا يحفظه الخادم (٧٠٠ بينما المحفوظ ٣٠٠)
+    // ⇒ يدفع للمورّد أكثر مما عليه — الخطأ نفسه الذي حُذِّر منه في شاشة البيع.
+    const grand = round2(goodsIqd.plus(taxIqd));
+    // معامل الرفع صار ١ دائماً: حصّة الشحن تُعرَض للعِلم ولا تُضاف إلى تكلفة الوحدة (لم تعُد تُرسمَل).
+    const uplift = D(1);
     return { sum, goodsIqd, taxIqd, grand, uplift, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
   }, [shippingCost, customsCost, totals.subtotal, totals.totalTax, state.currency, state.agreedRate]);
 
@@ -144,30 +179,30 @@ export default function PurchaseNew() {
     }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
-      return "أضِف أصنافاً بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
+      return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
     }
     return null;
   }
 
-  function handleSubmit() {
-    const err = validate();
-    if (err) {
-      notify.warn(err);
-      return;
-    }
-    create.mutate({
+  // يبني حمولة الإنشاء المشتركة بين «حفظ واعتماد» (CONFIRMED) و«حفظ مسوّدة» (DRAFT) — الفرق
+  // الوحيد هو status؛ كل الحقول الأخرى (المورّد/البنود/الشحن/الضريبة) واحدة في الحالتين.
+  function buildPayload(status: "CONFIRMED" | "DRAFT") {
+    return {
       supplierId: state.entityId!,
       branchId: state.branchId,
       taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
-      status: "CONFIRMED",
+      status,
       // IDEMPOTENCY (تدقيق ٢/٧): كان المفتاح يُولَّد ويُعلَّق في DOM مخفيّ فقط ولا يُرسَل ⇒ النقر
       // المزدوج يُنشئ أمرَي شراء. الآن نمرّره في الحمولة فيَحرس الخادم من الازدواج.
       clientRequestId,
       notes: state.notes.trim() || undefined,
       // USD: أسعار البنود نفسها بالدولار، والخادم يحوّلها إلى التكلفة الدينارية بسعر التثبيت.
       agreedCurrency: state.currency,
-      // فاتورة المورد بالدولار تشمل الضريبة أيضاً؛ الشحن/الكمرك أدناه مسجّلان بالدينار منفصلين.
-      usdTotal: state.currency === "USD" ? round2(D(totals.grandTotal)).toFixed(2) : undefined,
+      // ملاحظة (إصلاح رسالة «لا يطابق مجموع البنود»): لا نُرسل usdTotal. حين يوجد «سعر التثبيت»
+      // (إلزاميّ للدولار في هذه الشاشة) يشتقّ الخادمُ إجماليَّ الدولار من البنود نفسها (usdGoods +
+      // الضريبة) بترتيب تقريبٍ سطريٍّ محدَّد؛ وأسعار البنود تُرسَل بمنزلتين عشريّتين (nonNegMoneyString)
+      // بينما كانت الواجهة تشتقّ usdTotal من أسعارٍ كاملة الدقّة (مثل 4.1666) ⇒ الإجماليان يختلفان
+      // بفروق تقريبٍ بحتة فيرفض الحارسُ الحفظَ زوراً. المرجع الوحيد هو حساب الخادم من البنود.
       agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
       // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
       // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
@@ -181,12 +216,35 @@ export default function PurchaseNew() {
         // سعر الشراء بالوحدة (price = costBase × convFactor عند الإضافة، قابل للتعديل).
         unitPrice: round2(D(l.price)).toFixed(2),
       })),
-    });
+    };
   }
 
+  function handleSubmit() {
+    // ActionButtons (مشترك) لا يُعطِّل زرّ «مسوّدة» أثناء التحفّظ — حارس محلّي يمنع تضارب حفظَين
+    // متزامنين (كلاهما يشترك clientRequestId ثابتاً؛ الخادم يمنع الازدواج، لكن قد يُربَك التوجيه بعد النجاح).
+    if (create.isPending) return;
+    const err = validate();
+    if (err) {
+      notify.warn(err);
+      return;
+    }
+    savingDraftRef.current = false;
+    create.mutate(buildPayload("CONFIRMED"));
+  }
+
+  // حفظ مسوّدة فعلي (كان زرّاً يوهم بإنذار «سيُفعَّل لاحقاً» بلا استدعاء — الراوتر يدعم
+  // status=DRAFT فعلياً منذ createOrder، فقط لم تكن الواجهة تستدعيه): يحفظ نفس بيانات الأمر بحالة
+  // «مسوّدة» بلا أثر مخزني/مالي فوري (createOrder لا يكتب شيئاً غير سطور الأمر)، قابلة للاستكمال
+  // لاحقاً من قائمة المشتريات عبر «اعتماد الأمر» ثم استلامها كالمعتاد.
   function handleSaveDraft() {
-    // الراوتر يدعم status=DRAFT لكنّ المتطلب الأساسي «CONFIRMED». نوحّد التحذير الآن.
-    notify.info("حفظ المسوّدات سيُفعَّل لاحقاً — استخدم «حفظ واعتماد».");
+    if (create.isPending) return;
+    const err = validate();
+    if (err) {
+      notify.warn(err);
+      return;
+    }
+    savingDraftRef.current = true;
+    create.mutate(buildPayload("DRAFT"));
   }
 
   function handleAction(kind: InvoiceActionKind) {
@@ -206,7 +264,7 @@ export default function PurchaseNew() {
         copyInvoiceItems(state.items);
         dispatch({ type: "CLEAR_ITEMS" });
         setPasteAvailable(true);
-        notify.ok("تم نسخ الأصناف وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
+        notify.ok("تم نسخ المنتجات وتفريغ الفاتورة. ستجد «لصق» في أي فاتورة تفتحها.");
         return;
       case "paste": {
         const items = takeInvoiceItems();
@@ -285,7 +343,10 @@ export default function PurchaseNew() {
   const meta = INVOICE_TYPES[INVOICE_TYPE];
 
   return (
-    <div ref={containerRef} dir="rtl" className="flex h-full flex-col gap-3">
+    // تدفّق طبيعيّ (لا حبس بارتفاع الإطار): كان `h-full` يضغط المحرّرَ داخل ٧٢٠px فيبقى للجدول
+    // صفّان فقط وتُقتَطع بطاقةُ الشحن/الإجراءات أسفل الشريط الجانبي. الآن تنمو الصفحة بمحتواها
+    // ويُمرِّرها `<main overflow-auto>` — فيَظهر الجدولُ كبيراً وكلُّ حقول الشريط الجانبي كاملةً.
+    <div ref={containerRef} dir="rtl" className="flex flex-col gap-3">
       {/* Title bar */}
       <div className="flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-extrabold">
@@ -312,9 +373,13 @@ export default function PurchaseNew() {
       {/* Header card (document metadata + supplier + terms + PO reference) */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
 
-      {/* Body: products on the right, totals/actions/terms on the left (RTL → aside on left) */}
-      <div className="flex min-h-0 flex-1 gap-3">
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+      {/* Body: products on the right, totals/actions/terms on the left (RTL → aside on left).
+          يتراصّ عمودياً على الشاشات الضيّقة ويصير صفّاً على الواسعة؛ الشريط الجانبي بارتفاعه
+          الطبيعيّ (items-start) فلا تُقتَطع بطاقةُ الشحن/الكمرك ولا الإجراءات. */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+        {/* عمود المنتجات: ارتفاع سخيّ ثابت كي يعرض الجدولُ المشتركُ (بتمريره الداخليّ) صفوفاً
+            كثيرة بدل صفّين — بديلاً عن الحبس السابق بارتفاع الإطار. */}
+        <div className="flex min-w-0 flex-1 flex-col gap-2 h-[60vh] min-h-[420px] print:h-auto print:min-h-fit">
           <ProductTable
             items={state.items}
             dispatch={dispatch}
@@ -324,6 +389,7 @@ export default function PurchaseNew() {
             showCost={true}
             purchaseCurrency={state.currency}
             purchaseRate={state.agreedRate}
+            purchasePriceInsights={priceInsights.data}
             onOpenBulkPicker={() => setBulkOpen(true)}
             onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
           />
@@ -337,7 +403,7 @@ export default function PurchaseNew() {
           />
         </div>
 
-        <aside className="flex w-80 shrink-0 flex-col gap-2">
+        <aside className="flex w-full shrink-0 flex-col gap-2 lg:w-80">
           {/* landed-cost (تدقيق ١٧/٧، خطر #2 — الآن مُنفَّذ لا مُخفى): الشحن/الكمرك يُحفظان ويُرسمَلان
               في تكلفة المخزون (WAVG) عند الاستلام ويُضافان إلى ذمّة المورّد — لا مصروف P&L. باقي حقول
               المحرّر (خصم/مصاريف أخرى/دفع) تبقى مخفيّة لأنّ createOrder لا يحفظها؛ الدفع عند الاستلام. */}
@@ -372,28 +438,39 @@ export default function PurchaseNew() {
 
               {landed.hasLanded && landed.hasBase && (
                 <div className="mt-1 rounded-lg border border-dashed bg-muted/40 p-2.5 text-xs">
-                  <div className="mb-1.5 font-bold text-foreground">التكلفة المُرسمَلة لكلّ وحدة (توزيع بنسبة القيمة)</div>
+                  <div className="mb-1.5 font-bold text-foreground">توزيع الشحن على البنود بنسبة القيمة (للعِلم فقط)</div>
                   <ul className="space-y-1">
                     {state.items.map((l, i) => (
                       <li key={i} className="flex items-center justify-between gap-2">
                         <span className="min-w-0 truncate text-muted-foreground">{l.name}</span>
                         <span dir="ltr" className="shrink-0 font-bold tabular-nums">
-                          {fmtAr(round2(D(l.price).times(landed.rate).times(landed.uplift)).toFixed(2))} د.ع
+                          {/* حصّة البند من مصروف الشحن (بنسبة قيمته) — معلومةٌ تحليلية، لا تُضاف
+                              إلى سعره ولا إلى تكلفته. الأصلُ يُعرَض بجانبها للمقارنة. */}
+                          {fmtAr(
+                            round2(
+                              D(totals.subtotal).gt(0)
+                                ? landed.sum
+                                    .times(D(l.price).times(D(l.qty || 0)))
+                                    .dividedBy(D(totals.subtotal))
+                                : D(0),
+                            ).toFixed(2),
+                          )}{" "}د.ع شحناً
                           <span className="font-normal text-muted-foreground">
-                            {" "}(الأصل {fmtAr(l.price)}{state.currency === "USD" ? "$" : " د.ع"})
+                            {" "}(سعر الشراء {fmtAr(l.price)}{state.currency === "USD" ? "$" : " د.ع"})
                           </span>
                         </span>
                       </li>
                     ))}
                   </ul>
                   <div className="mt-1.5 border-t pt-1.5 text-[11px] text-muted-foreground">
-                    تُضاف إلى ذمّة المورّد وتظهر في تكلفة البضاعة — لا كمصروف مستقلّ.
+                    <strong>لا تُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.</strong> تُسجَّل مصروف نقلٍ
+                    على الشركة لحظة الاستلام (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
                   </div>
                 </div>
               )}
               {landed.hasLanded && !landed.hasBase && (
                 <p className="text-[11px] font-semibold text-amber-600">
-                  أضِف أصنافاً بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
+                  أضِف منتجات بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
                 </p>
               )}
             </div>
@@ -413,15 +490,17 @@ export default function PurchaseNew() {
           {state.currency === "USD" && landed.rate.gt(0) && (
             <section className="rounded-xl border bg-card px-4 py-3 text-sm">
               <div className="flex justify-between text-muted-foreground">
-                <span>إجمالي فاتورة المورد</span>
-                <span dir="ltr" className="font-bold text-foreground">{fmtAr(totals.subtotal)} $</span>
+                <span>إجمالي فاتورة المورد (دولار)</span>
+                <span dir="ltr" className="font-bold text-foreground">{fmtAr(totals.grandTotal)} $</span>
               </div>
               <div className="mt-1 flex justify-between text-muted-foreground">
-                <span>المعادل المثبت</span>
-                <span dir="ltr" className="font-bold text-foreground">{fmtAr(landed.goodsIqd.toFixed(2))} د.ع</span>
+                <span>سعر التثبيت</span>
+                <span dir="ltr" className="font-bold text-foreground">{fmtAr(state.agreedRate)} د.ع/$</span>
               </div>
+              {/* التكلفة بالدينار = فاتورة المورد × سعر التثبيت. الشحن/الكمرك **ليسا** ضمنها
+                  (مصروفُ نقلٍ مستقلٌّ لحظة الاستلام، قرار المالك ٥/٨) — لذا لا نقول «مع الشحن». */}
               <div className="mt-1 flex justify-between border-t pt-2 font-bold">
-                <span>تكلفة المخزون مع الشحن</span>
+                <span>التكلفة بالدينار</span>
                 <span dir="ltr">{fmtAr(landed.grand.toFixed(2))} د.ع</span>
               </div>
             </section>

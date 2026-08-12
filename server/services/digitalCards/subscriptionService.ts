@@ -1,0 +1,170 @@
+/**
+ * سجلّ اشتراكات التعلم. العقد نتيجة للبيع الناجح ولا يحل محله: التجديد يضيف عقداً جديداً
+ * مرتبطاً بالسابق، فتظل الفاتورة والتكلفة والربح التاريخية غير قابلة للتغيير.
+ */
+import { and, desc, eq, gte, inArray, lte, ne } from "drizzle-orm";
+import {
+  branches,
+  digitalSaleDetails,
+  digitalSubscriptionContracts,
+  digitalOfferings,
+  invoices,
+  products,
+} from "../../../drizzle/schema";
+import type { DB, Tx } from "../../db";
+
+export function expiresAfter(startsAt: Date, durationDays: number): Date {
+  const expiresAt = new Date(startsAt);
+  // حدّ زمني موحّد: لا نبني نهاية العقد من تاريخ الجهاز المحلي لأن الخادم قد يعمل بتوقيت آخر.
+  expiresAt.setUTCDate(expiresAt.getUTCDate() + durationDays);
+  return expiresAt;
+}
+
+export async function previousContractId(
+  tx: Tx,
+  offeringId: number,
+  studentCustomerId: number,
+): Promise<number | null> {
+  const [previous] = await tx
+    .select({ id: digitalSubscriptionContracts.id })
+    .from(digitalSubscriptionContracts)
+    .where(
+      and(
+        eq(digitalSubscriptionContracts.offeringId, offeringId),
+        eq(digitalSubscriptionContracts.studentCustomerId, studentCustomerId),
+      ),
+    )
+    .orderBy(desc(digitalSubscriptionContracts.expiresAt))
+    .limit(1);
+  return previous ? Number(previous.id) : null;
+}
+
+/**
+ * Lock the latest non-cancelled contract so two renewals cannot both start from
+ * the same point.  A renewal starts after an active term, not at `now`, avoiding
+ * overlapping paid periods.
+ */
+export async function renewalAnchor(
+  tx: Tx,
+  offeringId: number,
+  studentCustomerId: number,
+): Promise<{ previousContractId: number | null; startsAt: Date }> {
+  const [previous] = await tx
+    .select({ id: digitalSubscriptionContracts.id, expiresAt: digitalSubscriptionContracts.expiresAt })
+    .from(digitalSubscriptionContracts)
+    .where(and(
+      eq(digitalSubscriptionContracts.offeringId, offeringId),
+      eq(digitalSubscriptionContracts.studentCustomerId, studentCustomerId),
+      ne(digitalSubscriptionContracts.status, "CANCELLED"),
+    ))
+    .orderBy(desc(digitalSubscriptionContracts.expiresAt))
+    .limit(1)
+    .for("update");
+  const now = new Date();
+  return {
+    previousContractId: previous ? Number(previous.id) : null,
+    startsAt: previous && previous.expiresAt.getTime() > now.getTime() ? previous.expiresAt : now,
+  };
+}
+
+/** Cancel subscription entitlements atomically with their digital-card reversal. */
+export async function cancelContractsByInvoiceItems(tx: Tx, invoiceItemIds: number[]): Promise<void> {
+  if (invoiceItemIds.length === 0) return;
+  await tx
+    .update(digitalSubscriptionContracts)
+    .set({ status: "CANCELLED" })
+    .where(and(
+      inArray(digitalSubscriptionContracts.invoiceItemId, invoiceItemIds),
+      ne(digitalSubscriptionContracts.status, "CANCELLED"),
+    ));
+}
+
+export async function listContracts(
+  db: DB,
+  filters: {
+    branchId?: number | null;
+    from?: Date;
+    to?: Date;
+    activeOnly?: boolean;
+  } = {},
+) {
+  const now = new Date();
+  const conditions = [];
+  if (filters.branchId != null) {
+    conditions.push(eq(digitalSubscriptionContracts.branchId, filters.branchId));
+  }
+  if (filters.from) conditions.push(gte(digitalSubscriptionContracts.expiresAt, filters.from));
+  if (filters.to) conditions.push(lte(digitalSubscriptionContracts.expiresAt, filters.to));
+  if (filters.activeOnly) {
+    conditions.push(eq(digitalSubscriptionContracts.status, "ACTIVE"));
+    conditions.push(gte(digitalSubscriptionContracts.expiresAt, now));
+  }
+  const rows = await db
+    .select({
+      id: digitalSubscriptionContracts.id,
+      offeringId: digitalSubscriptionContracts.offeringId,
+      offeringName: products.name,
+      branchId: digitalSubscriptionContracts.branchId,
+      invoiceId: digitalSubscriptionContracts.invoiceId,
+      invoiceItemId: digitalSubscriptionContracts.invoiceItemId,
+      studentCustomerId: digitalSubscriptionContracts.studentCustomerId,
+      studentName: digitalSubscriptionContracts.studentNameSnapshot,
+      durationDays: digitalSubscriptionContracts.durationDays,
+      startsAt: digitalSubscriptionContracts.startsAt,
+      expiresAt: digitalSubscriptionContracts.expiresAt,
+      previousContractId: digitalSubscriptionContracts.previousContractId,
+      storedStatus: digitalSubscriptionContracts.status,
+    })
+    .from(digitalSubscriptionContracts)
+    .innerJoin(
+      digitalOfferings,
+      eq(digitalSubscriptionContracts.offeringId, digitalOfferings.id),
+    )
+    .innerJoin(products, eq(digitalOfferings.productId, products.id))
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(digitalSubscriptionContracts.expiresAt));
+
+  return rows.map((row) => ({
+    ...row,
+    status:
+      row.storedStatus === "CANCELLED"
+        ? "CANCELLED"
+        : row.expiresAt.getTime() > now.getTime()
+          ? "ACTIVE"
+          : "EXPIRED",
+  }));
+}
+
+/**
+ * سجل مبيعات الاشتراكات فقط. لا نحسب صلاحية أو انتهاء أو متبقياً؛ تلك مسؤولية المنصة التعليمية.
+ */
+export async function listSubscriptionSales(
+  db: DB,
+  filters: { branchId?: number | null } = {},
+) {
+  const conditions = [eq(digitalOfferings.offeringType, "EDUCATIONAL_SUBSCRIPTION")];
+  if (filters.branchId != null) conditions.push(eq(invoices.branchId, filters.branchId));
+
+  return db
+    .select({
+      id: digitalSaleDetails.id,
+      invoiceId: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceDate: invoices.invoiceDate,
+      branchId: invoices.branchId,
+      branchName: branches.name,
+      offeringName: products.name,
+      providerReference: digitalSaleDetails.providerReference,
+      studentName: digitalSaleDetails.studentNameSnapshot,
+      studentPhone: digitalSaleDetails.studentPhoneSnapshot,
+      sellPrice: digitalSaleDetails.sellPriceSnapshot,
+      fulfillmentStatus: digitalSaleDetails.fulfillmentStatus,
+    })
+    .from(digitalSaleDetails)
+    .innerJoin(invoices, eq(digitalSaleDetails.invoiceId, invoices.id))
+    .innerJoin(branches, eq(invoices.branchId, branches.id))
+    .innerJoin(digitalOfferings, eq(digitalSaleDetails.offeringId, digitalOfferings.id))
+    .innerJoin(products, eq(digitalOfferings.productId, products.id))
+    .where(and(...conditions))
+    .orderBy(desc(invoices.invoiceDate), desc(digitalSaleDetails.id));
+}

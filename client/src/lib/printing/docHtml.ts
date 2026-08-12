@@ -271,7 +271,7 @@ export function docTableV2(
   const showIdx = !opts.hideIndex;
 
   const th = (label: string, width?: number) =>
-    `<th style="vertical-align:middle;padding:7px 8px;text-align:center;font-size:10.75px;font-weight:800;color:#fff;border:1.5px solid rgba(255,255,255,.5);letter-spacing:.2px;${width ? `width:${width}px;` : ''}">${esc(label)}</th>`;
+    `<th style="vertical-align:middle;padding:7px 8px;text-align:center;font-size:11.5px;font-weight:800;color:#fff;border:1.5px solid rgba(255,255,255,.5);letter-spacing:.2px;${width ? `width:${width}px;` : ''}">${esc(label)}</th>`;
 
   const head = `<tr style="background:${B.greenDark}">${showIdx ? th('م', idxW) : ''}${columns.map((c) => th(c.label, c.width)).join('')}</tr>`;
 
@@ -284,14 +284,14 @@ export function docTableV2(
       : '';
 
     const cells = columns.map((c) => {
-      const size = c.size ?? 11.75;
+      const size = c.size ?? 12.25;
       const color = c.color ?? '#000';
       const isMoney = /price|total|tax|amount|debit|credit|balance|remaining|paid/i.test(c.key);
       const align = 'text-align:center';
       const font = isMoney ? 'direction:ltr;unicode-bidi:isolate;white-space:nowrap;font-variant-numeric:tabular-nums;' : '';
       const weight = c.emphasize ? 'font-weight:800' : (isMoney ? 'font-weight:800' : 'font-weight:700');
       const finalColor = c.emphasize ? B.green : color;
-      const finalSize = c.emphasize ? 12.75 : size;
+      const finalSize = c.emphasize ? 13.25 : size;
       return `<td style="vertical-align:middle;padding:6px;${align};font-size:${finalSize}px;color:${finalColor};${weight};border:1.5px solid ${B.borderDk};${brdBot}${font}">${esc(r[c.key] ?? '')}</td>`;
     }).join('');
 

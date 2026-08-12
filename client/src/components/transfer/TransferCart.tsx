@@ -123,7 +123,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
       <div className="flex shrink-0 items-center justify-between border-b bg-muted px-3.5 py-1.5">
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1.5 text-sm font-extrabold">
-            <PackagePlus aria-hidden className="size-4" /> أصناف السند
+            <PackagePlus aria-hidden className="size-4" /> منتجات السند
           </span>
           {lines.length > 0 && (
             <span className="rounded-full bg-primary px-2.5 py-0.5 text-xs font-bold text-primary-foreground">
@@ -168,7 +168,7 @@ export function TransferCart({ lines, setLines, branchId, bulkOpen, setBulkOpen,
               <tr>
                 <td colSpan={8} className="py-12 text-center text-muted-foreground">
                   <div className="opacity-50 flex justify-center"><Package aria-hidden size={40} /></div>
-                  <div className="mt-2 text-sm font-semibold">لا أصناف في السند</div>
+                  <div className="mt-2 text-sm font-semibold">لا منتجات في السند</div>
                   <div className="mx-auto mt-1 max-w-xs text-xs">ابحث بالاسم أو SKU أو امسح الباركود، أو استعمل «إضافة متعددة»</div>
                 </td>
               </tr>

@@ -10,7 +10,7 @@ import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { D, fmtAr, formatIqd } from "@/lib/money";
-import { BalanceTag, isMoneyStr, isRateStr, newClientRequestId, selectCls, type ExchangeRow } from "@/components/exchange/shared";
+import { BalanceTag, isMoneyStr, isRateStr, NetExposureTag, newClientRequestId, selectCls, type ExchangeRow } from "@/components/exchange/shared";
 
 type Currency = "USD" | "IQD";
 
@@ -191,7 +191,8 @@ export default function ExchangeSettle() {
           <div className="flex flex-wrap gap-4 rounded-md bg-muted/40 px-3 py-2 text-sm">
             {house && <><span>رصيد الدولار: <BalanceTag value={house.balanceUsd} unit="$" /></span>
             <span>رصيد الدينار: <BalanceTag value={house.balanceIqd} unit="د.ع" /></span>
-            <span className="text-muted-foreground">متوسط كلفة الدولار: <span dir="ltr">{D(house.usdCostRate).isZero() ? "—" : fmtAr(house.usdCostRate)}</span></span></>}
+            <span className="text-muted-foreground">متوسط كلفة الدولار: <span dir="ltr">{D(house.usdCostRate).isZero() ? "—" : fmtAr(house.usdCostRate)}</span></span>
+            <span>صافي التعرّض: <NetExposureTag house={house} /></span></>}
             {supplier && <>
               <span>الدين الدفتري: <span dir="ltr" className="font-medium">{formatIqd(supplier.currentBalance)}</span></span>
               <span>الدين الدولاري: <span dir="ltr" className="font-medium">{fmtAr(supplier.currentBalanceUsd ?? "0")} $</span></span>

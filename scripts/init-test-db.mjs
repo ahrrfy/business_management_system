@@ -20,6 +20,7 @@
 import "dotenv/config";
 import mysql from "mysql2/promise";
 import { execFileSync } from "node:child_process";
+import { defaultTestDatabaseUrl } from "./lib/test-db-name.mjs";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -57,8 +58,10 @@ function parseAndGuard(rawUrl, label) {
   return { host, port: Number(port), user, password, dbName };
 }
 
-// نفس اشتقاق vitest.config.ts: TEST_DATABASE_URL وإلّا الافتراضي على صندوق الاختبار 3310.
-const RAW_URL = process.env.TEST_DATABASE_URL ?? "mysql://root:testpw@127.0.0.1:3310/erp_test";
+// نفس اشتقاق vitest.config.ts حرفياً (مصدرٌ واحد مشترك: scripts/lib/test-db-name.mjs):
+// TEST_DATABASE_URL وإلّا قاعدةٌ **خاصّة بشجرة العمل** على صندوق الاختبار 3310 — كي لا تتقاتل
+// جلستان على قاعدةٍ واحدة (٧/٨/٢٦). المستودع الرئيسيّ يبقى على `erp_test` بلا تغيير.
+const RAW_URL = process.env.TEST_DATABASE_URL ?? defaultTestDatabaseUrl(process.cwd());
 const target = parseAndGuard(RAW_URL, "قاعدة الاختبار");
 
 // إن ضُبطت قاعدة التحكّم، افحصها **الآن** (قبل أيّ فعل) بنفس الحرّاس — bootstrap ينشئ القاعدة

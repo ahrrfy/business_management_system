@@ -27,6 +27,9 @@ const MONEY_FIELDS = [
   "amount", "price", "unitPrice", "deposit", "paid", "paidAmount", "cost", "unitCost",
   "discount", "discountAmount", "fee", "salary", "settlement", "openingBalance",
   "refund", "salePrice", "laborCost", "deliveryCost", "creditLimit", "subtotal",
+  // تدقيق ٣/٨: `costPrice` (لم يكن يُلتقَط — `\bcost` لا يطابق `costPrice:` إذ يليه `Price` لا `:`)
+  // ⇒ أي حقل تكلفة جديد عارٍ كان يمرّ صامتاً. القائمة تلتقطه الآن؛ المواقع القائمة في BASELINE.
+  "costPrice",
 ];
 // حقول تحمل اسماً مالياً لكنها ليست مبلغاً (نِسَب/أعلام) — تُستثنى.
 const NOT_MONEY = /Percent$|Rate$|Type$|Method$|Enabled$/;
@@ -35,6 +38,9 @@ const NOT_MONEY = /Percent$|Rate$|Type$|Method$|Enabled$/;
 // تُقلَّص بإصلاح الحقل إلى مخطّط مالي (nonNegMoneyString...). لا تُضِف إليها.
 const BASELINE = new Set([
   "catalogRouter.ts:price",
+  // تدقيق ٣/٨: انتهاكات قائمة كُشفت بعد إضافة `costPrice` للكشف (كانت تمرّ صامتة). مُدرَجة كي
+  // يُلتقَط أي حقل تكلفة **جديد** خارجها؛ تُقلَّص بتحويلها لـnonNegMoneyString لاحقاً (تدفّق منتج أساسيّ).
+  "catalogRouter.ts:costPrice",
   "customerRouter.ts:creditLimit",
   "customerRouter.ts:openingBalance",
   "expenseRouter.ts:amount",

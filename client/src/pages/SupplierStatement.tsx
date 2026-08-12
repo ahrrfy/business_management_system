@@ -48,7 +48,7 @@ const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string }
 ];
 
 const PO_STATUS_LABEL: Record<string, string> = {
-  DRAFT: "مسودّة",
+  DRAFT: "مسوّدة",
   SENT: "مُرسَل",
   CONFIRMED: "مؤكّد",
   RECEIVED: "مُستلَم",
