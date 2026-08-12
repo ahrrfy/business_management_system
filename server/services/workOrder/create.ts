@@ -182,6 +182,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         customerId: input.customerId ?? null,
         amount: newDepositD,
         notes: `[WO_DEPOSIT:${workOrderId}]`,
+        paymentMethod: depositMethod, // دلو النقد للدفتر المزدوج (لا يُخزَّن)
       });
     }
 

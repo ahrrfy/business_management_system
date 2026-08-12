@@ -537,6 +537,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         receiptId,
         customerId: input.customerId ?? null,
         amount: newMoneyD,
+        paymentMethod: input.payment!.method, // دلو النقد للدفتر المزدوج (لا يُخزَّن)
       });
     }
     for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
