@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 847,
+    "trpcTotal": 848,
     "byKind": {
-      "mutation": 429,
+      "mutation": 430,
       "query": 418
     },
     "byAuthority": {
-      "module-gate": 380,
+      "module-gate": 381,
       "module-map": 263,
       "admin": 74,
       "raw-role": 55,
@@ -19,7 +19,7 @@
     },
     "bySensitivity": {
       "LOW": 417,
-      "MEDIUM": 318,
+      "MEDIUM": 319,
       "HIGH": 112
     },
     "byModule": {
@@ -51,6 +51,7 @@
       "pos": 3,
       "users": 2,
       "crm|workorders": 2,
+      "settings": 1,
       "sales|workorders": 1
     },
     "flagCounts": {
@@ -68,7 +69,7 @@
     "expressMounts": 11,
     "jobs": 15,
     "routerFiles": 90,
-    "proposedPermissions": 720,
+    "proposedPermissions": 721,
     "proposedDomains": {
       "hr": 86,
       "inventory": 68,
@@ -78,7 +79,7 @@
       "iam": 42,
       "store": 40,
       "sales": 40,
-      "admin": 36,
+      "admin": 37,
       "crm": 33,
       "workorders": 29,
       "marketing": 28,
@@ -10566,7 +10567,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/reportsRouter.ts:536"
+      "loc": "server/routers/reportsRouter.ts:1204"
     },
     {
       "surface": "trpc",
@@ -10652,6 +10653,23 @@
       "sensitivityWhy": "قراءة",
       "flags": "",
       "loc": "server/routers/reportsRouter.ts:315"
+    },
+    {
+      "surface": "trpc",
+      "router": "reportsRouter",
+      "proposedPermission": "admin.report.update",
+      "name": "setDoubleEntryMode",
+      "kind": "mutation",
+      "procedure": "settingsAdminProcedure",
+      "authority": "module-gate",
+      "module": "settings",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/reportsRouter.ts:1224"
     },
     {
       "surface": "trpc",
