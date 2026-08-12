@@ -366,6 +366,38 @@ export const customersReadProcedure = protectedProcedure.use(requireModule("crm"
 export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep", "print_operator"], "crm", "FULL");
 export const customersManagerProcedure = moduleProcedure(["manager"], "crm", "FULL");
 
+// (١٢/٨، اصلاح عاجل بطلب المالك): بوّابةُ إنشاء العميل من محطة الاستقبال — تقبل مَن يملك
+// crm=FULL (البوّابة القياسية) أو workorders=FULL (بوّابة محطة الاستقبال). السبب: كاشير
+// الاستقبال يستقبل طلبات الزبائن ويحتاج حتماً إلى ربطها بسجلٍّ دائم لإكمال الطلب/الحجز/التسليم؛
+// وأدوار الاستقبال المخصّصة (حين تُعدَّل crm يدوياً إلى READ) كانت تنكسر رغم إبقاء workorders=FULL.
+// هذا هو نفس تعايُش (sales‖workorders) في invoiceViewProcedure أعلاه — قرارٌ متعمَّد بأنّ الوصول
+// لمحطة الاستقبال يستتبع القدرة على حفظ عميلها.
+export function customerReceptionCreateAllowed(user: {
+  role: string;
+  permissionsOverride?: unknown;
+}): boolean {
+  if (user.role === "admin") return true;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (moduleAccessAllowed(user.role, override, "crm", "FULL", ["cashier", "manager", "sales_rep", "print_operator"])) {
+    return true;
+  }
+  // POS_STATION_GATES.RECEPTION.allowedRoles = ["cashier", "manager", "print_operator"]
+  if (moduleAccessAllowed(user.role, override, "workorders", "FULL", ["cashier", "manager", "print_operator"])) {
+    return true;
+  }
+  return false;
+}
+
+export const customersReceptionCreateProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    if (!customerReceptionCreateAllowed(ctx.user)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    }
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  }),
+);
+
 // CRM هو مالك رحلة العميل؛ تبقى وحدات المبيعات/القنوات/الخزينة مزوّدات أحداث عبر حدود واضحة.
 export const crmReadProcedure = branchScopedProcedure.use(requireModule("crm", "READ"));
 export const crmWriteProcedure = moduleProcedure(["cashier", "manager", "sales_rep"], "crm", "FULL");

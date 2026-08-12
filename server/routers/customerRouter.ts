@@ -21,7 +21,7 @@ import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive } from "../lib/redact";
 import { positiveMoneyString } from "../lib/schemas";
-import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, managerProcedure, router } from "../trpc";
+import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, customersReceptionCreateProcedure, managerProcedure, router } from "../trpc";
 import { getCustomerOperations } from "../services/customerOperationsService";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -139,7 +139,11 @@ export const customerRouter = router({
       return { ...masked, qrPayload };
     }),
 
-  create: customersCashierProcedure
+  // (١٢/٨، اصلاح عاجل بطلب المالك): استُبدلت customersCashierProcedure بـcustomersReceptionCreateProcedure
+  // كي يُقبل من يملك crm=FULL **أو** workorders=FULL (كاشير الاستقبال بدور مخصّص حُدَّت فيه crm يدوياً).
+  // بقيّة عمليات CRM (notes/update/delete) تبقى محكومة ببوّاباتها الأضيق — التغيير محصور بإنشاء العميل
+  // (أساس ربط الطلب بالسجل الدائم) لا بإدارة العملاء بأكملها.
+  create: customersReceptionCreateProcedure
     .input(
       z.object({
         name: z.string().min(1).max(255),

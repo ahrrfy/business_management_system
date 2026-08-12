@@ -121,6 +121,10 @@ const RESERVATION_READ_ROLES = ["admin", "manager", "accountant", "cashier", "wa
 const CHANNEL_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor", "warehouse", "print_operator"] as const;
 /** مرآة قائمة أدوار customersCashierProcedure الخادمية (server/trpc.ts) — لا تنجرف عنها. */
 const CUSTOMER_CREATE_ROLES = ["cashier", "manager", "sales_rep", "print_operator"] as const;
+/** مرآة POS_STATION_GATES.RECEPTION.allowedRoles — بوّابة محطة الاستقبال الثانية (workorders=FULL).
+ *  (١٢/٨) كاشير الاستقبال بدور مخصّص حُدَّت فيه crm يدوياً يبقى قادراً على حفظ العميل لأنه شرطُ إكمال
+ *  طلب/حجز/تسليم — تعايشُ الازدواج يطابق customerReceptionCreateAllowed الخادميّة. */
+const RECEPTION_STATION_ROLES = ["cashier", "manager", "print_operator"] as const;
 const STORE_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 const CRM_READ_ROLES = ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"] as const;
 
@@ -143,11 +147,15 @@ export default function Reception() {
   const canReadChannels = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "channels", "READ", CHANNEL_READ_ROLES,
   );
-  // مرآة بوّابة customers.create الخادمية بالضبط (customersCashierProcedure =
-  // moduleProcedure(["cashier","manager","sales_rep"], "crm", "FULL") — server/trpc.ts).
-  // مطابقتها هنا تُظهر/تُخفي زرّ «احفظه كعميل» بدل أن يفاجئ الموظّفَ رفضٌ في منتصف الدفع.
-  const canCreateCustomer = me.data != null && moduleAccessAllowed(
-    me.data.role, reservationPermissions, "crm", "FULL", CUSTOMER_CREATE_ROLES,
+  // مرآة بوّابة customers.create الخادمية بالضبط (customerReceptionCreateAllowed في server/trpc.ts):
+  // crm=FULL (الأدوار القياسية) **أو** workorders=FULL (بوّابة محطة الاستقبال). مطابقتها هنا تُظهر/تُخفي
+  // زرّ «احفظه كعميل» وتزيل تحذير «لا يمكن حفظ» بدل أن يفاجئ الموظّفَ رفضٌ في منتصف الدفع.
+  const canCreateCustomer = me.data != null && (
+    moduleAccessAllowed(
+      me.data.role, reservationPermissions, "crm", "FULL", CUSTOMER_CREATE_ROLES,
+    ) || moduleAccessAllowed(
+      me.data.role, reservationPermissions, "workorders", "FULL", RECEPTION_STATION_ROLES,
+    )
   );
   const canReadStoreOrders = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "store", "READ", STORE_READ_ROLES,
