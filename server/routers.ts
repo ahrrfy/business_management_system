@@ -29,6 +29,7 @@ import { quotationRouter } from "./routers/quotationRouter";
 import { userRouter } from "./routers/userRouter";
 import { roleRouter } from "./routers/roleRouter";
 import { auditRouter } from "./routers/auditRouter";
+import { deliveryLegacyRepairRouter } from "./routers/deliveryLegacyRepairRouter";
 import { barcodeRouter } from "./routers/barcodeRouter";
 import { importRouter } from "./routers/imports";
 import { voucherRouter, voucherCategoryRouter } from "./routers/voucherRouter";
@@ -114,6 +115,7 @@ export const appRouter = router({
   reports: reportsRouter,
   quotations: quotationRouter,
   audit: auditRouter,
+  deliveryLegacyRepair: deliveryLegacyRepairRouter,
   barcode: barcodeRouter,
   imports: importRouter,
   vouchers: voucherRouter,
