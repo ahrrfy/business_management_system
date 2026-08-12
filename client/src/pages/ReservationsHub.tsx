@@ -86,6 +86,15 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
   const [branchId, setBranchId] = useState<number | null>(null);
   const effectiveBranch = fixedBranchId ?? branchId ?? userBranchId ?? branches.data?.[0]?.id ?? null;
 
+  // Codex P2 على PR #559: `Date.now()` يُقاس أثناء render فقط ⇒ حجزٌ يعبر عتبة ٤س لن يتحوّل إلى
+  // «ينتهي قريباً» تلقائياً على شاشة كاشيرٍ مفتوحة لساعات. مؤقّت كلّ ٦٠ث يُطلق re-render يعيد حساب
+  // `expiringSoon` بحبيبة الدقيقة — كافٍ لعتبة الساعات، خفيفٌ (setState فارغ عبر counter).
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
   const [status, setStatus] = useState<"" | ReservationStatus>("");
   const [q, setQ] = useState("");
   // مدى تاريخ الانتهاء (اختياري) + الترتيب: «ينتهي أولاً» افتراضياً — طابور الصباح.
@@ -367,7 +376,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                     <TableRow
                       key={r.id}
                       className={cn(
-                        expiringSoon && "bg-[var(--sem-warning)]/10 hover:bg-[var(--sem-warning)]/20",
+                        expiringSoon && "bg-[var(--sem-warn)]/10 hover:bg-[var(--sem-warn)]/20",
                         isExpired && "bg-muted/50 text-muted-foreground",
                       )}
                     >
@@ -379,13 +388,13 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                         <div className="flex items-center gap-1.5">
                           <Badge variant={STATUS_VARIANT[st]}>{STATUS_LABEL[st] ?? st}</Badge>
                           {expiringSoon && (
-                            <Badge variant="outline" className="border-[var(--sem-warning)] text-[var(--sem-warning)] font-bold text-[10px]">
+                            <Badge variant="outline" className="border-[var(--sem-warn)] text-[var(--sem-warn)] font-bold text-[10px]">
                               ينتهي قريباً
                             </Badge>
                           )}
                         </div>
                       </TableCell>
-                      <TableCell className={cn("text-xs", expiringSoon && "font-bold text-[var(--sem-warning)]")} dir="ltr">
+                      <TableCell className={cn("text-xs", expiringSoon && "font-bold text-[var(--sem-warn)]")} dir="ltr">
                         {r.expiresAt ? fmtDateTime(r.expiresAt) : "—"}
                       </TableCell>
                       <TableCell>
