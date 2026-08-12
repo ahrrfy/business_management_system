@@ -1049,13 +1049,11 @@ private fun PlanAmountFields(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ReceivableCodeField(draft.branchId, { value -> onUpdate { copy(branchId = value.filter(Char::isDigit)) } }, "الفرع", Modifier.fillMaxWidth(), KeyboardType.Number)
                 ReceivableCodeField(draft.totalAmount, { value -> onUpdate { copy(totalAmount = value) } }, "إجمالي الخطة", Modifier.fillMaxWidth(), KeyboardType.Decimal)
-                ReceivableCodeField(draft.downPayment, { value -> onUpdate { copy(downPayment = value) } }, "دفعة أولى", Modifier.fillMaxWidth(), KeyboardType.Decimal)
             }
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ReceivableCodeField(draft.branchId, { value -> onUpdate { copy(branchId = value.filter(Char::isDigit)) } }, "الفرع", Modifier.weight(1f), KeyboardType.Number)
                 ReceivableCodeField(draft.totalAmount, { value -> onUpdate { copy(totalAmount = value) } }, "إجمالي الخطة", Modifier.weight(1f), KeyboardType.Decimal)
-                ReceivableCodeField(draft.downPayment, { value -> onUpdate { copy(downPayment = value) } }, "دفعة أولى", Modifier.weight(1f), KeyboardType.Decimal)
             }
         }
     }
@@ -1115,7 +1113,7 @@ private fun ActionDialog(
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 when (action) {
                     is ReceivablesPendingAction.CreatePlan -> {
-                        Text("سيُطابق إجمالي الخطة والدفعة الأولى والأقساط مع الذمّة قبل الإنشاء.")
+                        Text("تُطابَق أقساط الخطة مع الذمّة قبل الإنشاء. لدفعةٍ أولى: سجّلها سندَ قبضٍ نقديٍّ أولاً ثم أنشئ الخطة على المتبقّي.")
                         InfoLine("العميل", "#${action.draft.customerId}")
                         InfoLine("الإجمالي المدخل", "${action.draft.totalAmount} د.ع")
                         InfoLine("عدد الأقساط", action.draft.lines.size.toString())

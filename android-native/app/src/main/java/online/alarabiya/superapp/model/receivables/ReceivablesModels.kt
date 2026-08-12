@@ -156,8 +156,11 @@ data class NewInstallmentPlan(
         if (branchId.toLongOrNull()?.takeIf { it > 0 } == null) return "معرّف الفرع مطلوب"
         val total = ReceivablesMoney.validatedInput(totalAmount) ?: return "إجمالي الخطة غير صالح"
         if (BigDecimal(total.value) <= BigDecimal.ZERO) return "إجمالي الخطة يجب أن يكون موجباً"
+        // قرار المالك (١٢/٨) — «لا دينار بلا سند»: الدفعة الأولى تُسجَّل سندَ قبضٍ فعليّاً أولاً ثم تُنشأ
+        // الخطة على المتبقّي؛ فالخادم يرفض أيّ دفعةٍ أولى (enforceFinancialIntegrity). نحرسها هنا أيضاً
+        // (الحقل أُزيل من الشاشة فتبقى "0"، وهذا حارسٌ دفاعيّ لأيّ مسارٍ يضبطها).
         val down = ReceivablesMoney.validatedInput(downPayment.ifBlank { "0" }) ?: return "الدفعة الأولى غير صالحة"
-        if (BigDecimal(down.value) < BigDecimal.ZERO) return "الدفعة الأولى لا يمكن أن تكون سالبة"
+        if (BigDecimal(down.value).signum() != 0) return "الدفعة الأولى تُسجَّل سندَ قبضٍ نقديٍّ أولاً — أنشئ الخطة على المتبقّي (لا دينار بلا سند)"
         if (notes.length > 1000) return "الملاحظات أطول من الحد المسموح"
         if (lines.isEmpty() || lines.size > 60) return "عدد الأقساط يجب أن يكون بين 1 و60"
         lines.forEachIndexed { index, line -> line.validationError(index)?.let { return it } }
