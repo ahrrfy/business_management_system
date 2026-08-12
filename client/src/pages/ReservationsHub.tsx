@@ -86,6 +86,15 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
   const [branchId, setBranchId] = useState<number | null>(null);
   const effectiveBranch = fixedBranchId ?? branchId ?? userBranchId ?? branches.data?.[0]?.id ?? null;
 
+  // Codex P2 على PR #559: `Date.now()` يُقاس أثناء render فقط ⇒ حجزٌ يعبر عتبة ٤س لن يتحوّل إلى
+  // «ينتهي قريباً» تلقائياً على شاشة كاشيرٍ مفتوحة لساعات. مؤقّت كلّ ٦٠ث يُطلق re-render يعيد حساب
+  // `expiringSoon` بحبيبة الدقيقة — كافٍ لعتبة الساعات، خفيفٌ (setState فارغ عبر counter).
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
   const [status, setStatus] = useState<"" | ReservationStatus>("");
   const [q, setQ] = useState("");
   // مدى تاريخ الانتهاء (اختياري) + الترتيب: «ينتهي أولاً» افتراضياً — طابور الصباح.
@@ -356,14 +365,38 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, onClo
                 rows.map((r) => {
                   const st = r.status as ReservationStatus;
                   const closeable = CLOSEABLE.includes(st);
+                  // D (١٢/٨): إبراز بصريّ للحجوزات قرب الانتهاء + المنتهية — «أكثر وضوحاً وتطوّراً».
+                  // - active + <٤س: تظليل كهرمانيّ + شارة «ينتهي قريباً» + رقم/تاريخ بلون التحذير.
+                  // - EXPIRED: تظليل رماديّ باهت (اكتمل السحب من الكرون، لكن السطر مرئيّ للفهم).
+                  // العتبة ٤س = ربع مدّة الحجز الافتراضيّة (١٦س) — «آخر ربع» يعطي الكاشير فرصة الاتّصال أو التمديد.
+                  const msLeft = r.expiresAt && closeable ? new Date(r.expiresAt).getTime() - Date.now() : null;
+                  const expiringSoon = msLeft != null && msLeft > 0 && msLeft < 4 * 3600 * 1000;
+                  const isExpired = st === "EXPIRED";
                   return (
-                    <TableRow key={r.id}>
+                    <TableRow
+                      key={r.id}
+                      className={cn(
+                        expiringSoon && "bg-[var(--sem-warn)]/10 hover:bg-[var(--sem-warn)]/20",
+                        isExpired && "bg-muted/50 text-muted-foreground",
+                      )}
+                    >
                       <TableCell className="font-mono" dir="ltr">{r.reservationNumber}</TableCell>
                       <TableCell>{r.contactName || <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell dir="ltr">{r.contactPhone}</TableCell>
                       <TableCell>{CHANNEL_LABEL[r.channel as Channel] ?? r.channel}</TableCell>
-                      <TableCell><Badge variant={STATUS_VARIANT[st]}>{STATUS_LABEL[st] ?? st}</Badge></TableCell>
-                      <TableCell className="text-xs" dir="ltr">{r.expiresAt ? fmtDateTime(r.expiresAt) : "—"}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant={STATUS_VARIANT[st]}>{STATUS_LABEL[st] ?? st}</Badge>
+                          {expiringSoon && (
+                            <Badge variant="outline" className="border-[var(--sem-warn)] text-[var(--sem-warn)] font-bold text-[10px]">
+                              ينتهي قريباً
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className={cn("text-xs", expiringSoon && "font-bold text-[var(--sem-warn)]")} dir="ltr">
+                        {r.expiresAt ? fmtDateTime(r.expiresAt) : "—"}
+                      </TableCell>
                       <TableCell>
                         <RowActions
                           mode="auto"

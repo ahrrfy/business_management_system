@@ -3,7 +3,7 @@ import { allocateLineTax } from "@/components/invoice";
 import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
@@ -208,34 +208,46 @@ export default function Purchases() {
             onResetFilters={resetF}
             filters={
               <>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} title="إلى تاريخ" />
-                <select
-                  className={selectCls}
-                  value={f.supplierId}
-                  onChange={(e) => setF({ supplierId: e.target.value })}
-                >
-                  <option value="">— كل الموردين —</option>
-                  {(suppliers.data ?? []).map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                      {balanceOptionText((s as { currentBalance?: string | null }).currentBalance, "supplier")}
-                    </option>
-                  ))}
-                </select>
-                <select className={selectCls} value={f.status} onChange={(e) => setF({ status: e.target.value })}>
-                  <option value="">— كل الحالات —</option>
-                  {Object.entries(PO_STATUS).map(([k, v]) => (
-                    <option key={k} value={k}>{v}</option>
-                  ))}
-                </select>
-                {isElevated && (
-                  <select className={selectCls} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })}>
-                    <option value="">— كل الفروع —</option>
-                    {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={b.id}>{b.name}</option>
+                {/* E (١٢/٨): FilterField يُظهر التسمية دائماً — Placeholder وحده يختفي عند الاختيار
+                    فيضيع معنى الحقل. صندوق الفلاتر الموحّد (ListToolbar) يوفّر المساحة الآن. */}
+                <FilterField label="من تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} />
+                </FilterField>
+                <FilterField label="المورد">
+                  <select
+                    className={selectCls}
+                    value={f.supplierId}
+                    onChange={(e) => setF({ supplierId: e.target.value })}
+                  >
+                    <option value="">— كل الموردين —</option>
+                    {(suppliers.data ?? []).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                        {balanceOptionText((s as { currentBalance?: string | null }).currentBalance, "supplier")}
+                      </option>
                     ))}
                   </select>
+                </FilterField>
+                <FilterField label="الحالة">
+                  <select className={selectCls} value={f.status} onChange={(e) => setF({ status: e.target.value })}>
+                    <option value="">— كل الحالات —</option>
+                    {Object.entries(PO_STATUS).map(([k, v]) => (
+                      <option key={k} value={k}>{v}</option>
+                    ))}
+                  </select>
+                </FilterField>
+                {isElevated && (
+                  <FilterField label="الفرع">
+                    <select className={selectCls} value={f.branchId} onChange={(e) => setF({ branchId: e.target.value })}>
+                      <option value="">— كل الفروع —</option>
+                      {(branches.data ?? []).map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                  </FilterField>
                 )}
               </>
             }
