@@ -188,6 +188,8 @@ export function ProductTable({
   }
   const stockState = (it: InvoiceLine) => {
     if (isPurchase) return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
+    // خدمة (١٢/٨/٢٦): بلا مخزون ذاتيّ — createSale يخصم موادها من الوصفة، فلا تحذير للخدمة.
+    if (it.isService) return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
     const convFactor = Number(it.conversionFactor) || 1;
     const availBase = Number(it.stockBase) || 0;
     const reqBase = demandByVariant.get(it.variantId) ?? (Number(it.qty) || 0) * convFactor;
@@ -354,17 +356,21 @@ export function ProductTable({
                   </td>
                   <td className={cn(td, "text-xs text-muted-foreground")}>{item.unit}</td>
                   <td className={td}>
-                    <span
-                      className={cn(
-                        "rounded px-1.5 py-0.5 text-xs font-extrabold tabular-nums",
-                        stock.isOut ? "bg-destructive text-destructive-foreground"
-                          : stock.isShort ? "bg-amber-100 text-amber-700"
-                          : "text-muted-foreground",
-                      )}
-                      dir="ltr"
-                    >
-                      {isPurchase ? fmtNum(item.stockBase) : stock.availInUnit}
-                    </span>
+                    {item.isService ? (
+                      <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">خدمة</span>
+                    ) : (
+                      <span
+                        className={cn(
+                          "rounded px-1.5 py-0.5 text-xs font-extrabold tabular-nums",
+                          stock.isOut ? "bg-destructive text-destructive-foreground"
+                            : stock.isShort ? "bg-amber-100 text-amber-700"
+                            : "text-muted-foreground",
+                        )}
+                        dir="ltr"
+                      >
+                        {isPurchase ? fmtNum(item.stockBase) : stock.availInUnit}
+                      </span>
+                    )}
                   </td>
                   {showCostCol && (
                     <td className={cn(td, "text-xs text-muted-foreground")} dir="ltr">

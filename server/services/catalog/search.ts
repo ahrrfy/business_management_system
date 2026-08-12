@@ -26,12 +26,21 @@ const receptionVisible = sql`(
   (${products.productType} <> ${PRINT_SERVICE_TYPE} AND ${products.productType} <> ${DIGITAL_CARD_TYPE}) OR
   (${products.productType} = ${PRINT_SERVICE_TYPE} AND ${products.showInReception} = TRUE)
 )`;
-function posVisibility(includeReceptionServices: boolean) {
-  return and(
+// رؤية فاتورة البيع المتقدّمة (١٢/٨/٢٦): كل خدمات الطباعة **بلا شرط showInReception** — الفاتورة الرسمية
+// قد تجمع سلعاً وخدماتٍ (شركات/حكومي). createSale يخصم موادها ذرّياً + يحتسب COGS من الوصفة. البطاقات
+// الرقميّة تُستثنى دائماً (منظومتها المستقلّة). isActive على المنتج/المتغيّر/الوحدة يبقى نافذاً.
+const advancedSaleVisible = sql`(
+  ${products.productType} IS NULL OR ${products.productType} <> ${DIGITAL_CARD_TYPE}
+)`;
+function posVisibility(mode: "default" | "reception" | "advancedSale") {
+  const baseConds = [
     eq(products.isActive, true),
     eq(productVariants.isActive, true),
     eq(productUnits.isActive, true),
-    includeReceptionServices ? receptionVisible : ordinaryCatalogProduct,
+  ];
+  return and(
+    ...baseConds,
+    mode === "advancedSale" ? advancedSaleVisible : mode === "reception" ? receptionVisible : ordinaryCatalogProduct,
   );
 }
 

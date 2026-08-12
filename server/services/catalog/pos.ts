@@ -370,17 +370,20 @@ export async function listByProductIds(
 
 /** List sellable rows for the POS, optionally filtered by a text query.
  *  includeReceptionServices=true يُظهر خدمات الطباعة المفعَّل عليها showInReception (كاشير الاستقبال).
+ *  includeAllServices=true (١٢/٨/٢٦) يُظهر **كل** خدمات الطباعة (بلا شرط showInReception) — لشاشة
+ *    فاتورة البيع المتقدّمة. يتقدَّم على includeReceptionServices إن حدَّدَ العميل الاثنين.
  *  opts.customerId (بند 12ب): يُطبّق الأسعار التعاقدية النشطة للعميل على الصفوف المطابقة. */
 export async function listForPos(
   branchId: number,
   tier: PriceTier,
   query?: string,
   limit = 200,
-  opts?: { includeReceptionServices?: boolean; customerId?: number | null },
+  opts?: { includeReceptionServices?: boolean; includeAllServices?: boolean; customerId?: number | null },
 ): Promise<PosRow[]> {
   const db = getDb();
   if (!db) return [];
-  const active = posVisibility(!!opts?.includeReceptionServices);
+  const mode = opts?.includeAllServices ? "advancedSale" : opts?.includeReceptionServices ? "reception" : "default";
+  const active = posVisibility(mode);
   const search = buildCatalogSearchWhere(query);
   const where = search ? and(active, search) : active;
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
