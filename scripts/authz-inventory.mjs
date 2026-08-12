@@ -236,6 +236,21 @@ const PROCEDURES = {
     roles: ["admin"],
     branch: false,
   },
+  reportsManagerProcedure: {
+    authority: "module-gate",
+    module: "reports",
+    level: "FULL",
+    roles: ["manager"],
+    branch: "required",
+  },
+  // مركّبة runtime: reportsManagerProcedure ثم requireAdmin؛ شرط admin تشديدٌ إضافي.
+  reportsAdminProcedure: {
+    authority: "module-gate",
+    module: "reports",
+    level: "FULL",
+    roles: ["admin"],
+    branch: false,
+  },
   customersReadProcedure: {
     authority: "module-map",
     module: "crm",

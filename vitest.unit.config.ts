@@ -44,6 +44,7 @@ export default defineConfig({
       "server/services/hrDevices/__tests__/bridgeSecurity.test.ts",
       "server/services/hrDevices/__tests__/bridgeGate.test.ts",
       "server/services/hrDevices/__tests__/runtimeTasks.test.ts",
+      "server/routers/__tests__/periodLockAuthority.test.ts",
       "server/routers/__tests__/superAppAuthority.test.ts",
       "server/tenancy/__tests__/tenantPoolPolicy.test.ts",
     ],

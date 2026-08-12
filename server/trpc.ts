@@ -382,6 +382,10 @@ export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manage
 export const inventoryManagerProcedure = moduleProcedure(["manager"], "inventory", "FULL");
 /** إنقاذ مخزني شديد الحساسية: بوابة inventory:FULL ثم admin و2FA مركزياً. */
 export const inventoryAdminProcedure = inventoryManagerProcedure.use(requireAdmin);
+/** طلبات الإقفال الشهري: مديرٌ ذو reports:FULL، مع احترام السحب والمنح الصريحين. */
+export const reportsManagerProcedure = moduleProcedure(["manager"], "reports", "FULL");
+/** اعتماد/رفض الإقفال: بوابة reports:FULL ثم admin و2FA مركزياً. */
+export const reportsAdminProcedure = reportsManagerProcedure.use(requireAdmin);
 // أسماء توافقية للراوترات القائمة؛ سلطة ملف العميل انتقلت فعلياً إلى وحدة CRM.
 export const customersReadProcedure = protectedProcedure.use(requireModule("crm", "READ"));
 // print_operator (٧/٨): مرآة POS_STATION_GATES.RECEPTION بالضبط (shared/permissions.ts) — نفس
