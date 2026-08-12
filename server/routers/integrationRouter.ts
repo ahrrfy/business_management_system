@@ -40,6 +40,7 @@ const waHubSettingsUpdateSchema = z.object({
   flowOrderReady: z.boolean().optional(),
   flowPurchaseThanks: z.boolean().optional(),
   flowConsignmentWithdraw: z.boolean().optional(),
+  flowReservationNearExpiry: z.boolean().optional(),
   csatOnResolve: z.boolean().optional(),
   killSwitch: z.boolean().optional(),
 });
@@ -62,6 +63,7 @@ const WA_HUB_DEFAULTS = {
   flowOrderReady: false,
   flowPurchaseThanks: false,
   flowConsignmentWithdraw: false,
+  flowReservationNearExpiry: false,
   csatOnResolve: false,
   killSwitch: false,
   updatedBy: null as number | null,

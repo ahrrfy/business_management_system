@@ -101,6 +101,171 @@ describe("enqueueOutbox — idempotency", () => {
 });
 
 describe("dispatchOutboxRow — دورة الإرسال", () => {
+  it("يلغي الصف المؤجّل إذا حُذف سجل العميل بعد الجدولة", async () => {
+    await seedActiveIntegration(1);
+    const inserted = await db().insert(s.customers).values({
+      name: "عميل سيُحذف",
+      phone: "+9647701234566",
+    });
+    const customerId = Number((inserted as any)?.[0]?.insertId ?? (inserted as any)?.insertId);
+    const { id } = await enqueueOutbox({
+      dedupeKey: "dedupe-deleted-customer-before-dispatch",
+      branchId: 1,
+      kind: "TEMPLATE",
+      customerId,
+      toPhoneE164: "+9647701234566",
+      templateName: "reservation_near_expiry",
+      templateLang: "ar",
+      payloadJson: { bodyParams: ["RES-0", "عميل", "صنف", "15:00"] },
+    });
+    await db().delete(s.customers).where(eq(s.customers.id, customerId));
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(successResponder("wamid.MUST_NOT_SEND"));
+    try {
+      await dispatchOutboxRow(id);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, id)))[0];
+    expect(row.status).toBe("CANCELLED");
+    expect(row.lastError).toContain("لم يعد موجوداً");
+  });
+
+  it("يلغي تنبيه الحجز المؤجّل إذا تغيّر موعد الانتهاء بعد الجدولة", async () => {
+    await seedActiveIntegration(1);
+    const originalExpiry = new Date(Date.now() + 60 * 60 * 1000);
+    const inserted = await db().insert(s.reservations).values({
+      reservationNumber: "RSV-OUTBOX-GUARD",
+      branchId: 1,
+      contactPhone: "+9647701234567",
+      channel: "PHONE",
+      status: "ACTIVE",
+      expiresAt: originalExpiry,
+      createdBy: 1,
+    });
+    const reservationId = Number((inserted as any)?.[0]?.insertId ?? (inserted as any)?.insertId);
+    const { id } = await enqueueOutbox({
+      dedupeKey: "dedupe-reservation-guard",
+      branchId: 1,
+      kind: "TEMPLATE",
+      toPhoneE164: "+9647701234567",
+      templateName: "reservation_near_expiry",
+      templateLang: "ar",
+      payloadJson: {
+        bodyParams: ["RSV-OUTBOX-GUARD", "عميل", "صنف", "15:00"],
+        deliveryGuard: {
+          type: "RESERVATION_NEAR_EXPIRY",
+          reservationId,
+          expiresAt: originalExpiry.toISOString(),
+        },
+      },
+    });
+    await db()
+      .update(s.reservations)
+      .set({ expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000) })
+      .where(eq(s.reservations.id, reservationId));
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(successResponder("wamid.MUST_NOT_SEND"));
+    try {
+      await dispatchOutboxRow(id);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, id)))[0];
+    expect(row.status).toBe("CANCELLED");
+    expect(row.lastError).toContain("تغيّر موعده");
+  });
+
+  it("يلغي تنبيه الحجز المؤجّل إذا عُطّل مفتاح التدفق بعد الجدولة", async () => {
+    await seedActiveIntegration(1);
+    await db().insert(s.waHubSettings).values({ id: 1, flowReservationNearExpiry: true });
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const inserted = await db().insert(s.reservations).values({
+      reservationNumber: "RSV-FLOW-GUARD",
+      branchId: 1,
+      contactPhone: "+9647701234567",
+      channel: "PHONE",
+      status: "ACTIVE",
+      expiresAt,
+      createdBy: 1,
+    });
+    const reservationId = Number((inserted as any)?.[0]?.insertId ?? (inserted as any)?.insertId);
+    const storedExpiry = (await db()
+      .select({ expiresAt: s.reservations.expiresAt })
+      .from(s.reservations)
+      .where(eq(s.reservations.id, reservationId))
+      .limit(1))[0].expiresAt;
+    const { id } = await enqueueOutbox({
+      dedupeKey: "dedupe-reservation-flow-guard",
+      branchId: 1,
+      kind: "TEMPLATE",
+      toPhoneE164: "+9647701234567",
+      templateName: "reservation_near_expiry",
+      templateLang: "ar",
+      payloadJson: {
+        bodyParams: ["RSV-FLOW-GUARD", "عميل", "صنف", "15:00"],
+        deliveryGuard: {
+          type: "RESERVATION_NEAR_EXPIRY",
+          reservationId,
+          expiresAt: storedExpiry.toISOString(),
+        },
+      },
+    });
+    await db().update(s.waHubSettings).set({ flowReservationNearExpiry: false }).where(eq(s.waHubSettings.id, 1));
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(successResponder("wamid.MUST_NOT_SEND"));
+    try {
+      await dispatchOutboxRow(id);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, id)))[0];
+    expect(row.status).toBe("CANCELLED");
+    expect(row.lastError).toContain("معطّل");
+  });
+
+  it("يلغي الصف المؤجّل قبل Graph إذا ألغى العميل موافقته بعد الجدولة", async () => {
+    await seedActiveIntegration(1);
+    const inserted = await db().insert(s.customers).values({
+      name: "عميل ألغى الموافقة",
+      phone: "+9647701234567",
+      waConsent: "UNKNOWN",
+    });
+    const customerId = Number((inserted as any)?.[0]?.insertId ?? (inserted as any)?.insertId);
+    const { id } = await enqueueOutbox({
+      dedupeKey: "dedupe-optout-before-dispatch",
+      branchId: 1,
+      kind: "TEMPLATE",
+      customerId,
+      toPhoneE164: "+9647701234567",
+      templateName: "reservation_near_expiry",
+      templateLang: "ar",
+      payloadJson: { bodyParams: ["RES-1", "عميل", "صنف", "15:00"] },
+    });
+    await db()
+      .update(s.customers)
+      .set({ waConsent: "OPTED_OUT" })
+      .where(eq(s.customers.id, customerId));
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(successResponder("wamid.MUST_NOT_SEND"));
+    try {
+      await dispatchOutboxRow(id);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, id)))[0];
+    expect(row.status).toBe("CANCELLED");
+    expect(row.lastError).toContain("ألغى موافقة");
+  });
+
   it("نجاح (fetch مزيف يعيد wamid) ⇒ outbox SENT+wamid وصفّ conversationMessages OUT بexternalId=wamid وorigin=API", async () => {
     await seedActiveIntegration(1);
     const convId = await seedConversation({ branchId: 1, hoursAgo: 1 });
@@ -238,6 +403,148 @@ describe("dispatchOutboxRow — دورة الإرسال", () => {
 });
 
 describe("sweepWaOutboxOnce — التقاط الدفعة", () => {
+  it("يحترم throttlePerMinute في صفوف outbox العامة ولا يرسل الدفعة كلها دفعةً واحدة", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1 });
+    await db().insert(s.waHubSettings).values({ id: 1, throttlePerMinute: 2 });
+    for (let index = 0; index < 3; index++) {
+      await enqueueOutbox({
+        dedupeKey: `dedupe-throttle-${index}`,
+        branchId: 1,
+        kind: "SESSION_TEXT",
+        conversationId: convId,
+        toPhoneE164: "+9647701234567",
+        payloadJson: { text: `رسالة ${index}` },
+      });
+    }
+
+    let wamidSeq = 0;
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ messages: [{ id: `wamid.THROTTLED.${++wamidSeq}` }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    try {
+      expect(await sweepWaOutboxOnce()).toEqual({ claimed: 2 });
+    } finally {
+      spy.mockRestore();
+    }
+    const rows = await db().select().from(s.waOutbox);
+    expect(rows.filter((row) => row.status === "SENT")).toHaveLength(2);
+    expect(rows.filter((row) => row.status === "QUEUED")).toHaveLength(1);
+  });
+
+  it("يعالج MEDIA_FETCH الوارد قبل تراكم الصادر وخارج throttle مع بقاء سقف الدورة الكلي", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1 });
+    await db().insert(s.waHubSettings).values({ id: 1, throttlePerMinute: 1 });
+    for (let index = 0; index < 3; index++) {
+      await enqueueOutbox({
+        dedupeKey: `dedupe-media-lane-outbound-${index}`,
+        branchId: 1,
+        kind: "SESSION_TEXT",
+        conversationId: convId,
+        toPhoneE164: "+9647701234567",
+        payloadJson: { text: `رسالة ${index}` },
+      });
+    }
+    const { id: mediaId } = await enqueueOutbox({
+      dedupeKey: "dedupe-media-lane-inbound",
+      branchId: 1,
+      kind: "MEDIA_FETCH",
+      payloadJson: {},
+    });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(successResponder("wamid.MEDIA.LANE"));
+    try {
+      expect(await sweepWaOutboxOnce()).toEqual({ claimed: 2 });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const rows = await db().select().from(s.waOutbox);
+    expect(rows.find((row) => row.id === mediaId)?.status).toBe("FAILED");
+    expect(rows.filter((row) => row.kind !== "MEDIA_FETCH" && row.status === "SENT")).toHaveLength(1);
+    expect(rows.filter((row) => row.kind !== "MEDIA_FETCH" && row.status === "QUEUED")).toHaveLength(2);
+  });
+
+  it("يحجز خمس خانات للصادر فلا يحتكره سيل MEDIA_FETCH مستمر", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1 });
+    await db().insert(s.waHubSettings).values({ id: 1, throttlePerMinute: 5 });
+    for (let index = 0; index < 25; index++) {
+      await enqueueOutbox({
+        dedupeKey: `dedupe-media-flood-${index}`,
+        branchId: 1,
+        kind: "MEDIA_FETCH",
+        payloadJson: {},
+      });
+    }
+    const { id: outboundId } = await enqueueOutbox({
+      dedupeKey: "dedupe-media-flood-outbound",
+      branchId: 1,
+      kind: "SESSION_TEXT",
+      conversationId: convId,
+      toPhoneE164: "+9647701234567",
+      payloadJson: { text: "رسالة لا تجوع" },
+    });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(successResponder("wamid.MEDIA.FLOOD"));
+    try {
+      expect(await sweepWaOutboxOnce()).toEqual({ claimed: 21 });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const rows = await db().select().from(s.waOutbox);
+    expect(rows.find((row) => row.id === outboundId)?.status).toBe("SENT");
+    expect(rows.filter((row) => row.kind === "MEDIA_FETCH" && row.status === "QUEUED")).toHaveLength(5);
+  });
+
+  it("ينظف الصفوف الملغاة بلا احتسابها من throttle حتى يصل إلى إرسال صالح", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1 });
+    await db().insert(s.waHubSettings).values({ id: 1, throttlePerMinute: 1, flowReservationNearExpiry: true });
+    for (let index = 0; index < 3; index++) {
+      await enqueueOutbox({
+        dedupeKey: `dedupe-stale-before-valid-${index}`,
+        branchId: 1,
+        kind: "TEMPLATE",
+        toPhoneE164: "+9647701234567",
+        templateName: "reservation_near_expiry",
+        templateLang: "ar",
+        payloadJson: {
+          bodyParams: ["RES-STALE", "عميل", "صنف", "15:00"],
+          deliveryGuard: {
+            type: "RESERVATION_NEAR_EXPIRY",
+            reservationId: 900000 + index,
+            expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          },
+        },
+      });
+    }
+    const { id: validId } = await enqueueOutbox({
+      dedupeKey: "dedupe-valid-after-stale",
+      branchId: 1,
+      kind: "SESSION_TEXT",
+      conversationId: convId,
+      toPhoneE164: "+9647701234567",
+      payloadJson: { text: "يجب أن تصل في الدورة نفسها" },
+    });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(successResponder("wamid.AFTER.STALE"));
+    try {
+      expect(await sweepWaOutboxOnce()).toEqual({ claimed: 4 });
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const rows = await db().select().from(s.waOutbox);
+    expect(rows.filter((row) => row.status === "CANCELLED")).toHaveLength(3);
+    expect(rows.find((row) => row.id === validId)?.status).toBe("SENT");
+  });
+
   it("صفّ scheduledAt مستقبلي لا يلتقطه استعلام الدفعة؛ والمستحقّ يُلتقط ويُرسَل", async () => {
     await seedActiveIntegration(1);
     const convId = await seedConversation({ branchId: 1, hoursAgo: 1 });

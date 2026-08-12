@@ -14,14 +14,23 @@
  *   4. لا تكامل واتساب ACTIVE لهذا الفرع ⇒ توقّف (المستدعي يبقى على مساره الحالي دون تغيير).
  *   5. customerId مُمرَّر وwaConsent='OPTED_OUT' ⇒ توقّف دائماً — لا استثناء لهذه القاعدة.
  *   6. القالب غير APPROVED عند Meta بعد (لم يُعتمَد/لم يُزامَن) ⇒ توقّف بأمان (لا رمي — يُعتمَد لاحقاً).
- *   7. `enqueueAndDispatch` بـkind=TEMPLATE + dedupeKey ⇒ idempotent (استدعاء مكرَّر بنفس dedupeKey
- *      يعيد نفس الصفّ بلا ازدواج).
+ *   7. outbox بـkind=TEMPLATE + dedupeKey ⇒ idempotent (استدعاء مكرَّر بنفس dedupeKey يعيد نفس
+ *      الصفّ بلا ازدواج). الحدث المفرد dispatch فوري؛ الدفعة يمكن أن تؤجله للكنّاس المقنّن.
  */
 import { eq } from "drizzle-orm";
 import { customers, waHubSettings, type WaHubSettings } from "../../../drizzle/schema";
+import type { Tx } from "../../db";
 import { logger } from "../../logger";
-import { requireDb } from "../tx";
-import { enqueueAndDispatch, getActiveWaIntegration, type ActiveWaIntegration } from "./outboxService";
+import { requireDb, withTx } from "../tx";
+import {
+  dispatchOutboxRow,
+  enqueueAndDispatch,
+  enqueueOutbox,
+  getActiveWaIntegration,
+  isActiveWaIntegrationId,
+  type ActiveWaIntegration,
+  type EnqueueOutboxInput,
+} from "./outboxService";
 import { getUsableTemplate } from "./templateService";
 
 /** مفاتيح تدفّقات الإشعار بقالب (§ب في المواصفة) — كلٌّ عمود Boolean مستقلّ في waHubSettings. */
@@ -29,10 +38,28 @@ export type AutomationFlowKey =
   | "flowArReminder"
   | "flowOrderReady"
   | "flowPurchaseThanks"
-  | "flowConsignmentWithdraw";
+  | "flowConsignmentWithdraw"
+  | "RESERVATION_NEAR_EXPIRY";
 
 /** كل مفاتيح الأتمتة القابلة للبوّابة المشتركة (تدفّقات القوالب + الردّ الآلي + CSAT). */
-export type AutomationFlagKey = AutomationFlowKey | "csatOnResolve" | "autoReplyAfterHours" | "autoReplyWelcome";
+export type AutomationFlagKey =
+  | "flowArReminder"
+  | "flowOrderReady"
+  | "flowPurchaseThanks"
+  | "flowConsignmentWithdraw"
+  | "flowReservationNearExpiry"
+  | "csatOnResolve"
+  | "autoReplyAfterHours"
+  | "autoReplyWelcome";
+
+/** المفتاح العام المطلوب للتدفّق قد يختلف عن اسم عمود الإعدادات؛ الحارس يقرأ العمود من هذا الربط فقط. */
+const FLOW_FLAG_BY_KEY: Record<AutomationFlowKey, AutomationFlagKey> = {
+  flowArReminder: "flowArReminder",
+  flowOrderReady: "flowOrderReady",
+  flowPurchaseThanks: "flowPurchaseThanks",
+  flowConsignmentWithdraw: "flowConsignmentWithdraw",
+  RESERVATION_NEAR_EXPIRY: "flowReservationNearExpiry",
+};
 
 export interface FlowNotifyInput {
   flowKey: AutomationFlowKey;
@@ -45,6 +72,21 @@ export interface FlowNotifyInput {
   templateLang?: string;
   bodyParams: string[];
   dedupeKey: string;
+  /** ذاكرة دورة اختيارية تحفظ بيانات التكامل المفكوكة والقالب؛ حالة التكامل تُعاد قراءتها بخفة لكل صف. */
+  cycleCache?: FlowNotifyCycleCache;
+  /** الدفعات الكبيرة تبقى QUEUED ليلتقطها الكنّاس المقنّن؛ الأحداث المفردة ترسل فورياً افتراضياً. */
+  dispatchMode?: "IMMEDIATE" | "DEFERRED";
+  /** حارس يُحفَظ مع الصف ويُعاد فحصه لحظة التسليم بعد أي انتظار في outbox. */
+  deliveryGuard?: {
+    type: "RESERVATION_NEAR_EXPIRY";
+    reservationId: number;
+    expiresAt: string;
+  };
+  /**
+   * حارس نهائي اختياري يُنفَّذ داخل نفس المعاملة التي تدرج outbox. يستعمله مصدر أعمال متغيّر
+   * (الحجز) لقفل صفه وإثبات بقاء الحدث صالحاً لحظة الجدولة، لا عند بداية فحوص الأتمتة فقط.
+   */
+  finalEligibilityCheck?: (tx: Tx) => Promise<boolean>;
 }
 
 export type FlowNotifySkipReason =
@@ -54,9 +96,22 @@ export type FlowNotifySkipReason =
   | "no_phone"
   | "opted_out"
   | "template_unavailable"
+  | "template_contract_mismatch"
+  | "stale"
+  | "terminal_duplicate"
   | "error";
 
 export type FlowNotifyResult = { queued: true; outboxId: number; isNew: boolean } | { skipped: FlowNotifySkipReason };
+
+export interface FlowNotifyCycleCache {
+  integrations: Map<number, ActiveWaIntegration | null>;
+  /** عدد متغيرات BODY للقالب المعتمد، أو null إن لم يكن قابلاً للاستعمال في هذه الدورة. */
+  usableTemplates: Map<string, number | null>;
+}
+
+export function createFlowNotifyCycleCache(): FlowNotifyCycleCache {
+  return { integrations: new Map(), usableTemplates: new Map() };
+}
 
 // ── إعدادات مركز واتساب الأعمال (get-or-default) ──────────────────────────────────────────────
 
@@ -68,6 +123,7 @@ const FLAG_DEFAULTS: Record<AutomationFlagKey, false> = {
   flowOrderReady: false,
   flowPurchaseThanks: false,
   flowConsignmentWithdraw: false,
+  flowReservationNearExpiry: false,
   csatOnResolve: false,
   autoReplyAfterHours: false,
   autoReplyWelcome: false,
@@ -108,11 +164,24 @@ export type AutomationGateResult =
 /** بوّابة الأتمتة المشتركة: killSwitch + مفتاح التدفّق + تكامل واتساب ACTIVE على الفرع. مُعاد
  *  استعمالها من `flowNotify` (تدفّقات القوالب) والردّ الآلي (بعد الدوام/الترحيب) وCSAT — نفس معايير
  *  الإيقاف للجميع، بوّابة واحدة لا نسخ متكرّرة تنجرف مع الوقت. */
-export async function checkAutomationGate(flagKey: AutomationFlagKey, branchId: number): Promise<AutomationGateResult> {
+export async function checkAutomationGate(
+  flagKey: AutomationFlagKey,
+  branchId: number,
+  cache?: FlowNotifyCycleCache,
+): Promise<AutomationGateResult> {
+  // لا تُخبَّأ إعدادات killSwitch: حارس الطوارئ يجب أن يُعاد لكل صف حتى يوقف دورة طويلة فوراً.
   const settings = await getWaHubSettings();
   if (settings.killSwitch) return { ok: false, skipped: "kill_switch" };
   if (!settings[flagKey]) return { ok: false, skipped: "disabled" };
-  const integration = await getActiveWaIntegration(branchId);
+  let integration = cache?.integrations.get(branchId);
+  if (integration && !(await isActiveWaIntegrationId(branchId, integration.integrationId))) {
+    integration = undefined;
+    cache?.integrations.delete(branchId);
+  }
+  if (!cache?.integrations.has(branchId)) {
+    integration = await getActiveWaIntegration(branchId);
+    cache?.integrations.set(branchId, integration);
+  }
   if (!integration) return { ok: false, skipped: "no_integration" };
   return { ok: true, integration, settings };
 }
@@ -130,13 +199,14 @@ async function isCustomerOptedOut(customerId: number): Promise<boolean> {
 /**
  * يحاول جدولة إشعار آلي بقالب Meta معتمَد — **لا يرمي أبداً**. كل رفض يُعاد كسبب `skipped` واضح
  * (المستدعي لا يحتاج التمييز عادةً؛ الاسترجاع للتشخيص/الاختبار فقط). نجاح ⇒ صفّ TEMPLATE في
- * `waOutbox` (idempotent بـdedupeKey) + محاولة إرسال فورية غير متزامنة (نمط enqueueAndDispatch).
+ * `waOutbox` (idempotent بـdedupeKey) + محاولة إرسال فورية غير متزامنة افتراضياً؛ مصادر الدفعات
+ * تستعمل `dispatchMode=DEFERRED` فيبقى الصف QUEUED للكنّاس المقنّن.
  */
 export async function flowNotify(input: FlowNotifyInput): Promise<FlowNotifyResult> {
   try {
     if (!input.toPhoneE164?.trim()) return { skipped: "no_phone" };
 
-    const gate = await checkAutomationGate(input.flowKey, input.branchId);
+    const gate = await checkAutomationGate(FLOW_FLAG_BY_KEY[input.flowKey], input.branchId, input.cycleCache);
     if (!gate.ok) return { skipped: gate.skipped };
 
     if (input.customerId != null && (await isCustomerOptedOut(input.customerId))) {
@@ -144,18 +214,59 @@ export async function flowNotify(input: FlowNotifyInput): Promise<FlowNotifyResu
     }
 
     const lang = input.templateLang ?? "ar";
-    const template = await getUsableTemplate(input.templateName, lang);
-    if (!template) return { skipped: "template_unavailable" };
+    const templateKey = `${input.templateName}:${lang}`;
+    let templateVariableCount = input.cycleCache?.usableTemplates.get(templateKey);
+    if (templateVariableCount != null) {
+      const template = await getUsableTemplate(input.templateName, lang);
+      templateVariableCount = template?.variableCount ?? null;
+      input.cycleCache?.usableTemplates.set(templateKey, templateVariableCount);
+    }
+    if (!input.cycleCache?.usableTemplates.has(templateKey)) {
+      const template = await getUsableTemplate(input.templateName, lang);
+      templateVariableCount = template?.variableCount ?? null;
+      input.cycleCache?.usableTemplates.set(templateKey, templateVariableCount);
+    }
+    if (templateVariableCount == null) return { skipped: "template_unavailable" };
+    if (templateVariableCount !== input.bodyParams.length) {
+      return { skipped: "template_contract_mismatch" };
+    }
 
-    const res = await enqueueAndDispatch({
+    const outboxInput: EnqueueOutboxInput = {
       dedupeKey: input.dedupeKey,
       branchId: input.branchId,
       toPhoneE164: input.toPhoneE164,
+      customerId: input.customerId ?? null,
       kind: "TEMPLATE",
-      payloadJson: { bodyParams: input.bodyParams },
+      payloadJson: {
+        bodyParams: input.bodyParams,
+        ...(input.deliveryGuard ? { deliveryGuard: input.deliveryGuard } : {}),
+      },
       templateName: input.templateName,
       templateLang: lang,
-    });
+      reviveTerminalDuplicate: input.deliveryGuard?.type === "RESERVATION_NEAR_EXPIRY",
+    };
+    const dispatchImmediately = input.dispatchMode !== "DEFERRED";
+    const res = input.finalEligibilityCheck
+      ? await withTx(async (tx) => {
+        if (!(await input.finalEligibilityCheck!(tx))) return null;
+        return enqueueOutbox(outboxInput, tx);
+      })
+      : dispatchImmediately
+        ? await enqueueAndDispatch(outboxInput)
+        : await enqueueOutbox(outboxInput);
+    if (!res) return { skipped: "stale" };
+    if (res.status === "FAILED" || res.status === "CANCELLED") {
+      return { skipped: "terminal_duplicate" };
+    }
+
+    // المسار العادي يطلق الإرسال داخل enqueueAndDispatch. المسار الذرّي الفوري ينتظر commit أولاً.
+    if (input.finalEligibilityCheck && dispatchImmediately) {
+      setImmediate(() => {
+        void dispatchOutboxRow(res.id).catch((e) => {
+          logger.error({ err: e, outboxId: res.id }, "flowNotify: immediate dispatch attempt failed");
+        });
+      });
+    }
     return { queued: true, outboxId: res.id, isNew: res.isNew };
   } catch (e) {
     logger.warn(

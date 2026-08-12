@@ -24,7 +24,11 @@ import { createConsignmentNote } from "../consignment/noteService";
 import { markWorkOrderReady } from "../workOrder/lifecycle";
 import { sendViaApi as sendArViaApi } from "../arRemindersService";
 import { sendViaApi as sendApViaApi } from "../apRemindersService";
-import { flowNotify as flowNotifyReal, isOutsideBusinessHours } from "../whatsapp/flowNotify";
+import {
+  createFlowNotifyCycleCache,
+  flowNotify as flowNotifyReal,
+  isOutsideBusinessHours,
+} from "../whatsapp/flowNotify";
 import { persistWaEvent, processWaEvent } from "../whatsapp/webhookProcessor";
 
 vi.mock("../whatsapp", async (importOriginal) => {
@@ -66,8 +70,19 @@ async function setWaHubSettings(partial: Partial<typeof s.waHubSettings.$inferIn
   await db().insert(s.waHubSettings).values({ id: 1, ...partial });
 }
 
-async function seedTemplate(name: string, status: "APPROVED" | "PENDING" = "APPROVED") {
-  await db().insert(s.waTemplates).values({ name, language: "ar", category: "UTILITY", templateStatus: status, bodyText: "نص تجريبي {{1}} {{2}}" });
+async function seedTemplate(
+  name: string,
+  status: "APPROVED" | "PENDING" = "APPROVED",
+  variableCount = name === "reservation_near_expiry" ? 4 : name === "payment_reminder" ? 3 : 2,
+) {
+  await db().insert(s.waTemplates).values({
+    name,
+    language: "ar",
+    category: "UTILITY",
+    templateStatus: status,
+    bodyText: "نص تجريبي",
+    variableCount,
+  });
 }
 
 async function seedCustomer(overrides: Partial<typeof s.customers.$inferInsert> = {}): Promise<number> {
@@ -203,6 +218,158 @@ describe("flowNotify — الحارس المشترك", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].kind).toBe("TEMPLATE");
     expect(rows[0].templateName).toBe("order_ready");
+  });
+
+  it("dispatchMode=DEFERRED يدرج الصف QUEUED بلا دفعة Graph فورية ليطبّق الكنّاس حد المعدل", async () => {
+    await setWaHubSettings({ flowReservationNearExpiry: true });
+    await seedActiveIntegration();
+    await seedTemplate("reservation_near_expiry");
+    const customerId = await seedCustomer();
+
+    const result = await flowNotifyReal({
+      flowKey: "RESERVATION_NEAR_EXPIRY",
+      branchId: 1,
+      toPhoneE164: "+9647701234567",
+      customerId,
+      templateName: "reservation_near_expiry",
+      bodyParams: ["RES-1", "أحمد", "صنف", "15:00"],
+      dedupeKey: "T42-DEFERRED",
+      dispatchMode: "DEFERRED",
+      deliveryGuard: {
+        type: "RESERVATION_NEAR_EXPIRY",
+        reservationId: 42,
+        expiresAt: "2026-08-12T12:00:00.000Z",
+      },
+    });
+
+    expect(result).toMatchObject({ queued: true, isNew: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.dedupeKey, "T42-DEFERRED")))[0];
+    expect(row.status).toBe("QUEUED");
+    expect(Number(row.customerId)).toBe(customerId);
+    expect((row.payloadJson as any).deliveryGuard).toEqual({
+      type: "RESERVATION_NEAR_EXPIRY",
+      reservationId: 42,
+      expiresAt: "2026-08-12T12:00:00.000Z",
+    });
+  });
+
+  it("يعيد التحقق من التكامل المخبّأ بين صفوف الدفعة ويتوقف إذا عُطّل أثناءها", async () => {
+    await setWaHubSettings({ flowReservationNearExpiry: true });
+    await seedActiveIntegration();
+    await seedTemplate("reservation_near_expiry");
+    const cycleCache = createFlowNotifyCycleCache();
+
+    const first = await flowNotifyReal({
+      flowKey: "RESERVATION_NEAR_EXPIRY",
+      branchId: 1,
+      toPhoneE164: "+9647701234567",
+      templateName: "reservation_near_expiry",
+      bodyParams: ["RES-1", "أحمد", "صنف", "15:00"],
+      dedupeKey: "T42-CACHE-ACTIVE",
+      dispatchMode: "DEFERRED",
+      cycleCache,
+    });
+    expect(first).toMatchObject({ queued: true, isNew: true });
+
+    await db()
+      .update(s.channelIntegrations)
+      .set({ status: "DISABLED" })
+      .where(and(eq(s.channelIntegrations.branchId, 1), eq(s.channelIntegrations.channel, "WHATSAPP")));
+
+    const second = await flowNotifyReal({
+      flowKey: "RESERVATION_NEAR_EXPIRY",
+      branchId: 1,
+      toPhoneE164: "+9647701234567",
+      templateName: "reservation_near_expiry",
+      bodyParams: ["RES-2", "علي", "صنف", "16:00"],
+      dedupeKey: "T42-CACHE-DISABLED",
+      dispatchMode: "DEFERRED",
+      cycleCache,
+    });
+
+    expect(second).toEqual({ skipped: "no_integration" });
+    expect(await db().select().from(s.waOutbox)).toHaveLength(1);
+  });
+
+  it("يعيد التحقق من اعتماد القالب الإيجابي المخبّأ ويتوقف إذا أصبح PAUSED أثناء الدفعة", async () => {
+    await setWaHubSettings({ flowReservationNearExpiry: true });
+    await seedActiveIntegration();
+    await seedTemplate("reservation_near_expiry");
+    const cycleCache = createFlowNotifyCycleCache();
+    const base = {
+      flowKey: "RESERVATION_NEAR_EXPIRY" as const,
+      branchId: 1,
+      toPhoneE164: "+9647701234567",
+      templateName: "reservation_near_expiry",
+      bodyParams: ["RES-TPL", "أحمد", "صنف", "15:00"],
+      dispatchMode: "DEFERRED" as const,
+      cycleCache,
+    };
+
+    expect(await flowNotifyReal({ ...base, dedupeKey: "T42-TEMPLATE-ACTIVE" }))
+      .toMatchObject({ queued: true, isNew: true });
+    await db()
+      .update(s.waTemplates)
+      .set({ templateStatus: "PAUSED" })
+      .where(and(eq(s.waTemplates.name, "reservation_near_expiry"), eq(s.waTemplates.language, "ar")));
+
+    expect(await flowNotifyReal({ ...base, dedupeKey: "T42-TEMPLATE-PAUSED" }))
+      .toEqual({ skipped: "template_unavailable" });
+    expect(await db().select().from(s.waOutbox)).toHaveLength(1);
+  });
+
+  it("يرفض القالب المعتمد إذا خالف عقد متغيرات BODY ولا يضع صف outbox", async () => {
+    await setWaHubSettings({ flowReservationNearExpiry: true });
+    await seedActiveIntegration();
+    await seedTemplate("reservation_near_expiry", "APPROVED", 3);
+
+    expect(await flowNotifyReal({
+      flowKey: "RESERVATION_NEAR_EXPIRY",
+      branchId: 1,
+      toPhoneE164: "+9647701234567",
+      templateName: "reservation_near_expiry",
+      bodyParams: ["RES-CONTRACT", "أحمد", "صنف", "15:00"],
+      dedupeKey: "T42-TEMPLATE-CONTRACT",
+      dispatchMode: "DEFERRED",
+    })).toEqual({ skipped: "template_contract_mismatch" });
+    expect(await db().select().from(s.waOutbox)).toHaveLength(0);
+  });
+
+  it("يحيي duplicate نهائياً لتنبيه حجز بعد عودة الأهلية بدلاً من وضع أثر كاذب", async () => {
+    await setWaHubSettings({ flowReservationNearExpiry: true });
+    await seedActiveIntegration();
+    await seedTemplate("reservation_near_expiry");
+    const input = {
+      flowKey: "RESERVATION_NEAR_EXPIRY" as const,
+      branchId: 1,
+      toPhoneE164: "+9647701234567",
+      templateName: "reservation_near_expiry",
+      bodyParams: ["RES-REVIVE", "أحمد", "صنف", "15:00"],
+      dedupeKey: "T42-TERMINAL-REVIVE",
+      dispatchMode: "DEFERRED" as const,
+      deliveryGuard: {
+        type: "RESERVATION_NEAR_EXPIRY" as const,
+        reservationId: 42,
+        expiresAt: "2026-08-12T12:00:00.000Z",
+      },
+    };
+
+    const first = await flowNotifyReal(input);
+    expect(first).toMatchObject({ queued: true, isNew: true });
+    const outboxId = "outboxId" in first ? first.outboxId : 0;
+    await db()
+      .update(s.waOutbox)
+      .set({ status: "CANCELLED", attempts: 3, wamid: "wamid.OLD", lastError: "قديم" })
+      .where(eq(s.waOutbox.id, outboxId));
+
+    const second = await flowNotifyReal(input);
+    expect(second).toMatchObject({ queued: true, outboxId, isNew: false });
+    const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, outboxId)))[0];
+    expect(row.status).toBe("QUEUED");
+    expect(row.attempts).toBe(0);
+    expect(row.wamid).toBeNull();
+    expect(row.lastError).toBeNull();
   });
 });
 

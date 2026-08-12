@@ -13,14 +13,24 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { logger } from "../../logger";
 import { expireDueReservations } from "./lifecycle";
+import { notifyNearExpiryReservations } from "./nearExpiry";
 
-let cronTask: ScheduledTask | null = null;
-let isRunning = false;
+let expiryCronTask: ScheduledTask | null = null;
+let nearExpiryCronTask: ScheduledTask | null = null;
+let expiryIsRunning = false;
+let nearExpiryIsRunning = false;
 
 /** دورة كنسٍ واحدة — تُستعمل من الكرون ومن الاختبار مباشرةً (بلا انتظار دقيقة). */
 export async function sweepExpiredReservationsOnce(): Promise<{ expired: number }> {
   return expireDueReservations(200);
 }
+
+/** دورة تنبيه واحدة — تُستعمل من كرون الدقيقة ومن الاختبار مباشرةً. */
+export async function notifyNearExpiryReservationsOnce(): Promise<NotifyNearExpiryResult> {
+  return notifyNearExpiryReservations();
+}
+
+type NotifyNearExpiryResult = Awaited<ReturnType<typeof notifyNearExpiryReservations>>;
 
 /**
  * تشغيل الكنّاس عند إقلاع الخادم. آمنة الاستدعاء مرّتين (تُوقف السابقة أولاً).
@@ -30,31 +40,53 @@ export async function sweepExpiredReservationsOnce(): Promise<{ expired: number 
 export function startReservationsSweeper(): void {
   // لا cron في بيئة الاختبار (يُسبّب تسريب مؤقّتات ⇒ vitest يعلّق) — نمط outboxSweeper/morningPushScheduler.
   if (process.env.NODE_ENV === "test") return;
-  const cronExpr = "*/5 * * * *"; // كل ٥ دقائق UTC
-  if (cronTask) cronTask.stop();
-  cronTask = cron.schedule(
-    cronExpr,
+  stopReservationsSweeper();
+  const expiryCronExpr = "*/5 * * * *"; // كل ٥ دقائق UTC
+  const nearExpiryCronExpr = "* * * * *"; // كل ٦٠ ثانية على العامل ٠
+  expiryCronTask = cron.schedule(
+    expiryCronExpr,
     async () => {
-      if (isRunning) return; // قفل تنفيذ متداخل — يمنع تراكب دورةٍ ثقيلة مع التالية.
-      isRunning = true;
+      if (expiryIsRunning) return; // قفل تنفيذ متداخل — يمنع تراكب دورةٍ ثقيلة مع التالية.
+      expiryIsRunning = true;
       try {
         const r = await sweepExpiredReservationsOnce();
         if (r.expired > 0) logger.info({ expired: r.expired }, "[reservations] expiry sweep cycle");
       } catch (e) {
         logger.error({ err: e }, "[reservations] expiry sweep cron threw");
       } finally {
-        isRunning = false;
+        expiryIsRunning = false;
       }
     },
     { timezone: "UTC" },
   );
-  logger.info(`[reservations] expiry sweeper started (cron: ${cronExpr} UTC)`);
+  nearExpiryCronTask = cron.schedule(
+    nearExpiryCronExpr,
+    async () => {
+      if (nearExpiryIsRunning) return;
+      nearExpiryIsRunning = true;
+      try {
+        const r = await notifyNearExpiryReservationsOnce();
+        if (r.notified > 0) logger.info(r, "[reservations] near-expiry notification cycle");
+      } catch (e) {
+        logger.error({ err: e }, "[reservations] near-expiry notification cron threw");
+      } finally {
+        nearExpiryIsRunning = false;
+      }
+    },
+    { timezone: "UTC" },
+  );
+  logger.info(`[reservations] expiry sweeper started (cron: ${expiryCronExpr} UTC)`);
+  logger.info(`[reservations] near-expiry notifier started (cron: ${nearExpiryCronExpr} UTC)`);
 }
 
 /** للاختبار فقط — يوقف الجدولة النشطة (نظافة). */
 export function stopReservationsSweeper(): void {
-  if (cronTask) {
-    cronTask.stop();
-    cronTask = null;
+  if (expiryCronTask) {
+    expiryCronTask.stop();
+    expiryCronTask = null;
+  }
+  if (nearExpiryCronTask) {
+    nearExpiryCronTask.stop();
+    nearExpiryCronTask = null;
   }
 }

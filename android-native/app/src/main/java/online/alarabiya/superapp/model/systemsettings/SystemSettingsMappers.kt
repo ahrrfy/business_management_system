@@ -50,6 +50,7 @@ object SystemSettingsMappers {
         flowOrderReady = root.bool("flowOrderReady"),
         flowPurchaseThanks = root.bool("flowPurchaseThanks"),
         flowConsignmentWithdraw = root.bool("flowConsignmentWithdraw"),
+        flowReservationNearExpiry = root.bool("flowReservationNearExpiry"),
         csatOnResolve = root.bool("csatOnResolve"),
         killSwitch = root.bool("killSwitch"),
     )
