@@ -2,6 +2,8 @@ import type Decimal from "decimal.js";
 import { eq, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryParties, exchangeHouses, suppliers } from "../../drizzle/schema";
 import type { Tx } from "../db";
+import { extractInsertId } from "../lib/insertId";
+import { shadowPost } from "./accounting/shadowHook";
 import { money, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
 
@@ -76,6 +78,13 @@ export interface EntryInput {
   dedupeKey?: string | null;
   createdBy?: number | null;
   createdByNameSnapshot?: string | null;
+  /**
+   * طريقة الدفع الخام (قيمة `receipts.paymentMethod`) — **لا تُخزَّن** (لا عمود لها في
+   * `accountingEntries`). يستهلكها خطّاف الدفتر المزدوج وحده ليحدّد دلو النقد المحاسبيّ
+   * (نقد ⇔ بنك)، فتبقى الترجمة في مكانٍ واحد بدل منطقٍ محاسبيٍّ مكرَّرٍ في مواضع القبض التسعة.
+   * غيابها على PAYMENT_IN/PAYMENT_OUT ⇒ **فجوة موسومة** لا افتراضَ نقد (لا تخمين على النواة المالية).
+   */
+  paymentMethod?: string | null;
 }
 
 /** Insert one ledger entry. RETURN entries carry negative values by convention.
@@ -83,7 +92,7 @@ export interface EntryInput {
 export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
   const entryDate = e.entryDate ?? new Date();
   await assertPeriodOpen(tx, entryDate);
-  await tx.insert(accountingEntries).values({
+  const res = await tx.insert(accountingEntries).values({
     entryType: e.entryType,
     dedupeKey: e.dedupeKey ?? null,
     branchId: e.branchId ?? null,
@@ -105,6 +114,9 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     createdBy: e.createdBy ?? null,
     createdByNameSnapshot: e.createdByNameSnapshot ?? null,
   });
+  // نقطة الحقن الوحيدة للدفتر المزدوج (P2). داخل **نفس المعاملة** ⇒ تراجعُ العملية يتراجع معه
+  // القيد. و`shadowPost` **لا يرمي أبداً**: أيّ خللٍ فيه يُسجَّل فجوةً ولا يُفشِل عملية أعمال.
+  await shadowPost(tx, extractInsertId(res), e);
 }
 
 /** AR: positive = customer owes us. Applied atomically via SQL increment. */

@@ -15,6 +15,9 @@ import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { postEntry } from "./ledgerService";
 import { getTreasuryBalance } from "./cashTransferService";
+import { utcTodayStart } from "./businessDay";
+import { assertPeriodOpen } from "./periodLockService";
+import { lockBranchMonthCloseGate } from "./reports/monthCloseGate";
 import {
   IQD_DENOMINATIONS,
   MATERIAL_SHIFT_VARIANCE_IQD,
@@ -77,6 +80,11 @@ export async function openShift(
 ) {
   const shiftType: ShiftType = input.shiftType ?? "RETAIL";
   return withTx(async (tx) => {
+    // يتسلسل مع اعتماد الإقفال العام. بعد نيل القفل نعيد فحص اليوم مقابل أحدث period lock؛
+    // الصفر في الرصيد الافتتاحي لا يجوز أن يصنع مساراً يتجاوز الحارس لغياب postEntry.
+    await lockBranchMonthCloseGate(tx, input.branchId);
+    await assertPeriodOpen(tx, utcTodayStart());
+
     const existing = await tx
       .select({ id: shifts.id })
       .from(shifts)

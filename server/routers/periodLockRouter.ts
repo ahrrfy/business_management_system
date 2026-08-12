@@ -8,8 +8,14 @@ import { auditLogs, users } from "../../drizzle/schema";
 import { verifyPassword } from "../auth/password";
 import { logAuditTx } from "../services/auditService";
 import { getActiveLock, lockPeriod, unlockLatestPeriod } from "../services/periodLockService";
+import {
+  approveMonthClose,
+  listMonthCloseRequests,
+  rejectMonthClose,
+  requestMonthClose,
+} from "../services/reports/monthCloseRequest";
 import { withTx } from "../services/tx";
-import { adminProcedure, router } from "../trpc";
+import { adminProcedure, managerProcedure, router } from "../trpc";
 
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
@@ -115,4 +121,65 @@ export const periodLockRouter = router({
         return result;
       });
     }),
+
+  // ── ش٥ب: طلب إقفال الشهر واعتماده (Maker-Checker) ────────────────────────────────────────
+  // قرار المالك (١١/٨): المدير يطلُب، والأدمن/المالك يُقفل، ولا تجاوز للحاجز إطلاقاً.
+  // لماذا هنا لا في reportsRouter: هذا الملف يملك قفل الفترة أصلاً (lock/unlock) — تماسكٌ لا تشتّت.
+
+  /** طابور الطلبات. مديرٌ فأعلى (الطالب يتابع طلبه، والأدمن يعتمد). */
+  closeRequests: managerProcedure
+    .input(z.object({ pendingOnly: z.boolean().optional() }).optional())
+    .query(async ({ input }) => withTx(async (tx) => listMonthCloseRequests(tx, { pendingOnly: input?.pendingOnly }))),
+
+  /** المدير يطلُب إقفال شهر. الجاهزية تُفحَص **خادمياً لكل الفروع** — لا يُصدَّق ادّعاء الواجهة. */
+  requestClose: managerProcedure
+    .input(z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "صيغة الشهر YYYY-MM") }))
+    .mutation(async ({ input, ctx }) =>
+      withTx(async (tx) => {
+        const result = await requestMonthClose(tx, { month: input.month, requestedBy: ctx.user.id });
+        await logAuditTx(tx, ctx, {
+          action: "period.close_request",
+          entityType: "monthCloseRequest",
+          entityId: result.id,
+          newValue: { month: input.month },
+        });
+        return result;
+      }),
+    ),
+
+  /** الأدمن/المالك يعتمد فيُقفل الفترة. الفحص يُعاد **حيّاً**، والطالب ≠ المعتمِد (فصل مهام). */
+  approveClose: adminProcedure
+    .input(z.object({ requestId: z.number().int().positive(), notes: z.string().max(255).optional() }))
+    .mutation(async ({ input, ctx }) =>
+      withTx(async (tx) => {
+        const result = await approveMonthClose(tx, {
+          requestId: input.requestId,
+          decidedBy: ctx.user.id,
+          notes: input.notes ?? null,
+        });
+        await logAuditTx(tx, ctx, {
+          action: "period.close_approve",
+          entityType: "monthCloseRequest",
+          entityId: input.requestId,
+          newValue: { month: result.month, periodId: result.periodId },
+        });
+        return result;
+      }),
+    ),
+
+  /** رفض الطلب بسببٍ مكتوب — يحرّر الشهر لطلبٍ جديد. */
+  rejectClose: adminProcedure
+    .input(z.object({ requestId: z.number().int().positive(), reason: z.string().trim().min(5).max(500) }))
+    .mutation(async ({ input, ctx }) =>
+      withTx(async (tx) => {
+        await rejectMonthClose(tx, { requestId: input.requestId, decidedBy: ctx.user.id, reason: input.reason });
+        await logAuditTx(tx, ctx, {
+          action: "period.close_reject",
+          entityType: "monthCloseRequest",
+          entityId: input.requestId,
+          newValue: { reason: input.reason },
+        });
+        return { ok: true as const };
+      }),
+    ),
 });
