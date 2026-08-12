@@ -1505,4 +1505,29 @@ describe("انحدار: الجرد الدوري يحافظ على تصنيفه �
     expect((await stockRow(1))?.openedAt).not.toBeNull();
     expect((await stockRow(2))?.openedAt).not.toBeNull();
   });
+
+  it("جلسة NORMAL: صنفٌ عُدّ مطابقاً (KEEP بلا فرق) يُفتَح أيضاً — openedAt يُختَم", async () => {
+    await enableOpeningMode(); // الوضع فعّال — ومع ذلك العدّ الدوري يُغلق السالب
+    await db()
+      .insert(s.branchStock)
+      .values([{ variantId: 1, branchId: 1, quantity: 40 }]); // openedAt = null (غير مُفتتَح)
+    const res = await createStocktakeSession(
+      {
+        name: "دوري-KEEP",
+        branchId: 1,
+        scopeType: "MANUAL",
+        variantIds: [1],
+        assignments: [{ name: "عامل", method: "PIN" }],
+      },
+      MGR,
+    );
+    const aid = await firstAssignmentId(res.sessionId);
+    await insertCount(res.sessionId, 1, aid, 40); // مطابق ⇒ KEEP بلا setStock
+    await forceStocktakeReview(res.sessionId, MGR);
+    await approveAllReadyItems(res.sessionId, MGR);
+    const ok = await approveStocktake(res.sessionId, MGR2);
+    expect(ok.ok).toBe(true);
+    // لا فرق ⇒ لا حركة عجز/زيادة، لكنّ فِعل العدّ يفتتح الصنف (يوقف بيعه بالسالب رغم غياب التعديل).
+    expect((await stockRow(1))?.openedAt).not.toBeNull();
+  });
 });
