@@ -220,6 +220,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         receiptId,
         customerId: wo.customerId ?? null,
         amount: paidNow,
+        paymentMethod: input.payment!.method, // دلو النقد للدفتر المزدوج (لا يُخزَّن)
       });
     }
 

@@ -8257,3 +8257,113 @@ export type DigitalWalletReconciliation =
   typeof digitalWalletReconciliations.$inferSelect;
 export type InsertDigitalWalletReconciliation =
   typeof digitalWalletReconciliations.$inferInsert;
+
+// ============================================================
+// الدفتر المزدوج — P2 (هجرة 0172، خطة docs/double-entry-p2-plan-2026-08-11.md)
+// جداولٌ **إضافيّة بحتة**: لا عمودٌ قائم يُعدَّل ولا سلوكُ قيدٍ حاليٍّ يتغيّر. الكتابة فيها محكومةٌ
+// بعلَم `doubleEntrySettings.mode` وافتراضه `OFF` ⇒ النشر بصفر أثر (بوّابتا س١+س٢ في الخطة).
+// ============================================================
+
+/**
+ * رأس القيد المزدوج — صفٌّ واحد لكل حدثٍ ماليّ في `accountingEntries` (يفرضه `uq_journal_entry`).
+ *  - `status='POSTED'` ⇒ له أسطرٌ متوازنة في `journalLines`.
+ *  - `status='UNMAPPED'` ⇒ **بلا أسطر**: نوعُ قيدٍ لم تُكتَب خريطته بعد. الفجوة تُسجَّل ولا تُفشِل
+ *    عملية أعمال أبداً (س٣)، وعدّادها = بوّابة الانتقال إلى ACTIVE (س٧).
+ *  - `ON DELETE CASCADE` إلزاميّ: `upsertOpeningEntry` يحذف قيوداً فعلاً ⇒ RESTRICT كان سيُفشل
+ *    حذف رصيدٍ افتتاحيّ ويكسر عمليةً قائمة.
+ */
+export const journalEntries = mysqlTable(
+  "journalEntries",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    entryId: bigint("entryId", { mode: "number" })
+      .notNull()
+      .references(() => accountingEntries.id, { onDelete: "cascade" }),
+    entryDate: date("entryDate").notNull(),
+    branchId: bigint("branchId", { mode: "number" }),
+    status: mysqlEnum("status", ["POSTED", "UNMAPPED"]).default("POSTED").notNull(),
+    unmappedReason: varchar("unmappedReason", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    entryUq: unique("uq_journal_entry").on(t.entryId),
+    dateStatusIdx: index("idx_journal_date_status").on(t.entryDate, t.status),
+  }),
+);
+export type JournalEntry = typeof journalEntries.$inferSelect;
+export type InsertJournalEntry = typeof journalEntries.$inferInsert;
+
+/**
+ * سطر القيد المزدوج: مدينٌ أو دائن (أحدهما صفر دائماً، والقيم غير سالبة — العكوس تُمرَّر كقيودٍ
+ * عكسيّة صريحة، يفرضه `postingEngine.nonNeg`). `role` = `accounts.systemRole`؛ الوصل بشجرة
+ * الحسابات وقت التقرير بـJOIN لا وقت الكتابة (يُجنّب بحثَ حسابٍ في مسار البيع الساخن).
+ */
+export const journalLines = mysqlTable(
+  "journalLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    journalId: bigint("journalId", { mode: "number" })
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "cascade" }),
+    role: varchar("role", { length: 40 }).notNull(),
+    debit: decimal("debit", { precision: 15, scale: 2 }).default("0").notNull(),
+    credit: decimal("credit", { precision: 15, scale: 2 }).default("0").notNull(),
+  },
+  (t) => ({
+    roleIdx: index("idx_journal_line_role").on(t.role),
+  }),
+);
+export type JournalLineRow = typeof journalLines.$inferSelect;
+export type InsertJournalLineRow = typeof journalLines.$inferInsert;
+
+/**
+ * علَم أوضاع الدفتر المزدوج (صفٌّ مفرد، نمط `taxSettings`):
+ *  - `OFF` (الافتراض) — لا كتابة إطلاقاً. صفر أثرٍ على الإنتاج.
+ *  - `SHADOW` — كتابةٌ موازيةٌ للمطابقة فقط؛ الدفتر المُعتمَد يبقى المبسّط.
+ *  - `ACTIVE` — الدفتر المزدوج مصدرُ التقارير المحاسبية. **لا يُبلَغ إلّا ببوّابةٍ آليّة** (س٧):
+ *    ≥٣٠ يوماً SHADOW + صفر فجوات + انحراف مطابقةٍ = 0.00 + كل أنواع `EntryType` مُخطَّطة.
+ */
+export const doubleEntrySettings = mysqlTable("doubleEntrySettings", {
+  id: int("id").default(1).primaryKey(),
+  mode: mysqlEnum("mode", ["OFF", "SHADOW", "ACTIVE"]).default("OFF").notNull(),
+  shadowStartedAt: timestamp("shadowStartedAt"),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type DoubleEntrySettings = typeof doubleEntrySettings.$inferSelect;
+
+/**
+ * طلبات إقفال الشهر (ش٥ب، هجرة 0173) — قرار المالك (١١/٨): **المدير يطلُب، والأدمن/المالك يُقفل**،
+ * و**لا تجاوز للحاجز إطلاقاً**. السبب من الكود لا افتراضاً: `lockPeriod` عامٌّ على الشركة كلّها
+ * (`financialPeriods` بلا branchId) ومحصورٌ بـadminProcedure منذ بنائه ⇒ فتحُه للمدير إضعافُ ضابط.
+ *
+ * بلا `branchId` عمداً: القفل عامّ فالطلب عامّ، والجاهزية تُحسب لكل الفروع حتماً (جاهزيةٌ مُنطَّقةٌ
+ * بفرع الطالب كانت ستُجيز الإقفال وفرعٌ آخر فيه وردية مفتوحة).
+ */
+export const monthCloseRequests = mysqlTable(
+  "monthCloseRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    month: varchar("month", { length: 7 }).notNull(),
+    status: mysqlEnum("monthCloseStatus", ["PENDING_APPROVAL", "APPROVED", "REJECTED"])
+      .default("PENDING_APPROVAL")
+      .notNull(),
+    /** لقطة الجاهزية وقت الطلب (JSON) — **للتدقيق فقط**؛ الاعتماد يُعيد الفحص حيّاً. */
+    readinessSnapshot: text("readinessSnapshot").notNull(),
+    requestedBy: int("requestedBy")
+      .notNull()
+      .references(() => users.id),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    decidedBy: int("decidedBy").references(() => users.id),
+    decidedAt: timestamp("decidedAt"),
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
+    /** financialPeriods.id الناتج عن الاعتماد — أثرٌ مباشر من الطلب إلى القفل الذي أنتجه. */
+    lockedPeriodId: bigint("lockedPeriodId", { mode: "number" }),
+    /** حارس «طلبٌ معلَّقٌ واحدٌ لكل شهر»: الشهر عند الإنشاء، NULL عند الحسم (نمط shifts.openGuard). */
+    pendingGuard: varchar("pendingGuard", { length: 7 }).unique("uq_month_close_pending"),
+  },
+  (t) => ({
+    statusRequestedIdx: index("idx_mcr_status_requested").on(t.status, t.requestedAt),
+  }),
+);
+export type MonthCloseRequest = typeof monthCloseRequests.$inferSelect;
