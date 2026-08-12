@@ -3,7 +3,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -140,21 +140,31 @@ export default function Quotations() {
             onResetFilters={resetF}
             filters={
               <>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} title="إلى تاريخ" />
-                <AppSelect size="sm" className="h-8 w-40" value={f.status || "ALL"} onValueChange={(v) => setF({ status: v === "ALL" ? "" : v })}>
-                  <option value="ALL">— كل الحالات —</option>
-                  {Object.entries(STATUS).map(([k, v]) => (
-                    <option key={k} value={k}>{v}</option>
-                  ))}
-                </AppSelect>
-                {isElevated && (
-                  <AppSelect size="sm" className="h-8 w-40" value={f.branchId || "ALL"} onValueChange={(v) => setF({ branchId: v === "ALL" ? "" : v })}>
-                    <option value="ALL">— كل الفروع —</option>
-                    {(branches.data ?? []).map((b) => (
-                      <option key={b.id} value={String(b.id)}>{b.name}</option>
+                {/* FilterField يُظهر التسمية دائماً — title كخاصية HTML أصيلة يظهر hover فقط
+                    ولا يخبر الموظّف بمعنى الحقل عند الاختيار (نمط PR #559). */}
+                <FilterField label="من تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={f.from} onChange={(e) => setF({ from: e.target.value })} />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={f.to} onChange={(e) => setF({ to: e.target.value })} />
+                </FilterField>
+                <FilterField label="الحالة">
+                  <AppSelect size="sm" className="h-8 w-40" value={f.status || "ALL"} onValueChange={(v) => setF({ status: v === "ALL" ? "" : v })}>
+                    <option value="ALL">— كل الحالات —</option>
+                    {Object.entries(STATUS).map(([k, v]) => (
+                      <option key={k} value={k}>{v}</option>
                     ))}
                   </AppSelect>
+                </FilterField>
+                {isElevated && (
+                  <FilterField label="الفرع">
+                    <AppSelect size="sm" className="h-8 w-40" value={f.branchId || "ALL"} onValueChange={(v) => setF({ branchId: v === "ALL" ? "" : v })}>
+                      <option value="ALL">— كل الفروع —</option>
+                      {(branches.data ?? []).map((b) => (
+                        <option key={b.id} value={String(b.id)}>{b.name}</option>
+                      ))}
+                    </AppSelect>
+                  </FilterField>
                 )}
               </>
             }

@@ -3,7 +3,7 @@
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { UsagePanel } from "@/components/UsagePanel";
@@ -252,10 +252,11 @@ export default function Products() {
               barcode: true,
             }}
             filters={
-              <div className="flex items-center gap-3 flex-wrap">
+              <>
+                {/* FilterField يُظهر التسمية دائماً أعلى الحقل — تسميات مُوحَّدة على النمط
+                    المعتمد (Purchases/Customers، PR #559). checkbox يبقى inline بتسمية جانبية. */}
                 {canPickBranch && (
-                  <label className="flex items-center gap-1.5 h-8 text-sm">
-                    <span className="text-muted-foreground">الفرع (للمخزون):</span>
+                  <FilterField label="الفرع (للمخزون)">
                     <select
                       value={pickedBranch ?? ""}
                       onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}
@@ -266,10 +267,9 @@ export default function Products() {
                         <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
                       ))}
                     </select>
-                  </label>
+                  </FilterField>
                 )}
-                <label className="flex items-center gap-1.5 h-8 text-sm">
-                  <span className="text-muted-foreground">الفئة:</span>
+                <FilterField label="الفئة">
                   <select
                     value={categoryFilter}
                     onChange={(e) => setCategoryFilter(e.target.value)}
@@ -279,8 +279,8 @@ export default function Products() {
                     <option value="0">— بلا فئة —</option>
                     <CategoryOptionList categories={categoriesQ.data ?? []} />
                   </select>
-                </label>
-                <label className="flex items-center gap-2 h-8 text-sm">
+                </FilterField>
+                <label className="flex items-center gap-2 h-8 text-sm self-end">
                   <input
                     type="checkbox"
                     className="size-4"
@@ -289,7 +289,7 @@ export default function Products() {
                   />
                   <span className="text-muted-foreground">إظهار المعطّل</span>
                 </label>
-              </div>
+              </>
             }
             exportSpec={branchId == null ? undefined : {
               filename: "المنتجات-الشامل",

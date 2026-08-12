@@ -1,5 +1,5 @@
 import { EntityPicker } from "@/components/invoice/EntityPicker";
-import { ListToolbar, RowActions } from "@/components/list";
+import { FilterField, ListToolbar, RowActions } from "@/components/list";
 import { ErrorState } from "@/components/PageState";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { Button } from "@/components/ui/button";
@@ -105,8 +105,10 @@ export default function SalesReturns() {
             }}
             filters={
               <>
-                {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
-                <div className="min-w-[200px]">
+                {/* FilterField يُظهر التسمية دائماً — placeholder/title وحدهما يختفيان عند الاختيار
+                    فيضيع معنى الحقل (نمط PR #559). */}
+                <FilterField label="العميل" className="min-w-[200px]">
+                  {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
                   <EntityPicker
                     type="SALE_RETURN"
                     selectedId={customerId === "" ? null : Number(customerId)}
@@ -114,31 +116,38 @@ export default function SalesReturns() {
                     placeholder="— كل العملاء —"
                     clearLabel="عرض كل العملاء"
                   />
-                </div>
-                <select
-                  className={selectCls}
-                  value={branchId}
-                  onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}
-                >
-                  <option value="">— كل الفروع —</option>
-                  {(branches.data ?? []).map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-                <AppSelect
-                  size="sm"
-                  className="h-8 w-44"
-                  value={createdBy === "" ? "ALL" : String(createdBy)}
-                  onValueChange={(v) => setFilter(setCreatedBy, v === "ALL" ? "" : Number(v))}
-                  placeholder="— منفّذ المرتجع —"
-                >
-                  <option value="ALL">— كل المنفّذين —</option>
-                  {(performers.data ?? []).map((p) => (
-                    <option key={p.id} value={String(p.id)}>{p.name}</option>
-                  ))}
-                </AppSelect>
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} title="من تاريخ" />
-                <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} title="إلى تاريخ" />
+                </FilterField>
+                <FilterField label="الفرع">
+                  <select
+                    className={selectCls}
+                    value={branchId}
+                    onChange={(e) => setFilter(setBranchId, e.target.value ? Number(e.target.value) : "")}
+                  >
+                    <option value="">— كل الفروع —</option>
+                    {(branches.data ?? []).map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </FilterField>
+                <FilterField label="منفّذ المرتجع">
+                  <AppSelect
+                    size="sm"
+                    className="h-8 w-44"
+                    value={createdBy === "" ? "ALL" : String(createdBy)}
+                    onValueChange={(v) => setFilter(setCreatedBy, v === "ALL" ? "" : Number(v))}
+                  >
+                    <option value="ALL">— كل المنفّذين —</option>
+                    {(performers.data ?? []).map((p) => (
+                      <option key={p.id} value={String(p.id)}>{p.name}</option>
+                    ))}
+                  </AppSelect>
+                </FilterField>
+                <FilterField label="من تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} />
+                </FilterField>
+                <FilterField label="إلى تاريخ">
+                  <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} />
+                </FilterField>
               </>
             }
             exportSpec={{
