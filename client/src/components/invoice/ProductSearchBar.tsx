@@ -39,6 +39,8 @@ interface NormalizedRow {
   stockBase: number;
   reservedBase: number; // المحجوز النشط (الحجوزات) — 0 في جانب الشراء
   availableBase: number; // المتاح للبيع (ATP) = stockBase − reservedBase
+  /** خدمة بلا مخزون ذاتيّ — createSale يوسّع وصفتها لخصم المواد. */
+  isService?: boolean;
   /** Sale price (sale side) OR cost (purchase side) — already in the unit, decimal string. */
   price: string;
   /** Cost in base unit (purchase side carries this; sale side gets it null when hidden). */
@@ -54,6 +56,9 @@ function stockBadgeColor(stock: number): string {
 
 export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, onNotify }: ProductSearchBarProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
+  // فاتورة بيع متقدّمة (١٢/٨/٢٦): تُظهر كل خدمات الطباعة بلا شرط showInReception، لأنّ الفاتورة
+  // الرسمية قد تضمّ سلعاً وخدماتٍ في نفس المستند (شركات/حكومي). createSale يخصم موادها ذرّياً.
+  const isAdvancedSale = invoiceType === "SALE";
 
   const [query, setQuery] = useState("");
   const [showDrop, setShowDrop] = useState(false);
@@ -68,7 +73,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   const canSearch = term.length >= 2;
   // Sale-side query
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: term, limit: 50 },
+    { branchId, tier, query: term, limit: 50, includeAllServices: isAdvancedSale },
     { enabled: !isPurchase && canSearch, placeholderData: keepPreviousData, staleTime: 15_000 }
   );
   // Purchase-side query
@@ -115,6 +120,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       stockBase: r.stockBase ?? 0,
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
+      isService: r.isService || r.isPrintService,
       price: r.price ?? "0",
       // التكلفة تصل من الخادم (`catalog.posList`) للمستخدم المخوَّل برؤيتها (مدير/أدمن)، ويُحجب
       // إلى null لغير المخوَّلين (كاشير) في `catalogRouter.redactPosCost` قبل الإرسال ⇒ لا تسرب.
@@ -149,6 +155,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       qty: 1,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase,
+      isService: r.isService,
       price: r.price || "0",
       costBase: r.costBase || "0",
       discount: "0",
@@ -183,6 +190,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           stockBase: row.stockBase ?? 0,
           reservedBase: row.reservedBase ?? 0,
           availableBase: row.availableBase ?? (row.stockBase ?? 0),
+          isService: row.isService || row.isPrintService,
           price: row.price ?? "0",
           costBase: "0",
         });
@@ -295,17 +303,28 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                 )}
               >
                 <div>
-                  <div className="text-sm font-bold text-foreground">{p.name}</div>
+                  <div className="text-sm font-bold text-foreground">
+                    {p.name}
+                    {p.isService && (
+                      <span className="ms-2 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">خدمة</span>
+                    )}
+                  </div>
                   <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                     <span>{p.sku}</span>
                     <span>•</span>
                     <span>{p.unitName}</span>
                     <span>•</span>
-                    <span className={stockBadgeColor(p.availableBase)}>متاح: {fmtNum(p.availableBase)}</span>
-                    {p.reservedBase > 0 && (
+                    {p.isService ? (
+                      <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
+                    ) : (
                       <>
-                        <span>•</span>
-                        <span className="text-amber-600">محجوز: {fmtNum(p.reservedBase)}</span>
+                        <span className={stockBadgeColor(p.availableBase)}>متاح: {fmtNum(p.availableBase)}</span>
+                        {p.reservedBase > 0 && (
+                          <>
+                            <span>•</span>
+                            <span className="text-amber-600">محجوز: {fmtNum(p.reservedBase)}</span>
+                          </>
+                        )}
                       </>
                     )}
                   </div>

@@ -21,7 +21,7 @@ import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive } from "../lib/redact";
 import { positiveMoneyString } from "../lib/schemas";
-import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, managerProcedure, router } from "../trpc";
+import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, customersReceptionCreateProcedure, managerProcedure, router, userHasCrmWriteAccess } from "../trpc";
 import { getCustomerOperations } from "../services/customerOperationsService";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -139,7 +139,11 @@ export const customerRouter = router({
       return { ...masked, qrPayload };
     }),
 
-  create: customersCashierProcedure
+  // (١٢/٨، اصلاح عاجل بطلب المالك): استُبدلت customersCashierProcedure بـcustomersReceptionCreateProcedure
+  // كي يُقبل من يملك crm=FULL **أو** workorders=FULL (كاشير الاستقبال بدور مخصّص حُدَّت فيه crm يدوياً).
+  // بقيّة عمليات CRM (notes/update/delete) تبقى محكومة ببوّاباتها الأضيق — التغيير محصور بإنشاء العميل
+  // (أساس ربط الطلب بالسجل الدائم) لا بإدارة العملاء بأكملها.
+  create: customersReceptionCreateProcedure
     .input(
       z.object({
         name: z.string().min(1).max(255),
@@ -162,17 +166,27 @@ export const customerRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // سياسة المالك (٢٥/٧): مَن يملك صلاحية إدارة العملاء (customersCashierProcedure — كاشير/مندوب/
-      // مدير + منح صريح) يُسجّل الرصيد الافتتاحي لحظة الإضافة. كان يُجرَّد صامتاً لغير الأدمن/المدير
-      // ⇒ **خسارة مالية صامتة** (العميل يُنشأ برصيد صفر بلا قيد OPENING فلا يظهر في الكشف/الأعمار).
-      // سقف الائتمان يبقى حقلاً إدارياً للأدمن/المدير وحدهما — قرارُ ائتمانٍ مستقبليّ لا قيمةٌ تاريخية —
-      // فنُثبّته "0" (نقدي فقط) لغير المرتفعين، بينما نُبقي الرصيد الافتتاحي كما أُدخِل.
+      // سياسة المالك (٢٥/٧): مَن يملك crm=FULL (كاشير/مندوب/مدير + منح صريح) يُسجّل الرصيد
+      // الافتتاحي لحظة الإضافة. كان يُجرَّد صامتاً لغير الأدمن/المدير ⇒ **خسارة مالية صامتة**
+      // (العميل يُنشأ برصيد صفر بلا قيد OPENING فلا يظهر في الكشف/الأعمار). سقف الائتمان يبقى
+      // حقلاً إدارياً للأدمن/المدير وحدهما — قرارُ ائتمانٍ مستقبليّ لا قيمةٌ تاريخية — فنُثبّته "0"
+      // (نقدي فقط) لغير المرتفعين، بينما نُبقي الرصيد الافتتاحي كما أُدخِل.
+      //
+      // (١٢/٨، مراجعة Codex P1): بعد فتح البوّابة لـworkorders=FULL بلا crm=FULL، وجب تجريد
+      // الحقول المالية عن هذا المسار الجديد. كاشير الاستقبال لا يملك سلطة إدخال رصيد افتتاحي
+      // عبر بوّابة workorders — سيكشف باباً ماليّاً غير مقصود. نجرّد openingBalance/Direction
+      // لكل مَن لا يملك crm=FULL كذلك (المدير/الأدمن كما كان).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      const safeInput = elevated ? input : { ...input, creditLimit: "0" };
+      const hasCrmWrite = userHasCrmWriteAccess(ctx.user);
+      const safeInput = elevated
+        ? input
+        : hasCrmWrite
+          ? { ...input, creditLimit: "0" }
+          : { ...input, creditLimit: "0", openingBalance: undefined, openingBalanceDirection: undefined };
       const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       // إعادة تشغيل idempotent = لا كتابة جديدة ⇒ لا نكرّر سجلّ التدقيق.
       if (!r.idempotentReplay) {
-        await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: !!input.openingBalance } });
+        await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: hasCrmWrite && !!input.openingBalance } });
       }
       // التوافق: المستهلكون القدامى يقرؤون `.id` (مثل WorkOrderNew)؛ نُبقي الكليهما.
       return { id: r.customerId, customerId: r.customerId, idempotentReplay: !!r.idempotentReplay };
