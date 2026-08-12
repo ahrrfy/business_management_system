@@ -64,7 +64,7 @@
     },
     "expressRoutes": 15,
     "expressMounts": 9,
-    "jobs": 11,
+    "jobs": 12,
     "routerFiles": 90,
     "proposedPermissions": 717,
     "proposedDomains": {
@@ -10870,7 +10870,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/reservationsRouter.ts:192"
+      "loc": "server/routers/reservationsRouter.ts:217"
     },
     {
       "surface": "trpc",
@@ -10887,7 +10887,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:219"
+      "loc": "server/routers/reservationsRouter.ts:244"
     },
     {
       "surface": "trpc",
@@ -10904,7 +10904,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:155"
+      "loc": "server/routers/reservationsRouter.ts:180"
     },
     {
       "surface": "trpc",
@@ -10921,7 +10921,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE|HANDLER_ROLE_CHECK|RAW_ROLE_GATE",
-      "loc": "server/routers/reservationsRouter.ts:205"
+      "loc": "server/routers/reservationsRouter.ts:230"
     },
     {
       "surface": "trpc",
@@ -10938,7 +10938,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:88"
+      "loc": "server/routers/reservationsRouter.ts:110"
     },
     {
       "surface": "trpc",
@@ -10955,7 +10955,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/reservationsRouter.ts:36"
+      "loc": "server/routers/reservationsRouter.ts:56"
     },
     {
       "surface": "trpc",
@@ -14759,6 +14759,11 @@
       "kind": "interval",
       "file": "server/services/nativePushOutboxWorker.ts",
       "line": 275
+    },
+    {
+      "kind": "cron",
+      "file": "server/services/reservations/sweeper.ts",
+      "line": 35
     },
     {
       "kind": "cron",
