@@ -15,7 +15,7 @@ import {
   requestMonthClose,
 } from "../services/reports/monthCloseRequest";
 import { withTx } from "../services/tx";
-import { adminProcedure, managerProcedure, router } from "../trpc";
+import { adminProcedure, reportsAdminProcedure, reportsManagerProcedure, router } from "../trpc";
 
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
@@ -127,12 +127,12 @@ export const periodLockRouter = router({
   // لماذا هنا لا في reportsRouter: هذا الملف يملك قفل الفترة أصلاً (lock/unlock) — تماسكٌ لا تشتّت.
 
   /** طابور الطلبات. مديرٌ فأعلى (الطالب يتابع طلبه، والأدمن يعتمد). */
-  closeRequests: managerProcedure
+  closeRequests: reportsManagerProcedure
     .input(z.object({ pendingOnly: z.boolean().optional() }).optional())
     .query(async ({ input }) => withTx(async (tx) => listMonthCloseRequests(tx, { pendingOnly: input?.pendingOnly }))),
 
   /** المدير يطلُب إقفال شهر. الجاهزية تُفحَص **خادمياً لكل الفروع** — لا يُصدَّق ادّعاء الواجهة. */
-  requestClose: managerProcedure
+  requestClose: reportsManagerProcedure
     .input(z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "صيغة الشهر YYYY-MM") }))
     .mutation(async ({ input, ctx }) =>
       withTx(async (tx) => {
@@ -148,7 +148,7 @@ export const periodLockRouter = router({
     ),
 
   /** الأدمن/المالك يعتمد فيُقفل الفترة. الفحص يُعاد **حيّاً**، والطالب ≠ المعتمِد (فصل مهام). */
-  approveClose: adminProcedure
+  approveClose: reportsAdminProcedure
     .input(z.object({ requestId: z.number().int().positive(), notes: z.string().max(255).optional() }))
     .mutation(async ({ input, ctx }) =>
       withTx(async (tx) => {
@@ -168,7 +168,7 @@ export const periodLockRouter = router({
     ),
 
   /** رفض الطلب بسببٍ مكتوب — يحرّر الشهر لطلبٍ جديد. */
-  rejectClose: adminProcedure
+  rejectClose: reportsAdminProcedure
     .input(z.object({ requestId: z.number().int().positive(), reason: z.string().trim().min(5).max(500) }))
     .mutation(async ({ input, ctx }) =>
       withTx(async (tx) => {
