@@ -164,11 +164,19 @@ describe("csrfGuard — متصفحات تحجب Origin/Referer (علّة الل�
     expect(res.statusCode).toBe(403);
   });
 
-  it("يقبل الغياب التام لكل الترويسات — PWA المثبَّت/WebView قديمة (٦/٧)", () => {
-    // كان يُرفض قطعياً فيتعطّل كل POST (بما فيه الدخول) في التطبيق المثبَّت على iOS<16.4
-    // وبعض WebView. آمنٌ لأن كوكي الجلسة sameSite:"strict" (لا يُرسَل عابر مواقع أصلاً)
-    // وكل متصفح حديث يرسل Origin/Sec-Fetch-Site حتماً في POST عابر المواقع.
-    const { nextCalled } = run(mockReq({ headers: {} }));
+  it("يرفض الغياب التام لكل إشارات المصدر دون إثبات عميل صريح", () => {
+    const { res, nextCalled } = run(mockReq({ headers: {} }));
+    expect(nextCalled).toBe(false);
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("يقبل WebView قديمة عند حمل ترويسة العميل غير البسيطة", () => {
+    const { nextCalled } = run(mockReq({ headers: { "x-erp-csrf": "1" } }));
+    expect(nextCalled).toBe(true);
+  });
+
+  it("يقبل عميل Android الأصلي عند غياب ترويسات المتصفح", () => {
+    const { nextCalled } = run(mockReq({ headers: { "x-alrueya-client": "android-native" } }));
     expect(nextCalled).toBe(true);
   });
 

@@ -2,10 +2,34 @@ import { COOKIE_NAME } from "@shared/const";
 import { parse as parseCookie } from "cookie";
 import type { NextFunction, Request, Response } from "express";
 import { verifySession } from "../auth/session";
-import { ensureTenantDb, isMultiTenantModeActive } from "../db";
+import { acquireTenantDb, isMultiTenantModeActive } from "../db";
 import { logger } from "../logger";
 import { runWithCompany } from "./context";
 import { resolveCompanyByCode, resolveCompanyById } from "./registry";
+
+function holdLeaseForResponse(req: Request, res: Response, release: () => void): boolean {
+  const requestClosed = () => req.aborted || req.destroyed || res.destroyed || res.writableEnded;
+  if (requestClosed()) {
+    release();
+    return false;
+  }
+
+  const releaseAndDetach = () => {
+    res.off("finish", releaseAndDetach);
+    res.off("close", releaseAndDetach);
+    req.off("aborted", releaseAndDetach);
+    release();
+  };
+  res.once("finish", releaseAndDetach);
+  res.once("close", releaseAndDetach);
+  req.once("aborted", releaseAndDetach);
+  // أغلق المقبس في الفجوة الدقيقة بين الفحص أعلاه وتركيب المستمعين.
+  if (requestClosed()) {
+    releaseAndDetach();
+    return false;
+  }
+  return true;
+}
 
 /**
  * وسيط Express يحدّد الشركة الحالية من كوكي جلسة المستخدم (`app_session_id`) قبل أي
@@ -21,7 +45,7 @@ import { resolveCompanyByCode, resolveCompanyById } from "./registry";
  * كما كان قبل تعدد الشركات، بلا أي تغيير.
  */
 export function tenancyMiddleware() {
-  return async (req: Request, _res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     if (!isMultiTenantModeActive()) return next();
     const cookies = parseCookie(req.headers.cookie ?? "");
     const session = await verifySession(cookies[COOKIE_NAME]).catch(() => null);
@@ -35,14 +59,18 @@ export function tenancyMiddleware() {
       // يجعل الطلب غير مصادَق (لا 500، لا تسريب على قاعدة خاطئة).
       const active = await resolveCompanyById(session.companyId);
       if (!active) return next();
-      const db = await ensureTenantDb(session.companyId);
-      runWithCompany(session.companyId, db, () => next());
+      const lease = await acquireTenantDb(session.companyId);
+      if (!holdLeaseForResponse(req, res, lease.release)) return;
+      runWithCompany(session.companyId, lease.db, () => next());
     } catch (e) {
       // شركة غير موجودة/معطّلة بعد إصدار التوكن ⇒ تابع بلا سياق؛ createContext (أو
       // requireAuth في printRoute/backupRoutes) يمتصّ فشل getDb() اللاحق فيصبح "غير
       // مسجَّل دخول" — لا 500 خام، لا تسريباً صامتاً على قاعدة خاطئة.
       logger.warn({ err: e, companyId: session.companyId }, "tenancy.middleware.company_unavailable");
-      next();
+      if (!res.headersSent) {
+        return res.status(503).json({ error: "company database temporarily unavailable" });
+      }
+      next(e);
     }
   };
 }
@@ -65,8 +93,9 @@ export function companyCodeTenancyMiddleware() {
     const company = code ? await resolveCompanyByCode(code).catch(() => null) : null;
     if (!company) return res.status(404).send("not found");
     try {
-      const db = await ensureTenantDb(company.id);
-      runWithCompany(company.id, db, () => next());
+      const lease = await acquireTenantDb(company.id);
+      if (!holdLeaseForResponse(req, res, lease.release)) return;
+      runWithCompany(company.id, lease.db, () => next());
     } catch (e) {
       logger.warn({ err: e, companyCode: code }, "tenancy.webhookMiddleware.company_unavailable");
       res.status(503).send("company unavailable");

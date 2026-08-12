@@ -2,11 +2,12 @@
 
 > **الهدف:** سدّ الفراغ الأمامي الوحيد المتبقّي في حماية المتجر: امتصاص هجمات الإغراق
 > الموزَّعة (DDoS) قبل وصولها للـVPS، وإضافة جدار معدّل رخيص في nginx يصدّ الفيضان قبل
-> أن يستهلك عملية Node — مع بقاء حدود التطبيق الدقيقة (express-rate-limit) كما هي.
+> أن يستهلك عملية Node. nginx هو عدّاد المعدّل المشترك أمام عمال PM2؛ حدود
+> express-rate-limit الذاكرية داخل كل عامل تبقى دفاعاً ثانوياً لا سقفاً عنقودياً.
 >
 > **المعمارية بعد التنفيذ:**
 > `الزائر ← Cloudflare (يمتصّ DDoS + يخفي IP الخادم + يخدم الأصول من حافته) ← nginx
-> (limit_req/limit_conn لكل IP حقيقي) ← Node (حدود لكل إجراء + مصادقة/CSRF/CSP)`
+> (limit_req/limit_conn مشترك لكل IP حقيقي) ← Node (دفاع ثانوي لكل عامل + مصادقة/CSRF/CSP)`
 >
 > **نطاق القرار:** Cloudflare للدومين العام `alarabiya.online` فقط. دومين الشركة
 > `srv1548487.hstgr.cloud` تابع لمضيف Hostinger ولا يمكن (ولا يلزم) إدخاله في CF —
@@ -99,9 +100,9 @@ grep -rln "alarabiya.online"       /etc/nginx/sites-enabled/
     limit_req  zone=alroya_general burst=120 nodelay;
 ```
 
-**٥) (موصى به) سقف أدنى لسطح الـAPI:** في كل من الكتلتين أضف قبل `location /` كتلة
-`location /api/` منسوخة منها حرفياً (proxy_pass وكل ترويساته كما هي) مع سطر واحد إضافي
-في أولها:
+**٥) طبّق ملف الموقع كاملاً:** يحتوي `deploy/nginx-erp.conf` سقف API العام وأنطقة مشتركة
+مستقلة للمصادقة/2FA والتعافي ورفع الاستعادة وwebhooks. لا تنسخ `location /api/` وحدها؛
+وإلا بقيت النقاط الحساسة مع سقف عام فقط وتضاعفت حصة MemoryStore بعدد عمال PM2.
 
 ```nginx
     location /api/ {
@@ -110,14 +111,15 @@ grep -rln "alarabiya.online"       /etc/nginx/sites-enabled/
     }
 ```
 
-> المرجع الكامل للشكل النهائي: كتلة server في `deploy/nginx-erp.conf` بعد تحديث ٢٠/٧.
+> المرجع الكامل للشكل النهائي: `deploy/nginx-erp.conf`. والفحص الساكن قبل النشر:
+> `pnpm check:nginx-abuse`.
 
 ```bash
 # 6) فحص ثم تحميل (لا restart):
 sudo nginx -t && sudo systemctl reload nginx
 
 # 7) تأكيد أن التوجيهات حيّة:
-sudo nginx -T | grep -E "alroya_(general|api|conn)|CF-Connecting-IP" | head
+sudo nginx -T | grep -E "alroya_(general|api|auth|password_recovery|restore|webhooks|conn)|CF-Connecting-IP" | head
 ```
 
 ---

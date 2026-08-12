@@ -36,7 +36,7 @@ async function seedAdmin() {
   await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values({
     id: 1, openId: "local_admin", name: "المدير", email: "admin@test.local", username: "admin",
-    passwordHash: hashPassword("Admin@12345"), role: "admin", loginMethod: "local", branchId: 1,
+    passwordHash: await hashPassword("Admin@12345"), role: "admin", loginMethod: "local", branchId: 1,
   });
 }
 

@@ -21,15 +21,8 @@ import { useEffect, useRef, useState } from "react";
 function fmtKb(kb: number): string {
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} م.ب` : `${kb} ك.ب`;
 }
-function fileToB64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => { const s = String(r.result); resolve(s.slice(s.indexOf(",") + 1)); };
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
-  });
-}
 const SQL_SAVE = { description: "نسخة قاعدة SQL", mime: "application/sql" } as const;
+const MAX_RESTORE_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 async function fetchBackupBlob(name: string): Promise<Blob> {
   const res = await fetch(`/api/backups/download?name=${encodeURIComponent(name)}`);
@@ -44,7 +37,7 @@ function downloadBackup(name: string) {
 
 type DangerAction =
   | { kind: "restore-server"; name: string }
-  | { kind: "restore-upload"; fileName: string; fileB64: string }
+  | { kind: "restore-upload"; file: File }
   | { kind: "reset" };
 
 /** فهرس مراسٍ الصفحة — بترتيب ظهور الأقسام فعلياً. */
@@ -176,17 +169,16 @@ export default function Settings() {
     onSuccess: () => afterDestructive("تمّت الاستعادة بنجاح"),
     onError: (e) => notify.err(e.message || "فشلت الاستعادة"),
   });
-  const restoreUpload = trpc.system.restoreUpload.useMutation({
-    onSuccess: () => afterDestructive("تمّت الاستعادة من الملف"),
-    onError: (e) => notify.err(e.message || "فشلت الاستعادة من الملف"),
-  });
+  const restoreUpload = trpc.system.restoreUpload.useMutation();
+  const [restoreUploadStreaming, setRestoreUploadStreaming] = useState(false);
   const resetSystem = trpc.system.resetSystem.useMutation({
     onSuccess: () => afterDestructive("تمّ تصفير النظام"),
     onError: (e) => notify.err(e.message || "فشل التصفير"),
   });
-  const dangerPending = restoreBackup.isPending || restoreUpload.isPending || resetSystem.isPending;
+  const dangerPending = restoreBackup.isPending || restoreUpload.isPending || restoreUploadStreaming || resetSystem.isPending;
 
   const confirmToken = info.data?.confirmToken ?? info.data?.db.name ?? "";
+  const onlineMaintenanceEnabled = info.data?.onlineMaintenanceEnabled === true;
 
   function backupAndDownload() {
     // حوار «حفظ باسم» يُفتح فوراً داخل النقرة باسم متوقَّع (نمط تسمية الخادم UTC) بينما تجري
@@ -202,16 +194,43 @@ export default function Settings() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (!file.name.endsWith(".sql")) { notify.err("اختر ملف .sql صالحاً"); return; }
-    try {
-      const fileB64 = await fileToB64(file);
-      setDanger({ kind: "restore-upload", fileName: file.name, fileB64 });
-    } catch { notify.err("تعذّر قراءة الملف"); }
+    if (!file.name.toLowerCase().endsWith(".sql")) { notify.err("اختر ملف .sql صالحاً"); return; }
+    if (file.size < 512) { notify.err("الملف صغير أو تالف"); return; }
+    if (file.size > MAX_RESTORE_UPLOAD_BYTES) { notify.err("الملف أكبر من الحدّ المسموح (200 م.ب)"); return; }
+    setDanger({ kind: "restore-upload", file });
   }
-  function handleDangerConfirm({ password, seed, confirm }: { password: string; seed: boolean; confirm: string }) {
+  async function handleDangerConfirm({ password, seed, confirm }: { password: string; seed: boolean; confirm: string }) {
     if (!danger) return;
     if (danger.kind === "restore-server") restoreBackup.mutate({ name: danger.name, confirm, password });
-    else if (danger.kind === "restore-upload") restoreUpload.mutate({ fileName: danger.fileName, fileB64: danger.fileB64, confirm, password });
+    else if (danger.kind === "restore-upload") {
+      setRestoreUploadStreaming(true);
+      try {
+        const authorization = await restoreUpload.mutateAsync({
+          fileName: danger.file.name,
+          fileSize: danger.file.size,
+          confirm,
+          password,
+        });
+        const response = await fetch(authorization.uploadUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authorization.ticket}`,
+            "Content-Type": "application/sql",
+            "X-ERP-CSRF": "1",
+          },
+          body: danger.file,
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null) as { error?: string } | null;
+          throw new Error(payload?.error || `فشلت الاستعادة (${response.status})`);
+        }
+        afterDestructive("تمّت الاستعادة من الملف");
+      } catch (error) {
+        notify.err(error instanceof Error ? error.message : "فشلت الاستعادة من الملف");
+      } finally {
+        setRestoreUploadStreaming(false);
+      }
+    }
     else resetSystem.mutate({ confirm, password, seed });
   }
 
@@ -303,7 +322,7 @@ export default function Settings() {
                           mode="menu"
                           actions={[
                             { key: "download", kind: "export", label: "تنزيل", icon: Download, gate: { adminOnly: true }, onSelect: () => downloadBackup(b.name) },
-                            { key: "restore", kind: "reverse", label: "استعادة", icon: RotateCcw, gate: { adminOnly: true }, onSelect: () => setDanger({ kind: "restore-server", name: b.name }) },
+                            { key: "restore", kind: "reverse", label: "استعادة", icon: RotateCcw, gate: { adminOnly: true }, disabled: !onlineMaintenanceEnabled, disabledReason: "الاستعادة عبر الويب معطّلة إنتاجياً؛ استخدم نافذة الصيانة", onSelect: () => setDanger({ kind: "restore-server", name: b.name }) },
                             {
                               key: "delete",
                               kind: "delete",
@@ -346,8 +365,13 @@ export default function Settings() {
             <p className="text-xs text-muted-foreground">
               استعد قاعدة البيانات من ملف نسخة (.sql) على جهازك (مثل نسخة خارجية/USB). يُتحقَّق من الملف، وتُؤخذ نسخة أمان أولاً.
             </p>
+            {!onlineMaintenanceEnabled && (
+              <p role="status" className="text-xs text-warning">
+                الاستعادة عبر الويب معطّلة في الإنتاج. أوقف عمال الويب ونفّذها من سطر الأوامر داخل نافذة صيانة.
+              </p>
+            )}
             <input ref={fileRef} type="file" accept=".sql" onChange={onPickFile} className="hidden" />
-            <Button variant="outline" onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>
+            <Button variant="outline" disabled={!onlineMaintenanceEnabled} onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>
           </CardContent>
         </Card>
 
@@ -559,7 +583,7 @@ export default function Settings() {
               يمسح كل البيانات المُدخلة (فواتير، مخزون، عملاء، منتجات…) ويُبقي المستخدمين والفروع فقط — للبدء من جديد بنظام فارغ.
               عملية لا رجعة فيها؛ تتطلّب اسم القاعدة + كلمة المرور، وتُؤخذ نسخة أمان أولاً.
             </p>
-            <Button variant="destructive" onClick={() => setDanger({ kind: "reset" })}>تصفير النظام…</Button>
+            <Button variant="destructive" disabled={!onlineMaintenanceEnabled} onClick={() => setDanger({ kind: "reset" })}>تصفير النظام…</Button>
           </CardContent>
         </Card>
 
@@ -581,7 +605,7 @@ export default function Settings() {
         title={danger?.kind === "reset" ? "تصفير النظام" : "استعادة قاعدة البيانات"}
         description={
           danger?.kind === "restore-server" ? `سيُستبدَل النظام الحالي بالكامل بمحتوى النسخة «${danger.name}».`
-            : danger?.kind === "restore-upload" ? `سيُستبدَل النظام الحالي بالكامل بمحتوى الملف «${danger.fileName}».`
+            : danger?.kind === "restore-upload" ? `سيُستبدَل النظام الحالي بالكامل بمحتوى الملف «${danger.file.name}».`
             : "سيُمسح كل ما أُدخل ويُبقى المستخدمون والفروع فقط."
         }
         warnings={

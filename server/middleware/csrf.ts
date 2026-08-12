@@ -45,14 +45,22 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
       deny(req, res, "CSRF: مصدر الطلب غير مصرَّح");
       return;
     }
-    // غياب الإشارات الثلاث كلياً (لا Origin ولا Referer ولا Sec-Fetch-Site) ⇒ نسمح (٦/٧/٢٦).
-    // كان يُرفض قطعياً فيتعطّل كل POST (بما فيه الدخول) في PWA المثبَّت على iOS < 16.4
-    // وبعض WebView القديمة التي لا ترسل Fetch-Metadata إطلاقاً — بينما GET يمرّ فتبدو
-    // الواجهة سليمة والدخول «معطّلاً بلا سبب». السماح هنا آمن لأن:
-    //  ١) كوكي الجلسة sameSite:"strict" (server/cookies.ts) — متصفحٌ لا يرسل الكوكي أصلاً
-    //     في أي طلب عابر مواقع، فطلب CSRF المزوّر يصل بلا جلسة أياً كانت ترويساته.
-    //  ٢) كل متصفح حديث يرسل Origin وSec-Fetch-Site حتماً في POST عابر المواقع — فالغياب
-    //     الكلي يعني عميلاً قديماً/مضمّناً same-origin أو عميلاً غير متصفح (لا كوكي ضحية لديه).
+    if (fetchSite === "same-origin" || fetchSite === "none") {
+      next();
+      return;
+    }
+
+    // Fail closed when every browser-provided source signal is absent. The web
+    // client adds a non-simple header; cross-site forms cannot forge it and a
+    // malicious script would need a CORS preflight, which this server rejects.
+    // The native Android client already identifies itself with a non-simple
+    // header, so old WebViews keep working without weakening browser requests.
+    const explicitClientProof =
+      req.get("x-erp-csrf") === "1" || req.get("x-alrueya-client") === "android-native";
+    if (!explicitClientProof) {
+      deny(req, res, "CSRF: تعذّر التحقق من مصدر الطلب");
+      return;
+    }
     next();
     return;
   }

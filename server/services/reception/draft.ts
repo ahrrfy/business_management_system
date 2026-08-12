@@ -17,12 +17,14 @@ import {
   receptionDrafts,
   users,
 } from "../../../drizzle/schema";
-import { getDb, type Tx } from "../../db";
+import { getDb, isMultiTenantModeActive, type Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { paginateKeyset } from "../../lib/paginateKeyset";
 import { escLike } from "../../lib/sqlLike";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
+import { getCurrentCompanyId } from "../../tenancy/context";
+import { runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
 import { heldNetOfDraft } from "./deposits";
 
 export interface DraftLineInput {
@@ -404,6 +406,10 @@ export async function cancelDraft(
 
 /** كنّاس ق٤: يطوي الفارغة المنقضية فقط — **لا يمسّ المموّلة أبداً** (I14). idempotent. */
 export async function sweepExpiredDrafts(): Promise<number> {
+  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+    const runs = await runAcrossActiveTenants("reception_draft_sweep", sweepExpiredDrafts);
+    return runs.reduce((sum, affected) => sum + affected, 0);
+  }
   const db = getDb();
   if (!db) return 0;
   const res = await db

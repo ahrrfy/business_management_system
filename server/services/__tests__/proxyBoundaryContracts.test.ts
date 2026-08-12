@@ -1,0 +1,27 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+describe("reverse proxy security boundary", () => {
+  it("يجعل Express والراوتر الحساس case-sensitive", async () => {
+    const index = await readFile(path.resolve(process.cwd(), "server/index.ts"), "utf8");
+    const backups = await readFile(path.resolve(process.cwd(), "server/backupRoutes.ts"), "utf8");
+    expect(index).toContain('app.set("case sensitive routing", true)');
+    expect(backups).toContain("Router({ caseSensitive: true, strict: true })");
+  });
+
+  it("يفرض سرّ hop في إنتاج loopback ويضيفه nginx لكل proxy_pass", async () => {
+    const index = await readFile(path.resolve(process.cwd(), "server/index.ts"), "utf8");
+    const nginx = await readFile(path.resolve(process.cwd(), "deploy/nginx-erp.conf"), "utf8");
+    expect(index).toContain("INTERNAL_PROXY_SECRET");
+    const proxied = nginx.match(/proxy_pass\s+http:\/\/127\.0\.0\.1:3000;/g) ?? [];
+    const proof = nginx.match(/proxy_set_header\s+X-Internal-Proxy-Secret\s+\$alroya_proxy_secret;/g) ?? [];
+    expect(proof.length).toBe(proxied.length);
+  });
+
+  it("يرفض aliases ذات المقاطع الإضافية قبل مكيّف tRPC", async () => {
+    const index = await readFile(path.resolve(process.cwd(), "server/index.ts"), "utf8");
+    expect(index).toContain('!/^\\/[^/]+$/.test(req.path)');
+    expect(index.indexOf('!/^\\/[^/]+$/.test(req.path)')).toBeLessThan(index.indexOf("createExpressMiddleware({"));
+  });
+});

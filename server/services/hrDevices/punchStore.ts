@@ -5,11 +5,18 @@
  * الجهاز يعيد إرسال مخزونه بعد كل انقطاع، وهذا مرغوب لا خطأ.
  * ========================================================================== */
 import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
-import { hrAttendancePunches, hrDeviceUsers } from "../../../drizzle/schema";
+import {
+  employees,
+  hrAttendancePunches,
+  hrDeviceUsers,
+  hrFingerprintDevices,
+} from "../../../drizzle/schema";
 import { requireDb, withTx } from "../tx";
 import { logger } from "../../logger";
 import type { DeviceRow, RawDeviceUser, RawPunch } from "./types";
 import { normalizePunchTime } from "./types";
+import { TRPCError } from "@trpc/server";
+import type { CompanyBranchScope } from "../companyBranchScope";
 
 /** أقصى قيمة لعمود enrollId (INT موقَّع في MySQL) — تجاوزها يُسقط الدفعة كلها في الوضع الصارم. */
 const MAX_ENROLL_ID = 2147483647;
@@ -140,10 +147,52 @@ export async function mapDeviceUserToEmployee(
   deviceId: number,
   enrollId: number,
   employeeId: number | null,
-  effectiveFrom?: string | null
+  effectiveFrom?: string | null,
+  scope?: CompanyBranchScope,
 ): Promise<number> {
   // ذرّي: تحديث الربط + إلحاقه بالبصمات السابقة معاً — وإلا مستخدمٌ مربوط وبصماته يتيمة عند فشل جزئي.
   return withTx(async (tx) => {
+    if (scope) {
+      const [device] = await tx
+        .select({ branchId: hrFingerprintDevices.branchId })
+        .from(hrFingerprintDevices)
+        .where(
+          scope.branchId == null
+            ? eq(hrFingerprintDevices.id, deviceId)
+            : and(
+                eq(hrFingerprintDevices.id, deviceId),
+                eq(hrFingerprintDevices.branchId, scope.branchId),
+              ),
+        )
+        .for("update")
+        .limit(1);
+      if (!device) throw new TRPCError({ code: "NOT_FOUND", message: "الجهاز غير موجود" });
+
+      if (employeeId != null) {
+        const [employee] = await tx
+          .select({ branchId: employees.branchId })
+          .from(employees)
+          .where(
+            scope.branchId == null
+              ? eq(employees.id, employeeId)
+              : and(eq(employees.id, employeeId), eq(employees.branchId, scope.branchId)),
+          )
+          .for("update")
+          .limit(1);
+        if (!employee) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+        if (
+          device.branchId == null ||
+          employee.branchId == null ||
+          Number(device.branchId) !== Number(employee.branchId)
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "يجب أن يكون الموظف والجهاز في الفرع نفسه",
+          });
+        }
+      }
+    }
+
     // فكّ الربط يمسح السريان أيضاً، وإلا بقي حدٌّ قديم يحكم ربطاً لاحقاً بموظف آخر بصمت.
     const from = employeeId == null ? null : effectiveFrom || null;
     const [existing] = await tx

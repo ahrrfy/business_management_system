@@ -36,7 +36,7 @@ async function seed() {
   await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([{
     id: 1, openId: "adm", name: "المدير", email: "admin@t.test",
-    passwordHash: hashPassword("P@ss1"), role: "admin", loginMethod: "local", branchId: 1,
+    passwordHash: await hashPassword("P@ss1"), role: "admin", loginMethod: "local", branchId: 1,
   }]);
 }
 function makeCtx(user: any) {

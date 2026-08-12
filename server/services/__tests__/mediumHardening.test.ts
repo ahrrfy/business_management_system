@@ -54,9 +54,9 @@ async function seed() {
     { id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "adm", name: "المدير", email: "admin@t.test", passwordHash: hashPassword("P@ss1"), role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 1, openId: "adm", name: "المدير", email: "admin@t.test", passwordHash: await hashPassword("P@ss1"), role: "admin", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "cashier", name: "كاشير", email: "cashier@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
-    { id: 3, openId: "mgr", name: "مدير فرع", email: "mgr@t.test", passwordHash: hashPassword("P@ss1"), role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "mgr", name: "مدير فرع", email: "mgr@t.test", passwordHash: await hashPassword("P@ss1"), role: "manager", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.suppliers).values([
     { id: 1, name: "مورّد اختبار", phone: "+9647001234567" },

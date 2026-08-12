@@ -56,7 +56,7 @@ async function seedAdmin() {
     openId: "local_admin",
     name: "المدير",
     email: "admin@test.local",
-    passwordHash: hashPassword("Admin@12345"),
+    passwordHash: await hashPassword("Admin@12345"),
     role: "admin",
     loginMethod: "local",
     branchId: 1,
@@ -357,7 +357,7 @@ describe("2FA — التعطيل والإنقاذ والحجب", () => {
       openId: "local_cashier",
       name: "كاشير",
       email: "cashier@test.local",
-      passwordHash: hashPassword("Admin@12345"),
+      passwordHash: await hashPassword("Admin@12345"),
       role: "cashier",
       branchId: 1,
       sessionsValidFrom: new Date(Date.now() - 2000),
@@ -429,7 +429,7 @@ describe("إلزام 2FA — راية me.mustEnroll2FA (قرار المالك ٢
     await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
     await d.insert(s.users).values({
       id, openId: `local_${role}_${id}`, name: role, email: `${role}${id}@test.local`,
-      passwordHash: hashPassword("Admin@12345"), role, loginMethod: "local", branchId: 1,
+      passwordHash: await hashPassword("Admin@12345"), role, loginMethod: "local", branchId: 1,
       sessionsValidFrom: new Date(Date.now() - 2000),
     });
     return (await d.select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];

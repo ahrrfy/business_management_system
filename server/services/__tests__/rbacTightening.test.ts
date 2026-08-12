@@ -50,9 +50,9 @@ async function seed() {
     { id: 2, name: "المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "local_admin", name: "المدير", email: "admin@t.test", passwordHash: hashPassword("Admin@12345"), role: "admin", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "local_mgr1", name: "مدير ف١", email: "m1@t.test", passwordHash: hashPassword("Admin@12345"), role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 3, openId: "local_mgr2", name: "مدير ف٢", email: "m2@t.test", passwordHash: hashPassword("Admin@12345"), role: "manager", loginMethod: "local", branchId: 2 },
+    { id: 1, openId: "local_admin", name: "المدير", email: "admin@t.test", passwordHash: await hashPassword("Admin@12345"), role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "local_mgr1", name: "مدير ف١", email: "m1@t.test", passwordHash: await hashPassword("Admin@12345"), role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "local_mgr2", name: "مدير ف٢", email: "m2@t.test", passwordHash: await hashPassword("Admin@12345"), role: "manager", loginMethod: "local", branchId: 2 },
     { id: 4, openId: "local_cashier1", name: "كاشير ف١", email: "c1@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 5, openId: "local_print", name: "فني مطبعة", email: "po@t.test", role: "print_operator", loginMethod: "local", branchId: 1 },
   ]);

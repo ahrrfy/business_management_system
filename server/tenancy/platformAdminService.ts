@@ -13,7 +13,7 @@ export async function createPlatformAdmin(input: { email: string; password: stri
   if (existing[0]) throw new Error(`مدير منصّة بهذا البريد موجود سلفاً: ${input.email}`);
   const result = await db.insert(platformAdmins).values({
     email: input.email,
-    passwordHash: hashPassword(input.password),
+    passwordHash: await hashPassword(input.password),
     name: input.name,
   });
   return extractInsertId(result);
@@ -27,7 +27,7 @@ export async function verifyPlatformAdminCredentials(email: string, password: st
   if (!db) return null;
   const rows = await db.select().from(platformAdmins).where(eq(platformAdmins.email, email.trim().toLowerCase())).limit(1);
   const admin = rows[0];
-  const ok = verifyPassword(password, admin?.passwordHash ?? DUMMY_STORED);
+  const ok = await verifyPassword(password, admin?.passwordHash ?? DUMMY_STORED);
   if (!admin || !ok || !admin.isActive) return null;
   return admin;
 }

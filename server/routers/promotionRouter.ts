@@ -12,7 +12,26 @@ import { protectedProcedure, requireModule, router } from "../trpc";
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
 
-const moneyStrOpt = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة").optional();
+function promotionActor(user: {
+  id: number;
+  branchId: number | null;
+  role: string;
+  isOwner?: boolean | null;
+}): svc.PromotionActor {
+  return {
+    userId: user.id,
+    // لا نستخدم ?? 1 هنا: غير الأدمن بلا فرع يجب أن يفشل مغلقاً، لا أن يرث الرئيسي.
+    branchId: user.branchId,
+    role: user.role,
+    isOwner: user.isOwner === true,
+  };
+}
+
+const moneyStrOpt = z
+  .string()
+  .trim()
+  .regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة")
+  .optional();
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
 
 /**
@@ -27,7 +46,13 @@ const wagePatch = z.object({
   attendanceExempt: z.boolean().optional(),
   dayRates: z.record(z.string(), z.number()).nullish(),
   workSchedule: z
-    .record(z.string(), z.object({ hours: z.number().min(0).max(24), rate: z.number().min(0).nullish() }))
+    .record(
+      z.string(),
+      z.object({
+        hours: z.number().min(0).max(24),
+        rate: z.number().min(0).nullish(),
+      }),
+    )
     .nullish(),
 });
 
@@ -39,9 +64,15 @@ export const promotionRouter = router({
    * هاتان الدالتان تحملانه أصلاً فضلاً عن مدى تاريخ اختياري (effectiveDate/lastDay) يُطبَّق هنا.
    */
   report: hrRead
-    .input(z.object({ from: dateStr.optional(), to: dateStr.optional() }).optional())
-    .query(async ({ input }) => {
-      const [promos, terms] = await Promise.all([svc.listPromotions(), svc.listTerminations()]);
+    .input(
+      z.object({ from: dateStr.optional(), to: dateStr.optional() }).optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      const actor = promotionActor(ctx.user);
+      const [promos, terms] = await Promise.all([
+        svc.listPromotions(actor),
+        svc.listTerminations(actor),
+      ]);
       const from = input?.from;
       const to = input?.to;
       const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
@@ -70,7 +101,9 @@ export const promotionRouter = router({
     }),
 
   /* ===== الترقيات ===== */
-  listPromotions: hrRead.query(() => svc.listPromotions()),
+  listPromotions: hrRead.query(({ ctx }) =>
+    svc.listPromotions(promotionActor(ctx.user)),
+  ),
 
   createPromotion: hrWrite
     .input(
@@ -94,17 +127,21 @@ export const promotionRouter = router({
         }),
     )
     .mutation(async ({ input, ctx }) => {
-      const p = await svc.createPromotion(input as svc.PromotionInput, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
-        role: ctx.user.role,
-      });
+      const p = await svc.createPromotion(
+        input as svc.PromotionInput,
+        promotionActor(ctx.user),
+      );
       await logAudit(ctx, {
         action: "promotion.create",
         entityType: "employeePromotion",
         entityId: p?.id,
         // البصمة الهدف كاملةً في السجلّ: «ترقية بلا راتب» قد تكون رفعَ سعر ساعةٍ صامتاً.
-        newValue: { employeeId: input.employeeId, toTitle: p?.toTitle ?? null, toSalary: p?.toSalary ?? null, toWage: p?.toWage ?? null },
+        newValue: {
+          employeeId: input.employeeId,
+          toTitle: p?.toTitle ?? null,
+          toSalary: p?.toSalary ?? null,
+          toWage: p?.toWage ?? null,
+        },
       });
       return p;
     }),
@@ -112,17 +149,19 @@ export const promotionRouter = router({
   approvePromotion: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const id = await svc.approvePromotion(input.id, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
-        role: ctx.user.role,
+      const id = await svc.approvePromotion(input.id, promotionActor(ctx.user));
+      await logAudit(ctx, {
+        action: "promotion.approve",
+        entityType: "employeePromotion",
+        entityId: id,
       });
-      await logAudit(ctx, { action: "promotion.approve", entityType: "employeePromotion", entityId: id });
       return { id };
     }),
 
   /* ===== إنهاء الخدمات ===== */
-  listTerminations: hrRead.query(() => svc.listTerminations()),
+  listTerminations: hrRead.query(({ ctx }) =>
+    svc.listTerminations(promotionActor(ctx.user)),
+  ),
 
   createTermination: hrWrite
     .input(
@@ -135,12 +174,19 @@ export const promotionRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const t = await svc.createTermination(input as svc.TerminationInput);
+      const t = await svc.createTermination(
+        input as svc.TerminationInput,
+        promotionActor(ctx.user),
+      );
       await logAudit(ctx, {
         action: "termination.create",
         entityType: "employeeTermination",
         entityId: t?.id,
-        newValue: { employeeId: input.employeeId, terminationType: input.terminationType, lastDay: input.lastDay },
+        newValue: {
+          employeeId: input.employeeId,
+          terminationType: input.terminationType,
+          lastDay: input.lastDay,
+        },
       });
       return t;
     }),
@@ -148,9 +194,24 @@ export const promotionRouter = router({
   completeTermination: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.completeTermination(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "termination.complete", entityType: "employeeTermination", entityId: res.terminationId });
+      const res = await svc.completeTermination(
+        input.id,
+        promotionActor(ctx.user),
+      );
+      await logAudit(ctx, {
+        action: "termination.complete",
+        entityType: "employeeTermination",
+        entityId: res.terminationId,
+        newValue: {
+          userDisabled: res.userDisabled,
+          deviceLinksReleased: res.deviceLinksReleased,
+          settlementVoucherCreated: res.settlementVoucher != null,
+        },
+      });
       // settlementVoucher != null ⇒ صُدِّر سند صرف مُعلَّق للتسوية ينتظر اعتماد مديرٍ آخر (فصل مهام #٦).
-      return { id: res.terminationId, settlementVoucher: res.settlementVoucher };
+      return {
+        id: res.terminationId,
+        settlementVoucher: res.settlementVoucher,
+      };
     }),
 });

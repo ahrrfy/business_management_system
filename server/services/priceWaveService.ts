@@ -22,6 +22,7 @@ import {
   productUnits,
   productVariants,
   products,
+  users,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -244,6 +245,35 @@ export async function getPriceUnitHistory(tx: Tx, productUnitId: number, limit =
     .where(eq(priceChangeLog.productUnitId, productUnitId))
     .orderBy(desc(priceChangeLog.createdAt), desc(priceChangeLog.id))
     .limit(limit);
+}
+
+/** أسماء منفّذ التغيير وموجة التسعير اللازمة لعرض سجلّ الوحدة بلا كشف بيانات حساب إضافية. */
+export async function enrichPriceHistoryMetadata(
+  tx: Tx,
+  rows: Array<{ actorUserId: number; waveId: number | null }>,
+) {
+  const actorIds = Array.from(new Set(rows.map((r) => Number(r.actorUserId))));
+  const waveIds = Array.from(
+    new Set(rows.map((r) => r.waveId == null ? null : Number(r.waveId)).filter((id): id is number => id != null)),
+  );
+
+  const actorRows = actorIds.length
+    ? await tx
+        .select({ id: users.id, name: users.name, username: users.username })
+        .from(users)
+        .where(inArray(users.id, actorIds))
+    : [];
+  const waveRows = waveIds.length
+    ? await tx
+        .select({ id: priceUpdateWaves.id, name: priceUpdateWaves.name })
+        .from(priceUpdateWaves)
+        .where(inArray(priceUpdateWaves.id, waveIds))
+    : [];
+
+  return {
+    actors: new Map(actorRows.map((r) => [Number(r.id), r.name?.trim() || r.username?.trim() || null])),
+    waves: new Map(waveRows.map((r) => [Number(r.id), r.name])),
+  };
 }
 
 /** ملء أسماء الوحدات لصفوف السجلّ (لعرض friendly في التقارير). */

@@ -68,7 +68,7 @@ export async function authenticatePin(
   if (!session || session.status !== "COUNTING") {
     // توحيد التوقيت مع مسار PIN الفاشل: scrypt على تجزئة وهمية كي لا يكشف زمنُ
     // الردّ وجودَ الجلسة من عدمه لمن يخمّن رموز الجلسات.
-    if (input.pin) verifyPassword(input.pin, DUMMY_STORED);
+    if (input.pin) await verifyPassword(input.pin, DUMMY_STORED);
     throw new TRPCError({ code: "NOT_FOUND", message: SESSION_UNAVAILABLE_MSG });
   }
 
@@ -92,7 +92,7 @@ export async function authenticatePin(
 
     // كل تكليفات PIN مقفلة ⇒ رسالة قفل صريحة (لا نجرّب ولا نزيد العدّادات).
     if (pinAssignments.length > 0 && unlocked.length === 0) {
-      verifyPassword(pin, DUMMY_STORED); // توحيد التوقيت مع مسار التجربة
+      await verifyPassword(pin, DUMMY_STORED); // توحيد التوقيت مع مسار التجربة
       throw new TRPCError({
         code: "TOO_MANY_REQUESTS",
         message: "أُوقف الدخول مؤقتاً بعد محاولات خاطئة متكررة — حاول بعد 15 دقيقة أو راجع مسؤول الجرد.",
@@ -100,12 +100,17 @@ export async function authenticatePin(
     }
 
     // جرّب التكليفات غير المقفلة — كل مقارنة scrypt timing-safe.
-    const matched =
-      unlocked.find((a) => a.pinHash != null && verifyPassword(pin, a.pinHash)) ?? null;
+    let matched: (typeof unlocked)[number] | null = null;
+    for (const assignment of unlocked) {
+      if (assignment.pinHash != null && (await verifyPassword(pin, assignment.pinHash))) {
+        matched = assignment;
+        break;
+      }
+    }
 
     if (!matched) {
       // غياب أي مرشّح للمقارنة (جلسة بلا تكليفات PIN) ⇒ scrypt وهمي لتوحيد التوقيت.
-      if (unlocked.length === 0) verifyPassword(pin, DUMMY_STORED);
+      if (unlocked.length === 0) await verifyPassword(pin, DUMMY_STORED);
       // ⚠️ كنّا نزيد العدّاد على كل تكليفات PIN غير المقفلة ⇒ ٥ محاولات خاطئة (من أيّ طرف،
       // داخلي أو خارجي يخمّن رمز الجلسة CNT-YYYY-NNNN) تقفل كل عمّال العدّ الميدانيين ١٥ دقيقة
       // فتشلّ يوم الجرد كلّه — DoS تشغيلي. الحماية من التخمين موكولة الآن لحدّ المعدّل على IP

@@ -728,6 +728,7 @@ export default function ProductEdit() {
             onScan={onScan}
             onColorCommit={commitColorRename}
             stockEditable={false}
+            priceHistory
             emptyHint="لا متغيّرات — أضِف عبر المولّد أعلاه."
           />
         </CardContent>

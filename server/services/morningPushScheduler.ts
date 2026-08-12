@@ -13,7 +13,9 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { pushSubscriptions, users } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { getDb, isMultiTenantModeActive } from "../db";
+import { getCurrentCompanyId } from "../tenancy/context";
+import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { getDashboardMetrics, getMyOpenTasksCount } from "./reports/dashboard";
 import {
   claimDailyPushSlot,
@@ -71,6 +73,20 @@ export interface MorningPushRunResult {
  * تُرجع تفصيلاً كافياً للتشخيص. أخطاء الإرسال الفردية لا تُوقف الدورة.
  */
 export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
+  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+    const runs = await runAcrossActiveTenants("morning_push", runMorningBriefPush);
+    return runs.reduce<MorningPushRunResult>(
+      (sum, run) => ({
+        candidates: sum.candidates + run.candidates,
+        sent: sum.sent + run.sent,
+        skippedAlreadySent: sum.skippedAlreadySent + run.skippedAlreadySent,
+        skippedEmpty: sum.skippedEmpty + run.skippedEmpty,
+        goneRevoked: sum.goneRevoked + run.goneRevoked,
+        failed: sum.failed + run.failed,
+      }),
+      { candidates: 0, sent: 0, skippedAlreadySent: 0, skippedEmpty: 0, goneRevoked: 0, failed: 0 },
+    );
+  }
   const result: MorningPushRunResult = {
     candidates: 0, sent: 0, skippedAlreadySent: 0, skippedEmpty: 0, goneRevoked: 0, failed: 0,
   };

@@ -45,7 +45,7 @@ async function seedBase() {
     openId: "local_admin",
     name: "المدير",
     email: "admin@test.local",
-    passwordHash: hashPassword("Admin@12345"),
+    passwordHash: await hashPassword("Admin@12345"),
     role: "admin",
     loginMethod: "local",
     branchId: 1,
@@ -70,7 +70,7 @@ describe("userService.createUser", () => {
     expect(row.role).toBe("cashier");
     expect(row.branchId).toBe(2);
     expect(row.isActive).toBe(true);
-    expect(verifyPassword("Pass1234!Aaa", row.passwordHash)).toBe(true);
+    expect(await verifyPassword("Pass1234!Aaa", row.passwordHash)).toBe(true);
   });
 
   it("يجعل الدور الافتراضي cashier", async () => {
@@ -178,8 +178,8 @@ describe("userService.resetUserPassword", () => {
     const { userId } = await createUser({ name: "ر", email: "r@a.local", password: "Pass1234!Aaa" }, actor);
     await resetUserPassword(userId, "NewPass99!Aaa", actor);
     const row = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
-    expect(verifyPassword("NewPass99!Aaa", row.passwordHash)).toBe(true);
-    expect(verifyPassword("Pass1234!Aaa", row.passwordHash)).toBe(false);
+    expect(await verifyPassword("NewPass99!Aaa", row.passwordHash)).toBe(true);
+    expect(await verifyPassword("Pass1234!Aaa", row.passwordHash)).toBe(false);
   });
 
   it("يرفض كلمة مرور ضعيفة", async () => {
@@ -211,7 +211,7 @@ describe("userService.revokeUserSessions", () => {
     expect(res.userId).toBe(userId);
     const after = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
     expect(new Date(after.sessionsValidFrom).getTime()).toBeGreaterThan(new Date(before.sessionsValidFrom).getTime());
-    expect(verifyPassword("Pass1234!Aaa", after.passwordHash)).toBe(true); // كلمة المرور لم تتغيّر
+    expect(await verifyPassword("Pass1234!Aaa", after.passwordHash)).toBe(true); // كلمة المرور لم تتغيّر
   });
 
   it("رفض: مستخدم غير موجود ⇒ NOT_FOUND", async () => {
@@ -224,7 +224,7 @@ describe("userService.changePassword", () => {
     const { userId } = await createUser({ name: "س", email: "s@a.local", password: "OldPass11!Aaa" }, actor);
     await changePassword(userId, "OldPass11!Aaa", "NewPass22!Aaa");
     const row = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
-    expect(verifyPassword("NewPass22!Aaa", row.passwordHash)).toBe(true);
+    expect(await verifyPassword("NewPass22!Aaa", row.passwordHash)).toBe(true);
   });
 
   it("يرفض كلمة مرور حالية خاطئة", async () => {
