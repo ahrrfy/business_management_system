@@ -118,9 +118,21 @@ export function calcLineTotal(item: InvoiceLine): string {
   return round2(lineBase.minus(disc)).toFixed(2);
 }
 
-/** Per-line margin percent (price-vs-costBase). Returns 2dp string (e.g. "23.45"), or "0" when no cost. */
+/**
+ * تكلفة الوحدة المختارة = تكلفة الوحدة الأساس × معامل التحويل. `costBase` تكلفةُ القطعة (الوحدة
+ * الأساس)، بينما `price` سعرُ الوحدة المختارة (سيت/درزن/كرتون)، فعرضُ `costBase` وحده يُظهر كلفة
+ * القطعة مقابل سعر السيت (هامشٌ منتفخ مضلِّل). نضربها بالمعامل ليتطابقا على الوحدة نفسها. 2dp.
+ * المعامل غير الصالح/الصفري ⇒ 1 (الوحدة الأساس). عرضٌ فقط — الخادم يحسب COGS بالكمية الأساس.
+ */
+export function calcUnitCost(item: InvoiceLine): string {
+  const factorRaw = safeD(item.conversionFactor);
+  const factor = factorRaw.greaterThan(0) ? factorRaw : new Decimal(1);
+  return round2(safeD(item.costBase).times(factor)).toFixed(2);
+}
+
+/** Per-line margin percent (price vs the SELECTED-unit cost). Returns 2dp string, or "0" when no cost. */
 export function calcMargin(item: InvoiceLine): string {
-  const cost = safeD(item.costBase);
+  const cost = safeD(calcUnitCost(item));
   const price = safeD(item.price);
   if (cost.lessThanOrEqualTo(0) || price.lessThanOrEqualTo(0)) return "0";
   return round2(price.minus(cost).dividedBy(cost).times(100)).toFixed(2);
