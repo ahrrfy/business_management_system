@@ -207,7 +207,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             onClick={() => setCollapsed((c) => !c)}
             aria-expanded={!collapsed}
             aria-label={collapsed ? "توسيع بيانات الفاتورة" : "طيّ بيانات الفاتورة"}
-            className="flex size-7 items-center justify-center rounded-md border text-muted-foreground transition hover:bg-accent"
+            className="flex size-7 items-center justify-center rounded-md border text-muted-foreground transition hover:bg-accent print:hidden"
           >
             {collapsed ? <ChevronDown aria-hidden className="size-4" /> : <ChevronUp aria-hidden className="size-4" />}
           </button>
@@ -219,7 +219,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
         <button
           type="button"
           onClick={() => setCollapsed(false)}
-          className="flex w-full flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2 text-start"
+          className="flex w-full flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2 text-start print:hidden"
           aria-label="توسيع بيانات الفاتورة للتعديل"
         >
           <span
@@ -233,7 +233,11 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             )}
           >
             {isSale ? <User aria-hidden className="size-3.5" /> : <Factory aria-hidden className="size-3.5" />}
-            {entitySet ? `${isSale ? "العميل" : "المورد"} محدَّد` : `اختر ${isSale ? "العميل" : "المورد"}`}
+            {entitySet
+              ? `${isSale ? "العميل" : "المورد"} محدَّد`
+              : isReturn
+                ? `نقدي — بلا ${isSale ? "عميل" : "مورّد"}`
+                : `اختر ${isSale ? "العميل" : "المورد"}`}
           </span>
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" dir="ltr">
             <Calendar aria-hidden className="size-3.5" /> {state.date}
@@ -246,10 +250,10 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
         </button>
       )}
 
-      {/* الشبكة الكاملة — تُطوى تلقائياً حين تمتلئ السلة */}
-      {!collapsed && (
-      <div className="px-4 pb-3 pt-2.5">
-        <HeaderSection title="تفاصيل الفاتورة" icon={FileText} columnsClass="grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+      {/* الشبكة الكاملة — تُطوى على الشاشة حين تمتلئ السلة، لكنها تبقى في DOM وتُطبَع دائماً
+          (طباعة المسودّة عبر window.print تعتمد على بيانات الرأس: العميل/الفرع/الشروط/المراجع). */}
+      <div className={cn("px-4 pb-3 pt-2.5", collapsed && "hidden print:block")}>
+        <HeaderSection title="تفاصيل الفاتورة" icon={FileText} columnsClass="grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
           <FieldGroup label="رقم المستند" icon={Hash}>
             <Input value={state.invoiceNumber} readOnly className="bg-muted font-bold" />
           </FieldGroup>
@@ -419,7 +423,6 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           </FieldGroup>
         </HeaderSection>
       </div>
-      )}
     </section>
   );
 }
