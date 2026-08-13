@@ -470,8 +470,10 @@ export async function approveStocktake(
 
     // (٧) آخر جرد معتمد لكل صنف معدود — يغذي «آخر جرد» والجرد الدوري ABC.
     // upsert لا UPDATE: صنف عُدّ صفراً بلا صفّ branchStock يبقى بلا صفّ فيظلّ «لم يُجرد» زوراً.
-    // افتتاحي: نفس الـupsert يختم openedAt لكل معدود (حتى KEEP والمعدود صفراً بلا setStock —
-    // عدُّه = تثبيت أساسه ⇒ يُقفل عليه البيع بالسالب فوراً)؛ COALESCE يصون افتتاحاً أسبق.
+    // «العدّ يفتتح الصنف» (تحقيق سوالب ١٢/٨): أيّ جرد معتمد — افتتاحيّ **أو دوريّ** — يختم openedAt
+    // لكل معدود، حتى KEEP والمعدود صفراً بلا setStock، لأنّ عدَّه = تثبيت أساسه ⇒ يُقفَل عليه البيع
+    // بالسالب فوراً؛ COALESCE يصون افتتاحاً أسبق. (كان محصوراً بالافتتاحيّ ⇒ يبقى المعدود دوريّاً بلا
+    // تعديلٍ «غير مُفتتَح» فيُباع بالسالب رغم جرده — الحلقة المتبقّية من حادثة السوالب.)
     const countedVariantIds = rows
       .filter((r) => r.rawCount != null)
       .map((r) => r.variantId);
@@ -485,15 +487,13 @@ export async function approveStocktake(
             branchId: Number(s.branchId),
             quantity: 0,
             lastCountedAt: now,
-            ...(isOpening ? { openedAt: now } : {}),
+            openedAt: now,
           })),
         )
         .onDuplicateKeyUpdate({
           set: {
             lastCountedAt: now,
-            ...(isOpening
-              ? { openedAt: sql`COALESCE(${branchStock.openedAt}, ${now})` }
-              : {}),
+            openedAt: sql`COALESCE(${branchStock.openedAt}, ${now})`,
           },
         });
     }

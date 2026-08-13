@@ -1448,7 +1448,7 @@ describe("فصل المهام في الاعتماد الافتتاحي", () => {
   });
 });
 
-describe("انحدار: الجرد الدوري لم يتغيّر سلوكه أثناء وضع الافتتاح الفعّال", () => {
+describe("انحدار: الجرد الدوري يحافظ على تصنيفه المحاسبيّ (عجز/زيادة) أثناء وضع الافتتاح الفعّال", () => {
   it("جلسة NORMAL: قيدا عجز/زيادة بمفاتيح STOCKTAKE:* يُرحَّلان كما هما وحركاتها بمرجع STOCKTAKE", async () => {
     await enableOpeningMode(); // الوضع فعّال — يجب ألا يسرّب سلوكه للجرد الدوري
     await db()
@@ -1499,8 +1499,35 @@ describe("انحدار: الجرد الدوري لم يتغيّر سلوكه أ�
       );
     expect(stMoves.length).toBe(2);
 
-    // الجرد الدوري لا يفتتح: openedAt يبقى فارغاً (يُعدّ lastCountedAt فقط).
-    expect((await stockRow(1))?.openedAt).toBeNull();
-    expect((await stockRow(2))?.openedAt).toBeNull();
+    // توسعة (تحقيق سوالب ١٢/٨): الجرد الدوري صار «يفتتح» الصنف عند تعديله — العدّ الفعليّ يثبّت
+    // الرصيد فيُختَم openedAt (يوقف بيعه بالسالب أثناء النافذة). التصنيف المحاسبيّ (عجز/زيادة أعلاه)
+    // مستقلٌّ تماماً ولم يتغيّر. قبلها كان الدوري يعدّ دون افتتاح — السبب المباشر لحادثة السوالب.
+    expect((await stockRow(1))?.openedAt).not.toBeNull();
+    expect((await stockRow(2))?.openedAt).not.toBeNull();
+  });
+
+  it("جلسة NORMAL: صنفٌ عُدّ مطابقاً (KEEP بلا فرق) يُفتَح أيضاً — openedAt يُختَم", async () => {
+    await enableOpeningMode(); // الوضع فعّال — ومع ذلك العدّ الدوري يُغلق السالب
+    await db()
+      .insert(s.branchStock)
+      .values([{ variantId: 1, branchId: 1, quantity: 40 }]); // openedAt = null (غير مُفتتَح)
+    const res = await createStocktakeSession(
+      {
+        name: "دوري-KEEP",
+        branchId: 1,
+        scopeType: "MANUAL",
+        variantIds: [1],
+        assignments: [{ name: "عامل", method: "PIN" }],
+      },
+      MGR,
+    );
+    const aid = await firstAssignmentId(res.sessionId);
+    await insertCount(res.sessionId, 1, aid, 40); // مطابق ⇒ KEEP بلا setStock
+    await forceStocktakeReview(res.sessionId, MGR);
+    await approveAllReadyItems(res.sessionId, MGR);
+    const ok = await approveStocktake(res.sessionId, MGR2);
+    expect(ok.ok).toBe(true);
+    // لا فرق ⇒ لا حركة عجز/زيادة، لكنّ فِعل العدّ يفتتح الصنف (يوقف بيعه بالسالب رغم غياب التعديل).
+    expect((await stockRow(1))?.openedAt).not.toBeNull();
   });
 });
