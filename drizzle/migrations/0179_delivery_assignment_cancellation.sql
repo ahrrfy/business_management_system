@@ -5,8 +5,15 @@
 -- statement below is guarded through information_schema, so the migrator's forward pass is
 -- safe on both drifted-production and freshly-built databases. Connection runs with
 -- multipleStatements=true (same path 0178 uses), so the SET/PREPARE/EXECUTE blocks apply.
+--
+-- Ordering note: `db:migrate:safe` runs this main migration BEFORE the extras pass that
+-- creates `parcelStatus`. So on a fresh migrator-built DB `parcelStatus` is absent here — its
+-- absent branch therefore CREATES the column with the FINAL enum (including CANCELLED) rather
+-- than journaling a no-op the later extra could not recover. ADD COLUMNs omit AFTER anchors so
+-- they never depend on a column an out-of-order extra has not created yet (position is
+-- cosmetic — Drizzle does not rely on physical column order).
 
--- parcelStatus: ensure the enum carries CANCELLED (idempotent MODIFY; only when the column exists)
+-- parcelStatus: MODIFY to the final enum when present, else CREATE it with the final enum (incl CANCELLED)
 SET @has_parcel_status := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'parcelStatus'
@@ -14,14 +21,15 @@ SET @has_parcel_status := (
 SET @ddl := IF(
   @has_parcel_status > 0,
   'ALTER TABLE `deliveryConsignments` MODIFY COLUMN `parcelStatus` ENUM(''ASSIGNED'',''ACCEPTED'',''PICKED_UP'',''OUT_FOR_DELIVERY'',''DELIVERED'',''FAILED'',''CANCELLED'',''RETURNED'') NOT NULL DEFAULT ''ASSIGNED''',
-  'SELECT 1'
+  'ALTER TABLE `deliveryConsignments` ADD COLUMN `parcelStatus` ENUM(''ASSIGNED'',''ACCEPTED'',''PICKED_UP'',''OUT_FOR_DELIVERY'',''DELIVERED'',''FAILED'',''CANCELLED'',''RETURNED'') NOT NULL DEFAULT ''ASSIGNED'''
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
--- consignmentStatus: ensure the enum (correct column name — the #582 contract fix); idempotent MODIFY
+-- consignmentStatus (created by 0029 without CANCELLED): MODIFY to the final enum when present,
+-- else CREATE with the final enum. The MODIFY branch is the real work — it adds CANCELLED.
 SET @has_consignment_status := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'consignmentStatus'
@@ -29,21 +37,21 @@ SET @has_consignment_status := (
 SET @ddl := IF(
   @has_consignment_status > 0,
   'ALTER TABLE `deliveryConsignments` MODIFY COLUMN `consignmentStatus` ENUM(''DISPATCHED'',''DELIVERED'',''PARTIAL'',''CANCELLED'',''RETURNED'',''WRITTEN_OFF'') NOT NULL DEFAULT ''DISPATCHED''',
-  'SELECT 1'
+  'ALTER TABLE `deliveryConsignments` ADD COLUMN `consignmentStatus` ENUM(''DISPATCHED'',''DELIVERED'',''PARTIAL'',''CANCELLED'',''RETURNED'',''WRITTEN_OFF'') NOT NULL DEFAULT ''DISPATCHED'''
 );
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
--- cancelledAt (guarded add)
+-- cancelledAt (guarded add; no AFTER anchor)
 SET @has_cancelled_at := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'cancelledAt'
 );
 SET @ddl := IF(
   @has_cancelled_at = 0,
-  'ALTER TABLE `deliveryConsignments` ADD COLUMN `cancelledAt` TIMESTAMP NULL AFTER `failureReason`',
+  'ALTER TABLE `deliveryConsignments` ADD COLUMN `cancelledAt` TIMESTAMP NULL',
   'SELECT 1'
 );
 PREPARE stmt FROM @ddl;
@@ -51,14 +59,14 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
--- cancellationReason (guarded add)
+-- cancellationReason (guarded add; no AFTER anchor)
 SET @has_cancellation_reason := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'cancellationReason'
 );
 SET @ddl := IF(
   @has_cancellation_reason = 0,
-  'ALTER TABLE `deliveryConsignments` ADD COLUMN `cancellationReason` VARCHAR(500) NULL AFTER `cancelledAt`',
+  'ALTER TABLE `deliveryConsignments` ADD COLUMN `cancellationReason` VARCHAR(500) NULL',
   'SELECT 1'
 );
 PREPARE stmt FROM @ddl;
@@ -66,14 +74,14 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
--- cancelledBy (guarded add)
+-- cancelledBy (guarded add; no AFTER anchor)
 SET @has_cancelled_by := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME = 'cancelledBy'
 );
 SET @ddl := IF(
   @has_cancelled_by = 0,
-  'ALTER TABLE `deliveryConsignments` ADD COLUMN `cancelledBy` INT NULL AFTER `cancellationReason`',
+  'ALTER TABLE `deliveryConsignments` ADD COLUMN `cancelledBy` INT NULL',
   'SELECT 1'
 );
 PREPARE stmt FROM @ddl;
