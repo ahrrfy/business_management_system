@@ -152,6 +152,8 @@ try {
     ["deliveryConsignments", "moneyStatus"], ["deliveryConsignments", "acceptedAt"],
     ["deliveryConsignments", "pickedUpAt"], ["deliveryConsignments", "outForDeliveryAt"],
     ["deliveryConsignments", "failedAt"], ["deliveryConsignments", "failureReason"],
+    ["deliveryConsignments", "cancelledAt"], ["deliveryConsignments", "cancellationReason"],
+    ["deliveryConsignments", "cancelledBy"],
     ["deliveryConsignments", "returnedAt"],
     ["deliveryConsignments", "custodyRecognizedAt"],
     ["deliveryPartyMembers", "memberRole"], ["deliveryRemittanceLines", "grossApplied"],
@@ -205,9 +207,30 @@ try {
     process.exit(1);
   }
 
+  const [deliveryCancellationEnumRows] = await conn.query(
+    "SELECT COLUMN_NAME AS c, COLUMN_TYPE AS t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'deliveryConsignments' AND COLUMN_NAME IN ('parcelStatus', 'consignmentStatus')",
+    [dbName],
+  );
+  const deliveryCancellationEnums = new Map(
+    deliveryCancellationEnumRows.map((row) => [String(row.c), String(row.t)]),
+  );
+  const missingDeliveryCancellationEnums = ["parcelStatus", "consignmentStatus"].filter(
+    (column) => !String(deliveryCancellationEnums.get(column) ?? "").includes("CANCELLED"),
+  );
+  if (missingDeliveryCancellationEnums.length) {
+    console.error(
+      "⛔ قيم enum مفقودة: deliveryConsignments بلا CANCELLED في " +
+        missingDeliveryCancellationEnums.join(", "),
+    );
+    console.error("   عالِج: طبّق الهجرة 0179 قبل إعادة تشغيل خادم الإنتاج.");
+    await conn.end();
+    process.exit(1);
+  }
+
   console.log(`✓ تحقّق المخطط: ${Object.keys(expected).length} جدولاً مطابقة لـ snapshot (${snapFiles[snapFiles.length - 1]}).`);
   console.log(`✓ تحقّق الفهارس: ${CRITICAL_INDEXES.length} فهرساً حرجاً موجودة.`);
   console.log("✓ تحقّق enum: receipts.paymentMethod يحوي TELECOM (I23).");
+  console.log("✓ تحقّق enum: إلغاء إسناد التوصيل متاح في parcelStatus وconsignmentStatus.");
   console.log(`✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`);
   await conn.end();
 } catch (e) {
