@@ -2086,7 +2086,7 @@ export default function Reception() {
       {/* مساحة الحجوزات جزء من شاشة الاستقبال نفسها؛ تبقى السلة محفوظة خلفها عند الرجوع. */}
       {showReservations && (
         <div className="absolute inset-0 z-30 bg-background">
-          <ReservationsHub embedded fixedBranchId={branchId} onClose={closeReservations} />
+          <ReservationsHub embedded fixedBranchId={branchId} currentShiftId={shift?.id ?? null} onClose={closeReservations} />
         </div>
       )}
       {/* ش١ (§٨.١): ورشتا الطلبات وطلبات الموقع لم تعودا طبقتين تُغطّيان لوحة الدفع —

@@ -20,7 +20,7 @@ const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
   "reservationEvents", "reservationLines", "reservationStock", "reservations",
-  "accountingEntries", "receipts", "inventoryMovements",
+  "accountingEntries", "receipts", "invoiceItems", "invoices", "idempotencyKeys", "inventoryMovements", "shifts", "openingModeSettings",
   "branchStock", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "productImages", "products",
   "auditLogs", "customers", "categories", "users", "branches",
 ];
@@ -32,7 +32,10 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
-  await db().insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await db().insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" },
+    { id: 2, openId: "other_cashier", name: "cashier 2", role: "cashier", loginMethod: "local" },
+  ]);
 }
 
 /** منتج بسيط بوحدة أساس (+درزن اختياري factor 12) ومخزون افتتاحي في الفرع ١. */
@@ -183,6 +186,117 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     await convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor);
     await expect(convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor)).rejects.toThrow();
     expect(await onHand(variantId)).toBe(7); // خُصم مرّة واحدة (10−3)
+  });
+
+  it("أولوية صاحب الحجز: انخفاض ATP بسبب حجز لاحق لا يمنع التحويل ما دام الفعلي يغطيه", async () => {
+    const cid = await mkCustomer("صاحب الحجز الأول");
+    const { variantId, baseUnitId } = await mkProduct("RSV-PRIORITY", 10);
+    const first = await createReservation(
+      { branchId: 1, customerId: cid, contactPhone: "07700000013", lines: [{ variantId, productUnitId: baseUnitId, quantity: 4 }] },
+      actor,
+    );
+    await createReservation(
+      { branchId: 1, contactPhone: "07700000014", lines: [{ variantId, productUnitId: baseUnitId, quantity: 5 }] },
+      actor,
+    );
+    expect((await atp(variantId)).available).toBe(1);
+
+    const conv = await convertReservationToSale({ reservationId: first.reservationId, payment: null }, actor);
+    expect(conv.invoiceId).toBeGreaterThan(0);
+    expect(await onHand(variantId)).toBe(6);
+    expect(await reserved(variantId)).toBe(5);
+    expect((await atp(variantId)).available).toBe(1);
+  });
+
+  it("التحويل يرفض المخزون الناقص ذرّياً حتى عند تفعيل سماح السالب في وضع الافتتاح", async () => {
+    const cid = await mkCustomer("حجز لا يرث سماح الافتتاح");
+    const { variantId, baseUnitId } = await mkProduct("RSV-STRICT-STOCK", 6);
+    const r = await createReservation(
+      { branchId: 1, customerId: cid, contactPhone: "07700000017", lines: [{ variantId, productUnitId: baseUnitId, quantity: 2 }] },
+      actor,
+    );
+    await db().update(s.branchStock)
+      .set({ quantity: 1, openedAt: null })
+      .where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, 1)));
+    await db().insert(s.openingModeSettings).values({
+      id: 1,
+      enabled: true,
+      endsAt: new Date(Date.now() + 24 * 60 * 60 * 1_000),
+      maxNegativeQtyPerLine: 10,
+      updatedBy: actor.userId,
+    });
+
+    await expect(convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor))
+      .rejects.toThrow(/المخزون غير كافٍ/);
+    expect(await onHand(variantId)).toBe(1);
+    expect(await reserved(variantId)).toBe(2);
+    const invoices = await db().select({ id: s.invoices.id }).from(s.invoices)
+      .where(eq(s.invoices.sourceId, `RES-${r.reservationId}`));
+    expect(invoices).toHaveLength(0);
+  });
+
+  it("انقضاء الحجز قبل التأكيد يرفض ذرّياً بلا فاتورة أو خصم مخزون", async () => {
+    const cid = await mkCustomer("حجز منقضٍ داخل الحوار");
+    const { variantId, baseUnitId } = await mkProduct("RSV-EXPIRED-DIALOG", 6);
+    const r = await createReservation(
+      { branchId: 1, customerId: cid, contactPhone: "07700000015", lines: [{ variantId, productUnitId: baseUnitId, quantity: 2 }] },
+      actor,
+    );
+    await db().update(s.reservations)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(s.reservations.id, r.reservationId));
+
+    await expect(convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor))
+      .rejects.toThrow(/انتهت مدّة الحجز/);
+    expect(await onHand(variantId)).toBe(6);
+    expect(await reserved(variantId)).toBe(2);
+    const invoices = await db().select({ id: s.invoices.id }).from(s.invoices)
+      .where(eq(s.invoices.sourceId, `RES-${r.reservationId}`));
+    expect(invoices).toHaveLength(0);
+  });
+
+  it("يثبّت وردية القابض الحالية على الفاتورة والإيصال ويعيدها في نتيجة التحويل", async () => {
+    await db().insert(s.shifts).values([
+      { branchId: 1, userId: 2, openingBalance: "0", shiftType: "RETAIL", openGuard: "2:1:RETAIL" },
+      { branchId: 1, userId: 1, openingBalance: "0", shiftType: "RETAIL", openGuard: "1:1:RETAIL" },
+      { branchId: 1, userId: 1, openingBalance: "0", shiftType: "RECEPTION", openGuard: "1:1:RECEPTION" },
+    ]);
+    const otherShift = (await db().select().from(s.shifts).where(eq(s.shifts.userId, 2)))[0];
+    const ownReceptionShift = (await db().select().from(s.shifts).where(and(
+      eq(s.shifts.userId, actor.userId),
+      eq(s.shifts.shiftType, "RECEPTION"),
+    )))[0];
+    const { variantId, baseUnitId } = await mkProduct("RSV-SHIFT", 3);
+    const r = await createReservation(
+      { branchId: 1, contactPhone: "07700000016", lines: [{ variantId, productUnitId: baseUnitId, quantity: 1 }] },
+      actor,
+    );
+
+    await expect(convertReservationToSale({
+      reservationId: r.reservationId,
+      shiftId: null,
+      payment: { amount: "1500", method: "CASH" },
+    }, actor)).rejects.toThrow(/افتح وردية/);
+    await expect(convertReservationToSale({
+      reservationId: r.reservationId,
+      shiftId: Number(otherShift.id),
+      payment: { amount: "1500", method: "CASH" },
+    }, actor)).rejects.toThrow(/وردية مساحة العمل/);
+    expect(await onHand(variantId)).toBe(3);
+    expect(await reserved(variantId)).toBe(1);
+
+    const conv = await convertReservationToSale({
+      reservationId: r.reservationId,
+      shiftId: Number(ownReceptionShift.id),
+      payment: { amount: "1500", method: "CASH" },
+    }, actor);
+    const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, conv.invoiceId)))[0];
+    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, conv.invoiceId)))[0];
+    expect(conv.shiftId).toBe(Number(ownReceptionShift.id));
+    expect(invoice.shiftId).toBe(Number(ownReceptionShift.id));
+    expect(receipt.shiftId).toBe(Number(ownReceptionShift.id));
+    expect(receipt.paymentMethod).toBe("CASH");
+    expect(receipt.cashBucket).toBe("DRAWER");
   });
 
   it("تحويل الحجز ببطاقة/تحويل يرفض المرجع الفارغ ويسجّل المرجع الصحيح خارج عدّ النقدية", async () => {
