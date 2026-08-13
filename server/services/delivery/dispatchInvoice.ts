@@ -155,8 +155,8 @@ export async function dispatchInvoiceInTx(
     if (party.branchId != null && Number(party.branchId) !== Number(inv.branchId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع الفاتورة" });
     }
-    if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُسنَد فاتورة ملغاة أو مرتجعة للتوصيل" });
+    if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُسنَد فاتورة ملغاة أو مرتجعة أو مستبدلة للتوصيل" });
     }
     // مراجعة عدائية ٩/٨ — ازدواج عهدة عبر القناتين: فاتورة طلب متجر (ONLINE) عهدتها تُدار من
     // مسار المتجر (تأكيد المندوب في «توصيلاتي» يرفعها بمفتاح ONLINE_COD_CUSTODY) — إسنادُها
@@ -166,10 +166,23 @@ export async function dispatchInvoiceInTx(
       throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة طلب متجر إلكتروني — إسناد المندوب من شاشة طلبات المتجر لا من هنا (عهدتها تُدار هناك)" });
     }
     // حارس بنيويّ مساند لقيد uq_consignment_invoice: رسالةٌ مفهومة بدل خطأ قاعدة بيانات.
-    const already = (await tx.select({ id: deliveryConsignments.id, n: deliveryConsignments.consignmentNumber })
-      .from(deliveryConsignments).where(eq(deliveryConsignments.invoiceId, input.invoiceId)).limit(1))[0];
-    if (already) {
-      throw new TRPCError({ code: "CONFLICT", message: `الفاتورة مُسنَدة أصلاً للإرسالية ${already.n}` });
+    const already = (await tx.select()
+      .from(deliveryConsignments)
+      .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+      .for("update")
+      .limit(1))[0];
+    if (already && (
+      already.status !== "CANCELLED"
+      || already.parcelStatus !== "CANCELLED"
+      || already.moneyStatus !== "CANCELLED"
+    )) {
+      throw new TRPCError({ code: "CONFLICT", message: `الفاتورة مُسنَدة أصلاً للإرسالية ${already.consignmentNumber}` });
+    }
+    if (already && (!round2(money(already.collectedAmount ?? "0")).isZero() || already.remittanceId != null)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "الإرسالية الملغاة تحمل تحصيلاً أو توريداً؛ لا يمكن إعادة تنشيطها",
+      });
     }
 
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
@@ -189,36 +202,80 @@ export async function dispatchInvoiceInTx(
     // أبداً ⇒ أجرةٌ قبضناها من الزبون أمانةً **لا تصل المندوب إطلاقاً** وتبقى في الدرج بلا
     // مالك. مطابقةٌ الآن لمسار أمر الشغل (dispatch.ts): COUNTER تُصرف فوراً دائماً (قبضناها
     // بالفعل)، وSHOP تُصرف حين لا توريدَ يُخصم منه.
-    const consignmentNumber = await nextConsignmentNumber(tx, Number(inv.branchId));
-    const cnRes = await tx.insert(deliveryConsignments).values({
-      consignmentNumber,
-      branchId: Number(inv.branchId),
-      partyId: input.partyId,
-      invoiceId: Number(inv.id),
-      workOrderId: null,
-      sourceType: input.onlineOrderId != null ? "ONLINE_ORDER" : "INVOICE",
-      sourceId: input.onlineOrderId != null ? Number(input.onlineOrderId) : Number(inv.id),
-      assignedUserId,
-      endCustomerId: inv.customerId ?? null,
-      codAmount: toDbMoney(codAmount),
-      collectedAmount: "0",
-      deliveryFee: toDbMoney(fee),
-      feeCollection,
-      feeSettledAt: null,
-      recipientName: input.recipientName ?? inv.contactName ?? null,
-      recipientPhone: input.recipientPhone ?? inv.contactPhone ?? null,
-      deliveryAddress: input.deliveryAddress ?? null,
-      governorate: input.governorate ?? null,
-      latitude: input.latitude ?? null,
-      longitude: input.longitude ?? null,
-      parcelStatus: "ASSIGNED",
-      moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
-      // اكتمال الدفع لا يثبت وصول الطرد؛ أبقه تشغيلياً مع المندوب حتى ختم التسليم.
-      status: "DISPATCHED",
-      settledAt: codPositive ? null : new Date(),
-      dispatchedBy: actor.userId,
-    });
-    const consignmentId = extractInsertId(cnRes);
+    const dispatchedAt = new Date();
+    let consignmentId: number;
+    let consignmentNumber: string;
+    if (already) {
+      consignmentId = Number(already.id);
+      consignmentNumber = already.consignmentNumber;
+      await tx.update(deliveryConsignments).set({
+        branchId: Number(inv.branchId),
+        partyId: input.partyId,
+        assignedUserId,
+        endCustomerId: inv.customerId ?? null,
+        codAmount: toDbMoney(codAmount),
+        collectedAmount: "0",
+        deliveryFee: toDbMoney(fee),
+        feeCollection,
+        feeSettledAt: null,
+        recipientName: input.recipientName ?? inv.contactName ?? null,
+        recipientPhone: input.recipientPhone ?? inv.contactPhone ?? null,
+        deliveryAddress: input.deliveryAddress ?? null,
+        governorate: input.governorate ?? null,
+        latitude: input.latitude ?? null,
+        longitude: input.longitude ?? null,
+        parcelStatus: "ASSIGNED",
+        moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
+        status: "DISPATCHED",
+        remittanceId: null,
+        dispatchedBy: actor.userId,
+        dispatchedAt,
+        acceptedAt: null,
+        pickedUpAt: null,
+        outForDeliveryAt: null,
+        settledAt: codPositive ? null : dispatchedAt,
+        courierDeliveredAt: null,
+        custodyRecognizedAt: null,
+        failedAt: null,
+        failureReason: null,
+        cancelledAt: null,
+        cancellationReason: null,
+        cancelledBy: null,
+        returnedAt: null,
+      }).where(eq(deliveryConsignments.id, consignmentId));
+    } else {
+      consignmentNumber = await nextConsignmentNumber(tx, Number(inv.branchId));
+      const cnRes = await tx.insert(deliveryConsignments).values({
+        consignmentNumber,
+        branchId: Number(inv.branchId),
+        partyId: input.partyId,
+        invoiceId: Number(inv.id),
+        workOrderId: null,
+        sourceType: input.onlineOrderId != null ? "ONLINE_ORDER" : "INVOICE",
+        sourceId: input.onlineOrderId != null ? Number(input.onlineOrderId) : Number(inv.id),
+        assignedUserId,
+        endCustomerId: inv.customerId ?? null,
+        codAmount: toDbMoney(codAmount),
+        collectedAmount: "0",
+        deliveryFee: toDbMoney(fee),
+        feeCollection,
+        feeSettledAt: null,
+        recipientName: input.recipientName ?? inv.contactName ?? null,
+        recipientPhone: input.recipientPhone ?? inv.contactPhone ?? null,
+        deliveryAddress: input.deliveryAddress ?? null,
+        governorate: input.governorate ?? null,
+        latitude: input.latitude ?? null,
+        longitude: input.longitude ?? null,
+        parcelStatus: "ASSIGNED",
+        moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
+        // اكتمال الدفع لا يثبت وصول الطرد؛ أبقه تشغيلياً مع المندوب حتى ختم التسليم.
+        status: "DISPATCHED",
+        settledAt: codPositive ? null : dispatchedAt,
+        dispatchedBy: actor.userId,
+        dispatchedAt,
+      });
+      consignmentId = extractInsertId(cnRes);
+    }
 
     if (codPositive) {
       // تدقيق ٦/٨ (ث٧): `floatLimit` كان يُدخَل في شاشة الجهة ولا يقرؤه أيّ مسار إسناد ⇒ سقفٌ
@@ -226,7 +283,9 @@ export async function dispatchInvoiceInTx(
       // مراجعة PR #495: الحارس صار **مشتركاً** (parties.assertFloatLimit) فلا ينحرف مساران.
       await assertFloatLimitTx(tx, party, codAmount);
       await appendDeliveryLedgerEntry(tx, {
-        eventKey: `CN:${consignmentId}:COD_ASSIGNED`,
+        eventKey: already
+          ? `CN:${consignmentId}:COD_ASSIGNED:REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
+          : `CN:${consignmentId}:COD_ASSIGNED`,
         partyId: input.partyId,
         consignmentId,
         branchId: Number(inv.branchId),
@@ -237,16 +296,24 @@ export async function dispatchInvoiceInTx(
     }
 
     await appendDeliveryEvent(tx, {
-      eventKey: `CN:${consignmentId}:ASSIGNED`,
+      eventKey: already
+        ? `CN:${consignmentId}:ASSIGNMENT_REACTIVATED:${input.clientRequestId ?? dispatchedAt.getTime()}`
+        : `CN:${consignmentId}:ASSIGNED`,
       consignmentId,
-      eventType: "ASSIGNED",
+      eventType: already ? "ASSIGNMENT_REACTIVATED" : "ASSIGNED",
+      fromParcelStatus: already?.parcelStatus ?? null,
       toParcelStatus: "ASSIGNED",
+      fromMoneyStatus: already?.moneyStatus ?? null,
       toMoneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
       actorUserId: actor.userId,
       payload: {
         partyId: input.partyId,
-        sourceType: input.onlineOrderId != null ? "ONLINE_ORDER" : "INVOICE",
-        sourceId: input.onlineOrderId != null ? Number(input.onlineOrderId) : Number(inv.id),
+        sourceType: already?.sourceType ?? (input.onlineOrderId != null ? "ONLINE_ORDER" : "INVOICE"),
+        sourceId: already == null
+          ? (input.onlineOrderId != null ? Number(input.onlineOrderId) : Number(inv.id))
+          : Number(already.sourceId),
+        previousPartyId: already == null ? null : Number(already.partyId),
+        reactivated: already != null,
       },
     });
 
@@ -260,6 +327,7 @@ export async function dispatchInvoiceInTx(
       invoiceNumber: inv.invoiceNumber,
       codAmount: codAmount.toFixed(2),
       deliveryFee: fee.toFixed(2),
+      reactivated: already != null,
     };
   }
 }

@@ -396,13 +396,13 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
 
   // مع عمود returnedTotal، الصيغة تبسّطت كثيراً:
   //   AR_per_invoice = total - paidAmount - returnedTotal (موقَّع، لا GREATEST(.,0))
-  // الفاتورة CANCELLED تستثنى (التزامها أُلغي).
+  // CANCELLED وSUPERSEDED مستندان نهائيان بلا ذمة: البديلة وحدها تحمل الالتزام بعد التصحيح.
   const invSum = await db
     .select({
       customerId: invoices.customerId,
       arGross: sql<string>`
         COALESCE(SUM(CASE
-          WHEN ${invoices.status} != 'CANCELLED'
+          WHEN ${invoices.status} NOT IN ('CANCELLED', 'SUPERSEDED')
           THEN CAST(${invoices.total} AS DECIMAL(15,2))
              - CAST(${invoices.paidAmount} AS DECIMAL(15,2))
              - CAST(${invoices.returnedTotal} AS DECIMAL(15,2))

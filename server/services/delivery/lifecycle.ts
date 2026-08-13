@@ -19,6 +19,7 @@ export type ParcelStatus =
   | "OUT_FOR_DELIVERY"
   | "DELIVERED"
   | "FAILED"
+  | "CANCELLED"
   | "RETURNED";
 
 export type DeliveryMoneyStatus =
@@ -187,6 +188,7 @@ const allowed: Record<ParcelStatus, ParcelStatus[]> = {
   OUT_FOR_DELIVERY: ["DELIVERED", "FAILED"],
   DELIVERED: [],
   FAILED: ["ASSIGNED", "RETURNED"],
+  CANCELLED: [],
   RETURNED: [],
 };
 

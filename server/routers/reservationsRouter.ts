@@ -3,9 +3,9 @@
 // (requireModule) لا بمجرّد الدور، فمديرٌ صلاحيته reservations=NONE/READ لا يتجاوز.
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { and, asc, desc, eq, gte, inArray, like, lt, or, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, like, lt, or, sql, type SQL } from "drizzle-orm";
 import {
-  branchStock, products, productUnits, productVariants, reservationLines, reservations, reservationStock,
+  branchStock, customers, products, productUnits, productVariants, reservationLines, reservations, reservationStock,
 } from "../../drizzle/schema";
 import { positiveMoneyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
@@ -52,6 +52,52 @@ function assertElevated(role: string | undefined) {
 const ymdString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
 
 export const reservationsRouter = router({
+  /** إفصاح تشغيلي دفعي للسلال: من حجز هذا المتغيّر وكم بقي من حجزه؟
+   * لا يكشف إلا حجوزات الفرع المسموح للمستخدم، ويستبعد المنتهية والصفوف المستوفاة. */
+  activeAllocations: reservationsRead
+    .input(z.object({
+      branchId: z.number().int().positive().optional(),
+      variantIds: z.array(z.number().int().positive()).min(1).max(100),
+    }))
+    .query(async ({ ctx, input }) => {
+      const db = requireDb();
+      const branchId = ctx.scopedBranchId ?? input.branchId;
+      if (branchId == null) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "اختر الفرع لعرض حجوزات المنتجات" });
+      }
+      const variantIds = Array.from(new Set(input.variantIds));
+      const remaining = sql<number>`${reservationLines.baseQuantity} - ${reservationLines.fulfilledBase}`;
+      const rows = await db
+        .select({
+          reservationId: reservations.id,
+          reservationNumber: reservations.reservationNumber,
+          variantId: reservationLines.variantId,
+          remainingBase: remaining,
+          customerName: sql<string>`COALESCE(NULLIF(${reservations.contactName}, ''), NULLIF(${customers.name}, ''), 'عميل غير مسمى')`,
+          expiresAt: reservations.expiresAt,
+        })
+        .from(reservationLines)
+        .innerJoin(reservations, eq(reservations.id, reservationLines.reservationId))
+        .leftJoin(customers, eq(customers.id, reservations.customerId))
+        .where(and(
+          eq(reservations.branchId, branchId),
+          inArray(reservations.status, ["ACTIVE", "PARTIALLY_FULFILLED"]),
+          gt(reservations.expiresAt, new Date()),
+          inArray(reservationLines.variantId, variantIds),
+          gt(remaining, 0),
+        ))
+        .orderBy(asc(reservations.expiresAt), asc(reservations.id));
+
+      return rows.map((row) => ({
+        reservationId: Number(row.reservationId),
+        reservationNumber: row.reservationNumber,
+        variantId: Number(row.variantId),
+        remainingBase: Number(row.remainingBase),
+        customerName: row.customerName,
+        expiresAt: row.expiresAt,
+      }));
+    }),
+
   /** القائمة — فلاتر مدى تاريخ الانتهاء (from/to شامِلَين) + ترتيب «ينتهي أولاً» افتراضياً (طابور
    *  الصباح) + offset/hasMore بدل الاقتطاع الصامت. الاستعلام مباشر هنا (لا listReservations من
    *  الخدمة، القاصرة عن المدى/الترتيب/hasMore — تبقى بلا مسّ) بنفس شروط العزل حرفياً. */

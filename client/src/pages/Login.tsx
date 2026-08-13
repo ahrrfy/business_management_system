@@ -6,7 +6,9 @@ import { Input } from "@/components/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { translateLoginError } from "@/lib/loginErrors";
+import { resetSessionQueryCache } from "@/lib/offline/sessionBoundary";
 import { trpc } from "@/lib/trpc";
+import { useQueryClient } from "@tanstack/react-query";
 import { INTERNAL_ORIGIN, isPublicHost } from "@/lib/siteHosts";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { useEffect, useState } from "react";
@@ -17,6 +19,7 @@ const REMEMBER_KEY = "erp.rememberMe";
 
 export default function Login() {
   const [, navigate] = useLocation();
+  const queryClient = useQueryClient();
   const utils = trpc.useUtils();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -57,10 +60,12 @@ export default function Login() {
     if (multiTenant && companyCode.trim()) {
       localStorage.setItem(LAST_COMPANY_CODE_KEY, companyCode.trim());
     }
-    // refetch (not invalidate): force-await the fresh session so the route
-    // guard sees the authenticated user immediately, avoiding a redirect race.
-    await utils.auth.me.refetch();
-    const role = utils.auth.me.getData()?.role;
+    // مفاتيح الاستعلام لا تتضمن هوية المستخدم؛ امسح كل بيانات الجلسة السابقة قبل
+    // تحميل هوية الجلسة الجديدة كي لا تظهر وردية/صلاحيات موظف آخر ولو للحظة.
+    await resetSessionQueryCache(queryClient);
+    const freshMe = await utils.client.auth.me.query();
+    utils.auth.me.setData(undefined, freshMe);
+    const role = freshMe?.role;
     // سياسة الدومينَين: الدخول من الدومين العام مقصورٌ فعلياً على المندوب (تطبيقه مبنيّ عليه).
     // موظّفٌ آخر دخل من هناك يحصل على جلسةٍ لا تُقرأ على دومين الشركة (الكوكي مقصور بالمضيف) ⇒
     // كل شاشة داخلية تقذفه لدخولٍ ثانٍ. نُنهي اللبس فوراً: ننقله لدخول دومين الشركة صراحةً.

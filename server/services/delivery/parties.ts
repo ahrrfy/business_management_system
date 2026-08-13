@@ -21,7 +21,7 @@ async function assertNoOpenCourierOrders(tx: Tx, partyId: number): Promise<void>
   const openConsignments = (await tx
     .select({ n: sql<number>`COUNT(*)` })
     .from(deliveryConsignments)
-    .where(and(eq(deliveryConsignments.partyId, partyId), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
+    .where(and(eq(deliveryConsignments.partyId, partyId), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
   if (Number(openStore?.n ?? 0) > 0 || Number(openConsignments?.n ?? 0) > 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل/فكّ ربط جهة عليها طلبات قيد التوصيل — سلّمها أو أعِد إسنادها أولاً" });
   }
@@ -194,7 +194,7 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
         const open = (await tx
           .select({ n: sql<number>`COUNT(*)` })
           .from(deliveryConsignments)
-          .where(and(eq(deliveryConsignments.partyId, input.id), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
+          .where(and(eq(deliveryConsignments.partyId, input.id), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
         if (Number(open?.n ?? 0) > 0) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُغيَّر فرع جهةٍ عليها إرساليات مفتوحة — سوِّها أو أرجِعها أولاً" });
         }
@@ -229,7 +229,7 @@ export async function setDeliveryPartyActive(id: number, isActive: boolean, _act
       const openCn = (await tx
         .select({ n: sql<number>`COUNT(*)` })
         .from(deliveryConsignments)
-        .where(and(eq(deliveryConsignments.partyId, id), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
+        .where(and(eq(deliveryConsignments.partyId, id), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
       if (Number(openCn?.n ?? 0) > 0) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل جهة لها إرساليات مفتوحة — ورِّدها أو أرجِعها أو اشطبها موجَّهةً أولاً" });
       }
@@ -284,7 +284,7 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
       oldest: sql<string | null>`MIN(${deliveryConsignments.dispatchedAt})`,
     })
     .from(deliveryConsignments)
-    .where(sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)
+    .where(sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)
     .groupBy(deliveryConsignments.partyId);
   const openMap = new Map(openAgg.map((r) => [Number(r.partyId), { openCount: Number(r.openCount), oldest: r.oldest }]));
 
@@ -419,7 +419,7 @@ export async function removeDeliveryPartyMember(
     const assigned = (await tx.select({ n: sql<number>`COUNT(*)` }).from(deliveryConsignments).where(and(
       eq(deliveryConsignments.partyId, input.partyId),
       eq(deliveryConsignments.assignedUserId, input.userId),
-      sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED')`,
+      sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED')`,
     )))[0];
     if (Number(assigned?.n ?? 0) > 0) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يمكن إزالة السائق قبل إعادة إسناد طروده المفتوحة" });

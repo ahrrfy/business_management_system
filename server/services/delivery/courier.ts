@@ -189,7 +189,7 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
     consignmentQuery()
       .where(and(
         consignmentScope,
-        sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED')`,
+        sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED')`,
       ))
       .orderBy(desc(deliveryConsignments.id)),
     consignmentQuery()
@@ -583,7 +583,7 @@ export async function confirmConsignmentDelivery(
 export async function transitionConsignmentParcel(
   input: {
     consignmentId: number;
-    toStatus: Exclude<ParcelStatus, "DELIVERED" | "RETURNED">;
+    toStatus: Exclude<ParcelStatus, "DELIVERED" | "CANCELLED" | "RETURNED">;
     reason?: string | null;
     clientRequestId: string;
   },

@@ -1774,6 +1774,11 @@ export default function Reception() {
    */
   async function captureOfflineReception(): Promise<boolean> {
     if (!shift || cart.length === 0) return false;
+    const capturedByUserId = me.data?.id;
+    if (!Number.isInteger(capturedByUserId) || Number(capturedByUserId) <= 0) {
+      notify.errBig("تعذّر تثبيت هوية الموظف — أعد تسجيل الدخول قبل قبض نقد دون اتصال");
+      return false;
+    }
     // مراجعة عدائية (٥/٨) — **حاصرة**: طلبٌ محفوظ (مسوّدة) لا يُلتقَط أوفلاينياً أبداً.
     // التثبيت يلتزم خادمياً بمفتاح المسوّدة (commitRequestId) بينما الالتقاط كان سيرحّل
     // بمفتاح الواجهة (reqIdRef) المختلف ⇒ uq_invoice_source عاجزٌ عن صدّ فاتورةٍ ثانية
@@ -1874,6 +1879,7 @@ export default function Reception() {
       payload,
       offlineReceiptNumber: receiptNumber,
       total: round2(grandTotalD).toFixed(2),
+      capturedByUserId: Number(capturedByUserId),
     });
     if (!stored) {
       notify.errBig("تعذّر حفظ العملية محلياً (مساحة المتصفح؟) — لا تُسلّم البضاعة قبل عودة الاتصال.");
@@ -2452,8 +2458,10 @@ export default function Reception() {
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-foreground" dir="ltr">
                       <span className="text-right">{r.sku} · {r.unitName}</span>
-                      {r.stockBase != null && r.stockBase > 0 && (
-                        <span className="ms-2">· متوفّر: {r.stockBase}</span>
+                      {!r.isService && (
+                        <span className="ms-2">
+                          · فعلي: {r.stockBase ?? 0} · محجوز: {r.reservedBase ?? 0} · متاح: {r.availableBase ?? r.stockBase ?? 0}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -2698,6 +2706,7 @@ export default function Reception() {
             </div>
           ) : (
             <CartTable
+              branchId={branchId}
               cart={cart}
               selKey={selKey}
               onSelect={setSelKey}

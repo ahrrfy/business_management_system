@@ -29,7 +29,9 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type PaymentMethod } from "@/lib/paymentMethod";
 import { invoiceStatusLabel, sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { X } from "lucide-react";
+import { FileWarning, Truck, X } from "lucide-react";
+import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
+import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 
@@ -40,11 +42,11 @@ const PAGE_SIZE = 50;
 
 const STATUS: Record<string, string> = {
   PENDING: "معلّقة", PARTIALLY_PAID: "مدفوعة جزئياً", PAID: "مدفوعة",
-  CONFIRMED: "مؤكّدة", CANCELLED: "ملغاة", RETURNED: "مرتجعة",
+  CONFIRMED: "مؤكّدة", CANCELLED: "ملغاة", RETURNED: "مرتجعة", SUPERSEDED: "مستبدلة بفاتورة مصححة",
 };
 const STATUS_CLS: Record<string, string> = {
   PAID: "badge-status-active", PARTIALLY_PAID: "badge-stock-low",
-  PENDING: "badge-status-cancelled", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out",
+  PENDING: "badge-status-cancelled", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out", SUPERSEDED: "badge-status-cancelled",
 };
 const BALANCE_FILTER = {
   DEPOSIT_DUE: "عربون — متبقّي للتحصيل",
@@ -67,6 +69,7 @@ const CONSIGNMENT_STATUS: Record<string, { label: string; cls: string }> = {
   DELIVERED: { label: "سُلِّمت", cls: "badge-status-active" },
   RETURNED: { label: "أُرجعت", cls: "badge-stock-out" },
   WRITTEN_OFF: { label: "شُطبت", cls: "badge-stock-out" },
+  CANCELLED: { label: "أُلغي التوصيل", cls: "badge-stock-out" },
 };
 
 function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "returnedTotal" | "status">) {
@@ -208,6 +211,8 @@ export default function Invoices() {
   // حالة تحضير تصدير «الكل» (جلب كامل النتائج المطابقة للفلتر، لا الصفحة المعروضة).
   const [exporting, setExporting] = useState(false);
   const [printingReceiptId, setPrintingReceiptId] = useState<number | null>(null);
+  const [dispatchTarget, setDispatchTarget] = useState<Row | null>(null);
+  const [cancelDeliveryTarget, setCancelDeliveryTarget] = useState<Row | null>(null);
 
   // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
   const taxSettings = trpc.system.getTaxSettings.useQuery();
@@ -506,8 +511,8 @@ export default function Invoices() {
       cell: (c) => {
         const r = c.row.original;
         // مسوّاة = لا دفعات بعدها؛ غير قابلة للإرجاع = ملغاة/مرتجعة بالكامل.
-        const settled = r.status === "PAID" || r.status === "CANCELLED" || r.status === "RETURNED";
-        const returnable = r.status !== "CANCELLED" && r.status !== "RETURNED";
+        const settled = r.status === "PAID" || r.status === "CANCELLED" || r.status === "RETURNED" || r.status === "SUPERSEDED";
+        const returnable = r.status !== "CANCELLED" && r.status !== "RETURNED" && r.status !== "SUPERSEDED";
         return (
           <RowActions
             mode="auto"
@@ -548,6 +553,40 @@ export default function Invoices() {
                 label: "طباعة A4",
                 onSelect: () => void printA4(r.id),
                 gate: { module: "sales", level: "READ" },
+              },
+              {
+                key: "correct",
+                kind: "correct",
+                icon: FileWarning,
+                label: "تعديل / استبدال موثّق",
+                href: `/invoices/${r.id}/correct`,
+                hidden:
+                  r.status === "CANCELLED" || r.status === "RETURNED" || r.status === "SUPERSEDED" ||
+                  r.sourceType === "WORKORDER" || (!!r.consignmentStatus && r.consignmentStatus !== "CANCELLED") ||
+                  !D(r.returnedTotal ?? "0").isZero() || !D(r.paidAmount ?? "0").isZero(),
+                gate: { roles: ["manager"], module: "sales", level: "FULL" },
+              },
+              {
+                key: "dispatch",
+                kind: "transfer",
+                icon: Truck,
+                label: "إسناد للتوصيل",
+                onSelect: () => setDispatchTarget(r),
+                hidden:
+                  (!!r.consignmentStatus && r.consignmentStatus !== "CANCELLED") ||
+                  r.status === "CANCELLED" || r.status === "RETURNED" || r.status === "SUPERSEDED" ||
+                  r.sourceType === "ONLINE" || r.sourceType === "WORKORDER",
+                gate: { roles: ["manager", "cashier", "sales_rep"], module: "store", level: "FULL" },
+              },
+              {
+                key: "cancel-delivery",
+                kind: "cancel",
+                label: "إلغاء إسناد التوصيل",
+                onSelect: () => setCancelDeliveryTarget(r),
+                variant: "destructive",
+                hidden: r.consignmentId == null ||
+                  (r.consignmentParcelStatus !== "ASSIGNED" && r.consignmentParcelStatus !== "FAILED"),
+                gate: { roles: ["manager"], module: "store", level: "FULL" },
               },
               {
                 key: "duplicate",
@@ -820,6 +859,27 @@ export default function Invoices() {
           </CardContent>
         </Card>
       )}
+      <InvoiceDispatchDialog
+        open={dispatchTarget != null}
+        onOpenChange={(open) => { if (!open) setDispatchTarget(null); }}
+        invoice={dispatchTarget ? {
+          id: dispatchTarget.id,
+          invoiceNumber: dispatchTarget.invoiceNumber,
+          total: dispatchTarget.total,
+          paidAmount: dispatchTarget.paidAmount,
+          returnedTotal: dispatchTarget.returnedTotal,
+          customerName: dispatchTarget.customerName,
+          customerPhone: dispatchTarget.customerPhone,
+        } : null}
+      />
+      <CancelDeliveryAssignmentDialog
+        open={cancelDeliveryTarget != null}
+        onOpenChange={(open) => { if (!open) setCancelDeliveryTarget(null); }}
+        consignment={cancelDeliveryTarget?.consignmentId ? {
+          id: cancelDeliveryTarget.consignmentId,
+          number: cancelDeliveryTarget.consignmentNumber ?? `#${cancelDeliveryTarget.consignmentId}`,
+        } : null}
+      />
     </div>
   );
 }

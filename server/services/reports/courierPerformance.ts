@@ -219,7 +219,7 @@ export async function getCourierPerformance(
       cnReturned: sql<number>`SUM(CASE WHEN ${deliveryConsignments.parcelStatus} = 'RETURNED' THEN 1 ELSE 0 END)`,
       cnWrittenOff: sql<number>`SUM(CASE WHEN ${deliveryConsignments.moneyStatus} = 'WRITTEN_OFF' THEN 1 ELSE 0 END)`,
       cnFailed: sql<number>`SUM(CASE WHEN ${deliveryConsignments.parcelStatus} = 'FAILED' THEN 1 ELSE 0 END)`,
-      cnOpen: sql<number>`SUM(CASE WHEN ${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') THEN 1 ELSE 0 END)`,
+      cnOpen: sql<number>`SUM(CASE WHEN ${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','CANCELLED','RETURNED') THEN 1 ELSE 0 END)`,
       cnValue: sql<string>`COALESCE(SUM(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2))), 0)`,
       // GREATEST(...,0): توريدٌ مختومٌ بلحظةٍ سابقة للإرسال (انحراف ساعة الجهاز/بيانات قديمة) كان
       // يعطي فرقاً سالباً يجرّ المتوسط لأسفل زوراً — نحصره بصفر (مراجعة نهائية ١٠/٨).

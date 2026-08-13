@@ -474,15 +474,6 @@ export const saleRouter = router({
         invoiceId: z.number().int().positive(),
         notes: z.string().max(5_000).optional(),
         dueDate: ymd.nullable().optional(),
-        receiptMethods: z
-          .array(
-            z.object({
-              receiptId: z.number().int().positive(),
-              method,
-            }),
-          )
-          .max(50)
-          .optional(),
         reason: z.string().trim().min(3, "اكتب سبب التعديل").max(500),
       }),
     )
@@ -514,28 +505,6 @@ export const saleRouter = router({
           .where(eq(receipts.invoiceId, input.invoiceId))
           .for("update");
 
-        const requestedMethods = new Map<number, z.infer<typeof method>>();
-        for (const receipt of input.receiptMethods ?? []) {
-          if (requestedMethods.has(receipt.receiptId)) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "تكرر سند الدفع في طلب التعديل",
-            });
-          }
-          requestedMethods.set(receipt.receiptId, receipt.method);
-        }
-        const receiptIds = new Set(
-          invoiceReceipts.map((receipt) => Number(receipt.id)),
-        );
-        for (const receiptId of Array.from(requestedMethods.keys())) {
-          if (!receiptIds.has(receiptId)) {
-            throw new TRPCError({
-              code: "FORBIDDEN",
-              message: "سند الدفع لا يتبع هذه الفاتورة",
-            });
-          }
-        }
-
         const oldFields = {
           notes: inv.notes ?? null,
           dueDate: inv.dueDate ? String(inv.dueDate).slice(0, 10) : null,
@@ -557,61 +526,16 @@ export const saleRouter = router({
               ? String(inv.dueDate).slice(0, 10)
               : null
             : input.dueDate;
-        const nextReceipts = invoiceReceipts.map((receipt) => ({
-          ...receipt,
-          nextMethod:
-            requestedMethods.get(Number(receipt.id)) ?? receipt.paymentMethod,
-        }));
-        const receiptMethodChanged = nextReceipts.some(
-          (receipt) => receipt.nextMethod !== receipt.paymentMethod,
-        );
         const headerChanged =
           nextNotes !== (inv.notes ?? null) ||
           nextDueDate !==
             (inv.dueDate ? String(inv.dueDate).slice(0, 10) : null);
-        if (!headerChanged && !receiptMethodChanged) {
+        if (!headerChanged) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "لم يتغير أي حقل في الفاتورة",
           });
         }
-
-        for (const receipt of nextReceipts) {
-          if (receipt.nextMethod === receipt.paymentMethod) continue;
-          // لا يجوز إنشاء حركة درج نقدي بلا وردية؛ إن كانت دفعة البطاقة الأصلية
-          // مرتبطة بورديّة الفاتورة نستخدمها عند التصحيح، وإلا يلزم تسجيلها عبر
-          // مسار خزينة مناسب بدلاً من توليد نقدٍ يتيم في التقارير.
-          if (
-            receipt.nextMethod === "CASH" &&
-            receipt.shiftId == null &&
-            inv.shiftId == null
-          ) {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message:
-                "لا يمكن تحويل الدفعة إلى نقدي بلا وردية مرتبطة بالفاتورة",
-            });
-          }
-          // طريقة الدفع هي مصدر تقارير الصندوق والبطاقات. لذلك تُعدّل في سند القبض
-          // نفسه، لا في شارة الفاتورة فقط. النقد يبقى مرتبطاً بدرج الكاشير إن وُجد.
-          await tx
-            .update(receipts)
-            .set({
-              paymentMethod: receipt.nextMethod,
-              cashBucket: receipt.nextMethod === "CASH" ? "DRAWER" : null,
-              shiftId:
-                receipt.nextMethod === "CASH"
-                  ? (receipt.shiftId ?? inv.shiftId)
-                  : receipt.shiftId,
-            })
-            .where(eq(receipts.id, receipt.id));
-        }
-
-        // invoices.paymentMethod حقل عرض مختصر فقط؛ مصدر الحقيقة للدفعات هو receipts.
-        // في الدفع المختلط نحتفظ بآخر طريقة قبض، كما يفعل تسجيل الدفعة الاعتيادي.
-        const lastReceipt = nextReceipts.at(-1);
-        const nextPaymentMethod =
-          lastReceipt?.nextMethod ?? inv.paymentMethod ?? null;
         await tx
           .update(invoices)
           .set({
@@ -619,18 +543,17 @@ export const saleRouter = router({
             dueDate: nextDueDate
               ? new Date(`${nextDueDate}T00:00:00.000Z`)
               : null,
-            paymentMethod: nextPaymentMethod,
           })
           .where(eq(invoices.id, input.invoiceId));
 
         const newFields = {
           notes: nextNotes,
           dueDate: nextDueDate,
-          paymentMethod: nextPaymentMethod,
-          receipts: nextReceipts.map((receipt) => ({
+          paymentMethod: inv.paymentMethod ?? null,
+          receipts: invoiceReceipts.map((receipt) => ({
             receiptId: Number(receipt.id),
-            method: receipt.nextMethod,
-            cashBucket: receipt.nextMethod === "CASH" ? "DRAWER" : null,
+            method: receipt.paymentMethod,
+            cashBucket: receipt.cashBucket,
           })),
         };
         await logAuditTx(tx, ctx, {
@@ -647,7 +570,7 @@ export const saleRouter = router({
 
   /**
    * تصحيح الفاتورة الكامل (0168) — «عكسٌ كامل + إعادة إصدار» بفاتورةٍ جديدة مربوطة (SUPERSEDED).
-   * يختلف عن `correct` أعلاه (تصحيحٌ بيانيّ محدود: ملاحظات/استحقاق/طريقة الدفع بلا مسّ البنود/الدفتر).
+   * يختلف عن `correct` أعلاه (تصحيحٌ بيانيّ محدود: ملاحظات/استحقاق بلا مسّ البنود/الإيصال/الدفتر).
    * هذا يعكس قيود SALE/COGS/المخزون/الذمم ثم يُعيد إصدارها بالبنود/الأسعار/الكميات المصحّحة.
    * مديريّ فقط (قرار المالك §١٠، مرآة المرتجع). موافقة المدير تُغطّي تجاوز الائتمان/البيع تحت التكلفة.
    * التفصيل: docs/invoice-correction-design-2026-08-10.md. الخدمة correctSale (مُتحقَّقةٌ باختبارات).
@@ -800,6 +723,7 @@ export const saleRouter = router({
             // التوصيل (٩/٨): شارة «توصيل — بيد فلان» وفلترها في شاشة الفواتير. صفّ واحد كحدّ
             // أقصى لكل فاتورة (uq_consignment_invoice) ⇒ لا مضاعفة صفوف.
             consignmentId: deliveryConsignments.id,
+            consignmentParcelStatus: deliveryConsignments.parcelStatus,
             // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
             consignmentNumber: sql<string | null>`COALESCE(${deliveryConsignments.consignmentNumber}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN ${onlineOrders.orderNumber} END)`,
             consignmentStatus: unifiedConsignmentStatus,
@@ -859,6 +783,7 @@ export const saleRouter = router({
             deviceId: invoices.posDeviceId,
             // التوصيل (٩/٨) — مرآة list حرفياً (نفس الشروط تتطلّب نفس الـjoin).
             consignmentId: deliveryConsignments.id,
+            consignmentParcelStatus: deliveryConsignments.parcelStatus,
             // ١٠/٨ — قناة المتجر بلا إرسالية: المرجع = رقم الطلب، والحالة تُشتقّ من الطلب المُسنَد.
             consignmentNumber: sql<string | null>`COALESCE(${deliveryConsignments.consignmentNumber}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN ${onlineOrders.orderNumber} END)`,
             consignmentStatus: unifiedConsignmentStatus,
@@ -913,11 +838,13 @@ export const saleRouter = router({
         await db
           .select({
             count: sql<number>`COUNT(*)`,
-            totalAmount: sql<string>`COALESCE(SUM(${invoices.total}), 0)`,
-            paidAmount: sql<string>`COALESCE(SUM(${invoices.paidAmount}), 0)`,
+            // المجاميع التاريخية تبقي الملغاة كما في العقد القائم؛ المستبدلة وحدها تُستبعد
+            // لأن البديلة تمثّل نفس العملية، وإدخال الأصل معها يضاعف الإجمالي والمقبوض ظاهرياً.
+            totalAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} != 'SUPERSEDED' THEN ${invoices.total} ELSE 0 END), 0)`,
+            paidAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} != 'SUPERSEDED' THEN ${invoices.paidAmount} ELSE 0 END), 0)`,
             // المتبقي (AR الحقيقي): total − paidAmount − returnedTotal لغير الملغاة
             // (الملغاة لا ذمة عليها؛ المرتجع جزئياً يُخصم منه ما أُرجع).
-            dueAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} != 'CANCELLED'
+            dueAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} NOT IN ('CANCELLED', 'SUPERSEDED')
               THEN CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           })
           .from(invoices)
@@ -992,7 +919,9 @@ export const saleRouter = router({
           courierName: sql<string | null>`COALESCE(${deliveryParties.name}, ${onlineDeliveryParty.name})`,
           courierFee: sql<string | null>`COALESCE(${deliveryConsignments.deliveryFee}, CASE WHEN CAST(${invoices.deliveryFee} AS DECIMAL(15,2)) > 0 THEN NULL ELSE ${onlineOrders.shippingCost} END)`,
           courierFeeCollection: sql<"COURIER" | "COUNTER" | "SHOP" | null>`COALESCE(${deliveryConsignments.feeCollection}, CASE WHEN ${onlineOrders.deliveryPartyId} IS NOT NULL THEN 'COURIER' END)`,
+          consignmentId: deliveryConsignments.id,
           consignmentNumber: deliveryConsignments.consignmentNumber,
+          consignmentParcelStatus: deliveryConsignments.parcelStatus,
           // ٩/٨: حالة الإرسالية وتوقيتاها — «وين طلبي؟» كان ينقطع خيطه هنا (الرقم بلا حالة).
           consignmentStatus: unifiedConsignmentStatus,
           consignmentDispatchedAt: deliveryConsignments.dispatchedAt,

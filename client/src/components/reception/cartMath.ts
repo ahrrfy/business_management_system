@@ -99,7 +99,7 @@ export function buildStockState(cart: CartLine[]) {
       return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
     }
     const convFactor = Number(line.row.conversionFactor) || 1;
-    const availBase = line.row.stockBase ?? 0;
+    const availBase = line.row.availableBase ?? line.row.stockBase ?? 0;
     const reqBase = demandByVariant.get(line.row.variantId) ?? line.qty * convFactor;
     const isOut = availBase <= 0;
     const isShort = !isOut && reqBase > availBase;

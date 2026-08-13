@@ -26,7 +26,7 @@ export async function getTodayNetSales(branchId?: number, now: Date = new Date()
     FROM invoices
     WHERE invoiceDate >= ${start}
       AND invoiceDate < ${endExclusive}
-      AND invoiceStatus <> 'CANCELLED'
+      AND invoiceStatus NOT IN ('CANCELLED', 'SUPERSEDED')
       ${branchId != null ? sql`AND branchId = ${branchId}` : sql``}
   `);
   const rows = (result as unknown as [Array<Record<string, unknown>>])[0] ?? [];

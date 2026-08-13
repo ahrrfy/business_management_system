@@ -29,6 +29,8 @@ import { AlertTriangle, CheckCircle2, CloudOff, CloudUpload, RefreshCw, Settings
 export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
   const connState = useConnectivity();
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery(undefined, { retry: false });
+  const currentUserId = Number(me.data?.id ?? 0) || null;
   const [summary, setSummary] = useState<OutboxSummary | null>(null);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<OfflineOutboxItem[]>([]);
@@ -80,14 +82,14 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
 
   const flushNow = useCallback(
     (force = false) => {
-      if (connectivity.get() !== "online") return;
-      void flushOutbox(api, { force }).then(() => {
+      if (connectivity.get() !== "online" || currentUserId == null) return;
+      void flushOutbox(api, { force, currentUserId }).then(() => {
         refresh();
         // بعد تفريغٍ ناجح: أنعش شاشات المبيعات/المخزون (الفواتير الرسمية وصلت الآن).
         void utils.catalog.posList.invalidate();
       });
     },
-    [api, refresh, utils],
+    [api, currentUserId, refresh, utils],
   );
 
   useEffect(() => {

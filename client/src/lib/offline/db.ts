@@ -7,6 +7,7 @@
 
 import Dexie, { type Table } from "dexie";
 import type { OfflineCatalogRow, OfflineCustomerRow, OfflineStockRow } from "@shared/offlineCatalog";
+import { LEGACY_OUTBOX_REVIEW_MESSAGE } from "./outboxIdentity";
 
 export interface OfflineMetaRow {
   key: string;
@@ -27,6 +28,8 @@ export interface OfflineOutboxItem {
   payload: unknown;
   offlineReceiptNumber: string;
   capturedAt: string;
+  /** هوية الموظف الذي قبض العملية؛ لا تُعاد العملية آلياً تحت جلسة موظف آخر. */
+  capturedByUserId: number | null;
   shiftId: number | null;
   branchId: number;
   status: "QUEUED" | "SENDING" | "SENT" | "PARKED";
@@ -81,6 +84,20 @@ class OfflineDb extends Dexie {
       keys: "name",
       profile: "key",
     });
+    this.version(3)
+      .stores({
+        outbox: "clientRequestId, status, capturedAt, capturedByUserId",
+      })
+      .upgrade(async (tx) => {
+        await tx.table("outbox").toCollection().modify((item: OfflineOutboxItem) => {
+          if (Number.isInteger(item.capturedByUserId) && Number(item.capturedByUserId) > 0) return;
+          item.capturedByUserId = null;
+          if (item.status === "QUEUED" || item.status === "SENDING") {
+            item.status = "PARKED";
+            item.lastError = LEGACY_OUTBOX_REVIEW_MESSAGE;
+          }
+        });
+      });
   }
 }
 

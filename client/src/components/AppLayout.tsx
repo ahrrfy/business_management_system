@@ -4,7 +4,9 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { openSearch } from "@/lib/searchEvents";
+import { resetSessionQueryCache } from "@/lib/offline/sessionBoundary";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
@@ -123,18 +125,18 @@ function isModuleActive(loc: string, href: string): boolean {
 }
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
-  const [loc, navigate] = useLocation();
+  const [loc] = useLocation();
+  const queryClient = useQueryClient();
   const me = trpc.auth.me.useQuery();
   const myStocktakes = trpc.count.mine.useQuery(undefined, {
     enabled: Boolean(me.data),
     refetchInterval: 30_000,
   });
-  const utils = trpc.useUtils();
   const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
-      await utils.auth.me.invalidate();
-      navigate("/login");
+      await resetSessionQueryCache(queryClient);
+      window.location.replace("/login");
     },
   });
 

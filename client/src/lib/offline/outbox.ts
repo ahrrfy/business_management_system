@@ -15,6 +15,8 @@
 import { getLastSyncAt } from "./catalogSync";
 import { decryptJson, encryptJson, isEncryptedEnvelope } from "./crypto";
 import { getMeta, offlineDb, setMeta, type OfflineOutboxItem, type OfflineOutboxKind } from "./db";
+import { getOfflineProfile } from "./pinLock";
+import { LEGACY_OUTBOX_REVIEW_MESSAGE, partitionOutboxByIdentity } from "./outboxIdentity";
 
 export const OFFLINE_QUEUE_CAP_IQD = 5_000_000;
 export const OFFLINE_CACHE_MAX_AGE_MS = 48 * 60 * 60 * 1000;
@@ -163,8 +165,12 @@ export async function enqueueOfflineItem(args: {
   payload: OfflinePayload;
   offlineReceiptNumber: string;
   total: string;
+  capturedByUserId?: number;
 }): Promise<boolean> {
   try {
+    const profile = args.capturedByUserId ? null : await getOfflineProfile();
+    const capturedByUserId = Number(args.capturedByUserId ?? profile?.userId ?? 0);
+    if (!Number.isInteger(capturedByUserId) || capturedByUserId <= 0) return false;
     const item: OfflineOutboxItem = {
       clientRequestId: args.payload.clientRequestId,
       kind: args.kind,
@@ -173,6 +179,7 @@ export async function enqueueOfflineItem(args: {
       payload: await encryptJson(args.payload),
       offlineReceiptNumber: args.offlineReceiptNumber,
       capturedAt: new Date().toISOString(),
+      capturedByUserId,
       shiftId: args.payload.shiftId,
       branchId: args.payload.branchId,
       status: "QUEUED",
@@ -194,6 +201,7 @@ export async function enqueueOfflineSale(args: {
   payload: OfflineSalePayload;
   offlineReceiptNumber: string;
   total: string;
+  capturedByUserId?: number;
 }): Promise<boolean> {
   return enqueueOfflineItem({ kind: "SALE", ...args });
 }
@@ -267,8 +275,12 @@ async function cleanupSent(): Promise<void> {
 }
 
 /** تفريغ الطابور: FIFO، طلب واحد بالطيران. يُستدعى من محفّزات useOutbox أو زرّ «مزامنة الآن». */
-export async function flushOutbox(api: ReplaySaleApi | ReplayApiMap, opts?: { force?: boolean }): Promise<void> {
+export async function flushOutbox(
+  api: ReplaySaleApi | ReplayApiMap,
+  opts: { currentUserId: number; force?: boolean },
+): Promise<void> {
   const apis = toApiMap(api);
+  if (!Number.isInteger(opts.currentUserId) || opts.currentUserId <= 0) return;
   if (flushState.flushing) return;
   if (!opts?.force && Date.now() < flushState.backoffUntil) return;
   flushState.flushing = true;
@@ -280,7 +292,16 @@ export async function flushOutbox(api: ReplaySaleApi | ReplayApiMap, opts?: { fo
     let skippedKinds = 0;
     for (;;) {
       const queued = await offlineDb.outbox.where("status").equals("QUEUED").sortBy("capturedAt");
-      const next = queued[skippedKinds];
+      const { replayable, legacy } = partitionOutboxByIdentity(queued, opts.currentUserId);
+      if (legacy.length > 0) {
+        await Promise.all(legacy.map((item) => offlineDb.outbox.update(item.clientRequestId, {
+          status: "PARKED",
+          capturedByUserId: null,
+          lastError: LEGACY_OUTBOX_REVIEW_MESSAGE,
+        })));
+        notifyOutboxChanged();
+      }
+      const next = replayable[skippedKinds];
       if (!next) break;
       await offlineDb.outbox.update(next.clientRequestId, { status: "SENDING" });
       notifyOutboxChanged();

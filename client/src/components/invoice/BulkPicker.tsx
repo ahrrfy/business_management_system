@@ -63,6 +63,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     unitName: string;
     conversionFactor: string;
     stockBase: number;
+    reservedBase: number;
+    availableBase: number;
     isService?: boolean;
     price: string;
     costBase: string;
@@ -80,6 +82,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         unitName: r.unitName,
         conversionFactor: r.conversionFactor,
         stockBase: r.stockBase ?? 0,
+        reservedBase: 0,
+        availableBase: r.stockBase ?? 0,
         price: r.costPriceBase,
         costBase: r.costPriceBase,
       }));
@@ -94,6 +98,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       unitName: r.unitName,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase ?? 0,
+      reservedBase: r.reservedBase ?? 0,
+      availableBase: r.availableBase ?? (r.stockBase ?? 0),
       isService: r.isService || r.isPrintService,
       price: r.price ?? "0",
       // التكلفة من الخادم للمخوَّل برؤيتها (مدير/أدمن)، وnull لغيره (كاشير) — الحجب في الراوتر.
@@ -127,6 +133,8 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         qty: 1,
         conversionFactor: r.conversionFactor,
         stockBase: r.stockBase,
+        reservedBase: r.reservedBase,
+        availableBase: r.availableBase,
         isService: r.isService,
         price: r.price || "0",
         costBase: r.costBase || "0",
@@ -240,7 +248,11 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                       {p.isService ? (
                         <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
                       ) : (
-                        <span className={p.stockBase < 5 ? "text-rose-600" : ""}>مخزون: {fmtNum(p.stockBase)}</span>
+                        <>
+                          <span>فعلي: {fmtNum(p.stockBase)}</span>
+                          {p.reservedBase > 0 && <span className="text-amber-600">محجوز: {fmtNum(p.reservedBase)}</span>}
+                          <span className={p.availableBase < 5 ? "text-rose-600" : ""}>متاح: {fmtNum(p.availableBase)}</span>
+                        </>
                       )}
                     </div>
                   </div>
