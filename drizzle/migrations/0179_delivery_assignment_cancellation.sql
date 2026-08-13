@@ -9,7 +9,7 @@ ALTER TABLE `deliveryConsignments`
     'CANCELLED',
     'RETURNED'
   ) NOT NULL DEFAULT 'ASSIGNED',
-  MODIFY COLUMN `status` ENUM(
+  MODIFY COLUMN `consignmentStatus` ENUM(
     'DISPATCHED',
     'DELIVERED',
     'PARTIAL',
