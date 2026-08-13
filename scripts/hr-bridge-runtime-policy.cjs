@@ -29,6 +29,12 @@ const allowedEnvironmentKeys = Object.freeze([
   // صامتاً — أي «ضبطٌ مُعلَنٌ لا يعمل». أيّ HR_DEVICE_* جديد يجب أن يُدرَج هنا أيضاً.
   "HR_DEVICE_SESSION_RATE_LIMIT_PER_MINUTE",
   "HR_DEVICE_MAX_WS_PER_IP",
+  // اعتماد العنوان التلقائيّ (تعلّم عنوان المتجر بعد تدوير IP المزوّد). بلا إدراجها هنا تُنقّى
+  // صامتاً فيعود الجسر للافتراضي (شاهدان) — «ضبطٌ مُعلَنٌ لا يعمل». MIN_WITNESSES=1 قرارُ مالكٍ
+  // صريحٌ: تعافٍ أسرع بجلسةِ موظّفٍ واحدة (مقابل خطرٍ أعلى موثَّق في originTrust.ts:42-52).
+  "HR_DEVICE_ORIGIN_AUTOTRUST",
+  "HR_DEVICE_ORIGIN_MIN_WITNESSES",
+  "HR_DEVICE_ORIGIN_TRUST_WINDOW_HOURS",
   "ATTENDANCE_PUSH_INCLUDE_WORKPLACE",
   "NATIVE_PUSH_ENVIRONMENT",
   "VAPID_PUBLIC_KEY",
