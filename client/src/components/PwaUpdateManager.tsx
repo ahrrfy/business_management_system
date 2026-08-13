@@ -177,12 +177,17 @@ export function PwaUpdateManager() {
       const controller = navigator.serviceWorker.controller;
       if (
         controller?.state === "activated" &&
-        registration?.active?.state === "activated"
+        registration?.active?.state === "activated" &&
+        // شرطٌ حاسم ضدّ «نجاحٍ كاذب»: بقاءُ عاملٍ منتظرٍ بعد إعادة الفتح يعني أنّ التفعيل لم يكتمل
+        // (سيناريو WebView المُجمَّد الذي أُعيد فيه الفتح قبل أن يُنهي skipWaiting) — الصفحة
+        // لا تزال تحت العامل القديم الذي يستوفي شرط «مُفعَّل» وحده. فلا نَدّعي نجاحاً، بل نُبقي
+        // البنر يعود للظهور لإعادة المحاولة (العامل المنتظر يعيد كشفه في التأثير الآخر).
+        !registration.waiting
       ) {
         setPwaUpdatePending(false);
         toast.success("تم تحديث النظام بنجاح");
       } else {
-        // لا ندّعي نجاحاً إن لم تصبح الصفحة تحت عامل فعّال بعد إعادة فتحها.
+        // لا ندّعي نجاحاً إن لم تصبح الصفحة تحت العامل الجديد بعد إعادة فتحها.
         toast.warning("فُتح النظام بأمان، لكن تعذّر تأكيد نسخة التحديث.");
       }
     });
