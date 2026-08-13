@@ -622,7 +622,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       .limit(1);
     const cn = cnRows[0];
     if (cn && (
-      !["DELIVERED", "RETURNED"].includes(cn.parcelStatus)
+      !["DELIVERED", "CANCELLED", "RETURNED"].includes(cn.parcelStatus)
       || cn.moneyStatus === "UNSETTLED"
       || cn.moneyStatus === "PARTIAL"
     )) {

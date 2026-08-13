@@ -1506,6 +1506,7 @@ export default function POS() {
         {/* Cart Panel */}
         <CartPanel
           C={C}
+          branchId={branchId}
           openingActive={openingActive}
           openingEndsYmd={openingModeQ.data?.endsAtYmd ?? null}
           cart={cart} total={total}
@@ -1705,8 +1706,8 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
                   <div style={{ fontSize: 11.5, color: C.mutedFg, marginTop: 2 }}>
                     {p.sku} · {p.unitName}
                     {!p.isService && (
-                      <span style={{ marginRight: 10, color: stockColor(p.stockBase) }}>
-                        مخزون: {fmt(p.stockBase)}
+                      <span style={{ marginRight: 10, color: stockColor(p.availableBase ?? p.stockBase) }}>
+                        فعلي: {fmt(p.stockBase)} · محجوز: {fmt(p.reservedBase ?? 0)} · متاح: {fmt(p.availableBase ?? p.stockBase)}
                       </span>
                     )}
                   </div>
@@ -1858,6 +1859,7 @@ function TabBar({ C, tabs, activeId, onSwitch, onAdd, onClose }: TabBarProps) {
 
 interface CartPanelProps {
   C: C;
+  branchId: number;
   cart: CartItem[]; total: number;
   selId: number | null; setSelId: (id: number | null) => void;
   changeQty: (id: number, qty: number) => void;
@@ -1878,7 +1880,7 @@ interface CartPanelProps {
   openingEndsYmd: string | null;
 }
 
-function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd }: CartPanelProps) {
+function CartPanel({ C, branchId, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
   const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
   const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
@@ -1892,13 +1894,24 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
     const f = Number(c.row.conversionFactor) || 1;
     demandByVariant.set(c.row.variantId, (demandByVariant.get(c.row.variantId) ?? 0) + c.qty * f);
   }
+  const reservationVariantIds = Array.from(new Set(cart.filter((item) => !item.row.isService && !item.digital).map((item) => item.row.variantId)));
+  const allocationsQ = trpc.reservations.activeAllocations.useQuery(
+    { branchId, variantIds: reservationVariantIds },
+    { enabled: reservationVariantIds.length > 0, staleTime: 15_000 },
+  );
+  const allocationsByVariant = new Map<number, NonNullable<typeof allocationsQ.data>>();
+  for (const allocation of allocationsQ.data ?? []) {
+    const list = allocationsByVariant.get(allocation.variantId) ?? [];
+    list.push(allocation);
+    allocationsByVariant.set(allocation.variantId, list);
+  }
   const stockState = (c: CartItem) => {
     const convFactor  = Number(c.row.conversionFactor) || 1;
     // مُنتج خِدمي: لا مَخزون ⇒ لا نَفاد ولا نَقص (الخَادم يَتجاوز فَحص المَخزون أيضاً).
     if (c.row.isService) {
       return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
     }
-    const availBase   = c.row.stockBase ?? 0;
+    const availBase   = c.row.availableBase ?? c.row.stockBase ?? 0;
     const reqBase     = demandByVariant.get(c.row.variantId) ?? c.qty * convFactor; // إجمالي طلب الصنف
     const isOut       = availBase <= 0;                       // نافذ — لا رصيد
     const isShort     = !isOut && reqBase > availBase;        // الطلب يتجاوز المتاح
@@ -2034,6 +2047,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
               const selected = selId === lineId;
               // تمييز بصري + نصّ قبل محاولة الدفع (المنطق المُجمَّع للصنف في stockState أعلاه).
               const { isOut, isShort, availInUnit } = stockState(c);
+              const allocations = allocationsByVariant.get(c.row.variantId) ?? [];
               // «وضع الافتتاح»: الصنف غير المُفتتَح (openedAt فارغ) يُباع نقداً بالسالب — وسم كهرماني
               // مطمئن بدل «نافذ» الأحمر المخيف (الحارس الفعلي خادميّ؛ الآجل/غير النقدي سيُرفض هناك).
               const openingSellable = (isOut || isShort) && openingActive && c.row.openedAt == null && !c.row.isService;
@@ -2061,6 +2075,27 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                           ? `تعليمي — ${c.digital.student.studentName}`
                           : c.digital.requiresStudentData ? "اشتراك تعليمي" : "كرت رقمي"}
                       </span>
+                    )}
+                    {!c.digital && !c.row.isService && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", marginTop: 5, fontSize: 11.5, fontWeight: 700, color: C.mutedFg }}>
+                        <span>فعلي {fmt(c.row.stockBase ?? 0)}</span>
+                        <span style={{ color: (c.row.reservedBase ?? 0) > 0 ? C.amber : C.mutedFg }}>
+                          محجوز {fmt(c.row.reservedBase ?? 0)}
+                        </span>
+                        <span>متاح {fmt(c.row.availableBase ?? c.row.stockBase ?? 0)}</span>
+                      </div>
+                    )}
+                    {allocations.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 }}>
+                        {allocations.map((allocation) => (
+                          <span
+                            key={allocation.reservationId}
+                            style={{ border: `1px solid ${C.amber}`, background: C.amberSoft, color: "#7a5200", borderRadius: 5, padding: "2px 7px", fontSize: 11.5, fontWeight: 800 }}
+                          >
+                            حجز باسم {allocation.customerName} · {fmt(allocation.remainingBase)} وحدة أساس
+                          </span>
+                        ))}
+                      </div>
                     )}
                     {c.digital && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px", marginTop: 5, fontSize: 12.5, fontWeight: 800, color: C.fg }}>

@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { trpc } from "@/lib/trpc";
 import {
   buildStockState,
   customLineGrand,
@@ -31,6 +32,7 @@ import {
  * بصفر تغيير سلوكي. كل الحالة ملك الصفحة؛ الاستدعاءات المباشرة استُبدلت بـprops مقابلة.
  */
 export interface CartTableProps {
+  branchId: number;
   cart: CartLine[]; selKey: string | null; onSelect: (key: string) => void;
   discountFor: string | null; setDiscountFor: (k: string | null) => void;
   isElevated: boolean;
@@ -44,6 +46,7 @@ export interface CartTableProps {
 }
 
 export function CartTable({
+  branchId,
   cart, selKey, onSelect,
   discountFor, setDiscountFor,
   isElevated,
@@ -52,6 +55,17 @@ export function CartTable({
   onEditCustomization,
   grandTotal, cartCount,
 }: CartTableProps) {
+  const variantIds = Array.from(new Set(cart.filter((line) => !line.custom && !line.row.isService).map((line) => line.row.variantId)));
+  const allocationsQ = trpc.reservations.activeAllocations.useQuery(
+    { branchId, variantIds },
+    { enabled: variantIds.length > 0, staleTime: 15_000 },
+  );
+  const allocationsByVariant = new Map<number, NonNullable<typeof allocationsQ.data>>();
+  for (const allocation of allocationsQ.data ?? []) {
+    const list = allocationsByVariant.get(allocation.variantId) ?? [];
+    list.push(allocation);
+    allocationsByVariant.set(allocation.variantId, list);
+  }
   return (
     <>
       <div className="flex-1 overflow-y-auto">
@@ -85,6 +99,7 @@ export function CartTable({
                 const total = isCustom ? customLineGrand(l) : lineTotal(l);
                 const selected = selKey === l.key;
                 const stock = stockState(l);
+                const allocations = allocationsByVariant.get(l.row.variantId) ?? [];
                 return (
                   <tr
                     key={l.key}
@@ -129,6 +144,27 @@ export function CartTable({
                           </span>
                         )}
                       </div>
+                      {!isCustom && !l.row.isService && (
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
+                          <span>فعلي {fmt(l.row.stockBase ?? 0)}</span>
+                          <span className={(l.row.reservedBase ?? 0) > 0 ? "font-bold text-amber-700 dark:text-amber-400" : ""}>
+                            محجوز {fmt(l.row.reservedBase ?? 0)}
+                          </span>
+                          <span className="font-bold">متاح {fmt(l.row.availableBase ?? l.row.stockBase ?? 0)}</span>
+                        </div>
+                      )}
+                      {allocations.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {allocations.map((allocation) => (
+                            <span
+                              key={allocation.reservationId}
+                              className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                            >
+                              حجز باسم {allocation.customerName} · {fmt(allocation.remainingBase)} وحدة أساس
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       {isCustom && (
                         <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5">
                           <div className="flex flex-wrap gap-1.5">

@@ -6,9 +6,10 @@
 // مستنداً محاسبيّاً** (لا مبيعات ولا قيود)، فتذييل «شكراً لتسوقكم — سياسة الاستبدال» في قالب
 // `printReceipt` سيكون مضلِّلاً. `printDoc` يمنحنا عنواناً/سطوراً/جدولاً/تذييلاً حرّاً بنفس تدرّج
 // الطابعات (جسر ← WebUSB ← نافذة). النمط مطابقٌ لـ`printDeliverySlip` في `deliveryDocs.ts`.
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { fmtDate, fmtTime, type DateInput } from "@/lib/date";
 import { printDoc } from "@/lib/printing/print";
+import type { PrintDoc } from "@/lib/printing/render";
 
 /** الحقول التي تقرأها الدالة فعلياً — يحقّقها `reservations.get` بنيوياً بلا تحويل. */
 export interface ReservationTicketSource {
@@ -48,21 +49,15 @@ const STATUS_LABEL: Record<string, string> = {
  * يطبع تذكرة حجزٍ حراريّة. `printDoc` يتدرّج تلقائياً: جسر الخادم ← WebUSB ← نافذة المتصفح.
  * لا رمي إن فشلت الطابعة — `printDoc` يبتلع الخطأ (تدهور سلس)، وشاشة الحجوزات تُبقي الحوار.
  */
-export function printReservationTicket(res: ReservationTicketSource): void {
-  // جدول ذو **صفَّين اثنين لكل سطر** (وصف كاملٌ يميناً + الإجمالي يساراً) عمداً — راسم الحراريّ
-  // `docToRaster` يرسم `r[0]` و`r[r.length-1]` فقط ويسقط ما بينهما. لو استعملنا ٤ أعمدة (منتج/كمية/
-  // سعر/إجمالي) لكانت التذكرة الحراريّة تُظهر المنتج والإجمالي وتُخفي الكمية والسعر — كارثة عمليّة
-  // لكاشير يسلّم البضاعة (لا يعرف كم يعطي). الآن الوصف يضمّ الكمية × السعر داخله (Codex P2 على #557).
-  const items = res.lines.map((l) => {
+export function reservationToTicketDoc(res: ReservationTicketSource): PrintDoc {
+  const itemBlocks = res.lines.map((l) => {
     const attrs = [l.color, l.size, l.variantName].filter(Boolean).join(" · ");
     const price = l.quotedUnitPrice != null ? fmt(l.quotedUnitPrice) : "غير مُسعَّر";
-    const qtyPrice = `${l.quantity} × ${price}${l.unitName ? ` / ${l.unitName}` : ""}`;
-    const desc = [
-      l.productName + (attrs ? ` — ${attrs}` : ""),
-      qtyPrice,
-    ].join("\n");
-    const totalCell = l.lineTotal != null ? fmt(l.lineTotal) : "—";
-    return [desc, totalCell];
+    return {
+      name: l.productName + (attrs ? ` — ${attrs}` : ""),
+      quantityPrice: `${l.quantity} × ${price}${l.unitName ? ` / ${l.unitName}` : ""}`,
+      total: l.lineTotal != null ? fmt(l.lineTotal) : "—",
+    };
   });
 
   const meta: string[] = [];
@@ -75,21 +70,20 @@ export function printReservationTicket(res: ReservationTicketSource): void {
   if (res.notes?.trim()) meta.push(`ملاحظات: ${res.notes.trim()}`);
 
   const totals: { label: string; value: string }[] = [];
-  const totalNum = Number(res.total ?? 0);
-  if (totalNum > 0) {
+  if (D(res.total).gt(0)) {
     totals.push({
       label: res.hasUnpriced ? "الإجمالي المسعَّر (جزئيّ)" : "الإجمالي المرجعيّ",
       value: `${fmt(res.total)} د.ع`,
     });
   }
 
-  void printDoc({
+  return {
     kind: "receipt",
     title: "تذكرة حجز",
     subtitle: res.reservationNumber,
     meta,
-    columns: ["المنتج — الكمية × السعر", "الإجمالي"],
-    rows: items,
+    columns: ["المنتج", "الإجمالي"],
+    itemBlocks,
     totals,
     footer:
       "احتفظ بهذه التذكرة للاستلام. الأسعار مرجعيّة قد تتغيّر عند التنفيذ." +
@@ -100,5 +94,9 @@ export function printReservationTicket(res: ReservationTicketSource): void {
       qrPayload: res.reservationNumber,
       displayLabel: res.reservationNumber,
     },
-  });
+  };
+}
+
+export function printReservationTicket(res: ReservationTicketSource): void {
+  void printDoc(reservationToTicketDoc(res));
 }

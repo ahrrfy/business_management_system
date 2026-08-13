@@ -40,6 +40,8 @@ export interface ActionButtonsProps {
   pasteAvailable?: boolean;
   /** الإجراءات الحقيقية التي تدعمها الشاشة الحالية. */
   availableActions?: readonly InvoiceActionKind[];
+  primaryLabel?: string;
+  printLabel?: string;
 }
 
 const DEFAULT_ACTIONS: Record<InvoiceType, readonly InvoiceActionKind[]> = {
@@ -66,6 +68,8 @@ export function ActionButtons({
   saving,
   pasteAvailable = false,
   availableActions = DEFAULT_ACTIONS[invoiceType],
+  primaryLabel,
+  printLabel,
 }: ActionButtonsProps) {
   const typeInfo = INVOICE_TYPES[invoiceType];
   const isQuote = invoiceType === "QUOTATION";
@@ -94,7 +98,7 @@ export function ActionButtons({
             "جارٍ الحفظ…"
           ) : (
             <span className="inline-flex items-center gap-1.5">
-              <Check aria-hidden className="size-4" /> حفظ واعتماد
+              <Check aria-hidden className="size-4" /> {primaryLabel ?? "حفظ واعتماد"}
             </span>
           )}
         </Button>
@@ -120,7 +124,7 @@ export function ActionButtons({
               onClick={() => onAction("print")}
               className="h-11"
             >
-              <Printer aria-hidden className="size-4" /> حفظ وطباعة
+              <Printer aria-hidden className="size-4" /> {printLabel ?? "حفظ وطباعة"}
             </Button>
           )}
         </div>

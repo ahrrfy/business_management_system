@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { appRouter } from "../../routers";
 import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
 import { withTx } from "../tx";
@@ -34,7 +35,7 @@ async function seedBase() {
   ]);
   await db().insert(s.users).values([
     { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" },
-    { id: 2, openId: "other_cashier", name: "cashier 2", role: "cashier", loginMethod: "local" },
+    { id: 2, openId: "other_cashier", name: "cashier 2", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
 }
 
@@ -68,6 +69,9 @@ async function reserved(variantId: number, branchId = 1) {
   return r?.reservedBase ?? 0;
 }
 const atp = (variantId: number, branchId = 1) => withTx((tx) => readAvailability(tx, variantId, branchId));
+function makeCtx(user: unknown) {
+  return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as any;
+}
 
 beforeEach(async () => {
   await truncateTables(TABLES);
@@ -90,6 +94,43 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     expect(await reserved(variantId)).toBe(3);
     const a = await atp(variantId);
     expect(a).toMatchObject({ onHand: 10, reserved: 3, available: 7 });
+  });
+
+  it("activeAllocations يعرض اسم صاحب الحجز والكمية المتبقية ويعزل فرع الكاشير", async () => {
+    const { variantId, baseUnitId } = await mkProduct("RSV-VISIBLE", 10);
+    const first = await createReservation(
+      {
+        branchId: 1,
+        contactName: "سارة",
+        contactPhone: "07700000011",
+        lines: [{ variantId, productUnitId: baseUnitId, quantity: 4 }],
+      },
+      actor,
+    );
+    await db()
+      .update(s.reservationLines)
+      .set({ fulfilledBase: 1 })
+      .where(eq(s.reservationLines.reservationId, first.reservationId));
+    await createReservation(
+      {
+        branchId: 2,
+        contactName: "باسل",
+        contactPhone: "07700000012",
+        lines: [{ variantId, productUnitId: baseUnitId, quantity: 2 }],
+      },
+      actor,
+    );
+
+    const cashier = (await db().select().from(s.users).where(eq(s.users.id, 2)).limit(1))[0];
+    const rows = await appRouter.createCaller(makeCtx(cashier)).reservations.activeAllocations({ variantIds: [variantId] });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      reservationId: first.reservationId,
+      variantId,
+      customerName: "سارة",
+      remainingBase: 3,
+    });
   });
 
   it("reservationStock المجمّع = Σ(المحجوز النشط) عبر عدّة حجوزات", async () => {

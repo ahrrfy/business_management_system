@@ -43,6 +43,8 @@ import {
   type RoleKey,
 } from "@shared/permissions";
 import { InvoiceDigitalCards } from "@/components/digitalCards/InvoiceDigitalCards";
+import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
+import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useParams, useSearch } from "wouter";
 import {
@@ -71,6 +73,7 @@ const STATUS: Record<string, string> = {
   CONFIRMED: "مؤكّدة",
   CANCELLED: "ملغاة",
   RETURNED: "مرتجعة",
+  SUPERSEDED: "مستبدلة بفاتورة مصححة",
 };
 const STATUS_CLS: Record<string, string> = {
   PAID: "bg-emerald-100 text-emerald-700",
@@ -78,6 +81,7 @@ const STATUS_CLS: Record<string, string> = {
   PENDING: "bg-muted text-foreground/70",
   RETURNED: "bg-rose-100 text-rose-700",
   CANCELLED: "bg-rose-100 text-rose-700",
+  SUPERSEDED: "badge-status-cancelled",
 };
 const SOURCE: Record<string, string> = {
   POS: "نقطة بيع",
@@ -242,10 +246,9 @@ export default function InvoiceDetail() {
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionNotes, setCorrectionNotes] = useState("");
   const [correctionDueDate, setCorrectionDueDate] = useState("");
-  const [correctionMethods, setCorrectionMethods] = useState<
-    Record<number, (typeof METHODS)[number]["v"]>
-  >({});
   const [correctionReason, setCorrectionReason] = useState("");
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [cancelDeliveryOpen, setCancelDeliveryOpen] = useState(false);
   const correctInvoice = trpc.sales.correct.useMutation({
     onSuccess: async () => {
       setCorrectionOpen(false);
@@ -319,6 +322,32 @@ export default function InvoiceDetail() {
       "FULL",
       ["manager"],
     );
+  const canDispatchInvoice =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["manager", "cashier", "sales_rep"],
+    ) &&
+    (!data.consignmentNumber || data.consignmentStatus === "CANCELLED") &&
+    data.status !== "CANCELLED" &&
+    data.status !== "RETURNED" &&
+    data.status !== "SUPERSEDED" &&
+    data.sourceType !== "ONLINE" &&
+    data.sourceType !== "WORKORDER";
+  const canCancelDelivery =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["manager"],
+    ) &&
+    data.consignmentId != null &&
+    (data.consignmentParcelStatus === "ASSIGNED" || data.consignmentParcelStatus === "FAILED");
   const isCancellable =
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
@@ -333,6 +362,7 @@ export default function InvoiceDetail() {
     canCorrectInvoice &&
     data.status !== "CANCELLED" &&
     data.status !== "SUPERSEDED" &&
+    D(data.paidAmount ?? "0").isZero() &&
     D(data.returnedTotal ?? "0").isZero() &&
     data.sourceType !== "WORKORDER" &&
     !data.consignmentNumber;
@@ -340,34 +370,15 @@ export default function InvoiceDetail() {
   function openCorrection() {
     setCorrectionNotes(data.notes ?? "");
     setCorrectionDueDate(data.dueDate ? String(data.dueDate).slice(0, 10) : "");
-    setCorrectionMethods(
-      Object.fromEntries(
-        (data.payments ?? []).map((payment) => [
-          payment.id,
-          payment.paymentMethod as (typeof METHODS)[number]["v"],
-        ]),
-      ),
-    );
     setCorrectionReason("");
     setCorrectionOpen(true);
   }
 
   function submitCorrection() {
-    const receiptMethods = (data.payments ?? [])
-      .filter(
-        (payment) =>
-          correctionMethods[payment.id] &&
-          correctionMethods[payment.id] !== payment.paymentMethod,
-      )
-      .map((payment) => ({
-        receiptId: payment.id,
-        method: correctionMethods[payment.id],
-      }));
     correctInvoice.mutate({
       invoiceId,
       notes: correctionNotes,
       dueDate: correctionDueDate || null,
-      receiptMethods,
       reason: correctionReason,
     });
   }
@@ -547,6 +558,18 @@ export default function InvoiceDetail() {
             >
               <FileWarning aria-hidden className="size-4" />
               تصحيح كامل
+            </Button>
+          )}
+          {canDispatchInvoice && (
+            <Button variant="outline" size="sm" onClick={() => setDispatchOpen(true)}>
+              <Truck aria-hidden className="size-4" />
+              إسناد للتوصيل
+            </Button>
+          )}
+          {canCancelDelivery && (
+            <Button variant="destructive" size="sm" onClick={() => setCancelDeliveryOpen(true)}>
+              <Truck aria-hidden className="size-4" />
+              إلغاء إسناد التوصيل
             </Button>
           )}
           {canCorrectInvoice && (
@@ -1242,52 +1265,13 @@ export default function InvoiceDetail() {
                 onChange={(event) => setCorrectionDueDate(event.target.value)}
               />
             </div>
-            {(data.payments ?? []).length > 0 && (
-              <div className="space-y-2">
-                <Label>طريقة الدفع لكل دفعة</Label>
-                <p className="text-xs text-muted-foreground">
-                  يُحدَّث سند القبض نفسه لكي تنعكس الطريقة الصحيحة في تقارير
-                  الصندوق والبطاقة والتحويل.
-                </p>
-                {(data.payments ?? []).map((payment) => (
-                  <div
-                    key={payment.id}
-                    className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-md border p-2.5"
-                  >
-                    <span className="text-sm">
-                      <span dir="ltr">{fmt(payment.amount)}</span> —{" "}
-                      {fmtDateTime(payment.createdAt)}
-                    </span>
-                    <select
-                      className={selectCls}
-                      value={
-                        correctionMethods[payment.id] ?? payment.paymentMethod
-                      }
-                      onChange={(event) =>
-                        setCorrectionMethods((current) => ({
-                          ...current,
-                          [payment.id]: event.target
-                            .value as (typeof METHODS)[number]["v"],
-                        }))
-                      }
-                    >
-                      {METHODS.map((item) => (
-                        <option key={item.v} value={item.v}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
-              </div>
-            )}
             <div className="space-y-1.5">
               <Label htmlFor="invoice-correction-reason">سبب التعديل *</Label>
               <Textarea
                 id="invoice-correction-reason"
                 value={correctionReason}
                 onChange={(event) => setCorrectionReason(event.target.value)}
-                placeholder="مثال: العميل طلب التحويل بدلاً من البطاقة قبل الطباعة"
+                placeholder="مثال: تصحيح ملاحظة العميل أو تاريخ الاستحقاق"
                 rows={2}
               />
             </div>
@@ -1399,6 +1383,27 @@ export default function InvoiceDetail() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <InvoiceDispatchDialog
+        open={dispatchOpen}
+        onOpenChange={setDispatchOpen}
+        invoice={{
+          id: data.id,
+          invoiceNumber: data.invoiceNumber,
+          total: data.total,
+          paidAmount: data.paidAmount,
+          returnedTotal: data.returnedTotal,
+          customerName: data.customerName,
+          customerPhone: data.customerPhone,
+        }}
+      />
+      <CancelDeliveryAssignmentDialog
+        open={cancelDeliveryOpen}
+        onOpenChange={setCancelDeliveryOpen}
+        consignment={data.consignmentId ? {
+          id: data.consignmentId,
+          number: data.consignmentNumber ?? `#${data.consignmentId}`,
+        } : null}
+      />
     </div>
   );
 }

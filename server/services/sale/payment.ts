@@ -83,8 +83,8 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     if (input.enforceBranchId != null && Number(inv.branchId) !== input.enforceBranchId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا تملك صلاحية على فاتورة فرع آخر" });
     }
-    if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الدفع على فاتورة ملغاة أو مرتجعة" });
+    if (inv.status === "CANCELLED" || inv.status === "RETURNED" || inv.status === "SUPERSEDED") {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يمكن الدفع على فاتورة نهائية ملغاة أو مرتجعة أو مستبدلة" });
     }
     if (inv.status === "PAID") {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة مدفوعة بالكامل" });

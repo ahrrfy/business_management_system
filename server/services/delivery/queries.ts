@@ -108,7 +108,7 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
   const db = getDb();
   if (!db) return [];
   const conds = [eq(deliveryConsignments.partyId, partyId)];
-  if (openOnly) conds.push(sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`);
+  if (openOnly) conds.push(sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`);
   return db
     .select({
       id: deliveryConsignments.id,

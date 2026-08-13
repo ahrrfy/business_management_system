@@ -95,6 +95,14 @@ export default function SalesInvoiceNew() {
   const correctInvoiceId = corrMatch && corrParams?.id ? Number(corrParams.id) : null;
   const isCorrection = correctInvoiceId != null && correctInvoiceId > 0;
   const original = trpc.sales.get.useQuery({ invoiceId: correctInvoiceId ?? 0 }, { enabled: isCorrection });
+  const correctionUnitIds = useMemo(
+    () => Array.from(new Set((original.data?.items ?? []).map((item) => item.productUnitId ?? 0).filter((id) => id > 0))),
+    [original.data?.items],
+  );
+  const correctionCatalog = trpc.catalog.byUnitIds.useQuery(
+    { branchId: original.data?.branchId ?? defaultBranchId, tier: (original.data?.priceTier ?? "RETAIL") as PriceTier, productUnitIds: correctionUnitIds },
+    { enabled: isCorrection && !!original.data && correctionUnitIds.length > 0, staleTime: 15_000 },
+  );
   const originalPaid = useMemo(() => D(original.data?.paidAmount ?? "0"), [original.data?.paidAmount]);
   const [reason, setReason] = useState("");
   const [overpayHandling, setOverpayHandling] = useState<"CREDIT" | "CASH_REFUND">("CASH_REFUND");
@@ -104,7 +112,9 @@ export default function SalesInvoiceNew() {
   const taxDefaultsAppliedRef = useRef(false);
   useEffect(() => {
     if (!isCorrection || correctionHydratedRef.current || !original.data) return;
+    if (correctionUnitIds.length > 0 && !correctionCatalog.data) return;
     const d = original.data;
+    const catalogByUnit = new Map((correctionCatalog.data ?? []).map((row) => [row.productUnitId, row]));
     if (d.customerId) dispatch({ type: "SET_ENTITY", id: d.customerId });
     if (d.priceTier) dispatch({ type: "SET_FIELD", field: "tier", value: d.priceTier as PriceTier });
     // خصمٌ إجماليّ (كمبلغ صريح — الأصل يخزّنه مبلغاً لا نسبة).
@@ -144,9 +154,12 @@ export default function SalesInvoiceNew() {
         unit: it.unitName ?? "",
         qty: D(it.quantity).toNumber(),
         conversionFactor: D(it.quantity).gt(0) ? D(it.baseQuantity).div(D(it.quantity)).toString() : "1",
-        stockBase: 0,
+        stockBase: catalogByUnit.get(it.productUnitId ?? 0)?.stockBase ?? 0,
+        reservedBase: catalogByUnit.get(it.productUnitId ?? 0)?.reservedBase ?? 0,
+        availableBase: catalogByUnit.get(it.productUnitId ?? 0)?.availableBase ?? 0,
+        isService: catalogByUnit.get(it.productUnitId ?? 0)?.isService ?? false,
         price: it.unitPrice,
-        costBase: "0",
+        costBase: catalogByUnit.get(it.productUnitId ?? 0)?.costPriceBase ?? "0",
         discount: D(it.discountAmount ?? 0).gt(0) ? String(it.discountAmount) : "0",
         discountType: "amount",
         note: "",
@@ -155,7 +168,7 @@ export default function SalesInvoiceNew() {
     });
     correctionHydratedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCorrection, original.data]);
+  }, [isCorrection, original.data, correctionCatalog.data, correctionUnitIds]);
 
   // بذرة «نسخ لفاتورة جديدة» (من قائمة الفواتير): sessionStorage تُقرأ مرة واحدة عند التركيب
   // ثم تُحذف فوراً (read-once) كي لا تُزرع مجدداً عند العودة للصفحة. الأسطر بشكل InvoiceLine حرفياً.
@@ -581,6 +594,7 @@ export default function SalesInvoiceNew() {
 
   /* ─── اختصارات لوحة المفاتيح (F2/F4/F9/F12/Esc) ───────────────────── */
   const containerRef = useRef<HTMLDivElement>(null);
+  const submitPending = isCorrection ? reissue.isPending : create.isPending;
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) =>
       !!el && (el as HTMLElement).matches?.("input, textarea, select, [contenteditable='true']");
@@ -604,7 +618,7 @@ export default function SalesInvoiceNew() {
       }
       if (e.key === "F4") {
         e.preventDefault();
-        if (!create.isPending) {
+        if (!submitPending) {
           releaseReservedPrintWindow();
           printAfterSaveRef.current = false;
           shareAfterSaveRef.current = false;
@@ -614,7 +628,7 @@ export default function SalesInvoiceNew() {
       }
       if (e.key === "F9") {
         e.preventDefault();
-        if (!create.isPending) {
+        if (!submitPending) {
           reservePrintWindow();
           printAfterSaveRef.current = true;
           shareAfterSaveRef.current = false;
@@ -708,7 +722,7 @@ export default function SalesInvoiceNew() {
       )}
 
       {/* البنية الأساسية: جدول البنود + لوحة الإجماليات والإجراءات */}
-      <div className="flex min-h-0 flex-1 gap-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
         <div className="flex min-w-0 flex-1 flex-col gap-2">
           <ProductTable
             items={state.items}
@@ -736,7 +750,7 @@ export default function SalesInvoiceNew() {
           />
         </div>
 
-        <aside className="flex w-80 shrink-0 flex-col gap-2">
+        <aside className="flex w-full shrink-0 flex-col gap-2 xl:w-80">
           {/* أجرة التوصيل صارت مدعومة في sales.create (تُحفَظ في `invoices.deliveryFee` وتدخل
               قيد SALE إيراداً بلا تكلفة، ويعكسها المرتجع الكامل) ⇒ أُظهرت مع مفتاح «مجاني».
               «مصاريف أخرى» تبقى مخفيّة: الخادم لا يحفظها، وإظهارها يُضخّم الإجمالي المعروض
@@ -770,6 +784,9 @@ export default function SalesInvoiceNew() {
             items={state.items}
             saving={isCorrection ? reissue.isPending : create.isPending}
             pasteAvailable={pasteAvailable}
+            availableActions={isCorrection ? ["save", "print"] : undefined}
+            primaryLabel={isCorrection ? "عكس الأصل وإصدار المصححة" : undefined}
+            printLabel={isCorrection ? "إصدار وطباعة المصححة" : undefined}
             onAction={handleAction}
           />
           <TermsAndNotes state={state} dispatch={dispatch} />

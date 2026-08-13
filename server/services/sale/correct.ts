@@ -26,6 +26,8 @@ import {
   digitalSaleDetails,
   invoiceItems,
   invoices,
+  products,
+  productVariants,
   receipts,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -130,6 +132,16 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     }
 
     const originalPaid = round2(money(inv.paidAmount));
+    // المرحلة الآمنة الحالية: إعادة إصدار مستند غير محصّل فقط. نقل سند قبض مكتمل إلى فاتورة
+    // بديلة يعيد كتابة الحقيقة التاريخية للدرج/وسيلة الدفع؛ يبقى محظوراً إلى أن تُبنى
+    // paymentApplications + reclassification append-only. الفاتورة المدفوعة تُعالج بمرتجع موثق
+    // ثم بيع جديد، لا عبر نقل الإيصال.
+    if (originalPaid.gt(0)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "الفاتورة عليها مقبوضات — استخدم مرتجعاً موثقاً ثم فاتورة بيع جديدة؛ لا يجوز نقل إيصال القبض التاريخي إلى فاتورة بديلة",
+      });
+    }
     const originalCustomerId = inv.customerId != null ? Number(inv.customerId) : null;
 
     // ── حارس النقل الماليّ (ذكاءٌ حاكمٌ يمنع الخطأ بالبناء) ──
@@ -166,6 +178,19 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     // ── ٢) العكس الكامل عبر منطق المرتجع المُختبَر (كل البنود، بلا ردٍّ نقديّ, مع إعادة للمخزون) ──
     const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, input.originalInvoiceId));
     if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة بلا بنودٍ لتصحيحها" });
+    const variantIds = Array.from(new Set(items.map((item) => Number(item.variantId))));
+    const serviceLine = (await tx
+      .select({ id: productVariants.id })
+      .from(productVariants)
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(and(inArray(productVariants.id, variantIds), eq(products.isService, true)))
+      .limit(1))[0];
+    if (serviceLine) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "لا تُعكس فاتورة خدمة كتصحيحٍ مخزني؛ استخدم إلغاء/مرتجع الخدمة الموثق ثم أنشئ الفاتورة الصحيحة",
+      });
+    }
     // returnedTotal=0 مضمونٌ أعلاه ⇒ المتبقّي القابل للعكس = كامل الكمية الأساس.
     const reverseLines = items.map((it) => ({ invoiceItemId: Number(it.id), baseQuantity: Number(it.baseQuantity) }));
     await returnSaleInTx(tx, { invoiceId: input.originalInvoiceId, lines: reverseLines, refund: null, restock: true, clientRequestId: null }, actor);
@@ -197,9 +222,9 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       branchId: Number(inv.branchId),
       shiftId: addPayShiftId,
       sourceType: inv.sourceType as "POS" | "ONLINE" | "ORDER",
-      customerId: input.customerId ?? null,
-      contactName: input.contactName ?? null,
-      contactPhone: input.contactPhone ?? null,
+      customerId: input.customerId === undefined ? originalCustomerId : input.customerId,
+      contactName: input.contactName === undefined ? (inv.contactName ?? null) : input.contactName,
+      contactPhone: input.contactPhone === undefined ? (inv.contactPhone ?? null) : input.contactPhone,
       priceTier: input.priceTier ?? null,
       lines: input.lines,
       invoiceDiscount: input.invoiceDiscount ?? null,

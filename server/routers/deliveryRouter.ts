@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure, workordersCashierProcedure } from "../trpc";
+import { cashierProcedure, deliveryCashierProcedure, deliveryManagerProcedure, deliveryReadProcedure, managerProcedure, router, storeFulfillProcedure, storeManagerProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import {
@@ -30,6 +30,7 @@ import {
   updateDeliveryParty,
   writeOffDeliveryShortfall,
 } from "../services/deliveryService";
+import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
 import { logAudit } from "../services/auditService";
 
 const partyKind = z.enum(["INDIVIDUAL", "COMPANY"]);
@@ -132,6 +133,23 @@ export const deliveryRouter = router({
       await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const res = await retryOnDeadlock(() => reassignDeliveryConsignment(input, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.consignment.reassign", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { partyId: input.partyId, assignedUserId: input.assignedUserId ?? null } });
+      return res;
+    }),
+
+  cancelAssignment: deliveryManagerProcedure
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+      clientRequestId: z.string().trim().min(8).max(100),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await retryOnDeadlock(() => cancelDeliveryAssignment(input, actorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.assignment.cancel",
+        entityType: "deliveryConsignment",
+        entityId: input.consignmentId,
+        newValue: { reason: input.reason },
+      });
       return res;
     }),
 
@@ -286,7 +304,7 @@ export const deliveryRouter = router({
   // 5/8: isnad fatura qa'ima lil-tawseel (bay' mubashir bila amr shughl).
   // Nafs bawwabat receptionQueue (workorders=FULL) — a'la min delivery.dispatch al-qadim
   // (cashierProcedure kham) wa-la tuda''if shay'an qa'iman.
-  dispatchInvoice: workordersCashierProcedure
+  dispatchInvoice: storeFulfillProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),

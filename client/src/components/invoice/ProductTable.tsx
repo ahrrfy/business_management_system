@@ -13,6 +13,7 @@ import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { trpc } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
 import { calcLineTotal, calcMargin, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
@@ -168,6 +169,19 @@ export function ProductTable({
     9 + (showDiscountCol ? 1 : 0) + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0) + (allowGiftLines ? 1 : 0);
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
+  const reservationVariantIds = isPurchase
+    ? []
+    : Array.from(new Set(items.filter((item) => !item.isService).map((item) => item.variantId)));
+  const allocationsQ = trpc.reservations.activeAllocations.useQuery(
+    { branchId, variantIds: reservationVariantIds },
+    { enabled: reservationVariantIds.length > 0, staleTime: 15_000 },
+  );
+  const allocationsByVariant = new Map<number, NonNullable<typeof allocationsQ.data>>();
+  for (const allocation of allocationsQ.data ?? []) {
+    const list = allocationsByVariant.get(allocation.variantId) ?? [];
+    list.push(allocation);
+    allocationsByVariant.set(allocation.variantId, list);
+  }
 
   const priceAsIqd = (price: string) => {
     const numeric = Number(price);
@@ -191,7 +205,7 @@ export function ProductTable({
     // خدمة (١٢/٨/٢٦): بلا مخزون ذاتيّ — createSale يخصم موادها من الوصفة، فلا تحذير للخدمة.
     if (it.isService) return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
     const convFactor = Number(it.conversionFactor) || 1;
-    const availBase = Number(it.stockBase) || 0;
+    const availBase = Number(it.availableBase ?? it.stockBase) || 0;
     const reqBase = demandByVariant.get(it.variantId) ?? (Number(it.qty) || 0) * convFactor;
     const isOut = availBase <= 0;
     const isShort = !isOut && reqBase > availBase;
@@ -285,6 +299,7 @@ export function ProductTable({
               const margin = calcMargin(item);
               const marginNum = Number(margin);
               const stock = stockState(item);
+              const allocations = allocationsByVariant.get(item.variantId) ?? [];
               const purchaseInsight = isPurchase
                 ? purchasePriceInsights?.[`${item.variantId}:${item.productUnitId}`]
                 : undefined;
@@ -323,6 +338,27 @@ export function ProductTable({
                       )}
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-foreground">{item.sku}</div>
+                    {!isPurchase && !item.isService && (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
+                        <span>فعلي {fmtNum(item.stockBase)}</span>
+                        <span className={Number(item.reservedBase ?? 0) > 0 ? "font-bold text-amber-700 dark:text-amber-400" : ""}>
+                          محجوز {fmtNum(item.reservedBase ?? 0)}
+                        </span>
+                        <span className="font-bold">متاح {fmtNum(item.availableBase ?? item.stockBase)}</span>
+                      </div>
+                    )}
+                    {allocations.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {allocations.map((allocation) => (
+                          <span
+                            key={allocation.reservationId}
+                            className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                          >
+                            حجز باسم {allocation.customerName} · {fmtNum(allocation.remainingBase)} وحدة أساس
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     {purchaseInsight && (
                       <div className="mt-1.5 space-y-0.5 text-[10px] leading-4" dir="rtl">
                         <div className="text-muted-foreground">

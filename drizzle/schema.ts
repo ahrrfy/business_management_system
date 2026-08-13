@@ -6277,6 +6277,7 @@ export const deliveryConsignments = mysqlTable(
       "OUT_FOR_DELIVERY",
       "DELIVERED",
       "FAILED",
+      "CANCELLED",
       "RETURNED",
     ])
       .default("ASSIGNED")
@@ -6295,6 +6296,7 @@ export const deliveryConsignments = mysqlTable(
       "DISPATCHED",
       "DELIVERED",
       "PARTIAL",
+      "CANCELLED",
       "RETURNED",
       "WRITTEN_OFF",
     ])
@@ -6319,6 +6321,9 @@ export const deliveryConsignments = mysqlTable(
     custodyRecognizedAt: timestamp("custodyRecognizedAt"),
     failedAt: timestamp("failedAt"),
     failureReason: varchar("failureReason", { length: 500 }),
+    cancelledAt: timestamp("cancelledAt"),
+    cancellationReason: varchar("cancellationReason", { length: 500 }),
+    cancelledBy: int("cancelledBy").references(() => users.id),
     returnedAt: timestamp("returnedAt"),
     notes: text("notes"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

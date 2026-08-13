@@ -166,17 +166,19 @@ describe("sales.listSummary — مجاميع الفلترة", () => {
     expect(round2s(sum.dueAmount)).toBe("30.00");
   });
 
-  it("returnedTotal يُخصم من المتبقي، والملغاة تساهم بصفر فيه وتبقى ضمن totalAmount", async () => {
+  it("الملغاة تبقى في الإجمالي التاريخي، والمستبدلة لا تضاعفه، وكلاهما صفر في المتبقي", async () => {
     const d1 = await sale("4"); // 40.00 بلا دفعة
     const d2 = await sale("2"); // 20.00 بلا دفعة
+    const d3 = await sale("3"); // 30.00 مستبدلة — لا تُجمع مع فاتورتها البديلة
     // مرتجع جزئي 10.00 على الأولى (returnedTotal يحدّثه returnService — نحدّثه مباشرة لعزل منطق المجاميع).
     await db().update(s.invoices).set({ returnedTotal: "10.00" }).where(eq(s.invoices.id, d1.invoiceId));
     // إلغاء الثانية بالكامل.
     await db().update(s.invoices).set({ status: "CANCELLED" }).where(eq(s.invoices.id, d2.invoiceId));
+    await db().update(s.invoices).set({ status: "SUPERSEDED" }).where(eq(s.invoices.id, d3.invoiceId));
 
     const sum = await caller().sales.listSummary({});
-    expect(sum.count).toBe(2);
-    // totalAmount يجمع الكل (حتى الملغاة) — المتبقي وحده يستثنيها.
+    expect(sum.count).toBe(3);
+    // الإجمالي يبقي الملغاة تاريخياً، ويستبعد الأصل المستبدل حتى لا يتكرر مع البديلة.
     expect(round2s(sum.totalAmount)).toBe("60.00");
     expect(round2s(sum.paidAmount)).toBe("0.00");
     // المتبقي = (40 − 0 − 10) للأولى + 0 للملغاة = 30.00.
