@@ -227,6 +227,8 @@ function nativePayloadFor(
   const notificationId = `np_${crypto.createHash("sha256").update(input.eventKey, "utf8").digest("base64url")}`;
   const sensitive =
     input.kind === "PAYROLL_READY" ||
+    // إشعار الإجازة يحمل نوعها ونطاق تواريخها (بيانات شخصية) ⇒ يُنقَّح على شاشة القفل دائماً كالراتب.
+    input.kind === "LEAVE_STATUS" ||
     (input.kind === "ATTENDANCE" && input.lockScreenSafe !== true);
   return normalizeNativePushPayload({
     notificationId,
