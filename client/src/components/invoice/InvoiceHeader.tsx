@@ -16,10 +16,11 @@ import {
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { cn } from "@/lib/utils";
-import { useRef, useState, type Dispatch } from "react";
+import { useEffect, useRef, useState, type Dispatch } from "react";
 import {
-  FileText, Hash, Calendar, Building, User, Factory, Wallet, Tag,
+  FileText, Hash, Calendar, Building, User, Factory, Tag,
   ClipboardList, Clock, DollarSign, UserCheck, Pin, CalendarDays, NotebookPen, Loader2,
+  ChevronDown, ChevronUp,
   type LucideIcon,
 } from "lucide-react";
 import { EntityPicker } from "./EntityPicker";
@@ -56,7 +57,7 @@ function FieldGroup({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1">
       <Label className="flex items-center gap-1 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
         {Icon && <Icon aria-hidden className="size-3.5 opacity-70" />}
         {label}
@@ -80,12 +81,12 @@ function HeaderSection({
 }) {
   return (
     <div>
-      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-primary">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-primary">
         {Icon && <Icon aria-hidden className="size-4" />}
         {title}
         <div className="ms-1 h-px flex-1 bg-border" />
       </div>
-      <div className={cn("grid items-end gap-x-3 gap-y-2", columnsClass ?? "grid-cols-1 md:grid-cols-2 lg:grid-cols-4")}>
+      <div className={cn("grid items-end gap-x-3 gap-y-1.5", columnsClass ?? "grid-cols-1 md:grid-cols-2 lg:grid-cols-4")}>
         {children}
       </div>
     </div>
@@ -105,6 +106,23 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
   latestStateRef.current = state;
   const tierRequestRef = useRef(0);
   const [isRepricing, setIsRepricing] = useState(false);
+
+  // رأس تكيّفيّ (هجين): يُطوى تلقائياً حين تحمل السلة منتجات ليتمدّد جدول السلة نزولاً ويعرض
+  // صفوفاً أكثر، ويعود كاملاً عند إفراغ السلة للإعداد. زرّ الطيّ/التوسيع اليدويّ يتقدّم على
+  // التلقائيّ حتى الانتقال التالي (٠↔موجود).
+  const itemCount = state.items.length;
+  const [collapsed, setCollapsed] = useState(itemCount > 0);
+  const prevItemCountRef = useRef(itemCount);
+  useEffect(() => {
+    const prev = prevItemCountRef.current;
+    prevItemCountRef.current = itemCount;
+    if (prev === 0 && itemCount > 0) setCollapsed(true);
+    else if (itemCount === 0) setCollapsed(false);
+  }, [itemCount]);
+
+  const entitySet = state.entityId != null;
+  const paymentLabel = PAYMENT_TERMS.find((t) => t.value === state.paymentTerms)?.label ?? state.paymentTerms;
+  const currencyLabel = CURRENCIES.find((c) => c.value === state.currency)?.label ?? state.currency;
 
   /**
    * Reprice the current cart in one server round-trip when the tier changes.
@@ -170,26 +188,68 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
     <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
       {/* Title bar */}
       <header
-        className="flex items-center justify-between border-b px-4 py-2.5"
+        className="flex items-center justify-between border-b px-4 py-2"
         style={{ background: `linear-gradient(135deg, ${typeInfo.colorHex}0a, transparent)` }}
       >
         <div className="flex items-center gap-2">
-          <div className={cn("flex h-8 w-8 items-center justify-center rounded-lg text-white", typeInfo.colorBg)}>
-            <typeInfo.icon aria-hidden className="size-4" />
+          <div className={cn("flex h-7 w-7 items-center justify-center rounded-lg text-white", typeInfo.colorBg)}>
+            <typeInfo.icon aria-hidden className="size-3.5" />
           </div>
-          <span className="text-base font-extrabold text-foreground">{typeInfo.label}</span>
+          <span className="text-sm font-extrabold text-foreground">{typeInfo.label}</span>
           <span className="rounded-md border border-amber-300/40 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
             مسوّدة
           </span>
         </div>
-        <div className="text-xs font-semibold text-muted-foreground" dir="ltr">
-          {state.invoiceNumber}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-muted-foreground" dir="ltr">{state.invoiceNumber}</span>
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "توسيع بيانات الفاتورة" : "طيّ بيانات الفاتورة"}
+            className="flex size-7 items-center justify-center rounded-md border text-muted-foreground transition hover:bg-accent"
+          >
+            {collapsed ? <ChevronDown aria-hidden className="size-4" /> : <ChevronUp aria-hidden className="size-4" />}
+          </button>
         </div>
       </header>
 
-      {/* Sections */}
-      <div className="flex flex-col gap-3.5 px-4 pb-3.5 pt-3">
-        <HeaderSection title="بيانات المستند" icon={FileText} columnsClass="grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
+      {/* ملخّص مطويّ — يحلّ محلّ الشبكة حين تحمل السلة منتجات، فيربح جدول السلة ارتفاعاً */}
+      {collapsed && (
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          className="flex w-full flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2 text-start"
+          aria-label="توسيع بيانات الفاتورة للتعديل"
+        >
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-bold",
+              entitySet
+                ? "text-foreground"
+                : isReturn
+                  ? "text-muted-foreground"
+                  : "border border-amber-300/40 bg-amber-50 text-amber-700",
+            )}
+          >
+            {isSale ? <User aria-hidden className="size-3.5" /> : <Factory aria-hidden className="size-3.5" />}
+            {entitySet ? `${isSale ? "العميل" : "المورد"} محدَّد` : `اختر ${isSale ? "العميل" : "المورد"}`}
+          </span>
+          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground" dir="ltr">
+            <Calendar aria-hidden className="size-3.5" /> {state.date}
+          </span>
+          <span className="text-xs text-muted-foreground">· {paymentLabel}</span>
+          <span className="text-xs text-muted-foreground">· {currencyLabel}</span>
+          <span className="ms-auto inline-flex items-center gap-1 text-xs font-semibold text-primary">
+            تعديل البيانات <ChevronDown aria-hidden className="size-4" />
+          </span>
+        </button>
+      )}
+
+      {/* الشبكة الكاملة — تُطوى تلقائياً حين تمتلئ السلة */}
+      {!collapsed && (
+      <div className="px-4 pb-3 pt-2.5">
+        <HeaderSection title="تفاصيل الفاتورة" icon={FileText} columnsClass="grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
           <FieldGroup label="رقم المستند" icon={Hash}>
             <Input value={state.invoiceNumber} readOnly className="bg-muted font-bold" />
           </FieldGroup>
@@ -231,9 +291,6 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
               placeholder={isReturn ? `نقدي — بلا ${isSale ? "عميل" : "مورّد"} (اختياري)` : undefined}
             />
           </FieldGroup>
-        </HeaderSection>
-
-        <HeaderSection title="الشروط المالية والمراجع" icon={Wallet} columnsClass="grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
           {isSale && (
             <FieldGroup label="فئة السعر" icon={Tag}>
               <Select
@@ -362,6 +419,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           </FieldGroup>
         </HeaderSection>
       </div>
+      )}
     </section>
   );
 }
