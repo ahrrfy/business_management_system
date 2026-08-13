@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
-import { calcLineTotal, calcMargin, fmtNum } from "./totals";
+import { calcLineTotal, calcMargin, calcUnitCost, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
 import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
 
@@ -213,8 +213,8 @@ export function ProductTable({
     return { isOut, isShort, availInUnit };
   };
 
-  const th = "sticky top-0 z-[2] whitespace-nowrap border-b-2 bg-muted px-2 py-2.5 text-center text-xs font-bold text-muted-foreground";
-  const td = "px-2 py-2.5 text-center text-sm align-middle";
+  const th = "sticky top-0 z-[2] whitespace-nowrap border-b-2 bg-muted px-2 py-2 text-center text-xs font-bold text-muted-foreground";
+  const td = "px-2 py-1.5 text-center text-sm align-middle";
 
   return (
     <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card print:overflow-visible">
@@ -324,8 +324,11 @@ export function ProductTable({
                     {item.barcode?.slice(-6) ?? "—"}
                   </td>
                   <td className={cn(td, "text-right")}>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-sm font-bold text-foreground">{item.name}</span>
+                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                      <span className="text-sm font-bold leading-tight text-foreground">{item.name}</span>
+                      {item.sku && (
+                        <span className="font-mono text-[10px] text-muted-foreground" dir="ltr">{item.sku}</span>
+                      )}
                       {stock.isOut && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
                           نافذ — لا مخزون
@@ -337,9 +340,8 @@ export function ProductTable({
                         </span>
                       )}
                     </div>
-                    <div className="mt-0.5 text-[11px] text-muted-foreground">{item.sku}</div>
                     {!isPurchase && !item.isService && (
-                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
                         <span>فعلي {fmtNum(item.stockBase)}</span>
                         <span className={Number(item.reservedBase ?? 0) > 0 ? "font-bold text-amber-700 dark:text-amber-400" : ""}>
                           محجوز {fmtNum(item.reservedBase ?? 0)}
@@ -348,7 +350,7 @@ export function ProductTable({
                       </div>
                     )}
                     {allocations.length > 0 && (
-                      <div className="mt-1.5 flex flex-wrap gap-1">
+                      <div className="mt-1 flex flex-wrap gap-1">
                         {allocations.map((allocation) => (
                           <span
                             key={allocation.reservationId}
@@ -360,7 +362,7 @@ export function ProductTable({
                       </div>
                     )}
                     {purchaseInsight && (
-                      <div className="mt-1.5 space-y-0.5 text-[10px] leading-4" dir="rtl">
+                      <div className="mt-1 space-y-0.5 text-[10px] leading-4" dir="rtl">
                         <div className="text-muted-foreground">
                           آخر شراء: <span dir="ltr" className="font-bold tabular-nums">{fmtNum(purchaseInsight.lastPurchase.price)}</span> د.ع
                           <span> من {purchaseInsight.lastPurchase.supplierName}</span>
@@ -410,7 +412,7 @@ export function ProductTable({
                   </td>
                   {showCostCol && (
                     <td className={cn(td, "text-xs text-muted-foreground")} dir="ltr">
-                      {fmtNum(item.costBase)}
+                      {fmtNum(calcUnitCost(item))}
                     </td>
                   )}
                   <td className={td}>
