@@ -16,6 +16,7 @@ import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
 import { withTx } from "../tx";
 import { consignmentBackedBalance } from "./guards";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
 
 /** تسوية عهدة: الجهة تدفع نقداً لخفض رصيدها (عجز توريدٍ سابق أو عهدة تحصيلات متجر). */
@@ -90,6 +91,15 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
     });
     const receiptId = extractInsertId(rIn);
     await adjustDeliveryBalance(tx, input.partyId, amount.neg());
+    await appendDeliveryLedgerEntry(tx, {
+      eventKey: `PARTY:${input.partyId}:COD_REMITTED:RECEIPT:${receiptId}`,
+      partyId: input.partyId,
+      branchId: input.branchId,
+      entryType: "COD_REMITTED",
+      amount: toDbMoney(amount),
+      actorUserId: actor.userId,
+      notes: input.notes ?? "Loose delivery custody remittance",
+    });
     await postEntry(tx, {
       entryType: "DELIVERY_REMIT", dedupeKey: `DELIVERY_SETTLE:${receiptId}`,
       branchId: input.branchId, deliveryPartyId: input.partyId, receiptId, amount, notes: "تسوية عهدة جهة توصيل",
@@ -146,8 +156,8 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
       if (Number(cn.partyId) !== Number(input.partyId)) throw new TRPCError({ code: "BAD_REQUEST", message: "الإرسالية لجهة أخرى" });
       if (Number(cn.branchId) !== Number(input.branchId)) throw new TRPCError({ code: "BAD_REQUEST", message: "الإرسالية تخصّ فرعاً آخر" });
-      if (cn.status !== "DISPATCHED" && cn.status !== "PARTIAL") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `الإرسالية ${cn.consignmentNumber} غير قابلة للشطب (حالتها ${cn.status})` });
+      if (cn.parcelStatus !== "DELIVERED" || (cn.moneyStatus !== "UNSETTLED" && cn.moneyStatus !== "PARTIAL")) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن شطب ${cn.consignmentNumber} قبل إثبات التسليم الفعلي أو بعد إغلاقها المالي` });
       }
       const remaining = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
       if (!amount.eq(remaining)) {
@@ -187,16 +197,38 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       await tx.update(deliveryConsignments).set({
         collectedAmount: toDbMoney(round2(money(cn.collectedAmount).plus(realPart))),
         status: "WRITTEN_OFF",
+        moneyStatus: "WRITTEN_OFF",
         settledAt: new Date(),
       }).where(eq(deliveryConsignments.id, Number(cn.id)));
       // الخسارة الحقيقية = الجزء المستحق فعلاً؛ قيد WRITEOFF بكامل المبلغ (صيغة مطابقة العهدة
       // DISPATCH−REMIT−WRITEOFF تتطلبه) مع cost/profit على الجزء الحقيقي وحده.
       await adjustDeliveryBalance(tx, input.partyId, amount.neg());
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `CN:${cn.id}:COD_WRITTEN_OFF`,
+        partyId: input.partyId,
+        consignmentId: Number(cn.id),
+        branchId: input.branchId,
+        entryType: "COD_WRITTEN_OFF",
+        amount: toDbMoney(amount),
+        actorUserId: actor.userId,
+        notes: input.reason.trim(),
+      });
+      await appendDeliveryEvent(tx, {
+        eventKey: `CN:${cn.id}:MONEY_WRITTEN_OFF`,
+        consignmentId: Number(cn.id),
+        eventType: "MONEY_WRITTEN_OFF",
+        fromParcelStatus: cn.parcelStatus,
+        toParcelStatus: cn.parcelStatus,
+        fromMoneyStatus: cn.moneyStatus,
+        toMoneyStatus: "WRITTEN_OFF",
+        actorUserId: actor.userId,
+        payload: { amount: toDbMoney(amount), reason: input.reason.trim() },
+      });
       await postEntry(tx, {
         entryType: "DELIVERY_WRITEOFF",
         dedupeKey: `DELIVERY_WRITEOFF:CN:${input.consignmentId}`,
         branchId: input.branchId, deliveryPartyId: input.partyId, invoiceId,
-        amount, cost: realPart, profit: realPart.neg(),
+        amount, cost: amount, profit: amount.neg(),
         notes: `شطب عهدة: ${input.reason.trim()}${phantomPart.gt(0) ? ` (منها ${phantomPart.toFixed(2)} تصفية عهدة زائدة عن متبقّي الفاتورة — بلا خسارة)` : ""}`,
       });
       if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.writeoff", input.clientRequestId, input.partyId, payloadHash);
@@ -216,6 +248,15 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
 
     // الشطب المجمّع (السائب): شطبٌ بلا نقد — خسارة فقط (cost-only) ⇒ لا إيصال درج.
     await adjustDeliveryBalance(tx, input.partyId, amount.neg());
+    await appendDeliveryLedgerEntry(tx, {
+      eventKey: `PARTY:${input.partyId}:COD_WRITTEN_OFF:${input.clientRequestId ?? crypto.randomUUID()}`,
+      partyId: input.partyId,
+      branchId: input.branchId,
+      entryType: "COD_WRITTEN_OFF",
+      amount: toDbMoney(amount),
+      actorUserId: actor.userId,
+      notes: input.reason.trim(),
+    });
     await postEntry(tx, {
       entryType: "DELIVERY_WRITEOFF",
       branchId: input.branchId, deliveryPartyId: input.partyId, invoiceId,
@@ -297,6 +338,15 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
       description: input.notes ?? `استرداد عجز مشطوب — جهة توصيل #${input.partyId}`, createdBy: actor.userId,
     });
     const receiptId = extractInsertId(rIn);
+    await appendDeliveryLedgerEntry(tx, {
+      eventKey: `PARTY:${input.partyId}:COD_RECOVERED:RECEIPT:${receiptId}`,
+      partyId: input.partyId,
+      branchId: input.branchId,
+      entryType: "COD_RECOVERED",
+      amount: toDbMoney(amount),
+      actorUserId: actor.userId,
+      notes: input.notes ?? "Recovered written-off delivery custody",
+    });
     // قيدان متعاكسان على العهدة (عكس شطب + توريد) — الرصيد صافيه صفر والصيغة متوازنة.
     await postEntry(tx, {
       entryType: "DELIVERY_WRITEOFF", dedupeKey: `DELIVERY_WRITEOFF_RECOVER:${receiptId}`,

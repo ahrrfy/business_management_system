@@ -1,58 +1,86 @@
 // CRUD جهات التوصيل.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, like, ne, or, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties, onlineOrders, users } from "../../../drizzle/schema";
+import { and, desc, eq, isNull, like, ne, or, sql } from "drizzle-orm";
+import { deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryPartyMembers, onlineOrders, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, toDbMoney } from "../money";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { withTx } from "../tx";
+import { appendDeliveryEvent } from "./lifecycle";
 import type { DeliveryActor, DeliveryPartyKind } from "./types";
-
-/**
- * سقف عهدة المندوب (`floatLimit`) — حارسٌ واحد يشترك فيه **كلّ** مسارات الإسناد.
- *
- * مراجعة PR #495: كان مطبَّقاً في `dispatchInvoiceInTx` وحده، بينما `dispatchToDelivery`
- * (مسار أمر الشغل) يقفل نفس الجهة ويُنشئ إرسالية COD ويرفع `currentBalance` بلا قراءة السقف
- * ⇒ سقفٌ مسرحيّ: أوامرُ شغلٍ جاهزة تدفع مندوباً إلى ما فوق سقفه بلا حدّ. يُستدعى **بعد** قفل
- * صفّ الجهة (`FOR UPDATE`) وقبل أيّ كتابة، فالرصيد المقروء هو الملتزَم لا لقطةً قديمة.
- */
-export function assertFloatLimit(
-  party: { name: string; floatLimit?: string | null; currentBalance?: string | null },
-  codAmount: ReturnType<typeof money>,
-): void {
-  const limit = money(party.floatLimit ?? "0");
-  if (!limit.gt(0)) return; // بلا سقفٍ مضبوط ⇒ بلا حدّ (السلوك القائم)
-  const after = money(party.currentBalance ?? "0").plus(codAmount).toDecimalPlaces(2);
-  if (after.gt(limit)) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: `عهدة ${party.name} ستبلغ ${after.toFixed(2)} وتتجاوز سقفها (${limit.toFixed(2)}) — استلم توريداً منه أوّلاً أو ارفع السقف`,
-    });
-  }
-}
 
 /** يمنع تعطيل/فكّ ربط جهة عليها طلبات متجر «مع المندوب» (SHIPPED) — وإلا تُيتَّم من مسار التحصيل
  *  الوحيد (توصيلاتي) بلا إعادة إسناد (مراجعة عدائية ١٢/٧). العهدة=0 لطلبٍ لم يُحصَّل بعد فلا يحرسها فحص الرصيد. */
 async function assertNoOpenCourierOrders(tx: Tx, partyId: number): Promise<void> {
-  const open = (await tx
+  const openStore = (await tx
     .select({ n: sql<number>`COUNT(*)` })
     .from(onlineOrders)
     .where(and(eq(onlineOrders.deliveryPartyId, partyId), eq(onlineOrders.status, "SHIPPED"))))[0];
-  if (Number(open?.n ?? 0) > 0) {
+  const openConsignments = (await tx
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(deliveryConsignments)
+    .where(and(eq(deliveryConsignments.partyId, partyId), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
+  if (Number(openStore?.n ?? 0) > 0 || Number(openConsignments?.n ?? 0) > 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل/فكّ ربط جهة عليها طلبات قيد التوصيل — سلّمها أو أعِد إسنادها أولاً" });
   }
 }
 
+/**
+ * حارس سقف التعرّض داخل المعاملة. currentBalance في المرحلة الثانية يمثّل
+ * النقد المحصّل فقط، لذلك يُشتق خطر الإسناد من الدفتر التشغيلي ويُقارن أيضاً
+ * بالرصيد المرحّل حتى لا تتجاوز الشحنات غير المسلّمة السقف بصمت.
+ */
+export async function assertFloatLimitTx(
+  tx: Tx,
+  party: { id: number | string; name: string; floatLimit?: string | null; currentBalance?: string | null },
+  codAmount: ReturnType<typeof money>,
+): Promise<void> {
+  const limit = money(party.floatLimit ?? "0");
+  if (!limit.gt(0)) return;
+  const row = (await tx.select({
+    exposure: sql<string>`COALESCE(SUM(CASE
+      WHEN ${deliveryLedgerEntries.entryType} = 'COD_ASSIGNED' THEN ${deliveryLedgerEntries.amount}
+      WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_RELEASED','COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount}
+      ELSE 0 END),0)`,
+  }).from(deliveryLedgerEntries).where(eq(deliveryLedgerEntries.partyId, Number(party.id))))[0];
+  const committed = money(row?.exposure ?? "0");
+  const legacyCash = money(party.currentBalance ?? "0");
+  const after = DecimalMax(committed, legacyCash).plus(codAmount).toDecimalPlaces(2);
+  if (after.gt(limit)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `التعرّض التشغيلي لجهة ${party.name} سيبلغ ${after.toFixed(2)} ويتجاوز السقف (${limit.toFixed(2)}) — ورّد النقد أو أعد توزيع الطرود أولاً`,
+    });
+  }
+}
+
+const DecimalMax = (
+  a: ReturnType<typeof money>,
+  b: ReturnType<typeof money>,
+) => (a.gte(b) ? a : b);
+
 /** يتحقّق أن userId حسابُ مندوب (courier) غير مرتبط بجهة أخرى — قبل الربط. (excludePartyId للتعديل.) */
-async function assertLinkableCourier(tx: Tx, userId: number, excludePartyId?: number): Promise<void> {
-  const u = (await tx.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1))[0];
+async function assertLinkableCourier(tx: Tx, userId: number, actor: DeliveryActor, excludePartyId?: number): Promise<void> {
+  const u = (await tx.select({ role: users.role, isActive: users.isActive, branchId: users.branchId }).from(users).where(eq(users.id, userId)).limit(1))[0];
   if (!u) throw new TRPCError({ code: "BAD_REQUEST", message: "الحساب المختار غير موجود" });
+  if (!u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الحساب المختار معطّل" });
   if (u.role !== "courier") throw new TRPCError({ code: "BAD_REQUEST", message: "الحساب المختار ليس دوره «مندوب توصيل»" });
+  if (actor.role !== "admin" && actor.branchId != null && u.branchId != null && Number(u.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "حساب المندوب يخص فرعاً آخر" });
+  }
   const conds = [eq(deliveryParties.userId, userId)];
   if (excludePartyId != null) conds.push(ne(deliveryParties.id, excludePartyId));
   const linked = (await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(and(...conds)).limit(1))[0];
   if (linked) throw new TRPCError({ code: "BAD_REQUEST", message: "هذا الحساب مرتبط بجهة توصيل أخرى" });
+  const memberConds = [eq(deliveryPartyMembers.userId, userId)];
+  if (excludePartyId != null) memberConds.push(ne(deliveryPartyMembers.partyId, excludePartyId));
+  const membership = (await tx.select({ partyId: deliveryPartyMembers.partyId })
+    .from(deliveryPartyMembers)
+    .where(and(...memberConds))
+    .limit(1))[0];
+  if (membership) throw new TRPCError({ code: "BAD_REQUEST", message: "هذا الحساب عضو في جهة توصيل أخرى" });
 }
 
 export interface CreateDeliveryPartyInput {
@@ -71,7 +99,7 @@ export interface CreateDeliveryPartyInput {
 
 export async function createDeliveryParty(input: CreateDeliveryPartyInput, actor: DeliveryActor): Promise<{ id: number }> {
   return withTx(async (tx) => {
-    if (input.userId != null) await assertLinkableCourier(tx, input.userId);
+    if (input.userId != null) await assertLinkableCourier(tx, input.userId, actor);
     const res = await tx.insert(deliveryParties).values({
       partyType: input.partyType,
       name: input.name.trim(),
@@ -86,7 +114,16 @@ export async function createDeliveryParty(input: CreateDeliveryPartyInput, actor
       notes: input.notes ?? null,
       isActive: true,
     });
-    return { id: extractInsertId(res) };
+    const id = extractInsertId(res);
+    if (input.userId != null) {
+      await tx.insert(deliveryPartyMembers).values({
+        partyId: id,
+        userId: input.userId,
+        memberRole: input.partyType === "COMPANY" ? "MANAGER" : "DRIVER",
+        createdBy: actor.userId,
+      });
+    }
+    return { id };
   });
 }
 
@@ -113,8 +150,36 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
     if (input.phone !== undefined) patch.phone = input.phone;
     if (input.phone2 !== undefined) patch.phone2 = input.phone2;
     if (input.userId !== undefined) {
-      if (input.userId != null) await assertLinkableCourier(tx, input.userId, input.id);
-      else await assertNoOpenCourierOrders(tx, input.id); // فكّ الربط: امنعه ما دامت طلبات قيد التوصيل
+      const cur = (await tx.select({ userId: deliveryParties.userId, partyType: deliveryParties.partyType }).from(deliveryParties).where(eq(deliveryParties.id, input.id)).for("update").limit(1))[0];
+      if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+      const before = cur.userId == null ? null : Number(cur.userId);
+      const after = input.userId == null ? null : Number(input.userId);
+      // السماح بربط جهة يتيمة (null→حساب) يعيد إرسالياتها إلى البوابة. أما فك الربط أو نقلها
+      // من حساب قائم فيُمنع ما دامت عليه أعمال مفتوحة كي لا تختفي من المستخدم الحالي.
+      if (before !== after && before != null) await assertNoOpenCourierOrders(tx, input.id);
+      if (after != null) await assertLinkableCourier(tx, after, _actor, input.id);
+      if (before !== after && before != null) {
+        await tx.delete(deliveryPartyMembers).where(and(
+          eq(deliveryPartyMembers.partyId, input.id),
+          eq(deliveryPartyMembers.userId, before),
+        ));
+      }
+      if (after != null) {
+        const member = (await tx.select({ id: deliveryPartyMembers.id }).from(deliveryPartyMembers).where(and(
+          eq(deliveryPartyMembers.partyId, input.id),
+          eq(deliveryPartyMembers.userId, after),
+        )).limit(1))[0];
+        if (member) {
+          await tx.update(deliveryPartyMembers).set({ isActive: true }).where(eq(deliveryPartyMembers.id, Number(member.id)));
+        } else {
+          await tx.insert(deliveryPartyMembers).values({
+            partyId: input.id,
+            userId: after,
+            memberRole: (input.partyType ?? cur.partyType) === "COMPANY" ? "MANAGER" : "DRIVER",
+            createdBy: _actor.userId,
+          });
+        }
+      }
       patch.userId = input.userId;
     }
     if (input.branchId !== undefined) {
@@ -129,7 +194,7 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
         const open = (await tx
           .select({ n: sql<number>`COUNT(*)` })
           .from(deliveryConsignments)
-          .where(and(eq(deliveryConsignments.partyId, input.id), sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`)))[0];
+          .where(and(eq(deliveryConsignments.partyId, input.id), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
         if (Number(open?.n ?? 0) > 0) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُغيَّر فرع جهةٍ عليها إرساليات مفتوحة — سوِّها أو أرجِعها أولاً" });
         }
@@ -164,7 +229,7 @@ export async function setDeliveryPartyActive(id: number, isActive: boolean, _act
       const openCn = (await tx
         .select({ n: sql<number>`COUNT(*)` })
         .from(deliveryConsignments)
-        .where(and(eq(deliveryConsignments.partyId, id), sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`)))[0];
+        .where(and(eq(deliveryConsignments.partyId, id), sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)))[0];
       if (Number(openCn?.n ?? 0) > 0) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل جهة لها إرساليات مفتوحة — ورِّدها أو أرجِعها أو اشطبها موجَّهةً أولاً" });
       }
@@ -185,7 +250,9 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
   const db = getDb();
   if (!db) return [];
   const conds = [];
-  if (opts.branchId != null) conds.push(eq(deliveryParties.branchId, opts.branchId));
+  if (opts.branchId != null) {
+    conds.push(or(eq(deliveryParties.branchId, opts.branchId), isNull(deliveryParties.branchId))!);
+  }
   if (opts.activeOnly) conds.push(eq(deliveryParties.isActive, true));
   if (opts.search && opts.search.trim()) {
     const s = `%${opts.search.trim()}%`;
@@ -217,12 +284,37 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
       oldest: sql<string | null>`MIN(${deliveryConsignments.dispatchedAt})`,
     })
     .from(deliveryConsignments)
-    .where(sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`)
+    .where(sql`(${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') OR ${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL'))`)
     .groupBy(deliveryConsignments.partyId);
   const openMap = new Map(openAgg.map((r) => [Number(r.partyId), { openCount: Number(r.openCount), oldest: r.oldest }]));
 
+  const driverRows = await db.select({
+    partyId: deliveryPartyMembers.partyId,
+    userId: deliveryPartyMembers.userId,
+    memberRole: deliveryPartyMembers.memberRole,
+    name: users.name,
+    username: users.username,
+  }).from(deliveryPartyMembers)
+    .innerJoin(users, eq(users.id, deliveryPartyMembers.userId))
+    .where(and(
+      eq(deliveryPartyMembers.isActive, true),
+      eq(users.isActive, true),
+    ));
+  const driversByParty = new Map<number, Array<{ userId: number; name: string }>>();
+  const portalPartyIds = new Set<number>();
+  for (const driver of driverRows) {
+    const partyId = Number(driver.partyId);
+    portalPartyIds.add(partyId);
+    if (driver.memberRole !== "DRIVER") continue;
+    const list = driversByParty.get(partyId) ?? [];
+    list.push({ userId: Number(driver.userId), name: driver.name ?? driver.username ?? `#${driver.userId}` });
+    driversByParty.set(partyId, list);
+  }
+
   return parties.map((p) => ({
     ...p,
+    drivers: driversByParty.get(Number(p.id)) ?? [],
+    hasPortalAccess: p.userId != null || portalPartyIds.has(Number(p.id)),
     openConsignments: openMap.get(Number(p.id))?.openCount ?? 0,
     oldestOutstanding: openMap.get(Number(p.id))?.oldest ?? null,
   }));
@@ -236,7 +328,7 @@ export async function getDeliveryParty(id: number) {
 }
 
 /** حسابات المناديب (دور courier) لربطها بجهة توصيل — مع الجهة المرتبطة حالياً (لمنتقي الربط). */
-export async function listCourierAccounts() {
+export async function listCourierAccounts(branchId?: number | null) {
   const db = getDb();
   if (!db) return [];
   const rows = await db
@@ -244,12 +336,17 @@ export async function listCourierAccounts() {
       id: users.id,
       name: users.name,
       username: users.username,
-      linkedPartyId: deliveryParties.id,
+      linkedPartyId: sql<number | null>`COALESCE(${deliveryPartyMembers.partyId}, ${deliveryParties.id})`,
       linkedPartyName: deliveryParties.name,
     })
     .from(users)
-    .leftJoin(deliveryParties, eq(deliveryParties.userId, users.id))
-    .where(eq(users.role, "courier"))
+    .leftJoin(deliveryPartyMembers, and(eq(deliveryPartyMembers.userId, users.id), eq(deliveryPartyMembers.isActive, true)))
+    .leftJoin(deliveryParties, or(eq(deliveryParties.id, deliveryPartyMembers.partyId), eq(deliveryParties.userId, users.id)))
+    .where(and(
+      eq(users.role, "courier"),
+      eq(users.isActive, true),
+      branchId == null ? undefined : or(eq(users.branchId, branchId), isNull(users.branchId)),
+    ))
     .orderBy(users.name);
   return rows.map((r) => ({
     id: Number(r.id),
@@ -258,4 +355,141 @@ export async function listCourierAccounts() {
     linkedPartyId: r.linkedPartyId != null ? Number(r.linkedPartyId) : null,
     linkedPartyName: r.linkedPartyName ?? null,
   }));
+}
+
+export async function listDeliveryPartyMembers(partyId: number) {
+  const db = getDb();
+  if (!db) return [];
+  return db.select({
+    id: deliveryPartyMembers.id,
+    partyId: deliveryPartyMembers.partyId,
+    userId: deliveryPartyMembers.userId,
+    memberRole: deliveryPartyMembers.memberRole,
+    isActive: deliveryPartyMembers.isActive,
+    name: users.name,
+    username: users.username,
+  }).from(deliveryPartyMembers)
+    .innerJoin(users, eq(users.id, deliveryPartyMembers.userId))
+    .where(eq(deliveryPartyMembers.partyId, partyId))
+    .orderBy(desc(deliveryPartyMembers.isActive), users.name);
+}
+
+export async function addDeliveryPartyMember(
+  input: { partyId: number; userId: number; memberRole: "DRIVER" | "MANAGER" | "ACCOUNTANT" },
+  actor: DeliveryActor,
+) {
+  return withTx(async (tx) => {
+    const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
+    if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    const otherMembership = (await tx.select({ partyId: deliveryPartyMembers.partyId }).from(deliveryPartyMembers).where(and(
+      eq(deliveryPartyMembers.userId, input.userId),
+      eq(deliveryPartyMembers.isActive, true),
+      ne(deliveryPartyMembers.partyId, input.partyId),
+    )).limit(1))[0];
+    if (otherMembership) throw new TRPCError({ code: "BAD_REQUEST", message: "هذا الحساب عضو في جهة توصيل أخرى" });
+    await assertLinkableCourier(tx, input.userId, actor, input.partyId);
+    const existing = (await tx.select().from(deliveryPartyMembers).where(and(
+      eq(deliveryPartyMembers.partyId, input.partyId),
+      eq(deliveryPartyMembers.userId, input.userId),
+    )).limit(1))[0];
+    if (existing) {
+      await tx.update(deliveryPartyMembers).set({ memberRole: input.memberRole, isActive: true }).where(eq(deliveryPartyMembers.id, Number(existing.id)));
+      return { id: Number(existing.id) };
+    }
+    const res = await tx.insert(deliveryPartyMembers).values({
+      partyId: input.partyId,
+      userId: input.userId,
+      memberRole: input.memberRole,
+      createdBy: actor.userId,
+    });
+    return { id: extractInsertId(res) };
+  });
+}
+
+export async function removeDeliveryPartyMember(
+  input: { partyId: number; userId: number },
+) {
+  return withTx(async (tx) => {
+    const member = (await tx.select().from(deliveryPartyMembers).where(and(
+      eq(deliveryPartyMembers.partyId, input.partyId),
+      eq(deliveryPartyMembers.userId, input.userId),
+      eq(deliveryPartyMembers.isActive, true),
+    )).for("update").limit(1))[0];
+    if (!member) return { removed: false };
+    const assigned = (await tx.select({ n: sql<number>`COUNT(*)` }).from(deliveryConsignments).where(and(
+      eq(deliveryConsignments.partyId, input.partyId),
+      eq(deliveryConsignments.assignedUserId, input.userId),
+      sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED')`,
+    )))[0];
+    if (Number(assigned?.n ?? 0) > 0) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يمكن إزالة السائق قبل إعادة إسناد طروده المفتوحة" });
+    }
+    const party = (await tx.select({ userId: deliveryParties.userId }).from(deliveryParties)
+      .where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
+    if (party?.userId != null && Number(party.userId) === input.userId) {
+      await assertNoOpenCourierOrders(tx, input.partyId);
+      await tx.update(deliveryParties).set({ userId: null }).where(eq(deliveryParties.id, input.partyId));
+    }
+    // The table has a unique key on userId. Deleting a safely-detached member
+    // keeps that identity reusable by another delivery party; the audit log is
+    // the immutable record of the removal.
+    await tx.delete(deliveryPartyMembers).where(eq(deliveryPartyMembers.id, Number(member.id)));
+    return { removed: true };
+  });
+}
+
+export async function reassignDeliveryConsignment(
+  input: { partyId: number; consignmentId: number; assignedUserId?: number | null; clientRequestId: string },
+  actor: DeliveryActor,
+) {
+  const payloadHash = idempotencyHash({
+    partyId: Number(input.partyId),
+    consignmentId: Number(input.consignmentId),
+    assignedUserId: input.assignedUserId == null ? null : Number(input.assignedUserId),
+  });
+  return withTx(async (tx) => {
+    const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
+    if (!party?.isActive) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة أو غير نشطة" });
+    const cn = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, input.consignmentId)).for("update").limit(1))[0];
+    if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+    const replay = await checkIdempotency(tx, "delivery.reassignConsignment", input.clientRequestId, payloadHash);
+    if (replay != null) return { consignmentId: replay, replay: true as const };
+    if (Number(cn.partyId) !== Number(input.partyId)) throw new TRPCError({ code: "BAD_REQUEST", message: "الإرسالية تخص جهة توصيل أخرى" });
+    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "إعادة الإسناد مسموحة قبل قبول الطرد أو بعد تسجيل تعذر التوصيل فقط" });
+    }
+    if (input.assignedUserId != null) {
+      const driver = (await tx.select({ id: deliveryPartyMembers.id, userActive: users.isActive }).from(deliveryPartyMembers)
+        .innerJoin(users, eq(users.id, deliveryPartyMembers.userId))
+        .where(and(
+          eq(deliveryPartyMembers.partyId, input.partyId),
+          eq(deliveryPartyMembers.userId, input.assignedUserId),
+          eq(deliveryPartyMembers.memberRole, "DRIVER"),
+          eq(deliveryPartyMembers.isActive, true),
+        )).limit(1))[0];
+      if (!driver?.userActive) throw new TRPCError({ code: "BAD_REQUEST", message: "السائق المختار ليس عضواً نشطاً في هذه الجهة" });
+    }
+    await tx.update(deliveryConsignments).set({
+      assignedUserId: input.assignedUserId ?? null,
+      parcelStatus: "ASSIGNED",
+      acceptedAt: null,
+      pickedUpAt: null,
+      outForDeliveryAt: null,
+      failedAt: null,
+      failureReason: null,
+    }).where(eq(deliveryConsignments.id, input.consignmentId));
+    await appendDeliveryEvent(tx, {
+      eventKey: `CN:${cn.id}:REASSIGNED:${input.clientRequestId}`,
+      consignmentId: Number(cn.id),
+      eventType: "REASSIGNED",
+      fromParcelStatus: cn.parcelStatus,
+      toParcelStatus: "ASSIGNED",
+      fromMoneyStatus: cn.moneyStatus,
+      toMoneyStatus: cn.moneyStatus,
+      actorUserId: actor.userId,
+      payload: { fromUserId: cn.assignedUserId, toUserId: input.assignedUserId ?? null },
+    });
+    await recordIdempotencyKey(tx, "delivery.reassignConsignment", input.clientRequestId, Number(cn.id), payloadHash);
+    return { consignmentId: Number(cn.id), replay: false as const };
+  });
 }

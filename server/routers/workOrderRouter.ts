@@ -122,8 +122,8 @@ const receptionCheckoutSchema = z.object({
   }).nullish(),
   // الاستقبال (٨/٨): تأكيد الموظّف توفّر الأصناف غير المجرودة فيزيائياً (بيع بالسالب لطلب COD في وضع الافتتاح).
   openingSellUnavailableConfirmed: z.boolean().optional(),
-  // بيع مباشر آجل (قرار المالك ١٠/٨): المقبوض أقلّ من إجمالي البضاعة/الطباعة بلا توصيل ⇒ المتبقّي
-  // ذمّةٌ على العميل المسجَّل (حدّ الائتمان نافذ). علَمٌ صريح؛ بلا عميلٍ يبقى الحاجز صارماً.
+  // بيع مباشر بدون عربون: المقبوض أقلّ من إجمالي البضاعة/الطباعة بلا توصيل ⇒ المتبقّي ذمّةٌ على
+  // عميل استقبال فعّال بهوية مكتملة (اسم + هاتف عراقي). التفويض الخادمي محصور في checkoutReception.
   deferredDirect: z.boolean().optional(),
   // ش١ (م٦): اعتماد مديرٍ للخصم اليدويّ >١٠٪ (بريد+كلمة مرور، verifyManagerApproval نفسها) —
   // يمنح priceOverrideApproved للكاشير كما يمنحه sales.create تماماً.
@@ -392,6 +392,7 @@ export const workOrderRouter = router({
           consignmentId: deliveryConsignments.id,
           consignmentStatus: deliveryConsignments.status,
           consignmentNumber: deliveryConsignments.consignmentNumber,
+          courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
           deliveryPartyId: deliveryConsignments.partyId,
           deliveryPartyName: deliveryParties.name,
         })
@@ -427,6 +428,7 @@ export const workOrderRouter = router({
         consignmentId: seeDelivery ? r.consignmentId : null,
         consignmentStatus: seeDelivery ? r.consignmentStatus : null,
         consignmentNumber: seeDelivery ? r.consignmentNumber : null,
+        courierDeliveredAt: seeDelivery ? r.courierDeliveredAt : null,
         deliveryPartyId: seeDelivery ? r.deliveryPartyId : null,
         deliveryPartyName: seeDelivery ? r.deliveryPartyName : null,
       }));
@@ -534,6 +536,7 @@ export const workOrderRouter = router({
           consignmentId: deliveryConsignments.id,
           consignmentStatus: deliveryConsignments.status,
           consignmentNumber: deliveryConsignments.consignmentNumber,
+          courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
           deliveryPartyId: deliveryConsignments.partyId,
           deliveryPartyName: deliveryParties.name,
         })
@@ -556,10 +559,11 @@ export const workOrderRouter = router({
           consignmentId: wo.consignmentId,
           consignmentStatus: wo.consignmentStatus,
           consignmentNumber: wo.consignmentNumber,
+          courierDeliveredAt: wo.courierDeliveredAt,
           deliveryPartyId: wo.deliveryPartyId,
           deliveryPartyName: wo.deliveryPartyName,
         }
-      : { consignmentId: null, consignmentStatus: null, consignmentNumber: null, deliveryPartyId: null, deliveryPartyName: null };
+      : { consignmentId: null, consignmentStatus: null, consignmentNumber: null, courierDeliveredAt: null, deliveryPartyId: null, deliveryPartyName: null };
     const materials = await db
       .select({
         id: workOrderMaterials.id,
@@ -638,18 +642,24 @@ export const workOrderRouter = router({
       const db = getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
       const wo = (
-        await db.select({ id: workOrders.id, branchId: workOrders.branchId }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
+        await db.select({ id: workOrders.id, branchId: workOrders.branchId, status: workOrders.status }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
       )[0];
       if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
       // عزل مدير الفرع (قرار المالك ١٢/٨): لا يُسنِد مديرٌ طلبَ فرعٍ آخر (المالك/الأدمن يعبُران الفروع).
       if (ctx.user.role !== "admin" && Number(wo.branchId) !== Number(ctx.user.branchId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
       }
+      if (wo.status === "DELIVERED" || wo.status === "CANCELLED") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تغيير فني أمر منتهٍ" });
+      }
       if (input.assignedTo != null) {
         const u = (
-          await db.select({ id: users.id, isActive: users.isActive, branchId: users.branchId }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
+          await db.select({ id: users.id, isActive: users.isActive, branchId: users.branchId, role: users.role }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
         )[0];
         if (!u || !u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
+        if (u.role !== "print_operator") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "إسناد أمر الشغل مخصص لفني تنفيذ بدور «فني طباعة»" });
+        }
         // منع إسناد الطلب لموظفٍ من فرعٍ آخر لا يستطيع تنفيذه (تدقيق ٢٥/٧). الموظف بلا فرع (مشترك) مسموح.
         if (u.branchId != null && Number(u.branchId) !== Number(wo.branchId)) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد الطلب لموظفٍ من فرعٍ آخر" });
@@ -743,9 +753,19 @@ export const workOrderRouter = router({
         } catch (error: any) {
           if (isDupEntry(error) && attempt < 2) continue;
           if (error instanceof TRPCError) throw error;
+          logger.error(
+            {
+              error,
+              clientRequestId: input.clientRequestId,
+              branchId: effectiveBranchId,
+              actorUserId: ctx.user.id,
+              attempt: attempt + 1,
+            },
+            "reception checkout transaction failed and rolled back",
+          );
           throw new TRPCError({
             code: "INTERNAL_SERVER_ERROR",
-            message: "تعذّر إتمام عملية الاستقبال؛ لم يُحفظ أي جزء منها",
+            message: `تعذّر إتمام عملية الاستقبال؛ لم يُحفظ أي جزء منها. مرجع المحاولة: ${input.clientRequestId}`,
             cause: error,
           });
         }

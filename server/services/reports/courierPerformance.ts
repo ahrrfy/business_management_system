@@ -4,14 +4,14 @@
 //   • المُسنَد / المُسلَّم / قيد التوصيل / المتعذّر (رُفض).
 //   • قيمة المُسلَّم + النقد المُحصَّل (COD) — من الفاتورة المرتبطة.
 //   • معدّل التعذّر % = المتعذّر ÷ (المُسلَّم + المتعذّر).
-//   • العهدة القائمة الآن (currentBalance) — نقدٌ حصّله ولم يُورّده بعد (لقطة لحظية لا فترة).
+//   • العهدة القائمة الآن من دفتر التوصيل، مفلترةً بالفرع عند طلب تقرير فرع.
 //
 // «المتعذّر» = طلب CANCELLED يحمل cancelReason (أي أُلغي عبر «تعذّر التسليم» للمندوب) — يميّزه
 // عن إلغاء الموظّف قبل الإرسال (بلا سبب مُسجَّل، وغالباً بلا جهة مُسنَدة). المصدر الوحيد للحقيقة
 // المالية يبقى الدفتر؛ هذا تقرير تشغيليّ للعدّ والقيمة يقرأ حالة الطلب وفاتورته فقط (بلا كتابة).
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
-import { deliveryConsignments, deliveryParties, deliveryRemittances, invoices, onlineOrders, users } from "../../../drizzle/schema";
+import { deliveryConsignments, deliveryLedgerEntries, deliveryParties, deliveryRemittances, invoices, onlineOrders, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import { money, round2, toDbMoney } from "../money";
@@ -37,6 +37,7 @@ export interface CourierPerfRow {
   cnDelivered: number;
   cnReturned: number;
   cnWrittenOff: number;
+  cnFailed: number;
   cnOpen: number;
   cnValue: string;
   /** متوسط زمن الدوران بالساعات (الإرسال → التوريد) للمُسوّاة من إرساليات الفترة. */
@@ -59,6 +60,7 @@ export interface CourierPerfSummary {
   custodyOutstanding: string;
   cnAssigned: number;
   cnDelivered: number;
+  cnFailed: number;
   cnOpen: number;
   cnValue: string;
   remitShortfall: string;
@@ -99,7 +101,7 @@ export async function getConsignmentAging(input: { branchId?: number } = {}): Pr
   const empty = { rows: [], totals: { openCount: 0, d0_7: "0.00", d8_14: "0.00", d15_30: "0.00", d31p: "0.00", totalOutstanding: "0.00" } };
   const db = getDb();
   if (!db) return empty;
-  const conds = [sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`];
+  const conds = [sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`];
   if (input.branchId) conds.push(eq(deliveryConsignments.branchId, input.branchId));
   const age = sql<number>`TIMESTAMPDIFF(DAY, ${deliveryConsignments.dispatchedAt}, NOW())`;
   const remaining = sql`GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)), 0)`;
@@ -167,13 +169,14 @@ export async function getCourierPerformance(
   const empty: CourierPerfSummary = {
     parties: 0, assigned: 0, delivered: 0, inTransit: 0, failed: 0,
     failRate: "0", deliveredValue: "0.00", codCollected: "0.00", custodyOutstanding: "0.00",
-    cnAssigned: 0, cnDelivered: 0, cnOpen: 0, cnValue: "0.00", remitShortfall: "0.00",
+    cnAssigned: 0, cnDelivered: 0, cnFailed: 0, cnOpen: 0, cnValue: "0.00", remitShortfall: "0.00",
   };
   const db = getDb();
   if (!db) return { rows: [], summary: empty };
 
   // تجميع طلبات المتجر المُسنَدة لجهة توصيل ضمن الفترة (بتاريخ الطلب)، مع قيمة/تحصيل الفاتورة.
   const conds = [isNotNull(onlineOrders.deliveryPartyId)];
+  conds.push(sql`NOT EXISTS (SELECT 1 FROM deliveryConsignments dc WHERE dc.sourceType = 'ONLINE_ORDER' AND dc.sourceId = ${onlineOrders.id})`);
   if (input.from) conds.push(sql`${onlineOrders.orderDate} >= ${localDayStart(input.from)}`);
   if (input.to) conds.push(sql`${onlineOrders.orderDate} < ${localNextDayStart(input.to)}`);
   if (input.branchId) conds.push(eq(onlineOrders.branchId, input.branchId));
@@ -186,7 +189,16 @@ export async function getCourierPerformance(
       inTransit: sql<number>`SUM(CASE WHEN ${onlineOrders.status} = 'SHIPPED' THEN 1 ELSE 0 END)`,
       failed: sql<number>`SUM(CASE WHEN ${onlineOrders.status} = 'CANCELLED' AND ${onlineOrders.cancelReason} IS NOT NULL THEN 1 ELSE 0 END)`,
       deliveredValue: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} = 'DELIVERED' THEN CAST(${invoices.total} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
-      codCollected: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} = 'DELIVERED' THEN CAST(${invoices.paidAmount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+      // Legacy online deliveries predate the operational delivery ledger. Count their
+      // invoice payment only when no instrumented COD_COLLECTED event exists; newer
+      // rows are counted below from the ledger by the actual collection timestamp.
+      codCollected: sql<string>`COALESCE(SUM(CASE WHEN ${onlineOrders.status} = 'DELIVERED'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM deliveryLedgerEntries dle
+          WHERE dle.eventKey = CONCAT('ONLINE:', ${onlineOrders.id}, ':COD_COLLECTED')
+        )
+        THEN CAST(${invoices.paidAmount} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
     })
     .from(onlineOrders)
     .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
@@ -203,14 +215,15 @@ export async function getCourierPerformance(
     .select({
       partyId: deliveryConsignments.partyId,
       cnAssigned: sql<number>`COUNT(*)`,
-      cnDelivered: sql<number>`SUM(CASE WHEN ${deliveryConsignments.status} = 'DELIVERED' THEN 1 ELSE 0 END)`,
-      cnReturned: sql<number>`SUM(CASE WHEN ${deliveryConsignments.status} = 'RETURNED' THEN 1 ELSE 0 END)`,
-      cnWrittenOff: sql<number>`SUM(CASE WHEN ${deliveryConsignments.status} = 'WRITTEN_OFF' THEN 1 ELSE 0 END)`,
-      cnOpen: sql<number>`SUM(CASE WHEN ${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL') THEN 1 ELSE 0 END)`,
+      cnDelivered: sql<number>`SUM(CASE WHEN ${deliveryConsignments.parcelStatus} = 'DELIVERED' THEN 1 ELSE 0 END)`,
+      cnReturned: sql<number>`SUM(CASE WHEN ${deliveryConsignments.parcelStatus} = 'RETURNED' THEN 1 ELSE 0 END)`,
+      cnWrittenOff: sql<number>`SUM(CASE WHEN ${deliveryConsignments.moneyStatus} = 'WRITTEN_OFF' THEN 1 ELSE 0 END)`,
+      cnFailed: sql<number>`SUM(CASE WHEN ${deliveryConsignments.parcelStatus} = 'FAILED' THEN 1 ELSE 0 END)`,
+      cnOpen: sql<number>`SUM(CASE WHEN ${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED') THEN 1 ELSE 0 END)`,
       cnValue: sql<string>`COALESCE(SUM(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2))), 0)`,
       // GREATEST(...,0): توريدٌ مختومٌ بلحظةٍ سابقة للإرسال (انحراف ساعة الجهاز/بيانات قديمة) كان
       // يعطي فرقاً سالباً يجرّ المتوسط لأسفل زوراً — نحصره بصفر (مراجعة نهائية ١٠/٨).
-      cnAvgTurnHours: sql<string | null>`AVG(CASE WHEN ${deliveryConsignments.settledAt} IS NOT NULL THEN GREATEST(TIMESTAMPDIFF(HOUR, ${deliveryConsignments.dispatchedAt}, ${deliveryConsignments.settledAt}), 0) END)`,
+      cnAvgTurnHours: sql<string | null>`AVG(CASE WHEN ${deliveryConsignments.courierDeliveredAt} IS NOT NULL THEN GREATEST(TIMESTAMPDIFF(HOUR, ${deliveryConsignments.dispatchedAt}, ${deliveryConsignments.courierDeliveredAt}), 0) END)`,
     })
     .from(deliveryConsignments)
     .where(and(...cnConds))
@@ -255,6 +268,22 @@ export async function getCourierPerformance(
     .leftJoin(users, eq(deliveryParties.userId, users.id))
     .where(sql`${deliveryParties.id} IN (${sql.join(partyIds, sql`, `)})`);
   const partyMap = new Map(parties.map((p) => [Number(p.id), p]));
+  const custodyConds = [sql`${deliveryLedgerEntries.entryType} IN ('COD_COLLECTED','COD_REMITTED','COD_WRITTEN_OFF')`];
+  if (input.branchId) custodyConds.push(eq(deliveryLedgerEntries.branchId, input.branchId));
+  const custodyAgg = await db.select({
+    partyId: deliveryLedgerEntries.partyId,
+    value: sql<string>`COALESCE(SUM(CASE WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount} ELSE -${deliveryLedgerEntries.amount} END),0)`,
+  }).from(deliveryLedgerEntries).where(and(...custodyConds)).groupBy(deliveryLedgerEntries.partyId);
+  const custodyMap = new Map(custodyAgg.map((r) => [Number(r.partyId), String(r.value)]));
+  const collectedConds = [eq(deliveryLedgerEntries.entryType, "COD_COLLECTED")];
+  if (input.from) collectedConds.push(sql`${deliveryLedgerEntries.occurredAt} >= ${localDayStart(input.from)}`);
+  if (input.to) collectedConds.push(sql`${deliveryLedgerEntries.occurredAt} < ${localNextDayStart(input.to)}`);
+  if (input.branchId) collectedConds.push(eq(deliveryLedgerEntries.branchId, input.branchId));
+  const collectedAgg = await db.select({
+    partyId: deliveryLedgerEntries.partyId,
+    value: sql<string>`COALESCE(SUM(${deliveryLedgerEntries.amount}),0)`,
+  }).from(deliveryLedgerEntries).where(and(...collectedConds)).groupBy(deliveryLedgerEntries.partyId);
+  const collectedMap = new Map(collectedAgg.map((r) => [Number(r.partyId), String(r.value)]));
 
   const rows: CourierPerfRow[] = partyIds.map((partyId) => {
     const a = onlineMap.get(partyId);
@@ -263,6 +292,7 @@ export async function getCourierPerformance(
     const p = partyMap.get(partyId);
     const delivered = Number(a?.delivered ?? 0);
     const failed = Number(a?.failed ?? 0);
+    const cnFailed = Number(c?.cnFailed ?? 0);
     const avgTurn = c?.cnAvgTurnHours == null ? null : Math.round(Number(c.cnAvgTurnHours));
     return {
       partyId,
@@ -275,14 +305,15 @@ export async function getCourierPerformance(
       delivered,
       inTransit: Number(a?.inTransit ?? 0),
       failed,
-      failRate: pct(failed, delivered),
+      failRate: pct(failed + cnFailed, delivered + Number(c?.cnDelivered ?? 0)),
       deliveredValue: toDbMoney(money(a?.deliveredValue ?? "0")),
-      codCollected: toDbMoney(money(a?.codCollected ?? "0")),
-      custodyOutstanding: toDbMoney(money(p?.currentBalance ?? "0")),
+      codCollected: toDbMoney(money(a?.codCollected ?? "0").plus(money(collectedMap.get(partyId) ?? "0"))),
+      custodyOutstanding: toDbMoney(money(custodyMap.get(partyId) ?? "0")),
       cnAssigned: Number(c?.cnAssigned ?? 0),
       cnDelivered: Number(c?.cnDelivered ?? 0),
       cnReturned: Number(c?.cnReturned ?? 0),
       cnWrittenOff: Number(c?.cnWrittenOff ?? 0),
+      cnFailed,
       cnOpen: Number(c?.cnOpen ?? 0),
       cnValue: toDbMoney(money(c?.cnValue ?? "0")),
       cnAvgTurnHours: avgTurn,
@@ -308,12 +339,13 @@ export async function getCourierPerformance(
       acc.custodyOutstanding = acc.custodyOutstanding.plus(money(r.custodyOutstanding));
       acc.cnAssigned += r.cnAssigned;
       acc.cnDelivered += r.cnDelivered;
+      acc.cnFailed += r.cnFailed;
       acc.cnOpen += r.cnOpen;
       acc.cnValue = acc.cnValue.plus(money(r.cnValue));
       acc.remitShortfall = acc.remitShortfall.plus(money(r.remitShortfall));
       return acc;
     },
-    { assigned: 0, delivered: 0, inTransit: 0, failed: 0, deliveredValue: new Decimal(0), codCollected: new Decimal(0), custodyOutstanding: new Decimal(0), cnAssigned: 0, cnDelivered: 0, cnOpen: 0, cnValue: new Decimal(0), remitShortfall: new Decimal(0) },
+    { assigned: 0, delivered: 0, inTransit: 0, failed: 0, deliveredValue: new Decimal(0), codCollected: new Decimal(0), custodyOutstanding: new Decimal(0), cnAssigned: 0, cnDelivered: 0, cnFailed: 0, cnOpen: 0, cnValue: new Decimal(0), remitShortfall: new Decimal(0) },
   );
 
   return {
@@ -324,12 +356,13 @@ export async function getCourierPerformance(
       delivered: totals.delivered,
       inTransit: totals.inTransit,
       failed: totals.failed,
-      failRate: pct(totals.failed, totals.delivered),
+      failRate: pct(totals.failed + totals.cnFailed, totals.delivered + totals.cnDelivered),
       deliveredValue: toDbMoney(totals.deliveredValue),
       codCollected: toDbMoney(totals.codCollected),
       custodyOutstanding: toDbMoney(totals.custodyOutstanding),
       cnAssigned: totals.cnAssigned,
       cnDelivered: totals.cnDelivered,
+      cnFailed: totals.cnFailed,
       cnOpen: totals.cnOpen,
       cnValue: toDbMoney(totals.cnValue),
       remitShortfall: toDbMoney(totals.remitShortfall),

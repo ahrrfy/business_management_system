@@ -85,6 +85,14 @@ try {
     ["couponRedemptions", "uq_coupon_redemption_invoice"],
     ["invoices", "idx_invoice_shift"], // ش٠ استقبال (0153): طابور المحطة keyset — غيابه مسح كامل
     ["orderPayments", "uq_orderpay_receipt"], // ش٤ (0155): الإصلاح البنيوي لالتقاط الإيصال الظنّي
+    ["deliveryConsignments", "uq_consignment_source"],
+    ["deliveryConsignments", "idx_consignment_parcel_queue"],
+    ["deliveryConsignments", "idx_consignment_money_queue"],
+    ["deliveryPartyMembers", "uq_delivery_party_member_user"],
+    ["deliveryRemittanceLines", "idx_delivery_remittance_line_cn"],
+    ["deliveryLedgerEntries", "idx_delivery_ledger_party_time"],
+    ["deliveryEvents", "idx_delivery_event_cn_time"],
+    ["deliveryOutbox", "idx_delivery_outbox_pending"],
     ["receptionDrafts", "uq_draft_commit_request"],
     ["receptionDrafts", "idx_draft_branch_status_id"],
     ["receptionDraftLines", "idx_dline_draft"],
@@ -126,6 +134,7 @@ try {
     "digitalOfferingBranches", "digitalPriceBatches", "digitalPriceVersions", "digitalCurrentPrices",
     "digitalSaleIntents", "digitalWalletReservations", "digitalSaleIntentItems", "digitalSaleDetails",
     "digitalWalletReconciliations", "digitalSubscriptionContracts",
+    "deliveryPartyMembers", "deliveryRemittanceLines", "deliveryLedgerEntries", "deliveryEvents", "deliveryOutbox",
   ];
   const CRITICAL_COLUMNS = [
     ["products", "searchNorm"], ["customers", "searchNorm"], ["suppliers", "searchNorm"], // 0035/0039
@@ -136,6 +145,18 @@ try {
     ["purchaseOrders", "poCurrency"], ["purchaseOrders", "usdTotal"], ["purchaseOrders", "agreedRate"], // 0038
     ["promotions", "campaignId"], ["promotions", "promotionApplicationMode"], // 0076 CRM
     ["invoices", "taxRatePercent"], ["quotations", "taxRatePercent"], ["purchaseOrders", "taxRatePercent"], // 0123
+    ["deliveryConsignments", "sourceType"], ["deliveryConsignments", "sourceId"],
+    ["deliveryConsignments", "assignedUserId"], ["deliveryConsignments", "parcelStatus"],
+    ["deliveryConsignments", "governorate"], ["deliveryConsignments", "latitude"],
+    ["deliveryConsignments", "longitude"],
+    ["deliveryConsignments", "moneyStatus"], ["deliveryConsignments", "acceptedAt"],
+    ["deliveryConsignments", "pickedUpAt"], ["deliveryConsignments", "outForDeliveryAt"],
+    ["deliveryConsignments", "failedAt"], ["deliveryConsignments", "failureReason"],
+    ["deliveryConsignments", "returnedAt"],
+    ["deliveryConsignments", "custodyRecognizedAt"],
+    ["deliveryPartyMembers", "memberRole"], ["deliveryRemittanceLines", "grossApplied"],
+    ["deliveryLedgerEntries", "entryType"], ["deliveryEvents", "eventKey"],
+    ["deliveryOutbox", "processedAt"],
     ["invoices", "contactName"], ["invoices", "contactPhone"], // 0150 reception identity snapshot
     ["invoices", "deliveryFree"], ["invoices", "deliveryWaivedAmount"], // 0152 reception/free-delivery disclosure
     ["invoices", "correctionOfInvoiceId"], ["invoices", "correctedByInvoiceId"], // 0169 correction lineage

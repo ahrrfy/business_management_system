@@ -773,6 +773,8 @@ export interface FinancialPosition {
   deliveryFloatCustomerBacked: string;
   /** ١٠/٨ — أمانات أجور توصيل قُبضت في الدرج ولم تُصرف للمندوب بعد (خصم؛ نقدها ضمن «النقد»). */
   deliveryFeeHeldLiability: string;
+  /** أجور توصيل مكتسبة لجهات التوصيل ولم تُدفع بعد (SHOP؛ COUNTER ضمن الأمانات أعلاه). */
+  deliveryFeeDueLiability: string;
   totalAssets: string;
   totalLiabilities: string;
   equity: string;
@@ -815,6 +817,7 @@ export async function getFinancialPosition(
     deliveryFloat: zero,
     deliveryFloatCustomerBacked: zero,
     deliveryFeeHeldLiability: zero,
+    deliveryFeeDueLiability: zero,
     totalAssets: zero,
     totalLiabilities: zero,
     equity: zero,
@@ -1074,12 +1077,18 @@ export async function getFinancialPosition(
   const customerAdvances = money(wa.v ?? 0).add(draftAdvances);
   const exchangeDebit = money(ex.d ?? 0); // أموالنا لدى الصرّافين (أصل).
   const exchangeCredit = money(ex.c ?? 0); // ما نَدين به للصرّافين (خصم).
-  // تدقيق ٦/٨ (ث٨): عهدة مناديب التوصيل — نقدٌ/تحصيلٌ بيد المندوب لم يُورَّد بعد (أصل).
+  // عهدة مناديب التوصيل من الدفتر التشغيلي المؤرَّخ؛ لا snapshot حالي في تقرير تاريخي،
+  // ولا تكرار كامل رصيد الجهة المشتركة في كل فرع.
   const dfRow = rowsOf(
     await db.execute(sql`
-    SELECT CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS v
-    FROM deliveryParties
-    ${bId ? sql`WHERE branchId = ${bId} OR branchId IS NULL` : sql``}
+    SELECT CAST(COALESCE(SUM(CASE
+      WHEN entryType = 'COD_COLLECTED' THEN amount
+      WHEN entryType IN ('COD_REMITTED','COD_WRITTEN_OFF') THEN -amount
+      ELSE 0 END), 0) AS CHAR) AS v
+    FROM deliveryLedgerEntries
+    WHERE 1=1
+      ${bId ? sql`AND branchId = ${bId}` : sql``}
+      ${asOf ? sql`AND DATE(occurredAt) <= ${asOf}` : sql``}
   `),
   )[0] ?? { v: "0" };
   // مراجعة PR #495 (ازدواج): الجزء المدعوم بعميلٍ مسجَّل من عهدة المناديب محسوبٌ سلفاً في
@@ -1088,12 +1097,20 @@ export async function getFinancialPosition(
   // يُستبعَد من الأصل هنا فلا يُحتسب ديناران لدينارٍ واحد بالطريق.
   const dfDupRow = rowsOf(
     await db.execute(sql`
-    SELECT CAST(COALESCE(SUM(GREATEST(dc.codAmount - dc.collectedAmount, 0)), 0) AS CHAR) AS v
-    FROM deliveryConsignments dc
+    SELECT CAST(COALESCE(SUM(CASE
+      WHEN dle.entryType = 'COD_COLLECTED' THEN dle.amount
+      WHEN dle.entryType IN ('COD_REMITTED','COD_WRITTEN_OFF') THEN -dle.amount
+      ELSE 0 END), 0) AS CHAR) AS v
+    FROM deliveryLedgerEntries dle
+      JOIN deliveryConsignments dc ON dc.id = dle.consignmentId
       JOIN invoices i ON i.id = dc.invoiceId
-    WHERE dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')
-      AND i.customerId IS NOT NULL
-      ${bId ? sql`AND dc.branchId = ${bId}` : sql``}
+    WHERE i.customerId IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM accountingEntries ae
+        WHERE ae.dedupeKey = CONCAT('PAYMENT_IN:COURIER_DELIVERY:', dc.id)
+      )
+      ${bId ? sql`AND dle.branchId = ${bId}` : sql``}
+      ${asOf ? sql`AND DATE(dle.occurredAt) <= ${asOf}` : sql``}
   `),
   )[0] ?? { v: "0" };
   const deliveryFloatGross = money(dfRow.v ?? 0);
@@ -1121,6 +1138,21 @@ export async function getFinancialPosition(
   )[0] ?? { v: "0" };
   const feeHeldNet = money(feeHeldRow.v ?? 0);
   const deliveryFeeHeldLiability = feeHeldNet.gt(0) ? feeHeldNet : money(0);
+  const feeDueRow = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(CASE
+        WHEN dle.entryType = 'FEE_EARNED' THEN dle.amount
+        WHEN dle.entryType IN ('FEE_PAID','FEE_OFFSET','FEE_REFUNDED') THEN -dle.amount
+        ELSE 0 END), 0) AS CHAR) AS v
+      FROM deliveryLedgerEntries dle
+        JOIN deliveryConsignments dc ON dc.id = dle.consignmentId
+      WHERE dc.consignmentFeeCollection = 'SHOP'
+        ${bId ? sql`AND dle.branchId = ${bId}` : sql``}
+        ${asOf ? sql`AND DATE(dle.occurredAt) <= ${asOf}` : sql``}
+    `),
+  )[0] ?? { v: "0" };
+  const feeDueNet = money(feeDueRow.v ?? 0);
+  const deliveryFeeDueLiability = feeDueNet.gt(0) ? feeDueNet : money(0);
 
   // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين
   //          + عهدة مناديب التوصيل (مالُ فواتيرَ بالطريق).
@@ -1143,7 +1175,8 @@ export async function getFinancialPosition(
     .add(arCredit)
     .add(customerAdvances)
     .add(exchangeCredit)
-    .add(deliveryFeeHeldLiability);
+    .add(deliveryFeeHeldLiability)
+    .add(deliveryFeeDueLiability);
   const equity = totalAssets.sub(totalLiabilities);
 
   // FI-02: حارس انحراف مرئي (قراءة فقط). الأرقام أعلاه تبقى من currentBalance؛ هذه إشارةٌ فقط.
@@ -1159,7 +1192,7 @@ export async function getFinancialPosition(
   }
 
   const historicalNote = isHistorical
-    ? "النقد ورصيد زين والذمم المدينة/الدائنة مبنيّة من الدفتر حتى هذا التاريخ. المخزون والأصول الثابتة وعرابين أوامر الشغل والطلبات المحفوظة وعهدة المناديب ورصيد الصيرفة تبقى بقيمتها الحالية دائماً (لا تاريخ رجعي لهذه البنود لغياب سجلّ تاريخ التكلفة/الحالة)."
+    ? "النقد ورصيد زين والذمم وعهدة التوصيل وأجورها مبنيّة من دفاتر مؤرخة حتى هذا التاريخ. المخزون والأصول الثابتة وعرابين أوامر الشغل والطلبات المحفوظة ورصيد الصيرفة تبقى بقيمتها الحالية لغياب سجل تاريخ تكلفة كامل."
     : null;
 
   return {
@@ -1183,6 +1216,7 @@ export async function getFinancialPosition(
     deliveryFloat: toDbMoney(deliveryFloat),
     deliveryFloatCustomerBacked: toDbMoney(deliveryFloatCustomerBacked),
     deliveryFeeHeldLiability: toDbMoney(deliveryFeeHeldLiability),
+    deliveryFeeDueLiability: toDbMoney(deliveryFeeDueLiability),
     totalAssets: toDbMoney(totalAssets),
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),

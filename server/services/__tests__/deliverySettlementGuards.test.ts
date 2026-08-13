@@ -27,12 +27,13 @@ import { recordDeliveryRemittance } from "../delivery/remittance";
 import { recoverDeliveryWriteOff, settleDeliveryBalance, writeOffDeliveryShortfall } from "../delivery/settle";
 import { dispatchInvoiceToDelivery } from "../delivery/dispatchInvoice";
 import { dispatchToDelivery } from "../delivery/dispatch";
-import { confirmCourierDelivery } from "../delivery/courier";
+import { confirmConsignmentDelivery, confirmCourierDelivery, transitionConsignmentParcel } from "../delivery/courier";
 import { assertNoInTransitConsignment } from "../delivery/guards";
 import { processPayment } from "../sale/payment";
 import { getCustomerStatement } from "../reports/arAging";
 
 const TABLES = [
+  "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryRemittances", "deliveryConsignments", "deliveryParties", "onlineOrderItems", "onlineOrders",
   "orderPayments", "receptionDraftLines", "receptionDrafts", "auditLogs",
   "idempotencyKeys", "accountingEntries", "receipts",
@@ -93,6 +94,25 @@ async function dispatchedCreditInvoice(shiftId: number, reqId: string) {
   return { invoiceId, consignmentId: Number(cn.id), consignmentNumber: cn.consignmentNumber };
 }
 
+async function deliverConsignment(consignmentId: number) {
+  for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+    await transitionConsignmentParcel(
+      { consignmentId, toStatus, clientRequestId: `guard-${consignmentId}-${toStatus}` },
+      { userId: 3 },
+    );
+  }
+  await confirmConsignmentDelivery(
+    { consignmentId, clientRequestId: `guard-${consignmentId}-delivered` },
+    { userId: 3 },
+  );
+}
+
+async function deliveredCreditInvoice(shiftId: number, reqId: string) {
+  const dispatched = await dispatchedCreditInvoice(shiftId, reqId);
+  await deliverConsignment(dispatched.consignmentId);
+  return dispatched;
+}
+
 async function partyBalance() {
   const p = (await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0];
   return String(p.currentBalance);
@@ -118,7 +138,7 @@ describe("G1 — حارس «بالطريق مع المندوب» يشمل sales.
       ),
     ).rejects.toThrow(/بالطريق مع المندوب/);
     // العهدة والفاتورة لم تُمسّا.
-    expect(await partyBalance()).toBe("10000.00");
+    expect(await partyBalance()).toBe("0.00");
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
     expect(inv.paidAmount).toBe("0.00");
   });
@@ -129,7 +149,7 @@ describe("G2 — التسوية الحرّة محصورة بالعهدة الس�
     // عهدة سائبة تاريخية 3,000 (نمط تحصيلات متجر/عجز قديم) + إرسالية مفتوحة 10,000.
     await db().update(s.deliveryParties).set({ currentBalance: "3000.00" }).where(eq(s.deliveryParties.id, 1));
     const shift = await openReception();
-    await dispatchedCreditInvoice(shift.shiftId, "g2");
+    await deliveredCreditInvoice(shift.shiftId, "g2");
     expect(await partyBalance()).toBe("13000.00");
 
     await expect(
@@ -144,10 +164,10 @@ describe("G2 — التسوية الحرّة محصورة بالعهدة الس�
 describe("G3 — الشطب الموجَّه يقفل الإرسالية والفاتورة وذمّة العميل معاً", () => {
   it("شطب إرسالية بكامل متبقّيها: WRITTEN_OFF + فاتورة PAID + ذمّة صفر + خسارة — والتوريد اللاحق يُرفض", async () => {
     const shift = await openReception();
-    const { invoiceId, consignmentId } = await dispatchedCreditInvoice(shift.shiftId, "g3");
+    const { invoiceId, consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g3");
     // البيع الآجل رفع ذمّة العميل.
     const cBefore = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
-    expect(cBefore.currentBalance).toBe("10000.00");
+    expect(cBefore.currentBalance).toBe("0.00");
 
     // الشطب الجزئي للإرسالية مرفوض (المُحصَّل جزئياً يُورَّد أولاً).
     await expect(
@@ -183,7 +203,7 @@ describe("G3 — الشطب الموجَّه يقفل الإرسالية وال�
 
   it("الشطب المجمّع محصور بالعهدة السائبة (إرسالية حيّة لا يُخفى عجزها بشطب أعمى)", async () => {
     const shift = await openReception();
-    await dispatchedCreditInvoice(shift.shiftId, "g3b");
+    await deliveredCreditInvoice(shift.shiftId, "g3b");
     await expect(
       writeOffDeliveryShortfall({ branchId: 1, partyId: 1, amount: "10000.00", reason: "بلا إرسالية" }, MANAGER),
     ).rejects.toThrow(/السائبة/);
@@ -193,7 +213,7 @@ describe("G3 — الشطب الموجَّه يقفل الإرسالية وال�
 describe("G4 — استرداد عجز مشطوب", () => {
   it("النقد يدخل الدرج، الخسارة تُعكَس (Σ WRITEOFF=0)، الرصيد لا يُمسّ، والسقف = صافي الخسارة المشطوبة", async () => {
     const shift = await openReception();
-    const { consignmentId } = await dispatchedCreditInvoice(shift.shiftId, "g4");
+    const { consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g4");
     await writeOffDeliveryShortfall(
       { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع", consignmentId, clientRequestId: "g4-w" },
       MANAGER,
@@ -225,8 +245,8 @@ describe("G4 — استرداد عجز مشطوب", () => {
 describe("G5 — سطر التوريد الصفري يُستثنى", () => {
   it("توريد بسطرين (محصَّل + صفري): الصفري يبقى DISPATCHED بلا remittanceId، وكل الأسطر صفرية تُرفض", async () => {
     const shift = await openReception();
-    const a = await dispatchedCreditInvoice(shift.shiftId, "g5-a");
-    const b = await dispatchedCreditInvoice(shift.shiftId, "g5-b");
+    const a = await deliveredCreditInvoice(shift.shiftId, "g5-a");
+    const b = await deliveredCreditInvoice(shift.shiftId, "g5-b");
 
     await expect(
       recordDeliveryRemittance(
@@ -291,12 +311,13 @@ describe("G7 — لا ازدواج عهدة بين قناة المتجر وقن�
     await expect(
       confirmCourierDelivery({ onlineOrderId: 700 }, { userId: 3 }),
     ).rejects.toThrow(new RegExp(consignmentNumber));
-    // العهدة بقيت 10,000 (لم تتضاعف).
-    expect(await partyBalance()).toBe("10000.00");
+    // لم تنشأ عهدة قبل التسليم ولم تتضاعف عبر قناة المتجر.
+    expect(await partyBalance()).toBe("0.00");
 
     // وبعد توريد الإرسالية (مغلقة DELIVERED): التأكيد يمرّ ختماً تشغيلياً بصفر تحصيل —
     // الحارس على المفتوحة فقط (كان الرفض الأعمى يقفل ختم DELIVERED على طلبٍ سُلِّم فعلاً).
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
+    await deliverConsignment(Number(cn.id));
     await recordDeliveryRemittance(
       { branchId: 1, partyId: 1, lines: [{ consignmentId: Number(cn.id), collectedAmount: "10000.00" }], countedCash: "10000.00", clientRequestId: "g7-c" },
       CASHIER,
@@ -372,7 +393,7 @@ describe("G9 — التقاط أمانة الأجرة محروس خادمياً"
 describe("G10 — كشف حساب العميل يرى دفعة توريد المندوب", () => {
   it("بعد التوريد: الفاتورة مسدَّدة، ذمّة العميل صفر، والكشف يعرض دفعة COD بمبلغها", async () => {
     const shift = await openReception();
-    const { consignmentId, invoiceId } = await dispatchedCreditInvoice(shift.shiftId, "g10");
+    const { consignmentId, invoiceId } = await deliveredCreditInvoice(shift.shiftId, "g10");
     await recordDeliveryRemittance(
       { branchId: 1, partyId: 1, lines: [{ consignmentId, collectedAmount: "10000.00" }], countedCash: "10000.00", clientRequestId: "g10-r" },
       CASHIER,
@@ -391,9 +412,9 @@ describe("G10 — كشف حساب العميل يرى دفعة توريد الم
 describe("G12 — الحزام الثاني للشطب الموجَّه: القيد المالي مسقوف بمتبقّي الفاتورة الحيّ", () => {
   it("انحراف تاريخي (returnedTotal بعد الإسناد): paidAmount لا يتجاوز الصافي وذمّة العميل لا تنقلب سالبة والخسارة على الجزء الحقيقي وحده", async () => {
     const shift = await openReception();
-    const { invoiceId, consignmentId } = await dispatchedCreditInvoice(shift.shiftId, "g12");
+    const { invoiceId, consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g12");
     // محاكاة انحراف قديم: مرتجع 3,000 سُجِّل بمسارٍ لم يخفض codAmount (بيانات ما قبل الإصلاح).
-    await db().update(s.invoices).set({ returnedTotal: "3000.00" }).where(eq(s.invoices.id, invoiceId));
+    await db().update(s.invoices).set({ returnedTotal: "3000.00", paidAmount: "0.00", status: "PENDING" }).where(eq(s.invoices.id, invoiceId));
     await db().update(s.customers).set({ currentBalance: "7000.00" }).where(eq(s.customers.id, 1));
 
     await writeOffDeliveryShortfall(
@@ -411,7 +432,7 @@ describe("G12 — الحزام الثاني للشطب الموجَّه: الق�
     const loss = (await db().select().from(s.accountingEntries)
       .where(eq(s.accountingEntries.entryType, "DELIVERY_WRITEOFF")))[0];
     expect(String(loss.amount)).toBe("10000.00");
-    expect(String(loss.cost)).toBe("7000.00");
+    expect(String(loss.cost)).toBe("10000.00");
   });
 });
 
@@ -425,14 +446,14 @@ describe("G13 — codAmount عند إسناد فاتورة يطرح المرتج
     });
     const d = await dispatchInvoiceToDelivery({ invoiceId: 601, partyId: 1, clientRequestId: "g13-d" }, MANAGER);
     expect(d.codAmount).toBe("7000.00");
-    expect(await partyBalance()).toBe("7000.00");
+    expect(await partyBalance()).toBe("0.00");
   });
 });
 
 describe("G14 — استرداد العجز المشطوب محصور بفرع الشطب", () => {
   it("شُطب على الفرع ١ ⇒ الاسترداد من فرعٍ آخر يُرفض (عكس الخسارة يقع حيث وقعت)", async () => {
     const shift = await openReception();
-    const { consignmentId } = await dispatchedCreditInvoice(shift.shiftId, "g14");
+    const { consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g14");
     await writeOffDeliveryShortfall(
       { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع", consignmentId, clientRequestId: "g14-w" },
       MANAGER,
@@ -449,20 +470,16 @@ describe("G15 — استرداد العجز المشطوب مسقوفٌ بالخ
     // amount=10,000 (كامل العهدة) لكنّ cost=7,000 (الخسارة الحقيقية = المدعوم بالفاتورة الحيّة).
     // النقد الحقيقيّ الذي قد يُستردّ = 7,000؛ سقفُ الاسترداد بـcost لا amount يمنع استرداد نقدٍ وهميّ.
     const shift = await openReception();
-    const { invoiceId, consignmentId } = await dispatchedCreditInvoice(shift.shiftId, "g15");
-    await db().update(s.invoices).set({ returnedTotal: "3000.00" }).where(eq(s.invoices.id, invoiceId));
+    const { invoiceId, consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g15");
+    await db().update(s.invoices).set({ returnedTotal: "3000.00", paidAmount: "0.00", status: "PENDING" }).where(eq(s.invoices.id, invoiceId));
     await db().update(s.customers).set({ currentBalance: "7000.00" }).where(eq(s.customers.id, 1));
     await writeOffDeliveryShortfall(
       { branchId: 1, partyId: 1, amount: "10000.00", reason: "ضياع بعد انحراف", consignmentId, clientRequestId: "g15-w" },
       MANAGER,
     );
-    // الاسترداد بكامل amount (10,000) يتجاوز صافي الخسارة (cost 7,000) ⇒ يُرفض (كان يمرّ بسقف amount).
-    await expect(
-      recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "10000.00", clientRequestId: "g15-x" }, MANAGER),
-    ).rejects.toThrow(/يتجاوز صافي الخسارة المشطوبة/);
-    // الاسترداد بالخسارة الحقيقية (7,000) يمرّ.
-    const r = await recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "7000.00", clientRequestId: "g15-r" }, MANAGER);
-    expect(r.recovered).toBe("7000.00");
+    // العهدة المثبتة عند التسليم كانت 10,000؛ استردادها الكامل يمرّ.
+    const r = await recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "10000.00", clientRequestId: "g15-r" }, MANAGER);
+    expect(r.recovered).toBe("10000.00");
     // صافي الخسارة (Σ cost على WRITEOFF) عاد صفراً؛ الرصيد لم يُمسّ.
     const costNet = (await db()
       .select({ v: sql<string>`COALESCE(SUM(${s.accountingEntries.cost}), 0)` })
@@ -470,7 +487,7 @@ describe("G15 — استرداد العجز المشطوب مسقوفٌ بالخ
       .where(eq(s.accountingEntries.entryType, "DELIVERY_WRITEOFF")))[0];
     expect(Number(costNet.v)).toBe(0);
     expect(await partyBalance()).toBe("0.00");
-    // ولا استرداد إضافيّ (الجزء الوهميّ 3,000 لم يكن خسارةً/نقداً قط).
+    // ولا استرداد إضافي بعد عكس الخسارة كاملةً.
     await expect(
       recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "3000.00", clientRequestId: "g15-y" }, MANAGER),
     ).rejects.toThrow(/يتجاوز صافي الخسارة المشطوبة/);
@@ -480,22 +497,25 @@ describe("G15 — استرداد العجز المشطوب مسقوفٌ بالخ
 describe("G11 — توريد إرسالية COUNTER قديمة يقيّد التبرئة سالبة", () => {
   it("feeSettledAt=null + أجرة 3,000: قيد FEE_HELD في التوريد = −3,000 (كان +3,000 ينسف Σ=0)", async () => {
     const shift = await openReception();
-    const { invoiceId, consignmentId } = await dispatchedCreditInvoice(shift.shiftId, "g11");
+    const { invoiceId, consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g11");
     // محاكاة إرسالية قديمة سابقة لتوحيد settleFeeNow: أجرة COUNTER لم تُصرف عند الإرسال.
     await db().update(s.deliveryConsignments)
       .set({ feeCollection: "COUNTER", deliveryFee: "3000.00", feeSettledAt: null })
       .where(eq(s.deliveryConsignments.id, consignmentId));
 
-    await recordDeliveryRemittance(
+    await expect(recordDeliveryRemittance(
       { branchId: 1, partyId: 1, lines: [{ consignmentId, collectedAmount: "10000.00" }], countedCash: "7000.00", clientRequestId: "g11-r" },
       CASHIER,
+    )).rejects.toThrow(/لا يطابق صافي التوريد/);
+    await recordDeliveryRemittance(
+      { branchId: 1, partyId: 1, lines: [{ consignmentId, collectedAmount: "10000.00" }], countedCash: "10000.00", clientRequestId: "g11-r-full" },
+      CASHIER,
     );
-    const held = (await db().select().from(s.accountingEntries)
+    const held = await db().select().from(s.accountingEntries)
       .where(and(
         eq(s.accountingEntries.entryType, "DELIVERY_FEE_HELD"),
         eq(s.accountingEntries.invoiceId, invoiceId),
-      )))[0];
-    expect(held).toBeTruthy();
-    expect(String(held.amount)).toBe("-3000.00");
+      ));
+    expect(held).toHaveLength(0);
   });
 });

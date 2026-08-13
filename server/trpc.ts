@@ -501,6 +501,12 @@ export const courierProcedure = t.procedure.use(requireModuleGate(["courier"], "
 // عهدة/بيانات جهات أخرى وPII زبائن الإرساليات (مراجعة عدائية ١٢/٧: branchScoped وحده لا يستشير
 // خريطة الصلاحيات فيسرّبها لأي مستخدم مصادَق ذي فرع). branchScoped ⇒ يبقى scopedBranchId للعزل.
 export const deliveryReadProcedure = branchScopedProcedure.use(requireModule("store", "READ"));
+// Supervisory delivery mutations are part of the store/delivery back office,
+// but must still honor explicit module grants and branch scope. Keep the cash
+// operation narrower than storeFulfillProcedure: only cashier/manager may pay
+// a courier fee from a drawer.
+export const deliveryManagerProcedure = moduleProcedure(["manager"], "store", "FULL");
+export const deliveryCashierProcedure = moduleProcedure(["cashier", "manager"], "store", "FULL");
 // suppliers — القراءة بالخريطة وحدها (كالعملاء): قوالب warehouse/purchasing/auditor/user تعِد
 // بها وكان managerProcedure يصدّها. الكتابة: warehouse/purchasing قالباهما FULL.
 export const suppliersReadProcedure = protectedProcedure.use(requireModule("suppliers", "READ"));

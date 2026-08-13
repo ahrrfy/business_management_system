@@ -14,9 +14,8 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { assertFloatLimit } from "../delivery/parties";
-import { money, round2 } from "../money";
-import { createSale } from "../saleService";
+import { dispatchInvoiceInTx } from "../delivery/dispatchInvoice";
+import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
 import { returnSale } from "../returnService";
 import { withTx, type Actor } from "../tx";
 
@@ -84,96 +83,87 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
   }
 
   const branchId = Number(order.branchId);
-  const fetchInv = async (id: number) =>
-    (await db.select({ n: invoices.invoiceNumber, t: invoices.total }).from(invoices).where(eq(invoices.id, id)).limit(1))[0];
-
-  // مُرسَل مسبقاً (استرداد idempotent).
-  if ((order.status === "SHIPPED" || order.status === "DELIVERED") && order.invoiceId) {
-    const inv = await fetchInv(Number(order.invoiceId));
-    return { orderId: order.id, invoiceId: Number(order.invoiceId), invoiceNumber: inv?.n ?? "", partyId: Number(order.deliveryPartyId ?? input.partyId), total: String(inv?.t ?? "0"), alreadyDispatched: true };
-  }
-  if (!order.invoiceId && order.status !== "CONFIRMED" && order.status !== "PROCESSING") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "ثبّت الطلب أولاً قبل الإرسال" });
-  }
-
-  const party = (await db.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).limit(1))[0];
-  if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
-  if (!elevated && party.branchId != null && Number(party.branchId) !== actor.branchId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "جهة توصيل تخصّ فرعاً آخر" });
-  }
-  // سقف العهدة (مراجعة عدائية ٩/٨): كان مفروضاً على مساري إرسال الاستقبال وحدهما بينما مسار
-  // المتجر يراكم عهدةً بلا حدّ (ترتفع عند تأكيد المندوب). البوّابة الوقائية الصحيحة هنا —
-  // **قبل** خروج البضاعة: نتوقّع قيمة البضاعة نقداً بيد المندوب. (عند التأكيد لا حارس:
-  // النقد قُبض فعلاً ورفضُ تسجيله يجعل الدفاتر تكذب.) فحص استرشاديّ بلا قفل — سقفٌ إداريّ
-  // لا ثابت محاسبي، ومساره الحرج (التأكيد) يشتقّ مبلغه من الفاتورة لا من هذا الفحص.
-  // ١٠/٨ (تمرير كامل): الإسقاط بالبضاعة وحدها (subtotal) — الأجرة للمندوب لا تدخل عهدته.
-  assertFloatLimit(party, round2(money(order.subtotal ?? order.total ?? "0")));
-
-  // ① الفاتورة + المخزون + القيد عبر createSale (تُعاد لو سبق ربطها — استرداد).
-  let invoiceId: number;
-  let invoiceNumber = "";
-  let total = "0";
-  if (order.invoiceId) {
-    invoiceId = Number(order.invoiceId);
-    const inv = await fetchInv(invoiceId);
-    invoiceNumber = inv?.n ?? "";
-    total = String(inv?.t ?? "0");
-  } else {
-    if (!order.customerId) throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا عميل — تعذّر إصدار الفاتورة" });
-    const items = await db.select().from(onlineOrderItems).where(eq(onlineOrderItems.onlineOrderId, order.id));
-    if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا بنود في الطلب" });
-    for (const it of items) {
-      if (it.productUnitId == null) throw new TRPCError({ code: "BAD_REQUEST", message: "بند بلا وحدة — لا يمكن الإصدار" });
+  let notifyInput: Parameters<typeof notifySaleCustomerAfterCommit>[0] | null = null;
+  let notifyResult: Parameters<typeof notifySaleCustomerAfterCommit>[1] | null = null;
+  const claim = await withTx(async (tx) => {
+    const cur = (await tx.select().from(onlineOrders).where(eq(onlineOrders.id, order.id)).for("update").limit(1))[0];
+    if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+    if (cur.status === "CANCELLED") return { cancelled: true as const, invoiceId: cur.invoiceId != null ? Number(cur.invoiceId) : null };
+    if ((cur.status === "SHIPPED" || cur.status === "DELIVERED") && cur.invoiceId) {
+      const inv = (await tx.select({ n: invoices.invoiceNumber, t: invoices.total }).from(invoices).where(eq(invoices.id, Number(cur.invoiceId))).limit(1))[0];
+      return {
+        cancelled: false as const,
+        result: { orderId: Number(cur.id), invoiceId: Number(cur.invoiceId), invoiceNumber: inv?.n ?? "", partyId: Number(cur.deliveryPartyId), total: String(inv?.t ?? "0"), alreadyDispatched: true },
+      };
     }
-    const sale = await createSale(
-      {
+    if (!cur.invoiceId && cur.status !== "CONFIRMED" && cur.status !== "PROCESSING") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "ثبّت الطلب أولاً قبل الإرسال" });
+    }
+
+    let invoiceId: number;
+    let invoiceNumber: string;
+    let total: string;
+    if (cur.invoiceId) {
+      invoiceId = Number(cur.invoiceId);
+      const inv = (await tx.select({ n: invoices.invoiceNumber, t: invoices.total }).from(invoices).where(eq(invoices.id, invoiceId)).limit(1))[0];
+      if (!inv) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "فاتورة الطلب المرتبطة غير موجودة" });
+      invoiceNumber = inv.n;
+      total = String(inv.t);
+    } else {
+      if (!cur.customerId) throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا عميل — تعذّر إصدار الفاتورة" });
+      const items = await tx.select().from(onlineOrderItems).where(eq(onlineOrderItems.onlineOrderId, cur.id));
+      if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا بنود في الطلب" });
+      if (items.some((it) => it.productUnitId == null)) throw new TRPCError({ code: "BAD_REQUEST", message: "بند بلا وحدة — لا يمكن الإصدار" });
+      const saleInput = {
         branchId,
-        customerId: Number(order.customerId), // COD ⇒ ذمّة العميل (تُصفّى عند تسجيل السداد)
-        sourceType: "ONLINE",
-        priceTier: "RETAIL",
+        customerId: Number(cur.customerId),
+        sourceType: "ONLINE" as const,
+        priceTier: "RETAIL" as const,
         lines: items.map((it) => ({
           variantId: Number(it.variantId),
           productUnitId: Number(it.productUnitId),
           quantity: String(it.quantity),
-          unitPriceOverride: String(it.unitPrice), // تثبيت سعر لقطة الطلب
+          unitPriceOverride: String(it.unitPrice),
         })),
-        // ١٠/٨ — قرار المالك (المندوب خارجيّ والأجرة له ⇒ **تمرير كامل** كالاستقبال حرفياً):
-        // أجرة الشحن **لا تدخل الفاتورة ولا الإيراد ولا وعاء العمولة** — الفاتورة بضاعةٌ فقط.
-        // الزبون يدفع للمندوب (بضاعة + أجرة) من واقع الطلب، المندوب يحتفظ بأجرته ويورّد
-        // البضاعة وحدها (التأكيد يشتقّ المُحصَّل من متبقّي الفاتورة ⇒ عهدة = بضاعة تلقائياً).
-        // كان الشحن إيراداً بهامش ١٠٠٪ يدخل عمولة الموظف المُرسِل بينما يُدفع للمندوب خارج
-        // النظام — هامش المتجر منفوخ وعمولة على مال تمرير. (الفواتير القديمة تبقى بدلالتها:
-        // invoices.deliveryFee>0 = شحنٌ داخل total — العرض يميّزها.)
-        notes: `طلب متجر ${order.orderNumber}`,
-        clientRequestId: `online-dispatch:${order.id}`,
-        priceOverrideApproved: true, // الموظف المُرسِل يُقرّ السعر المتّفق عليه مسبقاً
-        // لا تُنشئ موافقةً ذاتية باسم المُرسِل؛ حدّ ائتمان العميل يبقى نافذاً، والعميل بلا حدّ
-        // (creditLimit=null) يمرّ طبيعياً. تجاوز الحد يحتاج قراراً مستقلاً من مُصدر آخر.
+        notes: `طلب متجر ${cur.orderNumber}`,
+        clientRequestId: `online-dispatch:${cur.id}`,
+        priceOverrideApproved: true,
         creditApproved: false,
-      },
-      actor
-    );
-    invoiceId = sale.invoiceId;
-    invoiceNumber = sale.invoiceNumber;
-    total = sale.total;
-    await db.update(onlineOrders).set({ invoiceId }).where(eq(onlineOrders.id, order.id)); // ربط فوري (استرداد)
-  }
+      };
+      const sale = await createSaleInTx(tx, saleInput, actor);
+      invoiceId = sale.invoiceId;
+      invoiceNumber = sale.invoiceNumber;
+      total = sale.total;
+      await tx.update(onlineOrders).set({ invoiceId }).where(eq(onlineOrders.id, cur.id));
+      notifyInput = saleInput;
+      notifyResult = sale;
+    }
 
-  // ② مطالبة ذرّية بالطلب (SHIPPED) تحت قفل الصفّ + إعادة فحص عدم الإلغاء المتزامن (مراجعة عدائية ١٢/٧):
-  //    لولاها لأمكن لإلغاءٍ متزامن أن يقع بين إنشاء الفاتورة وربطها فيُحييَ هذا التحديثُ طلباً مُلغى.
-  const claim = await withTx(async (tx) => {
-    const cur = (await tx.select({ status: onlineOrders.status }).from(onlineOrders).where(eq(onlineOrders.id, order.id)).for("update").limit(1))[0];
-    if (cur?.status === "CANCELLED") return { cancelled: true as const };
-    await tx.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, order.id));
-    return { cancelled: false as const };
+    await dispatchInvoiceInTx(tx, {
+      invoiceId,
+      partyId: input.partyId,
+      deliveryFee: String(cur.shippingCost ?? "0"),
+      feeCollection: "COURIER",
+      deliveryAddress: cur.shippingAddress ?? null,
+      governorate: cur.governorate ?? null,
+      latitude: cur.latitude ?? null,
+      longitude: cur.longitude ?? null,
+      onlineOrderId: Number(cur.id),
+      clientRequestId: `online-parcel:${cur.id}`,
+    }, actor);
+    await tx.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, cur.id));
+    return {
+      cancelled: false as const,
+      result: { orderId: Number(cur.id), invoiceId, invoiceNumber, partyId: input.partyId, total },
+    };
   });
 
-  // أُلغي أثناء الإرسال ⇒ نعكس الفاتورة المُنشأة حديثاً (إعادة مخزون + عكس بيع + تصفير ذمّة) فلا تبقى
-  //    فاتورة يتيمة على طلبٍ مُلغى. idempotent بمفتاح فريد. الطلب يبقى CANCELLED (كما تركه الإلغاء).
   if (claim.cancelled) {
-    await reverseDispatchedInvoice(invoiceId, order.id, branchId, actor);
-    throw new TRPCError({ code: "CONFLICT", message: "أُلغي الطلب أثناء الإرسال — أُعيدت البضاعة للمخزون ولم يُرسَل" });
+    if (claim.invoiceId) await reverseDispatchedInvoice(claim.invoiceId, order.id, branchId, actor);
+    throw new TRPCError({ code: "CONFLICT", message: "أُلغي الطلب أثناء الإرسال — لم يُرسَل" });
   }
-
-  return { orderId: order.id, invoiceId, invoiceNumber, partyId: input.partyId, total };
+  if (notifyInput && notifyResult) {
+    try { await notifySaleCustomerAfterCommit(notifyInput, notifyResult); } catch { /* post-commit notification is best effort */ }
+  }
+  return claim.result;
 }

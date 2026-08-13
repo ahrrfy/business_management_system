@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createWorkOrder } from "../workOrderService";
+import { deliverWorkOrder } from "../workOrder/deliver";
 import { updateWorkOrderDeliveryMethod } from "../workOrder/fulfillment";
 import { openShift } from "../shiftService";
 
@@ -103,6 +104,15 @@ describe("updateWorkOrderDeliveryMethod — إعادة تصنيف التسليم
   beforeEach(async () => {
     await reset();
     await seed();
+  });
+
+  it("يرفض التسليم المباشر لطلب مخصص للتوصيل ويبقيه READY بلا فاتورة", async () => {
+    const woId = await newWorkOrder({ hasDelivery: true, deliveryAddress: "بغداد" });
+    await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
+    await expect(deliverWorkOrder({ workOrderId: woId }, CASHIER_B1)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    const wo = await loadWo(woId);
+    expect(wo.status).toBe("READY");
+    expect(wo.invoiceId).toBeNull();
   });
 
   it("يرفض التعديل بعد DELIVERED", async () => {

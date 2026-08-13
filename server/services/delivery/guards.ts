@@ -46,7 +46,7 @@ export async function consignmentBackedBalance(tx: Tx, partyId: number): Promise
         v: sql<string>`COALESCE(SUM(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2))), 0)`,
       })
       .from(deliveryConsignments)
-      .where(and(eq(deliveryConsignments.partyId, partyId), sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`))
+      .where(and(eq(deliveryConsignments.partyId, partyId), sql`${deliveryConsignments.moneyStatus} IN ('UNSETTLED','PARTIAL')`))
   )[0];
   return round2(money(row?.v ?? "0"));
 }

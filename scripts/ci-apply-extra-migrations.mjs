@@ -113,6 +113,10 @@ const EXTRA_MIGRATIONS = [
   // 12/8/2026: repair schema-push/baselined databases that missed the
   // reception delivery-disclosure columns and critical queue/payment indexes.
   "drizzle/migrations/0178_repair_reception_schema_drift.sql",
+  // Delivery phase 2: physical/financial states, company memberships,
+  // immutable allocations, operational ledger, events and outbox. This runs
+  // after the reception repair because it builds on those consignment fields.
+  "drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

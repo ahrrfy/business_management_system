@@ -26,11 +26,25 @@ type PartyRow = RouterOutputs["delivery"]["listParties"][number];
 type StatementEntry = NonNullable<RouterOutputs["delivery"]["partyStatement"]>["entries"][number];
 
 const CN_STATUS: Record<string, { label: string; cls: string }> = {
-  DISPATCHED: { label: "بالطريق", cls: "badge-stock-low" },
-  PARTIAL: { label: "حُصِّل جزئياً", cls: "badge-stock-low" },
-  DELIVERED: { label: "سُلِّمت", cls: "badge-status-active" },
+  NOT_APPLICABLE: { label: "لا تحصيل", cls: "bg-muted text-muted-foreground" },
+  UNSETTLED: { label: "غير مورّد", cls: "badge-stock-low" },
+  DISPATCHED: { label: "غير مسوّاة", cls: "badge-stock-low" },
+  PARTIAL: { label: "سُوّيت جزئياً", cls: "badge-stock-low" },
+  SETTLED: { label: "مسوّاة", cls: "badge-status-active" },
+  CANCELLED: { label: "ملغاة", cls: "bg-muted text-muted-foreground" },
+  DELIVERED: { label: "مسوّاة", cls: "badge-status-active" },
   RETURNED: { label: "أُرجعت", cls: "bg-muted text-muted-foreground" },
   WRITTEN_OFF: { label: "شُطبت", cls: "badge-stock-out" },
+};
+
+const PARCEL_STATUS: Record<string, string> = {
+  ASSIGNED: "مسند",
+  ACCEPTED: "مقبول",
+  PICKED_UP: "استلمه السائق",
+  OUT_FOR_DELIVERY: "خرج للتوصيل",
+  DELIVERED: "وصل العميل",
+  FAILED: "تعذر التوصيل",
+  RETURNED: "مرتجع",
 };
 
 const tabBtn = (active: boolean) =>
@@ -101,7 +115,7 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
     "FULL",
     ["manager"],
   );
-  const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "settings">("consignments");
+  const [tab, setTab] = useState<"consignments" | "remittances" | "statement" | "members" | "settings">("consignments");
 
   return (
     <div className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-sm md:p-8" dir="rtl" onClick={onClose}>
@@ -126,16 +140,20 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
           </div>
         </div>
 
+        <PartyFinancialSummary partyId={party.id} />
+
         <div className="mb-4 flex flex-wrap gap-2">
           <button className={tabBtn(tab === "consignments")} onClick={() => setTab("consignments")}>الإرساليات والفواتير</button>
           <button className={tabBtn(tab === "remittances")} onClick={() => setTab("remittances")}>سجل التوريدات</button>
           <button className={tabBtn(tab === "statement")} onClick={() => setTab("statement")}>كشف الحساب</button>
+          <button className={tabBtn(tab === "members")} onClick={() => setTab("members")}>حسابات الشركة والمندوبين</button>
           <button className={tabBtn(tab === "settings")} onClick={() => setTab("settings")}>بيانات الجهة</button>
         </div>
 
-        {tab === "consignments" && <ConsignmentsTab partyId={party.id} />}
+        {tab === "consignments" && <ConsignmentsTab partyId={party.id} canEdit={isManager} />}
         {tab === "remittances" && <RemittancesTab partyId={party.id} />}
         {tab === "statement" && <StatementTab party={party} />}
+        {tab === "members" && <PartyMembersTab partyId={party.id} canEdit={isManager} />}
         {tab === "settings" && <SettingsTab party={party} isManager={isManager} canRecover={canRecover} onChanged={onChanged} />}
       </div>
     </div>
@@ -144,6 +162,83 @@ export default function DeliveryPartyDetail({ party, onClose, onChanged }: {
 
 /** طرود متجر «مع المندوب» لم تُؤكَّد بعد (١٠/٨): عهدة المتجر تُرفع عند التأكيد لا الإرسال —
  *  ما بيده فعلياً كان غير ظاهر في أي عهدة أو كشف. */
+function PartyFinancialSummary({ partyId }: { partyId: number }) {
+  const q = trpc.delivery.partyFinancials.useQuery({ partyId }, { staleTime: 15_000 });
+  const s = q.data?.summary;
+  if (!s) return null;
+  const cells = [
+    ["COD مطلوب تحصيله", s.codOutstanding],
+    ["COD حُصّل", s.codCollected],
+    ["COD وُرّد", s.codRemitted],
+    ["نقد بذمة الجهة", s.cashInCustody],
+    ["أجرة مكتسبة", s.feeEarned],
+    ["أجرة مستحقة", s.feeDue],
+  ];
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
+      {cells.map(([label, value]) => (
+        <div key={label} className="rounded-xl border bg-card p-3">
+          <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
+          <div className="mt-1 font-extrabold tabular-nums" dir="ltr">{fmt(value)} د.ع</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PartyMembersTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
+  const members = trpc.delivery.partyMembers.useQuery({ partyId });
+  const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: canEdit });
+  const utils = trpc.useUtils();
+  const [userId, setUserId] = useState("");
+  const [memberRole, setMemberRole] = useState<"DRIVER" | "MANAGER" | "ACCOUNTANT">("DRIVER");
+  const refresh = () => {
+    void utils.delivery.partyMembers.invalidate({ partyId });
+    void utils.delivery.courierAccounts.invalidate();
+  };
+  const addM = trpc.delivery.addPartyMember.useMutation({
+    onSuccess: () => { notify.ok("تم ربط الحساب بالجهة"); setUserId(""); refresh(); },
+    onError: (e) => notify.err(e),
+  });
+  const removeM = trpc.delivery.removePartyMember.useMutation({
+    onSuccess: () => { notify.ok("تم إيقاف العضوية"); refresh(); },
+    onError: (e) => notify.err(e),
+  });
+  return (
+    <div className="space-y-3">
+      {canEdit && (
+        <div className="grid gap-2 rounded-xl border bg-card p-3 sm:grid-cols-[1fr_180px_auto]">
+          <select value={userId} onChange={(e) => setUserId(e.target.value)} className="rounded-lg border bg-background px-3 py-2 text-sm">
+            <option value="">اختر حساب دخول نشطاً</option>
+            {(accounts.data ?? []).filter((a) => a.linkedPartyId == null || Number(a.linkedPartyId) === partyId).map((a) => (
+              <option key={a.id} value={a.id}>{a.name} {a.username ? `(${a.username})` : ""}</option>
+            ))}
+          </select>
+          <select value={memberRole} onChange={(e) => setMemberRole(e.target.value as typeof memberRole)} className="rounded-lg border bg-background px-3 py-2 text-sm">
+            <option value="DRIVER">سائق</option>
+            <option value="MANAGER">مدير الشركة</option>
+            <option value="ACCOUNTANT">محاسب الشركة</option>
+          </select>
+          <Button disabled={!userId || addM.isPending} onClick={() => addM.mutate({ partyId, userId: Number(userId), memberRole })}>إضافة الحساب</Button>
+        </div>
+      )}
+      <div className="divide-y rounded-xl border bg-card">
+        {(members.data ?? []).map((m) => (
+          <div key={m.id} className="flex items-center justify-between gap-3 p-3 text-sm">
+            <div>
+              <b>{m.name ?? m.username ?? `#${m.userId}`}</b>
+              <span className="ms-2 text-xs text-muted-foreground">{m.memberRole === "DRIVER" ? "سائق" : m.memberRole === "MANAGER" ? "مدير" : "محاسب"}</span>
+              {!m.isActive && <span className="ms-2 text-xs text-destructive">موقوف</span>}
+            </div>
+            {canEdit && m.isActive && <Button variant="outline" size="sm" disabled={removeM.isPending} onClick={() => removeM.mutate({ partyId, userId: Number(m.userId) })}>إزالة</Button>}
+          </div>
+        ))}
+        {!members.isLoading && (members.data?.length ?? 0) === 0 && <div className="p-6 text-center text-sm text-muted-foreground">لا توجد حسابات مرتبطة.</div>}
+      </div>
+    </div>
+  );
+}
+
 function StoreInTransitChip({ partyId }: { partyId: number }) {
   const q = trpc.delivery.storeInTransit.useQuery({ partyId }, { staleTime: 30_000 });
   if (!q.data || q.data.count === 0) return null;
@@ -156,15 +251,22 @@ function StoreInTransitChip({ partyId }: { partyId: number }) {
 }
 
 // ───────────────────────── الإرساليات والفواتير ─────────────────────────
-function ConsignmentsTab({ partyId }: { partyId: number }) {
+function ConsignmentsTab({ partyId, canEdit }: { partyId: number; canEdit: boolean }) {
   const [openOnly, setOpenOnly] = useState(false);
   const q = trpc.delivery.consignments.useQuery({ partyId, openOnly });
+  const members = trpc.delivery.partyMembers.useQuery({ partyId });
+  const utils = trpc.useUtils();
+  const reassignM = trpc.delivery.reassignConsignment.useMutation({
+    onSuccess: () => { notify.ok("تم تحديث إسناد الطرد"); void utils.delivery.consignments.invalidate({ partyId }); },
+    onError: (e) => notify.err(e),
+  });
   const list = q.data ?? [];
+  const drivers = (members.data ?? []).filter((m) => m.isActive && m.memberRole === "DRIVER");
   return (
     <div className="space-y-3">
       <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
         <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} />
-        المفتوحة فقط (بالطريق / حُصِّل جزئياً)
+        المالية المفتوحة فقط (غير مسوّاة / مسوّاة جزئياً)
       </label>
       {q.isLoading ? (
         <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
@@ -181,7 +283,9 @@ function ConsignmentsTab({ partyId }: { partyId: number }) {
                 <th className="p-2.5 text-left">COD</th>
                 <th className="p-2.5 text-left">المُحصَّل</th>
                 <th className="p-2.5 text-left">المتبقّي</th>
-                <th className="p-2.5 text-center">الحالة</th>
+                <th className="p-2.5 text-center">حالة التسوية</th>
+                <th className="p-2.5 text-center">التسليم للعميل</th>
+                <th className="p-2.5 text-right">السائق والحركة</th>
                 <th className="p-2.5 text-right">أُرسلت</th>
                 <th className="p-2.5 text-right">التوريد</th>
               </tr>
@@ -189,7 +293,7 @@ function ConsignmentsTab({ partyId }: { partyId: number }) {
             <tbody>
               {list.map((c) => {
                 const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
-                const st = CN_STATUS[c.status] ?? { label: c.status, cls: "bg-muted" };
+                const st = CN_STATUS[c.moneyStatus] ?? { label: c.moneyStatus, cls: "bg-muted" };
                 return (
                   <tr key={c.id} className="border-b last:border-0 hover:bg-muted/30">
                     <td className="p-2.5 font-mono text-xs" dir="ltr">{c.consignmentNumber}</td>
@@ -206,6 +310,32 @@ function ConsignmentsTab({ partyId }: { partyId: number }) {
                     <td className={cn("p-2.5 text-left tabular-nums font-bold", remaining > 0 ? "text-destructive" : "")} dir="ltr">{fmt(String(remaining))}</td>
                     <td className="p-2.5 text-center">
                       <span className={cn("rounded px-2 py-0.5 text-xs font-bold", st.cls)}>{st.label}</span>
+                    </td>
+                    <td className="p-2.5 text-center text-xs">
+                      <Badge variant={c.parcelStatus === "DELIVERED" ? "success" : c.parcelStatus === "FAILED" ? "danger" : "info"}>
+                        {PARCEL_STATUS[c.parcelStatus] ?? c.parcelStatus}
+                      </Badge>
+                      {c.courierDeliveredAt && <div className="mt-1 text-money-positive">{fmtDate(c.courierDeliveredAt)}</div>}
+                    </td>
+                    <td className="min-w-48 p-2.5 text-xs">
+                      <div className="mb-1">{c.assignedUserName ?? "طابور الشركة المشترك"}</div>
+                      {c.failureReason && <div className="mb-1 text-destructive">{c.failureReason}</div>}
+                      {canEdit && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED") && (
+                        <select
+                          value={c.assignedUserId ?? ""}
+                          disabled={reassignM.isPending}
+                          onChange={(e) => reassignM.mutate({
+                            partyId,
+                            consignmentId: Number(c.id),
+                            assignedUserId: e.target.value ? Number(e.target.value) : null,
+                            clientRequestId: crypto.randomUUID(),
+                          })}
+                          className="w-full rounded-md border bg-background px-2 py-1"
+                        >
+                          <option value="">مشترك لكل السائقين</option>
+                          {drivers.map((d) => <option key={d.userId} value={d.userId}>{d.name ?? d.username ?? `#${d.userId}`}</option>)}
+                        </select>
+                      )}
                     </td>
                     <td className="p-2.5 text-xs text-muted-foreground">{c.dispatchedAt ? fmtDate(c.dispatchedAt) : "—"}</td>
                     <td className="p-2.5 text-xs">
@@ -379,9 +509,10 @@ function StatementTab({ party }: { party: PartyRow }) {
 function SettingsTab({ party, isManager, canRecover, onChanged }: { party: PartyRow; isManager: boolean; canRecover: boolean; onChanged: () => void }) {
   const utils = trpc.useUtils();
   const full = trpc.delivery.getParty.useQuery({ id: party.id });
+  const accounts = trpc.delivery.courierAccounts.useQuery(undefined, { enabled: isManager });
   const [form, setForm] = useState<{
     name: string; phone: string; phone2: string; defaultFee: string; floatLimit: string;
-    nationalId: string; vehicleInfo: string; notes: string;
+    nationalId: string; vehicleInfo: string; notes: string; userId: number | null;
   } | null>(null);
   // تهيئة النموذج من الجلب الكامل مرّة واحدة (getParty يحمل الحقول التي لا تعيدها listParties).
   useEffect(() => {
@@ -395,6 +526,7 @@ function SettingsTab({ party, isManager, canRecover, onChanged }: { party: Party
         nationalId: full.data.nationalId ?? "",
         vehicleInfo: full.data.vehicleInfo ?? "",
         notes: full.data.notes ?? "",
+        userId: full.data.userId != null ? Number(full.data.userId) : null,
       });
     }
   }, [full.data, form]);
@@ -457,6 +589,19 @@ function SettingsTab({ party, isManager, canRecover, onChanged }: { party: Party
           <label className="block text-sm font-bold">ملاحظات
             <Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="mt-1 h-10" />
           </label>
+          <label className="block text-sm font-bold">حساب بوابة الجهة
+            <select
+              className="mt-1 h-10 w-full rounded-md border bg-transparent px-3 text-sm"
+              value={form.userId ?? ""}
+              onChange={(e) => setForm({ ...form, userId: e.target.value ? Number(e.target.value) : null })}
+            >
+              <option value="">بلا حساب دخول</option>
+              {(accounts.data ?? [])
+                .filter((a) => a.linkedPartyId == null || a.linkedPartyId === party.id)
+                .map((a) => <option key={a.id} value={a.id}>{a.name}{a.username ? ` (${a.username})` : ""}</option>)}
+            </select>
+            <span className="mt-1 block text-xs font-normal text-muted-foreground">ربط أو تغيير الحساب ممنوع تلقائياً إذا كان سيُخفي إرساليات مفتوحة عن مستخدم قائم.</span>
+          </label>
           <div className="flex gap-2 pt-1">
             <Button
               className="flex-1"
@@ -471,6 +616,7 @@ function SettingsTab({ party, isManager, canRecover, onChanged }: { party: Party
                 nationalId: form.nationalId || null,
                 vehicleInfo: form.vehicleInfo || null,
                 notes: form.notes || null,
+                userId: form.userId,
               })}
             >{update.isPending ? "جارٍ…" : "حفظ"}</Button>
             <Button

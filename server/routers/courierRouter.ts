@@ -8,8 +8,9 @@
 import { z } from "zod";
 import { courierProcedure, router } from "../trpc";
 import { logAudit } from "../services/auditService";
-import { confirmConsignmentDelivery, confirmCourierDelivery, failCourierDelivery, listMyDeliveries } from "../services/deliveryService";
+import { confirmConsignmentDelivery, confirmCourierDelivery, failCourierDelivery, listMyDeliveries, transitionConsignmentParcel } from "../services/deliveryService";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { retryOnDeadlock } from "../lib/retryDeadlock";
 
 export const courierRouter = router({
   /** توصيلاتي: قيد التوصيل + المُسلّمة حديثاً + عهدتي (غير مرتبط ⇒ linked:false). */
@@ -38,13 +39,13 @@ export const courierRouter = router({
     }),
 
   /**
-   * تأكيد تسليم إرسالية استقبال — ختمٌ تشغيليّ بحت (courierDeliveredAt) لا يمسّ المال.
-   * التسوية تبقى بيد الموظّف عبر توريد المندوب (delivery.recordRemittance) دون تغيير.
+   * تأكيد التسليم الفعلي والتحصيل: يغلق ذمّة العميل وينقل COD إلى عهدة الجهة.
+   * إدخال النقد في الدرج يبقى بيد الموظف عبر delivery.recordRemittance.
    */
   confirmConsignmentDelivery: courierProcedure
-    .input(z.object({ consignmentId: z.number().int().positive() }))
+    .input(z.object({ consignmentId: z.number().int().positive(), clientRequestId: z.string().trim().min(8).max(100) }))
     .mutation(async ({ input, ctx }) => {
-      const res = await confirmConsignmentDelivery({ consignmentId: input.consignmentId }, { userId: ctx.user.id });
+      const res = await retryOnDeadlock(() => confirmConsignmentDelivery(input, { userId: ctx.user.id }));
       await logAudit(ctx, {
         action: "courier.confirmConsignmentDelivery",
         entityType: "deliveryConsignment",
@@ -53,6 +54,15 @@ export const courierRouter = router({
       });
       return res;
     }),
+
+  parcelTransition: courierProcedure
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      toStatus: z.enum(["ASSIGNED", "ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY", "FAILED"]),
+      reason: z.string().trim().min(2).max(500).nullish(),
+      clientRequestId: z.string().trim().min(8).max(100),
+    }))
+    .mutation(({ input, ctx }) => retryOnDeadlock(() => transitionConsignmentParcel(input, { userId: ctx.user.id }))),
 
   /** تعذّر التسليم (رفض الزبون): عكس بيع الطلب المرفوض + إلغاؤه (بلا تحصيل). */
   failDelivery: courierProcedure

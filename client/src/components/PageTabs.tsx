@@ -94,7 +94,7 @@ export function PageTabs({
   }
 
   return (
-    <TabsPrimitive.Root value={active.value} onValueChange={selectTab} dir="rtl" className="space-y-4">
+    <TabsPrimitive.Root value={active.value} onValueChange={selectTab} dir="rtl" className="min-w-0 max-w-full space-y-4 overflow-x-hidden">
       {/* شريط الأزرار — RTL يَبدأ يميناً؛ تمرير أفقي على الشاشات الضيّقة (٧ تبويبات) بلا كسر.
           الإجراءات (إن وُجدت) خارج tablist: role=tablist لا يَصحّ أن يَحوي غير tabs. */}
       <div className="flex items-start gap-3">

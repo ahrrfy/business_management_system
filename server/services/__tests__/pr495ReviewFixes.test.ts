@@ -2,7 +2,7 @@
  * ملاحظات مراجعة PR #495 — اختبارات انحدارٍ لكلّ إصلاح (ثابتٌ لكلّ ملاحظة).
  *
  *  R1 — عزل الفرع: كاشير فرعٍ لا يُرجع إرسالية فرعٍ آخر (كانت البوّابة بلا فحص ملكية).
- *  R2 — أمانة الأجرة المصروفة للمندوب لا تُردّ ثانيةً عند الإرجاع (خروجُ نقدٍ مرّتين).
+ *  R2 — أمانة الأجرة لا تُصرف قبل التسليم وتُردّ مرّةً واحدة عند إرجاع الطرد.
  *  R3 — سقف عهدة المندوب يُنفَّذ على مسار **أمر الشغل** أيضاً (كان في مسار الفاتورة وحده).
  *  R4 — تقريب السلّة المختلطة يُشتقّ خادمياً: مبلغٌ عميليٌّ منخفض لا يخلق خصماً غير معتمد.
  *  R5 — مواد أمر الشغل من المسوّدة بالوحدة الأساس (× معامل التحويل)، والخدمة بلا مواد.
@@ -117,20 +117,20 @@ describe("R1 — عزل الفرع في إرجاع الإرسالية", () => {
 
     await expect(returnConsignment(Number(cn.id), { ...CASHIER_B2, clientRequestId: "r1-x" } as never))
       .rejects.toThrowError(/فرعاً آخر/);
-    // ولا كتابةَ وقعت: الإرسالية ما زالت نافذة وعهدة المندوب كما هي.
+    // ولا كتابةَ وقعت: الإرسالية ما زالت نافذة، ولا عهدة نقدية قبل إثبات التسليم.
     const still = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, Number(cn.id))))[0];
     expect(still.status).toBe("DISPATCHED");
-    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(10000);
+    expect(Number((await db().select().from(s.deliveryParties).where(eq(s.deliveryParties.id, 1)))[0].currentBalance)).toBe(0);
 
     const ok = await returnConsignment(Number(cn.id), { ...CASHIER, clientRequestId: "r1-ok" } as never);
     expect(ok.reversed).toBe(true);
   });
 });
 
-describe("R2 — أمانة أجرة التوصيل لا تُردّ مرّتين", () => {
-  it("أجرةٌ COUNTER صُرفت للمندوب لحظة الإسناد ⇒ الإرجاع لا يُخرج ديناراً ثانياً", async () => {
+describe("R2 — أمانة أجرة التوصيل لا تُصرف قبل التسليم ولا تُردّ مرّتين", () => {
+  it("أجرة COUNTER تبقى أمانة عند الإسناد ثم تُردّ للزبون مرّةً واحدة عند الإرجاع", async () => {
     const shift = await openReception(2, 1);
-    // فاتورة COD (تُدفَع عند الاستلام) + أجرةٌ قُبضت أمانةً في الاستقبال وصُرفت للمندوب فوراً.
+    // فاتورة COD (تُدفَع عند الاستلام) + أجرةٌ قُبضت أمانةً في الاستقبال ولم يكتسبها المندوب بعد.
     const r = await checkoutReception({
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
       paymentMethod: "CASH", paidAmount: "0",
@@ -142,22 +142,22 @@ describe("R2 — أمانة أجرة التوصيل لا تُردّ مرّتين
     const invoiceId = r.regularSale!.invoiceId;
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.invoiceId, invoiceId)))[0];
     expect(cn.status).toBe("DISPATCHED");
-    expect(cn.feeSettledAt).not.toBeNull(); // صُرفت للمندوب فعلاً لحظة الإسناد
+    expect(cn.feeSettledAt).toBeNull();
 
     const outsBefore = (await db().select().from(s.receipts).where(and(
       eq(s.receipts.invoiceId, invoiceId), eq(s.receipts.direction, "OUT"),
     ))).length;
-    expect(outsBefore).toBe(1); // سند الأجرة للمندوب وحده
+    expect(outsBefore).toBe(0); // لا صرف قبل ثبوت التسليم
 
     const res = await returnConsignment(Number(cn.id), { ...CASHIER, clientRequestId: "r2-ret" } as never);
-    expect((res as { feeAlreadyPaidToCourier?: boolean }).feeAlreadyPaidToCourier).toBe(true);
+    expect((res as { feeAlreadyPaidToCourier?: boolean }).feeAlreadyPaidToCourier).toBe(false);
 
-    // لا سند صرفٍ ثانٍ إطلاقاً — الأمانة غادرت الدرج مرّةً واحدة (كان يخرج ديناران لقبضةٍ واحدة).
+    // سند واحد فقط يردّ الأمانة للزبون، ولا يوجد أي صرف سابق للمندوب.
     const outs = await db().select().from(s.receipts).where(and(
       eq(s.receipts.invoiceId, invoiceId), eq(s.receipts.direction, "OUT"),
     ));
-    expect(outs.length).toBe(outsBefore);
-    expect(outs.some((o) => String(o.referenceNumber ?? "") === `DLV-FEE-INV-${invoiceId}`)).toBe(false);
+    expect(outs.length).toBe(1);
+    expect(outs.some((o) => String(o.referenceNumber ?? "") === `DLV-FEE-INV-${invoiceId}`)).toBe(true);
 
     // ثابت الأمانة: Σ(DELIVERY_FEE_HELD) = صفر (قبضٌ + صرفٌ)، لا −الأجرة.
     const held = (await db().select({ v: sql<string>`COALESCE(SUM(${s.accountingEntries.amount}), 0)` })
@@ -222,7 +222,7 @@ describe("R3 — سقف عهدة المندوب على مسار أمر الشغ�
 
     const invoicesBefore = (await db().select().from(s.invoices)).length;
     await expect(dispatchToDelivery({ workOrderId: Number(wo.workOrderId), partyId: 1, deliveryFee: "0" }, CASHIER as never))
-      .rejects.toThrowError(/تتجاوز سقفها/);
+      .rejects.toThrowError(/يتجاوز السقف/);
     // الرفض قبل أيّ كتابة ⇒ لا فاتورة ولا إرسالية ولا عهدة.
     expect((await db().select().from(s.invoices)).length).toBe(invoicesBefore);
     expect((await db().select().from(s.deliveryConsignments)).length).toBe(0);

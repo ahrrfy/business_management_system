@@ -1035,11 +1035,15 @@ async function deploy(expectedHead) {
     );
 
     step("4/10 إنشاء نسخة احتياطية", () => run("pnpm", ["db:backup"]));
-    step("5/10 تطبيق الهجرات الآمنة وإصلاح مخطط الاستقبال", () => {
+    step("5/10 تطبيق الهجرات الآمنة وإصلاح الاستقبال والتوصيل", () => {
       run("pnpm", ["db:migrate:safe"]);
       run("node", [
         "scripts/ci-apply-extra-migrations.mjs",
         "--only=drizzle/migrations/0178_repair_reception_schema_drift.sql",
+      ]);
+      run("node", [
+        "scripts/ci-apply-extra-migrations.mjs",
+        "--only=drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
       ]);
     });
     step("6/10 التحقق من مخطط قاعدة البيانات", () =>

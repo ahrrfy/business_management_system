@@ -26,7 +26,7 @@ import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 /**
  * إدارة التوصيل (COD) — شاشة مكرّسة (D5):
  *  - «جاهز للإرسال»: تعيين جهة توصيل + أجرة لطلبٍ جاهز ⇒ إصدار فاتورة COD + عهدة.
- *  - «تسوية المناديب»: قبض تحصيلات الجهة، خصم الأجرة، توريد الصافي (D8) — كم للمكتبة وكم للجهة.
+ *  - «تسوية المناديب»: توريد COD كاملاً، ودفع الأجرة المستحقة بسند مستقل بعد ثبوت التسليم.
  */
 
 type ReadyOrder = RouterOutputs["delivery"]["readyForDispatch"][number];
@@ -62,7 +62,7 @@ export default function DeliveryHub() {
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
       <PageHeader
         title="إدارة التوصيل"
-        description="تعيين المناديب للطلبات الجاهزة (COD) وتسوية تحصيلاتهم بخصم الأجرة وتوريد الصافي."
+        description="إسناد الطلبات الجاهزة وتتبع تسليمها، ثم توريد COD ودفع أجرة التوصيل بسند مستقل."
         icon={<Truck className="size-6 text-primary" aria-hidden />}
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -85,8 +85,8 @@ export default function DeliveryHub() {
 // ───────────────────────── تبويب: جاهز للإرسال ─────────────────────────
 function DispatchTab() {
   const utils = trpc.useUtils();
-  const ready = trpc.delivery.readyForDispatch.useQuery();
-  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true });
+  const ready = trpc.delivery.readyForDispatch.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
+  const parties = trpc.delivery.listParties.useQuery({ activeOnly: true }, { refetchInterval: 30_000, refetchOnWindowFocus: true });
   const me = trpc.auth.me.useQuery();
   // مرآة بوّابة الخادم: dispatch = cashierProcedure = requireRole("cashier","manager") وadmin يمرّ ضمنياً
   // (بوّابة أدوار صِرفة بلا مفتاح وحدة صلاحيات — لا مفتاح delivery في المصفوفة ⇒ القائمة الحرفية هي المطابقة الدقيقة).
@@ -100,6 +100,10 @@ function DispatchTab() {
       setTarget(null);
       utils.delivery.readyForDispatch.invalidate();
       utils.delivery.listParties.invalidate();
+      utils.delivery.consignments.invalidate();
+      utils.delivery.openConsignments.invalidate();
+      utils.workOrders.list.invalidate();
+      utils.workOrders.counts.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -216,7 +220,7 @@ function DispatchTab() {
         parties={parties.data ?? []}
         pending={dispatch.isPending}
         onClose={() => setTarget(null)}
-        onConfirm={async ({ partyId, fee, recipientName, recipientPhone }) => {
+        onConfirm={async ({ partyId, fee, recipientName, recipientPhone, assignedUserId }) => {
           const ord = target!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
           // نافذة الملصق تُفتح هنا **متزامنةً مع نقرة التأكيد** (قبل await الإرسال) وإلا حجبها
@@ -231,6 +235,7 @@ function DispatchTab() {
               recipientPhone: recipientPhone || undefined,
               deliveryAddress: ord.deliveryAddress ?? undefined,
               clientRequestId: crypto.randomUUID(),
+              assignedUserId,
             });
             void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
             printDeliverySlip(ord, party, r);
@@ -248,6 +253,11 @@ function SettleTab() {
   const utils = trpc.useUtils();
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true });
   const me = trpc.auth.me.useQuery();
+  const branchId = Number(me.data?.branchId ?? 0);
+  const currentShift = trpc.shifts.current.useQuery(
+    { branchId, shiftType: "RECEPTION" },
+    { enabled: branchId > 0 },
+  );
   // مرآة بوّابتي الخادم: recordRemittance = cashierProcedure، وreturnConsignment = managerProcedure
   // (بوّابتا أدوار صِرفتان بلا مفتاح وحدة — القائمة الحرفية هي المطابقة الدقيقة، وadmin يمرّ ضمنياً).
   const canRemit = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
@@ -266,7 +276,7 @@ function SettleTab() {
     );
   const [partyId, setPartyId] = useState<string>("");
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
-  const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "RETURNED"; collected: string }>>({});
+  const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "NONE"; collected: string }>>({});
   const [countedBreakdown, setCountedBreakdown] = useState<Record<number, number>>({});
   const [countedCash, setCountedCash] = useState(0);
   // مفتاح idempotency **ثابت لكل جلسة توريد** (مراجعة عدائية ١٠/٨): كان UUID يُولَّد لحظة النقر
@@ -289,6 +299,15 @@ function SettleTab() {
     },
     onError: (e) => notify.err(e),
   });
+  const payFee = trpc.delivery.payFee.useMutation({
+    onSuccess: (r) => {
+      notify.ok("دُفعت أجرة التوصيل", `المبلغ ${fmt(r.paid)} د.ع — المتبقي ${fmt(r.remaining)} د.ع`);
+      void utils.delivery.openConsignments.invalidate();
+      void utils.delivery.partyFinancials.invalidate();
+      void utils.delivery.listParties.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
   const ret = trpc.delivery.returnConsignment.useMutation({
     onSuccess: (r) => {
       // مراجعة PR #495: أمانة الأجرة المصروفة للمندوب سلفاً **لا تُردّ** هنا (لا التزامَ باقياً
@@ -308,15 +327,26 @@ function SettleTab() {
   });
 
   const list = cons.data ?? [];
-  const get = (c: OpenConsignment) => rows[c.id] ?? { outcome: "COLLECTED" as const, collected: String(Math.max(0, Number(c.codAmount) - Number(c.collectedAmount))) };
+  const remainingOf = (c: OpenConsignment) => Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
+  const isRemittable = (c: OpenConsignment) => c.parcelStatus === "DELIVERED"
+    && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL")
+    && remainingOf(c) > 0;
+  const isReturnable = (c: OpenConsignment) => c.status === "DISPATCHED"
+    && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED")
+    && (c.moneyStatus === "NOT_APPLICABLE" || c.moneyStatus === "UNSETTLED")
+    && Number(c.collectedAmount) === 0;
+  const get = (c: OpenConsignment) => rows[c.id] ?? (isRemittable(c)
+    ? { outcome: "COLLECTED" as const, collected: String(remainingOf(c)) }
+    : { outcome: "NONE" as const, collected: "0" });
 
   const totals = useMemo(() => {
     // «العجز» = ما نقص عن الأسطر **المُدرَجة** في هذا التوريد (مطابقةً لدلالة الخادم بعد
     // استثناء الأسطر الصفرية — مراجعة ٩/٨): الإرسالية المتروكة كلياً «تبقى بالطريق» ولا
     // تدخل عجز هذا المستند، وإلا ناقض حوارُ التأكيد الإيصالَ المطبوع وسجلَّ التوريدات.
-    let collected = 0, fees = 0, expected = 0, leftInTransit = 0;
+    let collected = 0, expected = 0, leftInTransit = 0;
     for (const c of list) {
-      const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
+      if (!isRemittable(c)) continue;
+      const remaining = remainingOf(c);
       const st = get(c);
       const col = st.outcome === "COLLECTED" ? Math.min(remaining, Math.max(0, Number(st.collected) || 0)) : 0;
       if (col > 0) {
@@ -325,20 +355,18 @@ function SettleTab() {
         // الأجرة تُخصَم عند التسليم الكامل **وبشرط الخادم حرفياً** (مراجعة عدائية ٩/٨ — كانت
         // الشاشة تخصم كل الأجور فتحسب صافياً يخالف الخادم لإرساليات COURIER (يقبضها المندوب
         // بنفسه) والمصروفة سلفاً (feeSettledAt) ⇒ العدّ لا يطابق أبداً = طريق مسدود للتسوية).
-        const feeStillOwed = c.feeCollection !== "COURIER" && c.feeSettledAt == null;
-        if (col >= remaining && remaining > 0 && feeStillOwed) fees += Number(c.deliveryFee ?? 0);
       } else if (remaining > 0) {
         leftInTransit += 1;
       }
     }
-    return { collected, fees, net: collected - fees, shortfall: expected - collected, expected, leftInTransit };
+    return { collected, fees: 0, net: collected, shortfall: expected - collected, expected, leftInTransit };
   }, [list, rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
     // الأسطر الصفرية تُستثنى (٩/٨): غير المحصَّل ليس توريداً — يبقى بالطريق (كان الصفر يقلب
     // الإرسالية PARTIAL كاذبةً ويقفل باب إرجاعها). الخادم يرفضها أيضاً — الاستثناء هنا أوضح.
     const lines = list
-      .filter((c) => get(c).outcome === "COLLECTED")
+      .filter((c) => isRemittable(c) && get(c).outcome === "COLLECTED")
       .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
       .filter((l) => Number(l.collectedAmount) > 0);
     if (lines.length === 0) { notify.err("لا مبالغ للتوريد — أدخل المُحصَّل فعلاً؛ غير المحصَّل يبقى بالطريق"); return; }
@@ -349,7 +377,7 @@ function SettleTab() {
     const ok = await confirm({
       variant: "danger",
       title: "تأكيد تسوية تحصيلات المندوب",
-      description: `المُحصَّل ${fmt(String(totals.collected))} − الأجور ${fmt(String(totals.fees))} = صافٍ للمكتبة ${fmt(String(totals.net))} د.ع.${totals.shortfall > 0 ? ` يبقى العجز ${fmt(String(totals.shortfall))} د.ع ذمّةً على المندوب.` : ""}${totals.leftInTransit > 0 ? ` (${totals.leftInTransit} إرسالية تبقى بالطريق خارج هذا التوريد.)` : ""}`,
+      description: `المُحصَّل والمورّد للمكتبة ${fmt(String(totals.net))} د.ع. أجرة التوصيل تُدفع بسند مستقل بعد ثبوت التسليم.${totals.leftInTransit > 0 ? ` (${totals.leftInTransit} إرسالية تبقى بالطريق خارج هذا التوريد.)` : ""}`,
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
@@ -371,7 +399,7 @@ function SettleTab() {
       {!partyId ? null : cons.isLoading ? (
         <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>
       ) : list.length === 0 ? (
-        <EmptyState icon={Truck} title="لا شحنات مفتوحة" description="لا توجد إرساليات قيد التحصيل لهذه الجهة." />
+        <EmptyState icon={Truck} title="لا التزامات مفتوحة" description="لا توجد مبالغ للتوريد أو أجور للدفع أو إرساليات قابلة للإرجاع لهذه الجهة." />
       ) : (
         <>
           <ScrollTableShell className="bg-card">
@@ -390,10 +418,10 @@ function SettleTab() {
               <tbody>
                 {list.map((c) => {
                   const st = get(c);
-                  const remaining = Math.max(0, Number(c.codAmount) - Number(c.collectedAmount));
-                  // مرآة قاعدة الخادم (feeStillOwed): أجرة لا تُخصم من هذا التوريد تُعرَض موسومةً
-                  // لا رقماً صامتاً يُدخِله الموظف في حسبة العدّ خطأً.
-                  const feeStillOwed = c.feeCollection !== "COURIER" && c.feeSettledAt == null;
+                  const remaining = remainingOf(c);
+                  const remittable = isRemittable(c);
+                  const returnable = isReturnable(c);
+                  const feeDue = Math.max(0, Number(c.feeDue ?? 0));
                   return (
                     <tr key={c.id} className="border-b last:border-0">
                       <td className="p-3 font-medium">{c.consignmentNumber}</td>
@@ -409,38 +437,72 @@ function SettleTab() {
                       <td className="p-3 text-left tabular-nums" dir="ltr">{fmt(String(remaining))}</td>
                       <td className="p-3 text-left">
                         <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(c.deliveryFee)}</span>
-                        {Number(c.deliveryFee ?? 0) > 0 && !feeStillOwed && (
+                        {Number(c.deliveryFee ?? 0) > 0 && c.parcelStatus !== "DELIVERED" && (
+                          <span className="block text-[10px] font-bold text-muted-foreground">
+                            {c.feeCollection === "COURIER" ? "يقبضها المندوب من العميل" : "تُستحق بعد نجاح التوصيل"}
+                          </span>
+                        )}
+                        {Number(c.deliveryFee ?? 0) > 0 && c.parcelStatus === "DELIVERED" && feeDue <= 0 && (
                           <span className="block text-[10px] font-bold text-muted-foreground">
                             {c.feeCollection === "COURIER" ? "يقبضها المندوب — لا تُخصم" : "صُرفت سلفاً — لا تُخصم"}
                           </span>
                         )}
+                        {feeDue > 0 && c.parcelStatus === "DELIVERED" && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="mt-1 h-7 text-[10px]"
+                            disabled={payFee.isPending || !currentShift.data?.id}
+                            title={!currentShift.data?.id ? "افتح وردية استقبال لدفع الأجرة من درج موثق" : undefined}
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: "دفع أجرة التوصيل",
+                                description: `دفع ${fmt(String(feeDue))} د.ع لجهة التوصيل عن ${c.consignmentNumber} من وردية الاستقبال #${currentShift.data?.id}.`,
+                                confirmText: "دفع بسند صرف",
+                              });
+                              if (ok && currentShift.data?.id) payFee.mutate({
+                                consignmentId: c.id,
+                                shiftId: currentShift.data.id,
+                                clientRequestId: crypto.randomUUID(),
+                              });
+                            }}
+                          >
+                            دفع المستحق
+                          </Button>
+                        )}
                       </td>
                       <td className="p-3 text-center">
                         <div className="inline-flex gap-1">
-                          <button
-                            className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "COLLECTED" ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground")}
-                            onClick={() => setRows((r) => ({ ...r, [c.id]: { outcome: "COLLECTED", collected: String(remaining) } }))}
-                          ><Check aria-hidden className="inline size-3" /> حُصِّل</button>
-                          {canReturn && (
+                          {remittable && (
                             <button
-                              className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "RETURNED" ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground")}
+                              className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "COLLECTED" ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground")}
+                              onClick={() => setRows((r) => ({ ...r, [c.id]: { outcome: "COLLECTED", collected: String(remaining) } }))}
+                            ><Check aria-hidden className="inline size-3" /> حُصِّل</button>
+                          )}
+                          {canReturn && returnable && (
+                            <button
+                              className="rounded bg-amber-100 px-2 py-1 text-xs font-bold text-amber-700"
                               onClick={async () => {
                                 const ok = await confirm({ variant: "danger", title: "إرجاع الإرسالية", description: `عكس بيع الإرسالية ${c.consignmentNumber} وإعادة البضاعة للمخزون. متابعة؟`, confirmText: "إرجاع" });
                                 if (ok) ret.mutate({ consignmentId: c.id, clientRequestId: crypto.randomUUID() });
                               }}
                             ><RotateCcw aria-hidden className="inline size-3" /> مُرتجَع</button>
                           )}
+                          {!remittable && !returnable && feeDue > 0 && <span className="text-xs font-bold text-amber-700">أجرة مستحقة</span>}
                         </div>
                       </td>
                       <td className="p-3 text-left">
-                        <Input
-                          dir="ltr"
-                          inputMode="decimal"
-                          disabled={st.outcome !== "COLLECTED"}
-                          value={st.collected}
-                          onChange={(e) => setRows((r) => ({ ...r, [c.id]: { outcome: "COLLECTED", collected: e.target.value } }))}
-                          className="h-8 w-28 text-end tabular-nums"
-                        />
+                        {remittable ? (
+                          <Input
+                            dir="ltr"
+                            inputMode="decimal"
+                            disabled={st.outcome !== "COLLECTED"}
+                            value={st.collected}
+                            onChange={(e) => setRows((r) => ({ ...r, [c.id]: { outcome: "COLLECTED", collected: e.target.value } }))}
+                            className="h-8 w-28 text-end tabular-nums"
+                          />
+                        ) : "—"}
                       </td>
                     </tr>
                   );
@@ -452,8 +514,8 @@ function SettleTab() {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl border bg-card p-4 text-sm">
               <div className="flex justify-between border-b py-1.5"><span className="text-muted-foreground">إجمالي التحصيل (COD)</span><span dir="ltr" className="font-bold tabular-nums">{fmt(String(totals.collected))} د.ع</span></div>
-              <div className="flex justify-between border-b py-1.5"><span className="text-muted-foreground">مستحقات الجهة (الأجور)</span><span dir="ltr" className="tabular-nums text-amber-600">−{fmt(String(totals.fees))} د.ع</span></div>
-              <div className="flex justify-between border-b py-1.5"><span className="font-bold">صافٍ للمكتبة (المورَّد)</span><span dir="ltr" className="font-extrabold tabular-nums text-primary">{fmt(String(totals.net))} د.ع</span></div>
+              <div className="flex justify-between border-b py-1.5"><span className="text-muted-foreground">الأجور</span><span className="text-xs text-muted-foreground">تُدفع بسند مستقل بعد التسليم</span></div>
+              <div className="flex justify-between border-b py-1.5"><span className="font-bold">النقد المورَّد للمكتبة</span><span dir="ltr" className="font-extrabold tabular-nums text-primary">{fmt(String(totals.net))} د.ع</span></div>
               <div className={cn("flex items-center justify-between py-1.5 font-bold", totals.shortfall > 0.01 ? "text-destructive" : "text-emerald-600")}>
                 <span className="inline-flex items-center gap-1">{totals.shortfall > 0.01 && <AlertTriangle aria-hidden className="size-3.5" />} {totals.shortfall > 0.01 ? "عجز يبقى ذمّةً على المندوب" : "مطابق"}</span>
                 <span dir="ltr" className="tabular-nums">{fmt(String(Math.max(0, totals.shortfall)))} د.ع</span>

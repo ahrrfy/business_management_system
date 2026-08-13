@@ -167,6 +167,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
     utils.workOrders.get.invalidate({ workOrderId: id }),
     utils.workOrders.timeline.invalidate({ workOrderId: id }),
     utils.inventory.movements.invalidate(),
+    utils.delivery.readyForDispatch.invalidate(),
   ]).then(onChanged);
 
   const start = trpc.workOrders.start.useMutation({
@@ -174,7 +175,13 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
     onError: (e) => notify.err(e),
   });
   const markReady = trpc.workOrders.markReady.useMutation({
-    onSuccess: () => { notify.ok("جاهز للتسليم", "سلّمه للكاشير للتسليم وإصدار الفاتورة."); invalidate(); },
+    onSuccess: () => {
+      notify.ok(
+        "جاهز للتسليم",
+        detail.data?.hasDelivery ? "أصبح جاهزاً لإسناده من إدارة التوصيل." : "سلّمه للكاشير للتسليم وإصدار الفاتورة.",
+      );
+      invalidate();
+    },
     onError: (e) => notify.err(e),
   });
   const busy = start.isPending || markReady.isPending;

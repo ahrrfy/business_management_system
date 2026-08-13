@@ -83,14 +83,14 @@ describe("F7 #2 — IDOR كتابة عبر الفروع في عهدة التوص
   it("كاشير ف١ يسوّي جهةَ ف٢ ⇒ FORBIDDEN (جهة فرعٍ آخر)", async () => {
     await db().insert(s.deliveryParties).values({ id: 1, name: "مندوب ف٢", partyType: "INDIVIDUAL", branchId: 2, currentBalance: "500.00" });
     await expect(
-      caller("cashier", 1, 4).delivery.settle({ partyId: 1, amount: "100.00" } as any),
+      caller("cashier", 1, 4).delivery.settle({ partyId: 1, amount: "100.00", clientRequestId: "f7-settle-cross-cashier" } as any),
     ).rejects.toThrow(/جهة التوصيل تخصّ فرعاً آخر/);
   });
 
   it("كاشير ف٢ يسوّي جهةَ ف٢ ⇒ لا يُرفَض بحارس الفرع (قد يفشل لسبب آخر، لا «فرعٍ آخر»)", async () => {
     await db().insert(s.deliveryParties).values({ id: 1, name: "مندوب ف٢", partyType: "INDIVIDUAL", branchId: 2, currentBalance: "500.00" });
     try {
-      await caller("cashier", 2, 5).delivery.settle({ partyId: 1, amount: "100.00" } as any);
+      await caller("cashier", 2, 5).delivery.settle({ partyId: 1, amount: "100.00", clientRequestId: "f7-settle-own-cashier" } as any);
     } catch (e: any) {
       expect(String(e?.message)).not.toMatch(/جهة التوصيل تخصّ فرعاً آخر/);
     }
@@ -99,7 +99,7 @@ describe("F7 #2 — IDOR كتابة عبر الفروع في عهدة التوص
   it("جهة مشتركة (branchId=null) ⇒ أي كاشير يعبُر حارس الفرع", async () => {
     await db().insert(s.deliveryParties).values({ id: 2, name: "مندوب مشترك", partyType: "INDIVIDUAL", branchId: null, currentBalance: "500.00" });
     try {
-      await caller("cashier", 1, 4).delivery.settle({ partyId: 2, amount: "100.00" } as any);
+      await caller("cashier", 1, 4).delivery.settle({ partyId: 2, amount: "100.00", clientRequestId: "f7-settle-shared" } as any);
     } catch (e: any) {
       expect(String(e?.message)).not.toMatch(/جهة التوصيل تخصّ فرعاً آخر/);
     }
@@ -109,7 +109,7 @@ describe("F7 #2 — IDOR كتابة عبر الفروع في عهدة التوص
     await db().insert(s.deliveryParties).values({ id: 1, name: "مندوب ف٢", partyType: "INDIVIDUAL", branchId: 2, currentBalance: "500.00" });
     // مدير ف١ لا يسوّي جهة ف٢: التسوية تُحلّ على فرعه ١ فتُرفَض جهة ف٢ (كان يعبُر — سياسة ٢٣/٧ المُلغاة).
     await expect(
-      caller("manager", 1, 1).delivery.settle({ partyId: 1, amount: "100.00" } as any),
+      caller("manager", 1, 1).delivery.settle({ partyId: 1, amount: "100.00", clientRequestId: "f7-settle-cross-manager" } as any),
     ).rejects.toThrow(/فرع/);
   });
 });

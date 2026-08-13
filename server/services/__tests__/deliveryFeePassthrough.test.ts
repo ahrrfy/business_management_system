@@ -21,11 +21,20 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { openShift } from "../shiftService";
 import { createWorkOrder } from "../workOrderService";
-import { createDeliveryParty, dispatchToDelivery, recordDeliveryRemittance } from "../deliveryService";
+import {
+  confirmConsignmentDelivery,
+  createDeliveryParty,
+  dispatchToDelivery,
+  listOpenConsignments,
+  payDeliveryFee,
+  recordDeliveryRemittance,
+  transitionConsignmentParcel,
+} from "../deliveryService";
 import { reconcileDeliveryFloat, reconcileLedgerProfit } from "../reconcileService";
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts",
+  "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
   "workOrderMaterials", "workOrderImages", "workOrders",
@@ -54,13 +63,14 @@ async function seed() {
   await d.insert(s.users).values([
     { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_cashier", name: "كاشير", email: "c@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "local_courier", name: "مندوب", email: "d@t.test", role: "courier", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.customers).values([{ id: 1, name: "عميل", phone: "+9647700000000" }]);
   await d.insert(s.products).values([{ id: 1, name: "كتاب" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "BK-1", costPrice: "0.00" }]);
   await d.insert(s.branchStock).values([{ variantId: 1, branchId: 1, quantity: 100 }]);
   const { id: partyId } = await createDeliveryParty(
-    { partyType: "INDIVIDUAL", name: "مندوب", defaultFee: "1500", branchId: 1 }, MANAGER,
+    { partyType: "INDIVIDUAL", name: "مندوب", defaultFee: "1500", userId: 3, branchId: 1 }, MANAGER,
   );
   return { partyId };
 }
@@ -95,6 +105,19 @@ async function makeOrder(opts: {
   return woId;
 }
 
+async function deliver(consignmentId: number) {
+  for (const toStatus of ["ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"] as const) {
+    await transitionConsignmentParcel(
+      { consignmentId, toStatus, clientRequestId: `fee-test-${consignmentId}-${toStatus}` },
+      { userId: 3 },
+    );
+  }
+  await confirmConsignmentDelivery(
+    { consignmentId, clientRequestId: `fee-test-${consignmentId}-delivered` },
+    { userId: 3 },
+  );
+}
+
 describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () => {
   beforeEach(async () => { await reset(); });
 
@@ -122,6 +145,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     expect(await entries("DELIVERY_FEE_HELD")).toHaveLength(0);
 
     // التوريد: يورّد الـCOD كاملاً بلا خصم أجرة (قبضها بنفسه).
+    await deliver(disp.consignmentId);
     const rem = await recordDeliveryRemittance(
       { branchId: 1, partyId, countedCash: "8000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "8000" }] },
       CASHIER,
@@ -146,10 +170,18 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
 
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     expect(disp.codAmount).toBe("8000.00");
-    // صُرفت للمندوب لحظة الإرسال ⇒ الدرج يعود إلى العربون وحده (صافي الأجرة صفر).
-    expect(await drawerNet(shift.shiftId)).toBe(2000);
+    // لا تُدفع الأجرة قبل نجاح التوصيل.
+    expect(await drawerNet(shift.shiftId)).toBe(3500);
     expect(await entries("DELIVERY_FEE")).toHaveLength(0); // ليست مصروفاً
-    expect(await entries("DELIVERY_FEE_HELD")).toHaveLength(2); // قبض + صرف
+    expect(await entries("DELIVERY_FEE_HELD")).toHaveLength(1);
+
+    await deliver(disp.consignmentId);
+    await payDeliveryFee(
+      { consignmentId: disp.consignmentId, shiftId: shift.shiftId, clientRequestId: "counter-fee-paid" },
+      CASHIER,
+    );
+    expect(await drawerNet(shift.shiftId)).toBe(2000);
+    expect(await entries("DELIVERY_FEE_HELD")).toHaveLength(2); // قبض + دفع بعد النجاح
 
     // I4 — لا تُخصَم ثانيةً من التوريد.
     const rem = await recordDeliveryRemittance(
@@ -170,7 +202,16 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
 
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
     expect(disp.codAmount).toBe("0.00");
-    // الأجرة صُرفت فعلاً للمندوب ⇒ الدرج = قيمة البضاعة وحدها، لا زيادةَ يُحاسَب عليها الموظّف.
+    expect(await drawerNet(shift.shiftId)).toBe(11500);
+    expect((await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, disp.consignmentId)).limit(1))[0].feeSettledAt).toBeNull();
+    await deliver(disp.consignmentId);
+    const feeQueue = await listOpenConsignments(partyId, 1);
+    expect(feeQueue.find((c) => Number(c.id) === disp.consignmentId)?.feeDue).toBe("1500.00");
+    await payDeliveryFee(
+      { consignmentId: disp.consignmentId, shiftId: shift.shiftId, clientRequestId: "prepaid-counter-fee" },
+      CASHIER,
+    );
+    expect((await listOpenConsignments(partyId, 1)).some((c) => Number(c.id) === disp.consignmentId)).toBe(false);
     expect(await drawerNet(shift.shiftId)).toBe(10000);
     const cn = (await db().select().from(s.deliveryConsignments).where(eq(s.deliveryConsignments.id, disp.consignmentId)).limit(1))[0];
     expect(cn.feeSettledAt).not.toBeNull();
@@ -179,16 +220,21 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
 
   it("SHOP — المكتبة تتحمّل الأجرة ⇒ مصروفٌ حقيقيّ يُخصَم من التوريد (السلوك القديم محفوظ)", async () => {
     const { partyId } = await seed();
-    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
     const woId = await makeOrder({ deposit: "2000", fee: "1500", feeCollection: "SHOP" });
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
+    await deliver(disp.consignmentId);
     const rem = await recordDeliveryRemittance(
-      { branchId: 1, partyId, countedCash: "6500", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "8000" }] },
+      { branchId: 1, partyId, countedCash: "8000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "8000" }] },
       CASHIER,
     );
-    expect(rem.feesTotal).toBe("1500.00");
-    expect(rem.netRemitted).toBe("6500.00");
+    expect(rem.feesTotal).toBe("0.00");
+    expect(rem.netRemitted).toBe("8000.00");
+    await payDeliveryFee(
+      { consignmentId: disp.consignmentId, shiftId: shift.shiftId, clientRequestId: "shop-fee-paid" },
+      CASHIER,
+    );
     const fee = await entries("DELIVERY_FEE");
     expect(fee).toHaveLength(1);
     expect(fee[0].cost).toBe("1500.00"); // مصروفٌ حقيقيّ (تتحمّله المكتبة)

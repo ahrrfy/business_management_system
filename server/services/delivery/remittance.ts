@@ -2,8 +2,9 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties, deliveryRemittances, invoices, receipts } from "../../../drizzle/schema";
+import { deliveryConsignments, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
+import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
@@ -43,33 +44,29 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       lines: canonicalLines,
       countedCash: toDbMoney(round2(money(input.countedCash))),
     });
-    if (input.clientRequestId) {
+    const replayResult = async () => {
+      if (!input.clientRequestId) return null;
       const existingId = await checkIdempotency(tx, "delivery.remit", input.clientRequestId, payloadHash);
-      if (existingId != null) {
-        const rm = (await tx.select().from(deliveryRemittances).where(eq(deliveryRemittances.id, existingId)).limit(1))[0];
-        const replayTotal = round2(input.lines.reduce((sum, line) => sum.plus(money(line.collectedAmount)), new Decimal(0)));
-        if (
-          !rm
-          || Number(rm.branchId) !== Number(input.branchId)
-          || Number(rm.partyId) !== Number(input.partyId)
-          || !money(rm.collectedTotal).eq(replayTotal)
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمل لتوريد مختلف",
-          });
-        }
-        return {
-          remittanceId: existingId,
-          remittanceNumber: rm?.remittanceNumber ?? "",
-          collectedTotal: String(rm?.collectedTotal ?? "0"),
-          feesTotal: String(rm?.feesTotal ?? "0"),
-          netRemitted: String(rm?.netRemitted ?? "0"),
-          shortfallTotal: String(rm?.shortfallTotal ?? "0"),
-          status: rm?.status ?? "BALANCED",
-          idempotentReplay: true as const,
-        };
+      if (existingId == null) return null;
+      const rm = (await tx.select().from(deliveryRemittances).where(eq(deliveryRemittances.id, existingId)).limit(1))[0];
+      const replayTotal = round2(input.lines.reduce((sum, line) => sum.plus(money(line.collectedAmount)), new Decimal(0)));
+      if (!rm || Number(rm.branchId) !== Number(input.branchId) || Number(rm.partyId) !== Number(input.partyId) || !money(rm.collectedTotal).eq(replayTotal)) {
+        throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمل لتوريد مختلف" });
       }
+      return {
+        remittanceId: existingId,
+        remittanceNumber: rm.remittanceNumber,
+        collectedTotal: String(rm.collectedTotal),
+        feesTotal: String(rm.feesTotal),
+        netRemitted: String(rm.netRemitted),
+        shortfallTotal: String(rm.shortfallTotal),
+        status: rm.status,
+        idempotentReplay: true as const,
+      };
+    };
+    if (input.clientRequestId) {
+      const replay = await replayResult();
+      if (replay) return replay;
     }
     if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا إرساليات للتسوية" });
     const uniqueConsignmentIds = new Set(input.lines.map((line) => line.consignmentId));
@@ -79,12 +76,25 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
 
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    const replayAfterLock = await replayResult();
+    if (replayAfterLock) return replayAfterLock;
     if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع التوريد" });
     }
 
     // المرور ١: قفل + تحقّق + حساب (بلا كتابة) — ترتيب أقفال الإرساليات تصاعدياً يمنع الجمود.
-    type Work = { id: number; invoiceId: number; collected: Decimal; newCollected: Decimal; delivered: boolean; fee: Decimal; remaining: Decimal; feeCollection: string };
+    type Work = {
+      id: number;
+      invoiceId: number;
+      collected: Decimal;
+      invoiceCredit: Decimal;
+      newCollected: Decimal;
+      delivered: boolean;
+      fee: Decimal;
+      remaining: Decimal;
+      feeCollection: string;
+      fromMoneyStatus: "UNSETTLED" | "PARTIAL";
+    };
     const work: Work[] = [];
     let collectedTotal = new Decimal(0);
     let feesTotal = new Decimal(0);
@@ -98,6 +108,12 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
         throw new TRPCError({ code: "BAD_REQUEST", message: `إرسالية ${cn.consignmentNumber} تخصّ فرعاً آخر` });
       }
       if (cn.status !== "DISPATCHED" && cn.status !== "PARTIAL") throw new TRPCError({ code: "BAD_REQUEST", message: `إرسالية ${cn.consignmentNumber} غير قابلة للتسوية` });
+      if (cn.parcelStatus !== "DELIVERED") {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: `لا يمكن توريد ${cn.consignmentNumber} قبل إثبات وصول العميل` });
+      }
+      if (cn.moneyStatus !== "UNSETTLED" && cn.moneyStatus !== "PARTIAL") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `الإرسالية ${cn.consignmentNumber} غير قابلة للتوريد المالي` });
+      }
       const collected = round2(money(line.collectedAmount));
       if (collected.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ سالب" });
       // سطرٌ صفريّ يُستثنى كلياً (مراجعة عدائية ٩/٨): كان يقلب DISPATCHED إلى PARTIAL بصفر
@@ -122,12 +138,10 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       const invRemaining = invRow
         ? round2(money(invRow.total).minus(money(invRow.returnedTotal ?? "0")).minus(money(invRow.paidAmount)))
         : remaining;
-      if (collected.gt(invRemaining)) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: `المُحصَّل للإرسالية ${cn.consignmentNumber} يتجاوز متبقّي فاتورتها الحيّ (${invRemaining.toFixed(2)}) — سُدِّد جزءٌ في الكاونتر؛ سوِّ الفارق مع المندوب وأدخل المتبقّي فقط`,
-        });
-      }
+      // New deliveries settle customer AR at the physical-delivery event and
+      // move the amount to courier custody.  Legacy rows can still have a live
+      // invoice remainder, so only that part is credited during remittance.
+      const invoiceCredit = Decimal.min(collected, Decimal.max(invRemaining, 0));
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
       const delivered = newCollected.gte(money(cn.codAmount));
       // ٥/٨ — الأجرة تُخصَم من التوريد فقط إذا كانت **ما زالت مستحقّةً علينا** للمندوب:
@@ -135,7 +149,7 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       //             مرّةً ثانيةً بعد أن قبضها بنفسه).
       //   feeSettledAt ⇒ صُرفت نقداً لحظة الإرسال ⇒ لا خصم (حارس الصرف المزدوج).
       // وتبقى مستحقّةً عند التسليم الكامل فقط (تسليمٌ جزئيّ لا يستحقّ أجرةً).
-      const feeStillOwed = cn.feeCollection !== "COURIER" && cn.feeSettledAt == null;
+      const feeStillOwed = false;
       const fee = delivered && feeStillOwed ? round2(money(cn.deliveryFee)) : new Decimal(0);
       if (fee.gt(collected)) {
         throw new TRPCError({
@@ -143,7 +157,18 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
           message: `أجرة توصيل الإرسالية ${cn.consignmentNumber} تتجاوز النقد المورّد في هذه التسوية`,
         });
       }
-      work.push({ id: Number(cn.id), invoiceId: Number(cn.invoiceId), collected, newCollected, delivered, fee, remaining, feeCollection: String(cn.feeCollection ?? "SHOP") });
+      work.push({
+        id: Number(cn.id),
+        invoiceId: Number(cn.invoiceId),
+        collected,
+        invoiceCredit,
+        newCollected,
+        delivered,
+        fee,
+        remaining,
+        feeCollection: String(cn.feeCollection ?? "SHOP"),
+        fromMoneyStatus: cn.moneyStatus,
+      });
       collectedTotal = collectedTotal.plus(collected);
       feesTotal = feesTotal.plus(fee);
       expectedTotal = expectedTotal.plus(remaining);
@@ -153,6 +178,13 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
     }
     collectedTotal = round2(collectedTotal);
     feesTotal = round2(feesTotal);
+    const custodyBalance = round2(money(party.currentBalance));
+    if (collectedTotal.gt(custodyBalance)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `مبلغ التوريد (${collectedTotal.toFixed(2)}) يتجاوز النقد المثبت بذمة الجهة (${custodyBalance.toFixed(2)}). شغّل المطابقة المالية قبل المتابعة.`,
+      });
+    }
     const netRemitted = round2(collectedTotal.minus(feesTotal));
     const countedCash = round2(money(input.countedCash));
     if (countedCash.lt(0)) {
@@ -164,8 +196,10 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
         message: `النقد المعدود (${countedCash.toFixed(2)}) لا يطابق صافي التوريد المتوقع (${netRemitted.toFixed(2)}). راجع مبالغ الإرساليات والأجور قبل التأكيد.`,
       });
     }
-    const shortfallTotal = round2(round2(expectedTotal).minus(collectedTotal)); // عجز يبقى عهدة (D4)
-    const status: "BALANCED" | "SHORT" | "OVER" = shortfallTotal.gt("0.01") ? "SHORT" : shortfallTotal.lt("-0.01") ? "OVER" : "BALANCED";
+    // A partial allocation is not a cash shortage. Remaining COD is derived
+    // from immutable allocation lines, not accumulated as historical deficit.
+    const shortfallTotal = new Decimal(0);
+    const status: "BALANCED" | "SHORT" | "OVER" = "BALANCED";
 
     // درج المُستلِم (RECEPTION افتراضياً): صافي النقد (collected − fee) يدخله فعلياً.
     const { shiftId, cashBucket } = await shiftIdForCashTx(tx, { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role }, input.branchId, "توريد مندوب", input.shiftType ?? "RECEPTION");
@@ -212,30 +246,60 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       await tx.update(deliveryConsignments).set({
         collectedAmount: toDbMoney(w.newCollected),
         status: newStatus,
+        moneyStatus: w.delivered ? "SETTLED" : "PARTIAL",
         remittanceId,
         settledAt: w.delivered ? new Date() : null,
       }).where(eq(deliveryConsignments.id, w.id));
 
+      await tx.insert(deliveryRemittanceLines).values({
+        remittanceId,
+        consignmentId: w.id,
+        grossApplied: toDbMoney(w.collected),
+        feeOffset: "0.00",
+        cashReceived: toDbMoney(w.collected),
+        writtenOffAmount: "0.00",
+      });
+      await appendDeliveryLedgerEntry(tx, {
+        eventKey: `CN:${w.id}:REMIT:${remittanceId}`,
+        partyId: input.partyId,
+        consignmentId: w.id,
+        remittanceId,
+        branchId: input.branchId,
+        entryType: "COD_REMITTED",
+        amount: toDbMoney(w.collected),
+        actorUserId: actor.userId,
+      });
+      await appendDeliveryEvent(tx, {
+        eventKey: `CN:${w.id}:MONEY:${remittanceId}`,
+        consignmentId: w.id,
+        eventType: w.delivered ? "MONEY_SETTLED" : "MONEY_PARTIAL",
+        fromMoneyStatus: w.fromMoneyStatus,
+        toMoneyStatus: w.delivered ? "SETTLED" : "PARTIAL",
+        actorUserId: actor.userId,
+        payload: { remittanceId, grossApplied: toDbMoney(w.collected) },
+      });
+
       if (w.collected.gt(0)) {
-        const inv = (await tx.select({ total: invoices.total, paidAmount: invoices.paidAmount, customerId: invoices.customerId }).from(invoices).where(eq(invoices.id, w.invoiceId)).limit(1))[0];
+        const inv = (await tx.select({ total: invoices.total, paidAmount: invoices.paidAmount, returnedTotal: invoices.returnedTotal, customerId: invoices.customerId }).from(invoices).where(eq(invoices.id, w.invoiceId)).limit(1))[0];
         // تسوية الفاتورة بالـCOD المُحصَّل كاملاً (PAYMENT_IN) — يربط إيصال IN الدفعة.
-        await postEntry(tx, {
+        if (w.invoiceCredit.gt(0)) await postEntry(tx, {
           // dedupeKey بنيويّ (٩/٨): كان القيد الوحيد في مسارات التوصيل بلا مفتاح — محميّاً بمظلّة
           // idempotency التوريد وحدها؛ المفتاح يجعله محصَّناً بذاته كسائر قيود المنظومة.
           entryType: "PAYMENT_IN", dedupeKey: `PAYMENT_IN:REMIT:${w.id}:${remittanceId}`,
           branchId: input.branchId, invoiceId: w.invoiceId, receiptId: receiptInId,
           customerId: inv?.customerId != null ? Number(inv.customerId) : null,
-          amount: w.collected, notes: `توريد ${remittanceNumber}`,
+          amount: w.invoiceCredit, notes: `تسوية فاتورة قديمة ضمن ${remittanceNumber}`,
         });
-        if (inv) {
-          const newPaid = round2(money(inv.paidAmount).plus(w.collected));
-          await tx.update(invoices).set({ paidAmount: toDbMoney(newPaid), status: computeInvoiceStatus(String(inv.total), toDbMoney(newPaid)), paymentDate: new Date() }).where(eq(invoices.id, w.invoiceId));
+        if (inv && w.invoiceCredit.gt(0)) {
+          const newPaid = round2(money(inv.paidAmount).plus(w.invoiceCredit));
+          await tx.update(invoices).set({ paidAmount: toDbMoney(newPaid), status: computeInvoiceStatus(String(inv.total), toDbMoney(newPaid), String(inv.returnedTotal ?? "0")), paymentDate: new Date() }).where(eq(invoices.id, w.invoiceId));
           // ش٠ (٥/٨، V14): فاتورةٌ آجلة **بعميلٍ مسجَّل** أُسندت للتوصيل (dispatchInvoice يُبقي
           // customerId) — سدّد الزبون للمندوب فذمّته تنخفض بما حُصِّل، مرآةً حرفيةً لمسار المتجر
           // (courier.ts). كان التوريد يرفع paidAmount ولا يمسّ currentBalance إطلاقاً ⇒ ذمّةٌ
-          // لا تُغلق أبداً وكشفٌ يطالب من سدّد. (فواتير أوامر الشغل customerId=NULL عمداً ⇒ لا أثر.)
+          // لا تُغلق أبداً وكشفٌ يطالب من سدّد. وينطبق الآن أيضاً على فواتير أوامر الشغل
+          // المرسلة التي بقيت منسوبةً إلى عميلها بدلاً من قطع سلسلة الذمم.
           if (inv.customerId != null) {
-            await adjustCustomerBalance(tx, Number(inv.customerId), w.collected.neg());
+            await adjustCustomerBalance(tx, Number(inv.customerId), w.invoiceCredit.neg());
           }
         }
         // خفض العهدة بالـCOD المُحصَّل كاملاً (الأجرة netting لا تَمسّ العهدة).

@@ -391,6 +391,7 @@ export function ReceptionInvoiceQueue({
               recipientName: args.recipientName,
               recipientPhone: args.recipientPhone,
               deliveryAddress: args.deliveryAddress,
+              assignedUserId: args.assignedUserId,
               clientRequestId: `dispinv-${dispatchTarget.id}-${Date.now()}`,
             })
           }
@@ -601,6 +602,7 @@ function InvoiceDispatchDialog({
     recipientName?: string;
     recipientPhone?: string;
     deliveryAddress?: string;
+    assignedUserId?: number;
   }) => void;
 }) {
   const [partyId, setPartyId] = useState("");
@@ -610,6 +612,7 @@ function InvoiceDispatchDialog({
   const [name, setName] = useState(row.customerName ?? row.contactName ?? "");
   const [phone, setPhone] = useState(row.customerPhone ?? row.contactPhone ?? row.deliveryPhone ?? "");
   const [address, setAddress] = useState(row.deliveryAddress ?? "");
+  const [assignedUserId, setAssignedUserId] = useState("");
   const remaining = useMemo(
     () => round2(D(row.total).minus(D(row.paidAmount ?? 0)).minus(D(row.returnedTotal ?? 0))).toNumber(),
     [row],
@@ -627,6 +630,7 @@ function InvoiceDispatchDialog({
             value={partyId}
             onValueChange={(v) => {
               setPartyId(v);
+              setAssignedUserId("");
               const p = parties.find((x) => String(x.id) === v);
               if (p) setFee(p.defaultFee ?? "0");
             }}
@@ -639,6 +643,18 @@ function InvoiceDispatchDialog({
             ))}
           </AppSelect>
         </div>
+
+        {party?.partyType === "COMPANY" && (party.drivers?.length ?? 0) > 0 && (
+          <div className="space-y-1">
+            <Label className="text-[11px]">السائق داخل الشركة</Label>
+            <AppSelect value={assignedUserId} onValueChange={setAssignedUserId} aria-label="السائق داخل الشركة">
+              <option value="">طابور الشركة — يطالب به أول سائق</option>
+              {party.drivers?.map((driver) => (
+                <option key={driver.userId} value={driver.userId}>{driver.name}</option>
+              ))}
+            </AppSelect>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
@@ -701,6 +717,7 @@ function InvoiceDispatchDialog({
                 recipientName: name.trim() || undefined,
                 recipientPhone: phone.trim() || undefined,
                 deliveryAddress: address.trim() || undefined,
+                assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
               });
             }}
           >

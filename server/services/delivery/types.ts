@@ -7,6 +7,6 @@ export type DeliveryTxActor = { userId: number; branchId?: number | null; role?:
 
 /** الفاعل خفيف: branchId اختياري/فارغ (admin بلا فرع) بخلاف Actor الصارم.
  *  تصدير داخلي للحزمة فقط (يستهلكه parties) — لا يُعاد تصديره من البرميل. */
-export type DeliveryActor = { userId: number; branchId?: number | null };
+export type DeliveryActor = { userId: number; branchId?: number | null; role?: string };
 
 export type DeliveryPartyKind = "INDIVIDUAL" | "COMPANY";
