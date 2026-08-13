@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 const UPDATE_CHECK_TIMEOUT_MS = 8_000;
-const UPDATE_ACTIVATION_TIMEOUT_MS = 45_000;
+const UPDATE_ACTIVATION_TIMEOUT_MS = 12_000;
 const RELOAD_MARKER_KEY = "alroya.pwa-update.reload-requested";
 const RELOAD_MARKER_MAX_AGE_MS = 2 * 60 * 1_000;
 
@@ -288,7 +288,7 @@ export function PwaUpdateManager() {
         return;
       }
 
-      console.warn("[pwa] activation did not complete", {
+      console.warn("[pwa] activation not confirmed in poll window", {
         status: activation.status,
         attempts: activation.attempts,
         acknowledged: activation.acknowledged,
@@ -297,19 +297,17 @@ export function PwaUpdateManager() {
         activeState: current?.active?.state,
       });
 
-      if (activation.status === "timeout") {
-        toast.error(
-          "استغرق تفعيل التحديث أطول من المتوقع. بقي عملك والصفحة آمنين؛ حاول مرة أخرى.",
-        );
-      } else if (current?.waiting) {
-        toast.error(
-          "تغيّرت حزمة التحديث أثناء التفعيل؛ أعد المحاولة لتثبيت الأحدث.",
-        );
-      } else {
-        toast.error(
-          "لم يكتمل التفعيل. لم تُعد الصفحة ولم يُفقد عملك؛ أعد المحاولة.",
-        );
+      // skipWaiting أُرسل فعلاً للعامل المنتظر. بدل حبس الموظّف خلف خطأ «استغرق أطول من المتوقع»
+      // (كثيراً ما يكتمل التفعيل بُعيد نافذة الاستطلاع على WebViews التي تُجمّد العامل)، نُعيد فتح
+      // الصفحة: التنقّل الجديد يتبنّى العامل المُفعَّل، وفحص ما بعد إعادة الفتح (RELOAD_MARKER) يُبلّغ
+      // بصدق إن لم تُطبَّق النسخة فعلاً. العمل حُفظ محلياً أعلاه، فإعادة الفتح آمنة بلا فقد.
+      if (activation.status === "timeout" || current?.waiting) {
+        reopenWithVerifiedUpdate();
+        return;
       }
+
+      // لا عامل منتظر ولم يُفعَّل (نادر: اختفى أو فشل التثبيت) — رسالة صادقة بلا حبس الموظّف.
+      toast.error("لم يكتمل التفعيل ولم يُفقد عملك؛ أعد المحاولة.");
     } catch (error) {
       console.warn("[pwa] update application failed", error);
       toast.error("تعذّر تطبيق التحديث الآن؛ يمكنك متابعة عملك بأمان.");
@@ -350,8 +348,14 @@ export function PwaUpdateManager() {
               className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted"
               aria-hidden
             >
-              <div className="h-full w-1/2 rounded-full bg-primary motion-safe:animate-pulse" />
+              {/* شريط غير محدَّد صادق: قطعة تنزلق عرضياً = «جارٍ العمل»، لا نسبةً ثابتةً مضلِّلة. */}
+              <div className="pwa-update-bar h-full w-1/3 rounded-full bg-primary" />
             </div>
+            <style>{`
+              @keyframes pwaUpdateSlide { 0% { transform: translateX(-130%); } 100% { transform: translateX(400%); } }
+              .pwa-update-bar { animation: pwaUpdateSlide 1.15s ease-in-out infinite; }
+              @media (prefers-reduced-motion: reduce) { .pwa-update-bar { animation: none; width: 100%; } }
+            `}</style>
           </div>
         </div>
       )}
