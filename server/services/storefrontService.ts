@@ -12,7 +12,6 @@
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   branchStock,
-  branches,
   bundleComponents,
   categories,
   invoiceItems,
@@ -30,6 +29,7 @@ import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
 import { getProductCategoryIds, resolvePromotionForLine } from "./salesPromotionService";
 import { resolveColorHex, normalizeHex } from "@shared/colorBank";
+import { requireActiveBranch, requireStorefrontContext } from "./storefrontContextService";
 import {
   evaluateStorefrontUnitEligibility,
   storefrontAvailableCondition,
@@ -45,17 +45,12 @@ function todayYmdBaghdad(): string {
 }
 
 /**
- * فرع تسليم المتجر الافتراضي = الفرع الرئيسي (MAIN) — يُحلّ ديناميكياً لا يُثبَّت بـ1 (معرّفات
- * الفروع تختلف بين البيئات). لا كاش (احترام عزل الشركات في تعدّد الشركات). explicit يفوز.
+ * فرع المتجر يُقرأ من مرجع تشغيلي صريح. المعامل explicit موجود فقط لمسارات إدارية عامة
+ * تحتاج فرعاً بعينه، ويُتحقق من وجوده وتفعيله؛ لا fallback إلى MAIN/أول فرع/الرقم 1.
  */
 export async function resolveStorefrontBranchId(explicit?: number | null): Promise<number> {
-  if (explicit != null && explicit > 0) return explicit;
-  const db = getDb();
-  if (!db) return 1;
-  const byCode = (await db.select({ id: branches.id }).from(branches).where(eq(branches.code, "MAIN")).limit(1))[0];
-  if (byCode) return Number(byCode.id);
-  const first = (await db.select({ id: branches.id }).from(branches).orderBy(asc(branches.id)).limit(1))[0];
-  return first ? Number(first.id) : 1;
+  if (explicit != null) return requireActiveBranch(explicit);
+  return (await requireStorefrontContext()).branchId;
 }
 
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون ولا أسعار جملة/حكومي. */

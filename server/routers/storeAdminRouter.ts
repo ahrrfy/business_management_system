@@ -207,6 +207,7 @@ const settingsRouter = router({
     .input(
       z.object({
         isOpen: z.boolean().optional(),
+        fulfillmentBranchId: z.number().int().positive().nullable().optional(),
         announcement: z.string().max(500).nullish(),
         whatsappNumber: z.string().max(20).nullish(),
         freeShippingThreshold: z.string().regex(/^\d+(\.\d{1,2})?$/, "قيمة غير صحيحة").nullish(),
@@ -288,10 +289,10 @@ const catalogRouter = router({
       limit: z.number().int().positive().max(200).default(50),
       offset: z.number().int().min(0).default(0),
     }))
-    .query(async ({ input, ctx }) => {
-      // تدقيق ٣/٨: عزل الفرع أولاً — scopedBranchId (فرع المستخدم لغير المرتفع، null لـadmin/manager)
-      // يسبق input.branchId، وإلا تجاوز غير المرتفع عزله فقرأ مخزون فرع آخر. المرتفع يسقط لـinput.branchId.
-      const branchId = await resolveStorefrontBranchId(ctx.scopedBranchId ?? input.branchId ?? undefined);
+    .query(async ({ input }) => {
+      // لوحة المتجر والواجهة العامة تقرآن المرجع التشغيلي نفسه حتماً؛ فرع حساب المدير
+      // أو branchId قديم في عميل مخزّن لا يغيّران حقيقة الكتالوج العام.
+      const branchId = await resolveStorefrontBranchId(undefined);
       return listStoreCatalog({ ...input, branchId });
     }),
   setFeatured: storeManagerProcedure
@@ -311,7 +312,7 @@ const catalogRouter = router({
   setStock: storeManagerProcedure
     .input(z.object({ variantId: z.number().int().positive(), branchId: z.number().int().positive().nullish(), targetQuantity: z.number().int().min(0), notes: z.string().max(200).optional() }))
     .mutation(async ({ input, ctx }) => {
-      const branchId = await resolveStorefrontBranchId(input.branchId ?? undefined);
+      const branchId = await resolveStorefrontBranchId(undefined);
       // فصل مهام #٦: يُنشئ طلب تسوية معلَّقاً يعتمده مديرٌ آخر (بدل ضبطٍ فوريّ بفاعلٍ واحد).
       const r = await setStoreProductStock({ variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, createdBy: ctx.user.id, role: ctx.user.role, notes: input.notes });
       await logAudit(ctx, { action: "store.catalog.stockRequest", entityType: "stockAdjustmentRequest", entityId: r.requestId, newValue: { branchId, target: input.targetQuantity } });

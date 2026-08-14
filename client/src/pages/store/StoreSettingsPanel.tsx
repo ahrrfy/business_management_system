@@ -3,7 +3,7 @@
  * فتح/إغلاق المتجر (يوقف الطلب مؤقتاً)، شريط إعلان أعلى المتجر، رقم واتساب.
  */
 import { useEffect, useState } from "react";
-import { Loader2, Megaphone, Phone, Power, Save, Truck } from "lucide-react";
+import { Building2, Loader2, Megaphone, Phone, Power, Save, Truck, TriangleAlert } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
@@ -12,11 +12,19 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 export default function StoreSettingsPanel() {
   const utils = trpc.useUtils();
   const q = trpc.storeAdmin.settings.get.useQuery();
-  const [form, setForm] = useState({ isOpen: true, announcement: "", whatsappNumber: "", freeShippingThreshold: "" });
+  const branchesQ = trpc.branches.list.useQuery();
+  const [form, setForm] = useState({
+    isOpen: false,
+    fulfillmentBranchId: null as number | null,
+    announcement: "",
+    whatsappNumber: "",
+    freeShippingThreshold: "",
+  });
 
   useEffect(() => {
     if (q.data) setForm({
       isOpen: q.data.isOpen,
+      fulfillmentBranchId: q.data.fulfillmentBranchId,
       announcement: q.data.announcement ?? "",
       whatsappNumber: q.data.whatsappNumber ?? "",
       freeShippingThreshold: q.data.freeShippingThreshold ? String(Number(q.data.freeShippingThreshold)) : "",
@@ -35,6 +43,36 @@ export default function StoreSettingsPanel() {
     <div className="max-w-xl space-y-4">
       <h2 className="text-lg font-bold">إعدادات المتجر</h2>
 
+      <label className="block text-sm">
+        <span className="mb-1 flex items-center gap-1.5 font-medium text-muted-foreground">
+          <Building2 aria-hidden className="size-4" /> فرع تسليم المتجر
+        </span>
+        <select
+          value={form.fulfillmentBranchId ?? ""}
+          onChange={(event) => setForm({
+            ...form,
+            fulfillmentBranchId: event.target.value ? Number(event.target.value) : null,
+          })}
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30"
+          aria-label="فرع تسليم المتجر"
+        >
+          <option value="">اختر فرعاً نشطاً</option>
+          {(branchesQ.data ?? []).map((branch) => (
+            <option key={branch.id} value={branch.id}>{branch.name} — {branch.code}</option>
+          ))}
+        </select>
+        <span className="mt-1 block text-xs text-muted-foreground">
+          هذا الفرع هو مصدر المخزون الوحيد للمتجر العام والطلبات ولوحة الكتالوج.
+        </span>
+      </label>
+
+      {!form.fulfillmentBranchId && (
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]">
+          <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>يبقى المتجر مغلقاً حتى تعيين فرع تسليم يحوي منتجاً جاهزاً للبيع.</span>
+        </div>
+      )}
+
       <div className="flex items-center justify-between rounded-2xl border border-border bg-card p-4">
         <div className="flex items-center gap-3">
           <span className={`flex size-10 items-center justify-center rounded-xl ${form.isOpen ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400" : "bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400"}`}>
@@ -47,6 +85,7 @@ export default function StoreSettingsPanel() {
         </div>
         <button
           onClick={() => setForm({ ...form, isOpen: !form.isOpen })}
+          disabled={!form.fulfillmentBranchId}
           className={`relative h-7 w-12 rounded-full transition ${form.isOpen ? "bg-emerald-500" : "bg-muted-foreground/40"}`}
           aria-label="فتح/إغلاق المتجر"
         >
@@ -70,7 +109,7 @@ export default function StoreSettingsPanel() {
         <span className="mt-1 block text-xs text-muted-foreground">إن بلغ طلب الزبون هذا المبلغ ⇒ توصيل مجاني (يرفع متوسط قيمة الطلب).</span>
       </label>
 
-      <button onClick={() => m.mutate({ isOpen: form.isOpen, announcement: form.announcement || null, whatsappNumber: form.whatsappNumber || null, freeShippingThreshold: form.freeShippingThreshold ? String(Number(form.freeShippingThreshold)) : null })} disabled={m.isPending} className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
+      <button onClick={() => m.mutate({ fulfillmentBranchId: form.fulfillmentBranchId, isOpen: form.isOpen, announcement: form.announcement || null, whatsappNumber: form.whatsappNumber || null, freeShippingThreshold: form.freeShippingThreshold ? String(Number(form.freeShippingThreshold)) : null })} disabled={m.isPending} className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
         {m.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />} حفظ الإعدادات
       </button>
     </div>

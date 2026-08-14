@@ -23,6 +23,7 @@ import {
   productUnits,
   productVariants,
   products,
+  storeSettings as storeSettingsTable,
 } from "../../drizzle/schema";
 import { deliveryFeeFor, governorateById } from "@shared/governorates";
 import { getDb } from "../db";
@@ -30,8 +31,7 @@ import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
 import { resolvePromotionForLine } from "./salesPromotionService";
-import { resolveStorefrontBranchId } from "./storefrontService";
-import { getStoreSettings } from "./storeAdmin/storeSettingsService";
+import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
 import { verifyOnlineOrderLabelToken } from "./barcodeService";
 
@@ -107,14 +107,18 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
   const requestedShippingAddress = input.notes && input.notes.trim()
     ? `${address}\nملاحظة: ${input.notes.trim()}`
     : address;
-  // المتجر مغلق مؤقتاً (إعداد الموظف) ⇒ لا يُقبل طلب (إنفاذ خادمي فوق حجب الواجهة).
-  const storeSettings = await getStoreSettings();
-  if (!storeSettings.isOpen) throw new TRPCError({ code: "BAD_REQUEST", message: "المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً" });
-  // A public order always targets the store branch configured by the business.
-  // Never let a caller route an order to an arbitrary branch through the public API.
-  const branchId = await resolveStorefrontBranchId();
-
   return withTx(async (tx) => {
+    // نقفل صف الإعداد ثم صف الفرع داخل معاملة الطلب نفسها. تغيير فرع التسليم/إغلاق المتجر
+    // المتزامن لا يمكن أن ينتج طلباً على سياق قديم أو فرع معطّل.
+    const storefrontContext = await requireStorefrontContext(tx, { requireOpen: true, lock: true });
+    const branchId = storefrontContext.branchId;
+    const storeSettings = (
+      await tx
+        .select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
+        .from(storeSettingsTable)
+        .where(eq(storeSettingsTable.id, 1))
+        .limit(1)
+    )[0];
     // ① idempotency: أعِد الطلب نفسه إن تكرّر المفتاح (بلا إنشاء ثانٍ).
     if (input.clientRequestId) {
       const existing = (
@@ -246,6 +250,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
         lineAmount: retail.toFixed(2),
         hasContractPrice: false,
         todayYmd,
+        includeStoreManaged: true,
       });
       const discount = promo ? money(promo.discountForUnit) : money(0);
       const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
@@ -270,7 +275,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     const subtotal = round2(sumMoney(items.map((i) => i.lineTotal)));
     let deliveryFee = round2(deliveryFeeFor(input.governorate));
     // توصيل مجاني (AOV): إن بلغ المجموع الفرعي عتبة الإعدادات ⇒ الأجرة صفر (إنفاذ خادمي).
-    const freeThreshold = storeSettings.freeShippingThreshold ? money(storeSettings.freeShippingThreshold) : null;
+    const freeThreshold = storeSettings?.freeShippingThreshold ? money(storeSettings.freeShippingThreshold) : null;
     if (freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold)) deliveryFee = round2(money(0));
     const total = round2(subtotal.plus(deliveryFee));
 

@@ -16,7 +16,7 @@ import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontPr
 import { createOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
 import { retryOnDup } from "../lib/retryDup";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
-import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
+import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
 import { recordStoreConversionMetric } from "../services/storeAdmin/storeConversionMetricsService";
 
@@ -66,7 +66,7 @@ export const storefrontRouter = router({
     .mutation(({ input }) => recordStoreConversionMetric(input)),
 
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
-  settings: publicProcedure.query(() => getStoreSettings()),
+  settings: publicProcedure.query(() => getPublicStoreSettings()),
 
   /** كتالوج المتجر: فلترة فئة + بحث نصّي + سقف. يعيد التوفّر وسعر العرض. */
   catalog: publicProcedure

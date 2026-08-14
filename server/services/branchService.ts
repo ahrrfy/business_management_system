@@ -11,7 +11,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, ne, sql } from "drizzle-orm";
-import { branches, branchStock } from "../../drizzle/schema";
+import { branches, branchStock, storeSettings } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { withTx, type Actor } from "./tx";
@@ -134,20 +134,32 @@ export async function updateBranch(
  */
 export async function setBranchActive(id: number, isActive: boolean, _actor: Actor) {
   return withTx(async (tx) => {
-    const b = (await tx.select().from(branches).where(eq(branches.id, id)).for("update").limit(1))[0];
+    // ترتيب القفل موحّد مع تحديث إعدادات المتجر/إنشاء الطلب: settings ثم branches.
+    // قفل كل الفروع النشطة/المعطلة يَسلسل تعطيل فرعين متزامنين، لا صف الهدف وحده.
+    const storefront = (
+      await tx
+        .select({ fulfillmentBranchId: storeSettings.fulfillmentBranchId })
+        .from(storeSettings)
+        .where(eq(storeSettings.id, 1))
+        .for("update")
+        .limit(1)
+    )[0];
+    const lockedBranches = await tx.select().from(branches).orderBy(asc(branches.id)).for("update");
+    const b = lockedBranches.find((branch) => Number(branch.id) === id);
     if (!b) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود." });
     const currentlyActive = b.isActive == null ? true : !!b.isActive;
     if (currentlyActive === isActive) return { id, isActive };
 
     if (!isActive) {
-      const others = Number(
-        (
-          await tx
-            .select({ n: sql<number>`COUNT(*)` })
-            .from(branches)
-            .where(and(eq(branches.isActive, true), ne(branches.id, id)))
-        )[0]?.n ?? 0,
-      );
+      if (Number(storefront?.fulfillmentBranchId ?? 0) === id) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "لا يمكن تعطيل فرع تسليم المتجر — أغلق المتجر وعيّن فرع تسليم آخر أولاً.",
+        });
+      }
+      const others = lockedBranches.filter(
+        (branch) => Number(branch.id) !== id && branch.isActive === true,
+      ).length;
       if (others === 0) {
         throw new TRPCError({
           code: "BAD_REQUEST",

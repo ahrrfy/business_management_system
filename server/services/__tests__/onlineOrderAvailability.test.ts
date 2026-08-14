@@ -33,6 +33,7 @@ beforeEach(async () => {
     { variantId: 1, branchId: 1, quantity: 3 },
     { variantId: 1, branchId: 2, quantity: 100 },
   ]);
+  await d.insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1, isOpen: true });
 });
 
 describe("createOnlineOrder availability guards", () => {
@@ -53,10 +54,18 @@ describe("createOnlineOrder availability guards", () => {
     await expect(createOnlineOrder({ ...baseOrder, lines: [{ productUnitId: 1, quantity: 1 }] })).rejects.toThrow();
   });
 
-  it("ignores a caller-supplied branch and always stores the order on MAIN", async () => {
+  it("ignores a caller-supplied branch and always stores the order on the configured fulfillment branch", async () => {
     const created = await createOnlineOrder({ ...baseOrder, branchId: 2, lines: [{ productUnitId: 1, quantity: 1 }] });
     const order = (await db().select({ branchId: s.onlineOrders.branchId }).from(s.onlineOrders).where(eq(s.onlineOrders.id, created.orderId)))[0];
     expect(order?.branchId).toBe(1);
+  });
+
+  it("uses a non-MAIN configured fulfillment branch for availability and persistence", async () => {
+    await db().update(s.storeSettings).set({ fulfillmentBranchId: 2 }).where(eq(s.storeSettings.id, 1));
+    const created = await createOnlineOrder({ ...baseOrder, branchId: 1, lines: [{ productUnitId: 1, quantity: 50 }] });
+    expect(created.branchId).toBe(2);
+    const order = (await db().select().from(s.onlineOrders).where(eq(s.onlineOrders.id, created.orderId)))[0];
+    expect(order?.branchId).toBe(2);
   });
 
   it("replays only an identical order key and rejects a collision or altered cart", async () => {
