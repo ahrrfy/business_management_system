@@ -65,7 +65,7 @@ export interface RawRemediationExpense {
   amount: string;
   paymentMethod: string;
   cashBucket: "DRAWER" | "TREASURY" | null;
-  status: "ACTIVE" | "CANCELLED";
+  status: "PENDING_APPROVAL" | "ACTIVE" | "REJECTED" | "CANCELLED";
   category: string;
   description: string | null;
   referenceNumber: string | null;

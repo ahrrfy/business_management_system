@@ -2376,7 +2376,9 @@ export const expenses = mysqlTable(
     receiptId: bigint("receiptId", { mode: "number" }).references(
       () => receipts.id,
     ),
-    status: mysqlEnum("expenseStatus", ["ACTIVE", "CANCELLED"])
+    // دورة المصروف المالي: الكبير/غير النثري يُنشأ بلا أثر ثم يفعّله اعتماد المالك.
+    // ACTIVE وحدها تعني أن الإيصال والقيد ومصدر الدفع نُفّذت فعلاً.
+    status: mysqlEnum("expenseStatus", ["PENDING_APPROVAL", "ACTIVE", "REJECTED", "CANCELLED"])
       .default("ACTIVE")
       .notNull(),
     createdBy: int("createdBy").references(() => users.id),
