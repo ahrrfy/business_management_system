@@ -129,7 +129,7 @@ jobs:
           # positive verification marker instead of treating the expected trust warning as damage.
           jarsigner -verify -verbose -certs "$aab" > "$RUNNER_TEMP/aab-signature.txt"
           grep -Fq 'jar verified.' "$RUNNER_TEMP/aab-signature.txt"
-          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='6' versionName='1.0.0'"
+          "$aapt_path" dump badging "$apk" | grep -Fq "package: name='online.alarabiya.store' versionCode='7' versionName='1.0.0'"
           unzip -p "$apk" 'classes*.dex' > "$RUNNER_TEMP/native-classes.dex"
           grep -aFq 'https://srv1548487.hstgr.cloud' "$RUNNER_TEMP/native-classes.dex"
           actual="$("$apksigner_path" verify --print-certs "$apk" | sed -n 's/.*certificate SHA-256 digest: //p' | head -n 1 | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')"
