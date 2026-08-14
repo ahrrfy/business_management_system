@@ -11,6 +11,7 @@ import {
   myAnnouncements,
   setAnnouncementActive,
 } from "../announcementService";
+import type { NormalizedNativePushPayload } from "../nativePushService";
 
 function db() {
   const value = getDb();
@@ -75,8 +76,9 @@ describe("announcementService", () => {
     const d = db();
     await createAnnouncement({ title: "اجتماع سرّي", body: "تفاصيل داخليّة", audienceType: "ALL" }, 10);
     const [push] = await d.select().from(nativePushOutbox).where(eq(nativePushOutbox.userId, 11));
-    const payload = push.payload as { sensitive: boolean; title: string; body: string };
-    expect(payload.sensitive).toBe(true);
+    // حمولات FCM نصّية ⇒ العَلَم يُسلسَل نصّاً "true" لا boolean.
+    const payload = push.payload as NormalizedNativePushPayload;
+    expect(payload.sensitive).toBe("true");
     expect(payload.title).toBe("تحديث آمن");
     expect(payload.body).toBe("افتح سوبر العربية لعرض التفاصيل.");
     // النصّ الأصليّ لا يُسرَّب في حمولة الدفع (شاشة القفل تعرض النصّ الآمن فقط).
