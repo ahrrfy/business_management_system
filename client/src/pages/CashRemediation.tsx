@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, FileDown, FlaskConical, Printer, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,12 +55,6 @@ const SIMULATION_OPTIONS: RemediationClassification[] = [
 
 const selectClass =
   "h-9 rounded-md border border-input bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-type DryRunClient = {
-  cashRemediation: {
-    dryRun: { query(input: CashRemediationFilters): Promise<CashRemediationReport> };
-  };
-};
 
 export type CashRemediationExportRow = {
   shift: string;
@@ -238,11 +231,7 @@ export default function CashRemediation() {
     setSelectionScope(null);
     setSubmitted(null);
   }, [currentScope]);
-  const utils = trpc.useUtils();
-  const dryRunClient = utils.client as unknown as DryRunClient;
-  const reportQuery = useQuery({
-    queryKey: ["cash-remediation-dry-run", submitted],
-    queryFn: () => dryRunClient.cashRemediation.dryRun.query(submitted!),
+  const reportQuery = trpc.cashRemediation.dryRun.useQuery(submitted!, {
     enabled: submitted != null,
   });
 

@@ -118,6 +118,7 @@ const SECTIONS: Section[] = [
     items: [
       { title: "ملخّص الصندوق اليومي", desc: "قبض/صرف + توزيع طرق الدفع + فروقات الورديات", href: "/reports/treasury", icon: Calculator, gate: "manager", status: "ready" },
       { title: "مطابقة إقفال اليوم", desc: "المتوقَّع مقابل المعدود مقابل الفرق — لكل وردية وفرع", href: "/reports/day-close", icon: Scale, gate: "manager", status: "ready" },
+      { title: "تدقيق السالب التاريخي", desc: "محاكاة قراءة فقط لنقطة نشوء السالب وتصنيف كل خروج قبل أي معالجة محاسبية", href: "/reports/cash-remediation", icon: SearchCheck, gate: "manager", status: "ready" },
       { title: "تقرير المصروفات", desc: "بالفئة/جهة الصرف/الفترة", href: "/reports/expenses", icon: Receipt, gate: "manager", status: "ready" },
       { title: "المصروفات اليومية", desc: "سجلّ المصروفات وإدخالها", href: "/expenses", icon: Banknote, gate: "all", status: "ready" },
       { title: "سندات القبض والصرف", desc: "سجلّ السندات المستقلّة", href: "/vouchers", icon: Receipt, gate: "all", status: "ready" },
