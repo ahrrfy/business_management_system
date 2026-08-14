@@ -15,7 +15,7 @@
 
 ## الحالة — ✅ الخطة مكتملة التنفيذ حيّاً (٢٠/٧/٢٠٢٦)
 
-- [x] ملفات nginx جاهزة في المستودع (`deploy/nginx-ratelimit.conf` + `deploy/nginx-cloudflare-realip.conf` + تحديث `deploy/nginx-erp.conf`) — ٢٠/٧/٢٠٢٦
+- [x] ملفات nginx جاهزة ومشتركة للمضيفين في المستودع (`nginx-ratelimit` + `nginx-cloudflare-realip` + `nginx-proxy-common` + `nginx-app-locations` + قالبَي الموقع) — ١٥/٨/٢٠٢٦
 - [x] الجزء ب: طبقة nginx مطبَّقة على الخادم (الأنطقة + realip + كتلتا 443 للموقعين، نسخ احتياطية `*.bak-20260720`) — **429 مُثبَتة بالقياس: ١٠٦ رفض من دفعة ٢٠٠**
 - [x] الجزء أ: Cloudflare فعّال على `alarabiya.online` (حساب المالك، خطة Free): A@+www مستوردان Proxied، nameservers بُدّلت في hPanel إلى `lara`+`seamus.ns.cloudflare.com`، SSL **Full (strict)** + Always Use HTTPS + Bot Fight Mode + HTTP/3، **Rocket Loader مطفأ** (CSP)
 - [x] الجزء ج: التحقق الثلاثي نجح — `CF-RAY ...-BGW` (حافة بغداد) + store/login/team=200 + **realip مُثبَت**: طلب عبر CF ظهر في access.log بالـIP الحقيقي لا بعناوين الحافة
@@ -82,45 +82,36 @@ nginx -V 2>&1 | grep -o with-http_realip_module   # يجب أن يطبع اسم 
 sudo mkdir -p /etc/nginx/snippets
 sudo cp deploy/nginx-cloudflare-realip.conf /etc/nginx/snippets/alroya-cloudflare-realip.conf
 
-# 3) حدّد ملفَي الموقعَين الحيَّين (اسم ملف موقع المتجر قد يختلف):
-grep -rln "srv1548487.hstgr.cloud" /etc/nginx/sites-enabled/
-grep -rln "alarabiya.online"       /etc/nginx/sites-enabled/
-```
+# 3) ثبّت عقد proxy وlocations المشتركين. هذا يلغي النسختين اليدويتين اللتين قد تنجرف إحداهما:
+sudo cp deploy/nginx-proxy-common.conf  /etc/nginx/snippets/alroya-proxy-common.conf
+sudo cp deploy/nginx-app-locations.conf /etc/nginx/snippets/alroya-app-locations.conf
 
-**٤) عدّل كل كتلة `server` تخدم 443 في الملفَين** (كتل التحويل 80←443 لا تحتاج شيئاً)،
-وأضف بعد سطر `server_name` مباشرة:
+# 4) أنشئ ملف السر الحي الواحد بصلاحية root فقط، ثم أدخل قيمة INTERNAL_PROXY_SECRET عبر sudoedit.
+# الشكل البنيوي في nginx-proxy-secret.conf.example؛ لا تنسخ CHANGE_ME ولا تطبع القيمة.
+sudo install -o root -g root -m 600 /dev/null /etc/nginx/snippets/alroya-proxy-secret.conf
+sudoedit /etc/nginx/snippets/alroya-proxy-secret.conf
 
-```nginx
-    # --- حماية alroya: realip خلف Cloudflare + حدود معدّل (docs/cloudflare-plan.md) ---
-    include snippets/alroya-cloudflare-realip.conf;
-    limit_req_status  429;
-    limit_conn_status 429;
-    limit_req_log_level warn;
-    limit_conn alroya_conn 80;
-    limit_req  zone=alroya_general burst=120 nodelay;
-```
+# 5) ثبّت قالبَي المضيفين الملتزمين؛ كلاهما يضم السر والعقد وlocations نفسها:
+sudo cp deploy/nginx-erp.conf    /etc/nginx/sites-available/alroya-erp
+sudo cp deploy/nginx-public.conf /etc/nginx/sites-available/alroya-public
+sudo chown root:root /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-available/alroya-public
+sudo chmod 644 /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-available/alroya-public
+sudo ln -s /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-enabled/alroya-erp
+sudo ln -s /etc/nginx/sites-available/alroya-public /etc/nginx/sites-enabled/alroya-public
 
-**٥) طبّق ملف الموقع كاملاً:** يحتوي `deploy/nginx-erp.conf` سقف API العام وأنطقة مشتركة
-مستقلة للمصادقة/2FA والتعافي ورفع الاستعادة وwebhooks. لا تنسخ `location /api/` وحدها؛
-وإلا بقيت النقاط الحساسة مع سقف عام فقط وتضاعفت حصة MemoryStore بعدد عمال PM2.
+# 6) الفاحص الساكن يفشل إن كان أي proxy_pass بلا include محلي لعقد proxy/السر:
+node scripts/verify-nginx-abuse-controls.mjs
 
-```nginx
-    location /api/ {
-        limit_req zone=alroya_api burst=60 nodelay;
-        # …بقية توجيهات البروكسي كما في location / تماماً (proxy_pass لا يُورَّث)…
-    }
-```
-
-> المرجع الكامل للشكل النهائي: `deploy/nginx-erp.conf`. والفحص الساكن قبل النشر:
-> `pnpm check:nginx-abuse`.
-
-```bash
-# 6) فحص ثم تحميل (لا restart):
+# 7) فحص ثم تحميل (لا restart):
 sudo nginx -t && sudo systemctl reload nginx
 
-# 7) تأكيد أن التوجيهات حيّة:
+# 8) تأكيد أن التوجيهات حيّة:
 sudo nginx -T | grep -E "alroya_(general|api|auth|password_recovery|restore|webhooks|conn)|CF-Connecting-IP" | head
 ```
+
+> لا تعتمد وراثة `proxy_set_header` من `server`: وجود أي `proxy_set_header` داخل `location`
+> يلغي وراثة المجموعة كلها. لذلك يفرض الفاحص `include snippets/alroya-proxy-common.conf;`
+> داخل **كل** كتلة فيها `proxy_pass`.
 
 ---
 
@@ -144,11 +135,14 @@ sudo tail -20 /var/log/nginx/access.log
 # ٤) دخول الفريق سليم: https://srv1548487.hstgr.cloud يعمل كما هو (خارج CF بالكامل).
 
 # ٥) تطبيق المناديب (TWA على alarabiya.online): دخول + «توصيلاتي» يعملان عبر CF.
+
+# ٦) بوابة المتجر الخارجية: تفحص الصفحة وsettings/categories/catalog للمضيفين وترفض القوائم الفارغة:
+cd /home/deploy/erp && node scripts/verify-nginx-storefront-readiness.mjs
 ```
 
 **تراجع سريع عند أي مشكلة:**
-- طبقة nginx: احذف الأسطر المضافة من كتل server (أو علّقها) ← `nginx -t && reload`.
-  الملفان في conf.d/snippets يبقيان بلا ضرر (تعريفات خاملة).
+- طبقة nginx: أعد نسخ قالبَي الموقع والمقتطفات الملتزمة من الإصدار السابق المعلوم السلامة، ثم
+  `nginx -t && reload`. لا تحذف توجيهات متفرقة يدوياً، ولا تمس مواقع سراج أو أودو.
 - Cloudflare: حوّل سجلَّي `@` و`www` إلى **DNS only (رمادي)** في لوحة CF ⇒ يعود
   الترافيك مباشراً للخادم خلال دقائق **بلا** تبديل nameservers من جديد.
 

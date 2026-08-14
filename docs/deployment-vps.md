@@ -66,7 +66,7 @@ chmod 600 /home/deploy/erp/.env    # إلزامي: لا تترك أسرار ال
 | `HOST` | `127.0.0.1` | إلزامي في الإنتاج؛ خلف nginx لا يُكشف منفذ التطبيق للإنترنت إطلاقاً |
 | `ALLOW_PUBLIC_BIND` | `0` | ارفعه إلى `1` فقط إذا كان `HOST` العام/LAN مقصوداً ومعه جدار ناري؛ وإلا يفشل الإقلاع مغلقاً |
 | `PORT` | `3000` | يستمع داخلياً؛ nginx يُمرّر إليه |
-| `INTERNAL_PROXY_SECRET` | `openssl rand -hex 32` | يطابق `$alroya_proxy_secret` في nginx ويمنع تجاوز البروكسي من عملية محلية |
+| `INTERNAL_PROXY_SECRET` | `openssl rand -hex 32` | يطابق قيمة ملف nginx المحمي `/etc/nginx/snippets/alroya-proxy-secret.conf` ويمنع تجاوز البروكسي من عملية محلية |
 | `DATABASE_URL` | `mysql://erp_app:<قوية>@127.0.0.1:3307/erp` | حساب التطبيق محصور بقاعدة `erp`؛ لا تشغّل الويب بـroot |
 | `DB_APP_USER` / `DB_APP_PW` | `erp_app` / `openssl rand -hex 24` | حساب الويب الأقل امتيازاً؛ كلمة مختلفة عن root |
 | `DB_ROOT_PW` / `DB_NAME` / `DB_CONTAINER` | `<قوية>` / `erp` / `erp-mysql` | root للصيانة/التعافي وcompose فقط، ولا يبقى في بيئة عامل الويب |
@@ -121,8 +121,9 @@ systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدر�
 > الكوكي الأمني (`secure`) لا يُرسَل إلّا على HTTPS، والخادم يكتشف HTTPS عبر `X-Forwarded-Proto`
 > (لأنّ `trust proxy` مُفعَّل). لذا **يجب** تمرير هذه الترويسة وإلّا فشل تسجيل الدخول.
 >
-> قالب جاهز مُلتزَم في **`deploy/nginx-erp.conf`** (مضبوط لمضيف Hostinger مع `/healthz` وHSTS عبر
-> `certbot --nginx --hsts`). على خادم مشترك: ملف موقع **جديد** + `nginx -t` ثم **reload لا restart**.
+> قالبا المضيفين ملتزمان في **`deploy/nginx-erp.conf`** (النظام الداخلي) و
+> **`deploy/nginx-public.conf`** (المتجر العام)، ويشتركان في مجموعة locations واحدة وعقد proxy واحد.
+> على خادم مشترك: ملفا موقع **جديدان** + `nginx -t` ثم **reload لا restart**.
 >
 > **طبقة حدود المعدّل + Cloudflare (٢٠/٧):** القالب صار يتضمّن `limit_req`/`limit_conn`
 > (الأنطقة في `deploy/nginx-ratelimit.conf` ← conf.d) واسترجاع الـIP الحقيقي خلف Cloudflare
@@ -130,22 +131,40 @@ systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدر�
 > `nginx -t` على include. دليل التفعيل الكامل (DNS + لوحة CF + التحقق): **`docs/cloudflare-plan.md`**.
 
 ```bash
-# 0) تحقّق أولاً أن لا موقع قائماً يخدم اسم مضيفنا (لوحات الاستضافة تجهّز vhost افتراضياً أحياناً):
-grep -rn "srv1548487.hstgr.cloud" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ || echo "الاسم حرّ ✓"
+# 0) تحقّق أولاً أن لا موقع قائماً يخدم اسمي مضيفينا (لوحات الاستضافة تجهّز vhost افتراضياً أحياناً):
+grep -rnE "srv1548487\.hstgr\.cloud|alarabiya\.online" /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ || echo "الاسمان حران"
 
-# 1) ثبّت القالب الملتزَم (عدّل server_name فيه إن استعملت نطاقاً خاصاً):
+# 1) ثبّت الأنطقة والمقتطفات المشتركة الملتزمة:
+sudo mkdir -p /etc/nginx/snippets
+sudo cp /home/deploy/erp/deploy/nginx-ratelimit.conf /etc/nginx/conf.d/alroya-ratelimit-zones.conf
+sudo cp /home/deploy/erp/deploy/nginx-cloudflare-realip.conf /etc/nginx/snippets/alroya-cloudflare-realip.conf
+sudo cp /home/deploy/erp/deploy/nginx-proxy-common.conf /etc/nginx/snippets/alroya-proxy-common.conf
+sudo cp /home/deploy/erp/deploy/nginx-app-locations.conf /etc/nginx/snippets/alroya-app-locations.conf
+
+# 2) أنشئ مصدر السر الحي الوحيد بصلاحية root فقط، ثم أدخل القيمة التي تطابق .env عبر sudoedit.
+# الشكل البنيوي موثق في deploy/nginx-proxy-secret.conf.example؛ لا تنسخ قيمة CHANGE_ME ولا تطبع السر.
+sudo install -o root -g root -m 600 /dev/null /etc/nginx/snippets/alroya-proxy-secret.conf
+sudoedit /etc/nginx/snippets/alroya-proxy-secret.conf
+
+# 3) ثبّت كلا المضيفين من النسخ الملتزمة؛ لا تحتفظ بنسخة عامة يدوية تنجرف عنها:
 sudo cp /home/deploy/erp/deploy/nginx-erp.conf /etc/nginx/sites-available/alroya-erp
-# حرّر القيمة CHANGE_ME_INTERNAL_PROXY_SECRET لتطابق .env، ثم احجب الملف عن مستخدمي الخادم المشترك:
-sudo chown root:root /etc/nginx/sites-available/alroya-erp
-sudo chmod 600 /etc/nginx/sites-available/alroya-erp
+sudo cp /home/deploy/erp/deploy/nginx-public.conf /etc/nginx/sites-available/alroya-public
+sudo chown root:root /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-available/alroya-public
+sudo chmod 644 /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-available/alroya-public
 sudo ln -s /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-enabled/alroya-erp
+sudo ln -s /etc/nginx/sites-available/alroya-public /etc/nginx/sites-enabled/alroya-public
+cd /home/deploy/erp && node scripts/verify-nginx-abuse-controls.mjs
 sudo nginx -t && sudo systemctl reload nginx     # reload لا restart — لا نقطع مواقع الخادم الأخرى
 
-# 2) شهادة TLS + تحويل 80→443 + HSTS (G9 — لا يتحقق بدون --hsts):
+# 4) شهادتا TLS + تحويل 80→443 + HSTS (G9 — لا يتحقق بدون --hsts):
 sudo certbot --nginx --hsts -d srv1548487.hstgr.cloud
+sudo certbot --nginx --hsts -d alarabiya.online -d www.alarabiya.online
 
-# 3) تحقّق من مؤقّت التجديد التلقائي (G15) — شهادة لا تتجدّد = موقع يسقط بعد ٩٠ يوماً:
+# 5) تحقّق من مؤقّت التجديد التلقائي (G15) — شهادة لا تتجدّد = موقع يسقط بعد ٩٠ يوماً:
 systemctl list-timers | grep certbot
+
+# 6) بوابة الجاهزية من خارج Node: الصفحة + settings + categories + catalog، على المضيفين:
+cd /home/deploy/erp && node scripts/verify-nginx-storefront-readiness.mjs
 ```
 
 ## ٥. جدار النار (ufw) — احجب القاعدة عن الإنترنت
@@ -240,12 +259,12 @@ sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 
 قبل أي خطوة متحوّلة، يرفض السكربت الفرع غير `main` أو الشجرة غير النظيفة، يجلب `origin/main` بـfast-forward، ثم **يعيد تشغيل نفسه من الكود المسحوب** إن تغيّر SHA. كما يثبت أن CLI وحزمة وdaemon ‏PM2 كلها `7.0.3`؛ تثبيت npm وحده لا يكفي من دون `pm2 update`.
 
-بعد ذلك ينفّذ **١٠ مراحل** تحت قفل نشر حصري. إذا وجد journal من نشر انقطع، يعيد أولاً آخر إصدار ملتزم ويتحقق منه ويحفظه قبل بدء نشر جديد:
+بعد ذلك ينفّذ **١١ مرحلة** تحت قفل نشر حصري. إذا وجد journal من نشر انقطع، يعيد أولاً آخر إصدار ملتزم ويتحقق منه ويحفظه قبل بدء نشر جديد:
 
 | # | الخطوة | الأمر الفعليّ | الغاية |
 |---|--------|--------------|--------|
 | ١ | تركيب الاعتماديات | `pnpm install --frozen-lockfile` | يطابق `pnpm-lock.yaml` بالضبط |
-| ٢ | بناء المرشح | `pnpm build` | يبني العامل CJS بلا TypeScript وقت التشغيل، ويفحص dependency closure وmanifest وrollback state machine |
+| ٢ | بناء المرشح وعقد Nginx | `pnpm build` + `node scripts/verify-nginx-abuse-controls.mjs` | يبني العامل ويفشل قبل أي تغيير إن كان أي مضيف أو `proxy_pass` بلا عقد السر والترويسات المشتركة |
 | ٣ | preflight قبل DB | bootstrap الإصدار immutable | يفشل مبكراً قبل النسخ والهجرات؛ ويقبل `disabled` كحالة مقصودة |
 | ٤ | نسخة احتياطية | `pnpm db:backup` | قبل أي تغيير مخطّط |
 | ٥ | الهجرات | `pnpm db:migrate:safe` | هجرات مولّدة وآمنة فقط؛ لا `db:push` عارياً |
@@ -253,7 +272,8 @@ sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 | ٧ | preflight بعد DB | المرشح نفسه | يثبت توافق المرشح مع المخطط النهائي وعدم تغيّر وضع enabled/disabled أثناء النشر |
 | ٨ | فحص الرجوع | الإصدار الملتزم السابق | يثبت أن rollback ما زال متوافقاً مع المخطط الجديد قبل لمس PM2 |
 | ٩ | إعادة تحميل الويب | `pm2 reload ... --only erp-server --update-env` | reload للويب من الملف، بلا تشغيل الجسر من المسار المتغيّر |
-| ١٠ | معاملة تفعيل الجسر | release-local PM2 config → runtime gate → `pm2 save` → commit | يثبت المسار وcwd وPID والمنفذ والبيئة و`min_uptime`، ثم يثبت dump قبل اعتماد الحالة |
+| ١٠ | جاهزية المتجر الخارجية | `node scripts/verify-nginx-storefront-readiness.mjs` | يفحص المضيف الداخلي والعام: `/store` و`settings/categories/catalog`، ويرفض النتائج الفارغة |
+| ١١ | معاملة تفعيل الجسر | release-local PM2 config → runtime gate → `pm2 save` → commit | يثبت المسار وcwd وPID والمنفذ والبيئة و`min_uptime`، ثم يثبت dump قبل اعتماد الحالة |
 
 **عامل الجسر إصدار immutable فعلي:** يحوي bootstrap والحزمة والسياسة ومصنع PM2 وتعريف PM2 المحلي ولقطة canonical محمية (`0600`) لمفاتيح بيئة الجسر المسموحة، وكلها داخلة في SHA-256 واحد. الـpreflight والتشغيل والrollback تقرأ اللقطة من الإصدار نفسه ولا تعيد قراءة `.env`. لا تُنسخ الأسرار إلى `app.env` أو `dump.pm2`؛ PM2 يحمل مفاتيح التحكم الآمنة فقط، ثم يستبدل bootstrap بيئته باللقطة قبل استيراد العامل. لا يظهر الجسر في `ecosystem.config.cjs` الجذري إلا أثناء artifact-smoke.
 
@@ -263,7 +283,8 @@ sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 
 > عامل الجسر يبدأ دائماً fresh لأن `startOrReload --update-env` يدمج المفاتيح القديمة. تعريف الإصدار يصفّر البيئة الموروثة ثم يعيد allowlist فقط، والـbootstrap يحذف أي مفتاح زائد **قبل** تحميل كود العامل. البوابة تدقق `pm2_env.env` الفعلية من دون طباعة الأسماء أو القيم.
 
-**بعد النجاح — تحقّق حيّ فوريّ** (يطبعه السكربت نفسه):
+**بعد النجاح — تحقّق حيّ فوريّ:** بوابة المرحلة ١٠ تكون قد أثبتت أن كلا المضيفين يعيدان صفحة
+المتجر وإعداداته وفئاته ومنتجاته بأعداد غير صفرية. لفحص حالة الطباعة أيضاً:
 ```bash
 curl -sf https://srv1548487.hstgr.cloud/api/print/status || pm2 logs erp-server --lines 20
 ```
@@ -307,6 +328,7 @@ BASH
 ## ٨. قائمة تحقّق ما بعد النشر
 
 - [ ] `https://erp.<نطاقك>` يفتح بقفل TLS صحيح ويقبل تسجيل الدخول (الكوكي secure يعمل ⇒ X-Forwarded-Proto مضبوط).
+- [ ] `node scripts/verify-nginx-storefront-readiness.mjs` ينجح للمضيفين الداخلي والعام، وبأعداد فئات ومنتجات غير صفرية.
 - [ ] فتح الموقع عبر `http://` يُحوَّل تلقائياً إلى `https://` (certbot).
 - [ ] `docker compose ps` تُظهر `healthy`، و`pm2 status` تُظهر `online`.
 - [ ] `ss -tlnp | grep 3307` يُظهر `127.0.0.1:3307` فقط (لا `0.0.0.0`) — القاعدة محجوبة بالربط المحلي. (بند ufw فقط على خادم مخصّص.)

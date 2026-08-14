@@ -1008,15 +1008,18 @@ async function deploy(expectedHead) {
         pm2Contract,
       );
     }
-    step("1/10 تثبيت الاعتماديات المقفلة", () =>
+    step("1/11 تثبيت الاعتماديات المقفلة", () =>
       run("pnpm", ["install", "--frozen-lockfile"], {
         timeoutMs: 5 * 60_000,
       }),
     );
     const dotenvModule = await import("dotenv");
-    step("2/10 بناء وفحص إصدار الإنتاج", () =>
-      run("pnpm", ["build"], { timeoutMs: 10 * 60_000 }),
-    );
+    step("2/11 بناء وفحص إصدار الإنتاج وعقد Nginx", () => {
+      run("pnpm", ["build"], { timeoutMs: 10 * 60_000 });
+      run(process.execPath, ["scripts/verify-nginx-abuse-controls.mjs"], {
+        timeoutMs: 30_000,
+      });
+    });
     const repository = assertRepository(expectedHead);
     if (repository.head !== repository.remote) {
       throw new Error("DEPLOY_HEAD_NOT_ORIGIN_MAIN");
@@ -1030,12 +1033,12 @@ async function deploy(expectedHead) {
       deploymentEnvironment,
     });
     const provisional = { id: candidateRelease.id, mode: "enabled" };
-    const beforeMode = step("3/10 فحص المرشح قبل لمس قاعدة البيانات", () =>
+    const beforeMode = step("3/11 فحص المرشح قبل لمس قاعدة البيانات", () =>
       runPreflight(provisional, releaseTools),
     );
 
-    step("4/10 إنشاء نسخة احتياطية", () => run("pnpm", ["db:backup"]));
-    step("5/10 تطبيق الهجرات الآمنة وإصلاح الاستقبال والتوصيل", () => {
+    step("4/11 إنشاء نسخة احتياطية", () => run("pnpm", ["db:backup"]));
+    step("5/11 تطبيق الهجرات الآمنة وإصلاح الاستقبال والتوصيل", () => {
       run("pnpm", ["db:migrate:safe"]);
       run("node", [
         "scripts/ci-apply-extra-migrations.mjs",
@@ -1046,11 +1049,11 @@ async function deploy(expectedHead) {
         "--only=drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
       ]);
     });
-    step("6/10 التحقق من مخطط قاعدة البيانات", () =>
+    step("6/11 التحقق من مخطط قاعدة البيانات", () =>
       run("pnpm", ["db:verify"], { timeoutMs: 5 * 60_000 }),
     );
 
-    const afterMode = step("7/10 فحص المرشح بعد الهجرات", () =>
+    const afterMode = step("7/11 فحص المرشح بعد الهجرات", () =>
       runPreflight(provisional, releaseTools),
     );
     if (beforeMode !== afterMode) {
@@ -1059,17 +1062,17 @@ async function deploy(expectedHead) {
     const candidate = { id: candidateRelease.id, mode: afterMode };
     const committed = releaseTools.readState(PROJECT_ROOT).current;
     if (committed) {
-      step("8/10 إثبات صلاحية إصدار الرجوع مع المخطط الجديد", () => {
+      step("8/11 إثبات صلاحية إصدار الرجوع مع المخطط الجديد", () => {
         const rollbackMode = runPreflight(committed, releaseTools);
         if (rollbackMode !== committed.mode) {
           throw new Error("HR_BRIDGE_ROLLBACK_MODE_DRIFT");
         }
       });
     } else {
-      console.log("\n▶ 8/10 لا يوجد إصدار immutable سابق (أول انتقال فقط)." );
+      console.log("\n▶ 8/11 لا يوجد إصدار immutable سابق (أول انتقال فقط)." );
     }
 
-    step("9/10 إعادة تحميل خادم الويب", () =>
+    step("9/11 إعادة تحميل خادم الويب", () =>
       run(
         "pm2",
         [
@@ -1083,7 +1086,13 @@ async function deploy(expectedHead) {
       ),
     );
 
-    step("10/10 تفعيل إصدار الجسر والتحقق والحفظ الذري", () => {
+    step("10/11 فحص المتجر خارجياً عبر المضيفين", () =>
+      run(process.execPath, ["scripts/verify-nginx-storefront-readiness.mjs"], {
+        timeoutMs: 5 * 60_000,
+      }),
+    );
+
+    step("11/11 تفعيل إصدار الجسر والتحقق والحفظ الذري", () => {
       const operations = makeActivationOperations(
         candidate.id,
         releaseTools,
