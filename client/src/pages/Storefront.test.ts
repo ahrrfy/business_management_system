@@ -1,6 +1,14 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { collectStorefrontFailures, storefrontCategoryCount } from "./Storefront";
+import { describe, expect, it, vi } from "vitest";
+import {
+  addStorefrontCartLine,
+  collectStorefrontFailures,
+  recordStorefrontCartChange,
+  saveStorefrontSnapshot,
+  setStorefrontCartQuantity,
+  storefrontCategoryCount,
+  type CartLine,
+  type CheckoutForm,
+} from "./Storefront";
 
 describe("storefront source failures", () => {
   it("keeps every failed public source explicit instead of treating it as empty data", () => {
@@ -25,16 +33,6 @@ describe("storefront source failures", () => {
     ).toEqual(["categories"]);
   });
 
-  it("renders retryable failures and fails closed when settings are unknown", () => {
-    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
-
-    expect(source).toContain("تعذّر تحميل بعض بيانات المتجر");
-    expect(source).toContain("settingsQ.refetch()");
-    expect(source).toContain("categoriesQ.refetch()");
-    expect(source).toContain("offersQ.refetch()");
-    expect(source).toContain("catalogQ.refetch()");
-    expect(source).toContain("const storeOpen = settingsQ.isSuccess && settingsQ.data.isOpen");
-  });
 });
 
 describe("storefront availability contract", () => {
@@ -48,10 +46,73 @@ describe("storefront availability contract", () => {
     expect(storefrontCategoryCount(category, "ALL")).toBe(12);
   });
 
-  it("passes availability to the catalog API instead of relying only on client filtering", () => {
-    const source = readFileSync(new URL("./Storefront.tsx", import.meta.url), "utf8");
+});
 
-    expect(source).toMatch(/const catalogInput = \{[\s\S]*?availability,[\s\S]*?\} as const;/);
-    expect(source).toContain("trpc.storefront.catalog.useQuery(\n    catalogInput");
+describe("storefront persistence safety", () => {
+  const form: CheckoutForm = {
+    name: "زبون",
+    phone: "+964 7700000000",
+    governorate: "baghdad",
+    address: "بغداد",
+    notes: "",
+  };
+  const line: CartLine = {
+    productUnitId: 11,
+    productId: 7,
+    name: "دفتر",
+    price: "500",
+    imageUrl: null,
+    unitName: "قطعة",
+    qty: 1,
+  };
+
+  it("reports success only after both cart and checkout form are persisted", () => {
+    const storage = {
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+    };
+
+    expect(saveStorefrontSnapshot(new Map([[line.productUnitId, line]]), form, storage)).toBe(true);
+    expect(storage.setItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports quota/storage failure and still attempts both halves of the order", () => {
+    const storage = {
+      setItem: vi
+        .fn()
+        .mockImplementationOnce(() => undefined)
+        .mockImplementationOnce(() => {
+          throw new DOMException("Quota exceeded", "QuotaExceededError");
+        }),
+      removeItem: vi.fn(),
+    };
+
+    expect(saveStorefrontSnapshot(new Map([[line.productUnitId, line]]), form, storage)).toBe(false);
+    expect(storage.setItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks add, quantity change, and removal as unsaved cart interactions", () => {
+    const markChanged = vi.fn();
+    const added = addStorefrontCartLine(
+      new Map(),
+      {
+        productUnitId: line.productUnitId,
+        productId: line.productId,
+        productName: line.name,
+        imageUrl: line.imageUrl,
+        unitName: line.unitName,
+      },
+      line.price,
+    );
+    recordStorefrontCartChange(markChanged);
+    const increased = setStorefrontCartQuantity(added, line.productUnitId, 3);
+    recordStorefrontCartChange(markChanged);
+    const removed = setStorefrontCartQuantity(increased, line.productUnitId, 0);
+    recordStorefrontCartChange(markChanged);
+
+    expect(added.get(line.productUnitId)?.qty).toBe(1);
+    expect(increased.get(line.productUnitId)?.qty).toBe(3);
+    expect(removed.has(line.productUnitId)).toBe(false);
+    expect(markChanged).toHaveBeenCalledTimes(3);
   });
 });

@@ -45,6 +45,7 @@ import {
   X,
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { noteInteraction } from "@/lib/interactionDraft";
 
 /** حالات الطلب بالعربية + لونها — لعرض تتبّع الطلب العلنيّ. */
 const TRACK_STATUS: Record<string, { label: string; cls: string }> = {
@@ -65,7 +66,7 @@ import { BannerFrame, type StoreBannerCreative } from "@/components/store/Banner
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
 
-interface CartLine {
+export interface CartLine {
   productUnitId: number;
   productId: number;
   name: string;
@@ -78,10 +79,11 @@ interface CartLine {
 
 // حفظ السلة + بيانات التوصيل محلياً (مراجعة عدائية ١٢/٧): كان تحديث الصفحة/العودة للتطبيق يفرّغ
 // السلة والنموذج فيهجر الزبون الطلب. نُبقيهما في localStorage فيستأنف الزبون من حيث توقّف.
-type CheckoutForm = { name: string; phone: string; governorate: string; address: string; notes: string };
+export type CheckoutForm = { name: string; phone: string; governorate: string; address: string; notes: string };
 const DEFAULT_FORM: CheckoutForm = { name: "", phone: "+964 ", governorate: "baghdad", address: "", notes: "" };
 const CART_STORAGE_KEY = "alroya-store-cart-v1";
 const CHECKOUT_STORAGE_KEY = "alroya-store-checkout-v1";
+const STOREFRONT_PERSIST_REQUEST_EVENT = "alroya:storefront-persist-request";
 
 function loadCart(): Map<number, CartLine> {
   const m = new Map<number, CartLine>();
@@ -98,13 +100,19 @@ function loadCart(): Map<number, CartLine> {
   }
   return m;
 }
-function saveCart(cart: Map<number, CartLine>) {
+type StorefrontStorage = Pick<Storage, "setItem" | "removeItem">;
+
+export function saveCart(
+  cart: Map<number, CartLine>,
+  storage: StorefrontStorage = localStorage,
+): boolean {
   try {
     const arr = Array.from(cart.values());
-    if (arr.length === 0) localStorage.removeItem(CART_STORAGE_KEY);
-    else localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(arr));
+    if (arr.length === 0) storage.removeItem(CART_STORAGE_KEY);
+    else storage.setItem(CART_STORAGE_KEY, JSON.stringify(arr));
+    return true;
   } catch {
-    /* تخزين ممتلئ/محظور — تجاهل */
+    return false;
   }
 }
 function loadForm(): CheckoutForm {
@@ -123,12 +131,77 @@ function loadForm(): CheckoutForm {
     return { ...DEFAULT_FORM };
   }
 }
-function saveForm(form: CheckoutForm) {
+export function saveForm(
+  form: CheckoutForm,
+  storage: StorefrontStorage = localStorage,
+): boolean {
   try {
-    localStorage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(form));
+    storage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(form));
+    return true;
   } catch {
-    /* تجاهل */
+    return false;
   }
+}
+
+export function saveStorefrontSnapshot(
+  cart: Map<number, CartLine>,
+  form: CheckoutForm,
+  storage: StorefrontStorage = localStorage,
+): boolean {
+  // لا تستخدم short-circuit: يجب محاولة حفظ الجزأين كي يحصل الزبون على أفضل فرصة للاسترداد.
+  const cartSaved = saveCart(cart, storage);
+  const formSaved = saveForm(form, storage);
+  return cartSaved && formSaved;
+}
+
+export type StorefrontCartProduct = {
+  productUnitId: number;
+  productId: number;
+  productName: string;
+  imageUrl: string | null;
+  unitName: string;
+  variantLabel?: string;
+};
+
+export function addStorefrontCartLine(
+  current: Map<number, CartLine>,
+  product: StorefrontCartProduct,
+  effectivePrice: string,
+): Map<number, CartLine> {
+  const next = new Map(current);
+  const existing = next.get(product.productUnitId);
+  next.set(product.productUnitId, {
+    productUnitId: product.productUnitId,
+    productId: product.productId,
+    name: product.variantLabel
+      ? `${product.productName} — ${product.variantLabel}`
+      : product.productName,
+    price: effectivePrice,
+    imageUrl: product.imageUrl,
+    unitName: product.unitName,
+    variantLabel: product.variantLabel,
+    qty: (existing?.qty ?? 0) + 1,
+  });
+  return next;
+}
+
+export function setStorefrontCartQuantity(
+  current: Map<number, CartLine>,
+  productUnitId: number,
+  quantity: number,
+): Map<number, CartLine> {
+  const line = current.get(productUnitId);
+  if (!line) return current;
+  const next = new Map(current);
+  if (quantity <= 0) next.delete(productUnitId);
+  else next.set(productUnitId, { ...line, qty: Math.min(quantity, 999) });
+  return next;
+}
+
+export function recordStorefrontCartChange(
+  markChanged: () => void = noteInteraction,
+): void {
+  markChanged();
 }
 
 function money(v: string | number | null): string {
@@ -437,6 +510,10 @@ export default function Storefront() {
   const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
 
   const [form, setForm] = useState<CheckoutForm>(loadForm);
+  const cartRef = useRef(cart);
+  const formRef = useRef(form);
+  cartRef.current = cart;
+  formRef.current = form;
   const [clientRequestId, setClientRequestId] = useState<string>("");
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
   const viewedProductIds = useRef(new Set<number>());
@@ -491,13 +568,19 @@ export default function Storefront() {
     };
   }, []);
 
-  // استمرار السلة + بيانات التوصيل عبر تحديث الصفحة/إغلاق التطبيق (localStorage).
+  // استمرار السلة + بيانات التوصيل عبر تحديث الصفحة/إغلاق التطبيق (localStorage). طلب التحديث
+  // الآمن يستدعي الحافظ المتزامن أدناه ويأخذ نتيجة صريحة؛ امتلاء التخزين لا يعود فشلاً صامتاً.
   useEffect(() => {
-    saveCart(cart);
-  }, [cart]);
+    saveStorefrontSnapshot(cart, form);
+  }, [cart, form]);
   useEffect(() => {
-    saveForm(form);
-  }, [form]);
+    const persist = (event: Event) => {
+      const detail = (event as CustomEvent<{ report: (saved: boolean) => void }>).detail;
+      detail?.report(saveStorefrontSnapshot(cartRef.current, formRef.current));
+    };
+    window.addEventListener(STOREFRONT_PERSIST_REQUEST_EVENT, persist);
+    return () => window.removeEventListener(STOREFRONT_PERSIST_REQUEST_EVENT, persist);
+  }, []);
 
   const categoriesQ = trpc.storefront.categories.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
@@ -696,31 +779,12 @@ export default function Storefront() {
     const eff = p.salePrice ?? p.price;
     if (eff == null || p.inStock === false) return;
     trackConversion.mutate({ event: "ADD_TO_CART" });
-    setCart((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(p.productUnitId);
-      next.set(p.productUnitId, {
-        productUnitId: p.productUnitId,
-        productId: p.productId,
-        name: p.variantLabel ? `${p.productName} — ${p.variantLabel}` : p.productName,
-        price: eff,
-        imageUrl: p.imageUrl,
-        unitName: p.unitName,
-        variantLabel: p.variantLabel,
-        qty: (existing?.qty ?? 0) + 1,
-      });
-      return next;
-    });
+    recordStorefrontCartChange();
+    setCart((prev) => addStorefrontCartLine(prev, p, eff));
   }
   function setQty(productUnitId: number, qty: number) {
-    setCart((prev) => {
-      const next = new Map(prev);
-      const line = next.get(productUnitId);
-      if (!line) return prev;
-      if (qty <= 0) next.delete(productUnitId);
-      else next.set(productUnitId, { ...line, qty: Math.min(qty, 999) });
-      return next;
-    });
+    recordStorefrontCartChange();
+    setCart((prev) => setStorefrontCartQuantity(prev, productUnitId, qty));
   }
   function offerLabel(o: { type: "PERCENT" | "AMOUNT"; discountPercent: string; discountAmount: string }): string {
     return o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`;
