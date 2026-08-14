@@ -50,7 +50,8 @@ export default function Products() {
   const me = trpc.auth.me.useQuery();
   // imports.products = managerProcedure خادمياً — زرّ الاستيراد للمدير/الأدمن فقط (مرآة requireRole).
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
-  const canPickBranch = isElevated;
+  // سياسة العزل الحديثة: الأدمن وحده يعبر الفروع؛ المدير مثبت على فرعه كالكاشير.
+  const canPickBranch = me.data?.role === "admin";
 
   // الفلاتر تعيش في querystring (تُشارَك رابطاً وتنجو من التنقّل). "" = افتراضي كل حقل.
   const [f, setF] = useUrlFilters({ q: "", category: "", inactive: "", page: "0", branch: "" });
@@ -71,8 +72,8 @@ export default function Products() {
 
   // منتقي فرع صريح (نمط PR #288): افتراضي فرع المستخدم إن مُسنَد؛ وإلا يلزم اختياراً صريحاً
   // (لا `?? 1` صامت) — أثره هنا على عمود «المخزون» المعروض فقط (المنتجات/الأسعار عابرة للفروع).
-  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
-  const pickedBranch = f.branch === "" ? null : Number(f.branch);
+  const branchesQ = trpc.branches.list.useQuery();
+  const pickedBranch = canPickBranch && f.branch !== "" ? Number(f.branch) : null;
   const branchId = pickedBranch ?? (me.data?.branchId != null ? Number(me.data.branchId) : null);
   const setPickedBranch = (v: number | "") => setF({ branch: v === "" ? "" : String(v) });
 
@@ -105,6 +106,7 @@ export default function Products() {
   );
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
+  const effectiveBranchId = list.data?.branchId ?? branchId;
   const pages = Math.max(1, Math.ceil(total / limit));
 
   const setActive = trpc.catalog.setProductActive.useMutation({
@@ -265,7 +267,7 @@ export default function Products() {
                 {canPickBranch && (
                   <FilterField label="الفرع (للمخزون)">
                     <select
-                      value={pickedBranch ?? ""}
+                      value={branchId ?? ""}
                       onChange={(e) => setPickedBranch(e.target.value === "" ? "" : Number(e.target.value))}
                       className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
                     >
@@ -274,6 +276,13 @@ export default function Products() {
                         <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>
                       ))}
                     </select>
+                  </FilterField>
+                )}
+                {!canPickBranch && branchId != null && (
+                  <FilterField label="الفرع (للمخزون)">
+                    <span className="inline-flex h-8 items-center rounded-md border border-input px-2 text-sm font-bold">
+                      {branchesQ.data?.find((b) => Number(b.id) === effectiveBranchId)?.name ?? `فرع #${effectiveBranchId}`}
+                    </span>
                   </FilterField>
                 )}
                 <FilterField label="الفئة">
@@ -378,7 +387,7 @@ export default function Products() {
                       { key: "governmentPrice" as const, header: "السعر الحكومي", money: true, map: (r: Row) => r.governmentPrice != null ? Number(r.governmentPrice) : "" },
                     ]
                   : []),
-                { key: "branchId", header: "معرّف فرع المخزون", map: () => branchId },
+                { key: "branchId", header: "معرّف فرع المخزون", map: (r) => r.branchId },
                 { key: "stockBase", header: "المخزون بوحدة الأساس", map: (r) => Number(r.stockBase ?? 0) },
               ],
             }}

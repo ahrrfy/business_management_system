@@ -13,6 +13,8 @@ import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibi
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
 export interface PosRow {
+  /** الفرع الفعلي الذي قرأه الخادم بعد تطبيق عزل الحساب؛ لا يُستنتج من طلب العميل. */
+  branchId: number;
   productId: number;
   productName: string;
   variantId: number;
@@ -30,7 +32,7 @@ export interface PosRow {
   price: string | null; // null = no price defined for this unit×tier
   stockBase: number; // variant stock in base units at the branch (الرصيد الفعليّ)
   reservedBase: number; // المحجوز النشط بوحدة الأساس (الحجوزات R-م٤)
-  availableBase: number; // المتاح للبيع (ATP) = stockBase − reservedBase
+  availableBase: number; // المتاح التشغيلي للبيع = max(0, stockBase − reservedBase)
   /** «وضع الافتتاح» (ش٥): لحظة تثبيت الرصيد الافتتاحي — null = غير مُفتتَح (يُباع نقداً بالسالب أثناء النافذة). */
   openedAt: Date | null;
   isService: boolean; // مُنتج خِدمي: لا مَخزون، POS يَتجاوز فَحص نَقص المَخزون.
@@ -63,6 +65,19 @@ export interface PosRow {
    * التكلفة عبر شبكة tRPC. القيمة بوحدة الأساس (لا مضروبة بمعامل التحويل) — نمط `PurchaseRow`.
    */
   costPriceBase: string | null;
+}
+
+/** لقطة خفيفة لتحديث أسطر السلة دون إعادة التسعير أو تشغيل العروض. */
+export interface CatalogStockSnapshotRow {
+  branchId: number;
+  productUnitId: number;
+  variantId: number;
+  stockBase: number;
+  reservedBase: number;
+  availableBase: number;
+  openedAt: Date | null;
+  isService: boolean;
+  isBundle: boolean;
 }
 
 function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number, tier: PriceTier) {
@@ -111,16 +126,19 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
     );
 }
 
-function normalize(rows: any[]): PosRow[] {
+function normalize(rows: any[], branchId: number): PosRow[] {
   return rows.map((r) => ({
     ...r,
+    branchId,
     productId: Number(r.productId),
     variantId: Number(r.variantId),
     productUnitId: Number(r.productUnitId),
     isBaseUnit: !!r.isBaseUnit,
     stockBase: r.stockBase ?? 0,
     reservedBase: r.reservedBase ?? 0,
-    availableBase: (r.stockBase ?? 0) - (r.reservedBase ?? 0),
+    // الرصيد الفعلي يبقى موقّعاً لإظهار السالب الحقيقي، لكن «المتاح للبيع» قيمة تشغيلية
+    // لا يجوز أن تكون سالبة. تجاوز الحجز يبقى ظاهراً من reservedBase > stockBase.
+    availableBase: Math.max(0, (r.stockBase ?? 0) - (r.reservedBase ?? 0)),
     openedAt: r.openedAt ?? null,
     isService: !!r.isService,
     isCustomizable: !!r.isCustomizable,
@@ -217,11 +235,13 @@ async function applyPromotions(
  * قراءة واحدة لكل مكوّنات البكجات في القائمة. المكوّن الأشحّ يحدّد الحدّ. `isService`=true يُعامَل
  * كـ«لانهائي» (الخدمات بلا مخزون). إن كان المكوّن غير موجود في `branchStock` نعامله كصفر.
  */
-async function applyBundleAvailability(
+async function applyBundleAvailability<
+  T extends { variantId: number; isBundle: boolean; stockBase: number; reservedBase: number; availableBase: number },
+>(
   db: NonNullable<ReturnType<typeof getDb>>,
-  rows: PosRow[],
+  rows: T[],
   branchId: number,
-): Promise<PosRow[]> {
+): Promise<T[]> {
   const bundleVariantIds = rows.filter((r) => r.isBundle).map((r) => r.variantId);
   if (!bundleVariantIds.length) return rows;
   const uniqueBundleIds = Array.from(new Set(bundleVariantIds));
@@ -236,13 +256,14 @@ async function applyBundleAvailability(
     .from(bundleComponents)
     .where(inArray(bundleComponents.bundleVariantId, uniqueBundleIds));
 
-  // أرصدة كل المكوّنات + علم isService (خدمات لا تُحدّ التوفّر) — استعلام واحد.
+  // أرصدة كل المكوّنات ومحجوزها + علم isService (خدمات لا تُحدّ التوفّر) — استعلام واحد.
   const componentIds = Array.from(new Set(compRows.map((c) => Number(c.componentVariantId))));
   const stockAndKind = componentIds.length
     ? await db
         .select({
           variantId: productVariants.id,
           stock: branchStock.quantity,
+          reserved: reservationStock.reservedBase,
           isService: products.isService,
         })
         .from(productVariants)
@@ -251,39 +272,117 @@ async function applyBundleAvailability(
           branchStock,
           and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)),
         )
+        .leftJoin(
+          reservationStock,
+          and(eq(reservationStock.variantId, productVariants.id), eq(reservationStock.branchId, branchId)),
+        )
         .where(inArray(productVariants.id, componentIds))
     : [];
-  const stockByVid = new Map<number, { stock: number; isService: boolean }>();
+  const stockByVid = new Map<number, { stock: number; reserved: number; isService: boolean }>();
   for (const s of stockAndKind) {
-    stockByVid.set(Number(s.variantId), { stock: s.stock ?? 0, isService: !!s.isService });
+    stockByVid.set(Number(s.variantId), {
+      stock: s.stock ?? 0,
+      reserved: s.reserved ?? 0,
+      isService: !!s.isService,
+    });
   }
 
-  // احسب حدّاً لكل بكج.
-  const availByBundle = new Map<number, number>();
+  // احسب حدّ الرصيد الفعلي وحدّ ATP كلّاً على حدة. الحجز الرسمي ممنوع على variant البكج نفسه؛
+  // لذلك يُشتق المحجوز من فرق الحدّين ولا نطرح reservedBase الخاص بالبكج مرةً ثانية.
+  const stockByBundle = new Map<number, number>();
+  const availableByBundle = new Map<number, number>();
   for (const bid of uniqueBundleIds) {
     const comps = compRows.filter((c) => Number(c.bundleVariantId) === bid);
     if (!comps.length) {
-      availByBundle.set(bid, 0);
+      stockByBundle.set(bid, 0);
+      availableByBundle.set(bid, 0);
       continue;
     }
-    let min = Number.POSITIVE_INFINITY;
+    let stockMin = Number.POSITIVE_INFINITY;
+    let availableMin = Number.POSITIVE_INFINITY;
     for (const c of comps) {
       const info = stockByVid.get(Number(c.componentVariantId));
-      if (!info) { min = 0; break; }
+      if (!info) {
+        stockMin = 0;
+        availableMin = 0;
+        break;
+      }
       if (info.isService) continue; // خدمة كمكوّن: لا تُحدّ (مسموحة عمداً).
       const qty = Number(c.componentBaseQuantity);
-      const cap = qty > 0 ? Math.floor(info.stock / qty) : 0;
-      if (cap < min) min = cap;
+      const stockCap = qty > 0 ? Math.floor(info.stock / qty) : 0;
+      const availableCap = qty > 0 ? Math.floor(Math.max(0, info.stock - info.reserved) / qty) : 0;
+      if (stockCap < stockMin) stockMin = stockCap;
+      if (availableCap < availableMin) availableMin = availableCap;
     }
-    if (min === Number.POSITIVE_INFINITY) min = 0; // كل المكوّنات خدمات ⇒ لا نُظهر ∞، صفراً محايداً.
-    availByBundle.set(bid, Math.max(0, min));
+    // كل المكوّنات خدمات ⇒ لا نُظهر ∞، بل صفراً محايداً مع بقاء المنتج خدمةً قابلة للبيع.
+    if (stockMin === Number.POSITIVE_INFINITY) stockMin = 0;
+    if (availableMin === Number.POSITIVE_INFINITY) availableMin = 0;
+    stockByBundle.set(bid, Math.max(0, stockMin));
+    availableByBundle.set(bid, Math.max(0, availableMin));
   }
 
-  return rows.map((r) =>
-    r.isBundle
-      ? { ...r, stockBase: availByBundle.get(r.variantId) ?? 0, availableBase: (availByBundle.get(r.variantId) ?? 0) - r.reservedBase }
-      : r,
-  );
+  return rows.map((r) => {
+    if (!r.isBundle) return r;
+    const stockBase = stockByBundle.get(r.variantId) ?? 0;
+    const availableBase = availableByBundle.get(r.variantId) ?? 0;
+    return {
+      ...r,
+      stockBase,
+      reservedBase: Math.max(0, stockBase - availableBase),
+      availableBase,
+    };
+  });
+}
+
+/**
+ * يقرأ مخزون الوحدات الموجودة في سلة مفتوحة من مصدر الحقيقة الحالي. لا أسعار ولا عروض هنا؛
+ * لذلك يصلح للتحديث الدوري الرخيص ويمنع بقاء لقطة سلة/مسودة قديمة بعد بيع أو تسوية مخزون.
+ */
+export async function listStockByUnitIds(
+  productUnitIds: number[],
+  branchId: number,
+): Promise<CatalogStockSnapshotRow[]> {
+  const db = getDb();
+  if (!db || !productUnitIds.length) return [];
+  const rows = await db
+    .select({
+      productUnitId: productUnits.id,
+      variantId: productVariants.id,
+      stockBase: branchStock.quantity,
+      reservedBase: reservationStock.reservedBase,
+      openedAt: branchStock.openedAt,
+      isService: products.isService,
+      isBundle: products.isBundle,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(
+      branchStock,
+      and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)),
+    )
+    .leftJoin(
+      reservationStock,
+      and(eq(reservationStock.variantId, productVariants.id), eq(reservationStock.branchId, branchId)),
+    )
+    .where(inArray(productUnits.id, productUnitIds));
+
+  const normalized: CatalogStockSnapshotRow[] = rows.map((row) => {
+    const stockBase = row.stockBase ?? 0;
+    const reservedBase = row.reservedBase ?? 0;
+    return {
+      branchId,
+      productUnitId: Number(row.productUnitId),
+      variantId: Number(row.variantId),
+      stockBase,
+      reservedBase,
+      availableBase: Math.max(0, stockBase - reservedBase),
+      openedAt: row.openedAt ?? null,
+      isService: !!row.isService,
+      isBundle: !!row.isBundle,
+    };
+  });
+  return applyBundleAvailability(db, normalized, branchId);
 }
 
 /** بند 12ب: تراكب الأسعار التعاقدية — حين يُمرَّر customerId ولديه سعر تعاقدي نشط لوحدةٍ،
@@ -319,7 +418,7 @@ export async function lookupByBarcode(
   const rows = await baseSelect(db, branchId, tier)
     .where(and(activeOnly, eq(productUnits.id, owner.productUnitId)))
     .limit(1);
-  const priced = await applyContractPrices(db, normalize(rows), customerId);
+  const priced = await applyContractPrices(db, normalize(rows, branchId), customerId);
   const withAvail = await applyBundleAvailability(db, priced, branchId);
   // promotions v2: يحلّ العرض للأسطر غير-التعاقدية غير-البكجية غير-الخدمية.
   const [row] = await applyPromotions(withAvail, branchId, tier);
@@ -343,7 +442,7 @@ export async function listByUnitIds(
   const db = getDb();
   if (!db || !productUnitIds.length) return [];
   const rows = await baseSelect(db, branchId, tier).where(and(activeOnly, inArray(productUnits.id, productUnitIds)));
-  const priced = await applyContractPrices(db, normalize(rows), null);
+  const priced = await applyContractPrices(db, normalize(rows, branchId), null);
   const withAvail = await applyBundleAvailability(db, priced, branchId);
   return applyPromotions(withAvail, branchId, tier);
 }
@@ -363,7 +462,7 @@ export async function listByProductIds(
   const rows = await baseSelect(db, branchId, tier)
     .where(and(activeOnly, inArray(products.id, productIds)))
     .orderBy(products.id, productVariants.id, desc(productUnits.isBaseUnit));
-  const priced = await applyContractPrices(db, normalize(rows), null);
+  const priced = await applyContractPrices(db, normalize(rows, branchId), null);
   const withAvail = await applyBundleAvailability(db, priced, branchId);
   return applyPromotions(withAvail, branchId, tier);
 }
@@ -388,7 +487,7 @@ export async function listForPos(
   const where = search ? and(active, search) : active;
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await baseSelect(db, branchId, tier).where(where).orderBy(...order).limit(limit);
-  const priced = await applyContractPrices(db, normalize(rows), opts?.customerId);
+  const priced = await applyContractPrices(db, normalize(rows, branchId), opts?.customerId);
   const withAvail = await applyBundleAvailability(db, priced, branchId);
   return applyPromotions(withAvail, branchId, tier);
 }

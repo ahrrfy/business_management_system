@@ -155,6 +155,7 @@ export default function SalesInvoiceNew() {
         qty: D(it.quantity).toNumber(),
         conversionFactor: D(it.quantity).gt(0) ? D(it.baseQuantity).div(D(it.quantity)).toString() : "1",
         stockBase: catalogByUnit.get(it.productUnitId ?? 0)?.stockBase ?? 0,
+        stockBranchId: catalogByUnit.get(it.productUnitId ?? 0)?.branchId,
         reservedBase: catalogByUnit.get(it.productUnitId ?? 0)?.reservedBase ?? 0,
         availableBase: catalogByUnit.get(it.productUnitId ?? 0)?.availableBase ?? 0,
         isService: catalogByUnit.get(it.productUnitId ?? 0)?.isService ?? false,
@@ -184,7 +185,10 @@ export default function SalesInvoiceNew() {
       };
       if (seed.customerId) dispatch({ type: "SET_ENTITY", id: seed.customerId });
       if (seed.tier) dispatch({ type: "SET_FIELD", field: "tier", value: seed.tier });
-      if (Array.isArray(seed.items) && seed.items.length) dispatch({ type: "ADD_ITEMS", items: seed.items });
+      if (Array.isArray(seed.items) && seed.items.length) {
+        dispatch({ type: "ADD_ITEMS", items: seed.items });
+        dispatch({ type: "MARK_STOCK_STALE" });
+      }
       notify.info("تم نسخ الفاتورة — راجِع الأسعار فهي منسوخة من الفاتورة الأصلية وقد تختلف عن الأسعار الحالية.");
     } catch {
       /* بذرة معطوبة — تجاهل */
@@ -203,6 +207,52 @@ export default function SalesInvoiceNew() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.data?.branchId]);
+
+  // لقطة السطر المخزنية ليست مصدراً للحقيقة: النسخ/اللصق/تغيير الفرع ومسودة قديمة كلها قد تحمل
+  // رقماً قديماً. نعيد قراءة الوحدات الموجودة فقط من الفرع الذي طبّقه الخادم، دورياً وعند التركيز.
+  const stockUnitIds = useMemo(
+    () => Array.from(new Set(state.items.map((item) => item.productUnitId))).slice(0, 500),
+    [state.items],
+  );
+  const liveStockQ = trpc.catalog.stockByUnitIds.useQuery(
+    { branchId: state.branchId, productUnitIds: stockUnitIds },
+    {
+      enabled: stockUnitIds.length > 0,
+      staleTime: 0,
+      refetchInterval: stockUnitIds.length > 0 ? 15_000 : false,
+      refetchOnWindowFocus: true,
+    },
+  );
+
+  useEffect(() => {
+    dispatch({ type: "MARK_STOCK_STALE" });
+  }, [state.branchId]);
+
+  useEffect(() => {
+    const snapshot = liveStockQ.data;
+    if (!snapshot) return;
+    // غير الأدمن قد يطلب فرعاً آخر من واجهة/مسودة قديمة، لكن الخادم يجبره على فرع حسابه.
+    // نعكس الفرع الفعلي في الرأس بدلاً من إبقاء اسمٍ مضلّل فوق أرقام فرع آخر.
+    if (snapshot.branchId !== state.branchId) {
+      dispatch({ type: "SET_FIELD", field: "branchId", value: snapshot.branchId });
+      return;
+    }
+    dispatch({
+      type: "SET_STOCK_SNAPSHOTS",
+      snapshotsByUnitId: Object.fromEntries(
+        snapshot.rows.map((row) => [
+          row.productUnitId,
+          {
+            stockBase: row.stockBase,
+            stockBranchId: row.branchId,
+            reservedBase: row.reservedBase,
+            availableBase: row.availableBase,
+            isService: row.isService,
+          },
+        ]),
+      ),
+    });
+  }, [liveStockQ.data, state.branchId]);
 
   // تهيئة تفعيل/نسبة الضريبة من إعدادات النظام (مرّة واحدة فقط، فاتورة جديدة) — يبقى المستخدم
   // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم). المرجع مُعرَّف أعلاه.
@@ -573,6 +623,7 @@ export default function SalesInvoiceNew() {
           return;
         }
         dispatch({ type: "ADD_ITEMS", items });
+        dispatch({ type: "MARK_STOCK_STALE" });
         setPasteAvailable(false);
         notify.ok("تم لصق محتويات الفاتورة.");
         return;

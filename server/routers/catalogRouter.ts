@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { asc, eq, sql } from "drizzle-orm";
 import { categories, productVariants } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listByProductIds, listByUnitIds, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
+import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listByProductIds, listByUnitIds, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, listStockByUnitIds, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
 import { addUnitBarcodeAlias, listUnitBarcodes, listUnitBarcodesMany, removeUnitBarcodeAlias, resolveProductUnitId } from "../services/catalog/barcodeAliases";
 import { findSimilarProductNames } from "../services/catalog/similarNames";
@@ -241,6 +241,20 @@ export const catalogRouter = router({
     .query(async ({ input, ctx }) => {
       const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, includeAllServices: input.includeAllServices, customerId: input.customerId ?? undefined });
       return redactPosCost(rows, ctx.user);
+    }),
+
+  // تحديث خفيف وموثوق للرصيد داخل السلال المفتوحة/المستعادة. يعيد الفرع الفعلي بعد العزل
+  // حتى لا تعرض الواجهة اسم فرعٍ بينما الخادم قرأ فرع حساب المستخدم.
+  stockByUnitIds: productsReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        productUnitIds: z.array(z.number().int().positive()).max(500),
+      }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopeBranch(ctx, input.branchId);
+      return { branchId, rows: await listStockByUnitIds(input.productUnitIds, branchId) };
     }),
 
   // شاشة الملصقات (١٦/٧): إعادة تسعير قائمة الطباعة عند تبديل فئة السعر — استعلامٌ واحد

@@ -54,6 +54,18 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
       return action.state;
 
     case "SET_FIELD":
+      if (action.field === "branchId" && action.value !== state.branchId) {
+        return {
+          ...state,
+          branchId: action.value as number,
+          items: state.items.map(({
+            availableBase: _available,
+            reservedBase: _reserved,
+            stockBranchId: _stockBranch,
+            ...item
+          }) => item),
+        };
+      }
       return { ...state, [action.field]: action.value } as InvoiceState;
 
     case "SET_TIER_PRICES":
@@ -64,6 +76,28 @@ export function invoiceReducer(state: InvoiceState, action: InvoiceAction): Invo
           const price = action.pricesByUnitId[item.productUnitId];
           return price === undefined ? item : { ...item, price };
         }),
+      };
+
+    case "SET_STOCK_SNAPSHOTS":
+      return {
+        ...state,
+        items: state.items.map((item) => {
+          const snapshot = action.snapshotsByUnitId[item.productUnitId];
+          return snapshot
+            ? { ...item, ...snapshot }
+            : { ...item, stockBase: 0, stockBranchId: undefined, reservedBase: 0, availableBase: 0, isService: false };
+        }),
+      };
+
+    case "MARK_STOCK_STALE":
+      return {
+        ...state,
+        items: state.items.map(({
+          availableBase: _available,
+          reservedBase: _reserved,
+          stockBranchId: _stockBranch,
+          ...item
+        }) => item),
       };
 
     case "SET_ENTITY":

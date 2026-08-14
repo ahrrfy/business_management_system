@@ -16,6 +16,8 @@ import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
  * لحساب admin/manager. هذا يجعل الحجب خادمياً لا مجرد إخفاء أعمدة في الواجهة.
  */
 export interface AdminProductRow {
+  /** الفرع الفعلي الذي تنتمي إليه قيمة stockBase. */
+  branchId: number;
   productId: number;
   productName: string;
   productType: string | null;
@@ -89,9 +91,9 @@ export interface ListProductsAdminInput {
 export async function listProductsAdmin(
   input: ListProductsAdminInput,
   options: { includeSensitivePrices?: boolean } = {},
-): Promise<{ rows: AdminProductRow[]; total: number }> {
+): Promise<{ rows: AdminProductRow[]; total: number; branchId: number }> {
   const db = getDb();
-  if (!db) return { rows: [], total: 0 };
+  if (!db) return { rows: [], total: 0, branchId: input.branchId };
   const includeSensitivePrices = options.includeSensitivePrices === true;
   const limit = Math.min(Math.max(Math.trunc(input.limit ?? 50), 1), 500);
   const offset = Math.max(Math.trunc(input.offset ?? 0), 0);
@@ -237,6 +239,7 @@ export async function listProductsAdmin(
 
   return {
     rows: rows.map((r) => ({
+      branchId: input.branchId,
       productId: Number(r.productId),
       productName: r.productName,
       productType: r.productType ?? null,
@@ -291,6 +294,7 @@ export async function listProductsAdmin(
       barcodeAliases: r.productUnitId != null ? (aliasesByUnit.get(Number(r.productUnitId)) ?? []) : [],
     })),
     total: Number(totalRow?.n ?? 0),
+    branchId: input.branchId,
   };
 }
 
