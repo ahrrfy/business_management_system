@@ -642,7 +642,7 @@ export default function TasksHub() {
   const me = trpc.auth.me.useQuery();
   const role = (me.data?.role ?? "") as RoleKey;
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const isElevated = role === "admin" || role === "manager";
+  const canCrossBranches = role === "admin";
   const canWrite = !!role && moduleAccessAllowed(role, override, "tasks", "FULL", TASK_WRITE_ROLES);
   const myId = me.data?.id != null ? Number(me.data.id) : undefined;
   const myBranchId = me.data?.branchId != null ? Number(me.data.branchId) : null;
@@ -660,7 +660,7 @@ export default function TasksHub() {
     navigate(`/tasks/${id}`);
   }
 
-  const branches = trpc.branches.list.useQuery();
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: canCrossBranches });
   const [showNew, setShowNew] = useState(false);
 
   const tabBtn = (v: typeof tab) =>
@@ -695,12 +695,12 @@ export default function TasksHub() {
       </div>
 
       {tab === "board" && <BoardTab onOpen={openTask} />}
-      {tab === "list" && <ListTab isElevated={isElevated} branches={branches.data ?? []} onOpen={openTask} />}
+      {tab === "list" && <ListTab isElevated={canCrossBranches} branches={branches.data ?? []} onOpen={openTask} />}
       {tab === "mine" && <MineTab myId={myId} onOpen={openTask} />}
 
       {showNew && (
         <NewTaskDialog
-          isElevated={isElevated}
+          isElevated={canCrossBranches}
           myBranchId={myBranchId}
           branches={branches.data ?? []}
           onClose={() => setShowNew(false)}

@@ -22,6 +22,7 @@ export default defineConfig({
       "client/src/lib/cartDraft.test.ts",
       "client/src/lib/pwaUpdateLifecycle.test.ts",
       "client/src/lib/priceHistory.test.ts",
+      "client/src/lib/dashboardActionScope.test.ts",
       "client/src/pages/__tests__/auditedUxContracts.test.ts",
       "client/src/components/scan/BarcodeSearchCue.test.ts",
       "server/auth/password.test.ts",

@@ -305,7 +305,7 @@ function canSeeDeliveryForUser(user: { role: string; permissionsOverride?: unkno
 
 export const workOrderRouter = router({
   // §٧ IDOR: الكاشير لا يجب أن يرى أوامر فروع أخرى. branchScopedProcedure يحقن
-  // scopedBranchId=null للمدير/admin، ورقم الفرع لغيرهما.
+  // scopedBranchId=null للأدمن، ورقم الفرع للمدير وغيره.
   list: workordersReadProcedure
     .input(
       z

@@ -5,6 +5,7 @@ import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
 import { CopyButton } from "@/components/CopyButton";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
@@ -481,7 +482,7 @@ function MetricsBar() {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
-  // المدير/الأدمن يريان الإجمالي عبر الفروع (branchId=undefined) — الموظفون الميدانيون مقيَّدون.
+  // الأدمن يرى الإجمالي؛ مدير الفرع وغيره يقيّدهم الخادم بفرع الحساب.
   const elevated = role === "admin" || role === "manager";
   // رؤية الأرقام المالية (ذمم متأخّرة/نبض المبيعات) — نفس بوّابة reportViewerProcedure/الخادم عبر
   // moduleAccessAllowed (لا قائمة أدوار حرفية ⇒ لا تباعُد). الخادم يُصفّر هذه الحقول لغير المخوّل؛
@@ -1008,15 +1009,25 @@ function MorningBrief() {
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const elevated = role === "admin" || role === "manager";
-  const myBranch = me.data?.branchId ?? 1;
-  const branchScope = elevated ? undefined : myBranch;
-  const metrics = trpc.reports.dashboardMetrics.useQuery({ branchId: branchScope });
+  const accountBranchId = dashboardActionBranchId(me.data?.branchId);
+  // بطاقات «برنامج اليوم» تقود إلى قوائم تنفيذ فرعيّة؛ لذا يجب أن يأتي العدّ من الفرع نفسه.
+  // الأدمن غير المرتبط بفرع يبدأ بأول فرع ظاهر في شاشة التذكيرات، أمّا المدير بلا فرع فلا نعرض
+  // له عدّاداً مجمّعاً لا يستطيع تنفيذه.
+  const branches = trpc.branches.list.useQuery(undefined, {
+    enabled: role === "admin" && accountBranchId === undefined,
+  });
+  const branchScope = accountBranchId ?? (role === "admin" ? branches.data?.[0]?.id : undefined);
+  const metrics = trpc.reports.dashboardMetrics.useQuery(
+    { branchId: branchScope },
+    { enabled: elevated && branchScope !== undefined },
+  );
 
   // القسم للمدير/الأدمن حصراً — الموظّف الميداني لا يحتاج نظرة إشرافية.
   if (!elevated) return null;
   if (metrics.isLoading || !metrics.data) return null;
   const brief = metrics.data.morningBrief;
-  const total = brief.arRemindersDue + brief.promisedToday + brief.overdueWorkOrders;
+  // promisedToday مجموعة جزئية من arRemindersDue؛ لا نعدّها مرّتين في إجمالي البنود.
+  const total = brief.arRemindersDue + brief.overdueWorkOrders;
   // كل الأصفار ⇒ لا حاجة لبانر «برنامج اليوم» — تنظيف بصريّ حين لا شيء يستحقّ الفعل.
   if (total === 0) return null;
 
@@ -1034,9 +1045,14 @@ function MorningBrief() {
       aria-label="برنامج اليوم"
     >
       <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-        <h2 style={{ fontSize: 15, fontWeight: 800, color: T.text, margin: 0 }}>
-          برنامج اليوم
-        </h2>
+        <div>
+          <h2 style={{ fontSize: 15, fontWeight: 800, color: T.text, margin: 0 }}>
+            برنامج اليوم
+          </h2>
+          <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>
+            ضمن فرع التنفيذ — افتح كل بطاقة للوصول إلى قائمتها
+          </div>
+        </div>
         <span style={{ fontSize: 12, color: T.sub }}>{dateLabel} — {fmtAr(total)} بند{total === 1 ? "" : "ود"} للمتابعة</span>
       </header>
       <div
@@ -1062,7 +1078,7 @@ function MorningBrief() {
             href="/reports/ar-reminders"
             label="تذكيرات ذمم مستحقّة"
             count={brief.arRemindersDue}
-            sub="عملاء متأخّرون ≥٧ أيام يحتاجون رسالة"
+            sub="افتح قائمة العملاء ثم أرسل أو سجّل قرار المتابعة"
             accent="var(--sem-info)"
             iconBg="var(--sem-info-bg)"
             icon={<ARIco color="var(--sem-info)" />}
@@ -1070,7 +1086,7 @@ function MorningBrief() {
         )}
         {brief.overdueWorkOrders > 0 && (
           <BriefCard
-            href="/work-orders"
+            href={`/work-orders?branch=${branchScope}`}
             label="أوامر شغل متأخّرة"
             count={brief.overdueWorkOrders}
             sub="تجاوزت التاريخ المتوقّع للتسليم"

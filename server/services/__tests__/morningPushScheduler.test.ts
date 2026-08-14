@@ -36,6 +36,7 @@ const TABLES = [
   "pushNotificationLog",
   "pushSubscriptions",
   "arReminders",
+  "tasks",
   "workOrders",
   "receipts",
   "invoiceItems",
@@ -67,7 +68,7 @@ beforeEach(async () => {
 });
 
 /** يُنشئ WO متأخّرة ⇒ overdueWorkOrders > 0 ⇒ MorningBrief غير فارغ. */
-async function seedOverdueWo(userId: number, orderNumber: string) {
+async function seedOverdueWo(userId: number, orderNumber: string, branchId = 1) {
   const d = db();
   await d.insert(s.customers).values({
     id: userId * 10,
@@ -78,7 +79,7 @@ async function seedOverdueWo(userId: number, orderNumber: string) {
   const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
   await d.insert(s.workOrders).values({
     orderNumber,
-    branchId: 1,
+    branchId,
     customerId: userId * 10,
     status: "IN_PROGRESS",
     dueDate: yesterday,
@@ -111,7 +112,7 @@ describe("runMorningBriefPush", () => {
     const [, payload] = mockSendNotification.mock.calls[0];
     const parsed = JSON.parse(payload as string);
     expect(parsed.kind).toBe("MORNING_BRIEF");
-    expect(parsed.url).toBe("/work-orders");
+    expect(parsed.url).toBe("/work-orders?branch=1");
     expect(parsed.body).toContain("أمر شغل متأخّر");
     expect(parsed.body).not.toContain("عميل-1"); // لا تسريب أسماء عملاء في جسم الإشعار
   });
@@ -142,6 +143,102 @@ describe("runMorningBriefPush", () => {
     expect(mockSendNotification).not.toHaveBeenCalled();
   });
 
+  it("لا يرسل لمدير فرع ١ عدّادات تخص فرعاً آخر", async () => {
+    const d = db();
+    await d.insert(s.branches).values({ id: 2, name: "الثاني", code: "B2", type: "SALES" });
+    await d.insert(s.users).values({
+      id: 4,
+      openId: "u4",
+      name: "مدير فرع ١",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+      isActive: true,
+    });
+    await subscribeUserToPush({ ...SUB, endpoint: SUB.endpoint + "-manager-scope" }, 4);
+    await seedOverdueWo(4, "WO-OTHER-BRANCH", 2);
+
+    const r = await runMorningBriefPush();
+
+    expect(r.candidates).toBe(1);
+    expect(r.sent).toBe(0);
+    expect(r.skippedEmpty).toBe(1);
+    expect(mockSendNotification).not.toHaveBeenCalled();
+  });
+
+  it("لا يحتسب العميل الموعود مرتين في إجمالي بنود الإشعار", async () => {
+    const d = db();
+    await subscribeUserToPush(SUB, 1);
+    await d.insert(s.customers).values({
+      id: 700,
+      name: "عميل موعود",
+      phone: "07901234567",
+      defaultPriceTier: "RETAIL",
+      currentBalance: "100",
+    });
+    const dueDate = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10);
+    await d.insert(s.invoices).values({
+      invoiceNumber: "INV-PROMISE",
+      sourceType: "ORDER",
+      branchId: 1,
+      customerId: 700,
+      dueDate,
+      subtotal: "100",
+      total: "100",
+      status: "PENDING",
+      createdBy: 1,
+    });
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    await d.insert(s.arReminders).values({
+      customerId: 700,
+      branchId: 1,
+      totalUnpaidSnapshot: "100",
+      oldestInvoiceDate: dueDate,
+      daysOverdue: 20,
+      messageBody: "",
+      status: "SKIPPED",
+      skipReason: "وعد اليوم",
+      promisedDate: todayYmd,
+      createdBy: 1,
+    });
+
+    const r = await runMorningBriefPush();
+
+    expect(r.sent).toBe(1);
+    const [, payload] = mockSendNotification.mock.calls[0];
+    const parsed = JSON.parse(payload as string);
+    expect(parsed.counts.arRemindersDue).toBe(1);
+    expect(parsed.counts.promisedToday).toBe(1);
+    expect(parsed.body).toMatch(/^1 بند للمتابعة/);
+    expect(parsed.body).toContain("1 تذكير (منها 1 موعود اليوم)");
+  });
+
+  it("لا يحتسب المهمة المتأخرة المسندة للمستخدم مرتين في الإجمالي", async () => {
+    const d = db();
+    await subscribeUserToPush(SUB, 1);
+    await d.insert(s.tasks).values({
+      taskNumber: "TASK-OVERDUE-MINE",
+      branchId: 1,
+      taskKind: "FOLLOW_UP",
+      taskStatus: "IN_PROGRESS",
+      priority: "HIGH",
+      title: "متابعة متأخرة",
+      assignedTo: 1,
+      createdBy: 1,
+      dueAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const r = await runMorningBriefPush();
+
+    expect(r.sent).toBe(1);
+    const [, payload] = mockSendNotification.mock.calls[0];
+    const parsed = JSON.parse(payload as string);
+    expect(parsed.counts.myOpenTasks).toBe(1);
+    expect(parsed.counts.overdueTasks).toBe(1);
+    expect(parsed.body).toMatch(/^1 بند للمتابعة/);
+    expect(parsed.body).toContain("1 مهمة مفتوحة (منها 1 متأخرة)");
+  });
+
   it("idempotency: إعادة التشغيل نفس اليوم لا يُرسل ثانيةً", async () => {
     await subscribeUserToPush(SUB, 1);
     await seedOverdueWo(1, "WO-D");
@@ -163,9 +260,7 @@ describe("runMorningBriefPush", () => {
     expect(r.sent).toBe(0);
   });
 
-  // إصلاح gap-audit HIGH (٥/٧): مدينو الرصيد الافتتاحي كانوا غائبين كلياً عن هذا الإشعار — أهمّ
-  // قناة متابعة يومية صُمِّمت خصيصاً لهم. تحقّق طرف-لطرف: العدّاد يصل فعلياً لجسم إشعار الأدمن.
-  it("جسم إشعار الأدمن يتضمّن مدين الرصيد الافتتاحي (بلا فاتورة) — لا يعود غائباً بعد الإصلاح", async () => {
+  it("لا يخلط إشعار فرع الأدمن مديني الرصيد الافتتاحي غير المنتمين إلى قائمة ذلك الفرع", async () => {
     await subscribeUserToPush(SUB, 1); // مستخدم ١ = admin (seedBeforeEach)
     const d = db();
     await d.insert(s.customers).values({
@@ -184,14 +279,9 @@ describe("runMorningBriefPush", () => {
     });
 
     const r = await runMorningBriefPush();
-    expect(r.sent).toBe(1);
-    const [, payload] = mockSendNotification.mock.calls[0];
-    const parsed = JSON.parse(payload as string);
-    expect(parsed.counts.arRemindersDue).toBe(1);
-    expect(parsed.body).toContain("تذكير");
-    // تذكيرات AR/وعد اليوم أعلى أولوية من أوامر الشغل المتأخّرة (gap-audit ٥/٧ بند ١٠) ⇒ الرابط
-    // يوجّه مباشرةً لشاشة تذكيرات الذمم لا /dashboard.
-    expect(parsed.url).toBe("/reports/ar-reminders");
+    expect(r.sent).toBe(0);
+    expect(r.skippedEmpty).toBe(1);
+    expect(mockSendNotification).not.toHaveBeenCalled();
   });
 
   // نفس السيناريو لكن للمدير (لا أدمن) — يجب أن يبقى غائباً (لا انتماء فرعيّ لهؤلاء المدينين، ولا
