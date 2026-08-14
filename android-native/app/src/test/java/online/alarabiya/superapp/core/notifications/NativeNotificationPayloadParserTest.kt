@@ -135,6 +135,32 @@ class NativeNotificationPayloadParserTest {
         assertEquals(NativeFeatureIntent.VIEW, destination.intent)
     }
 
+    @Test
+    fun acceptsRoutesAndRedactsAnnouncementNotification() {
+        val result = NativeNotificationPayloadParser.parse(
+            validPayload().toMutableMap().apply {
+                put("kind", "ANNOUNCEMENT")
+                put("destination", "alrueya://app/module/announcements/view/5")
+                put("sensitive", "true")
+                put("title", "اجتماع سرّي")
+                put("body", "تفاصيل داخليّة")
+            },
+        )
+
+        assertTrue("Expected ANNOUNCEMENT to be accepted", result is NativeNotificationParseResult.Accepted)
+        val payload = (result as NativeNotificationParseResult.Accepted).payload
+        // يُقبَل ويُوجَّه لتغذية «إعلاناتي»: وجهةٌ لميزة الإعلانات (VIEW بمعرّف).
+        val destination = payload.destination
+        assertTrue("destination must be an announcements feature", destination is NativeDestination.Feature)
+        val feature = destination as NativeDestination.Feature
+        assertEquals(NativeModule.ANNOUNCEMENTS, feature.module)
+        assertEquals(NativeFeatureIntent.VIEW, feature.intent)
+        assertEquals("5", feature.entityId)
+        // مُنقَّحٌ على شاشة القفل افتراضاً: العنوان/النصّ الأصليّان لا يظهران.
+        assertEquals("تحديث آمن", payload.title)
+        assertEquals("افتح سوبر العربية لعرض التفاصيل.", payload.body)
+    }
+
     private fun validPayload(): Map<String, String> = mapOf(
         "version" to "1",
         "notificationId" to "notif_2026_08_06_1",

@@ -234,6 +234,9 @@ function nativePayloadFor(
     input.kind === "PAYROLL_READY" ||
     // إشعار الإجازة يحمل نوعها ونطاق تواريخها (بيانات شخصية) ⇒ يُنقَّح على شاشة القفل دائماً كالراتب.
     input.kind === "LEAVE_STATUS" ||
+    // الإعلان قد يحمل معلوماتٍ داخليّةً حسّاسة وجمهورُه واسع ⇒ يُنقَّح على شاشة القفل افتراضاً
+    // (العميل يستبدل العنوان/النص بنصٍّ آمن حتى فتح التطبيق).
+    input.kind === "ANNOUNCEMENT" ||
     (input.kind === "ATTENDANCE" && input.lockScreenSafe !== true);
   return normalizeNativePushPayload({
     notificationId,

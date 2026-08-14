@@ -71,6 +71,20 @@ describe("announcementService", () => {
     expect(push.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("دفع الإعلان مُنقَّحٌ على شاشة القفل افتراضاً — لا يُسرّب العنوان/النص", async () => {
+    const d = db();
+    await createAnnouncement({ title: "اجتماع سرّي", body: "تفاصيل داخليّة", audienceType: "ALL" }, 10);
+    const [push] = await d.select().from(nativePushOutbox).where(eq(nativePushOutbox.userId, 11));
+    const payload = push.payload as { sensitive: boolean; title: string; body: string };
+    expect(payload.sensitive).toBe(true);
+    expect(payload.title).toBe("تحديث آمن");
+    expect(payload.body).toBe("افتح سوبر العربية لعرض التفاصيل.");
+    // النصّ الأصليّ لا يُسرَّب في حمولة الدفع (شاشة القفل تعرض النصّ الآمن فقط).
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain("اجتماع سرّي");
+    expect(serialized).not.toContain("تفاصيل داخليّة");
+  });
+
   it("تعميم BRANCH يقصر الإشعار على الفرع المستهدَف وحده", async () => {
     const d = db();
     await createAnnouncement({ title: "فرع٢", body: "..", audienceType: "BRANCH", audienceBranchId: 2 }, 10);
