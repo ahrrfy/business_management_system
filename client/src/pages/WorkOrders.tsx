@@ -1103,6 +1103,7 @@ export default function WorkOrders() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  const canCrossBranches = me.data?.role === "admin";
   // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
   // فنّي المطبعة (workordersExecProcedure) يقدّم المراحل لكن التسليم/الفوترة مال ونقد (كاشير/مدير أو منح صريح).
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
@@ -1114,8 +1115,8 @@ export default function WorkOrders() {
   // في الإسناد inline على بطاقات «طابور وارد» (بَدل فَتح الـDrawer لِكل أَمر).
   // مَفعَّلة لِلمَدير فَقط لِتَوافق صَلاحية `assignableStaff` على الخادم.
   const assignableStaff = trpc.workOrders.assignableStaff.useQuery(undefined, { enabled: isManager });
-  // منتقي الفرع — القائمة تدعم branchId للمرتفعين (المدير/الأدمن يقرآن كل الفروع؛ غيرهما مُجبَر بفرعه خادمياً).
-  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: isManager });
+  // عبور الفروع للأدمن فقط؛ مدير الفرع مقيَّد بفرعه في الواجهة والخادم.
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: canCrossBranches });
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
@@ -1145,7 +1146,7 @@ export default function WorkOrders() {
     from: f.from || undefined,
     to: f.to || undefined,
     assignedTo: f.tech !== "all" ? Number(f.tech) : undefined,
-    branchId: isManager && f.branch !== "all" ? Number(f.branch) : undefined,
+    branchId: canCrossBranches && f.branch !== "all" ? Number(f.branch) : undefined,
   };
   // العلة الجوهرية سابقاً: list({limit:200}) واحدة desc(id) — «مُسلَّم» المتراكمة بلا سقف كانت تملأ
   // النافذة فيسقط عملٌ نشط من اللوحة بصمت. الحل (نمط WorkOrderStation المُصلَح): استعلامان منفصلان —
@@ -1371,7 +1372,7 @@ export default function WorkOrders() {
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
           <input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث (رقم / عنوان / عميل)" />
         </div>
-        {isManager && (
+        {canCrossBranches && (
           <AppSelect
             value={f.branch}
             onValueChange={(v) => setF({ branch: v })}

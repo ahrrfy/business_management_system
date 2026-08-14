@@ -70,10 +70,14 @@ function SortTh({
 }
 
 export default function ARAging() {
-  const branches = trpc.branches.list.useQuery();
+  const me = trpc.auth.me.useQuery();
+  const canCrossBranches = me.data?.role === "admin";
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: canCrossBranches });
   // القائمة كاملة محمَّلة من الخادم ⇒ كل الفلاتر أدناه عميلية (بحث/شريحة/فئة/فرز/ترقيم).
   const [f, setF, resetF] = useUrlFilters({ branch: "", q: "", bucket: "", ctype: "" });
-  const aging = trpc.reports.arAging.useQuery({ branchId: f.branch ? Number(f.branch) : undefined });
+  const aging = trpc.reports.arAging.useQuery({
+    branchId: canCrossBranches && f.branch ? Number(f.branch) : undefined,
+  });
   const sel = useRowSelection<number>();
 
   // الفرز العميلي: تنازلي أولاً (الأهم = الأكبر ديناً) ثم تصاعدي عند النقر مجدداً.
@@ -255,12 +259,14 @@ export default function ARAging() {
 
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <FilterField label="الفرع" className="w-44">
-            <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })}>
-              <option value="">— كل الفروع —</option>
-              {(branches.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
-            </AppSelect>
-          </FilterField>
+          {canCrossBranches && (
+            <FilterField label="الفرع" className="w-44">
+              <AppSelect value={f.branch} onValueChange={(v) => setF({ branch: v })}>
+                <option value="">— كل الفروع —</option>
+                {(branches.data ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
+              </AppSelect>
+            </FilterField>
+          )}
           <FilterField label="بحث (العميل / الهاتف)" className="w-56">
             <Input
               type="search"

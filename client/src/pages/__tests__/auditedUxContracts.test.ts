@@ -53,4 +53,56 @@ describe("audited public UX contracts", () => {
     expect(source).toContain("setRestoreUploadStreaming(true)");
     expect(source).toContain("setRestoreUploadStreaming(false)");
   });
+
+  it("keeps today's actionable reminder count in the same branch scope as its queue", () => {
+    const dashboard = readPage("Dashboard.tsx");
+    const morningBrief = dashboard.slice(
+      dashboard.indexOf("function MorningBrief()"),
+      dashboard.indexOf("const PromiseIco"),
+    );
+    const reminders = readPage("ARReminders.tsx");
+
+    expect(morningBrief).toContain("dashboardActionBranchId(me.data?.branchId)");
+    expect(morningBrief).not.toContain("elevated ? undefined");
+    expect(morningBrief).toContain('href={`/work-orders?branch=${branchScope}`}');
+    expect(reminders).toContain("dashboardActionBranchId(me.data?.branchId)");
+    expect(reminders).toContain("accountBranchId ?? branches.data?.[0]?.id");
+  });
+
+  it("starts both receivable and payable action queues in the account branch", () => {
+    const ar = readPage("ARReminders.tsx");
+    const ap = readPage("APReminders.tsx");
+
+    for (const source of [ar, ap]) {
+      expect(source).toContain("dashboardActionBranchId(me.data?.branchId)");
+      expect(source).toContain("accountBranchId ?? branches.data?.[0]?.id");
+      expect(source).not.toContain("«برنامج اليوم» ولوحة التحكم تجمعان كل الفروع");
+    }
+  });
+
+  it("does not offer a cross-branch work-order filter to a branch manager", () => {
+    const source = readPage("WorkOrders.tsx");
+
+    expect(source).toContain('const canCrossBranches = me.data?.role === "admin"');
+    expect(source).toContain("{canCrossBranches && (");
+    expect(source).toContain('branchId: canCrossBranches && f.branch !== "all"');
+  });
+
+  it("does not offer cross-branch task reads or writes to a branch manager", () => {
+    const source = readPage("TasksHub.tsx");
+
+    expect(source).toContain('const canCrossBranches = role === "admin"');
+    expect(source).toContain("<ListTab isElevated={canCrossBranches}");
+    expect(source).toContain("isElevated={canCrossBranches}");
+  });
+
+  it("keeps aging and stocktake destination filters within manager branch authority", () => {
+    const aging = readPage("ARAging.tsx");
+    const stocktakes = readPage("Stocktakes.tsx");
+
+    expect(aging).toContain('const canCrossBranches = me.data?.role === "admin"');
+    expect(aging).toContain("{canCrossBranches && (");
+    expect(stocktakes).toContain("{isAdmin && (");
+    expect(stocktakes).toContain("enabled: isAdmin");
+  });
 });

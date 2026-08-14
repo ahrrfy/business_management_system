@@ -27,6 +27,7 @@ import { fmtDateTime } from "@/lib/date";
 import { RowActions } from "@/components/list";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { exportRows } from "@/lib/export";
+import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
 
 function fmtAmount(v: string | number): string {
   return Number(v).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
@@ -75,9 +76,11 @@ export default function APReminders() {
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
   const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
-  // نطاق العرض: فرع محدَّد (رقم) | undefined (فرع المستخدم لغير الأدمن، أو الفرع الأول افتراضياً للأدمن).
+  const accountBranchId = dashboardActionBranchId(me.data?.branchId);
+  // نطاق العرض: فرع الحساب أولاً، ثم أول فرع فعّال للأدمن غير المرتبط بفرع.
   const [scope, setScope] = useState<number | undefined>(undefined);
-  const effectiveScope: number | undefined = scope ?? (isAdmin ? branches.data?.[0]?.id : undefined);
+  const effectiveScope: number | undefined =
+    scope ?? (isAdmin ? accountBranchId ?? branches.data?.[0]?.id : undefined);
   // «كل الفروع» — أدمن حصراً، قراءة مجمَّعة فقط (apRemindersRouter.queue/history.allBranches). لا
   // معنى لكتابة «كل الفروع» (assertSupplierHasBranchPO يتحقّق من فرعٍ واحدٍ محدَّد) فنُعطّل إجراءات
   // الصفّ (متابعة/API/تأجيل) في هذا الوضع — الواجهة أدناه تُوضّح السبب بدل إخفائها بلا تفسير.
@@ -276,12 +279,10 @@ export default function APReminders() {
             />
             كل الفروع (قراءة فقط)
           </label>
-          {/* تلميح فرق النطاق: هذه الشاشة تفتح على فرع واحد افتراضياً، بخلاف بطاقة «برنامج اليوم»
-              ولوحة التحكم اللتين تجمعان كل الفروع (gap-audit ٥/٧ medium — لا تلميح بصري سابقاً). */}
           {scope === undefined && !allBranches && (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Info className="size-3.5" aria-hidden />
-              افتراضياً على الفرع الأول — «برنامج اليوم» ولوحة التحكم تجمعان كل الفروع.
+              يبدأ العرض بفرع الحساب، أو أول فرع فعّال عند غياب التعيين.
             </span>
           )}
           {allBranches && (

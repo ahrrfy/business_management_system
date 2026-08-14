@@ -22,17 +22,33 @@ const TASK_OVERDUE_SQL_COND = sql`
  * (تُحسب مرّة واحدة لكل قيمة includeOpeningBalance بغضّ النظر عن عدد المشتركين — تجنّباً لتكرار
  * N+1 الذي أُصلح ٥/٧؛ إضافة رقمٍ شخصيّ داخل تلك الدالة الثقيلة كانت ستُعيد فتح تلك العلّة).
  */
-export async function getMyOpenTasksCount(userId: number): Promise<number> {
+export async function getMyTaskBriefCounts(
+  userId: number,
+  overdueBranchId?: number | null,
+): Promise<{ open: number; overdueInScope: number }> {
   const db = getDb();
-  if (!db) return 0;
+  if (!db) return { open: 0, overdueInScope: 0 };
+  const overdueBranchFilter = overdueBranchId == null
+    ? sql``
+    : sql`AND t.branchId = ${overdueBranchId}`;
   const rows = await db.execute(sql`
-    SELECT COUNT(*) AS c
+    SELECT
+      COUNT(*) AS openCount,
+      COALESCE(SUM(CASE WHEN (${TASK_OVERDUE_SQL_COND}) ${overdueBranchFilter} THEN 1 ELSE 0 END), 0) AS overdueInScope
     FROM tasks t
     WHERE t.assignedTo = ${userId}
       AND t.taskStatus NOT IN ('RESOLVED','CANCELLED')
   `);
   const data = (rows as any)[0] ?? rows;
-  return Number((Array.isArray(data) ? data[0]?.c : 0) ?? 0);
+  const row = Array.isArray(data) ? data[0] : undefined;
+  return {
+    open: Number(row?.openCount ?? 0),
+    overdueInScope: Number(row?.overdueInScope ?? 0),
+  };
+}
+
+export async function getMyOpenTasksCount(userId: number): Promise<number> {
+  return (await getMyTaskBriefCounts(userId)).open;
 }
 
 export interface DashboardMetricsResult {

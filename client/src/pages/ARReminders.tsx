@@ -30,6 +30,7 @@ import { fmtDateTime } from "@/lib/date";
 import { RowActions } from "@/components/list";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { exportRows } from "@/lib/export";
+import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
 
 const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
 
@@ -112,10 +113,11 @@ export default function ARReminders() {
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
   const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
+  const accountBranchId = dashboardActionBranchId(me.data?.branchId);
   // نطاق العرض: فرع محدَّد (رقم) | مدينو الرصيد الافتتاحي ("opening") | undefined (فرع المستخدم لغير الأدمن).
   const [scope, setScope] = useState<number | "opening" | undefined>(undefined);
   const effectiveScope: number | "opening" | undefined =
-    scope ?? (isAdmin ? branches.data?.[0]?.id : undefined);
+    scope ?? (isAdmin ? accountBranchId ?? branches.data?.[0]?.id : undefined);
   const queueInput =
     effectiveScope === "opening"
       ? { openingScope: true }
@@ -319,12 +321,10 @@ export default function ARReminders() {
               أرصدة سابقة مُدوَّرة بلا فواتير نظام — للمتابعة والتحصيل.
             </span>
           )}
-          {/* تلميح فرق النطاق: هذه الشاشة تفتح على فرع واحد افتراضياً، بخلاف بطاقة «برنامج اليوم»
-              ولوحة التحكم اللتين تجمعان كل الفروع (gap-audit ٥/٧ medium — لا تلميح بصري سابقاً). */}
           {scope === undefined && (
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Info className="size-3.5" aria-hidden />
-              افتراضياً على الفرع الأول — «برنامج اليوم» ولوحة التحكم تجمعان كل الفروع.
+              يبدأ العرض بفرع الحساب، أو أول فرع فعّال عند غياب التعيين.
             </span>
           )}
         </div>

@@ -162,7 +162,7 @@ export default function Stocktakes() {
   const isManagerPlus = role === "admin" || role === "manager";
   const isAdmin = role === "admin";
 
-  const branches = trpc.branches.list.useQuery();
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
   const statsQ = trpc.stocktakes.stats.useQuery(undefined, { enabled: canCreate });
   const listQ = trpc.stocktakes.list.useQuery(
     {
@@ -290,22 +290,24 @@ export default function Stocktakes() {
                   <option value="APPROVED">معتمدة ومُسوّاة</option>
                   <option value="CANCELLED">ملغاة</option>
                 </select>
-                <select
-                  className={selectCls}
-                  value={branchId}
-                  onChange={(e) => {
-                    setBranchId(Number(e.target.value));
-                    setPage(0);
-                  }}
-                  aria-label="الفرع"
-                >
-                  <option value={0}>كل الفروع</option>
-                  {(branches.data ?? []).map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
+                {isAdmin && (
+                  <select
+                    className={selectCls}
+                    value={branchId}
+                    onChange={(e) => {
+                      setBranchId(Number(e.target.value));
+                      setPage(0);
+                    }}
+                    aria-label="الفرع"
+                  >
+                    <option value={0}>كل الفروع</option>
+                    {(branches.data ?? []).map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </>
             }
             exportSpec={{
