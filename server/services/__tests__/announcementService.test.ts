@@ -1,6 +1,6 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { branches, users } from "../../../drizzle/schema";
+import { appNotifications, branches, nativePushOutbox, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   acknowledgeAnnouncement,
@@ -23,6 +23,8 @@ beforeEach(async () => {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   await d.execute(sql`TRUNCATE TABLE announcementReads`);
   await d.execute(sql`TRUNCATE TABLE announcements`);
+  await d.execute(sql`TRUNCATE TABLE appNotifications`);
+  await d.execute(sql`TRUNCATE TABLE nativePushOutbox`);
   await d.execute(sql`TRUNCATE TABLE users`);
   await d.execute(sql`TRUNCATE TABLE branches`);
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -55,6 +57,25 @@ describe("announcementService", () => {
     expect(branch.recipientCount).toBe(1); // cash2 فقط
     const role = await createAnnouncement({ title: "كاشيرون", body: "..", audienceType: "ROLE", audienceRole: "cashier" }, 10);
     expect(role.recipientCount).toBe(2); // cash1 + cash2 النشطان
+  });
+
+  it("النشر يُعمّم إشعاراً لكل مستهدَفٍ نشط عدا الناشر (داخل التطبيق + دفع أصيل)", async () => {
+    const d = db();
+    const a = await createAnnouncement({ title: "اجتماع", body: "غداً ٩ص", audienceType: "ALL" }, 10);
+    const notes = await d.select().from(appNotifications).where(eq(appNotifications.kind, "ANNOUNCEMENT"));
+    // المستهدَف النشط 10,11,12,13؛ الناشر 10 مُستثنى والمعطّل 14 مستبعَد ⇒ 11,12,13.
+    expect(notes.map((n) => Number(n.userId)).sort((x, y) => x - y)).toEqual([11, 12, 13]);
+    expect(notes.every((n) => Number(n.entityId) === a.id)).toBe(true);
+    // دفعٌ أصيل مُدرَجٌ في الصندوق الصادر لمستهدَفٍ نشط.
+    const push = await d.select().from(nativePushOutbox).where(eq(nativePushOutbox.userId, 11));
+    expect(push.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("تعميم BRANCH يقصر الإشعار على الفرع المستهدَف وحده", async () => {
+    const d = db();
+    await createAnnouncement({ title: "فرع٢", body: "..", audienceType: "BRANCH", audienceBranchId: 2 }, 10);
+    const notes = await d.select().from(appNotifications).where(eq(appNotifications.kind, "ANNOUNCEMENT"));
+    expect(notes.map((n) => Number(n.userId))).toEqual([12]); // cash2 (فرع ٢) فقط
   });
 
   it("يرفض إنشاء إعلانٍ بتاريخ انتهاءٍ ماضٍ", async () => {

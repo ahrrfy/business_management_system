@@ -25,6 +25,7 @@ export type AppNotificationKind =
   | "ATTENDANCE"
   | "LEAVE_STATUS"
   | "APPROVAL_REQUIRED"
+  | "ANNOUNCEMENT"
   | "SYSTEM";
 
 export interface NotificationPreferencesInput {
@@ -215,6 +216,10 @@ function nativeDestinationFor(
     return entity
       ? `alrueya://app/module/hr/view/${entity}`
       : "alrueya://app/profile";
+  }
+  if (input.kind === "ANNOUNCEMENT") {
+    // إعلانٌ بعينه ⇒ تغذية «إعلاناتي» على تفصيله (القصر العميل يوجّهه للتغذية قبل بوّابة الصلاحية).
+    return entity ? `alrueya://app/module/announcements/view/${entity}` : null;
   }
   return null;
 }

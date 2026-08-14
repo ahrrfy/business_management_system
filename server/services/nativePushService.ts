@@ -68,6 +68,7 @@ const MODULES = new Set([
   "courier",
   "users",
   "settings",
+  "announcements",
 ]);
 const INTENTS = new Set([
   "browse",

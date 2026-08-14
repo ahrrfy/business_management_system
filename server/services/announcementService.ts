@@ -1,5 +1,6 @@
 import { and, count, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { announcementReads, announcements, users } from "../../drizzle/schema";
+import { createAppNotification } from "./appNotificationService";
 import { requireDb } from "./tx";
 
 /**
@@ -68,6 +69,60 @@ async function countTargetedActiveUsers(
   return Number(row?.n ?? 0);
 }
 
+/** مُعرِّفات الموظفين النشطين المستهدَفين (لتعميم الإشعار)، عدا مُعرّفٍ مُستثنى (الناشر). */
+async function targetedActiveUserIds(
+  audienceType: AnnouncementAudienceType,
+  audienceBranchId: number | null,
+  audienceRole: string | null,
+  excludeUserId: number,
+): Promise<number[]> {
+  const db = requireDb();
+  const clauses = [eq(users.isActive, true)];
+  if (audienceType === "BRANCH" && audienceBranchId != null) clauses.push(eq(users.branchId, audienceBranchId));
+  if (audienceType === "ROLE" && audienceRole != null) clauses.push(sql`${users.role} = ${audienceRole}`);
+  const rows = await db.select({ id: users.id }).from(users).where(and(...clauses));
+  return rows.map((r) => Number(r.id)).filter((id) => id !== excludeUserId);
+}
+
+/**
+ * تعميم إشعار الإعلان (best-effort): لكل مستهدَفٍ نشط — عدا الناشر — إشعارٌ داخل التطبيق + دفعٌ
+ * أصيل (kind=ANNOUNCEMENT، رابط عميق لتفصيله) بمفتاح إزالة ازدواج لكل مستخدم. **لا يرمي أبداً**:
+ * الإعلان مُثبَّتٌ سلفاً، والتوصيل best-effort فلا يُفشِل النشر (والموظف يراه عبر التغذية).
+ */
+async function fanOutAnnouncementNotifications(
+  announcementId: number,
+  input: CreateAnnouncementInput,
+  audienceBranchId: number | null,
+  audienceRole: string | null,
+  actorUserId: number,
+): Promise<void> {
+  try {
+    const ids = await targetedActiveUserIds(input.audienceType, audienceBranchId, audienceRole, actorUserId);
+    const title = input.title.trim().slice(0, 180);
+    const body = input.body.trim().slice(0, 600);
+    for (const userId of ids) {
+      try {
+        await createAppNotification({
+          userId,
+          kind: "ANNOUNCEMENT",
+          title,
+          body,
+          route: "/mobile",
+          eventKey: `ANNOUNCEMENT:${announcementId}:${userId}`,
+          entityType: "announcement",
+          entityId: announcementId,
+          requiresAction: input.requiresAck ?? false,
+          push: true,
+        });
+      } catch {
+        // إشعارٌ واحدٌ متعثّر لا يوقف بقيّة المستهدَفين.
+      }
+    }
+  } catch {
+    // تعذّر الاستعلام عن المستهدَفين ⇒ لا تعميم؛ الإعلان مُثبَّتٌ ويُقرأ عبر التغذية.
+  }
+}
+
 export async function createAnnouncement(input: CreateAnnouncementInput, actorUserId: number) {
   const db = requireDb();
   const audienceBranchId = input.audienceType === "BRANCH" ? Number(input.audienceBranchId) : null;
@@ -91,6 +146,8 @@ export async function createAnnouncement(input: CreateAnnouncementInput, actorUs
   });
   const announcementId = Number((res as { insertId: number }).insertId);
   const recipientCount = await countTargetedActiveUsers(input.audienceType, audienceBranchId, audienceRole);
+  // تعميم best-effort بعد تثبيت الإعلان — لا يُفشِل النشرَ إن تعثّر.
+  await fanOutAnnouncementNotifications(announcementId, input, audienceBranchId, audienceRole, actorUserId);
   return { id: announcementId, recipientCount };
 }
 
