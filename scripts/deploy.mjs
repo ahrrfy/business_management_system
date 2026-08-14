@@ -25,6 +25,228 @@ const SHA = /^[a-f0-9]{40}$/;
 const BRIDGE_PROCESS_NAME = "erp-hr-bridge";
 const SYNC_LOCK_TOKEN_ENV = "HR_BRIDGE_DEPLOY_SYNC_LOCK_TOKEN";
 const SYNC_LOCK_PARENT_PID_ENV = "HR_BRIDGE_DEPLOY_SYNC_LOCK_PARENT_PID";
+const WEB_ARTIFACT_ID = /^web-[a-z0-9][a-z0-9._-]{0,126}$/;
+const WEB_ARTIFACT_RETENTION = 3;
+
+function codedError(code, cause) {
+  const error = new Error(code, cause ? { cause } : undefined);
+  error.code = code;
+  return error;
+}
+
+function assertPlainDirectory(directory, code) {
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw codedError(code);
+  return stat;
+}
+
+function assertPlainFile(file, code) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1) {
+    throw codedError(code);
+  }
+}
+
+function assertWebArtifactReady(directory, code) {
+  assertPlainDirectory(directory, code);
+  assertPlainFile(path.join(directory, "index.js"), code);
+  assertPlainDirectory(path.join(directory, "public"), code);
+  assertPlainFile(path.join(directory, "public", "index.html"), code);
+}
+
+function ensureWebReleaseRoot(projectRoot) {
+  const resolvedRoot = path.resolve(projectRoot);
+  assertPlainDirectory(resolvedRoot, "WEB_ARTIFACT_PROJECT_ROOT_INVALID");
+  const runtimeRoot = path.join(resolvedRoot, ".runtime");
+  if (fs.existsSync(runtimeRoot)) {
+    assertPlainDirectory(runtimeRoot, "WEB_ARTIFACT_RUNTIME_ROOT_INVALID");
+  } else {
+    fs.mkdirSync(runtimeRoot, { mode: 0o700 });
+  }
+  const releasesRoot = path.join(runtimeRoot, "web-releases");
+  if (fs.existsSync(releasesRoot)) {
+    assertPlainDirectory(releasesRoot, "WEB_ARTIFACT_RELEASE_ROOT_INVALID");
+  } else {
+    fs.mkdirSync(releasesRoot, { mode: 0o700 });
+  }
+  if (fs.lstatSync(resolvedRoot).dev !== fs.lstatSync(releasesRoot).dev) {
+    throw codedError("WEB_ARTIFACT_RELEASE_CROSS_DEVICE");
+  }
+  return { projectRoot: resolvedRoot, releasesRoot };
+}
+
+function fsyncDirectory(directory) {
+  if (process.platform === "win32") return;
+  const descriptor = fs.openSync(directory, "r");
+  try {
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+export function snapshotWebArtifact(projectRoot, options = {}) {
+  const { projectRoot: resolvedRoot, releasesRoot } = ensureWebReleaseRoot(projectRoot);
+  const id = options.id ?? `web-${Date.now()}-${randomUUID().slice(0, 12)}`;
+  if (!WEB_ARTIFACT_ID.test(id)) throw codedError("WEB_ARTIFACT_ID_INVALID");
+  const distPath = path.join(resolvedRoot, "dist");
+  assertWebArtifactReady(distPath, "WEB_ARTIFACT_BASELINE_INVALID");
+  if (fs.lstatSync(distPath).dev !== fs.lstatSync(releasesRoot).dev) {
+    throw codedError("WEB_ARTIFACT_RELEASE_CROSS_DEVICE");
+  }
+
+  const releaseDirectory = path.join(releasesRoot, id);
+  const temporaryDirectory = path.join(releasesRoot, `.tmp-${id}-${randomUUID()}`);
+  if (fs.existsSync(releaseDirectory) || fs.existsSync(temporaryDirectory)) {
+    throw codedError("WEB_ARTIFACT_RELEASE_EXISTS");
+  }
+  const previousPath = path.join(releaseDirectory, "previous");
+  const failedCandidatePath = path.join(releaseDirectory, "failed-candidate");
+  try {
+    fs.mkdirSync(temporaryDirectory, { mode: 0o700 });
+    const temporaryPrevious = path.join(temporaryDirectory, "previous");
+    fs.cpSync(distPath, temporaryPrevious, {
+      recursive: true,
+      errorOnExist: true,
+      preserveTimestamps: true,
+    });
+    assertWebArtifactReady(temporaryPrevious, "WEB_ARTIFACT_BASELINE_COPY_INVALID");
+    fs.writeFileSync(
+      path.join(temporaryDirectory, "metadata.json"),
+      `${JSON.stringify({ version: 1, id, createdAt: new Date().toISOString() })}\n`,
+      { encoding: "utf8", mode: 0o600, flag: "wx" },
+    );
+    fs.renameSync(temporaryDirectory, releaseDirectory);
+    fsyncDirectory(releasesRoot);
+  } catch (error) {
+    if (fs.existsSync(temporaryDirectory)) {
+      fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+    throw codedError("WEB_ARTIFACT_SNAPSHOT_FAILED", error);
+  }
+  return Object.freeze({
+    id,
+    projectRoot: resolvedRoot,
+    releasesRoot,
+    releaseDirectory,
+    distPath,
+    previousPath,
+    failedCandidatePath,
+  });
+}
+
+function validateWebArtifactSnapshot(snapshot) {
+  const roots = ensureWebReleaseRoot(snapshot?.projectRoot ?? "");
+  if (!WEB_ARTIFACT_ID.test(snapshot?.id ?? "")) {
+    throw codedError("WEB_ARTIFACT_SNAPSHOT_INVALID");
+  }
+  const expectedRelease = path.join(roots.releasesRoot, snapshot.id);
+  if (
+    path.resolve(snapshot.releasesRoot) !== roots.releasesRoot ||
+    path.resolve(snapshot.releaseDirectory) !== expectedRelease ||
+    path.resolve(snapshot.distPath) !== path.join(roots.projectRoot, "dist") ||
+    path.resolve(snapshot.previousPath) !== path.join(expectedRelease, "previous") ||
+    path.resolve(snapshot.failedCandidatePath) !== path.join(expectedRelease, "failed-candidate")
+  ) {
+    throw codedError("WEB_ARTIFACT_SNAPSHOT_INVALID");
+  }
+  assertPlainDirectory(expectedRelease, "WEB_ARTIFACT_SNAPSHOT_INVALID");
+  assertWebArtifactReady(snapshot.previousPath, "WEB_ARTIFACT_BASELINE_INVALID");
+  if (fs.existsSync(snapshot.failedCandidatePath)) {
+    throw codedError("WEB_ARTIFACT_FAILED_CANDIDATE_EXISTS");
+  }
+  return roots;
+}
+
+export function rollbackWebArtifact(snapshot, operations) {
+  const roots = validateWebArtifactSnapshot(snapshot);
+  if (typeof operations?.reload !== "function" || typeof operations?.health !== "function") {
+    throw codedError("WEB_ARTIFACT_ROLLBACK_OPERATIONS_INVALID");
+  }
+  const candidateExists = fs.existsSync(snapshot.distPath);
+  if (candidateExists) {
+    assertPlainDirectory(snapshot.distPath, "WEB_ARTIFACT_CANDIDATE_INVALID");
+    if (fs.lstatSync(snapshot.distPath).dev !== fs.lstatSync(snapshot.previousPath).dev) {
+      throw codedError("WEB_ARTIFACT_RELEASE_CROSS_DEVICE");
+    }
+    fs.renameSync(snapshot.distPath, snapshot.failedCandidatePath);
+  }
+  try {
+    fs.renameSync(snapshot.previousPath, snapshot.distPath);
+  } catch (error) {
+    let restoreError = null;
+    if (candidateExists && !fs.existsSync(snapshot.distPath)) {
+      try {
+        fs.renameSync(snapshot.failedCandidatePath, snapshot.distPath);
+      } catch (candidateRestoreError) {
+        restoreError = candidateRestoreError;
+      }
+    }
+    throw codedError(
+      "WEB_ARTIFACT_SWAP_FAILED",
+      restoreError ? new AggregateError([error, restoreError]) : error,
+    );
+  }
+  fsyncDirectory(roots.projectRoot);
+  fsyncDirectory(snapshot.releaseDirectory);
+  try {
+    operations.reload();
+    operations.health();
+  } catch (error) {
+    throw codedError("WEB_ARTIFACT_ROLLBACK_RUNTIME_FAILED", error);
+  }
+  return snapshot;
+}
+
+export function pruneWebArtifactSnapshots(projectRoot, options = {}) {
+  const { releasesRoot } = ensureWebReleaseRoot(projectRoot);
+  const keepRecent = options.keepRecent ?? WEB_ARTIFACT_RETENTION;
+  if (!Number.isSafeInteger(keepRecent) || keepRecent < 1 || keepRecent > 20) {
+    throw codedError("WEB_ARTIFACT_RETENTION_INVALID");
+  }
+  const protectedIds = new Set(options.protectedIds ?? []);
+  if ([...protectedIds].some((id) => !WEB_ARTIFACT_ID.test(id))) {
+    throw codedError("WEB_ARTIFACT_RETENTION_PROTECTION_INVALID");
+  }
+  const entries = [];
+  const temporaryEntries = [];
+  for (const name of fs.readdirSync(releasesRoot)) {
+    if (/^\.tmp-web-[a-z0-9][a-z0-9._-]*-[0-9a-f-]{36}$/i.test(name)) {
+      const directory = path.join(releasesRoot, name);
+      const stat = fs.lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw codedError("WEB_ARTIFACT_RELEASE_ENTRY_INVALID");
+      }
+      temporaryEntries.push(directory);
+      continue;
+    }
+    if (!WEB_ARTIFACT_ID.test(name)) continue;
+    const directory = path.join(releasesRoot, name);
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw codedError("WEB_ARTIFACT_RELEASE_ENTRY_INVALID");
+    }
+    entries.push({ name, directory, mtimeMs: stat.mtimeMs });
+  }
+  entries.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
+  const kept = new Set(entries.filter((entry) => protectedIds.has(entry.name)).map((entry) => entry.name));
+  for (const entry of entries) {
+    if (kept.size >= keepRecent) break;
+    kept.add(entry.name);
+  }
+  let removed = 0;
+  for (const directory of temporaryEntries) {
+    fs.rmSync(directory, { recursive: true, force: false });
+    removed++;
+  }
+  for (const entry of entries) {
+    if (kept.has(entry.name)) continue;
+    fs.rmSync(entry.directory, { recursive: true, force: false });
+    removed++;
+  }
+  if (removed > 0) fsyncDirectory(releasesRoot);
+  return { kept: kept.size, removed };
+}
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -751,7 +973,7 @@ function runControlEnvironmentSelftest() {
   console.log("hr bridge control environment selftest: NODE_OPTIONS/NODE_PATH stripped");
 }
 
-function readBridgeDeploymentEnvironment(policy, dotenvConfig) {
+function readDeploymentEnvironmentFile(dotenvConfig) {
   const environmentFile = path.join(PROJECT_ROOT, ".env");
   const stat = fs.lstatSync(environmentFile);
   if (
@@ -769,6 +991,11 @@ function readBridgeDeploymentEnvironment(policy, dotenvConfig) {
     quiet: true,
   });
   if (result.error) throw new Error("HR_BRIDGE_ENV_FILE_NOT_READABLE");
+  return parsed;
+}
+
+function readBridgeDeploymentEnvironment(policy, dotenvConfig) {
+  const parsed = readDeploymentEnvironmentFile(dotenvConfig);
   const environment = {};
   for (const key of policy.allowedEnvironmentKeys) {
     if (typeof parsed[key] === "string") environment[key] = parsed[key];
@@ -777,6 +1004,71 @@ function readBridgeDeploymentEnvironment(policy, dotenvConfig) {
   environment.TZ = "UTC";
   environment.HR_BRIDGE_LOAD_DOTENV = "0";
   return environment;
+}
+
+function readWebHealthEnvironment(dotenvConfig) {
+  const parsed = readDeploymentEnvironmentFile(dotenvConfig);
+  const port = Number(parsed.PORT || 3000);
+  const requireSecret = parsed.REQUIRE_INTERNAL_PROXY_SECRET === "1" ? "1" : "0";
+  const secret = parsed.INTERNAL_PROXY_SECRET?.trim() ?? "";
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw codedError("WEB_HEALTH_PORT_INVALID");
+  }
+  if (requireSecret === "1" && !/^[a-f0-9]{64}$/i.test(secret)) {
+    throw codedError("WEB_HEALTH_PROXY_SECRET_INVALID");
+  }
+  return {
+    PORT: String(port),
+    REQUIRE_INTERNAL_PROXY_SECRET: requireSecret,
+    ...(requireSecret === "1" ? { INTERNAL_PROXY_SECRET: secret } : {}),
+  };
+}
+
+function reloadWebProcess() {
+  run(
+    "pm2",
+    [
+      "reload",
+      "ecosystem.config.cjs",
+      "--only",
+      "erp-server",
+      "--update-env",
+    ],
+    { timeoutMs: 2 * 60_000 },
+  );
+}
+
+const INTERNAL_WEB_HEALTH_SCRIPT = String.raw`
+const port = Number(process.env.PORT || 3000);
+const headers = {};
+if (process.env.REQUIRE_INTERNAL_PROXY_SECRET === "1") {
+  const secret = process.env.INTERNAL_PROXY_SECRET || "";
+  if (!/^[a-f0-9]{64}$/i.test(secret)) process.exit(2);
+  headers["X-Internal-Proxy-Secret"] = secret;
+}
+let healthy = false;
+for (let attempt = 0; attempt < 10; attempt++) {
+  try {
+    const response = await fetch("http://127.0.0.1:" + port + "/healthz", {
+      headers,
+      signal: AbortSignal.timeout(5000),
+    });
+    const body = await response.json();
+    if (response.ok && body?.ok === true) {
+      healthy = true;
+      break;
+    }
+  } catch {}
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+}
+if (!healthy) process.exit(3);
+`;
+
+function verifyInternalWebHealth(environment) {
+  run(process.execPath, ["--input-type=module", "-e", INTERNAL_WEB_HEALTH_SCRIPT], {
+    timeoutMs: 20_000,
+    env: { ...controlSubprocessEnvironment(), ...environment },
+  });
 }
 
 function runPreflight(descriptor, releaseTools) {
@@ -1014,83 +1306,115 @@ async function deploy(expectedHead) {
       }),
     );
     const dotenvModule = await import("dotenv");
-    step("2/11 بناء وفحص إصدار الإنتاج وعقد Nginx", () => {
-      run("pnpm", ["build"], { timeoutMs: 10 * 60_000 });
-      run(process.execPath, ["scripts/verify-nginx-abuse-controls.mjs"], {
-        timeoutMs: 30_000,
-      });
-    });
-    const repository = assertRepository(expectedHead);
-    if (repository.head !== repository.remote) {
-      throw new Error("DEPLOY_HEAD_NOT_ORIGIN_MAIN");
-    }
     const deploymentEnvironment = readBridgeDeploymentEnvironment(
       policy,
       dotenvModule.config,
     );
-    const candidateRelease = releaseTools.prepareRelease(PROJECT_ROOT, {
-      sourceCommit: expectedHead,
-      deploymentEnvironment,
-    });
-    const provisional = { id: candidateRelease.id, mode: "enabled" };
-    const beforeMode = step("3/11 فحص المرشح قبل لمس قاعدة البيانات", () =>
-      runPreflight(provisional, releaseTools),
-    );
-
-    step("4/11 إنشاء نسخة احتياطية", () => run("pnpm", ["db:backup"]));
-    step("5/11 تطبيق الهجرات الآمنة وإصلاح الاستقبال والتوصيل", () => {
-      run("pnpm", ["db:migrate:safe"]);
-      run("node", [
-        "scripts/ci-apply-extra-migrations.mjs",
-        "--only=drizzle/migrations/0178_repair_reception_schema_drift.sql",
-      ]);
-      run("node", [
-        "scripts/ci-apply-extra-migrations.mjs",
-        "--only=drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
-      ]);
-    });
-    step("6/11 التحقق من مخطط قاعدة البيانات", () =>
-      run("pnpm", ["db:verify"], { timeoutMs: 5 * 60_000 }),
-    );
-
-    const afterMode = step("7/11 فحص المرشح بعد الهجرات", () =>
-      runPreflight(provisional, releaseTools),
-    );
-    if (beforeMode !== afterMode) {
-      throw new Error("HR_BRIDGE_MODE_CHANGED_DURING_DEPLOY");
-    }
-    const candidate = { id: candidateRelease.id, mode: afterMode };
-    const committed = releaseTools.readState(PROJECT_ROOT).current;
-    if (committed) {
-      step("8/11 إثبات صلاحية إصدار الرجوع مع المخطط الجديد", () => {
-        const rollbackMode = runPreflight(committed, releaseTools);
-        if (rollbackMode !== committed.mode) {
-          throw new Error("HR_BRIDGE_ROLLBACK_MODE_DRIFT");
-        }
+    const webHealthEnvironment = readWebHealthEnvironment(dotenvModule.config);
+    let webArtifact = null;
+    let candidate = null;
+    let committed = null;
+    let smokeStarted = false;
+    try {
+      step("2/11 حفظ إصدار الويب السابق ثم بناء المرشح وفحص Nginx", () => {
+        webArtifact = snapshotWebArtifact(PROJECT_ROOT, {
+          id: `web-${Date.now()}-${expectedHead.slice(0, 12)}`,
+        });
+        pruneWebArtifactSnapshots(PROJECT_ROOT, {
+          keepRecent: WEB_ARTIFACT_RETENTION,
+          protectedIds: [webArtifact.id],
+        });
+        run("pnpm", ["build"], { timeoutMs: 10 * 60_000 });
+        run(process.execPath, ["scripts/verify-nginx-abuse-controls.mjs"], {
+          timeoutMs: 30_000,
+        });
       });
-    } else {
-      console.log("\n▶ 8/11 لا يوجد إصدار immutable سابق (أول انتقال فقط)." );
+      const repository = assertRepository(expectedHead);
+      if (repository.head !== repository.remote) {
+        throw new Error("DEPLOY_HEAD_NOT_ORIGIN_MAIN");
+      }
+      const candidateRelease = releaseTools.prepareRelease(PROJECT_ROOT, {
+        sourceCommit: expectedHead,
+        deploymentEnvironment,
+      });
+      const provisional = { id: candidateRelease.id, mode: "enabled" };
+      const beforeMode = step("3/11 فحص المرشح قبل لمس قاعدة البيانات", () =>
+        runPreflight(provisional, releaseTools),
+      );
+
+      step("4/11 إنشاء نسخة احتياطية", () => run("pnpm", ["db:backup"]));
+      step("5/11 تطبيق الهجرات الآمنة وإصلاح الاستقبال والتوصيل", () => {
+        run("pnpm", ["db:migrate:safe"]);
+        run("node", [
+          "scripts/ci-apply-extra-migrations.mjs",
+          "--only=drizzle/migrations/0178_repair_reception_schema_drift.sql",
+        ]);
+        run("node", [
+          "scripts/ci-apply-extra-migrations.mjs",
+          "--only=drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
+        ]);
+      });
+      step("6/11 التحقق من مخطط قاعدة البيانات", () =>
+        run("pnpm", ["db:verify"], { timeoutMs: 5 * 60_000 }),
+      );
+
+      const afterMode = step("7/11 فحص المرشح بعد الهجرات", () =>
+        runPreflight(provisional, releaseTools),
+      );
+      if (beforeMode !== afterMode) {
+        throw new Error("HR_BRIDGE_MODE_CHANGED_DURING_DEPLOY");
+      }
+      candidate = { id: candidateRelease.id, mode: afterMode };
+      committed = releaseTools.readState(PROJECT_ROOT).current;
+      if (committed) {
+        step("8/11 إثبات صلاحية إصدار الرجوع مع المخطط الجديد", () => {
+          const rollbackMode = runPreflight(committed, releaseTools);
+          if (rollbackMode !== committed.mode) {
+            throw new Error("HR_BRIDGE_ROLLBACK_MODE_DRIFT");
+          }
+        });
+      } else {
+        console.log("\n▶ 8/11 لا يوجد إصدار immutable سابق (أول انتقال فقط)." );
+      }
+
+      step("9/11 إعادة تحميل خادم الويب", reloadWebProcess);
+
+      smokeStarted = true;
+      step("10/11 فحص المتجر خارجياً عبر المضيفين", () =>
+        run(process.execPath, ["scripts/verify-nginx-storefront-readiness.mjs"], {
+          timeoutMs: 5 * 60_000,
+        }),
+      );
+    } catch (candidateError) {
+      if (!webArtifact) throw candidateError;
+      try {
+        step("رجوع آمن إلى إصدار الويب السابق والتحقق الداخلي", () =>
+          rollbackWebArtifact(webArtifact, {
+            reload: reloadWebProcess,
+            health: () => verifyInternalWebHealth(webHealthEnvironment),
+          }),
+        );
+        try {
+          pruneWebArtifactSnapshots(PROJECT_ROOT, {
+            keepRecent: WEB_ARTIFACT_RETENTION,
+            protectedIds: [webArtifact.id],
+          });
+        } catch {
+          console.warn("WEB_ARTIFACT_RETENTION_DEFERRED");
+        }
+      } catch (rollbackError) {
+        throw codedError(
+          "WEB_CANDIDATE_FAILED_ROLLBACK_FAILED",
+          new AggregateError([candidateError, rollbackError]),
+        );
+      }
+      throw codedError(
+        smokeStarted
+          ? "WEB_STOREFRONT_SMOKE_FAILED_ROLLBACK_OK"
+          : "WEB_CANDIDATE_FAILED_ROLLBACK_OK",
+        candidateError,
+      );
     }
-
-    step("9/11 إعادة تحميل خادم الويب", () =>
-      run(
-        "pm2",
-        [
-          "reload",
-          "ecosystem.config.cjs",
-          "--only",
-          "erp-server",
-          "--update-env",
-        ],
-        { timeoutMs: 2 * 60_000 },
-      ),
-    );
-
-    step("10/11 فحص المتجر خارجياً عبر المضيفين", () =>
-      run(process.execPath, ["scripts/verify-nginx-storefront-readiness.mjs"], {
-        timeoutMs: 5 * 60_000,
-      }),
-    );
 
     step("11/11 تفعيل إصدار الجسر والتحقق والحفظ الذري", () => {
       const operations = makeActivationOperations(
@@ -1112,6 +1436,14 @@ async function deploy(expectedHead) {
     );
     if (retention.failed > 0) {
       console.warn("HR_BRIDGE_RELEASE_RETENTION_DEFERRED");
+    }
+    try {
+      pruneWebArtifactSnapshots(PROJECT_ROOT, {
+        keepRecent: WEB_ARTIFACT_RETENTION,
+        protectedIds: [webArtifact.id],
+      });
+    } catch {
+      console.warn("WEB_ARTIFACT_RETENTION_DEFERRED");
     }
   } finally {
     releaseLock();
@@ -1290,7 +1622,7 @@ async function dispatch() {
   await main();
 }
 
-dispatch().catch((error) => {
+function reportDeploymentFailure(error) {
   const code = error?.code || error?.message || "DEPLOY_FAILED";
   console.error(`\n⛔ فشل النشر: ${code}`);
   if (String(code).startsWith("PM2_VERSION_UNSUPPORTED")) {
@@ -1320,6 +1652,21 @@ dispatch().catch((error) => {
     process.exitCode = 2;
     return;
   }
+  if (code === "WEB_STOREFRONT_SMOKE_FAILED_ROLLBACK_OK") {
+    console.error("   فشل فحص المتجر؛ أُعيد إصدار الويب السابق وتحققت صحته داخلياً، وحُفظ المرشح الفاشل للتشخيص.");
+  }
+  if (code === "WEB_CANDIDATE_FAILED_ROLLBACK_OK") {
+    console.error("   فشل مرشح الويب قبل الجاهزية؛ أُعيد الإصدار السابق وتحققت صحته داخلياً.");
+  }
+  if (code === "WEB_CANDIDATE_FAILED_ROLLBACK_FAILED") {
+    console.error("   فشل مرشح الويب وفشل الرجوع أو التحقق الداخلي؛ يلزم تدخل تشغيلي فوري.");
+    process.exitCode = 2;
+    return;
+  }
   console.error("   لا تنفّذ db:restore تلقائياً؛ الاستعادة تتطلب إثبات تلف بيانات وقراراً موثقاً.");
   process.exitCode = 1;
-});
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === DEPLOY_SCRIPT) {
+  dispatch().catch(reportDeploymentFailure);
+}

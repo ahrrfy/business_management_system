@@ -91,17 +91,34 @@ export async function verifyStorefrontOrigin(rawOrigin, options = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
     throw smokeError("STOREFRONT_SMOKE_SETTINGS_INVALID", origin, "storefront.settings");
   }
+  if (!Number.isSafeInteger(settings.fulfillmentBranchId) || settings.fulfillmentBranchId < 1) {
+    throw smokeError("STOREFRONT_SMOKE_SETTINGS_NOT_READY", origin, "storefront.settings");
+  }
   if (!Array.isArray(categories)) {
     throw smokeError("STOREFRONT_SMOKE_CATEGORIES_INVALID", origin, "storefront.categories");
   }
   if (categories.length < minCategories) {
     throw smokeError("STOREFRONT_SMOKE_CATEGORIES_EMPTY", origin, "storefront.categories", String(categories.length));
   }
+  if (categories.some((category) =>
+    !category ||
+    !Number.isSafeInteger(category.id) ||
+    category.id < 1 ||
+    typeof category.name !== "string" ||
+    category.name.trim() === "" ||
+    !Number.isSafeInteger(category.productCount) ||
+    category.productCount < 1
+  )) {
+    throw smokeError("STOREFRONT_SMOKE_CATEGORIES_INVALID", origin, "storefront.categories");
+  }
   if (!catalog || !Array.isArray(catalog.items)) {
     throw smokeError("STOREFRONT_SMOKE_CATALOG_INVALID", origin, "storefront.catalog");
   }
   if (catalog.items.length < minProducts) {
     throw smokeError("STOREFRONT_SMOKE_CATALOG_EMPTY", origin, "storefront.catalog", String(catalog.items.length));
+  }
+  if (catalog.items.some((item) => !item || !Number.isSafeInteger(item.productId) || item.productId < 1)) {
+    throw smokeError("STOREFRONT_SMOKE_CATALOG_INVALID", origin, "storefront.catalog");
   }
 
   return {
@@ -130,7 +147,7 @@ function fakeStorefrontFetch(overrides = {}) {
     }
     const procedure = url.pathname.split("/").at(-1);
     const values = {
-      "storefront.settings": overrides.settings ?? { isOpen: true },
+      "storefront.settings": overrides.settings ?? { isOpen: true, fulfillmentBranchId: 1 },
       "storefront.categories": overrides.categories ?? [{ id: 1, name: "Ready", productCount: 1 }],
       "storefront.catalog": overrides.catalog ?? { items: [{ productId: 1 }] },
     };
@@ -155,6 +172,10 @@ async function selftest() {
     () => verifyStorefrontOrigins(["https://store.example", "https://store.example/"], { fetchImpl: fakeStorefrontFetch(), timeoutMs: 100 }),
     /STOREFRONT_SMOKE_REQUIRES_TWO_ORIGINS/,
   );
+  await assert.rejects(
+    () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ settings: {} }), timeoutMs: 100 }),
+    /STOREFRONT_SMOKE_SETTINGS_NOT_READY/,
+  );
 
   await assert.rejects(
     () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ statuses: { "storefront.catalog": 403 } }), timeoutMs: 100 }),
@@ -167,6 +188,14 @@ async function selftest() {
   await assert.rejects(
     () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ catalog: { items: [] } }), timeoutMs: 100 }),
     /STOREFRONT_SMOKE_CATALOG_EMPTY/,
+  );
+  await assert.rejects(
+    () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ categories: [{ id: 1, name: "Broken", productCount: 0 }] }), timeoutMs: 100 }),
+    /STOREFRONT_SMOKE_CATEGORIES_INVALID/,
+  );
+  await assert.rejects(
+    () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ catalog: { items: [{ productId: 0 }] } }), timeoutMs: 100 }),
+    /STOREFRONT_SMOKE_CATALOG_INVALID/,
   );
   await assert.rejects(
     () => verifyStorefrontOrigin("https://store.example", { fetchImpl: fakeStorefrontFetch({ page: "forbidden" }), timeoutMs: 100 }),
