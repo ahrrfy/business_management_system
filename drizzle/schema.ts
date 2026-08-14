@@ -3302,19 +3302,36 @@ export type StoreConversionDailyMetric =
   typeof storeConversionDailyMetrics.$inferSelect;
 
 /** إعدادات المتجر (صفّ مفرد، نمط taxSettings): فتح/إغلاق المتجر، شريط إعلان، رقم واتساب. */
-export const storeSettings = mysqlTable("storeSettings", {
-  id: int("id").autoincrement().primaryKey(),
-  isOpen: boolean("isOpen").default(true).notNull(),
-  announcement: varchar("announcement", { length: 500 }),
-  whatsappNumber: varchar("whatsappNumber", { length: 20 }),
-  // عتبة التوصيل المجاني (AOV): إن بلغ المجموع الفرعي هذا الحدّ ⇒ أجرة توصيل صفر. null/0 = معطّل.
-  freeShippingThreshold: decimal("freeShippingThreshold", {
-    precision: 15,
-    scale: 2,
+export const storeSettings = mysqlTable(
+  "storeSettings",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    isOpen: boolean("isOpen").default(true).notNull(),
+    announcement: varchar("announcement", { length: 500 }),
+    whatsappNumber: varchar("whatsappNumber", { length: 20 }),
+    /**
+     * الفرع التشغيلي الوحيد للمتجر العام. لا يجوز استنتاجه من فرع المستخدم أو من رقم 1؛
+     * كل الكتالوج والطلب ولوحة الإدارة يعيد قراءة هذا المرجع الصريح.
+     * يبقى nullable لتسمح الهجرة بقاعدة جديدة قبل seed، لكن فتح المتجر يُرفض خادمياً بلا قيمة.
+     */
+    fulfillmentBranchId: bigint("fulfillmentBranchId", { mode: "number" }).references(
+      () => branches.id,
+      { onDelete: "restrict" },
+    ),
+    // عتبة التوصيل المجاني (AOV): إن بلغ المجموع الفرعي هذا الحدّ ⇒ أجرة توصيل صفر. null/0 = معطّل.
+    freeShippingThreshold: decimal("freeShippingThreshold", {
+      precision: 15,
+      scale: 2,
+    }),
+    updatedBy: int("updatedBy").references(() => users.id),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    fulfillmentBranchIdx: index("idx_store_settings_fulfillment_branch").on(
+      table.fulfillmentBranchId,
+    ),
   }),
-  updatedBy: int("updatedBy").references(() => users.id),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+);
 export type StoreSettings = typeof storeSettings.$inferSelect;
 export type InsertStoreSettings = typeof storeSettings.$inferInsert;
 
