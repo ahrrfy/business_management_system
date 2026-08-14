@@ -177,6 +177,29 @@ describe("analyzeCashRemediation", () => {
     expect(result.outflows[1].evidenceMissing).toContain("TREASURY_HANDOVER_OR_FUNDING_PROOF");
   });
 
+  it("لا يسمي تحويل الخزينة مثبتاً إذا غاب CASH_HANDOVER رغم اكتمال الزوج واعتماده", () => {
+    const report = analyzeCashRemediation(
+      {
+        shifts: [shift({ openingBalance: "200.00" })],
+        receipts: [
+          receipt(1, {
+            amount: "50.00",
+            referenceNumber: "CH-1-20260201-2",
+            pairedTreasuryReceiptId: 101,
+            pairedTreasuryReceiptStatus: "COMPLETED",
+            pairedTreasuryApprovalStatus: "APPROVED",
+          }),
+        ],
+      },
+      filters,
+    );
+    expect(report.shifts[0].outflows[0]).toMatchObject({
+      suggestedClassification: "UNVERIFIED_INTERNAL_TRANSFER",
+      confidence: "LOW",
+    });
+    expect(report.shifts[0].outflows[0].evidenceMissing).toContain("LEDGER_ENTRY");
+  });
+
   it("يتعرف إلى إلغاء المصروف المتصافر ولا يسمح بعكسه مرة ثانية", () => {
     const cancelledExpense = {
       id: 80,
@@ -223,6 +246,29 @@ describe("analyzeCashRemediation", () => {
         simulations: [{ receiptId: 1, classification: "DUPLICATE_OR_ERROR" }],
       }),
     ).toThrow(/لا يقبل محاكاة تسوية/);
+
+    const incomplete = analyzeCashRemediation(
+      {
+        ...dataset,
+        receipts: [
+          dataset.receipts[0],
+          {
+            ...dataset.receipts[1],
+            status: "FAILED",
+            ledgerEntryIds: [],
+            ledgerEntryTypes: [],
+          },
+        ],
+      },
+      filters,
+    );
+    expect(incomplete.shifts[0].outflows[0]).toMatchObject({
+      suggestedClassification: "UNVERIFIED_REVERSAL",
+      confidence: "LOW",
+    });
+    expect(incomplete.shifts[0].outflows[0].evidenceMissing).toEqual(
+      expect.arrayContaining(["PAYMENT_PROOF", "MANAGER_DECISION", "LEDGER_ENTRY"]),
+    );
   });
 
   it("يعرض before/after لمحاكاة الدفع الشخصي بلا ترحيل", () => {

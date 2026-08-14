@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCashRemediationExportRows,
   buildCashRemediationPrintInput,
+  cashRemediationScopeFingerprint,
 } from "./CashRemediation";
 import type { CashRemediationReport } from "../../../server/services/cashRemediation/types";
 
@@ -132,5 +133,30 @@ describe("CashRemediation draft output", () => {
     expect(print.columns.map((column) => column.key)).toContain("simulationEffect");
     expect(print.columns.map((column) => column.key)).toContain("rationale");
     expect(print.headerExtra).toContainEqual({ label: "الوضع", value: "DRY-RUN للقراءة فقط" });
+  });
+
+  it("يضمّن كل معرّفات المصروفات المتعارضة في التصدير والطباعة", () => {
+    const multiExpense = structuredClone(report) as CashRemediationReport;
+    multiExpense.shifts[0].outflows[0].source.expenseIds = [31, 32];
+    const rows = buildCashRemediationExportRows(multiExpense);
+    expect(rows[0].source).toBe("EXPENSE 31، 32");
+    const print = buildCashRemediationPrintInput(multiExpense);
+    expect(print.rows[0].source).toBe("EXPENSE 31، 32");
+    expect(print.rows[0].rationale).toBe("فرضية");
+  });
+
+  it("تتغير بصمة النطاق عند أي مرشح فلا تعبر اختيارات قديمة", () => {
+    const base = {
+      from: "2026-02-01",
+      to: "2026-02-28",
+      branchId: "1",
+      shiftIds: "11، 12",
+      userIds: "7",
+    };
+    const fingerprint = cashRemediationScopeFingerprint(base);
+    expect(cashRemediationScopeFingerprint({ ...base, to: "2026-03-01" })).not.toBe(fingerprint);
+    expect(cashRemediationScopeFingerprint({ ...base, branchId: "2" })).not.toBe(fingerprint);
+    expect(cashRemediationScopeFingerprint({ ...base, shiftIds: "11" })).not.toBe(fingerprint);
+    expect(cashRemediationScopeFingerprint({ ...base, userIds: "8" })).not.toBe(fingerprint);
   });
 });

@@ -84,6 +84,25 @@ export type CashRemediationExportRow = {
   draftStatus: string;
 };
 
+export type CashRemediationScopeInput = {
+  from: string;
+  to: string;
+  branchId: string;
+  shiftIds: string;
+  userIds: string;
+};
+
+/** بصمة محافظة: أي تغيير مرئي في المرشحات يبطل اختيارات المحاكاة القديمة. */
+export function cashRemediationScopeFingerprint(input: CashRemediationScopeInput): string {
+  return JSON.stringify({
+    from: input.from,
+    to: input.to,
+    branchId: input.branchId.trim(),
+    shiftIds: input.shiftIds.trim(),
+    userIds: input.userIds.trim(),
+  });
+}
+
 export function buildCashRemediationExportRows(
   report: CashRemediationReport,
 ): CashRemediationExportRow[] {
@@ -209,10 +228,16 @@ export default function CashRemediation() {
   const [userIds, setUserIds] = useState("");
   const [submitted, setSubmitted] = useState<CashRemediationFilters | null>(null);
   const [selections, setSelections] = useState<Record<number, RemediationClassification | "">>({});
+  const [selectionScope, setSelectionScope] = useState<string | null>(null);
+  const currentScope = useMemo(
+    () => cashRemediationScopeFingerprint({ from, to, branchId, shiftIds, userIds }),
+    [from, to, branchId, shiftIds, userIds],
+  );
   useEffect(() => {
     setSelections({});
+    setSelectionScope(null);
     setSubmitted(null);
-  }, [from, to, branchId, shiftIds, userIds]);
+  }, [currentScope]);
   const utils = trpc.useUtils();
   const dryRunClient = utils.client as unknown as DryRunClient;
   const reportQuery = useQuery({
@@ -230,7 +255,11 @@ export default function CashRemediation() {
       const visibleReceiptIds = new Set(
         reportQuery.data?.shifts.flatMap((shift) => shift.outflows.map((row) => row.receiptId)) ?? [],
       );
-      if (!includeSimulation) setSelections({});
+      const scopedSelections = selectionScope === currentScope ? selections : {};
+      if (!includeSimulation) {
+        setSelections({});
+        setSelectionScope(null);
+      }
       setSubmitted({
         from,
         to,
@@ -238,7 +267,7 @@ export default function CashRemediation() {
         shiftIds: parseIds(shiftIds),
         userIds: parseIds(userIds),
         simulations: includeSimulation
-          ? Object.entries(selections)
+          ? Object.entries(scopedSelections)
               .filter((entry): entry is [string, RemediationClassification] => Boolean(entry[1]))
               .filter(([receiptId]) => visibleReceiptIds.has(Number(receiptId)))
               .map(([receiptId, classification]) => ({ receiptId: Number(receiptId), classification }))
@@ -382,8 +411,16 @@ export default function CashRemediation() {
                               className={selectClass}
                               aria-label={`تصنيف محاكاة الإيصال ${row.receiptId}`}
                               disabled={!row.affectsDrawer || row.pairedTreasuryReceiptId != null || row.status === "REVERSED" || row.source.expenseIds.length > 1}
-                              value={selections[row.receiptId] ?? ""}
-                              onChange={(event) => setSelections((current) => ({ ...current, [row.receiptId]: event.target.value as RemediationClassification | "" }))}
+                              value={selectionScope === currentScope ? (selections[row.receiptId] ?? "") : ""}
+                              onChange={(event) => {
+                                const value = event.target.value as RemediationClassification | "";
+                                setSelections((current) =>
+                                  selectionScope === currentScope
+                                    ? { ...current, [row.receiptId]: value }
+                                    : { [row.receiptId]: value },
+                                );
+                                setSelectionScope(currentScope);
+                              }}
                             >
                               <option value="">بلا محاكاة</option>
                               {SIMULATION_OPTIONS.map((option) => <option key={option} value={option}>{CLASSIFICATION_LABEL[option]}</option>)}
