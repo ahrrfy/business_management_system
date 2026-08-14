@@ -9,7 +9,7 @@
  * ويطبّق **نفس محرّك العروض** (`resolvePromotionForLine`) المستعمل في نقطة البيع — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   branchStock,
   branches,
@@ -30,6 +30,11 @@ import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
 import { getProductCategoryIds, resolvePromotionForLine } from "./salesPromotionService";
 import { resolveColorHex, normalizeHex } from "@shared/colorBank";
+import {
+  evaluateStorefrontUnitEligibility,
+  storefrontAvailableCondition,
+  storefrontPublishableCondition,
+} from "./storefrontEligibilityService";
 
 const RETAIL = "RETAIL" as const;
 
@@ -70,7 +75,7 @@ export interface StorefrontProduct {
   salePrice: string | null;
   /** اسم العرض المطبَّق (للشارة) — null لا عرض. */
   promotionName: string | null;
-  /** متوفّر في المخزون (الكمية > 0 بالفرع) — نعم/لا فقط, لا نكشف الكمية. */
+  /** متوفّر: رصيد الفرع بالأساس يغطي معامل وحدة البيع — نعم/لا فقط، لا نكشف الرصيد الكامل. */
   inStock: boolean;
   imageUrl: string | null;
   /** بكج (مجموعة مُجمّعة) — يُعرَض بشارة «بكج» ومحتوياته في التفاصيل. */
@@ -84,7 +89,8 @@ export interface StorefrontProduct {
   /**
    * ألوان المنتج (اسم + لون حقيقي «#RRGGBB» + توفّر) — سواتش تسويقية للزبون. تُملأ إن وُجد ≥ لون معروف.
    * تشمل الألوان **النافدة** (inStock=false) لعرض نطاق الألوان كاملاً؛ الواجهة تميّزها بصرياً (باهتة + «نافد»)
-   * فلا تُضلِّل الزبون. التوفّر = رصيد الفرع > 0 لأيّ متغيّر يحمل هذا اللون (تجميعٌ عبر القياسات).
+   * فلا تُضلِّل الزبون. التوفّر = وجود وحدة متجر مسعّرة يغطي رصيدُ الفرع معاملَها لأيّ متغيّر
+   * يحمل هذا اللون (تجميعٌ عبر القياسات).
    */
   colors?: { name: string; hex: string; inStock: boolean }[];
   /** وحدات البيع التي أتاحها المدير للمتجر؛ تُستخدم لاختيار «بند/كارتون» في صفحة المنتج. */
@@ -120,18 +126,13 @@ const LOW_STOCK_THRESHOLD = 5;
 export interface StorefrontCategory {
   id: number;
   name: string;
+  /** كل المنتجات المنشورة في القسم، بما فيها النافدة. */
   productCount: number;
+  /** المنتجات التي تملك خيار بيع واحداً على الأقل يغطي رصيدُه معاملَ الوحدة. */
+  availableCount: number;
 }
 
-const sellable = and(
-  eq(products.isActive, true),
-  eq(products.isService, false),
-  eq(products.showInStore, true), // إخفاء المدير للمنتج من واجهة المتجر (لوحة hPanel)
-  eq(productVariants.isActive, true),
-  eq(productUnits.isActive, true),
-  eq(productUnits.isStoreSaleUnit, true),
-  sql`${productPrices.price} is not null`
-);
+export type StorefrontAvailability = "IN_STOCK" | "ALL";
 
 /** SELECT موحّد بالحقول الآمنة + كمية الفرع (داخلياً لحساب inStock فقط، لا تُصدَّر). */
 function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number) {
@@ -241,15 +242,26 @@ async function attachVariantColors(
 ): Promise<void> {
   if (!items.length) return;
   const productIds = items.map((i) => i.productId);
-  // نضمّ رصيد الفرع لكل متغيّر (leftJoin ⇒ اللون بلا صفّ رصيد = صفر = نافد) لحساب توفّر كل لون.
+  // نضمّ وحدات بيع المتجر وأسعارها ورصيد الفرع؛ stock>0 وحده لا يكفي إذا كانت الوحدة كرتوناً بمعامل 12.
   const rows = await db
     .select({
       productId: productVariants.productId,
       color: productVariants.color,
       colorHex: productVariants.colorHex,
       stockQty: branchStock.quantity,
+      conversionFactor: productUnits.conversionFactor,
+      retailPrice: productPrices.price,
     })
     .from(productVariants)
+    .leftJoin(productUnits, and(
+      eq(productUnits.variantId, productVariants.id),
+      eq(productUnits.isActive, true),
+      eq(productUnits.isStoreSaleUnit, true),
+    ))
+    .leftJoin(productPrices, and(
+      eq(productPrices.productUnitId, productUnits.id),
+      eq(productPrices.priceTier, RETAIL),
+    ))
     .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
     .orderBy(asc(productVariants.id));
@@ -265,7 +277,13 @@ async function attachVariantColors(
     if (!hex) continue; // اسم غير معروف بلا لون صريح ⇒ لا سواتش (لا اختراع)
     let m = byProduct.get(pid);
     if (!m) { m = new Map(); byProduct.set(pid, m); }
-    const inStock = Number(r.stockQty ?? 0) > 0;
+    const inStock = evaluateStorefrontUnitEligibility({
+      isActive: true,
+      isStoreSaleUnit: true,
+      retailPrice: r.retailPrice ?? null,
+      conversionFactor: r.conversionFactor == null ? null : String(r.conversionFactor),
+      stockBase: r.stockQty == null ? null : Number(r.stockQty),
+    }).available;
     const cur = m.get(hex);
     if (cur) cur.inStock ||= inStock; // تجميع التوفّر عبر متغيّرات نفس اللون
     else if (m.size < 12) m.set(hex, { name, inStock });
@@ -334,14 +352,17 @@ export async function storefrontCatalog(opts: {
   categoryId?: number | null;
   search?: string | null;
   limit?: number;
+  availability?: StorefrontAvailability;
 }): Promise<{ items: StorefrontProduct[] }> {
   const db = getDb();
   if (!db) return { items: [] };
   const branchId = await resolveStorefrontBranchId(opts.branchId);
   const cap = Math.min(Math.max(opts.limit ?? 60, 1), 120);
-  // شبكة المتجر واجهة تحويل لا فهرس أرشيف: لا تعرض إلا ما يمكن شراؤه الآن.
-  // صفحة المنتج المباشرة تبقي حالة «غير متوفر» واضحة إن وصل إليها الزائر من رابط سابق.
-  const conds = [sellable, sql`${branchStock.quantity} >= ${productUnits.conversionFactor}`];
+  const availability = opts.availability ?? "IN_STOCK";
+  const available = storefrontAvailableCondition();
+  // IN_STOCK هو السلوك الافتراضي المتوافق. ALL يعيد كل المنشور ويترك inStock=false للنافد.
+  const conds = [storefrontPublishableCondition()];
+  if (availability === "IN_STOCK") conds.push(available);
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
   const s = String(opts.search ?? "").trim();
   if (s) {
@@ -357,7 +378,13 @@ export async function storefrontCatalog(opts: {
   }
   const rows = await safeSelect(db, branchId)
     .where(and(...conds))
-    .orderBy(desc(products.isFeatured), desc(sql`${productImages.url} is not null`), asc(products.name), asc(productUnits.conversionFactor))
+    .orderBy(
+      desc(available),
+      desc(products.isFeatured),
+      desc(sql`${productImages.url} is not null`),
+      asc(products.name),
+      asc(productUnits.conversionFactor),
+    )
     .limit(cap * 3);
 
   const seen = new Set<number>();
@@ -375,7 +402,7 @@ export async function storefrontCatalog(opts: {
   return { items };
 }
 
-/** فئات المتجر: الفئات التي فيها منتج واحد على الأقل قابل للاقتناء. */
+/** فئات المتجر: لا تختفي لمجرد نفاد المخزون؛ تُعيد المنشور والمتاح كلّاً على حدة. */
 export async function storefrontCategories(branchIdInput?: number): Promise<StorefrontCategory[]> {
   const db = getDb();
   if (!db) return [];
@@ -385,6 +412,7 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
       id: categories.id,
       name: categories.name,
       productCount: sql<number>`COUNT(DISTINCT ${products.id})`,
+      availableCount: sql<number>`COUNT(DISTINCT CASE WHEN ${branchStock.quantity} >= ${productUnits.conversionFactor} THEN ${products.id} END)`,
     })
     .from(products)
     .innerJoin(productVariants, and(eq(productVariants.productId, products.id), eq(productVariants.isActive, true)))
@@ -393,19 +421,22 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
       and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isActive, true), eq(productUnits.isStoreSaleUnit, true))
     )
     .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .innerJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId), gt(branchStock.quantity, 0)))
+    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     .innerJoin(categories, eq(products.categoryId, categories.id))
     // showInStore: يحترم إخفاء المدير للقسم من واجهة المتجر (لوحة hPanel)؛ والترتيب بـsortOrder.
     .where(and(
-      eq(products.isActive, true),
-      eq(products.isService, false),
-      eq(products.showInStore, true),
+      storefrontPublishableCondition(),
+      eq(categories.isActive, true),
       eq(categories.showInStore, true),
-      sql`${branchStock.quantity} >= ${productUnits.conversionFactor}`
     ))
     .groupBy(categories.id, categories.name, categories.sortOrder)
     .orderBy(asc(categories.sortOrder), asc(categories.name));
-  return rows.map((r) => ({ id: Number(r.id), name: r.name, productCount: Number(r.productCount) }));
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: r.name,
+    productCount: Number(r.productCount),
+    availableCount: Number(r.availableCount),
+  }));
 }
 
 /** صفحة منتج واحد (تفاصيل آمنة + توفّر + سعر عرض). */
@@ -414,8 +445,8 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   if (!db) return null;
   const branchId = await resolveStorefrontBranchId(branchIdInput);
   const rows = await safeSelect(db, branchId)
-    .where(and(sellable, eq(products.id, productId)))
-    .orderBy(asc(productUnits.conversionFactor));
+    .where(and(storefrontPublishableCondition(), eq(products.id, productId)))
+    .orderBy(desc(storefrontAvailableCondition()), asc(productUnits.conversionFactor));
   if (!rows.length) return null;
   const options = rows.map(toStorefront);
   await applyStorefrontPromotions(options, branchId);
@@ -493,7 +524,7 @@ export async function storefrontRelated(
   if (!cat || cat.categoryId == null) return [];
   const cap = Math.min(Math.max(limit, 1), 20);
   const rows = await safeSelect(db, branchId)
-    .where(and(sellable, eq(products.categoryId, Number(cat.categoryId)), ne(products.id, productId), sql`${branchStock.quantity} >= ${productUnits.conversionFactor}`))
+    .where(and(storefrontPublishableCondition(), eq(products.categoryId, Number(cat.categoryId)), ne(products.id, productId), storefrontAvailableCondition()))
     .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name), asc(productUnits.conversionFactor))
     .limit(cap * 3);
   const seen = new Set<number>();

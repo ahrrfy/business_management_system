@@ -89,6 +89,7 @@ describe("listStoreCatalog — التجميع والترتيب", () => {
     expect(notebook.retailPrice).toBe("1000.00");
     expect(notebook.saleUnitName).toBe("قطعة");
     expect(notebook.stockBase).toBe(50);
+    expect(notebook.inStock).toBe(true);
     expect(notebook.hasImage).toBe(true);
     expect(notebook.variantId).toBe(1);
 
@@ -114,33 +115,57 @@ describe("listStoreCatalog — التجميع والترتيب", () => {
     expect(notebook.retailPrice).toBe("5000.00");
     expect(notebook.saleUnitName).toBe("بند");
     expect(notebook.stockBase).toBe(50);
+    expect(notebook.inStock).toBe(false);
+    expect(notebook.readinessReasons).toContain("BELOW_SALE_UNIT_FACTOR");
+    expect(notebook.variants[0].units.find((unit) => unit.productUnitId === 10)?.availableUnits).toBe(0);
+  });
+
+  it("لا يجمع رصيد متغيّرات المنتج ولا يختار MIN variant هدفاً للتسوية", async () => {
+    const d = db();
+    await d.insert(s.productVariants).values({ id: 10, productId: 1, sku: "V1-BLUE", color: "أزرق", costPrice: "4.00" });
+    await d.insert(s.productUnits).values({ id: 10, variantId: 10, unitName: "قطعة", isBaseUnit: true, isStoreSaleUnit: true });
+    await d.insert(s.productPrices).values({ productUnitId: 10, priceTier: "RETAIL", price: "1000.00" });
+    await d.insert(s.branchStock).values({ variantId: 10, branchId: 1, quantity: 100 });
+
+    const { rows } = await listStoreCatalog({ branchId: 1 });
+    const notebook = rows.find((row) => row.productId === 1)!;
+    expect(notebook.variantId).toBeNull();
+    expect(notebook.stockBase).toBeNull();
+    expect(notebook.variants.map((variant) => [variant.variantId, variant.stockBase])).toEqual([
+      [1, 50],
+      [10, 100],
+    ]);
   });
 });
 
-describe("listStoreCatalog — sellableTotal (العدد الحقيقي الظاهر للزبون، بمعزل عن total)", () => {
-  it("بلا فلاتر: total=4 (كل المنتجات) لكن sellableTotal=3 (يستبعد المخفيّ #3 فقط — لا يشترط مخزوناً>0)", async () => {
-    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1, limit: 50 });
+describe("listStoreCatalog — publishableTotal/sellableTotal بمعزل عن total", () => {
+  it("يفصل كل الكتالوج عن المنشور وعن القابل للشراء فعلياً", async () => {
+    const { total, publishableTotal, sellableTotal } = await listStoreCatalog({ branchId: 1, limit: 50 });
     expect(total).toBe(4);
+    expect(publishableTotal).toBe(3); // #1 و#2 و#4 منشورة حتى مع نفاد #2
     expect(sellableTotal).toBe(2);
   });
 
   it("hiddenOnly يُصفّي total للمخفيّ فقط، لكن sellableTotal يبقى يعكس القابل للبيع فعلياً (لا يتناقض معه)", async () => {
-    const { rows, total, sellableTotal } = await listStoreCatalog({ branchId: 1, hiddenOnly: true });
+    const { rows, total, publishableTotal, sellableTotal } = await listStoreCatalog({ branchId: 1, hiddenOnly: true });
     expect(rows.map((r) => r.productId)).toEqual([3]);
     expect(total).toBe(1);
+    expect(publishableTotal).toBe(3);
     expect(sellableTotal).toBe(2); // معيار مستقلّ عن فلتر العرض hiddenOnly
   });
 
   it("categoryId=1 يُضيّق كلا العدَدين لنفس القسم", async () => {
-    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1, categoryId: 1 });
+    const { total, publishableTotal, sellableTotal } = await listStoreCatalog({ branchId: 1, categoryId: 1 });
     expect(total).toBe(2);
+    expect(publishableTotal).toBe(2);
     expect(sellableTotal).toBe(1); // الدفتر فقط؛ القلم نافد
   });
 
   it("منتج بلا سعر مفرد (RETAIL) لا يُحتسب ضمن sellableTotal رغم isActive/showInStore", async () => {
     await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 1));
-    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1 });
+    const { total, publishableTotal, sellableTotal } = await listStoreCatalog({ branchId: 1 });
     expect(total).toBe(4); // total لا يفحص وجود سعر
+    expect(publishableTotal).toBe(2); // #2 النافد و#4 المتاح
     expect(sellableTotal).toBe(1); // فقدَ الدفتر أهليته
   });
 });

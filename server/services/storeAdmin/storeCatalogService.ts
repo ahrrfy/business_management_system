@@ -4,13 +4,22 @@
  * الذرّي — لا كتابة branchStock عارية). الصورة على مستوى المنتج (primary). كلّه بوّابة store.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { withTx } from "../tx";
 import { requestStockAdjustment } from "../inventory/adjustmentApproval";
 import { assertValidImageDataUrl } from "../../lib/imageValidation";
+import {
+  storefrontAvailableCondition,
+  storefrontPublishableCondition,
+  type StorefrontReadinessReason,
+} from "../storefrontEligibilityService";
+import {
+  loadStorefrontReadiness,
+  type StorefrontReadinessVariant,
+} from "./storefrontReadinessService";
 
 export interface StoreCatalogRow {
   productId: number;
@@ -19,10 +28,16 @@ export interface StoreCatalogRow {
   isActive: boolean;
   isFeatured: boolean;
   showInStore: boolean;
+  /** توافق قديم: لا يُملأ إلا إذا كان للمنتج متغيّر واحد بالضبط. */
   variantId: number | null;
   retailPrice: string | null;
   saleUnitName: string | null;
-  stockBase: number;
+  /** توافق قديم: رصيد المتغيّر الوحيد؛ null للمنتج متعدد المتغيّرات كي لا يوحي بمجموع كاذب. */
+  stockBase: number | null;
+  publishable: boolean;
+  inStock: boolean;
+  readinessReasons: StorefrontReadinessReason[];
+  variants: StorefrontReadinessVariant[];
   hasImage: boolean;
   imageUrl: string | null;
 }
@@ -48,9 +63,9 @@ export interface StoreCatalogListInput {
  */
 export async function listStoreCatalog(
   input: StoreCatalogListInput,
-): Promise<{ rows: StoreCatalogRow[]; total: number; sellableTotal: number }> {
+): Promise<{ rows: StoreCatalogRow[]; total: number; publishableTotal: number; sellableTotal: number }> {
   const db = getDb();
-  if (!db) return { rows: [], total: 0, sellableTotal: 0 };
+  if (!db) return { rows: [], total: 0, publishableTotal: 0, sellableTotal: 0 };
   const limit = Math.min(input.limit ?? 50, 200);
   const offset = Math.max(input.offset ?? 0, 0);
 
@@ -63,6 +78,7 @@ export async function listStoreCatalog(
   if (qPat) conds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
   if (input.featuredOnly) conds.push(eq(products.isFeatured, true));
   if (input.hiddenOnly) conds.push(eq(products.showInStore, false));
+  if (input.missingImageOnly) conds.push(isNull(productImages.id));
   const whereClause = conds.length ? and(...conds) : undefined;
 
   const base = db
@@ -73,15 +89,15 @@ export async function listStoreCatalog(
       isActive: products.isActive,
       isFeatured: products.isFeatured,
       showInStore: products.showInStore,
-      variantId: sql<number | null>`MIN(${productVariants.id})`,
-      stockBase: sql<number>`COALESCE(SUM(${branchStock.quantity}), 0)`,
       imageUrl: sql<string | null>`MAX(${productImages.url})`,
     })
     .from(products)
     .leftJoin(categories, eq(categories.id, products.categoryId))
-    .leftJoin(productVariants, and(eq(productVariants.productId, products.id), eq(productVariants.isActive, true)))
-    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)))
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)))
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      isNull(productImages.variantId),
+    ))
     .where(whereClause)
     .groupBy(products.id)
     .orderBy(desc(products.isFeatured), asc(products.name))
@@ -90,79 +106,65 @@ export async function listStoreCatalog(
 
   const raw = await base;
   const productIds = raw.map((r) => Number(r.productId));
-  const salePriceRows = productIds.length
-    ? await db
-        .select({
-          productId: productVariants.productId,
-          unitName: productUnits.unitName,
-          price: productPrices.price,
-        })
-        .from(productVariants)
-        .innerJoin(
-          productUnits,
-          and(
-            eq(productUnits.variantId, productVariants.id),
-            eq(productUnits.isActive, true),
-            eq(productUnits.isStoreSaleUnit, true),
-          ),
-        )
-        .innerJoin(
-          productPrices,
-          and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")),
-        )
-        .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
-        .orderBy(asc(productVariants.productId), asc(productUnits.conversionFactor), asc(productUnits.id))
-    : [];
-  const firstSalePrice = new Map<number, { unitName: string; price: string }>();
-  for (const priceRow of salePriceRows) {
-    const productId = Number(priceRow.productId);
-    if (!firstSalePrice.has(productId)) {
-      firstSalePrice.set(productId, { unitName: priceRow.unitName, price: priceRow.price });
-    }
-  }
-  let rows: StoreCatalogRow[] = raw.map((r) => ({
-    productId: Number(r.productId),
-    name: r.name,
-    categoryName: r.categoryName ?? null,
-    isActive: r.isActive == null ? true : !!r.isActive,
-    isFeatured: !!r.isFeatured,
-    showInStore: r.showInStore == null ? true : !!r.showInStore,
-    variantId: r.variantId != null ? Number(r.variantId) : null,
-    retailPrice: firstSalePrice.get(Number(r.productId))?.price ?? null,
-    saleUnitName: firstSalePrice.get(Number(r.productId))?.unitName ?? null,
-    stockBase: Number(r.stockBase ?? 0),
-    hasImage: r.imageUrl != null,
-    imageUrl: r.imageUrl ?? null,
-  }));
-  if (input.missingImageOnly) rows = rows.filter((r) => !r.hasImage);
+  const readiness = await loadStorefrontReadiness({ branchId: input.branchId, productIds });
+  const rows: StoreCatalogRow[] = raw.map((r) => {
+    const productId = Number(r.productId);
+    const state = readiness.get(productId);
+    const onlyVariant = state?.variants.length === 1 ? state.variants[0] : null;
+    return {
+      productId,
+      name: r.name,
+      categoryName: r.categoryName ?? null,
+      isActive: r.isActive === true,
+      isFeatured: !!r.isFeatured,
+      showInStore: r.showInStore == null ? true : !!r.showInStore,
+      variantId: onlyVariant?.variantId ?? null,
+      retailPrice: state?.preferredUnit?.retailPrice ?? null,
+      saleUnitName: state?.preferredUnit?.unitName ?? null,
+      stockBase: onlyVariant?.stockBase ?? null,
+      publishable: state?.publishable ?? false,
+      inStock: state?.inStock ?? false,
+      readinessReasons: state?.readinessReasons ?? ["NO_ACTIVE_VARIANT"],
+      variants: state?.variants ?? [],
+      hasImage: r.imageUrl != null,
+      imageUrl: r.imageUrl ?? null,
+    };
+  });
 
-  const [cnt] = await db.select({ n: sql<number>`COUNT(*)` }).from(products).where(whereClause);
+  const [cnt] = await db
+    .select({ n: sql<number>`COUNT(DISTINCT ${products.id})` })
+    .from(products)
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      isNull(productImages.variantId),
+    ))
+    .where(whereClause);
 
   // العدد الحقيقي «الظاهر فعلياً» — نفس شرط sellable في storefrontService، بنفس فلترة الفئة/البحث
   // (لا فلاتر العرض featuredOnly/hiddenOnly/missingImageOnly — تلك أدوات تصفّح للمدير لا معيار بيع).
-  const sellableConds = [
-    eq(products.isActive, true),
-    eq(products.isService, false),
-    eq(products.showInStore, true),
-    eq(productVariants.isActive, true),
-    eq(productUnits.isActive, true),
-    eq(productUnits.isStoreSaleUnit, true),
-    sql`${productPrices.price} is not null`,
-    sql`${branchStock.quantity} >= ${productUnits.conversionFactor}`,
-  ];
-  if (input.categoryId === 0 || input.categoryId === null) sellableConds.push(isNull(products.categoryId));
-  else if (input.categoryId != null) sellableConds.push(eq(products.categoryId, input.categoryId));
-  if (qPat) sellableConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
-  const [sellableCnt] = await db
-    .select({ n: sql<number>`COUNT(DISTINCT ${products.id})` })
+  const eligibilityConds = [storefrontPublishableCondition()];
+  if (input.categoryId === 0 || input.categoryId === null) eligibilityConds.push(isNull(products.categoryId));
+  else if (input.categoryId != null) eligibilityConds.push(eq(products.categoryId, input.categoryId));
+  if (qPat) eligibilityConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
+  const [eligibilityCnt] = await db
+    .select({
+      publishable: sql<number>`COUNT(DISTINCT ${products.id})`,
+      available: sql<number>`COUNT(DISTINCT CASE WHEN ${storefrontAvailableCondition()} THEN ${products.id} END)`,
+    })
     .from(products)
     .innerJoin(productVariants, eq(productVariants.productId, products.id))
     .innerJoin(productUnits, eq(productUnits.variantId, productVariants.id))
     .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")))
-    .innerJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)))
-    .where(and(...sellableConds));
+    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)))
+    .where(and(...eligibilityConds));
 
-  return { rows, total: Number(cnt?.n ?? 0), sellableTotal: Number(sellableCnt?.n ?? 0) };
+  return {
+    rows,
+    total: Number(cnt?.n ?? 0),
+    publishableTotal: Number(eligibilityCnt?.publishable ?? 0),
+    sellableTotal: Number(eligibilityCnt?.available ?? 0),
+  };
 }
 
 /** تمييز منتج (يتصدّر العرض في المتجر). */

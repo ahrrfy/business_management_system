@@ -161,6 +161,7 @@ try {
     ["deliveryOutbox", "processedAt"],
     ["invoices", "contactName"], ["invoices", "contactPhone"], // 0150 reception identity snapshot
     ["invoices", "deliveryFree"], ["invoices", "deliveryWaivedAmount"], // 0152 reception/free-delivery disclosure
+    ["productUnits", "isStoreSaleUnit"], // 0121 storefront eligibility; غيابه يحوّل API الكتالوج/الفئات إلى 500
     ["invoices", "correctionOfInvoiceId"], ["invoices", "correctedByInvoiceId"], // 0169 correction lineage
     ["invoiceItems", "isGift"], // 0149 gift line disclosure
     ["workOrders", "deliveryFeeCollection"], ["workOrders", "contactName"], ["workOrders", "contactPhone"],

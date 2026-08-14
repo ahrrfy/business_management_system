@@ -272,6 +272,7 @@ describe("importProducts", () => {
     expect(v.costPrice).toBe("1.00");
     const u = (await db().select().from(s.productUnits))[0];
     expect(u.isBaseUnit).toBe(true);
+    expect(u.isStoreSaleUnit).toBe(true);
     const pr = (await db().select().from(s.productPrices))[0];
     expect(pr.price).toBe("2.00");
     expect(pr.priceTier).toBe("RETAIL");
@@ -310,7 +311,10 @@ describe("importProducts", () => {
       actor,
     );
     expect(r.committed).toBe(true);
-    expect(await db().select().from(s.productUnits)).toHaveLength(2);
+    const units = await db().select().from(s.productUnits);
+    expect(units).toHaveLength(2);
+    expect(units.find((unit) => unit.isBaseUnit)?.isStoreSaleUnit).toBe(true);
+    expect(units.find((unit) => !unit.isBaseUnit)?.isStoreSaleUnit).toBe(false);
     expect(await db().select().from(s.productVariants)).toHaveLength(1);
   });
 
@@ -988,6 +992,7 @@ describe("importProducts — شريحة تكامل الاستيراد (§٥.١/�
     const u = (await db().select().from(s.productUnits))[0];
     expect(u.unitName).toBe("قطعة");
     expect(u.isBaseUnit).toBe(true); // صف واحد بلا تحديد ⇒ وحدته هي الأساس
+    expect(u.isStoreSaleUnit).toBe(true); // الاستيراد لا يُنشئ منتجاً مخفياً من المتجر بصمت
     // المخزون الافتتاحي: حركة ADJUST بمرجع OPENING + رصيد فرع = 4 داخل نفس المعاملة.
     const stock = (await db().select().from(s.branchStock))[0];
     expect(stock.quantity).toBe(4);

@@ -75,6 +75,8 @@ export const storefrontRouter = router({
         categoryId: z.number().int().positive().nullish(),
         search: z.string().max(64).optional(),
         limit: z.number().int().min(1).max(120).default(60),
+        // متوافق للخلف: غياب الحقل يبقي السلوك القديم (المتوفر فقط).
+        availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
       })
     )
     .query(({ input }) =>
@@ -82,6 +84,7 @@ export const storefrontRouter = router({
         categoryId: input.categoryId ?? null,
         search: input.search,
         limit: input.limit,
+        availability: input.availability,
       })
     ),
 

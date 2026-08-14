@@ -735,6 +735,9 @@ async function persistProductsInTx(
           conversionFactor: u.conversionFactor,
           barcode: u.barcode ?? null,
           isBaseUnit: !!u.isBaseUnit,
+          // عقد المتجر: الاستيراد لا ينشئ وحدة أساس صامتة غير قابلة للبيع أونلاين.
+          // الوحدات الأكبر تبقى اختياراً صريحاً من شاشة المنتج.
+          isStoreSaleUnit: !!u.isBaseUnit,
         });
         const productUnitId = insertId(uRes);
         for (const [tier, price] of Array.from(u.prices)) {
