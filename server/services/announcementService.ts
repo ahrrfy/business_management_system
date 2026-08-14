@@ -1,12 +1,14 @@
-import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { announcementReads, announcements, users } from "../../drizzle/schema";
-import { createAppNotification } from "./appNotificationService";
 import { requireDb } from "./tx";
 
 /**
  * خدمة إعلانات الموظفين الداخلية — الإدارة تنشئ وتستهدف، والموظفون المستهدَفون يقرؤون/يُقرّون.
- * التوصيل عبر نظام الإشعارات القائم (داخل التطبيق + دفع أصيل، نوع ANNOUNCEMENT).
  * الاستهداف: ALL كل الموظفين · BRANCH فرعٌ بعينه · ROLE دورٌ بعينه.
+ *
+ * المرحلة ١ (هذه): نموذج البيانات + API + صلاحيات + إقرار + استهداف. **بلا تعميم إشعار** —
+ * التوصيل (مركز الإشعارات داخل التطبيق + دفع أصيل بتنقيح ومزامنة قراءة صحيحين) يُبنى في المرحلة ٢
+ * مع الواجهة الأصيلة، تجنّباً لدفعٍ يُهمله العميل الحاليّ صامتاً ولنموذج قراءة مزدوج.
  */
 
 export type AnnouncementAudienceType = "ALL" | "BRANCH" | "ROLE";
@@ -23,7 +25,7 @@ export interface CreateAnnouncementInput {
   expiresAt?: Date | null;
 }
 
-/** هل يُطابق جمهور الإعلان مستخدماً بعينه؟ (يُستعمل لتحديد المستلمين ولحراسة القراءة/الإقرار.) */
+/** هل يُطابق جمهور الإعلان مستخدماً بعينه؟ (حارس القراءة/الإقرار.) */
 function audienceMatchesUser(
   a: { audienceType: string; audienceBranchId: number | null; audienceRole: string | null },
   u: { role: string; branchId: number | null },
@@ -44,9 +46,7 @@ function targetingWhere(user: { role: string; branchId: number | null }) {
       and(eq(announcements.audienceType, "BRANCH"), eq(announcements.audienceBranchId, Number(user.branchId)))!,
     );
   }
-  audienceClauses.push(
-    and(eq(announcements.audienceType, "ROLE"), eq(announcements.audienceRole, user.role))!,
-  );
+  audienceClauses.push(and(eq(announcements.audienceType, "ROLE"), eq(announcements.audienceRole, user.role))!);
   return and(
     eq(announcements.isActive, true),
     or(isNull(announcements.expiresAt), gt(announcements.expiresAt, new Date())),
@@ -54,13 +54,29 @@ function targetingWhere(user: { role: string; branchId: number | null }) {
   );
 }
 
-/** إنشاء إعلان + تعميم إشعار على كل موظفٍ مستهدَف (أفضل جهد — فشل الإشعار لا يُفشل الإنشاء). */
+/** عدد الموظفين النشطين المستهدَفين (للعرض في الإدارة — لا تعميم فعليّ في المرحلة ١). */
+async function countTargetedActiveUsers(
+  audienceType: AnnouncementAudienceType,
+  audienceBranchId: number | null,
+  audienceRole: string | null,
+): Promise<number> {
+  const db = requireDb();
+  const clauses = [eq(users.isActive, true)];
+  if (audienceType === "BRANCH" && audienceBranchId != null) clauses.push(eq(users.branchId, audienceBranchId));
+  if (audienceType === "ROLE" && audienceRole != null) clauses.push(sql`${users.role} = ${audienceRole}`);
+  const [row] = await db.select({ n: count() }).from(users).where(and(...clauses));
+  return Number(row?.n ?? 0);
+}
+
 export async function createAnnouncement(input: CreateAnnouncementInput, actorUserId: number) {
   const db = requireDb();
   const audienceBranchId = input.audienceType === "BRANCH" ? Number(input.audienceBranchId) : null;
   const audienceRole = input.audienceType === "ROLE" ? String(input.audienceRole ?? "") : null;
   if (input.audienceType === "BRANCH" && !audienceBranchId) throw new Error("يجب اختيار الفرع المستهدَف");
   if (input.audienceType === "ROLE" && !audienceRole) throw new Error("يجب اختيار الدور المستهدَف");
+  if (input.expiresAt != null && input.expiresAt.getTime() <= Date.now()) {
+    throw new Error("تاريخ انتهاء الإعلان يجب أن يكون في المستقبل");
+  }
 
   const [res] = await db.insert(announcements).values({
     title: input.title.trim(),
@@ -74,34 +90,8 @@ export async function createAnnouncement(input: CreateAnnouncementInput, actorUs
     expiresAt: input.expiresAt ?? null,
   });
   const announcementId = Number((res as { insertId: number }).insertId);
-
-  // المستلمون = الموظفون النشطون المطابقون للجمهور. (المكتبة شركة صغيرة ⇒ الحلقة مقبولة.)
-  const activeUsers = await db
-    .select({ id: users.id, role: users.role, branchId: users.branchId })
-    .from(users)
-    .where(eq(users.isActive, true));
-  const targeted = activeUsers.filter((u) =>
-    audienceMatchesUser({ audienceType: input.audienceType, audienceBranchId, audienceRole }, u),
-  );
-
-  const title = input.title.trim().slice(0, 180);
-  const body = input.body.trim().slice(0, 600);
-  for (const u of targeted) {
-    await createAppNotification({
-      userId: u.id,
-      kind: "ANNOUNCEMENT",
-      title,
-      body,
-      route: "/mobile#announcements",
-      eventKey: `announcement:${announcementId}:${u.id}`,
-      entityType: "announcement",
-      entityId: announcementId,
-      requiresAction: input.requiresAck ?? false,
-      push: true,
-    }).catch(() => undefined);
-  }
-
-  return { id: announcementId, recipientCount: targeted.length };
+  const recipientCount = await countTargetedActiveUsers(input.audienceType, audienceBranchId, audienceRole);
+  return { id: announcementId, recipientCount };
 }
 
 /** قائمة الإدارة: الإعلانات (الأحدث أولاً) مع عدّادَي القراءة والإقرار. */
@@ -133,7 +123,7 @@ export async function listAnnouncements(opts?: { includeInactive?: boolean; limi
   }));
 }
 
-/** تفاصيل الإدارة: إعلانٌ واحد + قائمة قرّائه (من قرأ/أقرّ ومتى). */
+/** تفاصيل الإدارة: إعلانٌ واحد + قائمة قرّائه (من قرأ/أقرّ ومتى). null إن لم يوجد. */
 export async function getAnnouncementWithReaders(id: number) {
   const db = requireDb();
   const [row] = await db.select().from(announcements).where(eq(announcements.id, id)).limit(1);
@@ -152,12 +142,14 @@ export async function getAnnouncementWithReaders(id: number) {
   return { announcement: row, readers };
 }
 
-export async function setAnnouncementActive(id: number, isActive: boolean) {
+/** تفعيل/تعطيل إعلان. يعيد false إن لم يوجد الصفّ (ليميّز الراوتر NOT_FOUND). */
+export async function setAnnouncementActive(id: number, isActive: boolean): Promise<boolean> {
   const db = requireDb();
-  await db.update(announcements).set({ isActive }).where(eq(announcements.id, id));
+  const [res] = await db.update(announcements).set({ isActive }).where(eq(announcements.id, id));
+  return Number((res as { affectedRows?: number }).affectedRows ?? 0) > 0;
 }
 
-/** إعلانات الموظف المستهدَفة (الأحدث أولاً) مع حالة قراءته/إقراره لكلّ. */
+/** إعلانات الموظف المستهدَفة (الأحدث أولاً) + عدّاد غير المقروء **الكامل** (غير مقيّد بالصفحة). */
 export async function myAnnouncements(user: { id: number; role: string; branchId: number | null }, limit = 50) {
   const db = requireDb();
   const capped = Math.min(Math.max(limit, 1), 100);
@@ -181,11 +173,19 @@ export async function myAnnouncements(user: { id: number; role: string; branchId
     .where(targetingWhere({ role: user.role, branchId: user.branchId }))
     .orderBy(desc(announcements.createdAt))
     .limit(capped);
-  const unreadCount = rows.filter((r) => r.readAt == null).length;
-  return { rows, unreadCount };
+  // عدّاد غير المقروء الحقيقيّ (كل المستهدَف بلا صفّ قراءة، لا صفحة النتائج فقط).
+  const [unread] = await db
+    .select({ n: count() })
+    .from(announcements)
+    .leftJoin(
+      announcementReads,
+      and(eq(announcementReads.announcementId, announcements.id), eq(announcementReads.userId, user.id)),
+    )
+    .where(and(targetingWhere({ role: user.role, branchId: user.branchId }), isNull(announcementReads.readAt)));
+  return { rows, unreadCount: Number(unread?.n ?? 0) };
 }
 
-/** يتحقّق أنّ الإعلان يستهدف المستخدم فعلاً (حارس IDOR للقراءة/الإقرار). */
+/** يتحقّق أنّ الإعلان يستهدف المستخدم فعلاً (حارس IDOR)؛ يعيد صفّ الإعلان. */
 async function assertTargeted(user: { id: number; role: string; branchId: number | null }, announcementId: number) {
   const db = requireDb();
   const [row] = await db.select().from(announcements).where(eq(announcements.id, announcementId)).limit(1);
@@ -213,7 +213,10 @@ export async function acknowledgeAnnouncement(
   announcementId: number,
 ) {
   const db = requireDb();
-  await assertTargeted(user, announcementId);
+  const row = await assertTargeted(user, announcementId);
+  if (!row.requiresAck) throw new Error("هذا الإعلان لا يتطلّب إقراراً");
+  if (!row.isActive) throw new Error("الإعلان غير فعّال");
+  if (row.expiresAt != null && row.expiresAt.getTime() <= Date.now()) throw new Error("انتهت صلاحية الإعلان");
   const now = new Date();
   await db
     .insert(announcementReads)

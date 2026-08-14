@@ -1,7 +1,12 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { ROLES } from "@shared/permissions";
-import { announcementsManagerProcedure, protectedProcedure, router } from "../trpc";
+import {
+  announcementsManagerProcedure,
+  announcementsReadProcedure,
+  protectedProcedure,
+  router,
+} from "../trpc";
 import { logAudit } from "../services/auditService";
 import {
   acknowledgeAnnouncement,
@@ -33,11 +38,28 @@ const createInput = z
   .refine((v) => v.audienceType !== "ROLE" || v.audienceRole != null, {
     message: "اختر الدور المستهدَف",
     path: ["audienceRole"],
+  })
+  .refine((v) => !v.expiresAt || new Date(v.expiresAt).getTime() > Date.now(), {
+    message: "تاريخ انتهاء الإعلان يجب أن يكون في المستقبل",
+    path: ["expiresAt"],
   });
 
 export const announcementsRouter = router({
-  // ─── إدارة (manager+ / announcements:FULL) ─────────────────────────────
+  // ─── إدارة ───────────────────────────────────────────────────────────
+  // الإنشاء: manager+ / announcements:FULL. حوكمة الفرع: مدير الفرع (غير admin/owner) يبثّ لفرعه فقط.
   create: announcementsManagerProcedure.input(createInput).mutation(async ({ ctx, input }) => {
+    const crossBranch = ctx.user.role === "admin" || ctx.user.isOwner === true;
+    if (!crossBranch) {
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الحساب" });
+      }
+      if (input.audienceType !== "BRANCH" || Number(input.audienceBranchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "مدير الفرع يبثّ لفرعه فقط — اختر جمهور «الفرع» بفرعك (البثّ عبر الفروع للأدمن).",
+        });
+      }
+    }
     const result = await createAnnouncement(
       {
         title: input.title,
@@ -60,22 +82,22 @@ export const announcementsRouter = router({
     return result;
   }),
 
-  list: announcementsManagerProcedure
+  // القراءة الإدارية: announcements≥READ (يشمل المدقّق).
+  list: announcementsReadProcedure
     .input(z.object({ includeInactive: z.boolean().optional(), limit: z.number().int().min(1).max(200).optional() }).optional())
     .query(({ input }) => listAnnouncements(input)),
 
-  get: announcementsManagerProcedure
-    .input(z.object({ id: z.number().int().positive() }))
-    .query(async ({ input }) => {
-      const r = await getAnnouncementWithReaders(input.id);
-      if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "الإعلان غير موجود" });
-      return r;
-    }),
+  get: announcementsReadProcedure.input(z.object({ id: z.number().int().positive() })).query(async ({ input }) => {
+    const r = await getAnnouncementWithReaders(input.id);
+    if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "الإعلان غير موجود" });
+    return r;
+  }),
 
   setActive: announcementsManagerProcedure
     .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
-      await setAnnouncementActive(input.id, input.isActive);
+      const found = await setAnnouncementActive(input.id, input.isActive);
+      if (!found) throw new TRPCError({ code: "NOT_FOUND", message: "الإعلان غير موجود" });
       await logAudit(ctx, {
         action: "announcement.setActive",
         entityType: "announcement",

@@ -66,7 +66,6 @@ const MODULES = new Set([
   "gifts",
   "catalogAnomalies",
   "courier",
-  "announcements",
   "users",
   "settings",
 ]);

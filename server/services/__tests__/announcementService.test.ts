@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { appNotifications, branches, nativePushOutbox, users } from "../../../drizzle/schema";
+import { branches, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   acknowledgeAnnouncement,
@@ -9,6 +9,7 @@ import {
   listAnnouncements,
   markAnnouncementRead,
   myAnnouncements,
+  setAnnouncementActive,
 } from "../announcementService";
 
 function db() {
@@ -22,9 +23,6 @@ beforeEach(async () => {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   await d.execute(sql`TRUNCATE TABLE announcementReads`);
   await d.execute(sql`TRUNCATE TABLE announcements`);
-  await d.execute(sql`TRUNCATE TABLE appNotifications`);
-  await d.execute(sql`TRUNCATE TABLE nativePushOutbox`);
-  await d.execute(sql`TRUNCATE TABLE appNotificationPreferences`);
   await d.execute(sql`TRUNCATE TABLE users`);
   await d.execute(sql`TRUNCATE TABLE branches`);
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -44,36 +42,28 @@ beforeEach(async () => {
 const cash2 = { id: 12, role: "cashier", branchId: 2 };
 
 describe("announcementService", () => {
-  it("جمهور ALL يُعمَّم على الموظفين النشطين فقط", async () => {
+  it("recipientCount لجمهور ALL = النشطون فقط (يستبعد المعطّل)", async () => {
     const r = await createAnnouncement({ title: "اجتماع", body: "غداً ٩ص", audienceType: "ALL" }, 10);
     expect(r.recipientCount).toBe(4); // 10,11,12,13 — المعطّل 14 مستبعَد
-    const notes = await db().select().from(appNotifications);
-    expect(notes).toHaveLength(4);
-    expect(notes.every((n) => n.kind === "ANNOUNCEMENT" && n.entityId === r.id)).toBe(true);
-    expect((await db().select().from(nativePushOutbox)).length).toBe(4);
   });
 
-  it("جمهور BRANCH يستهدف فرعاً بعينه", async () => {
-    const r = await createAnnouncement(
-      { title: "فرع", body: "المبيعات فقط", audienceType: "BRANCH", audienceBranchId: 2 },
+  it("recipientCount لجمهور BRANCH/ROLE مقصورٌ على المستهدَف", async () => {
+    const branch = await createAnnouncement(
+      { title: "فرع", body: "..", audienceType: "BRANCH", audienceBranchId: 2 },
       10,
     );
-    expect(r.recipientCount).toBe(1);
-    const notes = await db().select().from(appNotifications);
-    expect(notes.map((n) => n.userId)).toEqual([12]);
+    expect(branch.recipientCount).toBe(1); // cash2 فقط
+    const role = await createAnnouncement({ title: "كاشيرون", body: "..", audienceType: "ROLE", audienceRole: "cashier" }, 10);
+    expect(role.recipientCount).toBe(2); // cash1 + cash2 النشطان
   });
 
-  it("جمهور ROLE يستهدف دوراً بعينه", async () => {
-    const r = await createAnnouncement(
-      { title: "كاشيرون", body: "للكاشير", audienceType: "ROLE", audienceRole: "cashier" },
-      10,
-    );
-    expect(r.recipientCount).toBe(2); // cash1 + cash2 النشطان
-    const notes = await db().select().from(appNotifications);
-    expect(notes.map((n) => n.userId).sort((a, b) => a - b)).toEqual([11, 12]);
+  it("يرفض إنشاء إعلانٍ بتاريخ انتهاءٍ ماضٍ", async () => {
+    await expect(
+      createAnnouncement({ title: "x", body: "..", audienceType: "ALL", expiresAt: new Date(Date.now() - 60_000) }, 10),
+    ).rejects.toThrow();
   });
 
-  it("mine يعيد إعلانات الموظف المستهدَفة فقط + حالة القراءة/الإقرار", async () => {
+  it("mine يعيد إعلانات الموظف المستهدَفة فقط + عدّاد غير المقروء", async () => {
     await createAnnouncement({ title: "للكل", body: "..", audienceType: "ALL" }, 10);
     const branchAnn = await createAnnouncement(
       { title: "فرع٢", body: "..", audienceType: "BRANCH", audienceBranchId: 2 },
@@ -92,12 +82,29 @@ describe("announcementService", () => {
     await markAnnouncementRead(cash2, branchAnn.id);
     mine = await myAnnouncements(cash2);
     expect(mine.unreadCount).toBe(1);
+  });
 
-    await acknowledgeAnnouncement(cash2, branchAnn.id);
-    const detail = await getAnnouncementWithReaders(branchAnn.id);
+  it("unreadCount غير مقيَّد بحجم الصفحة", async () => {
+    for (let i = 0; i < 3; i++) {
+      await createAnnouncement({ title: `n${i}`, body: "..", audienceType: "ALL" }, 10);
+    }
+    const mine = await myAnnouncements(cash2, 1); // صفحة واحدة
+    expect(mine.rows).toHaveLength(1);
+    expect(mine.unreadCount).toBe(3); // العدّاد يتجاوز الصفحة
+  });
+
+  it("الإقرار يتطلّب requiresAck ويُسجَّل في تفاصيل الإدارة", async () => {
+    const a = await createAnnouncement({ title: "إلزاميّ", body: "..", audienceType: "ALL", requiresAck: true }, 10);
+    await acknowledgeAnnouncement(cash2, a.id);
+    const detail = await getAnnouncementWithReaders(a.id);
     expect(detail?.readers).toHaveLength(1);
     expect(detail?.readers[0]).toMatchObject({ userId: 12 });
     expect(detail?.readers[0].acknowledgedAt).not.toBeNull();
+  });
+
+  it("الإقرار على إعلانٍ لا يتطلّبه يُرفَض", async () => {
+    const a = await createAnnouncement({ title: "اختياريّ", body: "..", audienceType: "ALL", requiresAck: false }, 10);
+    await expect(acknowledgeAnnouncement(cash2, a.id)).rejects.toThrow();
   });
 
   it("القراءة لإعلانٍ لا يخصّ الموظف تُرفَض (حارس IDOR)", async () => {
@@ -114,5 +121,11 @@ describe("announcementService", () => {
     await acknowledgeAnnouncement(cash2, a.id);
     const list = await listAnnouncements();
     expect(list[0]).toMatchObject({ id: a.id, readCount: 2, ackCount: 1 });
+  });
+
+  it("setAnnouncementActive يعيد false لمعرّفٍ غير موجود", async () => {
+    expect(await setAnnouncementActive(999999, false)).toBe(false);
+    const a = await createAnnouncement({ title: "x", body: "..", audienceType: "ALL" }, 10);
+    expect(await setAnnouncementActive(a.id, false)).toBe(true);
   });
 });

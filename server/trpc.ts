@@ -597,3 +597,5 @@ export const catalogAnomaliesManagerProcedure = moduleProcedure(["manager"], "ca
 // (mine/markRead/acknowledge) تمرّ عبر protectedProcedure داخل الراوتر — أيّ موظف مصادَق يقرأ
 // إعلاناته المستهدَفة فقط (الحارس في الخدمة يتحقّق من الجمهور، منعاً لـIDOR).
 export const announcementsManagerProcedure = moduleProcedure(["manager"], "announcements", "FULL");
+// القراءة الإدارية (قائمة/تفاصيل/إحصاء القرّاء): announcements≥READ — يشمل المدقّق (auditor READ) للرقابة.
+export const announcementsReadProcedure = protectedProcedure.use(requireModule("announcements", "READ"));
