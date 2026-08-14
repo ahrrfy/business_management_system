@@ -14,10 +14,10 @@ class NativeNavigationRegistryTest {
             "workorders", "channels", "tasks", "store", "treasury", "suppliers", "products",
             "expenses", "reports", "assets", "hr", "commissions", "consignments",
             "reservations", "digital_cards", "gifts", "catalogAnomalies", "courier", "users",
-            "settings",
+            "settings", "announcements",
         )
 
-        assertEquals(27, registry.modules.size)
+        assertEquals(28, registry.modules.size)
         assertEquals(expected, registry.modules.map(NativeModule::wireName).toSet())
         assertTrue(registry.modules.all { registry.spec(it).supportedIntents.isNotEmpty() })
     }

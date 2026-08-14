@@ -37,6 +37,7 @@ import online.alarabiya.superapp.data.ConversationsRepository
 import online.alarabiya.superapp.data.CommerceRepository
 import online.alarabiya.superapp.data.CollaborationRepository
 import online.alarabiya.superapp.data.CollectionsRepository
+import online.alarabiya.superapp.data.AnnouncementsRepository
 import online.alarabiya.superapp.data.FinanceRepository
 import online.alarabiya.superapp.data.InventoryRepository
 import online.alarabiya.superapp.data.InsightsRepository
@@ -62,6 +63,7 @@ import online.alarabiya.superapp.data.ExecutiveRepository
 import online.alarabiya.superapp.model.inventory.InventoryCapabilities
 import online.alarabiya.superapp.model.accountingControls.AccountingControlsCapabilities
 import online.alarabiya.superapp.model.collections.CollectionsCapabilities
+import online.alarabiya.superapp.model.announcements.AnnouncementsCapabilities
 import online.alarabiya.superapp.model.hradmin.HrAdminCapabilities
 import online.alarabiya.superapp.model.marketing.MarketingScope
 import online.alarabiya.superapp.model.operations.OperationsScope
@@ -199,6 +201,9 @@ class MainActivity : FragmentActivity() {
                     receivablesSource = receivablesRepository,
                     collectionsSourceFactory = { bootstrap ->
                         CollectionsRepository(api, CollectionsCapabilities.fromBootstrap(bootstrap))
+                    },
+                    announcementsSourceFactory = { bootstrap ->
+                        AnnouncementsRepository(api, AnnouncementsCapabilities.fromBootstrap(bootstrap))
                     },
                     marketingSourceFactory = { bootstrap, branchId ->
                         MarketingRepository(

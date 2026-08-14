@@ -242,6 +242,7 @@ class NativeNavigationRegistry private constructor(
                 spec(NativeModule.COURIER, OPERATIONS),
                 spec(NativeModule.USERS, CRUD),
                 spec(NativeModule.SETTINGS, CRUD),
+                spec(NativeModule.ANNOUNCEMENTS, READ_ONLY + NativeFeatureIntent.CREATE),
             ).associateBy(NativeModuleSpec::module),
         )
 
