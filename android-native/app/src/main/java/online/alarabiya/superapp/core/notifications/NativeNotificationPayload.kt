@@ -101,6 +101,11 @@ object NativeNotificationPayloadParser {
             intent = NativeFeatureIntent.VIEW,
             requiresEntity = true,
         )
+        "ANNOUNCEMENT" -> destination.matchesFeature(
+            module = NativeModule.ANNOUNCEMENTS,
+            intent = NativeFeatureIntent.VIEW,
+            requiresEntity = true,
+        )
         else -> false
     }
 

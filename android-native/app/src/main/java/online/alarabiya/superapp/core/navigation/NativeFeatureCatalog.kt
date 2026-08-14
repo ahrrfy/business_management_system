@@ -27,6 +27,8 @@ enum class NativeScreen {
     HR_ADMIN,
     SYSTEM_SETTINGS,
     SETTINGS,
+    ANNOUNCEMENTS_FEED,
+    ANNOUNCEMENTS_ADMIN,
 }
 
 data class NativeFeatureDefinition(
@@ -82,6 +84,8 @@ object NativeFeatureCatalog {
         NativeFeatureDefinition("hr-admin", "إدارة الموارد البشرية", NativeScreen.HR_ADMIN, setOf(NativeModule.HR)),
         NativeFeatureDefinition("system-settings", "إعدادات النظام", NativeScreen.SYSTEM_SETTINGS, setOf(NativeModule.SETTINGS)),
         NativeFeatureDefinition("settings", "الإعدادات الشخصية", NativeScreen.SETTINGS, emptySet()),
+        NativeFeatureDefinition("announcements-feed", "إعلاناتي", NativeScreen.ANNOUNCEMENTS_FEED, emptySet()),
+        NativeFeatureDefinition("announcements-admin", "الإعلانات", NativeScreen.ANNOUNCEMENTS_ADMIN, setOf(NativeModule.ANNOUNCEMENTS)),
     )
 
     private val byScreen = definitions.associateBy(NativeFeatureDefinition::screen)
@@ -154,6 +158,9 @@ object NativeFeatureCatalog {
             NativeScreen.STORE_ADMIN -> (principal.role.equals("admin", true) || principal.role.equals("manager", true)) &&
                 principal.grantFor(NativeModule.STORE).satisfies(ModuleGrant.READ)
             NativeScreen.APPROVALS -> registry.authorize(NativeDestination.Approvals, principal) == AccessDecision.Allowed
+            NativeScreen.ANNOUNCEMENTS_FEED -> principal.authenticated
+            NativeScreen.ANNOUNCEMENTS_ADMIN ->
+                principal.grantFor(NativeModule.ANNOUNCEMENTS).satisfies(ModuleGrant.READ)
             else -> entryDestination(screen, principal, registry) != null
         }
     }

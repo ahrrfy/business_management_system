@@ -28,6 +28,7 @@ enum class NativeModule(val wireName: String) {
     COURIER("courier"),
     USERS("users"),
     SETTINGS("settings"),
+    ANNOUNCEMENTS("announcements"),
     ;
 
     companion object {

@@ -256,6 +256,14 @@ import online.alarabiya.superapp.feature.selfservice.SelfServiceRoute
 import online.alarabiya.superapp.feature.selfservice.SelfServiceSection
 import online.alarabiya.superapp.feature.selfservice.SelfServiceViewModel
 import online.alarabiya.superapp.feature.selfservice.SelfServiceViewModelFactory
+import online.alarabiya.superapp.feature.announcements.AnnouncementsAdminRoute
+import online.alarabiya.superapp.feature.announcements.AnnouncementsAdminViewModel
+import online.alarabiya.superapp.feature.announcements.AnnouncementsAdminViewModelFactory
+import online.alarabiya.superapp.feature.announcements.AnnouncementsFeedRoute
+import online.alarabiya.superapp.feature.announcements.AnnouncementsFeedViewModel
+import online.alarabiya.superapp.feature.announcements.AnnouncementsFeedViewModelFactory
+import online.alarabiya.superapp.data.AnnouncementsDataSource
+import online.alarabiya.superapp.model.announcements.AnnouncementsCapabilities
 import online.alarabiya.superapp.feature.shifts.ShiftScreen
 import online.alarabiya.superapp.feature.shifts.ShiftViewModel
 import online.alarabiya.superapp.feature.settings.SettingsScreen
@@ -358,6 +366,7 @@ fun SuperAppRoot(
     collaborationSource: CollaborationDataSource,
     receivablesSource: ReceivablesDataSource,
     collectionsSourceFactory: (AppBootstrap) -> CollectionsDataSource,
+    announcementsSourceFactory: (AppBootstrap) -> AnnouncementsDataSource,
     marketingSourceFactory: (AppBootstrap, Long?) -> MarketingDataSource,
     operationsSourceFactory: (AppBootstrap, Long?) -> OperationsDataSource,
     inventorySourceFactory: (AppBootstrap, Long?) -> InventoryDataSource,
@@ -435,6 +444,7 @@ fun SuperAppRoot(
                             collaborationSource = collaborationSource,
                             receivablesSource = receivablesSource,
                             collectionsSourceFactory = collectionsSourceFactory,
+                            announcementsSourceFactory = announcementsSourceFactory,
                             marketingSourceFactory = marketingSourceFactory,
                             operationsSourceFactory = operationsSourceFactory,
                             inventorySourceFactory = inventorySourceFactory,
@@ -1171,6 +1181,8 @@ private enum class NativeComposeRoute(val route: String, val screen: NativeScree
     Finance("native-finance", NativeScreen.FINANCE),
     Receivables("native-receivables", NativeScreen.RECEIVABLES),
     Collections("native-collections", NativeScreen.COLLECTIONS),
+    AnnouncementsFeed("native-announcements-feed", NativeScreen.ANNOUNCEMENTS_FEED),
+    AnnouncementsAdmin("native-announcements-admin", NativeScreen.ANNOUNCEMENTS_ADMIN),
     Products("native-products", NativeScreen.PRODUCTS),
     Settings("native-profile", NativeScreen.SETTINGS, primary = true),
 }
@@ -1227,6 +1239,7 @@ internal fun AppWorkspace(
     collaborationSource: CollaborationDataSource? = null,
     receivablesSource: ReceivablesDataSource? = null,
     collectionsSourceFactory: ((AppBootstrap) -> CollectionsDataSource)? = null,
+    announcementsSourceFactory: ((AppBootstrap) -> AnnouncementsDataSource)? = null,
     marketingSourceFactory: ((AppBootstrap, Long?) -> MarketingDataSource)? = null,
     operationsSourceFactory: ((AppBootstrap, Long?) -> OperationsDataSource)? = null,
     inventorySourceFactory: ((AppBootstrap, Long?) -> InventoryDataSource)? = null,
@@ -1288,6 +1301,12 @@ internal fun AppWorkspace(
     val collectionsSource = remember(state.bootstrap, collectionsSourceFactory) {
         collectionsSourceFactory?.invoke(state.bootstrap)
     }
+    val announcementsCapabilities = remember(state.bootstrap) {
+        AnnouncementsCapabilities.fromBootstrap(state.bootstrap)
+    }
+    val announcementsSource = remember(state.bootstrap, announcementsSourceFactory) {
+        announcementsSourceFactory?.invoke(state.bootstrap)
+    }
     val crmCapabilities = remember(state.bootstrap, effectiveBranchId) {
         state.bootstrap.toCrmCapabilities().copy(branchId = effectiveBranchId)
     }
@@ -1341,7 +1360,7 @@ internal fun AppWorkspace(
     }
     val installedScreens = remember(
         state.bootstrap, effectiveBranchId, sessionBranchContext.principal.canSelectBranch,
-        adminSource, crmSource, conversationsSource, commerceSource, collaborationSource, shiftSource, receivablesSource, collectionsSource, marketingSource, operationsSource, accountingControlsSource, inventorySource, hrAdminSource, salesSource, purchasingSource, workOrdersSource, warehouseToolsSource, storeDeliverySource, storeAdminSource, financeSource, insightsSource, productsSource, legalSource, systemSettingsSource,
+        adminSource, crmSource, conversationsSource, commerceSource, collaborationSource, shiftSource, receivablesSource, collectionsSource, marketingSource, operationsSource, accountingControlsSource, inventorySource, hrAdminSource, salesSource, purchasingSource, workOrdersSource, warehouseToolsSource, storeDeliverySource, storeAdminSource, financeSource, insightsSource, productsSource, legalSource, systemSettingsSource, announcementsSource,
     ) {
         buildSet {
             if (state.bootstrap.hasPersonalWorkspace) add(NativeScreen.SELF_SERVICE)
@@ -1378,6 +1397,11 @@ internal fun AppWorkspace(
                 collectionsSource != null && collectionsCapabilities.canReadCreditDecisions &&
                 principal.grantFor(NativeModule.COLLECTIONS).satisfies(ModuleGrant.FULL)
             ) add(NativeScreen.COLLECTIONS)
+            if (announcementsSource != null) {
+                // تغذية الإعلانات عالميّة لكل مصادَق؛ شاشة الإدارة محروسة بصلاحية الوحدة.
+                add(NativeScreen.ANNOUNCEMENTS_FEED)
+                if (announcementsCapabilities.canReadManagement) add(NativeScreen.ANNOUNCEMENTS_ADMIN)
+            }
             if (
                 marketingSource != null &&
                 (marketingCapabilities.canReadCampaigns || marketingCapabilities.canReadCatalogQuality)
@@ -1595,6 +1619,8 @@ internal fun AppWorkspace(
                     receivablesSource = receivablesSource,
                     receivablesPolicy = receivablesPolicy,
                     collectionsSource = collectionsSource,
+                    announcementsSource = announcementsSource,
+                    announcementsCapabilities = announcementsCapabilities,
                     marketingSource = marketingSource,
                     marketingScope = marketingScope,
                     marketingCapabilities = marketingCapabilities,
@@ -1673,6 +1699,8 @@ internal fun AppWorkspace(
                     receivablesSource = receivablesSource,
                     receivablesPolicy = receivablesPolicy,
                     collectionsSource = collectionsSource,
+                    announcementsSource = announcementsSource,
+                    announcementsCapabilities = announcementsCapabilities,
                     marketingSource = marketingSource,
                     marketingScope = marketingScope,
                     marketingCapabilities = marketingCapabilities,
@@ -1864,6 +1892,8 @@ private fun NativeWorkspaceNavHost(
     receivablesSource: ReceivablesDataSource?,
     receivablesPolicy: ReceivablesAccessPolicy,
     collectionsSource: CollectionsDataSource?,
+    announcementsSource: AnnouncementsDataSource?,
+    announcementsCapabilities: AnnouncementsCapabilities,
     marketingSource: MarketingDataSource?,
     marketingScope: MarketingScope,
     marketingCapabilities: MarketingCapabilities,
@@ -2182,6 +2212,42 @@ private fun NativeWorkspaceNavHost(
             }
             Box(Modifier.fillMaxSize().testTag("native-route-collections")) {
                 CollectionsRoute(featureViewModel)
+            }
+        }
+        if (announcementsSource != null) composable(NativeComposeRoute.AnnouncementsFeed.route) {
+            val feedViewModel: AnnouncementsFeedViewModel = viewModel(
+                key = "announcements-feed-${state.bootstrap.user.id}",
+                factory = AnnouncementsFeedViewModelFactory(announcementsSource),
+            )
+            LaunchedEffect(pendingNavigation) {
+                val id = pendingNavigation.featureEntity(NativeModule.ANNOUNCEMENTS) ?: return@LaunchedEffect
+                feedViewModel.openDetail(id)
+                onNavigationConsumed()
+            }
+            WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.AnnouncementsFeed, enabled = !tablet) {
+                if (feedViewModel.state.selectedId == null) false
+                else true.also { feedViewModel.closeDetail() }
+            }
+            Box(Modifier.fillMaxSize().testTag("native-route-announcements")) {
+                AnnouncementsFeedRoute(feedViewModel)
+            }
+        }
+        if (announcementsSource != null && announcementsCapabilities.canReadManagement) {
+            composable(NativeComposeRoute.AnnouncementsAdmin.route) {
+                val adminViewModel: AnnouncementsAdminViewModel = viewModel(
+                    key = "announcements-admin-${state.bootstrap.user.id}",
+                    factory = AnnouncementsAdminViewModelFactory(announcementsSource, announcementsCapabilities),
+                )
+                WorkspaceNestedBackHandler(nestedBackCoordinator, NativeComposeRoute.AnnouncementsAdmin, enabled = !tablet) {
+                    when {
+                        adminViewModel.state.editorOpen -> true.also { adminViewModel.closeEditor() }
+                        adminViewModel.state.selectedId != null -> true.also { adminViewModel.select(null) }
+                        else -> false
+                    }
+                }
+                Box(Modifier.fillMaxSize().testTag("native-route-announcements-admin")) {
+                    AnnouncementsAdminRoute(adminViewModel)
+                }
             }
         }
         if (marketingSource != null) composable(NativeComposeRoute.Marketing.route) {
@@ -2920,6 +2986,35 @@ private fun implementedServices(
         )
     }
 
+    if (NativeScreen.ANNOUNCEMENTS_FEED in installed) {
+        add(
+            NativeServiceEntry(
+                key = "announcements-feed",
+                label = "إعلاناتي",
+                accessLabel = "عرض",
+                screen = NativeScreen.ANNOUNCEMENTS_FEED,
+                destination = NativeDestination.Feature(
+                    NativeModule.ANNOUNCEMENTS,
+                    NativeFeatureIntent.BROWSE,
+                ),
+                icon = Icons.Rounded.Campaign,
+            ),
+        )
+    }
+
+    if (NativeScreen.ANNOUNCEMENTS_ADMIN in installed) {
+        add(
+            NativeServiceEntry(
+                key = "announcements-admin",
+                label = "إدارة الإعلانات",
+                accessLabel = "إدارة",
+                screen = NativeScreen.ANNOUNCEMENTS_ADMIN,
+                destination = NativeDestination.Module(NativeModule.ANNOUNCEMENTS),
+                icon = Icons.Rounded.Campaign,
+            ),
+        )
+    }
+
     if (NativeScreen.INSIGHTS in installed) {
         add(
             NativeServiceEntry(
@@ -3135,6 +3230,15 @@ private fun implementedRouteFor(
     if (notificationSelfServiceSection(notificationKind, destination) != null) {
         return NativeComposeRoute.SelfService
     }
+    // تغذية الإعلانات عالميّة: يبلغها كلّ مصادَق عبر الرابط العميق (VIEW من الإشعار) أو التصفّح
+    // (BROWSE من بطاقة الخدمة) — قبل بوّابة الصلاحية، لأنّ الموظّف لا يملك منح وحدة الإعلانات.
+    if (
+        destination is NativeDestination.Feature &&
+        destination.module == NativeModule.ANNOUNCEMENTS &&
+        (destination.intent == NativeFeatureIntent.VIEW || destination.intent == NativeFeatureIntent.BROWSE)
+    ) {
+        return NativeComposeRoute.AnnouncementsFeed
+    }
     if (NativeNavigationRegistry.Default.authorize(destination, principal) != AccessDecision.Allowed) return null
     return when (destination) {
         NativeDestination.Home -> NativeComposeRoute.Home
@@ -3282,6 +3386,8 @@ private fun NativeScreen.toComposeRoute(): NativeComposeRoute = when (this) {
     NativeScreen.HR_ADMIN -> NativeComposeRoute.HrAdmin
     NativeScreen.SYSTEM_SETTINGS -> NativeComposeRoute.SystemSettings
     NativeScreen.SETTINGS -> NativeComposeRoute.Settings
+    NativeScreen.ANNOUNCEMENTS_FEED -> NativeComposeRoute.AnnouncementsFeed
+    NativeScreen.ANNOUNCEMENTS_ADMIN -> NativeComposeRoute.AnnouncementsAdmin
 }
 
 private fun ApprovalAccessPolicy.canManageModule(module: NativeModule): Boolean =
