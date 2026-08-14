@@ -12,6 +12,7 @@ import {
   setPwaUpdatePending,
   subscribePwaUpdateOpen,
 } from "@/lib/pwaUpdateStatus";
+import { isPublicHost } from "@/lib/siteHosts";
 import { Download, RefreshCw, ShieldCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -22,6 +23,23 @@ const RELOAD_MARKER_KEY = "alroya.pwa-update.reload-requested";
 const RELOAD_MARKER_MAX_AGE_MS = 2 * 60 * 1_000;
 
 type UpdatePhase = "saving" | "activating" | "reopening";
+export type PwaUpdateDelivery = "AUTO_APPLY" | "PROMPT" | "NONE";
+
+/**
+ * زائر المتجر لا يملك مسودة ERP حرجة ويجب ألا يبقى على shell قديم يحوّل أخطاء API إلى فراغ.
+ * أما الموظفون والمناديب فيحتفظون بالموافقة اليدوية لأن لديهم عمليات قد تكون غير محفوظة.
+ */
+export function decidePwaUpdateDelivery(input: {
+  hostname: string;
+  pathname: string;
+  hasWaitingWorker: boolean;
+}): PwaUpdateDelivery {
+  if (!input.hasWaitingWorker) return "NONE";
+  const storefrontPath =
+    input.pathname === "/store" || input.pathname.startsWith("/store/");
+  if (isPublicHost(input.hostname) && storefrontPath) return "AUTO_APPLY";
+  return "PROMPT";
+}
 
 function phaseMessage(phase: UpdatePhase): string {
   if (phase === "saving") return "جارٍ حفظ العمل محلياً";
@@ -74,12 +92,31 @@ export function PwaUpdateManager() {
   const [ready, setReady] = useState(false);
   const [applying, setApplying] = useState(false);
   const [phase, setPhase] = useState<UpdatePhase>("saving");
+  const [autoApplyTicket, setAutoApplyTicket] = useState(0);
   const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
   const updateWasSignaledRef = useRef(false);
+  const autoAttemptedWorkerRef = useRef<ServiceWorker | null>(null);
 
-  const revealUpdate = () => {
+  const revealUpdate = (registration = registrationRef.current) => {
+    if (registration) registrationRef.current = registration;
     setPwaUpdatePending(true);
     setReady(true);
+    if (typeof window === "undefined") return;
+    const waitingWorker = registration?.waiting ?? null;
+    const delivery = decidePwaUpdateDelivery({
+      hostname: window.location.hostname,
+      pathname: window.location.pathname,
+      hasWaitingWorker: !!waitingWorker,
+    });
+    if (
+      delivery === "AUTO_APPLY" &&
+      waitingWorker &&
+      autoAttemptedWorkerRef.current !== waitingWorker
+    ) {
+      // تذكرة واحدة لكل عامل منتظر تمنع حلقة إعادة محاولات صامتة إذا فشل التفعيل فعلاً.
+      autoAttemptedWorkerRef.current = waitingWorker;
+      setAutoApplyTicket((ticket) => ticket + 1);
+    }
   };
 
   useEffect(() => {
@@ -93,7 +130,12 @@ export function PwaUpdateManager() {
           onNeedRefresh() {
             if (!disposed) {
               updateWasSignaledRef.current = true;
-              revealUpdate();
+              void navigator.serviceWorker.getRegistration().then((registration) => {
+                if (!disposed) revealUpdate(registration ?? null);
+              }).catch((error) => {
+                console.warn("[pwa] waiting registration lookup failed", error);
+                if (!disposed) revealUpdate();
+              });
             }
           },
           onOfflineReady() {
@@ -101,6 +143,7 @@ export function PwaUpdateManager() {
           },
           onRegisteredSW(_swUrl, registration) {
             registrationRef.current = registration ?? null;
+            if (registration?.waiting) revealUpdate(registration);
           },
           onRegisterError(error) {
             // النسخة الفعالة تبقى صالحة؛ نسجل السبب ولا نعطّل عمل الموظف.
@@ -137,14 +180,14 @@ export function PwaUpdateManager() {
           registrationRef.current = registration ?? null;
           if (registration?.waiting) {
             updateWasSignaledRef.current = true;
-            revealUpdate();
+            revealUpdate(registration);
             return;
           }
 
           await registration?.update();
           if (registration?.waiting) {
             updateWasSignaledRef.current = true;
-            revealUpdate();
+            revealUpdate(registration);
           }
         })
         .catch((error) => {
@@ -164,6 +207,15 @@ export function PwaUpdateManager() {
       document.removeEventListener("visibilitychange", visible);
     };
   }, []);
+
+  useEffect(() => {
+    if (autoApplyTicket === 0) return;
+    // applyUpdate يحفظ لقطة الإدخالات ويفرغ autosaves قبل التفعيل؛ سلة المتجر ونموذج التوصيل
+    // محفوظان أيضاً في localStorage داخل Storefront، لذلك returning profile ينتقل بأمان.
+    void applyUpdate();
+    // التذكرة هي الحدث المقصود؛ إدراج applyUpdate يعيد الأثر كل render لأنه دالة محلية.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoApplyTicket]);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;

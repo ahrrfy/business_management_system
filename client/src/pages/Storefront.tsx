@@ -379,9 +379,38 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
 }
 
 type Panel = null | "cart" | "checkout" | "confirmation" | "track" | "label";
-type AvailabilityFilter = "IN_STOCK" | "ALL";
+export type AvailabilityFilter = "IN_STOCK" | "ALL";
 type PriceFilter = "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
 type CatalogSort = "RECOMMENDED" | "PRICE_ASC" | "PRICE_DESC" | "BEST_SELLERS";
+export type StorefrontSource = "settings" | "categories" | "offers" | "catalog";
+
+const STOREFRONT_SOURCE_LABELS: Record<StorefrontSource, string> = {
+  settings: "إعدادات المتجر",
+  categories: "الفئات والأقسام",
+  offers: "العروض",
+  catalog: "المنتجات",
+};
+
+/**
+ * يبقي فشل كل مصدرٍ علنيّ حالةً مستقلة وصريحة. لا يجوز تحويل خطأ API إلى [] ثم وصفه
+ * للزبون بأنه «لا توجد فئات/عروض/منتجات»؛ الفراغ التجاري الصحيح لا يأتي إلا بعد نجاح الطلب.
+ */
+export function collectStorefrontFailures(
+  failed: Record<StorefrontSource, boolean>,
+): StorefrontSource[] {
+  return (Object.keys(STOREFRONT_SOURCE_LABELS) as StorefrontSource[]).filter(
+    (source) => failed[source],
+  );
+}
+
+export function storefrontCategoryCount(
+  category: { productCount: number; availableCount?: number },
+  availability: AvailabilityFilter,
+): number {
+  return availability === "IN_STOCK"
+    ? (category.availableCount ?? category.productCount)
+    : category.productCount;
+}
 
 function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
   switch (filter) {
@@ -474,8 +503,16 @@ export default function Storefront() {
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const bannersQ = trpc.storefront.banners.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const settingsQ = trpc.storefront.settings.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
+  // يطبّق الخادم مرشح التوفر قبل limit حتى لا تتحول الصفحة إلى نتيجة ناقصة بعد ترشيحٍ محلي.
+  // إبقاء الترشيح الدفاعي أدناه يحمي الواجهة أثناء ترقية عقد API تدريجياً.
+  const catalogInput = {
+    categoryId,
+    search: search || undefined,
+    limit: 120,
+    availability,
+  } as const;
   const catalogQ = trpc.storefront.catalog.useQuery(
-    { categoryId, search: search || undefined, limit: 120 },
+    catalogInput,
     { placeholderData: (prev) => prev }
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
@@ -538,12 +575,23 @@ export default function Storefront() {
   const cats = categoriesQ.data ?? [];
   const offers = offersQ.data ?? [];
   const banners = bannersQ.data ?? [];
+  const sourceFailures = collectStorefrontFailures({
+    settings: settingsQ.isError,
+    categories: categoriesQ.isError,
+    offers: offersQ.isError,
+    catalog: catalogQ.isError,
+  });
+  const supportingFailures = sourceFailures.filter(
+    (source) => source !== "catalog",
+  );
   // توزيع البنرات على مواضعها الثلاثة (الصفوف القديمة بلا placement = رئيسي).
   const heroBanners = useMemo(() => banners.filter((b) => (b.placement ?? "HERO") === "HERO"), [banners]);
   const sideBanners = useMemo(() => banners.filter((b) => b.placement === "SIDE"), [banners]);
   const inlineBanners = useMemo(() => banners.filter((b) => b.placement === "INLINE"), [banners]);
   const announcement = settingsQ.data?.announcement ?? null;
-  const storeOpen = settingsQ.data?.isOpen ?? true;
+  // الفشل المغلق: لا نسمح بإرسال طلب قبل معرفة حالة المتجر فعلياً. خطأ الإعدادات له
+  // تنبيه مستقل أدناه، فلا يتنكر في هيئة «مفتوح» ولا «مغلق».
+  const storeOpen = settingsQ.isSuccess && settingsQ.data.isOpen;
   const activeCatName = useMemo(
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
@@ -589,6 +637,13 @@ export default function Storefront() {
     setSearch("");
     setCategoryId(null);
     clearRefinements();
+  }
+  function retrySupportingSources() {
+    const retries: Promise<unknown>[] = [];
+    if (settingsQ.isError) retries.push(settingsQ.refetch());
+    if (categoriesQ.isError) retries.push(categoriesQ.refetch());
+    if (offersQ.isError) retries.push(offersQ.refetch());
+    void Promise.allSettled(retries);
   }
   // فواصل السيل التسويقية: بنرات INLINE المُدارة أولاً، وعند غيابها تُشتقّ من عروض اليوم الفعّالة
   // (فلسفة in-feed العالمية: لا يمرّ الزبون بأكثر من ~عشرة منتجات دون محفّز شراء).
@@ -777,7 +832,7 @@ export default function Storefront() {
               {cats.map((c) => (
                 <button key={c.id} onClick={() => selectCategory(c.id)} className={chip(categoryId === c.id)}>
                   {c.name}
-                  <span className="mr-1 opacity-60">{c.productCount}</span>
+                  <span className="mr-1 opacity-60">{storefrontCategoryCount(c, availability)}</span>
                 </button>
               ))}
             </div>
@@ -787,6 +842,36 @@ export default function Storefront() {
 
       {/* المحتوى */}
       <main className="mx-auto max-w-6xl px-4 py-4 pb-28">
+        {supportingFailures.length > 0 && (
+          <section
+            role="alert"
+            aria-live="polite"
+            className="mb-4 rounded-2xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-4 text-[var(--sem-warn)] shadow-sm"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-extrabold">تعذّر تحميل بعض بيانات المتجر</p>
+                <p className="mt-1 text-xs leading-6 opacity-90">
+                  لم نعتبرها فارغة: تعذّر تحميل {supportingFailures.map((source) => STOREFRONT_SOURCE_LABELS[source]).join("، ")}.
+                  يمكنك متابعة تصفح المنتجات المتاحة ثم إعادة المحاولة.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={retrySupportingSources}
+                disabled={supportingFailures.some((source) => {
+                  if (source === "settings") return settingsQ.isFetching;
+                  if (source === "categories") return categoriesQ.isFetching;
+                  return offersQ.isFetching;
+                })}
+                className="shrink-0 rounded-xl border border-[var(--sem-warn)]/50 bg-white px-3 py-2 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn)]/10 disabled:cursor-wait disabled:opacity-60"
+              >
+                إعادة المحاولة
+              </button>
+            </div>
+          </section>
+        )}
         {/* شريط إعلان الموظف */}
         {announcement && (
           <div className="mb-3 flex items-center gap-2 rounded-2xl bg-amber-100 px-4 py-2.5 text-sm font-bold text-amber-900 dark:bg-amber-500/15 dark:text-amber-300">
@@ -795,7 +880,7 @@ export default function Storefront() {
           </div>
         )}
         {/* المتجر مغلق مؤقتاً */}
-        {!storeOpen && (
+        {settingsQ.isSuccess && !storeOpen && (
           <div className="mb-4 rounded-2xl bg-rose-100 px-4 py-3 text-center text-sm font-bold text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
             المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً. تصفّح المنتجات وعُد لاحقاً.
           </div>
@@ -1375,6 +1460,10 @@ export default function Storefront() {
                     متابعة إلى الدفع عند الاستلام
                     <ArrowRight aria-hidden className="size-4" />
                   </>
+                ) : settingsQ.isLoading || settingsQ.isFetching ? (
+                  "جارٍ التحقق من حالة المتجر"
+                ) : settingsQ.isError ? (
+                  "تعذّر التحقق من استقبال الطلبات — أعد المحاولة"
                 ) : (
                   "المتجر مغلق مؤقتاً — تعذّر إتمام الطلب"
                 )}
