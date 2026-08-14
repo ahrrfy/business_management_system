@@ -238,7 +238,7 @@ val verifyProductionReleaseInputs by tasks.registering {
         if (productionApplicationId != "online.alarabiya.store") {
             throw GradleException("Unexpected production applicationId.")
         }
-        if (productionVersionCode != 6 || productionVersionName != "1.0.0") {
+        if (productionVersionCode != 7 || productionVersionName != "1.0.0") {
             throw GradleException("Unexpected production version contract.")
         }
         if (productionBaseUrl != expectedProductionEndpoint) {
