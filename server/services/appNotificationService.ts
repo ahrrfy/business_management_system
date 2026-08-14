@@ -25,6 +25,7 @@ export type AppNotificationKind =
   | "ATTENDANCE"
   | "LEAVE_STATUS"
   | "APPROVAL_REQUIRED"
+  | "ANNOUNCEMENT"
   | "SYSTEM";
 
 export interface NotificationPreferencesInput {
@@ -215,6 +216,11 @@ function nativeDestinationFor(
     return entity
       ? `alrueya://app/module/hr/view/${entity}`
       : "alrueya://app/profile";
+  }
+  if (input.kind === "ANNOUNCEMENT") {
+    return entity
+      ? `alrueya://app/module/announcements/view/${entity}`
+      : "alrueya://app/home";
   }
   return null;
 }

@@ -591,3 +591,9 @@ export const catalogAnomaliesReadProcedure = protectedProcedure.use(
   requireModuleGate(["manager", "accountant", "auditor"], "catalogAnomalies", "READ")
 );
 export const catalogAnomaliesManagerProcedure = moduleProcedure(["manager"], "catalogAnomalies", "FULL");
+
+// ─── إعلانات الموظفين «announcements» — الإدارة تنشئ/تستهدف/تتابع الإقرار ────────────
+// الإنشاء والإدارة مديريّ (manager+ أو منح صريح announcements:FULL)؛ القراءة الذاتيّة للموظف
+// (mine/markRead/acknowledge) تمرّ عبر protectedProcedure داخل الراوتر — أيّ موظف مصادَق يقرأ
+// إعلاناته المستهدَفة فقط (الحارس في الخدمة يتحقّق من الجمهور، منعاً لـIDOR).
+export const announcementsManagerProcedure = moduleProcedure(["manager"], "announcements", "FULL");

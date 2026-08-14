@@ -8715,3 +8715,57 @@ export const monthCloseRequests = mysqlTable(
   }),
 );
 export type MonthCloseRequest = typeof monthCloseRequests.$inferSelect;
+
+/**
+ * إعلانات الموظفين الداخلية — الإدارة تنشر، والموظفون المستهدَفون يقرؤون/يُقرّون.
+ * (فجوة إصدار حسمها collaboration-contract-audit: API + مفتاح صلاحيات + نموذج إقرار + عقد جمهور.)
+ * الجمهور: ALL كل الموظفين · BRANCH فرعٌ بعينه (audienceBranchId) · ROLE دورٌ بعينه (audienceRole).
+ */
+export const announcements = mysqlTable(
+  "announcements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    title: varchar("title", { length: 200 }).notNull(),
+    body: text("body").notNull(),
+    priority: mysqlEnum("announcementPriority", ["NORMAL", "IMPORTANT", "CRITICAL"])
+      .default("NORMAL")
+      .notNull(),
+    audienceType: mysqlEnum("announcementAudience", ["ALL", "BRANCH", "ROLE"]).notNull(),
+    audienceBranchId: bigint("audienceBranchId", { mode: "number" }).references(() => branches.id),
+    audienceRole: varchar("audienceRole", { length: 40 }),
+    /** هل يجب على الموظف الإقرار صراحةً بقراءته (لا مجرد فتحه)؟ */
+    requiresAck: boolean("requiresAck").default(false).notNull(),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    isActive: boolean("isActive").default(true).notNull(),
+    expiresAt: timestamp("expiresAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    activeIdx: index("idx_announcement_active").on(table.isActive, table.createdAt),
+    audienceIdx: index("idx_announcement_audience").on(table.audienceType, table.audienceBranchId),
+  }),
+);
+export type Announcement = typeof announcements.$inferSelect;
+
+/** سجلّ قراءة/إقرار الموظف للإعلان — صفٌّ واحد لكل (إعلان × مستخدم). acknowledgedAt يُملأ عند الإقرار الصريح. */
+export const announcementReads = mysqlTable(
+  "announcementReads",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    announcementId: bigint("announcementId", { mode: "number" })
+      .notNull()
+      .references(() => announcements.id),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id),
+    readAt: timestamp("readAt").defaultNow().notNull(),
+    acknowledgedAt: timestamp("acknowledgedAt"),
+  },
+  (table) => ({
+    uniq: unique("uq_announcement_read").on(table.announcementId, table.userId),
+    userIdx: index("idx_announcement_read_user").on(table.userId),
+  }),
+);
+export type AnnouncementRead = typeof announcementReads.$inferSelect;
