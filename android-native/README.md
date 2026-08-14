@@ -28,7 +28,7 @@ Override the HTTPS endpoints with `ALRUEYA_DEV_BASE_URL`, `ALRUEYA_STAGING_BASE_
 `ALRUEYA_PROD_BASE_URL`, or their camel-case Gradle property equivalents.
 
 The Play update keeps the package ID `online.alarabiya.store`, `versionName 1.0.0`, and
-`versionCode 6`. Only debug builds add the `.debug` application ID suffix. A signed production
+`versionCode 7`. Only debug builds add the `.debug` application ID suffix. A signed production
 build reads signing values from environment variables or Gradle properties; never commit them:
 
 - `ANDROID_KEYSTORE_PATH` / `androidKeystorePath`
