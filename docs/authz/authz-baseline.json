@@ -1,9 +1,6 @@
 {
   "generated": "static",
   "keys": [
-    "announcementsRouter.acknowledge@server/routers/announcementsRouter.ts",
-    "announcementsRouter.markRead@server/routers/announcementsRouter.ts",
-    "announcementsRouter.mine@server/routers/announcementsRouter.ts",
     "auditRouter.facets@server/routers/auditRouter.ts",
     "auditRouter.list@server/routers/auditRouter.ts",
     "authRouter.changePassword@server/routers/authRouter.ts",

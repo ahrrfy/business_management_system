@@ -4,7 +4,7 @@ import { ROLES } from "@shared/permissions";
 import {
   announcementsManagerProcedure,
   announcementsReadProcedure,
-  protectedProcedure,
+  selfServiceProcedure,
   router,
 } from "../trpc";
 import { logAudit } from "../services/auditService";
@@ -108,18 +108,18 @@ export const announcementsRouter = router({
     }),
 
   // ─── ذاتيّ (أيّ موظف مصادَق يرى إعلاناته المستهدَفة فقط) ─────────────────
-  mine: protectedProcedure
+  mine: selfServiceProcedure
     .input(z.object({ limit: z.number().int().min(1).max(100).optional() }).optional())
     .query(({ ctx, input }) =>
       myAnnouncements({ id: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId ?? null }, input?.limit ?? 50),
     ),
 
-  markRead: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+  markRead: selfServiceProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
     await markAnnouncementRead({ id: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId ?? null }, input.id);
     return { ok: true };
   }),
 
-  acknowledge: protectedProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+  acknowledge: selfServiceProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
     await acknowledgeAnnouncement({ id: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId ?? null }, input.id);
     return { ok: true };
   }),
