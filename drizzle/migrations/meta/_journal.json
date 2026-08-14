@@ -1254,6 +1254,13 @@
       "when": 1787879432000,
       "tag": "0179_delivery_assignment_cancellation",
       "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "5",
+      "when": 1787879433000,
+      "tag": "0180_employee_announcements",
+      "breakpoints": true
     }
   ]
 }

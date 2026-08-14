@@ -579,6 +579,20 @@ const PROCEDURES = {
     roles: ["manager"],
     branch: "required",
   },
+  announcementsManagerProcedure: {
+    authority: "module-gate",
+    module: "announcements",
+    level: "FULL",
+    roles: ["manager"],
+    branch: "required",
+  },
+  announcementsReadProcedure: {
+    authority: "module-map",
+    module: "announcements",
+    level: "READ",
+    roles: [],
+    branch: false,
+  },
   // بوّابات مُعرَّفة **خارج** server/trpc.ts (سلطة موزّعة — انظر §30.10 Legacy Mapping):
   auditReadProcedure: {
     authority: "raw-role",

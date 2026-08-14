@@ -75,6 +75,7 @@ import { contactsRouter } from "./routers/contactsRouter";
 import { broadcastsRouter } from "./routers/broadcastsRouter";
 import { reservationsRouter } from "./routers/reservationsRouter";
 import { documentDeliveryRouter } from "./routers/documentDeliveryRouter";
+import { announcementsRouter } from "./routers/announcementsRouter";
 import { receptionRouter } from "./routers/receptionRouter";
 import { executiveRouter } from "./routers/executiveRouter";
 
@@ -185,6 +186,8 @@ export const appRouter = router({
   reservations: reservationsRouter,
   reception: receptionRouter,
   documentDelivery: documentDeliveryRouter,
+  // إعلانات الموظفين الداخلية (ش١): إدارة تنشر/تستهدف/تتابع الإقرار + قراءة ذاتيّة للموظف.
+  announcements: announcementsRouter,
 });
 
 export type AppRouter = typeof appRouter;

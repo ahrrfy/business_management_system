@@ -81,6 +81,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "gifts",        label: "الهدايا والمجانيات",   description: "الوارد المجّاني من الموردين (صفر تكلفة) والصادر للعملاء (مصروف ترويجيّ بحوكمة اعتماد)" },
   { key: "catalogAnomalies", label: "تدقيق الكتالوج",   description: "لوحة كشف شذوذ التكلفة/السعر/المعامل — يفحص وجود بيانات مغلوطة (SINARLINE-class) بعست عدسات (L1-L6)" },
   { key: "courier",      label: "توصيلاتي (المندوب)",  description: "شاشة المندوب الذاتية: طلباتي، تأكيد التسليم والتحصيل، عهدتي" },
+  { key: "announcements", label: "إعلانات الموظفين",    description: "نشر إعلانات داخلية للموظفين واستهدافها (كل/فرع/دور) ومتابعة الإقرار" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
 ];
@@ -102,6 +103,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "FULL", settings: "FULL",
     catalogAnomalies: "FULL",
+    announcements: "FULL",
   },
   manager: {
     digital_cards: "FULL",
@@ -118,6 +120,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "READ", settings: "READ",
     catalogAnomalies: "FULL",
+    announcements: "FULL",
   },
   accountant: {
     digital_cards: "FULL",
@@ -252,6 +255,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     customers: "READ", suppliers: "READ", products: "READ", expenses: "READ", reports: "READ",
     users: "READ", settings: "READ",
     catalogAnomalies: "READ",
+    announcements: "READ",
   },
   user: {
     digital_cards: "NONE",
