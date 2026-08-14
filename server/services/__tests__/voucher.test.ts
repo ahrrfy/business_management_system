@@ -58,6 +58,33 @@ async function openShift(branchId = 1, userId = 1): Promise<number> {
   return insertId(r);
 }
 
+async function fundDrawer(shiftId: number, amount = "1000.00") {
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    shiftId,
+    cashBucket: "DRAWER",
+    direction: "IN",
+    amount,
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    referenceNumber: `TEST-DRAWER-FUND-${shiftId}`,
+    createdBy: 1,
+  });
+}
+
+async function fundTreasury(amount = "1000.00") {
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount,
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 1,
+  });
+}
+
 beforeEach(async () => {
   await reset();
   await seedBase();
@@ -121,7 +148,8 @@ describe("سند قبض (RECEIPT) — IN", () => {
 
 describe("سند صرف (PAYMENT) — OUT", () => {
   it("صرف لمورّد يَكتب receipt + قيد PAYMENT_OUT + AP ينقص", async () => {
-    await openShift(1, 1); // shift-gate
+    const shiftId = await openShift(1, 1); // shift-gate
+    await fundDrawer(shiftId);
     const r = await createVoucher(
       {
         voucherType: "PAYMENT",
@@ -146,7 +174,8 @@ describe("سند صرف (PAYMENT) — OUT", () => {
   });
 
   it("صرف لـOTHER (راتب موظف): receipt + قيد، لا تأثير على ذمم", async () => {
-    await openShift(1, 1); // shift-gate
+    const shiftId = await openShift(1, 1); // shift-gate
+    await fundDrawer(shiftId);
     const r = await createVoucher(
       {
         voucherType: "PAYMENT",
@@ -227,7 +256,8 @@ describe("تكرار/إجبار", () => {
 
 describe("listVouchers", () => {
   it("يُعيد السندات المستقلّة فقط (يَستثني receipts الفواتير)", async () => {
-    await openShift(1, 1); // shift-gate: السندات النقدية تتطلّب وردية مفتوحة.
+    const shiftId = await openShift(1, 1); // shift-gate: السندات النقدية تتطلّب وردية مفتوحة.
+    await fundDrawer(shiftId);
     await createVoucher(
       { voucherType: "RECEIPT", branchId: 1, amount: "10", paymentMethod: "CASH", partyType: "OTHER", description: "a" },
       actor,
@@ -400,6 +430,7 @@ describe("إعفاء الخزينة الإدارية (admin/manager) للسند�
   });
 
   it("admin PAYMENT نقدي بلا وردية ⇒ shiftId=null + cashBucket=TREASURY", async () => {
+    await fundTreasury();
     const r = await createVoucher(
       {
         voucherType: "PAYMENT",

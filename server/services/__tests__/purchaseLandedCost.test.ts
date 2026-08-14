@@ -32,6 +32,16 @@ async function seed() {
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
   await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "10000000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 1,
+  });
   await d.insert(s.products).values([{ id: 1, name: "ورق" }, { id: 2, name: "حبر" }]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "P-1", costPrice: "0.00" },
@@ -125,7 +135,10 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
     // المصروف **ليس** على المورّد: القيد بلا supplierId فلا يظهر حركةً في كشف حسابه.
     expect(payOut[0].supplierId).toBeNull();
     // وإيصال صرفٍ فعليّ خرج به النقد.
-    const rcpts = await db().select().from(s.receipts);
+    const rcpts = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.direction, "OUT"));
     expect(rcpts).toHaveLength(1);
     expect(rcpts[0].direction).toBe("OUT");
     expect(rcpts[0].amount).toBe("400.00");
@@ -174,9 +187,48 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
       actor,
     );
     expect(await expenseRows()).toHaveLength(0);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.direction, "OUT")),
+    ).toHaveLength(0);
     expect(await costOf(1)).toBe("100.00");
     expect(await supplierBalance()).toBe("1000.00");
+  });
+
+  it("نقص الخزينة عند دفع الشحن ⇒ rollback للاستلام والمخزون والذمة والمصروف", async () => {
+    await db()
+      .delete(s.receipts)
+      .where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
+    const po = await orderWithShipping();
+    const items = await itemsOf(po.purchaseOrderId);
+
+    await expect(
+      receivePurchase(
+        {
+          purchaseOrderId: po.purchaseOrderId,
+          lines: items.map((item) => ({
+            purchaseOrderItemId: Number(item.id),
+            receivedBaseQuantity: item.baseQuantity,
+          })),
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(await costOf(1)).toBe("0.00");
+    expect(await costOf(2)).toBe("0.00");
+    expect(await supplierBalance()).toBe("0.00");
+    expect(await expenseRows()).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    expect((await entries()).filter((e) => e.entryType === "PURCHASE")).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.direction, "OUT")),
+    ).toHaveLength(0);
   });
 
   it("حارس: شحن سالب ⇒ BAD_REQUEST", async () => {

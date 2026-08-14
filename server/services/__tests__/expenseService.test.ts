@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -47,6 +47,17 @@ async function seedBase() {
     role: "admin",
     loginMethod: "local",
   });
+  // رصيد خزينة حقيقي يمول عهد الورديات والمصروفات الإدارية في اختبارات النجاح.
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "20000000.00",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 1,
+  });
 }
 
 async function entries(type: string) {
@@ -61,7 +72,7 @@ beforeEach(async () => {
 describe("المصروفات اليومية", () => {
   it("createExpense: يولّد expense + receipt OUT + قيد PAYMENT_OUT", async () => {
     // shift-gate: المصاريف النقدية تستلزم وردية مفتوحة (تُملأ تلقائياً إن لم تُمرَّر).
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "150000" }, actor);
     const r = await createExpense(
       {
         branchId: 1,
@@ -123,6 +134,29 @@ describe("المصروفات اليومية", () => {
     ).rejects.toThrow();
   });
 
+  it("رصيد درج غير كافٍ ⇒ rollback كامل بلا مصروف أو إيصال OUT أو قيد", async () => {
+    await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    await expect(
+      createExpense(
+        {
+          branchId: 1,
+          category: "SUPPLIES",
+          amount: "10",
+          paymentMethod: "CASH",
+          description: "اختبار عدم السالب",
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.expenses)).toHaveLength(0);
+    const outs = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.direction, "OUT"));
+    expect(outs).toHaveLength(0);
+    expect(await entries("PAYMENT_OUT")).toHaveLength(0);
+  });
+
   it("وردية مغلقة تُرفض", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
     await closeShift({ shiftId, countedCash: "0" }, actor);
@@ -142,7 +176,7 @@ describe("المصروفات اليومية", () => {
   });
 
   it("cancelExpense: يُحوّل expense إلى CANCELLED + يعكس النقد + قيد PAYMENT_IN معاكس", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "80000" }, actor);
     const r = await createExpense(
       { branchId: 1, shiftId, category: "MARKETING", amount: "80000", paymentMethod: "CASH" },
       actor
@@ -157,7 +191,15 @@ describe("المصروفات اليومية", () => {
     expect(origRc.status).toBe("REVERSED");
 
     // قبض تعويضي IN يُلغي الأثر الصافي على الصندوق
-    const inn = await db().select().from(s.receipts).where(eq(s.receipts.direction, "IN"));
+    const inn = await db()
+      .select()
+      .from(s.receipts)
+      .where(
+        and(
+          eq(s.receipts.direction, "IN"),
+          eq(s.receipts.shiftId, shiftId),
+        ),
+      );
     expect(inn).toHaveLength(1);
     expect(inn[0].amount).toBe("80000.00");
     expect(inn[0].paymentMethod).toBe("CASH");
@@ -171,24 +213,24 @@ describe("المصروفات اليومية", () => {
     const adj = await entries("ADJUST");
     expect(adj).toHaveLength(0);
 
-    // إغلاق الوردية: المتوقع = 0 (الصرف ألغي بالتعويض)
-    const closed = await closeShift({ shiftId, countedCash: "0" }, actor);
-    expect(closed.expectedCash).toBe("0.00");
+    // إغلاق الوردية: عهدة 80k بقيت كاملة لأن الصرف ألغي بالتعويض.
+    const closed = await closeShift({ shiftId, countedCash: "80000" }, actor);
+    expect(closed.expectedCash).toBe("80000.00");
     expect(closed.variance).toBe("0.00");
   });
 
   it("cancelExpense بعد إغلاق الوردية يُرفض", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100" }, actor);
     const r = await createExpense(
       { branchId: 1, shiftId, category: "RENT", amount: "100", paymentMethod: "CASH", description: "x" },
       actor
     );
-    await closeShift({ shiftId, countedCash: "-100" }, actor);
+    await closeShift({ shiftId, countedCash: "0" }, actor);
     await expect(cancelExpense(r.expenseId, actor)).rejects.toThrow();
   });
 
   it("cancelExpense على مصروف ملغى يُرفض", async () => {
-    await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate
+    await openShift({ branchId: 1, openingBalance: "50" }, actor); // shift-gate
     const r = await createExpense(
       { branchId: 1, category: "OTHER", amount: "50", paymentMethod: "CASH", description: "تجربة" },
       actor
@@ -228,7 +270,10 @@ describe("إنفاذ الوردية النقدية (shift-gate) للمصاريف
     // لا expense ولا receipt ولا قيد دفتري كُتب.
     const exps = await db().select().from(s.expenses);
     expect(exps).toHaveLength(0);
-    const recs = await db().select().from(s.receipts);
+    const recs = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.direction, "OUT"));
     expect(recs).toHaveLength(0);
     const entries = await db().select().from(s.accountingEntries);
     expect(entries).toHaveLength(0);

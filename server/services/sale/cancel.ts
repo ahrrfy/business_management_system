@@ -45,6 +45,7 @@ import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledg
 import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { userNameSnapshot } from "../userSnapshot";
 
@@ -451,6 +452,13 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         const g = await shiftIdForCashTx(tx, actor, Number(inv.branchId), "استرداد إلغاء فاتورة");
         shiftId = g.shiftId;
         cashBucket = g.cashBucket;
+        await assertCashOutAvailable(tx, {
+          branchId: Number(inv.branchId),
+          cashBucket,
+          shiftId,
+          amount: refundable,
+          operation: "استرداد إلغاء الفاتورة",
+        });
       } else {
         shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
       }

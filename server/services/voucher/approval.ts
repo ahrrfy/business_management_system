@@ -5,6 +5,7 @@ import { receipts, suppliers } from "../../../drizzle/schema";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDateStr, toDbMoney } from "../money";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
 import { assertBranchOwnership, computeSignature } from "./helpers";
 import type { PartyType, PaymentMethod } from "./types";
@@ -75,6 +76,20 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
       if (sup?.kind === "CONSIGNOR" && money(sup.bal ?? "0").lt(amount)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `مستحقّ المودِع (${money(sup.bal ?? "0").toFixed(2)}) أقلّ من مبلغ الصرف — أعِد توليد كشف التسوية` });
       }
+    }
+
+    if (
+      direction === "OUT" &&
+      paymentMethod === "CASH" &&
+      cashBucket != null
+    ) {
+      await assertCashOutAvailable(tx, {
+        branchId,
+        cashBucket,
+        shiftId,
+        amount,
+        operation: "اعتماد سند الصرف النقدي",
+      });
     }
 
     const voucherDate = (r.voucherDate as string | null) ?? toDateStr();

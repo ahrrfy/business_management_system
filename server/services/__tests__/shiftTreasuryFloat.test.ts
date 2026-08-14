@@ -135,13 +135,17 @@ describe("imprest — فتح الوردية يسحب العهدة من الخز�
     expect(entries[0]).toMatchObject({ amount: "50000.00", revenue: "0.00", cost: "0.00", profit: "0.00" });
   });
 
-  it("أوّل وردية بخزينة فارغة: تُفتَح بعجزٍ ظاهر لا حظر (allow + warning)", async () => {
-    const res = await openShift({ branchId: 1, openingBalance: "30000" }, { userId: CASHIER1, branchId: 1 });
-    expect(res.shiftId).toBeGreaterThan(0);            // لم يُحظَر
-    expect(res.treasuryWarning).toBe(true);
-    expect(res.treasuryBalanceAfter).toBe("-30000.00");
-    expect((await dash(1)).treasury).toBe("-30000.00"); // العجز مرئيّ للمدير ليموّل
-    expect((await db().select().from(s.shifts))).toHaveLength(1);
+  it("أوّل وردية بخزينة فارغة: تُرفض ذرياً ولا تنشئ وردية أو إيصالاً سالباً", async () => {
+    await expect(
+      openShift(
+        { branchId: 1, openingBalance: "30000" },
+        { userId: CASHIER1, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect((await dash(1)).treasury).toBe("0.00");
+    expect(await db().select().from(s.shifts)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await entriesOfType("SHIFT_FLOAT_OUT")).toHaveLength(0);
   });
 
   it("فتح بعهدة صفر: لا حركة خزينة ولا تحذير", async () => {

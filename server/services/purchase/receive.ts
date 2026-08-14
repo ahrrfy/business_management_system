@@ -10,6 +10,7 @@ import { applyMovement } from "../inventoryService";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
 import type { ReceivePurchaseInput } from "./types";
@@ -414,6 +415,13 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         );
         shipShiftId = g.shiftId;
         shipBucket = g.cashBucket;
+        await assertCashOutAvailable(tx, {
+          branchId: Number(po.branchId),
+          cashBucket: shipBucket,
+          shiftId: shipShiftId,
+          amount: receivedLanded,
+          operation: "دفع مصروف الشحن/الكمرك",
+        });
       }
       const shipReceiptRes = await tx.insert(receipts).values({
         branchId: Number(po.branchId),
@@ -494,6 +502,13 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         );
         shiftId = g.shiftId;
         cashBucket = g.cashBucket;
+        await assertCashOutAvailable(tx, {
+          branchId: Number(po.branchId),
+          cashBucket,
+          shiftId,
+          amount: paidNow,
+          operation: "دفع المورد عند الاستلام",
+        });
       }
       const rRes = await tx.insert(receipts).values({
         branchId: Number(po.branchId),

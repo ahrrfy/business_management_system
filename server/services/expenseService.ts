@@ -22,6 +22,7 @@ import { postEntry } from "./ledgerService";
 import { getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { shiftIdForCashTx } from "./shiftService";
+import { assertCashOutAvailable } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -411,6 +412,16 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
           message: "لا تَستطيع تسجيل مصروف على وردية مستخدم آخر",
         });
       }
+    }
+
+    if (input.paymentMethod === "CASH" && cashBucket != null) {
+      await assertCashOutAvailable(tx, {
+        branchId: input.branchId,
+        cashBucket,
+        shiftId: effectiveShiftId,
+        amount: amt,
+        operation: "تسجيل المصروف النقدي",
+      });
     }
 
     const rRes = await tx.insert(receipts).values({

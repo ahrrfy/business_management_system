@@ -35,6 +35,16 @@ async function seed() {
     { id: 2, openId: "usd-receiver", name: "مستلم", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورد دولاري" });
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "10000000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 1,
+  });
   await d.insert(s.products).values({ id: 1, name: "ورق" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "USD-1", costPrice: "0.00" });
   await d.insert(s.productUnits).values({

@@ -7,6 +7,7 @@ import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledg
 import { money, toDbMoney } from "../money";
 import { getActiveLock } from "../periodLockService";
 import { type Actor, withTx } from "../tx";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { assertBranchOwnership } from "./helpers";
 
 export interface CancelVoucherResult {
@@ -19,7 +20,8 @@ export interface CancelVoucherResult {
  * إلغاء سند قبض/صرف مستقلّ — المرآة الدقيقة لـcreateVoucher:
  *   - الأصل يُعلَّم REVERSED (يبقى في السجلّ للتدقيق).
  *   - إيصال تعويضي بالاتجاه المعاكس على نفس الوردية/الطريقة/المبلغ
- *     (تسوية الصندوق تجمع كل receipts بغضّ النظر عن status ⇒ قلب الحالة وحده يُفسد الصندوق).
+ *     (تسوية الصندوق تجمع COMPLETED وREVERSED وتستبعد PENDING/FAILED؛ قلب الحالة وحده
+ *     يُفسد الصندوق، بينما جمع الأصل المعكوس مع التعويض يصافر الأثر).
  *   - قيد دفتر معاكس (PAYMENT_OUT لإلغاء قبض، PAYMENT_IN لإلغاء صرف) بمبلغ موجب —
  *     ⚠️ ليس ADJUST: صيَغ reconcile تتجاهل ADJUST ⇒ انحراف وهمي دائم.
  *   - عكس رصيد الطرف بإشارة معاكسة تماماً لما كتبه createVoucher.
@@ -95,6 +97,26 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
 
     const amount = money(r.amount);
     const direction = r.direction as "IN" | "OUT";
+
+    if (direction === "IN" && r.paymentMethod === "CASH") {
+      const cashBucket = (r as {
+        cashBucket?: "DRAWER" | "TREASURY" | null;
+      }).cashBucket;
+      if (cashBucket == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "لا يمكن عكس سند قبض نقدي بلا مصدر نقد محدد؛ عالج السجل التاريخي أولاً",
+        });
+      }
+      await assertCashOutAvailable(tx, {
+        branchId: Number(r.branchId),
+        cashBucket,
+        shiftId: r.shiftId != null ? Number(r.shiftId) : null,
+        amount,
+        operation: "عكس سند القبض النقدي",
+      });
+    }
 
     await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, receiptId));
 

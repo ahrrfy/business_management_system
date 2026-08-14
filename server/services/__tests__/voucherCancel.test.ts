@@ -71,6 +71,20 @@ async function openShift(branchId = 1, userId = 1): Promise<number> {
   return insertId(r);
 }
 
+async function fundDrawer(shiftId: number, amount: string) {
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    shiftId,
+    cashBucket: "DRAWER",
+    direction: "IN",
+    amount,
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    referenceNumber: `TEST-DRAWER-FUND-${shiftId}`,
+    createdBy: 1,
+  });
+}
+
 /** نقد الوردية المتوقّع = Σ receipts (CASH IN) − Σ receipts (CASH OUT) — يجمع الكل بغضّ النظر عن status. */
 async function shiftCashNet(shiftId: number): Promise<string> {
   const rows = await db()
@@ -153,7 +167,8 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
 
 describe("إلغاء سند صرف لمورّد (PV)", () => {
   it("رصيد المورد يعود + reconcileSupplierBalances بلا انحراف", async () => {
-    await openShift(); // shift-gate-cash: السند النقدي يتطلّب وردية مفتوحة.
+    const shiftId = await openShift(); // shift-gate-cash: السند النقدي يتطلّب وردية مفتوحة.
+    await fundDrawer(shiftId, "25.00");
     const v = await createVoucher(
       { voucherType: "PAYMENT", branchId: 1, amount: "25.00", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: 1, description: "دفعة لمورّد" },
       actor,

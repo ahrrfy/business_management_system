@@ -10,6 +10,7 @@ import { money, toDateStr, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
 import { getApprovalThreshold } from "./thresholds";
 import { computeSignature, nextVoucherNumber, validateCategory } from "./helpers";
@@ -193,6 +194,21 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       } else {
         shiftId = await openShiftIdTx(tx, actor.userId, input.branchId);
       }
+    }
+
+    if (
+      !needsApproval &&
+      direction === "OUT" &&
+      input.paymentMethod === "CASH" &&
+      cashBucket != null
+    ) {
+      await assertCashOutAvailable(tx, {
+        branchId: input.branchId,
+        cashBucket,
+        shiftId,
+        amount,
+        operation: "إنشاء سند الصرف النقدي",
+      });
     }
 
     const rRes = await tx.insert(receipts).values({

@@ -66,6 +66,16 @@ async function seedBase() {
   await d.insert(s.voucherCategories).values({
     id: 2, name: "إيرادات متفرّقة", direction: "IN", isActive: true, sortOrder: 100,
   });
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "10000000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 1,
+  });
 }
 
 beforeEach(async () => {
@@ -167,6 +177,39 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     // لا بَصمة بَعد (تُكتَب عند الاعتماد)
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
     expect(rc.signatureHash).toBeNull();
+  });
+
+  it("فشل الرصيد عند الاعتماد يُبقي السند PENDING بلا قيد أو ذمة أو دلو نقدي", async () => {
+    await db()
+      .delete(s.receipts)
+      .where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
+    const r = await createVoucher({
+      voucherType: "PAYMENT",
+      branchId: 1,
+      amount: "2000000.00",
+      paymentMethod: "CASH",
+      partyType: "SUPPLIER",
+      partyId: 1,
+      description: "دفعة كبيرة غير ممولة",
+    }, managerActor);
+    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
+
+    await expect(approveVoucher(r.receiptId, adminActor)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+
+    const receipt = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId))
+    )[0];
+    expect(receipt.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(receipt.cashBucket).toBeNull();
+    expect(receipt.shiftId).toBeNull();
+    expect(receipt.approvedBy).toBeNull();
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    const supplier = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
+    expect(supplier.currentBalance).toBe("0.00");
   });
 
   it("اعتماد سند مُعلَّق بواسطة مدير غير المُنشئ ⇒ قَيد + رَصيد + بَصمة", async () => {
