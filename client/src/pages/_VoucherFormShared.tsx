@@ -27,6 +27,11 @@ import { cn } from "@/lib/utils";
 import { AlertTriangle, Building2, Hourglass, Info, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
+import {
+  voucherCashUiPolicy,
+  voucherCreateActionLabel,
+  voucherCreateSuccessMessage,
+} from "@/components/vouchers/voucherUiPolicy";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -91,7 +96,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const [err, setErr] = useState("");
 
   const branches = trpc.branches.list.useQuery();
-  const thresholds = trpc.vouchers.thresholds.useQuery();
   // فئات السندات بحَسب اتجاه السند الحالي (IN/OUT) — تَستثني المُعطَّلة.
   const categories = trpc.voucherCategories.list.useQuery({ includeInactive: false });
   const categoryOptions = useMemo(() => {
@@ -135,19 +139,22 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   }
 
   // وردية النقد + شارة الخزينة الإدارية.
-  const openShift = trpc.shifts.current.useQuery({ branchId }, { enabled: !!branchId });
-  const cashNeedsShift = method === "CASH" && !openShift.data && !openShift.isLoading;
-  const hardBlock = cashNeedsShift && !isElevated;
-  const treasuryNotice = cashNeedsShift && isElevated;
+  // OUT لا يمس درج المُنشئ أصلاً؛ مصدر التنفيذ النقدي الثابت هو خزينة المالك.
+  const openShift = trpc.shifts.current.useQuery({ branchId }, { enabled: isReceipt && !!branchId });
+  const { hardBlock, treasuryNotice } = voucherCashUiPolicy({
+    direction,
+    paymentMethod: method,
+    hasOpenShift: openShift.data != null,
+    shiftLoading: openShift.isLoading,
+    isElevated,
+  });
 
-  // عَتَبة الاعتماد — للتَلميح في الواجهة قبل الإرسال.
+  // كل OUT طلبٌ بلا أثر حتى ينفّذ مالكٌ آخر «اعتماد وصرف» خادمياً؛ IN يبقى فورياً.
   const amountNum = useMemo(() => {
     const v = Number(amount);
     return Number.isFinite(v) ? v : 0;
   }, [amount]);
-  const approvalThreshold = thresholds.data?.approval ?? 1_000_000;
-  const isOwner = !!(me.data as any)?.isOwner;
-  const needsApproval = !isOwner && direction === "OUT" && amountNum > 0 && amountNum >= approvalThreshold;
+  const awaitsOwnerDisbursement = direction === "OUT" && amountNum > 0;
   // لا عَتبة مُرفق: المُرفق اختياريّ دائماً (٣١/٧، قرار المالك).
 
   // السندات الأخيرة لنفس الطَرف (تَحذير الازدواج).
@@ -193,15 +200,17 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const [clientRequestId] = useState(() => crypto.randomUUID());
   const create = trpc.vouchers.create.useMutation({
     onSuccess: async (res) => {
-      if (res.approvalStatus === "PENDING_APPROVAL") {
-        notify.ok(`أُنشئ السند ${res.voucherNumber} — بانتظار اعتماد مدير ثانٍ (Maker-Checker).`);
-      } else {
-        notify.ok(`تَمّ إنشاء ${isReceipt ? "سند القبض" : "سند الصرف"} ${res.voucherNumber}`);
-      }
+      notify.ok(voucherCreateSuccessMessage({
+        direction,
+        voucherNumber: res.voucherNumber,
+        approvalStatus: res.approvalStatus,
+      }));
       await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
-      // طباعة فورية إن طُلبت
-      if (pendingPrintRef) {
+      // OUT لا يطبع وثيقة رسمية عند إنشاء الطلب. IN يطبع بعد نجاحه الفوري فقط.
+      if (isReceipt && pendingPrintRef && res.approvalStatus === "APPROVED") {
         await tryPrintAfterCreate(res.receiptId);
+      } else if (pendingPrintRef && res.approvalStatus !== "APPROVED") {
+        notify.err("حُفظ الطلب بلا أثر مالي؛ تتاح الطباعة الرسمية بعد الاعتماد والتنفيذ.");
       }
       navigate("/vouchers");
     },
@@ -301,7 +310,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     setErr("");
     const v = validate();
     if (v) { setErr(v); return; }
-    setPendingPrintRef(printAfter);
+    // حارس تجربة مستخدم فقط: سند الصرف المعلّق لا يطلب طباعة رسمية.
+    setPendingPrintRef(isReceipt ? printAfter : null);
     create.mutate(buildPayload());
   }
 
@@ -346,7 +356,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       if (e.key === "Escape") { void requestCancel(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
-        submit("thermal");
+        submit(isReceipt ? "thermal" : null);
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
         submit(null);
@@ -387,7 +397,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         title={isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
         description={isReceipt
           ? "إيرادات/تحصيلات مستقلّة بلا فاتورة (مثل: دفعة من عميل بلا تخصيص، إيرادات متفرّقة، استرداد من مورّد)."
-          : "مصاريف/مدفوعات مستقلّة بلا فاتورة (مثل: راتب موظف، إيجار، صيانة، دفعة لمورّد)."}
+          : "طلب صرف مستقلّ بلا أثر مالي عند الإرسال؛ ينفّذه مالك آخر لاحقاً عبر «اعتماد وصرف» بعد التحقق من الرصيد."}
         actions={
           <Button variant="outline" size="sm" onClick={() => void requestCancel()}>
             → القائمة
@@ -417,11 +427,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                 ariaLabel="مبلغ السند بالدينار"
                 className="text-right"
               />
-              {needsApproval && amountNum > 0 && (
+              {awaitsOwnerDisbursement && (
                 <div className="text-[11px] space-y-0.5 mt-1">
-                  <p className="text-orange-700 flex items-center gap-1">
+                  <p className="text-[var(--sem-warn)] flex items-center gap-1">
                     <ShieldQuestion aria-hidden className="size-3" />
-                    يَحتاج اعتماد مدير ثانٍ (Maker-Checker، عَتبة {fmt(approvalThreshold)} د.ع).
+                    سيبقى طلباً بلا أثر حتى يعتمد ويصرفه حساب مالك آخر.
                   </p>
                 </div>
               )}
@@ -659,7 +669,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   </table>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  هذا تَوضيح للقَيد المالي الذي سيُسجَّل تلقائياً عند الحفظ.
+                  {isReceipt
+                    ? "هذا تَوضيح للقَيد المالي الذي سيُسجَّل تلقائياً عند الحفظ."
+                    : "هذه معاينة فقط؛ لا يُسجَّل القيد إلا عند تنفيذ «اعتماد وصرف» بنجاح."}
                 </p>
               </div>
             )}
@@ -706,15 +718,21 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       {treasuryNotice && (
         <div className="rounded-md border badge-status-pending text-sm p-3 flex items-start gap-2">
           <Building2 aria-hidden className="size-4 shrink-0 mt-0.5" />
-          <span>يُسجَّل في <strong>الخزينة الإدارية</strong> (بلا وردية كاشير) — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.</span>
+          <span>
+            {isReceipt ? (
+              <>يُسجَّل في <strong>الخزينة الإدارية</strong> (بلا وردية كاشير) — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.</>
+            ) : (
+              <>المصدر المتوقع للطلب هو <strong>الخزينة الإدارية</strong>. لن يتغير رصيدها عند الإرسال؛ يتحقق الخادم منه عند «اعتماد وصرف».</>
+            )}
+          </span>
         </div>
       )}
-      {needsApproval && amountNum > 0 && (
-        <div className="rounded-md border border-orange-300 bg-orange-50 text-orange-900 text-sm p-3 flex items-start gap-2">
+      {awaitsOwnerDisbursement && (
+        <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)] text-sm p-3 flex items-start gap-2">
           <ShieldCheck aria-hidden className="size-4 shrink-0 mt-0.5" />
           <span>
-            هذا المبلغ يَستلزم <strong>اعتماد مدير ثانٍ</strong> (Maker-Checker، عَتبة {fmt(approvalThreshold)} د.ع).
-            سيُسجَّل بحالة «بانتظار الاعتماد» بلا أي تأثير مالي حتى يُعتمد. أنت كَمُنشِئ لا يُمكنك اعتماد سندك بنفسك (فَصل المهام).
+            سيُرسل <strong>طلب صرف</strong> بحالة «بانتظار الاعتماد والصرف» بلا إيصال أو قيد أو تغيير ذمة.
+            ينفّذه حساب مالك نشط غير مُنشئ الطلب، ويعيد الخادم التحقق من الرصيد والصلاحية عند التنفيذ.
           </span>
         </div>
       )}
@@ -727,25 +745,29 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           className={submitColor}
           title={hardBlock ? "افتح وردية قبل سند نقدي للكاشير" : "Ctrl+S"}
         >
-          {create.isPending ? "جارٍ الحفظ…" : (isReceipt ? "حفظ سند القبض" : "حفظ سند الصرف")}
+          {voucherCreateActionLabel(direction, create.isPending)}
         </Button>
-        <Button
-          variant="outline"
-          onClick={() => submit("thermal")}
-          disabled={create.isPending || hardBlock}
-          title="Ctrl+Enter"
-        >
-          <Printer aria-hidden className="size-4 ms-1" />
-          حفظ + طباعة حرارية
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => submit("a4")}
-          disabled={create.isPending || hardBlock}
-        >
-          <Printer aria-hidden className="size-4 ms-1" />
-          حفظ + طباعة A4
-        </Button>
+        {isReceipt && (
+          <>
+            <Button
+              variant="outline"
+              onClick={() => submit("thermal")}
+              disabled={create.isPending || hardBlock}
+              title="Ctrl+Enter"
+            >
+              <Printer aria-hidden className="size-4 ms-1" />
+              حفظ + طباعة حرارية
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => submit("a4")}
+              disabled={create.isPending || hardBlock}
+            >
+              <Printer aria-hidden className="size-4 ms-1" />
+              حفظ + طباعة A4
+            </Button>
+          </>
+        )}
         <Button variant="outline" disabled={create.isPending} onClick={() => void requestCancel()}>
           إلغاء (Esc)
         </Button>
