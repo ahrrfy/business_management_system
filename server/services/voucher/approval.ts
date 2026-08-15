@@ -6,6 +6,8 @@ import {
   assetMaintenance,
   digitalWalletTransactions,
   digitalWallets,
+  employees,
+  employeeTerminations,
   exchangeHouses,
   exchangeTransactions,
   expenses,
@@ -271,6 +273,72 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
     if (systemRequest?.kind === "VOUCHER_CANCELLATION") {
       if (r.referenceNumber !== `CANCEL-VCH-${systemRequest.originalReceiptId}`) {
         throw new TRPCError({ code: "CONFLICT", message: "مرجع طلب إلغاء القبض غير متطابق" });
+      }
+    } else if (systemRequest?.kind === "TERMINATION_SETTLEMENT") {
+      if (
+        !Number.isInteger(systemRequest.terminationId) ||
+        systemRequest.terminationId <= 0 ||
+        !Number.isInteger(systemRequest.employeeId) ||
+        systemRequest.employeeId <= 0 ||
+        typeof systemRequest.expectedAmount !== "string" ||
+        r.referenceNumber !== `TERM-SETTLEMENT-${systemRequest.terminationId}`
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "ارتباط طلب تسوية نهاية الخدمة غير صالح",
+        });
+      }
+      const [termination] = await tx
+        .select()
+        .from(employeeTerminations)
+        .where(eq(employeeTerminations.id, systemRequest.terminationId))
+        .for("update")
+        .limit(1);
+      const [employee] = await tx
+        .select({
+          id: employees.id,
+          branchId: employees.branchId,
+          employmentStatus: employees.employmentStatus,
+        })
+        .from(employees)
+        .where(eq(employees.id, systemRequest.employeeId))
+        .for("update")
+        .limit(1);
+      if (
+        !termination ||
+        termination.status !== "completed" ||
+        Number(termination.employeeId) !== systemRequest.employeeId ||
+        !employee ||
+        Number(employee.id) !== systemRequest.employeeId ||
+        Number(employee.branchId) !== branchId ||
+        employee.employmentStatus !== "terminated" ||
+        !money(termination.settlement).eq(amount) ||
+        !money(systemRequest.expectedAmount).eq(amount)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تغيّر سجل إنهاء الخدمة أو مبلغ تسويته — أوقف الصرف وراجع الموارد البشرية",
+        });
+      }
+      const [alreadyPaid] = await tx
+        .select({ id: receipts.id })
+        .from(receipts)
+        .where(
+          and(
+            eq(receipts.referenceNumber, `TERM-SETTLEMENT-${systemRequest.terminationId}`),
+            ne(receipts.id, receiptId),
+            eq(receipts.direction, "OUT"),
+            eq(receipts.status, "COMPLETED"),
+            eq(receipts.approvalStatus, "APPROVED"),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (alreadyPaid) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تسوية نهاية الخدمة مصروفة مسبقاً بسند آخر — مُنع الصرف المكرر",
+        });
       }
     } else if (
       systemRequest?.kind === "ASSET_ACQUISITION" ||
@@ -927,26 +995,38 @@ export async function rejectVoucher(
 }
 
 /**
- * إعادة تقديم صريحة لمحاولة سداد مصروف نظامي مرفوضة. المصروف وقيد الاعتراف لا يُعادان؛
- * يتبدّل فقط receipt clearing المرتبط به، ويبقى السند المرفوض وسببه للأثر التدقيقي.
+ * إعادة تقديم صريحة لمحاولة دفع نظامية مرفوضة (مصروف أو تسوية نهاية خدمة).
+ * يبقى المصدر والسند المرفوض وسببهما للتدقيق، ويُنشأ طلب clearing واحد بلا أثر مسبق.
+ * اسم التصدير القديم باقٍ لتوافق الراوتر والعملاء الحاليين.
  */
 export async function resubmitRejectedExpensePayment(
   receiptId: number,
   actor: Actor,
   correction?: { attachmentUrl?: string | null; note?: string | null },
-): Promise<{ receiptId: number; voucherNumber: string; approvalStatus: "PENDING_APPROVAL" }> {
+): Promise<{
+  receiptId: number;
+  voucherNumber: string;
+  approvalStatus: "APPROVED" | "PENDING_APPROVAL" | "REJECTED";
+}> {
   return withTx(async (tx) => {
     const [preview] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).limit(1);
     if (!preview || preview.branchId == null) {
-      throw new TRPCError({ code: "NOT_FOUND", message: "محاولة دفع المصروف المرفوضة غير موجودة" });
+      throw new TRPCError({ code: "NOT_FOUND", message: "محاولة الدفع النظامية المرفوضة غير موجودة" });
     }
     const previewRequest = parseSystemPaymentRequest(preview.internalNote);
-    if (previewRequest?.kind !== "PURCHASE_SHIPPING" && previewRequest?.kind !== "ASSET_MAINTENANCE") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "إعادة التقديم الصريحة متاحة لطلب دفع مصروف شحن أو صيانة فقط" });
+    if (
+      previewRequest?.kind !== "PURCHASE_SHIPPING" &&
+      previewRequest?.kind !== "ASSET_MAINTENANCE" &&
+      previewRequest?.kind !== "TERMINATION_SETTLEMENT"
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "إعادة التقديم الصريحة متاحة لطلب دفع مصروف أو تسوية نهاية خدمة فقط",
+      });
     }
     const branchId = Number(preview.branchId);
     if (actor.role !== "admin" && actor.branchId != null && Number(actor.branchId) !== branchId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "طلب دفع المصروف يخص فرعاً آخر" });
+      throw new TRPCError({ code: "FORBIDDEN", message: "طلب الدفع يخص فرعاً آخر" });
     }
     await lockCashSourceForUpdate(tx, { branchId, cashBucket: "TREASURY", shiftId: null });
     const [rejected] = await tx.select().from(receipts)
@@ -954,13 +1034,158 @@ export async function resubmitRejectedExpensePayment(
     const request = parseSystemPaymentRequest(rejected?.internalNote);
     if (
       !rejected ||
-      (request?.kind !== "PURCHASE_SHIPPING" && request?.kind !== "ASSET_MAINTENANCE") ||
+      (request?.kind !== "PURCHASE_SHIPPING" &&
+        request?.kind !== "ASSET_MAINTENANCE" &&
+        request?.kind !== "TERMINATION_SETTLEMENT") ||
       rejected.approvalStatus !== "REJECTED" || rejected.status !== "FAILED" ||
       JSON.stringify(request) !== JSON.stringify(previewRequest) ||
       !rejected.referenceNumber
     ) {
-      throw new TRPCError({ code: "CONFLICT", message: "محاولة دفع المصروف لم تعد مرفوضة صالحة لإعادة التقديم" });
+      throw new TRPCError({ code: "CONFLICT", message: "محاولة الدفع لم تعد مرفوضة صالحة لإعادة التقديم" });
     }
+    const existingTerminationReplacement = async (clientRequestId: string) => {
+      const [key] = await tx
+        .select({ refId: idempotencyKeys.refId })
+        .from(idempotencyKeys)
+        .where(
+          and(
+            eq(idempotencyKeys.operation, "voucher.create"),
+            eq(idempotencyKeys.clientRequestId, clientRequestId),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!key) return null;
+      const [replacement] = await tx
+        .select()
+        .from(receipts)
+        .where(eq(receipts.id, Number(key.refId)))
+        .for("update")
+        .limit(1);
+      if (!replacement) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "مرجع إعادة تقديم الدفع موجود لكن سنده مفقود — أوقف العملية وراجع التدقيق",
+        });
+      }
+      const isDead =
+        replacement.status === "REVERSED" ||
+        replacement.status === "FAILED" ||
+        replacement.approvalStatus === "REJECTED";
+      if (isDead) {
+        await tx.delete(idempotencyKeys).where(
+          and(
+            eq(idempotencyKeys.operation, "voucher.create"),
+            eq(idempotencyKeys.clientRequestId, clientRequestId),
+          ),
+        );
+        return null;
+      }
+      if (
+        Number(replacement.branchId) !== branchId ||
+        replacement.direction !== "OUT" ||
+        replacement.paymentMethod !== "CASH" ||
+        replacement.partyType !== "OTHER" ||
+        replacement.referenceNumber !== rejected.referenceNumber ||
+        replacement.internalNote !== rejected.internalNote ||
+        !money(replacement.amount).eq(money(rejected.amount))
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تعارض مفتاح إعادة التقديم مع سند دفع مختلف",
+        });
+      }
+      return {
+        receiptId: Number(replacement.id),
+        voucherNumber: String(replacement.voucherNumber ?? ""),
+        approvalStatus: replacement.approvalStatus as
+          | "APPROVED"
+          | "PENDING_APPROVAL"
+          | "REJECTED",
+      };
+    };
+
+    if (request.kind === "TERMINATION_SETTLEMENT") {
+      if (
+        !Number.isInteger(request.terminationId) ||
+        request.terminationId <= 0 ||
+        !Number.isInteger(request.employeeId) ||
+        request.employeeId <= 0 ||
+        typeof request.expectedAmount !== "string" ||
+        rejected.referenceNumber !== `TERM-SETTLEMENT-${request.terminationId}`
+      ) {
+        throw new TRPCError({ code: "CONFLICT", message: "ارتباط تسوية نهاية الخدمة المرفوضة غير صالح" });
+      }
+      const [termination] = await tx
+        .select()
+        .from(employeeTerminations)
+        .where(eq(employeeTerminations.id, request.terminationId))
+        .for("update")
+        .limit(1);
+      const [employee] = await tx
+        .select({
+          id: employees.id,
+          branchId: employees.branchId,
+          employmentStatus: employees.employmentStatus,
+          firstName: employees.firstName,
+          fatherName: employees.fatherName,
+          grandfatherName: employees.grandfatherName,
+          lastName: employees.lastName,
+        })
+        .from(employees)
+        .where(eq(employees.id, request.employeeId))
+        .for("update")
+        .limit(1);
+      if (
+        !termination ||
+        termination.status !== "completed" ||
+        Number(termination.employeeId) !== request.employeeId ||
+        !employee ||
+        Number(employee.branchId) !== branchId ||
+        employee.employmentStatus !== "terminated" ||
+        !money(termination.settlement).eq(money(rejected.amount)) ||
+        !money(request.expectedAmount).eq(money(rejected.amount))
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تغيّر سجل إنهاء الخدمة أو مبلغ تسويته — راجع الموارد البشرية قبل إعادة التقديم",
+        });
+      }
+      const employeeName = [
+        employee.firstName,
+        employee.fatherName,
+        employee.grandfatherName,
+        employee.lastName,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const clientRequestId = `termination-settlement-${request.terminationId}`;
+      const replay = await existingTerminationReplacement(clientRequestId);
+      if (replay) return replay;
+      const replacement = await createSystemPaymentRequestTx(tx, {
+        branchId,
+        amount: toDbMoney(rejected.amount),
+        paymentMethod: "CASH",
+        partyType: "OTHER",
+        counterpartyName: rejected.counterpartyName?.trim() || employeeName,
+        description: [
+          `إعادة تقديم تسوية نهاية خدمة — ${termination.terminationType}`,
+          correction?.note?.trim(),
+        ]
+          .filter(Boolean)
+          .join(" — "),
+        referenceNumber: rejected.referenceNumber,
+        attachmentUrl: correction?.attachmentUrl?.trim() || rejected.attachmentUrl || null,
+        voucherDate: toDateStr(),
+        clientRequestId,
+      }, actor, request);
+      return {
+        receiptId: replacement.receiptId,
+        voucherNumber: replacement.voucherNumber,
+        approvalStatus: replacement.approvalStatus,
+      };
+    }
+
     const replayKey = `system-expense-resubmit-${receiptId}`;
     const replayLinks = await tx.select({ refId: idempotencyKeys.refId })
       .from(idempotencyKeys)
@@ -1036,7 +1261,7 @@ export async function resubmitRejectedExpensePayment(
     return {
       receiptId: replacement.receiptId,
       voucherNumber: replacement.voucherNumber,
-      approvalStatus: "PENDING_APPROVAL" as const,
+      approvalStatus: replacement.approvalStatus,
     };
   });
 }

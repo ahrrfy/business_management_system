@@ -27,6 +27,7 @@ const SYSTEM_REFERENCE_PREFIXES = [
   "EXCHANGE-IQD-DEP-",
   "DIGITAL-WALLET-DEP-",
   "CANCEL-VCH-",
+  "TERM-SETTLEMENT-",
 ] as const;
 
 export function isSystemPaymentReference(reference: string | null | undefined): boolean {
@@ -67,6 +68,12 @@ export type SystemPaymentRequest =
       kind: "DIGITAL_WALLET_CASH_DEPOSIT";
       transactionId: number;
       walletId: number;
+      expectedAmount: string;
+    }
+  | {
+      kind: "TERMINATION_SETTLEMENT";
+      terminationId: number;
+      employeeId: number;
       expectedAmount: string;
     }
   | { kind: "VOUCHER_CANCELLATION"; originalReceiptId: number; originalCreatorId: number | null };

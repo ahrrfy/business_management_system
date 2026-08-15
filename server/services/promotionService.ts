@@ -15,14 +15,12 @@ import {
   employees,
   employeeTerminations,
   hrDeviceUsers,
-  receipts,
   users,
 } from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
-import { assertNonPhysicalOutReceipt } from "./cash/cashAvailability";
-import { nextVoucherNumber } from "./voucher/helpers";
+import { createSystemPaymentRequestTx } from "./voucher/create";
 import {
   wageProfileColumns,
   wageProfileOf,
@@ -584,32 +582,26 @@ export async function completeTermination(id: number, actor: PromotionActor) {
           message: "لا يمكن إنشاء سند تسوية لموظف بلا فرع مُسنَد",
         });
       }
-      const voucherNumber = await nextVoucherNumber(tx, "PAYMENT", branchId);
-      assertNonPhysicalOutReceipt({
-        classification: "DEFERRED_APPROVAL",
-        paymentMethod: "CASH",
-        cashBucket: null,
-        approvalStatus: "PENDING_APPROVAL",
-      });
-      const rRes = await tx.insert(receipts).values({
-        invoiceId: null,
+      const request = await createSystemPaymentRequestTx(tx, {
         branchId,
-        shiftId: null, // PENDING: لا وردية/دلو حتى الاعتماد (approveVoucher يحسمهما بوردية المُعتمِد)
-        cashBucket: null,
-        direction: "OUT",
         amount: toDbMoney(settlement),
         paymentMethod: "CASH",
-        status: "COMPLETED",
-        voucherNumber,
         partyType: "OTHER",
-        partyId: null,
         counterpartyName: fullEmployeeName(emp),
         description: `تسوية نهاية خدمة — ${t.terminationType}`,
-        voucherDate: new Date(`${t.lastDay}T00:00:00Z`),
-        createdBy: actor.userId,
-        approvalStatus: "PENDING_APPROVAL", // دائماً (عملية حسّاسة، بلا عتبة) — الأثر الماليّ عند الاعتماد فقط
+        referenceNumber: `TERM-SETTLEMENT-${id}`,
+        voucherDate: t.lastDay,
+        clientRequestId: `termination-settlement-${id}`,
+      }, { ...actor, branchId }, {
+        kind: "TERMINATION_SETTLEMENT",
+        terminationId: id,
+        employeeId: t.employeeId,
+        expectedAmount: toDbMoney(settlement),
       });
-      settlementVoucher = { receiptId: extractInsertId(rRes), voucherNumber };
+      settlementVoucher = {
+        receiptId: request.receiptId,
+        voucherNumber: request.voucherNumber,
+      };
     }
 
     return {

@@ -140,10 +140,10 @@ export default function Vouchers() {
     onError: (e) => notify.err(e),
   });
 
-  const resubmitExpenseMut = trpc.vouchers.resubmitExpensePayment.useMutation({
+  const resubmitSystemPaymentMut = trpc.vouchers.resubmitExpensePayment.useMutation({
     onSuccess: async (res) => {
       await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
-      notify.ok(`أُعيد تقديم طلب دفع المصروف بالسند ${res.voucherNumber} — لم يُكرَّر المصروف أو قيد الاعتراف`);
+      notify.ok(`أُعيد تقديم طلب الدفع النظامي بالسند ${res.voucherNumber} بلا تكرارٍ للمصدر أو أثرٍ مالي`);
     },
     onError: (e) => notify.err(e),
   });
@@ -177,16 +177,21 @@ export default function Vouchers() {
     approveMut.mutate({ receiptId: Number(r.id) });
   }
 
-  async function resubmitExpensePayment(r: VoucherRow) {
+  async function resubmitSystemPayment(r: VoucherRow) {
+    const isTerminationSettlement = r.referenceNumber?.startsWith("TERM-SETTLEMENT-") === true;
     const ok = await confirm({
       variant: "info",
-      title: "إعادة تقديم طلب دفع المصروف",
-      description: `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بالمصروف المثبت نفسه بلا مصروف أو قيد دفتر إضافي. هل تتابع؟`,
+      title: isTerminationSettlement
+        ? "إعادة تقديم تسوية نهاية الخدمة"
+        : "إعادة تقديم طلب دفع المصروف",
+      description: isTerminationSettlement
+        ? `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بسجل إنهاء الخدمة ومبلغه المعتمد نفسه بلا تغيير حالة الموظف أو أثر مالي مسبق. هل تتابع؟`
+        : `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بالمصروف المثبت نفسه بلا مصروف أو قيد دفتر إضافي. هل تتابع؟`,
       confirmText: "إعادة تقديم",
       cancelText: "تراجع",
     });
     if (!ok) return;
-    resubmitExpenseMut.mutate({ receiptId: Number(r.id) });
+    resubmitSystemPaymentMut.mutate({ receiptId: Number(r.id) });
   }
 
   function openReject(r: VoucherRow) {
@@ -704,13 +709,15 @@ export default function Vouchers() {
                                 : { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
-                              key: "resubmit-expense",
+                              key: "resubmit-system-payment",
                               kind: "create",
-                              label: "إعادة تقديم دفع المصروف",
-                              hidden: !canManage || r.approvalStatus !== "REJECTED" || !r.referenceNumber || (!r.referenceNumber.startsWith("SHIP-") && !r.referenceNumber.startsWith("ASSET-MAINT-")),
-                              disabled: resubmitExpenseMut.isPending,
+                              label: r.referenceNumber?.startsWith("TERM-SETTLEMENT-")
+                                ? "إعادة تقديم تسوية نهاية الخدمة"
+                                : "إعادة تقديم دفع المصروف",
+                              hidden: !canManage || r.approvalStatus !== "REJECTED" || !r.referenceNumber || (!r.referenceNumber.startsWith("SHIP-") && !r.referenceNumber.startsWith("ASSET-MAINT-") && !r.referenceNumber.startsWith("TERM-SETTLEMENT-")),
+                              disabled: resubmitSystemPaymentMut.isPending,
                               disabledReason: "توجد إعادة تقديم قيد التنفيذ",
-                              onSelect: () => void resubmitExpensePayment(r),
+                              onSelect: () => void resubmitSystemPayment(r),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
@@ -765,9 +772,11 @@ export default function Vouchers() {
           <DialogHeader>
             <DialogTitle>رفض السند {rejectTarget?.voucherNumber ?? ""}</DialogTitle>
             <DialogDescription>
-              {rejectTarget?.referenceNumber && (rejectTarget.referenceNumber.startsWith("SHIP-") || rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
-                ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
-                : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
+              {rejectTarget?.referenceNumber?.startsWith("TERM-SETTLEMENT-")
+                ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى إنهاء الخدمة مثبتاً وتبقى التسوية غير مدفوعة، ويمكن إعادة تقديمها صراحةً من السجل بلا تكرار."
+                : rejectTarget?.referenceNumber && (rejectTarget.referenceNumber.startsWith("SHIP-") || rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
+                  ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
+                  : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1">

@@ -158,7 +158,7 @@ export const voucherRouter = router({
       return res;
     }),
 
-  /** إعادة تقديم صريحة لتسوية مصروف نظامي مرفوضة؛ لا تعيد إنشاء المصروف أو قيد الاعتراف. */
+  /** إعادة تقديم صريحة لطلب دفع نظامي مرفوض (مصروف أو تسوية نهاية خدمة) مع إبقاء المصدر والسند المرفوض للتدقيق. */
   resubmitExpensePayment: treasuryManagerProcedure
     .input(z.object({
       receiptId: z.number().int().positive(),
@@ -176,7 +176,7 @@ export const voucherRouter = router({
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
       }, { attachmentUrl: input.attachmentUrl, note: input.note });
       await logAudit(ctx, {
-        action: "voucher.expensePayment.resubmit",
+        action: "voucher.systemPayment.resubmit",
         entityType: "receipt",
         entityId: res.receiptId,
         newValue: { rejectedReceiptId: input.receiptId, voucherNumber: res.voucherNumber },
