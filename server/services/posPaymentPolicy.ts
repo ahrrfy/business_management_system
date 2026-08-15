@@ -1,18 +1,9 @@
-import { TRPCError } from "@trpc/server";
-import {
-  POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
-  isPosPaymentMethodEnabled,
-} from "@shared/posPaymentPolicy";
-
 /**
- * Server-side fail-closed boundary for every cashier/reception money-in path.
- * A reference typed by an employee is not evidence of provider settlement.
+ * اسم توافق لمسارات نقاط البيع والاستقبال. التنفيذ الحاكم موحّد مع كل قبض
+ * يدخله الموظف، كي لا تنجرف سياسة POS عن بقية منافذ القبض مستقبلاً.
  */
+import { assertInboundPaymentMethodEnabled } from "./inboundPaymentPolicy";
+
 export function assertPosPaymentMethodEnabled(method: string | null | undefined): void {
-  if (!isPosPaymentMethodEnabled(method)) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
-    });
-  }
+  assertInboundPaymentMethodEnabled(method);
 }

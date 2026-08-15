@@ -28,7 +28,7 @@ describe("reception external payment fail-closed UX", () => {
     expect(source).toContain('id="reception-collection-external-disabled"');
     expect(source).toContain("disabled={!isPosPaymentMethodEnabled(p.v)}");
     expect(source).toContain("if (!isPosPaymentMethodEnabled(p.v)) return");
-    expect(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE).toMatch(/غير مفعّلة.*مزوّد.*تسوية موثوقين/);
+    expect(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE).toMatch(/غير مفعّل.*إثبات مستقل.*المزوّد.*تسوية.*موثوقة/);
   });
 
   it("disables external payment on every reception/work-order/reservation UI", () => {
