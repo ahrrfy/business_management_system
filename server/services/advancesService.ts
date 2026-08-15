@@ -148,6 +148,33 @@ function parseAdvanceRequest(value: string | null | undefined): AdvanceRequestMe
   }
 }
 
+/**
+ * سقف السلف غير المسدّدة يُحسم عند الاعتماد، لا عند إنشاء الطلب.
+ *
+ * قفل الموظف في المستدعي هو قفل التجميع الحاكم: كل تفعيل لسلفة الموظف نفسه يمرّ به،
+ * لذلك لا يستطيع اعتمادان متزامنان قراءة الرصيد القديم معاً. نقفل صفوف ACTIVE أيضاً
+ * كي يكون مجموع remaining لقطةً مستقرة أمام تسويات/إلغاءات الرواتب المتزامنة.
+ * الطلبات المعلّقة ليست أصلاً ولا التزاماً على الموظف، فلا تدخل المجموع؛ لكنها تُعاد
+ * محاكمتها هنا لحظة تحوّلها إلى ACTIVE وخروج النقد فعلياً.
+ */
+async function assertAdvanceOutstandingLimitTx(tx: Tx, employeeId: number, requested: Decimal): Promise<void> {
+  const active = await tx
+    .select({ id: employeeAdvances.id, remaining: employeeAdvances.remaining })
+    .from(employeeAdvances)
+    .where(and(eq(employeeAdvances.employeeId, employeeId), eq(employeeAdvances.status, "ACTIVE")))
+    .orderBy(asc(employeeAdvances.id))
+    .for("update");
+
+  const outstanding = active.reduce((sum, row) => sum.plus(money(row.remaining)), new Decimal(0));
+  const limit = money(getApprovalThreshold());
+  if (outstanding.plus(requested).gt(limit)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `اعتماد السلفة يتجاوز سقف السلف غير المسدَّدة (${toDbMoney(limit)} د.ع) — الرصيد القائم ${toDbMoney(outstanding)} د.ع. سدِّد القائم أو ارفض الطلب.`,
+    });
+  }
+}
+
 export async function activateAdvanceForApprovedVoucherTx(
   tx: Tx,
   receipt: {
@@ -188,6 +215,7 @@ export async function activateAdvanceForApprovedVoucherTx(
 
   const amount = money(meta.amount);
   const monthly = meta.monthlyDeduction == null ? null : money(meta.monthlyDeduction);
+  await assertAdvanceOutstandingLimitTx(tx, meta.employeeId, amount);
   const result = await tx.insert(employeeAdvances).values({
     employeeId: meta.employeeId,
     branchId: meta.branchId,
