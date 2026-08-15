@@ -6,12 +6,371 @@
 // للمستخدم كـ«تعذّر إتمام البيع» بلا أثر). هذه الخطوة تكشف ذلك قبل أن يكسر ميزة إنتاجية.
 //
 // الاستخدام:  pnpm db:verify   (تُستدعى آلياً ضمن pnpm prod:deploy بعد الهجرة)
-import "dotenv/config";
+import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createConnection } from "mysql2/promise";
 
 const META_DIR = "./drizzle/migrations/meta";
+const REQUIRED_EXPENSE_STATUSES = [
+  "PENDING_APPROVAL",
+  "ACTIVE",
+  "REJECTED",
+  "CANCELLED",
+];
+const BLOCKING_REFERENTIAL_RULES = new Set(["RESTRICT", "NO ACTION"]);
+
+/**
+ * عقد حي مستقل عن Drizzle snapshot للهجرتين 0181/0182.
+ *
+ * الـsnapshot الحالي أقدم من هاتين الهجرتين، لذلك لا يجوز استنتاج سلامتهما من
+ * فحص snapshot العام. هذه الدالة تستقبل metadata المقروءة من information_schema
+ * وتتحقق من البنية والدلالة المرجعية، لا من مجرد وجود اسم العمود.
+ */
+function collectOperationalSchemaContractErrors({
+  databaseName,
+  fulfillmentColumns,
+  fulfillmentIndexes,
+  fulfillmentForeignKeys,
+  expenseStatusColumns,
+}) {
+  const errors = [];
+  const fulfillment = fulfillmentColumns.find(
+    (row) =>
+      row.tableName === "storeSettings" &&
+      row.columnName === "fulfillmentBranchId",
+  );
+  const branchId = fulfillmentColumns.find(
+    (row) => row.tableName === "branches" && row.columnName === "id",
+  );
+
+  if (!fulfillment) {
+    errors.push(
+      "storeSettings.fulfillmentBranchId مفقود (الهجرة 0181 لم تُطبَّق).",
+    );
+  } else {
+    if (String(fulfillment.dataType).toLowerCase() !== "bigint") {
+      errors.push(
+        `storeSettings.fulfillmentBranchId نوعه ${fulfillment.columnType || fulfillment.dataType || "(مجهول)"} وليس BIGINT.`,
+      );
+    }
+    if (String(fulfillment.isNullable).toUpperCase() !== "YES") {
+      errors.push(
+        "storeSettings.fulfillmentBranchId يجب أن يقبل NULL لمرحلة bootstrap، بينما فتح المتجر يُحرس تطبيقياً.",
+      );
+    }
+    if (fulfillment.columnDefault != null) {
+      errors.push(
+        "storeSettings.fulfillmentBranchId يجب ألا يملك فرعاً افتراضياً صامتاً.",
+      );
+    }
+  }
+
+  if (!branchId) {
+    errors.push("branches.id مفقود؛ تعذّر إثبات توافق نوع مرجع فرع التنفيذ.");
+  } else if (
+    fulfillment &&
+    String(fulfillment.columnType).toLowerCase() !==
+      String(branchId.columnType).toLowerCase()
+  ) {
+    errors.push(
+      `نوع storeSettings.fulfillmentBranchId (${fulfillment.columnType}) لا يطابق branches.id (${branchId.columnType}).`,
+    );
+  }
+
+  const indexRows = fulfillmentIndexes
+    .filter((row) => row.indexName === "idx_store_settings_fulfillment_branch")
+    .sort((a, b) => Number(a.seqInIndex) - Number(b.seqInIndex));
+  if (!indexRows.length) {
+    errors.push(
+      "الفهرس storeSettings.idx_store_settings_fulfillment_branch مفقود (الهجرة 0181 ناقصة).",
+    );
+  } else if (
+    indexRows.length !== 1 ||
+    indexRows[0].columnName !== "fulfillmentBranchId" ||
+    Number(indexRows[0].seqInIndex) !== 1 ||
+    Number(indexRows[0].nonUnique) !== 1 ||
+    String(indexRows[0].isVisible).toUpperCase() !== "YES"
+  ) {
+    errors.push(
+      "idx_store_settings_fulfillment_branch يجب أن يكون فهرساً عادياً مرئياً وأحادي العمود على fulfillmentBranchId.",
+    );
+  }
+
+  const fulfillmentFks = fulfillmentForeignKeys.filter(
+    (row) => row.columnName === "fulfillmentBranchId",
+  );
+  const isBlockingRule = (rule) =>
+    BLOCKING_REFERENTIAL_RULES.has(String(rule).toUpperCase());
+  const isFulfillmentTarget = (row) =>
+    row.referencedTableName === "branches" && row.referencedColumnName === "id";
+  const validFulfillmentFks = fulfillmentFks.filter(
+    (row) =>
+      isFulfillmentTarget(row) &&
+      row.referencedTableSchema === databaseName &&
+      isBlockingRule(row.deleteRule) &&
+      isBlockingRule(row.updateRule),
+  );
+  if (!validFulfillmentFks.length) {
+    errors.push(
+      "FK محلي صحيح مفقود: storeSettings.fulfillmentBranchId يجب أن يشير إلى branches.id في القاعدة نفسها بقواعد حظر.",
+    );
+  }
+  const wrongTargetFks = fulfillmentFks.filter(
+    (row) => !isFulfillmentTarget(row),
+  );
+  if (wrongTargetFks.length) {
+    errors.push(
+      "يوجد FK إضافي مخالف على storeSettings.fulfillmentBranchId لا يشير إلى branches.id.",
+    );
+  }
+  const crossSchemaFks = fulfillmentFks.filter(
+    (row) =>
+      isFulfillmentTarget(row) && row.referencedTableSchema !== databaseName,
+  );
+  if (crossSchemaFks.length) {
+    errors.push(
+      `FK فرع التنفيذ يجب أن يشير إلى branches.id داخل القاعدة نفسها (${databaseName})؛ يوجد مرجع عابر لقاعدة أخرى.`,
+    );
+  }
+  const unsafeDeleteFks = fulfillmentFks.filter(
+    (row) =>
+      isFulfillmentTarget(row) &&
+      row.referencedTableSchema === databaseName &&
+      !isBlockingRule(row.deleteRule),
+  );
+  if (unsafeDeleteFks.length) {
+    errors.push(
+      `FK فرع التنفيذ يجب أن يمنع حذف الفرع (ON DELETE RESTRICT/NO ACTION)، والحالي ${unsafeDeleteFks.map((row) => row.deleteRule || "(مفقود)").join(", ")}.`,
+    );
+  }
+  const unsafeUpdateFks = fulfillmentFks.filter(
+    (row) =>
+      isFulfillmentTarget(row) &&
+      row.referencedTableSchema === databaseName &&
+      !isBlockingRule(row.updateRule),
+  );
+  if (unsafeUpdateFks.length) {
+    errors.push(
+      `FK فرع التنفيذ يجب أن يمنع تغيير المفتاح (ON UPDATE RESTRICT/NO ACTION)، والحالي ${unsafeUpdateFks.map((row) => row.updateRule || "(مفقود)").join(", ")}.`,
+    );
+  }
+
+  const expenseStatus = expenseStatusColumns.find(
+    (row) => row.tableName === "expenses" && row.columnName === "expenseStatus",
+  );
+  if (!expenseStatus) {
+    errors.push("expenses.expenseStatus مفقود (الهجرة 0182 لم تُطبَّق).");
+  } else {
+    const columnType = String(expenseStatus.columnType);
+    if (String(expenseStatus.dataType).toLowerCase() !== "enum") {
+      errors.push(
+        `expenses.expenseStatus يجب أن يكون ENUM، والحالي ${columnType || "(مجهول)"}.`,
+      );
+    }
+    const actualStatuses = [...columnType.matchAll(/'((?:''|[^'])*)'/g)].map(
+      (match) => match[1].replaceAll("''", "'"),
+    );
+    if (
+      actualStatuses.length !== REQUIRED_EXPENSE_STATUSES.length ||
+      actualStatuses.some(
+        (status, index) => status !== REQUIRED_EXPENSE_STATUSES[index],
+      )
+    ) {
+      errors.push(
+        `expenses.expenseStatus يجب أن يطابق الحالات بالترتيب حصراً: ${REQUIRED_EXPENSE_STATUSES.join(", ")}؛ والحالي: ${actualStatuses.join(", ") || "(فارغ)"}.`,
+      );
+    }
+    if (String(expenseStatus.isNullable).toUpperCase() !== "NO") {
+      errors.push("expenses.expenseStatus يجب أن يكون NOT NULL.");
+    }
+    if (String(expenseStatus.columnDefault) !== "ACTIVE") {
+      errors.push(
+        `expenses.expenseStatus يجب أن يكون افتراضه ACTIVE للسجلات القديمة، والحالي ${expenseStatus.columnDefault ?? "NULL"}.`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+function runOperationalContractSelftest({ quiet = false } = {}) {
+  const validInput = {
+    databaseName: "erp_contract_test",
+    fulfillmentColumns: [
+      {
+        tableName: "storeSettings",
+        columnName: "fulfillmentBranchId",
+        dataType: "bigint",
+        columnType: "bigint",
+        isNullable: "YES",
+        columnDefault: null,
+      },
+      {
+        tableName: "branches",
+        columnName: "id",
+        dataType: "bigint",
+        columnType: "bigint",
+        isNullable: "NO",
+        columnDefault: null,
+      },
+    ],
+    fulfillmentIndexes: [
+      {
+        indexName: "idx_store_settings_fulfillment_branch",
+        columnName: "fulfillmentBranchId",
+        seqInIndex: 1,
+        nonUnique: 1,
+        isVisible: "YES",
+      },
+    ],
+    fulfillmentForeignKeys: [
+      {
+        columnName: "fulfillmentBranchId",
+        referencedTableName: "branches",
+        referencedColumnName: "id",
+        referencedTableSchema: "erp_contract_test",
+        deleteRule: "RESTRICT",
+        updateRule: "NO ACTION",
+      },
+    ],
+    expenseStatusColumns: [
+      {
+        tableName: "expenses",
+        columnName: "expenseStatus",
+        dataType: "enum",
+        columnType: "enum('PENDING_APPROVAL','ACTIVE','REJECTED','CANCELLED')",
+        isNullable: "NO",
+        columnDefault: "ACTIVE",
+      },
+    ],
+  };
+
+  assert.deepEqual(collectOperationalSchemaContractErrors(validInput), []);
+
+  const missingMigrationErrors = collectOperationalSchemaContractErrors({
+    databaseName: validInput.databaseName,
+    fulfillmentColumns: validInput.fulfillmentColumns.filter(
+      (row) => row.columnName !== "fulfillmentBranchId",
+    ),
+    fulfillmentIndexes: [],
+    fulfillmentForeignKeys: [],
+    expenseStatusColumns: [],
+  });
+  assert.ok(missingMigrationErrors.some((error) => error.includes("0181")));
+  assert.ok(missingMigrationErrors.some((error) => error.includes("الفهرس")));
+  assert.ok(missingMigrationErrors.some((error) => error.includes("FK")));
+  assert.ok(missingMigrationErrors.some((error) => error.includes("0182")));
+
+  const semanticDriftErrors = collectOperationalSchemaContractErrors({
+    ...validInput,
+    fulfillmentColumns: validInput.fulfillmentColumns.map((row) =>
+      row.columnName === "fulfillmentBranchId"
+        ? {
+            ...row,
+            columnType: "bigint unsigned",
+            isNullable: "NO",
+            columnDefault: 1,
+          }
+        : row,
+    ),
+    fulfillmentIndexes: [
+      { ...validInput.fulfillmentIndexes[0], nonUnique: 0, isVisible: "NO" },
+      {
+        indexName: "idx_store_settings_fulfillment_branch",
+        columnName: "id",
+        seqInIndex: 2,
+        nonUnique: 0,
+        isVisible: "NO",
+      },
+    ],
+    fulfillmentForeignKeys: validInput.fulfillmentForeignKeys.map((row) => ({
+      ...row,
+      deleteRule: "CASCADE",
+      updateRule: "CASCADE",
+    })),
+    expenseStatusColumns: validInput.expenseStatusColumns.map((row) => ({
+      ...row,
+      columnType: "enum('ACTIVE','CANCELLED')",
+      isNullable: "YES",
+      columnDefault: "CANCELLED",
+    })),
+  });
+  for (const expectedFragment of [
+    "لا يطابق branches.id",
+    "يقبل NULL",
+    "فرعاً افتراضياً",
+    "عادياً مرئياً وأحادي العمود",
+    "ON DELETE RESTRICT/NO ACTION",
+    "ON UPDATE RESTRICT/NO ACTION",
+    "بالترتيب حصراً",
+    "NOT NULL",
+    "افتراضه ACTIVE",
+  ]) {
+    assert.ok(
+      semanticDriftErrors.some((error) => error.includes(expectedFragment)),
+      `selftest لم يلتقط الانجراف: ${expectedFragment}`,
+    );
+  }
+
+  const equivalentBlockingRulesErrors = collectOperationalSchemaContractErrors({
+    ...validInput,
+    fulfillmentForeignKeys: validInput.fulfillmentForeignKeys.map((row) => ({
+      ...row,
+      deleteRule: "NO ACTION",
+      updateRule: "RESTRICT",
+    })),
+  });
+  assert.deepEqual(
+    equivalentBlockingRulesErrors,
+    [],
+    "RESTRICT وNO ACTION مترادفان كقواعد حظر في MySQL",
+  );
+
+  const crossSchemaFk = {
+    ...validInput.fulfillmentForeignKeys[0],
+    referencedTableSchema: "other_database",
+  };
+  for (const fulfillmentForeignKeys of [
+    [...validInput.fulfillmentForeignKeys, crossSchemaFk],
+    [crossSchemaFk, ...validInput.fulfillmentForeignKeys],
+  ]) {
+    const mixedFkErrors = collectOperationalSchemaContractErrors({
+      ...validInput,
+      fulfillmentForeignKeys,
+    });
+    assert.ok(
+      mixedFkErrors.some((error) => error.includes("داخل القاعدة نفسها")),
+      "يجب رفض FK إضافي عابر لقاعدة أخرى مهما كان ترتيب information_schema",
+    );
+  }
+
+  const reorderedEnumErrors = collectOperationalSchemaContractErrors({
+    ...validInput,
+    expenseStatusColumns: validInput.expenseStatusColumns.map((row) => ({
+      ...row,
+      columnType:
+        "enum('ACTIVE','PENDING_APPROVAL','REJECTED','CANCELLED','EXTRA')",
+    })),
+  });
+  assert.ok(
+    reorderedEnumErrors.some((error) => error.includes("بالترتيب حصراً")),
+    "يجب رفض enum ذي ترتيب مختلف أو قيمة زائدة",
+  );
+
+  if (!quiet) console.log("db schema operational contracts selftest: OK");
+}
+
+if (process.argv.includes("--selftest")) {
+  runOperationalContractSelftest();
+  process.exit(0);
+}
+
+// CI وprod:deploy يستدعيان db:verify مباشرة؛ لذلك تعمل اختبارات الدلالة في كل تشغيل،
+// وليس فقط عند تذكّر تشغيل ملف اختبار منفصل.
+runOperationalContractSelftest({ quiet: true });
+
+await import("dotenv/config");
+const { createConnection } = await import("mysql2/promise");
 
 // 1) أحدث snapshot = المخطط المرجعي الكامل بعد كل الهجرات.
 const snapFiles = readdirSync(META_DIR)
@@ -21,7 +380,9 @@ if (!snapFiles.length) {
   console.error("⛔ تحقّق المخطط: لا snapshot في", META_DIR);
   process.exit(1);
 }
-const snap = JSON.parse(readFileSync(join(META_DIR, snapFiles[snapFiles.length - 1]), "utf-8"));
+const snap = JSON.parse(
+  readFileSync(join(META_DIR, snapFiles[snapFiles.length - 1]), "utf-8"),
+);
 
 // شكل المرجع: table -> Set(column)
 const expected = {};
@@ -32,7 +393,10 @@ for (const [tname, tdef] of Object.entries(snap.tables ?? {})) {
 }
 
 const url = process.env.DATABASE_URL;
-if (!url) { console.error("⛔ DATABASE_URL غير محدّد."); process.exit(1); }
+if (!url) {
+  console.error("⛔ DATABASE_URL غير محدّد.");
+  process.exit(1);
+}
 
 const conn = await createConnection(url);
 const dbName = new URL(url).pathname.replace(/^\//, "");
@@ -40,7 +404,7 @@ const dbName = new URL(url).pathname.replace(/^\//, "");
 try {
   const [rows] = await conn.query(
     "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ?",
-    [dbName]
+    [dbName],
   );
   const actual = {}; // table -> Set(column)
   for (const r of rows) (actual[r.TABLE_NAME] ??= new Set()).add(r.COLUMN_NAME);
@@ -48,16 +412,26 @@ try {
   const missingTables = [];
   const missingCols = [];
   for (const [table, cols] of Object.entries(expected)) {
-    if (!actual[table]) { missingTables.push(table); continue; }
-    for (const col of cols) if (!actual[table].has(col)) missingCols.push(`${table}.${col}`);
+    if (!actual[table]) {
+      missingTables.push(table);
+      continue;
+    }
+    for (const col of cols)
+      if (!actual[table].has(col)) missingCols.push(`${table}.${col}`);
   }
 
   if (missingTables.length || missingCols.length) {
     console.error("⛔ تحقّق المخطط فشل — القاعدة منحرفة عن snapshot:");
-    if (missingTables.length) console.error("   جداول ناقصة:", missingTables.join(", "));
-    if (missingCols.length) console.error("   أعمدة ناقصة:", missingCols.join(", "));
-    console.error("   السبب الأرجح: هجرة لم تُطبَّق فعلياً أو baseline سُجّل على قاعدة أقدم.");
-    console.error("   عالِج بـ db:generate لهجرة جديدة، أو راجع __drizzle_migrations.");
+    if (missingTables.length)
+      console.error("   جداول ناقصة:", missingTables.join(", "));
+    if (missingCols.length)
+      console.error("   أعمدة ناقصة:", missingCols.join(", "));
+    console.error(
+      "   السبب الأرجح: هجرة لم تُطبَّق فعلياً أو baseline سُجّل على قاعدة أقدم.",
+    );
+    console.error(
+      "   عالِج بـ db:generate لهجرة جديدة، أو راجع __drizzle_migrations.",
+    );
     await conn.end();
     process.exit(1);
   }
@@ -111,13 +485,23 @@ try {
     "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? GROUP BY TABLE_NAME, INDEX_NAME",
     [dbName],
   );
-  const haveIdx = new Set(idxRows.map((r) => `${r.TABLE_NAME}.${r.INDEX_NAME}`));
-  const missingIdx = CRITICAL_INDEXES.filter(([t, i]) => !haveIdx.has(`${t}.${i}`)).map(([t, i]) => `${t}.${i}`);
+  const haveIdx = new Set(
+    idxRows.map((r) => `${r.TABLE_NAME}.${r.INDEX_NAME}`),
+  );
+  const missingIdx = CRITICAL_INDEXES.filter(
+    ([t, i]) => !haveIdx.has(`${t}.${i}`),
+  ).map(([t, i]) => `${t}.${i}`);
   if (missingIdx.length) {
-    console.error("⛔ تحقّق الفهارس فشل — فهارس حرجة مفقودة (خطر مسح جداول كاملة أو علّة صامتة كـ0013):");
+    console.error(
+      "⛔ تحقّق الفهارس فشل — فهارس حرجة مفقودة (خطر مسح جداول كاملة أو علّة صامتة كـ0013):",
+    );
     console.error("   " + missingIdx.join(", "));
-    console.error("   السبب الأرجح: هجرة فهرس لم تُطبَّق، أو أُسقط الفهرس مع عمود محذوف، أو خطأ اسم عمود في الهجرة.");
-    console.error("   عالِج: راجع الهجرة المعنيّة وأعد إنشاء الفهرس (نمط idempotent كـ0030/0031/0032).");
+    console.error(
+      "   السبب الأرجح: هجرة فهرس لم تُطبَّق، أو أُسقط الفهرس مع عمود محذوف، أو خطأ اسم عمود في الهجرة.",
+    );
+    console.error(
+      "   عالِج: راجع الهجرة المعنيّة وأعد إنشاء الفهرس (نمط idempotent كـ0030/0031/0032).",
+    );
     await conn.end();
     process.exit(1);
   }
@@ -150,18 +534,40 @@ try {
   //    (هجرة 0041 المصالحة تُعيد إنشاء أي مفقود idempotently.)
   const CRITICAL_TABLES = [
     "externalPaymentAttempts",
-    "receptionDrafts", "receptionDraftLines", "orderPayments",
-    "voucherCategories", "exchangeHouses", "exchangeTransactions", "crmCampaigns", "couponPrograms", "coupons", "couponRedemptions",
+    "receptionDrafts",
+    "receptionDraftLines",
+    "orderPayments",
+    "voucherCategories",
+    "exchangeHouses",
+    "exchangeTransactions",
+    "crmCampaigns",
+    "couponPrograms",
+    "coupons",
+    "couponRedemptions",
     // D4 digital cards.  The latest Drizzle snapshot is intentionally frozen
     // before these migrations, so the generic snapshot check above cannot see
     // a partially applied digital-cards rollout.  Missing any of these tables
     // otherwise presents to the POS as an empty catalogue rather than a
     // deploy-time schema error.
-    "digitalProviders", "digitalWallets", "digitalWalletTransactions", "digitalOfferings",
-    "digitalOfferingBranches", "digitalPriceBatches", "digitalPriceVersions", "digitalCurrentPrices",
-    "digitalSaleIntents", "digitalWalletReservations", "digitalSaleIntentItems", "digitalSaleDetails",
-    "digitalWalletReconciliations", "digitalSubscriptionContracts",
-    "deliveryPartyMembers", "deliveryRemittanceLines", "deliveryLedgerEntries", "deliveryEvents", "deliveryOutbox",
+    "digitalProviders",
+    "digitalWallets",
+    "digitalWalletTransactions",
+    "digitalOfferings",
+    "digitalOfferingBranches",
+    "digitalPriceBatches",
+    "digitalPriceVersions",
+    "digitalCurrentPrices",
+    "digitalSaleIntents",
+    "digitalWalletReservations",
+    "digitalSaleIntentItems",
+    "digitalSaleDetails",
+    "digitalWalletReconciliations",
+    "digitalSubscriptionContracts",
+    "deliveryPartyMembers",
+    "deliveryRemittanceLines",
+    "deliveryLedgerEntries",
+    "deliveryEvents",
+    "deliveryOutbox",
   ];
   const CRITICAL_COLUMNS = [
     ["externalPaymentAttempts", "externalPaymentChannel"],
@@ -173,56 +579,100 @@ try {
     ["externalPaymentAttempts", "receiptId"],
     ["digitalSaleIntents", "externalPaymentAttemptId"],
     ["digitalSaleIntents", "externalPaymentDeviceId"],
-    ["products", "searchNorm"], ["customers", "searchNorm"], ["suppliers", "searchNorm"], // 0035/0039
-    ["receipts", "voucherCategoryId"], ["receipts", "counterpartyName"], ["receipts", "voucherDate"], // 0036
-    ["receipts", "attachmentUrl"], ["receipts", "internalNote"], ["receipts", "signatureHash"],
-    ["receipts", "receiptApprovalStatus"], ["receipts", "approvedBy"], ["receipts", "approvedAt"],
+    ["products", "searchNorm"],
+    ["customers", "searchNorm"],
+    ["suppliers", "searchNorm"], // 0035/0039
+    ["receipts", "voucherCategoryId"],
+    ["receipts", "counterpartyName"],
+    ["receipts", "voucherDate"], // 0036
+    ["receipts", "attachmentUrl"],
+    ["receipts", "internalNote"],
+    ["receipts", "signatureHash"],
+    ["receipts", "receiptApprovalStatus"],
+    ["receipts", "approvedBy"],
+    ["receipts", "approvedAt"],
     ["accountingEntries", "exchangeHouseId"], // 0037
-    ["purchaseOrders", "poCurrency"], ["purchaseOrders", "usdTotal"], ["purchaseOrders", "agreedRate"], // 0038
-    ["promotions", "campaignId"], ["promotions", "promotionApplicationMode"], // 0076 CRM
-    ["invoices", "taxRatePercent"], ["quotations", "taxRatePercent"], ["purchaseOrders", "taxRatePercent"], // 0123
-    ["deliveryConsignments", "sourceType"], ["deliveryConsignments", "sourceId"],
-    ["deliveryConsignments", "assignedUserId"], ["deliveryConsignments", "parcelStatus"],
-    ["deliveryConsignments", "governorate"], ["deliveryConsignments", "latitude"],
+    ["purchaseOrders", "poCurrency"],
+    ["purchaseOrders", "usdTotal"],
+    ["purchaseOrders", "agreedRate"], // 0038
+    ["promotions", "campaignId"],
+    ["promotions", "promotionApplicationMode"], // 0076 CRM
+    ["invoices", "taxRatePercent"],
+    ["quotations", "taxRatePercent"],
+    ["purchaseOrders", "taxRatePercent"], // 0123
+    ["deliveryConsignments", "sourceType"],
+    ["deliveryConsignments", "sourceId"],
+    ["deliveryConsignments", "assignedUserId"],
+    ["deliveryConsignments", "parcelStatus"],
+    ["deliveryConsignments", "governorate"],
+    ["deliveryConsignments", "latitude"],
     ["deliveryConsignments", "longitude"],
-    ["deliveryConsignments", "moneyStatus"], ["deliveryConsignments", "acceptedAt"],
-    ["deliveryConsignments", "pickedUpAt"], ["deliveryConsignments", "outForDeliveryAt"],
-    ["deliveryConsignments", "failedAt"], ["deliveryConsignments", "failureReason"],
-    ["deliveryConsignments", "cancelledAt"], ["deliveryConsignments", "cancellationReason"],
+    ["deliveryConsignments", "moneyStatus"],
+    ["deliveryConsignments", "acceptedAt"],
+    ["deliveryConsignments", "pickedUpAt"],
+    ["deliveryConsignments", "outForDeliveryAt"],
+    ["deliveryConsignments", "failedAt"],
+    ["deliveryConsignments", "failureReason"],
+    ["deliveryConsignments", "cancelledAt"],
+    ["deliveryConsignments", "cancellationReason"],
     ["deliveryConsignments", "cancelledBy"],
     ["deliveryConsignments", "returnedAt"],
     ["deliveryConsignments", "custodyRecognizedAt"],
-    ["deliveryPartyMembers", "memberRole"], ["deliveryRemittanceLines", "grossApplied"],
-    ["deliveryLedgerEntries", "entryType"], ["deliveryEvents", "eventKey"],
+    ["deliveryPartyMembers", "memberRole"],
+    ["deliveryRemittanceLines", "grossApplied"],
+    ["deliveryLedgerEntries", "entryType"],
+    ["deliveryEvents", "eventKey"],
     ["deliveryOutbox", "processedAt"],
-    ["invoices", "contactName"], ["invoices", "contactPhone"], // 0150 reception identity snapshot
-    ["invoices", "deliveryFree"], ["invoices", "deliveryWaivedAmount"], // 0152 reception/free-delivery disclosure
-    ["invoices", "correctionOfInvoiceId"], ["invoices", "correctedByInvoiceId"], // 0169 correction lineage
+    ["invoices", "contactName"],
+    ["invoices", "contactPhone"], // 0150 reception identity snapshot
+    ["invoices", "deliveryFree"],
+    ["invoices", "deliveryWaivedAmount"], // 0152 reception/free-delivery disclosure
+    ["productUnits", "isStoreSaleUnit"], // 0121 storefront eligibility; غيابه يحوّل API الكتالوج/الفئات إلى 500
+    ["invoices", "correctionOfInvoiceId"],
+    ["invoices", "correctedByInvoiceId"], // 0169 correction lineage
     ["invoiceItems", "isGift"], // 0149 gift line disclosure
-    ["workOrders", "deliveryFeeCollection"], ["workOrders", "contactName"], ["workOrders", "contactPhone"],
-    ["workOrders", "depositReceiptId"], ["workOrders", "deliveryPhone"], // 0147/0150/0153 reception work-order trail
-    ["deliveryConsignments", "consignmentFeeCollection"], ["deliveryConsignments", "feeSettledAt"], // 0150 courier fee custody
+    ["workOrders", "deliveryFeeCollection"],
+    ["workOrders", "contactName"],
+    ["workOrders", "contactPhone"],
+    ["workOrders", "depositReceiptId"],
+    ["workOrders", "deliveryPhone"], // 0147/0150/0153 reception work-order trail
+    ["deliveryConsignments", "consignmentFeeCollection"],
+    ["deliveryConsignments", "feeSettledAt"], // 0150 courier fee custody
     ["deliveryConsignments", "courierDeliveredAt"], // 0166 courier delivery evidence timestamp
     // D4: the POS catalogue requires an offering-to-branch mapping and a
     // materialized current price.  Check the key fields as well as the tables
     // so a stale/baselined production database cannot make enabled cards
     // silently disappear for cashiers.
-    ["digitalOfferings", "isActive"], ["digitalOfferings", "subscriptionDurationDays"],
-    ["digitalOfferingBranches", "branchId"], ["digitalOfferingBranches", "walletId"],
-    ["digitalPriceBatches", "status"], ["digitalPriceVersions", "validUntil"],
+    ["digitalOfferings", "isActive"],
+    ["digitalOfferings", "subscriptionDurationDays"],
+    ["digitalOfferingBranches", "branchId"],
+    ["digitalOfferingBranches", "walletId"],
+    ["digitalPriceBatches", "status"],
+    ["digitalPriceVersions", "validUntil"],
     ["digitalCurrentPrices", "priceVersionId"],
-    ["digitalSaleIntents", "status"], ["digitalSaleIntentItems", "providerId"],
+    ["digitalSaleIntents", "status"],
+    ["digitalSaleIntentItems", "providerId"],
     ["digitalSaleDetails", "fulfillmentStatus"],
     ["digitalSubscriptionContracts", "expiresAt"],
   ];
   const missingCritTables = CRITICAL_TABLES.filter((t) => !actual[t]);
-  const missingCritCols = CRITICAL_COLUMNS.filter(([t, c]) => !actual[t] || !actual[t].has(c)).map(([t, c]) => `${t}.${c}`);
+  const missingCritCols = CRITICAL_COLUMNS.filter(
+    ([t, c]) => !actual[t] || !actual[t].has(c),
+  ).map(([t, c]) => `${t}.${c}`);
   if (missingCritTables.length || missingCritCols.length) {
-    console.error("⛔ تحقّق كائنات ما بعد snapshot 0034 فشل — انحراف صامت (كائنات هجرات 0035-0040 مسجَّلة «مُطبَّقة» لكنها غائبة فعلاً):");
-    if (missingCritTables.length) console.error("   جداول مفقودة:", missingCritTables.join(", "));
-    if (missingCritCols.length) console.error("   أعمدة مفقودة:", missingCritCols.join(", "));
-    console.error("   السبب الأرجح: هجرة طُبِّقت بطريقة تفشل صامتاً سابقاً (drizzle-kit migrate) ⇒ سُجِّلت دون تنفيذ.");
-    console.error("   عالِج: pnpm db:backup && pnpm db:migrate:safe (هجرة 0041 المصالحة تُعيد إنشاءها idempotently).");
+    console.error(
+      "⛔ تحقّق كائنات ما بعد snapshot 0034 فشل — انحراف صامت (كائنات هجرات 0035-0040 مسجَّلة «مُطبَّقة» لكنها غائبة فعلاً):",
+    );
+    if (missingCritTables.length)
+      console.error("   جداول مفقودة:", missingCritTables.join(", "));
+    if (missingCritCols.length)
+      console.error("   أعمدة مفقودة:", missingCritCols.join(", "));
+    console.error(
+      "   السبب الأرجح: هجرة طُبِّقت بطريقة تفشل صامتاً سابقاً (drizzle-kit migrate) ⇒ سُجِّلت دون تنفيذ.",
+    );
+    console.error(
+      "   عالِج: pnpm db:backup && pnpm db:migrate:safe (هجرة 0041 المصالحة تُعيد إنشاءها idempotently).",
+    );
     await conn.end();
     process.exit(1);
   }
@@ -236,7 +686,9 @@ try {
   );
   const telecomType = String(telecomRows?.[0]?.t ?? "");
   if (!telecomType.includes("TELECOM")) {
-    console.error("⛔ قيمة enum مفقودة: receipts.paymentMethod بلا 'TELECOM' (هجرة 0156 لم تصل فعلياً).");
+    console.error(
+      "⛔ قيمة enum مفقودة: receipts.paymentMethod بلا 'TELECOM' (هجرة 0156 لم تصل فعلياً).",
+    );
     console.error("   COLUMN_TYPE الحالي:", telecomType || "(غير موجود)");
     console.error("   عالِج: طبّق 0154 (migrator) أو extras/0154 (CI push).");
     await conn.end();
@@ -250,8 +702,14 @@ try {
   const deliveryCancellationEnums = new Map(
     deliveryCancellationEnumRows.map((row) => [String(row.c), String(row.t)]),
   );
-  const missingDeliveryCancellationEnums = ["parcelStatus", "consignmentStatus"].filter(
-    (column) => !String(deliveryCancellationEnums.get(column) ?? "").includes("CANCELLED"),
+  const missingDeliveryCancellationEnums = [
+    "parcelStatus",
+    "consignmentStatus",
+  ].filter(
+    (column) =>
+      !String(deliveryCancellationEnums.get(column) ?? "").includes(
+        "CANCELLED",
+      ),
   );
   if (missingDeliveryCancellationEnums.length) {
     console.error(
@@ -263,11 +721,101 @@ try {
     process.exit(1);
   }
 
-  console.log(`✓ تحقّق المخطط: ${Object.keys(expected).length} جدولاً مطابقة لـ snapshot (${snapFiles[snapFiles.length - 1]}).`);
-  console.log(`✓ تحقّق الفهارس: ${CRITICAL_INDEXES.length} فهرساً حرجاً موجودة.`);
+  // ── عقود 0181/0182 الحيّة: لا تعتمد على snapshot لأنه أقدم من الهجرتين.
+  //    نتحقق من الدلالة الكاملة (النوع/الفهرس/FK وسياسة الحذف + enum)، لا من اسم العمود فقط.
+  const [fulfillmentColumns] = await conn.query(
+    `SELECT TABLE_NAME AS tableName,
+            COLUMN_NAME AS columnName,
+            DATA_TYPE AS dataType,
+            COLUMN_TYPE AS columnType,
+            IS_NULLABLE AS isNullable,
+            COLUMN_DEFAULT AS columnDefault
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = ?
+        AND ((TABLE_NAME = 'storeSettings' AND COLUMN_NAME = 'fulfillmentBranchId')
+          OR (TABLE_NAME = 'branches' AND COLUMN_NAME = 'id'))`,
+    [dbName],
+  );
+  const [fulfillmentIndexes] = await conn.query(
+    `SELECT INDEX_NAME AS indexName,
+            COLUMN_NAME AS columnName,
+            SEQ_IN_INDEX AS seqInIndex,
+            NON_UNIQUE AS nonUnique,
+            IS_VISIBLE AS isVisible
+       FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = 'storeSettings'
+        AND INDEX_NAME = 'idx_store_settings_fulfillment_branch'
+      ORDER BY SEQ_IN_INDEX`,
+    [dbName],
+  );
+  const [fulfillmentForeignKeys] = await conn.query(
+    `SELECT kcu.CONSTRAINT_NAME AS constraintName,
+            kcu.COLUMN_NAME AS columnName,
+            kcu.REFERENCED_TABLE_SCHEMA AS referencedTableSchema,
+            kcu.REFERENCED_TABLE_NAME AS referencedTableName,
+            kcu.REFERENCED_COLUMN_NAME AS referencedColumnName,
+            rc.DELETE_RULE AS deleteRule,
+            rc.UPDATE_RULE AS updateRule
+       FROM information_schema.KEY_COLUMN_USAGE kcu
+       JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
+         ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+        AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+        AND rc.TABLE_NAME = kcu.TABLE_NAME
+      WHERE kcu.TABLE_SCHEMA = ?
+        AND kcu.TABLE_NAME = 'storeSettings'
+        AND kcu.COLUMN_NAME = 'fulfillmentBranchId'`,
+    [dbName],
+  );
+  const [expenseStatusColumns] = await conn.query(
+    `SELECT TABLE_NAME AS tableName,
+            COLUMN_NAME AS columnName,
+            DATA_TYPE AS dataType,
+            COLUMN_TYPE AS columnType,
+            IS_NULLABLE AS isNullable,
+            COLUMN_DEFAULT AS columnDefault
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = 'expenses'
+        AND COLUMN_NAME = 'expenseStatus'`,
+    [dbName],
+  );
+  const operationalContractErrors = collectOperationalSchemaContractErrors({
+    databaseName: dbName,
+    fulfillmentColumns,
+    fulfillmentIndexes,
+    fulfillmentForeignKeys,
+    expenseStatusColumns,
+  });
+  if (operationalContractErrors.length) {
+    console.error(
+      "⛔ عقود المخطط التشغيلية 0181/0182 فشلت — الهجرة ناقصة أو البنية منجرفة:",
+    );
+    for (const error of operationalContractErrors)
+      console.error(`   - ${error}`);
+    console.error(
+      "   عالِج: راجع 0181_store_fulfillment_branch.sql و0182_expense_approval_lifecycle.sql ثم طبّق pnpm db:migrate:safe.",
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
+  console.log(
+    `✓ تحقّق المخطط: ${Object.keys(expected).length} جدولاً مطابقة لـ snapshot (${snapFiles[snapFiles.length - 1]}).`,
+  );
+  console.log(
+    `✓ تحقّق الفهارس: ${CRITICAL_INDEXES.length} فهرساً حرجاً موجودة.`,
+  );
   console.log("✓ تحقّق enum: receipts.paymentMethod يحوي TELECOM (I23).");
-  console.log("✓ تحقّق enum: إلغاء إسناد التوصيل متاح في parcelStatus وconsignmentStatus.");
-  console.log(`✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`);
+  console.log(
+    "✓ تحقّق enum: إلغاء إسناد التوصيل متاح في parcelStatus وconsignmentStatus.",
+  );
+  console.log(
+    "✓ عقود 0181/0182: فرع تنفيذ المتجر (نوع+فهرس+FK) ودورة اعتماد المصروفات مطابقة.",
+  );
+  console.log(
+    `✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`,
+  );
   await conn.end();
 } catch (e) {
   await conn.end().catch(() => {});

@@ -10,7 +10,7 @@ import { createBranch, listBranchesAdmin, setBranchActive, updateBranch } from "
 
 const actor = { userId: 1, branchId: 1 };
 
-const TABLES = ["branchStock", "productVariants", "products", "branches"];
+const TABLES = ["storeSettings", "branchStock", "productVariants", "products", "branches"];
 
 function db() {
   const d = getDb();
@@ -124,6 +124,13 @@ describe("setBranchActive", () => {
     await expect(setBranchActive(2, false, actor)).rejects.toThrow(/لا يزال يحمل مخزوناً/);
     const row = (await db().select().from(s.branches).where(eq(s.branches.id, 2)))[0];
     expect(row.isActive).toBe(true); // لم يتغيّر (rollback)
+  });
+
+  it("رفض: تعطيل فرع تسليم المتجر حتى لو كان المتجر مغلقاً ورصيده صفر", async () => {
+    await db().insert(s.storeSettings).values({ id: 1, isOpen: false, fulfillmentBranchId: 2 });
+    await expect(setBranchActive(2, false, actor)).rejects.toThrow(/فرع تسليم المتجر/);
+    const row = (await db().select().from(s.branches).where(eq(s.branches.id, 2)))[0];
+    expect(row.isActive).toBe(true);
   });
 
   it("مخزون صفري (كمية 0) لا يمنع التعطيل", async () => {

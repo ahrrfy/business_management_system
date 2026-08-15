@@ -21,6 +21,7 @@ import { getOpenShift } from "./shiftService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -312,6 +313,8 @@ export interface ConvertQuotationInput {
 
 /** يحوّل عرض السعر إلى فاتورة فعلية (بيع كامل: مخزون + دفتر) مرة واحدة فقط. */
 export async function convertQuotation(input: ConvertQuotationInput, actor: Actor & { role?: string }) {
+  if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
+
   // اقرأ العرض وبنوده خارج معاملة البيع (createSale يفتح معاملته الخاصة).
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير متاحة" });

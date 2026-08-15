@@ -4,6 +4,7 @@ import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { PAY_METHOD_AR, isCashier, rowsOf } from "./helpers";
 import { utcTodayStart } from "../businessDay";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
 
 export interface MethodSlice {
   key: string;
@@ -49,7 +50,7 @@ export async function getPaymentMethodBreakdown(
         CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount,
         COUNT(*) AS cnt
       FROM receipts r
-      WHERE r.receiptStatus = 'COMPLETED'
+      WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND r.receiptApprovalStatus = 'APPROVED'
         AND r.createdAt >= ${from}
         AND r.createdAt < ${to}

@@ -10,19 +10,118 @@ import { money, toDateStr, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
+import type { Tx } from "../../db";
 import { type Actor, withTx } from "../tx";
-import { getApprovalThreshold } from "./thresholds";
 import { computeSignature, nextVoucherNumber, validateCategory } from "./helpers";
 import type { VoucherInput, VoucherResult } from "./types";
 
+const SYSTEM_REQUEST_PREFIX = "@SYSTEM_PAYMENT_REQUEST:";
+const SYSTEM_REFERENCE_PREFIXES = [
+  "ASSET-ACQ-",
+  "ASSET-REACQ-",
+  "ASSET-MAINT-",
+  "PO-PAY-",
+  "SHIP-",
+  "EXCHANGE-IQD-DEP-",
+  "DIGITAL-WALLET-DEP-",
+  "CANCEL-VCH-",
+  "TERM-SETTLEMENT-",
+] as const;
+
+export function isSystemPaymentReference(reference: string | null | undefined): boolean {
+  return !!reference && SYSTEM_REFERENCE_PREFIXES.some((prefix) => reference.startsWith(prefix));
+}
+
+export type SystemPaymentRequest =
+  | { kind: "ASSET_ACQUISITION"; assetId: number }
+  | {
+      kind: "ASSET_REACQUISITION";
+      assetId: number;
+      sequence: number;
+      source: AssetFinancialSnapshot;
+      target: AssetFinancialSnapshot & { supplierId: null };
+    }
+  | { kind: "ASSET_MAINTENANCE"; assetId: number; maintenanceId: number }
+  | {
+      kind: "PURCHASE_SUPPLIER";
+      purchaseOrderId: number;
+      requestToken: string;
+      expectedAmount: string;
+      sourceTotal: string;
+    }
+  | {
+      kind: "PURCHASE_SHIPPING";
+      purchaseOrderId: number;
+      requestToken: string;
+      expectedAmount: string;
+      sourceShippingTotal: string;
+    }
+  | {
+      kind: "EXCHANGE_IQD_DEPOSIT";
+      transactionId: number;
+      exchangeHouseId: number;
+      expectedAmount: string;
+    }
+  | {
+      kind: "DIGITAL_WALLET_CASH_DEPOSIT";
+      transactionId: number;
+      walletId: number;
+      expectedAmount: string;
+    }
+  | {
+      kind: "TERMINATION_SETTLEMENT";
+      terminationId: number;
+      employeeId: number;
+      expectedAmount: string;
+    }
+  | { kind: "VOUCHER_CANCELLATION"; originalReceiptId: number; originalCreatorId: number | null };
+
+export interface AssetFinancialSnapshot {
+  branchId: number | null;
+  supplierId: number | null;
+  purchaseDate: string;
+  purchaseValue: string;
+  salvageValue: string;
+  usefulLifeYears: number;
+  depreciationMethod: "sl" | "db";
+  accumulatedDepreciation: string;
+}
+
+function encodeSystemPaymentRequest(request: SystemPaymentRequest): string {
+  return `${SYSTEM_REQUEST_PREFIX}${JSON.stringify(request)}`;
+}
+
+export function parseSystemPaymentRequest(note: string | null | undefined): SystemPaymentRequest | null {
+  if (!note?.startsWith(SYSTEM_REQUEST_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(note.slice(SYSTEM_REQUEST_PREFIX.length)) as SystemPaymentRequest;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.kind !== "string") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 /** يُنشئ سند قبض (IN) أو صرف (OUT) ذريّاً.
  *
- * Maker-Checker: لو المَبلغ ≥ getApprovalThreshold() يُسجَّل بـapprovalStatus=PENDING_APPROVAL
- * بلا قيد دفتر ولا تأثير على الرصيد/الصندوق — فقط الصفّ في receipts. الاعتماد لاحقاً
- * عبر approveVoucher() يُكمل الأثر المالي. النَموذج: «المُسجِّل ≠ المُعتمِد» (SOD).
+ * Maker-Checker: كل سند صرف يُسجَّل بـapprovalStatus=PENDING_APPROVAL، بصرف النظر
+ * عن المبلغ أو صفة المُنشئ، بلا قيد دفتر ولا تأثير على الرصيد/الصندوق. الاعتماد اللاحق
+ * من مالك نشط مختلف عبر approveVoucher() هو منفذ الأثر المالي الوحيد (SOD).
+ * سند القبض يحتفظ بسياسة الاعتماد القائمة.
  */
-export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
-  return withTx(async (tx) => {
+export async function createVoucherTx(
+  tx: Tx,
+  input: VoucherInput,
+  actor: Actor,
+  options?: { systemRequest?: SystemPaymentRequest },
+): Promise<VoucherResult> {
+    // سند القبض ينشئ إيصالاً وقيد PAYMENT_IN ويحرّك ذمة الطرف فوراً. لا يكفي
+    // مرجع يكتبه الموظف لإثبات مال خارجي؛ ارفضه قبل idempotency أو أي قراءة DB.
+    if (input.voucherType === "RECEIPT") {
+      assertInboundPaymentMethodEnabled(input.paymentMethod);
+    }
     if (input.paymentMethod === "EXCHANGE") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -51,11 +150,20 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
           const requestedPartyId = input.partyType === "OTHER" ? null : (input.partyId ?? null);
           const storedInvoiceId = r.invoiceId != null ? Number(r.invoiceId) : null;
           const requestedInvoiceId = input.invoiceId ?? null;
+          const requestedDirection = input.voucherType === "RECEIPT" ? "IN" : "OUT";
+          const requestedReference = input.referenceNumber?.trim() || null;
+          const requestedSystemNote = options?.systemRequest
+            ? encodeSystemPaymentRequest(options.systemRequest)
+            : null;
           if (
             Number(r.branchId) !== Number(input.branchId) ||
+            r.direction !== requestedDirection ||
+            r.paymentMethod !== input.paymentMethod ||
             (r.partyType ?? null) !== (input.partyType ?? null) ||
             storedPartyId !== requestedPartyId ||
             storedInvoiceId !== requestedInvoiceId ||
+            (r.referenceNumber ?? null) !== requestedReference ||
+            (requestedSystemNote != null && r.internalNote !== requestedSystemNote) ||
             money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)
           ) {
             throw new TRPCError({
@@ -84,6 +192,12 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     const description = input.description?.trim();
     if (!description) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "وصف السند مطلوب" });
+    }
+    if (!options?.systemRequest && input.internalNote?.startsWith(SYSTEM_REQUEST_PREFIX)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "بادئة الملاحظات النظامية محجوزة" });
+    }
+    if (!options?.systemRequest && isSystemPaymentReference(input.referenceNumber)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع السند النظامي محجوز" });
     }
     // تَحقّقات الإلزام المَشروط (vouchers-pro):
     if (input.paymentMethod === "TRANSFER" && !input.referenceNumber?.trim()) {
@@ -172,14 +286,9 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     await assertPeriodOpen(tx, utcDayStart(voucherDate));
 
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
-    // مالك النظام (isOwner) يتجاوز كل اعتماد ثنائي — هو الجهة النهائية.
-    // عتبة Maker-Checker على الصرف (OUT) فقط — القبض (IN) مال داخل للشركة،
-    // خطره أدنى بكثير من الصرف ولا يستوجب تعليقاً بعتبة المبلغ.
-    // forcePendingApproval يبقى فعّالاً (أمانة + OTHER) لأنه يغطّي حالات خاصة لا عتبة مبلغ.
-    const needsApproval = !actor.isOwner && (
-      forcePendingApproval ||
-      (direction === "OUT" && amount.toNumber() >= getApprovalThreshold())
-    );
+    // عقد المالك: كل سند صرف يُنشأ طلباً معلّقاً، بصرف النظر عن المبلغ أو صفة المنشئ.
+    // سند القبض يبقى على سياسته القائمة (OTHER يحتاج Maker-Checker، وغيره مباشر).
+    const needsApproval = direction === "OUT" || forcePendingApproval;
 
     // shiftId + cashBucket — سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦).
     //  - PENDING_APPROVAL: لا نَقفل وردية ولا نُحدّد دلواً (لا تأثير على الصندوق حتى الاعتماد).
@@ -195,6 +304,12 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       }
     }
 
+    if (needsApproval && direction === "OUT") {
+      assertNonPhysicalOutReceipt({
+        classification: "DEFERRED_APPROVAL", paymentMethod: input.paymentMethod,
+        cashBucket: null, approvalStatus: "PENDING_APPROVAL", operation: "إنشاء طلب سند صرف",
+      });
+    }
     const rRes = await tx.insert(receipts).values({
       branchId: input.branchId,
       invoiceId: input.partyType === "CUSTOMER" ? (input.invoiceId ?? null) : null,
@@ -206,7 +321,7 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       referenceNumber: input.referenceNumber?.trim() || null,
       checkNumber: input.checkNumber?.trim() || null,
       cardLastFour: input.cardLastFour?.trim() || null,
-      status: "COMPLETED",
+      status: needsApproval ? "PENDING" : "COMPLETED",
       voucherNumber,
       partyType: input.partyType,
       partyId: input.partyType === "OTHER" ? null : (input.partyId ?? null),
@@ -217,7 +332,9 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       counterpartyName: input.counterpartyName?.trim() || null,
       voucherDate: new Date(voucherDate),
       attachmentUrl: input.attachmentUrl?.trim() || null,
-      internalNote: input.internalNote?.trim() || null,
+      internalNote: options?.systemRequest
+        ? encodeSystemPaymentRequest(options.systemRequest)
+        : (input.internalNote?.trim() || null),
       approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
     });
     const receiptId = extractInsertId(rRes);
@@ -239,7 +356,7 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       if (input.partyType === "CUSTOMER" && input.partyId) {
         await adjustCustomerBalance(tx, input.partyId, direction === "IN" ? amount.neg() : amount);
       } else if (input.partyType === "SUPPLIER" && input.partyId) {
-        await adjustSupplierBalance(tx, input.partyId, direction === "OUT" ? amount.neg() : amount);
+        await adjustSupplierBalance(tx, input.partyId, amount);
       }
 
       // البَصمة بَعد كل الكتابات ⇒ تَختم السند بكل عناصره المُستقرّة.
@@ -268,5 +385,23 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       direction,
       approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
     };
-  });
+}
+
+/** طلب دفع نظامي يعيد استعمال عقد السند الواحد: معلّق دائماً وبلا أثر حتى اعتماد مالك آخر. */
+export async function createSystemPaymentRequestTx(
+  tx: Tx,
+  input: Omit<VoucherInput, "voucherType">,
+  actor: Actor,
+  request: SystemPaymentRequest,
+): Promise<VoucherResult> {
+  return createVoucherTx(tx, { ...input, voucherType: "PAYMENT" }, actor, { systemRequest: request });
+}
+
+export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
+  // الحارس الخارجي يمنع حتى فتح transaction عند إعادة المحاولة غير الموثقة.
+  // يبقى الحارس داخل createVoucherTx دفاعاً عن المستدعين الذين يملكون Tx أصلاً.
+  if (input.voucherType === "RECEIPT") {
+    assertInboundPaymentMethodEnabled(input.paymentMethod);
+  }
+  return withTx((tx) => createVoucherTx(tx, input, actor));
 }

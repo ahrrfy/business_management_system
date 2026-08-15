@@ -13,7 +13,7 @@
 //   - manager scoping للراوتر (في promotionsRouter): يفرض branchId من ctx للـnon-admin.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { products, promotionTargets, promotions } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -151,6 +151,9 @@ export interface ResolveLineInput {
   /** داخلي: لحل عرض كوبون محدد من دون إدخاله في المنافسة التلقائية. */
   requiredApplicationMode?: "AUTO" | "COUPON";
   specificPromotionId?: number;
+  /** Current Read + FOR UPDATE للعروض وأهدافها. يستعمله تثبيت طلب المتجر كي
+   * لا يطبّق خصماً عُطّل أثناء انتظاره أقفال الكتالوج. */
+  lockForUpdate?: boolean;
 }
 
 /**
@@ -173,7 +176,7 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
   // بتحويل x إلى `x 00:00:00` ⇒ آخر يوم يفشل. `DATE(?)` يحافظ على المقارنة بحبيبة اليوم.
   const todayYmd = input.todayYmd;
 
-  const candidates = await tx
+  const candidateQuery = tx
     .select({
       id: promotions.id,
       name: promotions.name,
@@ -203,12 +206,15 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
         input.includeStoreManaged ? undefined : eq(promotions.isStoreManaged, false),
       ),
     );
+  const candidates = input.lockForUpdate
+    ? await candidateQuery.orderBy(asc(promotions.id)).for("update")
+    : await candidateQuery;
   if (!candidates.length) return null;
 
   const nonAllIds = candidates.filter((c) => c.scope !== "ALL").map((c) => Number(c.id));
   const matchedTargetPromoIds = new Set<number>();
   if (nonAllIds.length) {
-    const rows = await tx
+    const targetQuery = tx
       .select({
         promotionId: promotionTargets.promotionId,
         categoryId: promotionTargets.categoryId,
@@ -217,6 +223,9 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
       })
       .from(promotionTargets)
       .where(inArray(promotionTargets.promotionId, nonAllIds));
+    const rows = input.lockForUpdate
+      ? await targetQuery.orderBy(asc(promotionTargets.promotionId)).for("update")
+      : await targetQuery;
     for (const t of rows) {
       const pid = Number(t.promotionId);
       const match =

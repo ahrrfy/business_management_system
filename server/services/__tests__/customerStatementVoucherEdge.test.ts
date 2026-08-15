@@ -17,6 +17,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createVoucher } from "../voucher/create";
 import { cancelVoucher } from "../voucher/cancel";
+import { approveVoucher } from "../voucher/approval";
 import { createWorkOrder } from "../workOrder/create";
 import { startWorkOrder, markWorkOrderReady } from "../workOrder/lifecycle";
 import { deliverWorkOrder } from "../workOrder/deliver";
@@ -25,6 +26,7 @@ import { money } from "../money";
 import { truncateTables } from "./__testUtils__";
 
 const admin = { userId: 1, branchId: 1, role: "admin" as const };
+const owner = { userId: 2, branchId: 1, role: "manager" as const };
 const OLD = new Date("2020-01-01T00:00:00.000Z");
 const FROM = "2021-01-01";
 
@@ -45,7 +47,10 @@ async function reset() {
 async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "local_admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1 });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "local_owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
   await d.insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: "1000000" });
   await d.insert(s.shifts).values({ id: 1, userId: 1, branchId: 1, status: "OPEN", openedAt: new Date(), openGuard: "1:1", openingBalance: "0" });
 }
@@ -75,7 +80,8 @@ describe("F5 حافّة (ب) — كشف العميل يتّزن مع السند 
     );
     // مُعتمَد فوراً (50 < عتبة الاعتماد) ⇒ currentBalance = −50.
     expect(await currentBalance()).toBe("-50.00");
-    await cancelVoucher(v.receiptId, admin);
+    const cancellation = await cancelVoucher(v.receiptId, admin);
+    await approveVoucher(Number(cancellation.approvalReceiptId), owner);
     // الإلغاء يعكس ⇒ currentBalance = 0.
     expect(await currentBalance()).toBe("0.00");
     // الأصل REVERSED والتعويضي COMPLETED كلاهما قبل الفترة.

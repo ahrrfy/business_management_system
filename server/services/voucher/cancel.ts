@@ -7,19 +7,23 @@ import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledg
 import { money, toDbMoney } from "../money";
 import { getActiveLock } from "../periodLockService";
 import { type Actor, withTx } from "../tx";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { assertBranchOwnership } from "./helpers";
+import { createSystemPaymentRequestTx } from "./create";
 
 export interface CancelVoucherResult {
   receiptId: number;
   voucherNumber: string;
-  status: "REVERSED";
+  status: "REVERSED" | "PENDING_APPROVAL";
+  approvalReceiptId?: number;
 }
 
 /**
  * إلغاء سند قبض/صرف مستقلّ — المرآة الدقيقة لـcreateVoucher:
  *   - الأصل يُعلَّم REVERSED (يبقى في السجلّ للتدقيق).
  *   - إيصال تعويضي بالاتجاه المعاكس على نفس الوردية/الطريقة/المبلغ
- *     (تسوية الصندوق تجمع كل receipts بغضّ النظر عن status ⇒ قلب الحالة وحده يُفسد الصندوق).
+ *     (تسوية الصندوق تجمع COMPLETED وREVERSED وتستبعد PENDING/FAILED؛ قلب الحالة وحده
+ *     يُفسد الصندوق، بينما جمع الأصل المعكوس مع التعويض يصافر الأثر).
  *   - قيد دفتر معاكس (PAYMENT_OUT لإلغاء قبض، PAYMENT_IN لإلغاء صرف) بمبلغ موجب —
  *     ⚠️ ليس ADJUST: صيَغ reconcile تتجاهل ADJUST ⇒ انحراف وهمي دائم.
  *   - عكس رصيد الطرف بإشارة معاكسة تماماً لما كتبه createVoucher.
@@ -29,11 +33,34 @@ export interface CancelVoucherResult {
  */
 export async function cancelVoucher(receiptId: number, actor: Actor): Promise<CancelVoucherResult> {
   return withTx(async (tx) => {
+    const [preview] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).limit(1);
+    if (!preview || preview.voucherNumber == null) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+    }
+    const previewBucket = preview.cashBucket as "DRAWER" | "TREASURY" | null;
+    const materialCash = preview.paymentMethod === "CASH" && previewBucket != null;
+    if (materialCash) {
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(preview.branchId),
+        cashBucket: previewBucket,
+        shiftId: preview.shiftId != null ? Number(preview.shiftId) : null,
+      });
+    }
     const r = (
       await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
     )[0];
     if (!r || r.voucherNumber == null) {
       throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+    }
+    if (
+      materialCash &&
+      (
+        r.paymentMethod !== "CASH" || r.direction !== preview.direction ||
+        r.cashBucket !== previewBucket || Number(r.branchId) !== Number(preview.branchId) ||
+        Number(r.shiftId ?? 0) !== Number(preview.shiftId ?? 0)
+      )
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر مصدر السند النقدي أثناء الإلغاء — أعد المحاولة" });
     }
     // تدقيق ١٧/٧: السند المستقل قد يُربَط توثيقياً بفاتورة بيع (ميزة ٥/٧، receipts.invoiceId) — والربط
     // توثيقيٌّ بحت لا يمسّ invoice.paidAmount (createVoucher يُخزّن الرابط فقط)، فعكسه آمنٌ بمرآة الإنشاء
@@ -46,7 +73,11 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
     if (r.status === "REVERSED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "السند ملغى بالفعل" });
     }
-    if (r.status !== "COMPLETED") {
+    if (
+      r.status !== "COMPLETED" &&
+      r.approvalStatus !== "PENDING_APPROVAL" &&
+      r.approvalStatus !== "REJECTED"
+    ) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء سند غير مكتمل" });
     }
     if (r.paymentMethod === "EXCHANGE") {
@@ -54,9 +85,6 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
         code: "BAD_REQUEST",
         message: "هذا السند مرتبط بعملية صيرفة؛ اعكس العملية من وحدة الصيرفة كي يُستعاد رصيد المورد والصيرفة معاً",
       });
-    }
-    if (actor.role !== "admin" && r.createdBy != null && Number(r.createdBy) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز إلغاء سند أنشأته بنفسك — يلزم مدير آخر (فصل المهام)." });
     }
     await assertBranchOwnership(tx, actor, r.branchId != null ? Number(r.branchId) : null, "سند");
 
@@ -95,6 +123,50 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
 
     const amount = money(r.amount);
     const direction = r.direction as "IN" | "OUT";
+
+    // عكس قبض نقدي هو CASH OUT حقيقي، لذلك لا يُنفّذ داخل طلب الإلغاء ولا يملك admin
+    // استثناءً. الأصل يبقى نافذاً حتى يعتمد مالك نشط مختلف عن طالب الإلغاء وعن منشئ القبض؛
+    // approveVoucher يعيد قراءة الأصل تحت القفل ويستعمل هذا الطلب نفسه كإيصال التعويض.
+    if (direction === "IN" && r.paymentMethod === "CASH") {
+      const cashBucket = (r as {
+        cashBucket?: "DRAWER" | "TREASURY" | null;
+      }).cashBucket;
+      if (cashBucket == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "لا يمكن عكس سند قبض نقدي بلا مصدر نقد محدد؛ عالج السجل التاريخي أولاً",
+        });
+      }
+      const request = await createSystemPaymentRequestTx(tx, {
+        branchId: Number(r.branchId),
+        amount: toDbMoney(amount),
+        paymentMethod: "CASH",
+        partyType: (r.partyType as "CUSTOMER" | "SUPPLIER" | "OTHER" | null) ?? "OTHER",
+        partyId: r.partyId != null ? Number(r.partyId) : null,
+        counterpartyName:
+          r.partyType === "OTHER"
+            ? (r.counterpartyName?.trim() || `إلغاء سند ${r.voucherNumber}`)
+            : null,
+        description: `طلب إلغاء سند قبض ${r.voucherNumber}`,
+        referenceNumber: `CANCEL-VCH-${receiptId}`,
+        clientRequestId: `voucher-cancellation-${receiptId}`,
+      }, actor, {
+        kind: "VOUCHER_CANCELLATION",
+        originalReceiptId: receiptId,
+        originalCreatorId: r.createdBy != null ? Number(r.createdBy) : null,
+      });
+      return {
+        receiptId,
+        voucherNumber,
+        status: "PENDING_APPROVAL" as const,
+        approvalReceiptId: request.receiptId,
+      };
+    }
+
+    if (actor.role !== "admin" && r.createdBy != null && Number(r.createdBy) === actor.userId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز إلغاء سند أنشأته بنفسك — يلزم مدير آخر (فصل المهام)." });
+    }
 
     await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, receiptId));
 

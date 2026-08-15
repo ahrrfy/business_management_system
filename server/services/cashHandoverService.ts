@@ -14,6 +14,7 @@ import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
+import { assertCashTransferAvailable, assertTreasuryOutException } from "./cash/cashAvailability";
 import type { Actor } from "./tx";
 
 export interface HandoverResult {
@@ -75,6 +76,13 @@ export async function settleShiftReturnTx(
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد نقد لإرجاعه للخزينة" });
   }
   const branchId = input.branchId;
+  assertTreasuryOutException("CASH_HANDOVER_INTERNAL");
+  await assertCashTransferAvailable(tx, {
+    source: { branchId, cashBucket: "DRAWER", shiftId: input.shiftId },
+    destination: { branchId, cashBucket: "TREASURY" },
+    amount,
+    operation: "إرجاع كامل نقد الوردية إلى الخزينة",
+  });
   const handoverNumber = await nextHandoverNumber(tx, branchId);
 
   // receipt #1: OUT من DRAWER (الوردية المُغلَقة) — سجلّ تفريغ الدرج.

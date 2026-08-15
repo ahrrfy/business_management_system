@@ -1,14 +1,19 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryConsignments, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
-import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "./shiftService";
+import { resolveBranchCashShiftTx } from "./shiftService";
+import {
+  assertCashOutAvailable,
+  lockCashSourceForUpdate,
+  MATERIALIZED_RECEIPT_STATUSES,
+} from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -100,9 +105,77 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       }
     }
 
+    // CASH refund must lock its drawer before the invoice and any consignment supplier.
+    // Voucher approval uses source→party; doing invoice/consignor→source here creates the inverse.
+    const invPreview = (
+      await tx.select({ branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1)
+    )[0];
+    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (actor.role !== "admin" && Number(invPreview.branchId) !== Number(actor.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+    }
+    const deliveryPreview = (
+      await tx
+        .select({
+          id: deliveryConsignments.id,
+          partyId: deliveryConsignments.partyId,
+          branchId: deliveryConsignments.branchId,
+          invoiceId: deliveryConsignments.invoiceId,
+        })
+        .from(deliveryConsignments)
+        .where(eq(deliveryConsignments.invoiceId, input.invoiceId))
+        .limit(1)
+    )[0] ?? null;
+    let prelockedRefundShift: { shiftId: number; openingBalance: string } | null = null;
+    if (input.refund?.method === "CASH" && money(input.refund.amount).gt(0)) {
+      prelockedRefundShift = await resolveBranchCashShiftTx(
+        tx,
+        Number(invPreview.branchId),
+        input.refund.shiftId ?? null,
+      );
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(invPreview.branchId),
+        cashBucket: "DRAWER",
+        shiftId: prelockedRefundShift.shiftId,
+      });
+    }
+    // مسارات التوصيل تتشارك ترتيباً واحداً بعد المصدر: party→consignment→invoice.
+    // بدونه يمسك التوريد الإرسالية ثم ينتظر الفاتورة بينما المرتجع يمسك الفاتورة ثم ينتظرها.
+    if (deliveryPreview) {
+      const party = (
+        await tx.select({ id: deliveryParties.id }).from(deliveryParties)
+          .where(eq(deliveryParties.id, Number(deliveryPreview.partyId))).for("update").limit(1)
+      )[0];
+      if (!party) throw new TRPCError({ code: "CONFLICT", message: "جهة توصيل الفاتورة غير موجودة" });
+      const lockedDelivery = (
+        await tx.select({
+          id: deliveryConsignments.id,
+          partyId: deliveryConsignments.partyId,
+          branchId: deliveryConsignments.branchId,
+          invoiceId: deliveryConsignments.invoiceId,
+        }).from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, Number(deliveryPreview.id))).for("update").limit(1)
+      )[0];
+      if (
+        !lockedDelivery ||
+        Number(lockedDelivery.partyId) !== Number(deliveryPreview.partyId) ||
+        Number(lockedDelivery.branchId) !== Number(deliveryPreview.branchId) ||
+        Number(lockedDelivery.invoiceId) !== Number(input.invoiceId)
+      ) {
+        throw new TRPCError({ code: "CONFLICT", message: "تغيّرت إرسالية الفاتورة أثناء المرتجع؛ أعد المحاولة" });
+      }
+    } else {
+      // locking gap/current read يمنع إسناد إرسالية جديدة بين المعاينة وقفل الفاتورة.
+      await tx.select({ id: deliveryConsignments.id }).from(deliveryConsignments)
+        .where(eq(deliveryConsignments.invoiceId, input.invoiceId)).for("update");
+    }
+
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (Number(inv.branchId) !== Number(invPreview.branchId)) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء المرتجع؛ أعد المحاولة" });
+    }
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة ملغاة أو مرتجعة بالكامل" });
     }
@@ -449,17 +522,15 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     const capMethods: string[] = refundMethod === "CASH" ? ["CASH", "TELECOM"] : refundMethod ? [refundMethod] : [];
     let methodAvailable = new Decimal(0);
     if (refundMethod) {
-      const mr = await tx
-        .select({
-          inSum: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`,
-          outSum: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
-        })
+      const methodReceipts = await tx
+        .select({ direction: receipts.direction, amount: receipts.amount })
         .from(receipts)
         .where(
           and(
             eq(receipts.invoiceId, input.invoiceId),
             inArray(receipts.paymentMethod, capMethods as never),
-            eq(receipts.status, "COMPLETED"),
+            inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+            eq(receipts.approvalStatus, "APPROVED"),
             // تدقيق ٦/٨ (ث٣/ث٥/ث١٢): إيصال **أمانة أجرة التوصيل** مختومٌ بالفاتورة تشغيلياً
             // لكنّه مالُ طرفٍ ثالث (لم يمسّ paidAmount) — احتسابُه «مقبوضاً نقداً على الفاتورة»
             // كان يفتح رداً نقدياً على فاتورةٍ لم يُدفَع منها دينارٌ نقداً (مدفوعة بالبطاقة مثلاً)
@@ -469,8 +540,15 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
               WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
             )`,
           ),
-        );
-      methodAvailable = money(mr[0]?.inSum ?? "0").minus(money(mr[0]?.outSum ?? "0"));
+        )
+        // current read بعد source lock: لا نعتمد snapshot المعاينة السابق للانتظار.
+        .for("update");
+      methodAvailable = methodReceipts.reduce(
+        (sum, receipt) => receipt.direction === "IN"
+          ? sum.plus(money(receipt.amount))
+          : sum.minus(money(receipt.amount)),
+        money(0),
+      );
       // ش٤ (مراجعة عدائية): حصص العرابين المُطبَّقة على هذه الفاتورة (orderPayments APPLICATION)
       // تدخل paidAmount بينما إيصال أمّها **غير مختوم** بالفاتورة (مُشظّى بين هدفين، أو مشوبٌ
       // بردٍّ جزئيّ) فلا يراه inSum ⇒ فاتورةٌ PAID كان مرتجعُها غير قابلٍ للاسترداد بنيوياً
@@ -530,24 +608,22 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       // Z-report صاحب الدرج فيظهر له عجزٌ لا يفهم سببه عند الإغلاق. resolveBranchCashShiftTx يبحث
       // في ورديات الفرع المفتوحة كلّها (لا الفاعل فقط)، ويتطلّب اختياراً صريحاً (refund.shiftId)
       // حين يتعدّد الدرج المفتوح. غير النقد لا يمسّ صندوقاً فيبقى على النمط القديم (معلوماتيّ بحت).
-      let shiftId: number | null;
+      let shiftId: number | null = null;
       if (input.refund!.method === "CASH") {
-        const resolved = await resolveBranchCashShiftTx(tx, Number(inv.branchId), input.refund!.shiftId ?? null);
+        const resolved = prelockedRefundShift;
+        if (!resolved) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل درج الاسترداد النقدي" });
+        }
         shiftId = resolved.shiftId;
         // حدّ الدرج (نمط cashDropService — لا يُسحَب أكثر من النقد الحاليّ فيه): سقف الفاتورة
         // (refundCap أعلاه) وحده لا يكفي — يضمن فقط أن المسترَد ≤ ما دُفع بهذه الطريقة على هذه
         // الفاتورة، لا أنّ الدرج المستهدَف يحمل هذا المبلغ *الآن* (سحبٌ نقديّ أو مصروفٌ سابقٌ في
         // نفس الوردية قد يكون أنقص الدرج فعلياً). بلا هذا الحدّ يُطلَب من الكاشير تسليم نقدٍ لا يملكه
         // فعلياً في درجه أثناء العمل، لا أن يُكتشَف الخلل لاحقاً عند الإغلاق فقط.
-        const currentDrawerCash = await computeExpectedCash(tx, shiftId, resolved.openingBalance);
-        if (cashRefund.gt(currentDrawerCash)) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `المبلغ يتجاوز النقد المتوفّر حالياً في هذا الدرج (المتاح ${currentDrawerCash.toFixed(2)} < المطلوب ${cashRefund.toFixed(2)}) — راجع الدرج أو اختر درجاً/طريقة استرداد أخرى.`,
-          });
-        }
-      } else {
-        shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
+        await assertCashOutAvailable(tx, {
+          branchId: Number(inv.branchId), cashBucket: "DRAWER", shiftId,
+          amount: cashRefund, operation: "استرداد مرتجع البيع نقداً",
+        });
       }
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,

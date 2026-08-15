@@ -5,6 +5,7 @@ import { getDb } from "../../db";
 import { grantAdvance } from "../advancesService";
 import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, payRun, updateItem } from "../payrollService";
+import { approveVoucher } from "../voucher/approval";
 
 const MAKER = { userId: 1, branchId: 1, role: "admin" };
 const CHECKER = { userId: 2, branchId: 1, role: "manager" };
@@ -43,8 +44,19 @@ beforeEach(async () => {
   ]);
   await d.insert(s.users).values([
     { id: 1, openId: "pay-maker", name: "منشئ", role: "admin", branchId: 1 },
-    { id: 2, openId: "pay-checker", name: "مدقق", role: "manager", branchId: 1 },
+    { id: 2, openId: "pay-checker", name: "مدقق", role: "manager", branchId: 1, isOwner: true, isActive: true },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "100000000",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 2,
+  });
 });
 
 describe("financial integrity — payroll", () => {
@@ -142,7 +154,7 @@ describe("financial integrity — advances", () => {
       amount: "1000",
       clientRequestId: "same-advance-request",
     };
-    const results = await Promise.allSettled([grantAdvance(input, CHECKER), grantAdvance(input, CHECKER)]);
+    const results = await Promise.allSettled([grantAdvance(input, MAKER), grantAdvance(input, MAKER)]);
     if (!results.some((r) => r.status === "fulfilled")) {
       throw new Error(
         results
@@ -151,10 +163,20 @@ describe("financial integrity — advances", () => {
       );
     }
 
-    const advances = await db().select().from(s.employeeAdvances);
-    const receipts = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
-    expect(advances).toHaveLength(1);
+    const fulfilled = results.find((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof grantAdvance>>> => r.status === "fulfilled");
+    expect(fulfilled?.value.status).toBe("PENDING_APPROVAL");
+    expect(await db().select().from(s.employeeAdvances)).toHaveLength(0);
+    let receipts = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
     expect(receipts).toHaveLength(1);
     expect(Number(receipts[0].amount)).toBe(1000);
+    expect(receipts[0]).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+
+    await approveVoucher(Number(fulfilled!.value.receiptId), CHECKER);
+
+    const advances = await db().select().from(s.employeeAdvances);
+    receipts = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    expect(advances).toHaveLength(1);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "TREASURY" });
   });
 });

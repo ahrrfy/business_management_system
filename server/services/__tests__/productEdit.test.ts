@@ -9,18 +9,23 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { getProductForVariantEdit, updateProductWithVariants } from "../productEditService";
 import { updateProduct } from "../catalog/productUpdate";
+import { createOnlineOrder } from "../onlineOrderService";
 
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
   "inventoryMovements",
   "accountingEntries",
+  "onlineOrderItems",
+  "onlineOrders",
+  "storeSettings",
   "branchStock",
   "productPrices",
   "productUnits",
   "productImages",
   "productVariants",
   "products",
+  "customers",
   "branches",
   "users",
 ];
@@ -148,6 +153,60 @@ describe("updateProductWithVariants — الكتابة", () => {
       actor,
     );
     expect(r.added).toBe(0); // الأساس ما زال «قطعة» فلا يُفعَّل الحارس
+  });
+
+  it("يمنع تغيير معامل وحدة مرتبطة بطلب متجر نشط في مساري التعديل", async () => {
+    await db().insert(s.customers).values({ id: 10, name: "زبون متجر", phone: "+9647701234567" });
+    await db().insert(s.onlineOrders).values({ id: 10, orderNumber: "ORD-UNIT-LOCK", customerId: 10, branchId: 1, subtotal: "11000.00", total: "11000.00", status: "PENDING" });
+    await db().insert(s.onlineOrderItems).values({ onlineOrderId: 10, variantId: 1, productUnitId: 2, quantity: "1", baseQuantity: 12, unitPrice: "11000.00", total: "11000.00" });
+    const changedTemplate = baseTemplate().map((unit) => unit.unitName === "درزن" ? { ...unit, conversionFactor: "24" } : unit);
+
+    await expect(updateProductWithVariants(
+      { productId: 1, name: "دفتر", unitTemplate: changedTemplate, variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    )).rejects.toThrow(/طلب متجر نشط/);
+
+    await expect(updateProduct(
+      { productId: 1, name: "دفتر", variants: [{ id: 1, sku: "NB-100", costPrice: "500", units: [
+        { id: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "1000.00" }] },
+        { id: 2, unitName: "درزن", conversionFactor: "24", isBaseUnit: false, prices: [{ priceTier: "RETAIL", price: "11000.00" }] },
+      ] }] },
+      actor,
+    )).rejects.toThrow(/طلب متجر نشط/);
+
+    await db().update(s.onlineOrders).set({ status: "CANCELLED" }).where(eq(s.onlineOrders.id, 10));
+    await expect(updateProductWithVariants(
+      { productId: 1, name: "دفتر", unitTemplate: changedTemplate, variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    )).resolves.toBeTruthy();
+  });
+
+  it("سباق إنشاء طلب مقابل تغيير العامل لا يثبت baseQuantity بائتة ولا يقع في deadlock", async () => {
+    await db().update(s.products).set({ showInStore: true }).where(eq(s.products.id, 1));
+    await db().update(s.productUnits).set({ isStoreSaleUnit: true }).where(eq(s.productUnits.id, 2));
+    await db().insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1, isOpen: true });
+    const changedTemplate = baseTemplate().map((unit) => unit.unitName === "درزن" ? { ...unit, conversionFactor: "24" } : unit);
+
+    const [createResult, editResult] = await Promise.allSettled([
+      createOnlineOrder({
+        customerName: "زبون سباق العامل", customerPhone: "07705550123", governorate: "baghdad",
+        addressText: "بغداد", clientRequestId: "factor-race-order",
+        lines: [{ productUnitId: 2, quantity: 1 }],
+      }),
+      updateProductWithVariants(
+        { productId: 1, name: "دفتر", unitTemplate: changedTemplate, variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+        actor,
+      ),
+    ]);
+
+    expect([createResult.status, editResult.status]).toContain("fulfilled");
+    const currentFactor = Number((await db().select({ factor: s.productUnits.conversionFactor }).from(s.productUnits).where(eq(s.productUnits.id, 2)))[0].factor);
+    const activeItems = await db()
+      .select({ quantity: s.onlineOrderItems.quantity, baseQuantity: s.onlineOrderItems.baseQuantity })
+      .from(s.onlineOrderItems)
+      .innerJoin(s.onlineOrders, eq(s.onlineOrderItems.onlineOrderId, s.onlineOrders.id))
+      .where(eq(s.onlineOrders.status, "PENDING"));
+    for (const item of activeItems) expect(Number(item.baseQuantity)).toBe(Number(item.quantity) * currentFactor);
   });
 
   it("#2 (Codex جولة٤ P1): أساسٌ **معطَّل** مع رصيدٍ + ترقية أخرى ⇒ يُرفض (الرصيد ما زال مُقوَّماً بالأساس القديم)", async () => {

@@ -19,7 +19,11 @@ function canonicalJson(v: unknown): string {
   if (Array.isArray(v)) return "[" + v.map(canonicalJson).join(",") + "]";
   const obj = v as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
-  return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") + "}";
+  return (
+    "{" +
+    keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(obj[k])).join(",") +
+    "}"
+  );
 }
 
 /** hash حمولة قانونيّ (sha256 hex، ٦٤ محرفاً) — ثابتٌ عبر إعادة الإرسال، مستقلٌّ عن ترتيب المفاتيح. */
@@ -46,19 +50,44 @@ export async function checkIdempotency(
   operation: string,
   clientRequestId: string | null | undefined,
   payloadHash?: string | null,
+  options?: { requireStoredHash?: boolean },
 ): Promise<number | null> {
   if (!clientRequestId) return null;
   const rows = await tx
-    .select({ refId: idempotencyKeys.refId, payloadHash: idempotencyKeys.payloadHash })
+    .select({
+      refId: idempotencyKeys.refId,
+      payloadHash: idempotencyKeys.payloadHash,
+    })
     .from(idempotencyKeys)
-    .where(and(eq(idempotencyKeys.operation, operation), eq(idempotencyKeys.clientRequestId, clientRequestId)))
+    .where(
+      and(
+        eq(idempotencyKeys.operation, operation),
+        eq(idempotencyKeys.clientRequestId, clientRequestId),
+      ),
+    )
     .limit(1);
   const row = rows[0];
   if (!row) return null;
-  if (payloadHash != null && row.payloadHash != null && row.payloadHash !== payloadHash) {
+  if (
+    options?.requireStoredHash === true &&
+    payloadHash != null &&
+    row.payloadHash == null
+  ) {
     throw new TRPCError({
       code: "CONFLICT",
-      message: "طلبٌ بنفس المعرّف لكن بحمولةٍ مختلفة — تحقّق من العملية ثم أعد المحاولة بمعرّفٍ جديد",
+      message:
+        "معرّف الطلب قديم ولا يملك بصمة حمولة قابلة للتحقق؛ راجع العملية ثم استخدم معرّفاً جديداً",
+    });
+  }
+  if (
+    payloadHash != null &&
+    row.payloadHash != null &&
+    row.payloadHash !== payloadHash
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "طلبٌ بنفس المعرّف لكن بحمولةٍ مختلفة — تحقّق من العملية ثم أعد المحاولة بمعرّفٍ جديد",
     });
   }
   return Number(row.refId);
@@ -72,7 +101,14 @@ export async function recordIdempotencyKey(
   refId: number,
   payloadHash?: string | null,
 ): Promise<void> {
-  await tx.insert(idempotencyKeys).values({ operation, clientRequestId, refId, payloadHash: payloadHash ?? null });
+  await tx
+    .insert(idempotencyKeys)
+    .values({
+      operation,
+      clientRequestId,
+      refId,
+      payloadHash: payloadHash ?? null,
+    });
 }
 
 /**
@@ -82,13 +118,30 @@ export async function recordIdempotencyKey(
  */
 export async function withIdempotency<T>(
   tx: Tx,
-  args: { operation: string; clientRequestId: string | null | undefined; payload?: unknown },
+  args: {
+    operation: string;
+    clientRequestId: string | null | undefined;
+    payload?: unknown;
+  },
   run: () => Promise<{ refId: number; result?: T }>,
 ): Promise<{ refId: number; result: T | null; replay: boolean }> {
-  const hash = args.payload !== undefined ? idempotencyHash(args.payload) : null;
-  const existing = await checkIdempotency(tx, args.operation, args.clientRequestId, hash);
+  const hash =
+    args.payload !== undefined ? idempotencyHash(args.payload) : null;
+  const existing = await checkIdempotency(
+    tx,
+    args.operation,
+    args.clientRequestId,
+    hash,
+  );
   if (existing != null) return { refId: existing, result: null, replay: true };
   const { refId, result } = await run();
-  if (args.clientRequestId) await recordIdempotencyKey(tx, args.operation, args.clientRequestId, refId, hash);
+  if (args.clientRequestId)
+    await recordIdempotencyKey(
+      tx,
+      args.operation,
+      args.clientRequestId,
+      refId,
+      hash,
+    );
   return { refId, result: result ?? null, replay: false };
 }

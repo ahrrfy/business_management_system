@@ -39,6 +39,7 @@ import { loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { ROLE_LABEL } from "@/lib/roles";
 import { normalizeSearchText } from "@shared/searchNormalize";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -281,7 +282,13 @@ export default function PrintPOS() {
       if (TAB_SEQ <= maxTab) TAB_SEQ = maxTab + 1;
       if (UID <= maxUid) UID = maxUid + 1;
       // المسوّدات الأقدم لا تحمل حالة المحاولة — تُستكمل بلا ادّعاء تأكيد.
-      setTabs(saved.tabs.map((t) => ({ ...t, paymentRef: t.paymentRef ?? "", externalPayment: t.externalPayment ?? null })));
+      setTabs(saved.tabs.map((t) => ({
+        ...t,
+        // لا نُعيد إحياء طريقة/محاولة خارجية قديمة من localStorage بعد إغلاق السطح.
+        method: "CASH" as PaymentMethod,
+        paymentRef: "",
+        externalPayment: null,
+      })));
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
     } else {
       setTabs([newTab(1, "طلب 1")]);
@@ -1152,9 +1159,11 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
     <button onClick={() => numPress(k)} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.95)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")} onMouseLeave={(e) => (e.currentTarget.style.transform = "")}
       style={{ height: fluid(42, 5.4, 48), fontSize: fluid(18, 2.5, 22), fontWeight: 800, background: del ? C.delKey : C.numKey, color: del ? C.delFg : C.fg, border: `1.5px solid ${C.border}`, borderRadius: 10, cursor: "pointer", fontFamily: "inherit", direction: "ltr", userSelect: "none", touchAction: "manipulation" }}>{k}</button>
   );
-  const Method = ({ m, Icon, label }: { m: PaymentMethod; Icon: React.ComponentType<{ "aria-hidden"?: boolean; size?: number }>; label: string }) => (
-    <button onClick={() => setMethod(m)}
-      style={{ flex: 1, minHeight: fluid(44, 5.6, 50), display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `2px solid ${method === m ? C.primary : C.border}`, borderRadius: 10, background: method === m ? C.primary : C.card, color: method === m ? C.primaryFg : C.fg, fontWeight: 800, fontSize: 13.5, cursor: "pointer", fontFamily: "inherit", touchAction: "manipulation" }}>
+  const Method = ({ m, Icon, label, disabled = false }: { m: PaymentMethod; Icon: React.ComponentType<{ "aria-hidden"?: boolean; size?: number }>; label: string; disabled?: boolean }) => (
+    <button onClick={disabled ? undefined : () => setMethod(m)} disabled={disabled}
+      aria-describedby={disabled ? "print-pos-external-payment-disabled" : undefined}
+      title={disabled ? POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE : undefined}
+      style={{ flex: 1, minHeight: fluid(44, 5.6, 50), display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `2px solid ${method === m ? C.primary : C.border}`, borderRadius: 10, background: method === m ? C.primary : C.card, color: method === m ? C.primaryFg : C.fg, fontWeight: 800, fontSize: 13.5, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.55 : 1, fontFamily: "inherit", touchAction: "manipulation" }}>
       <Icon aria-hidden size={19} />{label}
     </button>
   );
@@ -1188,8 +1197,12 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
         </div>
         <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
           <Method m="CASH" Icon={Banknote} label="نقدي" />
-          <Method m="CARD" Icon={CreditCard} label="بطاقة" />
-          <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />
+          <Method m="CARD" Icon={CreditCard} label="بطاقة" disabled />
+          <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" disabled />
+        </div>
+        <div id="print-pos-external-payment-disabled" role="status" style={{ marginBottom: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.amber, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
+          <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+          <span>{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</span>
         </div>
         {/* مرجع ومحاولة الدفع غير النقدي — CONFIRMED قبل إنشاء الفاتورة. */}
         <PaymentReferenceField

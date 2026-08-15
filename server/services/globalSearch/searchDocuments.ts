@@ -1,6 +1,14 @@
 // بحث المستندات المُقيَّدة بالفرع: الفواتير، عروض الأسعار، أوامر الشغل، أوامر الشراء، المصاريف.
 import { and, desc, eq, or, sql } from "drizzle-orm";
-import { customers, expenses, invoices, purchaseOrders, quotations, suppliers, workOrders } from "../../../drizzle/schema";
+import {
+  customers,
+  expenses,
+  invoices,
+  purchaseOrders,
+  quotations,
+  suppliers,
+  workOrders,
+} from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import type { SearchKind, SearchResult } from "./types";
@@ -18,16 +26,27 @@ async function searchInvoices(
   if (kind === "PHONE") return [];
 
   const conds: any[] = [];
-  if (scopedBranchId !== null) conds.push(eq(invoices.branchId, scopedBranchId));
+  if (scopedBranchId !== null)
+    conds.push(eq(invoices.branchId, scopedBranchId));
 
   // باركود ⇒ يطابق رقم فاتورة بالضبط، أو رقم فاتورة يحتوي الباركود (نادر لكن المالك يطلبه: مسح ⇒ فاتورة).
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
     const like_ = `%${escLike(query)}%`;
-    conds.push(or(eq(invoices.invoiceNumber, query), sql`${invoices.invoiceNumber} LIKE ${like_} ESCAPE '!'`));
+    conds.push(
+      or(
+        eq(invoices.invoiceNumber, query),
+        sql`${invoices.invoiceNumber} LIKE ${like_} ESCAPE '!'`,
+      ),
+    );
   } else {
     const like_ = `%${escLike(query)}%`;
     // نص ⇒ نطابق رقم الفاتورة أو ملاحظة (الملاحظات أحياناً تحوي اسم عميل/مرجع).
-    conds.push(or(sql`${invoices.invoiceNumber} LIKE ${like_} ESCAPE '!'`, sql`${invoices.notes} LIKE ${like_} ESCAPE '!'`));
+    conds.push(
+      or(
+        sql`${invoices.invoiceNumber} LIKE ${like_} ESCAPE '!'`,
+        sql`${invoices.notes} LIKE ${like_} ESCAPE '!'`,
+      ),
+    );
   }
 
   const rows = await db
@@ -72,13 +91,24 @@ async function searchQuotations(
   if (kind === "PHONE") return [];
 
   const conds: any[] = [];
-  if (scopedBranchId !== null) conds.push(eq(quotations.branchId, scopedBranchId));
+  if (scopedBranchId !== null)
+    conds.push(eq(quotations.branchId, scopedBranchId));
 
   const like_ = `%${escLike(query)}%`;
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(or(eq(quotations.quoteNumber, query), sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`));
+    conds.push(
+      or(
+        eq(quotations.quoteNumber, query),
+        sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`,
+      ),
+    );
   } else {
-    conds.push(or(sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`, sql`${quotations.notes} LIKE ${like_} ESCAPE '!'`));
+    conds.push(
+      or(
+        sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`,
+        sql`${quotations.notes} LIKE ${like_} ESCAPE '!'`,
+      ),
+    );
   }
 
   const rows = await db
@@ -118,13 +148,24 @@ async function searchWorkOrders(
   if (kind === "PHONE") return [];
 
   const conds: any[] = [];
-  if (scopedBranchId !== null) conds.push(eq(workOrders.branchId, scopedBranchId));
+  if (scopedBranchId !== null)
+    conds.push(eq(workOrders.branchId, scopedBranchId));
 
   const like_ = `%${escLike(query)}%`;
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(or(eq(workOrders.orderNumber, query), sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`));
+    conds.push(
+      or(
+        eq(workOrders.orderNumber, query),
+        sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`,
+      ),
+    );
   } else {
-    conds.push(or(sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`, sql`${workOrders.title} LIKE ${like_} ESCAPE '!'`));
+    conds.push(
+      or(
+        sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`,
+        sql`${workOrders.title} LIKE ${like_} ESCAPE '!'`,
+      ),
+    );
   }
 
   const rows = await db
@@ -165,13 +206,24 @@ async function searchPurchaseOrders(
   if (kind === "PHONE") return [];
 
   const conds: any[] = [];
-  if (scopedBranchId !== null) conds.push(eq(purchaseOrders.branchId, scopedBranchId));
+  if (scopedBranchId !== null)
+    conds.push(eq(purchaseOrders.branchId, scopedBranchId));
 
   const like_ = `%${escLike(query)}%`;
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(or(eq(purchaseOrders.poNumber, query), sql`${purchaseOrders.poNumber} LIKE ${like_} ESCAPE '!'`));
+    conds.push(
+      or(
+        eq(purchaseOrders.poNumber, query),
+        sql`${purchaseOrders.poNumber} LIKE ${like_} ESCAPE '!'`,
+      ),
+    );
   } else {
-    conds.push(or(sql`${purchaseOrders.poNumber} LIKE ${like_} ESCAPE '!'`, sql`${purchaseOrders.notes} LIKE ${like_} ESCAPE '!'`));
+    conds.push(
+      or(
+        sql`${purchaseOrders.poNumber} LIKE ${like_} ESCAPE '!'`,
+        sql`${purchaseOrders.notes} LIKE ${like_} ESCAPE '!'`,
+      ),
+    );
   }
 
   const rows = await db
@@ -213,14 +265,17 @@ async function searchExpenses(
   if (kind === "BARCODE" || kind === "PHONE") return [];
 
   const conds: any[] = [eq(expenses.status, "ACTIVE")];
-  if (scopedBranchId !== null) conds.push(eq(expenses.branchId, scopedBranchId));
+  if (scopedBranchId !== null)
+    conds.push(eq(expenses.branchId, scopedBranchId));
 
   const like_ = `%${escLike(query)}%`;
-  conds.push(or(
-    sql`${expenses.description} LIKE ${like_} ESCAPE '!'`,
-    sql`${expenses.referenceNumber} LIKE ${like_} ESCAPE '!'`,
-    sql`${expenses.payee} LIKE ${like_} ESCAPE '!'`,
-  ));
+  conds.push(
+    or(
+      sql`${expenses.description} LIKE ${like_} ESCAPE '!'`,
+      sql`${expenses.referenceNumber} LIKE ${like_} ESCAPE '!'`,
+      sql`${expenses.payee} LIKE ${like_} ESCAPE '!'`,
+    ),
+  );
 
   const rows = await db
     .select({
@@ -240,13 +295,20 @@ async function searchExpenses(
   return rows.map((r) => ({
     type: "EXPENSE" as const,
     id: r.id,
-    title: r.description?.slice(0, 80) || r.payee || `مصروف #${r.id}`,
-    subtitle: [r.payee, r.referenceNumber].filter(Boolean).join(" · ") || r.category,
+    title: `مصروف — ${r.description?.slice(0, 80) || r.payee || `#${r.id}`}`,
+    subtitle:
+      ["نافذ", r.payee, r.referenceNumber].filter(Boolean).join(" · ") ||
+      r.category,
     meta: `${r.amount} د.ع · ${r.expenseDate}`,
     route: `/treasury?tab=expenses&focus=${r.id}`,
     rank: 2,
   }));
 }
 
-
-export { searchInvoices, searchQuotations, searchWorkOrders, searchPurchaseOrders, searchExpenses };
+export {
+  searchInvoices,
+  searchQuotations,
+  searchWorkOrders,
+  searchPurchaseOrders,
+  searchExpenses,
+};

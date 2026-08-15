@@ -1,5 +1,5 @@
 // StoreHub — لوحة تحكّم المتجر الإلكتروني (نمط hPanel): لوحة + طلبات + بنرات + إعدادات.
-// البنرات/الإعدادات مديرية (storeManagerProcedure)؛ اللوحة/الطلبات لحاملي وحدة store.
+// التحكم العالمي بالمتجر (الفئات/البنرات/الإعدادات) admin حصراً؛ اللوحة/الطلبات لحاملي وحدة store.
 import { ExternalLink } from "lucide-react";
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
@@ -17,11 +17,11 @@ const StoreSettingsPanel = lazy(() => import("@/pages/store/StoreSettingsPanel")
 const TABS: HubTab[] = [
   { value: "dashboard", label: "لوحة المتجر", Component: StoreDashboard },
   { value: "orders", label: "الطلبات", Component: OrderFulfillment },
-  { value: "categories", label: "الفئات", gate: { managerOnly: true }, Component: StoreCategories },
+  { value: "categories", label: "الفئات", gate: { adminOnly: true }, Component: StoreCategories },
   { value: "catalog", label: "الكتالوج والعرض", gate: { managerOnly: true }, Component: StoreCatalog },
   { value: "analytics", label: "التحليلات", gate: { managerOnly: true }, Component: StoreAnalytics },
-  { value: "banners", label: "البنرات", gate: { managerOnly: true }, Component: BannerManager },
-  { value: "settings", label: "الإعدادات", gate: { managerOnly: true }, Component: StoreSettingsPanel },
+  { value: "banners", label: "البنرات", gate: { adminOnly: true }, Component: BannerManager },
+  { value: "settings", label: "الإعدادات", gate: { adminOnly: true }, Component: StoreSettingsPanel },
 ];
 
 export default function StoreHub() {

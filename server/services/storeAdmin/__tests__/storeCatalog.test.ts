@@ -89,6 +89,7 @@ describe("listStoreCatalog — التجميع والترتيب", () => {
     expect(notebook.retailPrice).toBe("1000.00");
     expect(notebook.saleUnitName).toBe("قطعة");
     expect(notebook.stockBase).toBe(50);
+    expect(notebook.inStock).toBe(true);
     expect(notebook.hasImage).toBe(true);
     expect(notebook.variantId).toBe(1);
 
@@ -114,33 +115,57 @@ describe("listStoreCatalog — التجميع والترتيب", () => {
     expect(notebook.retailPrice).toBe("5000.00");
     expect(notebook.saleUnitName).toBe("بند");
     expect(notebook.stockBase).toBe(50);
+    expect(notebook.inStock).toBe(false);
+    expect(notebook.readinessReasons).toContain("BELOW_SALE_UNIT_FACTOR");
+    expect(notebook.variants[0].units.find((unit) => unit.productUnitId === 10)?.availableUnits).toBe(0);
+  });
+
+  it("لا يجمع رصيد متغيّرات المنتج ولا يختار MIN variant هدفاً للتسوية", async () => {
+    const d = db();
+    await d.insert(s.productVariants).values({ id: 10, productId: 1, sku: "V1-BLUE", color: "أزرق", costPrice: "4.00" });
+    await d.insert(s.productUnits).values({ id: 10, variantId: 10, unitName: "قطعة", isBaseUnit: true, isStoreSaleUnit: true });
+    await d.insert(s.productPrices).values({ productUnitId: 10, priceTier: "RETAIL", price: "1000.00" });
+    await d.insert(s.branchStock).values({ variantId: 10, branchId: 1, quantity: 100 });
+
+    const { rows } = await listStoreCatalog({ branchId: 1 });
+    const notebook = rows.find((row) => row.productId === 1)!;
+    expect(notebook.variantId).toBeNull();
+    expect(notebook.stockBase).toBeNull();
+    expect(notebook.variants.map((variant) => [variant.variantId, variant.stockBase])).toEqual([
+      [1, 50],
+      [10, 100],
+    ]);
   });
 });
 
-describe("listStoreCatalog — sellableTotal (العدد الحقيقي الظاهر للزبون، بمعزل عن total)", () => {
-  it("بلا فلاتر: total=4 (كل المنتجات) لكن sellableTotal=3 (يستبعد المخفيّ #3 فقط — لا يشترط مخزوناً>0)", async () => {
-    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1, limit: 50 });
+describe("listStoreCatalog — publishableTotal/sellableTotal بمعزل عن total", () => {
+  it("يفصل كل الكتالوج عن المنشور وعن القابل للشراء فعلياً", async () => {
+    const { total, publishableTotal, sellableTotal } = await listStoreCatalog({ branchId: 1, limit: 50 });
     expect(total).toBe(4);
+    expect(publishableTotal).toBe(3); // #1 و#2 و#4 منشورة حتى مع نفاد #2
     expect(sellableTotal).toBe(2);
   });
 
   it("hiddenOnly يُصفّي total للمخفيّ فقط، لكن sellableTotal يبقى يعكس القابل للبيع فعلياً (لا يتناقض معه)", async () => {
-    const { rows, total, sellableTotal } = await listStoreCatalog({ branchId: 1, hiddenOnly: true });
+    const { rows, total, publishableTotal, sellableTotal } = await listStoreCatalog({ branchId: 1, hiddenOnly: true });
     expect(rows.map((r) => r.productId)).toEqual([3]);
     expect(total).toBe(1);
+    expect(publishableTotal).toBe(3);
     expect(sellableTotal).toBe(2); // معيار مستقلّ عن فلتر العرض hiddenOnly
   });
 
   it("categoryId=1 يُضيّق كلا العدَدين لنفس القسم", async () => {
-    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1, categoryId: 1 });
+    const { total, publishableTotal, sellableTotal } = await listStoreCatalog({ branchId: 1, categoryId: 1 });
     expect(total).toBe(2);
+    expect(publishableTotal).toBe(2);
     expect(sellableTotal).toBe(1); // الدفتر فقط؛ القلم نافد
   });
 
   it("منتج بلا سعر مفرد (RETAIL) لا يُحتسب ضمن sellableTotal رغم isActive/showInStore", async () => {
     await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 1));
-    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1 });
+    const { total, publishableTotal, sellableTotal } = await listStoreCatalog({ branchId: 1 });
     expect(total).toBe(4); // total لا يفحص وجود سعر
+    expect(publishableTotal).toBe(2); // #2 النافد و#4 المتاح
     expect(sellableTotal).toBe(1); // فقدَ الدفتر أهليته
   });
 });
@@ -225,7 +250,7 @@ describe("setProductPrimaryImage", () => {
 
 describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
   it("رفع المخزون ⇒ طلبٌ معلَّق بلا أثر، والاعتماد ⇒ حركة ADJUST + قيد بإشارة كلفة سالبة", async () => {
-    const req = await setStoreProductStock({ variantId: 2, branchId: 1, targetQuantity: 30, createdBy: 1, role: "admin" });
+    const req = await setStoreProductStock({ variantId: 2, branchId: 1, targetQuantity: 30 }, APPROVER);
     // لا تغيير مخزون ولا قيد قبل الاعتماد.
     let entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
     expect(entries).toHaveLength(0);
@@ -242,7 +267,7 @@ describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
   });
 
   it("خفض المخزون ⇒ اعتماد ⇒ delta سالب + كلفة موجبة (استرداد قيمة)", async () => {
-    const req = await setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: 20, createdBy: 1, role: "admin" }); // 50→20
+    const req = await setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: 20 }, APPROVER); // 50→20
     const res = await approveStockAdjustment(req.requestId, APPROVER);
     expect(res.delta).toBe(-30);
     const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
@@ -251,7 +276,7 @@ describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
   });
 
   it("دلتا صفر (نفس الكمية) ⇒ اعتماد بلا قيد محاسبي", async () => {
-    const req = await setStoreProductStock({ variantId: 3, branchId: 1, targetQuantity: 10, createdBy: 1, role: "admin" }); // 10→10
+    const req = await setStoreProductStock({ variantId: 3, branchId: 1, targetQuantity: 10 }, APPROVER); // 10→10
     const res = await approveStockAdjustment(req.requestId, APPROVER);
     expect(res.delta).toBe(0);
     const entries = await db().select().from(s.accountingEntries);
@@ -259,7 +284,7 @@ describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
   });
 
   it("رفض: كمية سالبة ⇒ خطأ (لا تغيير)", async () => {
-    await expect(setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: -5, createdBy: 1 })).rejects.toThrow();
+    await expect(setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: -5 }, APPROVER)).rejects.toThrow();
     const stock = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0];
     expect(stock.q).toBe(50); // بلا تغيير
   });

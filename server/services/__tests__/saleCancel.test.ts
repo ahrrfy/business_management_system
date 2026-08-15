@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { cancelSale } from "../sale/cancel";
+import { processPayment } from "../sale/payment";
 import { returnSale } from "../returnService";
 import { createSale } from "../saleService";
 import { lockPeriod } from "../periodLockService";
@@ -81,6 +82,16 @@ async function seedBase() {
     openedAt: new Date(),
     openGuard: "2:1",
     openingBalance: "0",
+  });
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "10000000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 1,
   });
 }
 
@@ -164,6 +175,41 @@ describe("cancelSale — ثابت ١ + ٢: صافي الدفتر صفر + رصي
 });
 
 describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ + PAYMENT_OUT", () => {
+  it("دفعة CASH وإلغاء الفاتورة على الدرج نفسه يتسلسلان بلا deadlock", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      },
+      admin,
+    );
+
+    const results = await Promise.allSettled([
+      processPayment(
+        { invoiceId: sale.invoiceId, amount: "1000.00", method: "CASH", shiftId: 1, clientRequestId: "pay-cancel-race" },
+        manager,
+      ),
+      cancelSale(
+        { invoiceId: sale.invoiceId, refundPaymentMethod: "CASH", reason: "سباق دفع وإلغاء", clientRequestId: "cancel-pay-race" },
+        manager,
+      ),
+    ]);
+
+    const failures = results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : []);
+    expect(failures).not.toEqual(expect.arrayContaining([expect.stringMatching(/DEADLOCK|ER_LOCK_DEADLOCK/i)]));
+    expect(failures.every((message) => /ملغاة|نهائية|مدفوعة|لا يمكن الدفع/.test(message))).toBe(true);
+    expect((await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0].status).toBe("CANCELLED");
+    const cash = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId));
+    const net = cash.reduce((sum, receipt) =>
+      sum + (receipt.direction === "IN" ? Number(receipt.amount) : -Number(receipt.amount)), 0);
+    expect(net).toBe(0);
+  });
+
   it("بيعٌ نقديّ كامل (مندوب) ⇒ إلغاء (مدير آخر) ⇒ إيصال صرفٍ OUT بمبلغ paidAmount + PAYMENT_OUT + المخزون يعود", async () => {
     await setStock(1, 1, 10);
     // بيع نقديّ كامل: paidNow = 5000. البائع = admin. الملغي = manager (SOD مُحترمة).
@@ -220,6 +266,51 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
     expect(invAfter.paidAmount).toBe("0.00");
     expect(money(await sumCol(sale.invoiceId, "revenue")).isZero()).toBe(true);
     expect(money(await sumCol(sale.invoiceId, "cost")).isZero()).toBe(true);
+  });
+
+  it("نقص خزينة المستردّ ⇒ rollback كامل ولا تُلغى الفاتورة أو يعود المخزون", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      {
+        branchId: 1,
+        customerId: 1,
+        shiftId: 1,
+        sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        payment: { amount: "2000.00", method: "CASH" },
+      },
+      manager,
+    );
+    await db()
+      .delete(s.receipts)
+      .where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
+
+    await expect(
+      cancelSale(
+        { invoiceId: sale.invoiceId, refundPaymentMethod: "CASH" },
+        admin,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const invoice = (
+      await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId))
+    )[0];
+    expect(invoice.status).toBe("PAID");
+    expect(await stockOf(1, 1)).toBe(8);
+    const refunds = await db()
+      .select()
+      .from(s.receipts)
+      .where(
+        sql`${s.receipts.invoiceId} = ${sale.invoiceId} AND ${s.receipts.direction} = 'OUT'`,
+      );
+    expect(refunds).toHaveLength(0);
+    const cancelEntries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(
+        sql`${s.accountingEntries.invoiceId} = ${sale.invoiceId} AND ${s.accountingEntries.entryType} IN ('RETURN', 'PAYMENT_OUT')`,
+      );
+    expect(cancelEntries).toHaveLength(0);
   });
 
   it("إلغاء بطريقة استرداد غير النقد (TRANSFER) ⇒ receipt بلا cashBucket + المبلغ صحيح", async () => {

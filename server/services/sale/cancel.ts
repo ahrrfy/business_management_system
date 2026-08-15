@@ -44,7 +44,13 @@ import { classifyVariants } from "../bundleService";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
-import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
+import { shiftIdForCashTx } from "../shiftService";
+import {
+  assertCashOutAvailable,
+  assertTreasuryOutException,
+  lockCashSourceForUpdate,
+  MATERIALIZED_RECEIPT_STATUSES,
+} from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { userNameSnapshot } from "../userSnapshot";
 
@@ -121,10 +127,37 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
       }
     }
 
+    // ترتيب الأقفال الحاكم: مصدر النقد قبل الفاتورة/مورّدي الأمانة. اعتماد سند مورد
+    // نقدي يسلك source→supplier؛ تأخير المصدر هنا كان يصنع المسار المعاكس.
+    const invPreview = (
+      await tx.select({ branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1)
+    )[0];
+    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (actor.role !== "admin" && Number(invPreview.branchId) !== Number(actor.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+    }
+    let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
+    if (input.refundPaymentMethod === "CASH") {
+      prelockedCashSource = await shiftIdForCashTx(
+        tx,
+        actor,
+        Number(invPreview.branchId),
+        "استرداد إلغاء فاتورة",
+      );
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(invPreview.branchId),
+        cashBucket: prelockedCashSource.cashBucket,
+        shiftId: prelockedCashSource.shiftId,
+      });
+    }
+
     // ═══ ١) قراءة الفاتورة تحت FOR UPDATE + الحراس ═══
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (Number(inv.branchId) !== Number(invPreview.branchId)) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء الإلغاء؛ أعد المحاولة" });
+    }
 
     if (inv.status === "CANCELLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة ملغاة مسبقاً" });
@@ -429,17 +462,25 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     // بفاتورة لكنه لا يرفع invoices.paidAmount ⇒ إن اعتمدنا paidAmount وحده يبقى قسمٌ من نقد العميل
     // غير مُسترَدٍّ فتنقلب ذمّته لدائن (فائض ائتمان). النموذج الصحيح: كل حركة receipt IN/OUT مرتبطة
     // بالفاتورة تدخل الحساب، مطابقةً لما تراه voucher-linked flows ونماذج التحصيل الفعلية.
-    const receiptSums = (
-      await tx
-        .select({
-          inSum: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`,
-          outSum: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
-        })
-        .from(receipts)
-        .where(and(eq(receipts.invoiceId, input.invoiceId), eq(receipts.status, "COMPLETED")))
-    )[0];
-    const totalIn = money(receiptSums?.inSum ?? "0");
-    const totalOutPrior = money(receiptSums?.outSum ?? "0");
+    // Current locking read: invPreview سبق انتظار source وقد أنشأ snapshot أقدم من دفعة
+    // متزامنة. aggregate عادي بعد الانتظار كان يلغي الفاتورة ولا يرى القبض الذي التزم للتو.
+    const materialReceipts = await tx
+      .select({ direction: receipts.direction, amount: receipts.amount })
+      .from(receipts)
+      .where(and(
+        eq(receipts.invoiceId, input.invoiceId),
+        inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+        eq(receipts.approvalStatus, "APPROVED"),
+      ))
+      .for("update");
+    const totalIn = materialReceipts.reduce(
+      (sum, receipt) => receipt.direction === "IN" ? sum.plus(money(receipt.amount)) : sum,
+      money(0),
+    );
+    const totalOutPrior = materialReceipts.reduce(
+      (sum, receipt) => receipt.direction === "OUT" ? sum.plus(money(receipt.amount)) : sum,
+      money(0),
+    );
     const refundable = totalIn.minus(totalOutPrior);
     let refundAmount = new Decimal(0);
     if (refundable.gt(0)) {
@@ -448,11 +489,20 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
       let shiftId: number | null = null;
       let cashBucket: "DRAWER" | "TREASURY" | null = null;
       if (input.refundPaymentMethod === "CASH") {
-        const g = await shiftIdForCashTx(tx, actor, Number(inv.branchId), "استرداد إلغاء فاتورة");
+        const g = prelockedCashSource;
+        if (!g) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر استرداد الإلغاء النقدي" });
+        }
         shiftId = g.shiftId;
         cashBucket = g.cashBucket;
-      } else {
-        shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
+        if (cashBucket === "TREASURY") assertTreasuryOutException("SALE_CANCELLATION_COMPENSATION");
+        await assertCashOutAvailable(tx, {
+          branchId: Number(inv.branchId),
+          cashBucket,
+          shiftId,
+          amount: refundable,
+          operation: "استرداد إلغاء الفاتورة",
+        });
       }
 
       // Codex P1 #1 + P2 #4 (١٢/٨): **لا voucherNumber** على إيصال استرداد الإلغاء — تسميته سنداً في

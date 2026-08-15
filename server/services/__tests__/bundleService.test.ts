@@ -21,7 +21,7 @@ const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
   "accountingEntries", "receipts", "inventoryMovements",
-  "invoiceItemBundleComponents", "invoiceItems", "invoices", "idempotencyKeys", "bundleComponents",
+  "invoiceItemBundleComponents", "invoiceItems", "invoices", "idempotencyKeys", "onlineOrderItems", "onlineOrders", "bundleComponents",
   "branchStock", "productPrices", "productUnits", "productVariants", "productImages", "products",
   "shifts", "auditLogs", "customers", "suppliers", "categories",
   "users", "branches",
@@ -161,6 +161,21 @@ describe("bundleService — ثوابت الأمان B1..B6", () => {
     await withTx(async (tx) => {
       await expect(validateBundleComponents(tx, 1, [{ componentVariantId: 1, componentBaseQuantity: 2 }])).rejects.toThrow(/نفسه/);
     });
+  });
+
+  it("يمنع تغيير وصفة بكج في طلب متجر نشط ويحررها بعد الإلغاء", async () => {
+    const { variantId, productUnitId } = await createTestBundle("طقم-طلب-نشط", [{ vid: 1, qty: 2 }], "20.00");
+    await db().insert(s.customers).values({ id: 99, name: "زبون المتجر", phone: "+9647701234567" });
+    await db().insert(s.onlineOrders).values({ id: 99, orderNumber: "ORD-BUNDLE-LOCK", customerId: 99, branchId: 1, subtotal: "20.00", total: "20.00", status: "PENDING" });
+    await db().insert(s.onlineOrderItems).values({ onlineOrderId: 99, variantId, productUnitId, quantity: "1", baseQuantity: 1, unitPrice: "20.00", total: "20.00" });
+
+    await expect(withTx((tx) => replaceBundleComponents(tx, variantId, [{ componentVariantId: 2, componentBaseQuantity: 1 }])))
+      .rejects.toThrow(/طلب متجر نشط/);
+    expect((await db().select().from(s.bundleComponents).where(eq(s.bundleComponents.bundleVariantId, variantId)))[0]?.componentVariantId).toBe(1);
+
+    await db().update(s.onlineOrders).set({ status: "CANCELLED" }).where(eq(s.onlineOrders.id, 99));
+    await expect(withTx((tx) => replaceBundleComponents(tx, variantId, [{ componentVariantId: 2, componentBaseQuantity: 1 }])))
+      .resolves.toHaveLength(1);
   });
 });
 

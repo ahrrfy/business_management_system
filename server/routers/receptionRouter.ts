@@ -25,6 +25,7 @@ import { verifyManagerApproval } from "./saleRouter";
 import { retryOnDeadlock } from "../lib/retryDeadlock";
 import { router, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
 import { logAudit } from "../services/auditService";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 /** عزل الفرع (نمط deliveryRouter.effectiveBranch): المرتفعون يعبرون بـbranchId صريح؛
  *  غيرهم يُجبَرون على فرعهم، وغيابه = FORBIDDEN. */
@@ -34,8 +35,13 @@ function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number 
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
 }
 
-// ش٥: TELECOM (رصيد زين) طريقةٌ خامسة في المحطة — خلف ضوابط telecom.ts خادمياً (§٩.٤).
+// التاريخية تبقى قابلةً للقراءة/التصفية؛ أمّا القبض الجديد فنقدي فقط حتى
+// يوجد مزوّد دفع وتسوية مستقلة موثوقان.
 const payMethodEnum = z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
+const cashPaymentMethod = z
+  .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
+  .transform((value) => value as "CASH");
 
 // ش٢ — عقود المسوّدة (§٦): بوّابة **exec** (كاشير/مدير/فنّي طباعة — المسوّدة بلا مالٍ فتُحرَّر
 // بأوسع أدوار المحطة)؛ التثبيت والمال يبقيان خلف بوّابة الكاشير (ش٣/ش٤).
@@ -115,7 +121,7 @@ export const receptionRouter = router({
       z.object({
         invoiceId: z.number().int().positive(),
         amount: positiveMoneyString,
-        method: payMethodEnum,
+        method: cashPaymentMethod,
         reference: z.string().trim().max(100).nullish(),
         clientRequestId: z.string().min(1).max(60),
       }),
@@ -149,7 +155,7 @@ export const receptionRouter = router({
       z.object({
         draftId: z.number().int().positive(),
         amount: positiveMoneyString,
-        method: payMethodEnum,
+        method: cashPaymentMethod,
         reference: z.string().trim().max(64).nullish(),
         /** ش٥ — هاتف مُرسِل رصيد زين (اختياريّ؛ يُطبَّع خادمياً E.164). */
         telecomSenderPhone: z.string().trim().max(32).nullish(),
@@ -339,7 +345,7 @@ export const receptionRouter = router({
       shiftId: z.number().int().positive(),
       collectNow: z.object({
         amount: positiveMoneyString,
-        method: payMethodEnum,
+        method: cashPaymentMethod,
         reference: z.string().trim().max(100).nullish(),
       }).nullish(),
       cashRoundIQD: z.boolean().optional(),

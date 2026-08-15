@@ -16,6 +16,7 @@ import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
 import { reconcileSupplierBalances } from "../reconcileService";
+import { approveVoucher } from "../voucher/approval";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
@@ -41,7 +42,21 @@ async function reset() {
 async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
+    { id: 2, openId: "owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "10000000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-PURCHASE-RETURN-LANDED",
+    createdBy: 2,
+  });
   await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
   await d.insert(s.products).values([{ id: 1, name: "ورق" }, { id: 2, name: "حبر" }]);
   await d.insert(s.productVariants).values([
@@ -86,7 +101,7 @@ async function orderedAndReceived(payNow?: string): Promise<number> {
   );
   const items = await db().select().from(s.purchaseOrderItems)
     .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)).orderBy(s.purchaseOrderItems.id);
-  await receivePurchase(
+  const received = await receivePurchase(
     {
       purchaseOrderId: po.purchaseOrderId,
       lines: items.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: i.baseQuantity })),
@@ -94,6 +109,13 @@ async function orderedAndReceived(payNow?: string): Promise<number> {
     },
     actor,
   );
+  if (received.supplierPaymentRequestReceiptId) {
+    await approveVoucher(Number(received.supplierPaymentRequestReceiptId), {
+      userId: 2,
+      branchId: 1,
+      role: "manager",
+    });
+  }
   return po.purchaseOrderId;
 }
 

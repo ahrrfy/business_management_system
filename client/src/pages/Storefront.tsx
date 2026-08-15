@@ -45,6 +45,7 @@ import {
   X,
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { noteInteraction } from "@/lib/interactionDraft";
 
 /** حالات الطلب بالعربية + لونها — لعرض تتبّع الطلب العلنيّ. */
 const TRACK_STATUS: Record<string, { label: string; cls: string }> = {
@@ -65,7 +66,7 @@ import { BannerFrame, type StoreBannerCreative } from "@/components/store/Banner
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
 
-interface CartLine {
+export interface CartLine {
   productUnitId: number;
   productId: number;
   name: string;
@@ -76,12 +77,93 @@ interface CartLine {
   qty: number;
 }
 
+export interface StorefrontPricingSnapshot {
+  productId: number;
+  storeUnits?: Array<{
+    productUnitId: number;
+    price: string | null;
+    salePrice: string | null;
+  }>;
+  variants?: Array<{
+    units: Array<{
+      productUnitId: number;
+      price: string | null;
+      salePrice: string | null;
+    }>;
+  }>;
+}
+
+export function reconcileStorefrontCartPricing(
+  current: Map<number, CartLine>,
+  latestByProduct: Map<number, StorefrontPricingSnapshot | null | undefined>,
+): { cart: Map<number, CartLine>; priceChanged: number; unavailable: number; unresolved: number } {
+  const cart = new Map(current);
+  let priceChanged = 0;
+  let unavailable = 0;
+  let unresolved = 0;
+  for (const line of Array.from(current.values())) {
+    const snapshot = latestByProduct.get(line.productId);
+    // undefined = فشل شبكة عابر؛ لا نحذف سطر الزبون بسببه. null = المنتج لم يعد منشوراً.
+    if (snapshot === undefined) {
+      unresolved += 1;
+      continue;
+    }
+    const units = snapshot == null
+      ? []
+      : [...(snapshot.storeUnits ?? []), ...(snapshot.variants ?? []).flatMap((variant) => variant.units)];
+    const unit = units.find((candidate) => candidate.productUnitId === line.productUnitId);
+    const currentPrice = unit?.salePrice ?? unit?.price ?? null;
+    if (currentPrice == null) {
+      cart.delete(line.productUnitId);
+      unavailable += 1;
+      continue;
+    }
+    if (Number(currentPrice).toFixed(2) !== Number(line.price).toFixed(2)) {
+      cart.set(line.productUnitId, { ...line, price: Number(currentPrice).toFixed(2) });
+      priceChanged += 1;
+    }
+  }
+  return { cart, priceChanged, unavailable, unresolved };
+}
+
+export function reconcileStorefrontCartQuote(
+  current: Map<number, CartLine>,
+  quotedLines: Array<{ productUnitId: number; quantity: number; unitPrice: string }>,
+): { cart: Map<number, CartLine>; priceChanged: number; unresolved: number } {
+  const cart = new Map(current);
+  const quotedByUnit = new Map(quotedLines.map((line) => [line.productUnitId, line]));
+  let priceChanged = 0;
+  let unresolved = 0;
+  for (const line of Array.from(current.values())) {
+    const quoted = quotedByUnit.get(line.productUnitId);
+    if (!quoted || quoted.quantity !== line.qty) {
+      unresolved += 1;
+      continue;
+    }
+    const price = Number(quoted.unitPrice).toFixed(2);
+    if (price !== Number(line.price).toFixed(2)) {
+      cart.set(line.productUnitId, { ...line, price });
+      priceChanged += 1;
+    }
+  }
+  return { cart, priceChanged, unresolved };
+}
+
 // حفظ السلة + بيانات التوصيل محلياً (مراجعة عدائية ١٢/٧): كان تحديث الصفحة/العودة للتطبيق يفرّغ
 // السلة والنموذج فيهجر الزبون الطلب. نُبقيهما في localStorage فيستأنف الزبون من حيث توقّف.
-type CheckoutForm = { name: string; phone: string; governorate: string; address: string; notes: string };
+export type CheckoutForm = { name: string; phone: string; governorate: string; address: string; notes: string };
 const DEFAULT_FORM: CheckoutForm = { name: "", phone: "+964 ", governorate: "baghdad", address: "", notes: "" };
 const CART_STORAGE_KEY = "alroya-store-cart-v1";
 const CHECKOUT_STORAGE_KEY = "alroya-store-checkout-v1";
+const CHECKOUT_ATTEMPT_STORAGE_KEY = "alroya-store-checkout-attempt-v1";
+const STOREFRONT_PERSIST_REQUEST_EVENT = "alroya:storefront-persist-request";
+
+export type StorefrontCheckoutAttempt = {
+  clientRequestId: string;
+  fingerprint: string;
+  expectedGrandTotal: string;
+  createdAt: number;
+};
 
 function loadCart(): Map<number, CartLine> {
   const m = new Map<number, CartLine>();
@@ -98,13 +180,20 @@ function loadCart(): Map<number, CartLine> {
   }
   return m;
 }
-function saveCart(cart: Map<number, CartLine>) {
+type StorefrontStorage = Pick<Storage, "setItem" | "removeItem">;
+type StorefrontReadStorage = Pick<Storage, "getItem" | "removeItem">;
+
+export function saveCart(
+  cart: Map<number, CartLine>,
+  storage: StorefrontStorage = localStorage,
+): boolean {
   try {
     const arr = Array.from(cart.values());
-    if (arr.length === 0) localStorage.removeItem(CART_STORAGE_KEY);
-    else localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(arr));
+    if (arr.length === 0) storage.removeItem(CART_STORAGE_KEY);
+    else storage.setItem(CART_STORAGE_KEY, JSON.stringify(arr));
+    return true;
   } catch {
-    /* تخزين ممتلئ/محظور — تجاهل */
+    return false;
   }
 }
 function loadForm(): CheckoutForm {
@@ -123,12 +212,128 @@ function loadForm(): CheckoutForm {
     return { ...DEFAULT_FORM };
   }
 }
-function saveForm(form: CheckoutForm) {
+export function saveForm(
+  form: CheckoutForm,
+  storage: StorefrontStorage = localStorage,
+): boolean {
   try {
-    localStorage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(form));
+    storage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(form));
+    return true;
   } catch {
-    /* تجاهل */
+    return false;
   }
+}
+
+export function loadCheckoutAttempt(
+  storage: StorefrontReadStorage = localStorage,
+): StorefrontCheckoutAttempt | null {
+  try {
+    const raw = storage.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<StorefrontCheckoutAttempt>;
+    if (
+      typeof value.clientRequestId !== "string" || !value.clientRequestId ||
+      typeof value.fingerprint !== "string" || !value.fingerprint ||
+      typeof value.expectedGrandTotal !== "string" ||
+      typeof value.createdAt !== "number"
+    ) {
+      storage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+      return null;
+    }
+    return value as StorefrontCheckoutAttempt;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCheckoutAttempt(
+  attempt: StorefrontCheckoutAttempt | null,
+  storage: StorefrontStorage = localStorage,
+): boolean {
+  try {
+    if (attempt) storage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, JSON.stringify(attempt));
+    else storage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function storefrontCheckoutFingerprint(cart: Map<number, CartLine>, form: CheckoutForm): string {
+  const lines = Array.from(cart.values())
+    .sort((a, b) => a.productUnitId - b.productUnitId)
+    .map((line) => [line.productUnitId, line.qty, Number(line.price).toFixed(2)]);
+  return JSON.stringify({
+    lines,
+    name: form.name.trim(),
+    phone: form.phone.replace(/\s+/g, " ").trim(),
+    governorate: form.governorate,
+    address: form.address.trim(),
+    notes: form.notes.trim(),
+  });
+}
+
+export function saveStorefrontSnapshot(
+  cart: Map<number, CartLine>,
+  form: CheckoutForm,
+  storage: StorefrontStorage = localStorage,
+  attempt: StorefrontCheckoutAttempt | null = null,
+): boolean {
+  // لا تستخدم short-circuit: يجب محاولة حفظ الجزأين كي يحصل الزبون على أفضل فرصة للاسترداد.
+  const cartSaved = saveCart(cart, storage);
+  const formSaved = saveForm(form, storage);
+  const attemptSaved = saveCheckoutAttempt(attempt, storage);
+  return cartSaved && formSaved && attemptSaved;
+}
+
+export type StorefrontCartProduct = {
+  productUnitId: number;
+  productId: number;
+  productName: string;
+  imageUrl: string | null;
+  unitName: string;
+  variantLabel?: string;
+};
+
+export function addStorefrontCartLine(
+  current: Map<number, CartLine>,
+  product: StorefrontCartProduct,
+  effectivePrice: string,
+): Map<number, CartLine> {
+  const next = new Map(current);
+  const existing = next.get(product.productUnitId);
+  next.set(product.productUnitId, {
+    productUnitId: product.productUnitId,
+    productId: product.productId,
+    name: product.variantLabel
+      ? `${product.productName} — ${product.variantLabel}`
+      : product.productName,
+    price: effectivePrice,
+    imageUrl: product.imageUrl,
+    unitName: product.unitName,
+    variantLabel: product.variantLabel,
+    qty: (existing?.qty ?? 0) + 1,
+  });
+  return next;
+}
+
+export function setStorefrontCartQuantity(
+  current: Map<number, CartLine>,
+  productUnitId: number,
+  quantity: number,
+): Map<number, CartLine> {
+  const line = current.get(productUnitId);
+  if (!line) return current;
+  const next = new Map(current);
+  if (quantity <= 0) next.delete(productUnitId);
+  else next.set(productUnitId, { ...line, qty: Math.min(quantity, 999) });
+  return next;
+}
+
+export function recordStorefrontCartChange(
+  markChanged: () => void = noteInteraction,
+): void {
+  markChanged();
 }
 
 function money(v: string | number | null): string {
@@ -379,9 +584,38 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
 }
 
 type Panel = null | "cart" | "checkout" | "confirmation" | "track" | "label";
-type AvailabilityFilter = "IN_STOCK" | "ALL";
+export type AvailabilityFilter = "IN_STOCK" | "ALL";
 type PriceFilter = "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
 type CatalogSort = "RECOMMENDED" | "PRICE_ASC" | "PRICE_DESC" | "BEST_SELLERS";
+export type StorefrontSource = "settings" | "categories" | "offers" | "catalog";
+
+const STOREFRONT_SOURCE_LABELS: Record<StorefrontSource, string> = {
+  settings: "إعدادات المتجر",
+  categories: "الفئات والأقسام",
+  offers: "العروض",
+  catalog: "المنتجات",
+};
+
+/**
+ * يبقي فشل كل مصدرٍ علنيّ حالةً مستقلة وصريحة. لا يجوز تحويل خطأ API إلى [] ثم وصفه
+ * للزبون بأنه «لا توجد فئات/عروض/منتجات»؛ الفراغ التجاري الصحيح لا يأتي إلا بعد نجاح الطلب.
+ */
+export function collectStorefrontFailures(
+  failed: Record<StorefrontSource, boolean>,
+): StorefrontSource[] {
+  return (Object.keys(STOREFRONT_SOURCE_LABELS) as StorefrontSource[]).filter(
+    (source) => failed[source],
+  );
+}
+
+export function storefrontCategoryCount(
+  category: { productCount: number; availableCount?: number },
+  availability: AvailabilityFilter,
+): number {
+  return availability === "IN_STOCK"
+    ? (category.availableCount ?? category.productCount)
+    : category.productCount;
+}
 
 function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
   switch (filter) {
@@ -408,7 +642,16 @@ export default function Storefront() {
   const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
 
   const [form, setForm] = useState<CheckoutForm>(loadForm);
-  const [clientRequestId, setClientRequestId] = useState<string>("");
+  const cartRef = useRef(cart);
+  const formRef = useRef(form);
+  cartRef.current = cart;
+  formRef.current = form;
+  const [checkoutAttempt, setCheckoutAttempt] = useState<StorefrontCheckoutAttempt | null>(loadCheckoutAttempt);
+  const checkoutAttemptRef = useRef(checkoutAttempt);
+  const orderInFlightRef = useRef(false);
+  const acceptedQuoteRef = useRef<{ fingerprint: string; total: string } | null>(null);
+  checkoutAttemptRef.current = checkoutAttempt;
+  const [checkoutSafetyError, setCheckoutSafetyError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
   const viewedProductIds = useRef(new Set<number>());
 
@@ -462,20 +705,37 @@ export default function Storefront() {
     };
   }, []);
 
-  // استمرار السلة + بيانات التوصيل عبر تحديث الصفحة/إغلاق التطبيق (localStorage).
+  // استمرار السلة + بيانات التوصيل عبر تحديث الصفحة/إغلاق التطبيق (localStorage). طلب التحديث
+  // الآمن يستدعي الحافظ المتزامن أدناه ويأخذ نتيجة صريحة؛ امتلاء التخزين لا يعود فشلاً صامتاً.
   useEffect(() => {
-    saveCart(cart);
-  }, [cart]);
+    saveStorefrontSnapshot(cart, form, localStorage, checkoutAttempt);
+  }, [cart, form, checkoutAttempt]);
   useEffect(() => {
-    saveForm(form);
-  }, [form]);
+    const persist = (event: Event) => {
+      const detail = (event as CustomEvent<{ report: (saved: boolean, state?: { inFlight: boolean }) => void }>).detail;
+      detail?.report(
+        saveStorefrontSnapshot(cartRef.current, formRef.current, localStorage, checkoutAttemptRef.current),
+        { inFlight: orderInFlightRef.current },
+      );
+    };
+    window.addEventListener(STOREFRONT_PERSIST_REQUEST_EVENT, persist);
+    return () => window.removeEventListener(STOREFRONT_PERSIST_REQUEST_EVENT, persist);
+  }, []);
 
   const categoriesQ = trpc.storefront.categories.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const bannersQ = trpc.storefront.banners.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const settingsQ = trpc.storefront.settings.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
+  // يطبّق الخادم مرشح التوفر قبل limit حتى لا تتحول الصفحة إلى نتيجة ناقصة بعد ترشيحٍ محلي.
+  // إبقاء الترشيح الدفاعي أدناه يحمي الواجهة أثناء ترقية عقد API تدريجياً.
+  const catalogInput = {
+    categoryId,
+    search: search || undefined,
+    limit: 120,
+    availability,
+  } as const;
   const catalogQ = trpc.storefront.catalog.useQuery(
-    { categoryId, search: search || undefined, limit: 120 },
+    catalogInput,
     { placeholderData: (prev) => prev }
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
@@ -494,7 +754,16 @@ export default function Storefront() {
   }, [selectedId]);
 
   const createOrder = trpc.storefront.createOrder.useMutation({
+    onMutate: () => {
+      orderInFlightRef.current = true;
+      setCheckoutSafetyError(null);
+    },
     onSuccess: (res) => {
+      orderInFlightRef.current = false;
+      checkoutAttemptRef.current = null;
+      acceptedQuoteRef.current = null;
+      setCheckoutAttempt(null);
+      saveCheckoutAttempt(null);
       setConfirmation({ orderNumber: res.orderNumber, total: res.total });
       setCart(new Map());
       // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
@@ -502,6 +771,79 @@ export default function Storefront() {
       // عبر التحديث تخصّ طلباً قيد الإنشاء فقط، لا بعد إتمامه.
       setForm({ ...DEFAULT_FORM });
       setPanel("confirmation");
+    },
+    onError: async (error) => {
+      orderInFlightRef.current = false;
+      if (error.data?.code === "CONFLICT") {
+        const failedAttempt = checkoutAttemptRef.current;
+        checkoutAttemptRef.current = null;
+        acceptedQuoteRef.current = null;
+        setCheckoutAttempt(null);
+        saveCheckoutAttempt(null);
+        await Promise.all([
+          utils.storefront.catalog.invalidate(),
+          utils.storefront.offers.invalidate(),
+          utils.storefront.settings.invalidate(),
+          utils.storefront.product.invalidate(),
+          utils.storefront.quoteOrder.invalidate(),
+        ]);
+        try {
+          const quoted = await utils.storefront.quoteOrder.fetch({
+            governorate: formRef.current.governorate,
+            lines: Array.from(cartRef.current.values()).map((line) => ({
+              productUnitId: line.productUnitId,
+              quantity: line.qty,
+            })),
+          });
+          const refreshedQuote = reconcileStorefrontCartQuote(cartRef.current, quoted.lines);
+          const totalChanged = failedAttempt == null ||
+            Number(quoted.total).toFixed(2) !== Number(failedAttempt.expectedGrandTotal).toFixed(2);
+          if (refreshedQuote.unresolved === 0 && (refreshedQuote.priceChanged > 0 || totalChanged)) {
+            cartRef.current = refreshedQuote.cart;
+            setCart(refreshedQuote.cart);
+            acceptedQuoteRef.current = {
+              fingerprint: storefrontCheckoutFingerprint(refreshedQuote.cart, formRef.current),
+              total: quoted.total,
+            };
+            setCheckoutSafetyError(
+              refreshedQuote.priceChanged > 0
+                ? `تحديث سعر ${refreshedQuote.priceChanged} من أصناف السلة. راجع الإجمالي الجديد ثم اضغط «تأكيد الطلب» للموافقة عليه.`
+                : "تغيّر إجمالي الطلب أو التوصيل. راجع الإجمالي الجديد ثم اضغط «تأكيد الطلب» للموافقة عليه.",
+            );
+            return;
+          }
+        } catch {
+          // إذا لم يعد الصنف منشوراً، يسقط المسار إلى reconciliation التفاصيل أدناه لحذفه صراحةً.
+        }
+        const productIds = Array.from(new Set(Array.from(cartRef.current.values()).map((line) => line.productId)));
+        const latestEntries = await Promise.all(productIds.map(async (productId) => {
+          try {
+            return [productId, await utils.storefront.product.fetch({ productId })] as const;
+          } catch {
+            return [productId, undefined] as const;
+          }
+        }));
+        const refreshed = reconcileStorefrontCartPricing(
+          cartRef.current,
+          new Map(latestEntries),
+        );
+        if (refreshed.priceChanged > 0 || refreshed.unavailable > 0) {
+          cartRef.current = refreshed.cart;
+          setCart(refreshed.cart);
+          const changes = [
+            refreshed.priceChanged > 0 ? `تحديث سعر ${refreshed.priceChanged} من أصناف السلة` : null,
+            refreshed.unavailable > 0 ? `إزالة ${refreshed.unavailable} لم يعد متاحاً` : null,
+          ].filter(Boolean).join("، ");
+          setCheckoutSafetyError(`${changes}. راجع الإجمالي الجديد ثم اضغط «تأكيد الطلب» للموافقة عليه.`);
+        } else if (refreshed.unresolved > 0) {
+          setCheckoutSafetyError("تغيّرت بيانات الطلب وتعذّر جلب بعض الأسعار الجديدة. تحقق من الاتصال ثم أعد المحاولة.");
+        } else {
+          setCheckoutSafetyError(error.message);
+        }
+      }
+    },
+    onSettled: () => {
+      orderInFlightRef.current = false;
     },
   });
 
@@ -538,12 +880,23 @@ export default function Storefront() {
   const cats = categoriesQ.data ?? [];
   const offers = offersQ.data ?? [];
   const banners = bannersQ.data ?? [];
+  const sourceFailures = collectStorefrontFailures({
+    settings: settingsQ.isError,
+    categories: categoriesQ.isError,
+    offers: offersQ.isError,
+    catalog: catalogQ.isError,
+  });
+  const supportingFailures = sourceFailures.filter(
+    (source) => source !== "catalog",
+  );
   // توزيع البنرات على مواضعها الثلاثة (الصفوف القديمة بلا placement = رئيسي).
   const heroBanners = useMemo(() => banners.filter((b) => (b.placement ?? "HERO") === "HERO"), [banners]);
   const sideBanners = useMemo(() => banners.filter((b) => b.placement === "SIDE"), [banners]);
   const inlineBanners = useMemo(() => banners.filter((b) => b.placement === "INLINE"), [banners]);
   const announcement = settingsQ.data?.announcement ?? null;
-  const storeOpen = settingsQ.data?.isOpen ?? true;
+  // الفشل المغلق: لا نسمح بإرسال طلب قبل معرفة حالة المتجر فعلياً. خطأ الإعدادات له
+  // تنبيه مستقل أدناه، فلا يتنكر في هيئة «مفتوح» ولا «مغلق».
+  const storeOpen = settingsQ.isSuccess && settingsQ.data.isOpen;
   const activeCatName = useMemo(
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
@@ -589,6 +942,13 @@ export default function Storefront() {
     setSearch("");
     setCategoryId(null);
     clearRefinements();
+  }
+  function retrySupportingSources() {
+    const retries: Promise<unknown>[] = [];
+    if (settingsQ.isError) retries.push(settingsQ.refetch());
+    if (categoriesQ.isError) retries.push(categoriesQ.refetch());
+    if (offersQ.isError) retries.push(offersQ.refetch());
+    void Promise.allSettled(retries);
   }
   // فواصل السيل التسويقية: بنرات INLINE المُدارة أولاً، وعند غيابها تُشتقّ من عروض اليوم الفعّالة
   // (فلسفة in-feed العالمية: لا يمرّ الزبون بأكثر من ~عشرة منتجات دون محفّز شراء).
@@ -641,31 +1001,12 @@ export default function Storefront() {
     const eff = p.salePrice ?? p.price;
     if (eff == null || p.inStock === false) return;
     trackConversion.mutate({ event: "ADD_TO_CART" });
-    setCart((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(p.productUnitId);
-      next.set(p.productUnitId, {
-        productUnitId: p.productUnitId,
-        productId: p.productId,
-        name: p.variantLabel ? `${p.productName} — ${p.variantLabel}` : p.productName,
-        price: eff,
-        imageUrl: p.imageUrl,
-        unitName: p.unitName,
-        variantLabel: p.variantLabel,
-        qty: (existing?.qty ?? 0) + 1,
-      });
-      return next;
-    });
+    recordStorefrontCartChange();
+    setCart((prev) => addStorefrontCartLine(prev, p, eff));
   }
   function setQty(productUnitId: number, qty: number) {
-    setCart((prev) => {
-      const next = new Map(prev);
-      const line = next.get(productUnitId);
-      if (!line) return prev;
-      if (qty <= 0) next.delete(productUnitId);
-      else next.set(productUnitId, { ...line, qty: Math.min(qty, 999) });
-      return next;
-    });
+    recordStorefrontCartChange();
+    setCart((prev) => setStorefrontCartQuantity(prev, productUnitId, qty));
   }
   function offerLabel(o: { type: "PERCENT" | "AMOUNT"; discountPercent: string; discountAmount: string }): string {
     return o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`;
@@ -676,7 +1017,6 @@ export default function Storefront() {
 
   function openCheckout() {
     if (!storeOpen) return; // المتجر مغلق — الإشعار ظاهر أعلى الصفحة
-    setClientRequestId(`sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
     trackConversion.mutate({ event: "BEGIN_CHECKOUT" });
     setPanel("checkout");
   }
@@ -685,14 +1025,42 @@ export default function Storefront() {
     const phone = form.phone.replace(/\s+/g, " ").trim();
     const address = form.address.trim();
     if (!name || phone.replace(/\D/g, "").length < 8 || address.length < 3 || cartLines.length === 0) return;
+    const fingerprint = storefrontCheckoutFingerprint(cart, form);
+    const previous = checkoutAttemptRef.current;
+    const acceptedQuote = acceptedQuoteRef.current?.fingerprint === fingerprint
+      ? acceptedQuoteRef.current
+      : null;
+    const attempt: StorefrontCheckoutAttempt = previous?.fingerprint === fingerprint
+      ? previous
+      : {
+          clientRequestId: typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? `sf-${crypto.randomUUID()}`
+            : `sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
+          fingerprint,
+          expectedGrandTotal: acceptedQuote?.total ?? cartTotal.toFixed(2),
+          createdAt: Date.now(),
+        };
+    // fail-closed قبل الشبكة: الرد الضائع آمن فقط إذا بقي نفس المفتاح بعد reload/PWA.
+    if (!saveStorefrontSnapshot(cart, form, localStorage, attempt)) {
+      setCheckoutSafetyError("تعذّر تأمين رقم محاولة الطلب على هذا الجهاز — حرّر مساحة التخزين ثم أعد المحاولة.");
+      return;
+    }
+    checkoutAttemptRef.current = attempt;
+    setCheckoutAttempt(attempt);
+    orderInFlightRef.current = true;
     createOrder.mutate({
       customerName: name,
       customerPhone: phone,
       governorate: form.governorate,
       addressText: address,
       notes: form.notes.trim() || undefined,
-      lines: cartLines.map((l) => ({ productUnitId: l.productUnitId, quantity: l.qty })),
-      clientRequestId,
+      lines: cartLines.map((l) => ({
+        productUnitId: l.productUnitId,
+        quantity: l.qty,
+        expectedUnitPrice: Number(l.price).toFixed(2),
+      })),
+      expectedGrandTotal: attempt.expectedGrandTotal,
+      clientRequestId: attempt.clientRequestId,
     });
   }
   const canSubmit =
@@ -777,7 +1145,7 @@ export default function Storefront() {
               {cats.map((c) => (
                 <button key={c.id} onClick={() => selectCategory(c.id)} className={chip(categoryId === c.id)}>
                   {c.name}
-                  <span className="mr-1 opacity-60">{c.productCount}</span>
+                  <span className="mr-1 opacity-60">{storefrontCategoryCount(c, availability)}</span>
                 </button>
               ))}
             </div>
@@ -787,6 +1155,36 @@ export default function Storefront() {
 
       {/* المحتوى */}
       <main className="mx-auto max-w-6xl px-4 py-4 pb-28">
+        {supportingFailures.length > 0 && (
+          <section
+            role="alert"
+            aria-live="polite"
+            className="mb-4 rounded-2xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-4 text-[var(--sem-warn)] shadow-sm"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-extrabold">تعذّر تحميل بعض بيانات المتجر</p>
+                <p className="mt-1 text-xs leading-6 opacity-90">
+                  لم نعتبرها فارغة: تعذّر تحميل {supportingFailures.map((source) => STOREFRONT_SOURCE_LABELS[source]).join("، ")}.
+                  يمكنك متابعة تصفح المنتجات المتاحة ثم إعادة المحاولة.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={retrySupportingSources}
+                disabled={supportingFailures.some((source) => {
+                  if (source === "settings") return settingsQ.isFetching;
+                  if (source === "categories") return categoriesQ.isFetching;
+                  return offersQ.isFetching;
+                })}
+                className="shrink-0 rounded-xl border border-[var(--sem-warn)]/50 bg-white px-3 py-2 text-xs font-bold text-[var(--sem-warn)] transition hover:bg-[var(--sem-warn)]/10 disabled:cursor-wait disabled:opacity-60"
+              >
+                إعادة المحاولة
+              </button>
+            </div>
+          </section>
+        )}
         {/* شريط إعلان الموظف */}
         {announcement && (
           <div className="mb-3 flex items-center gap-2 rounded-2xl bg-amber-100 px-4 py-2.5 text-sm font-bold text-amber-900 dark:bg-amber-500/15 dark:text-amber-300">
@@ -795,7 +1193,7 @@ export default function Storefront() {
           </div>
         )}
         {/* المتجر مغلق مؤقتاً */}
-        {!storeOpen && (
+        {settingsQ.isSuccess && !storeOpen && (
           <div className="mb-4 rounded-2xl bg-rose-100 px-4 py-3 text-center text-sm font-bold text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
             المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً. تصفّح المنتجات وعُد لاحقاً.
           </div>
@@ -1375,6 +1773,10 @@ export default function Storefront() {
                     متابعة إلى الدفع عند الاستلام
                     <ArrowRight aria-hidden className="size-4" />
                   </>
+                ) : settingsQ.isLoading || settingsQ.isFetching ? (
+                  "جارٍ التحقق من حالة المتجر"
+                ) : settingsQ.isError ? (
+                  "تعذّر التحقق من استقبال الطلبات — أعد المحاولة"
                 ) : (
                   "المتجر مغلق مؤقتاً — تعذّر إتمام الطلب"
                 )}
@@ -1448,9 +1850,9 @@ export default function Storefront() {
               </div>
             </div>
 
-            {createOrder.isError && (
+            {(createOrder.isError || checkoutSafetyError) && (
               <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600 dark:bg-rose-500/10">
-                {createOrder.error?.message ?? "تعذّر إرسال الطلب — أعد المحاولة"}
+                {checkoutSafetyError ?? createOrder.error?.message ?? "تعذّر إرسال الطلب — أعد المحاولة"}
               </p>
             )}
 

@@ -13,11 +13,13 @@ import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, getRun, payRun } from "../payrollService";
 
 const ACTOR = { userId: 1, branchId: 1 };
-// SOD-01/02 (فصل المهام): المُعتمِد/الدافع يجب أن يختلف عن المُولِّد ⇒ مستخدم ٢ يُعتمِد ويَدفع.
+// طلب الدفع يُنفّذه مالك نشط مختلف عن المُولِّد.
 const APPROVER = { userId: 2, branchId: 1 };
+const NON_OWNER = { userId: 3, branchId: 1 };
 
 const TABLES = [
   "accountingEntries",
+  "receipts",
   "payrollItems",
   "payrollRuns",
   "attendance",
@@ -46,8 +48,21 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1 },
-    { id: 2, openId: "test-approver", name: "مدقّق", role: "manager", branchId: 1 },
+    { id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1, isOwner: false },
+    { id: 2, openId: "test-approver", name: "مالك مدقّق", role: "manager", branchId: 1, isOwner: true },
+    { id: 3, openId: "test-non-owner", name: "مدقّق غير مالك", role: "manager", branchId: 1, isOwner: false },
+  ]);
+  await d.insert(s.receipts).values([
+    {
+      branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-B1", createdBy: 1,
+    },
+    {
+      branchId: 2, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-B2", createdBy: 1,
+    },
   ]);
 }
 beforeEach(async () => {
@@ -204,6 +219,19 @@ describe("payrollService — pay posts ledger entries", () => {
     await expect(payRun(run!.id, ACTOR)).rejects.toThrow();
   });
 
+  it("نقص خزينة الرواتب يبقي المسيّر approved ولا يكتب إيصالاً أو قيداً جزئياً", async () => {
+    await db().delete(s.receipts);
+    await createEmployee({ firstName: "نور", lastName: "التميمي", payType: "monthly", salary: "700000", allowances: "0" });
+    const run = await generatePayroll("2026-08", ACTOR);
+    await approveRun(run!.id, APPROVER);
+    await expect(payRun(run!.id, APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    const stored = await getRun(run!.id);
+    expect(stored?.status).toBe("approved");
+    expect(stored?.paidAt).toBeNull();
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+  });
+
   it("يُرحّل قيد كل موظف بفرعه هو لا بفرع المُولِّد (إسناد فرعي دقيق)", async () => {
     // المُولِّد بفرع 1، لكن لكل موظف فرعه: ع→1، ب→2 ⇒ يجب أن يُنسَب قيد كلٍّ لفرعه.
     const e1 = await createEmployee({ firstName: "عقيل", lastName: "ت", payType: "monthly", salary: "500000", allowances: "0", branchId: 1 });
@@ -262,6 +290,7 @@ describe("payrollService — فصل المهام (SOD-01/02)", () => {
     const run = await generatePayroll("2026-05", ACTOR);
     await approveRun(run!.id, APPROVER);
     await expect(payRun(run!.id, ACTOR)).rejects.toThrow(); // صرف ذاتي مرفوض
+    await expect(payRun(run!.id, NON_OWNER)).rejects.toMatchObject({ code: "FORBIDDEN" });
     const paid = await payRun(run!.id, APPROVER);
     expect(paid!.status).toBe("paid");
     expect(Number(paid!.paidBy)).toBe(2);

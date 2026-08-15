@@ -7,6 +7,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
 
 export interface WithdrawInput {
@@ -38,6 +39,12 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
     const amount = round2(input.amount);
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
 
+    // IQD creates a physical TREASURY IN. Reversal of another withdrawal takes the
+    // branch source before the house, so a new withdrawal must use the same order;
+    // house→receipt(FK branch) would form branch↔house under concurrency.
+    if ((input.currency ?? "IQD") === "IQD") {
+      await lockCashSourceForUpdate(tx, { branchId: input.branchId, cashBucket: "TREASURY" });
+    }
     const house = await lockHouse(tx, input.exchangeHouseId);
 
     if (input.currency === "USD") {
@@ -101,6 +108,7 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
       paymentMethod: "CASH",
       cashBucket: "TREASURY",
       status: "COMPLETED",
+      approvalStatus: "APPROVED",
       partyType: "OTHER",
       description: `سحب من الصيرفة «${house.name}»`,
       createdBy: actor.userId,

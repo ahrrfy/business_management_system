@@ -11,6 +11,7 @@ import { openShift } from "../shiftService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
 import { reconcileSupplierBalances } from "../reconcileService";
 import { money } from "../money";
+import { approveVoucher } from "../voucher/approval";
 
 const actor = { userId: 1, branchId: 1 };
 const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie() {}, clearCookie() {} } as any, user: { id: 1, role: "admin", branchId: 1 } as any };
@@ -31,7 +32,10 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
+    { id: 2, openId: "local_owner", name: "owner", role: "manager", loginMethod: "local", isOwner: true },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -39,6 +43,21 @@ async function seedBase() {
 }
 const setStock = (variantId: number, branchId: number, qty: number) => db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
 const count = async (where?: any) => (await db().select().from(s.accountingEntries)).length;
+
+async function fundCash(cashBucket: "DRAWER" | "TREASURY", amount: string, shiftId: number | null = null) {
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    shiftId,
+    direction: "IN",
+    amount,
+    paymentMethod: "CASH",
+    cashBucket,
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: `TEST-${cashBucket}-FUND`,
+    createdBy: 2,
+  });
+}
 
 beforeEach(async () => { await reset(); await seedBase(); });
 
@@ -87,11 +106,16 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
 
   it("vouchers.create: نفس clientRequestId ⇒ سند واحد", async () => {
     await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate-cash: السند النقدي يَستوجب وردية.
+    await fundCash("TREASURY", "100.00");
     const input = { voucherType: "PAYMENT" as const, branchId: 1, amount: "30.00", paymentMethod: "CASH" as const, partyType: "OTHER" as const, counterpartyName: "المؤجر", description: "إيجار", clientRequestId: "vch-key-1" };
     const r1 = await caller().vouchers.create(input);
     const r2 = await caller().vouchers.create(input);
     expect(r2.receiptId).toBe(r1.receiptId); // نفس السند (replay)
-    expect((await db().select().from(s.receipts))).toHaveLength(1);
+    const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(r1.receiptId)));
+    expect(pending).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+    expect((await db().select().from(s.receipts)).filter((r) => r.direction === "OUT")).toHaveLength(1);
+    expect((await db().select().from(s.accountingEntries)).filter((e) => e.entryType === "PAYMENT_OUT")).toHaveLength(0);
+    await approveVoucher(Number(r1.receiptId), { userId: 2, branchId: 1, role: "manager" });
     expect((await db().select().from(s.accountingEntries)).filter((e) => e.entryType === "PAYMENT_OUT")).toHaveLength(1);
   });
 });
@@ -211,7 +235,8 @@ describe("#2ج حارس وردية لعربون نقدي عند الإنشاء",
 
 describe("#1ب idempotency للمصروف وإنشاء أمر الشغل (النقر المزدوج)", () => {
   it("expenses.create: نفس clientRequestId ⇒ مصروف/صرف واحد", async () => {
-    await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate-cash: المصروف النقدي يَستوجب وردية.
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate-cash: المصروف النقدي يَستوجب وردية.
+    await fundCash("DRAWER", "100.00", shiftId);
     const input = { branchId: 1, category: "RENT" as const, amount: "30.00", paymentMethod: "CASH" as const, shiftId: null, clientRequestId: "exp-key-1" };
     await caller().expenses.create(input);
     await caller().expenses.create(input);

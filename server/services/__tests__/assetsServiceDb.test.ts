@@ -6,22 +6,42 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { addMaintenance, createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, updateAsset } from "../assetsService";
+import { addMaintenance, createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, postMonthlyDepreciation, updateAsset } from "../assetsService";
 import { computeDepreciation } from "../assets/depreciation";
+import { computeTreasuryCashBalance } from "../cash/cashAvailability";
+import { approveVoucher, rejectVoucher } from "../voucherService";
+import { resubmitRejectedExpensePayment } from "../voucher/approval";
+import { cancelExpense } from "../expenseService";
+import { sendTransfer } from "../cashTransferService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
+const OWNER = { userId: 2, branchId: 1, role: "manager" as const };
 const ADMIN_SCOPE = { branchId: null } as const;
 // FI-01: createAsset يأخذ Actor الآن (لترحيل قيد الاقتناء) — مُغلِّف يُمرّره عن كل الاختبارات القائمة.
-const mkAsset = (input: Parameters<typeof createAsset>[0]) => createAsset(input, ACTOR);
+const mkPendingAsset = (input: Parameters<typeof createAsset>[0]) =>
+  createAsset({ ...input, branchId: input.branchId ?? 1 }, ACTOR);
+const mkAsset = async (input: Parameters<typeof createAsset>[0]) => {
+  const asset = await mkPendingAsset(input);
+  if (asset?.paymentPending) {
+    await approveRequest(`ASSET-ACQ-${asset.id}`);
+    return getAsset(asset.id, ADMIN_SCOPE);
+  }
+  return asset;
+};
 
 const TABLES = [
+  "idempotencyKeys",
+  "cashTransfers",
   "accountingEntries",
+  "receipts",
+  "expenses",
   "assetMaintenance",
   "assetCustodyLog",
   "assetDocuments",
   "fixedAssets",
   "attendance",
   "employees",
+  "suppliers",
   "auditLogs",
   "branches",
   "users",
@@ -46,12 +66,26 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
+    { id: 2, openId: "asset_owner", name: "مالك الأصول", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
   await d.insert(s.employees).values([
     { id: 1, firstName: "موظف", lastName: "أول", email: "e1@test.local", branchId: 1, isActive: true },
     { id: 2, firstName: "موظف", lastName: "ثانٍ", email: "e2@test.local", branchId: 1, isActive: true },
   ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد الأصول" }); // FI-01: اقتناء على ذمّة المورّد
+  await d.insert(s.receipts).values({
+    branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "100000000.00",
+    paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+    referenceNumber: "TEST-ASSET-TREASURY-FUND", createdBy: 1,
+  });
+}
+
+async function approveRequest(referenceNumber: string) {
+  const [request] = await db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, referenceNumber));
+  expect(request).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+  return approveVoucher(Number(request.id), OWNER);
 }
 
 beforeEach(async () => {
@@ -127,7 +161,7 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
       .where(and(eq(s.accountingEntries.entryType, "PAYMENT_IN"), eq(s.accountingEntries.dedupeKey, `ASSET_DISP:${a!.id}`)));
     expect(cash).toBeTruthy();
     expect(Number(cash.amount)).toBe(700000);
-    const [rcpt] = await db().select().from(s.receipts).where(eq(s.receipts.direction, "IN"));
+    const [rcpt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(cash.receiptId)));
     expect(rcpt).toBeTruthy();
     expect(Number(rcpt.amount)).toBe(700000);
 
@@ -146,12 +180,15 @@ describe("assetsService — updateAsset (DB)", () => {
       purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5,
       depreciationMethod: "sl", custodianId: 1, branchId: 1,
     });
-    const up = await updateAsset(a!.id, {
+    const pendingUpdate = await updateAsset(a!.id, {
       name: "لابتوب مُحدَّث", category: "display", brand: "Dell", serial: "SN-9",
       branchId: 1, location: "مكتب جديد", purchaseDate: "2023-02-01",
       purchaseValue: "1200000", salvageValue: "150000", usefulLifeYears: 6,
       depreciationMethod: "db", condition: "جيد", warrantyEnd: "2026-02-01",
     }, ACTOR);
+    expect(pendingUpdate!.paymentPending).toBe(true);
+    await approveRequest(`ASSET-REACQ-${a!.id}-1`);
+    const up = await getAsset(a!.id, ADMIN_SCOPE);
     expect(up!.name).toBe("لابتوب مُحدَّث");
     expect(up!.category).toBe("display");
     expect(Number(up!.purchaseValue)).toBe(1200000);
@@ -187,12 +224,133 @@ describe("assetsService — updateAsset (DB)", () => {
     expect(Number((await getAsset(a!.id, ADMIN_SCOPE))!.purchaseValue)).toBe(1200000);
   });
 
+  it("supplier→cash: خزينة صفر تُثبت التعديل وتعلّق الدفع بلا عكس نقد/دفتر حتى اعتماد المالك", async () => {
+    await db().delete(s.receipts).where(eq(s.receipts.referenceNumber, "TEST-ASSET-TREASURY-FUND"));
+    const a = await mkAsset({
+      name: "طابعة آجلة", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "1000", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: 1,
+    });
+    await updateAsset(a!.id, {
+      name: "طابعة نقدية", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "1000", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: null,
+    }, ACTOR);
+
+    const changed = await getAsset(a!.id, ADMIN_SCOPE);
+    expect(changed!.supplierId).toBe(1);
+    expect(Number(changed!.purchaseValue)).toBe(1000);
+    expect(Number((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance)).toBe(1000);
+    const requests = await db().select().from(s.receipts);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ direction: "OUT", status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1); // PURCHASE فقط؛ لا عكس AP ولا PAYMENT_OUT قبل الاعتماد
+    await expect(approveVoucher(Number(requests[0].id), OWNER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.id, Number(requests[0].id))))[0].approvalStatus).toBe("PENDING_APPROVAL");
+    await rejectVoucher(Number(requests[0].id), OWNER, "بيانات الدفع تحتاج تصحيحاً");
+    const afterReject = await getAsset(a!.id, ADMIN_SCOPE);
+    expect(afterReject!.supplierId).toBe(1);
+    expect(Number(afterReject!.purchaseValue)).toBe(1000);
+    expect(Number((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance)).toBe(1000);
+  });
+
+  it("cash→cash المتكرر: كل عكس يسبق الطلب الجديد وبرقم حتمي فريد بلا اصطدام idempotency", async () => {
+    await db().delete(s.receipts).where(eq(s.receipts.referenceNumber, "TEST-ASSET-TREASURY-FUND"));
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "1000.00",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-ASSET-EXACT-FUND", createdBy: 1,
+    });
+    const a = await mkPendingAsset({
+      name: "آلة نقدية", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "1000", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1,
+    });
+    await approveRequest(`ASSET-ACQ-${a!.id}`);
+    await updateAsset(a!.id, {
+      name: "آلة نقدية مصححة", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "800", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: null,
+    }, ACTOR);
+    const [reacq] = await db().select().from(s.receipts).where(sql`${s.receipts.referenceNumber} LIKE ${`ASSET-REACQ-${a!.id}-%`}`);
+    await approveVoucher(Number(reacq.id), OWNER);
+
+    await updateAsset(a!.id, {
+      name: "آلة نقدية مصححة ثانية", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "600", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: null,
+    }, ACTOR);
+    const reacqs = await db().select().from(s.receipts)
+      .where(sql`${s.receipts.referenceNumber} LIKE ${`ASSET-REACQ-${a!.id}-%`}`)
+      .orderBy(s.receipts.id);
+    expect(reacqs.map((row) => row.referenceNumber)).toEqual([
+      `ASSET-REACQ-${a!.id}-1`,
+      `ASSET-REACQ-${a!.id}-2`,
+    ]);
+    await expect(updateAsset(a!.id, {
+      name: "طلب ثالث متداخل", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "500", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: null,
+    }, ACTOR)).rejects.toMatchObject({ code: "CONFLICT" });
+    await approveVoucher(Number(reacqs[1].id), OWNER);
+
+    await db().transaction(async (tx) => {
+      expect((await computeTreasuryCashBalance(tx, 1)).toFixed(2)).toBe("400.00");
+    });
+    const asset = await getAsset(a!.id, ADMIN_SCOPE);
+    expect(Number(asset!.purchaseValue)).toBe(600);
+    const rows = await db().select().from(s.receipts);
+    expect(rows.filter((r) => r.direction === "IN" && Number(r.amount) === 1000)).toHaveLength(2);
+    expect(rows.filter((r) => r.direction === "OUT" && Number(r.amount) === 1000)).toHaveLength(1);
+    expect(rows.filter((r) => r.direction === "OUT" && Number(r.amount) === 800)).toHaveLength(1);
+    expect(rows.filter((r) => r.direction === "IN" && Number(r.amount) === 800)).toHaveLength(1);
+    expect(rows.filter((r) => r.direction === "OUT" && Number(r.amount) === 600)).toHaveLength(1);
+  });
+
   it("يرفض تعديل أصل مُستبعَد", async () => {
     const a = await mkAsset({ name: "قديم", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", salvageValue: "50000", usefulLifeYears: 4, depreciationMethod: "sl" });
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "خردة", value: "0" }, ACTOR);
     await expect(
       updateAsset(a!.id, { name: "محاولة", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", usefulLifeYears: 4 }, ACTOR),
     ).rejects.toThrow();
+  });
+
+  it("اعتماد إعادة اقتناء عبر فرعين يتسلسل مع تحويل A→B بلا deadlock", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 2, cashBucket: "TREASURY", direction: "IN", amount: "1000000.00",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-ASSET-BRANCH-2-FUND", createdBy: ACTOR.userId,
+    });
+    const asset = await mkAsset({
+      name: "أصل عابر للفروع", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "1000", usefulLifeYears: 5, branchId: 1,
+    });
+    const pending = await updateAsset(asset!.id, {
+      name: "أصل عابر للفروع", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "800", usefulLifeYears: 5, branchId: 2,
+    }, ACTOR);
+    expect(pending!.paymentPending).toBe(true);
+    const [request] = await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `ASSET-REACQ-${asset!.id}-1`));
+
+    const results = await Promise.allSettled([
+      approveVoucher(Number(request.id), OWNER),
+      sendTransfer({
+        fromBranchId: 1,
+        toBranchId: 2,
+        amount: "100.00",
+        clientRequestId: "asset-reacq-cross-branch-transfer",
+      }, ACTOR),
+    ]);
+    expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+    for (const result of results) {
+      if (result.status === "rejected") {
+        expect(String(result.reason?.message ?? "")).not.toMatch(/DEADLOCK|ER_LOCK_DEADLOCK/i);
+      }
+    }
+    const updated = await getAsset(asset!.id, ADMIN_SCOPE);
+    expect(updated).toMatchObject({ branchId: 2, purchaseValue: "800.00", isActive: true });
+    expect(await db().select().from(s.cashTransfers)).toHaveLength(1);
   });
 });
 
@@ -208,14 +366,71 @@ describe("assetsService — FI-01 اقتناء يُرحَّل للدفتر (DB)"
     expect(Number(sup.currentBalance)).toBe(600000); // AP زادت بقيمة الأصل
   });
 
-  it("شراء بلا مورّد ⇒ نقد PAYMENT_OUT + إيصال OUT (الأصل مُقابَل بنقد)", async () => {
-    const a = await mkAsset({ name: "كرسي", category: "computers", purchaseDate: "2024-03-01", purchaseValue: "150000", usefulLifeYears: 5 });
+  it("شراء بلا مورّد ⇒ طلب PAYMENT معلّق ثم اعتماد مالك آخر ينفذ TREASURY/OUT مرة واحدة", async () => {
+    const a = await mkPendingAsset({ name: "كرسي", category: "computers", purchaseDate: "2024-03-01", purchaseValue: "150000", usefulLifeYears: 5 });
+    expect(a!.paymentPending).toBe(true);
+    expect(a!.isActive).toBe(false);
+    const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, `ASSET-ACQ-${a!.id}`));
+    expect(pending).toMatchObject({ direction: "OUT", status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null, shiftId: null });
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    await approveVoucher(Number(pending.id), OWNER);
     const [acq] = await db().select().from(s.accountingEntries)
-      .where(and(eq(s.accountingEntries.entryType, "PAYMENT_OUT"), eq(s.accountingEntries.dedupeKey, `ASSET_ACQ:${a!.id}`)));
+      .where(and(eq(s.accountingEntries.entryType, "PAYMENT_OUT"), eq(s.accountingEntries.receiptId, Number(pending.id))));
     expect(acq).toBeTruthy();
     expect(Number(acq.amount)).toBe(150000);
-    const [r] = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    const [r] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(pending.id)));
+    expect(r).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "TREASURY", shiftId: null });
     expect(Number(r.amount)).toBe(150000);
+    expect((await getAsset(a!.id, ADMIN_SCOPE))!.isActive).toBe(true);
+  });
+
+  it("tamper للـpayload أو تغيّر قيمة الأصل بعد الطلب يفشل مغلقاً بلا نقد/قيد جزئي", async () => {
+    const asset = await mkPendingAsset({
+      name: "مقص ورق",
+      category: "computers",
+      purchaseDate: "2024-03-01",
+      purchaseValue: "125000",
+      usefulLifeYears: 5,
+    });
+    const [request] = await db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, `ASSET-ACQ-${asset!.id}`));
+    const originalPayload = request.internalNote;
+    await db().update(s.receipts).set({ internalNote: "@SYSTEM_PAYMENT_REQUEST:{\"kind\":\"ASSET_ACQUISITION\"}" }).where(eq(s.receipts.id, Number(request.id)));
+    await expect(approveVoucher(Number(request.id), OWNER)).rejects.toMatchObject({ code: "CONFLICT" });
+    await db().update(s.receipts).set({ internalNote: originalPayload }).where(eq(s.receipts.id, Number(request.id)));
+    await db().update(s.fixedAssets).set({ purchaseValue: "126000.00" }).where(eq(s.fixedAssets.id, asset!.id));
+    await expect(approveVoucher(Number(request.id), OWNER)).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(request.id)));
+    expect(pending).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null, approvedBy: null });
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+  });
+
+  it("الأصل النقدي المعلّق لا يقبل الاستبعاد/العهدة/الصيانة/الإهلاك ولا يولّد PAYMENT_IN", async () => {
+    const pending = await mkPendingAsset({
+      name: "أصل غير مدفوع", category: "computers", purchaseDate: "2026-08-01",
+      purchaseValue: "250000", usefulLifeYears: 5, branchId: 1,
+    });
+    expect(pending).toMatchObject({ paymentPending: true, isActive: false });
+
+    await expect(disposeAsset(
+      pending!.id,
+      { kind: "disposed", date: "2026-08-02", reason: "محاولة بيع", value: "100000" },
+      ACTOR,
+    )).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(handoverCustody(pending!.id, 1, "محاولة عهدة", ACTOR))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(addMaintenance(pending!.id, { type: "محاولة صيانة", cost: "1000" }, ACTOR))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await postMonthlyDepreciation(2026, 8, ACTOR)).assetsPosted).toBe(0);
+
+    const [row] = await db().select().from(s.fixedAssets).where(eq(s.fixedAssets.id, pending!.id));
+    expect(row).toMatchObject({ isActive: false, status: "active", disposalValue: null });
+    expect(await db().select().from(s.assetCustodyLog)).toHaveLength(0);
+    expect(await db().select().from(s.assetMaintenance)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_IN"))).toHaveLength(0);
+    expect(await db().select().from(s.receipts)
+      .where(eq(s.receipts.direction, "IN"))).toHaveLength(1); // تمويل الاختبار فقط
   });
 });
 
@@ -231,7 +446,9 @@ describe("updateAsset — تصحيح الإهلاك المتراكم (DEPR-REVAL
     await db().update(s.fixedAssets).set({ accumulatedDepreciation: "800000.00" }).where(eq(s.fixedAssets.id, asset!.id));
 
     // نخفض القيمة إلى ٣٠٠ألف (المتراكم ٨٠٠ألف يتجاوز الأساس ⇒ كان NBV = −٥٠٠ألف عالقاً للأبد).
-    await updateAsset(asset!.id, { ...PARAMS, purchaseValue: "300000" }, ACTOR);
+    const pendingUpdate = await updateAsset(asset!.id, { ...PARAMS, purchaseValue: "300000" }, ACTOR);
+    expect(pendingUpdate!.paymentPending).toBe(true);
+    await approveRequest(`ASSET-REACQ-${asset!.id}-1`);
 
     const [a2] = await db().select().from(s.fixedAssets).where(eq(s.fixedAssets.id, asset!.id));
     const expected = computeDepreciation(
@@ -269,25 +486,104 @@ describe("updateAsset — تصحيح الإهلاك المتراكم (DEPR-REVAL
 describe("addMaintenance — ترحيل تكلفة الصيانة للدفتر والخزينة (تدقيق ١٧/٧)", () => {
   const A = { name: "مكيّف", category: "computers", purchaseDate: "2025-01-01", purchaseValue: "500000", usefulLifeYears: 5, branchId: 1 };
 
-  it("صيانة بتكلفة ⇒ إيصال TREASURY/OUT + قيد PAYMENT_OUT (ASSET_MAINT) + حالة maintenance", async () => {
+  it("صيانة بتكلفة ⇒ حالة maintenance + طلب معلّق، ثم اعتماد المالك ينفذ TREASURY/OUT", async () => {
     const asset = await mkAsset(A);
     await addMaintenance(asset!.id, { type: "تنظيف", vendor: "ورشة", cost: "50000", maintDate: "2026-07-10" }, ACTOR);
 
     const [a2] = await db().select().from(s.fixedAssets).where(eq(s.fixedAssets.id, asset!.id));
     expect(a2.status).toBe("maintenance");
 
-    const [ent] = await db()
-      .select()
-      .from(s.accountingEntries)
-      .where(sql`${s.accountingEntries.dedupeKey} LIKE ${`ASSET_MAINT:%`}`);
-    expect(ent).toBeTruthy();
-    expect(ent.entryType).toBe("PAYMENT_OUT");
-    expect(Number(ent.amount)).toBe(50000);
+    const [maintenance] = await db().select().from(s.assetMaintenance).where(eq(s.assetMaintenance.assetId, asset!.id));
+    const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, `ASSET-MAINT-${maintenance.id}`));
+    expect(pending).toMatchObject({ direction: "OUT", status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+    const [recognizedExpense] = await db().select().from(s.expenses).where(eq(s.expenses.receiptId, Number(pending.id)));
+    expect(recognizedExpense).toMatchObject({ category: "MAINTENANCE", amount: "50000.00", status: "ACTIVE" });
+    const [recognizedEntry] = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `ASSET_MAINT_ACCRUAL:${maintenance.id}`));
+    expect(recognizedEntry).toMatchObject({ entryType: "PAYMENT_OUT", amount: "50000.00", receiptId: null });
+    await approveVoucher(Number(pending.id), OWNER);
+    expect(await db().select().from(s.expenses)).toHaveLength(1);
+    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `ASSET_MAINT_ACCRUAL:${maintenance.id}`)))).toHaveLength(1);
+    const [rc] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(pending.id)));
+    expect(rc).toMatchObject({ direction: "OUT", cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED" });
+  });
 
-    const [rc] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(ent.receiptId)));
-    expect(rc.direction).toBe("OUT");
-    expect(rc.cashBucket).toBe("TREASURY");
-    expect(Number(rc.amount)).toBe(50000);
+  it("رفض دفع الصيانة يبقي الاعتراف، وإعادة تقديمه ثم اعتماده لا تكرر المصروف أو القيد", async () => {
+    const asset = await mkAsset(A);
+    await addMaintenance(asset!.id, { type: "إصلاح لوحة", vendor: "ورشة", cost: "25000", maintDate: "2026-07-11" }, ACTOR);
+    const [maintenance] = await db().select().from(s.assetMaintenance).where(eq(s.assetMaintenance.assetId, asset!.id));
+    const [request] = await db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, `ASSET-MAINT-${maintenance.id}`));
+
+    await rejectVoucher(Number(request.id), OWNER, "فاتورة الورشة غير واضحة");
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.approvalStatus, "PENDING_APPROVAL")))).toHaveLength(0);
+    expect(await db().select().from(s.expenses)).toHaveLength(1);
+    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `ASSET_MAINT_ACCRUAL:${maintenance.id}`)))).toHaveLength(1);
+
+    const replacement = await resubmitRejectedExpensePayment(Number(request.id), ACTOR, { note: "أُرفقت فاتورة مصححة" });
+    await approveVoucher(replacement.receiptId, OWNER);
+    expect(await db().select().from(s.expenses)).toHaveLength(1);
+    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `ASSET_MAINT_ACCRUAL:${maintenance.id}`)))).toHaveLength(1);
+    const material = (await db().select().from(s.receipts)).filter((row) => row.cashBucket === "TREASURY" && row.direction === "OUT" && row.approvalStatus === "APPROVED");
+    expect(material).toHaveLength(2); // اقتناء الأصل + دفع الصيانة؛ كلٌ مرة واحدة
+  });
+
+  it.each([
+    ["قبل الاعتماد", false],
+    ["بعد رفض الطلب", true],
+  ])("إلغاء مصروف صيانة %s يعكس الاستحقاق بلا CASH IN وهمي", async (_label, rejectFirst) => {
+    const asset = await mkAsset(A);
+    await addMaintenance(asset!.id, { type: "صيانة ستلغى", vendor: "ورشة", cost: "30000" }, ACTOR);
+    const [maintenance] = await db().select().from(s.assetMaintenance)
+      .where(eq(s.assetMaintenance.assetId, asset!.id));
+    const [request] = await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `ASSET-MAINT-${maintenance.id}`));
+    const [expense] = await db().select().from(s.expenses)
+      .where(eq(s.expenses.receiptId, Number(request.id)));
+    if (rejectFirst) await rejectVoucher(Number(request.id), OWNER, "إلغاء الخدمة قبل السداد");
+
+    const before = await db().transaction(async (tx) => (await computeTreasuryCashBalance(tx, 1)).toFixed(2));
+    await cancelExpense(Number(expense.id), ACTOR);
+    const after = await db().transaction(async (tx) => (await computeTreasuryCashBalance(tx, 1)).toFixed(2));
+    expect(after).toBe(before);
+
+    const [cancelledExpense] = await db().select().from(s.expenses).where(eq(s.expenses.id, Number(expense.id)));
+    const [terminalRequest] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(request.id)));
+    expect(cancelledExpense.status).toBe("CANCELLED");
+    expect(terminalRequest.status).toBe("REVERSED");
+    expect(await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `CANCEL-EXP-${expense.id}`))).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_IN"))).toHaveLength(0);
+    const [reversal] = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `EXPENSE_ACCRUAL_CANCEL:${expense.id}`));
+    expect(reversal).toMatchObject({ entryType: "PAYMENT_OUT", amount: "-30000.00", receiptId: null });
+  });
+
+  it("إلغاء مصروف صيانة بعد الاعتماد يعيد النقد المنفذ مرة واحدة", async () => {
+    const asset = await mkAsset(A);
+    await addMaintenance(asset!.id, { type: "صيانة مدفوعة ستلغى", vendor: "ورشة", cost: "40000" }, ACTOR);
+    const [maintenance] = await db().select().from(s.assetMaintenance)
+      .where(eq(s.assetMaintenance.assetId, asset!.id));
+    const [request] = await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `ASSET-MAINT-${maintenance.id}`));
+    const [expense] = await db().select().from(s.expenses)
+      .where(eq(s.expenses.receiptId, Number(request.id)));
+    const beforeApproval = await db().transaction(async (tx) => (await computeTreasuryCashBalance(tx, 1)).toFixed(2));
+    await approveVoucher(Number(request.id), OWNER);
+    const afterApproval = await db().transaction(async (tx) => (await computeTreasuryCashBalance(tx, 1)).toFixed(2));
+    expect(Number(beforeApproval) - Number(afterApproval)).toBe(40000);
+
+    await cancelExpense(Number(expense.id), ACTOR);
+    const afterCancel = await db().transaction(async (tx) => (await computeTreasuryCashBalance(tx, 1)).toFixed(2));
+    expect(afterCancel).toBe(beforeApproval);
+    const compensation = await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `CANCEL-EXP-${expense.id}`));
+    expect(compensation).toHaveLength(1);
+    expect(compensation[0]).toMatchObject({ direction: "IN", cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED" });
+    expect(await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_IN"))).toHaveLength(1);
+    expect(await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `EXPENSE_ACCRUAL_CANCEL:${expense.id}`))).toHaveLength(0);
   });
 
   it("صيانة بتكلفة صفر (كفالة) ⇒ لا إيصال ولا قيد، لكن صفّ الصيانة يُدرَج", async () => {

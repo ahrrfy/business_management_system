@@ -24,6 +24,7 @@ import { bundleComponents, productVariants, products } from "../../drizzle/schem
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
+import { assertNoActiveOnlineOrderBundleChange } from "./catalog/variantAvailability";
 
 /** واحدة من صفوف الوصفة كما تُخزَّن — نموذج القراءة العامّ. */
 export interface BundleComponentRow {
@@ -209,6 +210,7 @@ export async function replaceBundleComponents(
     .from(productVariants)
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(eq(productVariants.id, bundleVariantId))
+    .for("update")
     .limit(1);
   if (!parent[0]) {
     throw new TRPCError({ code: "NOT_FOUND", message: "متغيّر البكج غير موجود" });
@@ -216,6 +218,9 @@ export async function replaceBundleComponents(
   if (!parent[0].isBundle) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "هذا المتغيّر لا ينتمي لمنتج بكج" });
   }
+  // نفس mutex الذي يقفله createOnlineOrder قبل قراءة الوصفة. إمّا أن تلتزم الوصفة
+  // أولاً فيقرأها الطلب كاملة، أو يلتزم الطلب أولاً فتُرفض إعادة الكتابة حتى حسمه.
+  await assertNoActiveOnlineOrderBundleChange(tx, bundleVariantId);
 
   const validated = await validateBundleComponents(tx, bundleVariantId, raw);
 

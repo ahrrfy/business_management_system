@@ -62,8 +62,13 @@ export default function ExchangeOperations() {
 
   const deposit = trpc.exchange.deposit.useMutation({
     onSuccess: (r) => {
-      // إيداع الدولار المباشر صار معلّقاً باعتماد ثانٍ (SOD) — رسالة تُميّزه عن الإيداع الديناريّ النافذ.
-      afterOk(r?.pendingApproval ? "سُجِّل إيداع الدولار — بانتظار اعتماد مديرٍ ثانٍ (فصل مهام)" : "تمّ الإيداع");
+      afterOk(
+        r?.pendingApproval
+          ? currency === "IQD"
+            ? "رُفع طلب الإيداع النقدي بلا أثر على الخزينة أو رصيد الصيرفة — ينفّذه مالكٌ آخر من سندات الصرف"
+            : "سُجِّل إيداع الدولار — بانتظار اعتماد مديرٍ ثانٍ (فصل مهام)"
+          : "تمّ الإيداع",
+      );
       void utils.exchange.pendingDeposits.invalidate();
     },
     onError: (e) => notify.err(e.message),
@@ -215,12 +220,13 @@ export default function ExchangeOperations() {
             )}
             <div className="sm:col-span-2">
               <Button onClick={doDeposit} disabled={pending || !canWrite} className="gap-1.5">
-                <ArrowDownToLine className="h-4 w-4" />{pending ? "جارٍ…" : "تنفيذ الإيداع"}
+                <ArrowDownToLine className="h-4 w-4" />
+                {pending ? "جارٍ…" : currency === "IQD" ? "رفع طلب الإيداع" : "تنفيذ الإيداع"}
               </Button>
               <p className="text-[11px] text-muted-foreground mt-1.5">
                 {currency === "USD"
                   ? "دولار مباشر لمحفظة الصيرفة الدولارية (لا يمسّ رصيدنا الديناري إطلاقاً). السعر المرجعي يُحدّث متوسط كلفة المحفظة (WAVG)."
-                  : "يخرج النقد من خزينة الفرع ويصبح رصيداً لنا لدى الصيرفة (نقل أصل)."}
+                  : "يُنشئ طلب صرف من خزينة الفرع. لا يخرج النقد ولا يزيد رصيد الصيرفة قبل اعتماد مالكٍ آخر من شاشة سندات الصرف."}
               </p>
             </div>
           </div>

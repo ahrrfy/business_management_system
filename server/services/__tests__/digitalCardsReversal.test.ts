@@ -6,6 +6,8 @@ import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { returnSale } from "../returnService";
 import { withTx } from "../tx";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { approveVoucher } from "../voucher/approval";
 import {
   finalizeService, intentService, offeringService, pricingService,
   providerService, reversalService, walletOpsService, walletService,
@@ -42,6 +44,11 @@ async function seedBase() {
     { id: 3, openId: "u3", name: "مدير ثانٍ", role: "manager", loginMethod: "local" },
     { id: 4, openId: "u4", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
+  await db().insert(s.receipts).values({
+    branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+    cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-FUND", createdBy: 4,
+  });
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
 
@@ -57,9 +64,10 @@ async function mkProvider(name: string, mode: "PREPAID" | "POSTPAID") {
 async function mkWallet(providerId: number, balance: string) {
   const { walletId } = await withTx((tx) =>
     walletService.createWallet(tx, { providerId, branchId: 1, code: "W1", name: "محفظة" }, { userId: 1, branchId: 1 }));
-  await withTx((tx) => walletOpsService.deposit(tx, {
+  const request = await withTx((tx) => walletOpsService.deposit(tx, {
     walletId, amount: balance, paymentMethod: "CASH", clientRequestId: `dep-${Math.random().toString(36).slice(2, 10)}`,
   }, mgr));
+  await approveVoucher(request.receiptId, ownerUser);
   return walletId;
 }
 
@@ -145,6 +153,46 @@ describe("ش١٢ — حظر المرتجع العام", () => {
 });
 
 describe("ش١٢ — معيار الخروج: صافي صفريّ عند العكس الكامل المؤكَّد", () => {
+  it("العكس والإيداع النقدي لنفس المحفظة يتسلسلان source→wallet بلا deadlock", async () => {
+    const { providerId } = await mkProvider("آسياسيل", "PREPAID");
+    const walletId = await mkWallet(providerId, "100000");
+    const offeringId = await mkOffering(providerId, "كارت", walletId);
+    const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
+    const sale = await sell([{ offeringId, priced: priced.get(offeringId)! }]);
+    const ids = await detailIds(sale.invoiceId);
+    const depositRequest = await withTx((tx) => walletOpsService.deposit(tx, {
+      walletId, amount: "1000", paymentMethod: "CASH", clientRequestId: "lock-order-deposit",
+    }, mgr));
+
+    let sourceLocked!: () => void;
+    let releaseSource!: () => void;
+    const sourceIsLocked = new Promise<void>((resolve) => { sourceLocked = resolve; });
+    const mayContinue = new Promise<void>((resolve) => { releaseSource = resolve; });
+    const blocker = withTx(async (tx) => {
+      await lockCashSourceForUpdate(tx, { branchId: 1, cashBucket: "TREASURY" });
+      sourceLocked();
+      await mayContinue;
+    });
+    await sourceIsLocked;
+
+    // العكس يدخل طابور branch أولاً؛ في الترتيب القديم كان يقفل invoice/details أولاً.
+    const reversal = withTx((tx) => reversalService.approveReversal(tx, {
+      invoiceId: sale.invoiceId, detailIds: ids, reason: "اختبار ترتيب الأقفال",
+    }, mgr));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // الاعتماد المالكي هو لحظة تحريك النقد والمحفظة؛ فيدخل نفس ترتيب source→wallet مع العكس.
+    const depositApproval = approveVoucher(depositRequest.receiptId, ownerUser);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseSource();
+
+    const results = await Promise.allSettled([blocker, reversal, depositApproval]);
+    expect(results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : [])).toEqual([]);
+    const [finalWallet] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    expect(finalWallet.currentBalance).toBe("101000.00");
+  });
+
   it("مسبق الدفع: الدفتر يعود صفراً والمحفظة تعود لرصيدها", async () => {
     const { providerId } = await mkProvider("آسياسيل", "PREPAID");
     const walletId = await mkWallet(providerId, "1000000");

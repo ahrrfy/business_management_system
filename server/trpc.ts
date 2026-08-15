@@ -124,6 +124,35 @@ const requireUser = t.middleware(async ({ ctx, next, path }) => {
 export const protectedProcedure = t.procedure.use(requireUser);
 
 /**
+ * بوابة المالك الموثّق. هذه قراءة مبكرة لراية الجلسة لتحسين الرفض عند حدود API؛
+ * العمليات المالية الحساسة ملزمة بإعادة قراءة isOwner/isActive داخل معاملتها نفسها.
+ */
+const requireOwnerSession = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user || ctx.user.isOwner !== true) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "هذا الإجراء يتطلب حساب مالك نشطاً",
+    });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+export const ownerProcedure = protectedProcedure.use(requireOwnerSession);
+
+/**
+ * حدّ قراءة المتجر العام: يبقى بلا جلسة عميل عمداً، لكنه لا يصلح إلا تحت namespace
+ * storefront الذي تحميه حدود المعدّل العامة في server/index.ts. الإجراءات الكاتبة لا تستخدمه.
+ */
+const requireStorefrontPublicPath = t.middleware(({ path, next }) => {
+  if (!path.startsWith("storefront.")) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "مسار متجر عام غير صالح" });
+  }
+  return next();
+});
+
+export const storefrontPublicReadProcedure = t.procedure.use(requireStorefrontPublicPath);
+
+/**
  * Self-service boundary for the mobile workspace. Handlers using this
  * procedure must derive the subject from ctx.user and must not accept a
  * caller-supplied user or employee identifier.

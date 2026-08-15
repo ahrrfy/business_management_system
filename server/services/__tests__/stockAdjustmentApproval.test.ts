@@ -118,6 +118,15 @@ describe("تسوية المخزون بفصل مهام (#٦ الشريحة ٢)", 
     await expect(approveStockAdjustment(requestId, MGR2)).rejects.toThrow(/فرعٍ آخر/);
   });
 
+  it("مدير SALES لا ينشئ طلب تسوية لفرع MAIN ولا يترك صفاً معلّقاً", async () => {
+    await expect(
+      requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, MGR2),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const rows = await db().select().from(s.stockAdjustmentRequests);
+    expect(rows).toHaveLength(0);
+    expect(await stockOf(1, 1)).toBe(20);
+  });
+
   it("الرفض يُنهي الطلب بلا أثر مخزون", async () => {
     const { requestId } = await requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, WH1);
     await rejectStockAdjustment(requestId, MGR1, "خطأ في الإدخال");

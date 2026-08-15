@@ -15,6 +15,7 @@ import {
 import { adminProcedure, router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
+import { resubmitRejectedExpensePayment } from "../services/voucher/approval";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
@@ -45,10 +46,10 @@ const voucherListFilters = z.object({
 type VoucherListFilters = z.infer<typeof voucherListFilters>;
 
 export const voucherRouter = router({
-  /** عَتبة النظام (للتعرّض في الواجهة: تَلميح «هذا المبلغ يَحتاج اعتماد مدير ثانٍ»).
-   *  لا عَتبة مُرفق — المُرفق اختياريّ دائماً (٣١/٧). */
+  /** معلومات حوكمة الواجهة. العتبة تخص سياسة القبض القائمة؛ كل سند صرف يحتاج اعتماداً. */
   thresholds: treasuryManagerReadProcedure.query(() => ({
     approval: getApprovalThreshold(),
+    allPaymentsRequireApproval: true,
   })),
 
   create: treasuryManagerProcedure
@@ -125,12 +126,14 @@ export const voucherRouter = router({
         branchId: Number(ctx.user.branchId),
         role: ctx.user.role,
       });
-      await logAudit(ctx, {
-        action: "voucher.approve",
-        entityType: "receipt",
-        entityId: input.receiptId,
-        newValue: { voucherNumber: res.voucherNumber, signatureHash: res.signatureHash },
-      });
+      if (!res.replayed) {
+        await logAudit(ctx, {
+          action: "voucher.approve",
+          entityType: "receipt",
+          entityId: input.receiptId,
+          newValue: { voucherNumber: res.voucherNumber, signatureHash: res.signatureHash, approvalAuthority: "OWNER" },
+        });
+      }
       return res;
     }),
 
@@ -155,6 +158,32 @@ export const voucherRouter = router({
       return res;
     }),
 
+  /** إعادة تقديم صريحة لطلب دفع نظامي مرفوض (مصروف أو تسوية نهاية خدمة) مع إبقاء المصدر والسند المرفوض للتدقيق. */
+  resubmitExpensePayment: treasuryManagerProcedure
+    .input(z.object({
+      receiptId: z.number().int().positive(),
+      attachmentUrl: z.string().max(4_000_000).nullish(),
+      note: z.string().trim().max(500).nullish(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await resubmitRejectedExpensePayment(input.receiptId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId),
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      }, { attachmentUrl: input.attachmentUrl, note: input.note });
+      await logAudit(ctx, {
+        action: "voucher.systemPayment.resubmit",
+        entityType: "receipt",
+        entityId: res.receiptId,
+        newValue: { rejectedReceiptId: input.receiptId, voucherNumber: res.voucherNumber },
+      });
+      return res;
+    }),
+
   // إلغاء سند مستقلّ: الأصل REVERSED + إيصال تعويضي معاكس + قيد معاكس + عكس رصيد الطرف.
   cancel: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
@@ -171,7 +200,11 @@ export const voucherRouter = router({
         action: "voucher.cancel",
         entityType: "receipt",
         entityId: input.receiptId,
-        newValue: { voucherNumber: res.voucherNumber, status: res.status },
+        newValue: {
+          voucherNumber: res.voucherNumber,
+          status: res.status,
+          approvalReceiptId: res.approvalReceiptId ?? null,
+        },
       });
       return res;
     }),

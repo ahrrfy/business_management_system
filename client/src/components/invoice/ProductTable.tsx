@@ -17,6 +17,7 @@ import { trpc } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
 import { calcLineTotal, calcMargin, calcUnitCost, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
+import { getLineStockState } from "./stockAvailability";
 import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
 
 export interface PurchasePriceInsight {
@@ -146,6 +147,8 @@ export function ProductTable({
   onOpenBulkPicker,
   onNotify,
 }: ProductTableProps) {
+  const branchesQ = trpc.branches.list.useQuery();
+  const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   // مرتجع البيع: السعر والخصم يُعرَضان للقراءة فقط — الخادم يتجاهل تسعير المحرّر ويحسب الاسترداد
   // تناسبياً من إجماليّات بنود الفاتورة المصدر المخزَّنة، فتحريرهما وهمٌ يضلّل الموظّف.
@@ -201,16 +204,10 @@ export function ProductTable({
     }
   }
   const stockState = (it: InvoiceLine) => {
-    if (isPurchase) return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
-    // خدمة (١٢/٨/٢٦): بلا مخزون ذاتيّ — createSale يخصم موادها من الوصفة، فلا تحذير للخدمة.
-    if (it.isService) return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
     const convFactor = Number(it.conversionFactor) || 1;
-    const availBase = Number(it.availableBase ?? it.stockBase) || 0;
     const reqBase = demandByVariant.get(it.variantId) ?? (Number(it.qty) || 0) * convFactor;
-    const isOut = availBase <= 0;
-    const isShort = !isOut && reqBase > availBase;
-    const availInUnit = Math.floor(availBase / convFactor);
-    return { isOut, isShort, availInUnit };
+    const state = getLineStockState(it, reqBase);
+    return isPurchase ? { ...state, isOut: false, isShort: false } : state;
   };
 
   const th = "sticky top-0 z-[2] whitespace-nowrap border-b-2 bg-muted px-2 py-2 text-center text-xs font-bold text-muted-foreground";
@@ -271,7 +268,7 @@ export function ProductTable({
               <th className={cn(th, "w-24")}>الباركود</th>
               <th className={cn(th, "min-w-[180px] text-right")}>المنتج</th>
               <th className={cn(th, "w-16")}>الوحدة</th>
-              <th className={cn(th, "w-16")}>المخزون</th>
+              <th className={cn(th, "w-20")}>{isPurchase ? "المخزون" : "المتاح للبيع"}</th>
               {showCostCol && <th className={cn(th, "w-20")}>التكلفة</th>}
               <th className={cn(th, "w-24")}>{isPurchase ? `سعر الشراء ${purchaseCurrency === "USD" ? "$" : "د.ع"}` : "السعر"}</th>
               <th className={cn(th, "w-32")}>الكمية</th>
@@ -315,8 +312,8 @@ export function ProductTable({
                   key={`${item.productUnitId}-${idx}`}
                   className={cn(
                     "border-b transition hover:bg-muted/50",
-                    stock.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",
-                    !stock.isOut && stock.isShort && "border-s-[3px] border-s-amber-500 bg-amber-50",
+                    stock.isKnown && stock.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",
+                    stock.isKnown && !stock.isOut && stock.isShort && "border-s-[3px] border-s-amber-500 bg-amber-50",
                   )}
                 >
                   <td className={cn(td, "font-semibold text-muted-foreground")}>{idx + 1}</td>
@@ -329,24 +326,40 @@ export function ProductTable({
                       {item.sku && (
                         <span className="font-mono text-[10px] text-muted-foreground" dir="ltr">{item.sku}</span>
                       )}
-                      {stock.isOut && (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
-                          نافذ — لا مخزون
+                      {!isPurchase && !stock.isKnown && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-[10px] font-extrabold text-muted-foreground">
+                          جارٍ التحقق من الرصيد
                         </span>
                       )}
-                      {!stock.isOut && stock.isShort && (
+                      {!isPurchase && stock.isService && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-[10px] font-extrabold text-muted-foreground">
+                          خدمة — بلا رصيد مخزني
+                        </span>
+                      )}
+                      {!isPurchase && stock.isKnown && stock.isOut && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
+                          لا يوجد متاح للبيع
+                        </span>
+                      )}
+                      {!isPurchase && stock.isKnown && !stock.isOut && stock.isShort && (
                         <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
-                          {stock.availInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${stock.availInUnit} فقط`}
+                          {stock.availableInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${stock.availableInUnit} فقط`}
+                        </span>
+                      )}
+                      {!isPurchase && stock.overbookedBase > 0 && (
+                        <span className="inline-flex items-center rounded-md bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">
+                          زيادة حجز {fmtNum(stock.overbookedBase)} وحدة أساس
                         </span>
                       )}
                     </div>
-                    {!isPurchase && !item.isService && (
+                    {!isPurchase && stock.isKnown && !stock.isService && (
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
-                        <span>فعلي {fmtNum(item.stockBase)}</span>
-                        <span className={Number(item.reservedBase ?? 0) > 0 ? "font-bold text-amber-700 dark:text-amber-400" : ""}>
-                          محجوز {fmtNum(item.reservedBase ?? 0)}
+                        <span>{branchLabel(item.stockBranchId ?? branchId)}</span>
+                        <span>فعلي {fmtNum(stock.onHandBase)}</span>
+                        <span className={stock.reservedBase > 0 ? "font-bold text-amber-700 dark:text-amber-400" : ""}>
+                          محجوز {fmtNum(stock.reservedBase)}
                         </span>
-                        <span className="font-bold">متاح {fmtNum(item.availableBase ?? item.stockBase)}</span>
+                        <span className="font-bold">متاح للبيع {fmtNum(stock.availableBase)}</span>
                       </div>
                     )}
                     {allocations.length > 0 && (
@@ -400,13 +413,17 @@ export function ProductTable({
                       <span
                         className={cn(
                           "rounded px-1.5 py-0.5 text-xs font-extrabold tabular-nums",
-                          stock.isOut ? "bg-destructive text-destructive-foreground"
+                          stock.isKnown && stock.isOut ? "bg-destructive text-destructive-foreground"
                             : stock.isShort ? "bg-amber-100 text-amber-700"
                             : "text-muted-foreground",
                         )}
                         dir="ltr"
                       >
-                        {isPurchase ? fmtNum(item.stockBase) : stock.availInUnit}
+                        {isPurchase
+                          ? fmtNum(item.stockBase)
+                          : stock.isKnown
+                            ? fmtNum(stock.availableInUnit)
+                            : "…"}
                       </span>
                     )}
                   </td>

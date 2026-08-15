@@ -13,15 +13,19 @@ function db() {
 
 beforeEach(async () => {
   await truncateTables([
-    "invoiceItems", "branchStock", "productImages", "productPrices", "productUnits", "productVariants", "products", "categories", "branches",
+    "invoiceItems", "onlineOrderItems", "onlineOrders", "customers", "reservationStock", "bundleComponents", "branchStock", "productImages", "productPrices", "productUnits", "productVariants", "products", "categories", "branches",
   ]);
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "Main", code: "MAIN", type: "MAIN" });
-  await d.insert(s.categories).values([{ id: 1, name: "Available" }, { id: 2, name: "Hidden" }]);
+  await d.insert(s.categories).values([
+    { id: 1, name: "Available" },
+    { id: 2, name: "Out of stock" },
+    { id: 3, name: "Hidden" },
+  ]);
   await d.insert(s.products).values([
     { id: 1, name: "Available item", categoryId: 1, showInStore: true },
-    { id: 2, name: "Out of stock item", categoryId: 1, showInStore: true },
-    { id: 3, name: "Hidden item", categoryId: 2, showInStore: false },
+    { id: 2, name: "Out of stock item", categoryId: 2, showInStore: true },
+    { id: 3, name: "Hidden item", categoryId: 3, showInStore: false },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "AVAILABLE", costPrice: "1.00" },
@@ -46,13 +50,24 @@ beforeEach(async () => {
 });
 
 describe("storefront availability", () => {
-  it("lists only in-stock, store-visible products and categories", async () => {
+  it("يبقي IN_STOCK افتراضياً ويعيد الفئات المنشورة حتى لو كان المتاح فيها صفراً", async () => {
     const catalog = await storefrontCatalog({ branchId: 1, limit: 20 });
     expect(catalog.items.map((item) => item.productId)).toEqual([1]);
     expect(catalog.items[0]?.inStock).toBe(true);
 
     const categories = await storefrontCategories(1);
-    expect(categories.map((category) => category.id)).toEqual([1]);
+    expect(categories).toEqual([
+      { id: 1, name: "Available", productCount: 1, availableCount: 1 },
+      { id: 2, name: "Out of stock", productCount: 1, availableCount: 0 },
+    ]);
+  });
+
+  it("ALL يعيد المنشور النافد صراحةً ولا يعيد المنتج المخفي", async () => {
+    const catalog = await storefrontCatalog({ branchId: 1, availability: "ALL", limit: 20 });
+    expect(catalog.items.map((item) => [item.productId, item.inStock])).toEqual([
+      [1, true],
+      [2, false],
+    ]);
   });
 
   it("keeps an out-of-stock direct product explicit and non-purchasable", async () => {
@@ -80,6 +95,92 @@ describe("storefront availability", () => {
       ["carton", false],
     ]);
     expect(product?.storeUnits?.some((u) => u.unitName === "piece")).toBe(false);
+  });
+
+  it("يقيس التوفّر مقابل معامل وحدة البيع لا مقابل stock > 0", async () => {
+    const d = db();
+    await d.update(s.productUnits).set({ conversionFactor: "12" }).where(eq(s.productUnits.id, 1));
+    await d.update(s.branchStock).set({ quantity: 1 }).where(eq(s.branchStock.variantId, 1));
+
+    expect((await storefrontCatalog({ branchId: 1 })).items).toHaveLength(0);
+    const all = await storefrontCatalog({ branchId: 1, availability: "ALL" });
+    expect(all.items.find((item) => item.productId === 1)?.inStock).toBe(false);
+    expect((await storefrontCategories(1)).find((category) => category.id === 1)?.availableCount).toBe(0);
+  });
+
+  it("يطرح الحجز النشط من ATP في الكتالوج والتفاصيل والفئات", async () => {
+    await db().insert(s.reservationStock).values({ variantId: 1, branchId: 1, reservedBase: 3 });
+
+    expect((await storefrontCatalog({ branchId: 1 })).items).toHaveLength(0);
+    expect((await storefrontCatalog({ branchId: 1, availability: "ALL" })).items.find((item) => item.productId === 1)?.inStock).toBe(false);
+    expect((await storefrontProduct(1, 1))?.inStock).toBe(false);
+    expect((await storefrontCategories(1)).find((category) => category.id === 1)?.availableCount).toBe(0);
+  });
+
+  it("يطبق limit على المنتجات بعد تجميع متغيراتها ووحداتها لا على صفوف SQL الخام", async () => {
+    const d = db();
+    const extraUnits = Array.from({ length: 10 }, (_, index) => ({
+      id: 30 + index,
+      variantId: 1,
+      unitName: `unit-${index}`,
+      conversionFactor: String(index + 1),
+      isStoreSaleUnit: true,
+    }));
+    await d.insert(s.productUnits).values(extraUnits);
+    await d.insert(s.productPrices).values(extraUnits.map((unit) => ({
+      productUnitId: unit.id,
+      priceTier: "RETAIL" as const,
+      price: "1000.00",
+    })));
+    await d.insert(s.products).values({ id: 5, name: "Second ready product", categoryId: 1, showInStore: true });
+    await d.insert(s.productVariants).values({ id: 5, productId: 5, sku: "SECOND-READY", costPrice: "1.00" });
+    await d.insert(s.productUnits).values({ id: 5, variantId: 5, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true });
+    await d.insert(s.productPrices).values({ productUnitId: 5, priceTier: "RETAIL", price: "1000.00" });
+    await d.insert(s.branchStock).values({ variantId: 5, branchId: 1, quantity: 2 });
+
+    expect((await storefrontCatalog({ branchId: 1, limit: 2 })).items.map((item) => item.productId)).toEqual([1, 5]);
+  });
+
+  it("يختار بطاقة variant×unit حتمياً عند تعادل التوفّر والمعامل", async () => {
+    const d = db();
+    await d.insert(s.productVariants).values({ id: 9, productId: 1, sku: "AVAILABLE-SECOND", color: "أزرق", costPrice: "1.00" });
+    await d.insert(s.productUnits).values({ id: 9, variantId: 9, unitName: "piece-2", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true });
+    await d.insert(s.productPrices).values({ productUnitId: 9, priceTier: "RETAIL", price: "2000.00" });
+    await d.insert(s.branchStock).values({ variantId: 9, branchId: 1, quantity: 3 });
+
+    const samples = await Promise.all(Array.from({ length: 8 }, () => storefrontCatalog({ branchId: 1, limit: 1 })));
+    expect(samples.map((sample) => sample.items[0]?.productUnitId)).toEqual(Array(8).fill(1));
+    expect(samples.map((sample) => sample.items[0]?.price)).toEqual(Array(8).fill("1000.00"));
+  });
+
+  it("يكسر تعادل اختيار products عند cap بمعرّف ثابت", async () => {
+    const d = db();
+    await d.update(s.products).set({ name: "Same" }).where(eq(s.products.id, 1));
+    await d.update(s.products).set({ name: "Same" }).where(eq(s.products.id, 2));
+    await d.update(s.branchStock).set({ quantity: 3 }).where(eq(s.branchStock.variantId, 2));
+    const ids = [];
+    for (let i = 0; i < 8; i += 1) ids.push((await storefrontCatalog({ branchId: 1, limit: 1 })).items[0]?.productId);
+    expect(ids).toEqual(Array(8).fill(1));
+  });
+
+  it("يشتق توفر البكج من ATP مكوّناته بلا branchStock ذاتي ولا طرح حجز البكج مرتين", async () => {
+    const d = db();
+    await d.insert(s.products).values({ id: 20, name: "Bundle", categoryId: 1, showInStore: true, isBundle: true });
+    await d.insert(s.productVariants).values({ id: 20, productId: 20, sku: "BUNDLE-20", costPrice: "1.00" });
+    await d.insert(s.productUnits).values({ id: 20, variantId: 20, unitName: "bundle", isBaseUnit: true, isStoreSaleUnit: true });
+    await d.insert(s.productPrices).values({ productUnitId: 20, priceTier: "RETAIL", price: "2500.00" });
+    await d.insert(s.bundleComponents).values({ bundleVariantId: 20, componentVariantId: 1, componentBaseQuantity: 2 });
+
+    expect((await storefrontProduct(20, 1))?.inStock).toBe(true);
+    expect((await storefrontCatalog({ branchId: 1 })).items.some((item) => item.productId === 20)).toBe(true);
+
+    await d.insert(s.reservationStock).values([
+      { variantId: 1, branchId: 1, reservedBase: 2 },
+      // صف legacy للبكج نفسه يجب تجاهله تماماً؛ الحجز الرسمي يمنعه.
+      { variantId: 20, branchId: 1, reservedBase: 99 },
+    ]);
+    expect((await storefrontProduct(20, 1))?.inStock).toBe(false);
+    expect((await storefrontCatalog({ branchId: 1 })).items.some((item) => item.productId === 20)).toBe(false);
   });
 });
 
@@ -119,8 +220,9 @@ describe("storefront color swatches", () => {
     expect(colors.find((c) => c.name === "أحمر")?.inStock).toBe(true);
     expect(colors.find((c) => c.name === "أزرق")?.inStock).toBe(false);
     // الخيارات ليست مجرد نقاط لونية: كل متغير يعيد وحدة البيع والمخزون الخاصين به.
+    // الخيار المتاح يتقدّم كي لا تختار بطاقة المنتج متغيّراً نافداً بينما بديلٌ متاح.
     expect(product?.variants?.map((v) => [v.color, v.size, v.inStock])).toEqual([
-      ["أحمر", "S", false], ["أحمر", "L", true], ["أزرق", "M", false],
+      ["أحمر", "L", true], ["أحمر", "S", false], ["أزرق", "M", false],
     ]);
     expect(product?.variants?.find((v) => v.size === "L")?.units[0]?.productUnitId).toBe(11);
   });

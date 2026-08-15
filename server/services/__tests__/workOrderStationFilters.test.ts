@@ -14,6 +14,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { createWorkOrder } from "../workOrderService";
+import { openShift } from "../shiftService";
 
 const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie() {}, clearCookie() {} } as any, user: { id: 1, role: "admin", branchId: 1 } as any };
 const opCtx = (id: number) => ({ req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie() {}, clearCookie() {} } as any, user: { id, role: "print_operator", branchId: 1 } as any });
@@ -60,6 +61,10 @@ async function wo(opts: { title: string; branchId?: number; status?: string; ass
 
 describe("workOrders.list — ترشيح محطة التنفيذ خادمياً", () => {
   it("يعرض للفني كل تفاصيل التشغيل والدفع والتوصيل مع إبقاء التكلفة الداخلية محجوبة", async () => {
+    await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
+      { userId: 1, branchId: 1 },
+    );
     const created = await createWorkOrder({
       branchId: 1,
       baseVariantId: null,
@@ -68,7 +73,7 @@ describe("workOrders.list — ترشيح محطة التنفيذ خادمياً"
       quantity: 2,
       salePrice: "100000.00",
       deposit: "40000.00",
-      paymentMethod: "TRANSFER",
+      paymentMethod: "CASH",
       paymentReference: "WO-TRX-1",
       paymentReceiptUrl: "data:image/png;base64,cGF5bWVudA==",
       hasDelivery: true,
@@ -84,7 +89,7 @@ describe("workOrders.list — ترشيح محطة التنفيذ خادمياً"
     const detail = await caller(opCtx(2)).workOrders.get({ workOrderId: created.workOrderId });
     expect(detail).toMatchObject({
       customerPhone: "07701234567",
-      paymentMethod: "TRANSFER",
+      paymentMethod: "CASH",
       paymentReference: "WO-TRX-1",
       hasDelivery: true,
       deliveryAddress: "بغداد — المنصور",

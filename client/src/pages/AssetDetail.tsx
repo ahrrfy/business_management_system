@@ -66,7 +66,7 @@ export default function AssetDetail() {
   };
 
   const handover = trpc.assets.handover.useMutation({ onSuccess: async () => { notify.ok("تم تسليم العهدة"); setOpenHandover(false); setHEmp(""); setHNote(""); await refresh(); }, onError: (e) => notify.err(e) });
-  const addMaint = trpc.assets.addMaintenance.useMutation({ onSuccess: async () => { notify.ok("تم تسجيل الصيانة"); setOpenMaint(false); setMType(""); setMVendor(""); setMCost(""); setMNote(""); await refresh(); }, onError: (e) => notify.err(e) });
+  const addMaint = trpc.assets.addMaintenance.useMutation({ onSuccess: async (a) => { notify.ok(a?.paymentPending ? "سُجّلت الصيانة، أمّا دفعها النقدي فمعلّق حتى اعتماد مالكٍ آخر من سندات الصرف" : "تم تسجيل الصيانة"); setOpenMaint(false); setMType(""); setMVendor(""); setMCost(""); setMNote(""); await refresh(); }, onError: (e) => notify.err(e) });
   const returnMaint = trpc.assets.returnFromMaintenance.useMutation({ onSuccess: async () => { notify.ok("أُعيد الأصل للخدمة"); await refresh(); }, onError: (e) => notify.err(e) });
   const addDoc = trpc.assets.addDocument.useMutation({ onSuccess: async () => { notify.ok("رُفِع المستند"); setDocTitle(""); setDocImages([]); await refresh(); }, onError: (e) => notify.err(e) });
   const delDoc = trpc.assets.deleteDocument.useMutation({ onSuccess: async () => { notify.ok("حُذِف المستند"); await refresh(); }, onError: (e) => notify.err(e) });
@@ -79,7 +79,11 @@ export default function AssetDetail() {
   if (q.error) return <ErrorState message={`تعذّر تحميل الأصل: ${q.error.message}`} onRetry={() => q.refetch()} />;
   if (!a) return <div className="p-10 text-center text-muted-foreground">الأصل غير موجود. <Link href="/assets/register" className="text-primary">رجوع للسجلّ</Link></div>;
 
-  const isLive = a.status === "active" || a.status === "maintenance";
+  // Cash acquisitions remain isActive=false until a different owner approves
+  // and executes their treasury payment. Their persisted status is still
+  // "active", so status alone must never expose operational lifecycle actions.
+  const isPaymentPending = a.isActive === false;
+  const isLive = !isPaymentPending && (a.status === "active" || a.status === "maintenance");
 
   return (
     <div className="space-y-4 max-w-5xl">
@@ -99,12 +103,16 @@ export default function AssetDetail() {
                 <span>·</span>
                 <span>{assetCategoryLabel(a.category)}</span>
                 <span>·</span>
-                <AssetStatusBadge status={a.status} />
+                {isPaymentPending ? (
+                  <span className="badge-status-pending rounded-full px-2 py-0.5 text-xs">بانتظار اعتماد الدفع</span>
+                ) : (
+                  <AssetStatusBadge status={a.status} />
+                )}
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {a.status !== "disposed" && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
+            {!isPaymentPending && a.status !== "disposed" && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
             <Button variant="outline" size="sm" onClick={() => setOpenLabel(true)}>بطاقة الأصل</Button>
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenMaint(true)}>تسجيل صيانة</Button>}
             {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: "إعادة الأصل للخدمة", description: `إعادة الأصل «${a.name}» (${a.code}) من الصيانة إلى الخدمة؟`, confirmText: "إعادة للخدمة" }))) return; returnMaint.mutate({ assetId: id }); }} disabled={returnMaint.isPending}>إعادة للخدمة</Button>}
@@ -113,6 +121,16 @@ export default function AssetDetail() {
           </div>
         </CardContent>
       </Card>
+
+      {isPaymentPending && (
+        <div role="status" className="rounded-md border badge-status-pending p-3 text-sm">
+          <div className="font-bold">بانتظار اعتماد دفع الاقتناء</div>
+          <p className="mt-1">
+            هذا سجلّ طلب أصل، وليس أصلاً تشغيلياً بعد. تبقى الصيانة والعهدة والاستبعاد والتعديل والمستندات
+            مقفلة حتى يعتمد مالكٌ آخر سند الصرف ويُنفَّذ الدفع من الخزينة.
+          </p>
+        </div>
+      )}
 
       {/* مؤشّرات */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -243,30 +261,36 @@ export default function AssetDetail() {
           <Card>
             <CardHeader><CardTitle className="text-base">المستندات</CardTitle></CardHeader>
             <CardContent className="space-y-4">
-              {/* رفع مستند جديد (فاتورة شراء/كفالة/محضر…) — صورة مضغوطة تلقائياً */}
-              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
-                  <div className="space-y-1">
-                    <Label htmlFor="doc-title" className="text-xs">عنوان المستند</Label>
-                    <Input id="doc-title" value={docTitle} maxLength={255} onChange={(e) => setDocTitle(e.target.value)} placeholder="مثال: فاتورة الشراء / بطاقة الكفالة" />
-                  </div>
-                  <Button
-                    type="button"
-                    disabled={!docTitle.trim() || !docImages[0]?.dataUrl || addDoc.isPending}
-                    onClick={() => addDoc.mutate({ assetId: id, title: docTitle.trim(), dataUrl: docImages[0]!.dataUrl })}
-                    className="gap-1.5"
-                  >
-                    <Upload aria-hidden className="size-4" /> رفع المستند
-                  </Button>
+              {isPaymentPending ? (
+                <div role="status" className="rounded-md border badge-status-pending p-3 text-sm">
+                  رفع المستند غير متاح قبل اعتماد الدفع وتحويل الطلب إلى أصل تشغيلي.
                 </div>
-                <ImageUploader
-                  value={docImages}
-                  onChange={setDocImages}
-                  maxItems={1}
-                  singlePrimary={false}
-                  hint="صورة المستند (PNG/JPG) — تُضغط تلقائياً قبل الحفظ."
-                />
-              </div>
+              ) : (
+                /* رفع مستند جديد (فاتورة شراء/كفالة/محضر…) — صورة مضغوطة تلقائياً */
+                <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                  <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+                    <div className="space-y-1">
+                      <Label htmlFor="doc-title" className="text-xs">عنوان المستند</Label>
+                      <Input id="doc-title" value={docTitle} maxLength={255} onChange={(e) => setDocTitle(e.target.value)} placeholder="مثال: فاتورة الشراء / بطاقة الكفالة" />
+                    </div>
+                    <Button
+                      type="button"
+                      disabled={!docTitle.trim() || !docImages[0]?.dataUrl || addDoc.isPending}
+                      onClick={() => addDoc.mutate({ assetId: id, title: docTitle.trim(), dataUrl: docImages[0]!.dataUrl })}
+                      className="gap-1.5"
+                    >
+                      <Upload aria-hidden className="size-4" /> رفع المستند
+                    </Button>
+                  </div>
+                  <ImageUploader
+                    value={docImages}
+                    onChange={setDocImages}
+                    maxItems={1}
+                    singlePrimary={false}
+                    hint="صورة المستند (PNG/JPG) — تُضغط تلقائياً قبل الحفظ."
+                  />
+                </div>
+              )}
 
               {/* المستندات المرفوعة */}
               {a.docs.length === 0 ? (
@@ -287,19 +311,21 @@ export default function AssetDetail() {
                         ) : (
                           <span className="text-xs text-muted-foreground">بلا ملف</span>
                         )}
-                        <button
-                          type="button"
-                          disabled={delDoc.isPending}
-                          onClick={async () => {
-                            if (await confirm({ variant: "danger", title: "حذف المستند؟", description: `«${doc.title}» — لا يمكن التراجع.`, confirmText: "حذف" })) {
-                              delDoc.mutate({ docId: doc.id });
-                            }
-                          }}
-                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
-                          aria-label={`حذف المستند ${doc.title}`}
-                        >
-                          <Trash2 aria-hidden className="size-3.5" /> حذف
-                        </button>
+                        {!isPaymentPending && (
+                          <button
+                            type="button"
+                            disabled={delDoc.isPending}
+                            onClick={async () => {
+                              if (await confirm({ variant: "danger", title: "حذف المستند؟", description: `«${doc.title}» — لا يمكن التراجع.`, confirmText: "حذف" })) {
+                                delDoc.mutate({ docId: doc.id });
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
+                            aria-label={`حذف المستند ${doc.title}`}
+                          >
+                            <Trash2 aria-hidden className="size-3.5" /> حذف
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}

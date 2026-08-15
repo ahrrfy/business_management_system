@@ -21,8 +21,7 @@
 
 const path = require("node:path");
 const dotenv = require("dotenv");
-const artifactSmoke =
-  process.env.HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE === "1";
+const artifactSmoke = process.env.HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE === "1";
 dotenv.config({ quiet: true });
 
 // PM2 merges the ecosystem loader's process.env into every app. Merely omitting
@@ -77,7 +76,10 @@ module.exports = {
   apps: [
     {
       name: "erp-server",
-      script: "dist/index.js",
+      // web-current is an atomically replaced symlink to one complete,
+      // immutable release. A build never writes into the artifact served by
+      // running workers, and rolling reloads can safely overlap two releases.
+      script: ".runtime/web-current/index.js",
       cwd: __dirname,
       // ── توزيع الأحمال داخل الخادم (cluster) ────────────────────────────────────────────
       // عدّة عمّال يتقاسمون الطلبات على نوى المعالج ⇒ طاقةٌ أعلى تحت الذروة (٧ كاشيرات + كل
@@ -122,7 +124,8 @@ module.exports = {
         PORT: process.env.PORT || 3000,
         HOST: process.env.HOST || "127.0.0.1",
         ALLOW_PUBLIC_BIND: process.env.ALLOW_PUBLIC_BIND || "0",
-        REQUIRE_INTERNAL_PROXY_SECRET: process.env.REQUIRE_INTERNAL_PROXY_SECRET || "0",
+        REQUIRE_INTERNAL_PROXY_SECRET:
+          process.env.REQUIRE_INTERNAL_PROXY_SECRET || "0",
         INTERNAL_PROXY_SECRET: process.env.INTERNAL_PROXY_SECRET,
         // يطابق عدد عمّال الويب المقصود في `instances` أعلاه.
         WEB_INSTANCES: String(process.env.WEB_INSTANCES || 2),
@@ -153,7 +156,8 @@ module.exports = {
         TZ: "UTC",
         CONTROL_DATABASE_URL: process.env.CONTROL_DATABASE_URL,
         INTEGRATIONS_ENCRYPTION_KEY: process.env.INTEGRATIONS_ENCRYPTION_KEY,
-        DB_CONTAINER: provisionPrivilegedEnvironment.DB_CONTAINER || "erp-mysql",
+        DB_CONTAINER:
+          provisionPrivilegedEnvironment.DB_CONTAINER || "erp-mysql",
         DB_ROOT_PW: provisionPrivilegedEnvironment.DB_ROOT_PW,
         DATABASE_URL: process.env.DATABASE_URL, // يُستعمَل فقط لاستنتاج host/port الافتراضيَّين لقواعد الشركات الجديدة.
       },

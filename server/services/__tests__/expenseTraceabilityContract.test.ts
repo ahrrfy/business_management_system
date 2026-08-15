@@ -3,7 +3,7 @@ import { inArray, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import * as schema from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createExpense, listExpenses } from "../expenseService";
+import { approveExpense, createExpense, listExpenses } from "../expenseService";
 import { openShift } from "../shiftService";
 
 type FundingKind = "DRAWER" | "TREASURY" | "NON_CASH" | "STOCK";
@@ -50,6 +50,7 @@ async function resetFixtureTables() {
   const connection = db();
   const tables = [
     "accountingEntries",
+    "auditLogs",
     "expenseStockItems",
     "expenses",
     "receipts",
@@ -79,13 +80,45 @@ async function seedTraceabilityFixtures() {
     type: "MAIN",
     isActive: true,
   });
-  await connection.insert(schema.users).values({
-    id: actor.userId,
-    openId: "expense_traceability_admin",
-    name: actorName,
-    role: actor.role,
-    branchId: actor.branchId,
-    loginMethod: "local",
+  await connection.insert(schema.users).values([
+    {
+      id: actor.userId,
+      openId: "expense_traceability_admin",
+      name: actorName,
+      role: actor.role,
+      branchId: actor.branchId,
+      loginMethod: "local",
+    },
+    {
+      id: 2,
+      openId: "expense_traceability_owner",
+      name: "مالك الاعتماد",
+      role: "admin",
+      branchId: 1,
+      loginMethod: "local",
+      isOwner: true,
+      isActive: true,
+    },
+  ]);
+  await connection.insert(schema.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "5000.00",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    createdBy: 2,
+  });
+  await connection.insert(schema.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "10000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TRACEABILITY-TREASURY-FUND",
+    createdBy: actor.userId,
   });
   await connection
     .insert(schema.products)
@@ -135,6 +168,7 @@ describe("expense list traceability contract", () => {
         category: "RENT",
         amount: "100.00",
         paymentMethod: "CASH",
+        cashSource: "TREASURY",
         description: "صرف نقدي من الخزينة الإدارية",
         referenceNumber: "TRACE-TREASURY",
         payee: commonPayee,
@@ -142,6 +176,12 @@ describe("expense list traceability contract", () => {
       },
       actor,
     );
+    await approveExpense(treasury.expenseId, {
+      userId: 2,
+      branchId: 1,
+      role: "admin",
+      isOwner: true,
+    });
 
     const nonCash = await createExpense(
       {
@@ -156,6 +196,12 @@ describe("expense list traceability contract", () => {
       },
       actor,
     );
+    await approveExpense(nonCash.expenseId, {
+      userId: 2,
+      branchId: 1,
+      role: "admin",
+      isOwner: true,
+    });
 
     const { shiftId } = await openShift(
       { branchId: 1, openingBalance: "1000.00" },

@@ -14,6 +14,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { cancelAdvance, grantAdvance } from "../advancesService";
 import { setEmploymentStatus } from "../employeeService";
+import { approveVoucher } from "../voucher/approval";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -47,16 +48,36 @@ beforeEach(async () => {
   await d.insert(s.users).values([
     { id: 1, openId: "a", name: "المدير", role: "admin", loginMethod: "local", isActive: true },
     // مديرٌ ثانٍ نشط كي لا يصطدم الفصل بحارس «آخر مدير».
-    { id: 9, openId: "b", name: "مدير احتياط", role: "admin", loginMethod: "local", isActive: true },
+    { id: 9, openId: "b", name: "مدير احتياط", role: "admin", loginMethod: "local", isActive: true, isOwner: true },
     { id: 2, openId: "c", name: "كاشير", role: "cashier", loginMethod: "local", isActive: true, sessionsValidFrom: OLD_VALID_FROM },
   ]);
   await d.insert(s.employees).values([
     { id: 1, firstName: "أحمد", lastName: "الجبوري", payType: "monthly", salary: "900000", employmentStatus: "active", isActive: true, branchId: 1, userId: 2, hireDate: "2026-01-01" },
     { id: 2, firstName: "زينب", lastName: "الربيعي", payType: "monthly", salary: "800000", employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2026-01-01" },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "10000000",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 9,
+  });
   await d.insert(s.hrFingerprintDevices).values({ id: 10, name: "جهاز الرئيسي", serialNumber: "SNTERM1", protocol: "AIFACE_WS", enabled: true, branchId: 1 });
   await d.insert(s.hrDeviceUsers).values({ deviceId: 10, enrollId: 7, name: "احمد", employeeId: 1, effectiveFrom: "2026-01-01" });
 });
+
+async function grantAndApprove(input: Parameters<typeof grantAdvance>[0]) {
+  const pending = await grantAdvance(input, ADMIN as never);
+  expect(pending.status).toBe("PENDING_APPROVAL");
+  await approveVoucher(Number(pending.receiptId), { userId: 9, branchId: 1, role: "admin" });
+  const [active] = await db().select().from(s.employeeAdvances)
+    .where(eq(s.employeeAdvances.receiptId, Number(pending.receiptId)));
+  return active!;
+}
 
 describe("حوكمة إنهاء الخدمة", () => {
   it("ط١+ط٢) الفصل يُعطّل الحساب ويُبطل جلساته ويُحرّر ربط الجهاز مع إبقاء المرآة", async () => {
@@ -161,9 +182,8 @@ describe("حوكمة نقد السلف", () => {
   });
 
   it("ط٤) لا تُلغى سلفة وسند صرفها سارٍ — والإلغاء يمرّ بعد عكس السند", async () => {
-    const adv = await grantAdvance(
+    const adv = await grantAndApprove(
       { employeeId: 2, branchId: 1, amount: "100000", clientRequestId: "adv-1" },
-      ADMIN as never,
     );
     expect(adv.receiptId).toBeTruthy();
 
@@ -178,14 +198,21 @@ describe("حوكمة نقد السلف", () => {
   });
 
   it("ط٦) السقف التراكميّ يمنع تقسيم السلف للالتفاف على عتبة الاعتماد", async () => {
-    // هجوم التقسيم الواقعيّ: مبالغ صغيرة متتالية (دون عتبة المُرفق ٢٥٠ألف أيضاً) حتى
-    // يبلغ المجموع عتبة الاعتماد الثنائي (١م). الرابعة تُقبَل (٨٠٠ألف) والخامسة تُرفض.
+    // هجوم التقسيم الواقعيّ: مبالغ صغيرة متتالية تصل إلى ٨٠٠ ألف، ثم طلب يجعل
+    // الإجمالي يتجاوز سقف المليون بدينار واحد. الوصول إلى السقف نفسه مسموح؛ تجاوزه مرفوض.
     for (let i = 1; i <= 4; i++) {
-      await grantAdvance({ employeeId: 2, branchId: 1, amount: "200000", clientRequestId: `acc-${i}` }, ADMIN as never);
+      await grantAndApprove({ employeeId: 2, branchId: 1, amount: "200000", clientRequestId: `acc-${i}` });
     }
+    const fifth = await grantAdvance(
+      { employeeId: 2, branchId: 1, amount: "200001", clientRequestId: "acc-5" },
+      ADMIN as never,
+    );
     await expect(
-      grantAdvance({ employeeId: 2, branchId: 1, amount: "200000", clientRequestId: "acc-5" }, ADMIN as never),
+      approveVoucher(Number(fifth.receiptId), { userId: 9, branchId: 1, role: "admin" }),
     ).rejects.toThrow(/غير المسدَّدة/);
+    const [stillPending] = await db().select().from(s.receipts)
+      .where(eq(s.receipts.id, Number(fifth.receiptId)));
+    expect(stillPending).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL" });
     const rows = await db().select().from(s.employeeAdvances);
     expect(rows).toHaveLength(4);
   });

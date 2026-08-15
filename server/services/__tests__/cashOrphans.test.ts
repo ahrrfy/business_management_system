@@ -5,10 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createExpense } from "../expenseService";
 import { getCashOrphansReport } from "../reportsTreasuryService";
-
-const adminActor = { userId: 1, branchId: 1, role: "admin" };
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "expenseStockItems", "expenses",
@@ -35,6 +32,14 @@ async function seedBase() {
   await d.insert(s.users).values({ id: 1, openId: "admin", name: "أحمد المدير", role: "admin", loginMethod: "local", branchId: 1 });
 }
 
+async function insertTreasuryOut(amount = "500000") {
+  await db().insert(s.receipts).values({
+    branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "OUT", amount,
+    paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+    description: "مصروف خزينة fixture لتقرير الأيتام", createdBy: 1,
+  });
+}
+
 beforeEach(async () => {
   await reset();
   await seedBase();
@@ -42,11 +47,8 @@ beforeEach(async () => {
 
 describe("cashOrphans يَفصل TREASURY عن TRUE_ORPHAN", () => {
   it("admin بـcashBucket=TREASURY يَدخل countTreasury، والسجلّ التاريخي بـNULL يَدخل countTrueOrphan", async () => {
-    // ١) مصروف admin (TREASURY) ⇒ يُكتَب تلقائياً بـcashBucket='TREASURY'.
-    await createExpense(
-      { branchId: 1, category: "RENT", amount: "500000", paymentMethod: "CASH", description: "إيجار طارئ" },
-      adminActor
-    );
+    // ١) سجل خزينة مادي معتمد؛ الاختبار هنا لعقد التقرير لا لمسار اعتماد المصروف.
+    await insertTreasuryOut();
     // ٢) محاكاة سجلّ تاريخي قبل الهجرة: receipt مباشر بـcashBucket=NULL + shiftId=null.
     await db().insert(s.receipts).values({
       branchId: 1,
@@ -90,10 +92,7 @@ describe("cashOrphans يَفصل TREASURY عن TRUE_ORPHAN", () => {
   });
 
   it("فلتر category=TREASURY يَقصِر النتائج", async () => {
-    await createExpense(
-      { branchId: 1, category: "RENT", amount: "500000", paymentMethod: "CASH", description: "إيجار" },
-      adminActor
-    );
+    await insertTreasuryOut();
     await db().insert(s.receipts).values({
       branchId: 1, shiftId: null, cashBucket: null,
       direction: "OUT", amount: "300000", paymentMethod: "CASH", status: "COMPLETED", createdBy: 1,
@@ -110,10 +109,7 @@ describe("cashOrphans يَفصل TREASURY عن TRUE_ORPHAN", () => {
   });
 
   it("createdByRole يَظهر في كل صفّ ليُمكِّن شارة الدور في الواجهة", async () => {
-    await createExpense(
-      { branchId: 1, category: "RENT", amount: "500000", paymentMethod: "CASH", description: "إيجار" },
-      adminActor
-    );
+    await insertTreasuryOut();
     const r = await getCashOrphansReport({});
     expect(r.rows[0].createdByRole).toBe("admin");
     expect(r.rows[0].createdByName).toBe("أحمد المدير");

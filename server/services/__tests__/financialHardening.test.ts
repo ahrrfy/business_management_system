@@ -155,10 +155,16 @@ describe("أقفال المخزون — إنشاء الصفّ قبل القفل 
 describe("المرتجعات — سقف الاسترداد بالطريقة نفسها (لا يُفرّغ الصندوق ببيع بطاقة)", () => {
   it("يرفض استرداداً نقدياً لبيعٍ دُفع بالبطاقة", async () => {
     await setStock(1, 1, 10);
+    const shiftId = await openShift(1);
     const sale = await createSale(
-      { branchId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CARD" } },
+      { branchId: 1, shiftId, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
       actor,
     );
+    // CARD تاريخيّ: يُثبَّت كـfixture مباشرةً، لا عبر مسار القبض الحي المعطّل حتى توجد تسوية موثوقة.
+    await db()
+      .update(s.receipts)
+      .set({ paymentMethod: "CARD", cashBucket: null, referenceNumber: "HISTORICAL-CARD-1" })
+      .where(and(eq(s.receipts.invoiceId, sale.invoiceId), eq(s.receipts.direction, "IN")));
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     // الدفع كان بطاقةً ⇒ المتاح نقداً = 0 ⇒ يُرفض الاسترداد النقدي.
     await expect(

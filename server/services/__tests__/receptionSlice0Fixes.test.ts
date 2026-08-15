@@ -320,19 +320,16 @@ describe("V1 — تقريب IQD للبيع المباشر الخالص النق�
   });
 });
 
-describe("سلامة إيصال العربون غير النقديّ (انحدار V3 على مسار البطاقة)", () => {
-  it("عربون بطاقة: cashBucket فارغ (خارج الدرج) وdepositReceiptId مثبَّت", async () => {
+describe("سلامة تعطيل العربون غير النقديّ", () => {
+  it("عربون بطاقة: يُرفض fail-closed ولا يخلّف أمر شغل أو إيصالاً", async () => {
     await openReceptionShift();
-    const wo = await createWorkOrder({
+    await expect(createWorkOrder({
       branchId: 1, customerId: 1, baseVariantId: null, title: "بنر",
       salePrice: "8000", quantity: 1,
       deposit: "3000", paymentMethod: "CARD", paymentReference: "CARD-REF-77",
-    }, CASHIER);
-    const workOrderId = (wo as { workOrderId: number }).workOrderId;
-    const row = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, workOrderId)))[0];
-    const dep = (await db().select().from(s.receipts).where(eq(s.receipts.id, Number(row.depositReceiptId))))[0];
-    expect(dep.paymentMethod).toBe("CARD");
-    expect(dep.cashBucket).toBeNull();
-    expect(dep.amount).toBe("3000.00");
+    }, CASHIER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(await db().select().from(s.workOrders)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 });

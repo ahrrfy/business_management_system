@@ -14,6 +14,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { consignmentBackedBalance } from "./guards";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
@@ -57,9 +58,25 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
         return { receiptId: existingId, idempotentReplay: true as const };
       }
     }
+    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+    const resolvedCash = await shiftIdForCashTx(
+      tx,
+      { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role },
+      input.branchId,
+      "تسوية عهدة مندوب",
+      input.shiftType ?? "RECEPTION",
+    );
+    await lockCashSourceForUpdate(tx, {
+      branchId: input.branchId,
+      cashBucket: resolvedCash.cashBucket,
+      shiftId: resolvedCash.shiftId,
+    });
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
-    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+    if (input.clientRequestId) {
+      const replayAfterLock = await checkIdempotency(tx, "delivery.settle", input.clientRequestId, payloadHash);
+      if (replayAfterLock != null) return { receiptId: replayAfterLock, idempotentReplay: true as const };
+    }
     const balance = round2(money(party.currentBalance));
     if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع التسوية" });
@@ -83,10 +100,9 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
       });
     }
 
-    const { shiftId, cashBucket } = await shiftIdForCashTx(tx, { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role }, input.branchId, "تسوية عهدة مندوب", input.shiftType ?? "RECEPTION");
     const rIn = await tx.insert(receipts).values({
-      branchId: input.branchId, shiftId, direction: "IN", amount: toDbMoney(amount),
-      paymentMethod: "CASH", cashBucket, status: "COMPLETED", partyType: "OTHER",
+      branchId: input.branchId, shiftId: resolvedCash.shiftId, direction: "IN", amount: toDbMoney(amount),
+      paymentMethod: "CASH", cashBucket: resolvedCash.cashBucket, status: "COMPLETED", approvalStatus: "APPROVED", partyType: "OTHER",
       referenceNumber: `DLV-SETTLE-${input.partyId}`, description: input.notes ?? `تسوية عهدة جهة توصيل #${input.partyId}`, createdBy: actor.userId,
     });
     const receiptId = extractInsertId(rIn);
@@ -138,12 +154,12 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
     }
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
     // ٩/٨ — اتساق الفرع (مرآة settle/remit): خسارة الشطب كانت تقع على فرع الفاعل ولو خصّت
     // الجهةُ فرعاً آخر ⇒ أرباح الفروع المقارنة تكذب بلا أيّ انحراف في رصيد الجهة يكشفها.
     if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع الشطب" });
     }
-    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
     if (amount.gt(round2(money(party.currentBalance)))) throw new TRPCError({ code: "BAD_REQUEST", message: "الشطب يتجاوز العهدة القائمة" });
     if (!input.reason || input.reason.trim().length < 3) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الشطب مطلوب" });
 
@@ -296,12 +312,28 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
       const existingId = await checkIdempotency(tx, "delivery.recoverWriteoff", input.clientRequestId, payloadHash);
       if (existingId != null) return { receiptId: existingId, idempotentReplay: true as const };
     }
+    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+    const resolvedCash = await shiftIdForCashTx(
+      tx,
+      { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role },
+      input.branchId,
+      "استرداد عجز مشطوب",
+      input.shiftType ?? "RECEPTION",
+    );
+    await lockCashSourceForUpdate(tx, {
+      branchId: input.branchId,
+      cashBucket: resolvedCash.cashBucket,
+      shiftId: resolvedCash.shiftId,
+    });
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    if (input.clientRequestId) {
+      const replayAfterLock = await checkIdempotency(tx, "delivery.recoverWriteoff", input.clientRequestId, payloadHash);
+      if (replayAfterLock != null) return { receiptId: replayAfterLock, idempotentReplay: true as const };
+    }
     if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع الاسترداد" });
     }
-    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
     // السقف = صافي **الخسارة المشطوبة** تاريخياً (Σ cost − Σ استرداداتها) **على نفس الفرع** — لا
     // يُستردّ ما لم يُشطَب، وعكسُ الخسارة يقع على الفرع الذي حملها أصلاً (مراجعة عدائية ٩/٨: جهة
     // مشتركة branchId=NULL شُطبت على الرئيسي واستُردّت من فرع المبيعات = أرباح الفرعين تكذب
@@ -330,10 +362,9 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
       });
     }
 
-    const { shiftId, cashBucket } = await shiftIdForCashTx(tx, { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role }, input.branchId, "استرداد عجز مشطوب", input.shiftType ?? "RECEPTION");
     const rIn = await tx.insert(receipts).values({
-      branchId: input.branchId, shiftId, direction: "IN", amount: toDbMoney(amount),
-      paymentMethod: "CASH", cashBucket, status: "COMPLETED", partyType: "OTHER",
+      branchId: input.branchId, shiftId: resolvedCash.shiftId, direction: "IN", amount: toDbMoney(amount),
+      paymentMethod: "CASH", cashBucket: resolvedCash.cashBucket, status: "COMPLETED", approvalStatus: "APPROVED", partyType: "OTHER",
       referenceNumber: `DLV-RECOVER-${input.partyId}`,
       description: input.notes ?? `استرداد عجز مشطوب — جهة توصيل #${input.partyId}`, createdBy: actor.userId,
     });

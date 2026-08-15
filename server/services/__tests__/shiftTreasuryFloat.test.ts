@@ -101,6 +101,37 @@ describe("imprest — التمويل (fundTreasury)", () => {
     expect(await db().select().from(s.receipts)).toHaveLength(1);
   });
 
+  it("تمويلان متزامنان لنفس الخزينة يتسلسلان بلا deadlock ويجمعان الرصيد", async () => {
+    const actor = { userId: MANAGER1, branchId: 1, role: "manager" as const };
+    const results = await Promise.allSettled([
+      fundTreasury({
+        branchId: 1, amount: "100000", description: "تمويل متزامن أول",
+        clientRequestId: "fund-concurrent-1",
+      }, actor),
+      fundTreasury({
+        branchId: 1, amount: "200000", description: "تمويل متزامن ثانٍ",
+        clientRequestId: "fund-concurrent-2",
+      }, actor),
+    ]);
+
+    expect(results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : [])).toEqual([]);
+    for (const result of results) {
+      if (result.status === "rejected") {
+        expect(String(result.reason?.message ?? "")).not.toMatch(/DEADLOCK|Deadlock|ER_LOCK_DEADLOCK/);
+      }
+    }
+    expect((await dash(1)).treasury).toBe("300000.00");
+    const refs = (await db().select({ ref: s.receipts.referenceNumber }).from(s.receipts))
+      .map((row) => row.ref)
+      .sort();
+    expect(refs).toEqual([
+      expect.stringMatching(/^TF-1-\d{8}-0001$/),
+      expect.stringMatching(/^TF-1-\d{8}-0002$/),
+    ]);
+  });
+
   it("حوكمة: الكاشير مرفوض، والمدير لا يموّل فرعاً آخر", async () => {
     await expect(
       fundTreasury({ branchId: 1, amount: "1000", description: "x", clientRequestId: "g1" }, { userId: CASHIER1, branchId: 1, role: "cashier" }),
@@ -135,13 +166,17 @@ describe("imprest — فتح الوردية يسحب العهدة من الخز�
     expect(entries[0]).toMatchObject({ amount: "50000.00", revenue: "0.00", cost: "0.00", profit: "0.00" });
   });
 
-  it("أوّل وردية بخزينة فارغة: تُفتَح بعجزٍ ظاهر لا حظر (allow + warning)", async () => {
-    const res = await openShift({ branchId: 1, openingBalance: "30000" }, { userId: CASHIER1, branchId: 1 });
-    expect(res.shiftId).toBeGreaterThan(0);            // لم يُحظَر
-    expect(res.treasuryWarning).toBe(true);
-    expect(res.treasuryBalanceAfter).toBe("-30000.00");
-    expect((await dash(1)).treasury).toBe("-30000.00"); // العجز مرئيّ للمدير ليموّل
-    expect((await db().select().from(s.shifts))).toHaveLength(1);
+  it("أوّل وردية بخزينة فارغة: تُرفض ذرياً ولا تنشئ وردية أو إيصالاً سالباً", async () => {
+    await expect(
+      openShift(
+        { branchId: 1, openingBalance: "30000" },
+        { userId: CASHIER1, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect((await dash(1)).treasury).toBe("0.00");
+    expect(await db().select().from(s.shifts)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await entriesOfType("SHIFT_FLOAT_OUT")).toHaveLength(0);
   });
 
   it("فتح بعهدة صفر: لا حركة خزينة ولا تحذير", async () => {
@@ -150,6 +185,28 @@ describe("imprest — فتح الوردية يسحب العهدة من الخز�
     expect(res.treasuryBalanceAfter).toBeNull();
     expect(await entriesOfType("SHIFT_FLOAT_OUT")).toHaveLength(0);
     expect((await dash(1)).treasury).toBe("0.00");
+  });
+
+  it("فتح ورديتين ممولتين متزامنتين في الفرع نفسه يتسلسل بلا deadlock", async () => {
+    await fundTreasury(
+      { branchId: 1, amount: "100000", description: "تمويل فتح متزامن", clientRequestId: "fund-open-race" },
+      { userId: MANAGER1, branchId: 1, role: "manager" },
+    );
+
+    const results = await Promise.allSettled([
+      openShift({ branchId: 1, openingBalance: "40000" }, { userId: CASHIER1, branchId: 1 }),
+      openShift({ branchId: 1, openingBalance: "40000" }, { userId: CASHIER2, branchId: 1 }),
+    ]);
+
+    expect(results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : [])).toEqual([]);
+    expect((await dash(1))).toMatchObject({ treasury: "20000.00", drawer: "80000.00", openShifts: 2 });
+    const floatReceipts = await db()
+      .select()
+      .from(s.receipts)
+      .where(and(eq(s.receipts.cashBucket, "TREASURY"), eq(s.receipts.direction, "OUT")));
+    expect(floatReceipts).toHaveLength(2);
   });
 });
 

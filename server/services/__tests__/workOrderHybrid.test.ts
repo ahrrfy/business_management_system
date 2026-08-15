@@ -10,8 +10,9 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { createWorkOrder, startWorkOrder, markWorkOrderReady, deliverWorkOrder } from "../workOrderService";
-import { getShiftReport, openShift } from "../shiftService";
+import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 const actor = { userId: 1, branchId: 1 };
 const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie() {}, clearCookie() {} } as any, user: { id: 1, role: "admin", branchId: 1 } as any };
@@ -137,12 +138,12 @@ describe("ذرّية سلة الاستقبال المختلطة", () => {
     expect(Number(stock.quantity)).toBe(19);
   });
 
-  it("عربون التحويل يُسجّل بمرجعه ولا يدخل عدّ النقدية", async () => {
+  it("عربون التحويل يُرفض قبل إنشاء أمر شغل أو إيصال", async () => {
     const opened = await openShift(
       { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
       { ...actor, role: "admin" },
     );
-    const result = await checkoutReception({
+    await expect(checkoutReception({
       branchId: 1,
       shiftId: opened.shiftId,
       paymentMethod: "TRANSFER",
@@ -157,17 +158,10 @@ describe("ذرّية سلة الاستقبال المختلطة", () => {
         paymentMethod: "TRANSFER",
         paymentReference: "TRX-WO-1001",
       }],
-    }, { ...actor, role: "admin" });
+    }, { ...actor, role: "admin" })).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
 
-    const order = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrders[0].workOrderId)))[0];
-    expect(order.paymentMethod).toBe("TRANSFER");
-    expect(order.paymentReference).toBe("TRX-WO-1001");
-    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.workOrderId, order.id)))[0];
-    expect(receipt.paymentMethod).toBe("TRANSFER");
-    expect(receipt.referenceNumber).toBe("TRX-WO-1001");
-    expect(receipt.cashBucket).toBeNull();
-    const report = await getShiftReport(opened.shiftId);
-    expect(report.expectedCash).toBe("0.00");
+    expect(await db().select().from(s.workOrders)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 
   it("المبلغ الواحد يغطي البيع ثم ينساب على أكثر من أمر شغل بلا تجاوز أي بند", async () => {
@@ -178,8 +172,7 @@ describe("ذرّية سلة الاستقبال المختلطة", () => {
     const result = await checkoutReception({
       branchId: 1,
       shiftId: opened.shiftId,
-      paymentMethod: "CARD",
-      paymentReference: "CARD-MIX-42",
+      paymentMethod: "CASH",
       paidAmount: "42.00",
       clientRequestId: "reception-global-payment",
       regularSale: {
@@ -196,8 +189,8 @@ describe("ذرّية سلة الاستقبال المختلطة", () => {
     const second = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, result.workOrders[1].workOrderId)))[0];
     expect(first.deposit).toBe("25.00");
     expect(second.deposit).toBe("7.00");
-    expect(first.paymentMethod).toBe("CARD");
-    expect(second.paymentReference).toBe("CARD-MIX-42");
+    expect(first.paymentMethod).toBe("CASH");
+    expect(second.paymentMethod).toBe("CASH");
   });
 
   it("الخادم يرفض دفعة لا تغطي البيع المباشر حتى لو وُجدت أوامر طباعة", async () => {

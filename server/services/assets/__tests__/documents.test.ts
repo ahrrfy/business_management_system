@@ -38,7 +38,17 @@ async function seed() {
 
 async function mkAsset() {
   return createAsset(
-    { name: "لابتوب", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", usefulLifeYears: 5, branchId: 1 },
+    {
+      name: "لابتوب",
+      category: "computers",
+      purchaseDate: "2023-01-01",
+      purchaseValue: "1000000",
+      usefulLifeYears: 5,
+      branchId: 1,
+      // مستندات الأصل جزء من دورة حياة أصل تشغيلي. الاقتناء الآجل من
+      // المورد يفعّله فوراً، بخلاف الاقتناء النقدي المعلّق لاعتماد المالك.
+      supplierId: 1,
+    },
     ACTOR,
   );
 }

@@ -6,6 +6,7 @@
  * (مدير/كاشير/مندوب مبيعات). عزل الفرع في setStatus مشتقٌّ من دور الفاعل (مرتفع ⇒ بلا قيد).
  */
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { logAudit } from "../services/auditService";
 import { router, storeFulfillProcedure, storeManagerProcedure, storeReadProcedure } from "../trpc";
 import {
@@ -61,6 +62,32 @@ function actorScopedBranch(user: { role: string; branchId: number | null }): num
   const elevated = user.role === "admin";
   return elevated ? null : (user.branchId != null ? Number(user.branchId) : null);
 }
+
+function assertCatalogBranchAccess(scopedBranchId: number | null, fulfillmentBranchId: number): void {
+  if (scopedBranchId != null && Number(scopedBranchId) !== Number(fulfillmentBranchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك قراءة أو تسوية مخزون فرع تنفيذ المتجر من فرعٍ آخر" });
+  }
+}
+
+/** مخزون فرع التنفيذ: مدير الفرع نفسه يمر، ولا يستطيع عبور فرعه. */
+const storeFulfillmentManagerProcedure = storeManagerProcedure.use(async ({ ctx, next }) => {
+  const fulfillmentBranchId = await resolveStorefrontBranchId(undefined);
+  assertCatalogBranchAccess(actorScopedBranch(ctx.user), fulfillmentBranchId);
+  return next({ ctx: { ...ctx, fulfillmentBranchId } });
+});
+
+/**
+ * سطح المتجر العام (الإعدادات والبنرات والفئات وظهور/صور المنتجات والعروض) ليس مورداً
+ * فرعياً قابلاً للتفويض بل إعداد شركة واحد. نجعله للمالك/الأدمن فقط: هذا يلغي جذرياً
+ * TOCTOU «مدير A اجتاز التفويض ثم غيّر المالك fulfillment إلى B قبل كتابة الخدمة»؛
+ * لا تعتمد السلطة هنا على لقطة DB قابلة للتغيّر إطلاقاً.
+ */
+const storeGlobalAdminProcedure = storeManagerProcedure.use(async ({ ctx, next }) => {
+  if (actorScopedBranch(ctx.user) != null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "إدارة إعدادات ومحتوى المتجر العام للمالك أو الأدمن فقط" });
+  }
+  return next({ ctx });
+});
 
 const ordersRouter = router({
   /** قائمة طلبات المتجر (اختياري: فلترة حالة/مدى تاريخ + مؤشّر لصفحات إضافية — اليوم كان اقتطاعاً
@@ -172,13 +199,13 @@ function assertSafeBannerInput(input: Partial<z.infer<typeof bannerInput>>) {
 /** بنرات المتجر (إدارة — storeManagerProcedure). */
 const bannersRouter = router({
   list: storeReadProcedure.query(() => listBanners()),
-  create: storeManagerProcedure.input(bannerInput).mutation(async ({ input, ctx }) => {
+  create: storeGlobalAdminProcedure.input(bannerInput).mutation(async ({ input, ctx }) => {
     assertSafeBannerInput(input);
     const r = await createBanner(input, ctx.user.id);
     await logAudit(ctx, { action: "store.banner.create", entityType: "storeBanner", entityId: r.id, newValue: { title: input.title } });
     return r;
   }),
-  update: storeManagerProcedure
+  update: storeGlobalAdminProcedure
     .input(z.object({ id: z.number().int().positive() }).and(bannerInputFields.partial()))
     .mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
@@ -193,7 +220,7 @@ const bannersRouter = router({
       await logAudit(ctx, { action: "store.banner.update", entityType: "storeBanner", entityId: id, newValue: rest });
       return r;
     }),
-  remove: storeManagerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+  remove: storeGlobalAdminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
     const r = await deleteBanner(input.id);
     await logAudit(ctx, { action: "store.banner.delete", entityType: "storeBanner", entityId: input.id });
     return r;
@@ -203,16 +230,19 @@ const bannersRouter = router({
 /** إعدادات المتجر (قراءة عامة للمصرَّح، تعديل مديري). */
 const settingsRouter = router({
   get: storeReadProcedure.query(() => getStoreSettings()),
-  update: storeManagerProcedure
+  update: storeGlobalAdminProcedure
     .input(
       z.object({
         isOpen: z.boolean().optional(),
+        fulfillmentBranchId: z.number().int().positive().nullable().optional(),
         announcement: z.string().max(500).nullish(),
         whatsappNumber: z.string().max(20).nullish(),
         freeShippingThreshold: z.string().regex(/^\d+(\.\d{1,2})?$/, "قيمة غير صحيحة").nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // إعداد واحد يحكم المتجر العام كله. مدير فرع لا يفتح/يغلق أو يعيد توجيه
+      // متجر فرع آخر؛ نفحص الفرع الحالي والمستهدف كي لا يلتفّ بنقل التنفيذ إلى فرعه.
       const r = await updateStoreSettings(input, ctx.user.id);
       await logAudit(ctx, { action: "store.settings.update", entityType: "storeSettings", entityId: 1, newValue: r });
       return r;
@@ -222,7 +252,7 @@ const settingsRouter = router({
 /** فئات المتجر (إدارة — إنشاء/تعديل/حذف/ترتيب/إظهار + إسناد منتجات). يلفّ categoryService المُختبَر. */
 const categoriesRouter = router({
   list: storeReadProcedure.query(() => listCategoriesAdmin()),
-  create: storeManagerProcedure
+  create: storeGlobalAdminProcedure
     .input(z.object({ name: z.string().min(1).max(255), description: z.string().max(1000).nullish() }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
@@ -230,7 +260,7 @@ const categoriesRouter = router({
       await logAudit(ctx, { action: "store.category.create", entityType: "storeCategory", entityId: r.id, newValue: { name: input.name } });
       return r;
     }),
-  update: storeManagerProcedure
+  update: storeGlobalAdminProcedure
     .input(z.object({ id: z.number().int().positive(), name: z.string().min(1).max(255).optional(), description: z.string().max(1000).nullish(), isActive: z.boolean().optional() }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
@@ -238,7 +268,7 @@ const categoriesRouter = router({
       await logAudit(ctx, { action: "store.category.update", entityType: "storeCategory", entityId: input.id, newValue: input });
       return r;
     }),
-  remove: storeManagerProcedure
+  remove: storeGlobalAdminProcedure
     .input(z.object({ id: z.number().int().positive(), reassignToId: z.number().int().positive().nullish() }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
@@ -246,7 +276,7 @@ const categoriesRouter = router({
       await logAudit(ctx, { action: "store.category.delete", entityType: "storeCategory", entityId: input.id });
       return r;
     }),
-  setVisibility: storeManagerProcedure
+  setVisibility: storeGlobalAdminProcedure
     .input(z.object({ id: z.number().int().positive(), showInStore: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
@@ -254,7 +284,7 @@ const categoriesRouter = router({
       await logAudit(ctx, { action: "store.category.visibility", entityType: "storeCategory", entityId: input.id, newValue: { showInStore: input.showInStore } });
       return r;
     }),
-  reorder: storeManagerProcedure
+  reorder: storeGlobalAdminProcedure
     .input(z.object({ orderedIds: z.array(z.number().int().positive()).min(1).max(500) }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
@@ -265,7 +295,7 @@ const categoriesRouter = router({
   listProducts: storeReadProcedure
     .input(z.object({ q: z.string().max(120).optional(), categoryId: z.number().int().min(0).nullish(), limit: z.number().int().positive().max(500).default(100) }))
     .query(({ input }) => listProductsForAssign(input)),
-  assignProducts: storeManagerProcedure
+  assignProducts: storeGlobalAdminProcedure
     .input(z.object({ productIds: z.array(z.number().int().positive()).min(1).max(2000), categoryId: z.number().int().positive().nullable() }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
@@ -289,35 +319,39 @@ const catalogRouter = router({
       offset: z.number().int().min(0).default(0),
     }))
     .query(async ({ input, ctx }) => {
-      // تدقيق ٣/٨: عزل الفرع أولاً — scopedBranchId (فرع المستخدم لغير المرتفع، null لـadmin/manager)
-      // يسبق input.branchId، وإلا تجاوز غير المرتفع عزله فقرأ مخزون فرع آخر. المرتفع يسقط لـinput.branchId.
-      const branchId = await resolveStorefrontBranchId(ctx.scopedBranchId ?? input.branchId ?? undefined);
+      // لوحة المتجر والواجهة العامة تقرآن المرجع التشغيلي نفسه حتماً؛ فرع حساب المدير
+      // أو branchId قديم في عميل مخزّن لا يغيّران حقيقة الكتالوج العام.
+      const branchId = await resolveStorefrontBranchId(undefined);
+      assertCatalogBranchAccess(actorScopedBranch(ctx.user), branchId);
       return listStoreCatalog({ ...input, branchId });
     }),
-  setFeatured: storeManagerProcedure
+  setFeatured: storeGlobalAdminProcedure
     .input(z.object({ productId: z.number().int().positive(), isFeatured: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const r = await setProductFeatured(input);
       await logAudit(ctx, { action: "store.catalog.featured", entityType: "product", entityId: input.productId, newValue: { isFeatured: input.isFeatured } });
       return r;
     }),
-  setVisible: storeManagerProcedure
+  setVisible: storeGlobalAdminProcedure
     .input(z.object({ productId: z.number().int().positive(), showInStore: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const r = await setProductStoreVisible(input);
       await logAudit(ctx, { action: "store.catalog.visibility", entityType: "product", entityId: input.productId, newValue: { showInStore: input.showInStore } });
       return r;
     }),
-  setStock: storeManagerProcedure
+  setStock: storeFulfillmentManagerProcedure
     .input(z.object({ variantId: z.number().int().positive(), branchId: z.number().int().positive().nullish(), targetQuantity: z.number().int().min(0), notes: z.string().max(200).optional() }))
     .mutation(async ({ input, ctx }) => {
-      const branchId = await resolveStorefrontBranchId(input.branchId ?? undefined);
+      const branchId = ctx.fulfillmentBranchId;
       // فصل مهام #٦: يُنشئ طلب تسوية معلَّقاً يعتمده مديرٌ آخر (بدل ضبطٍ فوريّ بفاعلٍ واحد).
-      const r = await setStoreProductStock({ variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, createdBy: ctx.user.id, role: ctx.user.role, notes: input.notes });
+      const r = await setStoreProductStock(
+        { variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, notes: input.notes },
+        { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role },
+      );
       await logAudit(ctx, { action: "store.catalog.stockRequest", entityType: "stockAdjustmentRequest", entityId: r.requestId, newValue: { branchId, target: input.targetQuantity } });
       return { requestId: r.requestId, status: "PENDING_APPROVAL" as const };
     }),
-  setImage: storeManagerProcedure
+  setImage: storeGlobalAdminProcedure
     .input(z.object({ productId: z.number().int().positive(), url: z.string().max(5_000_000).nullable() }))
     .mutation(async ({ input, ctx }) => {
       const r = await setProductPrimaryImage(input);
@@ -336,13 +370,14 @@ function baghdadTodayYmd(): string {
 const promotionsRouter = router({
   list: storeReadProcedure
     .input(z.object({ includeInactive: z.boolean().default(false) }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       // فرع المتجر = فرع الواجهة نفسه دائماً (كـcreate/deactivate/storefront) — لا يُشتَقّ من فرع
       // المُشاهِد (scopedBranchId) وإلا لرأى مستخدم READ على فرعٍ آخر عروضاً خاطئة/فارغة (مراجعة ١٣/٧).
       const branchId = await resolveStorefrontBranchId(undefined);
+      assertCatalogBranchAccess(actorScopedBranch(ctx.user), branchId);
       return listStorePromotions({ branchId, includeInactive: input.includeInactive, todayYmd: baghdadTodayYmd() });
     }),
-  create: storeManagerProcedure
+  create: storeGlobalAdminProcedure
     .input(z.object({
       name: z.string().min(1).max(255),
       description: z.string().max(2000).nullish(),
@@ -371,10 +406,11 @@ const promotionsRouter = router({
       });
       return { promotionId };
     }),
-  deactivate: storeManagerProcedure
+  deactivate: storeGlobalAdminProcedure
     .input(z.object({ promotionId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      await withTx((tx) => deactivateStorePromotion(tx, input.promotionId));
+      const branchId = await resolveStorefrontBranchId(undefined);
+      await withTx((tx) => deactivateStorePromotion(tx, input.promotionId, branchId));
       await logAudit(ctx, { action: "store.promotion.deactivate", entityType: "promotion", entityId: input.promotionId });
       return { ok: true };
     }),

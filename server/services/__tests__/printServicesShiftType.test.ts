@@ -34,6 +34,17 @@ async function seed() {
     { id: 1, openId: "local_admin", name: "المدير", email: "admin@t.test", role: "admin", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_print", name: "كاشير الطباعة", email: "p@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "1000.00",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-PRINT-SHIFT",
+    createdBy: 1,
+  });
 }
 
 describe("نوع الوردية — PRINT_SERVICES (فصل درج الطباعة عن التجزئة)", () => {

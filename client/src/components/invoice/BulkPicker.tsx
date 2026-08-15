@@ -34,6 +34,8 @@ export interface BulkPickerProps {
 
 export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, tier }: BulkPickerProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
+  const branchesQ = trpc.branches.list.useQuery();
+  const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
   // فاتورة بيع متقدّمة (١٢/٨/٢٦): كل خدمات الطباعة تُعرض هنا بلا شرط showInReception (المتقدّمة قد
   // تجمع سلعاً وخدماتٍ). createSale يخصم مواد الخدمة ويحتسب COGS ذرّياً.
   const isAdvancedSale = invoiceType === "SALE";
@@ -63,9 +65,10 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     unitName: string;
     conversionFactor: string;
     stockBase: number;
+    stockBranchId: number;
     reservedBase: number;
     availableBase: number;
-    isService?: boolean;
+    isService: boolean;
     price: string;
     costBase: string;
   };
@@ -82,8 +85,10 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         unitName: r.unitName,
         conversionFactor: r.conversionFactor,
         stockBase: r.stockBase ?? 0,
+        stockBranchId: branchId,
         reservedBase: 0,
         availableBase: r.stockBase ?? 0,
+        isService: false,
         price: r.costPriceBase,
         costBase: r.costPriceBase,
       }));
@@ -98,6 +103,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
       unitName: r.unitName,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase ?? 0,
+      stockBranchId: r.branchId,
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
       isService: r.isService || r.isPrintService,
@@ -133,6 +139,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         qty: 1,
         conversionFactor: r.conversionFactor,
         stockBase: r.stockBase,
+        stockBranchId: r.stockBranchId,
         reservedBase: r.reservedBase,
         availableBase: r.availableBase,
         isService: r.isService,
@@ -245,13 +252,15 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                       <span>•</span>
                       <span>{p.unitName}</span>
                       <span>•</span>
+                      <span>الفرع: {branchLabel(p.stockBranchId)}</span>
+                      <span>•</span>
                       {p.isService ? (
                         <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
                       ) : (
                         <>
                           <span>فعلي: {fmtNum(p.stockBase)}</span>
                           {p.reservedBase > 0 && <span className="text-amber-600">محجوز: {fmtNum(p.reservedBase)}</span>}
-                          <span className={p.availableBase < 5 ? "text-rose-600" : ""}>متاح: {fmtNum(p.availableBase)}</span>
+                          <span className={p.availableBase < 5 ? "text-rose-600" : ""}>متاح للبيع: {fmtNum(p.availableBase)}</span>
                         </>
                       )}
                     </div>

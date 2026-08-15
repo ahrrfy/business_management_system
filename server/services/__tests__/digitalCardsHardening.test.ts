@@ -6,6 +6,7 @@ import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { withTx } from "../tx";
+import { approveVoucher } from "../voucher/approval";
 import {
   dashboardService, intentService, offeringService, posCardsService,
   pricingService, providerService, studentService, walletOpsService, walletService,
@@ -19,6 +20,7 @@ import {
 
 const actor = { userId: 1, branchId: 1, role: "cashier" };
 const mgr = { userId: 2, branchId: 1, role: "manager" };
+const owner = { userId: 3, branchId: 1, role: "admin", isOwner: true };
 const DATE = "2026-07-29";
 
 const TABLES = [
@@ -41,6 +43,19 @@ async function seedBase() {
   await db().insert(s.users).values([
     { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
     { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
+    { id: 3, openId: "u3", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
+  ]);
+  await db().insert(s.receipts).values([
+    {
+      branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-1", createdBy: owner.userId,
+    },
+    {
+      branchId: 2, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-2", createdBy: owner.userId,
+    },
   ]);
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
@@ -54,9 +69,10 @@ async function setup(branchId = 1) {
   const { walletId } = await withTx((tx) => walletService.createWallet(tx, {
     providerId, branchId, code: `W${branchId}${Math.random().toString(36).slice(2, 5)}`, name: `محفظة ${branchId}`,
   }, { userId: 1, branchId: 1 }));
-  await withTx((tx) => walletOpsService.deposit(tx, {
+  const request = await withTx((tx) => walletOpsService.deposit(tx, {
     walletId, amount: "1000000", paymentMethod: "CASH", clientRequestId: `d-${Math.random().toString(36).slice(2, 12)}`,
   }, { ...mgr, branchId }));
+  await approveVoucher(request.receiptId, { ...owner, branchId });
   const r = await withTx((tx) => offeringService.createOffering(tx, {
     providerId, offeringType: "TELECOM_CARD", name: `كارت-${branchId}`, pricingMode: "FIXED_MARGIN",
     fixedMargin: "850", roundingStep: "0", branches: [{ branchId, walletId }],
@@ -187,13 +203,16 @@ describe("ش١٣ — الضغط المتزامن على رصيد المحفظة"
     const { walletId } = await setup(1);
     const [before] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
 
-    await Promise.all(
+    const requests = await Promise.all(
       Array.from({ length: 5 }, (_, i) =>
         withTx((tx) => walletOpsService.deposit(tx, {
           walletId, amount: "1000", paymentMethod: "CASH", clientRequestId: `conc-dep-${i}-${Math.random().toString(36).slice(2, 8)}`,
         }, mgr)),
       ),
     );
+    const [pending] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
+    expect(pending.currentBalance).toBe(before.currentBalance);
+    await Promise.all(requests.map((request) => approveVoucher(request.receiptId, owner)));
 
     const [after] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, walletId));
     expect(Number(after.currentBalance)).toBe(Number(before.currentBalance) + 5000);

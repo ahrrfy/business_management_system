@@ -6,6 +6,7 @@ import { appRouter } from "../../routers";
 import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
 import { withTx } from "../tx";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 import {
   cancelReservation, convertReservationToSale, createReservation, expireDueReservations,
   extendReservation, readAvailability, releaseReservation,
@@ -20,6 +21,7 @@ import {
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
+  "onlineOrderItems", "onlineOrders",
   "reservationEvents", "reservationLines", "reservationStock", "reservations",
   "accountingEntries", "receipts", "invoiceItems", "invoices", "idempotencyKeys", "inventoryMovements", "shifts", "openingModeSettings",
   "branchStock", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "productImages", "products",
@@ -146,7 +148,51 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     const res = await createReservation({ branchId: 1, contactPhone: "07700000004", lines: [{ variantId, productUnitId: baseUnitId, quantity: 8 }] }, actor);
     expect(res.overbookedVariantIds).toContain(variantId);
     expect(await reserved(variantId)).toBe(8);
-    expect((await atp(variantId)).available).toBe(-3); // المتاح سالب موسوم
+    expect(await atp(variantId)).toMatchObject({
+      available: 0,
+      rawAvailableBase: -3,
+      shortfallBase: 3,
+    });
+  });
+
+  it("ATP الحجز يحتسب تخصيص الطلب الإلكتروني النشط ولا يبيع المتاح نفسه مرتين", async () => {
+    const { variantId, baseUnitId } = await mkProduct("RSV-ONLINE-ATP", 10);
+    await db().insert(s.customers).values({ id: 91, name: "زبون متجر محجوز له" });
+    await db().insert(s.onlineOrders).values({
+      id: 91,
+      orderNumber: "ORD-RSV-ATP",
+      customerId: 91,
+      branchId: 1,
+      subtotal: "12000.00",
+      total: "12000.00",
+      status: "CONFIRMED",
+    });
+    await db().insert(s.onlineOrderItems).values({
+      onlineOrderId: 91,
+      variantId,
+      productUnitId: baseUnitId,
+      quantity: "8.000",
+      baseQuantity: 8,
+      unitPrice: "1500.00",
+      total: "12000.00",
+    });
+
+    expect(await atp(variantId)).toMatchObject({ onHand: 10, reserved: 8, available: 2 });
+    const res = await createReservation({
+      branchId: 1,
+      contactPhone: "07700000040",
+      lines: [{ variantId, productUnitId: baseUnitId, quantity: 5 }],
+    }, actor);
+
+    expect(res.overbookedVariantIds).toContain(variantId);
+    expect(await reserved(variantId)).toBe(5); // reservationStock يبقى الحجز الرسمي القابل للتحرير فقط
+    expect(await atp(variantId)).toMatchObject({
+      onHand: 10,
+      reserved: 13,
+      available: 0,
+      rawAvailableBase: -3,
+      shortfallBase: 3,
+    });
   });
 
   it("الإلغاء يحرّر المحجوز بالكامل مرّة واحدة (idempotent على الحالة النهائية)", async () => {
@@ -249,6 +295,85 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     expect((await atp(variantId)).available).toBe(1);
   });
 
+  it("FIFO يمنع الحجز الأحدث من سرقة الأقدم ويعلن عجزه بعد تنفيذ الأقدم", async () => {
+    const firstCustomerId = await mkCustomer("صاحب الحجز الأقدم FIFO");
+    const secondCustomerId = await mkCustomer("صاحب الحجز الأحدث FIFO");
+    const { variantId, baseUnitId } = await mkProduct("RSV-FIFO", 5);
+    const first = await createReservation({
+      branchId: 1,
+      customerId: firstCustomerId,
+      contactPhone: "07700000051",
+      lines: [{ variantId, productUnitId: baseUnitId, quantity: 4 }],
+    }, actor);
+    const second = await createReservation({
+      branchId: 1,
+      customerId: secondCustomerId,
+      contactPhone: "07700000052",
+      lines: [{ variantId, productUnitId: baseUnitId, quantity: 4 }],
+    }, actor);
+
+    await expect(convertReservationToSale({ reservationId: second.reservationId, payment: null }, actor))
+      .rejects.toThrow(/مخصّص|الحجوزات|المتاح/);
+    expect(await onHand(variantId)).toBe(5);
+    expect(await reserved(variantId)).toBe(8);
+    expect((await db().select().from(s.reservations).where(eq(s.reservations.id, second.reservationId)))[0]?.status)
+      .toBe("ACTIVE");
+
+    const converted = await convertReservationToSale({ reservationId: first.reservationId, payment: null }, actor);
+    expect(converted.invoiceId).toBeGreaterThan(0);
+    expect(await onHand(variantId)).toBe(1);
+    expect(await reserved(variantId)).toBe(4);
+    expect((await db().select().from(s.reservations).where(eq(s.reservations.id, first.reservationId)))[0]?.status)
+      .toBe("FULFILLED");
+    expect((await db().select().from(s.reservations).where(eq(s.reservations.id, second.reservationId)))[0]?.status)
+      .toBe("ACTIVE");
+    expect(await atp(variantId)).toMatchObject({
+      available: 0,
+      rawAvailableBase: -3,
+      shortfallBase: 3,
+    });
+  });
+
+  it("تحويل الحجز لا يعفي تخصيص طلب إلكتروني نشط لطرف آخر", async () => {
+    const reservationCustomerId = await mkCustomer("صاحب الحجز الرسمي");
+    const onlineCustomerId = await mkCustomer("صاحب طلب المتجر");
+    const { variantId, baseUnitId } = await mkProduct("RSV-CONVERT-ONLINE", 10);
+    await db().insert(s.onlineOrders).values({
+      id: 92,
+      orderNumber: "ORD-RSV-CONVERT",
+      customerId: onlineCustomerId,
+      branchId: 1,
+      subtotal: "12000.00",
+      total: "12000.00",
+      status: "CONFIRMED",
+    });
+    await db().insert(s.onlineOrderItems).values({
+      onlineOrderId: 92,
+      variantId,
+      productUnitId: baseUnitId,
+      quantity: "8.000",
+      baseQuantity: 8,
+      unitPrice: "1500.00",
+      total: "12000.00",
+    });
+    const reservation = await createReservation({
+      branchId: 1,
+      customerId: reservationCustomerId,
+      contactPhone: "07700000041",
+      lines: [{ variantId, productUnitId: baseUnitId, quantity: 3 }],
+    }, actor);
+
+    await expect(convertReservationToSale({ reservationId: reservation.reservationId, payment: null }, actor))
+      .rejects.toThrow(/طلبات المتجر|مخصّص/);
+    expect(await onHand(variantId)).toBe(10);
+    expect(await reserved(variantId)).toBe(3);
+    expect(await atp(variantId)).toMatchObject({
+      available: 0,
+      rawAvailableBase: -1,
+      shortfallBase: 1,
+    });
+  });
+
   it("التحويل يرفض المخزون الناقص ذرّياً حتى عند تفعيل سماح السالب في وضع الافتتاح", async () => {
     const cid = await mkCustomer("حجز لا يرث سماح الافتتاح");
     const { variantId, baseUnitId } = await mkProduct("RSV-STRICT-STOCK", 6);
@@ -340,7 +465,7 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     expect(receipt.cashBucket).toBe("DRAWER");
   });
 
-  it("تحويل الحجز ببطاقة/تحويل يرفض المرجع الفارغ ويسجّل المرجع الصحيح خارج عدّ النقدية", async () => {
+  it("تحويل الحجز ببطاقة/تحويل يُرفض بلا فاتورة أو إيصال أو مسّ للحجز", async () => {
     const { variantId, baseUnitId } = await mkProduct("RSV-PAY-REF", 5);
     const r = await createReservation(
       { branchId: 1, contactPhone: "07700000012", lines: [{ variantId, productUnitId: baseUnitId, quantity: 1 }] },
@@ -350,18 +475,17 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     await expect(convertReservationToSale({
       reservationId: r.reservationId,
       payment: { amount: "1500", method: "CARD" },
-    }, actor)).rejects.toThrow(/مرجع/);
+    }, actor)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
     expect(await onHand(variantId)).toBe(5);
     expect(await reserved(variantId)).toBe(1);
 
-    const conv = await convertReservationToSale({
+    await expect(convertReservationToSale({
       reservationId: r.reservationId,
       payment: { amount: "1500", method: "TRANSFER", reference: "TRX-RES-1001" },
-    }, actor);
-    expect(conv.status).toBe("PAID");
-    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, conv.invoiceId)))[0];
-    expect(receipt.paymentMethod).toBe("TRANSFER");
-    expect(receipt.referenceNumber).toBe("TRX-RES-1001");
-    expect(receipt.shiftId).toBeNull();
+    }, actor)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    expect(await onHand(variantId)).toBe(5);
+    expect(await reserved(variantId)).toBe(1);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 });

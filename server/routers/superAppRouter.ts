@@ -9,7 +9,19 @@ import {
 import { LEAVE_TYPES } from "@shared/hr";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   attendance,
   branches,
@@ -79,6 +91,31 @@ const quietTime = z
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "الوقت يجب أن يكون HH:mm")
   .nullable();
 
+/** نفس سلامة طلب المصروف التي تتطلبها خدمة الاعتماد؛ لا نعرض قراراً سيفشل حتماً عند تنفيذه. */
+function actionableExpenseApprovalWhere(ownerUserId: number) {
+  return and(
+    eq(expenses.status, "PENDING_APPROVAL"),
+    eq(expenses.source, "CASH"),
+    eq(receipts.direction, "OUT"),
+    eq(receipts.status, "PENDING"),
+    eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+    isNull(expenses.shiftId),
+    isNull(expenses.cashBucket),
+    isNull(receipts.shiftId),
+    isNull(receipts.cashBucket),
+    isNull(receipts.invoiceId),
+    isNull(receipts.workOrderId),
+    isNull(receipts.reservationId),
+    isNull(receipts.voucherNumber),
+    sql`${expenses.createdBy} IS NOT NULL`,
+    ne(expenses.createdBy, ownerUserId),
+    sql`${receipts.branchId} <=> ${expenses.branchId}`,
+    sql`${receipts.amount} <=> ${expenses.amount}`,
+    sql`${receipts.paymentMethod} <=> ${expenses.paymentMethod}`,
+    sql`${receipts.createdBy} <=> ${expenses.createdBy}`,
+  );
+}
+
 function isVisible(level: AccessLevel | undefined): boolean {
   return level === "FULL" || level === "READ";
 }
@@ -103,13 +140,20 @@ export function resolveSuperAppAuthority(user: SuperAppAuthorityUser) {
     ? { ...ROLE_TEMPLATES.admin }
     : resolvePermissions(
         role,
-        (user.permissionsOverride ?? null) as Record<string, AccessLevel> | null,
+        (user.permissionsOverride ?? null) as Record<
+          string,
+          AccessLevel
+        > | null,
       );
   const allBranches = ownerOrAdmin;
-  const requestedBranchId = user.branchId == null ? null : Number(user.branchId);
-  const branchId = requestedBranchId != null && Number.isInteger(requestedBranchId) && requestedBranchId > 0
-    ? requestedBranchId
-    : null;
+  const requestedBranchId =
+    user.branchId == null ? null : Number(user.branchId);
+  const branchId =
+    requestedBranchId != null &&
+    Number.isInteger(requestedBranchId) &&
+    requestedBranchId > 0
+      ? requestedBranchId
+      : null;
   return {
     role,
     permissions,
@@ -155,7 +199,10 @@ export async function getScopedCustomerPulse(scopedBranchId: number | null) {
       })
       .from(customers)
       .where(eq(customers.isActive, true));
-    return { count: Number(row?.count ?? 0), balance: String(row?.balance ?? "0") };
+    return {
+      count: Number(row?.count ?? 0),
+      balance: String(row?.balance ?? "0"),
+    };
   }
 
   const [customerRow, balanceRow] = await Promise.all([
@@ -163,7 +210,12 @@ export async function getScopedCustomerPulse(scopedBranchId: number | null) {
       .select({ count: sql<number>`count(distinct ${customers.id})` })
       .from(customers)
       .innerJoin(invoices, eq(invoices.customerId, customers.id))
-      .where(and(eq(customers.isActive, true), eq(invoices.branchId, scopedBranchId)))
+      .where(
+        and(
+          eq(customers.isActive, true),
+          eq(invoices.branchId, scopedBranchId),
+        ),
+      )
       .then((rows) => rows[0]),
     db
       .select({
@@ -171,11 +223,13 @@ export async function getScopedCustomerPulse(scopedBranchId: number | null) {
       })
       .from(invoices)
       .innerJoin(customers, eq(invoices.customerId, customers.id))
-      .where(and(
-        eq(customers.isActive, true),
-        eq(invoices.branchId, scopedBranchId),
-        inArray(invoices.status, ["PENDING", "PARTIALLY_PAID"]),
-      ))
+      .where(
+        and(
+          eq(customers.isActive, true),
+          eq(invoices.branchId, scopedBranchId),
+          inArray(invoices.status, ["PENDING", "PARTIALLY_PAID"]),
+        ),
+      )
       .then((rows) => rows[0]),
   ]);
   return {
@@ -188,18 +242,27 @@ export async function getScopedCustomerPulse(scopedBranchId: number | null) {
  * to a branch, so branch AP is derived from the canonical AP-aging ledger. */
 export async function getScopedSupplierPulse(scopedBranchId: number | null) {
   const db = requireDb();
-  const countPromise = scopedBranchId == null
-    ? db
-        .select({ count: sql<number>`count(*)` })
-        .from(suppliers)
-        .where(eq(suppliers.isActive, true))
-        .then((rows) => rows[0])
-    : db
-        .select({ count: sql<number>`count(distinct ${suppliers.id})` })
-        .from(suppliers)
-        .innerJoin(purchaseOrders, eq(purchaseOrders.supplierId, suppliers.id))
-        .where(and(eq(suppliers.isActive, true), eq(purchaseOrders.branchId, scopedBranchId)))
-        .then((rows) => rows[0]);
+  const countPromise =
+    scopedBranchId == null
+      ? db
+          .select({ count: sql<number>`count(*)` })
+          .from(suppliers)
+          .where(eq(suppliers.isActive, true))
+          .then((rows) => rows[0])
+      : db
+          .select({ count: sql<number>`count(distinct ${suppliers.id})` })
+          .from(suppliers)
+          .innerJoin(
+            purchaseOrders,
+            eq(purchaseOrders.supplierId, suppliers.id),
+          )
+          .where(
+            and(
+              eq(suppliers.isActive, true),
+              eq(purchaseOrders.branchId, scopedBranchId),
+            ),
+          )
+          .then((rows) => rows[0]);
   const [countRow, agingRows] = await Promise.all([
     countPromise,
     getAPAging({ branchId: scopedBranchId ?? undefined, limit: 10_000 }),
@@ -432,7 +495,7 @@ export const superAppRouter = router({
       }
 
       if (input.moduleKey === "treasury") {
-        const [shiftRow, approvalRow] = await Promise.all([
+        const [shiftRow, approvalRow, expenseApprovalRow] = await Promise.all([
           db
             .select({ count: sql<number>`count(*)` })
             .from(shifts)
@@ -451,12 +514,26 @@ export const superAppRouter = router({
             .where(
               and(
                 eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+                notExists(
+                  db
+                    .select({ id: expenses.id })
+                    .from(expenses)
+                    .where(eq(expenses.receiptId, receipts.id)),
+                ),
                 scopedBranchId == null
                   ? undefined
                   : eq(receipts.branchId, scopedBranchId),
               ),
             )
             .then((rows) => rows[0]),
+          authority.capabilities.isOwner
+            ? db
+                .select({ count: sql<number>`count(*)` })
+                .from(expenses)
+                .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
+                .where(actionableExpenseApprovalWhere(ctx.user.id))
+                .then((rows) => rows[0])
+            : Promise.resolve({ count: 0 }),
         ]);
         return {
           moduleKey: input.moduleKey,
@@ -475,6 +552,17 @@ export const superAppRouter = router({
               "count",
               "/vouchers",
             ),
+            ...(authority.capabilities.isOwner
+              ? [
+                  metric(
+                    "expense-approvals",
+                    "طلبات مصروف لاعتماد المالك",
+                    expenseApprovalRow?.count,
+                    "count",
+                    "/treasury?tab=expenses&status=PENDING_APPROVAL",
+                  ),
+                ]
+              : []),
           ],
         };
       }
@@ -1551,88 +1639,118 @@ export const superAppRouter = router({
       const canTreasuryApprove =
         role === "admin" || role === "manager" || role === "accountant";
 
-      const [stockRows, leaveRows, voucherRows, giftRows] = await Promise.all([
-        permissions.inventory === "FULL" && canManage
-          ? listStockAdjustmentRequests({
-              branchId,
-              status: "PENDING_APPROVAL",
-            })
-          : Promise.resolve([]),
-        permissions.hr === "FULL"
-          ? db
-              .select({
-                id: leaveRequests.id,
-                leaveType: leaveRequests.leaveType,
-                fromDate: leaveRequests.fromDate,
-                toDate: leaveRequests.toDate,
-                days: leaveRequests.days,
-                reason: leaveRequests.reason,
-                requestedAt: leaveRequests.requestedAt,
-                employeeUserId: employees.userId,
-                employeeBranchId: employees.branchId,
-                firstName: employees.firstName,
-                lastName: employees.lastName,
+      const [stockRows, leaveRows, voucherRows, expenseRows, giftRows] =
+        await Promise.all([
+          permissions.inventory === "FULL" && canManage
+            ? listStockAdjustmentRequests({
+                branchId,
+                status: "PENDING_APPROVAL",
               })
-              .from(leaveRequests)
-              .innerJoin(employees, eq(leaveRequests.employeeId, employees.id))
-              .where(
-                and(
-                  eq(leaveRequests.status, "pending"),
-                  ...(branchId == null
-                    ? []
-                    : [eq(employees.branchId, branchId)]),
-                ),
-              )
-              .orderBy(desc(leaveRequests.requestedAt))
-              .limit(sourceLimit)
-          : Promise.resolve([]),
-        permissions.treasury === "FULL" &&
-        canTreasuryApprove &&
-        (role === "admin" || ctx.user.branchId != null)
-          ? db
-              .select({
-                id: receipts.id,
-                voucherNumber: receipts.voucherNumber,
-                amount: receipts.amount,
-                direction: receipts.direction,
-                description: receipts.description,
-                createdBy: receipts.createdBy,
-                createdAt: receipts.createdAt,
-              })
-              .from(receipts)
-              .where(
-                and(
-                  eq(receipts.approvalStatus, "PENDING_APPROVAL"),
-                  ...(branchId == null ? [] : [eq(receipts.branchId, branchId)]),
-                  isNull(receipts.invoiceId),
-                ),
-              )
-              .orderBy(desc(receipts.createdAt))
-              .limit(sourceLimit)
-          : Promise.resolve([]),
-        permissions.gifts === "FULL" && canManage
-          ? db
-              .select({
-                id: giftVouchers.id,
-                giftNumber: giftVouchers.giftNumber,
-                totalCost: giftVouchers.totalCost,
-                reason: giftVouchers.reason,
-                createdBy: giftVouchers.createdBy,
-                createdAt: giftVouchers.createdAt,
-              })
-              .from(giftVouchers)
-              .where(
-                and(
-                  eq(giftVouchers.status, "PENDING_APPROVAL"),
-                  ...(branchId == null
-                    ? []
-                    : [eq(giftVouchers.branchId, branchId)]),
-                ),
-              )
-              .orderBy(desc(giftVouchers.createdAt))
-              .limit(sourceLimit)
-          : Promise.resolve([]),
-      ]);
+            : Promise.resolve([]),
+          permissions.hr === "FULL"
+            ? db
+                .select({
+                  id: leaveRequests.id,
+                  leaveType: leaveRequests.leaveType,
+                  fromDate: leaveRequests.fromDate,
+                  toDate: leaveRequests.toDate,
+                  days: leaveRequests.days,
+                  reason: leaveRequests.reason,
+                  requestedAt: leaveRequests.requestedAt,
+                  employeeUserId: employees.userId,
+                  employeeBranchId: employees.branchId,
+                  firstName: employees.firstName,
+                  lastName: employees.lastName,
+                })
+                .from(leaveRequests)
+                .innerJoin(
+                  employees,
+                  eq(leaveRequests.employeeId, employees.id),
+                )
+                .where(
+                  and(
+                    eq(leaveRequests.status, "pending"),
+                    ...(branchId == null
+                      ? []
+                      : [eq(employees.branchId, branchId)]),
+                  ),
+                )
+                .orderBy(desc(leaveRequests.requestedAt))
+                .limit(sourceLimit)
+            : Promise.resolve([]),
+          permissions.treasury === "FULL" &&
+          canTreasuryApprove &&
+          (role === "admin" || ctx.user.branchId != null)
+            ? db
+                .select({
+                  id: receipts.id,
+                  voucherNumber: receipts.voucherNumber,
+                  amount: receipts.amount,
+                  direction: receipts.direction,
+                  description: receipts.description,
+                  createdBy: receipts.createdBy,
+                  createdAt: receipts.createdAt,
+                })
+                .from(receipts)
+                .where(
+                  and(
+                    eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+                    notExists(
+                      db
+                        .select({ id: expenses.id })
+                        .from(expenses)
+                        .where(eq(expenses.receiptId, receipts.id)),
+                    ),
+                    ...(branchId == null
+                      ? []
+                      : [eq(receipts.branchId, branchId)]),
+                    isNull(receipts.invoiceId),
+                  ),
+                )
+                .orderBy(desc(receipts.createdAt))
+                .limit(sourceLimit)
+            : Promise.resolve([]),
+          ctx.user.isOwner === true
+            ? db
+                .select({
+                  id: expenses.id,
+                  category: expenses.category,
+                  amount: expenses.amount,
+                  paymentMethod: expenses.paymentMethod,
+                  description: expenses.description,
+                  payee: expenses.payee,
+                  createdBy: expenses.createdBy,
+                  createdAt: expenses.createdAt,
+                })
+                .from(expenses)
+                .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
+                .where(actionableExpenseApprovalWhere(ctx.user.id))
+                .orderBy(desc(expenses.createdAt))
+                .limit(sourceLimit)
+            : Promise.resolve([]),
+          permissions.gifts === "FULL" && canManage
+            ? db
+                .select({
+                  id: giftVouchers.id,
+                  giftNumber: giftVouchers.giftNumber,
+                  totalCost: giftVouchers.totalCost,
+                  reason: giftVouchers.reason,
+                  createdBy: giftVouchers.createdBy,
+                  createdAt: giftVouchers.createdAt,
+                })
+                .from(giftVouchers)
+                .where(
+                  and(
+                    eq(giftVouchers.status, "PENDING_APPROVAL"),
+                    ...(branchId == null
+                      ? []
+                      : [eq(giftVouchers.branchId, branchId)]),
+                  ),
+                )
+                .orderBy(desc(giftVouchers.createdAt))
+                .limit(sourceLimit)
+            : Promise.resolve([]),
+        ]);
 
       return [
         ...stockRows
@@ -1701,6 +1819,30 @@ export const superAppRouter = router({
               duplicatePolicy: "state_transition_guard" as const,
             },
           })),
+        ...expenseRows
+          .filter((row) => Number(row.createdBy) !== ctx.user.id)
+          .map((row) => ({
+            kind: "expense" as const,
+            id: Number(row.id),
+            title: "طلب مصروف",
+            reference: `EXP#${row.id}`,
+            detail:
+              [row.description, row.payee, row.category]
+                .filter(Boolean)
+                .join(" · ") || "طلب مصروف بانتظار اعتماد المالك",
+            href: `/treasury?tab=expenses&focus=${row.id}`,
+            createdAt: row.createdAt,
+            amount: row.amount,
+            paymentMethod: row.paymentMethod,
+            canReject: true,
+            capabilities: {
+              canApprove: true,
+              canReject: true,
+              rejectionReason: "required" as const,
+              supportsClientRequestId: false,
+              duplicatePolicy: "state_transition_guard" as const,
+            },
+          })),
         ...giftRows
           .filter(
             (row) => role === "admin" || Number(row.createdBy) !== ctx.user.id,
@@ -1736,7 +1878,7 @@ export const superAppRouter = router({
   approvalDetail: superAppProcedure
     .input(
       z.object({
-        kind: z.enum(["inventory", "leave", "voucher", "gift"]),
+        kind: z.enum(["inventory", "leave", "voucher", "expense", "gift"]),
         id: z.number().int().positive(),
       }),
     )
@@ -1870,6 +2012,12 @@ export const superAppRouter = router({
             and(
               eq(receipts.id, input.id),
               eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+              notExists(
+                db
+                  .select({ id: expenses.id })
+                  .from(expenses)
+                  .where(eq(expenses.receiptId, receipts.id)),
+              ),
               ...(branchId == null ? [] : [eq(receipts.branchId, branchId)]),
               isNull(receipts.invoiceId),
             ),
@@ -1885,6 +2033,52 @@ export const superAppRouter = router({
           detail: row.description || "سند مالي بانتظار الاعتماد",
           createdAt: row.createdAt,
           amount: row.amount,
+          canReject: true,
+          capabilities: {
+            canApprove: true,
+            canReject: true,
+            rejectionReason: "required" as const,
+            supportsClientRequestId: false,
+            duplicatePolicy: "state_transition_guard" as const,
+          },
+        };
+      }
+
+      if (input.kind === "expense") {
+        if (ctx.user.isOwner !== true) return notFound();
+        const [row] = await db
+          .select({
+            id: expenses.id,
+            category: expenses.category,
+            amount: expenses.amount,
+            paymentMethod: expenses.paymentMethod,
+            description: expenses.description,
+            payee: expenses.payee,
+            createdBy: expenses.createdBy,
+            createdAt: expenses.createdAt,
+          })
+          .from(expenses)
+          .innerJoin(receipts, eq(expenses.receiptId, receipts.id))
+          .where(
+            and(
+              eq(expenses.id, input.id),
+              actionableExpenseApprovalWhere(ctx.user.id),
+            ),
+          )
+          .limit(1);
+        if (!row) return notFound();
+        return {
+          kind: "expense" as const,
+          id: Number(row.id),
+          title: "طلب مصروف",
+          reference: `EXP#${row.id}`,
+          detail:
+            [row.description, row.payee, row.category]
+              .filter(Boolean)
+              .join(" · ") || "طلب مصروف بانتظار اعتماد المالك",
+          createdAt: row.createdAt,
+          amount: row.amount,
+          paymentMethod: row.paymentMethod,
           canReject: true,
           capabilities: {
             canApprove: true,

@@ -123,7 +123,7 @@ export const installmentRouter = router({
           receiptId: res.receiptId,
           voucherNumber: res.voucherNumber,
           planCompleted: res.planCompleted,
-          paymentMethod: input.paymentMethod ?? null,
+          paymentMethod: input.paymentMethod ?? "CASH",
         },
       });
       return res;

@@ -49,6 +49,30 @@ async function seedBase() {
     { id: CASHIER2, openId: "local_c2", name: "كاشير٢", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: MANAGER2, openId: "local_mgr2", name: "مدير الفرع٢", role: "manager", loginMethod: "local", branchId: 2 },
   ]);
+  await d.insert(s.receipts).values([
+    {
+      branchId: 1,
+      direction: "IN",
+      amount: "1000000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-DAY-CLOSE-1",
+      createdBy: ADMIN,
+    },
+    {
+      branchId: 2,
+      direction: "IN",
+      amount: "1000000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-DAY-CLOSE-2",
+      createdBy: ADMIN,
+    },
+  ]);
 }
 
 let invSeq = 0;
@@ -172,20 +196,20 @@ describe("getDayCloseReconciliation — التفكيك والثوابت", () => 
 });
 
 describe("getDayCloseReconciliation — الفرق (drift)", () => {
-  it("I2: فائض + عجز + وردية مفتوحة (لا تُحتسَب في المعدود)", async () => {
-    // فائض: افتتاحيّ 50000 + بيع 30000 ⇒ متوقَّع 80000، معدود 85000 ⇒ +5000
+  it("I2: مطابقة + عجز + وردية مفتوحة (لا تُحتسَب في المعدود)", async () => {
+    // مطابقة: افتتاحيّ 50000 + بيع 30000 ⇒ متوقَّع ومعدود 80000
     const a = await openShift({ branchId: 1, openingBalance: "50000" }, { userId: CASHIER1, branchId: 1 });
     const invA = await seedInvoice(1);
     await insertReceipt({ shiftId: a.shiftId, branchId: 1, direction: "IN", amount: "30000.00", invoiceId: invA });
-    await closeShift({ shiftId: a.shiftId, countedCash: "85000" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    await closeShift({ shiftId: a.shiftId, countedCash: "80000" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
 
-    // عجز: يبدأ بالمتبقّي المثبت 85000 + بيع 20000 ⇒ متوقَّع 105000، معدود 102000 ⇒ −3000
+    // عجز: عهدة مستقلة 85000 + بيع 20000 ⇒ متوقَّع 105000، معدود 102000 ⇒ −3000
     const b = await openShift({ branchId: 1, openingBalance: "85000" }, { userId: CASHIER2, branchId: 1 });
     const invB = await seedInvoice(1);
     await insertReceipt({ shiftId: b.shiftId, branchId: 1, direction: "IN", amount: "20000.00", invoiceId: invB, createdBy: CASHIER2 });
     await closeShift({ shiftId: b.shiftId, countedCash: "102000" }, { userId: CASHIER2, branchId: 1, role: "cashier" });
 
-    // مفتوحة: تبدأ بالمتبقّي المثبت 102000 + بيع 5000 ⇒ counted/drift = null، expected حيّ 107000
+    // مفتوحة: عهدة مستقلة 102000 + بيع 5000 ⇒ counted/drift = null، expected حيّ 107000
     const c = await openShift({ branchId: 1, openingBalance: "102000" }, { userId: CASHIER1, branchId: 1 });
     const invC = await seedInvoice(1);
     await insertReceipt({ shiftId: c.shiftId, branchId: 1, direction: "IN", amount: "5000.00", invoiceId: invC });
@@ -194,8 +218,8 @@ describe("getDayCloseReconciliation — الفرق (drift)", () => {
 
     const la = line(res, a.shiftId);
     expect(la.expected).toBe("80000.00");
-    expect(la.drift).toBe("5000.00");
-    expect(la.storedVariance).toBe("5000.00");
+    expect(la.drift).toBe("0.00");
+    expect(la.storedVariance).toBe("0.00");
 
     const lb = line(res, b.shiftId);
     expect(lb.expected).toBe("105000.00");
@@ -213,11 +237,11 @@ describe("getDayCloseReconciliation — الفرق (drift)", () => {
     expect(res.totals.shiftCount).toBe(3);
     expect(res.totals.openCount).toBe(1);
     expect(res.totals.closedCount).toBe(2);
-    expect(res.totals.counted).toBe("187000.00");
-    expect(res.totals.drift).toBe("2000.00");
-    expect(res.balancedCount).toBe(0);
-    expect(res.driftCount).toBe(2);
-    expect(res.overCount).toBe(1);
+    expect(res.totals.counted).toBe("182000.00");
+    expect(res.totals.drift).toBe("-3000.00");
+    expect(res.balancedCount).toBe(1);
+    expect(res.driftCount).toBe(1);
+    expect(res.overCount).toBe(0);
     expect(res.shortCount).toBe(1);
   });
 });

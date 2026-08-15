@@ -17,6 +17,7 @@ import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDbMoney } from "./money";
 import { shiftIdForCashTx } from "./shiftService";
+import { lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -86,6 +87,27 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
           idempotent: true as const,
         };
       }
+    }
+
+    const settlement = input.settlement ?? "CREDIT";
+    const method = input.paymentMethod ?? "CASH";
+    let prelockedCash: { shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" } | null = null;
+    if (settlement === "CASH") {
+      if (method !== "CASH") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد غير النقدي يتطلب سند قبض موثقاً" });
+      }
+      const resolved = await shiftIdForCashTx(
+        tx,
+        { userId: actor.userId, branchId: input.branchId, role: (actor as Actor & { role?: string }).role },
+        input.branchId,
+        "استرداد من المورد",
+      );
+      await lockCashSourceForUpdate(tx, {
+        branchId: input.branchId,
+        cashBucket: resolved.cashBucket,
+        shiftId: resolved.shiftId,
+      });
+      prelockedCash = resolved;
     }
 
     // إن وُجد أمر شراء مرجعي ⇒ تحقّق ملكية المورد/الفرع + سقف الكميّات.
@@ -289,14 +311,9 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     // الاسترداد النقدي اختياري: لو CASH ⇒ المورد ردّ النقد ⇒ receipt IN ⇒ يزيد الصندوق،
     // ولأنّنا أنقصنا الذمم بكامل القيمة فإن استلامنا نقداً يجب أن "يُعيد" قيمة النقد للذمم
     // كي يظل صافي الأثر: AP -= (returnedTotal − cashReceived). يُحقّق ذلك بـ PAYMENT_IN + adjustSupplier(+cash).
-    const settlement = input.settlement ?? "CREDIT";
     if (settlement === "CASH") {
       if (refPo?.agreedCurrency === "USD") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "استرداد فاتورة دولارية يُسجَّل عبر عملية صيرفة مرتبطة، لا كقبض نقدي ديناري مباشر" });
-      }
-      const method = input.paymentMethod ?? "CASH";
-      if (method !== "CASH") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد غير النقدي يتطلب سند قبض موثقاً" });
       }
       if (!refPo) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد النقدي يتطلب أمر شراء مرجعياً يثبت دفعة سابقة" });
@@ -320,27 +337,21 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا توجد دفعة سابقة تبرر استرداداً نقدياً؛ استخدم خصماً من الذمة" });
       }
       // G14 (١٩/٦/٢٦): استرداد نقدي من المورد يَلزم وردية مفتوحة (متّسق مع receivePurchase).
-      const isCash = method === "CASH";
-      let shiftId: number | null = null;
-      let cashBucket: "DRAWER" | "TREASURY" | null = null;
-      if (isCash) {
-        const g = await shiftIdForCashTx(
-          tx,
-          { userId: actor.userId, branchId: input.branchId, role: (actor as Actor & { role?: string }).role },
-          input.branchId,
-          "استرداد من المورد",
-        );
-        shiftId = g.shiftId;
-        cashBucket = g.cashBucket;
+      if (!prelockedCash) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "لم يُقفل مصدر الاسترداد النقدي من المورد",
+        });
       }
       const rRes = await tx.insert(receipts).values({
         branchId: input.branchId,
-        shiftId,
-        cashBucket,
+        shiftId: prelockedCash.shiftId,
+        cashBucket: prelockedCash.cashBucket,
         direction: "IN",
         amount: toDbMoney(cashRefund),
         paymentMethod: method,
         status: "COMPLETED",
+        approvalStatus: "APPROVED",
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(rRes);

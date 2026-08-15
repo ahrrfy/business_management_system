@@ -1,14 +1,16 @@
 // دورة حياة الأصل بعد الإنشاء: تسليم عهدة + تسجيل/إنهاء صيانة.
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull } from "drizzle-orm";
-import { assetCustodyLog, assetMaintenance, employees, fixedAssets, receipts } from "../../../drizzle/schema";
+import { assetCustodyLog, assetMaintenance, employees, expenses, fixedAssets } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { postEntry } from "../ledgerService";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { companyBranchScope } from "../companyBranchScope";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
+import { createSystemPaymentRequestTx } from "../voucher/create";
+import { postEntry } from "../ledgerService";
 
 /** تسليم عهدة: يُغلق العهدة الجارية ويفتح أخرى للموظف الجديد، ويحدّث صاحب العهدة.
  *  يتحقّق من أنّ الموظف نشط (employmentStatus='active') لمنع تسجيل عهدة على موظف منتهي/في إجازة،
@@ -56,10 +58,39 @@ export interface MaintenanceInput {
 
 export async function addMaintenance(assetId: number, m: MaintenanceInput, actor: Actor) {
   const scope = companyBranchScope(actor);
+  let paymentRequestReceiptId: number | null = null;
   await withTx(async (tx) => {
-    const a = await loadForUpdate(tx, assetId, scope);
-    if (a.status === "disposed") throw new Error("لا يمكن تسجيل صيانة لأصل مُستبعَد");
     const cost = money(m.cost ?? "0");
+    // المعاينة لا تُعتمد كحقيقة أعمال؛ غرضها تحديد mutex الخزينة فقط. ترتيب جميع
+    // المسارات النقدية للأصل هو branch/source → asset، ثم نعيد التحقق تحت قفل الأصل.
+    const previewConds = [eq(fixedAssets.id, assetId)];
+    if (scope.branchId != null) previewConds.push(eq(fixedAssets.branchId, scope.branchId));
+    const [preview] = await tx
+      .select({ branchId: fixedAssets.branchId })
+      .from(fixedAssets)
+      .where(and(...previewConds))
+      .limit(1);
+    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "الأصل غير موجود" });
+    const previewBranchId = preview.branchId != null ? Number(preview.branchId) : (actor.branchId ?? null);
+    if (cost.gt(0)) {
+      if (previewBranchId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "دفع صيانة الأصل نقداً يتطلب فرعاً محدداً لخزينة الصرف",
+        });
+      }
+      await lockCashSourceForUpdate(tx, {
+        branchId: previewBranchId,
+        cashBucket: "TREASURY",
+        shiftId: null,
+      });
+    }
+    const a = await loadForUpdate(tx, assetId, scope);
+    const branchId = a.branchId != null ? Number(a.branchId) : (actor.branchId ?? null);
+    if (cost.gt(0) && branchId !== previewBranchId) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الأصل أثناء تسجيل الصيانة — أعد المحاولة" });
+    }
+    if (a.status === "disposed") throw new Error("لا يمكن تسجيل صيانة لأصل مُستبعَد");
     const maintDate = m.maintDate ?? toDateStr();
     const res = await tx.insert(assetMaintenance).values({
       assetId,
@@ -70,30 +101,53 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
       note: m.note ?? null,
     });
     const maintId = extractInsertId(res);
-    // قيد تلقائيّ عند كل دفع (§٥، تدقيق ١٧/٧): تكلفة الصيانة النقدية تخرج نقداً من الخزينة بإيصال OUT +
-    // قيد PAYMENT_OUT (نمط اقتناء الأصل النقديّ create.ts). كان صفّ الصيانة يُدرَج بلا أثرٍ ماليّ ⇒
-    // مالٌ يُدفَع بلا قيد دفتريّ ولا نقصٍ في الخزينة. الصيانة الصفرية (كفالة) لا تُرحّل قيداً.
+    // تسجيل الصيانة يثبت الحدث والمصروف فوراً؛ الدفع الخارجي طلبٌ معلّق لا يلمس الخزينة
+    // حتى ينفذه مالك نشط مختلف عبر approveVoucher. الصيانة الصفرية (كفالة) بلا طلب دفع.
     if (cost.gt(0)) {
-      const branchId = a.branchId != null ? Number(a.branchId) : (actor.branchId ?? null);
-      const rRes = await tx.insert(receipts).values({
+      if (branchId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "دفع صيانة الأصل نقداً يتطلب فرعاً محدداً لخزينة الصرف",
+        });
+      }
+      const request = await createSystemPaymentRequestTx(tx, {
         branchId,
-        cashBucket: "TREASURY",
-        direction: "OUT",
         amount: toDbMoney(cost),
         paymentMethod: "CASH",
-        status: "COMPLETED",
+        partyType: "OTHER",
+        counterpartyName: m.vendor?.trim() || `صيانة أصل ${a.code ?? assetId}`,
+        description: `صيانة أصل ${a.code ?? assetId} — ${m.type}`,
+        referenceNumber: `ASSET-MAINT-${maintId}`,
+        voucherDate: maintDate,
+        clientRequestId: `asset-maintenance-${maintId}`,
+      }, actor, { kind: "ASSET_MAINTENANCE", assetId, maintenanceId: maintId });
+      paymentRequestReceiptId = request.receiptId;
+      // الاعتراف بالصيانة يقع عند تسجيل الخدمة، لا عند سدادها. receipt المعلّق هو
+      // clearing قابل للرفض وإعادة التقديم؛ لا يكرر expense/ledger عند الدفع لاحقاً.
+      await tx.insert(expenses).values({
+        branchId,
+        shiftId: null,
+        expenseDate: new Date(`${maintDate}T00:00:00.000Z`),
+        category: "MAINTENANCE",
+        amount: toDbMoney(cost),
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        source: "CASH",
+        description: `صيانة أصل ${a.code ?? assetId} — ${m.type}`,
+        referenceNumber: `ASSET-MAINT-${maintId}`,
+        payee: m.vendor?.trim() || null,
+        receiptId: request.receiptId,
+        status: "ACTIVE",
         createdBy: actor.userId,
-        description: `صيانة أصل ${a.code ?? assetId}`,
       });
-      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_OUT",
         branchId,
-        receiptId,
+        receiptId: null,
         amount: cost,
-        entryDate: new Date(maintDate),
-        dedupeKey: `ASSET_MAINT:${maintId}`,
-        notes: `صيانة أصل ${a.code ?? assetId} — ${m.type}`,
+        dedupeKey: `ASSET_MAINT_ACCRUAL:${maintId}`,
+        entryDate: new Date(`${maintDate}T00:00:00.000Z`),
+        notes: `استحقاق صيانة أصل ${a.code ?? assetId} — ${m.type}`,
       });
     }
     // الأصل قيد الصيانة الآن (إن لم يكن مُستبعَداً).
@@ -101,7 +155,10 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
       await tx.update(fixedAssets).set({ status: "maintenance" }).where(eq(fixedAssets.id, assetId));
     }
   });
-  return getAsset(assetId, scope);
+  const asset = await getAsset(assetId, scope);
+  return asset
+    ? { ...asset, paymentPending: paymentRequestReceiptId != null, paymentRequestReceiptId }
+    : null;
 }
 
 /**

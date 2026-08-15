@@ -5,7 +5,7 @@
  * كلّها تنعكس فوراً في المتجر العلني `/store`.
  */
 import { useState } from "react";
-import { Boxes, Check, Eye, EyeOff, ImagePlus, Loader2, PackageSearch, Save, Search, Star, X } from "lucide-react";
+import { AlertTriangle, Boxes, Check, Eye, EyeOff, ImagePlus, Loader2, PackageSearch, Save, Search, Star, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmt, fmtInt } from "@/lib/money";
@@ -14,15 +14,32 @@ import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 type Filter = "all" | "featured" | "hidden" | "noImage";
 const PAGE = 40;
 
+const READINESS_LABELS: Record<string, string> = {
+  PRODUCT_INACTIVE: "المنتج معطّل",
+  SERVICE_PRODUCT: "منتج خدمي",
+  PRODUCT_HIDDEN: "مخفي من المتجر",
+  CATEGORY_HIDDEN: "الفئة معطّلة أو مخفية من المتجر",
+  NO_ACTIVE_VARIANT: "لا متغيّر نشط",
+  NO_STORE_SALE_UNIT: "لا وحدة بيع للمتجر",
+  NO_RETAIL_PRICE: "لا سعر مفرد",
+  INVALID_CONVERSION_FACTOR: "معامل الوحدة غير صالح",
+  NO_STOCK_ROW: "لا رصيد مسجّل للفرع",
+  NEGATIVE_STOCK: "رصيد سالب",
+  OUT_OF_STOCK: "نافد",
+  BELOW_SALE_UNIT_FACTOR: "الرصيد أقل من معامل وحدة البيع",
+};
+
 export default function StoreCatalog() {
   const [q, setQ] = useState("");
   const [categoryId, setCategoryId] = useState<number | "">("");
   const [filter, setFilter] = useState<Filter>("all");
   const [limit, setLimit] = useState(PAGE);
-  const [stockFor, setStockFor] = useState<{ productId: number; variantId: number; name: string; stockBase: number } | null>(null);
+  const [stockFor, setStockFor] = useState<{ variantId: number; name: string; stockBase: number } | null>(null);
   const [imageFor, setImageFor] = useState<{ productId: number; name: string; imageUrl: string | null } | null>(null);
 
   const utils = trpc.useUtils();
+  const meQ = trpc.auth.me.useQuery();
+  const isAdmin = meQ.data?.role === "admin";
   const catsQ = trpc.storeAdmin.categories.list.useQuery();
   const listQ = trpc.storeAdmin.catalog.list.useQuery({
     q: q.trim() || undefined,
@@ -53,9 +70,16 @@ export default function StoreCatalog() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-lg font-bold"><Boxes aria-hidden className="size-5 text-primary" /> الكتالوج والعرض</h2>
         <span className="text-xs text-muted-foreground">
-          {fmtInt(total)} منتج بالكتالوج (يشمل المعطّل/المخفيّ) · <span className="font-bold text-foreground">{fmtInt(listQ.data?.sellableTotal ?? 0)}</span> قابل للشراء الآن في المتجر
+          {fmtInt(total)} بالكتالوج · <span className="font-bold text-foreground">{fmtInt(listQ.data?.publishableTotal ?? 0)}</span> منشور · <span className="font-bold text-[var(--sem-pos)]">{fmtInt(listQ.data?.sellableTotal ?? 0)}</span> قابل للشراء الآن
         </span>
       </div>
+
+      {!meQ.isLoading && !isAdmin && (
+        <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>يمكنك مراجعة مخزون فرع التنفيذ ورفع طلب تسوية. النشر والإخفاء والصور والتمييز صلاحيات مركزية لمالك النظام.</span>
+        </div>
+      )}
 
       {/* شريط الفلترة */}
       <div className="space-y-2 rounded-2xl border border-border bg-card p-3">
@@ -82,6 +106,8 @@ export default function StoreCatalog() {
       {/* القائمة */}
       {listQ.isLoading ? (
         <div className="flex justify-center py-16 text-muted-foreground"><Loader2 aria-hidden className="size-6 animate-spin" /></div>
+      ) : listQ.isError ? (
+        <div className="rounded-2xl border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-8 text-center text-sm text-[var(--sem-neg)]">{listQ.error.message}</div>
       ) : rows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
           <PackageSearch aria-hidden className="mx-auto mb-2 size-8 opacity-40" />
@@ -90,41 +116,75 @@ export default function StoreCatalog() {
       ) : (
         <div className="space-y-2">
           {rows.map((p) => {
-            const stockLow = p.stockBase <= 0;
             return (
-              <div key={p.productId} className="flex items-center gap-3 rounded-2xl border border-border bg-card p-3">
-                {/* صورة */}
-                <button onClick={() => setImageFor({ productId: p.productId, name: p.name, imageUrl: p.imageUrl })} title="تعيين الصورة" className="group relative size-16 shrink-0 overflow-hidden rounded-xl bg-muted">
-                  {p.imageUrl
-                    ? <img src={p.imageUrl} alt={p.name} className="size-full object-cover" />
-                    : <span className="flex size-full items-center justify-center text-muted-foreground"><ImagePlus aria-hidden className="size-6 opacity-40" /></span>}
-                  <span className="absolute inset-0 hidden items-center justify-center bg-black/40 text-white group-hover:flex"><ImagePlus aria-hidden className="size-5" /></span>
-                </button>
-
-                {/* تفاصيل */}
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <p className="truncate text-sm font-bold">{p.name}</p>
-                    {p.isFeatured && <span className="flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"><Star aria-hidden className="size-2.5" /> مميّز</span>}
-                    {!p.showInStore && <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">مخفيّ</span>}
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    {p.categoryName ?? "بلا قسم"}
-                    {p.retailPrice != null && <> · <span className="font-medium tabular-nums text-foreground">{fmt(p.retailPrice)}</span> د.ع{p.saleUnitName ? ` / ${p.saleUnitName}` : ""}</>}
-                  </p>
-                  <button onClick={() => p.variantId && setStockFor({ productId: p.productId, variantId: p.variantId, name: p.name, stockBase: p.stockBase })} disabled={!p.variantId} title={stockLow ? "لن يظهر هذا المنتج في واجهة العميل حتى يتوفر رصيد" : "متاح للشراء في واجهة العميل"} className={`mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 ${stockLow ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
-                    <Boxes aria-hidden className="size-3" /> المخزون: {fmtInt(p.stockBase)}{stockLow ? " — نافد (مخفي عن العميل)" : " — متاح للشراء"}
+              <div key={p.productId} className="rounded-2xl border border-border bg-card p-3">
+                <div className="flex items-center gap-3">
+                  {/* صورة */}
+                  <button onClick={() => { if (isAdmin) setImageFor({ productId: p.productId, name: p.name, imageUrl: p.imageUrl }); }} disabled={!isAdmin} title={isAdmin ? "تعيين الصورة" : "تعيين الصورة لمالك النظام فقط"} className="group relative size-16 shrink-0 overflow-hidden rounded-xl bg-muted disabled:cursor-default">
+                    {p.imageUrl
+                      ? <img src={p.imageUrl} alt={p.name} className="size-full object-cover" />
+                      : <span className="flex size-full items-center justify-center text-muted-foreground"><ImagePlus aria-hidden className="size-6 opacity-40" /></span>}
+                    {isAdmin && <span className="absolute inset-0 hidden items-center justify-center bg-black/40 text-white group-hover:flex"><ImagePlus aria-hidden className="size-5" /></span>}
                   </button>
+
+                  {/* تفاصيل */}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="truncate text-sm font-bold">{p.name}</p>
+                      {p.isFeatured && <span className="flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"><Star aria-hidden className="size-2.5" /> مميّز</span>}
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${p.inStock ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : p.publishable ? "bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]" : "bg-[var(--sem-neg-bg)] text-[var(--sem-neg)]"}`}>
+                        {p.inStock ? "قابل للشراء" : p.publishable ? "منشور — غير متاح" : "غير جاهز للنشر"}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      {p.categoryName ?? "بلا قسم"}
+                      {p.retailPrice != null && <> · <span className="font-medium tabular-nums text-foreground">{fmt(p.retailPrice)}</span> د.ع{p.saleUnitName ? ` / ${p.saleUnitName}` : ""}</>}
+                    </p>
+                    {p.readinessReasons.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {p.readinessReasons.map((reason) => <span key={reason} className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-neg-bg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--sem-neg)]"><AlertTriangle aria-hidden className="size-2.5" />{READINESS_LABELS[reason] ?? reason}</span>)}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* أزرار */}
+                  {isAdmin && <div className="flex shrink-0 items-center gap-1.5">
+                    <button onClick={() => featM.mutate({ productId: p.productId, isFeatured: !p.isFeatured })} disabled={featM.isPending} title={p.isFeatured ? "إلغاء التمييز" : "تمييز (يتصدّر العرض)"} aria-label="تمييز" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.isFeatured ? "text-amber-500" : "text-muted-foreground"}`}>
+                      <Star aria-hidden className={`size-4 ${p.isFeatured ? "fill-amber-400" : ""}`} />
+                    </button>
+                    <button onClick={() => visM.mutate({ productId: p.productId, showInStore: !p.showInStore })} disabled={visM.isPending} title={p.showInStore ? "إخفاء من المتجر" : "إظهار في المتجر"} aria-label="إظهار/إخفاء" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.showInStore ? "text-emerald-600" : "text-muted-foreground"}`}>
+                      {p.showInStore ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />}
+                    </button>
+                  </div>}
                 </div>
 
-                {/* أزرار */}
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <button onClick={() => featM.mutate({ productId: p.productId, isFeatured: !p.isFeatured })} disabled={featM.isPending} title={p.isFeatured ? "إلغاء التمييز" : "تمييز (يتصدّر العرض)"} aria-label="تمييز" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.isFeatured ? "text-amber-500" : "text-muted-foreground"}`}>
-                    <Star aria-hidden className={`size-4 ${p.isFeatured ? "fill-amber-400" : ""}`} />
-                  </button>
-                  <button onClick={() => visM.mutate({ productId: p.productId, showInStore: !p.showInStore })} disabled={visM.isPending} title={p.showInStore ? "إخفاء من المتجر" : "إظهار في المتجر"} aria-label="إظهار/إخفاء" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.showInStore ? "text-emerald-600" : "text-muted-foreground"}`}>
-                    {p.showInStore ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />}
-                  </button>
+                {/* الرصيد يُعرض ويُعدّل لكل متغيّر صريح؛ لا مجموع منتجات ولا MIN variant. */}
+                <div className="mt-3 grid gap-2 border-t border-border pt-3 md:grid-cols-2">
+                  {p.variants.length === 0 ? (
+                    <p className="text-xs text-[var(--sem-neg)]">لا يوجد متغيّر يمكن ربط المخزون به.</p>
+                  ) : p.variants.map((variant) => {
+                    const saleUnits = variant.units.filter((unit) => unit.isActive && unit.isStoreSaleUnit);
+                    return (
+                      <div key={variant.variantId} className="rounded-xl border border-border bg-background p-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-bold">{variant.label}</p>
+                            <p className="text-[10px] text-muted-foreground">SKU: {variant.sku}</p>
+                          </div>
+                          <button onClick={() => setStockFor({ variantId: variant.variantId, name: `${p.name} — ${variant.label}`, stockBase: variant.stockBase })} disabled={!variant.isActive} className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-bold hover:bg-accent disabled:opacity-50" title="إنشاء طلب تسوية لهذا المتغيّر تحديداً">
+                            <Boxes aria-hidden className="size-3" /> {fmtInt(variant.stockBase)} أساس
+                          </button>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {saleUnits.length === 0 ? <span className="text-[10px] text-[var(--sem-neg)]">لا وحدة بيع متجر نشطة</span> : saleUnits.map((unit) => (
+                            <span key={unit.productUnitId} className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${unit.inStock && variant.isActive ? "bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]" : "bg-muted text-muted-foreground"}`} title={`المعامل: ${unit.conversionFactor} من الوحدة الأساس`}>
+                              {unit.unitName}: {!variant.isActive ? "المتغيّر معطّل" : unit.inStock ? `${fmtInt(unit.availableUnits)} متاح` : READINESS_LABELS[unit.readinessReasons[0] ?? "OUT_OF_STOCK"]}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -139,7 +199,7 @@ export default function StoreCatalog() {
       )}
 
       {stockFor && <StockDialog target={stockFor} onClose={() => setStockFor(null)} onDone={invalidate} />}
-      {imageFor && <ImageDialog target={imageFor} onClose={() => setImageFor(null)} onDone={invalidate} />}
+      {isAdmin && imageFor && <ImageDialog target={imageFor} onClose={() => setImageFor(null)} onDone={invalidate} />}
     </div>
   );
 }
@@ -148,7 +208,7 @@ export default function StoreCatalog() {
 function StockDialog({ target, onClose, onDone }: { target: { variantId: number; name: string; stockBase: number }; onClose: () => void; onDone: () => void }) {
   const [qty, setQty] = useState(String(target.stockBase));
   const setM = trpc.storeAdmin.catalog.setStock.useMutation({
-    onSuccess: () => { notify.ok("حُدّث المخزون"); onDone(); onClose(); },
+    onSuccess: () => { notify.ok("أُرسل طلب تسوية المخزون للاعتماد"); onDone(); onClose(); },
     onError: (e) => notify.err(e),
   });
   const n = Number(qty);

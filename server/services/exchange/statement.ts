@@ -48,8 +48,9 @@ export async function getExchangeStatement(input: StatementInput) {
   let totalFxDiff = new Decimal(0);
   let totalUsdBought = new Decimal(0);
   for (const t of txns) {
-    // العمليات المعكوسة (REVERSED) تظهر في السجلّ لكنها تُستثنى من الإجماليات (تدقيق ١٧/٧).
-    if (t.status === "REVERSED") continue;
+    // السجل يعرض الطلبات المعلّقة والمعكوسة للتدقيق، لكن الإجماليات تمثّل الحركة
+    // النافذة وحدها. PENDING_APPROVAL لا يرفع رصيد الصيرفة ولا يخرج نقداً بعد.
+    if (t.status !== "ACTIVE") continue;
     // إيداع/سحب دولار مباشر: iqdAmount=0 دائماً (محفظتان معزولتان) ⇒ مجموع IQD لا يتأثّر.
     if (t.type === "DEPOSIT") {
       totalDepositIqd = totalDepositIqd.plus(money(t.iqdAmount));

@@ -201,7 +201,7 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
         { invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } },
         manager,
       ),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     // صفر أثر: لا مخزون تحرّك ولا قيد RETURN كُتب (الرفض قبل أي كتابة تُلمَس بصرياً هنا خارج الفحص التالي).
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, itemId)))[0];

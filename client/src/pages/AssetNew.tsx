@@ -52,7 +52,14 @@ export default function AssetNew() {
   );
 
   const create = trpc.assets.create.useMutation({
-    onSuccess: (a) => { notify.ok(`أُضيف الأصل ${a?.code ?? ""}`); navigate(a?.id ? `/assets/${a.id}` : "/assets/register"); },
+    onSuccess: (a) => {
+      notify.ok(
+        a?.paymentPending
+          ? `حُفظ طلب الأصل ${a.code} معلّقاً — لا يظهر أصلاً نشطاً ولا يبدأ إهلاكه قبل اعتماد مالكٍ آخر ودفعه من الخزينة`
+          : `أُضيف الأصل ${a?.code ?? ""}`,
+      );
+      navigate(a?.id ? `/assets/${a.id}` : "/assets/register");
+    },
     onError: (e) => { setError(e.message); notify.err(e); },
   });
 

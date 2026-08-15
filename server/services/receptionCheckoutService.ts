@@ -8,6 +8,7 @@ import type { PriceTier } from "./pricing";
 import { createSaleInTx } from "./sale/create";
 import type { PrintSaleLineInput } from "./printSaleService";
 import { createPrintSaleInTx } from "./printSaleService";
+import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 import type { CreateWorkOrderInput } from "./workOrder/types";
 import { createWorkOrderInTx } from "./workOrder/create";
 import { dispatchInvoiceInTx } from "./delivery/dispatchInvoice";
@@ -127,6 +128,7 @@ async function isCompleteReplay(tx: Parameters<Parameters<typeof withTx>[0]>[0],
  * (workOrders.receptionCheckout المباشر + offline.replayReception — يبقيان إلى الأبد).
  */
 export async function checkoutReception(input: ReceptionCheckoutInput, actor: Actor) {
+  assertPosPaymentMethodEnabled(input.paymentMethod);
   return withTx((tx) => checkoutReceptionInTx(tx, input, actor));
 }
 
@@ -135,6 +137,9 @@ export async function checkoutReceptionInTx(
   input: ReceptionCheckoutInput,
   actor: Actor,
 ) {
+  // commitDraft يستدعي النواة داخل معاملته بلا الغلاف؛ لذلك الحارس هنا أيضاً.
+  // يسبق isCompleteReplay حتى لا يكشف مفتاحٌ مخمّن فاتورةً قديمة غير نقدية.
+  assertPosPaymentMethodEnabled(input.paymentMethod);
   {
     // إعادة ردّ عملية سبق التزامها لا تحتاج وردية ما زالت مفتوحة. هذا مهم إذا وصل الالتزام
     // إلى القاعدة ثم انقطع الرد وأُغلقت الوردية قبل إعادة المحاولة. أي عملية جديدة/ناقصة تمرّ

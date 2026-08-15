@@ -25,19 +25,24 @@ import {
 } from "../advancesService";
 import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, payRun, updateItem } from "../payrollService";
+import { approveVoucher } from "../voucherService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" };
 // SOD: المُعتمِد/الدافع يجب أن يختلف عن المُولِّد.
 const APPROVER = { userId: 2, branchId: 1, role: "manager" };
 let requestSeq = 0;
-function grantAdvance(
+async function grantAdvance(
   input: Omit<GrantAdvanceInput, "clientRequestId"> & { clientRequestId?: string },
   actor: typeof ACTOR,
 ) {
-  return grantAdvanceService(
+  const requested = await grantAdvanceService(
     { ...input, clientRequestId: input.clientRequestId ?? `advance-test-${++requestSeq}` },
     actor,
   );
+  if (requested.status !== "PENDING_APPROVAL") return requested;
+  await approveVoucher(Number(requested.receiptId), APPROVER);
+  const [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.receiptId, Number(requested.receiptId)));
+  return { ...row!, employeeName: requested.employeeName, voucherNumber: requested.voucherNumber };
 }
 
 const TABLES = [
@@ -75,8 +80,13 @@ async function seedBase() {
   ]);
   await d.insert(s.users).values([
     { id: 1, openId: "t-admin", name: "مدير", role: "admin", branchId: 1 },
-    { id: 2, openId: "t-approver", name: "مدقّق", role: "manager", branchId: 1 },
+    { id: 2, openId: "t-approver", name: "مدقّق", role: "manager", branchId: 1, isOwner: true },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "IN",
+    amount: "100000000.00", paymentMethod: "CASH", status: "COMPLETED",
+    referenceNumber: "ADV-TEST-FUND", createdBy: 2,
+  });
 }
 beforeEach(async () => {
   requestSeq = 0;
@@ -146,11 +156,21 @@ describe("advancesService — المنح", () => {
     expect(Number(bal.balance)).toBe(200000);
   });
 
-  it("قرار Maker-Checker: مبلغ يبلغ عتبة الاعتماد الثنائي يُرفض قبل إنشاء أي سند أو سلفة", async () => {
+  it("طلب السلفة يبقى معلّقاً بلا سلفة/صرف حتى اعتماد المالك مهما بلغ المبلغ", async () => {
     const emp = await seedEmployee();
-    await expect(grantAdvance({ employeeId: emp.id, branchId: 1, amount: "1000000" }, ACTOR)).rejects.toThrow(/عتبة الاعتماد/);
-    expect((await db().select().from(s.receipts)).length).toBe(0);
+    const pending = await grantAdvanceService({
+      employeeId: emp.id, branchId: 1, amount: "1000000", clientRequestId: "large-advance-pending",
+    }, ACTOR);
+    expect(pending.status).toBe("PENDING_APPROVAL");
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(pending.receiptId)));
+    expect(receipt.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(receipt.cashBucket).toBeNull();
     expect((await db().select().from(s.employeeAdvances)).length).toBe(0);
+    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"))).length).toBe(0);
+
+    await approveVoucher(Number(pending.receiptId), APPROVER);
+    expect((await db().select().from(s.employeeAdvances)).length).toBe(1);
+    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"))).length).toBe(1);
   });
 
   it("لا مُرفق إلزامي: سلفة بمبلغ كبير بلا مُرفق تُمنَح (٣١/٧ — أُلغيت عتبة المُرفق)", async () => {

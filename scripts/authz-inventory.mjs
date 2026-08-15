@@ -31,13 +31,20 @@ const OUT_DIR = join(ROOT, "docs", "authz");
 /**
  * تصنيف كل procedure مُصدَّر من server/trpc.ts: أي بوّابة يمثّل، وما الوحدة/المستوى/الأدوار،
  * وهل يفرض فرعاً. مشتقّ يدوياً من قراءة server/trpc.ts (المصدر الوحيد للبوّابات).
- * authority: raw-role | module-gate | module-map | token | none | admin | platform
+ * authority: raw-role | module-gate | module-map | token | owner | public-read | none | admin | platform
  */
 const PROCEDURES = {
   publicProcedure: {
     authority: "none",
     module: null,
     level: null,
+    roles: [],
+    branch: false,
+  },
+  storefrontPublicReadProcedure: {
+    authority: "public-read",
+    module: "storefront",
+    level: "READ",
     roles: [],
     branch: false,
   },
@@ -52,6 +59,13 @@ const PROCEDURES = {
     authority: "none",
     module: null,
     level: null,
+    roles: [],
+    branch: false,
+  },
+  ownerProcedure: {
+    authority: "owner",
+    module: "ownership",
+    level: "APPROVE",
     roles: [],
     branch: false,
   },
@@ -1050,6 +1064,8 @@ function flagsOf(ep, meta) {
   else {
     if (meta.authority === "none" && ep.kind === WRITE_KIND)
       f.push("WRITE_WITHOUT_MODULE_GATE");
+    if (meta.authority === "public-read" && ep.kind === WRITE_KIND)
+      f.push("WRITE_WITHOUT_MODULE_GATE");
     if (meta.authority === "none" && ep.kind === "query")
       f.push("READ_WITHOUT_MODULE_GATE");
     if (meta.authority === "raw-role") f.push("RAW_ROLE_GATE");
@@ -1074,7 +1090,11 @@ function flagsOf(ep, meta) {
     )
       f.push("RAW_ROLE_GATE");
   }
-  if (ep.procedure === "publicProcedure") f.push("UNAUTHENTICATED");
+  if (
+    ep.procedure === "publicProcedure" ||
+    ep.procedure === "storefrontPublicReadProcedure"
+  )
+    f.push("UNAUTHENTICATED");
   const s = sensitivityOf(ep);
   if (s.level === "HIGH") f.push("SENSITIVE_ACTION");
   return f;

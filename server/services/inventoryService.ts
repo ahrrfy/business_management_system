@@ -5,6 +5,7 @@ import { branchStock, inventoryMovements, openingModeSettings, productUnits, pro
 import type { Tx } from "../db";
 import type { DecimalInput } from "./money";
 import { extractInsertId } from "../lib/insertId";
+import { loadVariantAvailability } from "./catalog/variantAvailability";
 
 /** يَتحقّق إن كان المُتغيّر يَنتمي لمُنتج خِدمي (لا مَخزون). يُستعمَل لِتجاوز inventoryMovements/branchStock. */
 export async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
@@ -91,6 +92,16 @@ export interface ApplyMovementArgs {
    * الافتتاحي بعد ذلك. يطابق فرع OPENING في setStock.
    */
   stampOpened?: boolean;
+  /**
+   * استثناء تخصيص طلب المتجر الجاري فقط عند تحويله إلى فاتورة. يبقى reservationStock
+   * وكل طلب نشط آخر محمياً تحت mutex المتغيّر/الرصيد نفسه. حقل داخلي لا تقبله الراوترات.
+   */
+  onlineOrderAllocationExemptionId?: number;
+  /**
+   * مجموع الحجز الرسمي الجاري + الحجوزات الأحدث منه المسموح بتجاوزها وفق FIFO، بوحدة الأساس.
+   * يُطرح من formalReservationBase وحده (وبحدّه)، فلا يعفي حجزاً أقدم ولا تخصيص طلب إلكتروني.
+   */
+  formalReservationExemptionBase?: number;
 }
 export interface ApplyMovementResult {
   movementId: number;
@@ -140,6 +151,17 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     });
   }
 
+  // حارس الخصم المركزي: كل قناة (POS/API/dispatch/transfer) ترى الحجز الرسمي وتخصيصات
+  // الطلبات الإلكترونية تحت الأقفال نفسها. dispatch يستثني طلبه وحده، فلا يخصم حصة B
+  // عند شحن A. allowNegative=true محجوز لوقائع خرجت فعلاً (offline/material consumption)
+  // ويجب تسجيلها ولو كشفت عجزاً؛ المسارات الحيّة لا تتجاوز هذا الحارس.
+  const lockedAvailability = DEDUCTING.has(a.movementType)
+    ? (await loadVariantAvailability(tx, a.branchId, [a.variantId], {
+        lock: true,
+        excludeOnlineOrderId: a.onlineOrderAllocationExemptionId,
+      })).get(a.variantId)
+    : undefined;
+
   // اضمن وجود صفّ الرصيد قبل القفل — FOR UPDATE لا يقفل شيئاً على صفّ غير موجود (يتسرّب بيعٌ زائد/فقدُ تحديث).
   await tx
     .insert(branchStock)
@@ -156,6 +178,30 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   // «وضع الافتتاح»: السماح المشروط يسري على غير المُفتتَح فقط — openedAt مقروء تحت نفس القفل
   // (صفٌّ يُنشأ الآن = غير مُفتتَح بداهةً؛ واعتمادُ جردٍ افتتاحي متزامن يتسلسل على هذا القفل).
   const negativeAllowed = a.allowNegative || (a.allowNegativeUnopened === true && rows[0]?.openedAt == null);
+
+  const requestedFormalExemption = Number.isSafeInteger(a.formalReservationExemptionBase)
+    && Number(a.formalReservationExemptionBase) > 0
+    ? Number(a.formalReservationExemptionBase)
+    : 0;
+  const formalReservationExemption = Math.min(
+    lockedAvailability?.formalReservationBase ?? 0,
+    requestedFormalExemption,
+  );
+  const reservedBase = Math.max(0, (lockedAvailability?.reservedBase ?? 0) - formalReservationExemption);
+  const availableAfterAllocations = Math.max(0, currentQty - reservedBase);
+  if (
+    DEDUCTING.has(a.movementType) &&
+    reservedBase > 0 &&
+    a.baseQuantity > availableAfterAllocations &&
+    a.allowNegative !== true
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        `المتاح بعد الحجوزات وطلبات المتجر ${availableAfterAllocations} وحدة أساس، ` +
+        `والمطلوب ${a.baseQuantity} — لا يمكن استهلاك مخزون مخصّص لطلب آخر`,
+    });
+  }
 
   const sign = SIGN[a.movementType];
   if (DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity && !negativeAllowed) {

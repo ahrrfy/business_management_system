@@ -159,6 +159,28 @@ describe("G2 — التسوية الحرّة محصورة بالعهدة الس�
     const ok = await settleDeliveryBalance({ branchId: 1, partyId: 1, amount: "3000.00", clientRequestId: "g2-b" }, CASHIER);
     expect(ok.partyBalanceAfter).toBe("10000.00");
   });
+
+  it("تسوية سائبة وتوريد إرسالية لنفس الجهة يتسلسلان source→party بلا deadlock", async () => {
+    await db().update(s.deliveryParties).set({ currentBalance: "3000.00" }).where(eq(s.deliveryParties.id, 1));
+    const shift = await openReception();
+    const { consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g2-race");
+
+    const results = await Promise.allSettled([
+      settleDeliveryBalance({
+        branchId: 1, partyId: 1, amount: "3000.00", clientRequestId: "g2-race-settle",
+      }, CASHIER),
+      recordDeliveryRemittance({
+        branchId: 1,
+        partyId: 1,
+        countedCash: "10000.00",
+        clientRequestId: "g2-race-remit",
+        lines: [{ consignmentId, collectedAmount: "10000.00" }],
+      }, CASHIER),
+    ]);
+
+    expect(results.filter((result) => result.status === "rejected")).toEqual([]);
+    expect(await partyBalance()).toBe("0.00");
+  }, 15_000);
 });
 
 describe("G3 — الشطب الموجَّه يقفل الإرسالية والفاتورة وذمّة العميل معاً", () => {
@@ -452,6 +474,7 @@ describe("G13 — codAmount عند إسناد فاتورة يطرح المرتج
 
 describe("G14 — استرداد العجز المشطوب محصور بفرع الشطب", () => {
   it("شُطب على الفرع ١ ⇒ الاسترداد من فرعٍ آخر يُرفض (عكس الخسارة يقع حيث وقعت)", async () => {
+    await db().insert(s.branches).values({ id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" });
     const shift = await openReception();
     const { consignmentId } = await deliveredCreditInvoice(shift.shiftId, "g14");
     await writeOffDeliveryShortfall(
@@ -492,6 +515,36 @@ describe("G15 — استرداد العجز المشطوب مسقوفٌ بالخ
       recoverDeliveryWriteOff({ branchId: 1, partyId: 1, amount: "3000.00", clientRequestId: "g15-y" }, MANAGER),
     ).rejects.toThrow(/يتجاوز صافي الخسارة المشطوبة/);
   });
+
+  it("استرداد شطب وتوريد إرسالية أخرى لنفس الجهة يتسلسلان source→party بلا deadlock", async () => {
+    const shift = await openReception();
+    const first = await deliveredCreditInvoice(shift.shiftId, "g15-race-first");
+    await writeOffDeliveryShortfall({
+      branchId: 1,
+      partyId: 1,
+      amount: "10000.00",
+      reason: "شطب لسباق الاسترداد",
+      consignmentId: first.consignmentId,
+      clientRequestId: "g15-race-writeoff",
+    }, MANAGER);
+    const second = await deliveredCreditInvoice(shift.shiftId, "g15-race-second");
+
+    const results = await Promise.allSettled([
+      recoverDeliveryWriteOff({
+        branchId: 1, partyId: 1, amount: "10000.00", clientRequestId: "g15-race-recover",
+      }, MANAGER),
+      recordDeliveryRemittance({
+        branchId: 1,
+        partyId: 1,
+        countedCash: "10000.00",
+        clientRequestId: "g15-race-remit",
+        lines: [{ consignmentId: second.consignmentId, collectedAmount: "10000.00" }],
+      }, CASHIER),
+    ]);
+
+    expect(results.filter((result) => result.status === "rejected")).toEqual([]);
+    expect(await partyBalance()).toBe("0.00");
+  }, 15_000);
 });
 
 describe("G11 — توريد إرسالية COUNTER قديمة يقيّد التبرئة سالبة", () => {

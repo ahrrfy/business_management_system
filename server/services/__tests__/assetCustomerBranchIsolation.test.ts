@@ -9,8 +9,10 @@ import * as schema from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
+import { approveVoucher } from "../voucherService";
 
 const TABLES = [
+  "idempotencyKeys",
   "auditLogs",
   "accountingEntries",
   "receipts",
@@ -287,6 +289,23 @@ describe("assets company and branch scope", () => {
       usefulLifeYears: 5,
       status: "active",
     });
+    await db().insert(schema.receipts).values([
+      {
+        branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "10000.00",
+        paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+        referenceNumber: "SCOPE-MOVE-FUND-1", createdBy: 1,
+      },
+      {
+        branchId: 2, cashBucket: "TREASURY", direction: "IN", amount: "10000.00",
+        paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+        referenceNumber: "SCOPE-MOVE-FUND-2", createdBy: 1,
+      },
+      {
+        branchId: 1, cashBucket: "TREASURY", direction: "OUT", amount: "1000.00",
+        paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+        referenceNumber: "ASSET-ACQ-606", createdBy: 1,
+      },
+    ]);
     const moved = await admin.assets.update({
       id: 606,
       name: "Movable asset",
@@ -297,7 +316,12 @@ describe("assets company and branch scope", () => {
       usefulLifeYears: 5,
       depreciationMethod: "sl",
     });
-    expect(moved.branchId).toBe(2);
+    expect(moved).toMatchObject({ branchId: 1, paymentPending: true });
+    const [request] = await db().select().from(schema.receipts)
+      .where(eq(schema.receipts.referenceNumber, "ASSET-REACQ-606-1"));
+    await approveVoucher(Number(request.id), { userId: 5, branchId: 1, role: "manager" });
+    const finalized = await admin.assets.get({ id: 606 });
+    expect(finalized.branchId).toBe(2);
 
     const entries = await db()
       .select({ key: schema.accountingEntries.dedupeKey, branchId: schema.accountingEntries.branchId })

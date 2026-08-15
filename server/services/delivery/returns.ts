@@ -1,13 +1,18 @@
 // إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { deliveryConsignments, deliveryParties, invoiceItemBundleComponents, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
 import { adjustCustomerBalance, adjustDeliveryBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
-import { computeExpectedCash, resolveBranchCashShiftTx } from "../shiftService";
+import { resolveBranchCashShiftTx } from "../shiftService";
+import {
+  assertCashOutAvailable,
+  lockCashSourceForUpdate,
+  MATERIALIZED_RECEIPT_STATUSES,
+} from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
@@ -26,18 +31,24 @@ export async function returnConsignment(
     // أيّ كتابة (قراءة خفيفة بلا قفل — القفل الحقيقيّ أدناه يعيد قراءة الصفّ كاملاً).
     // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران الفروع (owner مُطبَّع ⇒ admin)؛
     // المدير صار مقيَّداً بفرعه (كان `|| manager` يعكس إرسالية فرعٍ آخر ويردّ عربوناً من أدراجه).
+    const cnPreview = (
+      await tx
+        .select({
+          id: deliveryConsignments.id,
+          branchId: deliveryConsignments.branchId,
+          partyId: deliveryConsignments.partyId,
+          invoiceId: deliveryConsignments.invoiceId,
+          consignmentNumber: deliveryConsignments.consignmentNumber,
+          feeSettledAt: deliveryConsignments.feeSettledAt,
+        })
+        .from(deliveryConsignments)
+        .where(eq(deliveryConsignments.id, consignmentId))
+        .limit(1)
+    )[0];
+    if (!cnPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
     const scopedBranch = actor.role === "admin" ? null : (actor.branchId ?? null);
-    if (scopedBranch != null) {
-      const own = (
-        await tx
-          .select({ branchId: deliveryConsignments.branchId })
-          .from(deliveryConsignments)
-          .where(eq(deliveryConsignments.id, consignmentId))
-          .limit(1)
-      )[0];
-      if (own && Number(own.branchId) !== scopedBranch) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخصّ فرعاً آخر" });
-      }
+    if (scopedBranch != null && Number(cnPreview.branchId) !== scopedBranch) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخصّ فرعاً آخر" });
     }
     if (actor.clientRequestId) {
       const existingId = await checkIdempotency(tx, "delivery.return", actor.clientRequestId, payloadHash);
@@ -46,8 +57,53 @@ export async function returnConsignment(
         return { consignmentId, reversed: true as const, idempotentReplay: true as const };
       }
     }
+    const invPreview = (
+      await tx.select({ paidAmount: invoices.paidAmount }).from(invoices)
+        .where(eq(invoices.id, Number(cnPreview.invoiceId))).limit(1)
+    )[0];
+    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
+    const feeRefs = [`DLV-FEE-INV-${Number(cnPreview.invoiceId)}`, String(cnPreview.consignmentNumber)];
+    const previewFeeRows = cnPreview.feeSettledAt == null
+      ? await tx.select({ direction: receipts.direction, amount: receipts.amount }).from(receipts).where(and(
+          eq(receipts.invoiceId, Number(cnPreview.invoiceId)),
+          inArray(receipts.referenceNumber, [...feeRefs]),
+          inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+          eq(receipts.approvalStatus, "APPROVED"),
+        ))
+      : [];
+    const previewFeeNet = previewFeeRows.reduce(
+      (sum, receipt) => receipt.direction === "IN" ? sum.plus(money(receipt.amount)) : sum.minus(money(receipt.amount)),
+      money(0),
+    );
+    const previewNeedsCash = money(invPreview.paidAmount).gt(0) || previewFeeNet.gt(0);
+    let prelockedReturnShift: { shiftId: number; openingBalance: string } | null = null;
+    if (previewNeedsCash) {
+      prelockedReturnShift = await resolveBranchCashShiftTx(
+        tx,
+        Number(cnPreview.branchId),
+        actor.refundShiftId ?? null,
+      );
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(cnPreview.branchId),
+        cashBucket: "DRAWER",
+        shiftId: prelockedReturnShift.shiftId,
+      });
+    }
+    // الترتيب الموحد لمسارات التوصيل: source→party→consignment→invoice.
+    const party = (
+      await tx.select().from(deliveryParties).where(eq(deliveryParties.id, Number(cnPreview.partyId)))
+        .for("update").limit(1)
+    )[0];
+    if (!party) throw new TRPCError({ code: "CONFLICT", message: "جهة توصيل الإرسالية غير موجودة" });
     const cn = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, consignmentId)).for("update").limit(1))[0];
     if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+    if (
+      Number(cn.branchId) !== Number(cnPreview.branchId) ||
+      Number(cn.partyId) !== Number(cnPreview.partyId) ||
+      Number(cn.invoiceId) !== Number(cnPreview.invoiceId)
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّرت أطراف الإرسالية أثناء الإرجاع؛ أعد المحاولة" });
+    }
     const replayAfterLock = await checkIdempotency(tx, "delivery.return", actor.clientRequestId, payloadHash);
     if (replayAfterLock != null) return { consignmentId, reversed: true as const, idempotentReplay: true as const };
     if (cn.status !== "DISPATCHED" || cn.moneyStatus === "PARTIAL" || cn.moneyStatus === "SETTLED") {
@@ -59,7 +115,6 @@ export async function returnConsignment(
     if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطرد بعهدة السائق؛ سجّل تعذّر التوصيل وعودته للفرع قبل إرجاع البيع" });
     }
-    const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, Number(cn.partyId))).for("update").limit(1))[0];
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1))[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
     // تدقيق ٦/٨ (ث٤): حارسٌ متبادل مع شاشة المرتجعات — فاتورةٌ أُرجع منها شيءٌ سلفاً يقيّد هنا
@@ -201,14 +256,17 @@ export async function returnConsignment(
       // قد يُخفي خروج النقد الفعليّ عن صاحب الدرج الحقيقيّ. مرآة إصلاح returnService.ts (بلاغ مالك
       // ٢/٨/٢٦): resolveBranchCashShiftTx يبحث في ورديات الفرع المفتوحة كلّها، ويتحقّق أنّ الدرج
       // المستهدَف يحمل هذا المبلغ الآن فعلياً (نمط cashDropService — لا عجز أثناء العمل).
-      const resolved = await resolveBranchCashShiftTx(tx, Number(cn.branchId), actor.refundShiftId ?? null);
-      const currentDrawerCash = await computeExpectedCash(tx, resolved.shiftId, resolved.openingBalance);
-      if (deposit.gt(currentDrawerCash)) {
+      const resolved = prelockedReturnShift;
+      if (!resolved) {
         throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `المبلغ يتجاوز النقد المتوفّر حالياً في هذا الدرج (المتاح ${currentDrawerCash.toFixed(2)} < المطلوب ${deposit.toFixed(2)}) — راجع الدرج أو اختر درجاً آخر.`,
+          code: "CONFLICT",
+          message: "تغيّرت المقبوضات أثناء إرجاع الإرسالية؛ أعد المحاولة",
         });
       }
+      await assertCashOutAvailable(tx, {
+        branchId: Number(cn.branchId), cashBucket: "DRAWER", shiftId: resolved.shiftId,
+        amount: deposit, operation: "رد عربون إرجاع الإرسالية",
+      });
       const rOut = await tx.insert(receipts).values({
         branchId: Number(cn.branchId), shiftId: resolved.shiftId, direction: "OUT", amount: toDbMoney(deposit),
         paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", invoiceId: Number(cn.invoiceId),
@@ -242,32 +300,45 @@ export async function returnConsignment(
     //   (٢) صافي الإيصالات يشمل صرف الأجرة برقم الإرسالية أيضاً (تصفيةٌ ذاتية للحالات القديمة).
     // ما دُفع للمندوب فعلاً ثم أراد المالك ردّه للزبون = **مصروفٌ على المكتبة** بسند صرفٍ
     // صريح، لا تحريرٌ ثانٍ لنفس الأمانة. (يُعلَن للواجهة بـ`feeAlreadyPaidToCourier`.)
-    const feeHeldRow = (
-      await tx
-        .select({
-          net: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0)`,
-          collected: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.referenceNumber} = ${`DLV-FEE-INV-${Number(cn.invoiceId)}`} THEN ${receipts.amount} ELSE 0 END), 0)`,
-        })
-        .from(receipts)
-        .where(and(
-          eq(receipts.invoiceId, Number(cn.invoiceId)),
-          inArray(receipts.referenceNumber, [`DLV-FEE-INV-${Number(cn.invoiceId)}`, String(cn.consignmentNumber)]),
-          eq(receipts.status, "COMPLETED"),
-        ))
-    )[0];
-    const feeHeldNet = round2(money(feeHeldRow?.net ?? "0"));
+    const heldRef = `DLV-FEE-INV-${Number(cn.invoiceId)}`;
+    const feeHeldRows = await tx
+      .select({ direction: receipts.direction, amount: receipts.amount, referenceNumber: receipts.referenceNumber })
+      .from(receipts)
+      .where(and(
+        eq(receipts.invoiceId, Number(cn.invoiceId)),
+        inArray(receipts.referenceNumber, [heldRef, String(cn.consignmentNumber)]),
+        inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+        eq(receipts.approvalStatus, "APPROVED"),
+      ))
+      // current read after the source mutex: a stale snapshot must never authorize a refund.
+      .for("update");
+    const feeHeldNet = round2(feeHeldRows.reduce(
+      (sum, receipt) => receipt.direction === "IN"
+        ? sum.plus(money(receipt.amount))
+        : sum.minus(money(receipt.amount)),
+      money(0),
+    ));
     // الإفصاح: أمانةٌ قُبضت فعلاً (وارِدٌ موجب) ثم غادرت الدرج إلى المندوب ⇒ لا التزامَ باقياً
     // نُحرّره، لكن الكاشير يجب أن يعلم (ردُّها للزبون قرارُ إدارةٍ يُسجَّل مصروفاً).
-    const feeAlreadyPaidToCourier = cn.feeSettledAt != null && round2(money(feeHeldRow?.collected ?? "0")).gt(0);
+    const feeCollected = round2(feeHeldRows.reduce(
+      (sum, receipt) => receipt.direction === "IN" && receipt.referenceNumber === heldRef
+        ? sum.plus(money(receipt.amount))
+        : sum,
+      money(0),
+    ));
+    const feeAlreadyPaidToCourier = cn.feeSettledAt != null && feeCollected.gt(0);
     if (feeHeldNet.gt(0) && cn.feeSettledAt == null) {
-      const feeShift = await resolveBranchCashShiftTx(tx, Number(cn.branchId), actor.refundShiftId ?? null);
-      const drawerNow = await computeExpectedCash(tx, feeShift.shiftId, feeShift.openingBalance);
-      if (feeHeldNet.gt(drawerNow)) {
+      const feeShift = prelockedReturnShift;
+      if (!feeShift) {
         throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `ردّ أمانة أجرة التوصيل (${feeHeldNet.toFixed(2)}) يتجاوز النقد المتوفّر في هذا الدرج (${drawerNow.toFixed(2)}) — اختر درجاً آخر`,
+          code: "CONFLICT",
+          message: "تغيّرت أمانة أجرة التوصيل أثناء الإرجاع؛ أعد المحاولة",
         });
       }
+      await assertCashOutAvailable(tx, {
+        branchId: Number(cn.branchId), cashBucket: "DRAWER", shiftId: feeShift.shiftId,
+        amount: feeHeldNet, operation: "رد أمانة أجرة التوصيل",
+      });
       const feeOut = await tx.insert(receipts).values({
         branchId: Number(cn.branchId), shiftId: feeShift.shiftId, invoiceId: Number(cn.invoiceId),
         direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",

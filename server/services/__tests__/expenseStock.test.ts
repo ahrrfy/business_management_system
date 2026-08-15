@@ -3,17 +3,34 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import type { TrpcContext } from "../../context";
 import { getDb } from "../../db";
+import { appRouter } from "../../routers";
 import { cancelExpense, createExpense } from "../expenseService";
 import { sumMoney } from "../money";
 
-const actor = { userId: 1, branchId: 1 };
-function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
+const actor = { userId: 1, branchId: 1, role: "admin" as const };
+function db() {
+  const d = getDb();
+  if (!d) throw new Error("DATABASE_URL not set");
+  return d;
+}
 
 const TABLES = [
-  "accountingEntries", "expenseStockItems", "expenses", "receipts",
-  "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
-  "products", "shifts", "branches", "users", "idempotencyKeys",
+  "accountingEntries",
+  "expenseStockItems",
+  "expenses",
+  "receipts",
+  "inventoryMovements",
+  "branchStock",
+  "productPrices",
+  "productUnits",
+  "productVariants",
+  "products",
+  "shifts",
+  "branches",
+  "users",
+  "idempotencyKeys",
 ];
 
 async function reset() {
@@ -25,16 +42,54 @@ async function reset() {
 
 async function seed() {
   const d = db();
-  await d.insert(s.branches).values({ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN", isActive: true });
-  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
-  await d.insert(s.products).values([{ id: 1, name: "رول حراري" }, { id: 2, name: "قلم" }]);
+  await d.insert(s.branches).values({
+    id: 1,
+    name: "الفرع الرئيسي",
+    code: "MAIN",
+    type: "MAIN",
+    isActive: true,
+  });
+  await d.insert(s.users).values([
+    {
+      id: 1,
+      openId: "t",
+      name: "admin",
+      role: "admin",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: 2,
+      openId: "expense-stock-cashier",
+      name: "كاشير بلا صلاحية مخزنية",
+      role: "cashier",
+      loginMethod: "local",
+      branchId: 1,
+    },
+  ]);
+  await d.insert(s.products).values([
+    { id: 1, name: "رول حراري" },
+    { id: 2, name: "قلم" },
+  ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "ROLL", costPrice: "2.50" },
     { id: 2, productId: 2, sku: "PEN", costPrice: "1.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
-    { id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    {
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 2,
+      variantId: 2,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
   ]);
   await d.insert(s.branchStock).values([
     { variantId: 1, branchId: 1, quantity: 100 },
@@ -42,11 +97,20 @@ async function seed() {
   ]);
 }
 
-beforeEach(async () => { await reset(); await seed(); });
+beforeEach(async () => {
+  await reset();
+  await seed();
+});
 
 async function stock(variantId: number): Promise<number> {
-  const r = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock)
-    .where(sql`${s.branchStock.variantId} = ${variantId} AND ${s.branchStock.branchId} = 1`))[0];
+  const r = (
+    await db()
+      .select({ q: s.branchStock.quantity })
+      .from(s.branchStock)
+      .where(
+        sql`${s.branchStock.variantId} = ${variantId} AND ${s.branchStock.branchId} = 1`,
+      )
+  )[0];
   return Number(r?.q ?? 0);
 }
 async function entries(type?: string) {
@@ -56,13 +120,25 @@ async function entries(type?: string) {
 
 describe("صرف المخزون: النثرية (INTERNAL_USE)", () => {
   it("تخصم المخزون وتقيّد مصروفاً بالكلفة بلا receipt/صندوق", async () => {
-    const r = await createExpense({
-      branchId: 1, category: "SUPPLIES", amount: "0", paymentMethod: "CASH",
-      source: "STOCK", stockReason: "INTERNAL_USE",
-      items: [{ variantId: 1, baseQuantity: 2 }],
-    }, actor);
+    const r = await createExpense(
+      {
+        branchId: 1,
+        category: "SUPPLIES",
+        amount: "0",
+        paymentMethod: "CASH",
+        source: "STOCK",
+        stockReason: "INTERNAL_USE",
+        items: [{ variantId: 1, baseQuantity: 2 }],
+      },
+      actor,
+    );
     expect(await stock(1)).toBe(98);
-    const exp = (await db().select().from(s.expenses).where(eq(s.expenses.id, (r as any).expenseId)))[0];
+    const exp = (
+      await db()
+        .select()
+        .from(s.expenses)
+        .where(eq(s.expenses.id, (r as any).expenseId))
+    )[0];
     expect(exp.amount).toBe("5.00"); // 2 × 2.50
     expect(exp.source).toBe("STOCK");
     expect(exp.receiptId).toBeNull();
@@ -78,12 +154,27 @@ describe("صرف المخزون: النثرية (INTERNAL_USE)", () => {
   });
 
   it("amount = مجموع كلفة الأصناف (متعدّد)", async () => {
-    const r = await createExpense({
-      branchId: 1, category: "SUPPLIES", amount: "0", paymentMethod: "CASH",
-      source: "STOCK", stockReason: "INTERNAL_USE",
-      items: [{ variantId: 1, baseQuantity: 2 }, { variantId: 2, baseQuantity: 3 }], // 5.00 + 3.00
-    }, actor);
-    const exp = (await db().select().from(s.expenses).where(eq(s.expenses.id, (r as any).expenseId)))[0];
+    const r = await createExpense(
+      {
+        branchId: 1,
+        category: "SUPPLIES",
+        amount: "0",
+        paymentMethod: "CASH",
+        source: "STOCK",
+        stockReason: "INTERNAL_USE",
+        items: [
+          { variantId: 1, baseQuantity: 2 },
+          { variantId: 2, baseQuantity: 3 },
+        ], // 5.00 + 3.00
+      },
+      actor,
+    );
+    const exp = (
+      await db()
+        .select()
+        .from(s.expenses)
+        .where(eq(s.expenses.id, (r as any).expenseId))
+    )[0];
     expect(exp.amount).toBe("8.00");
     expect(await stock(2)).toBe(47);
   });
@@ -91,11 +182,19 @@ describe("صرف المخزون: النثرية (INTERNAL_USE)", () => {
 
 describe("صرف المخزون: التلف (WASTAGE)", () => {
   it("يقيّد خسارةً بالكلفة (WASTAGE)", async () => {
-    await createExpense({
-      branchId: 1, category: "OTHER", amount: "0", paymentMethod: "CASH",
-      source: "STOCK", stockReason: "WASTAGE", description: "انحشار",
-      items: [{ variantId: 1, baseQuantity: 4 }],
-    }, actor);
+    await createExpense(
+      {
+        branchId: 1,
+        category: "OTHER",
+        amount: "0",
+        paymentMethod: "CASH",
+        source: "STOCK",
+        stockReason: "WASTAGE",
+        description: "انحشار",
+        items: [{ variantId: 1, baseQuantity: 4 }],
+      },
+      actor,
+    );
     expect(await stock(1)).toBe(96);
     const w = await entries("WASTAGE");
     expect(w).toHaveLength(1);
@@ -105,12 +204,53 @@ describe("صرف المخزون: التلف (WASTAGE)", () => {
 });
 
 describe("صرف المخزون: الذرّية و CASH", () => {
+  it("بوابة الكاشير لا تستطيع شطب مخزون عبر شاشة المصروف", async () => {
+    const caller = appRouter.createCaller({
+      req: { headers: {} },
+      res: {},
+      sessionId: null,
+      platformAdmin: null,
+      user: {
+        id: 2,
+        openId: "expense-stock-cashier",
+        name: "كاشير بلا صلاحية مخزنية",
+        role: "cashier",
+        branchId: 1,
+        isActive: true,
+        isOwner: false,
+      },
+    } as unknown as TrpcContext);
+    await expect(
+      caller.expenses.create({
+        branchId: 1,
+        category: "SUPPLIES",
+        amount: "0",
+        paymentMethod: "CASH",
+        source: "STOCK",
+        stockReason: "INTERNAL_USE",
+        items: [{ variantId: 1, baseQuantity: 10 }],
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await stock(1)).toBe(100);
+    expect(await db().select().from(s.expenses)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+  });
+
   it("نقص مخزون ⇒ ROLLBACK (لا مصروف/حركة/قيد)", async () => {
-    await expect(createExpense({
-      branchId: 1, category: "SUPPLIES", amount: "0", paymentMethod: "CASH",
-      source: "STOCK", stockReason: "INTERNAL_USE",
-      items: [{ variantId: 1, baseQuantity: 1000 }],
-    }, actor)).rejects.toThrow();
+    await expect(
+      createExpense(
+        {
+          branchId: 1,
+          category: "SUPPLIES",
+          amount: "0",
+          paymentMethod: "CASH",
+          source: "STOCK",
+          stockReason: "INTERNAL_USE",
+          items: [{ variantId: 1, baseQuantity: 1000 }],
+        },
+        actor,
+      ),
+    ).rejects.toThrow();
     expect(await stock(1)).toBe(100);
     expect(await db().select().from(s.expenses)).toHaveLength(0);
     expect(await entries()).toHaveLength(0);
@@ -118,10 +258,21 @@ describe("صرف المخزون: الذرّية و CASH", () => {
 
   it("المصروف النقدي (CASH) يبقى كما هو: receipt OUT + PAYMENT_OUT بلا لمس المخزون", async () => {
     // shift-gate-cash: المصاريف النقدية تستلزم وردية مفتوحة (تُملأ تلقائياً إن لم تُمرَّر).
-    await db().insert(s.shifts).values({ userId: 1, branchId: 1, openingBalance: "0", status: "OPEN" });
-    await createExpense({
-      branchId: 1, category: "RENT", amount: "100", paymentMethod: "CASH",
-    }, actor);
+    await db().insert(s.shifts).values({
+      userId: 1,
+      branchId: 1,
+      openingBalance: "1000",
+      status: "OPEN",
+    });
+    await createExpense(
+      {
+        branchId: 1,
+        category: "RENT",
+        amount: "100",
+        paymentMethod: "CASH",
+      },
+      actor,
+    );
     expect(await stock(1)).toBe(100); // لا تأثير على المخزون
     const receipts = await db().select().from(s.receipts);
     expect(receipts).toHaveLength(1);
@@ -130,19 +281,87 @@ describe("صرف المخزون: الذرّية و CASH", () => {
     expect(po).toHaveLength(1);
     expect(await db().select().from(s.expenseStockItems)).toHaveLength(0);
   });
+
+  it("يرفض دقة كمية فوق 4 منازل ويربط المفتاح بالكمية الدقيقة", async () => {
+    await db().insert(s.productUnits).values({
+      id: 3,
+      variantId: 1,
+      unitName: "وحدة تحويل دقيقة",
+      conversionFactor: "100000",
+      isBaseUnit: false,
+    });
+    const common = {
+      branchId: 1,
+      category: "SUPPLIES" as const,
+      amount: "0",
+      paymentMethod: "CASH" as const,
+      source: "STOCK" as const,
+      stockReason: "INTERNAL_USE" as const,
+      clientRequestId: "stock-quantity-payload-key",
+    };
+
+    await expect(
+      createExpense(
+        {
+          ...common,
+          items: [{ variantId: 1, productUnitId: 3, quantity: "0.00001" }],
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const first = await createExpense(
+      {
+        ...common,
+        items: [{ variantId: 1, productUnitId: 3, quantity: "0.0001" }],
+      },
+      actor,
+    );
+    await expect(
+      createExpense(
+        {
+          ...common,
+          items: [{ variantId: 1, productUnitId: 3, quantity: "0.0002" }],
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await stock(1)).toBe(90);
+    expect(await db().select().from(s.expenses)).toHaveLength(1);
+    expect(
+      (
+        await db()
+          .select()
+          .from(s.expenseStockItems)
+          .where(eq(s.expenseStockItems.expenseId, first.expenseId))
+      )[0]?.baseQuantity,
+    ).toBe(10);
+  });
 });
 
 describe("صرف المخزون: الإلغاء", () => {
   it("إلغاء النثرية يعيد المخزون ويعكس القيد (صافي 0)", async () => {
-    const r = await createExpense({
-      branchId: 1, category: "SUPPLIES", amount: "0", paymentMethod: "CASH",
-      source: "STOCK", stockReason: "INTERNAL_USE",
-      items: [{ variantId: 1, baseQuantity: 4 }],
-    }, actor);
+    const r = await createExpense(
+      {
+        branchId: 1,
+        category: "SUPPLIES",
+        amount: "0",
+        paymentMethod: "CASH",
+        source: "STOCK",
+        stockReason: "INTERNAL_USE",
+        items: [{ variantId: 1, baseQuantity: 4 }],
+      },
+      actor,
+    );
     expect(await stock(1)).toBe(96);
     await cancelExpense((r as any).expenseId, actor);
     expect(await stock(1)).toBe(100); // عاد
-    const exp = (await db().select().from(s.expenses).where(eq(s.expenses.id, (r as any).expenseId)))[0];
+    const exp = (
+      await db()
+        .select()
+        .from(s.expenses)
+        .where(eq(s.expenses.id, (r as any).expenseId))
+    )[0];
     expect(exp.status).toBe("CANCELLED");
     // قيدان INTERNAL_USE (تقدّم + عكس) صافي amount = 0.
     const iu = await entries("INTERNAL_USE");

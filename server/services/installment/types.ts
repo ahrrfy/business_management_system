@@ -31,7 +31,7 @@ export interface CreatePlanInput {
 
 export interface PayLineInput {
   lineId: number;
-  /** الافتراضي: CHECK لقسط شيك، CASH لغيره. */
+  /** الافتراضي CASH دائماً؛ نوع الجدولة التاريخي لا يحدد وسيلة التحصيل الحالية. */
   paymentMethod?: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | null;
   note?: string | null;
   /** مُرفق السند (اختياريّ دائماً — لا إلزام مُرفق في النظام). */

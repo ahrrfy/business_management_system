@@ -210,11 +210,24 @@ describe("S4 — كواشف ش٦", () => {
         { userId: 2, branchId: 1, role: "cashier" },
       );
     }
+    await db().insert(s.receipts).values([
+      {
+        invoiceId: 9100, branchId: 1, shiftId: shift.shiftId, cashBucket: "DRAWER",
+        direction: "IN", amount: "500000.00", paymentMethod: "CASH", status: "COMPLETED",
+        approvalStatus: "PENDING_APPROVAL", createdBy: 2,
+      },
+      {
+        invoiceId: 9100, branchId: 1, shiftId: shift.shiftId, cashBucket: "DRAWER",
+        direction: "IN", amount: "400000.00", paymentMethod: "CASH", status: "COMPLETED",
+        approvalStatus: "REJECTED", createdBy: 2,
+      },
+    ]);
     const today = new Date().toISOString().slice(0, 10);
     const aw = await getAnomalyWatch({ from: today, to: today, branchId: 1 });
     const row = aw.othersCollections.rows.find((x) => x.userId === 2);
     expect(row).toBeTruthy();
-    expect(row!.receiptCount).toBeGreaterThanOrEqual(5);
+    expect(row!.receiptCount).toBe(5);
+    expect(Number(row!.totalAmount)).toBe(10000);
     expect(row!.flagged).toBe(true);
   });
 

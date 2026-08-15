@@ -157,8 +157,19 @@ async function seedBase() {
   ]);
   await d.insert(s.users).values([
     { id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1 },
-    { id: 2, openId: "test-approver", name: "مدقّق", role: "manager", branchId: 1 },
+    { id: 2, openId: "test-approver", name: "مدقّق", role: "manager", branchId: 1, isOwner: true, isActive: true },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "100000000",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-FUND",
+    createdBy: 2,
+  });
 }
 
 const BASE_INPUT: UpdatePayrollLegalInput = {

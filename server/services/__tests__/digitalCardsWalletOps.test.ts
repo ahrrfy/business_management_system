@@ -6,6 +6,7 @@ import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { withTx } from "../tx";
 import { providerService, walletOpsService, walletService } from "../digitalCards";
+import { approveVoucher } from "../voucher/approval";
 
 /**
  * البطاقات الرقمية — ش٩: الإيداع والسحب والتعديل والكشف والمطابقة.
@@ -19,7 +20,7 @@ const owner = { userId: 3, branchId: 1, role: "admin", isOwner: true };
 const TABLES = [
   "digitalWalletReconciliations", "digitalWalletTransactions", "digitalWalletReservations",
   "digitalWallets", "digitalProviders", "accountingEntries", "receipts",
-  "auditLogs", "suppliers", "users", "branches",
+  "idempotencyKeys", "auditLogs", "suppliers", "users", "branches",
 ];
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set for tests"); return d; }
@@ -31,6 +32,11 @@ async function seedBase() {
     { id: 2, openId: "m2", name: "مدير ب", role: "manager", loginMethod: "local" },
     { id: 3, openId: "a1", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
+  await db().insert(s.receipts).values({
+    branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+    cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-FUND", createdBy: 3,
+  });
 }
 
 async function mkWallet(threshold = "0") {
@@ -47,6 +53,14 @@ async function mkWallet(threshold = "0") {
 async function wallet(id: number) {
   const [w] = await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, id));
   return w;
+}
+
+async function approvedCashDeposit(walletId: number, amount: string, clientRequestId = rid()) {
+  const request = await withTx((tx) => walletOpsService.deposit(tx, {
+    walletId, amount, paymentMethod: "CASH", clientRequestId,
+  }, mgrA));
+  await approveVoucher(request.receiptId, owner);
+  return { ...request, balanceAfter: (await wallet(walletId)).currentBalance };
 }
 
 let seq = 0;
@@ -67,19 +81,32 @@ describe.sequential("ش٩ — الإيداع (§٦.١)", () => {
     expect((await wallet(walletId)).currentBalance).toBe("0.00");
   });
 
-  it("يرفع الرصيد + سند صرف OUT من الخزينة + قيد أصلٍ بصفر أثر P&L", async () => {
+  it("الإيداع النقدي طلبٌ بلا أثر ثم اعتماد مالك مختلف يحرّك الخزينة والمحفظة مرة واحدة", async () => {
     const { walletId } = await mkWallet();
     const r = await withTx((tx) => walletOpsService.deposit(tx, {
       walletId, amount: "1000000", paymentMethod: "CASH", clientRequestId: rid(),
     }, mgrA));
 
-    expect(r.balanceAfter).toBe("1000000.00");
-    expect((await wallet(walletId)).currentBalance).toBe("1000000.00");
+    expect(r).toMatchObject({ pendingApproval: true, balanceAfter: "0.00" });
+    expect((await wallet(walletId)).currentBalance).toBe("0.00");
 
     const [rec] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
-    expect(rec.direction).toBe("OUT");
-    expect(rec.cashBucket).toBe("TREASURY");
-    expect(rec.amount).toBe("1000000.00");
+    expect(rec).toMatchObject({ direction: "OUT", cashBucket: null, status: "PENDING", approvalStatus: "PENDING_APPROVAL", amount: "1000000.00" });
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    const [pendingTxn] = await db().select().from(s.digitalWalletTransactions);
+    expect(pendingTxn).toMatchObject({ type: "DEPOSIT", direction: "IN", status: "PENDING_APPROVAL", balanceAfter: "0.00" });
+
+    await db().update(s.digitalWalletTransactions).set({ amount: "1000001.00" }).where(eq(s.digitalWalletTransactions.id, pendingTxn.id));
+    await expect(approveVoucher(r.receiptId, owner)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await wallet(walletId)).currentBalance).toBe("0.00");
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    await db().update(s.digitalWalletTransactions).set({ amount: "1000000.00" }).where(eq(s.digitalWalletTransactions.id, pendingTxn.id));
+
+    await approveVoucher(r.receiptId, owner);
+    await approveVoucher(r.receiptId, owner); // retry idempotent
+    expect((await wallet(walletId)).currentBalance).toBe("1000000.00");
+    const [approvedReceipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
+    expect(approvedReceipt).toMatchObject({ cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED" });
 
     const [entry] = await db().select().from(s.accountingEntries)
       .where(eq(s.accountingEntries.entryType, "DIGITAL_WALLET_DEPOSIT"));
@@ -92,6 +119,7 @@ describe.sequential("ش٩ — الإيداع (§٦.١)", () => {
     const [mv] = await db().select().from(s.digitalWalletTransactions);
     expect(mv.type).toBe("DEPOSIT");
     expect(mv.direction).toBe("IN");
+    expect(mv.status).toBe("ACTIVE");
     expect(mv.balanceAfter).toBe("1000000.00");
   });
 
@@ -107,7 +135,7 @@ describe.sequential("ش٩ — الإيداع (§٦.١)", () => {
   it("إيداع بنفس clientRequestId مرّتين يفشل (قيد المحفظة الفريد)", async () => {
     const { walletId } = await mkWallet();
     const key = rid();
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "1000", paymentMethod: "CASH", clientRequestId: key }, mgrA));
+    await approvedCashDeposit(walletId, "1000", key);
     await expect(withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "1000", paymentMethod: "CASH", clientRequestId: key }, mgrA)))
       .rejects.toThrow();
     expect((await wallet(walletId)).currentBalance).toBe("1000.00");
@@ -117,7 +145,7 @@ describe.sequential("ش٩ — الإيداع (§٦.١)", () => {
 describe.sequential("ش٩ — السحب", () => {
   it("يخفض الرصيد بسند قبض IN وقيد أصلٍ صفريّ", async () => {
     const { walletId } = await mkWallet();
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "50000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
+    await approvedCashDeposit(walletId, "50000");
     const r = await withTx((tx) => walletOpsService.withdraw(tx, { walletId, amount: "20000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
 
     expect(r.balanceAfter).toBe("30000.00");
@@ -130,7 +158,7 @@ describe.sequential("ش٩ — السحب", () => {
 
   it("لا سحب يجعل الرصيد سالباً ولا يهبط تحت المحجوز", async () => {
     const { walletId } = await mkWallet();
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "10000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
+    await approvedCashDeposit(walletId, "10000");
 
     await expect(withTx((tx) => walletOpsService.withdraw(tx, { walletId, amount: "20000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA)))
       .rejects.toThrow(/سالباً/);
@@ -145,7 +173,7 @@ describe.sequential("ش٩ — السحب", () => {
 describe.sequential("ش٩ — التعديل بفصل المهام", () => {
   async function funded() {
     const { walletId } = await mkWallet();
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "100000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
+    await approvedCashDeposit(walletId, "100000");
     return walletId;
   }
 
@@ -221,8 +249,8 @@ describe.sequential("ش٩ — التعديل بفصل المهام", () => {
 describe.sequential("ش٩ — معيار الخروج: الرصيد يُعاد إنتاجه من الحركات", () => {
   it("سلسلة عمليات مختلطة ⇒ الرصيد المخزَّن = مجموع الحركات الفعّالة", async () => {
     const { walletId } = await mkWallet();
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "1000000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
-    await withTx((tx) => walletOpsService.withdraw(tx, { walletId, amount: "150000", paymentMethod: "TRANSFER", clientRequestId: rid() }, mgrA));
+    await approvedCashDeposit(walletId, "1000000");
+    await withTx((tx) => walletOpsService.withdraw(tx, { walletId, amount: "150000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
     await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "25000", paymentMethod: "TRANSFER", clientRequestId: rid() }, mgrA));
     const adj = await withTx((tx) => walletOpsService.requestAdjustment(tx, {
       walletId, amount: "3400", direction: "OUT", reason: "فرق مطابقة", clientRequestId: rid(),
@@ -250,7 +278,7 @@ describe.sequential("ش٩ — معيار الخروج: الرصيد يُعاد �
 describe.sequential("ش٩ — المطابقة اليومية (§٥.١١)", () => {
   async function funded(amount = "100000") {
     const { walletId } = await mkWallet();
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount, paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
+    await approvedCashDeposit(walletId, amount);
     return walletId;
   }
 
@@ -351,16 +379,16 @@ describe.sequential("ش٩ — المطابقة اليومية (§٥.١١)", () =
 describe.sequential("ش٩ — تنبيه الرصيد المنخفض", () => {
   it("يظهر عند نزول المتاح تحت حدّ المزوّد ويختفي بالإيداع", async () => {
     const { walletId } = await mkWallet("50000");
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "40000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
+    await approvedCashDeposit(walletId, "40000");
     expect(await walletOpsService.lowBalanceWallets(db(), 1)).toHaveLength(1);
 
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "100000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
+    await approvedCashDeposit(walletId, "100000");
     expect(await walletOpsService.lowBalanceWallets(db(), 1)).toHaveLength(0);
   });
 
   it("المحجوز يُحتسب: رصيدٌ كافٍ ومحجوزٌ كبير ⇒ تنبيه", async () => {
     const { walletId } = await mkWallet("50000");
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "80000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
+    await approvedCashDeposit(walletId, "80000");
     expect(await walletOpsService.lowBalanceWallets(db(), 1)).toHaveLength(0);
 
     await db().update(s.digitalWallets).set({ reservedBalance: "40000" }).where(eq(s.digitalWallets.id, walletId));

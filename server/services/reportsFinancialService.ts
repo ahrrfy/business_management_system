@@ -10,6 +10,7 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "./cash/cashAvailability";
 import {
   reconcileCustomerBalances,
   reconcileSupplierBalances,
@@ -915,7 +916,7 @@ export async function getFinancialPosition(
       FROM receipts r
       -- FIN-04: أساس التاريخ = تاريخ قيد الدفتر المرتبط (نفس أساس getCashFlow)، لا createdAt الخام.
       LEFT JOIN accountingEntries ae ON ae.receiptId = r.id AND ae.entryType IN ('PAYMENT_IN', 'PAYMENT_OUT')
-      WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
+      WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
         AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${asOf}
         ${bId ? sql`AND r.branchId = ${bId}` : sql``}
     `),
@@ -957,7 +958,7 @@ export async function getFinancialPosition(
         -- مراجعة PR #495: رصيد زين (نفس تعريف cardAccountService: الموقَّع المعتمَد).
         CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'TELECOM' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS telecom
       FROM receipts
-      WHERE receiptStatus = 'COMPLETED' AND receiptApprovalStatus = 'APPROVED'
+      WHERE receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND receiptApprovalStatus = 'APPROVED'
         ${bId ? sql`AND branchId = ${bId}` : sql``}
     `),
     )[0] ?? {
@@ -1011,7 +1012,7 @@ export async function getFinancialPosition(
   const fa = rowsOf(
     await db.execute(sql`
     SELECT CAST(COALESCE(SUM(purchaseValue - accumulatedDepreciation), 0) AS CHAR) AS v
-    FROM fixedAssets WHERE assetStatus NOT IN ('disposed', 'retired') ${bId ? sql`AND branchId = ${bId}` : sql``}
+    FROM fixedAssets WHERE isActive = TRUE AND assetStatus NOT IN ('disposed', 'retired') ${bId ? sql`AND branchId = ${bId}` : sql``}
   `),
   )[0] ?? { v: "0" };
 
@@ -1284,7 +1285,7 @@ export async function getCashFlow(opts: {
     FROM receipts r
     LEFT JOIN accountingEntries ae
       ON ae.receiptId = r.id AND ae.entryType IN ('PAYMENT_IN', 'PAYMENT_OUT')
-    WHERE r.receiptStatus = 'COMPLETED'
+    WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
       AND r.receiptApprovalStatus = 'APPROVED'
       AND COALESCE(ae.entryDate, DATE(r.createdAt)) >= ${opts.from}
       AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${opts.to}

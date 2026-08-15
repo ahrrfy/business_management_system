@@ -37,11 +37,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, Send, Wallet } from "lucide-react";
 import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
+import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { CopyButton } from "@/components/CopyButton";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -369,6 +371,7 @@ export default function POS() {
   // يتبعها). لا يمسّ كاشيراً/مستخدماً له فرع (الشرط أدناه يسقط فوراً فيبقى branchId = فرعه).
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const branchId = me.data?.branchId ?? offlineBoot?.branchId ?? pickedBranch ?? 1;
+  const activeBranchName = (branches.data ?? []).find((branch) => Number(branch.id) === branchId)?.name ?? `فرع #${branchId}`;
   const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
   const noAssignedBranch = me.data != null && me.data.branchId == null && offlineBoot?.branchId == null;
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
@@ -420,6 +423,27 @@ export default function POS() {
 
   const activeTab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cart      = activeTab.cart;
+
+  // السلال والمسودات تحفظ السعر والكمية، لكنها لا تملك الرصيد. نعيد قراءة رصيد كل الوحدات
+  // الموجودة في جميع التبويبات من الخادم دورياً؛ بذلك لا يبقى حساب على لقطة سبقت بيعاً/جرداً.
+  const cartUnitIds = useMemo(
+    () => Array.from(new Set(tabs.flatMap((tab) => tab.cart.map((item) => item.row.productUnitId)))).slice(0, 500),
+    [tabs],
+  );
+  const liveCartStockQ = trpc.catalog.stockByUnitIds.useQuery(
+    { branchId, productUnitIds: cartUnitIds },
+    {
+      enabled: !offline && cartUnitIds.length > 0,
+      staleTime: 0,
+      refetchInterval: !offline && cartUnitIds.length > 0 ? 15_000 : false,
+      refetchOnWindowFocus: true,
+    },
+  );
+  useEffect(() => {
+    const snapshot = liveCartStockQ.data;
+    if (!snapshot) return;
+    setTabs((current) => reconcilePosTabsStock(current, snapshot.rows, snapshot.branchId));
+  }, [liveCartStockQ.data]);
 
   // ── UI State ─────────────────────────────────────────────────────────────
   const [search,         setSearch]         = useState("");
@@ -530,14 +554,16 @@ export default function POS() {
     if (saved) {
       const hadLegacyDigital = saved.tabs.some((t) => t.cart.some((c) => c.digital && (!c.digital.providerReference || !c.digital.providerId)));
       // المسوّدات الأقدم لا تحمل paymentRef/dueDate — تُستكمل بفراغ كي لا تُرسَل undefined.
-      setTabs(saved.tabs.map((t) => ({
+      setTabs(markPosTabsStockStale(saved.tabs.map((t) => ({
         ...t,
         cart: t.cart.filter((c) => !c.digital || (!!c.digital.providerReference && !!c.digital.providerId)),
         clientRequestId: t.clientRequestId ?? newClientRequestId(),
-        paymentRef: t.paymentRef ?? "",
-        externalPayment: t.externalPayment ?? null,
+        // لا نُعيد إحياء طريقة/محاولة خارجية قديمة من localStorage بعد إغلاق السطح.
+        method: "CASH" as PaymentMethod,
+        paymentRef: "",
+        externalPayment: null,
         dueDate: t.dueDate ?? "",
-      })));
+      }))));
       if (hadLegacyDigital) notify.warn("أُزيلت كروت قديمة غير مكتملة من المسودة", "أعد إضافتها مع رقم العملية قبل البيع.");
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
     } else {
@@ -614,7 +640,7 @@ export default function POS() {
     {
       enabled: !offline && debouncedSearch.trim().length >= 2,
       placeholderData: keepPreviousData,
-      staleTime: 15_000,
+      staleTime: 0,
     }
   );
   // ش٢ أوفلاين: أثناء الانقطاع يُخدَم البحث من النموذج المحلي (Dexie) بنفس شكل PosRow —
@@ -647,17 +673,19 @@ export default function POS() {
     }
     if (receipt) setReceipt(null);
     if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
+    // صفوف الكتالوج الأوفلايني القديمة لا تحمل branchId؛ نربط الصف المضاف بالفرع الحالي صراحةً.
+    const currentRow = { ...row, branchId: row.branchId ?? branchId };
     setCart((raw) => {
       const prev = resetCouponItems(raw);
-      const i = prev.findIndex((c) => c.row.productUnitId === row.productUnitId);
+      const i = prev.findIndex((c) => c.row.productUnitId === currentRow.productUnitId);
       if (i >= 0) {
         const next = [...prev];
-        next[i] = { ...next[i], qty: next[i].qty + 1 };
+        next[i] = { ...next[i], row: currentRow, qty: next[i].qty + 1 };
         return next;
       }
-      return [...prev, { row, qty: 1 }];
+      return [...prev, { row: currentRow, qty: 1 }];
     });
-    setSelId(row.productUnitId);
+    setSelId(currentRow.productUnitId);
     setSearch(""); setShowDrop(false);
     searchRef.current?.focus();
   }
@@ -784,6 +812,7 @@ export default function POS() {
     // (تبديل مسار/تبويب) بينما الـref يعود للصفر ⇒ تصادم مفاتيح React. أقلّ معرّف ناقص واحد.
     const lineId = Math.min(0, ...cart.map((c) => c.digital?.lineId ?? 0)) - 1;
     const row: PosRow = {
+      branchId,
       productId: card.productId,
       productName: card.name,
       variantId: card.variantId,
@@ -975,6 +1004,7 @@ export default function POS() {
       }
       await Promise.all([
         utils.catalog.posList.invalidate(),
+        utils.catalog.stockByUnitIds.invalidate(),
         utils.customers.list.invalidate(),
         shiftQ.refetch(),
       ]);
@@ -1532,6 +1562,7 @@ export default function POS() {
         onTestPrint={testServerPrint}
         onOpenCards={() => setCardsOpen(true)}
         cardsDisabled={offline}
+        branchName={activeBranchName}
       />
 
       {/* شبكة البطاقات الرقمية (ش٥) — لا أثر ماليّ عند الإضافة، فقط سطرٌ في السلة بسعر الخادم. */}
@@ -1612,6 +1643,7 @@ export default function POS() {
         <CartPanel
           C={C}
           branchId={branchId}
+          branchName={activeBranchName}
           openingActive={openingActive}
           openingEndsYmd={openingModeQ.data?.endsAtYmd ?? null}
           cart={cart} total={total}
@@ -1706,9 +1738,10 @@ interface POSHeaderProps {
   /** فتح شبكة «الكروت والاشتراكات» (ش٥) — معطَّل أثناء الانقطاع (البيع الرقميّ أونلاين حصراً). */
   onOpenCards: () => void;
   cardsDisabled: boolean;
+  branchName: string;
 }
 
-function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, onCashDrop, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint, onOpenCards, cardsDisabled }: POSHeaderProps) {
+function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, onCashDrop, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint, onOpenCards, cardsDisabled, branchName }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -1812,7 +1845,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
                     {p.sku} · {p.unitName}
                     {!p.isService && (
                       <span style={{ marginRight: 10, color: stockColor(p.availableBase ?? p.stockBase) }}>
-                        فعلي: {fmt(p.stockBase)} · محجوز: {fmt(p.reservedBase ?? 0)} · متاح: {fmt(p.availableBase ?? p.stockBase)}
+                        {branchName} · فعلي: {fmt(p.stockBase)} · محجوز: {fmt(p.reservedBase ?? 0)} · متاح للبيع: {fmt(p.availableBase ?? p.stockBase)}
                       </span>
                     )}
                   </div>
@@ -1863,7 +1896,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
             <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.2, color: C.fg }}>{me.name}</div>
             <div style={{ fontSize: 10.5, color: C.mutedFg, lineHeight: 1.2 }}>
               {/* تسمية الدور المخصّص أولاً («كاشير تجزئة/طباعة») — كانت «كاشير» مثبّتةً نصاً. */}
-              {me.customRoleLabel ?? (me.role === "admin" ? "مدير" : me.role === "manager" ? "مدير فرع" : "كاشير")}
+              {me.customRoleLabel ?? (me.role === "admin" ? "مدير" : me.role === "manager" ? "مدير فرع" : "كاشير")} · {branchName}
             </div>
           </div>
           <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, flexShrink: 0 }}>
@@ -1965,6 +1998,7 @@ function TabBar({ C, tabs, activeId, onSwitch, onAdd, onClose }: TabBarProps) {
 interface CartPanelProps {
   C: C;
   branchId: number;
+  branchName: string;
   cart: CartItem[]; total: number;
   selId: number | null; setSelId: (id: number | null) => void;
   changeQty: (id: number, qty: number) => void;
@@ -1985,7 +2019,7 @@ interface CartPanelProps {
   openingEndsYmd: string | null;
 }
 
-function CartPanel({ C, branchId, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd }: CartPanelProps) {
+function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
   const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
   const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
@@ -2014,14 +2048,16 @@ function CartPanel({ C, branchId, cart, total, selId, setSelId, changeQty, remov
     const convFactor  = Number(c.row.conversionFactor) || 1;
     // مُنتج خِدمي: لا مَخزون ⇒ لا نَفاد ولا نَقص (الخَادم يَتجاوز فَحص المَخزون أيضاً).
     if (c.row.isService) {
-      return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
+      return { isKnown: true, isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
     }
+    const isKnown = c.row.branchId === branchId && c.row.availableBase != null;
+    if (!isKnown) return { isKnown: false, isOut: false, isShort: false, availInUnit: 0 };
     const availBase   = c.row.availableBase ?? c.row.stockBase ?? 0;
     const reqBase     = demandByVariant.get(c.row.variantId) ?? c.qty * convFactor; // إجمالي طلب الصنف
     const isOut       = availBase <= 0;                       // نافذ — لا رصيد
     const isShort     = !isOut && reqBase > availBase;        // الطلب يتجاوز المتاح
     const availInUnit = Math.floor(availBase / convFactor);  // المتاح بوحدة السطر
-    return { isOut, isShort, availInUnit };
+    return { isKnown: true, isOut, isShort, availInUnit };
   };
   // ملخّص للشارة الدائمة في التذييل (كي لا يختفي التحذير حين ينزلق السطر المميَّز خارج الرؤية).
   let anyOut = false, flaggedCount = 0;
@@ -2128,7 +2164,7 @@ function CartPanel({ C, branchId, cart, total, selId, setSelId, changeQty, remov
               <th style={{ ...TH, textAlign: "right" }}>المنتج</th>
               <th style={{ ...TH, width: 64 }}>الوحدة</th>
               <th style={{ ...TH, width: 110 }}>السعر</th>
-              <th style={{ ...TH, width: 80 }}>المخزون</th>
+              <th style={{ ...TH, width: 80 }}>المتاح للبيع</th>
               <th style={{ ...TH, width: 150 }}>الكمية</th>
               <th style={{ ...TH, width: 115 }}>الإجمالي</th>
               <th style={{ ...TH, width: 40 }}></th>
@@ -2151,7 +2187,7 @@ function CartPanel({ C, branchId, cart, total, selId, setSelId, changeQty, remov
               const lineId   = lineIdOf(c);
               const selected = selId === lineId;
               // تمييز بصري + نصّ قبل محاولة الدفع (المنطق المُجمَّع للصنف في stockState أعلاه).
-              const { isOut, isShort, availInUnit } = stockState(c);
+              const { isKnown, isOut, isShort, availInUnit } = stockState(c);
               const allocations = allocationsByVariant.get(c.row.variantId) ?? [];
               // «وضع الافتتاح»: الصنف غير المُفتتَح (openedAt فارغ) يُباع نقداً بالسالب — وسم كهرماني
               // مطمئن بدل «نافذ» الأحمر المخيف (الحارس الفعلي خادميّ؛ الآجل/غير النقدي سيُرفض هناك).
@@ -2169,6 +2205,11 @@ function CartPanel({ C, branchId, cart, total, selId, setSelId, changeQty, remov
                   <td style={{ ...TD, textAlign: "right", fontWeight: 800, fontSize: 19, lineHeight: 1.35, color: C.fg }}>
                     {c.row.productName}
                     <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500, marginRight: 5 }}>{c.row.sku}</span>
+                    {!c.row.isService && !isKnown && (
+                      <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 700, marginRight: 5 }}>
+                        جارٍ التحقق من الرصيد
+                      </span>
+                    )}
                     {c.disc != null && c.disc > 0 && (
                       <span style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginRight: 4 }}>−{c.disc}%</span>
                     )}
@@ -2181,13 +2222,14 @@ function CartPanel({ C, branchId, cart, total, selId, setSelId, changeQty, remov
                           : c.digital.requiresStudentData ? "اشتراك تعليمي" : "كرت رقمي"}
                       </span>
                     )}
-                    {!c.digital && !c.row.isService && (
+                    {!c.digital && !c.row.isService && isKnown && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px", marginTop: 5, fontSize: 11.5, fontWeight: 700, color: C.mutedFg }}>
+                        <span>{branchName}</span>
                         <span>فعلي {fmt(c.row.stockBase ?? 0)}</span>
                         <span style={{ color: (c.row.reservedBase ?? 0) > 0 ? C.amber : C.mutedFg }}>
                           محجوز {fmt(c.row.reservedBase ?? 0)}
                         </span>
-                        <span>متاح {fmt(c.row.availableBase ?? c.row.stockBase ?? 0)}</span>
+                        <span>متاح للبيع {fmt(c.row.availableBase ?? c.row.stockBase ?? 0)}</span>
                       </div>
                     )}
                     {allocations.length > 0 && (
@@ -2242,7 +2284,7 @@ function CartPanel({ C, branchId, cart, total, selId, setSelId, changeQty, remov
                   </td>
                   {/* عمود المخزون: ∞ للخدمات، رقم بلون أحمر/أصفر/طبيعي حسب الحالة. */}
                   <td style={{ ...TD, direction: "ltr", fontWeight: 700, color: isOut ? C.danger : isShort ? C.amber : C.mutedFg }}>
-                    {c.row.isService ? "∞" : fmt(availInUnit)}
+                    {c.row.isService ? "∞" : isKnown ? fmt(availInUnit) : "…"}
                   </td>
                   <td style={{ ...TD, padding: "6px 6px" }}>
                     {c.digital ? (
@@ -2370,14 +2412,15 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
     userSelect: "none" as const, touchAction: "manipulation" as const,
   });
 
-  const payMethodStyle = (active: boolean): React.CSSProperties => ({
+  const payMethodStyle = (active: boolean, disabled = false): React.CSSProperties => ({
     flex: 1, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center",
     gap: 3, minHeight: fluid(46, 6.6, 60), fontSize: dense ? 13 : 14, fontWeight: 800,
     border: `2px solid ${active ? C.primary : C.border}`,
-    borderRadius: 9, cursor: "pointer", fontFamily: "inherit",
+    borderRadius: 9, cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit",
     background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg,
     transition: "background .1s, color .1s, border-color .1s, box-shadow .1s", userSelect: "none" as const,
     boxShadow: active ? `0 3px 10px oklch(0.488 0.243 264.376 / .28)` : "none",
+    opacity: disabled ? 0.55 : 1,
   });
 
   const modeLabel = numMode === "QTY"  ? "الكمية — المنتج المحدد"
@@ -2527,15 +2570,19 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
           <button style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
             <Banknote aria-hidden size={22} />نقدي
           </button>
-          <button style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
+          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
             <CreditCard aria-hidden size={22} />بطاقة
           </button>
-          <button style={payMethodStyle(method === "TRANSFER")} onClick={() => setMethod("TRANSFER")}>
+          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
             <Send aria-hidden size={22} />تحويل
           </button>
-          <button style={payMethodStyle(method === "WALLET")}   onClick={() => setMethod("WALLET")}>
+          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
             <Wallet aria-hidden size={22} />محفظة
           </button>
+        </div>
+        <div id="pos-external-payment-disabled" role="status" style={{ marginTop: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.amber, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
+          <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+          <span>{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</span>
         </div>
       </div>
 

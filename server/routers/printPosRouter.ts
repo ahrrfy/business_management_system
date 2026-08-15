@@ -8,11 +8,12 @@ import { verifyManagerApproval } from "./saleRouter";
 import { posCashierProcedure, router } from "../trpc";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { confirmExternalPaymentAttempt, initiateExternalPaymentAttempt } from "../services/posExternalPayment";
+import { confirmExternalPaymentAttempt, initiateExternalPaymentAttempt, type PosExternalPaymentMethod } from "../services/posExternalPayment";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
-const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-const externalMethod = z.enum(["CARD", "CHECK", "TRANSFER", "WALLET"]);
+const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]);
+const externalMethod = z.enum(["CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]);
 const lineSchema = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
@@ -45,7 +46,7 @@ export const printPosRouter = router({
       }
       const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
       return initiateExternalPaymentAttempt(
-        { ...input, branchId, channel: "PRINT_POS" },
+        { ...input, method: input.method as PosExternalPaymentMethod, branchId, channel: "PRINT_POS" },
         { userId: ctx.user.id, branchId, role: ctx.user.role },
       );
     }),
@@ -86,8 +87,8 @@ export const printPosRouter = router({
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
         managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       }).superRefine((input, ctx) => {
-        if (input.payment && input.payment.method !== "CASH" && !input.payment.externalPaymentAttemptId) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
+        if (input.payment && input.payment.method !== "CASH") {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "method"], message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
         }
         if (input.payment?.method === "CASH" && input.payment.externalPaymentAttemptId != null) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });

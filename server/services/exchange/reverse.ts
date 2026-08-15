@@ -4,11 +4,13 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
-import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts } from "../../../drizzle/schema";
+import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
+import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, toDbRate } from "./helpers";
 
 /**
@@ -21,7 +23,11 @@ export async function recomputeHouseFromLog(tx: Tx, houseId: number): Promise<vo
     .select()
     .from(exchangeTransactions)
     .where(and(eq(exchangeTransactions.exchangeHouseId, houseId), eq(exchangeTransactions.status, "ACTIVE")))
-    .orderBy(asc(exchangeTransactions.createdAt), asc(exchangeTransactions.id));
+    .orderBy(asc(exchangeTransactions.createdAt), asc(exchangeTransactions.id))
+    // Current locking read: reverse starts with a nonlocking preview before waiting on the
+    // house mutex. A snapshot read here could miss a settlement that committed while we
+    // waited and overwrite its wallet effect during recomputation.
+    .for("update");
 
   let iqd = new Decimal(0);
   let usd = new Decimal(0);
@@ -83,9 +89,74 @@ export async function reverseExchangeTransaction(
   actor: Actor,
 ): Promise<{ txnId: number; txnNumber: string; status: "REVERSED" }> {
   return withTx(async (tx) => {
+    const [previewTxn] = await tx
+      .select({
+        receiptId: exchangeTransactions.receiptId,
+        type: exchangeTransactions.type,
+        supplierId: exchangeTransactions.supplierId,
+        purchaseOrderId: exchangeTransactions.purchaseOrderId,
+        exchangeHouseId: exchangeTransactions.exchangeHouseId,
+        branchId: exchangeTransactions.branchId,
+      })
+      .from(exchangeTransactions)
+      .where(eq(exchangeTransactions.id, txnId))
+      .limit(1);
+    if (previewTxn?.branchId != null) {
+      await lockBranchMonthCloseGate(tx, Number(previewTxn.branchId));
+    }
+    let previewCashReceipt: { id: number; branchId: number } | null = null;
+    if (previewTxn?.receiptId != null) {
+      const [previewReceipt] = await tx
+        .select({ id: receipts.id, branchId: receipts.branchId, paymentMethod: receipts.paymentMethod })
+        .from(receipts)
+        .where(eq(receipts.id, Number(previewTxn.receiptId)))
+        .limit(1);
+      if (previewReceipt?.paymentMethod === "CASH" && previewReceipt.branchId != null) {
+        previewCashReceipt = { id: Number(previewReceipt.id), branchId: Number(previewReceipt.branchId) };
+        await lockCashSourceForUpdate(tx, {
+          branchId: previewCashReceipt.branchId,
+          cashBucket: "TREASURY",
+        });
+      }
+    }
+    // تسوية جديدة تقفل branch→supplier→PO→house. العكس يجب أن يتبع الترتيب نفسه؛ قفل txn/house
+    // أولاً ثم العودة إلى المورد يصنع دورةً مع تسوية متزامنة. المعاينة تحدد الحسابات بلا قفل،
+    // ثم نعيد مطابقة الهويات بعد قفل العملية نفسها.
+    if (previewTxn?.type === "SETTLE" && previewTxn.supplierId != null) {
+      const [supplier] = await tx
+        .select({ id: suppliers.id })
+        .from(suppliers)
+        .where(eq(suppliers.id, Number(previewTxn.supplierId)))
+        .for("update")
+        .limit(1);
+      if (!supplier) throw new TRPCError({ code: "CONFLICT", message: "مورد التسوية غير موجود" });
+      if (previewTxn.purchaseOrderId != null) {
+        const [po] = await tx
+          .select({ id: purchaseOrders.id })
+          .from(purchaseOrders)
+          .where(eq(purchaseOrders.id, Number(previewTxn.purchaseOrderId)))
+          .for("update")
+          .limit(1);
+        if (!po) throw new TRPCError({ code: "CONFLICT", message: "فاتورة تسوية الصيرفة غير موجودة" });
+      }
+    }
+    if (previewTxn) await lockHouse(tx, Number(previewTxn.exchangeHouseId));
     const [txn] = await tx.select().from(exchangeTransactions).where(eq(exchangeTransactions.id, txnId)).for("update").limit(1);
     if (!txn) throw new TRPCError({ code: "NOT_FOUND", message: "عملية الصيرفة غير موجودة" });
     if (txn.status === "REVERSED") throw new TRPCError({ code: "BAD_REQUEST", message: "العملية معكوسة سابقاً" });
+    if (previewCashReceipt && Number(txn.receiptId) !== previewCashReceipt.id) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر إيصال عملية الصيرفة أثناء العكس — أعد المحاولة" });
+    }
+    if (
+      !previewTxn ||
+      txn.type !== previewTxn.type ||
+      Number(txn.exchangeHouseId) !== Number(previewTxn.exchangeHouseId) ||
+      Number(txn.supplierId ?? 0) !== Number(previewTxn.supplierId ?? 0) ||
+      Number(txn.purchaseOrderId ?? 0) !== Number(previewTxn.purchaseOrderId ?? 0) ||
+      Number(txn.branchId ?? 0) !== Number(previewTxn.branchId ?? 0)
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّرت أطراف عملية الصيرفة أثناء العكس — أعد المحاولة" });
+    }
     // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير لا يعكس عملية فرعٍ آخر.
     if (actor.role !== "admin" && txn.branchId != null && Number(txn.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "عملية الصيرفة تخصّ فرعاً آخر" });
@@ -101,7 +172,6 @@ export async function reverseExchangeTransaction(
       });
     }
     const houseId = Number(txn.exchangeHouseId);
-    await lockHouse(tx, houseId); // قفل المحفظة قبل أيّ تعديل رصيد
 
     // حارس اتساق فرق الصرف (تدقيق ٢٥/٧): عكس اقتناءِ دولارٍ (FX_BUY أو DEPOSIT-USD) استهلكته عمليةٌ
     // لاحقة (تسوية/سحب دولار) يترك فرق الصرف المحقَّق لتلك العملية محسوباً على متوسط كلفةٍ بطَل بعد
@@ -150,27 +220,48 @@ export async function reverseExchangeTransaction(
       }
     }
 
-    // ٣) سند تسديد الصيرفة لا يمسّ الخزينة: نعكس حالته فقط. إيصال الإيداع/السحب الخزيني وحده يُعوّض.
+    // ٣) كل إيصال مادي هو حدث تاريخي: الأصل يصبح REVERSED ويبقى مقروءاً، وتُنشأ ساق
+    // تعويضية معاكسة. يشمل هذا سند EXCHANGE غير الخزيني؛ ترك OUT المعكوس بلا IN كان يجعل
+    // تقارير التدفق/طرق الدفع تعرض الصرف وحده بعد العكس.
     if (txn.receiptId != null) {
       const [orig] = await tx.select().from(receipts).where(eq(receipts.id, Number(txn.receiptId))).for("update").limit(1);
+      if (
+        previewCashReceipt &&
+        (!orig || orig.paymentMethod !== "CASH" || Number(orig.branchId) !== previewCashReceipt.branchId)
+      ) {
+        throw new TRPCError({ code: "CONFLICT", message: "تغيّر مصدر إيصال الصيرفة أثناء العكس — أعد المحاولة" });
+      }
       if (orig && orig.status === "COMPLETED") {
-        if (txn.type === "SETTLE" && orig.paymentMethod === "EXCHANGE") {
-          await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, Number(orig.id)));
-        } else {
-          await tx.insert(receipts).values({
+        const compensationDirection = orig.direction === "OUT" ? "IN" : "OUT";
+        if (compensationDirection === "OUT" && orig.paymentMethod === "CASH") {
+          if (orig.branchId == null) throw new TRPCError({ code: "CONFLICT", message: "إيصال الصيرفة النقدي بلا فرع" });
+          assertTreasuryOutException("EXCHANGE_REVERSAL_COMPENSATION");
+          await assertCashOutAvailable(tx, {
+            branchId: Number(orig.branchId), cashBucket: "TREASURY", shiftId: null,
+            amount: orig.amount, operation: "عكس قبض عملية الصيرفة",
+          });
+        } else if (compensationDirection === "OUT") {
+          assertNonPhysicalOutReceipt({
+            classification: "NON_CASH_METHOD", paymentMethod: orig.paymentMethod,
+            cashBucket: null, operation: "عكس قبض صيرفة غير نقدي",
+          });
+        }
+        await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, Number(orig.id)));
+        await tx.insert(receipts).values({
           branchId: orig.branchId,
           shiftId: null,
-          cashBucket: "TREASURY",
-          direction: orig.direction === "OUT" ? "IN" : "OUT",
+          cashBucket: orig.paymentMethod === "CASH" ? "TREASURY" : null,
+          direction: compensationDirection,
           amount: orig.amount,
-          paymentMethod: "CASH",
+          paymentMethod: orig.paymentMethod,
           status: "COMPLETED",
-          partyType: "OTHER",
+          approvalStatus: "APPROVED",
+          partyType: orig.partyType ?? "OTHER",
+          partyId: orig.partyId,
           referenceNumber: `REV-EX-${txn.txnNumber}`,
           description: `عكس عملية صيرفة ${txn.txnNumber}`,
           createdBy: actor.userId,
-          });
-        }
+        });
       }
     }
 

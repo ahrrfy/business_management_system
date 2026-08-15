@@ -18,10 +18,14 @@ function db() {
 }
 
 beforeEach(async () => {
-  await truncateTables(["storeBanners", "branches", "users"]);
+  await truncateTables(["storeBanners", "storeSettings", "branches", "users"]);
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  // Banner reads require an explicit active fulfillment branch, but not an
+  // open/ready catalog. Keep the store closed instead of seeding an impossible
+  // "open with zero publishable stock" state.
+  await d.insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1, isOpen: false });
 });
 
 describe("createBanner — الموضع", () => {

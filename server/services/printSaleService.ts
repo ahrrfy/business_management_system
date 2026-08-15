@@ -44,6 +44,7 @@ import {
   lockConfirmedExternalPaymentAttempt,
   type LockedExternalPaymentAttempt,
 } from "./posExternalPayment";
+import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 
 /** علامة نوع المنتج لخدمات الطباعة: لا مخزون ذاتي، والاستهلاك عبر وصفة المواد فقط.
  *  (مخزّنة في products.productType — لا تحتاج تغيير مخطّط.) */
@@ -132,6 +133,12 @@ interface MaterialConsumption {
 }
 
 export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, actor: Actor): Promise<CreatePrintSaleResult> {
+    // حارس النواة لا وسم الراوتر: الاستقبال وتثبيت المسوّدة يستدعيان
+    // هذه الخدمة مباشرةً بلا requireExternalPaymentAttempt؛ لذلك يُرفض غير النقدي قبل
+    // idempotency أو أي قراءة/كتابة مالية أو مخزنية.
+    if (input.payment) {
+      assertPosPaymentMethodEnabled(input.payment.method);
+    }
     // ١. Idempotency: أعِد الفاتورة القائمة لنفس clientRequestId (نقرة مزدوجة/إعادة إرسال).
     if (input.clientRequestId) {
       const existing = await tx

@@ -1,6 +1,6 @@
 // إلغاء سند قبض/صرف — المرآة الدقيقة لـcreateVoucher:
-//   الأصل REVERSED + إيصال تعويضي معاكس على نفس الوردية + قيد PAYMENT_OUT/IN موجب (لا ADJUST)
-//   + عكس رصيد الطرف. يُمنع على وردية مغلقة، ويُمنع الإلغاء المزدوج.
+//   CASH IN ينشئ طلب تعويض معلّقاً؛ وبعد مالك آخر يصبح الأصل REVERSED + التعويض على الدلو نفسه
+//   + قيد PAYMENT_OUT/IN موجب (لا ADJUST) + عكس رصيد الطرف. يُمنع على وردية مغلقة/التكرار.
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -8,7 +8,7 @@ import { getDb } from "../../db";
 import { money } from "../money";
 import { reconcileSupplierBalances } from "../reconcileService";
 import { closeShift } from "../shiftService";
-import { cancelVoucher, createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
+import { approveVoucher, cancelVoucher, createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
 
 type LegacyVoucherInput = Omit<Parameters<typeof createVoucherRaw>[0], "clientRequestId"> & {
   clientRequestId?: string;
@@ -27,6 +27,8 @@ function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof creat
 }
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
+const ownerApprover = { userId: 2, branchId: 1, role: "manager" };
+const secondOwner = { userId: 3, branchId: 1, role: "manager" };
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
@@ -53,7 +55,11 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1, isOwner: false },
+    { id: 2, openId: "owner-approver", name: "مالك ثانٍ", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+    { id: 3, openId: "owner-third", name: "مالك ثالث", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "100.00" });
   // المورد برصيد افتتاحي 50 + قيد OPENING مطابق (كما يكتبه importService) ⇒ صيغة reconcile متّسقة.
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "50.00" });
@@ -69,6 +75,28 @@ async function seedBase() {
 async function openShift(branchId = 1, userId = 1): Promise<number> {
   const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN" });
   return insertId(r);
+}
+
+async function fundDrawer(shiftId: number, amount: string) {
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    shiftId,
+    cashBucket: "DRAWER",
+    direction: "IN",
+    amount,
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    referenceNumber: `TEST-DRAWER-FUND-${shiftId}`,
+    createdBy: 1,
+  });
+}
+
+async function fundTreasury(amount: string) {
+  await db().insert(s.receipts).values({
+    branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "IN",
+    amount, paymentMethod: "CASH", status: "COMPLETED",
+    referenceNumber: `TEST-TREASURY-FUND-${amount}`, createdBy: 1,
+  });
 }
 
 /** نقد الوردية المتوقّع = Σ receipts (CASH IN) − Σ receipts (CASH OUT) — يجمع الكل بغضّ النظر عن status. */
@@ -103,11 +131,20 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
     expect(afterCreate.currentBalance).toBe("70.00"); // 100 − 30
 
     const res = await cancelVoucher(v.receiptId, actor);
-    expect(res.status).toBe("REVERSED");
+    expect(res.status).toBe("PENDING_APPROVAL");
     expect(res.voucherNumber).toBe(v.voucherNumber);
 
-    // الأصل صار REVERSED.
-    const orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
+    // الطلب وحده أُنشئ: الأصل/الرصيد/الدفتر لم تتغير قبل المالك.
+    let orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
+    expect(orig.status).toBe("COMPLETED");
+    let cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    expect(cust.currentBalance).toBe("70.00");
+    const pending = (await db().select().from(s.receipts).where(eq(s.receipts.id, Number(res.approvalReceiptId))))[0];
+    expect(pending).toMatchObject({ direction: "OUT", status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null, shiftId: null });
+    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.receiptId, Number(pending.id))))).toHaveLength(0);
+
+    await approveVoucher(Number(res.approvalReceiptId), ownerApprover);
+    orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
     expect(orig.status).toBe("REVERSED");
 
     // التعويضي: OUT، نفس الوردية والمبلغ والطريقة، بلا voucherNumber، مرجعه CANCEL-VCH.
@@ -119,11 +156,11 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
     expect(Number(comp.shiftId)).toBe(shiftId);
     expect(comp.amount).toBe("30.00");
     expect(comp.paymentMethod).toBe("CASH");
-    expect(comp.voucherNumber).toBeNull();
+    expect(comp.voucherNumber).not.toBeNull();
     expect(comp.status).toBe("COMPLETED");
 
     // رصيد العميل عاد تماماً (مقارنة Decimal).
-    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(money(cust.currentBalance).eq(money("100.00"))).toBe(true);
 
     // قيد PAYMENT_OUT موجب مربوط بالتعويضي وبالعميل (لا ADJUST).
@@ -140,24 +177,26 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
     // نقد الوردية عاد لقيمته قبل السند (IN 30 يقابله OUT 30).
     expect(money(await shiftCashNet(shiftId)).eq(money(cashBefore))).toBe(true);
 
-    // listVouchers: السند الملغى يبقى ظاهراً بحالته، والتعويضي لا يظهر.
+    // listVouchers: الأصل الملغى وطلب التعويض المعتمد كلاهما سندان مدققان.
     const all = await listVouchers({});
-    expect(all).toHaveLength(1);
-    expect(all[0].status).toBe("REVERSED");
+    expect(all).toHaveLength(2);
+    expect(all.map((row) => row.status).sort()).toEqual(["COMPLETED", "REVERSED"]);
     const reversedOnly = await listVouchers({ status: "REVERSED" });
     expect(reversedOnly).toHaveLength(1);
     const completedOnly = await listVouchers({ status: "COMPLETED" });
-    expect(completedOnly).toHaveLength(0);
+    expect(completedOnly).toHaveLength(1);
   });
 });
 
 describe("إلغاء سند صرف لمورّد (PV)", () => {
   it("رصيد المورد يعود + reconcileSupplierBalances بلا انحراف", async () => {
-    await openShift(); // shift-gate-cash: السند النقدي يتطلّب وردية مفتوحة.
+    await fundTreasury("25.00");
     const v = await createVoucher(
       { voucherType: "PAYMENT", branchId: 1, amount: "25.00", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: 1, description: "دفعة لمورّد" },
       actor,
     );
+    expect(v.approvalStatus).toBe("PENDING_APPROVAL");
+    await approveVoucher(v.receiptId, ownerApprover);
     const afterCreate = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(afterCreate.currentBalance).toBe("25.00"); // 50 − 25
 
@@ -179,13 +218,55 @@ describe("إلغاء سند صرف لمورّد (PV)", () => {
 });
 
 describe("حواجز الإلغاء", () => {
-  it("إلغاء مزدوج يُرفض BAD_REQUEST ولا يُنشئ تعويضياً ثانياً", async () => {
+  it("قبض TREASURY لا يخرجه non-owner/admin، ولا يعتمده requester أو منشئ القبض؛ مالك ثالث فقط ينفذه", async () => {
+    const original = await createVoucher(
+      { voucherType: "RECEIPT", branchId: 1, amount: "40.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "قبض خزينة" },
+      ownerApprover,
+    );
+    const request = await cancelVoucher(original.receiptId, actor);
+    await expect(approveVoucher(Number(request.approvalReceiptId), actor)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(approveVoucher(Number(request.approvalReceiptId), ownerApprover)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await approveVoucher(Number(request.approvalReceiptId), secondOwner);
+    const [orig] = await db().select().from(s.receipts).where(eq(s.receipts.id, original.receiptId));
+    const [comp] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(request.approvalReceiptId)));
+    expect(orig.status).toBe("REVERSED");
+    expect(comp).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "TREASURY", shiftId: null });
+  });
+
+  it("tamper للـpayload أو المصدر يفشل مغلقاً ويبقي الأصل/الطلب/الذمة بلا أثر جزئي", async () => {
+    const original = await createVoucher(
+      { voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "قبض قابل للإلغاء" },
+      actor,
+    );
+    const request = await cancelVoucher(original.receiptId, actor);
+    await db().update(s.receipts).set({ internalNote: "tampered" }).where(eq(s.receipts.id, Number(request.approvalReceiptId)));
+    await expect(approveVoucher(Number(request.approvalReceiptId), ownerApprover)).rejects.toMatchObject({ code: "CONFLICT" });
+    await db().update(s.receipts).set({
+      internalNote: `@SYSTEM_PAYMENT_REQUEST:${JSON.stringify({ kind: "VOUCHER_CANCELLATION", originalReceiptId: original.receiptId, originalCreatorId: actor.userId })}`,
+    }).where(eq(s.receipts.id, Number(request.approvalReceiptId)));
+    await db().update(s.receipts).set({ amount: "31.00" }).where(eq(s.receipts.id, original.receiptId));
+    await expect(approveVoucher(Number(request.approvalReceiptId), ownerApprover)).rejects.toMatchObject({ code: "CONFLICT" });
+    const [orig] = await db().select().from(s.receipts).where(eq(s.receipts.id, original.receiptId));
+    const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(request.approvalReceiptId)));
+    const [customer] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    expect(orig.status).toBe("COMPLETED");
+    expect(pending).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+    expect(customer.currentBalance).toBe("70.00");
+    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT")))).toHaveLength(0);
+  });
+
+  it("تكرار طلب الإلغاء يعيد الطلب نفسه، والاعتماد/الإلغاء اللاحق لا يكرران التعويض", async () => {
     await openShift(); // shift-gate-cash
     const v = await createVoucher(
       { voucherType: "RECEIPT", branchId: 1, amount: "10.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "دفعة" },
       actor,
     );
-    await cancelVoucher(v.receiptId, actor);
+    const first = await cancelVoucher(v.receiptId, actor);
+    const replay = await cancelVoucher(v.receiptId, actor);
+    expect(replay.approvalReceiptId).toBe(first.approvalReceiptId);
+    await approveVoucher(Number(first.approvalReceiptId), ownerApprover);
+    const approvalReplay = await approveVoucher(Number(first.approvalReceiptId), ownerApprover);
+    expect(approvalReplay.replayed).toBe(true);
     await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
     // تعويضي واحد فقط، والرصيد لم يتحرّك مرة ثانية.
@@ -206,7 +287,7 @@ describe("حواجز الإلغاء", () => {
     );
     await closeShift({ shiftId, countedCash: "40.00" }, actor);
 
-    await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     // لا شيء تغيّر: الأصل COMPLETED، الرصيد كما بعد السند، لا تعويضي ولا قيد عكسي.
     const orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
@@ -240,7 +321,9 @@ describe("حواجز الإلغاء", () => {
 
     // الإلغاء يمرّ الآن (الحارس القديم كان يرفض كلّ سندٍ يحمل invoiceId ⇒ يستحيل عكسه إطلاقاً).
     const res = await cancelVoucher(v.receiptId, actor);
-    expect(res.status).toBe("REVERSED");
+    expect(res.status).toBe("PENDING_APPROVAL");
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("70.00");
+    await approveVoucher(Number(res.approvalReceiptId), ownerApprover);
     const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(money(cust.currentBalance).eq(money("100.00"))).toBe(true); // عاد الرصيد كاملاً
   });

@@ -7,6 +7,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { readOpeningWindowState } from "../openingModeService";
 import { linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
 import { openShiftIdTx } from "../shiftService";
@@ -23,6 +24,8 @@ export interface DeliverWorkOrderInput {
 
 /** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
 export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
+  // دفعة التسليم قبضٌ ذاتي من الموظف؛ نرفض غير النقدي قبل فحص idempotency وقفل الأمر.
+  if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
   return withTx(async (tx) => {
     // Idempotency: double-click / network-retry ⇒ return the already-created invoice.
     if (input.clientRequestId) {

@@ -1,7 +1,7 @@
 // إنشاء أصل: ترقيم AST-#### + قيد اقتناء (AP لمورّد أو نقد خزينة) + عهدة ابتدائية اختيارية.
 import { desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { assetCustodyLog, branches, employees, fixedAssets, kioskDevices, receipts } from "../../../drizzle/schema";
+import { assetCustodyLog, branches, employees, fixedAssets, kioskDevices } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
@@ -9,6 +9,7 @@ import { money, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { companyBranchScope, resolveTargetBranch } from "../companyBranchScope";
 import { getAsset } from "./queries";
+import { createSystemPaymentRequestTx } from "../voucher/create";
 
 /** الرمز التالي AST-#### — قراءة مرتّبة تحت قفل FOR UPDATE تُضيّق السباق، وقيد UNIQUE هو الحارس النهائي. */
 async function nextAssetCode(tx: Tx): Promise<string> {
@@ -44,6 +45,7 @@ export interface CreateAssetInput {
 export async function createAsset(input: CreateAssetInput, actor: Actor) {
   const scope = companyBranchScope(actor);
   const targetBranchId = resolveTargetBranch(scope, input.branchId, { required: false });
+  const paymentPending = money(input.purchaseValue).gt(0) && input.supplierId == null;
   const id = await withTx(async (tx) => {
     if (targetBranchId != null) {
       const [branch] = await tx
@@ -67,6 +69,8 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       }
     }
     const code = await nextAssetCode(tx);
+    const value = money(input.purchaseValue);
+    const awaitsCashApproval = value.gt(0) && input.supplierId == null;
     const [res] = await tx.insert(fixedAssets).values({
       code,
       name: input.name,
@@ -85,13 +89,15 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       condition: input.condition ?? null,
       warrantyEnd: input.warrantyEnd ?? null,
       linkedDeviceId: input.linkedDeviceId ?? null,
+      // الأصل النقدي لا يصبح أصلاً تشغيلياً/قابلاً للإهلاك قبل خروج النقد باعتماد مالك آخر.
+      // يبقى الصف غير النشط كسجل تدقيقي وربط حتمي لطلب الدفع.
+      isActive: !awaitsCashApproval,
     });
     const newId = extractInsertId(res);
 
     // FI-01/FA-01 (تدقيق ٢٠/٦، قرار المالك «كل إضافة = شراء جديد يُقيَّد»، ولا أصول قائمة سابقاً):
     // اقتناء الأصل يُرحَّل للدفتر فيُقابله التزام/نقد ⇒ لا تُنفَخ حقوق الملكية (أصل بلا مصدر تمويل).
     // مورّد ⇒ ذمم دائنة AP + قيد PURCHASE (يُسدَّد لاحقاً بسند). بلا مورّد ⇒ نقد PAYMENT_OUT من الخزينة.
-    const value = money(input.purchaseValue);
     const acqBranch = targetBranchId;
     const acqDate = new Date(input.purchaseDate);
     if (value.gt(0)) {
@@ -103,15 +109,23 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
         });
         await adjustSupplierBalance(tx, input.supplierId, value);
       } else {
-        const rRes = await tx.insert(receipts).values({
-          branchId: acqBranch, cashBucket: "TREASURY", direction: "OUT",
-          amount: toDbMoney(value), paymentMethod: "CASH", status: "COMPLETED", createdBy: actor.userId,
-        });
-        const receiptId = extractInsertId(rRes);
-        await postEntry(tx, {
-          entryType: "PAYMENT_OUT", branchId: acqBranch, receiptId, amount: value, entryDate: acqDate,
-          dedupeKey: `ASSET_ACQ:${newId}`, notes: `اقتناء أصل ${code} (نقدي)`,
-        });
+        if (acqBranch == null) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "شراء أصل نقداً يتطلب فرعاً محدداً لخزينة الصرف",
+          });
+        }
+        await createSystemPaymentRequestTx(tx, {
+          branchId: acqBranch,
+          amount: toDbMoney(value),
+          paymentMethod: "CASH",
+          partyType: "OTHER",
+          counterpartyName: input.name,
+          description: `اقتناء أصل ${code} (طلب دفع نقدي)`,
+          referenceNumber: `ASSET-ACQ-${newId}`,
+          voucherDate: input.purchaseDate,
+          clientRequestId: `asset-acquisition-${newId}`,
+        }, actor, { kind: "ASSET_ACQUISITION", assetId: newId });
       }
     }
 
@@ -141,5 +155,6 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     }
     return newId;
   });
-  return getAsset(id, scope);
+  const asset = await getAsset(id, scope);
+  return asset ? { ...asset, paymentPending } : null;
 }

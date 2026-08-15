@@ -1,14 +1,17 @@
 // نواة المحجوز المجمّع (reservationStock) — نمط applyMovement مع branchStock.
-// حجز ناعم (soft/ATP): لا يمسّ branchStock إطلاقاً. المتاح (ATP) = رصيد فعليّ − محجوز نشط.
-// التزامن: قفل صفّ reservationStock يتسلسل الحجوزات المتزامنة على نفس (صنف×فرع) ⇒ لا سباق «آخر قطعة».
+// حجز ناعم (soft/ATP): لا يمسّ branchStock إطلاقاً. المتاح الحاكم يجمع الحجز الرسمي
+// وتخصيص الطلبات الإلكترونية النشطة من primitive الكتالوج نفسها، فلا ينشأ ATP ثانٍ متناقض.
 import { and, eq, sql } from "drizzle-orm";
-import { branchStock, reservationStock } from "../../../drizzle/schema";
+import { reservationStock } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
 
 export interface Availability {
   onHand: number; // الرصيد الفعليّ بوحدة الأساس
-  reserved: number; // المحجوز النشط بوحدة الأساس
-  available: number; // ATP = onHand − reserved (قد يكون سالباً إن حُجز فوق الرصيد — موسوم بالإنفاذ الناعم)
+  reserved: number; // الحجز الرسمي + تخصيص طلبات المتجر النشطة بوحدة الأساس
+  available: number; // ATP تنفيذيّ = max(0, onHand − reserved)؛ لا تعرض أي شاشة كمية سالبة قابلة للبيع
+  rawAvailableBase: number; // فرق تشخيصي موقّع للتدقيق فقط
+  shortfallBase: number; // مقدار العجز التشخيصي = max(0, reserved − onHand)
 }
 
 /** يضمن وجود صفّ reservationStock للـ(صنف×فرع) قبل القفل — FOR UPDATE لا يقفل صفّاً غير موجود. */
@@ -20,8 +23,9 @@ async function ensureReservedRow(tx: Tx, variantId: number, branchId: number): P
 }
 
 /**
- * يقرأ المتاح (ATP) لصنف×فرع. مع lock=true يقفل صفّ reservationStock تحت نفس المعاملة
- * ⇒ حجزان متزامنان يتسلسلان (الثاني يقرأ محجوز الأوّل بعد commit).
+ * يقرأ المتاح (ATP) لصنف×فرع من المصدر الحاكم نفسه المستعمل في POS والمتجر.
+ * مع lock=true يقفل variant/stock/allocations بالترتيب الموحد؛ لذلك يرى الحجز الثاني
+ * الحجز الرسمي والطلب الإلكتروني اللذين التزما قبله، ولا يتجاوز تخصيصهما بصمت.
  */
 export async function readAvailability(
   tx: Tx,
@@ -29,21 +33,19 @@ export async function readAvailability(
   branchId: number,
   opts: { lock?: boolean } = {},
 ): Promise<Availability> {
-  if (opts.lock) await ensureReservedRow(tx, variantId, branchId);
-  const stockRows = await tx
-    .select({ q: branchStock.quantity })
-    .from(branchStock)
-    .where(and(eq(branchStock.variantId, variantId), eq(branchStock.branchId, branchId)))
-    .limit(1);
-  const onHand = stockRows[0]?.q ?? 0;
-  const resBase = tx
-    .select({ r: reservationStock.reservedBase })
-    .from(reservationStock)
-    .where(and(eq(reservationStock.variantId, variantId), eq(reservationStock.branchId, branchId)))
-    .limit(1);
-  const resRows = await (opts.lock ? resBase.for("update") : resBase);
-  const reserved = resRows[0]?.r ?? 0;
-  return { onHand, reserved, available: onHand - reserved };
+  const state = (await loadVariantAvailability(tx, branchId, [variantId], {
+    lock: opts.lock === true,
+  })).get(variantId);
+  const onHand = state?.onHandBase ?? 0;
+  const reserved = state?.reservedBase ?? 0;
+  const rawAvailableBase = onHand - reserved;
+  return {
+    onHand,
+    reserved,
+    available: Math.max(0, rawAvailableBase),
+    rawAvailableBase,
+    shortfallBase: Math.max(0, -rawAvailableBase),
+  };
 }
 
 /**

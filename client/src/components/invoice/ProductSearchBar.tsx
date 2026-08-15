@@ -37,10 +37,11 @@ interface NormalizedRow {
   unitName: string;
   conversionFactor: string;
   stockBase: number;
+  stockBranchId: number;
   reservedBase: number; // المحجوز النشط (الحجوزات) — 0 في جانب الشراء
-  availableBase: number; // المتاح للبيع (ATP) = stockBase − reservedBase
+  availableBase: number; // المتاح التشغيلي للبيع = max(0, stockBase − reservedBase)
   /** خدمة بلا مخزون ذاتيّ — createSale يوسّع وصفتها لخصم المواد. */
-  isService?: boolean;
+  isService: boolean;
   /** Sale price (sale side) OR cost (purchase side) — already in the unit, decimal string. */
   price: string;
   /** Cost in base unit (purchase side carries this; sale side gets it null when hidden). */
@@ -56,6 +57,8 @@ function stockBadgeColor(stock: number): string {
 
 export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, onNotify }: ProductSearchBarProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
+  const branchesQ = trpc.branches.list.useQuery();
+  const branchLabel = (id: number) => branchesQ.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
   // فاتورة بيع متقدّمة (١٢/٨/٢٦): تُظهر كل خدمات الطباعة بلا شرط showInReception، لأنّ الفاتورة
   // الرسمية قد تضمّ سلعاً وخدماتٍ في نفس المستند (شركات/حكومي). createSale يخصم موادها ذرّياً.
   const isAdvancedSale = invoiceType === "SALE";
@@ -74,7 +77,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   // Sale-side query
   const posQ = trpc.catalog.posList.useQuery(
     { branchId, tier, query: term, limit: 50, includeAllServices: isAdvancedSale },
-    { enabled: !isPurchase && canSearch, placeholderData: keepPreviousData, staleTime: 15_000 }
+    { enabled: !isPurchase && canSearch, placeholderData: keepPreviousData, staleTime: 0 }
   );
   // Purchase-side query
   const purQ = trpc.catalog.forPurchase.useQuery(
@@ -102,8 +105,10 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         unitName: r.unitName,
         conversionFactor: r.conversionFactor,
         stockBase: r.stockBase ?? 0,
+        stockBranchId: branchId,
         reservedBase: 0, // الشراء لا يعنيه المحجوز
         availableBase: r.stockBase ?? 0,
+        isService: false,
         price: r.costPriceBase, // purchase price defaults to last cost (base)
         costBase: r.costPriceBase,
       }));
@@ -118,6 +123,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       unitName: r.unitName,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase ?? 0,
+      stockBranchId: r.branchId,
       reservedBase: r.reservedBase ?? 0,
       availableBase: r.availableBase ?? (r.stockBase ?? 0),
       isService: r.isService || r.isPrintService,
@@ -155,6 +161,9 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       qty: 1,
       conversionFactor: r.conversionFactor,
       stockBase: r.stockBase,
+      stockBranchId: r.stockBranchId,
+      reservedBase: r.reservedBase,
+      availableBase: r.availableBase,
       isService: r.isService,
       price: r.price || "0",
       costBase: r.costBase || "0",
@@ -188,6 +197,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
           unitName: row.unitName,
           conversionFactor: row.conversionFactor,
           stockBase: row.stockBase ?? 0,
+          stockBranchId: row.branchId,
           reservedBase: row.reservedBase ?? 0,
           availableBase: row.availableBase ?? (row.stockBase ?? 0),
           isService: row.isService || row.isPrintService,
@@ -314,15 +324,25 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                     <span>•</span>
                     <span>{p.unitName}</span>
                     <span>•</span>
+                    <span>الفرع: {branchLabel(p.stockBranchId)}</span>
+                    <span>•</span>
                     {p.isService ? (
                       <span>بلا مخزون ذاتيّ (تُخصَم موادها)</span>
                     ) : (
                       <>
-                        <span className={stockBadgeColor(p.availableBase)}>متاح: {fmtNum(p.availableBase)}</span>
+                        <span>فعلي: {fmtNum(p.stockBase)}</span>
+                        <span>•</span>
+                        <span className={stockBadgeColor(p.availableBase)}>متاح للبيع: {fmtNum(p.availableBase)}</span>
                         {p.reservedBase > 0 && (
                           <>
                             <span>•</span>
                             <span className="text-amber-600">محجوز: {fmtNum(p.reservedBase)}</span>
+                            {p.reservedBase > p.stockBase && (
+                              <>
+                                <span>•</span>
+                                <span>زيادة حجز: {fmtNum(p.reservedBase - p.stockBase)}</span>
+                              </>
+                            )}
                           </>
                         )}
                       </>

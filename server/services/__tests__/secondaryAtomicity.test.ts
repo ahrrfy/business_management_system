@@ -12,6 +12,7 @@ import { getDb } from "../../db";
 import { withTx } from "../tx";
 import { lockPeriod } from "../periodLockService";
 import { deleteVacancy } from "../recruitmentService";
+import { openShift } from "../shiftService";
 
 const TABLES = [
   "idempotencyKeys",
@@ -135,8 +136,9 @@ describe("workOrder.deliver — clientRequestId يَمنع تسليم مزدوج
 
     const { deliverWorkOrder } = await import("../workOrderService");
     const actor = { userId: 1, branchId: 1, role: "cashier" as const };
-    // TRANSFER لا يَستوجب وردية ⇒ يَتجنّب خطأ «وردية مفتوحة»؛ المبلغ = salePrice ⇒ لا آجل.
-    const input = { workOrderId: 1, clientRequestId: "deliver-key-001", payment: { amount: "100.00", method: "TRANSFER" as const, reference: "TEST-TRANSFER-001" } };
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
+    // الدفع نقديّ كامل، لذلك نفتح وردية الاستقبال ونختبر idempotency في المسار الحي الفعلي.
+    const input = { workOrderId: 1, clientRequestId: "deliver-key-001", payment: { amount: "100.00", method: "CASH" as const } };
 
     const r1 = await deliverWorkOrder(input, actor);
     expect(r1.invoiceId).toBeGreaterThan(0);
@@ -174,28 +176,27 @@ describe("processPayment — تعارض طريقة السداد ⇒ CONFLICT", (
     const { processPayment } = await import("../saleService");
     const actor = { userId: 1, branchId: 1 };
 
-    // دفعة أولى بـCASH (بلا وردية — لا نَختبر المسار الكامل، فقط حارس idempotency)
-    // نُسجّل مباشرةً في جدول idempotencyKeys ثم نتحقّق من الـconflict
-    const { recordIdempotencyKey, findIdempotentRefId } = await import("../idempotency");
+    // نحاكي سجلاً تاريخياً غير نقدي مباشرةً؛ الغرض اختبار تعارض المفتاح، لا فتح قبض جديد محظور.
+    const { recordIdempotencyKey } = await import("../idempotency");
     await withTx(async (tx) => {
-      // نحاكي دفعة CASH مُسجَّلة بإيصال id=99
+      // دفعة TRANSFER تاريخية مسجّلة بإيصال id=99.
       await d.insert(s.receipts).values({
         id: 99,
         branchId: 1,
         invoiceId: 1,
         direction: "IN",
         amount: "100.00",
-        paymentMethod: "CASH",
+        paymentMethod: "TRANSFER",
         status: "COMPLETED",
         createdBy: 1,
       });
       await recordIdempotencyKey(tx, "sale.pay", "pay-key-XYZ", 99);
     });
 
-    // دفعة ثانية بنفس المفتاح ولكن طريقة TRANSFER ⇒ يجب CONFLICT
+    // إعادة CASH مسموحة حالياً، لكن المفتاح نفسه يعود لطريقة تاريخية مختلفة ⇒ يجب CONFLICT.
     await expect(
       processPayment(
-        { invoiceId: 1, amount: "100.00", method: "TRANSFER", clientRequestId: "pay-key-XYZ" },
+        { invoiceId: 1, amount: "100.00", method: "CASH", clientRequestId: "pay-key-XYZ" },
         actor
       )
     ).rejects.toMatchObject({ code: "CONFLICT" });

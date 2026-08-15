@@ -9,6 +9,7 @@ import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idem
 import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
+import { assertTreasuryOutException, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { nextRemittanceNumber } from "./numbering";
 import type { DeliveryTxActor } from "./types";
@@ -73,6 +74,17 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
     if (uniqueConsignmentIds.size !== input.lines.length) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تكرار الإرسالية نفسها داخل التوريد" });
     }
+
+    // CASH IN participates in the same mutex graph as CASH OUT: source→party→consignment→invoice.
+    // Locking party/documents first and the drawer only before receipt insert inverted delivery returns.
+    const { shiftId, cashBucket } = await shiftIdForCashTx(
+      tx,
+      { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role },
+      input.branchId,
+      "توريد مندوب",
+      input.shiftType ?? "RECEPTION",
+    );
+    await lockCashSourceForUpdate(tx, { branchId: input.branchId, cashBucket, shiftId });
 
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
@@ -202,7 +214,6 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
     const status: "BALANCED" | "SHORT" | "OVER" = "BALANCED";
 
     // درج المُستلِم (RECEPTION افتراضياً): صافي النقد (collected − fee) يدخله فعلياً.
-    const { shiftId, cashBucket } = await shiftIdForCashTx(tx, { userId: actor.userId, branchId: actor.branchId ?? undefined, role: actor.role }, input.branchId, "توريد مندوب", input.shiftType ?? "RECEPTION");
     const remittanceNumber = await nextRemittanceNumber(tx, input.branchId);
 
     const rmRes = await tx.insert(deliveryRemittances).values({
@@ -231,6 +242,7 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       receiptInId = extractInsertId(rIn);
     }
     if (feesTotal.gt(0)) {
+      if (cashBucket === "TREASURY") assertTreasuryOutException("DELIVERY_REMITTANCE_CLEARING");
       const rOut = await tx.insert(receipts).values({
         branchId: input.branchId, shiftId, direction: "OUT", amount: toDbMoney(feesTotal),
         paymentMethod: "CASH", cashBucket, status: "COMPLETED", referenceNumber: remittanceNumber,

@@ -54,6 +54,7 @@ import { parseScan } from "@/lib/scanRouter";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import ReservationsHub from "@/pages/ReservationsHub";
@@ -1150,6 +1151,12 @@ export default function Reception() {
   }
 
   async function handleSubmit(opts: { quickFullPay: boolean; openingConfirmed?: boolean }) {
+    // Fail before customer creation/offline capture: a stale external method must not
+    // leave an orphan customer when the checkout service rejects the payment.
+    if (!isPosPaymentMethodEnabled(String(method))) {
+      notify.err(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+      return;
+    }
     if (cart.length === 0) return;
     if (!shift) {
       notify.err("ابدأ الوردية أولاً قبل إتمام طلب العميل");

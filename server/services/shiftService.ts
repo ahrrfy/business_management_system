@@ -14,7 +14,11 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { postEntry } from "./ledgerService";
-import { getTreasuryBalance } from "./cashTransferService";
+import {
+  assertCashOutAvailable,
+  assertTreasuryOutException,
+  computeDrawerCashBalance,
+} from "./cash/cashAvailability";
 import { utcTodayStart } from "./businessDay";
 import { assertPeriodOpen } from "./periodLockService";
 import { lockBranchMonthCloseGate } from "./reports/monthCloseGate";
@@ -115,6 +119,19 @@ export async function openShift(
     // التسرّب يبقى قائماً *داخل* الوردية: closeShift يحسب المتوقَّع = الافتتاحيّ + المبيعات النقدية −
     // المدفوعات ويقارنه بالمعدود ⇒ فرق الوردية مسجَّلٌ ومعزولٌ لصاحبها. العمودان openingExpectedCash/
     // openingDiscrepancyReason مُهمَلان الآن (يبقيان null بلا هجرة إسقاط).
+    const opening = money(input.openingBalance);
+    // ترتيب الأقفال الحاكم هو مصدر النقد ثم المستند. إدراج الوردية أولاً يأخذ قفل FK مشتركاً
+    // على الفرع، فتستطيع معاملتا فتح متزامنتان أن تتعطلا كلتاهما عند محاولة ترقيته إلى X.
+    // لذلك نتحقق من تمويل الخزينة ونقفل حسابها قبل إنشاء صف الوردية نفسه.
+    if (opening.gt(0)) assertTreasuryOutException("SHIFT_FLOAT_INTERNAL");
+    const treasuryAvailability = opening.gt(0)
+      ? await assertCashOutAvailable(tx, {
+          branchId: input.branchId,
+          cashBucket: "TREASURY",
+          amount: opening,
+          operation: "تمويل عهدة افتتاح الوردية",
+        })
+      : null;
     try {
       const res = await tx.insert(shifts).values({
         branchId: input.branchId,
@@ -132,15 +149,12 @@ export async function openShift(
       // فعلياً من **الخزينة** إلى الدرج ⇒ نُسجّل حركة خزينة صريحة (TREASURY OUT) وإلّا فُكَّت لوحة الخزينة
       // (الدرج يزيد بلا نقصان مقابل في الخزينة ⇒ ازدواج وهميّ). جانب الدرج ضمنيّ في اللوحة (Σ openingBalance
       // للورديات المفتوحة) فلا نُنشئ إيصال DRAWER IN (وإلّا احتُسِب مرّتين). إن نقصت الخزينة عن العهدة
-      // يصير رصيدها سالباً (يُعرَض كتحذيرٍ للمدير ليموّلها) — **لا حظر** (قرار المالك: عدم حبس الكاشير).
+      // يُرفض فتح الوردية ذرياً إن لم تكفِ الخزينة؛ حدّ الصلاحية لا يصنع نقداً ولا يسمح بعهدة سالبة.
       let treasuryBalanceAfter: string | null = null;
       let treasuryWarning = false;
-      const opening = money(input.openingBalance);
       if (opening.gt(0)) {
-        const treasuryBefore = await getTreasuryBalance(tx, input.branchId);
-        const after = treasuryBefore.minus(opening);
-        treasuryBalanceAfter = toDbMoney(after);
-        treasuryWarning = after.isNegative();
+        treasuryBalanceAfter = treasuryAvailability!.availableAfter;
+        treasuryWarning = false;
         const outRes = await tx.insert(receipts).values({
           branchId: input.branchId,
           shiftId: null, // حركة خزينة (لا درج) ⇒ خارج computeExpectedCash لأيّ وردية
@@ -171,7 +185,8 @@ export async function openShift(
         hasDiscrepancy: false,
         difference: null as string | null,
         discrepancyReason: null as string | null,
-        // العهدة الوسيطة: رصيد الخزينة بعد سحب العهدة + علم العجز (للتحذير اللين في الواجهة).
+        // العهدة الوسيطة: رصيد الخزينة بعد السحب. يبقى الحقل التاريخي treasuryWarning=false
+        // حفاظاً على عقد الاستجابة؛ العجز لم يعد حالة نجاح ممكنة.
         treasuryBalanceAfter,
         treasuryWarning,
       };
@@ -193,23 +208,9 @@ export async function computeExpectedCash(
   shiftId: number,
   openingBalance: string,
 ) {
-  const rows = await tx
-    .select({
-      cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
-      cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
-    })
-    .from(receipts)
-    // فلتر cashBucket='DRAWER' دفاعي: يَمنع إدراج سندات TREASURY (shiftId=null عادةً)
-    // في حالة انتقلت إليها shiftId بطريق غير متوقّع.
-    // SHIFT-EXPECTED (تدقيق ٢/٧): لا نفلتر بـreceiptStatus — الإلغاء يَعكس بنمط «وسم الأصل REVERSED +
-    // إيصال تعويضيّ IN مكتمل»، فحصْر المكتمل يَحذف الأصل ويُبقي التعويض ⇒ عكسٌ مزدوج. جمع كل حالات
-    // DRAWER يُصافر الزوج (الأصل + تعويضه) صحيحاً. البطاقات الحيّة تتبع الصيغة نفسها (بلا فلتر حالة).
-    .where(
-      and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER")),
-    );
-  const cashIn = money(rows[0]?.cashIn ?? "0");
-  const cashOut = money(rows[0]?.cashOut ?? "0");
-  return money(openingBalance).plus(cashIn).minus(cashOut);
+  // فلتر DRAWER+CASH وصيغة حالات الإلغاء يعيشان في الدالة المركزية نفسها التي يستعملها
+  // حارس الصرف؛ هذا يمنع انجراف Z-report عن الرصيد الذي سمح الحارس بإنفاقه.
+  return computeDrawerCashBalance(tx, shiftId, openingBalance);
 }
 
 /**

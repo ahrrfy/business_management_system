@@ -14,5 +14,14 @@ export async function loadForUpdate(tx: Tx, assetId: number, scope: CompanyBranc
   const [a] = await tx.select().from(fixedAssets).where(and(...conds)).for("update").limit(1);
   // Deliberately mask cross-branch IDs as not found.
   if (!a) throw new TRPCError({ code: "NOT_FOUND", message: "الأصل غير موجود" });
+  // الأصل النقدي غير النشط ليس أصلاً تشغيلياً بعد: يبقى سجلاً تدقيقياً فقط حتى
+  // اعتماد المالك وخروج النقد. منع مركزي يغلق الاستبعاد/العهدة/الصيانة/المستندات
+  // والترحيل الشهري، فلا يمكن توليد CASH IN أو إهلاك أو حركة عهدة لأصل غير مدفوع.
+  if (a.isActive === false) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "الأصل بانتظار اعتماد دفع الاقتناء ولا يمكن تنفيذ دورة حياته قبل حسم الطلب",
+    });
+  }
   return a;
 }

@@ -44,6 +44,30 @@ async function seedBase() {
     { id: CASHIER2, openId: "local_c2", name: "كاشير٢", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: MANAGER2, openId: "local_mgr2", name: "مدير الفرع٢", role: "manager", loginMethod: "local", branchId: 2 },
   ]);
+  await d.insert(s.receipts).values([
+    {
+      branchId: 1,
+      direction: "IN",
+      amount: "1000000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-SHIFT-CONTINUITY-1",
+      createdBy: ADMIN,
+    },
+    {
+      branchId: 2,
+      direction: "IN",
+      amount: "1000000.00",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-SHIFT-CONTINUITY-2",
+      createdBy: ADMIN,
+    },
+  ]);
 }
 
 beforeEach(async () => {

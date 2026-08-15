@@ -223,6 +223,8 @@ export const purchaseRouter = router({
               lines: input.lines.map((l) => ({ purchaseOrderItemId: l.purchaseOrderItemId, receivedBaseQuantity: l.receivedBaseQuantity })),
               totalReceivedBaseQuantity: input.lines.reduce((s, l) => s + l.receivedBaseQuantity, 0),
               payment: input.payment ? { amount: input.payment.amount, method: input.payment.method } : null,
+              shippingPaymentRequestReceiptId: res.shippingPaymentRequestReceiptId,
+              supplierPaymentRequestReceiptId: res.supplierPaymentRequestReceiptId,
             },
           });
           return res;

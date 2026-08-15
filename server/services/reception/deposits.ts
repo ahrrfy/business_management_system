@@ -21,13 +21,14 @@ import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { money, round2, toDbMoney } from "../money";
 import {
-  computeExpectedCash,
   getOpenShift,
   openShiftIdTx,
   resolveBranchCashShiftTx,
 } from "../shiftService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { assertTelecomCollectAllowed } from "./telecom";
 import { withTx, type Actor } from "../tx";
 
@@ -98,6 +99,8 @@ async function recomputedDraftTotal(tx: Tx, draftId: number): Promise<Decimal> {
  * بلا `version` عمداً: قبضُ مالٍ لا يفشل لأنّ زميلاً أضاف سطراً — حاميه clientRequestId.
  */
 export async function collectDeposit(input: CollectDepositInput, actor: Actor & { role?: string }) {
+  // العربون قبض POS حقيقي؛ لا نسجّله خارجياً بلا مزوّد وتسوية موثوقين.
+  assertPosPaymentMethodEnabled(input.method);
   return withTx(async (tx) => {
     // idempotency أولاً: إعادة إرسال نفس الطلب تعيد النتيجة نفسها بلا قبضٍ ثانٍ.
     const existingId = await findIdempotentRefId(tx, "reception.collectDeposit", input.clientRequestId);
@@ -345,13 +348,10 @@ export async function refundDeposit(
     if (method === "CASH") {
       const resolved = await resolveBranchCashShiftTx(tx, Number(draft.branchId), opts.refundShiftId ?? null);
       shiftId = resolved.shiftId;
-      const drawer = await computeExpectedCash(tx, shiftId, resolved.openingBalance);
-      if (amountD.gt(drawer)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `المبلغ يتجاوز النقد المتوفّر حالياً في هذا الدرج (المتاح ${drawer.toFixed(2)} < المطلوب ${amountD.toFixed(2)})`,
-        });
-      }
+      await assertCashOutAvailable(tx, {
+        branchId: Number(draft.branchId), cashBucket: "DRAWER", shiftId,
+        amount: amountD, operation: "استرداد عربون طلب محفوظ",
+      });
     } else {
       shiftId = await openShiftIdTx(tx, actor.userId, Number(draft.branchId), "RECEPTION");
     }
@@ -600,7 +600,7 @@ export async function refundAppliedCollectionsForWorkOrder(
 ) {
   const parts = await appliedCollectionsForWorkOrder(tx, args.workOrderId);
   if (!parts.length) return { refunded: "0.00" };
-  let cashShift: { shiftId: number; openingBalance: string } | null = null;
+  let cashShift: { shiftId: number } | null = null;
   let total = money(0);
   for (const part of parts) {
     const amountD = round2(money(part.amount));
@@ -612,20 +612,17 @@ export async function refundAppliedCollectionsForWorkOrder(
     if (refundMethod === "CASH") {
       if (!cashShift) {
         const resolved = await resolveBranchCashShiftTx(tx, args.branchId, args.refundShiftId ?? null);
-        cashShift = { shiftId: resolved.shiftId, openingBalance: resolved.openingBalance };
+        cashShift = { shiftId: resolved.shiftId };
       }
       shiftId = cashShift.shiftId;
       // مراجعة PR #495: `computeExpectedCash` يُعاد حسابه في كلّ دورة **بعد** إدراج إيصال OUT
       // السابقة داخل نفس المعاملة، فهو يعكس المستردّات السابقة أصلاً. جمعُ `cashOutSoFar` فوقه
       // كان يخصمها مرّتين ⇒ رفضٌ زائف من الحصّة الثانية فصاعداً (درجٌ فيه ١٠٠ وردّان ٤٠: الثانية
       // تُرفض بحجّة «المتاح ٢٠» بينما المتبقّي ٦٠ فعلاً). المقارنة الآن بالدرج المُعاد حسابه وحده.
-      const drawer = await computeExpectedCash(tx, shiftId, cashShift.openingBalance);
-      if (amountD.gt(drawer)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `ردّ عربون الطلب يتجاوز النقد المتوفّر في الدرج (المتاح ${drawer.toFixed(2)} < المطلوب ${amountD.toFixed(2)})`,
-        });
-      }
+      await assertCashOutAvailable(tx, {
+        branchId: args.branchId, cashBucket: "DRAWER", shiftId,
+        amount: amountD, operation: "رد حصة عربون أمر الشغل",
+      });
     } else {
       shiftId = await openShiftIdTx(tx, args.actor.userId, args.branchId, "RECEPTION");
     }

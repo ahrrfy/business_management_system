@@ -31,6 +31,13 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { CheckCircle2, XCircle, Paperclip, ShieldQuestion, Link2, X } from "lucide-react";
+import {
+  canPrintOfficialVoucher,
+  canShowVoucherApprovalAction,
+  canShowVoucherRejectAction,
+  expectedVoucherSourceLabel,
+  voucherApprovalLabel,
+} from "@/components/vouchers/voucherUiPolicy";
 
 type VoucherRow = RouterOutputs["vouchers"]["list"][number];
 
@@ -43,12 +50,6 @@ const PARTY_LABEL: Record<string, string> = { CUSTOMER: "عميل", SUPPLIER: "�
 const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "صكّ", TRANSFER: "تحويل", WALLET: "محفظة", EXCHANGE: "صيرفة", TELECOM: "رصيد زين",
 };
-const APPROVAL_LABEL: Record<string, string> = {
-  APPROVED: "مُعتمَد",
-  PENDING_APPROVAL: "بانتظار الاعتماد",
-  REJECTED: "مَرفوض",
-};
-
 function shortHash(h?: string | null): string {
   return h ? String(h).slice(0, 8).toUpperCase() : "—";
 }
@@ -56,8 +57,10 @@ function shortHash(h?: string | null): string {
 export default function Vouchers() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
-  const canManage = me.data &&
+  const canManage = !!me.data &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "treasury", "FULL", ["manager", "accountant"]);
+  // عرضٌ إرشادي فقط؛ approve على الخادم ملزم بإعادة قراءة isOwner النشط وفصل المنشئ عن المعتمد.
+  const isOwner = me.data?.isOwner === true;
   // الفلاتر تعيش في querystring — تبقى مع فتح التفاصيل والرجوع، وتُشارَك رابطاً.
   const [f, setF, resetF] = useUrlFilters({
     type: "", party: "", method: "", approval: "", cat: "", branch: "", status: "", from: "", to: "", q: "",
@@ -112,9 +115,14 @@ export default function Vouchers() {
   });
 
   const approveMut = trpc.vouchers.approve.useMutation({
-    onSuccess: async (res) => {
+    onSuccess: async (res, variables) => {
+      const approvedDirection = all.find((row) => Number(row.id) === variables.receiptId)?.direction;
       await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
-      notify.ok(`اعتُمد السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`);
+      notify.ok(
+        approvedDirection === "OUT"
+          ? `اعتُمد وصُرف السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`
+          : `اعتُمد السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`,
+      );
     },
     onError: (e) => notify.err(e),
   });
@@ -132,21 +140,66 @@ export default function Vouchers() {
     onError: (e) => notify.err(e),
   });
 
+  const resubmitSystemPaymentMut = trpc.vouchers.resubmitExpensePayment.useMutation({
+    onSuccess: async (res) => {
+      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
+      notify.ok(`أُعيد تقديم طلب الدفع النظامي بالسند ${res.voucherNumber} بلا تكرارٍ للمصدر أو أثرٍ مالي`);
+    },
+    onError: (e) => notify.err(e),
+  });
+
   async function approveVoucher(r: VoucherRow) {
+    // لا يُعد هذا حارس صلاحية؛ هو منع UX فقط، والإنفاذ الحاسم في الإجراء الخادمي.
+    if (r.direction === "OUT" && !isOwner) {
+      notify.err("اعتماد وصرف سندات الصرف متاح لحساب مالك نشط فقط.");
+      return;
+    }
+    const partyLabel = r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
+    const isPayment = r.direction === "OUT";
+    const expectedSource = expectedVoucherSourceLabel(r);
+    const isRecognizedExpense =
+      r.referenceNumber?.startsWith("SHIP-") === true ||
+      r.referenceNumber?.startsWith("ASSET-MAINT-") === true;
     const ok = await confirm({
       variant: "info",
-      title: "اعتماد السند",
-      description: `سَيُصبح السند ${r.voucherNumber ?? ""} مُعتمَداً ويُسجَّل قيد الدفتر ويُؤثّر على ${
-        r.partyType === "CUSTOMER" ? "ذمة العميل" : r.partyType === "SUPPLIER" ? "ذمة المورّد" : "الصندوق"
-      } بمبلغ ${fmt(r.amount)} د.ع. هل تتابع؟`,
-      confirmText: "اعتماد",
+      title: isPayment ? "اعتماد وصرف السند" : "اعتماد السند",
+      description: isPayment
+        ? isRecognizedExpense
+          ? `المصروف وقيد استحقاقه مُثبتان مسبقاً. سيُعيد الخادم فحص المصدر والرصيد ثم يُخرج اعتماد السند ${r.voucherNumber ?? ""} مبلغ ${fmt(r.amount)} د.ع من ${expectedSource} مرةً واحدة فقط، بلا مصروف أو قيد استحقاق ثانٍ. عند أي فشل يبقى طلب الدفع بلا أثر نقدي. هل تتابع؟`
+          : `سيُتحقق الخادم من الرصيد ثم يعتمد ويصرف السند ${r.voucherNumber ?? ""} في عملية واحدة بلا مرحلة وسيطة. المبلغ: ${fmt(r.amount)} د.ع · الطرف: ${partyLabel} · المصدر المتوقع لحظة التأكيد: ${expectedSource}. يُعاد فحص المصدر والرصيد داخل المعاملة؛ عند أي فشل لن يُسجَّل إيصال أو قيد أو تغيير ذمة. هل تتابع؟`
+        : `سَيُصبح السند ${r.voucherNumber ?? ""} مُعتمَداً ويُسجَّل قيد الدفتر ويُؤثّر على ${
+            r.partyType === "CUSTOMER" ? "ذمة العميل" : r.partyType === "SUPPLIER" ? "ذمة المورّد" : "الصندوق"
+          } بمبلغ ${fmt(r.amount)} د.ع. هل تتابع؟`,
+      confirmText: isPayment ? "اعتماد وصرف" : "اعتماد",
       cancelText: "تراجع",
     });
     if (!ok) return;
     approveMut.mutate({ receiptId: Number(r.id) });
   }
 
+  async function resubmitSystemPayment(r: VoucherRow) {
+    const isTerminationSettlement = r.referenceNumber?.startsWith("TERM-SETTLEMENT-") === true;
+    const ok = await confirm({
+      variant: "info",
+      title: isTerminationSettlement
+        ? "إعادة تقديم تسوية نهاية الخدمة"
+        : "إعادة تقديم طلب دفع المصروف",
+      description: isTerminationSettlement
+        ? `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بسجل إنهاء الخدمة ومبلغه المعتمد نفسه بلا تغيير حالة الموظف أو أثر مالي مسبق. هل تتابع؟`
+        : `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بالمصروف المثبت نفسه بلا مصروف أو قيد دفتر إضافي. هل تتابع؟`,
+      confirmText: "إعادة تقديم",
+      cancelText: "تراجع",
+    });
+    if (!ok) return;
+    resubmitSystemPaymentMut.mutate({ receiptId: Number(r.id) });
+  }
+
   function openReject(r: VoucherRow) {
+    // إخفاء/منع UX فقط؛ الخادم القادم يفرض isOwner النشط وفصل الواجبات.
+    if (r.direction === "OUT" && !isOwner) {
+      notify.err("رفض طلبات الصرف متاح لحساب مالك نشط فقط.");
+      return;
+    }
     setRejectReason("");
     setRejectTarget(r);
   }
@@ -227,7 +280,7 @@ export default function Vouchers() {
           { key: "referenceNumber", header: "الرقم المرجعي" },
           { key: "checkNumber", header: "رقم الصكّ" },
           { key: "cardLastFour", header: "آخر ٤ بطاقة" },
-          { key: "approvalStatus", header: "حالة الاعتماد", map: (r) => APPROVAL_LABEL[r.approvalStatus ?? "APPROVED"] ?? "—" },
+          { key: "approvalStatus", header: "حالة الاعتماد", map: (r) => voucherApprovalLabel(r) },
           { key: "status", header: "الحالة", map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل") },
           // attachment-upload (٥/٧): المُرفق أصبح data URL صورة (~٩٣٣ك حرفاً) — تصديره خاماً يُفسد
           // الخلية (حدّ Excel ~٣٢،٧٦٧ حرفاً) ⇒ نعم/لا فقط؛ المُلَفّ نفسه يُفتَح من الشاشة مباشرةً.
@@ -246,6 +299,10 @@ export default function Vouchers() {
 
   // طباعة السند: نَطلب السند الكامل من السيرفر (يَتضمَّن createdByName/approvedByName/categoryName/partyName).
   async function printVoucher(r: VoucherRow, mode: "thermal" | "a4") {
+    if (!canPrintOfficialVoucher(r)) {
+      notify.err("لا تتاح الطباعة الرسمية قبل اعتماد السند وتنفيذ أثره المالي.");
+      return;
+    }
     try {
       const v = await utils.vouchers.get.fetch({ receiptId: Number(r.id) });
       if (!v) { notify.err("تعذّر جَلب تفاصيل السند"); return; }
@@ -318,7 +375,7 @@ export default function Vouchers() {
               <Button className="bg-emerald-600 hover:bg-emerald-700">+ سند قبض</Button>
             </Link>
             <Link href="/vouchers/payment/new">
-              <Button className="bg-rose-600 hover:bg-rose-700">+ سند صرف</Button>
+              <Button className="bg-rose-600 hover:bg-rose-700">+ طلب صرف</Button>
             </Link>
           </div>
         }
@@ -372,8 +429,12 @@ export default function Vouchers() {
           <FilterField label="الاعتماد">
             <select className={selectCls} value={f.approval} onChange={(e) => applyFilter({ approval: e.target.value })}>
               <option value="">الكل</option>
-              <option value="APPROVED">مُعتمَد</option>
-              <option value="PENDING_APPROVAL">بانتظار الاعتماد</option>
+              <option value="APPROVED">
+                {f.type === "PAYMENT" ? "معتمد ومصروف" : f.type === "RECEIPT" ? "مُعتمَد" : "مُعتمَد / مصروف"}
+              </option>
+              <option value="PENDING_APPROVAL">
+                {f.type === "PAYMENT" ? "بانتظار الاعتماد والصرف" : f.type === "RECEIPT" ? "بانتظار الاعتماد" : "بانتظار الاعتماد / الصرف"}
+              </option>
               <option value="REJECTED">مَرفوض</option>
             </select>
           </FilterField>
@@ -437,7 +498,7 @@ export default function Vouchers() {
         </Card>
         <Card>
           <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">إجمالي الصرف (مُعتمَد)</div>
+            <div className="text-xs text-muted-foreground">إجمالي الصرف (معتمد ومصروف)</div>
             <div className="text-xl font-bold text-money-negative tabular-nums" dir="ltr">{fmt(totalOut)}</div>
           </CardContent>
         </Card>
@@ -458,7 +519,11 @@ export default function Vouchers() {
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground inline-flex items-center gap-1">
               <ShieldQuestion aria-hidden className="size-3.5" />
-              بانتظار اعتماد (بلا أَثَر)
+              {f.type === "PAYMENT"
+                ? "بانتظار اعتماد وصرف (بلا أَثَر)"
+                : f.type === "RECEIPT"
+                  ? "بانتظار اعتماد (بلا أَثَر)"
+                  : "بانتظار اعتماد / صرف (بلا أَثَر)"}
             </div>
             <div className="text-xl font-bold text-amber-700 tabular-nums" dir="ltr">{fmt(agg.data?.pendingTotal ?? "0")}</div>
             <div className="text-[11px] text-muted-foreground mt-0.5">
@@ -578,7 +643,7 @@ export default function Vouchers() {
                           {isPending && <ShieldQuestion aria-hidden className="size-3" />}
                           {isRejected && <XCircle aria-hidden className="size-3" />}
                           {!isPending && !isRejected && <CheckCircle2 aria-hidden className="size-3" />}
-                          {APPROVAL_LABEL[r.approvalStatus ?? "APPROVED"]}
+                          {voucherApprovalLabel(r)}
                         </span>
                       </td>
                       <td className="p-2 text-center">
@@ -598,6 +663,7 @@ export default function Vouchers() {
                               key: "print-thermal",
                               kind: "print",
                               label: "طباعة حرارية",
+                              hidden: !canPrintOfficialVoucher(r),
                               onSelect: () => void printVoucher(r, "thermal"),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" },
                             },
@@ -605,28 +671,53 @@ export default function Vouchers() {
                               key: "print-a4",
                               kind: "print",
                               label: "طباعة A4 (PDF)",
+                              hidden: !canPrintOfficialVoucher(r),
                               onSelect: () => void printVoucher(r, "a4"),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" },
                             },
                             {
                               key: "approve",
                               kind: "approve",
-                              label: "اعتماد السند",
-                              hidden: !canManage || r.approvalStatus !== "PENDING_APPROVAL",
+                              label: r.direction === "OUT" ? "اعتماد وصرف" : "اعتماد السند",
+                              hidden: !canShowVoucherApprovalAction({
+                                direction: r.direction,
+                                approvalStatus: r.approvalStatus,
+                                isOwner,
+                                canManageLegacyReceipt: canManage,
+                              }),
                               disabled: approveMut.isPending,
-                              disabledReason: "توجد عملية اعتماد قيد التنفيذ",
+                              disabledReason: "توجد عملية اعتماد وصرف قيد التنفيذ",
                               onSelect: () => void approveVoucher(r),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                              gate: { module: "treasury", level: "FULL" },
                             },
                             {
                               key: "reject",
                               kind: "reverse",
-                              label: "رفض السند",
+                              label: r.direction === "OUT" ? "رفض طلب الصرف" : "رفض السند",
                               variant: "destructive",
-                              hidden: !canManage || r.approvalStatus !== "PENDING_APPROVAL",
+                              hidden: !canShowVoucherRejectAction({
+                                direction: r.direction,
+                                approvalStatus: r.approvalStatus,
+                                isOwner,
+                                canManageLegacyReceipt: canManage,
+                              }),
                               disabled: rejectMut.isPending,
                               disabledReason: "توجد عملية رفض قيد التنفيذ",
                               onSelect: () => openReject(r),
+                              gate: r.direction === "OUT"
+                                ? { module: "treasury", level: "FULL" }
+                                : { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                            },
+                            {
+                              key: "resubmit-system-payment",
+                              kind: "create",
+                              label: r.referenceNumber?.startsWith("TERM-SETTLEMENT-")
+                                ? "إعادة تقديم تسوية نهاية الخدمة"
+                                : "إعادة تقديم دفع المصروف",
+                              hidden: !canManage || r.approvalStatus !== "REJECTED" || !r.referenceNumber || (!r.referenceNumber.startsWith("SHIP-") && !r.referenceNumber.startsWith("ASSET-MAINT-") && !r.referenceNumber.startsWith("TERM-SETTLEMENT-")),
+                              disabled: resubmitSystemPaymentMut.isPending,
+                              disabledReason: "توجد إعادة تقديم قيد التنفيذ",
+                              onSelect: () => void resubmitSystemPayment(r),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
@@ -681,7 +772,11 @@ export default function Vouchers() {
           <DialogHeader>
             <DialogTitle>رفض السند {rejectTarget?.voucherNumber ?? ""}</DialogTitle>
             <DialogDescription>
-              سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي.
+              {rejectTarget?.referenceNumber?.startsWith("TERM-SETTLEMENT-")
+                ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى إنهاء الخدمة مثبتاً وتبقى التسوية غير مدفوعة، ويمكن إعادة تقديمها صراحةً من السجل بلا تكرار."
+                : rejectTarget?.referenceNumber && (rejectTarget.referenceNumber.startsWith("SHIP-") || rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
+                  ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
+                  : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1">

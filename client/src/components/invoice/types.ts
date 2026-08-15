@@ -31,7 +31,11 @@ export interface InvoiceLine {
   conversionFactor: string;
   /** Stock at the active branch in base units. */
   stockBase: number;
+  /** الفرع الفعلي الذي جاءت منه لقطة المخزون بعد عزل الحساب خادمياً. */
+  stockBranchId?: number;
+  /** Active reservations in base units. Missing means the snapshot still needs a live refresh. */
   reservedBase?: number;
+  /** Sellable quantity in base units, clamped at zero. Missing means the snapshot is stale/unknown. */
   availableBase?: number;
   /** خدمة (١٢/٨/٢٦): الخدمة بلا مخزون ذاتيّ ⇒ لا نُظهر تحذير «خارج المخزون»؛ createSale يخصم موادها من الوصفة. */
   isService?: boolean;
@@ -94,6 +98,11 @@ export type InvoiceAction =
   | { type: "REPLACE_STATE"; state: InvoiceState }
   | { type: "SET_FIELD"; field: keyof Omit<InvoiceState, "items">; value: InvoiceState[keyof Omit<InvoiceState, "items">] }
   | { type: "SET_TIER_PRICES"; tier: PriceTier; pricesByUnitId: Record<number, string> }
+  | {
+      type: "SET_STOCK_SNAPSHOTS";
+      snapshotsByUnitId: Record<number, { stockBase: number; stockBranchId: number; reservedBase: number; availableBase: number; isService: boolean }>;
+    }
+  | { type: "MARK_STOCK_STALE" }
   | { type: "SET_ENTITY"; id: number | null }
   | { type: "ADD_ITEM"; item: InvoiceLine }
   | { type: "ADD_ITEMS"; items: InvoiceLine[] }

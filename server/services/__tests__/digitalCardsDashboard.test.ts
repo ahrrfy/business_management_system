@@ -5,6 +5,7 @@ import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createSupplier } from "../supplierService";
 import { withTx } from "../tx";
+import { approveVoucher } from "../voucher/approval";
 import {
   dashboardService, finalizeService, intentService, offeringService,
   pricingService, providerService, walletOpsService, walletService,
@@ -18,6 +19,7 @@ import {
 
 const actor = { userId: 1, branchId: 1, role: "cashier" };
 const mgr = { userId: 2, branchId: 1, role: "manager" };
+const owner = { userId: 3, branchId: 1, role: "admin", isOwner: true };
 const DATE = "2026-07-29";
 const FROM = "2026-01-01";
 const TO = "2027-01-01";
@@ -44,7 +46,13 @@ async function seedBase() {
   await db().insert(s.users).values([
     { id: 1, openId: "u1", name: "كاشير", role: "cashier", loginMethod: "local" },
     { id: 2, openId: "u2", name: "مدير", role: "manager", loginMethod: "local" },
+    { id: 3, openId: "u3", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
+  await db().insert(s.receipts).values({
+    branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+    cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-FUND", createdBy: owner.userId,
+  });
   await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, status: "OPEN", openingBalance: "0" });
 }
 
@@ -60,9 +68,10 @@ async function mkProvider(name: string, mode: "PREPAID" | "POSTPAID") {
 async function mkWallet(providerId: number, balance: string, code = "W1") {
   const { walletId } = await withTx((tx) =>
     walletService.createWallet(tx, { providerId, branchId: 1, code, name: `محفظة ${code}` }, { userId: 1, branchId: 1 }));
-  await withTx((tx) => walletOpsService.deposit(tx, {
+  const request = await withTx((tx) => walletOpsService.deposit(tx, {
     walletId, amount: balance, paymentMethod: "CASH", clientRequestId: `dep-${code}-${Math.random().toString(36).slice(2, 9)}`,
   }, mgr));
+  await approveVoucher(request.receiptId, owner);
   return walletId;
 }
 

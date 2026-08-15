@@ -21,7 +21,8 @@ import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
-import { computeExpectedCash, resolveBranchCashShiftTx } from "../shiftService";
+import { resolveBranchCashShiftTx } from "../shiftService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import type { Actor } from "../tx";
 
 export interface RefundWorkOrderFeeHeldOpts {
@@ -93,13 +94,10 @@ export async function refundWorkOrderDeliveryFeeHeld(
   }
 
   const resolved = await resolveBranchCashShiftTx(tx, opts.branchId, opts.refundShiftId ?? null);
-  const drawerNow = await computeExpectedCash(tx, resolved.shiftId, resolved.openingBalance);
-  if (feeHeldNet.gt(drawerNow)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `ردّ أمانة أجرة التوصيل (${feeHeldNet.toFixed(2)}) يتجاوز النقد المتوفّر في هذا الدرج (${drawerNow.toFixed(2)}) — اختر درجاً آخر`,
-    });
-  }
+  await assertCashOutAvailable(tx, {
+    branchId: opts.branchId, cashBucket: "DRAWER", shiftId: resolved.shiftId,
+    amount: feeHeldNet, operation: "رد أمانة أجرة توصيل أمر الشغل",
+  });
   const feeOut = await tx.insert(receipts).values({
     branchId: opts.branchId, shiftId: resolved.shiftId, workOrderId: opts.workOrderId,
     direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",

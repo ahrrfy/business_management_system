@@ -366,10 +366,22 @@ describe("R8 — المركز المالي: رصيد زين أصلٌ، وعرب�
     } as never, CASHIER as never);
     const before = await getFinancialPosition({ verify: false });
 
-    await collectDeposit({
-      draftId: draft.draftId, amount: "20000.00", method: "TELECOM",
-      reference: "ZAIN-123456", clientRequestId: "r8-telecom",
+    const historicalCollection = await collectDeposit({
+      draftId: draft.draftId, amount: "20000.00", method: "CASH",
+      clientRequestId: "r8-telecom",
     }, CASHIER as never);
+
+    // fixture تاريخية مكتملة البنية من زمن TELECOM: التقارير ما زالت ملزمة
+    // بإظهارها، لكن إنشاء قبض TELECOM جديد صار fail-closed حتى توجد تسوية موثوقة.
+    await db().update(s.receipts).set({
+      paymentMethod: "TELECOM",
+      cashBucket: null,
+      referenceNumber: "ZAIN-123456",
+    }).where(eq(s.receipts.id, historicalCollection.receiptId));
+    await db().update(s.orderPayments).set({
+      method: "TELECOM",
+      referenceNumber: "ZAIN-123456",
+    }).where(eq(s.orderPayments.id, historicalCollection.paymentId));
 
     const pos = await getFinancialPosition({ verify: false });
     expect(Number(pos.telecom)).toBe(20000);        // كان صفراً (غائباً عن التجميع كلّه)

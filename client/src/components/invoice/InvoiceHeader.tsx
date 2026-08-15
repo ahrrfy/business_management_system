@@ -100,7 +100,10 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
   const isQuote = invoiceType === "QUOTATION";
   const isReturn = invoiceType === "SALE_RETURN" || invoiceType === "PURCHASE_RETURN";
 
+  const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
+  // سياسة main الحديثة: الأدمن وحده يعبر الفروع؛ المدير وسائر الأدوار مثبتون على فرع الحساب.
+  const canChangeBranch = me.data?.role === "admin";
   const utils = trpc.useUtils();
   const latestStateRef = useRef(state);
   latestStateRef.current = state;
@@ -267,10 +270,11 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             />
           </FieldGroup>
 
-          <FieldGroup label="الفرع" icon={Building}>
+          <FieldGroup label={canChangeBranch ? "الفرع" : "الفرع المثبّت للحساب"} icon={Building}>
             <Select
               value={String(state.branchId)}
               onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "branchId", value: Number(v) })}
+              disabled={!canChangeBranch}
             >
               <SelectTrigger>
                 <SelectValue placeholder="—" />

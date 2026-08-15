@@ -57,7 +57,16 @@ export default function AssetEdit() {
   );
 
   const update = trpc.assets.update.useMutation({
-    onSuccess: async (a) => { notify.ok("تم حفظ تعديلات الأصل"); await utils.assets.get.invalidate({ id }); await utils.assets.list.invalidate(); navigate(`/assets/${a?.id ?? id}`); },
+    onSuccess: async (a) => {
+      notify.ok(
+        a?.paymentPending
+          ? "حُفظ طلب تحويل تمويل الأصل بلا تغيير القيمة أو المورّد أو الذمّة — ينفّذ مالكٌ آخر الدفع والتعديل معاً"
+          : "تم حفظ تعديلات الأصل",
+      );
+      await utils.assets.get.invalidate({ id });
+      await utils.assets.list.invalidate();
+      navigate(`/assets/${a?.id ?? id}`);
+    },
     onError: (e) => { setError(e.message); notify.err(e); },
   });
 

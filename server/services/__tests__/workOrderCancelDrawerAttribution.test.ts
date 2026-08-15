@@ -121,7 +121,7 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
       paymentMethod: "CASH", cashBucket: "DRAWER", status: "COMPLETED", createdBy: 2,
     });
 
-    await expect(cancelWorkOrder(workOrderId, manager)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelWorkOrder(workOrderId, manager)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
   it("لا وردية مفتوحة بالفرع إطلاقاً (أُغلقت بعد قبض العربون) ⇒ الاسترداد النقدي يُرفَض", async () => {

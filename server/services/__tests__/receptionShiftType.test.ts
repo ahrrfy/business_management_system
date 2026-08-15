@@ -34,6 +34,17 @@ async function seed() {
     { id: 1, openId: "local_admin", name: "المدير", email: "admin@t.test", role: "admin", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_recep", name: "خدمة الزبائن", email: "r@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "1000.00",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-RECEPTION-SHIFT",
+    createdBy: 1,
+  });
 }
 
 describe("Slice 0 — shiftType (RECEPTION/RETAIL)", () => {

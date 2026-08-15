@@ -13,9 +13,10 @@
  */
 import { TRPCError } from "@trpc/server";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
-  branchStock,
+  bundleComponents,
+  categories,
   customers,
   onlineOrderItems,
   onlineOrders,
@@ -23,17 +24,22 @@ import {
   productUnits,
   productVariants,
   products,
+  storeSettings as storeSettingsTable,
 } from "../../drizzle/schema";
 import { deliveryFeeFor, governorateById } from "@shared/governorates";
-import { getDb } from "../db";
+import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
 import { resolvePromotionForLine } from "./salesPromotionService";
-import { resolveStorefrontBranchId } from "./storefrontService";
-import { getStoreSettings } from "./storeAdmin/storeSettingsService";
+import { requireStorefrontContext } from "./storefrontContextService";
 import { withTx } from "./tx";
 import { verifyOnlineOrderLabelToken } from "./barcodeService";
+import {
+  loadVariantAvailability,
+  lockProductUnitsForOnlineAllocation,
+} from "./catalog/variantAvailability";
+import { retryOnDup } from "../lib/retryDup";
 
 const RETAIL = "RETAIL" as const;
 
@@ -45,6 +51,8 @@ function todayYmdBaghdad(): string {
 export interface OnlineOrderLineInput {
   productUnitId: number;
   quantity: number;
+  /** السعر الذي ظهر للزبون عند التأكيد؛ لا يُستعمل للتسعير بل كـoptimistic contract. */
+  expectedUnitPrice?: string | null;
 }
 
 export interface CreateOnlineOrderInput {
@@ -57,6 +65,8 @@ export interface CreateOnlineOrderInput {
   longitude?: number | null;
   notes?: string | null;
   lines: OnlineOrderLineInput[];
+  /** الإجمالي المعروض شاملاً التوصيل؛ اختلافه عن إعادة التسعير المقفلة يرفض قبل إنشاء الطلب. */
+  expectedGrandTotal?: string | null;
   clientRequestId?: string | null;
 }
 
@@ -85,228 +95,561 @@ export function normalizeStorePhone(raw: string): string {
   return normalizeIraqPhoneE164(raw);
 }
 
+const REQUEST_KEY_CONFLICT =
+  "رمز الطلب استُخدم لطلب مختلف — أنشئ رمزاً جديداً وحاول مجدداً";
+
+/**
+ * إعادة idempotent معزولة عن صاحبها. القراءة القافلة تُستعمل بعد variant mutex كي ترى
+ * Current Read لطلبٍ التزم بينما كانت هذه المعاملة تنتظر، حتى تحت REPEATABLE READ.
+ */
+async function loadOwnedReplay(
+  tx: Tx,
+  input: CreateOnlineOrderInput,
+  phone: string,
+  requestedShippingAddress: string,
+  requestedLineQuantities: ReadonlyMap<number, number>,
+  lock = false,
+): Promise<CreateOnlineOrderResult | null> {
+  if (!input.clientRequestId) return null;
+  const query = tx
+    .select({
+      id: onlineOrders.id,
+      orderNumber: onlineOrders.orderNumber,
+      customerId: onlineOrders.customerId,
+      branchId: onlineOrders.branchId,
+      subtotal: onlineOrders.subtotal,
+      shippingCost: onlineOrders.shippingCost,
+      total: onlineOrders.total,
+      governorate: onlineOrders.governorate,
+      shippingAddress: onlineOrders.shippingAddress,
+    })
+    .from(onlineOrders)
+    .where(eq(onlineOrders.clientRequestId, input.clientRequestId))
+    .limit(1);
+  const existing = (lock ? await query.for("update") : await query)[0];
+  if (!existing) return null;
+
+  const ownerQuery =
+    existing.customerId == null
+      ? null
+      : tx
+          .select({
+            phone: customers.phone,
+            phone2: customers.phone2,
+            phone3: customers.phone3,
+            whatsapp: customers.whatsapp,
+          })
+          .from(customers)
+          .where(eq(customers.id, Number(existing.customerId)))
+          .limit(1);
+  const owner =
+    ownerQuery == null
+      ? null
+      : ((lock ? await ownerQuery.for("update") : await ownerQuery)[0] ?? null);
+  if (
+    !owner ||
+    ![owner.phone, owner.phone2, owner.phone3, owner.whatsapp].includes(phone)
+  ) {
+    // لا نُفصح هل المفتاح موجود ولا رقم الطلب ولا المبلغ للطرف الآخر.
+    throw new TRPCError({ code: "CONFLICT", message: REQUEST_KEY_CONFLICT });
+  }
+
+  const linesQuery = tx
+    .select({
+      productUnitId: onlineOrderItems.productUnitId,
+      quantity: onlineOrderItems.quantity,
+    })
+    .from(onlineOrderItems)
+    .where(eq(onlineOrderItems.onlineOrderId, Number(existing.id)));
+  const existingLines = lock
+    ? await linesQuery.for("update")
+    : await linesQuery;
+  const storedLineQuantities = new Map<number, number>();
+  for (const line of existingLines) {
+    const unitId = Number(line.productUnitId);
+    storedLineQuantities.set(
+      unitId,
+      (storedLineQuantities.get(unitId) ?? 0) + Number(line.quantity),
+    );
+  }
+  const sameLines =
+    storedLineQuantities.size === requestedLineQuantities.size &&
+    Array.from(requestedLineQuantities.entries()).every(
+      ([unitId, quantity]) => storedLineQuantities.get(unitId) === quantity,
+    );
+  if (
+    existing.governorate !== input.governorate ||
+    existing.shippingAddress !== requestedShippingAddress ||
+    !sameLines
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "رمز الطلب استُخدم لطلب مختلف — أعد تحميل السلة وحاول مجدداً",
+    });
+  }
+  return {
+    orderId: Number(existing.id),
+    orderNumber: existing.orderNumber,
+    branchId: Number(existing.branchId),
+    subtotal: String(existing.subtotal),
+    deliveryFee: String(existing.shippingCost),
+    total: String(existing.total),
+    itemCount: existingLines.length,
+    idempotentReplay: true,
+  };
+}
+
+/** قفل العميل هو أول قفل أعمال مشترك، قبل المخزون، اتساقاً مع createSale/POS. */
+async function lockOrCreateOnlineCustomer(tx: Tx, phone: string, name: string): Promise<number> {
+  const custLock = `online-customer:${phone}`;
+  const lockRes = (await tx.execute(sql`SELECT GET_LOCK(${custLock}, 5) AS locked`)) as unknown;
+  const lockedRow = Array.isArray(lockRes)
+    ? (lockRes[0] as { locked?: number }[])?.[0]
+    : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
+  if (!lockedRow || Number(lockedRow.locked) !== 1) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تأمين إنشاء العميل — أعد المحاولة" });
+  }
+  try {
+    const existing = (
+      await tx
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.phone, phone))
+        .limit(1)
+        .for("update")
+    )[0];
+    if (existing) return Number(existing.id);
+    const inserted = await tx.insert(customers).values({
+      name,
+      phone,
+      customerType: "فرد",
+      defaultPriceTier: RETAIL,
+      creditLimit: "0",
+      currentBalance: "0",
+      isActive: true,
+    });
+    return extractInsertId(inserted);
+  } finally {
+    // named lock للتسلسل المبكر فقط؛ قفل صف/فجوة العميل يبقى حتى COMMIT.
+    await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`);
+  }
+}
+
+interface PricedOnlineOrderLine {
+  productId: number;
+  categoryId: number | null;
+  variantId: number;
+  productName: string;
+  isBundle: boolean;
+  productUnitId: number;
+  quantity: number;
+  baseQuantity: number;
+  retailUnitPrice: string;
+  discountPerUnit: string;
+  unitPrice: string;
+  lineTotal: string;
+}
+
+export interface OnlineOrderQuoteInput {
+  governorate: string;
+  lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>;
+}
+
+export interface OnlineOrderQuoteResult {
+  lines: Array<{
+    productUnitId: number;
+    quantity: number;
+    retailUnitPrice: string;
+    discountPerUnit: string;
+    unitPrice: string;
+    lineTotal: string;
+  }>;
+  subtotal: string;
+  deliveryFee: string;
+  total: string;
+}
+
+/** محرك التسعير الوحيد للـquote وللتثبيت؛ lineAmount يستعمل كمية السلة الفعلية. */
+async function priceOnlineOrderLines(
+  tx: Tx,
+  branchId: number,
+  lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
+  options: { lock: boolean },
+): Promise<PricedOnlineOrderLine[]> {
+  const unitIds = Array.from(new Set(lines.map((line) => Number(line.productUnitId)))).sort((a, b) => a - b);
+  const query = tx
+    .select({
+      productId: products.id,
+      productName: products.name,
+      categoryId: products.categoryId,
+      productUnitId: productUnits.id,
+      variantId: productVariants.id,
+      conversionFactor: productUnits.conversionFactor,
+      unitActive: productUnits.isActive,
+      unitAvailableInStore: productUnits.isStoreSaleUnit,
+      variantActive: productVariants.isActive,
+      productActive: products.isActive,
+      showInStore: products.showInStore,
+      categoryActive: categories.isActive,
+      categoryShowInStore: categories.showInStore,
+      isService: products.isService,
+      isBundle: products.isBundle,
+      price: productPrices.price,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .leftJoin(productPrices, and(
+      eq(productPrices.productUnitId, productUnits.id),
+      eq(productPrices.priceTier, RETAIL),
+    ))
+    .where(inArray(productUnits.id, unitIds))
+    .orderBy(asc(productUnits.id));
+  const rows = options.lock ? await query.for("update") : await query;
+  const byUnit = new Map(rows.map((row) => [Number(row.productUnitId), row]));
+  const todayYmd = todayYmdBaghdad();
+  const priced: PricedOnlineOrderLine[] = [];
+  for (const line of lines) {
+    const quantity = Math.floor(line.quantity);
+    const row = byUnit.get(Number(line.productUnitId));
+    if (
+      !Number.isSafeInteger(quantity) || quantity <= 0 || !row || !row.productActive ||
+      !row.showInStore || (row.categoryId != null && (!row.categoryActive || !row.categoryShowInStore)) ||
+      row.isService || !row.variantActive || !row.unitActive || !row.unitAvailableInStore || row.price == null
+    ) {
+      throw new TRPCError({
+        code: options.lock ? "CONFLICT" : "BAD_REQUEST",
+        message: "أحد المنتجات لم يعُد متاحاً — حدّث السلة",
+      });
+    }
+    const base = money(quantity).times(row.conversionFactor ?? 1);
+    if (!base.isInteger() || !base.gt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الوحدة لا تتحول إلى كمية أساس صحيحة" });
+    }
+    const retail = round2(row.price);
+    const productId = Number(row.productId);
+    const variantId = Number(row.variantId);
+    const categoryId = row.categoryId == null ? null : Number(row.categoryId);
+    const promo = await resolvePromotionForLine(tx, {
+      branchId,
+      customerTier: RETAIL,
+      productId,
+      variantId,
+      categoryId,
+      unitPrice: retail.toFixed(2),
+      lineAmount: retail.times(quantity).toFixed(2),
+      hasContractPrice: false,
+      todayYmd,
+      includeStoreManaged: true,
+      lockForUpdate: options.lock,
+    });
+    const discount = promo ? money(promo.discountForUnit) : money(0);
+    const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
+    priced.push({
+      productId,
+      categoryId,
+      variantId,
+      productName: row.productName,
+      isBundle: row.isBundle === true,
+      productUnitId: Number(row.productUnitId),
+      quantity,
+      baseQuantity: base.toNumber(),
+      retailUnitPrice: retail.toFixed(2),
+      discountPerUnit: round2(discount).toFixed(2),
+      unitPrice: unitPrice.toFixed(2),
+      lineTotal: round2(unitPrice.times(quantity)).toFixed(2),
+    });
+  }
+  return priced;
+}
+
+function totalOnlineOrderQuote(
+  items: Array<{ lineTotal: string }>,
+  governorate: string,
+  freeShippingThreshold: string | null | undefined,
+): Pick<OnlineOrderQuoteResult, "subtotal" | "deliveryFee" | "total"> {
+  const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
+  let deliveryFee = round2(deliveryFeeFor(governorate));
+  const freeThreshold = freeShippingThreshold ? money(freeShippingThreshold) : null;
+  if (freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold)) deliveryFee = round2(money(0));
+  return {
+    subtotal: subtotal.toFixed(2),
+    deliveryFee: deliveryFee.toFixed(2),
+    total: round2(subtotal.plus(deliveryFee)).toFixed(2),
+  };
+}
+
+export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<OnlineOrderQuoteResult> {
+  if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أضف صنفاً واحداً على الأقل" });
+  if (!governorateById(input.governorate)) throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير صحيحة" });
+  return withTx(async (tx) => {
+    const context = await requireStorefrontContext(tx, { requireOpen: true });
+    const settings = (await tx.select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
+      .from(storeSettingsTable).where(eq(storeSettingsTable.id, 1)).limit(1))[0];
+    const items = await priceOnlineOrderLines(tx, context.branchId, input.lines, { lock: false });
+    const totals = totalOnlineOrderQuote(items, input.governorate, settings?.freeShippingThreshold);
+    return {
+      lines: items.map((item) => ({
+        productUnitId: item.productUnitId,
+        quantity: item.quantity,
+        retailUnitPrice: item.retailUnitPrice,
+        discountPerUnit: item.discountPerUnit,
+        unitPrice: item.unitPrice,
+        lineTotal: item.lineTotal,
+      })),
+      ...totals,
+    };
+  });
+}
+
 /** طلب متجر جديد — server-priced، مُتحقَّق، idempotent، ذرّي. لا أثر مالي (PENDING فقط). */
-export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<CreateOnlineOrderResult> {
+export async function createOnlineOrder(
+  input: CreateOnlineOrderInput,
+): Promise<CreateOnlineOrderResult> {
+  return retryOnDup(() => createOnlineOrderAttempt(input));
+}
+
+async function createOnlineOrderAttempt(
+  input: CreateOnlineOrderInput,
+): Promise<CreateOnlineOrderResult> {
   const gov = governorateById(input.governorate);
-  if (!gov) throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير معروفة" });
-  if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "السلة فارغة" });
+  if (!gov)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "المحافظة غير معروفة",
+    });
+  if (!input.lines.length)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "السلة فارغة" });
   const name = input.customerName.trim();
   const phone = normalizeStorePhone(input.customerPhone);
-  if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم مطلوب" });
-  if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "رقم الهاتف مطلوب" });
+  if (!name)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم مطلوب" });
+  if (!phone)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "رقم الهاتف مطلوب" });
   const address = input.addressText.trim();
-  if (!address) throw new TRPCError({ code: "BAD_REQUEST", message: "العنوان مطلوب" });
+  if (!address)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "العنوان مطلوب" });
   const requestedLineQuantities = new Map<number, number>();
   for (const line of input.lines) {
     const qty = Math.floor(line.quantity);
-    if (!Number.isSafeInteger(line.productUnitId) || !Number.isFinite(qty) || qty <= 0) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية أو منتج غير صحيح" });
+    if (
+      !Number.isSafeInteger(line.productUnitId) ||
+      !Number.isFinite(qty) ||
+      qty <= 0
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "كمية أو منتج غير صحيح",
+      });
     }
-    requestedLineQuantities.set(line.productUnitId, (requestedLineQuantities.get(line.productUnitId) ?? 0) + qty);
+    requestedLineQuantities.set(
+      line.productUnitId,
+      (requestedLineQuantities.get(line.productUnitId) ?? 0) + qty,
+    );
   }
-  const requestedShippingAddress = input.notes && input.notes.trim()
-    ? `${address}\nملاحظة: ${input.notes.trim()}`
-    : address;
-  // المتجر مغلق مؤقتاً (إعداد الموظف) ⇒ لا يُقبل طلب (إنفاذ خادمي فوق حجب الواجهة).
-  const storeSettings = await getStoreSettings();
-  if (!storeSettings.isOpen) throw new TRPCError({ code: "BAD_REQUEST", message: "المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً" });
-  // A public order always targets the store branch configured by the business.
-  // Never let a caller route an order to an arbitrary branch through the public API.
-  const branchId = await resolveStorefrontBranchId();
-
+  const requestedShippingAddress =
+    input.notes && input.notes.trim()
+      ? `${address}\nملاحظة: ${input.notes.trim()}`
+      : address;
   return withTx(async (tx) => {
-    // ① idempotency: أعِد الطلب نفسه إن تكرّر المفتاح (بلا إنشاء ثانٍ).
-    if (input.clientRequestId) {
-      const existing = (
-        await tx
-          .select({
-            id: onlineOrders.id,
-            orderNumber: onlineOrders.orderNumber,
-            branchId: onlineOrders.branchId,
-            customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
-            subtotal: onlineOrders.subtotal,
-            shippingCost: onlineOrders.shippingCost,
-            total: onlineOrders.total,
-            governorate: onlineOrders.governorate,
-            shippingAddress: onlineOrders.shippingAddress,
-          })
-          .from(onlineOrders)
-          .innerJoin(customers, eq(onlineOrders.customerId, customers.id))
-          .where(eq(onlineOrders.clientRequestId, input.clientRequestId))
-          .limit(1)
-      )[0];
-      if (existing) {
-        const existingLines = await tx
-          .select({ productUnitId: onlineOrderItems.productUnitId, quantity: onlineOrderItems.quantity })
-          .from(onlineOrderItems)
-          .where(eq(onlineOrderItems.onlineOrderId, Number(existing.id)));
-        const storedLineQuantities = new Map<number, number>();
-        for (const line of existingLines) {
-          const unitId = Number(line.productUnitId);
-          storedLineQuantities.set(unitId, (storedLineQuantities.get(unitId) ?? 0) + Number(line.quantity));
-        }
-        const sameLines = storedLineQuantities.size === requestedLineQuantities.size
-          && Array.from(requestedLineQuantities.entries()).every(([unitId, quantity]) => storedLineQuantities.get(unitId) === quantity);
-        // A request key is a replay key, not an order-lookup key.  Reject every
-        // mismatch to prevent a guessed/colliding key from exposing another order.
-        if (
-          normalizeStorePhone(existing.customerPhone ?? "") !== phone
-          || existing.governorate !== input.governorate
-          || existing.shippingAddress !== requestedShippingAddress
-          || !sameLines
-        ) {
-          throw new TRPCError({ code: "CONFLICT", message: "رمز الطلب استُخدم لطلب مختلف — أعد تحميل السلة وحاول مجدداً" });
-        }
-        return {
-          orderId: Number(existing.id),
-          orderNumber: existing.orderNumber,
-          branchId: Number(existing.branchId),
-          subtotal: String(existing.subtotal),
-          deliveryFee: String(existing.shippingCost),
-          total: String(existing.total),
-          itemCount: existingLines.length,
-          idempotentReplay: true,
-        };
-      }
-    }
+    // ① replay يسبق حالة المتجر/الفرع: نجاحٌ مُلتزَم سابقاً يبقى قابلاً للإعادة حتى
+    // لو أُغلق المتجر أو تغيّر فرع التنفيذ بعده. الاستعلام معزول بهاتف صاحب الطلب؛
+    // المفتاح المتصادم لطرف آخر لا يعيد أيّ حقل من طلبه.
+    const replay = await loadOwnedReplay(
+      tx,
+      input,
+      phone,
+      requestedShippingAddress,
+      requestedLineQuantities,
+    );
+    if (replay) return replay;
 
-    // ② تسعير خادمي + تحقّق لكل بند.
-    const items: {
-      variantId: number;
-      productUnitId: number;
-      quantity: number;
-      baseQuantity: number;
-      unitPrice: string;
-      lineTotal: string;
-    }[] = [];
+    // الطلب الجديد فقط يمرّ ببوابة التشغيل. storeSettings يبقى X-lock فيثبت اختيار الفرع/الفتح؛
+    // أمّا صفّ branch فيكفيه FOR SHARE لإثبات الوجود والتفعيل، وهو متوافق مع قفل FK المشترك
+    // لإدراج فاتورة POS. قفل الفرع X قبل العميل يعكس ترتيب POS (customer→branch FK) ويصنع deadlock.
+    const storefrontContext = await requireStorefrontContext(tx, {
+      requireOpen: true,
+      lock: true,
+      branchLock: "share",
+    });
+    const branchId = storefrontContext.branchId;
+    const storeSettings = (
+      await tx
+        .select({
+          freeShippingThreshold: storeSettingsTable.freeShippingThreshold,
+        })
+        .from(storeSettingsTable)
+        .where(eq(storeSettingsTable.id, 1))
+        .limit(1)
+    )[0];
+
+    // ② لقطة تسعير أولية لبناء متطلبات الأقفال. التثبيت المالي الوحيد أدناه يعيد
+    // تشغيل المحرك نفسه بقراءة current مقفلة بعد قفل العميل والوحدات.
+    const items = await priceOnlineOrderLines(tx, branchId, input.lines, { lock: false });
     const requestedBaseByVariant = new Map<number, number>();
-    const todayYmd = todayYmdBaghdad();
-    for (const line of input.lines) {
-      const qty = Math.floor(line.quantity);
-      if (!Number.isFinite(qty) || qty <= 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "كمية غير صحيحة" });
-      }
-      const row = (
-        await tx
-          .select({
-            productId: products.id,
-            productName: products.name,
-            categoryId: products.categoryId,
-            productUnitId: productUnits.id,
-            variantId: productVariants.id,
-            conversionFactor: productUnits.conversionFactor,
-            unitActive: productUnits.isActive,
-            unitAvailableInStore: productUnits.isStoreSaleUnit,
-            variantActive: productVariants.isActive,
-            productActive: products.isActive,
-            showInStore: products.showInStore,
-            isService: products.isService,
-            price: productPrices.price,
-            stockQty: branchStock.quantity,
-          })
-          .from(productUnits)
-          .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-          .innerJoin(products, eq(productVariants.productId, products.id))
-          .leftJoin(
-            productPrices,
-            and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL))
-          )
-          .leftJoin(
-            branchStock,
-            and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId))
-          )
-          .where(eq(productUnits.id, line.productUnitId))
-          .limit(1)
-      )[0];
+
+    // أول قفل أعمال مشترك بعد تسعير السلة: العميل، اتساقاً مع POS/createSale.
+    const customerId = await lockOrCreateOnlineCustomer(tx, phone, name);
+
+    // ترتيب الأقفال العالمي: customer → productUnit → variant/branchStock → order/items.
+    // نقفل معنى الكمية قبل الوصفة وATP؛ تعديل العامل المتزامن إمّا يسبقنا فنرفض
+    // لقطة السلة القديمة، أو ينتظرنا ثم يرى الطلب النشط ويرفض التعديل.
+    const unitIds = Array.from(new Set(items.map((item) => item.productUnitId))).sort((a, b) => a - b);
+    const currentUnits = await lockProductUnitsForOnlineAllocation(tx, unitIds);
+    const currentFactorByUnit = new Map(currentUnits.map((unit) => [unit.id, unit.conversionFactor]));
+    const currentItems = await priceOnlineOrderLines(tx, branchId, input.lines, { lock: true });
+    requestedBaseByVariant.clear();
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      const current = currentItems[index];
+      const factor = current
+        ? currentFactorByUnit.get(current.productUnitId)
+        : undefined;
       if (
-        !row ||
-        !row.productActive ||
-        !row.showInStore ||
-        row.isService ||
-        !row.variantActive ||
-        !row.unitActive ||
-        !row.unitAvailableInStore ||
-        row.price == null
+        !current || current.productUnitId !== item.productUnitId || factor == null ||
+        !money(item.quantity).times(factor).eq(item.baseQuantity)
       ) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "أحد المنتجات لم يعُد متاحاً — حدّث السلة" });
-      }
-      // مزامنة المخزون: لا يُطلَب صنفٌ غير متوفّر (يُخصَم المخزون فعلياً عند الإرسال — شريحة ٤).
-      if (Number(row.stockQty ?? 0) <= 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `«${row.productName}» غير متوفّر حالياً` });
-      }
-      // العرض خادمياً (نفس محرّك الكتالوج/POS) ⇒ السعر المدفوع = السعر المعروض.
-      const retail = round2(row.price);
-      const promo = await resolvePromotionForLine(tx, {
-        branchId,
-        customerTier: RETAIL,
-        productId: Number(row.productId),
-        variantId: Number(row.variantId),
-        categoryId: row.categoryId != null ? Number(row.categoryId) : null,
-        unitPrice: retail.toFixed(2),
-        lineAmount: retail.toFixed(2),
-        hasContractPrice: false,
-        todayYmd,
-      });
-      const discount = promo ? money(promo.discountForUnit) : money(0);
-      const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
-      const lineTotal = round2(unitPrice.times(qty));
-      const baseQuantity = Number(money(qty).times(row.conversionFactor ?? 1).toFixed(0));
-      const variantId = Number(row.variantId);
-      const requestedBase = (requestedBaseByVariant.get(variantId) ?? 0) + baseQuantity;
-      if (Number(row.stockQty ?? 0) < requestedBase) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `«${row.productName}» لا تتوفر منه الكمية المطلوبة حالياً` });
-      }
-      requestedBaseByVariant.set(variantId, requestedBase);
-      items.push({
-        variantId,
-        productUnitId: Number(row.productUnitId),
-        quantity: qty,
-        baseQuantity,
-        unitPrice: unitPrice.toFixed(2),
-        lineTotal: lineTotal.toFixed(2),
-      });
-    }
-
-    const subtotal = round2(sumMoney(items.map((i) => i.lineTotal)));
-    let deliveryFee = round2(deliveryFeeFor(input.governorate));
-    // توصيل مجاني (AOV): إن بلغ المجموع الفرعي عتبة الإعدادات ⇒ الأجرة صفر (إنفاذ خادمي).
-    const freeThreshold = storeSettings.freeShippingThreshold ? money(storeSettings.freeShippingThreshold) : null;
-    if (freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold)) deliveryFee = round2(money(0));
-    const total = round2(subtotal.plus(deliveryFee));
-
-    // ③ find-or-create عميل نقدي بالهاتف (creditLimit "0" = نقدي فقط، لا ائتمان).
-    // منع التكرار تحت التزامن (مراجعة عدائية ١٢/٧): GET_LOCK وحده لا يكفي — يُحرَّر في finally قبل
-    // COMMIT، وقراءة snapshot تحت REPEATABLE READ لا ترى إدراج المعاملة الأخرى. **القفل الحقيقي هو
-    // قفل صفّ الفهرس**: البحث بـ`.for("update")` يقرأ آخر مُلتزَم ويحجز الصفّ/الفجوة، فطلبٌ ثانٍ
-    // بنفس الهاتف يتربّص على قفل الإدراج الأول حتى يلتزم ثم يجده فيعيد استعماله (نمط credit.ts).
-    // نُبقي GET_LOCK كتسلسُلٍ مبكّر يُجنّب تسابق الفجوة (deadlock) في المسار الشائع.
-    const custLock = `online-customer:${phone}`;
-    const lockRes = (await tx.execute(sql`SELECT GET_LOCK(${custLock}, 5) AS locked`)) as unknown;
-    const lockedRow = Array.isArray(lockRes) ? (lockRes[0] as { locked?: number }[])?.[0] : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
-    if (!lockedRow || Number(lockedRow.locked) !== 1) {
-      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تأمين إنشاء العميل — أعد المحاولة" });
-    }
-    let customerId: number;
-    try {
-      const existingCust = (
-        await tx.select({ id: customers.id, name: customers.name }).from(customers).where(eq(customers.phone, phone)).limit(1).for("update")
-      )[0];
-      if (existingCust) {
-        customerId = Number(existingCust.id);
-      } else {
-        const insCust = await tx.insert(customers).values({
-          name,
-          phone,
-          customerType: "فرد",
-          defaultPriceTier: RETAIL,
-          creditLimit: "0",
-          currentBalance: "0",
-          isActive: true,
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تغيّرت أهلية منتج أو وحدة في السلة أثناء الطلب — حدّث السلة وأعد المحاولة",
         });
-        customerId = extractInsertId(insCust);
       }
-    } finally {
-      await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`);
+      item.productId = current.productId;
+      item.categoryId = current.categoryId;
+      item.variantId = current.variantId;
+      item.productName = current.productName;
+      item.isBundle = current.isBundle;
+      item.baseQuantity = current.baseQuantity;
+      item.unitPrice = current.unitPrice;
+      item.lineTotal = current.lineTotal;
+      const requestedBase = (requestedBaseByVariant.get(current.variantId) ?? 0) + current.baseQuantity;
+      requestedBaseByVariant.set(current.variantId, requestedBase);
+    }
+    for (let index = 0; index < items.length; index++) {
+      const expected = input.lines[index]?.expectedUnitPrice;
+      if (expected != null && !round2(expected).eq(items[index].unitPrice)) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تغيّر سعر أحد المنتجات منذ عرضه — حدّث السلة ووافق على الإجمالي الجديد",
+        });
+      }
+    }
+
+    // ATP واحد للطلب كاملاً. نفكّ البكج إلى مكوّناته ثم نجمع المتطلبات؛ بهذا لا
+    // نطرح حجزاً legacy للبكج، ولا يمرّ طلب يجمع بكجاً وصنفه المكوّن فوق ATP نفسه.
+    const bundleIds = Array.from(
+      new Set(
+        items.filter((item) => item.isBundle).map((item) => item.variantId),
+      ),
+    );
+    if (bundleIds.length) {
+      // mutex الوصفة: replaceBundleComponents يقفل الصف نفسه قبل فحص الطلبات النشطة.
+      await tx
+        .select({ id: productVariants.id })
+        .from(productVariants)
+        .where(inArray(productVariants.id, bundleIds))
+        .orderBy(asc(productVariants.id))
+        .for("update");
+    }
+    const recipes = bundleIds.length
+      ? await tx
+          .select({
+            bundleVariantId: bundleComponents.bundleVariantId,
+            componentVariantId: bundleComponents.componentVariantId,
+            componentBaseQuantity: bundleComponents.componentBaseQuantity,
+          })
+          .from(bundleComponents)
+          .where(inArray(bundleComponents.bundleVariantId, bundleIds))
+      : [];
+    const recipeByBundle = new Map<
+      number,
+      Array<{ componentVariantId: number; componentBaseQuantity: number }>
+    >();
+    for (const row of recipes) {
+      const bundleId = Number(row.bundleVariantId);
+      const current = recipeByBundle.get(bundleId) ?? [];
+      current.push({
+        componentVariantId: Number(row.componentVariantId),
+        componentBaseQuantity: Number(row.componentBaseQuantity),
+      });
+      recipeByBundle.set(bundleId, current);
+    }
+    const stockRequirements = new Map<number, number>();
+    for (const [variantId, requestedBase] of Array.from(
+      requestedBaseByVariant.entries(),
+    )) {
+      const item = items.find(
+        (candidate) => candidate.variantId === variantId,
+      )!;
+      if (!item.isBundle) {
+        stockRequirements.set(
+          variantId,
+          (stockRequirements.get(variantId) ?? 0) + requestedBase,
+        );
+        continue;
+      }
+      const components = recipeByBundle.get(variantId) ?? [];
+      if (!components.length) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `«${item.productName}» بكج غير مكتمل ولا يمكن طلبه`,
+        });
+      }
+      for (const component of components) {
+        const required = requestedBase * component.componentBaseQuantity;
+        stockRequirements.set(
+          component.componentVariantId,
+          (stockRequirements.get(component.componentVariantId) ?? 0) + required,
+        );
+      }
+    }
+    const quoteTotals = totalOnlineOrderQuote(items, input.governorate, storeSettings?.freeShippingThreshold);
+    const subtotal = money(quoteTotals.subtotal);
+    const deliveryFee = money(quoteTotals.deliveryFee);
+    const total = money(quoteTotals.total);
+    if (input.expectedGrandTotal != null && !round2(input.expectedGrandTotal).eq(total)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر إجمالي الطلب أو أجرة التوصيل منذ عرضه — حدّث السلة ووافق على الإجمالي الجديد",
+      });
+    }
+
+    // ③ ترتيب الأقفال العالمي مع POS/createSale: customer → units → variants → active orders/items.
+    // لا ندرج رأس الطلب قبل ATP، وبذلك لا يعود create↔dispatch إلى دورة order→variant.
+    const stockAvailability = await loadVariantAvailability(
+      tx,
+      branchId,
+      Array.from(stockRequirements.keys()).sort((a, b) => a - b),
+      { lock: true },
+    );
+    // إن كانت محاولة بنفس المفتاح تنتظر mutex ثم التزمت الأولى، فالقراءة القافلة هنا
+    // تراها وتعيد نجاحها قبل ATP/الفتح في إعادة retry اللاحقة، بلا كشف لطرف آخر.
+    const concurrentReplay = await loadOwnedReplay(
+      tx,
+      input,
+      phone,
+      requestedShippingAddress,
+      requestedLineQuantities,
+      true,
+    );
+    if (concurrentReplay) return concurrentReplay;
+    for (const [variantId, requiredBase] of Array.from(
+      stockRequirements.entries(),
+    )) {
+      const available = stockAvailability.get(variantId);
+      if (available?.isService) continue;
+      if (
+        !available ||
+        available.isBundle ||
+        requiredBase > available.availableBase
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "لا تتوفر الكمية المطلوبة حالياً بعد احتساب الحجوزات النشطة والطلبات النشطة — حدّث السلة",
+        });
+      }
     }
 
     // ④ إنشاء الطلب (PENDING) — رقمٌ مؤقّت فريد ثم ORD-{id} (بلا سباق ترقيم).
@@ -327,7 +670,10 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     });
     const orderId = extractInsertId(insOrder);
     const orderNumber = `ORD-${100000 + orderId}`;
-    await tx.update(onlineOrders).set({ orderNumber }).where(eq(onlineOrders.id, orderId));
+    await tx
+      .update(onlineOrders)
+      .set({ orderNumber })
+      .where(eq(onlineOrders.id, orderId));
 
     // ⑤ بنود الطلب (لقطة السعر الخادمي).
     for (const it of items) {
@@ -362,14 +708,23 @@ export interface OnlineOrderTracking {
   total: string;
   governorate: string | null;
   createdAt: Date;
-  items: { productName: string; unitName: string; quantity: string; unitPrice: string; total: string }[];
+  items: {
+    productName: string;
+    unitName: string;
+    quantity: string;
+    unitPrice: string;
+    total: string;
+  }[];
 }
 
 /**
  * تتبّع الطلب: يتطلّب **رقم الطلب + الهاتف معاً** (خصوصية — لا يكفي تخمين الرقم لرؤية طلب غيرك).
  * null إن لم يُطابِق.
  */
-export async function trackOnlineOrder(orderNumber: string, phone: string): Promise<OnlineOrderTracking | null> {
+export async function trackOnlineOrder(
+  orderNumber: string,
+  phone: string,
+): Promise<OnlineOrderTracking | null> {
   const db = getDb();
   if (!db) return null;
   const order = (
@@ -383,13 +738,20 @@ export async function trackOnlineOrder(orderNumber: string, phone: string): Prom
         total: onlineOrders.total,
         governorate: onlineOrders.governorate,
         createdAt: onlineOrders.createdAt,
-        customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+        customerPhone: sql<
+          string | null
+        >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
       })
       .from(onlineOrders)
       .innerJoin(customers, eq(onlineOrders.customerId, customers.id))
       // الهاتف المخزَّن E.164 (normalizeStorePhone عند الإنشاء) ⇒ نُوحِّد المُدخَل قبل المطابقة،
       // وإلا لم يُطابق زبونٌ يُدخِل رقمه بصيغته المحلّية «0770…» رقمَه المخزَّن «+964770…» أبداً.
-      .where(and(eq(onlineOrders.orderNumber, orderNumber.trim()), eq(customers.phone, normalizeStorePhone(phone))))
+      .where(
+        and(
+          eq(onlineOrders.orderNumber, orderNumber.trim()),
+          eq(customers.phone, normalizeStorePhone(phone)),
+        ),
+      )
       .limit(1)
   )[0];
   if (!order) return null;
@@ -403,7 +765,10 @@ export async function trackOnlineOrder(orderNumber: string, phone: string): Prom
       total: onlineOrderItems.total,
     })
     .from(onlineOrderItems)
-    .innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
+    .innerJoin(
+      productVariants,
+      eq(onlineOrderItems.variantId, productVariants.id),
+    )
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, eq(onlineOrderItems.productUnitId, productUnits.id))
     .where(eq(onlineOrderItems.onlineOrderId, Number(order.id)));
@@ -430,32 +795,79 @@ export async function trackOnlineOrder(orderNumber: string, phone: string): Prom
  * ملخص QR المطبوع على الطرد. لا يكفي رقم الطلب المتسلسل للوصول إليه: يجب أن يطابق
  * التوقيع HMAC الذي أنشأه الخادم للملصق، فتظل قراءة الملصق مفيدة للمندوب وآمنة من التخمين.
  */
-export async function readOnlineOrderLabel(orderNumber: string, token: string): Promise<OnlineOrderTracking & {
-  customerName: string | null; customerPhone: string | null; addressText: string | null;
-}> {
+export async function readOnlineOrderLabel(
+  orderNumber: string,
+  token: string,
+): Promise<
+  OnlineOrderTracking & {
+    customerName: string | null;
+    customerPhone: string | null;
+    addressText: string | null;
+  }
+> {
   if (!verifyOnlineOrderLabelToken(orderNumber, token)) {
     throw new TRPCError({ code: "NOT_FOUND", message: "رمز الملصق غير صالح" });
   }
   const db = getDb();
-  if (!db) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
-  const order = (await db.select({
-    id: onlineOrders.id, orderNumber: onlineOrders.orderNumber, status: onlineOrders.status,
-    subtotal: onlineOrders.subtotal, shippingCost: onlineOrders.shippingCost, total: onlineOrders.total,
-    governorate: onlineOrders.governorate, createdAt: onlineOrders.createdAt,
-    customerName: customers.name,
-    customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
-    addressText: onlineOrders.shippingAddress,
-  }).from(onlineOrders).innerJoin(customers, eq(onlineOrders.customerId, customers.id))
-    .where(eq(onlineOrders.orderNumber, orderNumber.trim())).limit(1))[0];
-  if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
-  const items = await db.select({ productName: products.name, unitName: productUnits.unitName, quantity: onlineOrderItems.quantity, unitPrice: onlineOrderItems.unitPrice, total: onlineOrderItems.total })
-    .from(onlineOrderItems).innerJoin(productVariants, eq(onlineOrderItems.variantId, productVariants.id))
-    .innerJoin(products, eq(productVariants.productId, products.id)).leftJoin(productUnits, eq(onlineOrderItems.productUnitId, productUnits.id))
+  if (!db)
+    throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  const order = (
+    await db
+      .select({
+        id: onlineOrders.id,
+        orderNumber: onlineOrders.orderNumber,
+        status: onlineOrders.status,
+        subtotal: onlineOrders.subtotal,
+        shippingCost: onlineOrders.shippingCost,
+        total: onlineOrders.total,
+        governorate: onlineOrders.governorate,
+        createdAt: onlineOrders.createdAt,
+        customerName: customers.name,
+        customerPhone: sql<
+          string | null
+        >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+        addressText: onlineOrders.shippingAddress,
+      })
+      .from(onlineOrders)
+      .innerJoin(customers, eq(onlineOrders.customerId, customers.id))
+      .where(eq(onlineOrders.orderNumber, orderNumber.trim()))
+      .limit(1)
+  )[0];
+  if (!order)
+    throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  const items = await db
+    .select({
+      productName: products.name,
+      unitName: productUnits.unitName,
+      quantity: onlineOrderItems.quantity,
+      unitPrice: onlineOrderItems.unitPrice,
+      total: onlineOrderItems.total,
+    })
+    .from(onlineOrderItems)
+    .innerJoin(
+      productVariants,
+      eq(onlineOrderItems.variantId, productVariants.id),
+    )
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(productUnits, eq(onlineOrderItems.productUnitId, productUnits.id))
     .where(eq(onlineOrderItems.onlineOrderId, Number(order.id)));
   return {
-    orderNumber: order.orderNumber, status: order.status, subtotal: String(order.subtotal), deliveryFee: String(order.shippingCost), total: String(order.total),
-    governorate: order.governorate ?? null, createdAt: order.createdAt, customerName: order.customerName ?? null,
-    customerPhone: order.customerPhone ?? null, addressText: order.addressText ?? null,
-    items: items.map((i) => ({ productName: i.productName, unitName: i.unitName ?? "", quantity: String(i.quantity), unitPrice: String(i.unitPrice), total: String(i.total) })),
+    orderNumber: order.orderNumber,
+    status: order.status,
+    subtotal: String(order.subtotal),
+    deliveryFee: String(order.shippingCost),
+    total: String(order.total),
+    governorate: order.governorate ?? null,
+    createdAt: order.createdAt,
+    customerName: order.customerName ?? null,
+    customerPhone: order.customerPhone ?? null,
+    addressText: order.addressText ?? null,
+    items: items.map((i) => ({
+      productName: i.productName,
+      unitName: i.unitName ?? "",
+      quantity: String(i.quantity),
+      unitPrice: String(i.unitPrice),
+      total: String(i.total),
+    })),
   };
 }

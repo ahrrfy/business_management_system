@@ -22,7 +22,7 @@ import { approveVoucher } from "../voucher/approval";
 import { withTx } from "../tx";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" };
-// مديران لاختبار فصل المهام (SOD-04): admin مُستثنى فلا يصلح لاختبار الرفض. المُنشئ ≠ المُعتمِد.
+// مُنشئ ومدقّق مالك لاختبار فصل المهام (SOD-04): المُنشئ ≠ المالك المُعتمِد.
 const MANAGER_A = { userId: 2, branchId: 1, role: "manager" };
 const MANAGER_B = { userId: 3, branchId: 1, role: "manager" };
 const MANAGER_BRANCH_2 = { userId: 4, branchId: 2, role: "manager" };
@@ -72,6 +72,7 @@ async function seedBase() {
       name: "مدير ب",
       role: "manager",
       branchId: 1,
+      isOwner: true,
     },
     {
       id: 4,
@@ -383,7 +384,12 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
     expect(before.length).toBe(0); // لا أثر ماليّ قبل الاعتماد
 
-    // اعتماد مديرٍ آخر (SOD-04) ⇒ يُرحَّل PAYMENT_OUT للخزينة.
+    // اعتماد مالكٍ آخر (SOD-04) ⇒ يُرحَّل PAYMENT_OUT للخزينة.
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "1500000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TERMINATION-FUND", createdBy: 3,
+    });
     await approveVoucher(res.settlementVoucher!.receiptId, MANAGER_B);
     const [rc2] = await db()
       .select()
@@ -401,7 +407,12 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
     expect(Number(after[0].branchId)).toBe(1);
   });
 
-  it("المُنشئ لا يعتمد سند تسويته بنفسه (فصل مهام SOD-04)", async () => {
+  it("المالك المُنشئ لا يعتمد سند تسويته بنفسه (فصل مهام SOD-04)", async () => {
+    await db().insert(s.users).values({
+      id: 6, openId: "self-approving-owner", name: "مالك منشئ", role: "manager",
+      branchId: 1, loginMethod: "local", isOwner: true,
+    });
+    const ownerMaker = { userId: 6, branchId: 1, role: "manager" };
     const emp = await createEmployee({
       firstName: "هدى",
       lastName: "الطائي",
@@ -418,10 +429,10 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       },
       ACTOR,
     );
-    const res = await completeTermination(t!.id, MANAGER_A);
+    const res = await completeTermination(t!.id, ownerMaker);
     await expect(
-      approveVoucher(res.settlementVoucher!.receiptId, MANAGER_A),
-    ).rejects.toThrow(/فصل المهام/);
+      approveVoucher(res.settlementVoucher!.receiptId, ownerMaker),
+    ).rejects.toThrow(/صانع الطلب|أنشأته بنفسك/);
     // لا أثر ماليّ (لم يُعتمَد).
     const entries = await db()
       .select()

@@ -11,12 +11,17 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { middleware, publicProcedure, router } from "../trpc";
+import {
+  middleware,
+  publicProcedure,
+  router,
+  storefrontPublicReadProcedure,
+} from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
-import { createOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
+import { createOnlineOrder, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
 import { retryOnDup } from "../lib/retryDup";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
-import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
+import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
 import { recordStoreConversionMetric } from "../services/storeAdmin/storeConversionMetricsService";
 
@@ -66,7 +71,7 @@ export const storefrontRouter = router({
     .mutation(({ input }) => recordStoreConversionMetric(input)),
 
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
-  settings: publicProcedure.query(() => getStoreSettings()),
+  settings: publicProcedure.query(() => getPublicStoreSettings()),
 
   /** كتالوج المتجر: فلترة فئة + بحث نصّي + سقف. يعيد التوفّر وسعر العرض. */
   catalog: publicProcedure
@@ -75,6 +80,8 @@ export const storefrontRouter = router({
         categoryId: z.number().int().positive().nullish(),
         search: z.string().max(64).optional(),
         limit: z.number().int().min(1).max(120).default(60),
+        // متوافق للخلف: غياب الحقل يبقي السلوك القديم (المتوفر فقط).
+        availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
       })
     )
     .query(({ input }) =>
@@ -82,6 +89,7 @@ export const storefrontRouter = router({
         categoryId: input.categoryId ?? null,
         search: input.search,
         limit: input.limit,
+        availability: input.availability,
       })
     ),
 
@@ -95,10 +103,22 @@ export const storefrontRouter = router({
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => storefrontRelated(input.productId)),
 
+  /** إعادة تسعير السلة بكمياتها الفعلية؛ نفس محرك createOrder، بلا أي كتابة. */
+  quoteOrder: storefrontPublicReadProcedure
+    .input(z.object({
+      governorate: z.string().trim().min(1).max(40),
+      lines: z.array(z.object({
+        productUnitId: z.number().int().positive(),
+        quantity: z.number().int().positive().max(999),
+      })).min(1).max(100),
+    }))
+    .query(({ input }) => quoteOnlineOrder(input)),
+
   /**
    * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.
-   * السعر خادمي بالكامل (المدخل لا يحوي أسعاراً — فقط productUnitId + الكمية). المحافظة يتحقّق
-   * منها الخادم. clientRequestId (اختياري) يمنع الطلب المكرّر.
+   * السعر خادمي بالكامل. expectedUnitPrice/expectedGrandTotal عقد موافقة optimistic فقط:
+   * لا يُسعّر الخادم منهما، بل يقارن السعر المقفَل بما رآه الزبون ويرفض أي اختلاف.
+   * clientRequestId (اختياري) يمنع الطلب المكرّر.
    */
   createOrder: publicProcedure
     .input(
@@ -111,9 +131,14 @@ export const storefrontRouter = router({
         longitude: z.number().min(-180).max(180).nullish(),
         notes: z.string().max(500).optional(),
         lines: z
-          .array(z.object({ productUnitId: z.number().int().positive(), quantity: z.number().int().positive().max(999) }))
+          .array(z.object({
+            productUnitId: z.number().int().positive(),
+            quantity: z.number().int().positive().max(999),
+            expectedUnitPrice: z.string().regex(/^\d{1,15}(?:\.\d{1,2})?$/),
+          }))
           .min(1)
           .max(100),
+        expectedGrandTotal: z.string().regex(/^\d{1,18}(?:\.\d{1,2})?$/),
         clientRequestId: z.string().max(80).optional(),
       })
     )
