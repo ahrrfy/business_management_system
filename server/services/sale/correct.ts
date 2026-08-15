@@ -39,6 +39,7 @@ import { withTx, type Actor } from "../tx";
 import { createSaleInTx } from "./create";
 import type { PriceTier } from "../pricing";
 import type { SaleLineInput } from "./types";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 
 type CorrectionPayMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -82,6 +83,8 @@ export interface CorrectSaleResult {
 }
 
 export async function correctSale(input: CorrectSaleInput, actor: Actor & { role?: string }): Promise<CorrectSaleResult> {
+  if (input.additionalPayment) assertPosPaymentMethodEnabled(input.additionalPayment.method);
+
   return withTx(async (tx) => {
     // ── ٠) idempotency: إعادة التشغيل بنفس المفتاح تُعيد التصحيح الأوّل (refId = الفاتورة الجديدة) ──
     if (input.clientRequestId) {

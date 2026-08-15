@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea";
 import CustomerPicker from "@/components/CustomerPicker";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import {
   Dialog,
   DialogContent,
@@ -486,16 +487,20 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
             <label className="text-sm font-medium">طريقة الدفع</label>
             <select className={dlgInput} value={methodV} onChange={(e) => setMethodV(e.target.value as typeof methodV)}>
               <option value="CASH">نقدي</option>
-              <option value="CARD">بطاقة</option>
-              <option value="TRANSFER">تحويل</option>
-              <option value="WALLET">محفظة</option>
+              <option value="CARD" disabled>بطاقة</option>
+              <option value="TRANSFER" disabled>تحويل</option>
+              <option value="WALLET" disabled>محفظة</option>
             </select>
+            <p className="text-xs text-muted-foreground">{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</p>
           </div>
         </div>
         <DialogFooter>
           <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={pending}>إلغاء</button>
-          <button className="wob-btn wob-btn-primary" disabled={pending || (amtD.gt(0) && methodV !== "CASH" && !reference.trim())}
-            onClick={() => onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV, reference: methodV === "CASH" ? undefined : reference.trim() } : undefined)}>
+          <button className="wob-btn wob-btn-primary" disabled={pending || !isPosPaymentMethodEnabled(methodV) || (amtD.gt(0) && methodV !== "CASH" && !reference.trim())}
+            onClick={() => {
+              if (!isPosPaymentMethodEnabled(methodV)) return;
+              onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV, reference: undefined } : undefined);
+            }}>
             {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
           </button>
         </DialogFooter>

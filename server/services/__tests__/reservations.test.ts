@@ -6,6 +6,7 @@ import { appRouter } from "../../routers";
 import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
 import { withTx } from "../tx";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 import {
   cancelReservation, convertReservationToSale, createReservation, expireDueReservations,
   extendReservation, readAvailability, releaseReservation,
@@ -464,7 +465,7 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     expect(receipt.cashBucket).toBe("DRAWER");
   });
 
-  it("تحويل الحجز ببطاقة/تحويل يرفض المرجع الفارغ ويسجّل المرجع الصحيح خارج عدّ النقدية", async () => {
+  it("تحويل الحجز ببطاقة/تحويل يُرفض بلا فاتورة أو إيصال أو مسّ للحجز", async () => {
     const { variantId, baseUnitId } = await mkProduct("RSV-PAY-REF", 5);
     const r = await createReservation(
       { branchId: 1, contactPhone: "07700000012", lines: [{ variantId, productUnitId: baseUnitId, quantity: 1 }] },
@@ -474,18 +475,17 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     await expect(convertReservationToSale({
       reservationId: r.reservationId,
       payment: { amount: "1500", method: "CARD" },
-    }, actor)).rejects.toThrow(/مرجع/);
+    }, actor)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
     expect(await onHand(variantId)).toBe(5);
     expect(await reserved(variantId)).toBe(1);
 
-    const conv = await convertReservationToSale({
+    await expect(convertReservationToSale({
       reservationId: r.reservationId,
       payment: { amount: "1500", method: "TRANSFER", reference: "TRX-RES-1001" },
-    }, actor);
-    expect(conv.status).toBe("PAID");
-    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, conv.invoiceId)))[0];
-    expect(receipt.paymentMethod).toBe("TRANSFER");
-    expect(receipt.referenceNumber).toBe("TRX-RES-1001");
-    expect(receipt.shiftId).toBeNull();
+    }, actor)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    expect(await onHand(variantId)).toBe(5);
+    expect(await reserved(variantId)).toBe(1);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 });

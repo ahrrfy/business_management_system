@@ -8,6 +8,7 @@ import { getDb } from "../../db";
 import { createPrintSale } from "../printSaleService";
 import { getShiftReport } from "../shiftService";
 import { withTx } from "../tx";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
@@ -149,16 +150,14 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
 });
 
 describe("بيع الطباعة: التقريب النقدي + الذمم + idempotency", () => {
-  it("دفع البطاقة يحفظ مرجع العملية ولا يدخل درج النقد", async () => {
-    await createPrintSale({
+  it("دفع البطاقة يُرفض قبل إنشاء فاتورة أو إيصال", async () => {
+    await expect(createPrintSale({
       branchId: 1, shiftId: 1,
       lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
       payment: { amount: "250", method: "CARD", reference: "POS-CARD-7788" },
-    }, actor);
-    const rec = (await db().select().from(s.receipts))[0];
-    expect(rec.paymentMethod).toBe("CARD");
-    expect(rec.cashBucket).toBeNull();
-    expect(rec.referenceNumber).toBe("POS-CARD-7788");
+    }, actor)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
   });
 
   it("تقريب IQD للبيع النقدي الكامل ⇒ قيد ADJUST بالفرق", async () => {

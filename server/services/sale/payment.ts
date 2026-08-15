@@ -10,6 +10,7 @@ import { openShiftIdTx } from "../shiftService";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import type { PaymentMethod } from "./types";
 
 export interface ProcessPaymentInput {
@@ -33,6 +34,8 @@ export interface ProcessPaymentInput {
 
 /** Record a later payment against a credit invoice; updates status + AR. */
 export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
+  // يسبق idempotency وقراءة الفاتورة؛ المرجع اليدوي ليس تسوية بنكية أو مزوّداً موثوقاً.
+  assertPosPaymentMethodEnabled(input.method);
   return withTx(async (tx) => {
     // Idempotency (نمط جذري ١): قبل أيّ replay، نتحقّق أنّ الإيصال المخزَّن يخصّ نفس الفاتورة
     // وفرع المستخدم الحقيقي. كان الـreplay يَعود قبل enforceBranchId وقبل أيّ ربط بـinput.invoiceId

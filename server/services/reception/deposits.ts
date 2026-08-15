@@ -21,6 +21,7 @@ import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { money, round2, toDbMoney } from "../money";
 import {
   getOpenShift,
@@ -98,6 +99,8 @@ async function recomputedDraftTotal(tx: Tx, draftId: number): Promise<Decimal> {
  * بلا `version` عمداً: قبضُ مالٍ لا يفشل لأنّ زميلاً أضاف سطراً — حاميه clientRequestId.
  */
 export async function collectDeposit(input: CollectDepositInput, actor: Actor & { role?: string }) {
+  // العربون قبض POS حقيقي؛ لا نسجّله خارجياً بلا مزوّد وتسوية موثوقين.
+  assertPosPaymentMethodEnabled(input.method);
   return withTx(async (tx) => {
     // idempotency أولاً: إعادة إرسال نفس الطلب تعيد النتيجة نفسها بلا قبضٍ ثانٍ.
     const existingId = await findIdempotentRefId(tx, "reception.collectDeposit", input.clientRequestId);

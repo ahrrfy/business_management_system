@@ -41,6 +41,7 @@ import { checkoutReception } from "../services/receptionCheckoutService";
 import { logger } from "../logger";
 import { upsertConversation } from "../services/conversationService";
 import { normalizeIraqPhoneE164 } from "../lib/phone";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
 const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
@@ -50,9 +51,11 @@ const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
   CONCAT('مستخدم #', ${workOrders.createdBy})
 )`;
 
-const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-// ش٥: TELECOM (رصيد زين) — على مسار الاستقبال حصراً وخلف ضوابط telecom.ts داخل الخدمة.
-const receptionPaymentMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
+// سطوح نقطة البيع/الاستقبال نقدية فقط حتى يوجد مزوّد وتسوية موثوقان.
+const receptionPaymentMethod = z
+  .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
+  .transform((value) => value as "CASH");
 const priceTierEnum = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const quantityString = z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة");
 const receptionWorkOrderSchema = z.object({
@@ -70,9 +73,7 @@ const receptionWorkOrderSchema = z.object({
   channelHandle: z.string().max(120).nullish(),
   priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
   deposit: nonNegMoneyString.nullish(),
-  // ش٥: TELECOM مقبولة هنا (سلة الاستقبال تكتب طريقة عربون الأمر) — الإنشاء المفرد المباشر
-  // بعربون زين محروسٌ داخل createWorkOrderInTx (assertTelecomCollectAllowed عند غياب shiftId).
-  paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]).nullish(),
+  paymentMethod: receptionPaymentMethod.nullish(),
   paymentReference: z.string().max(100).nullish(),
   paymentReceiptUrl: z.string().nullish(),
   hasDelivery: z.boolean().nullish(),
@@ -167,10 +168,6 @@ const receptionCheckoutSchema = z.object({
       path: ["customerId"],
       message: "أوامر الشغل تتطلب عميلاً محفوظاً مع اسم ورقم هاتف",
     });
-  }
-  const hasPayment = money(input.paidAmount ?? "0").gt(0) || !!input.regularSale || !!input.printSale || input.workOrders.some((order) => money(order.deposit ?? "0").gt(0));
-  if (hasPayment && input.paymentMethod !== "CASH" && !input.paymentReference?.trim()) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["paymentReference"], message: "مرجع الدفع مطلوب" });
   }
   for (let index = 0; index < input.workOrders.length; index += 1) {
     const order = input.workOrders[index];
@@ -838,7 +835,7 @@ export const workOrderRouter = router({
         // v3-add-screens(100%): أولوية + دفع + توصيل.
         priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
         deposit: nonNegMoneyString.nullish(),
-        paymentMethod: z.enum(["CASH", "CARD", "TRANSFER"]).nullish(),
+        paymentMethod: receptionPaymentMethod.nullish(),
         paymentReference: z.string().max(100).nullish(),
         paymentReceiptUrl: z.string().nullish(),
         hasDelivery: z.boolean().nullish(),
@@ -1075,10 +1072,10 @@ export const workOrderRouter = router({
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
-        payment: z.object({ amount: positiveMoneyString, method, reference: z.string().trim().max(100).nullish() }).superRefine((payment, ctx) => {
-          if (payment.method !== "CASH" && !payment.reference?.trim()) {
-            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
-          }
+        payment: z.object({
+          amount: positiveMoneyString,
+          method: receptionPaymentMethod,
+          reference: z.string().trim().max(100).nullish(),
         }).optional(),
         clientRequestId: z.string().optional().nullable(),
       })

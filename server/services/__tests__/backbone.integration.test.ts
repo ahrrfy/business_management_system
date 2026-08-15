@@ -18,6 +18,7 @@ import {
   startWorkOrder,
 } from "../workOrderService";
 import { withTx } from "../tx";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 import { approveVoucher } from "../voucher/approval";
 
 const actor = { userId: 1, branchId: 1 };
@@ -553,17 +554,18 @@ describe("أوامر الشغل/المطبعة", () => {
 });
 
 describe("إدارة الورديات (Z-report)", () => {
-  it("بيع البطاقة لا يدخل النقد المتوقع", async () => {
+  it("بيع البطاقة يُرفض قبل الفاتورة والمخزون ولا يغيّر النقد المتوقع", async () => {
     await setStock(1, 1, 24);
-    await fundTreasury();
-    const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);
+    const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "0.00" }, actor);
 
     await expect(createSale(
       { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CARD" } },
       actor
-    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-    const afterCard = await closeShift({ shiftId, countedCash: "50.00" }, actor);
-    expect(afterCard.expectedCash).toBe("50.00");
+    )).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await stockOf(1, 1)).toBe(24);
+    const afterCard = await closeShift({ shiftId, countedCash: "0.00" }, actor);
+    expect(afterCard.expectedCash).toBe("0.00");
     expect(afterCard.variance).toBe("0.00");
   });
 
@@ -860,9 +862,18 @@ describe("عروض الأسعار (Quotations)", () => {
     const qRow = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
     expect(qRow.status).toBe("DRAFT");
 
-    // اقبل ثم حوّل بدفعة كاملة 100 (TRANSFER — لا يَلزم وردية مفتوحة؛ التحويل النقدي يَحلّ الوردية الآن).
+    // اقبل ثم أثبت أن الدفع الخارجي يفشل مغلقاً بلا أي أثر قبل التحويل النقدي.
     await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
-    const conv = await convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "TRANSFER" } }, actor);
+    await expect(
+      convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "TRANSFER" } }, actor),
+    ).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    expect(await stockOf(1, 1)).toBe(24);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect((await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0].status).toBe("ACCEPTED");
+
+    await openShiftSvc({ branchId: 1, openingBalance: "0.00" }, actor);
+    const conv = await convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "CASH" } }, actor);
     expect(conv.alreadyConverted).toBe(false);
 
     // الآن المخزون يُخصم (درزن = 12) والفاتورة بالأسعار المعروضة.

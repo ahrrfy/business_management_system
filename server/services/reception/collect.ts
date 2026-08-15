@@ -12,6 +12,7 @@ import { invoices, shifts } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
 import { assertNoInTransitConsignment } from "../delivery/guards";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { processPayment } from "../sale/payment";
 import { getOpenShift } from "../shiftService";
 import { type Actor } from "../tx";
@@ -25,6 +26,8 @@ export async function collectOnReceptionInvoice(
   input: CollectOnInvoiceInput,
   actor: Actor & { role?: string },
 ) {
+  // رفض قبل جلب الفاتورة/الوردية: مرجع يكتبه الموظف ليس إثبات تسوية خارجية.
+  assertPosPaymentMethodEnabled(input.method);
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مهيّأة" });
 

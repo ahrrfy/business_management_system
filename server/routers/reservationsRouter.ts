@@ -17,6 +17,7 @@ import {
 import { requireDb } from "../services/tx";
 import { logger } from "../logger";
 import { branchScopedProcedure, requireModule, router } from "../trpc";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 const reservationsRead = branchScopedProcedure.use(requireModule("reservations", "READ"));
 const reservationsWrite = branchScopedProcedure.use(requireModule("reservations", "FULL"));
@@ -42,6 +43,10 @@ async function sweepExpiredById(reservationId: number): Promise<void> {
 
 const reservationStatus = z.enum(["ACTIVE", "PARTIALLY_FULFILLED", "FULFILLED", "EXPIRED", "CANCELLED", "RELEASED"]);
 const reservationChannel = z.enum(["PHONE", "WALK_IN", "WHATSAPP", "STORE"]);
+const reservationCashPaymentMethod = z
+  .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
+  .transform((value) => value as "CASH");
 
 function assertElevated(role: string | undefined) {
   if (role !== "admin" && role !== "manager") {
@@ -323,14 +328,10 @@ export const reservationsRouter = router({
         payment: z
           .object({
             amount: positiveMoneyString,
-            method: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]),
+            method: reservationCashPaymentMethod,
             reference: z.string().trim().max(100).nullish(),
           })
           .nullish(),
-      }).superRefine((input, ctx) => {
-        if (input.payment && input.payment.method !== "CASH" && !input.payment.reference?.trim()) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "reference"], message: "مرجع الدفع غير النقدي مطلوب" });
-        }
       }),
     )
     .mutation(async ({ ctx, input }) => {

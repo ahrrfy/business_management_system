@@ -13,6 +13,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { assertTelecomCollectAllowed } from "../reception/telecom";
 import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
@@ -22,6 +23,9 @@ import type { Tx } from "../../db";
 
 /** Create a work order in RECEIVED status — stock is NOT consumed yet. */
 export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, actor: Actor) {
+    // الطريقة تغطّي عربون الأمر وأجرة التوصيل المقبوضة في الاستقبال؛ نغلقها
+    // قبل idempotency وإنشاء الأمر حتى لا يبقى أثر تشغيلي من قبض مرفوض.
+    if (input.paymentMethod != null) assertPosPaymentMethodEnabled(input.paymentMethod);
     // idempotency: إعادة طلب بنفس المفتاح ⇒ نُعيد الأمر الأول دون إنشاء/قبض عربون ثانٍ.
     const replayId = await findIdempotentRefId(tx, "workOrder.create", input.clientRequestId);
     if (replayId) {

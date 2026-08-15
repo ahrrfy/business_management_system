@@ -40,6 +40,7 @@ import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/date";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 type QueueOut = RouterOutputs["reception"]["invoiceQueue"];
 type Row = QueueOut["rows"][number];
@@ -472,16 +473,30 @@ function CollectPaymentDialog({
             <button
               key={p.v}
               type="button"
-              onClick={() => { setMethod(p.v); setTelecomConfirmed(false); }}
+              onClick={() => {
+                if (!isPosPaymentMethodEnabled(p.v)) return;
+                setMethod(p.v);
+                setTelecomConfirmed(false);
+              }}
+              disabled={!isPosPaymentMethodEnabled(p.v)}
+              aria-describedby={!isPosPaymentMethodEnabled(p.v) ? "reception-collection-external-disabled" : undefined}
+              title={isPosPaymentMethodEnabled(p.v) ? p.label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
               className={cn(
                 "min-h-[40px] rounded-lg border-2 text-xs font-extrabold",
-                method === p.v ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted",
+                method === p.v
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : isPosPaymentMethodEnabled(p.v)
+                    ? "bg-card hover:bg-muted"
+                    : "cursor-not-allowed bg-muted/40 text-muted-foreground/45",
               )}
             >
               {p.label}
             </button>
           ))}
         </div>
+        <p id="reception-collection-external-disabled" className="text-[10px] leading-relaxed text-muted-foreground">
+          {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+        </p>
         {needRef && (
           <Input
             value={reference}

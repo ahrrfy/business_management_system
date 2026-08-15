@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   ArrowLeftRight,
   Banknote,
@@ -14,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { PAY_METHOD_LABEL, type PayMethod } from "./cartMath";
 
 /**
@@ -77,6 +79,14 @@ export function PaymentPanel({
   submitting, cartEmpty, hasShift,
   onSubmit,
 }: PaymentPanelProps) {
+  // قد تكون الصفحة مفتوحة قبل النشر أو تحمل حالة قديمة؛ لا نترك طريقةً خارجية خفية.
+  useEffect(() => {
+    if (!isPosPaymentMethodEnabled(method)) {
+      setMethod("CASH");
+      setPaymentReference("");
+    }
+  }, [method, setMethod, setPaymentReference]);
+
   return (
     <div
       tabIndex={-1}
@@ -257,14 +267,18 @@ export function PaymentPanel({
           ).map((p) => (
             <button
               key={p.v}
-              onClick={() => setMethod(p.v)}
-              title={p.label}
+              onClick={() => { if (isPosPaymentMethodEnabled(p.v)) setMethod(p.v); }}
+              disabled={!isPosPaymentMethodEnabled(p.v)}
+              aria-describedby={!isPosPaymentMethodEnabled(p.v) ? "reception-external-payment-disabled" : undefined}
+              title={isPosPaymentMethodEnabled(p.v) ? p.label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
               aria-pressed={method === p.v}
               className={cn(
                 "inline-flex h-10 items-center gap-1.5 rounded-lg border-2 px-2.5 text-xs font-extrabold transition-colors",
                 method === p.v
                   ? "border-primary bg-primary text-primary-foreground"
-                  : "bg-card hover:bg-muted",
+                  : isPosPaymentMethodEnabled(p.v)
+                    ? "bg-card hover:bg-muted"
+                    : "cursor-not-allowed bg-muted/40 text-muted-foreground/45",
               )}
             >
               <p.Icon aria-hidden className="size-4" />
@@ -272,6 +286,9 @@ export function PaymentPanel({
             </button>
           ))}
         </div>
+        <span id="reception-external-payment-disabled" className="max-w-48 text-[9px] leading-tight text-muted-foreground">
+          {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+        </span>
         {needPaymentRef && (
           <Input
             value={paymentReference}

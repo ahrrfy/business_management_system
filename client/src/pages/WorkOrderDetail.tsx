@@ -22,6 +22,7 @@ import { canSeeCost } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 const STATUS_LABEL: Record<string, string> = {
   RECEIVED: "مُستلَم",
@@ -92,6 +93,13 @@ export default function WorkOrderDetail() {
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [payReference, setPayReference] = useState("");
+
+  useEffect(() => {
+    if (!isPosPaymentMethodEnabled(payMethod)) {
+      setPayMethod("CASH");
+      setPayReference("");
+    }
+  }, [payMethod]);
 
   // ?print=1 من شاشة «حفظ وطباعة»: نطبع التذكرة الحرارية تلقائياً مرة واحدة بعد تحميل البيانات.
   const autoPrintedRef = useRef(false);
@@ -384,8 +392,9 @@ export default function WorkOrderDetail() {
               <div className="space-y-1">
                 <Label>طريقة الدفع</Label>
                 <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
-                  {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+                  {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
                 </select>
+                <p className="text-[10px] leading-relaxed text-muted-foreground">{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</p>
               </div>
               {/* مرآة PaymentReferenceField من POS (client/src/components/pos/PaymentReferenceField.tsx) —
                *  ذاك المكوّن مبنيّ بأنماط CSS خام تخصّ ثيم POS (colors prop)؛ هنا حقل مطابق ببنى Tailwind
@@ -475,6 +484,10 @@ export default function WorkOrderDetail() {
             onClick={async () => {
               const payAmountD = D(payAmount || "0");
               const payNow = payAmountD.gt(0);
+              if (!isPosPaymentMethodEnabled(payMethod)) {
+                setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+                return;
+              }
               // الخادم يرفض دفعاً غير نقديّ بلا مرجع (deliver.ts superRefine) — نتحقّق مبكراً بدل
               // فشل التسليم بخطأ zod عامّ بعد تأكيد المستخدم.
               if (payNow && payMethod !== "CASH" && !payReference.trim()) {

@@ -17,7 +17,11 @@
  *  T8 (D9) — كاشف تركّز زين: موظفٌ نصف وارده زين وفوق الأرضية ⇒ مُعلَّم.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// TELECOM remains readable/reconcilable for historical receipts. Dedicated
+// policy suites verify that production intake itself is now fail-closed.
+vi.mock("../posPaymentPolicy", () => ({ assertPosPaymentMethodEnabled: () => undefined }));
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { closeShift, openShift } from "../shiftService";

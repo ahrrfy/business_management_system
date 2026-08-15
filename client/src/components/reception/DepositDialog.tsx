@@ -2,7 +2,7 @@
 // المرآة الشاشيّة لخدمة reception.collectDeposit: وردية استقبالٍ مُلزَمة («سيدخل درجك أنت»
 // للنقد وحده — I15: غير النقد يُسجَّل على الوردية للمحاسبة ولا يدخل الدرج)،
 // مرجعٌ لغير النقد، مفتاح idempotency لكل فتح، وسند قبضٍ مطبوعٌ للزبون (ليس إيصال بيع).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Decimal from "decimal.js";
 import { Banknote } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
 import { printDepositReceipt } from "@/lib/printing/draftTicket";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 const D = (v: string | number) => new Decimal(v || 0);
 const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
@@ -60,6 +61,15 @@ export default function DepositDialog({
   const [telecomConfirmed, setTelecomConfirmed] = useState(false);
   const [senderPhone, setSenderPhone] = useState("");
   const [clientRequestId] = useState(() => crypto.randomUUID());
+
+  useEffect(() => {
+    if (!isPosPaymentMethodEnabled(method)) {
+      setMethod("CASH");
+      setReference("");
+      setTelecomConfirmed(false);
+      setSenderPhone("");
+    }
+  }, [method]);
 
   const remainingCap = round2(D(orderTotal).minus(D(heldTotal)));
 
@@ -120,16 +130,30 @@ export default function DepositDialog({
             <button
               key={v}
               type="button"
-              onClick={() => { setMethod(v); setTelecomConfirmed(false); }}
+              onClick={() => {
+                if (!isPosPaymentMethodEnabled(v)) return;
+                setMethod(v);
+                setTelecomConfirmed(false);
+              }}
+              disabled={!isPosPaymentMethodEnabled(v)}
+              aria-describedby={!isPosPaymentMethodEnabled(v) ? "reception-deposit-external-disabled" : undefined}
+              title={isPosPaymentMethodEnabled(v) ? METHOD_LABEL[v] : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
               className={cn(
                 "min-h-[40px] flex-1 rounded-lg border-2 text-xs font-extrabold",
-                method === v ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-muted",
+                method === v
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : isPosPaymentMethodEnabled(v)
+                    ? "bg-card hover:bg-muted"
+                    : "cursor-not-allowed bg-muted/40 text-muted-foreground/45",
               )}
             >
               {METHOD_LABEL[v]}
             </button>
           ))}
         </div>
+        <p id="reception-deposit-external-disabled" className="text-[10px] leading-relaxed text-muted-foreground">
+          {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+        </p>
         {needRef && (
           <Input
             value={reference}

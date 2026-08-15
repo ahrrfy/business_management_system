@@ -29,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -477,6 +478,7 @@ export default function SalesInvoiceNew() {
 
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
+    if (!isPosPaymentMethodEnabled(state.paymentMethod)) return POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE;
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
     // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
@@ -815,6 +817,7 @@ export default function SalesInvoiceNew() {
             showShipping
             showOtherExpenses={false}
             showTaxToggle
+            cashOnlyPayment
           />
           {isCorrection && (
             <CorrectionPanel

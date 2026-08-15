@@ -41,6 +41,7 @@ import type { Tx } from "../../db";
 import { flowNotify } from "../whatsapp";
 import { readOpeningWindowState } from "../openingModeService";
 import { userNameSnapshot } from "../userSnapshot";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 
 // قنوات الاستقبال/التنفيذ المشمولة بإعفاء الائتمان في «وضع الافتتاح» (قرار المالك ١٠/٨):
@@ -61,6 +62,8 @@ export async function createSaleInTx(
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
+    // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
+    if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
     // This namespace is generated only by the trusted digital-card finalizer.  Check it
     // before idempotency lookup so a public POS request cannot replay an existing
     // digital invoice merely by guessing its sourceId.

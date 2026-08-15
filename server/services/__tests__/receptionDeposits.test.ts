@@ -22,7 +22,11 @@
  *  D12 (I8) — إعادة التثبيت تعيد نفس appliedPayments بلا تطبيقٍ مزدوج.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Keep exercising downstream refund/accounting rules for historical external
+// receipts. Dedicated policy suites cover the production fail-closed boundary.
+vi.mock("../posPaymentPolicy", () => ({ assertPosPaymentMethodEnabled: () => undefined }));
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { closeShift, getShiftReport, openShift } from "../shiftService";

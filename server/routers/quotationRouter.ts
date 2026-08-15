@@ -17,8 +17,12 @@ import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyStrin
 import { retryOnDup } from "../lib/retryDup";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
-const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const cashPaymentMethod = z
+  .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
+  .transform((value) => value as "CASH");
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على createdAt).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
@@ -225,7 +229,7 @@ export const quotationRouter = router({
     .input(
       z.object({
         quotationId: z.number().int().positive(),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method: cashPaymentMethod }).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {

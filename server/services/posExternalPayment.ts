@@ -5,11 +5,8 @@ import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { logger } from "../logger";
-import {
-  POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
-  isPosPaymentMethodEnabled,
-} from "@shared/posPaymentPolicy";
 import { money, toDbMoney } from "./money";
+import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 import { createSaleInTx, DIGITAL_SALE_CAPABILITY, notifySaleCustomerAfterCommit } from "./sale/create";
 import type { CreateSaleInput, CreateSaleResult } from "./sale/types";
 import { withTx, type Actor } from "./tx";
@@ -38,19 +35,6 @@ export interface ExternalPaymentBindingInput {
 }
 
 export type LockedExternalPaymentAttempt = typeof externalPaymentAttempts.$inferSelect;
-
-/**
- * حارس نقطة البيع الحاكم. وجود جدول 0183 أو مرجعٍ يدخله الموظف لا يُثبت قبضاً
- * خارجياً؛ ولا يُفتح هذا الحارس إلا مع تكامل مزوّد وتسوية قابلة للمطابقة.
- */
-export function assertPosPaymentMethodEnabled(method: string | null | undefined): void {
-  if (!isPosPaymentMethodEnabled(method)) {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
-    });
-  }
-}
 
 export type ConfirmedPosSaleInput = Omit<CreateSaleInput, "payment"> & {
   payment?: (NonNullable<CreateSaleInput["payment"]> & {

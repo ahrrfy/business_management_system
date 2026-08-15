@@ -7,6 +7,7 @@ import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
 import { logger } from "../../logger";
 import type { PaymentMethod } from "../sale/types";
 import { openShiftIdTx } from "../shiftService";
+import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { withTx, type Actor } from "../tx";
 import { assertReservationBranch, CLOSEABLE_STATUSES } from "./helpers";
 import { adjustReservedStock } from "./stock";
@@ -29,6 +30,8 @@ export interface ConvertReservationResult {
 }
 
 export async function convertReservationToSale(input: ConvertReservationInput, actor: Actor): Promise<ConvertReservationResult> {
+  // التحويل يخصم مخزوناً وينشئ فاتورة/إيصالاً؛ الحارس يسبق أي قراءة أو قفل.
+  if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
   if (input.payment && input.payment.method !== "CASH" && !input.payment.reference?.trim()) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع الدفع غير النقدي مطلوب" });
   }
