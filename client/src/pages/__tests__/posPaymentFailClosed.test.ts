@@ -28,7 +28,7 @@ describe("POS external payment fail-closed UX contract", () => {
     expect(source).toContain('paymentRef: ""');
     expect(source).toContain("externalPayment: null");
     expect(source).not.toContain('onClick={() => setMethod("CARD")}');
-    expect(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE).toMatch(/غير مفعّلة.*مزوّد.*تسوية موثوقين/);
+    expect(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE).toMatch(/غير مفعّل.*إثبات مستقل.*المزوّد.*تسوية.*موثوقة/);
   });
 
   it("disables PrintPOS external controls and clears stale external drafts", () => {
