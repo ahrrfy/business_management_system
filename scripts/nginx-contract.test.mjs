@@ -144,6 +144,7 @@ function makeOperations(fault = null) {
     nginxTest: () => maybeFail("nginx-test"),
     reload: () => maybeFail("reload"),
     smoke: () => maybeFail("smoke"),
+    rollbackSmoke: () => maybeFail("rollback-smoke"),
   };
 }
 
@@ -161,7 +162,7 @@ function runRollbackFault(fault) {
     assert.deepEqual(operations.calls.slice(-3), [
       "nginx-test",
       "reload",
-      "smoke",
+      "rollback-smoke",
     ]);
     assert.equal(fs.readdirSync(fixture.backupRoot).length, 1);
   } finally {
@@ -372,6 +373,39 @@ function runRollbackFault(fault) {
 
 for (const fault of ["install", "nginx-test", "reload", "smoke"]) {
   runRollbackFault(fault);
+}
+
+{
+  const fixture = createFixture();
+  try {
+    const before = snapshotLive(fixture);
+    const operations = makeOperations();
+    operations.smoke = () => {
+      operations.calls.push("smoke");
+      throw new Error("public storefront was already degraded before install");
+    };
+    operations.rollbackSmoke = () =>
+      operations.calls.push("rollback-smoke");
+
+    assert.throws(
+      () => installNginxContract(fixtureOptions(fixture, operations)),
+      (error) => error?.code === "NGINX_INSTALL_FAILED_ROLLBACK_OK",
+      "a failed candidate smoke must not make a successfully restored degraded baseline look like a rollback failure",
+    );
+    assertSnapshot(before);
+    assert.equal(
+      fs.existsSync(path.join(fixture.backupRoot, "pending.json")),
+      false,
+      "the durable journal must clear once the previous baseline is restored and rollback health passes",
+    );
+    assert.deepEqual(operations.calls.slice(-3), [
+      "nginx-test",
+      "reload",
+      "rollback-smoke",
+    ]);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
 }
 
 {
