@@ -138,6 +138,7 @@
     "storefrontRouter.createOrder@server/routers/storefrontRouter.ts",
     "storefrontRouter.offers@server/routers/storefrontRouter.ts",
     "storefrontRouter.product@server/routers/storefrontRouter.ts",
+    "storefrontRouter.quoteOrder@server/routers/storefrontRouter.ts",
     "storefrontRouter.related@server/routers/storefrontRouter.ts",
     "storefrontRouter.settings@server/routers/storefrontRouter.ts",
     "storefrontRouter.trackBanner@server/routers/storefrontRouter.ts",

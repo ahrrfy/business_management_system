@@ -1,29 +1,29 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 870,
+    "trpcTotal": 871,
     "byKind": {
       "mutation": 443,
-      "query": 427
+      "query": 428
     },
     "byAuthority": {
       "module-gate": 392,
       "module-map": 269,
       "admin": 74,
+      "none": 56,
       "raw-role": 55,
-      "none": 55,
       "self-assignment": 17,
       "platform": 5,
       "token": 2,
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 426,
+      "LOW": 427,
       "MEDIUM": 328,
       "HIGH": 116
     },
     "byModule": {
-      "(none)": 209,
+      "(none)": 210,
       "hr": 80,
       "digital_cards": 75,
       "reports": 67,
@@ -56,13 +56,13 @@
       "sales|workorders": 1
     },
     "flagCounts": {
-      "LOCAL_GATE": 141,
+      "LOCAL_GATE": 157,
       "NO_BRANCH_SCOPE": 135,
       "SENSITIVE_ACTION": 116,
       "ADMIN_ONLY": 77,
       "RAW_ROLE_GATE": 65,
-      "UNAUTHENTICATED": 32,
-      "READ_WITHOUT_MODULE_GATE": 30,
+      "UNAUTHENTICATED": 33,
+      "READ_WITHOUT_MODULE_GATE": 31,
       "WRITE_WITHOUT_MODULE_GATE": 25,
       "HANDLER_ROLE_CHECK": 5
     },
@@ -70,7 +70,7 @@
     "expressMounts": 11,
     "jobs": 16,
     "routerFiles": 93,
-    "proposedPermissions": 742,
+    "proposedPermissions": 743,
     "proposedDomains": {
       "hr": 86,
       "reports": 70,
@@ -91,8 +91,8 @@
       "digitalcards/wallets": 15,
       "superapp": 14,
       "delivery": 13,
+      "storefront": 13,
       "tasks": 13,
-      "storefront": 12,
       "digitalcards/pricing": 11,
       "kiosk": 11,
       "ar": 10,
@@ -12328,7 +12328,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "assignProducts",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12336,8 +12336,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:269"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:298"
     },
     {
       "surface": "trpc",
@@ -12354,7 +12354,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:81"
+      "loc": "server/routers/storeAdminRouter.ts:108"
     },
     {
       "surface": "trpc",
@@ -12362,7 +12362,7 @@
       "proposedPermission": "store.store_admin.create",
       "name": "create",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12370,8 +12370,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:175"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:202"
     },
     {
       "surface": "trpc",
@@ -12379,7 +12379,7 @@
       "proposedPermission": "store.store_admin.create",
       "name": "create",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12387,8 +12387,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:226"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:255"
     },
     {
       "surface": "trpc",
@@ -12396,7 +12396,7 @@
       "proposedPermission": "store.store_admin.create",
       "name": "create",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12404,8 +12404,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:346"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:380"
     },
     {
       "surface": "trpc",
@@ -12413,7 +12413,7 @@
       "proposedPermission": "store.store_admin.revoke",
       "name": "deactivate",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12421,8 +12421,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:375"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:409"
     },
     {
       "surface": "trpc",
@@ -12439,7 +12439,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:84"
+      "loc": "server/routers/storeAdminRouter.ts:111"
     },
     {
       "surface": "trpc",
@@ -12456,7 +12456,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:109"
+      "loc": "server/routers/storeAdminRouter.ts:136"
     },
     {
       "surface": "trpc",
@@ -12473,7 +12473,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:205"
+      "loc": "server/routers/storeAdminRouter.ts:232"
     },
     {
       "surface": "trpc",
@@ -12490,7 +12490,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:68"
+      "loc": "server/routers/storeAdminRouter.ts:95"
     },
     {
       "surface": "trpc",
@@ -12507,7 +12507,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:174"
+      "loc": "server/routers/storeAdminRouter.ts:201"
     },
     {
       "surface": "trpc",
@@ -12524,7 +12524,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:225"
+      "loc": "server/routers/storeAdminRouter.ts:254"
     },
     {
       "surface": "trpc",
@@ -12541,7 +12541,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:281"
+      "loc": "server/routers/storeAdminRouter.ts:310"
     },
     {
       "surface": "trpc",
@@ -12558,7 +12558,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:338"
+      "loc": "server/routers/storeAdminRouter.ts:371"
     },
     {
       "surface": "trpc",
@@ -12575,7 +12575,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:406"
+      "loc": "server/routers/storeAdminRouter.ts:441"
     },
     {
       "surface": "trpc",
@@ -12592,7 +12592,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:266"
+      "loc": "server/routers/storeAdminRouter.ts:295"
     },
     {
       "surface": "trpc",
@@ -12609,7 +12609,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:105"
+      "loc": "server/routers/storeAdminRouter.ts:132"
     },
     {
       "surface": "trpc",
@@ -12617,7 +12617,7 @@
       "proposedPermission": "store.store_admin.delete",
       "name": "remove",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12625,8 +12625,8 @@
       "branch": "required",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: remove",
-      "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/storeAdminRouter.ts:196"
+      "flags": "LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/storeAdminRouter.ts:223"
     },
     {
       "surface": "trpc",
@@ -12634,7 +12634,7 @@
       "proposedPermission": "store.store_admin.delete",
       "name": "remove",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12642,8 +12642,8 @@
       "branch": "required",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: remove",
-      "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/storeAdminRouter.ts:242"
+      "flags": "LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/storeAdminRouter.ts:271"
     },
     {
       "surface": "trpc",
@@ -12651,7 +12651,7 @@
       "proposedPermission": "store.store_admin.reorder",
       "name": "reorder",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12659,8 +12659,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:258"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:287"
     },
     {
       "surface": "trpc",
@@ -12668,7 +12668,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "setFeatured",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12676,8 +12676,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:298"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:328"
     },
     {
       "surface": "trpc",
@@ -12685,7 +12685,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "setImage",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12693,8 +12693,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:321"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:354"
     },
     {
       "surface": "trpc",
@@ -12711,7 +12711,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:89"
+      "loc": "server/routers/storeAdminRouter.ts:116"
     },
     {
       "surface": "trpc",
@@ -12719,7 +12719,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "setStock",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeFulfillmentManagerProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12727,8 +12727,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:312"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:342"
     },
     {
       "surface": "trpc",
@@ -12736,7 +12736,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "setVisibility",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12744,8 +12744,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:250"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:279"
     },
     {
       "surface": "trpc",
@@ -12753,7 +12753,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "setVisible",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12761,8 +12761,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:305"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:335"
     },
     {
       "surface": "trpc",
@@ -12779,7 +12779,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:386"
+      "loc": "server/routers/storeAdminRouter.ts:421"
     },
     {
       "surface": "trpc",
@@ -12787,7 +12787,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "update",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12795,8 +12795,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:181"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:208"
     },
     {
       "surface": "trpc",
@@ -12804,7 +12804,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "update",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12812,8 +12812,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:206"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:233"
     },
     {
       "surface": "trpc",
@@ -12821,7 +12821,7 @@
       "proposedPermission": "store.store_admin.update",
       "name": "update",
       "kind": "mutation",
-      "procedure": "storeManagerProcedure",
+      "procedure": "storeGlobalAdminProcedure",
       "authority": "module-gate",
       "module": "store",
       "level": "FULL",
@@ -12829,8 +12829,8 @@
       "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "",
-      "loc": "server/routers/storeAdminRouter.ts:234"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/storeAdminRouter.ts:263"
     },
     {
       "surface": "trpc",
@@ -12898,7 +12898,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:106"
+      "loc": "server/routers/storefrontRouter.ts:118"
     },
     {
       "surface": "trpc",
@@ -12915,7 +12915,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/storefrontRouter.ts:148"
+      "loc": "server/routers/storefrontRouter.ts:165"
     },
     {
       "surface": "trpc",
@@ -12950,6 +12950,23 @@
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
       "loc": "server/routers/storefrontRouter.ts:92"
+    },
+    {
+      "surface": "trpc",
+      "router": "storefrontRouter",
+      "proposedPermission": "storefront.storefront.quote_order",
+      "name": "quoteOrder",
+      "kind": "query",
+      "procedure": "publicProcedure",
+      "authority": "none",
+      "module": "",
+      "level": "",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
+      "loc": "server/routers/storefrontRouter.ts:102"
     },
     {
       "surface": "trpc",
@@ -13034,7 +13051,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:143"
+      "loc": "server/routers/storefrontRouter.ts:160"
     },
     {
       "surface": "trpc",
@@ -14377,7 +14394,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:199"
+      "loc": "server/routers/voucherRouter.ts:201"
     },
     {
       "surface": "trpc",
@@ -14411,7 +14428,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:159"
+      "loc": "server/routers/voucherRouter.ts:161"
     },
     {
       "surface": "trpc",
@@ -14445,7 +14462,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:321"
+      "loc": "server/routers/voucherRouter.ts:323"
     },
     {
       "surface": "trpc",
@@ -14462,7 +14479,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:207"
+      "loc": "server/routers/voucherRouter.ts:209"
     },
     {
       "surface": "trpc",
@@ -14479,7 +14496,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:179"
+      "loc": "server/routers/voucherRouter.ts:181"
     },
     {
       "surface": "trpc",
@@ -14496,7 +14513,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:309"
+      "loc": "server/routers/voucherRouter.ts:311"
     },
     {
       "surface": "trpc",
@@ -14513,7 +14530,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:396"
+      "loc": "server/routers/voucherRouter.ts:398"
     },
     {
       "surface": "trpc",
@@ -14530,7 +14547,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:218"
+      "loc": "server/routers/voucherRouter.ts:220"
     },
     {
       "surface": "trpc",
@@ -14547,7 +14564,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:138"
+      "loc": "server/routers/voucherRouter.ts:140"
     },
     {
       "surface": "trpc",
@@ -14564,7 +14581,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:379"
+      "loc": "server/routers/voucherRouter.ts:381"
     },
     {
       "surface": "trpc",
@@ -14581,7 +14598,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:50"
+      "loc": "server/routers/voucherRouter.ts:49"
     },
     {
       "surface": "trpc",
@@ -14598,7 +14615,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:350"
+      "loc": "server/routers/voucherRouter.ts:352"
     },
     {
       "surface": "trpc",
