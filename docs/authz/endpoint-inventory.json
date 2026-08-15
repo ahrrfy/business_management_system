@@ -1,10 +1,10 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 876,
+    "trpcTotal": 882,
     "byKind": {
-      "mutation": 448,
-      "query": 428
+      "mutation": 451,
+      "query": 431
     },
     "byAuthority": {
       "module-gate": 397,
@@ -12,20 +12,20 @@
       "admin": 74,
       "raw-role": 55,
       "none": 53,
-      "self-assignment": 17,
+      "self-assignment": 19,
+      "owner": 6,
       "platform": 5,
       "token": 2,
-      "owner": 2,
       "device-bootstrap": 1,
       "public-read": 1
     },
     "bySensitivity": {
-      "LOW": 427,
-      "MEDIUM": 333,
-      "HIGH": 116
+      "LOW": 430,
+      "MEDIUM": 335,
+      "HIGH": 117
     },
     "byModule": {
-      "(none)": 207,
+      "(none)": 209,
       "hr": 80,
       "digital_cards": 75,
       "reports": 67,
@@ -47,6 +47,7 @@
       "gifts": 9,
       "reservations": 7,
       "catalogAnomalies": 6,
+      "ownership": 6,
       "courier": 5,
       "pos": 5,
       "announcements": 4,
@@ -54,7 +55,6 @@
       "expenses": 4,
       "users": 2,
       "crm|workorders": 2,
-      "ownership": 2,
       "settings": 1,
       "sales|workorders": 1,
       "storefront": 1
@@ -62,7 +62,7 @@
     "flagCounts": {
       "LOCAL_GATE": 155,
       "NO_BRANCH_SCOPE": 135,
-      "SENSITIVE_ACTION": 116,
+      "SENSITIVE_ACTION": 117,
       "ADMIN_ONLY": 77,
       "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 33,
@@ -74,13 +74,13 @@
     "expressMounts": 11,
     "jobs": 16,
     "routerFiles": 93,
-    "proposedPermissions": 748,
+    "proposedPermissions": 754,
     "proposedDomains": {
       "hr": 86,
       "reports": 70,
+      "treasury": 69,
       "inventory": 68,
       "catalog": 64,
-      "treasury": 63,
       "store": 48,
       "sales": 44,
       "iam": 42,
@@ -11819,6 +11819,23 @@
     {
       "surface": "trpc",
       "router": "shiftRouter",
+      "proposedPermission": "treasury.shift.void",
+      "name": "cancelFunding",
+      "kind": "mutation",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: cancel",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/shiftRouter.ts:162"
+    },
+    {
+      "surface": "trpc",
+      "router": "shiftRouter",
       "proposedPermission": "treasury.shift.cash_drop",
       "name": "cashDrop",
       "kind": "mutation",
@@ -11831,7 +11848,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/shiftRouter.ts:218"
+      "loc": "server/routers/shiftRouter.ts:408"
     },
     {
       "surface": "trpc",
@@ -11848,7 +11865,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: close",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/shiftRouter.ts:159"
+      "loc": "server/routers/shiftRouter.ts:290"
     },
     {
       "surface": "trpc",
@@ -11865,7 +11882,58 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/shiftRouter.ts:296"
+      "loc": "server/routers/shiftRouter.ts:486"
+    },
+    {
+      "surface": "trpc",
+      "router": "shiftRouter",
+      "proposedPermission": "treasury.shift.funding_outgoing",
+      "name": "fundingOutgoing",
+      "kind": "query",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/shiftRouter.ts:153"
+    },
+    {
+      "surface": "trpc",
+      "router": "shiftRouter",
+      "proposedPermission": "treasury.shift.funding_requests",
+      "name": "fundingRequests",
+      "kind": "query",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/shiftRouter.ts:128"
+    },
+    {
+      "surface": "trpc",
+      "router": "shiftRouter",
+      "proposedPermission": "treasury.shift.funding_sources",
+      "name": "fundingSources",
+      "kind": "query",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/shiftRouter.ts:138"
     },
     {
       "surface": "trpc",
@@ -11882,7 +11950,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/shiftRouter.ts:264"
+      "loc": "server/routers/shiftRouter.ts:454"
     },
     {
       "surface": "trpc",
@@ -11899,7 +11967,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/shiftRouter.ts:21"
+      "loc": "server/routers/shiftRouter.ts:36"
     },
     {
       "surface": "trpc",
@@ -11916,7 +11984,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/shiftRouter.ts:112"
+      "loc": "server/routers/shiftRouter.ts:243"
     },
     {
       "surface": "trpc",
@@ -11933,7 +12001,41 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/shiftRouter.ts:277"
+      "loc": "server/routers/shiftRouter.ts:467"
+    },
+    {
+      "surface": "trpc",
+      "router": "shiftRouter",
+      "proposedPermission": "treasury.shift.request_funding",
+      "name": "requestFunding",
+      "kind": "mutation",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/shiftRouter.ts:183"
+    },
+    {
+      "surface": "trpc",
+      "router": "shiftRouter",
+      "proposedPermission": "treasury.shift.respond_funding",
+      "name": "respondFunding",
+      "kind": "mutation",
+      "procedure": "selfServiceProcedure",
+      "authority": "self-assignment",
+      "module": "",
+      "level": "SELF",
+      "roles": "authenticated-user",
+      "branch": "self",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/shiftRouter.ts:209"
     },
     {
       "surface": "trpc",

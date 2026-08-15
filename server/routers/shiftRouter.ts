@@ -10,7 +10,21 @@ import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { remediateAndCloseLegacyNegativeShifts } from "../services/legacyNegativeShiftService";
 import { createCashDrop } from "../services/cashDropService";
-import { router, treasuryCashierProcedure, treasuryReadProcedure } from "../trpc";
+import {
+  cancelShiftFundingRequest,
+  listMyPendingShiftFunding,
+  listEligibleShiftFundingSources,
+  listPendingShiftFundingForOwners,
+  requestAdditionalShiftFunding,
+  respondToShiftFundingRequest,
+} from "../services/shiftFundingService";
+import {
+  ownerProcedure,
+  router,
+  selfServiceProcedure,
+  treasuryCashierProcedure,
+  treasuryReadProcedure,
+} from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
@@ -109,6 +123,122 @@ export const shiftRouter = router({
       });
       return { rows, total, hasMore, nextCursor };
     }),
+
+  /** عهد التمويل الإضافي المسندة لصاحب الوردية الحالي فقط، بصرف النظر عن مسمى دوره. */
+  fundingRequests: selfServiceProcedure.query(({ ctx }) =>
+    listMyPendingShiftFunding({
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+      role: ctx.user.role,
+      isOwner: ctx.user.isOwner,
+    }),
+  ),
+
+  /** سحوبات الورديات المقبولة المتاحة كمصدرٍ وحيد لعهدة إضافية. */
+  fundingSources: ownerProcedure
+    .input(z.object({
+      targetShiftId: z.number().int().positive(),
+      cursorReceiptId: z.number().int().positive().nullish(),
+    }))
+    .query(({ input, ctx }) =>
+      listEligibleShiftFundingSources(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+      }),
+    ),
+
+  /** الطلبات الصادرة المعلقة كي يستطيع المالك تحرير مصدرها إن لم يتم التسليم. */
+  fundingOutgoing: ownerProcedure.query(({ ctx }) =>
+    listPendingShiftFundingForOwners({
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+      role: ctx.user.role,
+      isOwner: ctx.user.isOwner,
+    }),
+  ),
+
+  cancelFunding: ownerProcedure
+    .input(
+      z.object({
+        requestReceiptId: z.number().int().positive(),
+        cancellationReason: z.string().trim().min(5).max(500),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      cancelShiftFundingRequest(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+        ipAddress:
+          (ctx.req.headers["x-forwarded-for"] as string | undefined)
+            ?.split(",")[0]
+            ?.trim() ?? ctx.req.ip ?? null,
+      }),
+    ),
+
+  /** المالك ينشئ عقد التسليم فقط؛ لا تتحرك الخزنة قبل قبول صاحب الوردية. */
+  requestFunding: ownerProcedure
+    .input(
+      z.object({
+        shiftId: z.number().int().positive(),
+        amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ التمويل غير صالح"),
+        evidenceNote: z.string().trim().min(10).max(500),
+        sourceTreasuryReceiptId: z.number().int().positive(),
+        clientRequestId: z.string().trim().min(1).max(64),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      retryOnDup(() =>
+        requestAdditionalShiftFunding(input, {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner,
+          ipAddress:
+            (ctx.req.headers["x-forwarded-for"] as string | undefined)
+              ?.split(",")[0]
+              ?.trim() ?? ctx.req.ip ?? null,
+        }),
+      ),
+    ),
+
+  /** صاحب الوردية وحده يؤكد أن النقد وصل فعلياً أو يرفض العهدة بلا أثر مالي. */
+  respondFunding: selfServiceProcedure
+    .input(
+      z
+        .object({
+          requestReceiptId: z.number().int().positive(),
+          decision: z.enum(["ACCEPT", "REJECT"]),
+          rejectionReason: z.string().trim().max(500).nullish(),
+        })
+        .superRefine((value, ctx) => {
+          if (
+            value.decision === "REJECT" &&
+            (value.rejectionReason?.trim().length ?? 0) < 5
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["rejectionReason"],
+              message: "سبب الرفض مطلوب (5 محارف على الأقل)",
+            });
+          }
+        }),
+    )
+    .mutation(({ input, ctx }) =>
+      respondToShiftFundingRequest(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+        ipAddress:
+          (ctx.req.headers["x-forwarded-for"] as string | undefined)
+            ?.split(",")[0]
+            ?.trim() ?? ctx.req.ip ?? null,
+      }),
+    ),
 
   open: treasuryCashierProcedure
     .input(

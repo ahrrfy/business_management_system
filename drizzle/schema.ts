@@ -2087,6 +2087,54 @@ export type Receipt = typeof receipts.$inferSelect;
 export type InsertReceipt = typeof receipts.$inferInsert;
 
 /**
+ * Indexed ownership of an accepted cash-drop source by a shift-funding request.
+ * JSON on receipts remains the immutable audit snapshot; this relation is the
+ * concurrency and lookup authority, so source reuse never requires a history scan.
+ */
+export const shiftFundingSourceLinks = mysqlTable(
+  "shiftFundingSourceLinks",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestReceiptId: bigint("requestReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => receipts.id),
+    sourceReceiptId: bigint("sourceReceiptId", { mode: "number" })
+      .notNull()
+      .references(() => receipts.id),
+    activeSourceReceiptId: bigint("activeSourceReceiptId", { mode: "number" })
+      .references(() => receipts.id),
+    targetShiftId: bigint("targetShiftId", { mode: "number" })
+      .notNull()
+      .references(() => shifts.id),
+    activeTargetShiftId: bigint("activeTargetShiftId", { mode: "number" })
+      .references(() => shifts.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    state: mysqlEnum("shiftFundingLinkState", ["PENDING", "CONSUMED", "RELEASED"])
+      .default("PENDING")
+      .notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    requestUnique: unique("uq_shift_funding_link_request").on(table.requestReceiptId),
+    activeSourceUnique: unique("uq_shift_funding_link_active_source").on(table.activeSourceReceiptId),
+    activeTargetUnique: unique("uq_shift_funding_link_active_target").on(table.activeTargetShiftId),
+    targetStateIdx: index("idx_shift_funding_link_target_state").on(table.targetShiftId, table.state),
+    branchStateIdx: index("idx_shift_funding_link_branch_state").on(table.branchId, table.state),
+    activeStateCheck: check(
+      "chk_shift_funding_link_active_state",
+      sql`(
+        (${table.state} = 'PENDING' AND ${table.activeSourceReceiptId} IS NOT NULL AND ${table.activeSourceReceiptId} = ${table.sourceReceiptId} AND ${table.activeTargetShiftId} IS NOT NULL AND ${table.activeTargetShiftId} = ${table.targetShiftId})
+        OR (${table.state} = 'CONSUMED' AND ${table.activeSourceReceiptId} IS NOT NULL AND ${table.activeSourceReceiptId} = ${table.sourceReceiptId} AND ${table.activeTargetShiftId} IS NULL)
+        OR (${table.state} = 'RELEASED' AND ${table.activeSourceReceiptId} IS NULL AND ${table.activeTargetShiftId} IS NULL)
+      )`,
+    ),
+  }),
+);
+
+/**
  * محاولة دفع خارجية للكاشيرين العادي والطباعة (0183).
  *
  * المرجع هنا مستقلّ عن `receipts.referenceNumber`: ذلك الحقل قديم ومتعدد الأغراض (سندات/زين/

@@ -69,7 +69,7 @@ const TYPE_LABEL: Record<string, string> = {
   CASH_HANDOVER: "تسليم درج للخزينة",
   CASH_TRANSFER_OUT: "تحويل نقدي صادر",
   CASH_TRANSFER_IN: "تحويل نقدي وارد",
-  SHIFT_FLOAT_OUT: "عهدة افتتاح وردية",
+  SHIFT_FLOAT_OUT: "عهدة تمويل وردية",
   TREASURY_FUNDING: "تمويل خزينة",
   DELIVERY_DISPATCH: "عهدة توصيل",
   DELIVERY_REMIT: "توريد توصيل",

@@ -33,6 +33,34 @@ function computeDelta(currentStr: string, previousStr: string): number | null {
   return Number(cur.minus(prev).div(prev).times(100).toDecimalPlaces(1).toString());
 }
 
+function shiftFundingInternalReceiptSql() {
+  return sql`
+    COALESCE(r.referenceNumber, '') LIKE 'STF-%'
+    AND EXISTS (
+      SELECT 1
+      FROM accountingEntries sfEntry
+      INNER JOIN receipts sfRequest ON sfRequest.id = sfEntry.receiptId
+      WHERE sfEntry.entryType = 'SHIFT_FLOAT_OUT'
+        AND sfRequest.referenceNumber = r.referenceNumber
+        AND sfRequest.branchId = r.branchId
+        AND sfRequest.direction = 'OUT'
+        AND sfRequest.cashBucket = 'TREASURY'
+        AND sfRequest.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND sfRequest.receiptApprovalStatus = 'APPROVED'
+        AND (
+          r.id = sfRequest.id
+          OR (
+            r.direction = 'IN'
+            AND r.cashBucket = 'DRAWER'
+            AND r.signatureHash IS NOT NULL
+            AND r.signatureHash = sfRequest.signatureHash
+            AND r.internalNote = sfRequest.internalNote
+          )
+        )
+    )
+  `;
+}
+
 async function fetchDailySparkline(
   db: NonNullable<ReturnType<typeof getDb>>,
   kind: "receipts_in" | "expenses" | "receipts_out",
@@ -47,6 +75,7 @@ async function fetchDailySparkline(
       WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'IN'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
         AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
+        AND NOT (${shiftFundingInternalReceiptSql()})
         ${branchFilter}
         ${bucketFilter}
       GROUP BY DATE(r.createdAt) ORDER BY day ASC
@@ -58,6 +87,7 @@ async function fetchDailySparkline(
       WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'OUT'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
         AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
+        AND NOT (${shiftFundingInternalReceiptSql()})
         ${branchFilter}
         ${bucketFilter}
       GROUP BY DATE(r.createdAt) ORDER BY day ASC
@@ -122,6 +152,7 @@ export async function getKpiTrends(
       WHERE r.direction = 'IN' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) = CURDATE()
         AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
+        AND NOT (${shiftFundingInternalReceiptSql()})
         ${branchFilterR} ${bucketFilterR}
     `),
   );
@@ -132,6 +163,7 @@ export async function getKpiTrends(
       WHERE r.direction = 'IN' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
         AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
+        AND NOT (${shiftFundingInternalReceiptSql()})
         ${branchFilterR} ${bucketFilterR}
     `),
   );
