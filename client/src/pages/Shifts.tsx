@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -80,6 +81,10 @@ export default function Shifts() {
   const [copying, setCopying] = useState<number | null>(null);
   const [closingShiftId, setClosingShiftId] = useState<number | null>(null);
   const [closeCounted, setCloseCounted] = useState("");
+  const [legacyEvidenceNote, setLegacyEvidenceNote] = useState("");
+  const [legacySourceReceiptId, setLegacySourceReceiptId] = useState("");
+  const [legacyConfirmedZero, setLegacyConfirmedZero] = useState(false);
+  const [legacyClientRequestId, setLegacyClientRequestId] = useState("");
   // فواتير الوردية — لتحقيق فروقات النقد (فتح قائمة مضمَّنة بدل الانتقال لشاشة مبيعات منفصلة).
   const [invoicesShiftId, setInvoicesShiftId] = useState<number | null>(null);
   const { copy } = useClipboard({ successMessage: "نُسِخ تقرير Z" });
@@ -147,6 +152,8 @@ export default function Shifts() {
       ? D(closeCounted).minus(closeExpected)
       : null;
   const closeHasVariance = closeDiff != null && closeDiff.abs().gt("0.005");
+  const isLegacyNegative = closeExpected?.lt(0) ?? false;
+  const isOwner = me.data?.isOwner === true;
   const closeReconciliation = adaptShiftCashReconciliation(closeReportQ.data, {
     countedCash: closeCounted || null,
     variance: closeDiff?.toFixed(2) ?? null,
@@ -154,10 +161,18 @@ export default function Shifts() {
   });
 
   const closeShiftM = trpc.shifts.close.useMutation({
-    onSuccess: async () => {
-      notify.ok("أُغلقت الوردية");
+    onSuccess: async (result) => {
+      notify.ok(
+        "legacyNegativeRemediation" in result
+          ? "مُوّلت الوردية من الخزنة بالقيمة الدقيقة، وصُفّرت وأُغلقت"
+          : "أُغلقت الوردية",
+      );
       setClosingShiftId(null);
       setCloseCounted("");
+      setLegacyEvidenceNote("");
+      setLegacySourceReceiptId("");
+      setLegacyConfirmedZero(false);
+      setLegacyClientRequestId("");
       await utils.shifts.list.invalidate();
     },
     onError: (e) => notify.errBig(e),
@@ -165,6 +180,13 @@ export default function Shifts() {
 
   function openCloseDialog(shiftId: number) {
     setCloseCounted("");
+    setLegacyEvidenceNote("");
+    setLegacySourceReceiptId("");
+    setLegacyConfirmedZero(false);
+    setLegacyClientRequestId(
+      globalThis.crypto?.randomUUID?.() ??
+        `legacy-${shiftId}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
     setClosingShiftId(shiftId);
   }
 
@@ -762,6 +784,10 @@ export default function Shifts() {
           if (!open) {
             setClosingShiftId(null);
             setCloseCounted("");
+            setLegacyEvidenceNote("");
+            setLegacySourceReceiptId("");
+            setLegacyConfirmedZero(false);
+            setLegacyClientRequestId("");
           }
         }}
       >
@@ -803,6 +829,61 @@ export default function Shifts() {
                 }
                 formatDateTime={(value) => fmtDT(value)}
               />
+              {isLegacyNegative && isOwner ? (
+                <div className="space-y-4 rounded-xl border border-warning/40 bg-warning/5 p-4 text-sm">
+                  <div>
+                    <p className="font-bold">معالجة رصيد سالب موروث — للمالك فقط</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      سيُسحب من الخزنة مبلغ {fmt(closeExpected?.abs().toNumber() ?? 0)} د.ع
+                      ويُضاف إلى هذه الوردية بسندَي تصحيح مترابطين، ثم يُثبت الرصيد والمعدود
+                      والفرق صفراً وتُغلق الوردية. لن يتغير أي سند تاريخي.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor="legacy-source-receipt" className="font-bold">
+                      رقم إيصال السحب الموجود في الخزنة (إن وُجد)
+                    </label>
+                    <Input
+                      id="legacy-source-receipt"
+                      type="number"
+                      min={1}
+                      inputMode="numeric"
+                      value={legacySourceReceiptId}
+                      onChange={(event) => setLegacySourceReceiptId(event.target.value)}
+                      placeholder="مثال: 2996"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      يُستعمل لإثبات سلسلة الحيازة فقط؛ المتبقي منه يبقى في الخزنة.
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor="legacy-evidence-note" className="font-bold">
+                      دليل وسبب المعالجة
+                    </label>
+                    <Textarea
+                      id="legacy-evidence-note"
+                      rows={3}
+                      maxLength={1000}
+                      value={legacyEvidenceNote}
+                      onChange={(event) => setLegacyEvidenceNote(event.target.value)}
+                      placeholder="اذكر نتيجة المراجعة، مصدر المبلغ، وتوجيه المالك…"
+                    />
+                  </div>
+                  <label className="flex items-start gap-2 rounded-md border bg-background p-3 font-bold">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4"
+                      checked={legacyConfirmedZero}
+                      onChange={(event) => setLegacyConfirmedZero(event.target.checked)}
+                    />
+                    <span>أؤكد أن النقد الموجود فعلياً في درج هذه الوردية معدود ويساوي صفراً.</span>
+                  </label>
+                </div>
+              ) : isLegacyNegative ? (
+                <div className="rounded-xl border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
+                  هذه وردية سالبة موروثة. لا يملك حق تمويلها وتصفيرها وإغلاقها إلا حساب المالك.
+                </div>
+              ) : (
               <div className="space-y-1.5 rounded-xl border p-4">
                 <label
                   htmlFor="close-counted-cash"
@@ -832,7 +913,8 @@ export default function Shifts() {
                   </div>
                 )}
               </div>
-              {closeHasVariance && (
+              )}
+              {!isLegacyNegative && closeHasVariance && (
                 <div className="rounded-xl border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
                   لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً
                   إليه صافي المبيعات النقدية المسجّلة. راجع الفواتير والمرتجعات
@@ -847,20 +929,44 @@ export default function Shifts() {
             </Button>
             <Button
               disabled={
-                !closeCounted ||
                 closeShiftM.isPending ||
-                closeHasVariance ||
-                closeExpected == null
+                closeExpected == null ||
+                (isLegacyNegative
+                  ? !isOwner ||
+                    legacyEvidenceNote.trim().length < 20 ||
+                    !legacyConfirmedZero ||
+                    !legacyClientRequestId
+                  : !closeCounted || closeHasVariance)
               }
-              onClick={() =>
-                closingShiftId != null &&
+              onClick={() => {
+                if (closingShiftId == null || closeExpected == null) return;
+                if (isLegacyNegative) {
+                  closeShiftM.mutate({
+                    shiftId: closingShiftId,
+                    countedCash: "0",
+                    legacyNegativeRemediation: {
+                      expectedCash: closeExpected.toFixed(2),
+                      sourceTreasuryReceiptId: legacySourceReceiptId
+                        ? Number(legacySourceReceiptId)
+                        : undefined,
+                      evidenceNote: legacyEvidenceNote.trim(),
+                      confirmDrawerCountedZero: true,
+                      clientRequestId: legacyClientRequestId,
+                    },
+                  });
+                  return;
+                }
                 closeShiftM.mutate({
                   shiftId: closingShiftId,
                   countedCash: closeCounted,
-                })
-              }
+                });
+              }}
             >
-              {closeShiftM.isPending ? "جارٍ الإغلاق…" : "إغلاق"}
+              {closeShiftM.isPending
+                ? "جارٍ التنفيذ…"
+                : isLegacyNegative
+                  ? "تمويل من الخزنة وتصفير وإغلاق"
+                  : "إغلاق"}
             </Button>
           </DialogFooter>
         </DialogContent>
