@@ -1312,6 +1312,101 @@ const expenseReceiptCreator = alias(users, "expenseReceiptCreator");
 const expenseReceiptApprover = alias(users, "expenseReceiptApprover");
 const expenseAuditActor = alias(users, "expenseAuditActor");
 
+const SYSTEM_PAYMENT_REQUEST_PREFIX = "@SYSTEM_PAYMENT_REQUEST:";
+const systemRequestJsonSql = sql`CASE
+  WHEN LEFT(COALESCE(${receipts.internalNote}, ''), CHAR_LENGTH(${SYSTEM_PAYMENT_REQUEST_PREFIX})) = ${SYSTEM_PAYMENT_REQUEST_PREFIX}
+    AND JSON_VALID(SUBSTRING(${receipts.internalNote}, CHAR_LENGTH(${SYSTEM_PAYMENT_REQUEST_PREFIX}) + 1))
+  THEN SUBSTRING(${receipts.internalNote}, CHAR_LENGTH(${SYSTEM_PAYMENT_REQUEST_PREFIX}) + 1)
+  ELSE '{}'
+END`;
+const systemRequestKindSql = sql`JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.kind'))`;
+const systemAccrualDedupeSql = sql`CASE
+  WHEN ${systemRequestKindSql} = 'PURCHASE_SHIPPING' THEN CONCAT(
+    'PURCHASE_SHIPPING_ACCRUAL:',
+    JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.purchaseOrderId')),
+    ':',
+    JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.requestToken'))
+  )
+  WHEN ${systemRequestKindSql} = 'ASSET_MAINTENANCE' THEN CONCAT(
+    'ASSET_MAINT_ACCRUAL:',
+    JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.maintenanceId'))
+  )
+  ELSE NULL
+END`;
+
+/**
+ * عقد واحد لحالة «اعترفنا بالمصروف ولم ندفعه ثم ألغيناه».
+ * لا يكفي كون السند PENDING/REJECTED: يلزم طلب نظامي من نوع الشحن/الصيانة،
+ * وقيد الاستحقاق الأصلي، وعكسه الكامل. يُعاد استعمال هذا التعبير في صفوف
+ * القائمة وفي مجاميع التدقيق حتى لا تنحرف دلالتا TypeScript وSQL عن بعضهما.
+ */
+const recognizedUnsettledCancellationSql = sql`COALESCE((
+  ${expenses.status} = 'CANCELLED'
+  AND ${expenses.source} = 'CASH'
+  AND ${expenses.shiftId} IS NULL
+  AND ${expenses.cashBucket} = 'TREASURY'
+  AND ${receipts.id} IS NOT NULL
+  AND ${receipts.direction} = 'OUT'
+  AND ${receipts.status} = 'REVERSED'
+  AND ${receipts.approvalStatus} IN ('PENDING_APPROVAL', 'REJECTED')
+  AND ${receipts.shiftId} IS NULL
+  AND ${receipts.cashBucket} IS NULL
+  AND (${expenses.amount} <=> ${receipts.amount})
+  AND (${expenses.branchId} <=> ${receipts.branchId})
+  AND (${expenses.paymentMethod} <=> ${receipts.paymentMethod})
+  AND (${expenses.createdBy} <=> ${receipts.createdBy})
+  AND (${expenses.referenceNumber} <=> ${receipts.referenceNumber})
+  AND (
+    (
+      ${expenses.category} = 'TRANSPORT'
+      AND ${systemRequestKindSql} = 'PURCHASE_SHIPPING'
+      AND ${receipts.referenceNumber} LIKE 'SHIP-%'
+      AND RIGHT(
+        ${receipts.referenceNumber},
+        CHAR_LENGTH(JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.requestToken')))
+      ) = JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.requestToken'))
+      AND CAST(
+        JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.expectedAmount'))
+        AS DECIMAL(15, 2)
+      ) <=> ${expenses.amount}
+    )
+    OR (
+      ${expenses.category} = 'MAINTENANCE'
+      AND ${systemRequestKindSql} = 'ASSET_MAINTENANCE'
+      AND ${receipts.referenceNumber} = CONCAT(
+        'ASSET-MAINT-',
+        JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.maintenanceId'))
+      )
+    )
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM accountingEntries AS recognizedAccrual
+    WHERE recognizedAccrual.entryType = 'PAYMENT_OUT'
+      AND recognizedAccrual.receiptId IS NULL
+      AND (recognizedAccrual.branchId <=> ${expenses.branchId})
+      AND (recognizedAccrual.amount <=> ${expenses.amount})
+      AND recognizedAccrual.dedupeKey = ${systemAccrualDedupeSql}
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM accountingEntries AS recognizedAccrualReversal
+    WHERE recognizedAccrualReversal.entryType = 'PAYMENT_OUT'
+      AND recognizedAccrualReversal.receiptId IS NULL
+      AND (recognizedAccrualReversal.branchId <=> ${expenses.branchId})
+      AND recognizedAccrualReversal.amount = -${expenses.amount}
+      AND recognizedAccrualReversal.dedupeKey = CONCAT('EXPENSE_ACCRUAL_CANCEL:', ${expenses.id})
+  )
+), FALSE)`;
+
+const missingPayeeSql = sql`(
+  TRIM(COALESCE(${expenses.payee}, '')) = ''
+  AND NOT (
+    ${recognizedUnsettledCancellationSql}
+    AND TRIM(COALESCE(${receipts.counterpartyName}, '')) <> ''
+  )
+)`;
+
 function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
   return db
     .select({
@@ -1362,11 +1457,13 @@ function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       receiptCreatedByName: expenseReceiptCreator.name,
       receiptCreatedByRole: expenseReceiptCreator.role,
       receiptCreatedAt: receipts.createdAt,
+      receiptCounterpartyName: receipts.counterpartyName,
       receiptApprovalStatus: receipts.approvalStatus,
       receiptApprovedBy: receipts.approvedBy,
       receiptApprovedByName: expenseReceiptApprover.name,
       receiptApprovedByRole: expenseReceiptApprover.role,
       receiptApprovedAt: receipts.approvedAt,
+      recognizedUnsettledCancellation: sql<number>`CASE WHEN ${recognizedUnsettledCancellationSql} THEN 1 ELSE 0 END`,
     })
     .from(expenses)
     .leftJoin(branches, eq(expenses.branchId, branches.id))
@@ -1403,8 +1500,14 @@ function nullableId(value: unknown): number | null {
 function integrityWarningsOf(row: any): string[] {
   const warnings: string[] = [];
   const fundingKind = fundingKindOf(row);
+  const recognizedUnsettledCancellation =
+    Number(row.recognizedUnsettledCancellation ?? 0) === 1;
   if (!row.description?.trim()) warnings.push("DESCRIPTION_MISSING");
-  if (!row.payee?.trim()) warnings.push("PAYEE_MISSING");
+  if (
+    !row.payee?.trim() &&
+    !(recognizedUnsettledCancellation && row.receiptCounterpartyName?.trim())
+  )
+    warnings.push("PAYEE_MISSING");
   if (row.source === "STOCK") {
     if (row.receiptId != null || row.linkedReceiptId != null)
       warnings.push("STOCK_HAS_RECEIPT");
@@ -1415,6 +1518,10 @@ function integrityWarningsOf(row: any): string[] {
 
   if (row.receiptId == null || row.linkedReceiptId == null) {
     warnings.push("RECEIPT_MISSING");
+  } else if (recognizedUnsettledCancellation) {
+    // كل الفروق المقصودة (TREASURY مقابل clearing بلا cashBucket، وعدم الاعتماد)
+    // مشمولة في العقد SQL أعلاه؛ لا تُعفَ الحالة إذا فُقد/عُبث أي قيد منه.
+    return warnings;
   } else {
     if (row.receiptDirection !== "OUT")
       warnings.push("RECEIPT_DIRECTION_MISMATCH");
@@ -1542,9 +1649,11 @@ function buildExpenseConditions(input: ListExpensesInput) {
 }
 
 const financialIntegritySql = sql`(
-  (${expenses.source} = 'STOCK' AND (${expenses.receiptId} IS NOT NULL OR ${expenses.shiftId} IS NOT NULL OR ${expenses.cashBucket} IS NOT NULL))
-  OR
-  (${expenses.source} <> 'STOCK' AND (
+  NOT ${recognizedUnsettledCancellationSql}
+  AND (
+    (${expenses.source} = 'STOCK' AND (${expenses.receiptId} IS NOT NULL OR ${expenses.shiftId} IS NOT NULL OR ${expenses.cashBucket} IS NOT NULL))
+    OR
+    (${expenses.source} <> 'STOCK' AND (
     ${expenses.receiptId} IS NULL OR ${receipts.id} IS NULL
     OR ${receipts.direction} <> 'OUT'
     OR NOT (${expenses.amount} <=> ${receipts.amount})
@@ -1575,12 +1684,13 @@ const financialIntegritySql = sql`(
     OR (${expenses.cashBucket} = 'DRAWER' AND ${expenses.shiftId} IS NULL)
     OR (${expenses.cashBucket} = 'TREASURY' AND ${expenses.shiftId} IS NOT NULL)
     OR (${expenses.paymentMethod} <> 'CASH' AND ${expenses.cashBucket} IS NOT NULL)
-  ))
+    ))
+  )
 )`;
 
 const needsAuditSql = sql`(
   TRIM(COALESCE(${expenses.description}, '')) = ''
-  OR TRIM(COALESCE(${expenses.payee}, '')) = ''
+  OR ${missingPayeeSql}
   OR ${financialIntegritySql}
 )`;
 
@@ -1642,7 +1752,7 @@ export async function listExpenses(input: ListExpensesInput = {}) {
         unknown: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} <> 'STOCK' AND ${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} IS NULL THEN ${expenses.amount} ELSE 0 END), 0)`,
         needsAudit: sql<number>`COALESCE(SUM(CASE WHEN ${needsAuditSql} THEN 1 ELSE 0 END), 0)`,
         missingDescription: sql<number>`COALESCE(SUM(CASE WHEN TRIM(COALESCE(${expenses.description}, '')) = '' THEN 1 ELSE 0 END), 0)`,
-        missingPayee: sql<number>`COALESCE(SUM(CASE WHEN TRIM(COALESCE(${expenses.payee}, '')) = '' THEN 1 ELSE 0 END), 0)`,
+        missingPayee: sql<number>`COALESCE(SUM(CASE WHEN ${missingPayeeSql} THEN 1 ELSE 0 END), 0)`,
         sourceMismatch: sql<number>`COALESCE(SUM(CASE WHEN ${financialIntegritySql} THEN 1 ELSE 0 END), 0)`,
         drawerMismatch: sql<number>`COALESCE(SUM(CASE WHEN ${expenses.cashBucket} = 'DRAWER' AND (${expenses.shiftId} IS NULL OR ${expenses.receiptId} IS NULL) THEN 1 ELSE 0 END), 0)`,
         count: sql<number>`COUNT(*)`,

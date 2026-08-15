@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   approveExpense,
+  cancelExpense,
   createExpense,
   getExpenseTrace,
   listExpenses,
@@ -68,6 +69,89 @@ async function reset() {
     referenceNumber: "EXPENSE-TRACE-TREASURY-FUND",
     createdBy: manager1.userId,
   });
+}
+
+type RecognizedRequestCase =
+  | { kind: "PURCHASE_SHIPPING"; approvalStatus: "PENDING_APPROVAL" }
+  | { kind: "ASSET_MAINTENANCE"; approvalStatus: "REJECTED" };
+
+async function recognizedUnsettledExpense(input: RecognizedRequestCase) {
+  const shipping = input.kind === "PURCHASE_SHIPPING";
+  const receiptId = shipping ? 401 : 402;
+  const expenseId = shipping ? 501 : 502;
+  const amount = shipping ? "400.00" : "250.00";
+  const request = shipping
+    ? {
+        kind: "PURCHASE_SHIPPING" as const,
+        purchaseOrderId: 91,
+        requestToken: "trace-shipping-token",
+        expectedAmount: amount,
+        sourceShippingTotal: amount,
+      }
+    : {
+        kind: "ASSET_MAINTENANCE" as const,
+        assetId: 81,
+        maintenanceId: 71,
+      };
+  const referenceNumber = shipping
+    ? "SHIP-TRACE-01-trace-shipping-token"
+    : "ASSET-MAINT-71";
+  const accrualDedupe = shipping
+    ? "PURCHASE_SHIPPING_ACCRUAL:91:trace-shipping-token"
+    : "ASSET_MAINT_ACCRUAL:71";
+
+  await db()
+    .insert(s.receipts)
+    .values({
+      id: receiptId,
+      branchId: 1,
+      shiftId: null,
+      cashBucket: null,
+      direction: "OUT",
+      amount,
+      paymentMethod: "CASH",
+      status: input.approvalStatus === "REJECTED" ? "FAILED" : "PENDING",
+      approvalStatus: input.approvalStatus,
+      referenceNumber,
+      partyType: "OTHER",
+      counterpartyName: shipping ? "شركة النقل/الكمرك" : "فني الصيانة",
+      description: shipping ? "شحن مستحق غير مدفوع" : "صيانة مستحقة غير مدفوعة",
+      internalNote: `@SYSTEM_PAYMENT_REQUEST:${JSON.stringify(request)}`,
+      createdBy: manager1.userId,
+    });
+  await db()
+    .insert(s.expenses)
+    .values({
+      id: expenseId,
+      branchId: 1,
+      shiftId: null,
+      cashBucket: "TREASURY",
+      expenseDate: new Date("2026-08-15T00:00:00.000Z"),
+      category: shipping ? "TRANSPORT" : "MAINTENANCE",
+      amount,
+      paymentMethod: "CASH",
+      source: "CASH",
+      description: shipping ? "شحن/كمرك أمر شراء" : "صيانة أصل",
+      referenceNumber,
+      payee: null,
+      receiptId,
+      status: "ACTIVE",
+      createdBy: manager1.userId,
+    });
+  await db()
+    .insert(s.accountingEntries)
+    .values({
+      entryType: "PAYMENT_OUT",
+      branchId: 1,
+      receiptId: null,
+      amount,
+      entryDate: new Date("2026-08-15T00:00:00.000Z"),
+      dedupeKey: accrualDedupe,
+      notes: "قيد استحقاق اختبار",
+    });
+
+  await cancelExpense(expenseId, manager2);
+  return { expenseId, receiptId, amount };
 }
 
 beforeEach(reset);
@@ -239,5 +323,75 @@ describe("عقد التتبع التفصيلي للمصروفات", () => {
     );
     expect(listed.rows[0].needsAudit).toBe(true);
     expect(listed.totals).toMatchObject({ nonCash: "400.00", needsAudit: 1 });
+  });
+
+  it.each([
+    {
+      label: "طلب شحن معلّق",
+      input: {
+        kind: "PURCHASE_SHIPPING",
+        approvalStatus: "PENDING_APPROVAL",
+      } as const,
+    },
+    {
+      label: "طلب صيانة مرفوض",
+      input: {
+        kind: "ASSET_MAINTENANCE",
+        approvalStatus: "REJECTED",
+      } as const,
+    },
+  ])(
+    "إلغاء $label بعكس استحقاق صحيح لا يولّد إنذاراً كاذباً في القائمة أو الأثر",
+    async ({ input }) => {
+      const { expenseId } = await recognizedUnsettledExpense(input);
+
+      const listed = await listExpenses({ status: "CANCELLED" });
+      expect(listed.rows).toHaveLength(1);
+      expect(listed.rows[0]).toMatchObject({
+        id: expenseId,
+        status: "CANCELLED",
+        receiptStatus: "REVERSED",
+        receiptApprovalStatus: input.approvalStatus,
+        integrityWarnings: [],
+        needsAudit: false,
+      });
+      expect(listed.totals).toMatchObject({
+        needsAudit: 0,
+        missingPayee: 0,
+        sourceMismatch: 0,
+      });
+
+      const trace = await getExpenseTrace(expenseId, { branchId: 1 });
+      expect(trace?.expense).toMatchObject({
+        id: expenseId,
+        integrityWarnings: [],
+        needsAudit: false,
+      });
+    },
+  );
+
+  it("يبقي التحذير إذا عُبث بعكس استحقاق مصروف ملغى غير مدفوع", async () => {
+    const { expenseId } = await recognizedUnsettledExpense({
+      kind: "PURCHASE_SHIPPING",
+      approvalStatus: "PENDING_APPROVAL",
+    });
+    await db()
+      .update(s.accountingEntries)
+      .set({ amount: "-399.00" })
+      .where(
+        eq(
+          s.accountingEntries.dedupeKey,
+          `EXPENSE_ACCRUAL_CANCEL:${expenseId}`,
+        ),
+      );
+
+    const listed = await listExpenses({ status: "CANCELLED" });
+    expect(listed.rows[0].integrityWarnings).toContain("RECEIPT_NOT_APPROVED");
+    expect(listed.rows[0].needsAudit).toBe(true);
+    expect(listed.totals).toMatchObject({ needsAudit: 1, sourceMismatch: 1 });
+
+    const trace = await getExpenseTrace(expenseId, { branchId: 1 });
+    expect(trace?.expense.integrityWarnings).toContain("RECEIPT_NOT_APPROVED");
+    expect(trace?.expense.needsAudit).toBe(true);
   });
 });
