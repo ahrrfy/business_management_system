@@ -133,7 +133,7 @@ describe("sale.create idempotency — بصمة كاملة تَكشف إعادة 
     expect((await db().select().from(s.invoices))).toHaveLength(1);
   });
 
-  it("نفس clientRequestId بطريقة دفع مختلفة ⇒ CONFLICT", async () => {
+  it("طريقة قبض غير مفعّلة تُرفض قبل idempotency وبلا أثر إضافي", async () => {
     const reqId = "sale-fp-method";
     await createSale(
       {
@@ -143,16 +143,18 @@ describe("sale.create idempotency — بصمة كاملة تَكشف إعادة 
       },
       actorAdmin,
     );
-    await expect(
-      createSale(
-        {
-          branchId: 1, shiftId: 1, customerId: 1, sourceType: "POS",
-          lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
-          payment: { amount: "10", method: "CARD" }, clientRequestId: reqId,
-        },
-        actorAdmin,
-      ),
-    ).rejects.toThrow(/طريقة دفع مختلفة/);
+    const cardAttempt = createSale(
+      {
+        branchId: 1, shiftId: 1, customerId: 1, sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: { amount: "10", method: "CARD" }, clientRequestId: reqId,
+      },
+      actorAdmin,
+    );
+    await expect(cardAttempt).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect((await db().select().from(s.invoices))).toHaveLength(1);
+    expect((await db().select().from(s.receipts))).toHaveLength(1);
+    expect((await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0].quantity).toBe(49);
   });
 
   it("نفس clientRequestId بعدد أسطر مختلف ⇒ CONFLICT", async () => {
@@ -194,7 +196,7 @@ describe("sale.create idempotency — بصمة كاملة تَكشف إعادة 
 
 // ─── (2) cashBucket='DRAWER' على receipts النقدية ─────────────────────
 describe("cashBucket='DRAWER' على receipts النقدية", () => {
-  it("بيع نقدي ⇒ DRAWER؛ بطاقة ⇒ null", async () => {
+  it("بيع نقدي ⇒ DRAWER؛ ومحاولة CARD المعطّلة بلا إيصال أو خصم", async () => {
     await createSale(
       {
         branchId: 1, shiftId: 1, customerId: 1, sourceType: "POS",
@@ -203,21 +205,20 @@ describe("cashBucket='DRAWER' على receipts النقدية", () => {
       },
       actorAdmin,
     );
-    await createSale(
+    await expect(createSale(
       {
         branchId: 1, shiftId: 1, customerId: 1, sourceType: "POS",
         lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
         payment: { amount: "10", method: "CARD", reference: "CARD-REF-1001" },
       },
       actorAdmin,
-    );
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     const rs = await db().select().from(s.receipts).orderBy(s.receipts.id);
-    expect(rs).toHaveLength(2);
+    expect(rs).toHaveLength(1);
     expect(rs[0].cashBucket).toBe("DRAWER");
     expect(rs[0].paymentMethod).toBe("CASH");
-    expect(rs[1].cashBucket).toBeNull();
-    expect(rs[1].paymentMethod).toBe("CARD");
-    expect(rs[1].referenceNumber).toBe("CARD-REF-1001");
+    expect((await db().select().from(s.invoices))).toHaveLength(1);
+    expect((await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0].quantity).toBe(49);
   });
 
   it("processPayment نقدي ⇒ DRAWER", async () => {

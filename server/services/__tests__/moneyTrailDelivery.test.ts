@@ -197,13 +197,25 @@ describe("M3 — الأمانة ليست دفعةً من العميل", () => {
     const shift = await openReception();
     const r = await checkoutReception({
       branchId: 1, shiftId: shift.shiftId, customerId: 1,
-      paymentMethod: "CARD", paymentReference: "CARD-1", paidAmount: "10000.00",
+      paymentMethod: "CASH", paidAmount: "10000.00",
       deliveryFeeHeld: "5000.00",
       clientRequestId: "m3-fee",
       regularSale: { lines: [LINE], amount: "10000.00" },
       delivery: { partyId: 1, fee: "5000.00", feeCollection: "COUNTER" },
     }, CASHIER);
     const invoiceId = r.regularSale!.invoiceId;
+
+    // سجلّ تاريخيّ موثوق قبل تعطيل القبض غير النقدي: نحافظ على تغطية قراءة
+    // البطاقة والاسترداد من البيانات القائمة، من دون فتح مسار قبض CARD حيّ.
+    await db().update(s.receipts).set({
+      paymentMethod: "CARD",
+      cashBucket: null,
+      referenceNumber: "CARD-1",
+    }).where(and(
+      eq(s.receipts.invoiceId, invoiceId),
+      eq(s.receipts.direction, "IN"),
+      eq(s.receipts.amount, "10000.00"),
+    ));
 
     // (أ) كشف الحساب: مجموع الدفعات = ما دفعه العميل فعلاً (10,000) لا 15,000.
     const st = await getCustomerStatement(1, {});

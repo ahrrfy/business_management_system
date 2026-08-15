@@ -74,12 +74,11 @@ async function openReception(userId = 2) {
 }
 
 /** بيع مباشر نقديّ كامل على وردية الاستقبال — فاتورة PAID في نطاق الطابور. */
-async function directSale(shiftId: number, reqId: string, qty = 1, method: "CASH" | "CARD" = "CASH") {
+async function directSale(shiftId: number, reqId: string, qty = 1) {
   return checkoutReception({
     branchId: 1,
     shiftId,
-    paymentMethod: method,
-    paymentReference: method === "CARD" ? "CARD-1" : undefined,
+    paymentMethod: "CASH",
     paidAmount: (1000 * qty).toFixed(2),
     clientRequestId: reqId,
     regularSale: { lines: [{ variantId: 1, productUnitId: 1, quantity: String(qty) }], amount: (1000 * qty).toFixed(2) },
@@ -123,8 +122,21 @@ describe("Q — طابور فواتير المحطة", () => {
 
   it("Q2: فلاتر paymentState/method/q", async () => {
     const rec = await openReception();
-    await directSale(rec.shiftId, "wq2-cash", 1, "CASH");
-    const cardSale = await directSale(rec.shiftId, "wq2-card", 2, "CARD");
+    await directSale(rec.shiftId, "wq2-cash", 1);
+    const cardSale = await directSale(rec.shiftId, "wq2-card", 2);
+    // فاتورة بطاقة تاريخية للبحث/التقارير؛ لا نستعمل مسار CARD الحيّ بعد
+    // سياسة القبض النقدي فقط، بل نحاكي السجل القائم المكتمل مباشرةً.
+    await db().update(s.receipts).set({
+      paymentMethod: "CARD",
+      cashBucket: null,
+      referenceNumber: "CARD-1",
+    }).where(and(
+      eq(s.receipts.invoiceId, Number(cardSale.regularSale!.invoiceId)),
+      eq(s.receipts.direction, "IN"),
+    ));
+    await db().update(s.invoices).set({
+      paymentMethod: "CARD",
+    }).where(eq(s.invoices.id, Number(cardSale.regularSale!.invoiceId)));
 
     const unsettled = await listReceptionInvoices({ branchId: 1, sinceDays: 7, paymentState: "UNSETTLED" });
     expect(unsettled.rows.length).toBe(0); // البيع المباشر يولد مدفوعاً

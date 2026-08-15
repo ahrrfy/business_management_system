@@ -12,7 +12,7 @@ const TABLES = [
   "couponRedemptions", "coupons", "couponPrograms", "crmCampaigns",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItemBundleComponents", "invoiceItems", "invoices",
   "promotionTargets", "promotions", "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "categories", "users", "branches",
+  "categories", "shifts", "users", "branches",
 ];
 const actor = { userId: 1, branchId: 1, role: "admin" };
 function db() { const value = getDb(); if (!value) throw new Error("DATABASE_URL not set"); return value; }
@@ -20,6 +20,7 @@ function db() { const value = getDb(); if (!value) throw new Error("DATABASE_URL
 async function seed() {
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.users).values({ id: 1, openId: "coupon-test", name: "admin", role: "admin", loginMethod: "local" });
+  await db().insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, openingBalance: "0", status: "OPEN" });
   await db().insert(s.categories).values({ id: 1, name: "قرطاسية" });
   await db().insert(s.products).values({ id: 1, name: "دفتر", categoryId: 1 });
   await db().insert(s.productVariants).values({ id: 1, productId: 1, sku: "NOTE-1", costPrice: "10.00" });
@@ -45,9 +46,9 @@ async function couponFixture(code = "CRM-ATOMIC-1") {
 
 function saleInput(promotionId: number, code: string) {
   return {
-    branchId: 1, sourceType: "ORDER" as const, priceTier: "RETAIL" as const, couponCode: code,
+    branchId: 1, shiftId: 1, sourceType: "ORDER" as const, priceTier: "RETAIL" as const, couponCode: code,
     lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "100.00", discountAmount: "10.00", promotionId }],
-    payment: { amount: "90.00", method: "CARD" as const },
+    payment: { amount: "90.00", method: "CASH" as const },
   };
 }
 

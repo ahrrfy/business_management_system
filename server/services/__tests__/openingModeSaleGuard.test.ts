@@ -1,7 +1,8 @@
 // «وضع الافتتاح» (ش٢ ١٩/٧ + توسعة قرار المالك ١٠/٨) — حارس البيع بالسالب في createSale/applyMovement:
 // أثناء النافذة الفعّالة تعمل **كل قنوات الاستقبال/التنفيذ** (POS/ORDER/WORKORDER) بالسالب للصنف
-// غير المُفتتَح، وبأيّ طريقة دفع (نقدي/بطاقة/آجل/جزئي) مع إعفاء حاجز الائتمان — والدَّين يُرحَّل
-// ذمّةً كاملة على العميل. الحُرّاس الصنفية تبقى صارمة: تكلفة مُدخلة (>0) + سقف الكمية + غير مُفتتَح +
+// غير المُفتتَح، نقداً أو آجلاً/جزئياً مع إعفاء حاجز الائتمان — والدَّين يُرحَّل ذمّةً كاملة على العميل.
+// القبض غير النقدي يبقى محكوماً بسياسة الإثبات والتسوية العامة ولا يتجاوزها وضع الافتتاح.
+// الحُرّاس الصنفية تبقى صارمة: تكلفة مُدخلة (>0) + سقف الكمية + غير مُفتتَح +
 // استثناء الأمانة. خارج النافذة يعود كل شيء صارماً (ائتماناً ومخزوناً). الأوفلاين مستقلّ لا يتراكب.
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -255,19 +256,16 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
     expect(await stockOf(1)).toBe(1);
   });
 
-  it("الدفع بالبطاقة كاملاً يُعد سداداً فورياً ويمرّ بالسالب دون إدخاله في درج النقد", async () => {
+  it("وضع الافتتاح لا يتجاوز تعطيل CARD؛ يُرفض القبض بلا فاتورة أو حركة", async () => {
     await enableOpeningMode();
-    const res = await createSale(
+    await expect(createSale(
       { branchId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CARD" } },
       actor,
-    );
-    expect(res.status).toBe("PAID");
-    expect(res.negativeDips).toEqual([{ variantId: 1, newQuantity: -2 }]);
-    expect(await stockOf(1)).toBe(-2);
-
-    const [receipt] = await db().select().from(s.receipts);
-    expect(receipt.paymentMethod).toBe("CARD");
-    expect(receipt.cashBucket).toBeNull();
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await stockOf(1)).toBe(0);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
   });
 
   it("توسعة ١٠/٨: قناة ORDER (تحويل عرض سعر) تستفيد الآن من الوضع وتمرّ بالسالب", async () => {
