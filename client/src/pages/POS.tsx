@@ -43,6 +43,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -557,8 +558,10 @@ export default function POS() {
         ...t,
         cart: t.cart.filter((c) => !c.digital || (!!c.digital.providerReference && !!c.digital.providerId)),
         clientRequestId: t.clientRequestId ?? newClientRequestId(),
-        paymentRef: t.paymentRef ?? "",
-        externalPayment: t.externalPayment ?? null,
+        // لا نُعيد إحياء طريقة/محاولة خارجية قديمة من localStorage بعد إغلاق السطح.
+        method: "CASH" as PaymentMethod,
+        paymentRef: "",
+        externalPayment: null,
         dueDate: t.dueDate ?? "",
       }))));
       if (hadLegacyDigital) notify.warn("أُزيلت كروت قديمة غير مكتملة من المسودة", "أعد إضافتها مع رقم العملية قبل البيع.");
@@ -2409,14 +2412,15 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
     userSelect: "none" as const, touchAction: "manipulation" as const,
   });
 
-  const payMethodStyle = (active: boolean): React.CSSProperties => ({
+  const payMethodStyle = (active: boolean, disabled = false): React.CSSProperties => ({
     flex: 1, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center",
     gap: 3, minHeight: fluid(46, 6.6, 60), fontSize: dense ? 13 : 14, fontWeight: 800,
     border: `2px solid ${active ? C.primary : C.border}`,
-    borderRadius: 9, cursor: "pointer", fontFamily: "inherit",
+    borderRadius: 9, cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit",
     background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg,
     transition: "background .1s, color .1s, border-color .1s, box-shadow .1s", userSelect: "none" as const,
     boxShadow: active ? `0 3px 10px oklch(0.488 0.243 264.376 / .28)` : "none",
+    opacity: disabled ? 0.55 : 1,
   });
 
   const modeLabel = numMode === "QTY"  ? "الكمية — المنتج المحدد"
@@ -2566,15 +2570,19 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
           <button style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
             <Banknote aria-hidden size={22} />نقدي
           </button>
-          <button style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
+          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
             <CreditCard aria-hidden size={22} />بطاقة
           </button>
-          <button style={payMethodStyle(method === "TRANSFER")} onClick={() => setMethod("TRANSFER")}>
+          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
             <Send aria-hidden size={22} />تحويل
           </button>
-          <button style={payMethodStyle(method === "WALLET")}   onClick={() => setMethod("WALLET")}>
+          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
             <Wallet aria-hidden size={22} />محفظة
           </button>
+        </div>
+        <div id="pos-external-payment-disabled" role="status" style={{ marginTop: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.amber, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
+          <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+          <span>{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</span>
         </div>
       </div>
 

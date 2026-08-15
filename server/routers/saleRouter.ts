@@ -34,7 +34,8 @@ import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
-import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternalPaymentAttempt } from "../services/posExternalPayment";
+import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternalPaymentAttempt, type PosExternalPaymentMethod } from "../services/posExternalPayment";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 // فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
 // الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
@@ -165,7 +166,8 @@ export async function verifyManagerApproval(
 }
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-const externalMethod = z.enum(["CARD", "CHECK", "TRANSFER", "WALLET"]);
+const posPaymentMethod = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]);
+const externalMethod = z.enum(["CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 // تاريخ فلترة YYYY-MM-DD (فلاتر الفترات الخادمية — لا فلترة محلية تُخفي صفحات الخادم).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
@@ -320,7 +322,7 @@ export const saleRouter = router({
       }
       const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
       return initiateExternalPaymentAttempt(
-        { ...input, branchId, channel: "POS" },
+        { ...input, method: input.method as PosExternalPaymentMethod, branchId, channel: "POS" },
         { userId: ctx.user.id, branchId, role: ctx.user.role },
       );
     }),
@@ -360,7 +362,7 @@ export const saleRouter = router({
         deliveryWaivedAmount: nonNegMoneyString.optional(),
         payment: z.object({
           amount: positiveMoneyString,
-          method,
+          method: posPaymentMethod,
           externalPaymentAttemptId: z.number().int().positive().optional(),
         }).optional(),
         // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
@@ -375,8 +377,8 @@ export const saleRouter = router({
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
         managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       }).superRefine((input, ctx) => {
-        if (input.payment && input.payment.method !== "CASH" && !input.payment.externalPaymentAttemptId) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
+        if (input.payment && input.payment.method !== "CASH") {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "method"], message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
         }
         if (input.payment?.method === "CASH" && input.payment.externalPaymentAttemptId != null) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
@@ -458,12 +460,12 @@ export const saleRouter = router({
   pay: salesCashierProcedure
     .input(z.object({
       // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
-      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, reference: z.string().trim().max(100).nullish(), shiftId: z.number().int().positive().optional(),
+      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method: posPaymentMethod, reference: z.string().trim().max(100).nullish(), shiftId: z.number().int().positive().optional(),
       // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
       clientRequestId: z.string().min(1).max(80).optional(),
     }).superRefine((input, ctx) => {
-      if (input.method !== "CASH" && !input.reference?.trim()) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      if (input.method !== "CASH") {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["method"], message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
       }
     }))
     .mutation(async ({ input, ctx }) => {

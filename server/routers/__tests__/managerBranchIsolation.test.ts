@@ -117,16 +117,16 @@ describe("عزل تسديد الدفعات (sales.pay) — المدير لا ي�
     const [inv] = await db().select({ id: s.invoices.id }).from(s.invoices).where(eq(s.invoices.invoiceNumber, "INV-B2-1")).limit(1);
     return Number(inv.id);
   }
-  it("مدير ف١ يُسدّد بطاقةً على فاتورة ف٢ ⇒ FORBIDDEN (فاتورة فرعٍ آخر)", async () => {
+  it("مدير ف١ يُسدّد نقداً على فاتورة ف٢ ⇒ FORBIDDEN (فاتورة فرعٍ آخر)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(4))); // مدير ف١
     await expect(
-      (caller.sales as any).pay({ invoiceId: await branch2InvoiceId(), amount: "100.00", method: "CARD", reference: "REF-1" }),
+      (caller.sales as any).pay({ invoiceId: await branch2InvoiceId(), amount: "100.00", method: "CASH" }),
     ).rejects.toThrow(/فرع/);
   });
   it("الأدمن لا يُحظَر فرعياً على تسديد فاتورة ف٢ (يعبُر فحص الفرع)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1))); // admin
     let err: any = null;
-    try { await (caller.sales as any).pay({ invoiceId: await branch2InvoiceId(), amount: "100.00", method: "CARD", reference: "REF-2" }); } catch (e) { err = e; }
+    try { await (caller.sales as any).pay({ invoiceId: await branch2InvoiceId(), amount: "100.00", method: "CASH" }); } catch (e) { err = e; }
     // admin يعبُر فحص الفرع (قد يفشل لسببٍ آخر كالوردية، لكن ليس رفضاً فرعياً).
     expect(String(err?.message ?? "")).not.toMatch(/فاتورة فرع آخر/);
   });

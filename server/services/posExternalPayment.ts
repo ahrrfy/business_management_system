@@ -5,6 +5,10 @@ import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { logger } from "../logger";
+import {
+  POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
+  isPosPaymentMethodEnabled,
+} from "@shared/posPaymentPolicy";
 import { money, toDbMoney } from "./money";
 import { createSaleInTx, DIGITAL_SALE_CAPABILITY, notifySaleCustomerAfterCommit } from "./sale/create";
 import type { CreateSaleInput, CreateSaleResult } from "./sale/types";
@@ -34,6 +38,19 @@ export interface ExternalPaymentBindingInput {
 }
 
 export type LockedExternalPaymentAttempt = typeof externalPaymentAttempts.$inferSelect;
+
+/**
+ * حارس نقطة البيع الحاكم. وجود جدول 0183 أو مرجعٍ يدخله الموظف لا يُثبت قبضاً
+ * خارجياً؛ ولا يُفتح هذا الحارس إلا مع تكامل مزوّد وتسوية قابلة للمطابقة.
+ */
+export function assertPosPaymentMethodEnabled(method: string | null | undefined): void {
+  if (!isPosPaymentMethodEnabled(method)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
+    });
+  }
+}
 
 export type ConfirmedPosSaleInput = Omit<CreateSaleInput, "payment"> & {
   payment?: (NonNullable<CreateSaleInput["payment"]> & {
@@ -90,6 +107,8 @@ function publicAttempt(row: LockedExternalPaymentAttempt) {
  * requestId يجعل إعادة إرسال نفس النقرة idempotent، بينما قيد المرجع العالمي يحسم السباق الحقيقي.
  */
 export async function initiateExternalPaymentAttempt(input: ExternalPaymentAttemptInput, actor: Actor) {
+  // fail-closed قبل أي قراءة/كتابة: لا يوجد مزوّد موثوق أو تسوية تؤكد القبض.
+  assertPosPaymentMethodEnabled(input.method);
   const amount = money(input.amount);
   if (!amount.isFinite() || !amount.gt(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ محاولة الدفع يجب أن يكون موجباً" });
@@ -167,6 +186,8 @@ export async function confirmExternalPaymentAttempt(
   input: { attemptId: number; branchId: number; channel: PosExternalPaymentChannel; deviceId: string },
   actor: Actor,
 ) {
+  // لا يجوز تحويل مرجعٍ ذاتي الإدخال إلى CONFIRMED مهما كان الدور.
+  assertPosPaymentMethodEnabled("CARD");
   return withTx(async (tx) => {
     const row = (await tx
       .select()
@@ -205,6 +226,7 @@ export async function lockConfirmedExternalPaymentAttempt(
   input: ExternalPaymentBindingInput,
   actor: Actor,
 ): Promise<LockedExternalPaymentAttempt> {
+  assertPosPaymentMethodEnabled(input.method);
   if (input.method === "CASH") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يرتبط بمحاولة دفع خارجية" });
   }
@@ -269,6 +291,7 @@ export async function assertExternalPaymentReplay(
   input: ExternalPaymentBindingInput,
   actor: Actor,
 ): Promise<void> {
+  assertPosPaymentMethodEnabled(input.method);
   if (input.method === "CASH") {
     if (input.attemptId != null) throw new TRPCError({ code: "CONFLICT", message: "بيع نقدي قديم لا يحمل محاولة دفع خارجية" });
     return;
@@ -352,6 +375,7 @@ export async function createConfirmedPosSaleInTx(
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
   const payment = input.payment;
+  if (payment) assertPosPaymentMethodEnabled(payment.method);
   if (!input.requireExternalPaymentAttempt || !payment) {
     return createSaleInTx(tx, coreSaleInput(input), actor, capability);
   }
