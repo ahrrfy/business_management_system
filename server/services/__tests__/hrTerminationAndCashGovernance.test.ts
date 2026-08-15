@@ -198,13 +198,13 @@ describe("حوكمة نقد السلف", () => {
   });
 
   it("ط٦) السقف التراكميّ يمنع تقسيم السلف للالتفاف على عتبة الاعتماد", async () => {
-    // هجوم التقسيم الواقعيّ: مبالغ صغيرة متتالية (دون عتبة المُرفق ٢٥٠ألف أيضاً) حتى
-    // يبلغ المجموع عتبة الاعتماد الثنائي (١م). الرابعة تُقبَل (٨٠٠ألف) والخامسة تُرفض.
+    // هجوم التقسيم الواقعيّ: مبالغ صغيرة متتالية تصل إلى ٨٠٠ ألف، ثم طلب يجعل
+    // الإجمالي يتجاوز سقف المليون بدينار واحد. الوصول إلى السقف نفسه مسموح؛ تجاوزه مرفوض.
     for (let i = 1; i <= 4; i++) {
       await grantAndApprove({ employeeId: 2, branchId: 1, amount: "200000", clientRequestId: `acc-${i}` });
     }
     const fifth = await grantAdvance(
-      { employeeId: 2, branchId: 1, amount: "200000", clientRequestId: "acc-5" },
+      { employeeId: 2, branchId: 1, amount: "200001", clientRequestId: "acc-5" },
       ADMIN as never,
     );
     await expect(
