@@ -7,6 +7,7 @@ import { createSupplier } from "../supplierService";
 import { returnSale } from "../returnService";
 import { withTx } from "../tx";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { approveVoucher } from "../voucher/approval";
 import {
   finalizeService, intentService, offeringService, pricingService,
   providerService, reversalService, walletOpsService, walletService,
@@ -63,9 +64,10 @@ async function mkProvider(name: string, mode: "PREPAID" | "POSTPAID") {
 async function mkWallet(providerId: number, balance: string) {
   const { walletId } = await withTx((tx) =>
     walletService.createWallet(tx, { providerId, branchId: 1, code: "W1", name: "محفظة" }, { userId: 1, branchId: 1 }));
-  await withTx((tx) => walletOpsService.deposit(tx, {
+  const request = await withTx((tx) => walletOpsService.deposit(tx, {
     walletId, amount: balance, paymentMethod: "CASH", clientRequestId: `dep-${Math.random().toString(36).slice(2, 10)}`,
   }, mgr));
+  await approveVoucher(request.receiptId, ownerUser);
   return walletId;
 }
 
@@ -158,6 +160,9 @@ describe("ش١٢ — معيار الخروج: صافي صفريّ عند الع�
     const priced = await publish(providerId, [{ offeringId, providerShare: "13400" }]);
     const sale = await sell([{ offeringId, priced: priced.get(offeringId)! }]);
     const ids = await detailIds(sale.invoiceId);
+    const depositRequest = await withTx((tx) => walletOpsService.deposit(tx, {
+      walletId, amount: "1000", paymentMethod: "CASH", clientRequestId: "lock-order-deposit",
+    }, mgr));
 
     let sourceLocked!: () => void;
     let releaseSource!: () => void;
@@ -175,14 +180,12 @@ describe("ش١٢ — معيار الخروج: صافي صفريّ عند الع�
       invoiceId: sale.invoiceId, detailIds: ids, reason: "اختبار ترتيب الأقفال",
     }, mgr));
     await new Promise((resolve) => setTimeout(resolve, 50));
-    // الإيداع القديم كان يمسك wallet ثم ينتظر branch، فتتكون دورة مع العكس.
-    const deposit = withTx((tx) => walletOpsService.deposit(tx, {
-      walletId, amount: "1000", paymentMethod: "CASH", clientRequestId: "lock-order-deposit",
-    }, mgr));
+    // الاعتماد المالكي هو لحظة تحريك النقد والمحفظة؛ فيدخل نفس ترتيب source→wallet مع العكس.
+    const depositApproval = approveVoucher(depositRequest.receiptId, ownerUser);
     await new Promise((resolve) => setTimeout(resolve, 50));
     releaseSource();
 
-    const results = await Promise.allSettled([blocker, reversal, deposit]);
+    const results = await Promise.allSettled([blocker, reversal, depositApproval]);
     expect(results.flatMap((result) => result.status === "rejected"
       ? [String(result.reason?.message ?? result.reason)]
       : [])).toEqual([]);
