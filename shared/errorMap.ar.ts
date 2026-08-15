@@ -245,6 +245,9 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   // ── الفروع والتشغيل ──
   branches_code_unique: { field: "رمز الفرع", entity: "الفروع" },
   uq_shift_open_guard: { msg: "توجد وردية مفتوحة من نفس النوع لهذا الموظف على هذا الفرع — أغلق الوردية المفتوحة أولاً ثم افتح الجديدة." },
+  uq_shift_funding_link_request: { msg: "طلب تمويل الوردية مرتبط بمصدر نقدي مسبقاً — حدّث القائمة ولا تُعد إرسال الطلب." },
+  uq_shift_funding_link_active_source: { msg: "مصدر النقد المحدد محجوز أو استُهلك في طلب تمويل آخر — اختر مصدراً متاحاً." },
+  uq_shift_funding_link_active_target: { msg: "توجد معاملة تمويل إضافي معلّقة لهذه الوردية — أكملها أو ألغها قبل إنشاء طلب جديد." },
   uq_year_branch: { msg: "السنة المالية مفتوحة مسبقاً لهذا الفرع — راجع شاشة الفترات المالية." },
   uq_kiosk_token_hash: { msg: "رمز الكشك مستعمل مسبقاً — ولّد رمزاً جديداً." },
   pushSubscriptions_endpoint_unique: { msg: "اشتراك الإشعارات مسجّل مسبقاً لهذا المتصفح — لا حاجة لإعادة التفعيل." },
