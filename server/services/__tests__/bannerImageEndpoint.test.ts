@@ -31,9 +31,12 @@ const JPEG_DATA_URL = `data:image/jpeg;base64,${JPEG_B64}`;
 const PNG_DATA_URL = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64")}`;
 
 beforeEach(async () => {
-  await truncateTables(["storeBanners", "branches", "users"]);
+  await truncateTables(["storeBanners", "storeSettings", "branches", "users"]);
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  // The public banner resource needs a configured active branch, not an open
+  // catalog. A closed store is the valid zero-product fixture.
+  await db().insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1, isOpen: false });
 });
 
 describe("decodeDataUrl — البوّابة الأمنية", () => {
