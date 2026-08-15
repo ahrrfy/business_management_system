@@ -1261,6 +1261,13 @@
       "when": 1787879433000,
       "tag": "0180_employee_announcements",
       "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "5",
+      "when": 1787879436000,
+      "tag": "0183_pos_external_payment_reference",
+      "breakpoints": true
     }
   ]
 }

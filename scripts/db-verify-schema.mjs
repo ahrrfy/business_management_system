@@ -66,6 +66,11 @@ try {
   //    0013 الصامت (idx_receipt_bucket_status على عمود bucketId محذوف) بقي غير مرئي حتى أُكتشف بالتدقيق.
   //    هنا نؤكّد وجود الفهارس التي يكسر غيابُها الأداء/التقارير إنتاجياً (أُضيفت في 0030/0031/0032).
   const CRITICAL_INDEXES = [
+    ["externalPaymentAttempts", "uq_extpay_reference"], // P0 0183: مرجع عالمي يمنع إعادة القبض عبر فرع/طريقة أخرى
+    ["externalPaymentAttempts", "uq_extpay_request"],
+    ["externalPaymentAttempts", "uq_extpay_invoice"],
+    ["externalPaymentAttempts", "uq_extpay_receipt"],
+    ["digitalSaleIntents", "uq_dsi_extpay_attempt"],
     ["receipts", "idx_receipt_bucket_status"], // F1: أُسقط مع bucketId في 0017، أُعيد في 0030
     ["receipts", "idx_receipt_shift_date"], // Z-report
     ["invoices", "idx_invoice_branch_status_date"], // S1: أعمار الذمم
@@ -117,12 +122,34 @@ try {
     process.exit(1);
   }
 
+  // مرجع فريد وحده لا يكفي: هذه القيود تمنع قواعد البيانات المنشأة بـdb:push من قبول
+  // حالة مؤكدة بلا دليل أو استهلاك نصف مربوط. افحص أسماءها صراحةً مثل الفهارس الحرجة.
+  const CRITICAL_CHECKS = [
+    "chk_extpay_amount_positive",
+    "chk_extpay_reference_normalized",
+    "chk_extpay_confirmed_evidence",
+    "chk_extpay_consumption_complete",
+  ];
+  const [constraintRows] = await conn.query(
+    "SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'externalPaymentAttempts' AND CONSTRAINT_TYPE = 'CHECK'",
+    [dbName],
+  );
+  const haveChecks = new Set(constraintRows.map((r) => r.CONSTRAINT_NAME));
+  const missingChecks = CRITICAL_CHECKS.filter((name) => !haveChecks.has(name));
+  if (missingChecks.length) {
+    console.error("⛔ تحقّق قيود الدفع الخارجي فشل — قيود CHECK مفقودة:");
+    console.error("   " + missingChecks.join(", "));
+    await conn.end();
+    process.exit(1);
+  }
+
   // ── تحقّق كائنات ما بعد snapshot 0034 (سدّ النقطة العمياء، ٢/٧): الـsnapshot مُجمَّد عند 0034 ⇒
   //    فحص الأعمدة أعلاه أعمى عن كل ما أضافته الهجرات 0035-0040 (searchNorm/الصيرفة/السندات/USD).
   //    طريقة قديمة (drizzle-kit migrate) كانت تُسجّل هجراتٍ «مُطبَّقة» دون تنفيذ SQL فعلاً ⇒ انحراف
   //    صامت (كائن غائب رغم تسجيل الهجرة) لم يكن db:verify يمسكه ⇒ ثقة كاذبة. نفحصها صراحةً هنا.
   //    (هجرة 0041 المصالحة تُعيد إنشاء أي مفقود idempotently.)
   const CRITICAL_TABLES = [
+    "externalPaymentAttempts",
     "receptionDrafts", "receptionDraftLines", "orderPayments",
     "voucherCategories", "exchangeHouses", "exchangeTransactions", "crmCampaigns", "couponPrograms", "coupons", "couponRedemptions",
     // D4 digital cards.  The latest Drizzle snapshot is intentionally frozen
@@ -137,6 +164,15 @@ try {
     "deliveryPartyMembers", "deliveryRemittanceLines", "deliveryLedgerEntries", "deliveryEvents", "deliveryOutbox",
   ];
   const CRITICAL_COLUMNS = [
+    ["externalPaymentAttempts", "externalPaymentChannel"],
+    ["externalPaymentAttempts", "externalPaymentMethod"],
+    ["externalPaymentAttempts", "externalReference"],
+    ["externalPaymentAttempts", "normalizedReference"],
+    ["externalPaymentAttempts", "externalPaymentState"],
+    ["externalPaymentAttempts", "invoiceId"],
+    ["externalPaymentAttempts", "receiptId"],
+    ["digitalSaleIntents", "externalPaymentAttemptId"],
+    ["digitalSaleIntents", "externalPaymentDeviceId"],
     ["products", "searchNorm"], ["customers", "searchNorm"], ["suppliers", "searchNorm"], // 0035/0039
     ["receipts", "voucherCategoryId"], ["receipts", "counterpartyName"], ["receipts", "voucherDate"], // 0036
     ["receipts", "attachmentUrl"], ["receipts", "internalNote"], ["receipts", "signatureHash"],
