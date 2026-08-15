@@ -19,6 +19,17 @@ beforeEach(async () => {
     { id: CASHIER.userId, openId: "cash-governance-cashier", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: MANAGER.userId, openId: "cash-governance-manager", name: "مدير", role: "manager", loginMethod: "local", branchId: 1 },
   ]);
+  await db().insert(receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "1000000.00",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-SHIFT-CASH-GOVERNANCE",
+    createdBy: MANAGER.userId,
+  });
 });
 
 async function openZeroShift() {

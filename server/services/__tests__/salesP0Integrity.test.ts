@@ -99,6 +99,17 @@ async function seedBase() {
   await d
     .insert(s.branchStock)
     .values({ variantId: 1, branchId: 1, quantity: 100 });
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "1000000.00",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-SALES-P0",
+    createdBy: 1,
+  });
 }
 
 async function insertShift(opts: {
@@ -249,7 +260,7 @@ describe("P0 cash-source integrity", () => {
       ),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.cashBucket, "DRAWER"))).toHaveLength(0);
     const invoice = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     expect(invoice.paidAmount).toBe("0.00");
   });
@@ -278,7 +289,7 @@ describe("P0 cash-source integrity", () => {
       ),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(await db().select().from(s.invoices)).toHaveLength(0);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.cashBucket, "DRAWER"))).toHaveLength(0);
   });
 
   it("each shift is independent — any opening is accepted, no coupling to the previous close", async () => {

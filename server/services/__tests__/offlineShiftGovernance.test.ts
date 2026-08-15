@@ -94,7 +94,7 @@ describe("closeShift — إغلاق idempotent (ش٤)", () => {
 
 describe("getShiftReport — منع الترحيل الأوفلايني بعد الإغلاق (ش٤)", () => {
   it("فاتورة أوفلاينية تصل بعد الإغلاق تُرفض ولا تغيّر الفواتير أو لقطة الوردية", async () => {
-    await closeShift({ shiftId: 1, countedCash: "10250.00" }, cashier1);
+    await closeShift({ shiftId: 1, countedCash: "10000.00" }, cashier1);
     await expect(
       replayOfflineSale(
         {

@@ -18,6 +18,7 @@ import {
   startWorkOrder,
 } from "../workOrderService";
 import { withTx } from "../tx";
+import { approveVoucher } from "../voucher/approval";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -51,7 +52,10 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
+    { id: 2, openId: "local_owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([
@@ -83,6 +87,20 @@ async function entries(type: string) {
 }
 async function moves() {
   return db().select().from(s.inventoryMovements);
+}
+
+async function fundTreasury(amount = "1000000.00") {
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount,
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: `TEST-TREASURY-BACKBONE-${crypto.randomUUID()}`,
+    createdBy: 2,
+  });
 }
 
 beforeEach(async () => {
@@ -360,6 +378,7 @@ describe("شراء: استلام جزئي ثم استلام تكميلي مع د
     const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
 
     // استلام جزئي 30 — لا دفعة
+    await fundTreasury();
     await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 30 }] }, actor);
     expect(await stockOf(1, 1)).toBe(30);
     let poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
@@ -368,7 +387,7 @@ describe("شراء: استلام جزئي ثم استلام تكميلي مع د
     expect(sup.currentBalance).toBe("150.00"); // 30 × 5
 
     // استلام تكميلي 70 + دفعة 200 نقد
-    await receivePurchase(
+    const completed = await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
         lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 70 }],
@@ -379,6 +398,14 @@ describe("شراء: استلام جزئي ثم استلام تكميلي مع د
     expect(await stockOf(1, 1)).toBe(100);
     poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
     expect(poRow.status).toBe("RECEIVED");
+    expect(poRow.paidAmount).toBe("0.00");
+    const paymentRequestId = Number(completed.supplierPaymentRequestReceiptId);
+    expect(paymentRequestId).toBeGreaterThan(0);
+    const [pendingPayment] = await db().select().from(s.receipts).where(eq(s.receipts.id, paymentRequestId));
+    expect(pendingPayment).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL" });
+
+    await approveVoucher(paymentRequestId, { userId: 2, branchId: 1, role: "manager" });
+    poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
     expect(poRow.paidAmount).toBe("200.00");
 
     // ذمة المورد = 500 (شراء) − 200 (دفعة) = 300
@@ -528,12 +555,13 @@ describe("أوامر الشغل/المطبعة", () => {
 describe("إدارة الورديات (Z-report)", () => {
   it("بيع البطاقة لا يدخل النقد المتوقع", async () => {
     await setStock(1, 1, 24);
+    await fundTreasury();
     const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);
 
-    await createSale(
+    await expect(createSale(
       { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CARD" } },
       actor
-    );
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     const afterCard = await closeShift({ shiftId, countedCash: "50.00" }, actor);
     expect(afterCard.expectedCash).toBe("50.00");
     expect(afterCard.variance).toBe("0.00");
@@ -541,6 +569,7 @@ describe("إدارة الورديات (Z-report)", () => {
 
   it("المرتجع النقدي يطرح من النقد المتوقع للوردية", async () => {
     await setStock(1, 1, 24);
+    await fundTreasury();
     const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);
     const sale = await createSale(
       { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" } },
@@ -562,6 +591,7 @@ describe("إدارة الورديات (Z-report)", () => {
 
   it("فتح برصيد افتتاحي → بيع نقدي → إغلاق: المتوقع والفروقات صحيحة", async () => {
     await setStock(1, 1, 24);
+    await fundTreasury();
     const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "50.00" }, actor);
     await createSale(
       { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" } },

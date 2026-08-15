@@ -95,7 +95,7 @@ async function receivePurchaseOf100(paymentAmount?: string, taxRatePercent = "0"
   const poItem = (
     await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId))
   )[0];
-  await receivePurchase(
+  const received = await receivePurchase(
     {
       purchaseOrderId: po.purchaseOrderId,
       lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 100 }],
@@ -103,6 +103,13 @@ async function receivePurchaseOf100(paymentAmount?: string, taxRatePercent = "0"
     },
     actor
   );
+  if (received.supplierPaymentRequestReceiptId) {
+    await approveVoucher(Number(received.supplierPaymentRequestReceiptId), {
+      userId: 2,
+      branchId: 1,
+      role: "manager",
+    });
+  }
   return po.purchaseOrderId;
 }
 
@@ -221,11 +228,16 @@ describe("مرتجع المشتريات", () => {
     }, actor);
     const item = (await db().select().from(s.purchaseOrderItems)
       .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
-    await receivePurchase({
+    const firstReceipt = await receivePurchase({
       purchaseOrderId: po.purchaseOrderId,
       lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 100 }],
       payment: { amount: "500.00", method: "CASH" },
     }, actor);
+    await approveVoucher(Number(firstReceipt.supplierPaymentRequestReceiptId), {
+      userId: 2,
+      branchId: 1,
+      role: "manager",
+    });
 
     const results = await Promise.allSettled([
       createPurchaseReturn({
