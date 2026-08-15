@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import mysql from "mysql2/promise";
 import { describe, expect, it } from "vitest";
 import * as s from "../../../../drizzle/schema";
 import { cashRemediationRouter } from "../../../routers/cashRemediationRouter";
@@ -29,7 +30,13 @@ describe("getCashRemediationDryRun — DB read-only", () => {
   it("يجلب المصدر والقيد ويثبت أن التقرير والمحاكاة لا تغير أي صف", async () => {
     const d = db();
     await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
-    await d.insert(s.users).values({ id: 7, openId: "u_taghreed", name: "تغريد", role: "cashier", branchId: 1 });
+    await d.insert(s.users).values({
+      id: 7,
+      openId: "u_taghreed",
+      name: "تغريد",
+      role: "cashier",
+      branchId: 1,
+    });
     await d.insert(s.shifts).values({
       id: 11,
       branchId: 1,
@@ -116,6 +123,66 @@ describe("getCashRemediationDryRun — DB read-only", () => {
     });
     expect(report.safeguards.sourceRowsChanged).toBe(0);
   });
+
+  it("يثبت لقطة واحدة: إدخال متزامن بعد أول SELECT لا يتسرب إلى بقية dataset", async () => {
+    const d = db();
+    await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+    await d.insert(s.users).values({
+      id: 7,
+      openId: "u_snapshot",
+      name: "مروة",
+      role: "cashier",
+      branchId: 1,
+    });
+    await d.insert(s.shifts).values({
+      id: 12,
+      branchId: 1,
+      userId: 7,
+      openingBalance: "100.00",
+      status: "CLOSED",
+      openedAt: new Date("2026-03-01T08:00:00.000Z"),
+      closedAt: new Date("2026-03-01T16:00:00.000Z"),
+    });
+    await d.insert(s.receipts).values({
+      id: 51,
+      shiftId: 12,
+      branchId: 1,
+      direction: "OUT",
+      amount: "20.00",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      createdBy: 7,
+      createdAt: new Date("2026-03-01T09:00:00.000Z"),
+    });
+
+    let concurrentInsertCommitted = false;
+    const report = await getCashRemediationDryRun(
+      { from: "2026-03-01", to: "2026-03-01", branchId: 1 },
+      {
+        afterShiftRead: async () => {
+          const connection = await mysql.createConnection(process.env.DATABASE_URL!);
+          try {
+            await connection.execute(
+              "INSERT INTO receipts " +
+                "(id, shiftId, branchId, direction, amount, paymentMethod, cashBucket, receiptStatus, receiptApprovalStatus, createdBy, createdAt) " +
+                "VALUES (?, ?, ?, 'OUT', ?, 'CASH', 'DRAWER', 'COMPLETED', 'APPROVED', ?, ?)",
+              [52, 12, 1, "90.00", 7, new Date("2026-03-01T10:00:00.000Z")],
+            );
+            concurrentInsertCommitted = true;
+          } finally {
+            await connection.end();
+          }
+        },
+      },
+    );
+
+    expect(concurrentInsertCommitted).toBe(true);
+    expect(report.shifts[0].outflows.map((row) => row.receiptId)).toEqual([51]);
+    expect(report.shifts[0].before.computedExpectedCash).toBe("80.00");
+    const persisted = await d.select({ id: s.receipts.id }).from(s.receipts);
+    expect(persisted.map((row) => Number(row.id)).sort()).toEqual([51, 52]);
+  });
 });
 
 describe("cashRemediationRouter", () => {
@@ -126,25 +193,30 @@ describe("cashRemediationRouter", () => {
   });
 
   it("يرفض مدير الفرع عند طلب فرع أجنبي أو عند غياب فرعه", async () => {
-    const context = (branchId: number | null) => ({
-      req: { headers: {} },
-      res: { cookie() {}, clearCookie() {} },
-      user: {
-        id: 7,
-        role: "manager",
-        branchId,
-        isOwner: false,
-        permissionsOverride: null,
-      },
-    }) as never;
+    const context = (branchId: number | null) =>
+      ({
+        req: { headers: {} },
+        res: { cookie() {}, clearCookie() {} },
+        user: {
+          id: 7,
+          role: "manager",
+          branchId,
+          isOwner: false,
+          permissionsOverride: null,
+        },
+      }) as never;
     const foreignCaller = cashRemediationRouter.createCaller(context(1));
     await expect(
-      foreignCaller.dryRun({ from: "2026-01-01", to: "2026-01-01", branchId: 2 }),
+      foreignCaller.dryRun({
+        from: "2026-01-01",
+        to: "2026-01-01",
+        branchId: 2,
+      }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const unassignedCaller = cashRemediationRouter.createCaller(context(null));
-    await expect(
-      unassignedCaller.dryRun({ from: "2026-01-01", to: "2026-01-01" }),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(unassignedCaller.dryRun({ from: "2026-01-01", to: "2026-01-01" })).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
   });
 });

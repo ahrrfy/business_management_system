@@ -11,6 +11,7 @@ import type {
   RemediationClassification,
   SuggestedClassification,
 } from "./types";
+import { receiptAffectsDrawerCash, receiptStatusAffectsCash } from "./statusPolicy";
 
 type ClassificationResult = {
   classification: SuggestedClassification;
@@ -35,11 +36,7 @@ function sourceOf(receipt: RawRemediationReceipt): CashRemediationOutRow["source
             : "RECEIPT";
   const documentId = expense
     ? expense.id
-    : receipt.invoiceId ??
-      receipt.workOrderId ??
-      receipt.reservationId ??
-      receipt.voucherNumber ??
-      receipt.id;
+    : (receipt.invoiceId ?? receipt.workOrderId ?? receipt.reservationId ?? receipt.voucherNumber ?? receipt.id);
   return {
     documentType,
     documentId,
@@ -72,11 +69,7 @@ function duplicateKey(receipt: RawRemediationReceipt): string | null {
 function baseEvidence(receipt: RawRemediationReceipt): EvidenceMissing[] {
   const missing: EvidenceMissing[] = [];
   const hasDocument = Boolean(
-    receipt.expense ||
-      receipt.invoiceId ||
-      receipt.workOrderId ||
-      receipt.reservationId ||
-      receipt.voucherNumber,
+    receipt.expense || receipt.invoiceId || receipt.workOrderId || receipt.reservationId || receipt.voucherNumber,
   );
   if (!hasDocument) missing.push("SOURCE_DOCUMENT");
   if (!receipt.partyId && !receipt.counterpartyName && !receipt.expense?.payee) {
@@ -97,11 +90,13 @@ function classify(
   const pairedInternalTransfer = receipt.pairedTreasuryReceiptId != null;
   if (pairedInternalTransfer) {
     const fullyAccepted =
+      receiptStatusAffectsCash(receipt.status) &&
       receipt.pairedTreasuryReceiptStatus === "COMPLETED" &&
       receipt.pairedTreasuryApprovalStatus === "APPROVED" &&
       receipt.ledgerEntryTypes.includes("CASH_HANDOVER");
     const transferEvidence: EvidenceMissing[] = [];
     if (
+      !receiptStatusAffectsCash(receipt.status) ||
       receipt.pairedTreasuryReceiptStatus !== "COMPLETED" ||
       receipt.pairedTreasuryApprovalStatus !== "APPROVED"
     ) {
@@ -109,16 +104,13 @@ function classify(
     }
     if (!receipt.ledgerEntryTypes.includes("CASH_HANDOVER")) transferEvidence.push("LEDGER_ENTRY");
     return {
-      classification: fullyAccepted
-        ? "VERIFIED_INTERNAL_TRANSFER"
-        : "UNVERIFIED_INTERNAL_TRANSFER",
+      classification: fullyAccepted ? "VERIFIED_INTERNAL_TRANSFER" : "UNVERIFIED_INTERNAL_TRANSFER",
       confidence: fullyAccepted ? "HIGH" : "LOW",
-      rationale:
-        fullyAccepted
-          ? receipt.referenceNumber?.startsWith("CH-")
-            ? "تسليم إغلاق مثبت بإيصال خزينة مكتمل ومعتمد؛ مستبعد من متوقع الدرج كما في تقرير الوردية."
-            : "سحب نقدي داخلي مثبت بإيصال خزينة مكتمل ومعتمد؛ يبقى خارج الدرج ويظهر كسحب تشغيلي."
-          : "يوجد زوج خزينة مطابق بنيوياً لكنه غير مكتمل/غير معتمد؛ يُحافظ على حساب الوردية القائم ولا يُعد إثبات تسوية.",
+      rationale: fullyAccepted
+        ? receipt.referenceNumber?.startsWith("CH-")
+          ? "تسليم إغلاق مثبت بإيصال خزينة مكتمل ومعتمد؛ مستبعد من متوقع الدرج كما في تقرير الوردية."
+          : "سحب نقدي داخلي مثبت بإيصال خزينة مكتمل ومعتمد؛ يبقى خارج الدرج ويظهر كسحب تشغيلي."
+        : "يوجد زوج خزينة مطابق بنيوياً لكنه غير مكتمل/غير معتمد؛ يُحافظ على حساب الوردية القائم ولا يُعد إثبات تسوية.",
       evidenceMissing: transferEvidence,
       duplicateOfReceiptId: null,
     };
@@ -176,8 +168,7 @@ function classify(
     return {
       classification: "MISSING_INTERNAL_TRANSFER",
       confidence: "LOW",
-      rationale:
-        "هذه أول حركة جعلت الرصيد الجاري سالباً؛ نقص التحويل فرضية تشخيصية فقط ولا يُرحّل بلا إثبات.",
+      rationale: "هذه أول حركة جعلت الرصيد الجاري سالباً؛ نقص التحويل فرضية تشخيصية فقط ولا يُرحّل بلا إثبات.",
       evidenceMissing: Array.from(
         new Set<EvidenceMissing>([
           ...evidenceMissing,
@@ -193,24 +184,15 @@ function classify(
   return {
     classification: "UNRESOLVED",
     confidence: "LOW",
-    rationale:
-      "لا تكفي البيانات البنيوية لإثبات أن الدفع من الدرج أو الخزينة أو مال الموظف؛ يلزم مستند خارجي وموافقة.",
+    rationale: "لا تكفي البيانات البنيوية لإثبات أن الدفع من الدرج أو الخزينة أو مال الموظف؛ يلزم مستند خارجي وموافقة.",
     evidenceMissing: Array.from(
-      new Set<EvidenceMissing>([
-        ...evidenceMissing,
-        "EMPLOYEE_DECLARATION",
-        "PHYSICAL_CASH_COUNT",
-        "MANAGER_DECISION",
-      ]),
+      new Set<EvidenceMissing>([...evidenceMissing, "EMPLOYEE_DECLARATION", "PHYSICAL_CASH_COUNT", "MANAGER_DECISION"]),
     ),
     duplicateOfReceiptId: null,
   };
 }
 
-function simulationDelta(
-  receipt: RawRemediationReceipt,
-  selected: RemediationClassification | null,
-) {
+function simulationDelta(receipt: RawRemediationReceipt, selected: RemediationClassification | null) {
   const zero = money("0");
   if (!selected) {
     return {
@@ -223,17 +205,13 @@ function simulationDelta(
   }
   const amount = money(receipt.amount);
   const reversesDrawer =
-    receipt.paymentMethod === "CASH" &&
-    receipt.cashBucket === "DRAWER" &&
+    receiptAffectsDrawerCash(receipt) &&
     !(receipt.pairedTreasuryReceiptId != null && receipt.referenceNumber?.startsWith("CH-"));
   const drawerDelta = reversesDrawer ? amount : zero;
   const treasuryDelta =
-    selected === "TREASURY_PAID" || selected === "MISSING_INTERNAL_TRANSFER"
-      ? amount.negated()
-      : zero;
+    selected === "TREASURY_PAID" || selected === "MISSING_INTERNAL_TRANSFER" ? amount.negated() : zero;
   const employeePayableDelta = selected === "EMPLOYEE_PERSONAL_PAID" ? amount : zero;
-  const expenseDelta =
-    selected === "DUPLICATE_OR_ERROR" && receipt.expense ? amount.negated() : zero;
+  const expenseDelta = selected === "DUPLICATE_OR_ERROR" && receipt.expense ? amount.negated() : zero;
   return {
     selectedClassification: selected,
     drawerDelta: toDbMoney(drawerDelta),
@@ -265,13 +243,12 @@ export function analyzeCashRemediation(
     if (
       receipt.paymentMethod !== "CASH" ||
       receipt.cashBucket !== "DRAWER" ||
+      !receiptStatusAffectsCash(receipt.status) ||
       receipt.pairedTreasuryReceiptId != null ||
       receipt.status === "REVERSED" ||
       receipt.linkedExpenseIds.length > 1
     ) {
-      throw new Error(
-        `الإيصال #${receiptId} لا يقبل محاكاة تسوية: لا يؤثر في سالب الدرج أو أنه تحويل داخلي مثبت`,
-      );
+      throw new Error(`الإيصال #${receiptId} لا يقبل محاكاة تسوية: لا يؤثر في سالب الدرج أو أنه تحويل داخلي مثبت`);
     }
   });
 
@@ -293,16 +270,15 @@ export function analyzeCashRemediation(
 
     for (const receipt of shiftReceipts) {
       const before = running;
-      const affectsDrawer = receipt.paymentMethod === "CASH" && receipt.cashBucket === "DRAWER";
+      const affectsDrawer = receiptAffectsDrawerCash(receipt);
       const excludedClosingHandover =
         affectsDrawer &&
         receipt.direction === "OUT" &&
         receipt.pairedTreasuryReceiptId != null &&
         Boolean(receipt.referenceNumber?.startsWith("CH-"));
       if (affectsDrawer && !excludedClosingHandover) {
-        running = receipt.direction === "IN"
-          ? running.plus(money(receipt.amount))
-          : running.minus(money(receipt.amount));
+        running =
+          receipt.direction === "IN" ? running.plus(money(receipt.amount)) : running.minus(money(receipt.amount));
       }
       runningByReceipt.set(receipt.id, {
         before: toDbMoney(before),
@@ -319,10 +295,7 @@ export function analyzeCashRemediation(
     }
 
     const seenDuplicates = new Map<string, number>();
-    const reversalByReceipt = new Map<
-      number,
-      { verified: boolean; evidenceMissing: EvidenceMissing[] }
-    >();
+    const reversalByReceipt = new Map<number, { verified: boolean; evidenceMissing: EvidenceMissing[] }>();
     for (const receipt of shiftReceipts) {
       const expense = receipt.expense;
       if (!expense || expense.status !== "CANCELLED" || receipt.status !== "REVERSED") continue;
@@ -341,19 +314,16 @@ export function analyzeCashRemediation(
         receipt.ledgerEntryTypes.includes("PAYMENT_OUT") &&
         compensation.ledgerEntryTypes.includes("PAYMENT_IN");
       const reversalEvidence: EvidenceMissing[] = [];
-      if (
-        compensation.status !== "COMPLETED" ||
-        compensation.approvalStatus !== "APPROVED"
-      ) {
+      if (compensation.status !== "COMPLETED" || compensation.approvalStatus !== "APPROVED") {
         reversalEvidence.push("PAYMENT_PROOF", "MANAGER_DECISION");
       }
-      if (
-        !receipt.ledgerEntryTypes.includes("PAYMENT_OUT") ||
-        !compensation.ledgerEntryTypes.includes("PAYMENT_IN")
-      ) {
+      if (!receipt.ledgerEntryTypes.includes("PAYMENT_OUT") || !compensation.ledgerEntryTypes.includes("PAYMENT_IN")) {
         reversalEvidence.push("LEDGER_ENTRY");
       }
-      reversalByReceipt.set(receipt.id, { verified, evidenceMissing: reversalEvidence });
+      reversalByReceipt.set(receipt.id, {
+        verified,
+        evidenceMissing: reversalEvidence,
+      });
     }
     const outflows: CashRemediationOutRow[] = [];
     for (const receipt of shiftReceipts.filter((row) => row.direction === "OUT")) {
@@ -386,10 +356,7 @@ export function analyzeCashRemediation(
         actorName: receipt.createdByName,
         counterpartyName: receipt.counterpartyName ?? receipt.expense?.payee ?? null,
         source: sourceOf(receipt),
-        affectsDrawer:
-          receipt.paymentMethod === "CASH" &&
-          receipt.cashBucket === "DRAWER" &&
-          !excludedClosingHandover,
+        affectsDrawer: receiptAffectsDrawerCash(receipt) && !excludedClosingHandover,
         excludedClosingHandover,
         pairedTreasuryReceiptId: receipt.pairedTreasuryReceiptId,
         pairedTreasuryReceiptStatus: receipt.pairedTreasuryReceiptStatus,
@@ -432,12 +399,10 @@ export function analyzeCashRemediation(
       before: {
         openingBalance: toDbMoney(money(shift.openingBalance)),
         computedExpectedCash: toDbMoney(running),
-        storedExpectedCash:
-          shift.storedExpectedCash == null ? null : toDbMoney(money(shift.storedExpectedCash)),
+        storedExpectedCash: shift.storedExpectedCash == null ? null : toDbMoney(money(shift.storedExpectedCash)),
         countedCash: counted == null ? null : toDbMoney(counted),
         computedVariance: counted == null ? null : toDbMoney(counted.minus(running)),
-        storedVariance:
-          shift.storedVariance == null ? null : toDbMoney(money(shift.storedVariance)),
+        storedVariance: shift.storedVariance == null ? null : toDbMoney(money(shift.storedVariance)),
       },
       afterSimulation: {
         expectedCash: toDbMoney(afterExpected),
@@ -451,9 +416,8 @@ export function analyzeCashRemediation(
     });
   }
 
-  const sumShift = (
-    pick: (shift: CashRemediationShiftReport) => string,
-  ) => shiftReports.reduce((sum, shift) => sum.plus(money(pick(shift))), money("0"));
+  const sumShift = (pick: (shift: CashRemediationShiftReport) => string) =>
+    shiftReports.reduce((sum, shift) => sum.plus(money(pick(shift))), money("0"));
   const { simulations: _simulations, ...reportedFilters } = filters;
   return {
     mode: "DRY_RUN_READ_ONLY",
@@ -470,8 +434,7 @@ export function analyzeCashRemediation(
       negativeShiftCount: shiftReports.filter((shift) => shift.firstNegative != null).length,
       outflowCount: shiftReports.reduce((count, shift) => count + shift.outflows.length, 0),
       unresolvedCount: shiftReports.reduce(
-        (count, shift) =>
-          count + shift.outflows.filter((row) => row.suggestedClassification === "UNRESOLVED").length,
+        (count, shift) => count + shift.outflows.filter((row) => row.suggestedClassification === "UNRESOLVED").length,
         0,
       ),
       beforeExpectedCash: toDbMoney(sumShift((shift) => shift.before.computedExpectedCash)),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyzeCashRemediation } from "../classifier";
+import { receiptStatusAffectsCash } from "../statusPolicy";
 import type {
   CashRemediationFilters,
   RawCashRemediationDataset,
@@ -7,7 +8,10 @@ import type {
   RawRemediationShift,
 } from "../types";
 
-const filters: CashRemediationFilters = { from: "2026-01-01", to: "2026-12-31" };
+const filters: CashRemediationFilters = {
+  from: "2026-01-01",
+  to: "2026-12-31",
+};
 
 function shift(overrides: Partial<RawRemediationShift> = {}): RawRemediationShift {
   return {
@@ -28,10 +32,7 @@ function shift(overrides: Partial<RawRemediationShift> = {}): RawRemediationShif
   };
 }
 
-function receipt(
-  id: number,
-  overrides: Partial<RawRemediationReceipt> = {},
-): RawRemediationReceipt {
+function receipt(id: number, overrides: Partial<RawRemediationReceipt> = {}): RawRemediationReceipt {
   return {
     id,
     shiftId: 1,
@@ -67,6 +68,46 @@ function receipt(
 }
 
 describe("analyzeCashRemediation", () => {
+  it("يوحّد أثر الحالات: COMPLETED وREVERSED فقط؛ PENDING وFAILED صفر", () => {
+    expect(receiptStatusAffectsCash("COMPLETED")).toBe(true);
+    expect(receiptStatusAffectsCash("REVERSED")).toBe(true);
+    expect(receiptStatusAffectsCash("PENDING")).toBe(false);
+    expect(receiptStatusAffectsCash("FAILED")).toBe(false);
+
+    const dataset: RawCashRemediationDataset = {
+      shifts: [shift({ openingBalance: "100.00", countedCash: "70.00" })],
+      receipts: [
+        receipt(1, { amount: "150.00", status: "PENDING" }),
+        receipt(2, { amount: "150.00", status: "FAILED" }),
+        receipt(3, { amount: "30.00", status: "REVERSED" }),
+        receipt(4, { direction: "IN", amount: "500.00", status: "PENDING" }),
+        receipt(5, { direction: "IN", amount: "500.00", status: "FAILED" }),
+      ],
+    };
+    const report = analyzeCashRemediation(dataset, filters);
+    const result = report.shifts[0];
+    expect(result.before.computedExpectedCash).toBe("70.00");
+    expect(result.firstNegative).toBeNull();
+    expect(
+      result.outflows.map((row) => ({
+        id: row.receiptId,
+        before: row.runningBalanceBefore,
+        after: row.runningBalanceAfter,
+        affects: row.affectsDrawer,
+      })),
+    ).toEqual([
+      { id: 1, before: "100.00", after: "100.00", affects: false },
+      { id: 2, before: "100.00", after: "100.00", affects: false },
+      { id: 3, before: "100.00", after: "70.00", affects: true },
+    ]);
+    expect(() =>
+      analyzeCashRemediation(dataset, {
+        ...filters,
+        simulations: [{ receiptId: 1, classification: "DUPLICATE_OR_ERROR" }],
+      }),
+    ).toThrow(/لا يقبل محاكاة تسوية/);
+  });
+
   it("يحسب الرصيد الجاري وأول نقطة سالب ويعرض كل OUT ومصدره", () => {
     const dataset: RawCashRemediationDataset = {
       shifts: [shift()],
@@ -122,7 +163,10 @@ describe("analyzeCashRemediation", () => {
 
   it("يسجل الرصيد الافتتاحي نفسه كأول نقطة سالب", () => {
     const report = analyzeCashRemediation(
-      { shifts: [shift({ openingBalance: "-25.00", countedCash: "0.00" })], receipts: [] },
+      {
+        shifts: [shift({ openingBalance: "-25.00", countedCash: "0.00" })],
+        receipts: [],
+      },
       filters,
     );
     expect(report.shifts[0].firstNegative).toEqual({
@@ -308,8 +352,15 @@ describe("analyzeCashRemediation", () => {
       {
         shifts: [shift({ openingBalance: "100.00" })],
         receipts: [
-          receipt(1, { amount: "10.00", expense: { ...duplicatedExpense, receiptId: 1 } }),
-          receipt(2, { amount: "10.00", expense: duplicatedExpense, linkedExpenseIds: [80] }),
+          receipt(1, {
+            amount: "10.00",
+            expense: { ...duplicatedExpense, receiptId: 1 },
+          }),
+          receipt(2, {
+            amount: "10.00",
+            expense: duplicatedExpense,
+            linkedExpenseIds: [80],
+          }),
         ],
       },
       filters,
@@ -322,7 +373,10 @@ describe("analyzeCashRemediation", () => {
     expect(() =>
       analyzeCashRemediation(
         { shifts: [shift()], receipts: [receipt(1)] },
-        { ...filters, simulations: [{ receiptId: 999, classification: "TREASURY_PAID" }] },
+        {
+          ...filters,
+          simulations: [{ receiptId: 999, classification: "TREASURY_PAID" }],
+        },
       ),
     ).toThrow(/ليس حركة OUT ضمن نطاق التقرير/);
     expect(() =>
@@ -331,7 +385,10 @@ describe("analyzeCashRemediation", () => {
           shifts: [shift()],
           receipts: [receipt(1, { paymentMethod: "CARD", cashBucket: null })],
         },
-        { ...filters, simulations: [{ receiptId: 1, classification: "TREASURY_PAID" }] },
+        {
+          ...filters,
+          simulations: [{ receiptId: 1, classification: "TREASURY_PAID" }],
+        },
       ),
     ).toThrow(/لا يقبل محاكاة تسوية/);
 
@@ -365,7 +422,10 @@ describe("analyzeCashRemediation", () => {
             }),
           ],
         },
-        { ...filters, simulations: [{ receiptId: 3, classification: "DUPLICATE_OR_ERROR" }] },
+        {
+          ...filters,
+          simulations: [{ receiptId: 3, classification: "DUPLICATE_OR_ERROR" }],
+        },
       ),
     ).toThrow(/لا يقبل محاكاة تسوية/);
   });
