@@ -173,7 +173,11 @@ export const voucherRouter = router({
         action: "voucher.cancel",
         entityType: "receipt",
         entityId: input.receiptId,
-        newValue: { voucherNumber: res.voucherNumber, status: res.status },
+        newValue: {
+          voucherNumber: res.voucherNumber,
+          status: res.status,
+          approvalReceiptId: res.approvalReceiptId ?? null,
+        },
       });
       return res;
     }),

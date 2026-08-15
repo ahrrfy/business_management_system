@@ -1,9 +1,10 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { branches, receipts, shifts } from "../../../drizzle/schema";
+import { branches, receipts, shifts, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, toDbMoney, type DecimalInput } from "../money";
+import type { Actor } from "../tx";
 
 export type CashBucket = "DRAWER" | "TREASURY";
 
@@ -41,9 +42,130 @@ export interface CashTransferAvailabilityInput {
   requireFullSourceBalance?: boolean;
 }
 
+/**
+ * إثبات سلطوي غير قابل للإنشاء خارج هذه الوحدة. وجود الرصيد وحده لا يجيز صرفاً
+ * خارجياً من الخزينة؛ يجب أن يثبت المسار، داخل المعاملة نفسها، مالكاً نشطاً
+ * مختلفاً عن كل صانعي الطلب ثم يمرر هذا الإثبات إلى الحارس المالي.
+ */
+export interface ExternalTreasuryDisbursementApproval {
+  readonly kind: "EXTERNAL_DISBURSEMENT";
+  readonly approverId: number;
+  readonly branchIds: readonly number[];
+}
+
+const externalTreasuryApprovals = new WeakSet<object>();
+const approvalTransactions = new WeakMap<object, Tx>();
+
+export interface AuthorizeExternalTreasuryDisbursementInput {
+  actor: Actor;
+  makerUserIds: Array<number | null | undefined>;
+  branchIds: number[];
+  operation: string;
+}
+
+/**
+ * يقفل مصادر الخزينة أولاً بترتيب ثابت، ثم يقرأ حساب المالك FOR SHARE كي تبقى
+ * isActive/isOwner ثابتة حتى COMMIT. الناتج مربوط بهوية tx ولا يعمل في معاملة أخرى.
+ */
+export async function authorizeExternalTreasuryDisbursement(
+  tx: Tx,
+  input: AuthorizeExternalTreasuryDisbursementInput,
+): Promise<ExternalTreasuryDisbursementApproval> {
+  const branchIds = Array.from(new Set(input.branchIds.map(Number))).sort((a, b) => a - b);
+  if (branchIds.length === 0 || branchIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `${input.operation}: لا يوجد مصدر خزينة صالح للاعتماد`,
+    });
+  }
+  for (const branchId of branchIds) {
+    await lockCashSourceForUpdate(tx, { branchId, cashBucket: "TREASURY", shiftId: null });
+  }
+
+  const [owner] = await tx
+    .select({ id: users.id, isActive: users.isActive, isOwner: users.isOwner })
+    .from(users)
+    .where(eq(users.id, input.actor.userId))
+    .for("share")
+    .limit(1);
+  if (!owner?.isActive || !owner.isOwner) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `${input.operation}: التنفيذ النقدي من الخزينة محصور بحساب مالك نشط`,
+    });
+  }
+  const makers = new Set(
+    input.makerUserIds
+      .filter((id): id is number => id != null)
+      .map(Number),
+  );
+  if (makers.has(Number(owner.id))) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `${input.operation}: لا يجوز لصانع الطلب تنفيذ صرفه — يلزم مالك آخر`,
+    });
+  }
+
+  const approval = Object.freeze({
+    kind: "EXTERNAL_DISBURSEMENT" as const,
+    approverId: Number(owner.id),
+    branchIds: Object.freeze(branchIds),
+  });
+  externalTreasuryApprovals.add(approval);
+  approvalTransactions.set(approval, tx);
+  return approval;
+}
+
+/** الحارس الوحيد لصرف خارجي نافذ من TREASURY بعد إثبات المالك/Four-eyes. */
+export async function assertApprovedTreasuryOutAvailable(
+  tx: Tx,
+  input: Omit<CashOutAvailabilityInput, "cashBucket" | "shiftId"> & { branchId: number },
+  approval: ExternalTreasuryDisbursementApproval,
+): Promise<CashOutAvailabilityResult> {
+  if (
+    !externalTreasuryApprovals.has(approval) ||
+    approvalTransactions.get(approval) !== tx ||
+    !approval.branchIds.includes(Number(input.branchId))
+  ) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: `${input.operation}: إثبات اعتماد الصرف الخارجي مفقود أو لا يخص هذه المعاملة/الخزينة`,
+    });
+  }
+  return assertCashOutAvailable(tx, {
+    ...input,
+    cashBucket: "TREASURY",
+    shiftId: null,
+  });
+}
+
 export type NonPhysicalOutClassification =
   | "DEFERRED_APPROVAL"
   | "NON_CASH_METHOD";
+
+/** الاستثناءات المادية الوحيدة من طابور مالك الصرف الخارجي؛ كلها نقل أصل داخلي أو تعويض مقيد بمصدر. */
+export const TREASURY_OUT_EXCEPTION_POLICY = Object.freeze({
+  CASH_TRANSFER_INTERNAL: "INTERNAL_TRANSFER",
+  CASH_DROP_INTERNAL: "INTERNAL_TRANSFER",
+  CASH_HANDOVER_INTERNAL: "INTERNAL_TRANSFER",
+  SHIFT_FLOAT_INTERNAL: "INTERNAL_TRANSFER",
+  EXCHANGE_DEPOSIT_INTERNAL: "INTERNAL_TRANSFER",
+  DIGITAL_WALLET_DEPOSIT_INTERNAL: "INTERNAL_TRANSFER",
+  DELIVERY_REMITTANCE_CLEARING: "INTERNAL_TRANSFER",
+  SALE_CANCELLATION_COMPENSATION: "REVERSAL_COMPENSATION",
+  SALE_RETURN_COMPENSATION: "REVERSAL_COMPENSATION",
+  DIGITAL_CARD_REVERSAL_COMPENSATION: "REVERSAL_COMPENSATION",
+  EXCHANGE_REVERSAL_COMPENSATION: "REVERSAL_COMPENSATION",
+} as const);
+
+export type TreasuryOutExceptionOperation = keyof typeof TREASURY_OUT_EXCEPTION_POLICY;
+
+/** وسم تدقيقي fail-closed: العملية يجب أن تكون مفتاحاً موجوداً حرفياً في السياسة المغلقة أعلاه. */
+export function assertTreasuryOutException(operation: TreasuryOutExceptionOperation): void {
+  if (!(operation in TREASURY_OUT_EXCEPTION_POLICY)) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تصنيف استثناء صرف الخزينة غير معروف" });
+  }
+}
 
 /**
  * استثناء مغلق لإيصال OUT لا يمثّل خروج نقد مادي الآن.

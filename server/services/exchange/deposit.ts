@@ -7,7 +7,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustExchangeBalanceIqd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import { assertCashOutAvailable, assertTreasuryOutException } from "../cash/cashAvailability";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
 
 export interface DepositInput {
@@ -43,6 +43,7 @@ export async function depositToExchange(
     // في الإيداع الديناري ترتيب الأقفال الحاكم: مصدر الخزينة → محفظة الصيرفة → receipt.
     // إيداع الدولار لا يمس خزينة الدينار، فيبقى قفل المحفظة وحده.
     if (input.currency !== "USD") {
+      assertTreasuryOutException("EXCHANGE_DEPOSIT_INTERNAL");
       await assertCashOutAvailable(tx, {
         branchId: input.branchId,
         cashBucket: "TREASURY",

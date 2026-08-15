@@ -47,6 +47,7 @@ import { assertPeriodOpen } from "../periodLockService";
 import { shiftIdForCashTx } from "../shiftService";
 import {
   assertCashOutAvailable,
+  assertTreasuryOutException,
   lockCashSourceForUpdate,
   MATERIALIZED_RECEIPT_STATUSES,
 } from "../cash/cashAvailability";
@@ -494,6 +495,7 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         }
         shiftId = g.shiftId;
         cashBucket = g.cashBucket;
+        if (cashBucket === "TREASURY") assertTreasuryOutException("SALE_CANCELLATION_COMPENSATION");
         await assertCashOutAvailable(tx, {
           branchId: Number(inv.branchId),
           cashBucket,

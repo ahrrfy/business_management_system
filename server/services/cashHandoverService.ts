@@ -14,7 +14,7 @@ import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
-import { assertCashTransferAvailable } from "./cash/cashAvailability";
+import { assertCashTransferAvailable, assertTreasuryOutException } from "./cash/cashAvailability";
 import type { Actor } from "./tx";
 
 export interface HandoverResult {
@@ -76,6 +76,7 @@ export async function settleShiftReturnTx(
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد نقد لإرجاعه للخزينة" });
   }
   const branchId = input.branchId;
+  assertTreasuryOutException("CASH_HANDOVER_INTERNAL");
   await assertCashTransferAvailable(tx, {
     source: { branchId, cashBucket: "DRAWER", shiftId: input.shiftId },
     destination: { branchId, cashBucket: "TREASURY" },

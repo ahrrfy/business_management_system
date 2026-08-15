@@ -16,6 +16,7 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { postEntry } from "./ledgerService";
 import {
   assertCashOutAvailable,
+  assertTreasuryOutException,
   computeDrawerCashBalance,
 } from "./cash/cashAvailability";
 import { utcTodayStart } from "./businessDay";
@@ -122,6 +123,7 @@ export async function openShift(
     // ترتيب الأقفال الحاكم هو مصدر النقد ثم المستند. إدراج الوردية أولاً يأخذ قفل FK مشتركاً
     // على الفرع، فتستطيع معاملتا فتح متزامنتان أن تتعطلا كلتاهما عند محاولة ترقيته إلى X.
     // لذلك نتحقق من تمويل الخزينة ونقفل حسابها قبل إنشاء صف الوردية نفسه.
+    if (opening.gt(0)) assertTreasuryOutException("SHIFT_FLOAT_INTERNAL");
     const treasuryAvailability = opening.gt(0)
       ? await assertCashOutAvailable(tx, {
           branchId: input.branchId,

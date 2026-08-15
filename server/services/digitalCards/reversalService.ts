@@ -31,7 +31,7 @@ import {
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
-import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { assertCashOutAvailable, assertTreasuryOutException, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
@@ -161,6 +161,7 @@ async function refundAndPostReturn(
   },
   actor: Actor,
 ): Promise<number> {
+  assertTreasuryOutException("DIGITAL_CARD_REVERSAL_COMPENSATION");
   await assertCashOutAvailable(tx, {
     branchId: opts.branchId,
     cashBucket: "TREASURY",

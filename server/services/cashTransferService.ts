@@ -12,6 +12,7 @@ import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import {
   assertCashTransferAvailable,
+  assertTreasuryOutException,
   computeTreasuryCashBalance,
 } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
@@ -179,6 +180,7 @@ export async function sendTransfer(
 
     // نقل داخلي بين خزانتين؛ الحارس يقفل المصدر والوجهة بترتيب هوية حتمي
     // قبل أي INSERT ذي FK، ولا يملك confirmNegative أي سلطة على مصدر التمويل.
+    assertTreasuryOutException("CASH_TRANSFER_INTERNAL");
     await assertCashTransferAvailable(tx, {
       source: { branchId: input.fromBranchId, cashBucket: "TREASURY" },
       destination: { branchId: input.toBranchId, cashBucket: "TREASURY" },

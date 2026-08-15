@@ -28,7 +28,7 @@ import {
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { postEntry } from "../ledgerService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import { assertCashOutAvailable, assertTreasuryOutException } from "../cash/cashAvailability";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
@@ -163,6 +163,7 @@ export async function deposit(
     cashBranchHint = Number(preview.branchId);
     assertWalletBranch(cashBranchHint, actor);
     // ترتيب الأقفال الحاكم: مصدر النقد → المحفظة → الإيصال.
+    assertTreasuryOutException("DIGITAL_WALLET_DEPOSIT_INTERNAL");
     await assertCashOutAvailable(tx, {
       branchId: cashBranchHint,
       cashBucket: "TREASURY",

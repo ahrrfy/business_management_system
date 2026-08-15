@@ -23,6 +23,7 @@ import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import {
   assertCashTransferAvailable,
+  assertTreasuryOutException,
   computeDrawerCashBalance,
 } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
@@ -171,6 +172,7 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
   }
 
   // 4. نقل داخلي DRAWER→TREASURY: حارس المصدر المركزي يمنع السحب فوق المتاح.
+  assertTreasuryOutException("CASH_DROP_INTERNAL");
   const availability = await assertCashTransferAvailable(tx, {
     source: { branchId, cashBucket: "DRAWER", shiftId: input.shiftId },
     destination: { branchId, cashBucket: "TREASURY" },

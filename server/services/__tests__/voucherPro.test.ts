@@ -160,6 +160,32 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
 });
 
 describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
+  it("مفتاح إنشاء واحد لا يعيد سنداً بمرجع/طريقة مختلفة ولا يولّد voucherNumber ثانياً", async () => {
+    const first = await createVoucher({
+      voucherType: "PAYMENT",
+      branchId: 1,
+      amount: "10.00",
+      paymentMethod: "TRANSFER",
+      partyType: "OTHER",
+      description: "طلب حتمي",
+      referenceNumber: "DET-REF-A",
+      clientRequestId: "deterministic-voucher-key",
+    }, managerActor);
+    await expect(createVoucher({
+      voucherType: "PAYMENT",
+      branchId: 1,
+      amount: "10.00",
+      paymentMethod: "TRANSFER",
+      partyType: "OTHER",
+      description: "طلب حتمي",
+      referenceNumber: "DET-REF-B",
+      clientRequestId: "deterministic-voucher-key",
+    }, managerActor)).rejects.toMatchObject({ code: "CONFLICT" });
+    const rows = await db().select().from(s.receipts);
+    expect(rows).toHaveLength(2); // تمويل الخزينة + طلب واحد فقط
+    expect(rows.filter((row) => row.voucherNumber === first.voucherNumber)).toHaveLength(1);
+  });
+
   it("مبلغ ≥ عَتبة الموافقة ⇒ PENDING_APPROVAL بلا قَيد ولا تَغيير رصيد", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00", // > ١.٠٠٠.٠٠٠
@@ -309,6 +335,27 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(replay.replayed).toBe(true);
     expect(replay.signatureHash).toBe(first.signatureHash);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+  });
+
+  it("فشلٌ بعد تحديث السند وإدراج القيد يرجع المعاملة كاملة ويبقي الطلب معلّقاً", async () => {
+    await db().update(s.suppliers).set({ currentBalance: "-9999999999999.99" }).where(eq(s.suppliers.id, 1));
+    const request = await createVoucher({
+      voucherType: "PAYMENT",
+      branchId: 1,
+      amount: "1.00",
+      paymentMethod: "CASH",
+      partyType: "SUPPLIER",
+      partyId: 1,
+      description: "اختبار rollback بعد القيد",
+    }, managerActor);
+
+    await expect(approveVoucher(request.receiptId, adminActor)).rejects.toBeTruthy();
+    const [stored] = await db().select().from(s.receipts).where(eq(s.receipts.id, request.receiptId));
+    expect(stored).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null, approvedBy: null });
+    expect(stored.signatureHash).toBeNull();
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    const [supplier] = await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1));
+    expect(supplier.currentBalance).toBe("-9999999999999.99");
   });
 });
 

@@ -1,15 +1,15 @@
 // إنشاء أصل: ترقيم AST-#### + قيد اقتناء (AP لمورّد أو نقد خزينة) + عهدة ابتدائية اختيارية.
 import { desc, eq } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { assetCustodyLog, branches, employees, fixedAssets, kioskDevices, receipts } from "../../../drizzle/schema";
+import { assetCustodyLog, branches, employees, fixedAssets, kioskDevices } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { money, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { companyBranchScope, resolveTargetBranch } from "../companyBranchScope";
 import { getAsset } from "./queries";
+import { createSystemPaymentRequestTx } from "../voucher/create";
 
 /** الرمز التالي AST-#### — قراءة مرتّبة تحت قفل FOR UPDATE تُضيّق السباق، وقيد UNIQUE هو الحارس النهائي. */
 async function nextAssetCode(tx: Tx): Promise<string> {
@@ -110,21 +110,17 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
             message: "شراء أصل نقداً يتطلب فرعاً محدداً لخزينة الصرف",
           });
         }
-        await assertCashOutAvailable(tx, {
+        await createSystemPaymentRequestTx(tx, {
           branchId: acqBranch,
-          cashBucket: "TREASURY",
-          amount: value,
-          operation: "شراء الأصل نقداً",
-        });
-        const rRes = await tx.insert(receipts).values({
-          branchId: acqBranch, cashBucket: "TREASURY", direction: "OUT",
-          amount: toDbMoney(value), paymentMethod: "CASH", status: "COMPLETED", createdBy: actor.userId,
-        });
-        const receiptId = extractInsertId(rRes);
-        await postEntry(tx, {
-          entryType: "PAYMENT_OUT", branchId: acqBranch, receiptId, amount: value, entryDate: acqDate,
-          dedupeKey: `ASSET_ACQ:${newId}`, notes: `اقتناء أصل ${code} (نقدي)`,
-        });
+          amount: toDbMoney(value),
+          paymentMethod: "CASH",
+          partyType: "OTHER",
+          counterpartyName: input.name,
+          description: `اقتناء أصل ${code} (طلب دفع نقدي)`,
+          referenceNumber: `ASSET-ACQ-${newId}`,
+          voucherDate: input.purchaseDate,
+          clientRequestId: `asset-acquisition-${newId}`,
+        }, actor, { kind: "ASSET_ACQUISITION", assetId: newId });
       }
     }
 

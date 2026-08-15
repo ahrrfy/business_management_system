@@ -7,7 +7,10 @@ import { accountingEntries, commissionRuns, employees, payrollItems, payrollRuns
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { restoreAdvanceSettlementsTx, settleAdvancesOnPayTx } from "../advancesService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import {
+  assertApprovedTreasuryOutAvailable,
+  authorizeExternalTreasuryDisbursement,
+} from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
@@ -87,13 +90,33 @@ async function nextDedupeKey(tx: Tx, base: string): Promise<string> {
  */
 export async function payRun(id: number, actor: Actor) {
   return withTx(async (tx) => {
+    // معاينة بلا قفل لتحديد خزائن الدفع. الترتيب العالمي: source branches → owner SHARE
+    // → payroll run → receipts. بعد قفل المسيّر نعيد كل حقائق الأعمال ونرفض أي انجراف.
+    const [runPreview] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, id)).limit(1);
+    if (!runPreview) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
+    const previewItems = await tx
+      .select({ ...getTableColumns(payrollItems), empBranchId: employees.branchId })
+      .from(payrollItems)
+      .leftJoin(employees, eq(payrollItems.employeeId, employees.id))
+      .where(eq(payrollItems.runId, id))
+      .orderBy(payrollItems.employeeId);
+    const previewBranchIds = Array.from(new Set(previewItems
+      .filter((item) => money(item.net).gt(0))
+      .map((item) => item.empBranchId ?? runPreview.branchId ?? null)
+      .filter((branchId): branchId is number => branchId != null)
+      .map(Number)));
+    const disbursementApproval = await authorizeExternalTreasuryDisbursement(tx, {
+      actor,
+      makerUserIds: [runPreview.createdBy],
+      branchIds: previewBranchIds,
+      operation: "صرف مسيّر الرواتب",
+    });
+
     const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, id)).for("update").limit(1);
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
     if (run.status !== "approved") throw new TRPCError({ code: "BAD_REQUEST", message: "يُدفع المسيّر بعد اعتماده فقط" });
-    // SOD-01 (فصل المهام): الدافع يجب أن يختلف عن مُولِّد المسيّر — يَمنع دورة إنشاء→دفع منفردة
-    // (المُعتمِد المستقلّ مفروض أصلاً في approveRun؛ هذا حارس إضافي على الصرف النقدي).
-    if (run.createdBy != null && Number(run.createdBy) === actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز صرف مسيّر أنشأته بنفسك — يلزم دافع آخر (فصل المهام)." });
+    if (Number(run.createdBy ?? 0) !== Number(runPreview.createdBy ?? 0)) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر صانع مسيّر الرواتب أثناء اعتماد الدفع — أعد المحاولة" });
     }
 
     // نجلب فرع كل موظف (employees.branchId) مع البند ⇒ يُرحَّل مصروف راتبه بفرعه هو.
@@ -134,12 +157,11 @@ export async function payRun(id: number, actor: Actor) {
     for (const [branchId, amount] of Array.from(treasuryByBranch.entries()).sort(
       ([left], [right]) => left - right,
     )) {
-      await assertCashOutAvailable(tx, {
+      await assertApprovedTreasuryOutAvailable(tx, {
         branchId,
-        cashBucket: "TREASURY",
         amount,
         operation: "صرف مسيّر الرواتب",
-      });
+      }, disbursementApproval);
     }
 
     // advances (بند 12ج): هل هذا **أول** دفع لهذا المسيّر أم إعادة دفع بعد عكس؟ تسوية السلف

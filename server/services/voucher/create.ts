@@ -16,6 +16,48 @@ import { type Actor, withTx } from "../tx";
 import { computeSignature, nextVoucherNumber, validateCategory } from "./helpers";
 import type { VoucherInput, VoucherResult } from "./types";
 
+const SYSTEM_REQUEST_PREFIX = "@SYSTEM_PAYMENT_REQUEST:";
+const SYSTEM_REFERENCE_PREFIXES = ["ASSET-ACQ-", "ASSET-REACQ-", "ASSET-MAINT-", "PO-PAY-", "SHIP-", "CANCEL-VCH-"] as const;
+
+export function isSystemPaymentReference(reference: string | null | undefined): boolean {
+  return !!reference && SYSTEM_REFERENCE_PREFIXES.some((prefix) => reference.startsWith(prefix));
+}
+
+export type SystemPaymentRequest =
+  | { kind: "ASSET_ACQUISITION"; assetId: number }
+  | { kind: "ASSET_REACQUISITION"; assetId: number; sequence: number }
+  | { kind: "ASSET_MAINTENANCE"; assetId: number; maintenanceId: number }
+  | {
+      kind: "PURCHASE_SUPPLIER";
+      purchaseOrderId: number;
+      requestToken: string;
+      expectedAmount: string;
+      sourceTotal: string;
+    }
+  | {
+      kind: "PURCHASE_SHIPPING";
+      purchaseOrderId: number;
+      requestToken: string;
+      expectedAmount: string;
+      sourceShippingTotal: string;
+    }
+  | { kind: "VOUCHER_CANCELLATION"; originalReceiptId: number; originalCreatorId: number | null };
+
+function encodeSystemPaymentRequest(request: SystemPaymentRequest): string {
+  return `${SYSTEM_REQUEST_PREFIX}${JSON.stringify(request)}`;
+}
+
+export function parseSystemPaymentRequest(note: string | null | undefined): SystemPaymentRequest | null {
+  if (!note?.startsWith(SYSTEM_REQUEST_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(note.slice(SYSTEM_REQUEST_PREFIX.length)) as SystemPaymentRequest;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.kind !== "string") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 /** يُنشئ سند قبض (IN) أو صرف (OUT) ذريّاً.
  *
  * Maker-Checker: كل سند صرف يُسجَّل بـapprovalStatus=PENDING_APPROVAL، بصرف النظر
@@ -23,7 +65,12 @@ import type { VoucherInput, VoucherResult } from "./types";
  * من مالك نشط مختلف عبر approveVoucher() هو منفذ الأثر المالي الوحيد (SOD).
  * سند القبض يحتفظ بسياسة الاعتماد القائمة.
  */
-export async function createVoucherTx(tx: Tx, input: VoucherInput, actor: Actor): Promise<VoucherResult> {
+export async function createVoucherTx(
+  tx: Tx,
+  input: VoucherInput,
+  actor: Actor,
+  options?: { systemRequest?: SystemPaymentRequest },
+): Promise<VoucherResult> {
     if (input.paymentMethod === "EXCHANGE") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -52,11 +99,20 @@ export async function createVoucherTx(tx: Tx, input: VoucherInput, actor: Actor)
           const requestedPartyId = input.partyType === "OTHER" ? null : (input.partyId ?? null);
           const storedInvoiceId = r.invoiceId != null ? Number(r.invoiceId) : null;
           const requestedInvoiceId = input.invoiceId ?? null;
+          const requestedDirection = input.voucherType === "RECEIPT" ? "IN" : "OUT";
+          const requestedReference = input.referenceNumber?.trim() || null;
+          const requestedSystemNote = options?.systemRequest
+            ? encodeSystemPaymentRequest(options.systemRequest)
+            : null;
           if (
             Number(r.branchId) !== Number(input.branchId) ||
+            r.direction !== requestedDirection ||
+            r.paymentMethod !== input.paymentMethod ||
             (r.partyType ?? null) !== (input.partyType ?? null) ||
             storedPartyId !== requestedPartyId ||
             storedInvoiceId !== requestedInvoiceId ||
+            (r.referenceNumber ?? null) !== requestedReference ||
+            (requestedSystemNote != null && r.internalNote !== requestedSystemNote) ||
             money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)
           ) {
             throw new TRPCError({
@@ -85,6 +141,12 @@ export async function createVoucherTx(tx: Tx, input: VoucherInput, actor: Actor)
     const description = input.description?.trim();
     if (!description) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "وصف السند مطلوب" });
+    }
+    if (!options?.systemRequest && input.internalNote?.startsWith(SYSTEM_REQUEST_PREFIX)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "بادئة الملاحظات النظامية محجوزة" });
+    }
+    if (!options?.systemRequest && isSystemPaymentReference(input.referenceNumber)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع السند النظامي محجوز" });
     }
     // تَحقّقات الإلزام المَشروط (vouchers-pro):
     if (input.paymentMethod === "TRANSFER" && !input.referenceNumber?.trim()) {
@@ -208,7 +270,7 @@ export async function createVoucherTx(tx: Tx, input: VoucherInput, actor: Actor)
       referenceNumber: input.referenceNumber?.trim() || null,
       checkNumber: input.checkNumber?.trim() || null,
       cardLastFour: input.cardLastFour?.trim() || null,
-      status: "COMPLETED",
+      status: needsApproval ? "PENDING" : "COMPLETED",
       voucherNumber,
       partyType: input.partyType,
       partyId: input.partyType === "OTHER" ? null : (input.partyId ?? null),
@@ -219,7 +281,9 @@ export async function createVoucherTx(tx: Tx, input: VoucherInput, actor: Actor)
       counterpartyName: input.counterpartyName?.trim() || null,
       voucherDate: new Date(voucherDate),
       attachmentUrl: input.attachmentUrl?.trim() || null,
-      internalNote: input.internalNote?.trim() || null,
+      internalNote: options?.systemRequest
+        ? encodeSystemPaymentRequest(options.systemRequest)
+        : (input.internalNote?.trim() || null),
       approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
     });
     const receiptId = extractInsertId(rRes);
@@ -270,6 +334,16 @@ export async function createVoucherTx(tx: Tx, input: VoucherInput, actor: Actor)
       direction,
       approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
     };
+}
+
+/** طلب دفع نظامي يعيد استعمال عقد السند الواحد: معلّق دائماً وبلا أثر حتى اعتماد مالك آخر. */
+export async function createSystemPaymentRequestTx(
+  tx: Tx,
+  input: Omit<VoucherInput, "voucherType">,
+  actor: Actor,
+  request: SystemPaymentRequest,
+): Promise<VoucherResult> {
+  return createVoucherTx(tx, { ...input, voucherType: "PAYMENT" }, actor, { systemRequest: request });
 }
 
 export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {

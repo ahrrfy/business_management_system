@@ -1,16 +1,17 @@
 // تعديل بيانات أصل قائم (لا يشمل العهدة/الحالة/الاستبعاد — لها مساراتها).
 import { TRPCError } from "@trpc/server";
-import { eq, like, sql } from "drizzle-orm";
-import { accountingEntries, branches, employees, fixedAssets, kioskDevices, receipts } from "../../../drizzle/schema";
+import { and, desc, eq, like, or, sql } from "drizzle-orm";
+import { accountingEntries, employees, fixedAssets, kioskDevices, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { money, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { companyBranchScope, resolveTargetBranch } from "../companyBranchScope";
 import { computeDepreciation } from "./depreciation";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
+import { createSystemPaymentRequestTx, parseSystemPaymentRequest } from "../voucher/create";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 
 /** تعديل بيانات أصل قائم (لا يشمل العهدة/الحالة/الاستبعاد — لها مساراتها). */
 export interface UpdateAssetInput {
@@ -34,7 +35,27 @@ export async function updateAsset(id: number, input: UpdateAssetInput, actor: Ac
   if (!(input.usefulLifeYears > 0)) throw new Error("العمر الإنتاجي يجب أن يكون أكبر من صفر");
   const scope = companyBranchScope(actor);
   await withTx(async (tx) => {
+    const previewConds = [eq(fixedAssets.id, id)];
+    if (scope.branchId != null) previewConds.push(eq(fixedAssets.branchId, scope.branchId));
+    const [preview] = await tx
+      .select({ branchId: fixedAssets.branchId })
+      .from(fixedAssets)
+      .where(and(...previewConds))
+      .limit(1);
+    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "الأصل غير موجود" });
+    const previewOldBranchId = preview.branchId == null ? null : Number(preview.branchId);
+    const previewTargetBranchId = resolveTargetBranch(
+      scope,
+      input.branchId !== undefined ? input.branchId : previewOldBranchId,
+      { required: false },
+    );
+    for (const branchId of Array.from(new Set([previewOldBranchId, previewTargetBranchId].filter((v): v is number => v != null))).sort((x, y) => x - y)) {
+      await lockCashSourceForUpdate(tx, { branchId, cashBucket: "TREASURY", shiftId: null });
+    }
     const a = await loadForUpdate(tx, id, scope);
+    if ((a.branchId == null ? null : Number(a.branchId)) !== previewOldBranchId) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الأصل أثناء التعديل — أعد المحاولة" });
+    }
     const targetBranchId = resolveTargetBranch(
       scope,
       input.branchId !== undefined ? input.branchId : (a.branchId == null ? null : Number(a.branchId)),
@@ -42,14 +63,8 @@ export async function updateAsset(id: number, input: UpdateAssetInput, actor: Ac
     );
     const oldBranchId = a.branchId == null ? null : Number(a.branchId);
     const branchChanged = oldBranchId !== targetBranchId;
-    if (targetBranchId != null) {
-      const [branch] = await tx
-        .select({ id: branches.id })
-        .from(branches)
-        .where(eq(branches.id, targetBranchId))
-        .for("update")
-        .limit(1);
-      if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
+    if (targetBranchId !== previewTargetBranchId) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر الفرع الهدف أثناء التعديل — أعد المحاولة" });
     }
     if (branchChanged && a.custodianId != null) {
       const [custodian] = await tx
@@ -93,12 +108,49 @@ export async function updateAsset(id: number, input: UpdateAssetInput, actor: Ac
 
     if (financiallyChanged) {
       const uid = actor.userId;
+      let oldCashWasPaid = oldSup == null;
+      if (oldSup == null && oldVal.gt(0)) {
+        const [latestCashRequest] = await tx
+          .select()
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.direction, "OUT"),
+              or(
+                eq(receipts.referenceNumber, `ASSET-ACQ-${id}`),
+                like(receipts.referenceNumber, `ASSET-REACQ-${id}-%`),
+              ),
+            ),
+          )
+          .orderBy(desc(receipts.id))
+          .for("update")
+          .limit(1);
+        const systemRequest = parseSystemPaymentRequest(latestCashRequest?.internalNote);
+        if (
+          latestCashRequest &&
+          (systemRequest?.kind === "ASSET_ACQUISITION" || systemRequest?.kind === "ASSET_REACQUISITION") &&
+          systemRequest.assetId === id
+        ) {
+          oldCashWasPaid =
+            latestCashRequest.status === "COMPLETED" &&
+            latestCashRequest.approvalStatus === "APPROVED";
+          if (latestCashRequest.approvalStatus === "PENDING_APPROVAL") {
+            await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, Number(latestCashRequest.id)));
+          } else if (oldCashWasPaid) {
+            await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, Number(latestCashRequest.id)));
+          }
+        }
+      }
       // لاحقة فريدة لكل تعديل (تفادي اصطدام uq_entry_dedupe عند تعديلٍ ثانٍ لنفس الأصل).
-      const prior = await tx
+      const priorLedger = await tx
         .select({ c: sql<number>`COUNT(*)` })
         .from(accountingEntries)
         .where(like(accountingEntries.dedupeKey, `ASSET_REACQ:${id}:%`));
-      const seq = Number(prior[0]?.c ?? 0) + 1;
+      const priorCashRequests = await tx
+        .select({ c: sql<number>`COUNT(*)` })
+        .from(receipts)
+        .where(like(receipts.referenceNumber, `ASSET-REACQ-${id}-%`));
+      const seq = Number(priorLedger[0]?.c ?? 0) + Number(priorCashRequests[0]?.c ?? 0) + 1;
 
       // (١) عكس أثر الاقتناء القديم.
       if (oldVal.gt(0)) {
@@ -109,7 +161,7 @@ export async function updateAsset(id: number, input: UpdateAssetInput, actor: Ac
             cost: oldVal.neg(), amount: oldVal.neg(),
             dedupeKey: `ASSET_ACQREV:${id}:${seq}`, notes: `عكس اقتناء أصل ${a.code ?? id} (تعديل)`,
           });
-        } else {
+        } else if (oldCashWasPaid) {
           if (oldBranchId == null) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
@@ -144,23 +196,17 @@ export async function updateAsset(id: number, input: UpdateAssetInput, actor: Ac
               message: "إعادة اقتناء الأصل نقداً تتطلب فرعاً محدداً لخزينة الصرف",
             });
           }
-          // العكس النقدي القديم (إن وُجد) كُتب أولاً داخل المعاملة؛ لذلك الحارس يرى
-          // الرصيد الحالي الحقيقي ويمنع supplier→cash غير الممول بلا رفض cash→cash ممول بصافيه.
-          await assertCashOutAvailable(tx, {
+          await createSystemPaymentRequestTx(tx, {
             branchId: targetBranchId,
-            cashBucket: "TREASURY",
-            amount: newVal,
-            operation: "إعادة اقتناء الأصل نقداً",
-          });
-          const rRes = await tx.insert(receipts).values({
-            branchId: targetBranchId, cashBucket: "TREASURY", direction: "OUT",
-            amount: toDbMoney(newVal), paymentMethod: "CASH", status: "COMPLETED",
-            approvalStatus: "APPROVED", createdBy: uid,
-          });
-          await postEntry(tx, {
-            entryType: "PAYMENT_OUT", branchId: targetBranchId, receiptId: extractInsertId(rRes), amount: newVal,
-            dedupeKey: `ASSET_REACQ:${id}:${seq}`, notes: `اقتناء أصل نقدي ${a.code ?? id} بعد تعديل`,
-          });
+            amount: toDbMoney(newVal),
+            paymentMethod: "CASH",
+            partyType: "OTHER",
+            counterpartyName: input.name,
+            description: `إعادة اقتناء أصل ${a.code ?? id} بعد تعديل (طلب دفع نقدي)`,
+            referenceNumber: `ASSET-REACQ-${id}-${seq}`,
+            voucherDate: input.purchaseDate,
+            clientRequestId: `asset-reacquisition-${id}-${seq}`,
+          }, actor, { kind: "ASSET_REACQUISITION", assetId: id, sequence: seq });
         }
       }
     }

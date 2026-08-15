@@ -32,7 +32,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
   it("FA-02: ربح بيع أصل يَظهر في قائمة الأرباح والخسائر ويَرفع صافي الربح", async () => {
     // شراء وتصرّف في نفس اليوم ⇒ إهلاك صفر ⇒ NBV = قيمة الشراء ⇒ الربح = المتحصّل − الشراء.
     const a = await createAsset(
-      { name: "طابعة", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "1000000", usefulLifeYears: 5 },
+      { name: "طابعة", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "1000000", usefulLifeYears: 5, branchId: 1 },
       ACTOR,
     );
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-06-01", reason: "بيع", value: "1200000" }, ACTOR);
@@ -46,7 +46,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
 
   it("FA-02: خسارة شطب أصل (بلا متحصّل) تَظهر مصروفاً وتَخفض صافي الربح", async () => {
     const a = await createAsset(
-      { name: "كرسي", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "500000", usefulLifeYears: 5 },
+      { name: "كرسي", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "500000", usefulLifeYears: 5, branchId: 1 },
       ACTOR,
     );
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-06-01", reason: "تلف", value: "0" }, ACTOR); // خسارة = −NBV
@@ -59,7 +59,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
 
   it("FI-01: اقتناء أصل على ذمّة المورد يَظهر في كشف الحساب ويتّزن مع الرصيد الحالي", async () => {
     await createAsset(
-      { name: "خادم", category: "computers", purchaseDate: "2024-03-01", purchaseValue: "600000", usefulLifeYears: 5, supplierId: 1 },
+      { name: "خادم", category: "computers", purchaseDate: "2024-03-01", purchaseValue: "600000", usefulLifeYears: 5, supplierId: 1, branchId: 1 },
       ACTOR,
     );
 
@@ -77,7 +77,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
 
   it("FI-02: الإهلاك الشهري يُرحّل مصروفاً + يُحدّث المتراكم + P&L + ميزانية NBV + idempotent", async () => {
     const a = await createAsset(
-      { name: "آلة", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1200000", salvageValue: "0", usefulLifeYears: 5, depreciationMethod: "sl" },
+      { name: "آلة", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1200000", salvageValue: "0", usefulLifeYears: 5, depreciationMethod: "sl", branchId: 1 },
       ACTOR,
     );
     // المتوقَّع التحليليّ حتى نهاية يونيو ٢٠٢٤ (نفس asOf الذي تَستعمله الخدمة: أوّل التالي).
@@ -122,7 +122,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
 
   it("FI-02: التصرّف بلا ترحيل شهري يُرحّل إهلاك catch-up حتى التاريخ (لا تسرّب من حقوق الملكية)", async () => {
     const a = await createAsset(
-      { name: "معدّة", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5, depreciationMethod: "sl" },
+      { name: "معدّة", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5, depreciationMethod: "sl", branchId: 1 },
       ACTOR,
     );
     // لم يُشغَّل postMonthlyDepreciation ⇒ المتراكم المخزَّن 0. التصرّف عند 2024-01-01.
@@ -146,7 +146,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
 
   it("#2/#3 (تدقيق التثبيت): أصل مشطوب (retired) يُستبعَد من ميزانية الأصول ولا يُهلَك بعد الشطب", async () => {
     const a = await createAsset(
-      { name: "جهاز مشطوب", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "800000", usefulLifeYears: 5 },
+      { name: "جهاز مشطوب", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "800000", usefulLifeYears: 5, branchId: 1 },
       ACTOR,
     );
     // شطب في نفس يوم الشراء (NBV = قيمة الشراء) ⇒ خسارة = −800000 وstatus=retired.

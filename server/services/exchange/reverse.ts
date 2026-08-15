@@ -9,7 +9,7 @@ import type { Tx } from "../../db";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
-import { assertCashOutAvailable, assertNonPhysicalOutReceipt, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, toDbRate } from "./helpers";
 
@@ -235,6 +235,7 @@ export async function reverseExchangeTransaction(
         const compensationDirection = orig.direction === "OUT" ? "IN" : "OUT";
         if (compensationDirection === "OUT" && orig.paymentMethod === "CASH") {
           if (orig.branchId == null) throw new TRPCError({ code: "CONFLICT", message: "إيصال الصيرفة النقدي بلا فرع" });
+          assertTreasuryOutException("EXCHANGE_REVERSAL_COMPENSATION");
           await assertCashOutAvailable(tx, {
             branchId: Number(orig.branchId), cashBucket: "TREASURY", shiftId: null,
             amount: orig.amount, operation: "عكس قبض عملية الصيرفة",

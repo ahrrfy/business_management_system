@@ -71,6 +71,7 @@ async function seedBase() {
       role: "manager",
       loginMethod: "local",
       branchId: 1,
+      isOwner: true,
     },
   ]);
   await db().insert(s.suppliers).values({
@@ -305,10 +306,11 @@ describe("cash-nonnegative-core — ترتيب الأقفال وعزل الفر�
 
     const [spent, cancelled] = await Promise.allSettled([directOut, cancellation]);
     expect(spent.status).toBe("fulfilled");
-    expect(cancelled.status).toBe("rejected");
-    if (cancelled.status === "rejected") {
-      expect(cancelled.reason).toMatchObject({ code: "PRECONDITION_FAILED" });
-      expect(String(cancelled.reason?.message ?? "")).not.toMatch(/DEADLOCK|Deadlock|ER_LOCK_DEADLOCK/);
+    expect(cancelled.status).toBe("fulfilled");
+    if (cancelled.status === "fulfilled") {
+      expect(cancelled.value).toMatchObject({ status: "PENDING_APPROVAL" });
+      await expect(approveVoucher(Number(cancelled.value.approvalReceiptId), manager))
+        .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     }
     await db().transaction(async (tx) => {
       expect((await computeTreasuryCashBalance(tx, 1)).toFixed(2)).toBe("0.00");
@@ -516,7 +518,8 @@ describe("cash-nonnegative-core — دلالة REVERSED موحّدة", () => {
       partyType: "SUPPLIER", partyId: 1, description: "قبض سيُعكس",
       clientRequestId: "treasury-reversed-zero",
     }, admin);
-    await cancelVoucher(created.receiptId, admin);
+    const cancellation = await cancelVoucher(created.receiptId, admin);
+    await approveVoucher(Number(cancellation.approvalReceiptId), manager);
 
     await db().transaction(async (tx) => {
       expect((await computeTreasuryCashBalance(tx, 1)).toFixed(2)).toBe("0.00");
@@ -552,7 +555,8 @@ describe("cash-nonnegative-core — دلالة REVERSED موحّدة", () => {
     }, admin);
     await db().update(s.receipts).set({ createdAt: yesterday, voucherDate: yesterdayDay }).where(eq(s.receipts.id, created.receiptId));
     await db().update(s.accountingEntries).set({ entryDate: yesterday }).where(eq(s.accountingEntries.receiptId, created.receiptId));
-    await cancelVoucher(created.receiptId, admin);
+    const cancellation = await cancelVoucher(created.receiptId, admin);
+    await approveVoucher(Number(cancellation.approvalReceiptId), manager);
 
     const flow = await getCashFlowSeries({ days: 2, branchId: 1 }, { scopedBranchId: 1, role: "admin", userId: 1 });
     expect(flow.find((row) => row.day === yesterdayDay)).toMatchObject({ inflow: "100.00", outflow: "0.00", net: "100.00" });
@@ -631,7 +635,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       !receiptInOnlyWriters.includes(file) && !unreachableOutWriters.includes(file))) {
       const source = readFileSync(path.join(root, relative), "utf8");
       expect(
-        /assertCashOutAvailable\s*\(|assertCashTransferAvailable\s*\(|assertNonPhysicalOutReceipt\s*\(/.test(source),
+        /createSystemPaymentRequestTx\s*\(|assertApprovedTreasuryOutAvailable\s*\(|assertCashOutAvailable\s*\(|assertCashTransferAvailable\s*\(|assertNonPhysicalOutReceipt\s*\(/.test(source),
         `${relative} must guard/classify OUT in the same service`,
       ).toBe(true);
     }
@@ -639,9 +643,45 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
 
   it("منفذ اعتماد السند هو باب التنفيذ الوحيد ويستخدم الحارس المركزي", () => {
     const source = readFileSync(path.resolve(process.cwd(), "server/services/voucher/approval.ts"), "utf8");
-    expect(source).toMatch(/await\s+assertCashOutAvailable\s*\(/);
+    expect(source).toMatch(/await\s+authorizeExternalTreasuryDisbursement\s*\(/);
+    expect(source).toMatch(/await\s+assertApprovedTreasuryOutAvailable\s*\(/);
     expect(source).toMatch(/cashBucket\s*=\s*"TREASURY"/);
     expect(source).toMatch(/shiftId\s*=\s*null/);
+  });
+
+  it("كل صرف TREASURY خارجي مباشر يثبت مالكاً مختلفاً أو يعلن استثناءً مغلقاً", () => {
+    const root = path.resolve(process.cwd(), "server/services");
+    const externalLifecycleFiles = [
+      "assets/create.ts",
+      "assets/update.ts",
+      "assets/lifecycle.ts",
+      "payroll/lifecycle.ts",
+      "purchase/receive.ts",
+      "voucher/approval.ts",
+    ];
+    for (const relative of externalLifecycleFiles) {
+      const source = readFileSync(path.join(root, relative), "utf8");
+      expect(
+        /createSystemPaymentRequestTx\s*\(|authorizeExternalTreasuryDisbursement\s*\(/.test(source),
+        `${relative} must defer external Treasury OUT or prove owner approval`,
+      ).toBe(true);
+    }
+
+    const exceptionFiles = new Map([
+      ["cashTransferService.ts", "CASH_TRANSFER_INTERNAL"],
+      ["cashDropService.ts", "CASH_DROP_INTERNAL"],
+      ["cashHandoverService.ts", "CASH_HANDOVER_INTERNAL"],
+      ["shiftService.ts", "SHIFT_FLOAT_INTERNAL"],
+      ["exchange/deposit.ts", "EXCHANGE_DEPOSIT_INTERNAL"],
+      ["digitalCards/walletOpsService.ts", "DIGITAL_WALLET_DEPOSIT_INTERNAL"],
+      ["sale/cancel.ts", "SALE_CANCELLATION_COMPENSATION"],
+      ["digitalCards/reversalService.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
+      ["exchange/reverse.ts", "EXCHANGE_REVERSAL_COMPENSATION"],
+    ]);
+    for (const [relative, key] of exceptionFiles) {
+      const source = readFileSync(path.join(root, relative), "utf8");
+      expect(source).toContain(`assertTreasuryOutException("${key}")`);
+    }
   });
 
   it("تصحيح البيع المدفوع مؤجل fail-closed ولا يترك باب CASH OUT خامداً", () => {
