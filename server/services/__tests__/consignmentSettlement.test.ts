@@ -19,8 +19,19 @@ async function seedBase() {
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await db().insert(s.users).values([
     { id: 1, openId: "m1", name: "مدير", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "m2", name: "مدير٢", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "m2", name: "مدير٢", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "10000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-CONSIGNMENT-SETTLEMENT-FUND",
+    createdBy: 2,
+  });
 }
 async function mkConsignorWithBalance(bal: string) {
   return (await createSupplier({ name: "أ. حيدر", supplierKind: "CONSIGNOR", openingBalance: bal, openingBalanceDirection: "OWED_BY_US" }, mgr)).supplierId;

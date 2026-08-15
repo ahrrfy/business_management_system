@@ -58,12 +58,23 @@ async function seedBase() {
   await d.insert(s.branches).values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
     { id: 1, openId: "t-admin", name: "محتسِب", role: "admin", branchId: 1 },
-    { id: 2, openId: "t-manager", name: "معتمِد", role: "manager", branchId: 1 },
+    { id: 2, openId: "t-manager", name: "معتمِد", role: "manager", branchId: 1, isOwner: true },
     { id: 3, openId: "t-seller", name: "بائع", role: "cashier", branchId: 1 },
   ]);
   await d.insert(s.employees).values([
     { id: 11, userId: 3, branchId: 1, firstName: "علي", lastName: "البائع", payType: "monthly", salary: "1000000", allowances: "0" },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "2000000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-COMMISSION-PAYROLL-FUND",
+    createdBy: 2,
+  });
 }
 
 /** خطة 2% فوق 100% + هدف 5,000,000 + بيع 5,200,000 في يونيو ⇒ عمولة 104,000. */

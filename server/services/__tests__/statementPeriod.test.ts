@@ -12,10 +12,11 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createSale, processPayment } from "../saleService";
 import { returnSale } from "../returnService";
 import { money } from "../money";
-import { createVoucher as createVoucherService } from "../voucherService";
+import { approveVoucher, createVoucher as createVoucherService } from "../voucherService";
 import { getCustomerStatement, getSupplierStatement } from "../reportsService";
 
 const actor = { userId: 1, branchId: 1 };
+const owner = { userId: 2, branchId: 1, role: "manager" as const };
 let voucherRequestSeq = 0;
 
 async function createVoucher(
@@ -70,7 +71,10 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "statement_owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([
@@ -87,6 +91,17 @@ async function seedBase() {
     userId: 1, branchId: 1, status: 'OPEN',
     openedAt: new Date(),
     openGuard: '1:1', openingBalance: '0',
+  });
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "1000000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TEST-STATEMENT-PERIOD-FUND",
+    createdBy: 2,
   });
 }
 
@@ -180,6 +195,7 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
       { voucherType: "PAYMENT", branchId: 1, amount: "20.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "صرف للعميل" },
       actor
     );
+    await approveVoucher(vOut.receiptId, owner);
 
     // بلا فترة: السندان يظهران موسومَين مستقلَّين (إصلاح علّة غيابهما عن الكشف).
     const all = await getCustomerStatement(1);
@@ -254,7 +270,7 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
       actor
     );
     const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
-    await receivePurchase(
+    const received = await receivePurchase(
       {
         purchaseOrderId: po.purchaseOrderId,
         lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: qty }],
@@ -262,6 +278,9 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
       },
       actor
     );
+    if (received.supplierPaymentRequestReceiptId != null) {
+      await approveVoucher(Number(received.supplierPaymentRequestReceiptId), owner);
+    }
     return po;
   }
   async function backdatePO(purchaseOrderId: number, ymd: string) {

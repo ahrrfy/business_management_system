@@ -432,7 +432,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
     const res = await completeTermination(t!.id, ownerMaker);
     await expect(
       approveVoucher(res.settlementVoucher!.receiptId, ownerMaker),
-    ).rejects.toThrow(/أنشأته بنفسك/);
+    ).rejects.toThrow(/صانع الطلب|أنشأته بنفسك/);
     // لا أثر ماليّ (لم يُعتمَد).
     const entries = await db()
       .select()
