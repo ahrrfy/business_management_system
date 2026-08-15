@@ -250,7 +250,7 @@ describe.sequential("ش٩ — معيار الخروج: الرصيد يُعاد �
   it("سلسلة عمليات مختلطة ⇒ الرصيد المخزَّن = مجموع الحركات الفعّالة", async () => {
     const { walletId } = await mkWallet();
     await approvedCashDeposit(walletId, "1000000");
-    await withTx((tx) => walletOpsService.withdraw(tx, { walletId, amount: "150000", paymentMethod: "TRANSFER", clientRequestId: rid() }, mgrA));
+    await withTx((tx) => walletOpsService.withdraw(tx, { walletId, amount: "150000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
     await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "25000", paymentMethod: "TRANSFER", clientRequestId: rid() }, mgrA));
     const adj = await withTx((tx) => walletOpsService.requestAdjustment(tx, {
       walletId, amount: "3400", direction: "OUT", reason: "فرق مطابقة", clientRequestId: rid(),

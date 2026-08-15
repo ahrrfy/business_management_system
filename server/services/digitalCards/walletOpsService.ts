@@ -33,6 +33,7 @@ import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { createSystemPaymentRequestTx } from "../voucher/create";
+import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 
 /** الحركات التي تزيد الرصيد؛ ما عداها يُنقصه. مصدرُ حقيقةٍ واحد لإشارة كل نوع. */
 const INBOUND_TYPES = new Set(["OPENING", "DEPOSIT", "SALE_REVERSAL"]);
@@ -300,6 +301,9 @@ export async function withdraw(
   },
   actor: Actor,
 ): Promise<{ transactionId: number; receiptId: number; balanceAfter: string }> {
+  // السحب من محفظة المزوّد يُثبت قبضاً لدينا. التحويل المكتوب يدوياً لا يثبت
+  // وصول المال؛ ارفضه قبل قفل المحفظة أو إنقاصها أو إنشاء الإيصال/القيد.
+  assertInboundPaymentMethodEnabled(input.paymentMethod);
   const w = await lockWallet(tx, input.walletId);
   const amount = money(input.amount);
 

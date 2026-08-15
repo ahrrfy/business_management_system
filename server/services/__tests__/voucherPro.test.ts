@@ -2,6 +2,7 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "../../../shared/inboundPaymentPolicy";
 import { getDb } from "../../db";
 import {
   approveVoucher,
@@ -92,12 +93,12 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
     }, adminActor)).rejects.toThrow(/مرجعي/);
   });
 
-  it("CARD بلا cardLastFour يُرفض", async () => {
+  it("CARD للقبض يُرفض قبل التحقق من cardLastFour", async () => {
     await expect(createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "500.00",
       paymentMethod: "CARD", partyType: "CUSTOMER", partyId: 1,
       description: "بطاقة",
-    }, adminActor)).rejects.toThrow(/البطاقة/);
+    }, adminActor)).rejects.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
   });
 
   it("CHECK بلا checkNumber يُرفض", async () => {

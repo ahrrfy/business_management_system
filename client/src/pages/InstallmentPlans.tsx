@@ -17,6 +17,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 import { notify } from "@/lib/notify";
 import { D, fmt } from "@/lib/money";
 import { fmtDateTime } from "@/lib/date";
@@ -913,7 +914,10 @@ function PlanDetailDialog({
                               label: "ارتجاع",
                               icon: Undo2,
                               variant: "destructive",
-                              hidden: p.status === "CANCELLED" || l.kind !== "CHECK" || (l.status !== "PENDING" && l.status !== "PAID"),
+                              hidden:
+                                p.status === "CANCELLED"
+                                || l.kind !== "CHECK"
+                                || (l.status !== "PENDING" && !(l.status === "PAID" && l.receiptPaymentMethod === "CHECK")),
                               onSelect: () => setBounceTarget(l),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
@@ -1011,7 +1015,7 @@ function PayLineDialog({
 }) {
   // الصكوك أُزيلت من طرق السداد (٤/٨، قرار مالك «لا استثناء») — حتى قسطٍ مجدوَل أصلاً كصكٍّ
   // (بيانات قديمة سابقة للقرار) يُحصَّل الآن نقداً أو ببديل آخر، لا صكّاً جديداً.
-  const [method, setMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">("CASH");
+  const method = "CASH" as const;
   const [note, setNote] = useState("");
   const [attachment, setAttachment] = useState<ImageItem[]>([]);
   const thresholds = trpc.vouchers.thresholds.useQuery(undefined, { staleTime: 300_000 });
@@ -1041,7 +1045,9 @@ function PayLineDialog({
           <DialogTitle>سداد القسط رقم {target.seq}</DialogTitle>
           <DialogDescription>
             المبلغ <span dir="ltr" className="font-bold tabular-nums">{fmt(target.amount)}</span> د.ع — يُنشأ سند قبض حقيقي يُحرّك ذمّة العميل والدفتر.
-            {target.kind === "CHECK" && target.checkNumber && <> (صك رقم <span dir="ltr">{target.checkNumber}</span>)</>}
+            {target.kind === "CHECK" && target.checkNumber && (
+              <> — كان مجدولاً سابقاً بصك رقم <span dir="ltr">{target.checkNumber}</span>، وسيُحصّل الآن نقداً.</>
+            )}
           </DialogDescription>
         </DialogHeader>
 
@@ -1050,14 +1056,15 @@ function PayLineDialog({
             <Label>طريقة الدفع</Label>
             <select
               value={method}
-              onChange={(e) => setMethod(e.target.value as typeof method)}
+              disabled
+              aria-describedby="installment-inbound-payment-policy"
               className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <option value="CASH">نقدي</option>
-              <option value="TRANSFER">تحويل</option>
-              <option value="CARD">بطاقة</option>
-              <option value="WALLET">محفظة</option>
             </select>
+            <p id="installment-inbound-payment-policy" className="text-[11px] text-muted-foreground">
+              {INBOUND_PAYMENT_DISABLED_MESSAGE}
+            </p>
           </div>
           <div className="space-y-1">
             <Label>ملاحظة</Label>

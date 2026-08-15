@@ -11,6 +11,7 @@ import { assertPeriodOpen } from "../periodLockService";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
 import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 import type { Tx } from "../../db";
 import { type Actor, withTx } from "../tx";
 import { computeSignature, nextVoucherNumber, validateCategory } from "./helpers";
@@ -109,6 +110,11 @@ export async function createVoucherTx(
   actor: Actor,
   options?: { systemRequest?: SystemPaymentRequest },
 ): Promise<VoucherResult> {
+    // سند القبض ينشئ إيصالاً وقيد PAYMENT_IN ويحرّك ذمة الطرف فوراً. لا يكفي
+    // مرجع يكتبه الموظف لإثبات مال خارجي؛ ارفضه قبل idempotency أو أي قراءة DB.
+    if (input.voucherType === "RECEIPT") {
+      assertInboundPaymentMethodEnabled(input.paymentMethod);
+    }
     if (input.paymentMethod === "EXCHANGE") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -385,5 +391,10 @@ export async function createSystemPaymentRequestTx(
 }
 
 export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
+  // الحارس الخارجي يمنع حتى فتح transaction عند إعادة المحاولة غير الموثقة.
+  // يبقى الحارس داخل createVoucherTx دفاعاً عن المستدعين الذين يملكون Tx أصلاً.
+  if (input.voucherType === "RECEIPT") {
+    assertInboundPaymentMethodEnabled(input.paymentMethod);
+  }
   return withTx((tx) => createVoucherTx(tx, input, actor));
 }

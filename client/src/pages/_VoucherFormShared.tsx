@@ -24,6 +24,7 @@ import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { cn } from "@/lib/utils";
+import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 import { AlertTriangle, Building2, Hourglass, Info, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
@@ -43,6 +44,7 @@ const METHODS = [
   { value: "TRANSFER", label: "تحويل" },
   { value: "WALLET", label: "محفظة" },
 ] as const;
+const CASH_METHODS = METHODS.filter((method) => method.value === "CASH");
 type MethodValue = typeof METHODS[number]["value"];
 
 const METHOD_LABEL_MAP: Record<MethodValue, string> = {
@@ -77,6 +79,13 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
 
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<MethodValue>("CASH");
+  useEffect(() => {
+    if (isReceipt && method !== "CASH") {
+      setMethod("CASH");
+      setReferenceNumber("");
+      setCardLastFour("");
+    }
+  }, [isReceipt, method]);
   const seededCustomerId = isReceipt ? Number(new URLSearchParams(search).get("customerId")) || null : null;
   const [partyType, setPartyType] = useState<"CUSTOMER" | "SUPPLIER" | "OTHER">(seededCustomerId ? "CUSTOMER" : "OTHER");
   const [customerId, setCustomerId] = useState<number | null>(seededCustomerId);
@@ -447,8 +456,13 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             <div className="space-y-1">
               <Label>طريقة الدفع *</Label>
               <select className={selectCls} value={method} onChange={(e) => setMethod(e.target.value as MethodValue)}>
-                {METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                {(isReceipt ? CASH_METHODS : METHODS).map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
               </select>
+              {isReceipt && (
+                <p id="voucher-inbound-payment-policy" className="text-[11px] text-muted-foreground">
+                  {INBOUND_PAYMENT_DISABLED_MESSAGE}
+                </p>
+              )}
             </div>
 
             {(method === "TRANSFER" || method === "CARD" || method === "WALLET") && (

@@ -84,6 +84,67 @@ async function seedPlan(over: Partial<Parameters<typeof createPlan>[0]> = {}) {
   );
 }
 
+/**
+ * لقطة تاريخية لقسط حُصّل بشيك قبل إغلاق القبض غير النقدي. لا تستعمل مسار
+ * payLine الحيّ عمداً؛ المطلوب إبقاء عكس البيانات القديمة ممكناً بلا فتح باب
+ * إنشاء شيك جديد.
+ */
+async function seedHistoricalPaidCheck(lineId: number) {
+  const d = db();
+  const [row] = await d
+    .select({ line: s.installmentLines, plan: s.installmentPlans })
+    .from(s.installmentLines)
+    .innerJoin(s.installmentPlans, eq(s.installmentLines.planId, s.installmentPlans.id))
+    .where(eq(s.installmentLines.id, lineId));
+  if (!row || row.line.kind !== "CHECK") throw new Error("historical CHECK fixture requires a CHECK line");
+
+  const receiptRes = await d.insert(s.receipts).values({
+    branchId: Number(row.plan.branchId),
+    direction: "IN",
+    amount: row.line.amount,
+    paymentMethod: "CHECK",
+    cashBucket: null,
+    checkNumber: row.line.checkNumber,
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    voucherNumber: `RV-HIST-CHECK-${lineId}`,
+    partyType: "CUSTOMER",
+    partyId: Number(row.plan.customerId),
+    description: "تحصيل شيك تاريخي قبل سياسة الإغلاق",
+    createdBy: actor.userId,
+  });
+  const receiptId = Number((receiptRes as unknown as [{ insertId: number }])[0].insertId);
+  await d.insert(s.accountingEntries).values({
+    entryType: "PAYMENT_IN",
+    branchId: Number(row.plan.branchId),
+    receiptId,
+    customerId: Number(row.plan.customerId),
+    amount: row.line.amount,
+    entryDate: new Date().toISOString().slice(0, 10),
+    dedupeKey: `HIST-INST-CHECK:${lineId}`,
+    createdBy: actor.userId,
+  });
+  await d
+    .update(s.customers)
+    .set({ currentBalance: sql`${s.customers.currentBalance} - ${row.line.amount}` })
+    .where(eq(s.customers.id, Number(row.plan.customerId)));
+  await d
+    .update(s.installmentLines)
+    .set({ status: "PAID", receiptId, paidAt: new Date() })
+    .where(eq(s.installmentLines.id, lineId));
+  const planLines = await d.select().from(s.installmentLines).where(eq(s.installmentLines.planId, Number(row.plan.id)));
+  const planCompleted = planLines.every((line) => Number(line.id) === lineId || line.status === "PAID");
+  if (planCompleted) {
+    await d.update(s.installmentPlans).set({ status: "COMPLETED" }).where(eq(s.installmentPlans.id, Number(row.plan.id)));
+  }
+  await d.insert(s.idempotencyKeys).values({
+    operation: "voucher.create",
+    clientRequestId: `instpay-${lineId}`,
+    refId: receiptId,
+  });
+  return { status: "PAID" as const, receiptId, planCompleted };
+}
+
 async function customerBalance(id = 1): Promise<string> {
   const c = (await db().select().from(s.customers).where(eq(s.customers.id, id)))[0];
   return String(c.currentBalance);
@@ -301,8 +362,9 @@ describe("bounceCheck", () => {
     const { planId } = await seedPlan();
     const plan = await getPlan(planId);
     const checkLine = plan.lines[1]; // شيك 50000
-    const pay = await payLine({ lineId: checkLine.id }, actor);
+    const pay = await seedHistoricalPaidCheck(checkLine.id);
     expect(pay.status).toBe("PAID");
+    expect((await getPlan(planId)).lines[1].receiptPaymentMethod).toBe("CHECK");
     expect(await customerBalance()).toBe("850000.00"); // 900000 − 50000
 
     const res = await bounceCheck({ lineId: checkLine.id, note: "ارتدّ من المصرف" }, actor);
@@ -344,7 +406,7 @@ describe("bounceCheck", () => {
     const checkLine = (await getPlan(planId)).lines[1]; // شيك 50000
 
     // 1) تحصيل أول (شيك) ⇒ الذمّة تنخفض.
-    const pay1 = await payLine({ lineId: checkLine.id }, actor);
+    const pay1 = await seedHistoricalPaidCheck(checkLine.id);
     expect(pay1.status).toBe("PAID");
     expect(await customerBalance()).toBe("850000.00"); // 900000 − 50000
 
@@ -383,28 +445,27 @@ describe("bounceCheck", () => {
     expect(Number(key.refId)).toBe(pay2.receiptId);
   });
 
-  it("دورات ارتداد متعدّدة لا تُراكم خطأً: كل (سداد↔ارتداد) يُبقي الذمّة متّسقة، وكل تحصيلٍ سندٌ مستقل", async () => {
+  it("بعد عكس شيك تاريخي، إعادة السداد النقدي لا يمكن ارتدادها كشيك", async () => {
     const { planId } = await seedPlan();
     const checkLine = (await getPlan(planId)).lines[1]; // شيك 50000
 
-    for (let i = 0; i < 3; i++) {
-      const pay = await payLine({ lineId: checkLine.id }, actor);
-      expect(pay.status).toBe("PAID");
-      expect(await customerBalance()).toBe("850000.00"); // سُدِّد ⇒ 900000 − 50000
-      await bounceCheck({ lineId: checkLine.id }, actor);
-      expect(await customerBalance()).toBe("900000.00"); // ارتدّ ⇒ استُعيدت
-    }
-    // سدادٌ نهائيّ يستقرّ عند 850000 (لا تضخّمَ ذمّةٍ ولا نقدَ متبخّراً).
-    const finalPay = await payLine({ lineId: checkLine.id }, actor);
-    expect(finalPay.status).toBe("PAID");
+    await seedHistoricalPaidCheck(checkLine.id);
     expect(await customerBalance()).toBe("850000.00");
+    await bounceCheck({ lineId: checkLine.id }, actor);
+    expect(await customerBalance()).toBe("900000.00");
 
-    // ٤ تحصيلات ناجحة ⇒ ٤ قيود PAYMENT_IN بإيصالاتٍ مختلفة، و٣ قيود PAYMENT_OUT للارتدادات.
+    const finalPay = await payLine({ lineId: checkLine.id, paymentMethod: "CASH" }, actor);
+    expect(finalPay.status).toBe("PAID");
+    expect((await getPlan(planId)).lines[1].receiptPaymentMethod).toBe("CASH");
+    expect(await customerBalance()).toBe("850000.00");
+    await expect(bounceCheck({ lineId: checkLine.id }, actor)).rejects.toThrow(/لم يكن بشيك/);
+
+    // تحصيل الشيك التاريخي + إعادة السداد النقدي، وعكس واحد فقط للأصل التاريخي.
     const ins = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
     const outs = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
-    expect(ins).toHaveLength(4);
-    expect(outs).toHaveLength(3);
-    expect(new Set(ins.map((e) => Number(e.receiptId))).size).toBe(4);
+    expect(ins).toHaveLength(2);
+    expect(outs).toHaveLength(1);
+    expect(new Set(ins.map((e) => Number(e.receiptId))).size).toBe(2);
   });
 
   it("تماثُل paidAmount: ارتداد قسطٍ مرتبطٍ بفاتورة لا يمسّ invoices.paidAmount ولا حالتها (لا يمحو سداداً مباشراً)", async () => {
@@ -436,7 +497,7 @@ describe("bounceCheck", () => {
     const checkLine = (await getPlan(planId)).lines[0];
 
     // تحصيل القسط عبر السند — يخفّض ذمّة العميل فقط ولا يمسّ paidAmount الفاتورة.
-    await payLine({ lineId: checkLine.id }, actor);
+    await seedHistoricalPaidCheck(checkLine.id);
     let inv = (await d.select().from(s.invoices).where(eq(s.invoices.id, 10)))[0];
     expect(inv.paidAmount).toBe("40000.00");
     expect(inv.status).toBe("PARTIALLY_PAID");
@@ -464,7 +525,7 @@ describe("bounceCheck", () => {
     const checkLine = (await getPlan(planId)).lines[1]; // شيك 50000
 
     // تحصيل الشيك عبر المسار الحقيقي (createVoucher لا يمسّ paidAmount).
-    const pay = await payLine({ lineId: checkLine.id }, actor);
+    const pay = await seedHistoricalPaidCheck(checkLine.id);
     expect(pay.status).toBe("PAID");
     expect((await d.select().from(s.invoices).where(eq(s.invoices.id, 7)))[0].paidAmount).toBe("20000.00");
 
@@ -493,7 +554,7 @@ describe("bounceCheck", () => {
     );
     const checkLine = (await getPlan(planId)).lines[0];
 
-    const pay = await payLine({ lineId: checkLine.id, attachmentUrl: "https://example.com/r.jpg" }, actor);
+    const pay = await seedHistoricalPaidCheck(checkLine.id);
     expect(pay.status).toBe("PAID");
     expect(await customerBalance()).toBe("-600000.00"); // 900000 − 1500000
 

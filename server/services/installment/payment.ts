@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 import { installmentLines, installmentPlans, invoices, voucherCategories } from "../../../drizzle/schema";
 import { toDbMoney } from "../money";
+import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 import { type Actor, requireDb, withTx } from "../tx";
 import { createVoucher } from "../voucherService";
 import { assertPlanBranch, type BranchRestriction, type PayLineInput, type PayLineResult } from "./types";
@@ -24,6 +25,10 @@ export async function payLine(
   actor: Actor,
   restrictToBranchId: BranchRestriction = null,
 ): Promise<PayLineResult> {
+  // التحصيل قَبضٌ حقيقي. الافتراضي نقدي حتى للقسط التاريخي المسمّى CHECK؛
+  // ولا نقرأ الخطة أصلاً إذا أرسل العميل طريقة غير موثقة صراحةً.
+  const method = input.paymentMethod ?? "CASH";
+  assertInboundPaymentMethodEnabled(method);
   const db = requireDb();
 
   const row = (
@@ -47,8 +52,6 @@ export async function payLine(
       message: line.status === "PAID" ? "هذا القسط مسدَّد بالفعل" : "هذا القسط ملغى — لا يمكن سداده",
     });
   }
-
-  const method = input.paymentMethod ?? (line.kind === "CHECK" ? "CHECK" : "CASH");
 
   // ربط سند القسط بفاتورة الخطة (يظهر في سجلّ دفعات الفاتورة) — فقط إن كانت ما تزال صالحة،
   // كي لا يُحجَب التحصيل لو أُلغيت الفاتورة بعد إنشاء الخطة (createVoucher يرفض الربط بملغاة).
@@ -76,11 +79,11 @@ export async function payLine(
       .limit(1)
   )[0];
 
-  const checkInfo =
+  const scheduledCheckInfo =
     line.kind === "CHECK"
-      ? ` (شيك رقم ${line.checkNumber ?? "—"}${line.bankName ? ` — ${line.bankName}` : ""})`
+      ? ` (مجدول سابقاً بصك رقم ${line.checkNumber ?? "—"}${line.bankName ? ` — ${line.bankName}` : ""}؛ التحصيل الحالي نقدي)`
       : "";
-  const description = `تحصيل القسط رقم ${line.seq} من خطة الأقساط #${plan.id}${checkInfo}`;
+  const description = `تحصيل القسط رقم ${line.seq} من خطة الأقساط #${plan.id}${scheduledCheckInfo}`;
 
   const voucher = await createVoucher(
     {
@@ -91,7 +94,7 @@ export async function payLine(
       partyType: "CUSTOMER",
       partyId: Number(plan.customerId),
       description,
-      checkNumber: method === "CHECK" ? (line.checkNumber ?? undefined) : undefined,
+      checkNumber: undefined,
       voucherCategoryId: cat?.id != null ? Number(cat.id) : null,
       invoiceId: voucherInvoiceId,
       attachmentUrl: input.attachmentUrl ?? null,

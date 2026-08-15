@@ -1,7 +1,7 @@
 // قوائم واستعلامات القراءة: صفحات الخطط + تفاصيل خطة + طابور التحصيل القريب الاستحقاق.
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
-import { customers, installmentLines, installmentPlans } from "../../../drizzle/schema";
+import { customers, installmentLines, installmentPlans, receipts } from "../../../drizzle/schema";
 import { toDateStr, toDbMoney } from "../money";
 import { requireDb } from "../tx";
 import { assertPlanBranch, type BranchRestriction, type InstallmentKind, type ListPlansFilter, type PlanStatus } from "./types";
@@ -99,8 +99,9 @@ export async function getPlan(planId: number, restrictToBranchId: BranchRestrict
   if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "الخطة غير موجودة" });
   assertPlanBranch(Number(row.plan.branchId), restrictToBranchId);
   const lines = await db
-    .select()
+    .select({ line: installmentLines, receiptPaymentMethod: receipts.paymentMethod })
     .from(installmentLines)
+    .leftJoin(receipts, eq(installmentLines.receiptId, receipts.id))
     .where(eq(installmentLines.planId, planId))
     .orderBy(asc(installmentLines.seq));
   return {
@@ -111,7 +112,13 @@ export async function getPlan(planId: number, restrictToBranchId: BranchRestrict
     invoiceId: row.plan.invoiceId != null ? Number(row.plan.invoiceId) : null,
     customerName: row.customerName,
     customerPhone: row.customerPhone,
-    lines: lines.map((l) => ({ ...l, id: Number(l.id), planId: Number(l.planId), receiptId: l.receiptId != null ? Number(l.receiptId) : null })),
+    lines: lines.map(({ line, receiptPaymentMethod }) => ({
+      ...line,
+      id: Number(line.id),
+      planId: Number(line.planId),
+      receiptId: line.receiptId != null ? Number(line.receiptId) : null,
+      receiptPaymentMethod: receiptPaymentMethod ?? null,
+    })),
   };
 }
 
