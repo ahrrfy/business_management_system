@@ -11,7 +11,12 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { middleware, publicProcedure, router } from "../trpc";
+import {
+  middleware,
+  publicProcedure,
+  router,
+  storefrontPublicReadProcedure,
+} from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
 import { createOnlineOrder, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
 import { retryOnDup } from "../lib/retryDup";
@@ -99,7 +104,7 @@ export const storefrontRouter = router({
     .query(({ input }) => storefrontRelated(input.productId)),
 
   /** إعادة تسعير السلة بكمياتها الفعلية؛ نفس محرك createOrder، بلا أي كتابة. */
-  quoteOrder: publicProcedure
+  quoteOrder: storefrontPublicReadProcedure
     .input(z.object({
       governorate: z.string().trim().min(1).max(40),
       lines: z.array(z.object({

@@ -14,7 +14,7 @@ import {
   expensesCashierProcedure,
   expensesManagerProcedure,
   expensesReadProcedure,
-  protectedProcedure,
+  ownerProcedure,
   router,
 } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -38,21 +38,6 @@ const recurringFreq = z.enum([
   "QUARTERLY",
   "YEARLY",
 ]);
-
-/**
- * سلطة اعتماد المصروف مشتقة من راية المالك المخزّنة لا من قالب الدور أو منح الوحدة.
- * الخدمة تعيد قراءة الراية والنشاط تحت FOR UPDATE؛ هذا الحارس المبكر يحسّن رسالة الرفض
- * ولا يُعدّ مصدراً نهائياً للسلطة.
- */
-const expenseOwnerProcedure = protectedProcedure.use(({ ctx, next }) => {
-  if (ctx.user.isOwner !== true) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "اعتماد المصروف أو رفضه يتطلب حساب مالك نشطاً",
-    });
-  }
-  return next({ ctx });
-});
 
 export const expenseRouter = router({
   list: expensesReadProcedure
@@ -197,7 +182,7 @@ export const expenseRouter = router({
     }),
 
   /** زر واحد: اعتماد + تنفيذ ذرّي؛ الخدمة تعيد قراءة isOwner/isActive تحت القفل. */
-  approve: expenseOwnerProcedure
+  approve: ownerProcedure
     .input(z.object({ expenseId: z.number().int().positive() }))
     .mutation(({ input, ctx }) =>
       approveExpense(input.expenseId, {
@@ -208,7 +193,7 @@ export const expenseRouter = router({
       }),
     ),
 
-  reject: expenseOwnerProcedure
+  reject: ownerProcedure
     .input(
       z.object({
         expenseId: z.number().int().positive(),
