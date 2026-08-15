@@ -21,6 +21,7 @@ import {
   allocateOfflineReceiptNumber,
   assertCanCapture,
   enqueueOfflineItem,
+  getDeviceCode,
   isOfflineSaleEnabled,
   type OfflinePrintSalePayload,
 } from "@/lib/offline/outbox";
@@ -44,6 +45,14 @@ type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
 type Svc = RouterOutputs["printPos"]["services"][number];
 type ShiftData = RouterOutputs["shifts"]["current"];
 
+type ExternalPaymentDraft = {
+  attemptId: number | null;
+  requestId: string;
+  fingerprint: string;
+  state: "INITIATED" | "CONFIRMED";
+  deviceId?: string;
+};
+
 type CartLine = { uid: number; svc: Svc; qty: number; price: number };
 type Tab = {
   id: number;
@@ -53,8 +62,9 @@ type Tab = {
   method: PaymentMethod;
   customerId: number | null;
   selUid: number | null;
-  /** مرجع عملية الدفع غير النقدي (إشعار جهاز/تحويل) — يُرسَل payment.reference ويُحفظ receipts.referenceNumber. */
+  /** مرجع ومحاولة الدفع غير النقدي المؤكدة خادمياً. */
   paymentRef: string;
+  externalPayment: ExternalPaymentDraft | null;
 };
 
 type Receipt = {
@@ -116,7 +126,7 @@ const riqd = (n: number) => roundCashIQD(n).toNumber();
 let TAB_SEQ = 2;
 let UID = 1;
 const newTab = (id: number, label?: string): Tab => ({
-  id, label: label ?? `طلب ${id}`, cart: [], payInput: "", method: "CASH", customerId: null, selUid: null, paymentRef: "",
+  id, label: label ?? `طلب ${id}`, cart: [], payInput: "", method: "CASH", customerId: null, selUid: null, paymentRef: "", externalPayment: null,
 });
 
 function brandedReceipt(r: Receipt): ReceiptBrowserData {
@@ -200,6 +210,15 @@ export default function PrintPOS() {
   const tab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cart = tab.cart;
   const total = cart.reduce((s, c) => s + c.price * c.qty, 0);
+  const paymentInputAmount = Number(tab.payInput || 0);
+  const paymentIsCredit = paymentInputAmount > 0 && paymentInputAmount < total;
+  const externalPaymentAmount = (paymentIsCredit ? paymentInputAmount : total).toFixed(2);
+  const externalPaymentFingerprint = `${tab.method}|${externalPaymentAmount}|${(tab.paymentRef ?? "").trim().toUpperCase()}`;
+  const externalFullPaymentFingerprint = `${tab.method}|${total.toFixed(2)}|${(tab.paymentRef ?? "").trim().toUpperCase()}`;
+  const externalPaymentConfirmed = tab.method === "CASH"
+    || (tab.externalPayment?.state === "CONFIRMED" && tab.externalPayment.fingerprint === externalPaymentFingerprint && tab.externalPayment.attemptId != null);
+  const externalFullPaymentConfirmed = tab.method === "CASH"
+    || (tab.externalPayment?.state === "CONFIRMED" && tab.externalPayment.fingerprint === externalFullPaymentFingerprint && tab.externalPayment.attemptId != null);
 
   const [catId, setCatId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
@@ -261,8 +280,8 @@ export default function PrintPOS() {
       const maxUid = Math.max(0, ...saved.tabs.flatMap((t) => t.cart.map((c) => c.uid)));
       if (TAB_SEQ <= maxTab) TAB_SEQ = maxTab + 1;
       if (UID <= maxUid) UID = maxUid + 1;
-      // المسوّدات الأقدم لا تحمل paymentRef — تُستكمل بفراغ.
-      setTabs(saved.tabs.map((t) => ({ ...t, paymentRef: t.paymentRef ?? "" })));
+      // المسوّدات الأقدم لا تحمل حالة المحاولة — تُستكمل بلا ادّعاء تأكيد.
+      setTabs(saved.tabs.map((t) => ({ ...t, paymentRef: t.paymentRef ?? "", externalPayment: t.externalPayment ?? null })));
       setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
     } else {
       setTabs([newTab(1, "طلب 1")]);
@@ -281,6 +300,7 @@ export default function PrintPOS() {
 
   // ── تبويبات ──
   const patch = (p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === activeId ? { ...t, ...p } : t)));
+  const patchTab = (id: number, p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...p } : t)));
   const setCart = (u: CartLine[] | ((c: CartLine[]) => CartLine[])) =>
     setTabs((prev) => prev.map((t) => (t.id !== activeId ? t : { ...t, cart: typeof u === "function" ? u(t.cart) : u })));
   const setPayInput = (u: string | ((s: string) => string)) =>
@@ -340,7 +360,7 @@ export default function PrintPOS() {
       };
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
-      setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "" });
+      setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null });
       setClientRequestId(crypto.randomUUID());
       const printed = await printReceipt(brandedReceipt(rec));
       setMessage({
@@ -369,6 +389,64 @@ export default function PrintPOS() {
       else setMessage({ kind: "err", text: e.message });
     },
   });
+
+  const initiateExternalPayment = trpc.printPos.initiateExternalPayment.useMutation();
+  const confirmExternalPaymentMutation = trpc.printPos.confirmExternalPayment.useMutation();
+
+  async function confirmCurrentExternalPayment() {
+    if (!shift || !cart.length || tab.method === "CASH") return;
+    const tabId = tab.id;
+    const reference = (tab.paymentRef ?? "").trim();
+    if (!reference) {
+      setMessage({ kind: "err", text: "أدخل مرجع الدفع الخارجي أولاً." });
+      return;
+    }
+    if (tab.payInput.trim() !== "" && Number(tab.payInput) <= 0) {
+      setMessage({ kind: "err", text: "مبلغ الدفع يجب أن يكون موجباً قبل تأكيد العملية الخارجية." });
+      return;
+    }
+
+    const fingerprint = externalPaymentFingerprint;
+    const prior = tab.externalPayment?.fingerprint === fingerprint ? tab.externalPayment : null;
+    const requestId = prior?.requestId ?? crypto.randomUUID();
+    let deviceId = prior?.deviceId;
+    if (!deviceId) {
+      try {
+        deviceId = await getDeviceCode();
+      } catch {
+        setMessage({ kind: "err", text: "تعذّر تحديد جهاز الكاشير — لا يمكن تأكيد دفع خارجي بلا هوية جهاز." });
+        return;
+      }
+    }
+    patchTab(tabId, { externalPayment: {
+      attemptId: prior?.attemptId ?? null,
+      requestId,
+      fingerprint,
+      state: prior?.state ?? "INITIATED",
+      deviceId,
+    } });
+
+    try {
+      let attemptId = prior?.attemptId ?? null;
+      if (!attemptId) {
+        const initiated = await initiateExternalPayment.mutateAsync({
+          branchId,
+          method: tab.method,
+          amount: externalPaymentAmount,
+          reference,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        patchTab(tabId, { externalPayment: { attemptId, requestId, fingerprint, state: "INITIATED", deviceId } });
+      }
+      await confirmExternalPaymentMutation.mutateAsync({ branchId, attemptId, deviceId });
+      patchTab(tabId, { externalPayment: { attemptId, requestId, fingerprint, state: "CONFIRMED", deviceId } });
+      setMessage({ kind: "ok", text: `تأكّد الدفع الخارجي وثُبّت المرجع ${reference}.` });
+    } catch (error) {
+      setMessage({ kind: "err", text: error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي" });
+    }
+  }
 
   /**
    * التقاط بيع خدمات طباعةٍ دون اتصال.
@@ -450,7 +528,7 @@ export default function PrintPOS() {
     };
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: cashTotal });
-    setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "" });
+    setCart([]); setPayInput(""); patch({ selUid: null, paymentRef: "", externalPayment: null });
     setClientRequestId(crypto.randomUUID());
     setMessage({
       kind: "ok",
@@ -469,6 +547,11 @@ export default function PrintPOS() {
     }
     // Quick pay means full payment, not a forced change of the selected method to CASH.
     const method: PaymentMethod = tab.method;
+    const confirmedForAmount = forceFullPayment ? externalFullPaymentConfirmed : externalPaymentConfirmed;
+    if (method !== "CASH" && !confirmedForAmount) {
+      setMessage({ kind: "err", text: "أدخل مرجع العملية وثبّت نجاح الدفع لدى المزوّد للمبلغ الحالي قبل الإتمام." });
+      return;
+    }
     const cashTotal = method === "CASH" ? riqd(total) : total;
     const paid = forceFullPayment ? cashTotal : Number(tab.payInput || 0);
     const isCredit = !forceFullPayment && paid > 0 && paid < cashTotal;
@@ -489,16 +572,19 @@ export default function PrintPOS() {
       credit: isCredit ? cashTotal - paid : 0,
       isCredit,
     };
-    // مرجع الدفع غير النقدي: يُرسَل فقط غير فارغ (مخطط الخادم min(1) يرفض السلسلة الفارغة).
-    const payRef = method !== "CASH" ? (tab.paymentRef ?? "").trim() : "";
     sale.mutate({
       branchId, shiftId: shift.id, clientRequestId,
+      ...(method !== "CASH" && tab.externalPayment?.deviceId ? { deviceId: tab.externalPayment.deviceId } : {}),
       customerId: tab.customerId ?? undefined, priceTier: "RETAIL",
       lines: cart.map((c) => ({
         variantId: c.svc.variantId, productUnitId: c.svc.productUnitId,
         quantity: String(c.qty), unitPriceOverride: c.price.toFixed(2),
       })),
-      payment: { amount, method, ...(payRef ? { reference: payRef } : {}) },
+      payment: {
+        amount,
+        method,
+        ...(method !== "CASH" ? { externalPaymentAttemptId: tab.externalPayment!.attemptId! } : {}),
+      },
       ...(cashFull ? { cashRoundIQD: true } : {}),
       ...(approval ? { managerApproval: approval } : {}),
     });
@@ -540,7 +626,7 @@ export default function PrintPOS() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, sale.isPending, receipt, creditPrompt, shifting, tab.method, tab.payInput, total]);
+  }, [cart, sale.isPending, receipt, creditPrompt, shifting, tab.method, tab.payInput, total, externalPaymentConfirmed, externalFullPaymentConfirmed]);
 
   // ── الطابعة الحرارية (WebUSB) + جسر الخادم ──
   const connectPrinter = async () => {
@@ -672,8 +758,12 @@ export default function PrintPOS() {
           changeQty={changeQty} removeRow={removeRow} onClear={clearCart}
           setPrice={setPrice} editPriceUid={editPriceUid} setEditPriceUid={setEditPriceUid}
           customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
-          payInput={tab.payInput} setPayInput={setPayInput} method={tab.method} setMethod={(m) => patch({ method: m })}
-          paymentRef={tab.paymentRef ?? ""} setPaymentRef={(v) => patch({ paymentRef: v })}
+          payInput={tab.payInput} setPayInput={setPayInput} method={tab.method} setMethod={(m) => patch({ method: m, externalPayment: null })}
+          paymentRef={tab.paymentRef ?? ""} setPaymentRef={(v) => patch({ paymentRef: v, externalPayment: null })}
+          externalPaymentConfirmed={externalPaymentConfirmed}
+          externalFullPaymentConfirmed={externalFullPaymentConfirmed}
+          externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
+          onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
           numPress={numPress} onPay={() => submit(false)} onQuickPay={() => submit(true)} isPending={sale.isPending}
         />
         <ServiceGrid C={C} services={services} loading={servicesQ.isLoading} cats={cats} catId={effectiveCatId} setCatId={setCatId} search={search} onAdd={addService} />
@@ -948,6 +1038,8 @@ interface CheckoutProps {
   customerId: number | null; setCustomerId: (id: number | null) => void;
   payInput: string; setPayInput: (u: string | ((s: string) => string)) => void; method: PaymentMethod; setMethod: (m: PaymentMethod) => void;
   paymentRef: string; setPaymentRef: (v: string) => void;
+  externalPaymentConfirmed: boolean; externalFullPaymentConfirmed: boolean;
+  externalPaymentPending: boolean; onConfirmExternalPayment: () => void;
   numPress: (k: string) => void; onPay: () => void; onQuickPay: () => void; isPending: boolean;
 }
 
@@ -1038,7 +1130,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
   );
 }
 
-function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paymentRef, setPaymentRef, numPress, onPay, onQuickPay, cart, customerId, isPending }: CheckoutProps) {
+function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalFullPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, numPress, onPay, onQuickPay, cart, customerId, isPending }: CheckoutProps) {
   // عند ضيق الارتفاع تُحذف رقائق المبالغ الجاهزة (لوحة الأرقام تُغنِي عنها) لتبقى
   // المفاتيح وأزرار الدفع كبيرة — حذفُ الثانويّ قبل تصغير الأساسيّ.
   const dense = useMediaQuery("(max-height: 820px)");
@@ -1051,7 +1143,10 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
   const isOwing = paid > 0 && paid < cashTotal;
   // حارس: لا بيع بسطرٍ بسعر صفر (خدمة سعرها يدوي لم يُدخَل) — يمنع فاتورة مجانية بالخطأ.
   const hasZeroLine = cart.some((c) => c.price <= 0);
-  const canPay = cartLen > 0 && !hasZeroLine && (payInput === "" || paid >= cashTotal) && (!isOwing || customerId != null);
+  // حافظ على عقد PrintPOS السابق: الدفعة الجزئية لا تُنشأ من هذه الشاشة؛ الحارس الجديد
+  // يضيف تأكيد غير النقدي فقط ولا يوسّع سلوك النقد/الآجل.
+  const canPay = cartLen > 0 && !hasZeroLine && (payInput === "" || paid >= cashTotal) && (!isOwing || customerId != null) && externalPaymentConfirmed;
+  const canQuickPay = cartLen > 0 && !hasZeroLine && externalFullPaymentConfirmed;
 
   const Key = ({ k, del }: { k: string; del?: boolean }) => (
     <button onClick={() => numPress(k)} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.95)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")} onMouseLeave={(e) => (e.currentTarget.style.transform = "")}
@@ -1096,13 +1191,16 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
           <Method m="CARD" Icon={CreditCard} label="بطاقة" />
           <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />
         </div>
-        {/* مرجع العملية للدفع غير النقدي — إلزامي بصرياً (تحذير) ولا يمنع الإتمام (يخفي نفسه للنقدي) */}
+        {/* مرجع ومحاولة الدفع غير النقدي — CONFIRMED قبل إنشاء الفاتورة. */}
         <PaymentReferenceField
           value={paymentRef}
           onChange={setPaymentRef}
           method={method}
+          confirmed={externalPaymentConfirmed}
+          confirming={externalPaymentPending}
+          onConfirm={onConfirmExternalPayment}
           inputId="print-pos-payment-reference"
-          colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber }}
+          colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber, success: C.success }}
           style={{ marginBottom: 6 }}
         />
 
@@ -1118,8 +1216,8 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
           {cartLen > 0 && !!payInput && isOwing && (<><span style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>المتبقي (آجل)</span><span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ fontSize: 21, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12, fontWeight: 500 }}>د.ع</span></span><CopyButton value={String(credit)} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" /></span></>)}
         </div>
         <div style={{ display: "flex", gap: 7 }}>
-          <button disabled={!cartLen || hasZeroLine || isPending} onClick={onQuickPay}
-            style={{ width: 116, height: fluid(48, 6, 54), background: cartLen && !hasZeroLine && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: cartLen && !hasZeroLine && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: cartLen && !hasZeroLine && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
+          <button disabled={!canQuickPay || isPending} onClick={onQuickPay}
+            style={{ width: 116, height: fluid(48, 6, 54), background: canQuickPay && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: canQuickPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: canQuickPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
             <Zap aria-hidden size={17} />دفع سريع ({METHOD_LABEL[method]})
           </button>
           <button disabled={!canPay || isPending} onClick={onPay}

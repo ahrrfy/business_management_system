@@ -38,6 +38,12 @@ import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
 import type { Tx } from "../db";
+import {
+  assertExternalPaymentReplay,
+  bindExternalPaymentAttempt,
+  lockConfirmedExternalPaymentAttempt,
+  type LockedExternalPaymentAttempt,
+} from "./posExternalPayment";
 
 /** علامة نوع المنتج لخدمات الطباعة: لا مخزون ذاتي، والاستهلاك عبر وصفة المواد فقط.
  *  (مخزّنة في products.productType — لا تحتاج تغيير مخطّط.) */
@@ -62,7 +68,16 @@ export interface CreatePrintSaleInput {
   contactPhone?: string | null;
   priceTier?: PriceTier | null;
   lines: PrintSaleLineInput[];
-  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
+  payment?: {
+    amount: string;
+    method: PaymentMethod;
+    reference?: string | null;
+    externalPaymentAttemptId?: number | null;
+  } | null;
+  /** داخلي: printPosRouter وحده يفعّله؛ مسارات الاستقبال/الأوفلاين القديمة لا تتظاهر بتأكيد خارجي. */
+  requireExternalPaymentAttempt?: boolean;
+  /** كود محطة الطباعة للتطابق مع محاولة الدفع، حين يكون متاحاً. */
+  deviceId?: string | null;
   /** ش٤ (§٧.٢) — مالٌ قُبض سلفاً (عرابين مسوّدة): يدخل paidAmount بلا إيصالٍ ثانٍ (I5) —
    *  مرآة CreateSaleInput.preCollected حرفياً. */
   preCollected?: { amount: string; receiptIds: number[] } | null;
@@ -140,6 +155,16 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         const requestedMethod = input.payment?.method ?? null;
         if ((ex.paymentMethod ?? null) !== requestedMethod) {
           throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمَل لبيع بطريقة دفع مختلفة" });
+        }
+        if (input.requireExternalPaymentAttempt && input.payment) {
+          await assertExternalPaymentReplay(tx, Number(ex.id), {
+            branchId: input.branchId,
+            channel: "PRINT_POS",
+            method: input.payment.method,
+            amount: input.payment.amount,
+            attemptId: input.payment.externalPaymentAttemptId,
+            deviceId: input.deviceId,
+          }, actor);
         }
         const existingItems = await tx
           .select({
@@ -369,6 +394,23 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     const paidNow = totalTenderedD.gt(effectiveTotalD) ? effectiveTotalD : totalTenderedD;
     const newMoneyD = round2(paidNow.minus(preCollectedD));
     const unpaid = effectiveTotalD.minus(paidNow);
+    let externalPaymentAttempt: LockedExternalPaymentAttempt | null = null;
+    if (input.requireExternalPaymentAttempt && input.payment) {
+      if (input.payment.method === "CASH") {
+        if (input.payment.externalPaymentAttemptId != null) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+        }
+      } else {
+        externalPaymentAttempt = await lockConfirmedExternalPaymentAttempt(tx, {
+          branchId: input.branchId,
+          channel: "PRINT_POS",
+          method: input.payment.method,
+          amount: toDbMoney(newMoneyD),
+          attemptId: input.payment.externalPaymentAttemptId,
+          deviceId: input.deviceId,
+        }, actor);
+      }
+    }
     // ش٧: متبقّي فاتورة التوصيل عهدةُ مندوبٍ تُرفع في نفس المعاملة (مرآة sale/create حرفياً).
     if (unpaid.gt(0) && !input.customerId && !input.codDispatchPending) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
@@ -538,11 +580,14 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         direction: "IN",
         amount: toDbMoney(newMoneyD),
         paymentMethod: input.payment!.method,
-        referenceNumber: input.payment!.reference?.trim() || null,
+        referenceNumber: externalPaymentAttempt?.externalReference ?? (input.payment!.reference?.trim() || null),
         status: "COMPLETED",
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(rRes);
+      if (externalPaymentAttempt) {
+        await bindExternalPaymentAttempt(tx, Number(externalPaymentAttempt.id), invoiceId, receiptId);
+      }
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,

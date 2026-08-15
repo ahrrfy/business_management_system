@@ -8,9 +8,11 @@ import { verifyManagerApproval } from "./saleRouter";
 import { posCashierProcedure, router } from "../trpc";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { confirmExternalPaymentAttempt, initiateExternalPaymentAttempt } from "../services/posExternalPayment";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const externalMethod = z.enum(["CARD", "CHECK", "TRANSFER", "WALLET"]);
 const lineSchema = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
@@ -26,6 +28,42 @@ export const printPosRouter = router({
     .input(z.object({ tier: tier.default("RETAIL") }).optional())
     .query(({ input }) => listPrintServices(input?.tier ?? "RETAIL")),
 
+  /** يسجّل محاولة مستقلة أولاً؛ لا فاتورة/إيصال/ذمّة قبل تأكيدها واستهلاكها. */
+  initiateExternalPayment: posCashierProcedure
+    .input(z.object({
+      branchId: z.number().int().positive(),
+      method: externalMethod,
+      amount: positiveMoneyString,
+      reference: z.string().trim().min(1).max(100),
+      requestId: z.string().trim().min(1).max(80),
+      deviceId: z.string().trim().min(1).max(64),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الكاشير" });
+      }
+      const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      return initiateExternalPaymentAttempt(
+        { ...input, branchId, channel: "PRINT_POS" },
+        { userId: ctx.user.id, branchId, role: ctx.user.role },
+      );
+    }),
+
+  confirmExternalPayment: posCashierProcedure
+    .input(z.object({ branchId: z.number().int().positive(), attemptId: z.number().int().positive(), deviceId: z.string().trim().min(1).max(64) }))
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الكاشير" });
+      }
+      const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      return confirmExternalPaymentAttempt(
+        { attemptId: input.attemptId, branchId, channel: "PRINT_POS", deviceId: input.deviceId },
+        { userId: ctx.user.id, branchId, role: ctx.user.role },
+      );
+    }),
+
   /** بيع خدمات الطباعة: فاتورة + خصم مواد بصمت + قيد + ذمم — ذرّياً (createPrintSale). */
   createSale: posCashierProcedure
     .input(
@@ -38,14 +76,22 @@ export const printPosRouter = router({
         payment: z.object({
           amount: positiveMoneyString,
           method,
-          reference: z.string().trim().min(1).max(100).optional(),
+          externalPaymentAttemptId: z.number().int().positive().optional(),
         }).optional(),
+        deviceId: z.string().trim().min(1).max(64).optional(),
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
         cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),
         notes: z.string().optional(),
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
         managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+      }).superRefine((input, ctx) => {
+        if (input.payment && input.payment.method !== "CASH" && !input.payment.externalPaymentAttemptId) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
+        }
+        if (input.payment?.method === "CASH" && input.payment.externalPaymentAttemptId != null) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+        }
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -72,6 +118,7 @@ export const printPosRouter = router({
         creditApproved: approvedBy != null,
         managerOverrideByUserId: approvedBy ?? undefined,
         priceOverrideApproved: priceOverrideApprovedBy != null,
+        requireExternalPaymentAttempt: true,
       };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {

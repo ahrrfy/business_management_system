@@ -18,9 +18,11 @@ import {
   unique,
   primaryKey,
   foreignKey,
+  check,
   customType,
   type AnyMySqlColumn,
 } from "drizzle-orm/mysql-core";
+import { sql } from "drizzle-orm";
 
 /** Raw binary storage for small, validated documents that must travel with DB backups. */
 const mediumblob = customType<{ data: Buffer; driverData: Buffer }>({
@@ -2083,6 +2085,74 @@ export const receipts = mysqlTable(
 
 export type Receipt = typeof receipts.$inferSelect;
 export type InsertReceipt = typeof receipts.$inferInsert;
+
+/**
+ * محاولة دفع خارجية للكاشيرين العادي والطباعة (0183).
+ *
+ * المرجع هنا مستقلّ عن `receipts.referenceNumber`: ذلك الحقل قديم ومتعدد الأغراض (سندات/زين/
+ * تحويلات)، أما هذا السجل فيمثّل دورة حياة عملية خارجية واحدة. لا تُربط المحاولة بفاتورة/إيصال
+ * إلا بعد وصولها إلى CONFIRMED، والربطان فريدان كي تُستهلك مرةً واحدة فقط.
+ */
+export const externalPaymentAttempts = mysqlTable(
+  "externalPaymentAttempts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    channel: mysqlEnum("externalPaymentChannel", ["POS", "PRINT_POS"]).notNull(),
+    paymentMethod: mysqlEnum("externalPaymentMethod", ["CARD", "CHECK", "TRANSFER", "WALLET"]).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    /** هوية مسار المزود والحساب مشتقتان خادمياً، لا يرسلهما العميل. */
+    providerCode: varchar("providerCode", { length: 32 }).notNull(),
+    accountReference: varchar("accountReference", { length: 80 }).notNull(),
+    /** كود محطة POS المحلي؛ إلزامي لكل محاولة كي لا يصبح المرجع عائماً بين الأجهزة. */
+    deviceId: varchar("deviceId", { length: 64 }).notNull(),
+    externalReference: varchar("externalReference", { length: 100 }).notNull(),
+    /** UPPER(TRIM(reference)) محفوظ صراحةً لتفرّد حتمي مستقل عن collation. */
+    normalizedReference: varchar("normalizedReference", { length: 100 }).notNull(),
+    state: mysqlEnum("externalPaymentState", ["INITIATED", "CONFIRMED", "FAILED", "REVERSED"])
+      .default("INITIATED")
+      .notNull(),
+    requestId: varchar("requestId", { length: 80 }).notNull(),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    confirmedBy: int("confirmedBy").references(() => users.id),
+    confirmedAt: timestamp("confirmedAt"),
+    invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
+    receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
+    consumedAt: timestamp("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    /** مرجع المزود فريد عالمياً بعد التطبيع، مهما تغيّر الفرع أو الطريقة أو قناة البيع. */
+    referenceUq: unique("uq_extpay_reference").on(table.normalizedReference),
+    requestUq: unique("uq_extpay_request").on(table.createdBy, table.requestId),
+    invoiceUq: unique("uq_extpay_invoice").on(table.invoiceId),
+    receiptUq: unique("uq_extpay_receipt").on(table.receiptId),
+    branchStateIdx: index("idx_extpay_branch_state").on(table.branchId, table.state, table.createdAt),
+    amountPositiveCheck: check("chk_extpay_amount_positive", sql`${table.amount} > 0`),
+    normalizedReferenceCheck: check(
+      "chk_extpay_reference_normalized",
+      sql`${table.normalizedReference} = UPPER(TRIM(${table.externalReference})) AND ${table.normalizedReference} <> ''`,
+    ),
+    confirmedEvidenceCheck: check(
+      "chk_extpay_confirmed_evidence",
+      sql`${table.state} NOT IN ('CONFIRMED','REVERSED') OR (${table.confirmedBy} IS NOT NULL AND ${table.confirmedAt} IS NOT NULL)`,
+    ),
+    consumptionCompleteCheck: check(
+      "chk_extpay_consumption_complete",
+      sql`(${table.invoiceId} IS NULL AND ${table.receiptId} IS NULL AND ${table.consumedAt} IS NULL)
+        OR (${table.invoiceId} IS NOT NULL AND ${table.receiptId} IS NOT NULL AND ${table.consumedAt} IS NOT NULL
+          AND ${table.state} IN ('CONFIRMED','REVERSED'))`,
+    ),
+  }),
+);
+
+export type ExternalPaymentAttempt = typeof externalPaymentAttempts.$inferSelect;
+export type InsertExternalPaymentAttempt = typeof externalPaymentAttempts.$inferInsert;
 
 /* ============================ فئات السندات (vouchers-pro ٣٠/٦) ============================
  * قائمة قابلة للإدارة من الواجهة (admin) — تُربط بـreceipts.voucherCategoryId.
@@ -8215,6 +8285,10 @@ export const digitalSaleIntents = mysqlTable(
       .notNull(),
     cartFingerprint: varchar("cartFingerprint", { length: 64 }).notNull(),
     paymentMethod: varchar("paymentMethod", { length: 20 }).notNull(),
+    /** محاولة قبض الزبون بالبطاقة، مستقلة عن مرجع إصدار الكرت لدى مزوّد البطاقات. */
+    externalPaymentAttemptId: bigint("externalPaymentAttemptId", { mode: "number" })
+      .unique("uq_dsi_extpay_attempt"),
+    externalPaymentDeviceId: varchar("externalPaymentDeviceId", { length: 64 }),
     expectedTotal: decimal("expectedTotal", {
       precision: 15,
       scale: 2,
@@ -8235,6 +8309,11 @@ export const digitalSaleIntents = mysqlTable(
   (t) => ({
     statusIdx: index("idx_dsi_status").on(t.status),
     branchIdx: index("idx_dsi_branch").on(t.branchId),
+    externalPaymentAttemptFk: foreignKey({
+      name: "fk_dsi_extpay_attempt",
+      columns: [t.externalPaymentAttemptId],
+      foreignColumns: [externalPaymentAttempts.id],
+    }),
   }),
 );
 export type DigitalSaleIntent = typeof digitalSaleIntents.$inferSelect;

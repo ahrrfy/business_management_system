@@ -137,6 +137,12 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  // محاولات الدفع الخارجية (0183): المرجع أحادي الاستعمال عالمياً، والربط أحادي.
+  uq_extpay_reference: { msg: "مرجع الدفع الخارجي مستخدَم في محاولة أخرى — لا يمكن تسجيل القبض مرتين." },
+  uq_extpay_request: { msg: "طلب محاولة الدفع هذا سُجّل مسبقاً — أعد تحميل حالته ولا تنشئ محاولة ثانية." },
+  uq_extpay_invoice: { msg: "هذه الفاتورة مرتبطة بمحاولة دفع خارجية أخرى بالفعل." },
+  uq_extpay_receipt: { msg: "هذا الإيصال مرتبط بمحاولة دفع خارجية أخرى بالفعل." },
+  uq_dsi_extpay_attempt: { msg: "محاولة دفع البطاقة مرتبطة بنيّة بيع رقمي أخرى بالفعل." },
   // ── استعادة كلمات المرور والسير الذاتية للمتقدمين (0174–0175) ──
   passwordResetTokens_lookupId_unique: {
     msg: "رمز استعادة كلمة المرور مسجّل مسبقاً — اطلب إصدار رمز جديد.",
