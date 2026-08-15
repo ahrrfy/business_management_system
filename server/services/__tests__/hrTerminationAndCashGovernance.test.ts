@@ -210,6 +210,9 @@ describe("حوكمة نقد السلف", () => {
     await expect(
       approveVoucher(Number(fifth.receiptId), { userId: 9, branchId: 1, role: "admin" }),
     ).rejects.toThrow(/غير المسدَّدة/);
+    const [stillPending] = await db().select().from(s.receipts)
+      .where(eq(s.receipts.id, Number(fifth.receiptId)));
+    expect(stillPending).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL" });
     const rows = await db().select().from(s.employeeAdvances);
     expect(rows).toHaveLength(4);
   });
