@@ -10,6 +10,7 @@ import {
   exchangeTransactions,
   expenses,
   fixedAssets,
+  idempotencyKeys,
   purchaseOrders,
   receipts,
   suppliers,
@@ -960,15 +961,61 @@ export async function resubmitRejectedExpensePayment(
     ) {
       throw new TRPCError({ code: "CONFLICT", message: "محاولة دفع المصروف لم تعد مرفوضة صالحة لإعادة التقديم" });
     }
-    const [expense] = await tx.select().from(expenses)
-      .where(eq(expenses.referenceNumber, rejected.referenceNumber))
+    const replayKey = `system-expense-resubmit-${receiptId}`;
+    const replayLinks = await tx.select({ refId: idempotencyKeys.refId })
+      .from(idempotencyKeys)
+      .where(and(
+        eq(idempotencyKeys.operation, "voucher.create"),
+        eq(idempotencyKeys.clientRequestId, replayKey),
+      ))
       .for("update")
-      .limit(1);
+      .limit(2);
+    if (replayLinks.length > 1) {
+      throw new TRPCError({ code: "CONFLICT", message: "رابط إعادة تقديم دفع المصروف غير وحيد" });
+    }
+    const currentReceiptId = replayLinks[0] ? Number(replayLinks[0].refId) : receiptId;
+
+    // The reference is descriptive and not unique.  On the first call the
+    // rejected parent must still be the expense edge; on a retry the unique
+    // idempotency link must point to the expense's current child.
+    const expenseMatches = await tx.select().from(expenses)
+      .where(and(
+        eq(expenses.receiptId, currentReceiptId),
+        eq(expenses.referenceNumber, rejected.referenceNumber),
+      ))
+      .for("update")
+      .limit(2);
+    const expense = expenseMatches[0];
     if (
-      !expense || expense.status !== "ACTIVE" ||
+      expenseMatches.length !== 1 || !expense || expense.status !== "ACTIVE" ||
       Number(expense.branchId) !== branchId || !money(expense.amount).eq(money(rejected.amount))
     ) {
       throw new TRPCError({ code: "CONFLICT", message: "استحقاق المصروف المرتبط بالطلب مفقود أو تغيّر" });
+    }
+    if (replayLinks[0]) {
+      const [child] = await tx.select().from(receipts)
+        .where(eq(receipts.id, currentReceiptId))
+        .for("update")
+        .limit(1);
+      if (
+        !child || child.status !== "PENDING" || child.approvalStatus !== "PENDING_APPROVAL" ||
+        child.direction !== "OUT" || child.shiftId != null || child.cashBucket != null ||
+        Number(child.branchId) !== branchId || child.paymentMethod !== rejected.paymentMethod ||
+        !money(child.amount).eq(money(rejected.amount)) ||
+        (child.referenceNumber ?? null) !== (rejected.referenceNumber ?? null) ||
+        (child.internalNote ?? null) !== (rejected.internalNote ?? null) ||
+        (child.partyType ?? null) !== (rejected.partyType ?? null) ||
+        (child.partyId == null ? null : Number(child.partyId)) !==
+          (rejected.partyId == null ? null : Number(rejected.partyId)) ||
+        child.voucherNumber == null
+      ) {
+        throw new TRPCError({ code: "CONFLICT", message: "طفل إعادة تقديم دفع المصروف مفقود أو تغيّر" });
+      }
+      return {
+        receiptId: currentReceiptId,
+        voucherNumber: String(child.voucherNumber),
+        approvalStatus: "PENDING_APPROVAL" as const,
+      };
     }
     const isShipping = request.kind === "PURCHASE_SHIPPING";
     const replacement = await createSystemPaymentRequestTx(tx, {
@@ -981,7 +1028,7 @@ export async function resubmitRejectedExpensePayment(
       referenceNumber: rejected.referenceNumber,
       attachmentUrl: correction?.attachmentUrl?.trim() || rejected.attachmentUrl || null,
       voucherDate: toDateStr(),
-      clientRequestId: `system-expense-resubmit-${receiptId}`,
+      clientRequestId: replayKey,
     }, actor, request);
     await tx.update(expenses)
       .set({ receiptId: replacement.receiptId })

@@ -10,6 +10,8 @@ import {
   listExpenses,
 } from "../expenseService";
 import { openShift } from "../shiftService";
+import { resubmitRejectedExpensePayment } from "../voucher/approval";
+import { computeSignature } from "../voucher/helpers";
 
 const manager1 = { userId: 1, branchId: 1, role: "manager" };
 const manager2 = { userId: 2, branchId: 1, role: "manager" };
@@ -24,11 +26,17 @@ async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const table of [
+    "idempotencyKeys",
     "auditLogs",
     "accountingEntries",
     "expenseStockItems",
     "receipts",
     "expenses",
+    "assetMaintenance",
+    "fixedAssets",
+    "purchaseOrderItems",
+    "purchaseOrders",
+    "suppliers",
     "shifts",
     "branches",
     "users",
@@ -58,6 +66,8 @@ async function reset() {
       isOwner: true,
     },
   ]);
+  await d.insert(s.branches).values({ id: 2, name: "SALES", code: "SALES", type: "SALES" });
+  await d.insert(s.suppliers).values({ id: 1, name: "TRACE-SUPPLIER" });
   await d.insert(s.receipts).values({
     branchId: 1,
     cashBucket: "TREASURY",
@@ -75,7 +85,10 @@ type RecognizedRequestCase =
   | { kind: "PURCHASE_SHIPPING"; approvalStatus: "PENDING_APPROVAL" }
   | { kind: "ASSET_MAINTENANCE"; approvalStatus: "REJECTED" };
 
-async function recognizedUnsettledExpense(input: RecognizedRequestCase) {
+async function recognizedUnsettledExpense(
+  input: RecognizedRequestCase,
+  options: { resubmit?: boolean; cancel?: boolean } = {},
+) {
   const shipping = input.kind === "PURCHASE_SHIPPING";
   const receiptId = shipping ? 401 : 402;
   const expenseId = shipping ? 501 : 502;
@@ -84,7 +97,7 @@ async function recognizedUnsettledExpense(input: RecognizedRequestCase) {
     ? {
         kind: "PURCHASE_SHIPPING" as const,
         purchaseOrderId: 91,
-        requestToken: "trace-shipping-token",
+        requestToken: "abcdef0123456789",
         expectedAmount: amount,
         sourceShippingTotal: amount,
       }
@@ -94,11 +107,56 @@ async function recognizedUnsettledExpense(input: RecognizedRequestCase) {
         maintenanceId: 71,
       };
   const referenceNumber = shipping
-    ? "SHIP-TRACE-01-trace-shipping-token"
+    ? "SHIP-TRACE-PO-91-abcdef0123456789"
     : "ASSET-MAINT-71";
   const accrualDedupe = shipping
-    ? "PURCHASE_SHIPPING_ACCRUAL:91:trace-shipping-token"
+    ? "PURCHASE_SHIPPING_ACCRUAL:91:abcdef0123456789"
     : "ASSET_MAINT_ACCRUAL:71";
+
+  if (shipping) {
+    await db().insert(s.purchaseOrders).values({
+      id: 91,
+      poNumber: "TRACE-PO-91",
+      supplierId: 1,
+      branchId: 1,
+      subtotal: "0.00",
+      shippingCost: amount,
+      customsCost: "0.00",
+      total: "0.00",
+      status: "RECEIVED",
+      createdBy: manager1.userId,
+    });
+  } else {
+    await db().insert(s.fixedAssets).values([
+      {
+        id: 81,
+        code: "AST-TRACE-81",
+        name: "TRACE-ASSET-81",
+        category: "devices",
+        branchId: 1,
+        purchaseDate: "2026-01-01",
+        purchaseValue: "1000.00",
+        usefulLifeYears: 5,
+      },
+      {
+        id: 82,
+        code: "AST-TRACE-82",
+        name: "TRACE-ASSET-82",
+        category: "devices",
+        branchId: 1,
+        purchaseDate: "2026-01-01",
+        purchaseValue: "1000.00",
+        usefulLifeYears: 5,
+      },
+    ]);
+    await db().insert(s.assetMaintenance).values({
+      id: 71,
+      assetId: 81,
+      maintDate: "2026-08-15",
+      type: "TRACE-MAINTENANCE",
+      cost: amount,
+    });
+  }
 
   await db()
     .insert(s.receipts)
@@ -112,6 +170,8 @@ async function recognizedUnsettledExpense(input: RecognizedRequestCase) {
       paymentMethod: "CASH",
       status: input.approvalStatus === "REJECTED" ? "FAILED" : "PENDING",
       approvalStatus: input.approvalStatus,
+      approvedBy: input.approvalStatus === "REJECTED" ? manager2.userId : null,
+      approvedAt: input.approvalStatus === "REJECTED" ? new Date() : null,
       referenceNumber,
       partyType: "OTHER",
       counterpartyName: shipping ? "شركة النقل/الكمرك" : "فني الصيانة",
@@ -143,6 +203,7 @@ async function recognizedUnsettledExpense(input: RecognizedRequestCase) {
     .values({
       entryType: "PAYMENT_OUT",
       branchId: 1,
+      purchaseOrderId: shipping ? 91 : null,
       receiptId: null,
       amount,
       entryDate: new Date("2026-08-15T00:00:00.000Z"),
@@ -150,9 +211,135 @@ async function recognizedUnsettledExpense(input: RecognizedRequestCase) {
       notes: "قيد استحقاق اختبار",
     });
 
-  await cancelExpense(expenseId, manager2);
-  return { expenseId, receiptId, amount };
+  let activeReceiptId = receiptId;
+  if (options.resubmit) {
+    const replacement = await resubmitRejectedExpensePayment(
+      receiptId,
+      manager2,
+      { note: "TRACE-RESUBMISSION" },
+    );
+    activeReceiptId = replacement.receiptId;
+  }
+  if (options.cancel !== false) await cancelExpense(expenseId, manager2);
+  return { expenseId, receiptId: activeReceiptId, originalReceiptId: receiptId, amount };
 }
+
+type RecognizedExpenseResult = Awaited<ReturnType<typeof recognizedUnsettledExpense>>;
+type SourceTamperCase = {
+  label: string;
+  input: RecognizedRequestCase;
+  options?: { resubmit?: boolean };
+  mutate: (result: RecognizedExpenseResult) => Promise<unknown>;
+};
+
+async function tamperSystemRequest(
+  receiptId: number,
+  patch: Record<string, unknown>,
+) {
+  const [receipt] = await db()
+    .select({ internalNote: s.receipts.internalNote })
+    .from(s.receipts)
+    .where(eq(s.receipts.id, receiptId));
+  const prefix = "@SYSTEM_PAYMENT_REQUEST:";
+  if (!receipt?.internalNote?.startsWith(prefix)) throw new Error("system request missing");
+  const request = JSON.parse(receipt.internalNote.slice(prefix.length));
+  await db()
+    .update(s.receipts)
+    .set({ internalNote: `${prefix}${JSON.stringify({ ...request, ...patch })}` })
+    .where(eq(s.receipts.id, receiptId));
+}
+
+const sourceTamperCases: SourceTamperCase[] = [
+  {
+    label: "maintenance asset relation",
+    input: { kind: "ASSET_MAINTENANCE", approvalStatus: "REJECTED" },
+    mutate: () => db().update(s.assetMaintenance).set({ assetId: 82 }).where(eq(s.assetMaintenance.id, 71)),
+  },
+  {
+    label: "missing maintenance source",
+    input: { kind: "ASSET_MAINTENANCE", approvalStatus: "REJECTED" },
+    mutate: () => db().delete(s.assetMaintenance).where(eq(s.assetMaintenance.id, 71)),
+  },
+  {
+    label: "shipping source snapshot",
+    input: { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+    mutate: ({ receiptId }) => tamperSystemRequest(receiptId, { sourceShippingTotal: "401.00" }),
+  },
+  {
+    label: "expense source reference",
+    input: { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+    mutate: ({ expenseId }) => db().update(s.expenses).set({ referenceNumber: "SHIP-TAMPERED" }).where(
+      eq(s.expenses.id, expenseId),
+    ),
+  },
+  {
+    label: "non-cash expense and receipt pair",
+    input: { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+    mutate: async ({ expenseId, receiptId }) => {
+      await db().update(s.expenses).set({ paymentMethod: "CARD" }).where(eq(s.expenses.id, expenseId));
+      await db().update(s.receipts).set({ paymentMethod: "CARD" }).where(eq(s.receipts.id, receiptId));
+    },
+  },
+  {
+    label: "receipt party linkage",
+    input: { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+    mutate: ({ receiptId }) => db().update(s.receipts).set({ partyType: "CUSTOMER", partyId: 777 }).where(
+      eq(s.receipts.id, receiptId),
+    ),
+  },
+  {
+    label: "purchase order source",
+    input: { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+    mutate: () => db().update(s.purchaseOrders).set({ branchId: 2 }).where(eq(s.purchaseOrders.id, 91)),
+  },
+  {
+    label: "accrual purchase order",
+    input: { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+    mutate: () => db().update(s.accountingEntries).set({ purchaseOrderId: null }).where(
+      eq(s.accountingEntries.dedupeKey, "PURCHASE_SHIPPING_ACCRUAL:91:abcdef0123456789"),
+    ),
+  },
+  {
+    label: "accrual amount",
+    input: { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+    mutate: () => db().update(s.accountingEntries).set({ amount: "399.00" }).where(
+      eq(s.accountingEntries.dedupeKey, "PURCHASE_SHIPPING_ACCRUAL:91:abcdef0123456789"),
+    ),
+  },
+  {
+    label: "accrual branch",
+    input: { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+    mutate: () => db().update(s.accountingEntries).set({ branchId: 2 }).where(
+      eq(s.accountingEntries.dedupeKey, "PURCHASE_SHIPPING_ACCRUAL:91:abcdef0123456789"),
+    ),
+  },
+  {
+    label: "resubmission rejection proof",
+    input: { kind: "ASSET_MAINTENANCE", approvalStatus: "REJECTED" },
+    options: { resubmit: true },
+    mutate: ({ originalReceiptId }) => db().update(s.receipts).set({ approvedAt: null }).where(
+      eq(s.receipts.id, originalReceiptId),
+    ),
+  },
+  {
+    label: "resubmission parent null party identity",
+    input: { kind: "ASSET_MAINTENANCE", approvalStatus: "REJECTED" },
+    options: { resubmit: true },
+    mutate: ({ originalReceiptId }) => db().update(s.receipts).set({ partyId: 0 }).where(
+      eq(s.receipts.id, originalReceiptId),
+    ),
+  },
+  {
+    label: "duplicate resubmission link",
+    input: { kind: "ASSET_MAINTENANCE", approvalStatus: "REJECTED" },
+    options: { resubmit: true },
+    mutate: ({ receiptId }) => db().insert(s.idempotencyKeys).values({
+      operation: "voucher.create",
+      clientRequestId: "system-expense-resubmit-999999",
+      refId: receiptId,
+    }),
+  },
+];
 
 beforeEach(reset);
 
@@ -393,5 +580,158 @@ describe("عقد التتبع التفصيلي للمصروفات", () => {
     const trace = await getExpenseTrace(expenseId, { branchId: 1 });
     expect(trace?.expense.integrityWarnings).toContain("RECEIPT_NOT_APPROVED");
     expect(trace?.expense.needsAudit).toBe(true);
+  });
+});
+
+describe("recognized unsettled source integrity", () => {
+  it("keeps a rejected then resubmitted cancellation clean through its system chain", async () => {
+    const { expenseId, receiptId, originalReceiptId } = await recognizedUnsettledExpense(
+      { kind: "ASSET_MAINTENANCE", approvalStatus: "REJECTED" },
+      { resubmit: true },
+    );
+    expect(receiptId).not.toBe(originalReceiptId);
+
+    const listed = await listExpenses({ status: "CANCELLED" });
+    expect(listed.rows[0]).toMatchObject({
+      id: expenseId,
+      createdBy: manager1.userId,
+      receiptCreatedBy: manager2.userId,
+      receiptStatus: "REVERSED",
+      receiptApprovalStatus: "PENDING_APPROVAL",
+      integrityWarnings: [],
+      needsAudit: false,
+    });
+    expect(listed.totals).toMatchObject({ needsAudit: 0, sourceMismatch: 0 });
+    expect((await getExpenseTrace(expenseId, { branchId: 1 }))?.expense).toMatchObject({
+      integrityWarnings: [],
+      needsAudit: false,
+    });
+  });
+
+  it.each(sourceTamperCases)(
+    "fails closed before cancellation when $label is tampered",
+    async ({ input, options, mutate }) => {
+      const result = await recognizedUnsettledExpense(input, { ...options, cancel: false });
+      await mutate(result);
+
+      await expect(cancelExpense(result.expenseId, manager2)).rejects.toMatchObject({
+        code: "CONFLICT",
+      });
+      const [expense] = await db()
+        .select({ status: s.expenses.status })
+        .from(s.expenses)
+        .where(eq(s.expenses.id, result.expenseId));
+      const [receipt] = await db()
+        .select({ status: s.receipts.status })
+        .from(s.receipts)
+        .where(eq(s.receipts.id, result.receiptId));
+      expect(expense.status).toBe("ACTIVE");
+      expect(receipt.status).not.toBe("REVERSED");
+    },
+  );
+
+  it.each(sourceTamperCases)(
+    "keeps list, trace and totals in audit state when $label is tampered after cancellation",
+    async ({ input, options, mutate }) => {
+      const result = await recognizedUnsettledExpense(input, options);
+      await mutate(result);
+
+      const listed = await listExpenses({ status: "CANCELLED" });
+      expect(listed.rows[0].integrityWarnings).toContain("RECEIPT_NOT_APPROVED");
+      expect(listed.rows[0].needsAudit).toBe(true);
+      expect(listed.totals).toMatchObject({ needsAudit: 1, sourceMismatch: 1 });
+
+      const trace = await getExpenseTrace(result.expenseId, { branchId: 1 });
+      expect(trace?.expense.integrityWarnings).toContain("RECEIPT_NOT_APPROVED");
+      expect(trace?.expense.needsAudit).toBe(true);
+    },
+  );
+
+  it("rejects a forged materialized system expense before creating any cancellation artifact", async () => {
+    const result = await recognizedUnsettledExpense(
+      { kind: "PURCHASE_SHIPPING", approvalStatus: "PENDING_APPROVAL" },
+      { cancel: false },
+    );
+    const voucherDate = "2026-08-15";
+    const voucherNumber = "PV-1-20260815-00401";
+    await db().update(s.receipts).set({
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      cashBucket: "TREASURY",
+      approvedBy: manager2.userId,
+      approvedAt: new Date("2026-08-15T09:00:00.000Z"),
+      voucherDate,
+      voucherNumber,
+      signatureHash: null,
+    }).where(eq(s.receipts.id, result.receiptId));
+
+    await expect(cancelExpense(result.expenseId, manager2)).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const forgedSignature = computeSignature({
+      id: result.receiptId,
+      amount: result.amount,
+      partyType: "OTHER",
+      partyId: null,
+      paymentMethod: "CASH",
+      voucherDate,
+      voucherNumber,
+      createdBy: manager1.userId,
+      approvedBy: manager2.userId,
+      branchId: 1,
+    });
+    await db().update(s.receipts).set({ signatureHash: forgedSignature }).where(eq(s.receipts.id, result.receiptId));
+    await tamperSystemRequest(result.receiptId, { purchaseOrderId: 999999 });
+
+    await expect(cancelExpense(result.expenseId, manager2)).rejects.toMatchObject({ code: "CONFLICT" });
+    const [expense] = await db().select().from(s.expenses).where(eq(s.expenses.id, result.expenseId));
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, result.receiptId));
+    expect(expense.status).toBe("ACTIVE");
+    expect(receipt.status).toBe("COMPLETED");
+    expect(await db().select().from(s.receipts).where(
+      eq(s.receipts.referenceNumber, `CANCEL-EXP-${result.expenseId}`),
+    )).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries).where(
+      eq(s.accountingEntries.dedupeKey, `EXPENSE_ACCRUAL_CANCEL:${result.expenseId}`),
+    )).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries).where(
+      eq(s.accountingEntries.entryType, "PAYMENT_IN"),
+    )).toHaveLength(0);
+  });
+
+  it("refuses resubmission when only the non-unique reference matches the expense", async () => {
+    const result = await recognizedUnsettledExpense(
+      { kind: "ASSET_MAINTENANCE", approvalStatus: "REJECTED" },
+      { cancel: false },
+    );
+    await db().update(s.expenses).set({ receiptId: null }).where(eq(s.expenses.id, result.expenseId));
+
+    await expect(
+      resubmitRejectedExpensePayment(result.originalReceiptId, manager2, { note: "BROKEN-EDGE" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await db().select().from(s.idempotencyKeys)).toHaveLength(0);
+    expect(await db().select().from(s.receipts).where(
+      eq(s.receipts.approvalStatus, "PENDING_APPROVAL"),
+    )).toHaveLength(0);
+  });
+
+  it("replays the same rejected-expense resubmission without creating a second child", async () => {
+    const result = await recognizedUnsettledExpense(
+      { kind: "ASSET_MAINTENANCE", approvalStatus: "REJECTED" },
+      { cancel: false },
+    );
+    const first = await resubmitRejectedExpensePayment(result.originalReceiptId, manager2, { note: "REPLAY" });
+    const second = await resubmitRejectedExpensePayment(result.originalReceiptId, manager2, { note: "REPLAY" });
+
+    expect(second).toEqual(first);
+    const pending = await db().select().from(s.receipts).where(
+      eq(s.receipts.approvalStatus, "PENDING_APPROVAL"),
+    );
+    expect(pending).toHaveLength(1);
+    expect(Number(pending[0].id)).toBe(first.receiptId);
+    expect(await db().select().from(s.idempotencyKeys).where(
+      eq(s.idempotencyKeys.clientRequestId, `system-expense-resubmit-${result.originalReceiptId}`),
+    )).toHaveLength(1);
+    const [expense] = await db().select().from(s.expenses).where(eq(s.expenses.id, result.expenseId));
+    expect(Number(expense.receiptId)).toBe(first.receiptId);
   });
 });

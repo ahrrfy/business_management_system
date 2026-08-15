@@ -4,17 +4,21 @@ import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import {
   accountingEntries,
+  assetMaintenance,
   auditLogs,
   branches,
   expenseStockItems,
   expenses,
+  fixedAssets,
+  idempotencyKeys,
   productVariants,
+  purchaseOrders,
   receipts,
   shifts,
   users,
 } from "../../drizzle/schema";
 import { localDayStart } from "./dateRange";
-import { getDb } from "../db";
+import { getDb, type Tx } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import {
@@ -29,6 +33,7 @@ import { assertCashOutAvailable, lockCashSourceForUpdate } from "./cash/cashAvai
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { parseSystemPaymentRequest } from "./voucher/create";
+import { computeSignature } from "./voucher/helpers";
 
 export type ExpensePaymentMethod =
   | "CASH"
@@ -988,6 +993,266 @@ export async function rejectExpense(
   });
 }
 
+type RecognizedSystemExpenseRequest = Extract<
+  NonNullable<ReturnType<typeof parseSystemPaymentRequest>>,
+  { kind: "PURCHASE_SHIPPING" | "ASSET_MAINTENANCE" }
+>;
+
+async function assertSystemExpenseResubmissionChain(
+  tx: Tx,
+  exp: typeof expenses.$inferSelect,
+  receipt: typeof receipts.$inferSelect,
+) {
+  if (exp.createdBy == null || receipt.createdBy == null) {
+    throw new TRPCError({ code: "CONFLICT", message: "منشئ طلب دفع المصروف مفقود" });
+  }
+  if (Number(exp.createdBy) === Number(receipt.createdBy)) return;
+
+  const links = await tx
+    .select({ clientRequestId: idempotencyKeys.clientRequestId })
+    .from(idempotencyKeys)
+    .where(
+      and(
+        eq(idempotencyKeys.operation, "voucher.create"),
+        eq(idempotencyKeys.refId, Number(receipt.id)),
+        sql`${idempotencyKeys.clientRequestId} LIKE ${"system-expense-resubmit-%"}`,
+      ),
+    )
+    .for("update")
+    .limit(2);
+  if (links.length !== 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "منشئ طلب دفع المصروف تغيّر بلا سلسلة إعادة تقديم نظامية وحيدة",
+    });
+  }
+  const match = /^system-expense-resubmit-(\d+)$/.exec(links[0].clientRequestId);
+  const parentReceiptId = match ? Number(match[1]) : 0;
+  if (!Number.isSafeInteger(parentReceiptId) || parentReceiptId <= 0 || parentReceiptId === Number(receipt.id)) {
+    throw new TRPCError({ code: "CONFLICT", message: "مرجع إعادة تقديم دفع المصروف غير صالح" });
+  }
+  const [parent] = await tx
+    .select()
+    .from(receipts)
+    .where(eq(receipts.id, parentReceiptId))
+    .for("update")
+    .limit(1);
+  if (
+    !parent ||
+    parent.direction !== "OUT" ||
+    parent.status !== "FAILED" ||
+    parent.approvalStatus !== "REJECTED" ||
+    parent.approvedBy == null ||
+    parent.approvedAt == null ||
+    parent.createdBy == null ||
+    Number(parent.createdBy) !== Number(exp.createdBy) ||
+    Number(parent.approvedBy) === Number(parent.createdBy) ||
+    parent.signatureHash != null ||
+    parent.shiftId != null ||
+    parent.cashBucket != null ||
+    Number(parent.branchId) !== Number(receipt.branchId) ||
+    parent.paymentMethod !== receipt.paymentMethod ||
+    !money(parent.amount).eq(money(receipt.amount)) ||
+    (parent.referenceNumber ?? null) !== (receipt.referenceNumber ?? null) ||
+    (parent.internalNote ?? null) !== (receipt.internalNote ?? null) ||
+    (parent.partyType ?? null) !== (receipt.partyType ?? null) ||
+    (parent.partyId == null ? null : Number(parent.partyId)) !==
+      (receipt.partyId == null ? null : Number(receipt.partyId))
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "سلسلة إعادة تقديم دفع المصروف مفقودة أو لا تطابق الطلب المرفوض",
+    });
+  }
+}
+
+/**
+ * Validates the authoritative source behind a recognized system expense, whether
+ * its clearing receipt is still unsettled or was genuinely materialized.
+ * This is deliberately stricter than trusting the JSON note: the note, source row,
+ * expense, receipt and accrual must all describe the same operation.
+ */
+async function assertRecognizedExpenseSource(
+  tx: Tx,
+  exp: typeof expenses.$inferSelect,
+  receipt: typeof receipts.$inferSelect,
+  settlementState: "UNSETTLED" | "MATERIALIZED" = "UNSETTLED",
+): Promise<{ accrualPurchaseOrderId: number | null }> {
+  const unsettledStateIsValid =
+    receipt.shiftId == null &&
+    receipt.cashBucket == null &&
+    (
+      (receipt.status === "PENDING" && receipt.approvalStatus === "PENDING_APPROVAL") ||
+      (receipt.status === "FAILED" && receipt.approvalStatus === "REJECTED")
+    );
+  const materializedStateIsValid =
+    receipt.status === "COMPLETED" &&
+    receipt.approvalStatus === "APPROVED" &&
+    receipt.shiftId == null &&
+    receipt.cashBucket === "TREASURY" &&
+    receipt.approvedBy != null &&
+    receipt.approvedAt != null &&
+    receipt.createdBy != null &&
+    Number(receipt.approvedBy) !== Number(receipt.createdBy) &&
+    receipt.voucherNumber != null &&
+    receipt.voucherDate != null &&
+    receipt.signatureHash != null;
+  if (
+    exp.status !== "ACTIVE" ||
+    exp.source !== "CASH" ||
+    exp.shiftId != null ||
+    exp.cashBucket !== "TREASURY" ||
+    exp.paymentMethod !== "CASH" ||
+    receipt.direction !== "OUT" ||
+    receipt.paymentMethod !== "CASH" ||
+    receipt.partyType !== "OTHER" ||
+    receipt.partyId != null ||
+    receipt.invoiceId != null ||
+    receipt.workOrderId != null ||
+    receipt.reservationId != null ||
+    (exp.referenceNumber ?? null) !== (receipt.referenceNumber ?? null) ||
+    (settlementState === "UNSETTLED" ? !unsettledStateIsValid : !materializedStateIsValid)
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "حالة استحقاق المصروف غير المدفوع لا تطابق عقد الإلغاء النظامي",
+    });
+  }
+
+  if (settlementState === "MATERIALIZED") {
+    const expectedSignature = computeSignature({
+      id: Number(receipt.id),
+      amount: toDbMoney(receipt.amount),
+      partyType: "OTHER",
+      partyId: null,
+      paymentMethod: "CASH",
+      voucherDate: String(receipt.voucherDate).slice(0, 10),
+      voucherNumber: String(receipt.voucherNumber),
+      createdBy: Number(receipt.createdBy),
+      approvedBy: Number(receipt.approvedBy),
+      branchId: Number(receipt.branchId),
+    });
+    if (receipt.signatureHash !== expectedSignature) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "بصمة اعتماد دفع المصروف المنفذ مفقودة أو لا تطابق السند",
+      });
+    }
+  }
+
+  const request = parseSystemPaymentRequest(receipt.internalNote) as RecognizedSystemExpenseRequest | null;
+  if (request?.kind !== "PURCHASE_SHIPPING" && request?.kind !== "ASSET_MAINTENANCE") {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "طلب دفع المصروف غير المنفذ لا يحمل مرجع مصدر نظامياً صالحاً",
+    });
+  }
+  await assertSystemExpenseResubmissionChain(tx, exp, receipt);
+
+  let accrualDedupe: string;
+  let expectedPurchaseOrderId: number | null;
+  if (request.kind === "PURCHASE_SHIPPING") {
+    if (
+      !Number.isSafeInteger(request.purchaseOrderId) ||
+      request.purchaseOrderId <= 0 ||
+      !/^[0-9a-f]{16}$/i.test(request.requestToken) ||
+      typeof request.expectedAmount !== "string" ||
+      typeof request.sourceShippingTotal !== "string" ||
+      !money(request.expectedAmount).eq(money(exp.amount))
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "بيانات مصدر مصروف الشحن غير صالحة" });
+    }
+    const [purchaseOrder] = await tx
+      .select()
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, request.purchaseOrderId))
+      .for("update")
+      .limit(1);
+    if (
+      !purchaseOrder ||
+      Number(purchaseOrder.branchId) !== Number(exp.branchId) ||
+      exp.category !== "TRANSPORT" ||
+      receipt.referenceNumber !== `SHIP-${purchaseOrder.poNumber}-${request.requestToken}` ||
+      !money(purchaseOrder.shippingCost)
+        .plus(money(purchaseOrder.customsCost))
+        .eq(money(request.sourceShippingTotal))
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مصدر الشحن أو الفرع أو المبلغ لا يطابق المصروف المعترف به",
+      });
+    }
+    accrualDedupe = `PURCHASE_SHIPPING_ACCRUAL:${request.purchaseOrderId}:${request.requestToken}`;
+    expectedPurchaseOrderId = request.purchaseOrderId;
+  } else {
+    if (
+      !Number.isSafeInteger(request.assetId) ||
+      request.assetId <= 0 ||
+      !Number.isSafeInteger(request.maintenanceId) ||
+      request.maintenanceId <= 0
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "بيانات مصدر مصروف الصيانة غير صالحة" });
+    }
+    const [maintenance] = await tx
+      .select()
+      .from(assetMaintenance)
+      .where(eq(assetMaintenance.id, request.maintenanceId))
+      .for("update")
+      .limit(1);
+    const [asset] = await tx
+      .select()
+      .from(fixedAssets)
+      .where(eq(fixedAssets.id, request.assetId))
+      .for("update")
+      .limit(1);
+    if (
+      !maintenance ||
+      !asset ||
+      Number(maintenance.assetId) !== request.assetId ||
+      Number(asset.branchId) !== Number(exp.branchId) ||
+      exp.category !== "MAINTENANCE" ||
+      receipt.referenceNumber !== `ASSET-MAINT-${request.maintenanceId}` ||
+      !money(maintenance.cost).eq(money(exp.amount))
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "سجل الصيانة أو الأصل أو الفرع أو المبلغ لا يطابق المصروف المعترف به",
+      });
+    }
+    accrualDedupe = `ASSET_MAINT_ACCRUAL:${request.maintenanceId}`;
+    expectedPurchaseOrderId = null;
+  }
+
+  const accruals = await tx
+    .select({
+      entryType: accountingEntries.entryType,
+      branchId: accountingEntries.branchId,
+      purchaseOrderId: accountingEntries.purchaseOrderId,
+      receiptId: accountingEntries.receiptId,
+      amount: accountingEntries.amount,
+    })
+    .from(accountingEntries)
+    .where(eq(accountingEntries.dedupeKey, accrualDedupe))
+    .for("update")
+    .limit(2);
+  const accrual = accruals[0];
+  if (
+    accruals.length !== 1 ||
+    !accrual ||
+    accrual.entryType !== "PAYMENT_OUT" ||
+    accrual.receiptId != null ||
+    Number(accrual.branchId) !== Number(exp.branchId) ||
+    Number(accrual.purchaseOrderId ?? 0) !== Number(expectedPurchaseOrderId ?? 0) ||
+    !money(accrual.amount).eq(money(exp.amount))
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "قيد استحقاق المصروف مفقود أو لا يطابق مصدره الحقيقي",
+    });
+  }
+  return { accrualPurchaseOrderId: expectedPurchaseOrderId };
+}
+
 /**
  * Cancel an active expense. Only allowed when the linked shift (if any) is still OPEN.
  * Marks the linked payment request/receipt REVERSED. A material APPROVED+COMPLETED
@@ -1180,6 +1445,31 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       });
     }
 
+    // A forged COMPLETED+APPROVED pair must not turn an unsettled system expense
+    // into a materialized one.  Recognize the reserved system shape even when its
+    // JSON/reference was damaged, then require both the approval signature and the
+    // authoritative source before either status changes.
+    const parsedSystemRequest = parseSystemPaymentRequest(linkedReceipt.internalNote);
+    const recognizedSystemExpenseCandidate =
+      parsedSystemRequest?.kind === "PURCHASE_SHIPPING" ||
+      parsedSystemRequest?.kind === "ASSET_MAINTENANCE" ||
+      linkedReceipt.internalNote?.startsWith("@SYSTEM_PAYMENT_REQUEST:") === true ||
+      (
+        linkedReceipt.voucherNumber != null &&
+        exp.cashBucket === "TREASURY" &&
+        (exp.category === "TRANSPORT" || exp.category === "MAINTENANCE")
+      ) ||
+      /^SHIP-.+-[0-9a-f]{16}$/i.test(linkedReceipt.referenceNumber ?? "") ||
+      /^ASSET-MAINT-[1-9][0-9]*$/.test(linkedReceipt.referenceNumber ?? "");
+    let unsettledSource: { accrualPurchaseOrderId: number | null } | null = null;
+    if (cashWasMaterialized) {
+      if (recognizedSystemExpenseCandidate) {
+        await assertRecognizedExpenseSource(tx, exp, linkedReceipt, "MATERIALIZED");
+      }
+    } else {
+      unsettledSource = await assertRecognizedExpenseSource(tx, exp, linkedReceipt);
+    }
+
     await tx
       .update(expenses)
       .set({ status: "CANCELLED" })
@@ -1191,7 +1481,7 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
 
     // مصروف الشحن/الصيانة يُعترف به قبل الدفع، وإيصاله المعلّق/المرفوض لم يمس
     // النقد. إلغاؤه يعكس قيد الاستحقاق فقط، ولا يخلق قبضاً وهمياً في الخزينة.
-    if (!cashWasMaterialized) {
+    if (unsettledSource) {
       const request = parseSystemPaymentRequest(linkedReceipt.internalNote);
       const accrualDedupe = request?.kind === "PURCHASE_SHIPPING"
         ? `PURCHASE_SHIPPING_ACCRUAL:${request.purchaseOrderId}:${request.requestToken}`
@@ -1228,7 +1518,7 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       await postEntry(tx, {
         entryType: "PAYMENT_OUT",
         branchId: Number(exp.branchId),
-        purchaseOrderId: accrual.purchaseOrderId != null ? Number(accrual.purchaseOrderId) : null,
+        purchaseOrderId: unsettledSource.accrualPurchaseOrderId,
         amount: money(exp.amount).neg(),
         entryDate: new Date(exp.expenseDate),
         dedupeKey: `EXPENSE_ACCRUAL_CANCEL:${expenseId}`,
@@ -1334,6 +1624,108 @@ const systemAccrualDedupeSql = sql`CASE
   ELSE NULL
 END`;
 
+const systemRequestPurchaseOrderIdSql = sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.purchaseOrderId')) AS UNSIGNED)`;
+const systemRequestMaintenanceIdSql = sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.maintenanceId')) AS UNSIGNED)`;
+const systemRequestAssetIdSql = sql`CAST(JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.assetId')) AS UNSIGNED)`;
+const systemRequestTokenSql = sql`JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.requestToken'))`;
+const systemRequestExpectedAmountSql = sql`JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.expectedAmount'))`;
+const systemRequestShippingTotalSql = sql`JSON_UNQUOTE(JSON_EXTRACT(${systemRequestJsonSql}, '$.sourceShippingTotal'))`;
+
+/** A different creator is legitimate only when this receipt is the exact child of a rejected system request. */
+const systemExpenseResubmissionChainSql = sql`(
+  (
+    SELECT COUNT(*)
+    FROM idempotencyKeys AS expenseResubmitLinkCount
+    WHERE expenseResubmitLinkCount.operation = 'voucher.create'
+      AND expenseResubmitLinkCount.clientRequestId LIKE 'system-expense-resubmit-%'
+      AND expenseResubmitLinkCount.refId = ${receipts.id}
+  ) = 1
+  AND EXISTS (
+  SELECT 1
+  FROM idempotencyKeys AS expenseResubmitLink
+  INNER JOIN receipts AS expenseResubmitParent
+    ON expenseResubmitParent.id = CAST(
+      SUBSTRING(
+        expenseResubmitLink.clientRequestId,
+        CHAR_LENGTH('system-expense-resubmit-') + 1
+      ) AS UNSIGNED
+    )
+  WHERE expenseResubmitLink.operation = 'voucher.create'
+    AND expenseResubmitLink.refId = ${receipts.id}
+    AND expenseResubmitLink.clientRequestId LIKE 'system-expense-resubmit-%'
+    AND expenseResubmitLink.clientRequestId REGEXP '^system-expense-resubmit-[1-9][0-9]*$'
+    AND expenseResubmitParent.id <> ${receipts.id}
+    AND expenseResubmitParent.direction = 'OUT'
+    AND expenseResubmitParent.receiptStatus = 'FAILED'
+    AND expenseResubmitParent.receiptApprovalStatus = 'REJECTED'
+    AND expenseResubmitParent.approvedBy IS NOT NULL
+    AND expenseResubmitParent.approvedAt IS NOT NULL
+    AND expenseResubmitParent.createdBy IS NOT NULL
+    AND expenseResubmitParent.createdBy = ${expenses.createdBy}
+    AND expenseResubmitParent.approvedBy <> expenseResubmitParent.createdBy
+    AND expenseResubmitParent.signatureHash IS NULL
+    AND expenseResubmitParent.shiftId IS NULL
+    AND expenseResubmitParent.cashBucket IS NULL
+    AND (expenseResubmitParent.branchId <=> ${receipts.branchId})
+    AND (expenseResubmitParent.amount <=> ${receipts.amount})
+    AND (expenseResubmitParent.paymentMethod <=> ${receipts.paymentMethod})
+    AND (expenseResubmitParent.referenceNumber <=> ${receipts.referenceNumber})
+    AND (expenseResubmitParent.internalNote <=> ${receipts.internalNote})
+    AND (expenseResubmitParent.voucherPartyType <=> ${receipts.partyType})
+    AND (expenseResubmitParent.partyId <=> ${receipts.partyId})
+  )
+)`;
+
+/** The JSON request is accepted only when its authoritative source still matches. */
+const recognizedSystemExpenseSourceSql = sql`(
+  (
+    ${expenses.category} = 'TRANSPORT'
+    AND ${systemRequestKindSql} = 'PURCHASE_SHIPPING'
+    AND JSON_TYPE(JSON_EXTRACT(${systemRequestJsonSql}, '$.purchaseOrderId')) = 'INTEGER'
+    AND ${systemRequestPurchaseOrderIdSql} > 0
+    AND JSON_TYPE(JSON_EXTRACT(${systemRequestJsonSql}, '$.requestToken')) = 'STRING'
+    AND BINARY ${systemRequestTokenSql} REGEXP '^[0-9A-Fa-f]{16}$'
+    AND JSON_TYPE(JSON_EXTRACT(${systemRequestJsonSql}, '$.expectedAmount')) = 'STRING'
+    AND ${systemRequestExpectedAmountSql} REGEXP '^[0-9]+([.][0-9]{1,2})?$'
+    AND CAST(${systemRequestExpectedAmountSql} AS DECIMAL(15, 2)) <=> ${expenses.amount}
+    AND JSON_TYPE(JSON_EXTRACT(${systemRequestJsonSql}, '$.sourceShippingTotal')) = 'STRING'
+    AND ${systemRequestShippingTotalSql} REGEXP '^[0-9]+([.][0-9]{1,2})?$'
+    AND EXISTS (
+      SELECT 1
+      FROM purchaseOrders AS recognizedPurchaseOrder
+      WHERE recognizedPurchaseOrder.id = ${systemRequestPurchaseOrderIdSql}
+        AND (recognizedPurchaseOrder.branchId <=> ${expenses.branchId})
+        AND ${receipts.referenceNumber} = CONCAT(
+          'SHIP-', recognizedPurchaseOrder.poNumber, '-', ${systemRequestTokenSql}
+        )
+        AND (
+          recognizedPurchaseOrder.shippingCost + recognizedPurchaseOrder.customsCost
+          <=> CAST(${systemRequestShippingTotalSql} AS DECIMAL(15, 2))
+        )
+    )
+  )
+  OR
+  (
+    ${expenses.category} = 'MAINTENANCE'
+    AND ${systemRequestKindSql} = 'ASSET_MAINTENANCE'
+    AND JSON_TYPE(JSON_EXTRACT(${systemRequestJsonSql}, '$.maintenanceId')) = 'INTEGER'
+    AND JSON_TYPE(JSON_EXTRACT(${systemRequestJsonSql}, '$.assetId')) = 'INTEGER'
+    AND ${systemRequestMaintenanceIdSql} > 0
+    AND ${systemRequestAssetIdSql} > 0
+    AND ${receipts.referenceNumber} = CONCAT('ASSET-MAINT-', ${systemRequestMaintenanceIdSql})
+    AND EXISTS (
+      SELECT 1
+      FROM assetMaintenance AS recognizedMaintenance
+      INNER JOIN fixedAssets AS recognizedAsset
+        ON recognizedAsset.id = recognizedMaintenance.assetId
+      WHERE recognizedMaintenance.id = ${systemRequestMaintenanceIdSql}
+        AND recognizedMaintenance.assetId = ${systemRequestAssetIdSql}
+        AND (recognizedAsset.branchId <=> ${expenses.branchId})
+        AND (recognizedMaintenance.cost <=> ${expenses.amount})
+    )
+  )
+)`;
+
 /**
  * عقد واحد لحالة «اعترفنا بالمصروف ولم ندفعه ثم ألغيناه».
  * لا يكفي كون السند PENDING/REJECTED: يلزم طلب نظامي من نوع الشحن/الصيانة،
@@ -1345,8 +1737,17 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
   AND ${expenses.source} = 'CASH'
   AND ${expenses.shiftId} IS NULL
   AND ${expenses.cashBucket} = 'TREASURY'
+  AND ${expenses.paymentMethod} = 'CASH'
+  AND ${receipts.paymentMethod} = 'CASH'
+  AND ${expenses.createdBy} IS NOT NULL
+  AND ${receipts.createdBy} IS NOT NULL
   AND ${receipts.id} IS NOT NULL
   AND ${receipts.direction} = 'OUT'
+  AND ${receipts.partyType} = 'OTHER'
+  AND ${receipts.partyId} IS NULL
+  AND ${receipts.invoiceId} IS NULL
+  AND ${receipts.workOrderId} IS NULL
+  AND ${receipts.reservationId} IS NULL
   AND ${receipts.status} = 'REVERSED'
   AND ${receipts.approvalStatus} IN ('PENDING_APPROVAL', 'REJECTED')
   AND ${receipts.shiftId} IS NULL
@@ -1354,7 +1755,10 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
   AND (${expenses.amount} <=> ${receipts.amount})
   AND (${expenses.branchId} <=> ${receipts.branchId})
   AND (${expenses.paymentMethod} <=> ${receipts.paymentMethod})
-  AND (${expenses.createdBy} <=> ${receipts.createdBy})
+  AND (
+    (${expenses.createdBy} <=> ${receipts.createdBy})
+    OR ${systemExpenseResubmissionChainSql}
+  )
   AND (${expenses.referenceNumber} <=> ${receipts.referenceNumber})
   AND (
     (
@@ -1379,6 +1783,7 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
       )
     )
   )
+  AND ${recognizedSystemExpenseSourceSql}
   AND EXISTS (
     SELECT 1
     FROM accountingEntries AS recognizedAccrual
@@ -1387,6 +1792,12 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
       AND (recognizedAccrual.branchId <=> ${expenses.branchId})
       AND (recognizedAccrual.amount <=> ${expenses.amount})
       AND recognizedAccrual.dedupeKey = ${systemAccrualDedupeSql}
+      AND (
+        (${systemRequestKindSql} = 'PURCHASE_SHIPPING'
+          AND recognizedAccrual.purchaseOrderId = ${systemRequestPurchaseOrderIdSql})
+        OR (${systemRequestKindSql} = 'ASSET_MAINTENANCE'
+          AND recognizedAccrual.purchaseOrderId IS NULL)
+      )
   )
   AND EXISTS (
     SELECT 1
@@ -1396,6 +1807,12 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
       AND (recognizedAccrualReversal.branchId <=> ${expenses.branchId})
       AND recognizedAccrualReversal.amount = -${expenses.amount}
       AND recognizedAccrualReversal.dedupeKey = CONCAT('EXPENSE_ACCRUAL_CANCEL:', ${expenses.id})
+      AND (
+        (${systemRequestKindSql} = 'PURCHASE_SHIPPING'
+          AND recognizedAccrualReversal.purchaseOrderId = ${systemRequestPurchaseOrderIdSql})
+        OR (${systemRequestKindSql} = 'ASSET_MAINTENANCE'
+          AND recognizedAccrualReversal.purchaseOrderId IS NULL)
+      )
   )
 ), FALSE)`;
 
