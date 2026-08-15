@@ -674,6 +674,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       ["cashDropService.ts", "CASH_DROP_INTERNAL"],
       ["cashHandoverService.ts", "CASH_HANDOVER_INTERNAL"],
       ["shiftService.ts", "SHIFT_FLOAT_INTERNAL"],
+      ["legacyNegativeShiftService.ts", "LEGACY_SHIFT_REMEDIATION_INTERNAL"],
       ["sale/cancel.ts", "SALE_CANCELLATION_COMPENSATION"],
       ["digitalCards/reversalService.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
       ["exchange/reverse.ts", "EXCHANGE_REVERSAL_COMPENSATION"],

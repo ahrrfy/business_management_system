@@ -8,6 +8,7 @@ import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
+import { remediateAndCloseLegacyNegativeShifts } from "../services/legacyNegativeShiftService";
 import { createCashDrop } from "../services/cashDropService";
 import { router, treasuryCashierProcedure, treasuryReadProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
@@ -164,11 +165,70 @@ export const shiftRouter = router({
         countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود مبلغ غير سالب"),
         // treasury-stage2: snapshot عدّاد الفئات (اختياري).
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
+        // مسار مالك استثنائي لورديات سالبة سبقت تفعيل الحارس. لا يَقبل مبلغ تمويل من العميل؛
+        // الخدمة تعيد حساب العجز وتضيف خزينة→درج بالقيمة الدقيقة ثم تغلق بصفر.
+        legacyNegativeRemediation: z
+          .object({
+            expectedCash: z.string().regex(/^-\d+(\.\d{1,2})?$/, "لقطة الرصيد السالب غير صالحة"),
+            sourceTreasuryReceiptId: z.number().int().positive().nullish(),
+            evidenceNote: z.string().trim().min(20).max(1000),
+            confirmDrawerCountedZero: z.literal(true),
+            clientRequestId: z.string().trim().min(1).max(64),
+          })
+          .optional(),
         // العهدة الوسيطة (imprest، ٢٨/٧/٢٦): لا تسليم يدويّ عند الإغلاق — يعود كامل المعدود للخزينة
         // تلقائياً (settleShiftReturnTx). أُزيل حقل handover؛ أيّ إرسال قديم منه يُهمَل (zod يُجرّده).
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (input.legacyNegativeRemediation) {
+        if (input.countedCash !== "0" && input.countedCash !== "0.00") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "معالجة الوردية السالبة تشترط أن يكون النقد المعدود فعلياً صفراً",
+          });
+        }
+        const batch = await remediateAndCloseLegacyNegativeShifts(
+          [
+            {
+              shiftId: input.shiftId,
+              expectedCash: input.legacyNegativeRemediation.expectedCash,
+              sourceTreasuryReceiptId:
+                input.legacyNegativeRemediation.sourceTreasuryReceiptId ?? null,
+              evidenceNote: input.legacyNegativeRemediation.evidenceNote,
+              confirmDrawerCountedZero:
+                input.legacyNegativeRemediation.confirmDrawerCountedZero,
+              clientRequestId: input.legacyNegativeRemediation.clientRequestId,
+            },
+          ],
+          {
+            userId: ctx.user.id,
+            branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+            role: ctx.user.role,
+            isOwner: ctx.user.isOwner,
+            ipAddress:
+              (ctx.req.headers["x-forwarded-for"] as string | undefined)
+                ?.split(",")[0]
+                ?.trim() ?? ctx.req.ip ?? null,
+          },
+        );
+        const corrected = batch.items[0];
+        if (!corrected) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم تكتمل معالجة الوردية" });
+        }
+        return {
+          ...corrected,
+          requiresManagerReview: false,
+          varianceReasonCode: null,
+          varianceReason: null,
+          treasuryReturn: null,
+          legacyNegativeRemediation: {
+            totalFunding: batch.totalFunding,
+            treasury: batch.treasury,
+            cutoff: batch.cutoff,
+          },
+        };
+      }
       // سياسة #14: نمرّر دور الفاعل + فرعه ليفرض closeShift فحص الملكية/الفرع.
       // G4: استبدال `?? -1` الذي كان يُمرَّر للخدمة فيرفع رسالة مضلّلة (لا تطابُق فرع)
       // بدل سبب الحقيقي (لا فرع مُسنَد). FORBIDDEN صريح للأدوار غير المرتفعة.
