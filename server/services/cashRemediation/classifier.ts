@@ -90,13 +90,13 @@ function classify(
   const pairedInternalTransfer = receipt.pairedTreasuryReceiptId != null;
   if (pairedInternalTransfer) {
     const fullyAccepted =
-      receiptStatusAffectsCash(receipt.status) &&
+      receiptStatusAffectsCash(receipt.status, receipt.approvalStatus) &&
       receipt.pairedTreasuryReceiptStatus === "COMPLETED" &&
       receipt.pairedTreasuryApprovalStatus === "APPROVED" &&
       receipt.ledgerEntryTypes.includes("CASH_HANDOVER");
     const transferEvidence: EvidenceMissing[] = [];
     if (
-      !receiptStatusAffectsCash(receipt.status) ||
+      !receiptStatusAffectsCash(receipt.status, receipt.approvalStatus) ||
       receipt.pairedTreasuryReceiptStatus !== "COMPLETED" ||
       receipt.pairedTreasuryApprovalStatus !== "APPROVED"
     ) {
@@ -243,7 +243,7 @@ export function analyzeCashRemediation(
     if (
       receipt.paymentMethod !== "CASH" ||
       receipt.cashBucket !== "DRAWER" ||
-      !receiptStatusAffectsCash(receipt.status) ||
+      !receiptStatusAffectsCash(receipt.status, receipt.approvalStatus) ||
       receipt.pairedTreasuryReceiptId != null ||
       receipt.status === "REVERSED" ||
       receipt.linkedExpenseIds.length > 1

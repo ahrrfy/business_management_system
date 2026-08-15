@@ -68,25 +68,52 @@ function receipt(id: number, overrides: Partial<RawRemediationReceipt> = {}): Ra
 }
 
 describe("analyzeCashRemediation", () => {
-  it("يوحّد أثر الحالات: COMPLETED وREVERSED فقط؛ PENDING وFAILED صفر", () => {
-    expect(receiptStatusAffectsCash("COMPLETED")).toBe(true);
-    expect(receiptStatusAffectsCash("REVERSED")).toBe(true);
-    expect(receiptStatusAffectsCash("PENDING")).toBe(false);
-    expect(receiptStatusAffectsCash("FAILED")).toBe(false);
+  it("يوحّد أثر الحالة والاعتماد: APPROVED مع COMPLETED/REVERSED فقط يؤثر", () => {
+    expect(receiptStatusAffectsCash("COMPLETED", "APPROVED")).toBe(true);
+    expect(receiptStatusAffectsCash("REVERSED", "APPROVED")).toBe(true);
+    expect(receiptStatusAffectsCash("PENDING", "APPROVED")).toBe(false);
+    expect(receiptStatusAffectsCash("FAILED", "APPROVED")).toBe(false);
+    expect(receiptStatusAffectsCash("COMPLETED", "PENDING_APPROVAL")).toBe(
+      false,
+    );
+    expect(receiptStatusAffectsCash("REVERSED", "PENDING_APPROVAL")).toBe(
+      false,
+    );
+    expect(receiptStatusAffectsCash("COMPLETED", "REJECTED")).toBe(false);
+    expect(receiptStatusAffectsCash("REVERSED", "REJECTED")).toBe(false);
 
     const dataset: RawCashRemediationDataset = {
-      shifts: [shift({ openingBalance: "100.00", countedCash: "70.00" })],
+      shifts: [shift({ openingBalance: "100.00", countedCash: "50.00" })],
       receipts: [
         receipt(1, { amount: "150.00", status: "PENDING" }),
         receipt(2, { amount: "150.00", status: "FAILED" }),
-        receipt(3, { amount: "30.00", status: "REVERSED" }),
-        receipt(4, { direction: "IN", amount: "500.00", status: "PENDING" }),
-        receipt(5, { direction: "IN", amount: "500.00", status: "FAILED" }),
+        receipt(3, {
+          amount: "150.00",
+          status: "COMPLETED",
+          approvalStatus: "PENDING_APPROVAL",
+        }),
+        receipt(4, {
+          amount: "150.00",
+          status: "REVERSED",
+          approvalStatus: "PENDING_APPROVAL",
+        }),
+        receipt(5, {
+          amount: "150.00",
+          status: "COMPLETED",
+          approvalStatus: "REJECTED",
+        }),
+        receipt(6, {
+          amount: "150.00",
+          status: "REVERSED",
+          approvalStatus: "REJECTED",
+        }),
+        receipt(7, { amount: "20.00", status: "COMPLETED" }),
+        receipt(8, { amount: "30.00", status: "REVERSED" }),
       ],
     };
     const report = analyzeCashRemediation(dataset, filters);
     const result = report.shifts[0];
-    expect(result.before.computedExpectedCash).toBe("70.00");
+    expect(result.before.computedExpectedCash).toBe("50.00");
     expect(result.firstNegative).toBeNull();
     expect(
       result.outflows.map((row) => ({
@@ -98,14 +125,21 @@ describe("analyzeCashRemediation", () => {
     ).toEqual([
       { id: 1, before: "100.00", after: "100.00", affects: false },
       { id: 2, before: "100.00", after: "100.00", affects: false },
-      { id: 3, before: "100.00", after: "70.00", affects: true },
+      { id: 3, before: "100.00", after: "100.00", affects: false },
+      { id: 4, before: "100.00", after: "100.00", affects: false },
+      { id: 5, before: "100.00", after: "100.00", affects: false },
+      { id: 6, before: "100.00", after: "100.00", affects: false },
+      { id: 7, before: "100.00", after: "80.00", affects: true },
+      { id: 8, before: "80.00", after: "50.00", affects: true },
     ]);
-    expect(() =>
-      analyzeCashRemediation(dataset, {
-        ...filters,
-        simulations: [{ receiptId: 1, classification: "DUPLICATE_OR_ERROR" }],
-      }),
-    ).toThrow(/لا يقبل محاكاة تسوية/);
+    for (const receiptId of [1, 3, 5]) {
+      expect(() =>
+        analyzeCashRemediation(dataset, {
+          ...filters,
+          simulations: [{ receiptId, classification: "DUPLICATE_OR_ERROR" }],
+        }),
+      ).toThrow(/لا يقبل محاكاة تسوية/);
+    }
   });
 
   it("يحسب الرصيد الجاري وأول نقطة سالب ويعرض كل OUT ومصدره", () => {
