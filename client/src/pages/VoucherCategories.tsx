@@ -1,12 +1,22 @@
 // إدارة فئات السندات — محاسب/مدير مخوّل بالخزينة، مع معالجة التصنيف التاريخي.
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import {
+  LoadingState,
+  ErrorState,
+  TableEmptyRow,
+} from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -22,10 +32,16 @@ import {
   voucherCategoryRoleOptionsFor,
   type VoucherCategoryPostingRole,
 } from "@shared/voucherCategoryAccounting";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  moduleAccessAllowed,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
 
 function unresolvedCategoryLabel(name: string): string {
-  return (UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES as readonly string[]).includes(name)
+  return (UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES as readonly string[]).includes(
+    name,
+  )
     ? "تحتاج مساراً تخصصياً"
     : "غير معيّن";
 }
@@ -34,7 +50,11 @@ type Row = RouterOutputs["voucherCategories"]["list"][number];
 
 // توحيد التسمية مع نموذج الإضافة/التعديل أدناه (كان BOTH يُعرَض «كلاهما» هنا و«قبض وصرف» في النموذج
 // لنفس القيمة — تسمية غير متّسقة على الشاشة نفسها).
-const DIR_LABEL: Record<string, string> = { IN: "قبض فقط", OUT: "صرف فقط", BOTH: "قبض وصرف" };
+const DIR_LABEL: Record<string, string> = {
+  IN: "قبض فقط",
+  OUT: "صرف فقط",
+  BOTH: "قبض وصرف",
+};
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -43,25 +63,42 @@ export default function VoucherCategories() {
   const list = trpc.voucherCategories.list.useQuery({ includeInactive: true });
   const unclassified = trpc.voucherCategories.unclassifiedOther.useQuery();
   const me = trpc.auth.me.useQuery();
-  const canManage = !!me.data?.role && moduleAccessAllowed(
-    me.data.role as RoleKey,
-    (me.data.permissionsOverride ?? null) as PermissionMap | null,
-    "treasury",
-    "FULL",
-    ["manager", "accountant"],
-  );
+  const canManage =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "treasury",
+      "FULL",
+      ["manager", "accountant"],
+    );
   const [query, setQuery] = useState("");
   const rows = list.data ?? [];
   const visibleRows = useMemo(() => {
     const q = query.trim().toLocaleLowerCase("ar");
-    return q ? rows.filter((r) => [r.name, r.description, DIR_LABEL[r.direction], voucherCategoryRoleLabel(r.postingRole)].some((v) => String(v ?? "").toLocaleLowerCase("ar").includes(q))) : rows;
+    return q
+      ? rows.filter((r) =>
+          [
+            r.name,
+            r.description,
+            DIR_LABEL[r.direction],
+            voucherCategoryRoleLabel(r.postingRole),
+          ].some((v) =>
+            String(v ?? "")
+              .toLocaleLowerCase("ar")
+              .includes(q),
+          ),
+        )
+      : rows;
   }, [rows, query]);
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Row | null>(null);
   const [name, setName] = useState("");
   const [direction, setDirection] = useState<"IN" | "OUT" | "BOTH">("OUT");
-  const [postingRole, setPostingRole] = useState<VoucherCategoryPostingRole | "">("");
+  const [postingRole, setPostingRole] = useState<
+    VoucherCategoryPostingRole | ""
+  >("");
   const [description, setDescription] = useState("");
   const [sortOrder, setSortOrder] = useState<number>(100);
 
@@ -97,22 +134,29 @@ export default function VoucherCategories() {
     },
     onError: (e) => notify.err(e),
   });
-  const [historicalAssignments, setHistoricalAssignments] = useState<Record<number, string>>({});
-  const assignHistorical = trpc.voucherCategories.assignHistoricalCategory.useMutation({
-    onSuccess: async () => {
-      await Promise.all([
-        utils.voucherCategories.unclassifiedOther.invalidate(),
-        utils.voucherCategories.list.invalidate(),
-      ]);
-      notify.ok("عُيّنت الفئة التاريخية وحُفظ أثر التدقيق");
-    },
-    onError: (e) => notify.err(e),
-  });
+  const [historicalAssignments, setHistoricalAssignments] = useState<
+    Record<number, string>
+  >({});
+  const assignHistorical =
+    trpc.voucherCategories.assignHistoricalCategory.useMutation({
+      onSuccess: async () => {
+        await Promise.all([
+          utils.voucherCategories.unclassifiedOther.invalidate(),
+          utils.voucherCategories.list.invalidate(),
+        ]);
+        notify.ok("عُيّنت الفئة التاريخية وحُفظ أثر التدقيق");
+      },
+      onError: (e) => notify.err(e),
+    });
 
   function resetForm() {
     setShowForm(false);
     setEditing(null);
-    setName(""); setDirection("OUT"); setPostingRole(""); setDescription(""); setSortOrder(100);
+    setName("");
+    setDirection("OUT");
+    setPostingRole("");
+    setDescription("");
+    setSortOrder(100);
   }
 
   function startEdit(r: Row) {
@@ -126,12 +170,31 @@ export default function VoucherCategories() {
   }
 
   function submitForm() {
-    if (!name.trim()) { notify.err("الاسم مطلوب"); return; }
-    if (!postingRole) { notify.err("الحساب المحاسبي المقابل مطلوب"); return; }
+    if (!name.trim()) {
+      notify.err("الاسم مطلوب");
+      return;
+    }
+    if (!postingRole) {
+      notify.err("الحساب المحاسبي المقابل مطلوب");
+      return;
+    }
     if (editing) {
-      update.mutate({ id: Number(editing.id), name: name.trim(), direction, postingRole, description: description.trim() || null, sortOrder });
+      update.mutate({
+        id: Number(editing.id),
+        name: name.trim(),
+        direction,
+        postingRole,
+        description: description.trim() || null,
+        sortOrder,
+      });
     } else {
-      create.mutate({ name: name.trim(), direction, postingRole, description: description.trim() || null, sortOrder });
+      create.mutate({
+        name: name.trim(),
+        direction,
+        postingRole,
+        description: description.trim() || null,
+        sortOrder,
+      });
     }
   }
 
@@ -158,13 +221,16 @@ export default function VoucherCategories() {
   }
 
   const mergeCandidates = useMemo(
-    () => rows.filter((c) =>
-      c.isActive &&
-      Number(c.id) !== Number(mergingRow?.id ?? -1) &&
-      c.postingRole != null &&
-      (mergingRow?.postingRole == null || c.postingRole === mergingRow.postingRole) &&
-      (c.direction === "BOTH" || c.direction === mergingRow?.direction)
-    ),
+    () =>
+      rows.filter(
+        (c) =>
+          c.isActive &&
+          Number(c.id) !== Number(mergingRow?.id ?? -1) &&
+          c.postingRole != null &&
+          (mergingRow?.postingRole == null ||
+            c.postingRole === mergingRow.postingRole) &&
+          (c.direction === "BOTH" || c.direction === mergingRow?.direction),
+      ),
     [rows, mergingRow],
   );
 
@@ -177,7 +243,10 @@ export default function VoucherCategories() {
 
   function confirmMerge() {
     if (!mergingRow || !mergeTargetId) return;
-    merge.mutate({ fromId: Number(mergingRow.id), toId: Number(mergeTargetId) });
+    merge.mutate({
+      fromId: Number(mergingRow.id),
+      toId: Number(mergeTargetId),
+    });
   }
 
   return (
@@ -187,9 +256,19 @@ export default function VoucherCategories() {
         description="تصنيف سندات القبض والصرف وربط كل فئة بحساب مقابل واضح في دفتر الأستاذ."
         actions={
           <div className="flex gap-2">
-            <Link href="/vouchers"><Button variant="outline" size="sm">→ السندات</Button></Link>
+            <Link href="/vouchers">
+              <Button variant="outline" size="sm">
+                → السندات
+              </Button>
+            </Link>
             {canManage && (
-              <Button onClick={() => { resetForm(); setShowForm(true); }} className="bg-emerald-600 hover:bg-emerald-700">
+              <Button
+                onClick={() => {
+                  resetForm();
+                  setShowForm(true);
+                }}
+                className="bg-[var(--sem-pos)] text-white hover:opacity-90"
+              >
                 <Plus aria-hidden className="size-4 ms-1" /> فئة جديدة
               </Button>
             )}
@@ -200,25 +279,27 @@ export default function VoucherCategories() {
       {!canManage && (
         <Card>
           <CardContent className="p-3 text-sm text-muted-foreground">
-            عرض فقط — الإدارة والمعالجة متاحتان للمحاسب أو المدير المخوّل بالخزينة.
+            عرض فقط — الإدارة والمعالجة متاحتان للمحاسب أو المدير المخوّل
+            بالخزينة.
           </CardContent>
         </Card>
       )}
 
       {unresolvedCount > 0 && (
-        <Card className="border-amber-300 bg-amber-50 text-amber-950">
+        <Card className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]">
           <CardContent className="p-3 text-sm flex items-start gap-2">
             <AlertTriangle aria-hidden className="size-4 mt-0.5 shrink-0" />
             <span>
-              توجد {unresolvedCount} فئة بلا تصنيف محاسبي صالح. لا تُستعمل في سندات «أخرى»
-              ولا يسمح الحارس بتحويل الدفتر إلى ACTIVE حتى تُعيّن أو تُعطّل.
+              توجد {unresolvedCount} فئة بلا تصنيف محاسبي صالح. لا تُستعمل في
+              سندات «أخرى» ولا يسمح الحارس بتحويل الدفتر إلى ACTIVE حتى تُعيّن
+              أو تُعطّل.
             </span>
           </CardContent>
         </Card>
       )}
 
       {(unclassified.data?.length ?? 0) > 0 && (
-        <Card className="border-amber-300">
+        <Card className="border-[var(--sem-warn)]/40">
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <Wrench aria-hidden className="size-4" />
@@ -251,22 +332,34 @@ export default function VoucherCategories() {
                     return (
                       <tr key={receiptId} className="border-t align-top">
                         <td className="p-2">
-                          <div className="font-medium">{receipt.voucherNumber ?? `#${receiptId}`}</div>
+                          <div className="font-medium">
+                            {receipt.voucherNumber ?? `#${receiptId}`}
+                          </div>
                           <div className="text-xs text-muted-foreground">
                             {receipt.voucherDate
-                              ? new Date(receipt.voucherDate).toLocaleDateString("ar-IQ")
+                              ? new Date(
+                                  receipt.voucherDate,
+                                ).toLocaleDateString("ar-IQ")
                               : "—"}
                           </div>
                         </td>
                         <td className="p-2">
-                          <div>{receipt.counterpartyName ?? "طرف غير مسمى"}</div>
-                          <div className="text-xs text-muted-foreground">{receipt.description ?? "—"}</div>
+                          <div>
+                            {receipt.counterpartyName ?? "طرف غير مسمى"}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {receipt.description ?? "—"}
+                          </div>
                         </td>
-                        <td className="p-2 text-center">{receipt.direction === "IN" ? "قبض" : "صرف"}</td>
-                        <td className="p-2 text-end tabular-nums">{String(receipt.amount)}</td>
+                        <td className="p-2 text-center">
+                          {receipt.direction === "IN" ? "قبض" : "صرف"}
+                        </td>
+                        <td className="p-2 text-end tabular-nums">
+                          {String(receipt.amount)}
+                        </td>
                         <td className="p-2 min-w-72">
                           {receipt.specialized ? (
-                            <div className="text-amber-800 font-medium">
+                            <div className="text-[var(--sem-warn)] font-medium">
                               {receipt.remediationMessage}
                             </div>
                           ) : canManage ? (
@@ -281,16 +374,26 @@ export default function VoucherCategories() {
                                 }
                                 aria-label={`فئة السند ${receipt.voucherNumber ?? receiptId}`}
                               >
-                                <option value="">— اختر الفئة والحساب المقابل —</option>
+                                <option value="">
+                                  — اختر الفئة والحساب المقابل —
+                                </option>
                                 {compatible.map((category) => (
-                                  <option key={Number(category.id)} value={String(category.id)}>
-                                    {category.name} — {voucherCategoryRoleLabel(category.postingRole)}
+                                  <option
+                                    key={Number(category.id)}
+                                    value={String(category.id)}
+                                  >
+                                    {category.name} —{" "}
+                                    {voucherCategoryRoleLabel(
+                                      category.postingRole,
+                                    )}
                                   </option>
                                 ))}
                               </AppSelect>
                               <Button
                                 size="sm"
-                                disabled={!selected || assignHistorical.isPending}
+                                disabled={
+                                  !selected || assignHistorical.isPending
+                                }
                                 onClick={() =>
                                   assignHistorical.mutate({
                                     receiptId,
@@ -302,7 +405,9 @@ export default function VoucherCategories() {
                               </Button>
                             </div>
                           ) : (
-                            <span className="text-muted-foreground">يتطلب صلاحية خزينة كاملة</span>
+                            <span className="text-muted-foreground">
+                              يتطلب صلاحية خزينة كاملة
+                            </span>
                           )}
                         </td>
                       </tr>
@@ -318,12 +423,18 @@ export default function VoucherCategories() {
       {showForm && canManage && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">{editing ? "تَعديل فئة" : "فئة جديدة"}</CardTitle>
+            <CardTitle className="text-base">
+              {editing ? "تَعديل فئة" : "فئة جديدة"}
+            </CardTitle>
           </CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>الاسم *</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="مَثلاً: إعلانات ومُلصقات" />
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="مَثلاً: إعلانات ومُلصقات"
+              />
             </div>
             <div className="space-y-1">
               <Label>الاتجاه *</Label>
@@ -333,7 +444,10 @@ export default function VoucherCategories() {
                 onChange={(e) => {
                   const next = e.target.value as "IN" | "OUT" | "BOTH";
                   setDirection(next);
-                  if (postingRole && !isVoucherCategoryRoleCompatible(next, postingRole)) {
+                  if (
+                    postingRole &&
+                    !isVoucherCategoryRoleCompatible(next, postingRole)
+                  ) {
                     setPostingRole("");
                   }
                 }}
@@ -347,31 +461,50 @@ export default function VoucherCategories() {
               <Label>الحساب المحاسبي المقابل *</Label>
               <AppSelect
                 value={postingRole}
-                onValueChange={(value) => setPostingRole(value as VoucherCategoryPostingRole | "")}
+                onValueChange={(value) =>
+                  setPostingRole(value as VoucherCategoryPostingRole | "")
+                }
                 aria-label="الحساب المحاسبي المقابل لفئة السند"
               >
                 <option value="">— اختر حساباً معتمداً —</option>
                 {roleOptions.map((option) => (
-                  <option key={option.role} value={option.role}>{option.label}</option>
+                  <option key={option.role} value={option.role}>
+                    {option.label}
+                  </option>
                 ))}
               </AppSelect>
               <p className="text-xs text-muted-foreground">
-                في القبض يكون هذا الحساب دائناً، وفي الصرف يكون مديناً. الحساب النقدي تحدده طريقة الدفع تلقائياً.
+                في القبض يكون هذا الحساب دائناً، وفي الصرف يكون مديناً. الحساب
+                النقدي تحدده طريقة الدفع تلقائياً.
               </p>
             </div>
             <div className="space-y-1 md:col-span-2">
               <Label>الوَصف (اختياري)</Label>
-              <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="شَرح مُختصر للفئة" />
+              <Input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="شَرح مُختصر للفئة"
+              />
             </div>
             <div className="space-y-1">
               <Label>ترتيب العرض</Label>
-              <Input type="number" value={sortOrder} onChange={(e) => setSortOrder(Number(e.target.value) || 0)} />
+              <Input
+                type="number"
+                value={sortOrder}
+                onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
+              />
             </div>
             <div className="md:col-span-2 flex gap-2">
-              <Button onClick={submitForm} disabled={create.isPending || update.isPending} className="bg-emerald-600 hover:bg-emerald-700">
+              <Button
+                onClick={submitForm}
+                disabled={create.isPending || update.isPending}
+                className="bg-[var(--sem-pos)] text-white hover:opacity-90"
+              >
                 {editing ? "حفظ التَعديل" : "حفظ الفئة"}
               </Button>
-              <Button variant="outline" onClick={resetForm}>إلغاء</Button>
+              <Button variant="outline" onClick={resetForm}>
+                إلغاء
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -383,7 +516,11 @@ export default function VoucherCategories() {
             title="فئات السندات"
             count={visibleRows.length}
             loading={list.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "اسم الفئة، الاتجاه أو الوصف…" }}
+            search={{
+              value: query,
+              onChange: setQuery,
+              placeholder: "اسم الفئة، الاتجاه أو الوصف…",
+            }}
             onResetFilters={() => setQuery("")}
             onRefresh={() => void list.refetch()}
             refreshing={list.isFetching}
@@ -393,11 +530,25 @@ export default function VoucherCategories() {
               rows: visibleRows,
               formats: ["xlsx", "csv"],
               columns: [
-                { key: "id", header: "#" }, { key: "name", header: "الاسم" },
-                { key: "direction", header: "الاتجاه", map: (r) => DIR_LABEL[r.direction] ?? r.direction },
-                { key: "postingRole", header: "الحساب المقابل", map: (r) => voucherCategoryRoleLabel(r.postingRole) },
-                { key: "description", header: "الوصف" }, { key: "sortOrder", header: "الترتيب" },
-                { key: "isActive", header: "الحالة", map: (r) => r.isActive ? "نشطة" : "معطّلة" },
+                { key: "id", header: "#" },
+                { key: "name", header: "الاسم" },
+                {
+                  key: "direction",
+                  header: "الاتجاه",
+                  map: (r) => DIR_LABEL[r.direction] ?? r.direction,
+                },
+                {
+                  key: "postingRole",
+                  header: "الحساب المقابل",
+                  map: (r) => voucherCategoryRoleLabel(r.postingRole),
+                },
+                { key: "description", header: "الوصف" },
+                { key: "sortOrder", header: "الترتيب" },
+                {
+                  key: "isActive",
+                  header: "الحالة",
+                  map: (r) => (r.isActive ? "نشطة" : "معطّلة"),
+                },
               ],
             }}
           />
@@ -418,38 +569,70 @@ export default function VoucherCategories() {
                 </tr>
               </thead>
               <tbody>
-                {list.isLoading && <tr><td colSpan={8}><LoadingState /></td></tr>}
+                {list.isLoading && (
+                  <tr>
+                    <td colSpan={8}>
+                      <LoadingState />
+                    </td>
+                  </tr>
+                )}
                 {list.isError && (
-                  <tr><td colSpan={8}><ErrorState message={list.error?.message} onRetry={() => void list.refetch()} /></td></tr>
+                  <tr>
+                    <td colSpan={8}>
+                      <ErrorState
+                        message={list.error?.message}
+                        onRetry={() => void list.refetch()}
+                      />
+                    </td>
+                  </tr>
                 )}
                 {visibleRows.map((r) => (
-                  <tr key={Number(r.id)} className={`border-t ${r.isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 text-center text-xs text-muted-foreground">{Number(r.id)}</td>
+                  <tr
+                    key={Number(r.id)}
+                    className={`border-t ${r.isActive ? "" : "opacity-60"}`}
+                  >
+                    <td className="p-2 text-center text-xs text-muted-foreground">
+                      {Number(r.id)}
+                    </td>
                     <td className="p-2 font-medium">{r.name}</td>
                     <td className="p-2 text-center text-xs">
-                      <span className={`inline-block rounded-full px-2 py-0.5 ${
-                        r.direction === "IN" ? "bg-emerald-100 text-emerald-800"
-                        : r.direction === "OUT" ? "bg-rose-100 text-rose-800"
-                        : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"
-                      }`}>
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 ${
+                          r.direction === "IN"
+                            ? "badge-status-active"
+                            : r.direction === "OUT"
+                              ? "badge-status-cancelled"
+                              : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"
+                        }`}
+                      >
                         {DIR_LABEL[r.direction]}
                       </span>
                     </td>
                     <td className="p-2 text-xs">
-                      {isVoucherCategoryRoleCompatible(r.direction, r.postingRole) ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700">
+                      {isVoucherCategoryRoleCompatible(
+                        r.direction,
+                        r.postingRole,
+                      ) ? (
+                        <span className="inline-flex items-center gap-1 text-[var(--sem-pos)]">
                           <CheckCircle2 aria-hidden className="size-3.5" />
                           {voucherCategoryRoleLabel(r.postingRole)}
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-amber-800 font-medium">
-                          <AlertTriangle aria-hidden className="size-3.5" /> {unresolvedCategoryLabel(r.name)}
+                        <span className="inline-flex items-center gap-1 text-[var(--sem-warn)] font-medium">
+                          <AlertTriangle aria-hidden className="size-3.5" />{" "}
+                          {unresolvedCategoryLabel(r.name)}
                         </span>
                       )}
                     </td>
-                    <td className="p-2 text-xs text-muted-foreground">{r.description ?? "—"}</td>
-                    <td className="p-2 text-center text-xs tabular-nums">{r.sortOrder}</td>
-                    <td className="p-2 text-center text-xs">{r.isActive ? "نعم" : "لا"}</td>
+                    <td className="p-2 text-xs text-muted-foreground">
+                      {r.description ?? "—"}
+                    </td>
+                    <td className="p-2 text-center text-xs tabular-nums">
+                      {r.sortOrder}
+                    </td>
+                    <td className="p-2 text-center text-xs">
+                      {r.isActive ? "نعم" : "لا"}
+                    </td>
                     {canManage && (
                       <td className="p-2 text-center">
                         <RowActions
@@ -461,7 +644,11 @@ export default function VoucherCategories() {
                               label: "تعديل",
                               icon: Edit3,
                               onSelect: () => startEdit(r),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                              gate: {
+                                roles: ["manager", "accountant"],
+                                module: "treasury",
+                                level: "FULL",
+                              },
                             },
                             {
                               key: "toggle",
@@ -469,7 +656,11 @@ export default function VoucherCategories() {
                               label: r.isActive ? "تعطيل" : "تفعيل",
                               variant: r.isActive ? "destructive" : "default",
                               onSelect: () => void toggleActive(r),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                              gate: {
+                                roles: ["manager", "accountant"],
+                                module: "treasury",
+                                level: "FULL",
+                              },
                             },
                             {
                               key: "merge",
@@ -477,7 +668,11 @@ export default function VoucherCategories() {
                               label: "دمج",
                               hidden: !r.isActive,
                               onSelect: () => void doMerge(r),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                              gate: {
+                                roles: ["manager", "accountant"],
+                                module: "treasury",
+                                level: "FULL",
+                              },
                             },
                           ]}
                         />
@@ -495,13 +690,22 @@ export default function VoucherCategories() {
       </Card>
 
       {/* دمج فئتين — منتقٍ بالاسم بدل رقم فئة خام (كان window.prompt يطلب رقماً يدوياً). */}
-      <Dialog open={mergingRow != null} onOpenChange={(open) => { if (!open) { setMergingRow(null); setMergeTargetId(""); } }}>
+      <Dialog
+        open={mergingRow != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setMergingRow(null);
+            setMergeTargetId("");
+          }
+        }}
+      >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>دمج فئة «{mergingRow?.name}»</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            كل سندات «{mergingRow?.name}» سَتُنقل إلى الفئة المُختارة وتُعطَّل الفئة الحالية. هذا الإجراء لا يُمكن التراجع عنه.
+            كل سندات «{mergingRow?.name}» سَتُنقل إلى الفئة المُختارة وتُعطَّل
+            الفئة الحالية. هذا الإجراء لا يُمكن التراجع عنه.
           </p>
           <div className="space-y-1.5">
             <Label htmlFor="merge-target">الفئة الهدف *</Label>
@@ -513,15 +717,27 @@ export default function VoucherCategories() {
             >
               <option value="">— اختر الفئة الهدف —</option>
               {mergeCandidates.map((c) => (
-                <option key={Number(c.id)} value={String(c.id)}>{c.name}</option>
+                <option key={Number(c.id)} value={String(c.id)}>
+                  {c.name}
+                </option>
               ))}
             </AppSelect>
             {mergeCandidates.length === 0 && (
-              <p className="text-xs text-muted-foreground">لا فئات نشِطة أخرى للدمج فيها.</p>
+              <p className="text-xs text-muted-foreground">
+                لا فئات نشِطة أخرى للدمج فيها.
+              </p>
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setMergingRow(null); setMergeTargetId(""); }}>إلغاء</Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setMergingRow(null);
+                setMergeTargetId("");
+              }}
+            >
+              إلغاء
+            </Button>
             <Button
               variant="destructive"
               disabled={!mergeTargetId || merge.isPending}

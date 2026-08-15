@@ -9,22 +9,24 @@ const refundRouterMocks = vi.hoisted(() => ({
     approvalStatus: "APPROVED" as const,
     replayed: false as const,
   })),
-  listPending: vi.fn(async () => ([{
-    receiptId: 77,
-    workOrderId: 9,
-    orderNumber: "WO-9",
-    amount: "2000.00",
-    paymentMethod: "CARD" as const,
-    customerId: 4,
-    customerName: "عميل",
-    createdBy: 5,
-    creatorName: "منشئ",
-    createdAt: new Date("2026-08-15T10:00:00Z"),
-    status: "PENDING" as const,
-    approvalStatus: "PENDING_APPROVAL" as const,
-    confirmationReference: null,
-    description: "طلب رد",
-  }])),
+  listPending: vi.fn(async () => [
+    {
+      receiptId: 77,
+      workOrderId: 9,
+      orderNumber: "WO-9",
+      amount: "2000.00",
+      paymentMethod: "CARD" as const,
+      customerId: 4,
+      customerName: "عميل",
+      createdBy: 5,
+      creatorName: "منشئ",
+      createdAt: new Date("2026-08-15T10:00:00Z"),
+      status: "PENDING" as const,
+      approvalStatus: "PENDING_APPROVAL" as const,
+      confirmationReference: null,
+      description: "طلب رد",
+    },
+  ]),
   status: vi.fn(async (workOrderId: number) => ({
     workOrderId,
     status: "PENDING" as const,
@@ -521,11 +523,14 @@ describe("P2 sales and purchase posting contracts", () => {
   });
 });
 
-function refundApprovalCaller(user: {
-  id: number;
-  role: "admin" | "manager" | "cashier";
-  isOwner: boolean;
-}, branchId = 1) {
+function refundApprovalCaller(
+  user: {
+    id: number;
+    role: "admin" | "manager" | "cashier";
+    isOwner: boolean;
+  },
+  branchId = 1,
+) {
   return workOrderRouter.createCaller({
     req: { headers: {} },
     res: {},
@@ -546,54 +551,90 @@ describe("workOrders.approveCancellationRefund authority", () => {
   });
 
   it("rejects non-owners before calling the refund materializer", async () => {
-    await expect(refundApprovalCaller({ id: 5, role: "manager", isOwner: false })
-      .approveCancellationRefund({ receiptId: 77, confirmationReference: "CARD-REFUND-77" }))
-      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      refundApprovalCaller({
+        id: 5,
+        role: "manager",
+        isOwner: false,
+      }).approveCancellationRefund({
+        receiptId: 77,
+        confirmationReference: "CARD-REFUND-77",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(refundRouterMocks.approve).not.toHaveBeenCalled();
   });
 
   it("routes owner approval to the materializer and audits the receipt", async () => {
-    await expect(refundApprovalCaller({ id: 3, role: "admin", isOwner: true })
-      .approveCancellationRefund({ receiptId: 77, confirmationReference: "CARD-REFUND-77" }))
-      .resolves.toMatchObject({ receiptId: 77, status: "COMPLETED" });
+    await expect(
+      refundApprovalCaller({
+        id: 3,
+        role: "admin",
+        isOwner: true,
+      }).approveCancellationRefund({
+        receiptId: 77,
+        confirmationReference: "CARD-REFUND-77",
+      }),
+    ).resolves.toMatchObject({ receiptId: 77, status: "COMPLETED" });
 
     expect(refundRouterMocks.approve).toHaveBeenCalledWith(
       77,
       { userId: 3, branchId: 1, role: "admin", isOwner: true },
       "CARD-REFUND-77",
-      expect.objectContaining({ user: expect.objectContaining({ id: 3, isOwner: true }) }),
+      expect.objectContaining({
+        user: expect.objectContaining({ id: 3, isOwner: true }),
+      }),
     );
   });
 
   it("keeps the pending refund queue owner-only and returns its explicit contract", async () => {
-    await expect(refundApprovalCaller({ id: 5, role: "manager", isOwner: false })
-      .pendingCancellationRefunds())
-      .rejects.toMatchObject({ code: "FORBIDDEN" });
-    const rows = await refundApprovalCaller({ id: 3, role: "admin", isOwner: true })
-      .pendingCancellationRefunds();
-    expect(rows).toEqual([expect.objectContaining({
-      receiptId: 77,
-      workOrderId: 9,
-      orderNumber: "WO-9",
-      amount: "2000.00",
-      paymentMethod: "CARD",
-      status: "PENDING",
-      approvalStatus: "PENDING_APPROVAL",
-      confirmationReference: null,
-    })]);
+    await expect(
+      refundApprovalCaller({
+        id: 5,
+        role: "manager",
+        isOwner: false,
+      }).pendingCancellationRefunds(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const rows = await refundApprovalCaller({
+      id: 3,
+      role: "admin",
+      isOwner: true,
+    }).pendingCancellationRefunds();
+    expect(rows).toEqual([
+      expect.objectContaining({
+        receiptId: 77,
+        workOrderId: 9,
+        orderNumber: "WO-9",
+        amount: "2000.00",
+        paymentMethod: "CARD",
+        status: "PENDING",
+        approvalStatus: "PENDING_APPROVAL",
+        confirmationReference: null,
+      }),
+    ]);
   });
 
   it("scopes durable refund status by branch and employee ownership", async () => {
-    await expect(refundApprovalCaller({ id: 8, role: "cashier", isOwner: false })
-      .cancellationRefundStatus({ workOrderId: 9 }))
-      .resolves.toEqual({ workOrderId: 9, status: "PENDING", amount: "2000.00" });
+    await expect(
+      refundApprovalCaller({
+        id: 8,
+        role: "cashier",
+        isOwner: false,
+      }).cancellationRefundStatus({ workOrderId: 9 }),
+    ).resolves.toEqual({
+      workOrderId: 9,
+      status: "PENDING",
+      amount: "2000.00",
+    });
     expect(refundRouterMocks.status).toHaveBeenLastCalledWith(9, {
       branchId: 1,
       ownerId: 8,
     });
 
-    await refundApprovalCaller({ id: 3, role: "admin", isOwner: true })
-      .cancellationRefundStatus({ workOrderId: 9 });
+    await refundApprovalCaller({
+      id: 3,
+      role: "admin",
+      isOwner: true,
+    }).cancellationRefundStatus({ workOrderId: 9 });
     expect(refundRouterMocks.status).toHaveBeenLastCalledWith(9, {
       branchId: null,
       ownerId: null,
@@ -605,10 +646,17 @@ describe("workOrders.approveCancellationRefund authority", () => {
       new URL("../workOrder/cancel.ts", import.meta.url),
       "utf8",
     );
-    expect(source).toContain("WORK_ORDER_CUSTOMER_REFUND:DIRECT:${workOrderId}:${Number(depRcpt.id)}");
+    expect(source).toContain(
+      "WORK_ORDER_CUSTOMER_REFUND:DIRECT:${workOrderId}:${Number(depRcpt.id)}",
+    );
     expect(source).toContain("legacySources.length !== 1");
-    const reserveAt = source.indexOf("await recordIdempotencyKey(\n        tx,\n        confirmationOperation");
-    const materializeAt = source.indexOf("await tx.update(receipts).set({\n      status: \"COMPLETED\"");
+    const approvalStart = source.indexOf("const confirmationOperation");
+    const approvalSource = source.slice(approvalStart);
+    const reserveAt = approvalSource.indexOf("await recordIdempotencyKey(");
+    const materializeAt = approvalSource.indexOf(
+      "await tx.update(receipts).set({",
+    );
+    expect(approvalStart).toBeGreaterThan(0);
     expect(reserveAt).toBeGreaterThan(0);
     expect(materializeAt).toBeGreaterThan(reserveAt);
   });

@@ -35,7 +35,9 @@ describe("voucher category accounting UI contract", () => {
     expect(categoriesPage).toContain("usedReceiptCount");
     expect(categoriesPage).toContain("voucherCategoryRoleOptionsFor(direction)");
     expect(voucherForm).toContain("فئة محاسبية معيّنة إلزامية لسندات «أخرى»");
-    expect(voucherForm).toContain("disabled={!isVoucherCategoryRoleCompatible");
+    expect(voucherForm).toMatch(
+      /disabled=\{\s*!isVoucherCategoryRoleCompatible\(/,
+    );
     expect(voucherForm).toContain("تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ");
   });
 });
