@@ -177,6 +177,9 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     const [pendingTxn] = await db().select().from(s.exchangeTransactions).where(eq(s.exchangeTransactions.id, request.txnId));
     const [pendingReceipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(pendingTxn.receiptId)));
     expect(pendingReceipt).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+    const statementWhilePending = await getExchangeStatement({ exchangeHouseId: id });
+    expect(statementWhilePending?.transactions).toHaveLength(1); // يبقى ظاهراً للتدقيق
+    expect(statementWhilePending?.summary.totalDepositIqd).toBe("0.00"); // لكنه غير نافذ بعد
 
     const trustedPayload = pendingReceipt.internalNote;
     await db().update(s.receipts)
@@ -197,6 +200,7 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     // نقد فعلي غادر الخزينة (receipt OUT).
     expect(await treasuryBalance(1)).toBe("8000000.00");
     expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("2000000.00");
+    expect((await getExchangeStatement({ exchangeHouseId: id }))?.summary.totalDepositIqd).toBe("2000000.00");
   });
 
   it("شراء دولار (نموذج الدَّين، قرار مالك ٣/٨): الصيرفة تُسلِّم الدولار فوراً ⇒ دَينٌ دولاريّ، الدينار لا يُمسّ، WAVG صحيح", async () => {

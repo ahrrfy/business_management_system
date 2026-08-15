@@ -128,10 +128,17 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
           }
         : { branchId: Number(preview.branchId), cashBucket: "TREASURY" as const, shiftId: null };
       if (source.cashBucket === "TREASURY") {
+        // إعادة اقتناء أصل قد تعكس CASH في فرع المصدر ثم تصرف من فرع الهدف.
+        // كلا الحسابين يجب أن يُقفلا قبل asset/receipt وبترتيب هوية ثابت؛ قفل الهدف
+        // وحده يصنع دورة target→source مقابل cash transfer source→target.
+        const disbursementBranchIds = systemRequestPreview?.kind === "ASSET_REACQUISITION"
+          ? [source.branchId, systemRequestPreview.source.branchId]
+              .filter((id): id is number => id != null)
+          : [source.branchId];
         externalTreasuryApproval = await authorizeExternalTreasuryDisbursement(tx, {
           actor,
           makerUserIds: [preview.createdBy, cancellationOriginalPreview?.createdBy],
-          branchIds: [source.branchId],
+          branchIds: disbursementBranchIds,
           operation: cancellationOriginalPreview ? "اعتماد إلغاء سند قبض نقدي" : "اعتماد سند الصرف النقدي",
         });
         if (systemRequestPreview?.kind === "EXCHANGE_IQD_DEPOSIT") {

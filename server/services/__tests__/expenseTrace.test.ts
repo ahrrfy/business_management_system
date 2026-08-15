@@ -59,12 +59,14 @@ async function reset() {
   ]);
   await d.insert(s.receipts).values({
     branchId: 1,
-    direction: "IN",
-    amount: "10000.00",
-    paymentMethod: "CASH",
     cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "20000.00",
+    paymentMethod: "CASH",
     status: "COMPLETED",
-    createdBy: 2,
+    approvalStatus: "APPROVED",
+    referenceNumber: "EXPENSE-TRACE-TREASURY-FUND",
+    createdBy: manager1.userId,
   });
 }
 

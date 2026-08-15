@@ -25,9 +25,10 @@ import {
 import { postEntry } from "./ledgerService";
 import { getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
-import { assertCashOutAvailable } from "./cash/cashAvailability";
+import { assertCashOutAvailable, lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { parseSystemPaymentRequest } from "./voucher/create";
 
 export type ExpensePaymentMethod =
   | "CASH"
@@ -989,13 +990,43 @@ export async function rejectExpense(
 
 /**
  * Cancel an active expense. Only allowed when the linked shift (if any) is still OPEN.
- * Marks original receipt REVERSED and inserts a COMPENSATING IN-receipt with the same
- * shiftId/method/amount so shift cash totals remain correct (computeExpectedCash sums all).
- * Posts an ADJUST ledger entry with a negative amount to reverse the books.
+ * Marks the linked payment request/receipt REVERSED. A material APPROVED+COMPLETED
+ * receipt gets a matching IN/PAYMENT_IN; a recognized-but-unpaid system expense gets
+ * only a negative PAYMENT_OUT accrual reversal, because no cash left to recover.
  */
 export async function cancelExpense(expenseId: number, actor: Actor) {
   return withTx(async (tx) => {
-    await lockExpenseCashSourceBeforeDocument(tx, expenseId, "CANCEL");
+    // معاينة غير سلطوية لتحديد mutex النقد ثم ترتيب الأقفال الحاكم:
+    // source → receipt → expense. approveVoucher يتبع الترتيب نفسه، فتفشل إعادة
+    // التحقق بدلاً من تكوين دورة receipt↔expense عند سباق الإلغاء مع الاعتماد.
+    const [expensePreview] = await tx
+      .select()
+      .from(expenses)
+      .where(eq(expenses.id, expenseId))
+      .limit(1);
+    if (!expensePreview)
+      throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+
+    if (
+      expensePreview.source !== "STOCK" &&
+      expensePreview.paymentMethod === "CASH" &&
+      (expensePreview.cashBucket === "DRAWER" || expensePreview.cashBucket === "TREASURY")
+    ) {
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(expensePreview.branchId),
+        cashBucket: expensePreview.cashBucket,
+        shiftId: expensePreview.shiftId != null ? Number(expensePreview.shiftId) : null,
+      });
+    }
+
+    const linkedReceipt = expensePreview.receiptId != null
+      ? (await tx
+          .select()
+          .from(receipts)
+          .where(eq(receipts.id, Number(expensePreview.receiptId)))
+          .for("update")
+          .limit(1))[0] ?? null
+      : null;
     const exp = (
       await tx
         .select()
@@ -1006,6 +1037,16 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     )[0];
     if (!exp)
       throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+    if (
+      Number(exp.branchId) !== Number(expensePreview.branchId) ||
+      Number(exp.receiptId ?? 0) !== Number(expensePreview.receiptId ?? 0) ||
+      Number(exp.shiftId ?? 0) !== Number(expensePreview.shiftId ?? 0) ||
+      exp.cashBucket !== expensePreview.cashBucket ||
+      exp.paymentMethod !== expensePreview.paymentMethod ||
+      !money(exp.amount).eq(money(expensePreview.amount))
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر مصدر دفع المصروف أثناء الإلغاء — أعد المحاولة" });
+    }
     if (exp.status !== "ACTIVE")
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -1114,15 +1155,94 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       return { expenseId, status: "CANCELLED" };
     }
 
+    if (!linkedReceipt || exp.receiptId == null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "المصروف المالي بلا سند دفع مرتبط — أوقف الإلغاء وراجع التدقيق",
+      });
+    }
+    if (
+      linkedReceipt.direction !== "OUT" ||
+      Number(linkedReceipt.branchId) !== Number(exp.branchId) ||
+      linkedReceipt.paymentMethod !== exp.paymentMethod ||
+      !money(linkedReceipt.amount).eq(money(exp.amount))
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "سند دفع المصروف لا يطابق سجل المصروف" });
+    }
+
+    const cashWasMaterialized =
+      linkedReceipt.status === "COMPLETED" &&
+      linkedReceipt.approvalStatus === "APPROVED";
+    if (linkedReceipt.approvalStatus === "APPROVED" && !cashWasMaterialized) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "سند المصروف معتمد لكنه ليس حركة مكتملة قابلة للعكس",
+      });
+    }
+
     await tx
       .update(expenses)
       .set({ status: "CANCELLED" })
       .where(eq(expenses.id, expenseId));
-    if (exp.receiptId) {
-      await tx
-        .update(receipts)
-        .set({ status: "REVERSED" })
-        .where(eq(receipts.id, Number(exp.receiptId)));
+    await tx
+      .update(receipts)
+      .set({ status: "REVERSED" })
+      .where(eq(receipts.id, Number(exp.receiptId)));
+
+    // مصروف الشحن/الصيانة يُعترف به قبل الدفع، وإيصاله المعلّق/المرفوض لم يمس
+    // النقد. إلغاؤه يعكس قيد الاستحقاق فقط، ولا يخلق قبضاً وهمياً في الخزينة.
+    if (!cashWasMaterialized) {
+      const request = parseSystemPaymentRequest(linkedReceipt.internalNote);
+      const accrualDedupe = request?.kind === "PURCHASE_SHIPPING"
+        ? `PURCHASE_SHIPPING_ACCRUAL:${request.purchaseOrderId}:${request.requestToken}`
+        : request?.kind === "ASSET_MAINTENANCE"
+          ? `ASSET_MAINT_ACCRUAL:${request.maintenanceId}`
+          : null;
+      if (!accrualDedupe) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "طلب دفع المصروف غير منفذ ولا يحمل مرجع استحقاق نظامياً صالحاً",
+        });
+      }
+      const [accrual] = await tx
+        .select({
+          entryType: accountingEntries.entryType,
+          branchId: accountingEntries.branchId,
+          purchaseOrderId: accountingEntries.purchaseOrderId,
+          receiptId: accountingEntries.receiptId,
+          amount: accountingEntries.amount,
+        })
+        .from(accountingEntries)
+        .where(eq(accountingEntries.dedupeKey, accrualDedupe))
+        .for("update")
+        .limit(1);
+      if (
+        !accrual ||
+        accrual.entryType !== "PAYMENT_OUT" ||
+        accrual.receiptId != null ||
+        Number(accrual.branchId) !== Number(exp.branchId) ||
+        !money(accrual.amount).eq(money(exp.amount))
+      ) {
+        throw new TRPCError({ code: "CONFLICT", message: "قيد استحقاق المصروف مفقود أو لا يطابق الطلب" });
+      }
+      await postEntry(tx, {
+        entryType: "PAYMENT_OUT",
+        branchId: Number(exp.branchId),
+        purchaseOrderId: accrual.purchaseOrderId != null ? Number(accrual.purchaseOrderId) : null,
+        amount: money(exp.amount).neg(),
+        entryDate: new Date(exp.expenseDate),
+        dedupeKey: `EXPENSE_ACCRUAL_CANCEL:${expenseId}`,
+        notes: `عكس استحقاق مصروف غير مدفوع #${expenseId}`,
+        createdBy: actor.userId,
+      });
+      return { expenseId, status: "CANCELLED" as const };
+    }
+
+    if (
+      linkedReceipt.cashBucket !== exp.cashBucket ||
+      Number(linkedReceipt.shiftId ?? 0) !== Number(exp.shiftId ?? 0)
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "مصدر النقد المنفذ لا يطابق المصروف" });
     }
 
     // Compensating IN-receipt so cash totals nullify cleanly.
@@ -1138,6 +1258,7 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       amount: toDbMoney(exp.amount),
       paymentMethod: exp.paymentMethod,
       status: "COMPLETED",
+      approvalStatus: "APPROVED",
       referenceNumber: `CANCEL-EXP-${expenseId}`,
       createdBy: actor.userId,
     });

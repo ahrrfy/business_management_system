@@ -16,6 +16,8 @@ import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { approveVoucher, createVoucher, rejectVoucher } from "../voucherService";
 import { resubmitRejectedExpensePayment } from "../voucher/approval";
+import { cancelExpense } from "../expenseService";
+import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 const owner = { userId: 2, branchId: 1, role: "manager" as const };
@@ -351,6 +353,35 @@ describe("الشحن/الكمرك — مصروفُ شركةٍ لا ذمّةُ م
       (row) => row.direction === "OUT" && row.cashBucket === "TREASURY" && row.approvalStatus === "APPROVED",
     );
     expect(materialCashOut).toHaveLength(1);
+  });
+
+  it("إلغاء مصروف الشحن قبل اعتماد الدفع يعكس الاستحقاق بلا CASH IN", async () => {
+    const po = await orderWithShipping();
+    const items = await itemsOf(po.purchaseOrderId);
+    const received = await receivePurchase({
+      purchaseOrderId: po.purchaseOrderId,
+      lines: items.map((item) => ({ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: item.baseQuantity })),
+      clientRequestId: "shipping-cancel-before-payment",
+    }, actor);
+    const requestId = Number(received.shippingPaymentRequestReceiptId);
+    const [expense] = await db().select().from(s.expenses).where(eq(s.expenses.receiptId, requestId));
+    const before = await db().transaction(async (tx) => (await computeTreasuryCashBalance(tx, 1)).toFixed(2));
+
+    await cancelExpense(Number(expense.id), actor);
+
+    const after = await db().transaction(async (tx) => (await computeTreasuryCashBalance(tx, 1)).toFixed(2));
+    expect(after).toBe(before);
+    expect((await db().select().from(s.expenses).where(eq(s.expenses.id, Number(expense.id))))[0].status).toBe("CANCELLED");
+    expect((await db().select().from(s.receipts).where(eq(s.receipts.id, requestId)))[0].status).toBe("REVERSED");
+    expect(await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `CANCEL-EXP-${expense.id}`))).toHaveLength(0);
+    expect((await entries()).filter((entry) => entry.entryType === "PAYMENT_IN")).toHaveLength(0);
+    const accrualMovements = (await entries()).filter((entry) =>
+      entry.entryType === "PAYMENT_OUT" &&
+      (entry.dedupeKey?.startsWith("PURCHASE_SHIPPING_ACCRUAL:") || entry.dedupeKey === `EXPENSE_ACCRUAL_CANCEL:${expense.id}`),
+    );
+    expect(accrualMovements).toHaveLength(2);
+    expect(accrualMovements.reduce((sum, entry) => sum + Number(entry.amount), 0)).toBe(0);
   });
 
   it("استلام نقدي واعتماد سند للمورد نفسه يتسلسلان بلا deadlock", async () => {

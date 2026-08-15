@@ -109,6 +109,17 @@ async function seedTraceabilityFixtures() {
     status: "COMPLETED",
     createdBy: 2,
   });
+  await connection.insert(schema.receipts).values({
+    branchId: 1,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount: "10000.00",
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: "TRACEABILITY-TREASURY-FUND",
+    createdBy: actor.userId,
+  });
   await connection
     .insert(schema.products)
     .values({ id: 1, name: "مادة تدقيقية" });
