@@ -30,7 +30,15 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { invoiceStatusLabel } from "@/lib/labels";
-import { Check, Copy, Lock, Printer, Receipt } from "lucide-react";
+import {
+  Check,
+  CircleDollarSign,
+  Copy,
+  Lock,
+  Printer,
+  Receipt,
+  X,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
@@ -85,6 +93,17 @@ export default function Shifts() {
   const [legacySourceReceiptId, setLegacySourceReceiptId] = useState("");
   const [legacyConfirmedZero, setLegacyConfirmedZero] = useState(false);
   const [legacyClientRequestId, setLegacyClientRequestId] = useState("");
+  const [fundingShiftId, setFundingShiftId] = useState<number | null>(null);
+  const [fundingAmount, setFundingAmount] = useState("");
+  const [fundingNote, setFundingNote] = useState("");
+  const [fundingSourceReceiptId, setFundingSourceReceiptId] = useState("");
+  const [fundingClientRequestId, setFundingClientRequestId] = useState("");
+  const [fundingSourceCursor, setFundingSourceCursor] = useState<number | null>(null);
+  const [fundingSourceCursorHistory, setFundingSourceCursorHistory] = useState<Array<number | null>>([]);
+  const [rejectFundingId, setRejectFundingId] = useState<number | null>(null);
+  const [fundingRejectionReason, setFundingRejectionReason] = useState("");
+  const [cancelFundingId, setCancelFundingId] = useState<number | null>(null);
+  const [fundingCancellationReason, setFundingCancellationReason] = useState("");
   // فواتير الوردية — لتحقيق فروقات النقد (فتح قائمة مضمَّنة بدل الانتقال لشاشة مبيعات منفصلة).
   const [invoicesShiftId, setInvoicesShiftId] = useState<number | null>(null);
   const { copy } = useClipboard({ successMessage: "نُسِخ تقرير Z" });
@@ -106,6 +125,7 @@ export default function Shifts() {
     limit: PAGE,
     offset: page * PAGE,
   });
+  const fundingRequestsQ = trpc.shifts.fundingRequests.useQuery();
 
   const rows = list.data?.rows ?? [];
   const total = list.data?.total ?? 0;
@@ -154,6 +174,16 @@ export default function Shifts() {
   const closeHasVariance = closeDiff != null && closeDiff.abs().gt("0.005");
   const isLegacyNegative = closeExpected?.lt(0) ?? false;
   const isOwner = me.data?.isOwner === true;
+  const fundingSourcesQ = trpc.shifts.fundingSources.useQuery(
+    {
+      targetShiftId: fundingShiftId ?? 0,
+      cursorReceiptId: fundingSourceCursor,
+    },
+    { enabled: isOwner && fundingShiftId != null },
+  );
+  const fundingOutgoingQ = trpc.shifts.fundingOutgoing.useQuery(undefined, {
+    enabled: isOwner,
+  });
   const closeReconciliation = adaptShiftCashReconciliation(closeReportQ.data, {
     countedCash: closeCounted || null,
     variance: closeDiff?.toFixed(2) ?? null,
@@ -177,6 +207,76 @@ export default function Shifts() {
     },
     onError: (e) => notify.errBig(e),
   });
+
+  const fundingRow = rows.find((r) => r.id === fundingShiftId) ?? null;
+  const fundingSources = fundingSourcesQ.data?.items ?? [];
+  const fundingReportQ = trpc.shifts.report.useQuery(
+    { shiftId: fundingShiftId ?? 0 },
+    { enabled: fundingShiftId != null },
+  );
+  const fundingExpected = fundingReportQ.data
+    ? D(fundingReportQ.data.expectedCash)
+    : null;
+  const requestFundingM = trpc.shifts.requestFunding.useMutation({
+    onSuccess: async () => {
+      notify.ok("أُنشئ طلب العهدة؛ لن تتحرك الخزنة حتى يؤكد صاحب الوردية الاستلام");
+      setFundingShiftId(null);
+      setFundingAmount("");
+      setFundingNote("");
+      setFundingSourceReceiptId("");
+      setFundingClientRequestId("");
+      setFundingSourceCursor(null);
+      setFundingSourceCursorHistory([]);
+      await Promise.all([
+        fundingRequestsQ.refetch(),
+        utils.shifts.fundingSources.invalidate(),
+        fundingOutgoingQ.refetch(),
+      ]);
+    },
+    onError: (error) => notify.errBig(error),
+  });
+  const respondFundingM = trpc.shifts.respondFunding.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(
+        result.status === "COMPLETED"
+          ? `ثُبّت استلام ${fmt(result.amount)} د.ع في الوردية #${result.shiftId}`
+          : "رُفض طلب العهدة بلا أي أثر نقدي",
+      );
+      setRejectFundingId(null);
+      setFundingRejectionReason("");
+      await Promise.all([
+        fundingRequestsQ.refetch(),
+        utils.shifts.list.invalidate(),
+      ]);
+    },
+    onError: (error) => notify.errBig(error),
+  });
+  const cancelFundingM = trpc.shifts.cancelFunding.useMutation({
+    onSuccess: async () => {
+      notify.ok("أُلغي طلب العهدة بلا أثر نقدي وأصبح سحب المصدر متاحاً من جديد");
+      setCancelFundingId(null);
+      setFundingCancellationReason("");
+      await Promise.all([
+        fundingOutgoingQ.refetch(),
+        utils.shifts.fundingSources.invalidate(),
+        fundingRequestsQ.refetch(),
+      ]);
+    },
+    onError: (error) => notify.errBig(error),
+  });
+
+  function openFundingDialog(shiftId: number) {
+    setFundingAmount("");
+    setFundingNote("");
+    setFundingSourceReceiptId("");
+    setFundingSourceCursor(null);
+    setFundingSourceCursorHistory([]);
+    setFundingClientRequestId(
+      globalThis.crypto?.randomUUID?.() ??
+        `shift-funding-${shiftId}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    setFundingShiftId(shiftId);
+  }
 
   function openCloseDialog(shiftId: number) {
     setCloseCounted("");
@@ -399,6 +499,106 @@ export default function Shifts() {
         title="سجلّ الورديات"
         description="ورديات الكاشير (فتح/إغلاق الصندوق) مع النقد المتوقّع والمعدود والفرق. أعد طباعة تقرير نهاية الوردية (Z) لأي وردية مغلقة."
       />
+
+      {(fundingRequestsQ.data?.length ?? 0) > 0 && (
+        <Card className="border-warning/50">
+          <CardHeader className="pb-2">
+            <div className="font-bold">عهد نقدية إضافية بانتظار استلامك</div>
+            <p className="text-xs text-muted-foreground">
+              لا تُضف العهدة إلى رصيد درجك إلا بعد أن تستلم النقد فعلياً وتضغط «استلمت».
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {(fundingRequestsQ.data ?? []).map((request) => (
+              <div
+                key={request.requestReceiptId}
+                className="flex flex-col gap-3 rounded-lg border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0 text-sm">
+                  <div className="font-bold">
+                    وردية #{request.shiftId} · {fmt(request.amount)} د.ع
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    سلّمها: {request.requestedByName ?? `#${request.requestedBy}`} · {request.evidenceNote}
+                  </div>
+                  {request.sourceReferenceNumber && (
+                    <div className="mt-1 text-xs text-muted-foreground" dir="ltr">
+                      {request.sourceReferenceNumber} · receipt #{request.sourceTreasuryReceiptId}
+                    </div>
+                  )}
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    size="sm"
+                    disabled={respondFundingM.isPending}
+                    onClick={() =>
+                      respondFundingM.mutate({
+                        requestReceiptId: request.requestReceiptId,
+                        decision: "ACCEPT",
+                      })
+                    }
+                  >
+                    <Check aria-hidden className="size-4" />
+                    استلمت النقد
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={respondFundingM.isPending}
+                    onClick={() => {
+                      setFundingRejectionReason("");
+                      setRejectFundingId(request.requestReceiptId);
+                    }}
+                  >
+                    <X aria-hidden className="size-4" />
+                    رفض
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {isOwner && (fundingOutgoingQ.data?.length ?? 0) > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="font-bold">طلبات عهدة أرسلت ولم تُستلم بعد</div>
+            <p className="text-xs text-muted-foreground">
+              ما تزال صفريّة الأثر. يمكنك إلغاء الطلب لتحرير سحب المصدر إذا تعذّر التسليم.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {(fundingOutgoingQ.data ?? []).map((request) => (
+              <div
+                key={request.requestReceiptId}
+                className="flex flex-col gap-3 rounded-lg border bg-background p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0 text-sm">
+                  <div className="font-bold">
+                    وردية #{request.shiftId} — {request.targetUserName ?? `#${request.targetUserId}`} · {fmt(request.amount)} د.ع
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {request.sourceReferenceNumber} · من وردية #{request.sourceShiftId} · {request.evidenceNote}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={cancelFundingM.isPending}
+                  onClick={() => {
+                    setFundingCancellationReason("");
+                    setCancelFundingId(request.requestReceiptId);
+                  }}
+                >
+                  <X aria-hidden className="size-4" />
+                  إلغاء الطلب
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -710,6 +910,17 @@ export default function Shifts() {
                             gate: { module: "treasury", level: "READ" },
                           },
                           {
+                            key: "funding",
+                            kind: "transfer",
+                            label: "تمويل إضافي",
+                            icon: CircleDollarSign,
+                            hidden:
+                              r.status !== "OPEN" ||
+                              !isOwner ||
+                              Number(r.userId) === Number(me.data?.id),
+                            onSelect: () => openFundingDialog(r.id),
+                          },
+                          {
                             key: "close",
                             kind: "reverse",
                             label: "إغلاق",
@@ -775,6 +986,269 @@ export default function Shifts() {
           </Button>
         </div>
       </div>
+
+      <Dialog
+        open={fundingShiftId != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFundingShiftId(null);
+            setFundingAmount("");
+            setFundingNote("");
+            setFundingSourceReceiptId("");
+            setFundingClientRequestId("");
+            setFundingSourceCursor(null);
+            setFundingSourceCursorHistory([]);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              تمويل إضافي للوردية #{fundingShiftId} — {fundingRow?.userName ?? ""}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
+              هذا طلب تسليم فقط: لا تُخصم الخزنة ولا يزيد الدرج حتى يستلم صاحب الوردية النقد فعلياً
+              ويؤكد الاستلام. الرصيد المتوقع الحي: {fundingReportQ.isLoading ? "جارٍ الحساب…" : fundingExpected == null ? "—" : `${fmt(fundingExpected.toString())} د.ع`}.
+            </div>
+            {fundingExpected?.lt(0) && (
+              <div className="rounded-lg border border-destructive/60 bg-destructive/10 p-3 text-xs font-bold text-destructive">
+                هذه الوردية سالبة؛ لا يجوز إخفاء العجز بتمويل إضافي. عالج المستند المسبب أو استخدم مسار التصحيح التاريخي.
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <label htmlFor="shift-funding-source" className="text-sm font-bold">
+                سحب الوردية المصدر
+              </label>
+              <select
+                id="shift-funding-source"
+                className={`${selectCls} h-10 w-full`}
+                value={fundingSourceReceiptId}
+                disabled={fundingSourcesQ.isLoading}
+                onChange={(event) => {
+                  const nextId = event.target.value;
+                  setFundingSourceReceiptId(nextId);
+                  const selected = fundingSources.find(
+                    (source) => Number(source.receiptId) === Number(nextId),
+                  );
+                  setFundingAmount(selected?.amount ?? "");
+                }}
+              >
+                <option value="">اختر سحباً نقدياً مقبولاً وغير مستخدم</option>
+                {fundingSources.map((source) => (
+                  <option key={source.receiptId} value={source.receiptId}>
+                    {source.referenceNumber} — وردية #{source.sourceShiftId} {source.sourceUserName ?? ""} — {fmt(source.amount)} د.ع
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                إلزامي: يجب أن يكون سحباً مقبولاً من وردية أخرى وبنفس المبلغ، ولا يمكن استعماله مرتين. من دون سحبٍ فعلي أغلق الوردية وافتح وردية جديدة بعهدة من الخزينة.
+              </p>
+              {!fundingSourcesQ.isLoading && fundingSources.length === 0 && (
+                <p className="text-xs font-bold text-warning">
+                  {fundingSourcesQ.data?.nextCursor != null
+                    ? "لا يوجد مصدر صالح في هذه الصفحة؛ اعرض المصادر الأقدم."
+                    : "لا يوجد سحب وردية مقبول متاح لهذا الفرع. نفّذ السحب واستلمه في الخزينة أولاً."}
+                </p>
+              )}
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={fundingSourcesQ.isLoading || fundingSourceCursorHistory.length === 0}
+                  onClick={() => {
+                    setFundingSourceReceiptId("");
+                    setFundingAmount("");
+                    setFundingSourceCursorHistory((history) => {
+                      const previous = history[history.length - 1] ?? null;
+                      setFundingSourceCursor(previous);
+                      return history.slice(0, -1);
+                    });
+                  }}
+                >
+                  الأحدث
+                </Button>
+                <span className="text-xs text-muted-foreground">50 مصدراً في الصفحة كحد أقصى</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={fundingSourcesQ.isLoading || fundingSourcesQ.data?.nextCursor == null}
+                  onClick={() => {
+                    const nextCursor = fundingSourcesQ.data?.nextCursor;
+                    if (nextCursor == null) return;
+                    setFundingSourceReceiptId("");
+                    setFundingAmount("");
+                    setFundingSourceCursorHistory((history) => [...history, fundingSourceCursor]);
+                    setFundingSourceCursor(nextCursor);
+                  }}
+                >
+                  الأقدم
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="shift-funding-amount" className="text-sm font-bold">
+                المبلغ المطابق للسحب
+              </label>
+              <MoneyInput
+                id="shift-funding-amount"
+                value={fundingAmount}
+                onChange={setFundingAmount}
+                placeholder="0"
+                ariaLabel="مبلغ التمويل الإضافي للوردية"
+                disabled
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="shift-funding-note" className="text-sm font-bold">
+                سبب الحاجة للنقد
+              </label>
+              <Textarea
+                id="shift-funding-note"
+                rows={3}
+                maxLength={500}
+                value={fundingNote}
+                onChange={(event) => setFundingNote(event.target.value)}
+                placeholder="مثال: عهدة لتسديد مصروفات تشغيلية متوقعة خلال الوردية"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFundingShiftId(null)}>
+              إلغاء
+            </Button>
+            <Button
+              disabled={
+                requestFundingM.isPending ||
+                fundingReportQ.isLoading ||
+                fundingExpected == null ||
+                fundingExpected.lt(0) ||
+                !fundingAmount ||
+                !fundingSourceReceiptId ||
+                D(fundingAmount || 0).lte(0) ||
+                fundingNote.trim().length < 10 ||
+                !fundingClientRequestId
+              }
+              onClick={() => {
+                if (fundingShiftId == null) return;
+                requestFundingM.mutate({
+                  shiftId: fundingShiftId,
+                  amount: D(fundingAmount).toFixed(2),
+                  evidenceNote: fundingNote.trim(),
+                  sourceTreasuryReceiptId: Number(fundingSourceReceiptId),
+                  clientRequestId: fundingClientRequestId,
+                });
+              }}
+            >
+              {requestFundingM.isPending ? "جارٍ إنشاء العهدة…" : "إنشاء طلب التسليم"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={rejectFundingId != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRejectFundingId(null);
+            setFundingRejectionReason("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>رفض استلام العهدة النقدية</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label htmlFor="shift-funding-rejection" className="text-sm font-bold">
+              سبب عدم الاستلام
+            </label>
+            <Textarea
+              id="shift-funding-rejection"
+              rows={3}
+              maxLength={500}
+              value={fundingRejectionReason}
+              onChange={(event) => setFundingRejectionReason(event.target.value)}
+              placeholder="لم أستلم النقد فعلياً أو المبلغ لا يطابق الطلب"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectFundingId(null)}>
+              رجوع
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={
+                respondFundingM.isPending ||
+                fundingRejectionReason.trim().length < 5
+              }
+              onClick={() => {
+                if (rejectFundingId == null) return;
+                respondFundingM.mutate({
+                  requestReceiptId: rejectFundingId,
+                  decision: "REJECT",
+                  rejectionReason: fundingRejectionReason.trim(),
+                });
+              }}
+            >
+              {respondFundingM.isPending ? "جارٍ الرفض…" : "تأكيد الرفض بلا أثر نقدي"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={cancelFundingId != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCancelFundingId(null);
+            setFundingCancellationReason("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>إلغاء طلب تسليم العهدة</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              الإلغاء لا يغيّر الخزينة أو الدرج، ويعيد إتاحة سحب المصدر لطلب صحيح لاحقاً.
+            </p>
+            <label htmlFor="shift-funding-cancellation" className="text-sm font-bold">
+              سبب الإلغاء
+            </label>
+            <Textarea
+              id="shift-funding-cancellation"
+              rows={3}
+              maxLength={500}
+              value={fundingCancellationReason}
+              onChange={(event) => setFundingCancellationReason(event.target.value)}
+              placeholder="تعذّر التسليم الفعلي أو لم تعد الوردية تحتاج المبلغ"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelFundingId(null)}>
+              رجوع
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={cancelFundingM.isPending || fundingCancellationReason.trim().length < 5}
+              onClick={() => {
+                if (cancelFundingId == null) return;
+                cancelFundingM.mutate({
+                  requestReceiptId: cancelFundingId,
+                  cancellationReason: fundingCancellationReason.trim(),
+                });
+              }}
+            >
+              {cancelFundingM.isPending ? "جارٍ الإلغاء…" : "إلغاء الطلب بلا أثر نقدي"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* إغلاق وردية عن بُعد (admin/manager) — لموظّف نسي إغلاق ورديته. نفس حوكمة نوافذ POS/
           الاستقبال/الطباعة تماماً: لا إغلاق بفرق (closeShift الخادمية ترفضه دون استثناء). */}

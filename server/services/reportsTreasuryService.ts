@@ -103,6 +103,31 @@ export async function getTreasurySummary(opts: {
         -- العهدة الوسيطة: استبعاد الحركة الداخلية وإلغاء التحويل فقط؛ CANCEL-VCH/EXP أثر تعويضي خارجي.
         -- (نقلٌ بين الدلاء/الفروع أو رأس مال، لا قبض/صرف تشغيليّ ⇒ يمنع ازدواج نقد المبيعات).
         AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
+        AND NOT (
+          COALESCE(r.referenceNumber, '') LIKE 'STF-%'
+          AND EXISTS (
+            SELECT 1
+            FROM accountingEntries sfEntry
+            INNER JOIN receipts sfRequest ON sfRequest.id = sfEntry.receiptId
+            WHERE sfEntry.entryType = 'SHIFT_FLOAT_OUT'
+              AND sfRequest.referenceNumber = r.referenceNumber
+              AND sfRequest.branchId = r.branchId
+              AND sfRequest.direction = 'OUT'
+              AND sfRequest.cashBucket = 'TREASURY'
+              AND sfRequest.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+              AND sfRequest.receiptApprovalStatus = 'APPROVED'
+              AND (
+                r.id = sfRequest.id
+                OR (
+                  r.direction = 'IN'
+                  AND r.cashBucket = 'DRAWER'
+                  AND r.signatureHash IS NOT NULL
+                  AND r.signatureHash = sfRequest.signatureHash
+                  AND r.internalNote = sfRequest.internalNote
+                )
+              )
+          )
+        )
         ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
       GROUP BY r.direction, r.paymentMethod
     `),

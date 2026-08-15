@@ -399,12 +399,29 @@ export default function POS() {
 
   // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة العملاء RECEPTION).
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
+  // العهدة لا تصل إلى الدرج بمجرد طلب المالك. نظهرها في محطة الكاشير نفسها كي
+  // يؤكد الاستلام الفعلي، بدل الاعتماد على رابط إداري مخفي عن تنقله.
+  const fundingRequestsQ = trpc.shifts.fundingRequests.useQuery(undefined, {
+    enabled: me.data != null && !offline,
+  });
+  const acceptFundingM = trpc.shifts.respondFunding.useMutation({
+    onSuccess: async () => {
+      notify.ok("أضيفت العهدة إلى الدرج بعد تأكيد الاستلام");
+      await Promise.all([fundingRequestsQ.refetch(), shiftQ.refetch()]);
+    },
+    onError: (error) => notify.errBig(error),
+  });
   // ش٥: وردية بديلة للإقلاع الأوفلايني — آخر وردية مفتوحة معلومة على هذا الجهاز. تُفعِّل مسارات
   // الالتقاط فقط (الإغلاق/التقرير أونلاينيان، والخادم يتحقق من الوردية فعلياً عند الترحيل).
   const shift = shiftQ.data
     ?? (offline && offlineBoot?.shiftId
       ? ({ id: offlineBoot.shiftId } as NonNullable<typeof shiftQ.data>)
       : undefined);
+  // قد يملك الموظف أدراجاً مستقلة RETAIL/RECEPTION/PRINT_SERVICES. محطة POS تعرض عهدة درجها الحالي
+  // وحدها حتى لا يؤكد الكاشير نقداً مسلماً لدرج آخر.
+  const posFundingRequests = (fundingRequestsQ.data ?? []).filter(
+    (request) => shift?.id != null && Number(request.shiftId) === Number(shift.id),
+  );
 
   // ش٥: كاش آخر وردية مفتوحة (يتجدد أونلاين؛ يُمسح عند غيابها كي لا يُلتقط على وردية بائدة).
   useEffect(() => {
@@ -1594,6 +1611,74 @@ export default function POS() {
           });
         }}
       />
+
+      {posFundingRequests.length > 0 && (
+        <div
+          data-testid="pos-shift-funding-banner"
+          style={{
+            margin: "6px 8px 0",
+            border: `1px solid ${C.amber}`,
+            background: C.amberSoft,
+            borderRadius: 8,
+            padding: "8px 10px",
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 900, fontSize: 13 }}>عهدة نقدية بانتظار استلامك</div>
+            <div style={{ fontSize: 12, color: C.mutedFg }}>
+              لا تُضاف إلى الدرج إلا بعد عدّ النقد فعلياً وتأكيد الاستلام.
+            </div>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {posFundingRequests.map((request) => (
+              <div key={request.requestReceiptId} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontWeight: 800, fontSize: 13 }}>{fmt(Number(request.amount))} د.ع</span>
+                <button
+                  type="button"
+                  disabled={acceptFundingM.isPending}
+                  onClick={() =>
+                    acceptFundingM.mutate({
+                      requestReceiptId: request.requestReceiptId,
+                      decision: "ACCEPT",
+                    })
+                  }
+                  style={{
+                    border: 0,
+                    borderRadius: 6,
+                    padding: "6px 10px",
+                    background: C.success,
+                    color: "white",
+                    fontWeight: 900,
+                    cursor: acceptFundingM.isPending ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {acceptFundingM.isPending ? "جارٍ التثبيت…" : "استلمت النقد"}
+                </button>
+              </div>
+            ))}
+            <Link
+              href="/shifts"
+              style={{
+                border: `1px solid ${C.border}`,
+                borderRadius: 6,
+                padding: "6px 10px",
+                color: C.fg,
+                fontSize: 12,
+                fontWeight: 800,
+                textDecoration: "none",
+                background: C.card,
+              }}
+            >
+              مراجعة الطلب أو رفضه
+            </Link>
+          </div>
+        </div>
+      )}
 
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />

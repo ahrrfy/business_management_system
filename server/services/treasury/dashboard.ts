@@ -144,7 +144,7 @@ export async function getDashboard(
   // ── (د) مقبوضات/مصروفات اليوم (مجموع كل طرق الدفع) ──
   const branchFilterRaw = effectiveBranch != null ? sql`AND branchId = ${effectiveBranch}` : sql``;
   // العهدة الوسيطة (imprest): استبعاد إيصالات الحركة الداخلية من «مقبوضات اليوم» — CH- (تسليم/إرجاع
-  // درج→خزينة)، CD- (سحب)، SF- (عهدة خزينة→درج)، CT- (تحويل بين فروع)، TF- (تمويل رأس مال)،
+  // درج→خزينة)، CD- (سحب)، SF-/STF- (عهدة خزينة→درج)، CT- (تحويل بين فروع)، TF- (تمويل رأس مال)،
   // CANCEL-CT- (إلغاء تحويل). CANCEL-VCH/EXP تعويض خارجي يجب ألّا يُخفى. ليست الحركة الداخلية قبضاً؛
   // ثم إرجاع TREASURY IN) كل إغلاق. أرصدة الدرج/الخزينة تبقى صحيحة (تُحسب من استعلاماتها الخاصّة).
   const todayReceipts = rowsOf(
@@ -156,6 +156,31 @@ export async function getDashboard(
         AND receiptApprovalStatus = 'APPROVED'
         AND DATE(createdAt) = CURDATE()
         AND COALESCE(referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
+        AND NOT (
+          COALESCE(receipts.referenceNumber, '') LIKE 'STF-%'
+          AND EXISTS (
+            SELECT 1
+            FROM accountingEntries sfEntry
+            INNER JOIN receipts sfRequest ON sfRequest.id = sfEntry.receiptId
+            WHERE sfEntry.entryType = 'SHIFT_FLOAT_OUT'
+              AND sfRequest.referenceNumber = receipts.referenceNumber
+              AND sfRequest.branchId = receipts.branchId
+              AND sfRequest.direction = 'OUT'
+              AND sfRequest.cashBucket = 'TREASURY'
+              AND sfRequest.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+              AND sfRequest.receiptApprovalStatus = 'APPROVED'
+              AND (
+                receipts.id = sfRequest.id
+                OR (
+                  receipts.direction = 'IN'
+                  AND receipts.cashBucket = 'DRAWER'
+                  AND receipts.signatureHash IS NOT NULL
+                  AND receipts.signatureHash = sfRequest.signatureHash
+                  AND receipts.internalNote = sfRequest.internalNote
+                )
+              )
+          )
+        )
         ${branchFilterRaw}
     `),
   );
