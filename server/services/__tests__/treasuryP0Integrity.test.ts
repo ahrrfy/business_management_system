@@ -46,22 +46,30 @@ beforeEach(async () => {
 });
 
 describe("treasury P0 integrity", () => {
-  it("rejects cashier-created expenses before any cash or expense row is written", async () => {
-    await expect(
-      createExpense(
-        {
-          branchId: 1,
-          amount: "750000",
-          category: "OTHER",
-          paymentMethod: "CASH",
-          description: "attempt to conceal drawer shortage",
-        },
-        { userId: CASHIER, branchId: 1, role: "cashier" },
-      ),
-    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  it("keeps cashier-created expenses pending with no cash or ledger effect before owner approval", async () => {
+    const result = await createExpense(
+      {
+        branchId: 1,
+        amount: "750000",
+        category: "OTHER",
+        paymentMethod: "CASH",
+        description: "cashier expense request for owner review",
+      },
+      { userId: CASHIER, branchId: 1, role: "cashier" },
+    );
 
-    expect(await db().select().from(s.expenses)).toHaveLength(0);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(result).toMatchObject({ status: "PENDING_APPROVAL", requiresApproval: true });
+    const [expense] = await db().select().from(s.expenses);
+    expect(expense).toMatchObject({ status: "PENDING_APPROVAL", cashBucket: null, shiftId: null });
+    const [receipt] = await db().select().from(s.receipts);
+    expect(receipt).toMatchObject({
+      direction: "OUT",
+      status: "PENDING",
+      approvalStatus: "PENDING_APPROVAL",
+      cashBucket: null,
+      shiftId: null,
+    });
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
   });
 
   it("requires a distinct same-branch recipient and keeps cash-drop receipt pending outside treasury balance", async () => {

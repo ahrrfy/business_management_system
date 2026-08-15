@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createSale, processPayment } from "../saleService";
+import { approveVoucher } from "../voucherService";
 import {
   getAPAging,
   getARAging,
@@ -24,6 +25,7 @@ import {
 } from "../workOrderService";
 
 const actor = { userId: 1, branchId: 1 };
+const owner = { userId: 2, branchId: 1, role: "manager" as const };
 
 const TABLES = [
   "idempotencyKeys",
@@ -70,7 +72,10 @@ async function seedBase() {
     { id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true, isActive: true },
+  ]);
   // M5/M8/M10: عمليات النقد (processPayment CASH هنا) تَستلزم وردية مفتوحة.
   await d.insert(s.shifts).values({
     userId: 1, branchId: 1, status: "OPEN",
@@ -146,6 +151,20 @@ describe("تقارير الذمم المدينة (AR)", () => {
 });
 
 describe("تقارير الذمم الدائنة (AP)", () => {
+  beforeEach(async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      cashBucket: "TREASURY",
+      direction: "IN",
+      amount: "1000000.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-AP-TREASURY-FUND",
+      createdBy: 1,
+    });
+  });
+
   async function makePO(supplierId: number, qty: number, unitPrice: string, receive: boolean, pay?: string) {
     const po = await createPurchaseOrder(
       { supplierId, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: String(qty), unitPrice }] },
@@ -153,7 +172,7 @@ describe("تقارير الذمم الدائنة (AP)", () => {
     );
     if (receive) {
       const poItem = (await db().select().from(s.purchaseOrderItems).where(sql`purchaseOrderId = ${po.purchaseOrderId}`))[0];
-      await receivePurchase(
+      const received = await receivePurchase(
         {
           purchaseOrderId: po.purchaseOrderId,
           lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: qty }],
@@ -161,6 +180,9 @@ describe("تقارير الذمم الدائنة (AP)", () => {
         },
         actor
       );
+      if (received.supplierPaymentRequestReceiptId != null) {
+        await approveVoucher(Number(received.supplierPaymentRequestReceiptId), owner);
+      }
     }
     return po;
   }

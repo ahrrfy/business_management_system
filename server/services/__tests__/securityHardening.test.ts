@@ -6,10 +6,12 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { reconcileCustomerBalances } from "../reconcileService";
 import { createVoucher as createVoucherService, cancelVoucher } from "../voucherService";
+import { approveVoucher } from "../voucher/approval";
 import { recordAttendance, monthSummary } from "../attendanceService";
 import { getSupplierStatement } from "../reportsService";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
+const owner = { userId: 4, branchId: 1, role: "manager" };
 let voucherRequestSeq = 0;
 
 async function createVoucher(
@@ -56,6 +58,7 @@ async function seedBase() {
     { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "mgrA", name: "مدير-MAIN", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "mgrB", name: "مدير-SALES", role: "manager", loginMethod: "local", branchId: 2 },
+    { id: 4, openId: "owner", name: "مالك-MAIN", role: "manager", loginMethod: "local", branchId: 1, isOwner: true, isActive: true },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0.00" });
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "0.00" });
@@ -122,7 +125,9 @@ describe("reconcileCustomerBalances — يضمّ سندات العميل الم�
       },
       actor,
     );
-    await cancelVoucher(r.receiptId, actor);
+    const cancellation = await cancelVoucher(r.receiptId, actor);
+    expect(cancellation.status).toBe("PENDING_APPROVAL");
+    await approveVoucher(cancellation.approvalReceiptId!, owner);
     const issues = await reconcileCustomerBalances();
     expect(issues).toHaveLength(0);
   });
@@ -321,7 +326,10 @@ describe("voucherService cancelVoucher — عزل عبر-فرعي (نمط جذر
     );
     const mgrMain = { userId: 2, branchId: 1 };
     const res = await cancelVoucher(r.receiptId, mgrMain);
-    expect(res.status).toBe("REVERSED");
+    expect(res.status).toBe("PENDING_APPROVAL");
+    await approveVoucher(res.approvalReceiptId!, owner);
+    const [cancelled] = await db().select().from(s.receipts).where(sql`${s.receipts.id} = ${r.receiptId}`).limit(1);
+    expect(cancelled.status).toBe("REVERSED");
   });
 
   it("admin يستطيع الإلغاء عبر أي فرع", async () => {
@@ -338,7 +346,10 @@ describe("voucherService cancelVoucher — عزل عبر-فرعي (نمط جذر
       actor,
     );
     const res = await cancelVoucher(r.receiptId, actor); // admin
-    expect(res.status).toBe("REVERSED");
+    expect(res.status).toBe("PENDING_APPROVAL");
+    await approveVoucher(res.approvalReceiptId!, owner);
+    const [cancelled] = await db().select().from(s.receipts).where(sql`${s.receipts.id} = ${r.receiptId}`).limit(1);
+    expect(cancelled.status).toBe("REVERSED");
   });
 });
 

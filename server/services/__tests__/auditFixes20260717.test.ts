@@ -111,7 +111,19 @@ describe("قفل الفترة — السندات (تدقيق ١٧/٧)", () => {
 
 describe("قفل الفترة — المصروفات (تدقيق ١٧/٧)", () => {
   it("إلغاء مصروف مؤرَّخ داخل فترة مُقفَلة يُرفض", async () => {
-    await openShift();
+    const shiftId = await openShift();
+    await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId,
+      cashBucket: "DRAWER",
+      direction: "IN",
+      amount: "100.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-LOCKED-EXPENSE-DRAWER-FUND",
+      createdBy: 1,
+    });
     const exp = await createExpense(
       {
         branchId: 1, category: "OTHER", amount: "20.00", paymentMethod: "CASH",
