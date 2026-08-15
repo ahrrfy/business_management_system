@@ -45,6 +45,8 @@
     "db:migrate:extra": "node scripts/ci-apply-extra-migrations.mjs",
     "db:verify": "node scripts/db-verify-schema.mjs",
     "prod:deploy": "node scripts/deploy.mjs",
+    "nginx:repair": "node scripts/install-nginx-contract.mjs",
+    "test:nginx-contract": "node scripts/nginx-contract.test.mjs && node scripts/deploy.test.mjs",
     "db:reset": "node scripts/reset.mjs",
     "db:restore": "node scripts/restore.mjs",
     "backup:pull-vps": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pull-vps-backup.ps1",
