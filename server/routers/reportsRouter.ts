@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
+import { parseBusinessYmd } from "../services/businessDay";
 import { maskBankFields } from "../lib/redact";
 import { getDb } from "../db";
 import {
@@ -20,9 +21,21 @@ import {
   getFinancialReconciliationDetails,
   toFinancialReconciliationSummary,
 } from "../services/reports/reconcileSummary";
-import { getCashFlow, getFinancialPosition, getGeneralLedger, getProfitAndLoss } from "../services/reportsFinancialService";
-import { getSalesRegister, getSalesByDimension } from "../services/reportsSalesService";
-import { getPurchasesReport, getPurchaseRegister } from "../services/reportsPurchasesService";
+import {
+  getCashFlow,
+  getFinancialPosition,
+  getProfitAndLoss,
+} from "../services/reportsFinancialService";
+import { getGeneralLedger } from "../services/reports/generalLedger";
+import { getTrialBalance } from "../services/reports/trialBalance";
+import {
+  getSalesRegister,
+  getSalesByDimension,
+} from "../services/reportsSalesService";
+import {
+  getPurchasesReport,
+  getPurchaseRegister,
+} from "../services/reportsPurchasesService";
 import { getArApAgingDetail } from "../services/reportsAgingDetailService";
 import {
   getInventoryValuation,
@@ -38,11 +51,18 @@ import {
   getCashOrphansReport,
 } from "../services/reportsTreasuryService";
 import { getDayCloseReconciliation } from "../services/reportsDayCloseService";
-import { getProductionReport, getProductionReportPage, getWorkOrdersReport } from "../services/reportsProductionService";
+import {
+  getProductionReport,
+  getProductionReportPage,
+  getWorkOrdersReport,
+} from "../services/reportsProductionService";
 import { workOrderProfitability } from "../services/reports/workOrderProfitability";
 import { getMonthCloseReadiness } from "../services/reports/monthCloseReadiness";
 import { getMonthlyClosePack } from "../services/reports/monthlyClosePack";
-import { getConsignmentAging, getCourierPerformance } from "../services/reports/courierPerformance";
+import {
+  getConsignmentAging,
+  getCourierPerformance,
+} from "../services/reports/courierPerformance";
 import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getAnomalyWatch } from "../services/reports/anomalyWatch";
@@ -60,7 +80,8 @@ import {
 } from "../services/reports/whatsappReports";
 import { money, toDbMoney } from "../services/money";
 import {
-  adminProcedure, settingsAdminProcedure,
+  adminProcedure,
+  settingsAdminProcedure,
   canViewReports,
   protectedProcedure,
   reportViewerProcedure,
@@ -77,6 +98,14 @@ const reportsProcedure = reportViewerProcedure;
 const ymdStr = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD");
+const strictYmdStr = ymdStr.refine((value) => {
+  try {
+    parseBusinessYmd(value);
+    return true;
+  } catch {
+    return false;
+  }
+}, "تاريخ تقويمي غير صالح");
 
 /**
  * يحلّ فرع التقرير مع عزل صارم: admin يعبُر أي فرع (input.branchId أو الكل)؛ غير-admin يُقيَّد بفرعه.
@@ -537,7 +566,8 @@ export const reportsRouter = router({
 
   /** إسقاط ملخّص للموبايل: نفس الفحص الشامل، بلا معرّفات أو أرصدة أو ملاحظات تفصيلية. */
   reconcileSummary: adminProcedure.query(async () =>
-    toFinancialReconciliationSummary(await getFinancialReconciliationDetails())),
+    toFinancialReconciliationSummary(await getFinancialReconciliationDetails()),
+  ),
 
   /**
    * أكثر المنتجات مبيعاً — ترتيب بالإيراد أو الكمية، فلاتر زمن+فرع.
@@ -624,67 +654,52 @@ export const reportsRouter = router({
       });
     }),
 
+  /** ميزان مراجعة رسمي من أسطر الدفتر المزدوج — لا اشتقاق لحقوق الملكية ولا موازنة مصطنعة. */
+  trialBalance: reportsBranchScoped
+    .input(
+      z
+        .object({
+          from: strictYmdStr,
+          to: strictYmdStr,
+          branchId: z.number().int().positive().optional(),
+        })
+        .refine((value) => value.from <= value.to, {
+          message: "تاريخ البداية يجب ألا يكون بعد تاريخ النهاية",
+          path: ["to"],
+        }),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getTrialBalance({ from: input.from, to: input.to, branchId });
+    }),
+
   /**
-   * دفتر اليومية / الأستاذ — تصفّح قيود accountingEntries بفلاتر (تاريخ/فرع/نوع) + إجماليات.
-   * يكشف الإيراد/التكلفة/الربح ⇒ manager فأعلى + عزل الفرع.
+   * دفتر أستاذ حساب واحد من journalEntries/journalLines، برصيد افتتاحي وجارٍ وربط بالمستند المصدر.
+   * reportViewerProcedure + scopedBranchId يفرضان بوابة التقارير وعزل الفرع (س٩).
    */
   generalLedger: reportsBranchScoped
     .input(
-      z.object({
-        from: ymdStr,
-        to: ymdStr,
-        branchId: z.number().int().positive().optional(),
-        entryTypes: z
-          .array(
-            z.enum([
-              "SALE",
-              "PURCHASE",
-              "PAYMENT_IN",
-              "PAYMENT_OUT",
-              "RETURN",
-              "ADJUST",
-              "OPENING",
-              "INTERNAL_USE",
-              "WASTAGE",
-              "GIFT_OUT",
-              "CASH_HANDOVER",
-              "CASH_TRANSFER_OUT",
-              "CASH_TRANSFER_IN",
-              "SHIFT_FLOAT_OUT",
-              "TREASURY_FUNDING",
-              "DELIVERY_DISPATCH",
-              "DELIVERY_REMIT",
-              "DELIVERY_FEE",
-              "DELIVERY_WRITEOFF",
-              "EXCHANGE_DEPOSIT",
-              "EXCHANGE_WITHDRAW",
-              "EXCHANGE_FX_BUY",
-              "EXCHANGE_SETTLE",
-              "EXCHANGE_FEE",
-              "EXCHANGE_FX_DIFF",
-              "DIGITAL_WALLET_DEPOSIT",
-              "DIGITAL_WALLET_WITHDRAWAL",
-              "DIGITAL_WALLET_CONSUMPTION",
-              "DIGITAL_WALLET_REVERSAL",
-              "DIGITAL_WALLET_ADJUSTMENT",
-              "DIGITAL_WRITEOFF",
-            ]),
-          )
-          .optional(),
-        // بحث نصّي حرّ — الطرف (عميل/مورّد)/الملاحظات/رقم الفاتورة المرتبطة.
-        q: z.string().trim().max(200).optional(),
-        limit: z.number().int().min(1).max(2000).default(200),
-        offset: z.number().int().min(0).default(0),
-      }),
+      z
+        .object({
+          accountId: z.number().int().positive(),
+          from: strictYmdStr,
+          to: strictYmdStr,
+          branchId: z.number().int().positive().optional(),
+          limit: z.number().int().min(1).max(2000).default(200),
+          offset: z.number().int().min(0).default(0),
+        })
+        .refine((value) => value.from <= value.to, {
+          message: "تاريخ البداية يجب ألا يكون بعد تاريخ النهاية",
+          path: ["to"],
+        }),
     )
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getGeneralLedger({
+        accountId: input.accountId,
         from: input.from,
         to: input.to,
         branchId,
-        entryTypes: input.entryTypes,
-        q: input.q,
         limit: input.limit,
         offset: input.offset,
       });
@@ -1029,14 +1044,16 @@ export const reportsRouter = router({
    * The legacy productionReport remains unchanged for the desktop client.
    */
   productionReportPage: reportsBranchScoped
-    .input(z.object({
-      from: ymdStr,
-      to: ymdStr,
-      branchId: z.number().int().positive().optional(),
-      limit: z.number().int().min(1).max(100).default(25),
-      offset: z.number().int().min(0).default(0),
-      cursor: z.number().int().positive().optional(),
-    }))
+    .input(
+      z.object({
+        from: ymdStr,
+        to: ymdStr,
+        branchId: z.number().int().positive().optional(),
+        limit: z.number().int().min(1).max(100).default(25),
+        offset: z.number().int().min(0).default(0),
+        cursor: z.number().int().positive().optional(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getProductionReportPage({
@@ -1126,7 +1143,9 @@ export const reportsRouter = router({
   /** أعمار الإرساليات المفتوحة (١٠/٨) — نظير أعمار الذمم لعُهد المناديب: دلاء زمنية من تاريخ
    *  الإرسال بقيمة متبقّي COD لكل جهة. نفس بوّابة التقارير + عزل الفرع. */
   consignmentAging: reportsBranchScoped
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .input(
+      z.object({ branchId: z.number().int().positive().optional() }).optional(),
+    )
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getConsignmentAging({ branchId });
@@ -1202,10 +1221,17 @@ export const reportsRouter = router({
 
   /** مطابقة شهر/فرع + حالة بوابة ACTIVE الحيّة. التحميل الكسول يبقي هذا الراوتر الضخم مستقراً. */
   reconcile: adminProcedure
-    .input(z.object({
-      month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "صيغة الشهر YYYY-MM").optional(),
-      branchId: z.number().int().positive().optional(),
-    }).optional())
+    .input(
+      z
+        .object({
+          month: z
+            .string()
+            .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "صيغة الشهر YYYY-MM")
+            .optional(),
+          branchId: z.number().int().positive().optional(),
+        })
+        .optional(),
+    )
     .query(async ({ input }) => {
       const [{ reconcileDoubleEntry }, { canActivate }] = await Promise.all([
         import("../services/reconcileService"),
@@ -1224,12 +1250,21 @@ export const reportsRouter = router({
   setDoubleEntryMode: settingsAdminProcedure
     .input(z.object({ target: z.enum(["SHADOW", "ACTIVE"]) }))
     .mutation(async ({ input, ctx }) => {
-      const [{ withTx }, { activateDoubleEntry, startDoubleEntryShadow }] = await Promise.all([
-        import("../services/tx"),
-        import("../services/accounting/doubleEntrySettings"),
-      ]);
-      return withTx(async (tx) => input.target === "SHADOW"
-        ? startDoubleEntryShadow(tx, { actorId: ctx.user.id, auditContext: ctx })
-        : activateDoubleEntry(tx, { actorId: ctx.user.id, auditContext: ctx }));
+      const [{ withTx }, { activateDoubleEntry, startDoubleEntryShadow }] =
+        await Promise.all([
+          import("../services/tx"),
+          import("../services/accounting/doubleEntrySettings"),
+        ]);
+      return withTx(async (tx) =>
+        input.target === "SHADOW"
+          ? startDoubleEntryShadow(tx, {
+              actorId: ctx.user.id,
+              auditContext: ctx,
+            })
+          : activateDoubleEntry(tx, {
+              actorId: ctx.user.id,
+              auditContext: ctx,
+            }),
+      );
     }),
 });

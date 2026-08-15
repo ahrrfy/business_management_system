@@ -27,8 +27,8 @@ Drizzle ORM (mysql2) · MySQL 8 · decimal.js عبر `server/services/money.ts` 
 | منفذ كتابة الدفتر **واحد** | `postEntry(tx, e: EntryInput)` — [ledgerService.ts:79](../server/services/ledgerService.ts#L79) | التوصيل = تعديل دالّةٍ واحدة، لا ٧٤ راوتراً |
 | **تسريبٌ يتجاوز المنفذ** | `postOpeningEntry` يُدرج مباشرةً — [openingBalance.ts:69](../server/services/openingBalance.ts#L69) | **ش٠ تُصلحه أولاً**، وإلّا فات الخطّافَ الرصيدُ الافتتاحيّ صامتاً. ⚠️ **ليس عِلّةً حيّة**: الحارس متّسق (`assertPeriodOpen(localTodayDate())` و`entryDate = localTodayDate()` — نفس التاريخ). تجاوزٌ بنيويّ يصير عِلّةً **لحظة تركيب الخطّاف** فقط |
 | **القيد ليس ملحقيّاً بالكامل** | `upsertOpeningEntry` **يُعدّل** ([:137](../server/services/openingBalance.ts#L137)) و**يحذف** ([:135](../server/services/openingBalance.ts#L135)) صفوف `accountingEntries` | **يُبطل افتراض «الدفتر ملحقيّ»**. بلا علاج: الحذف يُفشله FK، والتعديل يترك قيداً مزدوجاً **بائتاً يخالف الدفتر**. العلاج: `ON DELETE CASCADE` + `refreshJournal` عند التعديل (ش٠/ش١) |
-| `EntryType` = **٣١ نوعاً** | [ledgerService.ts:8-50](../server/services/ledgerService.ts#L8) | التوثيق قال ٢٢ — خطأ. المتبقّي **٢٥** |
-| المُخطَّط = **٦** فقط | `MAPPED_ENTRY_TYPES` — [postingEngine.ts:78](../server/services/accounting/postingEngine.ts#L78) | ش٢ تُكمِل الـ٢٥ على ٣ دفعات حسب الصعوبة |
+| `EntryType` = **٣٢ نوعاً** | [ledgerService.ts:8-50](../server/services/ledgerService.ts#L8) | أُضيف `DELIVERY_FEE_HELD`؛ المتبقّي **٢٦** بعد الخرائط الستّ الحالية |
+| المُخطَّط = **٦** فقط | `MAPPED_ENTRY_TYPES` — [postingEngine.ts:78](../server/services/accounting/postingEngine.ts#L78) | ش٢ تُكمِل الـ٢٦ على ٣ دفعات حسب الصعوبة |
 | المحرّك **نقيّ لا يكتب** | [postingEngine.ts:1-3](../server/services/accounting/postingEngine.ts#L1) | لا يحتاج إعادة كتابة — يحتاج **موصِّلاً** فقط |
 | يرمي `UnmappedEntryTypeError` على غير المُخطَّط | [postingEngine.ts:57](../server/services/accounting/postingEngine.ts#L57) | **خطر قاتل**: رميةٌ داخل معاملة البيع = ROLLBACK للفاتورة ⇒ الخطّاف يجب أن يبتلعها في SHADOW |
 | `assertPeriodOpen` مطبَّق أصلاً | [ledgerService.ts:81](../server/services/ledgerService.ts#L81) | القيد المزدوج يرث حماية الفترة مجّاناً |
@@ -255,7 +255,7 @@ await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), 
 
 ---
 
-### ش٢ — إكمال الخرائط الـ٢٥  ⛔ **محجوبة بقرار المالك (انظر أدناه)**
+### ش٢ — إكمال الخرائط الـ٢٦  ⛔ **محجوبة بقرار المالك (انظر أدناه)**
 
 تُقسَّم ثلاث دفعات حسب الوضوح المحاسبيّ — **لا تُخمَّن أيّ خريطة** (المبدأ الحاكم في رأس `postingEngine.ts`: «لا تخمين على النواة المالية»).
 
@@ -335,9 +335,9 @@ await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), 
 ### ✅ محسوم (١١/٨/٢٠٢٦)
 
 **١. مستوى الطموح = ميزان مراجعة رسميّ كامل** يقبله محاسبٌ قانونيّ أو جهةٌ ضريبية. **الأثر الملزِم:**
-- الـ**٢٥** خريطة كلّها في النطاق — **لا يُقبَل إبقاء أيّ نوعٍ فجوةً دائمة**.
+- الـ**٢٦** خريطة كلّها في النطاق — **لا يُقبَل إبقاء أيّ نوعٍ فجوةً دائمة**.
 - الدفعة **٢ج** (`ADJUST` · `RETURN` مورّد · `EXCHANGE_SETTLE` · `EXCHANGE_FX_DIFF` · `DIGITAL_WALLET_REVERSAL/ADJUSTMENT`) **تلزمها مصادقةُ محاسبٍ بشريٍّ مكتوبة** قبل الدخول في ACTIVE — تُرفَق في هذا الملف.
-- بوّابة س٧ تُشدَّد: `ACTIVE` تتطلّب `MAPPED_ENTRY_TYPES.size === 31` (كل أنواع `EntryType`) إضافةً إلى شروطها الحالية. **يفحصها الكود.**
+- بوّابة س٧ تُشدَّد: `ACTIVE` تتطلّب `MAPPED_ENTRY_TYPES.size === 32` (كل أنواع `EntryType` الحالية، ومنها `DELIVERY_FEE_HELD`) إضافةً إلى شروطها الحالية. **يفحصها الكود، ويجب تحديث العدد عند إضافة نوع جديد.**
 - التزامٌ تابع: القوائم المالية الرسمية (ميزانية/دخل) تصير امتداداً منطقياً بعد ACTIVE، لا نطاقاً مستقلّاً.
 
 ### ⬜ ما زالت مطلوبة (تحجب ش٢ج فقط)
@@ -373,6 +373,6 @@ await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), 
 | ش٠ الأساس | 🟩 مُنفَّذة ومتحقَّقة | — | — | ٨/٨ اختبارات · **الحزمة الكاملة ٤٢٠٣/٤٢٠٣ في ٣٨٤ ملفاً خضراء (TZ=UTC)** · `check:guards` التسعة |
 | ش١ الظلّ | 🟩 مُنفَّذة (تنتظر الحزمة + الالتزام) | — | — | ١٠/١٠ اختبارات · `pnpm check` نظيف · `check:guards` التسعة · ٣ مواضع مُوصَّلة و٦ فجواتٍ متعمَّدة (الجدول أعلاه) |
 | ش٢ الخرائط | 🔒 محجوبة | — | — | تنتظر قرارَي المالك ١ و٤ |
-| ش٣ التقارير | ⬜ لم تبدأ | — | — | تعتمد ش١ (تعمل ولو ناقصة الخرائط) |
+| ش٣ التقارير | 🟩 مُنفَّذة ومتحقَّقة | — | — | ١٣/١٣ اختباراً خاصاً · **الحزمة الكاملة ٤٦٤٠/٤٦٤٠ في ٤٢٧ ملفاً خضراء** · `check` + `build` + الحرّاس التسعة · جولة RTL عند 1500/500 وفحص ملفَّي Excel فعلياً · فصل فجوات الافتتاح عن الفترة · تسميات الأنواع الـ٣٢ الحالية؛ تبقى SHADOW صريحةً حتى بوابة ACTIVE |
 | ش٤ المطابقة | ⬜ لم تبدأ | — | — | تعتمد ش٣ |
 | ش٥ الإقفال | ⬜ لم تبدأ | — | — | مستقلّة — يمكن تنفيذها بالتوازي مع ش٣ |

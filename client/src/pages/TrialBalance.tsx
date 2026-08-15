@@ -1,173 +1,387 @@
-// ميزان المراجعة المبسّط — أرصدة بصيغة مدين/دائن (لقطة) تتوازن بناءً (حقوق الملكية مشتقّة).
-// عرض + Excel + طباعة A4. يشارك endpoint المركز المالي مع الميزانية العمومية.
+// ميزان مراجعة رسمي من journalEntries/journalLines — افتتاح، حركة، وختام لكل حساب قابل للترحيل.
 import { useMemo, useState } from "react";
+import type { ColumnDef } from "@tanstack/react-table";
+import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { DataTable } from "@/components/data-table/DataTable";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
+import {
+  DEFAULT_PERIOD,
+  PeriodFilter,
+  type PeriodValue,
+} from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { LoadingState, ErrorState } from "@/components/PageState";
-import { fmtAr, D } from "@/lib/money";
-import { fmtDate } from "@/lib/date";
+import { ErrorState } from "@/components/PageState";
+import { D, fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
-import { printReportDoc } from "@/lib/printing/reportDoc";
+import { cn } from "@/lib/utils";
 
-/** اليوم YYYY-MM-DD محلياً — لا toISOString (ينزاح قرب منتصف الليل ببغداد UTC+3). */
-function todayYmd(): string {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+type Report = RouterOutputs["reports"]["trialBalance"];
+type Row = Report["rows"][number];
+
+const TYPE_LABEL: Record<string, string> = {
+  ASSET: "أصل",
+  LIABILITY: "التزام",
+  EQUITY: "حقوق ملكية",
+  REVENUE: "إيراد",
+  EXPENSE: "مصروف",
+};
+const selectCls =
+  "h-9 rounded-md border border-input bg-background px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+function moneyCell(value: string) {
+  return D(value).isZero() ? "—" : fmtAr(value);
 }
 
-type Pos = RouterOutputs["reports"]["financialPosition"];
-
-const NOTE =
-  "معادلة مركز مالي مبسّطة وليست ميزان مراجعة قيود مزدوجة. حقوق الملكية مشتقّة = الأصول − الخصوم، لذلك لا يجوز اعتبار تساوي الطرفين دليلاً على سلامة القيود. الذمم على مستوى الشركة؛ النقد والمخزون حسب الفرع.";
-const selectCls =
-  "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-function buildRows(p: Pos) {
-  return [
-    { label: "النقد (تقديريّ)", debit: p.cash, credit: "0" },
-    { label: "مقبوضات البطاقة/البنك", debit: p.card, credit: "0" },
-    { label: "صكوك قيد التحصيل", debit: p.check, credit: "0" },
-    { label: "تحويلات مصرفية", debit: p.transfer, credit: "0" },
-    { label: "محافظ إلكترونية", debit: p.wallet, credit: "0" },
-    { label: "الذمم المدينة (عملاء)", debit: p.arDebit, credit: "0" },
-    { label: "سُلف للموردين", debit: p.apDebit, credit: "0" },
-    { label: "المخزون (بالتكلفة)", debit: p.inventory, credit: "0" },
-    { label: "الأصول الثابتة (بالتكلفة)", debit: p.fixedAssets, credit: "0" },
-    { label: "الذمم الدائنة (موردون)", debit: "0", credit: p.apCredit },
-    { label: "سُلف العملاء", debit: "0", credit: p.arCredit },
-    // FIN-05: عرابين طلبات خدمة العملاء غير المُسلَّمة — التزام دائن (الخدمة لم تُنجَز بعد).
-    { label: "سُلف عملاء (عرابين طلبات خدمة)", debit: "0", credit: p.customerAdvances },
-    { label: "حقوق الملكية (مشتقّة)", debit: "0", credit: p.equity },
-  ].filter((r) => D(r.debit).gt(0) || D(r.credit).gt(0));
+function LedgerModeNotice({ report }: { report: Report }) {
+  if (report.mode === "SHADOW") {
+    return (
+      <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] px-3 py-2 text-sm text-[var(--sem-warn)]">
+        <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+        <div>
+          <p className="font-semibold">
+            للمطابقة فقط — الدفتر المُعتمَد ما زال المبسّط.
+          </p>
+          <p className="text-xs opacity-80">
+            القيود المزدوجة تُكتب في وضع الظل منذ{" "}
+            {report.shadowStartedAt ?? "تاريخ غير مسجّل"}، ولا تصبح مصدراً
+            معتمداً قبل اجتياز بوابة ACTIVE.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  if (report.mode === "OFF") {
+    return (
+      <div className="flex items-start gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm text-foreground">
+        <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+        <div>
+          <p className="font-semibold">الدفتر المزدوج متوقف.</p>
+          <p className="text-xs opacity-80">
+            لن تظهر عمليات جديدة هنا ما دام الوضع OFF؛ لا تعتمد هذا التقرير
+            كميزانٍ حي.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-[var(--sem-pos)]/40 bg-[var(--sem-pos-bg)] px-3 py-2 text-sm text-[var(--sem-pos)]">
+      <CheckCircle2 aria-hidden className="size-4 shrink-0" />
+      الدفتر المزدوج في وضع ACTIVE.
+    </div>
+  );
 }
 
 export default function TrialBalance() {
+  const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
-  // «كما في تاريخ» — فارغ يعني اللقطة الحيّة الآن (بلا تغيير سلوكيّ افتراضاً). كان هذا المنتقي
-  // غائباً تماماً فتبقى اللقطة «اليوم» دائماً مهما احتاج المستخدم (أصلح من الجذر عبر reports.financialPosition.asOf).
-  const [asOf, setAsOf] = useState("");
-  const branches = trpc.branches.list.useQuery();
-  const q = trpc.reports.financialPosition.useQuery({
-    branchId: branchId ? Number(branchId) : undefined,
-    asOf: asOf || undefined,
+  const me = trpc.auth.me.useQuery();
+  const branches = trpc.branches.list.useQuery(undefined, {
+    enabled: me.data?.role === "admin",
   });
-  const p = q.data;
-  const rows = useMemo(() => (p ? buildRows(p) : []), [p]);
+  const canChooseBranch = me.data?.role === "admin";
+  const input = {
+    from: period.from,
+    to: period.to,
+    branchId: canChooseBranch && branchId ? Number(branchId) : undefined,
+  };
+  const q = trpc.reports.trialBalance.useQuery(input, {
+    enabled: Boolean(period.from && period.to && period.from <= period.to),
+  });
+  const report = q.data;
 
-  const totalDebit = p?.totalAssets ?? "0";
-  const totalCredit = p ? D(p.totalLiabilities).add(D(p.equity)).toString() : "0";
+  const columns = useMemo<ColumnDef<Row, unknown>[]>(
+    () => [
+      { accessorKey: "code", header: "الرمز" },
+      {
+        accessorKey: "name",
+        header: "الحساب",
+        cell: ({ row }) => (
+          <div>
+            <p
+              className={cn(
+                "font-medium",
+                row.original.isUnmappedAccount && "text-destructive",
+              )}
+            >
+              {row.original.name}
+            </p>
+            <p className="text-[10px] text-muted-foreground" dir="ltr">
+              {row.original.systemRole}
+            </p>
+          </div>
+        ),
+      },
+      {
+        id: "type",
+        header: "النوع",
+        accessorFn: (row) =>
+          row.type ? (TYPE_LABEL[row.type] ?? row.type) : "غير مربوط",
+      },
+      {
+        accessorKey: "openingDebit",
+        header: "افتتاح مدين",
+        cell: ({ row }) => <Money value={row.original.openingDebit} />,
+      },
+      {
+        accessorKey: "openingCredit",
+        header: "افتتاح دائن",
+        cell: ({ row }) => <Money value={row.original.openingCredit} />,
+      },
+      {
+        accessorKey: "periodDebit",
+        header: "حركة مدين",
+        cell: ({ row }) => <Money value={row.original.periodDebit} />,
+      },
+      {
+        accessorKey: "periodCredit",
+        header: "حركة دائن",
+        cell: ({ row }) => <Money value={row.original.periodCredit} />,
+      },
+      {
+        accessorKey: "closingDebit",
+        header: "ختام مدين",
+        cell: ({ row }) => <Money value={row.original.closingDebit} />,
+      },
+      {
+        accessorKey: "closingCredit",
+        header: "ختام دائن",
+        cell: ({ row }) => <Money value={row.original.closingCredit} />,
+      },
+    ],
+    [],
+  );
 
-  const kpis: KpiItem[] = p
+  const kpis: KpiItem[] = report
     ? [
-        { label: "إجمالي المدين", value: fmtAr(totalDebit), tone: "info" },
-        { label: "إجمالي الدائن", value: fmtAr(totalCredit), tone: "info" },
-        { label: "نوع المطابقة", value: "معادلة مشتقّة — ليست اختبار قيود", tone: "warning" },
+        {
+          label: "مدين حركة الفترة",
+          value: fmtAr(report.totals.periodDebit),
+          tone: "info",
+        },
+        {
+          label: "دائن حركة الفترة",
+          value: fmtAr(report.totals.periodCredit),
+          tone: "info",
+        },
+        {
+          label: "تحقق الميزان",
+          value: report.totals.isBalanced ? "متوازن" : "غير متوازن",
+          tone: report.totals.isBalanced ? "positive" : "negative",
+          hint: `فرق الختام ${fmtAr(report.totals.closingDifference)} د.ع`,
+        },
+        {
+          label: "فجوات حتى الختام",
+          value: report.unmappedCount,
+          tone: report.unmappedCount === 0 ? "positive" : "negative",
+          hint: `افتتاح ${report.openingUnmappedCount} · فترة ${report.periodUnmappedCount}`,
+        },
       ]
     : [];
 
-  const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل (الشركة)";
+  const branchLabel =
+    canChooseBranch && branchId
+      ? (branches.data?.find((branch) => branch.id === Number(branchId))
+          ?.name ?? String(branchId))
+      : canChooseBranch
+        ? "كل الشركة"
+        : "الفرع المعيّن";
 
   function onExport() {
-    exportRows(rows, {
-      filename: "ميزان-المراجعة",
-      columns: [
-        { key: "label", header: "الحساب" },
-        { key: "debit", header: "مدين", map: (r) => Number(r.debit) },
-        { key: "credit", header: "دائن", map: (r) => Number(r.credit) },
-      ],
-    });
-  }
-
-  function onPrint() {
-    if (!p) return;
-    printReportDoc({
-      title: "ميزان المراجعة",
-      headerExtra: [
-        { label: "كما في", value: p.asOf ? fmtDate(new Date(`${p.asOf}T00:00:00`)) : fmtDate(new Date()) },
+    if (!report) return;
+    exportRows(report.rows, {
+      filename: `ميزان-المراجعة-${period.from}-${period.to}`,
+      title: "ميزان المراجعة — الدفتر المزدوج",
+      meta: [
+        { label: "الفترة", value: `${period.from} — ${period.to}` },
         { label: "الفرع", value: branchLabel },
+        { label: "وضع الدفتر", value: report.mode },
+        {
+          label: "فجوات قبل الفترة",
+          value: String(report.openingUnmappedCount),
+        },
+        {
+          label: "فجوات داخل الفترة",
+          value: String(report.periodUnmappedCount),
+        },
       ],
-      note: p.historicalNote ? `${NOTE} ${p.historicalNote}` : NOTE,
       columns: [
-        { key: "label", label: "الحساب" },
-        { key: "debit", label: "مدين", align: "left" },
-        { key: "credit", label: "دائن", align: "left" },
+        { key: "code", header: "رمز الحساب" },
+        { key: "name", header: "اسم الحساب" },
+        {
+          key: "type",
+          header: "النوع",
+          map: (row) =>
+            row.type ? (TYPE_LABEL[row.type] ?? row.type) : "غير مربوط",
+        },
+        {
+          key: "openingDebit",
+          header: "افتتاح مدين",
+          money: true,
+          map: (row) => D(row.openingDebit).toNumber(),
+        },
+        {
+          key: "openingCredit",
+          header: "افتتاح دائن",
+          money: true,
+          map: (row) => D(row.openingCredit).toNumber(),
+        },
+        {
+          key: "periodDebit",
+          header: "حركة مدين",
+          money: true,
+          map: (row) => D(row.periodDebit).toNumber(),
+        },
+        {
+          key: "periodCredit",
+          header: "حركة دائن",
+          money: true,
+          map: (row) => D(row.periodCredit).toNumber(),
+        },
+        {
+          key: "closingDebit",
+          header: "ختام مدين",
+          money: true,
+          map: (row) => D(row.closingDebit).toNumber(),
+        },
+        {
+          key: "closingCredit",
+          header: "ختام دائن",
+          money: true,
+          map: (row) => D(row.closingCredit).toNumber(),
+        },
       ],
-      rows: rows.map((r) => ({
-        label: r.label,
-        debit: D(r.debit).gt(0) ? fmtAr(r.debit) : "—",
-        credit: D(r.credit).gt(0) ? fmtAr(r.credit) : "—",
-      })),
-      showIndex: false,
-      summary: [
-        { label: "إجمالي المدين", value: fmtAr(totalDebit) },
-        { label: "إجمالي الدائن", value: fmtAr(totalCredit), large: true, bold: true },
-      ],
+      totalsRow: {
+        code: "الإجمالي",
+        openingDebit: D(report.totals.openingDebit).toNumber(),
+        openingCredit: D(report.totals.openingCredit).toNumber(),
+        periodDebit: D(report.totals.periodDebit).toNumber(),
+        periodCredit: D(report.totals.periodCredit).toNumber(),
+        closingDebit: D(report.totals.closingDebit).toNumber(),
+        closingCredit: D(report.totals.closingCredit).toNumber(),
+      },
     });
   }
 
   return (
     <ReportShell
-      title="معادلة المركز المالي"
-      description="عرض مشتق للأصول والخصوم، وليس ميزان مراجعة محاسبياً من قيود مزدوجة."
-      note={p?.historicalNote ? `${NOTE} ${p.historicalNote}` : NOTE}
+      title="ميزان المراجعة"
+      description="أرصدة افتتاحية وحركة وختام مستخرجة مباشرةً من القيود المزدوجة، بلا حقوق ملكية مشتقّة."
       kpis={kpis}
       onExport={onExport}
-      onPrint={onPrint}
-      exportDisabled={!p}
-      printDisabled={!p}
+      exportDisabled={!report}
       filters={
         <div className="flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-              <option value="">الكل (الشركة)</option>
-              {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
-            </select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-muted-foreground">كما في تاريخ</label>
-            <Input type="date" dir="ltr" value={asOf} max={todayYmd()} onChange={(e) => setAsOf(e.target.value)} className="h-9 w-40" />
-          </div>
+          <PeriodFilter value={period} onChange={setPeriod} />
+          {canChooseBranch && (
+            <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+              الفرع
+              <select
+                className={selectCls}
+                value={branchId}
+                onChange={(event) =>
+                  setBranchId(
+                    event.target.value ? Number(event.target.value) : "",
+                  )
+                }
+              >
+                <option value="">كل الشركة</option>
+                {branches.data?.map((branch) => (
+                  <option key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       }
     >
-      <Card>
-        <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !p ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-end font-medium">الحساب</th>
-                  <th className="p-3 text-right font-medium">مدين</th>
-                  <th className="p-3 text-right font-medium">دائن</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} className="border-b">
-                    <td className="p-3 text-end">{r.label}</td>
-                    <td className="p-3 text-right tabular-nums" dir="ltr">{D(r.debit).gt(0) ? fmtAr(r.debit) : "—"}</td>
-                    <td className="p-3 text-right tabular-nums" dir="ltr">{D(r.credit).gt(0) ? fmtAr(r.credit) : "—"}</td>
-                  </tr>
-                ))}
-                <tr className="font-bold bg-muted/30">
-                  <td className="p-3 text-end">الإجمالي</td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(totalDebit)}</td>
-                  <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(totalCredit)}</td>
-                </tr>
-              </tbody>
-            </table>
-          )}
-        </CardContent>
-      </Card>
+      {q.isError ? (
+        <ErrorState
+          message="تعذّر تحميل ميزان المراجعة."
+          onRetry={() => void q.refetch()}
+        />
+      ) : (
+        <div className="space-y-3">
+          {report && <LedgerModeNotice report={report} />}
+          {report &&
+            (report.unmappedCount > 0 ||
+              report.unmappedAccountRoles.length > 0) && (
+              <div className="flex items-start gap-2 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] px-3 py-2 text-sm text-[var(--sem-neg)]">
+                <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+                <p>
+                  التقرير غير مكتمل للاعتماد: {report.openingUnmappedCount} فجوة
+                  قبل الفترة تؤثر في موثوقية الافتتاح، و
+                  {report.periodUnmappedCount} فجوة داخل الفترة
+                  {report.unmappedAccountRoles.length > 0 &&
+                    `، و${report.unmappedAccountRoles.length} دور محاسبي بلا حساب مربوط`}
+                  .
+                </p>
+              </div>
+            )}
+          <Card>
+            <CardContent className="p-3">
+              <DataTable
+                columns={columns}
+                data={report?.rows ?? []}
+                loading={q.isLoading}
+                searchable
+                searchPlaceholder="بحث برمز الحساب أو اسمه…"
+                emptyText="لا توجد قيود مزدوجة ضمن هذه الفترة."
+                pageSize={Infinity}
+                viewKey="double-entry-trial-balance"
+                getRowClassName={(row) =>
+                  row.isUnmappedAccount ? "bg-[var(--sem-neg-bg)]" : undefined
+                }
+              />
+            </CardContent>
+          </Card>
+          {report && <TotalsStrip report={report} />}
+        </div>
+      )}
     </ReportShell>
+  );
+}
+
+function Money({ value }: { value: string }) {
+  return (
+    <span className="block text-left tabular-nums" dir="ltr">
+      {moneyCell(value)}
+    </span>
+  );
+}
+
+function TotalsStrip({ report }: { report: Report }) {
+  const cells = [
+    ["افتتاح مدين", report.totals.openingDebit],
+    ["افتتاح دائن", report.totals.openingCredit],
+    ["حركة مدين", report.totals.periodDebit],
+    ["حركة دائن", report.totals.periodCredit],
+    ["ختام مدين", report.totals.closingDebit],
+    ["ختام دائن", report.totals.closingCredit],
+  ] as const;
+  return (
+    <div
+      className={cn(
+        "grid grid-cols-2 overflow-hidden rounded-md border text-sm sm:grid-cols-3 lg:grid-cols-6",
+        report.totals.isBalanced
+          ? "border-[var(--sem-pos)]"
+          : "border-[var(--sem-neg)]",
+      )}
+    >
+      {cells.map(([label, value]) => (
+        <div
+          key={label}
+          className="border-b border-s last:border-0 p-3 sm:border-b-0"
+        >
+          <p className="text-xs text-muted-foreground">{label}</p>
+          <p className="font-bold tabular-nums" dir="ltr">
+            {fmtAr(value)}
+          </p>
+        </div>
+      ))}
+    </div>
   );
 }

@@ -55,8 +55,8 @@ const SECTIONS: Section[] = [
     icon: ScrollText,
     items: [
       { title: "الأرباح والخسائر", desc: "إيراد − تكلفة المبيعات − مصروفات (مبسّطة، مع مقارنة)", href: "/reports/profit-loss", icon: TrendingUp, gate: "manager", status: "ready" },
-      { title: "ميزان المراجعة", desc: "تجميع أرصدة النقد/المدينين/الدائنين/المخزون", href: "/reports/trial-balance", icon: Scale, gate: "manager", status: "ready" },
-      { title: "دفتر اليومية / الأستاذ", desc: "تصفّح قيود الدفتر مع التنقّل لمستند المصدر", href: "/reports/general-ledger", icon: BookOpen, gate: "manager", status: "ready" },
+      { title: "ميزان المراجعة", desc: "افتتاح وحركة وختام من القيود المزدوجة مع تحقق التوازن", href: "/reports/trial-balance", icon: Scale, gate: "manager", status: "ready" },
+      { title: "دفتر الأستاذ العام", desc: "حركة حساب ورصيده الجاري مع مستند المصدر", href: "/reports/general-ledger", icon: BookOpen, gate: "manager", status: "ready" },
       { title: "الميزانية العمومية", desc: "أصول/خصوم/حقوق ملكية (مبسّطة مشتقّة)", href: "/reports/balance-sheet", icon: Landmark, gate: "manager", status: "ready" },
       { title: "التدفّقات النقدية", desc: "مقبوضات/مدفوعات (أساس نقدي)", href: "/reports/cash-flow", icon: Droplet, gate: "manager", status: "ready" },
     ],
