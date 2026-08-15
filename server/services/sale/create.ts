@@ -934,6 +934,8 @@ export async function createSaleInTx(
           // (استحقاق PURCHASE يتيم أدناه). يُرفض بـCONFLICT فيرتدّ ويُعلَّق لمراجعة المدير كالمسار الحيّ.
           allowNegative: input.strictStock !== true && (input.allowNegativeStock ?? false) && !consignByVariant.has(vid),
           allowNegativeUnopened: openingAllow,
+          onlineOrderAllocationExemptionId: input.onlineOrderAllocationId,
+          exemptFormalReservationAllocations: input.exemptFormalReservationAllocations,
         });
         // معلومة استشارية للمحاولة الفائزة فقط (لا تُعاد في replay الـidempotency — لا حالة دائمة عليها).
         if (openingAllow && moved.newQuantity < 0) negativeDips.push({ variantId: vid, newQuantity: moved.newQuantity });

@@ -367,7 +367,7 @@ export const catalogRouter = router({
   // تتسرّب التكلفة للكاشير/المندوب.
   forPurchase: productsPurchaseProcedure
     .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().int().positive().max(500).default(50) }))
-    .query(({ input }) => listForPurchase(input.branchId, input.query, input.limit)),
+    .query(({ input, ctx }) => listForPurchase(scopeBranch(ctx, input.branchId), input.query, input.limit)),
 
   createProduct: productsManagerProcedure
     .input(

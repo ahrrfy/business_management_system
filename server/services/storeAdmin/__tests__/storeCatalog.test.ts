@@ -250,7 +250,7 @@ describe("setProductPrimaryImage", () => {
 
 describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
   it("رفع المخزون ⇒ طلبٌ معلَّق بلا أثر، والاعتماد ⇒ حركة ADJUST + قيد بإشارة كلفة سالبة", async () => {
-    const req = await setStoreProductStock({ variantId: 2, branchId: 1, targetQuantity: 30, createdBy: 1, role: "admin" });
+    const req = await setStoreProductStock({ variantId: 2, branchId: 1, targetQuantity: 30 }, APPROVER);
     // لا تغيير مخزون ولا قيد قبل الاعتماد.
     let entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
     expect(entries).toHaveLength(0);
@@ -267,7 +267,7 @@ describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
   });
 
   it("خفض المخزون ⇒ اعتماد ⇒ delta سالب + كلفة موجبة (استرداد قيمة)", async () => {
-    const req = await setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: 20, createdBy: 1, role: "admin" }); // 50→20
+    const req = await setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: 20 }, APPROVER); // 50→20
     const res = await approveStockAdjustment(req.requestId, APPROVER);
     expect(res.delta).toBe(-30);
     const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
@@ -276,7 +276,7 @@ describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
   });
 
   it("دلتا صفر (نفس الكمية) ⇒ اعتماد بلا قيد محاسبي", async () => {
-    const req = await setStoreProductStock({ variantId: 3, branchId: 1, targetQuantity: 10, createdBy: 1, role: "admin" }); // 10→10
+    const req = await setStoreProductStock({ variantId: 3, branchId: 1, targetQuantity: 10 }, APPROVER); // 10→10
     const res = await approveStockAdjustment(req.requestId, APPROVER);
     expect(res.delta).toBe(0);
     const entries = await db().select().from(s.accountingEntries);
@@ -284,7 +284,7 @@ describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
   });
 
   it("رفض: كمية سالبة ⇒ خطأ (لا تغيير)", async () => {
-    await expect(setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: -5, createdBy: 1 })).rejects.toThrow();
+    await expect(setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: -5 }, APPROVER)).rejects.toThrow();
     const stock = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0];
     expect(stock.q).toBe(50); // بلا تغيير
   });

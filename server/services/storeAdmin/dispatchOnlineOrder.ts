@@ -12,12 +12,17 @@
  */
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders } from "../../../drizzle/schema";
+import { customers, deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { dispatchInvoiceInTx } from "../delivery/dispatchInvoice";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
 import { returnSale } from "../returnService";
 import { withTx, type Actor } from "../tx";
+import {
+  loadVariantAvailability,
+  lockProductUnitsForOnlineAllocation,
+} from "../catalog/variantAvailability";
+import { money } from "../money";
 
 export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
@@ -86,8 +91,43 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
   let notifyInput: Parameters<typeof notifySaleCustomerAfterCommit>[0] | null = null;
   let notifyResult: Parameters<typeof notifySaleCustomerAfterCommit>[1] | null = null;
   const claim = await withTx(async (tx) => {
+    // بروتوكول الأقفال العالمي نفسه في POS/createSale/createOnlineOrder:
+    // customer → productUnit → variant/branchStock → onlineOrder/items. createSale سيعيد قفل العميل
+    // re-entrantly داخل المعاملة نفسها، ولا ينشأ customer↔stock deadlock مع بيع متزامن.
+    const expectedCustomerId = order.customerId == null ? null : Number(order.customerId);
+    if (expectedCustomerId != null) {
+      const customer = (
+        await tx.select({ id: customers.id }).from(customers).where(eq(customers.id, expectedCustomerId)).for("update").limit(1)
+      )[0];
+      if (!customer) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "عميل الطلب غير موجود" });
+    }
+    const allocationItems = await tx
+      .select({
+        variantId: onlineOrderItems.variantId,
+        productUnitId: onlineOrderItems.productUnitId,
+      })
+      .from(onlineOrderItems)
+      .where(eq(onlineOrderItems.onlineOrderId, order.id));
+    const lockedUnits = await lockProductUnitsForOnlineAllocation(
+      tx,
+      allocationItems
+        .map((item) => item.productUnitId == null ? 0 : Number(item.productUnitId))
+        .filter((id) => id > 0),
+    );
+    const factorByUnit = new Map(lockedUnits.map((unit) => [unit.id, unit.conversionFactor]));
+    if (allocationItems.length) {
+      await loadVariantAvailability(
+        tx,
+        branchId,
+        allocationItems.map((item) => Number(item.variantId)),
+        { lock: true, excludeOnlineOrderId: Number(order.id) },
+      );
+    }
     const cur = (await tx.select().from(onlineOrders).where(eq(onlineOrders.id, order.id)).for("update").limit(1))[0];
     if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+    if ((cur.customerId == null ? null : Number(cur.customerId)) !== expectedCustomerId) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر عميل الطلب أثناء الإرسال — أعد المحاولة" });
+    }
     if (cur.status === "CANCELLED") return { cancelled: true as const, invoiceId: cur.invoiceId != null ? Number(cur.invoiceId) : null };
     if ((cur.status === "SHIPPED" || cur.status === "DELIVERED") && cur.invoiceId) {
       const inv = (await tx.select({ n: invoices.invoiceNumber, t: invoices.total }).from(invoices).where(eq(invoices.id, Number(cur.invoiceId))).limit(1))[0];
@@ -114,6 +154,15 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
       const items = await tx.select().from(onlineOrderItems).where(eq(onlineOrderItems.onlineOrderId, cur.id));
       if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا بنود في الطلب" });
       if (items.some((it) => it.productUnitId == null)) throw new TRPCError({ code: "BAD_REQUEST", message: "بند بلا وحدة — لا يمكن الإصدار" });
+      if (items.some((item) => {
+        const factor = factorByUnit.get(Number(item.productUnitId));
+        return factor == null || !money(item.quantity).times(factor).eq(Number(item.baseQuantity));
+      })) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "تغيّر معامل وحدة بعد تثبيت الطلب — ألغِ الطلب أو أعد إنشاءه بالسلة الحالية",
+        });
+      }
       const saleInput = {
         branchId,
         customerId: Number(cur.customerId),
@@ -129,6 +178,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
         clientRequestId: `online-dispatch:${cur.id}`,
         priceOverrideApproved: true,
         creditApproved: false,
+        onlineOrderAllocationId: Number(cur.id),
       };
       const sale = await createSaleInTx(tx, saleInput, actor);
       invoiceId = sale.invoiceId;

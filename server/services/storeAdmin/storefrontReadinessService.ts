@@ -1,17 +1,18 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import {
-  branchStock,
+  categories,
   productPrices,
   productUnits,
   productVariants,
   products,
 } from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, type DB, type Tx } from "../../db";
 import {
   evaluateStorefrontProductEligibility,
   evaluateStorefrontUnitEligibility,
   type StorefrontReadinessReason,
 } from "../storefrontEligibilityService";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
 
 export interface StorefrontReadinessUnit {
   productUnitId: number;
@@ -25,6 +26,8 @@ export interface StorefrontReadinessUnit {
   hasStockRow: boolean;
   /** عدد وحدات البيع الكاملة الممكنة = floor(stockBase / conversionFactor). */
   availableUnits: number;
+  /** ATP الحقيقي بالوحدة الأساس بعد طرح الحجز النشط. */
+  availableBase: number;
   publishable: boolean;
   inStock: boolean;
   readinessReasons: StorefrontReadinessReason[];
@@ -52,6 +55,64 @@ export interface StorefrontProductReadiness {
   preferredUnit: StorefrontReadinessUnit | null;
 }
 
+/**
+ * فحص readiness علني ضيّق ومبكّر الخروج. لا يبني DTO الكتالوج كاملاً في كل GET
+ * للإعدادات العامة؛ يمسح حبيبات variant×store-unit صغيرة حتمياً حتى يجد أول ATP صالح.
+ * عند نفاد الكتالوج لا يوجد اختصار صحيح بلا cache قابلة للإبطال من كل حركة مخزون، لذلك
+ * يبقى الفحص fail-closed لكنه بذاكرة ثابتة وحمولات SQL ضيقة.
+ */
+export async function hasReadyStorefrontCatalog(db: DB | Tx, branchId: number): Promise<boolean> {
+  const batchSize = 256;
+  let offset = 0;
+  while (true) {
+    const candidates = await db
+      .select({
+        variantId: productVariants.id,
+        productUnitId: productUnits.id,
+        conversionFactor: productUnits.conversionFactor,
+      })
+      .from(productUnits)
+      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(categories, eq(categories.id, products.categoryId))
+      .innerJoin(
+        productPrices,
+        and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")),
+      )
+      .where(and(
+        eq(products.isActive, true),
+        eq(products.showInStore, true),
+        eq(products.isService, false),
+        eq(productVariants.isActive, true),
+        eq(productUnits.isActive, true),
+        eq(productUnits.isStoreSaleUnit, true),
+        or(
+          isNull(products.categoryId),
+          and(eq(categories.isActive, true), eq(categories.showInStore, true)),
+        ),
+      ))
+      .orderBy(asc(productVariants.id), asc(productUnits.id))
+      .limit(batchSize)
+      .offset(offset);
+    if (!candidates.length) return false;
+
+    const availability = await loadVariantAvailability(
+      db,
+      branchId,
+      candidates.map((row) => Number(row.variantId)),
+    );
+    for (const candidate of candidates) {
+      const factor = Number(candidate.conversionFactor);
+      const available = availability.get(Number(candidate.variantId));
+      if (Number.isFinite(factor) && factor > 0 && available && available.availableBase >= factor) {
+        return true;
+      }
+    }
+    if (candidates.length < batchSize) return false;
+    offset += batchSize;
+  }
+}
+
 interface MutableVariant {
   variantId: number;
   sku: string;
@@ -69,6 +130,7 @@ interface MutableProduct {
   isActive: boolean;
   isService: boolean;
   showInStore: boolean;
+  categoryVisible: boolean;
   variants: Map<number, MutableVariant>;
 }
 
@@ -86,8 +148,8 @@ function variantLabel(variant: MutableVariant): string {
 export async function loadStorefrontReadiness(input: {
   branchId: number;
   productIds: number[];
-}): Promise<Map<number, StorefrontProductReadiness>> {
-  const db = getDb();
+}, queryDb?: DB | Tx): Promise<Map<number, StorefrontProductReadiness>> {
+  const db = queryDb ?? getDb();
   if (!db || !input.productIds.length) return new Map();
 
   const rows = await db
@@ -96,6 +158,9 @@ export async function loadStorefrontReadiness(input: {
       productActive: products.isActive,
       isService: products.isService,
       showInStore: products.showInStore,
+      categoryId: products.categoryId,
+      categoryActive: categories.isActive,
+      categoryShowInStore: categories.showInStore,
       variantId: productVariants.id,
       sku: productVariants.sku,
       variantName: productVariants.variantName,
@@ -108,22 +173,23 @@ export async function loadStorefrontReadiness(input: {
       unitActive: productUnits.isActive,
       isStoreSaleUnit: productUnits.isStoreSaleUnit,
       retailPrice: productPrices.price,
-      stockBase: branchStock.quantity,
     })
     .from(products)
+    .leftJoin(categories, eq(categories.id, products.categoryId))
     .leftJoin(productVariants, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
     .leftJoin(
       productPrices,
       and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")),
     )
-    .leftJoin(
-      branchStock,
-      and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)),
-    )
     .where(inArray(products.id, input.productIds))
     .orderBy(asc(products.id), asc(productVariants.id), asc(productUnits.conversionFactor), asc(productUnits.id));
 
+  const availability = await loadVariantAvailability(
+    db,
+    input.branchId,
+    rows.flatMap((row) => row.variantId == null ? [] : [Number(row.variantId)]),
+  );
   const grouped = new Map<number, MutableProduct>();
   for (const row of rows) {
     const productId = Number(row.productId);
@@ -134,6 +200,8 @@ export async function loadStorefrontReadiness(input: {
         isActive: row.productActive === true,
         isService: !!row.isService,
         showInStore: row.showInStore === true,
+        categoryVisible: row.categoryId == null
+          || (row.categoryActive === true && row.categoryShowInStore === true),
         variants: new Map(),
       };
       grouped.set(productId, product);
@@ -150,8 +218,8 @@ export async function loadStorefrontReadiness(input: {
         color: row.color ?? null,
         size: row.size ?? null,
         isActive: row.variantActive === true,
-        stockBase: Number(row.stockBase ?? 0),
-        hasStockRow: row.stockBase != null,
+        stockBase: availability.get(variantId)?.onHandBase ?? 0,
+        hasStockRow: availability.get(variantId)?.hasStockRow ?? false,
         units: [],
       };
       product.variants.set(variantId, variant);
@@ -159,13 +227,16 @@ export async function loadStorefrontReadiness(input: {
     if (row.productUnitId == null) continue;
 
     const factor = Number(row.conversionFactor);
-    const stockBase = row.stockBase == null ? null : Number(row.stockBase);
+    const availabilityRow = availability.get(variantId);
+    const stockBase = availabilityRow?.hasStockRow ? availabilityRow.onHandBase : null;
+    const availableBase = availabilityRow?.availableBase ?? 0;
     const eligibility = evaluateStorefrontUnitEligibility({
       isActive: row.unitActive === true,
       isStoreSaleUnit: !!row.isStoreSaleUnit,
       retailPrice: row.retailPrice ?? null,
       conversionFactor: row.conversionFactor == null ? null : String(row.conversionFactor),
       stockBase,
+      availableBase,
     });
     variant.units.push({
       productUnitId: Number(row.productUnitId),
@@ -177,8 +248,9 @@ export async function loadStorefrontReadiness(input: {
       stockBase: stockBase ?? 0,
       hasStockRow: stockBase != null,
       availableUnits: Number.isFinite(factor) && factor > 0
-        ? Math.max(0, Math.floor(Number(stockBase ?? 0) / factor))
+        ? Math.max(0, Math.floor(availableBase / factor))
         : 0,
+      availableBase,
       publishable: eligibility.publishable,
       inStock: eligibility.available,
       readinessReasons: eligibility.reasons,
@@ -192,6 +264,7 @@ export async function loadStorefrontReadiness(input: {
         isActive: true,
         isService: false,
         showInStore: true,
+        categoryVisible: true,
         variants: [{
           isActive: variant.isActive,
           units: variant.units.map((unit) => ({
@@ -200,6 +273,7 @@ export async function loadStorefrontReadiness(input: {
             retailPrice: unit.retailPrice,
             conversionFactor: unit.conversionFactor,
             stockBase: unit.hasStockRow ? unit.stockBase : null,
+            availableBase: unit.availableBase,
           })),
         }],
       });
@@ -221,6 +295,7 @@ export async function loadStorefrontReadiness(input: {
       isActive: product.isActive,
       isService: product.isService,
       showInStore: product.showInStore,
+      categoryVisible: product.categoryVisible,
       variants: variants.map((variant) => ({
         isActive: variant.isActive,
         units: variant.units.map((unit) => ({
@@ -229,6 +304,7 @@ export async function loadStorefrontReadiness(input: {
           retailPrice: unit.retailPrice,
           conversionFactor: unit.conversionFactor,
           stockBase: unit.hasStockRow ? unit.stockBase : null,
+          availableBase: unit.availableBase,
         })),
       })),
     });

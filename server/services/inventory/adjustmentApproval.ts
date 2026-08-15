@@ -46,8 +46,17 @@ export interface RequestAdjustmentInput {
   notes?: string | null;
 }
 
+function assertRequesterBranch(branchId: number, actor: Actor): void {
+  if (actor.role === "admin") return;
+  if (actor.branchId == null || Number(actor.branchId) !== Number(branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن طلب تسوية مخزون لفرعٍ آخر" });
+  }
+}
+
 /** يُنشئ طلب تسوية مخزونٍ معلَّقاً — **بلا تغيير مخزون** حتى الاعتماد. */
 export async function requestStockAdjustment(input: RequestAdjustmentInput, actor: Actor): Promise<{ requestId: number }> {
+  // حارس خدمة لا يعتمد على الراوتر: لا يجوز للمستدعي تزوير actor.branchId=target.
+  assertRequesterBranch(input.branchId, actor);
   return withTx(async (tx) => {
     if (!Number.isInteger(input.targetQuantity) || input.targetQuantity < 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });

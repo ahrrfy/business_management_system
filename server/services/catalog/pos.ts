@@ -1,6 +1,6 @@
 // قراءات الكاشير (POS): مطابقة الباركود وقائمة البيع.
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { branchStock, bundleComponents, productPrices, productUnits, productVariants, products, reservationStock } from "../../../drizzle/schema";
+import { branchStock, productPrices, productUnits, productVariants, products, reservationStock } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { resolveContractPrices } from "../contractPriceService";
 import { money, toDbMoney } from "../money";
@@ -10,6 +10,7 @@ import { getProductCategoryIds, resolvePromotionForLine } from "../salesPromotio
 import { withTx } from "../tx";
 import { resolveBarcodeOwner } from "./barcodeAliases";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility } from "./search";
+import { loadVariantAvailability } from "./variantAvailability";
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
 export interface PosRow {
@@ -231,9 +232,9 @@ async function applyPromotions(
 }
 
 /**
- * gstack B10 (٧/٧/٢٦): توفّر مشتق للبكج = min(floor(componentStock/componentBaseQuantity)) — عبر
- * قراءة واحدة لكل مكوّنات البكجات في القائمة. المكوّن الأشحّ يحدّد الحدّ. `isService`=true يُعامَل
- * كـ«لانهائي» (الخدمات بلا مخزون). إن كان المكوّن غير موجود في `branchStock` نعامله كصفر.
+ * يطبّق لقطة ATP الحاكمة على كل صفوف POS، لا البكجات وحدها. بذلك يقرأ الكاشير
+ * وشاشة المنتجات والمتجر المصدر نفسه: الرصيد الفعلي الموقّع ناقص الحجوزات الرسمية
+ * وتخصيصات الطلبات الإلكترونية النشطة؛ والبكج مشتق مرةً واحدة من مكوّناته.
  */
 async function applyBundleAvailability<
   T extends { variantId: number; isBundle: boolean; stockBase: number; reservedBase: number; availableBase: number },
@@ -242,94 +243,20 @@ async function applyBundleAvailability<
   rows: T[],
   branchId: number,
 ): Promise<T[]> {
-  const bundleVariantIds = rows.filter((r) => r.isBundle).map((r) => r.variantId);
-  if (!bundleVariantIds.length) return rows;
-  const uniqueBundleIds = Array.from(new Set(bundleVariantIds));
-
-  // مكوّنات كل البكجات في القائمة (استعلام واحد بلا N+1).
-  const compRows = await db
-    .select({
-      bundleVariantId: bundleComponents.bundleVariantId,
-      componentVariantId: bundleComponents.componentVariantId,
-      componentBaseQuantity: bundleComponents.componentBaseQuantity,
-    })
-    .from(bundleComponents)
-    .where(inArray(bundleComponents.bundleVariantId, uniqueBundleIds));
-
-  // أرصدة كل المكوّنات ومحجوزها + علم isService (خدمات لا تُحدّ التوفّر) — استعلام واحد.
-  const componentIds = Array.from(new Set(compRows.map((c) => Number(c.componentVariantId))));
-  const stockAndKind = componentIds.length
-    ? await db
-        .select({
-          variantId: productVariants.id,
-          stock: branchStock.quantity,
-          reserved: reservationStock.reservedBase,
-          isService: products.isService,
-        })
-        .from(productVariants)
-        .innerJoin(products, eq(productVariants.productId, products.id))
-        .leftJoin(
-          branchStock,
-          and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)),
-        )
-        .leftJoin(
-          reservationStock,
-          and(eq(reservationStock.variantId, productVariants.id), eq(reservationStock.branchId, branchId)),
-        )
-        .where(inArray(productVariants.id, componentIds))
-    : [];
-  const stockByVid = new Map<number, { stock: number; reserved: number; isService: boolean }>();
-  for (const s of stockAndKind) {
-    stockByVid.set(Number(s.variantId), {
-      stock: s.stock ?? 0,
-      reserved: s.reserved ?? 0,
-      isService: !!s.isService,
-    });
-  }
-
-  // احسب حدّ الرصيد الفعلي وحدّ ATP كلّاً على حدة. الحجز الرسمي ممنوع على variant البكج نفسه؛
-  // لذلك يُشتق المحجوز من فرق الحدّين ولا نطرح reservedBase الخاص بالبكج مرةً ثانية.
-  const stockByBundle = new Map<number, number>();
-  const availableByBundle = new Map<number, number>();
-  for (const bid of uniqueBundleIds) {
-    const comps = compRows.filter((c) => Number(c.bundleVariantId) === bid);
-    if (!comps.length) {
-      stockByBundle.set(bid, 0);
-      availableByBundle.set(bid, 0);
-      continue;
-    }
-    let stockMin = Number.POSITIVE_INFINITY;
-    let availableMin = Number.POSITIVE_INFINITY;
-    for (const c of comps) {
-      const info = stockByVid.get(Number(c.componentVariantId));
-      if (!info) {
-        stockMin = 0;
-        availableMin = 0;
-        break;
-      }
-      if (info.isService) continue; // خدمة كمكوّن: لا تُحدّ (مسموحة عمداً).
-      const qty = Number(c.componentBaseQuantity);
-      const stockCap = qty > 0 ? Math.floor(info.stock / qty) : 0;
-      const availableCap = qty > 0 ? Math.floor(Math.max(0, info.stock - info.reserved) / qty) : 0;
-      if (stockCap < stockMin) stockMin = stockCap;
-      if (availableCap < availableMin) availableMin = availableCap;
-    }
-    // كل المكوّنات خدمات ⇒ لا نُظهر ∞، بل صفراً محايداً مع بقاء المنتج خدمةً قابلة للبيع.
-    if (stockMin === Number.POSITIVE_INFINITY) stockMin = 0;
-    if (availableMin === Number.POSITIVE_INFINITY) availableMin = 0;
-    stockByBundle.set(bid, Math.max(0, stockMin));
-    availableByBundle.set(bid, Math.max(0, availableMin));
-  }
-
+  if (!rows.length) return rows;
+  const availability = await loadVariantAvailability(
+    db,
+    branchId,
+    rows.map((row) => row.variantId),
+  );
   return rows.map((r) => {
-    if (!r.isBundle) return r;
-    const stockBase = stockByBundle.get(r.variantId) ?? 0;
-    const availableBase = availableByBundle.get(r.variantId) ?? 0;
+    const current = availability.get(r.variantId);
+    if (!current) return { ...r, stockBase: 0, reservedBase: 0, availableBase: 0 };
     return {
       ...r,
-      stockBase,
-      reservedBase: Math.max(0, stockBase - availableBase),
-      availableBase,
+      stockBase: current.onHandBase,
+      reservedBase: current.reservedBase,
+      availableBase: current.availableBase,
     };
   });
 }

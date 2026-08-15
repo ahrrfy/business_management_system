@@ -100,8 +100,9 @@ export const storefrontRouter = router({
 
   /**
    * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.
-   * السعر خادمي بالكامل (المدخل لا يحوي أسعاراً — فقط productUnitId + الكمية). المحافظة يتحقّق
-   * منها الخادم. clientRequestId (اختياري) يمنع الطلب المكرّر.
+   * السعر خادمي بالكامل. expectedUnitPrice/expectedGrandTotal عقد موافقة optimistic فقط:
+   * لا يُسعّر الخادم منهما، بل يقارن السعر المقفَل بما رآه الزبون ويرفض أي اختلاف.
+   * clientRequestId (اختياري) يمنع الطلب المكرّر.
    */
   createOrder: publicProcedure
     .input(
@@ -114,9 +115,14 @@ export const storefrontRouter = router({
         longitude: z.number().min(-180).max(180).nullish(),
         notes: z.string().max(500).optional(),
         lines: z
-          .array(z.object({ productUnitId: z.number().int().positive(), quantity: z.number().int().positive().max(999) }))
+          .array(z.object({
+            productUnitId: z.number().int().positive(),
+            quantity: z.number().int().positive().max(999),
+            expectedUnitPrice: z.string().regex(/^\d{1,15}(?:\.\d{1,2})?$/),
+          }))
           .min(1)
           .max(100),
+        expectedGrandTotal: z.string().regex(/^\d{1,18}(?:\.\d{1,2})?$/),
         clientRequestId: z.string().max(80).optional(),
       })
     )

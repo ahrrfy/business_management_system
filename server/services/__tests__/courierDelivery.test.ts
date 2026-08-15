@@ -20,6 +20,8 @@ import { adjustCustomerBalance } from "../ledgerService";
 import { money } from "../money";
 import { withTx } from "../tx";
 import { reconcileCustomerBalances, reconcileDeliveryFloat, reconcileLedgerProfit } from "../reconcileService";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
+import { createOnlineOrder } from "../onlineOrderService";
 
 const MANAGER = { userId: 1, branchId: 1, role: "manager" };
 
@@ -28,8 +30,9 @@ const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
   "onlineOrderItems", "onlineOrders",
+  "storeSettings",
   "invoiceItems", "invoices", "inventoryMovements", "branchStock",
-  "productPrices", "productUnits", "productVariants", "products",
+  "bundleComponents", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "customers", "branches", "users",
 ];
 
@@ -60,7 +63,7 @@ async function seedBase() {
   await d.insert(s.productPrices).values([{ productUnitId: 1, priceTier: "RETAIL", price: "10.00" }]);
   // creditLimit: null = بلا حدّ ⇒ بيع آجل بلا موافقة ائتمان (نتفادى تبعيّة ساعة موافقة الائتمان في
   // اختبار موضوعه التحصيل لا الائتمان — الائتمان المؤقّت مسار dispatchOnlineOrder المُتحقَّق حيّاً).
-  await d.insert(s.customers).values({ id: 1, name: "زبون متجر", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
+  await d.insert(s.customers).values({ id: 1, name: "زبون متجر", phone: "+9647701234567", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: null });
   await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
   const { id: partyA } = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "جهة أ", userId: 3, branchId: 1 }, MANAGER);
   const { id: partyB } = await createDeliveryParty({ partyType: "INDIVIDUAL", name: "جهة ب", userId: 4, branchId: 1 }, MANAGER);
@@ -344,6 +347,11 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     const { partyA } = await seedParties();
     const stockBefore = await stockOf(1);
     const o = await confirmedOrder(2, "ORD-DSP1", "3000"); // subtotal 20 + شحن 3000 (يدفعه الزبون للمندوب)
+    expect((await loadVariantAvailability(db(), 1, [1])).get(1)).toMatchObject({
+      onHandBase: stockBefore,
+      reservedBase: 2,
+      availableBase: stockBefore - 2,
+    });
     const res = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA }, MANAGER);
     // قرار المالك (١٠/٨): المندوب خارجي والأجرة له ⇒ الفاتورة بضاعة فقط — كانت 3020 (الشحن
     // إيراداً بهامش ١٠٠٪ يدخل وعاء العمولة بينما يُدفع للمندوب خارج النظام).
@@ -358,6 +366,12 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(inv.sourceType).toBe("ONLINE");
     expect(await customerBalance(1)).toBe("20.00"); // AR = البضاعة (الأجرة ليست ذمّةً لنا)
     expect(await stockOf(1)).toBe(stockBefore - 2); // خُصم المخزون فعلاً
+    // SHIPPED يحرّر تخصيص الطلب في المعاملة نفسها التي تخصم onHand؛ لا طرح مزدوج.
+    expect((await loadVariantAvailability(db(), 1, [1])).get(1)).toMatchObject({
+      onHandBase: stockBefore - 2,
+      reservedBase: 0,
+      availableBase: stockBefore - 2,
+    });
     // قيد SALE بلا أجرة الشحن — وعاء العمولة يستثنيها بنيوياً.
     const revRows = await db().select({ v: s.accountingEntries.revenue }).from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, res.invoiceId));
     expect(revRows.reduce((t, r) => t + Number(r.v), 0)).toBe(20);
@@ -398,6 +412,77 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(await stockOf(1)).toBe(stockAfter); // لا خصم ثانٍ
     expect(await customerBalance(1)).toBe("10.00"); // ذمّة مرّة واحدة
     await reconcileClean();
+  });
+
+  it("يرفض dispatch إذا تغيّر معامل الوحدة خارج الحارس بعد تثبيت baseQuantity", async () => {
+    const { partyA } = await seedParties();
+    const existing = await confirmedOrder(1, "ORD-FACTOR-DRIFT");
+    await db().update(s.productUnits).set({ conversionFactor: "2" }).where(eq(s.productUnits.id, 1));
+    await expect(dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA }, MANAGER))
+      .rejects.toThrow(/تغيّر معامل وحدة/);
+    expect((await order(existing.orderId)).status).toBe("CONFIRMED");
+    expect(await stockOf(1)).toBe(100);
+  });
+
+  it("يوحّد ترتيب أقفال create وdispatch للصنف نفسه بلا deadlock أو طرح تخصيص مزدوج", async () => {
+    const { partyA } = await seedParties();
+    const d = db();
+    await d.update(s.products).set({ showInStore: true }).where(eq(s.products.id, 1));
+    await d.update(s.productUnits).set({ isStoreSaleUnit: true }).where(eq(s.productUnits.id, 1));
+    await d.insert(s.storeSettings).values({ id: 1, fulfillmentBranchId: 1, isOpen: true });
+    const existing = await confirmedOrder(1, "ORD-DSP-RACE");
+
+    const [dispatched, created] = await Promise.all([
+      dispatchOnlineOrder({ onlineOrderId: existing.orderId, partyId: partyA }, MANAGER),
+      createOnlineOrder({ customerName: "زبون متزامن", customerPhone: "07701234567", governorate: "baghdad", addressText: "بغداد", clientRequestId: "create-dispatch-lock-order", lines: [{ productUnitId: 1, quantity: 1 }] }),
+    ]);
+
+    expect(dispatched.orderId).toBe(existing.orderId);
+    expect((await order(existing.orderId)).status).toBe("SHIPPED");
+    expect((await order(created.orderId)).status).toBe("PENDING");
+    expect((await loadVariantAvailability(d, 1, [1])).get(1)).toMatchObject({ onHandBase: 99, reservedBase: 1, availableBase: 98 });
+  });
+
+  it("حارس الخصم المركزي: dispatch A لا يسرق B وبيع POS المتزامن لا يستهلك تخصيصهما", async () => {
+    const { partyA } = await seedParties();
+    await db().update(s.branchStock).set({ quantity: 10 }).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    const a = await confirmedOrder(8, "ORD-ALLOC-A");
+    const b = await confirmedOrder(2, "ORD-ALLOC-B");
+
+    const [dispatchResult, posResult] = await Promise.allSettled([
+      dispatchOnlineOrder({ onlineOrderId: a.orderId, partyId: partyA }, MANAGER),
+      createSale({
+        branchId: 1, customerId: 1, sourceType: "POS", priceTier: "RETAIL", strictStock: true,
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      }, MANAGER),
+    ]);
+
+    expect(dispatchResult.status).toBe("fulfilled");
+    expect(posResult.status).toBe("rejected");
+    if (posResult.status === "rejected") expect(String(posResult.reason?.message ?? posResult.reason)).toMatch(/مخصّص|الحجوزات/);
+    expect((await order(a.orderId)).status).toBe("SHIPPED");
+    expect((await order(b.orderId)).status).toBe("CONFIRMED");
+    expect(await stockOf(1)).toBe(2);
+    expect((await loadVariantAvailability(db(), 1, [1])).get(1)).toMatchObject({ onHandBase: 2, reservedBase: 2, availableBase: 0 });
+  });
+
+  it("حارس الخصم المركزي يوسّع تخصيص البكج ويحمي المكوّن من بيع مباشر بلا double subtraction", async () => {
+    await db().update(s.branchStock).set({ quantity: 2 }).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    await db().insert(s.products).values({ id: 2, name: "بكج قلمين", isBundle: true });
+    await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "BUNDLE-2", costPrice: "12.00" });
+    await db().insert(s.productUnits).values({ id: 2, variantId: 2, unitName: "بكج", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.productPrices).values({ productUnitId: 2, priceTier: "RETAIL", price: "18.00" });
+    await db().insert(s.bundleComponents).values({ bundleVariantId: 2, componentVariantId: 1, componentBaseQuantity: 2 });
+    await db().insert(s.onlineOrders).values({ id: 20, orderNumber: "ORD-BUNDLE-ALLOC", customerId: 1, branchId: 1, subtotal: "18.00", total: "18.00", status: "CONFIRMED" });
+    await db().insert(s.onlineOrderItems).values({ onlineOrderId: 20, variantId: 2, productUnitId: 2, quantity: "1", baseQuantity: 1, unitPrice: "18.00", total: "18.00" });
+
+    expect((await loadVariantAvailability(db(), 1, [1, 2])).get(1)).toMatchObject({ onHandBase: 2, reservedBase: 2, availableBase: 0 });
+    await expect(createSale({
+      branchId: 1, customerId: 1, sourceType: "POS", priceTier: "RETAIL", strictStock: true,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+    }, MANAGER)).rejects.toThrow(/مخصّص|الحجوزات/);
+    expect(await stockOf(1)).toBe(2);
+    expect((await loadVariantAvailability(db(), 1, [2])).get(2)).toMatchObject({ onHandBase: 1, reservedBase: 1, availableBase: 0 });
   });
 });
 

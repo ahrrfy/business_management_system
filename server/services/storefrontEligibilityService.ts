@@ -1,10 +1,12 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
   branchStock,
+  categories,
   productPrices,
   productUnits,
   productVariants,
   products,
+  reservationStock,
 } from "../../drizzle/schema";
 
 /**
@@ -17,6 +19,7 @@ export type StorefrontReadinessReason =
   | "PRODUCT_INACTIVE"
   | "SERVICE_PRODUCT"
   | "PRODUCT_HIDDEN"
+  | "CATEGORY_HIDDEN"
   | "NO_ACTIVE_VARIANT"
   | "NO_STORE_SALE_UNIT"
   | "NO_RETAIL_PRICE"
@@ -33,6 +36,8 @@ export interface StorefrontEligibilityUnitInput {
   conversionFactor: string | number | null;
   /** null يعني أنه لا يوجد صف branchStock لهذا المتغيّر في فرع المتجر. */
   stockBase: number | null;
+  /** ATP بعد طرح الحجز النشط. عند غيابه يبقى التوافق القديم: stockBase نفسه. */
+  availableBase?: number | null;
 }
 
 export interface StorefrontEligibilityVariantInput {
@@ -44,6 +49,8 @@ export interface StorefrontEligibilityProductInput {
   isActive: boolean;
   isService: boolean;
   showInStore: boolean;
+  /** المنتج بلا فئة صالح؛ أما الفئة المعطلة/المخفية فتغلق النشر والجاهزية. */
+  categoryVisible?: boolean;
   variants: StorefrontEligibilityVariantInput[];
 }
 
@@ -74,10 +81,11 @@ export function evaluateStorefrontUnitEligibility(
   const publishable = reasons.length === 0;
   if (!publishable) return { publishable: false, available: false, reasons: uniqueReasons(reasons) };
 
+  const availableBase = input.availableBase ?? input.stockBase;
   if (input.stockBase == null) reasons.push("NO_STOCK_ROW");
   else if (input.stockBase < 0) reasons.push("NEGATIVE_STOCK");
-  else if (input.stockBase === 0) reasons.push("OUT_OF_STOCK");
-  else if (input.stockBase < factor!) reasons.push("BELOW_SALE_UNIT_FACTOR");
+  else if (availableBase == null || availableBase === 0) reasons.push("OUT_OF_STOCK");
+  else if (availableBase < factor!) reasons.push("BELOW_SALE_UNIT_FACTOR");
 
   return {
     publishable: true,
@@ -94,6 +102,7 @@ export function evaluateStorefrontProductEligibility(
   if (!input.isActive) productReasons.push("PRODUCT_INACTIVE");
   if (input.isService) productReasons.push("SERVICE_PRODUCT");
   if (!input.showInStore) productReasons.push("PRODUCT_HIDDEN");
+  if (input.categoryVisible === false) productReasons.push("CATEGORY_HIDDEN");
   if (productReasons.length) {
     return { publishable: false, available: false, reasons: productReasons };
   }
@@ -138,6 +147,10 @@ export function storefrontPublishableCondition() {
     eq(products.isActive, true),
     eq(products.isService, false),
     eq(products.showInStore, true),
+    or(
+      isNull(products.categoryId),
+      and(eq(categories.isActive, true), eq(categories.showInStore, true)),
+    )!,
     eq(productVariants.isActive, true),
     eq(productUnits.isActive, true),
     eq(productUnits.isStoreSaleUnit, true),
@@ -148,5 +161,5 @@ export function storefrontPublishableCondition() {
 
 /** المخزون بوحدة الأساس ويجب أن يغطي معامل وحدة البيع نفسها. */
 export function storefrontAvailableCondition() {
-  return sql<boolean>`${branchStock.quantity} >= ${productUnits.conversionFactor}`;
+  return sql<boolean>`GREATEST(0, COALESCE(${branchStock.quantity}, 0) - COALESCE(${reservationStock.reservedBase}, 0)) >= ${productUnits.conversionFactor}`;
 }

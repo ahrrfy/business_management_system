@@ -8,6 +8,7 @@ import { getDb } from "../../db";
 import { getProductUsage, isFkBlocked, usageBlockMessage } from "../entityUsage";
 import { type Actor, withTx } from "../tx";
 import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
+import { loadVariantAvailability } from "./variantAvailability";
 
 /**
  * صفّ شاشة إدارة المنتجات: حبيبة (متغيّر × وحدة) لكن عبر LEFT JOIN —
@@ -70,6 +71,10 @@ export interface AdminProductRow {
   /** السعر الحكومي لوحدة الصف؛ null لغير المالك/المدير أو عند عدم تعريفه. */
   governmentPrice: string | null;
   stockBase: number;
+  /** الحجوزات الرسمية + تخصيص الطلبات الإلكترونية النشطة، بوحدة الأساس. */
+  reservedBase: number;
+  /** ATP التشغيلي = max(0, stockBase - reservedBase)، مشتق للمكوّنات والبكجات. */
+  availableBase: number;
   /** الباركودات البديلة للوحدة (productUnitBarcodes) — تظهر في التصدير وبجوار الباركود الأساسي. */
   barcodeAliases: string[];
 }
@@ -226,6 +231,11 @@ export async function listProductsAdmin(
     if (list) list.push(a.barcode);
     else aliasesByUnit.set(k, [a.barcode]);
   }
+  const availability = await loadVariantAvailability(
+    db,
+    input.branchId,
+    rows.flatMap((row) => row.variantId == null ? [] : [Number(row.variantId)]),
+  );
 
   // العدّ الإجمالي بنفس FROM/WHERE لكن بلا جوينات الأسعار/المخزون (كلاهما 1:0..1 لا يغيّر عدد الصفوف).
   const totalRow = (
@@ -290,7 +300,15 @@ export async function listProductsAdmin(
           : null,
       wholesalePrice: includeSensitivePrices ? (r.wholesalePrice ?? null) : null,
       governmentPrice: includeSensitivePrices ? (r.governmentPrice ?? null) : null,
-      stockBase: r.stockBase ?? 0,
+      stockBase: r.variantId != null
+        ? (availability.get(Number(r.variantId))?.onHandBase ?? 0)
+        : 0,
+      reservedBase: r.variantId != null
+        ? (availability.get(Number(r.variantId))?.reservedBase ?? 0)
+        : 0,
+      availableBase: r.variantId != null
+        ? (availability.get(Number(r.variantId))?.availableBase ?? 0)
+        : 0,
       barcodeAliases: r.productUnitId != null ? (aliasesByUnit.get(Number(r.productUnitId)) ?? []) : [],
     })),
     total: Number(totalRow?.n ?? 0),

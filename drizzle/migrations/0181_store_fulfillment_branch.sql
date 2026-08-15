@@ -1,5 +1,6 @@
 -- فرع تنفيذ المتجر الصريح: يمنع اختلاف العام/لوحة الإدارة/الطلب بسبب fallback صامت إلى MAIN أو 1.
--- الهجرة لا تنقل مخزوناً ولا تعدّل طلباً قديماً؛ تضيف مرجع الإعداد فقط وتملؤه بفرع نشط.
+-- الهجرة لا تنقل مخزوناً ولا تعدّل طلباً قديماً. وهي fail-closed عمداً:
+-- تعيين فرع لا يعني أن الكتالوج جاهز، لذلك لا تفتح المتجر تلقائياً أبداً.
 
 SET @has_fulfillment_branch := (
   SELECT COUNT(*) FROM information_schema.COLUMNS
@@ -62,11 +63,13 @@ SET @store_branch_id := COALESCE(
 );
 
 INSERT INTO `storeSettings` (`id`, `isOpen`, `fulfillmentBranchId`, `updatedAt`)
-SELECT 1, IF(@store_branch_id IS NULL, 0, 1), @store_branch_id, CURRENT_TIMESTAMP
+SELECT 1, 0, @store_branch_id, CURRENT_TIMESTAMP
 WHERE NOT EXISTS (SELECT 1 FROM `storeSettings` WHERE `id` = 1);
 
 UPDATE `storeSettings`
 SET
-  `fulfillmentBranchId` = COALESCE(`fulfillmentBranchId`, @store_branch_id),
-  `isOpen` = IF(@store_branch_id IS NULL AND `fulfillmentBranchId` IS NULL, 0, `isOpen`)
+  -- لا تستطيع SQL الهجرة إثبات أهلية الكتالوج الديناميكية (فئة/وحدة/سعر/ATP/بكج).
+  -- لذلك كل صفّ قديم يُغلق fail-closed، ثم يفتحه المالك صراحةً عبر الخدمة بعد فحص readiness.
+  `isOpen` = 0,
+  `fulfillmentBranchId` = COALESCE(`fulfillmentBranchId`, @store_branch_id)
 WHERE `id` = 1;

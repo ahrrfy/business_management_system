@@ -18,6 +18,10 @@ import { assertBaseUnitStable } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { postCostRevaluation } from "./costRevaluation";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
+import {
+  assertNoActiveOnlineOrderUnitChanges,
+  lockProductUnitsForOnlineAllocation,
+} from "./catalog/variantAvailability";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
@@ -501,6 +505,30 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
 
     const name = composeName(input, p.name);
     if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب" });
+
+    // نقفل الوحدات قبل productVariant، وهو نفس ترتيب إنشاء/إرسال طلب المتجر. ثم
+    // نشتق التغيير من الصفوف المقفلة لا من لقطة قديمة، ونفحص الطلبات النشطة Current Read.
+    const existingVariantIds = input.variants
+      .filter((variant) => variant.id != null)
+      .map((variant) => Number(variant.id));
+    const existingUnitIds = existingVariantIds.length
+      ? (await tx
+          .select({ id: productUnits.id })
+          .from(productUnits)
+          .where(inArray(productUnits.variantId, existingVariantIds)))
+          .map((unit) => Number(unit.id))
+      : [];
+    const lockedUnits = await lockProductUnitsForOnlineAllocation(tx, existingUnitIds);
+    const desiredTemplateByName = new Map(input.unitTemplate.map((unit) => [unit.unitName.trim(), unit] as const));
+    const protectedUnitIds = lockedUnits
+      .filter((unit) => {
+        const desired = desiredTemplateByName.get(unit.unitName);
+        if (!desired) return true;
+        const desiredFactor = desired.isBaseUnit ? 1 : Number(desired.conversionFactor);
+        return desiredFactor !== Number(unit.conversionFactor);
+      })
+      .map((unit) => unit.id);
+    await assertNoActiveOnlineOrderUnitChanges(tx, protectedUnitIds);
 
     await tx
       .update(products)

@@ -103,7 +103,6 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
         toFulfilled: line.baseQuantity,
       });
     }
-
     const sale = await createSaleInTx(tx, {
       branchId: Number(res.branchId),
       shiftId,
@@ -120,6 +119,8 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
       // الحجز وعدٌ لعميل محدد: لا يرث سماح السالب المؤقت لـORDER في وضع الافتتاح. يفحص
       // applyMovement الرصيد تحت قفله وفي ترتيب نواة البيع، فيغلق سباق refetch→commit أيضاً.
       strictStock: true,
+      // الحجز soft ووعده أسبق من حجوزات soft اللاحقة؛ لا نعفي تخصيص طلب متجر نشط.
+      exemptFormalReservationAllocations: true,
     }, actor);
 
     for (const line of saleLines) {

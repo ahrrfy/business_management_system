@@ -16,6 +16,9 @@ async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const table of [
+    "onlineOrderItems",
+    "onlineOrders",
+    "customers",
     "reservationStock",
     "branchStock",
     "bundleComponents",
@@ -83,7 +86,7 @@ describe("تطابق دلالة المخزون بين شاشة المنتجات 
     const sale = (await listForPos(1, "RETAIL", "تطابق"))[0];
 
     expect(adminResult.branchId).toBe(1);
-    expect(admin).toMatchObject({ branchId: 1, stockBase: 10 });
+    expect(admin).toMatchObject({ branchId: 1, stockBase: 10, reservedBase: 0, availableBase: 10 });
     expect(sale).toMatchObject({ branchId: 1, stockBase: 10, reservedBase: 0, availableBase: 10 });
   });
 
@@ -93,7 +96,7 @@ describe("تطابق دلالة المخزون بين شاشة المنتجات 
     const admin = (await listProductsAdmin({ branchId: 1, q: "تطابق" })).rows[0];
     const sale = (await listForPos(1, "RETAIL", "تطابق"))[0];
 
-    expect(admin.stockBase).toBe(10);
+    expect(admin).toMatchObject({ stockBase: 10, reservedBase: 13, availableBase: 0 });
     expect(sale).toMatchObject({ stockBase: 10, reservedBase: 13, availableBase: 0 });
   });
 
@@ -168,5 +171,56 @@ describe("تطابق دلالة المخزون بين شاشة المنتجات 
     await db().insert(s.reservationStock).values({ variantId: 2, branchId: 1, reservedBase: 2 });
     const [withLegacyBundleRow] = await listStockByUnitIds([2], 1);
     expect(withLegacyBundleRow).toMatchObject({ stockBase: 5, reservedBase: 2, availableBase: 3 });
+  });
+
+  it("يوحّد تخصيص الطلب الإلكتروني النشط بين المنتجات وPOS ولقطة السلة", async () => {
+    await seedStock(10, 2);
+    await db().insert(s.customers).values({ id: 1, name: "زبون طلب نشط" });
+    await db().insert(s.onlineOrders).values({
+      id: 1,
+      orderNumber: "ORD-PARITY",
+      customerId: 1,
+      branchId: 1,
+      subtotal: "3000.00",
+      total: "3000.00",
+      status: "CONFIRMED",
+    });
+    await db().insert(s.onlineOrderItems).values({
+      onlineOrderId: 1,
+      variantId: 1,
+      productUnitId: 1,
+      quantity: "3.000",
+      baseQuantity: 3,
+      unitPrice: "1000.00",
+      total: "3000.00",
+    });
+
+    const admin = (await listProductsAdmin({ branchId: 1, q: "تطابق" })).rows[0];
+    const sale = (await listForPos(1, "RETAIL", "تطابق"))[0];
+    const snapshot = (await listStockByUnitIds([1], 1))[0];
+    expect(admin).toMatchObject({ stockBase: 10, reservedBase: 5, availableBase: 5 });
+    expect(sale).toMatchObject({ stockBase: 10, reservedBase: 5, availableBase: 5 });
+    expect(snapshot).toMatchObject({ stockBase: 10, reservedBase: 5, availableBase: 5 });
+  });
+
+  it("يبقي الرصيد الفعلي السالب للبكج ظاهراً ويحصر ATP وحده بالصفر", async () => {
+    await seedStock(-1, 0);
+    await db().insert(s.products).values({ id: 2, name: "بكج بعجز", isBundle: true });
+    await db().insert(s.productVariants).values({ id: 2, productId: 2, sku: "NEG-BUNDLE", costPrice: "1000.00" });
+    await db().insert(s.productUnits).values({
+      id: 2,
+      variantId: 2,
+      unitName: "بكج",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    });
+    await db().insert(s.bundleComponents).values({
+      bundleVariantId: 2,
+      componentVariantId: 1,
+      componentBaseQuantity: 2,
+    });
+
+    const [snapshot] = await listStockByUnitIds([2], 1);
+    expect(snapshot).toMatchObject({ stockBase: -1, reservedBase: 0, availableBase: 0 });
   });
 });

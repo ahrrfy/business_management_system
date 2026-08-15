@@ -20,6 +20,7 @@ import {
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
+  "onlineOrderItems", "onlineOrders",
   "reservationEvents", "reservationLines", "reservationStock", "reservations",
   "accountingEntries", "receipts", "invoiceItems", "invoices", "idempotencyKeys", "inventoryMovements", "shifts", "openingModeSettings",
   "branchStock", "productPrices", "productUnitBarcodes", "productUnits", "productVariants", "productImages", "products",
@@ -146,7 +147,51 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     const res = await createReservation({ branchId: 1, contactPhone: "07700000004", lines: [{ variantId, productUnitId: baseUnitId, quantity: 8 }] }, actor);
     expect(res.overbookedVariantIds).toContain(variantId);
     expect(await reserved(variantId)).toBe(8);
-    expect((await atp(variantId)).available).toBe(-3); // المتاح سالب موسوم
+    expect(await atp(variantId)).toMatchObject({
+      available: 0,
+      rawAvailableBase: -3,
+      shortfallBase: 3,
+    });
+  });
+
+  it("ATP الحجز يحتسب تخصيص الطلب الإلكتروني النشط ولا يبيع المتاح نفسه مرتين", async () => {
+    const { variantId, baseUnitId } = await mkProduct("RSV-ONLINE-ATP", 10);
+    await db().insert(s.customers).values({ id: 91, name: "زبون متجر محجوز له" });
+    await db().insert(s.onlineOrders).values({
+      id: 91,
+      orderNumber: "ORD-RSV-ATP",
+      customerId: 91,
+      branchId: 1,
+      subtotal: "12000.00",
+      total: "12000.00",
+      status: "CONFIRMED",
+    });
+    await db().insert(s.onlineOrderItems).values({
+      onlineOrderId: 91,
+      variantId,
+      productUnitId: baseUnitId,
+      quantity: "8.000",
+      baseQuantity: 8,
+      unitPrice: "1500.00",
+      total: "12000.00",
+    });
+
+    expect(await atp(variantId)).toMatchObject({ onHand: 10, reserved: 8, available: 2 });
+    const res = await createReservation({
+      branchId: 1,
+      contactPhone: "07700000040",
+      lines: [{ variantId, productUnitId: baseUnitId, quantity: 5 }],
+    }, actor);
+
+    expect(res.overbookedVariantIds).toContain(variantId);
+    expect(await reserved(variantId)).toBe(5); // reservationStock يبقى الحجز الرسمي القابل للتحرير فقط
+    expect(await atp(variantId)).toMatchObject({
+      onHand: 10,
+      reserved: 13,
+      available: 0,
+      rawAvailableBase: -3,
+      shortfallBase: 3,
+    });
   });
 
   it("الإلغاء يحرّر المحجوز بالكامل مرّة واحدة (idempotent على الحالة النهائية)", async () => {
@@ -247,6 +292,46 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     expect(await onHand(variantId)).toBe(6);
     expect(await reserved(variantId)).toBe(5);
     expect((await atp(variantId)).available).toBe(1);
+  });
+
+  it("تحويل الحجز لا يعفي تخصيص طلب إلكتروني نشط لطرف آخر", async () => {
+    const reservationCustomerId = await mkCustomer("صاحب الحجز الرسمي");
+    const onlineCustomerId = await mkCustomer("صاحب طلب المتجر");
+    const { variantId, baseUnitId } = await mkProduct("RSV-CONVERT-ONLINE", 10);
+    await db().insert(s.onlineOrders).values({
+      id: 92,
+      orderNumber: "ORD-RSV-CONVERT",
+      customerId: onlineCustomerId,
+      branchId: 1,
+      subtotal: "12000.00",
+      total: "12000.00",
+      status: "CONFIRMED",
+    });
+    await db().insert(s.onlineOrderItems).values({
+      onlineOrderId: 92,
+      variantId,
+      productUnitId: baseUnitId,
+      quantity: "8.000",
+      baseQuantity: 8,
+      unitPrice: "1500.00",
+      total: "12000.00",
+    });
+    const reservation = await createReservation({
+      branchId: 1,
+      customerId: reservationCustomerId,
+      contactPhone: "07700000041",
+      lines: [{ variantId, productUnitId: baseUnitId, quantity: 3 }],
+    }, actor);
+
+    await expect(convertReservationToSale({ reservationId: reservation.reservationId, payment: null }, actor))
+      .rejects.toThrow(/طلبات المتجر|مخصّص/);
+    expect(await onHand(variantId)).toBe(10);
+    expect(await reserved(variantId)).toBe(3);
+    expect(await atp(variantId)).toMatchObject({
+      available: 0,
+      rawAvailableBase: -1,
+      shortfallBase: 1,
+    });
   });
 
   it("التحويل يرفض المخزون الناقص ذرّياً حتى عند تفعيل سماح السالب في وضع الافتتاح", async () => {

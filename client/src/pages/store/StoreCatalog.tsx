@@ -18,6 +18,7 @@ const READINESS_LABELS: Record<string, string> = {
   PRODUCT_INACTIVE: "المنتج معطّل",
   SERVICE_PRODUCT: "منتج خدمي",
   PRODUCT_HIDDEN: "مخفي من المتجر",
+  CATEGORY_HIDDEN: "الفئة معطّلة أو مخفية من المتجر",
   NO_ACTIVE_VARIANT: "لا متغيّر نشط",
   NO_STORE_SALE_UNIT: "لا وحدة بيع للمتجر",
   NO_RETAIL_PRICE: "لا سعر مفرد",
@@ -37,6 +38,8 @@ export default function StoreCatalog() {
   const [imageFor, setImageFor] = useState<{ productId: number; name: string; imageUrl: string | null } | null>(null);
 
   const utils = trpc.useUtils();
+  const meQ = trpc.auth.me.useQuery();
+  const isAdmin = meQ.data?.role === "admin";
   const catsQ = trpc.storeAdmin.categories.list.useQuery();
   const listQ = trpc.storeAdmin.catalog.list.useQuery({
     q: q.trim() || undefined,
@@ -71,6 +74,13 @@ export default function StoreCatalog() {
         </span>
       </div>
 
+      {!meQ.isLoading && !isAdmin && (
+        <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>يمكنك مراجعة مخزون فرع التنفيذ ورفع طلب تسوية. النشر والإخفاء والصور والتمييز صلاحيات مركزية لمالك النظام.</span>
+        </div>
+      )}
+
       {/* شريط الفلترة */}
       <div className="space-y-2 rounded-2xl border border-border bg-card p-3">
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -96,6 +106,8 @@ export default function StoreCatalog() {
       {/* القائمة */}
       {listQ.isLoading ? (
         <div className="flex justify-center py-16 text-muted-foreground"><Loader2 aria-hidden className="size-6 animate-spin" /></div>
+      ) : listQ.isError ? (
+        <div className="rounded-2xl border border-[var(--sem-neg)]/30 bg-[var(--sem-neg-bg)] px-4 py-8 text-center text-sm text-[var(--sem-neg)]">{listQ.error.message}</div>
       ) : rows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
           <PackageSearch aria-hidden className="mx-auto mb-2 size-8 opacity-40" />
@@ -108,11 +120,11 @@ export default function StoreCatalog() {
               <div key={p.productId} className="rounded-2xl border border-border bg-card p-3">
                 <div className="flex items-center gap-3">
                   {/* صورة */}
-                  <button onClick={() => setImageFor({ productId: p.productId, name: p.name, imageUrl: p.imageUrl })} title="تعيين الصورة" className="group relative size-16 shrink-0 overflow-hidden rounded-xl bg-muted">
+                  <button onClick={() => { if (isAdmin) setImageFor({ productId: p.productId, name: p.name, imageUrl: p.imageUrl }); }} disabled={!isAdmin} title={isAdmin ? "تعيين الصورة" : "تعيين الصورة لمالك النظام فقط"} className="group relative size-16 shrink-0 overflow-hidden rounded-xl bg-muted disabled:cursor-default">
                     {p.imageUrl
                       ? <img src={p.imageUrl} alt={p.name} className="size-full object-cover" />
                       : <span className="flex size-full items-center justify-center text-muted-foreground"><ImagePlus aria-hidden className="size-6 opacity-40" /></span>}
-                    <span className="absolute inset-0 hidden items-center justify-center bg-black/40 text-white group-hover:flex"><ImagePlus aria-hidden className="size-5" /></span>
+                    {isAdmin && <span className="absolute inset-0 hidden items-center justify-center bg-black/40 text-white group-hover:flex"><ImagePlus aria-hidden className="size-5" /></span>}
                   </button>
 
                   {/* تفاصيل */}
@@ -136,14 +148,14 @@ export default function StoreCatalog() {
                   </div>
 
                   {/* أزرار */}
-                  <div className="flex shrink-0 items-center gap-1.5">
+                  {isAdmin && <div className="flex shrink-0 items-center gap-1.5">
                     <button onClick={() => featM.mutate({ productId: p.productId, isFeatured: !p.isFeatured })} disabled={featM.isPending} title={p.isFeatured ? "إلغاء التمييز" : "تمييز (يتصدّر العرض)"} aria-label="تمييز" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.isFeatured ? "text-amber-500" : "text-muted-foreground"}`}>
                       <Star aria-hidden className={`size-4 ${p.isFeatured ? "fill-amber-400" : ""}`} />
                     </button>
                     <button onClick={() => visM.mutate({ productId: p.productId, showInStore: !p.showInStore })} disabled={visM.isPending} title={p.showInStore ? "إخفاء من المتجر" : "إظهار في المتجر"} aria-label="إظهار/إخفاء" className={`flex size-9 items-center justify-center rounded-lg border border-border transition hover:bg-accent disabled:opacity-50 ${p.showInStore ? "text-emerald-600" : "text-muted-foreground"}`}>
                       {p.showInStore ? <Eye aria-hidden className="size-4" /> : <EyeOff aria-hidden className="size-4" />}
                     </button>
-                  </div>
+                  </div>}
                 </div>
 
                 {/* الرصيد يُعرض ويُعدّل لكل متغيّر صريح؛ لا مجموع منتجات ولا MIN variant. */}
@@ -187,7 +199,7 @@ export default function StoreCatalog() {
       )}
 
       {stockFor && <StockDialog target={stockFor} onClose={() => setStockFor(null)} onDone={invalidate} />}
-      {imageFor && <ImageDialog target={imageFor} onClose={() => setImageFor(null)} onDone={invalidate} />}
+      {isAdmin && imageFor && <ImageDialog target={imageFor} onClose={() => setImageFor(null)} onDone={invalidate} />}
     </div>
   );
 }

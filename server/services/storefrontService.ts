@@ -11,7 +11,6 @@
  */
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
-  branchStock,
   bundleComponents,
   categories,
   invoiceItems,
@@ -32,9 +31,9 @@ import { resolveColorHex, normalizeHex } from "@shared/colorBank";
 import { requireActiveBranch, requireStorefrontContext } from "./storefrontContextService";
 import {
   evaluateStorefrontUnitEligibility,
-  storefrontAvailableCondition,
   storefrontPublishableCondition,
 } from "./storefrontEligibilityService";
+import { loadVariantAvailability } from "./catalog/variantAvailability";
 
 const RETAIL = "RETAIL" as const;
 
@@ -130,7 +129,7 @@ export interface StorefrontCategory {
 export type StorefrontAvailability = "IN_STOCK" | "ALL";
 
 /** SELECT موحّد بالحقول الآمنة + كمية الفرع (داخلياً لحساب inStock فقط، لا تُصدَّر). */
-function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number) {
+function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
   return db
     .select({
       productId: products.id,
@@ -150,15 +149,98 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number)
       imageId: productImages.id,
       imageUrl: productImages.url,
       isBundle: products.isBundle,
-      stockQty: branchStock.quantity, // داخلي فقط ⇒ inStock
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+}
+
+/** مرحلة ترشيح ضيقة: لا تحمل URL/data الصور ولا الحقول التسويقية الثقيلة قبل حسم product-level limit. */
+function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) {
+  return db
+    .select({
+      productId: products.id,
+      variantId: productVariants.id,
+      conversionFactor: productUnits.conversionFactor,
+      isFeatured: products.isFeatured,
+      productName: products.name,
+      imageId: productImages.id,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(categories, eq(products.categoryId, categories.id))
+    .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
+    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+}
+
+function chooseCandidateProductIds(
+  rows: Array<{
+    productId: number;
+    conversionFactor: string;
+    isFeatured: boolean | null;
+    productName: string;
+    imageId: number | null;
+    availableQty: number;
+  }>,
+  cap: number,
+  availabilityFilter: StorefrontAvailability,
+): number[] {
+  const productsById = new Map<number, {
+    id: number;
+    inStock: boolean;
+    featured: boolean;
+    hasImage: boolean;
+    name: string;
+  }>();
+  for (const row of rows) {
+    const id = Number(row.productId);
+    const inStock = row.availableQty >= Number(row.conversionFactor);
+    const current = productsById.get(id);
+    if (current) {
+      current.inStock ||= inStock;
+      current.hasImage ||= row.imageId != null;
+    } else {
+      productsById.set(id, {
+        id,
+        inStock,
+        featured: row.isFeatured === true,
+        hasImage: row.imageId != null,
+        name: row.productName,
+      });
+    }
+  }
+  return Array.from(productsById.values())
+    .filter((product) => availabilityFilter === "ALL" || product.inStock)
+    .sort((a, b) =>
+      Number(b.inStock) - Number(a.inStock)
+      || Number(b.featured) - Number(a.featured)
+      || Number(b.hasImage) - Number(a.hasImage)
+      || a.name.localeCompare(b.name, "ar")
+      || a.id - b.id)
+    .slice(0, cap)
+    .map((product) => product.id);
+}
+
+async function attachAvailability<TRow extends { variantId: number }>(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  branchId: number,
+  rows: TRow[],
+): Promise<Array<TRow & { stockQty: number; reservedQty: number; availableQty: number; hasStockRow: boolean }>> {
+  const availability = await loadVariantAvailability(db, branchId, rows.map((row) => Number(row.variantId)));
+  return rows.map((row) => {
+    const state = availability.get(Number(row.variantId));
+    return {
+      ...row,
+      stockQty: state?.onHandBase ?? 0,
+      reservedQty: state?.reservedBase ?? 0,
+      availableQty: state?.availableBase ?? 0,
+      hasStockRow: state?.hasStockRow ?? false,
+    };
+  });
 }
 
 /**
@@ -184,10 +266,11 @@ function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
   variantName: string | null; color: string | null; colorHex: string | null; size: string | null;
   category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
-  imageId?: number | null; imageUrl: string | null; isBundle: boolean | null; stockQty: number | null;
+  imageId?: number | null; imageUrl: string | null; isBundle: boolean | null;
+  stockQty: number; reservedQty: number; availableQty: number; hasStockRow: boolean;
 }): StorefrontProduct {
   const factor = Math.max(1, Number(r.conversionFactor) || 1);
-  const availableUnits = Math.floor(Number(r.stockQty ?? 0) / factor);
+  const availableUnits = Math.floor(r.availableQty / factor);
   return {
     productId: Number(r.productId),
     productUnitId: Number(r.productUnitId),
@@ -241,9 +324,9 @@ async function attachVariantColors(
   const rows = await db
     .select({
       productId: productVariants.productId,
+      variantId: productVariants.id,
       color: productVariants.color,
       colorHex: productVariants.colorHex,
-      stockQty: branchStock.quantity,
       conversionFactor: productUnits.conversionFactor,
       retailPrice: productPrices.price,
     })
@@ -257,9 +340,9 @@ async function attachVariantColors(
       eq(productPrices.productUnitId, productUnits.id),
       eq(productPrices.priceTier, RETAIL),
     ))
-    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
     .orderBy(asc(productVariants.id));
+  const availability = await loadVariantAvailability(db, branchId, rows.map((row) => Number(row.variantId)));
   // لكل منتج: خريطة hex → {name, inStock}. التفرّد باللون الفعليّ لا بالاسم (يمنع تكرار سواتش
   // متطابقة: احمر + أحمر فاقع، ويُبقي لونين مختلفين لنفس الاسم). التوفّر **يُجمَّع** عبر كل متغيّرات
   // اللون (لونٌ بعدّة قياسات = متوفّرٌ إن توفّر أيّ قياس منه). أوّل اسم يفوز، والترتيب ثابت بترتيب الظهور.
@@ -272,12 +355,14 @@ async function attachVariantColors(
     if (!hex) continue; // اسم غير معروف بلا لون صريح ⇒ لا سواتش (لا اختراع)
     let m = byProduct.get(pid);
     if (!m) { m = new Map(); byProduct.set(pid, m); }
+    const state = availability.get(Number(r.variantId));
     const inStock = evaluateStorefrontUnitEligibility({
       isActive: true,
       isStoreSaleUnit: true,
       retailPrice: r.retailPrice ?? null,
       conversionFactor: r.conversionFactor == null ? null : String(r.conversionFactor),
-      stockBase: r.stockQty == null ? null : Number(r.stockQty),
+      stockBase: state?.hasStockRow ? state.onHandBase : null,
+      availableBase: state?.availableBase ?? 0,
     }).available;
     const cur = m.get(hex);
     if (cur) cur.inStock ||= inStock; // تجميع التوفّر عبر متغيّرات نفس اللون
@@ -353,11 +438,9 @@ export async function storefrontCatalog(opts: {
   if (!db) return { items: [] };
   const branchId = await resolveStorefrontBranchId(opts.branchId);
   const cap = Math.min(Math.max(opts.limit ?? 60, 1), 120);
-  const availability = opts.availability ?? "IN_STOCK";
-  const available = storefrontAvailableCondition();
+  const availabilityFilter = opts.availability ?? "IN_STOCK";
   // IN_STOCK هو السلوك الافتراضي المتوافق. ALL يعيد كل المنشور ويترك inStock=false للنافد.
   const conds = [storefrontPublishableCondition()];
-  if (availability === "IN_STOCK") conds.push(available);
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
   const s = String(opts.search ?? "").trim();
   if (s) {
@@ -371,16 +454,20 @@ export async function storefrontCatalog(opts: {
     );
     if (searchCond) conds.push(searchCond);
   }
-  const rows = await safeSelect(db, branchId)
-    .where(and(...conds))
-    .orderBy(
-      desc(available),
-      desc(products.isFeatured),
-      desc(sql`${productImages.url} is not null`),
-      asc(products.name),
-      asc(productUnits.conversionFactor),
-    )
-    .limit(cap * 3);
+  const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+  const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
+  const selectedIds = chooseCandidateProductIds(hydratedCandidates, cap, availabilityFilter);
+  if (!selectedIds.length) return { items: [] };
+  const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
+  const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
+  const rows = (await attachAvailability(db, branchId, rawRows))
+    .filter((row) => availabilityFilter === "ALL" || row.availableQty >= Number(row.conversionFactor))
+    .sort((a, b) =>
+      (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap)
+      || Number(b.availableQty >= Number(b.conversionFactor)) - Number(a.availableQty >= Number(a.conversionFactor))
+      || Number(a.conversionFactor) - Number(b.conversionFactor)
+      || Number(a.variantId) - Number(b.variantId)
+      || Number(a.productUnitId) - Number(b.productUnitId));
 
   const seen = new Set<number>();
   const items: StorefrontProduct[] = [];
@@ -402,12 +489,14 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
   const db = getDb();
   if (!db) return [];
   const branchId = await resolveStorefrontBranchId(branchIdInput);
-  const rows = await db
+  const rawRows = await db
     .select({
       id: categories.id,
       name: categories.name,
-      productCount: sql<number>`COUNT(DISTINCT ${products.id})`,
-      availableCount: sql<number>`COUNT(DISTINCT CASE WHEN ${branchStock.quantity} >= ${productUnits.conversionFactor} THEN ${products.id} END)`,
+      sortOrder: categories.sortOrder,
+      productId: products.id,
+      variantId: productVariants.id,
+      conversionFactor: productUnits.conversionFactor,
     })
     .from(products)
     .innerJoin(productVariants, and(eq(productVariants.productId, products.id), eq(productVariants.isActive, true)))
@@ -416,7 +505,6 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
       and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isActive, true), eq(productUnits.isStoreSaleUnit, true))
     )
     .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     .innerJoin(categories, eq(products.categoryId, categories.id))
     // showInStore: يحترم إخفاء المدير للقسم من واجهة المتجر (لوحة hPanel)؛ والترتيب بـsortOrder.
     .where(and(
@@ -424,14 +512,43 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
       eq(categories.isActive, true),
       eq(categories.showInStore, true),
     ))
-    .groupBy(categories.id, categories.name, categories.sortOrder)
     .orderBy(asc(categories.sortOrder), asc(categories.name));
-  return rows.map((r) => ({
-    id: Number(r.id),
-    name: r.name,
-    productCount: Number(r.productCount),
-    availableCount: Number(r.availableCount),
-  }));
+  const availability = await loadVariantAvailability(db, branchId, rawRows.map((row) => Number(row.variantId)));
+  const grouped = new Map<number, {
+    id: number;
+    name: string;
+    sortOrder: number;
+    products: Set<number>;
+    availableProducts: Set<number>;
+  }>();
+  for (const row of rawRows) {
+    const categoryId = Number(row.id);
+    let category = grouped.get(categoryId);
+    if (!category) {
+      category = {
+        id: categoryId,
+        name: row.name,
+        sortOrder: Number(row.sortOrder ?? 0),
+        products: new Set(),
+        availableProducts: new Set(),
+      };
+      grouped.set(categoryId, category);
+    }
+    const productId = Number(row.productId);
+    category.products.add(productId);
+    const state = availability.get(Number(row.variantId));
+    if ((state?.availableBase ?? 0) >= Number(row.conversionFactor)) {
+      category.availableProducts.add(productId);
+    }
+  }
+  return Array.from(grouped.values())
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name, "ar") || a.id - b.id)
+    .map((category) => ({
+      id: category.id,
+      name: category.name,
+      productCount: category.products.size,
+      availableCount: category.availableProducts.size,
+    }));
 }
 
 /** صفحة منتج واحد (تفاصيل آمنة + توفّر + سعر عرض). */
@@ -439,9 +556,15 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   const db = getDb();
   if (!db) return null;
   const branchId = await resolveStorefrontBranchId(branchIdInput);
-  const rows = await safeSelect(db, branchId)
+  const rawRows = await safeSelect(db)
     .where(and(storefrontPublishableCondition(), eq(products.id, productId)))
-    .orderBy(desc(storefrontAvailableCondition()), asc(productUnits.conversionFactor));
+    .orderBy(asc(productUnits.conversionFactor));
+  const rows = (await attachAvailability(db, branchId, rawRows))
+    .sort((a, b) =>
+      Number(b.availableQty >= Number(b.conversionFactor)) - Number(a.availableQty >= Number(a.conversionFactor))
+      || Number(a.conversionFactor) - Number(b.conversionFactor)
+      || Number(a.variantId) - Number(b.variantId)
+      || Number(a.productUnitId) - Number(b.productUnitId));
   if (!rows.length) return null;
   const options = rows.map(toStorefront);
   await applyStorefrontPromotions(options, branchId);
@@ -518,10 +641,28 @@ export async function storefrontRelated(
   const cat = (await db.select({ categoryId: products.categoryId }).from(products).where(eq(products.id, productId)).limit(1))[0];
   if (!cat || cat.categoryId == null) return [];
   const cap = Math.min(Math.max(limit, 1), 20);
-  const rows = await safeSelect(db, branchId)
-    .where(and(storefrontPublishableCondition(), eq(products.categoryId, Number(cat.categoryId)), ne(products.id, productId), storefrontAvailableCondition()))
-    .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name), asc(productUnits.conversionFactor))
-    .limit(cap * 3);
+  const conds = [
+    storefrontPublishableCondition(),
+    eq(products.categoryId, Number(cat.categoryId)),
+    ne(products.id, productId),
+  ];
+  const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+  const selectedIds = chooseCandidateProductIds(
+    await attachAvailability(db, branchId, candidateRows),
+    cap,
+    "IN_STOCK",
+  );
+  if (!selectedIds.length) return [];
+  const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
+  const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
+  const rows = (await attachAvailability(db, branchId, rawRows))
+    .filter((row) => row.availableQty >= Number(row.conversionFactor))
+    .sort((a, b) =>
+      (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap)
+      || Number(b.availableQty >= Number(b.conversionFactor)) - Number(a.availableQty >= Number(a.conversionFactor))
+      || Number(a.conversionFactor) - Number(b.conversionFactor)
+      || Number(a.variantId) - Number(b.variantId)
+      || Number(a.productUnitId) - Number(b.productUnitId));
   const seen = new Set<number>();
   const items: StorefrontProduct[] = [];
   for (const r of rows) {

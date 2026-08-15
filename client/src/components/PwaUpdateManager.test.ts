@@ -173,7 +173,7 @@ describe("storefront save handshake", () => {
     };
 
     const result = requestStorefrontPersistence(target);
-    expect(result).toEqual({ attempted: 1, ok: true });
+    expect(result).toEqual({ attempted: 1, ok: true, inFlight: false });
     expect(automaticStorefrontPersistenceIsSafe(result)).toBe(true);
   });
 
@@ -187,7 +187,7 @@ describe("storefront save handshake", () => {
     };
 
     const result = requestStorefrontPersistence(target);
-    expect(result).toEqual({ attempted: 1, ok: false });
+    expect(result).toEqual({ attempted: 1, ok: false, inFlight: false });
     expect(automaticStorefrontPersistenceIsSafe(result)).toBe(false);
   });
 
@@ -195,7 +195,20 @@ describe("storefront save handshake", () => {
     const target = { dispatchEvent: vi.fn(() => true) };
     const result = requestStorefrontPersistence(target);
 
-    expect(result).toEqual({ attempted: 0, ok: true });
+    expect(result).toEqual({ attempted: 0, ok: true, inFlight: false });
+    expect(automaticStorefrontPersistenceIsSafe(result)).toBe(false);
+  });
+
+  it("blocks automatic apply while createOrder is in flight even after the snapshot is durable", () => {
+    const target = {
+      dispatchEvent(event: Event) {
+        const detail = (event as CustomEvent<{ report: (saved: boolean, state?: { inFlight: boolean }) => void }>).detail;
+        detail.report(true, { inFlight: true });
+        return true;
+      },
+    };
+    const result = requestStorefrontPersistence(target);
+    expect(result).toEqual({ attempted: 1, ok: true, inFlight: true });
     expect(automaticStorefrontPersistenceIsSafe(result)).toBe(false);
   });
 });

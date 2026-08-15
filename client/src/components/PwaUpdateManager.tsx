@@ -140,29 +140,32 @@ export async function resolveWaitingWorkerVersion(
 
 export function requestStorefrontPersistence(
   target: Pick<Window, "dispatchEvent"> = window,
-): { attempted: number; ok: boolean } {
+): { attempted: number; ok: boolean; inFlight: boolean } {
   let attempted = 0;
   let ok = true;
-  const event = new CustomEvent<{ report: (saved: boolean) => void }>(
+  let inFlight = false;
+  const event = new CustomEvent<{ report: (saved: boolean, state?: { inFlight: boolean }) => void }>(
     STOREFRONT_PERSIST_REQUEST_EVENT,
     {
       detail: {
-        report(saved) {
+        report(saved, state) {
           attempted += 1;
           ok = saved && ok;
+          inFlight = inFlight || state?.inFlight === true;
         },
       },
     },
   );
   target.dispatchEvent(event);
-  return { attempted, ok };
+  return { attempted, ok, inFlight };
 }
 
 export function automaticStorefrontPersistenceIsSafe(result: {
   attempted: number;
   ok: boolean;
+  inFlight: boolean;
 }): boolean {
-  return result.attempted > 0 && result.ok;
+  return result.attempted > 0 && result.ok && !result.inFlight;
 }
 
 function phaseMessage(phase: UpdatePhase): string {

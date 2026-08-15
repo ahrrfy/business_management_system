@@ -108,25 +108,32 @@ describe("listStorePromotions — تصفية + ملكية القناة", () => {
 describe("deactivateStorePromotion — الملكية بعلامة القناة (منع IDOR)", () => {
   it("يُعطّل عرض المتجر (isStoreManaged)", async () => {
     const id = await seedPromo({ name: "متجريّ", branchId: STORE, customerTier: "RETAIL", isStoreManaged: true });
-    await withTx((tx) => deactivateStorePromotion(tx, id));
+    await withTx((tx) => deactivateStorePromotion(tx, id, STORE));
     const p = (await db().select().from(s.promotions).where(eq(s.promotions.id, id)))[0];
     expect(p.isActive).toBe(false);
   });
 
   it("يرفض تعطيل عرض كاشير RETAIL@فرع-المتجر (نفس branch+till، غير store-managed) ⇒ FORBIDDEN", async () => {
     const id = await seedPromo({ name: "خصم كاشير مفرد", branchId: STORE, customerTier: "RETAIL", isStoreManaged: false });
-    await expect(withTx((tx) => deactivateStorePromotion(tx, id))).rejects.toThrow(/ليس من عروض المتجر/);
+    await expect(withTx((tx) => deactivateStorePromotion(tx, id, STORE))).rejects.toThrow(/ليس من عروض المتجر/);
     const p = (await db().select().from(s.promotions).where(eq(s.promotions.id, id)))[0];
     expect(p.isActive).toBe(true);
   });
 
   it("يرفض تعطيل عرض عامّ (NULL/NULL) ⇒ FORBIDDEN", async () => {
     const id = await seedPromo({ name: "عامّ", branchId: null, customerTier: null });
-    await expect(withTx((tx) => deactivateStorePromotion(tx, id))).rejects.toThrow(/ليس من عروض المتجر/);
+    await expect(withTx((tx) => deactivateStorePromotion(tx, id, STORE))).rejects.toThrow(/ليس من عروض المتجر/);
   });
 
   it("عرض غير موجود ⇒ NOT_FOUND", async () => {
-    await expect(withTx((tx) => deactivateStorePromotion(tx, 999999))).rejects.toThrow(/غير موجود/);
+    await expect(withTx((tx) => deactivateStorePromotion(tx, 999999, STORE))).rejects.toThrow(/غير موجود/);
+  });
+
+  it("يرفض عرض متجر تابعاً لفرع آخر ولا يغيّر حالته", async () => {
+    const id = await seedPromo({ name: "متجر فرع آخر", branchId: OTHER, customerTier: "RETAIL", isStoreManaged: true });
+    await expect(withTx((tx) => deactivateStorePromotion(tx, id, STORE))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const [promotion] = await db().select().from(s.promotions).where(eq(s.promotions.id, id));
+    expect(promotion.isActive).toBe(true);
   });
 });
 

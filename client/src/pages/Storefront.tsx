@@ -77,13 +77,70 @@ export interface CartLine {
   qty: number;
 }
 
+export interface StorefrontPricingSnapshot {
+  productId: number;
+  storeUnits?: Array<{
+    productUnitId: number;
+    price: string | null;
+    salePrice: string | null;
+  }>;
+  variants?: Array<{
+    units: Array<{
+      productUnitId: number;
+      price: string | null;
+      salePrice: string | null;
+    }>;
+  }>;
+}
+
+export function reconcileStorefrontCartPricing(
+  current: Map<number, CartLine>,
+  latestByProduct: Map<number, StorefrontPricingSnapshot | null | undefined>,
+): { cart: Map<number, CartLine>; priceChanged: number; unavailable: number; unresolved: number } {
+  const cart = new Map(current);
+  let priceChanged = 0;
+  let unavailable = 0;
+  let unresolved = 0;
+  for (const line of Array.from(current.values())) {
+    const snapshot = latestByProduct.get(line.productId);
+    // undefined = فشل شبكة عابر؛ لا نحذف سطر الزبون بسببه. null = المنتج لم يعد منشوراً.
+    if (snapshot === undefined) {
+      unresolved += 1;
+      continue;
+    }
+    const units = snapshot == null
+      ? []
+      : [...(snapshot.storeUnits ?? []), ...(snapshot.variants ?? []).flatMap((variant) => variant.units)];
+    const unit = units.find((candidate) => candidate.productUnitId === line.productUnitId);
+    const currentPrice = unit?.salePrice ?? unit?.price ?? null;
+    if (currentPrice == null) {
+      cart.delete(line.productUnitId);
+      unavailable += 1;
+      continue;
+    }
+    if (Number(currentPrice).toFixed(2) !== Number(line.price).toFixed(2)) {
+      cart.set(line.productUnitId, { ...line, price: Number(currentPrice).toFixed(2) });
+      priceChanged += 1;
+    }
+  }
+  return { cart, priceChanged, unavailable, unresolved };
+}
+
 // حفظ السلة + بيانات التوصيل محلياً (مراجعة عدائية ١٢/٧): كان تحديث الصفحة/العودة للتطبيق يفرّغ
 // السلة والنموذج فيهجر الزبون الطلب. نُبقيهما في localStorage فيستأنف الزبون من حيث توقّف.
 export type CheckoutForm = { name: string; phone: string; governorate: string; address: string; notes: string };
 const DEFAULT_FORM: CheckoutForm = { name: "", phone: "+964 ", governorate: "baghdad", address: "", notes: "" };
 const CART_STORAGE_KEY = "alroya-store-cart-v1";
 const CHECKOUT_STORAGE_KEY = "alroya-store-checkout-v1";
+const CHECKOUT_ATTEMPT_STORAGE_KEY = "alroya-store-checkout-attempt-v1";
 const STOREFRONT_PERSIST_REQUEST_EVENT = "alroya:storefront-persist-request";
+
+export type StorefrontCheckoutAttempt = {
+  clientRequestId: string;
+  fingerprint: string;
+  expectedGrandTotal: string;
+  createdAt: number;
+};
 
 function loadCart(): Map<number, CartLine> {
   const m = new Map<number, CartLine>();
@@ -101,6 +158,7 @@ function loadCart(): Map<number, CartLine> {
   return m;
 }
 type StorefrontStorage = Pick<Storage, "setItem" | "removeItem">;
+type StorefrontReadStorage = Pick<Storage, "getItem" | "removeItem">;
 
 export function saveCart(
   cart: Map<number, CartLine>,
@@ -143,15 +201,66 @@ export function saveForm(
   }
 }
 
+export function loadCheckoutAttempt(
+  storage: StorefrontReadStorage = localStorage,
+): StorefrontCheckoutAttempt | null {
+  try {
+    const raw = storage.getItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<StorefrontCheckoutAttempt>;
+    if (
+      typeof value.clientRequestId !== "string" || !value.clientRequestId ||
+      typeof value.fingerprint !== "string" || !value.fingerprint ||
+      typeof value.expectedGrandTotal !== "string" ||
+      typeof value.createdAt !== "number"
+    ) {
+      storage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+      return null;
+    }
+    return value as StorefrontCheckoutAttempt;
+  } catch {
+    return null;
+  }
+}
+
+export function saveCheckoutAttempt(
+  attempt: StorefrontCheckoutAttempt | null,
+  storage: StorefrontStorage = localStorage,
+): boolean {
+  try {
+    if (attempt) storage.setItem(CHECKOUT_ATTEMPT_STORAGE_KEY, JSON.stringify(attempt));
+    else storage.removeItem(CHECKOUT_ATTEMPT_STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function storefrontCheckoutFingerprint(cart: Map<number, CartLine>, form: CheckoutForm): string {
+  const lines = Array.from(cart.values())
+    .sort((a, b) => a.productUnitId - b.productUnitId)
+    .map((line) => [line.productUnitId, line.qty, Number(line.price).toFixed(2)]);
+  return JSON.stringify({
+    lines,
+    name: form.name.trim(),
+    phone: form.phone.replace(/\s+/g, " ").trim(),
+    governorate: form.governorate,
+    address: form.address.trim(),
+    notes: form.notes.trim(),
+  });
+}
+
 export function saveStorefrontSnapshot(
   cart: Map<number, CartLine>,
   form: CheckoutForm,
   storage: StorefrontStorage = localStorage,
+  attempt: StorefrontCheckoutAttempt | null = null,
 ): boolean {
   // لا تستخدم short-circuit: يجب محاولة حفظ الجزأين كي يحصل الزبون على أفضل فرصة للاسترداد.
   const cartSaved = saveCart(cart, storage);
   const formSaved = saveForm(form, storage);
-  return cartSaved && formSaved;
+  const attemptSaved = saveCheckoutAttempt(attempt, storage);
+  return cartSaved && formSaved && attemptSaved;
 }
 
 export type StorefrontCartProduct = {
@@ -514,7 +623,11 @@ export default function Storefront() {
   const formRef = useRef(form);
   cartRef.current = cart;
   formRef.current = form;
-  const [clientRequestId, setClientRequestId] = useState<string>("");
+  const [checkoutAttempt, setCheckoutAttempt] = useState<StorefrontCheckoutAttempt | null>(loadCheckoutAttempt);
+  const checkoutAttemptRef = useRef(checkoutAttempt);
+  const orderInFlightRef = useRef(false);
+  checkoutAttemptRef.current = checkoutAttempt;
+  const [checkoutSafetyError, setCheckoutSafetyError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
   const viewedProductIds = useRef(new Set<number>());
 
@@ -571,12 +684,15 @@ export default function Storefront() {
   // استمرار السلة + بيانات التوصيل عبر تحديث الصفحة/إغلاق التطبيق (localStorage). طلب التحديث
   // الآمن يستدعي الحافظ المتزامن أدناه ويأخذ نتيجة صريحة؛ امتلاء التخزين لا يعود فشلاً صامتاً.
   useEffect(() => {
-    saveStorefrontSnapshot(cart, form);
-  }, [cart, form]);
+    saveStorefrontSnapshot(cart, form, localStorage, checkoutAttempt);
+  }, [cart, form, checkoutAttempt]);
   useEffect(() => {
     const persist = (event: Event) => {
-      const detail = (event as CustomEvent<{ report: (saved: boolean) => void }>).detail;
-      detail?.report(saveStorefrontSnapshot(cartRef.current, formRef.current));
+      const detail = (event as CustomEvent<{ report: (saved: boolean, state?: { inFlight: boolean }) => void }>).detail;
+      detail?.report(
+        saveStorefrontSnapshot(cartRef.current, formRef.current, localStorage, checkoutAttemptRef.current),
+        { inFlight: orderInFlightRef.current },
+      );
     };
     window.addEventListener(STOREFRONT_PERSIST_REQUEST_EVENT, persist);
     return () => window.removeEventListener(STOREFRONT_PERSIST_REQUEST_EVENT, persist);
@@ -614,7 +730,15 @@ export default function Storefront() {
   }, [selectedId]);
 
   const createOrder = trpc.storefront.createOrder.useMutation({
+    onMutate: () => {
+      orderInFlightRef.current = true;
+      setCheckoutSafetyError(null);
+    },
     onSuccess: (res) => {
+      orderInFlightRef.current = false;
+      checkoutAttemptRef.current = null;
+      setCheckoutAttempt(null);
+      saveCheckoutAttempt(null);
       setConfirmation({ orderNumber: res.orderNumber, total: res.total });
       setCart(new Map());
       // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
@@ -622,6 +746,48 @@ export default function Storefront() {
       // عبر التحديث تخصّ طلباً قيد الإنشاء فقط، لا بعد إتمامه.
       setForm({ ...DEFAULT_FORM });
       setPanel("confirmation");
+    },
+    onError: async (error) => {
+      orderInFlightRef.current = false;
+      if (error.data?.code === "CONFLICT") {
+        checkoutAttemptRef.current = null;
+        setCheckoutAttempt(null);
+        saveCheckoutAttempt(null);
+        await Promise.all([
+          utils.storefront.catalog.invalidate(),
+          utils.storefront.offers.invalidate(),
+          utils.storefront.settings.invalidate(),
+          utils.storefront.product.invalidate(),
+        ]);
+        const productIds = Array.from(new Set(Array.from(cartRef.current.values()).map((line) => line.productId)));
+        const latestEntries = await Promise.all(productIds.map(async (productId) => {
+          try {
+            return [productId, await utils.storefront.product.fetch({ productId })] as const;
+          } catch {
+            return [productId, undefined] as const;
+          }
+        }));
+        const refreshed = reconcileStorefrontCartPricing(
+          cartRef.current,
+          new Map(latestEntries),
+        );
+        if (refreshed.priceChanged > 0 || refreshed.unavailable > 0) {
+          cartRef.current = refreshed.cart;
+          setCart(refreshed.cart);
+          const changes = [
+            refreshed.priceChanged > 0 ? `تحديث سعر ${refreshed.priceChanged} من أصناف السلة` : null,
+            refreshed.unavailable > 0 ? `إزالة ${refreshed.unavailable} لم يعد متاحاً` : null,
+          ].filter(Boolean).join("، ");
+          setCheckoutSafetyError(`${changes}. راجع الإجمالي الجديد ثم اضغط «تأكيد الطلب» للموافقة عليه.`);
+        } else if (refreshed.unresolved > 0) {
+          setCheckoutSafetyError("تغيّرت بيانات الطلب وتعذّر جلب بعض الأسعار الجديدة. تحقق من الاتصال ثم أعد المحاولة.");
+        } else {
+          setCheckoutSafetyError(error.message);
+        }
+      }
+    },
+    onSettled: () => {
+      orderInFlightRef.current = false;
     },
   });
 
@@ -795,7 +961,6 @@ export default function Storefront() {
 
   function openCheckout() {
     if (!storeOpen) return; // المتجر مغلق — الإشعار ظاهر أعلى الصفحة
-    setClientRequestId(`sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
     trackConversion.mutate({ event: "BEGIN_CHECKOUT" });
     setPanel("checkout");
   }
@@ -804,14 +969,39 @@ export default function Storefront() {
     const phone = form.phone.replace(/\s+/g, " ").trim();
     const address = form.address.trim();
     if (!name || phone.replace(/\D/g, "").length < 8 || address.length < 3 || cartLines.length === 0) return;
+    const fingerprint = storefrontCheckoutFingerprint(cart, form);
+    const previous = checkoutAttemptRef.current;
+    const attempt: StorefrontCheckoutAttempt = previous?.fingerprint === fingerprint
+      ? previous
+      : {
+          clientRequestId: typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? `sf-${crypto.randomUUID()}`
+            : `sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
+          fingerprint,
+          expectedGrandTotal: cartTotal.toFixed(2),
+          createdAt: Date.now(),
+        };
+    // fail-closed قبل الشبكة: الرد الضائع آمن فقط إذا بقي نفس المفتاح بعد reload/PWA.
+    if (!saveStorefrontSnapshot(cart, form, localStorage, attempt)) {
+      setCheckoutSafetyError("تعذّر تأمين رقم محاولة الطلب على هذا الجهاز — حرّر مساحة التخزين ثم أعد المحاولة.");
+      return;
+    }
+    checkoutAttemptRef.current = attempt;
+    setCheckoutAttempt(attempt);
+    orderInFlightRef.current = true;
     createOrder.mutate({
       customerName: name,
       customerPhone: phone,
       governorate: form.governorate,
       addressText: address,
       notes: form.notes.trim() || undefined,
-      lines: cartLines.map((l) => ({ productUnitId: l.productUnitId, quantity: l.qty })),
-      clientRequestId,
+      lines: cartLines.map((l) => ({
+        productUnitId: l.productUnitId,
+        quantity: l.qty,
+        expectedUnitPrice: Number(l.price).toFixed(2),
+      })),
+      expectedGrandTotal: attempt.expectedGrandTotal,
+      clientRequestId: attempt.clientRequestId,
     });
   }
   const canSubmit =
@@ -1601,9 +1791,9 @@ export default function Storefront() {
               </div>
             </div>
 
-            {createOrder.isError && (
+            {(createOrder.isError || checkoutSafetyError) && (
               <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600 dark:bg-rose-500/10">
-                {createOrder.error?.message ?? "تعذّر إرسال الطلب — أعد المحاولة"}
+                {checkoutSafetyError ?? createOrder.error?.message ?? "تعذّر إرسال الطلب — أعد المحاولة"}
               </p>
             )}
 

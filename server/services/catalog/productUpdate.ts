@@ -1,6 +1,6 @@
 // تحديث منتج قائم: ترويسة + متغيّر(ات) + وحدات + أسعار في معاملة واحدة.
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { priceChangeLog, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { assertBaseUnitStable } from "./baseUnitGuard";
 import { extractInsertId } from "../../lib/insertId";
@@ -9,6 +9,10 @@ import { toDbMoney } from "../money";
 import { postCostRevaluation } from "../costRevaluation";
 import type { PriceTier } from "../pricing";
 import { type Actor, withTx } from "../tx";
+import {
+  assertNoActiveOnlineOrderUnitChanges,
+  lockProductUnitsForOnlineAllocation,
+} from "./variantAvailability";
 
 export interface UpdateProductUnitInput {
   id?: number; // existing unit id (omit for new)
@@ -65,6 +69,29 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "البكج لا يقبل إلّا وحدة أساس واحدة" });
       }
     }
+
+    // productUnit هو mutex معنى الكمية: نقفل كل وحدات المتغيّرات القائمة قبل أي
+    // قفل variant/كتابة، ثم نحدد التغييرات من القراءة المقفلة ونفحص الطلبات النشطة.
+    // هكذا لا يمر تعديل بعامل «غير متغير» من لقطة قديمة بعد أن غيّره محرر متزامن.
+    const existingUnitIds = input.variants.length
+      ? (await tx
+          .select({ id: productUnits.id })
+          .from(productUnits)
+          .where(inArray(productUnits.variantId, input.variants.map((variant) => variant.id))))
+          .map((unit) => Number(unit.id))
+      : [];
+    const lockedUnits = await lockProductUnitsForOnlineAllocation(tx, existingUnitIds);
+    const desiredByVariant = new Map(input.variants.map((variant) => [
+      variant.id,
+      new Map(variant.units.filter((unit) => unit.id != null).map((unit) => [Number(unit.id), unit] as const)),
+    ] as const));
+    const protectedUnitIds = lockedUnits
+      .filter((unit) => {
+        const desired = desiredByVariant.get(unit.variantId)?.get(unit.id);
+        return !desired || Number(desired.conversionFactor) !== Number(unit.conversionFactor);
+      })
+      .map((unit) => unit.id);
+    await assertNoActiveOnlineOrderUnitChanges(tx, protectedUnitIds);
 
     await tx
       .update(products)

@@ -124,7 +124,7 @@ export default function Products() {
     if (picked.length === 0) return;
     const headers = ["المنتج", "المتغيّر", "الوحدة", "الباركود", "بدائل الباركود", "السعر"];
     if (isElevated) headers.push("التكلفة", "سعر الجملة");
-    headers.push("المخزون");
+    headers.push("الرصيد الفعلي", "المحجوز والمخصص", "المتاح للبيع");
     const tsv = formatTableAsTSV(
       headers,
       picked.map((r) => {
@@ -140,7 +140,9 @@ export default function Products() {
           row["التكلفة"] = r.costPrice ?? "";
           row["سعر الجملة"] = r.wholesalePrice ?? "";
         }
-        row["المخزون"] = r.stockBase ?? 0;
+        row["الرصيد الفعلي"] = r.stockBase ?? 0;
+        row["المحجوز والمخصص"] = r.reservedBase ?? 0;
+        row["المتاح للبيع"] = r.availableBase ?? 0;
         return row;
       }),
     );
@@ -388,7 +390,9 @@ export default function Products() {
                     ]
                   : []),
                 { key: "branchId", header: "معرّف فرع المخزون", map: (r) => r.branchId },
-                { key: "stockBase", header: "المخزون بوحدة الأساس", map: (r) => Number(r.stockBase ?? 0) },
+                { key: "stockBase", header: "الرصيد الفعلي بوحدة الأساس", map: (r) => Number(r.stockBase ?? 0) },
+                { key: "reservedBase", header: "المحجوز والمخصص بوحدة الأساس", map: (r) => Number(r.reservedBase ?? 0) },
+                { key: "availableBase", header: "المتاح للبيع بوحدة الأساس", map: (r) => Number(r.availableBase ?? 0) },
               ],
             }}
             onImport={isElevated ? () => setImportOpen(true) : undefined}
@@ -418,7 +422,9 @@ export default function Products() {
                 <th className="p-2 text-right">السعر (مفرد)</th>
                 {isElevated && <th className="p-2 text-right">التكلفة</th>}
                 {isElevated && <th className="p-2 text-right">سعر الجملة</th>}
-                <th className="p-2 text-right">المخزون</th>
+                <th className="p-2 text-right">الرصيد الفعلي</th>
+                <th className="p-2 text-right">المحجوز والمخصص</th>
+                <th className="p-2 text-right">المتاح للبيع</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -472,6 +478,8 @@ export default function Products() {
                       </td>
                     )}
                     <td className="p-2 text-right tabular-nums" dir="ltr">{r.stockBase}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{r.reservedBase}</td>
+                    <td className="p-2 text-right tabular-nums font-medium" dir="ltr">{r.availableBase}</td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "badge-status-active" : "badge-stock-out"}`}>
                         {r.productIsActive ? "مفعّل" : "معطّل"}

@@ -4,18 +4,14 @@
  * الذرّي — لا كتابة branchStock عارية). الصورة على مستوى المنتج (primary). كلّه بوّابة store.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
-import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { and, asc, desc, eq, isNull, sql, type SQL } from "drizzle-orm";
+import { categories, productImages, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
-import { withTx } from "../tx";
+import { withTx, type Actor } from "../tx";
 import { requestStockAdjustment } from "../inventory/adjustmentApproval";
 import { assertValidImageDataUrl } from "../../lib/imageValidation";
-import {
-  storefrontAvailableCondition,
-  storefrontPublishableCondition,
-  type StorefrontReadinessReason,
-} from "../storefrontEligibilityService";
+import { type StorefrontReadinessReason } from "../storefrontEligibilityService";
 import {
   loadStorefrontReadiness,
   type StorefrontReadinessVariant,
@@ -143,27 +139,25 @@ export async function listStoreCatalog(
 
   // العدد الحقيقي «الظاهر فعلياً» — نفس شرط sellable في storefrontService، بنفس فلترة الفئة/البحث
   // (لا فلاتر العرض featuredOnly/hiddenOnly/missingImageOnly — تلك أدوات تصفّح للمدير لا معيار بيع).
-  const eligibilityConds = [storefrontPublishableCondition()];
+  const eligibilityConds: SQL[] = [];
   if (input.categoryId === 0 || input.categoryId === null) eligibilityConds.push(isNull(products.categoryId));
   else if (input.categoryId != null) eligibilityConds.push(eq(products.categoryId, input.categoryId));
   if (qPat) eligibilityConds.push(sql`(${products.name} LIKE ${qPat} ESCAPE '!' OR ${products.searchNorm} LIKE ${qPat} ESCAPE '!')`);
-  const [eligibilityCnt] = await db
-    .select({
-      publishable: sql<number>`COUNT(DISTINCT ${products.id})`,
-      available: sql<number>`COUNT(DISTINCT CASE WHEN ${storefrontAvailableCondition()} THEN ${products.id} END)`,
-    })
+  const eligibilityProducts = await db
+    .selectDistinct({ productId: products.id })
     .from(products)
-    .innerJoin(productVariants, eq(productVariants.productId, products.id))
-    .innerJoin(productUnits, eq(productUnits.variantId, productVariants.id))
-    .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")))
-    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)))
-    .where(and(...eligibilityConds));
+    .where(eligibilityConds.length ? and(...eligibilityConds) : undefined);
+  const eligibility = await loadStorefrontReadiness({
+    branchId: input.branchId,
+    productIds: eligibilityProducts.map((row) => Number(row.productId)),
+  });
+  const eligibilityRows = Array.from(eligibility.values());
 
   return {
     rows,
     total: Number(cnt?.n ?? 0),
-    publishableTotal: Number(eligibilityCnt?.publishable ?? 0),
-    sellableTotal: Number(eligibilityCnt?.available ?? 0),
+    publishableTotal: eligibilityRows.filter((row) => row.publishable).length,
+    sellableTotal: eligibilityRows.filter((row) => row.inStock).length,
   };
 }
 
@@ -206,7 +200,10 @@ export async function setProductPrimaryImage(input: { productId: number; url: st
 /** لوحة المتجر: **طلب** ضبط مخزون — يمرّ بالاعتماد الثنائيّ نفسه (فصل مهام #٦): يُنشئ طلباً معلَّقاً
  *  (بلا تغيير مخزون) يعتمده مديرٌ آخر عبر approveStockAdjustment. كان يطبّق setStock فوراً بفاعلٍ واحد
  *  (بابُ تجاوزٍ للضبط — مراجعة عدائية). */
-export async function setStoreProductStock(input: { variantId: number; branchId: number; targetQuantity: number; createdBy: number; role?: string; notes?: string }) {
+export async function setStoreProductStock(
+  input: { variantId: number; branchId: number; targetQuantity: number; notes?: string },
+  actor: Actor,
+) {
   return requestStockAdjustment(
     {
       variantId: input.variantId,
@@ -214,6 +211,6 @@ export async function setStoreProductStock(input: { variantId: number; branchId:
       targetQuantity: input.targetQuantity,
       notes: input.notes ? `لوحة المتجر — ${input.notes}` : "لوحة المتجر",
     },
-    { userId: input.createdBy, branchId: input.branchId, role: input.role },
+    actor,
   );
 }

@@ -44,6 +44,11 @@ async function seed() {
   ]);
   await d.insert(s.products).values({ id: 1, name: "ورق" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PAP", costPrice: "5.00" });
+  await d.insert(s.productUnits).values({ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+  await d.insert(s.branchStock).values([
+    { variantId: 1, branchId: 1, quantity: 11 },
+    { variantId: 1, branchId: 2, quantity: 22 },
+  ]);
 }
 
 /** سياق caller بدور + خريطة تجاوز اختيارية (كما يحقنها resolveCustomRole في context.ts). */
@@ -136,6 +141,14 @@ describe("#27 — forPurchase متاح لأدوار الشراء، محجوب ع
   });
   it("manager يمرّ على catalog.forPurchase", async () => {
     await expect(caller("manager", null).catalog.forPurchase({ branchId: 1 })).resolves.toBeDefined();
+  });
+  it("غير admin يُقيَّد بفرعه ولا يقرأ كمية فرعٍ يمرر معرّفه", async () => {
+    const rows = await caller("warehouse", null, 1).catalog.forPurchase({ branchId: 2 });
+    expect(rows[0]?.stockBase).toBe(11);
+  });
+  it("admin وحده يستطيع قراءة كمية فرع آخر صراحةً", async () => {
+    const rows = await caller("admin", null, 1).catalog.forPurchase({ branchId: 2 });
+    expect(rows[0]?.stockBase).toBe(22);
   });
   it("cashier (خارج قائمة الشراء) ⇒ forPurchase FORBIDDEN (لا تتسرّب التكلفة)", async () => {
     await expect(caller("cashier", null).catalog.forPurchase({ branchId: 1 })).rejects.toThrow(FORBIDDEN);

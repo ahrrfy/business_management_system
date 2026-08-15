@@ -112,15 +112,19 @@ export async function createStorePromotion(
 }
 
 /** تعطيل عرضٍ متجريّ — يرفض ما ليس عرضَ متجرٍ (isStoreManaged) منعاً لتعطيل عروض الكاشير/الإدارة عبر القناة. */
-export async function deactivateStorePromotion(tx: Tx, promotionId: number): Promise<void> {
+export async function deactivateStorePromotion(tx: Tx, promotionId: number, expectedBranchId: number): Promise<void> {
   const p = (
     await tx
-      .select({ id: promotions.id, isStoreManaged: promotions.isStoreManaged })
+      .select({ id: promotions.id, branchId: promotions.branchId, isStoreManaged: promotions.isStoreManaged })
       .from(promotions)
       .where(eq(promotions.id, promotionId))
+      .for("update")
       .limit(1)
   )[0];
   if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "العرض غير موجود" });
   if (!p.isStoreManaged) throw new TRPCError({ code: "FORBIDDEN", message: "هذا العرض ليس من عروض المتجر — يُدار من الإدارة" });
+  if (p.branchId == null || Number(p.branchId) !== Number(expectedBranchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "عرض المتجر يخصّ فرع تنفيذ آخر" });
+  }
   await deactivatePromotion(tx, promotionId);
 }

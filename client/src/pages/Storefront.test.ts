@@ -2,9 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   addStorefrontCartLine,
   collectStorefrontFailures,
+  loadCheckoutAttempt,
   recordStorefrontCartChange,
+  reconcileStorefrontCartPricing,
+  saveCheckoutAttempt,
   saveStorefrontSnapshot,
   setStorefrontCartQuantity,
+  storefrontCheckoutFingerprint,
   storefrontCategoryCount,
   type CartLine,
   type CheckoutForm,
@@ -114,5 +118,41 @@ describe("storefront persistence safety", () => {
     expect(increased.get(line.productUnitId)?.qty).toBe(3);
     expect(removed.has(line.productUnitId)).toBe(false);
     expect(markChanged).toHaveBeenCalledTimes(3);
+  });
+
+  it("persists the checkout request key across reload and keeps the fingerprint deterministic", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: vi.fn((key: string) => values.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => { values.set(key, value); }),
+      removeItem: vi.fn((key: string) => { values.delete(key); }),
+    };
+    const cart = new Map([[line.productUnitId, line]]);
+    const fingerprint = storefrontCheckoutFingerprint(cart, form);
+    const attempt = { clientRequestId: "sf-stable", fingerprint, expectedGrandTotal: "500.00", createdAt: 123 };
+    expect(saveCheckoutAttempt(attempt, storage)).toBe(true);
+    expect(loadCheckoutAttempt(storage)).toEqual(attempt);
+    expect(storefrontCheckoutFingerprint(new Map(Array.from(cart).reverse()), { ...form })).toBe(fingerprint);
+  });
+
+  it("changes the retry fingerprint when the monetary/cart intent changes", () => {
+    const cart = new Map([[line.productUnitId, line]]);
+    const changed = new Map([[line.productUnitId, { ...line, price: "750", qty: 2 }]]);
+    expect(storefrontCheckoutFingerprint(changed, form)).not.toBe(storefrontCheckoutFingerprint(cart, form));
+  });
+
+  it("refreshes a conflicted cart price so the next confirmation carries a new accepted fingerprint", () => {
+    const original = new Map([[line.productUnitId, line]]);
+    const originalFingerprint = storefrontCheckoutFingerprint(original, form);
+    const refreshed = reconcileStorefrontCartPricing(original, new Map([
+      [line.productId, {
+        productId: line.productId,
+        storeUnits: [{ productUnitId: line.productUnitId, price: "750.00", salePrice: null }],
+      }],
+    ]));
+
+    expect(refreshed).toMatchObject({ priceChanged: 1, unavailable: 0, unresolved: 0 });
+    expect(refreshed.cart.get(line.productUnitId)?.price).toBe("750.00");
+    expect(storefrontCheckoutFingerprint(refreshed.cart, form)).not.toBe(originalFingerprint);
   });
 });
