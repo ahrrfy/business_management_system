@@ -935,7 +935,7 @@ export async function createSaleInTx(
           allowNegative: input.strictStock !== true && (input.allowNegativeStock ?? false) && !consignByVariant.has(vid),
           allowNegativeUnopened: openingAllow,
           onlineOrderAllocationExemptionId: input.onlineOrderAllocationId,
-          exemptFormalReservationAllocations: input.exemptFormalReservationAllocations,
+          formalReservationExemptionBase: input.formalReservationExemptions?.[vid],
         });
         // معلومة استشارية للمحاولة الفائزة فقط (لا تُعاد في replay الـidempotency — لا حالة دائمة عليها).
         if (openingAllow && moved.newQuantity < 0) negativeDips.push({ variantId: vid, newQuantity: moved.newQuantity });

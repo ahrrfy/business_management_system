@@ -33,13 +33,15 @@ async function readSettingsRow(db: QueryDb, lock: boolean) {
   return (lock ? await query.for("update") : await query)[0];
 }
 
-async function readBranchRow(db: QueryDb, branchId: number, lock: boolean) {
+type RowLock = false | "update" | "share";
+
+async function readBranchRow(db: QueryDb, branchId: number, lock: RowLock) {
   const query = db
     .select({ id: branches.id, name: branches.name, isActive: branches.isActive })
     .from(branches)
     .where(eq(branches.id, branchId))
     .limit(1);
-  return (lock ? await query.for("update") : await query)[0];
+  return (lock ? await query.for(lock) : await query)[0];
 }
 
 /**
@@ -48,7 +50,7 @@ async function readBranchRow(db: QueryDb, branchId: number, lock: boolean) {
  */
 export async function inspectStorefrontContext(
   db: QueryDb = requireDb(),
-  options: { lock?: boolean } = {},
+  options: { lock?: boolean; branchLock?: "update" | "share" } = {},
 ): Promise<StorefrontContextInspection> {
   const lock = options.lock === true;
   const settings = await readSettingsRow(db, lock);
@@ -67,7 +69,11 @@ export async function inspectStorefrontContext(
     };
   }
 
-  const branch = await readBranchRow(db, configuredBranchId, lock);
+  const branch = await readBranchRow(
+    db,
+    configuredBranchId,
+    lock ? (options.branchLock ?? "update") : false,
+  );
   const branchActive = branch?.isActive === true;
   return {
     configured: !!branch,
@@ -82,9 +88,12 @@ export async function inspectStorefrontContext(
 /** المصدر الوحيد لفرع الكتالوج والطلب ولوحة المتجر. */
 export async function requireStorefrontContext(
   db: QueryDb = requireDb(),
-  options: { requireOpen?: boolean; lock?: boolean } = {},
+  options: { requireOpen?: boolean; lock?: boolean; branchLock?: "update" | "share" } = {},
 ): Promise<StorefrontOperationalContext> {
-  const context = await inspectStorefrontContext(db, { lock: options.lock });
+  const context = await inspectStorefrontContext(db, {
+    lock: options.lock,
+    branchLock: options.branchLock,
+  });
   if (!context.configured || context.branchId == null || context.branchName == null) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",

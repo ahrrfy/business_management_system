@@ -235,6 +235,174 @@ async function lockOrCreateOnlineCustomer(tx: Tx, phone: string, name: string): 
   }
 }
 
+interface PricedOnlineOrderLine {
+  productId: number;
+  categoryId: number | null;
+  variantId: number;
+  productName: string;
+  isBundle: boolean;
+  productUnitId: number;
+  quantity: number;
+  baseQuantity: number;
+  retailUnitPrice: string;
+  discountPerUnit: string;
+  unitPrice: string;
+  lineTotal: string;
+}
+
+export interface OnlineOrderQuoteInput {
+  governorate: string;
+  lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>;
+}
+
+export interface OnlineOrderQuoteResult {
+  lines: Array<{
+    productUnitId: number;
+    quantity: number;
+    retailUnitPrice: string;
+    discountPerUnit: string;
+    unitPrice: string;
+    lineTotal: string;
+  }>;
+  subtotal: string;
+  deliveryFee: string;
+  total: string;
+}
+
+/** محرك التسعير الوحيد للـquote وللتثبيت؛ lineAmount يستعمل كمية السلة الفعلية. */
+async function priceOnlineOrderLines(
+  tx: Tx,
+  branchId: number,
+  lines: Array<Pick<OnlineOrderLineInput, "productUnitId" | "quantity">>,
+  options: { lock: boolean },
+): Promise<PricedOnlineOrderLine[]> {
+  const unitIds = Array.from(new Set(lines.map((line) => Number(line.productUnitId)))).sort((a, b) => a - b);
+  const query = tx
+    .select({
+      productId: products.id,
+      productName: products.name,
+      categoryId: products.categoryId,
+      productUnitId: productUnits.id,
+      variantId: productVariants.id,
+      conversionFactor: productUnits.conversionFactor,
+      unitActive: productUnits.isActive,
+      unitAvailableInStore: productUnits.isStoreSaleUnit,
+      variantActive: productVariants.isActive,
+      productActive: products.isActive,
+      showInStore: products.showInStore,
+      categoryActive: categories.isActive,
+      categoryShowInStore: categories.showInStore,
+      isService: products.isService,
+      isBundle: products.isBundle,
+      price: productPrices.price,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .leftJoin(productPrices, and(
+      eq(productPrices.productUnitId, productUnits.id),
+      eq(productPrices.priceTier, RETAIL),
+    ))
+    .where(inArray(productUnits.id, unitIds))
+    .orderBy(asc(productUnits.id));
+  const rows = options.lock ? await query.for("update") : await query;
+  const byUnit = new Map(rows.map((row) => [Number(row.productUnitId), row]));
+  const todayYmd = todayYmdBaghdad();
+  const priced: PricedOnlineOrderLine[] = [];
+  for (const line of lines) {
+    const quantity = Math.floor(line.quantity);
+    const row = byUnit.get(Number(line.productUnitId));
+    if (
+      !Number.isSafeInteger(quantity) || quantity <= 0 || !row || !row.productActive ||
+      !row.showInStore || (row.categoryId != null && (!row.categoryActive || !row.categoryShowInStore)) ||
+      row.isService || !row.variantActive || !row.unitActive || !row.unitAvailableInStore || row.price == null
+    ) {
+      throw new TRPCError({
+        code: options.lock ? "CONFLICT" : "BAD_REQUEST",
+        message: "أحد المنتجات لم يعُد متاحاً — حدّث السلة",
+      });
+    }
+    const base = money(quantity).times(row.conversionFactor ?? 1);
+    if (!base.isInteger() || !base.gt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الوحدة لا تتحول إلى كمية أساس صحيحة" });
+    }
+    const retail = round2(row.price);
+    const productId = Number(row.productId);
+    const variantId = Number(row.variantId);
+    const categoryId = row.categoryId == null ? null : Number(row.categoryId);
+    const promo = await resolvePromotionForLine(tx, {
+      branchId,
+      customerTier: RETAIL,
+      productId,
+      variantId,
+      categoryId,
+      unitPrice: retail.toFixed(2),
+      lineAmount: retail.times(quantity).toFixed(2),
+      hasContractPrice: false,
+      todayYmd,
+      includeStoreManaged: true,
+      lockForUpdate: options.lock,
+    });
+    const discount = promo ? money(promo.discountForUnit) : money(0);
+    const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
+    priced.push({
+      productId,
+      categoryId,
+      variantId,
+      productName: row.productName,
+      isBundle: row.isBundle === true,
+      productUnitId: Number(row.productUnitId),
+      quantity,
+      baseQuantity: base.toNumber(),
+      retailUnitPrice: retail.toFixed(2),
+      discountPerUnit: round2(discount).toFixed(2),
+      unitPrice: unitPrice.toFixed(2),
+      lineTotal: round2(unitPrice.times(quantity)).toFixed(2),
+    });
+  }
+  return priced;
+}
+
+function totalOnlineOrderQuote(
+  items: Array<{ lineTotal: string }>,
+  governorate: string,
+  freeShippingThreshold: string | null | undefined,
+): Pick<OnlineOrderQuoteResult, "subtotal" | "deliveryFee" | "total"> {
+  const subtotal = round2(sumMoney(items.map((item) => item.lineTotal)));
+  let deliveryFee = round2(deliveryFeeFor(governorate));
+  const freeThreshold = freeShippingThreshold ? money(freeShippingThreshold) : null;
+  if (freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold)) deliveryFee = round2(money(0));
+  return {
+    subtotal: subtotal.toFixed(2),
+    deliveryFee: deliveryFee.toFixed(2),
+    total: round2(subtotal.plus(deliveryFee)).toFixed(2),
+  };
+}
+
+export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<OnlineOrderQuoteResult> {
+  if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أضف صنفاً واحداً على الأقل" });
+  if (!governorateById(input.governorate)) throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير صحيحة" });
+  return withTx(async (tx) => {
+    const context = await requireStorefrontContext(tx, { requireOpen: true });
+    const settings = (await tx.select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
+      .from(storeSettingsTable).where(eq(storeSettingsTable.id, 1)).limit(1))[0];
+    const items = await priceOnlineOrderLines(tx, context.branchId, input.lines, { lock: false });
+    const totals = totalOnlineOrderQuote(items, input.governorate, settings?.freeShippingThreshold);
+    return {
+      lines: items.map((item) => ({
+        productUnitId: item.productUnitId,
+        quantity: item.quantity,
+        retailUnitPrice: item.retailUnitPrice,
+        discountPerUnit: item.discountPerUnit,
+        unitPrice: item.unitPrice,
+        lineTotal: item.lineTotal,
+      })),
+      ...totals,
+    };
+  });
+}
+
 /** طلب متجر جديد — server-priced، مُتحقَّق، idempotent، ذرّي. لا أثر مالي (PENDING فقط). */
 export async function createOnlineOrder(
   input: CreateOnlineOrderInput,
@@ -297,11 +465,13 @@ async function createOnlineOrderAttempt(
     );
     if (replay) return replay;
 
-    // الطلب الجديد فقط يمرّ ببوابة التشغيل. نقفل الإعداد والفرع في المعاملة نفسها
-    // كي لا يتغيّر سياق التنفيذ بين فحص ATP وتثبيت الطلب.
+    // الطلب الجديد فقط يمرّ ببوابة التشغيل. storeSettings يبقى X-lock فيثبت اختيار الفرع/الفتح؛
+    // أمّا صفّ branch فيكفيه FOR SHARE لإثبات الوجود والتفعيل، وهو متوافق مع قفل FK المشترك
+    // لإدراج فاتورة POS. قفل الفرع X قبل العميل يعكس ترتيب POS (customer→branch FK) ويصنع deadlock.
     const storefrontContext = await requireStorefrontContext(tx, {
       requireOpen: true,
       lock: true,
+      branchLock: "share",
     });
     const branchId = storefrontContext.branchId;
     const storeSettings = (
@@ -314,104 +484,10 @@ async function createOnlineOrderAttempt(
         .limit(1)
     )[0];
 
-    // ② تسعير خادمي + تحقّق لكل بند.
-    const items: {
-      productId: number;
-      categoryId: number | null;
-      variantId: number;
-      productName: string;
-      isBundle: boolean;
-      productUnitId: number;
-      quantity: number;
-      baseQuantity: number;
-      unitPrice: string;
-      lineTotal: string;
-    }[] = [];
+    // ② لقطة تسعير أولية لبناء متطلبات الأقفال. التثبيت المالي الوحيد أدناه يعيد
+    // تشغيل المحرك نفسه بقراءة current مقفلة بعد قفل العميل والوحدات.
+    const items = await priceOnlineOrderLines(tx, branchId, input.lines, { lock: false });
     const requestedBaseByVariant = new Map<number, number>();
-    const todayYmd = todayYmdBaghdad();
-    for (const line of input.lines) {
-      const qty = Math.floor(line.quantity);
-      if (!Number.isFinite(qty) || qty <= 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "كمية غير صحيحة" });
-      }
-      const row = (
-        await tx
-          .select({
-            productId: products.id,
-            productName: products.name,
-            categoryId: products.categoryId,
-            productUnitId: productUnits.id,
-            variantId: productVariants.id,
-            conversionFactor: productUnits.conversionFactor,
-            unitActive: productUnits.isActive,
-            unitAvailableInStore: productUnits.isStoreSaleUnit,
-            variantActive: productVariants.isActive,
-            productActive: products.isActive,
-            showInStore: products.showInStore,
-            categoryActive: categories.isActive,
-            categoryShowInStore: categories.showInStore,
-            isService: products.isService,
-            isBundle: products.isBundle,
-            price: productPrices.price,
-          })
-          .from(productUnits)
-          .innerJoin(
-            productVariants,
-            eq(productUnits.variantId, productVariants.id),
-          )
-          .innerJoin(products, eq(productVariants.productId, products.id))
-          .leftJoin(categories, eq(categories.id, products.categoryId))
-          .leftJoin(
-            productPrices,
-            and(
-              eq(productPrices.productUnitId, productUnits.id),
-              eq(productPrices.priceTier, RETAIL),
-            ),
-          )
-          .where(eq(productUnits.id, line.productUnitId))
-          .limit(1)
-      )[0];
-      if (
-        !row ||
-        !row.productActive ||
-        !row.showInStore ||
-        (row.categoryId != null &&
-          (!row.categoryActive || !row.categoryShowInStore)) ||
-        row.isService ||
-        !row.variantActive ||
-        !row.unitActive ||
-        !row.unitAvailableInStore ||
-        row.price == null
-      ) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "أحد المنتجات لم يعُد متاحاً — حدّث السلة",
-        });
-      }
-      // لقطة أولية فقط لبناء السلة. بعد mutex الوحدة نقوم بقراءة Current Read مقفلة
-      // للأهلية والسعر والعرض؛ لا يعتمد إنشاء الطلب على هذه اللقطة القابلة للتقادم.
-      const retail = round2(row.price);
-      const unitPrice = retail;
-      const lineTotal = round2(unitPrice.times(qty));
-      const baseQuantity = Number(
-        money(qty)
-          .times(row.conversionFactor ?? 1)
-          .toFixed(0),
-      );
-      const variantId = Number(row.variantId);
-      items.push({
-        productId: Number(row.productId),
-        categoryId: row.categoryId != null ? Number(row.categoryId) : null,
-        variantId,
-        productName: row.productName,
-        isBundle: row.isBundle === true,
-        productUnitId: Number(row.productUnitId),
-        quantity: qty,
-        baseQuantity,
-        unitPrice: unitPrice.toFixed(2),
-        lineTotal: lineTotal.toFixed(2),
-      });
-    }
 
     // أول قفل أعمال مشترك بعد تسعير السلة: العميل، اتساقاً مع POS/createSale.
     const customerId = await lockOrCreateOnlineCustomer(tx, phone, name);
@@ -422,46 +498,16 @@ async function createOnlineOrderAttempt(
     const unitIds = Array.from(new Set(items.map((item) => item.productUnitId))).sort((a, b) => a - b);
     const currentUnits = await lockProductUnitsForOnlineAllocation(tx, unitIds);
     const currentFactorByUnit = new Map(currentUnits.map((unit) => [unit.id, unit.conversionFactor]));
-    const currentCatalogRows = await tx
-      .select({
-        productId: products.id,
-        productName: products.name,
-        categoryId: products.categoryId,
-        productUnitId: productUnits.id,
-        variantId: productVariants.id,
-        conversionFactor: productUnits.conversionFactor,
-        unitActive: productUnits.isActive,
-        unitAvailableInStore: productUnits.isStoreSaleUnit,
-        variantActive: productVariants.isActive,
-        productActive: products.isActive,
-        showInStore: products.showInStore,
-        categoryActive: categories.isActive,
-        categoryShowInStore: categories.showInStore,
-        isService: products.isService,
-        isBundle: products.isBundle,
-        price: productPrices.price,
-      })
-      .from(productUnits)
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .leftJoin(categories, eq(categories.id, products.categoryId))
-      .leftJoin(productPrices, and(
-        eq(productPrices.productUnitId, productUnits.id),
-        eq(productPrices.priceTier, RETAIL),
-      ))
-      .where(inArray(productUnits.id, unitIds))
-      .orderBy(asc(productUnits.id))
-      .for("update");
-    const currentCatalogByUnit = new Map(currentCatalogRows.map((row) => [Number(row.productUnitId), row]));
+    const currentItems = await priceOnlineOrderLines(tx, branchId, input.lines, { lock: true });
     requestedBaseByVariant.clear();
-    for (const item of items) {
-      const current = currentCatalogByUnit.get(item.productUnitId);
-      const factor = currentFactorByUnit.get(item.productUnitId);
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      const current = currentItems[index];
+      const factor = current
+        ? currentFactorByUnit.get(current.productUnitId)
+        : undefined;
       if (
-        !current || factor == null || !current.productActive || !current.showInStore ||
-        (current.categoryId != null && (!current.categoryActive || !current.categoryShowInStore)) ||
-        current.isService || !current.variantActive || !current.unitActive ||
-        !current.unitAvailableInStore || current.price == null ||
+        !current || current.productUnitId !== item.productUnitId || factor == null ||
         !money(item.quantity).times(factor).eq(item.baseQuantity)
       ) {
         throw new TRPCError({
@@ -469,34 +515,16 @@ async function createOnlineOrderAttempt(
           message: "تغيّرت أهلية منتج أو وحدة في السلة أثناء الطلب — حدّث السلة وأعد المحاولة",
         });
       }
-      const retail = round2(current.price);
-      const categoryId = current.categoryId != null ? Number(current.categoryId) : null;
-      const productId = Number(current.productId);
-      const variantId = Number(current.variantId);
-      const promo = await resolvePromotionForLine(tx, {
-        branchId,
-        customerTier: RETAIL,
-        productId,
-        variantId,
-        categoryId,
-        unitPrice: retail.toFixed(2),
-        lineAmount: retail.times(item.quantity).toFixed(2),
-        hasContractPrice: false,
-        todayYmd,
-        includeStoreManaged: true,
-        lockForUpdate: true,
-      });
-      const discount = promo ? money(promo.discountForUnit) : money(0);
-      const currentUnitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
-      item.productId = productId;
-      item.categoryId = categoryId;
-      item.variantId = variantId;
+      item.productId = current.productId;
+      item.categoryId = current.categoryId;
+      item.variantId = current.variantId;
       item.productName = current.productName;
-      item.isBundle = current.isBundle === true;
-      item.unitPrice = currentUnitPrice.toFixed(2);
-      item.lineTotal = round2(currentUnitPrice.times(item.quantity)).toFixed(2);
-      const requestedBase = (requestedBaseByVariant.get(variantId) ?? 0) + item.baseQuantity;
-      requestedBaseByVariant.set(variantId, requestedBase);
+      item.isBundle = current.isBundle;
+      item.baseQuantity = current.baseQuantity;
+      item.unitPrice = current.unitPrice;
+      item.lineTotal = current.lineTotal;
+      const requestedBase = (requestedBaseByVariant.get(current.variantId) ?? 0) + current.baseQuantity;
+      requestedBaseByVariant.set(current.variantId, requestedBase);
     }
     for (let index = 0; index < items.length; index++) {
       const expected = input.lines[index]?.expectedUnitPrice;
@@ -576,15 +604,10 @@ async function createOnlineOrderAttempt(
         );
       }
     }
-    const subtotal = round2(sumMoney(items.map((i) => i.lineTotal)));
-    let deliveryFee = round2(deliveryFeeFor(input.governorate));
-    // توصيل مجاني (AOV): إن بلغ المجموع الفرعي عتبة الإعدادات ⇒ الأجرة صفر (إنفاذ خادمي).
-    const freeThreshold = storeSettings?.freeShippingThreshold
-      ? money(storeSettings.freeShippingThreshold)
-      : null;
-    if (freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold))
-      deliveryFee = round2(money(0));
-    const total = round2(subtotal.plus(deliveryFee));
+    const quoteTotals = totalOnlineOrderQuote(items, input.governorate, storeSettings?.freeShippingThreshold);
+    const subtotal = money(quoteTotals.subtotal);
+    const deliveryFee = money(quoteTotals.deliveryFee);
+    const total = money(quoteTotals.total);
     if (input.expectedGrandTotal != null && !round2(input.expectedGrandTotal).eq(total)) {
       throw new TRPCError({
         code: "CONFLICT",

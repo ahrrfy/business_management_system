@@ -1,13 +1,14 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createOnlineOrder } from "../onlineOrderService";
+import { createOnlineOrder, quoteOnlineOrder } from "../onlineOrderService";
 import { listStockByUnitIds } from "../catalog/pos";
 import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
 import { truncateAllTables } from "./__testUtils__";
 import { withTx } from "../tx";
 import type { Tx } from "../../db";
+import { createSaleInTx } from "../sale/create";
 
 function db() {
   const d = getDb();
@@ -50,6 +51,19 @@ async function commitMutationWhileCreateWaitsOnUnit(
   releaseMutation();
   await mutation;
   return creation;
+}
+
+async function waitForOnlineCustomerNamedLock(phone: string): Promise<void> {
+  const lockName = `online-customer:${phone}`;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const raw = await db().execute(sql`SELECT IS_USED_LOCK(${lockName}) AS ownerId`) as unknown;
+    const row = Array.isArray(raw)
+      ? (raw[0] as Array<{ ownerId?: number | string | null }>)?.[0]
+      : (raw as { rows?: Array<{ ownerId?: number | string | null }> }).rows?.[0];
+    if (row?.ownerId != null) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("online order did not reach the customer lock barrier");
 }
 
 beforeEach(async () => {
@@ -197,6 +211,44 @@ describe("createOnlineOrder availability guards", () => {
     expect(await db().select().from(s.onlineOrders)).toHaveLength(0);
   });
 
+  it("quote يطبق minLineAmount على كمية السلة نفسها ثم ينجح التأكيد بالسعر الموافق عليه", async () => {
+    await db().update(s.productPrices).set({ price: "100.00" }).where(eq(s.productPrices.productUnitId, 1));
+    await db().update(s.storeSettings).set({ freeShippingThreshold: "1.00" }).where(eq(s.storeSettings.id, 1));
+    await db().insert(s.promotions).values({
+      id: 1,
+      name: "خصم كمية",
+      type: "PERCENT",
+      discountPercent: "10.00",
+      discountAmount: "0.00",
+      scope: "ALL",
+      effectiveFrom: new Date("2020-01-01"),
+      effectiveTo: new Date("2099-12-31"),
+      branchId: 1,
+      customerTier: "RETAIL",
+      minLineAmount: "200.00",
+      priority: 100,
+      isActive: true,
+      applicationMode: "AUTO",
+      isStoreManaged: true,
+    });
+
+    const quote = await quoteOnlineOrder({
+      governorate: "baghdad",
+      lines: [{ productUnitId: 1, quantity: 2 }],
+    });
+    expect(quote).toMatchObject({ subtotal: "180.00", deliveryFee: "0.00", total: "180.00" });
+    expect(quote.lines[0]).toMatchObject({ unitPrice: "90.00", discountPerUnit: "10.00", lineTotal: "180.00" });
+
+    const created = await createOnlineOrder({
+      ...baseOrder,
+      clientRequestId: "quantity-threshold-quote",
+      lines: [{ productUnitId: 1, quantity: 2, expectedUnitPrice: quote.lines[0].unitPrice }],
+      expectedGrandTotal: quote.total,
+    });
+    expect(created).toMatchObject({ subtotal: "180.00", total: "180.00" });
+    expect(await db().select().from(s.onlineOrders)).toHaveLength(1);
+  });
+
   it.each([
     ["product", async (tx: Tx) => { await tx.update(s.products).set({ showInStore: false }).where(eq(s.products.id, 1)); }],
     ["variant", async (tx: Tx) => { await tx.update(s.productVariants).set({ isActive: false }).where(eq(s.productVariants.id, 1)); }],
@@ -230,6 +282,62 @@ describe("createOnlineOrder availability guards", () => {
     const [first, second] = await Promise.all([createOnlineOrder(request), createOnlineOrder(request)]);
     expect(first.orderId).toBe(second.orderId);
     expect((await db().select().from(s.onlineOrders)).filter((row) => row.clientRequestId === request.clientRequestId)).toHaveLength(1);
+  });
+
+  it("ينهي طلب المتجر وبيع POS للعميل والفرع نفسيهما بلا deadlock ويحفظ أثريهما", async () => {
+    await db().insert(s.users).values({
+      id: 1,
+      openId: "storefront-pos-lock-test",
+      name: "Lock test admin",
+      role: "admin",
+      loginMethod: "local",
+    });
+    await db().insert(s.customers).values({
+      id: 1,
+      name: "Test customer",
+      phone: "+9647701234567",
+      creditLimit: null,
+      currentBalance: "0.00",
+    });
+
+    let customerLocked!: () => void;
+    let releasePos!: () => void;
+    const customerBarrier = new Promise<void>((resolve) => { customerLocked = resolve; });
+    const releaseBarrier = new Promise<void>((resolve) => { releasePos = resolve; });
+    const posSale = withTx(async (tx) => {
+      await tx.select({ id: s.customers.id })
+        .from(s.customers)
+        .where(eq(s.customers.id, 1))
+        .for("update");
+      customerLocked();
+      await releaseBarrier;
+      return createSaleInTx(tx, {
+        branchId: 1,
+        customerId: 1,
+        sourceType: "POS",
+        clientRequestId: "pos-vs-online-branch-share",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+        payment: null,
+      }, { userId: 1, branchId: 1, role: "admin" });
+    });
+    await customerBarrier;
+
+    const online = createOnlineOrder({
+      ...baseOrder,
+      clientRequestId: "online-vs-pos-branch-share",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    });
+    await waitForOnlineCustomerNamedLock("+9647701234567");
+    releasePos();
+
+    const [sale, order] = await Promise.all([posSale, online]);
+    expect(sale.invoiceId).toBeGreaterThan(0);
+    expect(order.orderId).toBeGreaterThan(0);
+    expect((await listStockByUnitIds([1], 1))[0]).toMatchObject({
+      stockBase: 2,
+      reservedBase: 1,
+      availableBase: 1,
+    });
   });
 
   it("يسمح replay لصاحب phone حتى لو كان whatsapp مختلفاً", async () => {

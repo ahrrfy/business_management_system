@@ -4,6 +4,7 @@ import {
   collectStorefrontFailures,
   loadCheckoutAttempt,
   recordStorefrontCartChange,
+  reconcileStorefrontCartQuote,
   reconcileStorefrontCartPricing,
   saveCheckoutAttempt,
   saveStorefrontSnapshot,
@@ -154,5 +155,17 @@ describe("storefront persistence safety", () => {
     expect(refreshed).toMatchObject({ priceChanged: 1, unavailable: 0, unresolved: 0 });
     expect(refreshed.cart.get(line.productUnitId)?.price).toBe("750.00");
     expect(storefrontCheckoutFingerprint(refreshed.cart, form)).not.toBe(originalFingerprint);
+  });
+
+  it("applies a quantity-threshold quote instead of repeating the qty=1 catalog price", () => {
+    const twoItems = new Map([[line.productUnitId, { ...line, price: "100.00", qty: 2 }]]);
+    const refreshed = reconcileStorefrontCartQuote(twoItems, [{
+      productUnitId: line.productUnitId,
+      quantity: 2,
+      unitPrice: "90.00",
+    }]);
+
+    expect(refreshed).toMatchObject({ priceChanged: 1, unresolved: 0 });
+    expect(refreshed.cart.get(line.productUnitId)).toMatchObject({ qty: 2, price: "90.00" });
   });
 });

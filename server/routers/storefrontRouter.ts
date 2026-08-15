@@ -13,7 +13,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { middleware, publicProcedure, router } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
-import { createOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
+import { createOnlineOrder, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
 import { retryOnDup } from "../lib/retryDup";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
@@ -97,6 +97,17 @@ export const storefrontRouter = router({
   related: publicProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => storefrontRelated(input.productId)),
+
+  /** إعادة تسعير السلة بكمياتها الفعلية؛ نفس محرك createOrder، بلا أي كتابة. */
+  quoteOrder: publicProcedure
+    .input(z.object({
+      governorate: z.string().trim().min(1).max(40),
+      lines: z.array(z.object({
+        productUnitId: z.number().int().positive(),
+        quantity: z.number().int().positive().max(999),
+      })).min(1).max(100),
+    }))
+    .query(({ input }) => quoteOnlineOrder(input)),
 
   /**
    * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.

@@ -294,6 +294,45 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     expect((await atp(variantId)).available).toBe(1);
   });
 
+  it("FIFO يمنع الحجز الأحدث من سرقة الأقدم ويعلن عجزه بعد تنفيذ الأقدم", async () => {
+    const firstCustomerId = await mkCustomer("صاحب الحجز الأقدم FIFO");
+    const secondCustomerId = await mkCustomer("صاحب الحجز الأحدث FIFO");
+    const { variantId, baseUnitId } = await mkProduct("RSV-FIFO", 5);
+    const first = await createReservation({
+      branchId: 1,
+      customerId: firstCustomerId,
+      contactPhone: "07700000051",
+      lines: [{ variantId, productUnitId: baseUnitId, quantity: 4 }],
+    }, actor);
+    const second = await createReservation({
+      branchId: 1,
+      customerId: secondCustomerId,
+      contactPhone: "07700000052",
+      lines: [{ variantId, productUnitId: baseUnitId, quantity: 4 }],
+    }, actor);
+
+    await expect(convertReservationToSale({ reservationId: second.reservationId, payment: null }, actor))
+      .rejects.toThrow(/مخصّص|الحجوزات|المتاح/);
+    expect(await onHand(variantId)).toBe(5);
+    expect(await reserved(variantId)).toBe(8);
+    expect((await db().select().from(s.reservations).where(eq(s.reservations.id, second.reservationId)))[0]?.status)
+      .toBe("ACTIVE");
+
+    const converted = await convertReservationToSale({ reservationId: first.reservationId, payment: null }, actor);
+    expect(converted.invoiceId).toBeGreaterThan(0);
+    expect(await onHand(variantId)).toBe(1);
+    expect(await reserved(variantId)).toBe(4);
+    expect((await db().select().from(s.reservations).where(eq(s.reservations.id, first.reservationId)))[0]?.status)
+      .toBe("FULFILLED");
+    expect((await db().select().from(s.reservations).where(eq(s.reservations.id, second.reservationId)))[0]?.status)
+      .toBe("ACTIVE");
+    expect(await atp(variantId)).toMatchObject({
+      available: 0,
+      rawAvailableBase: -3,
+      shortfallBase: 3,
+    });
+  });
+
   it("تحويل الحجز لا يعفي تخصيص طلب إلكتروني نشط لطرف آخر", async () => {
     const reservationCustomerId = await mkCustomer("صاحب الحجز الرسمي");
     const onlineCustomerId = await mkCustomer("صاحب طلب المتجر");

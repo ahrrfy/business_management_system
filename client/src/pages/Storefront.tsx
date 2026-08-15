@@ -126,6 +126,29 @@ export function reconcileStorefrontCartPricing(
   return { cart, priceChanged, unavailable, unresolved };
 }
 
+export function reconcileStorefrontCartQuote(
+  current: Map<number, CartLine>,
+  quotedLines: Array<{ productUnitId: number; quantity: number; unitPrice: string }>,
+): { cart: Map<number, CartLine>; priceChanged: number; unresolved: number } {
+  const cart = new Map(current);
+  const quotedByUnit = new Map(quotedLines.map((line) => [line.productUnitId, line]));
+  let priceChanged = 0;
+  let unresolved = 0;
+  for (const line of Array.from(current.values())) {
+    const quoted = quotedByUnit.get(line.productUnitId);
+    if (!quoted || quoted.quantity !== line.qty) {
+      unresolved += 1;
+      continue;
+    }
+    const price = Number(quoted.unitPrice).toFixed(2);
+    if (price !== Number(line.price).toFixed(2)) {
+      cart.set(line.productUnitId, { ...line, price });
+      priceChanged += 1;
+    }
+  }
+  return { cart, priceChanged, unresolved };
+}
+
 // حفظ السلة + بيانات التوصيل محلياً (مراجعة عدائية ١٢/٧): كان تحديث الصفحة/العودة للتطبيق يفرّغ
 // السلة والنموذج فيهجر الزبون الطلب. نُبقيهما في localStorage فيستأنف الزبون من حيث توقّف.
 export type CheckoutForm = { name: string; phone: string; governorate: string; address: string; notes: string };
@@ -626,6 +649,7 @@ export default function Storefront() {
   const [checkoutAttempt, setCheckoutAttempt] = useState<StorefrontCheckoutAttempt | null>(loadCheckoutAttempt);
   const checkoutAttemptRef = useRef(checkoutAttempt);
   const orderInFlightRef = useRef(false);
+  const acceptedQuoteRef = useRef<{ fingerprint: string; total: string } | null>(null);
   checkoutAttemptRef.current = checkoutAttempt;
   const [checkoutSafetyError, setCheckoutSafetyError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
@@ -737,6 +761,7 @@ export default function Storefront() {
     onSuccess: (res) => {
       orderInFlightRef.current = false;
       checkoutAttemptRef.current = null;
+      acceptedQuoteRef.current = null;
       setCheckoutAttempt(null);
       saveCheckoutAttempt(null);
       setConfirmation({ orderNumber: res.orderNumber, total: res.total });
@@ -750,7 +775,9 @@ export default function Storefront() {
     onError: async (error) => {
       orderInFlightRef.current = false;
       if (error.data?.code === "CONFLICT") {
+        const failedAttempt = checkoutAttemptRef.current;
         checkoutAttemptRef.current = null;
+        acceptedQuoteRef.current = null;
         setCheckoutAttempt(null);
         saveCheckoutAttempt(null);
         await Promise.all([
@@ -758,7 +785,36 @@ export default function Storefront() {
           utils.storefront.offers.invalidate(),
           utils.storefront.settings.invalidate(),
           utils.storefront.product.invalidate(),
+          utils.storefront.quoteOrder.invalidate(),
         ]);
+        try {
+          const quoted = await utils.storefront.quoteOrder.fetch({
+            governorate: formRef.current.governorate,
+            lines: Array.from(cartRef.current.values()).map((line) => ({
+              productUnitId: line.productUnitId,
+              quantity: line.qty,
+            })),
+          });
+          const refreshedQuote = reconcileStorefrontCartQuote(cartRef.current, quoted.lines);
+          const totalChanged = failedAttempt == null ||
+            Number(quoted.total).toFixed(2) !== Number(failedAttempt.expectedGrandTotal).toFixed(2);
+          if (refreshedQuote.unresolved === 0 && (refreshedQuote.priceChanged > 0 || totalChanged)) {
+            cartRef.current = refreshedQuote.cart;
+            setCart(refreshedQuote.cart);
+            acceptedQuoteRef.current = {
+              fingerprint: storefrontCheckoutFingerprint(refreshedQuote.cart, formRef.current),
+              total: quoted.total,
+            };
+            setCheckoutSafetyError(
+              refreshedQuote.priceChanged > 0
+                ? `تحديث سعر ${refreshedQuote.priceChanged} من أصناف السلة. راجع الإجمالي الجديد ثم اضغط «تأكيد الطلب» للموافقة عليه.`
+                : "تغيّر إجمالي الطلب أو التوصيل. راجع الإجمالي الجديد ثم اضغط «تأكيد الطلب» للموافقة عليه.",
+            );
+            return;
+          }
+        } catch {
+          // إذا لم يعد الصنف منشوراً، يسقط المسار إلى reconciliation التفاصيل أدناه لحذفه صراحةً.
+        }
         const productIds = Array.from(new Set(Array.from(cartRef.current.values()).map((line) => line.productId)));
         const latestEntries = await Promise.all(productIds.map(async (productId) => {
           try {
@@ -971,6 +1027,9 @@ export default function Storefront() {
     if (!name || phone.replace(/\D/g, "").length < 8 || address.length < 3 || cartLines.length === 0) return;
     const fingerprint = storefrontCheckoutFingerprint(cart, form);
     const previous = checkoutAttemptRef.current;
+    const acceptedQuote = acceptedQuoteRef.current?.fingerprint === fingerprint
+      ? acceptedQuoteRef.current
+      : null;
     const attempt: StorefrontCheckoutAttempt = previous?.fingerprint === fingerprint
       ? previous
       : {
@@ -978,7 +1037,7 @@ export default function Storefront() {
             ? `sf-${crypto.randomUUID()}`
             : `sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`,
           fingerprint,
-          expectedGrandTotal: cartTotal.toFixed(2),
+          expectedGrandTotal: acceptedQuote?.total ?? cartTotal.toFixed(2),
           createdAt: Date.now(),
         };
     // fail-closed قبل الشبكة: الرد الضائع آمن فقط إذا بقي نفس المفتاح بعد reload/PWA.

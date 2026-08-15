@@ -1,14 +1,14 @@
 // Reservation-to-sale conversion is a single transaction: invoice, stock reservation release,
 // and reservation lifecycle transition commit or roll back together.
 import { TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, or } from "drizzle-orm";
 import { productUnits, reservationEvents, reservationLines, reservations, shifts } from "../../../drizzle/schema";
 import { createSaleInTx, notifySaleCustomerAfterCommit } from "../sale/create";
 import { logger } from "../../logger";
 import type { PaymentMethod } from "../sale/types";
 import { openShiftIdTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
-import { assertReservationBranch, loadReservation } from "./helpers";
+import { assertReservationBranch, CLOSEABLE_STATUSES } from "./helpers";
 import { adjustReservedStock } from "./stock";
 
 export interface ConvertReservationInput {
@@ -34,9 +34,24 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
   }
 
   const result = await withTx(async (tx) => {
-    // All closing paths (cancel, release, expiry) lock this row too, so they cannot
-    // leave a successfully created invoice detached from a now-closed reservation.
-    const res = await loadReservation(tx, input.reservationId);
+    // نقرأ مرشح الفرع أولاً، ثم نقفل الحجوزات النشطة كلها بترتيب id ثابت. بذلك تكون
+    // أولوية FIFO قابلة للحساب تحت قفل واحد ولا يستطيع تحويل B الأحدث تجاوز A الأقدم.
+    const candidate = (await tx.select().from(reservations)
+      .where(eq(reservations.id, input.reservationId)).limit(1))[0];
+    if (!candidate) throw new TRPCError({ code: "NOT_FOUND", message: "الحجز غير موجود" });
+    assertReservationBranch(candidate, actor);
+    const lockedReservations = await tx.select().from(reservations)
+      .where(and(
+        eq(reservations.branchId, Number(candidate.branchId)),
+        or(
+          eq(reservations.id, input.reservationId),
+          inArray(reservations.status, [...CLOSEABLE_STATUSES]),
+        ),
+      ))
+      .orderBy(asc(reservations.id))
+      .for("update");
+    const res = lockedReservations.find((row) => Number(row.id) === input.reservationId);
+    if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "الحجز غير موجود" });
     assertReservationBranch(res, actor);
     if (res.status !== "ACTIVE" && res.status !== "PARTIALLY_FULFILLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن تحويل حجز حالته ${res.status}` });
@@ -103,6 +118,33 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
         toFulfilled: line.baseQuantity,
       });
     }
+    const variantIds = Array.from(new Set(saleLines.map((line) => line.variantId))).sort((a, b) => a - b);
+    const activeAllocationLines = await tx
+      .select({
+        reservationId: reservationLines.reservationId,
+        variantId: reservationLines.variantId,
+        baseQuantity: reservationLines.baseQuantity,
+        fulfilledBase: reservationLines.fulfilledBase,
+      })
+      .from(reservationLines)
+      .innerJoin(reservations, eq(reservationLines.reservationId, reservations.id))
+      .where(and(
+        eq(reservations.branchId, Number(res.branchId)),
+        inArray(reservations.status, [...CLOSEABLE_STATUSES]),
+        inArray(reservationLines.variantId, variantIds),
+      ))
+      .orderBy(asc(reservations.id), asc(reservationLines.id))
+      .for("update");
+    const formalReservationExemptions: Record<number, number> = {};
+    for (const line of activeAllocationLines) {
+      // الحجز الجاري والأحدث منه لا يسبقان الجاري في FIFO. طرحهما من aggregate
+      // يبقي الحجوزات الأقدم محمية، وأي drift غير منسوب يبقى محمياً fail-closed.
+      if (Number(line.reservationId) < Number(res.id)) continue;
+      const variantId = Number(line.variantId);
+      const remainingBase = Math.max(0, Number(line.baseQuantity) - Number(line.fulfilledBase));
+      formalReservationExemptions[variantId] =
+        (formalReservationExemptions[variantId] ?? 0) + remainingBase;
+    }
     const sale = await createSaleInTx(tx, {
       branchId: Number(res.branchId),
       shiftId,
@@ -119,8 +161,7 @@ export async function convertReservationToSale(input: ConvertReservationInput, a
       // الحجز وعدٌ لعميل محدد: لا يرث سماح السالب المؤقت لـORDER في وضع الافتتاح. يفحص
       // applyMovement الرصيد تحت قفله وفي ترتيب نواة البيع، فيغلق سباق refetch→commit أيضاً.
       strictStock: true,
-      // الحجز soft ووعده أسبق من حجوزات soft اللاحقة؛ لا نعفي تخصيص طلب متجر نشط.
-      exemptFormalReservationAllocations: true,
+      formalReservationExemptions,
     }, actor);
 
     for (const line of saleLines) {

@@ -97,9 +97,11 @@ export interface ApplyMovementArgs {
    * وكل طلب نشط آخر محمياً تحت mutex المتغيّر/الرصيد نفسه. حقل داخلي لا تقبله الراوترات.
    */
   onlineOrderAllocationExemptionId?: number;
-  /** تحويل حجز رسمي قائم: صاحب الحجز الأقدم لا تمنعه حجوزات soft اللاحقة، لكن
-   * تخصيصات الطلبات الإلكترونية تبقى محمية. داخلي ولا تقبله أي راوترات. */
-  exemptFormalReservationAllocations?: boolean;
+  /**
+   * مجموع الحجز الرسمي الجاري + الحجوزات الأحدث منه المسموح بتجاوزها وفق FIFO، بوحدة الأساس.
+   * يُطرح من formalReservationBase وحده (وبحدّه)، فلا يعفي حجزاً أقدم ولا تخصيص طلب إلكتروني.
+   */
+  formalReservationExemptionBase?: number;
 }
 export interface ApplyMovementResult {
   movementId: number;
@@ -177,9 +179,14 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   // (صفٌّ يُنشأ الآن = غير مُفتتَح بداهةً؛ واعتمادُ جردٍ افتتاحي متزامن يتسلسل على هذا القفل).
   const negativeAllowed = a.allowNegative || (a.allowNegativeUnopened === true && rows[0]?.openedAt == null);
 
-  const formalReservationExemption = a.exemptFormalReservationAllocations === true
-    ? (lockedAvailability?.formalReservationBase ?? 0)
+  const requestedFormalExemption = Number.isSafeInteger(a.formalReservationExemptionBase)
+    && Number(a.formalReservationExemptionBase) > 0
+    ? Number(a.formalReservationExemptionBase)
     : 0;
+  const formalReservationExemption = Math.min(
+    lockedAvailability?.formalReservationBase ?? 0,
+    requestedFormalExemption,
+  );
   const reservedBase = Math.max(0, (lockedAvailability?.reservedBase ?? 0) - formalReservationExemption);
   const availableAfterAllocations = Math.max(0, currentQty - reservedBase);
   if (
