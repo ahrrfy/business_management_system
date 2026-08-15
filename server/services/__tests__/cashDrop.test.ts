@@ -41,6 +41,18 @@ async function seedBase() {
     { id: MANAGER2, openId: "local_mgr2", name: "مدير الفرع٢", role: "manager", loginMethod: "local", branchId: 2 },
     { id: DISABLED_MANAGER, openId: "local_mgr_off", name: "مدير معطَّل", role: "manager", loginMethod: "local", branchId: 1, isActive: false },
   ]);
+  await d.insert(s.receipts).values([
+    {
+      branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-B1", createdBy: ADMIN,
+    },
+    {
+      branchId: 2, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-B2", createdBy: ADMIN,
+    },
+  ]);
 }
 
 /** إيصال درجٍ نقديّ (لتغذية رصيد الدرج) — بلا فاتورة (رصيد الدرج لا يبالي بالتصنيف). */
@@ -105,12 +117,12 @@ describe("createCashDrop — المسار السعيد والأثر", () => {
 });
 
 describe("createCashDrop — الحراسات", () => {
-  it("حدّ الدرج: سحبٌ أكثر من النقد المتاح ⇒ BAD_REQUEST بلا إيصالات", async () => {
+  it("حدّ الدرج: سحبٌ أكثر من النقد المتاح ⇒ PRECONDITION_FAILED بلا إيصالات", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "50000" }, { userId: CASHIER1, branchId: 1 });
     await drawerReceipt(shiftId, "IN", "10000.00"); // الدرج 60000
     await expect(
       createCashDrop({ shiftId, amount: "70000" }, { userId: CASHIER1, branchId: 1, role: "cashier" }),
-    ).rejects.toThrow(/أكثر من النقد في الدرج/);
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     const all = await db().select().from(s.receipts).where(and(eq(s.receipts.shiftId, shiftId), like(s.receipts.referenceNumber, "CD-%")));
     expect(all).toHaveLength(0);
   });

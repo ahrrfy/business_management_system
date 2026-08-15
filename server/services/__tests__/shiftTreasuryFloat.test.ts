@@ -101,6 +101,37 @@ describe("imprest — التمويل (fundTreasury)", () => {
     expect(await db().select().from(s.receipts)).toHaveLength(1);
   });
 
+  it("تمويلان متزامنان لنفس الخزينة يتسلسلان بلا deadlock ويجمعان الرصيد", async () => {
+    const actor = { userId: MANAGER1, branchId: 1, role: "manager" as const };
+    const results = await Promise.allSettled([
+      fundTreasury({
+        branchId: 1, amount: "100000", description: "تمويل متزامن أول",
+        clientRequestId: "fund-concurrent-1",
+      }, actor),
+      fundTreasury({
+        branchId: 1, amount: "200000", description: "تمويل متزامن ثانٍ",
+        clientRequestId: "fund-concurrent-2",
+      }, actor),
+    ]);
+
+    expect(results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : [])).toEqual([]);
+    for (const result of results) {
+      if (result.status === "rejected") {
+        expect(String(result.reason?.message ?? "")).not.toMatch(/DEADLOCK|Deadlock|ER_LOCK_DEADLOCK/);
+      }
+    }
+    expect((await dash(1)).treasury).toBe("300000.00");
+    const refs = (await db().select({ ref: s.receipts.referenceNumber }).from(s.receipts))
+      .map((row) => row.ref)
+      .sort();
+    expect(refs).toEqual([
+      expect.stringMatching(/^TF-1-\d{8}-0001$/),
+      expect.stringMatching(/^TF-1-\d{8}-0002$/),
+    ]);
+  });
+
   it("حوكمة: الكاشير مرفوض، والمدير لا يموّل فرعاً آخر", async () => {
     await expect(
       fundTreasury({ branchId: 1, amount: "1000", description: "x", clientRequestId: "g1" }, { userId: CASHIER1, branchId: 1, role: "cashier" }),
@@ -154,6 +185,28 @@ describe("imprest — فتح الوردية يسحب العهدة من الخز�
     expect(res.treasuryBalanceAfter).toBeNull();
     expect(await entriesOfType("SHIFT_FLOAT_OUT")).toHaveLength(0);
     expect((await dash(1)).treasury).toBe("0.00");
+  });
+
+  it("فتح ورديتين ممولتين متزامنتين في الفرع نفسه يتسلسل بلا deadlock", async () => {
+    await fundTreasury(
+      { branchId: 1, amount: "100000", description: "تمويل فتح متزامن", clientRequestId: "fund-open-race" },
+      { userId: MANAGER1, branchId: 1, role: "manager" },
+    );
+
+    const results = await Promise.allSettled([
+      openShift({ branchId: 1, openingBalance: "40000" }, { userId: CASHIER1, branchId: 1 }),
+      openShift({ branchId: 1, openingBalance: "40000" }, { userId: CASHIER2, branchId: 1 }),
+    ]);
+
+    expect(results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : [])).toEqual([]);
+    expect((await dash(1))).toMatchObject({ treasury: "20000.00", drawer: "80000.00", openShifts: 2 });
+    const floatReceipts = await db()
+      .select()
+      .from(s.receipts)
+      .where(and(eq(s.receipts.cashBucket, "TREASURY"), eq(s.receipts.direction, "OUT")));
+    expect(floatReceipts).toHaveLength(2);
   });
 });
 

@@ -31,6 +31,11 @@ async function seedBase() {
     { id: 2, openId: "m2", name: "مدير ب", role: "manager", loginMethod: "local" },
     { id: 3, openId: "a1", name: "المالك", role: "admin", loginMethod: "local", isOwner: true },
   ]);
+  await db().insert(s.receipts).values({
+    branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+    cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-FUND", createdBy: 3,
+  });
 }
 
 async function mkWallet(threshold = "0") {

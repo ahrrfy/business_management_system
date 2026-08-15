@@ -3,6 +3,7 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
 import { isCashier, rowsOf } from "./helpers";
 
 export interface DrawerBalanceRow {
@@ -122,7 +123,7 @@ export async function getDashboard(
         FROM branches b
         LEFT JOIN receipts r ON r.branchId = b.id
           AND r.cashBucket = 'TREASURY'
-          AND r.receiptStatus = 'COMPLETED'
+          AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
           AND r.receiptApprovalStatus = 'APPROVED'
         WHERE b.isActive = TRUE
           ${branchFilter}
@@ -144,17 +145,17 @@ export async function getDashboard(
   const branchFilterRaw = effectiveBranch != null ? sql`AND branchId = ${effectiveBranch}` : sql``;
   // العهدة الوسيطة (imprest): استبعاد إيصالات الحركة الداخلية من «مقبوضات اليوم» — CH- (تسليم/إرجاع
   // درج→خزينة)، CD- (سحب)، SF- (عهدة خزينة→درج)، CT- (تحويل بين فروع)، TF- (تمويل رأس مال)،
-  // CANCEL- (إلغاء تحويل). ليست قبضاً خارجياً؛ لولا استبعادها لحُسب نقد المبيعات مرّتين (بيع DRAWER IN
+  // CANCEL-CT- (إلغاء تحويل). CANCEL-VCH/EXP تعويض خارجي يجب ألّا يُخفى. ليست الحركة الداخلية قبضاً؛
   // ثم إرجاع TREASURY IN) كل إغلاق. أرصدة الدرج/الخزينة تبقى صحيحة (تُحسب من استعلاماتها الخاصّة).
   const todayReceipts = rowsOf(
     await db.execute(sql`
       SELECT CAST(COALESCE(SUM(amount), 0) AS CHAR) AS total
       FROM receipts
       WHERE direction = 'IN'
-        AND receiptStatus = 'COMPLETED'
+        AND receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND receiptApprovalStatus = 'APPROVED'
         AND DATE(createdAt) = CURDATE()
-        AND COALESCE(referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
+        AND COALESCE(referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         ${branchFilterRaw}
     `),
   );

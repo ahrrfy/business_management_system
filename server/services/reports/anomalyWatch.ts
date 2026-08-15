@@ -21,6 +21,7 @@ import Decimal from "decimal.js";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { localDayStart, localNextDayStart } from "../dateRange";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
 
 /* ── عتبات الأعلام (ثوابت مسماة — الجداول تعرض الجميع والعلم يرتّب لا يحجب) ── */
 /** مضاعف متوسط النطاق: يُعلَّم الكاشير إذا بلغت نسبته ≥ المضاعف × متوسط كل الكاشيرية بالفترة. */
@@ -583,7 +584,8 @@ export async function getAnomalyWatch(opts: {
         SUM(CASE WHEN r.paymentMethod = 'TELECOM' THEN 1 ELSE 0 END) AS telecomCount
       FROM receipts r
       LEFT JOIN users u ON u.id = r.createdBy
-      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED'
+      WHERE r.direction = 'IN' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND r.receiptApprovalStatus = 'APPROVED'
         AND r.createdAt >= ${fromTs} AND r.createdAt < ${toTs}
         ${branchReceipt}
       GROUP BY r.createdBy, u.name
@@ -631,7 +633,8 @@ export async function getAnomalyWatch(opts: {
       FROM receipts r
       JOIN invoices i ON i.id = r.invoiceId
       LEFT JOIN users u ON u.id = r.createdBy
-      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED'
+      WHERE r.direction = 'IN' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
+        AND r.receiptApprovalStatus = 'APPROVED'
         AND r.voucherNumber IS NULL
         AND i.createdBy IS NOT NULL AND r.createdBy IS NOT NULL AND i.createdBy <> r.createdBy
         AND r.createdAt >= ${fromTs} AND r.createdAt < ${toTs}

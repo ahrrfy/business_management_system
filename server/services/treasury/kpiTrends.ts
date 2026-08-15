@@ -5,6 +5,7 @@ import { money, toDbMoney } from "../money";
 import { isCashier, rowsOf } from "./helpers";
 import { getDashboard } from "./dashboard";
 import { utcTodayStart } from "../businessDay";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
 
 export interface KpiTrendPoint {
   current: string;
@@ -43,9 +44,9 @@ async function fetchDailySparkline(
     q = sql`
       SELECT DATE(r.createdAt) AS day, CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'IN'
+      WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'IN'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
-        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         ${branchFilter}
         ${bucketFilter}
       GROUP BY DATE(r.createdAt) ORDER BY day ASC
@@ -54,9 +55,9 @@ async function fetchDailySparkline(
     q = sql`
       SELECT DATE(r.createdAt) AS day, CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'OUT'
+      WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'OUT'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
-        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         ${branchFilter}
         ${bucketFilter}
       GROUP BY DATE(r.createdAt) ORDER BY day ASC
@@ -118,9 +119,9 @@ export async function getKpiTrends(
     await db.execute(sql`
       SELECT CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
+      WHERE r.direction = 'IN' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) = CURDATE()
-        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         ${branchFilterR} ${bucketFilterR}
     `),
   );
@@ -128,9 +129,9 @@ export async function getKpiTrends(
     await db.execute(sql`
       SELECT CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
+      WHERE r.direction = 'IN' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         ${branchFilterR} ${bucketFilterR}
     `),
   );
@@ -182,7 +183,7 @@ export async function getKpiTrends(
       await db.execute(sql`
         SELECT CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END), 0) AS CHAR) AS amount
         FROM receipts r
-        WHERE r.cashBucket = 'TREASURY' AND r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
+        WHERE r.cashBucket = 'TREASURY' AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL} AND r.receiptApprovalStatus = 'APPROVED'
           AND DATE(r.createdAt) < CURDATE()
           ${branchFilterR}
       `),

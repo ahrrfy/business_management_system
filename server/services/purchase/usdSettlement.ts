@@ -11,6 +11,7 @@ import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../l
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import type { SettlePurchaseUsdDirectInput } from "./types";
+import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 
 export async function settlePurchaseUsdDirect(
   input: SettlePurchaseUsdDirectInput,
@@ -72,6 +73,10 @@ export async function settlePurchaseUsdDirect(
     const fxDiff = carryingIqd.minus(chargedIqd);
     const cashOut = round2(chargedIqd.plus(feeIqd));
 
+    assertNonPhysicalOutReceipt({
+      classification: "NON_CASH_METHOD", paymentMethod: input.method, cashBucket: null,
+      operation: "تسديد فاتورة المورد الدولارية بوسيلة غير نقدية",
+    });
     const receiptRes = await tx.insert(receipts).values({
       branchId: Number(po.branchId),
       shiftId: null,

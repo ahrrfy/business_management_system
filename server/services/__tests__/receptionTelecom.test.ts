@@ -418,6 +418,11 @@ describe("T12 — إصلاح المراجعة: قفل تقادم المطابق�
 
 describe("T13 — قرار مالك ٦/٨: مرتجع فاتورةٍ مدفوعة زيناً يُستردّ نقداً", () => {
   it("بيع 2,000 زيناً ثم مرتجع كامل باسترداد CASH ⇒ إيصال OUT نقديّ من الدرج والمشتقّ لا يُمسّ؛ وCARD يبقى سقفه صفراً", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "10000.00",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-T13-OPENING-FUND", createdBy: 1,
+    });
     const shift = await openReceptionWithFloat(2, "10000.00");
     const p = await promoteDraft({ branchId: 1, header: { customerId: 1 }, lines: [GOODS_LINE] }, CASHIER);
     const r = await commitDraft({
@@ -472,11 +477,22 @@ describe("T8 — D9: تركّز رصيد زين لدى موظف", () => {
       { draftId: p.draftId, amount: "100000.00", method: "CASH", clientRequestId: uuid("t8c00002") },
       CASHIER,
     );
+    await db().insert(s.receipts).values([
+      {
+        branchId: 1, shiftId: shift.shiftId, cashBucket: null, direction: "IN", amount: "900000.00",
+        paymentMethod: "TELECOM", status: "COMPLETED", approvalStatus: "PENDING_APPROVAL", createdBy: 2,
+      },
+      {
+        branchId: 1, shiftId: shift.shiftId, cashBucket: null, direction: "IN", amount: "800000.00",
+        paymentMethod: "TELECOM", status: "COMPLETED", approvalStatus: "REJECTED", createdBy: 2,
+      },
+    ]);
     const today = new Date().toISOString().slice(0, 10);
     const aw = await getAnomalyWatch({ from: today, to: today, branchId: 1 });
     const row = aw.telecomShares.rows.find((x) => x.userId === 2);
     expect(row).toBeTruthy();
     expect(Number(row!.telecomIn)).toBe(150000);
+    expect(Number(row!.totalIn)).toBe(250000);
     expect(row!.flagged).toBe(true);
     expect(aw.kpis.flaggedTelecomCollectors).toBe(1);
     // للنظافة: أغلق الوردية (نقد 100,000 وحده في الدرج).

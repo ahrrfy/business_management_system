@@ -18,6 +18,7 @@ const APPROVER = { userId: 2, branchId: 1 };
 
 const TABLES = [
   "accountingEntries",
+  "receipts",
   "payrollItems",
   "payrollRuns",
   "attendance",
@@ -48,6 +49,18 @@ async function seedBase() {
   await d.insert(s.users).values([
     { id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1 },
     { id: 2, openId: "test-approver", name: "مدقّق", role: "manager", branchId: 1 },
+  ]);
+  await d.insert(s.receipts).values([
+    {
+      branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-B1", createdBy: 1,
+    },
+    {
+      branchId: 2, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-B2", createdBy: 1,
+    },
   ]);
 }
 beforeEach(async () => {

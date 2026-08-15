@@ -30,12 +30,11 @@ import {
   productVariants,
   receipts,
 } from "../../../drizzle/schema";
-import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
-import { money, round2, toDbMoney } from "../money";
+import { money, round2 } from "../money";
 import { returnSaleInTx } from "../returnService";
-import { computeExpectedCash, resolveBranchCashShiftTx, openShiftIdTx } from "../shiftService";
+import { resolveBranchCashShiftTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
 import { createSaleInTx } from "./create";
 import type { PriceTier } from "../pricing";
@@ -263,47 +262,17 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
 
     // ── ٩) الفرق الزائد (overpay): المقبوض سلفاً > مستحقّ المصحّح ⇒ يُردّ/يُرصَّد ──
     const overpay = round2(Decimal.max(new Decimal(0), detachedSum.minus(newTotal)));
-    let overpayHandled: "CREDIT" | "CASH_REFUND" | undefined;
+    // المرحلة الحالية تمنع أي أصل عليه مقبوضات (`originalPaid > 0`) قبل العكس، وتثبت
+    // detachedSum===originalPaid؛ لذلك overpay موجب غير قابل للوصول بنيوياً. إبقاء كاتب CASH OUT
+    // خامد هنا يفتح باباً غير مرتب الأقفال إذا رُفعت السياسة لاحقاً. نفشل مغلقاً، وعلى شريحة
+    // paymentApplications المستقبلية أن تعيد بناء الاسترداد بترتيب source→customer→document.
     if (overpay.gt(0)) {
-      const mode = input.overpayHandling ?? "CASH_REFUND";
-      const creditCustomerId = input.customerId ?? originalCustomerId;
-      if (mode === "CREDIT" && creditCustomerId == null) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد الدائن يتطلّب عميلاً مسجَّلاً — اختر استرداداً نقدياً للعميل العابر" });
-      }
-      if (mode === "CASH_REFUND") {
-        const resolved = await resolveBranchCashShiftTx(tx, Number(inv.branchId), input.overpayRefundShiftId ?? null);
-        const drawerCash = await computeExpectedCash(tx, resolved.shiftId, resolved.openingBalance);
-        if (overpay.gt(drawerCash)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: `الفرق الزائد (${overpay.toFixed(2)}) يتجاوز النقد المتوفّر في هذا الدرج (${drawerCash.toFixed(2)}) — اختر درجاً آخر أو رصيداً دائناً` });
-        }
-        const rRes = await tx.insert(receipts).values({
-          invoiceId: newId, branchId: Number(inv.branchId), shiftId: resolved.shiftId,
-          cashBucket: "DRAWER", direction: "OUT", amount: toDbMoney(overpay), paymentMethod: "CASH",
-          status: "COMPLETED", createdBy: actor.userId,
-        });
-        await postEntry(tx, {
-          entryType: "PAYMENT_OUT", branchId: Number(inv.branchId), invoiceId: newId,
-          receiptId: extractInsertId(rRes), customerId: creditCustomerId, amount: overpay,
-          notes: `استرداد فرقٍ زائد — تصحيح فاتورة #${input.originalInvoiceId}`,
-        });
-        overpayHandled = "CASH_REFUND";
-      } else {
-        // رصيد دائن: إيصال OUT بلا مسٍّ للدرج (cashBucket=null) + خفض ذمّة العميل (رصيدٌ لصالحه).
-        const shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
-        const rRes = await tx.insert(receipts).values({
-          invoiceId: newId, branchId: Number(inv.branchId), shiftId,
-          cashBucket: null, direction: "OUT", amount: toDbMoney(overpay), paymentMethod: "CASH",
-          status: "COMPLETED", createdBy: actor.userId,
-        });
-        await postEntry(tx, {
-          entryType: "PAYMENT_OUT", branchId: Number(inv.branchId), invoiceId: newId,
-          receiptId: extractInsertId(rRes), customerId: creditCustomerId, amount: overpay,
-          notes: `فرقٌ زائد مُحوَّل رصيداً دائناً — تصحيح فاتورة #${input.originalInvoiceId}`,
-        });
-        await adjustCustomerBalance(tx, creditCustomerId!, overpay.neg());
-        overpayHandled = "CREDIT";
-      }
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "خرق ثابت التصحيح: نشأ فرق زائد رغم حظر نقل المقبوضات",
+      });
     }
+    const overpayHandled: "CREDIT" | "CASH_REFUND" | undefined = undefined;
 
     // ── ١٠) تسجيل مفتاح idempotency (refId = الفاتورة الجديدة) ──
     if (input.clientRequestId) {

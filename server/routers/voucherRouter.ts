@@ -45,10 +45,10 @@ const voucherListFilters = z.object({
 type VoucherListFilters = z.infer<typeof voucherListFilters>;
 
 export const voucherRouter = router({
-  /** عَتبة النظام (للتعرّض في الواجهة: تَلميح «هذا المبلغ يَحتاج اعتماد مدير ثانٍ»).
-   *  لا عَتبة مُرفق — المُرفق اختياريّ دائماً (٣١/٧). */
+  /** معلومات حوكمة الواجهة. العتبة تخص سياسة القبض القائمة؛ كل سند صرف يحتاج اعتماداً. */
   thresholds: treasuryManagerReadProcedure.query(() => ({
     approval: getApprovalThreshold(),
+    allPaymentsRequireApproval: true,
   })),
 
   create: treasuryManagerProcedure
@@ -125,12 +125,14 @@ export const voucherRouter = router({
         branchId: Number(ctx.user.branchId),
         role: ctx.user.role,
       });
-      await logAudit(ctx, {
-        action: "voucher.approve",
-        entityType: "receipt",
-        entityId: input.receiptId,
-        newValue: { voucherNumber: res.voucherNumber, signatureHash: res.signatureHash },
-      });
+      if (!res.replayed) {
+        await logAudit(ctx, {
+          action: "voucher.approve",
+          entityType: "receipt",
+          entityId: input.receiptId,
+          newValue: { voucherNumber: res.voucherNumber, signatureHash: res.signatureHash, approvalAuthority: "OWNER" },
+        });
+      }
       return res;
     }),
 

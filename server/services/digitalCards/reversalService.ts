@@ -31,6 +31,7 @@ import {
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
+import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
@@ -57,6 +58,61 @@ function assertManager(actor: Actor): void {
   if (actor.role !== "admin" && actor.role !== "manager") {
     throw new TRPCError({ code: "FORBIDDEN", message: "عكس بيع الكروت قرارٌ مديريّ" });
   }
+}
+
+async function prelockCashReversal(
+  tx: Tx,
+  input: { invoiceId: number; detailIds: number[] },
+  actor: Actor,
+  lockPrepaidWallets: boolean,
+): Promise<{ branchId: number; customerId: number | null; walletIds: Set<number> }> {
+  const [previewInvoice] = await tx
+    .select({ branchId: invoices.branchId, customerId: invoices.customerId })
+    .from(invoices)
+    .where(eq(invoices.id, input.invoiceId))
+    .limit(1);
+  if (!previewInvoice) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+  const branchId = Number(previewInvoice.branchId);
+  if (actor.role !== "admin" && branchId !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخصّ فرعاً آخر" });
+  }
+
+  let walletIds = new Set<number>();
+  if (lockPrepaidWallets) {
+    const previews = await tx
+      .select({ walletTransactionId: digitalSaleDetails.walletTransactionId })
+      .from(digitalSaleDetails)
+      .where(and(eq(digitalSaleDetails.invoiceId, input.invoiceId), inArray(digitalSaleDetails.id, input.detailIds)));
+    if (previews.length !== input.detailIds.length) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "بعض بنود الكروت غير موجودة في هذه الفاتورة" });
+    }
+    const transactionIds = previews.flatMap((row) =>
+      row.walletTransactionId == null ? [] : [Number(row.walletTransactionId)],
+    );
+    if (transactionIds.length > 0) {
+      const originals = await tx
+        .select({ walletId: digitalWalletTransactions.walletId })
+        .from(digitalWalletTransactions)
+        .where(inArray(digitalWalletTransactions.id, transactionIds));
+      walletIds = new Set(originals.map((row) => Number(row.walletId)));
+    }
+  }
+
+  await lockCashSourceForUpdate(tx, { branchId, cashBucket: "TREASURY" });
+  for (const walletId of Array.from(walletIds).sort((a, b) => a - b)) {
+    const [wallet] = await tx
+      .select({ id: digitalWallets.id })
+      .from(digitalWallets)
+      .where(eq(digitalWallets.id, walletId))
+      .for("update")
+      .limit(1);
+    if (!wallet) throw new TRPCError({ code: "NOT_FOUND", message: "المحفظة غير موجودة" });
+  }
+  return {
+    branchId,
+    customerId: previewInvoice.customerId != null ? Number(previewInvoice.customerId) : null,
+    walletIds,
+  };
 }
 
 /**
@@ -105,6 +161,12 @@ async function refundAndPostReturn(
   },
   actor: Actor,
 ): Promise<number> {
+  await assertCashOutAvailable(tx, {
+    branchId: opts.branchId,
+    cashBucket: "TREASURY",
+    amount: opts.sell,
+    operation: "استرداد بيع الكروت الرقمية",
+  });
   const receiptRes = await tx.insert(receipts).values({
     invoiceId: opts.invoiceId,
     branchId: opts.branchId,
@@ -161,12 +223,17 @@ export async function approveReversal(
   const reason = input.reason.trim();
   if (!reason) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب العكس مطلوب" });
 
+  const prelocked = await prelockCashReversal(tx, input, actor, true);
+
   const [inv] = await tx
     .select({ id: invoices.id, branchId: invoices.branchId, customerId: invoices.customerId })
     .from(invoices)
     .where(eq(invoices.id, input.invoiceId))
     .for("update");
   if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+  if (Number(inv.branchId) !== prelocked.branchId) {
+    throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء العكس — أعد المحاولة" });
+  }
   // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير لا يعكس بيع فرعٍ آخر.
   if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخصّ فرعاً آخر" });
@@ -206,6 +273,9 @@ export async function approveReversal(
         .limit(1);
       if (!orig) throw new TRPCError({ code: "NOT_FOUND", message: "حركة المحفظة الأصلية غير موجودة" });
       const wid = Number(orig.walletId);
+      if (!prelocked.walletIds.has(wid)) {
+        throw new TRPCError({ code: "CONFLICT", message: "تغيّرت محفظة بند الكرت أثناء العكس — أعد المحاولة" });
+      }
       prepaidByWallet.set(wid, (prepaidByWallet.get(wid) ?? money(0)).plus(amount));
     } else {
       const pid = Number(d.providerId);
@@ -387,12 +457,17 @@ export async function lossRefund(
 ): Promise<{ invoiceId: number; reversed: number; refunded: string; loss: string; outcome: ReversalOutcome }> {
   assertManager(actor);
 
+  const prelocked = await prelockCashReversal(tx, input, actor, false);
+
   const [inv] = await tx
     .select({ id: invoices.id, branchId: invoices.branchId, customerId: invoices.customerId })
     .from(invoices)
     .where(eq(invoices.id, input.invoiceId))
     .for("update");
   if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+  if (Number(inv.branchId) !== prelocked.branchId) {
+    throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء ردّ الخسارة — أعد المحاولة" });
+  }
   // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط يعبُران (owner مُطبَّع ⇒ admin)؛ المدير لا يعكس بيع فرعٍ آخر.
   if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة تخصّ فرعاً آخر" });

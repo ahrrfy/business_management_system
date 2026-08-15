@@ -6,12 +6,15 @@ import { getDb } from "../../db";
 import { purchaseReturnsRouter } from "../../routers/purchaseReturns";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
+import { createVoucher } from "../voucher/create";
+import { approveVoucher } from "../voucher/approval";
 
 const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
   "accountingEntries",
   "receipts",
+  "idempotencyKeys",
   "inventoryMovements",
   "branchStock",
   "purchaseOrderItems",
@@ -42,7 +45,10 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
+    { id: 2, openId: "local_owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true, isActive: true },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "0.00" });
   await d.insert(s.productUnits).values([
@@ -50,6 +56,21 @@ async function seedBase() {
     { id: 2, variantId: 1, unitName: "درزن", conversionFactor: "12", isBaseUnit: false },
   ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+}
+
+async function fundTreasury(amount = "5000.00") {
+  await db().insert(s.receipts).values({
+    branchId: 1,
+    shiftId: null,
+    cashBucket: "TREASURY",
+    direction: "IN",
+    amount,
+    paymentMethod: "CASH",
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    referenceNumber: `PURCHASE-RETURN-FUND-${crypto.randomUUID()}`,
+    createdBy: 1,
+  });
 }
 
 async function stockOf(variantId: number, branchId: number): Promise<number> {
@@ -157,6 +178,7 @@ describe("مرتجع المشتريات", () => {
   });
 
   it("إرجاع نقدي (CASH): receipt IN + قيد PAYMENT_IN + الذمم تظل ثابتة صافياً (الصندوق ارتفع بدلها)", async () => {
+    await fundTreasury();
     const poId = await receivePurchaseOf100("500.00");
     const supBefore = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(supBefore.currentBalance).toBe("0.00");
@@ -174,7 +196,7 @@ describe("مرتجع المشتريات", () => {
     );
 
     // receipt IN بالقيمة الكاملة (المورد ردّ النقد)
-    const rcs = (await db().select().from(s.receipts)).filter((r) => r.direction === "IN");
+    const rcs = (await db().select().from(s.receipts)).filter((r) => r.direction === "IN" && r.referenceNumber == null);
     expect(rcs).toHaveLength(1);
     expect(rcs[0].amount).toBe("100.00");
 
@@ -188,6 +210,75 @@ describe("مرتجع المشتريات", () => {
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(sup.currentBalance).toBe("0.00");
   });
+
+  it("استرداد نقدي واستلام نقدي لنفس أمر الشراء يتسلسلان source→PO بلا deadlock", async () => {
+    await fundTreasury("2000.00");
+    const po = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      status: "CONFIRMED",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "200", unitPrice: "5.00" }],
+    }, actor);
+    const item = (await db().select().from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+    await receivePurchase({
+      purchaseOrderId: po.purchaseOrderId,
+      lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 100 }],
+      payment: { amount: "500.00", method: "CASH" },
+    }, actor);
+
+    const results = await Promise.allSettled([
+      createPurchaseReturn({
+        clientRequestId: "purchase-return-vs-receive",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: po.purchaseOrderId,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "20", unitPrice: "5.00" }],
+        settlement: "CASH",
+        paymentMethod: "CASH",
+      }, actor),
+      receivePurchase({
+        purchaseOrderId: po.purchaseOrderId,
+        lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 100 }],
+        payment: { amount: "500.00", method: "CASH" },
+      }, actor),
+    ]);
+
+    expect(results.filter((result) => result.status === "rejected")).toEqual([]);
+    expect(await stockOf(1, 1)).toBe(180);
+  }, 15_000);
+
+  it("استرداد نقدي واعتماد سند للمورد نفسه يتسلسلان source→supplier بلا deadlock", async () => {
+    await fundTreasury("2000.00");
+    const poId = await receivePurchaseOf100("500.00");
+    await db().update(s.suppliers).set({ currentBalance: "500.00" }).where(eq(s.suppliers.id, 1));
+    const voucher = await createVoucher({
+      voucherType: "PAYMENT",
+      branchId: 1,
+      amount: "100.00",
+      paymentMethod: "CASH",
+      partyType: "SUPPLIER",
+      partyId: 1,
+      description: "سند متزامن مع مرتجع شراء نقدي",
+      clientRequestId: "purchase-return-voucher",
+    }, actor);
+
+    const results = await Promise.allSettled([
+      createPurchaseReturn({
+        clientRequestId: "purchase-return-vs-voucher",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: poId,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "20", unitPrice: "5.00" }],
+        settlement: "CASH",
+        paymentMethod: "CASH",
+      }, actor),
+      approveVoucher(voucher.receiptId, { userId: 2, branchId: 1, role: "manager" }),
+    ]);
+
+    expect(results.filter((result) => result.status === "rejected")).toEqual([]);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("400.00");
+  }, 15_000);
 
   it("إرجاع CASH بلا أمر شراء ودفعة موثقة ⇒ يُرفض ولا يترك أثراً", async () => {
     await receivePurchaseOf100();

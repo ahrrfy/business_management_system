@@ -5,6 +5,7 @@ import { assetCustodyLog, branches, employees, fixedAssets, kioskDevices, receip
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { money, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { companyBranchScope, resolveTargetBranch } from "../companyBranchScope";
@@ -103,6 +104,18 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
         });
         await adjustSupplierBalance(tx, input.supplierId, value);
       } else {
+        if (acqBranch == null) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "شراء أصل نقداً يتطلب فرعاً محدداً لخزينة الصرف",
+          });
+        }
+        await assertCashOutAvailable(tx, {
+          branchId: acqBranch,
+          cashBucket: "TREASURY",
+          amount: value,
+          operation: "شراء الأصل نقداً",
+        });
         const rRes = await tx.insert(receipts).values({
           branchId: acqBranch, cashBucket: "TREASURY", direction: "OUT",
           amount: toDbMoney(value), paymentMethod: "CASH", status: "COMPLETED", createdBy: actor.userId,

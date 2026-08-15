@@ -8,6 +8,7 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "./cash/cashAvailability";
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -96,12 +97,12 @@ export async function getTreasurySummary(opts: {
       SELECT r.direction AS direction, r.paymentMethod AS method,
              CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.receiptStatus = 'COMPLETED'
+      WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) >= ${opts.from} AND DATE(r.createdAt) <= ${opts.to}
-        -- العهدة الوسيطة: استبعاد الحركة الداخلية (CH-/CD-/SF-/CT-/TF-/CANCEL-) من totalIn/totalOut
+        -- العهدة الوسيطة: استبعاد الحركة الداخلية وإلغاء التحويل فقط؛ CANCEL-VCH/EXP أثر تعويضي خارجي.
         -- (نقلٌ بين الدلاء/الفروع أو رأس مال، لا قبض/صرف تشغيليّ ⇒ يمنع ازدواج نقد المبيعات).
-        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF|CANCEL)-'
+        AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
         ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
       GROUP BY r.direction, r.paymentMethod
     `),
@@ -402,7 +403,7 @@ export async function getCashOrphansReport(opts: {
       LEFT JOIN users u ON u.id = r.createdBy
       WHERE r.shiftId IS NULL
         AND r.paymentMethod = 'CASH'
-        AND r.receiptStatus = 'COMPLETED'
+        AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND r.receiptApprovalStatus = 'APPROVED'
         ${opts.from ? sql`AND DATE(r.createdAt) >= ${opts.from}` : sql``}
         ${opts.to ? sql`AND DATE(r.createdAt) <= ${opts.to}` : sql``}

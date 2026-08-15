@@ -7,7 +7,7 @@ import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledg
 import { money, toDbMoney } from "../money";
 import { getActiveLock } from "../periodLockService";
 import { type Actor, withTx } from "../tx";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { assertBranchOwnership } from "./helpers";
 
 export interface CancelVoucherResult {
@@ -31,11 +31,35 @@ export interface CancelVoucherResult {
  */
 export async function cancelVoucher(receiptId: number, actor: Actor): Promise<CancelVoucherResult> {
   return withTx(async (tx) => {
+    const [preview] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).limit(1);
+    if (!preview || preview.voucherNumber == null) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+    }
+    const previewBucket = preview.cashBucket as "DRAWER" | "TREASURY" | null;
+    const materialCash = preview.paymentMethod === "CASH" && previewBucket != null;
+    const reversesCashIn = preview.direction === "IN" && materialCash;
+    if (materialCash) {
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(preview.branchId),
+        cashBucket: previewBucket,
+        shiftId: preview.shiftId != null ? Number(preview.shiftId) : null,
+      });
+    }
     const r = (
       await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
     )[0];
     if (!r || r.voucherNumber == null) {
       throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+    }
+    if (
+      materialCash &&
+      (
+        r.paymentMethod !== "CASH" || r.direction !== preview.direction ||
+        r.cashBucket !== previewBucket || Number(r.branchId) !== Number(preview.branchId) ||
+        Number(r.shiftId ?? 0) !== Number(preview.shiftId ?? 0)
+      )
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر مصدر السند النقدي أثناء الإلغاء — أعد المحاولة" });
     }
     // تدقيق ١٧/٧: السند المستقل قد يُربَط توثيقياً بفاتورة بيع (ميزة ٥/٧، receipts.invoiceId) — والربط
     // توثيقيٌّ بحت لا يمسّ invoice.paidAmount (createVoucher يُخزّن الرابط فقط)، فعكسه آمنٌ بمرآة الإنشاء

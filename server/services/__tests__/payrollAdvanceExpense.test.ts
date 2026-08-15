@@ -15,6 +15,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { approveRun, cancelRun, generatePayroll, payRun } from "../payrollService";
 import { grantAdvance } from "../advancesService";
+import { approveVoucher } from "../voucher/approval";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -39,7 +40,15 @@ async function payrollExpense(): Promise<number> {
 /** صافي أثر الخزينة من إيصالات الرواتب (OUT سالب، IN موجب). */
 async function treasuryDelta(): Promise<number> {
   const rows = await db().select().from(s.receipts).where(eq(s.receipts.cashBucket, "TREASURY"));
-  return rows.reduce((sum, r) => sum + (r.direction === "OUT" ? -Number(r.amount) : Number(r.amount)), 0);
+  return rows
+    .filter((r) => r.referenceNumber !== "TEST-TREASURY-FUND")
+    .reduce((sum, r) => sum + (r.direction === "OUT" ? -Number(r.amount) : Number(r.amount)), 0);
+}
+
+async function grantAndApproveAdvance(input: Parameters<typeof grantAdvance>[0]) {
+  const pending = await grantAdvance(input, MAKER as never);
+  await approveVoucher(Number(pending.receiptId), CHECKER as never);
+  return pending;
 }
 
 beforeEach(async () => {
@@ -61,8 +70,13 @@ beforeEach(async () => {
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values([
     { id: 1, openId: "a", name: "مُولِّد", role: "admin", loginMethod: "local" },
-    { id: 9, openId: "b", name: "معتمِد", role: "admin", loginMethod: "local" },
+    { id: 9, openId: "b", name: "معتمِد", role: "admin", loginMethod: "local", isOwner: true },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
+    cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+    referenceNumber: "TEST-TREASURY-FUND", createdBy: 9,
+  });
   await d.insert(s.employees).values({
     id: 1, firstName: "أحمد", lastName: "الجبوري", payType: "monthly", salary: "1000000", allowances: "0",
     employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2025-01-01",
@@ -71,9 +85,8 @@ beforeEach(async () => {
 
 describe("مصروف الرواتب مع السلف", () => {
   it("م١+م٢) المصروف = الصافي + استرداد السلفة، والخزينة تنقص بالصافي فقط", async () => {
-    await grantAdvance(
+    await grantAndApproveAdvance(
       { employeeId: 1, branchId: 1, amount: "200000", monthlyDeduction: "200000", clientRequestId: "adv-x" },
-      MAKER as never,
     );
     const treasuryAfterGrant = await treasuryDelta();
     expect(treasuryAfterGrant).toBe(-200000); // خرج نقد السلفة
@@ -94,9 +107,8 @@ describe("مصروف الرواتب مع السلف", () => {
   });
 
   it("م٣) عكس الدفع يعكس القيدين ⇒ صافي الدفتر صفر", async () => {
-    await grantAdvance(
+    await grantAndApproveAdvance(
       { employeeId: 1, branchId: 1, amount: "200000", monthlyDeduction: "200000", clientRequestId: "adv-y" },
-      MAKER as never,
     );
     const run = await generatePayroll(PERIOD, MAKER as never);
     await approveRun(Number(run.id), CHECKER as never);

@@ -7,6 +7,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { openShiftIdTx } from "../shiftService";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
 import type { PaymentMethod } from "./types";
@@ -76,9 +77,41 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       }
     }
 
+    const amount = money(input.amount);
+    const paymentReference = input.reference?.trim() || null;
+    if (input.method !== "CASH" && !paymentReference) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+    }
+    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+
+    // ترتيب الأقفال العام يشمل CASH IN: source→document→receipt. إلغاء/مرتجع الفاتورة
+    // يحتاج المصدر أولاً كي يرد النقد؛ إبقاء الدفع invoice→shift يصنع دورة معه.
+    const invPreview = (
+      await tx.select({ branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1)
+    )[0];
+    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (input.enforceBranchId != null && Number(invPreview.branchId) !== input.enforceBranchId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا تملك صلاحية على فاتورة فرع آخر" });
+    }
+    let prelockedShiftId: number | null = null;
+    if (input.method === "CASH") {
+      prelockedShiftId = input.shiftId ?? await openShiftIdTx(tx, actor.userId, Number(invPreview.branchId));
+      if (prelockedShiftId == null) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يَلزم وردية مفتوحة للبيع النقدي" });
+      }
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(invPreview.branchId),
+        cashBucket: "DRAWER",
+        shiftId: prelockedShiftId,
+      });
+    }
+
     const rows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = rows[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    if (Number(inv.branchId) !== Number(invPreview.branchId)) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء الدفع؛ أعد المحاولة" });
+    }
     // عزل الفرع: غير المدير لا يدفع على فاتورة فرع آخر (منع IDOR).
     if (input.enforceBranchId != null && Number(inv.branchId) !== input.enforceBranchId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا تملك صلاحية على فاتورة فرع آخر" });
@@ -89,12 +122,6 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     if (inv.status === "PAID") {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة مدفوعة بالكامل" });
     }
-    const amount = money(input.amount);
-    const paymentReference = input.reference?.trim() || null;
-    if (input.method !== "CASH" && !paymentReference) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
-    }
-    if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
     const remaining = money(inv.total)
       .minus(money(inv.returnedTotal ?? "0"))
       .minus(money(inv.paidAmount));
@@ -109,7 +136,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     }
 
     // إن مُرِّر shiftId: تَحقّق من حالة الوردية وملكيتها (M5 + M9).
-    if (input.shiftId != null) {
+    if (input.method === "CASH" && input.shiftId != null) {
       const sRows = await tx
         .select()
         .from(shifts)
@@ -144,14 +171,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       }
     }
     // انسب الدفع النقدي لوردية الموظّف المفتوحة إن لم يُمرَّر صراحةً (تسوية الصندوق).
-    const shiftId = input.shiftId ?? (await openShiftIdTx(tx, actor.userId, Number(inv.branchId)));
-    // M5/M8: النقد يَستوجب وردية مفتوحة (سواء مُرِّرت صراحةً أو حُلّت من المستخدم).
-    if (input.method === "CASH" && shiftId == null) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "يَلزم وردية مفتوحة للبيع النقدي",
-      });
-    }
+    const shiftId = prelockedShiftId;
     if (input.preInsertCheck) await input.preInsertCheck(tx);
     const rRes = await tx.insert(receipts).values({
       invoiceId: input.invoiceId,

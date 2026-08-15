@@ -4,6 +4,7 @@ import { eq, like, sql } from "drizzle-orm";
 import { accountingEntries, branches, employees, fixedAssets, kioskDevices, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { money, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { companyBranchScope, resolveTargetBranch } from "../companyBranchScope";
@@ -109,9 +110,16 @@ export async function updateAsset(id: number, input: UpdateAssetInput, actor: Ac
             dedupeKey: `ASSET_ACQREV:${id}:${seq}`, notes: `عكس اقتناء أصل ${a.code ?? id} (تعديل)`,
           });
         } else {
+          if (oldBranchId == null) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: "عكس اقتناء الأصل النقدي يتطلب فرع الاقتناء القديم",
+            });
+          }
           const rRes = await tx.insert(receipts).values({
             branchId: oldBranchId, cashBucket: "TREASURY", direction: "IN",
-            amount: toDbMoney(oldVal), paymentMethod: "CASH", status: "COMPLETED", createdBy: uid,
+            amount: toDbMoney(oldVal), paymentMethod: "CASH", status: "COMPLETED",
+            approvalStatus: "APPROVED", createdBy: uid,
           });
           await postEntry(tx, {
             entryType: "PAYMENT_OUT", branchId: oldBranchId, receiptId: extractInsertId(rRes), amount: oldVal.neg(),
@@ -130,9 +138,24 @@ export async function updateAsset(id: number, input: UpdateAssetInput, actor: Ac
           });
           await adjustSupplierBalance(tx, newSup, newVal);
         } else {
+          if (targetBranchId == null) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: "إعادة اقتناء الأصل نقداً تتطلب فرعاً محدداً لخزينة الصرف",
+            });
+          }
+          // العكس النقدي القديم (إن وُجد) كُتب أولاً داخل المعاملة؛ لذلك الحارس يرى
+          // الرصيد الحالي الحقيقي ويمنع supplier→cash غير الممول بلا رفض cash→cash ممول بصافيه.
+          await assertCashOutAvailable(tx, {
+            branchId: targetBranchId,
+            cashBucket: "TREASURY",
+            amount: newVal,
+            operation: "إعادة اقتناء الأصل نقداً",
+          });
           const rRes = await tx.insert(receipts).values({
             branchId: targetBranchId, cashBucket: "TREASURY", direction: "OUT",
-            amount: toDbMoney(newVal), paymentMethod: "CASH", status: "COMPLETED", createdBy: uid,
+            amount: toDbMoney(newVal), paymentMethod: "CASH", status: "COMPLETED",
+            approvalStatus: "APPROVED", createdBy: uid,
           });
           await postEntry(tx, {
             entryType: "PAYMENT_OUT", branchId: targetBranchId, receiptId: extractInsertId(rRes), amount: newVal,

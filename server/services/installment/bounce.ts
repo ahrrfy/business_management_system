@@ -6,6 +6,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
+import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { assertPlanBranch, type BranchRestriction } from "./types";
 
 /**
@@ -68,6 +69,10 @@ export async function bounceCheck(
         // بدلاً منه: نُبقي الأصل (حدثٌ وقع فعلاً) ونُصدر إيصال عكسٍ **أماميّ** مكتمل — شيفت-محايد
         // (TREASURY، لا درج): ارتداد الشيك حدثٌ خزينيّ/ذمميّ لا سحبَ نقدٍ من درج الوردية الجارية،
         // فلا يشوّه أيّ Z-report ويسمح بارتداد شيكٍ حُصِّل في وردية مغلقة (الحالة الأشيع).
+        assertNonPhysicalOutReceipt({
+          classification: "NON_CASH_METHOD", paymentMethod: rec.paymentMethod,
+          cashBucket: "TREASURY", operation: "عكس شيك مرتد",
+        });
         const compRes = await tx.insert(receipts).values({
           invoiceId: rec.invoiceId ?? null,
           branchId,

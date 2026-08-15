@@ -10,20 +10,20 @@ import { money, toDateStr, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import type { Tx } from "../../db";
 import { type Actor, withTx } from "../tx";
-import { getApprovalThreshold } from "./thresholds";
 import { computeSignature, nextVoucherNumber, validateCategory } from "./helpers";
 import type { VoucherInput, VoucherResult } from "./types";
 
 /** يُنشئ سند قبض (IN) أو صرف (OUT) ذريّاً.
  *
- * Maker-Checker: لو المَبلغ ≥ getApprovalThreshold() يُسجَّل بـapprovalStatus=PENDING_APPROVAL
- * بلا قيد دفتر ولا تأثير على الرصيد/الصندوق — فقط الصفّ في receipts. الاعتماد لاحقاً
- * عبر approveVoucher() يُكمل الأثر المالي. النَموذج: «المُسجِّل ≠ المُعتمِد» (SOD).
+ * Maker-Checker: كل سند صرف يُسجَّل بـapprovalStatus=PENDING_APPROVAL، بصرف النظر
+ * عن المبلغ أو صفة المُنشئ، بلا قيد دفتر ولا تأثير على الرصيد/الصندوق. الاعتماد اللاحق
+ * من مالك نشط مختلف عبر approveVoucher() هو منفذ الأثر المالي الوحيد (SOD).
+ * سند القبض يحتفظ بسياسة الاعتماد القائمة.
  */
-export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
-  return withTx(async (tx) => {
+export async function createVoucherTx(tx: Tx, input: VoucherInput, actor: Actor): Promise<VoucherResult> {
     if (input.paymentMethod === "EXCHANGE") {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -173,14 +173,9 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     await assertPeriodOpen(tx, utcDayStart(voucherDate));
 
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
-    // مالك النظام (isOwner) يتجاوز كل اعتماد ثنائي — هو الجهة النهائية.
-    // عتبة Maker-Checker على الصرف (OUT) فقط — القبض (IN) مال داخل للشركة،
-    // خطره أدنى بكثير من الصرف ولا يستوجب تعليقاً بعتبة المبلغ.
-    // forcePendingApproval يبقى فعّالاً (أمانة + OTHER) لأنه يغطّي حالات خاصة لا عتبة مبلغ.
-    const needsApproval = !actor.isOwner && (
-      forcePendingApproval ||
-      (direction === "OUT" && amount.toNumber() >= getApprovalThreshold())
-    );
+    // عقد المالك: كل سند صرف يُنشأ طلباً معلّقاً، بصرف النظر عن المبلغ أو صفة المنشئ.
+    // سند القبض يبقى على سياسته القائمة (OTHER يحتاج Maker-Checker، وغيره مباشر).
+    const needsApproval = direction === "OUT" || forcePendingApproval;
 
     // shiftId + cashBucket — سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦).
     //  - PENDING_APPROVAL: لا نَقفل وردية ولا نُحدّد دلواً (لا تأثير على الصندوق حتى الاعتماد).
@@ -196,21 +191,12 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       }
     }
 
-    if (
-      !needsApproval &&
-      direction === "OUT" &&
-      input.paymentMethod === "CASH" &&
-      cashBucket != null
-    ) {
-      await assertCashOutAvailable(tx, {
-        branchId: input.branchId,
-        cashBucket,
-        shiftId,
-        amount,
-        operation: "إنشاء سند الصرف النقدي",
+    if (needsApproval && direction === "OUT") {
+      assertNonPhysicalOutReceipt({
+        classification: "DEFERRED_APPROVAL", paymentMethod: input.paymentMethod,
+        cashBucket: null, approvalStatus: "PENDING_APPROVAL", operation: "إنشاء طلب سند صرف",
       });
     }
-
     const rRes = await tx.insert(receipts).values({
       branchId: input.branchId,
       invoiceId: input.partyType === "CUSTOMER" ? (input.invoiceId ?? null) : null,
@@ -255,7 +241,7 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       if (input.partyType === "CUSTOMER" && input.partyId) {
         await adjustCustomerBalance(tx, input.partyId, direction === "IN" ? amount.neg() : amount);
       } else if (input.partyType === "SUPPLIER" && input.partyId) {
-        await adjustSupplierBalance(tx, input.partyId, direction === "OUT" ? amount.neg() : amount);
+        await adjustSupplierBalance(tx, input.partyId, amount);
       }
 
       // البَصمة بَعد كل الكتابات ⇒ تَختم السند بكل عناصره المُستقرّة.
@@ -284,5 +270,8 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       direction,
       approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
     };
-  });
+}
+
+export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
+  return withTx((tx) => createVoucherTx(tx, input, actor));
 }

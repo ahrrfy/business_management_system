@@ -19,6 +19,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
+import { lockCashSourceForUpdate } from "./cash/cashAvailability";
 
 export interface FundTreasuryInput {
   branchId: number;
@@ -50,7 +51,10 @@ async function nextFundingNumber(tx: Tx, branchId: number): Promise<string> {
     const rows = await tx
       .select({ n: receipts.referenceNumber })
       .from(receipts)
-      .where(like(receipts.referenceNumber, `${prefix}%`));
+      .where(like(receipts.referenceNumber, `${prefix}%`))
+      // current read بعد انتظار قفل الفرع؛ القراءة العادية تعيد snapshot أقدم أُنشئ
+      // عند فحص idempotency وقد لا ترى تمويلاً التزم أثناء الانتظار.
+      .for("update");
     let maxSeq = 0;
     for (const r of rows) {
       const suffix = String(r.n ?? "").slice(prefix.length);
@@ -115,6 +119,13 @@ export async function fundTreasury(
         throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك تمويل خزينة فرعٍ غير فرعك" });
       }
     }
+
+    // القفل يسبق الترقيم والإيصال: تمويلان متزامنان لا يملكان FK/S على الفرع
+    // ثم يحاولان ترقية القفل إلى X عبر قارئ الرصيد، كما يضمن رقمين متسلسلين مرئيين.
+    await lockCashSourceForUpdate(tx, {
+      branchId: input.branchId,
+      cashBucket: "TREASURY",
+    });
 
     const referenceNumber = await nextFundingNumber(tx, input.branchId);
 

@@ -21,6 +21,7 @@ import {
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
+import { assertNonPhysicalOutReceipt } from "./cash/cashAvailability";
 import { nextVoucherNumber } from "./voucher/helpers";
 import {
   wageProfileColumns,
@@ -584,6 +585,12 @@ export async function completeTermination(id: number, actor: PromotionActor) {
         });
       }
       const voucherNumber = await nextVoucherNumber(tx, "PAYMENT", branchId);
+      assertNonPhysicalOutReceipt({
+        classification: "DEFERRED_APPROVAL",
+        paymentMethod: "CASH",
+        cashBucket: null,
+        approvalStatus: "PENDING_APPROVAL",
+      });
       const rRes = await tx.insert(receipts).values({
         invoiceId: null,
         branchId,

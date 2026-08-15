@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { openShift } from "../shiftService";
+import { returnSale } from "../returnService";
 import { createWorkOrder } from "../workOrderService";
 import {
   confirmConsignmentDelivery,
@@ -292,6 +293,62 @@ describe("delivery COD — money path", () => {
     await allReconcileClean();
   });
 
+  it("سباق إرجاع الإرسالية مع توريدها يقفل party→consignment ولا يقع في deadlock", async () => {
+    const { partyId } = await seed();
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const woId = await readyWorkOrder(false);
+    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+
+    const results = await Promise.allSettled([
+      returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "race-delivery-return" }),
+      recordDeliveryRemittance({
+        branchId: 1,
+        partyId,
+        countedCash: "10000",
+        clientRequestId: "race-delivery-remittance",
+        lines: [{ consignmentId: disp.consignmentId, collectedAmount: "10000" }],
+      }, CASHIER),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect((await db().select({ status: s.deliveryConsignments.status }).from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, disp.consignmentId)).limit(1))[0]?.status).toBe("RETURNED");
+    await allReconcileClean();
+  }, 15_000);
+
+  it("سباق إرجاع الإرسالية مع مرتجع البيع يقفل drawer→party→consignment→invoice ولا يكرر الرد", async () => {
+    const { partyId } = await seed();
+    const shift = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const woId = await readyWorkOrder(true);
+    const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, disp.invoiceId)).limit(1))[0];
+
+    const results = await Promise.allSettled([
+      returnConsignment(disp.consignmentId, {
+        ...MANAGER,
+        clientRequestId: "race-consignment-refund",
+        refundShiftId: shift.shiftId,
+      }),
+      returnSale({
+        invoiceId: disp.invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: Number(item.baseQuantity) }],
+        refund: { amount: "2000", method: "CASH", shiftId: shift.shiftId },
+        restock: true,
+        clientRequestId: "race-sale-return",
+      }, MANAGER),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const cashRefunds = await db().select({ amount: s.receipts.amount }).from(s.receipts).where(and(
+      eq(s.receipts.invoiceId, disp.invoiceId),
+      eq(s.receipts.direction, "OUT"),
+      eq(s.receipts.paymentMethod, "CASH"),
+    ));
+    expect(cashRefunds.filter((receipt) => Number(receipt.amount) === 2000)).toHaveLength(1);
+    expect((await invoice(disp.invoiceId)).status).toBe("RETURNED");
+    await allReconcileClean();
+  }, 15_000);
+
   it("idempotency الإرسال: نقرة مزدوجة = إرسالية واحدة + قيد SALE واحد", async () => {
     const { partyId } = await seed();
     await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
@@ -365,7 +422,7 @@ describe("delivery COD — money path", () => {
 
       await expect(
         returnConsignment(disp.consignmentId, { ...MANAGER, clientRequestId: "ret-attr-4" }),
-      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+      ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     });
   });
 });

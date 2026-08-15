@@ -7,7 +7,8 @@ import { applyMovement } from "../inventoryService";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { refundAppliedCollectionsForWorkOrder } from "../reception/deposits";
-import { computeExpectedCash, openShiftIdTx, resolveBranchCashShiftTx } from "../shiftService";
+import { openShiftIdTx, resolveBranchCashShiftTx } from "../shiftService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 
@@ -79,13 +80,10 @@ export async function cancelWorkOrder(
         if (refundMethod === "CASH") {
           const resolved = await resolveBranchCashShiftTx(tx, Number(wo.branchId), opts.refundShiftId ?? null);
           shiftId = resolved.shiftId;
-          const currentDrawerCash = await computeExpectedCash(tx, shiftId, resolved.openingBalance);
-          if (refundAmt.gt(currentDrawerCash)) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: `المبلغ يتجاوز النقد المتوفّر حالياً في هذا الدرج (المتاح ${currentDrawerCash.toFixed(2)} < المطلوب ${refundAmt.toFixed(2)}) — راجع الدرج أو اختر درجاً آخر.`,
-            });
-          }
+          await assertCashOutAvailable(tx, {
+            branchId: Number(wo.branchId), cashBucket: "DRAWER", shiftId,
+            amount: refundAmt, operation: "رد عربون إلغاء أمر الشغل",
+          });
         } else {
           shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
         }
@@ -140,13 +138,10 @@ export async function cancelWorkOrder(
     const feeHeldNet = round2(money(feeHeldRow?.v ?? "0"));
     if (feeHeldNet.gt(0)) {
       const resolved = await resolveBranchCashShiftTx(tx, Number(wo.branchId), opts.refundShiftId ?? null);
-      const drawerNow = await computeExpectedCash(tx, resolved.shiftId, resolved.openingBalance);
-      if (feeHeldNet.gt(drawerNow)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `ردّ أمانة أجرة التوصيل (${feeHeldNet.toFixed(2)}) يتجاوز النقد المتوفّر في هذا الدرج (${drawerNow.toFixed(2)}) — اختر درجاً آخر`,
-        });
-      }
+      await assertCashOutAvailable(tx, {
+        branchId: Number(wo.branchId), cashBucket: "DRAWER", shiftId: resolved.shiftId,
+        amount: feeHeldNet, operation: "رد أمانة أجرة توصيل أمر الشغل",
+      });
       const feeOut = await tx.insert(receipts).values({
         branchId: Number(wo.branchId), shiftId: resolved.shiftId, workOrderId,
         direction: "OUT", amount: toDbMoney(feeHeldNet), paymentMethod: "CASH", cashBucket: "DRAWER",

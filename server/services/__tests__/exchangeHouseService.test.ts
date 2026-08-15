@@ -30,6 +30,13 @@ import {
 } from "../exchangeHouseService";
 import { getFinancialPosition, getProfitAndLoss } from "../reportsFinancialService";
 import { reconcileSupplierBalances } from "../reconcileService";
+import { withTx } from "../tx";
+import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { getCashFlowSeries } from "../treasury/cashFlow";
+import { getPaymentMethodBreakdown } from "../treasury/paymentBreakdown";
+import { utcTodayStart } from "../businessDay";
+import { createVoucher } from "../voucher/create";
+import { approveVoucher } from "../voucher/approval";
 
 const TABLES = [
   "accountingEntries",
@@ -63,8 +70,8 @@ async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "local_mgr2", name: "مدير ٢", email: "m2@t.test", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 1, openId: "local_mgr", name: "مدير", email: "m@t.test", role: "manager", loginMethod: "local", branchId: 1, isOwner: false },
+    { id: 2, openId: "local_mgr2", name: "مدير ٢", email: "m2@t.test", role: "manager", loginMethod: "local", branchId: 1, isOwner: true, isActive: true },
   ]);
   // مورد نَدين له ٢٬٠٠٠٬٠٠٠ د.ع (AP موجب = علينا).
   await d.insert(s.suppliers).values([{ id: 1, name: "مورد الورق", currentBalance: "2000000.00" }]);
@@ -86,7 +93,8 @@ async function seed() {
 async function treasuryBalance(branchId: number): Promise<string> {
   const rows: any = await db().execute(sql`
     SELECT CAST(COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0) AS CHAR) AS bal
-    FROM receipts WHERE branchId=${branchId} AND cashBucket='TREASURY' AND receiptStatus='COMPLETED'`);
+    FROM receipts WHERE branchId=${branchId} AND cashBucket='TREASURY'
+      AND receiptStatus IN ('COMPLETED', 'REVERSED') AND receiptApprovalStatus='APPROVED'`);
   const r = Array.isArray(rows) ? rows[0]?.[0] : rows?.rows?.[0];
   return String(r?.bal ?? "0");
 }
@@ -505,6 +513,44 @@ describe("exchange-house — تكامل التقارير والمطابقة (إ�
 const reverser = { userId: 2, branchId: 1, role: "manager" } as const;
 
 describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقيق ١٧/٧)", () => {
+  it("عكس إيصال الصيرفة لا يقفل receipt قبل branch مقابل OUT متزامن", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة ترتيب الأقفال" }, actor);
+    const dep = await depositToExchange({
+      exchangeHouseId: id, branchId: 1, amount: "100000", currency: "IQD",
+      clientRequestId: "exchange-lock-order-deposit",
+    }, actor);
+
+    let sourceLocked!: () => void;
+    let releaseSource!: () => void;
+    const sourceIsLocked = new Promise<void>((resolve) => { sourceLocked = resolve; });
+    const mayContinue = new Promise<void>((resolve) => { releaseSource = resolve; });
+    const directOut = withTx(async (tx) => {
+      await lockCashSourceForUpdate(tx, { branchId: 1, cashBucket: "TREASURY" });
+      sourceLocked();
+      await mayContinue;
+      await assertCashOutAvailable(tx, {
+        branchId: 1, cashBucket: "TREASURY", amount: "50000",
+        operation: "صرف موازٍ لعكس الصيرفة",
+      });
+      await tx.insert(s.receipts).values({
+        branchId: 1, cashBucket: "TREASURY", direction: "OUT", amount: "50000.00",
+        paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+        referenceNumber: "EXCHANGE-LOCK-ORDER-OUT", createdBy: actor.userId,
+      });
+    });
+    await sourceIsLocked;
+    const reversal = reverseExchangeTransaction(dep.txnId, reverser);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    releaseSource();
+
+    const results = await Promise.allSettled([directOut, reversal]);
+    expect(results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : [])).toEqual([]);
+    expect(await treasuryBalance(1)).toBe("9950000.00");
+    expect((await getExchangeHouse(id))?.balanceIqd).toBe("0.00");
+  });
+
   beforeEach(async () => {
     await reset();
     await seed();
@@ -545,6 +591,10 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
     );
     let sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(Number(sup.currentBalance)).toBe(1250000); // 2000000 − 750000
+    const flowWhileSettled = (await getCashFlowSeries(
+      { days: 1, branchId: 1 },
+      { scopedBranchId: null, role: "admin" },
+    )).at(-1)!;
 
     await reverseExchangeTransaction(st.txnId, reverser);
     sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
@@ -558,8 +608,123 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
     const [voucher] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(st.receiptId)));
     expect(voucher.status).toBe("REVERSED");
     const exchangeReceipts = await db().select().from(s.receipts).where(eq(s.receipts.paymentMethod, "EXCHANGE"));
-    expect(exchangeReceipts).toHaveLength(1);
+    expect(exchangeReceipts).toHaveLength(2);
+    expect(exchangeReceipts.map((receipt) => receipt.direction).sort()).toEqual(["IN", "OUT"]);
+    expect(exchangeReceipts.every((receipt) => receipt.approvalStatus === "APPROVED")).toBe(true);
+    const exchangeBreakdown = (await getPaymentMethodBreakdown(
+      { period: "today", branchId: 1 },
+      { scopedBranchId: null, role: "admin" },
+    )).find((slice) => slice.key === "EXCHANGE")!;
+    expect(exchangeBreakdown).toMatchObject({ inTotal: "750000.00", outTotal: "750000.00", count: 2 });
+    const flowAfterReverse = (await getCashFlowSeries(
+      { days: 1, branchId: 1 },
+      { scopedBranchId: null, role: "admin" },
+    )).at(-1)!;
+    expect(Number(flowAfterReverse.net) - Number(flowWhileSettled.net)).toBe(750000);
   });
+
+  it("عكس تسوية EXCHANGE في يوم لاحق يوازن التدفق عبر الفترتين ولا يمحو التاريخ", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة عبر الفترات" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000", currency: "IQD" }, actor);
+    const settled = await settleSupplierViaExchange(
+      {
+        exchangeHouseId: id,
+        branchId: 1,
+        supplierId: 1,
+        currency: "IQD",
+        walletAmount: "500000",
+        settledIqd: "500000",
+      },
+      actor,
+    );
+    const yesterday = new Date(utcTodayStart().getTime() - 12 * 60 * 60 * 1000);
+    await db().update(s.receipts).set({ createdAt: yesterday }).where(eq(s.receipts.id, Number(settled.receiptId)));
+
+    await reverseExchangeTransaction(settled.txnId, reverser);
+
+    const yesterdayExchange = (await getPaymentMethodBreakdown(
+      { period: "yesterday", branchId: 1 },
+      { scopedBranchId: null, role: "admin" },
+    )).find((slice) => slice.key === "EXCHANGE")!;
+    const todayExchange = (await getPaymentMethodBreakdown(
+      { period: "today", branchId: 1 },
+      { scopedBranchId: null, role: "admin" },
+    )).find((slice) => slice.key === "EXCHANGE")!;
+    expect(yesterdayExchange).toMatchObject({ inTotal: "0.00", outTotal: "500000.00", count: 1 });
+    expect(todayExchange).toMatchObject({ inTotal: "500000.00", outTotal: "0.00", count: 1 });
+
+    const flow = await getCashFlowSeries(
+      { days: 2, branchId: 1 },
+      { scopedBranchId: null, role: "admin" },
+    );
+    expect(flow.at(-2)).toMatchObject({ inflow: "0.00", outflow: "500000.00", net: "-500000.00" });
+    expect(flow.at(-1)).toMatchObject({ inflow: "10500000.00", outflow: "2000000.00", net: "8500000.00" });
+    expect(flow.reduce((sum, point) => sum + Number(point.net), 0)).toBe(8000000);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("2000000.00");
+    expect((await getExchangeHouse(id))?.balanceIqd).toBe("2000000.00");
+  });
+
+  it("تسوية جديدة وعكس تسوية سابقة لنفس المورد والمحفظة لا يتعاكسان في الأقفال", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة سباق التسوية" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000", currency: "IQD" }, actor);
+    const prior = await settleSupplierViaExchange(
+      { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "IQD", walletAmount: "500000", settledIqd: "500000" },
+      actor,
+    );
+
+    const results = await Promise.allSettled([
+      settleSupplierViaExchange(
+        {
+          exchangeHouseId: id,
+          branchId: 1,
+          supplierId: 1,
+          currency: "IQD",
+          walletAmount: "100000",
+          settledIqd: "100000",
+          clientRequestId: "settle-while-reversing",
+        },
+        actor,
+      ),
+      reverseExchangeTransaction(prior.txnId, reverser),
+    ]);
+
+    expect(results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : [])).toEqual([]);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("1900000.00");
+    expect((await getExchangeHouse(id))?.balanceIqd).toBe("1900000.00");
+  });
+
+  it("تسوية EXCHANGE واعتماد سند نقدي للمورد نفسه يتسلسلان branch→supplier بلا deadlock", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة سباق السند" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "1000000", currency: "IQD" }, actor);
+    const voucher = await createVoucher({
+      voucherType: "PAYMENT",
+      branchId: 1,
+      amount: "100000",
+      paymentMethod: "CASH",
+      partyType: "SUPPLIER",
+      partyId: 1,
+      description: "سند متزامن مع تسوية صيرفة",
+      clientRequestId: "exchange-voucher-lock-order",
+    }, actor);
+
+    const results = await Promise.allSettled([
+      settleSupplierViaExchange({
+        exchangeHouseId: id,
+        branchId: 1,
+        supplierId: 1,
+        currency: "IQD",
+        walletAmount: "100000",
+        settledIqd: "100000",
+        clientRequestId: "exchange-settle-vs-voucher",
+      }, actor),
+      approveVoucher(voucher.receiptId, actorB),
+    ]);
+
+    expect(results.filter((result) => result.status === "rejected")).toEqual([]);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("1800000.00");
+  }, 15_000);
 
   it("عكس إيداع دينار يعيد النقد للخزينة بإيصال تعويضيّ", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
@@ -570,6 +735,35 @@ describe("reverseExchangeTransaction — عكس عملية صيرفة (تدقي�
     expect(Number(await treasuryBalance(1))).toBe(10000000); // عاد النقد للخزينة
     const house = await getExchangeHouse(id);
     expect(Number(house!.balanceIqd)).toBe(0); // محفظة الدينار استُعيدت
+  });
+
+  it("عكس سحب IQD وسحب جديد يقفلان branch→house بلا deadlock", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة سباق السحب" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000", currency: "IQD" }, actor);
+    const prior = await withdrawFromExchange(
+      { exchangeHouseId: id, branchId: 1, amount: "500000", currency: "IQD" },
+      actor,
+    );
+
+    const results = await Promise.allSettled([
+      reverseExchangeTransaction(prior.txnId, reverser),
+      withdrawFromExchange(
+        {
+          exchangeHouseId: id,
+          branchId: 1,
+          amount: "100000",
+          currency: "IQD",
+          clientRequestId: "withdraw-while-reversing",
+        },
+        actor,
+      ),
+    ]);
+
+    expect(results.flatMap((result) => result.status === "rejected"
+      ? [String(result.reason?.message ?? result.reason)]
+      : [])).toEqual([]);
+    expect((await getExchangeHouse(id))?.balanceIqd).toBe("1900000.00");
+    expect(await treasuryBalance(1)).toBe("8100000.00");
   });
 
   it("فصل المهام: المُنشئ لا يعكس عمليته بنفسه؛ ومنفِّذٌ آخر يمرّ؛ والعكس المزدوج مرفوض", async () => {

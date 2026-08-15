@@ -10,6 +10,10 @@ import { extractInsertId } from "../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
+import {
+  assertCashTransferAvailable,
+  computeTreasuryCashBalance,
+} from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 
 export interface SendTransferInput {
@@ -71,15 +75,7 @@ export async function getTreasuryBalance(
   tx: Tx,
   branchId: number,
 ): Promise<ReturnType<typeof money>> {
-  const rows: any = await tx.execute(sql`
-    SELECT CAST(COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END), 0) AS CHAR) AS balance
-    FROM receipts
-    WHERE branchId = ${branchId}
-      AND cashBucket = 'TREASURY'
-      AND receiptStatus = 'COMPLETED'
-  `);
-  const r = Array.isArray(rows) ? rows[0]?.[0] : rows?.rows?.[0];
-  return money(r?.balance ?? 0);
+  return computeTreasuryCashBalance(tx, branchId);
 }
 
 /** إرسال تحويل نقدي من فرع إلى آخر (IN_TRANSIT). */
@@ -152,7 +148,6 @@ export async function sendTransfer(
         .select()
         .from(branches)
         .where(eq(branches.id, input.fromBranchId))
-        .for("update")
         .limit(1)
     )[0];
     const toBranch = (
@@ -182,20 +177,14 @@ export async function sendTransfer(
       }
     }
 
-    // فحص رصيد TREASURY تحت قفل الفرع؛ النقد المادي غير الموجود لا يقبل التجاوز.
-    const available = await getTreasuryBalance(tx, input.fromBranchId);
-    if (amount.gt(available)) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: `التحويل مرفوض: الرصيد النقدي المتاح ${available.toFixed(2)} د.ع أقلّ من المطلوب ${amount.toFixed(2)} د.ع. لا يجوز نقل نقد مادي غير موجود.`,
-        cause: {
-          balanceWarning: {
-            available: available.toFixed(2),
-            requested: amount.toFixed(2),
-          },
-        } as never,
-      });
-    }
+    // نقل داخلي بين خزانتين؛ الحارس يقفل المصدر والوجهة بترتيب هوية حتمي
+    // قبل أي INSERT ذي FK، ولا يملك confirmNegative أي سلطة على مصدر التمويل.
+    await assertCashTransferAvailable(tx, {
+      source: { branchId: input.fromBranchId, cashBucket: "TREASURY" },
+      destination: { branchId: input.toBranchId, cashBucket: "TREASURY" },
+      amount,
+      operation: "التحويل النقدي بين الفروع",
+    });
 
     // 5. توليد رقم التحويل.
     const transferNumber = await nextTransferNumber(tx, input.fromBranchId);

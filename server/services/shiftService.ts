@@ -118,6 +118,18 @@ export async function openShift(
     // التسرّب يبقى قائماً *داخل* الوردية: closeShift يحسب المتوقَّع = الافتتاحيّ + المبيعات النقدية −
     // المدفوعات ويقارنه بالمعدود ⇒ فرق الوردية مسجَّلٌ ومعزولٌ لصاحبها. العمودان openingExpectedCash/
     // openingDiscrepancyReason مُهمَلان الآن (يبقيان null بلا هجرة إسقاط).
+    const opening = money(input.openingBalance);
+    // ترتيب الأقفال الحاكم هو مصدر النقد ثم المستند. إدراج الوردية أولاً يأخذ قفل FK مشتركاً
+    // على الفرع، فتستطيع معاملتا فتح متزامنتان أن تتعطلا كلتاهما عند محاولة ترقيته إلى X.
+    // لذلك نتحقق من تمويل الخزينة ونقفل حسابها قبل إنشاء صف الوردية نفسه.
+    const treasuryAvailability = opening.gt(0)
+      ? await assertCashOutAvailable(tx, {
+          branchId: input.branchId,
+          cashBucket: "TREASURY",
+          amount: opening,
+          operation: "تمويل عهدة افتتاح الوردية",
+        })
+      : null;
     try {
       const res = await tx.insert(shifts).values({
         branchId: input.branchId,
@@ -138,15 +150,8 @@ export async function openShift(
       // يُرفض فتح الوردية ذرياً إن لم تكفِ الخزينة؛ حدّ الصلاحية لا يصنع نقداً ولا يسمح بعهدة سالبة.
       let treasuryBalanceAfter: string | null = null;
       let treasuryWarning = false;
-      const opening = money(input.openingBalance);
       if (opening.gt(0)) {
-        const treasuryAvailability = await assertCashOutAvailable(tx, {
-          branchId: input.branchId,
-          cashBucket: "TREASURY",
-          amount: opening,
-          operation: "تمويل عهدة افتتاح الوردية",
-        });
-        treasuryBalanceAfter = treasuryAvailability.availableAfter;
+        treasuryBalanceAfter = treasuryAvailability!.availableAfter;
         treasuryWarning = false;
         const outRes = await tx.insert(receipts).values({
           branchId: input.branchId,

@@ -65,6 +65,11 @@ describe("treasury P0 integrity", () => {
   });
 
   it("requires a distinct same-branch recipient and keeps cash-drop receipt pending outside treasury balance", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "IN", amount: "100000", paymentMethod: "CASH",
+      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND", createdBy: MANAGER,
+    });
     const { shiftId } = await openShift(
       { branchId: 1, openingBalance: "100000" },
       { userId: CASHIER, branchId: 1 },
@@ -98,13 +103,13 @@ describe("treasury P0 integrity", () => {
     expect(contract.status).toBe("PENDING");
     expect(contract.createdBy).toBe(MANAGER);
 
-    // العهدة الوسيطة (imprest): فتح الوردية سحب عهدة 100000 من الخزينة (TREASURY OUT) ⇒ الرصيد −100000.
-    // السحب النقديّ المعلّق (PENDING) لا يُضاف حتى يُقبَل ⇒ الرصيد يبقى −100000 (لو دخل لصار −90000).
+    // العهدة الوسيطة: تمويل 100000 ثم فتح الوردية يسحبها كاملةً ⇒ الخزينة صفر.
+    // السحب النقديّ المعلّق (PENDING) لا يُضاف حتى يُقبَل؛ وإلا ظهر 10000 وهمياً.
     const dashboard = await getDashboard(
       { branchId: 1 },
       { scopedBranchId: null, role: "admin", userId: MANAGER },
     );
-    expect(dashboard.treasuryBalances.find((r) => r.branchId === 1)?.balance).toBe("-100000.00");
+    expect(dashboard.treasuryBalances.find((r) => r.branchId === 1)?.balance).toBe("0.00");
   });
 
   it("excludes unapproved receipts from treasury summaries", async () => {

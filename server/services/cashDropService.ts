@@ -21,6 +21,10 @@ import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
+import {
+  assertCashTransferAvailable,
+  computeDrawerCashBalance,
+} from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 
 export interface CashDropInput {
@@ -79,16 +83,7 @@ async function nextDropNumber(tx: Tx, branchId: number): Promise<string> {
  * بلا فلتر حالة (مطابقةً لـshiftService.computeExpectedCash — العكوس تُصافَر بإيصالٍ تعويضيّ).
  */
 async function currentDrawerCash(tx: Tx, shiftId: number, openingBalance: string) {
-  const rows = await tx
-    .select({
-      cashIn: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
-      cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
-    })
-    .from(receipts)
-    .where(and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER")));
-  const cashIn = money(rows[0]?.cashIn ?? "0");
-  const cashOut = money(rows[0]?.cashOut ?? "0");
-  return money(openingBalance).plus(cashIn).minus(cashOut);
+  return computeDrawerCashBalance(tx, shiftId, openingBalance);
 }
 
 /**
@@ -175,14 +170,14 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
     throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
   }
 
-  // 4. حدّ الدرج: لا يُسحَب أكثر من النقد الحاليّ فيه.
-  const drawer = await currentDrawerCash(tx, input.shiftId, sh.openingBalance);
-  if (amount.gt(drawer)) {
-    throw new TRPCError({
-      code: "BAD_REQUEST",
-      message: `لا يمكن سحب أكثر من النقد في الدرج (المتاح ${drawer.toFixed(2)} < المطلوب ${amount.toFixed(2)})`,
-    });
-  }
+  // 4. نقل داخلي DRAWER→TREASURY: حارس المصدر المركزي يمنع السحب فوق المتاح.
+  const availability = await assertCashTransferAvailable(tx, {
+    source: { branchId, cashBucket: "DRAWER", shiftId: input.shiftId },
+    destination: { branchId, cashBucket: "TREASURY" },
+    amount,
+    operation: "السحب النقدي من الدرج إلى الخزينة",
+  });
+  const drawer = money(availability.availableBefore);
 
   // 5. سلسلة الحيازة: لا يوجد «سحب إلى خزينة بلا شخص». المستلم إلزامي،
   // مختلف عن المنشئ ومن الفرع نفسه.
@@ -260,6 +255,6 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
     outReceiptId,
     inReceiptId,
     drawerBefore: toDbMoney(drawer),
-    drawerAfter: toDbMoney(drawer.minus(amount)),
+    drawerAfter: availability.availableAfter,
   };
 }

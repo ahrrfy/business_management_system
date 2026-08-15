@@ -8,20 +8,24 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { addMaintenance, createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, updateAsset } from "../assetsService";
 import { computeDepreciation } from "../assets/depreciation";
+import { computeTreasuryCashBalance } from "../cash/cashAvailability";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
 const ADMIN_SCOPE = { branchId: null } as const;
 // FI-01: createAsset يأخذ Actor الآن (لترحيل قيد الاقتناء) — مُغلِّف يُمرّره عن كل الاختبارات القائمة.
-const mkAsset = (input: Parameters<typeof createAsset>[0]) => createAsset(input, ACTOR);
+const mkAsset = (input: Parameters<typeof createAsset>[0]) =>
+  createAsset({ ...input, branchId: input.branchId ?? 1 }, ACTOR);
 
 const TABLES = [
   "accountingEntries",
+  "receipts",
   "assetMaintenance",
   "assetCustodyLog",
   "assetDocuments",
   "fixedAssets",
   "attendance",
   "employees",
+  "suppliers",
   "auditLogs",
   "branches",
   "users",
@@ -52,6 +56,11 @@ async function seedBase() {
     { id: 2, firstName: "موظف", lastName: "ثانٍ", email: "e2@test.local", branchId: 1, isActive: true },
   ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد الأصول" }); // FI-01: اقتناء على ذمّة المورّد
+  await d.insert(s.receipts).values({
+    branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "100000000.00",
+    paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+    referenceNumber: "TEST-ASSET-TREASURY-FUND", createdBy: 1,
+  });
 }
 
 beforeEach(async () => {
@@ -127,7 +136,7 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
       .where(and(eq(s.accountingEntries.entryType, "PAYMENT_IN"), eq(s.accountingEntries.dedupeKey, `ASSET_DISP:${a!.id}`)));
     expect(cash).toBeTruthy();
     expect(Number(cash.amount)).toBe(700000);
-    const [rcpt] = await db().select().from(s.receipts).where(eq(s.receipts.direction, "IN"));
+    const [rcpt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(cash.receiptId)));
     expect(rcpt).toBeTruthy();
     expect(Number(rcpt.amount)).toBe(700000);
 
@@ -185,6 +194,56 @@ describe("assetsService — updateAsset (DB)", () => {
     expect(Number(sup.currentBalance)).toBe(1200000);
     // القيمة المُرسمَلة الجديدة تُغذّي الإهلاك.
     expect(Number((await getAsset(a!.id, ADMIN_SCOPE))!.purchaseValue)).toBe(1200000);
+  });
+
+  it("supplier→cash: خزينة صفر ترفض الاقتناء الجديد وتتراجع عن عكس AP وكل التعديل", async () => {
+    await db().delete(s.receipts).where(eq(s.receipts.referenceNumber, "TEST-ASSET-TREASURY-FUND"));
+    const a = await mkAsset({
+      name: "طابعة آجلة", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "1000", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: 1,
+    });
+    await expect(updateAsset(a!.id, {
+      name: "طابعة نقدية", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "1000", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: null,
+    }, ACTOR)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const unchanged = await getAsset(a!.id, ADMIN_SCOPE);
+    expect(unchanged!.supplierId).toBe(1);
+    expect(Number(unchanged!.purchaseValue)).toBe(1000);
+    expect(Number((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance)).toBe(1000);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+  });
+
+  it("cash→cash: عكس 1000 يدخل أولاً ثم اقتناء 800 ينجح بخزينة كانت صفراً وصافيها 200", async () => {
+    await db().delete(s.receipts).where(eq(s.receipts.referenceNumber, "TEST-ASSET-TREASURY-FUND"));
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "1000.00",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-ASSET-EXACT-FUND", createdBy: 1,
+    });
+    const a = await mkAsset({
+      name: "آلة نقدية", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "1000", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1,
+    });
+    await updateAsset(a!.id, {
+      name: "آلة نقدية مصححة", category: "computers", purchaseDate: "2026-01-01",
+      purchaseValue: "800", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: null,
+    }, ACTOR);
+
+    await db().transaction(async (tx) => {
+      expect((await computeTreasuryCashBalance(tx, 1)).toFixed(2)).toBe("200.00");
+    });
+    const asset = await getAsset(a!.id, ADMIN_SCOPE);
+    expect(Number(asset!.purchaseValue)).toBe(800);
+    const rows = await db().select().from(s.receipts);
+    expect(rows.filter((r) => r.direction === "IN" && Number(r.amount) === 1000)).toHaveLength(2);
+    expect(rows.filter((r) => r.direction === "OUT" && Number(r.amount) === 1000)).toHaveLength(1);
+    expect(rows.filter((r) => r.direction === "OUT" && Number(r.amount) === 800)).toHaveLength(1);
   });
 
   it("يرفض تعديل أصل مُستبعَد", async () => {

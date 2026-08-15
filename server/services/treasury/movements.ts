@@ -2,6 +2,7 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
 import { PAY_METHOD_AR, isCashier, rowsOf } from "./helpers";
 
 export interface MovementRow {
@@ -139,7 +140,7 @@ export async function getRecentMovements(
         LEFT JOIN users au ON au.id = r.approvedBy
         LEFT JOIN shifts s ON s.id = r.shiftId
         LEFT JOIN users su ON su.id = s.userId
-        WHERE r.receiptStatus = 'COMPLETED'
+        WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
           AND r.receiptApprovalStatus = 'APPROVED'
           ${branchFilterR}
           ${fromFilterR}

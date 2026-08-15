@@ -10,6 +10,7 @@ import { appRouter } from "../../routers";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
 import { createVoucher } from "../voucher/create";
+import { approveVoucher } from "../voucher/approval";
 import { cancelVoucher } from "../voucher/cancel";
 import { getAnomalyWatch } from "../reports/anomalyWatch";
 import { todayUtcDate } from "../businessDay";
@@ -61,7 +62,7 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "local_admin", name: "المدير", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 1, openId: "local_admin", name: "المدير", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
     { id: 2, openId: "local_mgr", name: "منال", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_cashier", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1 },
   ]);
@@ -223,6 +224,11 @@ describe("D4 — عجوزات الورديات", () => {
 
 describe("D5 — عكس السندات", () => {
   it("سند يُعكس يظهر بمنشئه وعاكسه، وعكسٌ واحد لا يُعلَّم", async () => {
+    await db().insert(s.receipts).values({
+      branchId: 1, cashBucket: "TREASURY", direction: "IN", amount: "50.00",
+      paymentMethod: "CASH", status: "COMPLETED", approvalStatus: "APPROVED",
+      referenceNumber: "TEST-D5-FUND", createdBy: 1,
+    });
     const v = await createVoucher(
       {
         voucherType: "PAYMENT",
@@ -236,6 +242,7 @@ describe("D5 — عكس السندات", () => {
       },
       { ...actor2, role: "manager" } as any,
     );
+    await approveVoucher(v.receiptId, { ...actor1, role: "admin" } as any);
     await cancelVoucher(v.receiptId, { ...actor1, role: "admin" } as any);
 
     const aw = await getAnomalyWatch({ from: TODAY(), to: TODAY() });

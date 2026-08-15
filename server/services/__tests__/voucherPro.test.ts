@@ -54,8 +54,8 @@ async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" },
-    { id: 2, openId: "mgr", name: "مدير", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
+    { id: 2, openId: "mgr", name: "مدير مالك", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0.00" });
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "0.00" });
@@ -117,7 +117,7 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
       voucherCategoryId: 1,
     }, adminActor);
     expect(r.voucherNumber).toMatch(/^PV-/);
-    expect(r.approvalStatus).toBe("APPROVED");
+    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
   });
 
   it("مبلغ كبير مع attachmentUrl ⇒ يَنجح", async () => {
@@ -129,7 +129,7 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
       attachmentUrl: "https://drive.example.com/receipt-may.pdf",
     }, adminActor);
     expect(r.voucherNumber).toMatch(/^PV-/);
-    expect(r.approvalStatus).toBe("APPROVED");
+    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
   });
 
   it("فئة قَبض على سند صَرف ⇒ تُرفض", async () => {
@@ -247,10 +247,25 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
       attachmentUrl: "https://example.com/proof.pdf",
     }, managerActor);
 
-    await expect(approveVoucher(r.receiptId, managerActor)).rejects.toThrow(/فصل المهام/);
+    await expect(approveVoucher(r.receiptId, managerActor)).rejects.toThrow(/أنشأته بنفسك/);
   });
 
-  it("admin يُمكنه اعتماد سَنده بنفسه (مُستثنى للتصحيح الإداري)", async () => {
+  it("الدور الإداري لا يكفي: غير المالك والمالك المعطّل لا يعتمدان أو يرفضان", async () => {
+    await db().insert(s.users).values([
+      { id: 3, openId: "not-owner", name: "إداري", role: "admin", branchId: 1, isOwner: false },
+      { id: 4, openId: "inactive-owner", name: "مالك معطل", role: "admin", branchId: 1, isOwner: true, isActive: false },
+    ]);
+    const r = await createVoucher({
+      voucherType: "PAYMENT", branchId: 1, amount: "10.00", paymentMethod: "TRANSFER",
+      partyType: "OTHER", description: "اختبار صفة المالك", referenceNumber: "OWNER-AUTHZ",
+    }, managerActor);
+    await expect(approveVoucher(r.receiptId, { userId: 3, branchId: 1, role: "admin" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(rejectVoucher(r.receiptId, { userId: 4, branchId: 1, role: "admin" }, "رفض")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const [stored] = await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId));
+    expect(stored.approvalStatus).toBe("PENDING_APPROVAL");
+  });
+
+  it("لا استثناء admin: المالك المنشئ لا يعتمد سند نفسه", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
       paymentMethod: "TRANSFER", partyType: "OTHER",
@@ -258,8 +273,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
       referenceNumber: "TRF-Y",
       attachmentUrl: "https://example.com/proof.pdf",
     }, adminActor);
-    const ap = await approveVoucher(r.receiptId, adminActor);
-    expect(ap.approvalStatus).toBe("APPROVED");
+    await expect(approveVoucher(r.receiptId, adminActor)).rejects.toThrow(/أنشأته بنفسك/);
   });
 
   it("رَفض سَند مُعلَّق ⇒ لا أَثَر مالي + سَبب مُحفَّظ في internalNote", async () => {
@@ -282,15 +296,19 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(String(rc.internalNote ?? "")).toContain("مبلغ غير مَفهوم");
   });
 
-  it("لا يَجوز اعتماد سَند سَبق رفضه/اعتماده", async () => {
+  it("إعادة اعتماد سند APPROVED idempotent بلا أثر ثانٍ", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
       paymentMethod: "TRANSFER", partyType: "OTHER",
       description: "x", referenceNumber: "T",
       attachmentUrl: "https://example.com/proof.pdf",
     }, managerActor);
-    await approveVoucher(r.receiptId, adminActor);
-    await expect(approveVoucher(r.receiptId, adminActor)).rejects.toThrow(/بالفعل/);
+    const first = await approveVoucher(r.receiptId, adminActor);
+    const replay = await approveVoucher(r.receiptId, adminActor);
+    expect(first.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+    expect(replay.signatureHash).toBe(first.signatureHash);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
   });
 });
 
@@ -339,13 +357,16 @@ describe("vouchers-pro: السندات الأخيرة لنفس الطَرف", ()
 });
 
 describe("vouchers-pro: بَصمة SHA-256 + ثَبات", () => {
-  it("سَند صَغير (لا اعتماد) ⇒ بَصمة تُكتب فوراً", async () => {
+  it("سند الصرف الصغير لا يُبصم إلا بعد اعتماد مالك آخر", async () => {
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "50.00",
       paymentMethod: "CASH", partyType: "OTHER",
       description: "إيراد",
     }, adminActor);
-    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    let rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.signatureHash).toBeNull();
+    await approveVoucher(r.receiptId, managerActor);
+    rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
     expect(rc.signatureHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -358,6 +379,8 @@ describe("vouchers-pro: بَصمة SHA-256 + ثَبات", () => {
       voucherType: "PAYMENT", branchId: 1, amount: "50.00",
       paymentMethod: "CASH", partyType: "OTHER", description: "x",
     }, adminActor);
+    await approveVoucher(r1.receiptId, managerActor);
+    await approveVoucher(r2.receiptId, managerActor);
     const rc1 = (await db().select().from(s.receipts).where(eq(s.receipts.id, r1.receiptId)))[0];
     const rc2 = (await db().select().from(s.receipts).where(eq(s.receipts.id, r2.receiptId)))[0];
     expect(rc1.signatureHash).not.toBe(rc2.signatureHash);

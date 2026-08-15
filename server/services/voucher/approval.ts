@@ -1,13 +1,14 @@
-// اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: المُعتمِد ≠ المُنشئ إلا الـadmin).
+// اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { receipts, suppliers } from "../../../drizzle/schema";
+import { receipts, suppliers, users } from "../../../drizzle/schema";
+import { activateAdvanceForApprovedVoucherTx } from "../advancesService";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDateStr, toDbMoney } from "../money";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import { assertCashOutAvailable, assertNonPhysicalOutReceipt, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
-import { assertBranchOwnership, computeSignature } from "./helpers";
+import { computeSignature } from "./helpers";
 import type { PartyType, PaymentMethod } from "./types";
 
 export interface ApproveVoucherResult {
@@ -15,24 +16,85 @@ export interface ApproveVoucherResult {
   voucherNumber: string;
   approvalStatus: "APPROVED";
   signatureHash: string;
+  replayed: boolean;
 }
 
 /** اعتماد سند مُعلَّق (Maker-Checker): يُسجّل الأثر المالي ويُختم بـsignatureHash.
  *
- * شرط SOD-04 (فصل المهام، vouchers-pro): المُعتمِد ≠ المُنشئ، إلا الـadmin (مُستثنى للتصحيح الإداري).
- * شرط الفرع: غير الـadmin يَلزمه فرع السند.
- * شرط الحالة: السند يَجب أن يَكون PENDING_APPROVAL (لا APPROVED مُكرَّر، لا REJECTED).
+ * عقد المالك: المُعتمِد حساب users نشط وisOwner=true، ومختلف عن المُنشئ بلا استثناء دور.
+ * إعادة اعتماد سند APPROVED idempotent: تعيد البصمة بلا أي كتابة أو أثر مالي ثانٍ.
  */
 export async function approveVoucher(receiptId: number, actor: Actor): Promise<ApproveVoucherResult> {
   return withTx(async (tx) => {
+    const [preview] = await tx.select().from(receipts).where(eq(receipts.id, receiptId)).limit(1);
+    if (!preview || preview.voucherNumber == null) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+    }
+    const [approverPreview] = await tx.select().from(users).where(eq(users.id, actor.userId)).limit(1);
+    if (!approverPreview?.isActive || !approverPreview.isOwner) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "اعتماد السندات محصور بحساب مالك نشط" });
+    }
+    const previewApproverActor: Actor = {
+      userId: actor.userId,
+      branchId: Number(approverPreview.branchId ?? actor.branchId),
+      role: approverPreview.role,
+      isOwner: true,
+    };
+    const cashOutPreview = preview.direction === "OUT" && preview.paymentMethod === "CASH";
+    const cashInPreview = preview.direction === "IN" && preview.paymentMethod === "CASH";
+    let preResolvedCashIn: { shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" } | null = null;
+    if (cashOutPreview) {
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(preview.branchId),
+        cashBucket: "TREASURY",
+        shiftId: null,
+      });
+    } else if (cashInPreview) {
+      preResolvedCashIn = await shiftIdForCashTx(
+        tx, previewApproverActor, Number(preview.branchId), "اعتماد سند قبض نقدي",
+      );
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(preview.branchId),
+        cashBucket: preResolvedCashIn.cashBucket,
+        shiftId: preResolvedCashIn.shiftId,
+      });
+    }
+    // قفل مشاركة يكفي لتثبيت isActive/isOwner حتى نهاية المعاملة، ويبقى متوافقاً
+    // مع FK createdBy في كتّاب النقد الآخرين. الترتيب الحاكم للنقد: source → user SHARE → receipt.
+    const [approver] = await tx.select().from(users).where(eq(users.id, actor.userId)).for("share").limit(1);
+    if (!approver?.isActive || !approver.isOwner) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "اعتماد السندات محصور بحساب مالك نشط" });
+    }
+    if (
+      approver.role !== approverPreview.role ||
+      Number(approver.branchId ?? actor.branchId) !== Number(approverPreview.branchId ?? actor.branchId)
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّرت صلاحيات المالك أثناء الاعتماد — أعد المحاولة" });
+    }
     const r = (
       await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
     )[0];
     if (!r || r.voucherNumber == null) {
       throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
     }
+    if (
+      (cashOutPreview || cashInPreview) &&
+      (r.direction !== preview.direction || r.paymentMethod !== "CASH" || Number(r.branchId) !== Number(preview.branchId))
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر مصدر السند النقدي أثناء الاعتماد — أعد المحاولة" });
+    }
+    if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مالك آخر" });
+    }
     if (r.approvalStatus === "APPROVED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "السند مُعتمَد بالفعل" });
+      if (!r.signatureHash) throw new TRPCError({ code: "CONFLICT", message: "السند معتمد بلا بصمة سلامة — راجع التدقيق" });
+      return {
+        receiptId,
+        voucherNumber: String(r.voucherNumber),
+        approvalStatus: "APPROVED" as const,
+        signatureHash: String(r.signatureHash),
+        replayed: true,
+      };
     }
     if (r.approvalStatus === "REJECTED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "السند مرفوض — لا يمكن اعتماده" });
@@ -40,15 +102,6 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
     if (r.status === "REVERSED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "السند ملغى — لا يمكن اعتماده" });
     }
-    // SOD-04: المُنشئ لا يُعتمد سنده.
-    if (actor.role !== "admin" && r.createdBy != null && Number(r.createdBy) === actor.userId) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يجوز اعتماد سند أنشأته بنفسك — يلزم مدير آخر (فصل المهام).",
-      });
-    }
-    await assertBranchOwnership(tx, actor, r.branchId != null ? Number(r.branchId) : null, "سند");
-
     const amount = money(r.amount);
     const direction = r.direction as "IN" | "OUT";
     const branchId = Number(r.branchId);
@@ -56,16 +109,24 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
     const partyId = r.partyId != null ? Number(r.partyId) : null;
     const paymentMethod = r.paymentMethod as PaymentMethod;
 
-    // تَحديد shiftId/cashBucket عند الاعتماد (لا عند الإنشاء ⇒ يَتسق مع وردية المُعتمِد لا المُنشئ
-    // — وهو الصحيح: لحظة الاعتماد هي لحظة التأثير على الصندوق).
+    // سند الصرف النقدي يُموَّل من خزينة الفرع دائماً، لا من درج/وردية المالك.
     let shiftId: number | null;
     let cashBucket: "DRAWER" | "TREASURY" | null = null;
-    if (paymentMethod === "CASH") {
-      const g = await shiftIdForCashTx(tx, actor, branchId, "اعتماد سند نقدي");
+    const approverActor: Actor = {
+      userId: actor.userId,
+      branchId: Number(approver.branchId ?? actor.branchId),
+      role: approver.role,
+      isOwner: true,
+    };
+    if (paymentMethod === "CASH" && direction === "OUT") {
+      shiftId = null;
+      cashBucket = "TREASURY";
+    } else if (paymentMethod === "CASH") {
+      const g = preResolvedCashIn ?? await shiftIdForCashTx(tx, approverActor, branchId, "اعتماد سند قبض نقدي");
       shiftId = g.shiftId;
       cashBucket = g.cashBucket;
     } else {
-      shiftId = await openShiftIdTx(tx, actor.userId, branchId);
+      shiftId = await openShiftIdTx(tx, approverActor.userId, branchId);
     }
 
     // بضاعة الأمانة (ش٥): إعادة فحص السقف تحت قفل صف المودِع — مرتجعٌ بين الإصدار والاعتماد قد يكون
@@ -89,6 +150,11 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
         shiftId,
         amount,
         operation: "اعتماد سند الصرف النقدي",
+      });
+    } else if (direction === "OUT") {
+      assertNonPhysicalOutReceipt({
+        classification: "NON_CASH_METHOD", paymentMethod, cashBucket,
+        operation: "اعتماد سند صرف غير نقدي",
       });
     }
 
@@ -121,6 +187,16 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
       await adjustSupplierBalance(tx, partyId, direction === "OUT" ? amount.neg() : amount);
     }
 
+    await activateAdvanceForApprovedVoucherTx(tx, {
+      id: receiptId,
+      branchId: r.branchId != null ? Number(r.branchId) : null,
+      direction,
+      amount: String(r.amount),
+      paymentMethod,
+      internalNote: r.internalNote,
+      createdBy: r.createdBy != null ? Number(r.createdBy) : null,
+    });
+
     // البَصمة بعد إكمال كل التَغييرات.
     const hash = computeSignature({
       id: receiptId,
@@ -141,6 +217,7 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
       voucherNumber: String(r.voucherNumber),
       approvalStatus: "APPROVED" as const,
       signatureHash: hash,
+      replayed: false,
     };
   });
 }
@@ -152,13 +229,18 @@ export interface RejectVoucherResult {
 }
 
 /** رفض سند مُعلَّق — لا أثر مالي (لم يُسجَّل قيد ولا تَغيَّر رصيد). يَبقى للسجل التَدقيقي.
- *  نفس قاعدة SOD-04: لا يَرفض المُنشئ سنده (إلا admin). */
+ *  نفس عقد المالك وفصل المهام: مالك نشط مختلف عن المنشئ فقط. */
 export async function rejectVoucher(
   receiptId: number,
   actor: Actor,
   reason: string,
 ): Promise<RejectVoucherResult> {
   return withTx(async (tx) => {
+    // لا يلزم قفل X على حساب المالك؛ SHARE يثبت صفات التفويض ويتوافق مع FK createdBy.
+    const [approver] = await tx.select().from(users).where(eq(users.id, actor.userId)).for("share").limit(1);
+    if (!approver?.isActive || !approver.isOwner) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "رفض السندات محصور بحساب مالك نشط" });
+    }
     const r = (
       await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
     )[0];
@@ -168,13 +250,12 @@ export async function rejectVoucher(
     if (r.approvalStatus !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "السند ليس في انتظار الموافقة" });
     }
-    if (actor.role !== "admin" && r.createdBy != null && Number(r.createdBy) === actor.userId) {
+    if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "لا يجوز رفض سند أنشأته بنفسك — يلزم مدير آخر (فصل المهام).",
+        message: "لا يجوز رفض سند أنشأته بنفسك — يلزم مالك آخر",
       });
     }
-    await assertBranchOwnership(tx, actor, r.branchId != null ? Number(r.branchId) : null, "سند");
 
     const trimmedReason = reason.trim().slice(0, 500);
     if (!trimmedReason) {

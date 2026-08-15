@@ -10,7 +10,7 @@ import { applyMovement } from "../inventoryService";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
-import { assertCashOutAvailable } from "../cash/cashAvailability";
+import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { assertPurchaseBranch } from "./internal";
 import type { ReceivePurchaseInput } from "./types";
@@ -115,6 +115,45 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       }
     }
 
+    // ترتيب الأقفال العام: مصدر النقد → أمر الشراء/المورّد → الإيصالات. كانت المعاملة
+    // تقفل PO والمورّد أولاً ثم الخزينة، بينما اعتماد سند المورد يفعل العكس، فتتكون دورة
+    // supplier→branch / branch→supplier. قراءة المعاينة لا تقفل؛ وبناءً عليها نقفل المصدر
+    // قبل PO. بعد قفل PO نعيد التحقق من الفرع، فلا نعتمد على لقطة قديمة.
+    const poPreview = (
+      await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).limit(1)
+    )[0];
+    if (!poPreview) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    assertPurchaseBranch(poPreview, actor);
+    const shippingMethod = input.shippingPaymentMethod ?? "CASH";
+    const previewTotalLanded = round2(money(poPreview.shippingCost).plus(money(poPreview.customsCost)));
+    const previewItems = previewTotalLanded.gt(0) && shippingMethod === "CASH"
+      ? await tx
+          .select({ id: purchaseOrderItems.id, total: purchaseOrderItems.total })
+          .from(purchaseOrderItems)
+          .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId))
+      : [];
+    const requestedItemIds = new Set(input.lines.map((line) => line.purchaseOrderItemId));
+    const mayPayShippingCash =
+      shippingMethod === "CASH" &&
+      previewTotalLanded.gt(0) &&
+      previewItems.some((item) => requestedItemIds.has(Number(item.id)) && money(item.total).gt(0));
+    const mayPaySupplierCash =
+      input.payment?.method === "CASH" && money(input.payment.amount).gt(0);
+    let prelockedCashSource: Awaited<ReturnType<typeof shiftIdForCashTx>> | null = null;
+    if (mayPayShippingCash || mayPaySupplierCash) {
+      prelockedCashSource = await shiftIdForCashTx(
+        tx,
+        { userId: actor.userId, branchId: Number(poPreview.branchId), role: actor.role },
+        Number(poPreview.branchId),
+        mayPaySupplierCash ? "دفع للمورد عند الاستلام" : "مصروف شحن/كمرك عند الاستلام",
+      );
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(poPreview.branchId),
+        cashBucket: prelockedCashSource.cashBucket,
+        shiftId: prelockedCashSource.shiftId,
+      });
+    }
+
     const poRows = await tx
       .select()
       .from(purchaseOrders)
@@ -123,6 +162,9 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       .limit(1);
     const po = poRows[0];
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    if (Number(po.branchId) !== Number(poPreview.branchId)) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع أمر الشراء أثناء الاستلام؛ أعد المحاولة" });
+    }
     assertPurchaseBranch(po, actor);
     if (po.status !== "CONFIRMED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُستلم إلا أمر شراء معتمد بحالة مؤكدة" });
@@ -407,12 +449,13 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       let shipShiftId: number | null = null;
       let shipBucket: "DRAWER" | "TREASURY" | null = null;
       if (shipMethod === "CASH") {
-        const g = await shiftIdForCashTx(
-          tx,
-          { userId: actor.userId, branchId: Number(po.branchId), role: (actor as Actor & { role?: string }).role },
-          Number(po.branchId),
-          "مصروف شحن/كمرك عند الاستلام",
-        );
+        const g = prelockedCashSource;
+        if (!g) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تغيّرت بيانات تكلفة الشحن أثناء الاستلام؛ أعد المحاولة",
+          });
+        }
         shipShiftId = g.shiftId;
         shipBucket = g.cashBucket;
         await assertCashOutAvailable(tx, {
@@ -494,12 +537,10 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       let shiftId: number | null = null;
       let cashBucket: "DRAWER" | "TREASURY" | null = null;
       if (isCash) {
-        const g = await shiftIdForCashTx(
-          tx,
-          { userId: actor.userId, branchId: Number(po.branchId), role: (actor as Actor & { role?: string }).role },
-          Number(po.branchId),
-          "دفع للمورد",
-        );
+        const g = prelockedCashSource;
+        if (!g) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر دفعة المورد النقدية" });
+        }
         shiftId = g.shiftId;
         cashBucket = g.cashBucket;
         await assertCashOutAvailable(tx, {

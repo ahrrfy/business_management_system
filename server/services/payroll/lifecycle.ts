@@ -7,6 +7,7 @@ import { accountingEntries, commissionRuns, employees, payrollItems, payrollRuns
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { restoreAdvanceSettlementsTx, settleAdvancesOnPayTx } from "../advancesService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { postEntry } from "../ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
@@ -111,6 +112,33 @@ export async function payRun(id: number, actor: Actor) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "الدفع مرفوض: مجموع مبالغ الموظفين لا يساوي إجمالي صافي المسيّر",
+      });
+    }
+
+    // نقفل خزائن الفروع بترتيب ثابت ونفحص **إجمالي** صافي كل فرع قبل أي إيصال.
+    // فحص كل موظف منفرداً لا يكفي إذا كان كل راتب دون الرصيد ومجموعها يتجاوزه.
+    const treasuryByBranch = new Map<number, Decimal>();
+    for (const item of items) {
+      const net = money(item.net);
+      if (net.lte(0)) continue;
+      const branchId = item.empBranchId ?? run.branchId ?? null;
+      if (branchId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "صرف الرواتب نقداً يتطلب فرعاً محدداً لكل موظف أو للمسيّر",
+        });
+      }
+      const id = Number(branchId);
+      treasuryByBranch.set(id, (treasuryByBranch.get(id) ?? money(0)).plus(net));
+    }
+    for (const [branchId, amount] of Array.from(treasuryByBranch.entries()).sort(
+      ([left], [right]) => left - right,
+    )) {
+      await assertCashOutAvailable(tx, {
+        branchId,
+        cashBucket: "TREASURY",
+        amount,
+        operation: "صرف مسيّر الرواتب",
       });
     }
 

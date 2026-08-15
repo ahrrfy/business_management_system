@@ -4,6 +4,7 @@ import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { isCashier, rowsOf } from "./helpers";
 import { utcTodayStart } from "../businessDay";
+import { MATERIALIZED_RECEIPT_STATUS_SQL } from "../cash/cashAvailability";
 
 export interface DailyPoint {
   day: string; // YYYY-MM-DD
@@ -36,7 +37,7 @@ export async function getCashFlowSeries(
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' THEN r.amount ELSE 0 END), 0) AS CHAR) AS inflow,
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' THEN r.amount ELSE 0 END), 0) AS CHAR) AS outflow
       FROM receipts r
-      WHERE r.receiptStatus = 'COMPLETED'
+      WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND r.receiptApprovalStatus = 'APPROVED'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL ${days - 1} DAY)
         ${branchFilter}

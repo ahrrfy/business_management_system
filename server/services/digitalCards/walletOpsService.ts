@@ -28,6 +28,7 @@ import {
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { postEntry } from "../ledgerService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
@@ -146,8 +147,36 @@ export async function deposit(
   },
   actor: Actor,
 ): Promise<{ transactionId: number; receiptId: number; balanceAfter: string }> {
-  const w = await lockWallet(tx, input.walletId);
   const amount = money(input.amount);
+  if (amount.lte(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون أكبر من صفر" });
+  }
+
+  let cashBranchHint: number | null = null;
+  if (input.paymentMethod === "CASH") {
+    const [preview] = await tx
+      .select({ branchId: digitalWallets.branchId })
+      .from(digitalWallets)
+      .where(eq(digitalWallets.id, input.walletId))
+      .limit(1);
+    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "المحفظة غير موجودة" });
+    cashBranchHint = Number(preview.branchId);
+    assertWalletBranch(cashBranchHint, actor);
+    // ترتيب الأقفال الحاكم: مصدر النقد → المحفظة → الإيصال.
+    await assertCashOutAvailable(tx, {
+      branchId: cashBranchHint,
+      cashBucket: "TREASURY",
+      amount,
+      operation: "إيداع رصيد محفظة المزوّد نقداً",
+    });
+  }
+
+  const w = await lockWallet(tx, input.walletId);
+  if (cashBranchHint != null && Number(w.branchId) !== cashBranchHint) {
+    throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع المحفظة أثناء الإيداع — أعد المحاولة" });
+  }
+  assertWalletBranch(Number(w.branchId), actor);
+  if (!w.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: `المحفظة «${w.name}» معطَّلة` });
 
   const [prov] = await tx
     .select({ supplierName: suppliers.name })

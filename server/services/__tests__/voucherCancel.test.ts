@@ -8,7 +8,7 @@ import { getDb } from "../../db";
 import { money } from "../money";
 import { reconcileSupplierBalances } from "../reconcileService";
 import { closeShift } from "../shiftService";
-import { cancelVoucher, createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
+import { approveVoucher, cancelVoucher, createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
 
 type LegacyVoucherInput = Omit<Parameters<typeof createVoucherRaw>[0], "clientRequestId"> & {
   clientRequestId?: string;
@@ -27,6 +27,7 @@ function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof creat
 }
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
+const ownerApprover = { userId: 2, branchId: 1, role: "manager" };
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
@@ -53,7 +54,10 @@ async function reset() {
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
+    { id: 2, openId: "owner-approver", name: "مالك ثانٍ", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "100.00" });
   // المورد برصيد افتتاحي 50 + قيد OPENING مطابق (كما يكتبه importService) ⇒ صيغة reconcile متّسقة.
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "50.00" });
@@ -82,6 +86,14 @@ async function fundDrawer(shiftId: number, amount: string) {
     status: "COMPLETED",
     referenceNumber: `TEST-DRAWER-FUND-${shiftId}`,
     createdBy: 1,
+  });
+}
+
+async function fundTreasury(amount: string) {
+  await db().insert(s.receipts).values({
+    branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "IN",
+    amount, paymentMethod: "CASH", status: "COMPLETED",
+    referenceNumber: `TEST-TREASURY-FUND-${amount}`, createdBy: 1,
   });
 }
 
@@ -167,12 +179,13 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
 
 describe("إلغاء سند صرف لمورّد (PV)", () => {
   it("رصيد المورد يعود + reconcileSupplierBalances بلا انحراف", async () => {
-    const shiftId = await openShift(); // shift-gate-cash: السند النقدي يتطلّب وردية مفتوحة.
-    await fundDrawer(shiftId, "25.00");
+    await fundTreasury("25.00");
     const v = await createVoucher(
       { voucherType: "PAYMENT", branchId: 1, amount: "25.00", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: 1, description: "دفعة لمورّد" },
       actor,
     );
+    expect(v.approvalStatus).toBe("PENDING_APPROVAL");
+    await approveVoucher(v.receiptId, ownerApprover);
     const afterCreate = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(afterCreate.currentBalance).toBe("25.00"); // 50 − 25
 
@@ -221,7 +234,7 @@ describe("حواجز الإلغاء", () => {
     );
     await closeShift({ shiftId, countedCash: "40.00" }, actor);
 
-    await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     // لا شيء تغيّر: الأصل COMPLETED، الرصيد كما بعد السند، لا تعويضي ولا قيد عكسي.
     const orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];

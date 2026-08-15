@@ -9,6 +9,8 @@ import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, adjustSupplierBalan
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { computeSignature, nextVoucherNumber } from "../voucher/helpers";
+import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
 
 export interface SettleSupplierInput {
@@ -56,6 +58,9 @@ export async function settleSupplierViaExchange(
     if (walletAmount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ التسديد يجب أن يكون موجباً" });
     if (commission.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمولة لا تكون سالبة" });
 
+    // كل كاتب مالي في الفرع يبدأ ببوابة الفرع: تمنع سباق إقفال الشهر، وتوحّد
+    // ترتيب الأقفال مع اعتماد سند المورد (branch→supplier→PO→house).
+    await lockBranchMonthCloseGate(tx, input.branchId);
     const supplier = (await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId)).for("update").limit(1))[0];
     if (!supplier) throw new TRPCError({ code: "BAD_REQUEST", message: "المورد غير موجود" });
 
@@ -191,6 +196,10 @@ export async function settleSupplierViaExchange(
     const voucherNumber = await nextVoucherNumber(tx, "PAYMENT", input.branchId);
     const voucherDate = toDateStr();
     const description = `تسديد مورد «${supplier.name}» عبر صيرفة «${house.name}»`;
+    assertNonPhysicalOutReceipt({
+      classification: "NON_CASH_METHOD", paymentMethod: "EXCHANGE", cashBucket: null,
+      operation: "تسديد المورد عبر محفظة الصيرفة",
+    });
     const receiptRes = await tx.insert(receipts).values({
       branchId: input.branchId, shiftId: null, cashBucket: null, direction: "OUT",
       amount: toDbMoney(settledIqd), paymentMethod: "EXCHANGE", referenceNumber: txnNumber,

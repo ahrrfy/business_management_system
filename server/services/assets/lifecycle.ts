@@ -4,6 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { assetCustodyLog, assetMaintenance, employees, fixedAssets, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { postEntry } from "../ledgerService";
+import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { money, toDateStr, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { companyBranchScope } from "../companyBranchScope";
@@ -75,6 +76,18 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
     // مالٌ يُدفَع بلا قيد دفتريّ ولا نقصٍ في الخزينة. الصيانة الصفرية (كفالة) لا تُرحّل قيداً.
     if (cost.gt(0)) {
       const branchId = a.branchId != null ? Number(a.branchId) : (actor.branchId ?? null);
+      if (branchId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "دفع صيانة الأصل نقداً يتطلب فرعاً محدداً لخزينة الصرف",
+        });
+      }
+      await assertCashOutAvailable(tx, {
+        branchId,
+        cashBucket: "TREASURY",
+        amount: cost,
+        operation: "دفع صيانة الأصل نقداً",
+      });
       const rRes = await tx.insert(receipts).values({
         branchId,
         cashBucket: "TREASURY",
