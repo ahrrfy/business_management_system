@@ -18,8 +18,9 @@ import {
 } from "./nginx-contract.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const NGINX_EXTERNAL_HEALTH_SCRIPT = String.raw`
-const origins = ["https://srv1548487.hstgr.cloud", "https://alarabiya.online"];
+function createExternalHealthScript(origins) {
+  return String.raw`
+const origins = ${JSON.stringify(origins)};
 for (const origin of origins) {
   let healthy = false;
   for (let attempt = 0; attempt < 6; attempt++) {
@@ -41,6 +42,15 @@ for (const origin of origins) {
   console.log("nginx external health: " + new URL(origin).hostname + " OK");
 }
 `;
+}
+
+const NGINX_EXTERNAL_HEALTH_SCRIPT = createExternalHealthScript([
+  "https://srv1548487.hstgr.cloud",
+  "https://alarabiya.online",
+]);
+const NGINX_ROLLBACK_HEALTH_SCRIPT = createExternalHealthScript([
+  "https://srv1548487.hstgr.cloud",
+]);
 
 function installerError(code, cause) {
   const error = new Error(code, cause ? { cause } : undefined);
@@ -590,7 +600,7 @@ function rollback(backup, options, operations) {
   }
   operations.nginxTest();
   operations.reload();
-  operations.smoke();
+  operations.rollbackSmoke();
 }
 
 function recoverPendingInstall(contract, options) {
@@ -606,6 +616,19 @@ function recoverPendingInstall(contract, options) {
 }
 
 function defaultOperations(projectRoot) {
+  const externalHealth = (script) =>
+    execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: projectRoot,
+      stdio: "inherit",
+      timeout: 60_000,
+      env: Object.fromEntries(
+        ["PATH", "LANG", "LC_ALL", "SystemRoot", "WINDIR"].flatMap((key) =>
+          typeof process.env[key] === "string"
+            ? [[key, process.env[key]]]
+            : [],
+        ),
+      ),
+    });
   return Object.freeze({
     staticCheck: () =>
       execFileSync(
@@ -634,23 +657,8 @@ function defaultOperations(projectRoot) {
         stdio: "inherit",
         timeout: 30_000,
       }),
-    smoke: () =>
-      execFileSync(
-        process.execPath,
-        ["--input-type=module", "-e", NGINX_EXTERNAL_HEALTH_SCRIPT],
-        {
-          cwd: projectRoot,
-          stdio: "inherit",
-          timeout: 60_000,
-          env: Object.fromEntries(
-            ["PATH", "LANG", "LC_ALL", "SystemRoot", "WINDIR"].flatMap((key) =>
-              typeof process.env[key] === "string"
-                ? [[key, process.env[key]]]
-                : [],
-            ),
-          ),
-        },
-      ),
+    smoke: () => externalHealth(NGINX_EXTERNAL_HEALTH_SCRIPT),
+    rollbackSmoke: () => externalHealth(NGINX_ROLLBACK_HEALTH_SCRIPT),
   });
 }
 
@@ -660,6 +668,10 @@ function normalizeOptions(options) {
   const strictOwnership =
     options.strictOwnership ?? process.platform !== "win32";
   const strictMode = options.strictMode ?? process.platform !== "win32";
+  const operations = options.operations ?? defaultOperations(projectRoot);
+  if (typeof operations.rollbackSmoke !== "function") {
+    throw installerError("NGINX_INSTALL_OPERATIONS_INVALID");
+  }
   return Object.freeze({
     projectRoot,
     nginxRoot,
@@ -676,7 +688,7 @@ function normalizeOptions(options) {
     expectedGid: options.expectedGid ?? 0,
     requireRoot: options.requireRoot ?? true,
     faultInjection: options.faultInjection === true,
-    operations: options.operations ?? defaultOperations(projectRoot),
+    operations,
   });
 }
 
