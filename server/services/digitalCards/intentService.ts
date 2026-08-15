@@ -38,6 +38,7 @@ import { normalizeIraqPhoneE164, phoneSuffix10 } from "../../lib/phone";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { lockConfirmedExternalPaymentAttempt } from "../posExternalPayment";
 
 /* ────────── الأنواع ────────── */
 
@@ -70,6 +71,8 @@ export interface PrepareInput {
   branchId: number;
   shiftId: number;
   paymentMethod: string;
+  externalPaymentAttemptId?: number | null;
+  externalPaymentDeviceId?: string | null;
   cartFingerprint: string;
   lines: PrepareLine[];
 }
@@ -133,6 +136,9 @@ export async function prepare(
       shiftId: digitalSaleIntents.shiftId,
       createdBy: digitalSaleIntents.createdBy,
       paymentMethod: digitalSaleIntents.paymentMethod,
+      expectedTotal: digitalSaleIntents.expectedTotal,
+      externalPaymentAttemptId: digitalSaleIntents.externalPaymentAttemptId,
+      externalPaymentDeviceId: digitalSaleIntents.externalPaymentDeviceId,
     })
     .from(digitalSaleIntents)
     .where(eq(digitalSaleIntents.clientRequestId, input.clientRequestId))
@@ -143,6 +149,8 @@ export async function prepare(
       Number(existing.branchId) !== input.branchId ||
       Number(existing.shiftId) !== input.shiftId ||
       existing.paymentMethod !== input.paymentMethod ||
+      (existing.externalPaymentAttemptId == null ? null : Number(existing.externalPaymentAttemptId)) !== (input.externalPaymentAttemptId ?? null) ||
+      (existing.externalPaymentDeviceId ?? null) !== (input.externalPaymentDeviceId?.trim() || null) ||
       ((actor.role !== "admin" && actor.role !== "manager") && Number(existing.createdBy) !== actor.userId)
     ) {
       throw new TRPCError({
@@ -156,6 +164,17 @@ export async function prepare(
         message: "المحاولة السابقة أُغلقت — ابدأ طلباً جديداً قبل إعادة بيع الكروت",
       });
     }
+    if (existing.paymentMethod === "CARD" && input.externalPaymentAttemptId != null) {
+      await lockConfirmedExternalPaymentAttempt(tx, {
+        branchId: input.branchId,
+        channel: "POS",
+        method: "CARD",
+        amount: existing.expectedTotal,
+        attemptId: input.externalPaymentAttemptId,
+        deviceId: input.externalPaymentDeviceId,
+        digitalSaleIntentId: Number(existing.id),
+      }, actor);
+    }
     return { intentId: Number(existing.id), replay: true, expiresAt: existing.expiresAt };
   }
 
@@ -167,6 +186,12 @@ export async function prepare(
       code: "BAD_REQUEST",
       message: "البيع الرقميّ نقداً أو ببطاقة فقط — لا آجل على الكروت",
     });
+  }
+  if (input.paymentMethod === "CASH" && input.externalPaymentAttemptId != null) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+  }
+  if (input.externalPaymentAttemptId == null && input.externalPaymentDeviceId?.trim()) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُربط جهاز دفع بلا محاولة دفع خارجية" });
   }
   const keys = new Set(input.lines.map((l) => l.lineKey));
   if (keys.size !== input.lines.length) {
@@ -364,6 +389,17 @@ export async function prepare(
   const expiresAt = new Date(Date.now() + INTENT_TTL_MINUTES * 60_000);
   const expectedTotal = toDbMoney(sumMoney(resolved.map((r) => r.sellPrice)));
 
+  if (input.paymentMethod === "CARD" && input.externalPaymentAttemptId != null) {
+    await lockConfirmedExternalPaymentAttempt(tx, {
+      branchId: input.branchId,
+      channel: "POS",
+      method: "CARD",
+      amount: expectedTotal,
+      attemptId: input.externalPaymentAttemptId,
+      deviceId: input.externalPaymentDeviceId,
+    }, actor);
+  }
+
   const intentRes = await tx.insert(digitalSaleIntents).values({
     clientRequestId: input.clientRequestId,
     branchId: input.branchId,
@@ -372,6 +408,8 @@ export async function prepare(
     status: "PREPARED",
     cartFingerprint: input.cartFingerprint,
     paymentMethod: input.paymentMethod,
+    externalPaymentAttemptId: input.externalPaymentAttemptId ?? null,
+    externalPaymentDeviceId: input.externalPaymentDeviceId?.trim() || null,
     expectedTotal,
     expiresAt,
   });

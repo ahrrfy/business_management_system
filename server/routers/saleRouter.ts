@@ -27,13 +27,14 @@ import { users } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
-import { cancelSale, correctSale, createSale, processPayment } from "../services/saleService";
+import { cancelSale, correctSale, processPayment } from "../services/saleService";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
 import { canSeeCostForUser, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
+import { confirmExternalPaymentAttempt, createConfirmedPosSale, initiateExternalPaymentAttempt } from "../services/posExternalPayment";
 
 // فاتورة أمر الشغل تُنشأ عند التسليم/الإرسال، وقد ينفّذها كاشير آخر عن الذي استقبل
 // الطلب. نصل الفاتورة بأمرها عبر invoiceId (علاقة 1:1) كي تبقى مرئية لصاحب الطلب
@@ -164,6 +165,7 @@ export async function verifyManagerApproval(
 }
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+const externalMethod = z.enum(["CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 // تاريخ فلترة YYYY-MM-DD (فلاتر الفترات الخادمية — لا فلترة محلية تُخفي صفحات الخادم).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
@@ -301,6 +303,43 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
 }
 
 export const saleRouter = router({
+  /** محاولة دفع خارجية مستقلة: INITIATED أولاً، بلا أثر على الفاتورة/الذمّة. */
+  initiateExternalPayment: salesCashierProcedure
+    .input(z.object({
+      branchId: z.number().int().positive(),
+      method: externalMethod,
+      amount: positiveMoneyString,
+      reference: z.string().trim().min(1).max(100),
+      requestId: z.string().trim().min(1).max(80),
+      deviceId: z.string().trim().min(1).max(64),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      return initiateExternalPaymentAttempt(
+        { ...input, branchId, channel: "POS" },
+        { userId: ctx.user.id, branchId, role: ctx.user.role },
+      );
+    }),
+
+  /** تأكيد خادمي مسجّل؛ البيع اللاحق يستهلك المحاولة مرةً واحدة داخل معاملته. */
+  confirmExternalPayment: salesCashierProcedure
+    .input(z.object({ branchId: z.number().int().positive(), attemptId: z.number().int().positive(), deviceId: z.string().trim().min(1).max(64) }))
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const branchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      return confirmExternalPaymentAttempt(
+        { attemptId: input.attemptId, branchId, channel: "POS", deviceId: input.deviceId },
+        { userId: ctx.user.id, branchId, role: ctx.user.role },
+      );
+    }),
+
   create: salesCashierProcedure
     .input(
       z.object({
@@ -322,7 +361,7 @@ export const saleRouter = router({
         payment: z.object({
           amount: positiveMoneyString,
           method,
-          reference: z.string().trim().min(1).max(100).optional(),
+          externalPaymentAttemptId: z.number().int().positive().optional(),
         }).optional(),
         // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
         // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
@@ -335,6 +374,13 @@ export const saleRouter = router({
         notes: z.string().optional(),
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
         managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
+      }).superRefine((input, ctx) => {
+        if (input.payment && input.payment.method !== "CASH" && !input.payment.externalPaymentAttemptId) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
+        }
+        if (input.payment?.method === "CASH" && input.payment.externalPaymentAttemptId != null) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+        }
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -368,10 +414,11 @@ export const saleRouter = router({
         creditApproved: approvedBy != null,
         managerOverrideByUserId: approvedBy ?? undefined,
         priceOverrideApproved: priceOverrideApprovedBy != null,
+        requireExternalPaymentAttempt: true,
       };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createSale(effectiveInput, actor);
+          const res = await createConfirmedPosSale(effectiveInput, actor);
           // AUDIT-REPLAY (تدقيق ٢/٧): إعادة التشغيل الـidempotent لا تُنشئ بيعاً جديداً ⇒ لا نكتب سطر
           // تدقيق مكرَّراً في كل مرة (كان يضخّم السجلّ بأحداث «بيع» وهميّة لعملية واحدة).
           if (!res.idempotentReplay) {

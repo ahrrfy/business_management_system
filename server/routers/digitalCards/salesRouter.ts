@@ -32,6 +32,8 @@ export const salesRouter = router({
         branchId: z.number().int().positive(),
         shiftId: z.number().int().positive(),
         paymentMethod: z.string().min(1).max(20),
+        externalPaymentAttemptId: z.number().int().positive().optional(),
+        externalPaymentDeviceId: z.string().trim().min(1).max(64).optional(),
         cartFingerprint: z.string().min(1).max(64),
         lines: z
           .array(
@@ -46,6 +48,13 @@ export const salesRouter = router({
           )
           .min(1)
           .max(50),
+      }).superRefine((input, ctx) => {
+        if (input.paymentMethod === "CARD" && !input.externalPaymentAttemptId) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["externalPaymentAttemptId"], message: "أكّد دفع البطاقة قبل إعداد الكروت" });
+        }
+        if (input.paymentMethod === "CASH" && input.externalPaymentAttemptId != null) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+        }
       }),
     )
     .mutation(async ({ input, ctx }) => {

@@ -33,10 +33,11 @@ import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, sumMoney, toDbMoney } from "../money";
-import { createSaleInTx, DIGITAL_SALE_CAPABILITY } from "../sale/create";
+import { DIGITAL_SALE_CAPABILITY } from "../sale/create";
 import type { PaymentMethod } from "../sale/types";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { assertExternalPaymentReplay, createConfirmedPosSaleInTx } from "../posExternalPayment";
 
 export interface FinalizeInput {
   intentId: number;
@@ -45,6 +46,8 @@ export interface FinalizeInput {
   /** المبلغ المقبوض فعلاً؛ يجب أن يساوي إجمالي النيّة (لا بيع رقميّ جزئيّ). */
   paymentAmount: string;
   paymentMethod: PaymentMethod;
+  externalPaymentAttemptId?: number | null;
+  deviceId?: string | null;
   customerId?: number | null;
 }
 
@@ -108,6 +111,23 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       message: "طريقة الدفع تغيّرت بعد إعداد الكروت — ألغِ النيّة قبل الإصدار وابدأ من جديد",
     });
   }
+  const boundExternalAttemptId = intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId);
+  const boundExternalDeviceId = intent.externalPaymentDeviceId ?? null;
+  if (input.paymentMethod === "CARD") {
+    if (input.externalPaymentAttemptId != null && input.externalPaymentAttemptId !== boundExternalAttemptId) {
+      throw new TRPCError({ code: "CONFLICT", message: "محاولة دفع البطاقة لا تطابق النيّة الرقمية" });
+    }
+    // لا نُصنّع تأكيداً تاريخياً. الفاتورة القديمة المثبّتة تُقرأ فقط، أمّا أي نيّة CARD
+    // غير مثبّتة قبل 0183 فتحتاج مسار مراجعة/دفع مؤكّد ولا يجوز أن تنشئ إيصالاً جديداً.
+    if (intent.status !== "FINALIZED" && boundExternalAttemptId == null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "نيّة البطاقة لا تحمل محاولة دفع خارجية مؤكدة — أوقف التثبيت وراجِع العملية",
+      });
+    }
+  } else if (input.externalPaymentAttemptId != null) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
+  }
 
   /* ٢. إعادة الفاتورة القائمة إن كانت مُثبَّتة (idempotency). */
   if (intent.status === "FINALIZED") {
@@ -119,6 +139,17 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       .from(invoices)
       .where(eq(invoices.id, Number(intent.invoiceId)))
       .limit(1);
+    if (boundExternalAttemptId != null) {
+      await assertExternalPaymentReplay(tx, Number(intent.invoiceId), {
+        branchId: Number(intent.branchId),
+        channel: "POS",
+        method: input.paymentMethod,
+        amount: input.paymentAmount,
+        attemptId: boundExternalAttemptId,
+        deviceId: boundExternalDeviceId,
+        digitalSaleIntentId: input.intentId,
+      }, actor);
+    }
     return {
       intentId: input.intentId,
       invoiceId: Number(intent.invoiceId),
@@ -265,7 +296,7 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
   }
 
   /* ٦. نواة البيع داخل المعاملة نفسها — بيانات الطالب لقطة بيع فقط، بلا عقد أو ملف تشغيلي. */
-  const sale = await createSaleInTx(
+  const sale = await createConfirmedPosSaleInTx(
     tx,
     {
       branchId: Number(intent.branchId),
@@ -274,7 +305,14 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       sourceType: "POS",
       // namespace خادمي مشتق من النيّة؛ لا collision مع بيع POS عادي ولا اعتماد على مفتاح العميل.
       clientRequestId: `DIGITAL_INTENT:${input.intentId}`,
-      payment: { amount: toDbMoney(expectedTotal), method: input.paymentMethod },
+      payment: {
+        amount: toDbMoney(expectedTotal),
+        method: input.paymentMethod,
+        externalPaymentAttemptId: boundExternalAttemptId,
+        externalPaymentIntentId: input.intentId,
+      },
+      requireExternalPaymentAttempt: input.paymentMethod !== "CASH",
+      deviceId: boundExternalDeviceId,
       lines: items.map((it) => {
         const m = meta.get(Number(it.offeringId))!;
         return {
@@ -461,6 +499,8 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
       clientRequestId: digitalSaleIntents.clientRequestId,
       expectedTotal: digitalSaleIntents.expectedTotal,
       paymentMethod: digitalSaleIntents.paymentMethod,
+      externalPaymentAttemptId: digitalSaleIntents.externalPaymentAttemptId,
+      externalPaymentDeviceId: digitalSaleIntents.externalPaymentDeviceId,
     })
     .from(digitalSaleIntents)
     .where(eq(digitalSaleIntents.id, intentId))
@@ -476,6 +516,8 @@ export async function recoverNeedsReview(tx: Tx, intentId: number, actor: Actor)
       clientRequestId: intent.clientRequestId,
       paymentAmount: intent.expectedTotal,
       paymentMethod: intent.paymentMethod,
+      externalPaymentAttemptId: intent.externalPaymentAttemptId == null ? null : Number(intent.externalPaymentAttemptId),
+      deviceId: intent.externalPaymentDeviceId,
     },
     actor,
   );

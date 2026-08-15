@@ -51,6 +51,14 @@ type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 type NumMode = "QTY" | "DISC" | "PAY";
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 
+type ExternalPaymentDraft = {
+  attemptId: number | null;
+  requestId: string;
+  fingerprint: string;
+  state: "INITIATED" | "CONFIRMED";
+  deviceId?: string;
+};
+
 /** وسم سطر بطاقة رقمية (ش٥). كل مثيل مستقلّ حتى لو تكرّرت الفئة نفسها في السلة. */
 type DigitalLineMeta = {
   offeringId: number;
@@ -97,8 +105,9 @@ type POSTab = {
   couponInput: string;
   couponCode: string | null;
   couponLabel: string | null;
-  /** مرجع عملية الدفع غير النقدي (إشعار جهاز/تحويل) — يُرسَل payment.reference ويُحفظ receipts.referenceNumber. */
+  /** مرجع عملية الدفع غير النقدي؛ يُثبّت أولاً في محاولة خادمية مستقلة. */
   paymentRef: string;
+  externalPayment: ExternalPaymentDraft | null;
   /** تاريخ استحقاق البيع الآجل (YYYY-MM-DD، اختياري) — يصحّح أعمار الذمم والتذكيرات. */
   dueDate: string;
 };
@@ -216,7 +225,7 @@ const createTab = (id: number, label?: string): POSTab => ({
   customerId: null, tierOverride: null,
   clientRequestId: newClientRequestId(),
   couponInput: "", couponCode: null, couponLabel: null,
-  paymentRef: "", dueDate: "",
+  paymentRef: "", externalPayment: null, dueDate: "",
 });
 
 // ─── useSmartScanInput ────────────────────────────────────────────────────────
@@ -489,7 +498,7 @@ export default function POS() {
   }
   const setSelId   = (v: number | null) => patchActive({ selId: v });
   const setNumMode = (v: NumMode)        => patchActive({ numMode: v });
-  const setMethod  = (v: PaymentMethod)  => patchActive({ method: v });
+  const setMethod  = (v: PaymentMethod)  => patchActive({ method: v, externalPayment: null });
   const resetCouponItems = (items: CartItem[]) => items.map((item) => item.preCouponRow ? { ...item, row: item.preCouponRow, preCouponRow: undefined, disc: undefined } : item);
   const clearAppliedCoupon = () => {
     setCart((items) => resetCouponItems(items));
@@ -549,6 +558,7 @@ export default function POS() {
         cart: t.cart.filter((c) => !c.digital || (!!c.digital.providerReference && !!c.digital.providerId)),
         clientRequestId: t.clientRequestId ?? newClientRequestId(),
         paymentRef: t.paymentRef ?? "",
+        externalPayment: t.externalPayment ?? null,
         dueDate: t.dueDate ?? "",
       }))));
       if (hadLegacyDigital) notify.warn("أُزيلت كروت قديمة غير مكتملة من المسودة", "أعد إضافتها مع رقم العملية قبل البيع.");
@@ -601,6 +611,12 @@ export default function POS() {
   const credit  = round2(creditD).toNumber();
   const isCredit = paidD.gt(0) && paidD.lt(totalD);
   const isChange = paidD.gt(0) && paidD.gte(totalD);
+  const externalPaymentAmount = money(isCredit ? paid : total);
+  const externalPaymentFingerprint = `${activeTab.method}|${externalPaymentAmount}|${(activeTab.paymentRef ?? "").trim().toUpperCase()}`;
+  const externalPaymentConfirmed = activeTab.method === "CASH"
+    || (activeTab.externalPayment?.state === "CONFIRMED"
+      && activeTab.externalPayment.fingerprint === externalPaymentFingerprint
+      && activeTab.externalPayment.attemptId != null);
 
   // §٩ IQD denomination rounding: مبلغ نقدي يُرسل إلى الخادم بعد التقريب لأقرب ٢٥٠ د.ع.
   // الكاشير يرى المبلغ الفعلي الذي سيُسجَّل (شارة أسفل لوحة المفاتيح).
@@ -738,7 +754,7 @@ export default function POS() {
       setSelId(null);
       setPayInput("");
       // مفتاح جديد للتبويب: الفاتورة التالية عمليةٌ مستقلّة (نفس اصطلاح البيع العادي).
-      patchActive({ clientRequestId: crypto.randomUUID(), couponCode: null, couponLabel: null });
+      patchActive({ clientRequestId: crypto.randomUUID(), couponCode: null, couponLabel: null, paymentRef: "", externalPayment: null });
       setReceipt(rec);
       notify.ok(`تمّت الفاتورة ${r.invoiceNumber}`, `الإجمالي ${r.total} د.ع — سُجِّلت الكروت وتسوية المزوّد.`);
       void utils.shifts.current.invalidate();
@@ -760,11 +776,19 @@ export default function POS() {
       notify.err("البيع الرقميّ نقداً أو ببطاقة فقط");
       return;
     }
+    if (activeTab.method === "CARD" && !externalPaymentConfirmed) {
+      notify.err("أكّد دفع البطاقة الخارجي قبل بدء إصدار الكروت.");
+      return;
+    }
     prepareIntent.mutate({
       clientRequestId: activeTab.clientRequestId,
       branchId,
       shiftId: shift.id,
       paymentMethod: activeTab.method,
+      ...(activeTab.method === "CARD" ? {
+        externalPaymentAttemptId: activeTab.externalPayment!.attemptId!,
+        externalPaymentDeviceId: activeTab.externalPayment?.deviceId,
+      } : {}),
       cartFingerprint: digitalCartFingerprint(),
       lines: digitalLines.map((c) => ({
         lineKey: c.digital!.lineKey,
@@ -965,7 +989,7 @@ export default function POS() {
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
-      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", dueDate: "" });
+      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "" });
 
       const printed = await printReceipt(buildBrandedReceipt(alignedRec));
       if (printed.via === "server") {
@@ -1006,6 +1030,67 @@ export default function POS() {
       else { notify.errBig(e); setSaleError(e.message); }
     },
   });
+
+  const initiateExternalPayment = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternalPaymentMutation = trpc.sales.confirmExternalPayment.useMutation();
+
+  async function confirmCurrentExternalPayment() {
+    if (!shift || !cart.length || activeTab.method === "CASH") return;
+    const tabId = activeTab.id;
+    const reference = (activeTab.paymentRef ?? "").trim();
+    if (!reference) {
+      notify.err("أدخل مرجع الدفع الخارجي أولاً.");
+      return;
+    }
+    if (activeTab.payInput.trim() !== "" && D(activeTab.payInput).lte(0)) {
+      notify.err("مبلغ الدفع يجب أن يكون موجباً قبل تأكيد العملية الخارجية.");
+      return;
+    }
+
+    const fingerprint = externalPaymentFingerprint;
+    const prior = activeTab.externalPayment?.fingerprint === fingerprint ? activeTab.externalPayment : null;
+    const requestId = prior?.requestId ?? newClientRequestId();
+    let deviceId = prior?.deviceId;
+    if (!deviceId) {
+      try {
+        deviceId = await getDeviceCode();
+      } catch {
+        notify.err("تعذّر تحديد جهاز الكاشير — لا يمكن تأكيد دفع خارجي بلا هوية جهاز.");
+        return;
+      }
+    }
+    patchTab(tabId, {
+      externalPayment: {
+        attemptId: prior?.attemptId ?? null,
+        requestId,
+        fingerprint,
+        state: prior?.state ?? "INITIATED",
+        deviceId,
+      },
+    });
+
+    try {
+      let attemptId = prior?.attemptId ?? null;
+      if (!attemptId) {
+        const initiated = await initiateExternalPayment.mutateAsync({
+          branchId,
+          method: activeTab.method,
+          amount: externalPaymentAmount,
+          reference,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        patchTab(tabId, { externalPayment: { attemptId, requestId, fingerprint, state: "INITIATED", deviceId } });
+      }
+      await confirmExternalPaymentMutation.mutateAsync({ branchId, attemptId, deviceId });
+      patchTab(tabId, { externalPayment: { attemptId, requestId, fingerprint, state: "CONFIRMED", deviceId } });
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرةً واحدة.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي";
+      notify.err(message);
+    }
+  }
 
   const couponPreview = trpc.crm.coupons.preview.useMutation({
     onSuccess: (result) => {
@@ -1157,7 +1242,7 @@ export default function POS() {
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
-    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", dueDate: "" });
+    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "" });
     const printed = await printReceipt(buildBrandedReceipt(rec));
     if (printed.via === "browser") {
       notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة للإيصال المؤقت");
@@ -1167,6 +1252,10 @@ export default function POS() {
   async function submitSale(approval?: { email: string; password: string }) {
     setSaleError(null);
     if (!shift || !cart.length) return;
+    if (activeTab.method !== "CASH" && !externalPaymentConfirmed) {
+      notify.err("أدخل مرجع العملية وثبّت نجاح الدفع لدى المزوّد قبل إتمام البيع.");
+      return;
+    }
     // ش٥: البطاقة تُضاف للسلة بلا أثر ماليّ. مسار البيع الرقميّ (نية التنفيذ الخارجيّ ثم التثبيت
     // الذرّي) هو شريحةٌ لاحقة؛ حتى ذلك الحين **يُمنع** تمرير كرت رقميّ عبر مسار البيع العادي —
     // وإلا بِيع كرتٌ بلا استهلاك محفظة ولا ذمّة مزوّد (ثقبٌ ماليّ صامت).
@@ -1204,18 +1293,22 @@ export default function POS() {
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
     // نرسل المبلغ غير المقرّب؛ الخادم يقرّبه ويُسجّل النقد المستلم = الإجمالي المقرّب.
     saleCtxRef.current = captureSaleCtx();
-    const deviceId = await getDeviceCode().catch(() => undefined);
+    const deviceId = activeTab.method === "CASH"
+      ? await getDeviceCode().catch(() => undefined)
+      : activeTab.externalPayment?.deviceId;
     const cashFull = activeTab.method === "CASH" && !isCredit;
     const payAmount = isCredit ? money(paid) : money(total);
-    // مرجع الدفع غير النقدي: يُرسَل فقط غير فارغ (مخطط الخادم min(1) يرفض السلسلة الفارغة).
-    const payRef = activeTab.method !== "CASH" ? (activeTab.paymentRef ?? "").trim() : "";
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
-      payment: { amount: payAmount, method: activeTab.method, ...(payRef ? { reference: payRef } : {}) },
+      payment: {
+        amount: payAmount,
+        method: activeTab.method,
+        ...(activeTab.method !== "CASH" ? { externalPaymentAttemptId: activeTab.externalPayment!.attemptId! } : {}),
+      },
       // تاريخ الاستحقاق للآجل فقط — يُحفظ invoices.dueDate ويصحّح أعمار الذمم والتذكيرات.
       ...(isCredit && activeTab.dueDate ? { dueDate: activeTab.dueDate } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
@@ -1227,6 +1320,10 @@ export default function POS() {
   async function quickPay() {
     setSaleError(null);
     if (!shift || !cart.length) return;
+    if (activeTab.method !== "CASH" && !externalPaymentConfirmed) {
+      notify.err("أدخل مرجع العملية وثبّت نجاح الدفع لدى المزوّد قبل الدفع السريع.");
+      return;
+    }
     if (cart.some((c) => c.digital)) {
       // ش٧: الكرت الرقميّ لا يمرّ عبر مسار البيع العادي إطلاقاً — له مسارُ نيّةٍ وتنفيذٍ خارجيّ.
       // سلّة مختلطة (كروت + بضاعة) غير مدعومة بعد ⇒ رفضٌ صريح بدل بيعٍ ناقص.
@@ -1247,12 +1344,12 @@ export default function POS() {
       notify.err("المبلغ المقبوض لا يكون سالباً — صحّح المبلغ أو امسح الحقل للدفع الكامل.");
       return;
     }
-    // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
+    // الدفع السريع كامل؛ التقريب لفئة IQD يخص النقد وحده.
     saleCtxRef.current = captureSaleCtx();
-    const deviceId = await getDeviceCode().catch(() => undefined);
+    const deviceId = activeTab.method === "CASH"
+      ? await getDeviceCode().catch(() => undefined)
+      : activeTab.externalPayment?.deviceId;
     const payAmount = money(total);
-    // نفس مرجع الدفع غير النقدي — الدفع السريع قد يكون بطاقة/تحويلاً أيضاً.
-    const payRef = activeTab.method !== "CASH" ? (activeTab.paymentRef ?? "").trim() : "";
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       deviceId,
@@ -1260,7 +1357,11 @@ export default function POS() {
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
       // Quick pay means full payment; it must not silently replace CARD/TRANSFER/WALLET with CASH.
-      payment: { amount: payAmount, method: activeTab.method, ...(payRef ? { reference: payRef } : {}) },
+      payment: {
+        amount: payAmount,
+        method: activeTab.method,
+        ...(activeTab.method !== "CASH" ? { externalPaymentAttemptId: activeTab.externalPayment!.attemptId! } : {}),
+      },
       ...(activeTab.method === "CASH" ? { cashRoundIQD: true } : {}),
       ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
     });
@@ -1326,7 +1427,7 @@ export default function POS() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, sale.isPending, receipt, creditPrompt, shifting, cashDropping, cardsOpen, offline]);
+  }, [cart, sale.isPending, receipt, creditPrompt, shifting, cashDropping, cardsOpen, offline, externalPaymentConfirmed]);
 
   const connectPrinter = async () => {
     try { await pairPrinter(); setPrinterReady(true); notify.ok("تم ربط الطابعة"); }
@@ -1429,7 +1530,8 @@ export default function POS() {
   // فيستحيل إتمام الآجل الجزئي باللمس/الفأرة (F4 وحده كان يتجاوزه، وهو غائب على اللوحي).
   const canPay =
     cart.length > 0 &&
-    (activeTab.payInput === "" || paid >= total || (isCredit && activeTab.customerId != null));
+    (activeTab.payInput === "" || paid >= total || (isCredit && activeTab.customerId != null)) &&
+    externalPaymentConfirmed;
 
   return (
     <div className="retail-pos-surface" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
@@ -1510,7 +1612,10 @@ export default function POS() {
           isChange={isChange} isOwing={isCredit}
           method={activeTab.method} setMethod={setMethod}
           paymentRef={activeTab.paymentRef ?? ""}
-          setPaymentRef={(v) => patchActive({ paymentRef: v })}
+          setPaymentRef={(v) => patchActive({ paymentRef: v, externalPayment: null })}
+          externalPaymentConfirmed={externalPaymentConfirmed}
+          externalPaymentPending={initiateExternalPayment.isPending || confirmExternalPaymentMutation.isPending}
+          onConfirmExternalPayment={() => { void confirmCurrentExternalPayment(); }}
           dueDate={activeTab.dueDate ?? ""}
           setDueDate={(v) => patchActive({ dueDate: v })}
           numMode={activeTab.numMode} setNumMode={setNumMode}
@@ -2241,6 +2346,7 @@ interface PaymentPanelProps {
   isChange: boolean; isOwing: boolean;
   method: PaymentMethod; setMethod: (m: PaymentMethod) => void;
   paymentRef: string; setPaymentRef: (v: string) => void;
+  externalPaymentConfirmed: boolean; externalPaymentPending: boolean; onConfirmExternalPayment: () => void;
   dueDate: string; setDueDate: (v: string) => void;
   numMode: NumMode; setNumMode: (m: NumMode) => void;
   numPress: (k: string) => void;
@@ -2254,7 +2360,7 @@ interface PaymentPanelProps {
   couponPending: boolean;
 }
 
-function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
+function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
 
   // ── الاحتواء الديناميكي: تركيبٌ متكيّف قبل المقياس ───────────────────────────
   // شاشات الكاشير الفيزيائية صغيرة، والمطلوب وضوحٌ وكِبَرٌ لا انكماش. لذلك عند ضيق
@@ -2472,13 +2578,16 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         </div>
       </div>
 
-      {/* مرجع العملية للدفع غير النقدي — إلزامي بصرياً (تحذير) ولا يمنع الإتمام (يخفي نفسه للنقدي) */}
+      {/* مرجع ومحاولة الدفع غير النقدي — لا يُفتح الإتمام قبل CONFIRMED خادمية. */}
       <PaymentReferenceField
         value={paymentRef}
         onChange={setPaymentRef}
         method={method}
+        confirmed={externalPaymentConfirmed}
+        confirming={externalPaymentPending}
+        onConfirm={onConfirmExternalPayment}
         inputId="pos-payment-reference"
-        colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber }}
+        colors={{ border: C.border, muted: C.muted, mutedFg: C.mutedFg, fg: C.fg, amber: C.amber, success: C.success }}
         style={{ padding: blockPad, flexShrink: 0 }}
       />
 
@@ -2539,17 +2648,17 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
 
         {showQuickPay && (
           <button
-            disabled={!cartLen || isPending}
+            disabled={!canPay || isPending}
             onClick={() => onQuickPay()}
             style={{
               ...(dense ? { width: 128, flexShrink: 0 } : { width: "100%", marginBottom: 7 }),
               height: fluid(50, 6.6, 58),
-              background: cartLen && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted,
-              color: cartLen && !isPending ? "#fff" : C.mutedFg,
+              background: canPay && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted,
+              color: canPay && !isPending ? "#fff" : C.mutedFg,
               border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: dense ? 13.5 : 15, fontWeight: 900,
-              cursor: cartLen && !isPending ? "pointer" : "not-allowed",
+              cursor: canPay && !isPending ? "pointer" : "not-allowed",
               display: "flex", alignItems: "center", justifyContent: "center", gap: dense ? 5 : 7,
-              boxShadow: cartLen && !isPending ? "0 4px 14px oklch(0.60 0.18 50 / .38)" : "none",
+              boxShadow: canPay && !isPending ? "0 4px 14px oklch(0.60 0.18 50 / .38)" : "none",
               transition: "background .1s, color .1s, box-shadow .1s",
             }}>
             <Zap aria-hidden size={18} />{dense ? "دفع سريع" : `دفع سريع وطباعة — ${paymentMethodLabel(method)}`}
