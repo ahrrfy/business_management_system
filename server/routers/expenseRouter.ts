@@ -1,16 +1,20 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
+  approveExpense,
   cancelExpense,
   createExpense,
   getExpenseTrace,
   listExpenses,
+  rejectExpense,
 } from "../services/expenseService";
 import { logAudit } from "../services/auditService";
 import { nonNegMoneyString, ymdDate } from "../lib/schemas";
 import {
+  expensesCashierProcedure,
   expensesManagerProcedure,
   expensesReadProcedure,
+  protectedProcedure,
   router,
 } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -26,7 +30,7 @@ const category = z.enum([
   "OTHER",
 ]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-const status = z.enum(["ACTIVE", "CANCELLED"]);
+const status = z.enum(["PENDING_APPROVAL", "ACTIVE", "REJECTED", "CANCELLED"]);
 const recurringFreq = z.enum([
   "DAILY",
   "WEEKLY",
@@ -34,6 +38,21 @@ const recurringFreq = z.enum([
   "QUARTERLY",
   "YEARLY",
 ]);
+
+/**
+ * سلطة اعتماد المصروف مشتقة من راية المالك المخزّنة لا من قالب الدور أو منح الوحدة.
+ * الخدمة تعيد قراءة الراية والنشاط تحت FOR UPDATE؛ هذا الحارس المبكر يحسّن رسالة الرفض
+ * ولا يُعدّ مصدراً نهائياً للسلطة.
+ */
+const expenseOwnerProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.isOwner !== true) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "اعتماد المصروف أو رفضه يتطلب حساب مالك نشطاً",
+    });
+  }
+  return next({ ctx });
+});
 
 export const expenseRouter = router({
   list: expensesReadProcedure
@@ -87,10 +106,9 @@ export const expenseRouter = router({
       return trace;
     }),
 
-  // P0 financial integrity: a cashier must never be able to turn a drawer
-  // shortage into an "expense" and thereby reduce the shift's expected cash.
-  // Cash expenses are a manager/treasury workflow only.
-  create: expensesManagerProcedure
+  // الموظف المخوّل يُنشئ الطلب؛ الخدمة وحدها تقرر: نثرية صغيرة ممولة من درجه
+  // أو طلب اعتماد بلا أثر مالي. لا توجد صلاحية هنا تتجاوز حارس الرصيد أو المالك.
+  create: expensesCashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -144,7 +162,12 @@ export const expenseRouter = router({
         try {
           const res = await createExpense(
             { ...input, branchId },
-            { userId: ctx.user.id, branchId, role: ctx.user.role },
+            {
+              userId: ctx.user.id,
+              branchId,
+              role: ctx.user.role,
+              isOwner: ctx.user.isOwner === true,
+            },
           );
           if (!(res as { idempotent?: boolean }).idempotent) {
             await logAudit(ctx, {
@@ -172,6 +195,38 @@ export const expenseRouter = router({
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر تسجيل المصروف" });
     }),
+
+  /** زر واحد: اعتماد + تنفيذ ذرّي؛ الخدمة تعيد قراءة isOwner/isActive تحت القفل. */
+  approve: expenseOwnerProcedure
+    .input(z.object({ expenseId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) =>
+      approveExpense(input.expenseId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
+
+  reject: expenseOwnerProcedure
+    .input(
+      z.object({
+        expenseId: z.number().int().positive(),
+        reason: z.string().trim().min(3).max(1000),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      rejectExpense(
+        input.expenseId,
+        {
+          userId: ctx.user.id,
+          branchId: Number(ctx.user.branchId ?? 0),
+          role: ctx.user.role,
+          isOwner: ctx.user.isOwner === true,
+        },
+        input.reason,
+      ),
+    ),
 
   // إلغاء مصروف يعكس نقداً ⇒ مدير فأعلى.
   cancel: expensesManagerProcedure

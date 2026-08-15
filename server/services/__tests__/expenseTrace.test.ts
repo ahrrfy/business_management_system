@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
+  approveExpense,
   createExpense,
   getExpenseTrace,
   listExpenses,
@@ -53,8 +54,18 @@ async function reset() {
       role: "manager",
       loginMethod: "local",
       branchId: 1,
+      isOwner: true,
     },
   ]);
+  await d.insert(s.receipts).values({
+    branchId: 1,
+    direction: "IN",
+    amount: "10000.00",
+    paymentMethod: "CASH",
+    cashBucket: "TREASURY",
+    status: "COMPLETED",
+    createdBy: 2,
+  });
 }
 
 beforeEach(reset);
@@ -135,7 +146,7 @@ describe("عقد التتبع التفصيلي للمصروفات", () => {
     });
   });
 
-  it("TREASURY يتغلب على الوردية المفتوحة وOWN_DRAWER يرفض وردية شخص آخر", async () => {
+  it("طلب TREASURY لا ينفذ قبل اعتماد مالك آخر وOWN_DRAWER يرفض وردية شخص آخر", async () => {
     const own = await openShift(
       { branchId: 1, openingBalance: "1000" },
       manager1,
@@ -153,6 +164,19 @@ describe("عقد التتبع التفصيلي للمصروفات", () => {
       },
       manager1,
     );
+    const pendingRow = (await listExpenses({ status: "PENDING_APPROVAL" }))
+      .rows[0];
+    expect(pendingRow).toMatchObject({
+      id: treasury.expenseId,
+      shiftId: null,
+      cashBucket: null,
+      status: "PENDING_APPROVAL",
+      needsAudit: false,
+    });
+    await approveExpense(treasury.expenseId, {
+      ...manager2,
+      isOwner: true,
+    });
     const treasuryRow = (await listExpenses({ fundingKind: "TREASURY" }))
       .rows[0];
     expect(treasuryRow).toMatchObject({
@@ -180,7 +204,7 @@ describe("عقد التتبع التفصيلي للمصروفات", () => {
         },
         manager1,
       ),
-    ).rejects.toThrow(/وردية مستخدم آخر/);
+    ).rejects.toThrow(/درج وردية المُنشئ فقط/);
   });
 
   it("يكشف اختلاف المصروف عن السند ويحسب needsAudit", async () => {
@@ -196,6 +220,10 @@ describe("عقد التتبع التفصيلي للمصروفات", () => {
       },
       manager1,
     );
+    await approveExpense(created.expenseId, {
+      ...manager2,
+      isOwner: true,
+    });
     await db()
       .update(s.receipts)
       .set({ amount: "401.00" })

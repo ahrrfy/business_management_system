@@ -20,6 +20,10 @@ import { Link, useLocation } from "wouter";
 import { Landmark } from "lucide-react";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import {
+  expenseApprovalExecutionText,
+  expenseExecutionMode,
+} from "./expenseUiPolicy";
 
 /**
  * مصروف جديد — v3 add-screens.
@@ -152,6 +156,11 @@ export default function ExpenseNew() {
     "CASH",
   );
   const isStock = source !== "CASH";
+  const canCreateStockExpense =
+    me.data?.role === "admin" || me.data?.role === "manager";
+  const sourceTabs = canCreateStockExpense
+    ? SOURCE_TABS
+    : SOURCE_TABS.slice(0, 1);
   const [items, setItems] = useState<StockLine[]>([]);
   const itemsTotal = useMemo(
     () =>
@@ -170,8 +179,12 @@ export default function ExpenseNew() {
     { branchId: Number(effectiveBranch) },
     { enabled: !!effectiveBranch },
   );
-  const role = me.data?.role;
-  const isElevated = role === "admin" || role === "manager";
+  const executionMode = expenseExecutionMode({
+    source,
+    amount,
+    paymentMethod,
+    cashSource,
+  });
 
   // مصدر النقد قرار صريح. عند غياب وردية للفاعل لا نترك اختيار درج غير صالح معلّقاً.
   useEffect(() => {
@@ -179,10 +192,14 @@ export default function ExpenseNew() {
   }, [effectiveBranch, openShift.data, openShift.isLoading]);
 
   const create = trpc.expenses.create.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setClientRequestId(crypto.randomUUID());
       await utils.expenses.list.invalidate();
-      notify.ok("تم تسجيل المصروف");
+      notify.ok(
+        "status" in result && result.status === "PENDING_APPROVAL"
+          ? "تم رفع طلب المصروف للمالك بلا صرف مالي حتى الاعتماد"
+          : "تم تسجيل المصروف وتنفيذه",
+      );
       navigate("/expenses");
     },
     onError: (e) => {
@@ -240,25 +257,17 @@ export default function ExpenseNew() {
     if (category === "OTHER" && !description.trim())
       return setError("وصف المصروف مطلوب لفئة «أخرى».");
 
-    // cash-treasury-mode: مدير/مسؤول يسجّل مصروفاً نقدياً بلا وردية مفتوحة ⇒ يُكتب في الخزينة الإدارية.
-    // تأكيد صريح قبل المتابعة (الكاشير مَحجوب أصلاً بزرّ مُعطَّل، فلا يصل هنا).
-    if (
-      paymentMethod === "CASH" &&
-      cashSource === "OWN_DRAWER" &&
-      !openShift.data
-    ) {
+    if (executionMode === "DRAWER_IMMEDIATE" && !openShift.data) {
       return setError(
-        "لا توجد وردية مفتوحة باسمك في هذا الفرع. اختر الخزينة الإدارية أو افتح وردية.",
+        "النثرية النقدية الصغيرة تُصرف من درج ورديتك فقط. افتح وردية ممولة أو حوّلها إلى طلب اعتماد خزينة.",
       );
     }
-    if (paymentMethod === "CASH" && cashSource === "TREASURY") {
-      if (!isElevated)
-        return setError("الصرف من الخزينة الإدارية متاح للمدير فقط.");
+    if (executionMode === "PENDING_OWNER_APPROVAL") {
       const ok = await confirm({
         variant: "warning",
-        title: "صرف من الخزينة الإدارية",
-        description: `سيُصرف ${fmt(D(amount).toFixed(2))} د.ع من خزينة الفرع الإدارية، ولن يُخصم من درج ورديتك${openShift.data ? ` #${Number(openShift.data.id)}` : ""}. متابعة؟`,
-        confirmText: "تسجيل المصروف",
+        title: "رفع طلب اعتماد مصروف",
+        description: `سيُحفظ طلب ${fmt(D(amount).toFixed(2))} د.ع بلا أي خصم أو قيد مالي. يستطيع مالك نشط آخر فقط اعتماده. ${expenseApprovalExecutionText(paymentMethod)}`,
+        confirmText: "رفع طلب الاعتماد",
       });
       if (!ok) return;
     }
@@ -266,7 +275,7 @@ export default function ExpenseNew() {
     create.mutate({
       branchId: Number(effectiveBranch),
       shiftId:
-        cashSource === "OWN_DRAWER" && openShift.data?.id
+        executionMode === "DRAWER_IMMEDIATE" && openShift.data?.id
           ? Number(openShift.data.id)
           : null,
       cashSource: paymentMethod === "CASH" ? cashSource : null,
@@ -310,7 +319,7 @@ export default function ExpenseNew() {
       <Card>
         <CardContent className="pt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-2">
-            {SOURCE_TABS.map((t) => (
+            {sourceTabs.map((t) => (
               <button
                 key={t.value}
                 type="button"
@@ -332,7 +341,7 @@ export default function ExpenseNew() {
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            {SOURCE_TABS.find((t) => t.value === source)?.hint}
+            {sourceTabs.find((t) => t.value === source)?.hint}
           </p>
         </CardContent>
       </Card>
@@ -358,45 +367,33 @@ export default function ExpenseNew() {
               ))}
             </select>
             {(() => {
-              // cash-treasury-mode (تدقيق ١٧/٦):
-              //  - admin/manager بلا وردية + نقدي ⇒ شارة زرقاء «خزينة إدارية» (مشروع، يُحفَظ).
-              //  - cashier/warehouse بلا وردية + نقدي ⇒ تحذير أحمر + زر مُعطَّل.
               if (openShift.data) {
                 return (
                   <p className="text-xs text-money-positive">
-                    لديك وردية مفتوحة #{Number(openShift.data.id)} — اختر أدناه
-                    هل الصرف من درجها أم من الخزينة.
+                    لديك وردية مفتوحة #{Number(openShift.data.id)} — المصروف
+                    النقدي دون 500,000 د.ع يمكن تنفيذه فوراً من درجها.
                   </p>
                 );
               }
               if (!isStock && paymentMethod === "CASH") {
-                if (isElevated) {
-                  return (
-                    <p className="text-xs text-[var(--status-pending)] inline-flex items-center gap-1">
-                      <Landmark aria-hidden className="size-4" />
-                      <span>
-                        يُسجَّل في <strong>الخزينة الإدارية</strong> — يَظهر في
-                        تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج
-                        الكاشير.
-                      </span>
-                    </p>
-                  );
-                }
                 return (
-                  <p className="text-xs text-destructive">
-                    لا وردية مفتوحة — الكاشير يجب أن يَفتح وردية قبل المصروف
-                    النقدي.{" "}
-                    <Link href="/shifts" className="underline">
-                      افتح وردية
-                    </Link>{" "}
-                    أو غيِّر طريقة الدفع لغير نقدية.
+                  <p className="inline-flex items-center gap-1 text-xs text-[var(--status-pending)]">
+                    <Landmark aria-hidden className="size-4" />
+                    <span>
+                      لا وردية مفتوحة؛ اختر «طلب اعتماد الخزينة» ليُحفظ الطلب
+                      بلا صرف، أو{" "}
+                      <Link href="/shifts" className="underline">
+                        افتح وردية
+                      </Link>
+                      .
+                    </span>
                   </p>
                 );
               }
               return (
                 <p className="text-xs text-muted-foreground">
-                  لا توجد وردية مفتوحة لهذا الفرع — سيُسجَّل بلا ربط (طريقة دفع
-                  غير نقدية).
+                  الطريقة غير النقدية تُرفع لاعتماد المالك ولا تمس درج الوردية
+                  أو الخزينة النقدية.
                 </p>
               );
             })()}
@@ -475,22 +472,21 @@ export default function ExpenseNew() {
                       type="button"
                       role="radio"
                       aria-checked={cashSource === "TREASURY"}
-                      disabled={!isElevated}
                       onClick={() => setCashSource("TREASURY")}
                       className={cn(
                         "rounded-xl border p-3 text-start transition",
                         cashSource === "TREASURY"
                           ? "border-primary bg-primary/5 ring-1 ring-primary"
                           : "hover:bg-muted/50",
-                        !isElevated && "cursor-not-allowed opacity-50",
                       )}
                     >
                       <span className="inline-flex items-center gap-1.5 text-sm font-bold">
-                        <Landmark aria-hidden className="size-4" /> الخزينة
-                        الإدارية
+                        <Landmark aria-hidden className="size-4" /> طلب اعتماد
+                        الخزينة
                       </span>
                       <span className="mt-1 block text-xs text-muted-foreground">
-                        يُسجل على خزينة الفرع ولا يدخل في إغلاق أي وردية.
+                        يُحفظ بلا صرف أو قيد، ثم ينفذه مالك آخر من خزينة الفرع
+                        عند الاعتماد.
                       </span>
                     </button>
                   </div>
@@ -499,8 +495,7 @@ export default function ExpenseNew() {
                     <strong className="text-foreground">
                       {me.data?.name ?? `مستخدم #${me.data?.id ?? "—"}`}
                     </strong>
-                    . هذا يثبت من أدخل المصروف؛ لا يُعد إثباتاً لمن سلّم النقد
-                    فعلياً.
+                    . المنشئ لا يستطيع اعتماد طلبه بنفسه.
                   </p>
                 </div>
               )}
@@ -512,6 +507,10 @@ export default function ExpenseNew() {
                   onChange={setAmount}
                   placeholder="0"
                 />
+                <p className="text-[11px] text-muted-foreground">
+                  النقدي فقط دون 500,000 د.ع من درج ورديتك يُنفذ فوراً؛ الحد وما
+                  فوقه وجميع الطرق غير النقدية تتحول إلى طلب اعتماد المالك.
+                </p>
               </div>
             </>
           )}
@@ -750,31 +749,27 @@ export default function ExpenseNew() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {(() => {
-        // cash-treasury-mode: التعطيل صارم لـcashier/warehouse فقط؛ admin/manager يَكتبون
-        // معاملاتهم في الخزينة الإدارية (TREASURY) بَدلاً من تَعطيل الزرّ عليهم.
         const cashNeedsShift =
           !isStock &&
-          paymentMethod === "CASH" &&
-          cashSource === "OWN_DRAWER" &&
+          executionMode === "DRAWER_IMMEDIATE" &&
           !openShift.data &&
           !openShift.isLoading;
-        const hardBlock =
-          cashNeedsShift ||
-          (paymentMethod === "CASH" &&
-            cashSource === "TREASURY" &&
-            !isElevated);
         return (
           <div className="flex gap-2">
             <Button
               onClick={submit}
-              disabled={create.isPending || hardBlock}
+              disabled={create.isPending || cashNeedsShift}
               title={
-                hardBlock
-                  ? "الكاشير يجب أن يَفتح وردية قبل مصروف نقدي"
+                cashNeedsShift
+                  ? "الصرف النقدي الصغير يتطلب وردية المنشئ"
                   : undefined
               }
             >
-              {create.isPending ? "جارٍ الحفظ…" : "حفظ المصروف"}
+              {create.isPending
+                ? "جارٍ الحفظ…"
+                : executionMode === "PENDING_OWNER_APPROVAL"
+                  ? "رفع طلب الاعتماد"
+                  : "حفظ وتنفيذ المصروف"}
             </Button>
             <Link href="/expenses">
               <Button variant="outline">إلغاء</Button>

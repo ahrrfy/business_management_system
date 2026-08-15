@@ -17,11 +17,14 @@ import { localDayStart } from "./dateRange";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
-import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
-import { shiftIdForCashTx } from "./shiftService";
 import { assertCashOutAvailable } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -60,6 +63,12 @@ export type ExpenseFundingKind =
   | "STOCK"
   | "UNKNOWN";
 
+/**
+ * حدّ النثرية النقدية الذي قرّره المالك. المبلغ الأصغر فقط يستطيع أن يخرج فوراً
+ * من درج مُنشئ المصروف؛ الحد نفسه وما فوقه طلب اعتماد خزينة بلا أثر مالي حتى الاعتماد.
+ */
+export const PETTY_CASH_LIMIT_IQD = money("500000");
+
 /** صنف مُستهلَك من المخزون (مصدر STOCK): إمّا وحدة+كمية أو كمية أساس مباشرة. */
 export interface ExpenseStockItemInput {
   variantId: number;
@@ -92,11 +101,187 @@ export interface CreateExpenseInput {
   clientRequestId?: string | null;
 }
 
+function requiresExpenseApproval(
+  input: CreateExpenseInput,
+  amount: ReturnType<typeof money>,
+): boolean {
+  return (
+    input.paymentMethod !== "CASH" ||
+    amount.gte(PETTY_CASH_LIMIT_IQD) ||
+    input.cashSource === "TREASURY"
+  );
+}
+
+function assertExpenseFundingInput(input: CreateExpenseInput) {
+  if (
+    input.cashSource &&
+    ((input.source ?? "CASH") === "STOCK" || input.paymentMethod !== "CASH")
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "مصدر النقد يُحدَّد للمصروف المالي النقدي فقط",
+    });
+  }
+}
+
+function assertStockExpenseAuthority(actor: Actor) {
+  if (actor.role !== "admin" && actor.role !== "manager") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "صرف المخزون كمصروف يتطلب صلاحية مدير مخزون/مدير",
+    });
+  }
+}
+
+/** حمولة قانونية تربط مفتاح إعادة المحاولة بالعملية المالية نفسها وبمنشئها. */
+function expenseCreatePayloadHash(input: CreateExpenseInput, actor: Actor) {
+  const source = input.source ?? "CASH";
+  const shared = {
+    actorUserId: actor.userId,
+    branchId: input.branchId,
+    // غياب التاريخ جزءٌ ثابت من نية الطلب؛ الإعادة بعد منتصف الليل تعيد المستند الأول
+    // ولا تتحول إلى حمولة مختلفة بسبب الساعة. تاريخ التنفيذ الفعلي يُحسم مرة واحدة أدناه.
+    expenseDate: input.expenseDate?.trim() || null,
+    category: input.category,
+    paymentMethod: input.paymentMethod,
+    source,
+    description: input.description?.trim() || null,
+    referenceNumber: input.referenceNumber?.trim() || null,
+    payee: input.payee?.trim() || null,
+    costCenter: input.costCenter?.trim() || null,
+  };
+  if (source === "STOCK") {
+    const items = (input.items ?? [])
+      .map((item) => {
+        const usesUnit = item.productUnitId != null && item.quantity != null;
+        const quantity = usesUnit ? money(item.quantity) : null;
+        if (quantity && quantity.decimalPlaces() > 4) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "كمية صرف المخزون تقبل أربعة منازل عشرية كحد أقصى",
+          });
+        }
+        return {
+          variantId: item.variantId,
+          productUnitId: item.productUnitId ?? null,
+          quantity: quantity?.toFixed(4) ?? null,
+          baseQuantity: usesUnit ? null : (item.baseQuantity ?? null),
+        };
+      })
+      .sort(
+        (a, b) =>
+          a.variantId - b.variantId ||
+          Number(a.productUnitId ?? 0) - Number(b.productUnitId ?? 0) ||
+          String(a.quantity ?? "").localeCompare(String(b.quantity ?? "")) ||
+          Number(a.baseQuantity ?? 0) - Number(b.baseQuantity ?? 0),
+      );
+    return idempotencyHash({
+      ...shared,
+      stockReason: input.stockReason ?? null,
+      items,
+    });
+  }
+  return idempotencyHash({
+    ...shared,
+    amount: toDbMoney(input.amount),
+    shiftId: input.shiftId ?? null,
+    cashSource:
+      input.paymentMethod === "CASH"
+        ? (input.cashSource ?? "OWN_DRAWER")
+        : null,
+    isRecurring: input.isRecurring === true,
+    recurringFrequency:
+      input.isRecurring === true ? (input.recurringFrequency ?? null) : null,
+  });
+}
+
+async function loadExpenseReplay(tx: any, replayId: number) {
+  const ex = (
+    await tx
+      .select({ receiptId: expenses.receiptId, status: expenses.status })
+      .from(expenses)
+      .where(eq(expenses.id, replayId))
+      .limit(1)
+  )[0];
+  if (!ex) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "معرّف إعادة المحاولة يشير إلى مصروف مفقود؛ لم تُنفذ عملية جديدة ويحتاج السجل مراجعة تدقيقية",
+    });
+  }
+  return {
+    expenseId: replayId,
+    receiptId: ex.receiptId ? Number(ex.receiptId) : null,
+    status: ex.status,
+    requiresApproval: ex.status === "PENDING_APPROVAL",
+    idempotent: true,
+  };
+}
+
+async function lockOwnRetailShift(
+  tx: any,
+  input: CreateExpenseInput,
+  actor: Actor,
+): Promise<number> {
+  const conds = [
+    eq(shifts.userId, actor.userId),
+    eq(shifts.branchId, input.branchId),
+    eq(shifts.status, "OPEN"),
+    eq(shifts.shiftType, "RETAIL"),
+  ];
+  if (input.shiftId != null) conds.push(eq(shifts.id, input.shiftId));
+
+  const shift = (
+    await tx
+      .select({
+        id: shifts.id,
+        branchId: shifts.branchId,
+        userId: shifts.userId,
+        status: shifts.status,
+      })
+      .from(shifts)
+      .where(and(...conds))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!shift) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "المصروف النقدي الصغير يُصرف من درج وردية المُنشئ فقط؛ افتح وردية مبيعات ممولة أولاً.",
+    });
+  }
+  return Number(shift.id);
+}
+
+async function insertExpenseAudit(
+  tx: any,
+  actor: Actor,
+  expenseId: number,
+  branchId: number,
+  action: string,
+  oldValue: unknown,
+  newValue: unknown,
+) {
+  await tx.insert(auditLogs).values({
+    userId: actor.userId,
+    branchId,
+    action,
+    entityType: "expense",
+    entityId: String(expenseId),
+    oldValue,
+    newValue,
+  });
+}
+
 /** صرف من المخزون (نثرية/تلف): يُخصَم بالكلفة عبر applyMovement + قيد INTERNAL_USE/WASTAGE — بلا receipt ولا صندوق. */
 async function createStockExpenseTx(
   tx: any,
   input: CreateExpenseInput,
   actor: Actor,
+  payloadHash: string,
+  resolvedExpenseDate: string,
 ) {
   const stockReason = input.stockReason;
   if (stockReason !== "INTERNAL_USE" && stockReason !== "WASTAGE") {
@@ -168,7 +353,7 @@ async function createStockExpenseTx(
         message: `صنف #${id} غير موجود`,
       });
 
-  const expDate = input.expenseDate?.trim() || toDateStr();
+  const expDate = resolvedExpenseDate;
 
   // رأس المصروف (amount مؤقّت 0، بلا receipt/صندوق).
   const eRes = await tx.insert(expenses).values({
@@ -199,6 +384,7 @@ async function createStockExpenseTx(
       "expense.create.STOCK",
       input.clientRequestId,
       expenseId,
+      payloadHash,
     );
 
   // خصم المخزون (تصاعدياً بـvariantId) + snapshot الكلفة + أسطر الأصناف.
@@ -262,229 +448,542 @@ async function createStockExpenseTx(
 
 /** Record a daily expense: CASH ⇒ receipt(OUT)+PAYMENT_OUT ; STOCK ⇒ صرف مخزون بالكلفة (نثرية/تلف، بلا صندوق). */
 export async function createExpense(input: CreateExpenseInput, actor: Actor) {
-  return withTx(async (tx) => {
-    // Defense in depth behind the router gate. A cashier-controlled expense
-    // would be an alternate way to reduce expected drawer cash and conceal a
-    // shortage. Legacy internal maintenance callers may omit role; every API
-    // caller supplies it through context.
-    if (actor.role && actor.role !== "admin" && actor.role !== "manager") {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "تسجيل المصروفات المالية من صلاحية المدير/الخزينة فقط",
-      });
-    }
+  // تُفحص العلاقات البنيوية قبل الـhash/replay حتى لا يخفي مفتاح قديم طلباً غير صالح.
+  assertExpenseFundingInput(input);
+  // G4: CASH/STOCK منفصلان، والـhash يشمل المنشئ وكل الحقول المؤثرة.
+  const opKey =
+    (input.source ?? "CASH") === "STOCK"
+      ? "expense.create.STOCK"
+      : "expense.create.CASH";
+  const payloadHash = expenseCreatePayloadHash(input, actor);
+  const resolvedExpenseDate = input.expenseDate?.trim() || toDateStr();
+  try {
+    return await withTx(async (tx) => {
+      const replayId = await checkIdempotency(
+        tx,
+        opKey,
+        input.clientRequestId,
+        payloadHash,
+        { requireStoredHash: true },
+      );
+      if (replayId) return loadExpenseReplay(tx, replayId);
 
-    // G4 (١٩/٦/٢٦): مفتاح idempotency مفصول حسب المصدر — كان توحيد المفتاح بين CASH/STOCK
-    // يسمح بـreplay صامت يُرجع نتيجة لا تطابق المُدخل عند تغيّر source بين طلبَين بنفس الـID.
-    const opKey =
-      (input.source ?? "CASH") === "STOCK"
-        ? "expense.create.STOCK"
-        : "expense.create.CASH";
-    const replayId = await findIdempotentRefId(
-      tx,
-      opKey,
-      input.clientRequestId,
-    );
-    if (replayId) {
-      const ex = (
+      const b = (
         await tx
-          .select({ receiptId: expenses.receiptId })
-          .from(expenses)
-          .where(eq(expenses.id, replayId))
+          .select({ id: branches.id })
+          .from(branches)
+          .where(eq(branches.id, input.branchId))
           .limit(1)
       )[0];
+      if (!b)
+        throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+
+      // production-slice: صرف من المخزون (نثرية/تلف) — مسار منفصل لا يلمس الصندوق النقدي.
+      if ((input.source ?? "CASH") === "STOCK") {
+        assertStockExpenseAuthority(actor);
+        return await createStockExpenseTx(
+          tx,
+          input,
+          actor,
+          payloadHash,
+          resolvedExpenseDate,
+        );
+      }
+
+      // طبّع إلى دقّة قاعدة البيانات قبل قرار الحدّ؛ 499999.995 تُخزّن 500000.00
+      // ولذلك يجب أن تمرّ بدورة الاعتماد لا أن تُصرف فورياً من الدرج.
+      const amt = round2(money(input.amount));
+      if (amt.lte(0))
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "مبلغ المصروف يجب أن يكون موجباً",
+        });
+      if (input.category === "OTHER" && !input.description?.trim())
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "وصف المصروف مطلوب لفئة «أخرى»",
+        });
+
+      const expDate = resolvedExpenseDate;
+      const isRecurring = !!input.isRecurring;
+      if (isRecurring && !input.recurringFrequency)
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "حدّد دورية التكرار",
+        });
+
+      const pendingApproval = requiresExpenseApproval(input, amt);
+      let effectiveShiftId: number | null = null;
+      let cashBucket: "DRAWER" | "TREASURY" | null = null;
+
+      // لا يوجد سقوط إداري إلى الخزينة: الصرف النقدي الفوري نثريةٌ من درج المُنشئ وحده.
+      // أمّا طلب الاعتماد فيبقى بلا bucket/shift حتى يعتمد مالك آخر فيُنفّذ من الخزينة.
+      if (!pendingApproval && input.paymentMethod === "CASH") {
+        effectiveShiftId = await lockOwnRetailShift(tx, input, actor);
+        cashBucket = "DRAWER";
+        await assertCashOutAvailable(tx, {
+          branchId: input.branchId,
+          cashBucket: "DRAWER",
+          shiftId: effectiveShiftId,
+          amount: amt,
+          operation: "تسجيل المصروف النقدي الصغير",
+        });
+      }
+
+      const rRes = await tx.insert(receipts).values({
+        invoiceId: null,
+        branchId: input.branchId,
+        shiftId: effectiveShiftId,
+        cashBucket,
+        direction: "OUT",
+        amount: toDbMoney(amt),
+        paymentMethod: input.paymentMethod,
+        referenceNumber: input.referenceNumber?.trim() || null,
+        status: pendingApproval ? "PENDING" : "COMPLETED",
+        approvalStatus: pendingApproval ? "PENDING_APPROVAL" : "APPROVED",
+        createdBy: actor.userId,
+      });
+      const receiptId = extractInsertId(rRes);
+
+      const eRes = await tx.insert(expenses).values({
+        branchId: input.branchId,
+        shiftId: effectiveShiftId,
+        cashBucket,
+        expenseDate: new Date(expDate),
+        category: input.category,
+        amount: toDbMoney(amt),
+        paymentMethod: input.paymentMethod,
+        description: input.description?.trim() || null,
+        referenceNumber: input.referenceNumber?.trim() || null,
+        payee: input.payee?.trim() || null,
+        costCenter: input.costCenter?.trim() || null,
+        isRecurring,
+        recurringFrequency: isRecurring ? input.recurringFrequency! : null,
+        receiptId,
+        status: pendingApproval ? "PENDING_APPROVAL" : "ACTIVE",
+        createdBy: actor.userId,
+      });
+      const expenseId = extractInsertId(eRes);
+      // سجّل مفتاح الـidempotency — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قيد الصرف.
+      // G4: المفتاح مفصول CASH عن STOCK.
+      if (input.clientRequestId)
+        await recordIdempotencyKey(
+          tx,
+          "expense.create.CASH",
+          input.clientRequestId,
+          expenseId,
+          payloadHash,
+        );
+
+      if (!pendingApproval) {
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: input.branchId,
+          receiptId,
+          amount: amt,
+          entryDate: new Date(expDate),
+          notes: `مصروف (${input.category})${input.description?.trim() ? ": " + input.description.trim() : ""}`,
+          createdBy: actor.userId,
+        });
+      }
+
       return {
-        expenseId: replayId,
-        receiptId: ex?.receiptId ? Number(ex.receiptId) : null,
+        expenseId,
+        receiptId,
+        status: pendingApproval ? "PENDING_APPROVAL" : "ACTIVE",
+        requiresApproval: pendingApproval,
+      };
+    });
+  } catch (error) {
+    if (!input.clientRequestId) throw error;
+    // المكرر النقدي قد ينتظر قفل الدرج حتى يصرف الأول الرصيد، فيرى حارس السيولة قبل
+    // INSERT المفتاح. القراءة الجديدة بعد rollback تحوّله إلى replay إن كان الأول قد التزم.
+    const replay = await withTx(async (tx) => {
+      const replayId = await checkIdempotency(
+        tx,
+        opKey,
+        input.clientRequestId,
+        payloadHash,
+        { requireStoredHash: true },
+      );
+      return replayId ? loadExpenseReplay(tx, replayId) : null;
+    });
+    if (replay) return replay;
+    throw error;
+  }
+}
+
+async function lockActiveOwner(tx: any, actor: Actor) {
+  const owner = (
+    await tx
+      .select({
+        id: users.id,
+        isActive: users.isActive,
+        isOwner: users.isOwner,
+      })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      // قفل SHARE يمنع تعطيل المالك حتى نهاية القرار، ويبقى متوافقاً مع قفل FK
+      // الذي تأخذه إيصالات نقدية أخرى على users؛ قفل X هنا يصنع user↔source deadlock.
+      .for("share")
+      .limit(1)
+  )[0];
+  if (!owner || owner.isActive !== true || owner.isOwner !== true) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "اعتماد المصروف أو رفضه يتطلب حساب مالك نشطاً",
+    });
+  }
+  return owner;
+}
+
+function assertPendingExpenseReceipt(exp: any, receipt: any) {
+  const valid =
+    receipt &&
+    receipt.direction === "OUT" &&
+    receipt.status === "PENDING" &&
+    receipt.approvalStatus === "PENDING_APPROVAL" &&
+    receipt.cashBucket == null &&
+    receipt.shiftId == null &&
+    receipt.invoiceId == null &&
+    receipt.workOrderId == null &&
+    receipt.reservationId == null &&
+    receipt.voucherNumber == null &&
+    Number(receipt.branchId) === Number(exp.branchId) &&
+    money(receipt.amount).eq(money(exp.amount)) &&
+    receipt.paymentMethod === exp.paymentMethod &&
+    receipt.createdBy != null &&
+    exp.createdBy != null &&
+    Number(receipt.createdBy) === Number(exp.createdBy);
+  if (!valid) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "طلب المصروف لا يطابق إيصال الاعتماد المعلّق؛ لم يُنفّذ أي أثر مالي ويحتاج مراجعة تدقيقية.",
+    });
+  }
+}
+
+/**
+ * ترتيب الأقفال النقدية ثابت على مستوى النظام: مصدر النقد (فرع الخزينة/الوردية)
+ * ثم مستند المصروف ثم الإيصال. القراءة الأولى مجرد hint؛ كل قرار أعمال يُعاد بعد
+ * قفل صف المصروف نفسه.
+ */
+async function lockExpenseCashSourceBeforeDocument(
+  tx: any,
+  expenseId: number,
+  operation: "APPROVE" | "CANCEL",
+) {
+  const hint = (
+    await tx
+      .select({
+        branchId: expenses.branchId,
+        shiftId: expenses.shiftId,
+        cashBucket: expenses.cashBucket,
+        paymentMethod: expenses.paymentMethod,
+      })
+      .from(expenses)
+      .where(eq(expenses.id, expenseId))
+      .limit(1)
+  )[0];
+  if (!hint) return;
+
+  const locksTreasury =
+    hint.cashBucket === "TREASURY" ||
+    (operation === "APPROVE" && hint.paymentMethod === "CASH");
+  if (locksTreasury) {
+    await tx
+      .select({ id: branches.id })
+      .from(branches)
+      .where(eq(branches.id, Number(hint.branchId)))
+      .for("update")
+      .limit(1);
+    return;
+  }
+
+  if (hint.shiftId != null) {
+    await tx
+      .select({ id: shifts.id })
+      .from(shifts)
+      .where(eq(shifts.id, Number(hint.shiftId)))
+      .for("update")
+      .limit(1);
+  }
+}
+
+/** اعتماد وتنفيذ ذريّ: مالك نشط غير المُنشئ، والخزينة هي مصدر CASH الوحيد. */
+export async function approveExpense(expenseId: number, actor: Actor) {
+  return withTx(async (tx) => {
+    await lockActiveOwner(tx, actor);
+    await lockExpenseCashSourceBeforeDocument(tx, expenseId, "APPROVE");
+    const exp = (
+      await tx
+        .select()
+        .from(expenses)
+        .where(eq(expenses.id, expenseId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!exp)
+      throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+    if (Number(exp.createdBy) === Number(actor.userId)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يجوز لمن أنشأ طلب المصروف أن يعتمد طلبه بنفسه",
+      });
+    }
+    if (exp.status === "ACTIVE") {
+      const completedReceipt =
+        exp.receiptId == null
+          ? null
+          : (
+              await tx
+                .select({
+                  status: receipts.status,
+                  approvalStatus: receipts.approvalStatus,
+                  approvedBy: receipts.approvedBy,
+                })
+                .from(receipts)
+                .where(eq(receipts.id, Number(exp.receiptId)))
+                .for("update")
+                .limit(1)
+            )[0];
+      if (
+        !completedReceipt ||
+        completedReceipt.status !== "COMPLETED" ||
+        completedReceipt.approvalStatus !== "APPROVED" ||
+        completedReceipt.approvedBy == null
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "المصروف نافذ أصلاً ولم ينشأ من دورة اعتماد معلّقة",
+        });
+      }
+      return {
+        expenseId,
+        receiptId: exp.receiptId == null ? null : Number(exp.receiptId),
+        status: "ACTIVE" as const,
         idempotent: true,
       };
     }
+    if (exp.status !== "PENDING_APPROVAL") {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "لا يمكن اعتماد طلب مصروف غير معلّق",
+      });
+    }
+    if (exp.source === "STOCK" || exp.receiptId == null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "طلب المصروف المعلّق لا يملك مساراً مالياً صالحاً",
+      });
+    }
 
-    const b = (
+    const receipt = (
       await tx
-        .select({ id: branches.id })
-        .from(branches)
-        .where(eq(branches.id, input.branchId))
+        .select()
+        .from(receipts)
+        .where(eq(receipts.id, Number(exp.receiptId)))
+        .for("update")
         .limit(1)
     )[0];
-    if (!b)
-      throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
+    assertPendingExpenseReceipt(exp, receipt);
 
-    if (
-      input.cashSource &&
-      ((input.source ?? "CASH") === "STOCK" || input.paymentMethod !== "CASH")
-    ) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "مصدر النقد يُحدَّد للمصروف المالي النقدي فقط",
-      });
-    }
-
-    // production-slice: صرف من المخزون (نثرية/تلف) — مسار منفصل لا يلمس الصندوق النقدي.
-    if ((input.source ?? "CASH") === "STOCK") {
-      return await createStockExpenseTx(tx, input, actor);
-    }
-
-    const amt = money(input.amount);
-    if (amt.lte(0))
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "مبلغ المصروف يجب أن يكون موجباً",
-      });
-    if (input.category === "OTHER" && !input.description?.trim())
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "وصف المصروف مطلوب لفئة «أخرى»",
-      });
-
-    // سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦ — تعديل المرحلة-١):
-    //  - admin/manager بلا وردية + نقدي ⇒ shiftId=null + bucket=TREASURY (سجلّ خزينة).
-    //  - cashier/warehouse بلا وردية + نقدي ⇒ PRECONDITION_FAILED (الحماية الأصلية).
-    //  - أيٌّ منهم مع وردية مفتوحة ⇒ shiftId=الوردية + bucket=DRAWER (Z-report).
-    //  - غير النقدي ⇒ shiftId اختياري + bucket=NULL (لا يَمسّ صندوقاً).
-    let effectiveShiftId: number | null = input.shiftId ?? null;
-    let cashBucket: "DRAWER" | "TREASURY" | null = null;
-    if (input.paymentMethod === "CASH") {
-      if (input.cashSource === "TREASURY") {
-        // اختيار صريح: الخزينة الإدارية لا تتبع أي وردية، حتى لو كان للفاعل درج مفتوح.
-        effectiveShiftId = null;
-        cashBucket = "TREASURY";
-      } else if (input.cashSource === "OWN_DRAWER") {
-        if (effectiveShiftId == null) {
-          const g = await shiftIdForCashTx(
-            tx,
-            actor,
-            input.branchId,
-            "مصروف نقدي من درج الفاعل",
-          );
-          if (g.shiftId == null || g.cashBucket !== "DRAWER") {
-            throw new TRPCError({
-              code: "PRECONDITION_FAILED",
-              message:
-                "لا توجد وردية مفتوحة للفاعل في هذا الفرع؛ اختر الخزينة الإدارية أو افتح وردية",
-            });
-          }
-          effectiveShiftId = g.shiftId;
-        }
-        cashBucket = "DRAWER";
-      } else if (effectiveShiftId == null) {
-        const g = await shiftIdForCashTx(
-          tx,
-          actor,
-          input.branchId,
-          "مصروف نقدي",
-        );
-        effectiveShiftId = g.shiftId;
-        cashBucket = g.cashBucket;
-      } else {
-        cashBucket = "DRAWER"; // shiftId مُمرَّر صراحةً ⇒ نقد درج
-      }
-    }
-
-    if (effectiveShiftId) {
-      const s = (
-        await tx
-          .select()
-          .from(shifts)
-          .where(eq(shifts.id, effectiveShiftId))
-          .for("update")
-          .limit(1)
-      )[0];
-      if (!s)
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "الوردية غير موجودة",
-        });
-      if (s.status !== "OPEN")
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "لا يمكن تسجيل مصروف على وردية مغلقة",
-        });
-      if (Number(s.branchId) !== input.branchId)
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "الوردية لا تطابق الفرع",
-        });
-      // لا امتياز إداري على عهدة شخص آخر: اختيار OWN_DRAWER أو تمرير shiftId يربطان وردية الفاعل فقط.
-      if (Number(s.userId) !== Number(actor.userId)) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "لا تَستطيع تسجيل مصروف على وردية مستخدم آخر",
-        });
-      }
-    }
-
-    if (input.paymentMethod === "CASH" && cashBucket != null) {
+    const cashBucket = exp.paymentMethod === "CASH" ? "TREASURY" : null;
+    if (cashBucket === "TREASURY") {
       await assertCashOutAvailable(tx, {
-        branchId: input.branchId,
+        branchId: Number(exp.branchId),
         cashBucket,
-        shiftId: effectiveShiftId,
-        amount: amt,
-        operation: "تسجيل المصروف النقدي",
+        shiftId: null,
+        amount: exp.amount,
+        operation: "اعتماد وصرف المصروف من الخزينة",
       });
     }
 
-    const rRes = await tx.insert(receipts).values({
-      invoiceId: null,
-      branchId: input.branchId,
-      shiftId: effectiveShiftId,
-      cashBucket,
-      direction: "OUT",
-      amount: toDbMoney(amt),
-      paymentMethod: input.paymentMethod,
-      referenceNumber: input.referenceNumber?.trim() || null,
-      status: "COMPLETED",
-      createdBy: actor.userId,
-    });
-    const receiptId = extractInsertId(rRes);
-
-    const expDate = input.expenseDate?.trim() || toDateStr();
-    const isRecurring = !!input.isRecurring;
-    if (isRecurring && !input.recurringFrequency)
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "حدّد دورية التكرار",
-      });
-    const eRes = await tx.insert(expenses).values({
-      branchId: input.branchId,
-      shiftId: effectiveShiftId,
-      cashBucket,
-      expenseDate: new Date(expDate),
-      category: input.category,
-      amount: toDbMoney(amt),
-      paymentMethod: input.paymentMethod,
-      description: input.description?.trim() || null,
-      referenceNumber: input.referenceNumber?.trim() || null,
-      payee: input.payee?.trim() || null,
-      costCenter: input.costCenter?.trim() || null,
-      isRecurring,
-      recurringFrequency: isRecurring ? input.recurringFrequency! : null,
-      receiptId,
-      status: "ACTIVE",
-      createdBy: actor.userId,
-    });
-    const expenseId = extractInsertId(eRes);
-    // سجّل مفتاح الـidempotency — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قيد الصرف.
-    // G4: المفتاح مفصول CASH عن STOCK.
-    if (input.clientRequestId)
-      await recordIdempotencyKey(
-        tx,
-        "expense.create.CASH",
-        input.clientRequestId,
-        expenseId,
+    await tx
+      .update(receipts)
+      .set({
+        shiftId: null,
+        cashBucket,
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        approvedBy: actor.userId,
+        approvedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(receipts.id, Number(exp.receiptId)),
+          eq(receipts.status, "PENDING"),
+          eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+        ),
+      );
+    await tx
+      .update(expenses)
+      .set({
+        shiftId: null,
+        cashBucket,
+        status: "ACTIVE",
+      })
+      .where(
+        and(
+          eq(expenses.id, expenseId),
+          eq(expenses.status, "PENDING_APPROVAL"),
+        ),
       );
 
     await postEntry(tx, {
       entryType: "PAYMENT_OUT",
-      branchId: input.branchId,
-      receiptId,
-      amount: amt,
-      entryDate: new Date(expDate),
-      notes: `مصروف (${input.category})${input.description?.trim() ? ": " + input.description.trim() : ""}`,
+      branchId: Number(exp.branchId),
+      receiptId: Number(exp.receiptId),
+      amount: money(exp.amount),
+      entryDate: new Date(exp.expenseDate),
+      notes: `مصروف معتمد (${exp.category})${exp.description?.trim() ? ": " + exp.description.trim() : ""}`,
       createdBy: actor.userId,
     });
+    await insertExpenseAudit(
+      tx,
+      actor,
+      expenseId,
+      Number(exp.branchId),
+      "expense.approveDisburse",
+      { status: "PENDING_APPROVAL", cashBucket: null },
+      {
+        status: "ACTIVE",
+        cashBucket,
+        receiptId: Number(exp.receiptId),
+        approvedBy: actor.userId,
+      },
+    );
 
-    return { expenseId, receiptId };
+    return {
+      expenseId,
+      receiptId: Number(exp.receiptId),
+      status: "ACTIVE" as const,
+      idempotent: false,
+    };
+  });
+}
+
+/** رفض ذريّ بلا صرف ولا قيد؛ يحتفظ بالسجلّ والأثر التدقيقي. */
+export async function rejectExpense(
+  expenseId: number,
+  actor: Actor,
+  rejectionReason: string,
+) {
+  return withTx(async (tx) => {
+    const reason = rejectionReason.trim();
+    if (reason.length < 3 || reason.length > 1000) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "سبب الرفض إلزامي وواضح (من 3 إلى 1000 حرف)",
+      });
+    }
+    await lockActiveOwner(tx, actor);
+    const exp = (
+      await tx
+        .select()
+        .from(expenses)
+        .where(eq(expenses.id, expenseId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!exp)
+      throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+    if (Number(exp.createdBy) === Number(actor.userId)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يجوز لمن أنشأ طلب المصروف أن يرفض طلبه بنفسه",
+      });
+    }
+    if (exp.status === "REJECTED") {
+      const rejectedReceipt =
+        exp.receiptId == null
+          ? null
+          : (
+              await tx
+                .select({
+                  status: receipts.status,
+                  approvalStatus: receipts.approvalStatus,
+                  approvedBy: receipts.approvedBy,
+                })
+                .from(receipts)
+                .where(eq(receipts.id, Number(exp.receiptId)))
+                .for("update")
+                .limit(1)
+            )[0];
+      if (
+        !rejectedReceipt ||
+        rejectedReceipt.status !== "FAILED" ||
+        rejectedReceipt.approvalStatus !== "REJECTED" ||
+        rejectedReceipt.approvedBy == null
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "المصروف مرفوض لكن أثر رفضه غير مكتمل ويحتاج مراجعة تدقيقية",
+        });
+      }
+      return {
+        expenseId,
+        receiptId: exp.receiptId == null ? null : Number(exp.receiptId),
+        status: "REJECTED" as const,
+        idempotent: true,
+      };
+    }
+    if (exp.status !== "PENDING_APPROVAL" || exp.receiptId == null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "لا يمكن رفض طلب مصروف غير معلّق",
+      });
+    }
+    const receipt = (
+      await tx
+        .select()
+        .from(receipts)
+        .where(eq(receipts.id, Number(exp.receiptId)))
+        .for("update")
+        .limit(1)
+    )[0];
+    assertPendingExpenseReceipt(exp, receipt);
+
+    await tx
+      .update(receipts)
+      .set({
+        status: "FAILED",
+        approvalStatus: "REJECTED",
+        approvedBy: actor.userId,
+        approvedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(receipts.id, Number(exp.receiptId)),
+          eq(receipts.status, "PENDING"),
+          eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+        ),
+      );
+    await tx
+      .update(expenses)
+      .set({ status: "REJECTED" })
+      .where(
+        and(
+          eq(expenses.id, expenseId),
+          eq(expenses.status, "PENDING_APPROVAL"),
+        ),
+      );
+    await insertExpenseAudit(
+      tx,
+      actor,
+      expenseId,
+      Number(exp.branchId),
+      "expense.reject",
+      { status: "PENDING_APPROVAL" },
+      { status: "REJECTED", rejectedBy: actor.userId, rejectionReason: reason },
+    );
+    return {
+      expenseId,
+      receiptId: Number(exp.receiptId),
+      status: "REJECTED" as const,
+      idempotent: false,
+    };
   });
 }
 
@@ -496,6 +995,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
  */
 export async function cancelExpense(expenseId: number, actor: Actor) {
   return withTx(async (tx) => {
+    await lockExpenseCashSourceBeforeDocument(tx, expenseId, "CANCEL");
     const exp = (
       await tx
         .select()
@@ -661,7 +1161,7 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
 export interface ListExpensesInput {
   branchId?: number;
   category?: ExpenseCategory;
-  status?: "ACTIVE" | "CANCELLED";
+  status?: "PENDING_APPROVAL" | "ACTIVE" | "REJECTED" | "CANCELLED";
   from?: string; // YYYY-MM-DD
   to?: string;
   /** بحث نصّي خادمي: البيان/المرجع/المستفيد (أعمدة expenses فقط ⇒ بلا join في المجاميع). */
@@ -810,15 +1310,39 @@ function integrityWarningsOf(row: any): string[] {
       warnings.push("RECEIPT_CASH_BUCKET_MISMATCH");
     if (nullableId(row.createdBy) !== nullableId(row.receiptCreatedBy))
       warnings.push("RECEIPT_CREATOR_MISMATCH");
-    if (row.status === "ACTIVE" && row.receiptStatus !== "COMPLETED")
-      warnings.push("RECEIPT_STATUS_MISMATCH");
-    if (row.status === "CANCELLED" && row.receiptStatus !== "REVERSED")
-      warnings.push("RECEIPT_STATUS_MISMATCH");
-    if (row.receiptApprovalStatus !== "APPROVED")
-      warnings.push("RECEIPT_NOT_APPROVED");
+    if (row.status === "PENDING_APPROVAL") {
+      if (
+        row.receiptStatus !== "PENDING" ||
+        row.receiptApprovalStatus !== "PENDING_APPROVAL"
+      )
+        warnings.push("PENDING_RECEIPT_MISMATCH");
+    } else if (row.status === "REJECTED") {
+      if (
+        row.receiptStatus !== "FAILED" ||
+        row.receiptApprovalStatus !== "REJECTED"
+      )
+        warnings.push("REJECTED_RECEIPT_MISMATCH");
+    } else {
+      if (row.status === "ACTIVE" && row.receiptStatus !== "COMPLETED")
+        warnings.push("RECEIPT_STATUS_MISMATCH");
+      if (row.status === "CANCELLED" && row.receiptStatus !== "REVERSED")
+        warnings.push("RECEIPT_STATUS_MISMATCH");
+      if (row.receiptApprovalStatus !== "APPROVED")
+        warnings.push("RECEIPT_NOT_APPROVED");
+    }
   }
 
-  if (fundingKind === "UNKNOWN") warnings.push("CASH_FUNDING_UNKNOWN");
+  if (
+    fundingKind === "UNKNOWN" &&
+    row.status !== "PENDING_APPROVAL" &&
+    row.status !== "REJECTED"
+  )
+    warnings.push("CASH_FUNDING_UNKNOWN");
+  if (
+    (row.status === "PENDING_APPROVAL" || row.status === "REJECTED") &&
+    (row.shiftId != null || row.cashBucket != null)
+  )
+    warnings.push("UNEXECUTED_HAS_CASH_LOCATION");
   if (row.cashBucket === "DRAWER" && row.shiftId == null)
     warnings.push("DRAWER_WITHOUT_SHIFT");
   if (row.cashBucket === "TREASURY" && row.shiftId != null)
@@ -833,6 +1357,10 @@ function enrichExpenseRow<T extends Record<string, any>>(row: T) {
   const integrityWarnings = integrityWarningsOf(row);
   return {
     ...row,
+    approvalStatus: row.receiptApprovalStatus ?? null,
+    approvedBy: row.receiptApprovedBy ?? null,
+    approvedByName: row.receiptApprovedByName ?? null,
+    approvedAt: row.receiptApprovedAt ?? null,
     fundingKind,
     integrityWarnings,
     needsAudit: integrityWarnings.length > 0,
@@ -904,10 +1432,25 @@ const financialIntegritySql = sql`(
     OR NOT (${expenses.paymentMethod} <=> ${receipts.paymentMethod})
     OR NOT (${expenses.cashBucket} <=> ${receipts.cashBucket})
     OR NOT (${expenses.createdBy} <=> ${receipts.createdBy})
-    OR (${expenses.status} = 'ACTIVE' AND ${receipts.status} <> 'COMPLETED')
-    OR (${expenses.status} = 'CANCELLED' AND ${receipts.status} <> 'REVERSED')
-    OR ${receipts.approvalStatus} <> 'APPROVED'
-    OR (${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} IS NULL)
+    OR (${expenses.status} = 'PENDING_APPROVAL' AND (
+      ${receipts.status} <> 'PENDING'
+      OR ${receipts.approvalStatus} <> 'PENDING_APPROVAL'
+      OR ${expenses.shiftId} IS NOT NULL OR ${expenses.cashBucket} IS NOT NULL
+    ))
+    OR (${expenses.status} = 'REJECTED' AND (
+      ${receipts.status} <> 'FAILED'
+      OR ${receipts.approvalStatus} <> 'REJECTED'
+      OR ${expenses.shiftId} IS NOT NULL OR ${expenses.cashBucket} IS NOT NULL
+    ))
+    OR (${expenses.status} = 'ACTIVE' AND (
+      ${receipts.status} <> 'COMPLETED'
+      OR ${receipts.approvalStatus} <> 'APPROVED'
+      OR (${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} IS NULL)
+    ))
+    OR (${expenses.status} = 'CANCELLED' AND (
+      ${receipts.status} <> 'REVERSED'
+      OR ${receipts.approvalStatus} <> 'APPROVED'
+    ))
     OR (${expenses.cashBucket} = 'DRAWER' AND ${expenses.shiftId} IS NULL)
     OR (${expenses.cashBucket} = 'TREASURY' AND ${expenses.shiftId} IS NOT NULL)
     OR (${expenses.paymentMethod} <> 'CASH' AND ${expenses.cashBucket} IS NOT NULL)
@@ -924,6 +1467,8 @@ export async function listExpenses(input: ListExpensesInput = {}) {
   const db = getDb();
   const emptyTotals = {
     active: "0.00",
+    pendingApproval: "0.00",
+    rejected: "0.00",
     drawer: "0.00",
     treasury: "0.00",
     nonCash: "0.00",
@@ -966,6 +1511,8 @@ export async function listExpenses(input: ListExpensesInput = {}) {
     db
       .select({
         active: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' THEN ${expenses.amount} ELSE 0 END), 0)`,
+        pendingApproval: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'PENDING_APPROVAL' THEN ${expenses.amount} ELSE 0 END), 0)`,
+        rejected: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'REJECTED' THEN ${expenses.amount} ELSE 0 END), 0)`,
         drawer: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} <> 'STOCK' AND ${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} = 'DRAWER' THEN ${expenses.amount} ELSE 0 END), 0)`,
         treasury: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} <> 'STOCK' AND ${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} = 'TREASURY' THEN ${expenses.amount} ELSE 0 END), 0)`,
         nonCash: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} <> 'STOCK' AND ${expenses.paymentMethod} <> 'CASH' THEN ${expenses.amount} ELSE 0 END), 0)`,
@@ -989,6 +1536,8 @@ export async function listExpenses(input: ListExpensesInput = {}) {
     rows: pageResult.rows.map(enrichExpenseRow),
     totals: {
       active: totalsRow?.active ?? "0.00",
+      pendingApproval: totalsRow?.pendingApproval ?? "0.00",
+      rejected: totalsRow?.rejected ?? "0.00",
       drawer: totalsRow?.drawer ?? "0.00",
       treasury: totalsRow?.treasury ?? "0.00",
       nonCash: totalsRow?.nonCash ?? "0.00",

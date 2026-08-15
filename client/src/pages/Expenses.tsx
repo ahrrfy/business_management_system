@@ -9,6 +9,15 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
@@ -16,7 +25,7 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { printDoc } from "@/lib/printing/print";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -27,9 +36,11 @@ import {
 } from "@shared/permissions";
 import {
   AlertTriangle,
+  Ban,
   Building2,
   ChevronDown,
   ChevronUp,
+  CircleCheck,
   CircleDollarSign,
   Landmark,
   Layers3,
@@ -44,6 +55,11 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
+import {
+  expenseAuditDetail,
+  expenseStatusFromSearch,
+  isExpenseFinanciallyPrintable,
+} from "./expenseUiPolicy";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -83,11 +99,15 @@ function sourceLabel(r: {
 }
 
 const STATUS_CLS: Record<string, string> = {
+  PENDING_APPROVAL: "badge-status-pending",
   ACTIVE: "badge-status-active",
+  REJECTED: "badge-status-cancelled",
   CANCELLED: "badge-status-cancelled",
 };
 const STATUS_LABEL: Record<string, string> = {
+  PENDING_APPROVAL: "بانتظار اعتماد المالك",
   ACTIVE: "نافذ",
+  REJECTED: "مرفوض بلا صرف",
   CANCELLED: "مُلغى",
 };
 
@@ -122,6 +142,8 @@ type ExpenseRow = ExpenseRowBase &
 
 type ExpenseTotals = {
   active?: string | number | null;
+  pendingApproval?: string | number | null;
+  rejected?: string | number | null;
   count?: number | null;
   drawer?: string | number | null;
   treasury?: string | number | null;
@@ -136,6 +158,7 @@ type ExpenseTotals = {
 };
 
 type FundingKind =
+  | "PENDING"
   | "DRAWER"
   | "TREASURY"
   | "NON_CASH"
@@ -145,6 +168,7 @@ type FundingKind =
 type AuditFocus = "DESCRIPTION" | "PAYEE" | "SOURCE" | "DRAWER";
 
 const FUNDING_ORDER: FundingKind[] = [
+  "PENDING",
   "DRAWER",
   "TREASURY",
   "NON_CASH",
@@ -155,6 +179,11 @@ const FUNDING_META: Record<
   FundingKind,
   { label: string; short: string; badge: string }
 > = {
+  PENDING: {
+    label: "طلبات اعتماد غير منفذة",
+    short: "بلا أثر مالي",
+    badge: "badge-status-pending",
+  },
   DRAWER: {
     label: "مصروفات الأدراج والورديات",
     short: "درج وردية",
@@ -198,6 +227,8 @@ const APPROVAL_LABEL: Record<string, string> = {
 };
 
 function fundingKindOf(r: ExpenseRow): FundingKind {
+  if (r.status === "PENDING_APPROVAL" || r.status === "REJECTED")
+    return "PENDING";
   if (r.fundingKind && FUNDING_ORDER.includes(r.fundingKind as FundingKind))
     return r.fundingKind as FundingKind;
   if (r.source === "STOCK") return "STOCK";
@@ -227,6 +258,9 @@ const AUDIT_WARNING_LABEL: Record<string, string> = {
   NON_CASH_HAS_CASH_BUCKET: "عملية غير نقدية مرتبطة بدرج أو خزينة",
   STOCK_HAS_RECEIPT: "صرف مخزون مرتبط خطأً بإيصال نقدي",
   STOCK_HAS_CASH_LOCATION: "صرف مخزون مرتبط خطأً بدرج أو خزينة",
+  PENDING_RECEIPT_MISMATCH: "طلب الاعتماد لا يطابق إيصالاً معلّقاً",
+  REJECTED_RECEIPT_MISMATCH: "رفض الطلب لا يطابق حالة الإيصال",
+  UNEXECUTED_HAS_CASH_LOCATION: "طلب غير منفذ مرتبط خطأً بمصدر نقد",
 };
 
 function warningsOf(r: ExpenseRow): string[] {
@@ -247,6 +281,10 @@ function warningsOf(r: ExpenseRow): string[] {
 
 function fundingDetail(r: ExpenseRow): string {
   const kind = fundingKindOf(r);
+  if (kind === "PENDING")
+    return r.paymentMethod === "CASH"
+      ? "طلب اعتماد خزينة — لم يُصرف"
+      : `طلب اعتماد ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod} — لم يُنفذ`;
   if (kind === "DRAWER") {
     return (
       [r.shiftOwnerName, r.shiftId != null ? `وردية #${r.shiftId}` : null]
@@ -301,7 +339,13 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
         number: `EXP#${expenseId}`,
         type: "مصروف",
         status: STATUS_LABEL[expense.status] ?? expense.status,
-        statusTone: expense.status === "CANCELLED" ? "warning" : "ok",
+        statusTone:
+          expense.status === "REJECTED"
+            ? "critical"
+            : expense.status === "PENDING_APPROVAL" ||
+                expense.status === "CANCELLED"
+              ? "warning"
+              : "ok",
         direction: "OUT",
         amount: `${fmt(expense.amount)} د.ع`,
         branch: expense.branchName,
@@ -431,10 +475,11 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
           actor:
             event.userName ?? (event.userId ? `#${event.userId}` : "غير موثق"),
           at: fmtDateTime(event.createdAt),
-          detail:
-            event.oldValue != null || event.newValue != null
-              ? "تغيير موثق في سجل التدقيق"
-              : undefined,
+          detail: expenseAuditDetail(
+            event.action,
+            event.oldValue,
+            event.newValue,
+          ),
           tone: "info" as const,
         })),
         ...trace.data.reversalReceipts.map((event) => ({
@@ -455,6 +500,10 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
 
 /** إيصال صرف عبر printDoc العام — نفس نواقل الطباعة الثلاثة (جسر الخادم/WebUSB/متصفح). */
 async function printExpenseReceipt(r: ExpenseRow) {
+  if (!isExpenseFinanciallyPrintable(r.status)) {
+    notify.err("لا يمكن طباعة طلب مصروف غير منفذ كإيصال صرف");
+    return;
+  }
   const warnings = warningsOf(r);
   await printDoc({
     kind: "receipt",
@@ -497,7 +546,11 @@ export default function Expenses() {
   const branches = trpc.branches.list.useQuery();
   const [branchId, setBranchId] = useState<number | "">("");
   const [category, setCategory] = useState<string>("");
-  const [status, setStatus] = useState<string>("");
+  const [status, setStatus] = useState<string>(() =>
+    typeof window === "undefined"
+      ? ""
+      : expenseStatusFromSearch(window.location.search),
+  );
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<string>("");
@@ -505,6 +558,8 @@ export default function Expenses() {
   const [query, setQuery] = useState("");
   const [exporting, setExporting] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [rejectTarget, setRejectTarget] = useState<ExpenseRow | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(true);
   const [auditOnly, setAuditOnly] = useState(false);
   const [auditFocus, setAuditFocus] = useState<AuditFocus | null>(null);
@@ -861,8 +916,13 @@ export default function Expenses() {
             .then((res) => ({ rows: res.rows ?? [], total: res.totals.count })),
         { pageSize: 1000 },
       );
-      if (!all.length) {
-        notify.err("لا بيانات للطباعة");
+      const printable = all.filter((row) =>
+        isExpenseFinanciallyPrintable(row.status),
+      );
+      if (!printable.length) {
+        notify.err(
+          "لا توجد مصروفات نافذة للطباعة؛ الطلبات المعلّقة والمرفوضة لا تُطبع كسند صرف",
+        );
         return;
       }
       const filterLabels = [
@@ -880,7 +940,10 @@ export default function Expenses() {
       ]
         .filter(Boolean)
         .join(" · ");
-      const printTotal = all.reduce((s, r) => s + Number(r.amount), 0);
+      const printTotal = printable.reduce(
+        (sum, row) => sum.plus(D(row.amount)),
+        D(0),
+      );
       const opened = printReportDoc({
         title: "المصروفات اليومية",
         headerExtra: filterLabels
@@ -899,7 +962,7 @@ export default function Expenses() {
           { key: "status", label: "الحالة" },
           { key: "audit", label: "ملاحظات التدقيق" },
         ],
-        rows: all.map((r) => ({
+        rows: printable.map((r) => ({
           identity: `#${Number(r.id)}${r.receiptVoucherNumber ? ` / ${r.receiptVoucherNumber}` : r.receiptId ? ` / R#${r.receiptId}` : ""}`,
           date: `${fmtDate(r.expenseDate as unknown as string)} / ${fmtDateTime(r.createdAt as unknown as string)}`,
           branch: r.branchName ?? "—",
@@ -914,8 +977,8 @@ export default function Expenses() {
         })),
         summary: [
           {
-            label: "الإجمالي",
-            value: `${fmt(printTotal)} د.ع`,
+            label: "إجمالي المصروفات النافذة فقط",
+            value: `${fmt(printTotal.toString())} د.ع`,
             large: true,
             bold: true,
           },
@@ -944,11 +1007,34 @@ export default function Expenses() {
       "FULL",
       ["manager"],
     );
+  const canApprove = me.data?.isOwner === true;
 
   const cancel = trpc.expenses.cancel.useMutation({
     onSuccess: async () => {
       await utils.expenses.list.invalidate();
     },
+  });
+  const approve = trpc.expenses.approve.useMutation({
+    onSuccess: async (_result, variables) => {
+      await Promise.all([
+        utils.expenses.list.invalidate(),
+        utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
+      ]);
+      notify.ok("تم اعتماد المصروف وتنفيذه ذرياً");
+    },
+    onError: (error) => notify.err(error),
+  });
+  const reject = trpc.expenses.reject.useMutation({
+    onSuccess: async (_result, variables) => {
+      await Promise.all([
+        utils.expenses.list.invalidate(),
+        utils.expenses.trace.invalidate({ expenseId: variables.expenseId }),
+      ]);
+      setRejectTarget(null);
+      setRejectReason("");
+      notify.ok("رُفض طلب المصروف بلا أثر مالي");
+    },
+    onError: (error) => notify.err(error),
   });
 
   function actionsFor(r: ExpenseRow) {
@@ -958,7 +1044,54 @@ export default function Expenses() {
         kind: "print" as const,
         label: "طباعة إيصال صرف",
         onSelect: () => void printExpenseReceipt(r),
+        hidden: !isExpenseFinanciallyPrintable(r.status),
         gate: { module: "expenses" as const, level: "READ" as const },
+      },
+      {
+        key: "approve",
+        kind: "approve" as const,
+        icon: CircleCheck,
+        label: "اعتماد وصرف",
+        hidden:
+          r.status !== "PENDING_APPROVAL" ||
+          !canApprove ||
+          Number(r.createdBy) === Number(me.data?.id),
+        disabled: approve.isPending || reject.isPending,
+        disabledReason: "توجد عملية اعتماد قيد التنفيذ",
+        onSelect: () =>
+          void (async () => {
+            if (
+              !(await confirm({
+                variant: "warning",
+                title: "اعتماد وصرف المصروف",
+                description:
+                  r.paymentMethod === "CASH"
+                    ? `سيُسحب ${fmt(r.amount)} د.ع من خزينة الفرع ويُنشأ القيد والإيصال كعملية ذرية واحدة. هل تتابع؟`
+                    : `سيُنفذ المصروف غير النقدي ${fmt(r.amount)} د.ع ويُنشأ القيد والإيصال كعملية ذرية واحدة. هل تتابع؟`,
+                confirmText: "اعتماد وصرف",
+                cancelText: "تراجع",
+              }))
+            )
+              return;
+            approve.mutate({ expenseId: Number(r.id) });
+          })(),
+      },
+      {
+        key: "reject",
+        kind: "cancel" as const,
+        icon: Ban,
+        label: "رفض الطلب",
+        variant: "destructive" as const,
+        hidden:
+          r.status !== "PENDING_APPROVAL" ||
+          !canApprove ||
+          Number(r.createdBy) === Number(me.data?.id),
+        disabled: approve.isPending || reject.isPending,
+        disabledReason: "توجد عملية اعتماد قيد التنفيذ",
+        onSelect: () => {
+          setRejectReason("");
+          setRejectTarget(r);
+        },
       },
       {
         key: "cancel",
@@ -977,7 +1110,9 @@ export default function Expenses() {
                 description:
                   r.source === "STOCK"
                     ? `ستُعاد المنتجات (${fmt(r.amount)} د.ع كلفةً) إلى المخزون ويُعكس القيد. هل تتابع؟`
-                    : `سيُعكس مبلغ ${fmt(r.amount)} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
+                    : r.paymentMethod === "CASH"
+                      ? `سيُعاد مبلغ ${fmt(r.amount)} د.ع إلى ${r.cashBucket === "DRAWER" ? "درج الوردية" : "خزينة الفرع"} ويُسجَّل قيد محاسبي عكسي. هل تتابع؟`
+                      : `سيُعكس مبلغ ${fmt(r.amount)} د.ع محاسبياً بطريقة الدفع المسجّلة من دون مسّ الدرج أو الخزينة النقدية. هل تتابع؟`,
                 confirmText: "إلغاء المصروف",
                 cancelText: "تراجع",
               }))
@@ -999,7 +1134,7 @@ export default function Expenses() {
     <div className="space-y-3">
       <PageHeader
         title="المصروفات اليومية"
-        description="كل مصروف يولّد حركة صرف من الصندوق (تُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر."
+        description="النقدي الصغير الممول يُنفذ من درج المنشئ؛ سائر الطلبات تبقى بلا أثر حتى اعتماد مالك آخر، والنقدي المعتمد وحده يُصرف من الخزينة."
         actions={
           <div className="flex gap-2">
             <Button
@@ -1092,7 +1227,10 @@ export default function Expenses() {
                 )}
               </p>
               <p className="mt-0.5 text-[11px] text-muted-foreground">
-                ملغى: <span dir="ltr">{metric(totals.cancelled)}</span>
+                بانتظار الاعتماد:{" "}
+                <span dir="ltr">{metric(totals.pendingApproval)}</span>
+                {" · "}مرفوض: <span dir="ltr">{metric(totals.rejected)}</span>
+                {" · "}ملغى: <span dir="ltr">{metric(totals.cancelled)}</span>
                 {totals.needsAudit == null ? " · المحسوب من الصفحة" : ""}
               </p>
             </div>
@@ -1196,8 +1334,10 @@ export default function Expenses() {
                 value={status}
                 onChange={(event) => setStatus(event.target.value)}
               >
-                <option value="">النافذ والملغى</option>
+                <option value="">كل الحالات</option>
+                <option value="PENDING_APPROVAL">بانتظار اعتماد المالك</option>
                 <option value="ACTIVE">نافذ</option>
+                <option value="REJECTED">مرفوض بلا صرف</option>
                 <option value="CANCELLED">ملغى</option>
               </select>
             </div>
@@ -1898,6 +2038,71 @@ export default function Expenses() {
       {cancel.error && (
         <p className="text-sm text-destructive">{cancel.error.message}</p>
       )}
+      <Dialog
+        open={rejectTarget != null}
+        onOpenChange={(open) => {
+          if (!open && !reject.isPending) {
+            setRejectTarget(null);
+            setRejectReason("");
+          }
+        }}
+      >
+        <DialogContent dir="rtl">
+          <DialogHeader>
+            <DialogTitle>رفض طلب المصروف</DialogTitle>
+            <DialogDescription>
+              سيبقى الطلب بلا صرف أو قيد مالي. سبب الرفض إلزامي ويُحفظ في مسار
+              التدقيق.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-1">
+            <Label htmlFor="expense-rejection-reason">سبب الرفض *</Label>
+            <Textarea
+              id="expense-rejection-reason"
+              value={rejectReason}
+              onChange={(event) => setRejectReason(event.target.value)}
+              placeholder="مثال: المستند المؤيد ناقص أو المبلغ يحتاج تصحيحاً"
+              rows={3}
+              maxLength={1000}
+              autoFocus
+            />
+            {rejectTarget && (
+              <p className="text-xs text-muted-foreground">
+                طلب #{Number(rejectTarget.id)} · {fmt(rejectTarget.amount)} د.ع
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRejectTarget(null)}
+              disabled={reject.isPending}
+            >
+              تراجع
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={reject.isPending || rejectReason.trim().length < 3}
+              onClick={() => {
+                if (!rejectTarget || rejectReason.trim().length < 3) return;
+                reject.mutate({
+                  expenseId: Number(rejectTarget.id),
+                  reason: rejectReason.trim(),
+                });
+              }}
+            >
+              {reject.isPending ? (
+                <Loader2 aria-hidden className="size-4 animate-spin" />
+              ) : (
+                <Ban aria-hidden className="size-4" />
+              )}
+              رفض الطلب
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
