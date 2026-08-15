@@ -5,10 +5,11 @@ import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { computeDepreciation, createAsset, disposeAsset, postMonthlyDepreciation } from "../assetsService";
+import { computeDepreciation, createAsset, disposeAsset, listAssets, postMonthlyDepreciation } from "../assetsService";
 import { getFinancialPosition, getProfitAndLoss } from "../reportsFinancialService";
 import { getSupplierStatement } from "../reportsService";
 import { truncateTables } from "./__testUtils__";
+import { approveVoucher } from "../voucher/approval";
 
 function db() {
   const d = getDb();
@@ -16,6 +17,7 @@ function db() {
   return d;
 }
 const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
+const OWNER = { userId: 2, branchId: 1, role: "manager" as const };
 
 beforeEach(async () => {
   await truncateTables([
@@ -24,15 +26,23 @@ beforeEach(async () => {
   ]);
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
-  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
+    { id: 2, openId: "asset-report-owner", name: "مالك", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد الأصول" });
+  await d.insert(s.receipts).values({
+    branchId: 1, direction: "IN", amount: "10000000.00", paymentMethod: "CASH",
+    cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
+    referenceNumber: "TEST-ASSET-REPORT-FUND", createdBy: 1,
+  });
 });
 
 describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف المورد)", () => {
   it("FA-02: ربح بيع أصل يَظهر في قائمة الأرباح والخسائر ويَرفع صافي الربح", async () => {
     // شراء وتصرّف في نفس اليوم ⇒ إهلاك صفر ⇒ NBV = قيمة الشراء ⇒ الربح = المتحصّل − الشراء.
     const a = await createAsset(
-      { name: "طابعة", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "1000000", usefulLifeYears: 5, branchId: 1 },
+      { name: "طابعة", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "1000000", usefulLifeYears: 5, branchId: 1, supplierId: 1 },
       ACTOR,
     );
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-06-01", reason: "بيع", value: "1200000" }, ACTOR);
@@ -46,7 +56,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
 
   it("FA-02: خسارة شطب أصل (بلا متحصّل) تَظهر مصروفاً وتَخفض صافي الربح", async () => {
     const a = await createAsset(
-      { name: "كرسي", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "500000", usefulLifeYears: 5, branchId: 1 },
+      { name: "كرسي", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "500000", usefulLifeYears: 5, branchId: 1, supplierId: 1 },
       ACTOR,
     );
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-06-01", reason: "تلف", value: "0" }, ACTOR); // خسارة = −NBV
@@ -75,9 +85,30 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
     expect(periodStmt!.summary.openingBalance).toBe("600000.00");
   });
 
+  it("الأصل النقدي المعلّق يُعاد بمعرّفه لكنه لا يظهر بالقائمة/الميزانية ولا يُهلَك حتى اعتماد المالك", async () => {
+    const pendingAsset = await createAsset(
+      { name: "آلة معلّقة", category: "printing", purchaseDate: "2024-01-01", purchaseValue: "500000", usefulLifeYears: 5, branchId: 1 },
+      ACTOR,
+    );
+    expect(pendingAsset).toMatchObject({ paymentPending: true, isActive: false });
+    expect(pendingAsset!.id).toBeGreaterThan(0);
+    expect(pendingAsset!.code).toMatch(/^AST-/);
+    expect(await listAssets(undefined, { branchId: null })).toHaveLength(0);
+    expect((await getFinancialPosition()).fixedAssets).toBe("0.00");
+    expect((await postMonthlyDepreciation(2024, 6, ACTOR)).assetsPosted).toBe(0);
+
+    const [request] = await db().select().from(s.receipts)
+      .where(eq(s.receipts.referenceNumber, `ASSET-ACQ-${pendingAsset!.id}`));
+    await approveVoucher(Number(request.id), OWNER);
+
+    expect(await listAssets(undefined, { branchId: null })).toHaveLength(1);
+    expect((await getFinancialPosition()).fixedAssets).toBe("500000.00");
+    expect((await postMonthlyDepreciation(2024, 6, ACTOR)).assetsPosted).toBe(1);
+  });
+
   it("FI-02: الإهلاك الشهري يُرحّل مصروفاً + يُحدّث المتراكم + P&L + ميزانية NBV + idempotent", async () => {
     const a = await createAsset(
-      { name: "آلة", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1200000", salvageValue: "0", usefulLifeYears: 5, depreciationMethod: "sl", branchId: 1 },
+      { name: "آلة", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1200000", salvageValue: "0", usefulLifeYears: 5, depreciationMethod: "sl", branchId: 1, supplierId: 1 },
       ACTOR,
     );
     // المتوقَّع التحليليّ حتى نهاية يونيو ٢٠٢٤ (نفس asOf الذي تَستعمله الخدمة: أوّل التالي).
@@ -122,7 +153,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
 
   it("FI-02: التصرّف بلا ترحيل شهري يُرحّل إهلاك catch-up حتى التاريخ (لا تسرّب من حقوق الملكية)", async () => {
     const a = await createAsset(
-      { name: "معدّة", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5, depreciationMethod: "sl", branchId: 1 },
+      { name: "معدّة", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5, depreciationMethod: "sl", branchId: 1, supplierId: 1 },
       ACTOR,
     );
     // لم يُشغَّل postMonthlyDepreciation ⇒ المتراكم المخزَّن 0. التصرّف عند 2024-01-01.
@@ -146,7 +177,7 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
 
   it("#2/#3 (تدقيق التثبيت): أصل مشطوب (retired) يُستبعَد من ميزانية الأصول ولا يُهلَك بعد الشطب", async () => {
     const a = await createAsset(
-      { name: "جهاز مشطوب", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "800000", usefulLifeYears: 5, branchId: 1 },
+      { name: "جهاز مشطوب", category: "computers", purchaseDate: "2024-06-01", purchaseValue: "800000", usefulLifeYears: 5, branchId: 1, supplierId: 1 },
       ACTOR,
     );
     // شطب في نفس يوم الشراء (NBV = قيمة الشراء) ⇒ خسارة = −800000 وstatus=retired.

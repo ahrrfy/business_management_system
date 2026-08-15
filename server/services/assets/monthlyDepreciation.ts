@@ -45,7 +45,12 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
   const db = requireDb();
   // #3 (تدقيق التثبيت): استبعاد 'retired' كـ'disposed' — الأصل المشطوب جُمِّد إهلاكه المتراكم وسُجِّلت
   // بقيّته خسارةً، فمواصلة إهلاكه تُكرّر الشطب (خسارة عند الشطب + إهلاك لاحق). كامن حتى تُوصَل postDepreciation.
-  const statusScope = notInArray(fixedAssets.status, ["disposed", "retired"]);
+  // الأصل النقدي يبقى isActive=false حتى اعتماد مالك مختلف لطلب الدفع؛ لا إهلاك قبل
+  // ثبوت الاقتناء وخروج النقد فعلياً.
+  const statusScope = and(
+    eq(fixedAssets.isActive, true),
+    notInArray(fixedAssets.status, ["disposed", "retired"]),
+  );
   const rows = await db
     .select({ id: fixedAssets.id })
     .from(fixedAssets)

@@ -52,7 +52,11 @@ export function WalletMoveDialog({
     onClose();
   }
   const dep = trpc.digitalCards.wallets.deposit.useMutation({
-    onSuccess: (r) => done(`أُودع المبلغ — الرصيد ${fmtAr(r.balanceAfter)}`),
+    onSuccess: (r) => done(
+      r.pendingApproval
+        ? "رُفع طلب إيداع نقدي بلا أثر على الخزينة أو رصيد المحفظة — ينفّذه مالكٌ آخر من سندات الصرف"
+        : `أُودع المبلغ — الرصيد ${fmtAr(r.balanceAfter)}`,
+    ),
     onError: (e) => notify.err(e),
   });
   const wdr = trpc.digitalCards.wallets.withdraw.useMutation({

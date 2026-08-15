@@ -109,10 +109,23 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           });
         }
         const replayFully = replayItems.every((r) => (r.receivedBaseQuantity ?? 0) >= r.baseQuantity);
+        const [replayShippingRequest] = await tx
+          .select({ id: receipts.id })
+          .from(receipts)
+          .where(eq(receipts.referenceNumber, `SHIP-${replayPo.poNumber}-${paymentRequestToken}`))
+          .limit(1);
+        const [replaySupplierRequest] = await tx
+          .select({ id: receipts.id })
+          .from(receipts)
+          .where(eq(receipts.referenceNumber, `PO-PAY-${replayPo.poNumber}-${paymentRequestToken}`))
+          .limit(1);
         return {
           purchaseOrderId: input.purchaseOrderId,
           fullyReceived: replayFully,
           receivedTotal: money(replayPo.total).toFixed(2),
+          receivedUsd: money(replayPo.usdTotal ?? "0").toFixed(2),
+          shippingPaymentRequestReceiptId: replayShippingRequest ? Number(replayShippingRequest.id) : null,
+          supplierPaymentRequestReceiptId: replaySupplierRequest ? Number(replaySupplierRequest.id) : null,
           idempotentReplay: true as const,
         };
       }
@@ -468,6 +481,34 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           sourceShippingTotal: toDbMoney(totalLanded),
         });
         shippingPaymentRequestReceiptId = request.receiptId;
+        // الاعتراف بالمصروف يقع لحظة الاستلام، مستقلاً عن قرار توقيت السداد. الإيصال
+        // المعلّق هو حساب clearing تشغيلي: لا يدخل النقد حتى الاعتماد، بينما يبقى
+        // expense/ledger قائماً حتى لو رُفضت محاولة الدفع وأُعيد تقديمها.
+        await tx.insert(expenses).values({
+          branchId: Number(po.branchId),
+          shiftId: null,
+          cashBucket: "TREASURY",
+          expenseDate: new Date(),
+          category: "TRANSPORT",
+          amount: toDbMoney(receivedLanded),
+          paymentMethod: "CASH",
+          description: `شحن/كمرك أمر الشراء ${po.poNumber}`,
+          referenceNumber: `SHIP-${po.poNumber}-${paymentRequestToken}`,
+          receiptId: request.receiptId,
+          status: "ACTIVE",
+          createdBy: actor.userId,
+        });
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: Number(po.branchId),
+          purchaseOrderId: input.purchaseOrderId,
+          // الاعتراف مستقل عن محاولة السداد الحالية؛ expense.receiptId يحمل
+          // رابط الطلب القابل للاستبدال بعد الرفض من دون قيد ثانٍ.
+          receiptId: null,
+          amount: receivedLanded,
+          dedupeKey: `PURCHASE_SHIPPING_ACCRUAL:${input.purchaseOrderId}:${paymentRequestToken}`,
+          notes: `استحقاق مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
+        });
       } else {
         assertNonPhysicalOutReceipt({
           classification: "NON_CASH_METHOD",

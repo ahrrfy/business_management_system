@@ -1,13 +1,13 @@
 // إيداع نقد (دينار) من خزينة الفرع، أو إيداع دولار مباشر لمحفظة الصيرفة الدولارية (معزولتان).
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { exchangeTransactions, receipts } from "../../../drizzle/schema";
+import { exchangeTransactions } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
-import { adjustExchangeBalanceIqd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
-import { assertCashOutAvailable, assertTreasuryOutException } from "../cash/cashAvailability";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { createSystemPaymentRequestTx } from "../voucher/create";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
 
 export interface DepositInput {
@@ -34,7 +34,11 @@ export async function depositToExchange(
       const existing = await findIdempotentRefId(tx, "exchange.deposit", input.clientRequestId);
       if (existing != null) {
         const t = (await tx.select().from(exchangeTransactions).where(eq(exchangeTransactions.id, existing)).limit(1))[0];
-        return { txnId: existing, txnNumber: t?.txnNumber ?? "" };
+        return {
+          txnId: existing,
+          txnNumber: t?.txnNumber ?? "",
+          pendingApproval: t?.status === "PENDING_APPROVAL",
+        };
       }
     }
     const amount = round2(input.amount);
@@ -43,12 +47,12 @@ export async function depositToExchange(
     // في الإيداع الديناري ترتيب الأقفال الحاكم: مصدر الخزينة → محفظة الصيرفة → receipt.
     // إيداع الدولار لا يمس خزينة الدينار، فيبقى قفل المحفظة وحده.
     if (input.currency !== "USD") {
-      assertTreasuryOutException("EXCHANGE_DEPOSIT_INTERNAL");
-      await assertCashOutAvailable(tx, {
+      // الطلب لا يحجز الرصيد ولا يصرفه، لكن قفل المصدر يحافظ على الترتيب العالمي
+      // branch/source → house → document كي لا ينعكس مع اعتماد طلب آخر.
+      await lockCashSourceForUpdate(tx, {
         branchId: input.branchId,
         cashBucket: "TREASURY",
-        amount,
-        operation: "الإيداع النقدي لدى الصيرفة",
+        shiftId: null,
       });
     }
     const house = await lockHouse(tx, input.exchangeHouseId);
@@ -85,25 +89,8 @@ export async function depositToExchange(
       return { txnId, txnNumber, pendingApproval: true };
     }
 
-    // receipt OUT TREASURY — نقد فعلي يغادر خزينة الفرع إلى أصل الصيرفة.
-    const recRes = await tx.insert(receipts).values({
-      branchId: input.branchId,
-      shiftId: null,
-      direction: "OUT",
-      amount: toDbMoney(amount),
-      paymentMethod: "CASH",
-      cashBucket: "TREASURY",
-      status: "COMPLETED",
-      partyType: "OTHER",
-      description: `إيداع لدى الصيرفة «${house.name}»`,
-      createdBy: actor.userId,
-    });
-    const receiptId = extractInsertId(recRes);
-
-    await adjustExchangeBalanceIqd(tx, input.exchangeHouseId, amount);
-    const balIqdAfter = money(house.balanceIqd).plus(amount);
-    const balUsdAfter = money(house.balanceUsd);
-
+    // الإيداع الديناري دفعٌ إلى أمين خارجي، لا نقلٌ داخلي. نثبت طلب الحركة فقط؛
+    // لا house balance ولا receipt مادي ولا ledger حتى يعتمد مالك مختلف سند الصرف.
     const txnNumber = await nextTxnNumber(tx, input.branchId);
     const txRes = await tx.insert(exchangeTransactions).values({
       txnNumber,
@@ -112,28 +99,38 @@ export async function depositToExchange(
       type: "DEPOSIT",
       currency: "IQD",
       iqdAmount: toDbMoney(amount),
-      balanceIqdAfter: toDbMoney(balIqdAfter),
-      balanceUsdAfter: toDbMoney(balUsdAfter),
-      receiptId,
-      status: "ACTIVE",
+      balanceIqdAfter: toDbMoney(money(house.balanceIqd)),
+      balanceUsdAfter: toDbMoney(money(house.balanceUsd)),
+      receiptId: null,
+      status: "PENDING_APPROVAL",
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });
     const txnId = extractInsertId(txRes);
-
-    await postEntry(tx, {
-      entryType: "EXCHANGE_DEPOSIT",
+    const request = await createSystemPaymentRequestTx(tx, {
       branchId: input.branchId,
+      amount: toDbMoney(amount),
+      paymentMethod: "CASH",
+      partyType: "OTHER",
+      counterpartyName: house.name,
+      description: `طلب إيداع نقد لدى الصيرفة «${house.name}»`,
+      referenceNumber: `EXCHANGE-IQD-DEP-${txnId}`,
+      clientRequestId: `exchange-iqd-deposit-${txnId}`,
+      internalNote: null,
+    }, actor, {
+      kind: "EXCHANGE_IQD_DEPOSIT",
+      transactionId: txnId,
       exchangeHouseId: input.exchangeHouseId,
-      receiptId,
-      amount,
-      dedupeKey: `EXDEP:${txnNumber}`,
-      notes: input.notes ?? undefined,
+      expectedAmount: toDbMoney(amount),
     });
+    await tx
+      .update(exchangeTransactions)
+      .set({ receiptId: request.receiptId })
+      .where(eq(exchangeTransactions.id, txnId));
 
     if (input.clientRequestId) {
       await recordIdempotencyKey(tx, "exchange.deposit", input.clientRequestId, txnId);
     }
-    return { txnId, txnNumber };
+    return { txnId, txnNumber, pendingApproval: true };
   });
 }

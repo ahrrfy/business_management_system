@@ -28,10 +28,11 @@ import {
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { postEntry } from "../ledgerService";
-import { assertCashOutAvailable, assertTreasuryOutException } from "../cash/cashAvailability";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
+import { createSystemPaymentRequestTx } from "../voucher/create";
 
 /** الحركات التي تزيد الرصيد؛ ما عداها يُنقصه. مصدرُ حقيقةٍ واحد لإشارة كل نوع. */
 const INBOUND_TYPES = new Set(["OPENING", "DEPOSIT", "SALE_REVERSAL"]);
@@ -146,7 +147,7 @@ export async function deposit(
     notes?: string | null;
   },
   actor: Actor,
-): Promise<{ transactionId: number; receiptId: number; balanceAfter: string }> {
+): Promise<{ transactionId: number; receiptId: number; balanceAfter: string; pendingApproval?: boolean }> {
   const amount = money(input.amount);
   if (amount.lte(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون أكبر من صفر" });
@@ -162,13 +163,12 @@ export async function deposit(
     if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "المحفظة غير موجودة" });
     cashBranchHint = Number(preview.branchId);
     assertWalletBranch(cashBranchHint, actor);
-    // ترتيب الأقفال الحاكم: مصدر النقد → المحفظة → الإيصال.
-    assertTreasuryOutException("DIGITAL_WALLET_DEPOSIT_INTERNAL");
-    await assertCashOutAvailable(tx, {
+    // الطلب لا يحجز رصيداً، لكن نقفل mutex المصدر أولاً لحفظ ترتيب
+    // branch/source → wallet → document مع منفذ الاعتماد.
+    await lockCashSourceForUpdate(tx, {
       branchId: cashBranchHint,
       cashBucket: "TREASURY",
-      amount,
-      operation: "إيداع رصيد محفظة المزوّد نقداً",
+      shiftId: null,
     });
   }
 
@@ -186,14 +186,62 @@ export async function deposit(
     .where(eq(digitalProviders.id, Number(w.providerId)))
     .limit(1);
 
-  // سند صرف OUT من الخزينة (لا من درج الكاشير) — النقد خرج فعلاً إلى جهاز المزوّد.
+  if (input.paymentMethod === "CASH") {
+    // المزوّد أمين خارجي؛ لا نزيد المحفظة ولا نخرج نقداً قبل owner/maker-checker.
+    const pendingRes = await tx.insert(digitalWalletTransactions).values({
+      walletId: input.walletId,
+      branchId: Number(w.branchId),
+      type: "DEPOSIT",
+      direction: "IN",
+      amount: toDbMoney(amount),
+      balanceAfter: toDbMoney(money(w.currentBalance)),
+      transactionNumber: `DWD-P-${input.walletId}-${input.clientRequestId.slice(0, 12)}`,
+      clientRequestId: input.clientRequestId,
+      receiptId: null,
+      status: "PENDING_APPROVAL",
+      createdBy: actor.userId,
+      notes: input.notes ?? null,
+    });
+    const transactionId = extractInsertId(pendingRes);
+    const request = await createSystemPaymentRequestTx(tx, {
+      branchId: Number(w.branchId),
+      amount: toDbMoney(amount),
+      paymentMethod: "CASH",
+      partyType: "OTHER",
+      counterpartyName: prov?.supplierName ?? "مزوّد البطاقات الرقمية",
+      description: `طلب إيداع رصيد في محفظة «${w.name}»`,
+      referenceNumber: `DIGITAL-WALLET-DEP-${transactionId}`,
+      clientRequestId: `digital-wallet-deposit-${transactionId}`,
+    }, actor, {
+      kind: "DIGITAL_WALLET_CASH_DEPOSIT",
+      transactionId,
+      walletId: input.walletId,
+      expectedAmount: toDbMoney(amount),
+    });
+    await tx
+      .update(digitalWalletTransactions)
+      .set({ receiptId: request.receiptId })
+      .where(eq(digitalWalletTransactions.id, transactionId));
+    await auditLog(tx, actor, "digitalCards.wallet.depositRequested", input.walletId, {
+      amount: toDbMoney(amount),
+      requestReceiptId: request.receiptId,
+    });
+    return {
+      transactionId,
+      receiptId: request.receiptId,
+      balanceAfter: toDbMoney(money(w.currentBalance)),
+      pendingApproval: true,
+    };
+  }
+
+  // التحويل غير النقدي نافذ في مساره القائم؛ لا يمس خزينة النقد.
   const receiptRes = await tx.insert(receipts).values({
     branchId: Number(w.branchId),
     shiftId: null,
     direction: "OUT",
     amount: toDbMoney(amount),
     paymentMethod: input.paymentMethod,
-    cashBucket: input.paymentMethod === "CASH" ? "TREASURY" : null,
+    cashBucket: null,
     referenceNumber: input.clientRequestId,
     status: "COMPLETED",
     partyType: "OTHER",

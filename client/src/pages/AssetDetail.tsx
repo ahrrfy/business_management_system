@@ -66,7 +66,7 @@ export default function AssetDetail() {
   };
 
   const handover = trpc.assets.handover.useMutation({ onSuccess: async () => { notify.ok("تم تسليم العهدة"); setOpenHandover(false); setHEmp(""); setHNote(""); await refresh(); }, onError: (e) => notify.err(e) });
-  const addMaint = trpc.assets.addMaintenance.useMutation({ onSuccess: async () => { notify.ok("تم تسجيل الصيانة"); setOpenMaint(false); setMType(""); setMVendor(""); setMCost(""); setMNote(""); await refresh(); }, onError: (e) => notify.err(e) });
+  const addMaint = trpc.assets.addMaintenance.useMutation({ onSuccess: async (a) => { notify.ok(a?.paymentPending ? "سُجّلت الصيانة، أمّا دفعها النقدي فمعلّق حتى اعتماد مالكٍ آخر من سندات الصرف" : "تم تسجيل الصيانة"); setOpenMaint(false); setMType(""); setMVendor(""); setMCost(""); setMNote(""); await refresh(); }, onError: (e) => notify.err(e) });
   const returnMaint = trpc.assets.returnFromMaintenance.useMutation({ onSuccess: async () => { notify.ok("أُعيد الأصل للخدمة"); await refresh(); }, onError: (e) => notify.err(e) });
   const addDoc = trpc.assets.addDocument.useMutation({ onSuccess: async () => { notify.ok("رُفِع المستند"); setDocTitle(""); setDocImages([]); await refresh(); }, onError: (e) => notify.err(e) });
   const delDoc = trpc.assets.deleteDocument.useMutation({ onSuccess: async () => { notify.ok("حُذِف المستند"); await refresh(); }, onError: (e) => notify.err(e) });

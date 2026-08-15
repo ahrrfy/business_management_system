@@ -206,6 +206,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
   });
 
   it("فشل الرصيد عند الاعتماد يُبقي السند PENDING بلا قيد أو ذمة أو دلو نقدي", async () => {
+    await db().update(s.suppliers).set({ currentBalance: "3000000.00" }).where(eq(s.suppliers.id, 1));
     await db()
       .delete(s.receipts)
       .where(eq(s.receipts.referenceNumber, "TEST-TREASURY-FUND"));
@@ -235,10 +236,11 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     const supplier = (
       await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
     )[0];
-    expect(supplier.currentBalance).toBe("0.00");
+    expect(supplier.currentBalance).toBe("3000000.00");
   });
 
   it("اعتماد سند مُعلَّق بواسطة مدير غير المُنشئ ⇒ قَيد + رَصيد + بَصمة", async () => {
+    await db().update(s.suppliers).set({ currentBalance: "3000000.00" }).where(eq(s.suppliers.id, 1));
     const r = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
       paymentMethod: "TRANSFER", partyType: "SUPPLIER", partyId: 1,
@@ -256,7 +258,7 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     expect(ents[0].entryType).toBe("PAYMENT_OUT");
 
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
-    expect(sup.currentBalance).toBe("-2000000.00"); // AP يَنقص للمورّد ⇒ سَلب
+    expect(sup.currentBalance).toBe("1000000.00"); // AP يَنقص بلا السماح بدفعٍ يتجاوز المستحق
 
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
     expect(rc.approvalStatus).toBe("APPROVED");
@@ -274,6 +276,22 @@ describe("vouchers-pro: Maker-Checker (موافقة ثانية)", () => {
     }, managerActor);
 
     await expect(approveVoucher(r.receiptId, managerActor)).rejects.toThrow(/أنشأته بنفسك/);
+  });
+
+  it("يعيد فحص رصيد المورد الحالي عند الاعتماد ويُبقي الطلب معلّقاً إن استُهلك المستحق بعد الإنشاء", async () => {
+    await db().update(s.suppliers).set({ currentBalance: "3000000.00" }).where(eq(s.suppliers.id, 1));
+    const request = await createVoucher({
+      voucherType: "PAYMENT", branchId: 1, amount: "2000000.00",
+      paymentMethod: "TRANSFER", partyType: "SUPPLIER", partyId: 1,
+      description: "طلب قبل تغيّر كشف المورد", referenceNumber: "SUP-CURRENT-BALANCE",
+    }, managerActor);
+    await db().update(s.suppliers).set({ currentBalance: "500000.00" }).where(eq(s.suppliers.id, 1));
+
+    await expect(approveVoucher(request.receiptId, adminActor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.id, request.receiptId));
+    expect(pending).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", approvedBy: null });
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("500000.00");
   });
 
   it("الدور الإداري لا يكفي: غير المالك والمالك المعطّل لا يعتمدان أو يرفضان", async () => {

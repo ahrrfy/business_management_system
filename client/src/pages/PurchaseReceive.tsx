@@ -80,7 +80,11 @@ export default function PurchaseReceive() {
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const receive = trpc.purchases.receive.useMutation({
     onSuccess: async (r) => {
-      setDone(r.fullyReceived ? "تم الاستلام الكامل." : "تم استلام جزئي.");
+      const recognized = r.fullyReceived ? "تم الاستلام الكامل وإثبات المخزون وذمّة المورّد." : "تم الاستلام الجزئي وإثبات المخزون وذمّة المورّد.";
+      const pending: string[] = [];
+      if (r.shippingPaymentRequestReceiptId) pending.push("أُثبت مصروف الشحن وقيده، ودفعه النقدي معلّق لاعتماد مالكٍ آخر");
+      if (r.supplierPaymentRequestReceiptId) pending.push("دفعة المورّد النقدية معلّقة لاعتماد مالكٍ آخر");
+      setDone([recognized, ...pending].join(" "));
       await Promise.all([
         utils.purchases.get.invalidate({ purchaseOrderId }),
         utils.purchases.list.invalidate(),

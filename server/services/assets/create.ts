@@ -45,6 +45,7 @@ export interface CreateAssetInput {
 export async function createAsset(input: CreateAssetInput, actor: Actor) {
   const scope = companyBranchScope(actor);
   const targetBranchId = resolveTargetBranch(scope, input.branchId, { required: false });
+  const paymentPending = money(input.purchaseValue).gt(0) && input.supplierId == null;
   const id = await withTx(async (tx) => {
     if (targetBranchId != null) {
       const [branch] = await tx
@@ -68,6 +69,8 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       }
     }
     const code = await nextAssetCode(tx);
+    const value = money(input.purchaseValue);
+    const awaitsCashApproval = value.gt(0) && input.supplierId == null;
     const [res] = await tx.insert(fixedAssets).values({
       code,
       name: input.name,
@@ -86,13 +89,15 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
       condition: input.condition ?? null,
       warrantyEnd: input.warrantyEnd ?? null,
       linkedDeviceId: input.linkedDeviceId ?? null,
+      // الأصل النقدي لا يصبح أصلاً تشغيلياً/قابلاً للإهلاك قبل خروج النقد باعتماد مالك آخر.
+      // يبقى الصف غير النشط كسجل تدقيقي وربط حتمي لطلب الدفع.
+      isActive: !awaitsCashApproval,
     });
     const newId = extractInsertId(res);
 
     // FI-01/FA-01 (تدقيق ٢٠/٦، قرار المالك «كل إضافة = شراء جديد يُقيَّد»، ولا أصول قائمة سابقاً):
     // اقتناء الأصل يُرحَّل للدفتر فيُقابله التزام/نقد ⇒ لا تُنفَخ حقوق الملكية (أصل بلا مصدر تمويل).
     // مورّد ⇒ ذمم دائنة AP + قيد PURCHASE (يُسدَّد لاحقاً بسند). بلا مورّد ⇒ نقد PAYMENT_OUT من الخزينة.
-    const value = money(input.purchaseValue);
     const acqBranch = targetBranchId;
     const acqDate = new Date(input.purchaseDate);
     if (value.gt(0)) {
@@ -150,5 +155,6 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     }
     return newId;
   });
-  return getAsset(id, scope);
+  const asset = await getAsset(id, scope);
+  return asset ? { ...asset, paymentPending } : null;
 }

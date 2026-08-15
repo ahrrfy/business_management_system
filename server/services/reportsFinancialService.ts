@@ -1012,7 +1012,7 @@ export async function getFinancialPosition(
   const fa = rowsOf(
     await db.execute(sql`
     SELECT CAST(COALESCE(SUM(purchaseValue - accumulatedDepreciation), 0) AS CHAR) AS v
-    FROM fixedAssets WHERE assetStatus NOT IN ('disposed', 'retired') ${bId ? sql`AND branchId = ${bId}` : sql``}
+    FROM fixedAssets WHERE isActive = TRUE AND assetStatus NOT IN ('disposed', 'retired') ${bId ? sql`AND branchId = ${bId}` : sql``}
   `),
   )[0] ?? { v: "0" };
 

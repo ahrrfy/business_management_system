@@ -140,6 +140,14 @@ export default function Vouchers() {
     onError: (e) => notify.err(e),
   });
 
+  const resubmitExpenseMut = trpc.vouchers.resubmitExpensePayment.useMutation({
+    onSuccess: async (res) => {
+      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
+      notify.ok(`أُعيد تقديم طلب دفع المصروف بالسند ${res.voucherNumber} — لم يُكرَّر المصروف أو قيد الاعتراف`);
+    },
+    onError: (e) => notify.err(e),
+  });
+
   async function approveVoucher(r: VoucherRow) {
     // لا يُعد هذا حارس صلاحية؛ هو منع UX فقط، والإنفاذ الحاسم في الإجراء الخادمي.
     if (r.direction === "OUT" && !isOwner) {
@@ -149,11 +157,16 @@ export default function Vouchers() {
     const partyLabel = r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
     const isPayment = r.direction === "OUT";
     const expectedSource = expectedVoucherSourceLabel(r);
+    const isRecognizedExpense =
+      r.referenceNumber?.startsWith("SHIP-") === true ||
+      r.referenceNumber?.startsWith("ASSET-MAINT-") === true;
     const ok = await confirm({
       variant: "info",
       title: isPayment ? "اعتماد وصرف السند" : "اعتماد السند",
       description: isPayment
-        ? `سيُتحقق الخادم من الرصيد ثم يعتمد ويصرف السند ${r.voucherNumber ?? ""} في عملية واحدة بلا مرحلة وسيطة. المبلغ: ${fmt(r.amount)} د.ع · الطرف: ${partyLabel} · المصدر المتوقع لحظة التأكيد: ${expectedSource}. يُعاد فحص المصدر والرصيد داخل المعاملة؛ عند أي فشل لن يُسجَّل إيصال أو قيد أو تغيير ذمة. هل تتابع؟`
+        ? isRecognizedExpense
+          ? `المصروف وقيد استحقاقه مُثبتان مسبقاً. سيُعيد الخادم فحص المصدر والرصيد ثم يُخرج اعتماد السند ${r.voucherNumber ?? ""} مبلغ ${fmt(r.amount)} د.ع من ${expectedSource} مرةً واحدة فقط، بلا مصروف أو قيد استحقاق ثانٍ. عند أي فشل يبقى طلب الدفع بلا أثر نقدي. هل تتابع؟`
+          : `سيُتحقق الخادم من الرصيد ثم يعتمد ويصرف السند ${r.voucherNumber ?? ""} في عملية واحدة بلا مرحلة وسيطة. المبلغ: ${fmt(r.amount)} د.ع · الطرف: ${partyLabel} · المصدر المتوقع لحظة التأكيد: ${expectedSource}. يُعاد فحص المصدر والرصيد داخل المعاملة؛ عند أي فشل لن يُسجَّل إيصال أو قيد أو تغيير ذمة. هل تتابع؟`
         : `سَيُصبح السند ${r.voucherNumber ?? ""} مُعتمَداً ويُسجَّل قيد الدفتر ويُؤثّر على ${
             r.partyType === "CUSTOMER" ? "ذمة العميل" : r.partyType === "SUPPLIER" ? "ذمة المورّد" : "الصندوق"
           } بمبلغ ${fmt(r.amount)} د.ع. هل تتابع؟`,
@@ -162,6 +175,18 @@ export default function Vouchers() {
     });
     if (!ok) return;
     approveMut.mutate({ receiptId: Number(r.id) });
+  }
+
+  async function resubmitExpensePayment(r: VoucherRow) {
+    const ok = await confirm({
+      variant: "info",
+      title: "إعادة تقديم طلب دفع المصروف",
+      description: `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بالمصروف المثبت نفسه بلا مصروف أو قيد دفتر إضافي. هل تتابع؟`,
+      confirmText: "إعادة تقديم",
+      cancelText: "تراجع",
+    });
+    if (!ok) return;
+    resubmitExpenseMut.mutate({ receiptId: Number(r.id) });
   }
 
   function openReject(r: VoucherRow) {
@@ -679,6 +704,16 @@ export default function Vouchers() {
                                 : { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
+                              key: "resubmit-expense",
+                              kind: "create",
+                              label: "إعادة تقديم دفع المصروف",
+                              hidden: !canManage || r.approvalStatus !== "REJECTED" || !r.referenceNumber || (!r.referenceNumber.startsWith("SHIP-") && !r.referenceNumber.startsWith("ASSET-MAINT-")),
+                              disabled: resubmitExpenseMut.isPending,
+                              disabledReason: "توجد إعادة تقديم قيد التنفيذ",
+                              onSelect: () => void resubmitExpensePayment(r),
+                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                            },
+                            {
                               key: "stmt",
                               kind: "view",
                               label: "كشف حساب الطرف",
@@ -730,7 +765,9 @@ export default function Vouchers() {
           <DialogHeader>
             <DialogTitle>رفض السند {rejectTarget?.voucherNumber ?? ""}</DialogTitle>
             <DialogDescription>
-              سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي.
+              {rejectTarget?.referenceNumber && (rejectTarget.referenceNumber.startsWith("SHIP-") || rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
+                ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
+                : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1">

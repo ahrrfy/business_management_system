@@ -1,7 +1,7 @@
 // دورة حياة الأصل بعد الإنشاء: تسليم عهدة + تسجيل/إنهاء صيانة.
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull } from "drizzle-orm";
-import { assetCustodyLog, assetMaintenance, employees, fixedAssets } from "../../../drizzle/schema";
+import { assetCustodyLog, assetMaintenance, employees, expenses, fixedAssets } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, toDateStr, toDbMoney } from "../money";
@@ -10,6 +10,7 @@ import { companyBranchScope } from "../companyBranchScope";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
 import { createSystemPaymentRequestTx } from "../voucher/create";
+import { postEntry } from "../ledgerService";
 
 /** تسليم عهدة: يُغلق العهدة الجارية ويفتح أخرى للموظف الجديد، ويحدّث صاحب العهدة.
  *  يتحقّق من أنّ الموظف نشط (employmentStatus='active') لمنع تسجيل عهدة على موظف منتهي/في إجازة،
@@ -57,6 +58,7 @@ export interface MaintenanceInput {
 
 export async function addMaintenance(assetId: number, m: MaintenanceInput, actor: Actor) {
   const scope = companyBranchScope(actor);
+  let paymentRequestReceiptId: number | null = null;
   await withTx(async (tx) => {
     const cost = money(m.cost ?? "0");
     // المعاينة لا تُعتمد كحقيقة أعمال؛ غرضها تحديد mutex الخزينة فقط. ترتيب جميع
@@ -99,7 +101,7 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
       note: m.note ?? null,
     });
     const maintId = extractInsertId(res);
-    // تسجيل الصيانة يثبت الحدث التشغيلي فقط؛ الدفع الخارجي طلبٌ معلّق لا يلمس الخزينة/الدفتر
+    // تسجيل الصيانة يثبت الحدث والمصروف فوراً؛ الدفع الخارجي طلبٌ معلّق لا يلمس الخزينة
     // حتى ينفذه مالك نشط مختلف عبر approveVoucher. الصيانة الصفرية (كفالة) بلا طلب دفع.
     if (cost.gt(0)) {
       if (branchId == null) {
@@ -108,7 +110,7 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
           message: "دفع صيانة الأصل نقداً يتطلب فرعاً محدداً لخزينة الصرف",
         });
       }
-      await createSystemPaymentRequestTx(tx, {
+      const request = await createSystemPaymentRequestTx(tx, {
         branchId,
         amount: toDbMoney(cost),
         paymentMethod: "CASH",
@@ -119,13 +121,44 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput, actor
         voucherDate: maintDate,
         clientRequestId: `asset-maintenance-${maintId}`,
       }, actor, { kind: "ASSET_MAINTENANCE", assetId, maintenanceId: maintId });
+      paymentRequestReceiptId = request.receiptId;
+      // الاعتراف بالصيانة يقع عند تسجيل الخدمة، لا عند سدادها. receipt المعلّق هو
+      // clearing قابل للرفض وإعادة التقديم؛ لا يكرر expense/ledger عند الدفع لاحقاً.
+      await tx.insert(expenses).values({
+        branchId,
+        shiftId: null,
+        expenseDate: new Date(`${maintDate}T00:00:00.000Z`),
+        category: "MAINTENANCE",
+        amount: toDbMoney(cost),
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        source: "CASH",
+        description: `صيانة أصل ${a.code ?? assetId} — ${m.type}`,
+        referenceNumber: `ASSET-MAINT-${maintId}`,
+        payee: m.vendor?.trim() || null,
+        receiptId: request.receiptId,
+        status: "ACTIVE",
+        createdBy: actor.userId,
+      });
+      await postEntry(tx, {
+        entryType: "PAYMENT_OUT",
+        branchId,
+        receiptId: null,
+        amount: cost,
+        dedupeKey: `ASSET_MAINT_ACCRUAL:${maintId}`,
+        entryDate: new Date(`${maintDate}T00:00:00.000Z`),
+        notes: `استحقاق صيانة أصل ${a.code ?? assetId} — ${m.type}`,
+      });
     }
     // الأصل قيد الصيانة الآن (إن لم يكن مُستبعَداً).
     if (a.status !== "retired") {
       await tx.update(fixedAssets).set({ status: "maintenance" }).where(eq(fixedAssets.id, assetId));
     }
   });
-  return getAsset(assetId, scope);
+  const asset = await getAsset(assetId, scope);
+  return asset
+    ? { ...asset, paymentPending: paymentRequestReceiptId != null, paymentRequestReceiptId }
+    : null;
 }
 
 /**

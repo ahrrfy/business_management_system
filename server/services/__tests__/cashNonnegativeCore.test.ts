@@ -657,6 +657,8 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       "assets/lifecycle.ts",
       "payroll/lifecycle.ts",
       "purchase/receive.ts",
+      "exchange/deposit.ts",
+      "digitalCards/walletOpsService.ts",
       "voucher/approval.ts",
     ];
     for (const relative of externalLifecycleFiles) {
@@ -672,8 +674,6 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       ["cashDropService.ts", "CASH_DROP_INTERNAL"],
       ["cashHandoverService.ts", "CASH_HANDOVER_INTERNAL"],
       ["shiftService.ts", "SHIFT_FLOAT_INTERNAL"],
-      ["exchange/deposit.ts", "EXCHANGE_DEPOSIT_INTERNAL"],
-      ["digitalCards/walletOpsService.ts", "DIGITAL_WALLET_DEPOSIT_INTERNAL"],
       ["sale/cancel.ts", "SALE_CANCELLATION_COMPENSATION"],
       ["digitalCards/reversalService.ts", "DIGITAL_CARD_REVERSAL_COMPENSATION"],
       ["exchange/reverse.ts", "EXCHANGE_REVERSAL_COMPENSATION"],

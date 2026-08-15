@@ -15,6 +15,7 @@ import {
 import { adminProcedure, router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
+import { resubmitRejectedExpensePayment } from "../services/voucher/approval";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
@@ -153,6 +154,32 @@ export const voucherRouter = router({
         entityType: "receipt",
         entityId: input.receiptId,
         newValue: { voucherNumber: res.voucherNumber, reason: input.reason.slice(0, 200) },
+      });
+      return res;
+    }),
+
+  /** إعادة تقديم صريحة لتسوية مصروف نظامي مرفوضة؛ لا تعيد إنشاء المصروف أو قيد الاعتراف. */
+  resubmitExpensePayment: treasuryManagerProcedure
+    .input(z.object({
+      receiptId: z.number().int().positive(),
+      attachmentUrl: z.string().max(4_000_000).nullish(),
+      note: z.string().trim().max(500).nullish(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await resubmitRejectedExpensePayment(input.receiptId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId),
+        role: ctx.user.role,
+        isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
+      }, { attachmentUrl: input.attachmentUrl, note: input.note });
+      await logAudit(ctx, {
+        action: "voucher.expensePayment.resubmit",
+        entityType: "receipt",
+        entityId: res.receiptId,
+        newValue: { rejectedReceiptId: input.receiptId, voucherNumber: res.voucherNumber },
       });
       return res;
     }),

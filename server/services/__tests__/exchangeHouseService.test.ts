@@ -18,7 +18,7 @@ import {
   approveExchangeDeposit,
   buyUsdAtExchange,
   createExchangeHouse,
-  depositToExchange,
+  depositToExchange as createExchangeDepositRequest,
   getExchangeHouse,
   getExchangeStatement,
   listPendingExchangeDeposits,
@@ -115,14 +115,28 @@ async function depositUsdApproved(input: Parameters<typeof depositToExchange>[0]
   return res;
 }
 
+/** غالبية اختبارات السجل تفترض إيداع IQD نافذاً؛ يجمع الطلب واعتماد المالك مع إبقاء اختبار العقد منفصلاً. */
+async function depositToExchange(
+  input: Parameters<typeof createExchangeDepositRequest>[0],
+  creator: Parameters<typeof createExchangeDepositRequest>[1],
+) {
+  const res = await createExchangeDepositRequest(input, creator);
+  if ((input.currency ?? "IQD") === "IQD") {
+    const [txn] = await db().select().from(s.exchangeTransactions).where(eq(s.exchangeTransactions.id, res.txnId));
+    await approveVoucher(Number(txn.receiptId), actorB);
+  }
+  return res;
+}
+
 describe("exchange-house — وحدة الصيرفة ثنائية العملة", () => {
   it("لا يسمح بإيداع دينار في الصيرفة إذا لم يوجد نقد فعلي في الخزينة", async () => {
     await db().delete(s.receipts);
     const { id } = await createExchangeHouse({ name: "صيرفة بلا تمويل" }, actor);
 
-    await expect(
-      depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "750000" }, actor),
-    ).rejects.toThrow();
+    const request = await createExchangeDepositRequest({ exchangeHouseId: id, branchId: 1, amount: "750000" }, actor);
+    const [txn] = await db().select().from(s.exchangeTransactions).where(eq(s.exchangeTransactions.id, request.txnId));
+    await expect(approveVoucher(Number(txn.receiptId), actorB)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(txn).toMatchObject({ status: "PENDING_APPROVAL", balanceIqdAfter: "0.00" });
 
     const house = await getExchangeHouse(id);
     expect(house?.balanceIqd).toBe("0.00");
@@ -154,7 +168,29 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
 
   it("إيداع: الخزينة ↓ ومحفظة الدينار ↑ (نقل أصل، قيد 0/0/0)", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
-    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
+    const request = await createExchangeDepositRequest({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
+
+    expect(request.pendingApproval).toBe(true);
+    expect((await getExchangeHouse(id))?.balanceIqd).toBe("0.00");
+    expect(await treasuryBalance(1)).toBe("10000000.00");
+    expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("0.00");
+    const [pendingTxn] = await db().select().from(s.exchangeTransactions).where(eq(s.exchangeTransactions.id, request.txnId));
+    const [pendingReceipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(pendingTxn.receiptId)));
+    expect(pendingReceipt).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+
+    const trustedPayload = pendingReceipt.internalNote;
+    await db().update(s.receipts)
+      .set({ internalNote: '@SYSTEM_PAYMENT_REQUEST:{"kind":"EXCHANGE_IQD_DEPOSIT"}' })
+      .where(eq(s.receipts.id, Number(pendingTxn.receiptId)));
+    await expect(approveVoucher(Number(pendingTxn.receiptId), actorB)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await getExchangeHouse(id))?.balanceIqd).toBe("0.00");
+    await db().update(s.receipts).set({ internalNote: trustedPayload }).where(eq(s.receipts.id, Number(pendingTxn.receiptId)));
+    await db().update(s.exchangeTransactions).set({ iqdAmount: "2000001.00" }).where(eq(s.exchangeTransactions.id, request.txnId));
+    await expect(approveVoucher(Number(pendingTxn.receiptId), actorB)).rejects.toMatchObject({ code: "CONFLICT" });
+    await db().update(s.exchangeTransactions).set({ iqdAmount: "2000000.00" }).where(eq(s.exchangeTransactions.id, request.txnId));
+
+    await approveVoucher(Number(pendingTxn.receiptId), actorB);
+    await approveVoucher(Number(pendingTxn.receiptId), actorB); // retry idempotent
 
     const h = await getExchangeHouse(id);
     expect(h?.balanceIqd).toBe("2000000.00");

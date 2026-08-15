@@ -17,7 +17,16 @@ import { computeSignature, nextVoucherNumber, validateCategory } from "./helpers
 import type { VoucherInput, VoucherResult } from "./types";
 
 const SYSTEM_REQUEST_PREFIX = "@SYSTEM_PAYMENT_REQUEST:";
-const SYSTEM_REFERENCE_PREFIXES = ["ASSET-ACQ-", "ASSET-REACQ-", "ASSET-MAINT-", "PO-PAY-", "SHIP-", "CANCEL-VCH-"] as const;
+const SYSTEM_REFERENCE_PREFIXES = [
+  "ASSET-ACQ-",
+  "ASSET-REACQ-",
+  "ASSET-MAINT-",
+  "PO-PAY-",
+  "SHIP-",
+  "EXCHANGE-IQD-DEP-",
+  "DIGITAL-WALLET-DEP-",
+  "CANCEL-VCH-",
+] as const;
 
 export function isSystemPaymentReference(reference: string | null | undefined): boolean {
   return !!reference && SYSTEM_REFERENCE_PREFIXES.some((prefix) => reference.startsWith(prefix));
@@ -25,7 +34,13 @@ export function isSystemPaymentReference(reference: string | null | undefined): 
 
 export type SystemPaymentRequest =
   | { kind: "ASSET_ACQUISITION"; assetId: number }
-  | { kind: "ASSET_REACQUISITION"; assetId: number; sequence: number }
+  | {
+      kind: "ASSET_REACQUISITION";
+      assetId: number;
+      sequence: number;
+      source: AssetFinancialSnapshot;
+      target: AssetFinancialSnapshot & { supplierId: null };
+    }
   | { kind: "ASSET_MAINTENANCE"; assetId: number; maintenanceId: number }
   | {
       kind: "PURCHASE_SUPPLIER";
@@ -41,7 +56,30 @@ export type SystemPaymentRequest =
       expectedAmount: string;
       sourceShippingTotal: string;
     }
+  | {
+      kind: "EXCHANGE_IQD_DEPOSIT";
+      transactionId: number;
+      exchangeHouseId: number;
+      expectedAmount: string;
+    }
+  | {
+      kind: "DIGITAL_WALLET_CASH_DEPOSIT";
+      transactionId: number;
+      walletId: number;
+      expectedAmount: string;
+    }
   | { kind: "VOUCHER_CANCELLATION"; originalReceiptId: number; originalCreatorId: number | null };
+
+export interface AssetFinancialSnapshot {
+  branchId: number | null;
+  supplierId: number | null;
+  purchaseDate: string;
+  purchaseValue: string;
+  salvageValue: string;
+  usefulLifeYears: number;
+  depreciationMethod: "sl" | "db";
+  accumulatedDepreciation: string;
+}
 
 function encodeSystemPaymentRequest(request: SystemPaymentRequest): string {
   return `${SYSTEM_REQUEST_PREFIX}${JSON.stringify(request)}`;
