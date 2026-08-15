@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 871,
+    "trpcTotal": 872,
     "byKind": {
-      "mutation": 443,
+      "mutation": 444,
       "query": 428
     },
     "byAuthority": {
-      "module-gate": 392,
+      "module-gate": 393,
       "module-map": 269,
       "admin": 74,
       "none": 56,
@@ -19,7 +19,7 @@
     },
     "bySensitivity": {
       "LOW": 427,
-      "MEDIUM": 328,
+      "MEDIUM": 329,
       "HIGH": 116
     },
     "byModule": {
@@ -27,7 +27,7 @@
       "hr": 80,
       "digital_cards": 75,
       "reports": 67,
-      "treasury": 52,
+      "treasury": 53,
       "products": 49,
       "store": 48,
       "inventory": 43,
@@ -70,13 +70,13 @@
     "expressMounts": 11,
     "jobs": 16,
     "routerFiles": 93,
-    "proposedPermissions": 743,
+    "proposedPermissions": 744,
     "proposedDomains": {
       "hr": 86,
       "reports": 70,
       "inventory": 68,
       "catalog": 64,
-      "treasury": 62,
+      "treasury": 63,
       "store": 48,
       "iam": 42,
       "sales": 40,
@@ -9668,7 +9668,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:270"
+      "loc": "server/routers/purchaseRouter.ts:272"
     },
     {
       "surface": "trpc",
@@ -9719,7 +9719,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:386"
+      "loc": "server/routers/purchaseRouter.ts:388"
     },
     {
       "surface": "trpc",
@@ -9736,7 +9736,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:289"
+      "loc": "server/routers/purchaseRouter.ts:291"
     },
     {
       "surface": "trpc",
@@ -9753,7 +9753,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:358"
+      "loc": "server/routers/purchaseRouter.ts:360"
     },
     {
       "surface": "trpc",
@@ -9804,7 +9804,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: settle",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:239"
+      "loc": "server/routers/purchaseRouter.ts:241"
     },
     {
       "surface": "trpc",
@@ -14394,7 +14394,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:201"
+      "loc": "server/routers/voucherRouter.ts:232"
     },
     {
       "surface": "trpc",
@@ -14411,7 +14411,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:117"
+      "loc": "server/routers/voucherRouter.ts:118"
     },
     {
       "surface": "trpc",
@@ -14428,7 +14428,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:161"
+      "loc": "server/routers/voucherRouter.ts:188"
     },
     {
       "surface": "trpc",
@@ -14445,7 +14445,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:54"
+      "loc": "server/routers/voucherRouter.ts:55"
     },
     {
       "surface": "trpc",
@@ -14462,7 +14462,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:323"
+      "loc": "server/routers/voucherRouter.ts:354"
     },
     {
       "surface": "trpc",
@@ -14479,7 +14479,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:209"
+      "loc": "server/routers/voucherRouter.ts:240"
     },
     {
       "surface": "trpc",
@@ -14496,7 +14496,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:181"
+      "loc": "server/routers/voucherRouter.ts:212"
     },
     {
       "surface": "trpc",
@@ -14513,7 +14513,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:311"
+      "loc": "server/routers/voucherRouter.ts:342"
     },
     {
       "surface": "trpc",
@@ -14530,7 +14530,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:398"
+      "loc": "server/routers/voucherRouter.ts:429"
     },
     {
       "surface": "trpc",
@@ -14547,7 +14547,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:220"
+      "loc": "server/routers/voucherRouter.ts:251"
     },
     {
       "surface": "trpc",
@@ -14564,7 +14564,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:140"
+      "loc": "server/routers/voucherRouter.ts:141"
+    },
+    {
+      "surface": "trpc",
+      "router": "voucherRouter",
+      "proposedPermission": "treasury.voucher.resubmit_expense_payment",
+      "name": "resubmitExpensePayment",
+      "kind": "mutation",
+      "procedure": "treasuryManagerProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "FULL",
+      "roles": "manager|accountant",
+      "branch": "required",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/voucherRouter.ts:162"
     },
     {
       "surface": "trpc",
@@ -14581,7 +14598,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:381"
+      "loc": "server/routers/voucherRouter.ts:412"
     },
     {
       "surface": "trpc",
@@ -14598,7 +14615,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:49"
+      "loc": "server/routers/voucherRouter.ts:50"
     },
     {
       "surface": "trpc",
@@ -14615,7 +14632,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:352"
+      "loc": "server/routers/voucherRouter.ts:383"
     },
     {
       "surface": "trpc",
