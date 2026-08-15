@@ -5,7 +5,8 @@
  * الفرق إن وُجد يبقى ظاهراً، وأي role بلا حسابٍ في شجرة الحسابات يظهر كسطر خلل صريح كي لا يضيع
  * دينارٌ بصمت. القيم تُجمّع في MySQL كـDECIMAL ثم تُعالج بـdecimal.js فقط.
  */
-import { asc, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
 import {
   accounts,
   doubleEntrySettings,
@@ -54,7 +55,9 @@ export interface TrialBalanceTotals {
 
 export interface TrialBalanceResult {
   mode: DoubleEntryMode;
+  cycleId: string | null;
   shadowStartedAt: string | null;
+  availableFrom: string | null;
   from: string;
   to: string;
   branchId: number | null;
@@ -66,6 +69,17 @@ export interface TrialBalanceResult {
   totals: TrialBalanceTotals;
 }
 
+/**
+ * الحد الأدنى اللازم لواجهات تقارير الدفتر كي تضبط بداية الفترة قبل إرسال
+ * الاستعلام. لا يتضمن حالة التفعيل أو موانعه أو أي تفاصيل تشغيلية حساسة.
+ */
+export interface DoubleEntryReportAvailability {
+  mode: DoubleEntryMode;
+  cycleId: string | null;
+  availableFrom: string | null;
+  shadowStartedAt: string | null;
+}
+
 function rowsOf<T>(result: unknown): T[] {
   const data = (result as any)?.[0] ?? result;
   return Array.isArray(data) ? (data as T[]) : [];
@@ -75,6 +89,47 @@ function timestampText(value: Date | string | null | undefined): string | null {
   if (!value) return null;
   if (typeof value === "string") return value.slice(0, 19).replace("T", " ");
   return value.toISOString().slice(0, 19).replace("T", " ");
+}
+
+function baghdadYmd(value: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Baghdad",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type: "year" | "month" | "day") =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+export async function getDoubleEntryReportAvailability(): Promise<DoubleEntryReportAvailability> {
+  const db = getDb();
+  if (!db) {
+    return {
+      mode: "OFF",
+      cycleId: null,
+      availableFrom: null,
+      shadowStartedAt: null,
+    };
+  }
+
+  const [setting] = await db
+    .select({
+      mode: doubleEntrySettings.mode,
+      cycleId: doubleEntrySettings.shadowCycleId,
+      shadowStartedAt: doubleEntrySettings.shadowStartedAt,
+    })
+    .from(doubleEntrySettings)
+    .limit(1);
+  return {
+    mode: (setting?.mode as DoubleEntryMode | undefined) ?? "OFF",
+    cycleId: setting?.cycleId ?? null,
+    availableFrom: setting?.shadowStartedAt
+      ? baghdadYmd(setting.shadowStartedAt)
+      : null,
+    shadowStartedAt: timestampText(setting?.shadowStartedAt),
+  };
 }
 
 function splitBalance(signed: ReturnType<typeof money>): {
@@ -111,7 +166,9 @@ export async function getTrialBalance(input: {
   if (!db) {
     return {
       mode: "OFF",
+      cycleId: null,
       shadowStartedAt: null,
+      availableFrom: null,
       from: input.from,
       to: input.to,
       branchId: input.branchId ?? null,
@@ -127,11 +184,46 @@ export async function getTrialBalance(input: {
   const [setting] = await db
     .select({
       mode: doubleEntrySettings.mode,
+      cycleId: doubleEntrySettings.shadowCycleId,
       shadowStartedAt: doubleEntrySettings.shadowStartedAt,
     })
     .from(doubleEntrySettings)
     .limit(1);
   const mode = (setting?.mode as DoubleEntryMode | undefined) ?? "OFF";
+  const cycleId = setting?.cycleId ?? "";
+  const availableFrom = setting?.shadowStartedAt
+    ? baghdadYmd(setting.shadowStartedAt)
+    : null;
+  if (cycleId && availableFrom && input.from < availableFrom) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `تقارير الدفتر المزدوج متاحة من ${availableFrom}؛ لا تشمل أرباحاً وخسائر قبل تاريخ القطع.`,
+    });
+  }
+
+  // AR/AP وحقوق الملكية المقابلة قد تكون لقطةً عالمية لأن مصادرها لا تحمل branchId.
+  // إسقاطها من تقرير فرع يعطي «افتتاحاً» كاذباً؛ وإلصاقها بكل فرع يكرر الدينار. لذلك تصبح
+  // الدورة company-only فقط عندما توجد لقطة عالمية POSTED فعلاً، مع رفضٍ صريح لا نقصٍ صامت.
+  if (cycleId && input.branchId != null) {
+    const [globalOpening] = await db
+      .select({ id: journalEntries.id })
+      .from(journalEntries)
+      .where(
+        and(
+          eq(journalEntries.cycleId, cycleId),
+          eq(journalEntries.sourceType, "SHADOW_OPENING"),
+          isNull(journalEntries.branchId),
+        ),
+      )
+      .limit(1);
+    if (globalOpening) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "هذه الدورة تحمل رأس افتتاح عالمياً للذمم/حقوق الملكية؛ ميزان المراجعة متاح للشركة كلها فقط، وأي رأس غير POSTED يُعالج قبل الاعتماد ولا يجوز إخفاؤه بتقرير فرع ناقص.",
+      });
+    }
+  }
 
   const postingAccounts = await db
     .select({
@@ -148,17 +240,22 @@ export async function getTrialBalance(input: {
 
   const branchClause =
     input.branchId == null ? sql`` : sql` AND je.branchId = ${input.branchId}`;
+  const availabilityClause = availableFrom
+    ? sql` AND je.entryDate >= ${availableFrom}`
+    : sql``;
   const aggregates = rowsOf<RawAggregate>(
     await db.execute(sql`
       SELECT
         jl.role AS role,
-        CAST(COALESCE(SUM(CASE WHEN je.entryDate < ${input.from} THEN jl.debit ELSE 0 END), 0) AS CHAR) AS openingDebit,
-        CAST(COALESCE(SUM(CASE WHEN je.entryDate < ${input.from} THEN jl.credit ELSE 0 END), 0) AS CHAR) AS openingCredit,
-        CAST(COALESCE(SUM(CASE WHEN je.entryDate >= ${input.from} THEN jl.debit ELSE 0 END), 0) AS CHAR) AS periodDebit,
-        CAST(COALESCE(SUM(CASE WHEN je.entryDate >= ${input.from} THEN jl.credit ELSE 0 END), 0) AS CHAR) AS periodCredit
+        CAST(COALESCE(SUM(CASE WHEN je.sourceType = 'SHADOW_OPENING' OR je.entryDate < ${input.from} THEN jl.debit ELSE 0 END), 0) AS CHAR) AS openingDebit,
+        CAST(COALESCE(SUM(CASE WHEN je.sourceType = 'SHADOW_OPENING' OR je.entryDate < ${input.from} THEN jl.credit ELSE 0 END), 0) AS CHAR) AS openingCredit,
+        CAST(COALESCE(SUM(CASE WHEN je.sourceType <> 'SHADOW_OPENING' AND je.entryDate >= ${input.from} THEN jl.debit ELSE 0 END), 0) AS CHAR) AS periodDebit,
+        CAST(COALESCE(SUM(CASE WHEN je.sourceType <> 'SHADOW_OPENING' AND je.entryDate >= ${input.from} THEN jl.credit ELSE 0 END), 0) AS CHAR) AS periodCredit
       FROM journalLines jl
       INNER JOIN journalEntries je ON je.id = jl.journalId
       WHERE je.status = 'POSTED'
+        AND je.cycleId = ${cycleId}
+        ${availabilityClause}
         AND je.entryDate <= ${input.to}
         ${branchClause}
       GROUP BY jl.role
@@ -256,16 +353,21 @@ export async function getTrialBalance(input: {
     input.branchId == null
       ? sql``
       : sql` AND ${journalEntries.branchId} = ${input.branchId}`;
+  const gapAvailabilityClause = availableFrom
+    ? sql` AND ${journalEntries.entryDate} >= ${availableFrom}`
+    : sql``;
   const [gapRow] = rowsOf<{
     openingCount: number | string;
     periodCount: number | string;
   }>(
     await db.execute(sql`
       SELECT
-        SUM(CASE WHEN ${journalEntries.entryDate} < ${input.from} THEN 1 ELSE 0 END) AS openingCount,
-        SUM(CASE WHEN ${journalEntries.entryDate} >= ${input.from} THEN 1 ELSE 0 END) AS periodCount
+        SUM(CASE WHEN ${journalEntries.sourceType} = 'SHADOW_OPENING' OR ${journalEntries.entryDate} < ${input.from} THEN 1 ELSE 0 END) AS openingCount,
+        SUM(CASE WHEN ${journalEntries.sourceType} <> 'SHADOW_OPENING' AND ${journalEntries.entryDate} >= ${input.from} THEN 1 ELSE 0 END) AS periodCount
       FROM ${journalEntries}
       WHERE ${journalEntries.status} = 'UNMAPPED'
+        AND ${journalEntries.cycleId} = ${cycleId}
+        ${gapAvailabilityClause}
         AND ${journalEntries.entryDate} <= ${input.to}
         ${gapBranchClause}
     `),
@@ -275,7 +377,9 @@ export async function getTrialBalance(input: {
 
   return {
     mode,
+    cycleId: setting?.cycleId ?? null,
     shadowStartedAt: timestampText(setting?.shadowStartedAt),
+    availableFrom,
     from: input.from,
     to: input.to,
     branchId: input.branchId ?? null,

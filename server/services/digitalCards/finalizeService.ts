@@ -32,6 +32,7 @@ import { digitalSaleReferenceLabel } from "../../../shared/digitalSale";
 import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, sumMoney, toDbMoney } from "../money";
 import { DIGITAL_SALE_CAPABILITY } from "../sale/create";
 import type { PaymentMethod } from "../sale/types";
@@ -388,6 +389,11 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       dedupeKey: `DIGITAL:WCONS:${sale.invoiceId}:${walletId}`,
       notes: "استهلاك محفظة كروت",
       createdBy: actor.userId,
+      postingIntent: createPostingIntent(
+        "DIGITAL_WALLET_CONSUMPTION_SALE",
+        "DIGITAL_WALLET_CONSUMPTION",
+        [debitLine("INVENTORY", consumed), creditLine("DIGITAL_WALLET", consumed)],
+      ),
     });
   }
 
@@ -424,6 +430,11 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
       dedupeKey: `DIGITAL:AP:${sale.invoiceId}:${providerId}`,
       notes: "استحقاق مزوّد كروت",
       createdBy: actor.userId,
+      postingIntent: createPostingIntent(
+        "PURCHASE_DIGITAL",
+        "PURCHASE",
+        [debitLine("INVENTORY", amount), creditLine("AP", amount)],
+      ),
     });
     await adjustSupplierBalance(tx, supplierId, amount);
   }

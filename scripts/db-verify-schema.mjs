@@ -193,6 +193,29 @@ function collectOperationalSchemaContractErrors({
   return errors;
 }
 
+function collectExchangeUsdMigrationAuditErrors({
+  invalidRows = [],
+  invalidGroups = [],
+}) {
+  const errors = [];
+  for (const row of invalidRows) {
+    errors.push(
+      `USD_CUSTODY_SOURCE_INVALID txn=${row.txnNumber ?? row.id} ` +
+        `house=${row.exchangeHouseId} branch=${row.branchId ?? "NULL"} ` +
+        `type=${row.type} usd=${row.usdAmount} carrying=${row.iqdAmount} ` +
+        `savedRate=${row.exchangeRate}`,
+    );
+  }
+  for (const row of invalidGroups) {
+    errors.push(
+      `USD_CUSTODY_GROUP_INVALID house=${row.exchangeHouseId} ` +
+        `branch=${row.branchId ?? "NULL"} quantityUsd=${row.quantityUsd} ` +
+        `carryingResidualIqd=${row.carryingResidualIqd}`,
+    );
+  }
+  return errors;
+}
+
 function runOperationalContractSelftest({ quiet = false } = {}) {
   const validInput = {
     databaseName: "erp_contract_test",
@@ -357,6 +380,32 @@ function runOperationalContractSelftest({ quiet = false } = {}) {
     "يجب رفض enum ذي ترتيب مختلف أو قيمة زائدة",
   );
 
+  const exchangeAuditErrors = collectExchangeUsdMigrationAuditErrors({
+    invalidRows: [
+      {
+        id: 71,
+        txnNumber: "EX-USD-71",
+        exchangeHouseId: 4,
+        branchId: null,
+        type: "WITHDRAW",
+        usdAmount: "10.00",
+        iqdAmount: "0.00",
+        exchangeRate: "1450.0000",
+      },
+    ],
+    invalidGroups: [
+      {
+        exchangeHouseId: 4,
+        branchId: 2,
+        quantityUsd: "0.00",
+        carryingResidualIqd: "0.01",
+      },
+    ],
+  });
+  assert.equal(exchangeAuditErrors.length, 2);
+  assert.ok(exchangeAuditErrors[0].includes("USD_CUSTODY_SOURCE_INVALID"));
+  assert.ok(exchangeAuditErrors[1].includes("carryingResidualIqd=0.01"));
+
   if (!quiet) console.log("db schema operational contracts selftest: OK");
 }
 
@@ -481,6 +530,7 @@ try {
     ["invoices", "idx_invoice_correction_of"],
     ["invoices", "idx_invoice_corrected_by"],
     ["deliveryConsignments", "idx_consignment_workorder"],
+    ["exchangeTransactions", "idx_exchange_custody_scope"],
   ];
   const [idxRows] = await conn.query(
     "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? GROUP BY TABLE_NAME, INDEX_NAME",
@@ -587,6 +637,11 @@ try {
     "deliveryLedgerEntries",
     "deliveryEvents",
     "deliveryOutbox",
+    "monthCloseCertificates",
+    "monthCloseCertificateEvidence",
+    "monthCloseEvents",
+    "monthCloseSequence",
+    "yearEndReopenRequests",
   ];
   const CRITICAL_COLUMNS = [
     ["externalPaymentAttempts", "externalPaymentChannel"],
@@ -673,6 +728,30 @@ try {
     ["digitalSaleIntentItems", "providerId"],
     ["digitalSaleDetails", "fulfillmentStatus"],
     ["digitalSubscriptionContracts", "expiresAt"],
+    ["exchangeHouses", "balanceUsdCarryingIqd"],
+    ["financialPeriods", "closeMonth"],
+    ["financialPeriods", "closeRevision"],
+    ["financialPeriods", "predecessorPeriodId"],
+    ["monthCloseRequests", "closeRevision"],
+    ["monthCloseRequests", "requestedSequenceVersion"],
+    ["yearEndSnapshots", "scopeKey"],
+    ["yearEndSnapshots", "revision"],
+    ["yearEndSnapshots", "supersedesSnapshotId"],
+    ["monthCloseCertificates", "snapshotCanonical"],
+    ["monthCloseCertificates", "monthCloseCertificateKind"],
+    ["monthCloseCertificates", "certificateDoubleEntryMode"],
+    ["monthCloseCertificateEvidence", "referenceCanonical"],
+    ["monthCloseEvents", "payloadCanonical"],
+    ["monthCloseEvents", "monthCloseEventType"],
+    ["monthCloseSequence", "lastEventHash"],
+    ["monthCloseSequence", "monthCloseSequenceStatus"],
+    ["yearEndReopenRequests", "snapshotId"],
+    ["yearEndReopenRequests", "certificateId"],
+    ["yearEndReopenRequests", "periodId"],
+    ["yearEndReopenRequests", "requestPayloadHash"],
+    ["yearEndReopenRequests", "reversalEntryId"],
+    ["yearEndReopenRequests", "reopenEventId"],
+    ["yearEndReopenRequests", "yearEndReopenStatus"],
   ];
   const missingCritTables = CRITICAL_TABLES.filter((t) => !actual[t]);
   const missingCritCols = CRITICAL_COLUMNS.filter(
@@ -691,6 +770,200 @@ try {
     );
     console.error(
       "   عالِج: pnpm db:backup && pnpm db:migrate:safe (هجرة 0041 المصالحة تُعيد إنشاءها idempotently).",
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
+  const MONTH_CLOSE_CHECKS = [
+    ["financialPeriods", "chk_period_close_identity"],
+    ["monthCloseRequests", "chk_mcr_sequence_identity"],
+    ["yearEndSnapshots", "chk_year_snapshot_revision"],
+    ["monthCloseCertificates", "chk_mcc_identity"],
+    ["monthCloseCertificates", "chk_mcc_previous_pair"],
+    ["monthCloseCertificates", "chk_mcc_kind_refs"],
+    ["monthCloseCertificates", "chk_mcc_runtime_tuple"],
+    ["monthCloseCertificateEvidence", "chk_mcce_chunk_shape"],
+    ["monthCloseEvents", "chk_mce_reference_shape"],
+    ["monthCloseSequence", "chk_month_close_sequence_singleton"],
+    ["monthCloseSequence", "chk_mcs_status_tuple"],
+    ["yearEndReopenRequests", "chk_yerr_identity"],
+    ["yearEndReopenRequests", "chk_yerr_maker_checker"],
+    ["yearEndReopenRequests", "chk_yerr_lifecycle"],
+  ];
+  const [monthCloseCheckRows] = await conn.query(
+    `SELECT tc.TABLE_NAME, tc.CONSTRAINT_NAME, cc.CHECK_CLAUSE
+       FROM information_schema.TABLE_CONSTRAINTS tc
+       JOIN information_schema.CHECK_CONSTRAINTS cc
+         ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+        AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+      WHERE tc.TABLE_SCHEMA = ? AND tc.CONSTRAINT_TYPE = 'CHECK'`,
+    [dbName],
+  );
+  const monthCloseChecks = new Set(
+    monthCloseCheckRows.map(
+      (row) => `${row.TABLE_NAME}.${row.CONSTRAINT_NAME}`,
+    ),
+  );
+  const missingMonthCloseChecks = MONTH_CLOSE_CHECKS.filter(
+    ([table, name]) => !monthCloseChecks.has(`${table}.${name}`),
+  ).map(([table, name]) => `${table}.${name}`);
+  if (missingMonthCloseChecks.length) {
+    console.error(
+      "⛔ month-close semantic CHECK constraints are missing:",
+      missingMonthCloseChecks.join(", "),
+    );
+    await conn.end();
+    process.exit(1);
+  }
+  const eventReferenceShape = monthCloseCheckRows.find(
+    (row) =>
+      row.TABLE_NAME === "monthCloseEvents" &&
+      row.CONSTRAINT_NAME === "chk_mce_reference_shape",
+  );
+  const normalizedEventReferenceShape = String(
+    eventReferenceShape?.CHECK_CLAUSE ?? "",
+  )
+    .replaceAll("`", "")
+    // MySQL 8.4 exposes string literals through information_schema as
+    // _utf8mb4\'VALUE\'.  Normalize that display-only introducer before the
+    // semantic check so a correct physical CHECK is not rejected merely
+    // because the server reports its charset explicitly.
+    .replace(/_[a-z0-9]+\\'/gi, "'")
+    .replaceAll("\\'", "'")
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+  if (!normalizedEventReferenceShape.includes("PERIODID IS NULL")) {
+    console.error(
+      "⛔ chk_mce_reference_shape is stale: BOOTSTRAP must pair fresh month/period NULL or legacy month/period non-NULL.",
+    );
+    await conn.end();
+    process.exit(1);
+  }
+  if (
+    !/MONTHCLOSEEVENTTYPE\s*=\s*'UNLOCK'.*REQUESTID IS NULL.*PERIODID IS NOT NULL/.test(
+      normalizedEventReferenceShape,
+    )
+  ) {
+    console.error(
+      "⛔ chk_mce_reference_shape is stale: UNLOCK must not claim a month-close request reference.",
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
+  const MONTH_CLOSE_IMMUTABLE_TRIGGERS = [
+    "trg_period_predecessor_bi",
+    "trg_period_predecessor_bu",
+    "trg_year_supersedes_bi",
+    "trg_year_supersedes_bu",
+    "trg_mcc_supersedes_bi",
+    "trg_mcc_supersedes_bu",
+    "trg_mcc_no_update",
+    "trg_mcc_no_delete",
+    "trg_mcce_no_update",
+    "trg_mcce_no_delete",
+    "trg_mce_no_update",
+    "trg_mce_no_delete",
+    "trg_year_snapshot_no_update",
+    "trg_year_snapshot_no_delete",
+    "trg_yerr_guard_update",
+    "trg_yerr_no_delete",
+    "trg_advrep_alloc_no_update",
+    "trg_advrep_alloc_no_delete",
+    "trg_accrual_event_no_update",
+    "trg_accrual_event_no_delete",
+  ];
+  const [monthCloseTriggerRows] = await conn.query(
+    "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?",
+    [dbName],
+  );
+  const monthCloseTriggers = new Set(
+    monthCloseTriggerRows.map((row) => row.TRIGGER_NAME),
+  );
+  const missingMonthCloseTriggers = MONTH_CLOSE_IMMUTABLE_TRIGGERS.filter(
+    (name) => !monthCloseTriggers.has(name),
+  );
+  if (missingMonthCloseTriggers.length) {
+    console.error(
+      "⛔ month-close immutable triggers are missing:",
+      missingMonthCloseTriggers.join(", "),
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
+  const [exchangeCheckRows] = await conn.query(
+    "SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'exchangeHouses' AND CONSTRAINT_TYPE = 'CHECK'",
+    [dbName],
+  );
+  if (
+    !exchangeCheckRows.some(
+      (row) => row.CONSTRAINT_NAME === "chk_exchange_usd_carrying_sign",
+    )
+  ) {
+    console.error(
+      "⛔ قيد chk_exchange_usd_carrying_sign مفقود من exchangeHouses (0186 ناقصة أو schema drift).",
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
+  // 0186 direct-USD historical bridge.  The migration may only use each
+  // transaction's own saved usdAmount/exchangeRate.  This post-migration gate
+  // is deliberately operational, not just structural: it prints the exact
+  // unresolved rows and the signed cent residual per (house, branch), then
+  // stops prod:deploy before build/reload.
+  const [invalidUsdCustodyRows] = await conn.query(
+    `SELECT id,
+            txnNumber,
+            exchangeHouseId,
+            branchId,
+            exchangeTxnType AS type,
+            usdAmount,
+            iqdAmount,
+            exchangeRate
+       FROM exchangeTransactions
+      WHERE exchangeTxnStatus = 'ACTIVE'
+        AND exchangeTxnCurrency = 'USD'
+        AND exchangeTxnType IN ('FX_BUY','WITHDRAW','DEPOSIT')
+        AND (branchId IS NULL OR usdAmount <= 0 OR iqdAmount <= 0)
+      ORDER BY exchangeHouseId, branchId, id`,
+  );
+  const [invalidUsdCustodyGroups] = await conn.query(
+    `SELECT exchangeHouseId,
+            branchId,
+            ROUND(SUM(CASE WHEN exchangeTxnType IN ('FX_BUY','WITHDRAW')
+                           THEN usdAmount ELSE -usdAmount END), 2) AS quantityUsd,
+            ROUND(SUM(CASE WHEN exchangeTxnType IN ('FX_BUY','WITHDRAW')
+                           THEN iqdAmount ELSE -iqdAmount END), 2) AS carryingResidualIqd
+       FROM exchangeTransactions
+      WHERE exchangeTxnStatus = 'ACTIVE'
+        AND exchangeTxnCurrency = 'USD'
+        AND exchangeTxnType IN ('FX_BUY','WITHDRAW','DEPOSIT')
+      GROUP BY exchangeHouseId, branchId
+     HAVING quantityUsd < 0
+         OR carryingResidualIqd < 0
+         OR (quantityUsd = 0 AND carryingResidualIqd <> 0)
+         OR (quantityUsd <> 0 AND carryingResidualIqd = 0)
+      ORDER BY exchangeHouseId, branchId`,
+  );
+  const exchangeUsdAuditErrors = collectExchangeUsdMigrationAuditErrors({
+    invalidRows: invalidUsdCustodyRows,
+    invalidGroups: invalidUsdCustodyGroups,
+  });
+  if (exchangeUsdAuditErrors.length) {
+    console.error("⛔ Legacy direct-USD custody verification failed:");
+    for (const error of exchangeUsdAuditErrors.slice(0, 50)) {
+      console.error(`   - ${error}`);
+    }
+    if (exchangeUsdAuditErrors.length > 50) {
+      console.error(
+        `   - ... ${exchangeUsdAuditErrors.length - 50} more blocker(s)`,
+      );
+    }
+    console.error(
+      "   أصلح المصدر التاريخي بوثيقة محاسبية؛ لا تنسخ WAVG حالياً ولا معدل حركة أخرى، ثم أعد pnpm db:verify.",
     );
     await conn.end();
     process.exit(1);

@@ -289,7 +289,9 @@ describe("delivery COD — money path", () => {
     const inv = await invoice(disp.invoiceId);
     expect(inv.status).toBe("RETURNED");
     const stockAfter = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))).limit(1))[0];
-    expect(Number(stockAfter.q)).toBe(Number(stockBefore.q) + 1); // أُعيد للمخزون
+    // ناتج أمر الشغل المخصّص لم يملك حركة OUT مرجعية على الفاتورة، لذلك لا يجوز اختراع
+    // حركة IN عند رجوع الطرد. الثابت: لا إعادة مخزون بلا إخراج أصلي مثبت.
+    expect(Number(stockAfter.q)).toBe(Number(stockBefore.q));
     await allReconcileClean();
   });
 

@@ -1,13 +1,34 @@
 // ارتجاع شيك (bounceCheck) — عكسٌ محاسبيّ متماثل مع تحصيل القسط (AR-BOUNCE).
 import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
-import { idempotencyKeys, installmentLines, installmentPlans, receipts } from "../../../drizzle/schema";
+import { installmentLines, installmentPlans, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
+import {
+  createPostingIntent,
+  signedPostingLines,
+} from "../accounting/postingEngine";
 import { adjustCustomerBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { assertPlanBranch, type BranchRestriction } from "./types";
+
+/** Posting contract for a collected cheque that was subsequently dishonoured. */
+export function bouncedCheckPosting(amount: ReturnType<typeof money>) {
+  const postingSourceComponents = {
+    roleDebits: { AR: amount },
+    roleCredits: { CHECKS_RECEIVABLE: amount },
+  } as const;
+  return {
+    postingIntent: createPostingIntent(
+      "PAYMENT_OUT_CUSTOMER_REFUND",
+      "PAYMENT_OUT",
+      signedPostingLines("AR", "CHECKS_RECEIVABLE", amount),
+      postingSourceComponents,
+    ),
+    postingSourceComponents,
+  };
+}
 
 /**
  * ارتجاع شيك: قسط CHECK ⇒ BOUNCED.
@@ -90,6 +111,8 @@ export async function bounceCheck(
           approvalStatus: "APPROVED",
         });
         const compReceiptId = extractInsertId(compRes);
+        const { postingIntent, postingSourceComponents } =
+          bouncedCheckPosting(amount);
         await postEntry(tx, {
           entryType: "PAYMENT_OUT",
           branchId,
@@ -97,6 +120,9 @@ export async function bounceCheck(
           customerId: Number(row.plan.customerId),
           amount,
           revenue: money(0),
+          paymentMethod: rec.paymentMethod,
+          postingIntent,
+          postingSourceComponents,
           notes: `ارتداد شيك — القسط #${row.line.seq} من خطة #${row.plan.id}`,
         });
         // استعادة AR: التحصيل خفّض currentBalance بمقدار amount ⇒ نعيدها بإضافة +amount.
@@ -115,25 +141,8 @@ export async function bounceCheck(
       });
     }
 
-    // حلّ تعارُض إصلاحين (idempotency) — **مشروطٌ بعكسِ تحصيلٍ نافذ فعلاً (reversed)**: نحرّر مفتاح
-    // instpay-<lineId> الثابت الذي سجّله التحصيل (payLine → createVoucher). حين يكون الأصل COMPLETED/APPROVED
-    // (شيك محصَّل فعلاً) ثم يرتدّ، نُبقيه COMPLETED عمداً (AR-BOUNCE) فـisDead=false في voucher/create ⇒
-    // إعادة السداد تُعيد تشغيله صامتاً (replay) فيُوسم القسط PAID بلا نقدٍ مُسجَّل ولا خفض ذمّة (Bug A) —
-    // لذا نحرّر المفتاح ليُنشئ التحصيلُ التالي سنداً + قيد PAYMENT_IN + خفضَ ذمّةٍ فعليّاً.
-    //
-    // ⚠️ لا نحرّره إن لم يُعكَس تحصيلٌ نافذ (reversed=false): ارتدادُ قسطٍ **PENDING** سنده ما يزال
-    // PENDING_APPROVAL (Maker-Checker، لم يُعتمَد بعد — createVoucher يسجّل المفتاح حتى للسند المعلَّق) —
-    // حذف مفتاحه يُيتّم السند المعلَّق: لو اعتُمد لاحقاً خصم الذمّة، وإعادةُ السداد تُنشئ سنداً ثانياً (لا
-    // replay) ⇒ تحصيلٌ مزدوج (Codex P1). بإبقاء المفتاح: إعادة السداد تُعيد السند المعلَّق نفسه (idempotent)
-    // فلا ازدواج. (وحين لا يوجد تحصيلٌ أصلاً — شيك معلَّق لم يُحصَّل قطّ — لا مفتاح ولا reversed، فلا شيء نحذفه.)
-    if (reversed) {
-      await tx.delete(idempotencyKeys).where(
-        and(
-          eq(idempotencyKeys.operation, "voucher.create"),
-          eq(idempotencyKeys.clientRequestId, `instpay-${Number(input.lineId)}`),
-        ),
-      );
-    }
+    // مفتاح محاولة التحصيل السابقة immutable. payLine يشتق محاولة A<n> جديدة مرتبطة
+    // بالسند السابق عند BOUNCED؛ حذف المفتاح القديم يسمح لمحاولة شبكة متأخرة بإحياء أثره.
 
     await tx
       .update(installmentLines)

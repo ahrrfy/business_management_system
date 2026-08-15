@@ -10,17 +10,33 @@ import type { UpdateItemInput } from "./types";
 
 export async function updateItem(itemId: number, input: UpdateItemInput, actor?: Actor) {
   return withTx(async (tx) => {
-    const [item] = await tx.select().from(payrollItems).where(eq(payrollItems.id, itemId)).for("update").limit(1);
-    if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "بند المسيّر غير موجود" });
-    // Serialise edits to different items in the same run: recomputing the run header
-    // from concurrent snapshots can otherwise leave totalNet stale.
+    const [preview] = await tx
+      .select({ runId: payrollItems.runId })
+      .from(payrollItems)
+      .where(eq(payrollItems.id, itemId))
+      .limit(1);
+    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "بند المسيّر غير موجود" });
+    // Global payroll lifecycle order is run -> items. Approval/reopen use this order too,
+    // eliminating the item->run / run->item deadlock under a concurrent edit.
     const [run] = await tx
       .select()
       .from(payrollRuns)
-      .where(eq(payrollRuns.id, Number(item.runId)))
+      .where(eq(payrollRuns.id, Number(preview.runId)))
       .for("update")
       .limit(1);
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
+    const [item] = await tx
+      .select()
+      .from(payrollItems)
+      .where(eq(payrollItems.id, itemId))
+      .for("update")
+      .limit(1);
+    if (!item || Number(item.runId) !== Number(run.id)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "تغيّر بند المسيّر أثناء بدء التعديل — أعد المحاولة.",
+      });
+    }
     if (run.status !== "draft") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعديل البنود إلا والمسيّر مسودة" });
     }
@@ -45,6 +61,7 @@ export async function updateItem(itemId: number, input: UpdateItemInput, actor?:
           : `الاستقطاع لا يقلّ عن استقطاع السلفة المولَّد (${toDbMoney(advancePart)}) — لتغييره ألغِ المسودة وعدِّل السلفة ثم أعد التوليد`,
       });
     }
+    const wageReduction = round2(deductions.minus(floor));
     // العمولة قراءة فقط هنا — تعديلها = إعادة احتساب تشغيلة العمولات قبل توليد المسيّر.
     const net = computeNet(money(item.gross), overtime, money(item.commission), deductions);
     if (net.isNegative()) {
@@ -59,6 +76,7 @@ export async function updateItem(itemId: number, input: UpdateItemInput, actor?:
       .set({
         overtime: toDbMoney(overtime),
         deductions: toDbMoney(deductions),
+        wageReduction: toDbMoney(wageReduction),
         net: toDbMoney(net),
         note: input.note !== undefined ? (input.note?.trim() || null) : item.note,
       })

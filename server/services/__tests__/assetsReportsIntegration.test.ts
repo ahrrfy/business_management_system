@@ -85,25 +85,26 @@ describe("تكامل الأصول↔التقارير (FA-02 P&L + FI-01 كشف �
     expect(periodStmt!.summary.openingBalance).toBe("600000.00");
   });
 
-  it("الأصل النقدي المعلّق يُعاد بمعرّفه لكنه لا يظهر بالقائمة/الميزانية ولا يُهلَك حتى اعتماد المالك", async () => {
+  it("الأصل المثبت يظهر بالقائمة/الميزانية ويُهلك قبل تسوية التزامه النقدي", async () => {
     const pendingAsset = await createAsset(
       { name: "آلة معلّقة", category: "printing", purchaseDate: "2024-01-01", purchaseValue: "500000", usefulLifeYears: 5, branchId: 1 },
       ACTOR,
     );
-    expect(pendingAsset).toMatchObject({ paymentPending: true, isActive: false });
+    expect(pendingAsset).toMatchObject({ paymentPending: true, isActive: true });
     expect(pendingAsset!.id).toBeGreaterThan(0);
     expect(pendingAsset!.code).toMatch(/^AST-/);
-    expect(await listAssets(undefined, { branchId: null })).toHaveLength(0);
-    expect((await getFinancialPosition()).fixedAssets).toBe("0.00");
-    expect((await postMonthlyDepreciation(2024, 6, ACTOR)).assetsPosted).toBe(0);
+    expect(await listAssets(undefined, { branchId: null })).toHaveLength(1);
+    expect((await getFinancialPosition()).fixedAssets).toBe("500000.00");
+    expect((await postMonthlyDepreciation(2024, 6, ACTOR)).assetsPosted).toBe(1);
+    const fixedAssetsAfterDepreciation = (await getFinancialPosition()).fixedAssets;
 
     const [request] = await db().select().from(s.receipts)
       .where(eq(s.receipts.referenceNumber, `ASSET-ACQ-${pendingAsset!.id}`));
     await approveVoucher(Number(request.id), OWNER);
 
     expect(await listAssets(undefined, { branchId: null })).toHaveLength(1);
-    expect((await getFinancialPosition()).fixedAssets).toBe("500000.00");
-    expect((await postMonthlyDepreciation(2024, 6, ACTOR)).assetsPosted).toBe(1);
+    expect((await getFinancialPosition()).fixedAssets).toBe(fixedAssetsAfterDepreciation);
+    expect((await postMonthlyDepreciation(2024, 6, ACTOR)).assetsPosted).toBe(0);
   });
 
   it("FI-02: الإهلاك الشهري يُرحّل مصروفاً + يُحدّث المتراكم + P&L + ميزانية NBV + idempotent", async () => {

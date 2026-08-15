@@ -2,7 +2,7 @@
 // الخلل المُعالَج: بوّابة module-only كانت تعيد true فراغياً (roleOk صحيح فراغياً بلا قيود دور)
 // فتُظهر التبويب لكل الأدوار وإن رفضها الخادم بـ403؛ ولم تكن تستشير قالب الدور (المنح الصريح فقط).
 import { describe, expect, it } from "vitest";
-import { canSeeGate } from "./navVisibility";
+import { canSeeGate, RECONCILE_CONTROL_GATE } from "./navVisibility";
 
 describe("canSeeGate — قيود الدور", () => {
   it("بلا بوّابة ⇒ مرئي للكل", () => {
@@ -53,5 +53,23 @@ describe("canSeeGate — {roles + module}: مرآة requireModuleGate", () => {
   });
   it("دورٌ ضمن القائمة بقالبٍ كافٍ ⇒ مرئي", () => {
     expect(canSeeGate({ roles: ["manager"], module: "collections", level: "READ" }, "manager", null)).toBe(true);
+  });
+  it("المنع الفردي يُنفّذ حتى على دور مسموح به", () => {
+    expect(
+      canSeeGate(
+        { roles: ["manager", "accountant", "auditor"], module: "reports", level: "READ" },
+        "manager",
+        { reports: "NONE" },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("تدقيق الدفتر المزدوج — مطابق لبوابة الخادم", () => {
+  it("يظهر للأدمن فقط ولا تفتحه صلاحية reports أو دور manager", () => {
+    expect(canSeeGate(RECONCILE_CONTROL_GATE, "admin", null)).toBe(true);
+    expect(canSeeGate(RECONCILE_CONTROL_GATE, "manager", { reports: "FULL" })).toBe(false);
+    expect(canSeeGate(RECONCILE_CONTROL_GATE, "accountant", { reports: "FULL" })).toBe(false);
+    expect(canSeeGate(RECONCILE_CONTROL_GATE, "auditor", { reports: "FULL" })).toBe(false);
   });
 });

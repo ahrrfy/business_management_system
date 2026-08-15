@@ -47,7 +47,9 @@
 2. `pnpm db:push` — يبني المخطّط من `drizzle/schema.ts` (ينجح على فارغٍ بعد إصلاح اسم FK).
 3. `node scripts/ci-apply-extra-migrations.mjs` — يطبّق ما لا يمثّله drizzle-kit (أعمدة `GENERATED`،
    قيود `CHECK`، فهارس مُغطّية…).
-4. **(اختياريّ)** تهيئة قاعدة التحكّم لتعدّد الشركات — تُنفَّذ فقط إن ضُبط `TEST_CONTROL_DATABASE_URL`.
+4. `node scripts/db-verify-schema.mjs` — يفحص القاعدة الفعلية قبل إعلان النجاح؛ وهذا إلزامي لأن بعض
+   إصدارات `drizzle-kit push` قد تطبع خطأ DDL ثم تعيد رمز خروج صفرياً وتترك قاعدة نصف مبنية.
+5. **(اختياريّ)** تهيئة قاعدة التحكّم لتعدّد الشركات — تُنفَّذ فقط إن ضُبط `TEST_CONTROL_DATABASE_URL`.
 
 ### الاستعمال
 

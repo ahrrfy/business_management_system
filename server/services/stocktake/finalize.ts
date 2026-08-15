@@ -16,6 +16,7 @@ import {
 import { hashPassword, verifyPassword } from "../../auth/password";
 import { setStock } from "../inventoryService";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
@@ -273,13 +274,14 @@ export async function approveStocktake(
     // (٤+٥) التسويات والقرارات النهائية.
     let adjustedMovements = 0;
     let shortExpense = money(0);
+    let ownedShortExpense = money(0);
     let overGain = money(0);
     type DecisionUpsert = typeof stocktakeDecisions.$inferInsert;
     const upserts: DecisionUpsert[] = [];
 
     // بضاعة الأمانة (ش٤ تحسين): خريطة variantId → consignorId + تجميع حصص عجز الأمانة لكل مودِع.
-    // قرار المالك ٥: عجز صنف أمانة = خسارة على المكتبة (يبقى ضمن قيد SHORT) **+** التزامٌ للمودِع
-    // (كأنه بِيع بلا إيراد) ⇒ استحقاق يتيم بلا invoiceId. وزيادة الأمانة تُستبعَد من OVER (ليست ربحنا).
+    // قرار المالك ٥: عجز صنف أمانة = خسارة على المكتبة مقابل التزام المودِع مباشرةً (بلا INVENTORY
+    // محاسبي لأنها ليست أصلنا) ⇒ استحقاق يتيم بلا invoiceId. وزيادتها تُستبعَد من OVER (ليست ربحنا).
     const consignByVariant = new Map<number, number>();
     {
       const vids = Array.from(new Set(rows.map((r) => Number(r.variantId))));
@@ -368,13 +370,17 @@ export async function approveStocktake(
           const v = money(r.value ?? 0);
           const cId = consignByVariant.get(Number(r.variantId));
           if (r.diff < 0) {
-            // العجز خسارة على المكتبة في الحالتين (يبقى ضمن SHORT). لأصناف الأمانة: + استحقاق للمودِع.
+            // shortExpense يبقى إجمالي خسارة المكتبة للعقد/المحضر. محاسبياً نفصل المملوك عن الأمانة:
+            // المملوك يخفض INVENTORY، والأمانة خارج أصولنا فتُحمّل LOSSES مقابل التزام المودِع مباشرةً.
             shortExpense = shortExpense.plus(v.abs());
-            if (cId != null)
+            if (cId != null) {
               consignShortByConsignor.set(
                 cId,
                 (consignShortByConsignor.get(cId) ?? money(0)).plus(v.abs()),
               );
+            } else {
+              ownedShortExpense = ownedShortExpense.plus(v.abs());
+            }
           } else if (cId == null) {
             // زيادة صنف أمانة تُستبعَد من OVER (بضاعة المودِع الزائدة ليست ربحاً لنا).
             overGain = overGain.plus(v);
@@ -422,19 +428,37 @@ export async function approveStocktake(
     //   - reconcileLedgerProfit يفرض profit = revenue − cost على كل قيد ⇒ نكتب profit = −cost:
     //     عجز: cost موجب ⇒ profit سالب (ينخفض الربح بقيمة العجز)؛
     //     زيادة: cost سالب ⇒ profit موجب (يرتفع الربح بقيمة الزيادة). dedupeKey يمنع الازدواج بنيوياً.
-    if (shortExpense.gt(0)) {
+    if (ownedShortExpense.gt(0)) {
+      const postingSourceComponents = {
+        roleDebits: { LOSSES: ownedShortExpense },
+        roleCredits: { INVENTORY: ownedShortExpense },
+      };
       await postEntry(tx, {
         entryType: "ADJUST",
         branchId: Number(s.branchId),
-        cost: shortExpense,
-        profit: shortExpense.neg(),
+        cost: ownedShortExpense,
+        profit: ownedShortExpense.neg(),
         amount: money(0),
         notes: `جرد ${s.code} — عجز مخزون`,
         dedupeKey: `STOCKTAKE:${sessionId}:SHORT`,
         entryDate: now,
+        postingIntent: createPostingIntent(
+          "ADJUST_INVENTORY_LOSS",
+          "ADJUST",
+          [debitLine("LOSSES", ownedShortExpense), creditLine("INVENTORY", ownedShortExpense)],
+          {
+            roleDebits: { LOSSES: ownedShortExpense },
+            roleCredits: { INVENTORY: ownedShortExpense },
+          },
+        ),
+        postingSourceComponents,
       });
     }
     if (overGain.gt(0)) {
+      const postingSourceComponents = {
+        roleDebits: { INVENTORY: overGain },
+        roleCredits: { OTHER_REVENUE: overGain },
+      };
       await postEntry(tx, {
         entryType: "ADJUST",
         branchId: Number(s.branchId),
@@ -444,6 +468,16 @@ export async function approveStocktake(
         notes: `جرد ${s.code} — زيادة جرد`,
         dedupeKey: `STOCKTAKE:${sessionId}:OVER`,
         entryDate: now,
+        postingIntent: createPostingIntent(
+          "ADJUST_INVENTORY_GAIN",
+          "ADJUST",
+          [debitLine("INVENTORY", overGain), creditLine("OTHER_REVENUE", overGain)],
+          {
+            roleDebits: { INVENTORY: overGain },
+            roleCredits: { OTHER_REVENUE: overGain },
+          },
+        ),
+        postingSourceComponents,
       });
     }
 
@@ -455,15 +489,31 @@ export async function approveStocktake(
     )) {
       const amount = consignShortByConsignor.get(cId)!;
       if (amount.lte(0)) continue;
+      const postingSourceComponents = {
+        roleDebits: { LOSSES: amount },
+        roleCredits: { CONSIGNMENT_PAYABLE: amount },
+      };
       await postEntry(tx, {
         entryType: "PURCHASE",
         supplierId: cId,
         invoiceId: null,
         branchId: Number(s.branchId),
         amount,
+        cost: amount,
+        profit: amount.neg(),
         notes: `جرد ${s.code} — استحقاق عجز أمانة`,
         dedupeKey: `CONSIG:STK:${sessionId}:${cId}`,
         entryDate: now,
+        postingIntent: createPostingIntent(
+          "PURCHASE_CONSIGNMENT_SHORTAGE",
+          "PURCHASE",
+          [debitLine("LOSSES", amount), creditLine("CONSIGNMENT_PAYABLE", amount)],
+          {
+            roleDebits: { LOSSES: amount },
+            roleCredits: { CONSIGNMENT_PAYABLE: amount },
+          },
+        ),
+        postingSourceComponents,
       });
       await adjustSupplierBalance(tx, cId, amount);
     }

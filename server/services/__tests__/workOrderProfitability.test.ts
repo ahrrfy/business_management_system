@@ -160,12 +160,26 @@ describe("workOrderProfitability — صحة الأرقام المالية", () =
     expect(row.marginPct).toBe("83.33");
     expect(res.totals.laborCost).toBeNull();
 
-    // تحقّق تقاطعي: الإيراد المعروض يطابق قيد SALE (revenue في الدفتر).
+    // الفاتورة تحتفظ بالتكلفة التحليلية الكاملة (مواد + أجور مقتبسة) كي لا تسقط الأجور
+    // من مستند العمل وتقاريره، بينما قيد SALE لا يرسمل الأجور غير المستحقة كمخزون/WIP.
+    const invoice = (await db().select().from(s.invoices)
+      .where(eq(s.invoices.id, Number(row.invoiceId))))[0]!;
+    expect(invoice.costTotal).toBe("1700.00");
+
+    // تحقّق تقاطعي: الإيراد يطابق الدفتر، وCOGS الدفتري هو المواد المنطلقة من WIP فقط.
     const entry = (await db()
-      .select({ revenue: s.accountingEntries.revenue, cost: s.accountingEntries.cost })
+      .select({
+        revenue: s.accountingEntries.revenue,
+        cost: s.accountingEntries.cost,
+        profit: s.accountingEntries.profit,
+        notes: s.accountingEntries.notes,
+      })
       .from(s.accountingEntries)
       .where(eq(s.accountingEntries.entryType, "SALE")))[0];
     expect(entry.revenue).toBe(row.revenue);
+    expect(entry.cost).toBe("1000.00");
+    expect(entry.profit).toBe("5000.00");
+    expect(entry.notes).toContain("أجور تحليلية غير مرسملة=700.00");
   });
 
   it("laborRatePerHour يغيّر كلفة العمل والربح والهامش", async () => {

@@ -28,7 +28,13 @@ import { money, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { canonicalIraqiMobile, normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
-import { signedOpeningBalance, postOpeningEntry, upsertOpeningEntry, type OpeningDirection } from "./openingBalance";
+import {
+  assertLegacyOpeningMutable,
+  signedOpeningBalance,
+  postOpeningEntry,
+  upsertOpeningEntry,
+  type OpeningDirection,
+} from "./openingBalance";
 import { assertPeriodOpen } from "./periodLockService";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -496,10 +502,13 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
       .from(accountingEntries)
       .where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")))
       .limit(1);
-    if (openingEntry) await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
+    if (openingEntry) {
+      await assertLegacyOpeningMutable(tx);
+      await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
+      await tx.delete(accountingEntries).where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
+    }
 
     // إزالة البيانات التابعة الآمنة الوحيدة: القيد الافتتاحيّ + الملاحظات + جهات الاتصال + التذكيرات.
-    await tx.delete(accountingEntries).where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
     await tx.delete(customerNotes).where(eq(customerNotes.customerId, customerId));
     await tx.delete(contactPersons).where(eq(contactPersons.customerId, customerId));
     await tx.delete(arReminders).where(eq(arReminders.customerId, customerId));

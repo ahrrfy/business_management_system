@@ -16,6 +16,7 @@ import { ErrorState } from "@/components/PageState";
 import { D, fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { clampDoubleEntryReportPeriod } from "@/lib/doubleEntryReportPeriod";
 
 type Result = RouterOutputs["reports"]["generalLedger"];
 type Row = Result["rows"][number];
@@ -30,6 +31,7 @@ const SIDE_LABEL: Record<string, string> = {
   ZERO: "صفر",
 };
 const ENTRY_LABEL: Record<string, string> = {
+  SHADOW_OPENING: "رصيد افتتاح SHADOW",
   SALE: "بيع",
   PURCHASE: "شراء",
   PAYMENT_IN: "قبض",
@@ -65,6 +67,9 @@ const ENTRY_LABEL: Record<string, string> = {
 };
 
 function sourceView(row: Row): { label: string; href?: string } {
+  if (row.sourceType === "SHADOW_OPENING") {
+    return { label: "لقطة الرصيد الافتتاحي" };
+  }
   if (row.invoiceId) {
     return {
       label: row.invoiceNumber ?? `فاتورة #${row.invoiceId}`,
@@ -76,7 +81,9 @@ function sourceView(row: Row): { label: string; href?: string } {
     return { label: row.voucherNumber, href: "/treasury?tab=vouchers" };
   if (row.receiptId)
     return { label: `إيصال #${row.receiptId}`, href: "/treasury?tab=vouchers" };
-  return { label: `قيد #${row.entryId}` };
+  return {
+    label: row.entryId == null ? "مصدر غير مربوط" : `قيد #${row.entryId}`,
+  };
 }
 
 function ModeNotice({ result }: { result: Result }) {
@@ -118,6 +125,8 @@ export default function GeneralLedger() {
   const [accountId, setAccountId] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const me = trpc.auth.me.useQuery();
+  const availability = trpc.reports.doubleEntryReportAvailability.useQuery();
+  const availableFrom = availability.data?.availableFrom ?? null;
   const accounts = trpc.accounts.list.useQuery();
   const postingAccounts = useMemo(
     () => (accounts.data ?? []).filter((account) => account.systemRole != null),
@@ -127,6 +136,11 @@ export default function GeneralLedger() {
     if (accountId == null && postingAccounts.length > 0)
       setAccountId(postingAccounts[0].id);
   }, [accountId, postingAccounts]);
+  useEffect(() => {
+    setPeriod((current) =>
+      clampDoubleEntryReportPeriod(current, availableFrom),
+    );
+  }, [availableFrom]);
   const canChooseBranch = me.data?.role === "admin";
   const branches = trpc.branches.list.useQuery(undefined, {
     enabled: canChooseBranch,
@@ -139,12 +153,17 @@ export default function GeneralLedger() {
   };
   const q = trpc.reports.generalLedger.useQuery(
     { ...filterInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE },
-    { enabled: accountId != null && period.from <= period.to },
+    {
+      enabled:
+        accountId != null &&
+        period.from <= period.to &&
+        (!availableFrom || period.from >= availableFrom),
+    },
   );
   const result = q.data;
 
   function changePeriod(next: PeriodValue) {
-    setPeriod(next);
+    setPeriod(clampDoubleEntryReportPeriod(next, availableFrom));
     setPage(0);
   }
 
@@ -154,10 +173,14 @@ export default function GeneralLedger() {
       {
         id: "entry",
         header: "القيد",
-        accessorFn: (row) => row.entryId,
+        accessorFn: (row) => row.entryId ?? row.journalId,
         cell: ({ row }) => (
           <div>
-            <p className="font-medium">#{row.original.entryId}</p>
+            <p className="font-medium">
+              {row.original.entryId == null
+                ? `يومية #${row.original.journalId}`
+                : `#${row.original.entryId}`}
+            </p>
             <p className="text-[10px] text-muted-foreground">
               {ENTRY_LABEL[row.original.entryType] ?? row.original.entryType}
             </p>
@@ -296,6 +319,11 @@ export default function GeneralLedger() {
           { label: "الفترة", value: `${period.from} — ${period.to}` },
           { label: "الفرع", value: branchLabel },
           { label: "الوضع", value: result.mode },
+          { label: "دورة الدفتر", value: result.cycleId ?? "غير مفعلة" },
+          {
+            label: "بداية تغطية الدورة",
+            value: result.availableFrom ?? "لا توجد دورة مفعلة",
+          },
           {
             label: "الرصيد الافتتاحي",
             value: `${fmtAr(result.openingBalance)} ${SIDE_LABEL[result.openingSide]}`,
@@ -438,6 +466,21 @@ export default function GeneralLedger() {
       ) : (
         <div className="space-y-3">
           {result && <ModeNotice result={result} />}
+
+          {availableFrom && (
+            <div className="flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
+              <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <div>
+                <p className="font-medium">
+                  بداية تغطية دورة الدفتر: {availableFrom}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  ضُبطت الفترة تلقائياً؛ دفتر الأستاذ لا يدّعي حركةً أو رصيداً
+                  قبل لقطة القطع الحالية.
+                </p>
+              </div>
+            </div>
+          )}
           {result && result.unmappedCount > 0 && (
             <div className="flex items-center gap-2 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] px-3 py-2 text-sm text-[var(--sem-neg)]">
               <AlertTriangle aria-hidden className="size-4 shrink-0" />

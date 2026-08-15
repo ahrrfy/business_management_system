@@ -13,6 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
@@ -32,10 +33,14 @@ import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { CheckCircle2, XCircle, Paperclip, ShieldQuestion, Link2, X } from "lucide-react";
 import {
+  accrualPaymentAttemptLabel,
+  accrualPaymentResubmitPayload,
+  canShowAccrualPaymentResubmit,
   canPrintOfficialVoucher,
   canShowVoucherApprovalAction,
   canShowVoucherRejectAction,
   expectedVoucherSourceLabel,
+  validAccrualReissueReason,
   voucherApprovalLabel,
 } from "@/components/vouchers/voucherUiPolicy";
 
@@ -52,6 +57,24 @@ const METHOD_LABEL: Record<string, string> = {
 };
 function shortHash(h?: string | null): string {
   return h ? String(h).slice(0, 8).toUpperCase() : "—";
+}
+
+const SYSTEM_PAYMENT_PREFIXES = [
+  "ASSET-ACQ-",
+  "ASSET-REACQ-",
+  "ASSET-MAINT-",
+  "ASSET-SUP-SETTLE-",
+  "PO-PAY-",
+  "SHIP-",
+  "EXCHANGE-IQD-DEP-",
+  "DIGITAL-WALLET-DEP-",
+  "CANCEL-VCH-",
+  "TERM-SETTLEMENT-",
+  "ACCRUAL-REFUND-",
+] as const;
+
+function isSystemPaymentReference(reference?: string | null): boolean {
+  return !!reference && SYSTEM_PAYMENT_PREFIXES.some((prefix) => reference.startsWith(prefix));
 }
 
 export default function Vouchers() {
@@ -109,7 +132,11 @@ export default function Vouchers() {
   const cancelMut = trpc.vouchers.cancel.useMutation({
     onSuccess: async (res) => {
       await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
-      notify.ok(`أُلغي السند ${res.voucherNumber} وعُكست آثاره المالية`);
+      notify.ok(
+        res.status === "PENDING_APPROVAL"
+          ? `أُرسل طلب إلغاء السند ${res.voucherNumber} — يبقى أثره نافذاً حتى اعتماد مالك نشط آخر.`
+          : `أُلغي الطلب غير المادي ${res.voucherNumber} بلا أثر مالي`,
+      );
     },
     onError: (e) => notify.err(e),
   });
@@ -130,6 +157,10 @@ export default function Vouchers() {
   // حوار سبب الرفض (بديل window.prompt — نمط حوارات النظام).
   const [rejectTarget, setRejectTarget] = useState<VoucherRow | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [resubmitTarget, setResubmitTarget] = useState<VoucherRow | null>(null);
+  const [reissueReason, setReissueReason] = useState("");
+  const [resubmitNote, setResubmitNote] = useState("");
+  const [resubmitAttachmentImages, setResubmitAttachmentImages] = useState<ImageItem[]>([]);
 
   const rejectMut = trpc.vouchers.reject.useMutation({
     onSuccess: async (res) => {
@@ -142,62 +173,72 @@ export default function Vouchers() {
 
   const resubmitSystemPaymentMut = trpc.vouchers.resubmitExpensePayment.useMutation({
     onSuccess: async (res) => {
+      setResubmitTarget(null);
+      setReissueReason("");
+      setResubmitNote("");
+      setResubmitAttachmentImages([]);
       await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
-      notify.ok(`أُعيد تقديم طلب الدفع النظامي بالسند ${res.voucherNumber} بلا تكرارٍ للمصدر أو أثرٍ مالي`);
+      notify.ok(
+        res.replayed
+          ? `استُرجعت المحاولة A${res.attempt} بالسند ${res.voucherNumber} بلا إنشاء أو أثرٍ مكرر`
+          : `أُنشئت المحاولة A${res.attempt} بالسند ${res.voucherNumber} مرتبطة بالمحاولة #${res.priorReceiptId} بلا تكرارٍ للمصدر أو أثرٍ مالي`,
+      );
     },
     onError: (e) => notify.err(e),
   });
 
   async function approveVoucher(r: VoucherRow) {
     // لا يُعد هذا حارس صلاحية؛ هو منع UX فقط، والإنفاذ الحاسم في الإجراء الخادمي.
-    if (r.direction === "OUT" && !isOwner) {
-      notify.err("اعتماد وصرف سندات الصرف متاح لحساب مالك نشط فقط.");
+    if (!isOwner) {
+      notify.err("اعتماد السندات متاح لحساب مالك نشط فقط.");
       return;
     }
     const partyLabel = r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
     const isPayment = r.direction === "OUT";
     const expectedSource = expectedVoucherSourceLabel(r);
-    const isRecognizedExpense =
+    const isAccruedSystemPayment =
       r.referenceNumber?.startsWith("SHIP-") === true ||
-      r.referenceNumber?.startsWith("ASSET-MAINT-") === true;
+      r.referenceNumber?.startsWith("ASSET-MAINT-") === true ||
+      r.referenceNumber?.startsWith("ASSET-ACQ-") === true;
     const ok = await confirm({
       variant: "info",
-      title: isPayment ? "اعتماد وصرف السند" : "اعتماد السند",
+      title: isPayment ? "اعتماد المالك وصرف السند" : "اعتماد المالك للسند",
       description: isPayment
-        ? isRecognizedExpense
-          ? `المصروف وقيد استحقاقه مُثبتان مسبقاً. سيُعيد الخادم فحص المصدر والرصيد ثم يُخرج اعتماد السند ${r.voucherNumber ?? ""} مبلغ ${fmt(r.amount)} د.ع من ${expectedSource} مرةً واحدة فقط، بلا مصروف أو قيد استحقاق ثانٍ. عند أي فشل يبقى طلب الدفع بلا أثر نقدي. هل تتابع؟`
+        ? isAccruedSystemPayment
+          ? `الأصل أو المصروف وقيد استحقاقه مُثبتان مسبقاً. سيُعيد الخادم فحص المصدر والرصيد ثم يسوّي الالتزام بالسند ${r.voucherNumber ?? ""} بمبلغ ${fmt(r.amount)} د.ع من ${expectedSource} مرةً واحدة فقط، بلا اعتراف أو استحقاق ثانٍ. عند أي فشل يبقى الطلب بلا أثر نقدي. هل تتابع؟`
           : `سيُتحقق الخادم من الرصيد ثم يعتمد ويصرف السند ${r.voucherNumber ?? ""} في عملية واحدة بلا مرحلة وسيطة. المبلغ: ${fmt(r.amount)} د.ع · الطرف: ${partyLabel} · المصدر المتوقع لحظة التأكيد: ${expectedSource}. يُعاد فحص المصدر والرصيد داخل المعاملة؛ عند أي فشل لن يُسجَّل إيصال أو قيد أو تغيير ذمة. هل تتابع؟`
         : `سَيُصبح السند ${r.voucherNumber ?? ""} مُعتمَداً ويُسجَّل قيد الدفتر ويُؤثّر على ${
             r.partyType === "CUSTOMER" ? "ذمة العميل" : r.partyType === "SUPPLIER" ? "ذمة المورّد" : "الصندوق"
           } بمبلغ ${fmt(r.amount)} د.ع. هل تتابع؟`,
-      confirmText: isPayment ? "اعتماد وصرف" : "اعتماد",
+      confirmText: isPayment ? "اعتماد المالك وصرف" : "اعتماد المالك",
       cancelText: "تراجع",
     });
     if (!ok) return;
     approveMut.mutate({ receiptId: Number(r.id) });
   }
 
-  async function resubmitSystemPayment(r: VoucherRow) {
-    const isTerminationSettlement = r.referenceNumber?.startsWith("TERM-SETTLEMENT-") === true;
-    const ok = await confirm({
-      variant: "info",
-      title: isTerminationSettlement
-        ? "إعادة تقديم تسوية نهاية الخدمة"
-        : "إعادة تقديم طلب دفع المصروف",
-      description: isTerminationSettlement
-        ? `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بسجل إنهاء الخدمة ومبلغه المعتمد نفسه بلا تغيير حالة الموظف أو أثر مالي مسبق. هل تتابع؟`
-        : `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بالمصروف المثبت نفسه بلا مصروف أو قيد دفتر إضافي. هل تتابع؟`,
-      confirmText: "إعادة تقديم",
-      cancelText: "تراجع",
-    });
-    if (!ok) return;
-    resubmitSystemPaymentMut.mutate({ receiptId: Number(r.id) });
+  function openResubmitSystemPayment(r: VoucherRow) {
+    setReissueReason("");
+    setResubmitNote("");
+    setResubmitAttachmentImages([]);
+    setResubmitTarget(r);
+  }
+
+  function submitResubmitSystemPayment() {
+    if (!resubmitTarget || resubmitSystemPaymentMut.isPending) return;
+    if (!validAccrualReissueReason(reissueReason)) return;
+    resubmitSystemPaymentMut.mutate(accrualPaymentResubmitPayload({
+      receiptId: Number(resubmitTarget.id),
+      reissueReason,
+      attachmentUrl: resubmitAttachmentImages[0]?.dataUrl ?? null,
+      note: resubmitNote,
+    }));
   }
 
   function openReject(r: VoucherRow) {
     // إخفاء/منع UX فقط؛ الخادم القادم يفرض isOwner النشط وفصل الواجبات.
-    if (r.direction === "OUT" && !isOwner) {
-      notify.err("رفض طلبات الصرف متاح لحساب مالك نشط فقط.");
+    if (!isOwner) {
+      notify.err("رفض طلبات السندات متاح لحساب مالك نشط فقط.");
       return;
     }
     setRejectReason("");
@@ -212,11 +253,15 @@ export default function Vouchers() {
 
   async function cancelVoucher(r: VoucherRow) {
     const partyLabel = PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—";
+    const materialized =
+      r.status === "COMPLETED" && r.approvalStatus === "APPROVED";
     const ok = await confirm({
       variant: "danger",
-      title: "إلغاء السند",
-      description: `سيُعلَّم السند ${r.voucherNumber ?? ""} «مُلغى» ويُعكس مبلغ ${fmt(r.amount)} د.ع (الطرف: ${partyLabel}) في الصندوق والدفتر ورصيد الطرف. هل تتابع؟`,
-      confirmText: "إلغاء السند",
+      title: materialized ? "طلب إلغاء السند" : "إلغاء الطلب غير المادي",
+      description: materialized
+        ? `سيُنشأ طلب إلغاء معلّق للسند ${r.voucherNumber ?? ""} بمبلغ ${fmt(r.amount)} د.ع (الطرف: ${partyLabel}). يبقى السند وأثره المالي نافذين بلا تغيير حتى يعتمد مالك نشط آخر مختلف عن طالب الإلغاء ومنشئ الأصل؛ عند الاعتماد فقط يُعكس الصندوق والدفتر والذمة ذرياً. هل تتابع؟`
+        : `الطلب ${r.voucherNumber ?? ""} لم يُعتمد ولم يُنشئ أثراً مالياً؛ سيُعلّم ملغى بلا قيد أو حركة نقد. هل تتابع؟`,
+      confirmText: materialized ? "إرسال طلب الإلغاء" : "إلغاء الطلب",
       cancelText: "تراجع",
     });
     if (!ok) return;
@@ -278,7 +323,7 @@ export default function Vouchers() {
           { key: "amount", header: "المبلغ", map: (r) => Number(r.amount ?? 0) },
           { key: "paymentMethod", header: "الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
           { key: "referenceNumber", header: "الرقم المرجعي" },
-          { key: "checkNumber", header: "رقم الصكّ" },
+          { key: "checkNumber", header: "مرجع التحويل/الصكّ" },
           { key: "cardLastFour", header: "آخر ٤ بطاقة" },
           { key: "approvalStatus", header: "حالة الاعتماد", map: (r) => voucherApprovalLabel(r) },
           { key: "status", header: "الحالة", map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل") },
@@ -288,6 +333,10 @@ export default function Vouchers() {
           { key: "invoiceNumber", header: "الفاتورة المرتبطة", map: (r) => r.invoiceNumber ?? "—" },
           { key: "signatureHash", header: "بَصمة", map: (r) => shortHash(r.signatureHash) },
           { key: "cashBucket", header: "نوع النَقد", map: (r) => (r.cashBucket === "DRAWER" ? "درج كاشير" : r.cashBucket === "TREASURY" ? "خزينة إدارية" : "—") },
+          { key: "resubmitAttempt", header: "محاولة إعادة الإصدار", map: (r) => r.resubmitAttempt == null ? "—" : `A${r.resubmitAttempt}` },
+          { key: "resubmitRootReceiptId", header: "سند أصل السلسلة", map: (r) => r.resubmitRootReceiptId ?? "—" },
+          { key: "resubmitPriorReceiptId", header: "السند السابق", map: (r) => r.resubmitPriorReceiptId ?? "—" },
+          { key: "resubmitReason", header: "سبب إعادة الإصدار", map: (r) => r.resubmitReason ?? "—" },
         ],
       });
     } catch (e) {
@@ -602,6 +651,29 @@ export default function Vouchers() {
                             #{shortHash(r.signatureHash)}
                           </div>
                         )}
+                        {accrualPaymentAttemptLabel({
+                          attempt: r.resubmitAttempt,
+                          rootReceiptId: r.resubmitRootReceiptId,
+                          priorReceiptId: r.resubmitPriorReceiptId,
+                        }) && (
+                          <div className="mt-1 text-[10px] text-muted-foreground font-sans" dir="rtl">
+                            {accrualPaymentAttemptLabel({
+                              attempt: r.resubmitAttempt,
+                              rootReceiptId: r.resubmitRootReceiptId,
+                              priorReceiptId: r.resubmitPriorReceiptId,
+                            })}
+                          </div>
+                        )}
+                        {r.resubmitReason && (
+                          <div className="mt-0.5 max-w-52 truncate text-[10px] text-muted-foreground font-sans" title={r.resubmitReason} dir="rtl">
+                            سبب إعادة الإصدار: {r.resubmitReason}
+                          </div>
+                        )}
+                        {r.resubmitLineageStatus === "BROKEN" && (
+                          <div className="mt-1 text-[10px] text-rose-700 font-sans" dir="rtl">
+                            سلسلة إعادة الإصدار غير مكتملة — يلزم تدقيق
+                          </div>
+                        )}
                       </td>
                       <td className="p-2 text-xs">
                         {fmtDate(r.voucherDate as any)}
@@ -678,7 +750,7 @@ export default function Vouchers() {
                             {
                               key: "approve",
                               kind: "approve",
-                              label: r.direction === "OUT" ? "اعتماد وصرف" : "اعتماد السند",
+                              label: r.direction === "OUT" ? "اعتماد المالك وصرف" : "اعتماد المالك",
                               hidden: !canShowVoucherApprovalAction({
                                 direction: r.direction,
                                 approvalStatus: r.approvalStatus,
@@ -693,7 +765,7 @@ export default function Vouchers() {
                             {
                               key: "reject",
                               kind: "reverse",
-                              label: r.direction === "OUT" ? "رفض طلب الصرف" : "رفض السند",
+                              label: r.direction === "OUT" ? "رفض المالك لطلب الصرف" : "رفض المالك للسند",
                               variant: "destructive",
                               hidden: !canShowVoucherRejectAction({
                                 direction: r.direction,
@@ -704,20 +776,25 @@ export default function Vouchers() {
                               disabled: rejectMut.isPending,
                               disabledReason: "توجد عملية رفض قيد التنفيذ",
                               onSelect: () => openReject(r),
-                              gate: r.direction === "OUT"
-                                ? { module: "treasury", level: "FULL" }
-                                : { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                              gate: { module: "treasury", level: "FULL" },
                             },
                             {
                               key: "resubmit-system-payment",
                               kind: "create",
                               label: r.referenceNumber?.startsWith("TERM-SETTLEMENT-")
                                 ? "إعادة تقديم تسوية نهاية الخدمة"
+                                : r.referenceNumber?.startsWith("ASSET-ACQ-")
+                                  ? "إعادة تقديم تسوية اقتناء الأصل"
                                 : "إعادة تقديم دفع المصروف",
-                              hidden: !canManage || r.approvalStatus !== "REJECTED" || !r.referenceNumber || (!r.referenceNumber.startsWith("SHIP-") && !r.referenceNumber.startsWith("ASSET-MAINT-") && !r.referenceNumber.startsWith("TERM-SETTLEMENT-")),
+                              hidden: !canShowAccrualPaymentResubmit({
+                                referenceNumber: r.referenceNumber,
+                                approvalStatus: r.approvalStatus,
+                                resubmitLineageStatus: r.resubmitLineageStatus,
+                                canManage,
+                              }),
                               disabled: resubmitSystemPaymentMut.isPending,
                               disabledReason: "توجد إعادة تقديم قيد التنفيذ",
-                              onSelect: () => void resubmitSystemPayment(r),
+                              onSelect: () => openResubmitSystemPayment(r),
                               gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
                             },
                             {
@@ -731,9 +808,12 @@ export default function Vouchers() {
                             {
                               key: "cancel",
                               kind: "reverse",
-                              label: "إلغاء السند",
+                              label:
+                                r.status === "COMPLETED" && r.approvalStatus === "APPROVED"
+                                  ? "طلب إلغاء السند"
+                                  : "إلغاء الطلب",
                               variant: "destructive",
-                              hidden: !canManage || r.status === "REVERSED" || r.paymentMethod === "EXCHANGE",
+                              hidden: !canManage || r.status === "REVERSED" || r.paymentMethod === "EXCHANGE" || isSystemPaymentReference(r.referenceNumber),
                               disabled: cancelMut.isPending,
                               disabledReason: "توجد عملية إلغاء قيد التنفيذ",
                               onSelect: () => void cancelVoucher(r),
@@ -774,6 +854,8 @@ export default function Vouchers() {
             <DialogDescription>
               {rejectTarget?.referenceNumber?.startsWith("TERM-SETTLEMENT-")
                 ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى إنهاء الخدمة مثبتاً وتبقى التسوية غير مدفوعة، ويمكن إعادة تقديمها صراحةً من السجل بلا تكرار."
+                : rejectTarget?.referenceNumber?.startsWith("ASSET-ACQ-")
+                  ? "سبب الرفض إلزامي. يُرفض طلب التسوية فقط؛ يبقى الأصل والتزام اقتنائه مثبتين، ويمكن إعادة تقديم الدفع صراحةً بلا تكرار الأصل أو القيد."
                 : rejectTarget?.referenceNumber && (rejectTarget.referenceNumber.startsWith("SHIP-") || rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
                   ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
                   : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
@@ -801,6 +883,96 @@ export default function Vouchers() {
               disabled={!rejectReason.trim() || rejectMut.isPending}
             >
               {rejectMut.isPending ? "جارٍ الرفض…" : "رفض السند"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={resubmitTarget != null}
+        onOpenChange={(open) => {
+          if (!open && !resubmitSystemPaymentMut.isPending) {
+            setResubmitTarget(null);
+            setReissueReason("");
+            setResubmitNote("");
+            setResubmitAttachmentImages([]);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>إعادة إصدار طلب الدفع {resubmitTarget?.voucherNumber ?? ""}</DialogTitle>
+            <DialogDescription>
+              يبقى السند المرفوض محفوظاً. تُنشأ محاولة A{(resubmitTarget?.resubmitAttempt ?? 0) + 1}
+              مرتبطة بالسند #{resubmitTarget?.id ?? "—"}، بلا تكرار للمصروف أو الأصل أو قيد الاعتراف وبلا أثر نقدي قبل اعتماد المالك.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <Label htmlFor="voucher-reissue-reason">سبب إعادة الإصدار *</Label>
+            <Textarea
+              id="voucher-reissue-reason"
+              value={reissueReason}
+              onChange={(event) => setReissueReason(event.target.value)}
+              placeholder="مثلاً: أُرفقت فاتورة النقل المصححة"
+              rows={3}
+              minLength={5}
+              maxLength={500}
+              autoFocus
+            />
+            <div className="text-[11px] text-muted-foreground">
+              السبب جزء ثابت من سلسلة التدقيق ولا يمكن استبداله بعد إنشاء المحاولة.
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label>المستند المصحح (اختياري)</Label>
+            <ImageUploader
+              value={resubmitAttachmentImages}
+              onChange={setResubmitAttachmentImages}
+              maxItems={1}
+              maxSizeMB={2}
+              singlePrimary={false}
+              hint="اختر مستند المحاولة الجديدة. مرفق السند المرفوض لا يُنقل تلقائياً."
+            />
+            {resubmitTarget?.attachmentUrl && (
+              <a
+                href={resubmitTarget.attachmentUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs underline text-muted-foreground"
+              >
+                فتح مرفق المحاولة المرفوضة للمراجعة فقط
+              </a>
+            )}
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="voucher-reissue-note">ملاحظة المحاولة (اختيارية)</Label>
+            <Textarea
+              id="voucher-reissue-note"
+              value={resubmitNote}
+              onChange={(event) => setResubmitNote(event.target.value)}
+              placeholder="ملاحظة تشغيلية تضاف إلى وصف المحاولة الجديدة"
+              rows={2}
+              maxLength={500}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setResubmitTarget(null);
+                setReissueReason("");
+                setResubmitNote("");
+                setResubmitAttachmentImages([]);
+              }}
+              disabled={resubmitSystemPaymentMut.isPending}
+            >
+              تراجع
+            </Button>
+            <Button
+              onClick={submitResubmitSystemPayment}
+              disabled={!validAccrualReissueReason(reissueReason) || resubmitSystemPaymentMut.isPending}
+            >
+              {resubmitSystemPaymentMut.isPending ? "جارٍ إنشاء المحاولة…" : "إنشاء محاولة مرتبطة"}
             </Button>
           </DialogFooter>
         </DialogContent>

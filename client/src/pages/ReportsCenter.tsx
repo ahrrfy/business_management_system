@@ -30,6 +30,7 @@ interface ReportItem {
   icon: LucideIcon;
   gate: Gate;
   status: Status;
+  ownerOnly?: boolean;
 }
 interface Section {
   key: string;
@@ -147,7 +148,7 @@ const SECTIONS: Section[] = [
     label: "الموارد البشرية",
     icon: Briefcase,
     items: [
-      { title: "ملخّص الرواتب", desc: "إجمالي/بدلات/خصومات/صافٍ بالفترة", href: "/reports/payroll", icon: Banknote, gate: "manager", status: "ready" },
+      { title: "ملخّص الرواتب", desc: "استحقاق ودفعات وتحويلات قانونية موثقة", href: "/reports/payroll", icon: Banknote, gate: "manager", status: "ready", ownerOnly: true },
       { title: "تقرير الحضور", desc: "بالموظف/الفترة + الساعات", href: "/reports/attendance", icon: Clock8, gate: "manager", status: "ready" },
       { title: "الحضور الشهريّ (كل الموظفين)", desc: "ساعات · غياب · إضافيّ · المستحقّ", href: "/reports/attendance-monthly", icon: Clock8, gate: "manager", status: "ready" },
       { title: "أرصدة الإجازات", desc: "المستحقّ/المستخدَم/المتبقّي", href: "/reports/leaves", icon: Palmtree, gate: "manager", status: "ready" },
@@ -226,6 +227,7 @@ export default function ReportsCenter() {
   const [favs, setFavs] = useState<Set<string>>(() => loadFavs());
 
   const role = me.data?.role;
+  const isOwner = me.data?.isOwner === true;
   const permsOverride = (me.data?.permissionsOverride ?? null) as
     | import("@shared/permissions").PermissionMap
     | null;
@@ -248,18 +250,18 @@ export default function ReportsCenter() {
     () =>
       SECTIONS.map((s) => ({
         ...s,
-        items: s.items.filter((it) => canSeeGate(resolveGate(it.gate, s.key), role, permsOverride) && match(it)),
+        items: s.items.filter((it) => (!it.ownerOnly || isOwner) && canSeeGate(resolveGate(it.gate, s.key), role, permsOverride) && match(it)),
       })).filter((s) => s.items.length > 0),
-    [needle, role, permsOverride],
+    [needle, role, permsOverride, isOwner],
   );
 
   // المفضّلة (الجاهزة فقط ومرئية)
   const favItems = useMemo(
     () =>
       ALL_ITEMS.filter(
-        (it) => favs.has(it.href) && canSeeGate(resolveGate(it.gate, it.sectionKey), role, permsOverride) && it.status === "ready" && match(it),
+        (it) => favs.has(it.href) && (!it.ownerOnly || isOwner) && canSeeGate(resolveGate(it.gate, it.sectionKey), role, permsOverride) && it.status === "ready" && match(it),
       ),
-    [favs, needle, role, permsOverride],
+    [favs, needle, role, permsOverride, isOwner],
   );
 
   return (

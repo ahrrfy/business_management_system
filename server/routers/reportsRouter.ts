@@ -27,7 +27,10 @@ import {
   getProfitAndLoss,
 } from "../services/reportsFinancialService";
 import { getGeneralLedger } from "../services/reports/generalLedger";
-import { getTrialBalance } from "../services/reports/trialBalance";
+import {
+  getDoubleEntryReportAvailability,
+  getTrialBalance,
+} from "../services/reports/trialBalance";
 import {
   getSalesRegister,
   getSalesByDimension,
@@ -106,6 +109,19 @@ const strictYmdStr = ymdStr.refine((value) => {
     return false;
   }
 }, "تاريخ تقويمي غير صالح");
+
+/** الشهر المدني المرئي في بغداد؛ لا يُشتق من UTC كي لا ينقلب قرب منتصف الليل المحلي. */
+function currentBaghdadMonth(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Baghdad",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(now);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  if (!year || !month) throw new Error("تعذّر تحديد شهر الأعمال بتوقيت بغداد");
+  return `${year}-${month}`;
+}
 
 /**
  * يحلّ فرع التقرير مع عزل صارم: admin يعبُر أي فرع (input.branchId أو الكل)؛ غير-admin يُقيَّد بفرعه.
@@ -655,6 +671,14 @@ export const reportsRouter = router({
     }),
 
   /** ميزان مراجعة رسمي من أسطر الدفتر المزدوج — لا اشتقاق لحقوق الملكية ولا موازنة مصطنعة. */
+  /**
+   * نافذة إتاحة تقارير الدفتر بعد القطع. القراءة تتبع بوابة التقارير الحمراء،
+   * ولا تكشف موانع التفعيل أو اعتماد السياسة أو تفاصيل لقطة الافتتاح.
+   */
+  doubleEntryReportAvailability: reportsBranchScoped.query(async () =>
+    getDoubleEntryReportAvailability(),
+  ),
+
   trialBalance: reportsBranchScoped
     .input(
       z
@@ -1237,7 +1261,7 @@ export const reportsRouter = router({
         import("../services/reconcileService"),
         import("../services/accounting/activationGate"),
       ]);
-      const month = input?.month ?? new Date().toISOString().slice(0, 7);
+      const month = input?.month ?? currentBaghdadMonth();
       const [details, doubleEntry, activation] = await Promise.all([
         getFinancialReconciliationDetails(),
         reconcileDoubleEntry({ month, branchId: input?.branchId ?? null }),
@@ -1246,23 +1270,129 @@ export const reportsRouter = router({
       return { ...details, doubleEntry, activation };
     }),
 
-  /** OFF→SHADOW فقط يدوياً؛ SHADOW→ACTIVE يفوّض حصراً للبوابة داخل المعاملة. */
-  setDoubleEntryMode: settingsAdminProcedure
-    .input(z.object({ target: z.enum(["SHADOW", "ACTIVE"]) }))
+  /** الانتقالات كلها مدققة؛ ACTIVE حصراً عبر البوابة، وOFF طوارئ بسببٍ إلزامي بلا حذف اليومية. */
+  prepareDoubleEntryShadow: settingsAdminProcedure
+    .input(
+      z.object({
+        allocations: z
+          .array(
+            z.object({
+              role: z.enum([
+                "CAPITAL",
+                "RETAINED_EARNINGS",
+                "OWNER_CURRENT",
+                "LOAN_PAYABLE",
+              ]),
+              branchId: z.number().int().positive().nullable(),
+              debit: z.string().regex(/^\d+(?:\.\d{1,2})?$/),
+              credit: z.string().regex(/^\d+(?:\.\d{1,2})?$/),
+            }),
+          )
+          .max(400)
+          .default([]),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const [{ withTx }, { activateDoubleEntry, startDoubleEntryShadow }] =
+      const { prepareDoubleEntryShadowOpening } = await import(
+        "../services/accounting/doubleEntrySettings"
+      );
+      return prepareDoubleEntryShadowOpening({
+        actorId: ctx.user.id,
+        allocations: input.allocations,
+      });
+    }),
+
+  setDoubleEntryMode: settingsAdminProcedure
+    .input(
+      z.discriminatedUnion("target", [
+        z.object({
+          target: z.literal("SHADOW"),
+          preparationToken: z.string().min(40).max(100_000),
+          expectedOpeningHash: z.string().regex(/^[a-f0-9]{64}$/),
+          allocations: z
+            .array(
+              z.object({
+                role: z.enum([
+                  "CAPITAL",
+                  "RETAINED_EARNINGS",
+                  "OWNER_CURRENT",
+                  "LOAN_PAYABLE",
+                ]),
+                branchId: z.number().int().positive().nullable(),
+                debit: z.string().regex(/^\d+(?:\.\d{1,2})?$/),
+                credit: z.string().regex(/^\d+(?:\.\d{1,2})?$/),
+              }),
+            )
+            .max(400),
+        }),
+        z.object({ target: z.literal("ACTIVE") }),
+        z.object({
+          target: z.literal("OFF"),
+          reason: z.string().trim().min(10, "سبب الإيقاف مطلوب (10 أحرف على الأقل)").max(500),
+        }),
+      ]),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const [{ withTx }, { activateDoubleEntry, startDoubleEntryShadow, stopDoubleEntry }] =
         await Promise.all([
           import("../services/tx"),
           import("../services/accounting/doubleEntrySettings"),
         ]);
-      return withTx(async (tx) =>
-        input.target === "SHADOW"
-          ? startDoubleEntryShadow(tx, {
+      return withTx(async (tx) => {
+        if (input.target === "SHADOW") {
+          return startDoubleEntryShadow(tx, {
+            actorId: ctx.user.id,
+            preparationToken: input.preparationToken,
+            expectedOpeningHash: input.expectedOpeningHash,
+            allocations: input.allocations,
+            auditContext: ctx,
+          });
+        }
+        if (input.target === "ACTIVE") {
+          return activateDoubleEntry(tx, {
+            actorId: ctx.user.id,
+            auditContext: ctx,
+          });
+        }
+        return stopDoubleEntry(tx, {
+          actorId: ctx.user.id,
+          reason: input.reason,
+          auditContext: ctx,
+        });
+      });
+    }),
+
+  /** مرجع مصادقة محاسب بشري على سياسات الخرائط الملتبسة؛ حوكمة داخلية لا ادعاء معياري. */
+  setDoubleEntryPolicyApproval: settingsAdminProcedure
+    .input(
+      z.discriminatedUnion("action", [
+        z.object({
+          action: z.literal("APPROVE"),
+          reference: z.string().trim().min(10).max(255),
+          accountantName: z.string().trim().min(3).max(150),
+        }),
+        z.object({
+          action: z.literal("CLEAR"),
+          reason: z.string().trim().min(10).max(500),
+        }),
+      ]),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const [txModule, settingsModule] = await Promise.all([
+        import("../services/tx"),
+        import("../services/accounting/doubleEntrySettings"),
+      ]);
+      return txModule.withTx(async (tx) =>
+        input.action === "APPROVE"
+          ? settingsModule.approveDoubleEntryPolicy(tx, {
               actorId: ctx.user.id,
+              reference: input.reference,
+              accountantName: input.accountantName,
               auditContext: ctx,
             })
-          : activateDoubleEntry(tx, {
+          : settingsModule.clearDoubleEntryPolicyApproval(tx, {
               actorId: ctx.user.id,
+              reason: input.reason,
               auditContext: ctx,
             }),
       );

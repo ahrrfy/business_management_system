@@ -1,122 +1,371 @@
-// محرّك القيود المزدوجة (P1) — اختبارٌ صارم: كل خريطة متوازنة (Σمدين=Σدائن) + الأدوار الصحيحة +
-// تطابق تركيب البيع (SALE يَمدين AR بالكامل + PAYMENT_IN يُدائنه بالمدفوع ⇒ صافي AR = الآجل) +
-// **الصدق في النطاق:** الحالات المحمَّلة غير المدعومة (مرتجع مورّد/دفع بلا طرف/افتتاحيّ صيرفة/مبلغ سالب) تَرمي.
+import type Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
+import { money } from "../money";
 import {
+  InvalidPostingIntentError,
   MAPPED_ENTRY_TYPES,
   UnmappedEntryTypeError,
   assertBalanced,
+  createPostingIntent,
+  creditLine,
+  debitLine,
   postingLinesFor,
+  signedPostingLines,
+  validatePostingIntent,
+  validatePostingIntentPolicy,
   type JournalLine,
+  type PostingIntent,
 } from "../accounting/postingEngine";
 
-/** صافي (مدين − دائن) لكل دور — لفحص الأثر الصافي على الحسابات. */
-function netByRole(lines: JournalLine[]): Record<string, number> {
-  const net: Record<string, number> = {};
-  for (const l of lines) net[l.role] = (net[l.role] ?? 0) + Number(l.debit) - Number(l.credit);
+function netByRole(lines: JournalLine[]): Record<string, Decimal> {
+  const net: Record<string, Decimal> = {};
+  for (const line of lines) {
+    const current = net[line.role] ?? money(0);
+    net[line.role] = current.plus(money(line.debit)).minus(money(line.credit));
+  }
   return net;
 }
-function sum(lines: JournalLine[], key: "debit" | "credit"): number {
-  return lines.reduce((a, l) => a + Number(l[key]), 0);
+
+function total(lines: JournalLine[], side: "debit" | "credit"): Decimal {
+  let result = money(0);
+  for (const line of lines) result = result.plus(money(line[side]));
+  return result;
 }
 
-describe("محرّك القيود المزدوجة (P1) — التوازن والأدوار", () => {
-  it("كل خريطةٍ مُخطَّطة متوازنة (Σمدين=Σدائن)", () => {
+function expectMoney(actual: Decimal | undefined, expected: string): void {
+  expect(actual?.eq(money(expected))).toBe(true);
+}
+
+describe("postingEngine — legacy fallback and exact money", () => {
+  it("keeps the six legacy derivations balanced while Sh2 migrates callers", () => {
     const cases = [
-      { entryType: "SALE", revenue: "10000", cost: "6000", amount: "10000" },
-      { entryType: "RETURN", revenue: "-10000", cost: "-6000", amount: "-10000" },
-      { entryType: "PURCHASE", amount: "5000" },
-      { entryType: "PAYMENT_IN", amount: "3000", party: "CUSTOMER" as const },
-      { entryType: "PAYMENT_OUT", amount: "2000", party: "SUPPLIER" as const },
-      { entryType: "OPENING", amount: "4000", party: "CUSTOMER" as const },
-      { entryType: "OPENING", amount: "4000", party: "SUPPLIER" as const },
-      { entryType: "OPENING", amount: "-1000", party: "CUSTOMER" as const },
+      {
+        entryType: "SALE",
+        revenue: "10000.00",
+        cost: "6000.00",
+        amount: "10000.00",
+      },
+      {
+        entryType: "RETURN",
+        revenue: "-10000.00",
+        cost: "-6000.00",
+        amount: "-10000.00",
+      },
+      { entryType: "PURCHASE", amount: "5000.00" },
+      {
+        entryType: "PAYMENT_IN",
+        amount: "3000.00",
+        party: "CUSTOMER" as const,
+      },
+      {
+        entryType: "PAYMENT_OUT",
+        amount: "2000.00",
+        party: "SUPPLIER" as const,
+      },
+      { entryType: "OPENING", amount: "4000.00", party: "CUSTOMER" as const },
     ];
-    for (const c of cases) {
-      const lines = postingLinesFor(c);
-      expect(sum(lines, "debit")).toBeCloseTo(sum(lines, "credit"), 2);
-      expect(() => assertBalanced(lines, c.entryType)).not.toThrow();
-      // لا سطرٌ يحمل مديناً/دائناً سالباً.
-      for (const l of lines) { expect(Number(l.debit)).toBeGreaterThanOrEqual(0); expect(Number(l.credit)).toBeGreaterThanOrEqual(0); }
+    for (const input of cases) {
+      const lines = postingLinesFor(input);
+      expect(total(lines, "debit").eq(total(lines, "credit"))).toBe(true);
+      expect(() => assertBalanced(lines, input.entryType)).not.toThrow();
+      for (const line of lines) {
+        expect(money(line.debit).isNegative()).toBe(false);
+        expect(money(line.credit).isNegative()).toBe(false);
+      }
     }
   });
 
-  it("بيع (بلا ضريبة): مدين AR 10000، دائن المبيعات 10000، مدين تكلفة 6000/دائن مخزون 6000", () => {
-    const net = netByRole(postingLinesFor({ entryType: "SALE", revenue: "10000", cost: "6000", amount: "10000" }));
-    expect(net.AR).toBeCloseTo(10000, 2);
-    expect(net.SALES_STATIONERY).toBeCloseTo(-10000, 2); // دائن
-    expect(net.COGS).toBeCloseTo(6000, 2);
-    expect(net.INVENTORY).toBeCloseTo(-6000, 2); // دائن
+  it("derives inventory sale, tax-like liability, and cost without floating-point conversion", () => {
+    const net = netByRole(
+      postingLinesFor({
+        entryType: "SALE",
+        revenue: "10000.10",
+        cost: "6000.05",
+        amount: "11000.15",
+      }),
+    );
+    expectMoney(net.AR, "11000.15");
+    expectMoney(net.SALES_STATIONERY, "-10000.10");
+    expectMoney(net.OTHER_LIABILITY, "-1000.05");
+    expectMoney(net.COGS, "6000.05");
+    expectMoney(net.INVENTORY, "-6000.05");
   });
 
-  it("بيع بضريبة: الفرق (الإجمالي − الإيراد) يُدائن التزاماً فيبقى التوازن", () => {
-    const lines = postingLinesFor({ entryType: "SALE", revenue: "10000", cost: "6000", amount: "11000", taxAmount: "1000" });
-    const net = netByRole(lines);
-    expect(net.AR).toBeCloseTo(11000, 2);
-    expect(net.SALES_STATIONERY).toBeCloseTo(-10000, 2);
-    expect(net.OTHER_LIABILITY).toBeCloseTo(-1000, 2);
-    expect(sum(lines, "debit")).toBeCloseTo(sum(lines, "credit"), 2);
+  it("reverses a customer sale exactly and keeps supplier return out of fallback", () => {
+    const sale = netByRole(
+      postingLinesFor({
+        entryType: "SALE",
+        revenue: "100.10",
+        cost: "60.05",
+        amount: "100.10",
+      }),
+    );
+    const returned = netByRole(
+      postingLinesFor({
+        entryType: "RETURN",
+        revenue: "-100.10",
+        cost: "-60.05",
+        amount: "-100.10",
+      }),
+    );
+    for (const role of Object.keys(sale))
+      expectMoney(returned[role], sale[role].negated().toFixed(2));
+    expect(() =>
+      postingLinesFor({
+        entryType: "RETURN",
+        party: "SUPPLIER",
+        amount: "1.00",
+      }),
+    ).toThrow(UnmappedEntryTypeError);
   });
 
-  it("قطاع البيع يوجَّه لحساب المبيعات الصحيح (salesRole)", () => {
-    const net = netByRole(postingLinesFor({ entryType: "SALE", revenue: "5000", cost: "0", amount: "5000", salesRole: "SALES_PRINT" }));
-    expect(net.SALES_PRINT).toBeCloseTo(-5000, 2);
+  it("does not infer non-legacy or ambiguous payment maps", () => {
+    expect(() =>
+      postingLinesFor({ entryType: "EXCHANGE_DEPOSIT", amount: "1000.00" }),
+    ).toThrow(UnmappedEntryTypeError);
+    expect(() =>
+      postingLinesFor({ entryType: "PAYMENT_IN", amount: "10.00" }),
+    ).toThrow(UnmappedEntryTypeError);
+    expect(() =>
+      postingLinesFor({
+        entryType: "PAYMENT_OUT",
+        amount: "10.00",
+        party: "CUSTOMER",
+      }),
+    ).toThrow(UnmappedEntryTypeError);
+    expect(MAPPED_ENTRY_TYPES.has("EXCHANGE_DEPOSIT")).toBe(true);
+  });
+});
+
+describe("postingEngine — explicit PostingIntent", () => {
+  it("creates and validates a balanced profile and postingLinesFor trusts only that validated intent", () => {
+    const intent = createPostingIntent(
+      "PAYMENT_IN_CUSTOMER",
+      "PAYMENT_IN",
+      [debitLine("CASH", "77.35"), creditLine("AR", "77.35")],
+      {
+        roleDebits: { CASH: "77.35" },
+        roleCredits: { AR: "77.35" },
+      },
+    );
+    expect(
+      postingLinesFor({
+        entryType: "PAYMENT_IN",
+        amount: "77.35",
+        roleDebits: { CASH: "77.35" },
+        roleCredits: { AR: "77.35" },
+        intent,
+      }),
+    ).toEqual(intent.lines);
+    expect(validatePostingIntent(intent, "PAYMENT_IN")).toEqual(intent);
+    expect(Object.isFrozen(intent)).toBe(true);
+    expect(Object.isFrozen(intent.lines)).toBe(true);
   });
 
-  it("مرتجع بيع = عكس البيع بالضبط (نفس الأدوار باتجاهٍ معاكس)", () => {
-    const sale = netByRole(postingLinesFor({ entryType: "SALE", revenue: "10000", cost: "6000", amount: "10000" }));
-    const ret = netByRole(postingLinesFor({ entryType: "RETURN", revenue: "-10000", cost: "-6000", amount: "-10000" }));
-    for (const role of Object.keys(sale)) expect(ret[role]).toBeCloseTo(-sale[role], 2);
+  it("requires exact independent components for consignment shortage without allowing INVENTORY", () => {
+    const intent = createPostingIntent(
+      "PURCHASE_CONSIGNMENT_SHORTAGE",
+      "PURCHASE",
+      [debitLine("LOSSES", "1200.00"), creditLine("CONSIGNMENT_PAYABLE", "1200.00")],
+      {
+        roleDebits: { LOSSES: "1200.00" },
+        roleCredits: { CONSIGNMENT_PAYABLE: "1200.00" },
+      },
+    );
+    expect(
+      postingLinesFor({
+        entryType: "PURCHASE",
+        amount: "1200.00",
+        cost: "1200.00",
+        profit: "-1200.00",
+        roleDebits: { LOSSES: "1200.00" },
+        roleCredits: { CONSIGNMENT_PAYABLE: "1200.00" },
+        intent,
+      }),
+    ).toEqual(intent.lines);
+    expect(() =>
+      postingLinesFor({
+        entryType: "PURCHASE",
+        amount: "1200.00",
+        roleDebits: { LOSSES: "1199.00" },
+        roleCredits: { CONSIGNMENT_PAYABLE: "1200.00" },
+        intent,
+      }),
+    ).toThrow(InvalidPostingIntentError);
+    expect(() =>
+      postingLinesFor({
+        entryType: "PURCHASE",
+        amount: "1200.00",
+        roleDebits: { LOSSES: "1200.00" },
+        roleCredits: { INVENTORY: "1200.00" },
+        intent: createPostingIntent(
+          "PURCHASE_CONSIGNMENT_SHORTAGE",
+          "PURCHASE",
+          [debitLine("LOSSES", "1200.00"), creditLine("INVENTORY", "1200.00")],
+        ),
+      }),
+    ).toThrow(InvalidPostingIntentError);
   });
 
-  it("قبضٌ نقديّ من عميل: مدين CASH/دائن AR؛ وبطاقةً: مدين CARD_BANK", () => {
-    expect(netByRole(postingLinesFor({ entryType: "PAYMENT_IN", amount: "3000", party: "CUSTOMER" })).CASH).toBeCloseTo(3000, 2);
-    const card = netByRole(postingLinesFor({ entryType: "PAYMENT_IN", amount: "3000", party: "CUSTOMER", cashRole: "CARD_BANK" }));
-    expect(card.CARD_BANK).toBeCloseTo(3000, 2);
-    expect(card.AR).toBeCloseTo(-3000, 2);
+  it("rejects profile/entryType mismatch", () => {
+    const intent = {
+      profile: "PAYMENT_OUT_SUPPLIER",
+      entryType: "PAYMENT_IN",
+      lines: [debitLine("CASH", "1.00"), creditLine("AR", "1.00")],
+    } as PostingIntent;
+    expect(() => validatePostingIntent(intent)).toThrow(
+      InvalidPostingIntentError,
+    );
   });
 
-  it("شراء: مدين المخزون/دائن ذمم المورّد. صرفٌ لمورّد: مدين ذمم المورّد/دائن النقد", () => {
-    expect(netByRole(postingLinesFor({ entryType: "PURCHASE", amount: "5000" }))).toMatchObject({ INVENTORY: 5000, AP: -5000 });
-    expect(netByRole(postingLinesFor({ entryType: "PAYMENT_OUT", amount: "2000", party: "SUPPLIER" }))).toMatchObject({ AP: 2000, CASH: -2000 });
+  it("rejects a caller entryType different from the intent entryType", () => {
+    const intent = createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [
+      debitLine("CASH", "1.00"),
+      creditLine("AR", "1.00"),
+    ]);
+    expect(() => postingLinesFor({ entryType: "PAYMENT_OUT", intent })).toThrow(
+      InvalidPostingIntentError,
+    );
   });
 
-  it("تطابق تركيب البيع: بيعٌ نقديّ كامل ⇒ صافي AR = 0؛ بيعٌ آجل كامل ⇒ صافي AR = المبلغ", () => {
-    const sale = postingLinesFor({ entryType: "SALE", revenue: "10000", cost: "6000", amount: "10000" });
-    // نقديّ: PAYMENT_IN بكامل المبلغ من العميل.
-    const cashPay = postingLinesFor({ entryType: "PAYMENT_IN", amount: "10000", party: "CUSTOMER" });
-    const cashCombined = netByRole([...sale, ...cashPay]);
-    expect(cashCombined.AR).toBeCloseTo(0, 2); // صافي ذمّة العميل صفر (نقديّ)
-    expect(cashCombined.CASH).toBeCloseTo(10000, 2);
-    // آجل: بلا قبض.
-    expect(netByRole(sale).AR).toBeCloseTo(10000, 2);
+  it("rejects negative, dual-sided, zero, unknown-role, and unbalanced lines", () => {
+    expect(() => debitLine("CASH", "-0.01")).toThrow(InvalidPostingIntentError);
+    expect(() => creditLine("CASH", "0.00")).toThrow(InvalidPostingIntentError);
+
+    const base = { profile: "ADJUST_CASH", entryType: "ADJUST" } as const;
+    expect(() =>
+      validatePostingIntent({
+        ...base,
+        lines: [{ role: "CASH", debit: "1.00", credit: "1.00" }],
+      }),
+    ).toThrow(InvalidPostingIntentError);
+    expect(() =>
+      validatePostingIntent({
+        ...base,
+        lines: [
+          { role: "NOT_A_ROLE", debit: "1.00", credit: "0.00" },
+          creditLine("CAPITAL", "1.00"),
+        ],
+      } as PostingIntent),
+    ).toThrow(InvalidPostingIntentError);
+    const unbalanced = createPostingIntent("ADJUST_CASH", "ADJUST", [
+      debitLine("CASH", "2.00"),
+      creditLine("CAPITAL", "1.00"),
+    ]);
+    expect(() => validatePostingIntent(unbalanced)).toThrow(/غير متوازن/);
+    expect(() =>
+      validatePostingIntent({
+        ...base,
+        lines: [
+          { role: "CASH", debit: "1.001", credit: "0.00" },
+          creditLine("CAPITAL", "1.00"),
+        ],
+      }),
+    ).toThrow(/two decimal places/);
   });
 
-  it("رصيد افتتاحيّ: عميل موجب=AR مدين؛ مورّد موجب=AP دائن؛ عميل سالب يعكس", () => {
-    expect(netByRole(postingLinesFor({ entryType: "OPENING", amount: "4000", party: "CUSTOMER" }))).toMatchObject({ AR: 4000, OPENING_EQUITY: -4000 });
-    expect(netByRole(postingLinesFor({ entryType: "OPENING", amount: "4000", party: "SUPPLIER" }))).toMatchObject({ AP: -4000, OPENING_EQUITY: 4000 });
-    expect(netByRole(postingLinesFor({ entryType: "OPENING", amount: "-1000", party: "CUSTOMER" }))).toMatchObject({ AR: -1000, OPENING_EQUITY: 1000 });
+  it("copies and freezes caller-owned lines after validation", () => {
+    const source = [debitLine("CASH", "3.00"), creditLine("CAPITAL", "3.00")];
+    const intent = createPostingIntent("ADJUST_CASH", "ADJUST", source);
+    source[0].debit = "999.00";
+    expect(intent.lines[0].debit).toBe("3.00");
+    expect(Object.isFrozen(intent.lines[0])).toBe(true);
   });
 
-  it("نوعٌ غير مُخطَّطٍ بعد ⇒ UnmappedEntryTypeError (لا تخمين على النواة المالية)", () => {
-    expect(() => postingLinesFor({ entryType: "EXCHANGE_DEPOSIT", amount: "1000" })).toThrow(UnmappedEntryTypeError);
-    expect(MAPPED_ENTRY_TYPES.has("EXCHANGE_DEPOSIT")).toBe(false);
-    expect(MAPPED_ENTRY_TYPES.has("SALE")).toBe(true);
+  it("signedPostingLines reverses sides for negative deltas and emits no negative money", () => {
+    const positive = signedPostingLines("INVENTORY", "OTHER_REVENUE", "12.34");
+    const negative = signedPostingLines("INVENTORY", "OTHER_REVENUE", "-12.34");
+    expect(positive).toEqual([
+      debitLine("INVENTORY", "12.34"),
+      creditLine("OTHER_REVENUE", "12.34"),
+    ]);
+    expect(negative).toEqual([
+      debitLine("OTHER_REVENUE", "12.34"),
+      creditLine("INVENTORY", "12.34"),
+    ]);
+    expect(signedPostingLines("INVENTORY", "OTHER_REVENUE", "0.00")).toEqual(
+      [],
+    );
   });
 
-  it("الصدق في النطاق: الحالات المحمَّلة غير المدعومة تَرمي بدل التخمين الصامت", () => {
-    // مرتجع شراء (مورّد) ليس عكس بيع ⇒ يَرمي.
-    expect(() => postingLinesFor({ entryType: "RETURN", revenue: "-10000", cost: "-6000", amount: "-10000", party: "SUPPLIER" })).toThrow(UnmappedEntryTypeError);
-    // قبضٌ من غير عميل (ردّ مورّد) ⇒ يَرمي؛ وبلا طرفٍ أصلاً ⇒ يَرمي.
-    expect(() => postingLinesFor({ entryType: "PAYMENT_IN", amount: "3000", party: "SUPPLIER" })).toThrow(UnmappedEntryTypeError);
-    expect(() => postingLinesFor({ entryType: "PAYMENT_IN", amount: "3000" })).toThrow(UnmappedEntryTypeError);
-    // صرفٌ لغير مورّد (ردّ عميل/مصروف) ⇒ يَرمي؛ وبلا طرفٍ ⇒ يَرمي.
-    expect(() => postingLinesFor({ entryType: "PAYMENT_OUT", amount: "2000", party: "CUSTOMER" })).toThrow(UnmappedEntryTypeError);
-    expect(() => postingLinesFor({ entryType: "PAYMENT_OUT", amount: "2000" })).toThrow(UnmappedEntryTypeError);
-    // رصيد افتتاحيّ بلا طرف عميل/مورّد (صيرفة مثلاً) ⇒ يَرمي (لا افتراض AR صامت).
-    expect(() => postingLinesFor({ entryType: "OPENING", amount: "4000" })).toThrow(UnmappedEntryTypeError);
-    // مبلغٌ سالبٌ على نوعٍ غير مرتجعٍ (عكسٌ مخزَّن سالباً) ⇒ يَرمي (لا مدين/دائن سالب).
-    expect(() => postingLinesFor({ entryType: "PURCHASE", amount: "-5000" })).toThrow(UnmappedEntryTypeError);
-    expect(() => postingLinesFor({ entryType: "PAYMENT_OUT", amount: "-2000", party: "SUPPLIER" })).toThrow(UnmappedEntryTypeError);
+  it("permits governed no-journal memo profiles without accepting memo lines", () => {
+    const memo = createPostingIntent(
+      "DELIVERY_DISPATCH_COD",
+      "DELIVERY_DISPATCH",
+      [],
+    );
+    expect(
+      postingLinesFor({ entryType: "DELIVERY_DISPATCH", intent: memo }),
+    ).toEqual([]);
+    const zeroYearClose = createPostingIntent(
+      "ADJUST_YEAR_CLOSE_ZERO",
+      "ADJUST",
+      [],
+    );
+    expect(
+      postingLinesFor({ entryType: "ADJUST", intent: zeroYearClose }),
+    ).toEqual([]);
+    expect(() =>
+      validatePostingIntentPolicy(
+        createPostingIntent("ADJUST_CASH", "ADJUST", []),
+        "ADJUST",
+        {},
+      ),
+    ).toThrow(InvalidPostingIntentError);
+    expect(() =>
+      validatePostingIntentPolicy(
+        createPostingIntent("DELIVERY_DISPATCH_COD", "DELIVERY_DISPATCH", [
+          debitLine("DELIVERY_FLOAT", "1.00"),
+          creditLine("AR", "1.00"),
+        ]),
+        "DELIVERY_DISPATCH",
+        {},
+      ),
+    ).toThrow(InvalidPostingIntentError);
+  });
+
+  it("keeps drawer cash drops distinct from treasury-origin transfers", () => {
+    const cashDrop = createPostingIntent(
+      "CASH_DROP_TO_TRANSIT",
+      "CASH_TRANSFER_OUT",
+      [debitLine("CASH_IN_TRANSIT", "125.00"), creditLine("CASH", "125.00")],
+    );
+    expect(
+      postingLinesFor({
+        entryType: "CASH_TRANSFER_OUT",
+        amount: "125.00",
+        intent: cashDrop,
+      }),
+    ).toEqual(cashDrop.lines);
+
+    expect(() =>
+      postingLinesFor({
+        entryType: "CASH_TRANSFER_OUT",
+        amount: "125.00",
+        intent: createPostingIntent(
+          "CASH_TRANSFER_OUT_IN_TRANSIT",
+          "CASH_TRANSFER_OUT",
+          [
+            debitLine("CASH_IN_TRANSIT", "125.00"),
+            creditLine("CASH", "125.00"),
+          ],
+        ),
+      }),
+    ).toThrow(InvalidPostingIntentError);
+
+    expect(() =>
+      postingLinesFor({
+        entryType: "CASH_TRANSFER_OUT",
+        amount: "125.00",
+        intent: createPostingIntent(
+          "CASH_DROP_TO_TRANSIT",
+          "CASH_TRANSFER_OUT",
+          [
+            debitLine("CASH_IN_TRANSIT", "125.00"),
+            creditLine("TREASURY_CASH", "125.00"),
+          ],
+        ),
+      }),
+    ).toThrow(InvalidPostingIntentError);
   });
 });

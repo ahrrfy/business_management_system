@@ -83,19 +83,36 @@ export interface ApproveResult {
 
 export async function approveRun(id: number, actor: Actor): Promise<ApproveResult> {
   return withTx(async (tx) => {
-    const [run] = await tx.select().from(commissionRuns).where(eq(commissionRuns.id, id)).for("update");
+    const [preview] = await tx
+      .select({ period: commissionRuns.period })
+      .from(commissionRuns)
+      .where(eq(commissionRuns.id, id))
+      .limit(1);
+    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "التشغيلة غير موجودة." });
+    // Global lock order shared with payroll approval: payroll(period) → commission.
+    // The unique payroll period index also gap-locks a missing run.
+    const [payroll] = await tx
+      .select({ id: payrollRuns.id, status: payrollRuns.status })
+      .from(payrollRuns)
+      .where(eq(payrollRuns.period, preview.period))
+      .for("update")
+      .limit(1);
+    const [run] = await tx
+      .select()
+      .from(commissionRuns)
+      .where(eq(commissionRuns.id, id))
+      .for("update")
+      .limit(1);
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "التشغيلة غير موجودة." });
+    if (run.period !== preview.period) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّرت فترة تشغيلة العمولات أثناء الاعتماد." });
+    }
     if (run.status !== "draft") throw new TRPCError({ code: "CONFLICT", message: "التشغيلة معتمدة فعلاً." });
     if (run.createdBy != null && Number(run.createdBy) === actor.userId) {
       // SOD-03 (مرآة الرواتب): فصل مهام حقيقي — من احتسب لا يعتمد.
       throw new TRPCError({ code: "FORBIDDEN", message: "المعتمِد يجب أن يختلف عن مَن احتسب التشغيلة (فصل مهام)." });
     }
 
-    const [payroll] = await tx
-      .select({ id: payrollRuns.id, status: payrollRuns.status })
-      .from(payrollRuns)
-      .where(eq(payrollRuns.period, run.period))
-      .limit(1);
     if (payroll && payroll.status !== "draft") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",

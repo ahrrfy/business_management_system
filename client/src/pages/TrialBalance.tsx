@@ -1,5 +1,5 @@
 // ميزان مراجعة رسمي من journalEntries/journalLines — افتتاح، حركة، وختام لكل حساب قابل للترحيل.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -15,6 +15,7 @@ import { ErrorState } from "@/components/PageState";
 import { D, fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { cn } from "@/lib/utils";
+import { clampDoubleEntryReportPeriod } from "@/lib/doubleEntryReportPeriod";
 
 type Report = RouterOutputs["reports"]["trialBalance"];
 type Row = Report["rows"][number];
@@ -81,13 +82,25 @@ export default function TrialBalance() {
     enabled: me.data?.role === "admin",
   });
   const canChooseBranch = me.data?.role === "admin";
+  const availability = trpc.reports.doubleEntryReportAvailability.useQuery();
+  const availableFrom = availability.data?.availableFrom ?? null;
+  useEffect(() => {
+    setPeriod((current) =>
+      clampDoubleEntryReportPeriod(current, availableFrom),
+    );
+  }, [availableFrom]);
   const input = {
     from: period.from,
     to: period.to,
     branchId: canChooseBranch && branchId ? Number(branchId) : undefined,
   };
   const q = trpc.reports.trialBalance.useQuery(input, {
-    enabled: Boolean(period.from && period.to && period.from <= period.to),
+    enabled: Boolean(
+      period.from &&
+      period.to &&
+      period.from <= period.to &&
+      (!availableFrom || period.from >= availableFrom),
+    ),
   });
   const report = q.data;
 
@@ -197,6 +210,11 @@ export default function TrialBalance() {
         { label: "الفترة", value: `${period.from} — ${period.to}` },
         { label: "الفرع", value: branchLabel },
         { label: "وضع الدفتر", value: report.mode },
+        { label: "دورة الدفتر", value: report.cycleId ?? "غير مفعلة" },
+        {
+          label: "بداية تغطية الدورة",
+          value: report.availableFrom ?? "لا توجد دورة مفعلة",
+        },
         {
           label: "فجوات قبل الفترة",
           value: String(report.openingUnmappedCount),
@@ -273,7 +291,12 @@ export default function TrialBalance() {
       exportDisabled={!report}
       filters={
         <div className="flex flex-wrap items-end gap-3">
-          <PeriodFilter value={period} onChange={setPeriod} />
+          <PeriodFilter
+            value={period}
+            onChange={(next) =>
+              setPeriod(clampDoubleEntryReportPeriod(next, availableFrom))
+            }
+          />
           {canChooseBranch && (
             <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
               الفرع
@@ -306,6 +329,21 @@ export default function TrialBalance() {
       ) : (
         <div className="space-y-3">
           {report && <LedgerModeNotice report={report} />}
+
+          {availableFrom && (
+            <div className="flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
+              <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <div>
+                <p className="font-medium">
+                  بداية تغطية دورة الدفتر: {availableFrom}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  لا يتضمن هذا الميزان أرباحاً أو خسائر سبقت لقطة القطع؛ ضُبطت
+                  بداية الفترة تلقائياً لحماية دقة التقرير.
+                </p>
+              </div>
+            </div>
+          )}
           {report &&
             (report.unmappedCount > 0 ||
               report.unmappedAccountRoles.length > 0) && (

@@ -6,6 +6,7 @@
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -20,11 +21,21 @@ import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
+import { D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import {
+  EMPTY_TERMINATION_SETTLEMENT,
+  TERMINATION_PAYMENT_METHOD_LABEL,
+  terminationEarnedNet,
+  terminationSettlementTotal,
+  validateTerminationSettlement,
+  type TerminationSettlementBreakdown,
+} from "@/lib/terminationSettlement";
+import { printTerminationSettlement } from "@/lib/printing/printTerminationSettlement";
 import { WagePackageFields, wageValueFromEmployee, type WagePackageValue } from "@/components/form/WagePackageFields";
 import { TERMINATION_TYPES } from "@shared/hr";
 import { describeWageDiff, type WageProfileShape } from "@shared/wageDiff";
-import { CheckCircle2, TrendingUp, UserMinus, Wallet } from "lucide-react";
+import { CheckCircle2, Printer, RotateCcw, TrendingUp, UserMinus, Wallet } from "lucide-react";
 import { useMemo, useState } from "react";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -41,6 +52,31 @@ const termStatusCls: Record<string, string> = {
   pending: "badge-status-pending",
 };
 const termStatusLabel = (s: string) => (s === "completed" ? "مكتملة" : "قيد التنفيذ");
+const eventTime = (value?: Date | string | null) =>
+  value ? new Date(value).getTime() : Number.NEGATIVE_INFINITY;
+const terminationPaymentIsOutstanding = (t: {
+  latestSettlementPaymentEventKind?: "SALARY_PAYMENT" | "SALARY_PAYMENT_RETURN" | null;
+  settlementPaidAt?: Date | string | null;
+  settlementPaymentReturnedAt?: Date | string | null;
+}) =>
+  t.latestSettlementPaymentEventKind != null
+    ? t.latestSettlementPaymentEventKind === "SALARY_PAYMENT"
+    : eventTime(t.settlementPaidAt) > eventTime(t.settlementPaymentReturnedAt);
+const terminationFinancialStatus = (t: {
+  status: string;
+  recognizedAt?: Date | string | null;
+  latestSettlementPaymentEventKind?: "SALARY_PAYMENT" | "SALARY_PAYMENT_RETURN" | null;
+  settlementPaidAt?: Date | string | null;
+  settlementPaymentReturnedAt?: Date | string | null;
+  recognitionReversedAt?: Date | string | null;
+}) => {
+  if (t.status !== "completed") return "قيد التنفيذ";
+  if (t.recognitionReversedAt) return "عُكس الاستحقاق";
+  if (terminationPaymentIsOutstanding(t)) return "مصروفة";
+  if (t.settlementPaymentReturnedAt) return "أُعيد مبلغ الصرف";
+  if (t.recognizedAt) return "مثبتة — بانتظار الصرف";
+  return "مكتملة تاريخياً — تحتاج مراجعة";
+};
 
 /**
  * تفصيل حزمة الأجر قبل/بعد — **شرطُ جدوى الاعتماد الثاني**: من يعتمد تغييراً أجرياً
@@ -77,6 +113,7 @@ export default function Promotions() {
   const [tab, setTab] = useState("promotions");
   const [query, setQuery] = useState("");
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
 
   const promotions = trpc.promotions.listPromotions.useQuery();
   const terminations = trpc.promotions.listTerminations.useQuery();
@@ -146,10 +183,36 @@ export default function Promotions() {
   const [tEmp, setTEmp] = useState("");
   const [tType, setTType] = useState<string>(TERMINATION_TYPES[0]);
   const [tLastDay, setTLastDay] = useState(today());
-  const [tSettlement, setTSettlement] = useState("");
+  const [tBreakdown, setTBreakdown] = useState<TerminationSettlementBreakdown>(
+    EMPTY_TERMINATION_SETTLEMENT,
+  );
+  const [tPaymentMethod, setTPaymentMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">("CASH");
+  const [tPaymentReference, setTPaymentReference] = useState("");
+  const [tEvidenceNote, setTEvidenceNote] = useState("");
+  const [tZeroAmountsAttested, setTZeroAmountsAttested] = useState(false);
   const [tReason, setTReason] = useState("");
+  const tSettlement = terminationSettlementTotal(tBreakdown);
+  const tEarnedNet = terminationEarnedNet(tBreakdown);
+  const advanceBalance = trpc.payroll.advanceBalance.useQuery(
+    { employeeId: Number(tEmp) },
+    { enabled: termOpen && !!tEmp },
+  );
+  const [reverseTarget, setReverseTarget] = useState<{
+    id: number;
+    employeeName: string;
+    mode: "payment" | "recognition" | "reissue";
+  } | null>(null);
+  const [reverseReason, setReverseReason] = useState("");
+  const [reverseMethod, setReverseMethod] = useState<"CASH" | "CARD" | "TRANSFER" | "WALLET">("CASH");
+  const [reverseReference, setReverseReference] = useState("");
+  const [reverseDate, setReverseDate] = useState(today());
 
-  const resetTerm = () => { setTEmp(""); setTType(TERMINATION_TYPES[0]); setTLastDay(today()); setTSettlement(""); setTReason(""); };
+  const resetTerm = () => {
+    setTEmp(""); setTType(TERMINATION_TYPES[0]); setTLastDay(today());
+    setTBreakdown(EMPTY_TERMINATION_SETTLEMENT);
+    setTPaymentMethod("CASH"); setTPaymentReference(""); setTEvidenceNote("");
+    setTZeroAmountsAttested(false); setTReason("");
+  };
   const createTerm = trpc.promotions.createTermination.useMutation({
     onSuccess: async () => { notify.ok("سُجّل إجراء إنهاء الخدمة (قيد التنفيذ)"); setTermOpen(false); resetTerm(); await utils.promotions.listTerminations.invalidate(); },
     onError: (e) => notify.err(e),
@@ -166,16 +229,107 @@ export default function Promotions() {
     },
     onError: (e) => notify.err(e),
   });
+  const reversePayment = trpc.promotions.reverseTerminationPayment.useMutation({
+    onSuccess: async (data) => {
+      notify.ok(data.replacementVoucher
+        ? `سُجّلت إعادة المبلغ وأعيد فتح الالتزام. أُنشئ طلب صرف بديل (${data.replacementVoucher.voucherNumber}) لاعتماد مالك آخر.`
+        : "إعادة مبلغ التسوية مسجّلة مسبقاً.");
+      setReverseTarget(null); setReverseReason("");
+      await utils.promotions.listTerminations.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const reverseRecognition = trpc.promotions.reverseTerminationRecognition.useMutation({
+    onSuccess: async () => {
+      notify.ok("عُكس استحقاق التسوية بقيد مستقل وأعيد مخصص نهاية الخدمة إلى مصادره.");
+      setReverseTarget(null); setReverseReason("");
+      await utils.promotions.listTerminations.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const reissuePayment = trpc.promotions.reissueTerminationPayment.useMutation({
+    onSuccess: async (data) => {
+      notify.ok(data.replayed
+        ? `طلب الصرف ما زال معلقاً (${data.voucherNumber}).`
+        : `أُعيد إصدار طلب صرف مستقل (${data.voucherNumber}) لاعتماد مالك آخر.`);
+      setReverseTarget(null); setReverseReason("");
+      await utils.promotions.listTerminations.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const submitTerm = () => {
     if (!tEmp) return notify.warn("اختر الموظف");
+    const breakdownError = validateTerminationSettlement(tBreakdown);
+    if (breakdownError) return notify.warn(breakdownError);
+    if (
+      advanceBalance.data &&
+      D(tBreakdown.advanceRecovery || 0).gt(advanceBalance.data.balance)
+    ) {
+      return notify.warn(
+        `استرداد السلفة يتجاوز الرصيد النشط ${iqd(advanceBalance.data.balance)} د.ع.`,
+      );
+    }
+    if (tPaymentMethod !== "CASH" && !tPaymentReference.trim()) {
+      return notify.warn("رقم مرجع التحويل/البطاقة/المحفظة إلزامي للتسوية غير النقدية.");
+    }
+    if (tPaymentMethod === "CARD" && !/^\d{4}$/.test(tPaymentReference.trim())) {
+      return notify.warn("مرجع البطاقة يجب أن يكون آخر أربعة أرقام منها.");
+    }
+    if (tEvidenceNote.trim().length < 10) {
+      return notify.warn("اكتب مرجع المراجعة البشرية ومصدر القيم (10 أحرف على الأقل).");
+    }
+    if (!tZeroAmountsAttested) {
+      return notify.warn("يجب الإقرار بأن القيم الصفرية مقصودة ومراجعة.");
+    }
     createTerm.mutate({
       employeeId: Number(tEmp),
       terminationType: tType as (typeof TERMINATION_TYPES)[number],
       lastDay: tLastDay,
-      settlement: tSettlement.trim() || undefined,
+      breakdown: {
+        earnedGrossWages: tBreakdown.earnedGrossWages.trim() || undefined,
+        wageReductions: tBreakdown.wageReductions.trim() || undefined,
+        advanceRecovery: tBreakdown.advanceRecovery.trim() || undefined,
+        incomeTax: tBreakdown.incomeTax.trim() || undefined,
+        employeeSocialSecurity: tBreakdown.employeeSocialSecurity.trim() || undefined,
+        employerSocialSecurity: tBreakdown.employerSocialSecurity.trim() || undefined,
+        leaveCompensation: tBreakdown.leaveCompensation.trim() || undefined,
+        noticeCompensation: tBreakdown.noticeCompensation.trim() || undefined,
+        eosBenefit: tBreakdown.eosBenefit.trim() || undefined,
+        otherSettlement: tBreakdown.otherSettlement.trim() || undefined,
+        otherSettlementLabel: tBreakdown.otherSettlementLabel.trim() || undefined,
+      },
+      paymentMethod: tPaymentMethod,
+      paymentReference: tPaymentReference.trim() || undefined,
+      settlementEvidenceNote: tEvidenceNote.trim(),
+      zeroAmountsAttested: true,
       reason: tReason.trim() || undefined,
     });
+  };
+
+  const submitReversal = () => {
+    if (!reverseTarget || reverseReason.trim().length < 5) {
+      return notify.warn("اكتب سبباً واضحاً للعكس (خمسة أحرف على الأقل).");
+    }
+    if (reverseTarget.mode === "payment") {
+      if (reverseMethod !== "CASH" && !reverseReference.trim()) {
+        return notify.warn("مرجع إعادة المبلغ إلزامي للطريقة غير النقدية.");
+      }
+      if (reverseMethod === "CARD" && !/^\d{4}$/.test(reverseReference.trim())) {
+        return notify.warn("مرجع البطاقة يجب أن يكون آخر أربعة أرقام منها.");
+      }
+      reversePayment.mutate({
+        id: reverseTarget.id,
+        reason: reverseReason.trim(),
+        paymentMethod: reverseMethod,
+        referenceNumber: reverseReference.trim() || undefined,
+        reversalDate: reverseDate,
+      });
+    } else if (reverseTarget.mode === "recognition") {
+      reverseRecognition.mutate({ id: reverseTarget.id, reason: reverseReason.trim() });
+    } else {
+      reissuePayment.mutate({ id: reverseTarget.id, reason: reverseReason.trim() });
+    }
   };
 
   const promoRows = promotions.data ?? [];
@@ -345,8 +499,27 @@ export default function Promotions() {
                     formats: ["xlsx", "csv"],
                     columns: [
                       { key: "employeeName", header: "الموظف" }, { key: "terminationType", header: "نوع الإنهاء" },
-                      { key: "lastDay", header: "آخر يوم" }, { key: "settlement", header: "التسوية", money: true },
-                      { key: "reason", header: "السبب" }, { key: "status", header: "الحالة", map: (t) => termStatusLabel(t.status) },
+                      { key: "lastDay", header: "آخر يوم" },
+                      { key: "earnedGrossWages", header: "إجمالي أجور مكتسبة", money: true },
+                      { key: "wageReductions", header: "تخفيضات الأجر", money: true },
+                      { key: "advanceRecovery", header: "استرداد سلفة", money: true },
+                      { key: "remainingAdvanceAtRecognition", header: "رصيد السلفة بعد التسوية", money: true },
+                      { key: "currentRemainingAdvanceBalance", header: "رصيد السلفة الحالي", money: true },
+                      { key: "incomeTax", header: "ضريبة دخل", money: true },
+                      { key: "employeeSocialSecurity", header: "ضمان الموظف", money: true },
+                      { key: "employerSocialSecurity", header: "ضمان الشركة", money: true },
+                      { key: "leaveCompensation", header: "بدل إجازات", money: true },
+                      { key: "noticeCompensation", header: "بدل إشعار", money: true },
+                      { key: "eosBenefit", header: "نهاية الخدمة", money: true },
+                      { key: "otherSettlement", header: "مستحق آخر", money: true },
+                      { key: "otherSettlementLabel", header: "تصنيف الآخر" },
+                      { key: "settlementEvidenceNote", header: "مرجع المراجعة" },
+                      { key: "settlement", header: "إجمالي التسوية", money: true },
+                      { key: "eosProvisionConsumed", header: "المخصص المستخدم", money: true },
+                      { key: "eosProvisionReleased", header: "المخصص المحرر", money: true },
+                      { key: "eosExpenseRecognized", header: "فرق المصروف", money: true },
+                      { key: "reason", header: "السبب" },
+                      { key: "status", header: "الحالة المالية", map: (t) => terminationFinancialStatus(t) },
                     ],
                   }}
                 />
@@ -371,27 +544,119 @@ export default function Promotions() {
                           <td className="p-2"><EmpCell name={t.employeeName} color={t.colorTag} photoUrl={t.photoUrl} /></td>
                           <td className="p-2 text-[13px]">{t.terminationType}</td>
                           <td className="p-2 text-center text-xs tabular-nums" dir="ltr">{t.lastDay}</td>
-                          <td className="p-2 text-right tabular-nums font-medium" dir="ltr">{iqd(t.settlement)}</td>
+                          <td className="p-2 text-right">
+                            <div className="tabular-nums font-medium" dir="ltr">{iqd(t.settlement)}</div>
+                            <div className="mt-1 text-[10px] leading-4 text-muted-foreground">
+                              إجمالي أجر {iqd(t.earnedGrossWages)} · تخفيض {iqd(t.wageReductions)} · سلفة {iqd(t.advanceRecovery)}<br />
+                              ضريبة {iqd(t.incomeTax)} · ضمان موظف {iqd(t.employeeSocialSecurity)} · ضمان شركة {iqd(t.employerSocialSecurity)}<br />
+                              رصيد السلفة بعد التسوية {iqd(t.remainingAdvanceAtRecognition)}<br />
+                              <span className="text-muted-foreground">الرصيد الحالي وقت العرض {iqd(t.currentRemainingAdvanceBalance)}</span><br />
+                              إجازات {iqd(t.leaveCompensation)} · إشعار {iqd(t.noticeCompensation)}<br />
+                              نهاية خدمة {iqd(t.eosBenefit)} · آخر {iqd(t.otherSettlement)}
+                            </div>
+                            {t.recognizedAt && (
+                              <div className="mt-1 text-[10px] text-muted-foreground">
+                                من المخصص {iqd(t.eosProvisionConsumed)} · محرر {iqd(t.eosProvisionReleased)} · فرق مصروف {iqd(t.eosExpenseRecognized)}
+                              </div>
+                            )}
+                          </td>
                           <td className="p-2 text-xs text-muted-foreground">{t.reason ?? "—"}</td>
-                          <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${termStatusCls[t.status] ?? "bg-muted text-muted-foreground"}`}>{termStatusLabel(t.status)}</span></td>
+                          <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${termStatusCls[t.status] ?? "bg-muted text-muted-foreground"}`}>{terminationFinancialStatus(t)}</span></td>
                           <td className="p-2 text-center">
-                            {t.status === "pending" ? (
-                              <RowActions
-                                mode="inline"
-                                actions={[{
+                            <RowActions
+                              mode="menu"
+                              actions={[
+                                {
+                                  key: "print",
+                                  kind: "print",
+                                  label: "طباعة بيان التفكيك",
+                                  icon: Printer,
+                                  onSelect: () => printTerminationSettlement({
+                                    id: t.id,
+                                    employeeName: t.employeeName,
+                                    terminationType: t.terminationType,
+                                    lastDay: t.lastDay,
+                                    earnedGrossWages: t.earnedGrossWages,
+                                    wageReductions: t.wageReductions,
+                                    advanceRecovery: t.advanceRecovery,
+                                    incomeTax: t.incomeTax,
+                                    employeeSocialSecurity: t.employeeSocialSecurity,
+                                    employerSocialSecurity: t.employerSocialSecurity,
+                                    leaveCompensation: t.leaveCompensation,
+                                    noticeCompensation: t.noticeCompensation,
+                                    eosBenefit: t.eosBenefit,
+                                    otherSettlement: t.otherSettlement,
+                                    otherSettlementLabel: t.otherSettlementLabel,
+                                    evidenceNote: t.settlementEvidenceNote,
+                                    remainingAdvanceAtRecognition: t.remainingAdvanceAtRecognition,
+                                    total: t.settlement,
+                                    paymentMethod: TERMINATION_PAYMENT_METHOD_LABEL[t.settlementPaymentMethod] ?? t.settlementPaymentMethod,
+                                    status: terminationFinancialStatus(t),
+                                    reason: t.reason,
+                                    snapshotHash: t.settlementSnapshotHash,
+                                  }),
+                                },
+                                ...(t.status === "pending" ? [{
                                   key: "complete",
-                                  kind: "approve",
+                                  kind: "approve" as const,
                                   label: "إكمال",
-                                  gate: { module: "hr", level: "FULL" },
-                                  disabled: completeTerm.isPending,
-                                  disabledReason: "جارٍ إكمال إنهاء الخدمة",
+                                  gate: { module: "hr" as const, level: "FULL" as const },
+                                  disabled: completeTerm.isPending || me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy),
+                                  disabledReason: completeTerm.isPending
+                                    ? "جارٍ إكمال إنهاء الخدمة"
+                                    : me.data?.isOwner !== true
+                                      ? "إثبات الاستحقاق يتطلب مالكاً نشطاً"
+                                      : "منشئ الإجراء لا يجوز أن يثبت استحقاقه",
                                   onSelect: async () => {
                                     if (!(await confirm({ variant: "danger", title: "إكمال إنهاء الخدمة", description: `إنهاء خدمة «${t.employeeName}» نهائي، سيُستثنى الموظف من المسيّرات. اكتب «إنهاء الخدمة» للتأكيد.`, confirmText: "إنهاء الخدمة", requireText: "إنهاء الخدمة" }))) return;
                                     completeTerm.mutate({ id: t.id });
                                   },
-                                }]}
-                              />
-                            ) : <span className="text-xs text-muted-foreground">—</span>}
+                                }] : []),
+                                ...(t.status === "completed" && terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
+                                  key: "reverse-payment",
+                                  kind: "reverse" as const,
+                                  label: "عكس الصرف وإعادة الالتزام",
+                                  icon: RotateCcw,
+                                  gate: { module: "hr" as const, level: "FULL" as const },
+                                  disabled: me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy) || Number(me.data?.id) === Number(t.recognizedBy),
+                                  disabledReason: me.data?.isOwner !== true
+                                    ? "عكس الصرف يتطلب مالكاً نشطاً"
+                                    : "يلزم مالك مستقل عن منشئ ومثبت التسوية",
+                                  onSelect: () => {
+                                    setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "payment" });
+                                    setReverseReason(""); setReverseMethod("CASH"); setReverseReference(""); setReverseDate(today());
+                                  },
+                                }] : []),
+                                ...(t.status === "completed" && t.recognizedAt && D(t.settlement).gt(0) && !terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
+                                  key: "reissue-payment",
+                                  kind: "pay" as const,
+                                  label: "إعادة إصدار طلب الصرف",
+                                  icon: Wallet,
+                                  gate: { module: "hr" as const, level: "FULL" as const },
+                                  disabled: me.data?.isOwner !== true,
+                                  disabledReason: "إعادة الإصدار تتطلب مالكاً نشطاً",
+                                  onSelect: () => {
+                                    setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "reissue" });
+                                    setReverseReason("");
+                                  },
+                                }] : []),
+                                ...(t.status === "completed" && t.recognizedAt && t.recognitionEventId && !terminationPaymentIsOutstanding(t) && !t.recognitionReversedAt ? [{
+                                  key: "reverse-recognition",
+                                  kind: "reverse" as const,
+                                  label: "عكس إثبات الاستحقاق",
+                                  icon: RotateCcw,
+                                  gate: { module: "hr" as const, level: "FULL" as const },
+                                  disabled: me.data?.isOwner !== true || Number(me.data?.id) === Number(t.createdBy) || Number(me.data?.id) === Number(t.recognizedBy),
+                                  disabledReason: me.data?.isOwner !== true
+                                    ? "عكس الاستحقاق يتطلب مالكاً نشطاً"
+                                    : "يلزم مالك مستقل عن منشئ ومثبت التسوية",
+                                  onSelect: () => {
+                                    setReverseTarget({ id: t.id, employeeName: t.employeeName, mode: "recognition" });
+                                    setReverseReason("");
+                                  },
+                                }] : []),
+                              ]}
+                            />
                           </td>
                         </tr>
                       ))}
@@ -479,7 +744,7 @@ export default function Promotions() {
 
       {/* ===== نافذة إنهاء الخدمة ===== */}
       <Dialog open={termOpen} onOpenChange={(o) => { setTermOpen(o); if (!o) resetTerm(); }}>
-        <DialogContent>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>إنهاء خدمة موظف</DialogTitle></DialogHeader>
           <div className="rounded-md p-3 mb-1 text-xs flex items-start gap-2 bg-destructive/10 text-destructive">
             <UserMinus className="size-4 mt-0.5 shrink-0" />
@@ -502,12 +767,151 @@ export default function Promotions() {
               </div>
               <div className="space-y-1"><Label htmlFor="t-lastday">آخر يوم عمل</Label><Input id="t-lastday" type="date" dir="ltr" value={tLastDay} onChange={(e) => setTLastDay(e.target.value)} /></div>
             </div>
-            <div className="space-y-1"><Label htmlFor="t-settle">التسوية النهائية للمستحقات (د.ع)</Label><MoneyInput id="t-settle" value={tSettlement} onChange={setTSettlement} decimals={0} placeholder="رصيد إجازات + مكافأة نهاية خدمة" /></div>
+            <div className="rounded-md border p-3 space-y-3" data-testid="termination-breakdown">
+              <div>
+                <div className="text-sm font-medium">تفكيك التسوية اليدوي المعتمد</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                  لا يحسب النظام نسبة أو استحقاقاً قانونياً تلقائياً. تُدخل الموارد البشرية القيم
+                  التي حُسبت وراجعتها الجهة المختصة، ثم يعتمدها مستخدم آخر عند الإكمال.
+                </div>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label htmlFor="t-earned-gross">إجمالي الأجور المكتسبة حتى آخر يوم (د.ع)</Label>
+                  <MoneyInput id="t-earned-gross" value={tBreakdown.earnedGrossWages} onChange={(value) => setTBreakdown((current) => ({ ...current, earnedGrossWages: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-wage-reductions">تخفيضات الأجر المعتمدة (د.ع)</Label>
+                  <MoneyInput id="t-wage-reductions" value={tBreakdown.wageReductions} onChange={(value) => setTBreakdown((current) => ({ ...current, wageReductions: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-advance-recovery">استرداد السلفة من الأجر (د.ع)</Label>
+                  <MoneyInput id="t-advance-recovery" value={tBreakdown.advanceRecovery} onChange={(value) => setTBreakdown((current) => ({ ...current, advanceRecovery: value }))} decimals={2} placeholder="0" />
+                  <div className="text-[11px] text-muted-foreground">
+                    الرصيد النشط: {advanceBalance.isLoading ? "جارٍ التحميل…" : iqd(advanceBalance.data?.balance ?? "0")} د.ع؛ يبقى غير المسترد ذمةً على الموظف.
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-income-tax">ضريبة الدخل المعتمدة (د.ع)</Label>
+                  <MoneyInput id="t-income-tax" value={tBreakdown.incomeTax} onChange={(value) => setTBreakdown((current) => ({ ...current, incomeTax: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-ss-employee">حصة الموظف من الضمان (د.ع)</Label>
+                  <MoneyInput id="t-ss-employee" value={tBreakdown.employeeSocialSecurity} onChange={(value) => setTBreakdown((current) => ({ ...current, employeeSocialSecurity: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-ss-employer">حصة الشركة من الضمان (د.ع)</Label>
+                  <MoneyInput id="t-ss-employer" value={tBreakdown.employerSocialSecurity} onChange={(value) => setTBreakdown((current) => ({ ...current, employerSocialSecurity: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-leave">تعويض رصيد الإجازات (د.ع)</Label>
+                  <MoneyInput id="t-leave" value={tBreakdown.leaveCompensation} onChange={(value) => setTBreakdown((current) => ({ ...current, leaveCompensation: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-notice">تعويض مدة الإشعار (د.ع)</Label>
+                  <MoneyInput id="t-notice" value={tBreakdown.noticeCompensation} onChange={(value) => setTBreakdown((current) => ({ ...current, noticeCompensation: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-eos">استحقاق نهاية الخدمة المعتمد (د.ع)</Label>
+                  <MoneyInput id="t-eos" value={tBreakdown.eosBenefit} onChange={(value) => setTBreakdown((current) => ({ ...current, eosBenefit: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-other">مستحق آخر مصنّف (د.ع)</Label>
+                  <MoneyInput id="t-other" value={tBreakdown.otherSettlement} onChange={(value) => setTBreakdown((current) => ({ ...current, otherSettlement: value }))} decimals={2} placeholder="0" />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="t-other-label">تصنيف المستحق الآخر</Label>
+                  <Input id="t-other-label" value={tBreakdown.otherSettlementLabel} onChange={(event) => setTBreakdown((current) => ({ ...current, otherSettlementLabel: event.target.value }))} placeholder="مثال: مكافأة تعاقدية معتمدة" />
+                </div>
+              </div>
+              <div className="rounded-md border bg-background px-3 py-2 flex items-center justify-between gap-3">
+                <span className="text-xs text-muted-foreground">صافي الأجور بعد التخفيض والسلفة والضريبة وحصة الموظف</span>
+                <span className="tabular-nums font-semibold" dir="ltr">{iqd(tEarnedNet)}</span>
+              </div>
+              <div className="rounded-md bg-muted/60 px-3 py-2 flex items-center justify-between gap-3">
+                <Label htmlFor="t-settle">إجمالي التسوية المشتق</Label>
+                <MoneyInput id="t-settle" className="max-w-48 text-left font-semibold" value={tSettlement} onChange={() => undefined} decimals={2} disabled />
+              </div>
+            </div>
+            <div className="space-y-2 rounded-md border p-3">
+              <div className="space-y-1">
+                <Label htmlFor="t-evidence">مرجع المراجعة البشرية ومصدر القيم</Label>
+                <Textarea id="t-evidence" rows={2} value={tEvidenceNote} onChange={(event) => setTEvidenceNote(event.target.value)} placeholder="مثال: كشف المحاسب رقم… ومراجعة الموارد البشرية بتاريخ…" />
+              </div>
+              <label className="flex items-start gap-2 text-xs leading-5">
+                <Checkbox checked={tZeroAmountsAttested} onCheckedChange={(checked) => setTZeroAmountsAttested(checked === true)} />
+                <span>أقرّ بأن جميع القيم، بما فيها الأصفار، أُدخلت عمداً بعد مراجعة بشرية ولا تمثل احتساباً قانونياً تلقائياً.</span>
+              </label>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label htmlFor="t-payment-method">طريقة صرف التسوية بعد الاعتماد</Label>
+                <select id="t-payment-method" className={selectCls} value={tPaymentMethod} onChange={(event) => setTPaymentMethod(event.target.value as typeof tPaymentMethod)}>
+                  {Object.entries(TERMINATION_PAYMENT_METHOD_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="t-payment-reference">مرجع وسيلة الدفع</Label>
+                <Input id="t-payment-reference" value={tPaymentReference} onChange={(event) => setTPaymentReference(event.target.value)} disabled={tPaymentMethod === "CASH"} inputMode={tPaymentMethod === "CARD" ? "numeric" : undefined} maxLength={tPaymentMethod === "CARD" ? 4 : undefined} placeholder={tPaymentMethod === "CASH" ? "لا يلزم للدفع النقدي" : tPaymentMethod === "CARD" ? "آخر 4 أرقام" : "إلزامي قبل الحفظ"} />
+              </div>
+            </div>
             <div className="space-y-1"><Label htmlFor="t-reason">السبب / ملاحظات</Label><Textarea id="t-reason" rows={2} value={tReason} onChange={(e) => setTReason(e.target.value)} /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setTermOpen(false)}>إلغاء</Button>
             <Button className="bg-destructive text-white hover:bg-destructive/90" disabled={createTerm.isPending} onClick={submitTerm}>{createTerm.isPending ? "جارٍ…" : "حفظ إجراء الإنهاء"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* عكس الصرف مستقل عن عكس الاستحقاق: يُعاد المال أولاً ثم يُتاح عكس القيد. */}
+      <Dialog open={reverseTarget !== null} onOpenChange={(open) => { if (!open) { setReverseTarget(null); setReverseReason(""); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{reverseTarget?.mode === "payment"
+              ? "عكس صرف تسوية نهاية الخدمة"
+              : reverseTarget?.mode === "reissue"
+                ? "إعادة إصدار طلب صرف التسوية"
+                : "عكس إثبات استحقاق نهاية الخدمة"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs leading-5">
+              {reverseTarget?.mode === "payment"
+                ? `ستُسجّل إعادة المبلغ من «${reverseTarget.employeeName}» بإيصال قبض وقيد مستقل، ويُعاد فتح الالتزام قبل السماح بعكس الاستحقاق.`
+                : reverseTarget?.mode === "reissue"
+                  ? `سيُنشأ طلب صرف جديد للالتزام المفتوح الخاص بـ«${reverseTarget.employeeName}». لا يُعاد إثبات الاستحقاق، ويجب أن يعتمده مالك آخر.`
+                  : `سيُعكس قيد الاستحقاق الخاص بـ«${reverseTarget?.employeeName ?? "الموظف"}» بقيد مستقل مع إبقاء سجل إنهاء الخدمة؛ لا يُعاد تفعيل حساب الموظف تلقائياً.`}
+            </div>
+            {reverseTarget?.mode === "payment" && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label htmlFor="termination-reversal-method">طريقة إعادة المبلغ</Label>
+                  <select id="termination-reversal-method" className={selectCls} value={reverseMethod} onChange={(event) => setReverseMethod(event.target.value as typeof reverseMethod)}>
+                    {Object.entries(TERMINATION_PAYMENT_METHOD_LABEL).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="termination-reversal-date">تاريخ إعادة المبلغ</Label>
+                  <Input id="termination-reversal-date" type="date" dir="ltr" value={reverseDate} onChange={(event) => setReverseDate(event.target.value)} />
+                </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <Label htmlFor="termination-reversal-reference">مرجع وسيلة الدفع</Label>
+                  <Input id="termination-reversal-reference" value={reverseReference} onChange={(event) => setReverseReference(event.target.value)} disabled={reverseMethod === "CASH"} placeholder={reverseMethod === "CASH" ? "لا يلزم للإعادة النقدية" : "إلزامي"} />
+                </div>
+              </div>
+            )}
+            <div className="space-y-1">
+              <Label htmlFor="termination-reversal-reason">سبب العكس الموثق</Label>
+              <Textarea id="termination-reversal-reason" rows={3} value={reverseReason} onChange={(event) => setReverseReason(event.target.value)} placeholder="سبب واضح يظهر في الأثر التدقيقي" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReverseTarget(null)}>إلغاء</Button>
+            <Button variant={reverseTarget?.mode === "reissue" ? "default" : "destructive"} disabled={reversePayment.isPending || reverseRecognition.isPending || reissuePayment.isPending} onClick={submitReversal}>
+              {reversePayment.isPending || reverseRecognition.isPending || reissuePayment.isPending
+                ? "جارٍ التسجيل…"
+                : reverseTarget?.mode === "reissue" ? "إصدار طلب جديد" : "تسجيل العكس"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

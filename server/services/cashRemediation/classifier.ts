@@ -11,7 +11,10 @@ import type {
   RemediationClassification,
   SuggestedClassification,
 } from "./types";
-import { receiptAffectsDrawerCash, receiptStatusAffectsCash } from "./statusPolicy";
+import {
+  receiptAffectsDrawerCash,
+  receiptStatusAffectsCash,
+} from "./statusPolicy";
 
 type ClassificationResult = {
   classification: SuggestedClassification;
@@ -21,7 +24,9 @@ type ClassificationResult = {
   duplicateOfReceiptId: number | null;
 };
 
-function sourceOf(receipt: RawRemediationReceipt): CashRemediationOutRow["source"] {
+function sourceOf(
+  receipt: RawRemediationReceipt,
+): CashRemediationOutRow["source"] {
   const expense = receipt.expense;
   const documentType = expense
     ? "EXPENSE"
@@ -36,7 +41,11 @@ function sourceOf(receipt: RawRemediationReceipt): CashRemediationOutRow["source
             : "RECEIPT";
   const documentId = expense
     ? expense.id
-    : (receipt.invoiceId ?? receipt.workOrderId ?? receipt.reservationId ?? receipt.voucherNumber ?? receipt.id);
+    : (receipt.invoiceId ??
+      receipt.workOrderId ??
+      receipt.reservationId ??
+      receipt.voucherNumber ??
+      receipt.id);
   return {
     documentType,
     documentId,
@@ -46,7 +55,8 @@ function sourceOf(receipt: RawRemediationReceipt): CashRemediationOutRow["source
     workOrderId: receipt.workOrderId,
     reservationId: receipt.reservationId,
     voucherNumber: receipt.voucherNumber,
-    referenceNumber: receipt.referenceNumber ?? expense?.referenceNumber ?? null,
+    referenceNumber:
+      receipt.referenceNumber ?? expense?.referenceNumber ?? null,
     ledgerEntryIds: receipt.ledgerEntryIds,
     ledgerEntryTypes: receipt.ledgerEntryTypes,
   };
@@ -54,7 +64,8 @@ function sourceOf(receipt: RawRemediationReceipt): CashRemediationOutRow["source
 
 function duplicateKey(receipt: RawRemediationReceipt): string | null {
   if (receipt.expense) return `EXPENSE:${receipt.expense.id}`;
-  const reference = receipt.referenceNumber?.trim() || receipt.voucherNumber?.trim();
+  const reference =
+    receipt.referenceNumber?.trim() || receipt.voucherNumber?.trim();
   if (!reference) return null;
   return [
     receipt.shiftId,
@@ -69,10 +80,18 @@ function duplicateKey(receipt: RawRemediationReceipt): string | null {
 function baseEvidence(receipt: RawRemediationReceipt): EvidenceMissing[] {
   const missing: EvidenceMissing[] = [];
   const hasDocument = Boolean(
-    receipt.expense || receipt.invoiceId || receipt.workOrderId || receipt.reservationId || receipt.voucherNumber,
+    receipt.expense ||
+    receipt.invoiceId ||
+    receipt.workOrderId ||
+    receipt.reservationId ||
+    receipt.voucherNumber,
   );
   if (!hasDocument) missing.push("SOURCE_DOCUMENT");
-  if (!receipt.partyId && !receipt.counterpartyName && !receipt.expense?.payee) {
+  if (
+    !receipt.partyId &&
+    !receipt.counterpartyName &&
+    !receipt.expense?.payee
+  ) {
     missing.push("COUNTERPARTY");
   }
   if (!receipt.attachmentUrl) missing.push("PAYMENT_PROOF");
@@ -89,22 +108,38 @@ function classify(
   const evidenceMissing = baseEvidence(receipt);
   const pairedInternalTransfer = receipt.pairedTreasuryReceiptId != null;
   if (pairedInternalTransfer) {
+    const isClosingHandover =
+      receipt.referenceNumber?.startsWith("CH-") === true;
+    const hasSourceLedgerEntry = receipt.ledgerEntryTypes.includes(
+      isClosingHandover ? "CASH_HANDOVER" : "CASH_TRANSFER_OUT",
+    );
+    const hasPairedLedgerEntry =
+      isClosingHandover ||
+      receipt.pairedTreasuryLedgerEntryTypes.includes("CASH_TRANSFER_IN");
     const fullyAccepted =
       receiptStatusAffectsCash(receipt.status, receipt.approvalStatus) &&
       receipt.pairedTreasuryReceiptStatus === "COMPLETED" &&
       receipt.pairedTreasuryApprovalStatus === "APPROVED" &&
-      receipt.ledgerEntryTypes.includes("CASH_HANDOVER");
+      hasSourceLedgerEntry &&
+      hasPairedLedgerEntry;
     const transferEvidence: EvidenceMissing[] = [];
     if (
       !receiptStatusAffectsCash(receipt.status, receipt.approvalStatus) ||
       receipt.pairedTreasuryReceiptStatus !== "COMPLETED" ||
       receipt.pairedTreasuryApprovalStatus !== "APPROVED"
     ) {
-      transferEvidence.push("TREASURY_HANDOVER_OR_FUNDING_PROOF", "MANAGER_DECISION");
+      transferEvidence.push(
+        "TREASURY_HANDOVER_OR_FUNDING_PROOF",
+        "MANAGER_DECISION",
+      );
     }
-    if (!receipt.ledgerEntryTypes.includes("CASH_HANDOVER")) transferEvidence.push("LEDGER_ENTRY");
+    if (!hasSourceLedgerEntry || !hasPairedLedgerEntry) {
+      transferEvidence.push("LEDGER_ENTRY");
+    }
     return {
-      classification: fullyAccepted ? "VERIFIED_INTERNAL_TRANSFER" : "UNVERIFIED_INTERNAL_TRANSFER",
+      classification: fullyAccepted
+        ? "VERIFIED_INTERNAL_TRANSFER"
+        : "UNVERIFIED_INTERNAL_TRANSFER",
       confidence: fullyAccepted ? "HIGH" : "LOW",
       rationale: fullyAccepted
         ? receipt.referenceNumber?.startsWith("CH-")
@@ -121,7 +156,11 @@ function classify(
       confidence: "HIGH",
       rationale: `الإيصال مرتبط بأكثر من مستند مصروف (${receipt.linkedExpenseIds.join("، ")})؛ يجب حسم التعارض قبل أي تسوية.`,
       evidenceMissing: Array.from(
-        new Set<EvidenceMissing>([...evidenceMissing, "CONFIRM_SINGLE_PHYSICAL_PAYMENT", "MANAGER_DECISION"]),
+        new Set<EvidenceMissing>([
+          ...evidenceMissing,
+          "CONFIRM_SINGLE_PHYSICAL_PAYMENT",
+          "MANAGER_DECISION",
+        ]),
       ),
       duplicateOfReceiptId: null,
     };
@@ -144,7 +183,11 @@ function classify(
       confidence: receipt.expense ? "HIGH" : "MEDIUM",
       rationale: `توجد حركة OUT أسبق تحمل المصدر/البصمة نفسها (الإيصال #${duplicateOfReceiptId}).`,
       evidenceMissing: Array.from(
-        new Set<EvidenceMissing>([...evidenceMissing, "CONFIRM_SINGLE_PHYSICAL_PAYMENT", "MANAGER_DECISION"]),
+        new Set<EvidenceMissing>([
+          ...evidenceMissing,
+          "CONFIRM_SINGLE_PHYSICAL_PAYMENT",
+          "MANAGER_DECISION",
+        ]),
       ),
       duplicateOfReceiptId,
     };
@@ -159,16 +202,24 @@ function classify(
     return {
       classification: "DUPLICATE_OR_ERROR",
       confidence: "HIGH",
-      rationale: "بيانات إيصال الصرف لا تطابق مستند المصروف المرتبط أو أن المصروف ملغى.",
-      evidenceMissing: Array.from(new Set<EvidenceMissing>([...evidenceMissing, "MANAGER_DECISION"])),
+      rationale:
+        "بيانات إيصال الصرف لا تطابق مستند المصروف المرتبط أو أن المصروف ملغى.",
+      evidenceMissing: Array.from(
+        new Set<EvidenceMissing>([...evidenceMissing, "MANAGER_DECISION"]),
+      ),
       duplicateOfReceiptId: null,
     };
   }
-  if (causedNegative && receipt.paymentMethod === "CASH" && receipt.cashBucket === "DRAWER") {
+  if (
+    causedNegative &&
+    receipt.paymentMethod === "CASH" &&
+    receipt.cashBucket === "DRAWER"
+  ) {
     return {
       classification: "MISSING_INTERNAL_TRANSFER",
       confidence: "LOW",
-      rationale: "هذه أول حركة جعلت الرصيد الجاري سالباً؛ نقص التحويل فرضية تشخيصية فقط ولا يُرحّل بلا إثبات.",
+      rationale:
+        "هذه أول حركة جعلت الرصيد الجاري سالباً؛ نقص التحويل فرضية تشخيصية فقط ولا يُرحّل بلا إثبات.",
       evidenceMissing: Array.from(
         new Set<EvidenceMissing>([
           ...evidenceMissing,
@@ -184,15 +235,24 @@ function classify(
   return {
     classification: "UNRESOLVED",
     confidence: "LOW",
-    rationale: "لا تكفي البيانات البنيوية لإثبات أن الدفع من الدرج أو الخزينة أو مال الموظف؛ يلزم مستند خارجي وموافقة.",
+    rationale:
+      "لا تكفي البيانات البنيوية لإثبات أن الدفع من الدرج أو الخزينة أو مال الموظف؛ يلزم مستند خارجي وموافقة.",
     evidenceMissing: Array.from(
-      new Set<EvidenceMissing>([...evidenceMissing, "EMPLOYEE_DECLARATION", "PHYSICAL_CASH_COUNT", "MANAGER_DECISION"]),
+      new Set<EvidenceMissing>([
+        ...evidenceMissing,
+        "EMPLOYEE_DECLARATION",
+        "PHYSICAL_CASH_COUNT",
+        "MANAGER_DECISION",
+      ]),
     ),
     duplicateOfReceiptId: null,
   };
 }
 
-function simulationDelta(receipt: RawRemediationReceipt, selected: RemediationClassification | null) {
+function simulationDelta(
+  receipt: RawRemediationReceipt,
+  selected: RemediationClassification | null,
+) {
   const zero = money("0");
   if (!selected) {
     return {
@@ -206,12 +266,21 @@ function simulationDelta(receipt: RawRemediationReceipt, selected: RemediationCl
   const amount = money(receipt.amount);
   const reversesDrawer =
     receiptAffectsDrawerCash(receipt) &&
-    !(receipt.pairedTreasuryReceiptId != null && receipt.referenceNumber?.startsWith("CH-"));
+    !(
+      receipt.pairedTreasuryReceiptId != null &&
+      receipt.referenceNumber?.startsWith("CH-")
+    );
   const drawerDelta = reversesDrawer ? amount : zero;
   const treasuryDelta =
-    selected === "TREASURY_PAID" || selected === "MISSING_INTERNAL_TRANSFER" ? amount.negated() : zero;
-  const employeePayableDelta = selected === "EMPLOYEE_PERSONAL_PAID" ? amount : zero;
-  const expenseDelta = selected === "DUPLICATE_OR_ERROR" && receipt.expense ? amount.negated() : zero;
+    selected === "TREASURY_PAID" || selected === "MISSING_INTERNAL_TRANSFER"
+      ? amount.negated()
+      : zero;
+  const employeePayableDelta =
+    selected === "EMPLOYEE_PERSONAL_PAID" ? amount : zero;
+  const expenseDelta =
+    selected === "DUPLICATE_OR_ERROR" && receipt.expense
+      ? amount.negated()
+      : zero;
   return {
     selectedClassification: selected,
     drawerDelta: toDbMoney(drawerDelta),
@@ -234,7 +303,9 @@ export function analyzeCashRemediation(
     simulations.set(item.receiptId, item.classification);
   }
 
-  const receiptById = new Map(dataset.receipts.map((receipt) => [receipt.id, receipt]));
+  const receiptById = new Map(
+    dataset.receipts.map((receipt) => [receipt.id, receipt]),
+  );
   simulations.forEach((_classification, receiptId) => {
     const receipt = receiptById.get(receiptId);
     if (!receipt || receipt.direction !== "OUT") {
@@ -248,7 +319,9 @@ export function analyzeCashRemediation(
       receipt.status === "REVERSED" ||
       receipt.linkedExpenseIds.length > 1
     ) {
-      throw new Error(`الإيصال #${receiptId} لا يقبل محاكاة تسوية: لا يؤثر في سالب الدرج أو أنه تحويل داخلي مثبت`);
+      throw new Error(
+        `الإيصال #${receiptId} لا يقبل محاكاة تسوية: لا يؤثر في سالب الدرج أو أنه تحويل داخلي مثبت`,
+      );
     }
   });
 
@@ -256,17 +329,23 @@ export function analyzeCashRemediation(
   for (const shift of dataset.shifts) {
     const shiftReceipts = dataset.receipts
       .filter((receipt) => receipt.shiftId === shift.id)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id - b.id);
+      .sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id - b.id,
+      );
     let running = money(shift.openingBalance);
-    let firstNegative: CashRemediationShiftReport["firstNegative"] = running.isNegative()
-      ? {
-          point: "OPENING",
-          receiptId: null,
-          occurredAt: shift.openedAt.toISOString(),
-          balance: toDbMoney(running),
-        }
-      : null;
-    const runningByReceipt = new Map<number, { before: string; after: string }>();
+    let firstNegative: CashRemediationShiftReport["firstNegative"] =
+      running.isNegative()
+        ? {
+            point: "OPENING",
+            receiptId: null,
+            occurredAt: shift.openedAt.toISOString(),
+            balance: toDbMoney(running),
+          }
+        : null;
+    const runningByReceipt = new Map<
+      number,
+      { before: string; after: string }
+    >();
 
     for (const receipt of shiftReceipts) {
       const before = running;
@@ -278,7 +357,9 @@ export function analyzeCashRemediation(
         Boolean(receipt.referenceNumber?.startsWith("CH-"));
       if (affectsDrawer && !excludedClosingHandover) {
         running =
-          receipt.direction === "IN" ? running.plus(money(receipt.amount)) : running.minus(money(receipt.amount));
+          receipt.direction === "IN"
+            ? running.plus(money(receipt.amount))
+            : running.minus(money(receipt.amount));
       }
       runningByReceipt.set(receipt.id, {
         before: toDbMoney(before),
@@ -295,10 +376,18 @@ export function analyzeCashRemediation(
     }
 
     const seenDuplicates = new Map<string, number>();
-    const reversalByReceipt = new Map<number, { verified: boolean; evidenceMissing: EvidenceMissing[] }>();
+    const reversalByReceipt = new Map<
+      number,
+      { verified: boolean; evidenceMissing: EvidenceMissing[] }
+    >();
     for (const receipt of shiftReceipts) {
       const expense = receipt.expense;
-      if (!expense || expense.status !== "CANCELLED" || receipt.status !== "REVERSED") continue;
+      if (
+        !expense ||
+        expense.status !== "CANCELLED" ||
+        receipt.status !== "REVERSED"
+      )
+        continue;
       const compensation = shiftReceipts.find(
         (candidate) =>
           candidate.direction === "IN" &&
@@ -314,10 +403,16 @@ export function analyzeCashRemediation(
         receipt.ledgerEntryTypes.includes("PAYMENT_OUT") &&
         compensation.ledgerEntryTypes.includes("PAYMENT_IN");
       const reversalEvidence: EvidenceMissing[] = [];
-      if (compensation.status !== "COMPLETED" || compensation.approvalStatus !== "APPROVED") {
+      if (
+        compensation.status !== "COMPLETED" ||
+        compensation.approvalStatus !== "APPROVED"
+      ) {
         reversalEvidence.push("PAYMENT_PROOF", "MANAGER_DECISION");
       }
-      if (!receipt.ledgerEntryTypes.includes("PAYMENT_OUT") || !compensation.ledgerEntryTypes.includes("PAYMENT_IN")) {
+      if (
+        !receipt.ledgerEntryTypes.includes("PAYMENT_OUT") ||
+        !compensation.ledgerEntryTypes.includes("PAYMENT_IN")
+      ) {
         reversalEvidence.push("LEDGER_ENTRY");
       }
       reversalByReceipt.set(receipt.id, {
@@ -326,14 +421,20 @@ export function analyzeCashRemediation(
       });
     }
     const outflows: CashRemediationOutRow[] = [];
-    for (const receipt of shiftReceipts.filter((row) => row.direction === "OUT")) {
+    for (const receipt of shiftReceipts.filter(
+      (row) => row.direction === "OUT",
+    )) {
       const key = duplicateKey(receipt);
-      const duplicateOfReceiptId = key ? (seenDuplicates.get(key) ?? null) : null;
-      if (key && duplicateOfReceiptId == null) seenDuplicates.set(key, receipt.id);
+      const duplicateOfReceiptId = key
+        ? (seenDuplicates.get(key) ?? null)
+        : null;
+      if (key && duplicateOfReceiptId == null)
+        seenDuplicates.set(key, receipt.id);
       const classification = classify(
         receipt,
         duplicateOfReceiptId,
-        firstNegative?.point === "RECEIPT" && firstNegative.receiptId === receipt.id,
+        firstNegative?.point === "RECEIPT" &&
+          firstNegative.receiptId === receipt.id,
         reversalByReceipt.get(receipt.id) ?? null,
       );
       const balances = runningByReceipt.get(receipt.id)!;
@@ -351,12 +452,15 @@ export function analyzeCashRemediation(
         cashBucket: receipt.cashBucket,
         status: receipt.status,
         approvalStatus: receipt.approvalStatus,
-        description: receipt.description ?? receipt.expense?.description ?? null,
+        description:
+          receipt.description ?? receipt.expense?.description ?? null,
         actorId: receipt.createdBy,
         actorName: receipt.createdByName,
-        counterpartyName: receipt.counterpartyName ?? receipt.expense?.payee ?? null,
+        counterpartyName:
+          receipt.counterpartyName ?? receipt.expense?.payee ?? null,
         source: sourceOf(receipt),
-        affectsDrawer: receiptAffectsDrawerCash(receipt) && !excludedClosingHandover,
+        affectsDrawer:
+          receiptAffectsDrawerCash(receipt) && !excludedClosingHandover,
         excludedClosingHandover,
         pairedTreasuryReceiptId: receipt.pairedTreasuryReceiptId,
         pairedTreasuryReceiptStatus: receipt.pairedTreasuryReceiptStatus,
@@ -368,7 +472,10 @@ export function analyzeCashRemediation(
         rationale: classification.rationale,
         evidenceMissing: classification.evidenceMissing,
         duplicateOfReceiptId: classification.duplicateOfReceiptId,
-        simulation: simulationDelta(receipt, simulations.get(receipt.id) ?? null),
+        simulation: simulationDelta(
+          receipt,
+          simulations.get(receipt.id) ?? null,
+        ),
       });
     }
 
@@ -399,14 +506,22 @@ export function analyzeCashRemediation(
       before: {
         openingBalance: toDbMoney(money(shift.openingBalance)),
         computedExpectedCash: toDbMoney(running),
-        storedExpectedCash: shift.storedExpectedCash == null ? null : toDbMoney(money(shift.storedExpectedCash)),
+        storedExpectedCash:
+          shift.storedExpectedCash == null
+            ? null
+            : toDbMoney(money(shift.storedExpectedCash)),
         countedCash: counted == null ? null : toDbMoney(counted),
-        computedVariance: counted == null ? null : toDbMoney(counted.minus(running)),
-        storedVariance: shift.storedVariance == null ? null : toDbMoney(money(shift.storedVariance)),
+        computedVariance:
+          counted == null ? null : toDbMoney(counted.minus(running)),
+        storedVariance:
+          shift.storedVariance == null
+            ? null
+            : toDbMoney(money(shift.storedVariance)),
       },
       afterSimulation: {
         expectedCash: toDbMoney(afterExpected),
-        variance: counted == null ? null : toDbMoney(counted.minus(afterExpected)),
+        variance:
+          counted == null ? null : toDbMoney(counted.minus(afterExpected)),
         drawerDelta: toDbMoney(drawerDelta),
         treasuryDelta: toDbMoney(treasuryDelta),
         employeePayableDelta: toDbMoney(employeePayableDelta),
@@ -417,7 +532,10 @@ export function analyzeCashRemediation(
   }
 
   const sumShift = (pick: (shift: CashRemediationShiftReport) => string) =>
-    shiftReports.reduce((sum, shift) => sum.plus(money(pick(shift))), money("0"));
+    shiftReports.reduce(
+      (sum, shift) => sum.plus(money(pick(shift))),
+      money("0"),
+    );
   const { simulations: _simulations, ...reportedFilters } = filters;
   return {
     mode: "DRY_RUN_READ_ONLY",
@@ -431,18 +549,39 @@ export function analyzeCashRemediation(
     },
     summary: {
       shiftCount: shiftReports.length,
-      negativeShiftCount: shiftReports.filter((shift) => shift.firstNegative != null).length,
-      outflowCount: shiftReports.reduce((count, shift) => count + shift.outflows.length, 0),
-      unresolvedCount: shiftReports.reduce(
-        (count, shift) => count + shift.outflows.filter((row) => row.suggestedClassification === "UNRESOLVED").length,
+      negativeShiftCount: shiftReports.filter(
+        (shift) => shift.firstNegative != null,
+      ).length,
+      outflowCount: shiftReports.reduce(
+        (count, shift) => count + shift.outflows.length,
         0,
       ),
-      beforeExpectedCash: toDbMoney(sumShift((shift) => shift.before.computedExpectedCash)),
-      afterExpectedCash: toDbMoney(sumShift((shift) => shift.afterSimulation.expectedCash)),
-      drawerDelta: toDbMoney(sumShift((shift) => shift.afterSimulation.drawerDelta)),
-      treasuryDelta: toDbMoney(sumShift((shift) => shift.afterSimulation.treasuryDelta)),
-      employeePayableDelta: toDbMoney(sumShift((shift) => shift.afterSimulation.employeePayableDelta)),
-      expenseDelta: toDbMoney(sumShift((shift) => shift.afterSimulation.expenseDelta)),
+      unresolvedCount: shiftReports.reduce(
+        (count, shift) =>
+          count +
+          shift.outflows.filter(
+            (row) => row.suggestedClassification === "UNRESOLVED",
+          ).length,
+        0,
+      ),
+      beforeExpectedCash: toDbMoney(
+        sumShift((shift) => shift.before.computedExpectedCash),
+      ),
+      afterExpectedCash: toDbMoney(
+        sumShift((shift) => shift.afterSimulation.expectedCash),
+      ),
+      drawerDelta: toDbMoney(
+        sumShift((shift) => shift.afterSimulation.drawerDelta),
+      ),
+      treasuryDelta: toDbMoney(
+        sumShift((shift) => shift.afterSimulation.treasuryDelta),
+      ),
+      employeePayableDelta: toDbMoney(
+        sumShift((shift) => shift.afterSimulation.employeePayableDelta),
+      ),
+      expenseDelta: toDbMoney(
+        sumShift((shift) => shift.afterSimulation.expenseDelta),
+      ),
     },
     shifts: shiftReports,
   };

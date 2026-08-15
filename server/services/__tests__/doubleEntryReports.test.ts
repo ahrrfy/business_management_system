@@ -4,7 +4,7 @@
  * يثبت هذا الملف أن التقارير لا تعود إلى accountingEntries المالية المبسّطة، وأن كل مبلغٍ
  * يظهر في الافتتاح/الحركة/الختام مع عزل الفرع وبوابة التقارير الحمراء.
  */
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -12,6 +12,8 @@ import { appRouter } from "../../routers";
 import { CHART_ACCOUNTS } from "../accounting/chartSeed";
 import { getGeneralLedger } from "../reports/generalLedger";
 import { getTrialBalance } from "../reports/trialBalance";
+
+const TEST_CYCLE_ID = "11111111-1111-4111-8111-111111111111";
 
 function db() {
   const d = getDb();
@@ -46,6 +48,7 @@ type EntrySeed = {
   invoiceId?: number;
   notes?: string;
   status?: "POSTED" | "UNMAPPED";
+  cycleId?: string;
   lines?: Array<{ role: string; debit?: string; credit?: string }>;
 };
 
@@ -71,6 +74,7 @@ async function seedJournal(input: EntrySeed) {
       entryId: input.entryId,
       entryDate: new Date(`${input.date}T00:00:00Z`),
       branchId: input.branchId,
+      cycleId: input.cycleId ?? TEST_CYCLE_ID,
       status: input.status ?? "POSTED",
       unmappedReason:
         input.status === "UNMAPPED" ? "نوع قيد غير مخطط للاختبار" : null,
@@ -143,6 +147,7 @@ async function seedBase() {
       id: 1,
       mode: "SHADOW",
       shadowStartedAt: new Date("2026-01-01T00:00:00Z"),
+      shadowCycleId: TEST_CYCLE_ID,
     });
   await db().insert(s.invoices).values({
     id: 50,
@@ -250,6 +255,7 @@ describe("ميزان المراجعة المزدوج", () => {
     });
 
     expect(report.mode).toBe("SHADOW");
+    expect(report.cycleId).toBe(TEST_CYCLE_ID);
     expect(report.shadowStartedAt).toBe("2026-01-01 00:00:00");
     expect(report.unmappedCount).toBe(1);
     expect(report.totals).toMatchObject({
@@ -383,6 +389,28 @@ describe("ميزان المراجعة المزدوج", () => {
     expect(report.periodUnmappedCount).toBe(1);
     expect(report.unmappedCount).toBe(2);
   });
+
+  it("يعزل يوميات دورة SHADOW موقوفة عن الدورة الحالية", async () => {
+    await seedJournal({
+      journalId: 112,
+      entryId: 1012,
+      date: "2026-02-10",
+      branchId: 1,
+      cycleId: "22222222-2222-4222-8222-222222222222",
+      lines: [
+        { role: "AR", debit: "500.00" },
+        { role: "OPENING_EQUITY", credit: "500.00" },
+      ],
+    });
+
+    const report = await getTrialBalance({
+      from: "2026-02-01",
+      to: "2026-02-28",
+      branchId: 1,
+    });
+    expect(report.totals.periodDebit).toBe("100.00");
+    expect(report.totals.periodCredit).toBe("100.00");
+  });
 });
 
 describe("دفتر الأستاذ المزدوج", () => {
@@ -397,6 +425,7 @@ describe("دفتر الأستاذ المزدوج", () => {
     });
 
     expect(report.mode).toBe("SHADOW");
+    expect(report.cycleId).toBe(TEST_CYCLE_ID);
     expect(report.account).toMatchObject({
       id: 5,
       code: "1300",
@@ -431,6 +460,131 @@ describe("دفتر الأستاذ المزدوج", () => {
       closingSide: "DEBIT",
     });
     expect(report.unmappedCount).toBe(1);
+  });
+
+  it("يصنّف لقطة SHADOW_OPENING افتتاحاً دائماً ولا يضخّم حركة يوم القطع", async () => {
+    await db()
+      .insert(s.journalEntries)
+      .values({
+        id: 111,
+        entryId: null,
+        sourceType: "SHADOW_OPENING",
+        sourceKey: `SHADOW_OPENING:${TEST_CYCLE_ID}:1`,
+        cycleId: TEST_CYCLE_ID,
+        entryDate: new Date("2026-02-01T00:00:00Z"),
+        branchId: 1,
+        status: "POSTED",
+      });
+    await db()
+      .insert(s.journalLines)
+      .values([
+        { journalId: 111, role: "AR", debit: "25.00", credit: "0.00" },
+        { journalId: 111, role: "CAPITAL", debit: "0.00", credit: "25.00" },
+      ]);
+
+    const report = await getGeneralLedger({
+      accountId: 5,
+      from: "2026-02-01",
+      to: "2026-02-28",
+      branchId: 1,
+    });
+    expect(report.openingBalance).toBe("125.00");
+    expect(report.total).toBe(2);
+    expect(report.rows.some((row) => row.sourceType === "SHADOW_OPENING")).toBe(
+      false,
+    );
+    expect(report.totals).toMatchObject({
+      debit: "50.00",
+      credit: "50.00",
+      closingBalance: "125.00",
+    });
+
+    const trial = await getTrialBalance({
+      from: "2026-02-01",
+      to: "2026-02-28",
+      branchId: 1,
+    });
+    expect(trial.totals).toMatchObject({
+      openingDebit: "125.00",
+      openingCredit: "125.00",
+      periodDebit: "100.00",
+      periodCredit: "100.00",
+    });
+    expect(trial.rows.find((row) => row.systemRole === "AR")).toMatchObject({
+      openingDebit: "125.00",
+      periodDebit: "50.00",
+      periodCredit: "50.00",
+    });
+  });
+
+  it("يرفض تقرير الفرع عند وجود افتتاح عالمي ويتيح الحقيقة على مستوى الشركة", async () => {
+    await db()
+      .insert(s.journalEntries)
+      .values({
+        id: 113,
+        entryId: null,
+        sourceType: "SHADOW_OPENING",
+        sourceKey: `SHADOW_OPENING:${TEST_CYCLE_ID}:GLOBAL`,
+        cycleId: TEST_CYCLE_ID,
+        entryDate: new Date("2026-01-01T00:00:00Z"),
+        branchId: null,
+        status: "POSTED",
+      });
+    await db()
+      .insert(s.journalLines)
+      .values([
+        { journalId: 113, role: "AR", debit: "40.00", credit: "0.00" },
+        { journalId: 113, role: "CAPITAL", debit: "0.00", credit: "40.00" },
+      ]);
+
+    await expect(
+      getTrialBalance({
+        from: "2026-02-01",
+        to: "2026-02-28",
+        branchId: 1,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      getGeneralLedger({
+        accountId: 5,
+        from: "2026-02-01",
+        to: "2026-02-28",
+        branchId: 1,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await db()
+      .update(s.journalEntries)
+      .set({ status: "UNMAPPED" })
+      .where(eq(s.journalEntries.id, 113));
+    await expect(
+      getTrialBalance({
+        from: "2026-02-01",
+        to: "2026-02-28",
+        branchId: 1,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(
+      getGeneralLedger({
+        accountId: 5,
+        from: "2026-02-01",
+        to: "2026-02-28",
+        branchId: 1,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await db()
+      .update(s.journalEntries)
+      .set({ status: "POSTED" })
+      .where(eq(s.journalEntries.id, 113));
+
+    const company = await getGeneralLedger({
+      accountId: 5,
+      from: "2026-02-01",
+      to: "2026-02-28",
+    });
+    expect(company.openingBalance).toBe("140.00");
+    expect(company.openingSide).toBe("DEBIT");
   });
 
   it("يحافظ على الرصيد الجاري الصحيح عند ترقيم الصفحات", async () => {
@@ -527,9 +681,13 @@ describe("دفتر الأستاذ المزدوج", () => {
       branchId: 1,
     });
     expect(off.mode).toBe("OFF");
-    expect(off.total).toBe(2);
+    expect(off.total).toBe(0);
 
-    await db().insert(s.doubleEntrySettings).values({ id: 1, mode: "ACTIVE" });
+    await db().insert(s.doubleEntrySettings).values({
+      id: 1,
+      mode: "ACTIVE",
+      shadowCycleId: TEST_CYCLE_ID,
+    });
     const active = await getTrialBalance({
       from: "2026-02-01",
       to: "2026-02-28",
@@ -537,6 +695,32 @@ describe("دفتر الأستاذ المزدوج", () => {
     });
     expect(active.mode).toBe("ACTIVE");
     expect(active.totals.isBalanced).toBe(true);
+  });
+
+  it("يرفض نطاقاً قبل القطع ويصرّح بتاريخ الإتاحة دون خلط P&L تاريخي", async () => {
+    await db()
+      .update(s.doubleEntrySettings)
+      .set({ shadowStartedAt: new Date("2026-07-14T21:00:00.000Z") })
+      .where(sql`${s.doubleEntrySettings.id} = 1`);
+
+    await expect(
+      getTrialBalance({ from: "2026-07-14", to: "2026-07-31" }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(
+      getGeneralLedger({
+        accountId: 5,
+        from: "2026-07-14",
+        to: "2026-07-31",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const report = await getTrialBalance({
+      from: "2026-07-15",
+      to: "2026-07-31",
+    });
+    expect(report.availableFrom).toBe("2026-07-15");
+    expect(report.totals.periodDebit).toBe("0.00");
+    expect(report.totals.openingDebit).toBe("0.00");
   });
 });
 
@@ -550,6 +734,15 @@ describe("راوتر التقارير — الصلاحيات وعزل الفرع
         .limit(1)
     )[0];
     const caller = appRouter.createCaller(makeCtx(manager));
+
+    await expect(
+      caller.reports.doubleEntryReportAvailability(),
+    ).resolves.toEqual({
+      mode: "SHADOW",
+      cycleId: TEST_CYCLE_ID,
+      availableFrom: "2026-01-01",
+      shadowStartedAt: "2026-01-01 00:00:00",
+    });
 
     const scoped = await caller.reports.trialBalance({
       from: "2026-02-01",
@@ -574,6 +767,9 @@ describe("راوتر التقارير — الصلاحيات وعزل الفرع
         .limit(1)
     )[0];
     const caller = appRouter.createCaller(makeCtx(cashier));
+    await expect(
+      caller.reports.doubleEntryReportAvailability(),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(
       caller.reports.trialBalance({
         from: "2026-02-01",

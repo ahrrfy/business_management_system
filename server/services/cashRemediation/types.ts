@@ -102,6 +102,8 @@ export interface RawRemediationReceipt {
   pairedTreasuryReceiptId: number | null;
   pairedTreasuryReceiptStatus: string | null;
   pairedTreasuryApprovalStatus: string | null;
+  pairedTreasuryLedgerEntryIds: number[];
+  pairedTreasuryLedgerEntryTypes: string[];
 }
 
 export interface RawCashRemediationDataset {

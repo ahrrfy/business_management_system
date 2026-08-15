@@ -1,6 +1,6 @@
 /**
  * اختبارات cashDropService.createCashDrop — السحب النقديّ أثناء الوردية (drawer → treasury).
- * يغطّي: المسار السعيد (إيصالان + قيد CASH_HANDOVER بمفتاح CASH_DROP + حساب الدرج)، حدّ الدرج،
+ * يغطّي: المسار السعيد (إيصالان + قيد CASH_TRANSFER_OUT بمفتاح CASH_DROP + حساب الدرج)، حدّ الدرج،
  * الوردية المغلقة، غير المالك، المبلغ غير الموجب، السحوب المتعدّدة + التسلسل، المستلِم الاختياريّ،
  * والتكامل مع تقرير إقفال اليوم (دلو cashDrops + المتوقَّع/الفرق).
  */
@@ -34,37 +34,105 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: ADMIN, openId: "local_admin", name: "المدير العام", role: "admin", loginMethod: "local" },
-    { id: MANAGER1, openId: "local_mgr1", name: "مدير الفرع١", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: CASHIER1, openId: "local_c1", name: "كاشير١", role: "cashier", loginMethod: "local", branchId: 1 },
-    { id: CASHIER2, openId: "local_c2", name: "كاشير٢", role: "cashier", loginMethod: "local", branchId: 1 },
-    { id: MANAGER2, openId: "local_mgr2", name: "مدير الفرع٢", role: "manager", loginMethod: "local", branchId: 2 },
-    { id: DISABLED_MANAGER, openId: "local_mgr_off", name: "مدير معطَّل", role: "manager", loginMethod: "local", branchId: 1, isActive: false },
+    {
+      id: ADMIN,
+      openId: "local_admin",
+      name: "المدير العام",
+      role: "admin",
+      loginMethod: "local",
+    },
+    {
+      id: MANAGER1,
+      openId: "local_mgr1",
+      name: "مدير الفرع١",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: CASHIER1,
+      openId: "local_c1",
+      name: "كاشير١",
+      role: "cashier",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: CASHIER2,
+      openId: "local_c2",
+      name: "كاشير٢",
+      role: "cashier",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: MANAGER2,
+      openId: "local_mgr2",
+      name: "مدير الفرع٢",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 2,
+    },
+    {
+      id: DISABLED_MANAGER,
+      openId: "local_mgr_off",
+      name: "مدير معطَّل",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+      isActive: false,
+    },
   ]);
   await d.insert(s.receipts).values([
     {
-      branchId: 1, direction: "IN", amount: "100000000", paymentMethod: "CASH",
-      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
-      referenceNumber: "TEST-TREASURY-FUND-B1", createdBy: ADMIN,
+      branchId: 1,
+      direction: "IN",
+      amount: "100000000",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-B1",
+      createdBy: ADMIN,
     },
     {
-      branchId: 2, direction: "IN", amount: "100000000", paymentMethod: "CASH",
-      cashBucket: "TREASURY", status: "COMPLETED", approvalStatus: "APPROVED",
-      referenceNumber: "TEST-TREASURY-FUND-B2", createdBy: ADMIN,
+      branchId: 2,
+      direction: "IN",
+      amount: "100000000",
+      paymentMethod: "CASH",
+      cashBucket: "TREASURY",
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      referenceNumber: "TEST-TREASURY-FUND-B2",
+      createdBy: ADMIN,
     },
   ]);
 }
 
 /** إيصال درجٍ نقديّ (لتغذية رصيد الدرج) — بلا فاتورة (رصيد الدرج لا يبالي بالتصنيف). */
-async function drawerReceipt(shiftId: number, direction: "IN" | "OUT", amount: string, createdBy = CASHIER1) {
+async function drawerReceipt(
+  shiftId: number,
+  direction: "IN" | "OUT",
+  amount: string,
+  createdBy = CASHIER1,
+) {
   await db().insert(s.receipts).values({
-    branchId: 1, shiftId, direction, amount, paymentMethod: "CASH", cashBucket: "DRAWER",
-    status: "COMPLETED", createdBy,
+    branchId: 1,
+    shiftId,
+    direction,
+    amount,
+    paymentMethod: "CASH",
+    cashBucket: "DRAWER",
+    status: "COMPLETED",
+    createdBy,
   });
 }
 
 async function receiptsByRef(ref: string) {
-  return db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, ref));
+  return db()
+    .select()
+    .from(s.receipts)
+    .where(eq(s.receipts.referenceNumber, ref));
 }
 
 beforeEach(async () => {
@@ -72,12 +140,21 @@ beforeEach(async () => {
 });
 
 describe("createCashDrop — المسار السعيد والأثر", () => {
-  it("إيصالان (OUT درج / IN خزينة) + قيد CASH_HANDOVER بمفتاح CASH_DROP + حساب الدرج", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+  it("إيصالان (OUT درج / IN خزينة معلّق) + قيد CASH_TRANSFER_OUT إلى عهدة الطريق", async () => {
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
     await drawerReceipt(shiftId, "IN", "80000.00"); // بيع نقديّ ⇒ الدرج 180000
 
     const res = await createCashDrop(
-      { shiftId, amount: "120000", dropTo: MANAGER1, notes: "تقليل نقد الدرج", clientRequestId: "crid-happy" },
+      {
+        shiftId,
+        amount: "120000",
+        dropTo: MANAGER1,
+        notes: "تقليل نقد الدرج",
+        clientRequestId: "crid-happy",
+      },
       { userId: CASHIER1, branchId: 1, role: "cashier" },
     );
 
@@ -98,7 +175,10 @@ describe("createCashDrop — المسار السعيد والأثر", () => {
     expect(inn.status).toBe("PENDING");
     expect(inn.createdBy).toBe(MANAGER1); // يُنسَب الاستلام للمستلِم
 
-    const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "CASH_HANDOVER" as any));
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "CASH_TRANSFER_OUT" as any));
     expect(entries).toHaveLength(1);
     expect(entries[0].dedupeKey).toBe("CASH_DROP:crid-happy");
     expect(entries[0].amount).toBe("120000.00");
@@ -106,11 +186,20 @@ describe("createCashDrop — المسار السعيد والأثر", () => {
   });
 
   it("السحب يُنقِص المتوقَّع، والمعدود يُنقِص بالمثل ⇒ الفرق صفر (لا عجز وهميّ)", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
     await drawerReceipt(shiftId, "IN", "80000.00"); // الدرج 180000
-    await createCashDrop({ shiftId, amount: "120000", dropTo: MANAGER1 }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    await createCashDrop(
+      { shiftId, amount: "120000", dropTo: MANAGER1 },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     // بعد السحب الدرج فيه 60000؛ العدّ يطابقه.
-    const r = await closeShift({ shiftId, countedCash: "60000" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const r = await closeShift(
+      { shiftId, countedCash: "60000" },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     expect(r.expectedCash).toBe("60000.00"); // 100000 + 80000 − 120000
     expect(r.variance).toBe("0.00");
   });
@@ -118,98 +207,213 @@ describe("createCashDrop — المسار السعيد والأثر", () => {
 
 describe("createCashDrop — الحراسات", () => {
   it("حدّ الدرج: سحبٌ أكثر من النقد المتاح ⇒ PRECONDITION_FAILED بلا إيصالات", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "50000" }, { userId: CASHIER1, branchId: 1 });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "50000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
     await drawerReceipt(shiftId, "IN", "10000.00"); // الدرج 60000
     await expect(
-      createCashDrop({ shiftId, amount: "70000" }, { userId: CASHIER1, branchId: 1, role: "cashier" }),
+      createCashDrop(
+        { shiftId, amount: "70000" },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-    const all = await db().select().from(s.receipts).where(and(eq(s.receipts.shiftId, shiftId), like(s.receipts.referenceNumber, "CD-%")));
+    const all = await db()
+      .select()
+      .from(s.receipts)
+      .where(
+        and(
+          eq(s.receipts.shiftId, shiftId),
+          like(s.receipts.referenceNumber, "CD-%"),
+        ),
+      );
     expect(all).toHaveLength(0);
   });
 
   it("وردية مغلقة ⇒ BAD_REQUEST", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
-    await closeShift({ shiftId, countedCash: "100000" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await closeShift(
+      { shiftId, countedCash: "100000" },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     await expect(
-      createCashDrop({ shiftId, amount: "1000" }, { userId: CASHIER1, branchId: 1, role: "cashier" }),
+      createCashDrop(
+        { shiftId, amount: "1000" },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
     ).rejects.toThrow(/مغلقة/);
   });
 
   it("كاشير آخر يسحب من وردية زميله ⇒ FORBIDDEN", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
     await expect(
-      createCashDrop({ shiftId, amount: "1000" }, { userId: CASHIER2, branchId: 1, role: "cashier" }),
+      createCashDrop(
+        { shiftId, amount: "1000" },
+        { userId: CASHIER2, branchId: 1, role: "cashier" },
+      ),
     ).rejects.toThrow(/وردية موظّف آخر/);
   });
 
   it("مبلغ صفري/سالب ⇒ BAD_REQUEST", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
-    await expect(createCashDrop({ shiftId, amount: "0" }, { userId: CASHIER1, branchId: 1, role: "cashier" })).rejects.toThrow(/موجباً/);
-    await expect(createCashDrop({ shiftId, amount: "-5" }, { userId: CASHIER1, branchId: 1, role: "cashier" })).rejects.toThrow(/موجباً/);
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await expect(
+      createCashDrop(
+        { shiftId, amount: "0" },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
+    ).rejects.toThrow(/موجباً/);
+    await expect(
+      createCashDrop(
+        { shiftId, amount: "-5" },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
+    ).rejects.toThrow(/موجباً/);
   });
 
   it("المستلِم يجب أن يكون مديراً/إدارياً نشطاً", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
-    await expect(createCashDrop({ shiftId, amount: "1000", dropTo: CASHIER2 }, { userId: CASHIER1, branchId: 1, role: "cashier" })).rejects.toThrow(/مديراً أو إدارياً/);
-    await expect(createCashDrop({ shiftId, amount: "1000", dropTo: DISABLED_MANAGER }, { userId: CASHIER1, branchId: 1, role: "cashier" })).rejects.toThrow(/غير موجود أو معطّل/);
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    await expect(
+      createCashDrop(
+        { shiftId, amount: "1000", dropTo: CASHIER2 },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
+    ).rejects.toThrow(/مديراً أو إدارياً/);
+    await expect(
+      createCashDrop(
+        { shiftId, amount: "1000", dropTo: DISABLED_MANAGER },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
+    ).rejects.toThrow(/غير موجود أو معطّل/);
     // بلا مستلِم ⇒ مرفوض؛ لا يجوز للكاشير إنشاء استلام خزينة من طرف واحد.
     await expect(
-      createCashDrop({ shiftId, amount: "1000" }, { userId: CASHIER1, branchId: 1, role: "cashier" }),
+      createCashDrop(
+        { shiftId, amount: "1000" },
+        { userId: CASHIER1, branchId: 1, role: "cashier" },
+      ),
     ).rejects.toThrow(/تحديد مدير مستلم/);
   });
 });
 
 describe("createCashDrop — التسلسل والتراكم", () => {
   it("سحبان في نفس الفرع/اليوم ⇒ 0001 ثم 0002، والدرج يتناقص تراكمياً", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
-    const d1 = await createCashDrop({ shiftId, amount: "20000", dropTo: MANAGER1 }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const d1 = await createCashDrop(
+      { shiftId, amount: "20000", dropTo: MANAGER1 },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     expect(d1.dropNumber).toMatch(/-0001$/);
     expect(d1.drawerAfter).toBe("80000.00");
-    const d2 = await createCashDrop({ shiftId, amount: "30000", dropTo: MANAGER1 }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const d2 = await createCashDrop(
+      { shiftId, amount: "30000", dropTo: MANAGER1 },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     expect(d2.dropNumber).toMatch(/-0002$/);
     expect(d2.drawerBefore).toBe("80000.00");
     expect(d2.drawerAfter).toBe("50000.00");
   });
 
   it("admin يسحب من أي فرع (مرور حرّ)", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
-    const res = await createCashDrop({ shiftId, amount: "5000", dropTo: MANAGER1 }, { userId: ADMIN, branchId: 2, role: "admin" });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const res = await createCashDrop(
+      { shiftId, amount: "5000", dropTo: MANAGER1 },
+      { userId: ADMIN, branchId: 2, role: "admin" },
+    );
     expect(res.dropNumber).toMatch(/^CD-1-/);
   });
 });
 
 describe("createCashDrop — idempotency وترقيمٌ صلب (مراجعة Codex)", () => {
   it("نفس clientRequestId ⇒ إعادةُ تشغيل: لا سحب ثانٍ ولا حركةُ نقدٍ مزدوجة", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
     const crid = "crid-drop-idem-1";
-    const first = await createCashDrop({ shiftId, amount: "30000", dropTo: MANAGER1, clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const first = await createCashDrop(
+      { shiftId, amount: "30000", dropTo: MANAGER1, clientRequestId: crid },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     expect(first.idempotent).toBeFalsy();
     expect(first.drawerAfter).toBe("70000.00");
 
-    const second = await createCashDrop({ shiftId, amount: "30000", dropTo: MANAGER1, clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const second = await createCashDrop(
+      { shiftId, amount: "30000", dropTo: MANAGER1, clientRequestId: crid },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     expect(second.idempotent).toBe(true);
     expect(second.dropNumber).toBe(first.dropNumber);
     expect(second.drawerAfter).toBe("70000.00"); // لم يُخصَم ثانيةً (لولا الحماية لكان 40000)
 
     // إيصال OUT واحد فقط + قيد واحد بهذا المفتاح.
-    const outs = await db().select().from(s.receipts).where(and(eq(s.receipts.shiftId, shiftId), eq(s.receipts.direction, "OUT")));
+    const outs = await db()
+      .select()
+      .from(s.receipts)
+      .where(
+        and(eq(s.receipts.shiftId, shiftId), eq(s.receipts.direction, "OUT")),
+      );
     expect(outs).toHaveLength(1);
-    const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `CASH_DROP:${crid}`));
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `CASH_DROP:${crid}`));
     expect(entries).toHaveLength(1);
   });
 
   it("مفتاح idempotency مستعمَل لوردية أخرى ⇒ CONFLICT", async () => {
-    const a = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
-    const b = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER2, branchId: 1 });
+    const a = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
+    const b = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER2, branchId: 1 },
+    );
     const crid = "crid-cross-shift";
-    await createCashDrop({ shiftId: a.shiftId, amount: "10000", dropTo: MANAGER1, clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    await createCashDrop(
+      {
+        shiftId: a.shiftId,
+        amount: "10000",
+        dropTo: MANAGER1,
+        clientRequestId: crid,
+      },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     await expect(
-      createCashDrop({ shiftId: b.shiftId, amount: "10000", dropTo: MANAGER1, clientRequestId: crid }, { userId: CASHIER2, branchId: 1, role: "cashier" }),
+      createCashDrop(
+        {
+          shiftId: b.shiftId,
+          amount: "10000",
+          dropTo: MANAGER1,
+          clientRequestId: crid,
+        },
+        { userId: CASHIER2, branchId: 1, role: "cashier" },
+      ),
     ).rejects.toThrow(/idempotency/);
   });
 
   it("مفتاح idempotency بمبلغ أو مستلِم مختلف ⇒ CONFLICT بدل نجاحٍ زائف", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
     const crid = "crid-fingerprint";
     await createCashDrop(
       { shiftId, amount: "10000", dropTo: MANAGER1, clientRequestId: crid },
@@ -229,29 +433,63 @@ describe("createCashDrop — idempotency وترقيمٌ صلب (مراجعة Cod
       ),
     ).rejects.toThrow(/idempotency/);
 
-    const outs = await db().select().from(s.receipts).where(and(eq(s.receipts.shiftId, shiftId), eq(s.receipts.direction, "OUT")));
+    const outs = await db()
+      .select()
+      .from(s.receipts)
+      .where(
+        and(eq(s.receipts.shiftId, shiftId), eq(s.receipts.direction, "OUT")),
+      );
     expect(outs).toHaveLength(1);
   });
 
   it("يتجاهل مرجع CD- حرّاً غير رقميّ عند الترقيم (لا NaN)", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
     const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     // مرجعٌ حرّ يشبه بادئة السحب لكن بلاحقةٍ غير رقمية (سند/بطاقة أُدخِل يدوياً).
-    await db().insert(s.receipts).values({
-      branchId: 1, shiftId, direction: "OUT", amount: "1000.00", paymentMethod: "CASH", cashBucket: "DRAWER",
-      status: "COMPLETED", referenceNumber: `CD-1-${ymd}-ABC`, createdBy: CASHIER1,
-    });
-    const d = await createCashDrop({ shiftId, amount: "5000", dropTo: MANAGER1, clientRequestId: "crid-num" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    await db()
+      .insert(s.receipts)
+      .values({
+        branchId: 1,
+        shiftId,
+        direction: "OUT",
+        amount: "1000.00",
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+        status: "COMPLETED",
+        referenceNumber: `CD-1-${ymd}-ABC`,
+        createdBy: CASHIER1,
+      });
+    const d = await createCashDrop(
+      {
+        shiftId,
+        amount: "5000",
+        dropTo: MANAGER1,
+        clientRequestId: "crid-num",
+      },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
     expect(d.dropNumber).toBe(`CD-1-${ymd}-0001`); // ليس CD-…-NaN
   });
 });
 
 describe("createCashDrop — تكامل تقرير إقفال اليوم", () => {
   it("السحب يظهر في دلو cashDrops ويُنقِص المتوقَّع، والفرق صفر", async () => {
-    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const { shiftId } = await openShift(
+      { branchId: 1, openingBalance: "100000" },
+      { userId: CASHIER1, branchId: 1 },
+    );
     await drawerReceipt(shiftId, "IN", "50000.00"); // مقبوضات ⇒ الدرج 150000
-    await createCashDrop({ shiftId, amount: "40000", dropTo: MANAGER1 }, { userId: CASHIER1, branchId: 1, role: "cashier" });
-    await closeShift({ shiftId, countedCash: "110000" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    await createCashDrop(
+      { shiftId, amount: "40000", dropTo: MANAGER1 },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
+    await closeShift(
+      { shiftId, countedCash: "110000" },
+      { userId: CASHIER1, branchId: 1, role: "cashier" },
+    );
 
     const res = await getDayCloseReconciliation({ date: DATE, branchId: 1 });
     const line = res.shifts.find((x) => x.shiftId === shiftId)!;

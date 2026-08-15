@@ -38,3 +38,4 @@ export { addAssetDocument, deleteAssetDocument } from "./assets/documents";
 export type { DepreciationRunResult } from "./assets/monthlyDepreciation";
 export { postMonthlyDepreciation } from "./assets/monthlyDepreciation";
 export { dashboard, custodyReport, disposalLog } from "./assets/reports";
+export { requestSupplierAssetSettlement } from "./assets/supplierSettlement";

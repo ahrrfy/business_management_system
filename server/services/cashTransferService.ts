@@ -7,6 +7,11 @@ import { and, desc, eq, gte, inArray, like, lte, or, sql } from "drizzle-orm";
 import { branches, cashTransfers, receipts, users } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "./accounting/postingEngine";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
@@ -228,11 +233,20 @@ export async function sendTransfer(
     // 9. قيد محاسبي CASH_TRANSFER_OUT.
     await postEntry(tx, {
       entryType: "CASH_TRANSFER_OUT",
+      postingIntent: createPostingIntent(
+        "CASH_TRANSFER_OUT_IN_TRANSIT",
+        "CASH_TRANSFER_OUT",
+        [
+          debitLine("CASH_IN_TRANSIT", amount),
+          creditLine("TREASURY_CASH", amount),
+        ],
+      ),
       branchId: input.fromBranchId,
       receiptId: sentReceiptId,
       amount,
       dedupeKey: `CT_OUT:${transferNumber}`,
       notes: input.notes ?? undefined,
+      createdBy: actor.userId,
     });
 
     // 10. تَسجيل idempotency.
@@ -297,7 +311,14 @@ export async function receiveTransfer(
     }
 
     const amount = money(t.amount);
+    const fromBranchId = Number(t.fromBranchId);
     const toBranchId = Number(t.toBranchId);
+    if (t.sentReceiptId == null) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "التحويل لا يملك إيصال إرسال موثقاً ولا يمكن استلامه",
+      });
+    }
 
     // 4. receipt IN في فرع المستلم.
     const recRes = await tx.insert(receipts).values({
@@ -326,13 +347,40 @@ export async function receiveTransfer(
       })
       .where(eq(cashTransfers.id, transferId));
 
+    // Clear the sender's in-transit asset into the interbranch due-from balance.
+    await postEntry(tx, {
+      entryType: "CASH_TRANSFER_OUT",
+      postingIntent: createPostingIntent(
+        "INTERBRANCH_CLEARING_OUT",
+        "CASH_TRANSFER_OUT",
+        [
+          debitLine("INTERBRANCH_CLEARING", amount),
+          creditLine("CASH_IN_TRANSIT", amount),
+        ],
+      ),
+      branchId: fromBranchId,
+      receiptId: Number(t.sentReceiptId),
+      amount,
+      dedupeKey: `CT_CLEAR_OUT:${t.transferNumber}`,
+      createdBy: actor.userId,
+    });
+
     // 6. قيد CASH_TRANSFER_IN.
     await postEntry(tx, {
       entryType: "CASH_TRANSFER_IN",
+      postingIntent: createPostingIntent(
+        "CASH_TRANSFER_IN_FROM_CLEARING",
+        "CASH_TRANSFER_IN",
+        [
+          debitLine("TREASURY_CASH", amount),
+          creditLine("INTERBRANCH_CLEARING", amount),
+        ],
+      ),
       branchId: toBranchId,
       receiptId: receivedReceiptId,
       amount,
       dedupeKey: `CT_IN:${t.transferNumber}`,
+      createdBy: actor.userId,
     });
 
     return { transferId, receivedReceiptId };
@@ -417,10 +465,19 @@ export async function cancelTransfer(
     // قيد معاكس (يُحيّد CT_OUT الأصلي عبر CT_IN معاكس بـdedupeKey مختلف).
     await postEntry(tx, {
       entryType: "CASH_TRANSFER_IN",
+      postingIntent: createPostingIntent(
+        "CASH_TRANSFER_IN_FROM_TRANSIT",
+        "CASH_TRANSFER_IN",
+        [
+          debitLine("TREASURY_CASH", amount),
+          creditLine("CASH_IN_TRANSIT", amount),
+        ],
+      ),
       branchId: fromBranchId,
       receiptId: reversalReceiptId,
       amount,
       dedupeKey: `CT_OUT_REV:${t.transferNumber}`,
+      createdBy: actor.userId,
       notes: `إلغاء — ${reason}`,
     });
 

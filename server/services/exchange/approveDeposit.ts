@@ -1,16 +1,19 @@
 // اعتماد إيداع الدولار المباشر المعلّق (SOD، تدقيق ٢٥/٧) — المعتمِد ≠ المُنشئ (admin مُستثنى).
 // قبل الاعتماد لا أثر إطلاقاً (deposit.ts يُنشئ العملية PENDING_APPROVAL بلا رفع رصيد/WAVG/قيد،
 // وrecomputeHouseFromLog يرشّح ACTIVE فيستثنيها). عند الاعتماد يُطبَّق الأثر كاملاً تحت قفل المحفظة:
-// WAVG + رفع الرصيد الدولاري + قيد EXCHANGE_DEPOSIT إعلاميّ، ثم تُعلَّم ACTIVE. يمنع تضخيم المحفظة
-// بدولارٍ لم يصل فعلاً (كان يُخلق أصلٌ بلا طرفٍ مقابلٍ مُدقَّق).
+// تتحقق الحيازة المادية المشتقة، ثم تخرجها بـWAVG إلى control الصيرفة وتُرحّل القيد، ثم تُعلَّم ACTIVE.
+// لا يُقبل سعر الطلب الحر كمصدر كلفة ولا يُنشأ دولار من العدم.
 import { TRPCError } from "@trpc/server";
-import Decimal from "decimal.js";
 import { and, asc, eq } from "drizzle-orm";
 import { exchangeHouses, exchangeTransactions } from "../../../drizzle/schema";
-import { adjustExchangeBalanceUsd, postEntry } from "../ledgerService";
-import { money, round2, toDbMoney } from "../money";
+import { postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import { money, toDbMoney } from "../money";
 import { requireDb, withTx, type Actor } from "../tx";
+import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, toDbRate } from "./helpers";
+import { allocateCarryingIqd, calculateSignedUsdMovement, deriveForeignCashUsdPosition, persistSignedUsdControl } from "./reverse";
+import { postExchangeControlReclassification } from "./controlClassification";
 
 /** إيداعات الدولار المعلّقة (بانتظار اعتماد ثانٍ) — طابور الاعتماد للراوتر/الواجهة. */
 export async function listPendingExchangeDeposits(exchangeHouseId?: number, restrictBranchId?: number | null) {
@@ -51,6 +54,23 @@ export async function approveExchangeDeposit(
   actor: Actor,
 ): Promise<{ txnId: number; txnNumber: string; status: "ACTIVE" }> {
   return withTx(async (tx) => {
+    const [preview] = await tx
+      .select({
+        exchangeHouseId: exchangeTransactions.exchangeHouseId,
+        branchId: exchangeTransactions.branchId,
+      })
+      .from(exchangeTransactions)
+      .where(eq(exchangeTransactions.id, txnId))
+      .limit(1);
+    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "عملية الصيرفة غير موجودة" });
+    if (preview.branchId == null) {
+      throw new TRPCError({ code: "CONFLICT", message: "إيداع الدولار المعلّق بلا فرع حيازة موثّق" });
+    }
+    const branchId = Number(preview.branchId);
+    // ترتيب الأقفال الثابت لكل writers/reversal: branch → house → transaction rows.
+    await lockBranchMonthCloseGate(tx, branchId);
+    const houseId = Number(preview.exchangeHouseId);
+    const house = await lockHouse(tx, houseId);
     const [txn] = await tx
       .select()
       .from(exchangeTransactions)
@@ -58,6 +78,9 @@ export async function approveExchangeDeposit(
       .for("update")
       .limit(1);
     if (!txn) throw new TRPCError({ code: "NOT_FOUND", message: "عملية الصيرفة غير موجودة" });
+    if (Number(txn.exchangeHouseId) !== houseId || Number(txn.branchId) !== branchId) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّرت أطراف إيداع الدولار أثناء الاعتماد — أعد المحاولة" });
+    }
     if (txn.status !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد إيداع دولار معلّق بهذا المعرّف" });
     }
@@ -73,33 +96,80 @@ export async function approveExchangeDeposit(
       throw new TRPCError({ code: "FORBIDDEN", message: "عملية الصيرفة تخصّ فرعاً آخر" });
     }
 
-    const houseId = Number(txn.exchangeHouseId);
-    const house = await lockHouse(tx, houseId);
     const amount = money(txn.usdAmount);
-    const rate = money(txn.exchangeRate);
+    const custody = await deriveForeignCashUsdPosition(tx, houseId, branchId);
+    if (amount.gt(custody.quantityUsd)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `الإيداع يتجاوز حيازة الدولار الفعلية (${custody.quantityUsd.toFixed(2)}$ متاح مقابل ${amount.toFixed(2)}$ مطلوب)`,
+      });
+    }
+    if (custody.wavgRate.lte(0)) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا توجد حيازة دولار فعلية بكلفة دفترية معلومة" });
+    }
+    const carryingIqd = allocateCarryingIqd(custody.carryingIqd, amount, custody.quantityUsd);
 
-    // تطبيق الأثر (نظير مسار الإيداع القديم، لكن الآن باعتماد ثانٍ): WAVG + رفع الرصيد الدولاري.
+    // الإيداع يخرج دولاراً مادياً ويزيد control الصيرفة؛ كل جانب يحتفظ بكلفته المستقلة عند عبور الصفر.
     const oldUsd = money(house.balanceUsd);
-    const oldRate = money(house.usdCostRate);
-    const newUsd = oldUsd.plus(amount);
-    const newCostBasis = oldUsd.times(oldRate).plus(amount.times(rate));
-    const newRate = newUsd.isZero() ? new Decimal(0) : newCostBasis.div(newUsd);
+    const oldCarrying = money(house.balanceUsdCarryingIqd);
+    const movement = calculateSignedUsdMovement(oldUsd, oldCarrying, amount, carryingIqd);
 
-    await adjustExchangeBalanceUsd(tx, houseId, amount);
-    await tx.update(exchangeHouses).set({ usdCostRate: toDbRate(newRate) }).where(eq(exchangeHouses.id, houseId));
+    await persistSignedUsdControl(tx, houseId, movement);
     await tx
       .update(exchangeTransactions)
-      .set({ status: "ACTIVE", balanceUsdAfter: toDbMoney(newUsd) })
+      .set({
+        status: "ACTIVE",
+        iqdAmount: toDbMoney(carryingIqd),
+        exchangeRate: toDbRate(custody.wavgRate),
+        fxDiff: toDbMoney(movement.fxGainIqd),
+        balanceUsdAfter: toDbMoney(movement.balanceUsd),
+      })
       .where(eq(exchangeTransactions.id, txnId));
 
-    // قيمة دينارية معادِلة إعلامية فقط (نظير قيد الرصيد الافتتاحي) — dedupeKey فريد يمنع الازدواج عند إعادة المحاولة.
     await postEntry(tx, {
       entryType: "EXCHANGE_DEPOSIT",
       branchId: txn.branchId != null ? Number(txn.branchId) : null,
       exchangeHouseId: houseId,
-      amount: round2(amount.times(rate)),
+      amount: carryingIqd,
       dedupeKey: `EXDEP:${txn.txnNumber}`,
       notes: txn.notes ?? "إيداع دولار مباشر (معتمَد)",
+      postingIntent: createPostingIntent(
+        "EXCHANGE_DEPOSIT_USD_CASH",
+        "EXCHANGE_DEPOSIT",
+        [debitLine("EXCHANGE_WALLET_USD", carryingIqd), creditLine("FOREIGN_CASH_USD", carryingIqd)],
+      ),
+      postingSourceComponents: {
+        roleDebits: { EXCHANGE_WALLET_USD: carryingIqd },
+        roleCredits: { FOREIGN_CASH_USD: carryingIqd },
+      },
+    });
+
+    if (!movement.fxGainIqd.isZero()) {
+      const fxAmount = movement.fxGainIqd.abs();
+      const fxComponents = movement.fxGainIqd.isPositive()
+        ? { roleDebits: { EXCHANGE_WALLET_USD: fxAmount }, roleCredits: { FX_GAIN: fxAmount } }
+        : { roleDebits: { FX_LOSS: fxAmount }, roleCredits: { EXCHANGE_WALLET_USD: fxAmount } };
+      await postEntry(tx, {
+        entryType: "EXCHANGE_FX_DIFF",
+        branchId: txn.branchId != null ? Number(txn.branchId) : null,
+        exchangeHouseId: houseId,
+        amount: movement.fxGainIqd,
+        dedupeKey: `EXDEP:FX:${txn.txnNumber}`,
+        notes: "فرق كلفة عند إيداع دولار فعلي",
+        postingSourceComponents: fxComponents,
+        postingIntent: movement.fxGainIqd.isPositive()
+          ? createPostingIntent("EXCHANGE_FX_GAIN", "EXCHANGE_FX_DIFF", [debitLine("EXCHANGE_WALLET_USD", fxAmount), creditLine("FX_GAIN", fxAmount)], fxComponents)
+          : createPostingIntent("EXCHANGE_FX_LOSS", "EXCHANGE_FX_DIFF", [debitLine("FX_LOSS", fxAmount), creditLine("EXCHANGE_WALLET_USD", fxAmount)], fxComponents),
+      });
+    }
+
+    await postExchangeControlReclassification(tx, {
+      exchangeHouseId: houseId,
+      currency: "USD",
+      beforeSignedIqd: oldCarrying,
+      afterSignedIqd: movement.balanceCarryingIqd,
+      sourceKey: txn.txnNumber,
+      notes: `تصنيف ذمة الصيرفة لإيداع الدولار ${txn.txnNumber}`,
     });
 
     return { txnId, txnNumber: txn.txnNumber, status: "ACTIVE" as const };

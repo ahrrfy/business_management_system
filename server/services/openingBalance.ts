@@ -12,13 +12,33 @@ import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { accountingEntries } from "../../drizzle/schema";
 import type { Tx } from "../db";
-import { shadowRepost } from "./accounting/shadowHook";
+import { getDoubleEntryRuntime } from "./accounting/journalStore";
 import { localTodayDate } from "./dateRange";
 import { postEntry } from "./ledgerService";
+import {
+  createPostingIntent,
+  signedPostingLines,
+} from "./accounting/postingEngine";
 import { money, round2, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
 
 export type OpeningDirection = "OWED_TO_US" | "OWED_BY_US";
+
+/**
+ * الأرصدة الافتتاحية مرجع قطعٍ تاريخي، وليست أداة تصحيح بعد بدء الدفتر المزدوج.
+ * القفل المشترك يسبق أي قراءة/تعديل للمصدر كي ينتظر انتقال OFF → SHADOW العملية
+ * الجارية، والعكس. بعد القطع يجب تسجيل الفرق بقيدٍ مصنف جديد يحفظ التاريخ.
+ */
+export async function assertLegacyOpeningMutable(tx: Tx): Promise<void> {
+  const runtime = await getDoubleEntryRuntime(tx);
+  if (runtime.mode !== "OFF") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "لا يمكن إنشاء أو تعديل أو حذف رصيد افتتاحي بعد بدء SHADOW/ACTIVE. سجّل التصحيح بقيد فرقٍ جديد ومصنف يحفظ لقطة القطع والتاريخ المحاسبي.",
+    });
+  }
+}
 
 /** تحقّق من صيغة المبلغ (غير سالب، منزلتان عشريتان). يرمي TRPCError عند الفساد (تصل رسالته للواجهة). */
 export function assertValidMagnitude(magnitude: string): void {
@@ -29,7 +49,6 @@ export function assertValidMagnitude(magnitude: string): void {
       message: "قيمة الرصيد الافتتاحي غير صالحة (رقم غير سالب، منزلتان عشريتان).",
     });
 }
-
 /**
  * القيمة الموقَّعة المخزَّنة في currentBalance وفق دلالة الطرف.
  *  - العميل: OWED_TO_US ⇒ موجب، OWED_BY_US ⇒ سالب.
@@ -67,6 +86,8 @@ export async function postOpeningEntry(
   amount: string,
   notes = "رصيد افتتاحي",
 ): Promise<void> {
+  await assertLegacyOpeningMutable(tx);
+  const signedAmount = money(amount);
   // يمرّ عبر postEntry (منفذ الدفتر الوحيد) لا بإدراجٍ مباشر: الإدراج المباشر كان يتجاوز
   // نقطةَ الحقن المركزية — حارس الفترة الموحَّد وخطّاف الدفتر المزدوج (P2) — فيسقط الرصيد
   // الافتتاحيّ من ميزان المراجعة بصمت. القيم أدناه مطابقةٌ حرفياً للإدراج السابق.
@@ -78,7 +99,14 @@ export async function postOpeningEntry(
     cost: money("0"),
     profit: money("0"),
     taxAmount: money("0"),
-    amount: money(amount),
+    amount: signedAmount,
+    postingIntent: createPostingIntent(
+      party === "CUSTOMER" ? "OPENING_CUSTOMER" : "OPENING_SUPPLIER",
+      "OPENING",
+      party === "CUSTOMER"
+        ? signedPostingLines("AR", "OPENING_EQUITY", signedAmount)
+        : signedPostingLines("OPENING_EQUITY", "AP", signedAmount),
+    ),
     // localTodayDate() يمنع انزياح OPENING ليوم سابق (عمود DATE على توقيت بغداد +٣).
     entryDate: localTodayDate(),
     notes,
@@ -119,6 +147,7 @@ export async function upsertOpeningEntry(
   newSigned: string,
   notes = "رصيد افتتاحي",
 ): Promise<{ delta: string }> {
+  await assertLegacyOpeningMutable(tx);
   const col = party === "CUSTOMER" ? accountingEntries.customerId : accountingEntries.supplierId;
   const existing = (
     await tx
@@ -140,15 +169,8 @@ export async function upsertOpeningEntry(
       await tx.delete(accountingEntries).where(eq(accountingEntries.id, existing.id));
     } else {
       await tx.update(accountingEntries).set({ amount: toDbMoney(target) }).where(eq(accountingEntries.id, existing.id));
-      // تغيّر المبلغ **بعد** الإدراج ⇒ أعِد بناء القيد المزدوج، وإلّا بقي على المبلغ القديم
-      // فخالف الدفتر بصمت. (هذا المسار الوحيد في النظام الذي يُعدّل مبلغ قيدٍ مُدرَج.)
-      await shadowRepost(tx, existing.id, {
-        entryType: "OPENING",
-        customerId: party === "CUSTOMER" ? partyId : null,
-        supplierId: party === "SUPPLIER" ? partyId : null,
-        amount: target,
-        entryDate: new Date(existing.entryDate as unknown as string),
-      });
+      // في OFF لا تُنشأ يومية جديدة ولا يُعاد بناء يومية دورة تاريخية. عند بدء دورة
+      // لاحقة تلتقط شهادة القطع الرصيد التشغيلي المحدّث، مع بقاء كل دورة قديمة كما أُقرت.
     }
   } else {
     // لا قيد سابق ⇒ أنشئ (postOpeningEntry يفحص فترة اليوم بنفسه).

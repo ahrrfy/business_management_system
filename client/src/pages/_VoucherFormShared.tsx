@@ -33,6 +33,11 @@ import {
   voucherCreateActionLabel,
   voucherCreateSuccessMessage,
 } from "@/components/vouchers/voucherUiPolicy";
+import {
+  isVoucherCategoryRoleCompatible,
+  UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES,
+  voucherCategoryRoleLabel,
+} from "@shared/voucherCategoryAccounting";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -111,6 +116,12 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     const list = categories.data ?? [];
     return list.filter((c) => c.direction === "BOTH" || c.direction === direction);
   }, [categories.data, direction]);
+  const selectedCategory = categoryOptions.find(
+    (category) => Number(category.id) === Number(voucherCategoryId),
+  );
+  const selectedCategoryReady =
+    selectedCategory != null &&
+    isVoucherCategoryRoleCompatible(selectedCategory.direction, selectedCategory.postingRole);
 
   // عميل/مورّد المُختار (لمعاينة الرَصيد).
   const customerData = trpc.customers.get.useQuery(
@@ -280,6 +291,12 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     if (!description.trim()) return "وصف السند مطلوب.";
     if (partyType === "CUSTOMER" && !customerId) return "اختر العميل المرتبط بالسند.";
     if (partyType === "SUPPLIER" && !supplierId) return "اختر المورّد المرتبط بالسند.";
+    if (partyType === "OTHER" && voucherCategoryId === "") {
+      return "فئة محاسبية معيّنة إلزامية لسندات «أخرى».";
+    }
+    if (partyType === "OTHER" && !selectedCategoryReady) {
+      return "الفئة المختارة بلا حساب مقابل صالح؛ عيّن الحساب من إدارة الفئات أولاً.";
+    }
     if (method === "TRANSFER" && !referenceNumber.trim()) {
       return "الرقم المرجعي إلزامي لطريقة الدفع «تحويل».";
     }
@@ -385,7 +402,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     if (direction === "IN") {
       const credit = partyType === "CUSTOMER" ? "ذمة عميل (تَنقص)"
         : partyType === "SUPPLIER" ? "ذمة مورّد (تَزيد)"
-        : "إيرادات متفرّقة";
+        : selectedCategoryReady
+          ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
+          : "اختر فئة محاسبية مهيأة";
       return [
         { side: "مَدين", account: `صندوق ${branchName} — ${cashBucketLabel}`, amount: a },
         { side: "دائن", account: credit, amount: a },
@@ -393,12 +412,14 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     }
     const debit = partyType === "CUSTOMER" ? "ذمة عميل (تَزيد)"
       : partyType === "SUPPLIER" ? "ذمة مورّد (تَنقص)"
-      : "مَصاريف متفرّقة";
+      : selectedCategoryReady
+        ? voucherCategoryRoleLabel(selectedCategory?.postingRole)
+        : "اختر فئة محاسبية مهيأة";
     return [
       { side: "مَدين", account: debit, amount: a },
       { side: "دائن", account: `صندوق ${branchName} — ${cashBucketLabel}`, amount: a },
     ];
-  }, [amountNum, branches.data, branchId, method, treasuryNotice, direction, partyType]);
+  }, [amountNum, branches.data, branchId, method, treasuryNotice, direction, partyType, selectedCategory, selectedCategoryReady]);
 
   return (
     <div className="space-y-4">
@@ -489,19 +510,40 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               </div>
             )}
             <div className="space-y-1 md:col-span-2">
-              <Label>فئة السند {direction === "OUT" ? "(مصروف)" : "(إيراد)"}</Label>
+              <Label>
+                فئة السند {direction === "OUT" ? "(مصروف)" : "(إيراد)"}
+                {partyType === "OTHER" ? " *" : ""}
+              </Label>
               <select
                 className={selectCls}
                 value={voucherCategoryId === "" ? "" : String(voucherCategoryId)}
                 onChange={(e) => setVoucherCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
               >
-                <option value="">— بلا فئة —</option>
+                <option value="">— اختر الفئة المحاسبية —</option>
                 {categoryOptions.map((c) => (
-                  <option key={Number(c.id)} value={Number(c.id)}>{c.name}</option>
+                  <option
+                    key={Number(c.id)}
+                    value={Number(c.id)}
+                    disabled={!isVoucherCategoryRoleCompatible(c.direction, c.postingRole)}
+                  >
+                    {c.name}
+                    {!isVoucherCategoryRoleCompatible(c.direction, c.postingRole)
+                      ? (UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES as readonly string[]).includes(c.name)
+                        ? " — تحتاج مساراً تخصصياً"
+                        : " — غير مهيأة محاسبياً"
+                      : ` — ${voucherCategoryRoleLabel(c.postingRole)}`}
+                  </option>
                 ))}
               </select>
-              <p className="text-[11px] text-muted-foreground">
-                موصى به — يُفتح بها تَقارير «مَصاريف حسب الفئة» و«إيرادات حسب الفئة».{" "}
+              <p className={cn(
+                "text-[11px]",
+                partyType === "OTHER" && !selectedCategoryReady
+                  ? "text-amber-800 font-medium"
+                  : "text-muted-foreground",
+              )}>
+                {partyType === "OTHER"
+                  ? "إلزامية: تحدد الحساب المقابل الذي سيظهر في دفتر الأستاذ. "
+                  : "اختيارية للتقارير؛ الذمة هي الحساب المقابل محاسبياً. "}
                 <Link href="/voucher-categories" className="underline">إدارة الفئات</Link>
               </p>
             </div>

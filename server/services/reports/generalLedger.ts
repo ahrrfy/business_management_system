@@ -6,7 +6,7 @@
  * من مرة، ثم نربط الحدث المالي بمستنده الأصلي للتدقيق.
  */
 import { TRPCError } from "@trpc/server";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   accounts,
   doubleEntrySettings,
@@ -21,7 +21,9 @@ export type BalanceSide = "DEBIT" | "CREDIT" | "ZERO";
 
 export interface GeneralLedgerRow {
   journalId: number;
-  entryId: number;
+  entryId: number | null;
+  sourceType: "ACCOUNTING_ENTRY" | "SHADOW_OPENING";
+  postingProfile: string | null;
   entryDate: string;
   entryType: string;
   branchId: number | null;
@@ -48,7 +50,9 @@ export interface GeneralLedgerRow {
 
 export interface GeneralLedgerResult {
   mode: DoubleEntryMode;
+  cycleId: string | null;
   shadowStartedAt: string | null;
+  availableFrom: string | null;
   from: string;
   to: string;
   branchId: number | null;
@@ -92,6 +96,18 @@ function timestampText(value: Date | string | null | undefined): string | null {
   if (!value) return null;
   if (typeof value === "string") return value.slice(0, 19).replace("T", " ");
   return value.toISOString().slice(0, 19).replace("T", " ");
+}
+
+function baghdadYmd(value: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Baghdad",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type: "year" | "month" | "day") =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 function balanceView(value: ReturnType<typeof money>): {
@@ -145,15 +161,49 @@ export async function getGeneralLedger(input: {
   const [setting] = await db
     .select({
       mode: doubleEntrySettings.mode,
+      cycleId: doubleEntrySettings.shadowCycleId,
       shadowStartedAt: doubleEntrySettings.shadowStartedAt,
     })
     .from(doubleEntrySettings)
     .limit(1);
   const mode = (setting?.mode as DoubleEntryMode | undefined) ?? "OFF";
+  const cycleId = setting?.cycleId ?? "";
+  const availableFrom = setting?.shadowStartedAt
+    ? baghdadYmd(setting.shadowStartedAt)
+    : null;
+  if (cycleId && availableFrom && input.from < availableFrom) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `دفتر الأستاذ متاح من ${availableFrom}؛ لا يشمل أرباحاً وخسائر قبل تاريخ القطع.`,
+    });
+  }
+  if (cycleId && input.branchId != null) {
+    const [globalOpening] = await db
+      .select({ id: journalEntries.id })
+      .from(journalEntries)
+      .where(
+        and(
+          eq(journalEntries.cycleId, cycleId),
+          eq(journalEntries.sourceType, "SHADOW_OPENING"),
+          isNull(journalEntries.branchId),
+        ),
+      )
+      .limit(1);
+    if (globalOpening) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "هذه الدورة تحمل رأس افتتاح عالمياً للذمم/حقوق الملكية؛ دفتر الأستاذ متاح للشركة كلها فقط، وأي رأس غير POSTED يُعالج قبل الاعتماد ولا يجوز إخفاؤه بتقرير فرع ناقص.",
+      });
+    }
+  }
   const limit = Math.min(Math.max(input.limit ?? 200, 1), 2000);
   const offset = Math.max(input.offset ?? 0, 0);
   const branchClause =
     input.branchId == null ? sql`` : sql` AND je.branchId = ${input.branchId}`;
+  const availabilityClause = availableFrom
+    ? sql` AND je.entryDate >= ${availableFrom}`
+    : sql``;
 
   const [openingRow] = rowsOf<{ balance: string | null }>(
     await db.execute(sql`
@@ -161,8 +211,10 @@ export async function getGeneralLedger(input: {
       FROM journalLines jl
       INNER JOIN journalEntries je ON je.id = jl.journalId
       WHERE je.status = 'POSTED'
+        AND je.cycleId = ${cycleId}
+        ${availabilityClause}
         AND jl.role = ${account.systemRole}
-        AND je.entryDate < ${input.from}
+        AND (je.sourceType = 'SHADOW_OPENING' OR je.entryDate < ${input.from})
         ${branchClause}
     `),
   );
@@ -183,7 +235,10 @@ export async function getGeneralLedger(input: {
         FROM journalEntries je
         INNER JOIN journalLines jl ON jl.journalId = je.id
         WHERE je.status = 'POSTED'
+          AND je.cycleId = ${cycleId}
+          ${availabilityClause}
           AND jl.role = ${account.systemRole}
+          AND je.sourceType <> 'SHADOW_OPENING'
           AND je.entryDate >= ${input.from}
           AND je.entryDate <= ${input.to}
           ${branchClause}
@@ -201,11 +256,13 @@ export async function getGeneralLedger(input: {
         SELECT
           je.id AS journalId,
           je.entryId AS entryId,
+          je.sourceType AS sourceType,
+          je.postingProfile AS postingProfile,
           DATE_FORMAT(je.entryDate, '%Y-%m-%d') AS entryDate,
-          ae.entryType AS entryType,
+          COALESCE(ae.entryType, je.sourceType) AS entryType,
           je.branchId AS branchId,
           b.name AS branchName,
-          ae.notes AS notes,
+          COALESCE(ae.notes, 'رصيد افتتاح دورة الدفتر المزدوج') AS notes,
           SUM(jl.debit) AS debit,
           SUM(jl.credit) AS credit,
           ae.invoiceId AS invoiceId,
@@ -219,11 +276,11 @@ export async function getGeneralLedger(input: {
           s.name AS supplierName,
           ae.createdBy AS createdBy,
           COALESCE(u.name, ae.createdByNameSnapshot) AS createdByName,
-          ae.dedupeKey AS dedupeKey,
-          DATE_FORMAT(ae.createdAt, '%Y-%m-%d %H:%i:%s') AS createdAt
+          COALESCE(ae.dedupeKey, je.sourceKey) AS dedupeKey,
+          DATE_FORMAT(COALESCE(ae.createdAt, je.createdAt), '%Y-%m-%d %H:%i:%s') AS createdAt
         FROM journalEntries je
         INNER JOIN journalLines jl ON jl.journalId = je.id
-        INNER JOIN accountingEntries ae ON ae.id = je.entryId
+        LEFT JOIN accountingEntries ae ON ae.id = je.entryId
         LEFT JOIN branches b ON b.id = je.branchId
         LEFT JOIN invoices i ON i.id = ae.invoiceId
         LEFT JOIN receipts r ON r.id = ae.receiptId
@@ -231,12 +288,15 @@ export async function getGeneralLedger(input: {
         LEFT JOIN suppliers s ON s.id = ae.supplierId
         LEFT JOIN users u ON u.id = ae.createdBy
         WHERE je.status = 'POSTED'
+          AND je.cycleId = ${cycleId}
+          ${availabilityClause}
           AND jl.role = ${account.systemRole}
+          AND je.sourceType <> 'SHADOW_OPENING'
           AND je.entryDate >= ${input.from}
           AND je.entryDate <= ${input.to}
           ${branchClause}
         GROUP BY
-          je.id, je.entryId, je.entryDate, ae.entryType, je.branchId, b.name,
+          je.id, je.entryId, je.sourceType, je.postingProfile, je.entryDate, ae.entryType, je.branchId, b.name,
           ae.notes, ae.invoiceId, i.invoiceNumber, ae.purchaseOrderId,
           ae.receiptId, r.voucherNumber, ae.customerId, c.name, ae.supplierId,
           s.name, ae.createdBy, u.name, ae.createdByNameSnapshot, ae.dedupeKey,
@@ -265,7 +325,9 @@ export async function getGeneralLedger(input: {
     const running = balanceView(openingSigned.add(money(row.periodRunning)));
     return {
       journalId: Number(row.journalId),
-      entryId: Number(row.entryId),
+      entryId: row.entryId == null ? null : Number(row.entryId),
+      sourceType: row.sourceType,
+      postingProfile: row.postingProfile ?? null,
       entryDate: String(row.entryDate),
       entryType: String(row.entryType),
       branchId: row.branchId == null ? null : Number(row.branchId),
@@ -296,16 +358,21 @@ export async function getGeneralLedger(input: {
     input.branchId == null
       ? sql``
       : sql` AND ${journalEntries.branchId} = ${input.branchId}`;
+  const gapAvailabilityClause = availableFrom
+    ? sql` AND ${journalEntries.entryDate} >= ${availableFrom}`
+    : sql``;
   const [gapRow] = rowsOf<{
     openingCount: number | string;
     periodCount: number | string;
   }>(
     await db.execute(sql`
       SELECT
-        SUM(CASE WHEN ${journalEntries.entryDate} < ${input.from} THEN 1 ELSE 0 END) AS openingCount,
-        SUM(CASE WHEN ${journalEntries.entryDate} >= ${input.from} THEN 1 ELSE 0 END) AS periodCount
+        SUM(CASE WHEN ${journalEntries.sourceType} = 'SHADOW_OPENING' OR ${journalEntries.entryDate} < ${input.from} THEN 1 ELSE 0 END) AS openingCount,
+        SUM(CASE WHEN ${journalEntries.sourceType} <> 'SHADOW_OPENING' AND ${journalEntries.entryDate} >= ${input.from} THEN 1 ELSE 0 END) AS periodCount
       FROM ${journalEntries}
       WHERE ${journalEntries.status} = 'UNMAPPED'
+        AND ${journalEntries.cycleId} = ${cycleId}
+        ${gapAvailabilityClause}
         AND ${journalEntries.entryDate} <= ${input.to}
         ${gapBranchClause}
     `),
@@ -316,7 +383,9 @@ export async function getGeneralLedger(input: {
 
   return {
     mode,
+    cycleId: setting?.cycleId ?? null,
     shadowStartedAt: timestampText(setting?.shadowStartedAt),
+    availableFrom,
     from: input.from,
     to: input.to,
     branchId: input.branchId ?? null,

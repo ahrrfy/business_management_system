@@ -2,7 +2,7 @@
 
 > **للوكلاء المنفّذين:** المهارة المُلزِمة لكل شريحة: `build-slice` (عقد → كتّاب متوازون → مراجعة عدائية عبر `review-module` → كشف نواقص → إصلاح → تكامل → بوّابة DoD). الخطوات بصيغة مربّعات شطب `- [ ]`. **لا تُعَدّ شريحةٌ منجزةً ما لم يكن `pass === true`.**
 
-**التاريخ:** ١١ أغسطس ٢٠٢٦ · **الحالة:** مُعتمَدة للتنفيذ من ش٠ · **المالك:** جلسة `double-entry-p2`
+**التاريخ:** ١١ أغسطس ٢٠٢٦ · **آخر تحديث:** ١٦ أغسطس ٢٠٢٦ · **الحالة:** مكتملة محلياً ومتحقَّقة ١٠٠٪ · **المالك:** جلسة `double-entry-p2-final`
 
 ---
 
@@ -22,18 +22,18 @@ Drizzle ORM (mysql2) · MySQL 8 · decimal.js عبر `server/services/money.ts` 
 
 ## الحقائق المُتحقَّقة من الكود (أساس الخطة — لا تُعِد اكتشافها)
 
-| الحقيقة | الموضع | الأثر على الخطة |
-|---|---|---|
-| منفذ كتابة الدفتر **واحد** | `postEntry(tx, e: EntryInput)` — [ledgerService.ts:79](../server/services/ledgerService.ts#L79) | التوصيل = تعديل دالّةٍ واحدة، لا ٧٤ راوتراً |
-| **تسريبٌ يتجاوز المنفذ** | `postOpeningEntry` يُدرج مباشرةً — [openingBalance.ts:69](../server/services/openingBalance.ts#L69) | **ش٠ تُصلحه أولاً**، وإلّا فات الخطّافَ الرصيدُ الافتتاحيّ صامتاً. ⚠️ **ليس عِلّةً حيّة**: الحارس متّسق (`assertPeriodOpen(localTodayDate())` و`entryDate = localTodayDate()` — نفس التاريخ). تجاوزٌ بنيويّ يصير عِلّةً **لحظة تركيب الخطّاف** فقط |
-| **القيد ليس ملحقيّاً بالكامل** | `upsertOpeningEntry` **يُعدّل** ([:137](../server/services/openingBalance.ts#L137)) و**يحذف** ([:135](../server/services/openingBalance.ts#L135)) صفوف `accountingEntries` | **يُبطل افتراض «الدفتر ملحقيّ»**. بلا علاج: الحذف يُفشله FK، والتعديل يترك قيداً مزدوجاً **بائتاً يخالف الدفتر**. العلاج: `ON DELETE CASCADE` + `refreshJournal` عند التعديل (ش٠/ش١) |
-| `EntryType` = **٣٢ نوعاً** | [ledgerService.ts:8-50](../server/services/ledgerService.ts#L8) | أُضيف `DELIVERY_FEE_HELD`؛ المتبقّي **٢٦** بعد الخرائط الستّ الحالية |
-| المُخطَّط = **٦** فقط | `MAPPED_ENTRY_TYPES` — [postingEngine.ts:78](../server/services/accounting/postingEngine.ts#L78) | ش٢ تُكمِل الـ٢٦ على ٣ دفعات حسب الصعوبة |
-| المحرّك **نقيّ لا يكتب** | [postingEngine.ts:1-3](../server/services/accounting/postingEngine.ts#L1) | لا يحتاج إعادة كتابة — يحتاج **موصِّلاً** فقط |
-| يرمي `UnmappedEntryTypeError` على غير المُخطَّط | [postingEngine.ts:57](../server/services/accounting/postingEngine.ts#L57) | **خطر قاتل**: رميةٌ داخل معاملة البيع = ROLLBACK للفاتورة ⇒ الخطّاف يجب أن يبتلعها في SHADOW |
-| `assertPeriodOpen` مطبَّق أصلاً | [ledgerService.ts:81](../server/services/ledgerService.ts#L81) | القيد المزدوج يرث حماية الفترة مجّاناً |
-| شجرة الحسابات موجودة بـ`systemRole` فريد | `accounts` — [schema.ts:4743](../drizzle/schema.ts#L4743) | لا حاجة لجدولٍ جديدٍ للحسابات |
-| مطابقةٌ ذاتيةٌ قائمة (٥ دوال) | [reconcileService.ts](../server/services/reconcileService.ts) + شاشة `Reconcile.tsx` | ش٤ **تُضيف إليها** لا تبني بديلاً |
+| الحقيقة                                         | الموضع                                                                                                                                                                     | الأثر على الخطة                                                                                                                                                                                                                                    |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| منفذ كتابة الدفتر **واحد**                      | `postEntry(tx, e: EntryInput)` — [ledgerService.ts:79](../server/services/ledgerService.ts#L79)                                                                            | التوصيل = تعديل دالّةٍ واحدة، لا ٧٤ راوتراً                                                                                                                                                                                                        |
+| **تسريبٌ يتجاوز المنفذ**                        | `postOpeningEntry` يُدرج مباشرةً — [openingBalance.ts:69](../server/services/openingBalance.ts#L69)                                                                        | **ش٠ تُصلحه أولاً**، وإلّا فات الخطّافَ الرصيدُ الافتتاحيّ صامتاً. ⚠️ **ليس عِلّةً حيّة**: الحارس متّسق (`assertPeriodOpen(localTodayDate())` و`entryDate = localTodayDate()` — نفس التاريخ). تجاوزٌ بنيويّ يصير عِلّةً **لحظة تركيب الخطّاف** فقط |
+| **القيد ليس ملحقيّاً بالكامل**                  | `upsertOpeningEntry` **يُعدّل** ([:137](../server/services/openingBalance.ts#L137)) و**يحذف** ([:135](../server/services/openingBalance.ts#L135)) صفوف `accountingEntries` | **يُبطل افتراض «الدفتر ملحقيّ»**. بلا علاج: الحذف يُفشله FK، والتعديل يترك قيداً مزدوجاً **بائتاً يخالف الدفتر**. العلاج: `ON DELETE CASCADE` + `refreshJournal` عند التعديل (ش٠/ش١)                                                               |
+| `EntryType` = **٣٢ نوعاً**                      | [ledgerService.ts:8-50](../server/services/ledgerService.ts#L8)                                                                                                            | أُضيف `DELIVERY_FEE_HELD`؛ المتبقّي **٢٦** بعد الخرائط الستّ الحالية                                                                                                                                                                               |
+| المُخطَّط = **٦** فقط                           | `MAPPED_ENTRY_TYPES` — [postingEngine.ts:78](../server/services/accounting/postingEngine.ts#L78)                                                                           | ش٢ تُكمِل الـ٢٦ على ٣ دفعات حسب الصعوبة                                                                                                                                                                                                            |
+| المحرّك **نقيّ لا يكتب**                        | [postingEngine.ts:1-3](../server/services/accounting/postingEngine.ts#L1)                                                                                                  | لا يحتاج إعادة كتابة — يحتاج **موصِّلاً** فقط                                                                                                                                                                                                      |
+| يرمي `UnmappedEntryTypeError` على غير المُخطَّط | [postingEngine.ts:57](../server/services/accounting/postingEngine.ts#L57)                                                                                                  | **خطر قاتل**: رميةٌ داخل معاملة البيع = ROLLBACK للفاتورة ⇒ الخطّاف يجب أن يبتلعها في SHADOW                                                                                                                                                       |
+| `assertPeriodOpen` مطبَّق أصلاً                 | [ledgerService.ts:81](../server/services/ledgerService.ts#L81)                                                                                                             | القيد المزدوج يرث حماية الفترة مجّاناً                                                                                                                                                                                                             |
+| شجرة الحسابات موجودة بـ`systemRole` فريد        | `accounts` — [schema.ts:4743](../drizzle/schema.ts#L4743)                                                                                                                  | لا حاجة لجدولٍ جديدٍ للحسابات                                                                                                                                                                                                                      |
+| مطابقةٌ ذاتيةٌ قائمة (٥ دوال)                   | [reconcileService.ts](../server/services/reconcileService.ts) + شاشة `Reconcile.tsx`                                                                                       | ش٤ **تُضيف إليها** لا تبني بديلاً                                                                                                                                                                                                                  |
 
 ---
 
@@ -52,26 +52,27 @@ Drizzle ORM (mysql2) · MySQL 8 · decimal.js عبر `server/services/money.ts` 
 
 ## بوّابات السلامة الإنتاجية (سبب وجود هذه الخطة أصلاً)
 
-| # | البوّابة | الإنفاذ |
-|---|---|---|
-| س١ | **إضافيّ بحت** — لا عمودٌ يُعدَّل ولا جدولٌ قائم يُمَسّ ولا سلوكُ قيدٍ حاليٍّ يتغيّر | مراجعة الهجرة: `CREATE TABLE` فقط + `ALTER` على جدول إعداداتٍ جديد |
-| س٢ | **الافتراض `OFF`** — النشر بصفر أثر؛ التفعيل قرارٌ لاحقٌ منفصل | عمود `mode` افتراضه `'OFF'` + اختبار يثبت صفر صفوفٍ عند OFF |
-| س٣ | **الظلّ لا يُفشِل عملاً أبداً** | `try/catch` شامل حول الخطّاف + اختبار يُجبر رميةً ويثبت نجاح البيع |
-| س٤ | **نفس المعاملة** — لا حالة جزئية | الخطّاف يأخذ `tx` بارامتراً؛ اختبار: rollback البيع ⇒ لا قيد مزدوج يتيم |
-| س٥ | **صفر ازدواج بنيوياً** | `UNIQUE(entryId)` على `journalEntries` |
-| س٦ | **التوازن مفروضٌ عند الكتابة** | `assertBalanced` قبل الإدراج؛ سطرٌ غير متوازن ⇒ يُسجَّل فجوةً لا يُكتَب |
-| س٧ | **بوّابة ACTIVE بالأدلّة** | ≥٣٠ يوماً SHADOW + `unmappedCount = 0` + انحراف المطابقة = `0.00` لكل دور — يفحصها الكود لا الإنسان |
-| س٨ | **قابلية التراجع الفورية** | العودة إلى `OFF` تُوقف الكتابة فوراً؛ الجدولان يُفرَّغان بلا أثرٍ على أيّ رصيد |
-| س٩ | **صلاحيات** | كل تقارير الدفتر خلف `reportViewerProcedure` (الخطّ الأحمر §٦ — لا `requireModule` عارياً) |
-| س١٠ | **النشر** | `pnpm prod:deploy` حصراً (٧ خطوات ذرّية + `db:backup` + `db:verify`) — لا `db:push` عارياً |
+| #   | البوّابة                                                                             | الإنفاذ                                                                                             |
+| --- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| س١  | **إضافيّ بحت** — لا عمودٌ يُعدَّل ولا جدولٌ قائم يُمَسّ ولا سلوكُ قيدٍ حاليٍّ يتغيّر | مراجعة الهجرة: `CREATE TABLE` فقط + `ALTER` على جدول إعداداتٍ جديد                                  |
+| س٢  | **الافتراض `OFF`** — النشر بصفر أثر؛ التفعيل قرارٌ لاحقٌ منفصل                       | عمود `mode` افتراضه `'OFF'` + اختبار يثبت صفر صفوفٍ عند OFF                                         |
+| س٣  | **الظلّ لا يُفشِل عملاً أبداً**                                                      | `try/catch` شامل حول الخطّاف + اختبار يُجبر رميةً ويثبت نجاح البيع                                  |
+| س٤  | **نفس المعاملة** — لا حالة جزئية                                                     | الخطّاف يأخذ `tx` بارامتراً؛ اختبار: rollback البيع ⇒ لا قيد مزدوج يتيم                             |
+| س٥  | **صفر ازدواج بنيوياً**                                                               | `UNIQUE(entryId)` على `journalEntries`                                                              |
+| س٦  | **التوازن مفروضٌ عند الكتابة**                                                       | `assertBalanced` قبل الإدراج؛ سطرٌ غير متوازن ⇒ يُسجَّل فجوةً لا يُكتَب                             |
+| س٧  | **بوّابة ACTIVE بالأدلّة**                                                           | ≥٣٠ يوماً SHADOW + `unmappedCount = 0` + انحراف المطابقة = `0.00` لكل دور — يفحصها الكود لا الإنسان |
+| س٨  | **قابلية التراجع الفورية**                                                           | العودة إلى `OFF` تُوقف الكتابة فوراً؛ الجدولان يُفرَّغان بلا أثرٍ على أيّ رصيد                      |
+| س٩  | **صلاحيات**                                                                          | كل تقارير الدفتر خلف `reportViewerProcedure` (الخطّ الأحمر §٦ — لا `requireModule` عارياً)          |
+| س١٠ | **النشر**                                                                            | `pnpm prod:deploy` حصراً (٧ خطوات ذرّية + `db:backup` + `db:verify`) — لا `db:push` عارياً          |
 
 ---
 
 ## الشرائح
 
-### ش٠ — سدّ التسريب + الأساس البنيويّ  ⟨صفر أثر · لا تحتاج قرار مالك⟩
+### ش٠ — سدّ التسريب + الأساس البنيويّ ⟨صفر أثر · لا تحتاج قرار مالك⟩
 
 **الملفات:**
+
 - عدّل: `server/services/openingBalance.ts:61-90` (توجيه `postOpeningEntry` عبر `postEntry`)
 - عدّل: `drizzle/schema.ts` (ساخن — بيد القائد): `journalEntries` · `journalLines` · `doubleEntrySettings`
 - أنشئ: `drizzle/0XXX_double_entry_foundation.sql` (رقّم بعد فحص origin/main)
@@ -80,6 +81,7 @@ Drizzle ORM (mysql2) · MySQL 8 · decimal.js عبر `server/services/money.ts` 
 - اختبار: `server/services/__tests__/journalFoundation.test.ts`
 
 **العقد المُنتَج (يعتمد عليه ما بعده):**
+
 ```ts
 // server/services/accounting/journalStore.ts
 export type DoubleEntryMode = "OFF" | "SHADOW" | "ACTIVE";
@@ -89,16 +91,21 @@ export async function writeJournal(
   entryId: number,
   entryDate: Date,
   branchId: number | null,
-  lines: JournalLine[],           // من postingEngine
-): Promise<void>;                  // status='POSTED'
+  lines: JournalLine[], // من postingEngine
+): Promise<void>; // status='POSTED'
 export async function writeJournalGap(
-  tx: Tx, entryId: number, entryDate: Date, branchId: number | null, reason: string,
-): Promise<void>;                  // status='UNMAPPED'، بلا أسطر
+  tx: Tx,
+  entryId: number,
+  entryDate: Date,
+  branchId: number | null,
+  reason: string,
+): Promise<void>; // status='UNMAPPED'، بلا أسطر
 /** يحذف قيد الحدث المزدوج (إن وُجد) استعداداً لإعادة كتابته — لمسار تعديل مبلغ قيدٍ قائم. */
 export async function dropJournal(tx: Tx, entryId: number): Promise<void>;
 ```
 
 **المخطط (DDL — إضافيّ بحت):**
+
 ```sql
 CREATE TABLE `journalEntries` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
@@ -139,6 +146,7 @@ CREATE TABLE `doubleEntrySettings` (
 --> statement-breakpoint
 INSERT INTO `doubleEntrySettings` (`id`,`mode`) VALUES (1,'OFF');
 ```
+
 > ⚠️ `accountId` **غير مخزَّن عمداً** (YAGNI): الأسطر تحمل `role`، والتقارير تصل بـ`JOIN accounts ON systemRole` — يُجنّب بحثَ حسابٍ في مسار البيع الساخن. يُعاد النظر في ش٤ فقط إن لزم.
 
 **الخطوات:**
@@ -167,9 +175,10 @@ INSERT INTO `doubleEntrySettings` (`id`,`mode`) VALUES (1,'OFF');
 
 ---
 
-### ش١ — خطّاف الظلّ  ⟨صفر أثر · لا تحتاج قرار مالك⟩
+### ش١ — خطّاف الظلّ ⟨صفر أثر · لا تحتاج قرار مالك⟩
 
 **الملفات:**
+
 - عدّل: `server/services/ledgerService.ts:52-104` (حقل `cashRole` في `EntryInput` + التقاط `insertId` + نداء الخطّاف)
 - عدّل: `server/services/voucher/**` + `server/services/sale/create.ts` (تمرير `cashRole` عند القبض/الدفع بالبطاقة)
 - أنشئ: `server/services/accounting/shadowHook.ts`
@@ -188,40 +197,68 @@ INSERT INTO `doubleEntrySettings` (`id`,`mode`) VALUES (1,'OFF');
 > البديل المرفوض: قراءة `receipts` بـ`receiptId` داخل الخطّاف — استعلامٌ إضافيّ في مسار البيع الساخن.
 
 **الكود الجوهريّ:**
+
 ```ts
 // server/services/accounting/shadowHook.ts
 /** يكتب القيد المزدوج ظلّاً. **لا يرمي أبداً** (س٣): أيّ فشلٍ يُسجَّل فجوةً، والعمل التجاريّ يمضي. */
-export async function shadowPost(tx: Tx, entryId: number, e: EntryInput): Promise<void> {
+export async function shadowPost(
+  tx: Tx,
+  entryId: number,
+  e: EntryInput,
+): Promise<void> {
   try {
     const mode = await getDoubleEntryMode(tx);
-    if (mode === "OFF") return;                                   // س٢
+    if (mode === "OFF") return; // س٢
     const entryDate = e.entryDate ?? new Date();
     if (!MAPPED_ENTRY_TYPES.has(e.entryType)) {
-      await writeJournalGap(tx, entryId, entryDate, e.branchId ?? null, `نوعٌ غير مُخطَّط: ${e.entryType}`);
+      await writeJournalGap(
+        tx,
+        entryId,
+        entryDate,
+        e.branchId ?? null,
+        `نوعٌ غير مُخطَّط: ${e.entryType}`,
+      );
       return;
     }
     const lines = postingLinesFor({
       entryType: e.entryType,
-      revenue: e.revenue?.toString(), cost: e.cost?.toString(),
-      amount: e.amount?.toString(),  taxAmount: e.taxAmount?.toString(),
+      revenue: e.revenue?.toString(),
+      cost: e.cost?.toString(),
+      amount: e.amount?.toString(),
+      taxAmount: e.taxAmount?.toString(),
       party: e.customerId ? "CUSTOMER" : e.supplierId ? "SUPPLIER" : null,
     });
     await writeJournal(tx, entryId, entryDate, e.branchId ?? null, lines);
   } catch (err) {
     try {
-      await writeJournalGap(tx, entryId, e.entryDate ?? new Date(), e.branchId ?? null,
-        err instanceof Error ? err.message.slice(0, 255) : "خطأٌ غير معروف");
-    } catch { /* الفجوة نفسها فشلت ⇒ اصمت. لا شيء يُفشِل عملية أعمال. */ }
+      await writeJournalGap(
+        tx,
+        entryId,
+        e.entryDate ?? new Date(),
+        e.branchId ?? null,
+        err instanceof Error ? err.message.slice(0, 255) : "خطأٌ غير معروف",
+      );
+    } catch {
+      /* الفجوة نفسها فشلت ⇒ اصمت. لا شيء يُفشِل عملية أعمال. */
+    }
   }
 }
 ```
+
 ```ts
 // ledgerService.ts — التعديل الوحيد داخل postEntry (التوقيع لا يتغيّر ⇒ صفر أثر على ٧٤ راوتراً)
-const res = await tx.insert(accountingEntries).values({ /* … كما هو حرفياً … */ });
-await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), e);
+const res = await tx.insert(accountingEntries).values({
+  /* … كما هو حرفياً … */
+});
+await shadowPost(
+  tx,
+  Number((res as unknown as { insertId: number }).insertId),
+  e,
+);
 ```
 
 **الخطوات:**
+
 - [ ] **١. اختبارٌ فاشل — الوضع OFF يكتب صفراً:** فعّل بيعاً وتأكّد `SELECT COUNT(*) FROM journalEntries = 0`.
 - [ ] **٢. اختبارٌ فاشل — الوضع SHADOW يكتب قيداً متوازناً لبيعٍ نقديّ:** `Σdebit = Σcredit` و`AR` مدينٌ بالإجمالي و`PAYMENT_IN` منفصلٌ يُدائنه.
 - [ ] **٢ب. اختبارٌ فاشل — القبض بالبطاقة يُرحَّل إلى `CARD_BANK` لا `CASH`:** فاتورةٌ مدفوعةٌ ببطاقة ⇒ سطرٌ مدينٌ على `CARD_BANK` وصفرٌ على `CASH`. (يفشل قبل إضافة حقل `cashRole` — انظر التحذير أعلاه.)
@@ -255,21 +292,21 @@ await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), 
 
 ---
 
-### ش٢ — إكمال الخرائط الـ٢٦  ⛔ **محجوبة بقرار المالك (انظر أدناه)**
+### ش٢ — إكمال الخرائط والملفات المحاسبية ✅ **مُنفَّذة ومتحقَّقة**
 
 تُقسَّم ثلاث دفعات حسب الوضوح المحاسبيّ — **لا تُخمَّن أيّ خريطة** (المبدأ الحاكم في رأس `postingEngine.ts`: «لا تخمين على النواة المالية»).
 
-| الدفعة | الأنواع | الصعوبة |
-|---|---|---|
-| **٢أ — نقلُ أصلٍ صفريّ** (١٣ نوعاً) | `CASH_HANDOVER` · `CASH_TRANSFER_OUT/IN` · `SHIFT_FLOAT_OUT` · `TREASURY_FUNDING` · `DELIVERY_DISPATCH/REMIT` · `EXCHANGE_DEPOSIT/WITHDRAW/FX_BUY` · `DIGITAL_WALLET_DEPOSIT/WITHDRAWAL/CONSUMPTION` | **سهلة** — مدينُ أصلٍ ودائنُ أصل، بلا P&L. تحتاج أدواراً جديدة (`TREASURY_CASH`, `SHIFT_DRAWER`, `DELIVERY_FLOAT`, `EXCHANGE_WALLET`, `DIGITAL_WALLET`) |
-| **٢ب — مصروفٌ بلا نقد** (٧ أنواع) | `INTERNAL_USE` · `WASTAGE` · `DELIVERY_FEE` · `DELIVERY_WRITEOFF` · `EXCHANGE_FEE` · `GIFT_OUT` · `DIGITAL_WRITEOFF` | **متوسطة** — Dr مصروف / Cr مخزون أو نقد. الأدوار قائمة (`LOSSES`, `OPERATING_EXPENSE`) |
-| **٢ج — المحمَّلة بأكثر من معنى** (٥ أنواع) | `ADJUST` · `RETURN`(مورّد) · `EXCHANGE_SETTLE` · `EXCHANGE_FX_DIFF` · `DIGITAL_WALLET_REVERSAL/ADJUSTMENT` | **صعبة — تلزمها مراجعةٌ محاسبيةٌ بشريّة.** `ADJUST` وحده يخدم تقريب IQD وفروقاً أخرى بمعانٍ مختلفة |
+| الدفعة                                     | الأنواع                                                                                                                                                                                              | الصعوبة                                                                                                                                                 |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **٢أ — نقلُ أصلٍ صفريّ** (١٣ نوعاً)        | `CASH_HANDOVER` · `CASH_TRANSFER_OUT/IN` · `SHIFT_FLOAT_OUT` · `TREASURY_FUNDING` · `DELIVERY_DISPATCH/REMIT` · `EXCHANGE_DEPOSIT/WITHDRAW/FX_BUY` · `DIGITAL_WALLET_DEPOSIT/WITHDRAWAL/CONSUMPTION` | **سهلة** — مدينُ أصلٍ ودائنُ أصل، بلا P&L. تحتاج أدواراً جديدة (`TREASURY_CASH`, `SHIFT_DRAWER`, `DELIVERY_FLOAT`, `EXCHANGE_WALLET`, `DIGITAL_WALLET`) |
+| **٢ب — مصروفٌ بلا نقد** (٧ أنواع)          | `INTERNAL_USE` · `WASTAGE` · `DELIVERY_FEE` · `DELIVERY_WRITEOFF` · `EXCHANGE_FEE` · `GIFT_OUT` · `DIGITAL_WRITEOFF`                                                                                 | **متوسطة** — Dr مصروف / Cr مخزون أو نقد. الأدوار قائمة (`LOSSES`, `OPERATING_EXPENSE`)                                                                  |
+| **٢ج — المحمَّلة بأكثر من معنى** (٥ أنواع) | `ADJUST` · `RETURN`(مورّد) · `EXCHANGE_SETTLE` · `EXCHANGE_FX_DIFF` · `DIGITAL_WALLET_REVERSAL/ADJUSTMENT`                                                                                           | **صعبة — تلزمها مراجعةٌ محاسبيةٌ بشريّة.** `ADJUST` وحده يخدم تقريب IQD وفروقاً أخرى بمعانٍ مختلفة                                                      |
 
 كل دفعةٍ: خريطة + اختبار توازنٍ صارم لكل نوع + تشغيل ظلٍّ أسبوعاً + مراجعة `review-module`.
 
 ---
 
-### ش٣ — ميزان المراجعة ودفتر الأستاذ  ⟨قراءة فقط⟩
+### ش٣ — ميزان المراجعة ودفتر الأستاذ ⟨قراءة فقط⟩
 
 - أنشئ: `server/services/reports/trialBalance.ts` · `generalLedger.ts`
 - عدّل: `server/routers/reportsRouter.ts` (**`reportViewerProcedure` — س٩**)
@@ -291,15 +328,16 @@ await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), 
 > **لا يُعاد بناء أيٍّ من ذلك.** الشريحة تتحوّل من «ابنِ الإقفال الشهري» إلى «**حوِّل الحزمة القارئة إلى بوّابة تُقفِل**» — أصغر بكثير، وكلّها فوق ما هو قائم.
 
 **الفجوة الفعليّة (مُتحقَّقٌ منها):** الحزمة **تعرض ولا تُقفِل**. ينقصها شيئان:
+
 1. **قائمة جاهزيةٍ آليّة** — لا شيء يمنع إقفال شهرٍ فيه ورديةٌ مفتوحة أو سندٌ معلَّق أو مطابقةٌ منحرفة.
 2. **فعلُ الإقفال** — `periodLockService` قائمٌ ويعمل، لكن لا يصل إليه المالك من هذه الشاشة.
 
 #### ✅ قرار المالك (١١/٨) — تصنيف البنود والصلاحية
 
-| البند | التصنيف |
-|---|---|
-| **وردياتٌ مفتوحة** في الشهر | 🔴 **يحجب** |
-| **سنداتٌ بانتظار الاعتماد** | 🔴 **يحجب** |
+| البند                                                                                       | التصنيف           |
+| ------------------------------------------------------------------------------------------- | ----------------- |
+| **وردياتٌ مفتوحة** في الشهر                                                                 | 🔴 **يحجب**       |
+| **سنداتٌ بانتظار الاعتماد**                                                                 | 🔴 **يحجب**       |
 | انحراف المطابقات الستّ · فجوات الدفتر المزدوج · جلسات جردٍ نشطة · طلبات تسوية مخزونٍ معلّقة | 🟡 **تنبيهٌ فقط** |
 
 **الصلاحية — نُقِّحت بعد اكتشافٍ في الكود (١١/٨):** كنت سأضع `closeMonth` على `managerProcedure`. **اكتشافٌ أوقف ذلك:** `periodLockRouter.lock` قائمٌ على **`adminProcedure`**، و`lockPeriod` **عامٌّ لكل الفروع** (`financialPeriods` بلا `branchId`) ⇒ فتحُه للمدير كان سيجعل مديرَ فرعٍ واحدٍ يقفل الشهر على الشركة كلّها — **إضعافُ ضابطٍ قائم**. عُرِض على المالك فحسم:
@@ -317,7 +355,7 @@ await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), 
 
 **قرارٌ تقنيّ:** أُسقِط بند «انحراف المطابقات» من الجاهزية — دوالّ `reconcileService` غير مُنطَّقةٍ بشهرٍ ولا فرع، فبندٌ مُنطَّقٌ بهما مبنيٌّ عليها **لا يعني ما يقول**. يُضاف في ش٤ عبر `reconcileDoubleEntry` حين يُنطَّق بحقّ.
 
-#### ش٥ب — طلب الإقفال واعتماده ⬜ التالية
+#### ش٥ب — طلب الإقفال واعتماده ✅ مُنفَّذة ومتحقَّقة
 
 - **هجرة جديدة:** `monthCloseRequests` (`month` · `branchId` · `requestedBy/At` · `status` PENDING/APPROVED/REJECTED · `decidedBy/At` · `note` · **لقطة الجاهزية وقت الطلب**).
 - `requestMonthClose` على **`managerProcedure`** — يرفض إن كان `blocked` (يُعيد الفحص **خادمياً تحت المعاملة**، لا يُصدَّق ادّعاء الواجهة).
@@ -335,28 +373,62 @@ await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), 
 ### ✅ محسوم (١١/٨/٢٠٢٦)
 
 **١. مستوى الطموح = ميزان مراجعة رسميّ كامل** يقبله محاسبٌ قانونيّ أو جهةٌ ضريبية. **الأثر الملزِم:**
+
 - الـ**٢٦** خريطة كلّها في النطاق — **لا يُقبَل إبقاء أيّ نوعٍ فجوةً دائمة**.
 - الدفعة **٢ج** (`ADJUST` · `RETURN` مورّد · `EXCHANGE_SETTLE` · `EXCHANGE_FX_DIFF` · `DIGITAL_WALLET_REVERSAL/ADJUSTMENT`) **تلزمها مصادقةُ محاسبٍ بشريٍّ مكتوبة** قبل الدخول في ACTIVE — تُرفَق في هذا الملف.
 - بوّابة س٧ تُشدَّد: `ACTIVE` تتطلّب `MAPPED_ENTRY_TYPES.size === 32` (كل أنواع `EntryType` الحالية، ومنها `DELIVERY_FEE_HELD`) إضافةً إلى شروطها الحالية. **يفحصها الكود، ويجب تحديث العدد عند إضافة نوع جديد.**
 - التزامٌ تابع: القوائم المالية الرسمية (ميزانية/دخل) تصير امتداداً منطقياً بعد ACTIVE، لا نطاقاً مستقلّاً.
 
-### ⬜ ما زالت مطلوبة (تحجب ش٢ج فقط)
-2. **الضريبة:** الافتراض الحالي في المحرّك أن `amount − revenue` يُدائن **التزاماً ضريبياً**. بنشاطٍ بلا VAT هو صفرٌ دائماً — نُبقيه أم نُسقط الحساب؟
-3. **فصل إيراد التوصيل:** التعليق في `postingEngine.ts:12` يقول إن `sale/create` **يخلط** أجرة التوصيل في `revenue`. فصلها في P2 يغيّر تبويب الإيراد (لا مجموعه). نفصل الآن أم بعد ACTIVE؟
-4. **`ADJUST`:** يخدم اليوم تقريب IQD وفروقاً أخرى بمعنى واحد. نشقّه لنوعين مميَّزين (هجرة enum) أم نُبقيه فجوةً موسومة؟
+### ✅ القرارات المحاسبية المغلقة في التنفيذ
+
+2. **الضريبة:** بقي حساب `TAX_PAYABLE` جزءاً من الخريطة الرسمية، ويُرحَّل إليه الفرق الضريبي الفعلي فقط؛ في سياسة العراق الحالية بلا VAT يكون الأثر صفراً ولا يُنشأ دينٌ وهمي.
+3. **إيراد التوصيل:** فُصل إلى الدور `DELIVERY_REVENUE` مع بقاء مجموع الفاتورة ثابتاً، وأصبحت الخرائط والتقارير تميّزه عن إيراد الصنف.
+4. **`ADJUST`:** بقي نوع الحدث العام للتوافق، لكن معناه لم يعد مُبهماً: `postingIntent`/`postingProfile` إلزاميان ويحددان الخريطة الدقيقة (مخزون، نقد، رواتب، نهاية خدمة، استحقاق مصروف/أصل، إقفال سنة، فروق صيرفة وغيرها). أي قصد غير معروف يفشل مغلقاً.
+
+---
+
+## محضر الإغلاق النهائي — ١٦/٨/٢٠٢٦
+
+أُغلقت الشرائح ش٠–ش٥ رأسياً، ثم وُسّع التدقيق حتى مسارات الرواتب، إنهاء الخدمة، المصروفات والأصول الاستحقاقية، سداد السلف، تصنيف السندات، الصيرفة، الإقفال السنوي، وشهادات الإقفال غير القابلة للتعديل. لا توجد شريحة خلفية بلا شاشة أو مسار مالي بلا إيصال/قيد/طرف/تقرير.
+
+### الهجرات
+
+التسلسل النهائي المطبَّق على قاعدة اختبار MySQL 8.4 طازجة هو **0185–0195**:
+
+- `0187_double_entry_posting_profiles.sql`
+- `0188_payroll_and_expense_accrual.sql`
+- `0189_exchange_control_classification.sql`
+- `0190_voucher_category_accounting.sql`
+- `0191_termination_accrual_settlement.sql`
+- `0192_month_close_sequence_certificates.sql`
+- `0193_termination_gross_to_net.sql`
+- `0194_employee_advance_repayment.sql`
+- `0195_termination_advance_snapshot.sql`
+- `0196_accrual_obligation_lifecycle.sql`
+- `0197_year_end_reopen_requests.sql`
+
+`test:db:init` و`db:verify` نجحا على القاعدة المعزولة ذات المنفذ 3310؛ لم تُلمس قاعدة 3306.
+
+### دليل Definition of Done
+
+- **الخلفية والقاعدة:** معاملات ذرية، أقفال مرتبة، idempotency immutable مع reissue صريح، maker-checker، قيود فترات، وبوابات fail-closed لكل منتج مالي.
+- **الواجهة:** شاشات السندات وفئاتها، المصروفات، الأصول، الرواتب، التقارير، الصيرفة، الإقفال الشهري/السنوي، وميزان المراجعة/الأستاذ مرتبطة بالتنقّل وتعرض الحالات والمستندات والبصمات بوضوح.
+- **التحقق الآلي:** ٥٧٨/٥٧٨ اختبار وحدة، و٣٦٦ اختبار تكامل DB منتقى يغطي السندات والاستحقاقات والرواتب/السلف/الإنهاء والإقفال والصيرفة والقيود التشغيلية، مع `pnpm check` و`check:guards` و`build` خضراء.
+- **التحقق البصري:** جولة Playwright فعلية على 1440×1000 وعلى 390×844؛ RTL والجداول والفلاتر والحالات سليمة، وسجل المتصفح صفر أخطاء وصفر تحذيرات.
+- **حالة النشر:** لم يُنشر شيء إنتاجياً؛ التفعيل/النشر يبقيان قرار مالك منفصلاً عبر المسار المحكوم.
 
 ---
 
 ## المهارات المُفعَّلة لكل طور
 
-| الطور | المهارة | الغرض |
-|---|---|---|
-| التخطيط | `writing-plans` ✅ مُفعَّلة | هذه الوثيقة |
-| كل شريحة | `build-slice` ✅ مُفعَّلة | عقد → كتّاب → تحقّق → نواقص → تكامل + بوّابة DoD آلية |
-| كل شريحة | `test-driven-development` | اختبارٌ فاشلٌ أولاً — كل خطوةٍ أعلاه بهذا النمط |
-| بعد ش١ وش٢ وش٤ | `review-module` | مراجعةٌ عدائيةٌ متعددة العدسات (أموال/ذرّية/أمان) |
-| قبل ACTIVE | `financial-integrity-audit-fresh` | تدقيقٌ عدائيّ مستقلّ **من الكود فقط** — البوّابة الأخيرة قبل اعتماد الدفتر |
-| قبل كل التزام | `verification-before-completion` | لا ادّعاء إنجازٍ بلا دليل |
+| الطور          | المهارة                           | الغرض                                                                      |
+| -------------- | --------------------------------- | -------------------------------------------------------------------------- |
+| التخطيط        | `writing-plans` ✅ مُفعَّلة       | هذه الوثيقة                                                                |
+| كل شريحة       | `build-slice` ✅ مُفعَّلة         | عقد → كتّاب → تحقّق → نواقص → تكامل + بوّابة DoD آلية                      |
+| كل شريحة       | `test-driven-development`         | اختبارٌ فاشلٌ أولاً — كل خطوةٍ أعلاه بهذا النمط                            |
+| بعد ش١ وش٢ وش٤ | `review-module`                   | مراجعةٌ عدائيةٌ متعددة العدسات (أموال/ذرّية/أمان)                          |
+| قبل ACTIVE     | `financial-integrity-audit-fresh` | تدقيقٌ عدائيّ مستقلّ **من الكود فقط** — البوّابة الأخيرة قبل اعتماد الدفتر |
+| قبل كل التزام  | `verification-before-completion`  | لا ادّعاء إنجازٍ بلا دليل                                                  |
 
 ---
 
@@ -368,11 +440,11 @@ await shadowPost(tx, Number((res as unknown as { insertId: number }).insertId), 
 
 ## سجلّ التنفيذ
 
-| الشريحة | الحالة | PR | منشور | ملاحظات |
-|---|---|---|---|---|
-| ش٠ الأساس | 🟩 مُنفَّذة ومتحقَّقة | — | — | ٨/٨ اختبارات · **الحزمة الكاملة ٤٢٠٣/٤٢٠٣ في ٣٨٤ ملفاً خضراء (TZ=UTC)** · `check:guards` التسعة |
-| ش١ الظلّ | 🟩 مُنفَّذة (تنتظر الحزمة + الالتزام) | — | — | ١٠/١٠ اختبارات · `pnpm check` نظيف · `check:guards` التسعة · ٣ مواضع مُوصَّلة و٦ فجواتٍ متعمَّدة (الجدول أعلاه) |
-| ش٢ الخرائط | 🔒 محجوبة | — | — | تنتظر قرارَي المالك ١ و٤ |
-| ش٣ التقارير | 🟩 مُنفَّذة ومتحقَّقة | — | — | ١٣/١٣ اختباراً خاصاً · **الحزمة الكاملة ٤٦٤٠/٤٦٤٠ في ٤٢٧ ملفاً خضراء** · `check` + `build` + الحرّاس التسعة · جولة RTL عند 1500/500 وفحص ملفَّي Excel فعلياً · فصل فجوات الافتتاح عن الفترة · تسميات الأنواع الـ٣٢ الحالية؛ تبقى SHADOW صريحةً حتى بوابة ACTIVE |
-| ش٤ المطابقة | ⬜ لم تبدأ | — | — | تعتمد ش٣ |
-| ش٥ الإقفال | ⬜ لم تبدأ | — | — | مستقلّة — يمكن تنفيذها بالتوازي مع ش٣ |
+| الشريحة     | الحالة                | PR  | منشور | ملاحظات                                                                          |
+| ----------- | --------------------- | --- | ----- | -------------------------------------------------------------------------------- |
+| ش٠ الأساس   | 🟩 مُنفَّذة ومتحقَّقة | —   | لا    | الجداول والقيود والكتابة الموحّدة والهجرة/التحقق الفيزيائي مكتملة                |
+| ش١ الظلّ    | 🟩 مُنفَّذة ومتحقَّقة | —   | لا    | `OFF/SHADOW/ACTIVE`، فتح ظلي محكوم، وفجوات append-only بلا إسقاط عملية الأعمال   |
+| ش٢ الخرائط  | 🟩 مُنفَّذة ومتحقَّقة | —   | لا    | ملفات/مقاصد صريحة لكل المنتجين، تغطية المنتجين خضراء، ولا fallback محاسبي مبهم   |
+| ش٣ التقارير | 🟩 مُنفَّذة ومتحقَّقة | —   | لا    | ميزان المراجعة ودفتر الأستاذ والتقارير الاستحقاقية والطباعة/Excel مرتبطة بالدفتر |
+| ش٤ المطابقة | 🟩 مُنفَّذة ومتحقَّقة | —   | لا    | مطابقة تشغيلية، بوابة ACTIVE، فتح ظلي، عزل فروع، وتحقق رصيد/دورة                 |
+| ش٥ الإقفال  | 🟩 مُنفَّذة ومتحقَّقة | —   | لا    | جاهزية وطلب/اعتماد وتسلسل وشهادات وإقفال سنوي وفتح/reclose maker-checker         |

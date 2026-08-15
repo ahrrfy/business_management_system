@@ -31,6 +31,7 @@ import {
 } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
@@ -253,6 +254,26 @@ export async function approveWriteoff(
         approvedAt: new Date(),
         notes: `شطب نيّة عالقة #${input.intentId} — ${reason}`.trim(),
       });
+      // The issued code is first recognized as digital inventory, then the aggregate
+      // DIGITAL_WRITEOFF entry below expenses that inventory. This preserves the
+      // wallet-to-inventory asset trail even when finalization never produced an invoice.
+      await postEntry(tx, {
+        entryType: "DIGITAL_WALLET_CONSUMPTION",
+        branchId,
+        digitalWalletId: walletId,
+        amount: issuedAmount,
+        revenue: money(0),
+        cost: money(0),
+        profit: money(0),
+        dedupeKey: `DIGITAL:WCONS:WOFF:${input.intentId}:${walletId}`,
+        notes: `إثبات مخزون كروت مشطوب من نيّة #${input.intentId}`,
+        createdBy: actor.userId,
+        postingIntent: createPostingIntent(
+          "DIGITAL_WALLET_CONSUMPTION_SALE",
+          "DIGITAL_WALLET_CONSUMPTION",
+          [debitLine("INVENTORY", issuedAmount), creditLine("DIGITAL_WALLET", issuedAmount)],
+        ),
+      });
     }
 
     await tx
@@ -298,6 +319,11 @@ export async function approveWriteoff(
       dedupeKey: `DIGITAL:APWOFF:${input.intentId}:${providerId}`,
       notes: `استحقاق مزوّد لكروت مشطوبة من نيّة #${input.intentId}`,
       createdBy: actor.userId,
+      postingIntent: createPostingIntent(
+        "PURCHASE_DIGITAL",
+        "PURCHASE",
+        [debitLine("INVENTORY", payable.amount), creditLine("AP", payable.amount)],
+      ),
     });
     await adjustSupplierBalance(tx, payable.supplierId, payable.amount);
   }
@@ -314,6 +340,11 @@ export async function approveWriteoff(
     dedupeKey: `DIGITAL:WOFF:${input.intentId}`,
     notes: `شطب نيّة كروت عالقة #${input.intentId} — ${reason}`.trim(),
     createdBy: actor.userId,
+    postingIntent: createPostingIntent(
+      "DIGITAL_WRITEOFF_EXPENSE",
+      "DIGITAL_WRITEOFF",
+      [debitLine("LOSSES", loss), creditLine("INVENTORY", loss)],
+    ),
   });
 
   await tx

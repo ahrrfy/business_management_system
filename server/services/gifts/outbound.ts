@@ -11,6 +11,10 @@ import { extractInsertId } from "../../lib/insertId";
 import { applyMovement, convertToBaseQuantity, isBundleVariant, isServiceVariant } from "../inventoryService";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
+import {
+  createPostingIntent,
+  signedPostingLines,
+} from "../accounting/postingEngine";
 import { money, round2 } from "../money";
 import { withTx, type Actor } from "../tx";
 import { ensureAndLockBranchStock, nextGiftNumber } from "./helpers";
@@ -41,7 +45,6 @@ export interface OutboundGiftResult {
   totalCost: string;
   pending: boolean;
 }
-
 type Converted = { variantId: number; productUnitId: number; quantity: string; baseQuantity: number; refSalePrice: string | null };
 
 /** يحوّل الأسطر لوحدة الأساس ويمنع البكج/الخدميّ (لا مخزون ذاتيّ). */
@@ -148,6 +151,11 @@ async function applyOutboundEffect(
     amount: total,
     revenue: money(0),
     profit: round2(money(0).minus(total)),
+    postingIntent: createPostingIntent(
+      "GIFT_OUT_PROMO",
+      "GIFT_OUT",
+      signedPostingLines("GIFTS_PROMO", "INVENTORY", total),
+    ),
     dedupeKey: `GIFT:${giftVoucherId}`,
     notes: "هدية صادرة للعميل",
   });

@@ -13,7 +13,9 @@ const filters: CashRemediationFilters = {
   to: "2026-12-31",
 };
 
-function shift(overrides: Partial<RawRemediationShift> = {}): RawRemediationShift {
+function shift(
+  overrides: Partial<RawRemediationShift> = {},
+): RawRemediationShift {
   return {
     id: 1,
     branchId: 1,
@@ -32,7 +34,10 @@ function shift(overrides: Partial<RawRemediationShift> = {}): RawRemediationShif
   };
 }
 
-function receipt(id: number, overrides: Partial<RawRemediationReceipt> = {}): RawRemediationReceipt {
+function receipt(
+  id: number,
+  overrides: Partial<RawRemediationReceipt> = {},
+): RawRemediationReceipt {
   return {
     id,
     shiftId: 1,
@@ -63,6 +68,8 @@ function receipt(id: number, overrides: Partial<RawRemediationReceipt> = {}): Ra
     pairedTreasuryReceiptId: null,
     pairedTreasuryReceiptStatus: null,
     pairedTreasuryApprovalStatus: null,
+    pairedTreasuryLedgerEntryIds: [],
+    pairedTreasuryLedgerEntryTypes: [],
     ...overrides,
   };
 }
@@ -169,7 +176,11 @@ describe("analyzeCashRemediation", () => {
       ],
     };
 
-    const report = analyzeCashRemediation(dataset, filters, new Date("2026-02-02T00:00:00Z"));
+    const report = analyzeCashRemediation(
+      dataset,
+      filters,
+      new Date("2026-02-02T00:00:00Z"),
+    );
     const result = report.shifts[0];
     expect(result.before.computedExpectedCash).toBe("-30.00");
     expect(result.firstNegative).toEqual({
@@ -184,9 +195,13 @@ describe("analyzeCashRemediation", () => {
       documentId: 80,
       ledgerEntryIds: [90],
     });
-    expect(result.outflows[0].suggestedClassification).toBe("MISSING_INTERNAL_TRANSFER");
+    expect(result.outflows[0].suggestedClassification).toBe(
+      "MISSING_INTERNAL_TRANSFER",
+    );
     expect(result.outflows[0].confidence).toBe("LOW");
-    expect(result.outflows[0].evidenceMissing).toContain("TREASURY_HANDOVER_OR_FUNDING_PROOF");
+    expect(result.outflows[0].evidenceMissing).toContain(
+      "TREASURY_HANDOVER_OR_FUNDING_PROOF",
+    );
     expect(report.safeguards).toEqual({
       mutationsAvailable: false,
       postedDocuments: 0,
@@ -232,6 +247,8 @@ describe("analyzeCashRemediation", () => {
             pairedTreasuryReceiptId: 102,
             pairedTreasuryReceiptStatus: "PENDING",
             pairedTreasuryApprovalStatus: "APPROVED",
+            ledgerEntryIds: [502],
+            ledgerEntryTypes: ["CASH_TRANSFER_OUT"],
           }),
         ],
       },
@@ -252,7 +269,53 @@ describe("analyzeCashRemediation", () => {
       suggestedClassification: "UNVERIFIED_INTERNAL_TRANSFER",
       confidence: "LOW",
     });
-    expect(result.outflows[1].evidenceMissing).toContain("TREASURY_HANDOVER_OR_FUNDING_PROOF");
+    expect(result.outflows[1].evidenceMissing).toContain(
+      "TREASURY_HANDOVER_OR_FUNDING_PROOF",
+    );
+  });
+
+  it("verifies CD only when both receipt-linked transfer stages exist", () => {
+    const analyze = (sourceTypes: string[], pairedTypes: string[]) =>
+      analyzeCashRemediation(
+        {
+          shifts: [shift({ openingBalance: "200.00" })],
+          receipts: [
+            receipt(1, {
+              amount: "60.00",
+              referenceNumber: "CD-1-20260201-2",
+              pairedTreasuryReceiptId: 102,
+              pairedTreasuryReceiptStatus: "COMPLETED",
+              pairedTreasuryApprovalStatus: "APPROVED",
+              ledgerEntryIds: sourceTypes.map(
+                (_entryType, index) => 501 + index,
+              ),
+              ledgerEntryTypes: sourceTypes,
+              pairedTreasuryLedgerEntryIds: pairedTypes.map(
+                (_entryType, index) => 601 + index,
+              ),
+              pairedTreasuryLedgerEntryTypes: pairedTypes,
+            }),
+          ],
+        },
+        filters,
+      ).shifts[0].outflows[0];
+
+    expect(analyze(["CASH_TRANSFER_OUT"], ["CASH_TRANSFER_IN"])).toMatchObject({
+      suggestedClassification: "VERIFIED_INTERNAL_TRANSFER",
+      confidence: "HIGH",
+      evidenceMissing: [],
+    });
+    for (const incomplete of [
+      analyze([], ["CASH_TRANSFER_IN"]),
+      analyze(["CASH_TRANSFER_OUT"], []),
+      analyze(["CASH_HANDOVER"], ["CASH_TRANSFER_IN"]),
+    ]) {
+      expect(incomplete).toMatchObject({
+        suggestedClassification: "UNVERIFIED_INTERNAL_TRANSFER",
+        confidence: "LOW",
+      });
+      expect(incomplete.evidenceMissing).toContain("LEDGER_ENTRY");
+    }
   });
 
   it("لا يسمي تحويل الخزينة مثبتاً إذا غاب CASH_HANDOVER رغم اكتمال الزوج واعتماده", () => {
@@ -275,7 +338,9 @@ describe("analyzeCashRemediation", () => {
       suggestedClassification: "UNVERIFIED_INTERNAL_TRANSFER",
       confidence: "LOW",
     });
-    expect(report.shifts[0].outflows[0].evidenceMissing).toContain("LEDGER_ENTRY");
+    expect(report.shifts[0].outflows[0].evidenceMissing).toContain(
+      "LEDGER_ENTRY",
+    );
   });
 
   it("يتعرف إلى إلغاء المصروف المتصافر ولا يسمح بعكسه مرة ثانية", () => {
@@ -345,7 +410,11 @@ describe("analyzeCashRemediation", () => {
       confidence: "LOW",
     });
     expect(incomplete.shifts[0].outflows[0].evidenceMissing).toEqual(
-      expect.arrayContaining(["PAYMENT_PROOF", "MANAGER_DECISION", "LEDGER_ENTRY"]),
+      expect.arrayContaining([
+        "PAYMENT_PROOF",
+        "MANAGER_DECISION",
+        "LEDGER_ENTRY",
+      ]),
     );
   });
 
@@ -354,7 +423,9 @@ describe("analyzeCashRemediation", () => {
       { shifts: [shift()], receipts: [receipt(2)] },
       {
         ...filters,
-        simulations: [{ receiptId: 2, classification: "EMPLOYEE_PERSONAL_PAID" }],
+        simulations: [
+          { receiptId: 2, classification: "EMPLOYEE_PERSONAL_PAID" },
+        ],
       },
     );
     expect(report.shifts[0].before.computedExpectedCash).toBe("-50.00");
@@ -443,7 +514,9 @@ describe("analyzeCashRemediation", () => {
       suggestedClassification: "DUPLICATE_OR_ERROR",
       confidence: "HIGH",
     });
-    expect(conflictingSources.shifts[0].outflows[0].source.expenseIds).toEqual([80, 81]);
+    expect(conflictingSources.shifts[0].outflows[0].source.expenseIds).toEqual([
+      80, 81,
+    ]);
     expect(() =>
       analyzeCashRemediation(
         {

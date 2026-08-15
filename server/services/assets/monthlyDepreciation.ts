@@ -3,6 +3,10 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, notInArray } from "drizzle-orm";
 import { fixedAssets } from "../../../drizzle/schema";
+import {
+  createPostingIntent,
+  signedPostingLines,
+} from "../accounting/postingEngine";
 import { postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { type Actor, requireDb, withTx } from "../tx";
@@ -16,7 +20,6 @@ export interface DepreciationRunResult {
   assetsPosted: number;
   totalDepreciation: string;
 }
-
 /**
  * FI-02 (تدقيق ٢٠/٦، قرار المالك «إهلاك شهريّ عبر مهمة دورية»): يُرحّل إهلاك شهرٍ واحد لكل أصل
  * غير مُستبعَد كقيد مصروف في الدفتر، ويُحدّث الإهلاك المتراكم على الأصل (⇒ الميزانية NBV).
@@ -45,8 +48,8 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
   const db = requireDb();
   // #3 (تدقيق التثبيت): استبعاد 'retired' كـ'disposed' — الأصل المشطوب جُمِّد إهلاكه المتراكم وسُجِّلت
   // بقيّته خسارةً، فمواصلة إهلاكه تُكرّر الشطب (خسارة عند الشطب + إهلاك لاحق). كامن حتى تُوصَل postDepreciation.
-  // الأصل النقدي يبقى isActive=false حتى اعتماد مالك مختلف لطلب الدفع؛ لا إهلاك قبل
-  // ثبوت الاقتناء وخروج النقد فعلياً.
+  // الأصل المثبت في السجل حيازةٌ معترف بها ويبدأ إهلاكه عند الجاهزية للاستخدام؛
+  // تأخر تسوية ثمنه يبقى التزاماً مستقلاً ولا يؤخر الاعتراف أو الإهلاك.
   const statusScope = and(
     eq(fixedAssets.isActive, true),
     notInArray(fixedAssets.status, ["disposed", "retired"]),
@@ -84,6 +87,15 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
         cost: monthDep,
         profit: monthDep.neg(), // مصروف: revenue(0) − cost = ربح سالب ⇒ يَجتاز reconcileLedgerProfit
         amount: monthDep,
+        postingIntent: createPostingIntent(
+          "ADJUST_DEPRECIATION",
+          "ADJUST",
+          signedPostingLines(
+            "DEPRECIATION_EXPENSE",
+            "ACCUMULATED_DEPRECIATION",
+            monthDep,
+          ),
+        ),
         entryDate,
         dedupeKey: `DEPR:${id}:${period}`,
         notes: `إهلاك ${period} لأصل ${a.code}`,

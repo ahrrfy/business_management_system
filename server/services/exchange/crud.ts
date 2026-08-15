@@ -4,7 +4,8 @@ import { and, desc, eq, like, or, sql } from "drizzle-orm";
 import { exchangeHouses, exchangeTransactions } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, postEntry } from "../ledgerService";
+import { adjustExchangeBalanceIqd, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { nextTxnNumber, toDbRate } from "./helpers";
@@ -33,6 +34,7 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
       isActive: true,
       balanceIqd: "0.00",
       balanceUsd: "0.00",
+      balanceUsdCarryingIqd: "0.00",
       usdCostRate: "0.0000",
     });
     const id = extractInsertId(res);
@@ -46,10 +48,14 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
       }
       // ترحيل الرصيد عبر adjust فقط (لا set مباشر) + سعر الكلفة الافتتاحي للمحفظة الدولارية.
       if (!openUsd.isZero()) {
-        await tx.update(exchangeHouses).set({ usdCostRate: toDbRate(openRate) }).where(eq(exchangeHouses.id, id));
+        const openingCarrying = round2(openUsd.times(openRate));
+        await tx.update(exchangeHouses).set({
+          balanceUsd: toDbMoney(openUsd),
+          balanceUsdCarryingIqd: toDbMoney(openingCarrying),
+          usdCostRate: toDbRate(openingCarrying.abs().div(openUsd.abs())),
+        }).where(eq(exchangeHouses.id, id));
       }
       await adjustExchangeBalanceIqd(tx, id, openIqd);
-      await adjustExchangeBalanceUsd(tx, id, openUsd);
 
       const txnNumber = await nextTxnNumber(tx, actor.branchId ?? null);
       await tx.insert(exchangeTransactions).values({
@@ -69,7 +75,26 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
       });
 
       // قيد OPENING بقيمة دينارية معادِلة (دينار + دولار×سعر). dedupeKey فريد ⇒ لا تكرار رصيد.
-      const openingIqdValue = openIqd.plus(openUsd.times(openRate));
+      const openUsdIqdValue = round2(openUsd.times(openRate));
+      const openingIqdValue = openIqd.plus(openUsdIqdValue);
+      const openingComponents = {
+        roleDebits: {
+          ...(openIqd.gt(0) ? { EXCHANGE_RECEIVABLE_IQD: openIqd } : {}),
+          ...(openUsdIqdValue.gt(0) ? { EXCHANGE_RECEIVABLE_USD: openUsdIqdValue } : {}),
+          ...(!openIqd.lt(0) && !openUsdIqdValue.lt(0) ? {} : {
+            OPENING_EQUITY: (openIqd.lt(0) ? openIqd.abs() : money(0))
+              .plus(openUsdIqdValue.lt(0) ? openUsdIqdValue.abs() : money(0)),
+          }),
+        },
+        roleCredits: {
+          ...(openIqd.lt(0) ? { EXCHANGE_PAYABLE_IQD: openIqd.abs() } : {}),
+          ...(openUsdIqdValue.lt(0) ? { EXCHANGE_PAYABLE_USD: openUsdIqdValue.abs() } : {}),
+          ...(!openIqd.gt(0) && !openUsdIqdValue.gt(0) ? {} : {
+            OPENING_EQUITY: (openIqd.gt(0) ? openIqd : money(0))
+              .plus(openUsdIqdValue.gt(0) ? openUsdIqdValue : money(0)),
+          }),
+        },
+      } as const;
       await postEntry(tx, {
         entryType: "OPENING",
         branchId: actor.branchId || null,
@@ -78,6 +103,24 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
         entryDate: new Date(),
         dedupeKey: `OPENING:EXCHANGE:${id}`,
         notes: "رصيد افتتاحي صيرفة",
+        postingSourceComponents: openingComponents,
+        postingIntent: createPostingIntent(
+          "OPENING_EXCHANGE_COMBINED",
+          "OPENING",
+          [
+            ...(openIqd.gt(0)
+              ? [debitLine("EXCHANGE_RECEIVABLE_IQD", openIqd), creditLine("OPENING_EQUITY", openIqd)]
+              : openIqd.lt(0)
+                ? [debitLine("OPENING_EQUITY", openIqd.abs()), creditLine("EXCHANGE_PAYABLE_IQD", openIqd.abs())]
+                : []),
+            ...(openUsdIqdValue.gt(0)
+              ? [debitLine("EXCHANGE_RECEIVABLE_USD", openUsdIqdValue), creditLine("OPENING_EQUITY", openUsdIqdValue)]
+              : openUsdIqdValue.lt(0)
+                ? [debitLine("OPENING_EQUITY", openUsdIqdValue.abs()), creditLine("EXCHANGE_PAYABLE_USD", openUsdIqdValue.abs())]
+                : []),
+          ],
+          openingComponents,
+        ),
       });
     }
     return { id };

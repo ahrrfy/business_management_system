@@ -21,6 +21,14 @@ export type RoleGate = {
 };
 
 /**
+ * التقارير التشخيصية وإجراءات قطع/تفعيل الدفتر تشارك سطحاً واحداً؛ القراءة
+ * خادميّاً adminProcedure والكتابة تضيف FULL + 2FA، لذلك لا يظهر التبويب لمدير.
+ */
+export const RECONCILE_CONTROL_GATE = Object.freeze({
+  adminOnly: true,
+}) satisfies RoleGate;
+
+/**
  * هل يرى المستخدم (بدوره role وصلاحياته الممنوحة override) عنصراً يحمل القيد gate؟
  * قيد الدور يطابق حرفياً منطق AppLayout التاريخي، وmodule يفتح مساراً إضافياً بالمنح الصريح.
  */
@@ -30,27 +38,25 @@ export function canSeeGate(
   override?: PermissionMap | null
 ): boolean {
   if (!gate) return true;
-  const hasRoleConstraint = !!(gate.adminOnly || gate.managerOnly || gate.roles);
   const isAdmin = role === "admin";
-  const isManager = isAdmin || role === "manager";
-  const roleOk =
-    (!gate.adminOnly || isAdmin) &&
-    (!gate.managerOnly || isManager) &&
-    (!gate.roles || isAdmin || (role != null && gate.roles.includes(role as RoleKey)));
-  // قيد الدور الصريح ناجح ⇒ مرئي فوراً.
-  if (hasRoleConstraint && roleOk) return true;
   // adminOnly حصري عمداً (إدارة النظام) — لا يُفتح بمنح وحدة.
-  if (gate.adminOnly) return false;
+  if (gate.adminOnly) return isAdmin;
   // بوّابة الوحدة تُحسم بالخريطة المحلولة (قالب الدور + المنح الصريح) — تدقيق ١٧/٧: كان القيد بلا قيود
   // دور يعيد true فراغياً (roleOk صحيح فراغياً) فيُظهر تبويبات module-only لكل الأدوار وإن رفضها الخادم
   // بـ403؛ كما كان يستشير المنح الصريح (override) وحده لا قالب الدور. الآن يطابق الخادم بدقّة:
   //   مع قيد دور ⇒ مرآة requireModuleGate (منح صريح للأدوار خارج القائمة)؛ بلا قيد دور ⇒ مرآة requireModule (القالب).
   if (gate.module) {
     const lvl = gate.level ?? "READ";
-    return gate.roles
-      ? moduleAccessAllowed(role ?? "", override, gate.module, lvl, gate.roles)
-      : hasModuleAccess(role ?? "", override, gate.module, lvl);
+    if (gate.roles) {
+      return moduleAccessAllowed(role ?? "", override, gate.module, lvl, gate.roles);
+    }
+    if (gate.managerOnly) {
+      return moduleAccessAllowed(role ?? "", override, gate.module, lvl, ["manager"]);
+    }
+    return hasModuleAccess(role ?? "", override, gate.module, lvl);
   }
+  if (gate.managerOnly) return isAdmin || role === "manager";
+  if (gate.roles) return isAdmin || (role != null && gate.roles.includes(role as RoleKey));
   // لا قيد دور ولا وحدة ⇒ مرئي للكل.
-  return !hasRoleConstraint;
+  return true;
 }

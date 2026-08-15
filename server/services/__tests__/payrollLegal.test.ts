@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createEmployee } from "../employeeService";
-import { approveRun, generatePayroll, payRun } from "../payrollService";
+import { approveRun, cancelRun, generatePayroll, payRun } from "../payrollService";
 import {
   computeLegalComponents,
   computeProgressiveTax,
@@ -410,5 +410,141 @@ describe("generatePayroll — المكوّنات القانونية (DB)", () =>
     expect(Number(it.socialSecurityEmployee)).toBe(0); // لا ضمان على أجرٍ لم يُكتسَب
     expect(Number(it.net)).toBe(0);
     expect(Number(it.net)).toBeGreaterThanOrEqual(0); // ليس سالباً ⇒ لا يعطّل اعتماد مسيّرٍ متعدّد
+  });
+
+  it.each([
+    ["تعيين", "basic", "2026-06-16", null, 25000],
+    ["تعيين", "gross", "2026-06-16", null, 30000],
+    ["إنهاء", "basic", null, "2026-06-15", 25000],
+    ["إنهاء", "gross", null, "2026-06-15", 30000],
+  ] as const)(
+    "يقسّط الضمان وEOS عند %s منتصف الشهر على وعاء %s",
+    async (_scenario, socialSecurityBase, hireDate, terminationDate, expectedEmployeeSs) => {
+      await setLegal({
+        socialSecurityEnabled: true,
+        socialSecurityEmployeeRate: "5",
+        socialSecurityEmployerRate: "10",
+        socialSecurityBase,
+        endOfServiceEnabled: true,
+        endOfServiceDaysPerYear: "21",
+      });
+      const employee = await createEmployee({
+        firstName: "جزئي",
+        lastName: "الشهر",
+        payType: "monthly",
+        salary: "1000000",
+        allowances: "200000",
+        hireDate,
+      });
+      if (terminationDate) {
+        await db()
+          .update(s.employees)
+          .set({
+            employmentStatus: "terminated",
+            isActive: false,
+            terminationDate,
+          })
+          .where(eq(s.employees.id, employee!.id));
+      }
+
+      const run = await generatePayroll("2026-06", ACTOR);
+      const item = run!.items[0];
+      expect(Number(item.gross)).toBe(600000);
+      expect(Number(item.socialSecurityEmployee)).toBe(expectedEmployeeSs);
+      expect(Number(item.socialSecurityEmployer)).toBe(expectedEmployeeSs * 2);
+      expect(Number(item.endOfServiceAccrual)).toBe(29166.67);
+    },
+  );
+
+  it.each([
+    ["كامل الشهر", "2026-06-01", "2026-06-30", false],
+    ["نصف الشهر", "2026-06-01", "2026-06-15", true],
+  ] as const)(
+    "يحسب ضمان basic من الأجر الأساسي المكتسب في مسار الحضور عند إجازة بلا راتب %s",
+    async (_scenario, unpaidFrom, unpaidTo, addPaidRemainder) => {
+      await setLegal({
+        socialSecurityEnabled: true,
+        socialSecurityEmployeeRate: "5",
+        socialSecurityBase: "basic",
+      });
+      await db().insert(s.hrAttendanceSettings).values({
+        id: 1,
+        attendancePayEnabled: true,
+        attendancePayFrom: "2026-06-01",
+      });
+      const employee = await createEmployee({
+        firstName: "حضور",
+        lastName: "قانوني",
+        payType: "monthly",
+        salary: "900000",
+        allowances: "0",
+      });
+      await db().insert(s.leaveRequests).values({
+        employeeId: employee!.id,
+        leaveType: "بدون راتب",
+        paid: false,
+        fromDate: unpaidFrom,
+        toDate: unpaidTo,
+        days: addPaidRemainder ? 15 : 30,
+        status: "approved",
+      });
+      if (addPaidRemainder) {
+        await db().insert(s.leaveRequests).values({
+          employeeId: employee!.id,
+          leaveType: "سنوية",
+          paid: true,
+          fromDate: "2026-06-16",
+          toDate: "2026-06-30",
+          days: 15,
+          status: "approved",
+        });
+      }
+
+      const run = await generatePayroll("2026-06", ACTOR);
+      const item = run!.items[0];
+      const expectedSs = new Decimal(item.gross).times(0.05).toDecimalPlaces(2);
+      expect(Number(item.socialSecurityEmployee)).toBe(expectedSs.toNumber());
+      if (!addPaidRemainder) {
+        expect(Number(item.gross)).toBe(0);
+        expect(Number(item.socialSecurityEmployee)).toBe(0);
+        expect(Number(item.net)).toBe(0);
+      } else {
+        expect(Number(item.gross)).toBeGreaterThan(0);
+      }
+    },
+  );
+
+  it("يرفض الاعتماد إذا تغيّرت السياسة القانونية بعد التوليد", async () => {
+    await createEmployee({
+      firstName: "لقطة",
+      lastName: "قانونية",
+      payType: "monthly",
+      salary: "1000000",
+      allowances: "0",
+    });
+    const run = await generatePayroll("2026-06", ACTOR);
+    expect(Number(run!.items[0].incomeTax)).toBe(0);
+
+    await setLegal({
+      incomeTaxEnabled: true,
+      incomeTaxExemption: "0",
+      incomeTaxBrackets: [{ upTo: null, rate: "10" }],
+    });
+    await expect(approveRun(Number(run!.id), APPROVER)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    const [stored] = await db()
+      .select()
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, Number(run!.id)));
+    expect(stored.status).toBe("draft");
+    expect(stored.approvalSnapshotHash).toBeNull();
+
+    await cancelRun(Number(run!.id), APPROVER, "إعادة توليد بعد تغيير السياسة");
+    const regenerated = await generatePayroll("2026-06", ACTOR);
+    expect(Number(regenerated!.items[0].incomeTax)).toBe(100000);
+    await expect(approveRun(Number(regenerated!.id), APPROVER)).resolves.toMatchObject({
+      status: "approved",
+    });
   });
 });

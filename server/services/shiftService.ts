@@ -13,6 +13,7 @@ import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { postEntry } from "./ledgerService";
 import {
   assertCashOutAvailable,
@@ -83,7 +84,7 @@ export async function openShift(
   actor: Actor,
 ) {
   const shiftType: ShiftType = input.shiftType ?? "RETAIL";
-  return withTx(async (tx) => {
+  const executeOpen = async (tx: Tx) => {
     // يتسلسل مع اعتماد الإقفال العام. بعد نيل القفل نعيد فحص اليوم مقابل أحدث period lock؛
     // الصفر في الرصيد الافتتاحي لا يجوز أن يصنع مساراً يتجاوز الحارس لغياب postEntry.
     await lockBranchMonthCloseGate(tx, input.branchId);
@@ -172,6 +173,10 @@ export async function openShift(
         // قيد SHIFT_FLOAT_OUT (نقلٌ خزينة→درج، revenue/cost=0). dedupeKey فريد لكل وردية.
         await postEntry(tx, {
           entryType: "SHIFT_FLOAT_OUT",
+          postingIntent: createPostingIntent("SHIFT_FLOAT_FROM_TREASURY", "SHIFT_FLOAT_OUT", [
+            debitLine("CASH", opening),
+            creditLine("TREASURY_CASH", opening),
+          ]),
           branchId: input.branchId,
           receiptId: outReceiptId,
           amount: opening,
@@ -199,7 +204,8 @@ export async function openShift(
       }
       throw e;
     }
-  });
+  };
+  return withTx(executeOpen, { gate: "FINANCIAL_WRITER" });
 }
 
 /** Expected cash = opening balance + cash received − cash refunded during the shift. */
@@ -236,7 +242,7 @@ export async function closeShift(
   },
   actor: Actor & { role?: string },
 ) {
-  return withTx(async (tx) => {
+  const executeClose = async (tx: Tx) => {
     const rows = await tx
       .select()
       .from(shifts)
@@ -391,7 +397,8 @@ export async function closeShift(
       requiresManagerReview: isMaterialVariance,
       treasuryReturn,
     };
-  });
+  };
+  return withTx(executeClose, { gate: "FINANCIAL_WRITER" });
 }
 
 type CashReconciliationCategory =
