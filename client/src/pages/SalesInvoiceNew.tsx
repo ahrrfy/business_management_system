@@ -29,7 +29,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { getDeviceCode } from "@/lib/offline/outbox";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -310,6 +312,48 @@ export default function SalesInvoiceNew() {
     [state.taxEnabled, state.items, totals.totalTax, totals.afterDiscount],
   );
 
+  /* ─── إثبات الدفع غير النقديّ ────────────────────────────────────
+   * نفس بوّابة الكاشير حرفاً بحرف: محاولةٌ خادمية INITIATED ⇒ CONFIRMED تُستهلَك مرّةً
+   * واحدة مع الفاتورة. هذه الشاشة بيعٌ على الكاونتر كالكاشير، فلا يجوز أن يكون معيار
+   * إثباتها أضعف. (مسار التصحيح يمرّ بـ`reissue` الذي يقبل مرجعاً نصّياً بعقده الخاصّ.)
+   */
+  const [paymentRef, setPaymentRef] = useState("");
+  const [externalAttempt, setExternalAttempt] = useState<
+    { attemptId: number; requestId: string; deviceId: string; fingerprint: string } | null
+  >(null);
+  const externalAmount = round2(D(computePaidStr())).toFixed(2);
+  const externalFingerprint = `${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
+  const externalConfirmed =
+    state.paymentMethod === "CASH" || externalAttempt?.fingerprint === externalFingerprint;
+
+  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+
+  async function confirmExternalPayment() {
+    const reference = paymentRef.trim();
+    if (!reference) return notify.err("أدخل مرجع العملية أولاً.");
+    if (!D(externalAmount).gt(0)) return notify.err("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
+    const branchId = me.data?.branchId;
+    if (branchId == null) return notify.err("لا فرع مُسنَد لهذا المستخدم — لا يمكن تأكيد دفع خارجي.");
+    try {
+      const deviceId = externalAttempt?.deviceId ?? (await getDeviceCode());
+      const requestId = externalAttempt?.requestId ?? crypto.randomUUID();
+      const initiated = await initiateExternal.mutateAsync({
+        branchId: Number(branchId),
+        method: state.paymentMethod as "CARD" | "TRANSFER" | "WALLET",
+        amount: externalAmount,
+        reference,
+        requestId,
+        deviceId,
+      });
+      await confirmExternal.mutateAsync({ branchId: Number(branchId), attemptId: initiated.attemptId, deviceId });
+      setExternalAttempt({ attemptId: initiated.attemptId, requestId, deviceId, fingerprint: externalFingerprint });
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرّةً واحدة.`);
+    } catch (error) {
+      notify.err(error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي");
+    }
+  }
+
   /* ─── mutation ─────────────────────────────────────────────────── */
   const create = trpc.sales.create.useMutation({
     onSuccess: (r) => {
@@ -420,7 +464,15 @@ export default function SalesInvoiceNew() {
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
       // صراحةً من «تطبيق ضريبة» في ملخّص المبالغ (لعملاء/دوائر تتطلّب فاتورة ضريبية).
       taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
-      payment: hasPayment ? { amount: paidStr, method: state.paymentMethod } : undefined,
+      payment: hasPayment
+        ? {
+            amount: paidStr,
+            method: state.paymentMethod,
+            ...(state.paymentMethod === "CASH"
+              ? {}
+              : { externalPaymentAttemptId: externalAttempt?.attemptId }),
+          }
+        : undefined,
       // تاريخ الاستحقاق للبيع الآجل/الأقساط فقط (يُحفظ على invoices.dueDate ⇒ أعمار الذمم
       // تُعمِّر من موعد الاستحقاق لا تاريخ الفاتورة). الحقل يظهر في الترويسة لهذين النوعين فقط.
       dueDate:
@@ -456,7 +508,13 @@ export default function SalesInvoiceNew() {
       reason: reason.trim(),
       clientRequestId,
       ...(diff.gt(0) && collect.gt(0)
-        ? { additionalPayment: { amount: round2(collect).toFixed(2), method: state.paymentMethod } }
+        ? {
+            additionalPayment: {
+              amount: round2(collect).toFixed(2),
+              method: state.paymentMethod,
+              ...(state.paymentMethod === "CASH" ? {} : { reference: paymentRef.trim() }),
+            },
+          }
         : {}),
       ...(diff.lt(0) ? { overpayHandling } : {}),
       ...(approval ? { managerApproval: approval } : {}),
@@ -478,7 +536,7 @@ export default function SalesInvoiceNew() {
 
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
-    if (!isPosPaymentMethodEnabled(state.paymentMethod)) return POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE;
+    if (!isPosPaymentMethodEnabled(state.paymentMethod)) return posPaymentRejectionMessage(state.paymentMethod);
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
     // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
@@ -494,6 +552,14 @@ export default function SalesInvoiceNew() {
     }
     // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
     // في وضع التصحيح: الدفع محمولٌ خادمياً وتحقّقه في validateCorrection ⇒ نتخطّى منطق الدفع هنا.
+    // لا يُفتَح الحفظ لدفعٍ غير نقديّ قبل تثبيت إثباته (محاولةٌ مؤكَّدة للإنشاء، مرجعٌ للتصحيح).
+    if (state.paymentMethod !== "CASH" && D(computePaidStr()).gt(0)) {
+      if (isCorrection) {
+        if (!paymentRef.trim()) return "أدخِل مرجع العملية للدفع غير النقديّ.";
+      } else if (!externalConfirmed || externalAttempt == null) {
+        return "ثبّت تأكيد الدفع غير النقديّ قبل حفظ الفاتورة.";
+      }
+    }
     if (!isCorrection) {
       const paid = D(computePaidStr());
       const remaining = D(totals.grandTotal).minus(paid);
@@ -817,8 +883,26 @@ export default function SalesInvoiceNew() {
             showShipping
             showOtherExpenses={false}
             showTaxToggle
-            cashOnlyPayment
           />
+          {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لبوّابة الكاشير.
+              في التصحيح يكفي المرجع النصّي (عقد `sales.reissue` يحمله بنفسه). */}
+          {state.paymentMethod !== "CASH" && D(computePaidStr()).gt(0) && (
+            <div className="rounded-xl border bg-card p-3">
+              <PaymentReferenceField
+                value={paymentRef}
+                onChange={(v) => { setPaymentRef(v); setExternalAttempt(null); }}
+                method={state.paymentMethod}
+                confirmed={isCorrection ? paymentRef.trim().length > 0 : externalConfirmed}
+                confirming={initiateExternal.isPending || confirmExternal.isPending}
+                onConfirm={confirmExternalPayment}
+                inputId="sales-invoice-payment-reference"
+                colors={{
+                  border: "var(--border)", muted: "var(--muted)", mutedFg: "var(--muted-foreground)",
+                  fg: "var(--foreground)", amber: "var(--sem-warn)", success: "var(--sem-ok)",
+                }}
+              />
+            </div>
+          )}
           {isCorrection && (
             <CorrectionPanel
               original={original.data ?? null}

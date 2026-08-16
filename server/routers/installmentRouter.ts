@@ -100,6 +100,8 @@ export const installmentRouter = router({
       z.object({
         lineId: z.number().int().positive(),
         paymentMethod: payMethod.nullish(),
+        referenceNumber: z.string().trim().max(100).nullish(),
+        cardLastFour: z.string().trim().regex(/^\d{4}$/, "آخر ٤ أرقام للبطاقة").nullish(),
         note: z.string().max(255).nullish(),
         // نفس سقف voucherRouter.create — رسالة الحجم الودودة تأتي من طبقة أدنى.
         attachmentUrl: z.string().max(4_000_000).nullish(),

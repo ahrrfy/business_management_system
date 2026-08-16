@@ -94,6 +94,10 @@ export async function payLine(
       partyType: "CUSTOMER",
       partyId: Number(plan.customerId),
       description,
+      // إثبات القبض غير النقديّ يُمرَّر كما أدخله المحصِّل؛ `createVoucher` هو من يفرض
+      // إلزاميّتهما (مرجعٌ للتحويل/المحفظة، وآخر ٤ أرقام للبطاقة) فلا نُكرّر الحارس هنا.
+      referenceNumber: input.referenceNumber?.trim() || null,
+      cardLastFour: input.cardLastFour?.trim() || null,
       checkNumber: undefined,
       voucherCategoryId: cat?.id != null ? Number(cat.id) : null,
       invoiceId: voucherInvoiceId,

@@ -50,18 +50,26 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     expect(isPosPaymentMethodEnabled("CHECK")).toBe(false);
   });
 
-  // الشاشات التي لا تملك مسار إثبات (لا محاولة مؤكَّدة ولا حقل مرجع) تبقى نقديّةً عمداً:
-  // فتحُ طريقةٍ لا يستطيع الخادم قبولها = زرٌّ ينتهي بخطأ تحقّق، لا ميزة.
-  it("الشاشات بلا مسار إثبات تبقى نقديّة حتى يُبنى لها المسار", () => {
+  // كل شاشةٍ فُتحت لغير النقد تملك الآن مسار إثباتها: محاولةٌ مؤكَّدة حيث يفرضها العقد،
+  // ومرجعٌ نصّيّ حيث يكفي. لا شاشة تُرسل طريقةً لا يستطيع الخادم قبول حمولتها.
+  it("فاتورة البيع المتقدّمة تحمل بوّابة الإثبات نفسها كالكاشير", () => {
     const invoice = readClient("../../pages/SalesInvoiceNew.tsx");
-    const totals = readClient("../invoice/TotalsPanel.tsx");
-    const quotation = readClient("../../pages/QuotationDetail.tsx");
-    const installments = readClient("../../pages/InstallmentPlans.tsx");
 
-    expect(invoice).toContain("cashOnlyPayment");
-    expect(totals).toContain("cashOnlyPayment = false");
-    expect(quotation).toContain('setPayMethod("CASH")');
-    expect(installments).toContain('const method = "CASH" as const');
+    expect(invoice).not.toContain("cashOnlyPayment");
+    expect(invoice).toContain("PaymentReferenceField");
+    expect(invoice).toContain("initiateExternalPayment");
+    expect(invoice).toContain("confirmExternalPayment");
+    expect(invoice).toContain("externalPaymentAttemptId: externalAttempt?.attemptId");
+    // مسار التصحيح يمرّ بعقد `reissue` الذي يحمل المرجع النصّي بنفسه.
+    expect(invoice).toContain("reference: paymentRef.trim()");
+  });
+
+  it("تحويل عرض السعر يجمع المرجع ويُمرّره بدل قسر النقد", () => {
+    const quotation = readClient("../../pages/QuotationDetail.tsx");
+
+    expect(quotation).not.toContain('setPayMethod("CASH");');
+    expect(quotation).toContain('id="quotation-pay-reference"');
+    expect(quotation).toContain('reference: payMethod === "CASH" ? undefined : payReference.trim()');
   });
 
   it("الشاشات ذات حقل المرجع تُرسله فعلاً بدل إسقاطه", () => {

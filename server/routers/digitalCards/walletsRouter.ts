@@ -86,6 +86,8 @@ export const walletsRouter = router({
         walletId: z.number().int().positive(),
         amount: positiveMoneyString,
         paymentMethod: z.enum(["CASH", "TRANSFER"]),
+        /** مرجع الحوالة كما يظهر في كشف البنك — إلزاميّ للتحويل (المطابقة لا تقوم على UUID داخليّ). */
+        referenceNumber: z.string().trim().max(100).nullish(),
         clientRequestId: z.string().min(8).max(80),
         notes: z.string().max(300).nullish(),
       }),
