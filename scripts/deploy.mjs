@@ -2372,7 +2372,7 @@ async function dispatch() {
       try {
         fs.writeFileSync(winner, `${process.pid}\n`, { flag: "wx" });
         process.stdout.write("RACE_WINNER\n");
-        sleep(1_000);
+        sleep(3_000);
       } finally {
         lock.release();
       }
