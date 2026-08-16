@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 882,
+    "trpcTotal": 884,
     "byKind": {
-      "mutation": 451,
-      "query": 431
+      "mutation": 452,
+      "query": 432
     },
     "byAuthority": {
-      "module-gate": 397,
+      "module-gate": 399,
       "module-map": 269,
       "admin": 74,
       "raw-role": 55,
@@ -20,8 +20,8 @@
       "public-read": 1
     },
     "bySensitivity": {
-      "LOW": 430,
-      "MEDIUM": 335,
+      "LOW": 431,
+      "MEDIUM": 336,
       "HIGH": 117
     },
     "byModule": {
@@ -29,7 +29,7 @@
       "hr": 80,
       "digital_cards": 75,
       "reports": 67,
-      "treasury": 53,
+      "treasury": 55,
       "products": 49,
       "store": 48,
       "inventory": 43,
@@ -74,11 +74,11 @@
     "expressMounts": 11,
     "jobs": 16,
     "routerFiles": 93,
-    "proposedPermissions": 754,
+    "proposedPermissions": 756,
     "proposedDomains": {
       "hr": 86,
+      "treasury": 71,
       "reports": 70,
-      "treasury": 69,
       "inventory": 68,
       "catalog": 64,
       "store": 48,
@@ -14092,7 +14092,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/treasuryRouter.ts:39"
+      "loc": "server/routers/treasuryRouter.ts:69"
     },
     {
       "surface": "trpc",
@@ -14109,7 +14109,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/treasuryRouter.ts:181"
+      "loc": "server/routers/treasuryRouter.ts:211"
     },
     {
       "surface": "trpc",
@@ -14126,7 +14126,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/treasuryRouter.ts:100"
+      "loc": "server/routers/treasuryRouter.ts:130"
     },
     {
       "surface": "trpc",
@@ -14143,7 +14143,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/treasuryRouter.ts:54"
+      "loc": "server/routers/treasuryRouter.ts:84"
     },
     {
       "surface": "trpc",
@@ -14160,7 +14160,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/treasuryRouter.ts:134"
+      "loc": "server/routers/treasuryRouter.ts:164"
     },
     {
       "surface": "trpc",
@@ -14177,7 +14177,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/treasuryRouter.ts:151"
+      "loc": "server/routers/treasuryRouter.ts:181"
     },
     {
       "surface": "trpc",
@@ -14194,7 +14194,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/treasuryRouter.ts:117"
+      "loc": "server/routers/treasuryRouter.ts:147"
     },
     {
       "surface": "trpc",
@@ -14211,7 +14211,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/treasuryRouter.ts:74"
+      "loc": "server/routers/treasuryRouter.ts:104"
+    },
+    {
+      "surface": "trpc",
+      "router": "treasuryRouter",
+      "proposedPermission": "treasury.treasury.pending_handover_queue",
+      "name": "pendingHandoverQueue",
+      "kind": "query",
+      "procedure": "treasuryManagerProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "FULL",
+      "roles": "manager|accountant",
+      "branch": "required",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/treasuryRouter.ts:44"
     },
     {
       "surface": "trpc",
@@ -14228,7 +14245,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/treasuryRouter.ts:30"
+      "loc": "server/routers/treasuryRouter.ts:32"
+    },
+    {
+      "surface": "trpc",
+      "router": "treasuryRouter",
+      "proposedPermission": "treasury.treasury.reassign_handover_receipt",
+      "name": "reassignHandoverReceipt",
+      "kind": "mutation",
+      "procedure": "treasuryManagerProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "FULL",
+      "roles": "manager|accountant",
+      "branch": "required",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/treasuryRouter.ts:53"
     },
     {
       "surface": "trpc",
