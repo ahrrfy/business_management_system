@@ -62,6 +62,7 @@ import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
+import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -93,6 +94,10 @@ async function startServer() {
     );
     process.exit(1);
   }
+
+  // لا نُفعّل R2 ضمنياً أثناء بقاء الصور القديمة في MySQL، لكن إذا فُعّل السائق صراحةً
+  // فيجب أن يكون عقده كاملاً قبل فتح منفذ HTTP لا عند أول طلب صورة.
+  assertImageStoreStartupConfiguration();
 
   const isDev = process.env.NODE_ENV === "development";
   // إنتاج آمن افتراضياً: غياب HOST أو الربط العام العرضي يوقف الإقلاع قبل فتح المنفذ.
