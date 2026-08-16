@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
+  BundleMedia,
   addStorefrontCartLine,
   addStorefrontCartLines,
   collectStorefrontFailures,
@@ -15,6 +18,33 @@ import {
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
+
+describe("storefront bundle media", () => {
+  it("يعرض حتى أربع صور مكوّنات في شبكة واحدة دون تكرار النص البديل", () => {
+    const html = renderToStaticMarkup(createElement(BundleMedia, {
+      urls: ["/a.webp", "/b.webp", "/c.webp", "/d.webp", "/ignored.webp"],
+      fallbackUrl: "/a.webp",
+      alt: "بكج العودة إلى المدرسة",
+    }));
+
+    expect(html.match(/<img/g)).toHaveLength(4);
+    expect(html).toContain('role="img"');
+    expect(html).toContain("صور مكوّنات البكج: بكج العودة إلى المدرسة");
+    expect(html).not.toContain("/ignored.webp");
+  });
+
+  it("يعرض الصورة التسويقية الخاصة منفردة عند عدم إرجاع صور المكوّنات", () => {
+    const html = renderToStaticMarkup(createElement(BundleMedia, {
+      urls: undefined,
+      fallbackUrl: "/bundle.webp",
+      alt: "بكج خاص",
+    }));
+
+    expect(html.match(/<img/g)).toHaveLength(1);
+    expect(html).toContain('/bundle.webp');
+    expect(html).not.toContain("صور مكوّنات البكج");
+  });
+});
 
 describe("storefront source failures", () => {
   it("keeps every failed public source explicit instead of treating it as empty data", () => {

@@ -11,7 +11,7 @@
  *   • هيرو + شريط ثقة + شارات خصم — سمات المتجر الناجح. مقصور على المتجر (لا يمسّ نظام الموظفين).
  *   • متجاوب أولوية-الجوال، ثيم فاتح/داكن، خطّ Cairo (ودود كـNunito الموصى به).
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import React, { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "wouter";
 import {
   AlertTriangle,
@@ -400,6 +400,56 @@ function ProductImage({
   return <img src={url} alt={alt} loading="lazy" className={`store-product-image object-cover ${className ?? ""}`} />;
 }
 
+/**
+ * يعرض صور مكوّنات البكج بالمرجع من دون إنشاء نسخ جديدة منها.
+ * الصورة التسويقية الخاصة بالبكج تبقى صاحبة الأولوية لأن الخادم لا يعيد
+ * bundleImageUrls عند وجودها.
+ */
+export function BundleMedia({
+  urls,
+  fallbackUrl,
+  alt,
+  className,
+  showFallbackLabel = false,
+}: {
+  urls?: string[];
+  fallbackUrl: string | null;
+  alt: string;
+  className?: string;
+  showFallbackLabel?: boolean;
+}) {
+  const componentImages = (urls ?? []).filter(Boolean).slice(0, 4);
+  if (componentImages.length <= 1) {
+    return (
+      <ProductImage
+        url={fallbackUrl ?? componentImages[0] ?? null}
+        alt={alt}
+        className={className}
+        showFallbackLabel={showFallbackLabel}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={`store-product-media grid grid-cols-2 grid-rows-2 overflow-hidden bg-slate-100 dark:bg-slate-800 ${className ?? ""}`}
+      role="img"
+      aria-label={`صور مكوّنات البكج: ${alt}`}
+    >
+      {componentImages.map((url, index) => (
+        <img
+          key={`${url}-${index}`}
+          src={url}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="size-full min-h-0 min-w-0 object-cover"
+        />
+      ))}
+    </div>
+  );
+}
+
 /** «تسوّق حسب القسم» — بطاقات فئات بصرية تقود التصفّح (نمط تجاريّ عالميّ). */
 function CategoryTiles({ cats, onPick }: { cats: { id: number; name: string }[]; onPick: (id: number) => void }) {
   if (cats.length === 0) return null;
@@ -463,6 +513,7 @@ type RowProduct = {
   price: string | null;
   salePrice?: string | null;
   imageUrl: string | null;
+  bundleImageUrls?: string[];
   unitName: string;
   inStock?: boolean;
 };
@@ -472,7 +523,7 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
   return (
     <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
       <button onClick={onSelect} className="relative block text-right">
-        <ProductImage url={p.imageUrl} alt={p.productName} className="store-product-media aspect-square w-full" />
+        <BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
         {onSale && pct > 0 && (
           <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
         )}
@@ -1490,7 +1541,13 @@ export default function Storefront() {
                   }`}
                 >
                   <button onClick={() => setSelectedId(p.productId)} className="relative block text-right">
-                    <ProductImage url={p.imageUrl} alt={p.productName} showFallbackLabel className="store-product-media aspect-square w-full" />
+                    <BundleMedia
+                      urls={p.bundleImageUrls}
+                      fallbackUrl={p.imageUrl}
+                      alt={p.productName}
+                      showFallbackLabel
+                      className="aspect-square w-full"
+                    />
                     {onSale && pct > 0 && (
                       <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">
                         −{pct}٪
@@ -1661,7 +1718,12 @@ export default function Storefront() {
             ) : detailQ.data ? (
               <div>
                 <div className="flex gap-4">
-                  <ProductImage url={detailQ.data.imageUrl} alt={detailQ.data.productName} className="store-product-media size-28 shrink-0 rounded-2xl" />
+                  <BundleMedia
+                    urls={detailQ.data.bundleImageUrls}
+                    fallbackUrl={detailQ.data.imageUrl}
+                    alt={detailQ.data.productName}
+                    className="size-28 shrink-0 rounded-2xl"
+                  />
                   <div className="min-w-0 flex-1">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
