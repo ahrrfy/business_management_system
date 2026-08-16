@@ -17,6 +17,7 @@ function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof creat
     ...input,
     counterpartyName: isOther ? (input.counterpartyName ?? "طرف اختباري موثق") : input.counterpartyName,
     referenceNumber: isOtherReceipt ? (input.referenceNumber ?? `SRC-${voucherRequestSequence}`) : input.referenceNumber,
+    voucherCategoryId: isOther ? (input.voucherCategoryId ?? (isOtherReceipt ? 11 : 10)) : input.voucherCategoryId,
     clientRequestId: input.clientRequestId ?? `voucher-test-${voucherRequestSequence}`,
   }, actor);
 }
@@ -25,6 +26,7 @@ const actor = { userId: 1, branchId: 1, role: "admin" };
 const ownerApprover = { userId: 2, branchId: 1, role: "manager" };
 
 const TABLES = [
+  "voucherCategories",
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
@@ -52,6 +54,10 @@ async function seedBase() {
   await d.insert(s.users).values([
     { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
     { id: 2, openId: "owner-approver", name: "مالك ثانٍ", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
+  await d.insert(s.voucherCategories).values([
+    { id: 10, name: "مصروفات اختبارية", direction: "OUT", postingRole: "RENT" },
+    { id: 11, name: "إيرادات اختبارية", direction: "IN", postingRole: "OTHER_REVENUE" },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "100.00" });
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "50.00" });

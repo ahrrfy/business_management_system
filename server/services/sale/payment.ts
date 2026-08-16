@@ -5,6 +5,7 @@ import { invoices, receipts, shifts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, toDbMoney } from "../money";
 import { openShiftIdTx } from "../shiftService";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
@@ -12,6 +13,7 @@ import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import type { PaymentMethod } from "./types";
+import { paymentAssetRole } from "./paymentPosting";
 
 export interface ProcessPaymentInput {
   invoiceId: number;
@@ -199,6 +201,11 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       .set({ paidAmount: toDbMoney(newPaid), status, paymentDate: new Date(), paymentMethod: input.method })
       .where(eq(invoices.id, input.invoiceId));
 
+    const paymentRole = paymentAssetRole(input.method, input.method === "CASH" ? "DRAWER" : null, "IN");
+    const paymentPostingSource = {
+      roleDebits: { [paymentRole]: amount },
+      roleCredits: { AR: amount },
+    };
     await postEntry(tx, {
       entryType: "PAYMENT_IN",
       branchId: Number(inv.branchId),
@@ -206,6 +213,8 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       receiptId,
       customerId: inv.customerId,
       amount,
+      postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(paymentRole, amount), creditLine("AR", amount)], paymentPostingSource),
+      postingSourceComponents: paymentPostingSource,
     });
     if (inv.customerId) {
       await adjustCustomerBalance(tx, Number(inv.customerId), amount.neg());

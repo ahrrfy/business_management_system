@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { auditLogs, customers, invoices, receipts, shifts } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
 import { postEntry } from "./ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import type { SaleLineInput, PaymentMethod } from "./sale/types";
 import type { PriceTier } from "./pricing";
 import { createSaleInTx } from "./sale/create";
@@ -493,6 +494,14 @@ export async function checkoutReceptionInTx(
         receiptId: extractInsertId(feeRes),
         amount: feeHeldD,
         notes: "أمانة أجرة توصيل — طلب استقبال",
+        postingSourceComponents: {
+          roleDebits: { CASH: feeHeldD },
+          roleCredits: { COURIER_PAYABLE: feeHeldD },
+        },
+        postingIntent: createPostingIntent("DELIVERY_FEE_HELD_RECEIPT", "DELIVERY_FEE_HELD", [debitLine("CASH", feeHeldD), creditLine("COURIER_PAYABLE", feeHeldD)], {
+          roleDebits: { CASH: feeHeldD },
+          roleCredits: { COURIER_PAYABLE: feeHeldD },
+        }),
       });
     }
 

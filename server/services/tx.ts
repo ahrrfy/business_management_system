@@ -1,18 +1,60 @@
 import { TRPCError } from "@trpc/server";
 import { getDb, type DB, type Tx } from "../db";
+import {
+  ensureFinancialPostingGate,
+  isMonthCloseGateMissing,
+  lockCompanyMonthCloseGate,
+  lockFinancialPostingGate,
+} from "./reports/monthCloseGate";
 
 /** Resolve the DB or throw a uniform tRPC error when DATABASE_URL is unset. */
 export function requireDb(): DB {
   const db = getDb();
   if (!db) {
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "قاعدة البيانات غير متاحة",
+    });
   }
   return db;
 }
 
-/** Wrap a unit of work in an atomic transaction. Any throw ⇒ full ROLLBACK. */
-export async function withTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return requireDb().transaction(fn);
+export type TransactionGate = "FINANCIAL_WRITER" | "GOVERNANCE" | "NONE";
+
+/**
+ * Wrap a unit of work in an atomic transaction. Any throw ⇒ full ROLLBACK.
+ *
+ * The default gate is deliberately acquired before the callback can lock any
+ * domain row. This gives every application transaction one global lock order:
+ * company gate -> domain rows. Month/year-close governance asks for the
+ * exclusive form at transaction entry, so it can never hold the gate while a
+ * writer waits on a domain lock that governance later needs.
+ */
+export async function withTx<T>(
+  fn: (tx: Tx) => Promise<T>,
+  options: { gate?: TransactionGate } = {},
+): Promise<T> {
+  const database = requireDb();
+  const run = () => database.transaction(async (tx) => {
+    const gate = options.gate ?? "FINANCIAL_WRITER";
+    if (gate === "GOVERNANCE") await lockCompanyMonthCloseGate(tx);
+    else if (gate === "FINANCIAL_WRITER") await lockFinancialPostingGate(tx);
+    return fn(tx);
+  });
+
+  try {
+    return await run();
+  } catch (error) {
+    if (!isMonthCloseGateMissing(error)) throw error;
+    // الفشل وقع قبل callback، لذلك الإعادة آمنة ولا تكرر أي أثر أعمال.
+    await ensureFinancialPostingGate(database);
+    return run();
+  }
+}
+
+/** Governance transaction with the exclusive close gate acquired at entry. */
+export function withGovernanceTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return withTx(fn, { gate: "GOVERNANCE" });
 }
 
 /**
@@ -26,4 +68,9 @@ export async function withTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
  * على مستوى الخدمة (مثل productionService.assertProductionBranch، عزل الفروع لغير
  * admin، حجب التكلفة عن الكاشير) تَعتمد عليه — تَمريره من ctx.user.role إلزامي عملياً.
  */
-export type Actor = { userId: number; branchId: number; role?: string; isOwner?: boolean };
+export type Actor = {
+  userId: number;
+  branchId: number;
+  role?: string;
+  isOwner?: boolean;
+};

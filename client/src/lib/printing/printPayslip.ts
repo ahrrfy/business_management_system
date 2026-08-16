@@ -23,6 +23,7 @@ import {
 } from "./docHtml";
 import { esc, fmt, openPrintWindow } from "./brand";
 import { formatArabicMoneyWords } from "./tafqit";
+import { D, round2 } from "@/lib/money";
 
 export interface PayslipData {
   runId: number;
@@ -33,6 +34,11 @@ export interface PayslipData {
   position?: string | null;
   department?: string | null;
   branchName?: string | null;
+  revisionNo?: number | null;
+  accrualDate?: string | null;
+  legalPolicyHash?: string | null;
+  approvalSnapshotHash?: string | null;
+  itemSnapshotHash?: string | null;
   payTypeLabel: string;
   baseSalary?: string | null;
   /** ساعات مستحقّة (الساعيّ دائماً، والشهريّ عند تفعيل الأجر بالحضور). */
@@ -44,10 +50,16 @@ export interface PayslipData {
   advanceDeduction?: string | null;
   socialSecurityEmployee?: string | null;
   incomeTax?: string | null;
+  socialSecurityEmployer?: string | null;
+  endOfServiceAccrual?: string | null;
   net: string;
   /** ملاحظة الاحتساب (تفصيل الأجر بالحضور أو خصم الإجازة) — تُعرض كما هي للشفافية. */
   note?: string | null;
   paidAt?: string | null;
+  paidAmount?: string | null;
+  paymentMethod?: string | null;
+  paymentReference?: string | null;
+  receiptId?: number | null;
   settings?: CompanySettings;
 }
 
@@ -55,12 +67,13 @@ export interface PayslipData {
 function line(label: string, value: string | null | undefined, kind: "earn" | "deduct"): {
   bandLabel: string;
   amount: string;
-  _n: number;
+  _n: string;
   _kind: string;
 } | null {
-  const n = Number(value ?? 0);
-  if (!Number.isFinite(n) || n === 0) return null;
-  return { bandLabel: label, amount: fmt(String(Math.abs(n))), _n: Math.abs(n), _kind: kind };
+  const n = D(value ?? 0);
+  if (n.isZero()) return null;
+  const absolute = round2(n.abs()).toFixed(2);
+  return { bandLabel: label, amount: fmt(absolute), _n: absolute, _kind: kind };
 }
 
 export function printPayslip(d: PayslipData): boolean {
@@ -71,7 +84,10 @@ export function printPayslip(d: PayslipData): boolean {
       fields: [
         { label: "الشهر", value: d.period },
         { label: "رقم المسيّر", value: `PR-${d.runId}` },
-        ...(d.paidAt ? [{ label: "تاريخ الصرف", value: d.paidAt }] : []),
+        ...(d.revisionNo != null ? [{ label: "المراجعة", value: `R${d.revisionNo}` }] : []),
+        ...(d.accrualDate ? [{ label: "تاريخ الاستحقاق", value: d.accrualDate }] : []),
+        ...(d.paidAt ? [{ label: "تاريخ الصرف الفعلي", value: d.paidAt }] : []),
+        ...(d.receiptId ? [{ label: "مستند الصرف", value: `REC-${d.receiptId}` }] : []),
       ],
       badge: {
         label: d.statusLabel,
@@ -98,10 +114,12 @@ export function printPayslip(d: PayslipData): boolean {
       variant: "gray",
       fields: [
         { label: "طريقة الأجر", value: d.payTypeLabel },
-        ...(d.baseSalary != null && Number(d.baseSalary) > 0
+        ...(d.baseSalary != null && D(d.baseSalary).gt(0)
           ? [{ label: "الراتب الأساس", value: `${fmt(d.baseSalary)} د.ع` }]
           : []),
-        ...(d.hours != null && Number(d.hours) > 0 ? [{ label: "الساعات المستحقّة", value: `${fmt(d.hours)} ساعة` }] : []),
+        ...(d.hours != null && D(d.hours).gt(0) ? [{ label: "الساعات المستحقّة", value: `${fmt(d.hours)} ساعة` }] : []),
+        ...(d.paymentMethod ? [{ label: "طريقة الصرف", value: d.paymentMethod }] : []),
+        ...(d.paymentReference ? [{ label: "مرجع الصرف", value: d.paymentReference }] : []),
       ],
     },
   ]);
@@ -110,22 +128,23 @@ export function printPayslip(d: PayslipData): boolean {
     line("الأجر الأساس والمخصّصات", d.gross, "earn"),
     line("عمل إضافي", d.overtime, "earn"),
     line("عمولة مبيعات", d.commission, "earn"),
-  ].filter(Boolean) as Array<{ bandLabel: string; amount: string; _n: number }>;
+  ].filter(Boolean) as Array<{ bandLabel: string; amount: string; _n: string }>;
 
   const deducts = [
     line("استقطاع سلفة", d.advanceDeduction, "deduct"),
     line("ضمان اجتماعي (حصة الموظف)", d.socialSecurityEmployee, "deduct"),
     line("ضريبة الدخل", d.incomeTax, "deduct"),
-  ].filter(Boolean) as Array<{ bandLabel: string; amount: string; _n: number }>;
+  ].filter(Boolean) as Array<{ bandLabel: string; amount: string; _n: string }>;
 
   // الفارق بين إجمالي الاستقطاع والبنود المسمّاة = خصومات أخرى (إجازة بلا راتب…)
-  const namedDeduct = deducts.reduce((s, x) => s + x._n, 0);
-  const otherDeduct = Number(d.deductions ?? 0) - namedDeduct;
-  if (otherDeduct > 0.004) {
-    deducts.push({ bandLabel: "خصومات أخرى (إجازة/غياب)", amount: fmt(String(otherDeduct)), _n: otherDeduct });
+  const namedDeduct = deducts.reduce((sum, item) => sum.plus(D(item._n)), D(0));
+  const otherDeduct = round2(D(d.deductions ?? 0).minus(namedDeduct));
+  if (otherDeduct.gt(0)) {
+    const amount = otherDeduct.toFixed(2);
+    deducts.push({ bandLabel: "خصومات أخرى (إجازة/غياب)", amount: fmt(amount), _n: amount });
   }
 
-  const totalEarn = earnings.reduce((s, x) => s + x._n, 0);
+  const totalEarn = round2(earnings.reduce((sum, item) => sum.plus(D(item._n)), D(0))).toFixed(2);
 
   const table = docTableV2(
     [
@@ -139,7 +158,7 @@ export function printPayslip(d: PayslipData): boolean {
       {
         band: "المجموع",
         earn: fmt(String(totalEarn)),
-        deduct: Number(d.deductions) > 0 ? `−${fmt(d.deductions)}` : "—",
+        deduct: D(d.deductions).gt(0) ? `−${fmt(d.deductions)}` : "—",
       },
     ],
     { hideIndex: true },
@@ -156,8 +175,22 @@ export function printPayslip(d: PayslipData): boolean {
   const grand = grandTotalBar("صافي المستحقّ", fmt(d.net), { big: true });
   const tafqit = tafqitLine(formatArabicMoneyWords(d.net));
 
+  const employerLiabilities = D(d.socialSecurityEmployer ?? 0).gt(0) || D(d.endOfServiceAccrual ?? 0).gt(0)
+    ? `<div style="margin-top:8px;padding:8px 14px;border:1px solid #CBD5E1;border-radius:4px;background:#F8FAFC">
+        <div style="font-size:10.75px;font-weight:800;color:#334155;margin-bottom:4px">التزامات على الشركة — لا تُخصم من الموظف</div>
+        ${D(d.socialSecurityEmployer ?? 0).gt(0) ? `<div style="font-size:10.25px">حصة رب العمل في الضمان: <b>${fmt(d.socialSecurityEmployer!)} د.ع</b></div>` : ""}
+        ${D(d.endOfServiceAccrual ?? 0).gt(0) ? `<div style="font-size:10.25px">استحقاق نهاية الخدمة للفترة: <b>${fmt(d.endOfServiceAccrual!)} د.ع</b></div>` : ""}
+      </div>`
+    : "";
+
+  const audit = `<div style="margin-top:8px;padding:6px 10px;border:1px solid #E5E7EB;border-radius:4px;font-size:8.75px;color:#64748B;direction:ltr;text-align:left;word-break:break-all">
+    POLICY ${esc(d.legalPolicyHash || "N/A")}<br>
+    APPROVAL ${esc(d.approvalSnapshotHash || "N/A")}<br>
+    ITEM ${esc(d.itemSnapshotHash || "N/A")}
+  </div>`;
+
   const signatures = `<div style="margin-top:30px;display:flex;justify-content:space-between;gap:24px">
-    ${["الموظف (استلمت)", "المحاسب", "المدير المفوَّض"]
+    ${[d.paidAt ? "الموظف (استلمت)" : "الموظف (اطلعت)", "المحاسب", "المدير المفوَّض"]
       .map(
         (l) => `<div style="flex:1;text-align:center">
           <div style="height:34px"></div>
@@ -166,9 +199,9 @@ export function printPayslip(d: PayslipData): boolean {
       )
       .join("")}
   </div>
-  <div style="margin-top:10px;font-size:9.75px;color:#8B8E89">هذا الكشف بيان احتساب — الصرف يتمّ عبر مسيّر الرواتب باعتماده المزدوج.</div>`;
+  <div style="margin-top:10px;font-size:9.75px;color:#8B8E89">هذا الكشف بيان احتساب واستحقاق — لا يثبت قبض الموظف ما لم تظهر حالة «مدفوع» وتاريخ الصرف.</div>`;
 
-  const body = `${pageBodyOpen()}${header}${cards}${table}${noteBox}${grand}${tafqit}${signatures}${pageBodyClose()}${pageFooter(
+  const body = `${pageBodyOpen()}${header}${cards}${table}${noteBox}${grand}${tafqit}${employerLiabilities}${audit}${signatures}${pageBodyClose()}${pageFooter(
     d.settings,
     { rightText: `REF PR-${d.runId}/${d.period}/EMP-${d.employeeId}` },
   )}`;

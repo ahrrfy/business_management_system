@@ -8,6 +8,10 @@ import { extractInsertId } from "../../lib/insertId";
 import { applyMovement } from "../inventoryService";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
+import {
+  createPostingIntent,
+  signedPostingLines,
+} from "../accounting/postingEngine";
 import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
 import { spoilageSplit } from "./calc";
@@ -103,6 +107,11 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
         amount: sp.abnormalLoss,
         revenue: new Decimal(0),
         profit: round2(new Decimal(0).minus(sp.abnormalLoss)),
+        postingIntent: createPostingIntent(
+          "WASTAGE_INVENTORY",
+          "WASTAGE",
+          signedPostingLines("LOSSES", "INVENTORY", sp.abnormalLoss),
+        ),
         notes: `هدر إنتاج غير طبيعي — ${docNumber} (${sp.abnormalUnits} وحدة)`,
         dedupeKey: `WASTAGE:PROD:${productionOrderId}`,
       });
@@ -110,7 +119,6 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
     return { productionOrderId, docNumber, totalCost: totalCost.toFixed(2) };
   });
 }
-
 /**
  * تحقّق + تحليل أسطر الإنتاج: «تشغيل بوصفة» (الخادم يوسّع) أو مدخلات/مخرجات يدوية،
  * ثم حارس التحويل الذاتي ووجود كل الأصناف. يُعيد الأسطر المحلولة + العمالة + الهدر + الوصفة المرتبطة.

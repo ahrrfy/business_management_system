@@ -81,6 +81,11 @@ async function stockOf(variantId: number, branchId: number): Promise<number> {
   return rows[0]?.q ?? 0;
 }
 
+async function seedOwnedStock(quantity = 100, costPrice = "5.00") {
+  await db().update(s.productVariants).set({ costPrice }).where(eq(s.productVariants.id, 1));
+  await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity });
+}
+
 async function receivePurchaseOf100(paymentAmount?: string, taxRatePercent = "0") {
   const po = await createPurchaseOrder(
     {
@@ -429,6 +434,134 @@ describe("مرتجع المشتريات", () => {
 });
 
 // RBAC: تمنع البوّابة الكاشير وأمين المخزن من إنشاء مرتجع شراء.
+describe("purchase return hardening", () => {
+  it("rejects a no-PO return from a consignor without changing stock or AP", async () => {
+    await seedOwnedStock();
+    await db().update(s.suppliers).set({ supplierKind: "CONSIGNOR" }).where(eq(s.suppliers.id, 1));
+    const stockBefore = await stockOf(1, 1);
+    const balanceBefore = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance;
+
+    await expect(
+      createPurchaseReturn({
+        supplierId: 1,
+        branchId: 1,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "5.00" }],
+        settlement: "CREDIT",
+      }, actor),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(await stockOf(1, 1)).toBe(stockBefore);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe(balanceBefore);
+    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "RETURN"))).toHaveLength(0);
+  });
+
+  it.each([
+    ["consignment", { isConsignment: true, consignorId: 1 }],
+    ["service", { isService: true }],
+    ["bundle/non-owned", { isBundle: true }],
+  ] as const)("rejects a no-PO return for a %s product", async (_kind, productUpdate) => {
+    await seedOwnedStock();
+    await db().update(s.products).set(productUpdate).where(eq(s.products.id, 1));
+
+    await expect(
+      createPurchaseReturn({
+        supplierId: 1,
+        branchId: 1,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "5.00" }],
+        settlement: "CREDIT",
+      }, actor),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(await stockOf(1, 1)).toBe(100);
+    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "RETURN"))).toHaveLength(0);
+  });
+
+  it("binds an idempotency key to the exact item fingerprint", async () => {
+    await receivePurchaseOf100();
+    await createPurchaseReturn({
+      clientRequestId: "purchase-return-item-fingerprint",
+      supplierId: 1,
+      branchId: 1,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "5.00" }],
+      settlement: "CREDIT",
+    }, actor);
+
+    await expect(
+      createPurchaseReturn({
+        clientRequestId: "purchase-return-item-fingerprint",
+        supplierId: 1,
+        branchId: 1,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "3", unitPrice: "5.00" }],
+        settlement: "CREDIT",
+      }, actor),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(await stockOf(1, 1)).toBe(98);
+    expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "RETURN"))).toHaveLength(1);
+  });
+
+  it("binds an idempotency key to the referenced purchase-order source", async () => {
+    const firstPoId = await receivePurchaseOf100();
+    const secondPoId = await receivePurchaseOf100();
+    await createPurchaseReturn({
+      clientRequestId: "purchase-return-source-fingerprint",
+      supplierId: 1,
+      branchId: 1,
+      purchaseOrderRefId: firstPoId,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "5.00" }],
+      settlement: "CREDIT",
+    }, actor);
+
+    await expect(
+      createPurchaseReturn({
+        clientRequestId: "purchase-return-source-fingerprint",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: secondPoId,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "2", unitPrice: "5.00" }],
+        settlement: "CREDIT",
+      }, actor),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(await stockOf(1, 1)).toBe(198);
+    expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "RETURN"))).toHaveLength(1);
+  });
+
+  it("requires completed APPROVED cash-payment evidence before a cash refund", async () => {
+    await fundTreasury();
+    const purchaseOrderId = await receivePurchaseOf100("500.00");
+    const paymentEntry = (
+      await db()
+        .select({ receiptId: s.accountingEntries.receiptId })
+        .from(s.accountingEntries)
+        .where(and(
+          eq(s.accountingEntries.entryType, "PAYMENT_OUT"),
+          eq(s.accountingEntries.purchaseOrderId, purchaseOrderId),
+        ))
+    )[0];
+    expect(paymentEntry?.receiptId).toBeTruthy();
+    await db()
+      .update(s.receipts)
+      .set({ status: "FAILED", approvalStatus: "REJECTED" })
+      .where(eq(s.receipts.id, Number(paymentEntry.receiptId)));
+
+    await expect(
+      createPurchaseReturn({
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: purchaseOrderId,
+        items: [{ variantId: 1, productUnitId: 1, quantity: "20", unitPrice: "5.00" }],
+        settlement: "CASH",
+        paymentMethod: "CASH",
+      }, actor),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(await stockOf(1, 1)).toBe(100);
+    expect(await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "RETURN"))).toHaveLength(0);
+    expect((await db().select().from(s.receipts)).filter((receipt) => receipt.direction === "IN" && receipt.referenceNumber == null)).toHaveLength(0);
+  });
+});
+
 function ctxWith(role: string, branchId: number | null = 1): TrpcContext {
   return {
     req: { headers: {} } as unknown as TrpcContext["req"],

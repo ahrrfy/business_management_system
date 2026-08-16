@@ -129,7 +129,7 @@ describe("sale.create idempotency — بصمة كاملة تَكشف إعادة 
         { branchId: 1, customerId: 2, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }], clientRequestId: reqId },
         actorAdmin,
       ),
-    ).rejects.toThrow(/عميل مختلف/);
+    ).rejects.toThrow(/حمولة/);
     expect((await db().select().from(s.invoices))).toHaveLength(1);
   });
 
@@ -176,7 +176,7 @@ describe("sale.create idempotency — بصمة كاملة تَكشف إعادة 
         },
         actorAdmin,
       ),
-    ).rejects.toThrow(/عدد أصناف مختلف/);
+    ).rejects.toThrow(/حمولة/);
   });
 
   it("نفس clientRequestId بكامل البصمة ⇒ replay آمن (لا فاتورة ثانية)", async () => {

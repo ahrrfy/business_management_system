@@ -21,6 +21,7 @@ function emptyForm() {
     name: "", category: "computers", brand: "", serial: "",
     branchId: "", location: "", condition: "ممتاز",
     supplierId: "", purchaseDate: today(), purchaseValue: "", warrantyEnd: "",
+    acquisitionBeneficiaryName: "", acquisitionEvidenceReference: "",
     method: "sl" as "sl" | "db", usefulLifeYears: String(categoryDefaultLife("computers")), salvageValue: "0",
     custodianId: "",
   };
@@ -37,6 +38,7 @@ export default function AssetNew() {
   const [, navigate] = useLocation();
   const opts = trpc.assets.formOptions.useQuery();
   const [error, setError] = useState("");
+  const [clientRequestId] = useState(() => crypto.randomUUID());
 
   const [form, setForm] = useState(emptyForm);
   const [initialForm] = useState(emptyForm);
@@ -55,7 +57,7 @@ export default function AssetNew() {
     onSuccess: (a) => {
       notify.ok(
         a?.paymentPending
-          ? `حُفظ طلب الأصل ${a.code} معلّقاً — لا يظهر أصلاً نشطاً ولا يبدأ إهلاكه قبل اعتماد مالكٍ آخر ودفعه من الخزينة`
+          ? `ثُبّت الأصل ${a.code} وأُثبت التزام اقتنائه — الأصل نشط ويبدأ إهلاكه، أمّا خروج النقد فينتظر اعتماد مالكٍ آخر`
           : `أُضيف الأصل ${a?.code ?? ""}`,
       );
       navigate(a?.id ? `/assets/${a.id}` : "/assets/register");
@@ -69,6 +71,8 @@ export default function AssetNew() {
     if (!form.purchaseValue.trim()) { setError("قيمة الشراء مطلوبة."); return; }
     if (!(Number(form.purchaseValue) > 0)) { setError("قيمة الشراء يجب أن تكون أكبر من صفر."); return; }
     if (!(Number(form.usefulLifeYears) > 0)) { setError("العمر الإنتاجي يجب أن يكون أكبر من صفر."); return; }
+    if (!form.acquisitionEvidenceReference.trim()) { setError("مرجع فاتورة أو عقد الاقتناء مطلوب."); return; }
+    if (!form.supplierId && !form.acquisitionBeneficiaryName.trim()) { setError("اسم البائع الحقيقي مطلوب عند عدم اختيار مورد مسجل."); return; }
     create.mutate({
       name: form.name.trim(),
       category: form.category as never,
@@ -78,6 +82,9 @@ export default function AssetNew() {
       location: form.location.trim() || undefined,
       custodianId: form.custodianId ? Number(form.custodianId) : undefined,
       supplierId: form.supplierId ? Number(form.supplierId) : undefined,
+      acquisitionBeneficiaryName: form.supplierId ? undefined : form.acquisitionBeneficiaryName.trim(),
+      acquisitionEvidenceReference: form.acquisitionEvidenceReference.trim(),
+      clientRequestId,
       purchaseDate: form.purchaseDate,
       purchaseValue: form.purchaseValue.trim(),
       salvageValue: form.salvageValue.trim() || "0",
@@ -146,6 +153,10 @@ export default function AssetNew() {
           <div className="space-y-1"><Label>تاريخ الشراء *</Label><Input type="date" dir="ltr" value={form.purchaseDate} onChange={(e) => set({ purchaseDate: e.target.value })} /></div>
           <div className="space-y-1"><Label>قيمة الشراء (د.ع) *</Label><MoneyInput value={form.purchaseValue} onChange={(purchaseValue) => set({ purchaseValue })} decimals={0} placeholder="1,850,000" /></div>
           <div className="space-y-1"><Label>نهاية الكفالة</Label><Input type="date" dir="ltr" value={form.warrantyEnd} onChange={(e) => set({ warrantyEnd: e.target.value })} /></div>
+          {!form.supplierId && (
+            <div className="space-y-1"><Label>اسم البائع الحقيقي *</Label><Input value={form.acquisitionBeneficiaryName} onChange={(e) => set({ acquisitionBeneficiaryName: e.target.value })} placeholder="اسم الشخص أو الجهة كما في المستند" /></div>
+          )}
+          <div className="space-y-1"><Label>مرجع فاتورة/عقد الاقتناء *</Label><Input value={form.acquisitionEvidenceReference} onChange={(e) => set({ acquisitionEvidenceReference: e.target.value })} dir="ltr" placeholder="INV-2026-001" /></div>
         </CardContent>
       </Card>
 

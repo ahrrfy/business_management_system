@@ -18,6 +18,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { setStock, isBundleVariant, isServiceVariant } from "../inventoryService";
 import { loadOpeningPurchaseLinkedVariantIds } from "../stocktake/openingEligibility";
 import { postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money } from "../money";
 import { requireDb } from "../tx";
 import { type Actor, withTx } from "../tx";
@@ -62,9 +63,24 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
       throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
     }
     const v = (
-      await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1)
+      await tx
+        .select({
+          id: productVariants.id,
+          costPrice: productVariants.costPrice,
+          isConsignment: products.isConsignment,
+        })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(eq(productVariants.id, input.variantId))
+        .limit(1)
     )[0];
     if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
+    if (v.isConsignment) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "بضاعة الأمانة لا تُسوّى بطلب تعديل مخزون — استعمل سندات الأمانة أو الجرد الدوري",
+      });
+    }
     // C2 (مراجعة عدائية): مرآة حراس setStock عند الطلب — لا نُنشئ طلباً يستحيل اعتماده (البكج يُرفَض عند
     // الاعتماد فيبقى معلَّقاً للأبد؛ الخِدميّ لا مخزون له). البكج يُسوَّى بمكوّناته لا مباشرةً.
     if (await isBundleVariant(tx, input.variantId)) {
@@ -132,23 +148,40 @@ export async function approveStockAdjustment(
         message: `تغيّر المخزون منذ الطلب (كان ${r.expectedQuantity}، الآن ${liveQty}) — أعد الطلب بالرصيد الحاليّ`,
       });
     }
+    // ترتيب القفل الحاكم مع الشراء/WAVG: branchStock ثم productVariants. نحجز لقطة التكلفة حتى
+    // نهاية الاعتماد، ونرفض أيضاً أي طلب قديم صار صنفه أمانة قبل تطبيق حركة أو قيد.
+    const variant = (
+      await tx
+        .select({
+          costPrice: productVariants.costPrice,
+          isConsignment: products.isConsignment,
+        })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(eq(productVariants.id, Number(r.variantId)))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!variant) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
+    }
+    if (variant.isConsignment) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "بضاعة الأمانة لا تُعتمد كتسوية مخزون — ارفض الطلب واستعمل سندات الأمانة أو الجرد الدوري",
+      });
+    }
     // تدقيق ١١/٨ (H3): أثناء نافذة الافتتاح، تسوية صنفٍ **غير مُفتتَح** = تثبيت رصيدٍ افتتاحيّ ⇒ مسار
     // OPENING (يختم openedAt مركزياً) **بصفر أثر P&L** بدل ترحيل ADJUST بقيمة الفرق × التكلفة (كان يُنتج
     // ربحاً/خسارةً وهميّاً). لكن openedAt IS NULL وحده لا يكفي (مراجعة Codex): الصنف المرتبط بأمر شراءٍ غير
-    // ملغى (له مصدرٌ شرائيّ سيُستلَم) أو صنف الأمانة (يُؤسَّس بسند إيداع) — تأسيسه OPENING يزدوج مع مصدره
-    // لاحقاً، فنستثنيهما (نفس أهلية الجرد الافتتاحي في create/liveScope) ويبقيان على مسار ADJUST العاديّ.
+    // ملغى (له مصدرٌ شرائيّ سيُستلَم) — تأسيسه OPENING يزدوج مع مصدره لاحقاً، فنستثنيه (نفس أهلية
+    // الجرد الافتتاحي في create/liveScope). الأمانة مرفوضة أعلاه من مسار التسوية كله.
     const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
     const windowActive = !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
     let openingEstablish = windowActive && cur?.openedAt == null;
     if (openingEstablish) {
       const purchaseLinked = await loadOpeningPurchaseLinkedVariantIds(tx, branchId, [Number(r.variantId)]);
-      const [prod] = await tx
-        .select({ isConsign: products.isConsignment })
-        .from(productVariants)
-        .innerJoin(products, eq(productVariants.productId, products.id))
-        .where(eq(productVariants.id, Number(r.variantId)))
-        .limit(1);
-      if (purchaseLinked.has(Number(r.variantId)) || prod?.isConsign) openingEstablish = false;
+      if (purchaseLinked.has(Number(r.variantId))) openingEstablish = false;
     }
     // يطبّق المخزون الآن (لحظة الاعتماد) — setStock يفرض حراس الخدمة/البكج. قد يرمي ⇒ يُلغى الاعتماد كلّه.
     // مرجع OPENING عند التثبيت الافتتاحيّ ⇒ ختم openedAt (بلا referenceId: تدفّق حقيقي في netAfter لاحقاً).
@@ -162,9 +195,6 @@ export async function approveStockAdjustment(
     });
     // قيد ADJUST بقيمة الفرق × التكلفة — يُتجاوَز كلياً في التثبيت الافتتاحيّ (صفر أثر P&L، كالجرد الافتتاحي).
     if (!openingEstablish && stockRes.delta && stockRes.delta !== 0) {
-      const v = (
-        await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, Number(r.variantId))).limit(1)
-      )[0];
       const noteData = decodeAdjustmentNotes(r.notes);
       if (noteData.cost == null) {
         throw new TRPCError({
@@ -172,7 +202,7 @@ export async function approveStockAdjustment(
           message: "طلب التسوية قديم ولا يحتوي لقطة تكلفة موثّقة — ارفضه وأنشئ طلباً جديداً",
         });
       }
-      const liveCost = money(v?.costPrice ?? "0").toFixed(2);
+      const liveCost = money(variant.costPrice ?? "0").toFixed(2);
       if (liveCost !== noteData.cost) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -181,6 +211,15 @@ export async function approveStockAdjustment(
       }
       const adjustValue = money(noteData.cost).times(stockRes.delta);
       if (!adjustValue.isZero()) {
+        const postingSourceComponents = adjustValue.isPositive()
+          ? {
+              roleDebits: { INVENTORY: adjustValue },
+              roleCredits: { OTHER_REVENUE: adjustValue },
+            }
+          : {
+              roleDebits: { LOSSES: adjustValue.abs() },
+              roleCredits: { INVENTORY: adjustValue.abs() },
+            };
         await postEntry(tx, {
           entryType: "ADJUST",
           branchId,
@@ -189,6 +228,26 @@ export async function approveStockAdjustment(
           amount: money(0),
           dedupeKey: `INV_ADJUST:${stockRes.movementId}`,
           notes: `تسوية مخزون معتمَدة (طلب #${id})${noteData.human ? ` — ${noteData.human}` : ""}`,
+          postingIntent: adjustValue.isPositive()
+            ? createPostingIntent(
+              "ADJUST_INVENTORY_GAIN",
+              "ADJUST",
+              [debitLine("INVENTORY", adjustValue), creditLine("OTHER_REVENUE", adjustValue)],
+              {
+                roleDebits: { INVENTORY: adjustValue },
+                roleCredits: { OTHER_REVENUE: adjustValue },
+              },
+            )
+            : createPostingIntent(
+              "ADJUST_INVENTORY_LOSS",
+              "ADJUST",
+              [debitLine("LOSSES", adjustValue.abs()), creditLine("INVENTORY", adjustValue.abs())],
+              {
+                roleDebits: { LOSSES: adjustValue.abs() },
+                roleCredits: { INVENTORY: adjustValue.abs() },
+              },
+            ),
+          postingSourceComponents,
         });
       }
     }

@@ -9,13 +9,15 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { baghdadToday } from "../businessDay";
 import { createEmployee } from "../employeeService";
-import { approveRun, cancelRun, generatePayroll, getRun, payRun } from "../payrollService";
+import { approveRun, generatePayroll, getRun, payRun, returnSalaryPayment } from "../payrollService";
 
 const ACTOR = { userId: 1, branchId: 1 };
 // طلب الدفع يُنفّذه مالك نشط مختلف عن المُولِّد.
 const APPROVER = { userId: 2, branchId: 1 };
 const NON_OWNER = { userId: 3, branchId: 1 };
+const RETURN_APPROVER = { userId: 4, branchId: 1 };
 
 const TABLES = [
   "accountingEntries",
@@ -51,6 +53,7 @@ async function seedBase() {
     { id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1, isOwner: false },
     { id: 2, openId: "test-approver", name: "مالك مدقّق", role: "manager", branchId: 1, isOwner: true },
     { id: 3, openId: "test-non-owner", name: "مدقّق غير مالك", role: "manager", branchId: 1, isOwner: false },
+    { id: 4, openId: "test-return-approver", name: "مالك مستقل للإعادة", role: "manager", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.receipts).values([
     {
@@ -222,14 +225,21 @@ describe("payrollService — pay posts ledger entries", () => {
   it("نقص خزينة الرواتب يبقي المسيّر approved ولا يكتب إيصالاً أو قيداً جزئياً", async () => {
     await db().delete(s.receipts);
     await createEmployee({ firstName: "نور", lastName: "التميمي", payType: "monthly", salary: "700000", allowances: "0" });
-    const run = await generatePayroll("2026-08", ACTOR);
+    const run = await generatePayroll("2026-07", ACTOR);
     await approveRun(run!.id, APPROVER);
-    await expect(payRun(run!.id, APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(
+      payRun(run!.id, APPROVER, { paymentMethod: "CASH", paymentDate: baghdadToday() }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     const stored = await getRun(run!.id);
     expect(stored?.status).toBe("approved");
     expect(stored?.paidAt).toBeNull();
     expect(await db().select().from(s.receipts)).toHaveLength(0);
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT")),
+    ).toHaveLength(0);
   });
 
   it("يُرحّل قيد كل موظف بفرعه هو لا بفرع المُولِّد (إسناد فرعي دقيق)", async () => {
@@ -252,26 +262,52 @@ describe("payrollService — pay posts ledger entries", () => {
     expect(Number(ent2.branchId)).toBe(2); // فرع الموظف لا فرع المُولِّد
   });
 
-  it("عكس مسيّر مدفوع ثمّ إعادة دفعه يقيّد قيداً جديداً (:r1) بلا اصطدام بالمفتاح الفريد", async () => {
+  it("إعادة دفعة راتب فعلية ثمّ إعادة دفعها تكتب حركة مستقلة بلا اصطدام بالمفتاح الفريد", async () => {
     await createEmployee({ firstName: "مصطفى", lastName: "الكناني", payType: "monthly", salary: "1000000", allowances: "0" });
     const run = await generatePayroll("2026-03", ACTOR);
     await approveRun(run!.id, APPROVER);
     await payRun(run!.id, APPROVER); // الدفع الأول: PAYROLL:<run>:<emp>
 
-    const reversed = await cancelRun(run!.id, ACTOR); // عكس ⇒ approved + قيد PAYROLL-REV
-    expect(reversed.status).toBe("approved");
+    const [salaryPayment] = await db()
+      .select({ id: s.payrollAccountingEvents.id })
+      .from(s.payrollAccountingEvents)
+      .where(
+        and(
+          eq(s.payrollAccountingEvents.runId, run!.id),
+          eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+        ),
+      );
+    expect(salaryPayment).toBeTruthy();
+    await returnSalaryPayment(
+      {
+        accountingEventId: Number(salaryPayment.id),
+        returnedAt: baghdadToday(),
+        reason: "إعادة راتب مثبتة للاختبار",
+      },
+      RETURN_APPROVER,
+    );
+    expect((await getRun(run!.id))?.status).toBe("approved");
 
-    const repaid = await payRun(run!.id, APPROVER); // إعادة الدفع: PAYROLL:<run>:<emp>:r1
+    const repaid = await payRun(run!.id, APPROVER, {
+      paymentMethod: "CASH",
+      paymentDate: baghdadToday(),
+    });
     expect(repaid!.status).toBe("paid");
 
-    // الدفتر يحوي ٣ قيود PAYMENT_OUT: +net (أصلي) + (−net) (عكس) + +net (إعادة) ⇒ المحصّلة الصافية = net.
-    const entries = await db()
+    const outgoing = await db()
       .select()
       .from(s.accountingEntries)
       .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
-    expect(entries.length).toBe(3);
-    const sum = entries.reduce((acc, e) => acc + Number(e.amount), 0);
-    expect(sum).toBe(1000000);
+    const incoming = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
+    expect(outgoing).toHaveLength(2);
+    expect(incoming).toHaveLength(1);
+    const netCashOut =
+      outgoing.reduce((acc, entry) => acc + Number(entry.amount), 0) -
+      incoming.reduce((acc, entry) => acc + Number(entry.amount), 0);
+    expect(netCashOut).toBe(1000000);
   });
 });
 

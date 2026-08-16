@@ -48,7 +48,7 @@ beforeEach(async () => { await reset(); await seedBase(); });
 
 describe("تسليم أمر خدمة خالص (بلا منتج أساس) — كان مكسوراً", () => {
   it("baseVariantId=null ⇒ فاتورة بلا سطر invoiceItems + قيد SALE صحيح", async () => {
-    await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
     const wo = await createWorkOrder({ branchId: 1, baseVariantId: null, title: "تصميم شعار", salePrice: "100.00" }, actor);
     await startWorkOrder(wo.workOrderId, { ...actor, role: "admin" }); // لا مواد ⇒ لا خصم مخزون
     await markWorkOrderReady(wo.workOrderId, { ...actor, role: "admin" });

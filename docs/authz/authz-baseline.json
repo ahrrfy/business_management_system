@@ -82,7 +82,6 @@
     "kioskRouter.lookup@server/routers/kioskRouter.ts",
     "kioskRouter.publicBranches@server/routers/kioskRouter.ts",
     "payrollRouter.updateLegalSettings@server/routers/payrollRouter.ts",
-    "periodLockRouter.lock@server/routers/periodLockRouter.ts",
     "periodLockRouter.unlock@server/routers/periodLockRouter.ts",
     "platformAdminRouter.login@server/routers/platformAdminRouter.ts",
     "platformAdminRouter.logout@server/routers/platformAdminRouter.ts",
@@ -163,11 +162,6 @@
     "userRouter.revokeSession@server/routers/userRouter.ts",
     "userRouter.revokeSessions@server/routers/userRouter.ts",
     "userRouter.setActive@server/routers/userRouter.ts",
-    "userRouter.update@server/routers/userRouter.ts",
-    "voucherRouter.create@server/routers/voucherRouter.ts#2",
-    "voucherRouter.merge@server/routers/voucherRouter.ts",
-    "voucherRouter.setActive@server/routers/voucherRouter.ts",
-    "voucherRouter.update@server/routers/voucherRouter.ts",
-    "yearEndRouter.close@server/routers/yearEndRouter.ts"
+    "userRouter.update@server/routers/userRouter.ts"
   ]
 }

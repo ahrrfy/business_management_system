@@ -1,5 +1,6 @@
 import { RowActions } from "@/components/list";
 import { FinancialTraceDetails } from "@/components/financial/FinancialTraceDetails";
+import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -81,6 +82,7 @@ const METHOD_LABEL: Record<string, string> = {
   CHECK: "صك",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
+  ACCRUAL: "استحقاق",
 };
 
 // production-slice: مصدر الصرف من المخزون (نثرية/تلف) بدل طريقة الدفع.
@@ -138,6 +140,14 @@ type ExpenseRow = ExpenseRowBase &
     updatedAt: string | Date | null;
     fundingKind: string | null;
     integrityWarnings: string[] | null;
+    accrualObligationId: number | null;
+    accrualKind: string | null;
+    settlementStatus: string | null;
+    accrualBeneficiaryName: string | null;
+    accrualEvidenceReference: string | null;
+    recognitionAccountingEntryId: number | null;
+    settlementAccountingEntryId: number | null;
+    settlementReceiptId: number | null;
   }>;
 
 type ExpenseTotals = {
@@ -155,6 +165,8 @@ type ExpenseTotals = {
   missingPayee?: string | number | null;
   sourceMismatch?: string | number | null;
   drawerMismatch?: string | number | null;
+  accruedUnpaid?: string | number | null;
+  accruedPaid?: string | number | null;
 };
 
 type FundingKind =
@@ -162,6 +174,8 @@ type FundingKind =
   | "DRAWER"
   | "TREASURY"
   | "NON_CASH"
+  | "ACCRUED_UNPAID"
+  | "ACCRUED_PAID"
   | "STOCK"
   | "UNATTRIBUTED";
 
@@ -172,6 +186,8 @@ const FUNDING_ORDER: FundingKind[] = [
   "DRAWER",
   "TREASURY",
   "NON_CASH",
+  "ACCRUED_UNPAID",
+  "ACCRUED_PAID",
   "STOCK",
   "UNATTRIBUTED",
 ];
@@ -198,6 +214,16 @@ const FUNDING_META: Record<
     label: "مصروفات غير نقدية",
     short: "غير نقدي",
     badge: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
+  },
+  ACCRUED_UNPAID: {
+    label: "مصروفات مستحقة غير مدفوعة",
+    short: "مستحق غير مدفوع",
+    badge: "badge-status-pending",
+  },
+  ACCRUED_PAID: {
+    label: "مصروفات مستحقة سُوّيت فعلياً",
+    short: "استحقاق مسوّى",
+    badge: "badge-status-active",
   },
   STOCK: {
     label: "مصروفات من المخزون بالكلفة",
@@ -261,6 +287,16 @@ const AUDIT_WARNING_LABEL: Record<string, string> = {
   PENDING_RECEIPT_MISMATCH: "طلب الاعتماد لا يطابق إيصالاً معلّقاً",
   REJECTED_RECEIPT_MISMATCH: "رفض الطلب لا يطابق حالة الإيصال",
   UNEXECUTED_HAS_CASH_LOCATION: "طلب غير منفذ مرتبط خطأً بمصدر نقد",
+  ACCRUAL_PAYMENT_METHOD_MISMATCH:
+    "طريقة المصروف المستحق لا تطابق عقد الاستحقاق",
+  ACCRUAL_HAS_DIRECT_RECEIPT:
+    "الاعتراف بالاستحقاق مرتبط خطأً بإيصال نقدي مباشر",
+  ACCRUAL_HAS_CASH_LOCATION: "الاعتراف بالاستحقاق مرتبط خطأً بدرج أو خزينة",
+  ACCRUAL_OBLIGATION_MISSING: "سجل التزام الاستحقاق مفقود",
+  ACCRUAL_RECOGNITION_ENTRY_MISSING: "قيد الاعتراف بالاستحقاق مفقود",
+  ACCRUAL_SETTLEMENT_TRACE_MISSING: "أثر تسوية الاستحقاق المدفوع غير مكتمل",
+  UNPAID_ACCRUAL_HAS_SETTLEMENT_EFFECT:
+    "استحقاق غير مدفوع يحمل أثر تسوية متناقضاً",
 };
 
 function warningsOf(r: ExpenseRow): string[] {
@@ -285,6 +321,10 @@ function fundingDetail(r: ExpenseRow): string {
     return r.paymentMethod === "CASH"
       ? "طلب اعتماد خزينة — لم يُصرف"
       : `طلب اعتماد ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod} — لم يُنفذ`;
+  if (kind === "ACCRUED_UNPAID")
+    return `${r.accrualBeneficiaryName ?? r.payee ?? "مستفيد غير موثق"} · اعتراف محاسبي بلا خروج نقدي`;
+  if (kind === "ACCRUED_PAID")
+    return `${r.accrualBeneficiaryName ?? r.payee ?? "مستفيد غير موثق"} · سُوّي بسند وقيد مستقلين`;
   if (kind === "DRAWER") {
     return (
       [r.shiftOwnerName, r.shiftId != null ? `وردية #${r.shiftId}` : null]
@@ -324,8 +364,14 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
   }
 
   const expense = trace.data.expense as ExpenseRow;
-  const receiptId =
+  const directReceiptId =
     expense.receiptId == null ? null : Number(expense.receiptId);
+  const settlementReceiptId =
+    expense.settlementReceiptId == null
+      ? null
+      : Number(expense.settlementReceiptId);
+  const receiptId = settlementReceiptId ?? directReceiptId;
+  const obligationEvents = trace.data.obligationEvents ?? [];
   const warnings = warningsOf(expense);
   const reversal = trace.data.reversalReceipts[0];
 
@@ -357,6 +403,11 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
             value: `${CATEGORY_LABEL[expense.category] ?? expense.category}${expense.costCenter ? ` · ${expense.costCenter}` : ""}`,
           },
           { label: "حالة الاعتماد", value: expense.approvalStatus },
+          { label: "حالة الاستحقاق", value: expense.settlementStatus },
+          {
+            label: "مرجع دليل المصدر",
+            value: expense.accrualEvidenceReference,
+          },
         ],
       }}
       parties={{
@@ -410,7 +461,19 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
             dir: "ltr",
             emphasis: true,
           },
-          { label: "حالة الإيصال", value: expense.receiptStatus },
+          { label: "حالة الإيصال المباشر", value: expense.receiptStatus },
+          {
+            label: "قيد الاعتراف",
+            value: expense.recognitionAccountingEntryId
+              ? `JE#${expense.recognitionAccountingEntryId}`
+              : null,
+          },
+          {
+            label: "قيد التسوية",
+            value: expense.settlementAccountingEntryId
+              ? `JE#${expense.settlementAccountingEntryId}`
+              : null,
+          },
         ],
       }}
       linkChain={[
@@ -420,13 +483,41 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
           value: `EXP#${expenseId}`,
           status: STATUS_LABEL[expense.status] ?? expense.status,
         },
-        {
-          kind: "RECEIPT",
-          label: "إيصال الصرف",
-          value: receiptId ? `R#${receiptId}` : null,
-          status: expense.receiptStatus,
-          missing: !receiptId,
-        },
+        ...(expense.source === "ACCRUAL"
+          ? obligationEvents.map((event) => ({
+              id: `accrual-event-${event.id}`,
+              kind: (event.accountingEntryId
+                ? "LEDGER"
+                : event.receiptId
+                  ? "RECEIPT"
+                  : "DOCUMENT") as "LEDGER" | "RECEIPT" | "DOCUMENT",
+              label:
+                event.eventType === "RECOGNIZED"
+                  ? "اعتراف الاستحقاق"
+                  : event.eventType === "PAYMENT_REQUESTED"
+                    ? "طلب التسوية — صفر أثر نقدي"
+                    : event.eventType === "PAYMENT_SETTLED"
+                      ? "التسوية الفعلية"
+                      : event.eventType === "RECOGNITION_REVERSED"
+                        ? "عكس الاعتراف"
+                        : event.eventType,
+              value: event.accountingEntryId
+                ? `JE#${event.accountingEntryId}`
+                : event.receiptId
+                  ? `R#${event.receiptId}`
+                  : `AOE#${event.id}`,
+              status: event.eventType,
+              subtitle: `${fmt(event.amount)} د.ع · ${event.evidenceReference}`,
+            }))
+          : [
+              {
+                kind: "RECEIPT" as const,
+                label: "إيصال الصرف",
+                value: directReceiptId ? `R#${directReceiptId}` : null,
+                status: expense.receiptStatus,
+                missing: !directReceiptId,
+              },
+            ]),
         ...trace.data.ledgerEntries.map((entry) => ({
           id: entry.id,
           kind: "LEDGER" as const,
@@ -493,6 +584,20 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
           detail: `${fmt(event.amount)} د.ع`,
           tone: "warning" as const,
         })),
+        ...trace.data.correctionRequests.map((event) => ({
+          id: `accrual-correction-${event.id}`,
+          action: "تصحيح مصدر الاستحقاق",
+          actor: `#${event.requestedBy}`,
+          at: fmtDateTime(event.requestedAt),
+          status: event.status,
+          detail: `${event.reason} · ${event.externalEvidenceReference}`,
+          tone:
+            event.status === "APPROVED"
+              ? ("ok" as const)
+              : event.status === "REJECTED"
+                ? ("warning" as const)
+                : ("info" as const),
+        })),
       ]}
     />
   );
@@ -500,6 +605,12 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
 
 /** إيصال صرف عبر printDoc العام — نفس نواقل الطباعة الثلاثة (جسر الخادم/WebUSB/متصفح). */
 async function printExpenseReceipt(r: ExpenseRow) {
+  if (r.source === "ACCRUAL") {
+    notify.err(
+      "المصروف المستحق ليس إيصال صرف؛ اطبع سند التسوية الفعلي من شاشة السندات بعد اعتماده",
+    );
+    return;
+  }
   if (!isExpenseFinanciallyPrintable(r.status)) {
     notify.err("لا يمكن طباعة طلب مصروف غير منفذ كإيصال صرف");
     return;
@@ -560,6 +671,27 @@ export default function Expenses() {
   const [printing, setPrinting] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<ExpenseRow | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [correctionTarget, setCorrectionTarget] = useState<ExpenseRow | null>(
+    null,
+  );
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [correctionEvidence, setCorrectionEvidence] = useState("");
+  const [correctionAttachment, setCorrectionAttachment] = useState<ImageItem[]>(
+    [],
+  );
+  const [correctionRefundMethod, setCorrectionRefundMethod] = useState<
+    "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"
+  >("CASH");
+  const [correctionRefundBucket, setCorrectionRefundBucket] = useState<
+    "DRAWER" | "TREASURY"
+  >("TREASURY");
+  const [correctionRefundReference, setCorrectionRefundReference] =
+    useState("");
+  const [correctionRefundCardTail, setCorrectionRefundCardTail] = useState("");
+  const [correctionReviewReason, setCorrectionReviewReason] = useState("");
+  const [correctionClientRequestId, setCorrectionClientRequestId] = useState(
+    () => crypto.randomUUID(),
+  );
   const [advancedOpen, setAdvancedOpen] = useState(true);
   const [auditOnly, setAuditOnly] = useState(false);
   const [auditFocus, setAuditFocus] = useState<AuditFocus | null>(null);
@@ -604,6 +736,10 @@ export default function Expenses() {
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
+  const correctionHistory = trpc.expenses.accrualCorrections.useQuery(
+    { obligationId: Number(correctionTarget?.accrualObligationId ?? 0) },
+    { enabled: Number(correctionTarget?.accrualObligationId ?? 0) > 0 },
+  );
   const rows = (list.data?.rows ?? []) as ExpenseRow[];
   const totals = (list.data?.totals ?? {}) as ExpenseTotals;
   const total = Number(totals.count ?? 0);
@@ -825,6 +961,36 @@ export default function Expenses() {
       map: (r) => r.cashBucket ?? "",
     },
     { key: "fundingDetail", header: "تفصيل مصدر التمويل", map: fundingDetail },
+    {
+      key: "settlementStatus",
+      header: "حالة تسوية الاستحقاق",
+      map: (r) => r.settlementStatus ?? "",
+    },
+    {
+      key: "accrualObligationId",
+      header: "رقم التزام الاستحقاق",
+      map: (r) => r.accrualObligationId ?? "",
+    },
+    {
+      key: "accrualEvidenceReference",
+      header: "مرجع دليل الاعتراف",
+      map: (r) => r.accrualEvidenceReference ?? "",
+    },
+    {
+      key: "recognitionAccountingEntryId",
+      header: "قيد الاعتراف",
+      map: (r) => r.recognitionAccountingEntryId ?? "",
+    },
+    {
+      key: "settlementReceiptId",
+      header: "سند التسوية",
+      map: (r) => r.settlementReceiptId ?? "",
+    },
+    {
+      key: "settlementAccountingEntryId",
+      header: "قيد التسوية",
+      map: (r) => r.settlementAccountingEntryId ?? "",
+    },
     { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
     {
       key: "shiftOwnerName",
@@ -1036,6 +1202,53 @@ export default function Expenses() {
     },
     onError: (error) => notify.err(error),
   });
+  const requestCorrection = trpc.expenses.requestAccrualCorrection.useMutation({
+    onSuccess: async () => {
+      notify.ok("سُجل طلب تصحيح المصدر بلا عكس أو قبض تلقائي");
+      setCorrectionClientRequestId(crypto.randomUUID());
+      setCorrectionReason("");
+      setCorrectionEvidence("");
+      setCorrectionAttachment([]);
+      await Promise.all([
+        utils.expenses.list.invalidate(),
+        correctionHistory.refetch(),
+      ]);
+    },
+    onError: (error) => notify.err(error),
+  });
+  const approveCorrection = trpc.expenses.approveAccrualCorrection.useMutation({
+    onSuccess: async () => {
+      notify.ok("اعتمد التصحيح وعُكس الاعتراف بقيد مستقل");
+      await Promise.all([
+        utils.expenses.list.invalidate(),
+        correctionHistory.refetch(),
+      ]);
+    },
+    onError: (error) => notify.err(error),
+  });
+  const rejectCorrection = trpc.expenses.rejectAccrualCorrection.useMutation({
+    onSuccess: async () => {
+      notify.ok("رُفض التصحيح وبقي الاستحقاق الأصلي قائماً");
+      setCorrectionReviewReason("");
+      await Promise.all([
+        utils.expenses.list.invalidate(),
+        correctionHistory.refetch(),
+      ]);
+    },
+    onError: (error) => notify.err(error),
+  });
+  const retryCorrectionRefund =
+    trpc.expenses.retryAccrualCorrectionRefund.useMutation({
+      onSuccess: async () => {
+        notify.ok("أُعيد تقديم طلب قبض الاسترداد، وينتظر اعتماد مالك آخر");
+        setCorrectionClientRequestId(crypto.randomUUID());
+        await Promise.all([
+          utils.expenses.list.invalidate(),
+          correctionHistory.refetch(),
+        ]);
+      },
+      onError: (error) => notify.err(error),
+    });
 
   function actionsFor(r: ExpenseRow) {
     return [
@@ -1044,7 +1257,8 @@ export default function Expenses() {
         kind: "print" as const,
         label: "طباعة إيصال صرف",
         onSelect: () => void printExpenseReceipt(r),
-        hidden: !isExpenseFinanciallyPrintable(r.status),
+        hidden:
+          !isExpenseFinanciallyPrintable(r.status) || r.source === "ACCRUAL",
         gate: { module: "expenses" as const, level: "READ" as const },
       },
       {
@@ -1094,11 +1308,43 @@ export default function Expenses() {
         },
       },
       {
+        key: "correct-source",
+        kind: "reverse" as const,
+        label: "تصحيح المصدر",
+        variant: "destructive" as const,
+        hidden:
+          r.status !== "ACTIVE" ||
+          r.source !== "ACCRUAL" ||
+          r.accrualObligationId == null ||
+          ![
+            "ACCRUED_UNPAID",
+            "PAYMENT_PENDING",
+            "PAID",
+            "CORRECTION_PENDING",
+            "REFUND_PENDING",
+          ].includes(r.settlementStatus ?? "") ||
+          !canCancel,
+        disabled: requestCorrection.isPending,
+        disabledReason: "يوجد طلب تصحيح قيد التسجيل",
+        onSelect: () => {
+          setCorrectionTarget(r);
+          setCorrectionReason("");
+          setCorrectionEvidence("");
+          setCorrectionAttachment([]);
+          setCorrectionReviewReason("");
+        },
+        gate: {
+          roles: ["manager"] as RoleKey[],
+          module: "expenses" as const,
+          level: "FULL" as const,
+        },
+      },
+      {
         key: "cancel",
         kind: "reverse" as const,
         label: "إلغاء",
         variant: "destructive" as const,
-        hidden: r.status !== "ACTIVE" || !canCancel,
+        hidden: r.status !== "ACTIVE" || r.source === "ACCRUAL" || !canCancel,
         disabled: cancel.isPending,
         disabledReason: "توجد عملية إلغاء قيد التنفيذ",
         onSelect: () =>
@@ -1128,6 +1374,16 @@ export default function Expenses() {
       },
     ];
   }
+
+  const activeCorrection =
+    correctionHistory.data?.find((item) => item.status === "PENDING") ?? null;
+  const retryableRefundCorrection =
+    correctionHistory.data?.find(
+      (item) =>
+        item.status === "REJECTED" && item.previousObligationStatus === "PAID",
+    ) ?? null;
+  const correctionRequiresRefund =
+    correctionTarget?.settlementStatus === "PAID";
 
   // أموال العرض عبر fmt من @/lib/money (فواصل آلاف + منزلتان) — بديل الدالة المحلية السابقة.
   return (
@@ -1195,6 +1451,10 @@ export default function Expenses() {
               <p className="mt-0.5 text-[11px] text-muted-foreground">
                 غير نقدي: <span dir="ltr">{metric(totals.nonCash)}</span>
               </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                مستحق غير مدفوع:{" "}
+                <span dir="ltr">{metric(totals.accruedUnpaid)}</span>
+              </p>
             </div>
             <span className="rounded-lg bg-[var(--sem-pos-bg)] p-1.5 text-[var(--sem-pos)]">
               <WalletCards aria-hidden className="size-4" />
@@ -1210,6 +1470,10 @@ export default function Expenses() {
               </p>
               <p className="mt-0.5 text-[11px] text-muted-foreground">
                 من المخزون: <span dir="ltr">{metric(totals.stock)}</span>
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                استحقاق مسوّى:{" "}
+                <span dir="ltr">{metric(totals.accruedPaid)}</span>
               </p>
             </div>
             <span className="rounded-lg bg-[var(--sem-info-bg)] p-1.5 text-[var(--sem-info)]">
@@ -2100,6 +2364,343 @@ export default function Expenses() {
               )}
               رفض الطلب
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={correctionTarget != null}
+        onOpenChange={(open) => {
+          if (
+            !open &&
+            !requestCorrection.isPending &&
+            !approveCorrection.isPending &&
+            !rejectCorrection.isPending &&
+            !retryCorrectionRefund.isPending
+          ) {
+            setCorrectionTarget(null);
+            setCorrectionReason("");
+            setCorrectionEvidence("");
+            setCorrectionAttachment([]);
+            setCorrectionReviewReason("");
+          }
+        }}
+      >
+        <DialogContent dir="rtl" className="max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>تصحيح مصدر المصروف المستحق</DialogTitle>
+            <DialogDescription>
+              التصحيح يحفظ المصروف الأصلي ويضيف طلباً وحدثاً وعكساً مستقلاً.
+              المصروف المدفوع يتطلب استرداداً فعلياً موثقاً واعتماد مالك آخر.
+            </DialogDescription>
+          </DialogHeader>
+          {correctionTarget && (
+            <div className="space-y-3">
+              <div className="rounded-md border p-3 text-sm">
+                <div className="font-medium">
+                  EXP#{Number(correctionTarget.id)} ·{" "}
+                  {fmt(correctionTarget.amount)} د.ع
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  {correctionTarget.accrualBeneficiaryName ??
+                    correctionTarget.payee ??
+                    "مستفيد غير موثق"}{" "}
+                  · {FUNDING_META[fundingKindOf(correctionTarget)].short}
+                </div>
+                <div className="mt-1 text-xs" dir="ltr">
+                  {correctionTarget.accrualEvidenceReference ?? "—"}
+                </div>
+              </div>
+
+              {correctionHistory.isLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ
+                  تحميل سجل التصحيح…
+                </div>
+              ) : activeCorrection ? (
+                <div className="space-y-3 rounded-md border badge-status-pending p-3 text-sm">
+                  <div className="font-medium">
+                    طلب تصحيح #{activeCorrection.id} بانتظار الاعتماد
+                  </div>
+                  <p>{activeCorrection.reason}</p>
+                  <p className="text-xs" dir="ltr">
+                    {activeCorrection.externalEvidenceReference}
+                  </p>
+                  {activeCorrection.previousObligationStatus === "PAID" ? (
+                    <p>
+                      أُنشئ طلب قبض استرداد معلّق بلا أثر نقدي. تتم المراجعة من
+                      شاشة سندات القبض لمطابقة دليل المزود قبل أي قيد.
+                    </p>
+                  ) : me.data?.isOwner === true &&
+                    Number(activeCorrection.requestedBy) !==
+                      Number(me.data.id) ? (
+                    <div className="space-y-2 border-t pt-3">
+                      <Label htmlFor="expense-correction-review-reason">
+                        سبب الرفض عند الرفض
+                      </Label>
+                      <Input
+                        id="expense-correction-review-reason"
+                        value={correctionReviewReason}
+                        onChange={(event) =>
+                          setCorrectionReviewReason(event.target.value)
+                        }
+                        placeholder="يُترك فارغاً عند الاعتماد"
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          disabled={
+                            approveCorrection.isPending ||
+                            rejectCorrection.isPending
+                          }
+                          onClick={async () => {
+                            if (
+                              !(await confirm({
+                                variant: "warning",
+                                title: "اعتماد تصحيح المصدر",
+                                description:
+                                  "سيُغلق المصدر التشغيلي ويُعكس قيد الاعتراف بقيد append-only مستقل.",
+                                confirmText: "اعتماد التصحيح",
+                              }))
+                            )
+                              return;
+                            approveCorrection.mutate({
+                              correctionRequestId: Number(activeCorrection.id),
+                            });
+                          }}
+                        >
+                          اعتماد التصحيح
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          disabled={
+                            correctionReviewReason.trim().length < 3 ||
+                            approveCorrection.isPending ||
+                            rejectCorrection.isPending
+                          }
+                          onClick={() =>
+                            rejectCorrection.mutate({
+                              correctionRequestId: Number(activeCorrection.id),
+                              reason: correctionReviewReason.trim(),
+                            })
+                          }
+                        >
+                          رفض التصحيح
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      ينتظر مالكاً آخر؛ لا يستطيع منشئ الطلب اعتماده أو رفضه.
+                    </p>
+                  )}
+                </div>
+              ) : retryableRefundCorrection ? (
+                <div className="space-y-3 rounded-md border badge-status-rejected p-3 text-sm">
+                  <div className="font-medium">
+                    رُفض طلب قبض الاسترداد المرتبط بالتصحيح #
+                    {retryableRefundCorrection.id}
+                  </div>
+                  <p>
+                    {retryableRefundCorrection.rejectionReason ??
+                      "لم يُسجّل سبب الرفض."}
+                  </p>
+                  <p className="text-muted-foreground">
+                    يحتفظ النظام بالطلب المرفوض وسلسلة التدقيق. يمكن لمنشئ طلب
+                    التصحيح وحده إصدار طلب قبض بديل بمفتاح مستقل، ثم يعتمد مالك
+                    آخر الطلب الجديد.
+                  </p>
+                  {Number(retryableRefundCorrection.requestedBy) ===
+                  Number(me.data?.id) ? (
+                    <Button
+                      disabled={retryCorrectionRefund.isPending}
+                      onClick={() =>
+                        retryCorrectionRefund.mutate({
+                          correctionRequestId: Number(
+                            retryableRefundCorrection.id,
+                          ),
+                          clientRequestId: correctionClientRequestId,
+                        })
+                      }
+                    >
+                      {retryCorrectionRefund.isPending ? (
+                        <Loader2 aria-hidden className="size-4 animate-spin" />
+                      ) : null}
+                      إعادة تقديم طلب قبض الاسترداد
+                    </Button>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      إعادة التقديم محصورة بمنشئ طلب التصحيح الأصلي.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    <Label htmlFor="expense-correction-reason">
+                      سبب التصحيح *
+                    </Label>
+                    <Textarea
+                      id="expense-correction-reason"
+                      rows={3}
+                      value={correctionReason}
+                      onChange={(event) =>
+                        setCorrectionReason(event.target.value)
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="expense-correction-evidence">
+                      مرجع الدليل الخارجي *
+                    </Label>
+                    <Input
+                      id="expense-correction-evidence"
+                      dir="ltr"
+                      value={correctionEvidence}
+                      onChange={(event) =>
+                        setCorrectionEvidence(event.target.value)
+                      }
+                    />
+                  </div>
+                  <ImageUploader
+                    value={correctionAttachment}
+                    onChange={setCorrectionAttachment}
+                    maxItems={1}
+                    singlePrimary={false}
+                    hint="مرفق فاتورة التصحيح/الإشعار الدائن إلزامي."
+                  />
+                  {correctionRequiresRefund && (
+                    <div className="space-y-3 rounded-md border p-3">
+                      <p className="font-medium">دليل الاسترداد الفعلي</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label>الطريقة</Label>
+                          <select
+                            className={selectCls}
+                            value={correctionRefundMethod}
+                            onChange={(event) =>
+                              setCorrectionRefundMethod(
+                                event.target
+                                  .value as typeof correctionRefundMethod,
+                              )
+                            }
+                          >
+                            <option value="CASH">نقد</option>
+                            <option value="CARD">بطاقة</option>
+                            <option value="CHECK">صك</option>
+                            <option value="TRANSFER">تحويل</option>
+                            <option value="WALLET">محفظة</option>
+                          </select>
+                        </div>
+                        {correctionRefundMethod === "CASH" ? (
+                          <div className="space-y-1">
+                            <Label>وجهة النقد</Label>
+                            <select
+                              className={selectCls}
+                              value={correctionRefundBucket}
+                              onChange={(event) =>
+                                setCorrectionRefundBucket(
+                                  event.target
+                                    .value as typeof correctionRefundBucket,
+                                )
+                              }
+                            >
+                              <option value="TREASURY">الخزينة الإدارية</option>
+                              <option value="DRAWER">درج الوردية</option>
+                            </select>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <Label>مرجع مزود الاسترداد</Label>
+                            <Input
+                              dir="ltr"
+                              value={correctionRefundReference}
+                              onChange={(event) =>
+                                setCorrectionRefundReference(event.target.value)
+                              }
+                            />
+                          </div>
+                        )}
+                        {correctionRefundMethod === "CARD" && (
+                          <div className="space-y-1">
+                            <Label>آخر أربعة أرقام</Label>
+                            <Input
+                              dir="ltr"
+                              maxLength={4}
+                              value={correctionRefundCardTail}
+                              onChange={(event) =>
+                                setCorrectionRefundCardTail(
+                                  event.target.value
+                                    .replace(/\D/g, "")
+                                    .slice(0, 4),
+                                )
+                              }
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCorrectionTarget(null)}>
+              إغلاق
+            </Button>
+            {!activeCorrection &&
+              !retryableRefundCorrection &&
+              correctionTarget && (
+                <Button
+                  variant="destructive"
+                  disabled={
+                    correctionHistory.isLoading ||
+                    requestCorrection.isPending ||
+                    correctionReason.trim().length < 3 ||
+                    !correctionEvidence.trim() ||
+                    !correctionAttachment[0]?.dataUrl ||
+                    (correctionRequiresRefund &&
+                      correctionRefundMethod !== "CASH" &&
+                      !correctionRefundReference.trim()) ||
+                    (correctionRequiresRefund &&
+                      correctionRefundMethod === "CARD" &&
+                      !/^\d{4}$/.test(correctionRefundCardTail))
+                  }
+                  onClick={() =>
+                    requestCorrection.mutate({
+                      obligationId: Number(
+                        correctionTarget.accrualObligationId,
+                      ),
+                      reason: correctionReason.trim(),
+                      externalEvidenceReference: correctionEvidence.trim(),
+                      attachmentUrl: correctionAttachment[0]!.dataUrl,
+                      refundPaymentMethod: correctionRequiresRefund
+                        ? correctionRefundMethod
+                        : null,
+                      refundCashBucket:
+                        correctionRequiresRefund &&
+                        correctionRefundMethod === "CASH"
+                          ? correctionRefundBucket
+                          : null,
+                      refundReferenceNumber:
+                        correctionRequiresRefund &&
+                        correctionRefundMethod !== "CASH"
+                          ? correctionRefundReference.trim()
+                          : null,
+                      refundCardLastFour:
+                        correctionRequiresRefund &&
+                        correctionRefundMethod === "CARD"
+                          ? correctionRefundCardTail
+                          : null,
+                      clientRequestId: correctionClientRequestId,
+                    })
+                  }
+                >
+                  {requestCorrection.isPending ? (
+                    <Loader2 aria-hidden className="size-4 animate-spin" />
+                  ) : null}
+                  تسجيل طلب التصحيح
+                </Button>
+              )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

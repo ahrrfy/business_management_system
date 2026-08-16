@@ -8,7 +8,7 @@ import * as s from "../../../../drizzle/schema";
 import { getDb } from "../../../db";
 import { addAssetDocument, createAsset, deleteAssetDocument, getAsset } from "../../assetsService";
 
-const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
+const ACTOR = { userId: 1, branchId: 1, role: "admin" as const, isOwner: true };
 const ADMIN_SCOPE = { branchId: null } as const;
 const TABLES = [
   "accountingEntries", "assetMaintenance", "assetCustodyLog", "assetDocuments",
@@ -32,7 +32,7 @@ async function reset() {
 async function seed() {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
-  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", isOwner: true });
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد" });
 }
 
@@ -45,6 +45,9 @@ async function mkAsset() {
       purchaseValue: "1000000",
       usefulLifeYears: 5,
       branchId: 1,
+      clientRequestId: "asset-document-test",
+      acquisitionEvidenceReference: "ASSET-DOC-INVOICE-1",
+      acquisitionBeneficiaryName: "مورّد تجهيزات الاختبار",
       // مستندات الأصل جزء من دورة حياة أصل تشغيلي. الاقتناء الآجل من
       // المورد يفعّله فوراً، بخلاف الاقتناء النقدي المعلّق لاعتماد المالك.
       supplierId: 1,

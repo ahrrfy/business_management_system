@@ -1,6 +1,7 @@
 // أدوات مشتركة لحزمة الرواتب (يستهلكها generate.ts وupdate.ts وlifecycle.ts): التحقّق من صيغة
 // الشهر، تاريخ أول القيد، صافي البند، إعادة حساب مجاميع المسيّر، وحساب أيام/فترات الإجازة بلا راتب.
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
 import { payrollItems, payrollRuns } from "../../../drizzle/schema";
@@ -21,6 +22,135 @@ export function assertPeriod(period: string): string {
 /** أول يوم من الشهر (YYYY-MM-01) — يُستعمل entryDate للقيود ولا تأثير له على dedupe. */
 export function periodEntryDate(period: string): string {
   return `${period}-01`;
+}
+
+/** آخر يوم مدني من شهر المسيّر؛ بغداد لا تغيّر التاريخ المحاسبي المخزّن بصيغة DATE. */
+export function periodAccrualDate(period: string): string {
+  const p = assertPeriod(period);
+  const [year, month] = p.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${p}-${String(lastDay).padStart(2, "0")}`;
+}
+
+function canonicalHashValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalHashValue);
+  if (value instanceof Date) return value.toJSON();
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, child]) => [key, canonicalHashValue(child)]),
+    );
+  }
+  return value;
+}
+
+/** JSON canonical ثابت حتى بعد إعادة ترتيب مفاتيح أعمدة MySQL JSON. */
+export function payrollHash(value: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalHashValue(value)), "utf8")
+    .digest("hex");
+}
+
+export interface PayrollBreakdown {
+  earnedWage: Decimal;
+  wageReduction: Decimal;
+  advance: Decimal;
+  incomeTax: Decimal;
+  socialSecurityEmployee: Decimal;
+  socialSecurityEmployer: Decimal;
+  eosProvision: Decimal;
+  net: Decimal;
+  expenseTotal: Decimal;
+}
+
+/**
+ * العقد المحاسبي الحاكم للبند:
+ * E = G - R، N = E - A - T - Se، ومصروف الشهر = E + Sr + P.
+ * لا نسمح باستقطاع غير مصنّف أو بتسامح عددي عائم؛ كل القيم Decimal ومقربة منزلتين.
+ */
+export function payrollBreakdown(item: {
+  gross: unknown;
+  overtime: unknown;
+  commission: unknown;
+  deductions: unknown;
+  wageReduction: unknown;
+  advanceDeduction: unknown;
+  socialSecurityEmployee: unknown;
+  incomeTax: unknown;
+  socialSecurityEmployer: unknown;
+  endOfServiceAccrual: unknown;
+  net: unknown;
+}): PayrollBreakdown {
+  const grossEarned = round2(
+    money(item.gross as never)
+      .plus(money(item.overtime as never))
+      .plus(money(item.commission as never)),
+  );
+  const wageReduction = round2(money(item.wageReduction as never));
+  const advance = round2(money(item.advanceDeduction as never));
+  const incomeTax = round2(money(item.incomeTax as never));
+  const socialSecurityEmployee = round2(
+    money(item.socialSecurityEmployee as never),
+  );
+  const socialSecurityEmployer = round2(
+    money(item.socialSecurityEmployer as never),
+  );
+  const eosProvision = round2(money(item.endOfServiceAccrual as never));
+  const storedDeductions = round2(money(item.deductions as never));
+  const classifiedDeductions = round2(
+    wageReduction.plus(advance).plus(incomeTax).plus(socialSecurityEmployee),
+  );
+  const earnedWage = round2(grossEarned.minus(wageReduction));
+  const net = round2(
+    earnedWage.minus(advance).minus(incomeTax).minus(socialSecurityEmployee),
+  );
+
+  if (
+    [
+      grossEarned,
+      wageReduction,
+      advance,
+      incomeTax,
+      socialSecurityEmployee,
+      socialSecurityEmployer,
+      eosProvision,
+      earnedWage,
+      net,
+    ].some((value) => value.isNegative())
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "مكوّنات بند الراتب غير صالحة: لا يجوز وجود مبلغ سالب في لقطة الاعتماد.",
+    });
+  }
+  if (!storedDeductions.eq(classifiedDeductions)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "استقطاعات بند الراتب لا تطابق تصنيفها (خفض أجر + سلفة + ضريبة + ضمان) — أعد حفظ البند.",
+    });
+  }
+  if (!round2(money(item.net as never)).eq(net)) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "صافي بند الراتب لا يطابق مكوّناته المصنفة — أعد حفظ البند.",
+    });
+  }
+  return {
+    earnedWage,
+    wageReduction,
+    advance,
+    incomeTax,
+    socialSecurityEmployee,
+    socialSecurityEmployer,
+    eosProvision,
+    net,
+    expenseTotal: round2(
+      earnedWage.plus(socialSecurityEmployer).plus(eosProvision),
+    ),
+  };
 }
 
 /** صافي البند = الإجمالي + الإضافي + العمولة − الاستقطاع (لا يقلّ عن الصفر منطقياً، لكن لا نقصّ —

@@ -30,6 +30,7 @@ const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: st
   { v: "CASH", label: "نقدي" },
   { v: "TRANSFER", label: "تحويل" },
   { v: "CARD", label: "بطاقة" },
+  { v: "CHECK", label: "صك" },
   { v: "WALLET", label: "محفظة" },
 ];
 
@@ -56,6 +57,8 @@ export default function PurchaseReceive() {
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   // طريقة دفع **مصروف الشحن/الكمرك** (لشركة النقل) — مستقلّة تماماً عن دفعة المورّد أعلاه.
   const [shipMethod, setShipMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [shipPaymentReference, setShipPaymentReference] = useState("");
+  const [shipCardLastFour, setShipCardLastFour] = useState("");
   const [directUsd, setDirectUsd] = useState("");
   const [directIqd, setDirectIqd] = useState("");
   const [directFee, setDirectFee] = useState("");
@@ -82,7 +85,7 @@ export default function PurchaseReceive() {
     onSuccess: async (r) => {
       const recognized = r.fullyReceived ? "تم الاستلام الكامل وإثبات المخزون وذمّة المورّد." : "تم الاستلام الجزئي وإثبات المخزون وذمّة المورّد.";
       const pending: string[] = [];
-      if (r.shippingPaymentRequestReceiptId) pending.push("أُثبت مصروف الشحن وقيده، ودفعه النقدي معلّق لاعتماد مالكٍ آخر");
+      if (r.shippingPaymentRequestReceiptId) pending.push("أُثبت مصروف الشحن والتزامه، وتسويته معلّقة لاعتماد مالكٍ آخر");
       if (r.supplierPaymentRequestReceiptId) pending.push("دفعة المورّد النقدية معلّقة لاعتماد مالكٍ آخر");
       setDone([recognized, ...pending].join(" "));
       await Promise.all([
@@ -175,6 +178,12 @@ export default function PurchaseReceive() {
       if (want > remaining) return setError(`الكمية المستلمة للمنتج «${it.productName}» تتجاوز المتبقّي (${remaining}).`);
     }
     const payment = D(payAmount).gt(0) ? { amount: round2(D(payAmount)).toFixed(2), method: payMethod } : undefined;
+    if ((shipMethod === "TRANSFER" || shipMethod === "CHECK") && !shipPaymentReference.trim()) {
+      return setError(shipMethod === "CHECK" ? "أدخل رقم صك الشحن." : "أدخل مرجع تحويل الشحن.");
+    }
+    if (shipMethod === "CARD" && !/^\d{4}$/.test(shipCardLastFour.trim())) {
+      return setError("أدخل آخر أربعة أرقام لبطاقة تسوية الشحن.");
+    }
     if (
       !(await confirm({
         variant: "info",
@@ -190,7 +199,19 @@ export default function PurchaseReceive() {
           .filter((b) => b.freeBaseQuantity > 0)
       : [];
     try {
-      await receive.mutateAsync({ purchaseOrderId, lines, payment, shippingPaymentMethod: shipMethod, clientRequestId });
+      await receive.mutateAsync({
+        purchaseOrderId,
+        lines,
+        payment,
+        shippingPaymentMethod: shipMethod,
+        shippingPaymentReference:
+          shipMethod === "TRANSFER" || shipMethod === "CHECK"
+            ? shipPaymentReference.trim()
+            : undefined,
+        shippingCardLastFour:
+          shipMethod === "CARD" ? shipCardLastFour.trim() : undefined,
+        clientRequestId,
+      });
       // البونص المجّانيّ بعد نجاح الاستلام العاديّ (تسلسليّ idempotent — نمط convertQuotation؛ مفتاح مشتقّ).
       if (bonusLines.length) await recordBonus.mutateAsync({ purchaseOrderId, bonusLines, clientRequestId: `${clientRequestId}:bonus` });
       setClientRequestId(crypto.randomUUID()); // تصفيرٌ بعد نجاح الاثنين معاً
@@ -363,9 +384,9 @@ export default function PurchaseReceive() {
               <span dir="ltr" className="font-bold tabular-nums text-foreground">
                 {fmt(D(data.shippingCost ?? 0).plus(D(data.customsCost ?? 0)).toFixed(2))} د.ع
               </span>{" "}
-              يُسجَّل <strong>مصروف نقلٍ على الشركة</strong> بحصّة ما تستلمه الآن — لا يُضاف إلى ذمّة
-              المورّد ولا إلى تكلفة الصنف. إن كنتَ ستدفع لشركة النقل لاحقاً، سجّله من شاشة المصروفات
-              وقت الدفع بدل الآن.
+              يُثبَت <strong>مصروف نقلٍ والتزامٌ على الشركة</strong> بحصّة ما تستلمه الآن — لا يُضاف إلى ذمّة
+              المورّد ولا إلى تكلفة الصنف. لا تُسجّله مرةً ثانية من شاشة المصروفات؛ اختر أداة التسوية المتوقعة
+              هنا، ويبقى السداد معلّقاً حتى اعتماد مالكٍ آخر.
             </p>
             <div className="space-y-1">
               <Label>طريقة دفع الشحن</Label>
@@ -373,6 +394,32 @@ export default function PurchaseReceive() {
                 {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
               </select>
             </div>
+            {shipMethod === "TRANSFER" || shipMethod === "CHECK" ? (
+              <div className="space-y-1">
+                <Label>{shipMethod === "CHECK" ? "رقم الصك" : "مرجع التحويل"}</Label>
+                <Input
+                  value={shipPaymentReference}
+                  onChange={(event) => setShipPaymentReference(event.target.value)}
+                  maxLength={50}
+                  dir="ltr"
+                />
+              </div>
+            ) : null}
+            {shipMethod === "CARD" ? (
+              <div className="space-y-1">
+                <Label>آخر أربعة أرقام للبطاقة</Label>
+                <Input
+                  value={shipCardLastFour}
+                  onChange={(event) => setShipCardLastFour(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                  inputMode="numeric"
+                  maxLength={4}
+                  dir="ltr"
+                />
+              </div>
+            ) : null}
+            <p className="text-xs text-muted-foreground sm:col-span-2">
+              لا يحدث أي صرف عند الاستلام. يبقى المبلغ التزاماً حتى يعتمد مالك آخر طلب التسوية، مع حفظ أداة الدفع ومرجعها.
+            </p>
           </CardContent>
         </Card>
       )}

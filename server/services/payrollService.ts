@@ -34,9 +34,28 @@
  *   update     — updateItem (تحرير بند أثناء المسودة فقط).
  *   lifecycle  — approveRun/payRun/cancelRun (الاعتماد ثم الدفع ثم الإلغاء/العكس).
  * ========================================================================== */
-export type { UpdateItemInput } from "./payroll/types";
+export type {
+  UpdateItemInput,
+  PayrollPaymentInput,
+  PayrollPaymentMethod,
+  PayrollReturnInput,
+  PayrollRemittanceKind,
+  CreatePayrollRemittanceInput,
+  PayrollRemittancePaymentInput,
+} from "./payroll/types";
 export { countDaysWithin } from "./payroll/helpers";
-export { listRuns, getRun } from "./payroll/queries";
+export { listRuns, getRun, getPayrollFinancialLedger } from "./payroll/queries";
 export { generatePayroll } from "./payroll/generate";
 export { updateItem } from "./payroll/update";
-export { approveRun, payRun, cancelRun } from "./payroll/lifecycle";
+export { approveRun, cancelRun } from "./payroll/lifecycle";
+export { payRun, returnSalaryPayment } from "./payroll/settlement";
+export {
+  createRemittanceRequest,
+  approveRemittanceRequest,
+  rejectRemittanceRequest,
+  payRemittanceRequest,
+  returnRemittance,
+  listRemittanceRequests,
+  listPayrollObligations,
+  listStatutoryObligationSummary,
+} from "./payroll/remittance";

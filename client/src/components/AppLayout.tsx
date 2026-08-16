@@ -114,7 +114,13 @@ const NAV_LINKS: NavLink[] = [
   // الموارد البشرية: تبويباتها صارت مرآة الخادم (HrHub) ⇒ تُفتح كبوّابته requireModule("hr","READ")
   // — أدوار القالب (accountant/auditor قالباهما hr=READ) + المنح الصريح عبر module.
   { href: "/hr", label: "الموارد البشرية", icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
-  { href: "/closing", label: "الإقفال والرَقابة", icon: Lock, managerOnly: true },
+  {
+    href: "/closing",
+    label: "الإقفال والرَقابة",
+    icon: Lock,
+    roles: ["admin", "manager", "accountant", "auditor"],
+    module: "reports",
+  },
   { href: "/settings", label: "الإدارة والإعدادات", icon: Settings, managerOnly: true },
 ];
 

@@ -1,97 +1,97 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 887,
+    "trpcTotal": 936,
     "byKind": {
-      "mutation": 454,
-      "query": 433
+      "mutation": 482,
+      "query": 454
     },
     "byAuthority": {
-      "module-gate": 402,
-      "module-map": 269,
-      "admin": 74,
+      "module-gate": 426,
+      "module-map": 296,
+      "admin": 67,
       "raw-role": 55,
       "none": 53,
       "self-assignment": 19,
-      "owner": 6,
+      "owner": 11,
       "platform": 5,
       "token": 2,
       "device-bootstrap": 1,
       "public-read": 1
     },
     "bySensitivity": {
-      "LOW": 432,
-      "MEDIUM": 338,
-      "HIGH": 117
+      "LOW": 452,
+      "MEDIUM": 350,
+      "HIGH": 134
     },
     "byModule": {
-      "(none)": 209,
-      "hr": 80,
+      "(none)": 202,
+      "hr": 100,
+      "reports": 81,
       "digital_cards": 75,
-      "reports": 67,
-      "treasury": 55,
+      "treasury": 61,
       "products": 49,
       "store": 48,
       "inventory": 43,
       "sales": 30,
       "crm": 29,
+      "workorders": 29,
       "campaigns": 28,
-      "workorders": 28,
-      "assets": 16,
+      "assets": 21,
       "commissions": 16,
       "suppliers": 13,
       "tasks": 13,
+      "ownership": 11,
       "purchases": 11,
       "collections": 10,
       "channels": 10,
       "gifts": 9,
+      "expenses": 7,
       "reservations": 7,
       "catalogAnomalies": 6,
-      "ownership": 6,
       "courier": 5,
       "pos": 5,
       "announcements": 4,
       "consignments": 4,
-      "expenses": 4,
+      "settings": 3,
       "users": 2,
       "crm|workorders": 2,
-      "settings": 1,
       "sales|workorders": 1,
       "storefront": 1
     },
     "flagCounts": {
-      "LOCAL_GATE": 155,
-      "NO_BRANCH_SCOPE": 135,
-      "SENSITIVE_ACTION": 117,
-      "ADMIN_ONLY": 77,
+      "LOCAL_GATE": 180,
+      "NO_BRANCH_SCOPE": 160,
+      "SENSITIVE_ACTION": 134,
+      "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 33,
       "READ_WITHOUT_MODULE_GATE": 30,
       "WRITE_WITHOUT_MODULE_GATE": 23,
-      "HANDLER_ROLE_CHECK": 5
+      "HANDLER_ROLE_CHECK": 6
     },
     "expressRoutes": 16,
     "expressMounts": 11,
     "jobs": 16,
     "routerFiles": 93,
-    "proposedPermissions": 759,
+    "proposedPermissions": 798,
     "proposedDomains": {
-      "hr": 86,
-      "treasury": 71,
-      "reports": 70,
+      "hr": 106,
+      "reports": 84,
+      "treasury": 78,
       "inventory": 68,
       "catalog": 64,
       "store": 48,
       "sales": 47,
       "iam": 42,
-      "admin": 37,
+      "admin": 39,
       "crm": 33,
+      "workorders": 31,
       "marketing": 28,
-      "workorders": 28,
       "purchasing": 26,
+      "assets": 21,
       "digitalcards/sales": 18,
       "commissions": 17,
-      "assets": 16,
       "digitalcards/wallets": 15,
       "superapp": 14,
       "delivery": 13,
@@ -107,11 +107,11 @@
       "digitalcards/dashboard": 7,
       "reservations": 7,
       "digitalcards/offerings": 6,
-      "accounting": 6,
       "digitalcards/providers": 5,
       "digitalcards/reversal": 5,
       "consignment": 4,
       "digitalcards/students": 4,
+      "accounting": 4,
       "digitalcards/pos": 3,
       "nativepush": 3,
       "audit": 2,
@@ -446,6 +446,23 @@
     {
       "surface": "trpc",
       "router": "assetsRouter",
+      "proposedPermission": "assets.asset.acquisition_corrections",
+      "name": "acquisitionCorrections",
+      "kind": "query",
+      "procedure": "assetRead",
+      "authority": "module-map",
+      "module": "assets",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/assetsRouter.ts:76"
+    },
+    {
+      "surface": "trpc",
+      "router": "assetsRouter",
       "proposedPermission": "assets.asset.create",
       "name": "addDocument",
       "kind": "mutation",
@@ -458,7 +475,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:245"
+      "loc": "server/routers/assetsRouter.ts:318"
     },
     {
       "surface": "trpc",
@@ -475,7 +492,24 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:199"
+      "loc": "server/routers/assetsRouter.ts:269"
+    },
+    {
+      "surface": "trpc",
+      "router": "assetsRouter",
+      "proposedPermission": "assets.asset.approve",
+      "name": "approveAcquisitionCorrection",
+      "kind": "mutation",
+      "procedure": "assetWrite",
+      "authority": "module-map",
+      "module": "assets",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/assetsRouter.ts:104"
     },
     {
       "surface": "trpc",
@@ -492,7 +526,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:66"
+      "loc": "server/routers/assetsRouter.ts:133"
     },
     {
       "surface": "trpc",
@@ -509,7 +543,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:62"
+      "loc": "server/routers/assetsRouter.ts:68"
     },
     {
       "surface": "trpc",
@@ -526,7 +560,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:61"
+      "loc": "server/routers/assetsRouter.ts:67"
     },
     {
       "surface": "trpc",
@@ -543,7 +577,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: delete",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/assetsRouter.ts:259"
+      "loc": "server/routers/assetsRouter.ts:332"
     },
     {
       "surface": "trpc",
@@ -560,7 +594,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:63"
+      "loc": "server/routers/assetsRouter.ts:69"
     },
     {
       "surface": "trpc",
@@ -577,7 +611,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:224"
+      "loc": "server/routers/assetsRouter.ts:297"
     },
     {
       "surface": "trpc",
@@ -594,7 +628,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:64"
+      "loc": "server/routers/assetsRouter.ts:70"
     },
     {
       "surface": "trpc",
@@ -611,7 +645,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:55"
+      "loc": "server/routers/assetsRouter.ts:61"
     },
     {
       "surface": "trpc",
@@ -628,7 +662,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:173"
+      "loc": "server/routers/assetsRouter.ts:243"
     },
     {
       "surface": "trpc",
@@ -645,7 +679,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:42"
+      "loc": "server/routers/assetsRouter.ts:48"
     },
     {
       "surface": "trpc",
@@ -662,7 +696,58 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:122"
+      "loc": "server/routers/assetsRouter.ts:192"
+    },
+    {
+      "surface": "trpc",
+      "router": "assetsRouter",
+      "proposedPermission": "assets.asset.reject",
+      "name": "rejectAcquisitionCorrection",
+      "kind": "mutation",
+      "procedure": "assetWrite",
+      "authority": "module-map",
+      "module": "assets",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reject",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/assetsRouter.ts:115"
+    },
+    {
+      "surface": "trpc",
+      "router": "assetsRouter",
+      "proposedPermission": "assets.asset.request_acquisition_correction",
+      "name": "requestAcquisitionCorrection",
+      "kind": "mutation",
+      "procedure": "assetWrite",
+      "authority": "module-map",
+      "module": "assets",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/assetsRouter.ts:82"
+    },
+    {
+      "surface": "trpc",
+      "router": "assetsRouter",
+      "proposedPermission": "assets.asset.request_supplier_settlement",
+      "name": "requestSupplierSettlement",
+      "kind": "mutation",
+      "procedure": "assetWrite",
+      "authority": "module-map",
+      "module": "assets",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: settle",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/assetsRouter.ts:72"
     },
     {
       "surface": "trpc",
@@ -679,7 +764,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:187"
+      "loc": "server/routers/assetsRouter.ts:257"
     },
     {
       "surface": "trpc",
@@ -696,7 +781,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:216"
+      "loc": "server/routers/assetsRouter.ts:289"
     },
     {
       "surface": "trpc",
@@ -713,7 +798,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/assetsRouter.ts:134"
+      "loc": "server/routers/assetsRouter.ts:204"
     },
     {
       "surface": "trpc",
@@ -5541,7 +5626,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:112"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:116"
     },
     {
       "surface": "trpc",
@@ -5558,7 +5643,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:185"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:189"
     },
     {
       "surface": "trpc",
@@ -5643,7 +5728,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:196"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:200"
     },
     {
       "surface": "trpc",
@@ -5660,7 +5745,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:143"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:147"
     },
     {
       "surface": "trpc",
@@ -5677,7 +5762,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:156"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:160"
     },
     {
       "surface": "trpc",
@@ -5694,7 +5779,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:118"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:122"
     },
     {
       "surface": "trpc",
@@ -5711,7 +5796,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: adjust",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:98"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:102"
     },
     {
       "surface": "trpc",
@@ -5728,7 +5813,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:173"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:177"
     },
     {
       "surface": "trpc",
@@ -5745,7 +5830,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:124"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:128"
     },
     {
       "surface": "trpc",
@@ -5779,7 +5864,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/digitalCards/walletsRouter.ts:83"
+      "loc": "server/routers/digitalCards/walletsRouter.ts:85"
     },
     {
       "surface": "trpc",
@@ -6328,6 +6413,23 @@
     {
       "surface": "trpc",
       "router": "expenseRouter",
+      "proposedPermission": "treasury.expense.accrual_corrections",
+      "name": "accrualCorrections",
+      "kind": "query",
+      "procedure": "expensesReadProcedure",
+      "authority": "module-map",
+      "module": "expenses",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/expenseRouter.ts:101"
+    },
+    {
+      "surface": "trpc",
+      "router": "expenseRouter",
       "proposedPermission": "treasury.expense.approve",
       "name": "approve",
       "kind": "mutation",
@@ -6340,7 +6442,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/expenseRouter.ts:185"
+      "loc": "server/routers/expenseRouter.ts:257"
+    },
+    {
+      "surface": "trpc",
+      "router": "expenseRouter",
+      "proposedPermission": "treasury.expense.approve",
+      "name": "approveAccrualCorrection",
+      "kind": "mutation",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/expenseRouter.ts:133"
     },
     {
       "surface": "trpc",
@@ -6357,7 +6476,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/expenseRouter.ts:217"
+      "loc": "server/routers/expenseRouter.ts:289"
     },
     {
       "surface": "trpc",
@@ -6374,7 +6493,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/expenseRouter.ts:96"
+      "loc": "server/routers/expenseRouter.ts:168"
     },
     {
       "surface": "trpc",
@@ -6391,7 +6510,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/expenseRouter.ts:43"
+      "loc": "server/routers/expenseRouter.ts:50"
     },
     {
       "surface": "trpc",
@@ -6408,7 +6527,58 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/expenseRouter.ts:196"
+      "loc": "server/routers/expenseRouter.ts:268"
+    },
+    {
+      "surface": "trpc",
+      "router": "expenseRouter",
+      "proposedPermission": "treasury.expense.reject",
+      "name": "rejectAccrualCorrection",
+      "kind": "mutation",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reject",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/expenseRouter.ts:144"
+    },
+    {
+      "surface": "trpc",
+      "router": "expenseRouter",
+      "proposedPermission": "treasury.expense.request_accrual_correction",
+      "name": "requestAccrualCorrection",
+      "kind": "mutation",
+      "procedure": "expensesManagerProcedure",
+      "authority": "module-gate",
+      "module": "expenses",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/expenseRouter.ts:110"
+    },
+    {
+      "surface": "trpc",
+      "router": "expenseRouter",
+      "proposedPermission": "treasury.expense.retry_accrual_correction_refund",
+      "name": "retryAccrualCorrectionRefund",
+      "kind": "mutation",
+      "procedure": "expensesManagerProcedure",
+      "authority": "module-gate",
+      "module": "expenses",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: refund",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/expenseRouter.ts:155"
     },
     {
       "surface": "trpc",
@@ -6425,7 +6595,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/expenseRouter.ts:79"
+      "loc": "server/routers/expenseRouter.ts:86"
     },
     {
       "surface": "trpc",
@@ -7190,7 +7360,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/installmentRouter.ts:133"
+      "loc": "server/routers/installmentRouter.ts:135"
     },
     {
       "surface": "trpc",
@@ -7207,7 +7377,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/installmentRouter.ts:151"
+      "loc": "server/routers/installmentRouter.ts:153"
     },
     {
       "surface": "trpc",
@@ -7241,7 +7411,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/installmentRouter.ts:236"
+      "loc": "server/routers/installmentRouter.ts:238"
     },
     {
       "surface": "trpc",
@@ -7258,7 +7428,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/installmentRouter.ts:231"
+      "loc": "server/routers/installmentRouter.ts:233"
     },
     {
       "surface": "trpc",
@@ -7275,7 +7445,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/installmentRouter.ts:174"
+      "loc": "server/routers/installmentRouter.ts:176"
     },
     {
       "surface": "trpc",
@@ -8414,7 +8584,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:199"
+      "loc": "server/routers/payrollRouter.ts:410"
     },
     {
       "surface": "trpc",
@@ -8431,7 +8601,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:231"
+      "loc": "server/routers/payrollRouter.ts:547"
     },
     {
       "surface": "trpc",
@@ -8448,7 +8618,58 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: grant",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:206"
+      "loc": "server/routers/payrollRouter.ts:522"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.advance_repayment_ledger",
+      "name": "advanceRepaymentLedger",
+      "kind": "query",
+      "procedure": "hrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:434"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.advance_repayment_request",
+      "name": "advanceRepaymentRequest",
+      "kind": "query",
+      "procedure": "hrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:430"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.advance_repayment_requests",
+      "name": "advanceRepaymentRequests",
+      "kind": "query",
+      "procedure": "hrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:417"
     },
     {
       "surface": "trpc",
@@ -8465,7 +8686,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:187"
+      "loc": "server/routers/payrollRouter.ts:395"
     },
     {
       "surface": "trpc",
@@ -8482,13 +8703,47 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:204"
+      "loc": "server/routers/payrollRouter.ts:415"
     },
     {
       "surface": "trpc",
       "router": "payrollRouter",
       "proposedPermission": "hr.payroll.approve",
       "name": "approve",
+      "kind": "mutation",
+      "procedure": "ownerHrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/payrollRouter.ts:130"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.approve",
+      "name": "approveAdvanceRepayment",
+      "kind": "mutation",
+      "procedure": "ownerHrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/payrollRouter.ts:486"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.approve",
+      "name": "approveRemittance",
       "kind": "mutation",
       "procedure": "hrWrite",
       "authority": "module-map",
@@ -8499,7 +8754,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:99"
+      "loc": "server/routers/payrollRouter.ts:275"
     },
     {
       "surface": "trpc",
@@ -8507,7 +8762,7 @@
       "proposedPermission": "hr.payroll.void",
       "name": "cancel",
       "kind": "mutation",
-      "procedure": "hrWrite",
+      "procedure": "ownerHrWrite",
       "authority": "module-map",
       "module": "hr",
       "level": "FULL",
@@ -8516,13 +8771,13 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/payrollRouter.ts:117"
+      "loc": "server/routers/payrollRouter.ts:167"
     },
     {
       "surface": "trpc",
       "router": "payrollRouter",
-      "proposedPermission": "hr.payroll.generate",
-      "name": "generate",
+      "proposedPermission": "hr.payroll.create",
+      "name": "createRemittance",
       "kind": "mutation",
       "procedure": "hrWrite",
       "authority": "module-map",
@@ -8533,15 +8788,15 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:59"
+      "loc": "server/routers/payrollRouter.ts:243"
     },
     {
       "surface": "trpc",
       "router": "payrollRouter",
-      "proposedPermission": "hr.payroll.view",
-      "name": "get",
+      "proposedPermission": "hr.payroll.financial_ledger",
+      "name": "financialLedger",
       "kind": "query",
-      "procedure": "hrRead",
+      "procedure": "ownerHrRead",
       "authority": "module-map",
       "module": "hr",
       "level": "READ",
@@ -8550,7 +8805,41 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:50"
+      "loc": "server/routers/payrollRouter.ts:86"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.generate",
+      "name": "generate",
+      "kind": "mutation",
+      "procedure": "ownerHrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:90"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.view",
+      "name": "get",
+      "kind": "query",
+      "procedure": "ownerHrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:77"
     },
     {
       "surface": "trpc",
@@ -8567,7 +8856,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:132"
+      "loc": "server/routers/payrollRouter.ts:340"
     },
     {
       "surface": "trpc",
@@ -8575,7 +8864,7 @@
       "proposedPermission": "hr.payroll.list",
       "name": "list",
       "kind": "query",
-      "procedure": "hrRead",
+      "procedure": "ownerHrRead",
       "authority": "module-map",
       "module": "hr",
       "level": "READ",
@@ -8584,13 +8873,47 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:48"
+      "loc": "server/routers/payrollRouter.ts:75"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.obligations",
+      "name": "obligations",
+      "kind": "query",
+      "procedure": "hrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|HANDLER_ROLE_CHECK|ADMIN_ONLY",
+      "loc": "server/routers/payrollRouter.ts:205"
     },
     {
       "surface": "trpc",
       "router": "payrollRouter",
       "proposedPermission": "hr.payroll.pay",
       "name": "pay",
+      "kind": "mutation",
+      "procedure": "ownerHrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:144"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.pay_remittance",
+      "name": "payRemittance",
       "kind": "mutation",
       "procedure": "hrWrite",
       "authority": "module-map",
@@ -8601,13 +8924,47 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:108"
+      "loc": "server/routers/payrollRouter.ts:301"
     },
     {
       "surface": "trpc",
       "router": "payrollRouter",
-      "proposedPermission": "hr.payroll.view",
-      "name": "summaryReport",
+      "proposedPermission": "hr.payroll.reject",
+      "name": "rejectAdvanceRepayment",
+      "kind": "mutation",
+      "procedure": "ownerHrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reject",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/payrollRouter.ts:504"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.reject",
+      "name": "rejectRemittance",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reject",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/payrollRouter.ts:288"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.remittances",
+      "name": "remittances",
       "kind": "query",
       "procedure": "hrRead",
       "authority": "module-map",
@@ -8618,13 +8975,13 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:55"
+      "loc": "server/routers/payrollRouter.ts:230"
     },
     {
       "surface": "trpc",
       "router": "payrollRouter",
-      "proposedPermission": "hr.payroll.update",
-      "name": "updateItem",
+      "proposedPermission": "hr.payroll.request_advance_repayment",
+      "name": "requestAdvanceRepayment",
       "kind": "mutation",
       "procedure": "hrWrite",
       "authority": "module-map",
@@ -8635,7 +8992,109 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/payrollRouter.ts:78"
+      "loc": "server/routers/payrollRouter.ts:446"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.request_advance_repayment_return",
+      "name": "requestAdvanceRepaymentReturn",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:468"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.return_remittance",
+      "name": "returnRemittance",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:319"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.return_salary_payment",
+      "name": "returnSalaryPayment",
+      "kind": "mutation",
+      "procedure": "ownerHrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:182"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.statutory_obligation_summary",
+      "name": "statutoryObligationSummary",
+      "kind": "query",
+      "procedure": "hrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:223"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.view",
+      "name": "summaryReport",
+      "kind": "query",
+      "procedure": "ownerHrRead",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "READ",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:82"
+    },
+    {
+      "surface": "trpc",
+      "router": "payrollRouter",
+      "proposedPermission": "hr.payroll.update",
+      "name": "updateItem",
+      "kind": "mutation",
+      "procedure": "ownerHrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/payrollRouter.ts:109"
     },
     {
       "surface": "trpc",
@@ -8652,7 +9111,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/payrollRouter.ts:138"
+      "loc": "server/routers/payrollRouter.ts:346"
     },
     {
       "surface": "trpc",
@@ -8669,7 +9128,75 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/periodLockRouter.ts:151"
+      "loc": "server/routers/periodLockRouter.ts:306"
+    },
+    {
+      "surface": "trpc",
+      "router": "periodLockRouter",
+      "proposedPermission": "accounting.period_lock.bootstrap_sequence",
+      "name": "bootstrapSequence",
+      "kind": "mutation",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/periodLockRouter.ts:53"
+    },
+    {
+      "surface": "trpc",
+      "router": "periodLockRouter",
+      "proposedPermission": "reports.period_lock.certificate",
+      "name": "certificate",
+      "kind": "query",
+      "procedure": "reportsAdminProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/periodLockRouter.ts:122"
+    },
+    {
+      "surface": "trpc",
+      "router": "periodLockRouter",
+      "proposedPermission": "reports.period_lock.certificates",
+      "name": "certificates",
+      "kind": "query",
+      "procedure": "reportsAdminProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/periodLockRouter.ts:105"
+    },
+    {
+      "surface": "trpc",
+      "router": "periodLockRouter",
+      "proposedPermission": "reports.period_lock.close",
+      "name": "closeActionReadiness",
+      "kind": "query",
+      "procedure": "reportsManagerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/periodLockRouter.ts:266"
     },
     {
       "surface": "trpc",
@@ -8686,7 +9213,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/periodLockRouter.ts:130"
+      "loc": "server/routers/periodLockRouter.ts:254"
+    },
+    {
+      "surface": "trpc",
+      "router": "periodLockRouter",
+      "proposedPermission": "reports.period_lock.export",
+      "name": "exportCertificate",
+      "kind": "query",
+      "procedure": "reportsAdminProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "أثر خارجي: export",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/periodLockRouter.ts:134"
     },
     {
       "surface": "trpc",
@@ -8703,24 +9247,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/periodLockRouter.ts:35"
-    },
-    {
-      "surface": "trpc",
-      "router": "periodLockRouter",
-      "proposedPermission": "accounting.period_lock.lock",
-      "name": "lock",
-      "kind": "mutation",
-      "procedure": "adminProcedure",
-      "authority": "admin",
-      "module": "",
-      "level": "",
-      "roles": "admin",
-      "branch": "none",
-      "sensitivity": "MEDIUM",
-      "sensitivityWhy": "كتابة",
-      "flags": "ADMIN_ONLY",
-      "loc": "server/routers/periodLockRouter.ts:74"
+      "loc": "server/routers/periodLockRouter.ts:151"
     },
     {
       "surface": "trpc",
@@ -8737,7 +9264,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/periodLockRouter.ts:171"
+      "loc": "server/routers/periodLockRouter.ts:351"
     },
     {
       "surface": "trpc",
@@ -8754,7 +9281,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: close",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/periodLockRouter.ts:135"
+      "loc": "server/routers/periodLockRouter.ts:279"
+    },
+    {
+      "surface": "trpc",
+      "router": "periodLockRouter",
+      "proposedPermission": "reports.period_lock.sequence_events",
+      "name": "sequenceEvents",
+      "kind": "query",
+      "procedure": "reportsAdminProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/periodLockRouter.ts:95"
     },
     {
       "surface": "trpc",
@@ -8771,7 +9315,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/periodLockRouter.ts:26"
+      "loc": "server/routers/periodLockRouter.ts:46"
     },
     {
       "surface": "trpc",
@@ -8788,7 +9332,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: unlock",
       "flags": "ADMIN_ONLY|SENSITIVE_ACTION",
-      "loc": "server/routers/periodLockRouter.ts:93"
+      "loc": "server/routers/periodLockRouter.ts:201"
+    },
+    {
+      "surface": "trpc",
+      "router": "periodLockRouter",
+      "proposedPermission": "reports.period_lock.verify_certificate",
+      "name": "verifyCertificate",
+      "kind": "query",
+      "procedure": "reportsAdminProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/periodLockRouter.ts:128"
     },
     {
       "surface": "trpc",
@@ -9485,7 +10046,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/promotionRouter.ts:149"
+      "loc": "server/routers/promotionRouter.ts:150"
     },
     {
       "surface": "trpc",
@@ -9502,7 +10063,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:194"
+      "loc": "server/routers/promotionRouter.ts:214"
     },
     {
       "surface": "trpc",
@@ -9519,7 +10080,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:108"
+      "loc": "server/routers/promotionRouter.ts:109"
     },
     {
       "surface": "trpc",
@@ -9536,7 +10097,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:166"
+      "loc": "server/routers/promotionRouter.ts:167"
     },
     {
       "surface": "trpc",
@@ -9553,7 +10114,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:104"
+      "loc": "server/routers/promotionRouter.ts:105"
     },
     {
       "surface": "trpc",
@@ -9570,7 +10131,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:162"
+      "loc": "server/routers/promotionRouter.ts:163"
+    },
+    {
+      "surface": "trpc",
+      "router": "promotionRouter",
+      "proposedPermission": "hr.promotion.reissue_termination_payment",
+      "name": "reissueTerminationPayment",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
+      "loc": "server/routers/promotionRouter.ts:269"
     },
     {
       "surface": "trpc",
@@ -9587,7 +10165,41 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:66"
+      "loc": "server/routers/promotionRouter.ts:67"
+    },
+    {
+      "surface": "trpc",
+      "router": "promotionRouter",
+      "proposedPermission": "hr.promotion.reverse",
+      "name": "reverseTerminationPayment",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reverse",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/promotionRouter.ts:239"
+    },
+    {
+      "surface": "trpc",
+      "router": "promotionRouter",
+      "proposedPermission": "hr.promotion.reverse",
+      "name": "reverseTerminationRecognition",
+      "kind": "mutation",
+      "procedure": "hrWrite",
+      "authority": "module-map",
+      "module": "hr",
+      "level": "FULL",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reverse",
+      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/promotionRouter.ts:296"
     },
     {
       "surface": "trpc",
@@ -9757,7 +10369,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:272"
+      "loc": "server/routers/purchaseRouter.ts:277"
     },
     {
       "surface": "trpc",
@@ -9808,7 +10420,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:388"
+      "loc": "server/routers/purchaseRouter.ts:393"
     },
     {
       "surface": "trpc",
@@ -9825,7 +10437,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:291"
+      "loc": "server/routers/purchaseRouter.ts:296"
     },
     {
       "surface": "trpc",
@@ -9842,7 +10454,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:360"
+      "loc": "server/routers/purchaseRouter.ts:365"
     },
     {
       "surface": "trpc",
@@ -9893,7 +10505,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: settle",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:241"
+      "loc": "server/routers/purchaseRouter.ts:246"
     },
     {
       "surface": "trpc",
@@ -10505,7 +11117,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:918"
+      "loc": "server/routers/reportsRouter.ts:957"
     },
     {
       "surface": "trpc",
@@ -10522,7 +11134,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:125"
+      "loc": "server/routers/reportsRouter.ts:170"
     },
     {
       "surface": "trpc",
@@ -10539,7 +11151,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:264"
+      "loc": "server/routers/reportsRouter.ts:309"
     },
     {
       "surface": "trpc",
@@ -10556,7 +11168,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:101"
+      "loc": "server/routers/reportsRouter.ts:146"
     },
     {
       "surface": "trpc",
@@ -10573,7 +11185,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:853"
+      "loc": "server/routers/reportsRouter.ts:892"
     },
     {
       "surface": "trpc",
@@ -10590,7 +11202,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:713"
+      "loc": "server/routers/reportsRouter.ts:752"
     },
     {
       "surface": "trpc",
@@ -10607,7 +11219,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:973"
+      "loc": "server/routers/reportsRouter.ts:1012"
     },
     {
       "surface": "trpc",
@@ -10624,7 +11236,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1128"
+      "loc": "server/routers/reportsRouter.ts:1169"
     },
     {
       "surface": "trpc",
@@ -10641,7 +11253,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1107"
+      "loc": "server/routers/reportsRouter.ts:1148"
     },
     {
       "surface": "trpc",
@@ -10658,7 +11270,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:139"
+      "loc": "server/routers/reportsRouter.ts:184"
     },
     {
       "surface": "trpc",
@@ -10675,7 +11287,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:251"
+      "loc": "server/routers/reportsRouter.ts:296"
     },
     {
       "surface": "trpc",
@@ -10692,7 +11304,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:229"
+      "loc": "server/routers/reportsRouter.ts:274"
     },
     {
       "surface": "trpc",
@@ -10709,7 +11321,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/reportsRouter.ts:500"
+      "loc": "server/routers/reportsRouter.ts:545"
     },
     {
       "surface": "trpc",
@@ -10726,7 +11338,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1001"
+      "loc": "server/routers/reportsRouter.ts:1040"
     },
     {
       "surface": "trpc",
@@ -10743,7 +11355,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:149"
+      "loc": "server/routers/reportsRouter.ts:194"
+    },
+    {
+      "surface": "trpc",
+      "router": "reportsRouter",
+      "proposedPermission": "reports.report.double_entry_report_availability",
+      "name": "doubleEntryReportAvailability",
+      "kind": "query",
+      "procedure": "reportsBranchScoped",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/reportsRouter.ts:678"
     },
     {
       "surface": "trpc",
@@ -10760,7 +11389,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:946"
+      "loc": "server/routers/reportsRouter.ts:985"
     },
     {
       "surface": "trpc",
@@ -10777,7 +11406,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:697"
+      "loc": "server/routers/reportsRouter.ts:736"
     },
     {
       "surface": "trpc",
@@ -10794,7 +11423,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:631"
+      "loc": "server/routers/reportsRouter.ts:704"
     },
     {
       "surface": "trpc",
@@ -10811,7 +11440,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:866"
+      "loc": "server/routers/reportsRouter.ts:905"
     },
     {
       "surface": "trpc",
@@ -10828,7 +11457,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:894"
+      "loc": "server/routers/reportsRouter.ts:933"
     },
     {
       "surface": "trpc",
@@ -10845,7 +11474,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:111"
+      "loc": "server/routers/reportsRouter.ts:156"
     },
     {
       "surface": "trpc",
@@ -10862,7 +11491,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:797"
+      "loc": "server/routers/reportsRouter.ts:836"
     },
     {
       "surface": "trpc",
@@ -10879,7 +11508,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:780"
+      "loc": "server/routers/reportsRouter.ts:819"
     },
     {
       "surface": "trpc",
@@ -10896,7 +11525,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:165"
+      "loc": "server/routers/reportsRouter.ts:210"
+    },
+    {
+      "surface": "trpc",
+      "router": "reportsRouter",
+      "proposedPermission": "admin.report.prepare_double_entry_shadow",
+      "name": "prepareDoubleEntryShadow",
+      "kind": "mutation",
+      "procedure": "settingsAdminProcedure",
+      "authority": "module-gate",
+      "module": "settings",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/reportsRouter.ts:1274"
     },
     {
       "surface": "trpc",
@@ -10913,7 +11559,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1014"
+      "loc": "server/routers/reportsRouter.ts:1053"
     },
     {
       "surface": "trpc",
@@ -10930,7 +11576,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1031"
+      "loc": "server/routers/reportsRouter.ts:1070"
     },
     {
       "surface": "trpc",
@@ -10947,7 +11593,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:606"
+      "loc": "server/routers/reportsRouter.ts:652"
     },
     {
       "surface": "trpc",
@@ -10964,7 +11610,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:587"
+      "loc": "server/routers/reportsRouter.ts:633"
     },
     {
       "surface": "trpc",
@@ -10981,7 +11627,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:826"
+      "loc": "server/routers/reportsRouter.ts:865"
     },
     {
       "surface": "trpc",
@@ -10998,7 +11644,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:812"
+      "loc": "server/routers/reportsRouter.ts:851"
     },
     {
       "surface": "trpc",
@@ -11015,7 +11661,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/reportsRouter.ts:1204"
+      "loc": "server/routers/reportsRouter.ts:1247"
     },
     {
       "surface": "trpc",
@@ -11032,7 +11678,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/reportsRouter.ts:539"
+      "loc": "server/routers/reportsRouter.ts:584"
     },
     {
       "surface": "trpc",
@@ -11049,7 +11695,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:180"
+      "loc": "server/routers/reportsRouter.ts:225"
     },
     {
       "surface": "trpc",
@@ -11066,7 +11712,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:752"
+      "loc": "server/routers/reportsRouter.ts:791"
     },
     {
       "surface": "trpc",
@@ -11083,7 +11729,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:727"
+      "loc": "server/routers/reportsRouter.ts:766"
     },
     {
       "surface": "trpc",
@@ -11100,7 +11746,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:315"
+      "loc": "server/routers/reportsRouter.ts:360"
     },
     {
       "surface": "trpc",
@@ -11117,7 +11763,24 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1224"
+      "loc": "server/routers/reportsRouter.ts:1305"
+    },
+    {
+      "surface": "trpc",
+      "router": "reportsRouter",
+      "proposedPermission": "admin.report.update",
+      "name": "setDoubleEntryPolicyApproval",
+      "kind": "mutation",
+      "procedure": "settingsAdminProcedure",
+      "authority": "module-gate",
+      "module": "settings",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/reportsRouter.ts:1366"
     },
     {
       "surface": "trpc",
@@ -11134,7 +11797,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:570"
+      "loc": "server/routers/reportsRouter.ts:616"
     },
     {
       "surface": "trpc",
@@ -11151,7 +11814,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:876"
+      "loc": "server/routers/reportsRouter.ts:915"
     },
     {
       "surface": "trpc",
@@ -11168,7 +11831,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:195"
+      "loc": "server/routers/reportsRouter.ts:240"
     },
     {
       "surface": "trpc",
@@ -11185,7 +11848,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:298"
+      "loc": "server/routers/reportsRouter.ts:343"
     },
     {
       "surface": "trpc",
@@ -11202,7 +11865,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:273"
+      "loc": "server/routers/reportsRouter.ts:318"
     },
     {
       "surface": "trpc",
@@ -11219,7 +11882,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:550"
+      "loc": "server/routers/reportsRouter.ts:596"
     },
     {
       "surface": "trpc",
@@ -11236,7 +11899,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:932"
+      "loc": "server/routers/reportsRouter.ts:971"
+    },
+    {
+      "surface": "trpc",
+      "router": "reportsRouter",
+      "proposedPermission": "reports.report.trial_balance",
+      "name": "trialBalance",
+      "kind": "query",
+      "procedure": "reportsBranchScoped",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "READ",
+      "roles": "manager|accountant|auditor",
+      "branch": "asserted",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/reportsRouter.ts:682"
     },
     {
       "surface": "trpc",
@@ -11253,7 +11933,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1156"
+      "loc": "server/routers/reportsRouter.ts:1199"
     },
     {
       "surface": "trpc",
@@ -11270,7 +11950,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1186"
+      "loc": "server/routers/reportsRouter.ts:1229"
     },
     {
       "surface": "trpc",
@@ -11287,7 +11967,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1171"
+      "loc": "server/routers/reportsRouter.ts:1214"
     },
     {
       "surface": "trpc",
@@ -11304,7 +11984,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1141"
+      "loc": "server/routers/reportsRouter.ts:1184"
     },
     {
       "surface": "trpc",
@@ -11321,7 +12001,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:215"
+      "loc": "server/routers/reportsRouter.ts:260"
     },
     {
       "surface": "trpc",
@@ -11338,7 +12018,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1058"
+      "loc": "server/routers/reportsRouter.ts:1099"
     },
     {
       "surface": "trpc",
@@ -11355,7 +12035,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/reportsRouter.ts:1089"
+      "loc": "server/routers/reportsRouter.ts:1130"
     },
     {
       "surface": "trpc",
@@ -14653,7 +15333,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:232"
+      "loc": "server/routers/voucherRouter.ts:263"
     },
     {
       "surface": "trpc",
@@ -14670,7 +15350,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:118"
+      "loc": "server/routers/voucherRouter.ts:133"
+    },
+    {
+      "surface": "trpc",
+      "router": "voucherRouter",
+      "proposedPermission": "treasury.voucher.update",
+      "name": "assignHistoricalCategory",
+      "kind": "mutation",
+      "procedure": "treasuryManagerProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "FULL",
+      "roles": "manager|accountant",
+      "branch": "required",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/voucherRouter.ts:684"
     },
     {
       "surface": "trpc",
@@ -14687,7 +15384,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:188"
+      "loc": "server/routers/voucherRouter.ts:219"
     },
     {
       "surface": "trpc",
@@ -14704,7 +15401,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:55"
+      "loc": "server/routers/voucherRouter.ts:70"
     },
     {
       "surface": "trpc",
@@ -14712,16 +15409,16 @@
       "proposedPermission": "treasury.voucher.create",
       "name": "create",
       "kind": "mutation",
-      "procedure": "adminProcedure",
-      "authority": "admin",
-      "module": "",
-      "level": "",
-      "roles": "admin",
-      "branch": "none",
+      "procedure": "treasuryManagerProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "FULL",
+      "roles": "manager|accountant",
+      "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:354"
+      "flags": "",
+      "loc": "server/routers/voucherRouter.ts:402"
     },
     {
       "surface": "trpc",
@@ -14738,7 +15435,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:240"
+      "loc": "server/routers/voucherRouter.ts:271"
     },
     {
       "surface": "trpc",
@@ -14755,7 +15452,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:212"
+      "loc": "server/routers/voucherRouter.ts:243"
     },
     {
       "surface": "trpc",
@@ -14772,7 +15469,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:342"
+      "loc": "server/routers/voucherRouter.ts:373"
     },
     {
       "surface": "trpc",
@@ -14780,16 +15477,16 @@
       "proposedPermission": "treasury.voucher.merge",
       "name": "merge",
       "kind": "mutation",
-      "procedure": "adminProcedure",
-      "authority": "admin",
-      "module": "",
-      "level": "",
-      "roles": "admin",
-      "branch": "none",
+      "procedure": "treasuryManagerProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "FULL",
+      "roles": "manager|accountant",
+      "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:429"
+      "flags": "",
+      "loc": "server/routers/voucherRouter.ts:561"
     },
     {
       "surface": "trpc",
@@ -14806,7 +15503,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:251"
+      "loc": "server/routers/voucherRouter.ts:282"
     },
     {
       "surface": "trpc",
@@ -14823,7 +15520,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/voucherRouter.ts:141"
+      "loc": "server/routers/voucherRouter.ts:156"
     },
     {
       "surface": "trpc",
@@ -14840,7 +15537,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:162"
+      "loc": "server/routers/voucherRouter.ts:177"
     },
     {
       "surface": "trpc",
@@ -14848,16 +15545,16 @@
       "proposedPermission": "treasury.voucher.update",
       "name": "setActive",
       "kind": "mutation",
-      "procedure": "adminProcedure",
-      "authority": "admin",
-      "module": "",
-      "level": "",
-      "roles": "admin",
-      "branch": "none",
+      "procedure": "treasuryManagerProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "FULL",
+      "roles": "manager|accountant",
+      "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:412"
+      "flags": "",
+      "loc": "server/routers/voucherRouter.ts:522"
     },
     {
       "surface": "trpc",
@@ -14874,7 +15571,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/voucherRouter.ts:50"
+      "loc": "server/routers/voucherRouter.ts:65"
+    },
+    {
+      "surface": "trpc",
+      "router": "voucherRouter",
+      "proposedPermission": "treasury.voucher.unclassified_other",
+      "name": "unclassifiedOther",
+      "kind": "query",
+      "procedure": "treasuryManagerReadProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "READ",
+      "roles": "manager|accountant",
+      "branch": "required",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/voucherRouter.ts:632"
     },
     {
       "surface": "trpc",
@@ -14882,16 +15596,33 @@
       "proposedPermission": "treasury.voucher.update",
       "name": "update",
       "kind": "mutation",
-      "procedure": "adminProcedure",
-      "authority": "admin",
-      "module": "",
-      "level": "",
-      "roles": "admin",
-      "branch": "none",
+      "procedure": "treasuryManagerProcedure",
+      "authority": "module-gate",
+      "module": "treasury",
+      "level": "FULL",
+      "roles": "manager|accountant",
+      "branch": "required",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "ADMIN_ONLY",
-      "loc": "server/routers/voucherRouter.ts:383"
+      "flags": "",
+      "loc": "server/routers/voucherRouter.ts:439"
+    },
+    {
+      "surface": "trpc",
+      "router": "workOrderRouter",
+      "proposedPermission": "workorders.work_order.approve",
+      "name": "approveCancellationRefund",
+      "kind": "mutation",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: cancel",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/workOrderRouter.ts:1126"
     },
     {
       "surface": "trpc",
@@ -14908,7 +15639,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:636"
+      "loc": "server/routers/workOrderRouter.ts:641"
     },
     {
       "surface": "trpc",
@@ -14925,7 +15656,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:611"
+      "loc": "server/routers/workOrderRouter.ts:616"
     },
     {
       "surface": "trpc",
@@ -14942,7 +15673,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/workOrderRouter.ts:1100"
+      "loc": "server/routers/workOrderRouter.ts:1105"
+    },
+    {
+      "surface": "trpc",
+      "router": "workOrderRouter",
+      "proposedPermission": "workorders.work_order.void",
+      "name": "cancellationRefundStatus",
+      "kind": "query",
+      "procedure": "workordersReadProcedure",
+      "authority": "module-map",
+      "module": "workorders",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/workOrderRouter.ts:1149"
     },
     {
       "surface": "trpc",
@@ -14959,7 +15707,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:1040"
+      "loc": "server/routers/workOrderRouter.ts:1045"
     },
     {
       "surface": "trpc",
@@ -14976,7 +15724,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:439"
+      "loc": "server/routers/workOrderRouter.ts:444"
     },
     {
       "surface": "trpc",
@@ -14993,7 +15741,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:812"
+      "loc": "server/routers/workOrderRouter.ts:817"
     },
     {
       "surface": "trpc",
@@ -15010,7 +15758,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:1071"
+      "loc": "server/routers/workOrderRouter.ts:1076"
     },
     {
       "surface": "trpc",
@@ -15027,7 +15775,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:945"
+      "loc": "server/routers/workOrderRouter.ts:950"
     },
     {
       "surface": "trpc",
@@ -15044,7 +15792,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:486"
+      "loc": "server/routers/workOrderRouter.ts:491"
     },
     {
       "surface": "trpc",
@@ -15061,7 +15809,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:306"
+      "loc": "server/routers/workOrderRouter.ts:311"
     },
     {
       "surface": "trpc",
@@ -15078,7 +15826,24 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:1063"
+      "loc": "server/routers/workOrderRouter.ts:1068"
+    },
+    {
+      "surface": "trpc",
+      "router": "workOrderRouter",
+      "proposedPermission": "workorders.work_order.pending_cancellation_refunds",
+      "name": "pendingCancellationRefunds",
+      "kind": "query",
+      "procedure": "ownerProcedure",
+      "authority": "owner",
+      "module": "ownership",
+      "level": "APPROVE",
+      "roles": "",
+      "branch": "none",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/workOrderRouter.ts:1141"
     },
     {
       "surface": "trpc",
@@ -15095,7 +15860,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:703"
+      "loc": "server/routers/workOrderRouter.ts:708"
     },
     {
       "surface": "trpc",
@@ -15112,7 +15877,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:960"
+      "loc": "server/routers/workOrderRouter.ts:965"
     },
     {
       "surface": "trpc",
@@ -15129,7 +15894,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:1055"
+      "loc": "server/routers/workOrderRouter.ts:1060"
     },
     {
       "surface": "trpc",
@@ -15146,7 +15911,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:679"
+      "loc": "server/routers/workOrderRouter.ts:684"
     },
     {
       "surface": "trpc",
@@ -15163,41 +15928,109 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/workOrderRouter.ts:1004"
+      "loc": "server/routers/workOrderRouter.ts:1009"
     },
     {
       "surface": "trpc",
       "router": "yearEndRouter",
-      "proposedPermission": "accounting.year_end.close",
+      "proposedPermission": "reports.year_end.approve",
+      "name": "approveReopen",
+      "kind": "mutation",
+      "procedure": "reportsAdminProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/yearEndRouter.ts:130"
+    },
+    {
+      "surface": "trpc",
+      "router": "yearEndRouter",
+      "proposedPermission": "reports.year_end.close",
       "name": "close",
       "kind": "mutation",
-      "procedure": "adminProcedure",
-      "authority": "admin",
-      "module": "",
-      "level": "",
+      "procedure": "reportsAdminProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
       "roles": "admin",
       "branch": "none",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: close",
-      "flags": "ADMIN_ONLY|SENSITIVE_ACTION",
-      "loc": "server/routers/yearEndRouter.ts:11"
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/yearEndRouter.ts:24"
     },
     {
       "surface": "trpc",
       "router": "yearEndRouter",
-      "proposedPermission": "accounting.year_end.list",
+      "proposedPermission": "reports.year_end.list",
       "name": "list",
       "kind": "query",
-      "procedure": "adminProcedure",
-      "authority": "admin",
-      "module": "",
-      "level": "",
-      "roles": "admin",
-      "branch": "none",
+      "procedure": "reportsManagerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "ADMIN_ONLY",
-      "loc": "server/routers/yearEndRouter.ts:39"
+      "flags": "",
+      "loc": "server/routers/yearEndRouter.ts:62"
+    },
+    {
+      "surface": "trpc",
+      "router": "yearEndRouter",
+      "proposedPermission": "reports.year_end.reject",
+      "name": "rejectReopen",
+      "kind": "mutation",
+      "procedure": "reportsAdminProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "admin",
+      "branch": "none",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reject",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/yearEndRouter.ts:157"
+    },
+    {
+      "surface": "trpc",
+      "router": "yearEndRouter",
+      "proposedPermission": "reports.year_end.reopen",
+      "name": "reopenRequests",
+      "kind": "query",
+      "procedure": "reportsManagerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/yearEndRouter.ts:76"
+    },
+    {
+      "surface": "trpc",
+      "router": "yearEndRouter",
+      "proposedPermission": "reports.year_end.request_reopen",
+      "name": "requestReopen",
+      "kind": "mutation",
+      "procedure": "reportsManagerProcedure",
+      "authority": "module-gate",
+      "module": "reports",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reopen",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/yearEndRouter.ts:91"
     }
   ],
   "express": [

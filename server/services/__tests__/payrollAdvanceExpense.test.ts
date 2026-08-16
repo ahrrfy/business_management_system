@@ -28,12 +28,12 @@ const MAKER = { userId: 1, branchId: 1, role: "admin" };
 const CHECKER = { userId: 9, branchId: 1, role: "admin" };
 const PERIOD = "2026-06";
 
-/** مجموع قيود الرواتب في الدفتر (نفس ما تقرأه قائمة الدخل: PAYMENT_OUT بمفتاح PAYROLL%). */
+/** مصروف الرواتب يُثبت عند الاعتماد بقيد استحقاق ADJUST، لا عند التسوية النقدية. */
 async function payrollExpense(): Promise<number> {
   const [r] = await db()
     .select({ total: sql<string>`COALESCE(SUM(${s.accountingEntries.amount}), 0)` })
     .from(s.accountingEntries)
-    .where(and(eq(s.accountingEntries.entryType, "PAYMENT_OUT"), like(s.accountingEntries.dedupeKey, "PAYROLL%")));
+    .where(and(eq(s.accountingEntries.entryType, "ADJUST"), like(s.accountingEntries.dedupeKey, "PAYROLL:ACCRUAL%")));
   return Number(r?.total ?? 0);
 }
 
@@ -106,29 +106,29 @@ describe("مصروف الرواتب مع السلف", () => {
     expect(await treasuryDelta()).toBe(-1000000);
   });
 
-  it("م٣) عكس الدفع يعكس القيدين ⇒ صافي الدفتر صفر", async () => {
+  it("م٣) إعادة فتح المسيّر المعتمد تعكس قيد الاستحقاق ⇒ صافي المصروف صفر", async () => {
     await grantAndApproveAdvance(
       { employeeId: 1, branchId: 1, amount: "200000", monthlyDeduction: "200000", clientRequestId: "adv-y" },
     );
     const run = await generatePayroll(PERIOD, MAKER as never);
     await approveRun(Number(run.id), CHECKER as never);
-    await payRun(Number(run.id), CHECKER as never);
     expect(await payrollExpense()).toBe(1000000);
 
     await cancelRun(Number(run.id), CHECKER as never);
     expect(await payrollExpense()).toBe(0);
   });
 
-  it("م٤) بلا سلفة: قيدٌ واحد والمصروف = الصافي (صفر انحدار)", async () => {
+  it("م٤) بلا سلفة: قيد استحقاق واحد والمصروف لا يتكرر عند الدفع", async () => {
     const run = await generatePayroll(PERIOD, MAKER as never);
     await approveRun(Number(run.id), CHECKER as never);
+    expect(await payrollExpense()).toBe(1000000);
     await payRun(Number(run.id), CHECKER as never);
 
     expect(await payrollExpense()).toBe(1000000);
     const entries = await db()
       .select()
       .from(s.accountingEntries)
-      .where(like(s.accountingEntries.dedupeKey, "PAYROLL%"));
+      .where(like(s.accountingEntries.dedupeKey, "PAYROLL:ACCRUAL%"));
     expect(entries).toHaveLength(1);
   });
 });

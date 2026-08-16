@@ -9,7 +9,6 @@ import * as schema from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
-import { approveVoucher } from "../voucherService";
 
 const TABLES = [
   "idempotencyKeys",
@@ -229,7 +228,11 @@ describe("assets company and branch scope", () => {
       }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(scoped.assets.handover({ assetId: 202, employeeId: 11 })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(scoped.assets.addMaintenance({ assetId: 202, type: "Forbidden" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(scoped.assets.addMaintenance({
+      assetId: 202,
+      type: "Forbidden",
+      clientRequestId: "scope-maintenance-202",
+    })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(scoped.assets.returnFromMaintenance({ assetId: 202 })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(scoped.assets.dispose({ assetId: 202, kind: "retired", date: "2026-08-01" })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(scoped.assets.addDocument({ assetId: 202, title: "Forbidden", dataUrl: "x" })).rejects.toMatchObject({ code: "NOT_FOUND" });
@@ -243,6 +246,9 @@ describe("assets company and branch scope", () => {
         purchaseValue: "1",
         usefulLifeYears: 1,
         depreciationMethod: "sl",
+        clientRequestId: "scope-cross-branch-create",
+        acquisitionEvidenceReference: "SCOPE-CROSS-BRANCH-DOC",
+        acquisitionBeneficiaryName: "مورّد اختبار النطاق",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
@@ -306,7 +312,7 @@ describe("assets company and branch scope", () => {
         referenceNumber: "ASSET-ACQ-606", createdBy: 1,
       },
     ]);
-    const moved = await admin.assets.update({
+    await expect(admin.assets.update({
       id: 606,
       name: "Movable asset",
       category: "computers",
@@ -315,19 +321,9 @@ describe("assets company and branch scope", () => {
       purchaseValue: "1500",
       usefulLifeYears: 5,
       depreciationMethod: "sl",
-    });
-    expect(moved).toMatchObject({ branchId: 1, paymentPending: true });
-    const [request] = await db().select().from(schema.receipts)
-      .where(eq(schema.receipts.referenceNumber, "ASSET-REACQ-606-1"));
-    await approveVoucher(Number(request.id), { userId: 5, branchId: 1, role: "manager" });
-    const finalized = await admin.assets.get({ id: 606 });
-    expect(finalized.branchId).toBe(2);
-
-    const entries = await db()
-      .select({ key: schema.accountingEntries.dedupeKey, branchId: schema.accountingEntries.branchId })
-      .from(schema.accountingEntries);
-    expect(entries.find((entry) => entry.key?.startsWith("ASSET_ACQREV:606:"))?.branchId).toBe(1);
-    expect(entries.find((entry) => entry.key?.startsWith("ASSET_REACQ:606:"))?.branchId).toBe(2);
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const unchanged = await admin.assets.get({ id: 606 });
+    expect(unchanged).toMatchObject({ branchId: 1, purchaseValue: "1000.00" });
   });
 
   it("redacts legacy cross-branch custodian/device links instead of leaking their identities", async () => {

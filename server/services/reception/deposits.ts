@@ -22,6 +22,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import {
   getOpenShift,
@@ -31,6 +32,7 @@ import {
 import { assertCashOutAvailable } from "../cash/cashAvailability";
 import { assertTelecomCollectAllowed } from "./telecom";
 import { withTx, type Actor } from "../tx";
+import { paymentAssetRole } from "../sale/paymentPosting";
 
 /** طرق العربون — TELECOM (رصيد زين، ش٥) خلف ضوابط §٩.٤ في telecom.ts. */
 export type DepositMethod = "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM";
@@ -207,6 +209,11 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
       createdBy: actor.userId,
     });
     const receiptId = extractInsertId(rRes);
+    const depositAssetRole = paymentAssetRole(input.method, input.method === "CASH" ? "DRAWER" : null, "IN");
+    const depositPostingSource = {
+      roleDebits: { [depositAssetRole]: amountD },
+      roleCredits: { OTHER_LIABILITY: amountD },
+    };
     await postEntry(tx, {
       entryType: "PAYMENT_IN",
       branchId: Number(draft.branchId),
@@ -214,6 +221,8 @@ export async function collectDeposit(input: CollectDepositInput, actor: Actor & 
       customerId: draft.customerId != null ? Number(draft.customerId) : null,
       amount: amountD,
       notes: `[DRAFT_DEPOSIT:${input.draftId}]`,
+      postingIntent: createPostingIntent("PAYMENT_IN_OTHER", "PAYMENT_IN", [debitLine(depositAssetRole, amountD), creditLine("OTHER_LIABILITY", amountD)], depositPostingSource),
+      postingSourceComponents: depositPostingSource,
     });
 
     const pRes = await tx.insert(orderPayments).values({
@@ -369,6 +378,11 @@ export async function refundDeposit(
       createdBy: actor.userId,
     });
     const refundReceiptId = extractInsertId(rRes);
+    const refundAssetRole = paymentAssetRole(method, method === "CASH" ? "DRAWER" : null, "OUT");
+    const refundPostingSource = {
+      roleDebits: { OTHER_LIABILITY: amountD },
+      roleCredits: { [refundAssetRole]: amountD },
+    };
     // مراجعة ش٤: ساقا الردّ بعميل **القبض الأمّ** لا بعميل المسوّدة الحاليّ — تغييرُ عميل
     // المسوّدة بين القبض والردّ كان يترك ساقين على عميلين مختلفين دائمتين في AR الفرعيّ المشتقّ.
     const legCustomerId = payment.customerId != null ? Number(payment.customerId) : null;
@@ -379,6 +393,8 @@ export async function refundDeposit(
       customerId: legCustomerId,
       amount: amountD,
       notes: `[DRAFT_DEPOSIT:${Number(draft.id)}] استرداد: ${input.reason}`,
+      postingIntent: createPostingIntent("PAYMENT_OUT_OTHER", "PAYMENT_OUT", [debitLine("OTHER_LIABILITY", amountD), creditLine(refundAssetRole, amountD)], refundPostingSource),
+      postingSourceComponents: refundPostingSource,
     });
 
     const refRes = await tx.insert(orderPayments).values({
@@ -640,6 +656,11 @@ export async function refundAppliedCollectionsForWorkOrder(
       createdBy: args.actor.userId,
     });
     const refundReceiptId = extractInsertId(rRes);
+    const refundAssetRole = paymentAssetRole(refundMethod, refundMethod === "CASH" ? "DRAWER" : null, "OUT");
+    const refundPostingSource = {
+      roleDebits: { OTHER_LIABILITY: amountD },
+      roleCredits: { [refundAssetRole]: amountD },
+    };
     // عميل ساقَي الردّ = عميل القبض الأمّ (لا عميل أمر الشغل) — تناظرٌ بنيويّ مهما تغيّر الربط.
     await postEntry(tx, {
       entryType: "PAYMENT_OUT",
@@ -648,6 +669,8 @@ export async function refundAppliedCollectionsForWorkOrder(
       customerId: part.customerId ?? args.customerId,
       amount: amountD,
       notes: `استرداد حصّة عربون مقبوضةٍ سلفاً — إلغاء طلب #${args.workOrderId}`,
+      postingIntent: createPostingIntent("PAYMENT_OUT_OTHER", "PAYMENT_OUT", [debitLine("OTHER_LIABILITY", amountD), creditLine(refundAssetRole, amountD)], refundPostingSource),
+      postingSourceComponents: refundPostingSource,
     });
     if (part.draftId != null) {
       await tx.insert(orderPayments).values({

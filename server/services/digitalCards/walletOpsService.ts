@@ -34,6 +34,7 @@ import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
 import { createSystemPaymentRequestTx } from "../voucher/create";
 import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 
 /** الحركات التي تزيد الرصيد؛ ما عداها يُنقصه. مصدرُ حقيقةٍ واحد لإشارة كل نوع. */
 const INBOUND_TYPES = new Set(["OPENING", "DEPOSIT", "SALE_REVERSAL"]);
@@ -160,7 +161,6 @@ export async function deposit(
   if (amount.lte(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون أكبر من صفر" });
   }
-
   let cashBranchHint: number | null = null;
   if (input.paymentMethod === "CASH") {
     const [preview] = await tx
@@ -272,6 +272,7 @@ export async function deposit(
     },
     actor,
   );
+  const depositAssetRole = "CARD_BANK" as const;
 
   // حركة أصل: صفر أثر P&L — ليست مشترياتٍ ولا مصروفاً (§٦.١).
   await postEntry(tx, {
@@ -286,6 +287,22 @@ export async function deposit(
     dedupeKey: `DIGITAL:WDEP:${mv.transactionId}`,
     notes: "إيداع رصيد محفظة كروت",
     createdBy: actor.userId,
+    postingSourceComponents: {
+      roleDebits: { DIGITAL_WALLET: amount },
+      roleCredits: { [depositAssetRole]: amount },
+    },
+    postingIntent: createPostingIntent(
+      "DIGITAL_WALLET_DEPOSIT_ASSET",
+      "DIGITAL_WALLET_DEPOSIT",
+      [
+        debitLine("DIGITAL_WALLET", amount),
+        creditLine(depositAssetRole, amount),
+      ],
+      {
+        roleDebits: { DIGITAL_WALLET: amount },
+        roleCredits: { [depositAssetRole]: amount },
+      },
+    ),
   });
 
   await auditLog(tx, actor, "digitalCards.wallet.deposit", input.walletId, {
@@ -351,6 +368,7 @@ export async function withdraw(
     },
     actor,
   );
+  const withdrawalAssetRole = input.paymentMethod === "CASH" ? "TREASURY_CASH" : "CARD_BANK";
 
   await postEntry(tx, {
     entryType: "DIGITAL_WALLET_WITHDRAWAL",
@@ -364,6 +382,22 @@ export async function withdraw(
     dedupeKey: `DIGITAL:WWDR:${mv.transactionId}`,
     notes: "سحب رصيد محفظة كروت",
     createdBy: actor.userId,
+    postingSourceComponents: {
+      roleDebits: { [withdrawalAssetRole]: amount },
+      roleCredits: { DIGITAL_WALLET: amount },
+    },
+    postingIntent: createPostingIntent(
+      "DIGITAL_WALLET_WITHDRAWAL_ASSET",
+      "DIGITAL_WALLET_WITHDRAWAL",
+      [
+        debitLine(withdrawalAssetRole, amount),
+        creditLine("DIGITAL_WALLET", amount),
+      ],
+      {
+        roleDebits: { [withdrawalAssetRole]: amount },
+        roleCredits: { DIGITAL_WALLET: amount },
+      },
+    ),
   });
 
   await auditLog(tx, actor, "digitalCards.wallet.withdraw", input.walletId, {
@@ -458,17 +492,47 @@ export async function approveAdjustment(
 
   await tx.update(digitalWallets).set({ currentBalance: toDbMoney(next) }).where(eq(digitalWallets.id, walletId));
 
+  const adjustmentAmount = money(pending.amount);
+  const adjustmentSourceComponents = pending.direction === "IN"
+    ? {
+        roleDebits: { DIGITAL_WALLET: adjustmentAmount },
+        roleCredits: { OTHER_REVENUE: adjustmentAmount },
+      }
+    : {
+        roleDebits: { LOSSES: adjustmentAmount },
+        roleCredits: { DIGITAL_WALLET: adjustmentAmount },
+      };
   await postEntry(tx, {
     entryType: "DIGITAL_WALLET_ADJUSTMENT",
     branchId: Number(w.branchId),
     digitalWalletId: walletId,
-    amount: money(pending.amount),
+    amount: adjustmentAmount,
     revenue: money(0),
     cost: money(0),
     profit: money(0),
     dedupeKey: `DIGITAL:WADJ:${input.transactionId}`,
     notes: `تعديل رصيد محفظة (${pending.direction}) — ${pending.notes ?? ""}`.trim(),
     createdBy: actor.userId,
+    postingSourceComponents: adjustmentSourceComponents,
+    postingIntent: pending.direction === "IN"
+      ? createPostingIntent(
+        "DIGITAL_WALLET_ADJUSTMENT_GAIN",
+        "DIGITAL_WALLET_ADJUSTMENT",
+        [
+          debitLine("DIGITAL_WALLET", adjustmentAmount),
+          creditLine("OTHER_REVENUE", adjustmentAmount),
+        ],
+        adjustmentSourceComponents,
+      )
+      : createPostingIntent(
+        "DIGITAL_WALLET_ADJUSTMENT_LOSS",
+        "DIGITAL_WALLET_ADJUSTMENT",
+        [
+          debitLine("LOSSES", adjustmentAmount),
+          creditLine("DIGITAL_WALLET", adjustmentAmount),
+        ],
+        adjustmentSourceComponents,
+      ),
   });
 
   await auditLog(tx, actor, "digitalCards.wallet.adjustApproved", walletId, {

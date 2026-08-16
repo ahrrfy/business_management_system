@@ -186,8 +186,8 @@ describe("F3 — أجرة COUNTER على مسار المسوّدة تُرفض ح
   });
 });
 
-describe("F4 — ختم فاتورة التسليم: وردية استقبالٍ أو لا شيء", () => {
-  it("منفّذٌ ورديته RETAIL فقط ⇒ فاتورة التسليم بلا shiftId (خارج طابور الاستقبال) وإيصال الدفعة على درجه", async () => {
+describe("F4 — ختم فاتورة التسليم: وردية استقبال إلزامية", () => {
+  it("منفّذٌ ورديته RETAIL فقط ⇒ يُرفض التسليم النقدي بلا أي أثر", async () => {
     // أمرُ شغلٍ بلا عربون (لا إيصال عند الإنشاء ⇒ لا حاجة لوردية المُنشئ).
     const wo = await createWorkOrder({
       branchId: 1, customerId: 1, baseVariantId: null, title: "لوحة",
@@ -196,23 +196,15 @@ describe("F4 — ختم فاتورة التسليم: وردية استقبالٍ
     await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, wo.workOrderId));
 
     // المنفّذ الثاني يفتح وردية **تجزئة** فقط — لا استقبال.
-    const retail = await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 5, branchId: 1 });
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RETAIL" }, { userId: 5, branchId: 1 });
 
-    const res = await deliverWorkOrder(
+    await expect(deliverWorkOrder(
       { workOrderId: wo.workOrderId, payment: { amount: "10000", method: "CASH" } },
       CASHIER2,
-    );
+    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
-    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, res.invoiceId)))[0];
-    expect(inv.shiftId).toBeNull(); // كان يُختم بوردية RETAIL فتظهر «مبيعات» في Z تجزئةٍ بلا نقدها كاملاً
-    // إيصال الدفعة على درج المنفّذ الفعليّ (النقد قُبض فعلاً هناك — المحاسبة على المستلَم).
-    const rcpt = (await db().select().from(s.receipts)
-      .where(and(eq(s.receipts.invoiceId, res.invoiceId), eq(s.receipts.direction, "IN"))))[0];
-    expect(Number(rcpt.shiftId)).toBe(retail.shiftId);
-    expect(rcpt.cashBucket).toBe("DRAWER");
-    // خارج طابور محطة الاستقبال (النطاق البنيويّ: وردية RECEPTION فقط).
-    const page = await listReceptionInvoices({ branchId: 1, sinceDays: 7 });
-    expect(page.rows.find((r) => r.id === res.invoiceId)).toBeUndefined();
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 
   it("منفّذٌ له وردية استقبال مفتوحة ⇒ الفاتورة تُختم بها وتظهر في الطابور (السلوك المقصود يبقى)", async () => {

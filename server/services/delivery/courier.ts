@@ -13,17 +13,50 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { customers, deliveryConsignments, deliveryParties, invoiceItems, invoices, onlineOrders, workOrders } from "../../../drizzle/schema";
+import {
+  customers,
+  deliveryConsignments,
+  deliveryParties,
+  invoiceItems,
+  invoices,
+  onlineOrders,
+  workOrders,
+} from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, round2, toDbMoney } from "../money";
-import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import {
+  adjustCustomerBalance,
+  adjustDeliveryBalance,
+  computeInvoiceStatus,
+  postEntry,
+} from "../ledgerService";
 import { returnSale } from "../returnService";
 import { withTx } from "../tx";
-import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
-import { appendDeliveryEvent, appendDeliveryLedgerEntry, assertMemberCanUseConsignment, assertParcelTransition, getDeliveryFinancialSummary, memberVisibilityCondition, resolveDeliveryMembership, type ParcelStatus } from "./lifecycle";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "../idempotency";
+import {
+  appendDeliveryEvent,
+  appendDeliveryLedgerEntry,
+  assertMemberCanUseConsignment,
+  assertParcelTransition,
+  getDeliveryFinancialSummary,
+  memberVisibilityCondition,
+  resolveDeliveryMembership,
+  type ParcelStatus,
+} from "./lifecycle";
+import {
+  deliveryCustomerCollectionIntent,
+  deliveryDispatchMemoIntent,
+  deliveryFeeAccrualIntent,
+} from "./posting";
 
 /** يحلّ جهة التوصيل المرتبطة بحساب المستخدم (المندوب). null إن لم يُربط الحساب بجهة نشطة. */
-export async function resolveCourierPartyId(userId: number): Promise<number | null> {
+export async function resolveCourierPartyId(
+  userId: number,
+): Promise<number | null> {
   return (await resolveDeliveryMembership(userId))?.partyId ?? null;
 }
 
@@ -65,8 +98,16 @@ export interface MyDeliveriesResult {
 }
 
 /** طلبات المندوب: قيد التوصيل (SHIPPED) + المُسلّمة حديثاً (DELIVERED) + عهدته الحالية. */
-export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResult> {
-  const empty: MyDeliveriesResult = { linked: false, partyName: null, custodyBalance: "0", toDeliver: [], delivered: [] };
+export async function listMyDeliveries(
+  userId: number,
+): Promise<MyDeliveriesResult> {
+  const empty: MyDeliveriesResult = {
+    linked: false,
+    partyName: null,
+    custodyBalance: "0",
+    toDeliver: [],
+    delivered: [],
+  };
   const db = getDb();
   if (!db) return empty;
   const membership = await resolveDeliveryMembership(userId);
@@ -80,29 +121,32 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
   );
 
   const onlineSelection = {
-      id: onlineOrders.id,
-      orderNumber: onlineOrders.orderNumber,
-      status: onlineOrders.status,
-      governorate: onlineOrders.governorate,
-      address: onlineOrders.shippingAddress,
-      latitude: onlineOrders.latitude,
-      longitude: onlineOrders.longitude,
-      orderTotal: onlineOrders.total,
-      createdAt: onlineOrders.orderDate,
-      customerName: customers.name,
-      customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
-      invTotal: invoices.total,
-      invPaid: invoices.paidAmount,
-      invReturned: invoices.returnedTotal,
-      // ١٠/٨ (تمرير كامل): الأجرة للمندوب — للفواتير الجديدة فقط (deliveryFee=0)؛ القديمة
-      // شحنُها داخل codDue أصلاً فلا أجرة إضافية فوقه.
-      shippingCost: sql<string>`CASE WHEN CAST(${invoices.deliveryFee} AS DECIMAL(15,2)) > 0 THEN '0.00' ELSE COALESCE(${onlineOrders.shippingCost}, '0.00') END`,
+    id: onlineOrders.id,
+    orderNumber: onlineOrders.orderNumber,
+    status: onlineOrders.status,
+    governorate: onlineOrders.governorate,
+    address: onlineOrders.shippingAddress,
+    latitude: onlineOrders.latitude,
+    longitude: onlineOrders.longitude,
+    orderTotal: onlineOrders.total,
+    createdAt: onlineOrders.orderDate,
+    customerName: customers.name,
+    customerPhone: sql<
+      string | null
+    >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+    invTotal: invoices.total,
+    invPaid: invoices.paidAmount,
+    invReturned: invoices.returnedTotal,
+    // ١٠/٨ (تمرير كامل): الأجرة للمندوب — للفواتير الجديدة فقط (deliveryFee=0)؛ القديمة
+    // شحنُها داخل codDue أصلاً فلا أجرة إضافية فوقه.
+    shippingCost: sql<string>`CASE WHEN CAST(${invoices.deliveryFee} AS DECIMAL(15,2)) > 0 THEN '0.00' ELSE COALESCE(${onlineOrders.shippingCost}, '0.00') END`,
   };
-  const legacyOnlineQuery = () => db
-    .select(onlineSelection)
-    .from(onlineOrders)
-    .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
-    .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id));
+  const legacyOnlineQuery = () =>
+    db
+      .select(onlineSelection)
+      .from(onlineOrders)
+      .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+      .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id));
   const legacyOnlineScope = and(
     eq(onlineOrders.deliveryPartyId, partyId),
     sql`NOT EXISTS (SELECT 1 FROM deliveryConsignments dc WHERE dc.sourceType = 'ONLINE_ORDER' AND dc.sourceId = ${onlineOrders.id})`,
@@ -124,7 +168,9 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
   const delivered: MyDeliveryRow[] = [];
   for (const r of rows) {
     // COD المستحقّ = صافي الفاتورة (total − returned) − المسدَّد. للطلب المُرسَل حديثاً = total.
-    const net = money(r.invTotal ?? r.orderTotal).minus(money(r.invReturned ?? "0"));
+    const net = money(r.invTotal ?? r.orderTotal).minus(
+      money(r.invReturned ?? "0"),
+    );
     const due = Decimal.max(net.minus(money(r.invPaid ?? "0")), 0);
     const row: MyDeliveryRow = {
       id: Number(r.id),
@@ -149,58 +195,74 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
   // التوريد الجزئي لا يعني أن الطرد اختفى، وختم التسليم يبقى في السجل حتى بعد التسوية المالية.
   // نضمّ أيضاً إرث COD=0 الذي أُنشئ DELIVERED بلا ختم كي لا تبقى طرود قديمة يتيمة عن الحساب.
   const consignmentSelection = {
-      id: deliveryConsignments.id,
-      consignmentNumber: deliveryConsignments.consignmentNumber,
-      status: deliveryConsignments.status,
-      codAmount: deliveryConsignments.codAmount,
-      collectedAmount: deliveryConsignments.collectedAmount,
-      courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
-      parcelStatus: deliveryConsignments.parcelStatus,
-      moneyStatus: deliveryConsignments.moneyStatus,
-      assignedUserId: deliveryConsignments.assignedUserId,
-      acceptedAt: deliveryConsignments.acceptedAt,
-      pickedUpAt: deliveryConsignments.pickedUpAt,
-      outForDeliveryAt: deliveryConsignments.outForDeliveryAt,
-      failedAt: deliveryConsignments.failedAt,
-      failureReason: deliveryConsignments.failureReason,
-      createdAt: deliveryConsignments.createdAt,
-      recipientName: deliveryConsignments.recipientName,
-      recipientPhone: deliveryConsignments.recipientPhone,
-      deliveryAddress: deliveryConsignments.deliveryAddress,
-      governorate: deliveryConsignments.governorate,
-      latitude: deliveryConsignments.latitude,
-      longitude: deliveryConsignments.longitude,
-      deliveryFee: deliveryConsignments.deliveryFee,
-      feeCollection: deliveryConsignments.feeCollection,
-      invTotal: invoices.total,
-      custName: customers.name,
-      custPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+    id: deliveryConsignments.id,
+    consignmentNumber: deliveryConsignments.consignmentNumber,
+    status: deliveryConsignments.status,
+    codAmount: deliveryConsignments.codAmount,
+    collectedAmount: deliveryConsignments.collectedAmount,
+    courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
+    parcelStatus: deliveryConsignments.parcelStatus,
+    moneyStatus: deliveryConsignments.moneyStatus,
+    assignedUserId: deliveryConsignments.assignedUserId,
+    acceptedAt: deliveryConsignments.acceptedAt,
+    pickedUpAt: deliveryConsignments.pickedUpAt,
+    outForDeliveryAt: deliveryConsignments.outForDeliveryAt,
+    failedAt: deliveryConsignments.failedAt,
+    failureReason: deliveryConsignments.failureReason,
+    createdAt: deliveryConsignments.createdAt,
+    recipientName: deliveryConsignments.recipientName,
+    recipientPhone: deliveryConsignments.recipientPhone,
+    deliveryAddress: deliveryConsignments.deliveryAddress,
+    governorate: deliveryConsignments.governorate,
+    latitude: deliveryConsignments.latitude,
+    longitude: deliveryConsignments.longitude,
+    deliveryFee: deliveryConsignments.deliveryFee,
+    feeCollection: deliveryConsignments.feeCollection,
+    invTotal: invoices.total,
+    custName: customers.name,
+    custPhone: sql<
+      string | null
+    >`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
   };
-  const consignmentQuery = () => db
-    .select(consignmentSelection)
-    .from(deliveryConsignments)
-    .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
-    .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id));
+  const consignmentQuery = () =>
+    db
+      .select(consignmentSelection)
+      .from(deliveryConsignments)
+      .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
+      .leftJoin(
+        customers,
+        eq(deliveryConsignments.endCustomerId, customers.id),
+      );
   const consignmentScope = and(
     eq(deliveryConsignments.partyId, partyId),
     memberVisibilityCondition(membership),
   );
   const [openConsignmentRows, deliveredConsignmentRows] = await Promise.all([
     consignmentQuery()
-      .where(and(
-        consignmentScope,
-        sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED')`,
-      ))
+      .where(
+        and(
+          consignmentScope,
+          sql`${deliveryConsignments.parcelStatus} NOT IN ('DELIVERED','RETURNED','CANCELLED')`,
+        ),
+      )
       .orderBy(desc(deliveryConsignments.id)),
     consignmentQuery()
-      .where(and(consignmentScope, eq(deliveryConsignments.parcelStatus, "DELIVERED")))
+      .where(
+        and(
+          consignmentScope,
+          eq(deliveryConsignments.parcelStatus, "DELIVERED"),
+        ),
+      )
       .orderBy(desc(deliveryConsignments.id))
       .limit(100),
   ]);
   const cnRows = [...openConsignmentRows, ...deliveredConsignmentRows];
 
   for (const r of cnRows) {
-    const due = Decimal.max(money(r.codAmount).minus(money(r.collectedAmount ?? "0")), 0);
+    const due = Decimal.max(
+      money(r.codAmount).minus(money(r.collectedAmount ?? "0")),
+      0,
+    );
     const row: MyDeliveryRow = {
       id: Number(r.id),
       kind: "consignment",
@@ -215,21 +277,25 @@ export async function listMyDeliveries(userId: number): Promise<MyDeliveriesResu
       orderTotal: String(r.invTotal ?? toDbMoney(due)),
       codDue: toDbMoney(due),
       // COURIER = يقبض أجرته من الزبون بنفسه فوق COD؛ COUNTER/SHOP لا يقبض من الزبون شيئاً فوقه.
-      courierFee: toDbMoney(r.feeCollection === "COURIER" ? money(r.deliveryFee ?? "0") : money(0)),
+      courierFee: toDbMoney(
+        r.feeCollection === "COURIER" ? money(r.deliveryFee ?? "0") : money(0),
+      ),
       createdAt: r.createdAt,
       acceptedAt: r.acceptedAt,
       pickedUpAt: r.pickedUpAt,
       outForDeliveryAt: r.outForDeliveryAt,
       deliveredAt: r.courierDeliveredAt,
       failureReason: r.failureReason,
-      assignedUserId: r.assignedUserId != null ? Number(r.assignedUserId) : null,
+      assignedUserId:
+        r.assignedUserId != null ? Number(r.assignedUserId) : null,
     };
     (r.parcelStatus === "DELIVERED" ? delivered : toDeliver).push(row);
   }
 
   // دمج المصدرين بترتيب زمنيّ نازل (الأحدث أولاً) — كلا القائمتين مبنيّتان أصلاً بترتيب المعرّف
   // النازل لكلٍّ على حدة، والفرز الموحّد يمنع تكتّل مصدرٍ فوق الآخر.
-  const byRecent = (a: MyDeliveryRow, b: MyDeliveryRow) => b.createdAt.getTime() - a.createdAt.getTime();
+  const byRecent = (a: MyDeliveryRow, b: MyDeliveryRow) =>
+    b.createdAt.getTime() - a.createdAt.getTime();
   toDeliver.sort(byRecent);
   delivered.sort(byRecent);
   return {
@@ -259,37 +325,85 @@ export async function confirmCourierDelivery(
   const membership = await resolveDeliveryMembership(actor.userId);
   const partyId = membership?.partyId ?? null;
   if (partyId == null || membership?.memberRole === "ACCOUNTANT") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "حسابك غير مرتبط بمندوب توصيل — راجع المدير" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "حسابك غير مرتبط بمندوب توصيل — راجع المدير",
+    });
   }
   return withTx(async (tx) => {
     // ترتيب القفل يطابق مسار التوصيل (party ثم الفاتورة) لتجنّب تشابك مع settle/remittance.
     const partyRow = (
-      await tx.select({ id: deliveryParties.id, balance: deliveryParties.currentBalance, isActive: deliveryParties.isActive }).from(deliveryParties).where(eq(deliveryParties.id, partyId)).for("update").limit(1)
+      await tx
+        .select({
+          id: deliveryParties.id,
+          balance: deliveryParties.currentBalance,
+          isActive: deliveryParties.isActive,
+        })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, partyId))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!partyRow) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    if (!partyRow)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "جهة التوصيل غير موجودة",
+      });
     // إعادة فحص التفعيل تحت القفل (سباق تعطيل متزامن — مراجعة عدائية ١٢/٧): جهة عُطّلت لا تقبض عهدة جديدة.
-    if (!partyRow.isActive) throw new TRPCError({ code: "FORBIDDEN", message: "جهة التوصيل مُعطَّلة — راجع المدير" });
+    if (!partyRow.isActive)
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "جهة التوصيل مُعطَّلة — راجع المدير",
+      });
 
     const order = (
-      await tx.select().from(onlineOrders).where(eq(onlineOrders.id, input.onlineOrderId)).for("update").limit(1)
+      await tx
+        .select()
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.onlineOrderId))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+    if (!order)
+      throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
     // IDOR: المندوب لا يؤكّد إلا طلباته المُسنَدة إليه.
     if (Number(order.deliveryPartyId) !== partyId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "هذا الطلب ليس ضمن توصيلاتك" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "هذا الطلب ليس ضمن توصيلاتك",
+      });
     }
     // يجب أن يكون مُرسَلاً (SHIPPED) أو مُسلَّماً (DELIVERED — استرداد idempotent). غيرهما: لم يُجهَّز بعد.
     if (order.status !== "SHIPPED" && order.status !== "DELIVERED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ليس قيد التوصيل" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الطلب ليس قيد التوصيل",
+      });
     }
-    if (!order.invoiceId) throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا فاتورة — تعذّر التحصيل" });
+    if (!order.invoiceId)
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الطلب بلا فاتورة — تعذّر التحصيل",
+      });
 
     const inv = (
-      await tx.select().from(invoices).where(eq(invoices.id, Number(order.invoiceId))).for("update").limit(1)
+      await tx
+        .select()
+        .from(invoices)
+        .where(eq(invoices.id, Number(order.invoiceId)))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الطلب غير موجودة" });
+    if (!inv)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "فاتورة الطلب غير موجودة",
+      });
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة الطلب ملغاة/مرتجعة — راجع المدير" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "فاتورة الطلب ملغاة/مرتجعة — راجع المدير",
+      });
     }
     // مراجعة عدائية ٩/٨ — الشقّ الثاني من حارس ازدواج العهدة (نظير رفض ONLINE في dispatchInvoice):
     // لو أُسندت فاتورة الطلب إرساليةً من مسار الاستقبال (بيانات قديمة/التفاف API) فعهدتُها ودورةُ
@@ -301,14 +415,19 @@ export async function confirmCourierDelivery(
       await tx
         .select({ n: deliveryConsignments.consignmentNumber })
         .from(deliveryConsignments)
-        .where(and(
-          eq(deliveryConsignments.invoiceId, Number(inv.id)),
-          inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]),
-        ))
+        .where(
+          and(
+            eq(deliveryConsignments.invoiceId, Number(inv.id)),
+            inArray(deliveryConsignments.status, ["DISPATCHED", "PARTIAL"]),
+          ),
+        )
         .limit(1)
     )[0];
     if (cnDup) {
-      throw new TRPCError({ code: "CONFLICT", message: `فاتورة الطلب مُسنَدة لإرسالية استقبال بالطريق (${cnDup.n}) — تحصيلها عبر توريد المندوب هناك` });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `فاتورة الطلب مُسنَدة لإرسالية استقبال بالطريق (${cnDup.n}) — تحصيلها عبر توريد المندوب هناك`,
+      });
     }
 
     // القيمة المُحصَّلة تُشتقّ من **الفاتورة** (صافي − مسدَّد) لا من حالة الطلب ⇒ التأكيد idempotent
@@ -318,17 +437,34 @@ export async function confirmCourierDelivery(
     const net = money(inv.total).minus(money(inv.returnedTotal ?? "0"));
     const collected = Decimal.max(net.minus(money(inv.paidAmount ?? "0")), 0);
 
-    if (!wasDelivered) await tx.update(onlineOrders).set({ status: "DELIVERED" }).where(eq(onlineOrders.id, order.id));
+    if (!wasDelivered)
+      await tx
+        .update(onlineOrders)
+        .set({ status: "DELIVERED" })
+        .where(eq(onlineOrders.id, order.id));
 
     let custodyAfter = money(partyRow.balance ?? "0");
     if (collected.gt(0)) {
       const newPaid = money(inv.paidAmount ?? "0").plus(collected);
       await tx
         .update(invoices)
-        .set({ paidAmount: toDbMoney(newPaid), status: computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0"), paymentDate: new Date() })
+        .set({
+          paidAmount: toDbMoney(newPaid),
+          status: computeInvoiceStatus(
+            inv.total,
+            toDbMoney(newPaid),
+            inv.returnedTotal ?? "0",
+          ),
+          paymentDate: new Date(),
+        })
         .where(eq(invoices.id, inv.id));
       // ذمّة العميل↓ (سدّد نقداً للمندوب).
-      if (order.customerId != null) await adjustCustomerBalance(tx, Number(order.customerId), collected.neg());
+      if (order.customerId != null)
+        await adjustCustomerBalance(
+          tx,
+          Number(order.customerId),
+          collected.neg(),
+        );
       // عهدة المندوب↑ (يحمل النقد حتى يُورّده للمتجر).
       await adjustDeliveryBalance(tx, partyId, collected);
       await appendDeliveryLedgerEntry(tx, {
@@ -345,6 +481,7 @@ export async function confirmCourierDelivery(
       // مُقيَّدة بالفرع، فيبدو صافي المبيعات المفرَّع مختلاًّ رغم صحّة الإجمالي (مراجعة عدائية ٩/٨).
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
+        postingIntent: deliveryCustomerCollectionIntent(collected),
         branchId: Number(inv.branchId),
         invoiceId: inv.id,
         customerId: order.customerId != null ? Number(order.customerId) : null,
@@ -356,6 +493,7 @@ export async function confirmCourierDelivery(
       // قيد عهدة المندوب (نظير DELIVERY_DISPATCH لمسار أوامر الشغل — يظهر في كشف عهدة المندوب).
       await postEntry(tx, {
         entryType: "DELIVERY_DISPATCH",
+        postingIntent: deliveryDispatchMemoIntent(),
         branchId: Number(inv.branchId),
         invoiceId: inv.id,
         deliveryPartyId: partyId,
@@ -397,19 +535,41 @@ export async function confirmConsignmentDelivery(
 ): Promise<ConfirmConsignmentResult> {
   const membership = await resolveDeliveryMembership(actor.userId);
   if (!membership) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "حسابك غير مرتبط بجهة توصيل نشطة" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "حسابك غير مرتبط بجهة توصيل نشطة",
+    });
   }
   if (membership.memberRole === "ACCOUNTANT") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "المحاسب يراجع الكشف ولا يؤكد التسليم" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "المحاسب يراجع الكشف ولا يؤكد التسليم",
+    });
   }
 
-  const clientRequestId = input.clientRequestId ?? `confirm-consignment-${input.consignmentId}`;
+  const clientRequestId =
+    input.clientRequestId ?? `confirm-consignment-${input.consignmentId}`;
   const payloadHash = idempotencyHash({ consignmentId: input.consignmentId });
   return withTx(async (tx) => {
-    const replay = await checkIdempotency(tx, "courier.confirmConsignment", clientRequestId, payloadHash);
+    const replay = await checkIdempotency(
+      tx,
+      "courier.confirmConsignment",
+      clientRequestId,
+      payloadHash,
+    );
     if (replay != null) {
-      const existing = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, replay)).limit(1))[0];
-      if (!existing?.courierDeliveredAt) throw new TRPCError({ code: "CONFLICT", message: "مفتاح العملية مرتبط بتسليم غير مكتمل" });
+      const existing = (
+        await tx
+          .select()
+          .from(deliveryConsignments)
+          .where(eq(deliveryConsignments.id, replay))
+          .limit(1)
+      )[0];
+      if (!existing?.courierDeliveredAt)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "مفتاح العملية مرتبط بتسليم غير مكتمل",
+        });
       return {
         consignmentId: Number(existing.id),
         consignmentNumber: existing.consignmentNumber,
@@ -420,10 +580,18 @@ export async function confirmConsignmentDelivery(
     // Every money-bearing delivery flow locks party → consignment → invoice.
     // Keeping one order prevents confirm/remittance deadlocks under load.
     const lockedParty = (
-      await tx.select({ id: deliveryParties.id }).from(deliveryParties)
-        .where(eq(deliveryParties.id, membership.partyId)).for("update").limit(1)
+      await tx
+        .select({ id: deliveryParties.id })
+        .from(deliveryParties)
+        .where(eq(deliveryParties.id, membership.partyId))
+        .for("update")
+        .limit(1)
     )[0];
-    if (!lockedParty) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    if (!lockedParty)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "جهة التوصيل غير موجودة",
+      });
     const cn = (
       await tx
         .select()
@@ -432,11 +600,23 @@ export async function confirmConsignmentDelivery(
         .for("update")
         .limit(1)
     )[0];
-    if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
-    const replayAfterLock = await checkIdempotency(tx, "courier.confirmConsignment", clientRequestId, payloadHash);
+    if (!cn)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "الإرسالية غير موجودة",
+      });
+    const replayAfterLock = await checkIdempotency(
+      tx,
+      "courier.confirmConsignment",
+      clientRequestId,
+      payloadHash,
+    );
     if (replayAfterLock != null) {
       if (Number(replayAfterLock) !== Number(cn.id) || !cn.courierDeliveredAt) {
-        throw new TRPCError({ code: "CONFLICT", message: "مفتاح العملية مرتبط بتسليم آخر أو غير مكتمل" });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "مفتاح العملية مرتبط بتسليم آخر أو غير مكتمل",
+        });
       }
       return {
         consignmentId: Number(cn.id),
@@ -455,18 +635,32 @@ export async function confirmConsignmentDelivery(
       };
     }
     if (cn.parcelStatus !== "OUT_FOR_DELIVERY") {
-      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يجب قبول الطرد واستلامه ووضعه «خرج للتوصيل» قبل ختم التسليم" });
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "يجب قبول الطرد واستلامه ووضعه «خرج للتوصيل» قبل ختم التسليم",
+      });
     }
 
     const deliveredAt = new Date();
-    const cod = round2(money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")));
-    if (cod.lt(0)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "تسويات الإرسالية تتجاوز مبلغ التحصيل الأصلي" });
-    await tx.update(deliveryConsignments).set({
-      courierDeliveredAt: deliveredAt,
-      parcelStatus: "DELIVERED",
-      ...(cod.gt(0) && cn.custodyRecognizedAt == null ? { custodyRecognizedAt: deliveredAt } : {}),
-      ...(cod.isZero() ? { status: "DELIVERED" as const } : {}),
-    }).where(eq(deliveryConsignments.id, Number(cn.id)));
+    const cod = round2(
+      money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")),
+    );
+    if (cod.lt(0))
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "تسويات الإرسالية تتجاوز مبلغ التحصيل الأصلي",
+      });
+    await tx
+      .update(deliveryConsignments)
+      .set({
+        courierDeliveredAt: deliveredAt,
+        parcelStatus: "DELIVERED",
+        ...(cod.gt(0) && cn.custodyRecognizedAt == null
+          ? { custodyRecognizedAt: deliveredAt }
+          : {}),
+        ...(cod.isZero() ? { status: "DELIVERED" as const } : {}),
+      })
+      .where(eq(deliveryConsignments.id, Number(cn.id)));
 
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${cn.id}:DELIVERED`,
@@ -480,9 +674,24 @@ export async function confirmConsignmentDelivery(
     });
 
     if (cod.gt(0)) {
-      const inv = (await tx.select().from(invoices).where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1))[0];
-      if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
-      const invoiceRemaining = round2(money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount)));
+      const inv = (
+        await tx
+          .select()
+          .from(invoices)
+          .where(eq(invoices.id, Number(cn.invoiceId)))
+          .for("update")
+          .limit(1)
+      )[0];
+      if (!inv)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "فاتورة الإرسالية غير موجودة",
+        });
+      const invoiceRemaining = round2(
+        money(inv.total)
+          .minus(money(inv.returnedTotal ?? "0"))
+          .minus(money(inv.paidAmount)),
+      );
       if (!invoiceRemaining.eq(cod)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
@@ -502,6 +711,7 @@ export async function confirmConsignmentDelivery(
         });
         await postEntry(tx, {
           entryType: "DELIVERY_DISPATCH",
+          postingIntent: deliveryDispatchMemoIntent(),
           dedupeKey: `DELIVERY_CUSTODY:${cn.id}`,
           branchId: Number(cn.branchId),
           invoiceId: Number(cn.invoiceId),
@@ -515,19 +725,28 @@ export async function confirmConsignmentDelivery(
       // cash and must not settle the customer a second time.
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
+        postingIntent: deliveryCustomerCollectionIntent(cod),
         dedupeKey: `PAYMENT_IN:COURIER_DELIVERY:${cn.id}`,
         branchId: Number(cn.branchId),
         invoiceId: Number(cn.invoiceId),
         customerId: inv.customerId != null ? Number(inv.customerId) : null,
+        deliveryPartyId: membership.partyId,
         amount: cod,
         notes: `تحصيل العميل لدى جهة التوصيل ${cn.consignmentNumber}`,
       });
       const newPaid = round2(money(inv.paidAmount).plus(cod));
-      await tx.update(invoices).set({
-        paidAmount: toDbMoney(newPaid),
-        status: computeInvoiceStatus(String(inv.total), toDbMoney(newPaid), String(inv.returnedTotal ?? "0")),
-        paymentDate: deliveredAt,
-      }).where(eq(invoices.id, Number(inv.id)));
+      await tx
+        .update(invoices)
+        .set({
+          paidAmount: toDbMoney(newPaid),
+          status: computeInvoiceStatus(
+            String(inv.total),
+            toDbMoney(newPaid),
+            String(inv.returnedTotal ?? "0"),
+          ),
+          paymentDate: deliveredAt,
+        })
+        .where(eq(invoices.id, Number(inv.id)));
       if (inv.customerId != null) {
         await adjustCustomerBalance(tx, Number(inv.customerId), cod.neg());
       }
@@ -544,6 +763,20 @@ export async function confirmConsignmentDelivery(
         amount: toDbMoney(fee),
         actorUserId: actor.userId,
       });
+      if (cn.feeCollection === "SHOP") {
+        await postEntry(tx, {
+          entryType: "DELIVERY_FEE",
+          postingIntent: deliveryFeeAccrualIntent(fee),
+          dedupeKey: `DELIVERY_FEE_ACCRUAL:${cn.id}`,
+          branchId: Number(cn.branchId),
+          invoiceId: Number(cn.invoiceId),
+          deliveryPartyId: membership.partyId,
+          amount: fee,
+          cost: fee,
+          profit: fee.neg(),
+          notes: `استحقاق أجرة توصيل ${cn.consignmentNumber}`,
+        });
+      }
       if (cn.feeCollection === "COURIER") {
         await appendDeliveryLedgerEntry(tx, {
           eventKey: `CN:${cn.id}:FEE_PAID_DIRECT`,
@@ -555,22 +788,37 @@ export async function confirmConsignmentDelivery(
           notes: "Paid directly by end customer",
           actorUserId: actor.userId,
         });
-        await tx.update(deliveryConsignments).set({ feeSettledAt: deliveredAt }).where(eq(deliveryConsignments.id, Number(cn.id)));
+        await tx
+          .update(deliveryConsignments)
+          .set({ feeSettledAt: deliveredAt })
+          .where(eq(deliveryConsignments.id, Number(cn.id)));
       }
     }
 
     if (cn.workOrderId != null) {
-      await tx.update(workOrders).set({
-        status: "DELIVERED",
-        deliveredAt,
-        invoiceId: Number(cn.invoiceId),
-      }).where(eq(workOrders.id, Number(cn.workOrderId)));
+      await tx
+        .update(workOrders)
+        .set({
+          status: "DELIVERED",
+          deliveredAt,
+          invoiceId: Number(cn.invoiceId),
+        })
+        .where(eq(workOrders.id, Number(cn.workOrderId)));
     }
     if (cn.sourceType === "ONLINE_ORDER") {
-      await tx.update(onlineOrders).set({ status: "DELIVERED" }).where(eq(onlineOrders.id, Number(cn.sourceId)));
+      await tx
+        .update(onlineOrders)
+        .set({ status: "DELIVERED" })
+        .where(eq(onlineOrders.id, Number(cn.sourceId)));
     }
 
-    await recordIdempotencyKey(tx, "courier.confirmConsignment", clientRequestId, Number(cn.id), payloadHash);
+    await recordIdempotencyKey(
+      tx,
+      "courier.confirmConsignment",
+      clientRequestId,
+      Number(cn.id),
+      payloadHash,
+    );
 
     return {
       consignmentId: Number(cn.id),
@@ -591,26 +839,50 @@ export async function transitionConsignmentParcel(
 ) {
   const membership = await resolveDeliveryMembership(actor.userId);
   if (!membership || membership.memberRole === "ACCOUNTANT") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "حسابك لا يملك تنفيذ حركة الطرد" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "حسابك لا يملك تنفيذ حركة الطرد",
+    });
   }
   const payloadHash = idempotencyHash(input);
   return withTx(async (tx) => {
-    const replay = await checkIdempotency(tx, "courier.parcelTransition", input.clientRequestId, payloadHash);
+    const replay = await checkIdempotency(
+      tx,
+      "courier.parcelTransition",
+      input.clientRequestId,
+      payloadHash,
+    );
     if (replay != null) return { consignmentId: replay, replay: true };
     const cn = (
-      await tx.select().from(deliveryConsignments)
+      await tx
+        .select()
+        .from(deliveryConsignments)
         .where(eq(deliveryConsignments.id, input.consignmentId))
-        .for("update").limit(1)
+        .for("update")
+        .limit(1)
     )[0];
-    if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
-    const replayAfterLock = await checkIdempotency(tx, "courier.parcelTransition", input.clientRequestId, payloadHash);
-    if (replayAfterLock != null) return { consignmentId: replayAfterLock, replay: true };
+    if (!cn)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "الإرسالية غير موجودة",
+      });
+    const replayAfterLock = await checkIdempotency(
+      tx,
+      "courier.parcelTransition",
+      input.clientRequestId,
+      payloadHash,
+    );
+    if (replayAfterLock != null)
+      return { consignmentId: replayAfterLock, replay: true };
     assertMemberCanUseConsignment(membership, cn);
     assertParcelTransition(cn.parcelStatus, input.toStatus);
     const now = new Date();
     const reason = input.reason?.trim() || null;
     if (input.toStatus === "FAILED" && (!reason || reason.length < 2)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "اكتب سبب تعذر التوصيل" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "اكتب سبب تعذر التوصيل",
+      });
     }
     const statusTimestamps: Record<string, object> = {
       ACCEPTED: { acceptedAt: now },
@@ -619,13 +891,18 @@ export async function transitionConsignmentParcel(
       FAILED: { failedAt: now, failureReason: reason },
       ASSIGNED: { failedAt: null, failureReason: null },
     };
-    await tx.update(deliveryConsignments).set({
-      parcelStatus: input.toStatus,
-      ...(input.toStatus === "ACCEPTED" && membership.memberRole === "DRIVER" && cn.assignedUserId == null
-        ? { assignedUserId: membership.userId }
-        : {}),
-      ...(statusTimestamps[input.toStatus] ?? {}),
-    }).where(eq(deliveryConsignments.id, Number(cn.id)));
+    await tx
+      .update(deliveryConsignments)
+      .set({
+        parcelStatus: input.toStatus,
+        ...(input.toStatus === "ACCEPTED" &&
+        membership.memberRole === "DRIVER" &&
+        cn.assignedUserId == null
+          ? { assignedUserId: membership.userId }
+          : {}),
+        ...(statusTimestamps[input.toStatus] ?? {}),
+      })
+      .where(eq(deliveryConsignments.id, Number(cn.id)));
     await appendDeliveryEvent(tx, {
       eventKey: `CN:${cn.id}:${input.toStatus}:${input.clientRequestId}`,
       consignmentId: Number(cn.id),
@@ -637,8 +914,18 @@ export async function transitionConsignmentParcel(
       actorUserId: actor.userId,
       payload: reason ? { reason } : {},
     });
-    await recordIdempotencyKey(tx, "courier.parcelTransition", input.clientRequestId, Number(cn.id), payloadHash);
-    return { consignmentId: Number(cn.id), status: input.toStatus, replay: false };
+    await recordIdempotencyKey(
+      tx,
+      "courier.parcelTransition",
+      input.clientRequestId,
+      Number(cn.id),
+      payloadHash,
+    );
+    return {
+      consignmentId: Number(cn.id),
+      status: input.toStatus,
+      replay: false,
+    };
   });
 }
 
@@ -662,58 +949,143 @@ export async function failCourierDelivery(
 ): Promise<FailDeliveryResult> {
   const membership = await resolveDeliveryMembership(actor.userId);
   const partyId = membership?.partyId ?? null;
-  if (partyId == null || membership?.memberRole === "ACCOUNTANT") throw new TRPCError({ code: "FORBIDDEN", message: "هذا الحساب للقراءة المالية ولا ينفذ حركة الطرد" });
+  if (partyId == null || membership?.memberRole === "ACCOUNTANT")
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "هذا الحساب للقراءة المالية ولا ينفذ حركة الطرد",
+    });
   const reason = (input.reason ?? "").trim();
-  if (reason.length < 2) throw new TRPCError({ code: "BAD_REQUEST", message: "اذكر سبب تعذّر التسليم" });
+  if (reason.length < 2)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "اذكر سبب تعذّر التسليم",
+    });
   const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  if (!db)
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "قاعدة البيانات غير متاحة",
+    });
 
   // المرحلة ①: **مطالبة ذرّية** بالطلب تحت قفل الصفّ (SHIPPED→CANCELLED). تُسلسِل ضدّ التحصيل المتزامن
   // (confirmCourierDelivery يقفل نفس الصفّ ويشترط SHIPPED/DELIVERED) ⇒ لا يعكس هذا فاتورةً حُصِّلت
   // للتوّ (مراجعة عدائية ١٢/٧): إمّا هذا يُطالِب أولاً فيرى confirm الحالة CANCELLED فيُرفَض، أو confirm
   // يُطالِب فيرى هذا DELIVERED فيُرفَض. فحص paidAmount يجري **تحت القفل** بعد المطالبة.
   const claim = await withTx(async (tx) => {
-    const order = (await tx.select().from(onlineOrders).where(eq(onlineOrders.id, input.onlineOrderId)).for("update").limit(1))[0];
-    if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
-    if (Number(order.deliveryPartyId) !== partyId) throw new TRPCError({ code: "FORBIDDEN", message: "هذا الطلب ليس ضمن توصيلاتك" });
-    if (!order.invoiceId) throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا فاتورة" });
-    const inv = (await tx.select({ status: invoices.status, paidAmount: invoices.paidAmount, branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, Number(order.invoiceId))).for("update").limit(1))[0];
-    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الطلب غير موجودة" });
+    const order = (
+      await tx
+        .select()
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, input.onlineOrderId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!order)
+      throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+    if (Number(order.deliveryPartyId) !== partyId)
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "هذا الطلب ليس ضمن توصيلاتك",
+      });
+    if (!order.invoiceId)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا فاتورة" });
+    const inv = (
+      await tx
+        .select({
+          status: invoices.status,
+          paidAmount: invoices.paidAmount,
+          branchId: invoices.branchId,
+        })
+        .from(invoices)
+        .where(eq(invoices.id, Number(order.invoiceId)))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!inv)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "فاتورة الطلب غير موجودة",
+      });
     if (order.status === "CANCELLED") {
       // استرداد idempotent: مُطالَبٌ سابقاً — أكمِل العكس إن لم تُرجَع الفاتورة بعد (فشلٌ بين المطالبة والعكس).
       const done = inv.status === "CANCELLED" || inv.status === "RETURNED";
-      return { orderNumber: order.orderNumber, invoiceId: Number(order.invoiceId), branchId: Number(inv.branchId), needsReverse: !done, alreadyDone: done };
+      return {
+        orderNumber: order.orderNumber,
+        invoiceId: Number(order.invoiceId),
+        branchId: Number(inv.branchId),
+        needsReverse: !done,
+        alreadyDone: done,
+      };
     }
-    if (order.status !== "SHIPPED") throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ليس قيد التوصيل" });
+    if (order.status !== "SHIPPED")
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الطلب ليس قيد التوصيل",
+      });
     if (money(inv.paidAmount ?? "0").gt(0)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب محصَّل — الإرجاع بعد التسليم عبر المدير" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الطلب محصَّل — الإرجاع بعد التسليم عبر المدير",
+      });
     }
-    await tx.update(onlineOrders).set({ status: "CANCELLED", cancelReason: reason }).where(eq(onlineOrders.id, order.id));
-    return { orderNumber: order.orderNumber, invoiceId: Number(order.invoiceId), branchId: Number(inv.branchId), needsReverse: true, alreadyDone: false };
+    await tx
+      .update(onlineOrders)
+      .set({ status: "CANCELLED", cancelReason: reason })
+      .where(eq(onlineOrders.id, order.id));
+    return {
+      orderNumber: order.orderNumber,
+      invoiceId: Number(order.invoiceId),
+      branchId: Number(inv.branchId),
+      needsReverse: true,
+      alreadyDone: false,
+    };
   });
   if (claim.alreadyDone) {
-    return { orderId: input.onlineOrderId, orderNumber: claim.orderNumber, reversed: false, alreadyCancelled: true };
+    return {
+      orderId: input.onlineOrderId,
+      orderNumber: claim.orderNumber,
+      reversed: false,
+      alreadyCancelled: true,
+    };
   }
 
   // المرحلة ②: عكس البيع (returnSale ذرّي، idempotent). الطلب مُطالَبٌ CANCELLED ⇒ لا يتدخّل confirm.
   let reversed = false;
   if (claim.needsReverse) {
     const items = await db
-      .select({ id: invoiceItems.id, baseQuantity: invoiceItems.baseQuantity, returnedBaseQuantity: invoiceItems.returnedBaseQuantity })
+      .select({
+        id: invoiceItems.id,
+        baseQuantity: invoiceItems.baseQuantity,
+        returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+      })
       .from(invoiceItems)
       .where(eq(invoiceItems.invoiceId, claim.invoiceId));
     const lines = items
-      .map((i) => ({ invoiceItemId: Number(i.id), baseQuantity: Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0) }))
+      .map((i) => ({
+        invoiceItemId: Number(i.id),
+        baseQuantity:
+          Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0),
+      }))
       .filter((l) => l.baseQuantity > 0);
     if (lines.length > 0) {
       // إعادة مخزون + عكس SALE + تصفير ذمّة العميل + الفاتورة RETURNED. actor.branchId=فرع الفاتورة
       // (المندوب عابرٌ للفروع). لا استرداد نقدي (paidAmount=0 مُتحقَّقٌ تحت القفل).
       await returnSale(
-        { invoiceId: claim.invoiceId, lines, refund: null, restock: true, clientRequestId: `courier-fail:${input.onlineOrderId}` },
+        {
+          invoiceId: claim.invoiceId,
+          lines,
+          refund: null,
+          restock: true,
+          clientRequestId: `courier-fail:${input.onlineOrderId}`,
+        },
         { userId: actor.userId, branchId: claim.branchId, role: "courier" },
       );
       reversed = true;
     }
   }
-  return { orderId: input.onlineOrderId, orderNumber: claim.orderNumber, reversed };
+  return {
+    orderId: input.onlineOrderId,
+    orderNumber: claim.orderNumber,
+    reversed,
+  };
 }

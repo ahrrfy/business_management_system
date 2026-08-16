@@ -8,10 +8,12 @@ import { purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import type { SettlePurchaseUsdDirectInput } from "./types";
 import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
+import { paymentAssetRole } from "../sale/paymentPosting";
 
 export async function settlePurchaseUsdDirect(
   input: SettlePurchaseUsdDirectInput,
@@ -77,6 +79,8 @@ export async function settlePurchaseUsdDirect(
       classification: "NON_CASH_METHOD", paymentMethod: input.method, cashBucket: null,
       operation: "تسديد فاتورة المورد الدولارية بوسيلة غير نقدية",
     });
+    const paymentRole = paymentAssetRole(input.method, null, "OUT");
+
     const receiptRes = await tx.insert(receipts).values({
       branchId: Number(po.branchId),
       shiftId: null,
@@ -109,8 +113,26 @@ export async function settlePurchaseUsdDirect(
       amount: carryingIqd,
       dedupeKey: `POUSD-PAY:${receiptId}`,
       notes: `Direct USD settlement via ${input.method}`,
+      postingSourceComponents: {
+        roleDebits: { AP: carryingIqd },
+        roleCredits: { [paymentRole]: carryingIqd },
+      },
+      postingIntent: createPostingIntent("PAYMENT_OUT_SUPPLIER", "PAYMENT_OUT", [debitLine("AP", carryingIqd), creditLine(paymentRole, carryingIqd)], {
+        roleDebits: { AP: carryingIqd },
+        roleCredits: { [paymentRole]: carryingIqd },
+      }),
     });
     if (!fxDiff.isZero()) {
+      const fxAbsolute = fxDiff.abs();
+      const fxSourceComponents = fxDiff.isPositive()
+        ? {
+            roleDebits: { [paymentRole]: fxAbsolute },
+            roleCredits: { FX_GAIN: fxAbsolute },
+          }
+        : {
+            roleDebits: { FX_LOSS: fxAbsolute },
+            roleCredits: { [paymentRole]: fxAbsolute },
+          };
       await postEntry(tx, {
         entryType: "EXCHANGE_FX_DIFF",
         branchId: Number(po.branchId),
@@ -120,6 +142,8 @@ export async function settlePurchaseUsdDirect(
         amount: fxDiff,
         dedupeKey: `POUSD-FX:${receiptId}`,
         notes: "Realized FX difference on direct supplier settlement",
+        postingSourceComponents: fxSourceComponents,
+        postingIntent: createPostingIntent(fxDiff.isPositive() ? "EXCHANGE_FX_GAIN" : "EXCHANGE_FX_LOSS", "EXCHANGE_FX_DIFF", fxDiff.isPositive() ? [debitLine(paymentRole, fxAbsolute), creditLine("FX_GAIN", fxAbsolute)] : [debitLine("FX_LOSS", fxAbsolute), creditLine(paymentRole, fxAbsolute)], fxSourceComponents),
       });
     }
     if (feeIqd.gt(0)) {
@@ -134,6 +158,14 @@ export async function settlePurchaseUsdDirect(
         profit: feeIqd.negated(),
         dedupeKey: `POUSD-FEE:${receiptId}`,
         notes: "Card/transfer fee for supplier settlement",
+        postingSourceComponents: {
+          roleDebits: { OPERATING_EXPENSE: feeIqd },
+          roleCredits: { [paymentRole]: feeIqd },
+        },
+        postingIntent: createPostingIntent("EXCHANGE_FEE_EXPENSE", "EXCHANGE_FEE", [debitLine("OPERATING_EXPENSE", feeIqd), creditLine(paymentRole, feeIqd)], {
+          roleDebits: { OPERATING_EXPENSE: feeIqd },
+          roleCredits: { [paymentRole]: feeIqd },
+        }),
       });
     }
     if (input.clientRequestId) {

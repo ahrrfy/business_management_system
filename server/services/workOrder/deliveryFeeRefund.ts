@@ -20,6 +20,7 @@ import { receipts, shifts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { resolveBranchCashShiftTx } from "../shiftService";
 import { assertCashOutAvailable } from "../cash/cashAvailability";
@@ -113,6 +114,14 @@ export async function refundWorkOrderDeliveryFeeHeld(
     receiptId: extractInsertId(feeOut),
     amount: feeHeldNet.neg(),
     notes: `${opts.reason} — طلب #${opts.workOrderId}`,
+    postingSourceComponents: {
+      roleDebits: { COURIER_PAYABLE: feeHeldNet },
+      roleCredits: { CASH: feeHeldNet },
+    },
+    postingIntent: createPostingIntent("DELIVERY_FEE_HELD_PAYOUT", "DELIVERY_FEE_HELD", [debitLine("COURIER_PAYABLE", feeHeldNet), creditLine("CASH", feeHeldNet)], {
+      roleDebits: { COURIER_PAYABLE: feeHeldNet },
+      roleCredits: { CASH: feeHeldNet },
+    }),
   });
   return { refunded: feeHeldNet.toFixed(2) };
 }

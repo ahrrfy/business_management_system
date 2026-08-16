@@ -4,6 +4,7 @@ import { FilterField, ListToolbar } from "@/components/list";
 import { trpc } from "@/lib/trpc";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { AssetStatusBadge, CategoryIcon, iqd } from "@/lib/assets/ui";
+import { assetSettlementPresentation } from "@/lib/assetAccrualStatus";
 import { ASSET_CATEGORIES, ASSET_STATUSES, assetCategoryLabel, assetStatusLabel } from "@shared/assets";
 import { ChevronLeft } from "lucide-react";
 import { useMemo } from "react";
@@ -100,6 +101,7 @@ export default function AssetRegister() {
                 { key: "purchaseValue", header: "قيمة الشراء", map: (r) => Number(r.purchaseValue) },
                 { key: "bookValue", header: "القيمة الدفترية", map: (r) => r.bookValue },
                 { key: "status", header: "الحالة", map: (r) => assetStatusLabel(r.status) },
+                { key: "settlementStatus", header: "تسوية الاقتناء", map: (r) => assetSettlementPresentation(r.settlementStatus).label },
               ],
             }}
             add={{ href: "/assets/new", label: "أصل جديد" }}
@@ -117,7 +119,7 @@ export default function AssetRegister() {
                   <th className="p-2">تاريخ الشراء</th>
                   <th className="p-2 text-right">قيمة الشراء</th>
                   <th className="p-2 text-right">القيمة الدفترية</th>
-                  <th className="p-2 text-center">الحالة</th>
+                  <th className="p-2 text-center">الحالة / التسوية</th>
                   <th className="p-2"></th>
                 </tr>
               </thead>
@@ -152,7 +154,20 @@ export default function AssetRegister() {
                     <td className="p-2 text-xs" dir="ltr">{a.purchaseDate}</td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(a.purchaseValue)}</td>
                     <td className="p-2 text-right tabular-nums font-medium" dir="ltr">{iqd(a.bookValue)}</td>
-                    <td className="p-2 text-center"><AssetStatusBadge status={a.status} /></td>
+                    <td className="p-2 text-center">
+                      <div className="flex flex-col items-center gap-1">
+                        <AssetStatusBadge status={a.status} />
+                        {a.settlementStatus && (() => {
+                          const settlement = assetSettlementPresentation(a.settlementStatus);
+                          const badge = settlement.tone === "active"
+                            ? "badge-status-active"
+                            : settlement.tone === "cancelled"
+                              ? "badge-status-cancelled"
+                              : "badge-status-pending";
+                          return <span title={settlement.detail} className={`${badge} rounded-full px-2 py-0.5 text-xs`}>{settlement.label}</span>;
+                        })()}
+                      </div>
+                    </td>
                     <td className="p-2 text-muted-foreground"><ChevronLeft className="size-4" /></td>
                   </tr>
                 ))}

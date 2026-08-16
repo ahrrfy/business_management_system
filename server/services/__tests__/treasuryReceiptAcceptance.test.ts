@@ -12,7 +12,11 @@ function db() {
 }
 
 function makeCtx(user: any) {
-  return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as any;
+  return {
+    req: { headers: {} },
+    res: { cookie() {}, clearCookie() {} },
+    user,
+  } as any;
 }
 
 const RECIPIENT = 21;
@@ -20,10 +24,45 @@ const INTRUDER = 22;
 const CASHIER = 23;
 
 async function user(id: number) {
-  return (await db().select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];
+  return (
+    await db().select().from(s.users).where(eq(s.users.id, id)).limit(1)
+  )[0];
 }
 
-async function pendingContract(referenceNumber = "CD-1-20260725-0001") {
+async function pendingContract(
+  referenceNumber = "CD-1-20260725-0001",
+  sourceShiftId: number | null = null,
+  stageSource: "NEW" | "LEGACY" | false = "NEW",
+) {
+  if (referenceNumber.startsWith("CD-") && stageSource) {
+    const sourceResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      shiftId: sourceShiftId,
+      direction: "OUT",
+      amount: "75000",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      referenceNumber,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      partyType: "OTHER",
+      createdBy: CASHIER,
+    });
+    const sourceReceiptId = Number(
+      (sourceResult as any)[0]?.insertId ?? (sourceResult as any).insertId,
+    );
+    await db()
+      .insert(s.accountingEntries)
+      .values({
+        entryType:
+          stageSource === "LEGACY" ? "CASH_HANDOVER" : "CASH_TRANSFER_OUT",
+        branchId: 1,
+        receiptId: sourceReceiptId,
+        amount: "75000",
+        entryDate: sql`CURDATE()` as unknown as string,
+        dedupeKey: `TEST:CASH_DROP:${referenceNumber}`,
+      });
+  }
   const result = await db().insert(s.receipts).values({
     branchId: 1,
     direction: "IN",
@@ -43,7 +82,14 @@ async function pendingContract(referenceNumber = "CD-1-20260725-0001") {
 beforeEach(async () => {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const table of ["auditLogs", "accountingEntries", "receipts", "shifts", "users", "branches"]) {
+  for (const table of [
+    "auditLogs",
+    "accountingEntries",
+    "receipts",
+    "shifts",
+    "users",
+    "branches",
+  ]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -105,7 +151,9 @@ describe("treasury handover receipt acceptance", () => {
       { branchId: 1 },
       { scopedBranchId: null, role: "admin", userId: RECIPIENT },
     );
-    expect(before.treasuryBalances.find((row) => row.branchId === 1)?.balance).toBe("0.00");
+    expect(
+      before.treasuryBalances.find((row) => row.branchId === 1)?.balance,
+    ).toBe("0.00");
 
     const queue = await recipient.treasury.pendingHandoverReceipts();
     expect(queue).toHaveLength(1);
@@ -116,18 +164,41 @@ describe("treasury handover receipt acceptance", () => {
       source: "CASH_DROP",
     });
 
-    const accepted = await recipient.treasury.acceptHandoverReceipt({ receiptId });
+    const accepted = await recipient.treasury.acceptHandoverReceipt({
+      receiptId,
+    });
     expect(accepted.idempotent).toBe(false);
+
+    const acceptanceEntries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.receiptId, receiptId));
+    expect(acceptanceEntries).toHaveLength(1);
+    expect(acceptanceEntries[0]).toMatchObject({
+      entryType: "CASH_TRANSFER_IN",
+      amount: "75000.00",
+      dedupeKey: `CASH_DROP_ACCEPT:${receiptId}`,
+    });
 
     const after = await getDashboard(
       { branchId: 1 },
       { scopedBranchId: null, role: "admin", userId: RECIPIENT },
     );
-    expect(after.treasuryBalances.find((row) => row.branchId === 1)?.balance).toBe("75000.00");
+    expect(
+      after.treasuryBalances.find((row) => row.branchId === 1)?.balance,
+    ).toBe("75000.00");
     expect(await recipient.treasury.pendingHandoverReceipts()).toEqual([]);
 
-    const replay = await recipient.treasury.acceptHandoverReceipt({ receiptId });
+    const replay = await recipient.treasury.acceptHandoverReceipt({
+      receiptId,
+    });
     expect(replay.idempotent).toBe(true);
+    expect(
+      await db()
+        .select({ id: s.accountingEntries.id })
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, receiptId)),
+    ).toHaveLength(1);
 
     const audits = await db()
       .select()
@@ -142,37 +213,73 @@ describe("treasury handover receipt acceptance", () => {
     });
   });
 
+  it("rejects an orphan cash-drop contract without materialising treasury cash", async () => {
+    const receiptId = await pendingContract(
+      "CD-1-20260725-ORPHAN",
+      null,
+      false,
+    );
+    const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
+
+    await expect(
+      recipient.treasury.acceptHandoverReceipt({ receiptId }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const row = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId))
+    )[0];
+    expect(row.status).toBe("PENDING");
+    expect(
+      await db()
+        .select({ id: s.accountingEntries.id })
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, receiptId)),
+    ).toHaveLength(0);
+  });
+
+  it("accepts a legacy already-recognised CD without posting treasury twice", async () => {
+    const receiptId = await pendingContract(
+      "CD-1-20260725-LEGACY",
+      null,
+      "LEGACY",
+    );
+    const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
+
+    await expect(
+      recipient.treasury.acceptHandoverReceipt({ receiptId }),
+    ).resolves.toMatchObject({ idempotent: false, receiptId });
+
+    expect(
+      await db()
+        .select({ id: s.accountingEntries.id })
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, receiptId)),
+    ).toHaveLength(0);
+  });
+
   it("shows the cashier and the source shift for a pending cash drop", async () => {
     const referenceNumber = "CD-1-20260725-0001";
-    const receiptId = await pendingContract(referenceNumber);
     const shiftResult = await db().insert(s.shifts).values({
       branchId: 1,
       userId: CASHIER,
       openingBalance: "0",
       openGuard: "cashier-source:1:RETAIL",
     });
-    const shiftId = Number((shiftResult as any)[0]?.insertId ?? (shiftResult as any).insertId);
-    await db().insert(s.receipts).values({
-      branchId: 1,
-      shiftId,
-      direction: "OUT",
-      amount: "75000",
-      paymentMethod: "CASH",
-      cashBucket: "DRAWER",
-      referenceNumber,
-      status: "COMPLETED",
-      partyType: "OTHER",
-      createdBy: CASHIER,
-    });
+    const shiftId = Number(
+      (shiftResult as any)[0]?.insertId ?? (shiftResult as any).insertId,
+    );
+    const receiptId = await pendingContract(referenceNumber, shiftId);
 
     const recipient = appRouter.createCaller(makeCtx(await user(RECIPIENT)));
-    await expect(recipient.treasury.pendingHandoverReceipts()).resolves.toEqual([
-      expect.objectContaining({
-        id: receiptId,
-        sourceEmployeeName: "Cashier source",
-        sourceShiftId: shiftId,
-      }),
-    ]);
+    await expect(recipient.treasury.pendingHandoverReceipts()).resolves.toEqual(
+      [
+        expect.objectContaining({
+          id: receiptId,
+          sourceEmployeeName: "Cashier source",
+          sourceShiftId: shiftId,
+        }),
+      ],
+    );
   });
 
   it("accepts a close-shift handover contract through the same recipient workflow", async () => {
@@ -194,5 +301,11 @@ describe("treasury handover receipt acceptance", () => {
       approvedBy: RECIPIENT,
     });
     expect(row.approvedAt).toBeTruthy();
+    expect(
+      await db()
+        .select({ id: s.accountingEntries.id })
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, receiptId)),
+    ).toHaveLength(0);
   });
 });

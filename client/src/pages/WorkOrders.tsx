@@ -31,6 +31,9 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
+import { newClientRequestId } from "@/lib/countQueue";
+import { canCancelWorkOrder, cancellationRefundNotice } from "@/lib/workOrderRefundPolicy";
 import {
   Dialog,
   DialogContent,
@@ -1108,7 +1111,12 @@ export default function WorkOrders() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
-  const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  // مرآة workordersManagerProcedure حرفياً: roles=[manager] + workorders/FULL، مع admin
+  // والمنح الصريح حسب moduleAccessAllowed. لا مقارنة أدوار خام قد تحجب دوراً مخصّصاً أو
+  // تُظهر زرّاً سيرفضه الخادم بسبب override مُقيِّد.
+  const canCancel = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
+  const isManager = canCancel;
+  const isOwner = me.data?.isOwner === true;
   const canCrossBranches = me.data?.role === "admin";
   // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
   // فنّي المطبعة (workordersExecProcedure) يقدّم المراحل لكن التسليم/الفوترة مال ونقد (كاشير/مدير أو منح صريح).
@@ -1141,10 +1149,13 @@ export default function WorkOrders() {
   }, [view]);
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
+  const [cancelNotice, setCancelNotice] = useState<{ title: string; description: string; awaitingOwner: boolean } | null>(null);
+  const [cancelRetryWorkOrderId, setCancelRetryWorkOrderId] = useState<number | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const cancelRequestIdsRef = useRef(new Map<number, string>());
 
   // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
   const serverFilters = {
@@ -1169,6 +1180,8 @@ export default function WorkOrders() {
     utils.workOrders.counts.invalidate(),
     utils.workOrders.get.invalidate(),
     utils.workOrders.timeline.invalidate(),
+    utils.workOrders.pendingCancellationRefunds.invalidate(),
+    utils.workOrders.cancellationRefundStatus.invalidate(),
     utils.inventory.movements.invalidate(),
     utils.delivery.readyForDispatch.invalidate(),
   ]);
@@ -1189,8 +1202,25 @@ export default function WorkOrders() {
     onError: (e) => { notify.err(e); invalidateAll(); },
   });
   const cancel = trpc.workOrders.cancel.useMutation({
-    onSuccess: () => { notify.ok("أُلغي الأمر", "أُعيدت المواد للمخزون إن وُجدت."); setSel(null); invalidateAll(); },
-    onError: (e) => { notify.err(e); invalidateAll(); },
+    onSuccess: (result, variables) => {
+      const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
+      setCancelNotice(notice);
+      if (notice.awaitingOwner) notify.warn(notice.title, notice.description);
+      else notify.ok(notice.title, notice.description);
+      cancelRequestIdsRef.current.delete(variables.workOrderId);
+      setCancelRetryWorkOrderId(null);
+      setSel(null);
+      invalidateAll();
+    },
+    onError: (error, variables) => {
+      notify.err(error, "لم نتأكد من نتيجة الإلغاء؛ يمكنك إعادة المحاولة بالمعرّف نفسه دون تكرار الأثر.");
+      setCancelRetryWorkOrderId(variables.workOrderId);
+      setCancelNotice({
+        title: "تعذّر التحقق من نتيجة الإلغاء",
+        description: "لم تُنشأ محاولة جديدة تلقائياً. أعد التحقق والمحاولة الآمنة بالمعرّف نفسه؛ إن كان الإلغاء نُفّذ فسيعيد الخادم النتيجة بلا تكرار.",
+        awaitingOwner: true,
+      });
+    },
   });
   const assign = trpc.workOrders.assign.useMutation({
     onSuccess: () => { notify.ok("تم تحديث الإسناد"); invalidateAll(); },
@@ -1321,7 +1351,9 @@ export default function WorkOrders() {
 
   async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
     if (!(await confirm({ variant: "danger", title: "إلغاء طلب الخدمة", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الطلب", cancelText: "تراجع" }))) return;
-    cancel.mutate({ workOrderId: d.id });
+    const clientRequestId = cancelRequestIdsRef.current.get(d.id) ?? newClientRequestId();
+    cancelRequestIdsRef.current.set(d.id, clientRequestId);
+    cancel.mutate({ workOrderId: d.id, clientRequestId });
   }
 
   const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all";
@@ -1370,6 +1402,37 @@ export default function WorkOrders() {
           <Link href="/pos?mode=RECEPTION" className="wob-btn wob-btn-primary">شاشة الاستقبال الموحدة</Link>
         </div>
       </div>
+
+      <WorkOrderRefundApprovals isOwner={isOwner} currentUserId={me.data?.id} />
+
+      {cancelNotice && (
+        <div
+          role="status"
+          className={cancelNotice.awaitingOwner
+            ? "rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]"
+            : "rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] p-3 text-sm text-[var(--sem-pos)]"}
+        >
+          <div className="font-bold">{cancelNotice.title}</div>
+          <div>{cancelNotice.description}</div>
+          {cancelRetryWorkOrderId != null && canCancel && (
+            <button
+              type="button"
+              className="mt-2 rounded-md border border-current px-3 py-1.5 text-xs font-bold disabled:opacity-50"
+              disabled={cancel.isPending}
+              onClick={() => {
+                const clientRequestId = cancelRequestIdsRef.current.get(cancelRetryWorkOrderId);
+                if (!clientRequestId) {
+                  notify.err("تعذّر العثور على معرّف المحاولة السابقة؛ افتح أمر الشغل للتحقق من حالته.");
+                  return;
+                }
+                cancel.mutate({ workOrderId: cancelRetryWorkOrderId, clientRequestId });
+              }}
+            >
+              {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
+            </button>
+          )}
+        </div>
+      )}
 
       <Stats counts={serverCounts} />
 

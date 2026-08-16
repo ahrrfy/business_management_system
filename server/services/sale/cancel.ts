@@ -38,21 +38,26 @@ import {
   receipts,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
 import { classifyVariants } from "../bundleService";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { shiftIdForCashTx } from "../shiftService";
 import {
   assertCashOutAvailable,
+  assertNonPhysicalOutReceipt,
   assertTreasuryOutException,
   lockCashSourceForUpdate,
   MATERIALIZED_RECEIPT_STATUSES,
 } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { userNameSnapshot } from "../userSnapshot";
+import { nextVoucherNumber } from "../voucher/helpers";
+import { classifyGiftPosting } from "./giftPosting";
+import { paymentAssetRole } from "./paymentPosting";
 
 // ملاحظة: EXCHANGE ممنوع (مسار الصيرفة له خدمة مخصّصة كما في voucherService)، وWALLET/CHECK/
 // TRANSFER تُمرَّر بلا shift-guard إن غاب — النقد وحده يستوجب shiftIdForCashTx.
@@ -77,20 +82,23 @@ export interface CancelSaleResult {
   cancelledAt: Date;
   /** المبلغ المسترَدّ فعلاً (قد يكون صفراً لفاتورةٍ غير مدفوعة). */
   refundAmount: string;
-  /** رقم سند الصرف الصادر (null إن لا استرداد نقديّ لأن paidAmount=0). */
+  /** رقم طلب سند الصرف غير النقدي (null للنقد الفوري أو عند غياب مبلغ). */
   refundVoucherNumber: string | null;
+  /** طلب غير نقدي بقي صفري الأثر حتى اعتماده وتنفيذه خارج هذه العملية. */
+  pendingRefundAmount?: string;
   /** true عند إعادة تشغيل idempotency لنفس المفتاح. */
   idempotentReplay?: true;
 }
 
 export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<CancelSaleResult> {
   return withTx(async (tx) => {
+    const requestFingerprint = input.clientRequestId?.trim() ? idempotencyHash(input) : null;
     // ═══ Idempotency: تكرار المفتاح ⇒ إرجاع نتيجة الإلغاء الأول (لا استرداد/عكس مزدوج) ═══
     // Codex P2 (١٢/٨): نُعيد بناء تفاصيل الاسترداد الحقيقية من الإيصال الذي كُتب — لا صفراً وهمياً.
     // كان الـreplay يُشعِر العميل «إلغاء بلا استرداد» في حين أن العملية الأولى قد سدّدت مبلغاً وأصدرت
     // إيصال صرف؛ فرقٌ بين التقرير والوقائع يخلّف انطباعاً بسرقة أو ازدواج فحص.
     if (input.clientRequestId?.trim()) {
-      const existingRefId = await findIdempotentRefId(tx, "sale.cancel", input.clientRequestId);
+      const existingRefId = await checkIdempotency(tx, "sale.cancel", input.clientRequestId, requestFingerprint);
       if (existingRefId != null) {
         if (Number(existingRefId) !== Number(input.invoiceId)) {
           throw new TRPCError({
@@ -100,17 +108,21 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         }
         const rInv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
         if (!rInv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
-        // ابحث عن إيصال الصرف الذي أُنشئ لهذه الفاتورة (الأحدث) بعد لحظة الإلغاء — يمثّل الاسترداد الفعلي.
-        // إن غاب (لم يُدفع أصلاً) ⇒ صفر واستعمال null. لا نستعمل voucherNumber لأننا لا نضعه (P1 #1).
+        // أحدث خروج قد يكون نقداً منفذاً أو طلب سند غير نقدي ما زال معلقاً.
         const priorRefund = (
           await tx
-            .select({ amount: receipts.amount, id: receipts.id })
+            .select({
+              amount: receipts.amount,
+              id: receipts.id,
+              status: receipts.status,
+              approvalStatus: receipts.approvalStatus,
+              voucherNumber: receipts.voucherNumber,
+            })
             .from(receipts)
             .where(
               and(
                 eq(receipts.invoiceId, input.invoiceId),
                 eq(receipts.direction, "OUT"),
-                eq(receipts.status, "COMPLETED"),
               ),
             )
             .orderBy(sql`${receipts.id} DESC`)
@@ -120,8 +132,13 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
           invoiceId: input.invoiceId,
           invoiceNumber: rInv.invoiceNumber,
           cancelledAt: rInv.cancelledAt ?? new Date(),
-          refundAmount: priorRefund ? money(priorRefund.amount).toFixed(2) : "0.00",
-          refundVoucherNumber: null, // انظر P1 #1: لا نضع voucherNumber على إيصال الاسترداد.
+          refundAmount: priorRefund?.status === "COMPLETED" && priorRefund.approvalStatus === "APPROVED"
+            ? money(priorRefund.amount).toFixed(2)
+            : "0.00",
+          refundVoucherNumber: priorRefund?.voucherNumber ?? null,
+          pendingRefundAmount: priorRefund?.status === "PENDING" && priorRefund.approvalStatus === "PENDING_APPROVAL"
+            ? money(priorRefund.amount).toFixed(2)
+            : "0.00",
           idempotentReplay: true,
         };
       }
@@ -319,6 +336,9 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     // — و«remainingBase» يُقصيها من workLines ⇒ لا نعكس تكلفتها هنا. يبقى صافي الأثر: خسارةٌ فعليّة
     // على المكتبة بمقدار كلفة التالف. النمط مطابقٌ لـreturnService.returnedCost.
     let restockedCost = new Decimal(0);
+    let restockedGiftCost = new Decimal(0);
+    let serviceRestockedCost = new Decimal(0);
+    let serviceRestockedGiftCost = new Decimal(0);
     for (const w of workLines) {
       const kind = kindByVariant.get(Number(w.item.variantId)) ?? "STOCKED";
       if (kind === "BUNDLE") {
@@ -336,7 +356,14 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         // STOCKED / SERVICE — applyMovement يعرف كيف يعامل الخدمة (لا branchStock لها ⇒ لا حركة).
         stockOps.push({ variantId: Number(w.item.variantId), baseQuantity: w.remainingBase });
       }
-      restockedCost = restockedCost.plus(round2(money(w.item.unitCost).times(w.remainingBase)));
+      const lineRestockedCost = round2(money(w.item.unitCost).times(w.remainingBase));
+      if (w.item.isGift) {
+        restockedGiftCost = restockedGiftCost.plus(lineRestockedCost);
+        if (kind === "SERVICE") serviceRestockedGiftCost = serviceRestockedGiftCost.plus(lineRestockedCost);
+      } else {
+        restockedCost = restockedCost.plus(lineRestockedCost);
+        if (kind === "SERVICE") serviceRestockedCost = serviceRestockedCost.plus(lineRestockedCost);
+      }
       // Codex P2 (١٢/٨): لا نطمس returnedRestockedBaseQuantity — نضيف إليها المُعاد الآن فقط
       // (كان الاستبدال بـbaseQuantity يزعم أن كل الوحدات عادت للرفّ حتى تلك المُرتجَعة سابقاً كتالف
       // ⇒ يخالف حركة المخزون والدفتر: إجمالي الحركات RETURN إعادةً = المُعاد الفعلي، والتقارير المستنِدة
@@ -350,6 +377,7 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         .where(eq(invoiceItems.id, Number(w.item.id)));
     }
     restockedCost = round2(restockedCost);
+    restockedGiftCost = round2(restockedGiftCost);
 
     // تطبيق حركات المخزون بترتيب variantId التصاعدي — يحافظ على ترتيب القفل الحتميّ (منع deadlock).
     const aggregated = new Map<number, number>();
@@ -371,9 +399,11 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     }
 
     // ═══ ٥) عكس التزام المودِع لبضاعة الأمانة (mirror returnService §٥ حاصرة ١) ═══
+    let consignmentRestockedCost = new Decimal(0);
+    let consignmentRestockedGiftCost = new Decimal(0);
+    const consignByVariant = new Map<number, number>();
     {
       const rvids = variantIds;
-      const consignByVariant = new Map<number, number>();
       if (rvids.length) {
         const crows = await tx
           .select({ vid: productVariants.id, isConsign: products.isConsignment, cId: products.consignorId })
@@ -383,16 +413,24 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         for (const r of crows) if (r.isConsign && r.cId != null) consignByVariant.set(Number(r.vid), Number(r.cId));
       }
       if (consignByVariant.size) {
-        const byConsignor = new Map<number, Decimal>();
+        const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
         for (const w of workLines) {
           const cId = consignByVariant.get(Number(w.item.variantId));
           if (cId == null) continue;
           const share = round2(money(w.item.unitCost).times(w.remainingBase));
-          byConsignor.set(cId, (byConsignor.get(cId) ?? new Decimal(0)).plus(share));
+          const split = byConsignor.get(cId) ?? { paid: new Decimal(0), gift: new Decimal(0) };
+          if (w.item.isGift) split.gift = split.gift.plus(share);
+          else split.paid = split.paid.plus(share);
+          byConsignor.set(cId, split);
         }
         for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
-          const share = byConsignor.get(cId)!;
+          const split = byConsignor.get(cId)!;
+          const paidShare = round2(split.paid);
+          const giftShare = round2(split.gift);
+          const share = round2(paidShare.plus(giftShare));
           if (share.lte(0)) continue;
+          consignmentRestockedCost = consignmentRestockedCost.plus(paidShare);
+          consignmentRestockedGiftCost = consignmentRestockedGiftCost.plus(giftShare);
           // عكس بنفس invoiceId ⇒ يدخل فلتر خصم العمولة (استرداد حصّة البائع الأصلي).
           await postEntry(tx, {
             entryType: "PURCHASE",
@@ -400,7 +438,11 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
             invoiceId: input.invoiceId,
             branchId: Number(inv.branchId),
             amount: share.neg(),
-            notes: "عكس استحقاق أمانة — إلغاء فاتورة",
+            cost: paidShare.neg(),
+            profit: paidShare,
+            notes: `عكس استحقاق أمانة — إلغاء فاتورة؛ COGS مبسّط=${toDbMoney(paidShare.neg())}`,
+            postingIntent: createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [...signedPostingLines("COGS", "CONSIGNMENT_PAYABLE", paidShare.neg()), ...signedPostingLines("GIFTS_PROMO", "CONSIGNMENT_PAYABLE", giftShare.neg())], { roleDebits: { CONSIGNMENT_PAYABLE: share }, roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare } }),
+            postingSourceComponents: { roleDebits: { CONSIGNMENT_PAYABLE: share }, roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare } },
           });
           await adjustSupplierBalance(tx, cId, share.neg());
         }
@@ -409,20 +451,106 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
 
     // ═══ ٦) قيد RETURN معكوس يزنُ ما تبقّى (assertPeriodOpen يفرض فتح الفترة تلقائياً) ═══
     const cancelOperatorName = await userNameSnapshot(tx, actor.userId);
-    await postEntry(tx, {
+    const ownedRestockedCost = round2(Decimal.max(new Decimal(0), restockedCost.minus(consignmentRestockedCost).minus(serviceRestockedCost)));
+    const ownedRestockedGiftCost = round2(Decimal.max(new Decimal(0), restockedGiftCost.minus(consignmentRestockedGiftCost).minus(serviceRestockedGiftCost)));
+    const financiallyRestockedGiftCost = round2(Decimal.max(new Decimal(0), restockedGiftCost.minus(serviceRestockedGiftCost)));
+    const deliveryRevenueReversal = round2(money(inv.deliveryFee ?? "0"));
+    const sectorRevenueReversal = round2(remainingRevenue.minus(deliveryRevenueReversal));
+    const returnAccountingAmount = round2(remainingRevenue.plus(remainingTax));
+    const invoiceMerchandiseRevenue = round2(money(inv.subtotal).minus(money(inv.discountAmount)));
+    const revenueItems = items.filter((item) => !item.isGift && money(item.total).gt(0)).sort((a, b) => Number(a.id) - Number(b.id));
+    const itemRevenueBasis = revenueItems.reduce((sum, item) => sum.plus(money(item.total)), money(0));
+    const netRevenueByItem = new Map<number, Decimal>();
+    let allocatedInvoiceRevenue = money(0);
+    for (let index = 0; index < revenueItems.length; index++) {
+      const item = revenueItems[index]!;
+      const lineRevenue = index === revenueItems.length - 1 ? round2(invoiceMerchandiseRevenue.minus(allocatedInvoiceRevenue)) : round2(invoiceMerchandiseRevenue.times(money(item.total)).div(itemRevenueBasis));
+      allocatedInvoiceRevenue = allocatedInvoiceRevenue.plus(lineRevenue);
+      netRevenueByItem.set(Number(item.id), lineRevenue);
+    }
+    const returnRevenueByRole = new Map<AccountRole, Decimal>();
+    const returnClasses = new Set<"SERVICE" | "CONSIGNMENT" | "INVENTORY">();
+    let allocatedReturnRevenue = money(0);
+    let balancingRole: AccountRole | null = null;
+    for (const { item, remainingBase } of workLines) {
+      const lineRevenue = netRevenueByItem.get(Number(item.id)) ?? money(0);
+      if (lineRevenue.isZero()) continue;
+      const kind = kindByVariant.get(Number(item.variantId)) ?? "STOCKED";
+      const returnClass = kind === "SERVICE" ? "SERVICE" : consignByVariant.has(Number(item.variantId)) ? "CONSIGNMENT" : "INVENTORY";
+      returnClasses.add(returnClass);
+      const role: AccountRole = kind === "SERVICE" ? "SALES_PRINT" : "SALES_STATIONERY";
+      const currentRevenue = remainingBase >= item.baseQuantity ? lineRevenue : round2(lineRevenue.times(remainingBase).div(item.baseQuantity));
+      allocatedReturnRevenue = allocatedReturnRevenue.plus(currentRevenue);
+      returnRevenueByRole.set(role, round2((returnRevenueByRole.get(role) ?? money(0)).plus(currentRevenue)));
+      balancingRole = role;
+    }
+    const sectorDelta = round2(sectorRevenueReversal.minus(allocatedReturnRevenue));
+    if (!sectorDelta.isZero() && balancingRole) {
+      returnRevenueByRole.set(balancingRole, round2((returnRevenueByRole.get(balancingRole) ?? money(0)).plus(sectorDelta)));
+    }
+    const returnProfile: PostingProfile = returnClasses.size > 1 ? "RETURN_SALE_MIXED" : returnClasses.has("SERVICE") ? "RETURN_SALE_SERVICE" : returnClasses.has("CONSIGNMENT") ? "RETURN_SALE_CONSIGNMENT" : "RETURN_SALE_INVENTORY";
+    const returnPostingLines = [
+      ...Array.from(returnRevenueByRole.entries())
+        .filter(([, amount]) => !amount.isZero())
+        .map(([role, amount]) => debitLine(role, amount)),
+      ...(deliveryRevenueReversal.isZero() ? [] : [debitLine("DELIVERY_REVENUE", deliveryRevenueReversal)]),
+      ...(remainingTax.isZero() ? [] : [debitLine("TAX_PAYABLE", remainingTax)]),
+      ...(returnAccountingAmount.isZero() ? [] : [creditLine("AR", returnAccountingAmount)]),
+      ...(ownedRestockedCost.isZero() ? [] : [debitLine("INVENTORY", ownedRestockedCost), creditLine("COGS", ownedRestockedCost)]),
+    ];
+    const returnPostingSource = {
+      roleDebits: {
+        SALES_STATIONERY: returnRevenueByRole.get("SALES_STATIONERY") ?? money(0),
+        SALES_PRINT: returnRevenueByRole.get("SALES_PRINT") ?? money(0),
+        SALES_FLEX: returnRevenueByRole.get("SALES_FLEX") ?? money(0),
+        OTHER_REVENUE: returnRevenueByRole.get("OTHER_REVENUE") ?? money(0),
+        DELIVERY_REVENUE: deliveryRevenueReversal,
+        TAX_PAYABLE: remainingTax,
+        INVENTORY: ownedRestockedCost,
+      },
+      roleCredits: { AR: returnAccountingAmount, COGS: ownedRestockedCost },
+    };
+    const returnPostingIntent = returnPostingLines.length ? createPostingIntent(returnProfile, "RETURN", returnPostingLines, returnPostingSource) : null;
+    // إلغاء فاتورة هدايا صِرفة لا يعكس SALE/AR؛ عكس GIFT_OUT أدناه هو أثره المالي.
+    if (returnPostingIntent) {
+      await postEntry(tx, {
       entryType: "RETURN",
       branchId: Number(inv.branchId),
       invoiceId: input.invoiceId,
       customerId: inv.customerId,
       revenue: remainingRevenue.neg(),
-      cost: restockedCost.neg(),
-      profit: remainingRevenue.minus(restockedCost).neg(),
+      // `cost` is a canonical source field: it must equal the owned COGS credit exactly.
+      // Service materials are already consumed and consignment is never our inventory.
+      cost: ownedRestockedCost.neg(),
+      profit: remainingRevenue.minus(ownedRestockedCost).neg(),
       taxAmount: remainingTax.neg(),
       amount: remainingAmount.neg(),
       createdBy: actor.userId,
       createdByNameSnapshot: cancelOperatorName,
-      notes: input.reason ? `إلغاء فاتورة — ${input.reason.slice(0, 200)}` : "إلغاء فاتورة",
-    });
+      notes: `${input.reason ? `إلغاء فاتورة — ${input.reason.slice(0, 200)}؛ ` : "إلغاء فاتورة؛ "}عكس كلفة تحليلية=${toDbMoney(restockedCost)}؛ عكس COGS مملوك=${toDbMoney(ownedRestockedCost)}؛ خدمة غير معادة=${toDbMoney(serviceRestockedCost)}؛ أمانة مستقلة=${toDbMoney(consignmentRestockedCost)}`,
+        postingIntent: returnPostingIntent,
+        postingSourceComponents: returnPostingSource,
+      });
+    }
+
+    if (financiallyRestockedGiftCost.gt(0)) {
+      const giftPosting = classifyGiftPosting(financiallyRestockedGiftCost, ownedRestockedGiftCost, -1);
+      await postEntry(tx, {
+        entryType: "GIFT_OUT",
+        branchId: Number(inv.branchId),
+        invoiceId: input.invoiceId,
+        customerId: inv.customerId,
+        revenue: money(0),
+        cost: financiallyRestockedGiftCost.neg(),
+        profit: financiallyRestockedGiftCost,
+        amount: financiallyRestockedGiftCost.neg(),
+        createdBy: actor.userId,
+        createdByNameSnapshot: cancelOperatorName,
+        notes: `عكس هدايا ضمن إلغاء فاتورة بيع؛ consignmentRemainder=${toDbMoney(giftPosting.consignmentRemainder)}`,
+        postingIntent: giftPosting.intent,
+        postingSourceComponents: giftPosting.sourceComponents,
+      });
+    }
 
     // ═══ ٧) عكس تقريب النقد العراقي إن لم يُعكَس سابقاً بمرتجع كامل ═══
     // returnService.fullyReturned يعكس التقريب بـdedupeKey `ADJUST:IQD:RETURN:<id>`؛ لن يكون موجوداً
@@ -452,11 +580,12 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
           profit: cashRoundOriginal.neg(),
           amount: cashRoundOriginal.neg(),
           notes: "عكس تقريب نقدي IQD — إلغاء فاتورة",
+          postingIntent: createPostingIntent("ADJUST_ROUNDING", "ADJUST", signedPostingLines("AR", "ROUNDING_DIFF", cashRoundOriginal.neg())),
         });
       }
     }
 
-    // ═══ ٨) الاسترداد: إيصال صرف OUT بجهة صرفٍ مُصرَّحة (بلا voucherNumber) ═══
+    // ═══ ٨) الاسترداد: النقد فوري؛ غير النقد طلب PAYMENT قابل لاعتماد المالك ═══
     // Codex P1 (١٢/٨): جمع كل المقبوضات المرتبطة بالفاتورة (IN) − ما استُرِدّ (OUT) كأساسٍ للاسترداد،
     // بدل الاعتماد على inv.paidAmount وحده. voucher/create.ts يخفض ذمّة العميل عند سند قبضٍ مرتبط
     // بفاتورة لكنه لا يرفع invoices.paidAmount ⇒ إن اعتمدنا paidAmount وحده يبقى قسمٌ من نقد العميل
@@ -483,6 +612,8 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
     );
     const refundable = totalIn.minus(totalOutPrior);
     let refundAmount = new Decimal(0);
+    let pendingRefundAmount = new Decimal(0);
+    let pendingRefundVoucherNumber: string | null = null;
     if (refundable.gt(0)) {
       // تحديد الوردية والدلو: النقد يمرّ shiftIdForCashTx (يضمن ورديةً للكاشير ويعطي TREASURY للمدير/الأدمن
       // بلا وردية). غير النقد لا يمسّ صندوقاً ⇒ shiftId اختياري (نأخذ ما هو مفتوح إن وُجد للربط بالتسوية).
@@ -503,13 +634,25 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
           amount: refundable,
           operation: "استرداد إلغاء الفاتورة",
         });
+      } else {
+        if (inv.customerId == null) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "الاسترداد غير النقدي يحتاج عميلاً مرتبطاً بالفاتورة كي يمرّ بسند صرف واعتماد مالك",
+          });
+        }
+        assertNonPhysicalOutReceipt({
+          classification: "DEFERRED_APPROVAL",
+          paymentMethod: input.refundPaymentMethod,
+          cashBucket: null,
+          approvalStatus: "PENDING_APPROVAL",
+          operation: "طلب استرداد إلغاء فاتورة غير نقدي",
+        });
+        pendingRefundVoucherNumber = await nextVoucherNumber(tx, "PAYMENT", Number(inv.branchId));
       }
 
-      // Codex P1 #1 + P2 #4 (١٢/٨): **لا voucherNumber** على إيصال استرداد الإلغاء — تسميته سنداً في
-      // vouchers.list يفتح مسار voucher/cancel.ts العام (يعكس النقد ويعدّل رصيد العميل تاركاً حالة
-      // الفاتورة CANCELLED وpaidAmount=0 ⇒ ازدواج عكسٍ ينقلب ائتماناً وهميّاً)، كما يُصنَّف تحت
-      // «expensesCash» في تقرير إغلاق اليوم بدل «returnsCash» (الشرط: voucherNumber IS NULL).
-      // نمط returnService.receipt هو المرجعية (بلا voucherNumber، مصنَّف كمرتجع، غير قابل للـcancel العام).
+      // غير النقد يحمل voucherNumber فيظهر بطابور السندات وي materialize حصراً عبر
+      // voucher.approve من مالك آخر. النقد الفوري يبقى إيصال مرتجع بلا voucherNumber.
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,
         branchId: Number(inv.branchId),
@@ -518,29 +661,47 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
         direction: "OUT",
         amount: toDbMoney(refundable),
         paymentMethod: input.refundPaymentMethod,
-        status: "COMPLETED",
+        status: input.refundPaymentMethod === "CASH" ? "COMPLETED" : "PENDING",
+        description: `استرداد إلغاء فاتورة ${inv.invoiceNumber}`,
+        approvalStatus: input.refundPaymentMethod === "CASH" ? "APPROVED" : "PENDING_APPROVAL",
+        referenceNumber: input.refundPaymentMethod === "CASH"
+          ? null
+          : `SALE-CANCEL-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12) ?? "LEGACY"}`,
+        voucherNumber: pendingRefundVoucherNumber,
         partyType: inv.customerId ? "CUSTOMER" : "OTHER",
         partyId: inv.customerId ?? null,
-        description: `استرداد إلغاء فاتورة ${inv.invoiceNumber}`,
-        approvalStatus: "APPROVED",
+        internalNote: pendingRefundVoucherNumber
+          ? `SALE_CUSTOMER_REFUND:CANCEL:${input.invoiceId}`
+          : null,
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(rRes);
-      await postEntry(tx, {
-        entryType: "PAYMENT_OUT",
-        branchId: Number(inv.branchId),
-        invoiceId: input.invoiceId,
-        receiptId,
-        customerId: inv.customerId,
-        amount: refundable,
-      });
-      refundAmount = refundable;
+      if (input.refundPaymentMethod === "CASH") {
+        const refundAssetRole = paymentAssetRole(input.refundPaymentMethod, cashBucket, "OUT");
+        const refundPostingSource = {
+          roleDebits: { AR: refundable },
+          roleCredits: { [refundAssetRole]: refundable },
+        };
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: Number(inv.branchId),
+          invoiceId: input.invoiceId,
+          receiptId,
+          customerId: inv.customerId,
+          amount: refundable,
+          postingIntent: createPostingIntent("PAYMENT_OUT_CUSTOMER_REFUND", "PAYMENT_OUT", [debitLine("AR", refundable), creditLine(refundAssetRole, refundable)], refundPostingSource),
+          postingSourceComponents: refundPostingSource,
+        });
+        refundAmount = refundable;
+      } else {
+        pendingRefundAmount = refundable;
+      }
     }
 
     // ═══ ٩) تصفير ذمّة العميل عن هذه الفاتورة ═══
-    // مساهمة الفاتورة في AR قبل الإلغاء: (remainingAmount − nonInvoicePaidPortion) — لكن نتّبع النمط
-    // المُثبَت في returnService: نُسقط بمقدار (remainingAmount − refundAmount). refundAmount الآن يشمل
-    // كامل ما قُبض على الفاتورة (voucher-linked receipts + الكاشير) ⇒ AR يعود لصفر بلا فائض ائتماني.
+    // مساهمة الفاتورة في AR قبل الإلغاء: (remainingAmount − ما استُرد فعلياً الآن).
+    // طلب الاسترداد غير النقدي المعلّق لا يُعامل كدفع: يبقى رصيد العميل دائناً حتى materialization
+    // الذي ينشئ PAYMENT_OUT/Dr AR، فلا نُصفّر ديناراً لم يغادر الحساب فعلاً.
     if (inv.customerId) {
       const arDrop = remainingAmount.minus(refundAmount);
       await adjustCustomerBalance(tx, Number(inv.customerId), arDrop.neg());
@@ -578,7 +739,7 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
 
     if (input.clientRequestId?.trim()) {
       // recordIdempotencyKey ذرّي: INSERT وحيد يرمي ER_DUP_ENTRY عند ازدواج (سباقٌ نظيف).
-      await recordIdempotencyKey(tx, "sale.cancel", input.clientRequestId, input.invoiceId);
+      await recordIdempotencyKey(tx, "sale.cancel", input.clientRequestId, input.invoiceId, requestFingerprint);
     }
 
     return {
@@ -586,7 +747,8 @@ export async function cancelSale(input: CancelSaleInput, actor: Actor): Promise<
       invoiceNumber: inv.invoiceNumber,
       cancelledAt,
       refundAmount: refundAmount.toFixed(2),
-      refundVoucherNumber: null,
+      refundVoucherNumber: pendingRefundVoucherNumber,
+      pendingRefundAmount: pendingRefundAmount.toFixed(2),
     };
   });
 }

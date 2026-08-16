@@ -58,11 +58,7 @@ export default function AssetEdit() {
 
   const update = trpc.assets.update.useMutation({
     onSuccess: async (a) => {
-      notify.ok(
-        a?.paymentPending
-          ? "حُفظ طلب تحويل تمويل الأصل بلا تغيير القيمة أو المورّد أو الذمّة — ينفّذ مالكٌ آخر الدفع والتعديل معاً"
-          : "تم حفظ تعديلات الأصل",
-      );
+      notify.ok("تم حفظ تعديلات الأصل");
       await utils.assets.get.invalidate({ id });
       await utils.assets.list.invalidate();
       navigate(`/assets/${a?.id ?? id}`);
@@ -129,7 +125,7 @@ export default function AssetEdit() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="br">الفرع</Label>
-            <select id="br" className={selectCls} value={form.branchId} onChange={(e) => set({ branchId: e.target.value })}>
+            <select id="br" className={selectCls} value={form.branchId} disabled aria-describedby="asset-financial-lock">
               <option value="">— اختر الفرع —</option>
               {(opts.data?.branches ?? []).map((b) => <option key={b.id} value={String(b.id)}>{b.name}</option>)}
             </select>
@@ -141,17 +137,20 @@ export default function AssetEdit() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">الشراء والكفالة</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">حقائق الاقتناء والكفالة</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div id="asset-financial-lock" className="md:col-span-2 rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+            الفرع والمورّد وتاريخ الاقتناء وقيمته حقائق مالية مُرحّلة لا تُعدَّل من هذه الشاشة. تصحيحها يتطلب مستنداً مالياً مستقلاً مع إثبات واعتماد وعكسٍ قابل للتدقيق.
+          </div>
           <div className="space-y-1">
             <Label htmlFor="sup">المورّد</Label>
-            <select id="sup" className={selectCls} value={form.supplierId} onChange={(e) => set({ supplierId: e.target.value })}>
+            <select id="sup" className={selectCls} value={form.supplierId} disabled aria-describedby="asset-financial-lock">
               <option value="">— بلا مورّد —</option>
               {(opts.data?.suppliers ?? []).map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
             </select>
           </div>
-          <div className="space-y-1"><Label htmlFor="pdate">تاريخ الشراء *</Label><Input id="pdate" type="date" dir="ltr" value={form.purchaseDate} onChange={(e) => set({ purchaseDate: e.target.value })} /></div>
-          <div className="space-y-1"><Label htmlFor="pval">قيمة الشراء (د.ع) *</Label><MoneyInput id="pval" value={form.purchaseValue} onChange={(purchaseValue) => set({ purchaseValue })} decimals={0} /></div>
+          <div className="space-y-1"><Label htmlFor="pdate">تاريخ الشراء *</Label><Input id="pdate" type="date" dir="ltr" value={form.purchaseDate} readOnly aria-describedby="asset-financial-lock" /></div>
+          <div className="space-y-1"><Label htmlFor="pval">قيمة الشراء (د.ع) *</Label><MoneyInput id="pval" value={form.purchaseValue} onChange={() => undefined} decimals={0} disabled aria-describedby="asset-financial-lock" /></div>
           <div className="space-y-1"><Label htmlFor="war">نهاية الكفالة</Label><Input id="war" type="date" dir="ltr" value={form.warrantyEnd} onChange={(e) => set({ warrantyEnd: e.target.value })} /></div>
         </CardContent>
       </Card>

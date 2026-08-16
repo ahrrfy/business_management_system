@@ -33,7 +33,37 @@ async function user(id: number) {
   return (await db().select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];
 }
 
-async function pendingContract(createdBy = HOLDER, referenceNumber = "CD-1-20260816-0001") {
+async function pendingContract(
+  createdBy = HOLDER,
+  referenceNumber = "CD-1-20260816-0001",
+  stageSource = true,
+  sourceCreatedBy = CASHIER,
+) {
+  if (stageSource) {
+    const sourceResult = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "OUT",
+      amount: "50000",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      referenceNumber,
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      partyType: "OTHER",
+      createdBy: sourceCreatedBy,
+    });
+    const sourceReceiptId = Number(
+      (sourceResult as any)[0]?.insertId ?? (sourceResult as any).insertId,
+    );
+    await db().insert(s.accountingEntries).values({
+      entryType: "CASH_TRANSFER_OUT",
+      branchId: 1,
+      receiptId: sourceReceiptId,
+      amount: "50000",
+      entryDate: sql`CURDATE()` as unknown as string,
+      dedupeKey: `TEST:CASH_DROP:${referenceNumber}`,
+    });
+  }
   const result = await db().insert(s.receipts).values({
     branchId: 1,
     direction: "IN",
@@ -72,7 +102,7 @@ beforeEach(async () => {
 
 describe("المسار أ — حوكمة النقد المعلَّق", () => {
   it("القاعدة تمنع رقمَي سحبٍ متطابقين لنفس الاتجاه، وتسمح بزوج OUT/IN بالتصميم", async () => {
-    await pendingContract(HOLDER, "CD-1-20260816-0009");
+    await pendingContract(HOLDER, "CD-1-20260816-0009", false);
     // نفس الرقم باتجاه OUT = التصميم السليم (سند الدرج المقابل) ⇒ يُقبَل.
     await db().insert(s.receipts).values({
       branchId: 1, direction: "OUT", amount: "50000", paymentMethod: "CASH", cashBucket: "DRAWER",
@@ -153,11 +183,12 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
   it("لا تُسنَد العهدة إلى مُسلِّم النقد نفسه — لا يُطوى الشاهدان بشخصٍ واحد", async () => {
     // سند الدرج المقابل أنشأه MANAGER (أي أنّه المُسلِّم). إسناد عهدته إليه = قبولٌ ذاتيّ
     // يلتفّ على شرط createCashDrop («المُسلِّم ليس المستلم»).
-    const receiptId = await pendingContract(HOLDER, "CD-1-20260816-0007");
-    await db().insert(s.receipts).values({
-      branchId: 1, direction: "OUT", amount: "50000", paymentMethod: "CASH", cashBucket: "DRAWER",
-      referenceNumber: "CD-1-20260816-0007", status: "COMPLETED", partyType: "OTHER", createdBy: MANAGER,
-    });
+    const receiptId = await pendingContract(
+      HOLDER,
+      "CD-1-20260816-0007",
+      true,
+      MANAGER,
+    );
     const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
     await expect(
       manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: MANAGER }),

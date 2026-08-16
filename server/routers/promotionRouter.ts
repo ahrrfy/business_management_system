@@ -32,6 +32,7 @@ const moneyStrOpt = z
   .trim()
   .regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة")
   .optional();
+const paymentMethod = z.enum(["CASH", "CARD", "TRANSFER", "WALLET"]);
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
 
 /**
@@ -170,6 +171,23 @@ export const promotionRouter = router({
         terminationType: z.enum(TERMINATION_TYPES),
         lastDay: dateStr,
         settlement: moneyStrOpt,
+        breakdown: z.object({
+          earnedGrossWages: moneyStrOpt,
+          wageReductions: moneyStrOpt,
+          advanceRecovery: moneyStrOpt,
+          incomeTax: moneyStrOpt,
+          employeeSocialSecurity: moneyStrOpt,
+          employerSocialSecurity: moneyStrOpt,
+          leaveCompensation: moneyStrOpt,
+          noticeCompensation: moneyStrOpt,
+          eosBenefit: moneyStrOpt,
+          otherSettlement: moneyStrOpt,
+          otherSettlementLabel: z.string().trim().max(120).optional(),
+        }),
+        paymentMethod: paymentMethod.default("CASH"),
+        paymentReference: z.string().trim().max(120).optional(),
+        settlementEvidenceNote: z.string().trim().min(10).max(500),
+        zeroAmountsAttested: z.literal(true),
         reason: z.string().trim().optional(),
       }),
     )
@@ -186,6 +204,8 @@ export const promotionRouter = router({
           employeeId: input.employeeId,
           terminationType: input.terminationType,
           lastDay: input.lastDay,
+          breakdown: input.breakdown,
+          paymentMethod: input.paymentMethod,
         },
       });
       return t;
@@ -212,6 +232,86 @@ export const promotionRouter = router({
       return {
         id: res.terminationId,
         settlementVoucher: res.settlementVoucher,
+        recognition: res.recognition,
       };
+    }),
+
+  reverseTerminationPayment: hrWrite
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        reason: z.string().trim().min(5).max(255),
+        paymentMethod: paymentMethod,
+        referenceNumber: z.string().trim().max(120).optional(),
+        reversalDate: dateStr.optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await svc.reverseTerminationPayment(
+        input.id,
+        promotionActor(ctx.user),
+        input,
+      );
+      if (!result.replayed) await logAudit(ctx, {
+        action: "termination.payment.reverse",
+        entityType: "employeeTermination",
+        entityId: input.id,
+        newValue: {
+          reason: input.reason,
+          paymentMethod: input.paymentMethod,
+          reversalDate: input.reversalDate ?? null,
+          receiptId: result.receiptId,
+        },
+      });
+      return result;
+    }),
+
+  reissueTerminationPayment: hrWrite
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        reason: z.string().trim().min(5).max(255),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await svc.reissueTerminationPayment(
+        input.id,
+        promotionActor(ctx.user),
+        input.reason,
+      );
+      if (!result.replayed) await logAudit(ctx, {
+        action: "termination.payment.reissue",
+        entityType: "employeeTermination",
+        entityId: input.id,
+        newValue: {
+          reason: input.reason,
+          receiptId: result.receiptId,
+          attempt: result.attempt,
+          replayed: result.replayed,
+        },
+      });
+      return result;
+    }),
+
+  reverseTerminationRecognition: hrWrite
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        reason: z.string().trim().min(5).max(255),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await svc.reverseTerminationRecognition(
+        input.id,
+        promotionActor(ctx.user),
+        input.reason,
+      );
+      if (!result.replayed) await logAudit(ctx, {
+        action: "termination.accrual.reverse",
+        entityType: "employeeTermination",
+        entityId: input.id,
+        newValue: { reason: input.reason, eventId: result.eventId },
+      });
+      return result;
     }),
 });

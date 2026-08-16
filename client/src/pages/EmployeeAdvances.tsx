@@ -24,6 +24,8 @@ import { trpc } from "@/lib/trpc";
 import { D } from "@/lib/money";
 import { HandCoins, Plus, X } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
+import { EmployeeAdvanceRepaymentPanel } from "@/components/hr/EmployeeAdvanceRepaymentPanel";
+import { toExcelMoney } from "@/lib/payrollAccrual";
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -125,9 +127,9 @@ export default function EmployeeAdvances() {
               formats: ["xlsx", "csv"],
               columns: [
                 { key: "employeeName", header: "الموظف" }, { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
-                { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
-                { key: "remaining", header: "المتبقّي", map: (r) => Number(r.remaining) },
-                { key: "monthlyDeduction", header: "الخصم الشهري", map: (r) => (r.monthlyDeduction != null ? Number(r.monthlyDeduction) : "") },
+                { key: "amount", header: "المبلغ", map: (r) => toExcelMoney(r.amount) },
+                { key: "remaining", header: "المتبقّي", map: (r) => toExcelMoney(r.remaining) },
+                { key: "monthlyDeduction", header: "الخصم الشهري", map: (r) => (r.monthlyDeduction != null ? toExcelMoney(r.monthlyDeduction) : "") },
                 { key: "voucherNumber", header: "سند الصرف", map: (r) => r.voucherNumber ?? "" },
                 { key: "grantedAt", header: "التاريخ", map: (r) => fmtDate(r.grantedAt) },
                 { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
@@ -239,6 +241,8 @@ export default function EmployeeAdvances() {
         </CardContent>
       </Card>
 
+      <EmployeeAdvanceRepaymentPanel />
+
       <GrantDialog open={grantOpen} onClose={() => setGrantOpen(false)} onDone={refresh} />
     </div>
   );
@@ -264,8 +268,7 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
   // عَتبة الاعتماد (الخادم هو المرجع؛ القيمة هنا للتنبيه المسبق فقط). لا عَتبة مُرفق — المُرفق اختياريّ (٣١/٧).
   const thresholdsQ = trpc.payroll.advanceThresholds.useQuery(undefined, { enabled: open });
   const approvalThreshold = thresholdsQ.data?.approval ?? 1_000_000;
-  const amountNum = Number(amount || 0);
-  const overApproval = amountNum >= approvalThreshold;
+  const overApproval = D(amount || 0).gte(D(approvalThreshold));
 
   // idempotency (تدقيق ١٧/٧): مفتاح ثابت لكل محاولة منح — يُبقى عند الفشل (إعادة المحاولة idempotent
   // فلا صرف نقدي مزدوج) ويتجدّد بعد النجاح فقط.
@@ -299,7 +302,7 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
                 </option>
               ))}
             </select>
-            {!!employeeId && balQ.data && Number(balQ.data.balance) > 0 && (
+            {!!employeeId && balQ.data && D(balQ.data.balance).gt(0) && (
               <p className="text-xs text-money-negative mt-1">
                 عليه سلف نشطة متبقّيها {iqd(balQ.data.balance)} د.ع ({balQ.data.activeCount} سلفة) — الخصم بالأقدم أولاً.
               </p>

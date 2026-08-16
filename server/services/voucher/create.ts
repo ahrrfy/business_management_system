@@ -1,12 +1,12 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
-import { customers, idempotencyKeys, invoices, receipts, suppliers } from "../../../drizzle/schema";
+import { eq } from "drizzle-orm";
+import { customers, invoices, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
-import { utcDayStart } from "../businessDay";
-import { money, toDateStr, toDbMoney } from "../money";
+import { baghdadToday, utcDayStart } from "../businessDay";
+import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
@@ -15,35 +15,130 @@ import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 import type { Tx } from "../../db";
 import { type Actor, withTx } from "../tx";
 import { computeSignature, nextVoucherNumber, validateCategory } from "./helpers";
+import { loadVoucherCategoryForPosting } from "./categoryAccounting";
+import { voucherPostingPlan } from "./posting";
+import { withMysqlDeadlockRetry } from "./deadlockRetry";
 import type { VoucherInput, VoucherResult } from "./types";
+import { createHash } from "node:crypto";
 
 const SYSTEM_REQUEST_PREFIX = "@SYSTEM_PAYMENT_REQUEST:";
 const SYSTEM_REFERENCE_PREFIXES = [
   "ASSET-ACQ-",
   "ASSET-REACQ-",
   "ASSET-MAINT-",
+  "ASSET-SUP-SETTLE-",
   "PO-PAY-",
   "SHIP-",
   "EXCHANGE-IQD-DEP-",
   "DIGITAL-WALLET-DEP-",
   "CANCEL-VCH-",
   "TERM-SETTLEMENT-",
+  "EMP-ADV-",
+  "ACCRUAL-REFUND-",
 ] as const;
 
 export function isSystemPaymentReference(reference: string | null | undefined): boolean {
   return !!reference && SYSTEM_REFERENCE_PREFIXES.some((prefix) => reference.startsWith(prefix));
 }
 
+/** Fail-closed envelope detection only; callers must still parse and validate the canonical payload. */
+export function hasSystemPaymentRequestEnvelope(note: string | null | undefined): boolean {
+  return note?.startsWith(SYSTEM_REQUEST_PREFIX) === true;
+}
+
+export type TerminationSettlementSystemPaymentRequest = {
+  kind: "TERMINATION_SETTLEMENT";
+  terminationId: number;
+  employeeId: number;
+  expectedAmount: string;
+  /** Monotonic request-issue sequence, serialized under the termination lock. */
+  attempt: number;
+  /** The payment-return event that made this repayment payable, or null initially. */
+  originReturnEventId: number | null;
+  /** Instrument evidence belongs in the signed internal request, never in the system reference. */
+  paymentEvidenceReference: string | null;
+  settlementSnapshotHash: string;
+  obligationId: number;
+};
+
+export type ParsedTerminationSettlementReference = {
+  terminationId: number;
+  attempt: number;
+  originReturnEventId: number | null;
+};
+
+const TERMINATION_SETTLEMENT_REFERENCE_RE =
+  /^TERM-SETTLEMENT-([1-9]\d*)(?:-REPAY-([1-9]\d*))?-A([1-9]\d*)$/;
+
+function isPositiveSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+/** Parses only the canonical system reference; no evidence or trailing text is accepted. */
+export function parseTerminationSettlementReference(
+  reference: string | null | undefined,
+): ParsedTerminationSettlementReference | null {
+  if (!reference) return null;
+  const match = TERMINATION_SETTLEMENT_REFERENCE_RE.exec(reference);
+  if (!match) return null;
+  const terminationId = Number(match[1]);
+  const originReturnEventId = match[2] == null ? null : Number(match[2]);
+  const attempt = Number(match[3]);
+  if (
+    !isPositiveSafeInteger(terminationId) ||
+    !isPositiveSafeInteger(attempt) ||
+    (originReturnEventId != null && !isPositiveSafeInteger(originReturnEventId))
+  ) {
+    return null;
+  }
+  return { terminationId, attempt, originReturnEventId };
+}
+
+/** Derives the one canonical reference from the typed internal request. */
+export function terminationSettlementReference(
+  request: Pick<
+    TerminationSettlementSystemPaymentRequest,
+    "terminationId" | "attempt" | "originReturnEventId"
+  >,
+): string | null {
+  if (
+    !isPositiveSafeInteger(request.terminationId) ||
+    !isPositiveSafeInteger(request.attempt) ||
+    (request.originReturnEventId != null &&
+      !isPositiveSafeInteger(request.originReturnEventId))
+  ) {
+    return null;
+  }
+  const repayment =
+    request.originReturnEventId == null
+      ? ""
+      : `-REPAY-${request.originReturnEventId}`;
+  return `TERM-SETTLEMENT-${request.terminationId}${repayment}-A${request.attempt}`;
+}
+
+export type AccrualObligationSystemSource = {
+  obligationId: number;
+  obligationSourceHash: string;
+  beneficiaryType: "SUPPLIER" | "OTHER";
+  beneficiaryId: number | null;
+  beneficiaryNameSnapshot: string;
+  sourceEvidenceReference: string;
+};
+
 export type SystemPaymentRequest =
-  | { kind: "ASSET_ACQUISITION"; assetId: number }
-  | {
-      kind: "ASSET_REACQUISITION";
+  | ({ kind: "ASSET_ACQUISITION"; assetId: number } &
+      AccrualObligationSystemSource)
+  | ({
+      kind: "ASSET_MAINTENANCE";
       assetId: number;
-      sequence: number;
-      source: AssetFinancialSnapshot;
-      target: AssetFinancialSnapshot & { supplierId: null };
-    }
-  | { kind: "ASSET_MAINTENANCE"; assetId: number; maintenanceId: number }
+      maintenanceId: number;
+    } & AccrualObligationSystemSource)
+  | ({
+      kind: "ASSET_SUPPLIER_SETTLEMENT";
+      assetId: number;
+      supplierId: number;
+      expectedAmount: string;
+    } & AccrualObligationSystemSource)
   | {
       kind: "PURCHASE_SUPPLIER";
       purchaseOrderId: number;
@@ -51,13 +146,15 @@ export type SystemPaymentRequest =
       expectedAmount: string;
       sourceTotal: string;
     }
-  | {
+  | ({
       kind: "PURCHASE_SHIPPING";
       purchaseOrderId: number;
       requestToken: string;
       expectedAmount: string;
       sourceShippingTotal: string;
-    }
+      /** دليل أداة الدفع غير النقدية (مرجع تحويل/صك أو آخر 4 للبطاقة). */
+      paymentReference?: string | null;
+    } & AccrualObligationSystemSource)
   | {
       kind: "EXCHANGE_IQD_DEPOSIT";
       transactionId: number;
@@ -70,23 +167,200 @@ export type SystemPaymentRequest =
       walletId: number;
       expectedAmount: string;
     }
+  | TerminationSettlementSystemPaymentRequest
   | {
-      kind: "TERMINATION_SETTLEMENT";
-      terminationId: number;
-      employeeId: number;
+      kind: "ACCRUAL_CORRECTION_REFUND";
+      correctionRequestId: number;
+      obligationId: number;
+      obligationSourceHash: string;
       expectedAmount: string;
+      originalSettlementReceiptId: number;
+      providerEvidenceReference: string;
     }
-  | { kind: "VOUCHER_CANCELLATION"; originalReceiptId: number; originalCreatorId: number | null };
+  | {
+      kind: "EMPLOYEE_ADVANCE";
+      employeeId: number;
+      branchId: number;
+      expectedAmount: string;
+      monthlyDeduction: string | null;
+      note: string | null;
+      sourceClientRequestId: string;
+      sourceHash: string;
+    }
+  | {
+      kind: "VOUCHER_CANCELLATION";
+      originalReceiptId: number;
+      originalCreatorId: number | null;
+      originalDirection: "IN" | "OUT";
+      originalPaymentMethod: "CASH" | "CARD" | "TRANSFER" | "CHECK" | "WALLET";
+      originalReferenceNumber: string | null;
+      originalCheckNumber: string | null;
+      originalCardLastFour: string | null;
+      originalCategoryId: number | null;
+      attempt: number;
+      priorCancellationReceiptId: number | null;
+      reissueReason: string | null;
+    };
 
-export interface AssetFinancialSnapshot {
-  branchId: number | null;
-  supplierId: number | null;
-  purchaseDate: string;
-  purchaseValue: string;
-  salvageValue: string;
-  usefulLifeYears: number;
-  depreciationMethod: "sl" | "db";
-  accumulatedDepreciation: string;
+type EmployeeAdvanceSource = Pick<
+  Extract<SystemPaymentRequest, { kind: "EMPLOYEE_ADVANCE" }>,
+  | "employeeId"
+  | "branchId"
+  | "expectedAmount"
+  | "monthlyDeduction"
+  | "note"
+  | "sourceClientRequestId"
+>;
+
+export function employeeAdvanceSourceHash(source: EmployeeAdvanceSource): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      employeeId: source.employeeId,
+      branchId: source.branchId,
+      expectedAmount: source.expectedAmount,
+      monthlyDeduction: source.monthlyDeduction,
+      note: source.note,
+      sourceClientRequestId: source.sourceClientRequestId,
+    }))
+    .digest("hex");
+}
+
+export function employeeAdvanceReference(
+  request: Extract<SystemPaymentRequest, { kind: "EMPLOYEE_ADVANCE" }>,
+): string | null {
+  if (
+    !isPositiveSafeInteger(request.employeeId) ||
+    !isPositiveSafeInteger(request.branchId) ||
+    !/^[a-f0-9]{64}$/.test(request.sourceHash) ||
+    employeeAdvanceSourceHash(request) !== request.sourceHash
+  ) {
+    return null;
+  }
+  return `EMP-ADV-${request.employeeId}-${request.sourceHash.slice(0, 16)}`;
+}
+
+function isCanonicalAccrualObligationSystemSource(
+  request: AccrualObligationSystemSource,
+): boolean {
+  return (
+    isPositiveSafeInteger(request.obligationId) &&
+    typeof request.obligationSourceHash === "string" &&
+    /^[a-f0-9]{64}$/.test(request.obligationSourceHash) &&
+    (request.beneficiaryType === "SUPPLIER" ||
+      request.beneficiaryType === "OTHER") &&
+    (request.beneficiaryType === "SUPPLIER"
+      ? request.beneficiaryId != null &&
+        isPositiveSafeInteger(request.beneficiaryId)
+      : request.beneficiaryId == null) &&
+    typeof request.beneficiaryNameSnapshot === "string" &&
+    request.beneficiaryNameSnapshot.trim() ===
+      request.beneficiaryNameSnapshot &&
+    request.beneficiaryNameSnapshot.length > 0 &&
+    typeof request.sourceEvidenceReference === "string" &&
+    request.sourceEvidenceReference.trim() ===
+      request.sourceEvidenceReference &&
+    request.sourceEvidenceReference.length > 0
+  );
+}
+
+/** Pure structural reference check. Source services still revalidate their locked DB rows. */
+export function isCanonicalSystemPaymentRequest(
+  request: SystemPaymentRequest,
+  reference: string | null | undefined,
+): boolean {
+  if (!reference) return false;
+  switch (request.kind) {
+    case "ASSET_ACQUISITION":
+      return (
+        isPositiveSafeInteger(request.assetId) &&
+        isCanonicalAccrualObligationSystemSource(request) &&
+        reference === `ASSET-ACQ-${request.assetId}`
+      );
+    case "ASSET_MAINTENANCE":
+      return (
+        isPositiveSafeInteger(request.assetId) &&
+        isPositiveSafeInteger(request.maintenanceId) &&
+        isCanonicalAccrualObligationSystemSource(request) &&
+        reference === `ASSET-MAINT-${request.maintenanceId}`
+      );
+    case "ASSET_SUPPLIER_SETTLEMENT":
+      return (
+        isPositiveSafeInteger(request.assetId) &&
+        isPositiveSafeInteger(request.supplierId) &&
+        typeof request.expectedAmount === "string" &&
+        /^(?:0|[1-9]\d*)\.\d{2}$/.test(request.expectedAmount) &&
+        money(request.expectedAmount).gt(0) &&
+        isCanonicalAccrualObligationSystemSource(request) &&
+        request.beneficiaryType === "SUPPLIER" &&
+        request.beneficiaryId === request.supplierId &&
+        reference ===
+          `ASSET-SUP-SETTLE-${request.assetId}-${request.obligationId}`
+      );
+    case "PURCHASE_SUPPLIER":
+      return isPositiveSafeInteger(request.purchaseOrderId) && !!request.requestToken && reference.endsWith(`-${request.requestToken}`) && reference.startsWith("PO-PAY-");
+    case "PURCHASE_SHIPPING":
+      return (
+        isPositiveSafeInteger(request.purchaseOrderId) &&
+        !!request.requestToken &&
+        isCanonicalAccrualObligationSystemSource(request) &&
+        reference.endsWith(`-${request.requestToken}`) &&
+        reference.startsWith("SHIP-")
+      );
+    case "EXCHANGE_IQD_DEPOSIT":
+      return isPositiveSafeInteger(request.transactionId) && isPositiveSafeInteger(request.exchangeHouseId) && reference === `EXCHANGE-IQD-DEP-${request.transactionId}`;
+    case "DIGITAL_WALLET_CASH_DEPOSIT":
+      return isPositiveSafeInteger(request.transactionId) && isPositiveSafeInteger(request.walletId) && reference === `DIGITAL-WALLET-DEP-${request.transactionId}`;
+    case "TERMINATION_SETTLEMENT":
+      return terminationSettlementReference(request) === reference && parseTerminationSettlementReference(reference) != null;
+    case "EMPLOYEE_ADVANCE":
+      return employeeAdvanceReference(request) === reference;
+    case "ACCRUAL_CORRECTION_REFUND":
+      return (
+        isPositiveSafeInteger(request.correctionRequestId) &&
+        isPositiveSafeInteger(request.obligationId) &&
+        isPositiveSafeInteger(request.originalSettlementReceiptId) &&
+        typeof request.obligationSourceHash === "string" &&
+        /^[a-f0-9]{64}$/.test(request.obligationSourceHash) &&
+        typeof request.expectedAmount === "string" &&
+        /^(?:0|[1-9]\d*)\.\d{2}$/.test(request.expectedAmount) &&
+        money(request.expectedAmount).gt(0) &&
+        typeof request.providerEvidenceReference === "string" &&
+        request.providerEvidenceReference.trim() ===
+          request.providerEvidenceReference &&
+        request.providerEvidenceReference.length > 0 &&
+        reference === `ACCRUAL-REFUND-${request.correctionRequestId}`
+      );
+    case "VOUCHER_CANCELLATION":
+      return (
+        isPositiveSafeInteger(request.originalReceiptId) &&
+        (request.originalCreatorId == null ||
+          isPositiveSafeInteger(request.originalCreatorId)) &&
+        (request.originalDirection === "IN" ||
+          request.originalDirection === "OUT") &&
+        ["CASH", "CARD", "TRANSFER", "CHECK", "WALLET"].includes(
+          request.originalPaymentMethod,
+        ) &&
+        (request.originalReferenceNumber == null ||
+          typeof request.originalReferenceNumber === "string") &&
+        (request.originalCheckNumber == null ||
+          typeof request.originalCheckNumber === "string") &&
+        (request.originalCardLastFour == null ||
+          typeof request.originalCardLastFour === "string") &&
+        (request.originalCategoryId == null ||
+          isPositiveSafeInteger(request.originalCategoryId)) &&
+        isPositiveSafeInteger(request.attempt) &&
+        (request.attempt === 1
+          ? request.priorCancellationReceiptId == null &&
+            request.reissueReason == null
+          : isPositiveSafeInteger(
+              Number(request.priorCancellationReceiptId),
+            ) &&
+            typeof request.reissueReason === "string" &&
+            request.reissueReason.trim() === request.reissueReason &&
+            request.reissueReason.length >= 5) &&
+        reference === `CANCEL-VCH-${request.originalReceiptId}`
+      );
+  }
 }
 
 function encodeSystemPaymentRequest(request: SystemPaymentRequest): string {
@@ -94,11 +368,30 @@ function encodeSystemPaymentRequest(request: SystemPaymentRequest): string {
 }
 
 export function parseSystemPaymentRequest(note: string | null | undefined): SystemPaymentRequest | null {
-  if (!note?.startsWith(SYSTEM_REQUEST_PREFIX)) return null;
+  if (!note || !hasSystemPaymentRequestEnvelope(note)) return null;
   try {
-    const parsed = JSON.parse(note.slice(SYSTEM_REQUEST_PREFIX.length)) as SystemPaymentRequest;
+    const parsed = JSON.parse(note.slice(SYSTEM_REQUEST_PREFIX.length)) as {
+      kind?: unknown;
+    };
     if (!parsed || typeof parsed !== "object" || typeof parsed.kind !== "string") return null;
-    return parsed;
+    switch (parsed.kind) {
+      case "ASSET_ACQUISITION":
+      case "ASSET_MAINTENANCE":
+      case "ASSET_SUPPLIER_SETTLEMENT":
+      case "PURCHASE_SUPPLIER":
+      case "PURCHASE_SHIPPING":
+      case "EXCHANGE_IQD_DEPOSIT":
+      case "DIGITAL_WALLET_CASH_DEPOSIT":
+      case "TERMINATION_SETTLEMENT":
+      case "EMPLOYEE_ADVANCE":
+      case "ACCRUAL_CORRECTION_REFUND":
+      case "VOUCHER_CANCELLATION":
+        return parsed as SystemPaymentRequest;
+      default:
+        // Legacy/unknown system requests are not generic vouchers. Returning null
+        // makes the reserved-reference guard fail closed before any cash effect.
+        return null;
+    }
   } catch {
     return null;
   }
@@ -117,9 +410,25 @@ export async function createVoucherTx(
   actor: Actor,
   options?: { systemRequest?: SystemPaymentRequest },
 ): Promise<VoucherResult> {
+    const normalizedReferenceNumber = input.referenceNumber?.trim() || null;
+    const normalizedInternalNote = options?.systemRequest
+      ? encodeSystemPaymentRequest(options.systemRequest)
+      : (input.internalNote?.trim() || null);
+    const reservedReferenceHadOuterWhitespace =
+      normalizedReferenceNumber != null &&
+      input.referenceNumber !== normalizedReferenceNumber &&
+      isSystemPaymentReference(normalizedReferenceNumber);
+    const reservedEnvelopeHadOuterWhitespace =
+      normalizedInternalNote != null &&
+      !options?.systemRequest &&
+      input.internalNote !== normalizedInternalNote &&
+      hasSystemPaymentRequestEnvelope(normalizedInternalNote);
     // سند القبض ينشئ إيصالاً وقيد PAYMENT_IN ويحرّك ذمة الطرف فوراً. لا يكفي
     // مرجع يكتبه الموظف لإثبات مال خارجي؛ ارفضه قبل idempotency أو أي قراءة DB.
-    if (input.voucherType === "RECEIPT") {
+    if (
+      input.voucherType === "RECEIPT" &&
+      options?.systemRequest?.kind !== "VOUCHER_CANCELLATION"
+    ) {
       assertInboundPaymentMethodEnabled(input.paymentMethod);
     }
     if (input.paymentMethod === "EXCHANGE") {
@@ -131,12 +440,37 @@ export async function createVoucherTx(
     if (!input.clientRequestId?.trim()) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح idempotency إلزامي لإنشاء السند" });
     }
+    // Validate the privileged envelope before idempotency lookup/replay. A stale key must never
+    // turn reserved metadata or a non-canonical source request into an accepted operation.
+    if (
+      reservedEnvelopeHadOuterWhitespace ||
+      (!options?.systemRequest &&
+        hasSystemPaymentRequestEnvelope(normalizedInternalNote))
+    ) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "بادئة الملاحظات النظامية محجوزة" });
+    }
+    if (
+      reservedReferenceHadOuterWhitespace ||
+      (!options?.systemRequest &&
+        isSystemPaymentReference(normalizedReferenceNumber))
+    ) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع السند النظامي محجوز" });
+    }
+    if (
+      options?.systemRequest &&
+      !isCanonicalSystemPaymentRequest(
+        options.systemRequest,
+        normalizedReferenceNumber,
+      )
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "طلب الدفع النظامي لا يطابق مرجعه canonical — أوقف الإنشاء وراجع الوحدة المصدرية",
+      });
+    }
     // Idempotency: تكرار نفس المفتاح يُعاد بنتيجة السند الأول (لا قيد/نقد مزدوج).
-    // #installments-3 (تدقيق التثبيت): كان الـreplay يُرجع أي سند مخزَّن — بما فيها المرفوض/الملغى —
-    // فمسار الأقساط يستعمل clientRequestId ثابتاً `instpay-${lineId}`، ومحاولةٌ بعد رفض السند تُرجع
-    // السند المرفوض فيُوسم القسط PAID خطأً بمعرِّف سند رُفض (والذمة لا تُخفَّض). الحلّ: نتخطّى الـreplay
-    // إن كان السند المخزَّن في حالة ميتة (REVERSED/FAILED أو REJECTED) — دلالة idempotency: نمنع تكرار
-    // أثر جانبيّ نافذ؛ سند رُبِط في الدفتر ثم عُكس/رُفض ليس له أثر نافذ لنعيد إرجاعه.
+    // المفتاح immutable حتى بعد الرفض/العكس: إعادة الإصدار تحتاج مفتاحاً جديداً صريحاً. حذف المفتاح
+    // القديم كان يسمح لمحاولة شبكة متأخرة بإحياء السند الميت وإعادة تحريك النقد/الذمة.
     if (input.clientRequestId) {
       const existingRefId = await findIdempotentRefId(tx, "voucher.create", input.clientRequestId);
       if (existingRefId != null) {
@@ -145,15 +479,25 @@ export async function createVoucherTx(
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "سند idempotency مفقود — تحقّق من الإيصال" });
         }
         const isDead = r.status === "REVERSED" || r.status === "FAILED" || r.approvalStatus === "REJECTED";
-        if (!isDead) {
+        {
           const storedPartyId = r.partyId != null ? Number(r.partyId) : null;
           const requestedPartyId = input.partyType === "OTHER" ? null : (input.partyId ?? null);
           const storedInvoiceId = r.invoiceId != null ? Number(r.invoiceId) : null;
           const requestedInvoiceId = input.invoiceId ?? null;
+          const storedCategoryId =
+            r.voucherCategoryId != null ? Number(r.voucherCategoryId) : null;
+          const requestedCategoryId = input.voucherCategoryId ?? null;
           const requestedDirection = input.voucherType === "RECEIPT" ? "IN" : "OUT";
-          const requestedReference = input.referenceNumber?.trim() || null;
-          const requestedSystemNote = options?.systemRequest
-            ? encodeSystemPaymentRequest(options.systemRequest)
+          const requestedReference = normalizedReferenceNumber;
+          const requestedInternalNote = normalizedInternalNote;
+          const requestedDescription = input.description?.trim() || null;
+          const requestedCounterpartyName = input.counterpartyName?.trim() || null;
+          const requestedCheckNumber = input.checkNumber?.trim() || null;
+          const requestedCardLastFour = input.cardLastFour?.trim() || null;
+          const requestedAttachmentUrl = input.attachmentUrl?.trim() || null;
+          const requestedVoucherDate = input.voucherDate?.trim().slice(0, 10) || null;
+          const storedVoucherDate = r.voucherDate
+            ? new Date(r.voucherDate).toISOString().slice(0, 10)
             : null;
           if (
             Number(r.branchId) !== Number(input.branchId) ||
@@ -162,13 +506,27 @@ export async function createVoucherTx(
             (r.partyType ?? null) !== (input.partyType ?? null) ||
             storedPartyId !== requestedPartyId ||
             storedInvoiceId !== requestedInvoiceId ||
+            storedCategoryId !== requestedCategoryId ||
             (r.referenceNumber ?? null) !== requestedReference ||
-            (requestedSystemNote != null && r.internalNote !== requestedSystemNote) ||
+            (r.internalNote ?? null) !== requestedInternalNote ||
+            (r.description?.trim() || null) !== requestedDescription ||
+            (r.counterpartyName?.trim() || null) !== requestedCounterpartyName ||
+            (r.checkNumber?.trim() || null) !== requestedCheckNumber ||
+            (r.cardLastFour?.trim() || null) !== requestedCardLastFour ||
+            (r.attachmentUrl?.trim() || null) !== requestedAttachmentUrl ||
+            (requestedVoucherDate != null && storedVoucherDate !== requestedVoucherDate) ||
             money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)
           ) {
             throw new TRPCError({
               code: "CONFLICT",
               message: "تعارض idempotency: المفتاح مستعمَل لسند بطرف/فرع/مبلغ/فاتورة مختلفة",
+            });
+          }
+          if (isDead) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message:
+                "مفتاح idempotency مرتبط بسند منتهٍ أو معكوس؛ أعد الإصدار من المسار الصريح بمفتاح جديد",
             });
           }
           return {
@@ -178,11 +536,6 @@ export async function createVoucherTx(
             approvalStatus: (r.approvalStatus as VoucherResult["approvalStatus"]) ?? "APPROVED",
           };
         }
-        // سند ميت (مرفوض/معكوس/فاشل) ⇒ نتخطّى الـreplay ونُنشئ سنداً جديداً بنفس المفتاح.
-        // recordIdempotencyKey أدناه سيُحاول INSERT وسيصطدم بـUNIQUE ⇒ نحذف السجلّ الميت أوّلاً.
-        await tx.delete(idempotencyKeys).where(
-          and(eq(idempotencyKeys.operation, "voucher.create"), eq(idempotencyKeys.clientRequestId, input.clientRequestId)),
-        );
       }
     }
     const amount = money(input.amount);
@@ -193,14 +546,8 @@ export async function createVoucherTx(
     if (!description) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "وصف السند مطلوب" });
     }
-    if (!options?.systemRequest && input.internalNote?.startsWith(SYSTEM_REQUEST_PREFIX)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "بادئة الملاحظات النظامية محجوزة" });
-    }
-    if (!options?.systemRequest && isSystemPaymentReference(input.referenceNumber)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع السند النظامي محجوز" });
-    }
     // تَحقّقات الإلزام المَشروط (vouchers-pro):
-    if (input.paymentMethod === "TRANSFER" && !input.referenceNumber?.trim()) {
+    if (input.paymentMethod === "TRANSFER" && !normalizedReferenceNumber) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الرقم المرجعي إلزامي لطريقة الدفع «تحويل» (للتطابق مع كَشف البنك)" });
     }
     if (input.paymentMethod === "CARD") {
@@ -221,8 +568,27 @@ export async function createVoucherTx(
     const direction: "IN" | "OUT" = input.voucherType === "RECEIPT" ? "IN" : "OUT";
 
     // تَحقّق الفئة (إن مُرّرت) — الاتجاه يَجب أن يَتسق مع نوع السند.
+    const requiresCategoryAccounting =
+      input.partyType === "OTHER" &&
+      !options?.systemRequest;
+    if (requiresCategoryAccounting && input.voucherCategoryId == null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "فئة السند والحساب المقابل إلزاميان لسندات «أخرى» — عيّن فئة محاسبية مهيأة قبل الحفظ",
+      });
+    }
     if (input.voucherCategoryId != null) {
-      await validateCategory(tx, input.voucherCategoryId, direction);
+      if (requiresCategoryAccounting) {
+        await loadVoucherCategoryForPosting(
+          tx,
+          input.voucherCategoryId,
+          direction,
+          { lock: true },
+        );
+      } else if (options?.systemRequest?.kind !== "VOUCHER_CANCELLATION") {
+        await validateCategory(tx, input.voucherCategoryId, direction);
+      }
     }
 
     // attachment-upload (٥/٧): ربط سند بفاتورة — العميل فقط (السندات receipts.invoiceId يُشير لـinvoices
@@ -275,8 +641,9 @@ export async function createVoucherTx(
       if (input.voucherType === "RECEIPT") forcePendingApproval = true;
     }
 
-    const voucherDate = (input.voucherDate?.trim() || toDateStr()).slice(0, 10);
-    if (voucherDate > toDateStr()) {
+    const today = baghdadToday();
+    const voucherDate = (input.voucherDate?.trim() || today).slice(0, 10);
+    if (voucherDate > today) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `لا يجوز تأريخ السند في المستقبل (${voucherDate})` });
     }
 
@@ -288,7 +655,10 @@ export async function createVoucherTx(
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
     // عقد المالك: كل سند صرف يُنشأ طلباً معلّقاً، بصرف النظر عن المبلغ أو صفة المنشئ.
     // سند القبض يبقى على سياسته القائمة (OTHER يحتاج Maker-Checker، وغيره مباشر).
-    const needsApproval = direction === "OUT" || forcePendingApproval;
+    const needsApproval =
+      direction === "OUT" ||
+      forcePendingApproval ||
+      options?.systemRequest?.kind === "VOUCHER_CANCELLATION";
 
     // shiftId + cashBucket — سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦).
     //  - PENDING_APPROVAL: لا نَقفل وردية ولا نُحدّد دلواً (لا تأثير على الصندوق حتى الاعتماد).
@@ -318,7 +688,7 @@ export async function createVoucherTx(
       direction,
       amount: toDbMoney(amount),
       paymentMethod: input.paymentMethod,
-      referenceNumber: input.referenceNumber?.trim() || null,
+      referenceNumber: normalizedReferenceNumber,
       checkNumber: input.checkNumber?.trim() || null,
       cardLastFour: input.cardLastFour?.trim() || null,
       status: needsApproval ? "PENDING" : "COMPLETED",
@@ -332,15 +702,27 @@ export async function createVoucherTx(
       counterpartyName: input.counterpartyName?.trim() || null,
       voucherDate: new Date(voucherDate),
       attachmentUrl: input.attachmentUrl?.trim() || null,
-      internalNote: options?.systemRequest
-        ? encodeSystemPaymentRequest(options.systemRequest)
-        : (input.internalNote?.trim() || null),
+      internalNote: normalizedInternalNote,
       approvalStatus: needsApproval ? "PENDING_APPROVAL" : "APPROVED",
     });
     const receiptId = extractInsertId(rRes);
 
     // الأثر المالي يُطبَّق فقط عند الاعتماد (PENDING_APPROVAL ⇒ صفّ معلَّق بلا أثَر).
     if (!needsApproval) {
+      const posting = voucherPostingPlan({
+        entryType: direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT",
+        partyType: input.partyType,
+        paymentMethod: input.paymentMethod,
+        cashBucket,
+        amount,
+        referenceNumber: input.referenceNumber,
+      });
+      if (!posting) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "تعذر بناء قيد السند من طريقة الدفع والطرف المحددين",
+        });
+      }
       await postEntry(tx, {
         entryType: direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT",
         branchId: input.branchId,
@@ -348,6 +730,9 @@ export async function createVoucherTx(
         customerId: input.partyType === "CUSTOMER" ? (input.partyId ?? null) : null,
         supplierId: input.partyType === "SUPPLIER" ? (input.partyId ?? null) : null,
         amount,
+        paymentMethod: input.paymentMethod,
+        postingIntent: posting.intent,
+        postingSourceComponents: posting.sourceComponents,
         // يُفرض قفل الفترة على تاريخ السند الفعلي لا تاريخ اليوم — سند بتاريخ رجعي داخل فترة مُقفَلة
         // كان يمرّ لأن postEntry يأخذ new Date() افتراضاً (تدقيق ١٧/٧: قفل الفترة مخترَق عبر السندات).
         entryDate: new Date(voucherDate),
@@ -397,11 +782,53 @@ export async function createSystemPaymentRequestTx(
   return createVoucherTx(tx, { ...input, voucherType: "PAYMENT" }, actor, { systemRequest: request });
 }
 
+/**
+ * Canonical accrual-correction refund request. It is always an OTHER receipt,
+ * stays PENDING_APPROVAL, and has no cash/journal effect until a second owner
+ * validates the locked source obligation in the approval service.
+ */
+export async function createSystemReceiptRequestTx(
+  tx: Tx,
+  input: Omit<VoucherInput, "voucherType">,
+  actor: Actor,
+  request: Extract<
+    SystemPaymentRequest,
+    { kind: "ACCRUAL_CORRECTION_REFUND" }
+  >,
+): Promise<VoucherResult> {
+  if (
+    input.partyType !== "OTHER" ||
+    input.partyId != null ||
+    input.voucherCategoryId != null ||
+    !input.counterpartyName?.trim()
+  ) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "طلب استرداد تصحيح الاستحقاق يتطلب طرف OTHER موثقاً بلا فئة يدوية",
+    });
+  }
+  if (!input.attachmentUrl?.trim()) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "مرفق دليل استرداد المبلغ إلزامي",
+    });
+  }
+  return createVoucherTx(
+    tx,
+    { ...input, voucherType: "RECEIPT" },
+    actor,
+    { systemRequest: request },
+  );
+}
+
 export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
   // الحارس الخارجي يمنع حتى فتح transaction عند إعادة المحاولة غير الموثقة.
   // يبقى الحارس داخل createVoucherTx دفاعاً عن المستدعين الذين يملكون Tx أصلاً.
   if (input.voucherType === "RECEIPT") {
     assertInboundPaymentMethodEnabled(input.paymentMethod);
   }
-  return withTx((tx) => createVoucherTx(tx, input, actor));
+  return withMysqlDeadlockRetry(() =>
+    withTx((tx) => createVoucherTx(tx, input, actor)),
+  );
 }

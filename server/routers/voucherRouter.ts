@@ -1,7 +1,7 @@
 // راوتر سندات القبض/الصرف المستقلّة. managerProcedure (تأثير مالي مباشر على الذمم + الصندوق).
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { logAudit } from "../services/auditService";
+import { logAudit, logAuditTx } from "../services/auditService";
 import {
   approveVoucher,
   cancelVoucher,
@@ -12,10 +12,23 @@ import {
   recentVouchersForParty,
   rejectVoucher,
 } from "../services/voucherService";
-import { adminProcedure, router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
+import { router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
 import { resubmitRejectedExpensePayment } from "../services/voucher/approval";
+import {
+  VOUCHER_CATEGORY_POSTING_ROLES,
+  isVoucherCategoryRoleCompatible,
+} from "../../shared/voucherCategoryAccounting";
+import { assertVoucherCategoryDefinition } from "../services/voucher/categoryAccounting";
+import { assertBranchOwnership } from "../services/voucher/helpers";
+import {
+  hasSystemPaymentRequestEnvelope,
+  isCanonicalSystemPaymentRequest,
+  isSystemPaymentReference,
+  parseSystemPaymentRequest,
+} from "../services/voucher/create";
+import { withMysqlDeadlockRetry } from "../services/voucher/deadlockRetry";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
 // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK محذوف من طرق الإنشاء، ويبقى في reportableMethod
@@ -28,6 +41,8 @@ const moneyStr = z
   .string()
   .regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان عشريتان كحدّ أقصى)");
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+const voucherCategoryDirection = z.enum(["IN", "OUT", "BOTH"]);
+const voucherCategoryPostingRole = z.enum(VOUCHER_CATEGORY_POSTING_ROLES);
 
 // فلاتر القائمة والمجاميع — schema واحد يضمن تطابق شروط list وaggregate للأبد.
 const voucherListFilters = z.object({
@@ -158,10 +173,12 @@ export const voucherRouter = router({
       return res;
     }),
 
-  /** إعادة تقديم صريحة لطلب دفع نظامي مرفوض (مصروف أو تسوية نهاية خدمة) مع إبقاء المصدر والسند المرفوض للتدقيق. */
+  /** إعادة إصدار محاولة تسوية استحقاق مرفوضة مع سبب وسلسلة A<n> ثابتة، دون تكرار الاعتراف. */
   resubmitExpensePayment: treasuryManagerProcedure
     .input(z.object({
       receiptId: z.number().int().positive(),
+      priorReceiptId: z.number().int().positive(),
+      reissueReason: z.string().trim().min(5).max(500),
       attachmentUrl: z.string().max(4_000_000).nullish(),
       note: z.string().trim().max(500).nullish(),
     }))
@@ -174,13 +191,27 @@ export const voucherRouter = router({
         branchId: Number(ctx.user.branchId),
         role: ctx.user.role,
         isOwner: !!(ctx.user as { isOwner?: boolean }).isOwner,
-      }, { attachmentUrl: input.attachmentUrl, note: input.note });
-      await logAudit(ctx, {
-        action: "voucher.systemPayment.resubmit",
-        entityType: "receipt",
-        entityId: res.receiptId,
-        newValue: { rejectedReceiptId: input.receiptId, voucherNumber: res.voucherNumber },
+      }, {
+        attachmentUrl: input.attachmentUrl,
+        note: input.note,
+        priorReceiptId: input.priorReceiptId,
+        reissueReason: input.reissueReason,
       });
+      if (!res.replayed) {
+        await logAudit(ctx, {
+          action: "voucher.systemPayment.resubmit",
+          entityType: "receipt",
+          entityId: res.receiptId,
+          newValue: {
+            rejectedReceiptId: input.receiptId,
+            priorReceiptId: input.priorReceiptId,
+            reissueReason: input.reissueReason,
+            voucherNumber: res.voucherNumber,
+            rootReceiptId: res.rootReceiptId,
+            attempt: res.attempt,
+          },
+        });
+      }
       return res;
     }),
 
@@ -346,25 +377,50 @@ export const voucherCategoryRouter = router({
       if (!db) return [];
       const wheres: any[] = [];
       if (!input?.includeInactive) wheres.push(eq(voucherCategories.isActive, true));
-      return db.select().from(voucherCategories)
+      const [rows, counts] = await Promise.all([
+        db.select().from(voucherCategories)
         .where(wheres.length ? and(...wheres) : undefined)
-        .orderBy(asc(voucherCategories.sortOrder), asc(voucherCategories.id));
+        .orderBy(asc(voucherCategories.sortOrder), asc(voucherCategories.id)),
+        db
+          .select({
+            categoryId: receipts.voucherCategoryId,
+            count: sql<number>`COUNT(*)`,
+          })
+          .from(receipts)
+          .where(isNotNull(receipts.voucherCategoryId))
+          .groupBy(receipts.voucherCategoryId),
+      ]);
+      const countById = new Map(
+        counts.map((row) => [Number(row.categoryId), Number(row.count ?? 0)]),
+      );
+      return rows.map((row) => ({
+        ...row,
+        usedReceiptCount: countById.get(Number(row.id)) ?? 0,
+      }));
     }),
 
-  create: adminProcedure
+  create: treasuryManagerProcedure
     .input(z.object({
       name: z.string().min(1).max(100),
-      direction: z.enum(["IN", "OUT", "BOTH"]).default("BOTH"),
+      direction: voucherCategoryDirection.default("BOTH"),
+      postingRole: voucherCategoryPostingRole,
       description: z.string().max(300).nullish(),
       sortOrder: z.number().int().default(0),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير مهيّأة" });
+      assertVoucherCategoryDefinition({
+        direction: input.direction,
+        postingRole: input.postingRole,
+        isActive: true,
+        name: input.name,
+      });
       try {
         const ins = await db.insert(voucherCategories).values({
           name: input.name.trim(),
           direction: input.direction,
+          postingRole: input.postingRole,
           description: input.description?.trim() || null,
           sortOrder: input.sortOrder,
           isActive: true,
@@ -380,25 +436,79 @@ export const voucherCategoryRouter = router({
       }
     }),
 
-  update: adminProcedure
+  update: treasuryManagerProcedure
     .input(z.object({
       id: z.number().int().positive(),
       name: z.string().min(1).max(100).optional(),
-      direction: z.enum(["IN", "OUT", "BOTH"]).optional(),
+      direction: voucherCategoryDirection.optional(),
+      postingRole: voucherCategoryPostingRole.optional(),
       description: z.string().max(300).nullish(),
       sortOrder: z.number().int().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير مهيّأة" });
-      const patch: any = {};
-      if (input.name !== undefined) patch.name = input.name.trim();
-      if (input.direction !== undefined) patch.direction = input.direction;
-      if (input.description !== undefined) patch.description = input.description?.trim() || null;
-      if (input.sortOrder !== undefined) patch.sortOrder = input.sortOrder;
-      if (Object.keys(patch).length === 0) return { ok: true };
       try {
-        await db.update(voucherCategories).set(patch).where(eq(voucherCategories.id, input.id));
+        const patch = await withTx(async (tx) => {
+          const [current] = await tx
+            .select()
+            .from(voucherCategories)
+            .where(eq(voucherCategories.id, input.id))
+            .for("update")
+            .limit(1);
+          if (!current) {
+            throw new TRPCError({ code: "NOT_FOUND", message: "فئة السند غير موجودة" });
+          }
+          const effectiveDirection = input.direction ?? current.direction;
+          const effectiveRole = input.postingRole ?? current.postingRole;
+          if (current.isActive) {
+            assertVoucherCategoryDefinition({
+              direction: effectiveDirection,
+              postingRole: effectiveRole,
+              isActive: true,
+              name: input.name ?? current.name,
+            });
+          } else if (
+            effectiveRole &&
+            !isVoucherCategoryRoleCompatible(effectiveDirection, effectiveRole)
+          ) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "الحساب المقابل لا يتوافق مع اتجاه الفئة",
+            });
+          }
+
+          const directionChanged =
+            input.direction != null && input.direction !== current.direction;
+          const roleChanged =
+            input.postingRole != null && input.postingRole !== current.postingRole;
+          if (directionChanged || roleChanged) {
+            const [used] = await tx
+              .select({ id: receipts.id })
+              .from(receipts)
+              .where(eq(receipts.voucherCategoryId, input.id))
+              .limit(1);
+            if (used) {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: directionChanged
+                  ? "لا يمكن تغيير اتجاه فئة مرتبطة بسندات؛ أنشئ فئة جديدة ثم ادمج المتوافق فقط"
+                  : "لا يمكن تغيير الحساب المقابل لفئة مرتبطة بأي سند؛ أنشئ فئة جديدة ثم ادمجها حفاظاً على أثر التدقيق",
+              });
+            }
+          }
+
+          const next: Record<string, unknown> = {};
+          if (input.name !== undefined) next.name = input.name.trim();
+          if (input.direction !== undefined) next.direction = input.direction;
+          if (input.postingRole !== undefined) next.postingRole = input.postingRole;
+          if (input.description !== undefined) next.description = input.description?.trim() || null;
+          if (input.sortOrder !== undefined) next.sortOrder = input.sortOrder;
+          if (Object.keys(next).length > 0) {
+            await tx.update(voucherCategories).set(next).where(eq(voucherCategories.id, input.id));
+          }
+          return next;
+        });
         await logAudit(ctx, { action: "voucherCategory.update", entityType: "voucherCategory", entityId: input.id, newValue: patch });
         return { ok: true };
       } catch (e: any) {
@@ -409,14 +519,36 @@ export const voucherCategoryRouter = router({
       }
     }),
 
-  setActive: adminProcedure
+  setActive: treasuryManagerProcedure
     .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير مهيّأة" });
       // عند التَعطيل: نَتحقّق أنّ لا سند نَشِط مَربوط بها — إن وُجد، تَعطيل سَلِس (الفئة تَختفي من
       // المُنتقيات الجَديدة لكن السندات القديمة تَحتفظ بربطها للتاريخ التَدقيقي).
-      await db.update(voucherCategories).set({ isActive: input.isActive }).where(eq(voucherCategories.id, input.id));
+      await withMysqlDeadlockRetry(() => withTx(async (tx) => {
+        const [category] = await tx
+          .select()
+          .from(voucherCategories)
+          .where(eq(voucherCategories.id, input.id))
+          .for("update")
+          .limit(1);
+        if (!category) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "فئة السند غير موجودة" });
+        }
+        if (input.isActive) {
+          assertVoucherCategoryDefinition({
+            direction: category.direction,
+            postingRole: category.postingRole,
+            isActive: true,
+            name: category.name,
+          });
+        }
+        await tx
+          .update(voucherCategories)
+          .set({ isActive: input.isActive })
+          .where(eq(voucherCategories.id, input.id));
+      }));
       await logAudit(ctx, {
         action: input.isActive ? "voucherCategory.activate" : "voucherCategory.deactivate",
         entityType: "voucherCategory",
@@ -426,7 +558,7 @@ export const voucherCategoryRouter = router({
     }),
 
   /** دَمج فئة في أخرى (للتنظيف): ينقل سندات A إلى B ثم يُعطّل A. */
-  merge: adminProcedure
+  merge: treasuryManagerProcedure
     .input(z.object({ fromId: z.number().int().positive(), toId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       if (input.fromId === input.toId) {
@@ -436,10 +568,57 @@ export const voucherCategoryRouter = router({
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير مهيّأة" });
       // MERGE-TX (تدقيق ٢/٧): الكتابتان (نقل السندات + تعطيل الفئة) مترابطتان — كانتا على db الخام
       // بلا معاملة ⇒ فشلٌ بينهما يترك سندات منقولة وفئةً ما تزال مفعَّلة. نلفّهما في withTx ذرّية.
-      await withTx(async (tx) => {
+      await withMysqlDeadlockRetry(() => withTx(async (tx) => {
+        // الترتيب موحّد مع اعتماد السند: receipt أولاً ثم category. قفل الصفوف
+        // بترتيب id يجعل merge متزامنين serializable ويمنع دورة category→receipt.
+        await tx
+          .select({ id: receipts.id })
+          .from(receipts)
+          .where(eq(receipts.voucherCategoryId, input.fromId))
+          .orderBy(asc(receipts.id))
+          .for("update");
+        const lockedCategories = await tx
+          .select()
+          .from(voucherCategories)
+          .where(
+            or(
+              eq(voucherCategories.id, input.fromId),
+              eq(voucherCategories.id, input.toId),
+            ),
+          )
+          .orderBy(asc(voucherCategories.id))
+          .for("update");
+        const source = lockedCategories.find(
+          (category) => Number(category.id) === input.fromId,
+        );
+        const target = lockedCategories.find(
+          (category) => Number(category.id) === input.toId,
+        );
+        if (!source || !target) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "إحدى فئتي الدمج غير موجودة" });
+        }
+        if (!target.isActive) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "الفئة الهدف معطّلة" });
+        }
+        assertVoucherCategoryDefinition({
+          direction: target.direction,
+          postingRole: target.postingRole,
+          isActive: true,
+          name: target.name,
+        });
+        const targetSupportsSource =
+          target.direction === "BOTH" || target.direction === source.direction;
+        const roleCompatible =
+          source.postingRole == null || source.postingRole === target.postingRole;
+        if (!targetSupportsSource || !roleCompatible) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "الدمج المحاسبي يتطلب فئة هدف بنفس الحساب المقابل واتجاه يغطي الفئة المصدر",
+          });
+        }
         await tx.update(receipts).set({ voucherCategoryId: input.toId }).where(eq(receipts.voucherCategoryId, input.fromId));
         await tx.update(voucherCategories).set({ isActive: false }).where(eq(voucherCategories.id, input.fromId));
-      });
+      }));
       await logAudit(ctx, {
         action: "voucherCategory.merge",
         entityType: "voucherCategory",
@@ -447,6 +626,150 @@ export const voucherCategoryRouter = router({
         newValue: { mergedInto: input.toId },
       });
       return { ok: true };
+    }),
+
+  /** قائمة معالجة صريحة للسندات اليدوية التاريخية التي سبقت إلزام التصنيف. */
+  unclassifiedOther: treasuryManagerReadProcedure.query(async ({ ctx }) => {
+    const db = getDb();
+    if (!db) return [];
+    const scope = [
+      eq(receipts.partyType, "OTHER"),
+      sql`${receipts.voucherCategoryId} IS NULL`,
+      isNotNull(receipts.voucherNumber),
+    ];
+    if (ctx.user.role !== "admin") {
+      if (ctx.user.branchId == null) return [];
+      scope.push(eq(receipts.branchId, Number(ctx.user.branchId)));
+    }
+    const rows = await db
+      .select({
+        id: receipts.id,
+        voucherNumber: receipts.voucherNumber,
+        voucherDate: receipts.voucherDate,
+        direction: receipts.direction,
+        amount: receipts.amount,
+        counterpartyName: receipts.counterpartyName,
+        description: receipts.description,
+        status: receipts.status,
+        approvalStatus: receipts.approvalStatus,
+        referenceNumber: receipts.referenceNumber,
+        internalNote: receipts.internalNote,
+      })
+      .from(receipts)
+      .where(and(...scope))
+      .orderBy(sql`${receipts.id} DESC`)
+      .limit(500);
+    return rows.map((row) => {
+      const request = parseSystemPaymentRequest(row.internalNote);
+      const canonicalSpecialized =
+        request != null &&
+        isCanonicalSystemPaymentRequest(request, row.referenceNumber);
+      const reservedSystemEnvelope = hasSystemPaymentRequestEnvelope(
+        row.internalNote,
+      );
+      const reservedSystemSource =
+        reservedSystemEnvelope || isSystemPaymentReference(row.referenceNumber);
+      return {
+        ...row,
+        specialized: reservedSystemSource,
+        remediationMessage: canonicalSpecialized
+          ? "يحتاج مساراً تخصصياً من الوحدة المصدرية"
+          : reservedSystemSource
+            ? "طلب نظامي غير canonical؛ يحتاج مراجعة تدقيق ولا يُصنّف يدوياً"
+          : "يحتاج تعيين فئة وحساب مقابل",
+      };
+    });
+  }),
+
+  assignHistoricalCategory: treasuryManagerProcedure
+    .input(
+      z.object({
+        receiptId: z.number().int().positive(),
+        voucherCategoryId: z.number().int().positive(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const changed = await withTx(async (tx) => {
+        const [receipt] = await tx
+          .select()
+          .from(receipts)
+          .where(eq(receipts.id, input.receiptId))
+          .for("update")
+          .limit(1);
+        if (!receipt || receipt.voucherNumber == null) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "السند التاريخي غير موجود" });
+        }
+        if (receipt.partyType !== "OTHER") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "المعالجة مخصصة لسندات OTHER فقط" });
+        }
+        if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        await assertBranchOwnership(
+          tx,
+          {
+            userId: ctx.user.id,
+            branchId: Number(ctx.user.branchId ?? receipt.branchId ?? 0),
+            role: ctx.user.role,
+          },
+          receipt.branchId != null ? Number(receipt.branchId) : null,
+          "سند تاريخي",
+        );
+        if (receipt.voucherCategoryId != null) {
+          if (Number(receipt.voucherCategoryId) === input.voucherCategoryId) {
+            return false;
+          }
+          throw new TRPCError({ code: "CONFLICT", message: "صُنّف السند بالفعل؛ لا يُعاد تصنيفه بعد الحفظ" });
+        }
+        if (
+          hasSystemPaymentRequestEnvelope(receipt.internalNote) ||
+          isSystemPaymentReference(receipt.referenceNumber)
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "هذا سند نظامي يحتاج مساراً تخصصياً من وحدته المصدرية، ولا يُصنّف يدوياً",
+          });
+        }
+        const [category] = await tx
+          .select()
+          .from(voucherCategories)
+          .where(eq(voucherCategories.id, input.voucherCategoryId))
+          .for("update")
+          .limit(1);
+        if (!category) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "فئة السند غير موجودة" });
+        }
+        assertVoucherCategoryDefinition({
+          direction: category.direction,
+          postingRole: category.postingRole,
+          isActive: category.isActive,
+          name: category.name,
+        });
+        if (
+          receipt.direction !== "IN" &&
+          receipt.direction !== "OUT"
+        ) {
+          throw new TRPCError({ code: "CONFLICT", message: "اتجاه السند التاريخي غير صالح" });
+        }
+        if (
+          category.direction !== "BOTH" &&
+          category.direction !== receipt.direction
+        ) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "اتجاه الفئة لا يطابق اتجاه السند" });
+        }
+        await tx
+          .update(receipts)
+          .set({ voucherCategoryId: input.voucherCategoryId })
+          .where(eq(receipts.id, input.receiptId));
+        await logAuditTx(tx, ctx, {
+          action: "voucherCategory.remediateHistorical",
+          entityType: "receipt",
+          entityId: input.receiptId,
+          newValue: { voucherCategoryId: input.voucherCategoryId },
+        });
+        return true;
+      });
+      return { ok: true, changed };
     }),
 });
 

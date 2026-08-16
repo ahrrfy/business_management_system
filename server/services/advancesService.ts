@@ -23,13 +23,20 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { advanceSettlements, branches, employeeAdvances, employees, receipts, voucherCategories } from "../../drizzle/schema";
+import { advanceSettlements, branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { getApprovalThreshold } from "./voucher/thresholds";
-import { createVoucherTx } from "./voucher/create";
+import {
+  createVoucherTx,
+  employeeAdvanceReference,
+  employeeAdvanceSourceHash,
+  type SystemPaymentRequest,
+} from "./voucher/create";
+
+export * from "./payroll/advanceRepayment";
 
 /** عَتبة السندات (اعتماد ثنائي) — تُعرَض للواجهة عبر بوّابة hr (بوّابة الخزينة لا تلزم هنا).
  *  لا عَتبة مُرفق: المُرفق اختياريّ دائماً (٣١/٧). */
@@ -47,9 +54,12 @@ export interface ListAdvancesFilters {
 
 export async function listAdvances(filters?: ListAdvancesFilters) {
   const db = requireDb();
+  if (filters?.branchId != null && (!Number.isInteger(filters.branchId) || filters.branchId <= 0)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "نطاق الفرع مطلوب." });
+  }
   const conds = [];
   if (filters?.employeeId) conds.push(eq(employeeAdvances.employeeId, filters.employeeId));
-  if (filters?.branchId) conds.push(eq(employeeAdvances.branchId, filters.branchId));
+  if (filters?.branchId != null) conds.push(eq(employeeAdvances.branchId, filters.branchId));
   if (filters?.status) conds.push(eq(employeeAdvances.status, filters.status));
   const rows = await db
     .select({
@@ -69,6 +79,7 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
       grandfatherName: employees.grandfatherName,
       lastName: employees.lastName,
       position: employees.position,
+      employmentStatus: employees.employmentStatus,
       branchName: branches.name,
       voucherNumber: receipts.voucherNumber,
     })
@@ -82,12 +93,19 @@ export async function listAdvances(filters?: ListAdvancesFilters) {
 }
 
 /** رصيد السلف المتبقّي على موظف = مجموع remaining لسلفه النشطة. */
-export async function employeeBalance(employeeId: number): Promise<{ employeeId: number; balance: string; activeCount: number }> {
+export async function employeeBalance(employeeId: number, branchId?: number): Promise<{ employeeId: number; balance: string; activeCount: number }> {
   const db = requireDb();
+  if (branchId != null && (!Number.isInteger(branchId) || branchId <= 0)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "نطاق الفرع مطلوب." });
+  }
   const rows = await db
     .select({ remaining: employeeAdvances.remaining })
     .from(employeeAdvances)
-    .where(and(eq(employeeAdvances.employeeId, employeeId), eq(employeeAdvances.status, "ACTIVE")));
+    .where(and(
+      eq(employeeAdvances.employeeId, employeeId),
+      eq(employeeAdvances.status, "ACTIVE"),
+      branchId != null ? eq(employeeAdvances.branchId, branchId) : undefined,
+    ));
   let sum = new Decimal(0);
   for (const r of rows) sum = sum.plus(money(r.remaining));
   return { employeeId, balance: toDbMoney(round2(sum)), activeCount: rows.length };
@@ -122,30 +140,105 @@ async function payrollCategoryIdTx(tx: Tx): Promise<number | null> {
  * قبل اعتماد مالكٍ ثانٍ للسند. الاعتماد يستدعي activateAdvanceForApprovedVoucherTx داخل
  * المعاملة نفسها التي تُخرج النقد، فيصبح (الصرف + السلفة ACTIVE) أثراً ذرياً واحداً.
  */
-const ADVANCE_REQUEST_PREFIX = "ERP:ADVANCE_REQUEST:v1:";
+type EmployeeAdvanceRequest = Extract<
+  SystemPaymentRequest,
+  { kind: "EMPLOYEE_ADVANCE" }
+>;
 
-interface AdvanceRequestMetadata {
-  employeeId: number;
-  branchId: number;
+type EmployeeAdvanceReceipt = {
+  id: number;
+  branchId: number | null;
+  direction: string;
   amount: string;
-  monthlyDeduction: string | null;
-  note: string | null;
-  clientRequestId: string;
-}
+  paymentMethod: string;
+  partyType?: string | null;
+  referenceNumber?: string | null;
+  createdBy: number | null;
+};
 
-function encodeAdvanceRequest(meta: AdvanceRequestMetadata): string {
-  return `${ADVANCE_REQUEST_PREFIX}${JSON.stringify(meta)}`;
-}
-
-function parseAdvanceRequest(value: string | null | undefined): AdvanceRequestMetadata | null {
-  if (!value?.startsWith(ADVANCE_REQUEST_PREFIX)) return null;
-  try {
-    const parsed = JSON.parse(value.slice(ADVANCE_REQUEST_PREFIX.length)) as AdvanceRequestMetadata;
-    if (!Number.isInteger(parsed.employeeId) || !Number.isInteger(parsed.branchId) || !parsed.clientRequestId) return null;
-    return parsed;
-  } catch {
-    return null;
+/** Validate the server-only capability against the locked source row and receipt facts. */
+export async function assertEmployeeAdvanceVoucherRequestTx(
+  tx: Tx,
+  receipt: EmployeeAdvanceReceipt,
+  request: EmployeeAdvanceRequest,
+  options?: { requireMaterialized?: boolean },
+) {
+  const expectedReference = employeeAdvanceReference(request);
+  if (
+    expectedReference == null ||
+    request.sourceHash !== employeeAdvanceSourceHash(request) ||
+    receipt.referenceNumber !== expectedReference ||
+    receipt.direction !== "OUT" ||
+    receipt.paymentMethod !== "CASH" ||
+    receipt.partyType !== "OTHER" ||
+    receipt.branchId == null ||
+    Number(receipt.branchId) !== request.branchId ||
+    !money(receipt.amount).eq(request.expectedAmount) ||
+    receipt.createdBy == null
+  ) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "بيانات سلفة الموظف أو قابليتها النظامية لا تطابق السند — أوقف العملية وراجع سجل المصدر",
+    });
   }
+
+  const provenanceKey = `ADVANCE:${request.sourceClientRequestId}`;
+  const provenanceRows = await tx
+    .select({ id: idempotencyKeys.id })
+    .from(idempotencyKeys)
+    .where(
+      and(
+        eq(idempotencyKeys.operation, "voucher.create"),
+        eq(idempotencyKeys.clientRequestId, provenanceKey),
+        eq(idempotencyKeys.refId, receipt.id),
+      ),
+    )
+    .for("update")
+    .limit(2);
+  if (provenanceRows.length !== 1) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "مصدر إنشاء سلفة الموظف غير مثبت بمفتاح idempotency مرتبط بالسند — أوقف العملية وراجع التدقيق",
+    });
+  }
+
+  const [emp] = await tx
+    .select()
+    .from(employees)
+    .where(eq(employees.id, request.employeeId))
+    .for("update")
+    .limit(1);
+  if (!emp) throw new TRPCError({ code: "NOT_FOUND", message: "موظف طلب السلفة غير موجود" });
+  if (!emp.isActive || emp.employmentStatus === "terminated") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد سلفة لموظف معطّل أو منتهي الخدمة" });
+  }
+  if (emp.branchId != null && Number(emp.branchId) !== request.branchId) {
+    throw new TRPCError({ code: "CONFLICT", message: "فرع موظف السلفة لا يطابق لقطة الطلب الموثقة" });
+  }
+  if (emp.userId != null && Number(emp.userId) === Number(receipt.createdBy)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز للموظف إنشاء طلب سلفة لنفسه" });
+  }
+
+  let materialized: typeof employeeAdvances.$inferSelect | null = null;
+  if (options?.requireMaterialized) {
+    [materialized] = await tx
+      .select()
+      .from(employeeAdvances)
+      .where(eq(employeeAdvances.receiptId, receipt.id))
+      .for("update")
+      .limit(1);
+    if (
+      !materialized ||
+      materialized.status !== "ACTIVE" ||
+      Number(materialized.employeeId) !== request.employeeId ||
+      Number(materialized.branchId) !== request.branchId ||
+      !money(materialized.amount).eq(request.expectedAmount)
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "سجل السلفة المادي لا يطابق السند الموثق" });
+    }
+  }
+  return { employee: emp, materialized };
 }
 
 /**
@@ -177,55 +270,28 @@ async function assertAdvanceOutstandingLimitTx(tx: Tx, employeeId: number, reque
 
 export async function activateAdvanceForApprovedVoucherTx(
   tx: Tx,
-  receipt: {
-    id: number;
-    branchId: number | null;
-    direction: string;
-    amount: string;
-    paymentMethod: string;
-    internalNote: string | null;
-    createdBy: number | null;
-  },
-): Promise<number | null> {
-  const meta = parseAdvanceRequest(receipt.internalNote);
-  if (!meta) return null;
-  if (
-    receipt.direction !== "OUT" || receipt.paymentMethod !== "CASH" || receipt.branchId == null ||
-    Number(receipt.branchId) !== meta.branchId || !money(receipt.amount).eq(meta.amount)
-  ) {
-    throw new TRPCError({ code: "CONFLICT", message: "بيانات طلب السلفة لا تطابق سند الصرف — أوقف الاعتماد وراجع السجل" });
-  }
+  receipt: EmployeeAdvanceReceipt,
+  request: EmployeeAdvanceRequest,
+): Promise<number> {
+  await assertEmployeeAdvanceVoucherRequestTx(tx, receipt, request);
 
   const [existing] = await tx.select({ id: employeeAdvances.id })
     .from(employeeAdvances).where(eq(employeeAdvances.receiptId, receipt.id)).limit(1);
   if (existing) return Number(existing.id);
 
-  const [emp] = await tx.select().from(employees)
-    .where(eq(employees.id, meta.employeeId)).for("update").limit(1);
-  if (!emp) throw new TRPCError({ code: "NOT_FOUND", message: "موظف طلب السلفة غير موجود" });
-  if (!emp.isActive || emp.employmentStatus === "terminated") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد سلفة لموظف معطّل أو منتهي الخدمة" });
-  }
-  if (emp.branchId != null && Number(emp.branchId) !== meta.branchId) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "فرع موظف السلفة تغيّر منذ إنشاء الطلب — أنشئ طلباً جديداً" });
-  }
-  if (receipt.createdBy == null) {
-    throw new TRPCError({ code: "CONFLICT", message: "منشئ سند السلفة مفقود — أوقف الاعتماد وراجع السجل" });
-  }
-
-  const amount = money(meta.amount);
-  const monthly = meta.monthlyDeduction == null ? null : money(meta.monthlyDeduction);
-  await assertAdvanceOutstandingLimitTx(tx, meta.employeeId, amount);
+  const amount = money(request.expectedAmount);
+  const monthly = request.monthlyDeduction == null ? null : money(request.monthlyDeduction);
+  await assertAdvanceOutstandingLimitTx(tx, request.employeeId, amount);
   const result = await tx.insert(employeeAdvances).values({
-    employeeId: meta.employeeId,
-    branchId: meta.branchId,
+    employeeId: request.employeeId,
+    branchId: request.branchId,
     amount: toDbMoney(amount),
     remaining: toDbMoney(amount),
     monthlyDeduction: monthly == null ? null : toDbMoney(monthly),
     status: "ACTIVE",
     receiptId: receipt.id,
-    note: meta.note,
-    createdBy: receipt.createdBy,
+    note: request.note,
+    createdBy: receipt.createdBy!,
   });
   return extractInsertId(result);
 }
@@ -255,14 +321,23 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "فرع صرف السلفة يجب أن يطابق فرع الموظف" });
     }
     const empName = fullEmployeeName(emp);
-    const metadata: AdvanceRequestMetadata = {
+    const source = {
       employeeId: input.employeeId,
       branchId: input.branchId,
-      amount: toDbMoney(amount),
+      expectedAmount: toDbMoney(amount),
       monthlyDeduction: monthly == null ? null : toDbMoney(monthly),
       note: input.note?.trim() || null,
-      clientRequestId: input.clientRequestId.trim(),
+      sourceClientRequestId: input.clientRequestId.trim(),
     };
+    const systemRequest: EmployeeAdvanceRequest = {
+      kind: "EMPLOYEE_ADVANCE",
+      ...source,
+      sourceHash: employeeAdvanceSourceHash(source),
+    };
+    const referenceNumber = employeeAdvanceReference(systemRequest);
+    if (!referenceNumber) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر اشتقاق مرجع سلفة الموظف" });
+    }
 
     const voucher = await createVoucherTx(tx, {
       voucherType: "PAYMENT",
@@ -271,17 +346,19 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       paymentMethod: "CASH",
       partyType: "OTHER",
       counterpartyName: empName,
-      referenceNumber: `EMP-ADV-${input.employeeId}-${input.clientRequestId}`,
+      referenceNumber,
       description: `سلفة موظف — ${empName}${input.note?.trim() ? ` — ${input.note.trim()}` : ""}`,
       voucherCategoryId: await payrollCategoryIdTx(tx),
       // المُرفق اختياريّ (٣١/٧: أُلغيت عتبة إلزام المُرفق من النظام كله).
       attachmentUrl: input.attachmentUrl?.trim() || null,
-      internalNote: encodeAdvanceRequest(metadata),
       clientRequestId: `ADVANCE:${input.clientRequestId}`,
-    }, actor);
+    }, actor, { systemRequest });
     const [storedReceipt] = await tx.select().from(receipts).where(eq(receipts.id, voucher.receiptId)).limit(1);
-    const storedMeta = parseAdvanceRequest(storedReceipt?.internalNote);
-    if (!storedMeta || JSON.stringify(storedMeta) !== JSON.stringify(metadata)) {
+    if (
+      storedReceipt?.referenceNumber !== referenceNumber ||
+      storedReceipt.internalNote == null ||
+      !storedReceipt.internalNote.includes(`\"sourceHash\":\"${systemRequest.sourceHash}\"`)
+    ) {
       throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: معرّف الطلب مستعمل لسلفة ببيانات مختلفة" });
     }
     const [active] = await tx.select().from(employeeAdvances)
@@ -296,7 +373,7 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       monthlyDeduction: monthly == null ? null : toDbMoney(monthly),
       status: "PENDING_APPROVAL" as const,
       receiptId: voucher.receiptId,
-      note: metadata.note,
+      note: systemRequest.note,
       createdBy: actor.userId,
       employeeName: empName,
       voucherNumber: voucher.voucherNumber,

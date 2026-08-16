@@ -120,6 +120,9 @@ const EXTRA_MIGRATIONS = [
   // 0185 المسار أ: عمود مولَّد STORED + فهرس فريد يمنع تكرار رقم السحب النقديّ لنفس الاتجاه
   //   (db:push لا يُنشئ الأعمدة المولَّدة ⇒ لولا هذا السطر لَمَرّ الاختبار خضراءَ زوراً في CI).
   "drizzle/migrations/0185_cash_drop_reference_uniqueness.sql",
+  // 15/8/2026: db:push represents the month-close tables and CHECKs but cannot create triggers.
+  // This idempotent repair keeps fresh CI/test databases identical to migration-built production.
+  "drizzle/migrations/extras/0192_0197_month_close_triggers.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

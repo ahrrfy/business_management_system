@@ -26,10 +26,12 @@ beforeEach(async () => {
 });
 
 describe("شجرة الحسابات (P0) — بذرٌ ذاتيّ من CHART_ACCOUNTS", () => {
-  it("٣١ حساباً؛ ٢٦ مربوطاً بـsystemRole و٥ رؤوس بلا ربط", async () => {
+  it("يطابق البذر الحيّ؛ وكل الحسابات التفصيلية مربوطة عدا الرؤوس الخمسة", async () => {
     const all = await listAccounts();
-    expect(all).toHaveLength(31);
-    expect(all.filter((a) => a.systemRole != null)).toHaveLength(26);
+    expect(all).toHaveLength(CHART_ACCOUNTS.length);
+    expect(all.filter((a) => a.systemRole != null)).toHaveLength(
+      CHART_ACCOUNTS.filter((a) => a.systemRole != null).length,
+    );
     expect(all.filter((a) => a.systemRole == null)).toHaveLength(5); // الرؤوس الخمسة
   });
 

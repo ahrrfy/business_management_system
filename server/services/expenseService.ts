@@ -1,9 +1,12 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import {
   accountingEntries,
+  accrualCorrectionRequests,
+  accrualObligationEvents,
+  accrualObligations,
   assetMaintenance,
   auditLogs,
   branches,
@@ -34,6 +37,24 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { parseSystemPaymentRequest } from "./voucher/create";
 import { computeSignature } from "./voucher/helpers";
+import {
+  expensePaymentResubmitKey,
+  parseExpensePaymentResubmitDescription,
+  parseExpensePaymentResubmitKey,
+} from "./voucher/resubmitLineage";
+import {
+  createPostingIntent,
+  signedPostingLines,
+  type AccountRole,
+  type PostingIntent,
+  type PostingSourceComponents,
+} from "./accounting/postingEngine";
+import { paymentAssetRole } from "./sale/paymentPosting";
+import {
+  expenseAccrualReversal,
+  expenseAccrualSettlement,
+  type AccruableExpenseRole,
+} from "./accounting/accrualPosting";
 
 export type ExpensePaymentMethod =
   | "CASH"
@@ -51,6 +72,77 @@ export type ExpenseCategory =
   | "MARKETING"
   | "OTHER";
 
+export function expenseRole(category: ExpenseCategory): AccountRole {
+  switch (category) {
+    case "RENT":
+      return "RENT";
+    case "UTILITIES":
+      return "UTILITIES";
+    case "SALARY":
+      return "SALARIES";
+    case "OTHER":
+      return "OTHER_EXPENSE";
+    default:
+      return "OPERATING_EXPENSE";
+  }
+}
+
+export function cashExpensePostingSourceComponents(
+  category: ExpenseCategory,
+  paymentMethod: ExpensePaymentMethod,
+  amount: ReturnType<typeof money>,
+  reverse = false,
+  cashBucket: "DRAWER" | "TREASURY" | null = null,
+): PostingSourceComponents {
+  // A compensating PAYMENT_IN reverses the exact asset credited by the original
+  // outgoing instrument. In particular, an issued cheque is CARD_BANK (not a
+  // newly received CHECKS_RECEIVABLE), and WALLET remains PAYMENT_WALLET.
+  const assetRole = paymentAssetRole(paymentMethod, cashBucket, "OUT");
+  const expenseAccount = expenseRole(category);
+  const sourceAmount = round2(amount.abs());
+  return reverse
+    ? {
+        roleDebits: { [assetRole]: sourceAmount },
+        roleCredits: { [expenseAccount]: sourceAmount },
+      }
+    : {
+        roleDebits: { [expenseAccount]: sourceAmount },
+        roleCredits: { [assetRole]: sourceAmount },
+      };
+}
+
+export function cashExpensePostingIntent(
+  category: ExpenseCategory,
+  paymentMethod: ExpensePaymentMethod,
+  amount: ReturnType<typeof money>,
+  reverse = false,
+  cashBucket: "DRAWER" | "TREASURY" | null = null,
+): PostingIntent {
+  const assetRole = paymentAssetRole(paymentMethod, cashBucket, "OUT");
+  const entryType = reverse ? "PAYMENT_IN" : "PAYMENT_OUT";
+  const sourceComponents = cashExpensePostingSourceComponents(
+    category,
+    paymentMethod,
+    amount,
+    reverse,
+    cashBucket,
+  );
+  return createPostingIntent(
+    reverse
+      ? "PAYMENT_IN_OTHER"
+      : category === "SALARY"
+        ? "PAYMENT_OUT_SALARY"
+        : "PAYMENT_OUT_EXPENSE",
+    entryType,
+    signedPostingLines(
+      expenseRole(category),
+      assetRole,
+      reverse ? amount.neg() : amount,
+    ),
+    sourceComponents,
+  );
+}
+
 export type RecurringFrequency =
   | "DAILY"
   | "WEEKLY"
@@ -59,7 +151,7 @@ export type RecurringFrequency =
   | "YEARLY";
 
 /** production-slice: مصدر الصرف. CASH=نقدي (الموجود)؛ STOCK=صرف من المخزون بالكلفة (نثرية/تلف). */
-export type ExpenseSource = "CASH" | "STOCK";
+export type ExpenseSource = "CASH" | "STOCK" | "ACCRUAL";
 export type ExpenseStockReason = "INTERNAL_USE" | "WASTAGE";
 export type ExpenseCashSource = "OWN_DRAWER" | "TREASURY";
 export type ExpenseFundingKind =
@@ -67,6 +159,8 @@ export type ExpenseFundingKind =
   | "TREASURY"
   | "NON_CASH"
   | "STOCK"
+  | "ACCRUED_UNPAID"
+  | "ACCRUED_PAID"
   | "UNKNOWN";
 
 /**
@@ -119,6 +213,9 @@ function requiresExpenseApproval(
 }
 
 function assertExpenseFundingInput(input: CreateExpenseInput) {
+  if (input.source === "ACCRUAL") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "مصدر ACCRUAL محجوز لمنتجي الاستحقاق النظاميين" });
+  }
   if (
     input.cashSource &&
     ((input.source ?? "CASH") === "STOCK" || input.paymentMethod !== "CASH")
@@ -443,6 +540,17 @@ async function createStockExpenseTx(
     amount,
     revenue: money(0),
     profit: round2(money(0).minus(amount)),
+    postingIntent: createPostingIntent(
+      stockReason === "WASTAGE"
+        ? "WASTAGE_INVENTORY"
+        : "INTERNAL_USE_INVENTORY",
+      stockReason,
+      signedPostingLines(
+        stockReason === "WASTAGE" ? "LOSSES" : "OPERATING_EXPENSE",
+        "INVENTORY",
+        amount,
+      ),
+    ),
     dedupeKey: `${stockReason}:${expenseId}`,
     entryDate: new Date(expDate),
     notes: `${stockReason === "WASTAGE" ? "تلف/هدر" : "نثرية داخلية"}${input.description?.trim() ? ": " + input.description.trim() : ""}`,
@@ -582,11 +690,27 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
         );
 
       if (!pendingApproval) {
+        const postingSourceComponents = cashExpensePostingSourceComponents(
+          input.category,
+          input.paymentMethod,
+          amt,
+          false,
+          cashBucket,
+        );
         await postEntry(tx, {
           entryType: "PAYMENT_OUT",
           branchId: input.branchId,
           receiptId,
           amount: amt,
+          paymentMethod: input.paymentMethod,
+          postingIntent: cashExpensePostingIntent(
+            input.category,
+            input.paymentMethod,
+            amt,
+            false,
+            cashBucket,
+          ),
+          postingSourceComponents,
           entryDate: new Date(expDate),
           notes: `مصروف (${input.category})${input.description?.trim() ? ": " + input.description.trim() : ""}`,
           createdBy: actor.userId,
@@ -778,7 +902,12 @@ export async function approveExpense(expenseId: number, actor: Actor) {
         message: "لا يمكن اعتماد طلب مصروف غير معلّق",
       });
     }
-    if (exp.source === "STOCK" || exp.receiptId == null) {
+    if (
+      exp.source === "STOCK" ||
+      exp.source === "ACCRUAL" ||
+      exp.paymentMethod === "ACCRUAL" ||
+      exp.receiptId == null
+    ) {
       throw new TRPCError({
         code: "CONFLICT",
         message: "طلب المصروف المعلّق لا يملك مساراً مالياً صالحاً",
@@ -837,11 +966,27 @@ export async function approveExpense(expenseId: number, actor: Actor) {
         ),
       );
 
+    const postingSourceComponents = cashExpensePostingSourceComponents(
+      exp.category,
+      exp.paymentMethod,
+      money(exp.amount),
+      false,
+      cashBucket,
+    );
     await postEntry(tx, {
       entryType: "PAYMENT_OUT",
       branchId: Number(exp.branchId),
       receiptId: Number(exp.receiptId),
       amount: money(exp.amount),
+      paymentMethod: exp.paymentMethod,
+      postingIntent: cashExpensePostingIntent(
+        exp.category,
+        exp.paymentMethod,
+        money(exp.amount),
+        false,
+        cashBucket,
+      ),
+      postingSourceComponents,
       entryDate: new Date(exp.expenseDate),
       notes: `مصروف معتمد (${exp.category})${exp.description?.trim() ? ": " + exp.description.trim() : ""}`,
       createdBy: actor.userId,
@@ -1006,8 +1151,6 @@ async function assertSystemExpenseResubmissionChain(
   if (exp.createdBy == null || receipt.createdBy == null) {
     throw new TRPCError({ code: "CONFLICT", message: "منشئ طلب دفع المصروف مفقود" });
   }
-  if (Number(exp.createdBy) === Number(receipt.createdBy)) return;
-
   const links = await tx
     .select({ clientRequestId: idempotencyKeys.clientRequestId })
     .from(idempotencyKeys)
@@ -1015,19 +1158,39 @@ async function assertSystemExpenseResubmissionChain(
       and(
         eq(idempotencyKeys.operation, "voucher.create"),
         eq(idempotencyKeys.refId, Number(receipt.id)),
-        sql`${idempotencyKeys.clientRequestId} LIKE ${"system-expense-resubmit-%"}`,
+        sql`${idempotencyKeys.clientRequestId} REGEXP ${"^system-expense-resubmit-[1-9][0-9]*-A[1-9][0-9]*$"}`,
       ),
     )
     .for("update")
     .limit(2);
+  if (links.length === 0 && Number(exp.createdBy) === Number(receipt.createdBy)) return;
   if (links.length !== 1) {
     throw new TRPCError({
       code: "CONFLICT",
       message: "منشئ طلب دفع المصروف تغيّر بلا سلسلة إعادة تقديم نظامية وحيدة",
     });
   }
-  const match = /^system-expense-resubmit-(\d+)$/.exec(links[0].clientRequestId);
-  const parentReceiptId = match ? Number(match[1]) : 0;
+  const lineage = parseExpensePaymentResubmitKey(links[0].clientRequestId);
+  if (!lineage || lineage.family !== "expense") {
+    throw new TRPCError({ code: "CONFLICT", message: "مرجع إعادة تقديم دفع المصروف غير صالح" });
+  }
+  let parentReceiptId = lineage.rootReceiptId;
+  if (lineage.attempt > 1) {
+    const [priorKey] = await tx
+      .select({ refId: idempotencyKeys.refId })
+      .from(idempotencyKeys)
+      .where(and(
+        eq(idempotencyKeys.operation, "voucher.create"),
+        eq(idempotencyKeys.clientRequestId, expensePaymentResubmitKey({
+          ...lineage,
+          attempt: lineage.attempt - 1,
+        })),
+      ))
+      .for("update")
+      .limit(1);
+    parentReceiptId = priorKey == null ? 0 : Number(priorKey.refId);
+  }
+  const descriptionLineage = parseExpensePaymentResubmitDescription(receipt.description);
   if (!Number.isSafeInteger(parentReceiptId) || parentReceiptId <= 0 || parentReceiptId === Number(receipt.id)) {
     throw new TRPCError({ code: "CONFLICT", message: "مرجع إعادة تقديم دفع المصروف غير صالح" });
   }
@@ -1039,6 +1202,9 @@ async function assertSystemExpenseResubmissionChain(
     .limit(1);
   if (
     !parent ||
+    !descriptionLineage ||
+    descriptionLineage.attempt !== lineage.attempt ||
+    descriptionLineage.priorReceiptId !== parentReceiptId ||
     parent.direction !== "OUT" ||
     parent.status !== "FAILED" ||
     parent.approvalStatus !== "REJECTED" ||
@@ -1077,7 +1243,13 @@ async function assertRecognizedExpenseSource(
   exp: typeof expenses.$inferSelect,
   receipt: typeof receipts.$inferSelect,
   settlementState: "UNSETTLED" | "MATERIALIZED" = "UNSETTLED",
-): Promise<{ accrualPurchaseOrderId: number | null }> {
+): Promise<{
+  accrualPurchaseOrderId: number | null;
+  accrualDedupe: string;
+  expenseRole: AccruableExpenseRole;
+}> {
+  const expectedExpenseCashBucket =
+    receipt.paymentMethod === "CASH" ? "TREASURY" : null;
   const unsettledStateIsValid =
     receipt.shiftId == null &&
     receipt.cashBucket == null &&
@@ -1089,7 +1261,7 @@ async function assertRecognizedExpenseSource(
     receipt.status === "COMPLETED" &&
     receipt.approvalStatus === "APPROVED" &&
     receipt.shiftId == null &&
-    receipt.cashBucket === "TREASURY" &&
+    receipt.cashBucket === expectedExpenseCashBucket &&
     receipt.approvedBy != null &&
     receipt.approvedAt != null &&
     receipt.createdBy != null &&
@@ -1101,10 +1273,9 @@ async function assertRecognizedExpenseSource(
     exp.status !== "ACTIVE" ||
     exp.source !== "CASH" ||
     exp.shiftId != null ||
-    exp.cashBucket !== "TREASURY" ||
-    exp.paymentMethod !== "CASH" ||
+    exp.cashBucket !== expectedExpenseCashBucket ||
+    exp.paymentMethod !== receipt.paymentMethod ||
     receipt.direction !== "OUT" ||
-    receipt.paymentMethod !== "CASH" ||
     receipt.partyType !== "OTHER" ||
     receipt.partyId != null ||
     receipt.invoiceId != null ||
@@ -1125,7 +1296,7 @@ async function assertRecognizedExpenseSource(
       amount: toDbMoney(receipt.amount),
       partyType: "OTHER",
       partyId: null,
-      paymentMethod: "CASH",
+      paymentMethod: receipt.paymentMethod,
       voucherDate: String(receipt.voucherDate).slice(0, 10),
       voucherNumber: String(receipt.voucherNumber),
       createdBy: Number(receipt.createdBy),
@@ -1152,12 +1323,21 @@ async function assertRecognizedExpenseSource(
   let accrualDedupe: string;
   let expectedPurchaseOrderId: number | null;
   if (request.kind === "PURCHASE_SHIPPING") {
+    const expectedPaymentReference =
+      receipt.paymentMethod === "CARD"
+        ? receipt.cardLastFour
+        : receipt.paymentMethod === "TRANSFER" ||
+            receipt.paymentMethod === "CHECK"
+          ? receipt.checkNumber
+          : null;
     if (
       !Number.isSafeInteger(request.purchaseOrderId) ||
       request.purchaseOrderId <= 0 ||
       !/^[0-9a-f]{16}$/i.test(request.requestToken) ||
       typeof request.expectedAmount !== "string" ||
       typeof request.sourceShippingTotal !== "string" ||
+      (request.paymentReference ?? null) !==
+        (expectedPaymentReference ?? null) ||
       !money(request.expectedAmount).eq(money(exp.amount))
     ) {
       throw new TRPCError({ code: "CONFLICT", message: "بيانات مصدر مصروف الشحن غير صالحة" });
@@ -1230,6 +1410,7 @@ async function assertRecognizedExpenseSource(
       purchaseOrderId: accountingEntries.purchaseOrderId,
       receiptId: accountingEntries.receiptId,
       amount: accountingEntries.amount,
+      postingProfile: accountingEntries.postingProfile,
     })
     .from(accountingEntries)
     .where(eq(accountingEntries.dedupeKey, accrualDedupe))
@@ -1239,25 +1420,63 @@ async function assertRecognizedExpenseSource(
   if (
     accruals.length !== 1 ||
     !accrual ||
-    accrual.entryType !== "PAYMENT_OUT" ||
+    accrual.entryType !== "ADJUST" ||
     accrual.receiptId != null ||
     Number(accrual.branchId) !== Number(exp.branchId) ||
     Number(accrual.purchaseOrderId ?? 0) !== Number(expectedPurchaseOrderId ?? 0) ||
-    !money(accrual.amount).eq(money(exp.amount))
+    !money(accrual.amount).eq(money(exp.amount)) ||
+    (accrual.postingProfile != null &&
+      accrual.postingProfile !== "ADJUST_EXPENSE_ACCRUAL")
   ) {
     throw new TRPCError({
       code: "CONFLICT",
       message: "قيد استحقاق المصروف مفقود أو لا يطابق مصدره الحقيقي",
     });
   }
-  return { accrualPurchaseOrderId: expectedPurchaseOrderId };
+  if (settlementState === "MATERIALIZED") {
+    const settlements = await tx
+      .select({
+        entryType: accountingEntries.entryType,
+        branchId: accountingEntries.branchId,
+        purchaseOrderId: accountingEntries.purchaseOrderId,
+        amount: accountingEntries.amount,
+        postingProfile: accountingEntries.postingProfile,
+      })
+      .from(accountingEntries)
+      .where(eq(accountingEntries.receiptId, Number(receipt.id)))
+      .for("update")
+      .limit(2);
+    const settlement = settlements[0];
+    if (
+      settlements.length !== 1 ||
+      !settlement ||
+      settlement.entryType !== "PAYMENT_OUT" ||
+      Number(settlement.branchId) !== Number(exp.branchId) ||
+      Number(settlement.purchaseOrderId ?? 0) !==
+        Number(expectedPurchaseOrderId ?? 0) ||
+      !money(settlement.amount).eq(money(exp.amount)) ||
+      (settlement.postingProfile != null &&
+        settlement.postingProfile !==
+          "PAYMENT_OUT_ACCRUED_EXPENSE_SETTLEMENT")
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "قيد تسوية المصروف المنفذ مفقود أو لا يطابق الاستحقاق",
+      });
+    }
+  }
+  return {
+    accrualPurchaseOrderId: expectedPurchaseOrderId,
+    accrualDedupe,
+    expenseRole: "OPERATING_EXPENSE",
+  };
 }
 
 /**
  * Cancel an active expense. Only allowed when the linked shift (if any) is still OPEN.
- * Marks the linked payment request/receipt REVERSED. A material APPROVED+COMPLETED
- * receipt gets a matching IN/PAYMENT_IN; a recognized-but-unpaid system expense gets
- * only a negative PAYMENT_OUT accrual reversal, because no cash left to recover.
+ * Marks the linked ordinary payment receipt REVERSED and records its matching reversal.
+ * Accrued shipping/maintenance is deliberately rejected before any cash/receipt write:
+ * its canonical source-correction workflow owns recognition reversal and any proven refund.
  */
 export async function cancelExpense(expenseId: number, actor: Actor) {
   return withTx(async (tx) => {
@@ -1271,6 +1490,19 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       .limit(1);
     if (!expensePreview)
       throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
+
+    const [linkedAccrual] = await tx
+      .select({ id: accrualObligations.id, status: accrualObligations.status })
+      .from(accrualObligations)
+      .where(eq(accrualObligations.expenseId, expenseId))
+      .for("update")
+      .limit(1);
+    if (linkedAccrual) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "مصروف الشحن/الصيانة المرتبط باستحقاق لا يُلغى من الإلغاء العام؛ استخدم طلب تصحيح المصدر المعتمد",
+      });
+    }
 
     if (
       expensePreview.source !== "STOCK" &&
@@ -1413,6 +1645,15 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
         amount: money(exp.amount).neg(),
         revenue: money(0),
         profit: round2(money(exp.amount)),
+        postingIntent: createPostingIntent(
+          reason === "WASTAGE" ? "WASTAGE_INVENTORY" : "INTERNAL_USE_INVENTORY",
+          reason,
+          signedPostingLines(
+            reason === "WASTAGE" ? "LOSSES" : "OPERATING_EXPENSE",
+            "INVENTORY",
+            money(exp.amount).neg(),
+          ),
+        ),
         dedupeKey: null,
         notes: `إلغاء ${reason === "WASTAGE" ? "تلف" : "نثرية"} #${expenseId}`,
         createdBy: actor.userId,
@@ -1461,10 +1702,20 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       ) ||
       /^SHIP-.+-[0-9a-f]{16}$/i.test(linkedReceipt.referenceNumber ?? "") ||
       /^ASSET-MAINT-[1-9][0-9]*$/.test(linkedReceipt.referenceNumber ?? "");
-    let unsettledSource: { accrualPurchaseOrderId: number | null } | null = null;
+    let recognizedSource: Awaited<
+      ReturnType<typeof assertRecognizedExpenseSource>
+    > | null = null;
+    let unsettledSource: Awaited<
+      ReturnType<typeof assertRecognizedExpenseSource>
+    > | null = null;
     if (cashWasMaterialized) {
       if (recognizedSystemExpenseCandidate) {
-        await assertRecognizedExpenseSource(tx, exp, linkedReceipt, "MATERIALIZED");
+        recognizedSource = await assertRecognizedExpenseSource(
+          tx,
+          exp,
+          linkedReceipt,
+          "MATERIALIZED",
+        );
       }
     } else {
       unsettledSource = await assertRecognizedExpenseSource(tx, exp, linkedReceipt);
@@ -1482,18 +1733,6 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     // مصروف الشحن/الصيانة يُعترف به قبل الدفع، وإيصاله المعلّق/المرفوض لم يمس
     // النقد. إلغاؤه يعكس قيد الاستحقاق فقط، ولا يخلق قبضاً وهمياً في الخزينة.
     if (unsettledSource) {
-      const request = parseSystemPaymentRequest(linkedReceipt.internalNote);
-      const accrualDedupe = request?.kind === "PURCHASE_SHIPPING"
-        ? `PURCHASE_SHIPPING_ACCRUAL:${request.purchaseOrderId}:${request.requestToken}`
-        : request?.kind === "ASSET_MAINTENANCE"
-          ? `ASSET_MAINT_ACCRUAL:${request.maintenanceId}`
-          : null;
-      if (!accrualDedupe) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "طلب دفع المصروف غير منفذ ولا يحمل مرجع استحقاق نظامياً صالحاً",
-        });
-      }
       const [accrual] = await tx
         .select({
           entryType: accountingEntries.entryType,
@@ -1503,23 +1742,29 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
           amount: accountingEntries.amount,
         })
         .from(accountingEntries)
-        .where(eq(accountingEntries.dedupeKey, accrualDedupe))
+        .where(eq(accountingEntries.dedupeKey, unsettledSource.accrualDedupe))
         .for("update")
         .limit(1);
       if (
         !accrual ||
-        accrual.entryType !== "PAYMENT_OUT" ||
+        accrual.entryType !== "ADJUST" ||
         accrual.receiptId != null ||
         Number(accrual.branchId) !== Number(exp.branchId) ||
         !money(accrual.amount).eq(money(exp.amount))
       ) {
         throw new TRPCError({ code: "CONFLICT", message: "قيد استحقاق المصروف مفقود أو لا يطابق الطلب" });
       }
+      const reversal = expenseAccrualReversal(
+        unsettledSource.expenseRole,
+        money(exp.amount),
+      );
       await postEntry(tx, {
-        entryType: "PAYMENT_OUT",
+        entryType: "ADJUST",
         branchId: Number(exp.branchId),
         purchaseOrderId: unsettledSource.accrualPurchaseOrderId,
         amount: money(exp.amount).neg(),
+        postingIntent: reversal.intent,
+        postingSourceComponents: reversal.sourceComponents,
         entryDate: new Date(exp.expenseDate),
         dedupeKey: `EXPENSE_ACCRUAL_CANCEL:${expenseId}`,
         notes: `عكس استحقاق مصروف غير مدفوع #${expenseId}`,
@@ -1556,11 +1801,71 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
 
     // G5 (١٩/٦/٢٦): قيد PAYMENT_IN بدل ADJUST (موجب) — متّسق مع نمط cancelVoucher
     // ويُغلق انحرافاً في cashReconcile الذي يتجاهل ADJUST عند حساب الرصيد من القيود.
+    const reversalCashBucket =
+      (exp as { cashBucket?: "DRAWER" | "TREASURY" | null }).cashBucket ??
+      null;
+    if (recognizedSource) {
+      const assetRole = paymentAssetRole(
+        exp.paymentMethod,
+        reversalCashBucket,
+        "OUT",
+      );
+      const settlementReversal = expenseAccrualSettlement(
+        assetRole,
+        money(exp.amount).neg(),
+      );
+      await postEntry(tx, {
+        entryType: "PAYMENT_OUT",
+        branchId: Number(exp.branchId),
+        receiptId: compReceiptId,
+        purchaseOrderId: recognizedSource.accrualPurchaseOrderId,
+        amount: money(exp.amount).neg(),
+        paymentMethod: exp.paymentMethod,
+        postingIntent: settlementReversal.intent,
+        postingSourceComponents: settlementReversal.sourceComponents,
+        dedupeKey: `EXPENSE_SETTLEMENT_CANCEL:${expenseId}`,
+        notes: `عكس تسوية مصروف مستحق #${expenseId}`,
+        createdBy: actor.userId,
+      });
+      const recognitionReversal = expenseAccrualReversal(
+        recognizedSource.expenseRole,
+        money(exp.amount),
+      );
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId: Number(exp.branchId),
+        purchaseOrderId: recognizedSource.accrualPurchaseOrderId,
+        amount: money(exp.amount).neg(),
+        postingIntent: recognitionReversal.intent,
+        postingSourceComponents: recognitionReversal.sourceComponents,
+        entryDate: new Date(exp.expenseDate),
+        dedupeKey: `EXPENSE_ACCRUAL_CANCEL:${expenseId}`,
+        notes: `عكس استحقاق مصروف مدفوع #${expenseId}`,
+        createdBy: actor.userId,
+      });
+      return { expenseId, status: "CANCELLED" as const };
+    }
+    const postingSourceComponents = cashExpensePostingSourceComponents(
+      exp.category,
+      exp.paymentMethod,
+      money(exp.amount),
+      true,
+      reversalCashBucket,
+    );
     await postEntry(tx, {
       entryType: "PAYMENT_IN",
       branchId: Number(exp.branchId),
       receiptId: compReceiptId,
       amount: money(exp.amount),
+      paymentMethod: exp.paymentMethod,
+      postingIntent: cashExpensePostingIntent(
+        exp.category,
+        exp.paymentMethod,
+        money(exp.amount),
+        true,
+        reversalCashBucket,
+      ),
+      postingSourceComponents,
       notes: `إلغاء مصروف #${expenseId}`,
       createdBy: actor.userId,
     });
@@ -1637,31 +1942,44 @@ const systemExpenseResubmissionChainSql = sql`(
     SELECT COUNT(*)
     FROM idempotencyKeys AS expenseResubmitLinkCount
     WHERE expenseResubmitLinkCount.operation = 'voucher.create'
-      AND expenseResubmitLinkCount.clientRequestId LIKE 'system-expense-resubmit-%'
+      AND expenseResubmitLinkCount.clientRequestId REGEXP '^system-expense-resubmit-[1-9][0-9]*-A[1-9][0-9]*$'
       AND expenseResubmitLinkCount.refId = ${receipts.id}
   ) = 1
   AND EXISTS (
   SELECT 1
   FROM idempotencyKeys AS expenseResubmitLink
-  INNER JOIN receipts AS expenseResubmitParent
-    ON expenseResubmitParent.id = CAST(
-      SUBSTRING(
-        expenseResubmitLink.clientRequestId,
-        CHAR_LENGTH('system-expense-resubmit-') + 1
-      ) AS UNSIGNED
+  INNER JOIN receipts AS expenseResubmitRoot
+    ON expenseResubmitRoot.id = CAST(SUBSTRING_INDEX(
+      SUBSTRING(expenseResubmitLink.clientRequestId, CHAR_LENGTH('system-expense-resubmit-') + 1),
+      '-A',
+      1
+    ) AS UNSIGNED)
+  LEFT JOIN idempotencyKeys AS expenseResubmitPriorLink
+    ON CAST(SUBSTRING_INDEX(expenseResubmitLink.clientRequestId, '-A', -1) AS UNSIGNED) > 1
+    AND expenseResubmitPriorLink.operation = 'voucher.create'
+    AND expenseResubmitPriorLink.clientRequestId = CONCAT(
+      'system-expense-resubmit-',
+      expenseResubmitRoot.id,
+      '-A',
+      CAST(SUBSTRING_INDEX(expenseResubmitLink.clientRequestId, '-A', -1) AS UNSIGNED) - 1
     )
+  INNER JOIN receipts AS expenseResubmitParent
+    ON expenseResubmitParent.id = CASE
+      WHEN CAST(SUBSTRING_INDEX(expenseResubmitLink.clientRequestId, '-A', -1) AS UNSIGNED) = 1
+        THEN expenseResubmitRoot.id
+      ELSE expenseResubmitPriorLink.refId
+    END
   WHERE expenseResubmitLink.operation = 'voucher.create'
     AND expenseResubmitLink.refId = ${receipts.id}
-    AND expenseResubmitLink.clientRequestId LIKE 'system-expense-resubmit-%'
-    AND expenseResubmitLink.clientRequestId REGEXP '^system-expense-resubmit-[1-9][0-9]*$'
+    AND expenseResubmitLink.clientRequestId REGEXP '^system-expense-resubmit-[1-9][0-9]*-A[1-9][0-9]*$'
     AND expenseResubmitParent.id <> ${receipts.id}
+    AND expenseResubmitRoot.createdBy = ${expenses.createdBy}
     AND expenseResubmitParent.direction = 'OUT'
     AND expenseResubmitParent.receiptStatus = 'FAILED'
     AND expenseResubmitParent.receiptApprovalStatus = 'REJECTED'
     AND expenseResubmitParent.approvedBy IS NOT NULL
     AND expenseResubmitParent.approvedAt IS NOT NULL
     AND expenseResubmitParent.createdBy IS NOT NULL
-    AND expenseResubmitParent.createdBy = ${expenses.createdBy}
     AND expenseResubmitParent.approvedBy <> expenseResubmitParent.createdBy
     AND expenseResubmitParent.signatureHash IS NULL
     AND expenseResubmitParent.shiftId IS NULL
@@ -1673,6 +1991,13 @@ const systemExpenseResubmissionChainSql = sql`(
     AND (expenseResubmitParent.internalNote <=> ${receipts.internalNote})
     AND (expenseResubmitParent.voucherPartyType <=> ${receipts.partyType})
     AND (expenseResubmitParent.partyId <=> ${receipts.partyId})
+    AND ${receipts.description} REGEXP CONCAT(
+      '(^| — )المحاولة A',
+      CAST(SUBSTRING_INDEX(expenseResubmitLink.clientRequestId, '-A', -1) AS UNSIGNED),
+      ' بعد السند #',
+      expenseResubmitParent.id,
+      ': .{5,}$'
+    )
   )
 )`;
 
@@ -1736,9 +2061,10 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
   ${expenses.status} = 'CANCELLED'
   AND ${expenses.source} = 'CASH'
   AND ${expenses.shiftId} IS NULL
-  AND ${expenses.cashBucket} = 'TREASURY'
-  AND ${expenses.paymentMethod} = 'CASH'
-  AND ${receipts.paymentMethod} = 'CASH'
+  AND (
+    (${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} = 'TREASURY')
+    OR (${expenses.paymentMethod} <> 'CASH' AND ${expenses.cashBucket} IS NULL)
+  )
   AND ${expenses.createdBy} IS NOT NULL
   AND ${receipts.createdBy} IS NOT NULL
   AND ${receipts.id} IS NOT NULL
@@ -1787,7 +2113,7 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
   AND EXISTS (
     SELECT 1
     FROM accountingEntries AS recognizedAccrual
-    WHERE recognizedAccrual.entryType = 'PAYMENT_OUT'
+    WHERE recognizedAccrual.entryType = 'ADJUST'
       AND recognizedAccrual.receiptId IS NULL
       AND (recognizedAccrual.branchId <=> ${expenses.branchId})
       AND (recognizedAccrual.amount <=> ${expenses.amount})
@@ -1802,7 +2128,7 @@ const recognizedUnsettledCancellationSql = sql`COALESCE((
   AND EXISTS (
     SELECT 1
     FROM accountingEntries AS recognizedAccrualReversal
-    WHERE recognizedAccrualReversal.entryType = 'PAYMENT_OUT'
+    WHERE recognizedAccrualReversal.entryType = 'ADJUST'
       AND recognizedAccrualReversal.receiptId IS NULL
       AND (recognizedAccrualReversal.branchId <=> ${expenses.branchId})
       AND recognizedAccrualReversal.amount = -${expenses.amount}
@@ -1880,12 +2206,41 @@ function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       receiptApprovedByName: expenseReceiptApprover.name,
       receiptApprovedByRole: expenseReceiptApprover.role,
       receiptApprovedAt: receipts.approvedAt,
+      accrualObligationId: accrualObligations.id,
+      accrualKind: accrualObligations.kind,
+      settlementStatus: accrualObligations.status,
+      accrualBeneficiaryType: accrualObligations.beneficiaryType,
+      accrualBeneficiarySupplierId: accrualObligations.beneficiarySupplierId,
+      accrualBeneficiaryName: accrualObligations.beneficiaryName,
+      accrualEvidenceReference: accrualObligations.evidenceReference,
+      accrualPurchaseOrderId: accrualObligations.purchaseOrderId,
+      accrualAssetId: accrualObligations.assetId,
+      accrualMaintenanceId: accrualObligations.maintenanceId,
+      recognitionAccountingEntryId: sql<number | null>`(
+        SELECT aoe.accountingEntryId FROM accrualObligationEvents aoe
+        WHERE aoe.obligationId = ${accrualObligations.id}
+          AND aoe.eventType = 'RECOGNIZED'
+        ORDER BY aoe.id DESC LIMIT 1
+      )`,
+      settlementAccountingEntryId: sql<number | null>`(
+        SELECT aoe.accountingEntryId FROM accrualObligationEvents aoe
+        WHERE aoe.obligationId = ${accrualObligations.id}
+          AND aoe.eventType IN ('PAYMENT_SETTLED', 'SETTLEMENT_REVERSED')
+        ORDER BY aoe.id DESC LIMIT 1
+      )`,
+      settlementReceiptId: sql<number | null>`(
+        SELECT aoe.receiptId FROM accrualObligationEvents aoe
+        WHERE aoe.obligationId = ${accrualObligations.id}
+          AND aoe.eventType IN ('PAYMENT_SETTLED', 'SETTLEMENT_REVERSED')
+        ORDER BY aoe.id DESC LIMIT 1
+      )`,
       recognizedUnsettledCancellation: sql<number>`CASE WHEN ${recognizedUnsettledCancellationSql} THEN 1 ELSE 0 END`,
     })
     .from(expenses)
     .leftJoin(branches, eq(expenses.branchId, branches.id))
     .leftJoin(expenseCreator, eq(expenses.createdBy, expenseCreator.id))
     .leftJoin(shifts, eq(expenses.shiftId, shifts.id))
+    .leftJoin(accrualObligations, eq(accrualObligations.expenseId, expenses.id))
     .leftJoin(expenseShiftOwner, eq(shifts.userId, expenseShiftOwner.id))
     .leftJoin(receipts, eq(expenses.receiptId, receipts.id))
     .leftJoin(
@@ -1902,7 +2257,11 @@ function fundingKindOf(row: {
   source: string;
   paymentMethod: string;
   cashBucket: "DRAWER" | "TREASURY" | null;
+  settlementStatus?: string | null;
 }): ExpenseFundingKind {
+  if (row.source === "ACCRUAL") {
+    return row.settlementStatus === "PAID" ? "ACCRUED_PAID" : "ACCRUED_UNPAID";
+  }
   if (row.source === "STOCK") return "STOCK";
   if (row.paymentMethod !== "CASH") return "NON_CASH";
   if (row.cashBucket === "DRAWER") return "DRAWER";
@@ -1930,6 +2289,24 @@ function integrityWarningsOf(row: any): string[] {
       warnings.push("STOCK_HAS_RECEIPT");
     if (row.shiftId != null || row.cashBucket != null)
       warnings.push("STOCK_HAS_CASH_LOCATION");
+    return warnings;
+  }
+  if (row.source === "ACCRUAL") {
+    if (row.paymentMethod !== "ACCRUAL") warnings.push("ACCRUAL_PAYMENT_METHOD_MISMATCH");
+    if (row.receiptId != null || row.linkedReceiptId != null) warnings.push("ACCRUAL_HAS_DIRECT_RECEIPT");
+    if (row.shiftId != null || row.cashBucket != null) warnings.push("ACCRUAL_HAS_CASH_LOCATION");
+    if (row.accrualObligationId == null) warnings.push("ACCRUAL_OBLIGATION_MISSING");
+    if (row.recognitionAccountingEntryId == null) warnings.push("ACCRUAL_RECOGNITION_ENTRY_MISSING");
+    if (["PAID", "REFUND_PENDING", "REFUNDED"].includes(row.settlementStatus ?? "")) {
+      if (row.settlementReceiptId == null || row.settlementAccountingEntryId == null) {
+        warnings.push("ACCRUAL_SETTLEMENT_TRACE_MISSING");
+      }
+    } else if (
+      ["ACCRUED_UNPAID", "PAYMENT_PENDING", "PAYABLE_UNSETTLED", "CORRECTION_PENDING"].includes(row.settlementStatus ?? "") &&
+      (row.settlementReceiptId != null || row.settlementAccountingEntryId != null)
+    ) {
+      warnings.push("UNPAID_ACCRUAL_HAS_SETTLEMENT_EFFECT");
+    }
     return warnings;
   }
 
@@ -2000,8 +2377,21 @@ function integrityWarningsOf(row: any): string[] {
 function enrichExpenseRow<T extends Record<string, any>>(row: T) {
   const fundingKind = fundingKindOf(row as any);
   const integrityWarnings = integrityWarningsOf(row);
+  const obligationBacked = row.source === "ACCRUAL";
   return {
     ...row,
+    // The recognition source never points at a replaceable payment request.
+    // Expose the material settlement and the immutable source evidence as
+    // explicit report/trace fields while preserving expense.receiptId=null.
+    linkedReceiptId: obligationBacked
+      ? row.settlementReceiptId ?? null
+      : row.linkedReceiptId ?? null,
+    beneficiaryName: obligationBacked
+      ? row.accrualBeneficiaryName ?? null
+      : row.receiptCounterpartyName ?? row.payee ?? null,
+    evidenceReference: obligationBacked
+      ? row.accrualEvidenceReference ?? null
+      : row.referenceNumber ?? null,
     approvalStatus: row.receiptApprovalStatus ?? null,
     approvedBy: row.receiptApprovedBy ?? null,
     approvedByName: row.receiptApprovedByName ?? null,
@@ -2025,6 +2415,14 @@ function buildExpenseConditions(input: ListExpensesInput) {
   if (input.source) conds.push(eq(expenses.source, input.source));
   if (input.amount != null) conds.push(eq(expenses.amount, input.amount));
   if (input.fundingKind === "STOCK") conds.push(eq(expenses.source, "STOCK"));
+  if (input.fundingKind === "ACCRUED_UNPAID") {
+    conds.push(eq(expenses.source, "ACCRUAL"));
+    conds.push(sql`${accrualObligations.status} <> 'PAID'`);
+  }
+  if (input.fundingKind === "ACCRUED_PAID") {
+    conds.push(eq(expenses.source, "ACCRUAL"));
+    conds.push(eq(accrualObligations.status, "PAID"));
+  }
   if (input.fundingKind === "NON_CASH") {
     conds.push(
       and(eq(expenses.source, "CASH"), ne(expenses.paymentMethod, "CASH")),
@@ -2068,9 +2466,36 @@ function buildExpenseConditions(input: ListExpensesInput) {
 const financialIntegritySql = sql`(
   NOT ${recognizedUnsettledCancellationSql}
   AND (
+    (${expenses.source} = 'ACCRUAL' AND (
+      ${expenses.paymentMethod} <> 'ACCRUAL'
+      OR ${expenses.receiptId} IS NOT NULL
+      OR ${expenses.shiftId} IS NOT NULL
+      OR ${expenses.cashBucket} IS NOT NULL
+      OR NOT EXISTS (
+        SELECT 1 FROM accrualObligations AS integrityObligation
+        WHERE integrityObligation.expenseId = ${expenses.id}
+          AND EXISTS (
+            SELECT 1 FROM accrualObligationEvents AS integrityRecognition
+            WHERE integrityRecognition.obligationId = integrityObligation.id
+              AND integrityRecognition.eventType = 'RECOGNIZED'
+              AND integrityRecognition.accountingEntryId IS NOT NULL
+          )
+          AND (
+            (integrityObligation.status = 'PAID' AND EXISTS (
+              SELECT 1 FROM accrualObligationEvents AS integritySettlement
+              WHERE integritySettlement.obligationId = integrityObligation.id
+                AND integritySettlement.eventType = 'PAYMENT_SETTLED'
+                AND integritySettlement.receiptId IS NOT NULL
+                AND integritySettlement.accountingEntryId IS NOT NULL
+            ))
+            OR integrityObligation.status <> 'PAID'
+          )
+      )
+    ))
+    OR
     (${expenses.source} = 'STOCK' AND (${expenses.receiptId} IS NOT NULL OR ${expenses.shiftId} IS NOT NULL OR ${expenses.cashBucket} IS NOT NULL))
     OR
-    (${expenses.source} <> 'STOCK' AND (
+    (${expenses.source} NOT IN ('STOCK','ACCRUAL') AND (
     ${expenses.receiptId} IS NULL OR ${receipts.id} IS NULL
     OR ${receipts.direction} <> 'OUT'
     OR NOT (${expenses.amount} <=> ${receipts.amount})
@@ -2121,6 +2546,8 @@ export async function listExpenses(input: ListExpensesInput = {}) {
     treasury: "0.00",
     nonCash: "0.00",
     stock: "0.00",
+    accruedUnpaid: "0.00",
+    accruedPaid: "0.00",
     cancelled: "0.00",
     unknown: "0.00",
     needsAudit: 0,
@@ -2163,8 +2590,10 @@ export async function listExpenses(input: ListExpensesInput = {}) {
         rejected: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'REJECTED' THEN ${expenses.amount} ELSE 0 END), 0)`,
         drawer: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} <> 'STOCK' AND ${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} = 'DRAWER' THEN ${expenses.amount} ELSE 0 END), 0)`,
         treasury: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} <> 'STOCK' AND ${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} = 'TREASURY' THEN ${expenses.amount} ELSE 0 END), 0)`,
-        nonCash: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} <> 'STOCK' AND ${expenses.paymentMethod} <> 'CASH' THEN ${expenses.amount} ELSE 0 END), 0)`,
+        nonCash: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} NOT IN ('STOCK','ACCRUAL') AND ${expenses.paymentMethod} <> 'CASH' THEN ${expenses.amount} ELSE 0 END), 0)`,
         stock: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} = 'STOCK' THEN ${expenses.amount} ELSE 0 END), 0)`,
+        accruedUnpaid: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} = 'ACCRUAL' AND ${accrualObligations.status} <> 'PAID' THEN ${expenses.amount} ELSE 0 END), 0)`,
+        accruedPaid: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} = 'ACCRUAL' AND ${accrualObligations.status} = 'PAID' THEN ${expenses.amount} ELSE 0 END), 0)`,
         cancelled: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'CANCELLED' THEN ${expenses.amount} ELSE 0 END), 0)`,
         unknown: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' AND ${expenses.source} <> 'STOCK' AND ${expenses.paymentMethod} = 'CASH' AND ${expenses.cashBucket} IS NULL THEN ${expenses.amount} ELSE 0 END), 0)`,
         needsAudit: sql<number>`COALESCE(SUM(CASE WHEN ${needsAuditSql} THEN 1 ELSE 0 END), 0)`,
@@ -2176,6 +2605,7 @@ export async function listExpenses(input: ListExpensesInput = {}) {
       })
       .from(expenses)
       .leftJoin(receipts, eq(expenses.receiptId, receipts.id))
+      .leftJoin(accrualObligations, eq(accrualObligations.expenseId, expenses.id))
       .where(baseWhere)
       .then((rows) => rows[0]),
   ]);
@@ -2190,6 +2620,8 @@ export async function listExpenses(input: ListExpensesInput = {}) {
       treasury: totalsRow?.treasury ?? "0.00",
       nonCash: totalsRow?.nonCash ?? "0.00",
       stock: totalsRow?.stock ?? "0.00",
+      accruedUnpaid: totalsRow?.accruedUnpaid ?? "0.00",
+      accruedPaid: totalsRow?.accruedPaid ?? "0.00",
       cancelled: totalsRow?.cancelled ?? "0.00",
       unknown: totalsRow?.unknown ?? "0.00",
       needsAudit: Number(totalsRow?.needsAudit ?? 0),
@@ -2228,14 +2660,36 @@ export async function getExpenseTrace(
   if (!raw) return null;
   const expense = enrichExpenseRow(raw);
 
+  const obligationEvents = raw.accrualObligationId == null
+    ? []
+    : await db
+        .select({
+          id: accrualObligationEvents.id,
+          eventType: accrualObligationEvents.eventType,
+          amount: accrualObligationEvents.amount,
+          receiptId: accrualObligationEvents.receiptId,
+          accountingEntryId: accrualObligationEvents.accountingEntryId,
+          evidenceReference: accrualObligationEvents.evidenceReference,
+          actorId: accrualObligationEvents.actorId,
+          reviewerId: accrualObligationEvents.reviewerId,
+          createdAt: accrualObligationEvents.createdAt,
+        })
+        .from(accrualObligationEvents)
+        .where(eq(accrualObligationEvents.obligationId, Number(raw.accrualObligationId)))
+        .orderBy(asc(accrualObligationEvents.id));
+  const obligationEntryIds = obligationEvents
+    .map((event) => event.accountingEntryId == null ? null : Number(event.accountingEntryId))
+    .filter((id): id is number => id != null);
   const ledgerWhere =
-    raw.receiptId != null
+    obligationEntryIds.length > 0
+      ? inArray(accountingEntries.id, obligationEntryIds)
+      : raw.receiptId != null
       ? eq(accountingEntries.receiptId, Number(raw.receiptId))
       : raw.source === "STOCK" && raw.stockReason
         ? eq(accountingEntries.dedupeKey, `${raw.stockReason}:${expenseId}`)
         : eq(accountingEntries.id, -1);
 
-  const [stockItems, ledgerEntries, auditTrail, reversalReceipts] =
+  const [stockItems, ledgerEntries, auditTrail, reversalReceipts, correctionRequests] =
     await Promise.all([
       raw.source === "STOCK"
         ? db
@@ -2257,6 +2711,8 @@ export async function getExpenseTrace(
         .select({
           id: accountingEntries.id,
           entryType: accountingEntries.entryType,
+          postingProfile: accountingEntries.postingProfile,
+          postingIntentJson: accountingEntries.postingIntentJson,
           receiptId: accountingEntries.receiptId,
           amount: accountingEntries.amount,
           cost: accountingEntries.cost,
@@ -2270,7 +2726,7 @@ export async function getExpenseTrace(
         })
         .from(accountingEntries)
         .where(ledgerWhere)
-        .orderBy(desc(accountingEntries.id))
+        .orderBy(asc(accountingEntries.id))
         .limit(25),
       db
         .select({
@@ -2321,7 +2777,22 @@ export async function getExpenseTrace(
         )
         .orderBy(desc(receipts.id))
         .limit(5),
+      raw.accrualObligationId == null
+        ? Promise.resolve([])
+        : db
+            .select()
+            .from(accrualCorrectionRequests)
+            .where(eq(accrualCorrectionRequests.obligationId, Number(raw.accrualObligationId)))
+            .orderBy(desc(accrualCorrectionRequests.id)),
     ]);
 
-  return { expense, stockItems, ledgerEntries, auditTrail, reversalReceipts };
+  return {
+    expense,
+    stockItems,
+    ledgerEntries,
+    obligationEvents,
+    correctionRequests,
+    auditTrail,
+    reversalReceipts,
+  };
 }

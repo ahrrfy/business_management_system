@@ -1,9 +1,10 @@
 // قراءات: القائمة (مع الإهلاك المحسوب)، أصل منفرد + عهدة/صيانة/مستندات، خيارات النماذج.
-import { and, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, like, or, sql } from "drizzle-orm";
 import {
   assetCustodyLog,
   assetDocuments,
   assetMaintenance,
+  accrualObligations,
   branches,
   employees,
   fixedAssets,
@@ -16,6 +17,56 @@ import type { CompanyBranchScope } from "../companyBranchScope";
 import { computeDepreciation } from "./depreciation";
 
 const empNameSql = sql<string | null>`concat(${employees.firstName}, ' ', ${employees.lastName})`;
+
+type AssetPaymentRow = {
+  id: number;
+  kind: string;
+  status: string;
+  assetId: number | null;
+  paymentRequestReceiptId: number | null;
+  beneficiaryName: string | null;
+  evidenceReference: string;
+};
+
+function paymentDisclosure(row: AssetPaymentRow | undefined) {
+  const paymentPending =
+    row != null &&
+    !["PAID", "REFUNDED", "RECOGNITION_REVERSED"].includes(row.status);
+  return {
+    paymentPending,
+    paymentRequestReceiptId: paymentPending ? row.paymentRequestReceiptId : null,
+    paymentApprovalStatus: row?.status ?? null,
+    settlementStatus: row?.status ?? null,
+    accrualObligationId: row == null ? null : Number(row.id),
+    accrualObligationKind: row?.kind ?? null,
+    accrualBeneficiaryName: row?.beneficiaryName ?? null,
+    accrualEvidenceReference: row?.evidenceReference ?? null,
+  };
+}
+
+async function assetPaymentRows() {
+  const db = requireDb();
+  return db
+    .select({
+      id: accrualObligations.id,
+      kind: accrualObligations.kind,
+      assetId: accrualObligations.assetId,
+      status: accrualObligations.status,
+      beneficiaryName: accrualObligations.beneficiaryName,
+      evidenceReference: accrualObligations.evidenceReference,
+      paymentRequestReceiptId: sql<number | null>`(
+        SELECT e.receiptId FROM accrualObligationEvents e
+        WHERE e.obligationId = ${accrualObligations.id}
+          AND e.eventType = 'PAYMENT_REQUESTED'
+        ORDER BY e.id DESC LIMIT 1
+      )`,
+    })
+    .from(accrualObligations)
+    .where(
+      inArray(accrualObligations.kind, ["ASSET_ACQUISITION_CASH", "ASSET_ACQUISITION_SUPPLIER"]),
+    )
+    .orderBy(accrualObligations.id);
+}
 
 export interface AssetFilters {
   category?: string;
@@ -32,7 +83,7 @@ export async function listAssets(filters: AssetFilters | undefined, scope: Compa
   const deviceJoin = scope.branchId == null
     ? eq(fixedAssets.linkedDeviceId, kioskDevices.id)
     : and(eq(fixedAssets.linkedDeviceId, kioskDevices.id), eq(kioskDevices.branchId, scope.branchId));
-  const conds = [eq(fixedAssets.isActive, true)];
+  const conds = filters?.includeDisposed ? [] : [eq(fixedAssets.isActive, true)];
   if (scope.branchId != null) conds.push(eq(fixedAssets.branchId, scope.branchId));
   if (filters?.category) conds.push(eq(fixedAssets.category, filters.category as never));
   if (filters?.branchId) {
@@ -46,19 +97,27 @@ export async function listAssets(filters: AssetFilters | undefined, scope: Compa
   if (filters?.status) conds.push(eq(fixedAssets.status, filters.status as never));
   else if (!filters?.includeDisposed) conds.push(inArray(fixedAssets.status, ["active", "maintenance", "retired"]));
 
-  const rows = await db
-    .select({
-      ...getTableColumns(fixedAssets),
-      custodianName: empNameSql,
-      branchName: branches.name,
-      linkedDeviceInScope: kioskDevices.id,
-    })
-    .from(fixedAssets)
-    .leftJoin(employees, custodianJoin)
-    .leftJoin(kioskDevices, deviceJoin)
-    .leftJoin(branches, eq(fixedAssets.branchId, branches.id))
-    .where(and(...conds))
-    .orderBy(desc(fixedAssets.id));
+  const [rows, paymentRows] = await Promise.all([
+    db
+      .select({
+        ...getTableColumns(fixedAssets),
+        custodianName: empNameSql,
+        branchName: branches.name,
+        linkedDeviceInScope: kioskDevices.id,
+      })
+      .from(fixedAssets)
+      .leftJoin(employees, custodianJoin)
+      .leftJoin(kioskDevices, deviceJoin)
+      .leftJoin(branches, eq(fixedAssets.branchId, branches.id))
+      .where(and(...conds))
+      .orderBy(desc(fixedAssets.id)),
+    assetPaymentRows(),
+  ]);
+  const latestPaymentByAsset = new Map<number, AssetPaymentRow>();
+  for (const payment of paymentRows) {
+    const assetId = payment.assetId == null ? null : Number(payment.assetId);
+    if (assetId != null) latestPaymentByAsset.set(assetId, payment);
+  }
 
   // أَثرِ كل أصل بقيم الإهلاك المحسوبة (لا تُخزَّن — تُحسب عند القراءة).
   return rows.map((r) => {
@@ -72,7 +131,11 @@ export async function listAssets(filters: AssetFilters | undefined, scope: Compa
         ? null
         : base.linkedDeviceId,
     };
-    return { ...scopedRow, ...computeDepreciation(scopedRow) };
+    return {
+      ...scopedRow,
+      ...computeDepreciation(scopedRow),
+      ...paymentDisclosure(latestPaymentByAsset.get(Number(scopedRow.id))),
+    };
   });
 }
 
@@ -139,9 +202,39 @@ export async function getAsset(id: number, scope: CompanyBranchScope) {
       .where(and(eq(assetDocuments.assetId, id), ...relationConds)),
   ]);
 
+  const [latestPayment] = await db
+    .select({
+      id: accrualObligations.id,
+      kind: accrualObligations.kind,
+      assetId: accrualObligations.assetId,
+      status: accrualObligations.status,
+      beneficiaryName: accrualObligations.beneficiaryName,
+      evidenceReference: accrualObligations.evidenceReference,
+      paymentRequestReceiptId: sql<number | null>`(
+        SELECT e.receiptId FROM accrualObligationEvents e
+        WHERE e.obligationId = ${accrualObligations.id}
+          AND e.eventType = 'PAYMENT_REQUESTED'
+        ORDER BY e.id DESC LIMIT 1
+      )`,
+    })
+    .from(accrualObligations)
+    .where(and(eq(accrualObligations.assetId, id), inArray(accrualObligations.kind, ["ASSET_ACQUISITION_CASH", "ASSET_ACQUISITION_SUPPLIER"])))
+    .orderBy(desc(accrualObligations.id))
+    .limit(1);
+
   // FA-05 (§٥): جمع المال عبر decimal لا Number/float (يَمنع انجراف الكسور في إجمالي الصيانة).
-  const maintTotal = sumMoney(maintenance.map((m) => m.cost)).toNumber();
-  return { ...scopedAsset, ...computeDepreciation(scopedAsset), custody, maintenance, docs, maintTotal };
+  const maintTotal = sumMoney(
+    maintenance.filter((m) => m.financialStatus !== "CORRECTED").map((m) => m.cost),
+  ).toNumber();
+  return {
+    ...scopedAsset,
+    ...computeDepreciation(scopedAsset),
+    ...paymentDisclosure(latestPayment),
+    custody,
+    maintenance,
+    docs,
+    maintTotal,
+  };
 }
 
 /** خيارات النماذج (إضافة/تسليم عهدة): الموظفون والفروع والموردون. */

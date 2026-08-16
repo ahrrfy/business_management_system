@@ -11,18 +11,73 @@ import { eq } from "drizzle-orm";
 import { doubleEntrySettings, journalEntries, journalLines } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
-import { assertBalanced, type JournalLine } from "./postingEngine";
+import { money, round2 } from "../money";
+import {
+  ACCOUNT_ROLES,
+  assertBalanced,
+  type JournalLine,
+  type JournalPostingProfile,
+  POSTING_POLICY_HASH,
+  type PostingProfile,
+} from "./postingEngine";
+
+const accountRoleSet: ReadonlySet<string> = new Set(ACCOUNT_ROLES);
+
+function assertValidLines(
+  lines: readonly JournalLine[],
+  context: string,
+): void {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const debit = money(line.debit);
+    const credit = money(line.credit);
+    if (!accountRoleSet.has(line.role)) {
+      throw new Error(`دور محاسبي غير معروف في ${context}، السطر ${index + 1}.`);
+    }
+    if (
+      !debit.isFinite() ||
+      !credit.isFinite() ||
+      debit.isNegative() ||
+      credit.isNegative() ||
+      !debit.eq(round2(debit)) ||
+      !credit.eq(round2(credit)) ||
+      debit.isZero() === credit.isZero()
+    ) {
+      throw new Error(
+        `سطر غير صالح في ${context}، السطر ${index + 1}: يجب أن يكون أحد الطرفين فقط موجباً وبدقتين عشريتين.`,
+      );
+    }
+  }
+}
 
 export type DoubleEntryMode = "OFF" | "SHADOW" | "ACTIVE";
+
+export interface DoubleEntryRuntime {
+  mode: DoubleEntryMode;
+  cycleId: string | null;
+}
 
 /**
  * وضع الدفتر المزدوج. **غياب صفّ الإعدادات ⇒ `OFF`** (فشلٌ آمن، بوّابة س٢): قاعدةٌ لم تُهيَّأ
  * بعد، أو صفٌّ حُذف، لا يجوز أن يُفعّل كتابةً لم يطلبها أحد.
  */
-export async function getDoubleEntryMode(tx: Tx): Promise<DoubleEntryMode> {
-  const row = (
+export async function getDoubleEntryRuntime(
+  tx: Tx,
+): Promise<DoubleEntryRuntime> {
+  let row = (
     await tx
-      .select({ mode: doubleEntrySettings.mode })
+      .select({
+        mode: doubleEntrySettings.mode,
+        cycleId: doubleEntrySettings.shadowCycleId,
+        openingHash: doubleEntrySettings.shadowOpeningHash,
+        approvalReference: doubleEntrySettings.policyApprovalReference,
+        approvalAccountant: doubleEntrySettings.policyAccountantName,
+        approvalAt: doubleEntrySettings.policyApprovedAt,
+        approvalBy: doubleEntrySettings.policyApprovedBy,
+        approvalCycleId: doubleEntrySettings.policyApprovalCycleId,
+        approvalOpeningHash: doubleEntrySettings.policyApprovalOpeningHash,
+        approvalPolicyHash: doubleEntrySettings.policyApprovalPolicyHash,
+      })
       .from(doubleEntrySettings)
       .where(eq(doubleEntrySettings.id, 1))
       // قفلٌ مشترك طوال معاملة الحدث المالي: كل الكتّاب يتوازون معاً، لكن انتقال الوضع (FOR UPDATE)
@@ -30,7 +85,69 @@ export async function getDoubleEntryMode(tx: Tx): Promise<DoubleEntryMode> {
       .for("share")
       .limit(1)
   )[0];
-  return (row?.mode as DoubleEntryMode | undefined) ?? "OFF";
+  if (!row) {
+    // ثبّت صف singleton قبل تقرير OFF. من دون الصف لا يوجد شيء يمكن قفله،
+    // وقد يسبقنا start بإدراجه بعد القراءة ويقسم الحدث حول لحظة القطع.
+    await tx
+      .insert(doubleEntrySettings)
+      .values({ id: 1, mode: "OFF" })
+      .onDuplicateKeyUpdate({ set: { id: 1 } });
+    row = (
+      await tx
+        .select({
+          mode: doubleEntrySettings.mode,
+          cycleId: doubleEntrySettings.shadowCycleId,
+          openingHash: doubleEntrySettings.shadowOpeningHash,
+          approvalReference: doubleEntrySettings.policyApprovalReference,
+          approvalAccountant: doubleEntrySettings.policyAccountantName,
+          approvalAt: doubleEntrySettings.policyApprovedAt,
+          approvalBy: doubleEntrySettings.policyApprovedBy,
+          approvalCycleId: doubleEntrySettings.policyApprovalCycleId,
+          approvalOpeningHash: doubleEntrySettings.policyApprovalOpeningHash,
+          approvalPolicyHash: doubleEntrySettings.policyApprovalPolicyHash,
+        })
+        .from(doubleEntrySettings)
+        .where(eq(doubleEntrySettings.id, 1))
+        .for("share")
+        .limit(1)
+    )[0];
+  }
+  const mode = (row?.mode as DoubleEntryMode | undefined) ?? "OFF";
+  const cycleId = row?.cycleId ?? null;
+  if (
+    mode === "ACTIVE" &&
+    (!cycleId ||
+      !row?.openingHash ||
+      !row.approvalReference ||
+      !row.approvalAccountant ||
+      !row.approvalAt ||
+      row.approvalBy == null ||
+      row.approvalCycleId !== cycleId ||
+      row.approvalOpeningHash !== row.openingHash ||
+      row.approvalPolicyHash !== POSTING_POLICY_HASH)
+  ) {
+    throw new Error(
+      "وضع ACTIVE غير صالح: اعتماد المحاسب لا يطابق الدورة/بصمة الافتتاح/سياسة الترحيل الحالية.",
+    );
+  }
+  return { mode, cycleId };
+}
+
+export async function getDoubleEntryMode(tx: Tx): Promise<DoubleEntryMode> {
+  return (await getDoubleEntryRuntime(tx)).mode;
+}
+
+interface JournalMetadata {
+  cycleId?: string | null;
+  postingProfile?: JournalPostingProfile | null;
+}
+
+interface ShadowOpeningJournalInput {
+  cycleId: string;
+  sourceKey: string;
+  entryDate: Date;
+  branchId: number | null;
+  lines: readonly JournalLine[];
 }
 
 /**
@@ -43,16 +160,20 @@ export async function writeJournal(
   entryDate: Date,
   branchId: number | null,
   lines: JournalLine[],
+  metadata: JournalMetadata = {},
 ): Promise<void> {
   // رأسٌ POSTED بلا أسطر يُخفي مبلغاً عن ميزان المراجعة بصمت ⇒ خللٌ لا فجوة. استعمل
   // writeJournalGap للحالة المشروعة (نوعٌ غير مُخطَّط).
   if (lines.length === 0) {
     throw new Error(`قيدٌ مزدوجٌ بلا أسطر (الحدث ${entryId}) — استعمل writeJournalGap للفجوة.`);
   }
+  assertValidLines(lines, `الحدث ${entryId}`);
   assertBalanced(lines, `الحدث ${entryId}`);
 
   const res = await tx.insert(journalEntries).values({
     entryId,
+    cycleId: metadata.cycleId ?? null,
+    postingProfile: metadata.postingProfile ?? null,
     entryDate,
     branchId,
     status: "POSTED",
@@ -65,6 +186,88 @@ export async function writeJournal(
 }
 
 /**
+ * يثبت حدثاً تشغيلياً مقصوداً بلا أثر دفتري. وجود الرأس يمنع اعتباره قيداً مفقوداً، بينما
+ * `MEMO` يمنعه من دخول ميزان المراجعة أو مجاميع المدين/الدائن.
+ */
+export async function writeJournalMemo(
+  tx: Tx,
+  entryId: number,
+  entryDate: Date,
+  branchId: number | null,
+  cycleId: string,
+  postingProfile: PostingProfile,
+): Promise<void> {
+  await tx.insert(journalEntries).values({
+    entryId,
+    cycleId,
+    postingProfile,
+    entryDate,
+    branchId,
+    status: "MEMO",
+  });
+}
+
+/**
+ * يكتب مجموعةً متوازنة من لقطة القطع الافتتاحية. لا يختلق صفاً في `accountingEntries`؛
+ * المصدر الاصطناعي مميز صراحةً ومربوط بالدورة وبمفتاح لقطة فريد قابل للتحقق من بصمته.
+ */
+export async function writeShadowOpeningJournal(
+  tx: Tx,
+  input: ShadowOpeningJournalInput,
+): Promise<void> {
+  if (input.lines.length === 0) {
+    throw new Error("مجموعة الافتتاح لا يجوز أن تكون بلا أسطر.");
+  }
+  assertValidLines(input.lines, input.sourceKey);
+  assertBalanced(input.lines, input.sourceKey);
+  const result = await tx.insert(journalEntries).values({
+    entryId: null,
+    sourceType: "SHADOW_OPENING",
+    sourceKey: input.sourceKey,
+    postingProfile: "SHADOW_OPENING_V1",
+    cycleId: input.cycleId,
+    entryDate: input.entryDate,
+    branchId: input.branchId,
+    status: "POSTED",
+  });
+  const journalId = extractInsertId(result);
+  await tx.insert(journalLines).values(
+    input.lines.map((line) => ({
+      journalId,
+      role: line.role,
+      debit: line.debit,
+      credit: line.credit,
+    })),
+  );
+}
+
+/** شهادة افتتاح صفرية صريحة؛ MEMO وحيد بلا أسطر، ولا تُستعمل لأي رصيد غير صفري. */
+export async function writeShadowOpeningMemo(
+  tx: Tx,
+  input: Omit<ShadowOpeningJournalInput, "lines">,
+): Promise<void> {
+  const asOf = input.entryDate.toISOString().slice(0, 10);
+  if (
+    input.branchId !== null ||
+    input.sourceKey !== `SHADOW_OPENING:${input.cycleId}:${asOf}:GLOBAL`
+  ) {
+    throw new Error(
+      "شهادة الافتتاح الصفرية يجب أن تكون عالمية وبمفتاح الدورة/تاريخ القطع المطابق.",
+    );
+  }
+  await tx.insert(journalEntries).values({
+    entryId: null,
+    sourceType: "SHADOW_OPENING",
+    sourceKey: input.sourceKey,
+    postingProfile: "SHADOW_OPENING_V1",
+    cycleId: input.cycleId,
+    entryDate: input.entryDate,
+    branchId: input.branchId,
+    status: "MEMO",
+  });
+}
+
+/**
  * يسجّل **فجوة**: حدثٌ ماليٌّ لم تُكتَب خريطته بعد (أو تعذّرت ترجمته). رأسٌ `UNMAPPED` بلا أسطر
  * ⇒ لا يدخل ميزان المراجعة، لكنه **مرئيٌّ ومعدود**: عدّاده صفراً شرطُ الانتقال إلى ACTIVE (س٧).
  */
@@ -74,9 +277,12 @@ export async function writeJournalGap(
   entryDate: Date,
   branchId: number | null,
   reason: string,
+  metadata: JournalMetadata = {},
 ): Promise<void> {
   await tx.insert(journalEntries).values({
     entryId,
+    cycleId: metadata.cycleId ?? null,
+    postingProfile: metadata.postingProfile ?? null,
     entryDate,
     branchId,
     status: "UNMAPPED",
