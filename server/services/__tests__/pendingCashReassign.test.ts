@@ -150,6 +150,36 @@ describe("المسار أ — حوكمة النقد المعلَّق", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
+  it("لا تُسنَد العهدة إلى مُسلِّم النقد نفسه — لا يُطوى الشاهدان بشخصٍ واحد", async () => {
+    // سند الدرج المقابل أنشأه MANAGER (أي أنّه المُسلِّم). إسناد عهدته إليه = قبولٌ ذاتيّ
+    // يلتفّ على شرط createCashDrop («المُسلِّم ليس المستلم»).
+    const receiptId = await pendingContract(HOLDER, "CD-1-20260816-0007");
+    await db().insert(s.receipts).values({
+      branchId: 1, direction: "OUT", amount: "50000", paymentMethod: "CASH", cashBucket: "DRAWER",
+      referenceNumber: "CD-1-20260816-0007", status: "COMPLETED", partyType: "OTHER", createdBy: MANAGER,
+    });
+    const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
+    await expect(
+      manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: MANAGER }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // وتبقى إعادة الإسناد لطرفٍ ثالث ممكنة.
+    await manager.treasury.reassignHandoverReceipt({ receiptId, toUserId: NEW_HOLDER });
+    const row = (await db().select().from(s.receipts).where(eq(s.receipts.id, receiptId)))[0];
+    expect(Number(row.createdBy)).toBe(NEW_HOLDER);
+  });
+
+  it("مرجعٌ حرٌّ يبدأ بـCD- (سند بنكيّ) لا يحجزه قيد التفرّد", async () => {
+    // `referenceNumber` حقلٌ حرّ؛ حجزُ كل ما يبدأ بـ«CD-» كان يمنع سندين بنكيَّين بنفس المرجع.
+    const mk = (ref: string) =>
+      db().insert(s.receipts).values({
+        branchId: 1, direction: "IN", amount: "1000", paymentMethod: "TRANSFER",
+        referenceNumber: ref, status: "COMPLETED", partyType: "OTHER", createdBy: MANAGER,
+      });
+    await mk("CD-BANK-991");
+    await expect(mk("CD-BANK-991")).resolves.toBeTruthy();
+  });
+
   it("عهدة مقبولة لا تُعاد إسناداً", async () => {
     const receiptId = await pendingContract(HOLDER);
     const holder = appRouter.createCaller(makeCtx(await user(HOLDER)));

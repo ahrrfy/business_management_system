@@ -55,7 +55,11 @@ SET @sql = IF(@col_exists = 0,
   CONCAT(
     'ALTER TABLE receipts ADD COLUMN cashDropKey VARCHAR(110) ',
     'GENERATED ALWAYS AS (',
-    'CASE WHEN referenceNumber LIKE ''CD-%'' ',
+    -- ليس البادئة وحدها: `referenceNumber` حقلٌ حرّ، وسندٌ عاديّ قد يحمل مرجعاً كـ«CD-BANK-991»
+    -- (اختبارات المطابقة تغطّي ذلك صراحةً) فيُحجَز ظلماً ويُرفض ثانٍ مثله. نطابق **شكل** الرقم
+    -- المولَّد بالضبط (CD-فرع-تاريخ-تسلسل) **مع** عقد السحب النقديّ (نقد + دلوٌ محدَّد).
+    'CASE WHEN referenceNumber REGEXP ''^CD-[0-9]+-[0-9]{8}-[0-9]{4}$'' ',
+    'AND paymentMethod = ''CASH'' AND cashBucket IS NOT NULL ',
     'THEN CONCAT(referenceNumber, '':'', direction) ELSE NULL END',
     ') STORED'
   ),

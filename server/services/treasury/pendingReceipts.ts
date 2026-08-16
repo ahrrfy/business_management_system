@@ -193,9 +193,9 @@ export async function reassignPendingTreasuryReceipt(
   actor: Actor,
   auditCtx?: AuditContext,
 ) {
-  if (actor.role !== "admin" && actor.role !== "manager") {
-    throw new TRPCError({ code: "FORBIDDEN", message: "إعادة إسناد عهدة النقد للمدير أو الإداريّ فقط" });
-  }
+  // ⛔ لا فحص دورٍ خام هنا: التفويض عند الحدّ عبر `treasuryManagerProcedure` (بوّابة وحدة
+  // treasury=FULL تحترم المنح الصريح). فحصٌ خامّ في الخدمة كان يُبطل ما تُعلنه البوّابة —
+  // محاسبٌ قالبه treasury=FULL يعبُر الحدّ ثم يُصَدّ هنا: عيب «مُنِحت الصلاحية ولم تُطبَّق» نفسه.
   return withTx(async (tx) => {
     const row = (
       await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
@@ -233,6 +233,30 @@ export async function reassignPendingTreasuryReceipt(
     }
     if (target.branchId == null || Number(target.branchId) !== Number(row.branchId)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون من فرع العهدة نفسه" });
+    }
+    // فصل المُسلِّم عن المستلم — الثابت الذي يفرضه `createCashDrop` عند الإنشاء
+    // («لا يجوز أن يكون مُسلِّم النقد هو المستلم نفسه»). بدون هذا الفحص كانت إعادة الإسناد
+    // **باباً خلفياً يطويه**: يكفي أن يكون مُسلِّم السحب مديراً فيُسنِد العهدة لنفسه ثمّ يقبلها
+    // بيده ⇒ سلسلة حيازة بشخصٍ واحد. المُسلِّم = مُنشئ سند الدرج المقابل (OUT).
+    const sourceOut = (
+      await tx
+        .select({ createdBy: receipts.createdBy })
+        .from(receipts)
+        .where(
+          and(
+            eq(receipts.referenceNumber, referenceNumber),
+            eq(receipts.branchId, Number(row.branchId)),
+            eq(receipts.direction, "OUT"),
+            eq(receipts.cashBucket, "DRAWER"),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (sourceOut?.createdBy != null && Number(sourceOut.createdBy) === toUserId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يجوز إسناد العهدة إلى مُسلِّم النقد نفسه — الاستلام يلزمه شخصٌ ثانٍ",
+      });
     }
 
     await tx

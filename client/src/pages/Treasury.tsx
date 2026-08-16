@@ -6,6 +6,7 @@ import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { FinancialSourceBadge } from "@/components/financial";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { hasModuleAccess } from "@shared/permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -188,8 +189,17 @@ export default function Treasury() {
 
   // المسار أ (ورقة الإصلاحات ١٦/٨): طابور العهد المعلّقة **كلّها** — لا المسندة للمستخدم وحده.
   // بدونه يبقى نقدُ مستلمٍ غائب خارج رصيد الخزينة بلا أن يراه أحد (٥٠٬٠٠٠ د.ع ظلّت أربعة أيام).
+  // بوّابة الشاشة تُطابق بوّابة الخادم (خريطة الصلاحيات: treasury=FULL) لا دوراً خاماً —
+  // وإلّا صار المنح الصريح معلَناً في جرد الصلاحيات وغير قابلٍ للاستعمال فعلياً.
+  const canGovernHandovers = hasModuleAccess(
+    userRole,
+    (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)
+      ?.permissionsOverride ?? null,
+    "treasury",
+    "FULL",
+  );
   const pendingQueue = trpc.treasury.pendingHandoverQueue.useQuery(undefined, {
-    enabled: isAdmin || isManager,
+    enabled: canGovernHandovers,
     refetchInterval: 30_000,
   });
   const reassignHandover = trpc.treasury.reassignHandoverReceipt.useMutation({
@@ -736,7 +746,7 @@ export default function Treasury() {
         )}
       </div>
 
-      {(isAdmin || isManager) && (pendingQueue.data?.length ?? 0) > 0 && (
+      {canGovernHandovers && (pendingQueue.data?.length ?? 0) > 0 && (
         <section className="rounded-md border p-4">
           <div className="mb-3 flex items-center gap-2">
             <Clock3 className="h-4 w-4 text-muted-foreground" />
@@ -783,7 +793,8 @@ export default function Treasury() {
                   aria-label={`إعادة إسناد العهدة ${row.referenceNumber}`}
                 >
                   {(handoverRecipients.data ?? [])
-                    .filter((u) => Number(u.id) !== row.assignedToId)
+                    // القائمة عابرةٌ للفروع؛ الخادم يرفض من هو خارج فرع العهدة ⇒ عرضُه خيارٌ ميّت.
+                    .filter((u) => Number(u.id) !== row.assignedToId && Number(u.branchId) === row.branchId)
                     .map((u) => (
                       <option key={u.id} value={String(u.id)}>
                         {u.name ?? `#${u.id}`}
