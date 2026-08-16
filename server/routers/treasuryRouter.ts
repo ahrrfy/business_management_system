@@ -13,11 +13,13 @@ import {
   getPaymentMethodBreakdown,
   getRecentMovements,
   listMyPendingTreasuryReceipts,
+  listPendingTreasuryQueue,
+  reassignPendingTreasuryReceipt,
 } from "../services/treasuryService";
 import { fundTreasury } from "../services/treasuryFundingService";
 import { logAudit } from "../services/auditService";
 import { retryOnDup } from "../lib/retryDup";
-import { branchScopedProcedure, managerBranchScopedProcedure, requireModule, router } from "../trpc";
+import { branchScopedProcedure, managerBranchScopedProcedure, requireModule, router, treasuryManagerProcedure } from "../trpc";
 
 const periodEnum = z.enum(["today", "yesterday", "week", "month"]);
 
@@ -34,6 +36,34 @@ export const treasuryRouter = router({
       role: ctx.user.role,
     });
   }),
+
+  /**
+   * طابور العهد المعلّقة كلّها في نطاق المدير (لا المسندة إليه وحده) — يكشف النقد
+   * المحبوس لدى مستلمٍ غائب/معطَّل مع عمره. المسار أ من ورقة الإصلاحات ١٦/٨.
+   */
+  pendingHandoverQueue: treasuryManagerProcedure.query(async ({ ctx }) => {
+    return listPendingTreasuryQueue({
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+      role: ctx.user.role,
+    });
+  }),
+
+  /** إعادة إسناد عهدة معلّقة لمستلمٍ آخر — مخرج النقد المحبوس (بلا حركة دينار). */
+  reassignHandoverReceipt: treasuryManagerProcedure
+    .input(z.object({ receiptId: z.number().int().positive(), toUserId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      return reassignPendingTreasuryReceipt(
+        input.receiptId,
+        input.toUserId,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+        ctx,
+      );
+    }),
 
   /** قبول صريح من المستلم نفسه؛ بعده فقط يصبح النقد جزءاً من رصيد الخزينة. */
   acceptHandoverReceipt: treasuryRead

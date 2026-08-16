@@ -91,6 +91,181 @@ export async function listMyPendingTreasuryReceipts(actor: Actor): Promise<Pendi
   });
 }
 
+export interface PendingTreasuryQueueRow extends PendingTreasuryReceipt {
+  /** المستلم المُسنَد إليه العقد حالياً — عمود الرؤية الذي كان غائباً. */
+  assignedToId: number;
+  assignedToName: string | null;
+  assignedToActive: boolean;
+  /** عمر العهدة بالأيام — «قديمة» تعني نقداً خارج رصيد الخزينة منذ ذلك الحين. */
+  ageDays: number;
+}
+
+/**
+ * طابور العهد المعلّقة **كلّها** في نطاق المدير — لا المسندة إليه وحده.
+ *
+ * العلّة التي يسدّها (المسار أ، ورقة ١٦/٨): `listMyPendingTreasuryReceipts` تُظهر العهدة
+ * للمستلم المُسنَد إليه فقط، فإن عُطّل أو غادر بقي النقد خارج رصيد الخزينة **بلا أن يراه أحد**
+ * — لا شاشة ولا تقرير. ما لا يظهر لا يُكتشَف.
+ */
+export async function listPendingTreasuryQueue(actor: Actor): Promise<PendingTreasuryQueueRow[]> {
+  const sourceReceipt = alias(receipts, "queueSourceReceipt");
+  const sourceEmployee = alias(users, "queueSourceEmployee");
+  const holder = alias(users, "queueHolder");
+  const elevated = actor.role === "admin";
+  const rows = await requireDb()
+    .select({
+      id: receipts.id,
+      branchId: receipts.branchId,
+      amount: receipts.amount,
+      referenceNumber: receipts.referenceNumber,
+      description: receipts.description,
+      createdAt: receipts.createdAt,
+      assignedToId: receipts.createdBy,
+      assignedToName: holder.name,
+      assignedToActive: holder.isActive,
+      sourceShiftId: sourceReceipt.shiftId,
+      sourceEmployeeName: sourceEmployee.name,
+    })
+    .from(receipts)
+    .leftJoin(holder, eq(receipts.createdBy, holder.id))
+    .leftJoin(
+      sourceReceipt,
+      and(
+        eq(sourceReceipt.referenceNumber, receipts.referenceNumber),
+        eq(sourceReceipt.branchId, receipts.branchId),
+        eq(sourceReceipt.direction, "OUT"),
+        eq(sourceReceipt.paymentMethod, "CASH"),
+        eq(sourceReceipt.cashBucket, "DRAWER"),
+      ),
+    )
+    .leftJoin(shifts, eq(sourceReceipt.shiftId, shifts.id))
+    .leftJoin(sourceEmployee, eq(shifts.userId, sourceEmployee.id))
+    .where(
+      and(
+        eq(receipts.direction, "IN"),
+        eq(receipts.paymentMethod, "CASH"),
+        eq(receipts.cashBucket, "TREASURY"),
+        eq(receipts.status, "PENDING"),
+        eq(receipts.approvalStatus, "APPROVED"),
+        or(like(receipts.referenceNumber, "CD-%"), like(receipts.referenceNumber, "CH-%")),
+        // عزل الفرع: admin يعبُر؛ غيره يرى فرعه وحده (نمط branchScopedProcedure).
+        ...(elevated ? [] : [eq(receipts.branchId, actor.branchId)]),
+      ),
+    )
+    .orderBy(asc(receipts.createdAt));
+
+  const now = Date.now();
+  return rows.flatMap((row) => {
+    if (row.branchId == null || row.referenceNumber == null || row.assignedToId == null) return [];
+    const source = contractSource(row.referenceNumber);
+    if (!source) return [];
+    const created = row.createdAt instanceof Date ? row.createdAt.getTime() : new Date(row.createdAt).getTime();
+    return [{
+      id: Number(row.id),
+      branchId: Number(row.branchId),
+      amount: String(row.amount),
+      referenceNumber: row.referenceNumber,
+      description: row.description,
+      createdAt: row.createdAt,
+      source,
+      sourceEmployeeName: row.sourceEmployeeName,
+      sourceShiftId: row.sourceShiftId == null ? null : Number(row.sourceShiftId),
+      assignedToId: Number(row.assignedToId),
+      assignedToName: row.assignedToName,
+      assignedToActive: row.assignedToActive !== false,
+      ageDays: Math.max(0, Math.floor((now - created) / 86_400_000)),
+    }];
+  });
+}
+
+/**
+ * إعادة إسناد عهدةٍ معلّقة إلى مستلمٍ آخر — **مخرج النقد المحبوس**.
+ *
+ * لا تُحرّك ديناراً ولا تُنشئ قيداً: النقد غادر الدرج فعلاً وقت السحب، وهذه العملية
+ * تُغيّر **من يملك قبوله** فقط. القبول يبقى فعلاً صريحاً من المستلم الجديد بهويته
+ * (سلسلة الحيازة محفوظة)، والأثر التدقيقيّ يحمل الطرفين فلا تضيع المسؤولية.
+ *
+ * الشروط مرآةٌ لِـ`createCashDrop`: المستلم مديرٌ أو إداريّ، نشط، من فرع العهدة نفسه.
+ */
+export async function reassignPendingTreasuryReceipt(
+  receiptId: number,
+  toUserId: number,
+  actor: Actor,
+  auditCtx?: AuditContext,
+) {
+  if (actor.role !== "admin" && actor.role !== "manager") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "إعادة إسناد عهدة النقد للمدير أو الإداريّ فقط" });
+  }
+  return withTx(async (tx) => {
+    const row = (
+      await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
+    )[0];
+    if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "عهدة الاستلام غير موجودة" });
+
+    const referenceNumber = row.referenceNumber ?? "";
+    const source = contractSource(referenceNumber);
+    const isTreasuryContract =
+      source != null &&
+      row.direction === "IN" &&
+      row.paymentMethod === "CASH" &&
+      row.cashBucket === "TREASURY" &&
+      row.approvalStatus === "APPROVED";
+    if (!isTreasuryContract) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "السند ليس عقد تسليم نقد معلقاً" });
+    }
+    if (row.status !== "PENDING") {
+      throw new TRPCError({ code: "CONFLICT", message: "العهدة لم تعد معلّقة — لا تُعاد إسناداً" });
+    }
+    if (actor.role !== "admin" && (row.branchId == null || Number(row.branchId) !== actor.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "هذه العهدة لا تخص فرعك" });
+    }
+    const previousHolder = row.createdBy == null ? null : Number(row.createdBy);
+    if (previousHolder === toUserId) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "العهدة مسندة إليه أصلاً" });
+    }
+
+    const target = (await tx.select().from(users).where(eq(users.id, toUserId)).limit(1))[0];
+    if (!target || !target.isActive) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "المستلِم غير موجود أو معطّل" });
+    }
+    if (target.role !== "admin" && target.role !== "manager") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون مديراً أو إدارياً" });
+    }
+    if (target.branchId == null || Number(target.branchId) !== Number(row.branchId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون من فرع العهدة نفسه" });
+    }
+
+    await tx
+      .update(receipts)
+      .set({ createdBy: toUserId })
+      .where(and(eq(receipts.id, receiptId), eq(receipts.status, "PENDING")));
+
+    if (auditCtx) {
+      await logAuditTx(tx, auditCtx, {
+        action: "treasury.handover.reassign",
+        entityType: "receipt",
+        entityId: receiptId,
+        oldValue: { assignedToId: previousHolder, referenceNumber },
+        newValue: {
+          assignedToId: toUserId,
+          referenceNumber,
+          amount: String(row.amount),
+          branchId: row.branchId == null ? null : Number(row.branchId),
+          source,
+        },
+      });
+    }
+
+    return {
+      receiptId: Number(row.id),
+      referenceNumber,
+      amount: String(row.amount),
+      previousHolderId: previousHolder,
+      assignedToId: toUserId,
+    };
+  });
+}
+
 /**
  * قبول ثنائي للحيازة. يقفل الصف لمنع قبولين متزامنين، ويقبل فقط المستلم
  * المسند إليه العقد ومن فرعه. إعادة الطلب بعد النجاح آمنة ولا تضاعف الرصيد.

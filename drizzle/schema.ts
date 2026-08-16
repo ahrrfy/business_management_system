@@ -1988,6 +1988,13 @@ export const receipts = mysqlTable(
      */
     cashBucket: mysqlEnum("cashBucket", ["DRAWER", "TREASURY"]),
     referenceNumber: varchar("referenceNumber", { length: 100 }),
+    /**
+     * 0185 — عمود مولَّد STORED = `CD-…:direction` لصفوف السحب النقديّ وحدها، وNULL لغيرها.
+     * عليه فهرس فريد `uq_receipt_cash_drop` ⇒ يستحيل رقما سحبٍ متطابقان لنفس الاتجاه، بينما
+     * تبقى مراجع بقيّة السندات حرّةً في التكرار (NULLات لا تتصادم). drizzle لا يَلمسه
+     * (read-only من JS) — مُعرَّف هنا للأنواع وحارس `db:verify` فقط.
+     */
+    cashDropKey: varchar("cashDropKey", { length: 110 }),
     /** ش٥ (§٩.٤): هاتف مُرسِل رصيد الاتصال — مُطبَّع E.164 بserver/lib/phone.ts (اختياريّ:
      *  الآلية الأساس أكواد كروت الشحن في referenceNumber، وهذا لمن حوّل من رقمه مباشرة). */
     telecomSenderPhone: varchar("telecomSenderPhone", { length: 32 }),
