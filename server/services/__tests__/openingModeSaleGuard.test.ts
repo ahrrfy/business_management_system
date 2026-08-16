@@ -256,16 +256,35 @@ describe("حارس البيع بالسالب المشروط — وضع الاف�
     expect(await stockOf(1)).toBe(1);
   });
 
-  it("وضع الافتتاح لا يتجاوز تعطيل CARD؛ يُرفض القبض بلا فاتورة أو حركة", async () => {
+  it("قبضٌ غير نقديّ بلا مرجع يُرفض في وضع الافتتاح بلا فاتورة أو حركة", async () => {
     await enableOpeningMode();
     await expect(createSale(
       { branchId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CARD" } },
       actor,
-    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    )).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(await stockOf(1)).toBe(0);
     expect(await db().select().from(s.invoices)).toHaveLength(0);
     expect(await db().select().from(s.receipts)).toHaveLength(0);
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+  });
+
+  it("البطاقة المسدَّدة كاملاً بمرجعها مؤهَّلة للسالب كالنقد (سدادٌ فوريّ كامل)", async () => {
+    // كان الإقفال الشامل يجعل هذا الفرع ميّتاً رغم أنّ التصميم يذكره صراحةً:
+    // «نقداً أو بالبطاقة» — أثرها المالي في خزينة البطاقة لا في درج الكاشير.
+    await enableOpeningMode();
+    const res = await createSale(
+      {
+        branchId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+        payment: { amount: "20.00", method: "CARD", reference: "CARD-OPEN-1001" },
+      },
+      actor,
+    );
+    expect(res.negativeDips).toEqual([{ variantId: 1, newQuantity: -2 }]);
+    expect(await stockOf(1)).toBe(-2);
+    const [receipt] = await db().select().from(s.receipts);
+    expect(receipt.paymentMethod).toBe("CARD");
+    expect(receipt.cashBucket).toBeNull();
   });
 
   it("توسعة ١٠/٨: قناة ORDER (تحويل عرض سعر) تستفيد الآن من الوضع وتمرّ بالسالب", async () => {
