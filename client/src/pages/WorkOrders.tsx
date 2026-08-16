@@ -20,6 +20,7 @@ import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shipp
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { RowActions, type RowAction } from "@/components/list";
 import { DataTable } from "@/components/data-table/DataTable";
+import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
@@ -1097,6 +1098,43 @@ function OrdersTable({
       viewKey="work-orders-list"
       getRowId={(r) => String(r.id)}
       pageSize={50}
+      mobileCardRenderer={(o) => {
+        const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
+        const due = positiveDiff(o.salePrice, o.deposit ?? 0);
+        const next = NEXT[o.status as Status];
+        return (
+          <MobileDataCard
+            key={o.id}
+            title={o.title}
+            subtitle={`${o.orderNumber} · ${o.customerName ?? "عميل نقدي"}`}
+            badge={{
+              label: workOrderStatusLabel(o),
+              variant: o.status === "DELIVERED" ? "success" : o.status === "READY" ? "default" : o.status === "IN_PROGRESS" ? "warning" : "secondary",
+            }}
+            amount={{
+              value: fmtAr(o.salePrice),
+              label: due.gt(0) && o.status !== "DELIVERED" && o.status !== "CANCELLED" ? `المتبقي: ${fmtAr(due.toFixed(2))}` : undefined,
+              positive: o.status === "DELIVERED",
+            }}
+            metadata={[
+              { label: "الكمية", value: `${fmtInt(o.quantity)} نسخة` },
+              { label: "الأولوية", value: pri.label },
+              { label: "الاستحقاق", value: fmtDate(o.dueDate), icon: Calendar },
+              { label: "الفني", value: o.assigneeName ?? "غير مُسنَد" },
+            ]}
+            onClick={() => onOpen(o.id)}
+            primaryAction={
+              next && (next !== "DELIVERED" || canDeliver)
+                ? {
+                    label: next === "IN_PROGRESS" ? "بدء التنفيذ" : next === "READY" ? "جاهز" : "تسليم",
+                    icon: next === "READY" ? CheckCircle2 : next === "DELIVERED" ? Package : ChevronRight,
+                    onClick: () => onAdvance(o, next),
+                  }
+                : undefined
+            }
+          />
+        );
+      }}
     />
   );
 }
