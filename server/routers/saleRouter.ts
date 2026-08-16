@@ -380,8 +380,10 @@ export const saleRouter = router({
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
         managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       }).superRefine((input, ctx) => {
-        if (input.payment && input.payment.method !== "CASH") {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "method"], message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
+        // الإثبات = محاولة دفع خارجية مؤكَّدة خادمياً، لا نصٌّ يكتبه الكاشير. (الإقفال الشامل
+        // للطرق غير النقدية أُلغي في ١٦/٨/٢٦ — كان يعطّل بيع البطاقة كلّياً بلا مقابل نزاهةٍ إضافيّ.)
+        if (input.payment && input.payment.method !== "CASH" && !input.payment.externalPaymentAttemptId) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "أكّد الدفع الخارجي قبل إتمام البيع" });
         }
         if (input.payment?.method === "CASH" && input.payment.externalPaymentAttemptId != null) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["payment", "externalPaymentAttemptId"], message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });
@@ -467,8 +469,8 @@ export const saleRouter = router({
       // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
       clientRequestId: z.string().min(1).max(80).optional(),
     }).superRefine((input, ctx) => {
-      if (input.method !== "CASH") {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["method"], message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
+      if (input.method !== "CASH" && !input.reference?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "مرجع عملية البطاقة/التحويل مطلوب" });
       }
     }))
     .mutation(async ({ input, ctx }) => {

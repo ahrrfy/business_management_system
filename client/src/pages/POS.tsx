@@ -43,7 +43,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
+import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2655,20 +2655,23 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
           <button style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
             <Banknote aria-hidden size={22} />نقدي
           </button>
-          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
+          <button style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
             <CreditCard aria-hidden size={22} />بطاقة
           </button>
-          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
+          <button style={payMethodStyle(method === "TRANSFER")} onClick={() => setMethod("TRANSFER")}>
             <Send aria-hidden size={22} />تحويل
           </button>
-          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
+          <button style={payMethodStyle(method === "WALLET")}   onClick={() => setMethod("WALLET")}>
             <Wallet aria-hidden size={22} />محفظة
           </button>
         </div>
-        <div id="pos-external-payment-disabled" role="status" style={{ marginTop: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.amber, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
-          <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
-          <span>{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</span>
-        </div>
+        {method !== "CASH" && (
+          // البوّابة ليست إقفالاً بل إثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح زرّ الإتمام.
+          <div id="pos-external-payment-proof" role="status" style={{ marginTop: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.mutedFg, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
+            <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+            <span>{POS_EXTERNAL_PAYMENT_PROOF_HINT}</span>
+          </div>
+        )}
       </div>
 
       {/* مرجع ومحاولة الدفع غير النقدي — لا يُفتح الإتمام قبل CONFIRMED خادمية. */}

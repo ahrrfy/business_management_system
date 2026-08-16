@@ -4,7 +4,6 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { closeShift } from "../shiftService";
 import { approveVoucher, createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
-import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 
 type LegacyVoucherInput = Omit<Parameters<typeof createVoucherRaw>[0], "clientRequestId"> & {
   clientRequestId?: string;
@@ -377,8 +376,8 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
     expect(ent).toHaveLength(1);
   });
 
-  it("سند قبض بطاقة بلا إثبات مستقل يُرفض، وZ-report النقدي لا يتأثّر", async () => {
-    await expect(createVoucher(
+  it("سند قبض بطاقة لا يَمسّ درج الكاشير، وZ-report النقدي لا يتأثّر", async () => {
+    const card = await createVoucher(
       {
         voucherType: "RECEIPT",
         branchId: 1,
@@ -390,8 +389,11 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
         cardLastFour: "1234", // vouchers-pro: إلزامي لـCARD
       },
       actor,
-    )).rejects.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    );
+    const [cardReceipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(card.receiptId)));
+    // §٥: غير النقد بلا دلوٍ نقديّ ⇒ لا يدخل تسوية الدرج مهما بلغ مبلغه.
+    expect(cardReceipt.paymentMethod).toBe("CARD");
+    expect(cardReceipt.cashBucket).toBeNull();
     // افتح وردية ثم أضف سند نقدي ضمنها ⇒ تسوية الصندوق يجب أن تُظهر النقد فقط (100)، لا الـ1000 بطاقة.
     const shiftId = await openShift(1, 1);
     await createVoucher(
@@ -484,8 +486,8 @@ describe("إعفاء الخزينة الإدارية (admin/manager) للسند�
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
   });
 
-  it("صفة admin لا تتجاوز إغلاق القبض بالبطاقة غير الموثّق", async () => {
-    await expect(createVoucher(
+  it("قبض البطاقة لا يستهلك إعفاء الخزينة الإدارية — بلا دلوٍ نقديّ أصلاً", async () => {
+    const r = await createVoucher(
       {
         voucherType: "RECEIPT",
         branchId: 1,
@@ -497,8 +499,10 @@ describe("إعفاء الخزينة الإدارية (admin/manager) للسند�
         cardLastFour: "5678", // vouchers-pro: إلزامي لـCARD
       },
       actor,
-    )).rejects.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    );
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(r.receiptId)));
+    // لا TREASURY ولا DRAWER: البطاقة لا تَمسّ صندوقاً، فإعفاء الخزينة لا معنى له هنا.
+    expect(receipt.cashBucket).toBeNull();
+    expect(receipt.shiftId).toBeNull();
   });
 });

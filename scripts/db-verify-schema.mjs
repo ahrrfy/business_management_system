@@ -446,6 +446,7 @@ try {
     ["externalPaymentAttempts", "uq_extpay_receipt"],
     ["digitalSaleIntents", "uq_dsi_extpay_attempt"],
     ["receipts", "idx_receipt_bucket_status"], // F1: أُسقط مع bucketId في 0017، أُعيد في 0030
+    ["receipts", "uq_receipt_cash_drop"], // 0185: تفرّد رقم السحب النقديّ لكل (رقم × اتجاه)
     ["receipts", "idx_receipt_shift_date"], // Z-report
     ["invoices", "idx_invoice_branch_status_date"], // S1: أعمار الذمم
     ["invoices", "idx_invoice_date_status"], // S2: تقارير المبيعات (مُغطٍّ)
@@ -502,6 +503,24 @@ try {
     console.error(
       "   عالِج: راجع الهجرة المعنيّة وأعد إنشاء الفهرس (نمط idempotent كـ0030/0031/0032).",
     );
+    await conn.end();
+    process.exit(1);
+  }
+
+  // 0185: وجود الفهرس الفريد وحده **لا يكفي** — إن بقي `cashDropKey` عموداً عادياً (كما يكتبه
+  // `db:push` من schema.ts) فقيمه كلّها NULL والفهرس لا يمنع شيئاً، بينما سجلّ الهجرات يقول
+  // إنّ 0185 طُبِّقت. هذا بالضبط انجراف المخطّط الذي وُجد `db:verify` لالتقاطه، فنفحص
+  // **دلالة** العمود لا اسمه: يجب أن يحمل تعبير توليدٍ فعلياً.
+  const [genRows] = await conn.query(
+    "SELECT GENERATION_EXPRESSION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'receipts' AND COLUMN_NAME = 'cashDropKey'",
+    [dbName],
+  );
+  const genExpr = genRows[0]?.GENERATION_EXPRESSION ?? "";
+  if (!genExpr) {
+    console.error(
+      "⛔ تحقّق العمود المولَّد فشل — receipts.cashDropKey ليس GENERATED (تفرّد رقم السحب النقديّ معطَّل فعلياً).",
+    );
+    console.error("   الإصلاح: أعِد تطبيق drizzle/migrations/0185_cash_drop_reference_uniqueness.sql");
     await conn.end();
     process.exit(1);
   }

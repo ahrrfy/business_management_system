@@ -40,7 +40,8 @@ import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/date";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 
 type QueueOut = RouterOutputs["reception"]["invoiceQueue"];
 type Row = QueueOut["rows"][number];
@@ -480,7 +481,7 @@ function CollectPaymentDialog({
               }}
               disabled={!isPosPaymentMethodEnabled(p.v)}
               aria-describedby={!isPosPaymentMethodEnabled(p.v) ? "reception-collection-external-disabled" : undefined}
-              title={isPosPaymentMethodEnabled(p.v) ? p.label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+              title={isPosPaymentMethodEnabled(p.v) ? p.label : posPaymentRejectionMessage(p.v)}
               className={cn(
                 "min-h-[40px] rounded-lg border-2 text-xs font-extrabold",
                 method === p.v
@@ -495,7 +496,7 @@ function CollectPaymentDialog({
           ))}
         </div>
         <p id="reception-collection-external-disabled" className="text-[10px] leading-relaxed text-muted-foreground">
-          {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+          {INBOUND_TELECOM_DISABLED_MESSAGE}
         </p>
         {needRef && (
           <Input

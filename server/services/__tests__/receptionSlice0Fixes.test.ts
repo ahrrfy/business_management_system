@@ -320,14 +320,30 @@ describe("V1 — تقريب IQD للبيع المباشر الخالص النق�
   });
 });
 
-describe("سلامة تعطيل العربون غير النقديّ", () => {
-  it("عربون بطاقة: يُرفض fail-closed ولا يخلّف أمر شغل أو إيصالاً", async () => {
+describe("العربون غير النقديّ: مرجعٌ إلزاميّ ولا مساس بدرج الكاشير", () => {
+  it("عربون بطاقة بمرجعه يُقبَل بإيصالٍ بلا دلوٍ نقديّ", async () => {
+    await openReceptionShift();
+    const wo = await createWorkOrder({
+      branchId: 1, customerId: 1, baseVariantId: null, title: "بنر",
+      salePrice: "8000", quantity: 1,
+      deposit: "3000", paymentMethod: "CARD", paymentReference: "CARD-REF-77",
+    }, CASHIER);
+
+    expect(wo.workOrderId).toBeGreaterThan(0);
+    const [receipt] = await db().select().from(s.receipts);
+    expect(receipt.paymentMethod).toBe("CARD");
+    expect(receipt.referenceNumber).toBe("CARD-REF-77");
+    // §٥: العربون غير النقديّ لا يدخل درج الكاشير فلا يظهر في تسوية الوردية.
+    expect(receipt.cashBucket).toBeNull();
+  });
+
+  it("عربون بطاقة بلا مرجع يُرفض ولا يخلّف أمر شغل أو إيصالاً", async () => {
     await openReceptionShift();
     await expect(createWorkOrder({
       branchId: 1, customerId: 1, baseVariantId: null, title: "بنر",
       salePrice: "8000", quantity: 1,
-      deposit: "3000", paymentMethod: "CARD", paymentReference: "CARD-REF-77",
-    }, CASHIER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      deposit: "3000", paymentMethod: "CARD",
+    }, CASHIER)).rejects.toThrow();
 
     expect(await db().select().from(s.workOrders)).toHaveLength(0);
     expect(await db().select().from(s.receipts)).toHaveLength(0);

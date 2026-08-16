@@ -10,7 +10,7 @@ import { fmt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -245,7 +245,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
   async function submitConversion() {
     if (!convertTarget) return;
     if (!isPosPaymentMethodEnabled(convertMethod)) {
-      notify.err(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+      notify.err(posPaymentRejectionMessage(convertMethod));
       return;
     }
     const amount = convertAmount.trim();
@@ -709,7 +709,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                       type="button"
                       disabled={isConversionBusy || convert.isPending || !isPosPaymentMethodEnabled(value)}
                       aria-describedby={!isPosPaymentMethodEnabled(value) ? "reservation-external-payment-disabled" : undefined}
-                      title={isPosPaymentMethodEnabled(value) ? label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+                      title={isPosPaymentMethodEnabled(value) ? label : posPaymentRejectionMessage(value)}
                       onClick={() => {
                         if (!isPosPaymentMethodEnabled(value)) return;
                         setConvertMethod(value);
@@ -724,9 +724,6 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                     </button>
                   ))}
                 </div>
-                <p id="reservation-external-payment-disabled" className="text-[10px] leading-relaxed text-muted-foreground">
-                  {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-                </p>
               </div>
             ) : null}
 
