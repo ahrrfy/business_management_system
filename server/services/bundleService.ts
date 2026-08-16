@@ -21,10 +21,13 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { bundleComponents, productVariants, products } from "../../drizzle/schema";
-import type { Tx } from "../db";
+import type { DB, Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
 import { assertNoActiveOnlineOrderBundleChange } from "./catalog/variantAvailability";
+
+/** القراءات المشتركة تعمل على الاتصال العام أو داخل معاملة — نفس المنطق، مصدرٌ واحد. */
+type BundleQueryDb = DB | Tx;
 
 /** واحدة من صفوف الوصفة كما تُخزَّن — نموذج القراءة العامّ. */
 export interface BundleComponentRow {
@@ -244,7 +247,7 @@ export async function replaceBundleComponents(
  * تعود Map<bundleVariantId, ComponentRow[]>. تُستعمَل في مسار البيع + شاشات العرض.
  */
 export async function getBundleDefinitions(
-  tx: Tx,
+  tx: BundleQueryDb,
   bundleVariantIds: number[]
 ): Promise<Map<number, BundleComponentRow[]>> {
   const map = new Map<number, BundleComponentRow[]>();
@@ -281,7 +284,7 @@ export async function getBundleDefinitions(
  * `defsByBundle`: نتيجة `getBundleDefinitions` — يُمرَّر لتفادي إعادة القراءة إن استُدعيت في مسار بيعٍ محمَّل.
  */
 export async function computeBundleUnitCosts(
-  tx: Tx,
+  tx: BundleQueryDb,
   bundleVariantIds: number[],
   defsByBundle: Map<number, BundleComponentRow[]>
 ): Promise<Map<number, string>> {
@@ -316,4 +319,21 @@ export async function computeBundleUnitCosts(
     costMap.set(bid, toDbMoney(sum));
   }
   return costMap;
+}
+
+/**
+ * تكلفة الوحدة الأساس لكل بكج، بقراءةٍ واحدةٍ للوصفات وأخرى للتكاليف.
+ *
+ * **مصدر الحقيقة الوحيد لتكلفة البكج في القراءة والكتابة معاً.** `productVariants.costPrice`
+ * للبكج صفرٌ بحكم التصميم (لا شراء له — يُركَّب من مكوّناته)، فأيّ شاشةٍ تعرض ذلك العمود مباشرةً
+ * تُظهر «تكلفة ٠» وهامشاً ١٠٠٪ كاذباً. تستعملها شاشة المنتجات والكاشير كما يستعملها مسار البيع.
+ */
+export async function loadBundleUnitCosts(
+  db: BundleQueryDb,
+  bundleVariantIds: number[]
+): Promise<Map<number, string>> {
+  const ids = Array.from(new Set(bundleVariantIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)));
+  if (!ids.length) return new Map<number, string>();
+  const defs = await getBundleDefinitions(db, ids);
+  return computeBundleUnitCosts(db, ids, defs);
 }

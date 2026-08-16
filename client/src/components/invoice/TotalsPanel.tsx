@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { calcTotals, fmtNum } from "./totals";
 import { PAYMENT_METHODS, type InvoiceAction, type InvoiceLine, type InvoiceState, type PaymentMethod } from "./types";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 
 export interface TotalsPanelProps {
   items: InvoiceLine[];
@@ -36,8 +36,8 @@ export interface TotalsPanelProps {
   shippingLabel?: string;
   /** true = إظهار مفتاح «مجاني» بجانب أجرة التوصيل (فاتورة البيع). Default false للشاشات الأخرى. */
   allowFreeShipping?: boolean;
-  /** SALES/POS money-in is CASH-only until a trusted provider + reconciliation lifecycle is enabled. */
-  cashOnlyPayment?: boolean;
+  /** true = تطبيق سياسة القبض الحاكمة (`@shared/inboundPaymentPolicy`): الطرق المدعومة فقط، وما عداها مقفل. */
+  enforceInboundPaymentPolicy?: boolean;
 }
 
 export function TotalsPanel({
@@ -52,7 +52,7 @@ export function TotalsPanel({
   overrideGrandTotal,
   shippingLabel = "مصاريف شحن",
   allowFreeShipping = false,
-  cashOnlyPayment = false,
+  enforceInboundPaymentPolicy = false,
 }: TotalsPanelProps) {
   const t = calcTotals(items, state);
   // (0152) «مجاني» صار حالةً صريحة لا استنتاجاً من الصفر — فالصفر كان يخلط «أُهديت الأجرة»
@@ -65,10 +65,10 @@ export function TotalsPanel({
   const remainingNum = grandTotalNum - paidNum;
 
   useEffect(() => {
-    if (cashOnlyPayment && !isPosPaymentMethodEnabled(state.paymentMethod)) {
+    if (enforceInboundPaymentPolicy && !isPosPaymentMethodEnabled(state.paymentMethod)) {
       dispatch({ type: "SET_FIELD", field: "paymentMethod", value: "CASH" });
     }
-  }, [cashOnlyPayment, dispatch, state.paymentMethod]);
+  }, [enforceInboundPaymentPolicy, dispatch, state.paymentMethod]);
 
   const rowCls = "flex items-center justify-between py-1.5";
   const labelCls = "text-sm font-semibold text-muted-foreground";
@@ -264,7 +264,7 @@ export function TotalsPanel({
             <div className="mb-2.5 flex flex-wrap gap-1.5">
               {PAYMENT_METHODS.map((m) => {
                 const active = state.paymentMethod === m.value;
-                const enabled = !cashOnlyPayment || isPosPaymentMethodEnabled(m.value);
+                const enabled = !enforceInboundPaymentPolicy || isPosPaymentMethodEnabled(m.value);
                 return (
                   <button
                     key={m.value}
@@ -275,7 +275,7 @@ export function TotalsPanel({
                     }}
                     disabled={!enabled}
                     aria-describedby={!enabled ? "invoice-external-payment-disabled" : undefined}
-                    title={enabled ? m.label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+                    title={enabled ? m.label : posPaymentRejectionMessage(m.value)}
                     className={cn(
                       "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition",
                       "outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -292,9 +292,9 @@ export function TotalsPanel({
                 );
               })}
             </div>
-            {cashOnlyPayment && (
+            {enforceInboundPaymentPolicy && PAYMENT_METHODS.some((m) => !isPosPaymentMethodEnabled(m.value)) && (
               <p id="invoice-external-payment-disabled" className="mb-2 text-[10px] leading-relaxed text-muted-foreground">
-                {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+                {posPaymentRejectionMessage(PAYMENT_METHODS.find((m) => !isPosPaymentMethodEnabled(m.value))!.value)}
               </p>
             )}
 

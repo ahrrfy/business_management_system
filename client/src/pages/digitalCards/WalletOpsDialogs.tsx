@@ -13,7 +13,7 @@ import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
+import { inboundPaymentRejectionMessage, isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
 import { useEffect, useState } from "react";
 
 export type WalletRow = RouterOutputs["digitalCards"]["wallets"]["list"][number];
@@ -72,7 +72,7 @@ export function WalletMoveDialog({
   function submit() {
     if (!wallet) return;
     if (!amount || Number(amount) <= 0) return notify.err("أدخِل مبلغاً أكبر من صفر");
-    if (mode === "withdraw" && method !== "CASH") return notify.err(INBOUND_PAYMENT_DISABLED_MESSAGE);
+    if (!isInboundPaymentMethodEnabled(method)) return notify.err(inboundPaymentRejectionMessage(method));
     const payload = {
       walletId: wallet.id, amount, paymentMethod: method,
       clientRequestId: crypto.randomUUID(), notes: notes.trim() || null,
@@ -105,15 +105,10 @@ export function WalletMoveDialog({
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="wm-method">وسيلة الحركة</label>
-            <select id="wm-method" className={selectCls} value={method} onChange={(e) => setMethod(e.target.value as "CASH" | "TRANSFER")} aria-describedby={isDep ? undefined : "wallet-withdraw-inbound-payment-policy"}>
+            <select id="wm-method" className={selectCls} value={method} onChange={(e) => setMethod(e.target.value as "CASH" | "TRANSFER")}>
               <option value="CASH">{isDep ? "نقداً من الخزينة" : "نقداً إلى الخزينة"}</option>
-              {isDep && <option value="TRANSFER">تحويل بنكي</option>}
+              <option value="TRANSFER">تحويل بنكي</option>
             </select>
-            {!isDep && (
-              <p id="wallet-withdraw-inbound-payment-policy" className="text-[11px] text-muted-foreground">
-                {INBOUND_PAYMENT_DISABLED_MESSAGE}
-              </p>
-            )}
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">ملاحظات (اختياري)</label>

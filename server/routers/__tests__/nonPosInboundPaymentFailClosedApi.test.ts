@@ -5,10 +5,12 @@ import type { TrpcContext } from "../../context";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { truncateTables } from "../../services/__tests__/__testUtils__";
-import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
+import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 
-const API_NON_CASH = ["CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"] as const;
-const ROUTER_CREATABLE_NON_CASH = new Set<string>(["CARD", "TRANSFER", "WALLET"]);
+/** الطرق المرفوضة بنيوياً في منافذ القبض غير البيعيّة: رصيد زين (مساره البطاقات الرقمية) والصكوك (قرار مالك). */
+const API_REJECTED = ["TELECOM", "CHECK"] as const;
+/** الطرق المدعومة بمرجعٍ قابلٍ للمطابقة — تُقبض فعلاً وتُحرّك الذمّة والدفتر. */
+const API_SUPPORTED_NON_CASH = ["CARD", "TRANSFER", "WALLET"] as const;
 const API_ROLES = ["admin", "manager", "accountant"] as const;
 const PARTIES = ["CUSTOMER", "SUPPLIER", "OTHER"] as const;
 
@@ -94,12 +96,12 @@ beforeEach(async () => {
   await truncateTables(TABLES);
 });
 
-describe.sequential("non-POS inbound payment API fail-closed", () => {
-  it.each(API_ROLES)("rejects every voucher receipt party/method for %s with zero money trail", async (role) => {
+describe.sequential("سياسة القبض خارج نقاط البيع على حدود الـAPI", () => {
+  it.each(API_ROLES)("سند القبض يرفض الطرق غير المدعومة لكل طرف بلا أيّ أثر ماليّ — %s", async (role) => {
     await seedCashFixtures();
     const caller = appRouter.createCaller(context(role, role === "admin" ? 1 : role === "manager" ? 2 : 3));
     for (const partyType of PARTIES) {
-      for (const paymentMethod of API_NON_CASH) {
+      for (const paymentMethod of API_REJECTED) {
         const rejection = expect(caller.vouchers.create({
           voucherType: "RECEIPT",
           branchId: 1,
@@ -111,12 +113,7 @@ describe.sequential("non-POS inbound payment API fail-closed", () => {
           description: "قبض غير نقدي غير موثّق",
           clientRequestId: `api-${role}-${partyType}-${paymentMethod}`,
         })).rejects;
-        if (ROUTER_CREATABLE_NON_CASH.has(paymentMethod)) {
-          await rejection.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
-        } else {
-          // CHECK/TELECOM مغلقان أيضاً عند عقد API قبل بلوغ الخدمة.
-          await rejection.toThrow();
-        }
+        await rejection.toThrow();
       }
     }
     await expectNoInboundArtifacts();
@@ -124,7 +121,7 @@ describe.sequential("non-POS inbound payment API fail-closed", () => {
     expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
   });
 
-  it.each(API_ROLES)("rejects installment non-cash collection for %s before line mutation", async (role) => {
+  it.each(API_ROLES)("تحصيل القسط يرفض الطرق غير المدعومة قبل مسّ السطر — %s", async (role) => {
     await seedCashFixtures();
     const planRes = await db().insert(s.installmentPlans).values({
       customerId: 1,
@@ -142,13 +139,8 @@ describe.sequential("non-POS inbound payment API fail-closed", () => {
     });
     const lineId = Number((lineRes as unknown as [{ insertId: number }])[0].insertId);
     const caller = appRouter.createCaller(context(role, role === "admin" ? 1 : role === "manager" ? 2 : 3));
-    for (const paymentMethod of API_NON_CASH) {
-      const rejection = expect(caller.installments.pay({ lineId, paymentMethod: paymentMethod as never })).rejects;
-      if (ROUTER_CREATABLE_NON_CASH.has(paymentMethod)) {
-        await rejection.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
-      } else {
-        await rejection.toThrow();
-      }
+    for (const paymentMethod of API_REJECTED) {
+      await expect(caller.installments.pay({ lineId, paymentMethod: paymentMethod as never })).rejects.toThrow();
     }
     expect(await db().select().from(s.receipts)).toHaveLength(0);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
@@ -160,20 +152,45 @@ describe.sequential("non-POS inbound payment API fail-closed", () => {
     expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("500.00");
   });
 
-  it.each(["admin", "manager"] as const)("rejects wallet TRANSFER withdrawal for %s before wallet lookup", async (role) => {
+  it.each(["admin", "manager"] as const)("سحب المحفظة برصيد زين مرفوض قبل قراءة المحفظة — %s", async (role) => {
     await seedCashFixtures();
     const caller = appRouter.createCaller(context(role, role === "admin" ? 1 : 2));
     await expect(caller.digitalCards.wallets.withdraw({
       walletId: 1,
       amount: "100.00",
-      paymentMethod: "TRANSFER",
+      paymentMethod: "TELECOM" as never,
       clientRequestId: `wallet-api-${role}`,
-    })).rejects.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
+    })).rejects.toThrow();
     await expectNoInboundArtifacts();
     expect((await db().select().from(s.digitalWallets).where(eq(s.digitalWallets.id, 1)))[0].currentBalance).toBe("100.00");
+    expect(INBOUND_TELECOM_DISABLED_MESSAGE).toMatch(/رصيد زين/);
   });
 
-  it("keeps CASH voucher receipt, installment collection, and wallet withdrawal operational", async () => {
+  it.each(API_SUPPORTED_NON_CASH)("سند قبض %s يُقبَل ويُحرّك ذمّة العميل والدفتر", async (paymentMethod) => {
+    await seedCashFixtures();
+    const caller = appRouter.createCaller(context("admin", 1));
+    const voucher = await caller.vouchers.create({
+      voucherType: "RECEIPT",
+      branchId: 1,
+      amount: "100.00",
+      paymentMethod,
+      partyType: "CUSTOMER",
+      partyId: 1,
+      referenceNumber: `REF-${paymentMethod}`,
+      // البطاقة تلزمها آخر ٤ أرقام (حارس قائم في createVoucherTx) — جزءٌ من قابلية المطابقة.
+      cardLastFour: paymentMethod === "CARD" ? "4321" : null,
+      description: "قبض غير نقديّ بمرجع",
+      clientRequestId: `ok-${paymentMethod}`,
+    } as never);
+    expect(voucher.receiptId).toBeGreaterThan(0);
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(voucher.receiptId)));
+    expect(receipt.paymentMethod).toBe(paymentMethod);
+    // غير النقد لا يَمسّ درج الكاشير (§٥) — لا دلوَ نقديّ له.
+    expect(receipt.cashBucket).toBeNull();
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("400.00");
+  });
+
+  it("النقد يبقى عاملاً كما هو: سند قبض + تحصيل قسط + سحب محفظة", async () => {
     await seedCashFixtures();
     const caller = appRouter.createCaller(context("admin", 1));
 

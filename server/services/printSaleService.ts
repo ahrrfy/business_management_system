@@ -138,6 +138,11 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     // idempotency أو أي قراءة/كتابة مالية أو مخزنية.
     if (input.payment) {
       assertPosPaymentMethodEnabled(input.payment.method);
+      // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: نظير الحارس في `sale/payment.ts`. كانت هذه
+      // القناة تُنشئ إيصالها بنفسها، فمرّ قبضٌ غير نقديّ بلا مرجعٍ حين تُستدعى الخدمة مباشرةً.
+      if (input.payment.method !== "CASH" && !(input.payment.reference ?? "").trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
     }
     // ١. Idempotency: أعِد الفاتورة القائمة لنفس clientRequestId (نقرة مزدوجة/إعادة إرسال).
     if (input.clientRequestId) {

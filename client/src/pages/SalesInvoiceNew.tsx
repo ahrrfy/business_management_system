@@ -817,7 +817,7 @@ export default function SalesInvoiceNew() {
             showShipping
             showOtherExpenses={false}
             showTaxToggle
-            cashOnlyPayment
+            enforceInboundPaymentPolicy
           />
           {isCorrection && (
             <CorrectionPanel

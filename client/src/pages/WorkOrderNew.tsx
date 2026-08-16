@@ -22,7 +22,7 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 
 /**
  * طلب خدمة جديد — v3 add-screens (شاشة احترافية متكاملة).
@@ -298,7 +298,7 @@ export default function WorkOrderNew() {
 
   async function handleSave(opts: { print: boolean }) {
     setError("");
-    if (!isPosPaymentMethodEnabled(paymentMethod)) return setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    if (!isPosPaymentMethodEnabled(paymentMethod)) return setError(posPaymentRejectionMessage(paymentMethod));
     if (!effectiveBranch) return setError("اختر الفرع أولاً.");
     if (!hasCart && !hasCustom) return setError("أضف منتجاً جاهزاً للسلّة أو أدخل خدمة تخصيص بسعر.");
     if (hasCustom && !salePrice.trim()) return setError("سعر بيع خدمة التخصيص مطلوب.");
@@ -846,18 +846,12 @@ export default function WorkOrderNew() {
             </button>
             <button
               type="button"
-              onClick={() => undefined}
-              disabled
-              aria-describedby="work-order-external-payment-disabled"
-              title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-              className="flex h-10 cursor-not-allowed items-center gap-1.5 rounded-md border bg-muted/40 px-4 text-sm text-muted-foreground/45"
+              onClick={() => setPaymentMethod("CARD")}
+              className={cn("h-10 px-4 rounded-md border text-sm flex items-center gap-1.5", paymentMethod === "CARD" ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent")}
             >
               <CreditCard aria-hidden className="size-4" /> بطاقة (ماستر/فيزا)
             </button>
           </div>
-          <p id="work-order-external-payment-disabled" className="text-[11px] text-muted-foreground">
-            {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-          </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">

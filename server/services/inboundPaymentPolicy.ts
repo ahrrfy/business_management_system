@@ -1,18 +1,21 @@
 import { TRPCError } from "@trpc/server";
 import {
-  INBOUND_PAYMENT_DISABLED_MESSAGE,
+  inboundPaymentRejectionMessage,
   isInboundPaymentMethodEnabled,
+  type InboundEnabledPaymentMethod,
 } from "@shared/inboundPaymentPolicy";
 
 /**
- * الحارس العام لكل مسار يثبت قبضاً اعتماداً على اختيار الموظف وحده.
- * يجب استدعاؤه قبل أي قراءة أو كتابة متى كانت الطريقة معروفة عند حدود العملية.
+ * الحارس العام لكل مسار يثبت قبضاً. يرفض المجهول ورصيد زين؛ أمّا إثبات وصول المال
+ * للطرق غير النقدية في نقاط البيع فبوّابته `externalPaymentAttempts` المؤكَّدة، لا هذا الحارس.
  */
-export function assertInboundPaymentMethodEnabled(method: string | null | undefined): asserts method is "CASH" {
+export function assertInboundPaymentMethodEnabled(
+  method: string | null | undefined,
+): asserts method is InboundEnabledPaymentMethod {
   if (!isInboundPaymentMethodEnabled(method)) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: INBOUND_PAYMENT_DISABLED_MESSAGE,
+      message: inboundPaymentRejectionMessage(method),
     });
   }
 }

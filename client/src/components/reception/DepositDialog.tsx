@@ -14,7 +14,8 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { notify } from "@/lib/notify";
 import { printDepositReceipt } from "@/lib/printing/draftTicket";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 
 const D = (v: string | number) => new Decimal(v || 0);
 const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
@@ -137,7 +138,7 @@ export default function DepositDialog({
               }}
               disabled={!isPosPaymentMethodEnabled(v)}
               aria-describedby={!isPosPaymentMethodEnabled(v) ? "reception-deposit-external-disabled" : undefined}
-              title={isPosPaymentMethodEnabled(v) ? METHOD_LABEL[v] : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+              title={isPosPaymentMethodEnabled(v) ? METHOD_LABEL[v] : posPaymentRejectionMessage(v)}
               className={cn(
                 "min-h-[40px] flex-1 rounded-lg border-2 text-xs font-extrabold",
                 method === v
@@ -152,7 +153,7 @@ export default function DepositDialog({
           ))}
         </div>
         <p id="reception-deposit-external-disabled" className="text-[10px] leading-relaxed text-muted-foreground">
-          {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+          {INBOUND_TELECOM_DISABLED_MESSAGE}
         </p>
         {needRef && (
           <Input

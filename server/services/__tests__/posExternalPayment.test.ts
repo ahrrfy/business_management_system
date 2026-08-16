@@ -8,7 +8,7 @@ import {
   createConfirmedPosSale,
   initiateExternalPaymentAttempt,
 } from "../posExternalPayment";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
+import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 import { truncateTables } from "./__testUtils__";
 
 const cashier = { userId: 1, branchId: 1, role: "cashier" } as const;
@@ -97,8 +97,12 @@ async function expectNoBusinessEffects() {
   expect(Number(stock.quantity)).toBe(10);
 }
 
-describe("POS external payments fail closed without a trusted provider settlement", () => {
-  it.each(EXTERNAL_METHODS)("rejects initiating %s before any database effect", async (method) => {
+/**
+ * العقد: الدفع غير النقدي مسموحٌ لكن **لا يُثبَّت أثرٌ ماليّ بلا محاولةٍ مؤكَّدة**.
+ * فما يُرفض هنا هو البيع بلا محاولة، والمحاولة الملفَّقة، ورصيد زين — لا الطريقة نفسها.
+ */
+describe("بوّابة الدفع الخارجي: محاولةٌ مؤكَّدة أو لا أثر", () => {
+  it.each(["TELECOM"] as const)("رصيد زين مرفوض قبل أيّ أثر في القاعدة — %s", async (method) => {
     await expect(initiateExternalPaymentAttempt({
       branchId: 1,
       channel: "POS",
@@ -107,13 +111,13 @@ describe("POS external payments fail closed without a trusted provider settlemen
       reference: unique("REF"),
       requestId: unique("REQ"),
       deviceId: "TEST-POS-DEVICE",
-    }, cashier)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    }, cashier)).rejects.toThrow(INBOUND_TELECOM_DISABLED_MESSAGE);
 
     expect(await db().select().from(s.externalPaymentAttempts)).toHaveLength(0);
     await expectNoBusinessEffects();
   });
 
-  it("rejects confirmation for cashier and owner before looking up or mutating an attempt", async () => {
+  it("محاولةٌ لا تخصّ الكاشير/الجهاز لا تُؤكَّد ولا تتحوّل حالتها", async () => {
     const legacyReference = unique("LEGACY-REF").toUpperCase();
     await db().insert(s.externalPaymentAttempts).values({
       branchId: 1,
@@ -131,11 +135,17 @@ describe("POS external payments fail closed without a trusted provider settlemen
     });
     const row = (await db().select().from(s.externalPaymentAttempts))[0];
 
-    for (const actor of [cashier, owner]) {
-      await expect(confirmExternalPaymentAttempt({
-        attemptId: Number(row.id), branchId: 1, channel: "POS", deviceId: "TEST-POS-DEVICE",
-      }, actor)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
-    }
+    // كاشيرٌ آخر لا يؤكّد محاولة غيره، وجهازٌ آخر لا يؤكّد محاولة جهازٍ سواه.
+    await expect(confirmExternalPaymentAttempt({
+      attemptId: Number(row.id), branchId: 1, channel: "POS", deviceId: "TEST-POS-DEVICE",
+    }, owner)).rejects.toThrow();
+    await expect(confirmExternalPaymentAttempt({
+      attemptId: Number(row.id), branchId: 1, channel: "POS", deviceId: "ANOTHER-DEVICE",
+    }, cashier)).rejects.toThrow();
+    // وقناةٌ أخرى (المطبعة) لا تستهلك محاولة الكاشير.
+    await expect(confirmExternalPaymentAttempt({
+      attemptId: Number(row.id), branchId: 1, channel: "PRINT_POS", deviceId: "TEST-POS-DEVICE",
+    }, cashier)).rejects.toThrow();
 
     const unchanged = (await db().select().from(s.externalPaymentAttempts).where(eq(s.externalPaymentAttempts.id, row.id)))[0];
     expect(unchanged.state).toBe("INITIATED");
@@ -143,22 +153,22 @@ describe("POS external payments fail closed without a trusted provider settlemen
     await expectNoBusinessEffects();
   });
 
-  it.each(EXTERNAL_METHODS)("rejects POS sale paid by %s with zero invoice/receipt/ledger/stock effects", async (method) => {
-    await expect(stockSale(method)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+  it.each(EXTERNAL_METHODS)("بيع %s بلا محاولة مؤكَّدة: صفر فاتورة/إيصال/قيد/مخزون", async (method) => {
+    await expect(stockSale(method)).rejects.toThrow();
     await expectNoBusinessEffects();
   });
 
-  it("does not permit bypassing the service guard by clearing the router marker", async () => {
-    await expect(stockSale("CARD", false)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+  it("إسقاط علامة الراوتر لا يفتح باباً خلفياً — الخدمة تفرض المحاولة بنفسها", async () => {
+    await expect(stockSale("CARD", false)).rejects.toThrow();
     await expectNoBusinessEffects();
   });
 
-  it.each(EXTERNAL_METHODS)("rejects PrintPOS sale paid by %s with zero business effects", async (method) => {
-    await expect(printSale(method)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+  it.each(EXTERNAL_METHODS)("بيع المطبعة بـ%s بلا محاولة مؤكَّدة: صفر أثر", async (method) => {
+    await expect(printSale(method)).rejects.toThrow();
     await expectNoBusinessEffects();
   });
 
-  it("keeps CASH working in POS and PrintPOS and creates only drawer receipts", async () => {
+  it("النقد يبقى عاملاً في الكاشير والمطبعة بإيصالات درجٍ فقط", async () => {
     await stockSale("CASH");
     await printSale("CASH");
 

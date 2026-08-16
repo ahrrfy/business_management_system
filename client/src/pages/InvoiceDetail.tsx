@@ -65,9 +65,9 @@ import {
   paymentMethodClass,
   paymentMethodLabel,
 } from "@/lib/paymentMethod";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 
-const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => method.v === "CASH");
+const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v));
 
 const STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -420,7 +420,7 @@ export default function InvoiceDetail() {
   async function submit() {
     setError("");
     setDone("");
-    if (payMethod !== "CASH") return setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    if (!isPosPaymentMethodEnabled(payMethod)) return setError(posPaymentRejectionMessage(payMethod));
     const amt = D(payAmount || "0");
     if (amt.lte(0)) return setError("أدخل مبلغاً موجباً.");
     if (amt.gt(remaining))
@@ -1068,9 +1068,6 @@ export default function InvoiceDetail() {
                   </option>
                 ))}
               </select>
-              <p className="text-xs font-medium text-muted-foreground">
-                {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-              </p>
             </div>
             <Button onClick={submit} disabled={pay.isPending}>
               {pay.isPending ? "جارٍ…" : "تسجيل الدفعة"}

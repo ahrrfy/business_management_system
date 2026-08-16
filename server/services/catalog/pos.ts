@@ -10,6 +10,7 @@ import { getProductCategoryIds, resolvePromotionForLine } from "../salesPromotio
 import { withTx } from "../tx";
 import { resolveBarcodeOwner } from "./barcodeAliases";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility } from "./search";
+import { loadBundleUnitCosts } from "../bundleService";
 import { loadVariantAvailability } from "./variantAvailability";
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
@@ -249,14 +250,19 @@ async function applyBundleAvailability<
     branchId,
     rows.map((row) => row.variantId),
   );
+  // تكلفة البكج مشتقّة من وصفته (`productVariants.costPrice` له صفرٌ بحكم التصميم) — بدونها
+  // كان الكاشير وسلّة الفاتورة يعرضان تكلفة ٠ وهامشاً كاذباً لكل بكج.
+  const bundleCosts = await loadBundleUnitCosts(db, rows.flatMap((row) => row.isBundle ? [row.variantId] : []));
   return rows.map((r) => {
+    const derivedCost = r.isBundle ? bundleCosts.get(r.variantId) ?? null : null;
     const current = availability.get(r.variantId);
-    if (!current) return { ...r, stockBase: 0, reservedBase: 0, availableBase: 0 };
+    if (!current) return { ...r, stockBase: 0, reservedBase: 0, availableBase: 0, ...(derivedCost ? { costPriceBase: derivedCost } : {}) };
     return {
       ...r,
       stockBase: current.onHandBase,
       reservedBase: current.reservedBase,
       availableBase: current.availableBase,
+      ...(derivedCost ? { costPriceBase: derivedCost } : {}),
     };
   });
 }
