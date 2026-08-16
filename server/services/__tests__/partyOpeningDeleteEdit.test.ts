@@ -171,8 +171,7 @@ describe("③ حذف طرفٍ بلا نشاط + حارس يرفض النشاط",
         openingBalance: "10000",
         openingBalanceDirection: "OWED_TO_US",
       })) as { customerId: number };
-      await db().insert(s.doubleEntrySettings).values({
-        id: 1,
+      await db().update(s.doubleEntrySettings).set({
         mode,
         shadowCycleId: `party-delete-${mode.toLowerCase()}`,
         ...(mode === "ACTIVE"
@@ -187,7 +186,7 @@ describe("③ حذف طرفٍ بلا نشاط + حارس يرفض النشاط",
               policyApprovedBy: 1,
             }
           : {}),
-      });
+      }).where(eq(s.doubleEntrySettings.id, 1));
 
       await expect(deleteSupplier(supplierId, actor)).rejects.toMatchObject({
         code: "PRECONDITION_FAILED",

@@ -42,6 +42,7 @@ async function seedBase() {
   // وردية مفتوحة للعربون النقدي
   const sr = await d.insert(s.shifts).values({
     userId: 1, branchId: 1, status: "OPEN",
+    shiftType: "RECEPTION",
     openedAt: new Date(),
     openGuard: "1:1", openingBalance: "0",
   });

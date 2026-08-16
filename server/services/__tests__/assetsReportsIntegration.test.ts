@@ -5,7 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { computeDepreciation, createAsset, disposeAsset, listAssets, postMonthlyDepreciation } from "../assetsService";
+import { computeDepreciation, createAsset as createAssetRaw, disposeAsset, listAssets, postMonthlyDepreciation } from "../assetsService";
 import { getFinancialPosition, getProfitAndLoss } from "../reportsFinancialService";
 import { getSupplierStatement } from "../reportsService";
 import { truncateTables } from "./__testUtils__";
@@ -16,10 +16,26 @@ function db() {
   if (!d) throw new Error("DATABASE_URL not set for tests");
   return d;
 }
-const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
+const ACTOR = { userId: 1, branchId: 1, role: "admin" as const, isOwner: true };
 const OWNER = { userId: 2, branchId: 1, role: "manager" as const };
+let assetRequestSeq = 0;
+type AssetInput = Parameters<typeof createAssetRaw>[0];
+async function createAsset(
+  input: Omit<AssetInput, "clientRequestId" | "acquisitionEvidenceReference" | "acquisitionBeneficiaryName"> &
+    Partial<Pick<AssetInput, "clientRequestId" | "acquisitionEvidenceReference" | "acquisitionBeneficiaryName">>,
+  actor: Parameters<typeof createAssetRaw>[1],
+) {
+  assetRequestSeq += 1;
+  return createAssetRaw({
+    ...input,
+    clientRequestId: input.clientRequestId ?? `asset-report-${assetRequestSeq}`,
+    acquisitionEvidenceReference: input.acquisitionEvidenceReference ?? `ASSET-REPORT-DOC-${assetRequestSeq}`,
+    acquisitionBeneficiaryName: input.acquisitionBeneficiaryName ?? "شركة تجهيزات الرافدين للاختبار",
+  }, actor);
+}
 
 beforeEach(async () => {
+  assetRequestSeq = 0;
   await truncateTables([
     "accountingEntries", "receipts", "assetMaintenance", "assetCustodyLog",
     "assetDocuments", "fixedAssets", "suppliers", "branches", "users",
@@ -27,7 +43,7 @@ beforeEach(async () => {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values([
-    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
+    { id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local", isOwner: true },
     { id: 2, openId: "asset-report-owner", name: "مالك", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد الأصول" });

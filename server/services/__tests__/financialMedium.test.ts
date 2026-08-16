@@ -56,7 +56,7 @@ async function setStock(variantId: number, branchId: number, qty: number) {
   await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
 }
 async function openShift(branchId = 1, userId = 1): Promise<number> {
-  const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN" });
+  const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN", shiftType: "RECEPTION" });
   return insertId(r);
 }
 

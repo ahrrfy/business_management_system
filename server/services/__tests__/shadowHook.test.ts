@@ -353,7 +353,7 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
   it("١١) intent القبض الصريح للمحفظة لا يمر بتخمين cashRole القديم", async () => {
     await seedBase("SHADOW");
     const sourceComponents = {
-      roleDebits: { DIGITAL_WALLET: "30.00" },
+      roleDebits: { PAYMENT_WALLET: "30.00" },
       roleCredits: { AR: "30.00" },
     } as const;
     await withTx(async (tx) => {
@@ -367,7 +367,7 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
           "PAYMENT_IN_CUSTOMER",
           "PAYMENT_IN",
           [
-            debitLine("DIGITAL_WALLET", "30.00"),
+            debitLine("PAYMENT_WALLET", "30.00"),
             creditLine("AR", "30.00"),
           ],
           sourceComponents,
@@ -378,7 +378,7 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
 
     const [journal] = await journals();
     expect(journal.status).toBe("POSTED");
-    expect(journal.lines.find((line) => line.role === "DIGITAL_WALLET")?.debit).toBe(30);
+    expect(journal.lines.find((line) => line.role === "PAYMENT_WALLET")?.debit).toBe(30);
     const [source] = await db().select().from(s.accountingEntries);
     expect(source.postingProfile).toBe("PAYMENT_IN_CUSTOMER");
     expect(source.postingIntentHash).toMatch(/^[a-f0-9]{64}$/);

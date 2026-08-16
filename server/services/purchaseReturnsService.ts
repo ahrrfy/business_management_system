@@ -365,8 +365,19 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       : new Decimal(0);
     const returnedUsd = round2(returnedUsdNet.plus(returnedUsdTax));
     const purchaseReturnPostingSource = {
-      roleDebits: { AP: returnedTotal, PURCHASE_PRICE_VARIANCE: purchasePriceVariance.isPositive() ? purchasePriceVariance : money(0) },
-      roleCredits: { INVENTORY: returnedInventoryBook, TAX_PAYABLE: returnedTax, PURCHASE_PRICE_VARIANCE: purchasePriceVariance.isNegative() ? purchasePriceVariance.abs() : money(0) },
+      roleDebits: {
+        AP: returnedTotal,
+        ...(purchasePriceVariance.gt(0)
+          ? { PURCHASE_PRICE_VARIANCE: purchasePriceVariance }
+          : {}),
+      },
+      roleCredits: {
+        INVENTORY: returnedInventoryBook,
+        ...(returnedTax.isZero() ? {} : { TAX_PAYABLE: returnedTax }),
+        ...(purchasePriceVariance.lt(0)
+          ? { PURCHASE_PRICE_VARIANCE: purchasePriceVariance.abs() }
+          : {}),
+      },
     };
 
     // قيد دفتر RETURN — الاتفاقية: قيم سالبة. cost سالب (تكلفة عُكست)، amount سالب.
@@ -379,7 +390,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
       notes: input.reason ?? undefined,
-      postingIntent: createPostingIntent("RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine("AP", returnedTotal), creditLine("INVENTORY", returnedInventoryBook), ...(returnedTax.isZero() ? [] : [creditLine("TAX_PAYABLE", returnedTax)]), ...(purchasePriceVariance.isPositive() ? [debitLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance)] : purchasePriceVariance.isNegative() ? [creditLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance.abs())] : [])], purchaseReturnPostingSource),
+      postingIntent: createPostingIntent("RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine("AP", returnedTotal), creditLine("INVENTORY", returnedInventoryBook), ...(returnedTax.isZero() ? [] : [creditLine("TAX_PAYABLE", returnedTax)]), ...(purchasePriceVariance.gt(0) ? [debitLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance)] : purchasePriceVariance.lt(0) ? [creditLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance.abs())] : [])], purchaseReturnPostingSource),
       postingSourceComponents: purchaseReturnPostingSource,
     });
 
@@ -442,7 +453,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
           .innerJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
           .where(and(
             eq(accountingEntries.entryType, "PAYMENT_IN"),
-            eq(accountingEntries.postingProfile, "PAYMENT_IN_SUPPLIER_REFUND"),
+            or(
+              eq(accountingEntries.postingProfile, "PAYMENT_IN_SUPPLIER_REFUND"),
+              sql`${accountingEntries.postingProfile} IS NULL`,
+            ),
             eq(accountingEntries.purchaseOrderId, Number(refPo.id)),
             eq(accountingEntries.supplierId, input.supplierId),
             eq(receipts.direction, "IN"),
@@ -458,7 +472,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
           .innerJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
           .where(and(
             eq(accountingEntries.entryType, "PAYMENT_OUT"),
-            eq(accountingEntries.postingProfile, "PAYMENT_OUT_SUPPLIER"),
+            or(
+              eq(accountingEntries.postingProfile, "PAYMENT_OUT_SUPPLIER"),
+              sql`${accountingEntries.postingProfile} IS NULL`,
+            ),
             eq(accountingEntries.purchaseOrderId, Number(refPo.id)),
             eq(accountingEntries.supplierId, input.supplierId),
             eq(receipts.direction, "OUT"),

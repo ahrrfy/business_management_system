@@ -52,7 +52,7 @@ async function seed() {
     { id: 2, openId: "local_owner", name: "owner", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0", creditLimit: "1000000" });
-  await d.insert(s.shifts).values({ id: 1, userId: 1, branchId: 1, status: "OPEN", openedAt: new Date(), openGuard: "1:1", openingBalance: "0" });
+  await d.insert(s.shifts).values({ id: 1, userId: 1, branchId: 1, status: "OPEN", shiftType: "RECEPTION", openedAt: new Date(), openGuard: "1:1", openingBalance: "0" });
 }
 async function currentBalance(): Promise<string> {
   return String((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance);

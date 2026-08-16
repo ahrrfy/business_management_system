@@ -105,6 +105,8 @@ async function orderedAndReceived(payNow?: string): Promise<number> {
     {
       purchaseOrderId: po.purchaseOrderId,
       lines: items.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: i.baseQuantity })),
+      shippingEvidenceReference: `SHIP-RET-${po.purchaseOrderId}`,
+      shippingBeneficiaryName: "شركة الرافدين للنقل الاختبارية",
       ...(payNow ? { payment: { amount: payNow, method: "CASH" as const } } : {}),
     },
     actor,

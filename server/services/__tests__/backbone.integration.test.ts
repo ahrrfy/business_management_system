@@ -72,7 +72,7 @@ async function setStock(variantId: number, branchId: number, qty: number) {
   await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
 }
 async function openShift(branchId = 1): Promise<number> {
-  const r = await db().insert(s.shifts).values({ branchId, userId: 1, openingBalance: "0", status: "OPEN" });
+  const r = await db().insert(s.shifts).values({ branchId, userId: 1, openingBalance: "0", status: "OPEN", shiftType: "RECEPTION" });
   return insertId(r);
 }
 async function stockOf(variantId: number, branchId: number): Promise<number> {
@@ -502,8 +502,9 @@ describe("أوامر الشغل/المطبعة", () => {
     // قيد SALE + قيد PAYMENT_IN + إيصال IN
     const sale = (await entries("SALE"))[0];
     expect(sale.revenue).toBe("500.00");
-    expect(sale.cost).toBe("120.00");
-    expect(sale.profit).toBe("380.00");
+    // قيد COGS يستهلك المواد فقط؛ أجر العامل يُعترف به عبر الرواتب ولا يُرسمل مرتين.
+    expect(sale.cost).toBe("20.00");
+    expect(sale.profit).toBe("480.00");
 
     const pin = await entries("PAYMENT_IN");
     expect(pin).toHaveLength(1);

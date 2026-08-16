@@ -79,6 +79,7 @@ async function seedBase() {
   // M5/M8/M10: عمليات النقد (processPayment CASH هنا) تَستلزم وردية مفتوحة.
   await d.insert(s.shifts).values({
     userId: 1, branchId: 1, status: "OPEN",
+    shiftType: "RECEPTION",
     openedAt: new Date(),
     openGuard: "1:1", openingBalance: "0",
   });

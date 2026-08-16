@@ -338,7 +338,8 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
     });
 
     const res = await cancelSale({ invoiceId: sale.invoiceId, refundPaymentMethod: "TRANSFER" }, admin);
-    expect(res.refundAmount).toBe("2000.00");
+    expect(res.refundAmount).toBe("0.00");
+    expect(res.pendingRefundAmount).toBe("2000.00");
 
     const outs = await db()
       .select()
@@ -347,8 +348,8 @@ describe("cancelSale — ثابت ٣: استرداد بجهة صرف نقديّ 
     expect(outs).toHaveLength(1);
     expect(outs[0].paymentMethod).toBe("TRANSFER");
     expect(outs[0].cashBucket).toBeNull(); // TRANSFER لا يمسّ صندوقاً
-    // Codex P1 #1 (١٢/٨): لا voucherNumber على إيصال استرداد الإلغاء.
-    expect(outs[0].voucherNumber).toBeNull();
+    // الاسترداد غير النقدي طلبُ صرف معلّقٌ مُرقّم حتى يعتمد مالك مستقل.
+    expect(outs[0].voucherNumber).toMatch(/^PV-/);
 
     // صافي الدفتر صفر.
     expect(money(await sumCol(sale.invoiceId, "revenue")).isZero()).toBe(true);
@@ -598,9 +599,10 @@ describe("cancelSale — إصلاحات مراجعة Codex (١٢/٨)", () => {
       { invoiceId: sale.invoiceId, refundPaymentMethod: "TRANSFER" },
       admin,
     );
-    expect(res.refundAmount).toBe("500.00");
-    // ذمّة العميل تعود لصفر (كانت 2500 وحدة).
-    expect(money(await customerBalance(1)).toFixed(2)).toBe("0.00");
+    expect(res.refundAmount).toBe("0.00");
+    expect(res.pendingRefundAmount).toBe("500.00");
+    // يبقى الائتمان الحقيقي ظاهراً حتى اعتماد طلب الاسترداد غير النقدي.
+    expect(money(await customerBalance(1)).toFixed(2)).toBe("-500.00");
   });
 
   it("P2: مرتجع تالفٍ سابق ⇒ الإلغاء يزيد returnedRestockedBaseQuantity بالمتبقّي فقط لا بكل الكميّة", async () => {

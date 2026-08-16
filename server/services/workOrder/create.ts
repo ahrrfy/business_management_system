@@ -31,12 +31,12 @@ async function requireLockedReceptionShift(
   label: string,
 ): Promise<number> {
   const conditions = [
-    eq(shifts.userId, actor.userId),
     eq(shifts.branchId, branchId),
     eq(shifts.status, "OPEN"),
     eq(shifts.shiftType, "RECEPTION"),
   ];
   if (explicitShiftId != null) conditions.push(eq(shifts.id, explicitShiftId));
+  else conditions.push(eq(shifts.userId, actor.userId));
   const row = (
     await tx
       .select({ id: shifts.id })

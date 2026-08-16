@@ -51,7 +51,7 @@ async function setStock(variantId: number, branchId: number, qty: number) {
   await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
 }
 async function openShift(branchId = 1, userId = 1): Promise<number> {
-  const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN" });
+  const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN", shiftType: "RECEPTION" });
   return insertId(r);
 }
 async function receiptsByDirection(dir: "IN" | "OUT") {
@@ -221,7 +221,7 @@ describe("ميزان المراجعة / التسوية المستقلّة — ي
   it("درج النقد يتوازن عبر كل التدفّقات + الذمم صحيحة + ربح الدفتر = إيراد − تكلفة", async () => {
     await setStock(1, 1, 100);
     await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0" });
-    const shRes = await db().insert(s.shifts).values({ branchId: 1, userId: 1, openingBalance: "100", status: "OPEN" });
+    const shRes = await db().insert(s.shifts).values({ branchId: 1, userId: 1, openingBalance: "100", status: "OPEN", shiftType: "RECEPTION" });
     const shiftId = Number((shRes as any)[0]?.insertId ?? (shRes as any).insertId);
 
     // ١) بيع نقدي 20.

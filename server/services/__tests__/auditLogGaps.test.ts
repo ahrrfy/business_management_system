@@ -21,6 +21,11 @@ import { withTx } from "../tx";
 
 const TABLES = [
   "auditLogs",
+  "monthCloseCertificateEvidence",
+  "monthCloseEvents",
+  "monthCloseCertificates",
+  "monthCloseSequence",
+  "monthCloseRequests",
   "financialPeriods",
   "accountingEntries",
   "receipts",
@@ -243,10 +248,29 @@ describe("period.unlock — يَلتقط cutoffDate المُفتَك", () => {
   it("سجلٌّ يَربط الفتح بتاريخ القفل (لا «unlocked: true» مجرّد)", async () => {
     const caller = appRouter.createCaller(makeCtx(await admin()));
     // لا API لقفلٍ مباشر بعد Sh5: نهيّئ الحالة داخلياً كي يظلّ هذا الاختبار مختصاً بعقد unlock/audit.
-    await withTx((tx) =>
-      lockPeriod(tx, { cutoffDate: "2026-03-31", notes: "Q1", lockedBy: 1 }),
+    const locked = await withTx((tx) =>
+      lockPeriod(tx, {
+        cutoffDate: "2026-03-31",
+        notes: "Q1",
+        lockedBy: 1,
+        closeMonth: "2026-03",
+        closeRevision: 1,
+      }),
     );
+    await db().update(s.monthCloseSequence).set({
+      status: "READY",
+      sequenceStartMonth: "2026-03",
+      activeThroughMonth: "2026-03",
+      nextRequiredMonth: "2026-04",
+      activePeriodId: Number(locked.id),
+      version: 1,
+      bootstrappedAt: new Date("2026-04-01T00:00:00.000Z"),
+      bootstrappedBy: 1,
+      bootstrapReason: "تهيئة اختبار أثر إعادة فتح الفترة",
+      bootstrapReference: "AUDIT-UNLOCK-TEST",
+    }).where(eq(s.monthCloseSequence.id, 1));
     await caller.periodLock.unlock({
+      expectedPeriodId: Number(locked.id),
       reason: "تصحيح تدقيقي موثق للاختبار",
       password: "Admin@12345",
     });
