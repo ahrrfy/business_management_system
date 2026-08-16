@@ -5,7 +5,7 @@ import { customers, invoices, receipts, suppliers } from "../../../drizzle/schem
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
-import { baghdadToday, utcDayStart } from "../businessDay";
+import { baghdadToday, todayUtcDate, utcDayStart } from "../businessDay";
 import { money, toDbMoney } from "../money";
 import { assertPeriodOpen } from "../periodLockService";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
@@ -641,8 +641,15 @@ export async function createVoucherTx(
       if (input.voucherType === "RECEIPT") forcePendingApproval = true;
     }
 
+    // أساسا التاريخ متمايزان عمداً (إصلاح انحدار #604):
+    //  - الحارس «لا تأريخ في المستقبل» يقيس بيوم **بغداد** (متسامح): مستخدمٌ في بغداد بعد منتصف
+    //    الليل يرسل تاريخ يومه المحلّي، فلا يجوز أن يُرفض بوصفه «مستقبلاً» لأنّ UTC ما زال أمس.
+    //  - أمّا **الختم الافتراضيّ** فيوم UTC: `entryDate` يُشتقّ من `voucherDate`، وكلّ قارئٍ ماليّ
+    //    يرشّح على أساس UTC (`utcDayRange`/`todayUtcDate` — إطار businessDay §٦). ختمُ يوم بغداد
+    //    كان يُخرج كل سندٍ يُنشأ بين ٢١:٠٠ و٢٤:٠٠ UTC من نافذة يومه في تقرير التدفّق النقديّ
+    //    والخزينة — أساسٌ مزدوجٌ صامت، وهو بالضبط ما يحذّر منه توثيق `baghdadToday` نفسه.
     const today = baghdadToday();
-    const voucherDate = (input.voucherDate?.trim() || today).slice(0, 10);
+    const voucherDate = (input.voucherDate?.trim() || todayUtcDate()).slice(0, 10);
     if (voucherDate > today) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `لا يجوز تأريخ السند في المستقبل (${voucherDate})` });
     }
