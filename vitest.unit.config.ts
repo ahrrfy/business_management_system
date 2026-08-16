@@ -43,6 +43,7 @@ export default defineConfig({
       "server/tenancy/__tests__/expressMiddlewareLease.test.ts",
       "server/tenancy/__tests__/tenantPoolLifecycle.test.ts",
       "server/services/__tests__/jobApplicantCvService.test.ts",
+      "server/services/__tests__/imageStudioProviderGuard.unit.test.ts",
       "server/routes/__tests__/jobApplicantCvHeaders.test.ts",
       "server/services/hrDevices/__tests__/bridgeSecurity.test.ts",
       "server/services/hrDevices/__tests__/bridgeGate.test.ts",

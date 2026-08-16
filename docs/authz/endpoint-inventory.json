@@ -6969,7 +6969,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/imageStudioRouter.ts:153"
+      "loc": "server/routers/imageStudioRouter.ts:168"
     },
     {
       "surface": "trpc",
@@ -6986,7 +6986,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/imageStudioRouter.ts:109"
+      "loc": "server/routers/imageStudioRouter.ts:124"
     },
     {
       "surface": "trpc",
@@ -7003,7 +7003,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/imageStudioRouter.ts:155"
+      "loc": "server/routers/imageStudioRouter.ts:170"
     },
     {
       "surface": "trpc",
@@ -7020,7 +7020,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE",
-      "loc": "server/routers/imageStudioRouter.ts:65"
+      "loc": "server/routers/imageStudioRouter.ts:70"
     },
     {
       "surface": "trpc",
@@ -7037,7 +7037,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/imageStudioRouter.ts:67"
+      "loc": "server/routers/imageStudioRouter.ts:72"
     },
     {
       "surface": "trpc",
@@ -7054,7 +7054,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/imageStudioRouter.ts:32"
+      "loc": "server/routers/imageStudioRouter.ts:37"
     },
     {
       "surface": "trpc",
@@ -7071,7 +7071,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/imageStudioRouter.ts:111"
+      "loc": "server/routers/imageStudioRouter.ts:126"
     },
     {
       "surface": "trpc",
@@ -7088,7 +7088,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/imageStudioRouter.ts:34"
+      "loc": "server/routers/imageStudioRouter.ts:39"
     },
     {
       "surface": "trpc",
@@ -7105,7 +7105,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/imageStudioRouter.ts:142"
+      "loc": "server/routers/imageStudioRouter.ts:157"
     },
     {
       "surface": "trpc",
@@ -7122,7 +7122,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "ADMIN_ONLY",
-      "loc": "server/routers/imageStudioRouter.ts:54"
+      "loc": "server/routers/imageStudioRouter.ts:59"
     },
     {
       "surface": "trpc",

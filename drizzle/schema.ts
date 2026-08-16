@@ -6716,6 +6716,28 @@ export const imageStudioSettings = mysqlTable("imageStudioSettings", {
 export type ImageStudioSettings = typeof imageStudioSettings.$inferSelect;
 export type InsertImageStudioSettings = typeof imageStudioSettings.$inferInsert;
 
+/**
+ * عدّاد يومي غير قابل للتجاوز لنداءات مزوّدي استوديو الصور المدفوعة. يُحجز النداء قبل
+ * الاتصال الخارجي ولا يُعاد بعده، لأن فشل الشبكة لا يثبت أن المزوّد لم يقتطع رصيداً.
+ * هذا هو مصدر الحقيقة للسقف اليومي عبر إعادة تشغيل PM2، بخلاف محدد المعدّل اللحظيّ في الذاكرة.
+ */
+export const imageStudioUsageDaily = mysqlTable(
+  "imageStudioUsageDaily",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    usageDate: date("usageDate", { mode: "string" }).notNull(),
+    service: mysqlEnum("service", ["REMOVEBG", "AI"]).notNull(),
+    requestCount: int("requestCount").default(0).notNull(),
+    lastRequestedAt: timestamp("lastRequestedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    dailyServiceUq: unique("uq_image_studio_usage_daily_service").on(table.usageDate, table.service),
+  }),
+);
+export type ImageStudioUsageDaily = typeof imageStudioUsageDaily.$inferSelect;
+export type InsertImageStudioUsageDaily = typeof imageStudioUsageDaily.$inferInsert;
+
 /** شريحة تصاعدية لضريبة الدخل: `upTo` حدّ أعلى للشريحة (سلسلة مالية) أو null للشريحة المفتوحة
  *  العليا («فما فوق»)، `rate` نسبة مئوية (سلسلة). الاحتساب حدّيّ تصاعديّ (كل جزء بنسبة شريحته). */
 export type IncomeTaxBracket = { upTo: string | null; rate: string };
