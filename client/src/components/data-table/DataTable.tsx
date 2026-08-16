@@ -87,6 +87,8 @@ type DataTableProps<T, K = string> = {
   // === التَحديد المُتَعَدِّد (اختِياري) ===
   selection?: DataTableSelection<K>;
   getRowId?: (row: T) => K; // مُلزِم لو selection مُعَطاة
+  /** عرض مخصص ككروت للهاتف (<md) بدلاً من الجدول العريض. */
+  mobileCardRenderer?: (row: T, index: number) => React.ReactNode;
   // نَقرة الصَفّ تُغَيِّر التَحديد (افتِراضياً: false — فقط Shift+Click أَو الـcheckbox)
   rowClickSelects?: boolean;
   /** صنف بصري اختياري للصف مشتق من بياناته (تمييز حالات تشغيلية مهمة). */
@@ -179,6 +181,7 @@ export function DataTable<T, K = string>({
   toolbar,
   selection,
   getRowId,
+  mobileCardRenderer,
   rowClickSelects = false,
   getRowClassName,
   pageSize = 50,
@@ -385,116 +388,243 @@ export function DataTable<T, K = string>({
           </div>
         </div>
       )}
-      <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
-        <table className="w-max min-w-full border-separate border-spacing-0 text-sm">
-          <thead className="bg-muted">
-            {table.getHeaderGroups().map((hg) => (
-              <tr key={hg.id} className="text-right">
-                {selectionEnabled && (
-                  <th className="p-2 w-10 text-center">
-                    <input
-                      type="checkbox"
-                      aria-label="تَحديد كل المَرئي"
-                      className="size-4 cursor-pointer accent-primary"
-                      checked={allVisibleSelected}
-                      ref={(el) => {
-                        if (el) el.indeterminate = someVisibleSelected;
-                      }}
-                      onChange={toggleAllVisible}
-                    />
-                  </th>
-                )}
-                {hg.headers.map((h) => {
-                  const sortable = h.column.getCanSort();
-                  const dir = h.column.getIsSorted();
-                  return (
-                    <th
-                      key={h.id}
-                      className={`border-b border-border/80 px-3 py-2.5 text-xs font-bold text-foreground whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
-                      aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
-                      {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
-                      onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
-                      onKeyDown={sortable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.column.getToggleSortingHandler()?.(e); } } : undefined}
-                    >
-                      {h.isPlaceholder ? null : (
-                        <span className="inline-flex items-center gap-1">
-                          {flexRender(h.column.columnDef.header, h.getContext())}
-                          {dir === "asc" ? <ChevronUp aria-hidden className="size-3.5" /> : dir === "desc" ? <ChevronDown aria-hidden className="size-3.5" /> : sortable ? <ArrowUpDown aria-hidden className="size-3.5 opacity-30" /> : null}
-                        </span>
-                      )}
-                    </th>
-                  );
-                })}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
+      {mobileCardRenderer ? (
+        <>
+          {/* عرض الكروت الذكية على شاشات الهاتف (<md) */}
+          <div className="md:hidden space-y-2.5">
             {loading && (
-              <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />
+              <TableSkeleton rows={4} cols={1} />
             )}
-            {!loading && visibleRows.map((row, rowIndex) => {
-              const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
-              const isSelected = selectionEnabled && selection!.isSelected(id as K);
-              return (
-                <tr
-                  key={row.id}
-                  data-selected={isSelected || undefined}
-                  className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
-                  onClick={(e) => {
-                    if (!selectionEnabled) return;
-                    // نَقرة الصَفّ تُغَيِّر التَحديد فَقَط لو: شِفت، أَو rowClickSelects.
-                    // نَتَجَنَّب العَناصِر التَفاعُلية داخِل الخَلية.
-                    const target = e.target as HTMLElement;
-                    if (target.closest("button, a, input, select, textarea, [role=button]")) return;
-                    if (e.shiftKey || rowClickSelects) {
-                      handleRowToggle(rowIndex, e);
-                    }
-                  }}
-                >
+            {!loading && visibleRows.map((row, idx) => (
+              <div key={row.id}>
+                {mobileCardRenderer(row.original, idx)}
+              </div>
+            ))}
+            {!loading && visibleRows.length === 0 && (
+              <div className="p-8 text-center text-muted-foreground text-sm bg-card border border-border/60 rounded-xl">
+                {emptyText}
+              </div>
+            )}
+          </div>
+
+          {/* الجدول الكامل للشاشات المتوسطة والأكبر (>=md) */}
+          <div className="hidden md:block">
+            <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
+              <table className="w-max min-w-full border-separate border-spacing-0 text-sm">
+                <thead className="bg-muted">
+                  {table.getHeaderGroups().map((hg) => (
+                    <tr key={hg.id} className="text-right">
+                      {selectionEnabled && (
+                        <th className="p-2 w-10 text-center">
+                          <input
+                            type="checkbox"
+                            aria-label="تَحديد كل المَرئي"
+                            className="size-4 cursor-pointer accent-primary"
+                            checked={allVisibleSelected}
+                            ref={(el) => {
+                              if (el) el.indeterminate = someVisibleSelected;
+                            }}
+                            onChange={toggleAllVisible}
+                          />
+                        </th>
+                      )}
+                      {hg.headers.map((h) => {
+                        const sortable = h.column.getCanSort();
+                        const dir = h.column.getIsSorted();
+                        return (
+                          <th
+                            key={h.id}
+                            className={`border-b border-border/80 px-3 py-2.5 text-xs font-bold text-foreground whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
+                            aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
+                            {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
+                            onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
+                            onKeyDown={sortable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.column.getToggleSortingHandler()?.(e); } } : undefined}
+                          >
+                            {h.isPlaceholder ? null : (
+                              <span className="inline-flex items-center gap-1">
+                                {flexRender(h.column.columnDef.header, h.getContext())}
+                                {dir === "asc" ? <ChevronUp aria-hidden className="size-3.5" /> : dir === "desc" ? <ChevronDown aria-hidden className="size-3.5" /> : sortable ? <ArrowUpDown aria-hidden className="size-3.5 opacity-30" /> : null}
+                              </span>
+                            )}
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </thead>
+                <tbody>
+                  {loading && (
+                    <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />
+                  )}
+                  {!loading && visibleRows.map((row, rowIndex) => {
+                    const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
+                    const isSelected = selectionEnabled && selection!.isSelected(id as K);
+                    return (
+                      <tr
+                        key={row.id}
+                        data-selected={isSelected || undefined}
+                        className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                        onClick={(e) => {
+                          if (!selectionEnabled) return;
+                          const target = e.target as HTMLElement;
+                          if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                          if (e.shiftKey || rowClickSelects) {
+                            handleRowToggle(rowIndex, e);
+                          }
+                        }}
+                      >
+                        {selectionEnabled && (
+                          <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              aria-label="تَحديد الصَفّ"
+                              className="size-4 cursor-pointer accent-primary"
+                              checked={isSelected}
+                              onClick={(e) => {
+                                handleRowToggle(rowIndex, e);
+                                e.preventDefault();
+                              }}
+                              onChange={() => { /* noop — التَغيير عَبر onClick */ }}
+                            />
+                          </td>
+                        )}
+                        {row.getVisibleCells().map((cell) => {
+                          const colId = cell.column.id;
+                          const cellVal = cellPrimitive(cell.getValue());
+                          const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
+                          return (
+                            <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
+                              <CopyContextMenu
+                                value={cellVal}
+                                rowHeaders={copyHeaders}
+                                rowValues={rowValues}
+                                columnHeader={columnHeaderText(cell.column)}
+                                columnValues={columnValuesByColId[colId]}
+                              >
+                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                              </CopyContextMenu>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                  {!loading && visibleRows.length === 0 && (
+                    <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyText}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </TableShell>
+          </div>
+        </>
+      ) : (
+        <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
+          <table className="w-max min-w-full border-separate border-spacing-0 text-sm">
+            <thead className="bg-muted">
+              {table.getHeaderGroups().map((hg) => (
+                <tr key={hg.id} className="text-right">
                   {selectionEnabled && (
-                    <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                    <th className="p-2 w-10 text-center">
                       <input
                         type="checkbox"
-                        aria-label="تَحديد الصَفّ"
+                        aria-label="تَحديد كل المَرئي"
                         className="size-4 cursor-pointer accent-primary"
-                        checked={isSelected}
-                        onClick={(e) => {
-                          // نَدعَم Shift+Click عَلى الـcheckbox نَفسه أَيضاً.
-                          handleRowToggle(rowIndex, e);
-                          // لا نُكَرِّر التَغيير في onChange.
-                          e.preventDefault();
+                        checked={allVisibleSelected}
+                        ref={(el) => {
+                          if (el) el.indeterminate = someVisibleSelected;
                         }}
-                        onChange={() => { /* noop — التَغيير عَبر onClick */ }}
+                        onChange={toggleAllVisible}
                       />
-                    </td>
+                    </th>
                   )}
-                  {row.getVisibleCells().map((cell) => {
-                    const colId = cell.column.id;
-                    const cellVal = cellPrimitive(cell.getValue());
-                    const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
+                  {hg.headers.map((h) => {
+                    const sortable = h.column.getCanSort();
+                    const dir = h.column.getIsSorted();
                     return (
-                      <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
-                        <CopyContextMenu
-                          value={cellVal}
-                          rowHeaders={copyHeaders}
-                          rowValues={rowValues}
-                          columnHeader={columnHeaderText(cell.column)}
-                          columnValues={columnValuesByColId[colId]}
-                        >
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </CopyContextMenu>
-                      </td>
+                      <th
+                        key={h.id}
+                        className={`border-b border-border/80 px-3 py-2.5 text-xs font-bold text-foreground whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:bg-muted/80" : ""}`}
+                        aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
+                        {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
+                        onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
+                        onKeyDown={sortable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.column.getToggleSortingHandler()?.(e); } } : undefined}
+                      >
+                        {h.isPlaceholder ? null : (
+                          <span className="inline-flex items-center gap-1">
+                            {flexRender(h.column.columnDef.header, h.getContext())}
+                            {dir === "asc" ? <ChevronUp aria-hidden className="size-3.5" /> : dir === "desc" ? <ChevronDown aria-hidden className="size-3.5" /> : sortable ? <ArrowUpDown aria-hidden className="size-3.5 opacity-30" /> : null}
+                          </span>
+                        )}
+                      </th>
                     );
                   })}
                 </tr>
-              );
-            })}
-            {!loading && visibleRows.length === 0 && (
-              <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyText}</td></tr>
-            )}
-          </tbody>
-        </table>
-      </TableShell>
+              ))}
+            </thead>
+            <tbody>
+              {loading && (
+                <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />
+              )}
+              {!loading && visibleRows.map((row, rowIndex) => {
+                const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
+                const isSelected = selectionEnabled && selection!.isSelected(id as K);
+                return (
+                  <tr
+                    key={row.id}
+                    data-selected={isSelected || undefined}
+                    className={`border-t odd:bg-background even:bg-muted/20 hover:bg-accent/35 data-[selected=true]:bg-accent/60 ${getRowClassName?.(row.original) ?? ""} ${selectionEnabled ? "cursor-default" : ""}`}
+                    onClick={(e) => {
+                      if (!selectionEnabled) return;
+                      const target = e.target as HTMLElement;
+                      if (target.closest("button, a, input, select, textarea, [role=button]")) return;
+                      if (e.shiftKey || rowClickSelects) {
+                        handleRowToggle(rowIndex, e);
+                      }
+                    }}
+                  >
+                    {selectionEnabled && (
+                      <td className="p-2 w-10 text-center" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label="تَحديد الصَفّ"
+                          className="size-4 cursor-pointer accent-primary"
+                          checked={isSelected}
+                          onClick={(e) => {
+                            handleRowToggle(rowIndex, e);
+                            e.preventDefault();
+                          }}
+                          onChange={() => { /* noop — التَغيير عَبر onClick */ }}
+                        />
+                      </td>
+                    )}
+                    {row.getVisibleCells().map((cell) => {
+                      const colId = cell.column.id;
+                      const cellVal = cellPrimitive(cell.getValue());
+                      const rowValues = leafCols.map((c) => cellPrimitive(row.getValue(c.id)));
+                      return (
+                        <td key={cell.id} className="border-b border-border/55 px-3 py-2.5 align-middle whitespace-nowrap">
+                          <CopyContextMenu
+                            value={cellVal}
+                            rowHeaders={copyHeaders}
+                            rowValues={rowValues}
+                            columnHeader={columnHeaderText(cell.column)}
+                            columnValues={columnValuesByColId[colId]}
+                          >
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </CopyContextMenu>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+              {!loading && visibleRows.length === 0 && (
+                <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyText}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </TableShell>
+      )}
       {serverMode ? (
         <>
           {selectionEnabled && selection!.count > 0 && (

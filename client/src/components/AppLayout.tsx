@@ -1,3 +1,4 @@
+import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -453,7 +454,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 overflow-auto outline-none">{children}</main>
+      <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+
+      {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}
+      <MobileBottomNav
+        role={role}
+        permsOverride={permsOverride}
+        onOpenMenu={() => setNavOpen(true)}
+      />
     </div>
   );
 }

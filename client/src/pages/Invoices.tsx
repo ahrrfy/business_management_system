@@ -1,4 +1,4 @@
-﻿import { CopyInline } from "@/components/CopyButton";
+import { CopyInline } from "@/components/CopyButton";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ListToolbar, RowActions, SelectionBar, useRowSelection } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -29,7 +29,8 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type PaymentMethod } from "@/lib/paymentMethod";
 import { invoiceStatusLabel, sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { FileWarning, Truck, X } from "lucide-react";
+import { MobileDataCard } from "@/components/ui/MobileDataCard";
+import { Calendar, CreditCard, FileWarning, Printer, Truck, User, X } from "lucide-react";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
@@ -774,6 +775,54 @@ export default function Invoices() {
         getRowClassName={(r) => isDepositDue(r) ? "bg-[var(--sem-warn-bg)] shadow-[inset_-3px_0_0_var(--sem-warn)]" : undefined}
         serverSearch={{ value: f.q, onChange: (v) => setF({ q: v }) }}
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
+        mobileCardRenderer={(r) => {
+          const stLabel = STATUS[r.status] ?? r.status;
+          const badgeVariant = r.status === "PAID"
+            ? "success"
+            : r.status === "PARTIALLY_PAID"
+              ? "warning"
+              : r.status === "CANCELLED" || r.status === "RETURNED"
+                ? "destructive"
+                : "secondary";
+
+          const due = D(r.total).minus(D(r.paidAmount)).minus(D(r.returnedTotal ?? "0"));
+          const hasDue = due.gt(0) && r.status !== "CANCELLED" && r.status !== "RETURNED";
+
+          return (
+            <MobileDataCard
+              key={r.id}
+              title={r.invoiceNumber}
+              subtitle={custName(r.customerName) + (r.salespersonName ? ` · ${r.salespersonName}` : "")}
+              badge={{
+                label: stLabel,
+                variant: badgeVariant,
+              }}
+              amount={{
+                value: fmt(r.total),
+                label: hasDue ? `متبقٍ: ${fmt(due.toString())}` : undefined,
+                positive: r.status === "PAID",
+                negative: r.status === "RETURNED" || r.status === "CANCELLED",
+              }}
+              metadata={[
+                { label: "التاريخ", value: fmtDate(r.invoiceDate), icon: Calendar },
+                { label: "الدفع", value: paymentLabel(r), icon: CreditCard },
+                { label: "النوع", value: sourceTypeLabel(r.sourceType) },
+                ...(r.consignmentStatus ? [{
+                  label: "التوصيل",
+                  value: CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus,
+                  icon: Truck,
+                }] : []),
+              ]}
+              onClick={() => navigate(`/invoices/${r.id}`)}
+              primaryAction={{
+                label: "وصل",
+                icon: Printer,
+                disabled: printingReceiptId === r.id,
+                onClick: () => void reprintThermal(r.id),
+              }}
+            />
+          );
+        }}
         toolbar={
           <>
             {/* «+ فاتورة جديدة» — مدخل مرئي لشاشة `/sales/new` (الفاتورة المتقدّمة: آجل/أقساط/خصم إجماليّ/ضريبة).
