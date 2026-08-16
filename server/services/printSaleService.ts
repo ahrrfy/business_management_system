@@ -140,7 +140,13 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       assertPosPaymentMethodEnabled(input.payment.method);
       // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: نظير الحارس في `sale/payment.ts`. كانت هذه
       // القناة تُنشئ إيصالها بنفسها، فمرّ قبضٌ غير نقديّ بلا مرجعٍ حين تُستدعى الخدمة مباشرةً.
-      if (input.payment.method !== "CASH" && !(input.payment.reference ?? "").trim()) {
+      // المرجع الحاكم إمّا محاولةٌ مؤكَّدة (قناة PrintPOS تُرسل معرّفها ويُقرأ مرجعها تحت القفل)
+      // أو نصٌّ يدخله الموظّف (قناة الاستقبال). أحدهما إلزاميّ: لا قبضَ بلا أثرٍ قابلٍ للمطابقة.
+      if (
+        input.payment.method !== "CASH"
+        && !(input.payment.reference ?? "").trim()
+        && input.payment.externalPaymentAttemptId == null
+      ) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
       }
     }

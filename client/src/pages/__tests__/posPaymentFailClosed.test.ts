@@ -23,6 +23,8 @@ describe("عقد الدفع غير النقدي في نقاط البيع", () =>
     expect(isPosPaymentMethodEnabled("CARD")).toBe(true);
     // رصيد زين لا يُقبض على الفاتورة — مساره شاشة البطاقات الرقمية.
     expect(isPosPaymentMethodEnabled("TELECOM")).toBe(false);
+    // قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK للسجلّات التاريخية فقط.
+    expect(isPosPaymentMethodEnabled("CHECK")).toBe(false);
     expect(isPosPaymentMethodEnabled("FUTURE_PROVIDER")).toBe(false);
     expect(isPosPaymentMethodEnabled(null)).toBe(false);
     expect(isPosPaymentMethodEnabled(undefined)).toBe(false);

@@ -27,16 +27,12 @@ describe("سياسة القبض خارج نقاط البيع", () => {
     expect(source).not.toContain('if (isReceipt && method !== "CASH")');
   });
 
-  it("تحصيل القسط يشتقّ طرقه من السياسة", () => {
-    const source = readPage("InstallmentPlans.tsx");
-    expect(source).not.toContain('const method = "CASH" as const');
-    expect(source).toContain("isInboundPaymentMethodEnabled");
-    expect(source).toContain('l.receiptPaymentMethod === "CHECK"');
-  });
-
-  it("حركة المحفظة الرقمية تُحكَم بالسياسة لا بشرطٍ مكتوبٍ في الشاشة", () => {
-    const source = readFileSync(new URL("../digitalCards/WalletOpsDialogs.tsx", import.meta.url), "utf8");
-    expect(source).toContain("if (!isInboundPaymentMethodEnabled(method))");
-    expect(source).not.toContain('mode === "withdraw" && method !== "CASH"');
+  // القسط والمحفظة بلا حقول الإثبات اللازمة (مرجع التحويل، آخر ٤ من البطاقة) فيبقيان نقديّين
+  // حتى تُمرَّر تلك الحقول عبر عقدَيهما — فتحُ طريقةٍ يرفضها الخادم زرٌّ ينتهي بخطأ لا ميزة.
+  it("القسط والمحفظة يبقيان نقديّين حتى تُمرَّر حقول الإثبات", () => {
+    const installments = readPage("InstallmentPlans.tsx");
+    const wallet = readFileSync(new URL("../digitalCards/WalletOpsDialogs.tsx", import.meta.url), "utf8");
+    expect(installments).toContain('const method = "CASH" as const');
+    expect(wallet).toContain('mode === "withdraw" && method !== "CASH"');
   });
 });

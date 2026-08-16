@@ -233,6 +233,22 @@ async function applyPromotions(
 }
 
 /**
+ * تكلفة البكج مشتقّة من وصفته (`productVariants.costPrice` له صفرٌ بحكم التصميم).
+ * تُطبَّق على صفوف POS **الحاملة للتكلفة** حصراً — تلك التي يحجب الراوتر تكلفتها عن
+ * غير المخوَّلين عبر `redactPosCost`. لقطة المخزون (`listStockByUnitIds`) لا تحمل تكلفةً
+ * أصلاً ولا تمرّ بالحجب، فإلحاق التكلفة بها كان سيسرّبها للكاشير.
+ */
+async function applyBundleUnitCost<T extends { variantId: number; isBundle: boolean; costPriceBase: string | null }>(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  rows: T[],
+): Promise<T[]> {
+  const bundleVariantIds = rows.flatMap((row) => row.isBundle ? [row.variantId] : []);
+  if (!bundleVariantIds.length) return rows;
+  const costs = await loadBundleUnitCosts(db, bundleVariantIds);
+  return rows.map((r) => (r.isBundle && costs.has(r.variantId) ? { ...r, costPriceBase: costs.get(r.variantId)! } : r));
+}
+
+/**
  * يطبّق لقطة ATP الحاكمة على كل صفوف POS، لا البكجات وحدها. بذلك يقرأ الكاشير
  * وشاشة المنتجات والمتجر المصدر نفسه: الرصيد الفعلي الموقّع ناقص الحجوزات الرسمية
  * وتخصيصات الطلبات الإلكترونية النشطة؛ والبكج مشتق مرةً واحدة من مكوّناته.
@@ -250,19 +266,14 @@ async function applyBundleAvailability<
     branchId,
     rows.map((row) => row.variantId),
   );
-  // تكلفة البكج مشتقّة من وصفته (`productVariants.costPrice` له صفرٌ بحكم التصميم) — بدونها
-  // كان الكاشير وسلّة الفاتورة يعرضان تكلفة ٠ وهامشاً كاذباً لكل بكج.
-  const bundleCosts = await loadBundleUnitCosts(db, rows.flatMap((row) => row.isBundle ? [row.variantId] : []));
   return rows.map((r) => {
-    const derivedCost = r.isBundle ? bundleCosts.get(r.variantId) ?? null : null;
     const current = availability.get(r.variantId);
-    if (!current) return { ...r, stockBase: 0, reservedBase: 0, availableBase: 0, ...(derivedCost ? { costPriceBase: derivedCost } : {}) };
+    if (!current) return { ...r, stockBase: 0, reservedBase: 0, availableBase: 0 };
     return {
       ...r,
       stockBase: current.onHandBase,
       reservedBase: current.reservedBase,
       availableBase: current.availableBase,
-      ...(derivedCost ? { costPriceBase: derivedCost } : {}),
     };
   });
 }
@@ -352,7 +363,7 @@ export async function lookupByBarcode(
     .where(and(activeOnly, eq(productUnits.id, owner.productUnitId)))
     .limit(1);
   const priced = await applyContractPrices(db, normalize(rows, branchId), customerId);
-  const withAvail = await applyBundleAvailability(db, priced, branchId);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
   // promotions v2: يحلّ العرض للأسطر غير-التعاقدية غير-البكجية غير-الخدمية.
   const [row] = await applyPromotions(withAvail, branchId, tier);
   return row ?? null;
@@ -376,7 +387,7 @@ export async function listByUnitIds(
   if (!db || !productUnitIds.length) return [];
   const rows = await baseSelect(db, branchId, tier).where(and(activeOnly, inArray(productUnits.id, productUnitIds)));
   const priced = await applyContractPrices(db, normalize(rows, branchId), null);
-  const withAvail = await applyBundleAvailability(db, priced, branchId);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
   return applyPromotions(withAvail, branchId, tier);
 }
 
@@ -396,7 +407,7 @@ export async function listByProductIds(
     .where(and(activeOnly, inArray(products.id, productIds)))
     .orderBy(products.id, productVariants.id, desc(productUnits.isBaseUnit));
   const priced = await applyContractPrices(db, normalize(rows, branchId), null);
-  const withAvail = await applyBundleAvailability(db, priced, branchId);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
   return applyPromotions(withAvail, branchId, tier);
 }
 
@@ -421,6 +432,6 @@ export async function listForPos(
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await baseSelect(db, branchId, tier).where(where).orderBy(...order).limit(limit);
   const priced = await applyContractPrices(db, normalize(rows, branchId), opts?.customerId);
-  const withAvail = await applyBundleAvailability(db, priced, branchId);
+  const withAvail = await applyBundleUnitCost(db, await applyBundleAvailability(db, priced, branchId));
   return applyPromotions(withAvail, branchId, tier);
 }

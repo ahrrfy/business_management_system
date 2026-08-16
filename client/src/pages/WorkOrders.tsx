@@ -498,7 +498,9 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
           <button className="wob-btn wob-btn-primary" disabled={pending || !isPosPaymentMethodEnabled(methodV) || (amtD.gt(0) && methodV !== "CASH" && !reference.trim())}
             onClick={() => {
               if (!isPosPaymentMethodEnabled(methodV)) return;
-              onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV, reference: undefined } : undefined);
+              onConfirm(amtD.gt(0)
+                ? { amount: round2(amtD).toFixed(2), method: methodV, reference: methodV === "CASH" ? undefined : reference.trim() }
+                : undefined);
             }}>
             {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
           </button>

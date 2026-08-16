@@ -11,7 +11,7 @@ import { truncateTables } from "../../services/__tests__/__testUtils__";
  * (`externalPaymentAttempts` بحالة CONFIRMED) يُستهلَك مرّةً واحدة مع الفاتورة.
  * ما يبقى مرفوضاً بنيوياً: رصيد زين (TELECOM) — مساره شاشة البطاقات الرقمية.
  */
-const ATTEMPT_METHODS = ["CARD", "CHECK", "TRANSFER", "WALLET"] as const;
+const ATTEMPT_METHODS = ["CARD", "TRANSFER", "WALLET"] as const;
 
 function context(role: "cashier" | "admin", id: number): TrpcContext {
   return {

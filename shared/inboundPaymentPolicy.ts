@@ -29,7 +29,6 @@ export type InboundNonCashPaymentMethod = (typeof INBOUND_NON_CASH_PAYMENT_METHO
 export const INBOUND_ENABLED_PAYMENT_METHODS = [
   "CASH",
   "CARD",
-  "CHECK",
   "TRANSFER",
   "WALLET",
 ] as const;
@@ -38,6 +37,10 @@ export type InboundEnabledPaymentMethod = (typeof INBOUND_ENABLED_PAYMENT_METHOD
 
 export const INBOUND_PAYMENT_DISABLED_MESSAGE =
   "طريقة القبض هذه غير مدعومة في النظام؛ استخدم النقد أو البطاقة أو التحويل أو المحفظة.";
+
+/** قرار المالك (٢٢/٧): لا تعامل بالصكوك — CHECK للسجلّات التاريخية فقط، لا لقبضٍ جديد. */
+export const INBOUND_CHECK_DISABLED_MESSAGE =
+  "لا تعامل بالصكوك — الصكّ يبقى للسجلّات التاريخية فقط.";
 
 /** رسالة رصيد زين تحديداً — سببه بنيويّ لا سياسيّ، فيُفصل كي لا يبحث الموظّف عن إذنٍ لا وجود له. */
 export const INBOUND_TELECOM_DISABLED_MESSAGE =
@@ -51,5 +54,7 @@ export function isInboundPaymentMethodEnabled(
 
 /** رسالة الرفض المناسبة للقيمة المرفوضة — تُستعمَل في الخادم والواجهة معاً. */
 export function inboundPaymentRejectionMessage(method: string | null | undefined): string {
-  return method === "TELECOM" ? INBOUND_TELECOM_DISABLED_MESSAGE : INBOUND_PAYMENT_DISABLED_MESSAGE;
+  if (method === "TELECOM") return INBOUND_TELECOM_DISABLED_MESSAGE;
+  if (method === "CHECK") return INBOUND_CHECK_DISABLED_MESSAGE;
+  return INBOUND_PAYMENT_DISABLED_MESSAGE;
 }

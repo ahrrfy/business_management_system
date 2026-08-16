@@ -47,24 +47,30 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     expect(workOrders).toContain('disabled={!isPosPaymentMethodEnabled("CARD")}');
     expect(workOrders).not.toContain('<option value="CARD" disabled>');
     expect(reservations).toContain("!isPosPaymentMethodEnabled(value)");
+    expect(isPosPaymentMethodEnabled("CHECK")).toBe(false);
   });
 
-  it("فاتورة البيع المتقدّمة تُطبّق السياسة عبر بوّابةٍ مُسمّاة بصدق", () => {
+  // الشاشات التي لا تملك مسار إثبات (لا محاولة مؤكَّدة ولا حقل مرجع) تبقى نقديّةً عمداً:
+  // فتحُ طريقةٍ لا يستطيع الخادم قبولها = زرٌّ ينتهي بخطأ تحقّق، لا ميزة.
+  it("الشاشات بلا مسار إثبات تبقى نقديّة حتى يُبنى لها المسار", () => {
     const invoice = readClient("../../pages/SalesInvoiceNew.tsx");
     const totals = readClient("../invoice/TotalsPanel.tsx");
+    const quotation = readClient("../../pages/QuotationDetail.tsx");
+    const installments = readClient("../../pages/InstallmentPlans.tsx");
 
-    expect(invoice).toContain("enforceInboundPaymentPolicy");
-    expect(invoice).toContain("isPosPaymentMethodEnabled(state.paymentMethod)");
-    expect(totals).toContain("enforceInboundPaymentPolicy = false");
-    expect(totals).toContain("isPosPaymentMethodEnabled(m.value)");
-    expect(totals).not.toContain("cashOnlyPayment");
+    expect(invoice).toContain("cashOnlyPayment");
+    expect(totals).toContain("cashOnlyPayment = false");
+    expect(quotation).toContain('setPayMethod("CASH")');
+    expect(installments).toContain('const method = "CASH" as const');
   });
 
-  it("تحويل عرض السعر يحفظ اختيار الموظّف بدل قسره نقداً", () => {
-    const quotation = readClient("../../pages/QuotationDetail.tsx");
+  it("الشاشات ذات حقل المرجع تُرسله فعلاً بدل إسقاطه", () => {
+    const workOrders = readClient("../../pages/WorkOrders.tsx");
+    const invoiceDetail = readClient("../../pages/InvoiceDetail.tsx");
 
-    expect(quotation).toContain("disabled={!isPosPaymentMethodEnabled(m.v)}");
-    expect(quotation).toContain("setPayMethod(e.target.value as typeof payMethod)");
-    expect(quotation).not.toContain('setPayMethod("CASH");');
+    expect(workOrders).toContain('reference: methodV === "CASH" ? undefined : reference.trim()');
+    expect(workOrders).not.toContain("reference: undefined } : undefined)");
+    expect(invoiceDetail).toContain('reference: payMethod === "CASH" ? undefined : payReference.trim()');
+    expect(invoiceDetail).toContain('id="invoice-pay-reference"');
   });
 });

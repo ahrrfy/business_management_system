@@ -14,6 +14,8 @@ import { truncateTables } from "./__testUtils__";
 const cashier = { userId: 1, branchId: 1, role: "cashier" } as const;
 const owner = { userId: 2, branchId: 1, role: "admin" } as const;
 const EXTERNAL_METHODS = ["CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"] as const;
+/** الطرق المرفوضة بنيوياً: رصيد زين (مساره البطاقات الرقمية) والصكوك (قرار مالك ٢٢/٧). */
+const REJECTED_METHODS = ["TELECOM", "CHECK"] as const;
 const TABLES = [
   "externalPaymentAttempts",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
@@ -102,7 +104,7 @@ async function expectNoBusinessEffects() {
  * فما يُرفض هنا هو البيع بلا محاولة، والمحاولة الملفَّقة، ورصيد زين — لا الطريقة نفسها.
  */
 describe("بوّابة الدفع الخارجي: محاولةٌ مؤكَّدة أو لا أثر", () => {
-  it.each(["TELECOM"] as const)("رصيد زين مرفوض قبل أيّ أثر في القاعدة — %s", async (method) => {
+  it.each(REJECTED_METHODS)("الطريقة المرفوضة بنيوياً %s تُردّ قبل أيّ أثر في القاعدة", async (method) => {
     await expect(initiateExternalPaymentAttempt({
       branchId: 1,
       channel: "POS",
@@ -111,7 +113,7 @@ describe("بوّابة الدفع الخارجي: محاولةٌ مؤكَّدة 
       reference: unique("REF"),
       requestId: unique("REQ"),
       deviceId: "TEST-POS-DEVICE",
-    }, cashier)).rejects.toThrow(INBOUND_TELECOM_DISABLED_MESSAGE);
+    }, cashier)).rejects.toThrow();
 
     expect(await db().select().from(s.externalPaymentAttempts)).toHaveLength(0);
     await expectNoBusinessEffects();

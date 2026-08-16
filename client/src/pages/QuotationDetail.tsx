@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -234,13 +234,17 @@ export default function QuotationDetail() {
                 value={payMethod}
                 onChange={(e) => {
                   if (!isPosPaymentMethodEnabled(e.target.value)) return;
-                  setPayMethod(e.target.value as typeof payMethod);
+                  setPayMethod("CASH");
                 }}
+                aria-describedby="quotation-external-payment-disabled"
               >
                 {METHODS.map((m) => (
                   <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>
                 ))}
               </select>
+              <p id="quotation-external-payment-disabled" className="text-xs text-muted-foreground">
+                {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+              </p>
             </div>
             <Button
               onClick={async () => {
