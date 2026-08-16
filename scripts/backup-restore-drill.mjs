@@ -70,6 +70,25 @@ export function assertPortAllowed(port) {
   return true;
 }
 
+/**
+ * حارس الحاوية — **مستقلٌّ عن حارس المنفذ عمداً**.
+ *
+ * المنفذ يُقرأ من `DATABASE_URL` بينما التنفيذ الفعليّ يجري على `DB_CONTAINER`؛ واختلافهما
+ * وارد (رابطٌ يشير لقاعدة اختبار وحاويةٌ تشير لمرآة الإنتاج) فيمرّ حارس المنفذ ويقع التمرين
+ * على المرآة. إنشاءُ قاعدة خدشٍ هناك يخرق خطّ CLAUDE.md الأحمر ولو لم يمسّ بياناتٍ حيّة.
+ */
+export function assertContainerAllowed(container) {
+  const name = String(container ?? "").trim();
+  if (!name) throw new Error("DRILL_CONTAINER_INVALID: اسم الحاوية فارغ");
+  if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
+    throw new Error("DRILL_CONTAINER_INVALID: اسم الحاوية يحوي محارف غير آمنة");
+  }
+  if (/prod/i.test(name)) {
+    throw new Error(`DRILL_CONTAINER_FORBIDDEN: «${name}» حاوية إنتاج/مرآته — لا يُجرى التمرين عليها`);
+  }
+  return name;
+}
+
 /** أحدث ملف نسخة (.sql أو .sql.gpg) في المجلّد. */
 export function pickLatestBackup(dir, entries) {
   const files = (entries ?? (existsSync(dir) ? readdirSync(dir) : []))
@@ -100,6 +119,7 @@ function main() {
   let drillDb;
   try {
     if (port) assertPortAllowed(port);
+    assertContainerAllowed(container);
     drillDb = assertSafeDrillDatabase(`${liveDb}${DRILL_SUFFIX}`, [
       liveDb,
       urlDb ? decodeURIComponent(urlDb) : "",

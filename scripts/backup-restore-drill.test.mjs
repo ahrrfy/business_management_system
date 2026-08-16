@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   DRILL_SUFFIX,
   assertDumpStaysInSandbox,
+  assertContainerAllowed,
   assertPortAllowed,
   assertSafeDrillDatabase,
   pickLatestBackup,
@@ -42,6 +43,16 @@ test("backup restore drill guards", () => {
   assert.equal(assertPortAllowed("3310"), true);
   assert.equal(assertPortAllowed("3307"), true);
   assert.throws(() => assertPortAllowed("3306"), /DRILL_PORT_FORBIDDEN/);
+
+  // ── الحاوية: حارسٌ مستقلّ عن المنفذ ──
+  // السبب: المنفذ من DATABASE_URL والتنفيذ على DB_CONTAINER؛ اختلافهما يُمرِّر حارس المنفذ
+  // فوق مرآة الإنتاج. (وجدتُه بمراجعةٍ ذاتية بعد أن تعذّرت مراجعة Codex على هذا الـPR.)
+  assert.equal(assertContainerAllowed("erp-mysql"), "erp-mysql");
+  assert.equal(assertContainerAllowed("erp-test-db"), "erp-test-db");
+  assert.throws(() => assertContainerAllowed("erp-mysql-prod"), /DRILL_CONTAINER_FORBIDDEN/);
+  assert.throws(() => assertContainerAllowed("PROD-db"), /DRILL_CONTAINER_FORBIDDEN/);
+  assert.throws(() => assertContainerAllowed(""), /DRILL_CONTAINER_INVALID/);
+  assert.throws(() => assertContainerAllowed("a; rm -rf /"), /DRILL_CONTAINER_INVALID/);
 
   // ── اختيار أحدث نسخة ──
   assert.equal(
