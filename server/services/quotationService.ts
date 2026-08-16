@@ -308,7 +308,7 @@ export async function setQuotationStatus(quotationId: number, status: QuoteStatu
 
 export interface ConvertQuotationInput {
   quotationId: number;
-  payment?: { amount: string; method: PaymentMethod } | null;
+  payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
 }
 
 /** يحوّل عرض السعر إلى فاتورة فعلية (بيع كامل: مخزون + دفتر) مرة واحدة فقط. */

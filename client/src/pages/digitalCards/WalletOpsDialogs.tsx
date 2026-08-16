@@ -13,7 +13,7 @@ import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
+import { inboundPaymentRejectionMessage, isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
 import { useEffect, useState } from "react";
 
 export type WalletRow = RouterOutputs["digitalCards"]["wallets"]["list"][number];
@@ -43,6 +43,7 @@ export function WalletMoveDialog({
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"CASH" | "TRANSFER">("CASH");
   const [notes, setNotes] = useState("");
+  const [reference, setReference] = useState("");
 
   useEffect(() => {
     if (mode === "withdraw") setMethod("CASH");
@@ -72,9 +73,12 @@ export function WalletMoveDialog({
   function submit() {
     if (!wallet) return;
     if (!amount || Number(amount) <= 0) return notify.err("أدخِل مبلغاً أكبر من صفر");
-    if (mode === "withdraw" && method !== "CASH") return notify.err(INBOUND_PAYMENT_DISABLED_MESSAGE);
+    if (!isInboundPaymentMethodEnabled(method)) return notify.err(inboundPaymentRejectionMessage(method));
+    // التحويل بلا مرجعٍ من كشف البنك = حركة خزينة بلا أثرٍ قابلٍ للمطابقة.
+    if (method !== "CASH" && !reference.trim()) return notify.err("مرجع الحوالة مطلوب للتحويل البنكي.");
     const payload = {
       walletId: wallet.id, amount, paymentMethod: method,
+      ...(method === "CASH" ? {} : { referenceNumber: reference.trim() }),
       clientRequestId: crypto.randomUUID(), notes: notes.trim() || null,
     };
     if (mode === "deposit") dep.mutate(payload); else wdr.mutate(payload);
@@ -105,16 +109,25 @@ export function WalletMoveDialog({
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium" htmlFor="wm-method">وسيلة الحركة</label>
-            <select id="wm-method" className={selectCls} value={method} onChange={(e) => setMethod(e.target.value as "CASH" | "TRANSFER")} aria-describedby={isDep ? undefined : "wallet-withdraw-inbound-payment-policy"}>
+            <select id="wm-method" className={selectCls} value={method} onChange={(e) => { setMethod(e.target.value as "CASH" | "TRANSFER"); setReference(""); }}>
               <option value="CASH">{isDep ? "نقداً من الخزينة" : "نقداً إلى الخزينة"}</option>
-              {isDep && <option value="TRANSFER">تحويل بنكي</option>}
+              <option value="TRANSFER">تحويل بنكي</option>
             </select>
-            {!isDep && (
-              <p id="wallet-withdraw-inbound-payment-policy" className="text-[11px] text-muted-foreground">
-                {INBOUND_PAYMENT_DISABLED_MESSAGE}
-              </p>
-            )}
           </div>
+          {method !== "CASH" && (
+            <div className="space-y-1">
+              <label className="text-sm font-medium" htmlFor="wm-reference">مرجع الحوالة <span className="text-destructive">*</span></label>
+              <Input
+                id="wm-reference"
+                dir="ltr"
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+                maxLength={100}
+                placeholder="رقم الحوالة كما في كشف البنك"
+              />
+              <p className="text-[11px] text-muted-foreground">يُحفَظ على السند ليُطابَق بكشف البنك.</p>
+            </div>
+          )}
           <div className="space-y-1">
             <label className="text-sm font-medium">ملاحظات (اختياري)</label>
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="رقم الحوالة، اسم المستلم…" dir="auto" />

@@ -27,12 +27,18 @@ describe("سياسة القبض خارج نقاط البيع", () => {
     expect(source).not.toContain('if (isReceipt && method !== "CASH")');
   });
 
-  // القسط والمحفظة بلا حقول الإثبات اللازمة (مرجع التحويل، آخر ٤ من البطاقة) فيبقيان نقديّين
-  // حتى تُمرَّر تلك الحقول عبر عقدَيهما — فتحُ طريقةٍ يرفضها الخادم زرٌّ ينتهي بخطأ لا ميزة.
-  it("القسط والمحفظة يبقيان نقديّين حتى تُمرَّر حقول الإثبات", () => {
-    const installments = readPage("InstallmentPlans.tsx");
-    const wallet = readFileSync(new URL("../digitalCards/WalletOpsDialogs.tsx", import.meta.url), "utf8");
-    expect(installments).toContain('const method = "CASH" as const');
-    expect(wallet).toContain('mode === "withdraw" && method !== "CASH"');
+  it("تحصيل القسط يجمع مرجع العملية وآخر ٤ من البطاقة ويُمرّرهما", () => {
+    const source = readPage("InstallmentPlans.tsx");
+    expect(source).not.toContain('const method = "CASH" as const');
+    expect(source).toContain("isInboundPaymentMethodEnabled");
+    expect(source).toContain("referenceNumber: method === \"CASH\" ? undefined : reference.trim()");
+    expect(source).toContain("cardLastFour: method === \"CARD\" ? cardLastFour : undefined");
+  });
+
+  it("سحب المحفظة بالتحويل يجمع مرجع الحوالة ويُمرّره (لا UUID داخليّ)", () => {
+    const source = readFileSync(new URL("../digitalCards/WalletOpsDialogs.tsx", import.meta.url), "utf8");
+    expect(source).not.toContain('mode === "withdraw" && method !== "CASH"');
+    expect(source).toContain("referenceNumber: reference.trim()");
+    expect(source).toContain('id="wm-reference"');
   });
 });

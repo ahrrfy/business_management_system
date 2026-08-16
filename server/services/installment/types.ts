@@ -34,6 +34,10 @@ export interface PayLineInput {
   /** الافتراضي CASH دائماً؛ نوع الجدولة التاريخي لا يحدد وسيلة التحصيل الحالية. */
   paymentMethod?: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | null;
   note?: string | null;
+  /** مرجع العملية لغير النقد (رقم التحويل/إشعار الجهاز) — يفرضه `createVoucher`. */
+  referenceNumber?: string | null;
+  /** آخر ٤ أرقام للبطاقة — إلزاميّ لـCARD في `createVoucher` (مطابقة كشف المزوّد). */
+  cardLastFour?: string | null;
   /** مُرفق السند (اختياريّ دائماً — لا إلزام مُرفق في النظام). */
   attachmentUrl?: string | null;
 }

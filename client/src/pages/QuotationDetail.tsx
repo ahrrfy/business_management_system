@@ -2,6 +2,8 @@ import { Button } from "@/components/ui/button";
 import { AutoPrintOnce } from "@/components/AutoPrintOnce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { notify } from "@/lib/notify";
 import { DocumentWhatsAppDialog } from "@/components/DocumentWhatsAppDialog";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
@@ -16,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
@@ -84,6 +86,7 @@ export default function QuotationDetail() {
   const [done, setDone] = useState("");
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [payReference, setPayReference] = useState("");
 
   const refresh = async () => {
     await Promise.all([utils.quotations.get.invalidate({ quotationId }), utils.quotations.list.invalidate()]);
@@ -234,18 +237,28 @@ export default function QuotationDetail() {
                 value={payMethod}
                 onChange={(e) => {
                   if (!isPosPaymentMethodEnabled(e.target.value)) return;
-                  setPayMethod("CASH");
+                  setPayMethod(e.target.value as typeof payMethod);
+                  setPayReference("");
                 }}
-                aria-describedby="quotation-external-payment-disabled"
               >
                 {METHODS.map((m) => (
                   <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>
                 ))}
               </select>
-              <p id="quotation-external-payment-disabled" className="text-xs text-muted-foreground">
-                {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-              </p>
             </div>
+            {payMethod !== "CASH" && (
+              <div className="space-y-1">
+                <Label htmlFor="quotation-pay-reference">مرجع العملية <span className="text-destructive">*</span></Label>
+                <Input
+                  id="quotation-pay-reference"
+                  dir="ltr"
+                  value={payReference}
+                  onChange={(e) => setPayReference(e.target.value)}
+                  maxLength={100}
+                  placeholder="رقم إشعار الجهاز أو رقم التحويل"
+                />
+              </div>
+            )}
             <Button
               onClick={async () => {
                 const pay = D(payAmount).gt(0);
@@ -258,7 +271,20 @@ export default function QuotationDetail() {
                   }))
                 )
                   return;
-                convert.mutate({ quotationId, payment: pay ? { amount: round2(D(payAmount)).toFixed(2), method: payMethod } : undefined });
+                if (pay && payMethod !== "CASH" && !payReference.trim()) {
+                  notify.err("مرجع عملية البطاقة/التحويل مطلوب — لا يُسجَّل قبضٌ بلا أثرٍ قابلٍ للمطابقة.");
+                  return;
+                }
+                convert.mutate({
+                  quotationId,
+                  payment: pay
+                    ? {
+                        amount: round2(D(payAmount)).toFixed(2),
+                        method: payMethod,
+                        reference: payMethod === "CASH" ? undefined : payReference.trim(),
+                      }
+                    : undefined,
+                });
               }}
               disabled={convert.isPending}
             >
