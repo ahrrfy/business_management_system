@@ -74,6 +74,14 @@ export interface StorefrontProduct {
   imageUrl: string | null;
   /** بكج (مجموعة مُجمّعة) — يُعرَض بشارة «بكج» ومحتوياته في التفاصيل. */
   isBundle: boolean;
+  /**
+   * صور المكوّنات المنشورة للبكج، بالترتيب الوصفي وبحدّ أربع صور.
+   *
+   * لا تُنشأ لها ملفات أو صفوف صور جديدة: هي مراجع إلى صور المنتجات المفردة. لا تُملأ إن كانت
+   * للبكج صورة خاصة منشورة؛ فتلك الصورة التسويقية هي المرجع البصري المقصود. الواجهة تستطيع
+   * رسمها كشبكة 2×2، بينما `imageUrl` يهبط إلى أولها لتبقى الشاشات الأقدم نافعة.
+   */
+  bundleImageUrls?: string[];
   /** محتويات البكج (اسم + كمية) — تُملأ في صفحة المنتج فقط للبكجات. */
   bundleItems?: { name: string; quantity: number }[];
   /** الندرة: المتبقّي بالمخزون — يُكشَف فقط حين ينخفض (≤ عتبة) كإشارة تسويقية؛ null إن وفير. */
@@ -155,7 +163,11 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
 }
 
 /** مرحلة ترشيح ضيقة: لا تحمل URL/data الصور ولا الحقول التسويقية الثقيلة قبل حسم product-level limit. */
@@ -174,7 +186,11 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
 }
 
 function chooseCandidateProductIds(
@@ -289,6 +305,90 @@ function toStorefront(r: {
     stockLeft: availableUnits > 0 && availableUnits <= LOW_STOCK_THRESHOLD ? availableUnits : null,
     soldCount: 0,
   };
+}
+
+/**
+ * يربط البكج بصور مكوّناته **بالمرجع فقط**؛ لا يولّد collage ولا ينسخ base64 إلى صفّ البكج.
+ *
+ * ترتيب الاختيار لكل مكوّن: صورة المتغيّر نفسه (لون/قياس) ثم الصورة الرئيسية على مستوى المنتج.
+ * لا تدخل إلا الصور APPROVED، والسقف أربع بلاطات كي يبقى ردّ الكتالوج ثابتاً وخفيفاً. إذا وضع
+ * الموظف صورة خاصة للبكج فلا نخلطها بصور المكوّنات ولا نعيد هذه الخاصية أصلاً.
+ */
+async function attachBundleComponentImages(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  items: StorefrontProduct[],
+): Promise<void> {
+  const targets = items.filter((item) => item.isBundle && !item.imageUrl);
+  if (!targets.length) return;
+
+  const bundleVariantIds = Array.from(new Set(targets.map((item) => item.variantId)));
+  const components = await db
+    .select({
+      bundleVariantId: bundleComponents.bundleVariantId,
+      componentVariantId: bundleComponents.componentVariantId,
+      componentProductId: productVariants.productId,
+      sortOrder: bundleComponents.sortOrder,
+    })
+    .from(bundleComponents)
+    .innerJoin(productVariants, eq(bundleComponents.componentVariantId, productVariants.id))
+    .where(inArray(bundleComponents.bundleVariantId, bundleVariantIds))
+    .orderBy(asc(bundleComponents.bundleVariantId), asc(bundleComponents.sortOrder), asc(bundleComponents.id));
+  if (!components.length) return;
+
+  const componentVariantIds = Array.from(new Set(components.map((row) => Number(row.componentVariantId))));
+  const componentProductIds = Array.from(new Set(components.map((row) => Number(row.componentProductId))));
+  // استعلامان مجمّعان بدلاً من N+1 لكل مكوّن/بكج. الصورة الخاصة بالمتغيّر تتقدّم حتى لو لم
+  // تكن primary (هي بالضبط صورة اللون)، ثم fallback لصورة المنتج الرئيسية.
+  const [variantImages, productPrimaryImages] = await Promise.all([
+    db
+      .select({ id: productImages.id, variantId: productImages.variantId, url: productImages.url, sortOrder: productImages.sortOrder })
+      .from(productImages)
+      .where(and(inArray(productImages.variantId, componentVariantIds), eq(productImages.reviewStatus, "APPROVED")))
+      .orderBy(asc(productImages.sortOrder), asc(productImages.id)),
+    db
+      .select({ id: productImages.id, productId: productImages.productId, url: productImages.url, sortOrder: productImages.sortOrder })
+      .from(productImages)
+      .where(and(
+        inArray(productImages.productId, componentProductIds),
+        isNull(productImages.variantId),
+        eq(productImages.isPrimary, true),
+        eq(productImages.reviewStatus, "APPROVED"),
+      ))
+      .orderBy(asc(productImages.sortOrder), asc(productImages.id)),
+  ]);
+
+  const firstVariantImage = new Map<number, { id: number; url: string }>();
+  for (const image of variantImages) {
+    const variantId = Number(image.variantId);
+    if (!firstVariantImage.has(variantId)) firstVariantImage.set(variantId, { id: Number(image.id), url: image.url });
+  }
+  const firstProductImage = new Map<number, { id: number; url: string }>();
+  for (const image of productPrimaryImages) {
+    const productId = Number(image.productId);
+    if (!firstProductImage.has(productId)) firstProductImage.set(productId, { id: Number(image.id), url: image.url });
+  }
+
+  const componentImagesByBundle = new Map<number, string[]>();
+  for (const component of components) {
+    const bundleVariantId = Number(component.bundleVariantId);
+    const urls = componentImagesByBundle.get(bundleVariantId) ?? [];
+    if (urls.length >= 4) continue;
+    const image = firstVariantImage.get(Number(component.componentVariantId))
+      ?? firstProductImage.get(Number(component.componentProductId));
+    if (!image) continue;
+    const publicUrl = toPublicProductImage(image.id, image.url);
+    // قد تشير صورتان إلى نفس كائن R2/المسار؛ لا نعرض البلاطة ذاتها مرتين.
+    if (publicUrl && !urls.includes(publicUrl)) urls.push(publicUrl);
+    componentImagesByBundle.set(bundleVariantId, urls);
+  }
+
+  for (const item of targets) {
+    const urls = componentImagesByBundle.get(item.variantId) ?? [];
+    if (!urls.length) continue;
+    item.bundleImageUrls = urls;
+    // توافق أمامي: كل مستهلك لا يعرف الشبكة يعرض على الأقل أول مكوّن بدل مساحة فارغة.
+    item.imageUrl = urls[0];
+  }
 }
 
 /** الدليل الاجتماعي: يُرفق عدد مرّات بيع كل منتج (COUNT فواتير مميّزة) — استعلام مجمَّع واحد. */
@@ -481,6 +581,7 @@ export async function storefrontCatalog(opts: {
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);
+  await attachBundleComponentImages(db, items);
   return { items };
 }
 
@@ -607,6 +708,7 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   await attachSoldCounts(db, [item]);
   await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
+  await attachBundleComponentImages(db, [item]);
   return item;
 }
 
