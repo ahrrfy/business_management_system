@@ -26,6 +26,7 @@ import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { branches, expenses, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { utcDayRange } from "./businessDay";
+import { materializedDrawerCashConditions } from "./cash/cashAvailability";
 import { money, toDbMoney } from "./money";
 
 /** سطر مطابقة وردية واحدة. كل الحقول المالية نصّية decimal(15,2). */
@@ -186,11 +187,10 @@ export async function getDayCloseReconciliation(opts: {
   //   • salesCash: IN بفاتورة بلا سند. collectionsCash: IN بسند قبض. (otherIn = المتبقّي.)
   //   • expensesCash: OUT بسند صرف أو مصروف مرتبط. returnsCash: OUT بفاتورة بلا سند/مصروف/CH.
   // cashIn/cashOut إجماليّان (الصيغة القانونية) ⇒ otherIn/otherOut = بواقٍ تضمن التطابق دوماً.
-  const isDrawerCash = and(
-    inArray(receipts.shiftId, shiftIds),
-    eq(receipts.cashBucket, "DRAWER"),
-    eq(receipts.paymentMethod, "CASH"),
-  );
+  // المسار ز (١٦/٨): كانت الشروط تُكتب هنا يدوياً بلا حالةٍ ولا اعتماد ⇒ إيصالٌ معلَّق أو
+  // غير معتمَد يدخل «المتوقَّع» في التقرير ولا يدخله في حارس الوردية ⇒ فرقٌ يُتَّهم به الكاشير.
+  // المصدر صار واحداً بالبناء: materializedDrawerCashConditions.
+  const isDrawerCash = and(inArray(receipts.shiftId, shiftIds), ...materializedDrawerCashConditions());
   const aggRows = await db
     .select({
       shiftId: receipts.shiftId,
