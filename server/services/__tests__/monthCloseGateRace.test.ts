@@ -86,6 +86,20 @@ beforeEach(async () => {
 });
 
 describe("company month-close gate", () => {
+  it("initializes a missing singleton concurrently without a gap-lock deadlock", async () => {
+    await db()
+      .delete(s.monthCloseSequence)
+      .where(eq(s.monthCloseSequence.id, 1));
+
+    await expect(
+      Promise.all(Array.from({ length: 8 }, () => withTx(async () => true))),
+    ).resolves.toEqual(Array(8).fill(true));
+
+    const rows = await db().select().from(s.monthCloseSequence);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(1);
+  });
+
   it("makes a real branchless ledger writer visible before close can certify", async () => {
     const request = await withTx((tx) =>
       requestMonthClose(tx, { month: MONTH, requestedBy: MANAGER }),

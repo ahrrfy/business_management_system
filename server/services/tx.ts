@@ -1,6 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import { getDb, type DB, type Tx } from "../db";
 import {
+  ensureFinancialPostingGate,
+  isMonthCloseGateMissing,
   lockCompanyMonthCloseGate,
   lockFinancialPostingGate,
 } from "./reports/monthCloseGate";
@@ -32,12 +34,22 @@ export async function withTx<T>(
   fn: (tx: Tx) => Promise<T>,
   options: { gate?: TransactionGate } = {},
 ): Promise<T> {
-  return requireDb().transaction(async (tx) => {
+  const database = requireDb();
+  const run = () => database.transaction(async (tx) => {
     const gate = options.gate ?? "FINANCIAL_WRITER";
     if (gate === "GOVERNANCE") await lockCompanyMonthCloseGate(tx);
     else if (gate === "FINANCIAL_WRITER") await lockFinancialPostingGate(tx);
     return fn(tx);
   });
+
+  try {
+    return await run();
+  } catch (error) {
+    if (!isMonthCloseGateMissing(error)) throw error;
+    // الفشل وقع قبل callback، لذلك الإعادة آمنة ولا تكرر أي أثر أعمال.
+    await ensureFinancialPostingGate(database);
+    return run();
+  }
 }
 
 /** Governance transaction with the exclusive close gate acquired at entry. */

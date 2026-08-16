@@ -1,7 +1,21 @@
 import { TRPCError } from "@trpc/server";
 import { asc, eq } from "drizzle-orm";
 import { branches, monthCloseSequence } from "../../../drizzle/schema";
-import type { Tx } from "../../db";
+import type { DB, Tx } from "../../db";
+
+const MISSING_GATE = "MONTH_CLOSE_GATE_MISSING";
+
+export function isMonthCloseGateMissing(error: unknown): boolean {
+  return error instanceof Error && error.message === MISSING_GATE;
+}
+
+/** يُستدعى خارج معاملة الأعمال فقط؛ INSERT المتزامن يُحسم بلا gap locks متبادلة. */
+export async function ensureFinancialPostingGate(db: DB): Promise<void> {
+  await db
+    .insert(monthCloseSequence)
+    .values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
+    .onDuplicateKeyUpdate({ set: { id: 1 } });
+}
 
 /**
  * صفوف الفروع هي بوابة التسلسل الثابتة للإقفال العام على الشركة.
@@ -20,26 +34,16 @@ import type { Tx } from "../../db";
  * covers branchless postings, which cannot be serialized through a branch FK.
  */
 export async function lockFinancialPostingGate(tx: Tx): Promise<void> {
-  let rows = await tx
-    .select({ id: monthCloseSequence.id })
-    .from(monthCloseSequence)
-    .where(eq(monthCloseSequence.id, 1))
-    .for("share")
-    .limit(1);
-  if (rows[0]) return;
-
-  await tx
-    .insert(monthCloseSequence)
-    .values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
-    .onDuplicateKeyUpdate({ set: { id: 1 } });
-  rows = await tx
+  const rows = await tx
     .select({ id: monthCloseSequence.id })
     .from(monthCloseSequence)
     .where(eq(monthCloseSequence.id, 1))
     .for("share")
     .limit(1);
   if (!rows[0]) {
-    throw new Error("MONTH_CLOSE_GATE_MISSING");
+    // الإدراج داخل هذه المعاملة بعد gap lock مشترك يسبب deadlock بين بادئين.
+    // withTx يتراجع أولاً، يهيّئ الصف خارج معاملة الأعمال، ثم يعيدها من بدايتها.
+    throw new Error(MISSING_GATE);
   }
 }
 
@@ -48,26 +52,14 @@ export async function lockFinancialPostingGate(tx: Tx): Promise<void> {
  * settings, branch rows, requests, periods, readiness evidence, or journals.
  */
 export async function lockCompanyMonthCloseGate(tx: Tx): Promise<void> {
-  let rows = await tx
+  const rows = await tx
     .select({ id: monthCloseSequence.id })
     .from(monthCloseSequence)
     .where(eq(monthCloseSequence.id, 1))
     .for("update")
     .limit(1);
   if (!rows[0]) {
-    await tx
-      .insert(monthCloseSequence)
-      .values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
-      .onDuplicateKeyUpdate({ set: { id: 1 } });
-    rows = await tx
-      .select({ id: monthCloseSequence.id })
-      .from(monthCloseSequence)
-      .where(eq(monthCloseSequence.id, 1))
-      .for("update")
-      .limit(1);
-  }
-  if (!rows[0]) {
-    throw new Error("MONTH_CLOSE_GATE_MISSING");
+    throw new Error(MISSING_GATE);
   }
   await tx
     .select({ id: branches.id })
