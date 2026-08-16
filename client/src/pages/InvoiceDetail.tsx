@@ -65,9 +65,9 @@ import {
   paymentMethodClass,
   paymentMethodLabel,
 } from "@/lib/paymentMethod";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 
-const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => method.v === "CASH");
+const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v));
 
 const STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -163,6 +163,7 @@ export default function InvoiceDetail() {
   const taxSettings = trpc.system.getTaxSettings.useQuery();
 
   const [payAmount, setPayAmount] = useState("");
+  const [payReference, setPayReference] = useState("");
   const [payMethod, setPayMethod] =
     useState<(typeof METHODS)[number]["v"]>("CASH");
   const [error, setError] = useState("");
@@ -420,8 +421,11 @@ export default function InvoiceDetail() {
   async function submit() {
     setError("");
     setDone("");
-    if (payMethod !== "CASH") return setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    if (!isPosPaymentMethodEnabled(payMethod)) return setError(posPaymentRejectionMessage(payMethod));
     const amt = D(payAmount || "0");
+    if (payMethod !== "CASH" && !payReference.trim()) {
+      return setError("مرجع عملية البطاقة/التحويل مطلوب — لا يُسجَّل قبضٌ بلا أثرٍ قابلٍ للمطابقة.");
+    }
     if (amt.lte(0)) return setError("أدخل مبلغاً موجباً.");
     if (amt.gt(remaining))
       return setError(`المبلغ يتجاوز المتبقّي (${fmt(remaining.toFixed(2))}).`);
@@ -439,6 +443,7 @@ export default function InvoiceDetail() {
       invoiceId,
       amount: amt.toFixed(2),
       method: payMethod,
+      reference: payMethod === "CASH" ? undefined : payReference.trim(),
       clientRequestId,
     });
   }
@@ -1068,10 +1073,25 @@ export default function InvoiceDetail() {
                   </option>
                 ))}
               </select>
-              <p className="text-xs font-medium text-muted-foreground">
-                {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-              </p>
             </div>
+            {payMethod !== "CASH" && (
+              <div className="space-y-1">
+                <Label htmlFor="invoice-pay-reference">
+                  مرجع العملية <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="invoice-pay-reference"
+                  dir="ltr"
+                  value={payReference}
+                  onChange={(e) => setPayReference(e.target.value)}
+                  maxLength={100}
+                  placeholder="رقم إشعار الجهاز أو رقم التحويل"
+                />
+                <p className="text-xs text-muted-foreground">
+                  لا تُسجَّل دفعة إلكترونية بلا مرجع قابل للمطابقة مع كشف المزوّد.
+                </p>
+              </div>
+            )}
             <Button onClick={submit} disabled={pay.isPending}>
               {pay.isPending ? "جارٍ…" : "تسجيل الدفعة"}
             </Button>

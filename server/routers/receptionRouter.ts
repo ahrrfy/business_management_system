@@ -35,13 +35,12 @@ function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number 
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
 }
 
-// التاريخية تبقى قابلةً للقراءة/التصفية؛ أمّا القبض الجديد فنقدي فقط حتى
-// يوجد مزوّد دفع وتسوية مستقلة موثوقان.
+// ش٥: TELECOM (رصيد زين) يبقى في **فلتر القراءة** فقط — قبضُه على الفاتورة مرفوض بنيوياً
+// (مساره شاشة البطاقات الرقمية). أمّا البطاقة/التحويل/المحفظة فمقبوضة بمرجع العملية.
 const payMethodEnum = z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
-const cashPaymentMethod = z
-  .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
-  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
-  .transform((value) => value as "CASH");
+// المحطة لا تقبض بالصكوك (قرار المالك ٢٢/٧) فلا CHECK هنا؛ والـrefine يبقى حارساً على TELECOM.
+const inboundPaymentMethod = payMethodEnum
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
 
 // ش٢ — عقود المسوّدة (§٦): بوّابة **exec** (كاشير/مدير/فنّي طباعة — المسوّدة بلا مالٍ فتُحرَّر
 // بأوسع أدوار المحطة)؛ التثبيت والمال يبقيان خلف بوّابة الكاشير (ش٣/ش٤).
@@ -121,7 +120,7 @@ export const receptionRouter = router({
       z.object({
         invoiceId: z.number().int().positive(),
         amount: positiveMoneyString,
-        method: cashPaymentMethod,
+        method: inboundPaymentMethod,
         reference: z.string().trim().max(100).nullish(),
         clientRequestId: z.string().min(1).max(60),
       }),
@@ -155,7 +154,7 @@ export const receptionRouter = router({
       z.object({
         draftId: z.number().int().positive(),
         amount: positiveMoneyString,
-        method: cashPaymentMethod,
+        method: inboundPaymentMethod,
         reference: z.string().trim().max(64).nullish(),
         /** ش٥ — هاتف مُرسِل رصيد زين (اختياريّ؛ يُطبَّع خادمياً E.164). */
         telecomSenderPhone: z.string().trim().max(32).nullish(),
@@ -345,7 +344,7 @@ export const receptionRouter = router({
       shiftId: z.number().int().positive(),
       collectNow: z.object({
         amount: positiveMoneyString,
-        method: cashPaymentMethod,
+        method: inboundPaymentMethod,
         reference: z.string().trim().max(100).nullish(),
       }).nullish(),
       cashRoundIQD: z.boolean().optional(),

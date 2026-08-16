@@ -15,7 +15,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 import { PAY_METHOD_LABEL, type PayMethod } from "./cartMath";
 
 /**
@@ -270,7 +271,7 @@ export function PaymentPanel({
               onClick={() => { if (isPosPaymentMethodEnabled(p.v)) setMethod(p.v); }}
               disabled={!isPosPaymentMethodEnabled(p.v)}
               aria-describedby={!isPosPaymentMethodEnabled(p.v) ? "reception-external-payment-disabled" : undefined}
-              title={isPosPaymentMethodEnabled(p.v) ? p.label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+              title={isPosPaymentMethodEnabled(p.v) ? p.label : posPaymentRejectionMessage(p.v)}
               aria-pressed={method === p.v}
               className={cn(
                 "inline-flex h-10 items-center gap-1.5 rounded-lg border-2 px-2.5 text-xs font-extrabold transition-colors",
@@ -287,7 +288,7 @@ export function PaymentPanel({
           ))}
         </div>
         <span id="reception-external-payment-disabled" className="max-w-48 text-[9px] leading-tight text-muted-foreground">
-          {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+          {INBOUND_TELECOM_DISABLED_MESSAGE}
         </span>
         {needPaymentRef && (
           <Input

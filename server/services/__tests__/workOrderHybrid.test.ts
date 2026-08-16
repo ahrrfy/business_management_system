@@ -12,7 +12,6 @@ import { appRouter } from "../../routers";
 import { createWorkOrder, startWorkOrder, markWorkOrderReady, deliverWorkOrder } from "../workOrderService";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 const actor = { userId: 1, branchId: 1 };
 const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie() {}, clearCookie() {} } as any, user: { id: 1, role: "admin", branchId: 1 } as any };
@@ -138,12 +137,12 @@ describe("ذرّية سلة الاستقبال المختلطة", () => {
     expect(Number(stock.quantity)).toBe(19);
   });
 
-  it("عربون التحويل يُرفض قبل إنشاء أمر شغل أو إيصال", async () => {
+  it("عربون التحويل بمرجعه يُنشئ أمر الشغل بإيصالٍ خارج درج النقد", async () => {
     const opened = await openShift(
       { branchId: 1, openingBalance: "0", shiftType: "RECEPTION" },
       { ...actor, role: "admin" },
     );
-    await expect(checkoutReception({
+    await checkoutReception({
       branchId: 1,
       shiftId: opened.shiftId,
       paymentMethod: "TRANSFER",
@@ -158,10 +157,13 @@ describe("ذرّية سلة الاستقبال المختلطة", () => {
         paymentMethod: "TRANSFER",
         paymentReference: "TRX-WO-1001",
       }],
-    }, { ...actor, role: "admin" })).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    }, { ...actor, role: "admin" });
 
-    expect(await db().select().from(s.workOrders)).toHaveLength(0);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    expect(await db().select().from(s.workOrders)).toHaveLength(1);
+    const [receipt] = await db().select().from(s.receipts);
+    expect(receipt.paymentMethod).toBe("TRANSFER");
+    expect(receipt.referenceNumber).toBe("TRX-WO-1001");
+    expect(receipt.cashBucket).toBeNull();
   });
 
   it("المبلغ الواحد يغطي البيع ثم ينساب على أكثر من أمر شغل بلا تجاوز أي بند", async () => {

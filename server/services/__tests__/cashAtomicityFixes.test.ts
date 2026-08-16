@@ -133,7 +133,7 @@ describe("sale.create idempotency — بصمة كاملة تَكشف إعادة 
     expect((await db().select().from(s.invoices))).toHaveLength(1);
   });
 
-  it("طريقة قبض غير مفعّلة تُرفض قبل idempotency وبلا أثر إضافي", async () => {
+  it("قبضٌ غير نقديّ بلا مرجع يُرفض قبل idempotency وبلا أثر إضافي", async () => {
     const reqId = "sale-fp-method";
     await createSale(
       {
@@ -151,7 +151,8 @@ describe("sale.create idempotency — بصمة كاملة تَكشف إعادة 
       },
       actorAdmin,
     );
-    await expect(cardAttempt).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    // بلا مرجع: يُردّ عند حدّ النواة قبل بلوغ فحص بصمة idempotency.
+    await expect(cardAttempt).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect((await db().select().from(s.invoices))).toHaveLength(1);
     expect((await db().select().from(s.receipts))).toHaveLength(1);
     expect((await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0].quantity).toBe(49);
@@ -196,7 +197,7 @@ describe("sale.create idempotency — بصمة كاملة تَكشف إعادة 
 
 // ─── (2) cashBucket='DRAWER' على receipts النقدية ─────────────────────
 describe("cashBucket='DRAWER' على receipts النقدية", () => {
-  it("بيع نقدي ⇒ DRAWER؛ ومحاولة CARD المعطّلة بلا إيصال أو خصم", async () => {
+  it("بيع نقدي ⇒ DRAWER؛ وبيع البطاقة ⇒ إيصالٌ بلا دلوٍ نقديّ", async () => {
     await createSale(
       {
         branchId: 1, shiftId: 1, customerId: 1, sourceType: "POS",
@@ -205,20 +206,24 @@ describe("cashBucket='DRAWER' على receipts النقدية", () => {
       },
       actorAdmin,
     );
-    await expect(createSale(
+    await createSale(
       {
         branchId: 1, shiftId: 1, customerId: 1, sourceType: "POS",
         lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
         payment: { amount: "10", method: "CARD", reference: "CARD-REF-1001" },
       },
       actorAdmin,
-    )).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    );
     const rs = await db().select().from(s.receipts).orderBy(s.receipts.id);
-    expect(rs).toHaveLength(1);
+    expect(rs).toHaveLength(2);
     expect(rs[0].cashBucket).toBe("DRAWER");
     expect(rs[0].paymentMethod).toBe("CASH");
-    expect((await db().select().from(s.invoices))).toHaveLength(1);
-    expect((await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0].quantity).toBe(49);
+    // §٥: البطاقة لا دلوَ نقديّ لها (لا تَمسّ درج الكاشير) ومرجعها محفوظ للمطابقة.
+    expect(rs[1].cashBucket).toBeNull();
+    expect(rs[1].paymentMethod).toBe("CARD");
+    expect(rs[1].referenceNumber).toBe("CARD-REF-1001");
+    expect((await db().select().from(s.invoices))).toHaveLength(2);
+    expect((await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0].quantity).toBe(48);
   });
 
   it("processPayment نقدي ⇒ DRAWER", async () => {

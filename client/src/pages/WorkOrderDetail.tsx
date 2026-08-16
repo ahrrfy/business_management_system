@@ -22,7 +22,7 @@ import { canSeeCost } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 
 const STATUS_LABEL: Record<string, string> = {
   RECEIVED: "مُستلَم",
@@ -394,7 +394,6 @@ export default function WorkOrderDetail() {
                 <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
                   {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
                 </select>
-                <p className="text-[10px] leading-relaxed text-muted-foreground">{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</p>
               </div>
               {/* مرآة PaymentReferenceField من POS (client/src/components/pos/PaymentReferenceField.tsx) —
                *  ذاك المكوّن مبنيّ بأنماط CSS خام تخصّ ثيم POS (colors prop)؛ هنا حقل مطابق ببنى Tailwind
@@ -485,7 +484,7 @@ export default function WorkOrderDetail() {
               const payAmountD = D(payAmount || "0");
               const payNow = payAmountD.gt(0);
               if (!isPosPaymentMethodEnabled(payMethod)) {
-                setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+                setError(posPaymentRejectionMessage(payMethod));
                 return;
               }
               // الخادم يرفض دفعاً غير نقديّ بلا مرجع (deliver.ts superRefine) — نتحقّق مبكراً بدل

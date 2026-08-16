@@ -31,6 +31,38 @@ export interface VariantAvailability {
   hasStockRow: boolean;
   isBundle: boolean;
   isService: boolean;
+  /** للبكج وحده: تفسير الطاقة المشتقّة — من يحدّها وهل يمنع البيع. `null` لغير البكج. */
+  bundleCapacity: BundleCapacity | null;
+}
+
+/**
+ * سبب طاقة البكج كما تُعرَض للمستخدم. صفرٌ بلا سبب كان يجعل البكج يبدو معطوباً وهو يعمل:
+ * لا فرق بصرياً بين «بكج بلا وصفة» (بيانات معطوبة) و«مكوّن نافد» (حالة تشغيلية عادية).
+ */
+export type BundleCapacityStatus =
+  /** الوصفة سليمة ومكوّناتها تكفي لبكجٍ واحد على الأقل. */
+  | "OK"
+  /** منتجٌ موسومٌ بكجاً بلا مكوّنات — بيانات معطوبة تمنع البيع (حارس createSale نفسه). */
+  | "NO_RECIPE"
+  /** مكوّنٌ معطَّل (منتجه أو متغيّره) — البيع مرفوض حتى لو توفّر رصيده. */
+  | "COMPONENT_INACTIVE"
+  /** مكوّنٌ محذوف/بكجٌ متداخل — لا يمكن اشتقاق الطاقة أصلاً. */
+  | "COMPONENT_UNRESOLVED"
+  /** الوصفة سليمة لكن أضعف مكوّن لا يكفي لبكجٍ واحد. */
+  | "COMPONENT_OUT_OF_STOCK";
+
+export interface BundleCapacity {
+  status: BundleCapacityStatus;
+  /** المكوّن الذي يحدّ الطاقة (الأشحّ) — مصدرُ الرقم المعروض، و«ماذا أشتري» عملياً. */
+  limiting: {
+    variantId: number;
+    productName: string;
+    sku: string | null;
+    /** كم وحدة أساس من المكوّن يحتاجها بكجٌ واحد. */
+    requiredPerBundle: number;
+    componentOnHandBase: number;
+    componentAvailableBase: number;
+  } | null;
 }
 
 type QueryDb = DB | Tx;
@@ -263,6 +295,7 @@ export async function loadVariantAvailability(
       hasStockRow: row.onHandBase != null,
       isBundle,
       isService: row.isService === true,
+      bundleCapacity: null,
     });
     if (isBundle) bundleIds.push(variantId);
   }
@@ -273,60 +306,125 @@ export async function loadVariantAvailability(
       bundleVariantId: bundleComponents.bundleVariantId,
       componentVariantId: bundleComponents.componentVariantId,
       componentBaseQuantity: bundleComponents.componentBaseQuantity,
+      sortOrder: bundleComponents.sortOrder,
     })
     .from(bundleComponents)
-    .where(inArray(bundleComponents.bundleVariantId, bundleIds));
+    .where(inArray(bundleComponents.bundleVariantId, bundleIds))
+    .orderBy(asc(bundleComponents.bundleVariantId), asc(bundleComponents.sortOrder), asc(bundleComponents.componentVariantId));
   const componentIds = Array.from(new Set(componentRows.map((row) => Number(row.componentVariantId))));
   const nextAncestry = new Set(ancestry);
   for (const bundleId of bundleIds) nextAncestry.add(bundleId);
   const componentAvailability = componentIds.length
     ? await loadVariantAvailability(db, branchId, componentIds, options, nextAncestry)
     : new Map<number, VariantAvailability>();
+  // بطاقة تعريف المكوّن: تُقرأ مرّةً واحدةً لكل الصفحة (لا N+1) كي يقول التفسير **أيّ صنفٍ**
+  // يحدّ البكج — الرقم وحده لا يخبر الموظّف بماذا يشتري ليُطلق البكج.
+  const componentMeta = new Map<number, { productName: string; sku: string | null; isActive: boolean }>();
+  if (componentIds.length) {
+    const metaRows = await db
+      .select({
+        variantId: productVariants.id,
+        sku: productVariants.sku,
+        variantActive: productVariants.isActive,
+        productName: products.name,
+        productActive: products.isActive,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, componentIds));
+    for (const row of metaRows) {
+      componentMeta.set(Number(row.variantId), {
+        productName: row.productName,
+        sku: row.sku ?? null,
+        isActive: row.variantActive !== false && row.productActive !== false,
+      });
+    }
+  }
+
+  const blockedBundle = (status: BundleCapacityStatus, limiting: BundleCapacity["limiting"]): VariantAvailability => ({
+    onHandBase: 0,
+    formalReservationBase: 0,
+    reservedBase: 0,
+    availableBase: 0,
+    hasStockRow: false,
+    isBundle: true,
+    isService: false,
+    bundleCapacity: { status, limiting },
+  });
 
   for (const bundleId of bundleIds) {
     const components = componentRows.filter((row) => Number(row.bundleVariantId) === bundleId);
     if (!components.length) {
-      result.set(bundleId, {
-        onHandBase: 0,
-        formalReservationBase: 0,
-        reservedBase: 0,
-        availableBase: 0,
-        hasStockRow: false,
-        isBundle: true,
-        isService: false,
-      });
+      // منتجٌ موسومٌ بكجاً بلا وصفة: `createSale` يرفض بيعه صراحةً، فلا يجوز أن تعرضه
+      // الشاشة كـ«نافد» — السبب بيانات لا مخزون، وعلاجه إضافة المكوّنات لا الشراء.
+      result.set(bundleId, blockedBundle("NO_RECIPE", null));
+      continue;
+    }
+
+    const describe = (component: (typeof components)[number], availability: VariantAvailability | undefined) => {
+      const variantId = Number(component.componentVariantId);
+      const meta = componentMeta.get(variantId);
+      return {
+        variantId,
+        productName: meta?.productName ?? `المكوّن #${variantId}`,
+        sku: meta?.sku ?? null,
+        requiredPerBundle: Number(component.componentBaseQuantity),
+        componentOnHandBase: availability?.onHandBase ?? 0,
+        componentAvailableBase: availability?.availableBase ?? 0,
+      };
+    };
+
+    // أسبقية التفسير: المعطَّل يمنع البيع مهما كان رصيده (حارس createSale)، ثم المتعذّر حلّه،
+    // ثم شحّ الرصيد. الترتيب يضمن أن يرى الموظّف السبب **القابل للعلاج أوّلاً**.
+    const inactive = components.find((component) => {
+      const meta = componentMeta.get(Number(component.componentVariantId));
+      return meta != null && !meta.isActive;
+    });
+    if (inactive) {
+      result.set(
+        bundleId,
+        blockedBundle("COMPONENT_INACTIVE", describe(inactive, componentAvailability.get(Number(inactive.componentVariantId)))),
+      );
       continue;
     }
 
     let onHandCapacity = Number.POSITIVE_INFINITY;
     let availableCapacity = Number.POSITIVE_INFINITY;
-    let complete = true;
+    let limitingComponent: (typeof components)[number] | null = null;
+    let unresolved: (typeof components)[number] | null = null;
     for (const component of components) {
       const quantity = Number(component.componentBaseQuantity);
       const availability = componentAvailability.get(Number(component.componentVariantId));
       if (!availability || !Number.isFinite(quantity) || quantity <= 0 || availability.isBundle) {
-        complete = false;
+        unresolved = component;
         break;
       }
       if (availability.isService) continue;
       onHandCapacity = Math.min(onHandCapacity, Math.floor(availability.onHandBase / quantity));
-      availableCapacity = Math.min(availableCapacity, Math.floor(availability.availableBase / quantity));
+      const componentCapacity = Math.floor(availability.availableBase / quantity);
+      if (componentCapacity < availableCapacity) {
+        availableCapacity = componentCapacity;
+        limitingComponent = component;
+      }
     }
 
-    if (!complete || onHandCapacity === Number.POSITIVE_INFINITY || availableCapacity === Number.POSITIVE_INFINITY) {
-      result.set(bundleId, {
-        onHandBase: 0,
-        formalReservationBase: 0,
-        reservedBase: 0,
-        availableBase: 0,
-        hasStockRow: false,
-        isBundle: true,
-        isService: false,
-      });
+    if (unresolved) {
+      result.set(
+        bundleId,
+        blockedBundle("COMPONENT_UNRESOLVED", describe(unresolved, componentAvailability.get(Number(unresolved.componentVariantId)))),
+      );
+      continue;
+    }
+    if (onHandCapacity === Number.POSITIVE_INFINITY || availableCapacity === Number.POSITIVE_INFINITY) {
+      // وصفةٌ بلا مكوّنٍ مخزَّن واحد (خدمات فقط) — لا طاقة قابلة للاشتقاق.
+      result.set(bundleId, blockedBundle("COMPONENT_UNRESOLVED", null));
       continue;
     }
 
     const availableBase = Math.max(0, availableCapacity);
+    const limiting = limitingComponent
+      ? describe(limitingComponent, componentAvailability.get(Number(limitingComponent.componentVariantId)))
+      : null;
     result.set(bundleId, {
       onHandBase: onHandCapacity,
       // لا يوجد صف حجز للبكج نفسه؛ السعة مشتقة من المكونات ولا تُستعمل لحركة مباشرة.
@@ -338,6 +436,7 @@ export async function loadVariantAvailability(
           || componentAvailability.get(Number(component.componentVariantId))?.hasStockRow === true),
       isBundle: true,
       isService: false,
+      bundleCapacity: { status: availableBase > 0 ? "OK" : "COMPONENT_OUT_OF_STOCK", limiting },
     });
   }
 
