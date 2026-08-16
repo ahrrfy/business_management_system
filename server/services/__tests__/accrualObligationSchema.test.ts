@@ -231,7 +231,7 @@ describe("0193 accrual-obligation lifecycle schema", () => {
     );
   });
 
-  it("is strict, ordered after 0193 and keeps every identifier MySQL-safe", () => {
+  it("is strict, ordered after 0195 and keeps every identifier MySQL-safe", () => {
     expect(migration).not.toMatch(/\bIF\s+NOT\s+EXISTS\b/i);
     expect(migration).not.toMatch(/\bINSERT\s+IGNORE\b/i);
     expect(migration).not.toMatch(/UPDATE `(?:fixedAssets|assetMaintenance)`/);
@@ -242,26 +242,26 @@ describe("0193 accrual-obligation lifecycle schema", () => {
     expect(identifiers.filter((name) => name.length > 64)).toEqual([]);
 
     expect(
-      journal.entries.filter((entry) => entry.idx >= 193 && entry.idx <= 194),
+      journal.entries.filter((entry) => entry.idx >= 195 && entry.idx <= 196),
     ).toEqual([
       {
-        idx: 193,
+        idx: 195,
         version: "5",
-        when: 1787879446000,
+        when: 1788052246000,
         tag: "0195_termination_advance_snapshot",
         breakpoints: true,
       },
       {
-        idx: 194,
+        idx: 196,
         version: "5",
-        when: 1787879447000,
+        when: 1788052247000,
         tag: "0196_accrual_obligation_lifecycle",
         breakpoints: true,
       },
     ]);
   });
 
-  it("names every 0194 foreign key explicitly and keeps schema identifiers within 64 characters", () => {
+  it("names every 0196 foreign key explicitly and keeps schema identifiers within 64 characters", () => {
     const expectedForeignKeys = new Map([
       [assetMaintenance, ["fk_maint_vendor_supplier"]],
       [

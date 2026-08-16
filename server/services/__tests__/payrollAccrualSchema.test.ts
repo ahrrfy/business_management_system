@@ -159,22 +159,24 @@ describe("0185 payroll and expense accrual schema", () => {
     expect(migration).not.toMatch(/payrollItems[\s\S]*JOIN\s+`?employees`?/i);
 
     const tail = journal.entries.filter(
-      (entry) => entry.idx >= 181 && entry.idx <= 186,
+      (entry) => entry.idx >= 181 && entry.idx <= 188,
     );
     expect(tail.map((entry) => entry.idx)).toEqual([
-      181, 182, 183, 184, 185, 186,
+      181, 182, 183, 184, 185, 186, 187, 188,
     ]);
     expect(tail.map((entry) => entry.tag)).toEqual([
       "0181_store_fulfillment_branch",
       "0182_expense_approval_lifecycle",
       "0183_pos_external_payment_reference",
       "0184_shift_funding_source_links",
+      "0185_cash_drop_reference_uniqueness",
+      "0186_offline_recovery_queue",
       "0187_double_entry_posting_profiles",
       "0188_payroll_and_expense_accrual",
     ]);
     expect(tail.map((entry) => entry.when)).toEqual([
-      1787879434000, 1787879435000, 1787879436000, 1787879437000, 1787879438000,
-      1787879439000,
+      1787879434000, 1787879435000, 1787879436000, 1787879437000,
+      1787965837000, 1788052237000, 1788052238000, 1788052239000,
     ]);
   });
 
