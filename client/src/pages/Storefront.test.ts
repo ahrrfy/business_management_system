@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   addStorefrontCartLine,
+  addStorefrontCartLines,
   collectStorefrontFailures,
   loadCheckoutAttempt,
   recordStorefrontCartChange,
@@ -119,6 +120,57 @@ describe("storefront persistence safety", () => {
     expect(increased.get(line.productUnitId)?.qty).toBe(3);
     expect(removed.has(line.productUnitId)).toBe(false);
     expect(markChanged).toHaveBeenCalledTimes(3);
+  });
+
+  it("adds several colours in one operation while preserving each variant as its own order line", () => {
+    const existing: CartLine = { ...line, qty: 2 };
+    const result = addStorefrontCartLines(new Map([[existing.productUnitId, existing]]), [
+      {
+        productUnitId: existing.productUnitId,
+        productId: existing.productId,
+        productName: "قلم",
+        imageUrl: null,
+        unitName: "قطعة",
+        variantLabel: "أزرق",
+        effectivePrice: "500",
+        quantity: 3,
+      },
+      {
+        productUnitId: 12,
+        productId: existing.productId,
+        productName: "قلم",
+        imageUrl: null,
+        unitName: "قطعة",
+        variantLabel: "أحمر",
+        effectivePrice: "500",
+        quantity: 2,
+      },
+    ]);
+
+    expect(result.get(11)).toMatchObject({ qty: 5, name: "قلم — أزرق" });
+    expect(result.get(12)).toMatchObject({ qty: 2, name: "قلم — أحمر" });
+    expect(result.size).toBe(2);
+  });
+
+  it("ignores zero or invalid multi-variant quantities", () => {
+    const result = addStorefrontCartLines(new Map(), [{
+      productUnitId: 12,
+      productId: 7,
+      productName: "قلم",
+      imageUrl: null,
+      unitName: "قطعة",
+      effectivePrice: "500",
+      quantity: 0,
+    }, {
+      productUnitId: 13,
+      productId: 7,
+      productName: "قلم",
+      imageUrl: null,
+      unitName: "قطعة",
+      effectivePrice: "500",
+      quantity: 1.5,
+    }]);
+    expect(result.size).toBe(0);
   });
 
   it("persists the checkout request key across reload and keeps the fingerprint deterministic", () => {

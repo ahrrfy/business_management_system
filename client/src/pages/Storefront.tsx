@@ -295,6 +295,12 @@ export type StorefrontCartProduct = {
   variantLabel?: string;
 };
 
+/** اختيارٌ واحد من نافذة المنتج. تبقى الأسعار معلومات عرض فقط؛ الخادم يعيد التسعير عند إنشاء الطلب. */
+export type StorefrontCartSelection = StorefrontCartProduct & {
+  effectivePrice: string;
+  quantity: number;
+};
+
 export function addStorefrontCartLine(
   current: Map<number, CartLine>,
   product: StorefrontCartProduct,
@@ -314,6 +320,28 @@ export function addStorefrontCartLine(
     variantLabel: product.variantLabel,
     qty: (existing?.qty ?? 0) + 1,
   });
+  return next;
+}
+
+/**
+ * إضافة عدة ألوان/متغيرات بضغطة واحدة مع دمج كل وحدة بيع في سطر سلتها القائم.
+ * لا نثق بالكمية أو السعر هنا عند الدفع: createOrder يعيد التحقق من المخزون والتسعير خادمياً.
+ */
+export function addStorefrontCartLines(
+  current: Map<number, CartLine>,
+  selections: StorefrontCartSelection[],
+): Map<number, CartLine> {
+  let next = new Map(current);
+  for (const selection of selections) {
+    if (!Number.isInteger(selection.quantity) || selection.quantity <= 0) continue;
+    const line = addStorefrontCartLine(next, selection, selection.effectivePrice);
+    const added = line.get(selection.productUnitId)!;
+    line.set(selection.productUnitId, {
+      ...added,
+      qty: Math.min((next.get(selection.productUnitId)?.qty ?? 0) + selection.quantity, 999),
+    });
+    next = line;
+  }
   return next;
 }
 
@@ -638,6 +666,9 @@ export default function Storefront() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedStoreUnitId, setSelectedStoreUnitId] = useState<number | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<number | null>(null);
+  // اختيار متعدد للمتغيرات في ورقة المنتج. المفتاح هو وحدة البيع، لا معرّف المتغير،
+  // كي لا تختلط وحدات مختلفة للون نفسه داخل السلة أو عند التسعير الخادمي.
+  const [variantQuantities, setVariantQuantities] = useState<Map<number, number>>(new Map());
   const [panel, setPanel] = useState<Panel>(null);
   const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
 
@@ -873,6 +904,7 @@ export default function Storefront() {
   useEffect(() => {
     setSelectedStoreUnitId(null);
     setSelectedVariantId(null);
+    setVariantQuantities(new Map());
   }, [selectedId]);
 
   useEffect(() => {
@@ -1008,6 +1040,41 @@ export default function Storefront() {
     trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((prev) => addStorefrontCartLine(prev, p, eff));
+  }
+  function setVariantQuantity(productUnitId: number, quantity: number) {
+    setVariantQuantities((previous) => {
+      const next = new Map(previous);
+      if (quantity <= 0) next.delete(productUnitId);
+      else next.set(productUnitId, Math.min(Math.trunc(quantity), 999));
+      return next;
+    });
+  }
+  function addSelectedVariants() {
+    if (!detailQ.data) return;
+    const selections: StorefrontCartSelection[] = [];
+    for (const variant of detailQ.data.variants ?? []) {
+      // كل صف يختار وحدة البيع المتوفرة الأصغر تلقائياً؛ منتج القلم المعتاد يملك وحدة واحدة.
+      // تبقى واجهة وحدة البيع المفردة أدناه للمنتجات التي تُباع بدرزن/كرتون.
+      const unit = variant.units.find((candidate) => candidate.inStock);
+      const quantity = unit ? variantQuantities.get(unit.productUnitId) ?? 0 : 0;
+      const effectivePrice = unit?.salePrice ?? unit?.price;
+      if (!unit || !effectivePrice || quantity <= 0) continue;
+      selections.push({
+        productUnitId: unit.productUnitId,
+        productId: detailQ.data.productId,
+        productName: detailQ.data.productName,
+        imageUrl: detailQ.data.imageUrl,
+        unitName: unit.unitName,
+        variantLabel: variant.label,
+        effectivePrice,
+        quantity,
+      });
+    }
+    if (selections.length === 0) return;
+    trackConversion.mutate({ event: "ADD_TO_CART" });
+    recordStorefrontCartChange();
+    setCart((previous) => addStorefrontCartLines(previous, selections));
+    setSelectedId(null);
   }
   function setQty(productUnitId: number, qty: number) {
     recordStorefrontCartChange();
@@ -1601,31 +1668,51 @@ export default function Storefront() {
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     <p className="mt-0.5 text-xs text-slate-500">الوحدة: {detailUnit?.unitName ?? detailQ.data.unitName}</p>
                     {(detailQ.data.variants?.length ?? 0) > 1 && (
-                      <div className="mt-3" aria-label="اختر اللون أو القياس المطلوب">
-                        <p className="mb-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر اللون / القياس</p>
-                        <div className="flex flex-wrap gap-1.5">
+                      <div className="mt-3" aria-label="اختر كميات الألوان أو المقاسات المطلوبة">
+                        <p className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر الكمية من كل لون / قياس</p>
+                        <p className="mb-2 text-[11px] text-slate-500">يمكنك إضافة عدة ألوان معاً بضغطة واحدة.</p>
+                        <div className="space-y-1.5">
                           {detailQ.data.variants!.map((variant) => {
-                            const selected = (detailVariant?.variantId ?? detailQ.data!.variantId) === variant.variantId;
+                            const unit = variant.units.find((candidate) => candidate.inStock);
+                            const quantity = unit ? variantQuantities.get(unit.productUnitId) ?? 0 : 0;
+                            const stockLimit = unit?.stockLeft == null ? 999 : Math.min(Math.floor(unit.stockLeft), 999);
                             return (
-                              <button
+                              <div
                                 key={variant.variantId}
-                                type="button"
-                                disabled={!variant.inStock}
-                                onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(null); }}
-                                className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                                  selected ? "border-[var(--sem-pos)] bg-[var(--sem-pos)] text-white" : "border-slate-200 text-slate-700 hover:border-[var(--sem-pos)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-slate-200"
+                                className={`flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 ${
+                                  unit ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800" : "border-slate-100 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-900"
                                 }`}
                               >
-                                {variant.colorHex && <span className="size-3 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
-                                <span>{variant.label}</span>
-                                {!variant.inStock && <span className="text-[10px]">نفد</span>}
-                              </button>
+                                <div className="flex min-w-0 items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
+                                  {variant.colorHex && <span className="size-3 shrink-0 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
+                                  <span className="truncate">{variant.label}</span>
+                                  {unit && variant.units.length > 1 && <span className="shrink-0 text-[10px] font-medium text-slate-400">{unit.unitName}</span>}
+                                  {!unit && <span className="shrink-0 text-[10px] text-stock-out">نفد</span>}
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <button
+                                    type="button"
+                                    aria-label={`إنقاص كمية ${variant.label}`}
+                                    disabled={!unit || quantity === 0}
+                                    onClick={() => unit && setVariantQuantity(unit.productUnitId, quantity - 1)}
+                                    className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"
+                                  ><Minus aria-hidden className="size-3.5" /></button>
+                                  <span className="w-5 text-center text-sm font-extrabold tabular-nums">{quantity}</span>
+                                  <button
+                                    type="button"
+                                    aria-label={`زيادة كمية ${variant.label}`}
+                                    disabled={!unit || quantity >= stockLimit}
+                                    onClick={() => unit && setVariantQuantity(unit.productUnitId, quantity + 1)}
+                                    className="flex size-7 items-center justify-center rounded-full bg-[var(--sem-pos)] text-white disabled:cursor-not-allowed disabled:opacity-40"
+                                  ><Plus aria-hidden className="size-3.5" /></button>
+                                </div>
+                              </div>
                             );
                           })}
                         </div>
                       </div>
                     )}
-                    {(detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 1 && (
+                    {(detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 1 && (
                       <div className="mt-2 flex flex-wrap gap-1.5" aria-label="اختر وحدة البيع">
                         {(detailVariant?.units ?? detailQ.data.storeUnits ?? []).map((unit) => {
                           const selected = (detailUnit?.productUnitId ?? detailQ.data!.productUnitId) === unit.productUnitId;
@@ -1679,14 +1766,21 @@ export default function Storefront() {
                 </div>
                 <button
                   onClick={() => {
-                    if (detailQ.data && detailUnit) addToCart({ ...detailQ.data, ...detailUnit, variantLabel: detailVariant?.label });
-                    setSelectedId(null);
+                    if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants();
+                    else {
+                      if (detailQ.data && detailUnit) addToCart({ ...detailQ.data, ...detailUnit, variantLabel: detailVariant?.label });
+                      setSelectedId(null);
+                    }
                   }}
-                  disabled={!detailUnit?.inStock || detailUnit.price == null}
+                  disabled={(detailQ.data?.variants?.length ?? 0) > 1
+                    ? !Array.from(variantQuantities.values()).some((quantity) => quantity > 0)
+                    : !detailUnit?.inStock || detailUnit.price == null}
                   className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                 >
                   <Plus aria-hidden className="size-4" />
-                  {detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
+                  {(detailQ.data?.variants?.length ?? 0) > 1
+                    ? "أضف الاختيارات إلى السلة"
+                    : detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
                 </button>
 
                 {/* محتويات البكج */}
