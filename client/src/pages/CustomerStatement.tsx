@@ -71,6 +71,7 @@ const STATUS_CLS: Record<string, string> = {
 };
 const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
+  COD: "تحصيل مندوب", RETURN: "مرتجع", OPENING_ADJ: "تصحيح افتتاحي",
 };
 
 export default function CustomerStatement() {
@@ -125,7 +126,12 @@ export default function CustomerStatement() {
       t: new Date(p.createdAt).getTime(),
       date: fmtDate(p.createdAt),
       ref: p.voucherNumber ?? "دفعة",
-      description: p.isStandalone
+      description:
+        // ب-١: قيد تصحيح الرصيد الافتتاحيّ يظهر حركةً داخل فترته (isStandalone صحيح لكنه ليس
+        // سنداً) — بلا هذا الفرع يُعرَض «سند صرف مستقل» فيبحث المحاسب عن سندٍ لا وجود له.
+        p.paymentMethod === "OPENING_ADJ"
+        ? "تصحيح رصيد افتتاحي"
+        : p.isStandalone
         ? (p.direction === "IN" ? "سند قبض مستقل" : "سند صرف مستقل")
         : (p.direction === "IN" ? "دفعة وارد" : "استرداد"),
       // الاتجاه المحاسبي: IN ينقص ذمة العميل (دائن)، OUT (استرداد/صرف له) يزيدها (مدين).

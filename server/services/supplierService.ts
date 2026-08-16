@@ -357,11 +357,19 @@ export async function deleteSupplier(supplierId: number, _actor: Actor) {
 
     // قفل الفترة (اتساقاً مع مسار التصحيح upsertOpeningEntry): لا يُحذَف قيد OPENING مؤرَّخ داخل فترة
     // مُقفَلة (يُغيّر أرقامها بأثر رجعيّ) — يُرفض حتى تُفتح الفترة (admin). لا قيد ⇒ لا شيء يُحذَف.
-    const [openingEntry] = await tx
-      .select({ entryDate: accountingEntries.entryDate })
+    // ب-١ (١٦/٨): نظير العميل — عدّة قيود OPENING (أصلٌ + فروق مؤرَّخة). نفحص **أقدمها**،
+    // فالحذف يطال الكلّ ولا يجوز أن يمرّ صفٌّ في فترة مُقفَلة بغطاء صفٍّ مفتوح.
+    const [openingAgg] = await tx
+      .select({
+        earliest: sql<string | null>`MIN(${accountingEntries.entryDate})`,
+        count: sql<number>`COUNT(*)`,
+      })
       .from(accountingEntries)
-      .where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")))
-      .limit(1);
+      .where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")));
+    const openingEntry =
+      Number(openingAgg?.count ?? 0) > 0 && openingAgg?.earliest
+        ? { entryDate: openingAgg.earliest }
+        : null;
     if (openingEntry) {
       await assertLegacyOpeningMutable(tx);
       await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));

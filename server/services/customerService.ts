@@ -497,11 +497,20 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
 
     // قفل الفترة (اتساقاً مع مسار التصحيح upsertOpeningEntry): لا يُحذَف قيد OPENING مؤرَّخ داخل فترة
     // مُقفَلة (يُغيّر أرقامها بأثر رجعيّ) — يُرفض حتى تُفتح الفترة (admin). لا قيد ⇒ لا شيء يُحذَف.
-    const [openingEntry] = await tx
-      .select({ entryDate: accountingEntries.entryDate })
+    // ب-١ (١٦/٨): الطرف قد يملك عدّة قيود OPENING (أصلٌ + فروق تصحيح مؤرَّخة) تمتدّ عبر فترات.
+    // كان الفحص يأخذ **صفّاً واحداً بلا ترتيب** ثمّ يحذف الكلّ ⇒ صفٌّ في فترة مُقفَلة يُمحى
+    // بغطاء صفٍّ مفتوح. نفحص **أقدم** تاريخ: إن كان مقفلاً فلا حذف أصلاً.
+    const [openingAgg] = await tx
+      .select({
+        earliest: sql<string | null>`MIN(${accountingEntries.entryDate})`,
+        count: sql<number>`COUNT(*)`,
+      })
       .from(accountingEntries)
-      .where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")))
-      .limit(1);
+      .where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
+    const openingEntry =
+      Number(openingAgg?.count ?? 0) > 0 && openingAgg?.earliest
+        ? { entryDate: openingAgg.earliest }
+        : null;
     if (openingEntry) {
       await assertLegacyOpeningMutable(tx);
       await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));

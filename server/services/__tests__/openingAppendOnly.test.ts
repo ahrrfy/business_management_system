@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { getOpeningEntryAmount, upsertOpeningEntry } from "../openingBalance";
+import { getCustomerStatement } from "../reports/arAging";
 import { withTx } from "../tx";
 
 /**
@@ -125,5 +126,35 @@ describe("المسار ب-١ — الرصيد الافتتاحي إلحاقيّ 
     const c = await withTx((tx) => upsertOpeningEntry(tx, "CUSTOMER", CUSTOMER, "60000"));
     expect(c.delta).toBe("0.00"); // لا تغيير ⇒ لا قيد جديد
     expect(await openingRows()).toHaveLength(2);
+  });
+});
+
+/**
+ * الوجه الثاني للإلحاقية: قيدُ الفرق **مؤرَّخٌ بيومه**. فلا يجوز أن يتسرّب إلى رصيدٍ مُرحَّل
+ * لفترةٍ سبقته (وإلّا تغيّر كشفٌ ماضٍ بلا حركةٍ تفسّره — نفس العلّة التي جئنا نعالجها بصيغةٍ
+ * أخرى)، ويجب أن يظهر **حركةً** داخل فترته وإلّا اختلّ اتزان الكشف بمقداره.
+ */
+describe("ب-١ — قيد التصحيح مؤرَّخٌ: مُرحَّلٌ قبله، حركةٌ داخله", () => {
+  it("رصيدُ فترةٍ لاحقةٍ يشمل التصحيح، وفترةٍ سابقةٍ لا يشمله", async () => {
+    await withTx((tx) => upsertOpeningEntry(tx, "CUSTOMER", CUSTOMER, "100000"));
+    await withTx((tx) => upsertOpeningEntry(tx, "CUSTOMER", CUSTOMER, "60000"));
+
+    // قيدا OPENING كلاهما بتاريخ اليوم (localTodayDate) ⇒ فترةٌ تبدأ غداً ترى المجموع مُرحَّلاً.
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const later = await getCustomerStatement(CUSTOMER, { from: tomorrow, to: tomorrow });
+    expect(later?.summary.openingBalance).toBe("60000.00");
+
+    // بينما فترةٌ تبدأ اليوم: المُرحَّل صفر (لا قيد **قبلها**)، والقيدان حركةٌ داخلها.
+    const today = new Date().toISOString().slice(0, 10);
+    const now = await getCustomerStatement(CUSTOMER, { from: today, to: today });
+    expect(now?.summary.openingBalance).toBe("0.00");
+    const adj = (now?.payments ?? []).filter((p) => p.paymentMethod === "OPENING_ADJ");
+    expect(adj).toHaveLength(2);
+    // صافي الحركة = المُرحَّل الغائب بالضبط ⇒ الكشف يتّزن (٦٠٬٠٠٠ = ١٠٠٬٠٠٠ مدين − ٤٠٬٠٠٠ دائن).
+    const net = adj.reduce(
+      (acc, p) => acc + (p.direction === "OUT" ? Number(p.amount) : -Number(p.amount)),
+      0,
+    );
+    expect(net).toBe(60000);
   });
 });
