@@ -79,3 +79,8 @@ client/public/imgly-assets/
 
 # Image studio — مخرجات سائق fs لـImageStore (جذر التطوير الافتراضيّ)
 .image-store/
+
+# حالة أدوات الوكلاء المحلّية لكل شجرة عمل (Codex/Claude) — لا تُلتزَم.
+# ملاحظة: AGENTS.md **متتبَّع** عمداً (مؤشّر رقيق إلى CLAUDE.md) — لا تُضِفه هنا.
+.agents/
+.codex/
