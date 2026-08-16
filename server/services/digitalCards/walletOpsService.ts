@@ -161,13 +161,6 @@ export async function deposit(
   if (amount.lte(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون أكبر من صفر" });
   }
-  if (input.paymentMethod === "TRANSFER") {
-    throw new TRPCError({
-      code: "PRECONDITION_FAILED",
-      message: "إيداع المحفظة بالتحويل متوقف حتى ربطه باعتماد صرف خارجي موثّق",
-    });
-  }
-
   let cashBranchHint: number | null = null;
   if (input.paymentMethod === "CASH") {
     const [preview] = await tx
@@ -279,7 +272,7 @@ export async function deposit(
     },
     actor,
   );
-  const depositAssetRole = input.paymentMethod === "CASH" ? "TREASURY_CASH" : "CARD_BANK";
+  const depositAssetRole = "CARD_BANK" as const;
 
   // حركة أصل: صفر أثر P&L — ليست مشترياتٍ ولا مصروفاً (§٦.١).
   await postEntry(tx, {
