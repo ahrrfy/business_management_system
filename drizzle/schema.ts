@@ -8922,3 +8922,56 @@ export const announcementReads = mysqlTable(
   }),
 );
 export type AnnouncementRead = typeof announcementReads.$inferSelect;
+
+/**
+ * 0186 — طابور استرداد المبيعات الأوفلاينية المرفوضة (المسار و-٤، ورقة الإصلاحات ١٦/٨).
+ *
+ * الجذر: حين يصل بيعٌ نقديّ التُقط أوفلاين **بعد إغلاق ورديته** (أو تجاوز ٧٢ ساعة)، يرفضه
+ * الخادم بـ`PRECONDITION_FAILED` ولا يكتب شيئاً — بينما الزبون **دفع فعلاً والبضاعة خرجت**.
+ * كان العنصر يبقى في طابور الجهاز وحده ⇒ إيرادٌ ومخزونٌ ونقدٌ خارج الدفتر، تضيع نهائياً
+ * إن مُسحت بيانات المتصفّح. رسالة الرفض نفسها كانت تُحيل إلى «مراجعة التسوية اللاحقة» — وهي
+ * غير موجودة. هذا الجدول هو تلك المراجعة: يلتقط الحمولة **خادمياً** لحظة الرفض فلا تعتمد
+ * نجاتها على جهازٍ قد يُمسح، ثم يُرحّلها المدير بقرارٍ مُدقَّق إلى وردية مفتوحة.
+ *
+ * ليس دفتراً: صفٌّ هنا **لا يُنشئ أثراً مالياً**. القيد يُكتب فقط عند الترحيل عبر `createSale`.
+ */
+export const offlineRecoveryItems = mysqlTable(
+  "offlineRecoveryItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    deviceId: varchar("deviceId", { length: 64 }),
+    /**
+     * الكاشير الذي التقط البيع وأرسله. تُعاد إليه نسبة الفاتورة عند الترحيل: محرّك العمولات
+     * ينسب الفاتورة بـ`invoices.createdBy` (`commissions/base.ts`)، و`createSale` يكتب فيه
+     * الفاعل — أي المدير المُراجِع — فكانت كل عملية استرداد تُحوّل عمولة الكاشير إلى المدير.
+     */
+    submittedByUserId: int("submittedByUserId"),
+    /**
+     * قناة الالتقاط. الترحيل الآليّ يدعم RETAIL وحدها (حمولتها هي عقد `replayOfflineSale`)،
+     * أمّا PRINT/RECEPTION فتُلتقَط **للرصد ومنع الضياع** وتُسوَّى يدوياً — إخفاؤها أسوأ من
+     * عرضها بلا زرّ ترحيل.
+     */
+    channel: mysqlEnum("recoveryChannel", ["RETAIL", "PRINT", "RECEPTION"]).default("RETAIL").notNull(),
+    /** مفتاح idempotency الأصليّ — فريدٌ كي لا يتضاعف العنصر بإعادة محاولة الجهاز. */
+    clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
+    offlineReceiptNumber: varchar("offlineReceiptNumber", { length: 40 }).notNull(),
+    capturedAt: timestamp("capturedAt").notNull(),
+    /** الحمولة كما أُرسلت (JSON نصّاً) — مصدر الترحيل لاحقاً بلا إعادة إدخال يدويّ. */
+    payload: mediumtext("payload").notNull(),
+    rejectCode: varchar("rejectCode", { length: 40 }).notNull(),
+    rejectReason: text("rejectReason"),
+    recoveryStatus: mysqlEnum("recoveryStatus", ["PENDING", "POSTED", "DISCARDED"]).default("PENDING").notNull(),
+    /** الفاتورة الناتجة عند الترحيل — الرابط بين الاحتجاز والدفتر. */
+    invoiceId: bigint("invoiceId", { mode: "number" }),
+    reviewedBy: int("reviewedBy"),
+    reviewedAt: timestamp("reviewedAt"),
+    discardReason: text("discardReason"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    uqRequest: unique("uq_offline_recovery_request").on(table.clientRequestId),
+    statusIdx: index("idx_offline_recovery_status").on(table.recoveryStatus, table.branchId),
+  }),
+);
+export type OfflineRecoveryItem = typeof offlineRecoveryItems.$inferSelect;

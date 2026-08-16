@@ -15,19 +15,24 @@ export const OFFLINE_CAPTURE_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
  * تجاوز النافذة عمداً: طابور العميل يُصنّف هذا «رفض أعمال» فيُعلّق العنصر لمراجعة المدير
  * ويُكمل تفريغ ما بعده — فلا يحجب عنصرٌ واحدٌ نقودَ اليوم كلّه.
  */
-export function assertCaptureWindow(capturedAtIso: string): Date {
+export function assertCaptureWindow(capturedAtIso: string, options?: { allowAged?: boolean }): Date {
   const capturedAt = new Date(capturedAtIso);
   if (Number.isNaN(capturedAt.getTime())) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لحظة التقاط غير صالحة" });
   }
   const ageMs = Date.now() - capturedAt.getTime();
+  // ⚠️ فحص المستقبل **لا يُتجاوَز أبداً** ولو بمراجعة مدير: لحظةٌ مستقبلية تُخزَّن في
+  // `invoices.capturedAt` فتُفسد تواريخ تقرير الأوفلاين وزمن الترحيل المحسوب منها.
+  // المدير يُراجع «قِدَم» العملية — لا يُصحّح ساعة جهازٍ منحرفة بقبولها كما هي.
   if (ageMs < -OFFLINE_CAPTURE_FUTURE_TOLERANCE_MS) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: "لحظة الالتقاط في المستقبل — تحقّق من ساعة جهاز الكاشير",
     });
   }
-  if (ageMs > OFFLINE_CAPTURE_MAX_AGE_MS) {
+  // `allowAged` لمسار استرداد المدير وحده: القِدَم هو **سببُ** وجود العنصر في الطابور،
+  // وقد راجعه إنسانٌ الآن. حارس الوردية المفتوحة يبقى نافذاً في createSale بأيّ حال.
+  if (!options?.allowAged && ageMs > OFFLINE_CAPTURE_MAX_AGE_MS) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message: "عمليّة أوفلاينية أقدم من ٧٢ ساعة — تتطلب مراجعة المدير قبل الترحيل",
