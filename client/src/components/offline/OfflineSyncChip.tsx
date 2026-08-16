@@ -37,7 +37,9 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
   // ش٥ — إعدادات الجهاز: مفتاح التجربة + PIN + التخزين الدائم + كود الجهاز.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deviceCode, setDeviceCode] = useState("");
-  const [saleEnabled, setSaleEnabled] = useState(false);
+  // الافتراضي مفعَّل (قرار مالك ١٦/٨) — الحالة الأولية تعكسه قبل القراءة من الجهاز كي لا
+  // تومض الشارة «معطَّل» للحظة على جهازٍ يعمل فعلاً.
+  const [saleEnabled, setSaleEnabled] = useState(true);
   const [persisted, setPersisted] = useState<string | null>(null);
   const [profile, setProfile] = useState<OfflineProfile | null>(null);
   const [pinInput, setPinInput] = useState("");
