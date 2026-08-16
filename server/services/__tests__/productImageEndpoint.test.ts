@@ -54,6 +54,7 @@ async function seedProduct(opts: {
   isActive?: boolean;
   isService?: boolean;
   imageValue?: string | null;
+  reviewStatus?: "APPROVED" | "PENDING_REVIEW" | "REJECTED";
 }): Promise<number> {
   const d = db();
   const id = opts.productId;
@@ -77,7 +78,13 @@ async function seedProduct(opts: {
   await d.insert(s.productPrices).values({ productUnitId: id, priceTier: "RETAIL", price: "1000" });
   const value = opts.imageValue === undefined ? JPEG_DATA_URL : opts.imageValue;
   if (value == null) return 0;
-  await d.insert(s.productImages).values({ id, productId: id, url: value, isPrimary: true });
+  await d.insert(s.productImages).values({
+    id,
+    productId: id,
+    url: value,
+    isPrimary: true,
+    reviewStatus: opts.reviewStatus ?? "APPROVED",
+  });
   return id;
 }
 
@@ -116,6 +123,20 @@ describe("GET /api/img/product/:id — البوّابة (علنية مجهولة
       expect((await fetch(`${base}/api/img/product/${inactive}`)).status).toBe(404);
       expect((await fetch(`${base}/api/img/product/${service}`)).status).toBe(404);
     });
+  });
+
+  it("🔒 صورة قيد المراجعة أو مرفوضة ⇒ 404 حتى لو كان المنتج منشوراً", async () => {
+    const pending = await seedProduct({ productId: 31, reviewStatus: "PENDING_REVIEW" });
+    const rejected = await seedProduct({ productId: 32, reviewStatus: "REJECTED" });
+    await withServer(async (base) => {
+      expect((await fetch(`${base}/api/img/product/${pending}`)).status).toBe(404);
+      expect((await fetch(`${base}/api/img/product/${rejected}`)).status).toBe(404);
+    });
+  });
+
+  it("لا يُضمّن الكتالوج رابط صورة غير معتمدة أصلاً", async () => {
+    await seedProduct({ productId: 33, reviewStatus: "PENDING_REVIEW" });
+    expect((await storefrontProduct(33, 1))?.imageUrl).toBeNull();
   });
 
   it("معرّف غير موجود ⇒ 404، وغير رقميّ/سالب ⇒ 400 (المفتاح عددٌ لا مسار ⇒ لا traversal)", async () => {

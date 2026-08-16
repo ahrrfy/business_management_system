@@ -38,6 +38,7 @@ import {
   sendTrpcError,
   trpcAwareRateLimitHandler,
 } from "./middleware/trpcError";
+import { hasOverfilledPublicSensitiveBatch } from "./middleware/publicSensitiveBatch";
 import {
   isBackgroundJobRunner,
   isClustered,
@@ -471,36 +472,14 @@ async function startServer() {
   // ضمن طلب واحد قبل اصطدامه بحدّ المعدّل. الحدّ التالي للنقاط العامة الحرجة لا يسمح بأكثر من
   // نداء واحد لكلّ طلب HTTP، فحدّ المعدّل القائم يعمل بدقّته الحقيقية بلا تمييع.
   app.use("/api/trpc", (req, res, next) => {
-    const PUBLIC_SENSITIVE = [
-      "auth.login",
-      "auth.twoFactorVerify",
-      "auth.resetPasswordWithToken",
-      "count.auth",
-      "kiosk.deviceLogin",
-      "recruitment.submit",
-      "platformAdmin.login",
-      // أحداث القياس كتابة علنية؛ نمنع حشو عشرات العدادات في دفعة HTTP واحدة.
-      "storefront.trackBanner",
-      "storefront.trackConversion",
-      // تتبّع الطلب: قابل للتعداد (رقم متسلسل) ⇒ نمنع حشو عشرات المحاولات في دفعة واحدة تتجاوز حدّه.
-      "storefront.trackOrder",
-    ];
-    // مسار البَتش يبدأ بـ"/api/trpc/x," مع فاصلة بين أسماء الإجراءات الموحَّدة.
     const path = req.path || "";
-    if (path.includes(",")) {
-      const procs = path.split("/").pop()?.split(",") ?? [];
-      let count = 0;
-      for (const p of procs) {
-        if (PUBLIC_SENSITIVE.some((s) => p.includes(s))) count++;
-      }
-      if (count > 1) {
-        sendTrpcError(res, {
-          httpStatus: 429,
-          code: "TOO_MANY_REQUESTS",
-          message: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة.",
-        });
-        return;
-      }
+    if (hasOverfilledPublicSensitiveBatch(path)) {
+      sendTrpcError(res, {
+        httpStatus: 429,
+        code: "TOO_MANY_REQUESTS",
+        message: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة.",
+      });
+      return;
     }
     next();
   });

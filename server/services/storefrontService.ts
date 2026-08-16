@@ -155,7 +155,11 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
 }
 
 /** مرحلة ترشيح ضيقة: لا تحمل URL/data الصور ولا الحقول التسويقية الثقيلة قبل حسم product-level limit. */
@@ -174,7 +178,11 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
 }
 
 function chooseCandidateProductIds(
