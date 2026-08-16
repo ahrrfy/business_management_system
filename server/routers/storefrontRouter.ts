@@ -73,13 +73,15 @@ export const storefrontRouter = router({
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
   settings: publicProcedure.query(() => getPublicStoreSettings()),
 
-  /** كتالوج المتجر: فلترة فئة + بحث نصّي + سقف. يعيد التوفّر وسعر العرض. */
+  /** كتالوج المتجر: فلترة فئة + بحث نصّي + صفحات متسلسلة بلا اقتطاع صامت. */
   catalog: publicProcedure
     .input(
       z.object({
         categoryId: z.number().int().positive().nullish(),
         search: z.string().max(64).optional(),
         limit: z.number().int().min(1).max(120).default(60),
+        // معرّف آخر منتج في الصفحة السابقة؛ يضيفه useInfiniteQuery فقط بعد الصفحة الأولى.
+        cursor: z.number().int().positive().nullish(),
         // متوافق للخلف: غياب الحقل يبقي السلوك القديم (المتوفر فقط).
         availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
       })
@@ -89,6 +91,7 @@ export const storefrontRouter = router({
         categoryId: input.categoryId ?? null,
         search: input.search,
         limit: input.limit,
+        cursor: input.cursor ?? null,
         availability: input.availability,
       })
     ),

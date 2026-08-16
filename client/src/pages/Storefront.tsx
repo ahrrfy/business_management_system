@@ -726,17 +726,20 @@ export default function Storefront() {
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const bannersQ = trpc.storefront.banners.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const settingsQ = trpc.storefront.settings.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
-  // يطبّق الخادم مرشح التوفر قبل limit حتى لا تتحول الصفحة إلى نتيجة ناقصة بعد ترشيحٍ محلي.
-  // إبقاء الترشيح الدفاعي أدناه يحمي الواجهة أثناء ترقية عقد API تدريجياً.
+  // يطبّق الخادم مرشح التوفر قبل حدّ الصفحة. useInfiniteQuery يمرّر nextCursor فقط عند
+  // «تحميل المزيد»، فتصل كل المنتجات المنشورة بلا سقف 120 صامت ولا تكرار بطاقات.
   const catalogInput = {
     categoryId,
     search: search || undefined,
-    limit: 120,
+    limit: 48,
     availability,
   } as const;
-  const catalogQ = trpc.storefront.catalog.useQuery(
+  const catalogQ = trpc.storefront.catalog.useInfiniteQuery(
     catalogInput,
-    { placeholderData: (prev) => prev }
+    {
+      getNextPageParam: (last) => last.nextCursor ?? undefined,
+      placeholderData: (prev) => prev,
+    },
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const labelQ = trpc.storefront.labelSummary.useQuery(labelParams ?? { orderNumber: "-", token: "-" }, { enabled: labelParams != null, retry: false });
@@ -876,7 +879,9 @@ export default function Storefront() {
     if (labelQ.data) setPanel("label");
   }, [labelQ.data]);
 
-  const items = catalogQ.data?.items ?? [];
+  const items = useMemo(() => (catalogQ.data?.pages ?? []).flatMap((page) => page.items), [catalogQ.data]);
+  // فشل صفحة لاحقة لا يمحو ما رآه الزائر بالفعل؛ حالة الخطأ الكاملة تخص الصفحة الأولى فقط.
+  const catalogInitialError = catalogQ.isError && items.length === 0;
   const cats = categoriesQ.data ?? [];
   const offers = offersQ.data ?? [];
   const banners = bannersQ.data ?? [];
@@ -884,7 +889,7 @@ export default function Storefront() {
     settings: settingsQ.isError,
     categories: categoriesQ.isError,
     offers: offersQ.isError,
-    catalog: catalogQ.isError,
+    catalog: catalogInitialError,
   });
   const supportingFailures = sourceFailures.filter(
     (source) => source !== "catalog",
@@ -920,7 +925,7 @@ export default function Storefront() {
     });
   }, [availability, brand, items, priceFilter, sort]);
   const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED";
-  // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الطلب الأساسي
+  // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الصفحة الأولى
   // يعني كتالوجاً فارغاً حقاً؛ وأي غياب مع بحث/فئة/تنقيح يعني صفراً بسبب التصفية.
   const isEmptyCatalog = items.length === 0 && !search && categoryId == null;
 
@@ -1370,7 +1375,7 @@ export default function Storefront() {
             <Loader2 aria-hidden className="size-8 animate-spin text-emerald-500" />
             <p className="mt-3 text-sm">جارٍ تحميل المنتجات…</p>
           </div>
-        ) : catalogQ.isError ? (
+        ) : catalogInitialError ? (
           <div className="flex flex-col items-center justify-center py-24 text-center" role="alert">
             <AlertTriangle aria-hidden className="size-10 text-[var(--sem-warn)]" />
             <p className="mt-3 text-sm font-bold text-slate-700 dark:text-slate-200">تعذّر تحميل المنتجات</p>
@@ -1405,7 +1410,8 @@ export default function Storefront() {
             )}
           </div>
         ) : (
-          <div id="store-results" className="scroll-mt-40 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+          <>
+            <div id="store-results" className="scroll-mt-40 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
             {filteredItems.flatMap((p, idx) => {
               const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
               const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
@@ -1481,7 +1487,26 @@ export default function Storefront() {
               }
               return nodes;
             })}
-          </div>
+            </div>
+            {catalogQ.hasNextPage && (
+              <div className="mt-6 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => void catalogQ.fetchNextPage()}
+                  disabled={catalogQ.isFetchingNextPage}
+                  className="store-primary-action flex min-w-40 items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold text-white transition motion-safe:active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {catalogQ.isFetchingNextPage && <Loader2 aria-hidden className="size-4 animate-spin" />}
+                  {catalogQ.isFetchingNextPage ? "جارٍ تحميل المزيد…" : "تحميل المزيد"}
+                </button>
+              </div>
+            )}
+            {catalogQ.isError && (
+              <p className="mt-3 text-center text-xs font-medium text-[var(--sem-neg)]" role="alert">
+                تعذّر تحميل الصفحة التالية. اضغط «تحميل المزيد» لإعادة المحاولة.
+              </p>
+            )}
+          </>
         )}
       </main>
 

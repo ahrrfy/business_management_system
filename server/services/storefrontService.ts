@@ -128,6 +128,13 @@ export interface StorefrontCategory {
 
 export type StorefrontAvailability = "IN_STOCK" | "ALL";
 
+/** صفحة كتالوج علني: مؤشر الاستكمال هو معرّف آخر منتج في ترتيب الكتالوج الحتمي. */
+export interface StorefrontCatalogPage {
+  items: StorefrontProduct[];
+  hasMore: boolean;
+  nextCursor: number | null;
+}
+
 /** SELECT موحّد بالحقول الآمنة + كمية الفرع (داخلياً لحساب inStock فقط، لا تُصدَّر). */
 function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
   return db
@@ -440,10 +447,12 @@ export async function storefrontCatalog(opts: {
   categoryId?: number | null;
   search?: string | null;
   limit?: number;
+  /** آخر productId رآه الزائر في نفس المرشحات؛ null/undefined = الصفحة الأولى. */
+  cursor?: number | null;
   availability?: StorefrontAvailability;
-}): Promise<{ items: StorefrontProduct[] }> {
+}): Promise<StorefrontCatalogPage> {
   const db = getDb();
-  if (!db) return { items: [] };
+  if (!db) return { items: [], hasMore: false, nextCursor: null };
   const branchId = await resolveStorefrontBranchId(opts.branchId);
   const cap = Math.min(Math.max(opts.limit ?? 60, 1), 120);
   const availabilityFilter = opts.availability ?? "IN_STOCK";
@@ -464,8 +473,26 @@ export async function storefrontCatalog(opts: {
   }
   const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
   const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
-  const selectedIds = chooseCandidateProductIds(hydratedCandidates, cap, availabilityFilter);
-  if (!selectedIds.length) return { items: [] };
+  // نرتّب على مستوى المنتج أولاً (بعد حساب ATP)، ثم نأخذ الصفحة. لا نطبّق limit على صفوف
+  // variant×unit كي لا يبتلع متغيّر واحد الصفحة كلها. cursor هو آخر منتج من هذا الترتيب لا
+  // إزاحة رقمية؛ لذلك لا يكرر بطاقات الصفحة السابقة عند التحميل التدريجي.
+  const orderedIds = chooseCandidateProductIds(
+    hydratedCandidates,
+    Number.MAX_SAFE_INTEGER,
+    availabilityFilter,
+  );
+  const cursor = opts.cursor ?? null;
+  const cursorIndex = cursor == null ? -1 : orderedIds.indexOf(cursor);
+  // مؤشر قديم بعد إخفاء المنتج/نفاده لا يعود إلى أول القائمة فيكرر ما رآه الزائر؛ ينتهي بأمان
+  // ويستعيد العميل الصفحة الأولى عند تحديث مرشحاته.
+  const remainingIds = cursor == null
+    ? orderedIds
+    : cursorIndex >= 0
+      ? orderedIds.slice(cursorIndex + 1)
+      : [];
+  const hasMore = remainingIds.length > cap;
+  const selectedIds = remainingIds.slice(0, cap);
+  if (!selectedIds.length) return { items: [], hasMore: false, nextCursor: null };
   const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
   const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
   const rows = (await attachAvailability(db, branchId, rawRows))
@@ -489,7 +516,12 @@ export async function storefrontCatalog(opts: {
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);
-  return { items };
+  const last = items[items.length - 1];
+  return {
+    items,
+    hasMore: hasMore && last != null,
+    nextCursor: hasMore && last != null ? last.productId : null,
+  };
 }
 
 /** فئات المتجر: لا تختفي لمجرد نفاد المخزون؛ تُعيد المنشور والمتاح كلّاً على حدة. */
