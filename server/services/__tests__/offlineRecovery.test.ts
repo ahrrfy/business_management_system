@@ -103,7 +103,7 @@ describe("المسار و-٤ — استرداد البيع الأوفلايني�
     await expect(cashier.offline.replaySale(saleInput())).rejects.toBeTruthy();
 
     await db().insert(s.shifts).values({
-      id: 2, branchId: 1, userId: MANAGER, openingBalance: "0", status: "OPEN",
+      id: 2, branchId: 1, userId: MANAGER, openingBalance: "0", status: "OPEN", shiftType: "RETAIL",
     });
 
     const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
@@ -123,6 +123,37 @@ describe("المسار و-٤ — استرداد البيع الأوفلايني�
     expect(Number(row.invoiceId)).toBe(Number(invoices[0].id));
   });
 
+  it("الفاتورة تُنسَب للكاشير الملتقِط لا للمدير المُراجِع (وعاء العمولة)", async () => {
+    const cashier = appRouter.createCaller(makeCtx(await user(CASHIER)));
+    await expect(cashier.offline.replaySale(saleInput())).rejects.toBeTruthy();
+    await db().insert(s.shifts).values({
+      id: 2, branchId: 1, userId: MANAGER, openingBalance: "0", status: "OPEN", shiftType: "RETAIL",
+    });
+    const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
+    const queue = await manager.offline.recoveryQueue();
+    const posted = await manager.offline.postRecoveryItem({ id: queue[0].id, targetShiftId: 2 });
+
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, posted.invoiceId)))[0];
+    // محرّك العمولات ينسب بـcreatedBy ⇒ لولا الإعادة لتحوّلت عمولة الكاشير إلى المدير.
+    expect(Number(inv.createdBy)).toBe(CASHIER);
+    expect(inv.salespersonNameSnapshot).toBe("كاشير");
+  });
+
+  it("لا يُرحَّل بيع التجزئة إلى وردية استقبال/طباعة", async () => {
+    const cashier = appRouter.createCaller(makeCtx(await user(CASHIER)));
+    await expect(cashier.offline.replaySale(saleInput())).rejects.toBeTruthy();
+    await db().insert(s.shifts).values({
+      id: 3, branchId: 1, userId: MANAGER, openingBalance: "0", status: "OPEN", shiftType: "RECEPTION",
+    });
+    const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
+    const queue = await manager.offline.recoveryQueue();
+    await expect(
+      manager.offline.postRecoveryItem({ id: queue[0].id, targetShiftId: 3 }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    // ويبقى العنصر معلّقاً للمحاولة الصحيحة — لا يُستهلك بالرفض.
+    expect((await manager.offline.recoveryQueue())).toHaveLength(1);
+  });
+
   it("الكاشير لا يُرحّل ولا يرى الطابور", async () => {
     const cashier = appRouter.createCaller(makeCtx(await user(CASHIER)));
     await expect(cashier.offline.recoveryQueue()).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -132,7 +163,7 @@ describe("المسار و-٤ — استرداد البيع الأوفلايني�
     const cashier = appRouter.createCaller(makeCtx(await user(CASHIER)));
     await expect(cashier.offline.replaySale(saleInput())).rejects.toBeTruthy();
     await db().insert(s.shifts).values({
-      id: 2, branchId: 1, userId: MANAGER, openingBalance: "0", status: "OPEN",
+      id: 2, branchId: 1, userId: MANAGER, openingBalance: "0", status: "OPEN", shiftType: "RETAIL",
     });
     const manager = appRouter.createCaller(makeCtx(await user(MANAGER)));
     const queue = await manager.offline.recoveryQueue();

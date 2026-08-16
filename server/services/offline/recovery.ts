@@ -8,7 +8,7 @@
 // يُكتب حصراً عند ترحيل المدير عبر `createSale` إلى وردية مفتوحة.
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq } from "drizzle-orm";
-import { offlineRecoveryItems, shifts, users } from "../../../drizzle/schema";
+import { invoices, offlineRecoveryItems, shifts, users } from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
 import { logger } from "../../logger";
 import { logAuditTx } from "../auditService";
@@ -28,6 +28,8 @@ export async function captureRejectedReplay(
   input: ReplayOfflineSaleInput,
   rejectCode: string,
   rejectReason: string,
+  submittedByUserId: number,
+  channel: "RETAIL" | "PRINT" | "RECEPTION" = "RETAIL",
 ): Promise<void> {
   try {
     const db = requireDb();
@@ -42,8 +44,10 @@ export async function captureRejectedReplay(
         payload: JSON.stringify(input),
         rejectCode,
         rejectReason,
+        submittedByUserId,
+        channel,
       })
-      .onDuplicateKeyUpdate({ set: { rejectCode, rejectReason } });
+      .onDuplicateKeyUpdate({ set: { rejectCode, rejectReason, submittedByUserId } });
   } catch (e) {
     // فشل الالتقاط لا يُغيّر نتيجة الترحيل ولا يجوز أن يحجب رسالة الرفض عن المستخدم —
     // **لكنّه لا يُبتلَع صامتاً**: صمتٌ هنا يعني بيعاً مدفوعاً يضيع بلا أثر، وهو العطل نفسه
@@ -70,6 +74,9 @@ export interface RecoveryQueueRow {
   rejectCode: string;
   rejectReason: string | null;
   ageDays: number;
+  channel: "RETAIL" | "PRINT" | "RECEPTION";
+  /** الترحيل الآليّ لبيع التجزئة وحده؛ البقيّة تُعرَض للرصد وتُسوَّى يدوياً. */
+  postable: boolean;
 }
 
 /** الطابور المعلَّق في نطاق المدير — admin يعبُر الفروع، وغيره فرعه وحده. */
@@ -109,6 +116,8 @@ export async function listRecoveryQueue(actor: Actor): Promise<RecoveryQueueRow[
       rejectCode: r.rejectCode,
       rejectReason: r.rejectReason,
       ageDays: Math.max(0, Math.floor((now - captured) / 86_400_000)),
+      channel: r.channel,
+      postable: r.channel === "RETAIL",
     };
   });
 }
@@ -145,31 +154,81 @@ export async function postRecoveryItem(
     throw new TRPCError({ code: "BAD_REQUEST", message: "اختر ورديةً مفتوحة — لا يُكتب في وردية مقفلة" });
   }
 
-  const payload = JSON.parse(item.payload) as ReplayOfflineSaleInput;
-  const result = await replayOfflineSale(
-    {
-      ...payload,
-      branchId: Number(item.branchId),
-      shiftId: targetShiftId,
-      // مفتاح جديد: الأصليّ قد يكون استُهلك بمحاولاتٍ سابقة، والعنصر يُرحَّل مرّةً واحدة
-      // يحرسها انتقالُ الحالة أدناه (PENDING→POSTED) لا المفتاح.
-      clientRequestId: `recovery:${item.id}:${payload.clientRequestId}`,
-      priceOverrideApproved: true,
-    },
-    actor,
-    { skipCaptureWindow: true },
-  );
+  if (item.channel !== "RETAIL") {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "الترحيل الآليّ متاحٌ لبيع التجزئة؛ عمليات الطباعة/الاستقبال مُسجَّلة هنا للرصد وتُسوَّى يدوياً",
+    });
+  }
+  if (shift.shiftType !== "RETAIL") {
+    // بيعُ تجزئةٍ يُرحَّل إلى درج استقبالٍ أو طباعة يُفسد «النقد المتوقَّع» لذلك الدرج وZ-report
+    // الخاصّ بنوعه. الشاشة تُصفّي أيضاً — والحدّ هو الحاجز.
+    throw new TRPCError({ code: "BAD_REQUEST", message: "وردية التجزئة وحدها تقبل ترحيل بيعٍ أوفلاينيّ" });
+  }
 
-  const updated = await db
+  // **حجزٌ ذرّيّ قبل الترحيل**: قراءةٌ غير مقفولة ثمّ تحديثٌ لاحق كانت تسمح لمديرَين بترحيل
+  // ورفض العنصر نفسه معاً (أحدهما يكتب فاتورةً والآخر يُعلنه مُهمَلاً). الانتقال PENDING→POSTED
+  // شرطٌ في الـWHERE ⇒ الفائز واحد، والخاسر يرى CONFLICT.
+  const claim = await db
     .update(offlineRecoveryItems)
-    .set({
-      recoveryStatus: "POSTED",
-      invoiceId: result.invoiceId,
-      reviewedBy: actor.userId,
-      reviewedAt: new Date(),
-    })
+    .set({ recoveryStatus: "POSTED", reviewedBy: actor.userId, reviewedAt: new Date() })
     .where(and(eq(offlineRecoveryItems.id, id), eq(offlineRecoveryItems.recoveryStatus, "PENDING")));
-  void updated;
+  const claimed = Number((claim as unknown as { affectedRows?: number })?.affectedRows ?? (claim as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
+  if (claimed < 1) {
+    throw new TRPCError({ code: "CONFLICT", message: "العنصر رُحِّل أو أُهمل سابقاً" });
+  }
+
+  const payload = JSON.parse(item.payload) as ReplayOfflineSaleInput;
+  let result: Awaited<ReturnType<typeof replayOfflineSale>>;
+  try {
+    result = await replayOfflineSale(
+      {
+        ...payload,
+        branchId: Number(item.branchId),
+        shiftId: targetShiftId,
+        // ⚠️ **المفتاح الأصليّ كما هو** — لا مفتاحاً جديداً. سببان:
+        // (١) الازدواج: قد يكون الترحيل الأوّل التزم فعلاً وضاع ردّه، فوصل الجهاز بعد ٧٢ ساعة
+        //     فرُفض قبل أن يبلغ فحص idempotency ⇒ التقطناه. الترحيل بمفتاحٍ جديد كان **يُنشئ
+        //     فاتورةً وإيصالاً وقيداً وحركة مخزونٍ ثانية للبيع الماديّ نفسه**. بالمفتاح الأصليّ
+        //     يربط `createSale` الفاتورة القائمة بدل تكرارها.
+        // (٢) الطول: `invoices.sourceId` = varchar(50)، والمفتاح المركَّب كان يتجاوزه فيفشل
+        //     الإدراج ويبقى بيعٌ قابلٌ للاسترداد معلّقاً أبداً.
+        clientRequestId: payload.clientRequestId,
+        priceOverrideApproved: true,
+      },
+      actor,
+      { skipCaptureWindow: true },
+    );
+  } catch (e) {
+    // فشل الترحيل يُعيد العنصر إلى الطابور — وإلّا بقي «مُرحَّلاً» بلا فاتورة.
+    await db
+      .update(offlineRecoveryItems)
+      .set({ recoveryStatus: "PENDING", reviewedBy: null, reviewedAt: null })
+      .where(eq(offlineRecoveryItems.id, id));
+    throw e;
+  }
+
+  await db
+    .update(offlineRecoveryItems)
+    .set({ invoiceId: result.invoiceId })
+    .where(eq(offlineRecoveryItems.id, id));
+
+  // **نسبة البيع لبائعه**: `createSale` يكتب الفاعل (المدير المُراجِع) في `invoices.createdBy`
+  // و`salespersonNameSnapshot`، ومحرّك العمولات ينسب الفاتورة بـ`createdBy`
+  // (`commissions/base.ts`) ⇒ كانت كلّ عملية استرداد تُحوّل عمولة الكاشير إلى المدير وتُفسد
+  // تقارير البائعين. نُعيد النسبة إلى مُلتقِط البيع الأصليّ، والمُراجِع محفوظٌ في أثر التدقيق.
+  if (item.submittedByUserId != null && Number(item.submittedByUserId) !== actor.userId) {
+    const seller = (
+      await db.select({ name: users.name }).from(users).where(eq(users.id, Number(item.submittedByUserId))).limit(1)
+    )[0];
+    await db
+      .update(invoices)
+      .set({
+        createdBy: Number(item.submittedByUserId),
+        ...(seller?.name ? { salespersonNameSnapshot: seller.name } : {}),
+      })
+      .where(eq(invoices.id, result.invoiceId));
+  }
 
   if (auditCtx) {
     await withTx(async (tx) => {
@@ -179,6 +238,20 @@ export async function postRecoveryItem(
         entityId: result.invoiceId,
         oldValue: { recoveryItemId: Number(item.id), offlineReceiptNumber: item.offlineReceiptNumber, rejectCode: item.rejectCode },
         newValue: { invoiceId: result.invoiceId, targetShiftId, branchId: Number(item.branchId) },
+      });
+    });
+  }
+
+  // بيعٌ قديم/بوردية مقفلة قد يكون أيضاً تحت التكلفة أو فوق عتبة الخصم اليدويّ. المسارات
+  // الأخرى تُصدر `sale.priceOverride` وشاشة التدقيق تُصنّف هذا الفعل بعينه ⇒ بدونه تختفي
+  // تجاوزات الاسترداد من مراجعة التسعير.
+  if (result.priceOverride && auditCtx) {
+    await withTx(async (tx) => {
+      await logAuditTx(tx, auditCtx, {
+        action: "sale.priceOverride",
+        entityType: "invoice",
+        entityId: result.invoiceId,
+        newValue: { approvedByUserId: actor.userId, byRole: actor.role ?? null, offlineRecovery: true },
       });
     });
   }

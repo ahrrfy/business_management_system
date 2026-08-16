@@ -178,7 +178,9 @@ export default function OfflineSalesReport() {
               aria-label={`ترحيل ${item.offlineReceiptNumber}`}
             >
               {(openShifts.data ?? [])
-                .filter((sh) => Number(sh.branchId) === item.branchId)
+                // وردية التجزئة وحدها: ترحيل بيعٍ إلى درج استقبال/طباعة يُفسد نقده المتوقَّع
+                // وZ-report الخاصّ بنوعه (والحدّ يرفضه أيضاً).
+                .filter((sh) => Number(sh.branchId) === item.branchId && sh.shiftType === "RETAIL")
                 .map((sh) => (
                   <option key={sh.shiftId} value={String(sh.shiftId)}>
                     وردية #{sh.shiftId} — {sh.userName ?? ""}
@@ -202,12 +204,28 @@ export default function OfflineSalesReport() {
                 >
                   تأكيد الإهمال
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setDiscardFor(null)}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setDiscardReason("");
+                    setDiscardFor(null);
+                  }}
+                >
                   إلغاء
                 </Button>
               </div>
             ) : (
-              <Button size="sm" variant="ghost" onClick={() => setDiscardFor(item.id)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  // تصفير السبب عند تبديل الصفّ: نصٌّ كُتب لعنصرٍ آخر كان يبقى ظاهراً وزرّ
+                  // التأكيد مُفعَّلاً ⇒ إهمال بيعٍ مدفوع بسببٍ لا يخصّه.
+                  setDiscardReason("");
+                  setDiscardFor(item.id);
+                }}
+              >
                 إهمال
               </Button>
             )}

@@ -18,7 +18,7 @@ import {
   buildOfflineVersions,
   buildStockSnapshot,
 } from "../services/offline/catalogSnapshot";
-import { replayOfflineSale } from "../services/offline/replaySale";
+import { replayOfflineSale, type ReplayOfflineSaleInput } from "../services/offline/replaySale";
 import { replayOfflinePrintSale } from "../services/offline/replayPrintSale";
 import { replayOfflineReception } from "../services/offline/replayReception";
 import { buildOfflineSalesReport } from "../services/offline/salesReport";
@@ -83,6 +83,12 @@ async function runReplay<T extends { invoiceId?: number; idempotentReplay?: bool
     capturedAt: string;
     deviceId: string | null;
     lines: number;
+    /** حمولة الالتقاط + هوية المُرسِل + القناة — لتوثيق الرفض خادمياً (و-٤) في كل القنوات. */
+    capture?: {
+      input: ReplayOfflineSaleInput;
+      submittedByUserId: number;
+      channel: "RETAIL" | "PRINT" | "RECEPTION";
+    };
   },
 ): Promise<T> {
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -104,7 +110,20 @@ async function runReplay<T extends { invoiceId?: number; idempotentReplay?: bool
       return res;
     } catch (e: unknown) {
       if (isDupEntry(e) && attempt < 2) continue;
-      if (e instanceof TRPCError) throw e;
+      if (e instanceof TRPCError) {
+        // و-٤: رفضُ الأعمال يعني عمليةً **مدفوعة** لا مكان لها في الدفتر ⇒ تُلتقط خادمياً قبل
+        // إعادة رمي الرفض. هنا في الغلاف المشترك كي تشمل الطباعة والاستقبال لا البيع وحده.
+        if (e.code === "PRECONDITION_FAILED" && meta.capture) {
+          await captureRejectedReplay(
+            meta.capture.input,
+            e.code,
+            e.message,
+            meta.capture.submittedByUserId,
+            meta.capture.channel,
+          );
+        }
+        throw e;
+      }
       const err = e as { message?: string; code?: string; sqlMessage?: string; sql?: string };
       logger.error(
         {
@@ -240,6 +259,8 @@ export const offlineRouter = router({
                 { ...replayInput, branchId: effectiveBranchId },
                 e.code,
                 e.message,
+                ctx.user.id,
+                "RETAIL",
               );
             }
             throw e;
@@ -308,6 +329,11 @@ export const offlineRouter = router({
         {
           ctx,
           action: "printSale.offlineReplay",
+          capture: {
+            input: { ...replayInput, branchId: effectiveBranchId } as unknown as ReplayOfflineSaleInput,
+            submittedByUserId: ctx.user.id,
+            channel: "PRINT" as const,
+          },
           offlineReceiptNumber: input.offlineReceiptNumber,
           capturedAt: input.capturedAt,
           deviceId: input.deviceId ?? null,
@@ -388,6 +414,11 @@ export const offlineRouter = router({
         {
           ctx,
           action: "reception.offlineReplay",
+          capture: {
+            input: { ...replayInput, branchId: effectiveBranchId } as unknown as ReplayOfflineSaleInput,
+            submittedByUserId: ctx.user.id,
+            channel: "RECEPTION" as const,
+          },
           offlineReceiptNumber: input.offlineReceiptNumber,
           capturedAt: input.capturedAt,
           deviceId: input.deviceId ?? null,

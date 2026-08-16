@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS `offlineRecoveryItems` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `branchId` bigint NOT NULL,
   `deviceId` varchar(64) DEFAULT NULL,
+  `submittedByUserId` int DEFAULT NULL,
+  `recoveryChannel` enum('RETAIL','PRINT','RECEPTION') NOT NULL DEFAULT 'RETAIL',
   `clientRequestId` varchar(64) NOT NULL,
   `offlineReceiptNumber` varchar(40) NOT NULL,
   `capturedAt` timestamp NOT NULL,

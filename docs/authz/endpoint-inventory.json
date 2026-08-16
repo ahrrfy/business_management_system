@@ -8227,7 +8227,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/offlineRouter.ts:127"
+      "loc": "server/routers/offlineRouter.ts:146"
     },
     {
       "surface": "trpc",
@@ -8244,7 +8244,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/offlineRouter.ts:133"
+      "loc": "server/routers/offlineRouter.ts:152"
     },
     {
       "surface": "trpc",
@@ -8261,7 +8261,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:420"
+      "loc": "server/routers/offlineRouter.ts:451"
     },
     {
       "surface": "trpc",
@@ -8278,7 +8278,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:408"
+      "loc": "server/routers/offlineRouter.ts:439"
     },
     {
       "surface": "trpc",
@@ -8295,7 +8295,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:399"
+      "loc": "server/routers/offlineRouter.ts:430"
     },
     {
       "surface": "trpc",
@@ -8312,7 +8312,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: print",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/offlineRouter.ts:267"
+      "loc": "server/routers/offlineRouter.ts:288"
     },
     {
       "surface": "trpc",
@@ -8329,7 +8329,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:326"
+      "loc": "server/routers/offlineRouter.ts:352"
     },
     {
       "surface": "trpc",
@@ -8346,7 +8346,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:152"
+      "loc": "server/routers/offlineRouter.ts:171"
     },
     {
       "surface": "trpc",
@@ -8363,7 +8363,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/offlineRouter.ts:137"
+      "loc": "server/routers/offlineRouter.ts:156"
     },
     {
       "surface": "trpc",
@@ -8380,7 +8380,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/offlineRouter.ts:129"
+      "loc": "server/routers/offlineRouter.ts:148"
     },
     {
       "surface": "trpc",
@@ -8397,7 +8397,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "NO_BRANCH_SCOPE",
-      "loc": "server/routers/offlineRouter.ts:125"
+      "loc": "server/routers/offlineRouter.ts:144"
     },
     {
       "surface": "trpc",

@@ -8934,6 +8934,18 @@ export const offlineRecoveryItems = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     branchId: bigint("branchId", { mode: "number" }).notNull(),
     deviceId: varchar("deviceId", { length: 64 }),
+    /**
+     * الكاشير الذي التقط البيع وأرسله. تُعاد إليه نسبة الفاتورة عند الترحيل: محرّك العمولات
+     * ينسب الفاتورة بـ`invoices.createdBy` (`commissions/base.ts`)، و`createSale` يكتب فيه
+     * الفاعل — أي المدير المُراجِع — فكانت كل عملية استرداد تُحوّل عمولة الكاشير إلى المدير.
+     */
+    submittedByUserId: int("submittedByUserId"),
+    /**
+     * قناة الالتقاط. الترحيل الآليّ يدعم RETAIL وحدها (حمولتها هي عقد `replayOfflineSale`)،
+     * أمّا PRINT/RECEPTION فتُلتقَط **للرصد ومنع الضياع** وتُسوَّى يدوياً — إخفاؤها أسوأ من
+     * عرضها بلا زرّ ترحيل.
+     */
+    channel: mysqlEnum("recoveryChannel", ["RETAIL", "PRINT", "RECEPTION"]).default("RETAIL").notNull(),
     /** مفتاح idempotency الأصليّ — فريدٌ كي لا يتضاعف العنصر بإعادة محاولة الجهاز. */
     clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
     offlineReceiptNumber: varchar("offlineReceiptNumber", { length: 40 }).notNull(),
