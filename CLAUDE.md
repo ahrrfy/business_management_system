@@ -30,7 +30,7 @@ client/src/pages (٢٣٧ صفحة، wouter + TanStack Query)
 docker start erp-mysql            # حاوية MySQL (mysql:8, root/erp_root_pw, منفذ 3306, قاعدة erp)
 pnpm install
 pnpm db:push                      # هجرة المخطط (محروسة بـ scripts/db-push-guard.mjs)
-pnpm seed                         # admin + فرعان + منتجات عيّنة (idempotent)
+CONFIRM_SAMPLE_DATA_SEED=1 pnpm seed   # admin + فرعان + منتجات عيّنة (idempotent) — التأكيد إلزاميّ
 pnpm dev                          # http://localhost:3000
 pnpm check                        # فحص الأنواع (tsc --noEmit)
 pnpm check:guards                 # حزمة الحرّاس العشرة — بوّابة ما قبل الدفع (§٣.١)
@@ -54,7 +54,11 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 - `fileParallelism: false` — الملفات تتسلسل؛ لا تسريع بالتوازي.
 - ⚠️ **`tsconfig.json` يستثني `**/*.test.ts`** ⇒ `pnpm check` **لا** يفحص أنواع الاختبارات؛ خطأ النوع فيها يظهر عند `vitest` وحده.
 - **`pre-commit` = `pnpm check && pnpm check:guards`** (~دقيقة) لا الحزمة الكاملة — أُعيدت معايرته لأنّ الحارس البطيء كان يُتجاوَز بـ`--no-verify` فيصير مسرحياً. الحزمة الكاملة مكانها CI (`check-test-build` فحصٌ مطلوبٌ لحماية `main`).
-- دخول: `admin@alroya.local` / `Admin@12345` (من `.env`). الإعدادات في `.env` (مُستثنى من git).
+- **البذرة محروسة بسياسةٍ صريحة** ([`server/config/seedPolicy.ts`](server/config/seedPolicy.ts)) — أمسكها التحقّق الحيّ ١٦/٨، وكانت تُعطّل أيّ بيئةٍ جديدة:
+  - `pnpm seed` وحده **يفشل**: يلزمه `CONFIRM_SAMPLE_DATA_SEED=1` (بيانات عيّنة + حسابات). وللإنتاج `pnpm seed:prod`.
+  - **`Admin@12345` مرفوضة صراحةً** (ضمن `PUBLISHED_PASSWORDS`)، وكذلك أيّ كلمةٍ أقصر من ١٠ خانات أو لا تحقّق `isStrongPassword` ⇒ **بيانات الدخول القديمة الموثَّقة هنا لم تعد تُنشئ حساباً**. اضبط `ADMIN_PASSWORD` قويةً في `.env` قبل البذر، وادخل بها.
+  - ⚠️ **فخّ dotenv:** القيمة غير المُقتبَسة تُقتطع عند أوّل `#` (`ADMIN_PASSWORD=Aa#Bb` تصير `Aa`) فتسقط البذرة برسالة «كلمة ضعيفة» مُضلِّلة — **اقتبس أيّ قيمةٍ فيها `#`**.
+- دخول: `admin@alroya.local` + `ADMIN_PASSWORD` التي ضبطتَها. الإعدادات في `.env` (مُستثنى من git).
 - **علل بيئية محسومة:** `tsx watch` معطوب على هذا الجهاز → أمر `dev` يستخدم `node --watch-path=./server ... --import tsx`. Docker Desktop ينهار بعلّة «Inference manager» → عند الحاجة: أوقف كل عمليات docker ثم أعد التشغيل. الكوكي `sameSite:"lax"` ليعمل على localhost.
 - **قاعدة الاختبار المحلّية (erp-test-db@3310، MySQL 8.4.9):** `pnpm test`/`pre-commit` يفترضان مخطّطاً مُهيَّأً بالحاليّ؛ لكن `db:push` **التزايديّ** على قاعدة منجرفة يفشل على 8.4 (`ER_DROP_INDEX_FK`) فتتجمّد القاعدة وتسقط الاختبارات بـ«Unknown column» لا علاقة لها بالكود. الحلّ: **`pnpm test:db:init`** (إسقاط+إنشاء طازج ثم `db:push` + `ci-apply-extra-migrations` — نفس مسار CI) بدل الـpush التزايديّ. حرّاسه ترفض 3306 (مرآة الإنتاج) وأيّ اسم بلا «test». التفصيل والجذر (اسم FK تلقائيّ >٦٤ محرفاً كان يُفشل `db:push` الطازج على 8.4): [`docs/local-test-db.md`](docs/local-test-db.md).
 
