@@ -69,6 +69,13 @@ async function waitForOnlineCustomerNamedLock(phone: string): Promise<void> {
 beforeEach(async () => {
   await truncateAllTables();
   const d = db();
+  // truncateAllTables removes the singleton seeded by the production
+  // migration. Restore it before concurrency barriers so financial writers
+  // acquire the intended shared gate instead of serializing on first insert.
+  await d
+    .insert(s.monthCloseSequence)
+    .values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
+    .onDuplicateKeyUpdate({ set: { id: 1 } });
   await d.insert(s.branches).values([
     { id: 1, name: "Main", code: "MAIN", type: "MAIN" },
     { id: 2, name: "Other", code: "OTHER", type: "SALES" },
