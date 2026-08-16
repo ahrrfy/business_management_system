@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../sale/create";
+import { returnSale } from "../returnService";
 import { withTx } from "../tx";
 
 const TABLES = [
@@ -146,6 +147,39 @@ describe("createSale — خدمة كسطر فاتورة متقدّمة", () => {
       .where(sql`${s.accountingEntries.entryType} = 'SALE'`))[0]!;
     expect(sale.cost).toBe("1165.00");
     expect(sale.profit).toBe("1585.00");
+  });
+
+  it("مرتجع سلّة مختلطة يعكس COGS المخزون المملوك فقط ولا يعيد مواد الخدمة المستهلكة", async () => {
+    const created = await createSale({
+      branchId: 1,
+      shiftId: 1,
+      lines: [
+        { variantId: 3, productUnitId: 3, quantity: "2" },
+        { variantId: 10, productUnitId: 10, quantity: "3" },
+      ],
+      payment: { amount: "2750", method: "CASH" },
+    }, actor);
+    const items = await db().select().from(s.invoiceItems)
+      .where(eq(s.invoiceItems.invoiceId, created.invoiceId));
+
+    await returnSale({
+      invoiceId: created.invoiceId,
+      lines: items.map((item) => ({
+        invoiceItemId: Number(item.id),
+        baseQuantity: Number(item.baseQuantity),
+      })),
+      restock: true,
+    }, actor);
+
+    // القلم أصل مملوك عاد للرف؛ مواد وصفة الخدمة استُهلكت فعلاً ولا تنشأ من المرتجع.
+    expect(await stock(3)).toBe(50);
+    expect(await stock(1)).toBe(97);
+    expect(await stock(2)).toBe(97);
+    const returned = (await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "RETURN")))[0]!;
+    expect(returned.cost).toBe("-1000.00");
+    expect(returned.profit).toBe("-1750.00");
+    expect(returned.notes).toContain("خدمة غير معادة=165.00");
   });
 
   it("مواد الخدمة تُخصَم حتى بنفاد المخزون (allowNegative دائماً لموادّ الوصفة)", async () => {

@@ -89,6 +89,8 @@ describe("فاتورة المورد الدولارية — التكلفة وال
     await receivePurchase({
       purchaseOrderId: created.purchaseOrderId,
       lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 }],
+      shippingEvidenceReference: `SHIP-USD-${created.purchaseOrderId}`,
+      shippingBeneficiaryName: "شركة الرافدين للنقل الاختبارية",
     }, receiver);
 
     const supplierAfterReceipt = (await db().select().from(s.suppliers)

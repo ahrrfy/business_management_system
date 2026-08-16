@@ -20,6 +20,7 @@ import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shipp
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { RowActions, type RowAction } from "@/components/list";
 import { DataTable } from "@/components/data-table/DataTable";
+import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
@@ -30,7 +31,10 @@ import { Textarea } from "@/components/ui/textarea";
 import CustomerPicker from "@/components/CustomerPicker";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
+import { newClientRequestId } from "@/lib/countQueue";
+import { canCancelWorkOrder, cancellationRefundNotice } from "@/lib/workOrderRefundPolicy";
 import {
   Dialog,
   DialogContent,
@@ -487,11 +491,10 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
             <label className="text-sm font-medium">طريقة الدفع</label>
             <select className={dlgInput} value={methodV} onChange={(e) => setMethodV(e.target.value as typeof methodV)}>
               <option value="CASH">نقدي</option>
-              <option value="CARD" disabled>بطاقة</option>
-              <option value="TRANSFER" disabled>تحويل</option>
-              <option value="WALLET" disabled>محفظة</option>
+              <option value="CARD" disabled={!isPosPaymentMethodEnabled("CARD")}>بطاقة</option>
+              <option value="TRANSFER" disabled={!isPosPaymentMethodEnabled("TRANSFER")}>تحويل</option>
+              <option value="WALLET" disabled={!isPosPaymentMethodEnabled("WALLET")}>محفظة</option>
             </select>
-            <p className="text-xs text-muted-foreground">{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</p>
           </div>
         </div>
         <DialogFooter>
@@ -499,7 +502,9 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
           <button className="wob-btn wob-btn-primary" disabled={pending || !isPosPaymentMethodEnabled(methodV) || (amtD.gt(0) && methodV !== "CASH" && !reference.trim())}
             onClick={() => {
               if (!isPosPaymentMethodEnabled(methodV)) return;
-              onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV, reference: undefined } : undefined);
+              onConfirm(amtD.gt(0)
+                ? { amount: round2(amtD).toFixed(2), method: methodV, reference: methodV === "CASH" ? undefined : reference.trim() }
+                : undefined);
             }}>
             {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
           </button>
@@ -1093,6 +1098,43 @@ function OrdersTable({
       viewKey="work-orders-list"
       getRowId={(r) => String(r.id)}
       pageSize={50}
+      mobileCardRenderer={(o) => {
+        const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
+        const due = positiveDiff(o.salePrice, o.deposit ?? 0);
+        const next = NEXT[o.status as Status];
+        return (
+          <MobileDataCard
+            key={o.id}
+            title={o.title}
+            subtitle={`${o.orderNumber} · ${o.customerName ?? "عميل نقدي"}`}
+            badge={{
+              label: workOrderStatusLabel(o),
+              variant: o.status === "DELIVERED" ? "success" : o.status === "READY" ? "default" : o.status === "IN_PROGRESS" ? "warning" : "secondary",
+            }}
+            amount={{
+              value: fmtAr(o.salePrice),
+              label: due.gt(0) && o.status !== "DELIVERED" && o.status !== "CANCELLED" ? `المتبقي: ${fmtAr(due.toFixed(2))}` : undefined,
+              positive: o.status === "DELIVERED",
+            }}
+            metadata={[
+              { label: "الكمية", value: `${fmtInt(o.quantity)} نسخة` },
+              { label: "الأولوية", value: pri.label },
+              { label: "الاستحقاق", value: fmtDate(o.dueDate), icon: Calendar },
+              { label: "الفني", value: o.assigneeName ?? "غير مُسنَد" },
+            ]}
+            onClick={() => onOpen(o.id)}
+            primaryAction={
+              next && (next !== "DELIVERED" || canDeliver)
+                ? {
+                    label: next === "IN_PROGRESS" ? "بدء التنفيذ" : next === "READY" ? "جاهز" : "تسليم",
+                    icon: next === "READY" ? CheckCircle2 : next === "DELIVERED" ? Package : ChevronRight,
+                    onClick: () => onAdvance(o, next),
+                  }
+                : undefined
+            }
+          />
+        );
+      }}
     />
   );
 }
@@ -1107,7 +1149,12 @@ export default function WorkOrders() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
-  const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  // مرآة workordersManagerProcedure حرفياً: roles=[manager] + workorders/FULL، مع admin
+  // والمنح الصريح حسب moduleAccessAllowed. لا مقارنة أدوار خام قد تحجب دوراً مخصّصاً أو
+  // تُظهر زرّاً سيرفضه الخادم بسبب override مُقيِّد.
+  const canCancel = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
+  const isManager = canCancel;
+  const isOwner = me.data?.isOwner === true;
   const canCrossBranches = me.data?.role === "admin";
   // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
   // فنّي المطبعة (workordersExecProcedure) يقدّم المراحل لكن التسليم/الفوترة مال ونقد (كاشير/مدير أو منح صريح).
@@ -1140,10 +1187,13 @@ export default function WorkOrders() {
   }, [view]);
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
+  const [cancelNotice, setCancelNotice] = useState<{ title: string; description: string; awaitingOwner: boolean } | null>(null);
+  const [cancelRetryWorkOrderId, setCancelRetryWorkOrderId] = useState<number | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const cancelRequestIdsRef = useRef(new Map<number, string>());
 
   // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
   const serverFilters = {
@@ -1168,6 +1218,8 @@ export default function WorkOrders() {
     utils.workOrders.counts.invalidate(),
     utils.workOrders.get.invalidate(),
     utils.workOrders.timeline.invalidate(),
+    utils.workOrders.pendingCancellationRefunds.invalidate(),
+    utils.workOrders.cancellationRefundStatus.invalidate(),
     utils.inventory.movements.invalidate(),
     utils.delivery.readyForDispatch.invalidate(),
   ]);
@@ -1188,8 +1240,25 @@ export default function WorkOrders() {
     onError: (e) => { notify.err(e); invalidateAll(); },
   });
   const cancel = trpc.workOrders.cancel.useMutation({
-    onSuccess: () => { notify.ok("أُلغي الأمر", "أُعيدت المواد للمخزون إن وُجدت."); setSel(null); invalidateAll(); },
-    onError: (e) => { notify.err(e); invalidateAll(); },
+    onSuccess: (result, variables) => {
+      const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
+      setCancelNotice(notice);
+      if (notice.awaitingOwner) notify.warn(notice.title, notice.description);
+      else notify.ok(notice.title, notice.description);
+      cancelRequestIdsRef.current.delete(variables.workOrderId);
+      setCancelRetryWorkOrderId(null);
+      setSel(null);
+      invalidateAll();
+    },
+    onError: (error, variables) => {
+      notify.err(error, "لم نتأكد من نتيجة الإلغاء؛ يمكنك إعادة المحاولة بالمعرّف نفسه دون تكرار الأثر.");
+      setCancelRetryWorkOrderId(variables.workOrderId);
+      setCancelNotice({
+        title: "تعذّر التحقق من نتيجة الإلغاء",
+        description: "لم تُنشأ محاولة جديدة تلقائياً. أعد التحقق والمحاولة الآمنة بالمعرّف نفسه؛ إن كان الإلغاء نُفّذ فسيعيد الخادم النتيجة بلا تكرار.",
+        awaitingOwner: true,
+      });
+    },
   });
   const assign = trpc.workOrders.assign.useMutation({
     onSuccess: () => { notify.ok("تم تحديث الإسناد"); invalidateAll(); },
@@ -1320,7 +1389,9 @@ export default function WorkOrders() {
 
   async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
     if (!(await confirm({ variant: "danger", title: "إلغاء طلب الخدمة", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الطلب", cancelText: "تراجع" }))) return;
-    cancel.mutate({ workOrderId: d.id });
+    const clientRequestId = cancelRequestIdsRef.current.get(d.id) ?? newClientRequestId();
+    cancelRequestIdsRef.current.set(d.id, clientRequestId);
+    cancel.mutate({ workOrderId: d.id, clientRequestId });
   }
 
   const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all";
@@ -1369,6 +1440,37 @@ export default function WorkOrders() {
           <Link href="/pos?mode=RECEPTION" className="wob-btn wob-btn-primary">شاشة الاستقبال الموحدة</Link>
         </div>
       </div>
+
+      <WorkOrderRefundApprovals isOwner={isOwner} currentUserId={me.data?.id} />
+
+      {cancelNotice && (
+        <div
+          role="status"
+          className={cancelNotice.awaitingOwner
+            ? "rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]"
+            : "rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] p-3 text-sm text-[var(--sem-pos)]"}
+        >
+          <div className="font-bold">{cancelNotice.title}</div>
+          <div>{cancelNotice.description}</div>
+          {cancelRetryWorkOrderId != null && canCancel && (
+            <button
+              type="button"
+              className="mt-2 rounded-md border border-current px-3 py-1.5 text-xs font-bold disabled:opacity-50"
+              disabled={cancel.isPending}
+              onClick={() => {
+                const clientRequestId = cancelRequestIdsRef.current.get(cancelRetryWorkOrderId);
+                if (!clientRequestId) {
+                  notify.err("تعذّر العثور على معرّف المحاولة السابقة؛ افتح أمر الشغل للتحقق من حالته.");
+                  return;
+                }
+                cancel.mutate({ workOrderId: cancelRetryWorkOrderId, clientRequestId });
+              }}
+            >
+              {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
+            </button>
+          )}
+        </div>
+      )}
 
       <Stats counts={serverCounts} />
 

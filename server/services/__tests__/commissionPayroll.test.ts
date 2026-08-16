@@ -57,7 +57,7 @@ async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "t-admin", name: "محتسِب", role: "admin", branchId: 1 },
+    { id: 1, openId: "t-admin", name: "محتسِب", role: "admin", branchId: 1, isOwner: true, isActive: true },
     { id: 2, openId: "t-manager", name: "معتمِد", role: "manager", branchId: 1, isOwner: true },
     { id: 3, openId: "t-seller", name: "بائع", role: "cashier", branchId: 1 },
   ]);
@@ -125,7 +125,7 @@ describe("commissionPayroll — الالتقاط مرّة واحدة بالضب�
   it("حذف مسودة المسيّر يفكّ الربط تلقائياً وإعادة التوليد تلتقط مجدداً بلا ازدواج", async () => {
     const commissionRunId = await approvedJuneCommission();
     const first = await generatePayroll("2026-06", COMPUTER);
-    await cancelRun(Number(first!.id), COMPUTER); // مسودة ⇒ حذف كامل ⇒ SET NULL على الربط.
+    await cancelRun(Number(first!.id), APPROVER); // مالك مستقل عن المُولِّد ⇒ حذف كامل وفكّ الربط.
 
     const [afterDelete] = await db().select().from(s.commissionRuns).where(eq(s.commissionRuns.id, commissionRunId));
     expect(afterDelete.payrollRunId).toBeNull();

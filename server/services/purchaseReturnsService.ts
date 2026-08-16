@@ -2,8 +2,8 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import {
-  accountingEntries,
-  inventoryMovements,
+  accountingEntries, branchStock, inventoryMovements,
+  products,
   productVariants,
   purchaseOrderItems,
   purchaseOrders,
@@ -12,14 +12,20 @@ import {
 } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { localDayStart } from "./dateRange";
-import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
+import {
+  checkIdempotency,
+  idempotencyHash,
+  recordIdempotencyKey,
+} from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "./ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { money, round2, sumMoney, toDbMoney } from "./money";
 import { shiftIdForCashTx } from "./shiftService";
 import { lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { paymentAssetRole } from "./sale/paymentPosting";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -48,6 +54,32 @@ export interface CreatePurchaseReturnInput {
   settlement?: "CASH" | "CREDIT";
 }
 
+function purchaseReturnFingerprint(input: CreatePurchaseReturnInput): string {
+  const items = input.items
+    .map((item) => ({
+      variantId: item.variantId,
+      productUnitId: item.productUnitId,
+      quantity: new Decimal(item.quantity).toString(),
+      unitPrice: money(item.unitPrice).toFixed(2),
+    }))
+    .sort((a, b) =>
+      a.variantId - b.variantId ||
+      a.productUnitId - b.productUnitId ||
+      a.quantity.localeCompare(b.quantity) ||
+      a.unitPrice.localeCompare(b.unitPrice),
+    );
+  return idempotencyHash({
+    version: 1,
+    supplierId: input.supplierId,
+    branchId: input.branchId,
+    sourcePurchaseOrderId: input.purchaseOrderRefId ?? null,
+    settlement: input.settlement ?? "CREDIT",
+    paymentMethod: input.paymentMethod ?? "CASH",
+    reason: input.reason?.trim() || null,
+    items,
+  });
+}
+
 /**
  * مرتجع مشتريات (إرجاع بضاعة للمورد):
  *  - OUT حركة مخزون عن كل بند (بقفل ذرّي على branchStock).
@@ -60,12 +92,19 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
   if (!input.items.length) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مرتجع المشتريات بلا أصناف" });
   }
+  const requestFingerprint = purchaseReturnFingerprint(input);
 
   return withTx(async (tx) => {
     // idempotency: جدول idempotencyKeys ذو القيد الفريد (operation,clientRequestId) — ذرّي بلا سباق TOCTOU
     // (بخلاف البحث القديم في notes غير المفهرس). نفس المفتاح ⇒ يُعاد بنتيجة المرتجع الأول.
     if (input.clientRequestId) {
-      const existingRefId = await findIdempotentRefId(tx, "purchase.return", input.clientRequestId);
+      const existingRefId = await checkIdempotency(
+        tx,
+        "purchase.return",
+        input.clientRequestId,
+        requestFingerprint,
+        { requireStoredHash: true },
+      );
       if (existingRefId != null) {
         const prior = (await tx
           .select({
@@ -91,6 +130,13 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
 
     const settlement = input.settlement ?? "CREDIT";
     const method = input.paymentMethod ?? "CASH";
+    if (settlement === "CASH" && input.purchaseOrderRefId == null) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "الاسترداد النقدي يتطلب أمر شراء مرجعياً وإيصال دفع سابقاً مكتملًا ومعتمداً",
+      });
+    }
     let prelockedCash: { shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" } | null = null;
     if (settlement === "CASH") {
       if (method !== "CASH") {
@@ -108,6 +154,23 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         shiftId: resolved.shiftId,
       });
       prelockedCash = resolved;
+    }
+
+    const [supplier] = await tx
+      .select({ id: suppliers.id, kind: suppliers.supplierKind })
+      .from(suppliers)
+      .where(eq(suppliers.id, input.supplierId))
+      .for("update")
+      .limit(1);
+    if (!supplier) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "المورّد غير موجود" });
+    }
+    if (input.purchaseOrderRefId == null && supplier.kind === "CONSIGNOR") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "لا يُنشأ مرتجع شراء بلا أمر مرجعي لمودِع أمانة؛ استخدم سند سحب/استبدال الأمانة",
+      });
     }
 
     // إن وُجد أمر شراء مرجعي ⇒ تحقّق ملكية المورد/الفرع + سقف الكميّات.
@@ -141,14 +204,49 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       /** التكلفة الدفترية (WAVG) لكلّ وحدة أساس — تُستعمَل لسقف خسارة الشحن/الكمرك (landed) عند الإرجاع. */
       bookCostPerBase: Decimal;
     };
+    const variantIds = Array.from(new Set(input.items.map((item) => item.variantId))).sort((a, b) => a - b);
+    await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, variantIds)).for("update");
+      // سقف القيمة: سعر إرجاع الوحدة لا يتجاوز التكلفة المسجّلة للصنف (book cost) ⇒ يمنع تضخيم تخفيض AP/الاسترداد
+      //  بقيمة عشوائية (الثغرة الحرجة للمرتجع بلا أمر مرجعي). الكمية مُقيّدة بالمخزون المتاح في applyMovement.
+    const lockedVariants = await tx
+      .select({
+        id: productVariants.id,
+        costPrice: productVariants.costPrice,
+        isConsignment: products.isConsignment,
+        consignorId: products.consignorId,
+        isService: products.isService,
+        isBundle: products.isBundle,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(productVariants.id, variantIds))
+      .for("update");
+    const variantById = new Map(
+      lockedVariants.map((variant) => [Number(variant.id), variant]),
+    );
     const work: Work[] = [];
     for (const it of input.items) {
+      const variant = variantById.get(it.variantId);
+      if (!variant) {
+        throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${it.variantId} غير موجود` });
+      }
+      if (
+        input.purchaseOrderRefId == null &&
+        (variant.isConsignment ||
+          variant.consignorId != null ||
+          variant.isService ||
+          variant.isBundle)
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            `المتغيّر ${it.variantId} ليس مخزوناً مملوكاً قابلاً لمرتجع شراء بلا أمر مرجعي`,
+        });
+      }
       const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
       // سقف القيمة: سعر إرجاع الوحدة لا يتجاوز التكلفة المسجّلة للصنف (book cost) ⇒ يمنع تضخيم تخفيض AP/الاسترداد
       //  بقيمة عشوائية (الثغرة الحرجة للمرتجع بلا أمر مرجعي). الكمية مُقيّدة بالمخزون المتاح في applyMovement.
-      const v = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, it.variantId)).limit(1))[0];
-      if (!v) throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${it.variantId} غير موجود` });
-      const bookCostPerBase = money(v.costPrice ?? "0");
+      const bookCostPerBase = money(variant.costPrice ?? "0");
       const factor = money(baseQuantity).dividedBy(money(it.quantity)); // وحدات الأساس لكل وحدة شراء
       const bookUnitCost = round2(bookCostPerBase.times(factor)); // تكلفة وحدة الشراء بالكتب
       let reqUnit = money(it.unitPrice);
@@ -253,6 +351,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     const returnedNet = round2(sumMoney(work.map((w) => w.lineTotal.toFixed(2))));
     // المرتجع المرجعي يرث نسبة ضريبة أمر الشراء؛ لا نسمح بإنشاء نسبة جديدة في المرتجع.
     // المرتجع غير المرجعي يبقى بلا ضريبة لغياب مستند أصل يمكن تدقيقه.
+    const returnedInventoryBook = round2(sumMoney(work.map((w) => w.bookCostPerBase.times(w.baseQuantity).toFixed(2))));
+    const purchasePriceVariance = round2(returnedInventoryBook.minus(returnedNet));
+    // المرتجع المرجعي يرث نسبة ضريبة أمر الشراء؛ لا نسمح بإنشاء نسبة جديدة في المرتجع.
+    // المرتجع غير المرجعي يبقى بلا ضريبة لغياب مستند أصل يمكن تدقيقه.
     const returnedTax = refPo
       ? round2(returnedNet.times(money(refPo.taxRatePercent ?? "0")).dividedBy(100))
       : new Decimal(0);
@@ -262,6 +364,21 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       ? round2(returnedUsdNet.times(money(refPo.taxRatePercent ?? "0")).dividedBy(100))
       : new Decimal(0);
     const returnedUsd = round2(returnedUsdNet.plus(returnedUsdTax));
+    const purchaseReturnPostingSource = {
+      roleDebits: {
+        AP: returnedTotal,
+        ...(purchasePriceVariance.gt(0)
+          ? { PURCHASE_PRICE_VARIANCE: purchasePriceVariance }
+          : {}),
+      },
+      roleCredits: {
+        INVENTORY: returnedInventoryBook,
+        ...(returnedTax.isZero() ? {} : { TAX_PAYABLE: returnedTax }),
+        ...(purchasePriceVariance.lt(0)
+          ? { PURCHASE_PRICE_VARIANCE: purchasePriceVariance.abs() }
+          : {}),
+      },
+    };
 
     // قيد دفتر RETURN — الاتفاقية: قيم سالبة. cost سالب (تكلفة عُكست)، amount سالب.
     await postEntry(tx, {
@@ -273,6 +390,8 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
       notes: input.reason ?? undefined,
+      postingIntent: createPostingIntent("RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine("AP", returnedTotal), creditLine("INVENTORY", returnedInventoryBook), ...(returnedTax.isZero() ? [] : [creditLine("TAX_PAYABLE", returnedTax)]), ...(purchasePriceVariance.gt(0) ? [debitLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance)] : purchasePriceVariance.lt(0) ? [creditLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance.abs())] : [])], purchaseReturnPostingSource),
+      postingSourceComponents: purchaseReturnPostingSource,
     });
 
     // التقط معرف قيد المرتجع للإرجاع للعميل (للتتبّع/idempotency).
@@ -292,7 +411,13 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
 
     // Idempotency: سجّل المفتاح (refId = قيد المرتجع). سباق نفس المفتاح ⇒ ER_DUP_ENTRY فيُعاد المحاولة replay.
     if (input.clientRequestId) {
-      await recordIdempotencyKey(tx, "purchase.return", input.clientRequestId, purchaseReturnEntryId);
+      await recordIdempotencyKey(
+        tx,
+        "purchase.return",
+        input.clientRequestId,
+        purchaseReturnEntryId,
+        requestFingerprint,
+      );
     }
 
     // AP: المورد يدين لنا الآن بقيمة المرتجع ⇒ ننقص رصيده الدائن لدينا (suppliers.currentBalance) بالسالب.
@@ -316,21 +441,52 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         throw new TRPCError({ code: "BAD_REQUEST", message: "استرداد فاتورة دولارية يُسجَّل عبر عملية صيرفة مرتبطة، لا كقبض نقدي ديناري مباشر" });
       }
       if (!refPo) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد النقدي يتطلب أمر شراء مرجعياً يثبت دفعة سابقة" });
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "تعذر تثبيت أمر الشراء المرجعي للاسترداد النقدي",
+        });
       }
       const priorRefundRow = (
         await tx
           .select({ v: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)` })
           .from(accountingEntries)
+          .innerJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
           .where(and(
             eq(accountingEntries.entryType, "PAYMENT_IN"),
+            or(
+              eq(accountingEntries.postingProfile, "PAYMENT_IN_SUPPLIER_REFUND"),
+              sql`${accountingEntries.postingProfile} IS NULL`,
+            ),
             eq(accountingEntries.purchaseOrderId, Number(refPo.id)),
             eq(accountingEntries.supplierId, input.supplierId),
+            eq(receipts.direction, "IN"),
+            eq(receipts.paymentMethod, "CASH"),
+            eq(receipts.status, "COMPLETED"),
+            eq(receipts.approvalStatus, "APPROVED"),
+          ))
+      )[0];
+      const approvedCashPaidRow = (
+        await tx
+          .select({ v: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)` })
+          .from(accountingEntries)
+          .innerJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
+          .where(and(
+            eq(accountingEntries.entryType, "PAYMENT_OUT"),
+            or(
+              eq(accountingEntries.postingProfile, "PAYMENT_OUT_SUPPLIER"),
+              sql`${accountingEntries.postingProfile} IS NULL`,
+            ),
+            eq(accountingEntries.purchaseOrderId, Number(refPo.id)),
+            eq(accountingEntries.supplierId, input.supplierId),
+            eq(receipts.direction, "OUT"),
+            eq(receipts.paymentMethod, "CASH"),
+            eq(receipts.status, "COMPLETED"),
+            eq(receipts.approvalStatus, "APPROVED"),
           ))
       )[0];
       const cashRefund = refundablePurchaseCash(
         returnedTotal,
-        money(refPo.paidAmount),
+        money(approvedCashPaidRow?.v ?? "0"),
         money(priorRefundRow?.v ?? "0"),
       );
       if (cashRefund.lte(0)) {
@@ -355,6 +511,11 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(rRes);
+      const refundAssetRole = paymentAssetRole(method, prelockedCash.cashBucket, "IN");
+      const refundPostingSource = {
+        roleDebits: { [refundAssetRole]: cashRefund },
+        roleCredits: { AP: cashRefund },
+      };
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
@@ -362,6 +523,8 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         supplierId: input.supplierId,
         receiptId,
         amount: cashRefund,
+        postingIntent: createPostingIntent("PAYMENT_IN_SUPPLIER_REFUND", "PAYMENT_IN", [debitLine(refundAssetRole, cashRefund), creditLine("AP", cashRefund)], refundPostingSource),
+        postingSourceComponents: refundPostingSource,
       });
       // العاكس: لأنّ النقد دخل صندوقنا، نُلغي خصم الذمم بمقدار النقد المُسترد.
       await adjustSupplierBalance(tx, input.supplierId, cashRefund);

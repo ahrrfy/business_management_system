@@ -1,3 +1,4 @@
+import { isDupEntry } from "@shared/errorMap.ar";
 import { and, eq, like, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -650,32 +651,32 @@ describe("additional shift funding — عهدة خزنة إلى درج بقبو�
       ),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
+    // «ساقا خزينة بالمرجع نفسه» صارت **مستحيلةً على مستوى القاعدة** منذ هجرة 0185 (المسار أ):
+    // `uq_receipt_cash_drop` على عمودٍ مولَّد يفرض تفرّد (رقم السحب × الاتجاه). كان هذا السيناريو
+    // يُلفَّق بإدراجٍ مباشر ليُختبَر الحارس التطبيقيّ؛ صار الإدراج نفسه يُرفض — وهو ضمانٌ أقوى
+    // (الحارس التطبيقيّ يبقى دفاعاً في العمق لصفوفٍ تاريخية سابقة للهجرة).
     const duplicatedSource = await acceptedDrop("140", "duplicate-treasury-leg");
-    await db().insert(s.receipts).values({
-      branchId: 1,
-      shiftId: null,
-      direction: "IN",
-      amount: "140.00",
-      paymentMethod: "CASH",
-      cashBucket: "TREASURY",
-      status: "COMPLETED",
-      approvalStatus: "APPROVED",
-      referenceNumber: duplicatedSource.dropNumber,
-      createdBy: 1,
-    });
-    expect((await listEligibleShiftFundingSources({ targetShiftId: 101 }, OWNER)).items).toHaveLength(0);
-    await expect(
-      requestAdditionalShiftFunding(
-        {
-          shiftId: 101,
-          amount: "140",
-          evidenceNote: "محاولة استعمال سحب يملك ساقي خزينة بالمرجع نفسه",
-          sourceTreasuryReceiptId: duplicatedSource.inReceiptId,
-          clientRequestId: "fund-duplicate-treasury-leg",
-        },
-        OWNER,
-      ),
-    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    let duplicateLegError: unknown = null;
+    try {
+      await db().insert(s.receipts).values({
+        branchId: 1,
+        shiftId: null,
+        direction: "IN",
+        amount: "140.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        referenceNumber: duplicatedSource.dropNumber,
+        createdBy: 1,
+      });
+    } catch (e) {
+      duplicateLegError = e;
+    }
+    // drizzle يُغلّف خطأ MySQL ⇒ نفحصه بمُساعد المستودع نفسه لا بالرسالة النصّية.
+    expect(isDupEntry(duplicateLegError)).toBe(true);
+    // ولأنّ التلفيق فشل، يبقى السحب مصدراً سليماً واحداً — لا مزدوجاً.
+    expect((await listEligibleShiftFundingSources({ targetShiftId: 101 }, OWNER)).items).toHaveLength(1);
 
     const genuineSource = await acceptedDrop("160", "ledger-tamper");
     const request = await requestAdditionalShiftFunding(

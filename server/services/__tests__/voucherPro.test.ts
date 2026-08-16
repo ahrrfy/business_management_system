@@ -2,7 +2,7 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
-import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "../../../shared/inboundPaymentPolicy";
+
 import { getDb } from "../../db";
 import {
   approveVoucher,
@@ -21,6 +21,9 @@ function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof creat
   const isOtherReceipt = isOther && input.voucherType === "RECEIPT";
   return createVoucherRaw({
     ...input,
+    voucherCategoryId: isOther
+      ? (input.voucherCategoryId ?? (input.voucherType === "RECEIPT" ? 2 : 1))
+      : input.voucherCategoryId,
     counterpartyName: isOther ? (input.counterpartyName ?? "طرف اختباري موثق") : input.counterpartyName,
     referenceNumber: isOtherReceipt ? (input.referenceNumber ?? `SRC-PRO-${voucherRequestSequence}`) : input.referenceNumber,
     clientRequestId: input.clientRequestId ?? `voucher-pro-test-${voucherRequestSequence}`,
@@ -62,10 +65,10 @@ async function seedBase() {
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "0.00" });
   // فئة سَندٍ نموذجية
   await d.insert(s.voucherCategories).values({
-    id: 1, name: "إيجار", direction: "OUT", isActive: true, sortOrder: 10,
+    id: 1, name: "إيجار", direction: "OUT", postingRole: "RENT", isActive: true, sortOrder: 10,
   });
   await d.insert(s.voucherCategories).values({
-    id: 2, name: "إيرادات متفرّقة", direction: "IN", isActive: true, sortOrder: 100,
+    id: 2, name: "إيرادات متفرّقة", direction: "IN", postingRole: "OTHER_REVENUE", isActive: true, sortOrder: 100,
   });
   await d.insert(s.receipts).values({
     branchId: 1,
@@ -93,12 +96,12 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
     }, adminActor)).rejects.toThrow(/مرجعي/);
   });
 
-  it("CARD للقبض يُرفض قبل التحقق من cardLastFour", async () => {
+  it("CARD للقبض بلا cardLastFour يُرفض (المطابقة مع كشف المزوّد)", async () => {
     await expect(createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "500.00",
       paymentMethod: "CARD", partyType: "CUSTOMER", partyId: 1,
       description: "بطاقة",
-    }, adminActor)).rejects.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
+    }, adminActor)).rejects.toThrow(/آخر ٤ من البطاقة/);
   });
 
   it("CHECK بلا checkNumber يُرفض", async () => {
@@ -143,7 +146,7 @@ describe("vouchers-pro: تَحقّقات إلزامية", () => {
 
   it("فئة BOTH ⇒ مَقبولة لكلا الاتجاهَين", async () => {
     await db().insert(s.voucherCategories).values({
-      id: 3, name: "تَسوية", direction: "BOTH", isActive: true, sortOrder: 200,
+      id: 3, name: "تَسوية", direction: "BOTH", postingRole: "OWNER_CURRENT", isActive: true, sortOrder: 200,
     });
     const r1 = await createVoucher({
       voucherType: "PAYMENT", branchId: 1, amount: "10.00",

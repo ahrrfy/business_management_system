@@ -23,7 +23,13 @@ import { money, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
-import { signedOpeningBalance, postOpeningEntry, upsertOpeningEntry, type OpeningDirection } from "./openingBalance";
+import {
+  assertLegacyOpeningMutable,
+  signedOpeningBalance,
+  postOpeningEntry,
+  upsertOpeningEntry,
+  type OpeningDirection,
+} from "./openingBalance";
 import { assertPeriodOpen } from "./periodLockService";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -356,10 +362,13 @@ export async function deleteSupplier(supplierId: number, _actor: Actor) {
       .from(accountingEntries)
       .where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")))
       .limit(1);
-    if (openingEntry) await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
+    if (openingEntry) {
+      await assertLegacyOpeningMutable(tx);
+      await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
+      await tx.delete(accountingEntries).where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")));
+    }
 
     // إزالة البيانات التابعة الوحيدة الآمنة: القيد الافتتاحيّ + جهات الاتصال + التذكيرات.
-    await tx.delete(accountingEntries).where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")));
     await tx.delete(contactPersons).where(eq(contactPersons.supplierId, supplierId));
     await tx.delete(apReminders).where(eq(apReminders.supplierId, supplierId));
     await tx.delete(suppliers).where(eq(suppliers.id, supplierId));

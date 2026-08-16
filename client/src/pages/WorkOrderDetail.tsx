@@ -22,7 +22,9 @@ import { canSeeCost } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { newClientRequestId } from "@/lib/countQueue";
+import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
 
 const STATUS_LABEL: Record<string, string> = {
   RECEIVED: "مُستلَم",
@@ -82,17 +84,25 @@ export default function WorkOrderDetail() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const wo = trpc.workOrders.get.useQuery({ workOrderId }, { enabled: Number.isFinite(workOrderId) });
+  const cancellationRefundStatus = trpc.workOrders.cancellationRefundStatus.useQuery(
+    { workOrderId },
+    { enabled: Number.isFinite(workOrderId) },
+  );
   const qs = useSearch();
   // حجب التكلفة بـcanSeeCost (نفس دالة الخادم/الشاشات الأخرى، لا مقارنة دور خام) — الخادم يُخفي
   // materialsCost/laborCost/unitCost بالفعل (null) لغير المخوَّلين، والواجهة تُخفي الصفوف/الأعمدة
   // كاملةً بدل عرضها فارغة («—») بلا داعٍ.
   const showCost = me.data ? canSeeCost(me.data.role) : true;
+  const canCancel = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
 
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  const [awaitingOwnerRefund, setAwaitingOwnerRefund] = useState(false);
+  const [cancelOutcomeUncertain, setCancelOutcomeUncertain] = useState(false);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [payReference, setPayReference] = useState("");
+  const cancelRequestIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isPosPaymentMethodEnabled(payMethod)) {
@@ -142,26 +152,65 @@ export default function WorkOrderDetail() {
     await Promise.all([
       utils.workOrders.get.invalidate({ workOrderId }),
       utils.workOrders.list.invalidate(),
+      utils.workOrders.pendingCancellationRefunds.invalidate(),
+      utils.workOrders.cancellationRefundStatus.invalidate({ workOrderId }),
       utils.inventory.movements.invalidate(),
       utils.delivery.readyForDispatch.invalidate(),
     ]);
   };
 
   const start = trpc.workOrders.start.useMutation({
-    onSuccess: async () => { setDone("بدأ التنفيذ — تم خصم المواد من المخزون."); setError(""); await refresh(); },
+    onSuccess: async () => { setDone("بدأ التنفيذ — تم خصم المواد من المخزون."); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
     onError: (e) => setError(e.message),
   });
   const markReady = trpc.workOrders.markReady.useMutation({
-    onSuccess: async () => { setDone("الأمر جاهز للتسليم."); setError(""); await refresh(); },
+    onSuccess: async () => { setDone("الأمر جاهز للتسليم."); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
     onError: (e) => setError(e.message),
   });
   const deliver = trpc.workOrders.deliver.useMutation({
-    onSuccess: async (r) => { setDone(`تم التسليم. فاتورة ${r.invoiceNumber} (${r.status}).`); setError(""); await refresh(); },
+    onSuccess: async (r) => { setDone(`تم التسليم. فاتورة ${r.invoiceNumber} (${r.status}).`); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
     onError: (e) => setError(e.message),
   });
   const cancel = trpc.workOrders.cancel.useMutation({
-    onSuccess: async () => { setDone("تم إلغاء الأمر — أُعيدت المواد للمخزون إن وُجدت."); setError(""); await refresh(); },
-    onError: (e) => setError(e.message),
+    onSuccess: async (result) => {
+      const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
+      setDone(`${notice.title} — ${notice.description}`);
+      setAwaitingOwnerRefund(notice.awaitingOwner);
+      setCancelOutcomeUncertain(false);
+      setError("");
+      cancelRequestIdRef.current = null;
+      if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+      await refresh();
+    },
+    onError: async (mutationError) => {
+      const [refundCheck, orderCheck] = await Promise.all([
+        cancellationRefundStatus.refetch(),
+        wo.refetch(),
+      ]);
+      const durable = refundCheck.data
+        ? durableRefundStatusNotice(refundCheck.data.status, fmtAr(refundCheck.data.amount))
+        : null;
+      if (durable) {
+        setDone(`${durable.title} — ${durable.description}`);
+        setAwaitingOwnerRefund(durable.awaitingOwner);
+        setCancelOutcomeUncertain(false);
+        setError("");
+        cancelRequestIdRef.current = null;
+        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+        return;
+      }
+      if (orderCheck.data?.status === "CANCELLED") {
+        setDone("تحققنا من الخادم: الأمر ملغى ولا يوجد رد غير نقدي معلّق.");
+        setAwaitingOwnerRefund(false);
+        setCancelOutcomeUncertain(false);
+        setError("");
+        cancelRequestIdRef.current = null;
+        if (typeof window !== "undefined") window.sessionStorage.removeItem(`work-order-cancel-request:${workOrderId}`);
+        return;
+      }
+      setCancelOutcomeUncertain(true);
+      setError(`${mutationError.message} — لم يثبت الخادم تنفيذ الإلغاء. يمكنك إعادة التحقق والمحاولة الآمنة بالمعرّف نفسه.`);
+    },
   });
 
   if (wo.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
@@ -175,6 +224,9 @@ export default function WorkOrderDetail() {
   // الرصيد المستحق = سعر البيع − العربون المقبوض، عبر decimal.js (لا Number() على المال، §٥) —
   // يُستعمَل في رسالة واتساب/ملصق الشحن/بطاقة الدفعة عند التسليم بدل تكرار Math.max(0, Number(a)-Number(b)).
   const remainingDue = positiveDiff(data.salePrice, data.deposit ?? 0);
+  const durableRefundNotice = cancellationRefundStatus.data
+    ? durableRefundStatusNotice(cancellationRefundStatus.data.status, fmt(cancellationRefundStatus.data.amount))
+    : null;
 
   return (
     <div className="space-y-4 max-w-4xl">
@@ -394,7 +446,6 @@ export default function WorkOrderDetail() {
                 <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
                   {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
                 </select>
-                <p className="text-[10px] leading-relaxed text-muted-foreground">{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</p>
               </div>
               {/* مرآة PaymentReferenceField من POS (client/src/components/pos/PaymentReferenceField.tsx) —
                *  ذاك المكوّن مبنيّ بأنماط CSS خام تخصّ ثيم POS (colors prop)؛ هنا حقل مطابق ببنى Tailwind
@@ -438,8 +489,59 @@ export default function WorkOrderDetail() {
         </Card>
       )}
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-600">{done}</p>}
+      {durableRefundNotice && (
+        <div
+          role="status"
+          className={cn(
+            "rounded-md border p-3 text-sm",
+            durableRefundNotice.awaitingOwner
+              ? "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+              : "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+          )}
+        >
+          <div className="font-bold">{durableRefundNotice.title}</div>
+          <div>{durableRefundNotice.description}</div>
+        </div>
+      )}
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+          <p>{error}</p>
+          {cancelOutcomeUncertain && canCancel && (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-2"
+              disabled={cancel.isPending}
+              onClick={() => {
+                const key = `work-order-cancel-request:${workOrderId}`;
+                const clientRequestId = cancelRequestIdRef.current
+                  ?? (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null);
+                if (!clientRequestId) {
+                  setError("تعذّر العثور على معرّف المحاولة السابقة؛ حدّث الصفحة للتحقق من حالة الأمر قبل أي إجراء.");
+                  return;
+                }
+                cancelRequestIdRef.current = clientRequestId;
+                cancel.mutate({ workOrderId, clientRequestId });
+              }}
+            >
+              {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
+            </Button>
+          )}
+        </div>
+      )}
+      {done && !durableRefundNotice && (
+        <p
+          role="status"
+          className={cn(
+            "rounded-md border p-3 text-sm",
+            awaitingOwnerRefund
+              ? "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+              : "border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] text-[var(--sem-pos)]",
+          )}
+        >
+          {done}
+        </p>
+      )}
 
       <div className="flex gap-2 flex-wrap">
         {data.status === "RECEIVED" && (
@@ -485,7 +587,7 @@ export default function WorkOrderDetail() {
               const payAmountD = D(payAmount || "0");
               const payNow = payAmountD.gt(0);
               if (!isPosPaymentMethodEnabled(payMethod)) {
-                setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+                setError(posPaymentRejectionMessage(payMethod));
                 return;
               }
               // الخادم يرفض دفعاً غير نقديّ بلا مرجع (deliver.ts superRefine) — نتحقّق مبكراً بدل
@@ -511,7 +613,7 @@ export default function WorkOrderDetail() {
             {deliver.isPending ? "جارٍ…" : "تسليم وإصدار فاتورة"}
           </Button>
         )}
-        {(data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
+        {canCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
             onClick={async () => {
@@ -521,7 +623,12 @@ export default function WorkOrderDetail() {
                 description: `سيُلغى أمر «${data.title}» (${data.orderNumber})، وتُعاد المواد للمخزون إن كانت قد خُصمت. هل تريد المتابعة؟`,
                 confirmText: "إلغاء الأمر",
               }))) return;
-              cancel.mutate({ workOrderId });
+              const key = `work-order-cancel-request:${workOrderId}`;
+              cancelRequestIdRef.current ??=
+                (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null)
+                ?? newClientRequestId();
+              if (typeof window !== "undefined") window.sessionStorage.setItem(key, cancelRequestIdRef.current);
+              cancel.mutate({ workOrderId, clientRequestId: cancelRequestIdRef.current });
             }}
             disabled={cancel.isPending}
           >

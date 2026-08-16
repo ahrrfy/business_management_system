@@ -12,7 +12,7 @@ import { trpc } from "@/lib/trpc";
 import { D, fmtAr } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
-import { netExposureIqd, selectCls, type ExchangeRow } from "@/components/exchange/shared";
+import { selectCls, type ExchangeRow } from "@/components/exchange/shared";
 import { RowActions, type RowAction } from "@/components/list";
 import { printExchangeSlipSmart, type ExchangeSlipData } from "@/lib/printing/printExchangeSlip";
 
@@ -121,7 +121,7 @@ export default function ExchangeStatement() {
       { header: "التاريخ", accessorKey: "createdAt", cell: ({ row }) => <span dir="ltr" className="text-xs text-muted-foreground">{fmtDT(row.original.createdAt)}</span> },
       { header: "الرقم", accessorKey: "txnNumber", cell: ({ row }) => <span dir="ltr" className="text-xs">{row.original.txnNumber}</span> },
       { header: "النوع", accessorKey: "type", cell: ({ row }) => TYPE_AR[row.original.type] ?? row.original.type },
-      { header: "دينار", accessorKey: "iqdAmount", cell: ({ row }) => <span dir="ltr" className="tabular-nums">{D(row.original.iqdAmount).isZero() ? "—" : fmtAr(row.original.iqdAmount)}</span> },
+      { header: "مبلغ ديناري / قيمة دفترية (د.ع)", accessorKey: "iqdAmount", cell: ({ row }) => <span dir="ltr" className="tabular-nums">{D(row.original.iqdAmount).isZero() ? "—" : fmtAr(row.original.iqdAmount)}</span> },
       { header: "دولار", accessorKey: "usdAmount", cell: ({ row }) => <span dir="ltr" className="tabular-nums">{D(row.original.usdAmount).isZero() ? "—" : fmtAr(row.original.usdAmount)}</span> },
       {
         header: "فرق الصرف", accessorKey: "fxDiff",
@@ -180,7 +180,7 @@ export default function ExchangeStatement() {
       <PageHeader
         icon={<FileText className="h-5 w-5 text-primary" />}
         title="كشف حساب الصيرفة"
-        description="كل حركات الصيرفة (إيداع/سحب/شراء/تسديد) مع الرصيد بعد كل حركة بعملتيه."
+        description="رصيد التعامل مع الصيرفة على مستوى الشركة، وحيازة الدولار الفعلية مفصّلة حسب الفرع."
       />
 
       <Card className="p-3">
@@ -204,23 +204,58 @@ export default function ExchangeStatement() {
       </Card>
 
       {houseId > 0 && sum && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
-          <StatCard label="الرصيد الحالي (دينار)" value={fmtAr(sum.currentBalanceIqd)} tone={D(sum.currentBalanceIqd).isNegative() ? "negative" : "positive"} />
-          <StatCard label="الرصيد الحالي (دولار)" value={fmtAr(sum.currentBalanceUsd)} sub="$" tone={D(sum.currentBalanceUsd).isNegative() ? "negative" : "positive"} />
-          {st.data?.house && (
-            <StatCard
-              label="صافي التعرّض الموحَّد"
-              value={fmtAr(netExposureIqd(st.data.house))}
-              sub="بسعر التكلفة المرجَّح"
-              tone={D(netExposureIqd(st.data.house)).isNegative() ? "negative" : "positive"}
-            />
-          )}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <StatCard label="حساب الصيرفة — دينار" value={fmtAr(sum.currentBalanceIqd)} sub="شركة ككل" tone={D(sum.currentBalanceIqd).isNegative() ? "negative" : "positive"} />
+          <StatCard label="حساب الصيرفة — دولار" value={fmtAr(sum.currentBalanceUsd)} sub="كمية control، شركة ككل" tone={D(sum.currentBalanceUsd).isNegative() ? "negative" : "positive"} />
+          <StatCard label="قيمة control الدفترية" value={fmtAr(sum.currentControlCarryingIqd)} sub="د.ع — ليست نقداً فعلياً" tone={D(sum.currentControlCarryingIqd).isNegative() ? "negative" : "positive"} />
+          <StatCard label="ذمة الصيرفة المدينة — دينار" value={fmtAr(sum.iqdControlReceivableIqd)} sub="د.ع" tone="positive" />
+          <StatCard label="ذمة الصيرفة الدائنة — دينار" value={fmtAr(sum.iqdControlPayableIqd)} sub="د.ع" tone={D(sum.iqdControlPayableIqd).isZero() ? "default" : "negative"} />
+          <StatCard label="ذمة الصيرفة المدينة — دولار" value={fmtAr(sum.usdControlReceivableIqd)} sub="قيمة دفترية د.ع" tone="positive" />
+          <StatCard label="ذمة الصيرفة الدائنة — دولار" value={fmtAr(sum.usdControlPayableIqd)} sub="قيمة دفترية د.ع" tone={D(sum.usdControlPayableIqd).isZero() ? "default" : "negative"} />
           <StatCard label="إجمالي الإيداعات (دينار)" value={fmtAr(sum.totalDepositIqd)} sub="د.ع" />
           <StatCard label="إجمالي الإيداعات (دولار)" value={fmtAr(sum.totalDepositUsd)} sub="$" />
+          <StatCard label="إجمالي السحب (دينار)" value={fmtAr(sum.totalWithdrawIqd)} sub="د.ع" />
+          <StatCard label="إجمالي السحب (دولار)" value={fmtAr(sum.totalWithdrawUsd)} sub="$" />
+          <StatCard label="إجمالي الدولار المشترى" value={fmtAr(sum.totalUsdBought)} sub="$" />
           <StatCard label="إجمالي التسديدات" value={fmtAr(sum.totalSettledIqd)} sub="د.ع" />
           <StatCard label="إجمالي العمولات" value={fmtAr(sum.totalFeesIqd)} sub="د.ع" tone="warning" />
           <StatCard label="صافي فروق الصرف" value={fmtAr(sum.totalFxDiff)} sub="د.ع" tone={D(sum.totalFxDiff).isNegative() ? "negative" : "positive"} />
         </div>
+      )}
+
+      {houseId > 0 && st.data && (
+        <Card className="p-4">
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold">النقد الدولاري الفعلي حسب الفرع</h3>
+            <p className="text-xs text-muted-foreground">
+              الكمية والقيمة الدفترية أدناه أصل نقدي فعلي في الفرع؛ وهي منفصلة عن رصيد التعامل مع الصيرفة أعلاه.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead>
+                <tr className="border-b bg-muted/40 text-right">
+                  <th className="px-3 py-2 font-medium">الفرع</th>
+                  <th className="px-3 py-2 font-medium">الكمية الفعلية ($)</th>
+                  <th className="px-3 py-2 font-medium">القيمة الدفترية (د.ع)</th>
+                  <th className="px-3 py-2 font-medium">متوسط الكلفة للعرض</th>
+                </tr>
+              </thead>
+              <tbody>
+                {st.data.physicalUsdByBranch.length === 0 ? (
+                  <tr><td colSpan={4} className="px-3 py-4 text-center text-muted-foreground">لا توجد حيازة دولار فعلية.</td></tr>
+                ) : st.data.physicalUsdByBranch.map((row) => (
+                  <tr key={row.branchId} className="border-b last:border-0">
+                    <td className="px-3 py-2">{row.branchName}</td>
+                    <td className="px-3 py-2 tabular-nums" dir="ltr">{fmtAr(row.quantityUsd)}</td>
+                    <td className="px-3 py-2 tabular-nums" dir="ltr">{fmtAr(row.carryingIqd)}</td>
+                    <td className="px-3 py-2 tabular-nums" dir="ltr">{fmtAr(row.wavgRate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
 
       <Card className="p-4">

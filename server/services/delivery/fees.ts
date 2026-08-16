@@ -9,6 +9,7 @@ import { resolveBranchCashShiftTx } from "../shiftService";
 import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { appendDeliveryLedgerEntry } from "./lifecycle";
+import { deliveryFeeHeldPayoutIntent, deliveryFeeSettlementIntent } from "./posting";
 import type { DeliveryTxActor } from "./types";
 
 export async function payDeliveryFee(
@@ -104,13 +105,19 @@ export async function payDeliveryFee(
     });
     await postEntry(tx, {
       entryType: cn.feeCollection === "COUNTER" ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
+      postingIntent: cn.feeCollection === "COUNTER"
+        ? deliveryFeeHeldPayoutIntent(amount.neg(), "DRAWER")
+        : deliveryFeeSettlementIntent(amount, "DRAWER"),
+      postingSourceComponents: {
+        roleDebits: { COURIER_PAYABLE: amount },
+        roleCredits: { CASH: amount },
+      },
       dedupeKey: `DELIVERY_FEE_PAID:${cn.id}:${input.clientRequestId}`,
       branchId: Number(cn.branchId),
       invoiceId: Number(cn.invoiceId),
       deliveryPartyId: Number(cn.partyId),
       receiptId,
       amount: cn.feeCollection === "COUNTER" ? amount.neg() : amount,
-      ...(cn.feeCollection === "SHOP" ? { cost: amount, profit: amount.neg() } : {}),
       notes: `دفع أجرة ${cn.consignmentNumber}`,
     });
     if (amount.eq(due)) await tx.update(deliveryConsignments).set({ feeSettledAt: new Date() }).where(eq(deliveryConsignments.id, Number(cn.id)));

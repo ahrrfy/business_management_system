@@ -4,7 +4,6 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { closeShift } from "../shiftService";
 import { approveVoucher, createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
-import { INBOUND_PAYMENT_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 
 type LegacyVoucherInput = Omit<Parameters<typeof createVoucherRaw>[0], "clientRequestId"> & {
   clientRequestId?: string;
@@ -18,6 +17,7 @@ function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof creat
     ...input,
     counterpartyName: isOther ? (input.counterpartyName ?? "طرف اختباري موثق") : input.counterpartyName,
     referenceNumber: isOtherReceipt ? (input.referenceNumber ?? `SRC-${voucherRequestSequence}`) : input.referenceNumber,
+    voucherCategoryId: isOther ? (input.voucherCategoryId ?? (isOtherReceipt ? 11 : 10)) : input.voucherCategoryId,
     clientRequestId: input.clientRequestId ?? `voucher-test-${voucherRequestSequence}`,
   }, actor);
 }
@@ -26,6 +26,7 @@ const actor = { userId: 1, branchId: 1, role: "admin" };
 const ownerApprover = { userId: 2, branchId: 1, role: "manager" };
 
 const TABLES = [
+  "voucherCategories",
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
@@ -53,6 +54,10 @@ async function seedBase() {
   await d.insert(s.users).values([
     { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
     { id: 2, openId: "owner-approver", name: "مالك ثانٍ", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+  ]);
+  await d.insert(s.voucherCategories).values([
+    { id: 10, name: "مصروفات اختبارية", direction: "OUT", postingRole: "RENT" },
+    { id: 11, name: "إيرادات اختبارية", direction: "IN", postingRole: "OTHER_REVENUE" },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "100.00" });
   await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "50.00" });
@@ -377,8 +382,8 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
     expect(ent).toHaveLength(1);
   });
 
-  it("سند قبض بطاقة بلا إثبات مستقل يُرفض، وZ-report النقدي لا يتأثّر", async () => {
-    await expect(createVoucher(
+  it("سند قبض بطاقة لا يَمسّ درج الكاشير، وZ-report النقدي لا يتأثّر", async () => {
+    const card = await createVoucher(
       {
         voucherType: "RECEIPT",
         branchId: 1,
@@ -390,8 +395,11 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
         cardLastFour: "1234", // vouchers-pro: إلزامي لـCARD
       },
       actor,
-    )).rejects.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
+    );
+    const [cardReceipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(card.receiptId)));
+    // §٥: غير النقد بلا دلوٍ نقديّ ⇒ لا يدخل تسوية الدرج مهما بلغ مبلغه.
+    expect(cardReceipt.paymentMethod).toBe("CARD");
+    expect(cardReceipt.cashBucket).toBeNull();
     // افتح وردية ثم أضف سند نقدي ضمنها ⇒ تسوية الصندوق يجب أن تُظهر النقد فقط (100)، لا الـ1000 بطاقة.
     const shiftId = await openShift(1, 1);
     await createVoucher(
@@ -484,8 +492,8 @@ describe("إعفاء الخزينة الإدارية (admin/manager) للسند�
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
   });
 
-  it("صفة admin لا تتجاوز إغلاق القبض بالبطاقة غير الموثّق", async () => {
-    await expect(createVoucher(
+  it("قبض البطاقة لا يستهلك إعفاء الخزينة الإدارية — بلا دلوٍ نقديّ أصلاً", async () => {
+    const r = await createVoucher(
       {
         voucherType: "RECEIPT",
         branchId: 1,
@@ -497,8 +505,10 @@ describe("إعفاء الخزينة الإدارية (admin/manager) للسند�
         cardLastFour: "5678", // vouchers-pro: إلزامي لـCARD
       },
       actor,
-    )).rejects.toThrow(INBOUND_PAYMENT_DISABLED_MESSAGE);
-    expect(await db().select().from(s.receipts)).toHaveLength(0);
-    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    );
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(r.receiptId)));
+    // لا TREASURY ولا DRAWER: البطاقة لا تَمسّ صندوقاً، فإعفاء الخزينة لا معنى له هنا.
+    expect(receipt.cashBucket).toBeNull();
+    expect(receipt.shiftId).toBeNull();
   });
 });

@@ -1,10 +1,12 @@
 // دورة تنفيذ الأمر: سحب ذاتي (claim) ← بدء التنفيذ (يستهلك المواد) ← جاهز (بلا تغيير مخزون).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { eq, inArray, sql } from "drizzle-orm";
-import { customers, products, productVariants, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { branchStock, customers, products, productVariants, workOrderMaterials, workOrders } from "../../../drizzle/schema";
 import { logger } from "../../logger";
 import { applyMovement } from "../inventoryService";
+import { postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2 } from "../money";
 import { readOpeningWindowState } from "../openingModeService";
 import { type Actor, requireDb, withTx } from "../tx";
@@ -41,23 +43,44 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
     // Deterministic lock order: ascending variantId.
     mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
 
-    // Batch-load variant costs + consignment flag in one query instead of N queries inside the loop.
-    const variantIds = mats.map((m) => Number(m.variantId));
+    // ترتيب القفل الحاكم مع الشراء/WAVG: branchStock ثم productVariants، وكلاهما تصاعدي. نضمن
+    // وجود صفّ الرصيد أولاً لأن FOR UPDATE لا يقفل صفاً مفقوداً، ثم نحجز لقطة التكلفة حتى الترحيل.
+    const variantIds = Array.from(new Set(mats.map((m) => Number(m.variantId)))).sort((a, b) => a - b);
+    if (variantIds.length > 0) {
+      await tx
+        .insert(branchStock)
+        .values(variantIds.map((variantId) => ({ variantId, branchId: Number(wo.branchId), quantity: 0 })))
+        .onDuplicateKeyUpdate({ set: { variantId: sql`${branchStock.variantId}` } });
+      await tx
+        .select({ id: branchStock.id })
+        .from(branchStock)
+        .where(and(eq(branchStock.branchId, Number(wo.branchId)), inArray(branchStock.variantId, variantIds)))
+        .orderBy(asc(branchStock.variantId))
+        .for("update");
+    }
     const infoRows = variantIds.length > 0
       ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice, isConsignment: products.isConsignment })
           .from(productVariants)
           .innerJoin(products, eq(productVariants.productId, products.id))
           .where(inArray(productVariants.id, variantIds))
+          .orderBy(asc(productVariants.id))
+          .for("update")
       : [];
+    if (infoRows.length !== variantIds.length) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "إحدى مواد أمر الشغل غير موجودة" });
+    }
+    if (infoRows.some((v) => v.isConsignment)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "بضاعة الأمانة لا تُستهلك كمادة في أمر شغل — استبدلها بمادة مملوكة للمكتبة",
+      });
+    }
     const costMap = new Map(infoRows.map((v) => [Number(v.id), v.costPrice]));
-    // Codex P1: بضاعة الأمانة تُستثنى من السالب — استهلاكُ مادةِ أمانةٍ لم تُودَع يُلفّق استهلاكاً
-    // لبضاعةٍ ليست لنا (مرآة استثناء الأمانة في مسار البيع).
-    const consignSet = new Set(infoRows.filter((v) => v.isConsignment).map((v) => Number(v.id)));
 
     // وضع الافتتاح (قرار المالك ١٠/٨): أثناء النافذة الفعّالة يُسمح باستهلاك مواد صنفٍ **غير مُفتتَح**
     // بالسالب حتى يُجرَد افتتاحياً — وإلا توقّف كاشير التنفيذ إذ لا مواد مجرودة بعد. الحُرّاس الصنفية
-    // تبقى: تكلفة>0 (سلامة COGS) + سقف السطر + غير مُفتتَح (openedAt IS NULL يُفحص داخل applyMovement) +
-    // استثناء الأمانة.
+    // تبقى: تكلفة>0 (سلامة COGS) + سقف السطر + غير مُفتتَح (openedAt IS NULL يُفحص داخل applyMovement).
+    // الأمانة مرفوضة من أمر الشغل كله قبل الوصول إلى هذه الرخصة.
     const opening = await readOpeningWindowState(tx);
 
     // لقطة تكلفة كل سطر (قد تتكرّر الأصناف) + **تجميع الكمية لكل صنف** قبل فحص السقف والحركة —
@@ -81,7 +104,7 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
       if (qty <= 0) continue;
       const unitCost = round2(money(costMap.get(vid) ?? "0"));
       const allowNegativeUnopened =
-        opening.active && unitCost.gt(0) && qty <= opening.maxQty && !consignSet.has(vid);
+        opening.active && unitCost.gt(0) && qty <= opening.maxQty;
       try {
         await applyMovement(tx, {
           variantId: vid,
@@ -103,13 +126,24 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
             ? "بدء التنفيذ بالسالب في وضع الافتتاح يتطلّب تكلفة مُدخلة للمادة — أدخِل تكلفتها أولاً"
             : qty > opening.maxQty
               ? `كمية المادة تتجاوز سقف السطر السالب في وضع الافتتاح (${opening.maxQty} وحدة أساس)`
-              : consignSet.has(vid)
-                ? "مادة بضاعة أمانة لا تُستهلك بالسالب — تُودَع أولاً بسند إيداع"
-                : "المادة مُفتتَحة (مجرودة) — رصيدها مثبّت والاستهلاك فوقه يخضع للفحص الصارم";
+              : "المادة مُفتتَحة (مجرودة) — رصيدها مثبّت والاستهلاك فوقه يخضع للفحص الصارم";
           throw new TRPCError({ code: "CONFLICT", message: `${e.message} — ${hint}` });
         }
         throw e;
       }
+    }
+
+    if (materialsCost.gt(0)) {
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        dedupeKey: `WO-WIP-CONSUME:${workOrderId}`,
+        branchId: Number(wo.branchId),
+        cost: materialsCost,
+        amount: materialsCost,
+        notes: `تحويل مواد أمر الشغل ${wo.orderNumber} إلى إنتاج تحت التشغيل`,
+        postingIntent: createPostingIntent("ADJUST_WIP_CONSUME", "ADJUST", [debitLine("WORK_IN_PROGRESS", materialsCost), creditLine("INVENTORY", materialsCost)], { roleDebits: { WORK_IN_PROGRESS: materialsCost }, roleCredits: { INVENTORY: materialsCost } }),
+        postingSourceComponents: { roleDebits: { WORK_IN_PROGRESS: materialsCost }, roleCredits: { INVENTORY: materialsCost } },
+      });
     }
 
     await tx

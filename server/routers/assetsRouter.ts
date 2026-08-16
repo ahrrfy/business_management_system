@@ -17,6 +17,12 @@ import type { Actor } from "../services/tx";
 import type { AuthUser } from "../context";
 import { protectedProcedure, requireModule, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
+import {
+  approveAccrualCorrection,
+  listAccrualCorrections,
+  rejectAccrualCorrection,
+  requestAccrualCorrection,
+} from "../services/accounting/accrualCorrection";
 
 const assetRead = protectedProcedure.use(requireModule("assets", "READ"));
 const assetWrite = protectedProcedure.use(requireModule("assets", "FULL"));
@@ -63,6 +69,67 @@ export const assetsRouter = router({
   disposalLog: assetRead.query(({ ctx }) => svc.disposalLog(companyBranchScope(ctx.user))),
   formOptions: assetRead.query(({ ctx }) => svc.formOptions(companyBranchScope(ctx.user))),
 
+  requestSupplierSettlement: assetWrite
+    .input(z.object({ assetId: z.number().int().positive(), clientRequestId: z.string().trim().min(8).max(64) }))
+    .mutation(({ input, ctx }) => svc.requestSupplierAssetSettlement(input, actorOf(ctx.user))),
+
+  acquisitionCorrections: assetRead
+    .input(z.object({ assetId: z.number().int().positive(), obligationId: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      listAccrualCorrections(input.obligationId, actorOf(ctx.user), input.assetId),
+    ),
+
+  requestAcquisitionCorrection: assetWrite
+    .input(
+      z.object({
+        assetId: z.number().int().positive(),
+        obligationId: z.number().int().positive(),
+        reason: z.string().trim().min(3).max(2000),
+        externalEvidenceReference: z.string().trim().min(1).max(191),
+        attachmentUrl: z.string().trim().min(1).max(8_000_000),
+        refundPaymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).nullish(),
+        refundCashBucket: z.enum(["DRAWER", "TREASURY"]).nullish(),
+        refundReferenceNumber: z.string().trim().max(100).nullish(),
+        refundCardLastFour: z.string().trim().regex(/^\d{4}$/).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      requestAccrualCorrection(
+        { ...input, expectedAssetId: input.assetId },
+        actorOf(ctx.user),
+      ),
+    ),
+
+  approveAcquisitionCorrection: assetWrite
+    .input(z.object({ assetId: z.number().int().positive(), correctionRequestId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) =>
+      approveAccrualCorrection(
+        input.correctionRequestId,
+        actorOf(ctx.user),
+        new Date(),
+        input.assetId,
+      ),
+    ),
+
+  rejectAcquisitionCorrection: assetWrite
+    .input(
+      z.object({
+        assetId: z.number().int().positive(),
+        correctionRequestId: z.number().int().positive(),
+        reason: z.string().trim().min(3).max(255),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      rejectAccrualCorrection(
+        input.correctionRequestId,
+        input.reason,
+        actorOf(ctx.user),
+        new Date(),
+        input.assetId,
+      ),
+    ),
+
   create: assetWrite
     .input(
       z.object({
@@ -82,6 +149,9 @@ export const assetsRouter = router({
         condition: z.string().trim().optional(),
         warrantyEnd: z.string().optional(),
         linkedDeviceId: z.number().int().positive().optional(),
+        acquisitionBeneficiaryName: z.string().trim().min(2).max(200).optional(),
+        acquisitionEvidenceReference: z.string().trim().min(1).max(191),
+        clientRequestId: z.string().trim().min(8).max(64),
       }).refine(
         (d) => {
           const re = /^\d+(\.\d{1,2})?$/;
@@ -202,7 +272,10 @@ export const assetsRouter = router({
         assetId: z.number().int().positive(),
         type: z.string().trim().min(1, "نوع الصيانة مطلوب"),
         vendor: z.string().trim().optional(),
+        vendorSupplierId: z.number().int().positive().optional(),
         cost: moneyStrOpt,
+        evidenceReference: z.string().trim().max(191).optional(),
+        clientRequestId: z.string().trim().min(8).max(64),
         note: z.string().trim().optional(),
         maintDate: z.string().optional(),
       }),

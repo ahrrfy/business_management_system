@@ -5,6 +5,8 @@ import { OpenShiftsPanel } from "@/components/treasury/OpenShiftsPanel";
 import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { FinancialSourceBadge } from "@/components/financial";
+import { AppSelect } from "@/components/ui/AppSelect";
+import { hasModuleAccess } from "@shared/permissions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -184,6 +186,36 @@ export default function Treasury() {
   const userRole = me.data?.role ?? "";
   const isAdmin = userRole === "admin";
   const isManager = userRole === "manager";
+
+  // المسار أ (ورقة الإصلاحات ١٦/٨): طابور العهد المعلّقة **كلّها** — لا المسندة للمستخدم وحده.
+  // بدونه يبقى نقدُ مستلمٍ غائب خارج رصيد الخزينة بلا أن يراه أحد (٥٠٬٠٠٠ د.ع ظلّت أربعة أيام).
+  // بوّابة الشاشة تُطابق بوّابة الخادم (خريطة الصلاحيات: treasury=FULL) لا دوراً خاماً —
+  // وإلّا صار المنح الصريح معلَناً في جرد الصلاحيات وغير قابلٍ للاستعمال فعلياً.
+  const canGovernHandovers = hasModuleAccess(
+    userRole,
+    (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)
+      ?.permissionsOverride ?? null,
+    "treasury",
+    "FULL",
+  );
+  const pendingQueue = trpc.treasury.pendingHandoverQueue.useQuery(undefined, {
+    enabled: canGovernHandovers,
+    refetchInterval: 30_000,
+  });
+  const reassignHandover = trpc.treasury.reassignHandoverReceipt.useMutation({
+    onSuccess: (result) => {
+      notify.ok(
+        "أُعيد إسناد العهدة",
+        `السند ${result.referenceNumber} — ${fmtAr(result.amount)} د.ع`,
+      );
+      void utils.treasury.pendingHandoverQueue.invalidate();
+      void utils.treasury.pendingHandoverReceipts.invalidate();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const handoverRecipients = trpc.shifts.handoverRecipients.useQuery(undefined, {
+    enabled: isAdmin || isManager,
+  });
   const canChooseBranch = isAdmin || isManager;
   const hideTreasury = dashboard.data?.hideTreasury ?? false;
 
@@ -713,6 +745,67 @@ export default function Treasury() {
           </Button>
         )}
       </div>
+
+      {canGovernHandovers && (pendingQueue.data?.length ?? 0) > 0 && (
+        <section className="rounded-md border p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Clock3 className="h-4 w-4 text-muted-foreground" />
+            <div>
+              <h2 className="text-sm font-bold">نقدٌ معلَّق لدى مستلمين (رقابة المدير)</h2>
+              <p className="text-xs text-muted-foreground">
+                عهدٌ خرجت من الأدراج ولم تدخل رصيد الخزينة بعد. إن تعذّر على المستلم قبولها
+                (إجازة/تعطيل حساب) فأعِد إسنادها — المبلغ لا يتحرّك، يتغيّر المسؤول عن قبوله فقط.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2">
+            {pendingQueue.data?.map((row) => (
+              <div key={row.id} className="flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold tabular-nums" dir="ltr">{row.referenceNumber}</span>
+                    {row.ageDays >= 2 && (
+                      <span className="rounded bg-[var(--sem-warning)]/15 px-1.5 py-0.5 text-xs text-[var(--sem-warning)]">
+                        معلَّقة منذ {row.ageDays} يوماً
+                      </span>
+                    )}
+                    {!row.assignedToActive && (
+                      <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
+                        المستلم معطَّل
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    مُسنَدة إلى:{" "}
+                    <span className="font-medium text-foreground">{row.assignedToName ?? `#${row.assignedToId}`}</span>
+                    {row.sourceEmployeeName ? <> · من وردية {row.sourceEmployeeName}</> : null}
+                  </div>
+                </div>
+                <div className="text-base font-bold tabular-nums" dir="ltr">{fmtAr(row.amount)} د.ع</div>
+                <AppSelect
+                  value=""
+                  onValueChange={(v) => {
+                    if (v) reassignHandover.mutate({ receiptId: row.id, toUserId: Number(v) });
+                  }}
+                  disabled={reassignHandover.isPending}
+                  placeholder="إعادة إسناد إلى…"
+                  className="w-48"
+                  aria-label={`إعادة إسناد العهدة ${row.referenceNumber}`}
+                >
+                  {(handoverRecipients.data ?? [])
+                    // القائمة عابرةٌ للفروع؛ الخادم يرفض من هو خارج فرع العهدة ⇒ عرضُه خيارٌ ميّت.
+                    .filter((u) => Number(u.id) !== row.assignedToId && Number(u.branchId) === row.branchId)
+                    .map((u) => (
+                      <option key={u.id} value={String(u.id)}>
+                        {u.name ?? `#${u.id}`}
+                      </option>
+                    ))}
+                </AppSelect>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {(pendingHandovers.data?.length ?? 0) > 0 && (
         <section className="rounded-md border border-[var(--sem-warning)]/40 bg-[var(--sem-warning)]/5 p-4">

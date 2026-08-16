@@ -1,6 +1,7 @@
 // بطاقات الورديات المفتوحة الحيّة.
 import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
+import { MATERIALIZED_DRAWER_CASH_RAW_SQL } from "../cash/cashAvailability";
 import { money, toDbMoney } from "../money";
 import { isCashier, rowsOf } from "./helpers";
 
@@ -44,11 +45,11 @@ export async function getOpenShifts(
         s.openedAt AS openedAt,
         CAST(COALESCE((
           SELECT SUM(r.amount) FROM receipts r
-          WHERE r.shiftId = s.id AND r.cashBucket = 'DRAWER' AND r.direction = 'IN'
+          WHERE r.shiftId = s.id AND r.direction = 'IN' AND ${MATERIALIZED_DRAWER_CASH_RAW_SQL}
         ), 0) AS CHAR) AS cashIn,
         CAST(COALESCE((
           SELECT SUM(r.amount) FROM receipts r
-          WHERE r.shiftId = s.id AND r.cashBucket = 'DRAWER' AND r.direction = 'OUT'
+          WHERE r.shiftId = s.id AND r.direction = 'OUT' AND ${MATERIALIZED_DRAWER_CASH_RAW_SQL}
         ), 0) AS CHAR) AS cashOut
       FROM shifts s
       LEFT JOIN branches b ON b.id = s.branchId

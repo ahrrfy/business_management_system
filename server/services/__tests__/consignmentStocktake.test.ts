@@ -10,14 +10,14 @@ import { approveStocktake, approveStocktakeItems, createStocktakeSession, decide
 
 /**
  * بضاعة الأمانة — ش٤ تحسين: عجز/زيادة الجرد لصنف أمانة (قرار المالك ٥ + design §٢-هـ).
- *   عجز صنف أمانة = خسارة على المكتبة (يبقى ضمن قيد SHORT) **+** التزامٌ للمودِع (استحقاق يتيم
- *   بلا invoiceId كأنه بِيع بلا إيراد) ⇒ يرفع رصيد المودِع، ويبقى **خارج وعاء العمولة**.
+ *   عجز صنف أمانة = خسارة على المكتبة مقابل التزام المودِع مباشرةً، بلا لمس INVENTORY المحاسبي
+ *   (فهي خارج أصولنا) ⇒ يرفع رصيد المودِع، ويبقى **خارج وعاء العمولة**.
  *   زيادة صنف أمانة = تُستبعَد من قيد OVER (بضاعة المودِع الزائدة ليست ربحنا) بلا استحقاق.
  */
 const actor = { userId: 1, branchId: 1, role: "admin" }; // userId 1 = admin (مُستثنى من SOD الاعتماد)
 const TABLES = [
   "stocktakeItemReviewEvents", "stocktakeDecisions", "stocktakeCountOperations", "stocktakeCounts", "stocktakeItems", "stocktakeAssignments", "stocktakeSessions",
-  "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",
+  "journalLines", "journalEntries", "accountingEntries", "doubleEntrySettings", "receipts", "inventoryMovements", "invoiceItems", "invoices", "idempotencyKeys",
   "consignmentNoteLines", "consignmentNotes",
   "branchStock", "productPrices", "productUnits", "productVariants", "productImages", "products",
   "shifts", "auditLogs", "customers", "suppliers", "categories", "users", "branches",
@@ -67,7 +67,7 @@ async function mkSession(variantId: number) {
 beforeEach(async () => { await truncateTables(TABLES); await seedBase(); });
 
 describe("بضاعة الأمانة — عجز/زيادة الجرد (ش٤ تحسين)", () => {
-  it("عجز صنف أمانة: قيد SHORT خسارةً على المكتبة + استحقاق يتيم للمودِع يرفع رصيده، وخارج وعاء العمولة", async () => {
+  it("عجز صنف أمانة: Dr خسائر / Cr التزام مودِع بلا INVENTORY، ويرفع رصيده وخارج وعاء العمولة", async () => {
     const cid = await mkConsignor();
     const { variantId } = await mkConsignProduct(cid, "400", "500");
     await setStockRow(variantId, 10); // رصيد 10؛ رصيد المودِع 0 (لا التزام عند الإيداع)
@@ -78,17 +78,18 @@ describe("بضاعة الأمانة — عجز/زيادة الجرد (ش٤ تح�
     await forceStocktakeReview(r.sessionId, actor);
     await decideStocktakeItem({ sessionId: r.sessionId, variantId, action: "ADJUST", reason: "LOSS_THEFT" }, actor);
     await approveStocktakeItems({ sessionId: r.sessionId, variantIds: [variantId] }, actor);
+    await db().insert(s.doubleEntrySettings).values({
+      id: 1,
+      mode: "SHADOW",
+      shadowCycleId: "consignment-stocktake-test",
+    });
 
     const ok = await approveStocktake(r.sessionId, actor);
     expect(ok.shortExpense).toBe("1200.00"); // خسارة المكتبة كاملةً (لا تُخصم بالاستحقاق)
     expect(ok.overGain).toBe("0.00");
 
-    // (أ) قيد SHORT — خسارة على المكتبة (profit سالب).
-    const [short] = await entriesOf(`STOCKTAKE:${r.sessionId}:SHORT`);
-    expect(short).toBeTruthy();
-    expect(short.cost).toBe("1200.00");
-    expect(short.profit).toBe("-1200.00");
-    expect(short.amount).toBe("0.00");
+    // لا قيد عجز مخزون مملوك: الأمانة ليست INVENTORY للمكتبة.
+    expect(await entriesOf(`STOCKTAKE:${r.sessionId}:SHORT`)).toHaveLength(0);
 
     // (ب) استحقاق يتيم للمودِع — PURCHASE بلا invoiceId + رصيد المودِع يرتفع 1200.
     const [accrual] = await entriesOf(`CONSIG:STK:${r.sessionId}:${cid}`);
@@ -97,9 +98,22 @@ describe("بضاعة الأمانة — عجز/زيادة الجرد (ش٤ تح�
     expect(Number(accrual.supplierId)).toBe(cid);
     expect(accrual.invoiceId).toBeNull();
     expect(accrual.amount).toBe("1200.00");
+    expect(accrual.cost).toBe("1200.00");
     expect(accrual.revenue).toBe("0.00");
-    expect(accrual.profit).toBe("0.00");
+    expect(accrual.profit).toBe("-1200.00");
     expect(await supplierBalance(cid)).toBe("1200.00");
+
+    const [head] = await db()
+      .select()
+      .from(s.journalEntries)
+      .where(eq(s.journalEntries.entryId, Number(accrual.id)));
+    expect(head.status).toBe("POSTED");
+    expect(head.postingProfile).toBe("PURCHASE_CONSIGNMENT_SHORTAGE");
+    const lines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, Number(head.id)));
+    expect(lines.map((line) => [line.role, line.debit, line.credit]).sort()).toEqual([
+      ["CONSIGNMENT_PAYABLE", "0.00", "1200.00"],
+      ["LOSSES", "1200.00", "0.00"],
+    ]);
 
     // (ج) خارج وعاء العمولة: invoiceId فارغ ⇒ INNER JOIN على الفواتير يستبعده ⇒ لا خصم لأي بائع.
     const base = await computeNetSalesByUser(db(), new Date().toISOString().slice(0, 7));

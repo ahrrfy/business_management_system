@@ -14,6 +14,10 @@ import {
   listPlans,
   payLine,
 } from "../installmentService";
+import { bouncedCheckPosting } from "../installment/bounce";
+import { validatePostingIntentAgainstSource } from "../accounting/postingEngine";
+import { money } from "../money";
+import { createVoucher } from "../voucherService";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 
@@ -329,9 +333,109 @@ describe("payLine — سند قبض حقيقي بالمسار الموحَّد",
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, res.receiptId)))[0];
     expect(rc.approvalStatus).toBe("APPROVED");
   });
+
+  it("رفض محاولة تحصيل A1 يبقي مفتاحها immutable، وإعادة السداد تنشئ A2 مرة واحدة والمحاولات القديمة لا تُحيي الأثر", async () => {
+    const { planId } = await seedPlan();
+    const line = (await getPlan(planId)).lines[0];
+    const baseDescription = `تحصيل القسط رقم ${line.seq} من خطة الأقساط #${planId}`;
+    const firstMetadata = JSON.stringify({
+      kind: "INSTALLMENT_PAYMENT_ATTEMPT",
+      lineId: Number(line.id),
+      attempt: 1,
+      priorReceiptId: null,
+      reissueReason: null,
+      operatorNote: null,
+    });
+    const rejectedInsert = await db().insert(s.receipts).values({
+      branchId: 1,
+      direction: "IN",
+      amount: line.amount,
+      paymentMethod: "CASH",
+      status: "FAILED",
+      approvalStatus: "REJECTED",
+      voucherNumber: `RV-INST-REJECTED-${line.id}`,
+      partyType: "CUSTOMER",
+      partyId: 1,
+      description: baseDescription,
+      internalNote: firstMetadata,
+      createdBy: actor.userId,
+    });
+    const rejectedReceiptId = Number(rejectedInsert[0].insertId);
+    await db().insert(s.idempotencyKeys).values({
+      operation: "voucher.create",
+      clientRequestId: `instpay-${line.id}-A1`,
+      refId: rejectedReceiptId,
+    });
+    await db()
+      .update(s.installmentLines)
+      .set({ receiptId: rejectedReceiptId })
+      .where(eq(s.installmentLines.id, line.id));
+
+    const paid = await payLine({ lineId: line.id, paymentMethod: "CASH" }, actor);
+    expect(paid).toMatchObject({ status: "PAID" });
+    expect(paid.receiptId).not.toBe(rejectedReceiptId);
+    expect(await customerBalance()).toBe("870000.00");
+    const keys = await db().select().from(s.idempotencyKeys);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          clientRequestId: `instpay-${line.id}-A1`,
+          refId: rejectedReceiptId,
+        }),
+        expect.objectContaining({
+          clientRequestId: `instpay-${line.id}-A2`,
+          refId: paid.receiptId,
+        }),
+      ]),
+    );
+
+    const staleRetry = () =>
+      createVoucher(
+        {
+          voucherType: "RECEIPT",
+          branchId: 1,
+          amount: line.amount,
+          paymentMethod: "CASH",
+          partyType: "CUSTOMER",
+          partyId: 1,
+          description: baseDescription,
+          internalNote: firstMetadata,
+          clientRequestId: `instpay-${line.id}-A1`,
+        },
+        actor,
+      );
+    const staleResults = await Promise.allSettled([staleRetry(), staleRetry()]);
+    expect(staleResults.every((result) => result.status === "rejected")).toBe(true);
+    expect(await customerBalance()).toBe("870000.00");
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.entryType, "PAYMENT_IN")),
+    ).toHaveLength(1);
+  });
 });
 
 describe("bounceCheck", () => {
+  it("عكس الشيك يصفر شيكات برسم التحصيل ولا يحرك البنك", () => {
+    const amount = money("50000.00");
+    const { postingIntent, postingSourceComponents } = bouncedCheckPosting(amount);
+    const roleNet = (role: string) => postingIntent.lines
+      .filter((line) => line.role === role)
+      .reduce((net, line) => net.plus(line.debit).minus(line.credit), money(0));
+
+    // التحصيل الأصلي: Dr CHECKS_RECEIVABLE / Cr AR. الارتداد يعكسه تماماً.
+    expect(amount.plus(roleNet("CHECKS_RECEIVABLE")).toFixed(2)).toBe("0.00");
+    expect(roleNet("AR").toFixed(2)).toBe("50000.00");
+    expect(roleNet("CARD_BANK").toFixed(2)).toBe("0.00");
+    expect(postingSourceComponents.roleCredits).toEqual({ CHECKS_RECEIVABLE: amount });
+    expect("CARD_BANK" in postingSourceComponents.roleCredits).toBe(false);
+    expect(() => validatePostingIntentAgainstSource(postingIntent, {
+      amount,
+      ...postingSourceComponents,
+    })).not.toThrow();
+  });
+
   it("شيك معلَّق ⇒ BOUNCED بلا أي حركة مالية، ثم يُسدَّد لاحقاً", async () => {
     const { planId } = await seedPlan();
     const plan = await getPlan(planId);
@@ -399,8 +503,7 @@ describe("bounceCheck", () => {
     expect((await getPlan(planId)).lines[1].status).toBe("BOUNCED");
   });
 
-  // الثابت الحرِج (تعارُض إصلاحين): بدون حذف مفتاح idempotency في bounceCheck، إعادة السداد تُعيد
-  // الإيصال الأصل صامتاً (replay) فيُوسم القسط PAID بلا سند/قيد/خفض ذمّة — النقد يتبخّر والذمّة تبقى.
+  // كل تحصيل محاولة immutable: بعد الارتداد يبقى المفتاح القديم ويُنشأ A<n> مرتبط به.
   it("شيك مُحصَّل يرتدّ ثم يُعاد سداده ⇒ سند + قيد PAYMENT_IN جديدان فعليّاً وتنخفض الذمّة (لا replay صامت للإيصال الأصل)", async () => {
     const { planId } = await seedPlan();
     const checkLine = (await getPlan(planId)).lines[1]; // شيك 50000
@@ -410,7 +513,7 @@ describe("bounceCheck", () => {
     expect(pay1.status).toBe("PAID");
     expect(await customerBalance()).toBe("850000.00"); // 900000 − 50000
 
-    // 2) ارتداد الشيك ⇒ استعادة الذمّة، القسط BOUNCED، ومفتاح idempotency يُحرَّر.
+    // 2) ارتداد الشيك ⇒ استعادة الذمّة، القسط BOUNCED، والمفتاح القديم يبقى للتدقيق.
     const b1 = await bounceCheck({ lineId: checkLine.id, note: "ارتدّ من المصرف" }, actor);
     expect(b1.reversed).toBe(true);
     expect(await customerBalance()).toBe("900000.00");
@@ -437,12 +540,15 @@ describe("bounceCheck", () => {
     expect(inReceiptIds.has(pay1.receiptId)).toBe(true);
     expect(inReceiptIds.has(pay2.receiptId)).toBe(true);
 
-    // (د) مفتاح idempotency الجديد يشير للإيصال الثاني لا الأول.
-    const key = (
+    // (د) المفتاح القديم لا يُحذف، ومحاولة A2 الجديدة ترتبط بالإيصال الثاني.
+    const oldKey = (
       await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}`))
     )[0];
-    expect(key).toBeTruthy();
-    expect(Number(key.refId)).toBe(pay2.receiptId);
+    const newKey = (
+      await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}-A2`))
+    )[0];
+    expect(Number(oldKey.refId)).toBe(pay1.receiptId);
+    expect(Number(newKey.refId)).toBe(pay2.receiptId);
   });
 
   it("بعد عكس شيك تاريخي، إعادة السداد النقدي لا يمكن ارتدادها كشيك", async () => {

@@ -4,9 +4,19 @@ import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { money, toDbMoney } from "../money";
 import { getMonthlyClosePack } from "../reports/monthlyClosePack";
 
 const TABLES = [
+  "journalLines",
+  "journalEntries",
+  "doubleEntrySettings",
+  "payrollAccountingEvents",
+  "payrollObligationAllocations",
+  "payrollObligations",
+  "payrollRemittanceRequests",
+  "payrollItems",
+  "payrollRuns",
   "accountingEntries",
   "receipts",
   "expenses",
@@ -81,6 +91,17 @@ async function seedInvoice(opts: { id: number; branchId?: number; date: string; 
     unitCost: opts.cost,
     total: opts.total,
   });
+  await d.insert(s.accountingEntries).values({
+    entryType: "SALE",
+    invoiceId: opts.id,
+    branchId: opts.branchId ?? 1,
+    customerId: 10,
+    revenue: opts.total,
+    cost: opts.cost,
+    profit: toDbMoney(money(opts.total).sub(opts.cost)),
+    amount: opts.total,
+    entryDate: new Date(opts.date),
+  });
 }
 
 beforeEach(async () => {
@@ -121,9 +142,9 @@ describe("monthlyClosePack", () => {
     expect(pack.sales.returnedTotal).toBe("1000.00");
     expect(pack.sales.netAfterReturns).toBe("14000.00");
 
-    expect(pack.profit.revenue).toBe("15000.00");
-    expect(pack.profit.cost).toBe("6000.00");
-    expect(pack.profit.profit).toBe("9000.00");
+    expect(pack.profit.revenue).toBe("14000.00");
+    expect(pack.profit.cost).toBe("5600.00");
+    expect(pack.profit.profit).toBe("8400.00");
 
     expect(pack.expenses.total).toBe("300000.00");
     expect(pack.treasury.totalIn).toBe("8000.00");
@@ -164,11 +185,127 @@ describe("monthlyClosePack", () => {
     expect(pack.sales.invoiceCount).toBe(0); // لا فواتير مؤرَّخة في الشهر
   });
 
+  it("مرتجع شهرٍ لاحق لا يعيد كتابة ربح الشهر السابق المقفَل ويظهر في شهر entryDate", async () => {
+    const d = db();
+    await seedInvoice({ id: 230, date: OUT_MONTH, total: "8000.00", cost: "3000.00" });
+    await d.insert(s.accountingEntries).values({
+      entryType: "RETURN",
+      branchId: 1,
+      invoiceId: 230,
+      customerId: 10,
+      supplierId: null,
+      revenue: "-1000.00",
+      cost: "-400.00",
+      profit: "-600.00",
+      amount: "-1000.00",
+      entryDate: new Date(IN_MONTH),
+    });
+
+    const june = await getMonthlyClosePack({ month: "2026-06" });
+    const july = await getMonthlyClosePack({ month: MONTH });
+
+    expect(june.profit).toMatchObject({ revenue: "8000.00", cost: "3000.00", profit: "5000.00" });
+    expect(june.sales.returnedTotal).toBe("0.00");
+    expect(july.profit).toMatchObject({ revenue: "-1000.00", cost: "-400.00", profit: "-600.00" });
+    expect(july.sales.returnedTotal).toBe("1000.00");
+  });
+
   it("شهر فارغ ⇒ أصفار سليمة بلا أخطاء", async () => {
     const pack = await getMonthlyClosePack({ month: "2025-01" });
     expect(pack.sales.invoiceCount).toBe(0);
     expect(pack.sales.netAfterReturns).toBe("0.00");
     expect(pack.profit.profit).toBe("0.00");
     expect(pack.treasury.net).toBe("0.00");
+  });
+
+  it("يأخذ تكلفة الرواتب من استحقاق الشهر لا من دفع الصافي", async () => {
+    const d = db();
+    await d.insert(s.accountingEntries).values([
+      {
+        id: 940,
+        entryType: "ADJUST",
+        branchId: 1,
+        amount: "1250.00",
+        entryDate: new Date("2026-07-31"),
+        dedupeKey: "PAYROLL:ACCRUAL:94:0:1",
+      },
+      {
+        id: 941,
+        entryType: "PAYMENT_OUT",
+        branchId: 1,
+        amount: "1000.00",
+        entryDate: new Date("2026-07-31"),
+        dedupeKey: "PAYROLL:94:1",
+      },
+    ]);
+    await d.insert(s.payrollAccountingEvents).values([
+      {
+        id: 940,
+        branchIdSnapshot: 1,
+        revisionNo: 0,
+        eventKind: "ACCRUAL",
+        accountingEntryId: 940,
+        sourceKey: "PAYROLL:ACCRUAL:94:0:1",
+        sourceHash: "d".repeat(64),
+        occurredAt: new Date("2026-07-31T12:00:00Z"),
+        createdBy: 1,
+      },
+      {
+        id: 941,
+        branchIdSnapshot: 1,
+        revisionNo: 0,
+        eventKind: "SALARY_PAYMENT",
+        accountingEntryId: 941,
+        sourceKey: "PAYROLL:94:1",
+        sourceHash: "e".repeat(64),
+        occurredAt: new Date("2026-07-31T13:00:00Z"),
+        createdBy: 1,
+      },
+    ]);
+
+    const pack = await getMonthlyClosePack({ month: MONTH, branchId: 1 });
+    expect(pack.profit.revenue).toBe("0.00");
+    expect(pack.profit.cost).toBe("0.00");
+    expect(pack.profit.profit).toBe("0.00");
+    expect(pack.profit.totalExpenses).toBe("1250.00");
+    expect(pack.profit.netProfit).toBe("-1250.00");
+    expect(pack.expenses.total).toBe("1250.00");
+    expect(pack.accountingBasis).toBe("LEGACY_DERIVED");
+  });
+
+  it("في ACTIVE يأخذ قائمة الدخل من أدوار اليومية بإشارتها ويستبعد تسوية الخصوم النقدية", async () => {
+    const d = db();
+    const cycleId = "active-payroll-cycle";
+    await d.insert(s.doubleEntrySettings).values({ id: 1, mode: "ACTIVE", shadowCycleId: cycleId });
+    await d.insert(s.accountingEntries).values([
+      { id: 980, entryType: "ADJUST", branchId: 1, amount: "1250.00", entryDate: new Date("2026-07-31") },
+      { id: 981, entryType: "ADJUST", branchId: 1, amount: "-250.00", entryDate: new Date("2026-07-31") },
+      { id: 982, entryType: "PAYMENT_OUT", branchId: 1, amount: "800.00", entryDate: new Date("2026-07-31") },
+    ]);
+    await d.insert(s.journalEntries).values([
+      { id: 980, entryId: 980, cycleId, entryDate: "2026-07-31", branchId: 1, status: "POSTED" },
+      { id: 981, entryId: 981, cycleId, entryDate: "2026-07-31", branchId: 1, status: "POSTED" },
+      { id: 982, entryId: 982, cycleId, entryDate: "2026-07-31", branchId: 1, status: "POSTED" },
+    ]);
+    await d.insert(s.journalLines).values([
+      // E + حصة رب العمل في الضمان + مخصص نهاية الخدمة = 1250.
+      { journalId: 980, role: "SALARIES", debit: "1000.00", credit: "0.00" },
+      { journalId: 980, role: "SOCIAL_SECURITY_EXPENSE", debit: "150.00", credit: "0.00" },
+      { journalId: 980, role: "EOS_EXPENSE", debit: "100.00", credit: "0.00" },
+      { journalId: 980, role: "ACCRUED_SALARY", debit: "0.00", credit: "1250.00" },
+      // عكس جزءٍ من الاستحقاق يخفض مصروف الشهر 250.
+      { journalId: 981, role: "SALARIES", debit: "0.00", credit: "250.00" },
+      { journalId: 981, role: "ACCRUED_SALARY", debit: "250.00", credit: "0.00" },
+      // دفع الصافي تسوية خصم/نقد فقط؛ يجب ألا يدخل قائمة الدخل.
+      { journalId: 982, role: "ACCRUED_SALARY", debit: "800.00", credit: "0.00" },
+      { journalId: 982, role: "CASH_MAIN", debit: "0.00", credit: "800.00" },
+    ]);
+
+    const pack = await getMonthlyClosePack({ month: MONTH, branchId: 1 });
+    expect(pack.accountingBasis).toBe("DOUBLE_ENTRY_ACTIVE");
+    expect(pack.profit.grossProfit).toBe("0.00");
+    expect(pack.profit.totalExpenses).toBe("1000.00");
+    expect(pack.profit.netProfit).toBe("-1000.00");
+    expect(pack.expenses.total).toBe("1000.00");
   });
 });

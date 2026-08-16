@@ -88,3 +88,18 @@ export function baghdadTodayUtcRange(now: Date = new Date()): {
     endExclusive: new Date(startMs + 24 * 60 * 60 * 1000),
   };
 }
+
+/** نطاق يوم/فترة مدنية ببغداد، محوّل إلى UTC بنهاية حصرية. */
+export function baghdadDayRangeUtc(from: string, to: string): {
+  start: Date;
+  endExclusive: Date;
+} {
+  const fromParts = parseBusinessYmd(from);
+  const toParts = parseBusinessYmd(to);
+  const startMs = Date.UTC(fromParts.y, fromParts.m - 1, fromParts.d) - BAGHDAD_UTC_OFFSET_MS;
+  const endMs = Date.UTC(toParts.y, toParts.m - 1, toParts.d + 1) - BAGHDAD_UTC_OFFSET_MS;
+  if (endMs <= startMs) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ النهاية يجب ألا يسبق تاريخ البداية" });
+  }
+  return { start: new Date(startMs), endExclusive: new Date(endMs) };
+}

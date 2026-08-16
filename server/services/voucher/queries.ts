@@ -1,10 +1,100 @@
 // قراءات السندات: القائمة المفلترة، سند منفرد موسَّع، والسندات الأخيرة لنفس الطرف (تحذير الازدواج).
-import { and, desc, eq, gte, isNotNull, lt, ne, or, sql } from "drizzle-orm";
-import { customers, exchangeHouses, exchangeTransactions, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
+import { and, desc, eq, gte, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
+import { customers, exchangeHouses, exchangeTransactions, idempotencyKeys, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import type { PartyType, PaymentMethod } from "./types";
+import {
+  expensePaymentResubmitKey,
+  parseExpensePaymentResubmitDescription,
+  parseExpensePaymentResubmitKey,
+} from "./resubmitLineage";
+
+const resubmitLineageKeySql = sql<string | null>`(
+  SELECT lineageKey.clientRequestId
+  FROM idempotencyKeys AS lineageKey
+  WHERE lineageKey.operation = 'voucher.create'
+    AND lineageKey.refId = ${receipts.id}
+    AND lineageKey.clientRequestId REGEXP '^system-(asset|expense)-resubmit-[1-9][0-9]*-A[1-9][0-9]*$'
+  ORDER BY lineageKey.id DESC
+  LIMIT 1
+)`;
+const resubmitLineageCountSql = sql<number>`(
+  SELECT COUNT(*)
+  FROM idempotencyKeys AS lineageCount
+  WHERE lineageCount.operation = 'voucher.create'
+    AND lineageCount.refId = ${receipts.id}
+    AND lineageCount.clientRequestId REGEXP '^system-(asset|expense)-resubmit-[1-9][0-9]*-A[1-9][0-9]*$'
+)`;
+
+async function attachResubmitLineage<
+  T extends {
+    id: number;
+    description: string | null;
+    resubmitClientRequestId: string | null;
+    resubmitLineageCount: number;
+  },
+>(db: NonNullable<ReturnType<typeof getDb>>, rows: T[]) {
+  const parsed = rows.map((row) => ({
+    row,
+    key: row.resubmitClientRequestId == null
+      ? null
+      : parseExpensePaymentResubmitKey(row.resubmitClientRequestId),
+    description: parseExpensePaymentResubmitDescription(row.description),
+  }));
+  const priorKeys = parsed.flatMap(({ key }) =>
+    key != null && key.attempt > 1
+      ? [expensePaymentResubmitKey({ ...key, attempt: key.attempt - 1 })]
+      : [],
+  );
+  const priorRows = priorKeys.length === 0
+    ? []
+    : await db
+        .select({ clientRequestId: idempotencyKeys.clientRequestId, refId: idempotencyKeys.refId })
+        .from(idempotencyKeys)
+        .where(and(
+          eq(idempotencyKeys.operation, "voucher.create"),
+          inArray(idempotencyKeys.clientRequestId, priorKeys),
+        ));
+  const priorByKey = new Map(
+    priorRows.map((row) => [row.clientRequestId, Number(row.refId)]),
+  );
+
+  return parsed.map(({ row, key, description }) => {
+    const { resubmitClientRequestId: _key, resubmitLineageCount: _count, ...base } = row;
+    if (row.resubmitLineageCount === 0 && row.resubmitClientRequestId == null) {
+      return {
+        ...base,
+        resubmitLineageStatus: "NONE" as const,
+        resubmitRootReceiptId: null,
+        resubmitAttempt: null,
+        resubmitPriorReceiptId: null,
+        resubmitReason: null,
+      };
+    }
+    const expectedPriorReceiptId = key == null
+      ? null
+      : key.attempt === 1
+        ? key.rootReceiptId
+        : priorByKey.get(expensePaymentResubmitKey({ ...key, attempt: key.attempt - 1 })) ?? null;
+    const valid =
+      row.resubmitLineageCount === 1 &&
+      key != null &&
+      description != null &&
+      description.attempt === key.attempt &&
+      description.priorReceiptId === expectedPriorReceiptId &&
+      description.priorReceiptId !== Number(row.id);
+    return {
+      ...base,
+      resubmitLineageStatus: valid ? "VALID" as const : "BROKEN" as const,
+      resubmitRootReceiptId: key?.rootReceiptId ?? null,
+      resubmitAttempt: key?.attempt ?? null,
+      resubmitPriorReceiptId: valid ? description.priorReceiptId : null,
+      resubmitReason: valid ? description.reissueReason : null,
+    };
+  });
+}
 
 /** قائمة السندات مع فلاتر (للسجلّ والتقارير). */
 export interface ListVouchersInput {
@@ -52,7 +142,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
   if (input.from) wheres.push(gte(receipts.createdAt, localDayStart(input.from)));
   if (input.to) wheres.push(lt(receipts.createdAt, localNextDayStart(input.to)));
 
-  return db
+  const rows = await db
     .select({
       id: receipts.id,
       voucherNumber: receipts.voucherNumber,
@@ -85,6 +175,8 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       invoiceNumber: invoices.invoiceNumber,
       exchangeHouseId: exchangeTransactions.exchangeHouseId,
       exchangeHouseName: exchangeHouses.name,
+      resubmitClientRequestId: resubmitLineageKeySql,
+      resubmitLineageCount: resubmitLineageCountSql,
     })
     .from(receipts)
     .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
@@ -94,6 +186,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
     .orderBy(desc(receipts.id))
     .limit(input.limit ?? 100)
     .offset(input.offset ?? 0);
+  return attachResubmitLineage(db, rows);
 }
 
 /** قراءة سند منفرد + معلومات مَوسَّعة (اسم المُنشئ/المُعتمِد/الفئة) للطباعة. */

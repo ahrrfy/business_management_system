@@ -229,7 +229,12 @@ export const quotationRouter = router({
     .input(
       z.object({
         quotationId: z.number().int().positive(),
-        payment: z.object({ amount: positiveMoneyString, method: cashPaymentMethod }).optional(),
+        payment: z.object({
+          amount: positiveMoneyString,
+          method: cashPaymentMethod,
+          // نواة البيع تفرضه لغير النقد؛ نمرّره كي لا يُرفض التحويل عند حدّها.
+          reference: z.string().trim().max(100).nullish(),
+        }).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {

@@ -8,22 +8,42 @@ import { getDb } from "../../db";
 import { money } from "../money";
 import { reconcileSupplierBalances } from "../reconcileService";
 import { closeShift } from "../shiftService";
-import { approveVoucher, cancelVoucher, createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
+import {
+  approveVoucher,
+  cancelVoucher,
+  createVoucher as createVoucherRaw,
+  listVouchers,
+} from "../voucherService";
 
-type LegacyVoucherInput = Omit<Parameters<typeof createVoucherRaw>[0], "clientRequestId"> & {
+type LegacyVoucherInput = Omit<
+  Parameters<typeof createVoucherRaw>[0],
+  "clientRequestId"
+> & {
   clientRequestId?: string;
 };
 let voucherRequestSequence = 0;
-function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof createVoucherRaw>[1]) {
+function createVoucher(
+  input: LegacyVoucherInput,
+  actor: Parameters<typeof createVoucherRaw>[1],
+) {
   voucherRequestSequence += 1;
   const isOther = input.partyType === "OTHER";
   const isOtherReceipt = isOther && input.voucherType === "RECEIPT";
-  return createVoucherRaw({
-    ...input,
-    counterpartyName: isOther ? (input.counterpartyName ?? "طرف اختباري موثق") : input.counterpartyName,
-    referenceNumber: isOtherReceipt ? (input.referenceNumber ?? `SRC-CANCEL-${voucherRequestSequence}`) : input.referenceNumber,
-    clientRequestId: input.clientRequestId ?? `voucher-cancel-test-${voucherRequestSequence}`,
-  }, actor);
+  return createVoucherRaw(
+    {
+      ...input,
+      counterpartyName: isOther
+        ? (input.counterpartyName ?? "طرف اختباري موثق")
+        : input.counterpartyName,
+      referenceNumber: isOtherReceipt
+        ? (input.referenceNumber ?? `SRC-CANCEL-${voucherRequestSequence}`)
+        : input.referenceNumber,
+      clientRequestId:
+        input.clientRequestId ??
+        `voucher-cancel-test-${voucherRequestSequence}`,
+    },
+    actor,
+  );
 }
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
@@ -31,10 +51,26 @@ const ownerApprover = { userId: 2, branchId: 1, role: "manager" };
 const secondOwner = { userId: 3, branchId: 1, role: "manager" };
 
 const TABLES = [
-  "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
-  "purchaseOrderItems", "purchaseOrders",
-  "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
+  "idempotencyKeys",
+  "accountingEntries",
+  "receipts",
+  "inventoryMovements",
+  "invoiceItems",
+  "invoices",
+  "purchaseOrderItems",
+  "purchaseOrders",
+  "branchStock",
+  "productPrices",
+  "productUnits",
+  "productVariants",
+  "products",
+  "shifts",
+  "workOrderMaterials",
+  "workOrders",
+  "customers",
+  "suppliers",
+  "branches",
+  "users",
   "auditLogs",
 ];
 
@@ -43,7 +79,8 @@ function db() {
   if (!d) throw new Error("DATABASE_URL not set");
   return d;
 }
-const insertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertId);
+const insertId = (res: any): number =>
+  Number(res?.[0]?.insertId ?? res?.insertId);
 
 async function reset() {
   const d = db();
@@ -54,15 +91,48 @@ async function reset() {
 
 async function seedBase() {
   const d = db();
-  await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
+  await d
+    .insert(s.branches)
+    .values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
-    { id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local", branchId: 1, isOwner: false },
-    { id: 2, openId: "owner-approver", name: "مالك ثانٍ", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
-    { id: 3, openId: "owner-third", name: "مالك ثالث", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
+    {
+      id: 1,
+      openId: "admin",
+      name: "admin",
+      role: "admin",
+      loginMethod: "local",
+      branchId: 1,
+      isOwner: false,
+    },
+    {
+      id: 2,
+      openId: "owner-approver",
+      name: "مالك ثانٍ",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+      isOwner: true,
+    },
+    {
+      id: 3,
+      openId: "owner-third",
+      name: "مالك ثالث",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+      isOwner: true,
+    },
   ]);
-  await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "100.00" });
+  await d.insert(s.customers).values({
+    id: 1,
+    name: "تاجر",
+    defaultPriceTier: "RETAIL",
+    currentBalance: "100.00",
+  });
   // المورد برصيد افتتاحي 50 + قيد OPENING مطابق (كما يكتبه importService) ⇒ صيغة reconcile متّسقة.
-  await d.insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "50.00" });
+  await d
+    .insert(s.suppliers)
+    .values({ id: 1, name: "مورّد", currentBalance: "50.00" });
   await d.insert(s.accountingEntries).values({
     entryType: "OPENING",
     supplierId: 1,
@@ -73,30 +143,42 @@ async function seedBase() {
 }
 
 async function openShift(branchId = 1, userId = 1): Promise<number> {
-  const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN" });
+  const r = await db()
+    .insert(s.shifts)
+    .values({ branchId, userId, openingBalance: "0", status: "OPEN" });
   return insertId(r);
 }
 
 async function fundDrawer(shiftId: number, amount: string) {
-  await db().insert(s.receipts).values({
-    branchId: 1,
-    shiftId,
-    cashBucket: "DRAWER",
-    direction: "IN",
-    amount,
-    paymentMethod: "CASH",
-    status: "COMPLETED",
-    referenceNumber: `TEST-DRAWER-FUND-${shiftId}`,
-    createdBy: 1,
-  });
+  await db()
+    .insert(s.receipts)
+    .values({
+      branchId: 1,
+      shiftId,
+      cashBucket: "DRAWER",
+      direction: "IN",
+      amount,
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      referenceNumber: `TEST-DRAWER-FUND-${shiftId}`,
+      createdBy: 1,
+    });
 }
 
 async function fundTreasury(amount: string) {
-  await db().insert(s.receipts).values({
-    branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "IN",
-    amount, paymentMethod: "CASH", status: "COMPLETED",
-    referenceNumber: `TEST-TREASURY-FUND-${amount}`, createdBy: 1,
-  });
+  await db()
+    .insert(s.receipts)
+    .values({
+      branchId: 1,
+      shiftId: null,
+      cashBucket: "TREASURY",
+      direction: "IN",
+      amount,
+      paymentMethod: "CASH",
+      status: "COMPLETED",
+      referenceNumber: `TEST-TREASURY-FUND-${amount}`,
+      createdBy: 1,
+    });
 }
 
 /** نقد الوردية المتوقّع = Σ receipts (CASH IN) − Σ receipts (CASH OUT) — يجمع الكل بغضّ النظر عن status. */
@@ -124,10 +206,20 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
     const cashBefore = await shiftCashNet(shiftId); // قبل السند
 
     const v = await createVoucher(
-      { voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "دفعة من تاجر" },
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "30.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "دفعة من تاجر",
+      },
       actor,
     );
-    const afterCreate = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    const afterCreate = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(afterCreate.currentBalance).toBe("70.00"); // 100 − 30
 
     const res = await cancelVoucher(v.receiptId, actor);
@@ -135,21 +227,46 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
     expect(res.voucherNumber).toBe(v.voucherNumber);
 
     // الطلب وحده أُنشئ: الأصل/الرصيد/الدفتر لم تتغير قبل المالك.
-    let orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
+    let orig = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId))
+    )[0];
     expect(orig.status).toBe("COMPLETED");
-    let cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    let cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(cust.currentBalance).toBe("70.00");
-    const pending = (await db().select().from(s.receipts).where(eq(s.receipts.id, Number(res.approvalReceiptId))))[0];
-    expect(pending).toMatchObject({ direction: "OUT", status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null, shiftId: null });
-    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.receiptId, Number(pending.id))))).toHaveLength(0);
+    const pending = (
+      await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.id, Number(res.approvalReceiptId)))
+    )[0];
+    expect(pending).toMatchObject({
+      direction: "OUT",
+      status: "PENDING",
+      approvalStatus: "PENDING_APPROVAL",
+      cashBucket: null,
+      shiftId: null,
+    });
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, Number(pending.id))),
+    ).toHaveLength(0);
 
     await approveVoucher(Number(res.approvalReceiptId), ownerApprover);
-    orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
+    orig = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId))
+    )[0];
     expect(orig.status).toBe("REVERSED");
 
     // التعويضي: OUT، نفس الوردية والمبلغ والطريقة، بلا voucherNumber، مرجعه CANCEL-VCH.
     const comp = (
-      await db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, `CANCEL-VCH-${v.receiptId}`))
+      await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.referenceNumber, `CANCEL-VCH-${v.receiptId}`))
     )[0];
     expect(comp).toBeTruthy();
     expect(comp.direction).toBe("OUT");
@@ -160,18 +277,28 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
     expect(comp.status).toBe("COMPLETED");
 
     // رصيد العميل عاد تماماً (مقارنة Decimal).
-    cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(money(cust.currentBalance).eq(money("100.00"))).toBe(true);
 
     // قيد PAYMENT_OUT موجب مربوط بالتعويضي وبالعميل (لا ADJUST).
     const outs = await db()
       .select()
       .from(s.accountingEntries)
-      .where(and(eq(s.accountingEntries.entryType, "PAYMENT_OUT"), eq(s.accountingEntries.receiptId, Number(comp.id))));
+      .where(
+        and(
+          eq(s.accountingEntries.entryType, "PAYMENT_OUT"),
+          eq(s.accountingEntries.receiptId, Number(comp.id)),
+        ),
+      );
     expect(outs).toHaveLength(1);
     expect(outs[0].amount).toBe("30.00");
     expect(Number(outs[0].customerId)).toBe(1);
-    const adjusts = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    const adjusts = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "ADJUST"));
     expect(adjusts).toHaveLength(0);
 
     // نقد الوردية عاد لقيمته قبل السند (IN 30 يقابله OUT 30).
@@ -180,7 +307,10 @@ describe("إلغاء سند قبض من عميل (RV) — وردية مفتوح�
     // listVouchers: الأصل الملغى وطلب التعويض المعتمد كلاهما سندان مدققان.
     const all = await listVouchers({});
     expect(all).toHaveLength(2);
-    expect(all.map((row) => row.status).sort()).toEqual(["COMPLETED", "REVERSED"]);
+    expect(all.map((row) => row.status).sort()).toEqual([
+      "COMPLETED",
+      "REVERSED",
+    ]);
     const reversedOnly = await listVouchers({ status: "REVERSED" });
     expect(reversedOnly).toHaveLength(1);
     const completedOnly = await listVouchers({ status: "COMPLETED" });
@@ -192,21 +322,55 @@ describe("إلغاء سند صرف لمورّد (PV)", () => {
   it("رصيد المورد يعود + reconcileSupplierBalances بلا انحراف", async () => {
     await fundTreasury("25.00");
     const v = await createVoucher(
-      { voucherType: "PAYMENT", branchId: 1, amount: "25.00", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: 1, description: "دفعة لمورّد" },
+      {
+        voucherType: "PAYMENT",
+        branchId: 1,
+        amount: "25.00",
+        paymentMethod: "CASH",
+        partyType: "SUPPLIER",
+        partyId: 1,
+        description: "دفعة لمورّد",
+      },
       actor,
     );
     expect(v.approvalStatus).toBe("PENDING_APPROVAL");
     await approveVoucher(v.receiptId, ownerApprover);
-    const afterCreate = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    const afterCreate = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
     expect(afterCreate.currentBalance).toBe("25.00"); // 50 − 25
 
-    await cancelVoucher(v.receiptId, actor);
+    const cancellation = await cancelVoucher(v.receiptId, actor);
+    expect(cancellation.status).toBe("PENDING_APPROVAL");
 
-    const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    let sup = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
+    expect(money(sup.currentBalance).eq(money("25.00"))).toBe(true);
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(
+          eq(
+            s.accountingEntries.receiptId,
+            Number(cancellation.approvalReceiptId),
+          ),
+        ),
+    ).toHaveLength(0);
+
+    await approveVoucher(Number(cancellation.approvalReceiptId), ownerApprover);
+
+    sup = (
+      await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1))
+    )[0];
     expect(money(sup.currentBalance).eq(money("50.00"))).toBe(true);
 
     // القيد المعاكس لإلغاء صرف = PAYMENT_IN موجب باسم المورد.
-    const ins = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
+    const ins = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
     expect(ins).toHaveLength(1);
     expect(ins[0].amount).toBe("25.00");
     expect(Number(ins[0].supplierId)).toBe(1);
@@ -218,56 +382,200 @@ describe("إلغاء سند صرف لمورّد (PV)", () => {
 });
 
 describe("حواجز الإلغاء", () => {
+  it.each(["CHECK", "TRANSFER"] as const)(
+    "serializes %s cancellation replay against approval without a deadlock or duplicate reversal",
+    async (paymentMethod) => {
+      const original = await createVoucher(
+        {
+          voucherType: "PAYMENT",
+          branchId: 1,
+          amount: "30.00",
+          paymentMethod,
+          checkNumber: paymentMethod === "CHECK" ? "CHK-RACE-001" : null,
+          referenceNumber:
+            paymentMethod === "TRANSFER" ? "TRX-CANCEL-RACE-001" : null,
+          partyType: "SUPPLIER",
+          partyId: 1,
+          description: "Cancellation approval race",
+        },
+        actor,
+      );
+      await approveVoucher(original.receiptId, ownerApprover);
+      const request = await cancelVoucher(original.receiptId, actor);
+      const approvalReceiptId = Number(request.approvalReceiptId);
+
+      const outcomes = await Promise.allSettled([
+        cancelVoucher(original.receiptId, actor),
+        approveVoucher(approvalReceiptId, secondOwner),
+      ]);
+      for (const outcome of outcomes) {
+        if (outcome.status === "rejected") {
+          expect(String(outcome.reason)).not.toMatch(
+            /ER_LOCK_DEADLOCK|deadlock/i,
+          );
+        }
+      }
+      expect(outcomes[1].status).toBe("fulfilled");
+
+      const [originalAfter] = await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.id, original.receiptId));
+      const [cancellationAfter] = await db()
+        .select()
+        .from(s.receipts)
+        .where(eq(s.receipts.id, approvalReceiptId));
+      const reversalEntries = await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.receiptId, approvalReceiptId));
+      const cancellationReceipts = await db()
+        .select()
+        .from(s.receipts)
+        .where(
+          eq(s.receipts.referenceNumber, `CANCEL-VCH-${original.receiptId}`),
+        );
+      const [supplier] = await db()
+        .select()
+        .from(s.suppliers)
+        .where(eq(s.suppliers.id, 1));
+
+      expect(originalAfter.status).toBe("REVERSED");
+      expect(cancellationAfter).toMatchObject({
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+      });
+      expect(cancellationReceipts).toHaveLength(1);
+      expect(reversalEntries).toHaveLength(1);
+      expect(money(supplier.currentBalance).eq(money("50.00"))).toBe(true);
+    },
+  );
+
   it("قبض TREASURY لا يخرجه non-owner/admin، ولا يعتمده requester أو منشئ القبض؛ مالك ثالث فقط ينفذه", async () => {
     const original = await createVoucher(
-      { voucherType: "RECEIPT", branchId: 1, amount: "40.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "قبض خزينة" },
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "40.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "قبض خزينة",
+      },
       ownerApprover,
     );
     const request = await cancelVoucher(original.receiptId, actor);
-    await expect(approveVoucher(Number(request.approvalReceiptId), actor)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(approveVoucher(Number(request.approvalReceiptId), ownerApprover)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      approveVoucher(Number(request.approvalReceiptId), actor),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(
+      approveVoucher(Number(request.approvalReceiptId), ownerApprover),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await approveVoucher(Number(request.approvalReceiptId), secondOwner);
-    const [orig] = await db().select().from(s.receipts).where(eq(s.receipts.id, original.receiptId));
-    const [comp] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(request.approvalReceiptId)));
+    const [orig] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, original.receiptId));
+    const [comp] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, Number(request.approvalReceiptId)));
     expect(orig.status).toBe("REVERSED");
-    expect(comp).toMatchObject({ status: "COMPLETED", approvalStatus: "APPROVED", cashBucket: "TREASURY", shiftId: null });
+    expect(comp).toMatchObject({
+      status: "COMPLETED",
+      approvalStatus: "APPROVED",
+      cashBucket: "TREASURY",
+      shiftId: null,
+    });
   });
 
   it("tamper للـpayload أو المصدر يفشل مغلقاً ويبقي الأصل/الطلب/الذمة بلا أثر جزئي", async () => {
     const original = await createVoucher(
-      { voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "قبض قابل للإلغاء" },
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "30.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "قبض قابل للإلغاء",
+      },
       actor,
     );
     const request = await cancelVoucher(original.receiptId, actor);
-    await db().update(s.receipts).set({ internalNote: "tampered" }).where(eq(s.receipts.id, Number(request.approvalReceiptId)));
-    await expect(approveVoucher(Number(request.approvalReceiptId), ownerApprover)).rejects.toMatchObject({ code: "CONFLICT" });
-    await db().update(s.receipts).set({
-      internalNote: `@SYSTEM_PAYMENT_REQUEST:${JSON.stringify({ kind: "VOUCHER_CANCELLATION", originalReceiptId: original.receiptId, originalCreatorId: actor.userId })}`,
-    }).where(eq(s.receipts.id, Number(request.approvalReceiptId)));
-    await db().update(s.receipts).set({ amount: "31.00" }).where(eq(s.receipts.id, original.receiptId));
-    await expect(approveVoucher(Number(request.approvalReceiptId), ownerApprover)).rejects.toMatchObject({ code: "CONFLICT" });
-    const [orig] = await db().select().from(s.receipts).where(eq(s.receipts.id, original.receiptId));
-    const [pending] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(request.approvalReceiptId)));
-    const [customer] = await db().select().from(s.customers).where(eq(s.customers.id, 1));
+    await db()
+      .update(s.receipts)
+      .set({ internalNote: "tampered" })
+      .where(eq(s.receipts.id, Number(request.approvalReceiptId)));
+    await expect(
+      approveVoucher(Number(request.approvalReceiptId), ownerApprover),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    await db()
+      .update(s.receipts)
+      .set({
+        internalNote: `@SYSTEM_PAYMENT_REQUEST:${JSON.stringify({ kind: "VOUCHER_CANCELLATION", originalReceiptId: original.receiptId, originalCreatorId: actor.userId })}`,
+      })
+      .where(eq(s.receipts.id, Number(request.approvalReceiptId)));
+    await db()
+      .update(s.receipts)
+      .set({ amount: "31.00" })
+      .where(eq(s.receipts.id, original.receiptId));
+    await expect(
+      approveVoucher(Number(request.approvalReceiptId), ownerApprover),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    const [orig] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, original.receiptId));
+    const [pending] = await db()
+      .select()
+      .from(s.receipts)
+      .where(eq(s.receipts.id, Number(request.approvalReceiptId)));
+    const [customer] = await db()
+      .select()
+      .from(s.customers)
+      .where(eq(s.customers.id, 1));
     expect(orig.status).toBe("COMPLETED");
-    expect(pending).toMatchObject({ status: "PENDING", approvalStatus: "PENDING_APPROVAL", cashBucket: null });
+    expect(pending).toMatchObject({
+      status: "PENDING",
+      approvalStatus: "PENDING_APPROVAL",
+      cashBucket: null,
+    });
     expect(customer.currentBalance).toBe("70.00");
-    expect((await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT")))).toHaveLength(0);
+    expect(
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT")),
+    ).toHaveLength(0);
   });
 
   it("تكرار طلب الإلغاء يعيد الطلب نفسه، والاعتماد/الإلغاء اللاحق لا يكرران التعويض", async () => {
     await openShift(); // shift-gate-cash
     const v = await createVoucher(
-      { voucherType: "RECEIPT", branchId: 1, amount: "10.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "دفعة" },
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "10.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "دفعة",
+      },
       actor,
     );
     const first = await cancelVoucher(v.receiptId, actor);
     const replay = await cancelVoucher(v.receiptId, actor);
     expect(replay.approvalReceiptId).toBe(first.approvalReceiptId);
     await approveVoucher(Number(first.approvalReceiptId), ownerApprover);
-    const approvalReplay = await approveVoucher(Number(first.approvalReceiptId), ownerApprover);
+    const approvalReplay = await approveVoucher(
+      Number(first.approvalReceiptId),
+      ownerApprover,
+    );
     expect(approvalReplay.replayed).toBe(true);
-    await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
 
     // تعويضي واحد فقط، والرصيد لم يتحرّك مرة ثانية.
     const comps = await db()
@@ -275,69 +583,124 @@ describe("حواجز الإلغاء", () => {
       .from(s.receipts)
       .where(eq(s.receipts.referenceNumber, `CANCEL-VCH-${v.receiptId}`));
     expect(comps).toHaveLength(1);
-    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    const cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(money(cust.currentBalance).eq(money("100.00"))).toBe(true);
   });
 
   it("سند على وردية مغلقة يُرفض ولا يتغيّر شيء", async () => {
     const shiftId = await openShift();
     const v = await createVoucher(
-      { voucherType: "RECEIPT", branchId: 1, amount: "40.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "دفعة قبل الإغلاق" },
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "40.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "دفعة قبل الإغلاق",
+      },
       actor,
     );
     await closeShift({ shiftId, countedCash: "40.00" }, actor);
 
-    await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(cancelVoucher(v.receiptId, actor)).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
 
     // لا شيء تغيّر: الأصل COMPLETED، الرصيد كما بعد السند، لا تعويضي ولا قيد عكسي.
-    const orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
+    const orig = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId))
+    )[0];
     expect(orig.status).toBe("COMPLETED");
-    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    const cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(money(cust.currentBalance).eq(money("60.00"))).toBe(true); // 100 − 40
     const comps = await db()
       .select()
       .from(s.receipts)
       .where(eq(s.receipts.referenceNumber, `CANCEL-VCH-${v.receiptId}`));
     expect(comps).toHaveLength(0);
-    const outs = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    const outs = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
     expect(outs).toHaveLength(0);
   });
 
   it("سند مستقل مربوط بفاتورة بيع (invoiceId) يُلغى بأمان — تدقيق ١٧/٧ (كان الحارس يمنع كلّ سندٍ مربوط)", async () => {
     await openShift();
     const invRes = await db().insert(s.invoices).values({
-      invoiceNumber: "INV-VL", sourceType: "POS", sourceId: "t-vl", branchId: 1, customerId: 1,
-      priceTier: "RETAIL", subtotal: "30.00", total: "30.00", costTotal: "0.00", paidAmount: "0.00",
-      status: "PENDING", invoiceDate: new Date(),
+      invoiceNumber: "INV-VL",
+      sourceType: "POS",
+      sourceId: "t-vl",
+      branchId: 1,
+      customerId: 1,
+      priceTier: "RETAIL",
+      subtotal: "30.00",
+      total: "30.00",
+      costTotal: "0.00",
+      paidAmount: "0.00",
+      status: "PENDING",
+      invoiceDate: new Date(),
     });
     const invoiceId = insertId(invRes);
     const v = await createVoucher(
-      { voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, invoiceId, description: "دفعة مربوطة بفاتورة" },
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "30.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        invoiceId,
+        description: "دفعة مربوطة بفاتورة",
+      },
       actor,
     );
     // السند مربوط بالفاتورة توثيقياً فعلاً.
-    const rv = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
+    const rv = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId))
+    )[0];
     expect(Number(rv.invoiceId)).toBe(invoiceId);
 
     // الإلغاء يمرّ الآن (الحارس القديم كان يرفض كلّ سندٍ يحمل invoiceId ⇒ يستحيل عكسه إطلاقاً).
     const res = await cancelVoucher(v.receiptId, actor);
     expect(res.status).toBe("PENDING_APPROVAL");
-    expect((await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0].currentBalance).toBe("70.00");
+    expect(
+      (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0]
+        .currentBalance,
+    ).toBe("70.00");
     await approveVoucher(Number(res.approvalReceiptId), ownerApprover);
-    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    const cust = (
+      await db().select().from(s.customers).where(eq(s.customers.id, 1))
+    )[0];
     expect(money(cust.currentBalance).eq(money("100.00"))).toBe(true); // عاد الرصيد كاملاً
   });
 
   it("إيصال غير سند (voucherNumber=null) يُرفض NOT_FOUND", async () => {
     const r = await db().insert(s.receipts).values({
-      branchId: 1, direction: "IN", amount: "15.00", paymentMethod: "CASH", status: "COMPLETED",
+      branchId: 1,
+      direction: "IN",
+      amount: "15.00",
+      paymentMethod: "CASH",
+      status: "COMPLETED",
     });
     const id = insertId(r);
-    await expect(cancelVoucher(id, actor)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(cancelVoucher(id, actor)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
     // الإيصال لم يُمسّ.
-    const row = (await db().select().from(s.receipts).where(eq(s.receipts.id, id)))[0];
+    const row = (
+      await db().select().from(s.receipts).where(eq(s.receipts.id, id))
+    )[0];
     expect(row.status).toBe("COMPLETED");
-    const comps = await db().select().from(s.receipts).where(isNull(s.receipts.referenceNumber));
+    const comps = await db()
+      .select()
+      .from(s.receipts)
+      .where(isNull(s.receipts.referenceNumber));
     expect(comps).toHaveLength(1); // الإيصال نفسه فقط — لا تعويضي.
   });
 });

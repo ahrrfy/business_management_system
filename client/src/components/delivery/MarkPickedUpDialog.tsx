@@ -7,7 +7,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
@@ -74,7 +74,7 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
   const submit = () => {
     if (!confirmed) return;
     if (!isPosPaymentMethodEnabled(payMethod)) {
-      setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+      setError(posPaymentRejectionMessage(payMethod));
       return;
     }
     if (payNow && payMethod !== "CASH" && !payReference.trim()) {
@@ -105,7 +105,6 @@ export function MarkPickedUpDialog({ order, pending, onClose, onConfirm }: {
             <AppSelect value={payMethod} onValueChange={(v) => setPayMethod(v as Method)} className="h-11">
               {METHODS.map((m) => <option key={m.v} value={m.v} disabled={!isPosPaymentMethodEnabled(m.v)}>{m.label}</option>)}
             </AppSelect>
-            <p className="text-[10px] leading-relaxed text-muted-foreground">{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</p>
           </div>
         </div>
         {payMethod !== "CASH" && (

@@ -5,6 +5,10 @@ import { asc, eq, inArray, sql } from "drizzle-orm";
 import { branchStock, productVariants, productionLines, productionOrders } from "../../../drizzle/schema";
 import { applyMovement } from "../inventoryService";
 import { postEntry } from "../ledgerService";
+import {
+  createPostingIntent,
+  signedPostingLines,
+} from "../accounting/postingEngine";
 import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
 import { assertProductionBranch } from "./helpers";
@@ -118,6 +122,11 @@ export async function cancelProduction(productionOrderId: number, actor: Actor &
         amount: abnormalLoss.neg(),
         revenue: new Decimal(0),
         profit: abnormalLoss,
+        postingIntent: createPostingIntent(
+          "WASTAGE_INVENTORY",
+          "WASTAGE",
+          signedPostingLines("LOSSES", "INVENTORY", abnormalLoss.neg()),
+        ),
         notes: `عكس هدر إنتاج غير طبيعي — إلغاء ${po.docNumber}`,
         dedupeKey: null,
       });

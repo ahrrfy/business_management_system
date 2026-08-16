@@ -26,6 +26,7 @@ import { assertFloatLimitTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { deliveryWorkOrderSaleIntent } from "./posting";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -118,7 +119,8 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     const salePrice = money(wo.salePrice);
     const quantity = wo.quantity;
-    const costTotal = round2(money(wo.materialsCost).plus(money(wo.laborCost)));
+    const materialsCost = round2(money(wo.materialsCost));
+    const costTotal = round2(materialsCost.plus(money(wo.laborCost)));
     const depositPaid = round2(money(wo.deposit ?? "0"));
     if (depositPaid.gt(salePrice)) throw new TRPCError({ code: "BAD_REQUEST", message: "العربون يتجاوز إجمالي الأمر" });
     // ٥/٨ — أجرة التوصيل تمريرٌ لا إيراد (قرار المالك): salePrice بضاعةٌ وخدمةٌ فقط، وcodAmount
@@ -235,13 +237,28 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // SALE: حافظ على هوية العميل كي يبقى القيد والفاتورة وكشف العميل مترابطة.
     await postEntry(tx, {
       entryType: "SALE",
+      postingIntent: deliveryWorkOrderSaleIntent(salePrice, depositPaid, materialsCost),
+      postingSourceComponents: {
+        roleDebits: {
+          AR: salePrice,
+          COGS: materialsCost,
+          OTHER_LIABILITY: depositPaid,
+        },
+        roleCredits: {
+          SALES_FLEX: salePrice,
+          WORK_IN_PROGRESS: materialsCost,
+          AR: depositPaid,
+        },
+      },
       dedupeKey: `SALE:${invoiceId}`,
       branchId: Number(wo.branchId),
       invoiceId,
       customerId: wo.customerId ?? null,
       revenue: salePrice,
-      cost: costTotal,
-      profit: round2(salePrice.minus(costTotal)),
+      // Labour is a management allocation on the invoice; only consumed
+      // materials are an accounted WIP asset released to COGS.
+      cost: materialsCost,
+      profit: round2(salePrice.minus(materialsCost)),
       amount: salePrice,
     });
     if (wo.customerId != null && codAmount.gt(0)) {

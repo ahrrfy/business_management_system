@@ -105,4 +105,18 @@ describe("audited public UX contracts", () => {
     expect(stocktakes).toContain("{isAdmin && (");
     expect(stocktakes).toContain("enabled: isAdmin");
   });
+
+  it("integrates MobileBottomNav and responsive card view in AppLayout and Invoices", () => {
+    const appLayoutSource = readFileSync(new URL("../../components/AppLayout.tsx", import.meta.url), "utf8");
+    expect(appLayoutSource).toContain("<MobileBottomNav");
+    expect(appLayoutSource).toContain("pb-24 lg:pb-6");
+
+    const invoicesSource = readPage("Invoices.tsx");
+    expect(invoicesSource).toContain("mobileCardRenderer=");
+    expect(invoicesSource).toContain("<MobileDataCard");
+
+    const dataTableSource = readFileSync(new URL("../../components/data-table/DataTable.tsx", import.meta.url), "utf8");
+    expect(dataTableSource).toContain("mobileCardRenderer?: (row: T, index: number) => React.ReactNode");
+    expect(dataTableSource).toContain("md:hidden space-y-2.5");
+  });
 });

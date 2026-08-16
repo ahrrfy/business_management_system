@@ -41,7 +41,7 @@ async function seedBase() {
   await d.insert(s.branches).values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values([
     { id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1 },
-    { id: 2, openId: "test-approver", name: "مدقّق", role: "manager", branchId: 1 },
+    { id: 2, openId: "test-approver", name: "مدقّق", role: "manager", branchId: 1, isOwner: true, isActive: true },
   ]);
 }
 beforeEach(async () => {

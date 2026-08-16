@@ -52,6 +52,15 @@ export interface ReceivePurchaseInput {
    * عن `payment` أعلاه (تلك دفعةٌ للمورّد، وهذه دفعةٌ لشركة النقل).
    */
   shippingPaymentMethod?: PaymentMethod | null;
+  /** مرجع أداة تسوية الشحن؛ إلزامي للتحويل والصك ويُحفظ في السند المالي. */
+  shippingPaymentReference?: string | null;
+  /** آخر أربعة أرقام للبطاقة عند اختيار CARD. */
+  shippingCardLastFour?: string | null;
+  /** طرف النقل المسجّل إن كان مورّداً؛ وإلا يلزم الاسم الحر مع دليل المصدر. */
+  shippingBeneficiarySupplierId?: number | null;
+  shippingBeneficiaryName?: string | null;
+  /** رقم فاتورة/وصل الناقل أو مستند الكمرك الذي يثبت الاعتراف، لا مرجع الدفع اللاحق. */
+  shippingEvidenceReference?: string | null;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة الاستلام الأول (لا تكرار للمخزون/AP). */
   clientRequestId?: string | null;
 }

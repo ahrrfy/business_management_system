@@ -101,6 +101,17 @@ export async function getPayrollLegalSettings(runner?: Runner): Promise<PayrollL
   return toView(rows[0]);
 }
 
+/** Current locking read used by payroll approval to bind the generated figures to the policy in force. */
+export async function getPayrollLegalSettingsForUpdate(tx: Tx): Promise<PayrollLegalSettingsView> {
+  const rows = await tx
+    .select()
+    .from(payrollLegalSettings)
+    .where(eq(payrollLegalSettings.id, 1))
+    .for("update")
+    .limit(1);
+  return toView(rows[0]);
+}
+
 /* ─────────────────────────── الاحتساب النقيّ (قابل للاختبار) ─────────────────────────── */
 
 export interface LegalComputeInputs {
@@ -251,14 +262,19 @@ export async function updatePayrollLegalSettings(
   const sortedBrackets = validateAndSortBrackets(input.incomeTaxBrackets, input.incomeTaxEnabled);
 
   return withTx(async (tx) => {
-    const beforeRows = await tx.select().from(payrollLegalSettings).where(eq(payrollLegalSettings.id, 1)).limit(1);
-    const before = toView(beforeRows[0]);
-
-    // ensure-row ثم تحديث (نمط taxSettings/openingModeSettings) — يعمل حتى لو لم تُقرأ الإعدادات من قبل.
+    // Establish and lock the singleton first. Approval takes the same row lock,
+    // so a policy update and an accrual approval cannot both validate stale state.
     await tx
       .insert(payrollLegalSettings)
       .values({ id: 1 })
       .onDuplicateKeyUpdate({ set: { id: 1 } });
+    const beforeRows = await tx
+      .select()
+      .from(payrollLegalSettings)
+      .where(eq(payrollLegalSettings.id, 1))
+      .for("update")
+      .limit(1);
+    const before = toView(beforeRows[0]);
 
     await tx
       .update(payrollLegalSettings)

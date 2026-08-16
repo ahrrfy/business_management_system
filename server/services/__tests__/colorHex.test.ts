@@ -91,12 +91,12 @@ describe("colorHex — الدوام عبر التعديل/الإضافة", () =>
       actor,
     );
     await updateProductWithVariants(
-      { productId: 1, unitTemplate: tmpl(), variants: [{ id: 1, sku: "NB-1", color: "أزرق", colorHex: "#ABCDEF", costPrice: "600", unitBarcodes: { قطعة: "BC-1" } }] },
+      { productId: 1, unitTemplate: tmpl(), variants: [{ id: 1, sku: "NB-1", color: "أزرق", colorHex: "#ABCDEF", costPrice: "500", unitBarcodes: { قطعة: "BC-1" } }] },
       actor,
     );
     const row = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
     expect(row.colorHex).toBe("#ABCDEF");
-    expect(row.costPrice).toBe("600.00");
+    expect(row.costPrice).toBe("500.00");
   });
 
   it("تعديلٌ لا يُرسل colorHex إطلاقاً (نمط السلعة البسيطة) ⇒ يُصان اللون الصريح المخزَّن — لا يُمحى", async () => {
@@ -107,12 +107,12 @@ describe("colorHex — الدوام عبر التعديل/الإضافة", () =>
     );
     // عدّل بحمولةٍ بلا colorHex إطلاقاً (color=null كما ترسله SimpleProductEditForm) ⇒ يجب أن يبقى اللون.
     await updateProductWithVariants(
-      { productId: 1, unitTemplate: tmpl(), variants: [{ id: 1, sku: "NB-1", color: null, costPrice: "700", unitBarcodes: { قطعة: "BC-1" } }] },
+      { productId: 1, unitTemplate: tmpl(), variants: [{ id: 1, sku: "NB-1", color: null, costPrice: "500", unitBarcodes: { قطعة: "BC-1" } }] },
       actor,
     );
     const row = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
     expect(row.colorHex).toBe("#ABCDEF"); // مصونٌ رغم غيابه من الحمولة (كان يُمحى صامتاً قبل الإصلاح)
-    expect(row.costPrice).toBe("700.00"); // بقيّة الحقول تُحدَّث طبيعياً
+    expect(row.costPrice).toBe("500.00"); // التكلفة ذات الرصيد لا تتغير من تعديل وصفي
   });
 
   it("colorHex = null صريحاً ⇒ يُمحى (المستخدم أعاده للتلقائي)", async () => {

@@ -9,6 +9,7 @@ import { approveVoucher } from "../voucher/approval";
 
 const MAKER = { userId: 1, branchId: 1, role: "admin" };
 const CHECKER = { userId: 2, branchId: 1, role: "manager" };
+const OWNER = { userId: 3, branchId: 1, role: "manager" };
 
 const TABLES = [
   "accountingEntries",
@@ -45,6 +46,7 @@ beforeEach(async () => {
   await d.insert(s.users).values([
     { id: 1, openId: "pay-maker", name: "منشئ", role: "admin", branchId: 1 },
     { id: 2, openId: "pay-checker", name: "مدقق", role: "manager", branchId: 1, isOwner: true, isActive: true },
+    { id: 3, openId: "pay-owner", name: "مالك مستقل", role: "manager", branchId: 1, isOwner: true, isActive: true },
   ]);
   await d.insert(s.receipts).values({
     branchId: 1,
@@ -87,7 +89,7 @@ describe("financial integrity — payroll", () => {
     const run = await generatePayroll("2026-06", MAKER);
     await updateItem(run!.items[0].id, { overtime: "25000" }, CHECKER);
     await expect(approveRun(run!.id, CHECKER)).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(approveRun(run!.id, MAKER)).resolves.toMatchObject({ status: "approved" });
+    await expect(approveRun(run!.id, OWNER)).resolves.toMatchObject({ status: "approved" });
   });
 
   it("يحتسب الموظف المعين منتصف الشهر عن أيام خدمته فقط", async () => {
@@ -117,7 +119,7 @@ describe("financial integrity — payroll", () => {
     const run = await generatePayroll("2026-06", MAKER);
     await approveRun(run!.id, CHECKER);
     await payRun(run!.id, CHECKER);
-    await expect(cancelRun(run!.id, { ...MAKER, enforceCashReturnEvidence: true })).rejects.toMatchObject({
+    await expect(cancelRun(run!.id, { ...OWNER, enforceCashReturnEvidence: true })).rejects.toMatchObject({
       code: "PRECONDITION_FAILED",
     });
   });

@@ -1,12 +1,15 @@
 // إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون.
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties, invoiceItemBundleComponents, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrders } from "../../../drizzle/schema";
+import type Decimal from "decimal.js";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { deliveryConsignments, deliveryParties, inventoryMovements, invoiceItems, invoices, onlineOrders, productVariants, products, receipts, workOrders } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
-import { adjustCustomerBalance, adjustDeliveryBalance, postEntry } from "../ledgerService";
+import { createPostingIntent, signedPostingLines, type AccountRole, type PostingSourceComponents } from "../accounting/postingEngine";
+import { adjustCustomerBalance, adjustDeliveryBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { classifyGiftPosting } from "../sale/giftPosting";
 import { resolveBranchCashShiftTx } from "../shiftService";
 import {
   assertCashOutAvailable,
@@ -15,6 +18,7 @@ import {
 } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { deliveryCustomerRefundIntent, deliveryFeeHeldPayoutIntent, deliveryReturnSaleIntent, type DeliveryReturnSaleKind } from "./posting";
 import type { DeliveryTxActor } from "./types";
 
 /** إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون. مقيَّد بـDISPATCHED (collected==0). */
@@ -126,61 +130,43 @@ export async function returnConsignment(
       });
     }
 
-    const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, Number(cn.invoiceId)));
-    // إعادة المخزون (حركة IN) لكل بند له صنف.
-    // ملاحظة (تدقيق ٢/٧): تمييز «البند الذي خُصم مخزونه فعلاً» عن «منتج مُخصَّص لم يُخصَم» ليس
-    // بمجرّد workOrderId (بند أمر شغل بـbaseVariant يُخصَم فعلاً) — يحتاج فحص «هل جرت حركة OUT
-    // للصنف على هذه الفاتورة». مؤجَّل لتفادي منع إعادة تخزينٍ مشروع (أمسك CI الحارس الفجّ).
-    //
-    // gstack B7 (٧/٧/٢٦): بنود البكج بلا branchStock ⇒ applyMovement يرفضها. نُوسّعها إلى مكوّناتها
-    // عبر لقطة `invoiceItemBundleComponents` (كنمط returnService بالضبط). ثم نطبّق الحركات مجمَّعةً.
-    const variantIds = Array.from(new Set(items.map((i) => Number(i.variantId))));
-    const bundleFlags = variantIds.length
-      ? await tx
-          .select({ id: productVariants.id, isBundle: products.isBundle })
-          .from(productVariants)
-          .innerJoin(products, eq(productVariants.productId, products.id))
-          .where(inArray(productVariants.id, variantIds))
-      : [];
-    const isBundleVariant = new Map<number, boolean>(bundleFlags.map((f) => [Number(f.id), !!f.isBundle]));
-    const bundleItemIds = items.filter((i) => isBundleVariant.get(Number(i.variantId))).map((i) => Number(i.id));
-    const snapshotByItem = new Map<number, Array<{ componentVariantId: number; componentBaseQuantity: number }>>();
-    if (bundleItemIds.length) {
-      const snapRows = await tx
-        .select({
-          invoiceItemId: invoiceItemBundleComponents.invoiceItemId,
-          componentVariantId: invoiceItemBundleComponents.componentVariantId,
-          componentBaseQuantity: invoiceItemBundleComponents.componentBaseQuantity,
-        })
-        .from(invoiceItemBundleComponents)
-        .where(inArray(invoiceItemBundleComponents.invoiceItemId, bundleItemIds));
-      for (const r of snapRows) {
-        const iid = Number(r.invoiceItemId);
-        const list = snapshotByItem.get(iid) ?? [];
-        list.push({ componentVariantId: Number(r.componentVariantId), componentBaseQuantity: Number(r.componentBaseQuantity) });
-        snapshotByItem.set(iid, list);
-      }
-    }
+    const items = await tx
+      .select({
+        id: invoiceItems.id,
+        variantId: invoiceItems.variantId,
+        total: invoiceItems.total,
+        unitCost: invoiceItems.unitCost,
+        baseQuantity: invoiceItems.baseQuantity,
+        isGift: invoiceItems.isGift,
+        isService: products.isService,
+        isConsignment: products.isConsignment,
+        consignorId: products.consignorId,
+        productType: products.productType,
+      })
+      .from(invoiceItems)
+      .innerJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(eq(invoiceItems.invoiceId, Number(cn.invoiceId)));
 
-    const stockOps = new Map<number, number>(); // variantId → baseQuantity مجمَّعة
-    for (const it of items) {
-      const itemVariantId = Number(it.variantId);
-      const itemBase = Number(it.baseQuantity);
-      if (isBundleVariant.get(itemVariantId)) {
-        const snap = snapshotByItem.get(Number(it.id)) ?? [];
-        if (!snap.length) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message: `بند البكج ${Number(it.id)} بلا لقطة مكوّنات — لا يمكن إرجاع الإرسالية آلياً (فاتورة قبل ٧/٧/٢٦)`,
-          });
-        }
-        for (const c of snap) {
-          const q = c.componentBaseQuantity * itemBase;
-          stockOps.set(c.componentVariantId, (stockOps.get(c.componentVariantId) ?? 0) + q);
-        }
-      } else {
-        stockOps.set(itemVariantId, (stockOps.get(itemVariantId) ?? 0) + itemBase);
-      }
+    // لا نخمّن من سطر الفاتورة ما خرج من المخزون: نعيد فقط حركات OUT الأصلية المرتبطة
+    // بالفاتورة. هكذا لا يتحول ناتج أمر شغل/خدمة مخصّصة إلى مخزون، وتعود مكوّنات البكج
+    // ومواد الخدمة بذات الكميات الفعلية التي خرجت، لا بإعادة بناء قد تنجرف عن الحركة الأصلية.
+    const originalOut = await tx
+      .select({
+        variantId: inventoryMovements.variantId,
+        quantity: inventoryMovements.quantity,
+      })
+      .from(inventoryMovements)
+      .where(and(
+        eq(inventoryMovements.branchId, Number(cn.branchId)),
+        eq(inventoryMovements.movementType, "OUT"),
+        eq(inventoryMovements.referenceType, "INVOICE"),
+        eq(inventoryMovements.referenceId, Number(cn.invoiceId)),
+      ));
+    const stockOps = new Map<number, number>();
+    for (const movement of originalOut) {
+      const variantId = Number(movement.variantId);
+      stockOps.set(variantId, (stockOps.get(variantId) ?? 0) + Number(movement.quantity));
     }
     // تطبيق مجمَّع بترتيب variantId تصاعدي (اتّساق مع sale/create.ts + returnService).
     const sortedVids = Array.from(stockOps.keys()).sort((a, b) => a - b);
@@ -189,7 +175,7 @@ export async function returnConsignment(
       if (qty <= 0) continue;
       await applyMovement(tx, {
         variantId: vid, branchId: Number(cn.branchId), baseQuantity: qty,
-        movementType: "IN", referenceType: "DELIVERY_RETURN", referenceId: consignmentId, createdBy: actor.userId,
+        movementType: "RETURN", referenceType: "DELIVERY_RETURN", referenceId: consignmentId, createdBy: actor.userId,
       });
     }
 
@@ -199,13 +185,191 @@ export async function returnConsignment(
     // عادت للرفّ والعميل يبقى مديناً بها للأبد. القيد يُختَم بالعميل، والذمّة تُخصَم أدناه.
     const total = money(inv.total);
     const costTotal = money(inv.costTotal);
+    const tax = round2(money(inv.taxAmount ?? "0"));
+    const deliveryRevenue = round2(money(inv.deliveryFee ?? "0"));
+    const sectorRevenue = round2(total.minus(tax).minus(deliveryRevenue));
+
+    // Mirror sale/create.ts exactly: discounts are allocated over paid lines,
+    // and each source sector reverses the revenue role it originally credited.
+    const revenueItems = items
+      .filter((item) => !item.isGift && money(item.total).gt(0))
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    const revenueBasis = revenueItems.reduce((sum, item) => sum.plus(money(item.total)), money(0));
+    const revenueByRole = new Map<AccountRole, Decimal>();
+    const returnClasses = new Set<"DIGITAL" | "SERVICE" | "CONSIGNMENT" | "INVENTORY">();
+    let allocatedRevenue = money(0);
+    for (let index = 0; index < revenueItems.length; index++) {
+      const item = revenueItems[index]!;
+      const amount = index === revenueItems.length - 1
+        ? round2(sectorRevenue.minus(allocatedRevenue))
+        : round2(sectorRevenue.times(money(item.total)).div(revenueBasis));
+      allocatedRevenue = allocatedRevenue.plus(amount);
+      const returnClass = item.productType === "DIGITAL_CARD"
+        ? "DIGITAL"
+        : item.isService
+          ? "SERVICE"
+          : item.isConsignment
+            ? "CONSIGNMENT"
+            : "INVENTORY";
+      returnClasses.add(returnClass);
+      const role: AccountRole = inv.sourceType === "WORKORDER"
+        ? "SALES_FLEX"
+        : returnClass === "DIGITAL"
+          ? "OTHER_REVENUE"
+          : returnClass === "SERVICE"
+            ? "SALES_PRINT"
+            : "SALES_STATIONERY";
+      revenueByRole.set(role, round2((revenueByRole.get(role) ?? money(0)).plus(amount)));
+    }
+    const returnKind: DeliveryReturnSaleKind = inv.sourceType === "WORKORDER"
+      ? "WORK_ORDER_SERVICE"
+      : returnClasses.size > 1
+        ? "MIXED"
+        : returnClasses.has("DIGITAL")
+          ? "DIGITAL"
+          : returnClasses.has("SERVICE")
+            ? "SERVICE"
+            : returnClasses.has("CONSIGNMENT")
+              ? "CONSIGNMENT"
+              : "INVENTORY";
+
+    const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
+    let ownedInventoryCost = money(0);
+    let giftCost = money(0);
+    let ownedGiftCost = money(0);
+    for (const item of items) {
+      const share = round2(money(item.unitCost).times(item.baseQuantity));
+      if (item.isGift) {
+        giftCost = giftCost.plus(share);
+        if (!item.isConsignment) ownedGiftCost = ownedGiftCost.plus(share);
+      } else if (!item.isService && !item.isConsignment) {
+        ownedInventoryCost = ownedInventoryCost.plus(share);
+      }
+      if (item.isConsignment) {
+        if (item.consignorId == null) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: `صنف أمانة بلا مودع في الفاتورة ${inv.invoiceNumber}` });
+        }
+        const consignorId = Number(item.consignorId);
+        const split = byConsignor.get(consignorId) ?? { paid: money(0), gift: money(0) };
+        if (item.isGift) split.gift = split.gift.plus(share);
+        else split.paid = split.paid.plus(share);
+        byConsignor.set(consignorId, split);
+      }
+    }
+    ownedInventoryCost = round2(ownedInventoryCost);
+    giftCost = round2(giftCost);
+    ownedGiftCost = round2(ownedGiftCost);
+
     const invCustomerId = inv.customerId != null ? Number(inv.customerId) : null;
-    await postEntry(tx, {
-      entryType: "RETURN", branchId: Number(cn.branchId), invoiceId: Number(cn.invoiceId),
-      customerId: invCustomerId,
-      revenue: total.neg(), cost: costTotal.neg(), profit: round2(total.minus(costTotal)).neg(), amount: total.neg(),
-      notes: `إرجاع إرسالية ${cn.consignmentNumber}`,
-    });
+    const revenueBeforeTax = round2(total.minus(tax));
+    // A returned delivery cancels the work order and does not put consumed
+    // materials back into stock or WIP. Keep that material COGS as the loss of
+    // the cancelled job; only the sale revenue is reversed. Inventory sales
+    // still reverse their physically-restocked owned cost as usual.
+    const operationalReturnCost = inv.sourceType === "WORKORDER"
+      ? money(0)
+      : costTotal.neg();
+    const operationalReturnRevenue = revenueBeforeTax.neg();
+    const revenueRoleEntries = Array.from(revenueByRole.entries()).map(([role, amount]) => ({
+      role: role as "SALES_FLEX" | "SALES_PRINT" | "SALES_STATIONERY" | "OTHER_REVENUE",
+      amount,
+    }));
+    const reversesOwnedInventory = returnKind === "INVENTORY" ||
+      returnKind === "DIGITAL" || returnKind === "MIXED";
+    const roleDebits: Partial<Record<AccountRole, Decimal>> = {};
+    for (const { role, amount } of revenueRoleEntries) roleDebits[role] = amount;
+    if (deliveryRevenue.gt(0)) roleDebits.DELIVERY_REVENUE = deliveryRevenue;
+    if (tax.gt(0)) roleDebits.TAX_PAYABLE = tax;
+    if (reversesOwnedInventory && ownedInventoryCost.gt(0)) {
+      roleDebits.INVENTORY = ownedInventoryCost;
+    }
+    const returnPostingSourceComponents: PostingSourceComponents = {
+      roleDebits,
+      roleCredits: {
+        AR: total,
+        ...(reversesOwnedInventory && ownedInventoryCost.gt(0)
+          ? { COGS: ownedInventoryCost }
+          : {}),
+      },
+    };
+    if (total.gt(0)) {
+      await postEntry(tx, {
+        entryType: "RETURN", branchId: Number(cn.branchId), invoiceId: Number(cn.invoiceId),
+        customerId: invCustomerId,
+        revenue: operationalReturnRevenue,
+        cost: operationalReturnCost,
+        profit: round2(operationalReturnRevenue.minus(operationalReturnCost)),
+        amount: total.neg(),
+        taxAmount: tax.neg(),
+        postingSourceComponents: returnPostingSourceComponents,
+        postingIntent: deliveryReturnSaleIntent({
+          kind: returnKind,
+          sectorRevenue,
+          revenueByRole: revenueRoleEntries,
+          deliveryRevenue,
+          tax,
+          total,
+          ownedInventoryCost,
+        }),
+        notes: `إرجاع إرسالية ${cn.consignmentNumber}`,
+      });
+    }
+
+    // Gift expense reverses only for goods that physically returned. The
+    // consignor part is a memo here because its GIFTS_PROMO leg is reversed by
+    // PURCHASE_CONSIGNMENT below; owned goods restore INVENTORY directly.
+    if (giftCost.gt(0)) {
+      const giftPosting = classifyGiftPosting(giftCost, ownedGiftCost, -1);
+      await postEntry(tx, {
+        entryType: "GIFT_OUT",
+        dedupeKey: `GIFT:DELIVERY_RETURN:${Number(cn.invoiceId)}`,
+        branchId: Number(cn.branchId),
+        invoiceId: Number(cn.invoiceId),
+        customerId: invCustomerId,
+        revenue: money(0),
+        cost: giftCost.neg(),
+        profit: giftCost,
+        amount: giftCost.neg(),
+        postingSourceComponents: giftPosting.sourceComponents,
+        notes: `عكس هدايا إرسالية ${cn.consignmentNumber}; consignmentRemainder=${toDbMoney(giftPosting.consignmentRemainder)}`,
+        postingIntent: giftPosting.intent,
+      });
+    }
+
+    // Returned consignment goods no longer create a debt to the consignor.
+    // Reverse both paid and gift shares with the original invoice link so the
+    // commission/net-sales filters also see the exact mirror entry.
+    for (const consignorId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
+      const split = byConsignor.get(consignorId)!;
+      const paidShare = round2(split.paid);
+      const giftShare = round2(split.gift);
+      const share = round2(paidShare.plus(giftShare));
+      if (share.lte(0)) continue;
+      await postEntry(tx, {
+        entryType: "PURCHASE",
+        dedupeKey: `CONSIG:DELIVERY_RETURN:${Number(cn.invoiceId)}:${consignorId}`,
+        supplierId: consignorId,
+        invoiceId: Number(cn.invoiceId),
+        branchId: Number(cn.branchId),
+        amount: share.neg(),
+        revenue: money(0),
+        cost: money(0),
+        profit: money(0),
+        notes: `عكس استحقاق أمانة — إرجاع إرسالية ${cn.consignmentNumber}`,
+        postingIntent: createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [
+          ...signedPostingLines("COGS", "CONSIGNMENT_PAYABLE", paidShare.neg()),
+          ...signedPostingLines("GIFTS_PROMO", "CONSIGNMENT_PAYABLE", giftShare.neg()),
+        ], {
+          roleDebits: { CONSIGNMENT_PAYABLE: share },
+          roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+        }),
+        postingSourceComponents: {
+          roleDebits: { CONSIGNMENT_PAYABLE: share },
+          roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare },
+        },
+      });
+      await adjustSupplierBalance(tx, consignorId, share.neg());
+    }
     await tx.update(invoices).set({ status: "RETURNED", returnedTotal: toDbMoney(total) }).where(eq(invoices.id, Number(cn.invoiceId)));
 
     // تحرير التعرض التشغيلي. في المرحلة الثانية لا ترتفع العهدة النقدية عند
@@ -274,6 +438,12 @@ export async function returnConsignment(
       });
       await postEntry(tx, {
         entryType: "PAYMENT_OUT", branchId: Number(cn.branchId), invoiceId: Number(cn.invoiceId),
+        postingIntent: deliveryCustomerRefundIntent(deposit, "DRAWER"),
+        postingSourceComponents: {
+          roleDebits: { AR: deposit },
+          roleCredits: { CASH: deposit },
+        },
+        customerId: invCustomerId,
         receiptId: extractInsertId(rOut), amount: deposit, notes: `رد عربون ${cn.consignmentNumber}`,
       });
       await tx.update(invoices).set({ paidAmount: "0.00" }).where(eq(invoices.id, Number(cn.invoiceId)));
@@ -349,6 +519,11 @@ export async function returnConsignment(
       });
       await postEntry(tx, {
         entryType: "DELIVERY_FEE_HELD",
+        postingIntent: deliveryFeeHeldPayoutIntent(feeHeldNet.neg(), "DRAWER"),
+        postingSourceComponents: {
+          roleDebits: { COURIER_PAYABLE: feeHeldNet },
+          roleCredits: { CASH: feeHeldNet },
+        },
         dedupeKey: `DELIVERY_FEE_HELD_REFUND:${consignmentId}`,
         branchId: Number(cn.branchId), invoiceId: Number(cn.invoiceId),
         receiptId: extractInsertId(feeOut),

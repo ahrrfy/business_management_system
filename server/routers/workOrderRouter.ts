@@ -25,9 +25,14 @@ import {
   updateWorkOrder,
   updateWorkOrderDeliveryMethod,
 } from "../services/workOrderService";
+import {
+  approveWorkOrderCancellationRefund,
+  getWorkOrderCancellationRefundStatus,
+  listPendingWorkOrderCancellationRefunds,
+} from "../services/workOrder/cancel";
 import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
-import { canSeeCostForUser, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
+import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -1103,14 +1108,48 @@ export const workOrderRouter = router({
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه استرداد العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
+      clientRequestId: z.string().trim().min(1).max(100).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const res = await cancelWorkOrder(
         input.workOrderId,
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
-        { refundShiftId: input.refundShiftId ?? null },
+        {
+          refundShiftId: input.refundShiftId ?? null,
+          clientRequestId: input.clientRequestId ?? null,
+        },
       );
       await logAudit(ctx, { action: "workOrder.cancel", entityType: "workOrder", entityId: input.workOrderId });
       return res;
     }),
+
+  approveCancellationRefund: ownerProcedure
+    .input(z.object({
+      receiptId: z.number().int().positive(),
+      confirmationReference: z.string().trim().min(3).max(100),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await approveWorkOrderCancellationRefund(input.receiptId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+      }, input.confirmationReference, ctx);
+      return res;
+    }),
+
+  pendingCancellationRefunds: ownerProcedure.query(({ ctx }) =>
+    listPendingWorkOrderCancellationRefunds({
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 1,
+      role: ctx.user.role,
+      isOwner: ctx.user.isOwner,
+    })),
+
+  cancellationRefundStatus: workordersReadProcedure
+    .input(z.object({ workOrderId: z.number().int().positive() }))
+    .query(({ input, ctx }) => getWorkOrderCancellationRefundStatus(
+      input.workOrderId,
+      { branchId: ctx.scopedBranchId, ownerId: ctx.scopedOwnerId },
+    )),
 });

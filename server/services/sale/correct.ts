@@ -31,7 +31,7 @@ import {
   receipts,
 } from "../../../drizzle/schema";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
-import { adjustCustomerBalance, postEntry } from "../ledgerService";
+import { adjustCustomerBalance } from "../ledgerService";
 import { money, round2 } from "../money";
 import { returnSaleInTx } from "../returnService";
 import { resolveBranchCashShiftTx } from "../shiftService";

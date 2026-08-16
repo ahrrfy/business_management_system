@@ -16,6 +16,7 @@ import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { getTreasuryBalance } from "./cashTransferService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
+import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
@@ -148,6 +149,10 @@ export async function fundTreasury(
     // قيد TREASURY_FUNDING (مصدر خارجيّ → خزينة، revenue/cost=0). dedupeKey فريد لكل إيداع.
     await postEntry(tx, {
       entryType: "TREASURY_FUNDING",
+      postingIntent: createPostingIntent("TREASURY_FUNDING_CAPITAL", "TREASURY_FUNDING", [
+        debitLine("TREASURY_CASH", amount),
+        creditLine("CAPITAL", amount),
+      ]),
       branchId: input.branchId,
       receiptId,
       amount,

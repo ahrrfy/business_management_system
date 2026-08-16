@@ -14,11 +14,13 @@ import { createSupplier, deleteSupplier, getSupplier, updateSupplier } from "../
 import { deleteCustomer, getCustomer, updateCustomer } from "../customerService";
 import { getAPAging, getSupplierStatement } from "../reports/apAging";
 import { getARAging } from "../reports/arAging";
+import { POSTING_POLICY_HASH } from "../accounting/postingEngine";
 
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
-  "accountingEntries", "receipts", "invoiceItems", "invoices", "purchaseOrders",
+  "journalLines", "journalEntries", "accountingEntries", "doubleEntrySettings",
+  "receipts", "invoiceItems", "invoices", "purchaseOrders",
   "customers", "suppliers", "financialPeriods", "branches", "users",
 ];
 
@@ -152,6 +154,57 @@ describe("③ حذف طرفٍ بلا نشاط + حارس يرفض النشاط",
     expect((await deleteCustomer(clean.customerId, actor)).deleted).toBe(true);
     expect(await openingEntry("CUSTOMER", clean.customerId)).toBeUndefined();
   });
+
+  it.each(["SHADOW", "ACTIVE"] as const)(
+    "%s يمنع حذف عميل أو مورّد يحمل مصدر OPENING ويرجع العملية كاملة",
+    async (mode) => {
+      const { supplierId } = await createSupplier(
+        {
+          name: `مورّد افتتاح محمي ${mode}`,
+          openingBalance: "50000",
+          openingBalanceDirection: "OWED_BY_US",
+        },
+        actor,
+      );
+      const customer = (await caller("admin").customers.create({
+        name: `عميل افتتاح محمي ${mode}`,
+        openingBalance: "10000",
+        openingBalanceDirection: "OWED_TO_US",
+      })) as { customerId: number };
+      await db().update(s.doubleEntrySettings).set({
+        mode,
+        shadowCycleId: `party-delete-${mode.toLowerCase()}`,
+        ...(mode === "ACTIVE"
+          ? {
+              shadowOpeningHash: "a".repeat(64),
+              policyApprovalReference: "PARTY-OPENING-POLICY",
+              policyApprovalPolicyHash: POSTING_POLICY_HASH,
+              policyApprovalCycleId: "party-delete-active",
+              policyApprovalOpeningHash: "a".repeat(64),
+              policyAccountantName: "محاسب الاختبار",
+              policyApprovedAt: new Date("2026-08-01T00:00:00.000Z"),
+              policyApprovedBy: 1,
+            }
+          : {}),
+      }).where(eq(s.doubleEntrySettings.id, 1));
+
+      await expect(deleteSupplier(supplierId, actor)).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+      });
+      await expect(deleteCustomer(customer.customerId, actor)).rejects.toMatchObject({
+        code: "PRECONDITION_FAILED",
+      });
+
+      expect(
+        (await db().select().from(s.suppliers).where(eq(s.suppliers.id, supplierId)))[0],
+      ).toBeTruthy();
+      expect(await openingEntry("SUPPLIER", supplierId)).toBeTruthy();
+      expect(
+        (await db().select().from(s.customers).where(eq(s.customers.id, customer.customerId)))[0],
+      ).toBeTruthy();
+      expect(await openingEntry("CUSTOMER", customer.customerId)).toBeTruthy();
+    },
+  );
 
   it("قفل الفترة يمنع حذف طرفٍ قيده الافتتاحي داخل فترة مُقفَلة (اتساقاً مع مسار التصحيح)", async () => {
     const { supplierId } = await createSupplier(

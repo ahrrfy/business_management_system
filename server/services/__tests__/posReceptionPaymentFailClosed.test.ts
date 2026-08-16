@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
-import {
-  POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE,
-  POS_EXTERNAL_PAYMENT_METHODS,
-} from "@shared/posPaymentPolicy";
+import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
+
+/**
+ * الطرق المرفوضة **بنيوياً** في كل منافذ القبض: رصيد زين (مساره شاشة البطاقات الرقمية).
+ * البطاقة/التحويل/المحفظة مسموحة، وبوّابتها محاولةُ الدفع المؤكَّدة داخل المعاملة
+ * (يحرسها `posExternalPayment.test.ts`) لا رفضٌ عند حدود الخدمة.
+ */
+const STRUCTURALLY_REJECTED = ["TELECOM"] as const;
 import { createPrintSaleInTx } from "../printSaleService";
 import { createSaleInTx } from "../sale/create";
 import { processPayment } from "../sale/payment";
@@ -29,11 +33,11 @@ function forbiddenTx() {
 }
 
 async function expectPolicyRejection(promise: Promise<unknown>) {
-  await expect(promise).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+  await expect(promise).rejects.toThrow(INBOUND_TELECOM_DISABLED_MESSAGE);
 }
 
-describe("reception/POS service boundaries are CASH-only", () => {
-  it.each(POS_EXTERNAL_PAYMENT_METHODS)("rejects %s before any invoice, receipt, stock, or work-order access", async (method) => {
+describe("حدود خدمات المحطة/الكاشير ترفض الطريقة غير المدعومة قبل أيّ لمسٍ للمعاملة", () => {
+  it.each(STRUCTURALLY_REJECTED)("يرفض %s قبل أيّ وصولٍ لفاتورة/إيصال/مخزون/أمر شغل", async (method) => {
     {
       const guarded = forbiddenTx();
       await expectPolicyRejection(createSaleInTx(guarded.tx, {

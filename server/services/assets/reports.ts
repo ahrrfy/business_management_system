@@ -1,6 +1,6 @@
 // لوحة المؤشّرات + تقرير العهد حسب الموظف + سجلّ الاستبعاد/الإخراج.
 import Decimal from "decimal.js";
-import { and, desc, eq, getTableColumns, inArray } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, ne } from "drizzle-orm";
 import { assetMaintenance, branches, fixedAssets } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { sumMoney, toDateStr } from "../money";
@@ -10,7 +10,8 @@ import { listAssets } from "./queries";
 
 export async function dashboard(scope: CompanyBranchScope) {
   const all = await listAssets({ includeDisposed: true }, scope);
-  const live = all.filter((a) => a.status === "active" || a.status === "maintenance" || a.status === "retired");
+  const correctedAcquisitions = all.filter((a) => a.recognitionStatus === "CORRECTED");
+  const live = all.filter((a) => a.recognitionStatus !== "CORRECTED" && (a.status === "active" || a.status === "maintenance" || a.status === "retired"));
 
   const totalAssets = live.length;
   // FA-05 (§٥): جمع قيم الشراء عبر decimal لا Number/float.
@@ -48,7 +49,7 @@ export async function dashboard(scope: CompanyBranchScope) {
     })
     .from(assetMaintenance)
     .innerJoin(fixedAssets, eq(assetMaintenance.assetId, fixedAssets.id))
-    .where(scope.branchId == null ? undefined : eq(fixedAssets.branchId, scope.branchId))
+    .where(and(ne(assetMaintenance.financialStatus, "CORRECTED"), ...(scope.branchId == null ? [] : [eq(fixedAssets.branchId, scope.branchId)])))
     .orderBy(desc(assetMaintenance.maintDate))
     .limit(6);
 
@@ -75,6 +76,7 @@ export async function dashboard(scope: CompanyBranchScope) {
     byBranch: Array.from(byBranch.entries()).map(([branch, v]) => ({ branch, ...v })).sort((a, b) => b.value - a.value),
     recentMaintenance,
     needsAction,
+    correctedAcquisitions,
   };
 }
 
@@ -110,9 +112,10 @@ export async function disposalLog(scope: CompanyBranchScope) {
     .leftJoin(branches, eq(fixedAssets.branchId, branches.id))
     .where(
       scope.branchId == null
-        ? inArray(fixedAssets.status, ["disposed", "retired"])
+        ? and(inArray(fixedAssets.status, ["disposed", "retired"]), ne(fixedAssets.recognitionStatus, "CORRECTED"))
         : and(
             inArray(fixedAssets.status, ["disposed", "retired"]),
+            ne(fixedAssets.recognitionStatus, "CORRECTED"),
             eq(fixedAssets.branchId, scope.branchId),
           ),
     )

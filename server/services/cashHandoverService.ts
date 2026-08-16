@@ -12,6 +12,7 @@ import { like, sql } from "drizzle-orm";
 import { receipts } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import { assertCashTransferAvailable, assertTreasuryOutException } from "./cash/cashAvailability";
@@ -121,6 +122,10 @@ export async function settleShiftReturnTx(
   // قيد CASH_HANDOVER واحد (نقلٌ بين دلوَين، revenue/cost=0).
   await postEntry(tx, {
     entryType: "CASH_HANDOVER",
+    postingIntent: createPostingIntent("CASH_HANDOVER_TO_TREASURY", "CASH_HANDOVER", [
+      debitLine("TREASURY_CASH", amount),
+      creditLine("CASH", amount),
+    ]),
     branchId,
     receiptId: outReceiptId,
     amount,

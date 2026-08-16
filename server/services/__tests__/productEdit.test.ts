@@ -107,13 +107,13 @@ describe("getProductForVariantEdit — القراءة", () => {
 });
 
 describe("updateProductWithVariants — الكتابة", () => {
-  it("تحديث متغيّر موجود: يغيّر الاسم/السعر/التكلفة في نفس الصفّ (لا صفّاً جديداً)", async () => {
+  it("تحديث متغيّر موجود: يغيّر الاسم/السعر في نفس الصفّ ويصون التكلفة ذات الرصيد", async () => {
     const r = await updateProductWithVariants(
       {
         productId: 1,
         name: "دفتر ١٠٠ ورقة (مُحدَّث)",
         unitTemplate: baseTemplate(),
-        variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
       },
       actor,
     );
@@ -121,7 +121,7 @@ describe("updateProductWithVariants — الكتابة", () => {
 
     const rows = await db().select().from(s.productVariants).where(eq(s.productVariants.productId, 1));
     expect(rows).toHaveLength(1);
-    expect(rows[0].costPrice).toBe("550.00");
+    expect(rows[0].costPrice).toBe("500.00");
     const prod = (await db().select().from(s.products).where(eq(s.products.id, 1)))[0];
     expect(prod.name).toBe("دفتر ١٠٠ ورقة (مُحدَّث)");
   });
@@ -149,7 +149,7 @@ describe("updateProductWithVariants — الكتابة", () => {
 
   it("#2: إبقاء الأساس نفسه (قطعة) ⇒ مسموح (لا تغيير هويّة)", async () => {
     const r = await updateProductWithVariants(
-      { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "550", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      { productId: 1, name: "دفتر", unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
       actor,
     );
     expect(r.added).toBe(0); // الأساس ما زال «قطعة» فلا يُفعَّل الحارس
@@ -250,7 +250,7 @@ describe("updateProductWithVariants — الكتابة", () => {
           {
             id: 1,
             sku: "NB-100",
-            costPrice: "550",
+            costPrice: "500",
             units: [
               { id: 1, unitName: "علبة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL" as const, price: "1000.00" }] },
               { id: 2, unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },

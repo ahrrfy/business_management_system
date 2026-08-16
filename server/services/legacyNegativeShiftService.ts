@@ -11,6 +11,11 @@ import {
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "./accounting/postingEngine";
+import {
   assertCashOutAvailable,
   assertTreasuryOutException,
   computeDrawerCashBalance,
@@ -24,7 +29,9 @@ import { withTx, type Actor } from "./tx";
  * لحظة تفعيل حارس الرصيد غير السالب على الإنتاج. لا يجوز استعمال مسار التصحيح
  * الاستثنائي لوردية فُتحت بعده؛ أي عجز جديد يجب إصلاح مستنده من وحدته الأصلية.
  */
-export const LEGACY_NEGATIVE_SHIFT_CUTOFF = new Date("2026-08-15T15:43:48.000Z");
+export const LEGACY_NEGATIVE_SHIFT_CUTOFF = new Date(
+  "2026-08-15T15:43:48.000Z",
+);
 
 export interface LegacyNegativeShiftItem {
   shiftId: number;
@@ -126,7 +133,10 @@ function normalizedInput(item: LegacyNegativeShiftItem) {
   }
   const clientRequestId = item.clientRequestId.trim();
   if (!clientRequestId || clientRequestId.length > 64) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح الطلب غير صالح" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "مفتاح الطلب غير صالح",
+    });
   }
   return {
     ...item,
@@ -141,7 +151,8 @@ function parseMetadata(value: string | null): CorrectionMetadata | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as Partial<CorrectionMetadata>;
-    return parsed.kind === "LEGACY_NEGATIVE_SHIFT_REMEDIATION" && parsed.version === 1
+    return parsed.kind === "LEGACY_NEGATIVE_SHIFT_REMEDIATION" &&
+      parsed.version === 1
       ? (parsed as CorrectionMetadata)
       : null;
   } catch {
@@ -156,7 +167,10 @@ async function loadCommittedReplay(
 ): Promise<LegacyNegativeShiftResult | null> {
   const key = dedupeKey(item);
   const [entry] = await tx
-    .select({ receiptId: accountingEntries.receiptId, dedupeKey: accountingEntries.dedupeKey })
+    .select({
+      receiptId: accountingEntries.receiptId,
+      dedupeKey: accountingEntries.dedupeKey,
+    })
     .from(accountingEntries)
     .where(eq(accountingEntries.dedupeKey, key))
     .limit(1);
@@ -214,7 +228,10 @@ async function loadCommittedReplay(
       sh,
       money(metadata.appliedAmount),
     );
-    if (!replaySource || replaySource.fingerprint !== metadata.sourceFingerprint) {
+    if (
+      !replaySource ||
+      replaySource.fingerprint !== metadata.sourceFingerprint
+    ) {
       throw new TRPCError({
         code: "CONFLICT",
         message: `وردية #${item.shiftId}: تغيّر سند المصدر بعد المعالجة`,
@@ -244,7 +261,8 @@ async function loadCommittedReplay(
   if (
     !drawerReceipt ||
     drawerReceipt.signatureHash !== metadata.payloadHash ||
-    parseMetadata(drawerReceipt.internalNote)?.payloadHash !== metadata.payloadHash
+    parseMetadata(drawerReceipt.internalNote)?.payloadHash !==
+      metadata.payloadHash
   ) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -293,7 +311,8 @@ async function validateSourceReceipt(
     source.approvalStatus !== "APPROVED" ||
     !source.referenceNumber?.startsWith("CD-") ||
     Number(source.createdBy) !== Number(sh.userId) ||
-    new Date(source.createdAt).getTime() >= LEGACY_NEGATIVE_SHIFT_CUTOFF.getTime() ||
+    new Date(source.createdAt).getTime() >=
+      LEGACY_NEGATIVE_SHIFT_CUTOFF.getTime() ||
     money(source.amount).lt(deficit)
   ) {
     throw new TRPCError({
@@ -358,17 +377,28 @@ export async function remediateAndCloseLegacyNegativeShifts(
   actor: LegacyNegativeShiftActor,
 ) {
   if (rawItems.length === 0 || rawItems.length > 20) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "عدد الورديات المطلوب معالجتها غير صالح" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "عدد الورديات المطلوب معالجتها غير صالح",
+    });
   }
-  const items = rawItems.map(normalizedInput).sort((a, b) => a.shiftId - b.shiftId);
+  const items = rawItems
+    .map(normalizedInput)
+    .sort((a, b) => a.shiftId - b.shiftId);
   if (new Set(items.map((item) => item.shiftId)).size !== items.length) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يجوز تكرار الوردية في طلب المعالجة" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يجوز تكرار الوردية في طلب المعالجة",
+    });
   }
   const sourceIds = items
     .map((item) => item.sourceTreasuryReceiptId)
     .filter((id): id is number => id != null);
   if (new Set(sourceIds).size !== sourceIds.length) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يجوز استعمال إيصال المصدر لأكثر من وردية" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يجوز استعمال إيصال المصدر لأكثر من وردية",
+    });
   }
 
   return withTx(async (tx) => {
@@ -381,21 +411,39 @@ export async function remediateAndCloseLegacyNegativeShifts(
         .where(eq(shifts.id, item.shiftId))
         .for("update")
         .limit(1);
-      if (!sh) throw new TRPCError({ code: "NOT_FOUND", message: `الوردية #${item.shiftId} غير موجودة` });
+      if (!sh)
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: `الوردية #${item.shiftId} غير موجودة`,
+        });
       lockedShifts.push(sh);
     }
-    const branchIds = Array.from(new Set(lockedShifts.map((sh) => Number(sh.branchId)))).sort((a, b) => a - b);
+    const branchIds = Array.from(
+      new Set(lockedShifts.map((sh) => Number(sh.branchId))),
+    ).sort((a, b) => a - b);
     for (const branchId of branchIds) {
-      await lockCashSourceForUpdate(tx, { branchId, cashBucket: "TREASURY", shiftId: null });
+      await lockCashSourceForUpdate(tx, {
+        branchId,
+        cashBucket: "TREASURY",
+        shiftId: null,
+      });
     }
     const [owner] = await tx
-      .select({ id: users.id, name: users.name, isOwner: users.isOwner, isActive: users.isActive })
+      .select({
+        id: users.id,
+        name: users.name,
+        isOwner: users.isOwner,
+        isActive: users.isActive,
+      })
       .from(users)
       .where(eq(users.id, actor.userId))
       .for("share")
       .limit(1);
     if (!owner?.isOwner || !owner.isActive) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "هذه المعالجة محصورة بحساب مالك نشط" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "هذه المعالجة محصورة بحساب مالك نشط",
+      });
     }
 
     const pending: Array<{
@@ -417,18 +465,28 @@ export async function remediateAndCloseLegacyNegativeShifts(
       if (sh.status !== "OPEN") {
         const replay = await loadCommittedReplay(tx, item, sh);
         if (!replay) {
-          throw new TRPCError({ code: "CONFLICT", message: `الوردية #${item.shiftId} مغلقة وليست معالجة مطابقة` });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `الوردية #${item.shiftId} مغلقة وليست معالجة مطابقة`,
+          });
         }
         results.push(replay);
         continue;
       }
-      if (new Date(sh.openedAt).getTime() >= LEGACY_NEGATIVE_SHIFT_CUTOFF.getTime()) {
+      if (
+        new Date(sh.openedAt).getTime() >=
+        LEGACY_NEGATIVE_SHIFT_CUTOFF.getTime()
+      ) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: `الوردية #${item.shiftId} ليست ضمن الورديات التاريخية السابقة للحارس`,
         });
       }
-      const expected = await computeDrawerCashBalance(tx, item.shiftId, sh.openingBalance);
+      const expected = await computeDrawerCashBalance(
+        tx,
+        item.shiftId,
+        sh.openingBalance,
+      );
       if (!expected.isNegative() || !expected.eq(item.expectedCash)) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -452,10 +510,15 @@ export async function remediateAndCloseLegacyNegativeShifts(
     const fundingByBranch = new Map<number, ReturnType<typeof money>>();
     for (const row of pending) {
       const branchId = Number(row.sh.branchId);
-      fundingByBranch.set(branchId, (fundingByBranch.get(branchId) ?? money(0)).plus(row.deficit));
+      fundingByBranch.set(
+        branchId,
+        (fundingByBranch.get(branchId) ?? money(0)).plus(row.deficit),
+      );
     }
     const treasury = [];
-    for (const [branchId, amount] of Array.from(fundingByBranch.entries()).sort(([a], [b]) => a - b)) {
+    for (const [branchId, amount] of Array.from(fundingByBranch.entries()).sort(
+      ([a], [b]) => a - b,
+    )) {
       assertTreasuryOutException("LEGACY_SHIFT_REMEDIATION_INTERNAL");
       const availability = await assertCashOutAvailable(tx, {
         branchId,
@@ -534,8 +597,19 @@ export async function remediateAndCloseLegacyNegativeShifts(
         createdAt: now,
       });
       const drawerInReceiptId = extractInsertId(inRes);
+      const postingSource = {
+        roleDebits: { CASH: deficit },
+        roleCredits: { TREASURY_CASH: deficit },
+      };
       await postEntry(tx, {
         entryType: "SHIFT_FLOAT_OUT",
+        postingIntent: createPostingIntent(
+          "SHIFT_FLOAT_FROM_TREASURY",
+          "SHIFT_FLOAT_OUT",
+          [debitLine("CASH", deficit), creditLine("TREASURY_CASH", deficit)],
+          postingSource,
+        ),
+        postingSourceComponents: postingSource,
         branchId: Number(sh.branchId),
         receiptId: treasuryOutReceiptId,
         amount: deficit,
@@ -545,7 +619,11 @@ export async function remediateAndCloseLegacyNegativeShifts(
         createdByNameSnapshot: owner.name ?? null,
       });
 
-      const finalExpected = await computeDrawerCashBalance(tx, item.shiftId, sh.openingBalance);
+      const finalExpected = await computeDrawerCashBalance(
+        tx,
+        item.shiftId,
+        sh.openingBalance,
+      );
       if (!finalExpected.isZero()) {
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
@@ -622,7 +700,10 @@ export async function remediateAndCloseLegacyNegativeShifts(
       items: results.sort((a, b) => Number(a.shiftId) - Number(b.shiftId)),
       treasury,
       totalFunding: toDbMoney(
-        results.reduce((sum, result) => sum.plus(result.fundingAmount), money(0)),
+        results.reduce(
+          (sum, result) => sum.plus(result.fundingAmount),
+          money(0),
+        ),
       ),
       cutoff: LEGACY_NEGATIVE_SHIFT_CUTOFF.toISOString(),
     };

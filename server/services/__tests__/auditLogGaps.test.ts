@@ -16,9 +16,16 @@ import { hashPassword } from "../../auth/password";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { appRouter } from "../../routers";
+import { lockPeriod } from "../periodLockService";
+import { withTx } from "../tx";
 
 const TABLES = [
   "auditLogs",
+  "monthCloseCertificateEvidence",
+  "monthCloseEvents",
+  "monthCloseCertificates",
+  "monthCloseSequence",
+  "monthCloseRequests",
   "financialPeriods",
   "accountingEntries",
   "receipts",
@@ -47,7 +54,9 @@ async function reset() {
 
 async function seedBase() {
   const d = db();
-  await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
+  await d
+    .insert(s.branches)
+    .values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values({
     id: 1,
     openId: "local_admin",
@@ -61,11 +70,17 @@ async function seedBase() {
 }
 
 function makeCtx(user: any) {
-  return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as any;
+  return {
+    req: { headers: {} },
+    res: { cookie() {}, clearCookie() {} },
+    user,
+  } as any;
 }
 
 async function admin() {
-  return (await db().select().from(s.users).where(eq(s.users.id, 1)).limit(1))[0];
+  return (
+    await db().select().from(s.users).where(eq(s.users.id, 1)).limit(1)
+  )[0];
 }
 
 async function lastAudit(action: string) {
@@ -97,7 +112,9 @@ describe("H5 — role.update يَلتقط oldValue/newValue لخريطة الص�
     // يَلتقطها بنفس الشكل — وهذا أَدقّ لأنّه يَحفظ NONE الصريحة لكل الوحدات لحظة الإنشاء).
     const createRow = await lastAudit("role.create");
     expect(createRow).toBeTruthy();
-    const created_new = createRow.newValue as { permissions?: Record<string, string> };
+    const created_new = createRow.newValue as {
+      permissions?: Record<string, string>;
+    };
     expect(created_new.permissions).toMatchObject({ reports: "READ" });
 
     // الآن update لتوسعة الصلاحية: reports: READ ⇒ FULL.
@@ -123,13 +140,22 @@ describe("H6 — catalog.updateProduct يَلتقط prices في oldValue/newValu
     // منتج بسيط بوحدة قطعة وسعر retail 10
     await d.insert(s.products).values({ id: 1, name: "قلم" });
     await d.insert(s.productVariants).values({
-      id: 1, productId: 1, sku: "PEN-1", costPrice: "5.00",
+      id: 1,
+      productId: 1,
+      sku: "PEN-1",
+      costPrice: "5.00",
     });
     await d.insert(s.productUnits).values({
-      id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true,
+      id: 1,
+      variantId: 1,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
     });
     await d.insert(s.productPrices).values({
-      productUnitId: 1, priceTier: "RETAIL", price: "10.00",
+      productUnitId: 1,
+      priceTier: "RETAIL",
+      price: "10.00",
     });
 
     const caller = appRouter.createCaller(makeCtx(await admin()));
@@ -156,10 +182,22 @@ describe("H6 — catalog.updateProduct يَلتقط prices في oldValue/newValu
     const row = await lastAudit("product.update");
     expect(row).toBeTruthy();
 
-    const oldV = row.oldValue as { variants: Array<{ units: Array<{ prices: Array<{ priceTier: string; price: string }> }> }> };
-    const newV = row.newValue as { variants: Array<{ units: Array<{ prices: Array<{ priceTier: string; price: string }> }> }> };
-    expect(oldV.variants[0].units[0].prices).toEqual([{ priceTier: "RETAIL", price: "10.00" }]);
-    expect(newV.variants[0].units[0].prices).toEqual([{ priceTier: "RETAIL", price: "7.00" }]);
+    const oldV = row.oldValue as {
+      variants: Array<{
+        units: Array<{ prices: Array<{ priceTier: string; price: string }> }>;
+      }>;
+    };
+    const newV = row.newValue as {
+      variants: Array<{
+        units: Array<{ prices: Array<{ priceTier: string; price: string }> }>;
+      }>;
+    };
+    expect(oldV.variants[0].units[0].prices).toEqual([
+      { priceTier: "RETAIL", price: "10.00" },
+    ]);
+    expect(newV.variants[0].units[0].prices).toEqual([
+      { priceTier: "RETAIL", price: "7.00" },
+    ]);
   });
 });
 
@@ -168,8 +206,13 @@ describe("user.update — oldValue + permissionsOverride", () => {
   it("ترقية دور + منح override تَتركان أَثَرَ قبل/بعد", async () => {
     const d = db();
     await d.insert(s.users).values({
-      id: 5, openId: "local_u5", name: "Old Name", email: "u5@t.test",
-      role: "cashier", loginMethod: "local", branchId: 1,
+      id: 5,
+      openId: "local_u5",
+      name: "Old Name",
+      email: "u5@t.test",
+      role: "cashier",
+      loginMethod: "local",
+      branchId: 1,
     });
 
     const caller = appRouter.createCaller(makeCtx(await admin()));
@@ -181,8 +224,16 @@ describe("user.update — oldValue + permissionsOverride", () => {
     });
     const row = await lastAudit("user.update");
     expect(row).toBeTruthy();
-    const oldV = row.oldValue as { name?: string; role?: string; permissionsOverride?: unknown };
-    const newV = row.newValue as { name?: string; role?: string; permissionsOverride?: unknown };
+    const oldV = row.oldValue as {
+      name?: string;
+      role?: string;
+      permissionsOverride?: unknown;
+    };
+    const newV = row.newValue as {
+      name?: string;
+      role?: string;
+      permissionsOverride?: unknown;
+    };
     expect(oldV.name).toBe("Old Name");
     expect(oldV.role).toBe("cashier");
     expect(oldV.permissionsOverride).toBeNull();
@@ -196,8 +247,30 @@ describe("user.update — oldValue + permissionsOverride", () => {
 describe("period.unlock — يَلتقط cutoffDate المُفتَك", () => {
   it("سجلٌّ يَربط الفتح بتاريخ القفل (لا «unlocked: true» مجرّد)", async () => {
     const caller = appRouter.createCaller(makeCtx(await admin()));
-    await caller.periodLock.lock({ cutoffDate: "2026-03-31", notes: "Q1" });
+    // لا API لقفلٍ مباشر بعد Sh5: نهيّئ الحالة داخلياً كي يظلّ هذا الاختبار مختصاً بعقد unlock/audit.
+    const locked = await withTx((tx) =>
+      lockPeriod(tx, {
+        cutoffDate: "2026-03-31",
+        notes: "Q1",
+        lockedBy: 1,
+        closeMonth: "2026-03",
+        closeRevision: 1,
+      }),
+    );
+    await db().update(s.monthCloseSequence).set({
+      status: "READY",
+      sequenceStartMonth: "2026-03",
+      activeThroughMonth: "2026-03",
+      nextRequiredMonth: "2026-04",
+      activePeriodId: Number(locked.id),
+      version: 1,
+      bootstrappedAt: new Date("2026-04-01T00:00:00.000Z"),
+      bootstrappedBy: 1,
+      bootstrapReason: "تهيئة اختبار أثر إعادة فتح الفترة",
+      bootstrapReference: "AUDIT-UNLOCK-TEST",
+    }).where(eq(s.monthCloseSequence.id, 1));
     await caller.periodLock.unlock({
+      expectedPeriodId: Number(locked.id),
       reason: "تصحيح تدقيقي موثق للاختبار",
       password: "Admin@12345",
     });
@@ -218,17 +291,28 @@ describe("shift.close — يَلتقط expectedCash/variance/handover", () => {
     const d = db();
     // كاشير مع وردية مفتوحة بـopeningBalance=0
     await d.insert(s.users).values({
-      id: 9, openId: "local_c9", name: "كاشير", email: "c9@t.test",
-      role: "cashier", loginMethod: "local", branchId: 1,
+      id: 9,
+      openId: "local_c9",
+      name: "كاشير",
+      email: "c9@t.test",
+      role: "cashier",
+      loginMethod: "local",
+      branchId: 1,
     });
     const sh = await d.insert(s.shifts).values({
-      userId: 9, branchId: 1, status: "OPEN",
-      openedAt: new Date(), openGuard: "9:1", openingBalance: "100.00",
+      userId: 9,
+      branchId: 1,
+      status: "OPEN",
+      openedAt: new Date(),
+      openGuard: "9:1",
+      openingBalance: "100.00",
     });
     const shiftId = extractInsertId(sh);
     expect(shiftId).toBeGreaterThan(0);
 
-    const cashier = (await db().select().from(s.users).where(eq(s.users.id, 9)).limit(1))[0];
+    const cashier = (
+      await db().select().from(s.users).where(eq(s.users.id, 9)).limit(1)
+    )[0];
     const caller = appRouter.createCaller(makeCtx(cashier));
     await caller.shifts.close({ shiftId, countedCash: "100.00" });
     const row = await lastAudit("shift.close");

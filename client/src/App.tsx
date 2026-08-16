@@ -11,7 +11,7 @@
 // حَدّ Suspense واحد حَول `Switch` (لا حَول كل Route) ⇒ تَنقّل المَسارات يُظهر fallback
 // مَرّة واحدة فَقط أثناء جَلب chunk الوِجهة، والـAppLayout (الشَريط الجانبي/الترويسة) يَبقى
 // مَرسوماً. fallback نَفس نَصّ `Protected` ⇒ تَتابع بصري سَلِس.
-import { Suspense, useCallback, useEffect } from "react";
+import { Suspense, useCallback, useEffect, type ReactNode } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OfflineBootGate, OnlineGate } from "@/components/offline/OfflineGate";
@@ -69,6 +69,7 @@ const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
+const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
@@ -185,6 +186,13 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 function NotFound() {
   return <div className="p-10 text-center text-muted-foreground">404 — الصفحة غير موجودة</div>;
+}
+
+/** مرآة واجهة لـownerProcedure: اسم الدور admin وحده لا يمنح الاطلاع على رواتب الشركة. */
+function RequireOwner({ children }: { children: ReactNode }) {
+  const me = trpc.auth.me.useQuery();
+  if (me.isLoading) return <RouteFallback />;
+  return me.data?.isOwner === true ? <>{children}</> : <Redirect to="/reports" />;
 }
 
 /** هل نحن على الدومين العام (متجر/وظائف)؟ — السياسة كاملةً في `@/lib/siteHosts`. */
@@ -304,6 +312,8 @@ export default function App() {
       <Route path="/purchases"><Shell><PurchasesHub /></Shell></Route>
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>
       <Route path="/purchases/:id/receive"><Shell><PurchaseReceive /></Shell></Route>
+      {/* بعد /purchases/new و/:id/receive عمداً: مسارٌ عامّ لا يبتلع الأخصّ منه. */}
+      <Route path="/purchases/:id"><Shell><PurchaseOrderDetail /></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
       <Route path="/stocktakes/new"><Shell><StocktakeNew /></Shell></Route>
@@ -425,7 +435,7 @@ export default function App() {
           فتُبوَّب بوحدة hr كي يفتحها مَن مُنح الموارد البشرية لا مَن مُنح التقارير (مراجعة Codex).
           قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة
           الخادم التي بلا قائمة أدوار. */}
-      <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><PayrollReport /></RequireRole></Shell></Route>
+      <Route path="/reports/payroll"><Shell><RequireOwner><PayrollReport /></RequireOwner></Shell></Route>
       <Route path="/reports/attendance-monthly"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><MonthlyAttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
@@ -464,7 +474,7 @@ export default function App() {
       <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
       <Route path="/audit"><Redirect to="/settings?tab=audit" /></Route>
-      <Route path="/closing"><Shell><RequireRole roles={["admin","manager"]}><ClosingHub /></RequireRole></Shell></Route>
+      <Route path="/closing"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
       <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>
       <Route path="/credit-approvals"><Redirect to="/closing?tab=credit" /></Route>
       <Route path="/year-end"><Redirect to="/closing?tab=yearend" /></Route>

@@ -5,6 +5,7 @@ import {
   branchStock,
   customers,
   deliveryParties,
+  doubleEntrySettings,
   inventoryMovements,
   invoices,
   journalEntries,
@@ -14,8 +15,12 @@ import {
   suppliers,
 } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
-import { cashRoleFor } from "./accounting/shadowHook";
-import { postingLinesFor } from "./accounting/postingEngine";
+import {
+  ACCOUNT_ROLES,
+  ALL_POSTING_PROFILES,
+  verifyPostingIntentEvidence,
+  type JournalLine,
+} from "./accounting/postingEngine";
 import { money, round2 } from "./money";
 import { entryNotHoldReceiptCond } from "./reception/holdReceipts";
 
@@ -49,16 +54,23 @@ export interface DoubleEntryReconciliation {
   sourceEntryCount: number;
   journalEntryCount: number;
   postedCount: number;
+  memoCount: number;
   gapCount: number;
   missingCount: number;
   extraCount: number;
   /** رأس يومية مرتبط بالمصدر لكنه منسوب إلى فرع أو تاريخ قيد مختلف. */
   scopeMismatchCount: number;
   unreconstructableCount: number;
+  /** مصادر أمكن بناء نيتها لكن يوميتها لا تطابق الأسطر/الحالة/profile حرفياً. */
+  sourceMismatchCount: number;
   /** مجموع القيم المطلقة لانحراف الأدوار. */
   drift: string;
   /** اختلال مجموع اليومية نفسها؛ دفاعٌ ثانٍ عن assertBalanced. */
   journalImbalance: string;
+  /** عدد اليوميات التي لا يتساوى مدينها ودائنها؛ لا يسمح الإلغاء بين يوميتين بإخفائه. */
+  imbalancedJournalCount: number;
+  observedProfiles: string[];
+  unobservedProfiles: string[];
   roles: DoubleEntryRoleReconciliation[];
   ok: boolean;
 }
@@ -71,8 +83,6 @@ export interface ReconcileDoubleEntryInput {
 }
 
 type QueryExecutor = NonNullable<ReturnType<typeof getDb>> | Tx;
-
-const CASH_BUCKET_ENTRY_TYPES = new Set(["PAYMENT_IN", "PAYMENT_OUT"]);
 
 function monthDates(month: string): { from: Date; to: Date; fromYmd: string; toYmd: string } {
   const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
@@ -97,6 +107,50 @@ function addNet(target: Map<string, ReturnType<typeof money>>, role: string, deb
   target.set(role, (target.get(role) ?? money(0)).plus(delta));
 }
 
+const journalRoleSet: ReadonlySet<string> = new Set(ACCOUNT_ROLES);
+
+/** Canonical multiset: line splitting and debit/credit wash lines remain visible. */
+function canonicalLineMultiset(
+  lines: ReadonlyArray<{ role: string; debit: string; credit: string }>,
+): string | null {
+  const normalized: string[] = [];
+  for (const line of lines) {
+    const debit = money(line.debit);
+    const credit = money(line.credit);
+    if (
+      !journalRoleSet.has(line.role) ||
+      !debit.isFinite() ||
+      !credit.isFinite() ||
+      debit.isNegative() ||
+      credit.isNegative() ||
+      !debit.eq(round2(debit)) ||
+      !credit.eq(round2(credit)) ||
+      debit.isZero() === credit.isZero()
+    ) {
+      return null;
+    }
+    const isDebit = !debit.isZero();
+    normalized.push(
+      `${line.role}\u0000${isDebit ? "D" : "C"}\u0000${(
+        isDebit ? debit : credit
+      ).toFixed(2)}`,
+    );
+  }
+  return normalized.sort().join("\n");
+}
+
+function journalLinesOf(lines: readonly JournalLine[]): Array<{
+  role: string;
+  debit: string;
+  credit: string;
+}> {
+  return lines.map((line) => ({
+    role: line.role,
+    debit: String(line.debit),
+    credit: String(line.credit),
+  }));
+}
+
 async function runDoubleEntryReconciliation(
   executor: QueryExecutor | null,
   input: {
@@ -111,13 +165,18 @@ async function runDoubleEntryReconciliation(
       sourceEntryCount: 0,
       journalEntryCount: 0,
       postedCount: 0,
+      memoCount: 0,
       gapCount: 0,
       missingCount: 0,
       extraCount: 0,
       scopeMismatchCount: 0,
       unreconstructableCount: 0,
+      sourceMismatchCount: 0,
       drift: "0.00",
       journalImbalance: "0.00",
+      imbalancedJournalCount: 0,
+      observedProfiles: [],
+      unobservedProfiles: [...ALL_POSTING_PROFILES],
       roles: [],
       ok: true,
     };
@@ -131,14 +190,14 @@ async function runDoubleEntryReconciliation(
       entryType: accountingEntries.entryType,
       revenue: accountingEntries.revenue,
       cost: accountingEntries.cost,
+      profit: accountingEntries.profit,
       amount: accountingEntries.amount,
       taxAmount: accountingEntries.taxAmount,
-      customerId: accountingEntries.customerId,
-      supplierId: accountingEntries.supplierId,
-      paymentMethod: receipts.paymentMethod,
+      postingProfile: accountingEntries.postingProfile,
+      postingIntentJson: accountingEntries.postingIntentJson,
+      postingIntentHash: accountingEntries.postingIntentHash,
     })
     .from(accountingEntries)
-    .leftJoin(receipts, eq(accountingEntries.receiptId, receipts.id))
     .where(input.sourceWhere);
 
   const heads = await executor
@@ -148,60 +207,135 @@ async function runDoubleEntryReconciliation(
       branchId: journalEntries.branchId,
       entryDate: journalEntries.entryDate,
       status: journalEntries.status,
+      postingProfile: journalEntries.postingProfile,
     })
     .from(journalEntries)
     .where(input.journalWhere);
 
   const actualLines = await executor
     .select({
+      journalId: journalLines.journalId,
       role: journalLines.role,
       debit: journalLines.debit,
       credit: journalLines.credit,
     })
     .from(journalLines)
     .innerJoin(journalEntries, eq(journalLines.journalId, journalEntries.id))
-    .where(and(input.journalWhere, eq(journalEntries.status, "POSTED")));
+    .where(input.journalWhere);
 
   const expectedByRole = new Map<string, ReturnType<typeof money>>();
+  const headBySourceId = new Map(
+    heads
+      .filter((head) => head.entryId != null)
+      .map((head) => [Number(head.entryId), head]),
+  );
+  const headByJournalId = new Map(
+    heads.map((head) => [Number(head.id), head]),
+  );
+  const actualLinesByJournal = new Map<
+    number,
+    Array<{ role: string; debit: string; credit: string }>
+  >();
+  for (const line of actualLines) {
+    const journalId = Number(line.journalId);
+    const bucket = actualLinesByJournal.get(journalId) ?? [];
+    bucket.push({
+      role: line.role,
+      debit: String(line.debit ?? "0"),
+      credit: String(line.credit ?? "0"),
+    });
+    actualLinesByJournal.set(journalId, bucket);
+  }
   let unreconstructableCount = 0;
+  let sourceMismatchCount = 0;
+  const observedProfiles = new Set<string>();
   for (const row of sourceRows) {
-    try {
-      let cashRole: "CASH" | "CARD_BANK" | undefined;
-      if (CASH_BUCKET_ENTRY_TYPES.has(row.entryType)) {
-        const resolved = cashRoleFor(row.paymentMethod);
-        if (resolved == null) throw new Error("دلو النقد غير قابل لإعادة البناء");
-        cashRole = resolved;
+    const head = headBySourceId.get(Number(row.id));
+
+    // PostingIntent الجديد لا يمكن إعادة اشتقاق variant الخاص به من accountingEntries؛
+    // تحققُه المستقل يكون عند الكتابة + مطابقة الأرصدة التشغيلية. هنا نحافظ على مقارنة
+    // legacy فقط، وننسخ صافي أسطر intent إلى جانب expected كي لا نخلق drift زائفاً.
+    if (row.postingProfile || row.postingIntentJson || row.postingIntentHash) {
+      try {
+        const intent = verifyPostingIntentEvidence({
+          expectedEntryType: row.entryType,
+          postingProfile: row.postingProfile,
+          postingIntentJson: row.postingIntentJson,
+          postingIntentHash: row.postingIntentHash,
+          source: {
+            amount: String(row.amount ?? "0"),
+            revenue: String(row.revenue ?? "0"),
+            cost: String(row.cost ?? "0"),
+            profit: String(row.profit ?? "0"),
+            taxAmount: String(row.taxAmount ?? "0"),
+          },
+        });
+        const expectedLines = [...intent.lines];
+        observedProfiles.add(intent.profile);
+        for (const line of expectedLines) {
+          addNet(
+            expectedByRole,
+            line.role,
+            String(line.debit),
+            String(line.credit),
+          );
+        }
+        if (head) {
+          const actualForHead = actualLinesByJournal.get(Number(head.id)) ?? [];
+          if (
+            head.status !== (expectedLines.length === 0 ? "MEMO" : "POSTED") ||
+            head.postingProfile !== intent.profile ||
+            canonicalLineMultiset(journalLinesOf(expectedLines)) !==
+              canonicalLineMultiset(actualForHead)
+          ) {
+            sourceMismatchCount += 1;
+          }
+        }
+      } catch {
+        unreconstructableCount += 1;
       }
-      const party = row.customerId != null
-        ? "CUSTOMER"
-        : row.supplierId != null
-          ? "SUPPLIER"
-          : null;
-      const lines = postingLinesFor({
-        entryType: row.entryType,
-        revenue: String(row.revenue ?? "0"),
-        cost: String(row.cost ?? "0"),
-        amount: String(row.amount ?? "0"),
-        taxAmount: String(row.taxAmount ?? "0"),
-        party,
-        cashRole,
-      });
-      for (const line of lines) addNet(expectedByRole, line.role, line.debit, line.credit);
-    } catch {
-      unreconstructableCount += 1;
+      continue;
     }
+    // كل مصدر داخل الدورة الحالية يجب أن يحمل دليلاً canonical. الاشتقاق
+    // القديم لا يُقبل بوابةً بديلة بعد القطع ولو كان نوعه من الخرائط الست.
+    unreconstructableCount += 1;
   }
 
   const actualByRole = new Map<string, ReturnType<typeof money>>();
-  let totalDebit = money(0);
-  let totalCredit = money(0);
   for (const line of actualLines) {
+    if (headByJournalId.get(Number(line.journalId))?.status !== "POSTED") {
+      continue;
+    }
     const debit = String(line.debit ?? "0");
     const credit = String(line.credit ?? "0");
     addNet(actualByRole, line.role, debit, credit);
-    totalDebit = totalDebit.plus(money(debit));
-    totalCredit = totalCredit.plus(money(credit));
   }
+
+  let imbalancedJournalCount = 0;
+  let journalImbalance = money(0);
+  for (const head of heads) {
+    const lines = actualLinesByJournal.get(Number(head.id)) ?? [];
+    if (head.status !== "POSTED") {
+      if (lines.length > 0) imbalancedJournalCount += 1;
+      continue;
+    }
+    if (lines.length === 0) {
+      imbalancedJournalCount += 1;
+      continue;
+    }
+    let debit = money(0);
+    let credit = money(0);
+    for (const line of lines) {
+      debit = debit.plus(money(line.debit));
+      credit = credit.plus(money(line.credit));
+    }
+    const difference = round2(debit.minus(credit).abs());
+    if (!difference.isZero()) {
+      imbalancedJournalCount += 1;
+      journalImbalance = journalImbalance.plus(difference);
+    }
+  }
+  journalImbalance = round2(journalImbalance);
 
   const roles = Array.from(new Set(Array.from(expectedByRole.keys()).concat(Array.from(actualByRole.keys()))))
     .sort()
@@ -231,27 +365,35 @@ async function runDoubleEntryReconciliation(
   const gapCount = heads.filter((row) => row.status === "UNMAPPED").length;
   const postedCount = heads.filter((row) => row.status === "POSTED").length;
   const drift = round2(roles.reduce((sum, row) => sum.plus(money(row.drift)), money(0)));
-  const journalImbalance = round2(totalDebit.minus(totalCredit).abs());
   const ok = gapCount === 0
     && missingCount === 0
     && extraCount === 0
     && scopeMismatchCount === 0
     && unreconstructableCount === 0
+    && sourceMismatchCount === 0
     && drift.isZero()
-    && journalImbalance.isZero();
+    && journalImbalance.isZero()
+    && imbalancedJournalCount === 0;
 
   return {
     scope: input.scope,
     sourceEntryCount: sourceRows.length,
     journalEntryCount: heads.length,
     postedCount,
+    memoCount: heads.filter((row) => row.status === "MEMO").length,
     gapCount,
     missingCount,
     extraCount,
     scopeMismatchCount,
     unreconstructableCount,
+    sourceMismatchCount,
     drift: drift.toFixed(2),
     journalImbalance: journalImbalance.toFixed(2),
+    imbalancedJournalCount,
+    observedProfiles: Array.from(observedProfiles).sort(),
+    unobservedProfiles: ALL_POSTING_PROFILES.filter(
+      (profile) => !observedProfiles.has(profile),
+    ),
     roles,
     ok,
   };
@@ -266,19 +408,38 @@ export async function reconcileDoubleEntry(
   input: ReconcileDoubleEntryInput,
   options?: { tx?: Tx },
 ): Promise<DoubleEntryReconciliation> {
+  const executor = options?.tx ?? getDb();
   const range = monthDates(input.month);
   const branchId = input.branchId ?? null;
+  const settings = executor
+    ? (
+        await executor
+          .select({
+            cycleId: doubleEntrySettings.shadowCycleId,
+          })
+          .from(doubleEntrySettings)
+          .where(eq(doubleEntrySettings.id, 1))
+          .limit(1)
+      )[0]
+    : undefined;
+  const activeCycle = settings?.cycleId ?? null;
+  const noCycle = sql`1 = 0`;
   const sourceWhere = and(
+    activeCycle
+      ? eq(accountingEntries.postingCycleId, activeCycle)
+      : noCycle,
     gte(accountingEntries.entryDate, range.from),
     lte(accountingEntries.entryDate, range.to),
     branchId == null ? undefined : eq(accountingEntries.branchId, branchId),
   ) as SQL;
   const journalWhere = and(
+    activeCycle ? eq(journalEntries.cycleId, activeCycle) : noCycle,
+    eq(journalEntries.sourceType, "ACCOUNTING_ENTRY"),
     gte(journalEntries.entryDate, range.from),
     lte(journalEntries.entryDate, range.to),
     branchId == null ? undefined : eq(journalEntries.branchId, branchId),
   ) as SQL;
-  return runDoubleEntryReconciliation(options?.tx ?? getDb(), {
+  return runDoubleEntryReconciliation(executor, {
     sourceWhere,
     journalWhere,
     scope: {
@@ -293,15 +454,18 @@ export async function reconcileDoubleEntry(
 
 /** نافذة المراقبة الفعلية للبوابة: createdAt منذ بدء SHADOW، فتستثني قيود اليوم السابقة للتفعيل. */
 export async function reconcileDoubleEntryShadowWindow(
-  input: { from: Date; to: Date },
+  input: { from: Date; to: Date; cycleId: string },
   options?: { tx?: Tx },
 ): Promise<DoubleEntryReconciliation> {
   return runDoubleEntryReconciliation(options?.tx ?? getDb(), {
     sourceWhere: and(
+      eq(accountingEntries.postingCycleId, input.cycleId),
       gte(accountingEntries.createdAt, input.from),
       lte(accountingEntries.createdAt, input.to),
     ) as SQL,
     journalWhere: and(
+      eq(journalEntries.cycleId, input.cycleId),
+      eq(journalEntries.sourceType, "ACCOUNTING_ENTRY"),
       gte(journalEntries.createdAt, input.from),
       lte(journalEntries.createdAt, input.to),
     ) as SQL,

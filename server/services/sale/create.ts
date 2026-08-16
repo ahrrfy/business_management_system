@@ -32,6 +32,7 @@ import {
 } from "../salesPromotionService";
 import { consumeCoupon, hashCouponCode, lockCouponForSale } from "../couponService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "../accounting/postingEngine";
 import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
@@ -40,8 +41,11 @@ import { type Actor, requireDb, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { flowNotify } from "../whatsapp";
 import { readOpeningWindowState } from "../openingModeService";
+import { classifyGiftPosting } from "./giftPosting";
+import { paymentAssetRole } from "./paymentPosting";
 import { userNameSnapshot } from "../userSnapshot";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 
 // قنوات الاستقبال/التنفيذ المشمولة بإعفاء الائتمان في «وضع الافتتاح» (قرار المالك ١٠/٨):
@@ -62,8 +66,19 @@ export async function createSaleInTx(
   actor: Actor,
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
+    const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
-    if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
+    if (input.payment) {
+      assertPosPaymentMethodEnabled(input.payment.method);
+      // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: هذه النواة تُنشئ إيصالها بنفسها (بند ١٢ أدناه)
+      // فلا يمرّ بحارس `sale/payment.ts`. كل مسارات البيع تصبّ هنا (الكاشير، المطبعة، تحويل
+      // عرض السعر، الحجز، أمر الشغل)، فوَضعُ الشرط هنا يغلق الباب على كلّها مرّةً واحدة بدل
+      // تكراره في كل مستدعٍ — والمرجع يأتي إمّا نصّاً من الموظّف أو من محاولةٍ مؤكَّدة
+      // (createConfirmedPosSaleInTx يحقن مرجع المحاولة في الحمولة قبل بلوغ هذه النقطة).
+      if (input.payment.method !== "CASH" && !(input.payment.reference ?? "").trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
+    }
     // This namespace is generated only by the trusted digital-card finalizer.  Check it
     // before idempotency lookup so a public POS request cannot replay an existing
     // digital invoice merely by guessing its sourceId.
@@ -76,6 +91,7 @@ export async function createSaleInTx(
     //    نمط processPayment/voucherService: نتحقّق من (branch, customer, payment.method, عدد الأسطر)
     //    قبل إرجاع الفاتورة القديمة، وإلا CONFLICT صريح يُظهر للمستخدم أن المفتاح يخصّ بيعاً مغايراً.
     if (input.clientRequestId) {
+      await checkIdempotency(tx, "sale.create", input.clientRequestId, requestFingerprint);
       const existing = await tx
         .select()
         .from(invoices)
@@ -991,8 +1007,86 @@ export async function createSaleInTx(
     }
 
     // 11. SALE ledger entry (revenue = net before tax + أجرة الشحن كإيراد بلا تكلفة).
-    const revenue = money(totals.subtotal).minus(money(totals.discountAmount)).plus(money(input.deliveryFee ?? "0"));
-    const cost = money(costTotal);
+    const byConsignor = new Map<number, { paid: ReturnType<typeof money>; gift: ReturnType<typeof money> }>();
+  let ownedInventoryCost = money(0);
+  let ownedGiftInventoryCost = money(0);
+  for (const c of computed) {
+      const share = round2(money(c.unitCost).times(c.baseQuantity));
+    const cId = consignByVariant.get(c.variantId);
+        if (cId != null) {
+      const current = byConsignor.get(cId) ?? {
+        paid: money(0),
+        gift: money(0),
+      };
+      if (c.isGift) current.gift = current.gift.plus(share);
+      else current.paid = current.paid.plus(share);
+      byConsignor.set(cId, current);
+    } else if (c.isGift) {
+      // هدية الخدمة تُستهلك مواد وصفتها فعلياً؛ لا مخزون للخدمة نفسها، لكن موادها أصلٌ خرج.
+      ownedGiftInventoryCost = ownedGiftInventoryCost.plus(share);
+    } else {
+      ownedInventoryCost = ownedInventoryCost.plus(share);
+    }
+  }
+  ownedInventoryCost = round2(ownedInventoryCost);
+  ownedGiftInventoryCost = round2(ownedGiftInventoryCost);
+
+  // 11. SALE ledger entry (revenue = net before tax + أجرة الشحن كإيراد بلا تكلفة).
+  const revenue = money(totals.subtotal)
+    .minus(money(totals.discountAmount))
+    .plus(money(input.deliveryFee ?? "0"));
+  // `invoices.costTotal` remains the complete analytical paid-line cost used by sales/job-cost
+  // reports. The SALE source field, however, is canonical ledger COGS and must equal only the
+  // owned inventory/materials actually credited below. Consignor COGS is disclosed by its
+  // PURCHASE_CONSIGNMENT entry, so it must not be duplicated here or represented as INVENTORY.
+  const analyticalInvoiceCost = money(costTotal);
+  const ledgerOwnedCogs = ownedInventoryCost;
+  const merchandiseRevenue = round2(revenue.minus(deliveryFeeD));
+  const revenueLines = computed.filter((c) => !c.isGift && money(c.total).gt(0));
+  const revenueBasis = revenueLines.reduce((sum, c) => sum.plus(money(c.total)), money(0));
+  const revenueByRole = new Map<AccountRole, ReturnType<typeof money>>();
+  const saleClasses = new Set<"DIGITAL" | "SERVICE" | "CONSIGNMENT" | "INVENTORY">();
+  let allocatedRevenue = money(0);
+  for (let index = 0; index < revenueLines.length; index++) {
+    const line = revenueLines[index]!;
+    const isDigital = variantById.get(line.variantId)?.productType === "DIGITAL_CARD";
+    const saleClass = isDigital ? "DIGITAL" : line.kind === "SERVICE" ? "SERVICE" : consignByVariant.has(line.variantId) ? "CONSIGNMENT" : "INVENTORY";
+    saleClasses.add(saleClass);
+    const role: AccountRole = input.sourceType === "WORKORDER" ? "SALES_FLEX" : isDigital ? "OTHER_REVENUE" : line.kind === "SERVICE" ? "SALES_PRINT" : "SALES_STATIONERY";
+    const lineRevenue = index === revenueLines.length - 1 ? round2(merchandiseRevenue.minus(allocatedRevenue)) : round2(merchandiseRevenue.times(money(line.total)).div(revenueBasis));
+    allocatedRevenue = allocatedRevenue.plus(lineRevenue);
+    revenueByRole.set(role, round2((revenueByRole.get(role) ?? money(0)).plus(lineRevenue)));
+  }
+  const saleProfile: PostingProfile = input.sourceType === "WORKORDER" ? "SALE_SERVICE_FLEX" : saleClasses.size > 1 ? "SALE_MIXED" : saleClasses.has("DIGITAL") ? "SALE_DIGITAL" : saleClasses.has("SERVICE") ? "SALE_SERVICE" : saleClasses.has("CONSIGNMENT") ? "SALE_CONSIGNMENT" : "SALE_INVENTORY";
+  const appliedCustomerDeposit = input.allowPreCollectedOverpay === true ? money(0) : preCollectedD;
+  const salePostingLines = [
+    ...(money(totals.total).isZero() ? [] : [debitLine("AR", money(totals.total))]),
+    ...Array.from(revenueByRole.entries())
+      .filter(([, amount]) => !amount.isZero())
+      .map(([role, amount]) => creditLine(role, amount)),
+    ...(deliveryFeeD.isZero() ? [] : [creditLine("DELIVERY_REVENUE", deliveryFeeD)]),
+    ...(money(totals.taxAmount).isZero() ? [] : [creditLine("TAX_PAYABLE", money(totals.taxAmount))]),
+    ...(ownedInventoryCost.isZero() ? [] : [debitLine("COGS", ownedInventoryCost), creditLine("INVENTORY", ownedInventoryCost)]),
+    ...(appliedCustomerDeposit.isZero() ? [] : [debitLine("OTHER_LIABILITY", appliedCustomerDeposit), creditLine("AR", appliedCustomerDeposit)]),
+  ];
+  const salePostingSource = {
+    roleDebits: { AR: money(totals.total), OTHER_LIABILITY: appliedCustomerDeposit, COGS: ownedInventoryCost },
+    roleCredits: {
+      AR: appliedCustomerDeposit,
+      SALES_STATIONERY: revenueByRole.get("SALES_STATIONERY") ?? money(0),
+      SALES_PRINT: revenueByRole.get("SALES_PRINT") ?? money(0),
+      SALES_FLEX: revenueByRole.get("SALES_FLEX") ?? money(0),
+      OTHER_REVENUE: revenueByRole.get("OTHER_REVENUE") ?? money(0),
+      DELIVERY_REVENUE: deliveryFeeD,
+      TAX_PAYABLE: money(totals.taxAmount),
+      INVENTORY: ownedInventoryCost,
+      WORK_IN_PROGRESS: money(0),
+    },
+  };
+  const salePostingIntent = salePostingLines.length ? createPostingIntent(saleProfile, "SALE", salePostingLines, salePostingSource) : null;
+  // فاتورة هدايا صِرفة لا تملك SALE مالياً؛ قيدها الوحيد GIFT_OUT أدناه. لا ننشئ
+  // SALE صفرياً بلا journal profile لأن ذلك ليس حدثاً مالياً في دفتر المبيعات.
+  if (salePostingIntent) {
     await postEntry(tx, {
       entryType: "SALE",
       dedupeKey: `SALE:${invoiceId}`, // حارس بنيوي: قيد SALE واحد لكل فاتورة
@@ -1000,52 +1094,60 @@ export async function createSaleInTx(
       invoiceId,
       customerId: input.customerId ?? null,
       revenue,
-      cost,
-      profit: revenue.minus(cost),
+      cost: ledgerOwnedCogs,
+      profit: revenue.minus(ledgerOwnedCogs),
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
+      notes: analyticalInvoiceCost.eq(ledgerOwnedCogs)
+        ? undefined
+        : `تكلفة تحليلية للفاتورة=${toDbMoney(analyticalInvoiceCost)}؛ COGS مملوك في قيد البيع=${toDbMoney(ledgerOwnedCogs)}؛ حصة الأمانة في قيود PURCHASE_CONSIGNMENT المستقلة`,
+      postingIntent: salePostingIntent,
+      postingSourceComponents: salePostingSource,
     });
+  }
 
-    // 11.ب هدايا الفاتورة (0149): قيدٌ واحدٌ لتكلفة كلّ البنود المُهداة — مصروف هدايا وترويج
-    // (إيراد=0، ربح=−التكلفة) مطابقٌ تماماً لقيد سند الهدية المستقلّ في `gifts/outbound.ts` فلا
-    // تنجرف القناتان. يحمل `invoiceId` للتتبّع (أيّ فاتورةٍ أهدت ماذا) ويبقى مع ذلك **خارج وعاء
-    // العمولة** لأنّ الوعاء يفلتر `entryType IN ('SALE','RETURN')` — فالبائع لا يُكافأ على إهداء
-    // ولا يُعاقَب به. `dedupeKey` حارسٌ بنيويّ: قيد هدايا واحد لكل فاتورة (نظير SALE:${invoiceId}).
-    if (giftCostD.gt(0)) {
-      await postEntry(tx, {
-        entryType: "GIFT_OUT",
-        dedupeKey: `GIFT:INV:${invoiceId}`,
-        branchId: input.branchId,
-        invoiceId,
-        customerId: input.customerId ?? null,
-        revenue: money(0),
-        cost: giftCostD,
-        profit: round2(money(0).minus(giftCostD)),
-        amount: giftCostD,
-        notes: "هدايا ضمن فاتورة بيع",
-      });
-    }
-
-    // 11.أ بضاعة الأمانة (ش٣): التقاط التزام المودِع لحظة البيع. طريقة الإجمالي — قيد SALE أعلاه لم يُمسّ
-    // (revenue كامل، الربح=الهامش لأن الحصة داخل unitCost). لكل مودِع: قيد PURCHASE **يتيم** بـinvoiceId
-    // (المميّز البنيوي PURCHASE∧invoiceId فارغ تاريخياً) بصفر أثر P&L (amount فقط) + رفع رصيده (AP). §٢-ب.
-    {
-      const byConsignor = new Map<number, ReturnType<typeof money>>();
-      for (const c of computed) {
-        const cId = consignByVariant.get(c.variantId);
-        if (cId == null) continue;
-        const share = money(c.unitCost).times(c.baseQuantity); // الحصة بوحدة الأساس (unitCost×baseQty).
-        byConsignor.set(cId, (byConsignor.get(cId) ?? money(0)).plus(share));
+  // 11.ب هدايا الفاتورة (0149): قيدٌ واحدٌ لتكلفة كلّ البنود المُهداة — مصروف هدايا وترويج
+  // (إيراد=0، ربح=−التكلفة) مطابقٌ تماماً لقيد سند الهدية المستقلّ في `gifts/outbound.ts` فلا
+  // تنجرف القناتان. يحمل `invoiceId` للتتبّع (أيّ فاتورةٍ أهدت ماذا) ويبقى مع ذلك **خارج وعاء
+  // العمولة** لأنّ الوعاء يفلتر `entryType IN ('SALE','RETURN')` — فالبائع لا يُكافأ على إهداء
+  // ولا يُعاقَب به. `dedupeKey` حارسٌ بنيويّ: قيد هدايا واحد لكل فاتورة (نظير SALE:${invoiceId}).
+  if (giftCostD.gt(0)) {
+    const giftPosting = classifyGiftPosting(giftCostD, ownedGiftInventoryCost, 1);
+    await postEntry(tx, {
+      entryType: "GIFT_OUT",
+      dedupeKey: `GIFT:INV:${invoiceId}`,
+      branchId: input.branchId,
+      invoiceId,
+      customerId: input.customerId ?? null,
+      revenue: money(0),
+      cost: giftCostD,
+      profit: round2(money(0).minus(giftCostD)),
+      amount: giftCostD,
+      notes: `هدايا ضمن فاتورة بيع؛ consignmentRemainder=${toDbMoney(giftPosting.consignmentRemainder)}`,
+      postingIntent: giftPosting.intent,
+      postingSourceComponents: giftPosting.sourceComponents,
+    });
       }
-      // ترتيب supplierId تصاعدياً — منع deadlock (مرآة ترتيب variantId في حركات المخزون).
-      for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
-        const amount = byConsignor.get(cId)!;
-        if (amount.lte(0)) continue;
+
+  // 11.أ بضاعة الأمانة (ش٣): التقاط التزام المودِع لحظة البيع. طريقة الإجمالي — قيد SALE أعلاه لم يُمسّ
+  // (revenue كامل، الربح=الهامش لأن الحصة داخل unitCost). لكل مودِع: قيد PURCHASE **يتيم** بـinvoiceId
+  // (المميّز البنيوي PURCHASE∧invoiceId فارغ تاريخياً) بصفر أثر P&L (amount فقط) + رفع رصيده (AP). §٢-ب.
+  {
+    // ترتيب supplierId تصاعدياً — منع deadlock (مرآة ترتيب variantId في حركات المخزون).
+    for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
+        const split = byConsignor.get(cId)!;
+      const paidShare = round2(split.paid);
+      const giftShare = round2(split.gift);
+      const amount = round2(paidShare.plus(giftShare));
+      if (amount.lte(0)) continue;
         await postEntry(tx, {
           entryType: "PURCHASE", supplierId: cId, invoiceId, branchId: input.branchId,
-          amount, revenue: money(0), cost: money(0), profit: money(0),
-          dedupeKey: `CONSIG:${invoiceId}:${cId}`, notes: "استحقاق أمانة",
-        });
+          amount, revenue: money(0), cost: paidShare, profit: paidShare.neg(),
+          dedupeKey: `CONSIG:${invoiceId}:${cId}`,
+          notes: `استحقاق أمانة؛ COGS مبسّط=${toDbMoney(paidShare)}؛ هدايا=${toDbMoney(giftShare)}`,
+        postingIntent: createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [...(paidShare.isZero() ? [] : [debitLine("COGS", paidShare)]), ...(giftShare.isZero() ? [] : [debitLine("GIFTS_PROMO", giftShare)]), creditLine("CONSIGNMENT_PAYABLE", amount)], { roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare }, roleCredits: { CONSIGNMENT_PAYABLE: amount } }),
+        postingSourceComponents: { roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare }, roleCredits: { CONSIGNMENT_PAYABLE: amount } },
+      });
         await adjustSupplierBalance(tx, cId, amount);
       }
     }
@@ -1064,7 +1166,8 @@ export async function createSaleInTx(
         profit: cashRoundingAdj,
         amount: cashRoundingAdj,
         notes: "تقريب نقدي IQD",
-      });
+      postingIntent: createPostingIntent("ADJUST_ROUNDING", "ADJUST", signedPostingLines("AR", "ROUNDING_DIFF", cashRoundingAdj)),
+    });
     }
 
     // 12. Payment + AR.
@@ -1083,9 +1186,15 @@ export async function createSaleInTx(
         paymentMethod: input.payment!.method,
         referenceNumber: input.payment!.reference?.trim() || null,
         status: "COMPLETED",
+        approvalStatus: "APPROVED",
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(rRes);
+      const paymentRole = paymentAssetRole(input.payment!.method, input.payment!.method === "CASH" ? "DRAWER" : null, "IN");
+      const paymentPostingSource = {
+        roleDebits: { [paymentRole]: newMoneyD },
+        roleCredits: { AR: newMoneyD },
+      };
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
@@ -1093,7 +1202,9 @@ export async function createSaleInTx(
         receiptId,
         customerId: input.customerId ?? null,
         amount: newMoneyD,
-      });
+      postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(paymentRole, newMoneyD), creditLine("AR", newMoneyD)], paymentPostingSource),
+      postingSourceComponents: paymentPostingSource,
+    });
     }
     // إيصالات المقبوض سلفاً المُمرَّرة صراحةً تُختم بالفاتورة فقط (append-only — نمط deliver.ts).
     for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
@@ -1104,6 +1215,9 @@ export async function createSaleInTx(
     }
     if (input.customerId) {
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
+    }
+    if (input.clientRequestId && requestFingerprint) {
+      await recordIdempotencyKey(tx, "sale.create", input.clientRequestId, invoiceId, requestFingerprint);
     }
 
     return {
@@ -1122,7 +1236,10 @@ export async function createSaleInTx(
 }
 
 export async function createSale(input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
-  const result = await withTx(async (tx) => createSaleInTx(tx, input, actor));
+  const result = await withTx(
+    async (tx) => createSaleInTx(tx, input, actor),
+    { gate: "FINANCIAL_WRITER" },
+  );
 
   // إشعار الشكر (T4.2، خلف مفتاح flowPurchaseThanks) — خارج معاملة البيع تماماً وبعد نجاحها فقط.
   // ⚠️ لا يمسّ ذرّية البيع أبداً: يعمل بعد الالتزام (commit) لا داخله، ومحمي بغلاف دفاعيّ هنا فوق

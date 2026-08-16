@@ -116,8 +116,10 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
@@ -1029,6 +1031,7 @@ private fun LoginForm(
     onVerify: (String) -> Unit,
 ) {
     val isTwoFactor = state.twoFactorTicket != null
+    val focusManager = LocalFocusManager.current
     val submitVerification = {
         val submittedCode = code
         onCodeChange("")
@@ -1072,6 +1075,7 @@ private fun LoginForm(
                         label = { Text("رمز الشركة") },
                         leadingIcon = { Icon(Icons.Rounded.BusinessCenter, null) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
                         singleLine = true,
                         shape = RoundedCornerShape(18.dp),
                     )
@@ -1083,6 +1087,7 @@ private fun LoginForm(
                     label = { Text("اسم المستخدم أو البريد") },
                     leadingIcon = { Icon(Icons.Rounded.Person, null) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
                     singleLine = true,
                     shape = RoundedCornerShape(18.dp),
                 )

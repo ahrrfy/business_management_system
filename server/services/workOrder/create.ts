@@ -1,33 +1,67 @@
 // إنشاء أمر شغل (RECEIVED) — لا يُستهلَك المخزون بعد؛ عربون مقبوض عند الإنشاء إن وُجد.
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   productVariants,
   receipts,
+  shifts,
   users,
   workOrderImages,
   workOrderMaterials,
   workOrders,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { assertTelecomCollectAllowed } from "../reception/telecom";
-import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { nextWorkOrderNumber } from "./helpers";
 import type { CreateWorkOrderInput } from "./types";
 import type { Tx } from "../../db";
+import { paymentAssetRole } from "../sale/paymentPosting";
+
+async function requireLockedReceptionShift(
+  tx: Tx,
+  actor: Actor,
+  branchId: number,
+  explicitShiftId: number | null,
+  label: string,
+): Promise<number> {
+  const conditions = [
+    eq(shifts.branchId, branchId),
+    eq(shifts.status, "OPEN"),
+    eq(shifts.shiftType, "RECEPTION"),
+  ];
+  if (explicitShiftId != null) conditions.push(eq(shifts.id, explicitShiftId));
+  else conditions.push(eq(shifts.userId, actor.userId));
+  const row = (
+    await tx
+      .select({ id: shifts.id })
+      .from(shifts)
+      .where(and(...conditions))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!row) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `افتح وردية استقبال في هذا الفرع قبل ${label}؛ لا يجوز تسجيل نقد DRAWER بلا وردية RECEPTION مقفلة`,
+    });
+  }
+  return Number(row.id);
+}
 
 /** Create a work order in RECEIVED status — stock is NOT consumed yet. */
 export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, actor: Actor) {
+    const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // الطريقة تغطّي عربون الأمر وأجرة التوصيل المقبوضة في الاستقبال؛ نغلقها
     // قبل idempotency وإنشاء الأمر حتى لا يبقى أثر تشغيلي من قبض مرفوض.
     if (input.paymentMethod != null) assertPosPaymentMethodEnabled(input.paymentMethod);
     // idempotency: إعادة طلب بنفس المفتاح ⇒ نُعيد الأمر الأول دون إنشاء/قبض عربون ثانٍ.
-    const replayId = await findIdempotentRefId(tx, "workOrder.create", input.clientRequestId);
+    const replayId = await checkIdempotency(tx, "workOrder.create", input.clientRequestId, requestFingerprint);
     if (replayId) {
       const ex = (
         await tx.select({ orderNumber: workOrders.orderNumber }).from(workOrders).where(eq(workOrders.id, replayId)).limit(1)
@@ -127,7 +161,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     });
     const workOrderId = extractInsertId(insRes);
     // سجّل مفتاح الـidempotency فوراً بعد إدراج الأمر — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قبض العربون.
-    if (input.clientRequestId) await recordIdempotencyKey(tx, "workOrder.create", input.clientRequestId, workOrderId);
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "workOrder.create", input.clientRequestId, workOrderId, requestFingerprint);
 
     // عربون مقبوض عند الإنشاء: نقدٌ حقيقي يدخل الصندوق ⇒ سجّله receipt(IN) بـshiftId + قيد PAYMENT_IN
     // (وإلا فهو نقد غير محتسَب في تسوية الوردية/الدفتر). يُربَط بالفاتورة عند التسليم.
@@ -156,10 +190,9 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
           reference: input.paymentReference,
         });
       }
-      const shiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
-      // عربون نقدي يدخل الدُرج ⇒ يلزم وردية مفتوحة لينعكس في تسوية الصندوق/Z-report (لا نقد «معلّق» بلا وردية).
-      if (depositMethod === "CASH" && shiftId == null)
-        throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض عربون نقدي" });
+      const shiftId = depositMethod === "CASH"
+        ? await requireLockedReceptionShift(tx, actor, input.branchId, basketShiftId, "قبض عربون نقدي")
+        : basketShiftId;
       const dRes = await tx.insert(receipts).values({
         branchId: input.branchId,
         shiftId,
@@ -172,6 +205,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         // كان NULL ⇒ يُستثنى من computeExpectedCash (cashBucket='DRAWER') ⇒ فائضٌ زائف عند إقفال وردية الاستقبال.
         cashBucket: depositMethod === "CASH" ? "DRAWER" : null,
         status: "COMPLETED",
+        approvalStatus: "APPROVED",
         createdBy: actor.userId,
       });
       const depositReceiptId = extractInsertId(dRes);
@@ -179,6 +213,11 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       // لم يعودوا يلتقطون بـ`.limit(1)` الملتبسة مع إيصال أجرة COUNTER.
       // (depositReceiptId يحمل إيصال الجزء الجديد N وحده؛ حصص P حقيقتها في orderPayments.)
       await tx.update(workOrders).set({ depositReceiptId }).where(eq(workOrders.id, workOrderId));
+      const depositAssetRole = paymentAssetRole(depositMethod, depositMethod === "CASH" ? "DRAWER" : null, "IN");
+      const depositPostingSource = {
+        roleDebits: { [depositAssetRole]: newDepositD },
+        roleCredits: { OTHER_LIABILITY: newDepositD },
+      };
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
@@ -187,7 +226,9 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         amount: newDepositD,
         notes: `[WO_DEPOSIT:${workOrderId}]`,
         paymentMethod: depositMethod, // دلو النقد للدفتر المزدوج (لا يُخزَّن)
-      });
+      postingIntent: createPostingIntent("PAYMENT_IN_OTHER", "PAYMENT_IN", [debitLine(depositAssetRole, newDepositD), creditLine("OTHER_LIABILITY", newDepositD)], depositPostingSource),
+      postingSourceComponents: depositPostingSource,
+    });
     }
 
     // ٥/٨ — أجرة توصيل قُبضت في الاستقبال (COUNTER): نقدٌ حقيقيّ يدخل الدرج لكنه **ليس بيعاً**.
@@ -202,10 +243,13 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       // (receptionCheckoutService) الذي يفعل ذلك أصلاً. وبهذا يسقط فحص TELECOM من جذره.
       const feeMethod = "CASH" as const;
       // ش٠ (V4): نفس درج السلة المُتحقَّق منه — لا ينشطر نقد سلةٍ واحدة على درجين.
-      const feeShiftId = basketShiftId ?? await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
-      if (feeMethod === "CASH" && feeShiftId == null) {
-        throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض أجرة توصيل نقداً" });
-      }
+      const feeShiftId = await requireLockedReceptionShift(
+        tx,
+        actor,
+        input.branchId,
+        basketShiftId,
+        "قبض أجرة توصيل نقداً",
+      );
       const feeRes = await tx.insert(receipts).values({
         branchId: input.branchId,
         shiftId: feeShiftId,
@@ -216,6 +260,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         referenceNumber: `DLV-FEE-WO-${workOrderId}`,
         cashBucket: feeMethod === "CASH" ? "DRAWER" : null,
         status: "COMPLETED",
+        approvalStatus: "APPROVED",
         partyType: "OTHER",
         description: `أجرة توصيل مقبوضة أمانةً للمندوب — طلب ${orderNumber}`,
         createdBy: actor.userId,
@@ -227,7 +272,15 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
         receiptId: extractInsertId(feeRes),
         amount: heldFeeD,
         notes: `أمانة أجرة توصيل — طلب ${orderNumber}`,
-      });
+      postingSourceComponents: {
+        roleDebits: { CASH: heldFeeD },
+        roleCredits: { COURIER_PAYABLE: heldFeeD },
+      },
+      postingIntent: createPostingIntent("DELIVERY_FEE_HELD_RECEIPT", "DELIVERY_FEE_HELD", [debitLine("CASH", heldFeeD), creditLine("COURIER_PAYABLE", heldFeeD)], {
+        roleDebits: { CASH: heldFeeD },
+        roleCredits: { COURIER_PAYABLE: heldFeeD },
+      }),
+    });
     }
 
     for (const m of input.materials ?? []) {

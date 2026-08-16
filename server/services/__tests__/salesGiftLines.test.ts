@@ -201,9 +201,8 @@ describe("مرتجع فاتورة فيها هدية", () => {
     const itemId = await giftItemId(sale.invoiceId);
     await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 2 }], restock: true }, actor);
 
-    const [ret] = await entryOf(sale.invoiceId, "RETURN");
-    expect(Number(ret.revenue)).toBe(0); // لم يُدفَع شيء ⇒ لا استرداد
-    expect(Number(ret.cost)).toBe(0); // تكلفة الهدية ليست في وعاء COGS فلا تُعكَس منه
+    const returns = await entryOf(sale.invoiceId, "RETURN");
+    expect(returns).toHaveLength(0); // لا يُنشأ قيد RETURN صفري؛ العكس في وعاء الهدية وحده
 
     const gifts = await entryOf(sale.invoiceId, "GIFT_OUT");
     const netGiftCost = gifts.reduce((a, g) => a + Number(g.cost), 0);

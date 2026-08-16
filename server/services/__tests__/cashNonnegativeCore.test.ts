@@ -48,6 +48,13 @@ async function reset() {
 }
 
 async function seedBase() {
+  // Production migrations seed this singleton. Restore it after another DB
+  // suite truncates monthCloseSequence so branch-concurrency starts with the
+  // same shared-gate invariant as a real installation.
+  await db()
+    .insert(s.monthCloseSequence)
+    .values({ id: 1, status: "NEEDS_BOOTSTRAP", version: 0 })
+    .onDuplicateKeyUpdate({ set: { id: 1 } });
   await db().insert(s.branches).values({
     id: 1,
     name: "MAIN",
@@ -99,7 +106,6 @@ beforeEach(async () => {
   await reset();
   await seedBase();
 });
-
 describe("cash-nonnegative-core — قفل المصدر والتراجع", () => {
   it("DRAWER: صرفان متزامنان لا يستهلكان الرصيد نفسه", async () => {
     await db().insert(s.shifts).values({
@@ -351,13 +357,17 @@ describe("cash-nonnegative-core — ترتيب الأقفال وعزل الفر�
 
     const results = await Promise.allSettled([directOut, cancellation]);
     expect(results.every((result) => result.status === "fulfilled")).toBe(true);
+    expect(results[1]).toMatchObject({
+      status: "fulfilled",
+      value: { status: "PENDING_APPROVAL" },
+    });
     for (const result of results) {
       if (result.status === "rejected") {
         expect(String(result.reason?.message ?? "")).not.toMatch(/DEADLOCK|Deadlock|ER_LOCK_DEADLOCK/);
       }
     }
     await db().transaction(async (tx) => {
-      expect((await computeTreasuryCashBalance(tx, 1)).toFixed(2)).toBe("100.00");
+      expect((await computeTreasuryCashBalance(tx, 1)).toFixed(2)).toBe("0.00");
     });
   });
 
@@ -653,9 +663,7 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
     const root = path.resolve(process.cwd(), "server/services");
     const externalLifecycleFiles = [
       "assets/create.ts",
-      "assets/update.ts",
       "assets/lifecycle.ts",
-      "payroll/lifecycle.ts",
       "purchase/receive.ts",
       "exchange/deposit.ts",
       "digitalCards/walletOpsService.ts",

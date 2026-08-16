@@ -3,13 +3,14 @@
 // استقطاع السلفة المقترح، وخصم الإجازة بلا راتب (أو نموذج الأجر بالحضور عند تفعيله).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import {
   attendance,
   commissionRunLines,
   commissionRuns,
   employees,
+  employeeTerminations,
   hrAttendanceSettings,
   leaveRequests,
   payrollItems,
@@ -22,14 +23,22 @@ import { money, round2, toDbMoney } from "../money";
 import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegalService";
 import { applyDuePromotions } from "../promotionService";
 import { type Actor, withTx } from "../tx";
+import { baghdadToday } from "../businessDay";
 import { assertPeriod, computeNet, countDaysWithin, expandSpans, recomputeRunTotals } from "./helpers";
 import { getRun } from "./queries";
+import { encodeTerminationWageCoverage } from "./terminationCoverage";
+import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
 
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
   return withTx(async (tx) => {
     // رفض التكرار: مسيّر واحد لكل شهر (القاعدة تفرض UNIQUE أيضاً، نتحقّق مبكراً برسالة عربية).
-    const [exists] = await tx.select({ id: payrollRuns.id }).from(payrollRuns).where(eq(payrollRuns.period, p)).limit(1);
+    const [exists] = await tx
+      .select({ id: payrollRuns.id })
+      .from(payrollRuns)
+      .where(eq(payrollRuns.period, p))
+      .for("update")
+      .limit(1);
     if (exists) throw new TRPCError({ code: "CONFLICT", message: `يوجد مسيّر رواتب لشهر ${p} بالفعل` });
 
     // كنسة الترقيات المستحقّة (تدقيق ١٧/٧): تُطبّق الترقيات المعتمَدة المؤجَّلة (effectiveDate مستقبليّ
@@ -43,19 +52,41 @@ export async function generatePayroll(period: string, actor: Actor) {
      * 2026-08) كان يُقدّم زياداتٍ مؤجَّلةً سنةً كاملة، وحذفُ المسودّة لا يتراجع عنها.
      * الشهر الجاري هو أقصى ما يُولَّد؛ ما بعده لا معنى له تشغيلياً أصلاً.
      */
-    const currentPeriod = new Date().toISOString().slice(0, 7);
+    const currentPeriod = baghdadToday().slice(0, 7);
     if (p > currentPeriod) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `لا يُولَّد مسيّر لشهر لم يبدأ بعد (${p}). أقصى شهر متاح: ${currentPeriod}.`,
       });
     }
+    const recognizedTerminationWages = await tx
+      .select({
+        terminationId: employeeTerminations.id,
+        employeeId: employeeTerminations.employeeId,
+        settlementSnapshotHash: employeeTerminations.settlementSnapshotHash,
+        earnedGrossWages: employeeTerminations.earnedGrossWages,
+      })
+      .from(employeeTerminations)
+      .where(
+        and(
+          eq(employeeTerminations.status, "completed"),
+          isNotNull(employeeTerminations.recognizedAt),
+          isNull(employeeTerminations.recognitionReversedAt),
+          sql`DATE_FORMAT(${employeeTerminations.lastDay}, '%Y-%m') = ${p}`,
+        ),
+      )
+      .orderBy(employeeTerminations.employeeId, employeeTerminations.id)
+      .for("share");
+    const terminationCoveredEmployeeIds = new Set(
+      recognizedTerminationWages.map((row) => Number(row.employeeId)),
+    );
     await applyDuePromotions(tx, periodEndYmd);
 
     // كل الموظفين غير منتهي الخدمة (نشطون + في إجازة).
-    const emps = await tx
+    const emps = (await tx
       .select({
         id: employees.id,
+        branchId: employees.branchId,
         payType: employees.payType,
         salary: employees.salary,
         allowances: employees.allowances,
@@ -76,7 +107,9 @@ export async function generatePayroll(period: string, actor: Actor) {
           sql`(${employees.employmentStatus} <> 'terminated' OR ${employees.terminationDate} IS NOT NULL)`,
         ),
       )
-      .orderBy(employees.id);
+      .orderBy(employees.id)).filter(
+        (employee) => !terminationCoveredEmployeeIds.has(Number(employee.id)),
+      );
 
     // commissions (٦/٧/٢٦): التقاط تشغيلة العمولات **المعتمدة** لنفس الشهر — بند «عمولة» لكل
     // موظف داخل نفس المعاملة (قفل رأس التشغيلة يمنع سباق إلغاء الاعتماد أثناء التوليد).
@@ -104,11 +137,16 @@ export async function generatePayroll(period: string, actor: Actor) {
     // ببند أجرٍ صفري كي تُصرف عمولته المستحقة مرّة واحدة ولا تضيع.
     const listedIds = new Set(emps.map((e) => Number(e.id)));
     const zeroGrossIds = new Set<number>();
-    const missingIds = Array.from(commissionByEmp.keys()).filter((id) => money(commissionByEmp.get(id) ?? 0).gt(0) && !listedIds.has(id));
+    const missingIds = Array.from(commissionByEmp.keys()).filter(
+      (id) =>
+        money(commissionByEmp.get(id) ?? 0).gt(0) &&
+        !listedIds.has(id),
+    );
     if (missingIds.length > 0) {
       const extra = await tx
         .select({
           id: employees.id,
+          branchId: employees.branchId,
           payType: employees.payType,
           salary: employees.salary,
           allowances: employees.allowances,
@@ -239,8 +277,27 @@ export async function generatePayroll(period: string, actor: Actor) {
     // **كل مكوّن معطَّل افتراضياً** ⇒ computeLegalComponents تُعيد صفراً ⇒ صفر أثر على deductions/net
     // (انحدار صفريّ مُثبَت باختبار). النِّسب/الشرائح يضبطها المالك مع محاسبه القانونيّ.
     const legalSettings = await getPayrollLegalSettings(tx);
+    const legalPolicy = buildPayrollLegalPolicyEvidence(legalSettings);
 
     // رأس المسيّر (مسودة) — المجاميع تُحدَّث بعد إدراج البنود.
+    const terminationCoverageNote = encodeTerminationWageCoverage(
+      p,
+      recognizedTerminationWages.map((row) => {
+        if (!row.settlementSnapshotHash) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `لقطة تسوية نهاية الخدمة #${row.terminationId} ناقصة؛ لا يمكن إثبات تغطية أجر الموظف #${row.employeeId}.`,
+          });
+        }
+        return {
+          terminationId: Number(row.terminationId),
+          employeeId: Number(row.employeeId),
+          settlementSnapshotHash: row.settlementSnapshotHash,
+          earnedGrossWages: money(row.earnedGrossWages).toFixed(2),
+          payrollCommission: money(commissionByEmp.get(Number(row.employeeId)) ?? 0).toFixed(2),
+        };
+      }),
+    );
     const runRes = await tx.insert(payrollRuns).values({
       period: p,
       branchId: actor.branchId ?? null,
@@ -250,6 +307,9 @@ export async function generatePayroll(period: string, actor: Actor) {
       totalOvertime: "0",
       totalDeductions: "0",
       totalNet: "0",
+      notes: terminationCoverageNote,
+      legalPolicySnapshot: legalPolicy.snapshot,
+      legalPolicyHash: legalPolicy.hash,
       createdBy: actor.userId,
     });
     const runId = extractInsertId(runRes);
@@ -376,16 +436,22 @@ export async function generatePayroll(period: string, actor: Actor) {
       // معطَّلة افتراضياً ⇒ كلها صفر ⇒ صفر أثر. لا مكوّنات على تسوية المفصول ذي الأجر الصفريّ (نهاية خدمته
       // تُسوّى عند الفصل — لا ازدواج، ولا خصم ضمان/ضريبة على أجرٍ صفريّ).
       // الوعاء الأساسيّ للشهريّ = الراتب الأساس (بلا مخصّصات)، وللساعيّ = أجر الفترة (gross).
-      const basicForLegal = monthly ? money(e.salary ?? 0) : gross;
+      // الوعاء الأساسي هو الأجر الأساسي المكتسب داخل نافذة العمل الفعلية، لا راتب
+      // الشهر الكامل. هذا يحمي التعيين/الإنهاء منتصف الشهر من ضمان وEOS شهر كامل.
+      const basicForLegal = monthly
+        ? round2(money(e.salary ?? 0).times(employmentRatio))
+        : gross;
       // Codex P2: ضمان/ضريبة على **الأجر المكتسَب فعلاً بعد الإجازة بلا راتب** لا على الإجماليّ الكامل —
       // (١) لا استقطاع على أجرٍ لم يُكتسَب، و(٢) يمنع تجاوز الاستقطاع للأجر ⇒ net سالباً يتعذّر اعتماده
       // (إجازةٌ تستهلك الشهر كان يُنتج net سالباً). الإجازة تخصّ الشهريّ فقط ⇒ للساعيّ leaveDeduction=0
       // فالوعاء = gross بلا تغيير. صفر إجازة ⇒ earnedGross=gross وearnedBasic=basicForLegal ⇒ صفر انحدار.
       const earnedGross = Decimal.max(0, gross.minus(leaveDeduction));
-      const earnedBasic = Decimal.max(0, basicForLegal.minus(leaveDeduction));
+      const earnedBasic = onAttendancePath
+        ? Decimal.max(0, money(attendancePayByEmp.get(Number(e.id))?.basePay ?? 0))
+        : Decimal.max(0, basicForLegal.minus(leaveDeduction));
       // Codex P2: معدّل نهاية الخدمة اليوميّ من وعاء الأجر لا من e.salary — الساعيّ راتبه 0 لكنه يكتسب
-      // gross، فكان استحقاقه يُسجَّل صفراً رغم كسبه. basicForLegal÷٣٠ ⇒ للشهريّ = الراتب÷٣٠ (كما كان)،
-      // وللساعيّ = gross÷٣٠. استحقاق نهاية الخدمة التزامٌ تعاقديّ لا يُنقَص بإجازة شهرٍ ⇒ على الوعاء الكامل.
+      // gross، فكان استحقاقه يُسجَّل صفراً رغم كسبه. للشهريّ يُقسَّط الوعاء بنسبة أيام
+      // العمل في الشهر، وللساعيّ = gross. الإجازة لا تخفض EOS لكن قِصر نافذة العمل يخفضه.
       const eosDailyRate = round2(basicForLegal.div(30));
       const legal = zeroGross
         ? { socialSecurityEmployee: new Decimal(0), socialSecurityEmployer: new Decimal(0), incomeTax: new Decimal(0), endOfServiceAccrual: new Decimal(0) }
@@ -422,6 +488,13 @@ export async function generatePayroll(period: string, actor: Actor) {
           return parts.join(" — ").slice(0, 255);
         })(),
         employeeId: Number(e.id),
+        branchIdSnapshot:
+          e.branchId == null
+            ? actor.branchId > 0
+              ? actor.branchId
+              : null
+            : Number(e.branchId),
+        revisionNo: 0,
         payType: monthly ? "monthly" : "hourly",
         hours,
         gross: toDbMoney(gross),
@@ -430,6 +503,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         overtime: toDbMoney(overtime),
         commission: toDbMoney(commission),
         deductions: toDbMoney(deductions),
+        wageReduction: toDbMoney(leaveDeduction),
         advanceDeduction: toDbMoney(advanceDeduction),
         // المكوّنات القانونية (البند ④، لقطة): حصّتا الموظف (ضمان+ضريبة) مُتضمَّنتان في deductions أعلاه؛
         // حصّة رب العمل واستحقاق نهاية الخدمة عرضٌ/التزامٌ فقط (خارج deductions/net). كلها صفر عند التعطيل.

@@ -1,3 +1,4 @@
+import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -114,7 +115,13 @@ const NAV_LINKS: NavLink[] = [
   // الموارد البشرية: تبويباتها صارت مرآة الخادم (HrHub) ⇒ تُفتح كبوّابته requireModule("hr","READ")
   // — أدوار القالب (accountant/auditor قالباهما hr=READ) + المنح الصريح عبر module.
   { href: "/hr", label: "الموارد البشرية", icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
-  { href: "/closing", label: "الإقفال والرَقابة", icon: Lock, managerOnly: true },
+  {
+    href: "/closing",
+    label: "الإقفال والرَقابة",
+    icon: Lock,
+    roles: ["admin", "manager", "accountant", "auditor"],
+    module: "reports",
+  },
   { href: "/settings", label: "الإدارة والإعدادات", icon: Settings, managerOnly: true },
 ];
 
@@ -447,7 +454,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 overflow-auto outline-none">{children}</main>
+      <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
+
+      {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}
+      <MobileBottomNav
+        role={role}
+        permsOverride={permsOverride}
+        onOpenMenu={() => setNavOpen(true)}
+      />
     </div>
   );
 }

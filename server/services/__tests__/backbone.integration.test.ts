@@ -18,7 +18,6 @@ import {
   startWorkOrder,
 } from "../workOrderService";
 import { withTx } from "../tx";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 import { approveVoucher } from "../voucher/approval";
 
 const actor = { userId: 1, branchId: 1 };
@@ -73,7 +72,7 @@ async function setStock(variantId: number, branchId: number, qty: number) {
   await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
 }
 async function openShift(branchId = 1): Promise<number> {
-  const r = await db().insert(s.shifts).values({ branchId, userId: 1, openingBalance: "0", status: "OPEN" });
+  const r = await db().insert(s.shifts).values({ branchId, userId: 1, openingBalance: "0", status: "OPEN", shiftType: "RECEPTION" });
   return insertId(r);
 }
 async function stockOf(variantId: number, branchId: number): Promise<number> {
@@ -503,8 +502,9 @@ describe("أوامر الشغل/المطبعة", () => {
     // قيد SALE + قيد PAYMENT_IN + إيصال IN
     const sale = (await entries("SALE"))[0];
     expect(sale.revenue).toBe("500.00");
-    expect(sale.cost).toBe("120.00");
-    expect(sale.profit).toBe("380.00");
+    // قيد COGS يستهلك المواد فقط؛ أجر العامل يُعترف به عبر الرواتب ولا يُرسمل مرتين.
+    expect(sale.cost).toBe("20.00");
+    expect(sale.profit).toBe("480.00");
 
     const pin = await entries("PAYMENT_IN");
     expect(pin).toHaveLength(1);
@@ -554,16 +554,25 @@ describe("أوامر الشغل/المطبعة", () => {
 });
 
 describe("إدارة الورديات (Z-report)", () => {
-  it("بيع البطاقة يُرفض قبل الفاتورة والمخزون ولا يغيّر النقد المتوقع", async () => {
+  it("بيع البطاقة يخصم المخزون ولا يدخل درج النقد (النقد المتوقع صفر)", async () => {
     await setStock(1, 1, 24);
     const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "0.00" }, actor);
 
-    await expect(createSale(
-      { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CARD" } },
+    const sale = await createSale(
+      {
+        branchId: 1, shiftId, sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "120.00", method: "CARD", reference: "CARD-Z-1001" },
+      },
       actor
-    )).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
-    expect(await db().select().from(s.invoices)).toHaveLength(0);
-    expect(await stockOf(1, 1)).toBe(24);
+    );
+    expect(sale.status).toBe("PAID");
+    // درزن = ١٢ ⇒ ٢٤ − ١٢.
+    expect(await stockOf(1, 1)).toBe(12);
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId));
+    expect(receipt.paymentMethod).toBe("CARD");
+    // §٥: غير النقد لا دلوَ نقديّ له ⇒ لا يَمسّ درج الكاشير ولا النقد المتوقّع.
+    expect(receipt.cashBucket).toBeNull();
     const afterCard = await closeShift({ shiftId, countedCash: "0.00" }, actor);
     expect(afterCard.expectedCash).toBe("0.00");
     expect(afterCard.variance).toBe("0.00");
@@ -862,11 +871,11 @@ describe("عروض الأسعار (Quotations)", () => {
     const qRow = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
     expect(qRow.status).toBe("DRAFT");
 
-    // اقبل ثم أثبت أن الدفع الخارجي يفشل مغلقاً بلا أي أثر قبل التحويل النقدي.
+    // اقبل ثم أثبت أن التحويل بلا مرجعٍ قابلٍ للمطابقة يفشل بلا أيّ أثر قبل التحويل النقدي.
     await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
     await expect(
       convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "TRANSFER" } }, actor),
-    ).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    ).rejects.toThrow();
     expect(await stockOf(1, 1)).toBe(24);
     expect(await db().select().from(s.invoices)).toHaveLength(0);
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);

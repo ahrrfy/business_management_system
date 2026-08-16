@@ -81,6 +81,7 @@ function assertSafeCleanupTarget(rawUrl: string | undefined): string | undefined
 const TEST_DB_URL = assertSafeCleanupTarget(process.env.DATABASE_URL);
 
 let cachedTables: string[] | null = null;
+let cachedDeleteTriggeredTables: Set<string> | null = null;
 
 async function discoverTables(conn: mysql.Connection): Promise<string[]> {
   if (cachedTables) return cachedTables;
@@ -97,6 +98,18 @@ async function discoverTables(conn: mysql.Connection): Promise<string[]> {
   return tables;
 }
 
+async function discoverDeleteTriggeredTables(
+  conn: mysql.Connection,
+): Promise<Set<string>> {
+  if (cachedDeleteTriggeredTables) return cachedDeleteTriggeredTables;
+  const [rows] = await conn.query<mysql.RowDataPacket[]>(
+    "SELECT DISTINCT EVENT_OBJECT_TABLE AS name FROM information_schema.TRIGGERS " +
+      "WHERE TRIGGER_SCHEMA = DATABASE() AND EVENT_MANIPULATION = 'DELETE'",
+  );
+  cachedDeleteTriggeredTables = new Set(rows.map((row) => row.name as string));
+  return cachedDeleteTriggeredTables;
+}
+
 afterEach(async () => {
   if (!TEST_DB_URL) return;
   // اتصال مُكرَّس طازج بالرابط الملتقَط — مُستقلّ عن تجمّع Drizzle (تُغلقه الاختبارات) وعن أيّ
@@ -104,14 +117,22 @@ afterEach(async () => {
   const conn = await mysql.createConnection(TEST_DB_URL);
   try {
     const tables = await discoverTables(conn);
+    const deleteTriggeredTables = await discoverDeleteTriggeredTables(conn);
     await conn.query("SET FOREIGN_KEY_CHECKS = 0");
     for (const t of tables) {
-      // DELETE FROM (لا TRUNCATE) — DML تَحترم FK_CHECKS=0. فشلٌ صريح (لا ابتلاع) لئلّا يَتراكم بصمت.
+      // جداول الأثر غير القابل للمحو تحرس DELETE بتريغر مقصود في الإنتاج. تنظيف الاختبار وحده
+      // يستعمل TRUNCATE عليها (مع تعطيل FK) كي لا نضع منفذ bypass داخل التريغر الإنتاجي.
+      // بقية الجداول تبقى على DELETE للأسباب الموثقة أعلى الملف.
       try {
-        await conn.query(`DELETE FROM \`${t}\``);
+        if (deleteTriggeredTables.has(t)) {
+          await conn.query(`TRUNCATE TABLE \`${t}\``);
+        } else {
+          await conn.query(`DELETE FROM \`${t}\``);
+        }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        throw new Error(`__setup__ cleanup: DELETE FROM ${t} failed: ${msg}`);
+        const operation = deleteTriggeredTables.has(t) ? "TRUNCATE TABLE" : "DELETE FROM";
+        throw new Error(`__setup__ cleanup: ${operation} ${t} failed: ${msg}`);
       }
     }
     await conn.query("SET FOREIGN_KEY_CHECKS = 1");

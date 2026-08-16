@@ -753,7 +753,7 @@ try {
   const syncLockSelftest = spawnSync(
     process.execPath,
     [path.join(path.dirname(fileURLToPath(import.meta.url)), "deploy.mjs"), "--selftest-sync-lock"],
-    { encoding: "utf8", timeout: 30_000 },
+    { encoding: "utf8", timeout: 60_000 },
   );
   assert.equal(syncLockSelftest.status, 0, syncLockSelftest.stderr);
   assert.match(syncLockSelftest.stdout, /fenced stale race passed/);

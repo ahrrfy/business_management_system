@@ -13,7 +13,7 @@ import { appRouter } from "../../routers";
  *  I5: عزل الفرع — الاستلام حصريّ للوجهة والإلغاء حصريّ للمصدر (غير المرفوعين).
  *  I6: لا استلام/إلغاء مزدوج (سند مقفل يرفض)، والاستلام idempotent بالمفتاح.
  */
-const TABLES = ["auditLogs", "idempotencyKeys", "accountingEntries", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "productVariants", "products", "users", "branches"];
+const TABLES = ["auditLogs", "idempotencyKeys", "journalLines", "journalEntries", "accountingEntries", "doubleEntrySettings", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "productVariants", "products", "suppliers", "users", "branches"];
 
 function db() {
   const d = getDb();
@@ -39,14 +39,21 @@ async function seed() {
     { id: 3, openId: "local_wh2", name: "مخزن ف٢", email: "wh2@t.test", role: "warehouse", loginMethod: "local", branchId: 2 },
     { id: 4, openId: "local_wh3", name: "مخزن ف٣", email: "wh3@t.test", role: "warehouse", loginMethod: "local", branchId: 3 },
   ]);
-  await d.insert(s.products).values([{ id: 1, name: "ورق A4" }, { id: 2, name: "قلم" }]);
+  await d.insert(s.suppliers).values({ id: 9, name: "مودِع التحويل", supplierKind: "CONSIGNOR", currentBalance: "0.00" });
+  await d.insert(s.products).values([
+    { id: 1, name: "ورق A4" },
+    { id: 2, name: "قلم" },
+    { id: 3, name: "ملزمة أمانة", isConsignment: true, consignorId: 9 },
+  ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "PAP-1", costPrice: "5.00" },
     { id: 2, productId: 2, sku: "PEN-1", costPrice: "1.00" },
+    { id: 3, productId: 3, sku: "CON-1", costPrice: "4.00" },
   ]);
   await d.insert(s.branchStock).values([
     { variantId: 1, branchId: 1, quantity: 20 },
     { variantId: 2, branchId: 1, quantity: 10 },
+    { variantId: 3, branchId: 1, quantity: 5 },
   ]);
 }
 function makeCtx(user: any) {
@@ -100,6 +107,11 @@ describe("I1: الإرسال ⇒ بالطريق (لا يظهر في رصيد أ�
 
 describe("I2+I3: الاستلام الجزئي والعجز الموثَّق", () => {
   it("استلام 6 من 8 بملاحظة ⇒ الوجهة +6، العجز 2 على السطر، ومجموع النظام نقص به", async () => {
+    await db().insert(s.doubleEntrySettings).values({
+      id: 1,
+      mode: "SHADOW",
+      shadowCycleId: "owned-transfer-shortage-test",
+    });
     const { r, doc } = await createStd();
     const wh2 = appRouter.createCaller(makeCtx(await userById(3)));
     const l1 = doc.lines.find((l: any) => Number(l.variantId) === 1)!;
@@ -134,6 +146,54 @@ describe("I2+I3: الاستلام الجزئي والعجز الموثَّق", (
     expect(Number(entries[0].amount)).toBe(0);
     expect(entries[0].dedupeKey).toBe(`TRANSFER_LOSS:${r.transferId}`);
     expect(entries[0].notes).toContain(doc.transferNumber);
+    const [head] = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, Number(entries[0].id)));
+    expect(head.status).toBe("POSTED");
+    expect(head.postingProfile).toBe("ADJUST_INVENTORY_LOSS");
+    const journalLines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, Number(head.id)));
+    expect(journalLines.map((line) => [line.role, line.debit, line.credit]).sort()).toEqual([
+      ["INVENTORY", "0.00", "10.00"],
+      ["LOSSES", "10.00", "0.00"],
+    ]);
+  });
+
+  it("عجز أمانة ⇒ Dr خسائر / Cr التزام المودِع، بلا INVENTORY ويرفع ذمته", async () => {
+    await db().insert(s.doubleEntrySettings).values({
+      id: 1,
+      mode: "SHADOW",
+      shadowCycleId: "consignment-transfer-shortage-test",
+    });
+    const admin = appRouter.createCaller(makeCtx(await userById(1)));
+    const created = await admin.inventory.transferBatch({
+      fromBranchId: 1,
+      toBranchId: 2,
+      reason: "STOCKOUT",
+      items: [{ variantId: 3, baseQuantity: 5 }],
+    });
+    const doc = await admin.inventory.transferGet({ id: created.transferId });
+    const wh2 = appRouter.createCaller(makeCtx(await userById(3)));
+    await wh2.inventory.transferReceive({
+      transferId: created.transferId,
+      lines: [{ lineId: Number(doc.lines[0].id), quantityReceived: 3, note: "فقد وحدتين بالطريق" }],
+    });
+
+    const [entry] = await db().select().from(s.accountingEntries);
+    expect(entry.entryType).toBe("PURCHASE");
+    expect(entry.dedupeKey).toBe(`CONSIG:TRANSFER_SHORT:${created.transferId}:9`);
+    expect(entry.amount).toBe("8.00");
+    expect(entry.cost).toBe("8.00");
+    expect(entry.profit).toBe("-8.00");
+    const [consignor] = await db().select().from(s.suppliers).where(eq(s.suppliers.id, 9));
+    expect(consignor.currentBalance).toBe("8.00");
+
+    const [head] = await db().select().from(s.journalEntries).where(eq(s.journalEntries.entryId, Number(entry.id)));
+    expect(head.status).toBe("POSTED");
+    expect(head.postingProfile).toBe("PURCHASE_CONSIGNMENT_SHORTAGE");
+    const journalLines = await db().select().from(s.journalLines).where(eq(s.journalLines.journalId, Number(head.id)));
+    expect(journalLines.map((line) => [line.role, line.debit, line.credit]).sort()).toEqual([
+      ["CONSIGNMENT_PAYABLE", "0.00", "8.00"],
+      ["LOSSES", "8.00", "0.00"],
+    ]);
+    expect(journalLines.some((line) => line.role === "INVENTORY")).toBe(false);
   });
 
   it("استلام مطابق كامل ⇒ لا قيد محاسبياً إطلاقاً", async () => {

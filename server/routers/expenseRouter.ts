@@ -18,6 +18,13 @@ import {
   router,
 } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
+import {
+  approveAccrualCorrection,
+  listAccrualCorrections,
+  rejectAccrualCorrection,
+  requestAccrualCorrection,
+  retryAccrualCorrectionRefund,
+} from "../services/accounting/accrualCorrection";
 
 const category = z.enum([
   "RENT",
@@ -52,9 +59,9 @@ export const expenseRouter = router({
           q: z.string().trim().min(1).optional(),
           // فلترة إضافية: طريقة الدفع (مطابقة يوم البطاقات) + مصدر الصرف (نقدي/مخزون).
           paymentMethod: method.optional(),
-          source: z.enum(["CASH", "STOCK"]).optional(),
+          source: z.enum(["CASH", "STOCK", "ACCRUAL"]).optional(),
           fundingKind: z
-            .enum(["DRAWER", "TREASURY", "NON_CASH", "STOCK"])
+            .enum(["DRAWER", "TREASURY", "NON_CASH", "STOCK", "ACCRUED_UNPAID", "ACCRUED_PAID"])
             .optional(),
           createdBy: z.number().int().positive().optional(),
           shiftId: z.number().int().positive().optional(),
@@ -90,6 +97,71 @@ export const expenseRouter = router({
         });
       return trace;
     }),
+
+  accrualCorrections: expensesReadProcedure
+    .input(z.object({ obligationId: z.number().int().positive() }))
+    .query(({ input, ctx }) => listAccrualCorrections(input.obligationId, {
+      userId: ctx.user.id,
+      branchId: Number(ctx.user.branchId ?? 0),
+      role: ctx.user.role,
+      isOwner: ctx.user.isOwner === true,
+    })),
+
+  requestAccrualCorrection: expensesManagerProcedure
+    .input(
+      z.object({
+        obligationId: z.number().int().positive(),
+        reason: z.string().trim().min(3).max(2000),
+        externalEvidenceReference: z.string().trim().min(1).max(191),
+        attachmentUrl: z.string().trim().min(1).max(8_000_000),
+        refundPaymentMethod: method.nullish(),
+        refundCashBucket: z.enum(["DRAWER", "TREASURY"]).nullish(),
+        refundReferenceNumber: z.string().trim().max(100).nullish(),
+        refundCardLastFour: z.string().trim().regex(/^\d{4}$/).nullish(),
+        clientRequestId: z.string().trim().min(8).max(64),
+      }),
+    )
+    .mutation(({ input, ctx }) =>
+      requestAccrualCorrection(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
+
+  approveAccrualCorrection: ownerProcedure
+    .input(z.object({ correctionRequestId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) =>
+      approveAccrualCorrection(input.correctionRequestId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
+
+  rejectAccrualCorrection: ownerProcedure
+    .input(z.object({ correctionRequestId: z.number().int().positive(), reason: z.string().trim().min(3).max(255) }))
+    .mutation(({ input, ctx }) =>
+      rejectAccrualCorrection(input.correctionRequestId, input.reason, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
+
+  retryAccrualCorrectionRefund: expensesManagerProcedure
+    .input(z.object({ correctionRequestId: z.number().int().positive(), clientRequestId: z.string().trim().min(8).max(64) }))
+    .mutation(({ input, ctx }) =>
+      retryAccrualCorrectionRefund(input.correctionRequestId, input.clientRequestId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner === true,
+      }),
+    ),
 
   // الموظف المخوّل يُنشئ الطلب؛ الخدمة وحدها تقرر: نثرية صغيرة ممولة من درجه
   // أو طلب اعتماد بلا أثر مالي. لا توجد صلاحية هنا تتجاوز حارس الرصيد أو المالك.
