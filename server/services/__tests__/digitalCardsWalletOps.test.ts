@@ -251,7 +251,8 @@ describe.sequential("ش٩ — معيار الخروج: الرصيد يُعاد �
     const { walletId } = await mkWallet();
     await approvedCashDeposit(walletId, "1000000");
     await withTx((tx) => walletOpsService.withdraw(tx, { walletId, amount: "150000", paymentMethod: "CASH", clientRequestId: rid() }, mgrA));
-    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "25000", paymentMethod: "TRANSFER", clientRequestId: rid() }, mgrA));
+    // الإيداع بالتحويل يلزمه مرجع الحوالة من كشف البنك (لا يُطابَق UUID داخليّ).
+    await withTx((tx) => walletOpsService.deposit(tx, { walletId, amount: "25000", paymentMethod: "TRANSFER", referenceNumber: "BANK-MIX-001", clientRequestId: rid() }, mgrA));
     const adj = await withTx((tx) => walletOpsService.requestAdjustment(tx, {
       walletId, amount: "3400", direction: "OUT", reason: "فرق مطابقة", clientRequestId: rid(),
     }, mgrA));
