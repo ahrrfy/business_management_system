@@ -55,6 +55,19 @@ describe("callRemovebg (fetch مُموَّه)", () => {
     await expect(callRemovebg("key", "QUJD", { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "NETWORK" });
   });
 
+  it("مهلة المزود ⇒ TIMEOUT ولا يبقى النداء معلّقاً", async () => {
+    const fakeFetch: typeof fetch = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("timed out", "TimeoutError")), { once: true });
+      });
+    await expect(callRemovebg("key", "QUJD", { fetchImpl: fakeFetch, timeoutMs: 1 })).rejects.toMatchObject({ kind: "TIMEOUT" });
+  });
+
+  it("جسم أكبر من الحد ⇒ RESPONSE_TOO_LARGE قبل احتجاز ذاكرة الخادم", async () => {
+    const fakeFetch: typeof fetch = async () => new Response(Buffer.from([1, 2, 3]), { status: 200, headers: { "content-length": "3" } });
+    await expect(callRemovebg("key", "QUJD", { fetchImpl: fakeFetch, maxResponseBytes: 2 })).rejects.toMatchObject({ kind: "RESPONSE_TOO_LARGE" });
+  });
+
   it("جسم فارغ رغم 200 ⇒ SERVICE (لا قصّ زائف)", async () => {
     const fakeFetch: typeof fetch = async () => new Response(Buffer.alloc(0), { status: 200 });
     await expect(callRemovebg("key", "QUJD", { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "SERVICE" });

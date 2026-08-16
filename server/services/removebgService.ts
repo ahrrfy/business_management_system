@@ -23,6 +23,8 @@ export type RemovebgErrorKind =
   | "OUT_OF_CREDITS" // 402 — نفد الرصيد
   | "RATE_LIMITED" // 429 — تجاوز الحدّ
   | "BAD_INPUT" // 400 — صورة غير صالحة/لا خلفية للقصّ
+  | "TIMEOUT" // انتهت مهلة الاتصال بالمزوّد
+  | "RESPONSE_TOO_LARGE" // مزوّد/شبكة أعاد جسماً أكبر من حد الخادم
   | "SERVICE" // 5xx أو غير متوقّع
   | "NETWORK"; // فشل الوصول للخدمة أصلاً
 
@@ -53,6 +55,46 @@ export interface CallRemovebgOptions {
   size?: "auto" | "preview" | "full";
   /** لِحقن fetch مُموَّه في الاختبار (افتراضياً fetch العام). */
   fetchImpl?: typeof fetch;
+  /** مهلة الاتصال الخارجي؛ لا نسمح لطلب واحد باحتجاز عامل الخادم بلا حد. */
+  timeoutMs?: number;
+  /** حد بايتات جسم الصورة قبل تحويله إلى Buffer. */
+  maxResponseBytes?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+function isTimeout(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : "";
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/** يقرأ stream مزوّد خارجي بحدّ صارم، فلا يحجز جسماً ضخماً ذاكرة الخادم. */
+async function readBoundedBody(res: Response, maxBytes: number): Promise<Buffer> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new RemovebgError("RESPONSE_TOO_LARGE", res.status, "استجابة remove.bg أكبر من الحد الآمن");
+  }
+  if (!res.body) return Buffer.alloc(0);
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new RemovebgError("RESPONSE_TOO_LARGE", res.status, "استجابة remove.bg أكبر من الحد الآمن");
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
 }
 
 /** محاولة قصٍّ واحدة بحجمٍ محدَّد. داخليّ — يلفّه `callRemovebg` بمنطق التراجع لـpreview. */
@@ -61,6 +103,8 @@ async function callRemovebgOnce(
   imageBase64: string,
   size: string,
   doFetch: typeof fetch,
+  timeoutMs: number,
+  maxResponseBytes: number,
 ): Promise<RemovebgResult> {
   const body = new URLSearchParams();
   body.set("image_file_b64", imageBase64);
@@ -76,13 +120,17 @@ async function callRemovebgOnce(
         Accept: "image/png, application/json",
       },
       body,
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e: any) {
+    if (isTimeout(e)) {
+      throw new RemovebgError("TIMEOUT", 0, "انتهت مهلة remove.bg");
+    }
     throw new RemovebgError("NETWORK", 0, `تعذّر الوصول لـremove.bg: ${e?.message ?? "خطأ شبكة"}`);
   }
 
   if (res.ok) {
-    const buf = Buffer.from(await res.arrayBuffer());
+    const buf = await readBoundedBody(res, maxResponseBytes);
     if (buf.length === 0) {
       throw new RemovebgError("SERVICE", res.status, "remove.bg أعاد جسماً فارغاً");
     }
@@ -100,10 +148,12 @@ async function callRemovebgOnce(
   // خطأ: نستخرج رسالة remove.bg (JSON {errors:[{title,code}]}) للتشخيص.
   let detail = "";
   try {
-    const j = (await res.json()) as { errors?: Array<{ title?: string; code?: string }> };
+    const j = JSON.parse((await readBoundedBody(res, Math.min(maxResponseBytes, 256 * 1024))).toString("utf8")) as {
+      errors?: Array<{ title?: string; code?: string }>;
+    };
     detail = j?.errors?.[0]?.title ?? j?.errors?.[0]?.code ?? "";
   } catch {
-    detail = await res.text().catch(() => "");
+    detail = "";
   }
   detail = String(detail).slice(0, 300);
 
@@ -130,12 +180,14 @@ export async function callRemovebg(
 ): Promise<RemovebgResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const size = opts.size ?? "auto";
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   try {
-    return await callRemovebgOnce(apiKey, imageBase64, size, doFetch);
+    return await callRemovebgOnce(apiKey, imageBase64, size, doFetch, timeoutMs, maxResponseBytes);
   } catch (e) {
     // المفتاح المجاني بلا رصيد يرفض الدقّة الكاملة ⇒ تراجُعٌ لـpreview المجانيّة (لا فشل صلب).
     if (e instanceof RemovebgError && e.kind === "OUT_OF_CREDITS" && size !== "preview") {
-      const r = await callRemovebgOnce(apiKey, imageBase64, "preview", doFetch);
+      const r = await callRemovebgOnce(apiKey, imageBase64, "preview", doFetch, timeoutMs, maxResponseBytes);
       return { ...r, isPreview: true };
     }
     throw e;
@@ -153,6 +205,10 @@ export function removebgErrorMessageAr(kind: RemovebgErrorKind): string {
       return "تجاوزتَ حدّ الطلبات على remove.bg — أعد المحاولة بعد قليل.";
     case "BAD_INPUT":
       return "الصورة غير صالحة للقصّ (لا موضوع واضح على خلفية).";
+    case "TIMEOUT":
+      return "تأخرت خدمة remove.bg في الردّ؛ أعد المحاولة لاحقاً.";
+    case "RESPONSE_TOO_LARGE":
+      return "أعادت remove.bg نتيجةً أكبر من الحد الآمن للخادم.";
     case "NETWORK":
       return "تعذّر الوصول لخدمة remove.bg.";
     case "SERVICE":
@@ -182,8 +238,10 @@ export async function getRemovebgAccount(
     res = await doFetch(REMOVEBG_ACCOUNT_ENDPOINT, {
       method: "GET",
       headers: { "X-Api-Key": apiKey, Accept: "application/json" },
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     });
   } catch (e: any) {
+    if (isTimeout(e)) throw new RemovebgError("TIMEOUT", 0, "انتهت مهلة remove.bg");
     throw new RemovebgError("NETWORK", 0, `تعذّر الوصول لـremove.bg: ${e?.message ?? "خطأ شبكة"}`);
   }
   if (!res.ok) {
@@ -191,9 +249,12 @@ export async function getRemovebgAccount(
       res.status === 403 ? "AUTH" : res.status === 429 ? "RATE_LIMITED" : "SERVICE";
     throw new RemovebgError(kind, res.status, `remove.bg /account ${res.status}`);
   }
-  const j = (await res.json().catch(() => ({}))) as {
-    data?: { attributes?: { credits?: { total?: number }; api?: { free_calls?: number } } };
-  };
+  let j: { data?: { attributes?: { credits?: { total?: number }; api?: { free_calls?: number } } } } = {};
+  try {
+    j = JSON.parse((await readBoundedBody(res, 256 * 1024)).toString("utf8"));
+  } catch (e) {
+    if (e instanceof RemovebgError) throw e;
+  }
   const attrs = j?.data?.attributes;
   const total = attrs?.credits?.total;
   const free = attrs?.api?.free_calls;

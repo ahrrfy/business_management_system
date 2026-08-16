@@ -16,6 +16,11 @@ import {
 } from "../services/imageStudioSettingsService";
 import { AiImageError, aiImageErrorMessageAr, generateStudioImage } from "../services/aiImageStudioService";
 import { callRemovebg, RemovebgError, removebgErrorMessageAr } from "../services/removebgService";
+import {
+  ImageStudioGuardError,
+  imageStudioGuardErrorMessageAr,
+  runGuardedImageStudioCall,
+} from "../services/imageStudioUsageGuard";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { logAudit } from "../services/auditService";
 
@@ -66,7 +71,7 @@ export const imageStudioRouter = router({
 
   proCutout: productsManagerProcedure
     .input(z.object({ imageDataUrl: z.string().min(1).max(6_000_000) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       // تحقّق أمني: data URL صورة صالحة (سحر البايتات) حتى ٢م.ب — نفس كتّاب صور المنتج.
       assertValidImageDataUrl(input.imageDataUrl, 2_000_000, true);
 
@@ -81,13 +86,23 @@ export const imageStudioRouter = router({
       const base64 = m[2];
 
       try {
-        const result = await callRemovebg(key, base64);
+        const result = await runGuardedImageStudioCall({
+          service: "REMOVEBG",
+          userId: Number(ctx.user.id),
+          run: () => callRemovebg(key, base64),
+        });
         return {
           cutoutDataUrl: `data:image/png;base64,${result.cutout.toString("base64")}`,
           creditsCharged: result.creditsCharged,
           isPreview: result.isPreview ?? false,
         };
       } catch (e) {
+        if (e instanceof ImageStudioGuardError) {
+          throw new TRPCError({
+            code: e.kind === "DAILY_BUDGET_EXHAUSTED" ? "PRECONDITION_FAILED" : "TOO_MANY_REQUESTS",
+            message: imageStudioGuardErrorMessageAr(e.kind),
+          });
+        }
         if (e instanceof RemovebgError) {
           // تصنيف يقود العرض: AUTH/نفاد الرصيد = خلل إعداد (PRECONDITION)؛ الباقي مؤقّت.
           throw new TRPCError({
@@ -163,7 +178,7 @@ export const imageStudioRouter = router({
         mode: z.enum(["EDIT", "GENERATE"]).default("EDIT"),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const mode = input.mode;
       let imageBase64: string | undefined;
       let mimeType: string | undefined;
@@ -191,12 +206,16 @@ export const imageStudioRouter = router({
       const prompt = buildAiStudioPrompt(runtime.basePrompt, input.userPrompt);
 
       try {
-        const result = await generateStudioImage({
-          apiKey: runtime.apiKey,
-          model: runtime.model,
-          prompt,
-          imageBase64,
-          mimeType,
+        const result = await runGuardedImageStudioCall({
+          service: "AI",
+          userId: Number(ctx.user.id),
+          run: () => generateStudioImage({
+            apiKey: runtime.apiKey,
+            model: runtime.model,
+            prompt,
+            imageBase64,
+            mimeType,
+          }),
         });
         return {
           imageDataUrl: `data:${result.mimeType};base64,${result.imageBase64}`,
@@ -204,6 +223,12 @@ export const imageStudioRouter = router({
           model: runtime.model,
         };
       } catch (e) {
+        if (e instanceof ImageStudioGuardError) {
+          throw new TRPCError({
+            code: e.kind === "DAILY_BUDGET_EXHAUSTED" ? "PRECONDITION_FAILED" : "TOO_MANY_REQUESTS",
+            message: imageStudioGuardErrorMessageAr(e.kind),
+          });
+        }
         if (e instanceof AiImageError) {
           // AUTH/QUOTA = خلل إعداد/خطّة (PRECONDITION)؛ BLOCKED/BAD_INPUT/NO_IMAGE = مدخل يُعدَّل (BAD_REQUEST)؛
           // SERVICE/NETWORK = مؤقّت (INTERNAL).
