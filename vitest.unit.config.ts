@@ -26,6 +26,8 @@ export default defineConfig({
       "client/src/pages/__tests__/auditedUxContracts.test.ts",
       "client/src/components/scan/BarcodeSearchCue.test.ts",
       "server/auth/password.test.ts",
+      "server/lib/imageStore/__tests__/imageStore.test.ts",
+      "server/lib/imageStore/__tests__/r2Store.test.ts",
       "server/services/__tests__/couponService.test.ts",
       "server/services/__tests__/businessDay.test.ts",
       "server/services/__tests__/reconcileSummary.test.ts",
