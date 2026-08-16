@@ -39,6 +39,7 @@ import {
   trpcAwareRateLimitHandler,
 } from "./middleware/trpcError";
 import { hasOverfilledPublicSensitiveBatch } from "./middleware/publicSensitiveBatch";
+import { publicStorefrontHostBoundary } from "./middleware/publicStorefrontHost";
 import {
   isBackgroundJobRunner,
   isClustered,
@@ -113,6 +114,9 @@ async function startServer() {
   assertMobileProductionReadiness();
 
   const app = express();
+  // alarabiya.online سطح العملاء فقط؛ لا يكفي تحويل React لأن API يظل قابلاً للوصول مباشرةً.
+  // يُركَّب قبل محللات الجسم وtRPC كي يُرفض API الداخلي مبكراً وبلا عمل قاعدة بيانات.
+  app.use(publicStorefrontHostBoundary);
   // توحيد حساسية المسار مع Nginx: Express غير حساس للحالة افتراضياً، ما يسمح لمسار
   // /API/TRPC بتجاوز locations الدقيقة/حدودها ثم الوصول للراوتر نفسه.
   app.set("case sensitive routing", true);
