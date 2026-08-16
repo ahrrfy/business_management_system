@@ -59,7 +59,10 @@ describe("اشتقاق طرق القبض من السياسة في كل شاشا�
     expect(invoice).toContain("PaymentReferenceField");
     expect(invoice).toContain("initiateExternalPayment");
     expect(invoice).toContain("confirmExternalPayment");
-    expect(invoice).toContain("externalPaymentAttemptId: externalAttempt?.attemptId");
+    expect(invoice).toContain("externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined");
+    // جهاز المحاولة يُرسَل مع الإنشاء وإلا رُفض استهلاكها؛ وفرعُ المحاولة = فرع الفاتورة.
+    expect(invoice).toContain("deviceId: externalAttempt.deviceId");
+    expect(invoice).toContain("const branchId = state.branchId;");
     // مسار التصحيح يمرّ بعقد `reissue` الذي يحمل المرجع النصّي بنفسه.
     expect(invoice).toContain("reference: paymentRef.trim()");
   });

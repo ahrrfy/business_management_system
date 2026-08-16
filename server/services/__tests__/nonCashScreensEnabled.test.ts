@@ -13,7 +13,7 @@ import { getDb } from "../../db";
 import { withTx } from "../tx";
 import { convertQuotation, createQuotation, setQuotationStatus } from "../quotationService";
 import { payLine } from "../installment/payment";
-import { withdraw } from "../digitalCards/walletOpsService";
+import { deposit, withdraw } from "../digitalCards/walletOpsService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" } as const;
 
@@ -154,6 +154,22 @@ describe("سحب رصيد المحفظة الرقمية بالتحويل", () =>
     }, ACTOR))).rejects.toThrow(/مرجع الحوالة/);
     expect((await db().select().from(s.digitalWallets))[0].currentBalance).toBe("1000.00");
     await noMoneyTrail();
+  });
+
+  it("الإيداع بالتحويل يخضع للقاعدة نفسها — بلا مرجع يُرفض، وبمرجعه يُحفَظ", async () => {
+    await seedWallet();
+    await expect(withTx((tx) => deposit(tx, {
+      walletId: 1, amount: "200.00", paymentMethod: "TRANSFER", clientRequestId: "d-no-ref-0001",
+    }, ACTOR))).rejects.toThrow(/مرجع الحوالة/);
+
+    const res = await withTx((tx) => deposit(tx, {
+      walletId: 1, amount: "200.00", paymentMethod: "TRANSFER",
+      referenceNumber: "BANK-DEP-7788", clientRequestId: "d-with-ref-0001",
+    }, ACTOR));
+    expect(res.receiptId).toBeGreaterThan(0);
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.id, res.receiptId));
+    expect(receipt.referenceNumber).toBe("BANK-DEP-7788");
+    expect(receipt.cashBucket).toBeNull();
   });
 
   it("بمرجع الحوالة: يُسحَب ويُحفَظ المرجع البنكيّ لا المعرّف الداخليّ", async () => {

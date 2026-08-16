@@ -144,12 +144,19 @@ export async function deposit(
     walletId: number;
     amount: string;
     paymentMethod: "CASH" | "TRANSFER";
+    /** مرجع الحوالة من كشف البنك — إلزاميّ للتحويل. */
+    referenceNumber?: string | null;
     clientRequestId: string;
     notes?: string | null;
   },
   actor: Actor,
 ): Promise<{ transactionId: number; receiptId: number; balanceAfter: string; pendingApproval?: boolean }> {
   const amount = money(input.amount);
+  // نظير السحب: مرجعٌ داخليّ (UUID) لا يُطابَق بكشف البنك.
+  const depositBankReference = input.referenceNumber?.trim() || null;
+  if (input.paymentMethod !== "CASH" && !depositBankReference) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع الحوالة مطلوب لإيداع المحفظة بالتحويل" });
+  }
   if (amount.lte(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون أكبر من صفر" });
   }
@@ -243,7 +250,7 @@ export async function deposit(
     amount: toDbMoney(amount),
     paymentMethod: input.paymentMethod,
     cashBucket: null,
-    referenceNumber: input.clientRequestId,
+    referenceNumber: depositBankReference ?? input.clientRequestId,
     status: "COMPLETED",
     partyType: "OTHER",
     description: `إيداع رصيد في محفظة «${w.name}» لدى ${prov?.supplierName ?? "مزوّد"}${input.notes ? " — " + input.notes : ""}`,

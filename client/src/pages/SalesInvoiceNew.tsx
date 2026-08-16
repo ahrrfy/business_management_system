@@ -319,12 +319,15 @@ export default function SalesInvoiceNew() {
    */
   const [paymentRef, setPaymentRef] = useState("");
   const [externalAttempt, setExternalAttempt] = useState<
-    { attemptId: number; requestId: string; deviceId: string; fingerprint: string } | null
+    { attemptId: number | null; requestId: string; deviceId: string; fingerprint: string; confirmed: boolean } | null
   >(null);
-  const externalAmount = round2(D(computePaidStr())).toFixed(2);
-  const externalFingerprint = `${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
+  /** مبلغ الإثبات = ما يُرسَل فعلاً: `collectNow` في التصحيح، ومدفوع الفاتورة في الإنشاء. */
+  const externalAmountD = isCorrection ? D(collectNow.trim() || "0") : D(computePaidStr());
+  const externalAmount = round2(externalAmountD).toFixed(2);
+  const externalNeeded = state.paymentMethod !== "CASH" && externalAmountD.gt(0);
+  const externalFingerprint = `${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
   const externalConfirmed =
-    state.paymentMethod === "CASH" || externalAttempt?.fingerprint === externalFingerprint;
+    !externalNeeded || (externalAttempt?.confirmed === true && externalAttempt.fingerprint === externalFingerprint);
 
   const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
   const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
@@ -332,22 +335,33 @@ export default function SalesInvoiceNew() {
   async function confirmExternalPayment() {
     const reference = paymentRef.trim();
     if (!reference) return notify.err("أدخل مرجع العملية أولاً.");
-    if (!D(externalAmount).gt(0)) return notify.err("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
-    const branchId = me.data?.branchId;
-    if (branchId == null) return notify.err("لا فرع مُسنَد لهذا المستخدم — لا يمكن تأكيد دفع خارجي.");
+    if (!externalAmountD.gt(0)) return notify.err("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
+    // فرع **الفاتورة** لا فرع المستخدم: المحاولة والفاتورة يجب أن يتّفقا وإلا رُفض الاستهلاك.
+    const branchId = state.branchId;
+    if (!branchId) return notify.err("حدّد فرع الفاتورة قبل تأكيد الدفع الخارجي.");
     try {
-      const deviceId = externalAttempt?.deviceId ?? (await getDeviceCode());
-      const requestId = externalAttempt?.requestId ?? crypto.randomUUID();
-      const initiated = await initiateExternal.mutateAsync({
-        branchId: Number(branchId),
-        method: state.paymentMethod as "CARD" | "TRANSFER" | "WALLET",
-        amount: externalAmount,
-        reference,
-        requestId,
-        deviceId,
-      });
-      await confirmExternal.mutateAsync({ branchId: Number(branchId), attemptId: initiated.attemptId, deviceId });
-      setExternalAttempt({ attemptId: initiated.attemptId, requestId, deviceId, fingerprint: externalFingerprint });
+      // إعادة استعمال المحاولة السابقة مشروطةٌ ببقاء بصمتها؛ وإلا فمعرّف طلبٍ جديد —
+      // فالمفتاح نفسه ببياناتٍ مختلفة يُردّ بتعارضٍ حتميّ.
+      const prior = externalAttempt?.fingerprint === externalFingerprint ? externalAttempt : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const requestId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        const initiated = await initiateExternal.mutateAsync({
+          branchId: Number(branchId),
+          method: state.paymentMethod as "CARD" | "TRANSFER" | "WALLET",
+          amount: externalAmount,
+          reference,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        // تُحفَظ **قبل** التأكيد: لو سقط التأكيد، تُعاد المحاولة نفسها بدل توليد مفتاحٍ
+        // جديد لمرجعٍ عالميّ الفرادة (فيُرفض تكراراً ويُحبَس القبض).
+        setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: false });
+      }
+      await confirmExternal.mutateAsync({ branchId: Number(branchId), attemptId, deviceId });
+      setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: true });
       notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرّةً واحدة.`);
     } catch (error) {
       notify.err(error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي");
@@ -470,9 +484,13 @@ export default function SalesInvoiceNew() {
             method: state.paymentMethod,
             ...(state.paymentMethod === "CASH"
               ? {}
-              : { externalPaymentAttemptId: externalAttempt?.attemptId }),
+              : { externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined }),
           }
         : undefined,
+      // يجب أن يطابق جهاز المحاولة المؤكَّدة، وإلا رُفض استهلاكها.
+      ...(hasPayment && state.paymentMethod !== "CASH" && externalAttempt?.deviceId
+        ? { deviceId: externalAttempt.deviceId }
+        : {}),
       // تاريخ الاستحقاق للبيع الآجل/الأقساط فقط (يُحفظ على invoices.dueDate ⇒ أعمار الذمم
       // تُعمِّر من موعد الاستحقاق لا تاريخ الفاتورة). الحقل يظهر في الترويسة لهذين النوعين فقط.
       dueDate:
@@ -553,10 +571,10 @@ export default function SalesInvoiceNew() {
     // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
     // في وضع التصحيح: الدفع محمولٌ خادمياً وتحقّقه في validateCorrection ⇒ نتخطّى منطق الدفع هنا.
     // لا يُفتَح الحفظ لدفعٍ غير نقديّ قبل تثبيت إثباته (محاولةٌ مؤكَّدة للإنشاء، مرجعٌ للتصحيح).
-    if (state.paymentMethod !== "CASH" && D(computePaidStr()).gt(0)) {
+    if (externalNeeded) {
       if (isCorrection) {
         if (!paymentRef.trim()) return "أدخِل مرجع العملية للدفع غير النقديّ.";
-      } else if (!externalConfirmed || externalAttempt == null) {
+      } else if (!externalConfirmed || externalAttempt?.attemptId == null) {
         return "ثبّت تأكيد الدفع غير النقديّ قبل حفظ الفاتورة.";
       }
     }
@@ -886,7 +904,7 @@ export default function SalesInvoiceNew() {
           />
           {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لبوّابة الكاشير.
               في التصحيح يكفي المرجع النصّي (عقد `sales.reissue` يحمله بنفسه). */}
-          {state.paymentMethod !== "CASH" && D(computePaidStr()).gt(0) && (
+          {externalNeeded && (
             <div className="rounded-xl border bg-card p-3">
               <PaymentReferenceField
                 value={paymentRef}
