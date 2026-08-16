@@ -49,9 +49,15 @@ export interface ReplayOfflineSaleInput {
 export async function replayOfflineSale(
   input: ReplayOfflineSaleInput,
   actor: Actor,
+  options?: { skipCaptureWindow?: boolean },
 ): Promise<CreateSaleResult> {
   // نافذة الالتقاط ونقديّة الدفع — حرّاسٌ مشتركة (captureWindow.ts) لا نسخةٌ محليّة.
-  const capturedAt = assertCaptureWindow(input.capturedAt);
+  // `skipCaptureWindow` لمسار استرداد المدير وحده (offline/recovery.ts): عمرُ العنصر هو **سببُ**
+  // وجوده في الطابور أصلاً، وقد راجعه إنسانٌ الآن. أمّا حارس الوردية المفتوحة فيبقى نافذاً
+  // داخل createSale — الإقفال حدٌّ محاسبيّ لا يُكتب بأثر رجعيّ بأيّ حال.
+  const capturedAt = options?.skipCaptureWindow
+    ? new Date(input.capturedAt)
+    : assertCaptureWindow(input.capturedAt);
   assertCashOnly(input.payment.method);
 
   return createSale(

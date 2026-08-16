@@ -22,6 +22,12 @@ import { replayOfflineSale } from "../services/offline/replaySale";
 import { replayOfflinePrintSale } from "../services/offline/replayPrintSale";
 import { replayOfflineReception } from "../services/offline/replayReception";
 import { buildOfflineSalesReport } from "../services/offline/salesReport";
+import {
+  captureRejectedReplay,
+  discardRecoveryItem,
+  listRecoveryQueue,
+  postRecoveryItem,
+} from "../services/offline/recovery";
 import { verifyManagerApproval } from "./saleRouter";
 import {
   customersReadProcedure,
@@ -30,6 +36,7 @@ import {
   reportViewerProcedure,
   router,
   salesCashierProcedure,
+  salesManagerProcedure,
   workordersCashierProcedure,
 } from "../trpc";
 
@@ -224,7 +231,19 @@ export const offlineRouter = router({
           return res;
         } catch (e: unknown) {
           if (isDupEntry(e) && attempt < 2) continue;
-          if (e instanceof TRPCError) throw e;
+          if (e instanceof TRPCError) {
+            // و-٤: رفضُ الأعمال (وردية مقفلة / خارج نافذة الالتقاط) يعني بيعاً **مدفوعاً** لا
+            // مكان له في الدفتر. نلتقط الحمولة خادمياً لحظتها فلا تعتمد نجاتها على جهازٍ قد
+            // يُمسح، ثم نُعيد رمي الرفض كما هو — سلوك العميل لم يتغيّر.
+            if (e.code === "PRECONDITION_FAILED") {
+              await captureRejectedReplay(
+                { ...replayInput, branchId: effectiveBranchId },
+                e.code,
+                e.message,
+              );
+            }
+            throw e;
+          }
           const err = e as { message?: string; code?: string; sqlMessage?: string; sql?: string };
           logger.error(
             {
@@ -374,6 +393,38 @@ export const offlineRouter = router({
           deviceId: input.deviceId ?? null,
           lines: (input.regularSale?.lines.length ?? 0) + (input.printSale?.lines.length ?? 0),
         },
+      );
+    }),
+  /** طابور الاسترداد: مبيعاتٌ أوفلاينية مدفوعة رفضها الخادم ولم تدخل الدفتر بعد. */
+  recoveryQueue: salesManagerProcedure.query(async ({ ctx }) => {
+    return listRecoveryQueue({
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+      role: ctx.user.role,
+    });
+  }),
+
+  /** ترحيل عنصرٍ محتجَز إلى وردية مفتوحة — هنا فقط يُكتب القيد. */
+  postRecoveryItem: salesManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), targetShiftId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      return postRecoveryItem(
+        input.id,
+        input.targetShiftId,
+        { userId: ctx.user.id, branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId), role: ctx.user.role },
+        ctx,
+      );
+    }),
+
+  /** إهمال عنصر (إيصال فحص/تجربة) — بسببٍ إلزاميّ وأثرٍ تدقيقيّ. */
+  discardRecoveryItem: salesManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), reason: z.string().min(5).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      return discardRecoveryItem(
+        input.id,
+        input.reason,
+        { userId: ctx.user.id, branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId), role: ctx.user.role },
+        ctx,
       );
     }),
 });
