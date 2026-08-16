@@ -47,7 +47,10 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts
 pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t "اسم الحالة"
 ```
 - **`TZ=UTC` إلزاميّ:** سكربت `test` يضبطها بـ`cross-env`، والاستدعاء المباشر لا ⇒ تُحمَّر اختبارات التاريخ زوراً.
-- **قاعدة الاختبار تُشتقّ من اسم شجرة العمل تلقائياً** (`scripts/lib/test-db-name.mjs`): `erp_<اسم-المجلّد>_test` على `127.0.0.1:3310`، والمستودع الأصل وحده يبقى `erp_test`. هذا ما يمنع تقاتل الجلسات المتوازية على قاعدةٍ واحدة (`__setup__.ts` يمسح **كل صفوف كل الجداول** بعد كل ملف) — لا تضبط `TEST_DATABASE_URL` يدوياً بلا سببٍ صريح.
+- **قاعدة الاختبار — مساران مختلفان، اعرف أيّهما أنت فيه** (`__setup__.ts` يمسح **كل صفوف كل الجداول** بعد كل ملف ⇒ الخلط بينهما يُسقِط اختبارات جلسةٍ أخرى):
+  - **بلا `TEST_DATABASE_URL`** (شجرة عملٍ عادية/harness): تُشتقّ تلقائياً من اسم المجلّد — `erp_<اسم-المجلّد>_test` على **`127.0.0.1:3310`** (`scripts/lib/test-db-name.mjs`)، والمستودع الأصل وحده يبقى `erp_test`.
+  - **⚠️ بعد `pnpm session:new`**: السكربت **يكتب `TEST_DATABASE_URL` صراحةً** مشتقّاً من `DATABASE_URL` في `.env` الجذر ([session.mjs:177-182](scripts/session.mjs#L177)) ⇒ يرث **منفذ 3306** بالإعداد الافتراضي، فيُلغي الاشتقاق أعلاه. وحارسا 3306 يرفضانه عندئذٍ: [`init-test-db.mjs:48`](scripts/init-test-db.mjs#L48) و[`__setup__.ts:69`](server/services/__tests__/__setup__.ts#L69). للتشغيل: إمّا **عدِّل `TEST_DATABASE_URL` في `.env` الجلسة إلى `mysql://root:testpw@127.0.0.1:3310/erp_<الجلسة>_test`** (المفضَّل)، أو اقبل قاعدة الجلسة على 3306 صراحةً بـ`ALLOW_PORT_3306=1` و`ALLOW_TEST_DB_PORT_3306=1` — **ولا تفعل الثانية إن كانت حاوية 3306 لديك مرآةَ الإنتاج**.
+  - **الأصحّ بنيوياً** أن يُولّد `session:new` رابط الاختبار من قاعدة 3310 لا من `DATABASE_URL` — إصلاحٌ مفتوح (أمسكته مراجعة Codex على PR #600).
 - `fileParallelism: false` — الملفات تتسلسل؛ لا تسريع بالتوازي.
 - ⚠️ **`tsconfig.json` يستثني `**/*.test.ts`** ⇒ `pnpm check` **لا** يفحص أنواع الاختبارات؛ خطأ النوع فيها يظهر عند `vitest` وحده.
 - **`pre-commit` = `pnpm check && pnpm check:guards`** (~دقيقة) لا الحزمة الكاملة — أُعيدت معايرته لأنّ الحارس البطيء كان يُتجاوَز بـ`--no-verify` فيصير مسرحياً. الحزمة الكاملة مكانها CI (`check-test-build` فحصٌ مطلوبٌ لحماية `main`).
@@ -176,10 +179,11 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 - **دليل النظام التشغيلي العميق** (تمتين الذاكرة/التعارض/الوكلاء): [`docs/playbook.md`](docs/playbook.md) — يُقرأ عند الحاجة. **أبقِ هذا الملف رشيقاً.**
 - **سجلّ الحملات المنتهية:** [`docs/campaign-log.md`](docs/campaign-log.md) — أرشيف §٦ و§٩ السابقين حرفياً (٨٦ك). تاريخيٌّ لا مرجعيّ: **تحقّق من الشيفرة قبل البناء على أيّ ادّعاءٍ فيه.**
 - **دفاتر عملٍ مفتوحة (بنودٌ لم تُغلَق بعد):**
-  - [`docs/audit-followups-2026-07-02.md`](docs/audit-followups-2026-07-02.md) — بنود F1-F7 بمربّعات شطب، تُنفَّذ في بيئة DB حيّة.
+  - [`docs/functional-audit-2026-07-17.md`](docs/functional-audit-2026-07-17.md) — **بندٌ واحد ما زال مفتوحاً ومُتحقَّقاً حيّاً ([السطر ٣٤١](docs/functional-audit-2026-07-17.md#L341)): رقم أمر الشراء يقود إلى `/purchases/:id` وهو مسارٌ غير معرَّف** — [PurchaseRegister.tsx:222](client/src/pages/PurchaseRegister.tsx#L222) و[GeneralLedger.tsx:131](client/src/pages/GeneralLedger.tsx#L131) يربطان إليه، بينما [App.tsx:303-306](client/src/App.tsx#L303) يعرّف `/purchases` و`/purchases/new` و`/purchases/:id/receive` فقط ⇒ كل نقرةٍ على رقم أمر تنتهي بصفحةٍ فارغة. بقيّة بنوده التقنية مُغلقة، وقرارات المالك التي كانت معلَّقة فيه حُسِمت كلّها (إلغاء الفاتورة #563 · عزل مدير الفرع #568 · الدفعة الأولى للقسط #560).
   - [`docs/financial-integrity-audit-2026-07-27.md`](docs/financial-integrity-audit-2026-07-27.md) — تدقيق ٦٨ وكيلاً من الكود وحده؛ صفر حرِج، ٨ عالية. **⚠️ حُدِّث ١٦/٨: بندا عزل RBAC المذكوران فيه أُصلِحا فعلاً** (`globalSearch/rbac.ts` صار يستشير خريطة الصلاحيات بدلالة `requireModule`؛ وحارس `shift.report` يقرأ `report.shift.branchId` — [shiftRouter.ts:477](server/routers/shiftRouter.ts#L477)). المتبقّي الجوهريّ: **حوكمة تعديل `costPrice`** (تعديلٌ يدويّ بلا قيدٍ مقابلٍ ولا حارس فترة ⇒ حركة حقوقٍ صامتة + COGS رجعيّ) والتسعير اليدويّ بلا سقف.
-  - [`docs/functional-audit-2026-07-17.md`](docs/functional-audit-2026-07-17.md) — بنوده التقنية مُغلقة؛ وقرارات المالك التي كانت معلَّقة فيه **حُسِمت كلّها** (إلغاء الفاتورة #563 · عزل مدير الفرع #568 · الدفعة الأولى للقسط #560).
-- **أرشيف مُغلق — لا تُعِد استقصاءه:** [`docs/_audit-archive/REVIEW-2026-06-15.md`](docs/_audit-archive/REVIEW-2026-06-15.md) (مُعالَجٌ بالكامل).
+- **أرشيف مُغلق — لا تُعِد استقصاءه:**
+  - [`docs/_audit-archive/REVIEW-2026-06-15.md`](docs/_audit-archive/REVIEW-2026-06-15.md) (مُعالَجٌ بالكامل).
+  - [`docs/audit-followups-2026-07-02.md`](docs/audit-followups-2026-07-02.md) — **مُغلق**: بنود F1-F7 كلّها `[x]` (١٤ مربّعاً، صفر غير مشطوب) والملف نفسه ينتهي بـ«يمكن أرشفة هذا الملف بعد الدمج». لا تُعِد فتح هجرة FK أو إنفاذ الأدوار أو idempotency العروض بناءً عليه.
 - **لا يوجد `README.md`:** هذا الملف هو المدخل الوحيد للمشروع، و`docs/` يحوي ٣٥+ وثيقة تصميمٍ وتدقيقٍ مؤرَّخة.
 - **ذاكرة دائمة:** `~/.claude/projects/.../memory/` (مؤشرات). **خطط المراحل:** `~/.claude/plans/`.
 - **اختبارات:** `server/services/__tests__/` (الثقل الأكبر) + `client/src/lib/**/*.test.ts` + `shared/**/*.test.ts`.
