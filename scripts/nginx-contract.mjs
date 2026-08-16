@@ -208,6 +208,39 @@ export function verifyRenderedNginxTopology(rendered, options = {}) {
   });
 }
 
+/**
+ * المجلّدات الأمّ التي **لا** يُسجَّل توقيت تعديلها في البصمة.
+ *
+ * `snippets/` مستثنىً أصلاً لأنّ التثبيت نفسه يكتب فيه فيغيّر توقيته. ويُضاف إليه مجلّدا
+ * اعتماديات TLS (`/etc/letsencrypt` وما تحته) لأنّ **certbot** يملكهما ويحدّث توقيتهما في كل
+ * دورة تجديدٍ روتينية — حدثٌ نظاميّ مشروع خارج سيطرة العقد. إدراجه كان يُسقِط النشر بإنذارٍ
+ * كاذب («عبثٌ بالإعداد») بلا أن يتغيّر ملفٌّ واحد (حادثة ١٦/٨/٢٦: توقيت `/etc/letsencrypt`
+ * وحده تغيّر بينما الملفّات الثلاثة عشر كلّها سليمة، فتوقّف نشرٌ مشروع).
+ *
+ * ⚠️ الاستثناء يقتصر على **توقيت المجلّد**؛ بصمة كل ملفٍّ (النوع، وجهة الرابط، الأذونات،
+ * المالك، الحجم، وتوقيته هو) تبقى محسوبةً ومقارَنةً كما كانت — فلا تضعف قدرة العقد على كشف
+ * أيّ تبديلٍ حقيقيّ في الشهادات أو الإعداد.
+ */
+function topologyIgnoredParents(options = {}) {
+  const nginxRoot = path.resolve(options.nginxRoot ?? "/etc/nginx");
+  const tlsDependencies = options.tlsDependencies ?? NGINX_TLS_DEPENDENCIES;
+  return new Set([
+    path.join(nginxRoot, "snippets"),
+    ...tlsDependencies.map((file) => path.resolve(path.dirname(file))),
+  ]);
+}
+
+/**
+ * يُصفّر توقيت المجلّد الأمّ للسجلّات المستثناة على **الطرفين** قبل المقارنة.
+ * التطبيق على الطرفين مقصود: يجعل البصمات المكتوبة قبل هذا الإصلاح (وفيها توقيتٌ حقيقيّ
+ * لمجلّد certbot) تُقارَن بنجاح بلا حاجة لإعادة توثيقٍ بصلاحيات root على الخادم.
+ */
+function normalizeTopologyRecord(record, ignoredParents) {
+  if (!record || typeof record.path !== "string") return record;
+  if (!ignoredParents.has(path.resolve(path.dirname(record.path)))) return record;
+  return { ...record, parentMtimeMs: null };
+}
+
 function topologyFileRecord(file, ignoredParent = null) {
   let lstat;
   let stat;
@@ -249,12 +282,9 @@ function topologyFileRecord(file, ignoredParent = null) {
 
 export function createNginxTopologyAttestation(rendered, options = {}) {
   const topology = verifyRenderedNginxTopology(rendered, options);
-  const ignoredParent = path.join(
-    path.resolve(options.nginxRoot ?? "/etc/nginx"),
-    "snippets",
-  );
+  const ignoredParents = topologyIgnoredParents(options);
   const files = topology.files
-    .map((file) => topologyFileRecord(file, ignoredParent))
+    .map((file) => normalizeTopologyRecord(topologyFileRecord(file), ignoredParents))
     .sort((left, right) => left.path.localeCompare(right.path));
   return `${JSON.stringify({ version: 1, files })}\n`;
 }
@@ -508,12 +538,17 @@ function inspectTopologyAttestation(contract, options, issues) {
     issues.push("NGINX_LIVE_TOPOLOGY_ATTESTATION_INVALID");
     return;
   }
-  for (const expected of attestation.files) {
+  const ignoredParents = topologyIgnoredParents({
+    nginxRoot: contract.nginxRoot,
+    tlsDependencies: options.tlsDependencies,
+  });
+  for (const expectedRaw of attestation.files) {
+    const expected = normalizeTopologyRecord(expectedRaw, ignoredParents);
     let actual;
     try {
-      actual = topologyFileRecord(
-        path.resolve(expected?.path ?? ""),
-        path.dirname(contract.topologyAttestationPath),
+      actual = normalizeTopologyRecord(
+        topologyFileRecord(path.resolve(expectedRaw?.path ?? "")),
+        ignoredParents,
       );
     } catch {
       issues.push("NGINX_LIVE_TOPOLOGY_DRIFT");
@@ -533,6 +568,9 @@ export function verifyLiveNginxContract(options = {}) {
     strictOwnership: options.strictOwnership ?? process.platform !== "win32",
     expectedUid: options.expectedUid ?? 0,
     expectedGid: options.expectedGid ?? 0,
+    // يُمرَّر كما هو (قد يكون `[]` في الاختبارات) كي يُحسب استثناء المجلّدات الأمّ بنفس
+    // مدخلات التوليد — ولا يسقط الفحص على القائمة الحقيقية داخل بيئة اختبارٍ معزولة.
+    tlsDependencies: options.tlsDependencies,
     appEnvPath: path.resolve(
       options.appEnvPath ?? path.join(contract.projectRoot, ".env"),
     ),

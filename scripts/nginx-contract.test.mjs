@@ -193,6 +193,28 @@ function runRollbackFault(fault) {
     });
     assert.equal(verified.files, NGINX_MANAGED_FILES.length);
     assert.equal(verified.links, 0);
+
+    // انحدار (١٦/٨/٢٦): تجديد شهادة certbot يغيّر **توقيت مجلّد** اعتماديات TLS وحده بلا
+    // مساس بأيّ ملفّ. كان ذلك يُسقط النشر بإنذارٍ كاذب. نحاكيه هنا: مجلّدٌ في قائمة
+    // tlsDependencies يُلمَس توقيته ⇒ يجب أن **يبقى النشر ممكناً**.
+    const tlsDirectory = path.join(fixture.nginxRoot, "sites-enabled");
+    const renewedAt = new Date(Date.now() + 60_000);
+    fs.utimesSync(tlsDirectory, renewedAt, renewedAt);
+    const afterRenewal = verifyLiveNginxContract({
+      projectRoot: fixture.projectRoot,
+      nginxRoot: fixture.nginxRoot,
+      strictOwnership: false,
+      strictMode: false,
+      managedLinks: [],
+      // مجلّد الاعتماديات = sites-enabled في هذه التجهيزة (يقوم مقام /etc/letsencrypt).
+      tlsDependencies: [path.join(tlsDirectory, "fullchain.pem")],
+    });
+    assert.equal(
+      afterRenewal.files,
+      NGINX_MANAGED_FILES.length,
+      "renewing a TLS dependency directory must not block a legitimate deploy",
+    );
+
     fs.writeFileSync(
       path.join(fixture.nginxRoot, "sites-enabled", "legacy-storefront"),
       "server_name alarabiya.online;\n",
