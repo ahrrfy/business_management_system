@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
 import { fmtDate } from "@/lib/date";
-import { fmtAr, positiveDiff } from "@/lib/money";
+import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { PackageCheck } from "lucide-react";
@@ -68,7 +68,19 @@ export default function PurchaseOrderDetail() {
     return <ErrorState message="رقم أمر شراء غير صالح." />;
   }
   if (po.isLoading) return <LoadingState />;
-  if (po.error) return <ErrorState message={po.error.message} />;
+  // دورٌ مُنح «التقارير» صراحةً دون «المشتريات» يعبُر سجلّ المشتريات/الأستاذ (بوّابة reports)
+  // ثمّ يصطدم هنا بـFORBIDDEN لأنّ `purchases.get` يلزمه purchases≥READ. لا نُوسّع الإجراء
+  // (يسرّب تكلفة الشراء لأدوارٍ لم تُمنَحها) — نشرح السبب بدل خطأٍ خام.
+  if (po.error) {
+    return po.error.data?.code === "FORBIDDEN" ? (
+      <EmptyState
+        title="لا تملك صلاحية «المشتريات»"
+        description="تفاصيل أمر الشراء تتطلّب صلاحية المشتريات (قراءة) — اطلبها من المدير."
+      />
+    ) : (
+      <ErrorState message={po.error.message} />
+    );
+  }
   if (!po.data) {
     return (
       <EmptyState
@@ -80,8 +92,17 @@ export default function PurchaseOrderDetail() {
 
   const d = po.data;
   const costHidden = d.total === null;
-  const remaining = costHidden ? null : positiveDiff(d.total, d.paidAmount);
-  const openForReceiving = d.status !== "RECEIVED" && d.status !== "CANCELLED";
+  const isUsd = d.agreedCurrency === "USD";
+  // المتبقّي للمورّد بعملة الاتفاق: أمر الدولار تُتابَع ذمّته بـusdTotal−paidUsd−returnedUsd
+  // (نفس حساب PurchaseReceive وخدمة التسوية) — عرض متبقّي الدينار وحده يُظهر رقماً مختلفاً مادّياً.
+  const remaining = costHidden
+    ? null
+    : isUsd
+      ? positiveDiff(d.usdTotal, D(d.paidUsd ?? 0).plus(D(d.returnedUsd ?? 0)).toString())
+      : positiveDiff(d.total, d.paidAmount);
+  // الاستلام مقصورٌ على CONFIRMED: `receivePurchase` يرفض كل ما عداها (purchase/receive.ts:180)
+  // ⇒ إظهار الزرّ لمسوّدةٍ أو أمرٍ مُرسَل يقود المستخدم إلى رفضٍ حتميّ بعد ملء النموذج.
+  const openForReceiving = d.status === "CONFIRMED";
 
   return (
     <div className="space-y-4">
@@ -106,7 +127,7 @@ export default function PurchaseOrderDetail() {
         <CardContent className="grid grid-cols-2 gap-4 md:grid-cols-4">
           <Field label="المورّد">
             {d.supplierId ? (
-              <Link href={`/suppliers/${d.supplierId}`} className="text-primary underline-offset-2 hover:underline">
+              <Link href={`/suppliers/${d.supplierId}/edit`} className="text-primary underline-offset-2 hover:underline">
                 {d.supplierName ?? `#${d.supplierId}`}
               </Link>
             ) : (
@@ -137,10 +158,10 @@ export default function PurchaseOrderDetail() {
                 <tr>
                   <th className="p-2.5 text-end font-medium">الصنف</th>
                   <th className="p-2.5 text-end font-medium">الوحدة</th>
-                  <th className="p-2.5 text-end font-medium">المطلوب</th>
-                  <th className="p-2.5 text-end font-medium">المستلَم</th>
-                  <th className="p-2.5 text-end font-medium">سعر الوحدة</th>
-                  <th className="p-2.5 text-end font-medium">الإجمالي</th>
+                  <th className="p-2.5 text-end font-medium">الكمية</th>
+                  <th className="p-2.5 text-end font-medium">المستلَم / المطلوب (أساس)</th>
+                  <th className="p-2.5 text-end font-medium">سعر الوحدة{isUsd ? " ($)" : ""}</th>
+                  <th className="p-2.5 text-end font-medium">الإجمالي{isUsd ? " ($)" : ""}</th>
                 </tr>
               </thead>
               <tbody>
@@ -152,9 +173,17 @@ export default function PurchaseOrderDetail() {
                     </td>
                     <td className="p-2.5 text-end">{it.unitName ?? "—"}</td>
                     <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(it.quantity)}</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(it.receivedBaseQuantity)}</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(it.unitPrice)}</td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(it.total)}</td>
+                    {/* الطرفان بوحدة الأساس: `quantity` بوحدة الشراء و`receivedBaseQuantity` بالأساس،
+                        فمقارنتهما مباشرةً تُظهر «٢ مطلوب / ٢٤ مستلَم» لكرتونٍ من ١٢. */}
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
+                      {fmtAr(it.receivedBaseQuantity)} / {fmtAr(it.baseQuantity)}
+                    </td>
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
+                      {fmtAr(isUsd ? it.usdUnitPrice : it.unitPrice)}
+                    </td>
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">
+                      {fmtAr(isUsd ? it.usdTotal : it.total)}
+                    </td>
                   </tr>
                 ))}
                 {d.items.length === 0 ? (
@@ -185,8 +214,16 @@ export default function PurchaseOrderDetail() {
               <Field label="الكمرك">{fmtAr(d.customsCost)}</Field>
               <Field label="الإجمالي">{fmtAr(d.total)}</Field>
               <Field label="المدفوع">{fmtAr(d.paidAmount)}</Field>
-              <Field label="المتبقّي">{fmtAr(remaining?.toString())}</Field>
-              {d.agreedCurrency === "USD" ? <Field label="الإجمالي بالدولار">{fmtAr(d.usdTotal)}</Field> : null}
+              {isUsd ? (
+                <>
+                  <Field label="فاتورة المورّد ($)">{fmtAr(d.usdTotal)}</Field>
+                  <Field label="المدفوع ($)">{fmtAr(d.paidUsd)}</Field>
+                  <Field label="المُرتجَع ($)">{fmtAr(d.returnedUsd)}</Field>
+                  <Field label="المتبقّي للمورّد ($)">{fmtAr(remaining?.toString())}</Field>
+                </>
+              ) : (
+                <Field label="المتبقّي">{fmtAr(remaining?.toString())}</Field>
+              )}
             </div>
           )}
         </CardContent>
