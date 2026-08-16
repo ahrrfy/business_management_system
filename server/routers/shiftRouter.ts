@@ -453,13 +453,15 @@ export const shiftRouter = router({
   // (treasuryCashierProcedure نفس بوّابة الإغلاق) كي يختار من يُسلّمه نقد الدرج.
   handoverRecipients: treasuryCashierProcedure.query(async () => {
     const db = getDb();
-    if (!db) return [] as { id: number; name: string }[];
+    if (!db) return [] as { id: number; name: string; branchId: number | null }[];
     const rows = await db
-      .select({ id: users.id, name: users.name })
+      // branchId مكشوفٌ للواجهة كي تُصفّي المستلمين بفرع العهدة (مراجعة Codex على #605):
+      // القائمة عابرةٌ للفروع، ومَن هو خارج فرع العهدة يرفضه الخادم لاحقاً ⇒ خيارٌ ميّت في الشاشة.
+      .select({ id: users.id, name: users.name, branchId: users.branchId })
       .from(users)
       .where(and(eq(users.isActive, true), inArray(users.role, ["admin", "manager"])))
       .orderBy(users.name);
-    return rows.map((r) => ({ id: r.id, name: r.name ?? `#${r.id}` }));
+    return rows.map((r) => ({ id: r.id, name: r.name ?? `#${r.id}`, branchId: r.branchId == null ? null : Number(r.branchId) }));
   }),
 
   // §٧ IDOR: كان كاشير من فرع A يستطيع `report` لوردية فرع B بمعرفة shiftId.
