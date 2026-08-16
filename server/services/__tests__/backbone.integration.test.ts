@@ -558,7 +558,11 @@ describe("إدارة الورديات (Z-report)", () => {
     const { shiftId } = await openShiftSvc({ branchId: 1, openingBalance: "0.00" }, actor);
 
     const sale = await createSale(
-      { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CARD" } },
+      {
+        branchId: 1, shiftId, sourceType: "POS",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
+        payment: { amount: "120.00", method: "CARD", reference: "CARD-Z-1001" },
+      },
       actor
     );
     expect(sale.status).toBe("PAID");

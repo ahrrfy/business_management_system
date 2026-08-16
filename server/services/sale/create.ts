@@ -63,7 +63,17 @@ export async function createSaleInTx(
   capability?: typeof DIGITAL_SALE_CAPABILITY,
 ): Promise<CreateSaleResult> {
     // نواة الفاتورة هي حدّ الأمان الأخير: لا نعتمد على راوتر أو marker لإثبات قبض خارجي.
-    if (input.payment) assertPosPaymentMethodEnabled(input.payment.method);
+    if (input.payment) {
+      assertPosPaymentMethodEnabled(input.payment.method);
+      // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: هذه النواة تُنشئ إيصالها بنفسها (بند ١٢ أدناه)
+      // فلا يمرّ بحارس `sale/payment.ts`. كل مسارات البيع تصبّ هنا (الكاشير، المطبعة، تحويل
+      // عرض السعر، الحجز، أمر الشغل)، فوَضعُ الشرط هنا يغلق الباب على كلّها مرّةً واحدة بدل
+      // تكراره في كل مستدعٍ — والمرجع يأتي إمّا نصّاً من الموظّف أو من محاولةٍ مؤكَّدة
+      // (createConfirmedPosSaleInTx يحقن مرجع المحاولة في الحمولة قبل بلوغ هذه النقطة).
+      if (input.payment.method !== "CASH" && !(input.payment.reference ?? "").trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
+    }
     // This namespace is generated only by the trusted digital-card finalizer.  Check it
     // before idempotency lookup so a public POS request cannot replay an existing
     // digital invoice merely by guessing its sourceId.
