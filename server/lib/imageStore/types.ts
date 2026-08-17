@@ -27,6 +27,10 @@ export interface ObjectHead {
   bytes?: number;
 }
 
+export interface ImageStoreReadOptions {
+  signal?: AbortSignal;
+}
+
 export interface ImageStore {
   /** يودِع البايتات عند المفتاح؛ متعادِل (كائن موجود ⇒ لا كتابة، existed=true). */
   put(key: string, body: Buffer, contentType: string): Promise<PutResult>;
@@ -35,7 +39,7 @@ export interface ImageStore {
   /** يبثّ بايتات الكائن، أو null إن غاب (⇒ سقوطٌ للمصغّرة في طبقة الخدمة). */
   getStream(key: string): Promise<Readable | null>;
   /** يقرأ الكائن كاملاً ضمن سقف صريح؛ مطلوب لمسار عام يتحقق قبل إرسال أي headers. */
-  getBuffer(key: string, expectedBytes: number): Promise<Buffer | null>;
+  getBuffer(key: string, expectedBytes: number, options?: ImageStoreReadOptions): Promise<Buffer | null>;
   /** يحذف الكائن (يُستعمَل من الكنس المعدود-مرجعياً فقط؛ لا حذف آنيّ عند cascade). */
   delete(key: string): Promise<void>;
   /** رابط موقَّع قصير العمر (اختياريّ — سائق R2؛ fs لا يدعمه). */

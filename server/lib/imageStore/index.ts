@@ -10,15 +10,17 @@ import { logger } from "../../logger";
 import type { ImageStore } from "./types";
 
 export { MAX_PUBLISHED_PRODUCT_IMAGE_BYTES } from "./types";
-export type { ImageStore, ObjectHead, PutResult } from "./types";
+export type { ImageStore, ImageStoreReadOptions, ObjectHead, PutResult } from "./types";
 export { contentHash, extForMime, objectKeyFor, shortHash } from "./contentAddress";
 export { FsImageStore } from "./fsStore";
 export { R2ImageStore, readR2ImageStoreConfig } from "./r2Store";
 export {
   ImageStoreUnavailableError,
+  ImageStoreClientAbortError,
   R2ResilienceController,
   classifyR2Failure,
   isImageStoreUnavailableError,
+  isImageStoreClientAbortError,
   readR2ResilienceConfig,
 } from "./resilience";
 export type { R2ResilienceConfig, R2ResilienceSnapshot } from "./resilience";

@@ -114,6 +114,27 @@ describe("R2ImageStore", () => {
     expect(store.resilienceSnapshot()).toMatchObject({ inFlight: 0, state: "open", transientFailures: 1, succeeded: 0 });
   });
 
+  it("إلغاء العميل أثناء Body يحرر permit ولا يفتح القاطع أو يسجل outage", async () => {
+    const body = new PassThrough();
+    const abort = new AbortController();
+    const store = new R2ImageStore(config, {
+      client: { send: vi.fn().mockResolvedValue({ Body: body, ContentLength: 5 }) },
+      resilienceConfig: { maxConcurrency: 1, maxQueue: 1, queueTimeoutMs: 1_000, failureThreshold: 1, openMs: 1_000 },
+    });
+    const read = store.getBuffer(KEY, 5, { signal: abort.signal });
+    await vi.waitFor(() => expect(store.resilienceSnapshot().inFlight).toBe(1));
+    abort.abort();
+    await expect(read).rejects.toMatchObject({ name: "ImageStoreClientAbortError" });
+    expect(store.resilienceSnapshot()).toMatchObject({
+      inFlight: 0,
+      state: "closed",
+      cancelled: 1,
+      transientFailures: 0,
+      permanentFailures: 0,
+      succeeded: 0,
+    });
+  });
+
   it.each([
     ["metadata mismatch", 6, Buffer.from("123456")],
     ["actual oversize", 5, Buffer.from("123456")],

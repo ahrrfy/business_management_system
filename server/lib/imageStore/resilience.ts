@@ -166,6 +166,10 @@ export class ImageStoreClientAbortError extends Error {
   }
 }
 
+export function isImageStoreClientAbortError(error: unknown): error is ImageStoreClientAbortError {
+  return error instanceof ImageStoreClientAbortError;
+}
+
 export function isImageStoreUnavailableError(error: unknown): error is ImageStoreUnavailableError {
   return error instanceof ImageStoreUnavailableError;
 }

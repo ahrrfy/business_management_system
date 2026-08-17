@@ -27,6 +27,7 @@ import { getDb, isMultiTenantModeActive } from "./db";
 import {
   getImageStore,
   isCurrentTenantCandidateKey,
+  isImageStoreClientAbortError,
   isImageStoreUnavailableError,
   MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
   recordImageStorePublicFallback,
@@ -235,10 +236,21 @@ async function sendStoredProductImage(
       return res.status(500).end();
     }
     let body: Buffer | null;
+    const abortController = new AbortController();
+    const abortRead = () => abortController.abort();
+    const abortOnEarlyClose = () => {
+      if (!res.writableEnded) abortController.abort();
+    };
+    req.once("aborted", abortRead);
+    res.once("close", abortOnEarlyClose);
     try {
       // لا ترويسة 200 ولا pipe قبل اكتمال الجسم داخل semaphore والقاطع.
-      body = await getImageStore().getBuffer(objectKey, bytes);
+      body = await getImageStore().getBuffer(objectKey, bytes, { signal: abortController.signal });
     } catch (error) {
+      if (isImageStoreClientAbortError(error)) {
+        preventCachingStoredImageFailure(res);
+        return res;
+      }
       if (!isImageStoreUnavailableError(error)) {
         preventCachingStoredImageFailure(res);
         throw error;
@@ -251,6 +263,9 @@ async function sendStoredProductImage(
       }
       preventCachingStoredImageFailure(res);
       return res.status(503).end();
+    } finally {
+      req.off("aborted", abortRead);
+      res.off("close", abortOnEarlyClose);
     }
     if (!body) {
       preventCachingStoredImageFailure(res);

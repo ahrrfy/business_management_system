@@ -16,13 +16,14 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from "node:stream";
 import {
   R2ResilienceController,
+  ImageStoreClientAbortError,
   readR2ResilienceConfig,
   type R2Operation,
   type R2ResilienceConfig,
   type R2ResilienceEvent,
   type R2ResilienceSnapshot,
 } from "./resilience";
-import type { ImageStore, ObjectHead, PutResult } from "./types";
+import type { ImageStore, ImageStoreReadOptions, ObjectHead, PutResult } from "./types";
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"]);
 const MAX_OBJECT_BYTES = 25 * 1024 * 1024;
@@ -38,7 +39,7 @@ export interface R2ImageStoreConfig {
 }
 
 interface S3Executor {
-  send(command: unknown): Promise<unknown>;
+  send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown>;
 }
 
 export interface R2ImageStoreDependencies {
@@ -114,7 +115,7 @@ function toNodeStream(body: unknown): Readable {
   throw new Error("ImageStore R2: جسم كائن غير صالح من المزوّد.");
 }
 
-function boundedBody(stream: Readable, maximumBytes: number): Promise<Buffer> {
+function boundedBody(stream: Readable, maximumBytes: number, signal?: AbortSignal): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
@@ -125,6 +126,7 @@ function boundedBody(stream: Readable, maximumBytes: number): Promise<Buffer> {
       stream.off("end", onEnd);
       stream.off("error", onError);
       stream.off("close", onClose);
+      signal?.removeEventListener("abort", onAbort);
     };
     const settle = (error?: unknown) => {
       if (settled) return;
@@ -150,6 +152,10 @@ function boundedBody(stream: Readable, maximumBytes: number): Promise<Buffer> {
     const onClose = () => {
       if (!settled) settle(Object.assign(new Error("ImageStore R2: انقطع جسم الكائن."), { code: "ECONNRESET" }));
     };
+    const onAbort = () => {
+      settle(new ImageStoreClientAbortError());
+      stream.destroy();
+    };
     const timer = setTimeout(() => {
       settle(Object.assign(new Error("ImageStore R2: انتهت مهلة جسم الكائن."), { name: "TimeoutError" }));
       stream.destroy();
@@ -159,6 +165,8 @@ function boundedBody(stream: Readable, maximumBytes: number): Promise<Buffer> {
     stream.once("end", onEnd);
     stream.once("error", onError);
     stream.once("close", onClose);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -250,27 +258,38 @@ export class R2ImageStore implements ImageStore {
     }
   }
 
-  async getBuffer(key: string, expectedBytes: number): Promise<Buffer | null> {
+  async getBuffer(key: string, expectedBytes: number, options: ImageStoreReadOptions = {}): Promise<Buffer | null> {
     assertSafeKey(key);
     if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > MAX_OBJECT_BYTES) {
       throw Object.assign(new Error("ImageStore R2: حد القراءة غير صالح."), { name: "ImageStoreIntegrityError" });
     }
     try {
       return await this.resilience.run("get", async () => {
-        const result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })) as {
+        if (options.signal?.aborted) throw new ImageStoreClientAbortError();
+        let result: { Body?: unknown; ContentLength?: number };
+        try {
+          result = await this.client.send(
+            new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+            { abortSignal: options.signal },
+          ) as { Body?: unknown; ContentLength?: number };
+        } catch (error) {
+          if (options.signal?.aborted) throw new ImageStoreClientAbortError();
+          throw error;
+        }
+        const typedResult = result as {
           Body?: unknown;
           ContentLength?: number;
         };
-        if (typeof result.ContentLength !== "number" || !Number.isSafeInteger(result.ContentLength) ||
-            result.ContentLength !== expectedBytes) {
-          const body = result.Body ? toNodeStream(result.Body) : null;
+        if (typeof typedResult.ContentLength !== "number" || !Number.isSafeInteger(typedResult.ContentLength) ||
+            typedResult.ContentLength !== expectedBytes) {
+          const body = typedResult.Body ? toNodeStream(typedResult.Body) : null;
           body?.destroy();
           throw Object.assign(new Error("ImageStore R2: حجم الكائن لا يطابق metadata المعتمدة."), {
             name: "ImageStoreIntegrityError",
           });
         }
-        if (!result.Body) throw new Error("ImageStore R2: الكائن الموجود بلا جسم.");
-        const body = await boundedBody(toNodeStream(result.Body), expectedBytes);
+        if (!typedResult.Body) throw new Error("ImageStore R2: الكائن الموجود بلا جسم.");
+        const body = await boundedBody(toNodeStream(typedResult.Body), expectedBytes, options.signal);
         if (body.length !== expectedBytes) {
           throw Object.assign(new Error("ImageStore R2: جسم الكائن أقصر من metadata المعتمدة."), {
             name: "ImageStoreIntegrityError",
