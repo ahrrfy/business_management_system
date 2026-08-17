@@ -9,10 +9,11 @@ import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
 import { sourceTypeLabel } from "@/lib/labels";
-import { METHOD_LABEL, paymentMethodLabel, type PaymentMethod } from "@/lib/paymentMethod";
+import { INVOICE_FILTER_METHODS, METHOD_LABEL, paymentMethodLabel, type InvoiceFilterMethod } from "@/lib/paymentMethod";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
 import { D, fmtAr } from "@/lib/money";
 import { canSeeCost } from "@shared/permissions";
+import { INVOICE_STATUSES, invoiceStatusLabel, isDeadInvoiceStatus, type InvoiceStatus } from "@shared/invoiceStatus";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { X } from "lucide-react";
@@ -24,14 +25,9 @@ type TopRow = RouterOutputs["reports"]["topProducts"][number];
 type SlowRow = RouterOutputs["reports"]["slowMovers"][number];
 type CatRow = RouterOutputs["reports"]["profitByCategory"][number];
 
-const STATUS: Record<string, string> = {
-  PENDING: "معلّقة",
-  PARTIALLY_PAID: "مدفوعة جزئياً",
-  PAID: "مدفوعة",
-  CONFIRMED: "مؤكّدة",
-  CANCELLED: "ملغاة",
-  RETURNED: "مرتجعة",
-};
+// التعريب من `@shared/invoiceStatus` (مصدر الحقيقة الوحيد) — كان قاموساً محلّياً يُسقِط
+// `SUPERSEDED` فتُعرَض/تُصدَّر/تُطبَع رمزاً إنجليزياً خاماً عبر `?? s`.
+// خريطة الأصناف اللونية تبقى محلّية: نطاقها العرض لا التعريب.
 const STATUS_CLS: Record<string, string> = {
   PAID: "badge-status-active",
   PARTIALLY_PAID: "badge-stock-low",
@@ -157,7 +153,7 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
       const s = c.getValue() as string;
       return (
         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted text-muted-foreground"}`}>
-          {STATUS[s] ?? s}
+          {invoiceStatusLabel(s)}
         </span>
       );
     },
@@ -171,8 +167,9 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
 
 const INVOICE_COST_COLUMNS = new Set(["costTotal"]);
 
-/** حالات الفاتورة المتاحة في فلتر التقرير (نفس enum الخادم). */
-const STATUS_OPTIONS = ["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"] as const;
+/** حالات الفاتورة المتاحة في فلتر التقرير — مرآة enum الخادم عبر المصدر المشترك.
+ *  `SUPERSEDED` كانت مفقودةً هنا ⇒ لا سبيل لحصر الفواتير المُصحَّحة من التقرير. */
+const STATUS_OPTIONS = INVOICE_STATUSES;
 /** مصادر الفاتورة — تشمل ONLINE (كانت مفقودة من الفلتر رغم دعم الخادم لها). */
 const SOURCE_OPTIONS = ["POS", "ONLINE", "ORDER", "WORKORDER"] as const;
 
@@ -209,7 +206,7 @@ export default function SalesReport() {
     branchId: f.branch ? Number(f.branch) : undefined,
     sourceTypes: f.source ? [f.source as (typeof SOURCE_OPTIONS)[number]] : undefined,
     statuses: f.status ? [f.status as (typeof STATUS_OPTIONS)[number]] : undefined,
-    paymentMethods: f.method ? [f.method as PaymentMethod | "NONE"] : undefined,
+    paymentMethods: f.method ? [f.method as InvoiceFilterMethod | "NONE"] : undefined,
     salespersonId: f.seller ? Number(f.seller) : undefined,
   };
   const invoiceQ = trpc.reports.salesReport.useQuery(invoiceFilters, { enabled: tab === "invoices" });
@@ -309,14 +306,15 @@ export default function SalesReport() {
                   <AppSelect value={f.status} onValueChange={(v) => setF({ status: v })}>
                     <option value="">الكل</option>
                     {STATUS_OPTIONS.map((s) => (
-                      <option key={s} value={s}>{STATUS[s] ?? s}</option>
+                      <option key={s} value={s}>{invoiceStatusLabel(s)}</option>
                     ))}
                   </AppSelect>
                 </FilterField>
                 <FilterField label="طريقة الدفع" className="w-40">
                   <AppSelect value={f.method} onValueChange={(v) => setF({ method: v })}>
                     <option value="">الكل</option>
-                    {(Object.keys(METHOD_LABEL) as PaymentMethod[]).map((m) => (
+                    {/* طرق الفاتورة وحدها — EXCHANGE طريقةُ سندِ صيرفةٍ لا تُكتب على فاتورة ويرفضها عقد التقرير. */}
+                    {INVOICE_FILTER_METHODS.map((m) => (
                       <option key={m} value={m}>{METHOD_LABEL[m]}</option>
                     ))}
                     <option value="NONE">آجل (بلا طريقة مسجَّلة)</option>
@@ -433,8 +431,8 @@ function InvoicesTab({
     to?: string;
     branchId?: number;
     sourceTypes?: ("POS" | "ONLINE" | "ORDER" | "WORKORDER")[];
-    statuses?: ("PENDING" | "CONFIRMED" | "PAID" | "PARTIALLY_PAID" | "CANCELLED" | "RETURNED")[];
-    paymentMethods?: (PaymentMethod | "NONE")[];
+    statuses?: InvoiceStatus[];
+    paymentMethods?: (InvoiceFilterMethod | "NONE")[];
     salespersonId?: number;
   };
   truncated: boolean;
@@ -542,9 +540,17 @@ function InvoicesTab({
                     returned: r.returnedTotal,
                     remaining: invoiceRemaining(r).toString(),
                     cost: showCost ? r.costTotal : undefined,
-                    status: STATUS[r.status] ?? r.status,
-                    statusColor:
-                      r.status === "PAID" ? "#0D6B52" : r.status === "PARTIALLY_PAID" ? "#92400E" : "#8A1F11",
+                    status: invoiceStatusLabel(r.status),
+                    // الأحمر (#8A1F11 = BRAND.alert) للمستند **الميت** وحده (ملغاة/مرتجعة/مستبدلة).
+                    // كان كل ما ليس PAID/PARTIALLY_PAID يُطبَع أحمر ⇒ فاتورةٌ آجلة سليمة (PENDING/CONFIRMED)
+                    // تبدو في الورقة المطبوعة كالملغاة تماماً. غير النهائيّ رماديّ محايد (#4E5148 = BRAND.textFaint).
+                    statusColor: isDeadInvoiceStatus(r.status)
+                      ? "#8A1F11"
+                      : r.status === "PAID"
+                        ? "#0D6B52"
+                        : r.status === "PARTIALLY_PAID"
+                          ? "#92400E"
+                          : "#4E5148",
                   })),
                 });
               }}
@@ -592,7 +598,7 @@ function InvoicesTab({
                         header: "الربح",
                         map: (r: ReportRow) => D(r.total).minus(D(r.returnedTotal ?? "0")).minus(D(r.costTotal)).toNumber(),
                       }] : []),
-                      { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
+                      { key: "status", header: "الحالة", map: (r) => invoiceStatusLabel(r.status) },
                     ],
                   });
                 } finally {

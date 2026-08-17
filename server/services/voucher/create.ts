@@ -1,5 +1,6 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { eq } from "drizzle-orm";
 import { customers, invoices, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -613,8 +614,14 @@ export async function createVoucherTx(
         if (Number(inv.customerId) !== Number(input.partyId)) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة المرتبطة لا تخصّ هذا العميل" });
         }
-        if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الربط بفاتورة ملغاة أو مرتجعة" });
+        // المُستبدَلة كانت تمرّ: `correct.ts` يتركها بـ`total` كاملاً و`returnedTotal` مُصفَّراً
+        // ⇒ تجتاز فلتر «مستحقّة» وتُعرَض للمحاسب في مُنتقي الفواتير بمتبقٍّ = إجماليها، فيُربَط
+        // بها قبضٌ بينما الالتزام الحقيقيّ على البديلة (مالٌ يُنسَب لمستندٍ عُكِس بالكامل).
+        if (isDeadInvoiceStatus(inv.status)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لا يمكن الربط بفاتورة ملغاة أو مرتجعة أو مستبدَلة بمصحّحة",
+          });
         }
       }
     } else if (input.partyType === "SUPPLIER") {

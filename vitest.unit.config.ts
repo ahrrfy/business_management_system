@@ -51,6 +51,8 @@ export default defineConfig({
       "client/src/pages/__tests__/assetPendingLifecycleUi.test.ts",
       "client/src/pages/__tests__/purchaseShippingAccrualUi.test.ts",
       "client/src/components/scan/BarcodeSearchCue.test.ts",
+      "client/src/components/invoice/__tests__/paymentTerms.test.ts",
+      "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",
       "server/auth/password.test.ts",
       "server/lib/imageStore/__tests__/imageStore.test.ts",
       "server/lib/imageStore/__tests__/resilience.test.ts",

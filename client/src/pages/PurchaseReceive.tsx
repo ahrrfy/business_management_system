@@ -26,13 +26,21 @@ const PO_STATUS: Record<string, string> = {
   CANCELLED: "ملغى",
 };
 
-const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
+// تسويةُ الشحن/الكمرك تُنشئ سند صرفٍ نظاميّاً يقبل غير النقد فعلاً ⇒ قائمتها الكاملة.
+// ⚠️ «صك» محذوفٌ: قرار المالك «لا تعامل بالصكوك» مطبَّقٌ في راوتر السندات (`creatableMethod`)
+// وفي `lib/paymentMethod`، وكان هذا المنتقي **المنفذ الوحيد الباقي في النظام** لإنشاء صكّ
+// فعليّ (عبر createSystemPaymentRequestTx) — بابٌ خلفيّ لقرارٍ مُقفلٍ في كل بابٍ آخر.
+const SHIPPING_METHODS: { v: "CASH" | "CARD" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
   { v: "TRANSFER", label: "تحويل" },
   { v: "CARD", label: "بطاقة" },
-  { v: "CHECK", label: "صك" },
   { v: "WALLET", label: "محفظة" },
 ];
+
+// دفعةُ المورّد لحظة الاستلام: **نقديّة فقط**. `receivePurchase` يرفض غيرها من أوّل سطر داخل
+// المعاملة، والرفض يُسقِط الاستلام كلّه (لا مخزون ولا ذمّة ولا قيد). عرضُ خمس طرقٍ هنا كان
+// يعني أنّ أربعاً منها تُضيّع إدخال أمين المخزن كاملاً برسالةٍ تحيله إلى سندٍ لا مسار له.
+const SUPPLIER_PAYMENT_METHODS: { v: "CASH"; label: string }[] = [{ v: "CASH", label: "نقدي" }];
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -54,9 +62,9 @@ export default function PurchaseReceive() {
   );
   const [free, setFree] = useState<Record<number, string>>({});
   const [payAmount, setPayAmount] = useState("");
-  const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [payMethod, setPayMethod] = useState<(typeof SUPPLIER_PAYMENT_METHODS)[number]["v"]>("CASH");
   // طريقة دفع **مصروف الشحن/الكمرك** (لشركة النقل) — مستقلّة تماماً عن دفعة المورّد أعلاه.
-  const [shipMethod, setShipMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [shipMethod, setShipMethod] = useState<(typeof SHIPPING_METHODS)[number]["v"]>("CASH");
   const [shipPaymentReference, setShipPaymentReference] = useState("");
   const [shipCardLastFour, setShipCardLastFour] = useState("");
   // الناقل ومستند الشحن — **اختياريان** (قرار المالك ١٧/٨/٢٦). كانا إلزامَين خادمياً بلا حقلٍ
@@ -185,8 +193,8 @@ export default function PurchaseReceive() {
       if (want > remaining) return setError(`الكمية المستلمة للمنتج «${it.productName}» تتجاوز المتبقّي (${remaining}).`);
     }
     const payment = D(payAmount).gt(0) ? { amount: round2(D(payAmount)).toFixed(2), method: payMethod } : undefined;
-    if ((shipMethod === "TRANSFER" || shipMethod === "CHECK") && !shipPaymentReference.trim()) {
-      return setError(shipMethod === "CHECK" ? "أدخل رقم صك الشحن." : "أدخل مرجع تحويل الشحن.");
+    if (shipMethod === "TRANSFER" && !shipPaymentReference.trim()) {
+      return setError("أدخل مرجع تحويل الشحن.");
     }
     if (shipMethod === "CARD" && !/^\d{4}$/.test(shipCardLastFour.trim())) {
       return setError("أدخل آخر أربعة أرقام لبطاقة تسوية الشحن.");
@@ -212,9 +220,7 @@ export default function PurchaseReceive() {
         payment,
         shippingPaymentMethod: shipMethod,
         shippingPaymentReference:
-          shipMethod === "TRANSFER" || shipMethod === "CHECK"
-            ? shipPaymentReference.trim()
-            : undefined,
+          shipMethod === "TRANSFER" ? shipPaymentReference.trim() : undefined,
         shippingCardLastFour:
           shipMethod === "CARD" ? shipCardLastFour.trim() : undefined,
         // الفراغ يُرسَل undefined لا نصّاً فارغاً (zod يفرض min على النصّ الموجود)؛ الخادم
@@ -407,7 +413,7 @@ export default function PurchaseReceive() {
             <div className="space-y-1">
               <Label>طريقة دفع الشحن</Label>
               <select className={selectCls} value={shipMethod} onChange={(e) => setShipMethod(e.target.value as typeof shipMethod)}>
-                {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+                {SHIPPING_METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
               </select>
             </div>
             {/* الناقل ومستند الشحن — اختياريّان. لا يحجبان الاستلام؛ تركُهما فارغَين يُسجّل
@@ -453,9 +459,9 @@ export default function PurchaseReceive() {
                 dir="ltr"
               />
             </div>
-            {shipMethod === "TRANSFER" || shipMethod === "CHECK" ? (
+            {shipMethod === "TRANSFER" ? (
               <div className="space-y-1">
-                <Label>{shipMethod === "CHECK" ? "رقم الصك" : "مرجع التحويل"}</Label>
+                <Label>مرجع التحويل</Label>
                 <Input
                   value={shipPaymentReference}
                   onChange={(event) => setShipPaymentReference(event.target.value)}
@@ -493,7 +499,7 @@ export default function PurchaseReceive() {
             <div className="space-y-1">
               <Label>طريقة الدفع</Label>
               <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
-                {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+                {SUPPLIER_PAYMENT_METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
               </select>
             </div>
           </CardContent>

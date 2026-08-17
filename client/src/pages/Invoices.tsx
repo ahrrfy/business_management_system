@@ -17,7 +17,7 @@ import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
-import { allocateLineTax } from "@/components/invoice";
+import { allocateLineTax, derivePaymentTerms } from "@/components/invoice";
 import { round2 } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -26,8 +26,9 @@ import { useLocation } from "wouter";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type PaymentMethod } from "@/lib/paymentMethod";
-import { invoiceStatusLabel, sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
+import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type InvoiceFilterMethod } from "@/lib/paymentMethod";
+import { sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
+import { INVOICE_STATUSES, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { Calendar, CreditCard, FileWarning, Printer, Truck, User, X } from "lucide-react";
@@ -41,13 +42,13 @@ type Row = RouterOutputs["sales"]["list"][number];
 /** حجم صفحة القائمة — الخادم يُرقّم، والمعروض هو المُحمَّل. */
 const PAGE_SIZE = 50;
 
-const STATUS: Record<string, string> = {
-  PENDING: "معلّقة", PARTIALLY_PAID: "مدفوعة جزئياً", PAID: "مدفوعة",
-  CONFIRMED: "مؤكّدة", CANCELLED: "ملغاة", RETURNED: "مرتجعة", SUPERSEDED: "مستبدلة بفاتورة مصححة",
-};
+// التعريب من `@shared/invoiceStatus` وحده (مصدر الحقيقة) — النسخة المحلّية هنا كانت قد صُحِّحت
+// يدوياً فوافقت المشترك، لكن بقاءها يُعيد الانجراف عند أوّل قيمةٍ جديدة في الـenum.
+// PENDING شارةٌ معلوماتية (أزرق) لا شارةُ مستندٍ ميت: كانت `badge-status-cancelled` — نفس رمادي
+// «ملغاة/مستبدلة» تماماً — فذمّةٌ حيّة قابلة للتحصيل تبدو كورقةٍ انتهت. التوكن مُعرَّف وغير مستعمَل.
 const STATUS_CLS: Record<string, string> = {
   PAID: "badge-status-active", PARTIALLY_PAID: "badge-stock-low",
-  PENDING: "badge-status-cancelled", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out", SUPERSEDED: "badge-status-cancelled",
+  PENDING: "badge-status-pending", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out", SUPERSEDED: "badge-status-cancelled",
 };
 const BALANCE_FILTER = {
   DEPOSIT_DUE: "عربون — متبقّي للتحصيل",
@@ -79,9 +80,9 @@ function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "re
   return D(row.paidAmount).gt(0) && D(row.total).minus(D(row.paidAmount)).minus(D(row.returnedTotal ?? "0")).gt(0);
 }
 
-// تعريب التصدير موحّد عبر قاموس labels المركزي؛ CONFIRMED غائبة عنه (ملف مشترك لا يُعدَّل هنا)
-// فتُستكمل محلياً كي لا يتسرّب الكود الخام للتصدير. عرض الشاشة يبقى على STATUS المحلي (أغنى صياغة).
-const exportStatusLabel = (s: string) => (s === "CONFIRMED" ? "مؤكّدة" : invoiceStatusLabel(s));
+// تعريب التصدير موحّد عبر قاموس labels المركزي — صار يغطّي CONFIRMED وSUPERSEDED معاً، فسقط
+// الترقيع المحلّي الذي كان يستكمل CONFIRMED (رمزٌ ميت) ويترك SUPERSEDED (حيّة) تتسرّب خاماً.
+const exportStatusLabel = (s: string) => invoiceStatusLabel(s);
 // فاتورة بلا عميل مسجَّل = بيع نقدي مباشر — المصطلح المعتمد «عميل نقدي» (لا شرطة غامضة).
 const custName = (n: string | null | undefined) => n ?? "عميل نقدي";
 // خلية التوصيل للتصدير/النسخ: «بالطريق — فلان (CN-…/ORD-…)» أو فارغة لغير الموصَّلة.
@@ -255,7 +256,8 @@ export default function Invoices() {
       sourceType: (f.sourceType || undefined) as Row["sourceType"] | undefined,
       balanceState: (f.balanceState || undefined) as keyof typeof BALANCE_FILTER | undefined,
       salespersonId: f.salespersonId ? Number(f.salespersonId) : undefined,
-      paymentMethod: (f.paymentMethod || undefined) as PaymentMethod | undefined,
+      // "NONE" = آجل (IS NULL خادمياً) — قيمةٌ إضافية على قائمة الفلترة لا عضوٌ في `PaymentMethod`.
+      paymentMethod: (f.paymentMethod || undefined) as InvoiceFilterMethod | "NONE" | undefined,
       branchId: f.branchId ? Number(f.branchId) : undefined,
       customerId: f.customerId ? Number(f.customerId) : undefined,
       delivery: (f.delivery || undefined) as keyof typeof DELIVERY_FILTER | undefined,
@@ -355,6 +357,12 @@ export default function Invoices() {
   // نسخ لفاتورة جديدة: نجلب التفاصيل ونزرعها في sessionStorage (تُقرأ مرة واحدة في /sales/new).
   // ننسخ الكمية الأصلية كاملة (الفاتورة الجديدة تعيد بيع السلّة — المرتجعات لا تنقصها)،
   // وشكل كل سطر يطابق InvoiceLine في محرّر الفواتير حرفياً.
+  //
+  // ⚠️ `paymentTerms` جزءٌ إلزاميّ من البذرة: بدونه تسقط الشاشة على افتراضيّ «نقدي»، و«نقدي»
+  // مع حقل المدفوع الفارغ تعني في `computePaidStr()` سداداً كاملاً ⇒ نسخُ فاتورةٍ آجلة كان
+  // يُنتج فاتورةً «مسدَّدة نقداً» بإيصال درج لمالٍ لم يُقبض (عجزٌ عند Z + ذمّةٌ تبخّرت).
+  // تاريخ الاستحقاق **لا يُنسخ** عمداً: النسخة بيعٌ جديد، واستحقاق الأصل قد يكون ماضياً
+  // فيُعمِّر ذمّةً وليدةً متأخّرةً فوراً — يضبطه الموظّف من حقلٍ يظهر لأنّ الشروط صارت آجلة.
   async function duplicateInvoice(invoiceId: number) {
     try {
       const d = await utils.sales.get.fetch({ invoiceId });
@@ -364,6 +372,7 @@ export default function Invoices() {
         JSON.stringify({
           customerId: d.customerId,
           tier: d.priceTier,
+          paymentTerms: derivePaymentTerms(d),
           items: d.items.map((it) => ({
             productId: it.productId ?? 0,
             variantId: it.variantId,
@@ -501,7 +510,7 @@ export default function Invoices() {
         const depositDue = isDepositDue(c.row.original);
         return (
           <div className="flex flex-col items-start gap-1">
-            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>{STATUS[s] ?? s}</span>
+            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>{invoiceStatusLabel(s)}</span>
             {depositDue && <span className="inline-block rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — يحتاج تحصيل الباقي</span>}
           </div>
         );
@@ -526,6 +535,8 @@ export default function Invoices() {
                 customerName: r.customerName,
                 total: r.total,
                 paidAmount: r.paidAmount,
+                // المرتجَع يُطرح من «المتبقّي» في الرسالة — بدونه تُطالِب برسالةٍ بمالٍ رُدَّ فعلاً.
+                returnedTotal: r.returnedTotal,
                 status: r.status,
               }),
               disabledReason: "لا يوجد رقم واتساب مرتبط بهذه الفاتورة",
@@ -688,8 +699,8 @@ export default function Invoices() {
               {/* قيمة «ALL» الحارسة: Radix يرفض بند القيمة الفارغة، فتبقى الحالة "" في الـURL نظيفة. */}
               <AppSelect id="inv-f-status" value={f.status || "ALL"} onValueChange={(v) => setF({ status: v === "ALL" ? "" : v })}>
                 <option value="ALL">— كل الحالات —</option>
-                {Object.entries(STATUS).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
+                {INVOICE_STATUSES.map((k) => (
+                  <option key={k} value={k}>{invoiceStatusLabel(k)}</option>
                 ))}
               </AppSelect>
             </div>
@@ -700,6 +711,10 @@ export default function Invoices() {
                 {POS_METHODS.map((m) => (
                   <option key={m.v} value={m.v}>{m.label}</option>
                 ))}
+                {/* «آجل» = `invoices.paymentMethod IS NULL` (بيعٌ نافذ بلا طريقة قبضٍ مسجَّلة).
+                    مرآةُ فلتر تقرير المبيعات — كان تمييز الآجل مستحيلاً من هذه الشاشة رغم أنّ
+                    العمود يعرضه «—»، فلا سبيل لحصر الذمم من حيث تُدار الفواتير. */}
+                <option value="NONE">آجل (بلا طريقة مسجَّلة)</option>
               </AppSelect>
             </div>
             <div className="space-y-1">
@@ -776,7 +791,7 @@ export default function Invoices() {
         serverSearch={{ value: f.q, onChange: (v) => setF({ q: v }) }}
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
         mobileCardRenderer={(r) => {
-          const stLabel = STATUS[r.status] ?? r.status;
+          const stLabel = invoiceStatusLabel(r.status);
           const badgeVariant = r.status === "PAID"
             ? "success"
             : r.status === "PARTIALLY_PAID"

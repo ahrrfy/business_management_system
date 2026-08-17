@@ -20,7 +20,8 @@ import { Link, useLocation, useSearch } from "wouter";
 import { Search, X as XIcon } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
-import { invoiceStatusLabel, priceTierLabel, sourceTypeLabel } from "@/lib/labels";
+import { priceTierLabel, sourceTypeLabel } from "@/lib/labels";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
 const ymd = (d: Date) =>
@@ -48,14 +49,8 @@ const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string }
   { label: "الكل", range: () => ({ from: "", to: "" }) },
 ];
 
-const STATUS_LABEL: Record<string, string> = {
-  PENDING: "معلّقة",
-  PARTIALLY_PAID: "مدفوعة جزئياً",
-  PAID: "مدفوعة",
-  CANCELLED: "ملغاة",
-  RETURNED: "مرتجعة",
-  CONFIRMED: "مؤكّدة",
-};
+// تعريب حالة الفاتورة من `@shared/invoiceStatus` وحده — كان قاموساً محلّياً بلا `SUPERSEDED`
+// يسبق `invoiceStatusLabel` في السلسلة، فيَحجب المصدر المركزيّ ويُخالف مسرده (PENDING).
 /** حالة سند القبض/الصرف كما يعيدها كشف الحساب (COMPLETED/REVERSED فقط بعد فلترة الخادم). */
 const RECEIPT_STATUS_LABEL: Record<string, string> = {
   COMPLETED: "مكتملة",
@@ -413,7 +408,7 @@ export default function CustomerStatement() {
                         <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
                         <td className="p-2">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[i.status] ?? "bg-muted"}`}>
-                            {STATUS_LABEL[i.status] ?? invoiceStatusLabel(i.status)}
+                            {invoiceStatusLabel(i.status)}
                           </span>
                           {depositDue && <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>}
                         </td>

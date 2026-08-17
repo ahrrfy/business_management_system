@@ -104,6 +104,13 @@ export const returnRouter = router({
         // مرتجع البيع: مرتبط بفاتورة ولا مورد له — عكس مرتجع الشراء (supplierId NOT NULL).
         isNull(accountingEntries.supplierId),
         isNotNull(accountingEntries.invoiceId),
+        // تصحيحُ الفاتورة يعكسها عبر `returnSaleInTx` فينتج قيد RETURN **بنفس شكل المرتجع
+        // الحقيقيّ تماماً** ⇒ كان كلّ تصحيحٍ يُحصى مرتجعَ بيعٍ باسم العميل وبقيمته الكاملة في
+        // السجلّ والتصدير وعدّاد المرتجعات: عميلٌ لم يُرجِع شيئاً يظهر بمرتجعٍ كامل.
+        // حالةُ الأصل هي الفاصل الحاسم: التصحيح يتركه SUPERSEDED دائماً، والمرتجع الحقيقيّ
+        // لا يُنتجها أبداً — ولا تلتبس الحالتان لأنّ `correctSale` يرفض فاتورةً عليها مرتجعٌ
+        // سابق، و`returnSale` يرفض المستبدَلة.
+        sql`${invoices.status} <> 'SUPERSEDED'`,
       ];
       if (input?.customerId) where.push(eq(accountingEntries.customerId, input.customerId));
       if (branchId) where.push(eq(accountingEntries.branchId, branchId));

@@ -4,6 +4,8 @@
  */
 
 import { fmtDate } from "./date";
+import { D } from "./money";
+import { invoiceStatusLabel, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 
 const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
 
@@ -122,13 +124,31 @@ export interface InvoiceMessageData {
   subtotal?: string | number;
   total: string | number;
   paidAmount?: string | number;
+  /** المرتجَع على الفاتورة — يُطرح في حساب المتبقّي الاحتياطيّ (كان مُهمَلاً ⇒ مطالبةٌ بمالٍ أُرجِع). */
+  returnedTotal?: string | number | null;
   remaining?: string | number;
   status?: string;
 }
 
+/**
+ * رسالة فاتورة للعميل عبر واتساب.
+ *
+ * **مطالبةٌ بمالٍ لا يُستحقّ — علّتان أُغلِقتا معاً:**
+ *  ١) `status` كان معرَّفاً في النوع و**لا يُقرأ إطلاقاً** ⇒ فاتورةٌ ملغاة/مرتجعة/مستبدلة تُرسِل
+ *     «المتبقّي: كذا» وهي مستندٌ ميت لا التزام عليه (`SUPERSEDED` أخطرها: `correct.ts` يترك
+ *     `total` كاملاً و`returnedTotal` مُصفَّراً ⇒ تبدو مستحقّةً بالكامل).
+ *  ٢) مسار الاحتياط كان `total − paid` بلا طرح المرتجَع ⇒ بعد مرتجعٍ جزئيّ تُطالَب بفارقٍ رُدَّ فعلاً.
+ *
+ * الأموال بـ`decimal.js` عبر `D` — لا `Number`/`parseFloat` على مبلغ (انجراف float + حارس CI).
+ */
 export function buildInvoiceMessage(data: InvoiceMessageData): string {
-  const remaining = data.remaining ?? (Number(data.total) - Number(data.paidAmount ?? 0));
-  const remainingNum = Number(remaining);
+  // المتبقّي الحقيقي = الإجمالي − المرتجَع − المدفوع (نفس معادلة InvoiceDetail/listSummary).
+  const remainingAmount =
+    data.remaining != null
+      ? D(data.remaining)
+      : D(data.total).minus(D(data.returnedTotal ?? 0)).minus(D(data.paidAmount ?? 0));
+  // مستندٌ ميت (ملغاة/مرتجعة/مستبدلة) ⇒ لا سطرَ مطالبةٍ ولا «مدفوعة بالكامل» — الحالة وحدها تُذكر.
+  const dead = isDeadInvoiceStatus(data.status);
 
   const lines: string[] = [
     `*فاتورة بيع #${data.invoiceNumber}*`,
@@ -147,12 +167,16 @@ export function buildInvoiceMessage(data: InvoiceMessageData): string {
   }
 
   lines.push(`*الإجمالي:* ${fmtMoney(data.total)} د.ع.`);
-  if (data.paidAmount && Number(data.paidAmount) > 0) {
+  const paid = D(data.paidAmount ?? 0);
+  if (paid.gt(0)) {
     lines.push(`*المدفوع:* ${fmtMoney(data.paidAmount)} د.ع.`);
   }
-  if (remainingNum > 0) {
-    lines.push(`*المتبقّي:* ${fmtMoney(remainingNum)} د.ع.`);
-  } else if (remainingNum === 0 && Number(data.paidAmount ?? 0) > 0) {
+  if (dead) {
+    // بدل المطالبة: بيانُ حالة المستند صراحةً كي لا يبقى العميل أمام مبالغ بلا تفسير.
+    lines.push(`*حالة الفاتورة:* ${invoiceStatusLabel(data.status)} — لا مبلغ مستحقّاً عليها.`);
+  } else if (remainingAmount.gt(0)) {
+    lines.push(`*المتبقّي:* ${fmtMoney(remainingAmount.toString())} د.ع.`);
+  } else if (remainingAmount.isZero() && paid.gt(0)) {
     lines.push(`*مدفوعة بالكامل*`);
   }
 

@@ -42,6 +42,7 @@ import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/date";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
 
 type QueueOut = RouterOutputs["reception"]["invoiceQueue"];
 type Row = QueueOut["rows"][number];
@@ -281,7 +282,9 @@ export function ReceptionInvoiceQueue({
                     </td>
                     <td className="px-2 py-2 text-center">
                       <Badge variant={r.status === "PAID" ? "default" : r.status === "PARTIALLY_PAID" ? "secondary" : "outline"} className="text-[10px]">
-                        {r.status === "PAID" ? "مدفوعة" : r.status === "PARTIALLY_PAID" ? "جزئية" : r.status === "PENDING" ? "معلّقة" : r.status === "RETURNED" ? "مرتجعة" : r.status}
+                        {/* التعريب من المصدر المشترك — السلسلة الشرطية كانت تُسقِط CONFIRMED/CANCELLED/SUPERSEDED
+                            إلى `r.status` رمزاً إنجليزياً خاماً في طابور الاستقبال. */}
+                        {invoiceStatusLabel(r.status)}
                       </Badge>
                     </td>
                     <td className="px-2 py-2">

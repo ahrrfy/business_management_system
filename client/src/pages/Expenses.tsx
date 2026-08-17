@@ -30,6 +30,8 @@ import { D, fmt } from "@/lib/money";
 import { printDoc } from "@/lib/printing/print";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
+import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
 import {
   moduleAccessAllowed,
   type PermissionMap,
@@ -679,9 +681,8 @@ export default function Expenses() {
   const [correctionAttachment, setCorrectionAttachment] = useState<ImageItem[]>(
     [],
   );
-  const [correctionRefundMethod, setCorrectionRefundMethod] = useState<
-    "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"
-  >("CASH");
+  const [correctionRefundMethod, setCorrectionRefundMethod] =
+    useState<InboundEnabledPaymentMethod>("CASH");
   const [correctionRefundBucket, setCorrectionRefundBucket] = useState<
     "DRAWER" | "TREASURY"
   >("TREASURY");
@@ -2583,11 +2584,11 @@ export default function Expenses() {
                               )
                             }
                           >
-                            <option value="CASH">نقد</option>
-                            <option value="CARD">بطاقة</option>
-                            <option value="CHECK">صك</option>
-                            <option value="TRANSFER">تحويل</option>
-                            <option value="WALLET">محفظة</option>
+                            {/* مشتقّة من سياسة القبض المشتركة — «صك» كان معروضاً ويرفضه الخادم
+                                في سند الاسترداد (`assertInboundPaymentMethodEnabled`) ⇒ صفر مسار نجاح. */}
+                            {INBOUND_METHOD_OPTIONS.map((m) => (
+                              <option key={m.v} value={m.v}>{m.label}</option>
+                            ))}
                           </select>
                         </div>
                         {correctionRefundMethod === "CASH" ? (

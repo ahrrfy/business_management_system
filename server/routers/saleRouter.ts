@@ -1,9 +1,11 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
+import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { z } from "zod";
 import {
   customers,
@@ -217,7 +219,11 @@ const salesListInput = z
     // الحاجة التشغيلية: مطابقة يوم البطاقات مع كشف جهاز الدفع تتطلّب حصر فواتير CARD.
     // ش٥ (V19): TELECOM في **فلتر القراءة** فقط — الكتابة (create/pay) تبقى بلا رصيد زين
     // (مقصورٌ على محطة الاستقبال خلف ضوابطها)، لكن فواتيرها تُفلتَر وتُقرأ من هنا.
-    paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"]).optional(),
+    // "NONE" = آجل (`paymentMethod IS NULL`) — الفاتورة الآجلة تُخزَّن بلا طريقة أصلاً، فكانت
+    // خارج كل تركيبات هذا الفلتر: تفلتر الطرق الأربع واحدةً واحدة فلا يبلغ مجموعها الإجمالي،
+    // والفارق (كلّ الذمم + كلّ COD المحصَّل) غير قابل للعرض إطلاقاً. النمط مأخوذٌ حرفياً من
+    // `reports.salesReport` الذي يملكه منذ البداية ولم يُنقَل إلى الشاشة الأكثر استعمالاً.
+    paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM", "NONE"]).optional(),
     // فرع صريح للمرتفعين (admin/manager عابرَي الفروع) — يُفعَّل فقط حين scopedBranchId فارغ؛
     // غير المرتفع يبقى محصوراً بفرعه مهما أرسل (انظر buildSalesListConds).
     branchId: z.number().int().positive().optional(),
@@ -261,21 +267,26 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
   if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
-  if (input?.paymentMethod) conds.push(eq(invoices.paymentMethod, input.paymentMethod));
+  if (input?.paymentMethod)
+    conds.push(
+      input.paymentMethod === "NONE"
+        ? isNull(invoices.paymentMethod)
+        : eq(invoices.paymentMethod, input.paymentMethod),
+    );
   if (input?.balanceState === "DEPOSIT_DUE") {
     conds.push(inArray(invoices.sourceType, ["ORDER", "WORKORDER"]));
     conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) > 0`);
     conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
   } else if (input?.balanceState === "OUTSTANDING") {
     conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
-    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+    conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   } else if (input?.balanceState === "UNPAID") {
     conds.push(sql`CAST(${invoices.paidAmount} AS DECIMAL(15,2)) = 0`);
     conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) > 0`);
-    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+    conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   } else if (input?.balanceState === "SETTLED") {
     conds.push(sql`CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) <= 0`);
-    conds.push(sql`${invoices.status} NOT IN ('CANCELLED', 'RETURNED')`);
+    conds.push(notInArray(invoices.status, [...DEAD_INVOICE_STATUSES]));
   }
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
   if (input?.shiftId) conds.push(eq(invoices.shiftId, input.shiftId));
@@ -546,6 +557,22 @@ export const saleRouter = router({
             code: "NOT_FOUND",
             message: "الفاتورة غير موجودة",
           });
+        // عزل الفرع (مرآة `correctSale` في services/sale/correct.ts): الوسيط `requireOwnBranch`
+        // يكتفي بـ«فرعٌ مُسنَد» ويصرّح أنّ فرضَ الفرع في الكتابة يقع **داخل الـhandler** — وهذا
+        // المسار وحده كان يُحمِّل بـ`eq(invoices.id, …)` ويكتب بلا أيّ فحصٍ للفرع ⇒ مدير فرعٍ
+        // يغيّر تاريخ استحقاق ذمّة فرعٍ آخر لا يستطيع حتى **قراءتها** (`sales.get` يحجبها بـ
+        // scopedBranchId) ⇒ خرقُ قرار «عزل مدير الفرع» وتشويهُ أعمار ذممٍ ليست له.
+        if (!canCrossBranches(ctx.user!) && Number(inv.branchId) !== Number(ctx.user!.branchId)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+        }
+        // حارس الحالة (مرآة `correctSale`): المستند المُبطَل/المُرتجَع لا تُعدَّل بياناته — تعديل
+        // تاريخ استحقاق فاتورةٍ ملغاةٍ أو مستبدَلةٍ يُحيي ذمّةً لا وجود لها في أعمار الذمم.
+        if (isDeadInvoiceStatus(inv.status)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "لا تُعدَّل بيانات فاتورة ملغاة أو مرتجعة أو مستبدَلة بمصحّحة",
+          });
+        }
 
         const invoiceReceipts = await tx
           .select({

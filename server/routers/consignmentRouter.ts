@@ -107,7 +107,10 @@ export const consignmentRouter = router({
     .input(z.object({
       consignorId: z.number().int().positive(),
       amount: positiveMoneyString,
-      paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "CHECK"]).default("CASH"),
+      // «صك» محذوف: قرار المالك «لا تعامل بالصكوك». حارس `voucher/create.ts` مشروطٌ بسندات
+      // **القبض** وحدها، وهذا الزود يستدعي `createVoucher` بـPAYMENT ⇒ كان سند صرفٍ بالصك
+      // يُنشأ فعلاً عبر tRPC مباشرةً، بينما راوتر السندات العام يمنعه (`creatableMethod`).
+      paymentMethod: z.enum(["CASH", "CARD", "TRANSFER"]).default("CASH"),
       branchId: z.number().int().positive(),
       clientRequestId: z.string().min(8).max(64),
       description: z.string().max(500).optional(),

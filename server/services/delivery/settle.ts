@@ -206,6 +206,7 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
           paidAmount: toDbMoney(newPaid),
           status: computeInvoiceStatus(String(inv.total), toDbMoney(newPaid), String(inv.returnedTotal ?? "0")),
           paymentDate: new Date(),
+          paymentMethod: sql`COALESCE(${invoices.paymentMethod}, 'CASH')`,
         }).where(eq(invoices.id, invoiceId));
         await postEntry(tx, {
           entryType: "PAYMENT_IN", dedupeKey: `PAYMENT_IN:WRITEOFF:CN:${cn.id}`,

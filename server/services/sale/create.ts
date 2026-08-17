@@ -735,7 +735,10 @@ export async function createSaleInTx(
     // 8. Invoice header.
     const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
     const status = computeInvoiceStatus(toDbMoney(effectiveTotalD), toDbMoney(paidNow));
-    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    // نسبة البيع: الفاعل، إلّا أن يُمرَّر `attributeToUserId` صراحةً (تفويضٌ داخليّ — التصحيح
+    // يُعيد إصدار بيع البائع الأصليّ بيد مديرٍ، فلا تُنقَل عمولته إلى المصحِّح).
+    const sellerUserId = input.attributeToUserId ?? actor.userId;
+    const salespersonNameSnapshot = await userNameSnapshot(tx, sellerUserId);
     const insRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: input.sourceType,
@@ -778,7 +781,7 @@ export async function createSaleInTx(
       capturedAt: input.offlineCapture?.capturedAt ?? null,
       salespersonNameSnapshot,
       posDeviceId: input.offlineCapture?.deviceId ?? input.deviceId ?? null,
-      createdBy: actor.userId,
+      createdBy: sellerUserId,
     });
     const invoiceId = extractInsertId(insRes);
 

@@ -74,6 +74,17 @@ export interface CreateSaleInput {
    *  في allocateAtCommit حيث تُعرف وحدة الهدف. */
   preCollected?: { amount: string; receiptIds: number[] } | null;
   clientRequestId?: string | null;
+  /**
+   * **تفويضٌ داخليّ حصراً — لا يقبله أيّ راوتر.** نسبةُ البيع (`invoices.createdBy` +
+   * `salespersonNameSnapshot`) إلى بائعٍ غير الفاعل الحاليّ.
+   *
+   * مستهلكه الوحيد `correctSale`: التصحيح يُعيد إصدار **بيع البائع الأصليّ** بيد مديرٍ مصحِّح،
+   * وكان يكتب `createdBy: actor.userId` (المدير) بينما وعاء العمولة يُجمَّع بـ`invoices.createdBy`
+   * (`commissions/base.ts`) وقيدُ `RETURN` العكسيّ يُخصَم من البائع الأصليّ ⇒ **الكاشير يخسر
+   * البيع كاملاً من وعائه الشهريّ والمدير يكسبه**، وتقرير «المبيعات حسب الموظف» يُعيد نسبته
+   * للمدير — بلا إنذارٍ ولا أثرٍ ظاهر. هويّة المصحِّح تبقى محفوظةً في `auditLogs` وحدها.
+   */
+  attributeToUserId?: number | null;
   /** معرّف محطة/جهاز نقطة البيع للتدقيق (ليس سراً ولا رمز مصادقة). */
   deviceId?: string | null;
   /** رمز كوبون CRM؛ يُقفل ويُتحقق ويُستهلك ذرّياً مع الفاتورة. */
