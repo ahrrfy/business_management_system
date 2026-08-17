@@ -3119,10 +3119,13 @@ export const productImages = mysqlTable(
       "ORIGINAL",
       "STUDIO_FREE",
       "STUDIO_PRO",
+      "STUDIO_AI",
       "MANUAL",
     ])
       .default("ORIGINAL")
       .notNull(),
+    /** هوية مهمة الاستوديو التي نشرت النسخة الحالية؛ تمنع استرجاع مهمة أقدم فوق نشر أحدث متماثل البصمة. */
+    publishedStudioJobId: bigint("publishedStudioJobId", { mode: "number" }),
     migratedAt: timestamp("migratedAt"),
   },
   (table) => ({
@@ -3153,31 +3156,85 @@ export const productImageJobs = mysqlTable(
       { onDelete: "cascade" },
     ),
     sourceContentHash: varchar("sourceContentHash", { length: 64 }),
+    /** لقطة الفرع عند الإسناد؛ المدير محصور بفرعه، والمالك/الأدمن فقط يعبران. */
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    /** بصمة الاسم والوصف وقت بدء المهمة لمنع طمس تعديلٍ أحدث عند الاعتماد. */
+    sourceProductHash: varchar("sourceProductHash", { length: 64 }),
+    /** صورة المصدر القائمة، إن بدأت المهمة من صورة محفوظة. لا يُعرَض رابطها للعامل مباشرةً. */
+    sourceImageId: bigint("sourceImageId", { mode: "number" }).references(
+      () => productImages.id,
+      { onDelete: "set null" },
+    ),
+    /** الأصل والمرشّح في المخزن الخاص؛ لا data URL كامل الدقة في MySQL. */
+    originalObjectKey: varchar("originalObjectKey", { length: 255 }),
+    processedObjectKey: varchar("processedObjectKey", { length: 255 }),
+    originalMime: varchar("originalMime", { length: 32 }),
+    processedMime: varchar("processedMime", { length: 32 }),
+    processedContentHash: varchar("processedContentHash", { length: 64 }),
+    processedBytes: int("processedBytes"),
+    processedWidth: int("processedWidth"),
+    processedHeight: int("processedHeight"),
     // المرشّح المحتجَز — لا يُخدَم عبر /api/img حتى الاعتماد (§٥ #١).
     processedUrl: mediumtext("processedUrl"),
-    mode: mysqlEnum("mode", ["FLATTEN", "CUT", "PRO"]).notNull(),
+    mode: mysqlEnum("mode", ["FLATTEN", "CUT", "PRO", "AI"]).notNull(),
     status: mysqlEnum("status", [
+      "ASSIGNED",
+      "IN_PROGRESS",
       "PENDING_REVIEW",
       "APPROVED",
       "REJECTED",
       "FAILED",
+      "REVERTED",
     ])
       .default("PENDING_REVIEW")
       .notNull(),
     templateVersion: int("templateVersion"),
     createdBy: int("createdBy").references(() => users.id), // users.id = int (لا bigint)
+    assignedTo: int("assignedTo").references(() => users.id),
+    assignedBy: int("assignedBy").references(() => users.id),
     reviewedBy: int("reviewedBy").references(() => users.id),
+    /** فتحة فريدة للمهمة النشطة: 1 أثناء العمل، NULL بعد الإغلاق؛ تمنع مهمتين لمنتج واحد. */
+    activeSlot: tinyint("activeSlot"),
+    /** lease مشترك في DB يمنع رفع مرشحين متوازيين عبر عدة workers. */
+    uploadLeaseToken: varchar("uploadLeaseToken", { length: 64 }),
+    uploadLeaseExpiresAt: timestamp("uploadLeaseExpiresAt"),
+    /** إثبات خادمي قصير العمر بأن مزوداً مدفوعاً/ذكياً نُفّذ لهذه المهمة. */
+    processingProofTokenHash: varchar("processingProofTokenHash", { length: 64 }),
+    processingProofMode: mysqlEnum("processingProofMode", ["PRO", "AI"]),
+    processingProofCandidateHash: varchar("processingProofCandidateHash", { length: 64 }),
+    processingProofExpiresAt: timestamp("processingProofExpiresAt"),
+    proposedName: varchar("proposedName", { length: 255 }),
+    proposedDescription: text("proposedDescription"),
+    proposedMarketingCopy: text("proposedMarketingCopy"),
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    submittedAt: timestamp("submittedAt"),
     reviewedAt: timestamp("reviewedAt"),
   },
   (table) => ({
     prodIdx: index("idx_pijob_product").on(table.productId),
     statusIdx: index("idx_pijob_status").on(table.status),
+    assigneeStatusIdx: index("idx_pijob_assignee_status").on(table.assignedTo, table.status),
+    branchStatusIdx: index("idx_pijob_branch_status").on(table.branchId, table.status),
+    oneActivePerProduct: unique("uq_pijob_product_active").on(table.productId, table.activeSlot),
   }),
 );
 
 export type ProductImageJob = typeof productImageJobs.$inferSelect;
 export type InsertProductImageJob = typeof productImageJobs.$inferInsert;
+
+/** سجل ثابت المفتاح لكنس كائنات الرفع التي لم تُربط بصف DB بعد فشل/انقطاع. */
+export const productImageObjectStaging = mysqlTable(
+  "productImageObjectStaging",
+  {
+    objectKey: varchar("objectKey", { length: 255 }).primaryKey(),
+    state: mysqlEnum("state", ["PENDING", "REFERENCED"]).default("PENDING").notNull(),
+    touchedAt: timestamp("touchedAt").defaultNow().onUpdateNow().notNull(),
+    referencedAt: timestamp("referencedAt"),
+  },
+  (table) => ({ stateTouchedIdx: index("idx_piostage_state_touched").on(table.state, table.touchedAt) }),
+);
 
 /* ============================ المشتريات ============================ */
 
@@ -7788,7 +7845,7 @@ export type InsertImageStudioSettings = typeof imageStudioSettings.$inferInsert;
 /**
  * عدّاد يومي غير قابل للتجاوز لنداءات مزوّدي استوديو الصور المدفوعة. يُحجز النداء قبل
  * الاتصال الخارجي ولا يُعاد بعده، لأن فشل الشبكة لا يثبت أن المزوّد لم يقتطع رصيداً.
- * هذا هو مصدر الحقيقة للسقف اليومي عبر إعادة تشغيل PM2، بخلاف محدد المعدّل اللحظيّ في الذاكرة.
+ * هذا هو مصدر الحقيقة للسقف اليومي عبر إعادة تشغيل PM2.
  */
 export const imageStudioUsageDaily = mysqlTable(
   "imageStudioUsageDaily",
@@ -7806,6 +7863,16 @@ export const imageStudioUsageDaily = mysqlTable(
 );
 export type ImageStudioUsageDaily = typeof imageStudioUsageDaily.$inferSelect;
 export type InsertImageStudioUsageDaily = typeof imageStudioUsageDaily.$inferInsert;
+
+/** صف ثابت لكل مستخدم لمعدل مزودي الصور؛ لا يتراكم مع الطلبات ويُقفل عبر جميع عمال PM2. */
+export const imageStudioUserRateState = mysqlTable("imageStudioUserRateState", {
+  userId: int("userId").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  windowStartedAt: timestamp("windowStartedAt").notNull(),
+  requestCount: int("requestCount").default(0).notNull(),
+  lastRequestedAt: timestamp("lastRequestedAt").notNull(),
+});
+export type ImageStudioUserRateState = typeof imageStudioUserRateState.$inferSelect;
+export type InsertImageStudioUserRateState = typeof imageStudioUserRateState.$inferInsert;
 
 /** شريحة تصاعدية لضريبة الدخل: `upTo` حدّ أعلى للشريحة (سلسلة مالية) أو null للشريحة المفتوحة
  *  العليا («فما فوق»)، `rate` نسبة مئوية (سلسلة). الاحتساب حدّيّ تصاعديّ (كل جزء بنسبة شريحته). */

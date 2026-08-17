@@ -13,6 +13,7 @@ interface StudioPreview {
   after: string;
   sizeKB: number;
   mode: StudioResult["mode"] | "AI";
+  processingReceipt?: string;
 }
 
 /**
@@ -28,7 +29,13 @@ interface StudioPreview {
  * احترافيّ) · **الذكاء الاصطناعي** (توليديّ يُعيد التصميم — مراجعة بشرية إلزامية والأصل محفوظ).
  * راجع client/src/lib/imageStudio/README.md.
  */
-export function ImageStudioUploader(props: ImageUploaderProps) {
+interface ImageStudioUploaderProps extends ImageUploaderProps {
+  onStudioModeChange?: (mode: "FLATTEN" | "CUT" | "AI") => void;
+  studioTaskId?: number;
+  onProcessingReceiptChange?: (receipt: string | null) => void;
+}
+
+export function ImageStudioUploader(props: ImageStudioUploaderProps) {
   const { value, onChange } = props;
   const [busy, setBusy] = useState(false);
   // الاستهداف: أيّ الصور تُعدَّل الآن. «استوديو» على صورة ⇒ [تلك]، «تحديد الكل» ⇒ كلّها.
@@ -43,6 +50,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
 
   const proConfig = trpc.imageStudio.proConfig.useQuery(undefined, { staleTime: 60_000 });
   const proCutout = trpc.imageStudio.proCutout.useMutation();
+  const bindProcessingProof = trpc.productStudio.bindProcessingProof.useMutation();
   const proAvailable = proConfig.data?.proAvailable ?? false;
 
   const aiConfig = trpc.imageStudio.aiConfig.useQuery(undefined, { staleTime: 60_000 });
@@ -101,11 +109,20 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
       const results = await Promise.all(
         targets.map(async (it): Promise<StudioPreview> => {
           let r: StudioResult;
+          let processingReceipt: string | undefined;
           if (proAvailable) {
             try {
-              const res = await proCutout.mutateAsync({ imageDataUrl: it.dataUrl });
+              const res = await proCutout.mutateAsync({ imageDataUrl: it.dataUrl, taskId: props.studioTaskId });
               // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
               r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, { trustCutout: true });
+              if (props.studioTaskId && res.processingReceipt) {
+                await bindProcessingProof.mutateAsync({
+                  taskId: props.studioTaskId,
+                  processingReceipt: res.processingReceipt,
+                  candidateDataUrl: r.dataUrl,
+                });
+                processingReceipt = res.processingReceipt;
+              }
               if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
             } catch (e) {
               // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
@@ -115,7 +132,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
           } else {
             r = await runFreeStudio(it.dataUrl, { safeOnly: true });
           }
-          return { id: it.id, before: it.dataUrl, after: r.dataUrl, sizeKB: Math.round(r.sizeKB), mode: r.mode };
+          return { id: it.id, before: it.dataUrl, after: r.dataUrl, sizeKB: Math.round(r.sizeKB), mode: r.mode, processingReceipt };
         }),
       );
       if (myToken !== runToken.current) return; // أُعيد الاستهداف أثناء المعالجة ⇒ تجاهُل نتيجةٍ لهدفٍ قديم
@@ -145,9 +162,16 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
       let failedCount = 0;
       for (const it of targets) {
         try {
-          const res = await aiTransform.mutateAsync({ imageDataUrl: it.dataUrl, userPrompt, mode: "EDIT" });
+          const res = await aiTransform.mutateAsync({ imageDataUrl: it.dataUrl, userPrompt, mode: "EDIT", taskId: props.studioTaskId });
           const norm = await normalizeAiStudioImage(res.imageDataUrl);
-          ok.push({ id: it.id, before: it.dataUrl, after: norm.dataUrl, sizeKB: Math.round(norm.sizeKB), mode: "AI" });
+          if (props.studioTaskId && res.processingReceipt) {
+            await bindProcessingProof.mutateAsync({
+              taskId: props.studioTaskId,
+              processingReceipt: res.processingReceipt,
+              candidateDataUrl: norm.dataUrl,
+            });
+          }
+          ok.push({ id: it.id, before: it.dataUrl, after: norm.dataUrl, sizeKB: Math.round(norm.sizeKB), mode: "AI", processingReceipt: res.processingReceipt });
         } catch (e) {
           failedCount++;
           if (!firstErr) firstErr = String((e as { message?: string })?.message ?? e ?? "");
@@ -173,6 +197,13 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
     if (!previews) return;
     // نطبّق كلّ ناتجٍ على صورته بالمعرّف حصراً (لا خلط/تكرار على غير المستهدَف) — راجع applyStudioPreviews.
     onChange(applyStudioPreviews(value, previews));
+    const acceptedMode = previews.some((preview) => preview.mode === "AI")
+      ? "AI"
+      : previews.some((preview) => preview.mode === "CUT")
+        ? "CUT"
+        : "FLATTEN";
+    props.onStudioModeChange?.(acceptedMode);
+    props.onProcessingReceiptChange?.(previews.find((preview) => preview.processingReceipt)?.processingReceipt ?? null);
     setPreviews(null);
     setNotice(null);
     setTargetIds([]);

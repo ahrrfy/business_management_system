@@ -31,7 +31,7 @@ import { VariantsTable } from "@/components/product/VariantsTable";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { type ImageItem } from "@/components/form/ImageUploader";
-import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
@@ -610,7 +610,6 @@ export default function ProductEdit() {
               </select>
             </Field>
             <Field label="بادئة SKU (للمتغيّرات الجديدة)" className="md:col-span-2"><Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" /></Field>
-            <Field label="الوصف" className="md:col-span-3"><Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="خصائص/ملاحظات…" /></Field>
           </CardContent>
         </Card>
         <Card>
@@ -781,19 +780,13 @@ export default function ProductEdit() {
         />
       )}
 
-      {/* صور المنتج المشتركة (على مستوى المنتج) — تُعرَض في المتجر/الكشك والمعاينة. لكل لون صورته المستقلّة
-          في صفّ المتغيّر أعلاه؛ هذه صور عامّة للمنتج كاملاً. */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">صور المنتج (مشتركة)</CardTitle></CardHeader>
-        <CardContent>
-          <ImageStudioUploader
-            value={images}
-            onChange={setImages}
-            maxItems={10}
-            hint="حتى 10 صور للمنتج عامّةً (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً. ولكل لون صورته المستقلّة في صفّ المتغيّر أعلاه."
-          />
-        </CardContent>
-      </Card>
+      <ProductMediaContentSection
+        description={description}
+        onDescriptionChange={setDescription}
+        images={images}
+        onImagesChange={setImages}
+        hint="حتى 10 صور عامة للمنتج؛ الأولى رئيسية، ولكل لون صورته المستقلة في صف المتغيّر."
+      />
 
       {/* gstack B12 (٧/٧/٢٦): تبويب وصفة البكج — يُعرض فقط لو المنتج بكج. المتغيّر الأول هو الأب حصراً
           (قيد الإنشاء + التعديل). previewImpact + setComponents يستهلكان في المكوّن. */}

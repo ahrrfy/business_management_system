@@ -10,7 +10,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
 import { type ImageItem } from "@/components/form/ImageUploader";
-import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
@@ -409,9 +409,6 @@ export default function SimpleProductEditForm({
           <Field label="رمز المنتج (SKU)" required className="md:col-span-2">
             <Input id="simpleedit-sku" value={sku} onChange={(e) => setSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PR-BOOK-ARB" />
           </Field>
-          <Field label="الوصف" className="md:col-span-3">
-            <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="خصائص/ملاحظات…" />
-          </Field>
         </CardContent>
       </Card>
 
@@ -602,18 +599,12 @@ export default function SimpleProductEditForm({
         </CardContent>
       </Card>
 
-      {/* ── صور المنتج (مشتركة) ── */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">صور المنتج (اختياري)</CardTitle></CardHeader>
-        <CardContent>
-          <ImageStudioUploader
-            value={images}
-            onChange={setImages}
-            maxItems={10}
-            hint="حتى 10 صور للمنتج (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً."
-          />
-        </CardContent>
-      </Card>
+      <ProductMediaContentSection
+        description={description}
+        onDescriptionChange={setDescription}
+        images={images}
+        onImagesChange={setImages}
+      />
 
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

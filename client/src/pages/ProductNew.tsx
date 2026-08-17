@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { type ImageItem } from "@/components/form/ImageUploader";
-import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { AlertCircle, Boxes, Layers, Package, Wrench, X } from "lucide-react";
 import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
@@ -599,9 +599,6 @@ export default function ProductNew() {
             <Field label="رمز المنتج (SKU الأساس)" hint="تُشتقّ منه أكواد المتغيّرات تلقائياً." className="md:col-span-2">
               <Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" />
             </Field>
-            <Field label="الوصف" className="md:col-span-3">
-              <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="خصائص/ملاحظات…" />
-            </Field>
           </CardContent>
         </Card>
 
@@ -792,18 +789,13 @@ export default function ProductNew() {
         </CardContent>
       </Card>
 
-      {/* ── الصور المشتركة على مستوى المنتج ── */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">صور المنتج (مشتركة)</CardTitle></CardHeader>
-        <CardContent>
-          <ImageStudioUploader
-            value={images}
-            onChange={setImages}
-            maxItems={10}
-            hint="حتى 10 صور للمنتج عامّةً (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً. ولكل لون صورته المستقلّة في صفّ المتغيّر بالأسفل."
-          />
-        </CardContent>
-      </Card>
+      <ProductMediaContentSection
+        description={description}
+        onDescriptionChange={setDescription}
+        images={images}
+        onImagesChange={setImages}
+        hint="حتى 10 صور عامة للمنتج؛ الأولى رئيسية، ولكل لون صورته المستقلة في صف المتغيّر."
+      />
 
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

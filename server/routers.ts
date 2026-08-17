@@ -69,6 +69,7 @@ import { courierRouter } from "./routers/courierRouter";
 import { crmRouter } from "./routers/crmRouter";
 import { offlineRouter } from "./routers/offlineRouter";
 import { imageStudioRouter } from "./routers/imageStudioRouter";
+import { productStudioRouter } from "./routers/productStudioRouter";
 import { printPricingRouter } from "./routers/printPricingRouter";
 import { tasksRouter } from "./routers/tasksRouter";
 import { contactsRouter } from "./routers/contactsRouter";
@@ -157,6 +158,7 @@ export const appRouter = router({
   // شَريحة #6 (٢٤/٦/٢٦): إدارة tokens التَكاملات في الواجهة (بَدل .env).
   integrations: integrationRouter,
   imageStudio: imageStudioRouter,
+  productStudio: productStudioRouter,
   // delivery-cod (٢٦/٦/٢٦): التوصيل (COD) — جهات التوصيل/العهد/الترحيل.
   delivery: deliveryRouter,
   // courier (١٢/٧/٢٦): شاشة المندوب الذاتية «توصيلاتي» — طلباتي + تأكيد التسليم والتحصيل.
