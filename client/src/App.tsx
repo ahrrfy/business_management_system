@@ -48,6 +48,7 @@ const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
 const PrintHub = lazy(() => import("@/pages/PrintHub"));
 const AssetsHub = lazy(() => import("@/pages/AssetsHub"));
 const HrHub = lazy(() => import("@/pages/HrHub"));
+const EmployeeOffboarding = lazy(() => import("@/pages/EmployeeOffboarding"));
 const DeliveryCenter = lazy(() => import("@/pages/DeliveryCenter"));
 const MyDeliveries = lazy(() => import("@/pages/MyDeliveries"));
 const ClosingHub = lazy(() => import("@/pages/ClosingHub"));
@@ -367,6 +368,8 @@ export default function App() {
       <Route path="/hr/employees/new"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
       <Route path="/hr/employees/:id/edit"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
       <Route path="/hr/employees/:id"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeDetail /></RequireRole></Shell></Route>
+      {/* تصفية خروج الموظف — قراءةٌ فقط تجمع ذمّته عبر ستّ وحدات قبل إنهاء الخدمة. */}
+      <Route path="/hr/offboarding"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeOffboarding /></RequireRole></Shell></Route>
       <Route path="/hr/attendance"><Redirect to="/hr?tab=attendance" /></Route>
       <Route path="/hr/payroll"><Redirect to="/hr?tab=payroll" /></Route>
       <Route path="/hr/leaves"><Redirect to="/hr?tab=leaves" /></Route>
