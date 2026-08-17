@@ -10,7 +10,7 @@
 import { eq } from "drizzle-orm";
 import { employees } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
-import { getEmployeeStatement } from "./employeeStatement";
+import { getEmployeeStatement, type StatementDueBasis } from "./employeeStatement";
 
 /** صفّ الموظف في التقرير الشهريّ. */
 export interface ReportRow {
@@ -36,7 +36,9 @@ export interface ReportRow {
   basePay: string;
   totalDue: string;
   attendanceExempt: boolean;
-  dueBasis: "hourly" | "attendance" | "fixedSalary" | "exempt";
+  dueBasis: StatementDueBasis;
+  /** الشهر مصروف ⇒ `totalDue` مجمَّدٌ من لقطة المسيّر لا مشتقٌّ من بيانات اليوم (ق٣). */
+  frozen: boolean;
 }
 
 export interface MonthlyAttendanceReportInput {
@@ -100,6 +102,7 @@ export async function getMonthlyAttendanceReport(input: MonthlyAttendanceReportI
       /** أساس الرقم أعلاه — يُعرَض في الشاشة فلا يُظنّ حسابُ الحضور مصدرَه دائماً. */
       attendanceExempt: exempt,
       dueBasis: st.dueBasis,
+      frozen: st.payrollSnapshot != null,
     });
   }
 

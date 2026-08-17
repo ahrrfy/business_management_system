@@ -7,9 +7,23 @@
  * يُعيد الكشف نفسه الذي يبني عليه المسيّر — **بنفس النواة** (`computeAttendancePay`)
  * لا بحسابٍ مستقلّ، فلا ينحرف المعروض عن المدفوع. وهذه قراءة صرفة: لا تكتب شيئاً
  * ولا تلمس مسيّراً، فيصلح للمراجعة قبل التوليد وبعده.
+ *
+ * ⛔ **الشهر المصروف مجمَّد** (قرار المالك ١٧/٨/٢٦): متى صار لشهرٍ مسيّرٌ **معتمدٌ أو
+ * مدفوع**، لم يعد الكشف يشتقّ رقمه من الراتب والجدول والإعدادات **الحاليّة** — يقرأ
+ * **لقطة بند المسيّر** كما كُتبت. وإلّا فترقيةُ راتبٍ في أيلول تُغيّر رقم آب المصروف
+ * أثراً رجعياً، وهذا الكشف يُطبَع ويُصدَّر ويُرسَل للموظف على واتساب ⇒ رقمٌ يخالف ما
+ * قبضه بيده. النواةُ تبقى تعمل: صفوفُ الأيام تشرح **كيف** حُسِب، واللقطة تحكم **بكم**.
  * ========================================================================== */
-import { and, eq, gte, lte, sql } from "drizzle-orm";
-import { attendance, employees, hrAttendanceSettings, leaveRequests, branches } from "../../../drizzle/schema";
+import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import {
+  attendance,
+  employees,
+  hrAttendanceSettings,
+  leaveRequests,
+  branches,
+  payrollItems,
+  payrollRuns,
+} from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
 import { requireDb } from "../tx";
 import { money, round2 } from "../money";
@@ -36,6 +50,73 @@ function hhmm(v: unknown): string | null {
   if (v instanceof Date) return v.toISOString().slice(11, 16);
   const s = String(v);
   return s.length >= 16 ? s.slice(11, 16) : s;
+}
+
+/** أساس رقم المستحقّ المعروض. `payrollSnapshot` يعني: الشهر صُرف والرقم مجمَّد. */
+export type StatementDueBasis = "hourly" | "exempt" | "attendance" | "fixedSalary" | "payrollSnapshot";
+
+/**
+ * لقطةُ بند المسيّر لهذا الموظف في هذا الشهر — أو `null` إن لم يُصرف الشهر بعد.
+ *
+ * **المسوّدة لا تُجمّد**: ما زالت تُحذف وتُعاد وتُعدَّل، فتجميدُها يُثبّت رقماً مؤقّتاً
+ * ويُخفي أثرَ تصحيح بصمةٍ قبل الاعتماد — وهو عين ما نريد أن يُرى. والملغى كذلك: لا يُصرف.
+ *
+ * ومراجعةُ المسيّر (`revisionNo`) تُرفَع عند عكس الاعتماد وإعادته، ويبقى بندُ المراجعة
+ * القديمة مخزَّناً ⇒ نأخذ **بند مراجعة الرأس الحالية**؛ وإن غابت (انجرافُ بيانات) نأخذ
+ * أعلى مراجعةٍ موجودة بدل أن نُرجع `null` فيعود الرقم إلى الاشتقاق الحيّ صامتاً.
+ */
+async function loadPayrollSnapshot(db: ReturnType<typeof requireDb>, employeeId: number, period: string) {
+  const [run] = await db
+    .select({
+      id: payrollRuns.id,
+      status: payrollRuns.status,
+      revisionNo: payrollRuns.revisionNo,
+      approvedAt: payrollRuns.approvedAt,
+      paidAt: payrollRuns.paidAt,
+    })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+    .limit(1);
+  if (!run) return null;
+
+  const items = await db
+    .select({
+      revisionNo: payrollItems.revisionNo,
+      payType: payrollItems.payType,
+      hours: payrollItems.hours,
+      gross: payrollItems.gross,
+      allowances: payrollItems.allowances,
+      overtime: payrollItems.overtime,
+      commission: payrollItems.commission,
+      deductions: payrollItems.deductions,
+      advanceDeduction: payrollItems.advanceDeduction,
+      net: payrollItems.net,
+      note: payrollItems.note,
+    })
+    .from(payrollItems)
+    .where(and(eq(payrollItems.runId, Number(run.id)), eq(payrollItems.employeeId, employeeId)))
+    .orderBy(desc(payrollItems.revisionNo));
+  const item = items.find((i) => Number(i.revisionNo) === Number(run.revisionNo)) ?? items[0];
+  // موظفٌ خارج المسيّر (عُيّن بعد اعتماده مثلاً) ⇒ لا لقطة له، والاشتقاق الحيّ هو الصحيح.
+  if (!item) return null;
+
+  return {
+    runId: Number(run.id),
+    status: String(run.status) as "approved" | "paid",
+    revisionNo: Number(item.revisionNo),
+    approvedAt: run.approvedAt ?? null,
+    paidAt: run.paidAt ?? null,
+    payType: item.payType,
+    hours: item.hours ?? null,
+    gross: item.gross,
+    allowances: item.allowances,
+    overtime: item.overtime,
+    commission: item.commission,
+    deductions: item.deductions,
+    advanceDeduction: item.advanceDeduction,
+    net: item.net,
+    note: item.note ?? null,
+  };
 }
 
 /** يفرد فترات الإجازة إلى تواريخ داخل نافذة. */
@@ -197,20 +278,35 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   const hourly = emp.payType === "hourly";
   const exempt = !!emp.attendanceExempt;
   const attendancePayEnabled = !!settings?.attendancePayEnabled;
-  /** أساس المستحقّ — مصدرُ حقيقةٍ واحد يستهلكه الكشفُ والتقريرُ والطباعة بلا إعادة اشتقاق. */
-  const dueBasis: "hourly" | "exempt" | "attendance" | "fixedSalary" = hourly
+  /**
+   * أساس المستحقّ — مصدرُ حقيقةٍ واحد يستهلكه الكشفُ والتقريرُ والطباعة بلا إعادة اشتقاق.
+   * `payrollSnapshot` يتقدّم على الأربعة الباقية: شهرٌ صُرف لا يُعاد اشتقاقه (قرار ق٣).
+   */
+  const liveBasis: "hourly" | "exempt" | "attendance" | "fixedSalary" = hourly
     ? "hourly"
     : exempt
       ? "exempt"
       : attendancePayEnabled
         ? "attendance"
         : "fixedSalary";
-  const amountDue =
-    dueBasis === "hourly"
+  const liveAmountDue =
+    liveBasis === "hourly"
       ? actualPaid.toFixed(2)
-      : dueBasis === "attendance"
+      : liveBasis === "attendance"
         ? round2(money(pay.basePay).plus(money(pay.overtimePay))).toFixed(2)
         : fixedPay.toFixed(2);
+
+  const snapshot = await loadPayrollSnapshot(db, input.employeeId, p);
+  const dueBasis: StatementDueBasis = snapshot ? "payrollSnapshot" : liveBasis;
+  /*
+   * الرقم المجمَّد = `gross + overtime` من اللقطة: **الأجر المكتسَب عن الشهر** بنفس معنى
+   * `amountDue` الحيّ (قبل العمولة وقبل الاستقطاعات) — فلا ينقلب معنى الحقل على مستهلكيه
+   * حين يتجمّد. والمصروف فعلاً (`net`) وكلُّ مكوّناته في `payrollSnapshot` تعرضها الشاشة
+   * صراحةً: تجميدُ الرقم ليس إخفاءَ تفصيله.
+   */
+  const amountDue = snapshot
+    ? round2(money(snapshot.gross).plus(money(snapshot.overtime))).toFixed(2)
+    : liveAmountDue;
 
   return {
     employee: {
@@ -236,6 +332,18 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     /** المستحقّ الفعليّ عن الشهر وأساسُه — يُعرَض ويُطبَع ويُشارَك بدل حساب الحضور دائماً. */
     amountDue,
     dueBasis,
+    /**
+     * لقطةُ الشهر المصروف (ق٣) — `null` ما لم يُعتمد مسيّرُه. وجودُها يعني أن `amountDue`
+     * أعلاه **مجمَّد** منها لا مشتقٌّ من بيانات اليوم.
+     */
+    payrollSnapshot: snapshot,
+    /**
+     * الرقم كما تشتقّه بيانات **اليوم** (راتبٌ وجدولٌ وإعداداتٌ حاليّة) وأساسُه — يُعرَضان
+     * بجانب المجمَّد لا بدلاً منه: الفرق بينهما هو أثرُ ما تغيّر بعد الصرف (ترقيةٌ، تصحيحُ
+     * بصمة، تبديلُ جدول)، وإظهارُه صراحةً يمنع أن يُقرأ الاختلافُ خطأً في النظام.
+     */
+    liveAmountDue,
+    liveBasis,
     totals: {
       scheduledHours: pay.scheduledHours,
       standardHours: pay.standardHours,
