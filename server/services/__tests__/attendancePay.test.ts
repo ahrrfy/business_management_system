@@ -414,3 +414,280 @@ describe("تفصيل أجر اليوم — أساس + إضافي = إجمالي 
     expect(sum("overtimeAmount")).toBeCloseTo(Number(r.overtimePay), 0);
   });
 });
+
+/*
+ * س١١) **الجدول الصفريّ** — قرار المالك ١٧/٨/٢٦: «كلُّ أيامه صفر أو {} يعني غياب الموظف عن
+ * أيام العمل ⇒ غيابٌ ظاهر في absentDays، لا عملَ يوم راحةٍ ولا صفراً صامتاً».
+ * كان يُنتج workDays فارغة ⇒ راتباً صفراً بلا أيّ تفسير، وكلَّ ساعاته المبصومة «عمل يوم راحة».
+ */
+describe("الجدول الصفريّ = جدولٌ غير مضبوط (س١١)", () => {
+  /** جدولٌ كلُّ أيامه صفر (الحالة التي يُنتجها حفظُ بطاقةٍ بلا ساعات). */
+  const ZERO: WorkSchedule = Object.fromEntries(
+    ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"].map((d) => [d, { hours: 0 }]),
+  );
+
+  it("بلا بصمات ⇒ كلُّ أيام الشهر غيابٌ ظاهر ومعلَّمٌ سببُه — لا صفرٌ صامت", () => {
+    const r = base({ schedule: ZERO, attendedHoursByDate: new Map() });
+
+    expect(r.scheduleMissing).toBe(true);
+    expect(r.absentDays).toBe(31); // تموز كلُّه — لا يوم راحة يُخفي الغياب
+    expect(r.restWorkedHours).toBe("0.00"); // ← جوهر ق٢: ليست «عمل يوم راحة»
+    expect(r.days.some((x) => x.state === "restWorked")).toBe(false);
+  });
+
+  it("مع بصمات ⇒ أيامها حضورٌ لا «عمل يوم راحة»، وباقي الأيام غياب", () => {
+    const att = new Map([["2026-07-06", D(8)]]);
+    const r = base({ schedule: ZERO, attendedHoursByDate: att });
+
+    expect(r.days.find((x) => x.date === "2026-07-06")?.state).toBe("present");
+    expect(r.payableHours).toBe("8.00"); // ساعاتُه أساسٌ لا إضافيّ (مقرَّرٌ صفرٌ لا يُقاس عليه)
+    expect(r.overtimeHours).toBe("0.00");
+    expect(r.absentDays).toBe(30);
+    expect(r.unpaidHours).toBe("0.00"); // لا مقرَّر ⇒ لا سالبَ بلا معنى
+  });
+
+  it("صفر انحدار: جدولٌ فيه راحةٌ واحدة يبقى راحةً — لا غياباً ولا جدولاً مفقوداً", () => {
+    const att = fullAttendance();
+    att.set("2026-07-03", D(8)); // الجمعة راحة في الجدول القياسيّ
+    const r = base({ attendedHoursByDate: att });
+
+    expect(r.scheduleMissing).toBe(false);
+    expect(r.absentDays).toBe(0); // الجُمَع لا تُطالَب بحضور
+    expect(r.restWorkedHours).toBe("8.00"); // وعملُ الجمعة يبقى «عمل يوم راحة»
+  });
+});
+
+/*
+ * س١٢) **بصمة انصرافٍ منسيّة وسط اليوم**: يومٌ بعدد بصماتٍ فرديّ (دخول·خروج·دخول) يحتسبه
+ * الطيّ بأزواجه المكتملة وحدها ⇒ ساعاتٌ موجبة لكنها ناقصة ⇒ **نصفُ يومٍ مدفوعٌ بصمت**.
+ * ودفعُ النصف تخمينٌ كدفع الصفر: اليوم المفتوح لا يُدفع مهما كانت ساعاته المسجَّلة.
+ */
+describe("اليوم المفتوح بساعاتٍ ناقصة — نصف يومٍ مدفوع (س١٢)", () => {
+  const day = "2026-07-06"; // اثنين — يوم دوام
+
+  it("ساعاتٌ موجبة + وسمُ نقصٍ ⇒ لا يُدفع، ويُعدّ يوماً مفتوحاً لا حاضراً", () => {
+    const att = fullAttendance();
+    att.set(day, D(4)); // زوجٌ مكتملٌ وحده من ثلاث بصمات
+    const r = base({ attendedHoursByDate: att, openDates: new Set([day]) });
+    const row = r.days.find((x) => x.date === day)!;
+
+    expect(row.state).toBe("open");
+    expect(row.attendedHours).toBe("4.00"); // الخام يبقى ظاهراً للشفافية
+    expect(row.countedHours).toBe("0.00");
+    expect(row.amount).toBe("0.00");
+    expect(r.openDays).toBe(1);
+    expect(r.absentDays).toBe(0);
+    expect(r.payableHours).toBe("200.00"); // 208 − 8: اليوم كلُّه معلَّق حتى يُصحَّح
+  });
+
+  it("صفر انحدار: اليوم نفسه بلا وسمِ نقصٍ يُدفع بساعاته كما كان", () => {
+    const att = fullAttendance();
+    att.set(day, D(4));
+    const r = base({ attendedHoursByDate: att });
+
+    expect(r.days.find((x) => x.date === day)?.state).toBe("present");
+    expect(r.payableHours).toBe("204.00"); // 208 − 4
+    expect(r.shortHours).toBe("4.00");
+    expect(r.openDays).toBe(0);
+  });
+});
+
+/*
+ * س١٣) **الإجازة بلا راتب** — عطبان أُغلقا معاً:
+ *   أ) الواقعة قبل `payFrom` كانت تُدفع كاملةً (فحص ما-قبل-السريان يسبقها).
+ *   ب) كانت تبتلع يوماً مبصوماً فعلاً ⇒ ثماني ساعاتٍ مسجَّلة تُدفع صفراً.
+ * القاعدة: **الحضور الفعليّ يتقدّم** — يومٌ فيه بصماتٌ عملٌ لا إجازة.
+ */
+describe("الإجازة بلا راتب: قبل السريان وأمام البصمة (س١٣)", () => {
+  const leaveDay = "2026-07-06"; // اثنين — قبل السريان أدناه
+
+  it("أ) الواقعة قبل تاريخ السريان لا تُدفع — والمستند أقوى من غياب البيانات", () => {
+    const control = base({ attendedHoursByDate: new Map(), payFrom: "2026-07-20" });
+    const r = base({
+      attendedHoursByDate: new Map(),
+      payFrom: "2026-07-20",
+      unpaidLeaveDates: new Set([leaveDay]),
+    });
+
+    expect(control.payableHours).toBe("128.00"); // ١٦ يوم دوامٍ قبل السريان
+    expect(r.payableHours).toBe("120.00"); // ناقصُ يومِ الإجازة
+    expect(r.unpaidLeaveDays).toBe(1);
+    expect(r.days.find((x) => x.date === leaveDay)?.state).toBe("unpaidLeave");
+    // صفر انحدار: باقي أيام ما قبل السريان تبقى مدفوعةً كاملةً.
+    expect(r.days.find((x) => x.date === "2026-07-07")?.state).toBe("beforeStart");
+  });
+
+  it("ب) يومٌ فيه بصماتٌ داخل الإجازة عملٌ يُدفع — لا إجازةً تبتلعه", () => {
+    const r = base({ attendedHoursByDate: fullAttendance(), unpaidLeaveDates: new Set([leaveDay]) });
+
+    expect(r.days.find((x) => x.date === leaveDay)?.state).toBe("present");
+    expect(r.unpaidLeaveDays).toBe(0);
+    expect(r.payableHours).toBe("208.00");
+  });
+
+  it("صفر انحدار: يومُ إجازةٍ بلا بصمة يبقى بلا أجر", () => {
+    const att = fullAttendance();
+    att.delete(leaveDay);
+    const r = base({ attendedHoursByDate: att, unpaidLeaveDates: new Set([leaveDay]) });
+
+    expect(r.days.find((x) => x.date === leaveDay)?.state).toBe("unpaidLeave");
+    expect(r.unpaidLeaveDays).toBe(1);
+    expect(r.payableHours).toBe("200.00");
+  });
+
+  it("يومٌ مفتوح داخل الإجازة يبقى مفتوحاً — بصمةٌ أثناء إجازةٍ تناقضٌ يحسمه المدير", () => {
+    const att = fullAttendance();
+    att.set(leaveDay, D(0));
+    const r = base({
+      attendedHoursByDate: att,
+      openDates: new Set([leaveDay]),
+      unpaidLeaveDates: new Set([leaveDay]),
+    });
+
+    expect(r.days.find((x) => x.date === leaveDay)?.state).toBe("open");
+    expect(r.openDays).toBe(1);
+    expect(r.unpaidLeaveDays).toBe(0);
+  });
+});
+
+/*
+ * س١٤) **السعر الصريح** في جدول الموظف هو الأصل (قرار المالك ٣١/٧) — وكان مسارا «عمل يوم
+ * الراحة» و«تعويض الشهر القصير» يتخطّيانه إلى المُشتقّ، فيُدفع الموظف بسعرٍ لم يُتّفق عليه.
+ */
+describe("السعر الصريح في مسارَي الراحة والتعويض (س١٤)", () => {
+  it("عمل يوم الراحة يُدفع بالسعر الصريح لا المُشتقّ", () => {
+    const sc = sched({ الجمعة: 0 }, 4500);
+    const att = fullAttendance(sc);
+    att.set("2026-07-03", D(8)); // الجمعة راحة
+    const r = base({ schedule: sc, attendedHoursByDate: att });
+    const fri = r.days.find((x) => x.date === "2026-07-03")!;
+
+    expect(fri.rate).toBe("4500.00");
+    expect(fri.amount).toBe("36000.00"); // ٨ × ٤٥٠٠ لا ٨ × 4326.92
+  });
+
+  it("صفر انحدار: بلا سعرٍ صريح يبقى المُشتقّ كما كان", () => {
+    const att = fullAttendance();
+    att.set("2026-07-03", D(8));
+    const r = base({ attendedHoursByDate: att });
+    const fri = r.days.find((x) => x.date === "2026-07-03")!;
+
+    expect(fri.rate).toBe("4326.92");
+  });
+
+  it("تعويض الشهر القصير يُدفع بالسعر الصريح أيضاً", () => {
+    const sc: WorkSchedule = Object.fromEntries(
+      ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"].map((d) => [
+        d,
+        { hours: 7, rate: 2000 },
+      ]),
+    );
+    const att = new Map<string, Decimal>();
+    for (const d of daysBetween("2026-02-01", "2026-02-28")) att.set(d, D(7));
+    const r = computeAttendancePay({
+      salary: D(350000), employmentStart: "2026-02-01", employmentEnd: "2026-02-28", schedule: sc,
+      attendedHoursByDate: att, paidLeaveDates: new Set(), unpaidLeaveDates: new Set(),
+      payFrom: "2026-02-01", monthStart: "2026-02-01", monthEnd: "2026-02-28",
+    });
+
+    expect(r.shortMonthHours).toBe("14.00");
+    // (196 + 14) × 2000 — كان التعويض يُحسب بالمُشتقّ (1666.67) فينقص ٤٬٦٦٦
+    expect(r.basePay).toBe("420000.00");
+    expect(r.days.filter((x) => x.state === "shortMonth").every((x) => x.rate === "2000.00")).toBe(true);
+  });
+});
+
+/*
+ * س١٥) `unpaidHours` كانت تُقاس على **الشهر المعياريّ** لا على نافذة عمل الموظف، فتُحمَّل
+ * المعيَّنَ في منتصف الشهر ساعاتِ ما قبل تعيينه «غيرَ مستحقّة» — دَينُ وقتٍ لم يكن فيه موظفاً.
+ */
+describe("غير المستحقّ مقصوصٌ على نافذة العمل (س١٥)", () => {
+  it("المعيَّن في منتصف الشهر بحضورٍ كامل ⇒ صفرُ ساعاتٍ غير مستحقّة", () => {
+    const att = new Map<string, Decimal>();
+    for (const d of daysBetween("2026-07-16", "2026-07-31")) {
+      if (dayNameOf(d) !== "الجمعة") att.set(d, D(8));
+    }
+    const r = base({
+      employmentStart: "2026-07-16",
+      attendedHoursByDate: att,
+      monthStart: "2026-07-01",
+      monthEnd: "2026-07-31",
+    });
+
+    expect(r.scheduledHours).toBe("104.00");
+    expect(r.unpaidHours).toBe("0.00"); // كانت ١٠٤ ساعة: كلُّ ما سبق تعيينه
+  });
+
+  it("صفر انحدار: الشهر الكامل يُبقي الغياب ظاهراً في غير المستحقّ", () => {
+    const att = fullAttendance();
+    att.delete("2026-07-06");
+    att.delete("2026-07-07");
+    const r = base({ attendedHoursByDate: att, monthStart: "2026-07-01", monthEnd: "2026-07-31" });
+
+    expect(r.unpaidHours).toBe("16.00");
+  });
+});
+
+/*
+ * س١٦) **تعويض الشهر القصير**: كان يُمنح بلا حضورٍ فعليّ فيُعطّل حارس «صفر بصمات شهراً
+ * كاملاً» في المسيّر (شرطه payableHours = 0)، ويدخل المستحقّ بلا صفٍّ ولا مسمّى.
+ */
+describe("تعويض الشهر القصير — شرطُه ومسمّاه (س١٦)", () => {
+  const SEVEN: WorkSchedule = Object.fromEntries(
+    ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"].map((d) => [d, { hours: 7 }]),
+  );
+
+  function feb(att: Map<string, Decimal>) {
+    return computeAttendancePay({
+      salary: D(350000), employmentStart: "2026-02-01", employmentEnd: "2026-02-28", schedule: SEVEN,
+      attendedHoursByDate: att, paidLeaveDates: new Set(), unpaidLeaveDates: new Set(),
+      payFrom: "2026-02-01", monthStart: "2026-02-01", monthEnd: "2026-02-28",
+    });
+  }
+
+  it("شباط بلا بصمةٍ واحدة ⇒ لا تعويض ولا ساعةً مستحقّة (الحارس يراه)", () => {
+    const r = feb(new Map());
+
+    expect(r.shortMonthHours).toBe("0.00"); // كان ١٤ ساعةً تُمنح لمن لم يعمل يوماً
+    expect(r.payableHours).toBe("0.00"); // ← الشرط الذي يفحصه حارس المسيّر
+    expect(r.earnedHours).toBe("0.00");
+    expect(r.basePay).toBe("0.00");
+    expect(r.absentDays).toBe(28);
+  });
+
+  it("صفر انحدار: شباط بحضورٍ كامل يبقى راتباً كاملاً بتعويض ١٤ ساعة", () => {
+    const att = new Map<string, Decimal>();
+    for (const d of daysBetween("2026-02-01", "2026-02-28")) att.set(d, D(7));
+    const r = feb(att);
+
+    expect(r.shortMonthHours).toBe("14.00");
+    expect(r.basePay).toBe("350000.00");
+    // المكتسَب فعلاً مفصولٌ عن التعويض — لا يعمى الحارس بجمعهما.
+    expect(r.earnedHours).toBe("196.00");
+    expect(r.payableHours).toBe("210.00");
+  });
+
+  it("التعويض صفوفٌ مسمّاة بتواريخها لا فرقاً غامضاً — ومجموع الأيام = الأجر", () => {
+    const att = new Map<string, Decimal>();
+    for (const d of daysBetween("2026-02-01", "2026-02-28")) att.set(d, D(7));
+    const r = feb(att);
+    const comp = r.days.filter((x) => x.state === "shortMonth");
+
+    expect(comp.map((x) => x.date)).toEqual(["2026-03-01", "2026-03-02"]);
+    expect(comp.every((x) => x.countedHours === "7.00")).toBe(true);
+    expect(r.days.reduce((a, x) => a + Number(x.amount), 0)).toBeCloseTo(Number(r.basePay), 0);
+  });
+
+  it("غيابُ يومين لا يُلغي التعويض — يجبر نقصَ التقويم لا نقصَ الحضور (صفر انحدار)", () => {
+    const att = new Map<string, Decimal>();
+    for (const d of daysBetween("2026-02-01", "2026-02-28")) att.set(d, D(7));
+    att.delete("2026-02-10");
+    att.delete("2026-02-11");
+    const r = feb(att);
+
+    expect(r.shortMonthHours).toBe("14.00");
+    expect(r.absentDays).toBe(2);
+    expect(r.basePay).toBe("326666.67");
+    expect(r.unpaidHours).toBe("14.00");
+  });
+});
