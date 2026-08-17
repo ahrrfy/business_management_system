@@ -307,7 +307,9 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
       if (input.openDates?.has(d)) {
         openDates.push(d);
         push("open", new Decimal(0), new Decimal(0), new Decimal(0), new Decimal(0));
-        continue; // بلا أجر **مؤقّتاً** — والمسيّر يوقف نفسه حتى يُحسم اليوم
+        // بلا أجرٍ **مؤقّتاً** — لا استبعاد للموظف ولا تجميد للمسيّر (قرار المالك ١٧/٨):
+        // يُصرف بساعاته المؤكَّدة ويُوسَم بندُه بهذا اليوم، وتصحيحُ البصمة قبل الاعتماد يستردّه.
+        continue;
       }
       absentDays += 1;
       push("absent", new Decimal(0), new Decimal(0), new Decimal(0), new Decimal(0));

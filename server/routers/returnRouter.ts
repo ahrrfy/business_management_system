@@ -212,6 +212,7 @@ export const returnRouter = router({
           taxAmount: invoices.taxAmount,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
+          returnedTotal: invoices.returnedTotal,
           paymentMethod: invoices.paymentMethod,
         })
         .from(invoices)
@@ -322,6 +323,8 @@ export const returnRouter = router({
       taxAmount: inv.taxAmount,
       total: inv.total,
       paidAmount: inv.paidAmount,
+      /** ما أُرجِع سابقاً — تحتاجه الشاشة لتحسب «المستحقّ للزبون» فلا تُعبّئ ردّاً لمدين. */
+      returnedTotal: inv.returnedTotal ?? "0",
       paymentMethod: inv.paymentMethod,
       paidByMethod,
       items,

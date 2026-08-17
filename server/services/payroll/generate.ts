@@ -4,7 +4,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
-import { fullEmployeeName } from "@shared/hr";
+import { PAYROLL_ITEM_ATTENTION_PREFIX, fullEmployeeName } from "@shared/hr";
 import {
   attendance,
   commissionRunLines,
@@ -331,6 +331,16 @@ export async function generatePayroll(period: string, actor: Actor) {
     });
     const runId = extractInsertId(runRes);
     const attendancePayByEmp = new Map<number, AttendancePayResult>();
+    /**
+     * أيامٌ مفتوحة موسومة (دخولٌ بلا انصراف) — تُرافق نتيجة التوليد فتراها الشاشة.
+     * ليست استبعاداً: أصحابُها لهم بنودٌ بساعاتهم المؤكَّدة، والوسمُ نداءٌ للتصحيح قبل الاعتماد.
+     */
+    const attendanceFlagged: Array<{
+      employeeId: number;
+      employeeName: string;
+      openDays: number;
+      openDates: string[];
+    }> = [];
 
     for (const e of emps) {
       const monthly = e.payType === "monthly";
@@ -412,19 +422,28 @@ export async function generatePayroll(period: string, actor: Actor) {
           });
         }
         /*
-         * حارس اليوم المفتوح (تدقيق ١٧/٨): يومٌ بدخولٍ بلا انصراف ساعاتُه **مجهولة** لا صفر.
-         * كان يمرّ غياباً فيُدفع صفراً صامتاً — وهو بالضبط «دينارٌ يضيع بصمت» الذي يمنعه
-         * المبدأ المالي الحاكم. والفرق بين اليومين أجرُ يومٍ كامل، فالنظام يتوقّف ويسمّي
-         * التواريخ بدل أن يخمّن. الحسم بنافذة «تصحيح» في كشف الموظف ثم إعادة التوليد
-         * (المسيّر مسودةٌ تُعاد، لا التزامٌ ماليّ).
+         * اليوم المفتوح (دخولٌ بلا انصراف) — **وسمٌ لا استبعاد ولا تجميد** (قرار المالك ١٧/٨):
+         *
+         * مرّ هذا الحارس بثلاث صيغ، وثالثتها وحدها تصمد:
+         *  ١) **قبل التدقيق**: يمرّ غياباً فيُدفع صفراً صامتاً — «دينارٌ يضيع بصمت».
+         *  ٢) **رميٌ يُجمّد الشركة كلَّها** من أجل بصمةٍ واحدة — نقضه المالك: «استبعد الموظف
+         *     وحده لا الشركة».
+         *  ٣) **استبعادُ الموظف** — بدا تنفيذاً حرفياً للقرار، لكنّ فحص الشيفرة أسقطه:
+         *     المسيّر واحدٌ لكل شهر بقيدٍ فريد، ولا واجهة لإضافة بندٍ إلى مسيّرٍ قائم ⇒
+         *     المستبعَد **لا سبيل لصرف أجر شهره أبداً** بعد الاعتماد. أي أن «بصمةً منسيّة»
+         *     كانت ستصير **ضياع أجر شهرٍ كامل** — نقيضَ المقصود.
+         *
+         * فالصيغة الصامدة: يبقى الموظف في المسيّر **بساعاته المؤكَّدة**، ولا يُحتسب اليوم
+         * المفتوح وحده، ويُوسَم البند بسببه وتُجمَع الأسماء في نتيجة التوليد. الشركة تُصرف،
+         * ولا أجر يضيع، والعمولة تُصرف مع بندها (لو استُبعد لضاعت بلا رجعة).
+         * والحسم قبل الاعتماد: تصحيح البصمة من كشف الموظف ثم حذف المسودّة وإعادة التوليد.
          */
         if (pay.openDays > 0) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              `الموظف «${fullEmployeeName(e as never)}» له ${pay.openDays} يوم بدخولٍ بلا انصراف في ${p} ` +
-              `(${pay.openDates.join("، ")}) — ساعاتها مجهولة لا صفر، ودفعُها صفراً يخصم أجر يومٍ كامل بلا وجه. ` +
-              `صحّح أوقاتها من كشف حضور الموظف ثم أعد التوليد.`,
+          attendanceFlagged.push({
+            employeeId: Number(e.id),
+            employeeName: fullEmployeeName(e as never),
+            openDays: pay.openDays,
+            openDates: pay.openDates,
           });
         }
         attendancePayByEmp.set(Number(e.id), pay);
@@ -525,6 +544,17 @@ export async function generatePayroll(period: string, actor: Actor) {
           if (ap.absentDays > 0) parts.push(`غياب ${ap.absentDays} يوم`);
           if (ap.unpaidLeaveDays > 0) parts.push(`إجازة بلا راتب ${ap.unpaidLeaveDays} يوم`);
           if (Number(ap.shortHours) > 0) parts.push(`نقص ${ap.shortHours} ساعة`);
+          // اليوم المفتوح **أوّلُ ما يُقرأ** في السطر: ساعاته مجهولة لا صفر، وتصحيحُه قبل
+          // الاعتماد يستردّ أجره. تُسمّى التواريخ لأن «N يوم» وحدها لا تدلّ على ما يُصحَّح.
+          if (ap.openDays > 0) {
+            // التواريخ مقصوصةٌ عند ٦ **بإفصاح** («+N أخرى»): سقفُ ٢٥٥ محرفاً أدناه يقصّ صامتاً،
+            // فقائمةٌ طويلة كانت تبتلع نفسها وتُخفي أنها ابتُلعت. الكاملة في نتيجة التوليد والكشف.
+            const shown = ap.openDates.slice(0, 6);
+            const rest = ap.openDates.length - shown.length;
+            parts.unshift(
+              `${PAYROLL_ITEM_ATTENTION_PREFIX} ${ap.openDays} يوم بلا انصراف (${shown.join("، ")}${rest > 0 ? ` +${rest} أخرى` : ""}) — غير محتسَبة`,
+            );
+          }
           return parts.join(" — ").slice(0, 255);
         })(),
         employeeId: Number(e.id),
@@ -561,6 +591,11 @@ export async function generatePayroll(period: string, actor: Actor) {
     if (commissionRun) {
       await tx.update(commissionRuns).set({ payrollRunId: runId }).where(eq(commissionRuns.id, Number(commissionRun.id)));
     }
-    return runId;
-  }).then((runId) => getRun(runId));
+    return { runId, attendanceFlagged };
+  }).then(async ({ runId, attendanceFlagged }) => {
+    const run = await getRun(runId);
+    // يُرافق النتيجةَ لا الرأسَ المخزَّن: حالةٌ لحظة التوليد تُعرَض ثم تزول بالتصحيح، ولا
+    // معنى لتخزينها فتشيخ. الشاشة تعرضها فور التوليد، وملاحظةُ البند أثرُها الدائم.
+    return { ...run, attendanceFlagged };
+  });
 }

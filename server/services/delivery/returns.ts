@@ -372,6 +372,31 @@ export async function returnConsignment(
     }
     await tx.update(invoices).set({ status: "RETURNED", returnedTotal: toDbMoney(total) }).where(eq(invoices.id, Number(cn.invoiceId)));
 
+    // عدّادات الأسطر — كانت مُغفَلةً هنا وحدها (returnService يكتبها في كل مرتجع).
+    // أثرُ الإغفال أنّ عائلتَي التقارير تتناقضان على نفس اليوم: مجاميعُ الرأس تُصفّر الإيراد
+    // عبر `returnedTotal`، بينما بُعد «الصنف» في `reportsSalesService` يشتقّ من السطر
+    // (`ii.total × (baseQuantity − returnedBaseQuantity) / baseQuantity`) فيُبقي الإرسالية
+    // المُرجَعة **بيعاً كاملاً إلى الأبد**، وتكلفتُها تُحيَّد أو لا حسب `returnedRestocked`.
+    // المرتجع هنا كامل بحكم التصميم (الحالة RETURNED و`returnedTotal` = الإجمالي)، لكن
+    // «المُعاد للرفّ» يُشتقّ من حركات OUT الأصلية لا من الأسطر — فالخدمة/الصنف الذي لم يخرج
+    // من المخزون لا يُحسب مُعاداً إليه، مرآةً لتمييز `restock` في returnService.
+    // نسخةٌ مستقلّة: `stockOps` استُهلكت في حركات المخزون أعلاه، والتوزيع هنا يستنفدها
+    // سطراً سطراً (صنفٌ واحد قد يتكرّر في أكثر من سطر) فلا يجوز أن يمسّ الأصل.
+    const restockedByVariant = new Map(stockOps);
+    for (const item of items) {
+      const vid = item.variantId != null ? Number(item.variantId) : null;
+      const restockedPool = vid != null ? (restockedByVariant.get(vid) ?? 0) : 0;
+      const restocked = Math.min(Number(item.baseQuantity), restockedPool);
+      if (vid != null && restocked > 0) restockedByVariant.set(vid, restockedPool - restocked);
+      await tx
+        .update(invoiceItems)
+        .set({
+          returnedBaseQuantity: Number(item.baseQuantity),
+          returnedRestockedBaseQuantity: restocked,
+        })
+        .where(eq(invoiceItems.id, Number(item.id)));
+    }
+
     // تحرير التعرض التشغيلي. في المرحلة الثانية لا ترتفع العهدة النقدية عند
     // الإسناد. أما الصفوف المرحّلة فتحمل custodyRecognizedAt لأن رصيدها القديم
     // كان تعرّضاً مُسجلاً في currentBalance؛ نعكس منه ما بقي فعلاً، ثم نحرر

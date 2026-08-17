@@ -8,8 +8,13 @@ import { fmtDate } from "@/lib/date";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
-import { PackageCheck, Pencil } from "lucide-react";
+import { Banknote, PackageCheck, Pencil } from "lucide-react";
 import { Link, useParams } from "wouter";
+import { useState } from "react";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { Label } from "@/components/ui/label";
+import { notify } from "@/lib/notify";
+import { round2 } from "@/lib/money";
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسوّدة",
@@ -55,6 +60,22 @@ export default function PurchaseOrderDetail() {
     { enabled: Number.isFinite(purchaseOrderId) && purchaseOrderId > 0 }
   );
   const me = trpc.auth.me.useQuery();
+  const utils = trpc.useUtils();
+  const [payAmount, setPayAmount] = useState("");
+  const [payRequestId, setPayRequestId] = useState(() => crypto.randomUUID());
+  const pay = trpc.purchases.pay.useMutation({
+    onSuccess: async (r) => {
+      notify.ok(
+        "أُنشئ طلب التسديد",
+        `المبلغ محجوزٌ بانتظار اعتماد مالكٍ ثانٍ — لا يُصرَف ولا يُنقص المتبقّي (${r.remainingBefore}) قبله.`,
+      );
+      setPayAmount("");
+      setPayRequestId(crypto.randomUUID());
+      await utils.purchases.get.invalidate({ purchaseOrderId });
+      await utils.purchases.list.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const canReceive = hasModuleAccess(
     me.data?.role ?? "",
@@ -166,6 +187,47 @@ export default function PurchaseOrderDetail() {
           ) : null}
         </CardContent>
       </Card>
+
+      {/* تسديد أمر الشراء — الفجوة التي كانت تُبقي الشراء الآجل بلا مسار إقفال: بطاقة الدفع
+          تختفي فور الاستلام ولا «تسديد» في الإجراءات، فيخرج كل سدادٍ لاحق إلى سند صرفٍ عامّ
+          لا يمسّ `paidAmount` ⇒ «المتبقّي» يطالب بمبلغٍ مسدَّد وخطرُ دفعٍ مكرَّر للمورّد. */}
+      {canReceive && !isUsd && d.status !== "CANCELLED" && remaining != null && remaining.gt(0) ? (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">تسديد للمورّد</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              المتبقّي {fmtAr(remaining.toFixed(2))} د.ع. التسديد نقديّ، ويُنشأ **طلباً معلّقاً** يعتمده مالكٌ
+              ثانٍ — لا يخرج المال ولا يُنقص المتبقّي قبل الاعتماد.
+            </p>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="min-w-40 space-y-1">
+                <Label htmlFor="po-pay-amount">المبلغ</Label>
+                <MoneyInput value={payAmount} onChange={setPayAmount} placeholder={remaining.toFixed(2)} />
+              </div>
+              <Button
+                size="sm"
+                disabled={pay.isPending || !D(payAmount || "0").gt(0)}
+                onClick={() => {
+                  const amount = round2(D(payAmount || "0"));
+                  if (!amount.gt(0)) return notify.err("أدخل مبلغاً موجباً");
+                  if (amount.gt(remaining)) return notify.err(`المبلغ يتجاوز المتبقّي (${fmtAr(remaining.toFixed(2))})`);
+                  pay.mutate({
+                    purchaseOrderId,
+                    amount: amount.toFixed(2),
+                    method: "CASH",
+                    clientRequestId: payRequestId,
+                  });
+                }}
+              >
+                <Banknote aria-hidden className="size-4" />
+                طلب تسديد
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader className="pb-3">

@@ -106,8 +106,35 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
     return returnValue.lte(cap) ? returnValue : cap;
   }, [activeOption?.cap, returnValue]);
 
-  /** المبلغ الافتراضيّ = السقف كاملاً (المسار الاعتياديّ صفريّ الإدخال). التحرير استثناء. */
-  const refundAmount = manualAmount ?? (railCap.gt(0) ? railCap.toFixed(2) : "");
+  /**
+   * المستحقّ للزبون فعلاً = ما دفعه فوق ما يبقى عليه **بعد** هذا المرتجع.
+   * السقف وحده لا يكفي: هو يحرس «لا نردّ أكثر ممّا قبضنا» ولا يحرس «لا نردّ ما هو مستحقٌّ لنا».
+   * فاتورةٌ آجلة بعربونٍ ٤٠٪ يُرجَع منها صنفٌ كان السقف يعرض ردّاً نقدياً كاملاً بنقرة، والعميل
+   * ما زال مديناً — نُعطي نقداً لمن يدين لنا. الافتراضيّ صار الأقلّ منهما.
+   */
+  const customerOwedBack = useMemo(() => {
+    const netAfter = D(inv?.total ?? "0")
+      .minus(D(inv?.returnedTotal ?? "0"))
+      .minus(returnValue);
+    const over = D(inv?.paidAmount ?? "0").minus(netAfter);
+    return over.gt(0) ? over : D(0);
+  }, [inv?.total, inv?.returnedTotal, inv?.paidAmount, returnValue]);
+
+  /** الوجه المقابل: ما يبقى على العميل بعد المرتجع (صفرٌ إن صار دائناً). */
+  const customerStillOwes = useMemo(() => {
+    const netAfter = D(inv?.total ?? "0")
+      .minus(D(inv?.returnedTotal ?? "0"))
+      .minus(returnValue);
+    const owes = netAfter.minus(D(inv?.paidAmount ?? "0"));
+    return owes.gt(0) ? owes : D(0);
+  }, [inv?.total, inv?.returnedTotal, inv?.paidAmount, returnValue]);
+
+  /** الافتراضيّ = الأقلّ من سقف الرافد والمستحقّ للزبون. التحرير يبقى متاحاً حتى السقف. */
+  const suggestedRefund = useMemo(
+    () => (customerOwedBack.lt(railCap) ? customerOwedBack : railCap),
+    [customerOwedBack, railCap],
+  );
+  const refundAmount = manualAmount ?? (suggestedRefund.gt(0) ? suggestedRefund.toFixed(2) : "");
   const refundD = /^\d+(\.\d+)?$/.test(refundAmount.trim()) ? D(refundAmount.trim()) : D(0);
   const overCap = refundD.gt(railCap);
 
@@ -241,6 +268,16 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
           <div>
             <div className="text-xs text-muted-foreground">المتاح للاسترداد</div>
             <div className="font-bold tabular-nums text-money-positive" dir="ltr">{fmt(inv.refundPool)}</div>
+          </div>
+          {/* الرقم الذي كان غائباً عن الشاشة: بدونه لا يملك الموظّف ما يمنعه من ردّ نقدٍ لمدين. */}
+          <div>
+            <div className="text-xs text-muted-foreground">المتبقّي على العميل بعد المرتجع</div>
+            <div
+              className={`font-bold tabular-nums ${customerStillOwes.gt(0) ? "text-money-negative" : "text-muted-foreground"}`}
+              dir="ltr"
+            >
+              {fmt(customerStillOwes.toFixed(2))}
+            </div>
           </div>
         </CardContent>
       </Card>
