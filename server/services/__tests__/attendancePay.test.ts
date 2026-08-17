@@ -341,7 +341,7 @@ describe("اليوم المفتوح — دخولٌ بلا انصراف (س٨)", 
     expect(r.days.find((x) => x.date === openDay)?.state).toBe("absent");
   });
 
-  it("لا يُدفع أجرُه (ساعاته مجهولة) — والمسيّر يوقف نفسه عنده لا يخمّنه", () => {
+  it("لا يُدفع أجرُه (ساعاته مجهولة لا صفر) — ولا يُخمَّن", () => {
     const att = fullAttendance();
     att.set(openDay, D(0));
     const r = base({ attendedHoursByDate: att, openDates: new Set([openDay]) });
@@ -349,6 +349,23 @@ describe("اليوم المفتوح — دخولٌ بلا انصراف (س٨)", 
 
     expect(day.amount).toBe("0.00");
     expect(day.totalAmount).toBe("0.00");
+  });
+
+  /*
+   * الثابت الذي يقوم عليه قرار «يبقى في المسيّر موسوماً» (١٧/٨): اليوم المفتوح يخصم **ساعاته
+   * وحدها** من المستحقّ ويبقى في المقرَّر — فبقيّة أيام الشهر تُصرف كاملةً بلا مسٍّ.
+   * لو ابتلع المفتوحُ المقرَّرَ لصار الأجر صحيحاً ظاهرياً ولاختفى أثرُ النقص من الملاحظة.
+   */
+  it("يخصم ساعاته وحدها: المستحقّ = المقرَّر − ساعات ذلك اليوم، والبقيّة كاملة", () => {
+    const att = fullAttendance();
+    att.set(openDay, D(0));
+    const r = base({ attendedHoursByDate: att, openDates: new Set([openDay]) });
+
+    expect(r.scheduledHours).toBe("208.00"); // تموز: ٢٦ يوم دوام × ٨ — المفتوح يبقى مقرَّراً
+    expect(r.payableHours).toBe("200.00"); // 208 − 8 (اليوم المفتوح وحده)
+    expect(r.absentDays).toBe(0);
+    // ٩٠٠٬٠٠٠ ÷ ٢٠٨ × ٢٠٠ — لا تعويض شهرٍ قصير يُخفي النقص.
+    expect(Number(r.basePay)).toBeCloseTo(865384.62, 1);
   });
 });
 

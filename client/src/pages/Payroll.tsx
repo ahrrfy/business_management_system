@@ -25,10 +25,10 @@ import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
-import { PAY_TYPES, payTypeLabel } from "@shared/hr";
+import { PAY_TYPES, payTypeLabel, payrollItemNeedsAttention } from "@shared/hr";
 import { printPayslip } from "@/lib/printing/printPayslip";
 import { payrollStatusLabel as accrualStatusLabel, toExcelMoney } from "@/lib/payrollAccrual";
-import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, Wallet, X } from "lucide-react";
+import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, TriangleAlert, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 const selectCls =
@@ -113,7 +113,25 @@ export default function Payroll() {
   };
 
   const generate = trpc.payroll.generate.useMutation({
-    onSuccess: async (r) => { notify.ok("تم توليد المسيّر"); setGenOpen(false); if (r?.id) setSelectedId(Number(r.id)); await refresh(); },
+    onSuccess: async (r) => {
+      /*
+       * الموسومون بيومٍ مفتوح (دخولٌ بلا انصراف): لا يُستبعد أحد — بندُه يُنشأ بساعاته
+       * المؤكَّدة وحدها — لكنّ الوسم يجب أن **يُرى** فوراً وإلّا اعتُمد نقصٌ صامت. التنبيه
+       * هنا لحظيّ، ولوحةُ الانتباه أدناه أثرُه الدائم (تُشتقّ من ملاحظات البنود).
+       */
+      const openCount = r?.attendanceFlagged?.length ?? 0;
+      if (openCount > 0) {
+        notify.warn(
+          `تم توليد المسيّر — ${openCount} موظف بأيام بلا انصراف`,
+          "ساعات تلك الأيام غير محتسَبة. صحّحها قبل الاعتماد (التفصيل أعلى الجدول).",
+        );
+      } else {
+        notify.ok("تم توليد المسيّر");
+      }
+      setGenOpen(false);
+      if (r?.id) setSelectedId(Number(r.id));
+      await refresh();
+    },
     onError: (e) => notify.err(e),
   });
   const approve = trpc.payroll.approve.useMutation({
@@ -196,6 +214,14 @@ export default function Payroll() {
     });
   }, [items, itemQ, payTypeF]);
   const itemsFiltered = Boolean(itemQ.trim() || payTypeF);
+
+  /*
+   * بنودٌ تحتاج انتباهاً قبل الاعتماد (اليوم المفتوح: دخولٌ بلا انصراف ⇒ ساعاتٌ غير محتسَبة).
+   * تُشتقّ من **ملاحظة البند نفسها** لا من نتيجة التوليد: فتظهر أيضاً عند فتح المسوّدة لاحقاً
+   * أو بعد إعادة تحميل الصفحة، لا في اللحظة التي وُلِّد فيها المسيّر وحدها.
+   * وتتجاهل الفلترة المحلية عمداً — إخفاءُ نقصٍ ماليّ خلف بحثٍ باسمٍ هو بالضبط ما تمنعه هذه اللوحة.
+   */
+  const attentionItems = useMemo(() => items.filter((p) => payrollItemNeedsAttention(p.note)), [items]);
 
   /** تصدير بنود المسيّر المعروضة (بعد الفلترة المحلية) إلى Excel. */
   const onExportItems = () => {
@@ -320,6 +346,34 @@ export default function Payroll() {
         </div>
       )}
 
+      {/* لوحة الانتباه — أيامٌ بلا انصراف: ساعاتٌ غير محتسَبة في بنودٍ قائمة (لا استبعاد) */}
+      {attentionItems.length > 0 && (
+        <Card className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]">
+          <CardContent className="p-3 space-y-2">
+            <div className="flex items-start gap-2">
+              <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
+              <div className="text-xs leading-relaxed">
+                <span className="font-medium text-[var(--sem-warn)]">
+                  {attentionItems.length} موظف بأيام بلا بصمة انصراف
+                </span>{" "}
+                — ساعات تلك الأيام <b>غير محتسَبة</b> في أجورهم، وبقيّة أيامهم محتسَبة كاملةً.
+                {isDraft
+                  ? " الحسم قبل الاعتماد: صحّح البصمة من كشف الموظف، ثم احذف هذه المسوّدة وأعد التوليد."
+                  : " المسيّر لم يعد مسوّدة — أعِده إلى مسوّدة أولاً إن أردت استرداد هذه الساعات."}
+              </div>
+            </div>
+            <ul className="space-y-1 ps-6">
+              {attentionItems.map((p) => (
+                <li key={p.id} className="text-[11px]">
+                  <span className="font-medium">{p.employeeName}</span>
+                  <span className="text-muted-foreground"> — {p.note}</span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
       {/* جدول البنود */}
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
@@ -380,14 +434,23 @@ export default function Payroll() {
                   const monthly = p.payType === "monthly";
                   // الأساسي للشهري = الإجمالي − البدلات (gross = أساسي + بدلات).
                   const baseDisplay = monthly ? round2(D(p.gross).minus(D(p.allowances))).toFixed(2) : p.gross;
+                  // بندٌ ناقص الساعات (يوم بلا انصراف): يُوسَم في صفّه أيضاً لا في اللوحة وحدها،
+                  // كي لا يمرّ في تصفّحٍ سريع للجدول أو بعد فلترةٍ باسم الموظف.
+                  const needsAttention = payrollItemNeedsAttention(p.note);
                   return (
-                    <tr key={p.id} className="border-t hover:bg-accent/40">
+                    <tr key={p.id} className={`border-t hover:bg-accent/40 ${needsAttention ? "bg-[var(--sem-warn-bg)]/60" : ""}`}>
                       <td className="p-2.5">
                         <div className="flex items-center gap-2.5">
                           <EmpAvatar name={p.employeeName} color={p.colorTag} photoUrl={p.photoUrl} sizePx={32} />
                           <div>
                             <div className="font-medium text-[13px]">{p.employeeName}</div>
                             {p.position && <div className="text-[11px] text-muted-foreground">{p.position}</div>}
+                            {needsAttention && (
+                              <div className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--sem-warn)]" title={p.note ?? undefined}>
+                                <TriangleAlert aria-hidden className="size-3 shrink-0" />
+                                <span>ساعات غير محتسَبة</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>
