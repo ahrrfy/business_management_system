@@ -68,8 +68,24 @@ jobs:
         env:
           CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
       - name: الاختبارات — الشريحة ${{ matrix.shard }}/2
-        # `pnpm test -- ...` يعالج الخيارات كخيارات pnpm؛ يلزم `run` لتمريرها إلى Vitest.
-        run: pnpm run test -- --shard=${{ matrix.shard }}/2
+        # ⚠️ pnpm يبتلع الخيارات **بالصيغتين**: `pnpm test --shard=…` يطبع نسخة pnpm نفسها،
+        # و`pnpm run test -- --shard=…` لا يُمرّرها أيضاً (مثبَّت: `pnpm run test -- --version`
+        # يشغّل الحزمة كاملةً بدل طباعة النسخة). فكانت **كلتا الشريحتين تشغّلان الحزمة كاملة**
+        # (٥٤٧ ملفاً لكلٍّ منهما بدل ~٢٧٤): تجزئةٌ بلا أثر، وكلفة CI مضاعفة، وزمن الجدار كما هو.
+        # `pnpm exec` يُمرّر الخيارات فعلاً (`pnpm exec cross-env TZ=UTC vitest --version` ⇒ vitest/3.2.7)،
+        # وهي الصيغة الموثَّقة في CLAUDE.md §٣ لتشغيل اختبارٍ واحد.
+        run: |
+          set -o pipefail
+          total="$(git ls-files "*.test.ts" | grep -cE "^(server|client/src|shared)/")"
+          pnpm exec cross-env TZ=UTC vitest run --shard=${{ matrix.shard }}/2 2>&1 | tee /tmp/shard.log
+          line="$(grep -E "^ *Test Files" /tmp/shard.log | tail -1)"
+          ran="$(printf "%s" "$line" | grep -oE "([0-9]+)" | tail -1 | tr -d "()")"
+          test -n "$ran"
+          echo "الشريحة ${{ matrix.shard }}/2 شغّلت $ran ملفاً من أصل $total"
+          # حارسٌ ضدّ عودة العطل صامتاً: التجزئة الفعّالة تُشغّل ~نصف الملفات؛ تجاوز ٧٠٪ يعني
+          # أنّ `--shard` لم يصل vitest. لا نقارن بالإجمالي مباشرةً لأنّ المجموعة المُجمَّعة
+          # أقلّ قليلاً من الملفات المتعقَّبة (٥٤٧ مقابل ٥٥٠) فتمرّ المقارنة الصارمة كاذبةً.
+          test "$((ran * 10))" -lt "$((total * 7))"
 
   check-test-build:
     needs: test-shards
