@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_PRICE_DECIMALS } from "../../shared/moneyPrecision";
 
 /** سلسلة مالية بـ٢ خانات عشرية على الأكثر، تَقبل السالب (للمرتجعات/التعديلات).
  *  متّسق مع toDbMoney(string) في server/services/money.ts.
@@ -26,6 +27,24 @@ export const positiveRateString = z
 export const nonNegMoneyString = z
   .string()
   .regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (غير سالب، منزلتان كحدّ أقصى)");
+
+/**
+ * **سعر وحدة بعملة المستند** — غير سالب، حتى `MAX_PRICE_DECIMALS` (٤) منزلة.
+ *
+ * لماذا أوسع من `nonNegMoneyString`: سعر الوحدة بالدولار يُشتقّ عادةً بالقسمة (سعر الكرتون ÷ عدد
+ * القطع = 3.4566) والعمود `purchaseOrderItems.usdUnitPrice` مُعرَّف `decimal(15,4)` أصلاً؛ فقصُّه
+ * لمنزلتين على حدّ الـAPI كان يرمي دقّةً تحفظها قاعدةُ البيانات، ويُنقص ذمّة المورّد بحجم الكمية.
+ *
+ * ⚠️ هذا **سقفٌ أعلى** لا إذنٌ مفتوح: العملة تُضيّقه داخل الخدمة (الدينار منزلتان) عبر
+ * `isWithinPriceDecimals` — لأنّ العملة تُعرَف على مستوى المستند لا على مستوى الحقل. لا تستعمله
+ * لمبالغ الفواتير/الدفعات (تلك أعمدة `decimal(15,2)` ⇒ `nonNegMoneyString`/`positiveMoneyString`).
+ */
+export const unitPriceString = z
+  .string()
+  .regex(
+    new RegExp(`^\\d+(\\.\\d{1,${MAX_PRICE_DECIMALS}})?$`),
+    `سعر غير صالح (غير سالب، ${MAX_PRICE_DECIMALS} منازل كحدّ أقصى)`,
+  );
 
 /** كمية موجبة (> 0)، بـ٣ منازل عشرية كحدّ أقصى. */
 export const positiveQtyString = z

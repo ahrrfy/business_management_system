@@ -14,7 +14,8 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { Landmark, Truck } from "lucide-react";
-import { D, fmtAr, round2, toBase } from "@/lib/money";
+import { isWithinPriceDecimals, priceDecimalsMessage } from "@shared/moneyPrecision";
+import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { EmptyState } from "@/components/EmptyState";
@@ -212,11 +213,32 @@ export default function PurchaseEdit() {
     const sum = round2(safeMoney(shippingCost).plus(safeMoney(customsCost)));
     const sourceSubtotal = D(totals.subtotal);
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
-    const goodsIqd = round2(sourceSubtotal.times(rate));
-    const taxIqd = round2(D(totals.totalTax).times(rate));
+    // نفس ترتيب تقريب الخادم (سطراً سطراً ثمّ الجمع، والضريبة على المجموع الدينارّي) — انظر
+    // التعليق المفصَّل في PurchaseNew: «المعروض = المحفوظ» شرطُ ألّا يدفع المالك ما لم يُحفَظ.
+    const goodsIqd =
+      state.currency === "USD"
+        ? round2(
+            state.items.reduce(
+              (acc, l) => acc.plus(round2(round2(safeMoney(l.price).times(D(l.qty || 0))).times(rate))),
+              D(0),
+            ),
+          )
+        : round2(sourceSubtotal.times(rate));
+    const taxIqd = state.taxEnabled
+      ? round2(goodsIqd.times(safeMoney(state.taxRatePercent || "0")).dividedBy(100))
+      : D(0);
     const grand = round2(goodsIqd.plus(taxIqd));
     return { sum, goodsIqd, taxIqd, grand, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
-  }, [shippingCost, customsCost, totals.subtotal, totals.totalTax, state.currency, state.agreedRate]);
+  }, [
+    shippingCost,
+    customsCost,
+    totals.subtotal,
+    state.items,
+    state.currency,
+    state.agreedRate,
+    state.taxEnabled,
+    state.taxRatePercent,
+  ]);
 
   function validate(): string | null {
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
@@ -226,6 +248,10 @@ export default function PurchaseEdit() {
       if (!qty.gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
       const price = D(l.price);
       if (price.lt(0)) return `سعر الشراء في «${l.name}» غير صالح.`;
+      // مرآة حارس الخادم: الدينار منزلتان والدولار أربع. يمسك ما جاء من لصقٍ أو من أمرٍ قديم.
+      if (!isWithinPriceDecimals(l.price, state.currency)) {
+        return priceDecimalsMessage(state.currency, l.name, l.price);
+      }
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
@@ -261,7 +287,10 @@ export default function PurchaseEdit() {
         variantId: l.variantId,
         productUnitId: l.productUnitId,
         quantity: D(l.qty).toString(),
-        unitPrice: round2(D(l.price)).toFixed(2),
+        // بدقّة عملة الأمر: كان `round2(...)` يقصّ أسعار الأمر الدولاريّ إلى منزلتين عند **كلّ
+        // حفظ** ولو لم تُمَسّ — تعديلُ ملاحظةٍ كان يُنقص قيمة الفاتورة صامتاً (المحرّر يقرأ
+        // `usdUnitPrice` بأربع منازل ثمّ يُعيدها اثنتَين).
+        unitPrice: toUnitPriceStr(l.price, state.currency),
       })),
     });
   }

@@ -6,7 +6,12 @@ export interface PurchaseLineInput {
   variantId: number;
   productUnitId: number;
   quantity: string; // in purchase unit
-  unitPrice: string; // price per purchase unit
+  /**
+   * سعر الوحدة **بعملة الأمر** (`PurchaseDocumentInput.agreedCurrency`) لا بالدينار دائماً:
+   * الدينار حتى منزلتين، والدولار حتى أربع (`shared/moneyPrecision`). يفرض ذلك
+   * `computePurchaseDocument` صراحةً — تجاوزُ الدقّة يُردّ برسالة لا يُقصّ صامتاً.
+   */
+  unitPrice: string;
 }
 /**
  * الحقول التي يُشتقّ منها حسابُ أمر الشراء (البنود والإجماليات) — يتقاسمها الإنشاء والتعديل

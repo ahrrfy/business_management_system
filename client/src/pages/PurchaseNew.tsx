@@ -16,7 +16,8 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Landmark, Truck } from "lucide-react";
-import { D, fmtAr, round2, toBase } from "@/lib/money";
+import { isWithinPriceDecimals, priceDecimalsMessage } from "@shared/moneyPrecision";
+import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -150,8 +151,23 @@ export default function PurchaseNew() {
     const sum = round2(safeMoney(shippingCost).plus(safeMoney(customsCost)));
     const sourceSubtotal = D(totals.subtotal);
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
-    const goodsIqd = round2(sourceSubtotal.times(rate));
-    const taxIqd = round2(D(totals.totalTax).times(rate));
+    // «المعروض = المحفوظ» (درس فاتورة الشحن ٥/٨): الخادم يترجم **كلّ سطرٍ على حدة** ثمّ يجمع
+    // (subtotal = Σ round2(سطر$ × السعر))، فترجمةُ المجموع مرّةً واحدة هنا كانت تُظهر إجمالياً
+    // يخالف المحفوظ بدنانيرَ قليلة على الفواتير متعدّدة البنود. نُطابق ترتيبَ تقريبه حرفياً.
+    const goodsIqd =
+      state.currency === "USD"
+        ? round2(
+            state.items.reduce(
+              (acc, l) => acc.plus(round2(round2(safeMoney(l.price).times(D(l.qty || 0))).times(rate))),
+              D(0),
+            ),
+          )
+        : round2(sourceSubtotal.times(rate));
+    // الضريبة الدينارية تُحسَب على **المجموع الفرعيّ الدينارّي** كما يفعل الخادم حرفياً، لا
+    // بترجمة الضريبة الدولارية (ترتيبا تقريبٍ مختلفان ⇒ دينارٌ أو اثنان فرقاً في المعروض).
+    const taxIqd = state.taxEnabled
+      ? round2(goodsIqd.times(safeMoney(state.taxRatePercent || "0")).dividedBy(100))
+      : D(0);
     // قرار المالك (٥/٨/٢٦): **الإجمالي = البضاعة + الضريبة فقط** — الشحن خارجه (مصروفُ شركةٍ لا
     // ذمّةُ مورّد). كان يُجمَع هنا فيعرض للمستخدم إجمالياً لا يحفظه الخادم (٧٠٠ بينما المحفوظ ٣٠٠)
     // ⇒ يدفع للمورّد أكثر مما عليه — الخطأ نفسه الذي حُذِّر منه في شاشة البيع.
@@ -159,7 +175,16 @@ export default function PurchaseNew() {
     // معامل الرفع صار ١ دائماً: حصّة الشحن تُعرَض للعِلم ولا تُضاف إلى تكلفة الوحدة (لم تعُد تُرسمَل).
     const uplift = D(1);
     return { sum, goodsIqd, taxIqd, grand, uplift, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
-  }, [shippingCost, customsCost, totals.subtotal, totals.totalTax, state.currency, state.agreedRate]);
+  }, [
+    shippingCost,
+    customsCost,
+    totals.subtotal,
+    state.items,
+    state.currency,
+    state.agreedRate,
+    state.taxEnabled,
+    state.taxRatePercent,
+  ]);
 
   function validate(): string | null {
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
@@ -170,6 +195,11 @@ export default function PurchaseNew() {
       if (!qty.gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
       const price = D(l.price);
       if (price.lt(0)) return `سعر الشراء في «${l.name}» غير صالح.`;
+      // دقّة السعر حسب العملة (مرآة حارس الخادم): الحقل يحدّ المنازل أثناء الكتابة، وهذا يمسك
+      // ما دخل من لصقٍ أو من أمرٍ قديم — رسالةٌ صريحة بدل قصٍّ صامت أو رحلةِ ذهابٍ وإياب.
+      if (!isWithinPriceDecimals(l.price, state.currency)) {
+        return priceDecimalsMessage(state.currency, l.name, l.price);
+      }
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
@@ -213,8 +243,10 @@ export default function PurchaseNew() {
         productUnitId: l.productUnitId,
         // الكمية بنفس الوحدة المختارة (الخادم يضرب × conversionFactor للحصول على base).
         quantity: D(l.qty).toString(),
-        // سعر الشراء بالوحدة (price = costBase × convFactor عند الإضافة، قابل للتعديل).
-        unitPrice: round2(D(l.price)).toFixed(2),
+        // سعر الشراء بالوحدة **بعملة الأمر** (price = costBase × convFactor عند الإضافة، قابل
+        // للتعديل). كان `round2(...).toFixed(2)` يقصّ سعر الدولار 3.4566 إلى 3.46 صامتاً رغم أنّ
+        // العمود `usdUnitPrice` يحفظ ٤ منازل ⇒ فارقٌ في ذمّة المورّد بحجم الكمية.
+        unitPrice: toUnitPriceStr(l.price, state.currency),
       })),
     };
   }

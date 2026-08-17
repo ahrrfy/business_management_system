@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like } from "drizzle-orm";
 import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
+import { isWithinPriceDecimals, priceDecimalsMessage, type PriceCurrency } from "../../../shared/moneyPrecision";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { convertToBaseQuantity } from "../inventoryService";
@@ -49,6 +50,25 @@ async function assertPurchasableVariants(tx: Tx, uniqueVariantIds: number[]): Pr
 }
 
 /**
+ * تسمية صنفٍ مقروءة للرسائل — تُستدعى **في مسار الخطأ وحده** (استعلامٌ واحد لصنفٍ واحد) كي يعرف
+ * المستخدم أيّ سطرٍ يُصحّح بدل رسالةٍ عامّة. تعذّر القراءة ⇒ المعرّف الخام (لا نُفشل رسالة خطأ).
+ */
+async function variantLabel(tx: Tx, variantId: number): Promise<string> {
+  try {
+    const [row] = await tx
+      .select({ name: products.name, sku: productVariants.sku })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(eq(productVariants.id, variantId))
+      .limit(1);
+    if (!row) return `الصنف #${variantId}`;
+    return row.sku ? `${row.name} — ${row.sku}` : String(row.name);
+  } catch {
+    return `الصنف #${variantId}`;
+  }
+}
+
+/**
  * حساب أسطر أمر الشراء وإجمالياته — **مصدر الحقيقة الحسابيّ الوحيد للإنشاء والتعديل معاً.**
  *
  * استُخرِج من `createPurchaseOrder` بلا أيّ تغيير سلوكيّ. سببُ الاستخراج بنيويّ: تعديلُ الأمر
@@ -66,6 +86,10 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "سعر صرف تثبيت الفاتورة يجب أن يكون موجباً" });
   }
 
+  // عملةُ **أسعار البنود** ليست دائماً عملةَ الأمر: المسار القديم (agreedCurrency=USD بلا سعر
+  // تثبيت) يُدخل أسعاراً دينارية و`usdTotal` مرجعاً إجمالياً فقط. الحاسم هو وجود سعر التثبيت.
+  const linePriceCurrency: PriceCurrency = explicitUsdRate ? "USD" : "IQD";
+
   const rows = [];
   const lineNets: string[] = [];
   const usdLineNets: string[] = [];
@@ -74,6 +98,15 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     // (الخدمة تُستدعى أيضاً من importService/seed لا الراوتر فقط ⇒ دفاع متعمّق إلزامي).
     if (money(it.unitPrice).lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "سعر الشراء لا يصحّ أن يكون سالباً" });
     if (money(it.quantity).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الشراء يجب أن تكون موجبة" });
+    // دقّة السعر حسب عملته (`shared/moneyPrecision`): الدينار منزلتان (عمود decimal(15,2))
+    // والدولار أربع (عمود usdUnitPrice decimal(15,4)). **رفضٌ صريح لا قصٌّ صامت**: قصُّ 3.4566
+    // إلى 3.46 يبدو نجاحاً بينما يُنقص ذمّة المورّد ويُسمّم WAVG لكلّ بيعةٍ لاحقة من الصنف.
+    if (!isWithinPriceDecimals(it.unitPrice, linePriceCurrency)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: priceDecimalsMessage(linePriceCurrency, await variantLabel(tx, it.variantId), it.unitPrice),
+      });
+    }
     const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
     const qty = money(it.quantity);
     const sourceUnitPrice = money(it.unitPrice);
@@ -81,8 +114,14 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     const usdLineNet = usdUnitPrice ? round2(usdUnitPrice.times(qty)) : null;
     // المسار الجديد: سعر البند المُدخل USD ويُحوّل بسعر التثبيت. المسار القديم بلا agreedRate
     // يبقى متوافقاً: unitPrice ديناري وusdTotal مرجع إجمالي فقط.
+    // سعرُ الوحدة الدينارية يبقى ٢dp (عمودُه decimal(15,2)) — عرضٌ ومرجعُ تكلفةِ الوحدة عند الاستلام.
     const iqdUnitPrice = explicitUsdRate ? round2(sourceUnitPrice.times(explicitUsdRate)) : sourceUnitPrice;
-    const lineNet = round2(iqdUnitPrice.times(qty));
+    // إجماليُّ السطر بالدينار يُترجَم من **إجمالي السطر بالدولار**، لا من سعر الوحدة بعد تقريبه:
+    // الالتزام دولاريّ والدينارُ ترجمتُه بسعر التثبيت. الضربُ بعد التقريب كان يُراكم فرقَ التقريب
+    // × الكمية (٥٠٠٠ وحدة × فرق ٠٫٤ د.ع = ٢٠٠٠ د.ع) فيخالف إجماليُّ الأمر فاتورةَ المورّد وذمّته.
+    const lineNet = usdLineNet && explicitUsdRate
+      ? round2(usdLineNet.times(explicitUsdRate))
+      : round2(iqdUnitPrice.times(qty));
     lineNets.push(lineNet.toFixed(2));
     if (usdLineNet) usdLineNets.push(usdLineNet.toFixed(2));
     rows.push({
