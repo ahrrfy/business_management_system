@@ -14,7 +14,15 @@ import type { PermissionMap } from "@shared/permissions";
 import { hasModuleAccess } from "@shared/permissions";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, parseImageDimensions } from "../lib/imageValidation";
-import { contentHash, getImageStore, objectKeyFor, readR2ImageStoreConfig, shortHash, studioObjectPrefix } from "../lib/imageStore";
+import {
+  assertImageStoreOperationalConfiguration,
+  contentHash,
+  getImageStore,
+  isImageStoreOperational,
+  objectKeyFor,
+  shortHash,
+  studioObjectPrefix,
+} from "../lib/imageStore";
 import { logger } from "../logger";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { isMultiTenantModeActive } from "../db";
@@ -104,24 +112,13 @@ function decodeStudioImage(dataUrl: string): { bytes: Buffer; mime: string; widt
 }
 
 function assertStoragePolicy(): void {
-  const driver = (process.env.IMAGE_STORE_DRIVER ?? "fs").toLowerCase();
-  // خادم الإنتاج مشترك: لا نسمح بسقوطٍ صامت إلى قرصه. غياب أسرار R2 يبقي الوحدة مقروءة
-  // لكن يمنع الرفع برسالة واضحة؛ لا يُفعّل R2 ولا يختلق اعتماداً.
-  if (process.env.NODE_ENV === "production" && driver !== "r2") {
+  try {
+    assertImageStoreOperationalConfiguration();
+  } catch {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "رفع الاستوديو متوقف حتى تهيئة مخزن R2 الخاص",
+      message: "عمليات الاستوديو متوقفة حتى تهيئة مخزن R2 الخاص",
     });
-  }
-  if (driver === "r2") {
-    try {
-      readR2ImageStoreConfig();
-    } catch {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "رفع الاستوديو متوقف لأن اعتماد مخزن R2 الخاص غير مكتمل",
-      });
-    }
   }
 }
 
@@ -201,6 +198,7 @@ export async function getStudioDashboard(actor: ProductStudioActor) {
     active: counts.ASSIGNED + counts.IN_PROGRESS + counts.PENDING_REVIEW + counts.REJECTED,
     canManage: isManager(actor),
     canAudit: actor.role === "auditor",
+    storageReady: isImageStoreOperational(),
   };
 }
 
@@ -362,6 +360,7 @@ export async function assignStudioTask(
   input: { productId: number; assigneeId: number; sourceImageId?: number | null },
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  assertStoragePolicy();
   const snapshot = await prepareSourceSnapshot(input.productId, input.sourceImageId);
   return withTx(async (tx) => {
     const product = (await tx.select({ id: products.id, name: products.name, description: products.description })
@@ -454,6 +453,10 @@ export async function saveStudioDraft(
       proposedMarketingCopy: input.proposedMarketingCopy?.trim() || null,
       status: "IN_PROGRESS",
       activeSlot: 1,
+      // وصلنا هنا فقط إن لم توجد lease حيّة؛ تصفير المنتهية يدوّر الملكية ويمنع رفعاً بطيئاً
+      // من الالتزام بعد حفظ هذه المسودة الأحدث.
+      uploadLeaseToken: null,
+      uploadLeaseExpiresAt: null,
     }).where(eq(productImageJobs.id, input.taskId));
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.saveDraft", input.taskId, {
       hasName: Boolean(input.proposedName?.trim()),
@@ -462,6 +465,31 @@ export async function saveStudioDraft(
     }));
     return { ok: true };
   });
+}
+
+/**
+ * يحرس استدعاء المزود قبل حجز الحصة/الاتصال الخارجي. الموظف لا يستهلك خدمة مدفوعة إلا لمهمة
+ * نشطة مسندة إليه في فرعه؛ المدير يبقى قادراً على استعمال الأداة مباشرةً، وتُعاد مراجعة المهمة
+ * تحت قفل عند إصدار receipt بعد نجاح المزود لسد سباق تغيّر الإسناد/الحالة.
+ */
+export async function authorizeStudioProcessing(
+  actor: ProductStudioActor,
+  taskId: number | undefined,
+): Promise<void> {
+  if (taskId == null) {
+    if (isManager(actor)) return;
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مهمة الاستوديو مطلوبة لتشغيل المعالجة" });
+  }
+  const task = (await requireDb().select({
+    assignedTo: productImageJobs.assignedTo,
+    branchId: productImageJobs.branchId,
+    status: productImageJobs.status,
+  }).from(productImageJobs).where(eq(productImageJobs.id, taskId)).limit(1))[0];
+  if (!task) throw new TRPCError({ code: "NOT_FOUND", message: "مهمة الاستوديو غير موجودة" });
+  assertTaskAccess(actor, task);
+  if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+    throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل معالجة جديدة" });
+  }
 }
 
 /** يسجّل نجاح المزود خادمياً ويرجع receipt أحادي المهمة قصير العمر، بلا أسرار المزود. */
@@ -572,7 +600,12 @@ export async function submitStudioCandidate(
     const result = await withTx(async (tx) => {
       const task = await lockTask(tx, input.taskId);
       assertTaskAccess(actor, task);
-      if (task.uploadLeaseToken !== token || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+      if (
+        task.uploadLeaseToken !== token ||
+        !task.uploadLeaseExpiresAt ||
+        task.uploadLeaseExpiresAt <= new Date() ||
+        !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)
+      ) {
         throw new TRPCError({ code: "CONFLICT", message: "انتهت ملكية الرفع أو تغيّرت حالة المهمة" });
       }
       const immutableOriginalHash = task.sourceContentHash ?? original?.hash;
@@ -669,6 +702,7 @@ async function streamToBase64(key: string): Promise<string> {
 }
 
 export async function getStudioCandidatePreview(actor: ProductStudioActor, taskId: number) {
+  assertStoragePolicy();
   const task = (await requireDb().select({
     assignedTo: productImageJobs.assignedTo,
     branchId: productImageJobs.branchId,
@@ -691,6 +725,7 @@ export async function getStudioCandidatePreview(actor: ProductStudioActor, taskI
 
 /** يعيد لقطة المصدر للمحرر المصرّح فقط؛ لا يكشف objectKey ولا ينشئ رابطاً عاماً. */
 export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: number) {
+  assertStoragePolicy();
   const task = (await requireDb().select({
     assignedTo: productImageJobs.assignedTo,
     branchId: productImageJobs.branchId,
@@ -707,6 +742,7 @@ export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: 
 
 export async function approveStudioTask(actor: ProductStudioActor, taskId: number) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  assertStoragePolicy();
   return withTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     assertTaskAccess(actor, task, true);
@@ -824,6 +860,7 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
 
 export async function revertStudioTask(actor: ProductStudioActor, taskId: number) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  assertStoragePolicy();
   const snapshot = (await requireDb().select({
     assignedTo: productImageJobs.assignedTo,
     branchId: productImageJobs.branchId,

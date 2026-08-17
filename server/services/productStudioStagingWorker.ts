@@ -1,6 +1,7 @@
 import cron, { type ScheduledTask } from "node-cron";
 import { isMultiTenantModeActive } from "../db";
 import { logger } from "../logger";
+import { isImageStoreOperational } from "../lib/imageStore";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { cleanupStudioStaging } from "./productStudioService";
@@ -9,6 +10,10 @@ const SWEEP_BATCH = 25;
 
 /** دورة صغيرة محدودة لكل شركة؛ الدورات اللاحقة تواصل التفريغ بلا ضغط مفاجئ على R2 أو MySQL. */
 export async function sweepProductStudioStagingOnce(): Promise<number> {
+  if (!isImageStoreOperational()) {
+    logger.warn("productStudio.staging.disabled: R2 image store is not configured");
+    return 0;
+  }
   if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
     const runs = await runAcrossActiveTenants("product_studio_staging", sweepProductStudioStagingOnce);
     return runs.reduce((sum, removed) => sum + removed, 0);

@@ -10,6 +10,7 @@ import {
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
+  type S3ClientConfig,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from "node:stream";
@@ -33,6 +34,7 @@ interface S3Executor {
 
 interface R2ImageStoreDependencies {
   client?: S3Executor;
+  clientFactory?: (config: S3ClientConfig) => S3Executor;
   signedUrl?: (client: S3Executor, command: GetObjectCommand, options: { expiresIn: number }) => Promise<string>;
 }
 
@@ -112,12 +114,20 @@ export class R2ImageStore implements ImageStore {
   constructor(config: R2ImageStoreConfig, dependencies: R2ImageStoreDependencies = {}) {
     assertR2Config(config);
     this.bucket = config.bucket;
-    this.client = dependencies.client ?? (new S3Client({
+    const clientConfig: S3ClientConfig = {
       region: "auto",
       endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
       credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
       maxAttempts: 3,
-    }) as unknown as S3Executor);
+      requestHandler: {
+        connectionTimeout: 5_000,
+        requestTimeout: 20_000,
+        socketTimeout: 15_000,
+        throwOnRequestTimeout: true,
+      },
+    };
+    this.client = dependencies.client ?? dependencies.clientFactory?.(clientConfig) ??
+      (new S3Client(clientConfig) as unknown as S3Executor);
     this.sign = dependencies.signedUrl ?? ((client, command, options) =>
       getSignedUrl(client as S3Client, command, options));
   }

@@ -1,8 +1,8 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
@@ -22,6 +22,7 @@ import {
   submitStudioCandidate,
   type ProductStudioActor,
 } from "../productStudioService";
+import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -75,6 +76,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   if (ORIGINAL_NODE_ENV === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
   __resetImageStoreForTest();
@@ -262,6 +265,50 @@ describe("product studio governed workflow", () => {
     ))).toHaveLength(2);
   });
 
+  it("rejects a slow upload after its DB lease expires and a newer draft is saved", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const startedAt = new Date("2026-08-17T08:00:00.000Z");
+    vi.setSystemTime(startedAt);
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
+    const store = getImageStore();
+    const originalPut = store.put.bind(store);
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+    let uploadReached!: () => void;
+    const reachedUpload = new Promise<void>((resolve) => { uploadReached = resolve; });
+    let firstPut = true;
+    vi.spyOn(store, "put").mockImplementation(async (...args) => {
+      const result = await originalPut(...args);
+      if (firstPut) {
+        firstPut = false;
+        uploadReached();
+        await blocked;
+      }
+      return result;
+    });
+
+    const slowSubmit = submitStudioCandidate(worker, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1_ALT,
+      mode: "CUT",
+    });
+    await reachedUpload;
+    vi.setSystemTime(new Date(startedAt.getTime() + 121_000));
+    await saveStudioDraft(worker, { taskId, proposedDescription: "مسودة أحدث بعد انتهاء مهلة الرفع" });
+    unblock();
+
+    await expect(slowSubmit).rejects.toMatchObject({ code: "CONFLICT" });
+    const [task] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
+    expect(task).toMatchObject({
+      status: "IN_PROGRESS",
+      proposedDescription: "مسودة أحدث بعد انتهاء مهلة الرفع",
+      processedObjectKey: null,
+      uploadLeaseToken: null,
+      uploadLeaseExpiresAt: null,
+    });
+  });
+
   it("rejects approval when product content or the source image changed after assignment", async () => {
     const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
     await submitStudioCandidate(worker, {
@@ -332,6 +379,74 @@ describe("product studio governed workflow", () => {
     const [task] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
     expect(task?.uploadLeaseToken).toBeNull();
     expect(task?.processedObjectKey).toBeNull();
+  });
+
+  it("does not copy a legacy source or create a task on production without R2", async () => {
+    await db().insert(s.productImages).values({
+      productId: 1,
+      url: PNG_1X1,
+      reviewStatus: "APPROVED",
+      isPrimary: true,
+    });
+    process.env.NODE_ENV = "production";
+    delete process.env.IMAGE_STORE_DRIVER;
+    __resetImageStoreForTest();
+
+    await expect(assignStudioTask(manager, { productId: 1, assigneeId: worker.userId }))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.productImageJobs)).toHaveLength(0);
+    expect(await db().select().from(s.productImageObjectStaging)).toHaveLength(0);
+    expect(await readdir(storeDir)).toHaveLength(0);
+  });
+
+  it("reports object-store readiness without hiding dashboard history", async () => {
+    await expect(getStudioDashboard(manager)).resolves.toMatchObject({ storageReady: true });
+    process.env.NODE_ENV = "production";
+    delete process.env.IMAGE_STORE_DRIVER;
+    __resetImageStoreForTest();
+    await expect(getStudioDashboard(manager)).resolves.toMatchObject({
+      storageReady: false,
+      counts: expect.any(Object),
+    });
+  });
+
+  it("blocks candidate preview and approval server-side when storage becomes unavailable", async () => {
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
+    await submitStudioCandidate(worker, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1_ALT,
+      mode: "CUT",
+    });
+    process.env.NODE_ENV = "production";
+    delete process.env.IMAGE_STORE_DRIVER;
+    __resetImageStoreForTest();
+
+    await expect(getStudioCandidatePreview(manager, taskId))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await expect(approveStudioTask(manager, taskId))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.productImages)).toHaveLength(0);
+    expect((await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId)))[0]?.status)
+      .toBe("PENDING_REVIEW");
+  });
+
+  it("skips production staging GC without R2 and preserves the database reference", async () => {
+    const objectKey = `single/studio/candidate/ab/${"a".repeat(64)}.png`;
+    await db().insert(s.productImageObjectStaging).values({
+      objectKey,
+      state: "PENDING",
+      touchedAt: new Date(Date.now() - 48 * 60 * 60_000),
+    });
+    process.env.NODE_ENV = "production";
+    delete process.env.IMAGE_STORE_DRIVER;
+    __resetImageStoreForTest();
+
+    await expect(sweepProductStudioStagingOnce()).resolves.toBe(0);
+    expect(await db().select().from(s.productImageObjectStaging)).toEqual([
+      expect.objectContaining({ objectKey, state: "PENDING" }),
+    ]);
+    expect(await readdir(storeDir)).toHaveLength(0);
   });
 
   it("sweeps old unreferenced pending and referenced staging objects", async () => {

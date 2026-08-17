@@ -10,11 +10,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { CheckCircle2, ClipboardList, History, Image, Loader2, RefreshCw, RotateCcw, UserCheck, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ClipboardList, History, Image, Loader2, RefreshCw, RotateCcw, UserCheck, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
 type StudioTask = RouterOutputs["productStudio"]["tasks"][number];
+
+export const STUDIO_STORAGE_DISABLED_MESSAGE =
+  "وضع القراءة القديم فعّال: مخزن R2 الخاص غير مهيأ. الإسناد ومعالجة الصور والاعتماد متوقفة بأمان، بينما تبقى الإحصاءات والمهام والسجل متاحة للقراءة.";
+
+export function isStudioStorageActionDisabled(storageReady: boolean | undefined): boolean {
+  return storageReady !== true;
+}
 
 const STATUS_LABEL: Record<StudioTask["status"], string> = {
   ASSIGNED: "مسندة",
@@ -95,11 +102,11 @@ export default function ProductImageStudio() {
   const selected = tasks.data?.find((task) => Number(task.id) === selectedId) ?? null;
   const preview = trpc.productStudio.candidatePreview.useQuery(
     { taskId: selectedId ?? 0 },
-    { enabled: Boolean(selectedId && selected?.hasCandidate), staleTime: 0, gcTime: 0 },
+    { enabled: Boolean(selectedId && selected?.hasCandidate && dashboard.data?.storageReady), staleTime: 0, gcTime: 0 },
   );
   const sourcePreview = trpc.productStudio.sourcePreview.useQuery(
     { taskId: selectedId ?? 0 },
-    { enabled: Boolean(selectedId && selected?.hasOriginal && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status)), staleTime: 0, gcTime: 0 },
+    { enabled: Boolean(selectedId && selected?.hasOriginal && dashboard.data?.storageReady && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status)), staleTime: 0, gcTime: 0 },
   );
 
   async function refresh() {
@@ -179,6 +186,7 @@ export default function ProductImageStudio() {
   const counts = dashboard.data?.counts;
   const busy = saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending;
   const editable = selected && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status);
+  const storageActionsDisabled = isStudioStorageActionDisabled(dashboard.data?.storageReady);
 
   return (
     <div className="space-y-4 p-4 md:p-6">
@@ -188,6 +196,13 @@ export default function ProductImageStudio() {
         icon={<Image aria-hidden className="size-6" />}
         actions={<Button variant="outline" size="sm" onClick={() => refresh()}><RefreshCw aria-hidden className="size-4" /> تحديث</Button>}
       />
+
+      {dashboard.data && storageActionsDisabled && (
+        <div role="status" className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>{STUDIO_STORAGE_DISABLED_MESSAGE}</span>
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">المهام النشطة</div><div className="mt-1 text-2xl font-bold">{dashboard.data?.active ?? 0}</div></CardContent></Card>
@@ -229,7 +244,7 @@ export default function ProductImageStudio() {
               <p className="text-xs text-muted-foreground">لكل منتج مهمة نشطة واحدة ومالك واحد؛ وزّع منتجات مختلفة على أكثر من موظف.</p>
             </div>
             <div className="flex items-end">
-              <Button className="w-full" disabled={!productId || !assigneeId || assign.isPending} onClick={() => assign.mutate({
+              <Button className="w-full" disabled={storageActionsDisabled || !productId || !assigneeId || assign.isPending} onClick={() => assign.mutate({
                 productId: Number(productId),
                 assigneeId: Number(assigneeId),
                 sourceImageId: sourceChoice === "new" ? null : Number(sourceChoice),
@@ -286,11 +301,11 @@ export default function ProductImageStudio() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
-                      <div className="space-y-1.5"><Label htmlFor="studio-name">اسم العرض</Label><Input id="studio-name" value={name} onChange={(event) => setName(event.target.value)} disabled={!editable} maxLength={255} /></div>
+                      <div className="space-y-1.5"><Label htmlFor="studio-name">اسم العرض</Label><Input id="studio-name" value={name} onChange={(event) => setName(event.target.value)} disabled={!editable || storageActionsDisabled} maxLength={255} /></div>
                     </CardContent>
                   </Card>
 
-                  {editable && (
+                  {editable && !storageActionsDisabled && (
                     <>
                       <ProductMediaContentSection
                         title="تنفيذ المهمة — الصور والمحتوى"
@@ -331,15 +346,15 @@ export default function ProductImageStudio() {
                         {preview.data && <PreviewPair data={preview.data} />}
                         {dashboard.data?.canManage && selected.status === "PENDING_REVIEW" && (
                           <div className="space-y-3 border-t pt-4">
-                            <div className="space-y-1.5"><Label htmlFor="studio-reject-reason">سبب الرفض عند الإعادة</Label><Textarea id="studio-reject-reason" rows={2} maxLength={500} value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="اذكر التعديل المطلوب بوضوح" /></div>
+                            <div className="space-y-1.5"><Label htmlFor="studio-reject-reason">سبب الرفض عند الإعادة</Label><Textarea id="studio-reject-reason" rows={2} maxLength={500} value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="اذكر التعديل المطلوب بوضوح" disabled={storageActionsDisabled} /></div>
                             <div className="flex flex-wrap gap-2">
-                              <Button disabled={busy} onClick={() => approve.mutate({ taskId: Number(selected.id) })}><CheckCircle2 aria-hidden className="size-4" /> اعتماد ونشر</Button>
-                              <Button variant="destructive" disabled={busy || rejectReason.trim().length < 5} onClick={() => reject.mutate({ taskId: Number(selected.id), reason: rejectReason })}><XCircle aria-hidden className="size-4" /> إعادة للتعديل</Button>
+                              <Button disabled={storageActionsDisabled || busy} onClick={() => approve.mutate({ taskId: Number(selected.id) })}><CheckCircle2 aria-hidden className="size-4" /> اعتماد ونشر</Button>
+                              <Button variant="destructive" disabled={storageActionsDisabled || busy || rejectReason.trim().length < 5} onClick={() => reject.mutate({ taskId: Number(selected.id), reason: rejectReason })}><XCircle aria-hidden className="size-4" /> إعادة للتعديل</Button>
                             </div>
                           </div>
                         )}
                         {dashboard.data?.canManage && selected.status === "APPROVED" && (
-                          <Button variant="outline" disabled={busy} onClick={() => revert.mutate({ taskId: Number(selected.id) })}><RotateCcw aria-hidden className="size-4" /> استرجاع الأصل</Button>
+                          <Button variant="outline" disabled={storageActionsDisabled || busy} onClick={() => revert.mutate({ taskId: Number(selected.id) })}><RotateCcw aria-hidden className="size-4" /> استرجاع الأصل</Button>
                         )}
                       </CardContent>
                     </Card>

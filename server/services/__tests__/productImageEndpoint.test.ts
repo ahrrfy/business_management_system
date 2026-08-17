@@ -19,7 +19,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -106,6 +106,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   __resetImageStoreForTest();
   delete process.env.IMAGE_STORE_DRIVER;
   delete process.env.IMAGE_STORE_DIR;
@@ -220,6 +221,19 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
       expect(res.headers.get("cross-origin-resource-policy")).toBe("same-origin");
       expect(Buffer.from(await res.arrayBuffer())).toEqual(JPEG_BYTES);
     });
+  });
+
+  it("يعيد 304 من البصمة قبل فتح كائن المخزن", async () => {
+    const { imageId, hash } = await seedStored(87);
+    const getStream = vi.spyOn(getImageStore(), "getStream");
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`, {
+        headers: { "If-None-Match": `"${shortHash(hash)}"` },
+      });
+      expect(res.status).toBe(304);
+      expect((await res.arrayBuffer()).byteLength).toBe(0);
+    });
+    expect(getStream).not.toHaveBeenCalled();
   });
 
   it("يرفض بصمة رابط ناقصة/خاطئة ولا يفتح R2 كدليل ملفات", async () => {

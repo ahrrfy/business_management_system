@@ -181,17 +181,14 @@ async function sendStoredProductImage(
 
   const version = shortHash(contentHash);
   if (typeof req.query.v !== "string" || req.query.v !== version) return res.status(404).end();
-  const stream = await getImageStore().getStream(objectKey);
-  if (!stream) return res.status(404).end();
-
   const etag = `"${version}"`;
   res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
   if (visibility === "private") res.setHeader("Vary", "Cookie");
   res.setHeader("ETag", etag);
-  if (req.headers["if-none-match"] === etag) {
-    stream.destroy();
-    return res.status(304).end();
-  }
+  if (req.headers["if-none-match"] === etag) return res.status(304).end();
+
+  const stream = await getImageStore().getStream(objectKey);
+  if (!stream) return res.status(404).end();
   res.setHeader("Content-Type", mime.toLowerCase());
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");

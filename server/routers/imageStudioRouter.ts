@@ -23,7 +23,11 @@ import {
 } from "../services/imageStudioUsageGuard";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { logAudit } from "../services/auditService";
-import { attestStudioProcessing, type ProductStudioActor } from "../services/productStudioService";
+import {
+  attestStudioProcessing,
+  authorizeStudioProcessing,
+  type ProductStudioActor,
+} from "../services/productStudioService";
 
 function studioActor(ctx: { user: { id: number; branchId?: number | null; role: string; isOwner?: boolean } }): ProductStudioActor {
   return {
@@ -82,6 +86,7 @@ export const imageStudioRouter = router({
   proCutout: productStudioWriteProcedure
     .input(z.object({ imageDataUrl: z.string().min(1).max(6_000_000), taskId: z.number().int().positive().optional() }))
     .mutation(async ({ input, ctx }) => {
+      await authorizeStudioProcessing(studioActor(ctx), input.taskId);
       // تحقّق أمني: data URL صورة صالحة (سحر البايتات) حتى ٢م.ب — نفس كتّاب صور المنتج.
       assertValidImageDataUrl(input.imageDataUrl, 2_000_000, true);
 
@@ -194,6 +199,7 @@ export const imageStudioRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      await authorizeStudioProcessing(studioActor(ctx), input.taskId);
       const mode = input.mode;
       let imageBase64: string | undefined;
       let mimeType: string | undefined;

@@ -62,6 +62,22 @@ describe("R2ImageStore", () => {
     expect(() => new R2ImageStore({ ...config, bucket: "INVALID_" })).toThrow(/bucket/);
   });
 
+  it("يضبط مهلاً محدودة للاتصال والطلب والخمول قبل تفعيل R2", () => {
+    let clientConfig: Record<string, unknown> | undefined;
+    new R2ImageStore(config, {
+      clientFactory: (value) => {
+        clientConfig = value as unknown as Record<string, unknown>;
+        return { send: vi.fn() };
+      },
+    });
+    expect(clientConfig?.requestHandler).toMatchObject({
+      connectionTimeout: 5_000,
+      requestTimeout: 20_000,
+      socketTimeout: 15_000,
+      throwOnRequestTimeout: true,
+    });
+  });
+
   it("يقيّد مدة الرابط الموقّع ويستعمل bucket الخاص", async () => {
     const signedUrl = vi.fn().mockResolvedValue("https://signed.example/object");
     const store = new R2ImageStore(config, { client: { send: vi.fn() }, signedUrl });
@@ -91,6 +107,34 @@ describe("getImageStore production guard", () => {
     process.env.IMAGE_STORE_DRIVER = "fs";
     __resetImageStoreForTest();
     expect(() => getImageStore()).toThrow(/محظور في الإنتاج/);
+  });
+
+  it("يرفض أي عملية تخزين في الإنتاج حين يبقى السائق غير مضبوط", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.IMAGE_STORE_DRIVER;
+    __resetImageStoreForTest();
+    expect(() => getImageStore()).toThrow(/R2/);
+  });
+
+  it("يطبع اسم السائق مرة واحدة كي لا تمر r2 المحاطة بمسافات ثم تسقط إلى fs", () => {
+    process.env.NODE_ENV = "production";
+    process.env.IMAGE_STORE_DRIVER = " r2 ";
+    process.env.R2_ACCOUNT_ID = "a".repeat(32);
+    process.env.R2_IMAGE_BUCKET = "private-images";
+    process.env.R2_ACCESS_KEY_ID = "key";
+    process.env.R2_SECRET_ACCESS_KEY = "secret";
+    __resetImageStoreForTest();
+    expect(getImageStore()).toBeInstanceOf(R2ImageStore);
+  });
+
+  it("يعيد فحص البوابة قبل إعادة كائن fs مخبّأ", () => {
+    process.env.NODE_ENV = "development";
+    process.env.IMAGE_STORE_DRIVER = "fs";
+    __resetImageStoreForTest();
+    expect(getImageStore()).toBeDefined();
+    process.env.NODE_ENV = "production";
+    delete process.env.IMAGE_STORE_DRIVER;
+    expect(() => getImageStore()).toThrow(/R2/);
   });
 
   it("يرفض R2 الناقص قبل إنشاء أي عميل", () => {
