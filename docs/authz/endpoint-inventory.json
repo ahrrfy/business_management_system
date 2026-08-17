@@ -8,8 +8,8 @@
     },
     "byAuthority": {
       "module-gate": 426,
-      "module-map": 298,
-      "admin": 67,
+      "module-map": 297,
+      "admin": 68,
       "raw-role": 55,
       "none": 53,
       "self-assignment": 19,
@@ -25,8 +25,8 @@
       "HIGH": 135
     },
     "byModule": {
-      "(none)": 202,
-      "hr": 101,
+      "(none)": 203,
+      "hr": 100,
       "reports": 81,
       "digital_cards": 75,
       "treasury": 61,
@@ -60,10 +60,10 @@
       "storefront": 1
     },
     "flagCounts": {
-      "LOCAL_GATE": 182,
-      "NO_BRANCH_SCOPE": 161,
+      "LOCAL_GATE": 181,
+      "NO_BRANCH_SCOPE": 150,
       "SENSITIVE_ACTION": 135,
-      "ADMIN_ONLY": 71,
+      "ADMIN_ONLY": 72,
       "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 33,
       "READ_WITHOUT_MODULE_GATE": 30,
@@ -811,11 +811,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:90"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:101"
     },
     {
       "surface": "trpc",
@@ -828,11 +828,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:82"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:93"
     },
     {
       "surface": "trpc",
@@ -845,11 +845,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:22"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:28"
     },
     {
       "surface": "trpc",
@@ -862,11 +862,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:98"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:109"
     },
     {
       "surface": "trpc",
@@ -879,11 +879,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:84"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:95"
     },
     {
       "surface": "trpc",
@@ -896,11 +896,11 @@
       "module": "hr",
       "level": "FULL",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:162"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:180"
     },
     {
       "surface": "trpc",
@@ -913,11 +913,11 @@
       "module": "hr",
       "level": "FULL",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:116"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:132"
     },
     {
       "surface": "trpc",
@@ -930,11 +930,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:107"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:121"
     },
     {
       "surface": "trpc",
@@ -947,11 +947,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:45"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:51"
     },
     {
       "surface": "trpc",
@@ -964,11 +964,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:68"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:79"
     },
     {
       "surface": "trpc",
@@ -976,16 +976,16 @@
       "proposedPermission": "hr.attendance.update",
       "name": "updateSettings",
       "kind": "mutation",
-      "procedure": "hrWrite",
-      "authority": "module-map",
-      "module": "hr",
-      "level": "FULL",
-      "roles": "",
+      "procedure": "adminProcedure",
+      "authority": "admin",
+      "module": "",
+      "level": "",
+      "roles": "admin",
       "branch": "none",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:47"
+      "flags": "ADMIN_ONLY",
+      "loc": "server/routers/attendanceRouter.ts:58"
     },
     {
       "surface": "trpc",

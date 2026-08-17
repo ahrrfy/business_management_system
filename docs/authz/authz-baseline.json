@@ -1,6 +1,7 @@
 {
   "generated": "static",
   "keys": [
+    "attendanceRouter.updateSettings@server/routers/attendanceRouter.ts",
     "auditRouter.facets@server/routers/auditRouter.ts",
     "auditRouter.list@server/routers/auditRouter.ts",
     "authRouter.changePassword@server/routers/authRouter.ts",

@@ -19,6 +19,11 @@ export interface EmployeeStatementInput {
   employeeId: number;
   /** الشهر "YYYY-MM" — الكشف يغطّيه كاملاً مقصوصاً بنافذة عمل الموظف. */
   period: string;
+  /**
+   * عزل الفرع (قرار المالك ١٢/٨): رقمٌ = يُرفَض موظفُ فرعٍ آخر، null = عبورٌ (أدمن/مالك).
+   * الكشف يعرض الراتب وسعر الساعة وأجر كل يوم ⇒ تسريبُه بين الفروع تسريبُ رواتب.
+   */
+  scopedBranchId?: number | null;
 }
 
 /**
@@ -67,6 +72,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       terminationDate: employees.terminationDate,
       workSchedule: employees.workSchedule,
       attendanceExempt: employees.attendanceExempt,
+      branchId: employees.branchId,
       branchName: branches.name,
     })
     .from(employees)
@@ -74,6 +80,13 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     .where(eq(employees.id, input.employeeId))
     .limit(1);
   if (!emp) return null;
+  /*
+   * عزل الفرع: **رفضٌ صريح** لا تصفيةٌ صامتة — الطلب يحمل معرّفاً بعينه، فإعادة `null`
+   * تُقرأ «لا موظف بهذا المعرّف» وتُخفي المحاولة. الرفض يُظهرها في السجلّ.
+   */
+  if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
+    throw new Error("هذا الموظف من فرعٍ آخر — لا صلاحية لك على كشف حضوره");
+  }
 
   const [settings] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
   // جدول الموظف وحده — الجدول العامّ أُلغي (0140) لأنه صار مكرّراً بعد دخوله بطاقةَ كل موظف.
