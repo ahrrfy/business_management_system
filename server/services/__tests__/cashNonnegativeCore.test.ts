@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createExpense } from "../expenseService";
@@ -522,6 +522,24 @@ describe("cash-nonnegative-core — اعتماد السند", () => {
 });
 
 describe("cash-nonnegative-core — دلالة REVERSED موحّدة", () => {
+  it("يختم السند الافتراضي بيوم UTC قرب منتصف الليل ولا يُسقطه من تقرير يومه", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-08-16T22:30:00.000Z"));
+    try {
+      await createVoucher({
+        voucherType: "RECEIPT", branchId: 1, amount: "100.00", paymentMethod: "CASH",
+        partyType: "SUPPLIER", partyId: 1, description: "قبض قرب منتصف الليل",
+        clientRequestId: "treasury-utc-day-boundary",
+      }, admin);
+
+      expect(await getCashFlow({ branchId: 1, from: "2026-08-16", to: "2026-08-16" })).toMatchObject({
+        totalIn: "100.00", totalOut: "0.00", net: "100.00",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("إلغاء قبض TREASURY يصافر الحارس واللوحة والحركة والتقرير", async () => {
     const created = await createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "100.00", paymentMethod: "CASH",
