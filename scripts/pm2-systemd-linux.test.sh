@@ -13,7 +13,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   echo "pm2 systemd linux test: root required" >&2
   exit 1
 fi
-systemd_state="$(systemctl is-system-running)"
+systemd_state="$(systemctl is-system-running || true)"
 if [[ "${systemd_state}" != "running" && "${systemd_state}" != "degraded" ]]; then
   echo "pm2 systemd linux test: a running systemd system instance is required" >&2
   exit 1
