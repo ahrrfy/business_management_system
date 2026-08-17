@@ -16,11 +16,34 @@ describe("واجهة استحقاق وتسوية شحن المشتريات", () 
   });
 
   it("تجمع دليل أداة الدفع غير النقدية وترسله إلى API", () => {
-    expect(source).toContain('shipMethod === "TRANSFER" || shipMethod === "CHECK"');
+    expect(source).toContain('shipMethod === "TRANSFER"');
     expect(source).toContain("مرجع التحويل");
-    expect(source).toContain("رقم الصك");
     expect(source).toContain("آخر أربعة أرقام للبطاقة");
     expect(source).toContain("shippingPaymentReference:");
     expect(source).toContain("shippingCardLastFour:");
+  });
+
+  /**
+   * قرار المالك «لا تعامل بالصكوك» كان مطبَّقاً في راوتر السندات وفي `lib/paymentMethod`،
+   * وهذا المنتقي هو المنفذ الوحيد الباقي الذي كان يُنشئ صكّاً فعلياً (عبر
+   * `createSystemPaymentRequestTx`). يُمنَع رجوعه نصّياً.
+   */
+  it("لا يعرض «صك» في تسوية الشحن — منفذٌ خلفيّ لقرارٍ مُقفلٍ في كل بابٍ آخر", () => {
+    expect(source).not.toContain('"CHECK"');
+    expect(source).not.toContain("رقم الصك");
+  });
+
+  /**
+   * دفعةُ المورّد لحظة الاستلام نقديّة فقط: `receivePurchase` يرفض غيرها من أوّل سطر داخل
+   * `withTx`، والرفض يُسقِط الاستلام كلّه (لا مخزون ولا ذمّة ولا قيد شراء). عرضُ طريقةٍ
+   * يرفضها العقد = إدخالٌ كاملٌ يضيع — نمط #596 الذي يحذّر منه CLAUDE.md §٦.
+   */
+  it("منتقي دفعة المورّد نقديّ فقط — لا يَعِد بما يرفضه الخادم", () => {
+    expect(source).toContain("SUPPLIER_PAYMENT_METHODS");
+    const list = source.match(/const SUPPLIER_PAYMENT_METHODS[^;]+;/s)?.[0] ?? "";
+    expect(list).toContain('v: "CASH"');
+    for (const rejected of ["CARD", "TRANSFER", "WALLET", "CHECK"]) {
+      expect(list).not.toContain(rejected);
+    }
   });
 });

@@ -14,6 +14,20 @@ import { canSeeCostForUser, purchasesManagerProcedure, purchasesReadProcedure, p
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+/**
+ * دفعةُ المورّد **لحظة الاستلام**: نقديّة فقط — العقد الخادميّ يرفض غيرها منذ أوّل سطر في
+ * `receivePurchase` («الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية»)،
+ * والرفض يُسقِط **الاستلام كلّه** داخل نفس المعاملة: لا مخزون، ولا ذمّة مورّد، ولا قيد شراء.
+ *
+ * كان الزود يقبل الخمس طرق فتصل الحمولة إلى الخدمة لتُرفَض هناك ⇒ أمين المخزن يُدخل الكميات
+ * ويختار «تحويل» فيخسر الإدخال كلّه برسالةٍ تحيله إلى سندٍ لا مسار له في الشاشة. تضييق الزود
+ * يجعل الرفض عند **حدّ العقد** (خطأ تحقّقٍ واضح) بدل عملٍ يسقط كاملاً — وهو الدرس المُوثَّق
+ * في CLAUDE.md §٦: لا تُفتَح طريقةٌ قبل التحقّق أنّ الخادم يقبل حمولتها.
+ *
+ * ⚠️ تسويةُ الشحن/الكمرك (`shippingPaymentMethod`) تبقى على `method` الكامل: مسارها مختلف
+ * تماماً — تُنشئ سند صرفٍ نظاميّاً يقبل غير النقد فعلاً.
+ */
+const supplierPaymentMethod = z.enum(["CASH"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
@@ -250,7 +264,7 @@ export const purchaseRouter = router({
               seen.add(line.purchaseOrderItemId);
             });
           }),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method: supplierPaymentMethod }).optional(),
         // طريقة دفع مصروف الشحن/الكمرك (لشركة النقل، لا للمورّد). الافتراضي نقديّ.
         shippingPaymentMethod: method.optional(),
         shippingPaymentReference: z.string().trim().min(1).max(50).optional(),

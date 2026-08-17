@@ -456,6 +456,7 @@ export async function confirmCourierDelivery(
             inv.returnedTotal ?? "0",
           ),
           paymentDate: new Date(),
+          paymentMethod: sql`COALESCE(${invoices.paymentMethod}, 'CASH')`,
         })
         .where(eq(invoices.id, inv.id));
       // ذمّة العميل↓ (سدّد نقداً للمندوب).
@@ -745,6 +746,7 @@ export async function confirmConsignmentDelivery(
             String(inv.returnedTotal ?? "0"),
           ),
           paymentDate: deliveredAt,
+          paymentMethod: sql`COALESCE(${invoices.paymentMethod}, 'CASH')`,
         })
         .where(eq(invoices.id, Number(inv.id)));
       if (inv.customerId != null) {

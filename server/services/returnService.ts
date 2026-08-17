@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
@@ -203,8 +204,17 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     if (Number(inv.branchId) !== Number(invPreview.branchId)) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء المرتجع؛ أعد المحاولة" });
     }
-    if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة ملغاة أو مرتجعة بالكامل" });
+    // المُستبدَلة كانت محجوبةً **بالمصادفة** لا بالتصميم: التصحيح يعكس كل الأسطر فيصير المتبقّي
+    // صفراً، فيسقط الطلب برسالة «كمية الإرجاع تتجاوز المتبقّي للبند ####» — رحلةٌ تنتهي بخطأ
+    // تقنيّ غامض بدل توجيهٍ صريح. ولو أُضيف بندٌ بعد التصحيح لتغيّر الحساب وسقط الدفاع.
+    if (isDeadInvoiceStatus(inv.status)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          inv.status === "SUPERSEDED"
+            ? "الفاتورة مستبدَلة بفاتورة مصحّحة — أرجِع من الفاتورة المصحّحة"
+            : "الفاتورة ملغاة أو مرتجعة بالكامل",
+      });
     }
     // G8 (١٩/٦/٢٦): فحص ملكية الفرع — managerProcedure يسمح بالمدير والأدمن، لكن مدير فرع لا
     // يجوز له إصدار مرتجع على فاتورة فرع آخر (يخرج نقد من صندوقه لفاتورة لا تخصّه).

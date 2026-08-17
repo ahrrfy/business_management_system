@@ -19,17 +19,15 @@ import { fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
+import { INVOICE_STATUSES, invoiceStatusLabel, type InvoiceStatus } from "@shared/invoiceStatus";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearch } from "wouter";
 
-const INVOICE_STATUS: Record<string, string> = {
-  PENDING: "معلّقة",
-  CONFIRMED: "مؤكّدة",
-  PAID: "مدفوعة",
-  PARTIALLY_PAID: "مدفوعة جزئياً",
-  CANCELLED: "ملغاة",
-  RETURNED: "مرتجعة",
-};
+/** حالات فلتر الفاتورة — مرآة enum الخادم (`salesListInput.status`) عبر المصدر المشترك.
+ *  `SUPERSEDED` كانت مفقودةً من القاموس المحلّي ⇒ يقبلها الخادم ولا سبيل لاختيارها من الشاشة،
+ *  والفاتورة المُصحَّحة تُعرَض وتُصدَّر رمزاً إنجليزياً خاماً. */
+const isInvoiceStatus = (v: string): v is InvoiceStatus =>
+  (INVOICE_STATUSES as readonly string[]).includes(v);
 
 /** حجم صفحة قائمة الفواتير — الترقيم خادميّ (نمط Invoices). */
 const PAGE_SIZE = 50;
@@ -55,7 +53,7 @@ export default function Returns() {
   const q = filters.q;
   // تصحيح قيمة URL (Codex P2): status enum معروف مسبقاً؛ قيمة غريبة (مشاركة/تعديل يدوي) تفشل
   // sales.listPage.useQuery صامتاً بخطأ Zod ⇒ رجوع للافتراضي (كل الحالات) بدل قائمةٍ فارغةٍ مضلِّلة.
-  const statusFilter = filters.status in INVOICE_STATUS ? filters.status : "";
+  const statusFilter = isInvoiceStatus(filters.status) ? filters.status : "";
   const setQ = (v: string) => setFilters({ q: v });
   const setStatusFilter = (v: string) => setFilters({ status: v });
 
@@ -66,8 +64,7 @@ export default function Returns() {
   // أي تغيير في البحث/الفلتر يعيد للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر).
   useEffect(() => { setPage(0); }, [qDebounced, statusFilter]);
 
-  type StatusFilter =
-    | "PENDING" | "CONFIRMED" | "PAID" | "PARTIALLY_PAID" | "CANCELLED" | "RETURNED" | undefined;
+  type StatusFilter = InvoiceStatus | undefined;
   const invoicesQuery = trpc.sales.listPage.useQuery({
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
@@ -118,8 +115,8 @@ export default function Returns() {
                     onValueChange={(v) => setStatusFilter(v === "ALL" ? "" : v)}
                   >
                     <option value="ALL">كل الحالات</option>
-                    {Object.entries(INVOICE_STATUS).map(([v, label]) => (
-                      <option key={v} value={v}>{label}</option>
+                    {INVOICE_STATUSES.map((v) => (
+                      <option key={v} value={v}>{invoiceStatusLabel(v)}</option>
                     ))}
                   </AppSelect>
                 </FilterField>
@@ -131,7 +128,7 @@ export default function Returns() {
                   { key: "invoiceNumber", header: "رقم الفاتورة" },
                   { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "عميل نقدي" },
                   { key: "total", header: "الإجمالي", map: (r) => Number(r.total ?? 0) },
-                  { key: "status", header: "الحالة", map: (r) => INVOICE_STATUS[r.status] ?? r.status },
+                  { key: "status", header: "الحالة", map: (r) => invoiceStatusLabel(r.status) },
                 ],
               }}
             />
@@ -155,7 +152,7 @@ export default function Returns() {
                       <tr key={inv.id} className={`border-t ${isPicked ? "bg-muted/40" : ""}`}>
                         <td className="p-2"><CopyInline value={inv.invoiceNumber} /></td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(inv.total)}</td>
-                        <td className="p-2">{INVOICE_STATUS[inv.status] ?? inv.status}</td>
+                        <td className="p-2">{invoiceStatusLabel(inv.status)}</td>
                         <td className="p-2 text-center">
                           <RowActions
                             mode="inline"

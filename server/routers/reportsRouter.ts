@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { INVOICE_STATUSES } from "@shared/invoiceStatus";
+import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { branches, customers, invoices, suppliers } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
@@ -368,18 +369,11 @@ export const reportsRouter = router({
         sourceTypes: z
           .array(z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]))
           .optional(),
-        statuses: z
-          .array(
-            z.enum([
-              "PENDING",
-              "CONFIRMED",
-              "PAID",
-              "PARTIALLY_PAID",
-              "CANCELLED",
-              "RETURNED",
-            ]),
-          )
-          .optional(),
+        // `SUPERSEDED` كانت غائبةً هنا وعن خيارات الشاشة معاً ⇒ حالةٌ موجودةٌ في البيانات
+        // وغير موجودةٍ في أيّ فلتر: لا تُعرَض ولا تُستبعَد، بينما التقرير **بلا استثناءٍ أساسيّ
+        // للحالة** فتدخل الإجمالي وغير المدفوع بقيمتها كاملة (الأصل المُستبدَل يبقى بـtotal
+        // كاملاً وreturnedTotal مُصفَّراً). صارت قابلةً للفلترة والاستبعاد صراحةً.
+        statuses: z.array(z.enum(INVOICE_STATUSES)).optional(),
         // فلتر طريقة الدفع على invoices.paymentMethod نفسه الذي يعرضه التقرير عموداً —
         // "NONE" = فاتورة بلا طريقة مسجَّلة (آجل/تاريخية قبل بدء التسجيل) أي IS NULL.
         paymentMethods: z
@@ -437,6 +431,12 @@ export const reportsRouter = router({
       }
       if (input.statuses && input.statuses.length > 0) {
         conditions.push(inArray(invoices.status, input.statuses));
+      } else {
+        // بلا فلترٍ صريح: تُستبعَد **المستبدلة وحدها** — مرآةً حرفيةً لعقد `sales.listSummary`
+        // («المجاميع التاريخية تبقي الملغاة كما في العقد القائم؛ المستبدلة وحدها تُستبعَد لأنّ
+        // البديلة تمثّل نفس العملية»). كان التقرير بلا أيّ استثناءٍ أساسيّ فيحتسب الأصل الميت
+        // والبديلة معاً في «الإجمالي» و«غير المدفوع». من يريدها صراحةً يطلبها في `statuses`.
+        conditions.push(ne(invoices.status, "SUPERSEDED"));
       }
       if (input.paymentMethods && input.paymentMethods.length > 0) {
         const withCredit = input.paymentMethods.includes("NONE");

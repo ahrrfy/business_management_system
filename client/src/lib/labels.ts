@@ -5,28 +5,12 @@
  */
 
 /**
- * حالة فاتورة البيع (invoices.status).
- *
- * **PENDING = «غير مدفوعة»** (تصحيح مسرد ١٧/٨/٢٦ بطلب المالك — كانت «معلّقة»): الحالة مشتقّة
- * من المال وحده (`computeInvoiceStatus`: المدفوع صفر ⇒ PENDING)، فالبيع الآجل النافذ كان يُقرأ
- * «موقوفاً/بانتظار إجراء» ويقلق الموظّف والمالك. التسمية المالية هي الصادقة.
- *
- * `CONFIRMED` و`SUPERSEDED` مضافتان هنا كي لا يتسرّب الرمز الإنجليزيّ الخام إلى الشاشات
- * والتصدير والطباعة عبر `?? s` (كانت `SUPERSEDED` تظهر خاماً في كل مستهلكٍ لهذا القاموس).
+ * ⛔ حالة فاتورة البيع **ليست هنا** — مصدرها الوحيد `@shared/invoiceStatus`
+ * (`INVOICE_STATUS_AR` · `invoiceStatusLabel` · `isDeadInvoiceStatus` · `INVOICE_STATUSES`).
+ * كانت نسخةٌ محلّية هنا فانجرفت عن الخادم: أُضيفت `SUPERSEDED` إلى enum المخطّط (هجرة 0168)
+ * ولم تصل هذا القاموس ⇒ تسرّب الرمز الإنجليزيّ الخام إلى ٦ شاشاتٍ وملفات Excel والطباعة.
+ * الخادم يحتاج المفهوم نفسه في استعلاماته، فمكانُه `shared/` لا هنا. **لا تُعِد تعريفه.**
  */
-export const INVOICE_STATUS_AR: Record<string, string> = {
-  PAID: "مدفوعة",
-  PARTIALLY_PAID: "مدفوعة جزئياً",
-  PENDING: "غير مدفوعة",
-  CONFIRMED: "مؤكّدة",
-  RETURNED: "مُرتجَعة",
-  CANCELLED: "ملغاة",
-  SUPERSEDED: "مستبدلة بفاتورة مصححة",
-};
-export function invoiceStatusLabel(s: string | null | undefined): string {
-  if (!s) return "—";
-  return INVOICE_STATUS_AR[s] ?? s;
-}
 
 /** مصدر الفاتورة (invoices.sourceType). */
 export const SOURCE_TYPE_AR: Record<string, string> = {

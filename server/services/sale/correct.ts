@@ -280,6 +280,11 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       payment: input.additionalPayment ?? null,
       preCollected: detachedSum.gt(0) ? { amount: detachedSum.toFixed(2), receiptIds: detachedIds } : null,
       allowPreCollectedOverpay: true,
+      // نسبةُ البيع تبقى للبائع الأصليّ لا للمدير المصحِّح: وعاء العمولة يُجمَّع بـ
+      // `invoices.createdBy` (commissions/base.ts) وقيدُ RETURN العكسيّ يُخصَم من الأصليّ ⇒
+      // بلا هذا السطر كان تصحيحُ سطرٍ واحد ينقل بيعاً كاملاً من وعاء الكاشير إلى وعاء المدير.
+      // هويّة المصحِّح محفوظةٌ في auditLogs (`sale.correctReissue`) — وهي موضعها الصحيح.
+      attributeToUserId: inv.createdBy ?? null,
       creditApproved: input.creditApproved,
       creditApprovalId: input.creditApprovalId,
       managerOverrideByUserId: input.managerOverrideByUserId,

@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { derivePaymentTerms } from "@/components/invoice/paymentTerms";
+import {
+  INVOICE_STATUS_AR,
+  INVOICE_STATUSES,
+  invoiceStatusLabel,
+  isDeadInvoiceStatus,
+} from "@shared/invoiceStatus";
 
 const readPage = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
 const readInvoiceModule = (name: string) =>
@@ -66,23 +72,39 @@ describe("عقد شروط الدفع في محرّر الفواتير", () => {
  * نفسها (`badge-status-cancelled` = رمادي «ملغاة/مستبدلة»). الحالة مشتقّة من المال وحده.
  */
 describe("عقد عرض حالة الفاتورة غير المدفوعة", () => {
-  it("PENDING تُسمّى «غير مدفوعة» في القاموس المركزي والشاشتين", () => {
-    const labels = readFileSync(new URL("../../lib/labels.ts", import.meta.url), "utf8");
-    expect(labels).toMatch(/PENDING:\s*"غير مدفوعة"/);
-    expect(readPage("Invoices.tsx")).toMatch(/PENDING:\s*"غير مدفوعة"/);
-    expect(readPage("InvoiceDetail.tsx")).toMatch(/PENDING:\s*"غير مدفوعة"/);
+  it("PENDING تُسمّى «غير مدفوعة» في المصدر المشترك", () => {
+    expect(INVOICE_STATUS_AR.PENDING).toBe("غير مدفوعة");
+    expect(invoiceStatusLabel("PENDING")).toBe("غير مدفوعة");
   });
 
   it("PENDING لا تتشارك شارة المستند الميت مع الملغاة/المستبدلة", () => {
     const page = readPage("Invoices.tsx");
     expect(page).toMatch(/PENDING:\s*"badge-status-pending"/);
     expect(page).not.toMatch(/PENDING:\s*"badge-status-cancelled"/);
+    // الشارة عرضٌ لا تعريب — ولذلك تبقى محلّيةً؛ لكن الحالة الميتة يجب أن تظلّ مصنَّفةً كذلك.
+    expect(isDeadInvoiceStatus("PENDING")).toBe(false);
+    expect(isDeadInvoiceStatus("SUPERSEDED")).toBe(true);
   });
 
-  it("القاموس المركزي يغطّي كل حالة يمكن أن تصل الشاشة — لا رمز إنجليزيّ خام", () => {
-    const labels = readFileSync(new URL("../../lib/labels.ts", import.meta.url), "utf8");
-    for (const code of ["PAID", "PARTIALLY_PAID", "PENDING", "CONFIRMED", "RETURNED", "CANCELLED", "SUPERSEDED"]) {
-      expect(labels).toMatch(new RegExp(`${code}:\\s*"`));
+  it("المصدر المشترك يغطّي كل حالة يمكن أن تصل الشاشة — لا رمز إنجليزيّ خام", () => {
+    for (const code of INVOICE_STATUSES) {
+      expect(INVOICE_STATUS_AR[code]).toBeTruthy();
+      expect(invoiceStatusLabel(code)).not.toBe(code);
+    }
+  });
+
+  /**
+   * الحارس الحقيقيّ: تعريب الحالة **مصدرُه واحد**. كانت ٦ نسخٍ محلّية تُسقط `SUPERSEDED`
+   * (أُضيفت للـenum في هجرة 0168) فتتسرّب رمزاً إنجليزياً خاماً إلى الشاشات والتصدير والطباعة.
+   * إعادةُ تعريف القاموس داخل شاشةٍ تُعيد الانجراف حتماً ⇒ تُمنَع نصّياً هنا.
+   */
+  it("لا شاشة تُعيد تعريف قاموس حالة الفاتورة محلّياً", () => {
+    for (const page of ["Invoices.tsx", "InvoiceDetail.tsx", "SalesReport.tsx", "Returns.tsx", "CustomerStatement.tsx"]) {
+      const src = readPage(page);
+      // «PAID: "…"» داخل الشاشة = قاموس تعريبٍ محلّيّ. خرائط الأصناف اللونية تُستثنى
+      // (قيمتها صنف tailwind/توكن: badge-… أو bg-…) لأن نطاقها العرض لا التعريب.
+      const localised = src.match(/\bPAID:\s*"(?!badge-|bg-)[^"]+"/g) ?? [];
+      expect(localised, `${page} يحمل قاموس تعريبٍ محلّياً`).toEqual([]);
     }
   });
 });

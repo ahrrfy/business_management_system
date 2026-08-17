@@ -12,6 +12,23 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import { VOIDED_INVOICE_STATUSES } from "@shared/invoiceStatus";
+
+/**
+ * قائمة الحالات المُبطَلة كجملة SQL — مشتقّة من الثابت المشترك لا مكتوبةً يدوياً، كي تسري أيّ
+ * حالةٍ تُضاف مستقبلاً على التقريرين معاً تلقائياً.
+ *
+ * **العلّة التي أغلقها هذا (١٧/٨):** كان الشرط `NOT IN ('CANCELLED')` وحدها، و`SUPERSEDED` تمرّ.
+ * و`sale/correct.ts` يترك الأصل المُستبدَل بـ`total` كاملاً و`returnedTotal` **مُصفَّراً صراحةً**
+ * ⇒ `revenue = SUM(total − returnedTotal)` يحتسب الأصل الميت **والبديلة** معاً، وتكلفته صفرٌ
+ * لأنّ العكس أعاد كل الكميات للرفّ ⇒ **كلّ تصحيح فاتورة كان يضاعف المبيعات ويضيف ربحاً وهمياً
+ * بقيمتها كاملة** في «المبيعات حسب البُعد» للعميل والفرع والكاشير، ويُظهرها ذمّةً وهمية.
+ * (المسار الصحيح كان قائماً في `saleRouter.ts` بتعليقٍ يشرح المضاعفة — هذا الملف وحده تخلّف.)
+ */
+const VOIDED_STATUS_SQL = sql`(${sql.join(
+  VOIDED_INVOICE_STATUSES.map((s) => sql`${s}`),
+  sql`, `,
+)})`;
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -76,12 +93,13 @@ export async function getSalesRegister(opts: {
         )
       )`
     : sql``;
-  // الفلتر المشترك: نطاق التاريخ + استبعاد الملغاة + الفرع (اختياري) + البحث النصّي (اختياري).
+  // الفلتر المشترك: نطاق التاريخ + استبعاد المُبطَلة (ملغاة/مستبدلة) + الفرع + البحث (اختياريان).
+  // المُرتجَعة تبقى عمداً: بيعٌ وقع ثمّ أُرجِع، صافيه صفرٌ عبر returnedTotal ويظهر في عمود «المرتجعات».
   // S2 (٢٩/٦/٢٦): نطاق قابل للفهرسة [from، nextDay(to)) بدل DATE(i.invoiceDate) (غير قابل للفهرسة كان
   // يفرض مسح كل الفواتير). يحتاج فهرساً مُغطّياً بترتيب (التاريخ ثم الحالة) — هجرة 0032. نفس نتيجة الحدّين الشاملين.
   const where = sql`
     i.invoiceDate >= ${`${opts.from} 00:00:00`} AND i.invoiceDate < ${`${nextDayStr(opts.to)} 00:00:00`}
-    AND i.invoiceStatus NOT IN ('CANCELLED')
+    AND i.invoiceStatus NOT IN ${VOIDED_STATUS_SQL}
     ${branchCond}
     ${qCond}
   `;
@@ -250,7 +268,7 @@ export async function getSalesByDimension(opts: {
   // يفرض مسح كل الفواتير). يحتاج فهرساً مُغطّياً بترتيب (التاريخ ثم الحالة) — هجرة 0032. نفس نتيجة الحدّين الشاملين.
   const where = sql`
     i.invoiceDate >= ${`${opts.from} 00:00:00`} AND i.invoiceDate < ${`${nextDayStr(opts.to)} 00:00:00`}
-    AND i.invoiceStatus NOT IN ('CANCELLED')
+    AND i.invoiceStatus NOT IN ${VOIDED_STATUS_SQL}
     ${branchCond}
   `;
 

@@ -1,7 +1,7 @@
 // ترحيل (D8): خصم الأجرة وتوريد الصافي. gross-up: PAYMENT_IN=COD كامل + DELIVERY_FEE=أجرة ⇒ صافي الدرج=المورَّد.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
@@ -502,6 +502,7 @@ export async function recordDeliveryRemittance(
                 String(inv.returnedTotal ?? "0"),
               ),
               paymentDate: new Date(),
+              paymentMethod: sql`COALESCE(${invoices.paymentMethod}, 'CASH')`,
             })
             .where(eq(invoices.id, w.invoiceId));
           // ش٠ (٥/٨، V14): فاتورةٌ آجلة **بعميلٍ مسجَّل** أُسندت للتوصيل (dispatchInvoice يُبقي

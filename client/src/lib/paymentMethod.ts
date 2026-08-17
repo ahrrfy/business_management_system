@@ -3,12 +3,16 @@
  * تُستخدم في POS (أزرار الدفع)، Invoices (عمود «طريقة الدفع»)، InvoiceDetail (سجل الدفعات)،
  * وحوار إغلاق الوردية (تفصيل الطرق). مصدر واحد ⇒ لا انحراف تسمية بين الشاشات.
  *
- * القيم الخمس تطابق `receipts.paymentMethod` (mysqlEnum صارم في drizzle/schema.ts) —
+ * القيم تطابق `receipts.paymentMethod` (mysqlEnum صارم في drizzle/schema.ts) —
  * أي قيمة جديدة يجب أن تُضاف للـenum الخادميّ **أولاً** لضمان الحفظ الصحيح.
  * CHECK محذوف عمداً من واجهات البيع بقرار المالك «لا تعامل بالصكوك».
  */
+import {
+  INBOUND_ENABLED_PAYMENT_METHODS,
+  type InboundEnabledPaymentMethod,
+} from "@shared/inboundPaymentPolicy";
 
-export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
+export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM" | "EXCHANGE";
 
 export const METHOD_LABEL: Record<PaymentMethod, string> = {
   CASH: "نقدي",
@@ -18,7 +22,31 @@ export const METHOD_LABEL: Record<PaymentMethod, string> = {
   WALLET: "محفظة",
   // ش٥ — رصيد اتصال زين (أكواد كروت شحن): «زين حصراً» بنيوياً — لا مزوّد آخر يُمثَّل.
   TELECOM: "رصيد زين",
+  // EXCHANGE — سند صرفٍ عبر الصيرفة (تسديد مورّد؛ يكتبه `exchange/settleSupplier.ts`)؛ لا يمسّ
+  // الخزينة ولا الدرج. كان ناقصاً هنا ⇒ `paymentMethodLabel` تُرجع الرمز الإنجليزيّ خاماً على
+  // شاشة الخزينة/السندات. القيمة موجودة في enum العمود منذ البداية.
+  EXCHANGE: "صيرفة",
 };
+
+/**
+ * **طريقة فاتورةٍ ≠ طريقة إيصال.** الاتحاد `PaymentMethod` أعلاه يخدم **التعريب/العرض** ويغطّي
+ * كل قيم `receipts.paymentMethod`؛ أمّا `invoices.paymentMethod` فأضيق: `EXCHANGE` لا تُكتب
+ * عليه قطّ — كاتبها الوحيد `exchange/settleSupplier.ts` على إيصال تسديد المورّد عبر الصيرفة.
+ *
+ * ⇒ فلاتر شاشات الفواتير/التقارير تشتقّ من هذا الثابت الأضيق، لا من `Object.keys(METHOD_LABEL)`:
+ * زودا `sales.list` و`reports.salesReport` يرفضان `EXCHANGE` عمداً، فإظهارها خياراً = خيارٌ
+ * بصفر مسار نجاح (نفس علّة «صك» في شاشتَي الأصول والمصروفات).
+ */
+export type InvoiceFilterMethod = Exclude<PaymentMethod, "EXCHANGE">;
+
+export const INVOICE_FILTER_METHODS: readonly InvoiceFilterMethod[] = [
+  "CASH",
+  "CARD",
+  "CHECK",
+  "TRANSFER",
+  "WALLET",
+  "TELECOM",
+] as const;
 
 /**
  * أصناف tailwind لشارة كل طريقة (خلفية + نص). تُطبَّق بلا `border` كي تعمل على
@@ -31,6 +59,7 @@ export const METHOD_CLS: Record<PaymentMethod, string> = {
   TRANSFER: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
   WALLET:   "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-200",
   TELECOM:  "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-200",
+  EXCHANGE: "bg-slate-100 text-slate-800 dark:bg-slate-900 dark:text-slate-200",
 };
 
 /**
@@ -39,13 +68,26 @@ export const METHOD_CLS: Record<PaymentMethod, string> = {
  * تلقائياً لأن الأزرار تُبنى من هذه القائمة عبر map().
  */
 /** ش٥: النوع مضيَّق على القيم الفعلية — CHECK محذوف بقرار المالك، وTELECOM (رصيد زين) مقصور
- *  على محطة الاستقبال خلف ضوابطها (لا يظهر في POS التجزئة/التسديد العام/تصحيح الطريقة). */
-export const POS_METHODS: readonly { v: Exclude<PaymentMethod, "CHECK" | "TELECOM">; label: string }[] = [
+ *  على محطة الاستقبال خلف ضوابطها (لا يظهر في POS التجزئة/التسديد العام/تصحيح الطريقة).
+ *  وEXCHANGE طريقةُ إيصالِ صيرفةٍ خادميّة بحتة — لا يختارها كاشيرٌ من شاشة. */
+export type PosPaymentMethod = Exclude<PaymentMethod, "CHECK" | "TELECOM" | "EXCHANGE">;
+
+export const POS_METHODS: readonly { v: PosPaymentMethod; label: string }[] = [
   { v: "CASH",     label: "نقدي" },
   { v: "CARD",     label: "بطاقة" },
   { v: "TRANSFER", label: "تحويل" },
   { v: "WALLET",   label: "محفظة" },
 ] as const;
+
+/**
+ * خيارات **القبض/الاسترداد** المسموح بها فعلياً — مشتقّة من سياسة القبض المشتركة لا مُعدَّدة يدوياً.
+ *
+ * كل مسار قبضٍ يمرّ بـ`assertInboundPaymentMethodEnabled` ([voucher/create.ts:433]) ⇒ اختيارُ
+ * «صك» من شاشةٍ ينتهي حتماً بـPRECONDITION_FAILED («لا تعامل بالصكوك» — قرار المالك ٢٢/٧).
+ * الاشتقاق يمنع تكرار العلّة: أيّ تغيير في السياسة يسري على الشاشات تلقائياً.
+ */
+export const INBOUND_METHOD_OPTIONS: readonly { v: InboundEnabledPaymentMethod; label: string }[] =
+  INBOUND_ENABLED_PAYMENT_METHODS.map((v) => ({ v, label: METHOD_LABEL[v] }));
 
 /** يُرجع نصّاً لعرضه عندما تكون الطريقة null (فاتورة قديمة قبل بدء تسجيل الطريقة). */
 export function paymentMethodLabel(m: string | null | undefined): string {

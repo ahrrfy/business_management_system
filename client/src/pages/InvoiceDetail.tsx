@@ -66,19 +66,12 @@ import {
   paymentMethodLabel,
 } from "@/lib/paymentMethod";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
 
 const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v));
 
-const STATUS: Record<string, string> = {
-  // «غير مدفوعة» لا «معلّقة» — انظر التعليق في Invoices.tsx (تصحيح مسرد ١٧/٨).
-  PENDING: "غير مدفوعة",
-  PARTIALLY_PAID: "مدفوعة جزئياً",
-  PAID: "مدفوعة",
-  CONFIRMED: "مؤكّدة",
-  CANCELLED: "ملغاة",
-  RETURNED: "مرتجعة",
-  SUPERSEDED: "مستبدلة بفاتورة مصححة",
-};
+// التعريب من `@shared/invoiceStatus` وحده (مصدر الحقيقة) — كانت نسخةً محلّية سابعة تنجرف
+// عن الـenum عند كل قيمةٍ جديدة. خريطة الأصناف اللونية تبقى محلّية: نطاقها العرض لا التعريب.
 const STATUS_CLS: Record<string, string> = {
   PAID: "bg-emerald-100 text-emerald-700",
   PARTIALLY_PAID: "bg-amber-100 text-amber-700",
@@ -197,7 +190,7 @@ export default function InvoiceDetail() {
 
   const pay = trpc.sales.pay.useMutation({
     onSuccess: async (r) => {
-      setDone(`تم تسجيل الدفعة. الحالة: ${STATUS[r.status] ?? r.status}.`);
+      setDone(`تم تسجيل الدفعة. الحالة: ${invoiceStatusLabel(r.status)}.`);
       setError("");
       await Promise.all([
         utils.sales.get.invalidate({ invoiceId }),
@@ -537,7 +530,10 @@ export default function InvoiceDetail() {
               })),
               total: data.total,
               paidAmount: data.paidAmount,
+              returnedTotal: data.returnedTotal,
               remaining: remaining.toFixed(2),
+              // بلا الحالة كانت الفاتورة الملغاة/المرتجعة/المستبدلة تُرسِل «المتبقّي» كمطالبة.
+              status: data.status,
             })}
           />
           <CopyAsMenu
@@ -684,7 +680,7 @@ export default function InvoiceDetail() {
               <span
                 className={`text-xs rounded-full px-2.5 py-0.5 font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}
               >
-                {STATUS[data.status] ?? data.status}
+                {invoiceStatusLabel(data.status)}
               </span>
             </div>
           </CardTitle>
@@ -1357,7 +1353,7 @@ export default function InvoiceDetail() {
               </div>
               {data.status !== "PENDING" && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
-                  حالة الفاتورة حالياً: <strong>{STATUS[data.status] ?? data.status}</strong> — يُلغى ما تبقّى غير مُرتجَع.
+                  حالة الفاتورة حالياً: <strong>{invoiceStatusLabel(data.status)}</strong> — يُلغى ما تبقّى غير مُرتجَع.
                 </div>
               )}
             </DialogDescription>

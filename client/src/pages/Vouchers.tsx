@@ -34,6 +34,7 @@ import {
   type VoucherPrintData,
 } from "@/lib/printing/voucherPrint";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import {
@@ -75,15 +76,8 @@ const PARTY_LABEL: Record<string, string> = {
   SUPPLIER: "مورّد",
   OTHER: "أخرى",
 };
-const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي",
-  CARD: "بطاقة",
-  CHECK: "صكّ",
-  TRANSFER: "تحويل",
-  WALLET: "محفظة",
-  EXCHANGE: "صيرفة",
-  TELECOM: "رصيد زين",
-};
+// التسمية من `@/lib/paymentMethod` (مصدر واحد مع POS والفواتير وحوار الوردية) — كانت نسخةً
+// محلّية سابقة للمركزيّ بـ«صيرفة»، فبقيت EXCHANGE ناقصةً هناك وظهرت خاماً في شاشة الخزينة.
 function shortHash(h?: string | null): string {
   return h ? String(h).slice(0, 8).toUpperCase() : "—";
 }
@@ -449,7 +443,7 @@ export default function Vouchers() {
           {
             key: "paymentMethod",
             header: "الدفع",
-            map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod,
+            map: (r) => paymentMethodLabel(r.paymentMethod),
           },
           { key: "referenceNumber", header: "الرقم المرجعي" },
           { key: "checkNumber", header: "مرجع التحويل/الصكّ" },
@@ -547,7 +541,7 @@ export default function Vouchers() {
         branchName,
         amount: fmt(v.amount),
         paymentMethod: v.paymentMethod,
-        paymentMethodLabel: METHOD_LABEL[v.paymentMethod] ?? v.paymentMethod,
+        paymentMethodLabel: paymentMethodLabel(v.paymentMethod),
         referenceNumber: v.referenceNumber,
         checkNumber: v.checkNumber,
         cardLastFour: v.cardLastFour,
@@ -1013,7 +1007,7 @@ export default function Vouchers() {
                         {fmt(r.amount)}
                       </td>
                       <td className="p-2 text-center text-xs">
-                        {METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}
+                        {paymentMethodLabel(r.paymentMethod)}
                       </td>
                       <td className="p-2 text-center">
                         <span

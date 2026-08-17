@@ -18,6 +18,8 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
+import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
+import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
 import { PlayCircle, Trash2, Upload, FileText, ExternalLink } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
@@ -79,7 +81,7 @@ export default function AssetDetail() {
   const [correctionReason, setCorrectionReason] = useState("");
   const [correctionEvidence, setCorrectionEvidence] = useState("");
   const [correctionAttachment, setCorrectionAttachment] = useState<ImageItem[]>([]);
-  const [correctionRefundMethod, setCorrectionRefundMethod] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("CASH");
+  const [correctionRefundMethod, setCorrectionRefundMethod] = useState<InboundEnabledPaymentMethod>("CASH");
   const [correctionRefundBucket, setCorrectionRefundBucket] = useState<"DRAWER" | "TREASURY">("TREASURY");
   const [correctionRefundReference, setCorrectionRefundReference] = useState("");
   const [correctionRefundCardTail, setCorrectionRefundCardTail] = useState("");
@@ -456,12 +458,12 @@ export default function AssetDetail() {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <Label htmlFor="asset-refund-method">طريقة الاسترداد *</Label>
+                    {/* الخيارات مشتقّة من سياسة القبض المشتركة — «صك» كان معروضاً بينما
+                        `assertInboundPaymentMethodEnabled` يرفضه في سند الاسترداد ⇒ صفر مسار نجاح. */}
                     <select id="asset-refund-method" className={selectCls} value={correctionRefundMethod} onChange={(event) => setCorrectionRefundMethod(event.target.value as typeof correctionRefundMethod)}>
-                      <option value="CASH">نقد</option>
-                      <option value="CARD">بطاقة</option>
-                      <option value="CHECK">صك</option>
-                      <option value="TRANSFER">تحويل</option>
-                      <option value="WALLET">محفظة</option>
+                      {INBOUND_METHOD_OPTIONS.map((m) => (
+                        <option key={m.v} value={m.v}>{m.label}</option>
+                      ))}
                     </select>
                   </div>
                   {correctionRefundMethod === "CASH" ? (
