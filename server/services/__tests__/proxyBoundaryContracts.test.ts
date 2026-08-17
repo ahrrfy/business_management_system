@@ -7,6 +7,9 @@ describe("reverse proxy security boundary", () => {
     const index = await readFile(path.resolve(process.cwd(), "server/index.ts"), "utf8");
     const backups = await readFile(path.resolve(process.cwd(), "server/backupRoutes.ts"), "utf8");
     expect(index).toContain('app.set("case sensitive routing", true)');
+    expect(index.indexOf('app.set("case sensitive routing", true)')).toBeLessThan(
+      index.indexOf("app.use(publicStorefrontHostBoundary)"),
+    );
     expect(backups).toContain("Router({ caseSensitive: true, strict: true })");
   });
 
@@ -21,7 +24,9 @@ describe("reverse proxy security boundary", () => {
 
   it("يرفض aliases ذات المقاطع الإضافية قبل مكيّف tRPC", async () => {
     const index = await readFile(path.resolve(process.cwd(), "server/index.ts"), "utf8");
-    expect(index).toContain('!/^\\/[^/]+$/.test(req.path)');
-    expect(index.indexOf('!/^\\/[^/]+$/.test(req.path)')).toBeLessThan(index.indexOf("createExpressMiddleware({"));
+    expect(index).toContain('!parseCanonicalTrpcProcedures(req.path || "")');
+    expect(index.indexOf('!parseCanonicalTrpcProcedures(req.path || "")')).toBeLessThan(
+      index.indexOf("createExpressMiddleware({"),
+    );
   });
 });

@@ -28,7 +28,12 @@ export function isPublicStorefrontProcedure(procedure: string): boolean {
 
 /** يحمي نطاق الناس من كل API داخلي؛ الدفعة لا تمر إلا إن كانت كل إجراءاتها مسموحة صراحةً. */
 export function publicStorefrontHostBoundary(req: Request, res: Response, next: NextFunction): void {
-  if (!isPublicStorefrontHost(req.hostname) || !req.path.startsWith("/api/")) return next();
+  if (!isPublicStorefrontHost(req.hostname) || !/^\/api\//i.test(req.path)) return next();
+  // ارفض case variants صراحةً أيضاً؛ هذا دفاع مستقل إذا تغيّر ترتيب تهيئة Express لاحقاً.
+  if (!req.path.startsWith("/api/")) {
+    res.status(404).end();
+    return;
+  }
   const isPublicImage = (req.method === "GET" || req.method === "HEAD") && req.path.startsWith("/api/img/");
   const trpcPath = req.path.match(/^\/api\/trpc\/([^/]+)$/)?.[1];
   const isPublicTrpc = !!trpcPath && trpcPath.split(",").every(isPublicStorefrontProcedure);

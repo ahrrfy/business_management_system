@@ -122,12 +122,12 @@ async function startServer() {
   assertMobileProductionReadiness();
 
   const app = express();
+  // يجب ضبطه قبل أول app.use: Express ينشئ الراوتر الداخلي عند أول middleware
+  // ويجمّد قيمة caseSensitive حينها؛ الضبط اللاحق لا يغيّر الراوتر القائم.
+  app.set("case sensitive routing", true);
   // alarabiya.online سطح العملاء فقط؛ لا يكفي تحويل React لأن API يظل قابلاً للوصول مباشرةً.
   // يُركَّب قبل محللات الجسم وtRPC كي يُرفض API الداخلي مبكراً وبلا عمل قاعدة بيانات.
   app.use(publicStorefrontHostBoundary);
-  // توحيد حساسية المسار مع Nginx: Express غير حساس للحالة افتراضياً، ما يسمح لمسار
-  // /API/TRPC بتجاوز locations الدقيقة/حدودها ثم الوصول للراوتر نفسه.
-  app.set("case sensitive routing", true);
   const server = createServer(app);
   // trust proxy مشروط: لا نثق برؤوس X-Forwarded-* إلا عند صحّة الإطار:
   //   - HOST=127.0.0.1 ⇒ خلف nginx/reverse-proxy موثوق (وضع الإنتاج على VPS).

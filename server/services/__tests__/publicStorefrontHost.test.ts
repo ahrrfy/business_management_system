@@ -56,4 +56,20 @@ describe("public storefront host boundary", () => {
     expect(end).toHaveBeenCalledOnce();
     expect(next).not.toHaveBeenCalled();
   });
+
+  it("يرفض API مختلط الحالة على المضيف العام قبل وصوله إلى راوتر داخلي", () => {
+    for (const path of ["/API/TRPC/inventory.list", "/Api/Trpc/storefront.catalog"]) {
+      const status = vi.fn().mockReturnThis();
+      const end = vi.fn();
+      const next = vi.fn();
+      publicStorefrontHostBoundary(
+        { hostname: "alarabiya.online", method: "GET", path } as any,
+        { status, end } as any,
+        next,
+      );
+      expect(status).toHaveBeenCalledWith(404);
+      expect(end).toHaveBeenCalledOnce();
+      expect(next).not.toHaveBeenCalled();
+    }
+  });
 });
