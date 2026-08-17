@@ -234,11 +234,21 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   let restWorked = new Decimal(0);
   const days: AttendancePayResult["days"] = [];
 
+  /*
+   * سعر ساعة اليوم: الصريح في جدول الموظف أوّلاً (هو الأصل بقرار المالك ٣١/٧)، وإلا المُشتقّ
+   * من الراتب. استُخرج دالّةً لأنه كان مكرّراً في مسار يوم الدوام وحده — بينما مسارا **عمل
+   * يوم الراحة** و**تعويض الشهر القصير** يستعملان المُشتقّ خامّاً، فيُدفع الموظف بسعرٍ لم
+   * يُتّفق عليه رغم أنه ضبط سعراً صريحاً لذلك اليوم (تدقيق ١٧/٨).
+   */
+  const rateOf = (day: DaySchedule): Decimal =>
+    day.rate != null && Number.isFinite(day.rate) && Number(day.rate) > 0
+      ? new Decimal(Number(day.rate))
+      : derivedRate;
+
   for (const d of workDays) {
     const day = dayOf(input.schedule, d);
     const daily = new Decimal(day.hours);
-    // سعر ساعة اليوم: الصريح أوّلاً (هو الأصل)، وإلا المُشتقّ من الراتب.
-    const rate = day.rate != null && Number.isFinite(day.rate) && Number(day.rate) > 0 ? new Decimal(Number(day.rate)) : derivedRate;
+    const rate = rateOf(day);
 
     const push = (
       state: AttendancePayResult["days"][number]["state"],
@@ -263,17 +273,23 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
       });
     };
 
+    /*
+     * الإجازة بلا راتب **تسبق** فحص ما-قبل-السريان (تدقيق ١٧/٨): تاريخ السريان يقول «لا
+     * بيانات حضور هنا فلا تُحاسِب على الغياب»، لا «كلُّ يومٍ مدفوعٌ مهما كان مستنده».
+     * والإجازة بلا راتب **مستندٌ معتمد** لا فراغُ بيانات — فكان ترتيبُها بعده يدفع أجرَ
+     * أيامٍ أقرّ الموظف نفسه أنها بلا راتب.
+     */
+    if (input.unpaidLeaveDates.has(d)) {
+      unpaidLeaveDays += 1;
+      push("unpaidLeave", new Decimal(0), new Decimal(0), new Decimal(0), new Decimal(0));
+      continue; // لا أجر — وهو المقصود من «بلا راتب»
+    }
     // ما قبل تاريخ السريان: لا بيانات حضور موثوقة ⇒ يُعامَل يوم دوامٍ كاملاً لا غياباً.
     if (input.payFrom == null || d < input.payFrom) {
       payable = payable.plus(daily);
       basePay = basePay.plus(rate.times(daily));
       push("beforeStart", daily, daily, new Decimal(0), rate.times(daily));
       continue;
-    }
-    if (input.unpaidLeaveDates.has(d)) {
-      unpaidLeaveDays += 1;
-      push("unpaidLeave", new Decimal(0), new Decimal(0), new Decimal(0), new Decimal(0));
-      continue; // لا أجر — وهو المقصود من «بلا راتب»
     }
     if (input.paidLeaveDates.has(d)) {
       payable = payable.plus(daily);
@@ -331,9 +347,18 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     input.monthEnd != null &&
     input.employmentStart <= input.monthStart &&
     input.employmentEnd >= input.monthEnd;
-  const shortMonth = wholeMonth ? Decimal.max(0, stdHours.minus(scheduled)) : new Decimal(0);
+  /*
+   * ⚠️ التعويض مشروطٌ بمستحقٍّ فعليّ (تدقيق ١٧/٨): كان يُمنح لمجرّد أن الشهر قصير، فيصير
+   * `payableHours` موجباً لموظفٍ **بلا بصمةٍ واحدة** في شباط ⇒ يُعمي حارسَ «صفر بصمات شهراً
+   * كاملاً» في المسيّر (شرطُه payableHours === 0) فيُصرف له أجرُ أيامٍ لم يحضرها.
+   * والشرط `payable > 0` لا «حضورٌ فعليّ» عمداً: شهرٌ كلُّه إجازةٌ مدفوعة أو ما قبل السريان
+   * يستحقّ التعويض فعلاً — المقصود استبعادُ الصفر المطلق وحده.
+   */
+  const shortMonth =
+    wholeMonth && payable.gt(0) ? Decimal.max(0, stdHours.minus(scheduled)) : new Decimal(0);
   const paidHours = payable.plus(shortMonth);
-  basePay = basePay.plus(derivedRate.times(shortMonth));
+  // التعويض بسعرٍ صريحٍ إن وُجد: يُقاس بيوم الشهر الأوّل بوصفه ممثّلاً لجدوله.
+  basePay = basePay.plus(rateOf(dayOf(input.schedule, input.monthStart ?? input.employmentStart)).times(shortMonth));
 
   /*
    * العمل في يوم الراحة (قرار المالك ٣١/٧: «سعر عادي»). كان اليوم صفرُ الساعات يُستبعَد
@@ -347,8 +372,10 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     const att = input.attendedHoursByDate.get(d);
     if (att == null || att.lte(0)) continue;
     const counted = Decimal.min(att, new Decimal(input.maxDailyHours ?? 12));
+    // السعر الصريح لهذا اليوم إن ضبطه المالك — لا المُشتقّ خامّاً (تدقيق ١٧/٨).
+    const restRate = rateOf(dayOf(input.schedule, d));
     restWorked = restWorked.plus(counted);
-    basePay = basePay.plus(derivedRate.times(counted));
+    basePay = basePay.plus(restRate.times(counted));
     days.push({
       date: d,
       dayName: dayNameOf(d),
@@ -356,11 +383,11 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
       attendedHours: att.toFixed(2),
       countedHours: counted.toFixed(2),
       overtimeHours: "0.00",
-      rate: round2(derivedRate).toFixed(2),
-      amount: round2(derivedRate.times(counted)).toFixed(2),
+      rate: round2(restRate).toFixed(2),
+      amount: round2(restRate.times(counted)).toFixed(2),
       // عمل يوم الراحة يُدفع بالسعر العاديّ كاملاً في الأساس ⇒ لا شقّ إضافيّ له.
       overtimeAmount: "0.00",
-      totalAmount: round2(derivedRate.times(counted)).toFixed(2),
+      totalAmount: round2(restRate.times(counted)).toFixed(2),
       state: "restWorked",
     });
   }
@@ -372,7 +399,13 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     standardHours: stdHours.toFixed(2),
     payableHours: paidHours.toFixed(2),
     shortMonthHours: shortMonth.toFixed(2),
-    unpaidHours: Decimal.max(scheduled, stdHours).minus(paidHours).toFixed(2),
+    /*
+     * الساعات غير المستحقّة تُقاس على **التزام هذا الموظف** لا على الشهر كلِّه (تدقيق ١٧/٨):
+     * المقام كان `max(scheduled, stdHours)` — أي ساعات الشهر المعياريّ — فالمعيَّن في منتصف
+     * تموز يُحمَّل ١٠٤ ساعةٍ «غير مستحقّة» عن أيامٍ لم يكن فيها موظفاً أصلاً، وكذلك المفصول.
+     * و`max(0, …)` يمنع سالباً بلا معنى (شهرٌ فيه عملُ يوم راحةٍ يتجاوز المقرَّر).
+     */
+    unpaidHours: Decimal.max(0, scheduled.minus(payable)).toFixed(2),
     hourlyRate: round2(derivedRate).toFixed(2),
     basePay: round2(basePay).toFixed(2),
     overtimeHours: otHours.toFixed(2),
