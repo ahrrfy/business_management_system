@@ -1,6 +1,22 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
-import {
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { afterAll, describe, expect, it } from "vitest";
+
+// Vite SSR على Windows لا يزيل shebang إذا حوّل Git الملف CLI إلى CRLF، فيفشل parse قبل
+// collection. نختبر نفس المصدر بعد إزالة غلاف التشغيل فقط؛ Node CLI نفسه يبقى بلا تعديل.
+const canaryCliUrl = new globalThis.URL("../../../../scripts/r2-image-store-canary.mjs", import.meta.url);
+const canaryModuleDir = await mkdtemp(join(tmpdir(), "r2-canary-vitest-"));
+const canaryModulePath = join(canaryModuleDir, "r2-image-store-canary.mjs");
+const canarySource = (await readFile(fileURLToPath(canaryCliUrl), "utf8"))
+  .replace(/^#![^\r\n]*(?:\r?\n|$)/, "")
+  .replace(/\r\n/g, "\n");
+await writeFile(canaryModulePath, canarySource, "utf8");
+afterAll(() => rm(canaryModuleDir, { recursive: true, force: true }));
+
+const {
   R2CanaryError,
   buildCanaryKey,
   buildCloudflareBucketDomainUrls,
@@ -8,7 +24,10 @@ import {
   runR2ImageStoreCanary,
   safeCanaryFailureCode,
   verifyR2BucketPrivacyConfiguration,
-} from "../../../../scripts/r2-image-store-canary.mjs";
+} = await import(
+  /* @vite-ignore -- الملف المؤقت خارج Vite graph عمداً. */
+  pathToFileURL(canaryModulePath).href
+);
 
 const BYTES = Buffer.from("private-canary");
 const KEY = "canary/r2-image-store/1-aaaaaaaaaaaaaaaaaaaaaaaa.png";
