@@ -30,12 +30,15 @@ import {
   productVariants,
   receipts,
 } from "../../../drizzle/schema";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import { assertCashOutAvailable, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
-import { adjustCustomerBalance } from "../ledgerService";
-import { money, round2 } from "../money";
+import { adjustCustomerBalance, postEntry } from "../ledgerService";
+import { money, round2, toDbMoney } from "../money";
 import { returnSaleInTx } from "../returnService";
 import { resolveBranchCashShiftTx } from "../shiftService";
 import { withTx, type Actor } from "../tx";
+import { extractInsertId } from "../../lib/insertId";
 import { createSaleInTx } from "./create";
 import type { PriceTier } from "../pricing";
 import type { SaleLineInput } from "./types";
@@ -105,6 +108,38 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
       }
     }
 
+    // ── ٠.٥) قفل درج الاسترداد **قبل** قفل الفاتورة ──
+    //    ترتيب القفل الحاكم في كل مسارات المال: المصدر (الدرج) ← الطرف ← المستند. `returnSaleInTx`
+    //    يقفل الدرج أولاً؛ فلو أخّرناه هنا إلى ما بعد قفل الفاتورة لتعاكس المسارانِ على نفس الدرج
+    //    والفاتورة ⇒ deadlock. ولمّا كان الفرق الزائد غير معلومٍ إلا بعد إعادة الترحيل (خطوة ⑦)،
+    //    نقفل مسبقاً بحسب **المدخلات وحدها** (حتميّ): إمّا طلبٌ صريح باسترداد نقديّ، أو فاتورةٌ
+    //    مقبوضةٌ بلا عميلٍ مسجَّل (الزبون العابر لا يحمل رصيداً دائناً ⇒ النقد مخرجه الوحيد).
+    const invPreview = (
+      await tx.select({ branchId: invoices.branchId, paidAmount: invoices.paidAmount, customerId: invoices.customerId })
+        .from(invoices).where(eq(invoices.id, input.originalInvoiceId)).limit(1)
+    )[0];
+    if (!invPreview) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    const previewPaid = round2(money(invPreview.paidAmount ?? "0"));
+    const targetCustomerPreview = input.customerId === undefined
+      ? (invPreview.customerId != null ? Number(invPreview.customerId) : null)
+      : (input.customerId != null ? Number(input.customerId) : null);
+    const mayNeedCashRefund =
+      previewPaid.gt(0) &&
+      (input.overpayHandling === "CASH_REFUND" || targetCustomerPreview == null);
+    let prelockedOverpayShift: { shiftId: number } | null = null;
+    if (mayNeedCashRefund) {
+      prelockedOverpayShift = await resolveBranchCashShiftTx(
+        tx,
+        Number(invPreview.branchId),
+        input.overpayRefundShiftId ?? null,
+      );
+      await lockCashSourceForUpdate(tx, {
+        branchId: Number(invPreview.branchId),
+        cashBucket: "DRAWER",
+        shiftId: prelockedOverpayShift.shiftId,
+      });
+    }
+
     // ── ١) تحميل الأصل تحت قفل الصفّ + الحرّاس ──
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.originalInvoiceId)).for("update").limit(1))[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
@@ -134,16 +169,18 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     }
 
     const originalPaid = round2(money(inv.paidAmount));
-    // المرحلة الآمنة الحالية: إعادة إصدار مستند غير محصّل فقط. نقل سند قبض مكتمل إلى فاتورة
-    // بديلة يعيد كتابة الحقيقة التاريخية للدرج/وسيلة الدفع؛ يبقى محظوراً إلى أن تُبنى
-    // paymentApplications + reclassification append-only. الفاتورة المدفوعة تُعالج بمرتجع موثق
-    // ثم بيع جديد، لا عبر نقل الإيصال.
-    if (originalPaid.gt(0)) {
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        message: "الفاتورة عليها مقبوضات — استخدم مرتجعاً موثقاً ثم فاتورة بيع جديدة؛ لا يجوز نقل إيصال القبض التاريخي إلى فاتورة بديلة",
-      });
-    }
+    // ⭐ قرار المالك (١٧/٨/٢٦): **المقبوض يُنتقل للفاتورة المصحّحة كما هو**.
+    //
+    // كان هنا حظرٌ شاملٌ لأي فاتورةٍ عليها مقبوضات، بحجّة أنّ «نقل سند قبضٍ مكتمل يعيد كتابة
+    // الحقيقة التاريخية للدرج/وسيلة الدفع». وهو حظرٌ أوسع ممّا يبرّره التنفيذ فعلاً: خطوة ④ لا
+    // تمسّ الإيصال إلّا في مؤشّره (`invoiceId ← NULL` ثمّ ختمه بالجديدة عبر `preCollected.receiptIds`،
+    // و`createSaleInTx` يكتب `.set({ invoiceId })` **وحده** تحت شرط `invoiceId IS NULL`). فالدرج
+    // والطريقة والتاريخ والمبلغ تبقى كما هي حرفياً — وهو عين ما قرّره المالك.
+    // والخطر الحقيقيّ الذي خشيه الكاتب (تمويلُ `paidAmount` من عربونٍ غير مختومٍ بهذه الفاتورة)
+    // يحرسه **حارس النقل الماليّ** أدناه (`detachedSum === originalPaid`) رفضاً نظيفاً قبل أي كتابة.
+    //
+    // أثرُ الحظر عملياً: **كل** فاتورة استقبالٍ عليها عربون ⇒ لا تُعدَّل أبداً (بلاغ المالك:
+    // «لا يمكن التحكم فيها والتعديل عليها»). والفرق الزائد الناتج يُعالَج في خطوة ⑨ أدناه.
     const originalCustomerId = inv.customerId != null ? Number(inv.customerId) : null;
 
     // ── حارس النقل الماليّ (ذكاءٌ حاكمٌ يمنع الخطأ بالبناء) ──
@@ -169,7 +206,13 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     }
     // منع تغيير العميل عند وجود مدفوعات: المقبوض يخصّ العميل الأصليّ؛ نقله لعميلٍ آخر يُشوّه الذمم
     //    (يُعيد للأصل ويُرصّد الجديد بلا إيصالٍ للأصل). لتغيير العميل: إلغاءٌ كامل ثمّ إعادة بيع.
-    const targetCustomerId = input.customerId != null ? Number(input.customerId) : null;
+    // ⚠️ `undefined` = «الحقل لم يُرسَل ⇒ بلا تغيير»، بخلاف `null` = «أزِل العميل صراحةً».
+    //    كان الاشتقاق يخلط بينهما (`!= null` وحده) — وهو كودٌ ميّتٌ ما دام أيّ مقبوضٍ محظوراً،
+    //    لكنّه يصير حيّاً بمجرّد رفع الحظر: تصحيحُ فاتورةٍ مقبوضةٍ بلا مسّ العميل كان سيُرفَض
+    //    زوراً بـ«لا يُغيَّر العميل». نُطابق الاشتقاق حرفياً لما تمرّره خطوة ⑦ لإعادة الترحيل.
+    const targetCustomerId = input.customerId === undefined
+      ? originalCustomerId
+      : (input.customerId != null ? Number(input.customerId) : null);
     if (originalPaid.gt(0) && Number(targetCustomerId ?? 0) !== Number(originalCustomerId ?? 0)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -263,19 +306,82 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     await tx.update(invoices).set({ correctionOfInvoiceId: input.originalInvoiceId }).where(eq(invoices.id, newId));
     await tx.update(invoices).set({ correctedByInvoiceId: newId }).where(eq(invoices.id, input.originalInvoiceId));
 
-    // ── ٩) الفرق الزائد (overpay): المقبوض سلفاً > مستحقّ المصحّح ⇒ يُردّ/يُرصَّد ──
+    // ── ٩) الفرق الزائد (overpay): المقبوض سلفاً > مستحقّ المصحّح ⇒ يُردّ نقداً أو يُرصَّد ──
+    //    `createSaleInTx` يقصُر `paidNow` على الإجمالي الجديد (allowPreCollectedOverpay) فيبقى
+    //    الفرقُ **مالاً دفعه الزبون بلا مقابل** — ولا يجوز أن «يُبتلَع» بصمت. المبدأ المالي الحاكم:
+    //    «لا دينار يضيع بصمت… ومالٌ محتجَز يلزمه مسار خروجٍ ممكنٌ دائماً».
     const overpay = round2(Decimal.max(new Decimal(0), detachedSum.minus(newTotal)));
-    // المرحلة الحالية تمنع أي أصل عليه مقبوضات (`originalPaid > 0`) قبل العكس، وتثبت
-    // detachedSum===originalPaid؛ لذلك overpay موجب غير قابل للوصول بنيوياً. إبقاء كاتب CASH OUT
-    // خامد هنا يفتح باباً غير مرتب الأقفال إذا رُفعت السياسة لاحقاً. نفشل مغلقاً، وعلى شريحة
-    // paymentApplications المستقبلية أن تعيد بناء الاسترداد بترتيب source→customer→document.
+    let overpayHandled: "CREDIT" | "CASH_REFUND" | undefined = undefined;
     if (overpay.gt(0)) {
-      throw new TRPCError({
-        code: "INTERNAL_SERVER_ERROR",
-        message: "خرق ثابت التصحيح: نشأ فرق زائد رغم حظر نقل المقبوضات",
-      });
+      // الزبون العابر لا يحمل رصيداً دائناً ⇒ النقد مخرجه الوحيد. ومع عميلٍ مسجَّل الافتراضُ
+      // رصيدٌ دائن (لا نُخرج نقداً من الدرج بلا طلبٍ صريح).
+      const handling: "CREDIT" | "CASH_REFUND" =
+        input.overpayHandling ?? (targetCustomerId != null ? "CREDIT" : "CASH_REFUND");
+
+      if (handling === "CREDIT") {
+        if (targetCustomerId == null) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "لا يمكن ترصيد الفرق الزائد لزبونٍ عابر بلا حساب — اختر الاسترداد النقديّ أو اربط الفاتورة بعميل",
+          });
+        }
+        // رصيدٌ دائن: الرصيد سالبٌ = له عندنا. لا نقد يتحرّك، والأثر ظاهرٌ في كشف حسابه.
+        await adjustCustomerBalance(tx, targetCustomerId, overpay.neg());
+        overpayHandled = "CREDIT";
+      } else {
+        // استردادٌ نقديّ من الدرج المُقفَل سلفاً (خطوة ٠.٥) — الترتيب المصدر←المستند محفوظ.
+        if (!prelockedOverpayShift) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "الاسترداد النقديّ للفرق الزائد يتطلّب تحديده قبل الحفظ (لم يُقفل درجٌ لهذه العملية) — أعد المحاولة باختيار «استرداد نقديّ».",
+          });
+        }
+        // حدّ الدرج: لا يُسحَب أكثر ممّا فيه **الآن** (نمط cashDropService/returnService) — كي لا
+        // يُطلَب من الكاشير تسليم نقدٍ لا يملكه فيُكتشَف العجز عند الإغلاق فقط.
+        await assertCashOutAvailable(tx, {
+          branchId: Number(inv.branchId),
+          cashBucket: "DRAWER",
+          shiftId: prelockedOverpayShift.shiftId,
+          amount: overpay,
+          operation: "ردّ الفرق الزائد عند تصحيح الفاتورة",
+        });
+        const refundRes = await tx.insert(receipts).values({
+          invoiceId: newId,
+          branchId: Number(inv.branchId),
+          shiftId: prelockedOverpayShift.shiftId,
+          cashBucket: "DRAWER", // يخرج من الدرج ⇒ يظهر في Z-report وتسوية النقد
+          direction: "OUT",
+          amount: toDbMoney(overpay),
+          paymentMethod: "CASH",
+          status: "COMPLETED",
+          approvalStatus: "APPROVED",
+          description: `ردّ فرقٍ زائد بتصحيح الفاتورة ${inv.invoiceNumber} ← ${repost.invoiceNumber}`,
+          partyType: targetCustomerId ? "CUSTOMER" : "OTHER",
+          partyId: targetCustomerId,
+          createdBy: actor.userId,
+        });
+        const refundReceiptId = extractInsertId(refundRes);
+        const refundSource = { roleDebits: { AR: overpay }, roleCredits: { CASH: overpay } };
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: Number(inv.branchId),
+          invoiceId: newId,
+          receiptId: refundReceiptId,
+          customerId: targetCustomerId,
+          amount: overpay,
+          notes: `ردّ فرق تصحيح الفاتورة ${inv.invoiceNumber}`,
+          postingIntent: createPostingIntent(
+            "PAYMENT_OUT_CUSTOMER_REFUND",
+            "PAYMENT_OUT",
+            [debitLine("AR", overpay), creditLine("CASH", overpay)],
+            refundSource,
+          ),
+          postingSourceComponents: refundSource,
+        });
+        // لا `adjustCustomerBalance` هنا: المال خرج فعلاً فلا يبقى له رصيدٌ دائن (وإلّا استفاد مرّتين).
+        overpayHandled = "CASH_REFUND";
+      }
     }
-    const overpayHandled: "CREDIT" | "CASH_REFUND" | undefined = undefined;
 
     // ── ١٠) تسجيل مفتاح idempotency (refId = الفاتورة الجديدة) ──
     if (input.clientRequestId) {

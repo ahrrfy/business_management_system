@@ -25,6 +25,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { D, round2, toBase, fmt } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
@@ -109,6 +110,27 @@ export default function SalesInvoiceNew() {
   const originalPaid = useMemo(() => D(original.data?.paidAmount ?? "0"), [original.data?.paidAmount]);
   const [reason, setReason] = useState("");
   const [overpayHandling, setOverpayHandling] = useState<"CREDIT" | "CASH_REFUND">("CASH_REFUND");
+  // درج ردّ الفائض — يُجلب مع وضع التصحيح فقط، ويُختار درج المنفّذ افتراضاً (نمط ReturnComposer).
+  const [overpayShiftId, setOverpayShiftId] = useState<number | null>(null);
+  const correctionShiftsQ = trpc.treasury.getOpenShifts.useQuery(
+    { branchId: original.data?.branchId ?? defaultBranchId },
+    { enabled: isCorrection && !!original.data, retry: false },
+  );
+  const correctionOpenShifts = useMemo(
+    () => (correctionShiftsQ.data ?? []).map((s) => ({
+      shiftId: s.shiftId,
+      userName: s.userName,
+      expectedCash: s.expectedCash,
+      isMine: Number(s.userId) === Number(me.data?.id ?? -1),
+    })),
+    [correctionShiftsQ.data, me.data?.id],
+  );
+  // الافتراضي: درج المنفّذ نفسه إن كان مفتوحاً، وإلّا الوحيد المفتوح — فلا يقرّر الموظف ما لا يعرفه.
+  useEffect(() => {
+    if (overpayShiftId != null || correctionOpenShifts.length === 0) return;
+    const mine = correctionOpenShifts.find((s) => s.isMine);
+    setOverpayShiftId(mine ? mine.shiftId : correctionOpenShifts.length === 1 ? correctionOpenShifts[0].shiftId : null);
+  }, [correctionOpenShifts, overpayShiftId]);
   const [collectNow, setCollectNow] = useState("");
   const correctionHydratedRef = useRef(false);
   // مُعرَّف هنا (لا لاحقاً) كي تتمكّن هيدرة التصحيح من تثبيته ⇒ لا تطمس تهيئةُ الضريبة الافتراضية ضريبةَ الأصل.
@@ -534,7 +556,15 @@ export default function SalesInvoiceNew() {
             },
           }
         : {}),
-      ...(diff.lt(0) ? { overpayHandling } : {}),
+      ...(diff.lt(0)
+        ? {
+            overpayHandling,
+            // الدرج مورد فرعٍ لا مستخدم — يُمرَّر صراحةً كي لا يرفض الخادم عند تعدّد الأدراج.
+            ...(overpayHandling === "CASH_REFUND" && overpayShiftId != null
+              ? { overpayRefundShiftId: overpayShiftId }
+              : {}),
+          }
+        : {}),
       ...(approval ? { managerApproval: approval } : {}),
     };
   }
@@ -549,6 +579,10 @@ export default function SalesInvoiceNew() {
       if (diff.minus(collect).gt(0) && !state.entityId) return "المتبقّي بعد المُحصَّل الآن ذمّة — اختر عميلاً أو حصّل الفرق كاملاً.";
     }
     if (diff.lt(0) && overpayHandling === "CREDIT" && !state.entityId) return "الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو اختر استرداداً نقدياً.";
+    if (diff.lt(0) && overpayHandling === "CASH_REFUND") {
+      if (correctionOpenShifts.length === 0) return "لا توجد وردية مفتوحة بالفرع لاسترداد الفائض نقداً — افتح وردية أو اختر رصيداً دائناً.";
+      if (overpayShiftId == null) return "حدّد الدرج الذي سيخرج منه الفائض نقداً.";
+    }
     return null;
   }
 
@@ -933,6 +967,9 @@ export default function SalesInvoiceNew() {
               overpayHandling={overpayHandling}
               setOverpayHandling={setOverpayHandling}
               hasCustomer={state.entityId != null}
+              openShifts={correctionOpenShifts}
+              overpayShiftId={overpayShiftId}
+              setOverpayShiftId={setOverpayShiftId}
             />
           )}
           <ActionButtons
@@ -1031,6 +1068,10 @@ interface CorrectionPanelProps {
   overpayHandling: "CREDIT" | "CASH_REFUND";
   setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void;
   hasCustomer: boolean;
+  /** أدراج الفرع المفتوحة — الخادم يفرض اختياراً صريحاً حين تتعدّد. */
+  openShifts: Array<{ shiftId: number; userName: string; expectedCash: string; isMine: boolean }>;
+  overpayShiftId: number | null;
+  setOverpayShiftId: (v: number | null) => void;
 }
 
 /**
@@ -1051,6 +1092,9 @@ function CorrectionPanel({
   overpayHandling,
   setOverpayHandling,
   hasCustomer,
+  openShifts,
+  overpayShiftId,
+  setOverpayShiftId,
 }: CorrectionPanelProps) {
   const diff = D(grandTotal).minus(originalPaid); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
   const isShort = diff.gt(0);
@@ -1125,6 +1169,34 @@ function CorrectionPanel({
           </RadioGroup>
           {overpayHandling === "CREDIT" && !hasCustomer && (
             <p className="text-xs text-destructive">الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو استرداداً نقدياً.</p>
+          )}
+          {/* الدرج مورد فرعٍ لا مستخدم: حين يتعدّد الدرج المفتوح يفرض الخادم اختياراً صريحاً
+              (resolveBranchCashShiftTx). بلا هذا المنتقي كان الموظف يملأ كل شيء ثمّ يُرفض —
+              نفس العلّة التي عولجت في شاشة المرتجعات. */}
+          {overpayHandling === "CASH_REFUND" && (
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold">من أيّ درج يخرج النقد؟</Label>
+              {openShifts.length === 0 ? (
+                <p className="text-xs text-destructive">
+                  لا توجد وردية مفتوحة في هذا الفرع — افتح وردية أو اختر رصيداً دائناً.
+                </p>
+              ) : (
+                <AppSelect
+                  size="sm"
+                  className="text-xs"
+                  aria-label="درج استرداد الفائض"
+                  value={overpayShiftId != null ? String(overpayShiftId) : ""}
+                  onValueChange={(v: string) => setOverpayShiftId(v ? Number(v) : null)}
+                  placeholder="اختر الدرج…"
+                >
+                  {openShifts.map((s) => (
+                    <option key={s.shiftId} value={String(s.shiftId)}>
+                      {s.isMine ? "درجي — " : ""}{s.userName} (نقد {fmt(s.expectedCash)})
+                    </option>
+                  ))}
+                </AppSelect>
+              )}
+            </div>
           )}
         </div>
       )}

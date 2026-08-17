@@ -12632,7 +12632,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/saleRouter.ts:1096"
+      "loc": "server/routers/saleRouter.ts:1100"
     },
     {
       "surface": "trpc",

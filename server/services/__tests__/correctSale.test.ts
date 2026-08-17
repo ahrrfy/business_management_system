@@ -87,21 +87,70 @@ const line = (qty: number) => ({ variantId: 1, productUnitId: 1, quantity: Strin
 describe("correctSale — تصحيح الفاتورة (عكس + إعادة ترحيل)", () => {
   beforeEach(async () => { await reset(); });
 
-  it("يرفض نقل المقبوضات إلى فاتورة بديلة ويبقي الإيصال والفاتورة والمخزون بلا تغيير", async () => {
+  // ⭐ قرار المالك (١٧/٨/٢٦): **المقبوض يُنتقل للفاتورة المصحّحة كما هو**. كان هنا حظرٌ شاملٌ
+  //    لأي فاتورةٍ عليها مقبوضات — وأثرُه عملياً أنّ كل فاتورة استقبالٍ عليها عربون لا تُعدَّل أبداً.
+  it("المقبوض يُنقل للمصحّحة كما هو — الإيصال يحتفظ بدرجه وطريقته، والفرق الزائد يُردّ نقداً", async () => {
     await seed();
-    const sale = await cashSale(1);
+    const sale = await cashSale(2); // ٢٠٠٠ مقبوضة نقداً
     const receiptBefore = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, sale.invoiceId)))[0];
 
-    await expect(correctSale({ originalInvoiceId: sale.invoiceId, lines: [line(2)] }, admin))
-      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    // تصحيحٌ لأسفل: قطعةٌ واحدة (١٠٠٠) ⇒ فرقٌ زائد ١٠٠٠ يُردّ نقداً (زبونٌ عابر بلا حساب).
+    const res = await correctSale(
+      { originalInvoiceId: sale.invoiceId, lines: [line(1)], overpayHandling: "CASH_REFUND" },
+      admin,
+    );
+    expect(res.overpay).toBe("1000.00");
+    expect(res.overpayHandled).toBe("CASH_REFUND");
 
-    const invoiceAfter = await getInvoice(sale.invoiceId);
+    // الأصل استُبدِل، والجديدة مربوطةٌ به ثنائيّ الاتجاه.
+    const original = await getInvoice(sale.invoiceId);
+    expect(original.status).toBe("SUPERSEDED");
+    expect(Number(original.correctedByInvoiceId)).toBe(res.correctedInvoiceId);
+
+    // 🔒 الثابت الجوهريّ: الإيصال التاريخيّ **لم يُعَد كتابته** — نفس الدرج ونفس الطريقة ونفس
+    //    المبلغ؛ تغيّر مؤشّره للفاتورة فقط (وهو ما قرّره المالك حرفياً).
     const receiptAfter = (await db().select().from(s.receipts).where(eq(s.receipts.id, receiptBefore.id)))[0];
-    expect(invoiceAfter.status).toBe("PAID");
-    expect(invoiceAfter.correctedByInvoiceId).toBeNull();
-    expect(receiptAfter.invoiceId).toBe(sale.invoiceId);
     expect(receiptAfter.shiftId).toBe(receiptBefore.shiftId);
     expect(receiptAfter.paymentMethod).toBe(receiptBefore.paymentMethod);
+    expect(receiptAfter.cashBucket).toBe(receiptBefore.cashBucket);
+    expect(String(receiptAfter.amount)).toBe(String(receiptBefore.amount));
+    expect(Number(receiptAfter.invoiceId)).toBe(res.correctedInvoiceId);
+
+    // الفرق الزائد خرج بإيصال OUT نقديّ من الدرج (لا يضيع بصمت).
+    const outs = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    expect(outs).toHaveLength(1);
+    expect(outs[0].paymentMethod).toBe("CASH");
+    expect(outs[0].cashBucket).toBe("DRAWER");
+    expect(Number(outs[0].amount)).toBeCloseTo(1000, 2);
+
+    // المخزون: بيعت ٢ ثمّ عُكِست ٢ وأُعيد بيع ١ ⇒ ٩.
+    expect(await getStock(1, 1)).toBe(9);
+    const corrected = await getInvoice(res.correctedInvoiceId);
+    expect(Number(corrected.total)).toBeCloseTo(1000, 2);
+    expect(Number(corrected.paidAmount)).toBeCloseTo(1000, 2);
+  });
+
+  it("الفرق الزائد لعميلٍ مسجَّل يصير رصيداً دائناً بلا مسّ الدرج (الافتراضي)", async () => {
+    await seed({ withCustomer: true });
+    const sale = await createSale({ branchId: 1, shiftId: 1, customerId: 1, priceTier: "RETAIL", sourceType: "ORDER",
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+      payment: { amount: "2000", method: "CASH" } }, admin);
+
+    const res = await correctSale({ originalInvoiceId: sale.invoiceId, lines: [line(1)] }, admin);
+    expect(res.overpay).toBe("1000.00");
+    expect(res.overpayHandled).toBe("CREDIT");
+    // رصيدٌ دائن = سالب (له عندنا)، ولا نقد خرج من الدرج.
+    expect(await getCustomerBalance(1)).toBeCloseTo(-1000, 2);
+    expect(await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"))).toHaveLength(0);
+  });
+
+  it("تصحيحٌ لأعلى على فاتورةٍ مقبوضةٍ بلا عميل يبقى مرفوضاً (لا ذمّة على زبونٍ عابر)", async () => {
+    await seed();
+    const sale = await cashSale(1);
+    await expect(correctSale({ originalInvoiceId: sale.invoiceId, lines: [line(2)] }, admin))
+      .rejects.toThrowError(/يتطلب عميلاً/);
+    // رفضٌ ذرّيّ: الأصل والمخزون بلا مسّ.
+    expect((await getInvoice(sale.invoiceId)).status).toBe("PAID");
     expect(await getStock(1, 1)).toBe(9);
   });
 
@@ -209,8 +258,10 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     // نُحاكي عربوناً موّل paidAmount لكن إيصالَ أمّه غير مختومٍ بهذه الفاتورة (invoiceId=NULL).
     await db().update(s.receipts).set({ invoiceId: null })
       .where(sql`${s.receipts.invoiceId}=${sale.invoiceId} AND ${s.receipts.direction}='IN'`);
+    // بعد رفع حظر المقبوضات الشامل صار هذا الحارس **يُختبَر فعلاً** (كان محجوباً خلفه):
+    // نتحقّق من رسالته لا من رمزه فقط، كي يبقى الاختبار مثبتاً للسبب الصحيح.
     await expect(correctSale({ originalInvoiceId: sale.invoiceId, customerId: 1, lines: [line(1)] }, admin))
-      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      .rejects.toThrowError(/لا يطابق إيصالات القبض القابلة للنقل/);
     // الرفض قبل أيّ تعديل ⇒ الأصل لم يُستبدَل ولم تُصفَّر ذمّة العميل زوراً.
     expect((await getInvoice(sale.invoiceId)).status).not.toBe("SUPERSEDED");
   });
@@ -221,7 +272,7 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     const sale = await createSale({ branchId: 1, customerId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS",
       lines: [line(1)], payment: { amount: "1000", method: "CASH" } }, admin);
     await expect(correctSale({ originalInvoiceId: sale.invoiceId, customerId: 2, lines: [line(1)] }, admin))
-      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      .rejects.toThrowError(/لا يُغيَّر العميل/);
   });
 
   it("حارس الدفعة الإضافية: تحصيلٌ يتجاوز الفرق المستحقّ ⇒ يُرفَض (حصِّل الفرق فقط)", async () => {
@@ -229,6 +280,6 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     const sale = await cashSale(1); // ١٠٠٠ مدفوعٌ كاملاً ⇒ لا نقص
     await expect(correctSale({ originalInvoiceId: sale.invoiceId, lines: [line(1)],
       additionalPayment: { amount: "500", method: "CASH" } }, admin))
-      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      .rejects.toThrowError(/تتجاوز الفرق المستحقّ/);
   });
 });
