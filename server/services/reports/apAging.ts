@@ -136,10 +136,20 @@ export interface SupplierStatementResult {
 async function supplierOpeningBalance(supplierId: number, from?: string, branchId?: number) {
   const db = getDb()!;
   const branchCond = branchId ? eq(accountingEntries.branchId, branchId) : undefined;
+  // ب-١ (١٦/٨): نظير العميل — «الافتتاحيّ كما في تاريخ س» = مجموع قيود OPENING **حتى س**،
+  // لأنّ التصحيح صار قيد فرقٍ مؤرَّخاً لا تعديلاً للأصل.
+  const openFromTs = from ? `${from} 00:00:00` : null;
   const openRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
-    .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.supplierId, supplierId), branchCond));
+    .where(
+      and(
+        eq(accountingEntries.entryType, "OPENING"),
+        eq(accountingEntries.supplierId, supplierId),
+        branchCond,
+        openFromTs ? sql`${accountingEntries.entryDate} < ${openFromTs}` : undefined,
+      ),
+    );
   let opening = money(openRow[0]?.v ?? 0);
   if (!from) return opening;
 
@@ -247,8 +257,14 @@ export async function getSupplierStatement(
   // FI-01: تشمل الحركة شراء الأصول اليتيم (PURCHASE بلا purchaseOrderId) ليَظهر في الكشف ويتّزن
   // الرصيد مع currentBalance؛ شراء PO يُعرَض من purchaseOrders أعلاه ⇒ نَستثنيه هنا (لا ازدواج).
   // EXCHANGE-SETTLE (تدقيق ٢/٧): تسديد الصيرفة يظهر ضمن حركة الفترة أيضاً (متماثلاً مع المُرحَّل).
+  // ب-١ (١٦/٨): OPENING يدخل الحركة **مع وجود فترة فقط** — المُرحَّل صار مقصوراً على ما قبل
+  // `from`، فتصحيحٌ داخل الفترة يجب أن يُعرَض حركةً وإلّا اختلّ اتزان الكشف. بلا فترة يبقى
+  // مستبعَداً لأنّ المُرحَّل يشمله كاملاً (وإلّا احتُسب مرّتين).
+  const openingMoveSql = from
+    ? sql` OR ${accountingEntries.entryType} = 'OPENING'`
+    : sql``;
   const payConds = [
-    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
+    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL)${openingMoveSql})`,
     eq(accountingEntries.supplierId, supplierId),
   ];
   if (branchId) payConds.push(eq(accountingEntries.branchId, branchId));

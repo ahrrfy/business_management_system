@@ -143,7 +143,11 @@ export async function getReminderQueue(opts: {
             sql`${accountingEntries.customerId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`,
           ),
         )
-        .groupBy(accountingEntries.customerId);
+        .groupBy(accountingEntries.customerId)
+        // ب-١ (١٦/٨): التصحيح صار قيد فرقٍ إلحاقيّاً ⇒ **وجود صفّ** لم يعد يعني «مدين افتتاحيّ»:
+        // رصيدٌ افتتاحيّ صُحِّح إلى صفرٍ (أو انقلب دائناً) يُبقي صفّيه في الجدول. المعيار الصحيح
+        // هو مجموع القيود موجباً — وإلّا طُولب عميلٌ بمبلغٍ سبق أن أُلغي.
+        .having(sql`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0) > 0`);
       const openedOn = new Map<number, string>();
       for (const r of openRows) if (r.openedOn) openedOn.set(Number(r.customerId), r.openedOn);
       openingEligible = openingCandidates
@@ -286,8 +290,12 @@ async function assertCustomerHasBranchInvoice(customerId: number, branchId: numb
  *  بدل فحص الفاتورة الفرعيّة (الذي يفشل حتماً لغيابها). يمنع تسجيل تذكير على عميل غير مدين افتتاحيّاً. */
 async function assertOpeningBalanceDebtor(customerId: number): Promise<void> {
   const db = requireDb();
+  // ب-١ (١٦/٨): **مجموع** قيود OPENING موجباً لا مجرّد وجود صفّ — التصحيح إلحاقيّ، فصفوف
+  // رصيدٍ أُلغي تبقى قائمةً ولا يجوز أن تفتح باب تسجيل تذكيرٍ عليه.
   const rows = await db
-    .select({ id: accountingEntries.id })
+    .select({
+      total: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)`,
+    })
     .from(accountingEntries)
     .innerJoin(customers, eq(customers.id, accountingEntries.customerId))
     .where(
@@ -296,9 +304,8 @@ async function assertOpeningBalanceDebtor(customerId: number): Promise<void> {
         eq(accountingEntries.customerId, customerId),
         sql`CAST(${customers.currentBalance} AS DECIMAL(15,2)) > 0`,
       ),
-    )
-    .limit(1);
-  if (rows.length === 0) {
+    );
+  if (!(money(rows[0]?.total ?? "0").gt(0))) {
     throw new TRPCError({ code: "NOT_FOUND", message: "لا رصيد افتتاحيّ مستحقّ لهذا العميل — لا يجوز تسجيل تذكير عنه." });
   }
 }

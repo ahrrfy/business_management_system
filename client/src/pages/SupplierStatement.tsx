@@ -107,6 +107,9 @@ export default function SupplierStatement() {
         : p.entryType === "PAYMENT_IN" ? "استرداد من المورد"
         : p.entryType === "EXCHANGE_SETTLE" ? "تسوية عبر صيرفة"
         : p.entryType === "PURCHASE" ? "شراء (بلا أمر)"
+        // ب-١: تصحيح الرصيد الافتتاحيّ صار قيد فرقٍ مؤرَّخاً يظهر حركةً داخل فترته (إشارته
+        // كما هي: موجب يزيد ما علينا). بلا هذا السطر يُعرَض باسم «دفعة مستقلة للمورد».
+        : p.entryType === "OPENING" ? "تصحيح رصيد افتتاحي"
         : (p.purchaseOrderId ? "دفعة للمورد" : "دفعة مستقلة للمورد");
       return {
         t: new Date(p.entryDate).getTime(),
