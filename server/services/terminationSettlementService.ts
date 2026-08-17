@@ -238,7 +238,10 @@ export interface TerminationWageAudit {
   /** المُدخَل − المحسوب (موجبٌ = دفعٌ زائد بلا سند، سالبٌ = بخسٌ للموظف). */
   deviation: string;
   matches: boolean;
-  /** مكوّنات المحسوب — لتفسير الانحراف بدل ترك رقمٍ مجرَّد. */
+  /**
+   * مكوّنات جانب الحضور — تُفسّر الرقم حين يكون الأساس `ATTENDANCE`، وتبقى في غيره
+   * معلومةً تشخيصية (ماذا يقول سجلّ حضوره فعلاً) لا مكوّنات `computedGrossWages`.
+   */
   components: {
     basePay: string;
     overtimePay: string;
@@ -449,7 +452,7 @@ export async function auditTerminationEarnedWagesTx(
   const note = matches
     ? null
     : `أجر شهر الفصل المُدخَل ${entered.toFixed(2)} يخالف المحسوب من ${basisLabel[basis]} ${computed.toFixed(2)} ` +
-      `بفارق ${deviation.toFixed(2)} عن الفترة ${windowFrom} → ${windowTo}` +
+      `بفارق ${deviation.toFixed(2)} عن الفترة من ${windowFrom} إلى ${windowTo}` +
       (cautions.length > 0 ? ` — ${cautions.join("؛ ")}` : "");
 
   return {
