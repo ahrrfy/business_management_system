@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 937,
+    "trpcTotal": 938,
     "byKind": {
-      "mutation": 482,
+      "mutation": 483,
       "query": 455
     },
     "byAuthority": {
       "module-gate": 426,
-      "module-map": 297,
+      "module-map": 298,
       "admin": 67,
       "raw-role": 55,
       "none": 53,
@@ -22,7 +22,7 @@
     "bySensitivity": {
       "LOW": 453,
       "MEDIUM": 350,
-      "HIGH": 134
+      "HIGH": 135
     },
     "byModule": {
       "(none)": 202,
@@ -45,7 +45,7 @@
       "purchases": 11,
       "collections": 10,
       "channels": 10,
-      "gifts": 9,
+      "gifts": 10,
       "expenses": 7,
       "reservations": 7,
       "catalogAnomalies": 6,
@@ -60,9 +60,9 @@
       "storefront": 1
     },
     "flagCounts": {
-      "LOCAL_GATE": 181,
+      "LOCAL_GATE": 182,
       "NO_BRANCH_SCOPE": 161,
-      "SENSITIVE_ACTION": 134,
+      "SENSITIVE_ACTION": 135,
       "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 33,
@@ -74,7 +74,7 @@
     "expressMounts": 11,
     "jobs": 16,
     "routerFiles": 93,
-    "proposedPermissions": 799,
+    "proposedPermissions": 800,
     "proposedDomains": {
       "hr": 107,
       "reports": 84,
@@ -101,7 +101,7 @@
       "kiosk": 11,
       "ar": 10,
       "channels": 10,
-      "gifts": 9,
+      "gifts": 10,
       "platform": 8,
       "announcements": 7,
       "digitalcards/dashboard": 7,
@@ -6629,7 +6629,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/giftsRouter.ts:216"
+      "loc": "server/routers/giftsRouter.ts:217"
     },
     {
       "surface": "trpc",
@@ -6646,7 +6646,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: close",
       "flags": "LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/giftsRouter.ts:265"
+      "loc": "server/routers/giftsRouter.ts:282"
     },
     {
       "surface": "trpc",
@@ -6663,7 +6663,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/giftsRouter.ts:244"
+      "loc": "server/routers/giftsRouter.ts:261"
     },
     {
       "surface": "trpc",
@@ -6680,7 +6680,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/giftsRouter.ts:256"
+      "loc": "server/routers/giftsRouter.ts:273"
+    },
+    {
+      "surface": "trpc",
+      "router": "giftsRouter",
+      "proposedPermission": "gifts.gift.void",
+      "name": "cancelGift",
+      "kind": "mutation",
+      "procedure": "giftsWrite",
+      "authority": "module-map",
+      "module": "gifts",
+      "level": "FULL",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: cancel",
+      "flags": "LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/giftsRouter.ts:225"
     },
     {
       "surface": "trpc",
@@ -6697,7 +6714,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/giftsRouter.ts:185"
+      "loc": "server/routers/giftsRouter.ts:186"
     },
     {
       "surface": "trpc",
@@ -6714,7 +6731,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/giftsRouter.ts:134"
+      "loc": "server/routers/giftsRouter.ts:135"
     },
     {
       "surface": "trpc",
@@ -6731,7 +6748,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/giftsRouter.ts:45"
+      "loc": "server/routers/giftsRouter.ts:46"
     },
     {
       "surface": "trpc",
@@ -6748,7 +6765,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/giftsRouter.ts:153"
+      "loc": "server/routers/giftsRouter.ts:154"
     },
     {
       "surface": "trpc",
@@ -6765,7 +6782,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/giftsRouter.ts:224"
+      "loc": "server/routers/giftsRouter.ts:241"
     },
     {
       "surface": "trpc",
@@ -6782,7 +6799,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/giftsRouter.ts:145"
+      "loc": "server/routers/giftsRouter.ts:146"
     },
     {
       "surface": "trpc",

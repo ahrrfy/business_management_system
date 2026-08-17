@@ -221,6 +221,28 @@ export async function cancelPlan(
           message: "لا يمكن إلغاء خطة لها سند تحصيل معتمد؛ زامن السداد أو اعكس السند أولاً",
         });
       }
+      // المسار و-٢ (١٧/٨): الحارس كان يفحص **المعتمَد المنجَز** فقط، فسندُ تحصيلٍ ما زال في
+      // طابور الاعتماد يبقى يتيماً بعد إلغاء خطته: يعتمده مديرٌ لاحقاً فيُقيَّد نقدٌ على خطةٍ
+      // ملغاة (والمعتمِد لا يرى في الطابور أنّ خطتها أُلغيت). لا نُلغيه هنا ضمناً — إلغاء
+      // مستندٍ ماليّ قرارُ صاحبه لا أثرٌ جانبيّ لعمليةٍ أخرى — بل نوقف الإلغاء ونسمّي المطلوب.
+      const pending = (
+        await tx
+          .select({ n: sql<number>`COUNT(*)` })
+          .from(receipts)
+          .where(
+            and(
+              inArray(receipts.id, receiptIds),
+              eq(receipts.approvalStatus, "PENDING_APPROVAL"),
+              sql`${receipts.status} <> 'REVERSED'`,
+            ),
+          )
+      )[0];
+      if (Number(pending?.n ?? 0) > 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "لا يمكن إلغاء خطة لها سند تحصيل في انتظار الاعتماد؛ ارفض السند أو ألغِه أولاً",
+        });
+      }
     }
     const reason = input.reason?.trim();
     await tx

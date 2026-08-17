@@ -1931,6 +1931,16 @@ export async function rejectVoucher(
         message: "السند ليس في انتظار الموافقة",
       });
     }
+    // المسار و-٣ (١٧/٨): إلغاء سندٍ معلَّق يقلبه `REVERSED` **ويُبقي** `approvalStatus` معلَّقاً
+    // (`cancel.ts` — لا أثر ماليّ فلا يُغيّر حالة الاعتماد). فكان يبقى في طابور الاعتماد ويقبل
+    // «رفضاً» لاحقاً ⇒ حالة مستحيلة `REVERSED + REJECTED`، وأخطر: يُطلق حدث `PAYMENT_REJECTED`
+    // على التزامٍ سبق أن أُلغي طلبه. `approveVoucher` يحرس `REVERSED` صراحةً — والرفض لم يكن.
+    if (r.status === "REVERSED") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "السند ملغى — لا يمكن رفضه (الإلغاء أنهى الطلب أصلاً)",
+      });
+    }
     if (r.createdBy != null && Number(r.createdBy) === actor.userId) {
       throw new TRPCError({
         code: "FORBIDDEN",
