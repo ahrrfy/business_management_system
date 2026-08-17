@@ -1,5 +1,6 @@
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: مالك نشط والمُعتمِد ≠ المُنشئ بلا استثناء).
 import { TRPCError } from "@trpc/server";
+import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   accountingEntries,
@@ -1824,6 +1825,17 @@ export async function approveVoucher(
         partyId,
         direction === "IN" ? amount.neg() : amount,
       );
+      // تخصيص السند لفاتورته عند **الاعتماد** لا الطلب (الأثر المالي كلّه هنا). حالةُ الفاتورة
+      // تُعاد فحصها داخل allocateVoucherToInvoiceTx تحت القفل: بين الطلب والاعتماد قد تُلغى
+      // الفاتورة أو تُصحَّح فيصير تخصيص المال لها نسبةً لمستندٍ ميت.
+      if (r.invoiceId != null) {
+        await allocateVoucherToInvoiceTx(tx, {
+          invoiceId: Number(r.invoiceId),
+          amount,
+          direction,
+          paymentMethod,
+        });
+      }
     } else if (partyType === "SUPPLIER" && partyId) {
       await adjustSupplierBalance(
         tx,
