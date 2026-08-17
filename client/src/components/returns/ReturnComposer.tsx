@@ -28,6 +28,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
+import { computeReturnTotal } from "@/lib/returnTotal";
 import { trpc } from "@/lib/trpc";
 
 type RefundRail = "CASH" | "CARD";
@@ -91,22 +92,11 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
   const items = inv?.items ?? [];
   const shifts = inv?.refundShifts ?? [];
 
-  /** قيمة المرتجع — نفس توزيع الخادم التناسبيّ (حصّة البند × نسبتَي الخصم والضريبة). */
-  const returnValue = useMemo(() => {
-    if (!inv) return D(0);
-    let gross = D(0);
-    for (const it of inv.items) {
-      const q = qty[it.invoiceItemId] ?? 0;
-      if (q <= 0 || !D(it.baseQuantity).gt(0)) continue;
-      gross = gross.plus(D(it.total).times(D(q).div(it.baseQuantity)));
-    }
-    const subtotal = D(inv.subtotal);
-    const discountRatio = subtotal.gt(0) ? D(inv.discountAmount).div(subtotal) : D(0);
-    const taxable = subtotal.minus(inv.discountAmount);
-    const taxRate = taxable.gt(0) ? D(inv.taxAmount).div(taxable) : D(0);
-    const revenue = round2(gross.times(D(1).minus(discountRatio)));
-    return round2(revenue.plus(round2(revenue.times(taxRate))));
-  }, [inv, qty]);
+  /** قيمة المرتجع — الصيغة في `lib/returnTotal` (مطابقةٌ لفرع الإرجاع الجزئيّ خادمياً، ومُختبَرة وحدها). */
+  const returnValue = useMemo(
+    () => (inv ? D(computeReturnTotal(inv.items, qty, inv)) : D(0)),
+    [inv, qty],
+  );
 
   const options = inv?.refundOptions ?? [];
   const activeOption = options.find((o) => o.method === rail);

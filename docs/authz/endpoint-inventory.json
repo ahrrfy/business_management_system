@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 953,
+    "trpcTotal": 954,
     "byKind": {
-      "mutation": 491,
+      "mutation": 492,
       "query": 462
     },
     "byAuthority": {
-      "module-gate": 430,
+      "module-gate": 431,
       "module-map": 309,
       "admin": 67,
       "raw-role": 55,
@@ -21,7 +21,7 @@
     },
     "bySensitivity": {
       "LOW": 460,
-      "MEDIUM": 356,
+      "MEDIUM": 357,
       "HIGH": 137
     },
     "byModule": {

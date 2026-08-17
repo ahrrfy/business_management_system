@@ -487,7 +487,12 @@ describe("P2 sales and purchase posting contracts", () => {
     );
   });
 
-  it("keeps correction overpay fail-closed without inventing an OUT receipt or PAYMENT_OUT", () => {
+  // ⭐ قرار المالك (١٧/٨/٢٦): الفرق الزائد لم يعد fail-closed — يُردّ نقداً أو يُرصَّد.
+  //    كان هذا الاختبار يحرس **الغياب** (لا إيصال ولا PAYMENT_OUT ولا تعديل رصيد)، وهو عقدٌ
+  //    سقط بالقرار. نستبدله بالعقد الحاكم الآن: الفائض **لا يُبتلَع صامتاً** — لكلّ رافدٍ مسارُه.
+  it("correction overpay is never swallowed: every rail leaves a receipt, an entry, or a credit", () => {
+    // الحساب المحاسبيّ يبقى كما هو: قبضٌ تاريخيّ ١٠٠٠ مقابل مصحّحٍ ٧٠٠ ⇒ AR دائنٌ بـ٣٠٠
+    // (هو «الفائض» الذي يجب أن يخرج بأحد المسارين، لا أن يبقى معلّقاً).
     const historicalPayment = createPostingIntent(
       "PAYMENT_IN_CUSTOMER",
       "PAYMENT_IN",
@@ -501,25 +506,29 @@ describe("P2 sales and purchase posting contracts", () => {
       [...historicalPayment.lines, ...correctedSale.lines],
       "AR",
     );
-
     expect(arBalance.toFixed(2)).toBe("-300.00");
 
     const source = readFileSync(
       new URL("../sale/correct.ts", import.meta.url),
       "utf8",
     );
-    const marker = "لا توجد حركة نقدية هنا";
-    expect(source).not.toContain(marker);
     const overpayStart = source.indexOf("if (overpay.gt(0))");
-    const overpayEnd = source.indexOf("const overpayHandled:", overpayStart);
     expect(overpayStart).toBeGreaterThanOrEqual(0);
-    expect(overpayEnd).toBeGreaterThan(overpayStart);
+    const overpayEnd = source.indexOf("// ── ⑩", overpayStart) >= 0
+      ? source.indexOf("// ── ⑩", overpayStart)
+      : source.length;
     const overpayBranch = source.slice(overpayStart, overpayEnd);
-    const executableOverpayBranch = overpayBranch.replace(/\/\/.*$/gm, "");
-    expect(executableOverpayBranch).toContain("throw new TRPCError");
-    expect(executableOverpayBranch).not.toMatch(
-      /insert\(receipts\)|postEntry\(|PAYMENT_OUT|adjustCustomerBalance\(/,
-    );
+    const executable = overpayBranch.replace(/\/\/.*$/gm, "");
+
+    // مسار الرصيد الدائن: يُخفّض ذمّة العميل بالفائض (سالبٌ = له عندنا).
+    expect(executable).toContain("adjustCustomerBalance");
+    expect(executable).toContain("overpay.neg()");
+    // مسار الاسترداد النقديّ: إيصال OUT + قيد PAYMENT_OUT + حدّ الدرج — الخمسة المطلوبة.
+    expect(executable).toMatch(/insert\(receipts\)/);
+    expect(executable).toContain("PAYMENT_OUT");
+    expect(executable).toContain("assertCashOutAvailable");
+    // ولا مسار صامت: الزبون العابر بلا حساب يُرفَض ترصيده صراحةً بدل ابتلاع ماله.
+    expect(executable).toContain("PRECONDITION_FAILED");
   });
 });
 
