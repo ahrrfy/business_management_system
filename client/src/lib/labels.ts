@@ -4,13 +4,24 @@
  * طرق الدفع في lib/paymentMethod.ts والأدوار في lib/roles.ts — لا تكرّرها هنا.
  */
 
-/** حالة فاتورة البيع (invoices.status). PENDING = «معلّقة» بقرار المسرد (لا «غير مدفوعة»). */
+/**
+ * حالة فاتورة البيع (invoices.status).
+ *
+ * **PENDING = «غير مدفوعة»** (تصحيح مسرد ١٧/٨/٢٦ بطلب المالك — كانت «معلّقة»): الحالة مشتقّة
+ * من المال وحده (`computeInvoiceStatus`: المدفوع صفر ⇒ PENDING)، فالبيع الآجل النافذ كان يُقرأ
+ * «موقوفاً/بانتظار إجراء» ويقلق الموظّف والمالك. التسمية المالية هي الصادقة.
+ *
+ * `CONFIRMED` و`SUPERSEDED` مضافتان هنا كي لا يتسرّب الرمز الإنجليزيّ الخام إلى الشاشات
+ * والتصدير والطباعة عبر `?? s` (كانت `SUPERSEDED` تظهر خاماً في كل مستهلكٍ لهذا القاموس).
+ */
 export const INVOICE_STATUS_AR: Record<string, string> = {
   PAID: "مدفوعة",
-  PARTIALLY_PAID: "جزئية",
-  PENDING: "معلّقة",
+  PARTIALLY_PAID: "مدفوعة جزئياً",
+  PENDING: "غير مدفوعة",
+  CONFIRMED: "مؤكّدة",
   RETURNED: "مُرتجَعة",
   CANCELLED: "ملغاة",
+  SUPERSEDED: "مستبدلة بفاتورة مصححة",
 };
 export function invoiceStatusLabel(s: string | null | undefined): string {
   if (!s) return "—";

@@ -17,7 +17,7 @@ import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
-import { allocateLineTax } from "@/components/invoice";
+import { allocateLineTax, derivePaymentTerms } from "@/components/invoice";
 import { round2 } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -41,13 +41,18 @@ type Row = RouterOutputs["sales"]["list"][number];
 /** حجم صفحة القائمة — الخادم يُرقّم، والمعروض هو المُحمَّل. */
 const PAGE_SIZE = 50;
 
+// PENDING = «غير مدفوعة» لا «معلّقة» (تصحيح مسرد ١٧/٨ بطلب المالك): الفاتورة الآجلة كانت
+// تُقرأ «موقوفة/بانتظار إجراء» بينما هي بيعٌ نافذ لم يُسدَّد بعد. الحالة مشتقّة من المال وحده
+// (`computeInvoiceStatus`: paid = 0 ⇒ PENDING) فالتسمية المالية هي الصادقة.
 const STATUS: Record<string, string> = {
-  PENDING: "معلّقة", PARTIALLY_PAID: "مدفوعة جزئياً", PAID: "مدفوعة",
+  PENDING: "غير مدفوعة", PARTIALLY_PAID: "مدفوعة جزئياً", PAID: "مدفوعة",
   CONFIRMED: "مؤكّدة", CANCELLED: "ملغاة", RETURNED: "مرتجعة", SUPERSEDED: "مستبدلة بفاتورة مصححة",
 };
+// PENDING شارةٌ معلوماتية (أزرق) لا شارةُ مستندٍ ميت: كانت `badge-status-cancelled` — نفس رمادي
+// «ملغاة/مستبدلة» تماماً — فذمّةٌ حيّة قابلة للتحصيل تبدو كورقةٍ انتهت. التوكن مُعرَّف وغير مستعمَل.
 const STATUS_CLS: Record<string, string> = {
   PAID: "badge-status-active", PARTIALLY_PAID: "badge-stock-low",
-  PENDING: "badge-status-cancelled", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out", SUPERSEDED: "badge-status-cancelled",
+  PENDING: "badge-status-pending", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out", SUPERSEDED: "badge-status-cancelled",
 };
 const BALANCE_FILTER = {
   DEPOSIT_DUE: "عربون — متبقّي للتحصيل",
@@ -79,9 +84,9 @@ function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "re
   return D(row.paidAmount).gt(0) && D(row.total).minus(D(row.paidAmount)).minus(D(row.returnedTotal ?? "0")).gt(0);
 }
 
-// تعريب التصدير موحّد عبر قاموس labels المركزي؛ CONFIRMED غائبة عنه (ملف مشترك لا يُعدَّل هنا)
-// فتُستكمل محلياً كي لا يتسرّب الكود الخام للتصدير. عرض الشاشة يبقى على STATUS المحلي (أغنى صياغة).
-const exportStatusLabel = (s: string) => (s === "CONFIRMED" ? "مؤكّدة" : invoiceStatusLabel(s));
+// تعريب التصدير موحّد عبر قاموس labels المركزي — صار يغطّي CONFIRMED وSUPERSEDED معاً، فسقط
+// الترقيع المحلّي الذي كان يستكمل CONFIRMED (رمزٌ ميت) ويترك SUPERSEDED (حيّة) تتسرّب خاماً.
+const exportStatusLabel = (s: string) => invoiceStatusLabel(s);
 // فاتورة بلا عميل مسجَّل = بيع نقدي مباشر — المصطلح المعتمد «عميل نقدي» (لا شرطة غامضة).
 const custName = (n: string | null | undefined) => n ?? "عميل نقدي";
 // خلية التوصيل للتصدير/النسخ: «بالطريق — فلان (CN-…/ORD-…)» أو فارغة لغير الموصَّلة.
@@ -355,6 +360,12 @@ export default function Invoices() {
   // نسخ لفاتورة جديدة: نجلب التفاصيل ونزرعها في sessionStorage (تُقرأ مرة واحدة في /sales/new).
   // ننسخ الكمية الأصلية كاملة (الفاتورة الجديدة تعيد بيع السلّة — المرتجعات لا تنقصها)،
   // وشكل كل سطر يطابق InvoiceLine في محرّر الفواتير حرفياً.
+  //
+  // ⚠️ `paymentTerms` جزءٌ إلزاميّ من البذرة: بدونه تسقط الشاشة على افتراضيّ «نقدي»، و«نقدي»
+  // مع حقل المدفوع الفارغ تعني في `computePaidStr()` سداداً كاملاً ⇒ نسخُ فاتورةٍ آجلة كان
+  // يُنتج فاتورةً «مسدَّدة نقداً» بإيصال درج لمالٍ لم يُقبض (عجزٌ عند Z + ذمّةٌ تبخّرت).
+  // تاريخ الاستحقاق **لا يُنسخ** عمداً: النسخة بيعٌ جديد، واستحقاق الأصل قد يكون ماضياً
+  // فيُعمِّر ذمّةً وليدةً متأخّرةً فوراً — يضبطه الموظّف من حقلٍ يظهر لأنّ الشروط صارت آجلة.
   async function duplicateInvoice(invoiceId: number) {
     try {
       const d = await utils.sales.get.fetch({ invoiceId });
@@ -364,6 +375,7 @@ export default function Invoices() {
         JSON.stringify({
           customerId: d.customerId,
           tier: d.priceTier,
+          paymentTerms: derivePaymentTerms(d),
           items: d.items.map((it) => ({
             productId: it.productId ?? 0,
             variantId: it.variantId,

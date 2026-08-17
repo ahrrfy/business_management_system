@@ -70,7 +70,8 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v));
 
 const STATUS: Record<string, string> = {
-  PENDING: "معلّقة",
+  // «غير مدفوعة» لا «معلّقة» — انظر التعليق في Invoices.tsx (تصحيح مسرد ١٧/٨).
+  PENDING: "غير مدفوعة",
   PARTIALLY_PAID: "مدفوعة جزئياً",
   PAID: "مدفوعة",
   CONFIRMED: "مؤكّدة",

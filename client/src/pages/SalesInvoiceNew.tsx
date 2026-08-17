@@ -62,9 +62,13 @@ import {
   calcTotals,
   calcLineTotal,
   allocateLineTax,
+  derivePaymentTerms,
   INVOICE_TYPES,
+  PAYMENT_METHODS,
   type InvoiceActionKind,
   type InvoiceLine,
+  type PaymentMethod,
+  type PaymentTerm,
   type PriceTier,
 } from "@/components/invoice";
 
@@ -142,6 +146,13 @@ export default function SalesInvoiceNew() {
     const catalogByUnit = new Map((correctionCatalog.data ?? []).map((row) => [row.productUnitId, row]));
     if (d.customerId) dispatch({ type: "SET_ENTITY", id: d.customerId });
     if (d.priceTier) dispatch({ type: "SET_FIELD", field: "tier", value: d.priceTier as PriceTier });
+    // شروط الدفع وطريقته من الأصل — لا تُترَك على افتراضيّ «نقدي». الشروط تُظهر حقل تاريخ
+    // الاستحقاق للفاتورة الآجلة (كان يُرسَل مخفيّاً فلا يستطيع الموظّف تصحيحه)، والطريقة هي
+    // التي يُقبَض بها «المُحصَّل الآن» فلا تُفترَض نقداً على فاتورةٍ قُبِضت بالبطاقة.
+    dispatch({ type: "SET_FIELD", field: "paymentTerms", value: derivePaymentTerms(d) });
+    if (d.paymentMethod && isPosPaymentMethodEnabled(d.paymentMethod as PaymentMethod)) {
+      dispatch({ type: "SET_FIELD", field: "paymentMethod", value: d.paymentMethod as PaymentMethod });
+    }
     // خصمٌ إجماليّ (كمبلغ صريح — الأصل يخزّنه مبلغاً لا نسبة).
     if (D(d.discountAmount ?? "0").gt(0)) {
       dispatch({ type: "SET_FIELD", field: "globalDiscountType", value: "amount" });
@@ -206,10 +217,14 @@ export default function SalesInvoiceNew() {
       const seed = JSON.parse(raw) as {
         customerId?: number | null;
         tier?: PriceTier;
+        paymentTerms?: PaymentTerm;
         items?: InvoiceLine[];
       };
       if (seed.customerId) dispatch({ type: "SET_ENTITY", id: seed.customerId });
       if (seed.tier) dispatch({ type: "SET_FIELD", field: "tier", value: seed.tier });
+      // شروط الدفع من الأصل: بدونها تبقى الشاشة على «نقدي» الافتراضيّ، فيصير نسخُ فاتورةٍ
+      // آجلة بيعاً «مسدَّداً بالكامل نقداً» عند الحفظ (computePaidStr) — قبضٌ لم يقع.
+      if (seed.paymentTerms) dispatch({ type: "SET_FIELD", field: "paymentTerms", value: seed.paymentTerms });
       if (Array.isArray(seed.items) && seed.items.length) {
         dispatch({ type: "ADD_ITEMS", items: seed.items });
         dispatch({ type: "MARK_STOCK_STALE" });
@@ -926,6 +941,10 @@ export default function SalesInvoiceNew() {
               قيد SALE إيراداً بلا تكلفة، ويعكسها المرتجع الكامل) ⇒ أُظهرت مع مفتاح «مجاني».
               «مصاريف أخرى» تبقى مخفيّة: الخادم لا يحفظها، وإظهارها يُضخّم الإجمالي المعروض
               و«ادفع الكل» بمبلغٍ لا يُحفَظ (خسارة مالية صامتة). */}
+          {/* في التصحيح تُخفى لوحة الدفع: `buildCorrectionPayload` يتجاهل `base.payment` كلياً،
+              فحقلا «المدفوع» و«الكل» كانا يقبلان مبلغاً يُهمَل صامتاً (الموظّف يكتب ما قبضه
+              فوق لوحة التصحيح مباشرةً فلا يُسجَّل إيصالٌ ولا يُخصَم من الذمّة). المسار الوحيد
+              للمال هنا هو «المُحصَّل الآن»، وطريقتُه صارت بجواره في CorrectionPanel. */}
           <TotalsPanel
             shippingLabel="أجرة التوصيل"
             allowFreeShipping
@@ -935,6 +954,7 @@ export default function SalesInvoiceNew() {
             showShipping
             showOtherExpenses={false}
             showTaxToggle
+            showPayment={!isCorrection}
           />
           {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لبوّابة الكاشير.
               في التصحيح يكفي المرجع النصّي (عقد `sales.reissue` يحمله بنفسه). */}
@@ -964,6 +984,8 @@ export default function SalesInvoiceNew() {
               setReason={setReason}
               collectNow={collectNow}
               setCollectNow={setCollectNow}
+              paymentMethod={state.paymentMethod}
+              setPaymentMethod={(m) => dispatch({ type: "SET_FIELD", field: "paymentMethod", value: m })}
               overpayHandling={overpayHandling}
               setOverpayHandling={setOverpayHandling}
               hasCustomer={state.entityId != null}
@@ -1065,6 +1087,9 @@ interface CorrectionPanelProps {
   setReason: (v: string) => void;
   collectNow: string;
   setCollectNow: (v: string) => void;
+  /** طريقة قبض «المُحصَّل الآن» — هنا لا في TotalsPanel: لوحة الدفع مخفيّة في التصحيح. */
+  paymentMethod: PaymentMethod;
+  setPaymentMethod: (v: PaymentMethod) => void;
   overpayHandling: "CREDIT" | "CASH_REFUND";
   setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void;
   hasCustomer: boolean;
@@ -1089,6 +1114,8 @@ function CorrectionPanel({
   setReason,
   collectNow,
   setCollectNow,
+  paymentMethod,
+  setPaymentMethod,
   overpayHandling,
   setOverpayHandling,
   hasCustomer,
@@ -1142,6 +1169,35 @@ function CorrectionPanel({
         <div className="space-y-1">
           <Label className="text-xs font-semibold">المُحصَّل الآن</Label>
           <MoneyInput value={collectNow} onChange={setCollectNow} placeholder="0" ariaLabel="المبلغ المُحصَّل الآن" />
+          {/* الطرق تُشتقّ من السياسة المركزية (لا نصّ ثابت) — المعطَّلة لا تُعرَض أصلاً هنا
+              لأنّ هذا منتقٍ مضغوط لا لوحة دفعٍ كاملة. */}
+          {collect.gt(0) && (
+            <div className="space-y-1 pt-1">
+              <Label className="text-xs font-semibold">طريقة القبض</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {PAYMENT_METHODS.filter((m) => isPosPaymentMethodEnabled(m.value)).map((m) => {
+                  const MIcon = m.icon;
+                  const active = paymentMethod === m.value;
+                  return (
+                    <button
+                      key={m.value}
+                      type="button"
+                      onClick={() => setPaymentMethod(m.value)}
+                      aria-pressed={active}
+                      className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        active
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-input bg-card text-foreground hover:bg-muted"
+                      }`}
+                    >
+                      <MIcon aria-hidden className="size-4" />
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {remainingCredit.gt(0) && (
             <p className={`text-xs ${hasCustomer ? "text-muted-foreground" : "text-destructive"}`}>
               {hasCustomer
