@@ -112,6 +112,24 @@ describe("returnSale — إسناد الاسترداد النقدي لدرج ا�
     expect(Number(cashOut?.total ?? 0)).toBeCloseTo(10, 2); // ظهر في Z-report صاحب الدرج الحقيقيّ.
   });
 
+  /**
+   * الزبون العابر بلا حساب: ما لا يُردّ لا يجد أين يُقيَّد — لا ذمّة ولا رصيد دائن. مرتجعٌ
+   * بلا استرداد كان يُعيد البضاعة ويعكس الإيراد ويُبقي ماله في الدرج بلا التزامٍ مقابل.
+   * يسقط هذا الاختبار على الشيفرة قبل إصلاح ١٧/٨.
+   */
+  it("زبونٌ عابر: مرتجعٌ بلا استرداد يُرفَض — لا ذمّة تستوعب ماله", async () => {
+    const cashierShift = await openShiftFor(2, 1);
+    const { invoiceId, itemId } = await sellOneCash(cashierShift);
+
+    await expect(
+      returnSale({ invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 1 }], refund: null }, manager),
+    ).rejects.toThrow(/زبونٌ عابر بلا حساب/);
+
+    // صفر أثر: البضاعة لم تعُد والإيراد لم يُعكَس (المعاملة ذرّية).
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, invoiceId)))[0];
+    expect(Number(inv.returnedTotal ?? 0)).toBe(0);
+  });
+
   it("وردية خاصّة للمديرة + وردية الكاشير مفتوحتان معاً ⇒ الاسترداد بلا تحديد صريح يُرفَض (تعدّد الدرج)", async () => {
     const mgrShift = await openShiftFor(1, 1);
     const cashierShift = await openShiftFor(2, 1);
