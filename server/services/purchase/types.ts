@@ -8,24 +8,41 @@ export interface PurchaseLineInput {
   quantity: string; // in purchase unit
   unitPrice: string; // price per purchase unit
 }
-export interface CreatePurchaseOrderInput {
-  supplierId: number;
-  branchId: number;
+/**
+ * الحقول التي يُشتقّ منها حسابُ أمر الشراء (البنود والإجماليات) — يتقاسمها الإنشاء والتعديل
+ * عبر `computePurchaseDocument` كي لا ينجرف الحسابان. لا تحمل هويّة الأمر ولا حالته.
+ */
+export interface PurchaseDocumentInput {
   taxRatePercent?: string | null;
-  status?: "DRAFT" | "SENT" | "CONFIRMED";
   items: PurchaseLineInput[];
-  notes?: string | null;
-  clientRequestId?: string;
   /** usd-po-reconcile: مطابقة سعر الشراء بالدولار (إعلامي بحت — لا يمسّ total/paidAmount الديناريَين). */
   agreedCurrency?: "IQD" | "USD";
   /** مبلغ فاتورة المورد الفعلية بالدولار — إلزامي فقط حين agreedCurrency=USD. */
   usdTotal?: string | null;
   /** سعر التثبيت بالدينار لكل دولار. وجوده يعني أن unitPrice في البنود سعر المورد بالدولار. */
   agreedRate?: string | null;
-  /** landed-cost: تكلفة الشحن الكلّية على أمر الشراء (تُرسمَل في تكلفة المخزون عند الاستلام، لا مصروف P&L). */
+  /** landed-cost: تكلفة الشحن الكلّية على أمر الشراء (مصروف نقلٍ لحظة الاستلام — لا ذمّة مورّد ولا تكلفة صنف). */
   shippingCost?: string | null;
-  /** landed-cost: تكلفة الكمرك الكلّية على أمر الشراء (تُرسمَل مثل الشحن تماماً). */
+  /** landed-cost: تكلفة الكمرك الكلّية على أمر الشراء (تُعامَل مثل الشحن تماماً). */
   customsCost?: string | null;
+}
+
+export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
+  supplierId: number;
+  branchId: number;
+  status?: "DRAFT" | "SENT" | "CONFIRMED";
+  notes?: string | null;
+  clientRequestId?: string;
+}
+
+/**
+ * تعديل أمر شراء قبل أيّ أثرٍ ماليّ/مخزنيّ. الفرع ورقم الأمر والحالة **غير قابلة للتعديل**:
+ * الفرع يحدّد ترقيم الأمر وعزلَه الأمنيّ، والحالة لها إجراؤها المستقلّ (اعتماد/إلغاء).
+ */
+export interface UpdatePurchaseOrderInput extends PurchaseDocumentInput {
+  purchaseOrderId: number;
+  supplierId: number;
+  notes?: string | null;
 }
 
 export interface SettlePurchaseUsdDirectInput {

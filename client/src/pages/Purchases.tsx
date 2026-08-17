@@ -347,6 +347,16 @@ export default function Purchases() {
                             gate: { roles: ["manager", "purchasing"], module: "purchases", level: "FULL" },
                           },
                           {
+                            key: "edit",
+                            kind: "edit",
+                            label: "تعديل الأمر",
+                            href: `/purchases/${p.id}/edit`,
+                            // الأهليّة الكاملة خادمية (لا استلام/لا دفعة)؛ هنا نُخفيه عن النهائيّ
+                            // فقط — والشاشة نفسها تشرح سبب المنع لو تعذّر التعديل.
+                            hidden: terminal,
+                            gate: { roles: ["manager", "purchasing"], module: "purchases", level: "FULL" },
+                          },
+                          {
                             key: "receive",
                             kind: terminal ? "view" : "approve",
                             label: terminal ? "عرض" : "استلام",
