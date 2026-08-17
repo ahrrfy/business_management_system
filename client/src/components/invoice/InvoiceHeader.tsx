@@ -43,6 +43,17 @@ export interface InvoiceHeaderProps {
   invoiceType: InvoiceType;
   /** Optional sales reps list (id+name). When empty, the field is hidden. */
   salesReps?: Array<{ id: number; name: string }>;
+  /**
+   * شارة حالة المستند في رأس المحرّر. الافتراض «مسوّدة» لأنّ كلّ المحرّرات تُنشئ مستنداً جديداً؛
+   * شاشةُ تعديلِ مستندٍ قائم تُمرّر حالته الحقيقية (مثل «مؤكّد») كي لا يقرأ المستخدم أنّه يحرّر
+   * مسوّدةً بينما هو يعدّل أمراً معتمَداً على وشك الاستلام.
+   */
+  statusBadge?: string;
+  /**
+   * يُثبّت حقل الفرع حتى للأدمن. شاشةُ تعديلِ مستندٍ قائم تحتاجه: فرعُ المستند يحدّد ترقيمه
+   * وعزلَه الأمنيّ فلا يُنقَل بتعديل، وتركُ المُنتقي مفتوحاً يجعل الاختيارَ يُهمَل بصمت.
+   */
+  lockBranch?: boolean;
 }
 
 function FieldGroup({
@@ -93,7 +104,7 @@ function HeaderSection({
   );
 }
 
-export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: InvoiceHeaderProps) {
+export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusBadge, lockBranch }: InvoiceHeaderProps) {
   const typeInfo = INVOICE_TYPES[invoiceType];
   const isSale = invoiceType === "SALE" || invoiceType === "QUOTATION" || invoiceType === "SALE_RETURN";
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
@@ -103,7 +114,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
   const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
   // سياسة main الحديثة: الأدمن وحده يعبر الفروع؛ المدير وسائر الأدوار مثبتون على فرع الحساب.
-  const canChangeBranch = me.data?.role === "admin";
+  const canChangeBranch = me.data?.role === "admin" && !lockBranch;
   const utils = trpc.useUtils();
   const latestStateRef = useRef(state);
   latestStateRef.current = state;
@@ -200,7 +211,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           </div>
           <span className="text-sm font-extrabold text-foreground">{typeInfo.label}</span>
           <span className="rounded-md border border-amber-300/40 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
-            مسوّدة
+            {statusBadge ?? "مسوّدة"}
           </span>
         </div>
         <div className="flex items-center gap-2">
