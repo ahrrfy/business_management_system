@@ -17,11 +17,67 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check-test-build:
+  # Vitest يشغّل ملفات التكامل تسلسلياً عمداً (fileParallelism:false) لأنّ كل ملف ينظّف
+  # قاعدة الاختبار. بعد #626 تجاوزت الحزمة الواحدة ٨٣:٥٤ ولم تكتمل ضمن سقف ٩٠ دقيقة.
+  # نقسم *الملفات* عبر مشغّلين، لكلّ واحد MySQL مستقلة؛ يبقى التنفيذ داخل كل قاعدة
+  # تسلسلياً، واتحاد الشريحتين هو الحزمة الكاملة بلا تداخل وفق عقد Vitest --shard.
+  test-shards:
+    name: test-shard-${{ matrix.shard }}-of-2
     runs-on: ubuntu-latest
-    # سقفٌ زمنيّ: بلغت الاختبارات الكاملة في main نحو ٤٤ دقيقة، وقد تتجاوز المهمّة ٦٠ دقيقة
-    # مع تذبذب سرعة المشغّل. يبقي ٩٠ دقيقة كل البوابات إلزامية ويمنع التشغيل العالق طويلاً.
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          # خدمة محلية مؤقتة داخل runner معزول؛ لا اعتماد ثابت كي لا يدخل سرٌ تاريخ Git.
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: erp_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      DATABASE_URL: mysql://root@127.0.0.1:3306/erp_test
+      TEST_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_test
+      ALLOW_TEST_DB_PORT_3306: "1"
+      TEST_CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: توليد سر JWT مؤقت لتشغيل الاختبارات
+        run: echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - name: تهيئة مخطّط قاعدة الاختبار
+        run: pnpm db:push
+      - name: تَطبيق هَجرات يَدوية إضافية (GENERATED columns إلخ)
+        run: node scripts/ci-apply-extra-migrations.mjs
+      - name: تهيئة قاعدة التحكّم (تعدّد الشركات)
+        run: node scripts/bootstrap-control-db.mjs
+        env:
+          CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
+      - name: الاختبارات — الشريحة ${{ matrix.shard }}/2
+        # `pnpm test -- ...` يعالج الخيارات كخيارات pnpm؛ يلزم `run` لتمريرها إلى Vitest.
+        run: pnpm run test -- --shard=${{ matrix.shard }}/2
+
+  check-test-build:
+    needs: test-shards
+    # يبقى اسم الفحص المطلوب ثابتاً، ويصدر فشلاً صريحاً بدل skipped إن فشلت/أُلغيت شريحة.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    # الاختبارات أصبحت في وظيفتَي الشطر أعلاه؛ هذه الوظيفة للعقود/الحرّاس/البناء فقط.
+    timeout-minutes: 45
     services:
       mysql:
         image: mysql:8.0
@@ -43,6 +99,8 @@ jobs:
       TEST_CONTROL_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_control_test
       JWT_SECRET: ci_test_secret_change_me_0123456789abcdef
     steps:
+      - name: تأكيد نجاح جميع شرائح الاختبار
+        run: test '${{ needs.test-shards.result }}' = 'success'
       # fetch-depth: 0 — يلزم لحارس «تصادم ترقيم الهجرات مع origin/main» داخل check:migrations
       # (يقارن `_journal.json` بالجانب الآخر). بعمق ١ لا يوجد مرجع origin/main فيتخطّى الحارس
       # صامتاً — و«حارسٌ لا يُشغَّل آلياً ليس حارساً» (درس CI موثَّق في هذا الملف أدناه).
@@ -114,8 +172,6 @@ jobs:
         run: pnpm check:nginx-abuse
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
-      - name: الاختبارات
-        run: pnpm test
       - name: بناء الإنتاج
         run: pnpm build
 
