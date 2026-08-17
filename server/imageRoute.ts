@@ -24,7 +24,13 @@ import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { productImages, products, storeBanners } from "../drizzle/schema";
 import { getSessionContext } from "./auth/session";
 import { getDb, isMultiTenantModeActive } from "./db";
-import { getImageStore, isCurrentTenantCandidateKey, shortHash } from "./lib/imageStore";
+import {
+  getImageStore,
+  isCurrentTenantCandidateKey,
+  isImageStoreUnavailableError,
+  recordImageStorePublicFallback,
+  shortHash,
+} from "./lib/imageStore";
 import { logger } from "./logger";
 import { resolveKioskDevice } from "./services/kioskDeviceService";
 import { inspectStorefrontContext } from "./services/storefrontContextService";
@@ -37,6 +43,8 @@ const ONE_YEAR = 60 * 60 * 24 * 365;
 
 /** أنواع الصور المسموح خدمتها — قائمة بيضاء صريحة (لا نثق ببادئة data URL القادمة من DB). */
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"]);
+/** المصغّرة شبكة عرض فقط؛ حدها يمنع تحويل عمود DB إلى مسار بديل لصور كاملة كبيرة. */
+const MAX_FALLBACK_THUMB_BYTES = 256 * 1024;
 
 export interface DecodedImage {
   mime: string;
@@ -159,7 +167,34 @@ type StoredProductImage = {
   contentHash: string | null;
   mime: string | null;
   bytes: number | null;
+  thumbDataUrl?: string | null;
 };
+
+/**
+ * سقوط عرضي عام فقط عند تعثّر R2. لا ETag ولا immutable: لا يجوز تثبيت المصغّرة سنةً مكان
+ * المشتق المعتمد. المصدر الوحيد هو thumbDataUrl المنشور في نفس صف الصورة المعتمدة، لا url ولا الأصل.
+ */
+function sendPublicThumbnailFallback(res: Response, dataUrl: string | null | undefined): Response | null {
+  const img = decodeDataUrl(dataUrl);
+  if (!img || img.bytes.length > MAX_FALLBACK_THUMB_BYTES) return null;
+  res.removeHeader("ETag");
+  res.removeHeader("Content-Length");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Content-Type", img.mime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("X-Image-Fallback", "thumbnail");
+  res.setHeader("Content-Length", String(img.bytes.length));
+  return res.end(img.bytes);
+}
+
+function preventCachingStoredImageFailure(res: Response): void {
+  res.removeHeader("ETag");
+  res.removeHeader("Content-Length");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+}
 
 /**
  * يبثّ **المشتق المعتمد فقط** من المخزن الخاص. مفتاح المرشّح لا يصل للعميل ولا توجد نقطة للأصل:
@@ -187,14 +222,35 @@ async function sendStoredProductImage(
   res.setHeader("ETag", etag);
   if (req.headers["if-none-match"] === etag) return res.status(304).end();
 
-  const stream = await getImageStore().getStream(objectKey);
-  if (!stream) return res.status(404).end();
+  let stream;
+  try {
+    stream = await getImageStore().getStream(objectKey);
+  } catch (error) {
+    if (!isImageStoreUnavailableError(error)) {
+      preventCachingStoredImageFailure(res);
+      throw error;
+    }
+    if (visibility === "public") {
+      const fallback = sendPublicThumbnailFallback(res, image.thumbDataUrl);
+      if (fallback) {
+        recordImageStorePublicFallback();
+        logger.warn({ component: "r2_image_store", reason: error.reason }, "img: serving approved thumbnail fallback");
+        return fallback;
+      }
+    }
+    preventCachingStoredImageFailure(res);
+    return res.status(503).end();
+  }
+  if (!stream) {
+    preventCachingStoredImageFailure(res);
+    return res.status(404).end();
+  }
   res.setHeader("Content-Type", mime.toLowerCase());
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   if (bytes != null && Number.isSafeInteger(bytes) && bytes > 0) res.setHeader("Content-Length", String(bytes));
   stream.on("error", (error) => {
-    logger.error({ err: error }, "img: private object stream failed");
+    logger.error({ err: error }, "img: object stream failed");
     res.destroy(error);
   });
   stream.pipe(res);
@@ -314,6 +370,7 @@ export function imageRouter(): Router {
             contentHash: productImages.contentHash,
             mime: productImages.mime,
             bytes: productImages.bytes,
+            thumbDataUrl: productImages.thumbDataUrl,
           })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))

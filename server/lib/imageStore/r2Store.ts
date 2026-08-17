@@ -14,6 +14,14 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from "node:stream";
+import {
+  R2ResilienceController,
+  readR2ResilienceConfig,
+  type R2Operation,
+  type R2ResilienceConfig,
+  type R2ResilienceEvent,
+  type R2ResilienceSnapshot,
+} from "./resilience";
 import type { ImageStore, ObjectHead, PutResult } from "./types";
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"]);
@@ -32,10 +40,13 @@ interface S3Executor {
   send(command: unknown): Promise<unknown>;
 }
 
-interface R2ImageStoreDependencies {
+export interface R2ImageStoreDependencies {
   client?: S3Executor;
   clientFactory?: (config: S3ClientConfig) => S3Executor;
   signedUrl?: (client: S3Executor, command: GetObjectCommand, options: { expiresIn: number }) => Promise<string>;
+  resilience?: R2ResilienceController;
+  resilienceConfig?: R2ResilienceConfig;
+  onResilienceEvent?: (event: R2ResilienceEvent) => void;
 }
 
 function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {
@@ -110,6 +121,7 @@ export class R2ImageStore implements ImageStore {
   private readonly client: S3Executor;
   private readonly bucket: string;
   private readonly sign: NonNullable<R2ImageStoreDependencies["signedUrl"]>;
+  private readonly resilience: R2ResilienceController;
 
   constructor(config: R2ImageStoreConfig, dependencies: R2ImageStoreDependencies = {}) {
     assertR2Config(config);
@@ -130,6 +142,23 @@ export class R2ImageStore implements ImageStore {
       (new S3Client(clientConfig) as unknown as S3Executor);
     this.sign = dependencies.signedUrl ?? ((client, command, options) =>
       getSignedUrl(client as S3Client, command, options));
+    this.resilience = dependencies.resilience ?? new R2ResilienceController(
+      dependencies.resilienceConfig ?? readR2ResilienceConfig(),
+      { onEvent: dependencies.onResilienceEvent },
+    );
+  }
+
+  /** لقطة محلية بلا bucket/key/اعتماد، صالحة للسجل والمراقبة فقط. */
+  resilienceSnapshot(): R2ResilienceSnapshot {
+    return this.resilience.snapshot();
+  }
+
+  recordPublicFallback(): void {
+    this.resilience.recordPublicFallback();
+  }
+
+  private send(operation: R2Operation, command: unknown): Promise<unknown> {
+    return this.resilience.run(operation, () => this.client.send(command));
   }
 
   async put(key: string, body: Buffer, contentType: string): Promise<PutResult> {
@@ -137,7 +166,7 @@ export class R2ImageStore implements ImageStore {
     assertImagePayload(body, contentType);
     const existing = await this.head(key);
     if (existing.exists) return { key, bytes: existing.bytes ?? body.length, existed: true };
-    await this.client.send(new PutObjectCommand({
+    await this.send("put", new PutObjectCommand({
       Bucket: this.bucket,
       Key: key,
       Body: body,
@@ -150,7 +179,7 @@ export class R2ImageStore implements ImageStore {
   async head(key: string): Promise<ObjectHead> {
     assertSafeKey(key);
     try {
-      const result = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key })) as { ContentLength?: number };
+      const result = await this.send("head", new HeadObjectCommand({ Bucket: this.bucket, Key: key })) as { ContentLength?: number };
       return { exists: true, ...(typeof result.ContentLength === "number" ? { bytes: result.ContentLength } : {}) };
     } catch (error) {
       if (isNotFound(error)) return { exists: false };
@@ -161,7 +190,7 @@ export class R2ImageStore implements ImageStore {
   async getStream(key: string): Promise<Readable | null> {
     assertSafeKey(key);
     try {
-      const result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })) as { Body?: unknown };
+      const result = await this.send("get", new GetObjectCommand({ Bucket: this.bucket, Key: key })) as { Body?: unknown };
       if (!result.Body) throw new Error("ImageStore R2: الكائن الموجود بلا جسم.");
       return toNodeStream(result.Body);
     } catch (error) {
@@ -173,7 +202,7 @@ export class R2ImageStore implements ImageStore {
   async delete(key: string): Promise<void> {
     assertSafeKey(key);
     try {
-      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+      await this.send("delete", new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
     } catch (error) {
       if (!isNotFound(error)) throw error;
     }

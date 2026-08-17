@@ -91,6 +91,7 @@ export const productStudioRouter = router({
       taskId,
       originalDataUrl: z.string().max(1_300_000).nullable().optional(),
       processedDataUrl: z.string().max(1_300_000),
+      thumbnailDataUrl: z.string().max(180_000),
       mode: z.enum(["FLATTEN", "CUT"]),
       processingReceipt: z.string().uuid().nullable().optional(),
       proposedName: nullableText(255),
