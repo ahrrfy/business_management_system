@@ -107,6 +107,7 @@ systemctl is-active --quiet "${SEED_UNIT}"
 existing_pid="$(cat /home/deploy/.pm2/pm2.pid)"
 existing_start="$(proc_start_time "${existing_pid}")"
 grep -Fq "/system.slice/${SEED_UNIT}" "/proc/${existing_pid}/cgroup"
+[[ "$(/usr/bin/node "${HELPER_TARGET}" --inspect)" == "${existing_pid} ${existing_start}" ]]
 systemctl start "${UNIT}"
 assert_active_contract "${existing_pid}" no
 [[ "$(proc_start_time "${existing_pid}")" == "${existing_start}" ]]

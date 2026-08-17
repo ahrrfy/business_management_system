@@ -279,24 +279,38 @@ function runResurrectAsDeploy(account) {
 }
 
 async function main() {
+  const inspectOnly =
+    process.argv.length === 3 && process.argv[2] === "--inspect";
   if (
     process.platform !== "linux" ||
     process.geteuid?.() !== 0 ||
     process.getegid?.() !== 0 ||
-    process.argv.length !== 2 ||
+    (process.argv.length !== 2 && !inspectOnly) ||
     fileURLToPath(import.meta.url) !== INSTALLED_HELPER
   ) {
     throw codedError("PM2_SYSTEMD_ROOT_HELPER_IDENTITY_INVALID");
   }
 
   assertTrustedRootPath(INSTALLED_HELPER);
-  assertTrustedRootPath(NODE_BIN);
-  assertTrustedRootPath(SETPRIV_BIN);
-  assertTrustedRootPath(PM2_BIN);
   assertTrustedRootPath(PASSWD_FILE);
   const account = parseDeployAccount(fs.readFileSync(PASSWD_FILE, "utf8"));
   assertDeployDirectory(account.home, account);
   assertDeployDirectory(PM2_HOME, account, true);
+  if (inspectOnly) {
+    const daemon = oneDaemon({
+      procRoot: "/proc",
+      pm2Home: PM2_HOME,
+      deployUid: account.uid,
+      expectedVersion: EXPECTED_PM2_VERSION,
+    });
+    if (!daemon) throw codedError("PM2_SYSTEMD_DAEMON_NOT_FOUND");
+    console.log(`${daemon.pid} ${daemon.startTime}`);
+    return;
+  }
+
+  assertTrustedRootPath(NODE_BIN);
+  assertTrustedRootPath(SETPRIV_BIN);
+  assertTrustedRootPath(PM2_BIN);
   ensurePidDirectory();
 
   const daemon = await reconcilePm2ForSystemd({

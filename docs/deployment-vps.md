@@ -108,7 +108,7 @@ sudo mkdir -p /etc/systemd/system/pm2-deploy.service.d
 sudo cp /home/deploy/erp/deploy/systemd/pm2-deploy.service.d/wait-mysql.conf /etc/systemd/system/pm2-deploy.service.d/
 sudo chmod +x /home/deploy/erp/deploy/wait-mysql-healthy.sh   # دفاع ثانٍ (الـdrop-in يستدعيه عبر /bin/bash أصلاً)
 # لا تنفّذ JavaScript من /home/deploy بصلاحية root. ثبّت عقد PID بالكتلة الذرية الموثقة في §٧.
-# يجب أن تكون قيمة release_sha هي SHA أخضر في CI، وأن تأتي قيمتا SHA-256 من مخرجات الإصدار الموثوق.
+# يجب أخذ القيم الثلاث من summary تشغيل CI الأخضر على push إلى main للإصدار نفسه.
 # لا تحسب القيم المتوقعة من الشجرة القابلة للكتابة لـdeploy ثم تعاملها كإثبات.
 systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدرع ظاهر في الوحدة
 systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.mjs
@@ -279,8 +279,10 @@ sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 **مرة واحدة بعد إدخال عقد PID أعلاه أو عند تغيّر helper/drop-in:** بعد نجاح `prod:deploy` ثبّت
 الملفين في مسارين root-owned. ⛔ لا تشغّل `sudo node /home/deploy/erp/...`؛ فهذا يحوّل تعديل
 ملفات deploy إلى تنفيذ root. مصدر النسخ قابل للكتابة لـdeploy، لذلك لا يكفي `install source final`:
-ثبّت أولاً في ملف مؤقت root-owned على filesystem الهدف، قارنه بقيمة SHA-256 منشورة للإصدار
-الأخضر، ثم استخدم `mv -T` الذري. هذه الأوامر لا تستدعي start/stop/restart:
+ثبّت أولاً في ملف مؤقت root-owned على filesystem الهدف، قارنه بقيمة SHA-256 المنشورة في
+summary وظيفة `check-test-build` الخضراء على **push إلى main** للإصدار نفسه، ثم استخدم `mv -T`
+الذري. لا تأخذ القيم من تشغيل PR ذي merge ref ولا من checkout الخادم. هذه الأوامر لا تستدعي
+start/stop/restart:
 
 ```bash
 cd /home/deploy/erp
@@ -292,8 +294,8 @@ case "$release_sha$helper_sha256$dropin_sha256" in *'<'*|'') echo 'release hashe
 
 sudo /usr/bin/install -d -o root -g root -m 0755 /usr/local/libexec/erp
 sudo /usr/bin/install -d -o root -g root -m 0755 /etc/systemd/system/pm2-deploy.service.d
-backup_dir="/var/backups/erp-systemd/$release_sha"
-sudo /usr/bin/install -d -o root -g root -m 0700 "$backup_dir"
+sudo /usr/bin/install -d -o root -g root -m 0700 /var/backups/erp-systemd
+backup_dir="$(sudo /usr/bin/mktemp -d "/var/backups/erp-systemd/${release_sha}.XXXXXX")"
 if sudo test -e /usr/local/libexec/erp/pm2-systemd-start.mjs; then
   sudo /usr/bin/cp -a /usr/local/libexec/erp/pm2-systemd-start.mjs "$backup_dir/helper.previous"
 else
@@ -321,18 +323,25 @@ sudo /usr/bin/systemd-analyze verify pm2-deploy.service
 test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/pm2-systemd-start.mjs)" = root:root:755
 test "$(stat -c '%U:%G:%a' /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf)" = root:root:644
 
-# إن كان daemon يعمل والوحدة failed/inactive: **start فقط** يتبنّى PID نفسه بلا انقطاع.
-before="$(cat /home/deploy/.pm2/pm2.pid)"
+# إن كان daemon يعمل والوحدة failed/inactive: inspect الموثوق يقرأ /proc فقط ولا ينشئ daemon.
+before="$(sudo /usr/bin/node /usr/local/libexec/erp/pm2-systemd-start.mjs --inspect)"
+before_pid="${before%% *}"
+before_start="${before#* }"
 sudo systemctl start pm2-deploy.service
 after="$(systemctl show pm2-deploy.service -p MainPID --value)"
-test "$before" = "$after"
+test "$before_pid" = "$after"
+after_stat="$(cat "/proc/$after/stat")"
+after_tail="${after_stat##*) }"
+read -r -a after_fields <<< "$after_tail"
+test "$before_start" = "${after_fields[19]}"
 systemctl is-active --quiet pm2-deploy.service
 test "$(stat -c '%U:%G:%a' /run/erp-pm2/pm2-deploy.pid)" = root:root:644
 sudo -iu deploy pm2 status
 ```
 
-إذا فشل `systemd-analyze verify` أو أي تحقق **قبل** `systemctl start`، أعد النسختين السابقتين
-ذرياً من `$backup_dir` (أو احذف الهدف الذي يحمل marker ‏`*.absent`)، ثم نفّذ
+كل محاولة تنشئ `$backup_dir` جديداً بـ`mktemp -d` ولا تعيد استعمال backup سابقاً. إذا فشل
+`systemd-analyze verify` أو أي تحقق **قبل** `systemctl start`، أعد النسختين السابقتين ذرياً من
+ذلك المسار الفريد (أو احذف الهدف الذي يحمل marker ‏`*.absent`)، ثم نفّذ
 `systemctl daemon-reload` و`systemd-analyze verify` مجدداً. لا تنفّذ rollback بعد نجاح
 `start` وثبات PID إلا إذا ثبت انحراف العقد؛ فالعملية الحية لم تُقتل أو تُستبدل أصلاً.
 

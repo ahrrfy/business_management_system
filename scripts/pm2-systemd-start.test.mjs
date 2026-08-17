@@ -207,7 +207,23 @@ function fixture() {
   assert.match(docs, /\/usr\/bin\/mktemp \/usr\/local\/libexec\/erp\//u);
   assert.match(docs, /\/usr\/bin\/sha256sum -c -/u);
   assert.match(docs, /\/usr\/bin\/mv -Tf -- "\$helper_tmp"/u);
-  assert.match(docs, /\/var\/backups\/erp-systemd\/\$release_sha/u);
+  assert.match(
+    docs,
+    /mktemp -d "\/var\/backups\/erp-systemd\/\$\{release_sha\}\.XXXXXX"/u,
+  );
+  assert.match(docs, /pm2-systemd-start\.mjs --inspect/u);
+  assert.doesNotMatch(
+    docs,
+    /before="\$\(cat \/home\/deploy\/\.pm2\/pm2\.pid\)"/u,
+  );
+
+  const ci = fs.readFileSync(
+    path.join(PROJECT_ROOT, ".github/workflows/ci.yml"),
+    "utf8",
+  );
+  assert.match(ci, /RELEASE_PM2_HELPER_SHA256/u);
+  assert.match(ci, /RELEASE_PM2_DROPIN_SHA256/u);
+  assert.match(ci, /GITHUB_STEP_SUMMARY/u);
 
   const deploymentVerifier = fs.readFileSync(
     path.join(PROJECT_ROOT, "scripts/verify-hr-bridge-deployment.mjs"),

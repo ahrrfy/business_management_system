@@ -57,6 +57,18 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: نشر بصمات عقد PM2 للإصدار
+        run: |
+          release_sha="$(git rev-parse HEAD)"
+          helper_sha256="$(sha256sum deploy/systemd/pm2-systemd-start.mjs | cut -d ' ' -f 1)"
+          dropin_sha256="$(sha256sum deploy/systemd/pm2-deploy.service.d/20-pidfile-reconcile.conf | cut -d ' ' -f 1)"
+          printf 'RELEASE_SHA=%s\nRELEASE_PM2_HELPER_SHA256=%s\nRELEASE_PM2_DROPIN_SHA256=%s\n' "$release_sha" "$helper_sha256" "$dropin_sha256"
+          {
+            printf '### PM2/systemd release contract\n\n'
+            printf -- '- `RELEASE_SHA=%s`\n' "$release_sha"
+            printf -- '- `RELEASE_PM2_HELPER_SHA256=%s`\n' "$helper_sha256"
+            printf -- '- `RELEASE_PM2_DROPIN_SHA256=%s`\n' "$dropin_sha256"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: عقد PM2/systemd الحقيقي (daemon قائم + إقلاع نظيف)
         run: |
           sudo /usr/bin/install -o root -g root -m 0755 "$(command -v node)" /usr/bin/node
