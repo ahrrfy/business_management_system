@@ -58,6 +58,37 @@ export interface CreateTransferArgs {
  * إنشاء سند تحويل + خصم المصدر (TRANSFER_OUT لكل سطر) داخل معاملة واحدة — إمّا يخرج السند
  * كاملاً «بالطريق» أو لا شيء (نقص مخزون بأي سطر = ROLLBACK للكل).
  */
+/**
+ * قفل أرصدة أصناف السند **في فرعَي التحويل وحدهما**، مرتَّباً تصاعدياً بالمتغيّر.
+ *
+ * المسار هـ-٢ (١٧/٨) — نظير هـ-١ في مسار الهدايا: كان القفل `WHERE variantId IN (…)` **بلا شرط
+ * فرع** ⇒ يقفل صفوف **كلّ الفروع** لتلك الأصناف، فتُسلسَل مبيعات فرعٍ ثالثٍ لا علاقة له بالتحويل
+ * خلفه (اختناقٌ صامت لا خطأ يظهر). ولا يشتري ذلك أمانَ WAVG: لقطة التكلفة تُقرأ من
+ * `productVariants.costPrice` (عالميّة) وتُقفَل بصفّها مباشرةً بعد هذا القفل — وكمّيات الفروع
+ * الأخرى لا تدخل حساب هذا السند إطلاقاً.
+ *
+ * الترتيب التصاعديّ يبقى إلزامياً (لا يُمَسّ): هو ما يمنع `ER_LOCK_DEADLOCK` بين سندين
+ * متزامنين يمسكان الأصناف نفسها، ويحفظ تسلسل «الرصيد ثمّ صفّ التكلفة» المتّبع في الشراء والإنتاج.
+ */
+async function lockTransferBranchStock(
+  tx: Tx,
+  sortedVariantIds: number[],
+  branchIds: number[],
+): Promise<void> {
+  if (!sortedVariantIds.length) return;
+  await tx
+    .select({ id: branchStock.id })
+    .from(branchStock)
+    .where(
+      and(
+        inArray(branchStock.variantId, sortedVariantIds),
+        inArray(branchStock.branchId, Array.from(new Set(branchIds)).sort((x, y) => x - y)),
+      ),
+    )
+    .orderBy(asc(branchStock.variantId))
+    .for("update");
+}
+
 export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   if (a.fromBranchId === a.toBranchId) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التحويل لنفس الفرع" });
@@ -124,12 +155,7 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   const sortedVariantIds = sorted.map((it) => it.variantId);
   // نفس ترتيب أقفال WAVG في الشراء/الإنتاج: أرصدة الصنف عالمياً ثم صف التكلفة.
   // بذلك تكون لقطة الإرسال هي التكلفة الفعلية لحظة خروج البضاعة، لا قراءة سبقت استلاماً متزامناً.
-  await tx
-    .select({ id: branchStock.id })
-    .from(branchStock)
-    .where(inArray(branchStock.variantId, sortedVariantIds))
-    .orderBy(asc(branchStock.variantId))
-    .for("update");
+  await lockTransferBranchStock(tx, sortedVariantIds, [a.fromBranchId, a.toBranchId]);
   const costRows = await tx
     .select({ id: productVariants.id, costPrice: productVariants.costPrice })
     .from(productVariants)
