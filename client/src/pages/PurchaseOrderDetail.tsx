@@ -8,7 +8,7 @@ import { fmtDate } from "@/lib/date";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { hasModuleAccess } from "@shared/permissions";
-import { PackageCheck } from "lucide-react";
+import { PackageCheck, Pencil } from "lucide-react";
 import { Link, useParams } from "wouter";
 
 const PO_STATUS: Record<string, string> = {
@@ -103,19 +103,39 @@ export default function PurchaseOrderDetail() {
   // الاستلام مقصورٌ على CONFIRMED: `receivePurchase` يرفض كل ما عداها (purchase/receive.ts:180)
   // ⇒ إظهار الزرّ لمسوّدةٍ أو أمرٍ مُرسَل يقود المستخدم إلى رفضٍ حتميّ بعد ملء النموذج.
   const openForReceiving = d.status === "CONFIRMED";
+  // التعديل ممكن ما لم يبدأ الأثر الفعليّ: أمرٌ نهائيّ، أو استُلم منه سطر، أو حمل دفعة.
+  // نفس حرّاس `updatePurchaseOrder` — والخادم هو الحكم النهائيّ.
+  const openForEditing =
+    d.status !== "RECEIVED" &&
+    d.status !== "CANCELLED" &&
+    !d.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0) &&
+    !D(d.paidAmount ?? 0).gt(0) &&
+    !D(d.paidUsd ?? 0).gt(0);
 
   return (
     <div className="space-y-4">
       <PageHeader
         title={`أمر شراء ${d.poNumber ?? `#${d.id}`}`}
         actions={
-          canReceive && openForReceiving ? (
-            <Button asChild size="sm">
-              <Link href={`/purchases/${d.id}/receive`}>
-                <PackageCheck aria-hidden className="size-4" />
-                استلام
-              </Link>
-            </Button>
+          canReceive && (openForEditing || openForReceiving) ? (
+            <div className="flex items-center gap-2">
+              {openForEditing ? (
+                <Button asChild size="sm" variant="outline">
+                  <Link href={`/purchases/${d.id}/edit`}>
+                    <Pencil aria-hidden className="size-4" />
+                    تعديل
+                  </Link>
+                </Button>
+              ) : null}
+              {openForReceiving ? (
+                <Button asChild size="sm">
+                  <Link href={`/purchases/${d.id}/receive`}>
+                    <PackageCheck aria-hidden className="size-4" />
+                    استلام
+                  </Link>
+                </Button>
+              ) : null}
+            </div>
           ) : undefined
         }
       />
