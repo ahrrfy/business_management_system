@@ -96,10 +96,11 @@ async function verifyConcurrentIntentLock(namespace) {
     );
     const gate = path.join(root, "gate");
     const winner = path.join(root, "winner");
+    const blocked = path.join(root, "blocked");
     const childSource = String.raw`
 const fs = require("node:fs");
 const tools = require(process.argv[1]);
-const [root, namespace, gate, winner] = process.argv.slice(2);
+const [root, namespace, gate, winner, blocked] = process.argv.slice(2);
 const wait = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 fs.writeFileSync(gate + "." + process.pid + ".ready", "ready\n", { flag: "wx" });
 while (!fs.existsSync(gate)) wait(10);
@@ -107,14 +108,19 @@ try {
   const unlock = tools.acquireRuntimeIntentLock(root, namespace);
   try {
     fs.writeFileSync(winner, String(process.pid), { flag: "wx" });
+    const deadline = Date.now() + 10_000;
+    while (!fs.existsSync(blocked)) {
+      if (Date.now() >= deadline) throw new Error("LOCK_RACE_BLOCKED_TIMEOUT");
+      wait(10);
+    }
     process.stdout.write("WINNER\n");
-    wait(750);
   } finally { unlock(); }
 } catch (error) {
   const expected = namespace === "sync"
     ? "HR_BRIDGE_DEPLOY_SYNC_ALREADY_RUNNING"
     : "HR_BRIDGE_DEPLOY_ALREADY_RUNNING";
   if (error?.message !== expected) throw error;
+  fs.writeFileSync(blocked, String(process.pid), { flag: "wx" });
   process.stdout.write("BLOCKED\n");
 }`;
     const children = [0, 1].map(() =>
@@ -128,6 +134,7 @@ try {
           namespace,
           gate,
           winner,
+          blocked,
         ],
         { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
       ),

@@ -57,6 +57,10 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: عقد PM2/systemd الحقيقي (daemon قائم + إقلاع نظيف)
+        run: |
+          sudo "$(command -v npm)" install --global --prefix /usr pm2@7.0.3
+          sudo /usr/bin/bash scripts/pm2-systemd-linux.test.sh
       # Dependency vulnerability audit lives in its own workflow now (security.yml, via
       # OSV-Scanner) — it runs on the same push/PR triggers, so coverage is unchanged and
       # the build/test job no longer blocks on a separate, redundant audit step.

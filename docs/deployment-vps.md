@@ -107,8 +107,9 @@ exit                                                # العودة إلى جلس
 sudo mkdir -p /etc/systemd/system/pm2-deploy.service.d
 sudo cp /home/deploy/erp/deploy/systemd/pm2-deploy.service.d/wait-mysql.conf /etc/systemd/system/pm2-deploy.service.d/
 sudo chmod +x /home/deploy/erp/deploy/wait-mysql-healthy.sh   # دفاع ثانٍ (الـdrop-in يستدعيه عبر /bin/bash أصلاً)
-# يثبت عقد ExecStart الذرّي ثم daemon-reload فقط؛ لا يبدأ/يوقف/يعيد تشغيل PM2.
-cd /home/deploy/erp && sudo /usr/bin/node scripts/install-pm2-systemd-contract.mjs
+# لا تنفّذ JavaScript من /home/deploy بصلاحية root. ثبّت عقد PID بالكتلة الذرية الموثقة في §٧.
+# يجب أن تكون قيمة release_sha هي SHA أخضر في CI، وأن تأتي قيمتا SHA-256 من مخرجات الإصدار الموثوق.
+# لا تحسب القيم المتوقعة من الشجرة القابلة للكتابة لـdeploy ثم تعاملها كإثبات.
 systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدرع ظاهر في الوحدة
 systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.mjs
 ```
@@ -120,10 +121,13 @@ systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.
 >
 > **عقد PID الخاص بـType=forking:** يحذف systemd ملف `PIDFile` القديم قبل `ExecStart`. إذا كان
 > daemon ‏PM2 قائماً، فإن `pm2 resurrect` يتصل به ولا يعيد إنشاء `pm2.pid`؛ كانت النتيجة
-> `protocol`/وحدة `failed` مع بقاء التطبيقات سليمة لكن خارج إشراف systemd. الـdrop-in الملتزم
-> يستبدل `ExecStart` فقط بغلافٍ يشغّل resurrect ثم يثبت daemon الوحيد بدلالة UID+PPID+عنوان
-> العملية+وقت البدء، ويعيد PIDFile ذرياً بصلاحية `0600` بلا kill/restart. وعلى إقلاعٍ نظيف
-> ينشئ PM2 الـdaemon كالمعتاد ثم يثبت الغلاف هويته نفسها. صفر daemon أو أكثر من واحد = فشل مغلق.
+> `protocol`/وحدة `failed` مع بقاء التطبيقات سليمة لكن خارج إشراف systemd. كما يرفض systemd تبنّي
+> PID خارج cgroup إذا كان PIDFile تحت ملكية `deploy`. الـdrop-in يشغّل بعلامة `+` **النسخة المثبّتة
+> root:root فقط** من helper ذاتي الاكتفاء؛ فتتحقق من مساراتها وهوية deploy، ثم تُسقط PM2 إلى UID/GID
+> الصحيحين عبر `setpriv --clear-groups` وبيئة ثابتة. وبعد resurrect تثبت daemon الوحيد بدلالة
+> UID+PPID+عنوان العملية+وقت البدء، وتكتب `/run/erp-pm2/pm2-deploy.pid` ذرياً `root:root 0644`.
+> لا يُنفّذ root أي كود من الشجرة القابلة للكتابة لـdeploy، ولا يحدث kill/restart. وعلى إقلاع نظيف
+> ينشئ PM2 الـdaemon داخل cgroup الخدمة؛ وعند وجوده تتبناه الوحدة دون تغيير PID. الغموض = فشل مغلق.
 
 ## ٤. nginx + HTTPS (إلزامي)
 
@@ -272,13 +276,50 @@ sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 
 > **PM2 خاص بكل مستخدم.** السكربت يرفض `root` أو `HOME/PM2_HOME` غير المطابق لـ`deploy`، كي لا يُنشئ daemon ثانياً يبدو فارغاً أو ينازع الخدمة الحقيقية على المنفذ.
 
-**مرة واحدة بعد إدخال عقد PID أعلاه أو عند تغيّر ملف الـdrop-in:** ثبّته كـroot بعد اكتمال
-`prod:deploy`. المثبّت يكتب الملف ذرياً، ينفّذ `daemon-reload` ويتحقق من العقد، ويرجع الملف
-السابق تلقائياً إن فشل؛ ولا يستدعي start/stop/restart إطلاقاً:
+**مرة واحدة بعد إدخال عقد PID أعلاه أو عند تغيّر helper/drop-in:** بعد نجاح `prod:deploy` ثبّت
+الملفين في مسارين root-owned. ⛔ لا تشغّل `sudo node /home/deploy/erp/...`؛ فهذا يحوّل تعديل
+ملفات deploy إلى تنفيذ root. مصدر النسخ قابل للكتابة لـdeploy، لذلك لا يكفي `install source final`:
+ثبّت أولاً في ملف مؤقت root-owned على filesystem الهدف، قارنه بقيمة SHA-256 منشورة للإصدار
+الأخضر، ثم استخدم `mv -T` الذري. هذه الأوامر لا تستدعي start/stop/restart:
 
 ```bash
 cd /home/deploy/erp
-sudo /usr/bin/node scripts/install-pm2-systemd-contract.mjs
+release_sha='<CI_GREEN_RELEASE_SHA>'
+helper_sha256='<RELEASE_PM2_HELPER_SHA256>'
+dropin_sha256='<RELEASE_PM2_DROPIN_SHA256>'
+test "$(git rev-parse HEAD)" = "$release_sha"
+case "$release_sha$helper_sha256$dropin_sha256" in *'<'*|'') echo 'release hashes are not pinned' >&2; exit 1;; esac
+
+sudo /usr/bin/install -d -o root -g root -m 0755 /usr/local/libexec/erp
+sudo /usr/bin/install -d -o root -g root -m 0755 /etc/systemd/system/pm2-deploy.service.d
+backup_dir="/var/backups/erp-systemd/$release_sha"
+sudo /usr/bin/install -d -o root -g root -m 0700 "$backup_dir"
+if sudo test -e /usr/local/libexec/erp/pm2-systemd-start.mjs; then
+  sudo /usr/bin/cp -a /usr/local/libexec/erp/pm2-systemd-start.mjs "$backup_dir/helper.previous"
+else
+  sudo /usr/bin/touch "$backup_dir/helper.absent"
+fi
+if sudo test -e /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf; then
+  sudo /usr/bin/cp -a /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf "$backup_dir/dropin.previous"
+else
+  sudo /usr/bin/touch "$backup_dir/dropin.absent"
+fi
+
+helper_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/.pm2-systemd-start.mjs.XXXXXX)"
+dropin_tmp="$(sudo /usr/bin/mktemp /etc/systemd/system/pm2-deploy.service.d/.20-pidfile-reconcile.conf.XXXXXX)"
+cleanup_pm2_contract_tmp() { sudo /usr/bin/rm -f -- "$helper_tmp" "$dropin_tmp"; }
+trap cleanup_pm2_contract_tmp EXIT HUP INT TERM
+sudo /usr/bin/install -o root -g root -m 0755 deploy/systemd/pm2-systemd-start.mjs "$helper_tmp"
+sudo /usr/bin/install -o root -g root -m 0644 deploy/systemd/pm2-deploy.service.d/20-pidfile-reconcile.conf "$dropin_tmp"
+printf '%s  %s\n' "$helper_sha256" "$helper_tmp" | sudo /usr/bin/sha256sum -c -
+printf '%s  %s\n' "$dropin_sha256" "$dropin_tmp" | sudo /usr/bin/sha256sum -c -
+sudo /usr/bin/mv -Tf -- "$helper_tmp" /usr/local/libexec/erp/pm2-systemd-start.mjs
+sudo /usr/bin/mv -Tf -- "$dropin_tmp" /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf
+trap - EXIT HUP INT TERM
+sudo /usr/bin/systemctl daemon-reload
+sudo /usr/bin/systemd-analyze verify pm2-deploy.service
+test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/pm2-systemd-start.mjs)" = root:root:755
+test "$(stat -c '%U:%G:%a' /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf)" = root:root:644
 
 # إن كان daemon يعمل والوحدة failed/inactive: **start فقط** يتبنّى PID نفسه بلا انقطاع.
 before="$(cat /home/deploy/.pm2/pm2.pid)"
@@ -286,8 +327,14 @@ sudo systemctl start pm2-deploy.service
 after="$(systemctl show pm2-deploy.service -p MainPID --value)"
 test "$before" = "$after"
 systemctl is-active --quiet pm2-deploy.service
+test "$(stat -c '%U:%G:%a' /run/erp-pm2/pm2-deploy.pid)" = root:root:644
 sudo -iu deploy pm2 status
 ```
+
+إذا فشل `systemd-analyze verify` أو أي تحقق **قبل** `systemctl start`، أعد النسختين السابقتين
+ذرياً من `$backup_dir` (أو احذف الهدف الذي يحمل marker ‏`*.absent`)، ثم نفّذ
+`systemctl daemon-reload` و`systemd-analyze verify` مجدداً. لا تنفّذ rollback بعد نجاح
+`start` وثبات PID إلا إذا ثبت انحراف العقد؛ فالعملية الحية لم تُقتل أو تُستبدل أصلاً.
 
 ⛔ لا تستعمل `systemctl restart/stop` ولا `pm2 kill/update` لهذا الإصلاح؛ تلك الأوامر تغيّر
 العمليات الحيّة بينما المطلوب تبنّي الـdaemon القائم فقط. عند الإقلاع النظيف لا يوجد `before`
@@ -386,7 +433,7 @@ BASH
 - [ ] فتح الموقع عبر `http://` يُحوَّل تلقائياً إلى `https://` (certbot).
 - [ ] `docker compose ps` تُظهر `healthy`، و`pm2 status` تُظهر `online`.
 - [ ] `ss -tlnp | grep 3307` يُظهر `127.0.0.1:3307` فقط (لا `0.0.0.0`) — القاعدة محجوبة بالربط المحلي. (بند ufw فقط على خادم مخصّص.)
-- [ ] `systemctl cat pm2-deploy.service | grep wait-mysql` يُظهر درع ترتيب الإقلاع (G10)، و`systemctl show pm2-deploy.service -p ExecStart --value` يُظهر `pm2-systemd-start.mjs`؛ الوحدة `active` و`MainPID` يساوي `/home/deploy/.pm2/pm2.pid`.
+- [ ] `systemctl cat pm2-deploy.service | grep wait-mysql` يُظهر درع ترتيب الإقلاع (G10)، و`ExecStart` يشير إلى helper ‏root-owned تحت `/usr/local/libexec/erp`؛ الوحدة `active` و`MainPID` يساوي `/run/erp-pm2/pm2-deploy.pid` المملوك `root:root 0644`.
 - [ ] `pnpm db:backup` يُنتج ملفاً > 2KB في `backups/` (+ مرافق `.sql.gpg` إن ضُبط التشفير)، ومهمّة cron الليلية مُسجَّلة (`crontab -l`).
 - [ ] أُجريت نسخة خارجية أولى (`pnpm backup:pull-vps` من جهاز المتجر) **وفُكَّ تشفيرها هناك بنجاح** بالعبارة المحفوظة خارج الخادم — عبارة خاطئة تُكتشف اليوم لا يوم الكارثة.
 - [ ] اختبار التعافي: `docker restart erp-mysql` ثم `pm2 restart erp-server` ثم قتل العملية (`pm2 pid` + `kill`) ⇒ كلّها تعود تلقائياً و`/healthz` يردّ 200. (⚠️ `sudo reboot` يُسقط كل أنظمة الخادم المشترك — فقط في نافذة صيانة يقرّها المالك؛ عندها يثبت الإقلاع الكامل.)
