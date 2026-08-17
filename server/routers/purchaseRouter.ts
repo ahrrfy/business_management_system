@@ -8,7 +8,7 @@ import { escLike } from "../lib/sqlLike";
 import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString, positiveRateString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
-import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase, settlePurchaseUsdDirect } from "../services/purchaseService";
+import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase, settlePurchaseUsdDirect, updatePurchaseOrder } from "../services/purchaseService";
 import { withTx } from "../services/tx";
 import { canSeeCostForUser, purchasesManagerProcedure, purchasesReadProcedure, purchasesWarehouseProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -141,6 +141,60 @@ export const purchaseRouter = router({
         { userId: ctx.user.id, branchId: effectiveBranchId },
       );
       await logAudit(ctx, { action: "purchase.createOrder", entityType: "purchaseOrder", entityId: (res as { purchaseOrderId?: number })?.purchaseOrderId, newValue: { supplierId: input.supplierId, items: input.items.length } });
+      return res;
+    }),
+
+  // تعديل أمر شراء قبل الاستلام — بنفس محرّر الإنشاء (شاشة `/purchases/:id/edit`). الحرّاس
+  // (لا استلام، لا دفعة، حالة غير نهائية) في الخدمة نفسها كي تحرس أيّ قناةٍ أخرى تستدعيها.
+  // الفرع **لا يُستقبَل من المدخلات**: تغييره يغيّر عزل الأمر وترقيمه ⇒ الخدمة تُبقيه على حاله.
+  updateOrder: purchasesManagerProcedure
+    .input(
+      z.object({
+        purchaseOrderId: z.number().int().positive(),
+        supplierId: z.number().int().positive(),
+        taxRatePercent: percentString.optional(),
+        items: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive(),
+              quantity: positiveQtyString,
+              unitPrice: nonNegMoneyString,
+            })
+          )
+          .min(1),
+        notes: z.string().optional(),
+        agreedCurrency: z.enum(["IQD", "USD"]).optional(),
+        usdTotal: positiveMoneyString.optional(),
+        agreedRate: positiveRateString.optional(),
+        shippingCost: nonNegMoneyString.optional(),
+        customsCost: nonNegMoneyString.optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن تعديل أمر شراء" });
+      }
+      const res = await updatePurchaseOrder(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+      // لقطة تدقيق بمبلغٍ وعددٍ لا بـ«عُدِّل» فقط — تعديلُ سعرٍ أو مورّدٍ قبل الاستلام يغيّر AP
+      // التي ستُرحَّل لاحقاً، فيلزم أثرٌ رقميّ يُراجَع (نفس درس المسار د-١ على تعديل الأسعار).
+      await logAudit(ctx, {
+        action: "purchase.updateOrder",
+        entityType: "purchaseOrder",
+        entityId: input.purchaseOrderId,
+        newValue: {
+          supplierId: input.supplierId,
+          items: input.items.length,
+          total: res.total,
+          shippingCost: input.shippingCost ?? "0",
+          customsCost: input.customsCost ?? "0",
+          agreedCurrency: input.agreedCurrency ?? "IQD",
+        },
+      });
       return res;
     }),
 
@@ -443,6 +497,13 @@ export const purchaseRouter = router({
         sku: productVariants.sku,
         variantName: productVariants.variantName,
         unitName: productUnits.unitName,
+        // الحقول الثلاثة التالية تُعيد بناء سطر السلّة في شاشة التعديل بنفس شكل سطر الإنشاء
+        // (`InvoiceLine`): بلا `productId` لا تجميعَ ولا تنقّلَ للمنتج، وبلا `conversionFactor`
+        // لا تحقّقَ من كسر وحدة الأساس عميلياً. اشتقاق المعامل من baseQuantity/quantity كان
+        // سيُخطئ عند كمّيةٍ كسريّة مقرَّبة ⇒ نقرأه من مصدره.
+        productId: products.id,
+        conversionFactor: productUnits.conversionFactor,
+        barcode: productUnits.barcode,
       })
       .from(purchaseOrderItems)
       .leftJoin(productVariants, eq(purchaseOrderItems.variantId, productVariants.id))

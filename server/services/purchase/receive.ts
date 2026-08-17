@@ -179,39 +179,28 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         message: "آخر أربعة أرقام للبطاقة إلزامية لتسوية مصروف الشحن",
       });
     }
-    const previewTotalLanded = round2(money(poPreview.shippingCost).plus(money(poPreview.customsCost)));
     const shippingBeneficiarySupplierId = input.shippingBeneficiarySupplierId ?? null;
-    const freeShippingBeneficiary = input.shippingBeneficiaryName?.trim() ?? "";
-    const shippingEvidenceReference = input.shippingEvidenceReference?.trim() ?? "";
-    const genericShippingNames = new Set([
-      "شركة النقل",
-      "شركة النقل/الكمرك",
-      "الناقل",
-      "الكمرك",
-      "shipping company",
-      "carrier",
-    ]);
-    if (previewTotalLanded.gt(0)) {
-      if (!shippingEvidenceReference) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "رقم فاتورة/وصل الشحن أو مستند الكمرك إلزامي لإثبات الاستحقاق" });
-      }
-      if (
-        new Set(["-", "لا يوجد", "بدون", "none", "n/a"]).has(
-          shippingEvidenceReference.toLocaleLowerCase("ar-IQ"),
-        )
-      ) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "أدخل مرجع فاتورة/وصل شحن أو مستند كمرك حقيقياً" });
-      }
-      if (shippingBeneficiarySupplierId == null && !freeShippingBeneficiary) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد الناقل/المستفيد الحقيقي من أجرة الشحن" });
-      }
-      if (
-        shippingBeneficiarySupplierId == null &&
-        genericShippingNames.has(freeShippingBeneficiary.toLocaleLowerCase("ar-IQ"))
-      ) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم العام للناقل غير مقبول؛ أدخل الاسم الحقيقي المثبت في المستند" });
-      }
-    }
+    // قرار المالك (١٧/٨/٢٦): **الناقل ومستند الشحن اختياريّان — لا يحجبان الاستلام.**
+    // كانا إلزامَين صلبَين (#604) بينما لا حقلَ لهما أصلاً في شاشة الاستلام ⇒ كلّ أمرٍ عليه
+    // شحن/كمرك كان يُرفَض حتماً برسالة «رقم فاتورة/وصل الشحن … إلزامي» بلا مسارِ خلاصٍ في
+    // الواجهة: ميزةٌ مقفلةٌ كلّياً لا حارسٌ. الخمسةُ التي يوجبها المبدأ المالي تبقى قائمة —
+    // إيصالٌ وقيدٌ مصنَّف وأثرٌ نقديّ وطرفٌ منسوبٌ إليه وتقريرٌ يُظهره — لكنّ الطرف والمستند
+    // يُملآن بقيمةٍ **صريحة الجهالة** حين لا يعرفهما أمين المخزن لحظة الاستلام، فيبقى المبلغ
+    // ظاهراً وقابلاً للتصحيح لاحقاً بدل أن يُمنَع إثباتُه أصلاً (مصروفٌ حقيقيٌّ بلا قيد = المال
+    // الذي «يضيع بصمت»، وهو الضرر الأكبر). طبقةُ الالتزامات (`accrualObligations`) تظلّ تُلزِم
+    // نصّاً غير فارغ ⇒ نضمن ذلك هنا بالبدائل لا بتليينها (تخدم مساراتٍ أخرى محكومة).
+    const rawShippingBeneficiary = input.shippingBeneficiaryName?.trim() ?? "";
+    const rawShippingEvidence = input.shippingEvidenceReference?.trim() ?? "";
+    // نائبات «لا شيء» تُعامَل كفراغٍ فتأخذ البديل الصريح بدل أن تُرفَض برسالة خطأ.
+    const placeholders = new Set(["-", "—", "لا يوجد", "بدون", "none", "n/a", "na"]);
+    const isPlaceholder = (value: string) => placeholders.has(value.toLocaleLowerCase("ar-IQ"));
+    const freeShippingBeneficiary =
+      !rawShippingBeneficiary || isPlaceholder(rawShippingBeneficiary) ? "" : rawShippingBeneficiary;
+    // البديل: رقم أمر الشراء نفسه — مستندٌ داخليٌّ حقيقيّ يربط الاستحقاق بمصدره، لا حشوٌ فارغ.
+    const shippingEvidenceReference =
+      !rawShippingEvidence || isPlaceholder(rawShippingEvidence)
+        ? `أمر الشراء ${poPreview.poNumber}`
+        : rawShippingEvidence;
     const mayPaySupplierCash =
       input.payment?.method === "CASH" && money(input.payment.amount).gt(0);
     let treasuryPrelocked = false;
@@ -524,7 +513,10 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       const shipMethod = input.shippingPaymentMethod ?? "CASH";
       {
         const shippingVoucherReference = `SHIP-${po.poNumber}-${paymentRequestToken}`;
-        let beneficiaryName = freeShippingBeneficiary;
+        // الطرف المنسوب إليه المصروف: مورّدٌ مسجَّل إن اختير، وإلّا الاسم الحرّ، وإلّا بديلٌ
+        // **صريح الجهالة** (لا اسمٌ عامّ يوهم بأنّه جهة حقيقية) — يظهر في `expenses.payee`
+        // وفي الالتزام والسند، فيُلتقَط بالبحث ويُصحَّح لاحقاً عند وصول فاتورة الناقل.
+        let beneficiaryName = freeShippingBeneficiary || "ناقل غير محدَّد";
         if (shippingBeneficiarySupplierId != null) {
           const [beneficiary] = await tx
             .select({ id: suppliers.id, name: suppliers.name, isActive: suppliers.isActive })

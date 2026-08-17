@@ -1489,7 +1489,8 @@ async function runSyncLockSelftest() {
     );
     const gate = path.join(directory, "race-gate");
     const winner = path.join(directory, "race-winner");
-    const racers = [0, 1].map(() =>
+    const blocked = path.join(directory, "race-blocked");
+    const racers = [0, 3_500].map((delayMs) =>
       spawn(
         process.execPath,
         [
@@ -1498,6 +1499,8 @@ async function runSyncLockSelftest() {
           path.join(directory, "race"),
           gate,
           winner,
+          blocked,
+          String(delayMs),
         ],
         {
           cwd: PROJECT_ROOT,
@@ -2351,8 +2354,18 @@ async function dispatch() {
     throw new Error("HR_BRIDGE_SYNC_LOCK_SELFTEST_CONTENDER_NOT_BLOCKED");
   }
   if (mode === "--sync-lock-race-contender") {
-    const [gate, winner, ...extra] = rest;
-    if (!directory || !gate || !winner || extra.length > 0) {
+    const [gate, winner, blocked, delayRaw, ...extra] = rest;
+    const delayMs = Number(delayRaw);
+    if (
+      !directory ||
+      !gate ||
+      !winner ||
+      !blocked ||
+      !Number.isSafeInteger(delayMs) ||
+      delayMs < 0 ||
+      delayMs > 5_000 ||
+      extra.length > 0
+    ) {
       throw new Error("HR_BRIDGE_SYNC_LOCK_SELFTEST_ARGUMENTS_INVALID");
     }
     const ready = path.join(
@@ -2367,17 +2380,25 @@ async function dispatch() {
       }
       sleep(10);
     }
+    if (delayMs > 0) sleep(delayMs);
     try {
       const lock = acquirePrePullLock(directory);
       try {
         fs.writeFileSync(winner, `${process.pid}\n`, { flag: "wx" });
+        const blockedDeadline = Date.now() + 10_000;
+        while (!fs.existsSync(blocked)) {
+          if (Date.now() >= blockedDeadline) {
+            throw new Error("HR_BRIDGE_SYNC_LOCK_SELFTEST_BLOCKED_TIMEOUT");
+          }
+          sleep(10);
+        }
         process.stdout.write("RACE_WINNER\n");
-        sleep(1_000);
       } finally {
         lock.release();
       }
     } catch (error) {
       if (error?.message === "HR_BRIDGE_DEPLOY_SYNC_ALREADY_RUNNING") {
+        fs.writeFileSync(blocked, `${process.pid}\n`, { flag: "wx" });
         process.stdout.write("RACE_BLOCKED\n");
         return;
       }
