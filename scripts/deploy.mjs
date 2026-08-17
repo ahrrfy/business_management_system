@@ -1487,8 +1487,14 @@ async function runSyncLockSelftest() {
       })}\n`,
       { encoding: "utf8", mode: 0o600, flag: "wx" },
     );
-    const gate = path.join(directory, "race-gate");
-    const winner = path.join(directory, "race-winner");
+  // إعادةٌ محدودة عند **التداخل الحميد**: أن تفوز المتسابقتان تباعاً ليس خرقاً للإقصاء
+  // المتبادل بل جدولةٌ تسلسلية (الثانية بدأت بعد أن حرّرت الأولى القفل فعلاً). إسقاط
+  // الاختبار عندها إنذارٌ كاذب. أمّا الخرق الحقيقيّ — فوزان **متزامنان** أو خروجٌ بخطأ —
+  // فيَسقط فوراً بلا إعادة: ملفّ `race-winner` يُكتب بـ`wx` فالفوز المتزامن يُفشِل الكتابة.
+  const RACE_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= RACE_ATTEMPTS; attempt += 1) {
+    const gate = path.join(directory, `race-gate-${attempt}`);
+    const winner = path.join(directory, `race-winner-${attempt}`);
     const racers = [0, 1].map(() =>
       spawn(
         process.execPath,
@@ -1508,7 +1514,11 @@ async function runSyncLockSelftest() {
     );
     const readyDeadline = Date.now() + 10_000;
     while (
-      fs.readdirSync(directory).filter((name) => name.endsWith(".ready"))
+      fs
+        .readdirSync(directory)
+        // مقصورٌ على هذه الجولة: ملفات الجاهزية مشتقّة من اسم البوّابة، فجولةٌ سابقة لا تُموّه
+        // العدّ فتُفتَح البوّابة قبل استعداد المتسابقتين (وهو ما يصنع التسلسل الحميد ابتداءً).
+        .filter((name) => name.startsWith(path.basename(gate)) && name.endsWith(".ready"))
         .length < 2
     ) {
       if (Date.now() >= readyDeadline) {
@@ -1534,15 +1544,28 @@ async function runSyncLockSelftest() {
           }),
       ),
     );
+    const winners = raceResults.filter((result) =>
+      result.stdout.includes("RACE_WINNER"),
+    ).length;
+    const blocked = raceResults.filter((result) =>
+      result.stdout.includes("RACE_BLOCKED"),
+    ).length;
+    const cleanExit = raceResults.every((result) => result.code === 0);
+    if (cleanExit && winners === 1 && blocked === 1) {
+      break; // الإقصاء المتبادل أُثبِت
+    }
+    // تداخلٌ حميد (تسلسلٌ بلا تزامن) ⇒ أعِد المحاولة؛ وإلّا فهو خرقٌ يَسقط الآن.
+    if (cleanExit && winners === 2 && blocked === 0 && attempt < RACE_ATTEMPTS) {
+      continue;
+    }
     if (
-      raceResults.some((result) => result.code !== 0) ||
-      raceResults.filter((result) => result.stdout.includes("RACE_WINNER"))
-        .length !== 1 ||
-      raceResults.filter((result) => result.stdout.includes("RACE_BLOCKED"))
-        .length !== 1
+      !cleanExit ||
+      winners !== 1 ||
+      blocked !== 1
     ) {
       throw new Error("HR_BRIDGE_SYNC_LOCK_SELFTEST_RACE_FAILED");
     }
+  }
   } finally {
     if (child?.exitCode == null) child?.kill();
     parentLock.release();
@@ -2372,12 +2395,23 @@ async function dispatch() {
       try {
         fs.writeFileSync(winner, `${process.pid}\n`, { flag: "wx" });
         process.stdout.write("RACE_WINNER\n");
-        sleep(1_000);
+        // الفائز يحمل القفل حتى **يُثبِت** الخاسر أنّه حُجب، لا لمدّةٍ ثابتة يُرجى أن تكفي.
+        // النوم الأعمى كان يجعل النتيجة تابعةً لجدولة المعالج: تحت حملٍ ثقيل يتأخّر الخاسر
+        // عن محاولته حتى يُحرَّر القفل، فيفوز الاثنان ويسقط الاختبار **بلا أيّ خرقٍ للإقصاء
+        // المتبادل** — إنذارٌ كاذب يُحمّر CI. الآن: نخرج فور وصول إشارة الحجب (أسرع من ثانية
+        // في الحالة الشائعة)، ونصبر حتى ١٠ث إن تأخّر الخاسر (بدل أن نُطلق سراح القفل مبكراً).
+        const blockedSignal = `${winner}.blocked`;
+        const holdDeadline = Date.now() + 10_000;
+        while (!fs.existsSync(blockedSignal) && Date.now() < holdDeadline) {
+          sleep(10);
+        }
       } finally {
         lock.release();
       }
     } catch (error) {
       if (error?.message === "HR_BRIDGE_DEPLOY_SYNC_ALREADY_RUNNING") {
+        // إشارةٌ للفائز بأنّ الإقصاء المتبادل أُثبِت ⇒ يُحرِّر القفل فوراً بلا انتظار.
+        fs.writeFileSync(`${winner}.blocked`, `${process.pid}\n`, { flag: "a" });
         process.stdout.write("RACE_BLOCKED\n");
         return;
       }
