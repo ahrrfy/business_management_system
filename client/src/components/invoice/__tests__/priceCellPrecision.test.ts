@@ -57,7 +57,11 @@ describe("supplier invoice reconciliation — الشاشتان تحملان ال
       // (٢) القيمة تُرسَل فعلاً (كانت الشاشتان تمتنعان عن إرسال usdTotal ⇒ الضابط مُعطَّل عملياً).
       expect(source).toContain("supplierInvoiceTotal: state.supplierInvoiceTotal.trim()");
       // (٣) المقارنة بعملة الأمر: الدولاريّ بإجماليه الدولاريّ والدينارّي بالدينارّي.
-      expect(source).toContain('derivedTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}');
+      expect(source).toContain('derivedTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}');
+      // (٣-ب) الإجماليّ مشتقٌّ بترتيب تقريب الخادم (سطراً سطراً) لا من `calcTotals` التي تجمع
+      //       غير المقرَّب — وإلّا اختلف حكمُ اللوحة عن حكم الخادم بفلسٍ على أسعار الدولار.
+      expect(source).toContain("deriveDocumentTotal(state.items");
+      expect(source).not.toContain("? totals.grandTotal :");
       // (٤) الحفظ يُمنع عند الاختلاف برسالة الحكم نفسها (مرآة حارس الخادم).
       expect(source).toContain('if (invoiceMatch.verdict !== "UNSET" && invoiceMatch.verdict !== "MATCH")');
       // (٥) التوزيع يمرّ بالدالّة النقيّة المُختبَرة لا بحسابٍ مكرَّر في الصفحة.

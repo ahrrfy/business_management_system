@@ -130,6 +130,32 @@ export function matchSupplierInvoice(
   };
 }
 
+/**
+ * **إجماليّ المستند بعملته، بترتيب تقريب الخادم حرفياً**: `Σ round2(سعر × كمّية)` ثمّ الضريبة على
+ * المجموع — لا `round2(Σ سعر × كمّية)`.
+ *
+ * ⚠️ لماذا لا نستعمل `calcTotals().grandTotal` هنا: هي تجمع القيم **غير مقرَّبة** ثمّ تقرّب مرّةً
+ * واحدة، بينما `computePurchaseDocument` يقرّب **كلّ سطرٍ** ثمّ يجمع. الفرق صفرٌ بالدينار (سعرٌ
+ * بمنزلتين × كمّيةٍ صحيحة = منزلتان بالضبط)، لكنّه فلسٌ حقيقيّ بالدولار ذي الأربع منازل
+ * (`3.4566 × 7 = 24.1962` ⇒ الخادم 24.20 والعميل 24.1962) — فتُظهر اللوحة «مطابق» بينما يرفض
+ * الخادم، أو العكس. المطابقة لا تحتمل تعريفَين للإجمالي.
+ */
+export function deriveDocumentTotal(
+  lines: MatchLine[],
+  taxRatePercent: string | number = 0,
+): { subtotal: string; tax: string; total: string } {
+  const subtotal = d2(
+    lines.reduce((acc, l) => {
+      const price = safe(l.price) ?? new Decimal(0);
+      const qty = safe(l.qty) ?? new Decimal(0);
+      return acc.plus(d2(price.times(qty)));
+    }, new Decimal(0)),
+  );
+  const rate = safe(taxRatePercent) ?? new Decimal(0);
+  const tax = rate.gt(0) ? d2(subtotal.times(rate).dividedBy(100)) : new Decimal(0);
+  return { subtotal: subtotal.toFixed(2), tax: tax.toFixed(2), total: d2(subtotal.plus(tax)).toFixed(2) };
+}
+
 export interface DistributeResult {
   /** الأسعار الجديدة بترتيب البنود نفسه (نصوصٌ بدقّة العملة). فارغة ⇒ تعذّر التوزيع. */
   prices: string[];

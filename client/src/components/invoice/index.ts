@@ -44,6 +44,7 @@ export { ShortcutsBar, type ShortcutsBarProps } from "./ShortcutsBar";
 export { SupplierInvoiceMatch, type SupplierInvoiceMatchProps } from "./SupplierInvoiceMatch";
 export {
   matchSupplierInvoice,
+  deriveDocumentTotal,
   distributeToSubtotal,
   subtotalForInvoiceTotal,
   type MatchLine,

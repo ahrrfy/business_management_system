@@ -35,6 +35,7 @@ import {
   TotalsPanel,
   calcTotals,
   createInitialState,
+  deriveDocumentTotal,
   distributeToSubtotal,
   invoiceReducer,
   matchSupplierInvoice,
@@ -177,11 +178,20 @@ export default function PurchaseNew() {
   /* ─── validation + submit ──────────────────────────────────────── */
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
 
+  // إجماليّ المستند بعملته **بترتيب تقريب الخادم** (سطراً سطراً ثمّ الجمع) — لا
+  // `totals.grandTotal` الذي يجمع غير المقرَّب فيقرّب مرّةً واحدة. الفرق فلسٌ حقيقيّ
+  // بالدولار ذي الأربع منازل، وهو ما تُبنى عليه المطابقة والعرض معاً («المعروض = المحفوظ»).
+  const docTotals = useMemo(
+    () => deriveDocumentTotal(state.items, state.taxEnabled ? state.taxRatePercent || "0" : "0"),
+    [state.items, state.taxEnabled, state.taxRatePercent],
+  );
+
   // landed-cost: الإجماليّ يشمل الشحن/الكمرك (يُوزَّعان بنسبة القيمة). التوزيع بالقيمة = نسبة رفعٍ
   // موحّدة على كلّ تكلفة وحدة: capUnit = price × (subtotal + شحن + كمرك) / subtotal. للمعاينة فقط.
   const landed = useMemo(() => {
     const sum = round2(safeMoney(shippingCost).plus(safeMoney(customsCost)));
-    const sourceSubtotal = D(totals.subtotal);
+    // المجموع الفرعيّ بترتيب تقريب الخادم (سطراً سطراً) لا بجمعٍ غير مقرَّب — مصدرٌ واحد.
+    const sourceSubtotal = D(docTotals.subtotal);
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
     // «المعروض = المحفوظ» (درس فاتورة الشحن ٥/٨): الخادم يترجم **كلّ سطرٍ على حدة** ثمّ يجمع
     // (subtotal = Σ round2(سطر$ × السعر))، فترجمةُ المجموع مرّةً واحدة هنا كانت تُظهر إجمالياً
@@ -210,7 +220,7 @@ export default function PurchaseNew() {
   }, [
     shippingCost,
     customsCost,
-    totals.subtotal,
+    docTotals.subtotal,
     state.items,
     state.currency,
     state.agreedRate,
@@ -222,11 +232,11 @@ export default function PurchaseNew() {
   const invoiceMatch = useMemo(
     () =>
       matchSupplierInvoice(
-        state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2),
+        state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2),
         state.supplierInvoiceTotal,
         state.currency,
       ),
-    [state.currency, state.supplierInvoiceTotal, totals.grandTotal, landed.grand],
+    [state.currency, state.supplierInvoiceTotal, docTotals.total, landed.grand],
   );
 
   function validate(): string | null {
@@ -569,12 +579,12 @@ export default function PurchaseNew() {
             showDiscount={false}
             showPayment={false}
             showTaxToggle
-            overrideGrandTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
+            overrideGrandTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
           />
           {/* مطابقة فاتورة المورّد: الإجماليّ المشتقّ يُقارَن بعملة الأمر — الدولاريّ بإجماليه
               الدولاريّ (مستند المورّد) والدينارّي بإجماليه الدينارّي، مطابقةً لحارس الخادم. */}
           <SupplierInvoiceMatch
-            derivedTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
+            derivedTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
             value={state.supplierInvoiceTotal}
             onChange={(v) => dispatch({ type: "SET_FIELD", field: "supplierInvoiceTotal", value: v })}
             currency={state.currency}

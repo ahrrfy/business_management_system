@@ -35,6 +35,7 @@ import {
   TotalsPanel,
   calcTotals,
   createInitialState,
+  deriveDocumentTotal,
   distributeToSubtotal,
   invoiceReducer,
   matchSupplierInvoice,
@@ -217,10 +218,19 @@ export default function PurchaseEdit() {
 
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
 
+  // إجماليّ المستند بعملته **بترتيب تقريب الخادم** (سطراً سطراً ثمّ الجمع) — لا
+  // `totals.grandTotal` الذي يجمع غير المقرَّب فيقرّب مرّةً واحدة. الفرق فلسٌ حقيقيّ
+  // بالدولار ذي الأربع منازل، وهو ما تُبنى عليه المطابقة والعرض معاً («المعروض = المحفوظ»).
+  const docTotals = useMemo(
+    () => deriveDocumentTotal(state.items, state.taxEnabled ? state.taxRatePercent || "0" : "0"),
+    [state.items, state.taxEnabled, state.taxRatePercent],
+  );
+
   // نفس معاينة PurchaseNew: الشحن/الكمرك **خارج** الإجمالي (مصروف نقلٍ لا ذمّة مورّد).
   const landed = useMemo(() => {
     const sum = round2(safeMoney(shippingCost).plus(safeMoney(customsCost)));
-    const sourceSubtotal = D(totals.subtotal);
+    // المجموع الفرعيّ بترتيب تقريب الخادم (سطراً سطراً) لا بجمعٍ غير مقرَّب — مصدرٌ واحد.
+    const sourceSubtotal = D(docTotals.subtotal);
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
     // نفس ترتيب تقريب الخادم (سطراً سطراً ثمّ الجمع، والضريبة على المجموع الدينارّي) — انظر
     // التعليق المفصَّل في PurchaseNew: «المعروض = المحفوظ» شرطُ ألّا يدفع المالك ما لم يُحفَظ.
@@ -241,7 +251,7 @@ export default function PurchaseEdit() {
   }, [
     shippingCost,
     customsCost,
-    totals.subtotal,
+    docTotals.subtotal,
     state.items,
     state.currency,
     state.agreedRate,
@@ -253,11 +263,11 @@ export default function PurchaseEdit() {
   const invoiceMatch = useMemo(
     () =>
       matchSupplierInvoice(
-        state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2),
+        state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2),
         state.supplierInvoiceTotal,
         state.currency,
       ),
-    [state.currency, state.supplierInvoiceTotal, totals.grandTotal, landed.grand],
+    [state.currency, state.supplierInvoiceTotal, docTotals.total, landed.grand],
   );
 
   /** يوزّع فرق المطابقة على أسعار البنود بنسبة القيمة — الأسعار الجديدة تظهر قبل الحفظ. */
@@ -564,10 +574,10 @@ export default function PurchaseEdit() {
             showDiscount={false}
             showPayment={false}
             showTaxToggle
-            overrideGrandTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
+            overrideGrandTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
           />
           <SupplierInvoiceMatch
-            derivedTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
+            derivedTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
             value={state.supplierInvoiceTotal}
             onChange={(v) => dispatch({ type: "SET_FIELD", field: "supplierInvoiceTotal", value: v })}
             currency={state.currency}

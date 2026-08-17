@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  deriveDocumentTotal,
   distributeToSubtotal,
   matchSupplierInvoice,
   subtotalForInvoiceTotal,
 } from "../supplierInvoiceMatch";
+import { calcTotals } from "../totals";
+import type { InvoiceLine, InvoiceState } from "../types";
 
 /**
  * بلاغ المالك (١٧/٨/٢٦): «لا يتم قبول الفاتورة ولا يمكن مطابقتها مع المورد وقيمة الفاتورة».
@@ -56,6 +59,41 @@ describe("matchSupplierInvoice — حكمُ المطابقة", () => {
     const r = matchSupplierInvoice("1000000.01", "1000000.00", "IQD");
     expect(r.verdict).toBe("OURS_HIGHER");
     expect(r.difference).toBe("-0.01");
+  });
+});
+
+describe("deriveDocumentTotal — الإجماليّ بترتيب تقريب الخادم", () => {
+  it("يقرّب كلّ سطرٍ ثمّ يجمع (لا العكس) ⇒ يطابق computePurchaseDocument", () => {
+    // 3.4566 × 7 = 24.1962 ⇒ الخادم يقرّب السطر إلى 24.20 قبل الجمع.
+    const r = deriveDocumentTotal([{ price: "3.4566", qty: 7 }, { price: "3.4566", qty: 7 }]);
+    expect(r.subtotal).toBe("48.40"); // 24.20 + 24.20
+    expect(r.total).toBe("48.40");
+  });
+
+  it("يختلف عن calcTotals — وهذا سببُ وجوده (لا تكرارٌ بلا داعٍ)", () => {
+    // `calcTotals` تجمع غير المقرَّب ثمّ تقرّب مرّة: round2(48.3924) = 48.39 ⇒ فلسٌ فرقاً.
+    // لو استُعملت في المطابقة لأظهرت اللوحة «مطابق» بينما يرفض الخادم (أو العكس).
+    const lines = [
+      { price: "3.4566", qty: 7, discount: "0", discountType: "percent" },
+      { price: "3.4566", qty: 7, discount: "0", discountType: "percent" },
+    ] as unknown as InvoiceLine[];
+    const state = {
+      globalDiscount: "", globalDiscountType: "percent", shipping: "", shippingFree: false,
+      otherExpenses: "", paidAmount: "", taxEnabled: false, taxRatePercent: "0",
+    } as unknown as InvoiceState;
+    expect(calcTotals(lines, state).grandTotal).toBe("48.39");
+    expect(deriveDocumentTotal(lines).total).toBe("48.40");
+  });
+
+  it("الضريبة تُحسَب على المجموع الفرعيّ المقرَّب", () => {
+    const r = deriveDocumentTotal([{ price: "100", qty: 10 }], "15");
+    expect(r.subtotal).toBe("1000.00");
+    expect(r.tax).toBe("150.00");
+    expect(r.total).toBe("1150.00");
+  });
+
+  it("بلا بنود ⇒ أصفار بلا انهيار", () => {
+    expect(deriveDocumentTotal([])).toEqual({ subtotal: "0.00", tax: "0.00", total: "0.00" });
   });
 });
 
