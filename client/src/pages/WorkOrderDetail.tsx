@@ -16,6 +16,7 @@ import { notify } from "@/lib/notify";
 import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { Printer, MessageCircle, Truck } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
+import { WorkOrderMaterialsEditor } from "@/components/workOrders/WorkOrderMaterialsEditor";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import { canSeeCost } from "@shared/permissions";
@@ -99,6 +100,8 @@ export default function WorkOrderDetail() {
   const [done, setDone] = useState("");
   const [awaitingOwnerRefund, setAwaitingOwnerRefund] = useState(false);
   const [cancelOutcomeUncertain, setCancelOutcomeUncertain] = useState(false);
+  // تحرير بنود الأمر (١٧/٨/٢٦) — الفجوة التي اشتكاها المالك: لا مسار لإضافة/حذف منتج.
+  const [editingMaterials, setEditingMaterials] = useState(false);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [payReference, setPayReference] = useState("");
@@ -347,8 +350,21 @@ export default function WorkOrderDetail() {
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center justify-between gap-2">
             <span className="truncate">{data.title}</span>
-            <span className={`text-xs rounded-full px-2.5 py-0.5 font-medium shrink-0 ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
-              {displayStatus}
+            <span className="flex shrink-0 items-center gap-1.5">
+              {/* التمييز البصريّ «مُعدَّل» (طلب المالك ١٧/٨) — من عمودٍ مخصَّص لتحرير البنود،
+                  لا من `updatedAt` (ذاك يتحرّك مع كل كتابة فيصير كلُّ أمرٍ «معدَّلاً»). */}
+              {Number(data.materialsEditCount ?? 0) > 0 && (
+                <span
+                  className="rounded-full bg-[var(--sem-warn-bg)] px-2.5 py-0.5 text-xs font-medium text-[var(--sem-warn)]"
+                  title={`عُدِّلت بنوده ${data.materialsEditCount} مرّة${data.materialsEditedByName ? ` — آخرها ${data.materialsEditedByName}` : ""}`}
+                >
+                  مُعدَّل
+                  {Number(data.materialsEditCount) > 1 ? ` ×${data.materialsEditCount}` : ""}
+                </span>
+              )}
+              <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
+                {displayStatus}
+              </span>
             </span>
           </CardTitle>
         </CardHeader>
@@ -384,8 +400,32 @@ export default function WorkOrderDetail() {
         </CardContent>
       </Card>
 
+      {editingMaterials ? (
+        <WorkOrderMaterialsEditor
+          workOrderId={data.id}
+          branchId={Number(data.branchId)}
+          orderNumber={data.orderNumber}
+          status={data.status}
+          initial={data.materials.map((m) => ({
+            variantId: Number(m.variantId),
+            baseQuantity: Number(m.baseQuantity),
+            productName: m.productName + (m.variantName ? ` — ${m.variantName}` : ""),
+            sku: m.sku ?? "",
+          }))}
+          onSaved={async () => { setEditingMaterials(false); await refresh(); }}
+          onCancel={() => setEditingMaterials(false)}
+        />
+      ) : (
       <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base">المواد</CardTitle></CardHeader>
+        <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
+          <CardTitle className="text-base">المواد</CardTitle>
+          {/* التعديل متاحٌ ما لم يُسلَّم الأمر أو يُلغَ — نفس ما يفرضه الخادم، فلا زرٌّ يقود لرفض. */}
+          {data.status !== "DELIVERED" && data.status !== "CANCELLED" && (
+            <Button size="sm" variant="outline" onClick={() => setEditingMaterials(true)}>
+              تعديل البنود
+            </Button>
+          )}
+        </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -426,6 +466,7 @@ export default function WorkOrderDetail() {
           </div>
         </CardContent>
       </Card>
+      )}
 
       {data.status === "READY" && (
         <Card>
