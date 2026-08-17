@@ -59,6 +59,13 @@ export default function PurchaseReceive() {
   const [shipMethod, setShipMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [shipPaymentReference, setShipPaymentReference] = useState("");
   const [shipCardLastFour, setShipCardLastFour] = useState("");
+  // الناقل ومستند الشحن — **اختياريان** (قرار المالك ١٧/٨/٢٦). كانا إلزامَين خادمياً بلا حقلٍ
+  // لهما في هذه الشاشة ⇒ كلّ أمرٍ عليه شحن/كمرك كان يُرفَض حتماً. الخادم يُكمل الناقص ببديلٍ
+  // صريح الجهالة («ناقل غير محدَّد» / رقم أمر الشراء) فيبقى المصروف مثبتاً وقابلاً للتصحيح.
+  const [shipBeneficiarySupplierId, setShipBeneficiarySupplierId] = useState<string>("");
+  const [shipBeneficiaryName, setShipBeneficiaryName] = useState("");
+  const [shipEvidenceReference, setShipEvidenceReference] = useState("");
+  const suppliersQuery = trpc.suppliers.list.useQuery();
   const [directUsd, setDirectUsd] = useState("");
   const [directIqd, setDirectIqd] = useState("");
   const [directFee, setDirectFee] = useState("");
@@ -210,6 +217,15 @@ export default function PurchaseReceive() {
             : undefined,
         shippingCardLastFour:
           shipMethod === "CARD" ? shipCardLastFour.trim() : undefined,
+        // الفراغ يُرسَل undefined لا نصّاً فارغاً (zod يفرض min على النصّ الموجود)؛ الخادم
+        // يُكمل البديل الصريح. اسمُ الناقل الحرّ يُهمَل متى اختير مورّدٌ مسجَّل.
+        shippingBeneficiarySupplierId: shipBeneficiarySupplierId ? Number(shipBeneficiarySupplierId) : undefined,
+        shippingBeneficiaryName:
+          !shipBeneficiarySupplierId && shipBeneficiaryName.trim().length >= 2
+            ? shipBeneficiaryName.trim()
+            : undefined,
+        shippingEvidenceReference:
+          shipEvidenceReference.trim().length >= 2 ? shipEvidenceReference.trim() : undefined,
         clientRequestId,
       });
       // البونص المجّانيّ بعد نجاح الاستلام العاديّ (تسلسليّ idempotent — نمط convertQuotation؛ مفتاح مشتقّ).
@@ -393,6 +409,49 @@ export default function PurchaseReceive() {
               <select className={selectCls} value={shipMethod} onChange={(e) => setShipMethod(e.target.value as typeof shipMethod)}>
                 {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
               </select>
+            </div>
+            {/* الناقل ومستند الشحن — اختياريّان. لا يحجبان الاستلام؛ تركُهما فارغَين يُسجّل
+                المصروف باسم «ناقل غير محدَّد» ومرجعِ أمر الشراء، ويبقى قابلاً للتصحيح لاحقاً. */}
+            <div className="space-y-1">
+              <Label>
+                الناقل / المستفيد <span className="text-xs font-normal text-muted-foreground">(اختياري)</span>
+              </Label>
+              <select
+                className={selectCls}
+                value={shipBeneficiarySupplierId}
+                onChange={(e) => setShipBeneficiarySupplierId(e.target.value)}
+              >
+                <option value="">— غير محدَّد / اسم حرّ —</option>
+                {(suppliersQuery.data ?? []).map((s) => (
+                  <option key={s.id} value={String(s.id)}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+            {!shipBeneficiarySupplierId ? (
+              <div className="space-y-1">
+                <Label>
+                  اسم الناقل <span className="text-xs font-normal text-muted-foreground">(اختياري)</span>
+                </Label>
+                <Input
+                  value={shipBeneficiaryName}
+                  onChange={(event) => setShipBeneficiaryName(event.target.value)}
+                  placeholder="اتركه فارغاً إن لم يُعرَف بعد"
+                  maxLength={200}
+                />
+              </div>
+            ) : null}
+            <div className="space-y-1">
+              <Label>
+                رقم فاتورة/وصل الشحن أو مستند الكمرك{" "}
+                <span className="text-xs font-normal text-muted-foreground">(اختياري)</span>
+              </Label>
+              <Input
+                value={shipEvidenceReference}
+                onChange={(event) => setShipEvidenceReference(event.target.value)}
+                placeholder={`الافتراضي: أمر الشراء ${data.poNumber}`}
+                maxLength={191}
+                dir="ltr"
+              />
             </div>
             {shipMethod === "TRANSFER" || shipMethod === "CHECK" ? (
               <div className="space-y-1">

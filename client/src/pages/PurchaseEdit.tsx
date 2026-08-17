@@ -1,0 +1,524 @@
+/**
+ * PurchaseEdit — تعديل أمر شراء قائم **بنفس محرّر الإنشاء بالضبط**.
+ *
+ * هذه الشاشة توأمُ `PurchaseNew`: نفس `@/components/invoice` بـ`invoiceType="PURCHASE"`، ونفس
+ * بطاقة الشحن/الكمرك، ونفس الاختصارات، ونفس التحقّق — فلا يتعلّم المستخدم واجهةً ثانية للتعديل.
+ * الفرق الجوهريّ ثلاثة أشياء فقط:
+ *   • الحالة الابتدائية تُبنى من `purchases.get` بدل سلّةٍ فارغة (بانتظار الجلب ⇒ هيكل تحميل).
+ *   • الحفظ يستدعي `purchases.updateOrder` (استبدالٌ كامل للبنود) بدل `createOrder`.
+ *   • الفرع غير قابل للتغيير (يحدّد ترقيم الأمر وعزله الأمنيّ) والحالة تبقى كما هي.
+ *
+ * الأهليّة يحسمها الخادم (لا استلام، لا دفعة، حالة غير نهائية) — والشاشة تعرض السبب بدل نموذجٍ
+ * يقود إلى رفضٍ حتميّ بعد جهد إدخال.
+ */
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Link, useLocation, useParams } from "wouter";
+import { Landmark, Truck } from "lucide-react";
+import { D, fmtAr, round2, toBase } from "@/lib/money";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { EmptyState } from "@/components/EmptyState";
+import { notify } from "@/lib/notify";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
+import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
+import {
+  ActionButtons,
+  BulkPicker,
+  INVOICE_TYPES,
+  InvoiceHeader,
+  ProductTable,
+  ShortcutsBar,
+  TermsAndNotes,
+  TotalsPanel,
+  calcTotals,
+  createInitialState,
+  invoiceReducer,
+  type InvoiceActionKind,
+  type InvoiceLine,
+  type InvoiceState,
+} from "@/components/invoice";
+
+const INVOICE_TYPE = "PURCHASE" as const;
+
+const PO_STATUS: Record<string, string> = {
+  DRAFT: "مسوّدة",
+  SENT: "مُرسَل",
+  CONFIRMED: "مؤكّد",
+  RECEIVED: "مُستلَم",
+  CANCELLED: "ملغى",
+};
+
+/** إجراءات شاشة التعديل: بلا «مسوّدة» (الحالة لا تتغيّر بالتعديل) وبلا «مرتجع» (مساره مستقلّ). */
+const EDIT_ACTIONS = ["save", "print", "duplicate", "paste"] as const;
+/** F12 «تفريغ» مقصيّ عمداً: تفريغُ سلّة أمرٍ قائم إتلافٌ صامت لا اختصارُ إدخال. */
+const EDIT_SHORTCUTS = [
+  { key: "F2", label: "بحث" },
+  { key: "F4", label: "حفظ" },
+  { key: "F9", label: "طباعة" },
+  { key: "Esc", label: "إلغاء" },
+];
+
+/** نظير safeMoney في PurchaseNew: MoneyInput يُصدر قيماً وسيطة («.») تكسر D() الخام أثناء الرسم. */
+function safeMoney(v: string) {
+  try {
+    return D(v);
+  } catch {
+    return D(0);
+  }
+}
+
+type PurchaseOrderData = NonNullable<RouterOutputs["purchases"]["get"]>;
+
+/**
+ * يبني حالة المحرّر من أمر الشراء المحفوظ.
+ *
+ * سعر السطر المعروض يتبع عملة الاتفاق: أمر الدولار أُدخِلت أسعاره بالدولار وحُوّلت خادمياً
+ * بسعر التثبيت، فإعادةُ عرض السعر الدينارّي في محرّرٍ عملتُه USD كانت ستُضاعف التحويل عند
+ * الحفظ (السعر × السعر). لذلك نعيد `usdUnitPrice` للأمر الدولاريّ و`unitPrice` للدينارّي.
+ */
+function stateFromOrder(order: PurchaseOrderData, branchId: number): InvoiceState {
+  const base = createInitialState(INVOICE_TYPE, branchId);
+  const isUsd = order.agreedCurrency === "USD";
+  const items: InvoiceLine[] = order.items.map((it) => {
+    const unitPrice = isUsd ? (it.usdUnitPrice ?? "0") : (it.unitPrice ?? "0");
+    return {
+      productId: Number(it.productId ?? 0),
+      variantId: Number(it.variantId),
+      productUnitId: Number(it.productUnitId),
+      name: [it.productName, it.variantName].filter(Boolean).join(" — ") || "صنف",
+      sku: it.sku ?? "",
+      barcode: it.barcode ?? null,
+      unit: it.unitName ?? "",
+      qty: Number(it.quantity ?? 0),
+      conversionFactor: String(it.conversionFactor ?? "1"),
+      // المخزون معلومةٌ عرضٍ في محرّر الشراء (لا حارس بيع) — لقطة الأمر لا تحمله، وإظهار صفرٍ
+      // كاذب أسوأ من إخفائه، لكن ProductTable يعرض العمود دائماً في وضع الشراء ⇒ صفرٌ محايد.
+      stockBase: 0,
+      price: String(unitPrice),
+      costBase: String(unitPrice),
+      discount: "0",
+      discountType: "percent",
+      note: "",
+    };
+  });
+  const taxRate = String(order.taxRatePercent ?? "0");
+  return {
+    ...base,
+    // رقم الأمر الحقيقيّ بدل رقمٍ مولَّد — الحقل للقراءة فقط في الرأس.
+    invoiceNumber: order.poNumber,
+    entityId: order.supplierId == null ? null : Number(order.supplierId),
+    branchId,
+    currency: isUsd ? "USD" : "IQD",
+    agreedRate: isUsd ? String(order.agreedRate ?? "") : "",
+    usdTotal: isUsd ? String(order.usdTotal ?? "") : "",
+    notes: order.notes ?? "",
+    taxEnabled: Number(taxRate) > 0,
+    taxRatePercent: taxRate,
+    items,
+  };
+}
+
+/** بصمة ما يُرسَل فعلاً في الحفظ — لا كامل الحالة (حقولٌ عرضية كالفئة لا تُحفَظ في أمر الشراء). */
+function editorFingerprint(state: InvoiceState, shippingCost: string, customsCost: string): string {
+  return JSON.stringify({
+    entityId: state.entityId,
+    currency: state.currency,
+    agreedRate: state.agreedRate,
+    notes: state.notes,
+    taxEnabled: state.taxEnabled,
+    taxRatePercent: state.taxRatePercent,
+    shippingCost,
+    customsCost,
+    items: state.items.map((l) => [l.variantId, l.productUnitId, l.qty, l.price]),
+  });
+}
+
+export default function PurchaseEdit() {
+  const params = useParams();
+  const purchaseOrderId = Number(params.id);
+  const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
+  const [pasteAvailable, setPasteAvailable] = useState(hasInvoiceTransfer);
+
+  const po = trpc.purchases.get.useQuery(
+    { purchaseOrderId },
+    { enabled: Number.isFinite(purchaseOrderId) && purchaseOrderId > 0 },
+  );
+  trpc.suppliers.list.useQuery(); // تدفئة كاش EntityPicker (نفس PurchaseNew)
+
+  const [state, dispatch] = useReducer(invoiceReducer, undefined, () => createInitialState(INVOICE_TYPE, 1));
+  const [shippingCost, setShippingCost] = useState("");
+  const [customsCost, setCustomsCost] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  /** بصمة اللقطة المحفوظة — مقارنتها بالبصمة الحالية تُعطي «هل تغيّر شيء؟» بلا أعلامٍ متسلسلة. */
+  const [baseline, setBaseline] = useState<string | null>(null);
+
+  // تحميل الأمر في المحرّر **مرّةً واحدة**: إعادةُ الحقن عند كل إعادة جلبٍ (invalidate/refocus)
+  // كانت ستطمس تعديلاً جارياً بلا إنذار.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    if (hydratedRef.current || !po.data) return;
+    hydratedRef.current = true;
+    const next = stateFromOrder(po.data, Number(po.data.branchId));
+    const ship = D(po.data.shippingCost ?? 0).gt(0) ? String(po.data.shippingCost) : "";
+    const customs = D(po.data.customsCost ?? 0).gt(0) ? String(po.data.customsCost) : "";
+    dispatch({ type: "REPLACE_STATE", state: next });
+    setShippingCost(ship);
+    setCustomsCost(customs);
+    setBaseline(editorFingerprint(next, ship, customs));
+  }, [po.data]);
+
+  // حارس فقدان البيانات: نشِطٌ فقط بعد الحقن وعند اختلافٍ فعليّ عن اللقطة المحفوظة.
+  const fingerprint = useMemo(
+    () => editorFingerprint(state, shippingCost, customsCost),
+    [state, shippingCost, customsCost],
+  );
+  useUnsavedGuard(baseline != null && baseline !== fingerprint);
+  // البصمة لحظة نجاح الحفظ تُقرأ من ref لا من إغلاق الطفرة (قد يكون من رسمٍ أقدم).
+  const fingerprintRef = useRef(fingerprint);
+  fingerprintRef.current = fingerprint;
+
+  const insightItems = useMemo(
+    () => Array.from(new Map(state.items.map((item) => [
+      `${item.variantId}:${item.productUnitId}`,
+      { variantId: item.variantId, productUnitId: item.productUnitId },
+    ])).values()),
+    [state.items],
+  );
+  const priceInsights = trpc.purchases.priceInsights.useQuery(
+    { branchId: state.branchId, supplierId: state.entityId ?? undefined, items: insightItems },
+    { enabled: state.branchId > 0 && insightItems.length > 0 },
+  );
+
+  const update = trpc.purchases.updateOrder.useMutation({
+    onSuccess: async (r) => {
+      // اللقطة المحفوظة صارت هي الحالية ⇒ يهدأ حارس فقدان البيانات قبل التنقّل.
+      setBaseline(fingerprintRef.current);
+      await Promise.all([
+        utils.purchases.get.invalidate({ purchaseOrderId }),
+        utils.purchases.list.invalidate(),
+      ]);
+      notify.ok(`حُفظت تعديلات أمر الشراء ${r.poNumber}`);
+      navigate(`/purchases/${purchaseOrderId}`);
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const totals = useMemo(() => calcTotals(state.items, state), [state]);
+
+  // نفس معاينة PurchaseNew: الشحن/الكمرك **خارج** الإجمالي (مصروف نقلٍ لا ذمّة مورّد).
+  const landed = useMemo(() => {
+    const sum = round2(safeMoney(shippingCost).plus(safeMoney(customsCost)));
+    const sourceSubtotal = D(totals.subtotal);
+    const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
+    const goodsIqd = round2(sourceSubtotal.times(rate));
+    const taxIqd = round2(D(totals.totalTax).times(rate));
+    const grand = round2(goodsIqd.plus(taxIqd));
+    return { sum, goodsIqd, taxIqd, grand, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
+  }, [shippingCost, customsCost, totals.subtotal, totals.totalTax, state.currency, state.agreedRate]);
+
+  function validate(): string | null {
+    if (!state.entityId) return "اختر المورد قبل الحفظ.";
+    if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
+    for (const l of state.items) {
+      const qty = D(l.qty);
+      if (!qty.gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
+      const price = D(l.price);
+      if (price.lt(0)) return `سعر الشراء في «${l.name}» غير صالح.`;
+      const base = toBase(l.qty, l.conversionFactor);
+      if (!base.isInteger())
+        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
+    }
+    if (state.currency === "USD" && !safeMoney(state.agreedRate).gt(0)) {
+      return "أدخل سعر الصرف المثبت للفاتورة.";
+    }
+    if (landed.hasLanded && !landed.hasBase) {
+      return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
+    }
+    return null;
+  }
+
+  function handleSubmit() {
+    if (update.isPending) return;
+    const err = validate();
+    if (err) {
+      notify.warn(err);
+      return;
+    }
+    update.mutate({
+      purchaseOrderId,
+      supplierId: state.entityId!,
+      taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
+      notes: state.notes.trim() || undefined,
+      agreedCurrency: state.currency,
+      // نظير createOrder: لا نُرسل usdTotal — الخادم يشتقّه من البنود بترتيب تقريبٍ محدَّد،
+      // وإرسالُ إجماليٍّ مشتقٍّ من أسعارٍ كاملة الدقّة يُفشل حارسَ المطابقة بفرق تقريبٍ بحت.
+      agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
+      shippingCost: safeMoney(shippingCost).gt(0) ? round2(safeMoney(shippingCost)).toFixed(2) : undefined,
+      customsCost: safeMoney(customsCost).gt(0) ? round2(safeMoney(customsCost)).toFixed(2) : undefined,
+      items: state.items.map((l) => ({
+        variantId: l.variantId,
+        productUnitId: l.productUnitId,
+        quantity: D(l.qty).toString(),
+        unitPrice: round2(D(l.price)).toFixed(2),
+      })),
+    });
+  }
+
+  function handleAction(kind: InvoiceActionKind) {
+    switch (kind) {
+      case "save":
+        handleSubmit();
+        return;
+      case "print":
+        window.print();
+        return;
+      case "duplicate":
+        if (!state.items.length) return notify.warn("لا توجد محتويات لنسخها.");
+        copyInvoiceItems(state.items);
+        setPasteAvailable(true);
+        notify.ok("تم نسخ المنتجات. ستجد «لصق» في أي فاتورة تفتحها.");
+        return;
+      case "paste": {
+        const items = takeInvoiceItems();
+        if (!items) {
+          setPasteAvailable(false);
+          notify.warn("لا توجد محتويات صالحة للصقها.");
+          return;
+        }
+        dispatch({ type: "ADD_ITEMS", items });
+        setPasteAvailable(false);
+        notify.ok("تم لصق محتويات الفاتورة.");
+        return;
+      }
+      default:
+        notify.info("هذا الإجراء غير متاح في شاشة التعديل.");
+        return;
+    }
+  }
+
+  /* ─── keyboard shortcuts (F2/F4/F9/Esc) — نفس محرّر الإنشاء عدا F12 (لا تفريغ لأمرٍ قائم) ── */
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "F2") {
+        e.preventDefault();
+        containerRef.current?.querySelector<HTMLInputElement>('input[aria-label="بحث المنتجات"]')?.focus();
+        return;
+      }
+      if (e.key === "F4") {
+        e.preventDefault();
+        if (!update.isPending) handleSubmit();
+        return;
+      }
+      if (e.key === "F9") {
+        e.preventDefault();
+        window.print();
+        return;
+      }
+      if (e.key === "Escape" && bulkOpen) setBulkOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkOpen, update.isPending, state, shippingCost, customsCost]);
+
+  /* ─── حالات ما قبل المحرّر ──────────────────────────────────────── */
+  if (!Number.isFinite(purchaseOrderId) || purchaseOrderId <= 0) {
+    return <ErrorState message="رقم أمر شراء غير صالح." />;
+  }
+  if (po.isLoading) return <LoadingState />;
+  if (po.error) {
+    return po.error.data?.code === "FORBIDDEN" ? (
+      <EmptyState
+        title="لا تملك صلاحية تعديل المشتريات"
+        description="تعديل أمر الشراء يتطلّب صلاحية المشتريات (كاملة) — اطلبها من المدير."
+      />
+    ) : (
+      <ErrorState message={po.error.message} />
+    );
+  }
+  if (!po.data) {
+    return (
+      <EmptyState
+        title="أمر الشراء غير موجود"
+        description="قد يكون محذوفاً أو يخصّ فرعاً آخر لا تملك الاطّلاع عليه."
+      />
+    );
+  }
+
+  const order = po.data;
+  const received = order.items.some((it) => (it.receivedBaseQuantity ?? 0) > 0);
+  const terminal = order.status === "RECEIVED" || order.status === "CANCELLED";
+  const paid = D(order.paidAmount ?? 0).gt(0) || D(order.paidUsd ?? 0).gt(0);
+  // مرآةُ حرّاس الخادم: نُبيّن السبب قبل الإدخال بدل رفضٍ حتميّ بعد ملء النموذج.
+  const blockedReason = terminal
+    ? `أمر الشراء ${PO_STATUS[order.status] ?? order.status} — لا يُعدَّل بعد ذلك. استعمل مرتجع شراء أو أنشئ أمراً جديداً.`
+    : received
+      ? "استُلمت بضاعة من هذا الأمر — التعديل بعد الاستلام يُغيّر مخزوناً وذمّةً مُرحَّلَين. استعمل مرتجع شراء."
+      : paid
+        ? "على هذا الأمر دفعة مسجَّلة للمورّد — لا يُعدَّل قبل تسوية الدفعة."
+        : null;
+  if (blockedReason) {
+    return (
+      <div className="space-y-4">
+        <EmptyState title={`تعذّر تعديل أمر الشراء ${order.poNumber}`} description={blockedReason} />
+        <div className="flex justify-center gap-2">
+          <Link href={`/purchases/${purchaseOrderId}`} className="text-sm font-semibold text-primary hover:underline">
+            عرض تفاصيل الأمر
+          </Link>
+          <Link href="/purchases" className="text-sm font-semibold text-muted-foreground hover:text-foreground">
+            رجوع للمشتريات
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const meta = INVOICE_TYPES[INVOICE_TYPE];
+
+  return (
+    <div ref={containerRef} dir="rtl" className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <h1 className="flex items-center gap-2 text-xl font-extrabold">
+          {(() => { const MIcon = meta.icon; return <MIcon aria-hidden className="size-6 text-primary" />; })()}
+          تعديل {meta.label}
+          <span className="font-mono text-sm font-semibold text-muted-foreground" dir="ltr">{order.poNumber}</span>
+        </h1>
+        <div className="flex items-center gap-3 text-xs">
+          <span className="hidden font-semibold text-muted-foreground sm:inline">
+            الإجمالي:{" "}
+            <span className="font-extrabold text-foreground" dir="ltr">{landed.grand.toFixed(2)}</span>{" "}
+            د.ع
+          </span>
+          <Link href={`/purchases/${purchaseOrderId}`} className="text-sm font-semibold text-muted-foreground hover:text-foreground">
+            ← رجوع للأمر
+          </Link>
+        </div>
+      </div>
+
+      <InvoiceHeader
+        state={state}
+        dispatch={dispatch}
+        invoiceType={INVOICE_TYPE}
+        statusBadge={PO_STATUS[order.status] ?? order.status}
+        lockBranch
+      />
+
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+        <div className="flex min-w-0 flex-1 flex-col gap-2 h-[60vh] min-h-[420px] print:h-auto print:min-h-fit">
+          <ProductTable
+            items={state.items}
+            dispatch={dispatch}
+            branchId={state.branchId}
+            tier={state.tier}
+            invoiceType={INVOICE_TYPE}
+            showCost={true}
+            purchaseCurrency={state.currency}
+            purchaseRate={state.agreedRate}
+            purchasePriceInsights={priceInsights.data}
+            onOpenBulkPicker={() => setBulkOpen(true)}
+            onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
+          />
+          <BulkPicker
+            open={bulkOpen}
+            onClose={() => setBulkOpen(false)}
+            onAddItems={(items) => dispatch({ type: "ADD_ITEMS", items })}
+            invoiceType={INVOICE_TYPE}
+            branchId={state.branchId}
+            tier={state.tier}
+          />
+        </div>
+
+        <aside className="flex w-full shrink-0 flex-col gap-2 lg:w-80">
+          <section className="overflow-hidden rounded-xl border bg-card">
+            <header className="flex items-center gap-2 border-b bg-muted px-4 py-2.5">
+              <Truck aria-hidden className="size-5" />
+              <span className="text-sm font-extrabold">تكلفة الشحن والكمرك</span>
+              <span className="ms-auto text-[11px] font-semibold text-muted-foreground">اختياري</span>
+            </header>
+            <div className="space-y-2 px-4 py-3">
+              <label className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                  <Truck aria-hidden className="size-4" /> الشحن
+                </span>
+                <MoneyInput
+                  value={shippingCost}
+                  onChange={setShippingCost}
+                  ariaLabel="تكلفة الشحن"
+                  className="h-8 w-32 text-center text-sm font-bold"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                  <Landmark aria-hidden className="size-4" /> الكمرك
+                </span>
+                <MoneyInput
+                  value={customsCost}
+                  onChange={setCustomsCost}
+                  ariaLabel="تكلفة الكمرك"
+                  className="h-8 w-32 text-center text-sm font-bold"
+                />
+              </label>
+              {landed.hasLanded && landed.hasBase && (
+                <div className="mt-1 rounded-lg border border-dashed bg-muted/40 p-2.5 text-[11px] text-muted-foreground">
+                  <strong>لا تُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.</strong> تُسجَّل مصروف نقلٍ
+                  على الشركة لحظة الاستلام (يظهر في المصروفات والدفتر)، وتكلفة الصنف تبقى سعر المورّد وحده.
+                </div>
+              )}
+              {landed.hasLanded && !landed.hasBase && (
+                <p className="text-[11px] font-semibold text-[var(--sem-warn)]">
+                  أضِف منتجات بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
+                </p>
+              )}
+            </div>
+          </section>
+
+          <TotalsPanel
+            items={state.items}
+            state={state}
+            dispatch={dispatch}
+            showShipping={false}
+            showOtherExpenses={false}
+            showDiscount={false}
+            showPayment={false}
+            showTaxToggle
+            overrideGrandTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
+          />
+          {state.currency === "USD" && landed.rate.gt(0) && (
+            <section className="rounded-xl border bg-card px-4 py-3 text-sm">
+              <div className="flex justify-between text-muted-foreground">
+                <span>إجمالي فاتورة المورد (دولار)</span>
+                <span dir="ltr" className="font-bold text-foreground">{fmtAr(totals.grandTotal)} $</span>
+              </div>
+              <div className="mt-1 flex justify-between text-muted-foreground">
+                <span>سعر التثبيت</span>
+                <span dir="ltr" className="font-bold text-foreground">{fmtAr(state.agreedRate)} د.ع/$</span>
+              </div>
+              <div className="mt-1 flex justify-between border-t pt-2 font-bold">
+                <span>التكلفة بالدينار</span>
+                <span dir="ltr">{fmtAr(landed.grand.toFixed(2))} د.ع</span>
+              </div>
+            </section>
+          )}
+          {/* بلا «مسوّدة»: التعديل لا يغيّر حالة الأمر (لها إجراؤها المستقلّ)، وزرٌّ يوهم
+              بحفظِ مسوّدةٍ ثانية على أمرٍ قائم يخلق مساراً لا وجود له. */}
+          <ActionButtons
+            invoiceType={INVOICE_TYPE}
+            items={state.items}
+            onAction={handleAction}
+            saving={update.isPending}
+            pasteAvailable={pasteAvailable}
+            availableActions={EDIT_ACTIONS}
+            primaryLabel="حفظ التعديلات"
+            printLabel="طباعة"
+          />
+          <TermsAndNotes state={state} dispatch={dispatch} />
+        </aside>
+      </div>
+
+      <ShortcutsBar shortcuts={EDIT_SHORTCUTS} />
+    </div>
+  );
+}
