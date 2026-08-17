@@ -1,5 +1,5 @@
 // أدوات وحدة الهدايا: توليد رقم السند (نمط nextConsignmentNumber) + أنواع مشتركة.
-import { desc, inArray, like, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, sql } from "drizzle-orm";
 import { branchStock, giftVouchers } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { toDateStr } from "../money";
@@ -45,11 +45,23 @@ export async function nextGiftNumber(tx: Tx, branchId: number): Promise<string> 
  */
 export async function ensureAndLockBranchStock(tx: Tx, variantIds: number[], branchId: number): Promise<void> {
   if (!variantIds.length) return;
-  for (const variantId of variantIds) {
+  // المسار هـ-١ (١٧/٨) — نطاق القفل وترتيبه:
+  //  ١) **بالفرع**: القفل كان `WHERE variantId IN (…)` بلا `branchId` رغم وجوده في التوقيع ⇒ يقفل
+  //     صفوف **كلّ الفروع** لتلك المتغيّرات، فتُسلسَل مبيعات فرعٍ آخر خلف هديةٍ في فرعٍ لا علاقة له
+  //     بها (اختناقٌ صامت، لا خطأ يظهر).
+  //  ٢) **مرتّباً تصاعدياً بـvariantId** في الإدراج والقفل معاً — نفس نمط `sale/create.ts` المُثبَت:
+  //     مسارانِ يمسكان المتغيّرين نفسيهما بترتيبين متعاكسين يصنعان `ER_LOCK_DEADLOCK`.
+  const ordered = Array.from(new Set(variantIds)).sort((a, b) => a - b);
+  for (const variantId of ordered) {
     await tx
       .insert(branchStock)
       .values({ variantId, branchId, quantity: 0 })
       .onDuplicateKeyUpdate({ set: { variantId: sql`${branchStock.variantId}` } });
   }
-  await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, variantIds)).for("update");
+  await tx
+    .select({ id: branchStock.id })
+    .from(branchStock)
+    .where(and(eq(branchStock.branchId, branchId), inArray(branchStock.variantId, ordered)))
+    .orderBy(asc(branchStock.variantId))
+    .for("update");
 }
