@@ -39,6 +39,13 @@ export interface ReturnSaleInput {
   restock?: boolean;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة المرتجع الأول (لا استرداد/إرجاع مزدوج). */
   clientRequestId?: string | null;
+  /**
+   * **تفويضٌ داخليّ حصراً — لا يقبله أيّ راوتر.** عكسُ `correctSale` الكامل قبل إعادة الإصدار.
+   * يُعفي من حارس «الزبون العابر يجب أن يُردّ له»: المال هنا لا يُحتجَز بلا طرف، بل يُنقل
+   * إلى الفاتورة المصحّحة عبر `preCollected` في نفس المعاملة. بدون هذا الاستثناء كان تصحيح
+   * أيّ فاتورةٍ نقديّةٍ لزبونٍ عابر يُرفَض كلّياً.
+   */
+  internalCorrectionReversal?: boolean;
 }
 
 /** جسم عكس المرتجع داخل معاملةٍ قائمة — يُعاد استعماله من correctSale (تصحيح الفاتورة)
@@ -678,7 +685,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     // تُطمئن الموظف بنصٍّ كاذب: «تُخصَم من ذمّة العميل فقط» — ولا ذمّة أصلاً.
     //
     // المستحقّ له = ما دفعه فوق ما يبقى عليه بعد المرتجع. يُفرَض ردُّه كاملاً أو لا يُحفظ المرتجع.
-    if (inv.customerId == null) {
+    if (inv.customerId == null && !input.internalCorrectionReversal) {
       const netAfterReturn = money(inv.total).minus(
         money(inv.returnedTotal ?? "0").plus(returnedTotal),
       );
