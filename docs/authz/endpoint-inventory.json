@@ -815,7 +815,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:101"
+      "loc": "server/routers/attendanceRouter.ts:110"
     },
     {
       "surface": "trpc",
@@ -832,7 +832,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:93"
+      "loc": "server/routers/attendanceRouter.ts:102"
     },
     {
       "surface": "trpc",
@@ -866,7 +866,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:109"
+      "loc": "server/routers/attendanceRouter.ts:118"
     },
     {
       "surface": "trpc",
@@ -883,7 +883,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:95"
+      "loc": "server/routers/attendanceRouter.ts:104"
     },
     {
       "surface": "trpc",
@@ -900,7 +900,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:180"
+      "loc": "server/routers/attendanceRouter.ts:189"
     },
     {
       "surface": "trpc",
@@ -917,7 +917,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:132"
+      "loc": "server/routers/attendanceRouter.ts:141"
     },
     {
       "surface": "trpc",
@@ -934,7 +934,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:121"
+      "loc": "server/routers/attendanceRouter.ts:130"
     },
     {
       "surface": "trpc",
@@ -968,7 +968,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:79"
+      "loc": "server/routers/attendanceRouter.ts:88"
     },
     {
       "surface": "trpc",

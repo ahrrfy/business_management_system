@@ -540,6 +540,8 @@ export async function getAttendanceSettings() {
     attendancePayEnabled: false,
     attendancePayFrom: null as string | null,
     maxDailyHours: "12.00",
+    nightShiftEnabled: false,
+    nightShiftCutoffHour: 8,
     updatedBy: null as number | null,
     updatedAt: new Date(),
   };
@@ -556,6 +558,8 @@ export async function updateAttendanceSettings(
     attendancePayEnabled?: boolean;
     attendancePayFrom?: string | null;
     maxDailyHours?: number;
+    nightShiftEnabled?: boolean;
+    nightShiftCutoffHour?: number;
   },
   actorUserId: number,
 ) {
@@ -568,6 +572,8 @@ export async function updateAttendanceSettings(
     ...(input.attendancePayEnabled !== undefined ? { attendancePayEnabled: input.attendancePayEnabled } : {}),
     ...(input.attendancePayFrom !== undefined ? { attendancePayFrom: input.attendancePayFrom || null } : {}),
     ...(input.maxDailyHours !== undefined ? { maxDailyHours: String(input.maxDailyHours) } : {}),
+    ...(input.nightShiftEnabled !== undefined ? { nightShiftEnabled: input.nightShiftEnabled } : {}),
+    ...(input.nightShiftCutoffHour !== undefined ? { nightShiftCutoffHour: input.nightShiftCutoffHour } : {}),
     updatedBy: actorUserId,
   };
   return withTx(async (tx) => {
@@ -596,6 +602,12 @@ export interface RecordAttendanceInput {
   actor?: { userId: number; role: string } | null;
   /** عزل الفرع: رقمٌ = يُرفَض موظفُ فرعٍ آخر؛ null/غياب = عبورٌ (أدمن/مالك أو الطيّ التلقائي). */
   scopedBranchId?: number | null;
+  /**
+   * تاريخ **الانصراف** حين يخالف تاريخ الوردية (وردية ليلية عابرة منتصف الليل).
+   * غيابه = تاريخ الحضور نفسه (السلوك السابق حرفياً). يمرّره الطيّ وحده؛ الإدخال اليدوي لا
+   * يمرّره ⇒ يبقى حارسُ «الانصراف بعد الدخول» صارماً على البشر ولا يفتح باب خطأٍ صامت.
+   */
+  checkOutDate?: string | null;
 }
 
 /** يُحوّل وقت "HH:MM" في يوم الحضور إلى Date لعمود timestamp (أو null).
@@ -678,7 +690,7 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     if (hoursViolation) throw new Error(hoursViolation);
 
     const checkInAt = timeToTimestamp(input.attendanceDate, input.checkIn);
-    const checkOutAt = timeToTimestamp(input.attendanceDate, input.checkOut);
+    const checkOutAt = timeToTimestamp(input.checkOutDate || input.attendanceDate, input.checkOut);
     const effectiveHours = isPaidStatus ? hoursDec : money(0);
     const rate = rateForDay(emp, input.attendanceDate);
     // الأجر بالدينار الصحيح (لا فئات أصغر من الدينار في المتجر): تقريب الناتج إلى عدد صحيح.

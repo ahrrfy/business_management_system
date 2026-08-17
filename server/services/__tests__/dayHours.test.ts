@@ -7,12 +7,14 @@
 //       ولا تفتح يوماً جديداً بصفر ساعات.
 //   ي٤) الإسناد حتميّ: يوم D يسأل جاريه فيصل للنتيجة نفسها مهما تكرّر الطيّ.
 import { describe, expect, it } from "vitest";
-import { computeDayHours } from "../hrDevices/dayHours";
+import { computeDayHours, type NightShiftOptions } from "../hrDevices/dayHours";
 
 const NIGHT: NightShiftOptions = { enabled: true, cutoffHour: 8 };
 const d = (t: string) => `2026-07-15 ${t}`;
-const prev = (t: string) => `2026-07-14 ${t}`;
 const next = (t: string) => `2026-07-16 ${t}`;
+/** يوم D مع بصمات فجر اليوم التالي — الشكل الذي يمرّره الطيّ. */
+const withDawn = (own: string[], dawn: string[], cutoffHour = 8) =>
+  computeDayHours(own, 12, undefined, { enabled: true, cutoffHour, nextDayPunches: dawn });
 
 describe("مزاوجة البصمات (ي١)", () => {
   it("يطرح استراحة الغداء: ٨ ساعات لا ١٢", () => {
@@ -66,12 +68,78 @@ describe("البصمة الناقصة (ي٢)", () => {
 });
 
 
+describe("الوردية الليلية (ي٣)", () => {
+  it("معطَّلة افتراضياً: وردية 22:00→06:00 تصير يومين ببصمةٍ واحدة لكلٍّ — صفر ساعات", () => {
+    const r = computeDayHours([d("22:00:00")]);
+    expect(r.hours).toBe("0.00");
+    expect(r.needsReview).toBe(true);
+    expect(r.checkOut).toBeNull();
+  });
+
+  it("عند تفعيلها تُغلق بصمةُ الفجر وردية أمس: ثماني ساعات لا صفر", () => {
+    const r = withDawn([d("22:00:00")], [next("06:00:00")]);
+    expect(r.hours).toBe("8.00");
+    expect(r.checkIn).toBe("22:00");
+    expect(r.checkOut).toBe("06:00");
+    expect(r.checkOutNextDay).toBe(true);
+    expect(r.needsReview).toBe(false);
+  });
+
+  it("بصمةُ فجر هذا اليوم تخصّ وردية أمس ⇒ تُستبعَد من يومه", () => {
+    // 06:00 من يوم D تُغلق وردية D-1؛ فلا تفتح يوماً جديداً هنا.
+    const r = withDawn([d("06:00:00"), d("22:00:00")], [next("06:00:00")]);
+    expect(r.checkIn).toBe("22:00"); // لا 06:00
+    expect(r.hours).toBe("8.00");
+  });
+
+  it("يومٌ كلُّ بصماته قبل الفصل ⇒ لا وردية له إطلاقاً (تخصّ أمس)", () => {
+    const r = withDawn([d("05:00:00"), d("07:00:00")], [next("06:00:00")]);
+    expect(r.usedCount).toBe(0); // ⇒ الطيّ يركنها «أُسندت لوردية اليوم السابق»
+    expect(r.hours).toBe("0.00");
+    expect(r.needsReview).toBe(false);
+  });
+
+  it("لا يجرّ فجرَ الغد إلى يومٍ بلا افتتاح — وإلّا سُرق انصرافُ وردية غيره", () => {
+    const r = withDawn([], [next("06:00:00")]);
+    expect(r.usedCount).toBe(0);
+    expect(r.hours).toBe("0.00");
+  });
+
+  it("ساعة الفصل قابلة للضبط: بفصلٍ عند ٤ لا تُضمّ بصمةُ ٠٦:٠٠", () => {
+    const r = withDawn([d("22:00:00")], [next("06:00:00")], 4);
+    expect(r.hours).toBe("0.00"); // 06:00 ≥ 4 ⇒ تخصّ الغد لا هذه الوردية
+    expect(r.needsReview).toBe(true);
+  });
+
+  it("النهار العاديّ لا يتأثّر بالتفعيل — صفر انحدار", () => {
+    const r = withDawn([d("08:00:00"), d("12:00:00"), d("16:00:00"), d("20:00:00")], []);
+    expect(r.hours).toBe("8.00");
+    expect(r.checkOutNextDay).toBe(false);
+    expect(r.needsReview).toBe(false);
+  });
+
+  it("سقف اليوم يبقى نافذاً على الوردية الليلية", () => {
+    const r = withDawn([d("18:00:00")], [next("07:30:00")]);
+    expect(Number(r.hours)).toBe(12); // قُصّت من ١٣.٥
+    expect(String(r.reviewReason)).toContain("غير معقولة");
+  });
+});
+
 describe("الحتمية (ي٤)", () => {
   it("تكرار الحساب بنفس المدخلات يعطي نفس النتيجة", () => {
-    const args = [[d("08:00:00"), d("12:00:00"), d("13:00:00")], [], [next("07:00:00")], NIGHT] as const;
-    const a = computeDayHours(...args);
-    const b = computeDayHours(...args);
+    const own = [d("08:00:00"), d("12:00:00"), d("13:00:00")];
+    const opts: NightShiftOptions = { ...NIGHT, nextDayPunches: [next("07:00:00")] };
+    const a = computeDayHours(own, 12, undefined, opts);
+    const b = computeDayHours(own, 12, undefined, opts);
     expect(a).toEqual(b);
+  });
+
+  it("الإسناد يُشتقّ من الجيران لا من حالةٍ مخزَّنة ⇒ إعادة الطيّ لا تغيّر شيئاً", () => {
+    const own = [d("22:00:00")];
+    const dawn = [next("06:00:00")];
+    const runs = [0, 1, 2].map(() => withDawn(own, dawn));
+    expect(runs[1]).toEqual(runs[0]);
+    expect(runs[2]).toEqual(runs[0]);
   });
 
   it("بصمة سالبة المدى (خلل ساعة الجهاز) لا تُنقص المجموع", () => {

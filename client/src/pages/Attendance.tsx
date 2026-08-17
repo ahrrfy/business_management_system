@@ -569,12 +569,16 @@ function AttendanceSettingsCard() {
   const [payOn, setPayOn] = useState(false);
   const [payFrom, setPayFrom] = useState("");
   const [maxDaily, setMaxDaily] = useState(12);
+  const [nightOn, setNightOn] = useState(false);
+  const [nightCutoff, setNightCutoff] = useState(8);
 
   useEffect(() => {
     if (!open || !s) return;
     setPayOn(!!s.attendancePayEnabled);
     setPayFrom(s.attendancePayFrom ? String(s.attendancePayFrom).slice(0, 10) : "");
     setMaxDaily(Number(s.maxDailyHours ?? 12));
+    setNightOn(!!s.nightShiftEnabled);
+    setNightCutoff(Number(s.nightShiftCutoffHour ?? 8));
   }, [open, s]);
 
   const save = trpc.attendance.updateSettings.useMutation({
@@ -599,6 +603,11 @@ function AttendanceSettingsCard() {
             <span className="text-muted-foreground">·</span>
             <span>سقف اليوم:</span>
             <span className="font-medium tabular-nums" dir="ltr">{q.isLoading ? "…" : `${Number(s?.maxDailyHours ?? 12)} ساعة`}</span>
+            <span className="text-muted-foreground">·</span>
+            <span>الوردية الليلية:</span>
+            <span className={s?.nightShiftEnabled ? "font-medium text-[var(--status-active,#16a34a)]" : "text-muted-foreground"}>
+              {q.isLoading ? "…" : s?.nightShiftEnabled ? `مفعَّلة — الفصل ${Number(s.nightShiftCutoffHour ?? 8)}:00` : "معطَّلة"}
+            </span>
           </div>
           <Button variant="outline" size="sm" onClick={() => setOpen(true)}>تعديل</Button>
         </CardContent>
@@ -644,13 +653,44 @@ function AttendanceSettingsCard() {
               </p>
             </div>
 
+            <div className="rounded-md border p-3 space-y-2">
+              <label className="flex items-start gap-2">
+                <input type="checkbox" className="size-4 mt-0.5" checked={nightOn} onChange={(e) => setNightOn(e.target.checked)} />
+                <span>
+                  <span className="font-medium">الوردية الليلية العابرة منتصف الليل</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                    بدونها تُسجَّل وردية ٢٢:٠٠ ← ٠٦:٠٠ يومين ببصمةٍ واحدة لكلٍّ ⇒ صفر ساعات وصفر أجر
+                    لليلة عملٍ كاملة. ومعها تُغلق بصمةُ الفجر وردية أمس ولا تفتح يوماً جديداً.
+                  </span>
+                </span>
+              </label>
+              <div className="space-y-1">
+                <Label htmlFor="night-cutoff">ساعة الفصل</Label>
+                <Input
+                  id="night-cutoff" type="number" min={0} max={23} step="1" dir="ltr"
+                  value={nightCutoff} disabled={!nightOn}
+                  onChange={(e) => setNightCutoff(Number(e.target.value))}
+                />
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  بصمةٌ قبل هذه الساعة تخصّ وردية اليوم السابق. اضبطها بعد آخر انصرافٍ ليليّ متوقَّع
+                  وقبل أوّل دخولٍ صباحيّ — الافتراضي ٨ صباحاً.
+                </p>
+              </div>
+            </div>
+
             <p className="text-xs text-muted-foreground border-t pt-2">
               التغيير لا يُعيد حساب أيام مسجَّلة سابقاً — يسري على ما يصل بعده.
             </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button>
-            <Button disabled={save.isPending} onClick={() => save.mutate({ attendancePayEnabled: payOn, attendancePayFrom: payFrom || null, maxDailyHours: maxDaily })}>
+            <Button disabled={save.isPending} onClick={() => save.mutate({
+              attendancePayEnabled: payOn,
+              attendancePayFrom: payFrom || null,
+              maxDailyHours: maxDaily,
+              nightShiftEnabled: nightOn,
+              nightShiftCutoffHour: nightCutoff,
+            })}>
               {save.isPending ? "جارٍ الحفظ…" : "حفظ"}
             </Button>
           </DialogFooter>

@@ -98,6 +98,7 @@ export default defineConfig({
       "server/tenancy/__tests__/tenantPoolPolicy.test.ts",
       "shared/attendanceHours.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
+      "server/services/__tests__/dayHours.test.ts",
     ],
   },
 });

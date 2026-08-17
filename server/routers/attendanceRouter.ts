@@ -61,6 +61,9 @@ export const attendanceRouter = router({
         attendancePayEnabled: z.boolean().optional(),
         attendancePayFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
         maxDailyHours: z.number().min(1).max(24).optional(),
+        nightShiftEnabled: z.boolean().optional(),
+        // ساعةُ الفصل ضمن اليوم — ما قبلها يُغلق وردية أمس.
+        nightShiftCutoffHour: z.number().int().min(0).max(23).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -69,7 +72,13 @@ export const attendanceRouter = router({
         action: "attendance.updateSettings",
         entityType: "hrAttendanceSettings",
         entityId: 1,
-        newValue: { attendancePayEnabled: input.attendancePayEnabled, attendancePayFrom: input.attendancePayFrom, maxDailyHours: input.maxDailyHours },
+        newValue: {
+          attendancePayEnabled: input.attendancePayEnabled,
+          attendancePayFrom: input.attendancePayFrom,
+          maxDailyHours: input.maxDailyHours,
+          nightShiftEnabled: input.nightShiftEnabled,
+          nightShiftCutoffHour: input.nightShiftCutoffHour,
+        },
       });
       return row;
     }),

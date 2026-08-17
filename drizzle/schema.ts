@@ -5912,6 +5912,18 @@ export const hrAttendanceSettings = mysqlTable("hrAttendanceSettings", {
     .default(false)
     .notNull(),
   attendancePayFrom: date("attendancePayFrom", { mode: "string" }),
+  /**
+   * الوردية الليلية العابرة منتصف الليل (0185) — **معطَّلة افتراضياً** (قرار مالك: نادرة
+   * في المطبعة). كان هذا المفتاح موصوفاً في تعليقات المخطط والخدمة والموجّه والواجهة
+   * **بلا عمودٍ ولا تنفيذ** — أي ميزةٌ موثَّقة معدومة (تدقيق ١٧/٨): وردية 22:00→06:00
+   * تُسجَّل يومين ببصمةٍ واحدة لكلٍّ ⇒ صفر ساعات وصفر أجر لليلة عملٍ كاملة.
+   *
+   * تغييرُه **لا يعيد حساب الماضي** — الأيام المطويّة تبقى كما هي؛ وما يصل بعده يُحتسب
+   * بالسياسة الجديدة (مسيّرات سابقة قد تكون بُنيت على الأرقام القديمة).
+   */
+  nightShiftEnabled: boolean("nightShiftEnabled").default(false).notNull(),
+  /** ساعةُ الفصل (0-23): بصمةٌ قبلها تُغلق وردية اليوم السابق ولا تفتح يوماً جديداً. */
+  nightShiftCutoffHour: int("nightShiftCutoffHour").default(8).notNull(),
   updatedBy: int("updatedBy").references(() => users.id),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
