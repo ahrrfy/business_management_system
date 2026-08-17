@@ -620,11 +620,36 @@ export const catalogRouter = router({
         action: "product.update",
         entityType: "product",
         entityId: input.productId,
-        oldValue: { name: before?.name, variants: before?.variants.map((v) => ({ id: v.id, sku: v.sku, isActive: v.isActive })) ?? [] },
+        // المسار د-١ (١٧/٨): لقطة التدقيق كانت `{id, sku, isActive}` فقط ⇒ **تعديل سعرٍ أو تكلفةٍ
+        // لا يترك أيّ أثرٍ رقميّ**: يبقى «مَن ومتى» بلا «مِن كم إلى كم»، فلا يمكن مراجعة تسعيرٍ
+        // بأثرٍ رجعيّ ولا ردّ اعتراضِ زبونٍ على سعر. أُضيفت التكلفة وسعر وحدة الأساس لكل متغيّر
+        // وشرائح أسعار الوحدات على الطرفين. (لا آلية إعادة تقييمٍ جديدة — `postCostRevaluation`
+        // قائمةٌ وتُرحّل قيد ADJUST؛ إضافة طبقةٍ ثانية كانت ستُنتج قيوداً مزدوجة.)
+        oldValue: {
+          name: before?.name,
+          variants:
+            before?.variants.map((v) => ({
+              id: v.id, sku: v.sku, isActive: v.isActive,
+              costPrice: v.costPrice, baseRetail: v.baseRetail,
+            })) ?? [],
+          unitPrices:
+            before?.unitTemplate.map((u) => ({
+              unitName: u.unitName, retail: u.retail, wholesale: u.wholesale, government: u.government,
+            })) ?? [],
+        },
         newValue: {
           name: input.name,
           added: (res as { added?: number }).added ?? 0,
-          variants: input.variants.map((v) => ({ id: v.id ?? null, sku: v.sku, isActive: v.isActive })),
+          variants: input.variants.map((v) => ({
+            id: v.id ?? null, sku: v.sku, isActive: v.isActive,
+            costPrice: v.costPrice, baseRetail: v.baseRetail ?? null,
+          })),
+          unitPrices: input.unitTemplate.map((u) => ({
+            unitName: u.unitName,
+            retail: u.prices.find((p) => p.priceTier === "RETAIL")?.price ?? null,
+            wholesale: u.prices.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
+            government: u.prices.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
+          })),
         },
       });
       return { ...res, aliasWarnings };
