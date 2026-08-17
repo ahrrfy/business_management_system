@@ -137,6 +137,7 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  uq_image_studio_usage_daily_service: { msg: "سجلّ حصة خدمة الاستوديو لهذا اليوم موجود مسبقاً." },
   // ── الرواتب/الإقفال/الاستحقاقات (0185–0194) ──
   uq_payroll_obligation_source: { msg: "التزام الرواتب لهذا المصدر مسجّل مسبقاً." },
   uq_payroll_obligation_revision: { msg: "مراجعة التزام الرواتب مسجّلة مسبقاً." },
