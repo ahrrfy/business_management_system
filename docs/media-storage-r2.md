@@ -55,6 +55,7 @@
 
    ```bash
    IMAGE_STORE_DRIVER=r2 R2_CANARY_CONFIRM=RUN_PRIVATE_R2_CANARY \
+     R2_CANARY_CLOUDFLARE_API_TOKEN='<temporary Workers R2 Storage Read token>' \
      node --import tsx scripts/r2-image-store-canary.mjs
    ```
 

@@ -19,6 +19,7 @@ import {
   contentHash,
   getImageStore,
   isImageStoreOperational,
+  MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
   objectKeyFor,
   shortHash,
   studioObjectPrefix,
@@ -28,7 +29,6 @@ import { getCurrentCompanyId } from "../tenancy/context";
 import { isMultiTenantModeActive } from "../db";
 import { resolveCompanyById } from "../tenancy/registry";
 
-const MAX_STUDIO_IMAGE_BYTES = 900_000;
 const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
 const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
 const MAX_PREVIEW_BYTES = 1_000_000;
@@ -95,7 +95,7 @@ function assertTaskAccess(
 }
 
 function decodeStudioImage(dataUrl: string): { bytes: Buffer; mime: string; width: number | null; height: number | null; hash: string } {
-  assertValidImageDataUrl(dataUrl, MAX_STUDIO_IMAGE_BYTES, true);
+  assertValidImageDataUrl(dataUrl, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, true);
   const comma = dataUrl.indexOf(",");
   const mime = dataUrl.slice(5, dataUrl.indexOf(";"));
   const bytes = Buffer.from(dataUrl.slice(comma + 1), "base64");

@@ -10,6 +10,9 @@
  */
 import type { Readable } from "node:stream";
 
+/** الحد الواحد نفسه لعقد submit والمشتق المنشور؛ إبقاؤه مشتركاً يمنع رفض صورة اعتمدها الاستوديو. */
+export const MAX_PUBLISHED_PRODUCT_IMAGE_BYTES = 900_000;
+
 export interface PutResult {
   /** المفتاح المعنون-بالمحتوى المُودَع. */
   key: string;
@@ -31,6 +34,8 @@ export interface ImageStore {
   head(key: string): Promise<ObjectHead>;
   /** يبثّ بايتات الكائن، أو null إن غاب (⇒ سقوطٌ للمصغّرة في طبقة الخدمة). */
   getStream(key: string): Promise<Readable | null>;
+  /** يقرأ الكائن كاملاً ضمن سقف صريح؛ مطلوب لمسار عام يتحقق قبل إرسال أي headers. */
+  getBuffer(key: string, expectedBytes: number): Promise<Buffer | null>;
   /** يحذف الكائن (يُستعمَل من الكنس المعدود-مرجعياً فقط؛ لا حذف آنيّ عند cascade). */
   delete(key: string): Promise<void>;
   /** رابط موقَّع قصير العمر (اختياريّ — سائق R2؛ fs لا يدعمه). */

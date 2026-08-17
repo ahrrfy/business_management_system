@@ -49,6 +49,23 @@ export class FsImageStore implements ImageStore {
     return createReadStream(this.full(key));
   }
 
+  async getBuffer(key: string, expectedBytes: number): Promise<Buffer | null> {
+    if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > 25 * 1024 * 1024) {
+      throw new Error("FsImageStore: حد القراءة غير صالح.");
+    }
+    try {
+      const full = this.full(key);
+      const stat = await fs.stat(full);
+      if (stat.size !== expectedBytes) throw new Error("FsImageStore: حجم الكائن لا يطابق metadata المعتمدة.");
+      const body = await fs.readFile(full);
+      if (body.length !== expectedBytes) throw new Error("FsImageStore: حجم الكائن لا يطابق metadata المعتمدة.");
+      return body;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
   async delete(key: string): Promise<void> {
     try {
       await fs.unlink(this.full(key));

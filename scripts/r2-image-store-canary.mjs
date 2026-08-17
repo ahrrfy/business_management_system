@@ -37,6 +37,81 @@ export function buildUnauthenticatedObjectUrl(accountId, bucket, key) {
   return `https://${accountId}.r2.cloudflarestorage.com/${path}`;
 }
 
+function assertCanaryAccountAndBucket(accountId, bucket) {
+  if (!/^[a-f0-9]{32}$/.test(accountId)) throw new R2CanaryError("CANARY_ACCOUNT_INVALID");
+  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) throw new R2CanaryError("CANARY_BUCKET_INVALID");
+}
+
+export function buildCloudflareBucketDomainUrls(accountId, bucket) {
+  assertCanaryAccountAndBucket(accountId, bucket);
+  const prefix = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/r2/buckets/${encodeURIComponent(bucket)}/domains`;
+  return { managed: `${prefix}/managed`, custom: `${prefix}/custom` };
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function fetchCloudflareApiResult(url, apiToken, fetchCloudflareApi) {
+  let response;
+  try {
+    response = await fetchCloudflareApi(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiToken}`, Accept: "application/json" },
+      redirect: "error",
+      cache: "no-store",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new R2CanaryError("CANARY_PRIVACY_CONFIG_API_FAILED", error);
+  }
+  if (response?.status !== 200 || typeof response.json !== "function") {
+    throw new R2CanaryError("CANARY_PRIVACY_CONFIG_API_FAILED");
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (error) {
+    throw new R2CanaryError("CANARY_PRIVACY_CONFIG_INVALID", error);
+  }
+  if (!isPlainObject(body) || body.success !== true || !Array.isArray(body.errors) || body.errors.length !== 0 ||
+      !isPlainObject(body.result)) {
+    throw new R2CanaryError("CANARY_PRIVACY_CONFIG_INVALID");
+  }
+  return body.result;
+}
+
+/**
+ * يثبت أن مساري النشر المباشر مغلقان من مصدر الحقيقة الرسمي في Cloudflare.
+ * 403/404 من S3 وحده لا يثبت ذلك لأن r2.dev وcustom domains مساران مستقلان.
+ */
+export async function verifyR2BucketPrivacyConfiguration({
+  accountId,
+  bucket,
+  apiToken,
+  fetchCloudflareApi = globalThis.fetch,
+}) {
+  assertCanaryAccountAndBucket(accountId, bucket);
+  if (typeof apiToken !== "string" || apiToken.trim() !== apiToken || apiToken.length < 16 ||
+      apiToken.length > 2048 || /[\x00-\x20\x7f]/.test(apiToken)) {
+    throw new R2CanaryError("CANARY_PRIVACY_CONFIG_TOKEN_REQUIRED");
+  }
+  if (typeof fetchCloudflareApi !== "function") throw new R2CanaryError("CANARY_FETCH_UNAVAILABLE");
+  const urls = buildCloudflareBucketDomainUrls(accountId, bucket);
+  const managed = await fetchCloudflareApiResult(urls.managed, apiToken, fetchCloudflareApi);
+  if (typeof managed.bucketId !== "string" || !/^[a-f0-9]{32}$/i.test(managed.bucketId) ||
+      typeof managed.domain !== "string" || managed.domain.length === 0 || typeof managed.enabled !== "boolean") {
+    throw new R2CanaryError("CANARY_PRIVACY_CONFIG_INVALID");
+  }
+  if (managed.enabled) throw new R2CanaryError("CANARY_R2_DEV_PUBLIC");
+
+  const custom = await fetchCloudflareApiResult(urls.custom, apiToken, fetchCloudflareApi);
+  if (!Array.isArray(custom.domains)) throw new R2CanaryError("CANARY_PRIVACY_CONFIG_INVALID");
+  if (custom.domains.length !== 0) throw new R2CanaryError("CANARY_CUSTOM_DOMAIN_CONFIGURED");
+  return { managedR2DevEnabled: false, customDomainCount: 0 };
+}
+
 async function streamBytes(stream, expectedMaximum) {
   const chunks = [];
   let total = 0;
@@ -52,19 +127,50 @@ async function streamBytes(stream, expectedMaximum) {
   return Buffer.concat(chunks);
 }
 
+function isNotFound(error) {
+  if (!error || typeof error !== "object") return false;
+  return error.name === "NotFound" || error.name === "NoSuchKey" || error.Code === "NoSuchKey" ||
+    error.code === "NoSuchKey" || error.$metadata?.httpStatusCode === 404;
+}
+
+async function cleanupCanaryObject(cleanupStore, key) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await cleanupStore.delete(key);
+    } catch (error) {
+      lastError = error;
+    }
+    try {
+      const head = await cleanupStore.head(key);
+      if (!head.exists) return;
+      lastError = new R2CanaryError("CANARY_CLEANUP_OBJECT_REMAINS");
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new R2CanaryError("CANARY_CLEANUP_FAILED", lastError);
+}
+
 /**
  * تُحقن التبعيات في الاختبار؛ في التشغيل الحقيقي store هو R2ImageStore والـURL هو endpoint الرسمي.
  * لا يقبل 200 من الطلب غير المصادق: ذلك يعني أن الكائن قابل للقراءة خارج بوابة التطبيق.
  */
 export async function runR2ImageStoreCanary({
   store,
+  cleanupStore,
   key,
   endpointUrl,
   bytes = PNG_1X1,
+  privacyConfiguration,
   fetchUnauthenticated = globalThis.fetch,
 }) {
   if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_CANARY_BYTES) {
     throw new R2CanaryError("CANARY_PAYLOAD_INVALID");
+  }
+  if (!cleanupStore || cleanupStore === store || typeof cleanupStore.delete !== "function" ||
+      typeof cleanupStore.head !== "function") {
+    throw new R2CanaryError("CANARY_INDEPENDENT_CLEANUP_REQUIRED");
   }
   if (typeof fetchUnauthenticated !== "function") throw new R2CanaryError("CANARY_FETCH_UNAVAILABLE");
   const expectedHash = createHash("sha256").update(bytes).digest("hex");
@@ -73,6 +179,11 @@ export async function runR2ImageStoreCanary({
   let result = null;
 
   try {
+    if (!privacyConfiguration || typeof privacyConfiguration !== "object") {
+      throw new R2CanaryError("CANARY_PRIVACY_CONFIG_REQUIRED");
+    }
+    await verifyR2BucketPrivacyConfiguration(privacyConfiguration);
+
     // إن رمى PUT بعد وصوله للمزوّد فوجود الكائن غير محسوم، لذلك ننظف. لكن إن عاد existed=true
     // فلا نحذف كائناً سابقاً (تصادم عشوائي شديد الندرة) لا نملكه.
     cleanupRequired = true;
@@ -85,6 +196,9 @@ export async function runR2ImageStoreCanary({
 
     const head = await store.head(key);
     if (!head.exists || head.bytes !== bytes.length) throw new R2CanaryError("CANARY_HEAD_MISMATCH");
+
+    // أعد الإثبات والكائن موجود لإغلاق نافذة تغيّر الإعداد بين الفحص الأول وPUT.
+    await verifyR2BucketPrivacyConfiguration(privacyConfiguration);
 
     let privacyResponse;
     try {
@@ -115,9 +229,7 @@ export async function runR2ImageStoreCanary({
   } finally {
     if (cleanupRequired) {
       try {
-        await store.delete(key);
-        const afterDelete = await store.head(key);
-        if (afterDelete.exists) throw new R2CanaryError("CANARY_CLEANUP_OBJECT_REMAINS");
+        await cleanupCanaryObject(cleanupStore, key);
       } catch (cleanupError) {
         if (!primaryError) primaryError = cleanupError;
         else primaryError = new R2CanaryError("CANARY_CLEANUP_FAILED", cleanupError);
@@ -144,13 +256,54 @@ async function main() {
   if (process.env.IMAGE_STORE_DRIVER?.trim().toLowerCase() !== "r2") {
     throw new R2CanaryError("CANARY_R2_DRIVER_REQUIRED");
   }
-  const [{ R2ImageStore, readR2ImageStoreConfig }] = await Promise.all([
+  const [{ R2ImageStore, readR2ImageStoreConfig }, { S3Client, DeleteObjectCommand, HeadObjectCommand }] = await Promise.all([
     import("../server/lib/imageStore/r2Store.ts"),
+    import("@aws-sdk/client-s3"),
   ]);
   const config = readR2ImageStoreConfig(process.env);
+  const cloudflareApiToken = process.env.R2_CANARY_CLOUDFLARE_API_TOKEN;
+  if (!cloudflareApiToken) throw new R2CanaryError("CANARY_PRIVACY_CONFIG_TOKEN_REQUIRED");
   const key = buildCanaryKey();
   const endpointUrl = buildUnauthenticatedObjectUrl(config.accountId, config.bucket, key);
-  const result = await runR2ImageStoreCanary({ store: new R2ImageStore(config), key, endpointUrl });
+  // عميل cleanup خاص بالـCLI فقط، بلا semaphore/breaker التطبيق: إذا وصل PUT ثم عاد 503 لا
+  // يجوز أن يمنع circuit_open حذف مفتاح canary. لا تُصدّر هذه البوابة إلى runtime التطبيق.
+  const cleanupClient = new S3Client({
+    region: "auto",
+    endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+    maxAttempts: 2,
+    requestHandler: {
+      connectionTimeout: 5_000,
+      requestTimeout: 10_000,
+      socketTimeout: 10_000,
+      throwOnRequestTimeout: true,
+    },
+  });
+  const cleanupStore = {
+    async delete(objectKey) {
+      await cleanupClient.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: objectKey }));
+    },
+    async head(objectKey) {
+      try {
+        await cleanupClient.send(new HeadObjectCommand({ Bucket: config.bucket, Key: objectKey }));
+        return { exists: true };
+      } catch (error) {
+        if (isNotFound(error)) return { exists: false };
+        throw error;
+      }
+    },
+  };
+  const result = await runR2ImageStoreCanary({
+    store: new R2ImageStore(config),
+    cleanupStore,
+    key,
+    endpointUrl,
+    privacyConfiguration: {
+      accountId: config.accountId,
+      bucket: config.bucket,
+      apiToken: cloudflareApiToken,
+    },
+  });
   process.stdout.write(`R2 canary: OK bytes=${result.bytes} privacy=${result.privacyStatus} cleanup=verified\n`);
 }
 

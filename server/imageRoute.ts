@@ -28,6 +28,7 @@ import {
   getImageStore,
   isCurrentTenantCandidateKey,
   isImageStoreUnavailableError,
+  MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
   recordImageStorePublicFallback,
   shortHash,
 } from "./lib/imageStore";
@@ -45,6 +46,9 @@ const ONE_YEAR = 60 * 60 * 24 * 365;
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"]);
 /** المصغّرة شبكة عرض فقط؛ حدها يمنع تحويل عمود DB إلى مسار بديل لصور كاملة كبيرة. */
 const MAX_FALLBACK_THUMB_BYTES = 256 * 1024;
+/** سقف مشتق العرض العام = عقد submit نفسه؛ أسوأ buffer افتراضي لكل worker = 4 × 900kB = 3.6MB. */
+const MAX_PUBLIC_STORED_IMAGE_BYTES = MAX_PUBLISHED_PRODUCT_IMAGE_BYTES;
+const MAX_PRIVATE_STORED_IMAGE_BYTES = 25 * 1024 * 1024;
 
 export interface DecodedImage {
   mime: string;
@@ -211,16 +215,63 @@ async function sendStoredProductImage(
   if (
     !objectKey || !isCurrentTenantCandidateKey(objectKey) ||
     !contentHash || !/^[0-9a-f]{64}$/i.test(contentHash) ||
-    !mime || !ALLOWED_MIME.has(mime.toLowerCase())
+    !mime || !ALLOWED_MIME.has(mime.toLowerCase()) ||
+    !Number.isSafeInteger(bytes) || bytes == null || bytes <= 0 || bytes > MAX_PRIVATE_STORED_IMAGE_BYTES
   ) return res.status(404).end();
 
   const version = shortHash(contentHash);
   if (typeof req.query.v !== "string" || req.query.v !== version) return res.status(404).end();
   const etag = `"${version}"`;
-  res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
-  if (visibility === "private") res.setHeader("Vary", "Cookie");
+  if (req.headers["if-none-match"] === etag) {
+    res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
+    if (visibility === "private") res.setHeader("Vary", "Cookie");
+    res.setHeader("ETag", etag);
+    return res.status(304).end();
+  }
+
+  if (visibility === "public") {
+    if (bytes > MAX_PUBLIC_STORED_IMAGE_BYTES) {
+      preventCachingStoredImageFailure(res);
+      return res.status(500).end();
+    }
+    let body: Buffer | null;
+    try {
+      // لا ترويسة 200 ولا pipe قبل اكتمال الجسم داخل semaphore والقاطع.
+      body = await getImageStore().getBuffer(objectKey, bytes);
+    } catch (error) {
+      if (!isImageStoreUnavailableError(error)) {
+        preventCachingStoredImageFailure(res);
+        throw error;
+      }
+      const fallback = sendPublicThumbnailFallback(res, image.thumbDataUrl);
+      if (fallback) {
+        recordImageStorePublicFallback();
+        logger.warn({ component: "r2_image_store", reason: error.reason }, "img: serving approved thumbnail fallback");
+        return fallback;
+      }
+      preventCachingStoredImageFailure(res);
+      return res.status(503).end();
+    }
+    if (!body) {
+      preventCachingStoredImageFailure(res);
+      return res.status(404).end();
+    }
+    if (body.length !== bytes || createHash("sha256").update(body).digest("hex") !== contentHash.toLowerCase()) {
+      preventCachingStoredImageFailure(res);
+      return res.status(500).end();
+    }
+    res.setHeader("Cache-Control", `public, max-age=${ONE_YEAR}, immutable`);
+    res.setHeader("ETag", etag);
+    res.setHeader("Content-Type", mime.toLowerCase());
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    res.setHeader("Content-Length", String(body.length));
+    return res.end(body);
+  }
+
+  res.setHeader("Cache-Control", `private, max-age=${ONE_YEAR}, immutable`);
+  res.setHeader("Vary", "Cookie");
   res.setHeader("ETag", etag);
-  if (req.headers["if-none-match"] === etag) return res.status(304).end();
 
   let stream;
   try {
@@ -229,14 +280,6 @@ async function sendStoredProductImage(
     if (!isImageStoreUnavailableError(error)) {
       preventCachingStoredImageFailure(res);
       throw error;
-    }
-    if (visibility === "public") {
-      const fallback = sendPublicThumbnailFallback(res, image.thumbDataUrl);
-      if (fallback) {
-        recordImageStorePublicFallback();
-        logger.warn({ component: "r2_image_store", reason: error.reason }, "img: serving approved thumbnail fallback");
-        return fallback;
-      }
     }
     preventCachingStoredImageFailure(res);
     return res.status(503).end();

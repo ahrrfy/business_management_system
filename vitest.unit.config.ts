@@ -55,6 +55,7 @@ export default defineConfig({
       "server/lib/imageStore/__tests__/imageStore.test.ts",
       "server/lib/imageStore/__tests__/resilience.test.ts",
       "server/lib/imageStore/__tests__/r2Store.test.ts",
+      "server/lib/imageStore/__tests__/r2Canary.test.ts",
       "server/services/__tests__/couponService.test.ts",
       "server/services/__tests__/businessDay.test.ts",
       "server/services/__tests__/reportsFinancialService.test.ts",

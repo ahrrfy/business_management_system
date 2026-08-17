@@ -2,6 +2,8 @@
  * حدود المرونة المحلية لسائق R2. الحالة مقصودة لكل process/worker: لا قاعدة بيانات ولا شبكة
  * إضافية في مسار الصورة، والحد الكلي في PM2 = عدد WEB_INSTANCES × maxConcurrency.
  */
+import type { Readable } from "node:stream";
+
 export interface R2ResilienceConfig {
   maxConcurrency: number;
   maxQueue: number;
@@ -11,7 +13,7 @@ export interface R2ResilienceConfig {
 }
 
 export type R2Operation = "put" | "head" | "get" | "delete";
-export type R2FailureClass = "not_found" | "transient" | "permanent";
+export type R2FailureClass = "not_found" | "transient" | "permanent" | "cancelled";
 export type ImageStoreUnavailableReason = "circuit_open" | "queue_full" | "queue_timeout" | "upstream";
 export type R2CircuitState = "closed" | "open" | "half_open";
 
@@ -25,6 +27,7 @@ export interface R2ResilienceSnapshot {
   transientFailures: number;
   permanentFailures: number;
   notFound: number;
+  cancelled: number;
   opened: number;
   circuitRejected: number;
   queueRejected: number;
@@ -82,7 +85,7 @@ function integerEnv(
 export function readR2ResilienceConfig(env: NodeJS.ProcessEnv = process.env): R2ResilienceConfig {
   return {
     maxConcurrency: integerEnv(env, "R2_MAX_CONCURRENCY", DEFAULT_CONFIG.maxConcurrency, 1, 64),
-    maxQueue: integerEnv(env, "R2_MAX_QUEUE", DEFAULT_CONFIG.maxQueue, 0, 1_024),
+    maxQueue: integerEnv(env, "R2_MAX_QUEUE", DEFAULT_CONFIG.maxQueue, 0, 16),
     queueTimeoutMs: integerEnv(env, "R2_QUEUE_TIMEOUT_MS", DEFAULT_CONFIG.queueTimeoutMs, 100, 30_000),
     failureThreshold: integerEnv(env, "R2_CIRCUIT_FAILURE_THRESHOLD", DEFAULT_CONFIG.failureThreshold, 1, 100),
     openMs: integerEnv(env, "R2_CIRCUIT_OPEN_MS", DEFAULT_CONFIG.openMs, 1_000, 300_000),
@@ -135,6 +138,7 @@ const TRANSIENT_CODES = new Set([
 /** تصنيف محافظ: fallback والقاطع للأعطال العابرة المؤكدة فقط؛ 401/403/validation تبقى صريحة. */
 export function classifyR2Failure(error: unknown): R2FailureClass {
   const { name, code, status } = errorShape(error);
+  if (name === "ImageStoreClientAbortError") return "cancelled";
   if (status === 404 || name === "NotFound" || name === "NoSuchKey" || code === "NoSuchKey") return "not_found";
   if (
     status === 408 || status === 429 || (status != null && status >= 500 && status <= 599) ||
@@ -152,6 +156,13 @@ export class ImageStoreUnavailableError extends Error {
     this.name = "ImageStoreUnavailableError";
     this.reason = reason;
     this.operation = operation;
+  }
+}
+
+export class ImageStoreClientAbortError extends Error {
+  constructor() {
+    super("ImageStore stream cancelled by consumer.");
+    this.name = "ImageStoreClientAbortError";
   }
 }
 
@@ -175,6 +186,7 @@ export class R2ResilienceController {
   private transientFailures = 0;
   private permanentFailures = 0;
   private notFound = 0;
+  private cancelled = 0;
   private opened = 0;
   private circuitRejected = 0;
   private queueRejected = 0;
@@ -199,6 +211,7 @@ export class R2ResilienceController {
       transientFailures: this.transientFailures,
       permanentFailures: this.permanentFailures,
       notFound: this.notFound,
+      cancelled: this.cancelled,
       opened: this.opened,
       circuitRejected: this.circuitRejected,
       queueRejected: this.queueRejected,
@@ -238,6 +251,65 @@ export class R2ResilienceController {
       entry.timer.unref?.();
       this.queue.push(entry as QueuedEntry<unknown>);
     });
+  }
+
+  /**
+   * نسخة streaming من run: تُسلّم الـReadable للمستهلك فور وصول headers، لكن لا تحرر permit
+   * ولا تسجل النجاح حتى end. خطأ body يدخل التصنيف والقاطع؛ close بلا error (إلغاء مستهلك
+   * مقصود) يحرر permit مرة واحدة ولا يلوّث القاطع.
+   */
+  runStream<T extends Readable | null>(operation: R2Operation, work: () => Promise<T>): Promise<T> {
+    let exposed = false;
+    let exposeResolve!: (value: T | PromiseLike<T>) => void;
+    let exposeReject!: (error: unknown) => void;
+    const result = new Promise<T>((resolve, reject) => {
+      exposeResolve = resolve;
+      exposeReject = reject;
+    });
+
+    void this.run(operation, async () => {
+      const stream = await work();
+      if (!stream) {
+        exposed = true;
+        exposeResolve(stream);
+        return stream;
+      }
+
+      const terminal = new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+          stream.off("end", onEnd);
+          stream.off("error", onError);
+          stream.off("close", onClose);
+        };
+        const settle = (error?: unknown) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (error === undefined) resolve();
+          else reject(error);
+        };
+        const onEnd = () => settle();
+        const onError = (error: unknown) => settle(error);
+        // Node يرسل close بعد end/error غالباً؛ settle يحمي release once.
+        const onClose = () => settle(new ImageStoreClientAbortError());
+        stream.once("end", onEnd);
+        stream.once("error", onError);
+        stream.once("close", onClose);
+      });
+      exposed = true;
+      exposeResolve(stream);
+      await terminal;
+      return stream;
+    }).catch((error: unknown) => {
+      // إن وقع الخطأ بعد تسليم stream فقد وصل أيضاً عبر حدث error للمستهلك؛ هنا نمنع
+      // unhandled rejection فقط، بينما run يكون قد سجله في المقاييس والقاطع.
+      if (!exposed) {
+        exposed = true;
+        exposeReject(error);
+      }
+    });
+    return result;
   }
 
   private isCircuitUnavailable(): boolean {
@@ -298,6 +370,15 @@ export class R2ResilienceController {
             this.openCircuit();
           }
           entry.reject(new ImageStoreUnavailableError("upstream", entry.operation, error));
+          return;
+        }
+        if (failureClass === "cancelled") {
+          this.cancelled += 1;
+          if (isProbe) {
+            this.openUntil = this.now() + this.config.openMs;
+            this.transition("open");
+          }
+          entry.reject(error);
           return;
         }
         if (failureClass === "not_found") this.notFound += 1;

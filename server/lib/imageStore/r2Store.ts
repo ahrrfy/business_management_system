@@ -26,6 +26,7 @@ import type { ImageStore, ObjectHead, PutResult } from "./types";
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"]);
 const MAX_OBJECT_BYTES = 25 * 1024 * 1024;
+const BODY_READ_TIMEOUT_MS = 20_000;
 const MIN_SIGNED_URL_SECONDS = 30;
 const MAX_SIGNED_URL_SECONDS = 60 * 60;
 
@@ -113,6 +114,54 @@ function toNodeStream(body: unknown): Readable {
   throw new Error("ImageStore R2: جسم كائن غير صالح من المزوّد.");
 }
 
+function boundedBody(stream: Readable, maximumBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      stream.off("error", onError);
+      stream.off("close", onClose);
+    };
+    const settle = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error === undefined) resolve(Buffer.concat(chunks, total));
+      else reject(error);
+    };
+    const onData = (chunk: Buffer | Uint8Array | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += bytes.length;
+      if (total > maximumBytes) {
+        settle(Object.assign(new Error("ImageStore R2: جسم الكائن أكبر من metadata المعتمدة."), {
+          name: "ImageStoreIntegrityError",
+        }));
+        stream.destroy();
+        return;
+      }
+      chunks.push(bytes);
+    };
+    const onEnd = () => settle();
+    const onError = (error: unknown) => settle(error);
+    const onClose = () => {
+      if (!settled) settle(Object.assign(new Error("ImageStore R2: انقطع جسم الكائن."), { code: "ECONNRESET" }));
+    };
+    const timer = setTimeout(() => {
+      settle(Object.assign(new Error("ImageStore R2: انتهت مهلة جسم الكائن."), { name: "TimeoutError" }));
+      stream.destroy();
+    }, BODY_READ_TIMEOUT_MS);
+    timer.unref?.();
+    stream.on("data", onData);
+    stream.once("end", onEnd);
+    stream.once("error", onError);
+    stream.once("close", onClose);
+  });
+}
+
 /**
  * يخاطب endpoint الحساب الرسمي فقط، HTTPS حصراً، مع bucket خاص. لا يسمح هذا السائق بـACL
  * أو endpoint قابل للتبديل كي لا تتحول بيانات اعتماد R2 إلى طلبات خارجية غير مقصودة.
@@ -190,9 +239,45 @@ export class R2ImageStore implements ImageStore {
   async getStream(key: string): Promise<Readable | null> {
     assertSafeKey(key);
     try {
-      const result = await this.send("get", new GetObjectCommand({ Bucket: this.bucket, Key: key })) as { Body?: unknown };
-      if (!result.Body) throw new Error("ImageStore R2: الكائن الموجود بلا جسم.");
-      return toNodeStream(result.Body);
+      return await this.resilience.runStream("get", async () => {
+        const result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })) as { Body?: unknown };
+        if (!result.Body) throw new Error("ImageStore R2: الكائن الموجود بلا جسم.");
+        return toNodeStream(result.Body);
+      });
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  async getBuffer(key: string, expectedBytes: number): Promise<Buffer | null> {
+    assertSafeKey(key);
+    if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > MAX_OBJECT_BYTES) {
+      throw Object.assign(new Error("ImageStore R2: حد القراءة غير صالح."), { name: "ImageStoreIntegrityError" });
+    }
+    try {
+      return await this.resilience.run("get", async () => {
+        const result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })) as {
+          Body?: unknown;
+          ContentLength?: number;
+        };
+        if (typeof result.ContentLength !== "number" || !Number.isSafeInteger(result.ContentLength) ||
+            result.ContentLength !== expectedBytes) {
+          const body = result.Body ? toNodeStream(result.Body) : null;
+          body?.destroy();
+          throw Object.assign(new Error("ImageStore R2: حجم الكائن لا يطابق metadata المعتمدة."), {
+            name: "ImageStoreIntegrityError",
+          });
+        }
+        if (!result.Body) throw new Error("ImageStore R2: الكائن الموجود بلا جسم.");
+        const body = await boundedBody(toNodeStream(result.Body), expectedBytes);
+        if (body.length !== expectedBytes) {
+          throw Object.assign(new Error("ImageStore R2: جسم الكائن أقصر من metadata المعتمدة."), {
+            name: "ImageStoreIntegrityError",
+          });
+        }
+        return body;
+      });
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;

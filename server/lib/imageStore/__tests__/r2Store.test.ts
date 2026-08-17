@@ -1,5 +1,5 @@
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetImageStoreForTest, getImageStore } from "..";
 import { R2ImageStore, readR2ImageStoreConfig } from "../r2Store";
@@ -84,6 +84,55 @@ describe("R2ImageStore", () => {
     await expect(store.signedUrl(KEY, 29)).rejects.toThrow(/30/);
     await expect(store.signedUrl(KEY, 60)).resolves.toBe("https://signed.example/object");
     expect((signedUrl.mock.calls[0][1] as GetObjectCommand).input).toMatchObject({ Bucket: config.bucket, Key: KEY });
+  });
+
+  it("يبقي permit حتى نهاية stream لا حتى headers", async () => {
+    const body = new PassThrough();
+    const store = new R2ImageStore(config, {
+      client: { send: vi.fn().mockResolvedValue({ Body: body }) },
+      resilienceConfig: { maxConcurrency: 1, maxQueue: 1, queueTimeoutMs: 1_000, failureThreshold: 1, openMs: 1_000 },
+    });
+    const stream = await store.getStream(KEY);
+    expect(store.resilienceSnapshot()).toMatchObject({ inFlight: 1, succeeded: 0 });
+    stream!.resume();
+    body.end(Buffer.from("image"));
+    await vi.waitFor(() => expect(store.resilienceSnapshot().inFlight).toBe(0));
+    expect(store.resilienceSnapshot()).toMatchObject({ succeeded: 1, transientFailures: 0 });
+  });
+
+  it("يحوّل خطأ Body العابر إلى unavailable ويفتح القاطع قبل إعادة أي buffer", async () => {
+    const body = new PassThrough();
+    const store = new R2ImageStore(config, {
+      client: { send: vi.fn().mockResolvedValue({ Body: body, ContentLength: 5 }) },
+      resilienceConfig: { maxConcurrency: 1, maxQueue: 1, queueTimeoutMs: 1_000, failureThreshold: 1, openMs: 1_000 },
+    });
+    const read = store.getBuffer(KEY, 5);
+    await vi.waitFor(() => expect(store.resilienceSnapshot().inFlight).toBe(1));
+    body.write(Buffer.from("im"));
+    body.destroy(Object.assign(new Error("reset"), { code: "ECONNRESET" }));
+    await expect(read).rejects.toMatchObject({ name: "ImageStoreUnavailableError", reason: "upstream" });
+    expect(store.resilienceSnapshot()).toMatchObject({ inFlight: 0, state: "open", transientFailures: 1, succeeded: 0 });
+  });
+
+  it.each([
+    ["metadata mismatch", 6, Buffer.from("123456")],
+    ["actual oversize", 5, Buffer.from("123456")],
+    ["actual short", 5, Buffer.from("1234")],
+  ])("يفشل مغلقاً عند %s كسلامة دائمة بلا فتح القاطع", async (_name, contentLength, payload) => {
+    const body = Readable.from([payload]);
+    const store = new R2ImageStore(config, {
+      client: { send: vi.fn().mockResolvedValue({ Body: body, ContentLength: contentLength }) },
+      resilienceConfig: { maxConcurrency: 1, maxQueue: 1, queueTimeoutMs: 1_000, failureThreshold: 1, openMs: 1_000 },
+    });
+    await expect(store.getBuffer(KEY, 5)).rejects.toMatchObject({ name: "ImageStoreIntegrityError" });
+    expect(store.resilienceSnapshot()).toMatchObject({ state: "closed", transientFailures: 0, permanentFailures: 1 });
+  });
+
+  it("يعيد buffer فقط بعد اكتمال الحجم المعتمد", async () => {
+    const body = Readable.from([Buffer.from("im"), Buffer.from("age")]);
+    const store = new R2ImageStore(config, { client: { send: vi.fn().mockResolvedValue({ Body: body, ContentLength: 5 }) } });
+    await expect(store.getBuffer(KEY, 5)).resolves.toEqual(Buffer.from("image"));
+    expect(store.resilienceSnapshot()).toMatchObject({ inFlight: 0, succeeded: 1 });
   });
 });
 

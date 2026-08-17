@@ -1,3 +1,4 @@
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   ImageStoreUnavailableError,
@@ -137,6 +138,49 @@ describe("R2ResilienceController", () => {
     await expect(b).rejects.toMatchObject({ reason: "upstream" });
     expect(controller.snapshot()).toMatchObject({ state: "open", opened: 1, transientFailures: 2 });
   });
+
+  it("يمسك permit حتى نهاية Body ويقيد 20 stream إلى active=1 وطابور محدود", async () => {
+    const controller = new R2ResilienceController({ ...baseConfig, maxConcurrency: 1, maxQueue: 2 });
+    const bodies = Array.from({ length: 20 }, () => new PassThrough());
+    let active = 0;
+    let maximumActive = 0;
+    const requests = bodies.map((body) => controller.runStream("get", async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      body.once("close", () => { active -= 1; });
+      body.resume();
+      return body;
+    }).then((value) => value, (error) => error));
+
+    await vi.waitFor(() => expect(controller.snapshot()).toMatchObject({ inFlight: 1, queued: 2, queueRejected: 17 }));
+    expect(maximumActive).toBe(1);
+    bodies[0].end(Buffer.from("a"));
+    await vi.waitFor(() => expect(controller.snapshot().started).toBe(2));
+    expect(maximumActive).toBe(1);
+    bodies[1].end(Buffer.from("b"));
+    await vi.waitFor(() => expect(controller.snapshot().started).toBe(3));
+    bodies[2].end(Buffer.from("c"));
+    await Promise.all(requests);
+    await vi.waitFor(() => expect(controller.snapshot().inFlight).toBe(0));
+    expect(controller.snapshot()).toMatchObject({ inFlight: 0, queued: 0, succeeded: 3, queueRejected: 17 });
+    expect(maximumActive).toBe(1);
+  });
+
+  it("يعد خطأ Body العابر للقاطع، ولا يعد destroy المقصود فشلاً", async () => {
+    const controller = new R2ResilienceController({ ...baseConfig, maxConcurrency: 1, failureThreshold: 1 });
+    const failedBody = new PassThrough();
+    await controller.runStream("get", async () => failedBody);
+    failedBody.destroy(Object.assign(new Error("reset"), { code: "ECONNRESET" }));
+    await vi.waitFor(() => expect(controller.snapshot()).toMatchObject({ inFlight: 0, state: "open", transientFailures: 1 }));
+
+    let now = 10_000;
+    const intentional = new R2ResilienceController(baseConfig, { now: () => now });
+    const cancelledBody = new PassThrough();
+    await intentional.runStream("get", async () => cancelledBody);
+    cancelledBody.destroy();
+    await vi.waitFor(() => expect(intentional.snapshot().inFlight).toBe(0));
+    expect(intentional.snapshot()).toMatchObject({ transientFailures: 0, permanentFailures: 0, succeeded: 0, cancelled: 1 });
+  });
 });
 
 describe("readR2ResilienceConfig", () => {
@@ -159,6 +203,7 @@ describe("readR2ResilienceConfig", () => {
 
   it("يفشل مغلقاً عند قيم غير صحيحة أو تتجاوز السقف", () => {
     expect(() => readR2ResilienceConfig({ R2_MAX_CONCURRENCY: "0" })).toThrow(/R2_MAX_CONCURRENCY/);
+    expect(() => readR2ResilienceConfig({ R2_MAX_QUEUE: "17" })).toThrow(/R2_MAX_QUEUE/);
     expect(() => readR2ResilienceConfig({ R2_MAX_QUEUE: "10001" })).toThrow(/R2_MAX_QUEUE/);
     expect(() => readR2ResilienceConfig({ R2_QUEUE_TIMEOUT_MS: "1.5" })).toThrow(/R2_QUEUE_TIMEOUT_MS/);
   });
