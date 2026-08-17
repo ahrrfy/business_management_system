@@ -315,7 +315,7 @@ describe("bundleService — التوسيع في المرتجع", () => {
     expect(await stockOf(2, 1)).toBe(8);
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
     await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }], restock: true } as any,
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }], restock: true, refund: { amount: "48.00", method: "CASH" } } as any,
       actor,
     );
     expect(await stockOf(1, 1)).toBe(20);
@@ -333,7 +333,7 @@ describe("bundleService — التوسيع في المرتجع", () => {
     );
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
     await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 1 }], restock: false } as any,
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 1 }], restock: false, refund: { amount: "24.00", method: "CASH" } } as any,
       actor,
     );
     expect(await stockOf(1, 1)).toBe(20 - 3);
@@ -387,7 +387,7 @@ describe("bundleService — gstack B6 (لقطة المرتجع) + M9 (ثابت �
     // إرجاع البكج — يجب أن يعيد **الوصفة الأصلية (قلم/دفتر)** لا الجديدة (مسطرة).
     const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
     await returnSale(
-      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }], restock: true } as any,
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }], restock: true, refund: { amount: "48.00", method: "CASH" } } as any,
       actor,
     );
     expect(await stockOf(1, 1)).toBe(20);  // القلم: عاد للأصل ✅

@@ -169,6 +169,8 @@ describe("createSale — خدمة كسطر فاتورة متقدّمة", () => {
         baseQuantity: Number(item.baseQuantity),
       })),
       restock: true,
+      // زبونٌ عابر مدفوعٌ نقداً: المرتجع الكامل يستوجب ردّ ما دفعه (حارس ١٧/٨ — لا ذمّة تستوعبه).
+      refund: { amount: "2750.00", method: "CASH" as const },
     }, actor);
 
     // القلم أصل مملوك عاد للرف؛ مواد وصفة الخدمة استُهلكت فعلاً ولا تنشأ من المرتجع.
