@@ -261,6 +261,7 @@ export function imageRouter(): Router {
           .where(
             and(
               eq(productImages.id, id),
+              eq(productImages.reviewStatus, "APPROVED"),
               eq(products.isActive, true),
               eq(products.isService, false),
               eq(products.showInStore, true),
@@ -301,7 +302,12 @@ export function imageRouter(): Router {
           .select({ url: productImages.url })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))
-          .where(and(eq(productImages.id, id), eq(products.isActive, true), eq(products.isService, false)))
+          .where(and(
+            eq(productImages.id, id),
+            eq(productImages.reviewStatus, "APPROVED"),
+            eq(products.isActive, true),
+            eq(products.isService, false),
+          ))
           .limit(1)
       )[0];
       if (!row) return res.status(404).end();
