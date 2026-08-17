@@ -38,7 +38,10 @@ import {
   sendTrpcError,
   trpcAwareRateLimitHandler,
 } from "./middleware/trpcError";
-import { hasOverfilledPublicSensitiveBatch } from "./middleware/publicSensitiveBatch";
+import {
+  hasOverfilledPublicSensitiveBatch,
+  parseCanonicalTrpcProcedures,
+} from "./middleware/publicSensitiveBatch";
 import { publicStorefrontHostBoundary } from "./middleware/publicStorefrontHost";
 import {
   isBackgroundJobRunner,
@@ -322,6 +325,16 @@ async function startServer() {
     }
   });
 
+  // افحص المسار الخام قبل محددات المعدّل وقبل أن يفكّ tRPC percent-encoding. قبول `%2C` هنا
+  // يجعل دفعة إجراءات تبدو طلباً واحداً للمحدد ثم تتحول إلى batch لاحقاً؛ لذلك أي ترميز أو
+  // slash/حبيبة غير معيارية يُرفض fail-closed ولا يصل إلى أي عمل قاعدة أو عدّاد.
+  app.use("/api/trpc", (req, res, next) => {
+    if (!parseCanonicalTrpcProcedures(req.path || "")) {
+      return res.status(404).json({ error: "non-canonical tRPC path" });
+    }
+    next();
+  });
+
   // حدّ صارم على تسجيل الدخول (حماية من تخمين كلمات المرور).
   // ٦/٧/٢٦: كان ١٠ طلبات/١٥د لكل IP **يَعُدّ الناجح والفاشل معاً** — وكل أجهزة المتجر خلف
   // راوتر واحد = IP عام واحد يتشارك الميزانية، فصباح عمل عادي (عدة أجهزة + جلسات ١٢ ساعة
@@ -501,16 +514,6 @@ async function startServer() {
   const tenancy = tenancyMiddleware();
 
   app.use("/api/trpc", tenancy);
-  // The adapter otherwise resolves the final segment, so `/x/auth.login` and
-  // `//auth.login` could reach auth while bypassing Nginx's exact abuse-control zone.
-  app.use("/api/trpc", (req, res, next) => {
-    // Inspect the original mounted path before normalization: exactly one leading
-    // slash followed by a single procedure/batch segment is canonical.
-    if (!/^\/[^/]+$/.test(req.path)) {
-      return res.status(404).json({ error: "non-canonical tRPC path" });
-    }
-    next();
-  });
   // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
   // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
   app.use(
