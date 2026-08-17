@@ -21,7 +21,7 @@ import { printAttendanceStatement } from "@/lib/printing/printAttendanceStatemen
 import { trpc } from "@/lib/trpc";
 import { whatsappLink } from "@/lib/intlPhone";
 import { attendanceHoursViolation, spanHours } from "@shared/attendanceHours";
-import { CalendarDays, FileSpreadsheet, PenLine, Printer, Send, TriangleAlert } from "lucide-react";
+import { CalendarDays, FileSpreadsheet, Lock, PenLine, Printer, Send, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 
 const selectCls =
@@ -91,8 +91,11 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
    * بلا بصمات كان يرى — ويُشارك ويطبع — صفراً تحت سطرٍ يقول إن الحضور لا يؤثّر في راتبه.
    */
   const totalDue = useMemo(() => (d ? Number(d.amountDue) : 0), [d]);
-  const dueLabel =
-    d?.dueBasis === "exempt"
+  /** لقطةُ الشهر المصروف — وجودُها يعني أن الرقم أعلاه مجمَّدٌ من المسيّر لا مشتقٌّ اليوم (ق٣). */
+  const snap = d?.payrollSnapshot ?? null;
+  const dueLabel = snap
+    ? `المستحقّ عن الشهر (من مسيّر ${snap.status === "paid" ? "مدفوع" : "معتمد"})`
+    : d?.dueBasis === "exempt"
       ? "الراتب الثابت المستحقّ (لا يخضع للحضور)"
       : d?.dueBasis === "fixedSalary"
         ? "الراتب الثابت المستحقّ (الأجر بالحضور غير مفعَّل)"
@@ -111,6 +114,8 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
     d.totals.absentDays > 0 ? `غياب: ${d.totals.absentDays} يوم` : null,
     Number(d.totals.overtimeHours) > 0 ? `أوفر تايم: ${d.totals.overtimeHours} ساعة` : null,
     `المستحقّ: ${iqd(String(totalDue))} د.ع`,
+    // شهرٌ مصروف: الرسالة تذهب للموظف على واتساب، فيلزمها الصافي الذي قبضه لا الإجماليّ وحده.
+    snap ? `الصافي المصروف: ${iqd(snap.net)} د.ع (من مسيّر ${snap.status === "paid" ? "مدفوع" : "معتمد"})` : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -132,7 +137,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
               employeeName: d.employee.name, employeeId: d.employee.id, position: d.employee.position,
               department: d.employee.department, branchName: d.employee.branchName,
               period: d.period, from: d.from, to: d.to, totals: d.totals,
-              amountDue: d.amountDue, dueBasis: d.dueBasis,
+              amountDue: d.amountDue, dueBasis: d.dueBasis, payrollSnapshot: snap,
             },
             d.days as never,
           )}>
@@ -184,6 +189,44 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
       </CardHeader>
 
       <CardContent className="space-y-3">
+        {/*
+          * الشهر المصروف (ق٣) — أوّل ما يُقرأ: كلُّ ما تحته تفصيلٌ يشرح كيف حُسِب، لا رقمٌ
+          * يُنافس المصروف. ونُظهر الاشتقاق الحيّ **عند اختلافه فقط** ومسمّى بأنه لا يُصرف:
+          * إخفاؤه يجعل الفرق يظهر لاحقاً بلا تفسير، وإظهارُه دائماً يُنافس الرقم المجمَّد.
+          */}
+        {snap && (
+          <div className="rounded-md border border-[var(--sem-info,var(--primary))]/40 bg-primary/5 p-2.5 space-y-1.5">
+            <div className="flex items-start gap-2 text-xs">
+              <Lock aria-hidden className="size-4 mt-0.5 shrink-0 text-primary" />
+              <span>
+                <span className="font-medium text-primary">
+                  الشهر {snap.status === "paid" ? "مدفوع" : "معتمد"} — الأرقام من المسيّر.
+                </span>{" "}
+                لا تتغيّر بتعديلٍ لاحق على الراتب أو الجدول أو إعدادات الحضور. الجدول أدناه تفصيلٌ للاطّلاع.
+              </span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-1.5 text-[11px]">
+              {[
+                { l: "الأجر الإجمالي", v: snap.gross },
+                { l: "أوفر تايم", v: snap.overtime },
+                { l: "عمولة", v: snap.commission },
+                { l: "استقطاع", v: snap.deductions },
+                { l: "الصافي المصروف", v: snap.net, strong: true },
+              ].map((x) => (
+                <div key={x.l} className="rounded border bg-background p-1.5">
+                  <div className="text-muted-foreground">{x.l}</div>
+                  <div className={`tabular-nums ${x.strong ? "font-bold" : ""}`} dir="ltr">{iqd(x.v)}</div>
+                </div>
+              ))}
+            </div>
+            {Number(d.liveAmountDue) !== totalDue && (
+              <div className="text-[11px] text-muted-foreground">
+                الاشتقاق ببيانات اليوم يُعطي {iqd(d.liveAmountDue)} د.ع — الفرق أثرُ ما تغيّر بعد
+                الاعتماد (ترقيةٌ أو تصحيحُ بصمة أو تبديلُ جدول)، <b>ولا يُصرف</b>.
+              </div>
+            )}
+          </div>
+        )}
         {d.employee.attendanceExempt && (
           <p className="text-xs rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 leading-relaxed">
             <span className="font-medium text-[var(--sem-warn)]">راتب ثابت — لا يخضع للحضور.</span> يُصرف راتبه
