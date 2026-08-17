@@ -8,8 +8,8 @@
     },
     "byAuthority": {
       "module-gate": 427,
-      "module-map": 297,
-      "admin": 68,
+      "module-map": 298,
+      "admin": 67,
       "raw-role": 55,
       "none": 53,
       "self-assignment": 19,
@@ -25,7 +25,7 @@
       "HIGH": 135
     },
     "byModule": {
-      "(none)": 203,
+      "(none)": 202,
       "hr": 100,
       "reports": 81,
       "digital_cards": 75,
@@ -52,18 +52,18 @@
       "courier": 5,
       "pos": 5,
       "announcements": 4,
+      "settings": 4,
       "consignments": 4,
-      "settings": 3,
       "users": 2,
       "crm|workorders": 2,
       "sales|workorders": 1,
       "storefront": 1
     },
     "flagCounts": {
-      "LOCAL_GATE": 181,
+      "LOCAL_GATE": 182,
       "NO_BRANCH_SCOPE": 144,
       "SENSITIVE_ACTION": 135,
-      "ADMIN_ONLY": 72,
+      "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 33,
       "READ_WITHOUT_MODULE_GATE": 30,
@@ -74,9 +74,9 @@
     "expressMounts": 11,
     "jobs": 16,
     "routerFiles": 93,
-    "proposedPermissions": 800,
+    "proposedPermissions": 801,
     "proposedDomains": {
-      "hr": 107,
+      "hr": 106,
       "reports": 84,
       "treasury": 78,
       "inventory": 68,
@@ -84,7 +84,7 @@
       "store": 48,
       "sales": 47,
       "iam": 42,
-      "admin": 39,
+      "admin": 40,
       "crm": 33,
       "workorders": 31,
       "marketing": 28,
@@ -815,7 +815,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:110"
+      "loc": "server/routers/attendanceRouter.ts:117"
     },
     {
       "surface": "trpc",
@@ -832,7 +832,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:102"
+      "loc": "server/routers/attendanceRouter.ts:109"
     },
     {
       "surface": "trpc",
@@ -849,7 +849,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:28"
+      "loc": "server/routers/attendanceRouter.ts:30"
     },
     {
       "surface": "trpc",
@@ -866,7 +866,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:118"
+      "loc": "server/routers/attendanceRouter.ts:125"
     },
     {
       "surface": "trpc",
@@ -883,7 +883,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:104"
+      "loc": "server/routers/attendanceRouter.ts:111"
     },
     {
       "surface": "trpc",
@@ -900,7 +900,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:189"
+      "loc": "server/routers/attendanceRouter.ts:196"
     },
     {
       "surface": "trpc",
@@ -917,7 +917,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:141"
+      "loc": "server/routers/attendanceRouter.ts:148"
     },
     {
       "surface": "trpc",
@@ -934,7 +934,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:130"
+      "loc": "server/routers/attendanceRouter.ts:137"
     },
     {
       "surface": "trpc",
@@ -951,7 +951,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:51"
+      "loc": "server/routers/attendanceRouter.ts:53"
     },
     {
       "surface": "trpc",
@@ -968,24 +968,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:88"
+      "loc": "server/routers/attendanceRouter.ts:95"
     },
     {
       "surface": "trpc",
       "router": "attendanceRouter",
-      "proposedPermission": "hr.attendance.update",
+      "proposedPermission": "admin.attendance.update",
       "name": "updateSettings",
       "kind": "mutation",
-      "procedure": "adminProcedure",
-      "authority": "admin",
-      "module": "",
-      "level": "",
-      "roles": "admin",
-      "branch": "none",
+      "procedure": "settingsWrite",
+      "authority": "module-map",
+      "module": "settings",
+      "level": "FULL",
+      "roles": "",
+      "branch": "scoped",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "ADMIN_ONLY",
-      "loc": "server/routers/attendanceRouter.ts:58"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/attendanceRouter.ts:65"
     },
     {
       "surface": "trpc",

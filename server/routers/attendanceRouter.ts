@@ -9,7 +9,7 @@ import * as svc from "../services/attendanceService";
 import { getAttendanceReport } from "../services/reportsHrService";
 import { getEmployeeStatement } from "../services/hr/employeeStatement";
 import { getMonthlyAttendanceReport } from "../services/hr/monthlyAttendanceReport";
-import { adminProcedure, branchScopedProcedure, requireModule, router } from "../trpc";
+import { branchScopedProcedure, requireModule, router } from "../trpc";
 
 /*
  * عزل الفرع (قرار المالك ١٢/٨) — `branchScopedProcedure` لا `protectedProcedure`:
@@ -19,6 +19,8 @@ import { adminProcedure, branchScopedProcedure, requireModule, router } from "..
  */
 const hrRead = branchScopedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = branchScopedProcedure.use(requireModule("hr", "FULL"));
+/** إعدادات شركيّة لا تخصّ موظفاً: `settings/FULL` = admin وحده (manager=READ). */
+const settingsWrite = branchScopedProcedure.use(requireModule("settings", "FULL"));
 
 const periodStr = z.string().regex(/^\d{4}-\d{2}$/, "صيغة الشهر يجب أن تكون YYYY-MM");
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ يجب أن تكون YYYY-MM-DD");
@@ -52,10 +54,15 @@ export const attendanceRouter = router({
 
   /*
    * مفتاح سياسة أجرٍ **شركيّ** (يشمل الفروع كلَّها): تفعيل الأجر بالحضور وتاريخ سريانه وسقف
-   * اليوم. كان خلف hr/FULL وحده فيملكه مديرُ فرعٍ — بضغطةٍ يحوّل رواتب الشركة كلّها إلى
-   * الاحتساب بالساعات أو يوقفه. `adminProcedure` = الأدمن والمالك (المُطبَّع إليه) وحدهما.
+   * اليوم والوردية الليلية. كان خلف hr/FULL وحده فيملكه مديرُ فرعٍ — بضغطةٍ يحوّل رواتب
+   * الشركة كلّها إلى الاحتساب بالساعات أو يوقفه.
+   *
+   * البوّابة `settings/FULL` لا `adminProcedure`: التقييد يتحقّق **عبر** خريطة الصلاحيات
+   * المشتركة لا بتجاوزها (admin=FULL · manager=READ ⇒ مدير الفرع ممنوع)، فتبقى الخريطة
+   * صادقةً وتستطيع الواجهة إخفاء الزرّ بها. وبوّابةُ أدمن خام كانت تُسقط بوّابة الوحدة
+   * فيمسكها حارس `authz-guard` بحقّ: «كتابة admin مستجدّة» تُعمي الخريطة عن نفسها.
    */
-  updateSettings: adminProcedure
+  updateSettings: settingsWrite
     .input(
       z.object({
         attendancePayEnabled: z.boolean().optional(),
