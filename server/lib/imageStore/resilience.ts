@@ -320,8 +320,13 @@ export class R2ResilienceController {
         return stream;
       }
 
+      let terminalFailed = false;
       const terminal = new Promise<void>((resolve, reject) => {
         let settled = false;
+        const prematureCloseError = () => Object.assign(
+          new Error("ImageStore stream closed before end."),
+          { code: "ECONNRESET" },
+        );
         const cleanup = () => {
           stream.off("end", onEnd);
           stream.off("error", onError);
@@ -333,26 +338,36 @@ export class R2ResilienceController {
           settled = true;
           cleanup();
           if (error === undefined) resolve();
-          else reject(error);
+          else {
+            terminalFailed = true;
+            reject(error);
+          }
         };
         const onEnd = () => settle();
         const onError = (error: unknown) => settle(error);
         const onAbort = () => {
-          if (!stream.destroyed) stream.destroy(new ImageStoreClientAbortError());
+          if (stream.destroyed) {
+            // ربما مضى close قبل ربطنا؛ لا نعتمد على حدث لن يعود.
+            settle(new ImageStoreClientAbortError());
+            return;
+          }
+          stream.destroy(new ImageStoreClientAbortError());
         };
         // Node يرسل close بعد end/error غالباً؛ settle يحمي release once.
         // close قبل end بلا علامة downstream صريحة هو انقطاع upstream، لا إلغاء عميل.
-        const onClose = () => settle(Object.assign(new Error("ImageStore stream closed before end."), {
-          code: "ECONNRESET",
-        }));
+        const onClose = () => settle(prematureCloseError());
         stream.once("end", onEnd);
         stream.once("error", onError);
         stream.once("close", onClose);
         options.signal?.addEventListener("abort", onAbort, { once: true });
+        // attach ثم inspect: يغلق نافذة وصول Body منتهية/مغلقة بعد ضياع terminal event.
         if (options.signal?.aborted) onAbort();
+        else if (stream.errored) settle(stream.errored);
+        else if (stream.readableEnded) settle();
+        else if (stream.destroyed || stream.closed || stream.readableAborted) settle(prematureCloseError());
       });
-      if (options.signal?.aborted) {
-        // لا نسلّم للمستهلك stream مدمرة إذا وقع abort أثناء انتظار headers.
+      if (options.signal?.aborted || terminalFailed) {
+        // لا نسلّم للمستهلك stream مدمرة/معطوبة إذا وقع terminal أثناء انتظار headers.
         await terminal;
         throw new ImageStoreClientAbortError();
       }

@@ -222,6 +222,63 @@ describe("R2ResilienceController", () => {
       succeeded: 0,
     });
   });
+
+  it("يرصد upstream مغلقاً قبل ربط listeners ويحرر permit كعطل عابر", async () => {
+    const controller = new R2ResilienceController({ ...baseConfig, maxConcurrency: 1, failureThreshold: 1 });
+    const body = new PassThrough();
+    body.destroy();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    await expect(controller.runStream("get", async () => body)).rejects.toMatchObject({
+      name: "ImageStoreUnavailableError",
+      reason: "upstream",
+    });
+    expect(controller.snapshot()).toMatchObject({
+      inFlight: 0,
+      state: "open",
+      transientFailures: 1,
+      cancelled: 0,
+      succeeded: 0,
+    });
+  });
+
+  it("يعد stream منتهية قبل الربط نجاحاً ولا يسرّب permit", async () => {
+    const controller = new R2ResilienceController({ ...baseConfig, maxConcurrency: 1 });
+    const body = new PassThrough({ autoDestroy: false });
+    const ended = new Promise<void>((resolve) => body.once("end", resolve));
+    body.resume();
+    body.end(Buffer.from("done"));
+    await ended;
+    expect(body.readableEnded).toBe(true);
+
+    await expect(controller.runStream("get", async () => body)).resolves.toBe(body);
+    await vi.waitFor(() => expect(controller.snapshot()).toMatchObject({ inFlight: 0, succeeded: 1 }));
+    expect(controller.snapshot()).toMatchObject({ transientFailures: 0 });
+  });
+
+  it("يفضّل abort الصريح على close سابق ويسوّيه مرة واحدة كإلغاء محايد", async () => {
+    const controller = new R2ResilienceController({ ...baseConfig, maxConcurrency: 1, failureThreshold: 1 });
+    const headers = deferred<PassThrough>();
+    const body = new PassThrough();
+    body.destroy();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const abort = new AbortController();
+    const read = controller.runStream("get", () => headers.promise, { signal: abort.signal });
+    await vi.waitFor(() => expect(controller.snapshot().inFlight).toBe(1));
+
+    abort.abort();
+    headers.resolve(body);
+
+    await expect(read).rejects.toBeInstanceOf(ImageStoreClientAbortError);
+    await vi.waitFor(() => expect(controller.snapshot().inFlight).toBe(0));
+    expect(controller.snapshot()).toMatchObject({
+      state: "closed",
+      cancelled: 1,
+      transientFailures: 0,
+      permanentFailures: 0,
+      succeeded: 0,
+    });
+  });
 });
 
 describe("readR2ResilienceConfig", () => {
