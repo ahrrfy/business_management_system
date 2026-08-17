@@ -188,14 +188,22 @@ function customerPaymentLink(customerId: number) {
  */
 async function customerOpeningBalance(customerId: number, from?: string) {
   const db = getDb()!;
+  // ب-١ (١٦/٨): تصحيح الرصيد الافتتاحيّ صار **قيد فرقٍ مؤرَّخاً** لا تعديلاً للأصل. لذا
+  // «الافتتاحيّ كما في تاريخ س» = مجموع قيود OPENING **حتى س** لا مجموعها كلّها: تصحيحٌ وقع
+  // اليوم لا يجوز أن يدخل رصيد كشفٍ بدأ الشهر الماضي — وإلّا تغيّر كشفٌ ماضٍ بلا حركةٍ تفسّره.
+  const fromTs = from ? `${from} 00:00:00` : null;
   const openRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
-    .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.customerId, customerId)));
+    .where(
+      and(
+        eq(accountingEntries.entryType, "OPENING"),
+        eq(accountingEntries.customerId, customerId),
+        fromTs ? sql`${accountingEntries.entryDate} < ${fromTs}` : undefined,
+      ),
+    );
   let opening = money(openRow[0]?.v ?? 0);
-  if (!from) return opening;
-
-  const fromTs = `${from} 00:00:00`;
+  if (!fromTs) return opening;
   const invRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS DECIMAL(15,2))), 0)` })
     .from(invoices)
@@ -367,6 +375,28 @@ export async function getCustomerStatement(
     .from(accountingEntries)
     .where(and(...returnConds));
 
+  // ب-١ (١٦/٨): قيود تصحيح الرصيد الافتتاحيّ **الواقعة داخل الفترة** حركةٌ في الكشف لا رصيدٌ
+  // مُرحَّل (المُرحَّل صار مقصوراً على ما قبل `from`). بدون هذا السطر يفقد الكشف اتزانه:
+  // المُرحَّل يستبعدها والحركة لا تعرضها ⇒ الختاميّ ≠ الرصيد الجاري بمقدار التصحيح.
+  const openingMoveConds = [
+    eq(accountingEntries.entryType, "OPENING"),
+    eq(accountingEntries.customerId, customerId),
+  ];
+  if (from) openingMoveConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
+  if (to) openingMoveConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
+  // بلا فترة: المُرحَّل يشمل كلّ القيود أصلاً ⇒ لا نُكرّرها حركةً.
+  const openingAdjustments = from
+    ? await db
+        .select({
+          id: accountingEntries.id,
+          amount: accountingEntries.amount,
+          createdAt: accountingEntries.entryDate,
+          notes: accountingEntries.notes,
+        })
+        .from(accountingEntries)
+        .where(and(...openingMoveConds))
+    : [];
+
   const openingBalance = await customerOpeningBalance(customerId, from);
 
   // ش٤ (I11): عرابين المسوّدات المحتجزة للعميل — **سطر إفصاحٍ منفصل** لا حركة كشف: المال
@@ -463,6 +493,20 @@ export async function getCustomerStatement(
         isStandalone: false,
         voucherNumber: null,
         description: e.notes ? String(e.notes) : "مرتجع مبيعات",
+      })),
+      // تصحيح رصيد افتتاحيّ داخل الفترة: الإشارة بدلالة أعمار AR نفسها (موجب يزيد ما علينا
+      // تحصيله = أثر PAYMENT_OUT، وسالب يخفّضه = أثر PAYMENT_IN) فيتّسق الرصيد الجاري للكشف.
+      ...openingAdjustments.map((e) => ({
+        id: -2_000_000_000 - Number(e.id),
+        invoiceId: null as number | null,
+        direction: (money(e.amount).isNegative() ? "IN" : "OUT") as "IN" | "OUT",
+        amount: money(e.amount).abs().toFixed(2),
+        paymentMethod: "OPENING_ADJ",
+        status: "COMPLETED",
+        createdAt: e.createdAt,
+        isStandalone: true,
+        voucherNumber: null,
+        description: e.notes ? String(e.notes) : "تصحيح رصيد افتتاحي",
       })),
     ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     summary: {

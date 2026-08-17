@@ -9,7 +9,7 @@
 //   - المورّد: موجب = «علينا للمورّد» (ذمّة دائنة AP).
 // لذا الاتجاه نفسه يُنتج إشارتين متعاكستين بين العميل والمورّد.
 import { TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { accountingEntries } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { getDoubleEntryRuntime } from "./accounting/journalStore";
@@ -85,6 +85,13 @@ export async function postOpeningEntry(
   partyId: number,
   amount: string,
   notes = "رصيد افتتاحي",
+  /**
+   * قيدُ فرقٍ تصحيحيّ لا قيدٌ افتتاحيّ أوّل (ب-١). الفارق الوحيد: `dedupeKey`.
+   * المفتاح الأساس `OPENING:<طرف>:<معرّف>` فريدٌ على مستوى القاعدة ويحرس **القيد الأوّل**
+   * من الازدواج (مسار الاستيراد يعتمد عليه). فقيود الفروق تأخذ مفتاحاً مشتقّاً بلاحقةٍ
+   * زمنية كي لا تصطدم به، ويبقى الحارس الأصليّ نافذاً على ما وُضع لأجله.
+   */
+  isAdjustment = false,
 ): Promise<void> {
   await assertLegacyOpeningMutable(tx);
   const signedAmount = money(amount);
@@ -110,7 +117,9 @@ export async function postOpeningEntry(
     // localTodayDate() يمنع انزياح OPENING ليوم سابق (عمود DATE على توقيت بغداد +٣).
     entryDate: localTodayDate(),
     notes,
-    dedupeKey: `OPENING:${party}:${partyId}`,
+    dedupeKey: isAdjustment
+      ? `OPENING:${party}:${partyId}:adj:${Date.now()}`
+      : `OPENING:${party}:${partyId}`,
   });
 }
 
@@ -121,12 +130,14 @@ export async function getOpeningEntryAmount(
   partyId: number,
 ): Promise<string> {
   const col = party === "CUSTOMER" ? accountingEntries.customerId : accountingEntries.supplierId;
+  // **مجموع** قيود OPENING لا أوّلها: التصحيح صار قيدَ فرقٍ إلحاقياً (ب-١)، فالطرف قد يملك
+  // قيداً أصلياً وقيود فروقٍ بعده. قراءة أوّل صفٍّ كانت ستُظهر القيمة القديمة في شاشة التعديل
+  // فيُعدّل المدير على أساسٍ خاطئ ويُنتج فرقاً ثانياً بمقدار الخطأ.
   const row = (
     await tx
-      .select({ amount: accountingEntries.amount })
+      .select({ amount: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
       .from(accountingEntries)
       .where(and(eq(accountingEntries.entryType, "OPENING"), eq(col, partyId)))
-      .limit(1)
   )[0];
   return toDbMoney(money(row?.amount ?? "0"));
 }
@@ -149,32 +160,42 @@ export async function upsertOpeningEntry(
 ): Promise<{ delta: string }> {
   await assertLegacyOpeningMutable(tx);
   const col = party === "CUSTOMER" ? accountingEntries.customerId : accountingEntries.supplierId;
+  // الرصيد الافتتاحيّ الحاليّ = **مجموع** قيود OPENING للطرف (أصلٌ + فروقٌ لاحقة)، لا أوّل قيد.
   const existing = (
     await tx
-      .select({ id: accountingEntries.id, amount: accountingEntries.amount, entryDate: accountingEntries.entryDate })
+      .select({
+        total: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)`,
+        count: sql<number>`COUNT(*)`,
+      })
       .from(accountingEntries)
       .where(and(eq(accountingEntries.entryType, "OPENING"), eq(col, partyId)))
-      .limit(1)
   )[0];
-  const oldSigned = money(existing?.amount ?? "0");
+  const hasAny = Number(existing?.count ?? 0) > 0;
+  const oldSigned = money(existing?.total ?? "0");
   const target = round2(money(newSigned));
   const delta = round2(target.minus(oldSigned));
-  if (delta.isZero()) return { delta: "0.00" }; // لا تغيير فعليّ.
+  if (delta.isZero()) return { delta: "0.00" }; // لا تغيير فعليّ ⇒ لا قيد.
 
-  if (existing) {
-    // تعديل/حذف قيدٍ قائم ⇒ افحص فترة القيد نفسه (لا اليوم): لا يُمسّ رصيدٌ افتتاحيّ في فترة مُقفَلة.
-    await assertPeriodOpen(tx, new Date(existing.entryDate as unknown as string));
-    if (target.isZero()) {
-      // القيد المزدوج (P2) يُجرَف معه بـON DELETE CASCADE ⇒ لا شيء إضافيّ هنا.
-      await tx.delete(accountingEntries).where(eq(accountingEntries.id, existing.id));
-    } else {
-      await tx.update(accountingEntries).set({ amount: toDbMoney(target) }).where(eq(accountingEntries.id, existing.id));
-      // في OFF لا تُنشأ يومية جديدة ولا يُعاد بناء يومية دورة تاريخية. عند بدء دورة
-      // لاحقة تلتقط شهادة القطع الرصيد التشغيلي المحدّث، مع بقاء كل دورة قديمة كما أُقرت.
-    }
-  } else {
-    // لا قيد سابق ⇒ أنشئ (postOpeningEntry يفحص فترة اليوم بنفسه).
-    await postOpeningEntry(tx, party, partyId, toDbMoney(target), notes);
-  }
+  // ── إلحاقيّ دائماً (ب-١، ١٦/٨) ────────────────────────────────────────────
+  // كان التصحيح يُجري UPDATE على المبلغ وDELETE عند التصفير ⇒ كشفٌ مطبوعٌ بتاريخٍ سابق لا
+  // يُعاد إنتاجه، والقيمة الأصلية تختفي من الوجود: حركة حقوقٍ صامتة في دفترٍ مصمَّمٍ إلحاقياً.
+  // الآن: **قيد فرقٍ جديد** بالمقدار الموقَّع، والقيد الأصليّ يبقى كما أُنشئ أبداً.
+  //
+  // ولماذا نفس النوع `OPENING` لا نوعٌ جديد: كل قارئي الرصيد الافتتاحيّ (المطابقة، أعمار
+  // AR/AP، كشوف الطرفين، شاشة التعديل) يجمعون قيود OPENING بـSUM — فالمجموع يساوي الهدف
+  // تلقائياً وتبقى قراءاتهم صحيحة بلا تعديل. نوعٌ جديد كان سيتطلّب تعديل كل قارئٍ منها معاً،
+  // وأيّ قارئٍ يُنسى يُنتج انحراف مطابقةٍ صامتاً لكل رصيدٍ افتتاحيٍّ معدَّل.
+  //
+  // والفترة تُفحص على **تاريخ اليوم** (داخل postOpeningEntry) لا على فترة القيد الأصليّ: قيد
+  // الفرق يقع اليوم، ولم يعد يُمسّ الماضي أصلاً — فتصحيح رصيدٍ أصلُه في فترة مُقفَلة صار
+  // ممكناً ومحاسبياً سليماً بدل أن يكون مستحيلاً.
+  await postOpeningEntry(
+    tx,
+    party,
+    partyId,
+    toDbMoney(delta),
+    hasAny ? `${notes} — تصحيح بفارق` : notes,
+    hasAny,
+  );
   return { delta: toDbMoney(delta) };
 }
