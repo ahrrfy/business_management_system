@@ -123,6 +123,10 @@ const EXTRA_MIGRATIONS = [
   // 15/8/2026: db:push represents the month-close tables and CHECKs but cannot create triggers.
   // This idempotent repair keeps fresh CI/test databases identical to migration-built production.
   "drizzle/migrations/extras/0192_0197_month_close_triggers.sql",
+  // ١٧/٨/٢٦: كتالوج فئات السندات. البذر بيانات لا بنية ⇒ `db:push` لا يُنتجه أبداً، فقاعدة
+  // CI/الاختبار كانت تحصل على فئات 0036 (المطبَّقة أعلاه) **بلا حساب مقابل** فتُخالف الإنتاج.
+  // 0202 idempotent (INSERT مشروط + UPDATE على NULL) ويجب أن تبقى بعد 0036 في الترتيب.
+  "drizzle/migrations/0202_voucher_category_defaults.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

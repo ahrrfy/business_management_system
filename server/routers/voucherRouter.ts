@@ -12,7 +12,13 @@ import {
   recentVouchersForParty,
   rejectVoucher,
 } from "../services/voucherService";
-import { router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
+import {
+  router,
+  treasuryGlobalProcedure,
+  treasuryGlobalReadProcedure,
+  treasuryManagerProcedure,
+  treasuryManagerReadProcedure,
+} from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
 import { resubmitRejectedExpensePayment } from "../services/voucher/approval";
@@ -21,6 +27,8 @@ import {
   isVoucherCategoryRoleCompatible,
 } from "../../shared/voucherCategoryAccounting";
 import { assertVoucherCategoryDefinition } from "../services/voucher/categoryAccounting";
+import { ensureDefaultVoucherCategories } from "../services/voucher/defaults";
+import { extractInsertId } from "../lib/insertId";
 import { assertBranchOwnership } from "../services/voucher/helpers";
 import {
   hasSystemPaymentRequestEnvelope,
@@ -370,7 +378,7 @@ async function aggregateVouchers(input: VoucherListFilters) {
 }
 
 export const voucherCategoryRouter = router({
-  list: treasuryManagerReadProcedure
+  list: treasuryGlobalReadProcedure
     .input(z.object({ includeInactive: z.boolean().default(false) }).optional())
     .query(async ({ input }) => {
       const db = getDb();
@@ -399,9 +407,9 @@ export const voucherCategoryRouter = router({
       }));
     }),
 
-  create: treasuryManagerProcedure
+  create: treasuryGlobalProcedure
     .input(z.object({
-      name: z.string().min(1).max(100),
+      name: z.string().trim().min(1, "اسم الفئة مطلوب").max(100),
       direction: voucherCategoryDirection.default("BOTH"),
       postingRole: voucherCategoryPostingRole,
       description: z.string().max(300).nullish(),
@@ -410,33 +418,68 @@ export const voucherCategoryRouter = router({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير مهيّأة" });
+      const name = input.name.trim();
       assertVoucherCategoryDefinition({
         direction: input.direction,
         postingRole: input.postingRole,
         isActive: true,
-        name: input.name,
+        name,
       });
       try {
-        const ins = await db.insert(voucherCategories).values({
-          name: input.name.trim(),
+        // extractInsertId بدل الالتقاط اليدويّ: كان `Number(undefined)` يُنتج NaN بصمت فيعود
+        // للواجهة معرّفٌ باطل (فتعذّر انتقاء الفئة المُنشأة فوراً) ويُكتب سجلّ تدقيق بلا كيان.
+        const id = extractInsertId(
+          await db.insert(voucherCategories).values({
+            name,
+            direction: input.direction,
+            postingRole: input.postingRole,
+            description: input.description?.trim() || null,
+            sortOrder: input.sortOrder,
+            isActive: true,
+          }),
+        );
+        await logAudit(ctx, { action: "voucherCategory.create", entityType: "voucherCategory", entityId: id, newValue: { ...input, name } });
+        // نُعيد الصفّ كاملاً كي تنتقيه شاشة السند فوراً بلا جولةِ قراءةٍ ثانية.
+        return {
+          id,
+          name,
           direction: input.direction,
           postingRole: input.postingRole,
-          description: input.description?.trim() || null,
-          sortOrder: input.sortOrder,
           isActive: true,
-        });
-        const id = (ins as any)?.[0]?.insertId ?? (ins as any)?.insertId;
-        await logAudit(ctx, { action: "voucherCategory.create", entityType: "voucherCategory", entityId: Number(id), newValue: input });
-        return { id: Number(id) };
+        };
       } catch (e: any) {
         if (isDupEntry(e)) {
-          throw new TRPCError({ code: "CONFLICT", message: "اسم الفئة مُكرَّر" });
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: `الفئة «${name}» موجودة مسبقاً — قد تكون معطّلة، فعّلها من قائمة الفئات بدل إنشاء نسخة ثانية.`,
+          });
         }
         throw e;
       }
     }),
 
-  update: treasuryManagerProcedure
+  /**
+   * استعادة كتالوج الفئات الافتراضية — مخرج تشغيليّ حين تكون القائمة فارغة أو ناقصة (قاعدةٌ
+   * بُنيت بـ`db:push`، أو فئاتٌ عُطّلت جماعياً) فيصير الحقل الإلزاميّ في سند «أخرى» بلا خيارات.
+   * idempotent تماماً: يُدخل الناقص ويملأ الحساب المقابل الفارغ فقط، ولا يمسّ ما عيّنه المالك.
+   */
+  restoreDefaults: treasuryGlobalProcedure.mutation(async ({ ctx }) => {
+    const result = await ensureDefaultVoucherCategories();
+    if (result.inserted.length || result.mapped.length) {
+      await logAudit(ctx, {
+        action: "voucherCategory.restoreDefaults",
+        entityType: "voucherCategory",
+        newValue: {
+          inserted: result.inserted,
+          mapped: result.mapped,
+          skipped: result.skipped,
+        },
+      });
+    }
+    return result;
+  }),
+
+  update: treasuryGlobalProcedure
     .input(z.object({
       id: z.number().int().positive(),
       name: z.string().min(1).max(100).optional(),
@@ -519,7 +562,7 @@ export const voucherCategoryRouter = router({
       }
     }),
 
-  setActive: treasuryManagerProcedure
+  setActive: treasuryGlobalProcedure
     .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();

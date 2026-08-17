@@ -65,8 +65,33 @@ describe("voucher category accounting router contract", () => {
     expect(source).not.toContain("create: adminProcedure");
     expect(source).not.toContain("update: adminProcedure");
     expect(source).not.toContain("merge: adminProcedure");
-    expect(source).toContain("create: treasuryManagerProcedure");
+    // كتابات الفئة بياناتٌ مرجعية عامّة (الجدول بلا branchId) ⇒ البوّابة العامّة: نفس قدرة
+    // الوحدة تماماً بلا اشتراط فرعٍ مُسنَد، الذي كان يصدّ محاسب الإدارة عن إنشاء فئةٍ إلزامية.
+    expect(source).toContain("create: treasuryGlobalProcedure");
+    expect(source).toContain("update: treasuryGlobalProcedure");
+    expect(source).toContain("setActive: treasuryGlobalProcedure");
+    expect(source).toContain("restoreDefaults: treasuryGlobalProcedure");
+    // كل ما يكتب في `receipts` يبقى مقصوراً بالفرع: الدمج ينقل سندات فئةٍ إلى أخرى.
     expect(source).toContain("merge: treasuryManagerProcedure");
+    expect(source).toContain("assignHistoricalCategory: treasuryManagerProcedure");
+    // ولا تخفيف في القدرة نفسها: نفس الوحدة ونفس المستوى ونفس قائمة الأدوار.
+    const trpcSource = readFileSync(
+      new URL("../../trpc.ts", import.meta.url),
+      "utf8",
+    );
+    expect(trpcSource).toMatch(
+      /treasuryGlobalProcedure = t\.procedure\.use\(\s*requireModuleGate\(\["manager", "accountant"\], "treasury", "FULL"\)/,
+    );
+    expect(trpcSource).toMatch(
+      /treasuryGlobalReadProcedure = t\.procedure\.use\(\s*requireModuleGate\(\["manager", "accountant"\], "treasury", "READ"\)/,
+    );
+  });
+
+  it("seeds the default catalog through one idempotent audited route", () => {
+    expect(source).toContain("ensureDefaultVoucherCategories()");
+    expect(source).toContain('action: "voucherCategory.restoreDefaults"');
+    // معرّف الإدراج عبر المُستخرِج الموحّد — لا Number(undefined) ⇒ NaN صامت للواجهة/التدقيق.
+    expect(source).toContain("const id = extractInsertId(");
   });
 
   it("does not emit a second audit record for an exact payment-resubmission replay", () => {

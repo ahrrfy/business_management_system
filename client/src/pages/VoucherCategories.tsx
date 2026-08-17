@@ -23,7 +23,7 @@ import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { AlertTriangle, CheckCircle2, Edit3, Plus, Wrench } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Edit3, Plus, RotateCcw, Wrench } from "lucide-react";
 import { ListToolbar, RowActions } from "@/components/list";
 import {
   isVoucherCategoryRoleCompatible,
@@ -32,6 +32,7 @@ import {
   voucherCategoryRoleOptionsFor,
   type VoucherCategoryPostingRole,
 } from "@shared/voucherCategoryAccounting";
+import { retiredVoucherCategory } from "@shared/voucherCategoryDefaults";
 import {
   moduleAccessAllowed,
   type PermissionMap,
@@ -44,6 +45,11 @@ function unresolvedCategoryLabel(name: string): string {
   )
     ? "تحتاج مساراً تخصصياً"
     : "غير معيّن";
+}
+
+/** الفئة الغامضة لا تُخمَّن لها حساب؛ نقول للمستخدم أين مسارها الصحيح بدل تركه أمام «غير معيّن». */
+function replacementHint(name: string): string | null {
+  return retiredVoucherCategory(name)?.replacement ?? null;
 }
 
 type Row = RouterOutputs["voucherCategories"]["list"][number];
@@ -125,6 +131,21 @@ export default function VoucherCategories() {
     },
     onError: (e) => notify.err(e),
   });
+  // مخرج تشغيليّ حين تكون القائمة فارغة أو ناقصة (قاعدةٌ بُنيت بـdb:push، أو تعطيلٌ جماعيّ):
+  // idempotent تماماً — يُدخل الناقص ويملأ الحساب المقابل الفارغ فقط، ولا يمسّ ما عيّنه المالك.
+  const restoreDefaults = trpc.voucherCategories.restoreDefaults.useMutation({
+    onSuccess: async (res) => {
+      await utils.voucherCategories.list.invalidate();
+      if (!res.inserted.length && !res.mapped.length) {
+        notify.ok(`الفئات الافتراضية مكتملة أصلاً (${res.total} فئة)`);
+        return;
+      }
+      notify.ok(
+        `استُعيدت الفئات الافتراضية: +${res.inserted.length} جديدة، ${res.mapped.length} عُيّن حسابها`,
+      );
+    },
+    onError: (e) => notify.err(e),
+  });
   const merge = trpc.voucherCategories.merge.useMutation({
     onSuccess: async () => {
       await utils.voucherCategories.list.invalidate();
@@ -198,6 +219,18 @@ export default function VoucherCategories() {
     }
   }
 
+  async function confirmRestoreDefaults() {
+    const ok = await confirm({
+      variant: "info",
+      title: "استعادة الفئات الافتراضية",
+      description:
+        "سَتُضاف فئات القبض والصرف الافتراضية الناقصة، ويُعيَّن الحساب المقابل للفئات التي بقيت بلا حساب. لا يُعدَّل اسمٌ ولا اتجاهٌ ولا حسابٌ عيّنته الإدارة، ولا تُفعَّل فئة عُطّلت عمداً.",
+      confirmText: "استعادة",
+    });
+    if (!ok) return;
+    restoreDefaults.mutate();
+  }
+
   async function toggleActive(r: Row) {
     const ok = await confirm({
       variant: r.isActive ? "warning" : "info",
@@ -261,6 +294,17 @@ export default function VoucherCategories() {
                 → السندات
               </Button>
             </Link>
+            {canManage && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={restoreDefaults.isPending}
+                onClick={() => void confirmRestoreDefaults()}
+              >
+                <RotateCcw aria-hidden className="size-4 ms-1" />
+                {restoreDefaults.isPending ? "جارٍ الاستعادة…" : "استعادة الافتراضية"}
+              </Button>
+            )}
             {canManage && (
               <Button
                 onClick={() => {
@@ -618,9 +662,16 @@ export default function VoucherCategories() {
                           {voucherCategoryRoleLabel(r.postingRole)}
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-[var(--sem-warn)] font-medium">
-                          <AlertTriangle aria-hidden className="size-3.5" />{" "}
-                          {unresolvedCategoryLabel(r.name)}
+                        <span className="inline-flex flex-col gap-0.5">
+                          <span className="inline-flex items-center gap-1 text-[var(--sem-warn)] font-medium">
+                            <AlertTriangle aria-hidden className="size-3.5" />{" "}
+                            {unresolvedCategoryLabel(r.name)}
+                          </span>
+                          {replacementHint(r.name) && (
+                            <span className="text-muted-foreground">
+                              البديل: {replacementHint(r.name)}
+                            </span>
+                          )}
                         </span>
                       )}
                     </td>

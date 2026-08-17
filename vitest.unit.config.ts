@@ -74,6 +74,7 @@ export default defineConfig({
       "server/services/__tests__/postingProducerCoverage.test.ts",
       "server/services/__tests__/voucherDoubleEntry.test.ts",
       "server/services/__tests__/voucherCategoryAccounting.test.ts",
+      "server/services/__tests__/voucherCategoryDefaults.test.ts",
       "server/services/__tests__/reconcileSummary.test.ts",
       "server/services/__tests__/permissionParity.test.ts",
       "server/services/__tests__/globalSearchRbac.test.ts",

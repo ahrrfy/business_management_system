@@ -386,7 +386,9 @@ export default function App() {
       <Route path="/vouchers"><Redirect to="/treasury?tab=vouchers" /></Route>
       <Route path="/vouchers/receipt/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherReceiptNew /></RequireRole></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherPaymentNew /></RequireRole></Shell></Route>
-      <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
+      {/* «محاسب» ينشئ السندات (المسارات أعلاه) وبوّابةُ الخادم لفئاتها تشمله (treasuryGlobalProcedure)،
+          لكن حارس المسار كان يُسقطه ⇒ «لا تملك صلاحية» على الشاشة الوحيدة التي تُنشئ الفئة الإلزامية. */}
+      <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
       <Route path="/card-account"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CardAccount /></RequireRole></Shell></Route>
