@@ -1,11 +1,14 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, desc, eq, inArray, like } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, like, lte } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import {
+  attendance,
   employeeAdvances,
   employeeTerminations,
   employees,
+  hrAttendanceSettings,
+  leaveRequests,
   payrollAccountingEvents,
   payrollObligationAllocations,
   payrollObligations,
@@ -14,8 +17,14 @@ import {
   users,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
+import { logger } from "../logger";
 import { extractInsertId } from "../lib/insertId";
 import { baghdadToday } from "./businessDay";
+import {
+  computeAttendancePay,
+  DEFAULT_WORK_SCHEDULE,
+  type WorkSchedule,
+} from "./hr/attendancePay";
 import {
   createPostingIntent,
   creditLine,
@@ -28,7 +37,7 @@ import {
   payrollSettlementPosting,
   postPayrollAccountingEvent,
 } from "./payroll/accounting";
-import { payrollHash } from "./payroll/helpers";
+import { expandSpans, payrollHash } from "./payroll/helpers";
 import type { PayrollPaymentMethod } from "./payroll/types";
 import { assertPeriodOpen } from "./periodLockService";
 import { withTx, type Actor } from "./tx";
@@ -187,6 +196,283 @@ export function assertTerminationPaymentMethod(
   return { method, referenceNumber: reference };
 }
 
+/* ==========================================================================
+ * سندُ أجر شهر الفصل — مطابقةُ المُدخَل اليدويّ بسجلّ الحضور (تدقيق ١٧/٨)
+ *
+ * العطب: `earnedGrossWages` في تسوية نهاية الخدمة رقمٌ **يُكتب يدوياً**، والمسيّر يستبعد
+ * صاحبه من شهر فصله استبعاداً تامّاً (`terminationCoveredEmployeeIds` في
+ * `payroll/generate.ts` + سياسة `TERMINATION_EARNED_WAGES_AUTHORITATIVE`) ⇒ **لا جهة في
+ * النظام كلِّه تقارن ذلك الرقم بما يقوله سجلّ حضوره**. فأجرُ شهرٍ كاملٍ يُثبَت ويُصرف بلا
+ * سند — نقضٌ صريح للمبدأ المالي الحاكم (§٥: «لا دينار … ليس له مسار أو تبويب»).
+ *
+ * العلاج هنا: اشتقاقُ المستحقّ من **نواة المسيّر نفسها** (`computeAttendancePay`) لنافذة
+ * عمله داخل شهر الفصل، وإلحاقُ النتيجة بلقطة التسوية المُجزَّأة (⇒ تدخل `snapshotHash`
+ * فتصير سنداً غير قابلٍ للتحريف)، وبملاحظة القيد المحاسبيّ، وبمخرَج الإجراء.
+ *
+ * ⚠️ **تحذيرٌ لا حجب** عمداً: القيمة المحسوبة تعتمد على اكتمال سجلّ الحضور، وهو ما لا
+ * يضمنه النظام اليوم (يومٌ مفتوح ببصمةٍ ناقصة، أو آخر يومٍ لم تُطوَ بصماتُه — انظر
+ * `promotionService.releaseDueTerminationDeviceLinks`). فحجبُ التسوية على انحرافٍ سببُه
+ * نقصُ بيانات كان سيحبس مستحقّات موظفٍ فُصل بلا مخرجٍ يدويّ في العقد الحاليّ. التحويل
+ * إلى حجبٍ صريح قرارُ مالكٍ بعد اكتمال مسار الحضور.
+ * ========================================================================== */
+
+/** أساس المقارنة كما يقرّره نموذج الأجر السّاري على هذا الموظف — مرآةُ `payroll/generate.ts`. */
+export type TerminationWageBasis =
+  /** الأجر بالحضور مفعَّل وهو شهريٌّ غير مُعفى ⇒ المحسوب = أساس + إضافيّ + بدلات بالتناسب. */
+  | "ATTENDANCE"
+  /** ساعيّ ⇒ المحسوب = مجموع مبالغ أيام حضوره المسجّلة (وهو ما يدفعه المسيّر له حرفياً). */
+  | "HOURLY"
+  /** مُعفى من الحضور ⇒ راتبٌ ثابت بالتناسب (قرار المالك: المُعفى لا يخضع للبصمة). */
+  | "EXEMPT"
+  /** الأجر بالحضور معطَّل للشركة ⇒ راتبٌ ثابت بالتناسب. */
+  | "FIXED_SALARY";
+
+export interface TerminationWageAudit {
+  basis: TerminationWageBasis;
+  /** نافذة عمله داخل شهر الفصل (تعيينٌ في منتصفه يقصّها من أوّلها). */
+  window: { from: string; to: string };
+  /** ما يقوله سجلّ حضوره/نموذجُ أجره — بنفس نواة المسيّر لا بحسابٍ موازٍ. */
+  computedGrossWages: string;
+  /** ما أدخله المُعِدّ يدوياً في التسوية. */
+  enteredGrossWages: string;
+  /** المُدخَل − المحسوب (موجبٌ = دفعٌ زائد بلا سند، سالبٌ = بخسٌ للموظف). */
+  deviation: string;
+  matches: boolean;
+  /** مكوّنات المحسوب — لتفسير الانحراف بدل ترك رقمٍ مجرَّد. */
+  components: {
+    basePay: string;
+    overtimePay: string;
+    allowances: string;
+    payableHours: string;
+  };
+  /** أيامٌ ساعاتُها مجهولة/ناقصة ⇒ المحسوب نفسه غير مكتمل، فلا يُحتجّ به وحده. */
+  openDays: number;
+  openDates: string[];
+  absentDays: number;
+  /** جدولُ دوامٍ غير مضبوط (كلُّ أيامه صفر) — سببُ صفرٍ مفسَّر لا مجهول. */
+  scheduleMissing: boolean;
+  /** ملاحظة عربية جاهزة للسجلّ/العرض حين ينحرف المُدخَل (null = مطابق). */
+  note: string | null;
+}
+
+/** آخر يومٍ في شهر "YYYY-MM" بتقويم UTC ثابت. */
+function monthEndOf(period: string): string {
+  const [year, month] = period.split("-").map(Number);
+  return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+}
+
+/**
+ * يشتقّ أجر شهر الفصل من سجلّ الحضور بنواة المسيّر ويقارنه بالمُدخَل اليدويّ.
+ *
+ * **مرآةٌ حرفيّة لـ`payroll/generate.ts`** في كل قرار: نافذةُ العمل، ومنطقُ اليوم المفتوح
+ * بوجهيه، وتناسبُ البدلات، وتصنيفُ المسار (حضور/ساعيّ/مُعفى/ثابت). أيّ انحرافٍ عنها يجعل
+ * التحذير كاذباً — وتحذيرٌ كاذب أسوأ من لا تحذير لأنه يُدرَّب المستعمل على تجاهله.
+ *
+ * لا يرمي أبداً على نقص البيانات: غيابُ صفّ الإعدادات أو الجدول يقع على الافتراضات نفسها
+ * التي يقع عليها المسيّر.
+ */
+export async function auditTerminationEarnedWagesTx(
+  tx: Tx,
+  input: {
+    employeeId: number;
+    lastDay: string;
+    enteredGrossWages: Decimal;
+  },
+): Promise<TerminationWageAudit> {
+  const period = input.lastDay.slice(0, 7);
+  const monthStart = `${period}-01`;
+  const monthEnd = monthEndOf(period);
+
+  const [emp] = await tx
+    .select({
+      payType: employees.payType,
+      salary: employees.salary,
+      allowances: employees.allowances,
+      hireDate: employees.hireDate,
+      workSchedule: employees.workSchedule,
+      attendanceExempt: employees.attendanceExempt,
+    })
+    .from(employees)
+    .where(eq(employees.id, input.employeeId))
+    .limit(1);
+
+  // نافذة عمله داخل الشهر: التعيينُ في منتصفه يقصّها من أوّلها، والفصلُ يُنهيها عند يومه
+  // الأخير (لا عند آخر الشهر) — وإلا حُسبت أيامُ ما بعد فصله غياباً وخُفض مستحقُّه.
+  const windowFrom =
+    emp?.hireDate && String(emp.hireDate) > monthStart
+      ? String(emp.hireDate)
+      : monthStart;
+  const windowTo = input.lastDay < monthEnd ? input.lastDay : monthEnd;
+
+  const [settings] = await tx
+    .select()
+    .from(hrAttendanceSettings)
+    .where(eq(hrAttendanceSettings.id, 1))
+    .limit(1);
+  const attendancePayOn = !!settings?.attendancePayEnabled;
+
+  const attendanceRows = await tx
+    .select({
+      date: attendance.attendanceDate,
+      hours: attendance.hours,
+      amount: attendance.amount,
+      checkIn: attendance.checkIn,
+      checkOut: attendance.checkOut,
+      status: attendance.status,
+      needsReview: attendance.needsReview,
+      reviewReason: attendance.reviewReason,
+    })
+    .from(attendance)
+    .where(
+      and(
+        eq(attendance.employeeId, input.employeeId),
+        gte(attendance.attendanceDate, windowFrom),
+        lte(attendance.attendanceDate, windowTo),
+      ),
+    );
+
+  const attendedHoursByDate = new Map<string, Decimal>();
+  const openDates = new Set<string>();
+  let hourlyPaidAmount = money(0);
+  for (const row of attendanceRows) {
+    if (row.status !== "PRESENT" && row.status !== "LATE") continue;
+    const ymd = String(row.date).slice(0, 10);
+    const hours = money(row.hours ?? 0);
+    attendedHoursByDate.set(ymd, hours);
+    hourlyPaidAmount = hourlyPaidAmount.plus(money(row.amount ?? 0));
+    // اليوم المفتوح بوجهيه كما يعرّفهما المسيّر: ساعاتٌ مجهولة كلياً (دخولٌ بلا انصراف
+    // ولا ساعات)، أو ناقصةٌ جزئياً (بصمةُ خروجٍ منسيّة وسمها الطيّ «ينقص تسجيل»).
+    const unknownHours =
+      row.checkIn != null && row.checkOut == null && hours.lte(0);
+    const missingPunch =
+      !!row.needsReview && String(row.reviewReason ?? "").includes("ينقص تسجيل");
+    if (unknownHours || missingPunch) openDates.add(ymd);
+  }
+
+  const leaves = await tx
+    .select({
+      paid: leaveRequests.paid,
+      fromDate: leaveRequests.fromDate,
+      toDate: leaveRequests.toDate,
+    })
+    .from(leaveRequests)
+    .where(
+      and(
+        eq(leaveRequests.employeeId, input.employeeId),
+        eq(leaveRequests.status, "approved"),
+        lte(leaveRequests.fromDate, windowTo),
+        gte(leaveRequests.toDate, windowFrom),
+      ),
+    );
+  const spansOf = (paid: boolean) =>
+    leaves
+      .filter((row) => !!row.paid === paid)
+      .map((row) => ({ from: String(row.fromDate), to: String(row.toDate) }));
+
+  const pay = computeAttendancePay({
+    salary: money(emp?.salary ?? 0),
+    employmentStart: windowFrom,
+    employmentEnd: windowTo,
+    schedule:
+      emp?.workSchedule && typeof emp.workSchedule === "object"
+        ? (emp.workSchedule as WorkSchedule)
+        : DEFAULT_WORK_SCHEDULE,
+    attendedHoursByDate,
+    openDates,
+    paidLeaveDates: expandSpans(spansOf(true), windowFrom, windowTo),
+    unpaidLeaveDates: expandSpans(spansOf(false), windowFrom, windowTo),
+    payFrom: settings?.attendancePayFrom
+      ? String(settings.attendancePayFrom)
+      : null,
+    monthStart,
+    monthEnd,
+    maxDailyHours: Number(settings?.maxDailyHours ?? 12),
+  });
+
+  // تناسبُ أيام العمل في الشهر — مقامُه أيام الشهر الفعلية تماماً كما في المسيّر.
+  const activeDays =
+    windowTo < windowFrom
+      ? 0
+      : Math.floor(
+          (Date.parse(`${windowTo}T00:00:00Z`) -
+            Date.parse(`${windowFrom}T00:00:00Z`)) /
+            86_400_000,
+        ) + 1;
+  const employmentRatio = new Decimal(activeDays).div(
+    Number(monthEnd.slice(8, 10)),
+  );
+  const allowances = round2(money(emp?.allowances ?? 0).times(employmentRatio));
+
+  const monthly = emp?.payType !== "hourly";
+  const basis: TerminationWageBasis = !monthly
+    ? "HOURLY"
+    : emp?.attendanceExempt
+      ? "EXEMPT"
+      : attendancePayOn
+        ? "ATTENDANCE"
+        : "FIXED_SALARY";
+
+  const computed =
+    basis === "HOURLY"
+      ? round2(hourlyPaidAmount)
+      : basis === "ATTENDANCE"
+        ? round2(
+            money(pay.basePay).plus(money(pay.overtimePay)).plus(allowances),
+          )
+        : round2(
+            money(emp?.salary ?? 0).times(employmentRatio).plus(allowances),
+          );
+
+  const entered = round2(input.enteredGrossWages);
+  const deviation = round2(entered.minus(computed));
+  const matches = deviation.isZero();
+  const basisLabel: Record<TerminationWageBasis, string> = {
+    ATTENDANCE: "سجلّ الحضور (أساس + إضافيّ + بدلات بالتناسب)",
+    HOURLY: "مجموع أجور أيام حضوره المسجّلة (موظف بالساعة)",
+    EXEMPT: "راتب ثابت بالتناسب (مُعفى من الحضور)",
+    FIXED_SALARY: "راتب ثابت بالتناسب (الأجر بالحضور معطَّل)",
+  };
+  /*
+   * التحفّظات تُقاس بمنظور المسيّر نفسه (`pay.openDays`) لا بمجموعة الأيام الخام: يومٌ
+   * ناقصُ البصمة قبل تاريخ سريان الأجر بالحضور مدفوعٌ كاملاً في النموذجين ⇒ التحذير عنه
+   * تحذيرٌ كاذب، والكاذب يُدرّب المستعمل على تجاهل الصادق.
+   */
+  const cautions: string[] = [];
+  if (pay.openDays > 0) {
+    cautions.push(
+      `تنبيه: ${pay.openDays} يوماً ساعاتُه ناقصة (${pay.openDates.join("، ")}) ⇒ المحسوب نفسه منقوص`,
+    );
+  }
+  if (pay.scheduleMissing && basis === "ATTENDANCE") {
+    cautions.push("تنبيه: جدول دوام الموظف غير مضبوط");
+  }
+  const note = matches
+    ? null
+    : `أجر شهر الفصل المُدخَل ${entered.toFixed(2)} يخالف المحسوب من ${basisLabel[basis]} ${computed.toFixed(2)} ` +
+      `بفارق ${deviation.toFixed(2)} عن الفترة ${windowFrom} → ${windowTo}` +
+      (cautions.length > 0 ? ` — ${cautions.join("؛ ")}` : "");
+
+  return {
+    basis,
+    window: { from: windowFrom, to: windowTo },
+    computedGrossWages: computed.toFixed(2),
+    enteredGrossWages: entered.toFixed(2),
+    deviation: deviation.toFixed(2),
+    matches,
+    components: {
+      basePay: pay.basePay,
+      overtimePay: pay.overtimePay,
+      allowances: allowances.toFixed(2),
+      payableHours: pay.payableHours,
+    },
+    openDays: pay.openDays,
+    openDates: pay.openDates,
+    absentDays: pay.absentDays,
+    scheduleMissing: pay.scheduleMissing,
+    note,
+  };
+}
+
 function roleComponents(
   debits: Partial<Record<AccountRole, Decimal>>,
   credits: Partial<Record<AccountRole, Decimal>>,
@@ -342,6 +628,8 @@ export async function recognizeTerminationSettlementTx(
   provisionConsumed: string;
   provisionReleased: string;
   expenseRecognized: string;
+  /** سندُ أجر شهر الفصل: المُدخَل مقابل المحسوب من سجلّ الحضور (انظر §سند أجر شهر الفصل). */
+  wageAudit: TerminationWageAudit;
 }> {
   const duplicate = await tx
     .select({ id: payrollAccountingEvents.id })
@@ -368,6 +656,30 @@ export async function recognizeTerminationSettlementTx(
       message:
         "إقرار القيم الصفرية ومرجع المراجعة البشرية التفصيلي إلزاميان قبل إثبات التسوية.",
     });
+  }
+  /*
+   * سندُ أجر شهر الفصل: يُشتقّ **قبل** بناء اللقطة كي يدخل `canonical` ⇒ يدخل
+   * `snapshotHash` ⇒ يصير جزءاً من المستند المحاسبيّ لا تعليقاً جانبياً يُمحى.
+   * ولا يحجب — انظر التحذير فوق `auditTerminationEarnedWagesTx`.
+   */
+  const wageAudit = await auditTerminationEarnedWagesTx(tx, {
+    employeeId: input.employeeId,
+    lastDay: input.lastDay,
+    enteredGrossWages: input.breakdown.earnedGrossWages,
+  });
+  if (!wageAudit.matches) {
+    logger.warn(
+      {
+        terminationId: input.terminationId,
+        employeeId: input.employeeId,
+        basis: wageAudit.basis,
+        entered: wageAudit.enteredGrossWages,
+        computed: wageAudit.computedGrossWages,
+        deviation: wageAudit.deviation,
+        openDays: wageAudit.openDays,
+      },
+      "termination: أجر شهر الفصل المُدخَل يخالف المحسوب من سجلّ الحضور",
+    );
   }
   const activeAdvances = await tx
     .select()
@@ -544,6 +856,21 @@ export async function recognizeTerminationSettlementTx(
       sourceBranchId: Number(row.branchIdSnapshot ?? input.branchId),
       amount: money(row.remainingAmount).toFixed(2),
     })),
+    /*
+     * سندُ أجر شهر الفصل داخل اللقطة المُوقَّعة: أجرُ الشهر الأخير كان الرقم الوحيد في
+     * التسوية بلا مرجعٍ يُقارَن به (المسيّر يستبعد صاحبه). تثبيتُه هنا يجعل «ما قاله سجلّ
+     * الحضور لحظة الإثبات» جزءاً من المستند نفسه، فلا يُعاد تفسيره لاحقاً ولا يُمحى.
+     */
+    wageAudit: {
+      basis: wageAudit.basis,
+      window: wageAudit.window,
+      computedGrossWages: wageAudit.computedGrossWages,
+      enteredGrossWages: wageAudit.enteredGrossWages,
+      deviation: wageAudit.deviation,
+      openDays: wageAudit.openDays,
+      absentDays: wageAudit.absentDays,
+      payableHours: wageAudit.components.payableHours,
+    },
   } as const;
   const snapshotHash = payrollHash(canonical);
 
@@ -722,7 +1049,14 @@ export async function recognizeTerminationSettlementTx(
       amount: posting.amount,
       postingIntent: posting.intent,
       postingSourceComponents: posting.source,
-      notes: `إثبات استحقاق تسوية نهاية خدمة موظف #${input.employeeId}`,
+      // انحرافُ أجر شهر الفصل يُكتب في **ملاحظة القيد** لا في سجلّ التطبيق وحده: القيد هو
+      // ما يبلغ المراجعَ والتقريرَ المحاسبيّ، والسجلّ يُقلَّم ويُنسى.
+      notes: wageAudit.note
+        ? `إثبات استحقاق تسوية نهاية خدمة موظف #${input.employeeId} — ${wageAudit.note}`.slice(
+            0,
+            500,
+          )
+        : `إثبات استحقاق تسوية نهاية خدمة موظف #${input.employeeId}`,
     });
     eventId = event.eventId;
     for (const application of advanceRecoveryByBranch.get(input.branchId) ?? []) {
@@ -790,6 +1124,7 @@ export async function recognizeTerminationSettlementTx(
     provisionConsumed: provisionConsumed.toFixed(2),
     provisionReleased: provisionReleased.toFixed(2),
     expenseRecognized: expenseRecognized.toFixed(2),
+    wageAudit,
   };
 }
 

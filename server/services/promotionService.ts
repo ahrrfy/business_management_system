@@ -2,11 +2,12 @@
  * خدمة الترقيات وإنهاء الخدمات — وحدة الموارد البشرية (server/services/promotionService.ts)
  * - الترقيات: تُنشأ بحالة pending؛ اعتمادها (داخل withTx) يحدّث مسمّى/راتب الموظف.
  * - إنهاء الخدمات: يُنشأ بحالة pending؛ إكماله (داخل withTx) يضع الموظف «منتهي الخدمة»،
- *   يعطّل حسابه ويبطل جلساته، يحرّر ربط جهاز الحضور، ويُنشئ سند التسوية المعلّق ذرّياً.
+ *   يعطّل حسابه ويبطل جلساته، **ويحرّر ربط جهاز الحضور متى انتهى يومُ الإنهاء** (لا لحظة
+ *   الإكمال — وإلا ضاعت بصماتُ آخر يوم عملٍ حضره فعلاً)، ويُنشئ سند التسوية المعلّق ذرّياً.
  * المبالغ كلها عبر money.ts (toDbMoney). الكتابات متعددة الأطراف داخل withTx.
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import type { Tx } from "../db";
 import { baghdadToday, todayUtcDate } from "./businessDay";
@@ -396,6 +397,67 @@ export async function applyDuePromotions(
 
 /* ===== إنهاء الخدمات ===== */
 
+/** اليوم التالي لـ"YYYY-MM-DD" بتقويم UTC ثابت (توقيت حائط لا لحظة عالمية — §businessDay). */
+function nextYmd(ymd: string): string {
+  return new Date(Date.parse(`${ymd}T00:00:00Z`) + 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * كنسة قطع ربوط أجهزة البصمة المستحقّة — **القطع يسري بعد نهاية يوم الإنهاء لا لحظته**
+ * (تدقيق ١٧/٨).
+ *
+ * العطب الذي يمنعه هذا الفصل: كان `completeTermination` يمسح `hrDeviceUsers.employeeId`
+ * **لحظة الإكمال**. والإكمال مسموحٌ في يوم العمل الأخير نفسه (`lastDay <= اليوم`)، فمن
+ * أُنهيت خدمته ظهراً وهو ما زال على رأس عمله تصل بصماتُ بقية يومه (وانصرافُه خصوصاً)
+ * بلا ربط: `ingestPunches` يحلّ الموظف **لحظة الاستلام** من هذا الجدول وحده، فتُخزَّن
+ * البصمة بـ`employeeId = NULL` ⇒ لا يلتقطها الطيّ أصلاً (`duePunchesCondition` يشترط
+ * `employeeId IS NOT NULL`) ⇒ يومُ عملٍ كاملٌ حضره فعلاً يذهب بلا أثرٍ ولا طابور مراجعةٍ
+ * منسوبٍ إليه. والأسوأ أنّ الجهاز المنقطع يرسل يومه كلَّه دفعةً بعد الإكمال ⇒ يُيتَّم اليوم
+ * بكامله. أمّا البصمة المربوطة فتبقى في الطابور مرئيّةً باسم صاحبها قابلةً للمعالجة.
+ *
+ * `asOf` = اليوم الجاري: يُقطَع ربطُ كلّ من **انتهى** يومُ إنهائه (`terminationDate < asOf`)،
+ * ويبقى ربط من يومُه جارٍ إلى الكنسة التالية. والكنسة ذاتيّة التنظيف: الصفّ المقطوع لا
+ * يعود يطابق الشرط (صار `employeeId = NULL`) ⇒ لا تراكم ولا دوران.
+ *
+ * بلا قفل `for update` عمداً: العملية **حياديّة التكرار** (قطعٌ متكرّر = لا شيء)، وقفلُ
+ * صفوف موظفين آخرين داخل معاملة الإنهاء يفتح باب تشابكٍ (deadlock) مع اعتماد المسيّر
+ * الذي يقفل صفوف الموظفين أيضاً.
+ *
+ * @returns معرّفات الموظفين الذين قُطعت ربوطهم في هذه الكنسة (صفّ لكل ربط).
+ */
+export async function releaseDueTerminationDeviceLinks(
+  tx: Tx,
+  asOf: string,
+): Promise<number[]> {
+  const due = await tx
+    .select({
+      linkId: hrDeviceUsers.id,
+      employeeId: hrDeviceUsers.employeeId,
+    })
+    .from(hrDeviceUsers)
+    .innerJoin(employees, eq(hrDeviceUsers.employeeId, employees.id))
+    .where(
+      and(
+        eq(employees.employmentStatus, "terminated"),
+        isNotNull(employees.terminationDate),
+        lt(employees.terminationDate, asOf),
+      ),
+    );
+  if (due.length === 0) return [];
+  await tx
+    .update(hrDeviceUsers)
+    .set({ employeeId: null, effectiveFrom: null })
+    .where(
+      inArray(
+        hrDeviceUsers.id,
+        due.map((row) => Number(row.linkId)),
+      ),
+    );
+  return due.map((row) => Number(row.employeeId));
+}
+
 /** استعلام إنهاءات الخدمة (مع اسم الموظف) — بمعرّف لصفّ واحد أو بلا معرّف للقائمة كاملةً. */
 async function terminationRows(actor: PromotionActor, id?: number) {
   const db = requireDb();
@@ -588,6 +650,10 @@ async function getTermination(id: number, actor: PromotionActor) {
 /**
  * إكمال إنهاء الخدمة (ذرّي): حالة الطلب والموظف، حساب النظام والجلسات، ربط جهاز الحضور،
  * وسند التسوية المعلّق وحدة عمل واحدة؛ أي فشل يعيدها جميعاً بلا حالة نصفية.
+ *
+ * قطعُ **حساب النظام** فوريّ (أمنٌ: مفصولٌ لا يبقى داخل النظام لحظةً)، أمّا قطعُ **ربط
+ * جهاز البصمة** فيسري بعد نهاية يوم الإنهاء (`releaseDueTerminationDeviceLinks`) لأنّ
+ * ذلك اليوم يومُ عملٍ حضره الموظف وبصماتُه لم تصل كلُّها بعد.
  */
 export async function completeTermination(id: number, actor: PromotionActor) {
   const scope = companyBranchScope(actor);
@@ -766,15 +832,6 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       }
     }
 
-    const deviceRelease = await tx
-      .update(hrDeviceUsers)
-      .set({ employeeId: null, effectiveFrom: null })
-      .where(eq(hrDeviceUsers.employeeId, t.employeeId));
-    const deviceLinksReleased = Number(
-      (deviceRelease as unknown as [{ affectedRows?: number }])[0]
-        ?.affectedRows ?? 0,
-    );
-
     await tx
       .update(employees)
       .set({
@@ -784,6 +841,29 @@ export async function completeTermination(id: number, actor: PromotionActor) {
         terminationReason: t.reason ?? null,
       })
       .where(eq(employees.id, t.employeeId));
+
+    /*
+     * قطع ربط جهاز البصمة **بعد نهاية يوم الإنهاء لا لحظته** (تدقيق ١٧/٨) — الشرح الكامل
+     * فوق `releaseDueTerminationDeviceLinks`. الكنسة تلي تحديث الموظف عمداً كي يدخل
+     * صاحبُ هذا الإجراء نفسه في شرطها بمسارٍ واحد: يومُه انتهى ⇒ يُقطع الآن (السلوك
+     * السابق حرفياً لكل إنهاءٍ أُكمل بعد يومه)، ويومُه جارٍ ⇒ يبقى ربطُه حيّاً فتُنسَب
+     * بصماتُ بقية يومه إليه، ويُقطع في أوّل كنسةٍ بعد انتهائه.
+     *
+     * ⚠️ قصورٌ متبقٍّ خارج ملكية هذا الملف: `recordAttendance` يرفض أيّ تسجيلٍ لموظفٍ
+     * `employmentStatus = 'terminated'` مهما كان تاريخُ اليوم، فبصماتُ اليوم الأخير
+     * المنسوبةُ هنا تُركَن في الطيّ بوسم EMPLOYEE_TERMINATED بدل أن تصير ساعاتٍ مدفوعة.
+     * إتمام العلاج يحتاج أن يقيّد الحارس هناك بـ`attendanceDate > terminationDate`.
+     */
+    const releasedLinks = await releaseDueTerminationDeviceLinks(
+      tx,
+      baghdadToday(),
+    );
+    const deviceLinksReleased = releasedLinks.filter(
+      (employeeId) => employeeId === Number(t.employeeId),
+    ).length;
+    /** يومُ الإنهاء ما زال جارياً ⇒ سريان القطع مؤجَّل إلى غده (null = قُطع الآن). */
+    const deviceLinkReleaseDeferredTo =
+      t.lastDay >= baghdadToday() ? nextYmd(t.lastDay) : null;
 
     const recognition = await recognizeTerminationSettlementTx(tx, {
       terminationId: id,
@@ -855,6 +935,7 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       recognition,
       userDisabled,
       deviceLinksReleased,
+      deviceLinkReleaseDeferredTo,
     };
   });
 }
