@@ -123,19 +123,48 @@ function safeFoldErrorCode(error: unknown): string {
     .slice(0, 48) || "FOLD_FAILED";
 }
 
+/** عدّاد الإخفاقات المتتالية — يُصفَّر عند أوّل دورةٍ بلا خطأ عابر. */
+let foldRetryStreak = 0;
+
+/** ١٥ث ثمّ تضاعفٌ حتى سقف ١٠ دقائق. الأولى تبقى ١٥ث بالضبط (لا انحدار على الاختبار القائم). */
+function foldRetryDelayMs(): number {
+  return Math.min(15_000 * 2 ** foldRetryStreak, 600_000);
+}
+
+/*
+ * تراجعٌ أُسّيّ بدل ١٥ ثانية أبداً (تدقيق ١٧/٨): خطأٌ دائم — كقفل المسيّر قبل وسمه — كان
+ * يُنتج ٥٧٦٠ دورة مسحٍ يومياً على أسخن استعلامٍ في الوحدة بلا أن يتقدّم شيء.
+ */
 function scheduleFoldRetry(): void {
   if (!foldRequestsAccepting || retryTimer) return;
+  const delay = foldRetryDelayMs();
+  foldRetryStreak += 1; // بعد الحساب ⇒ أوّل إعادةٍ ١٥ث
   retryTimer = setTimeout(() => {
     retryTimer = null;
     foldSoon();
-  }, 15_000);
+  }, delay);
   retryTimer.unref();
 }
 
 /** علامات أخطاء recordAttendance النهائية (يوسَم بها المعالَج نهائياً) — أيّ خطأ آخر عابر يُعاد. */
 function isTerminalFoldError(msg: string): boolean {
-  return msg.includes("منتهي الخدمة") || msg.includes("غير موجود") || msg.includes("سالبة");
+  return (
+    msg.includes("منتهي الخدمة") ||
+    msg.includes("غير موجود") ||
+    msg.includes("سالبة") ||
+    // شهرٌ مسيّرُه معتمد/مدفوع (تدقيق ١٧/٨): كان **عابراً** فتبقى البصمة processedAt=NULL
+    // بلا وسمٍ ولا سبب — «بالانتظار» صامتةً تضيع فعلياً — ومعها إعادةُ محاولةٍ أبدية كل ١٥ث.
+    // نهائيٌّ **موسوم**: المدير يراه ويستأنفه بإلغاء اعتماد المسيّر ثم إعادة الطيّ.
+    msg.includes("مسيّر رواتب")
+  );
 }
+
+/*
+ * ⚠️ لا تُوسَّع هذه القائمة بأنماطٍ يُنتجها المسار السليم: مراجعةٌ عدائية (١٧/٨) أمسكت
+ * محاولةً لإضافة «بعد وقت الدخول» — وهي رسالةُ حارس الاتّساق التي يُطلقها **الطيّ نفسه**
+ * كلّما عبرت وردية منتصف الليل ⇒ ليلةُ عملٍ كاملة تُختم وتُحذف بلا رجعة. أيّ نمطٍ جديد
+ * يلزمه إثباتٌ بتشغيلٍ فعليّ أن المسار السليم لا يُنتجه.
+ */
 
 /** طيّ دفعة واحدة (≤٥٠٠٠ بصمة معلَّقة مربوطة). يُعيد days/parked/processedAny للتحكّم بالحلقة. */
 async function foldOneBatch(): Promise<{ days: number; parked: number; processedAny: boolean }> {
@@ -281,6 +310,8 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: null })
         .where(inArray(hrAttendancePunches.id, g.ids));
       days++;
+      // يومٌ طُوي بنجاح ⇒ العطب العابر زال، فيعود التأخير إلى ١٥ث ولا يبقى متضخّماً.
+      foldRetryStreak = 0;
     } catch (e) {
       const note = e instanceof Error ? e.message.slice(0, 200) : "تعذر الطي";
       if (isTerminalFoldError(note)) {

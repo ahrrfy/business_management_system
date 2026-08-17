@@ -394,7 +394,13 @@ export async function generatePayroll(period: string, actor: Actor) {
          * بصماتٌ فعلاً وأجرٌ يُدفع، فليس «بلا جهاز».
          */
         if (
-          Number(pay.payableHours) === 0 &&
+          /*
+           * يُفحص المستحقّ **قبل** تعويض الشهر القصير (تدقيق ١٧/٨): `payableHours` يشمله،
+           * فكان موظفٌ بلا بصمةٍ واحدة في شباط يصير مستحقُّه موجباً (١٦ ساعة) ⇒ يُعمى الحارس
+           * ويُصرف له أجرٌ عن شهرٍ لم يحضره. والنواة صارت لا تمنح التعويض بلا مستحقٍّ أصلاً،
+           * وهذا الطرح دفاعٌ في العمق فلا يعود الحارس أعمى مهما تغيّرت سياسة التعويض.
+           */
+          Number(pay.payableHours) - Number(pay.shortMonthHours) === 0 &&
           Number(pay.restWorkedHours) === 0 &&
           pay.absentDays > 0
         ) {
