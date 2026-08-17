@@ -14,8 +14,8 @@ import {
   assertCashOutAvailable,
   assertNonPhysicalOutReceipt,
   lockCashSourceForUpdate,
-  MATERIALIZED_RECEIPT_STATUSES,
 } from "./cash/cashAvailability";
+import { effectiveRefundCap, isSurfacedRefundMethod, loadRefundCaps } from "./returns/refundCaps";
 import { withTx, type Actor } from "./tx";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -33,7 +33,8 @@ export interface ReturnLineInput {
 export interface ReturnSaleInput {
   invoiceId: number;
   lines: ReturnLineInput[];
-  refund?: { amount: string; method: PaymentMethod; shiftId?: number | null } | null;
+  /** `reference` = مرجع عملية جهاز الدفع، إلزاميّ للردّ بالبطاقة (إثباتٌ لا إقفال). */
+  refund?: { amount: string; method: PaymentMethod; shiftId?: number | null; reference?: string | null } | null;
   restock?: boolean;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة المرتجع الأول (لا استرداد/إرجاع مزدوج). */
   clientRequestId?: string | null;
@@ -102,7 +103,8 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         const fullyReturnedReplay =
           replayInv.status === "RETURNED" ||
           replayItems.every((r) => (r.returnedBaseQuantity ?? 0) >= r.baseQuantity);
-        const pendingReference = input.refund && input.refund.method !== "CASH"
+        // رافدا الردّ الفوريّ (نقد/بطاقة) لا يُنشئان سنداً معلَّقاً ⇒ لا مرجعَ معلَّقاً يُبحَث عنه.
+        const pendingReference = input.refund && !isSurfacedRefundMethod(input.refund.method)
           ? `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12)}`
           : null;
         const replayRefund = pendingReference
@@ -644,96 +646,38 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     if (requestedRefund.lt(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الاسترداد لا يصحّ أن يكون سالباً" });
     }
-    // سقف الاسترداد بالطريقة نفسها: المتاح = Σ(IN بهذه الطريقة) − Σ(OUT بهذه الطريقة)،
-    // فلا يُسترَدّ نقداً ما دُفع بطاقةً (يُفرّغ الصندوق) ولا يتجاوز المقبوض فعلاً بتلك الطريقة.
-    // ش٥ (قرار مالك ٦/٨): المقبوض **رصيد زين** يُستردّ **نقداً** — TELECOM ليست طريقة استرداد
-    // (لا سكّة ردٍّ لرصيدٍ شُحن؛ OUT بزين يُنقص الحساب المشتقّ زوراً)، فبِلا هذا الضمّ كانت
-    // فاتورة زينٍ خالصة مرتجعُها بلا أيّ مسار استردادٍ بنيوياً (سقف كل طريقةٍ صفر). حصص زين
-    // تدخل سقف النقد وحده، وOUT النقدية السابقة تُنقصه فلا استهلاك مزدوج. مرآة سياسة ردّ
-    // العربون في reception/deposits.ts. المرتجع أصلاً مديريّ (م٧) وحدّ الدرج أدناه قائم.
+    // سقف الاسترداد — **الحساب موحَّدٌ مع الشاشة حرفياً** في `returns/refundCaps.ts` (مصدر حقيقة
+    // واحد). كان مكرَّراً هنا بمنطقٍ يخالف ما تعرضه الشاشة، فيبني الموظف طلباً مرفوضاً حتماً.
+    // ⭐ قرار المالك (١٧/٨/٢٦): الاسترداد **النقديّ** متاحٌ من الوعاء كلّه مهما كان رافد القبض
+    // (زبونُ البطاقة العابر كان بلا أيّ مسار استرداد — علّة INV-1-20260816-00118)؛ وغيرُ النقد
+    // يبقى محدوداً برافده **وبالوعاء معاً** فلا استرداد مزدوج. التفصيل والثابت المحروس هناك.
     const refundMethod = input.refund?.method;
-    const capMethods: string[] = refundMethod === "CASH" ? ["CASH", "TELECOM"] : refundMethod ? [refundMethod] : [];
-    let methodAvailable = new Decimal(0);
+    let refundCap = new Decimal(0);
     if (refundMethod) {
-      const methodReceipts = await tx
-        .select({ direction: receipts.direction, amount: receipts.amount })
-        .from(receipts)
-        .where(
-          and(
-            eq(receipts.invoiceId, input.invoiceId),
-            inArray(receipts.paymentMethod, capMethods as never),
-            inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
-            eq(receipts.approvalStatus, "APPROVED"),
-            // تدقيق ٦/٨ (ث٣/ث٥/ث١٢): إيصال **أمانة أجرة التوصيل** مختومٌ بالفاتورة تشغيلياً
-            // لكنّه مالُ طرفٍ ثالث (لم يمسّ paidAmount) — احتسابُه «مقبوضاً نقداً على الفاتورة»
-            // كان يفتح رداً نقدياً على فاتورةٍ لم يُدفَع منها دينارٌ نقداً (مدفوعة بالبطاقة مثلاً)
-            // ويستهلك أمانة المندوب استرداداً. البصمة البنيوية: له قيد DELIVERY_FEE_HELD.
-            sql`NOT EXISTS (
-              SELECT 1 FROM accountingEntries ae
-              WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
-            )`,
-          ),
-        )
-        // current read بعد source lock: لا نعتمد snapshot المعاينة السابق للانتظار.
-        .for("update");
-      methodAvailable = methodReceipts.reduce(
-        (sum, receipt) => receipt.direction === "IN"
-          ? sum.plus(money(receipt.amount))
-          : sum.minus(money(receipt.amount)),
-        money(0),
-      );
-      // ش٤ (مراجعة عدائية): حصص العرابين المُطبَّقة على هذه الفاتورة (orderPayments APPLICATION)
-      // تدخل paidAmount بينما إيصال أمّها **غير مختوم** بالفاتورة (مُشظّى بين هدفين، أو مشوبٌ
-      // بردٍّ جزئيّ) فلا يراه inSum ⇒ فاتورةٌ PAID كان مرتجعُها غير قابلٍ للاسترداد بنيوياً
-      // (refundCap=0) ومال الزبون العابر يُحتجز بلا مسار. تُضمّ الحصّة بطريقة قبض أمّها، مع
-      // استبعاد ما إيصال أمّه مختومٌ بهذه الفاتورة (محسوبٌ في inSum سلفاً — لا ازدواج).
-      // outSum القائم (إيصالات OUT المختومة) يظلّ يُنقص السقف بعد كل استرداد فلا استهلاك مزدوج.
-      const appRes = await tx.execute(sql`
-        SELECT CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS v
-        FROM orderPayments app
-        JOIN orderPayments coll ON coll.id = app.parentPaymentId
-        LEFT JOIN receipts pr ON pr.id = coll.receiptId
-        WHERE app.orderPayKind = 'APPLICATION'
-          AND (
-            (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId = ${input.invoiceId})
-            OR (app.orderPayAppliedKind = 'WORKORDER' AND app.appliedId IN (
-              SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
-            ))
-          )
-          AND coll.orderPayMethod IN (${sql.join(capMethods.map((m) => sql`${m}`), sql`, `)})
-          AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
-      `);
-      const appData = (appRes as unknown as [Array<{ v: string }>])[0] ?? appRes;
-      const appRow = Array.isArray(appData) ? appData[0] : undefined;
-      methodAvailable = methodAvailable.plus(money(appRow?.v ?? "0"));
-
-      // قرار المالك (٦/٨/٢٦) — **ما حصّله المندوب وورّده مالٌ نقديّ وصلنا فعلاً**: إيصال
-      // التوريد مجمَّعٌ لعدّة فواتير بلا invoiceId، فكان المُحصَّل عبر المندوب غير مرئيٍّ
-      // لسقف الاسترداد ⇒ زبونٌ عابر دفع للمندوب وأعاد البضاعة **لا يستطيع استرداد ديناره
-      // من الشاشة إطلاقاً** (سقفه صفر). نضمّ هنا حصّة هذه الفاتورة من الإرسالية المُحصَّلة
-      // (collectedAmount) للسقف النقديّ — بحدّ ما تبقّى منها فعلاً بعد أيّ استردادٍ سابق
-      // (outSum أعلاه يُنقصه، فلا استهلاك مزدوج).
-      if (refundMethod === "CASH") {
-        const cnRes = await tx.execute(sql`
-          SELECT CAST(COALESCE(SUM(cn.collectedAmount), 0) AS CHAR) AS v
-          FROM deliveryConsignments cn
-          WHERE cn.invoiceId = ${input.invoiceId}
-            AND cn.consignmentStatus IN ('DELIVERED','PARTIAL')
-        `);
-        const cnData = (cnRes as unknown as [Array<{ v: string }>])[0] ?? cnRes;
-        const cnRow = Array.isArray(cnData) ? cnData[0] : undefined;
-        methodAvailable = methodAvailable.plus(money(cnRow?.v ?? "0"));
-      }
+      // `lock: true` إلزاميّ هنا: current read بعد قفل المصدر — لا نعتمد لقطةً قد يستهلكها
+      // استردادٌ متزامنٌ على الفاتورة نفسها بين القراءة والكتابة.
+      const caps = await loadRefundCaps(tx, input.invoiceId, { lock: true });
+      refundCap = effectiveRefundCap(caps, refundMethod, returnedTotal);
     }
-    const refundCap = Decimal.min(returnedTotal, methodAvailable);
     if (requestedRefund.gt(refundCap)) {
+      const poolNote = refundMethod === "CASH"
+        ? "الأقل من قيمة المرتجع والمتبقّي من المقبوض على الفاتورة بكل الطرق"
+        : "الأقل من قيمة المرتجع والمقبوض بهذه الطريقة والمتبقّي من المقبوض إجمالاً";
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة${refundMethod === "CASH" ? " — المقبوض رصيدَ زين يُستردّ نقداً ويدخل هذا السقف" : ""})`,
+        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = ${poolNote})`,
       });
     }
     const refundRequest = requestedRefund;
-    const materializedRefund = refundMethod === "CASH" ? refundRequest : money(0);
+    // ⭐ قرار المالك (١٧/٨/٢٦): **رافدا الردّ الفوريّ نقدٌ أو بطاقة**. الردّ بالبطاقة يُنفَّذ على
+    // جهاز الدفع فعلياً ثمّ يُوثَّق بمرجعه هنا ⇒ مالٌ خرج حقيقةً، فيجب أن **يتجسّد** (يُنقص
+    // `paidAmount` ويُرحَّل PAYMENT_OUT على CARD_BANK). تسجيلُه «معلَّقاً» كان يكذب على الواقع:
+    // الزبون استلم مالَه والدفتر يقول إنّ سنداً ينتظر الاعتماد. وهو مرآةٌ للسياسة الواردة —
+    // «البوّابة إثباتٌ لا إقفال» ([[inbound-payment-policy-2026-08-16]]): مرجع الجهاز إلزاميّ.
+    // الطرق الأخرى (تحويل/صك/محفظة) غير معروضةٍ في الشاشة وتبقى على مسار السند المعلَّق.
+    const isImmediateRefundRail = refundMethod != null && isSurfacedRefundMethod(refundMethod);
+    const refundReference = input.refund?.reference?.trim() || null;
+    const materializedRefund = isImmediateRefundRail ? refundRequest : money(0);
     let pendingRefundVoucherNumber: string | null = null;
 
     if (refundRequest.gt(0)) {
@@ -759,6 +703,25 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
           branchId: Number(inv.branchId), cashBucket: "DRAWER", shiftId,
           amount: materializedRefund, operation: "استرداد مرتجع البيع نقداً",
         });
+      } else if (isImmediateRefundRail) {
+        // الردّ بالبطاقة: **إثباتٌ لا إقفال**. المرجع (رقم عملية/كود موافقة الجهاز) إلزاميّ —
+        // هو الأثر الوحيد الذي يربط ديناراً خرج من حسابنا البنكيّ بمستنده، مطابقةً للمبدأ
+        // المالي الحاكم (خمسة: إيصال + قيدٌ مصنَّف + أثر تسوية + طرفٌ منسوب + تقريرٌ يُظهره).
+        // لا يشترط عميلاً مسجَّلاً: البطاقة نفسها هي الطرف (زبونٌ عابر يستردّ على بطاقته).
+        if (!refundReference) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "الاسترداد بالبطاقة يحتاج مرجع العملية من جهاز الدفع (رقم العملية/كود الموافقة) — نفّذ الاسترداد على الجهاز ثمّ أدخِل مرجعه",
+          });
+        }
+        // لا يمسّ درجاً (cashBucket=NULL) ⇒ لا أثر على expectedCash ولا على Z-report النقديّ.
+        assertNonPhysicalOutReceipt({
+          classification: "NON_CASH_METHOD",
+          paymentMethod: input.refund!.method,
+          cashBucket: null,
+          approvalStatus: "APPROVED",
+          operation: "استرداد مرتجع بيع على البطاقة",
+        });
       } else {
         if (inv.customerId == null) {
           throw new TRPCError({
@@ -780,19 +743,23 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         branchId: Number(inv.branchId),
         shiftId,
         // cashBucket=DRAWER للنقد (يَخرج من الدُرج بمرتجع نقدي ويظهر في Z-report).
-        // غير النقد ⇒ NULL (لا يَمسّ صندوقاً). مرآة لنمط saleService/voucherService.
+        // البطاقة وغيرها ⇒ NULL (لا يَمسّ صندوقاً). مرآة لنمط saleService/voucherService.
         cashBucket: input.refund!.method === "CASH" ? "DRAWER" : null,
         direction: "OUT",
         amount: toDbMoney(refundRequest),
         paymentMethod: input.refund!.method,
-        status: input.refund!.method === "CASH" ? "COMPLETED" : "PENDING",
-        approvalStatus: input.refund!.method === "CASH" ? "APPROVED" : "PENDING_APPROVAL",
+        status: isImmediateRefundRail ? "COMPLETED" : "PENDING",
+        approvalStatus: isImmediateRefundRail ? "APPROVED" : "PENDING_APPROVAL",
         referenceNumber: input.refund!.method === "CASH"
           ? null
-          : `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12) ?? "LEGACY"}`,
+          : isImmediateRefundRail
+            ? refundReference
+            : `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12) ?? "LEGACY"}`,
         description: input.refund!.method === "CASH"
           ? `استرداد مرتجع فاتورة ${inv.invoiceNumber}`
-          : `طلب استرداد غير نقدي معلّق لفاتورة ${inv.invoiceNumber} — بلا أثر حتى الاعتماد والتنفيذ`,
+          : isImmediateRefundRail
+            ? `استرداد مرتجع فاتورة ${inv.invoiceNumber} على البطاقة — مرجع الجهاز ${refundReference}`
+            : `طلب استرداد غير نقدي معلّق لفاتورة ${inv.invoiceNumber} — بلا أثر حتى الاعتماد والتنفيذ`,
         voucherNumber: pendingRefundVoucherNumber,
         partyType: inv.customerId ? "CUSTOMER" : "OTHER",
         partyId: inv.customerId ?? null,
@@ -803,7 +770,13 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       });
       const receiptId = extractInsertId(rRes);
       if (materializedRefund.gt(0)) {
-        const refundAssetRole = paymentAssetRole(input.refund!.method, "DRAWER", "OUT");
+        // الدلو يُمرَّر بحسب الرافد فعلاً: النقد من الدرج (CASH)، والبطاقة من الحساب البنكيّ
+        // (CARD_BANK) — تمرير "DRAWER" ثابتاً كان يُرحّل ردّ البطاقة على حساب النقد.
+        const refundAssetRole = paymentAssetRole(
+          input.refund!.method,
+          input.refund!.method === "CASH" ? "DRAWER" : null,
+          "OUT",
+        );
         const refundPostingSource = {
           roleDebits: { AR: materializedRefund },
           roleCredits: { [refundAssetRole]: materializedRefund },
@@ -889,7 +862,8 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       invoiceId: input.invoiceId,
       returnedTotal: returnedTotal.toFixed(2),
       fullyReturned,
-      pendingRefundAmount: refundMethod !== "CASH" ? refundRequest.toFixed(2) : "0.00",
+      // «معلَّق» = ما لم يخرج فعلاً بعد. رافدا الردّ الفوريّ (نقد/بطاقة) خرجا حقيقةً ⇒ صفر معلَّق.
+      pendingRefundAmount: isImmediateRefundRail ? "0.00" : refundRequest.toFixed(2),
       pendingRefundVoucherNumber,
     };
 }

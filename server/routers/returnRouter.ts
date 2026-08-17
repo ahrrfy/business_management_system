@@ -1,12 +1,13 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import type Decimal from "decimal.js";
 import { z } from "zod";
-import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, receipts, users } from "../../drizzle/schema";
+import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { returnSale } from "../services/returnService";
+import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
+import { getOpenShifts } from "../services/treasury/openShifts";
 import { router, salesManagerProcedure } from "../trpc";
 import { nonNegMoneyString } from "../lib/schemas";
 import { escLike } from "../lib/sqlLike";
@@ -26,7 +27,13 @@ export const returnRouter = router({
         lines: z.array(z.object({ invoiceItemId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).min(1),
         // shiftId اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx
         // يرمي طالباً التحديد حينها) — يختار المستخدم أيّ درجٍ خرج منه النقد فعلياً.
-        refund: z.object({ amount: nonNegMoneyString, method, shiftId: z.number().int().positive().optional() }).optional(),
+        refund: z.object({
+          amount: nonNegMoneyString,
+          method,
+          shiftId: z.number().int().positive().optional(),
+          // مرجع عملية جهاز الدفع — إلزاميّ للردّ بالبطاقة (تفرضه الخدمة، لا مجرّد تزيين واجهة).
+          reference: z.string().trim().min(1).max(100).optional(),
+        }).optional(),
         restock: z.boolean().optional(),
         // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
@@ -253,49 +260,50 @@ export const returnRouter = router({
       };
     });
 
-    // تبسيط المرتجعات (طلب مالك ٦/٨): «بمَ دُفعت هذه الفاتورة فعلاً؟» — الشاشة كانت عمياء
-    // فيختار الموظف «نقدي» لفاتورة بطاقةٍ ويُرفض بعد ملء كل شيء. الصافي لكل طريقة =
-    // Σ(IN) − Σ(OUT) للإيصالات المختومة + حصص العرابين المطبَّقة غير المختومة (نفس منطق
-    // سقف returnService حرفياً، مجموعاً بالطريقة). رصيد زين يُطوى في سقف النقد (قرار ٦/٨).
-    const pmRows = await db
-      .select({
-        method: receipts.paymentMethod,
-        net: sql<string>`CAST(COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0) AS CHAR)`,
-      })
-      .from(receipts)
-      .where(and(eq(receipts.invoiceId, input.invoiceId), eq(receipts.status, "COMPLETED")))
-      .groupBy(receipts.paymentMethod);
-    const appRes = await db.execute(sql`
-      SELECT coll.orderPayMethod AS method, CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS net
-      FROM orderPayments app
-      JOIN orderPayments coll ON coll.id = app.parentPaymentId
-      LEFT JOIN receipts pr ON pr.id = coll.receiptId
-      WHERE app.orderPayKind = 'APPLICATION'
-        AND (
-          (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId = ${input.invoiceId})
-          OR (app.orderPayAppliedKind = 'WORKORDER' AND app.appliedId IN (
-            SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
-          ))
-        )
-        AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
-      GROUP BY coll.orderPayMethod
-    `);
-    const appData = (appRes as unknown as [Array<{ method: string; net: string }>])[0] ?? appRes;
-    const paidMap = new Map<string, Decimal>();
-    for (const r of pmRows) {
-      if (!r.method) continue;
-      paidMap.set(r.method, (paidMap.get(r.method) ?? money(0)).plus(money(r.net)));
-    }
-    for (const r of (Array.isArray(appData) ? appData : []) as Array<{ method: string; net: string }>) {
-      if (!r.method) continue;
-      paidMap.set(r.method, (paidMap.get(r.method) ?? money(0)).plus(money(r.net)));
-    }
+    // سقوف الاسترداد — **نفس دالّة الخادم التي ستحكم على الطلب** (`loadRefundCaps`) لا نسخةٌ
+    // مقارِبة. كانت الشاشة تحسبها بنفسها فتعرض خياراً يرفضه الخادم بعد ملء كل شيء (بلاغ المالك
+    // ١٧/٨). الآن: ما تعرضه الشاشة = ما يقبله الخادم، بالتعريف.
+    const caps = await loadRefundCaps(db, input.invoiceId);
     const paidByMethod: Array<{ method: string; amount: string }> = [];
-    paidMap.forEach((v, m) => {
+    caps.netByMethod.forEach((v, m) => {
       if (v.gt(0)) paidByMethod.push({ method: m, amount: v.toFixed(2) });
     });
+    // سقفٌ خامّ لكل طريقة (قبل قصّه بقيمة المرتجع الذي لم تُحدَّد كمّياته بعد) — الشاشة تقصّه
+    // لحظياً بقيمة ما اختاره الموظف، فيبقى الطرفان على معادلةٍ واحدة.
+    // رافدا الردّ وحدهما (قرار المالك ١٧/٨: نقدٌ أو بطاقة) — لا تُعرَض طريقةٌ لا يريدها العمل.
+    const refundOptions = SURFACED_REFUND_METHODS.map((m) => ({
+      method: m,
+      cap: (caps.capByMethod.get(m) ?? money(0)).toFixed(2),
+      /** صافي المقبوض بهذا الرافد (زين مطويٌّ في النقد) — إفصاحٌ يشرح للموظف مصدر المال. */
+      paid: (caps.netByMethod.get(m) ?? money(0)).toFixed(2),
+      blockedReason: (caps.capByMethod.get(m) ?? money(0)).lte(0)
+        ? "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة"
+        : null,
+    }));
+
+    // أدراج الفرع المفتوحة — تُجلب هنا مع التفاصيل لا بطلبٍ ثانٍ مشروط، كي لا تُبنى الشاشة
+    // على حالةٍ ناقصة («جارٍ فحص الورديات…» ثمّ رفضٌ عند الحفظ). قرار المالك (١٧/٨): الاسترداد
+    // من **وردية منفّذ المرتجع المفتوحة** افتراضاً، أو يختار وردية أخرى مفتوحة صراحةً.
+    // النطاق = فرع الفاتورة دائماً (لا فرع الفاعل) — الدرج مورد فرعٍ لا مستخدم.
+    const openShifts = await getOpenShifts(
+      {},
+      { scopedBranchId: Number(inv.branchId), role: ctx.user.role, userId: ctx.user.id },
+    );
+    const refundShifts = openShifts.map((s) => ({
+      shiftId: s.shiftId,
+      userId: s.userId,
+      userName: s.userName,
+      shiftType: s.shiftType,
+      expectedCash: s.expectedCash,
+      /** درج المنفّذ نفسه — تختاره الشاشة افتراضاً فلا يقرّر الموظف ما لا يعرفه. */
+      isMine: Number(s.userId) === Number(ctx.user.id),
+    }));
 
     return {
+      /** الوعاء المتبقّي من المقبوض على الفاتورة بكل الطرق — سقف الردّ الأقصى بأيّ رافد. */
+      refundPool: caps.pool.toFixed(2),
+      refundOptions,
+      refundShifts,
       id: Number(inv.id),
       invoiceNumber: inv.invoiceNumber,
       status: inv.status,
