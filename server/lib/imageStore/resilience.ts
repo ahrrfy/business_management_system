@@ -296,7 +296,10 @@ export class R2ResilienceController {
         const onEnd = () => settle();
         const onError = (error: unknown) => settle(error);
         // Node يرسل close بعد end/error غالباً؛ settle يحمي release once.
-        const onClose = () => settle(new ImageStoreClientAbortError());
+        // close قبل end بلا علامة downstream صريحة هو انقطاع upstream، لا إلغاء عميل.
+        const onClose = () => settle(Object.assign(new Error("ImageStore stream closed before end."), {
+          code: "ECONNRESET",
+        }));
         stream.once("end", onEnd);
         stream.once("error", onError);
         stream.once("close", onClose);

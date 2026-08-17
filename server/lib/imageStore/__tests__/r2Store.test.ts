@@ -2,6 +2,7 @@ import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectComm
 import { PassThrough, Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetImageStoreForTest, getImageStore } from "..";
+import { ImageStoreClientAbortError } from "../resilience";
 import { R2ImageStore, readR2ImageStoreConfig } from "../r2Store";
 
 const KEY = "company/p/ab/abcdef.png";
@@ -98,6 +99,27 @@ describe("R2ImageStore", () => {
     body.end(Buffer.from("image"));
     await vi.waitFor(() => expect(store.resilienceSnapshot().inFlight).toBe(0));
     expect(store.resilienceSnapshot()).toMatchObject({ succeeded: 1, transientFailures: 0 });
+  });
+
+  it("إلغاء downstream يحرر permit ويتيح الطلب التالي فوراً", async () => {
+    const firstBody = new PassThrough();
+    const secondBody = Readable.from([Buffer.from("next")]);
+    const send = vi.fn()
+      .mockResolvedValueOnce({ Body: firstBody })
+      .mockResolvedValueOnce({ Body: secondBody });
+    const store = new R2ImageStore(config, {
+      client: { send },
+      resilienceConfig: { maxConcurrency: 1, maxQueue: 1, queueTimeoutMs: 1_000, failureThreshold: 1, openMs: 1_000 },
+    });
+    const first = await store.getStream(KEY);
+    first!.destroy(new ImageStoreClientAbortError());
+    await vi.waitFor(() => expect(store.resilienceSnapshot()).toMatchObject({ inFlight: 0, cancelled: 1 }));
+    const second = await store.getStream(KEY);
+    const chunks: Buffer[] = [];
+    for await (const chunk of second!) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString()).toBe("next");
+    await vi.waitFor(() => expect(store.resilienceSnapshot().inFlight).toBe(0));
+    expect(store.resilienceSnapshot()).toMatchObject({ state: "closed", succeeded: 1, queueTimeouts: 0 });
   });
 
   it("يحوّل خطأ Body العابر إلى unavailable ويفتح القاطع قبل إعادة أي buffer", async () => {

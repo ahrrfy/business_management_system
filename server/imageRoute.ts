@@ -26,6 +26,7 @@ import { getSessionContext } from "./auth/session";
 import { getDb, isMultiTenantModeActive } from "./db";
 import {
   getImageStore,
+  ImageStoreClientAbortError,
   isCurrentTenantCandidateKey,
   isImageStoreClientAbortError,
   isImageStoreUnavailableError,
@@ -37,6 +38,7 @@ import { logger } from "./logger";
 import { resolveKioskDevice } from "./services/kioskDeviceService";
 import { inspectStorefrontContext } from "./services/storefrontContextService";
 import type { Request, Response } from "express";
+import type { Readable } from "node:stream";
 import { companyCodeTenancyMiddleware } from "./tenancy/expressMiddleware";
 import { getCurrentCompanyId } from "./tenancy/context";
 
@@ -202,6 +204,67 @@ function preventCachingStoredImageFailure(res: Response): void {
 }
 
 /**
+ * يربط دورة حياة بثّ الكشك باتصال العميل. قطع downstream قبل finish يدمر upstream بلا error
+ * فيراه runStream إلغاءً محايداً ويحرر permit؛ النجاح الطبيعي لا يدمر الجسم مبكراً. كل مسار
+ * terminal ينظف listeners مرة واحدة حتى لا تتراكم على keep-alive.
+ */
+export function bindStoredStreamLifecycle(req: Request, res: Response, stream: Readable): void {
+  let completed = false;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    req.off("aborted", onClientAbort);
+    res.off("close", onResponseClose);
+    res.off("finish", onResponseFinish);
+    stream.off("end", onStreamEnd);
+    stream.off("error", onStreamError);
+    stream.off("close", onStreamClose);
+  };
+  const cancelUpstream = () => {
+    if (!completed && !stream.destroyed) stream.destroy(new ImageStoreClientAbortError());
+  };
+  const onClientAbort = () => cancelUpstream();
+  const onResponseClose = () => {
+    if (!completed) {
+      // destroy(error) يطلق error لاحقاً؛ أبقِ listener حتى يستهلك علامة الإلغاء ثم ينظف.
+      cancelUpstream();
+      return;
+    }
+    cleanup();
+  };
+  const onResponseFinish = () => {
+    completed = true;
+    cleanup();
+  };
+  const onStreamEnd = () => {
+    completed = true;
+    cleanup();
+  };
+  const onStreamError = (error: Error) => {
+    cleanup();
+    if (isImageStoreClientAbortError(error)) return;
+    logger.error({ err: error }, "img: object stream failed");
+    if (!res.destroyed) res.destroy(error);
+  };
+  const onStreamClose = () => {
+    cleanup();
+    if (!completed && !res.destroyed) {
+      const error = Object.assign(new Error("img: object stream closed before end"), { code: "ECONNRESET" });
+      logger.error({ err: error }, "img: object stream failed");
+      res.destroy(error);
+    }
+  };
+
+  req.once("aborted", onClientAbort);
+  res.once("close", onResponseClose);
+  res.once("finish", onResponseFinish);
+  stream.once("end", onStreamEnd);
+  stream.once("error", onStreamError);
+  stream.once("close", onStreamClose);
+}
+
+/**
  * يبثّ **المشتق المعتمد فقط** من المخزن الخاص. مفتاح المرشّح لا يصل للعميل ولا توجد نقطة للأصل:
  * صف productImages هو بوابة النشر، ومفتاحه المقبول مقصور دفاعياً على نطاق الشركة وstudio/candidate/. كما تُطابق
  * بصمة الرابط محتوى الصف قبل فتح R2 كي لا يصبح immutable صحيحاً لرابطٍ خاطئ.
@@ -307,10 +370,7 @@ async function sendStoredProductImage(
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   if (bytes != null && Number.isSafeInteger(bytes) && bytes > 0) res.setHeader("Content-Length", String(bytes));
-  stream.on("error", (error) => {
-    logger.error({ err: error }, "img: object stream failed");
-    res.destroy(error);
-  });
+  bindStoredStreamLifecycle(req, res, stream);
   stream.pipe(res);
   return res;
 }

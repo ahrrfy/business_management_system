@@ -2,6 +2,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   ImageStoreUnavailableError,
+  ImageStoreClientAbortError,
   R2ResilienceController,
   classifyR2Failure,
   readR2ResilienceConfig,
@@ -177,9 +178,23 @@ describe("R2ResilienceController", () => {
     const intentional = new R2ResilienceController(baseConfig, { now: () => now });
     const cancelledBody = new PassThrough();
     await intentional.runStream("get", async () => cancelledBody);
-    cancelledBody.destroy();
+    cancelledBody.destroy(new ImageStoreClientAbortError());
     await vi.waitFor(() => expect(intentional.snapshot().inFlight).toBe(0));
     expect(intentional.snapshot()).toMatchObject({ transientFailures: 0, permanentFailures: 0, succeeded: 0, cancelled: 1 });
+  });
+
+  it("يعد close مبكراً من upstream عطلاً عابراً لا إلغاء عميل", async () => {
+    const controller = new R2ResilienceController({ ...baseConfig, maxConcurrency: 1, failureThreshold: 1 });
+    const body = new PassThrough();
+    await controller.runStream("get", async () => body);
+    body.destroy();
+    await vi.waitFor(() => expect(controller.snapshot().inFlight).toBe(0));
+    expect(controller.snapshot()).toMatchObject({
+      state: "open",
+      transientFailures: 1,
+      cancelled: 0,
+      succeeded: 0,
+    });
   });
 });
 
