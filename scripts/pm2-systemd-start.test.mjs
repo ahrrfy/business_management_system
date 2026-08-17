@@ -116,8 +116,8 @@ function fixture() {
     assert.equal(fs.readFileSync(f.pidFile, "utf8"), "4242\n");
     if (process.platform !== "win32") {
       const stat = fs.statSync(f.pidFile);
-      assert.equal(stat.uid, 0);
-      assert.equal(stat.gid, 0);
+      assert.equal(stat.uid, process.geteuid());
+      assert.equal(stat.gid, process.getegid());
       assert.equal(stat.mode & 0o777, 0o644);
     }
   } finally {
