@@ -16,6 +16,18 @@ const fixtureRoot = fs.mkdtempSync(
 );
 const sentinel = "deployment-selftest-secret-canary";
 
+const pm2SystemdGuard = spawnSync(
+  process.execPath,
+  [path.join(path.dirname(fileURLToPath(import.meta.url)), "pm2-systemd-start.test.mjs")],
+  { encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024 },
+);
+assert.equal(
+  pm2SystemdGuard.status,
+  0,
+  `PM2/systemd PID-file guard failed: ${pm2SystemdGuard.stderr || pm2SystemdGuard.stdout}`,
+);
+process.stdout.write(pm2SystemdGuard.stdout);
+
 function writeFixtureSources(marker) {
   fs.mkdirSync(path.join(fixtureRoot, "scripts"), { recursive: true });
   fs.mkdirSync(path.join(fixtureRoot, "dist"), { recursive: true });

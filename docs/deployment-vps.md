@@ -107,14 +107,23 @@ exit                                                # العودة إلى جلس
 sudo mkdir -p /etc/systemd/system/pm2-deploy.service.d
 sudo cp /home/deploy/erp/deploy/systemd/pm2-deploy.service.d/wait-mysql.conf /etc/systemd/system/pm2-deploy.service.d/
 sudo chmod +x /home/deploy/erp/deploy/wait-mysql-healthy.sh   # دفاع ثانٍ (الـdrop-in يستدعيه عبر /bin/bash أصلاً)
-sudo systemctl daemon-reload
+# يثبت عقد ExecStart الذرّي ثم daemon-reload فقط؛ لا يبدأ/يوقف/يعيد تشغيل PM2.
+cd /home/deploy/erp && sudo /usr/bin/node scripts/install-pm2-systemd-contract.mjs
 systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدرع ظاهر في الوحدة
+systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.mjs
 ```
 
 > ⚠️ لا تنفّذ `pm2 save` كـroot، ولا تُنشئ startup لمستخدم root. الاستثناء المقصود الوحيد هو تنفيذ
 > أمر `sudo ... pm2 startup systemd -u deploy --hp /home/deploy` الذي طبعه PM2؛ فهو يثبّت وحدة systemd
 > المستهدفة للمستخدم `deploy`. إن وُجد دايمون PM2 جذري لنظام آخر فإن `pm2 save` كـroot يكتب فوق قائمة
 > إحيائه ويُسقط تطبيق غيرك من الإقلاع. دايموننا معزول تحت deploy.
+>
+> **عقد PID الخاص بـType=forking:** يحذف systemd ملف `PIDFile` القديم قبل `ExecStart`. إذا كان
+> daemon ‏PM2 قائماً، فإن `pm2 resurrect` يتصل به ولا يعيد إنشاء `pm2.pid`؛ كانت النتيجة
+> `protocol`/وحدة `failed` مع بقاء التطبيقات سليمة لكن خارج إشراف systemd. الـdrop-in الملتزم
+> يستبدل `ExecStart` فقط بغلافٍ يشغّل resurrect ثم يثبت daemon الوحيد بدلالة UID+PPID+عنوان
+> العملية+وقت البدء، ويعيد PIDFile ذرياً بصلاحية `0600` بلا kill/restart. وعلى إقلاعٍ نظيف
+> ينشئ PM2 الـdaemon كالمعتاد ثم يثبت الغلاف هويته نفسها. صفر daemon أو أكثر من واحد = فشل مغلق.
 
 ## ٤. nginx + HTTPS (إلزامي)
 
@@ -263,6 +272,27 @@ sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 
 > **PM2 خاص بكل مستخدم.** السكربت يرفض `root` أو `HOME/PM2_HOME` غير المطابق لـ`deploy`، كي لا يُنشئ daemon ثانياً يبدو فارغاً أو ينازع الخدمة الحقيقية على المنفذ.
 
+**مرة واحدة بعد إدخال عقد PID أعلاه أو عند تغيّر ملف الـdrop-in:** ثبّته كـroot بعد اكتمال
+`prod:deploy`. المثبّت يكتب الملف ذرياً، ينفّذ `daemon-reload` ويتحقق من العقد، ويرجع الملف
+السابق تلقائياً إن فشل؛ ولا يستدعي start/stop/restart إطلاقاً:
+
+```bash
+cd /home/deploy/erp
+sudo /usr/bin/node scripts/install-pm2-systemd-contract.mjs
+
+# إن كان daemon يعمل والوحدة failed/inactive: **start فقط** يتبنّى PID نفسه بلا انقطاع.
+before="$(cat /home/deploy/.pm2/pm2.pid)"
+sudo systemctl start pm2-deploy.service
+after="$(systemctl show pm2-deploy.service -p MainPID --value)"
+test "$before" = "$after"
+systemctl is-active --quiet pm2-deploy.service
+sudo -iu deploy pm2 status
+```
+
+⛔ لا تستعمل `systemctl restart/stop` ولا `pm2 kill/update` لهذا الإصلاح؛ تلك الأوامر تغيّر
+العمليات الحيّة بينما المطلوب تبنّي الـdaemon القائم فقط. عند الإقلاع النظيف لا يوجد `before`
+وتبدأ الوحدة تلقائياً بالمسار نفسه من `WantedBy=multi-user.target`.
+
 قبل أي خطوة متحوّلة، يرفض السكربت الفرع غير `main` أو الشجرة غير النظيفة، يجلب `origin/main` بـfast-forward، ثم **يعيد تشغيل نفسه من الكود المسحوب** إن تغيّر SHA. كما يثبت أن CLI وحزمة وdaemon ‏PM2 كلها `7.0.3`؛ تثبيت npm وحده لا يكفي من دون `pm2 update`.
 
 بعد ذلك ينفّذ **١٢ مرحلة (٠–١١)** تحت قفل نشر حصري. إذا وجد journal من نشر انقطع، يعيد أولاً آخر إصدار ملتزم ويتحقق منه ويحفظه قبل بدء نشر جديد. `prod:deploy` يعمل بهوية `deploy` ولا يستدعي `sudo`: إن كان Nginx الحي منحرفاً يتوقف قبل install/build/DB بالرمز `NGINX_LIVE_CONTRACT_DRIFT` ويطلب أمر الإصلاح الجذري أعلاه:
@@ -356,7 +386,7 @@ BASH
 - [ ] فتح الموقع عبر `http://` يُحوَّل تلقائياً إلى `https://` (certbot).
 - [ ] `docker compose ps` تُظهر `healthy`، و`pm2 status` تُظهر `online`.
 - [ ] `ss -tlnp | grep 3307` يُظهر `127.0.0.1:3307` فقط (لا `0.0.0.0`) — القاعدة محجوبة بالربط المحلي. (بند ufw فقط على خادم مخصّص.)
-- [ ] `systemctl cat pm2-deploy.service | grep wait-mysql` يُظهر درع ترتيب الإقلاع (G10) مثبَّتاً.
+- [ ] `systemctl cat pm2-deploy.service | grep wait-mysql` يُظهر درع ترتيب الإقلاع (G10)، و`systemctl show pm2-deploy.service -p ExecStart --value` يُظهر `pm2-systemd-start.mjs`؛ الوحدة `active` و`MainPID` يساوي `/home/deploy/.pm2/pm2.pid`.
 - [ ] `pnpm db:backup` يُنتج ملفاً > 2KB في `backups/` (+ مرافق `.sql.gpg` إن ضُبط التشفير)، ومهمّة cron الليلية مُسجَّلة (`crontab -l`).
 - [ ] أُجريت نسخة خارجية أولى (`pnpm backup:pull-vps` من جهاز المتجر) **وفُكَّ تشفيرها هناك بنجاح** بالعبارة المحفوظة خارج الخادم — عبارة خاطئة تُكتشف اليوم لا يوم الكارثة.
 - [ ] اختبار التعافي: `docker restart erp-mysql` ثم `pm2 restart erp-server` ثم قتل العملية (`pm2 pid` + `kill`) ⇒ كلّها تعود تلقائياً و`/healthz` يردّ 200. (⚠️ `sudo reboot` يُسقط كل أنظمة الخادم المشترك — فقط في نافذة صيانة يقرّها المالك؛ عندها يثبت الإقلاع الكامل.)
