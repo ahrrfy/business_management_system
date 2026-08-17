@@ -10,7 +10,8 @@ import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { closeGiftCampaign, createGiftCampaign, listGiftCampaigns } from "../services/gifts/campaigns";
 import { receiveInboundGift } from "../services/gifts/inbound";
 import { getGiftVoucher } from "../services/gifts/list";
-import { approveGift, createOutboundGift } from "../services/gifts/outbound";
+import { logAudit } from "../services/auditService";
+import { approveGift, cancelOutboundGift, createOutboundGift } from "../services/gifts/outbound";
 import { recordPurchaseBonusGift } from "../services/gifts/purchaseBonus";
 import { giftsReport } from "../services/gifts/reports";
 import { branchScopedProcedure, reportViewerProcedure, requireModule, router } from "../trpc";
@@ -219,6 +220,22 @@ export const giftsRouter = router({
       const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
       return approveGift(input.giftId, actor);
     }),
+  // و-١: إلغاء طلب هديةٍ معلَّق — المخرج الوحيد غير الاعتماد. صفر أثرٍ ماليّ (الأثر لا يُطبَّق
+  // إلّا عند الاعتماد)، والخدمة تفرض: معلَّقة فقط + صاحب الطلب أو مدير + عزل الفرع.
+  cancelGift: giftsWrite
+    .input(z.object({ giftId: z.number().int().positive(), reason: z.string().max(300).optional() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
+      const r = await cancelOutboundGift(input.giftId, actor, input.reason);
+      await logAudit(ctx, {
+        action: "gift.cancel",
+        entityType: "giftVoucher",
+        entityId: input.giftId,
+        newValue: { status: "CANCELLED", reason: input.reason ?? null },
+      });
+      return r;
+    }),
+
 
   // بونص «اشترِ واحصل» (G-م٦): تسجيل الكمية المجّانية المرافقة لأمر شراء كسند هدية وارد للمورّد نفسه.
   receivePurchaseBonus: giftsWrite
