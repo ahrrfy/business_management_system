@@ -39,6 +39,13 @@ export interface ReturnSaleInput {
   restock?: boolean;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة المرتجع الأول (لا استرداد/إرجاع مزدوج). */
   clientRequestId?: string | null;
+  /**
+   * **تفويضٌ داخليّ حصراً — لا يقبله أيّ راوتر.** عكسُ `correctSale` الكامل قبل إعادة الإصدار.
+   * يُعفي من حارس «الزبون العابر يجب أن يُردّ له»: المال هنا لا يُحتجَز بلا طرف، بل يُنقل
+   * إلى الفاتورة المصحّحة عبر `preCollected` في نفس المعاملة. بدون هذا الاستثناء كان تصحيح
+   * أيّ فاتورةٍ نقديّةٍ لزبونٍ عابر يُرفَض كلّياً.
+   */
+  internalCorrectionReversal?: boolean;
 }
 
 /** جسم عكس المرتجع داخل معاملةٍ قائمة — يُعاد استعماله من correctSale (تصحيح الفاتورة)
@@ -668,6 +675,32 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
       // استردادٌ متزامنٌ على الفاتورة نفسها بين القراءة والكتابة.
       const caps = await loadRefundCaps(tx, input.invoiceId, { lock: true });
       refundCap = effectiveRefundCap(caps, refundMethod, returnedTotal);
+    }
+    // ⭐ الزبون العابر (بلا حساب): ما لا يُردّ لا يجد أين يُقيَّد.
+    //
+    // العميل المسجَّل يستوعب الفارق في ذمّته (`adjustCustomerBalance` أدناه)، أمّا الزبون
+    // العابر فـ`customerId = NULL` ⇒ لا ذمّة ولا رصيد دائن. فمرتجعٌ بلا استرداد كان يُعيد
+    // البضاعة للرفّ ويعكس الإيراد **ويُبقي ماله في الدرج بلا التزامٍ مقابل ولا طرفٍ منسوبٍ
+    // إليه** — نقضٌ مزدوج للمبدأ الحاكم (طرفٌ منسوب + مسار خروجٍ ممكن دائماً). والشاشة كانت
+    // تُطمئن الموظف بنصٍّ كاذب: «تُخصَم من ذمّة العميل فقط» — ولا ذمّة أصلاً.
+    //
+    // المستحقّ له = ما دفعه فوق ما يبقى عليه بعد المرتجع. يُفرَض ردُّه كاملاً أو لا يُحفظ المرتجع.
+    if (inv.customerId == null && !input.internalCorrectionReversal) {
+      const netAfterReturn = money(inv.total).minus(
+        money(inv.returnedTotal ?? "0").plus(returnedTotal),
+      );
+      const owedToCustomer = Decimal.max(
+        new Decimal(0),
+        money(inv.paidAmount).minus(netAfterReturn),
+      );
+      if (owedToCustomer.gt(requestedRefund)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            `زبونٌ عابر بلا حساب: يجب ردّ ${owedToCustomer.toFixed(2)} كاملةً ` +
+            `(لا ذمّة تستوعب الفارق). افتح وردية للردّ النقديّ، أو سجّل العميل أوّلاً ليُقيَّد له رصيدٌ دائن.`,
+        });
+      }
     }
     if (requestedRefund.gt(refundCap)) {
       const poolNote = refundMethod === "CASH"

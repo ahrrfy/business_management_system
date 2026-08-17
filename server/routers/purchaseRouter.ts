@@ -10,6 +10,7 @@ import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase, settlePurchaseUsdDirect, updatePurchaseOrder } from "../services/purchaseService";
 import { withTx } from "../services/tx";
+import { payPurchaseOrder } from "../services/purchase/pay";
 import { canSeeCostForUser, purchasesManagerProcedure, purchasesReadProcedure, purchasesWarehouseProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -308,6 +309,34 @@ export const purchaseRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الاستلام (تكرار)" });
+    }),
+
+  /**
+   * تسديد أمر شراءٍ بعد استلامه — الفجوة التي كانت تُبقي الشراء الآجل بلا مسار إقفال
+   * (البيع يملك `sales.pay`؛ الشراء لا نظير له، فكلّ سدادٍ لاحق يخرج لسند صرفٍ عامّ لا
+   * يمسّ `purchaseOrders.paidAmount` ⇒ «المتبقّي» مضخَّم وخطرُ دفعٍ مكرَّر للمورّد).
+   * يُنشئ **طلباً معلّقاً** باعتماد ثانٍ — قرار المالك في كل صرفٍ للمورّد.
+   */
+  pay: purchasesManagerProcedure
+    .input(z.object({
+      purchaseOrderId: z.number().int().positive(),
+      amount: positiveMoneyString,
+      method: supplierPaymentMethod,
+      clientRequestId: z.string().min(1).max(80),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await payPurchaseOrder(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "purchase.pay",
+        entityType: "purchaseOrder",
+        entityId: input.purchaseOrderId,
+        newValue: { amount: input.amount, method: input.method, receiptId: res.paymentRequestReceiptId },
+      });
+      return res;
     }),
 
   // إلغاء أمر شراء لم يُستلم منه شيء (قلب حالة خالص — الحارس المالي/المخزني في الخدمة).

@@ -74,7 +74,14 @@ async function setStock(variantId: number, branchId: number, qty: number) {
 }
 
 /** بيع (آجل بعميل، أو نقدي بلا عميل مع سداد كامل — البيع غير المسدَّد بلا عميل مرفوض) ثم إرجاع جزء منه. */
-async function saleThenReturn(opts: { customerId?: number | null; qty: string; returnBase: number; pay?: string }) {
+async function saleThenReturn(opts: {
+  customerId?: number | null;
+  qty: string;
+  returnBase: number;
+  pay?: string;
+  /** استرداد نقديّ — إلزاميّ للزبون العابر المدفوع (لا ذمّة تستوعب الفارق، حارس ١٧/٨). */
+  refund?: string;
+}) {
   const sale = await createSale(
     {
       branchId: 1,
@@ -89,7 +96,11 @@ async function saleThenReturn(opts: { customerId?: number | null; qty: string; r
   );
   const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
   await returnSale(
-    { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: opts.returnBase }] },
+    {
+      invoiceId: sale.invoiceId,
+      lines: [{ invoiceItemId: Number(item.id), baseQuantity: opts.returnBase }],
+      ...(opts.refund ? { refund: { amount: opts.refund, method: "CASH" as const, shiftId: seedShiftId } } : {}),
+    },
     actor,
   );
   return sale;
@@ -198,7 +209,8 @@ describe("listSalesReturns — سجلّ مرتجعات البيع", () => {
 
   it("مرتجع بيع نقدي (بلا عميل): customerName فارغ والصفّ حاضر ببيانات ربط الفاتورة", async () => {
     await setStock(1, 1, 10);
-    const sale = await saleThenReturn({ customerId: null, qty: "4", returnBase: 2, pay: "40.00" });
+    // الزبون العابر دفع ٤٠ وأرجع بـ٢٠ ⇒ مستحقٌّ له ٢٠ يجب ردّها (لا حساب يستوعبها).
+    const sale = await saleThenReturn({ customerId: null, qty: "4", returnBase: 2, pay: "40.00", refund: "20.00" });
 
     const res = await listSalesReturns();
     expect(res.total).toBe(1);

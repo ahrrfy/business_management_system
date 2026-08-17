@@ -223,7 +223,7 @@ const salesListInput = z
     // خارج كل تركيبات هذا الفلتر: تفلتر الطرق الأربع واحدةً واحدة فلا يبلغ مجموعها الإجمالي،
     // والفارق (كلّ الذمم + كلّ COD المحصَّل) غير قابل للعرض إطلاقاً. النمط مأخوذٌ حرفياً من
     // `reports.salesReport` الذي يملكه منذ البداية ولم يُنقَل إلى الشاشة الأكثر استعمالاً.
-    paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM", "NONE"]).optional(),
+    paymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM", "MIXED", "NONE"]).optional(),
     // فرع صريح للمرتفعين (admin/manager عابرَي الفروع) — يُفعَّل فقط حين scopedBranchId فارغ؛
     // غير المرتفع يبقى محصوراً بفرعه مهما أرسل (انظر buildSalesListConds).
     branchId: z.number().int().positive().optional(),
