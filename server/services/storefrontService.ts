@@ -6,7 +6,7 @@
  * **توفّر** (inStock: نعم/لا، لا الكمية) + **سعر العرض** بعد الخصم إن وُجد.
  *
  * 🔗 مزامنة حقيقية مع النظام (لا بيانات منفصلة): يقرأ نفس جداول `products/productPrices/branchStock`
- * ويطبّق **نفس محرّك العروض** (`resolvePromotionForLine`) المستعمل في نقطة البيع — فالسعر المعروض
+ * ويطبّق **قواعد محرّك العروض نفسها** عبر snapshot مجمّعة — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
@@ -26,7 +26,7 @@ import { escLike } from "../lib/sqlLike";
 import { decodeDataUrl, productImageUrl } from "../imageRoute";
 import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
-import { getProductCategoryIds, resolvePromotionForLine } from "./salesPromotionService";
+import { loadPromotionRuleSnapshot, resolvePromotionFromSnapshot } from "./salesPromotionService";
 import { resolveColorHex, normalizeHex } from "@shared/colorBank";
 import { requireActiveBranch, requireStorefrontContext } from "./storefrontContextService";
 import {
@@ -483,41 +483,28 @@ async function attachVariantColors(
 }
 
 /**
- * يطبّق العروض على قائمة منتجات (نفس محرّك POS ⇒ العرض = الفرض). حارس أداء: إن لا عرض
- * فعّال اليوم ⇒ يعود بلا مسح لكل منتج (استعلام واحد رخيص). وإلّا يحلّ العرض الأنسب لكلٍّ.
+ * يطبّق العروض على قائمة منتجات بقواعد محرّك POS نفسها. تُحمَّل القواعد والأهداف مرة واحدة
+ * للصفحة، ثم يكون الحلّ لكل بطاقة نقياً في الذاكرة؛ لا استعلامات تتناسب مع عدد المنتجات.
  */
 async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: number): Promise<void> {
   const eligible = list.filter((p) => p.price != null);
   if (!eligible.length) return;
-  const db = getDb();
-  if (!db) return;
   const todayYmd = todayYmdBaghdad();
-  // حارس: هل يوجد أيّ عرض فعّال اليوم على هذا الفرع/فئة المفرد؟ (لا ⇒ تخطّي كامل.)
-  const anyActive = await db
-    .select({ id: promotions.id })
-    .from(promotions)
-    .where(
-      and(
-        eq(promotions.isActive, true),
-        sql`${promotions.effectiveFrom} <= DATE(${todayYmd})`,
-        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${todayYmd})`)!,
-        or(isNull(promotions.branchId), eq(promotions.branchId, branchId))!,
-        or(isNull(promotions.customerTier), eq(promotions.customerTier, RETAIL))!
-      )
-    )
-    .limit(1);
-  if (!anyActive.length) return;
-
   await withTx(async (tx) => {
-    const catByProduct = await getProductCategoryIds(tx, Array.from(new Set(eligible.map((p) => p.productId))));
+    const snapshot = await loadPromotionRuleSnapshot(tx, {
+      branchId,
+      customerTier: RETAIL,
+      todayYmd,
+      includeStoreManaged: true,
+    });
     for (const p of eligible) {
       const price = money(p.price!);
-      const res = await resolvePromotionForLine(tx, {
+      const res = resolvePromotionFromSnapshot(snapshot, {
         branchId,
         customerTier: RETAIL,
         productId: p.productId,
         variantId: p.variantId,
-        categoryId: catByProduct.get(p.productId) ?? p.categoryId ?? null,
+        categoryId: p.categoryId ?? null,
         unitPrice: price.toFixed(2),
         lineAmount: price.toFixed(2),
         hasContractPrice: false,
