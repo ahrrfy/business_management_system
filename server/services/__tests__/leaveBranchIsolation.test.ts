@@ -42,8 +42,10 @@ beforeEach(async () => {
   ]);
   await d.insert(s.users).values([{ id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: MAIN }]);
 
-  const a = await createEmployee({ firstName: "زيد", lastName: "الرئيسي", payType: "monthly", salary: "900000", branchId: MAIN });
-  const b = await createEmployee({ firstName: "بكر", lastName: "الآخر", payType: "monthly", salary: "900000", branchId: OTHER });
+  // رصيد إجازةٍ صريح: `createEmployee` يضبطه صفراً افتراضياً، و`decideLeave` يرفض الاعتماد
+  // بلا رصيدٍ كافٍ — فبدونه تسقط حالات «يمرّ» على حارس الرصيد قبل بلوغ حارس الفرع المقصود.
+  const a = await createEmployee({ firstName: "زيد", lastName: "الرئيسي", payType: "monthly", salary: "900000", branchId: MAIN, annualLeaveBalance: 30 });
+  const b = await createEmployee({ firstName: "بكر", lastName: "الآخر", payType: "monthly", salary: "900000", branchId: OTHER, annualLeaveBalance: 30 });
   mainEmp = a!.id;
   otherEmp = b!.id;
 });
