@@ -52,7 +52,13 @@ interface QueuedEntry<T> {
   resolve: (value: T | PromiseLike<T>) => void;
   reject: (error: unknown) => void;
   timer: ReturnType<typeof setTimeout> | null;
+  signal?: AbortSignal;
+  abortListener?: () => void;
   settled: boolean;
+}
+
+export interface R2ResilienceRunOptions {
+  signal?: AbortSignal;
 }
 
 const DEFAULT_CONFIG: R2ResilienceConfig = {
@@ -229,15 +235,45 @@ export class R2ResilienceController {
     this.publicFallbacks += 1;
   }
 
-  run<T>(operation: R2Operation, work: () => Promise<T>): Promise<T> {
+  run<T>(operation: R2Operation, work: () => Promise<T>, options: R2ResilienceRunOptions = {}): Promise<T> {
+    if (options.signal?.aborted) {
+      this.cancelled += 1;
+      return Promise.reject(new ImageStoreClientAbortError());
+    }
     if (this.isCircuitUnavailable()) return Promise.reject(this.rejectCircuit(operation));
     return new Promise<T>((resolve, reject) => {
-      const entry: QueuedEntry<T> = { operation, work, resolve, reject, timer: null, settled: false };
+      const entry: QueuedEntry<T> = {
+        operation,
+        work,
+        resolve,
+        reject,
+        timer: null,
+        signal: options.signal,
+        settled: false,
+      };
+      const rejectClientAbort = () => {
+        if (entry.settled) return;
+        const index = this.queue.indexOf(entry as QueuedEntry<unknown>);
+        if (index >= 0) this.queue.splice(index, 1);
+        entry.settled = true;
+        this.clearAdmissionListeners(entry);
+        this.cancelled += 1;
+        reject(new ImageStoreClientAbortError());
+      };
+      entry.abortListener = rejectClientAbort;
+      options.signal?.addEventListener("abort", rejectClientAbort, { once: true });
+      // abort قد يقع بين الفحص الأول وربط listener؛ إعادة الفحص تغلق النافذة بلا انتظار timeout.
+      if (options.signal?.aborted) {
+        rejectClientAbort();
+        return;
+      }
       if (this.inFlight < this.config.maxConcurrency) {
         this.start(entry);
         return;
       }
       if (this.queue.length >= this.config.maxQueue) {
+        entry.settled = true;
+        this.clearAdmissionListeners(entry);
         this.queueRejected += 1;
         this.emit({ type: "reject", reason: "queue_full", operation, at: this.now() });
         reject(new ImageStoreUnavailableError("queue_full", operation));
@@ -248,6 +284,7 @@ export class R2ResilienceController {
         const index = this.queue.indexOf(entry as QueuedEntry<unknown>);
         if (index >= 0) this.queue.splice(index, 1);
         entry.settled = true;
+        this.clearAdmissionListeners(entry);
         this.queueTimeouts += 1;
         this.emit({ type: "reject", reason: "queue_timeout", operation, at: this.now() });
         reject(new ImageStoreUnavailableError("queue_timeout", operation));
@@ -262,7 +299,11 @@ export class R2ResilienceController {
    * ولا تسجل النجاح حتى end. خطأ body يدخل التصنيف والقاطع؛ close بلا error (إلغاء مستهلك
    * مقصود) يحرر permit مرة واحدة ولا يلوّث القاطع.
    */
-  runStream<T extends Readable | null>(operation: R2Operation, work: () => Promise<T>): Promise<T> {
+  runStream<T extends Readable | null>(
+    operation: R2Operation,
+    work: () => Promise<T>,
+    options: R2ResilienceRunOptions = {},
+  ): Promise<T> {
     let exposed = false;
     let exposeResolve!: (value: T | PromiseLike<T>) => void;
     let exposeReject!: (error: unknown) => void;
@@ -285,6 +326,7 @@ export class R2ResilienceController {
           stream.off("end", onEnd);
           stream.off("error", onError);
           stream.off("close", onClose);
+          options.signal?.removeEventListener("abort", onAbort);
         };
         const settle = (error?: unknown) => {
           if (settled) return;
@@ -295,6 +337,9 @@ export class R2ResilienceController {
         };
         const onEnd = () => settle();
         const onError = (error: unknown) => settle(error);
+        const onAbort = () => {
+          if (!stream.destroyed) stream.destroy(new ImageStoreClientAbortError());
+        };
         // Node يرسل close بعد end/error غالباً؛ settle يحمي release once.
         // close قبل end بلا علامة downstream صريحة هو انقطاع upstream، لا إلغاء عميل.
         const onClose = () => settle(Object.assign(new Error("ImageStore stream closed before end."), {
@@ -303,12 +348,19 @@ export class R2ResilienceController {
         stream.once("end", onEnd);
         stream.once("error", onError);
         stream.once("close", onClose);
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        if (options.signal?.aborted) onAbort();
       });
+      if (options.signal?.aborted) {
+        // لا نسلّم للمستهلك stream مدمرة إذا وقع abort أثناء انتظار headers.
+        await terminal;
+        throw new ImageStoreClientAbortError();
+      }
       exposed = true;
       exposeResolve(stream);
       await terminal;
       return stream;
-    }).catch((error: unknown) => {
+    }, options).catch((error: unknown) => {
       // إن وقع الخطأ بعد تسليم stream فقد وصل أيضاً عبر حدث error للمستهلك؛ هنا نمنع
       // unhandled rejection فقط، بينما run يكون قد سجله في المقاييس والقاطع.
       if (!exposed) {
@@ -336,6 +388,7 @@ export class R2ResilienceController {
     if (this.state === "open") {
       if (this.now() < this.openUntil) {
         entry.settled = true;
+        this.clearAdmissionListeners(entry);
         entry.reject(this.rejectCircuit(entry.operation));
         return;
       }
@@ -345,13 +398,14 @@ export class R2ResilienceController {
     if (isProbe) {
       if (this.halfOpenProbeInFlight) {
         entry.settled = true;
+        this.clearAdmissionListeners(entry);
         entry.reject(this.rejectCircuit(entry.operation));
         return;
       }
       this.halfOpenProbeInFlight = true;
     }
     entry.settled = true;
-    if (entry.timer) clearTimeout(entry.timer);
+    this.clearAdmissionListeners(entry);
     this.inFlight += 1;
     this.started += 1;
     Promise.resolve()
@@ -406,8 +460,18 @@ export class R2ResilienceController {
   private drain(): void {
     while (this.inFlight < this.config.maxConcurrency && this.queue.length > 0) {
       const entry = this.queue.shift()!;
-      if (entry.timer) clearTimeout(entry.timer);
       this.start(entry);
+    }
+  }
+
+  private clearAdmissionListeners<T>(entry: QueuedEntry<T>): void {
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+    if (entry.signal && entry.abortListener) {
+      entry.signal.removeEventListener("abort", entry.abortListener);
+      entry.abortListener = undefined;
     }
   }
 

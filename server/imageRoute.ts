@@ -208,7 +208,12 @@ function preventCachingStoredImageFailure(res: Response): void {
  * فيراه runStream إلغاءً محايداً ويحرر permit؛ النجاح الطبيعي لا يدمر الجسم مبكراً. كل مسار
  * terminal ينظف listeners مرة واحدة حتى لا تتراكم على keep-alive.
  */
-export function bindStoredStreamLifecycle(req: Request, res: Response, stream: Readable): void {
+export function bindStoredStreamLifecycle(
+  req: Request,
+  res: Response,
+  stream: Readable,
+  signal?: AbortSignal,
+): boolean {
   let completed = false;
   let cleaned = false;
   const cleanup = () => {
@@ -220,11 +225,18 @@ export function bindStoredStreamLifecycle(req: Request, res: Response, stream: R
     stream.off("end", onStreamEnd);
     stream.off("error", onStreamError);
     stream.off("close", onStreamClose);
+    signal?.removeEventListener("abort", onSignalAbort);
   };
   const cancelUpstream = () => {
-    if (!completed && !stream.destroyed) stream.destroy(new ImageStoreClientAbortError());
+    if (completed) return;
+    if (stream.destroyed) {
+      cleanup();
+      return;
+    }
+    stream.destroy(new ImageStoreClientAbortError());
   };
   const onClientAbort = () => cancelUpstream();
+  const onSignalAbort = () => cancelUpstream();
   const onResponseClose = () => {
     if (!completed) {
       // destroy(error) يطلق error لاحقاً؛ أبقِ listener حتى يستهلك علامة الإلغاء ثم ينظف.
@@ -262,6 +274,14 @@ export function bindStoredStreamLifecycle(req: Request, res: Response, stream: R
   stream.once("end", onStreamEnd);
   stream.once("error", onStreamError);
   stream.once("close", onStreamClose);
+  signal?.addEventListener("abort", onSignalAbort, { once: true });
+
+  // يغلق سباق disconnect بين بدء GET وربط دورة حياة stream؛ لا pipe إلى response ميتة.
+  if (signal?.aborted || req.aborted || res.destroyed) {
+    cancelUpstream();
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -347,32 +367,46 @@ async function sendStoredProductImage(
     return res.end(body);
   }
 
-  res.setHeader("Cache-Control", `private, max-age=${ONE_YEAR}, immutable`);
-  res.setHeader("Vary", "Cookie");
-  res.setHeader("ETag", etag);
-
-  let stream;
+  const abortController = new AbortController();
+  const abortRead = () => abortController.abort();
+  const abortOnEarlyClose = () => {
+    if (!res.writableEnded) abortController.abort();
+  };
+  req.once("aborted", abortRead);
+  res.once("close", abortOnEarlyClose);
   try {
-    stream = await getImageStore().getStream(objectKey);
+    const stream = await getImageStore().getStream(objectKey, { signal: abortController.signal });
+    if (abortController.signal.aborted || req.aborted || res.destroyed) {
+      stream?.destroy(new ImageStoreClientAbortError());
+      return res;
+    }
+    if (!stream) {
+      preventCachingStoredImageFailure(res);
+      return res.status(404).end();
+    }
+    if (!bindStoredStreamLifecycle(req, res, stream, abortController.signal)) return res;
+
+    res.setHeader("Cache-Control", `private, max-age=${ONE_YEAR}, immutable`);
+    res.setHeader("Vary", "Cookie");
+    res.setHeader("ETag", etag);
+    res.setHeader("Content-Type", mime.toLowerCase());
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    if (bytes != null && Number.isSafeInteger(bytes) && bytes > 0) res.setHeader("Content-Length", String(bytes));
+    stream.pipe(res);
+    return res;
   } catch (error) {
+    if (isImageStoreClientAbortError(error)) return res;
     if (!isImageStoreUnavailableError(error)) {
       preventCachingStoredImageFailure(res);
       throw error;
     }
     preventCachingStoredImageFailure(res);
     return res.status(503).end();
+  } finally {
+    req.off("aborted", abortRead);
+    res.off("close", abortOnEarlyClose);
   }
-  if (!stream) {
-    preventCachingStoredImageFailure(res);
-    return res.status(404).end();
-  }
-  res.setHeader("Content-Type", mime.toLowerCase());
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-  if (bytes != null && Number.isSafeInteger(bytes) && bytes > 0) res.setHeader("Content-Length", String(bytes));
-  bindStoredStreamLifecycle(req, res, stream);
-  stream.pipe(res);
-  return res;
 }
 
 /**

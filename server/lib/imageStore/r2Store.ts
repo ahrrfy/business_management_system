@@ -244,14 +244,24 @@ export class R2ImageStore implements ImageStore {
     }
   }
 
-  async getStream(key: string): Promise<Readable | null> {
+  async getStream(key: string, options: ImageStoreReadOptions = {}): Promise<Readable | null> {
     assertSafeKey(key);
     try {
       return await this.resilience.runStream("get", async () => {
-        const result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key })) as { Body?: unknown };
+        if (options.signal?.aborted) throw new ImageStoreClientAbortError();
+        let result: { Body?: unknown };
+        try {
+          result = await this.client.send(
+            new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+            { abortSignal: options.signal },
+          ) as { Body?: unknown };
+        } catch (error) {
+          if (options.signal?.aborted) throw new ImageStoreClientAbortError();
+          throw error;
+        }
         if (!result.Body) throw new Error("ImageStore R2: الكائن الموجود بلا جسم.");
         return toNodeStream(result.Body);
-      });
+      }, { signal: options.signal });
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;
@@ -296,7 +306,7 @@ export class R2ImageStore implements ImageStore {
           });
         }
         return body;
-      });
+      }, { signal: options.signal });
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;

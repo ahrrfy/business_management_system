@@ -45,8 +45,10 @@ export class FsImageStore implements ImageStore {
     }
   }
 
-  async getStream(key: string): Promise<Readable | null> {
+  async getStream(key: string, options: ImageStoreReadOptions = {}): Promise<Readable | null> {
+    if (options.signal?.aborted) throw new ImageStoreClientAbortError();
     if (!(await this.head(key)).exists) return null;
+    if (options.signal?.aborted) throw new ImageStoreClientAbortError();
     return createReadStream(this.full(key));
   }
 

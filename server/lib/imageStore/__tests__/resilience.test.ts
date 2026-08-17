@@ -167,6 +167,32 @@ describe("R2ResilienceController", () => {
     expect(maximumActive).toBe(1);
   });
 
+  it("يزيل الطلب المنقطع من الطابور فوراً بلا بدء شبكة أو تلويث القاطع", async () => {
+    const controller = new R2ResilienceController({ ...baseConfig, maxConcurrency: 1, maxQueue: 2 });
+    const blocker = deferred<void>();
+    const first = controller.run("get", () => blocker.promise);
+    const abort = new AbortController();
+    const queuedWork = vi.fn(async () => "late");
+    const queued = controller.run("get", queuedWork, { signal: abort.signal });
+
+    await vi.waitFor(() => expect(controller.snapshot()).toMatchObject({ inFlight: 1, queued: 1, started: 1 }));
+    abort.abort();
+    await expect(queued).rejects.toBeInstanceOf(ImageStoreClientAbortError);
+    expect(controller.snapshot()).toMatchObject({
+      inFlight: 1,
+      queued: 0,
+      started: 1,
+      cancelled: 1,
+      transientFailures: 0,
+      permanentFailures: 0,
+      state: "closed",
+    });
+    expect(queuedWork).not.toHaveBeenCalled();
+
+    blocker.resolve();
+    await expect(first).resolves.toBeUndefined();
+  });
+
   it("يعد خطأ Body العابر للقاطع، ولا يعد destroy المقصود فشلاً", async () => {
     const controller = new R2ResilienceController({ ...baseConfig, maxConcurrency: 1, failureThreshold: 1 });
     const failedBody = new PassThrough();

@@ -158,6 +158,23 @@ describe("private stored stream lifecycle", () => {
     expect(rawRes.listenerCount("close")).toBe(0);
     expect(rawRes.listenerCount("finish")).toBe(0);
   });
+
+  it("signal انقطع قبل bind يدمر الجسم فوراً وينظف listeners", async () => {
+    const { req, res, rawReq, rawRes } = lifecyclePeers();
+    const body = new PassThrough({ autoDestroy: false });
+    const destroy = vi.spyOn(body, "destroy");
+    const abort = new AbortController();
+    abort.abort();
+
+    bindStoredStreamLifecycle(req, res, body, abort.signal);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(destroy.mock.calls[0][0]).toBeInstanceOf(ImageStoreClientAbortError);
+    expect(rawReq.listenerCount("aborted")).toBe(0);
+    expect(rawRes.listenerCount("close")).toBe(0);
+    expect(rawRes.listenerCount("finish")).toBe(0);
+  });
 });
 
 describe("GET /api/img/kiosk-product/:id — المصادقة", () => {

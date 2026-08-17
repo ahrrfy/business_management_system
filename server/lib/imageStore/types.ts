@@ -37,7 +37,7 @@ export interface ImageStore {
   /** يفحص وجود الكائن دون تنزيله (للتسوية/الكنس المعدود-مرجعياً). */
   head(key: string): Promise<ObjectHead>;
   /** يبثّ بايتات الكائن، أو null إن غاب (⇒ سقوطٌ للمصغّرة في طبقة الخدمة). */
-  getStream(key: string): Promise<Readable | null>;
+  getStream(key: string, options?: ImageStoreReadOptions): Promise<Readable | null>;
   /** يقرأ الكائن كاملاً ضمن سقف صريح؛ مطلوب لمسار عام يتحقق قبل إرسال أي headers. */
   getBuffer(key: string, expectedBytes: number, options?: ImageStoreReadOptions): Promise<Buffer | null>;
   /** يحذف الكائن (يُستعمَل من الكنس المعدود-مرجعياً فقط؛ لا حذف آنيّ عند cascade). */

@@ -122,6 +122,52 @@ describe("R2ImageStore", () => {
     expect(store.resilienceSnapshot()).toMatchObject({ state: "closed", succeeded: 1, queueTimeouts: 0 });
   });
 
+  it("إلغاء getStream المنتظر يحذفه من الطابور ولا يبدأ S3 بعد تحرير permit", async () => {
+    const firstBody = new PassThrough();
+    const send = vi.fn().mockResolvedValue({ Body: firstBody });
+    const store = new R2ImageStore(config, {
+      client: { send },
+      resilienceConfig: { maxConcurrency: 1, maxQueue: 1, queueTimeoutMs: 1_000, failureThreshold: 1, openMs: 1_000 },
+    });
+    const first = await store.getStream(KEY);
+    const abort = new AbortController();
+    const queued = store.getStream(KEY, { signal: abort.signal });
+    await vi.waitFor(() => expect(store.resilienceSnapshot()).toMatchObject({ inFlight: 1, queued: 1, started: 1 }));
+
+    abort.abort();
+    await expect(queued).rejects.toBeInstanceOf(ImageStoreClientAbortError);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(store.resilienceSnapshot()).toMatchObject({ queued: 0, cancelled: 1, transientFailures: 0, state: "closed" });
+
+    first!.resume();
+    firstBody.end(Buffer.from("done"));
+    await vi.waitFor(() => expect(store.resilienceSnapshot().inFlight).toBe(0));
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("إلغاء getStream قبل وصول headers يدمر الجسم المتأخر ولا يسلّمه للمستهلك", async () => {
+    let resolveHeaders!: (value: { Body: PassThrough }) => void;
+    const headers = new Promise<{ Body: PassThrough }>((resolve) => { resolveHeaders = resolve; });
+    const send = vi.fn().mockReturnValue(headers);
+    const body = new PassThrough({ autoDestroy: false });
+    const destroy = vi.spyOn(body, "destroy");
+    const abort = new AbortController();
+    const store = new R2ImageStore(config, {
+      client: { send },
+      resilienceConfig: { maxConcurrency: 1, maxQueue: 1, queueTimeoutMs: 1_000, failureThreshold: 1, openMs: 1_000 },
+    });
+
+    const read = store.getStream(KEY, { signal: abort.signal });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    abort.abort();
+    resolveHeaders({ Body: body });
+
+    await expect(read).rejects.toBeInstanceOf(ImageStoreClientAbortError);
+    await vi.waitFor(() => expect(store.resilienceSnapshot().inFlight).toBe(0));
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(store.resilienceSnapshot()).toMatchObject({ cancelled: 1, transientFailures: 0, state: "closed" });
+  });
+
   it("يحوّل خطأ Body العابر إلى unavailable ويفتح القاطع قبل إعادة أي buffer", async () => {
     const body = new PassThrough();
     const store = new R2ImageStore(config, {
