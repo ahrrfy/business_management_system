@@ -116,9 +116,11 @@ function stateFromOrder(order: PurchaseOrderData, branchId: number): InvoiceStat
     branchId,
     currency: isUsd ? "USD" : "IQD",
     agreedRate: isUsd ? String(order.agreedRate ?? "") : "",
-    // قيمة فاتورة المورّد الورقيّة بعملة الأمر: الدولاريّ من usdTotal والدينارّي من total —
-    // فتُعاد المطابقة عند كلّ تعديل بدل حفظِ أمرٍ يخالف مستنده.
-    supplierInvoiceTotal: isUsd ? String(order.usdTotal ?? "") : String(order.total ?? ""),
+    // قيمة فاتورة المورّد: تُملأ من `usdTotal` للأمر الدولاريّ **فقط** — فهو بالعقد «مبلغ فاتورة
+    // المورد الفعلية». الأمر الدينارّي لا يملك عموداً مقابلاً، وملؤه من `total` كان سيدّعي أنّ
+    // ورقة المورّد تساوي مجموعَنا **بلا أن يكون أحدٌ طابقهما** — ادّعاءُ حقيقةٍ لا نعرفها. يبقى
+    // فارغاً فيملؤه الموظّف من الورقة إن أراد تفعيل الضابط على هذا التعديل.
+    supplierInvoiceTotal: isUsd ? String(order.usdTotal ?? "") : "",
     notes: order.notes ?? "",
     taxEnabled: Number(taxRate) > 0,
     taxRatePercent: taxRate,
