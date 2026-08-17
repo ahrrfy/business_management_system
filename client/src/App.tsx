@@ -68,6 +68,7 @@ const StoreHub = lazy(() => import("@/pages/StoreHub"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
+const ProductImageStudio = lazy(() => import("@/pages/ProductImageStudio"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
 const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
@@ -283,6 +284,7 @@ export default function App() {
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
+      <Route path="/catalog/image-studio"><Shell><RequireRole roles={["admin","manager","print_operator","auditor"]} module="productStudio" level="READ"><ProductImageStudio /></RequireRole></Shell></Route>
       {/* gstack B10 (٧/٧/٢٦): موجات الأسعار — تبويب داخل InventoryHub. المسار المستقلّ يبقى للحفاظ على الروابط. */}
       <Route path="/price-waves"><Redirect to="/inventory?tab=price-waves" /></Route>
       {/* العروض والحملات والكوبونات مملوكة لوحدة CRM؛ الرابط القديم محفوظ. */}

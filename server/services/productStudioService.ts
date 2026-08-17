@@ -1,0 +1,903 @@
+import { TRPCError } from "@trpc/server";
+import { createHash, randomUUID } from "node:crypto";
+import { and, asc, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import {
+  auditLogs,
+  categories,
+  productImageObjectStaging,
+  productImageJobs,
+  productImages,
+  products,
+  users,
+} from "../../drizzle/schema";
+import type { PermissionMap } from "@shared/permissions";
+import { hasModuleAccess } from "@shared/permissions";
+import { requireDb, withTx } from "./tx";
+import { assertValidImageDataUrl, parseImageDimensions } from "../lib/imageValidation";
+import { contentHash, getImageStore, objectKeyFor, readR2ImageStoreConfig, shortHash, studioObjectPrefix } from "../lib/imageStore";
+import { logger } from "../logger";
+import { getCurrentCompanyId } from "../tenancy/context";
+import { isMultiTenantModeActive } from "../db";
+import { resolveCompanyById } from "../tenancy/registry";
+
+const MAX_STUDIO_IMAGE_BYTES = 900_000;
+const MAX_PREVIEW_BYTES = 1_000_000;
+const UPLOAD_LEASE_MS = 2 * 60_000;
+const PROCESSING_PROOF_MS = 15 * 60_000;
+const STAGING_TTL_MS = 24 * 60 * 60_000;
+
+export interface ProductStudioActor {
+  userId: number;
+  branchId: number | null;
+  role: string;
+  isOwner?: boolean;
+}
+
+type StudioStatus = typeof productImageJobs.$inferSelect.status;
+
+function isManager(actor: ProductStudioActor): boolean {
+  return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
+}
+
+function canCrossBranches(actor: ProductStudioActor): boolean {
+  return actor.role === "admin" || actor.isOwner === true;
+}
+
+function productContentHash(value: { name: string; description: string | null }): string {
+  return createHash("sha256").update(JSON.stringify([value.name, value.description ?? null])).digest("hex");
+}
+
+async function publishedImageUrl(imageId: number, hash: string): Promise<string> {
+  if (!isMultiTenantModeActive()) return `/api/img/product/${imageId}?v=${shortHash(hash)}`;
+  const companyId = getCurrentCompanyId();
+  if (companyId == null) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "سياق الشركة مطلوب لنشر الصورة" });
+  const company = await resolveCompanyById(companyId);
+  if (!company) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "تعذّر تحديد رابط الشركة العام" });
+  return `/api/img/company/${encodeURIComponent(company.code)}/product/${imageId}?v=${shortHash(hash)}`;
+}
+
+function auditValues(actor: ProductStudioActor, action: string, taskId: number, value: unknown) {
+  return {
+    userId: actor.userId,
+    branchId: actor.branchId,
+    action,
+    entityType: "productImageJob",
+    entityId: String(taskId),
+    newValue: value,
+  } as const;
+}
+
+function assertTaskAccess(
+  actor: ProductStudioActor,
+  task: { assignedTo: number | null; branchId: number | null },
+  managerOnly = false,
+  auditorRead = false,
+): void {
+  if (canCrossBranches(actor)) return;
+  if (actor.branchId == null || Number(task.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "المهمة تتبع فرعاً آخر" });
+  }
+  if (actor.role === "manager") return;
+  if (auditorRead && actor.role === "auditor") return;
+  if (managerOnly || Number(task.assignedTo) !== actor.userId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة ليست مسندة إليك" });
+  }
+}
+
+function decodeStudioImage(dataUrl: string): { bytes: Buffer; mime: string; width: number | null; height: number | null; hash: string } {
+  assertValidImageDataUrl(dataUrl, MAX_STUDIO_IMAGE_BYTES, true);
+  const comma = dataUrl.indexOf(",");
+  const mime = dataUrl.slice(5, dataUrl.indexOf(";"));
+  const bytes = Buffer.from(dataUrl.slice(comma + 1), "base64");
+  const dims = parseImageDimensions(bytes, mime);
+  const structurallyComplete = mime === "image/png"
+    ? bytes.length >= 20 && bytes.readUInt32BE(bytes.length - 12) === 0 && bytes.toString("ascii", bytes.length - 8, bytes.length - 4) === "IEND"
+    : mime === "image/jpeg" || mime === "image/jpg"
+      ? bytes.length >= 4 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9
+      : mime === "image/webp"
+        ? bytes.length >= 12 && bytes.readUInt32LE(4) + 8 === bytes.length
+        : false;
+  if (!dims || dims.width < 1 || dims.height < 1 || !structurallyComplete) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "تعذّر التحقق من أبعاد الصورة" });
+  }
+  return { bytes, mime, width: dims.width, height: dims.height, hash: contentHash(bytes) };
+}
+
+function assertStoragePolicy(): void {
+  const driver = (process.env.IMAGE_STORE_DRIVER ?? "fs").toLowerCase();
+  // خادم الإنتاج مشترك: لا نسمح بسقوطٍ صامت إلى قرصه. غياب أسرار R2 يبقي الوحدة مقروءة
+  // لكن يمنع الرفع برسالة واضحة؛ لا يُفعّل R2 ولا يختلق اعتماداً.
+  if (process.env.NODE_ENV === "production" && driver !== "r2") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "رفع الاستوديو متوقف حتى تهيئة مخزن R2 الخاص",
+    });
+  }
+  if (driver === "r2") {
+    try {
+      readR2ImageStoreConfig();
+    } catch {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "رفع الاستوديو متوقف لأن اعتماد مخزن R2 الخاص غير مكتمل",
+      });
+    }
+  }
+}
+
+async function lockTask(tx: Parameters<Parameters<typeof withTx>[0]>[0], taskId: number) {
+  const task = (
+    await tx.select().from(productImageJobs).where(eq(productImageJobs.id, taskId)).limit(1).for("update")
+  )[0];
+  if (!task) throw new TRPCError({ code: "NOT_FOUND", message: "مهمة الاستوديو غير موجودة" });
+  return task;
+}
+
+export async function listStudioProducts(search = "") {
+  const db = requireDb();
+  const q = search.trim().slice(0, 80);
+  const condition = q
+    ? and(eq(products.isActive, true), or(like(products.name, `%${q.replace(/[\\%_]/g, "\\$&")}%`), eq(products.id, Number(q) || 0)))
+    : eq(products.isActive, true);
+  return db
+    .select({
+      id: products.id,
+      name: products.name,
+      description: products.description,
+      categoryName: categories.name,
+      showInStore: products.showInStore,
+    })
+    .from(products)
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .where(condition)
+    .orderBy(asc(products.name))
+    .limit(40);
+}
+
+export async function listStudioAssignees(actor: ProductStudioActor) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const rows = await requireDb()
+    .select({
+      id: users.id,
+      name: users.name,
+      role: users.role,
+      branchId: users.branchId,
+      permissionsOverride: users.permissionsOverride,
+    })
+    .from(users)
+    .where(eq(users.isActive, true))
+    .orderBy(asc(users.name));
+  return rows
+    .filter((u) => {
+      if (actor.role !== "admin" && !actor.isOwner && Number(u.branchId) !== Number(actor.branchId)) return false;
+      return hasModuleAccess(u.role, u.permissionsOverride as PermissionMap | null, "productStudio", "FULL");
+    })
+    .map(({ id, name, role, branchId }) => ({ id, name: name || `مستخدم ${id}`, role, branchId }));
+}
+
+export async function getStudioDashboard(actor: ProductStudioActor) {
+  const scope = canCrossBranches(actor)
+    ? undefined
+    : actor.role === "manager" || actor.role === "auditor"
+      ? eq(productImageJobs.branchId, Number(actor.branchId))
+      : and(eq(productImageJobs.branchId, Number(actor.branchId)), eq(productImageJobs.assignedTo, actor.userId));
+  const rows = await requireDb()
+    .select({ status: productImageJobs.status, count: sql<number>`count(*)` })
+    .from(productImageJobs)
+    .where(scope)
+    .groupBy(productImageJobs.status);
+  const counts: Record<StudioStatus, number> = {
+    ASSIGNED: 0,
+    IN_PROGRESS: 0,
+    PENDING_REVIEW: 0,
+    APPROVED: 0,
+    REJECTED: 0,
+    FAILED: 0,
+    REVERTED: 0,
+  };
+  for (const row of rows) counts[row.status] = Number(row.count);
+  return {
+    counts,
+    active: counts.ASSIGNED + counts.IN_PROGRESS + counts.PENDING_REVIEW + counts.REJECTED,
+    canManage: isManager(actor),
+    canAudit: actor.role === "auditor",
+  };
+}
+
+export async function listStudioTasks(
+  actor: ProductStudioActor,
+  input: { scope: "QUEUE" | "MINE" | "REVIEW" | "HISTORY"; limit?: number },
+) {
+  const conds = [];
+  if (!canCrossBranches(actor)) conds.push(eq(productImageJobs.branchId, Number(actor.branchId)));
+  const branchAuditHistory = actor.role === "auditor" && input.scope === "HISTORY";
+  if ((!isManager(actor) && !branchAuditHistory) || input.scope === "MINE") {
+    conds.push(eq(productImageJobs.assignedTo, actor.userId));
+  }
+  if (input.scope === "QUEUE") conds.push(inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "REJECTED"]));
+  if (input.scope === "REVIEW") conds.push(eq(productImageJobs.status, "PENDING_REVIEW"));
+  if (input.scope === "HISTORY") conds.push(inArray(productImageJobs.status, ["APPROVED", "FAILED", "REVERTED"]));
+  return requireDb()
+    .select({
+      id: productImageJobs.id,
+      productId: productImageJobs.productId,
+      branchId: productImageJobs.branchId,
+      productName: products.name,
+      currentDescription: products.description,
+      status: productImageJobs.status,
+      mode: productImageJobs.mode,
+      assignedTo: productImageJobs.assignedTo,
+      assigneeName: users.name,
+      proposedName: productImageJobs.proposedName,
+      proposedDescription: productImageJobs.proposedDescription,
+      proposedMarketingCopy: productImageJobs.proposedMarketingCopy,
+      rejectionReason: productImageJobs.rejectionReason,
+      sourceImageId: productImageJobs.sourceImageId,
+      hasOriginal: sql<boolean>`${productImageJobs.originalObjectKey} is not null`,
+      hasCandidate: sql<boolean>`${productImageJobs.processedObjectKey} is not null`,
+      createdAt: productImageJobs.createdAt,
+      updatedAt: productImageJobs.updatedAt,
+      submittedAt: productImageJobs.submittedAt,
+      reviewedAt: productImageJobs.reviewedAt,
+    })
+    .from(productImageJobs)
+    .innerJoin(products, eq(products.id, productImageJobs.productId))
+    .leftJoin(users, eq(users.id, productImageJobs.assignedTo))
+    .where(conds.length ? and(...conds) : undefined)
+    .orderBy(desc(productImageJobs.updatedAt), desc(productImageJobs.id))
+    .limit(Math.min(input.limit ?? 100, 200));
+}
+
+export async function listStudioProductImages(productId: number) {
+  const product = (await requireDb().select({ id: products.id }).from(products)
+    .where(and(eq(products.id, productId), eq(products.isActive, true))).limit(1))[0];
+  if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+  return requireDb().select({
+    id: productImages.id,
+    isPrimary: productImages.isPrimary,
+    sortOrder: productImages.sortOrder,
+    origin: productImages.origin,
+  }).from(productImages).where(and(
+    eq(productImages.productId, productId),
+    eq(productImages.reviewStatus, "APPROVED"),
+  )).orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
+}
+
+async function stageStudioObject(objectKey: string): Promise<void> {
+  await requireDb().insert(productImageObjectStaging).values({ objectKey, state: "PENDING" }).onDuplicateKeyUpdate({
+    set: { touchedAt: new Date() },
+  });
+}
+
+/**
+ * مكنسة الرفع الفاشل: تقفل سجل المفتاح قبل الحذف. upsert لرفعٍ جديد على المفتاح نفسه ينتظر القفل،
+ * ثم يعيد PUT بعد الحذف؛ فلا يقطع الكنس مرجعاً جديداً قيد الإنشاء عبر worker آخر.
+ */
+export async function cleanupStudioStaging(limit = 5): Promise<number> {
+  const cutoff = new Date(Date.now() - STAGING_TTL_MS);
+  const candidates = await requireDb().select({ objectKey: productImageObjectStaging.objectKey })
+    .from(productImageObjectStaging)
+    // REFERENCED ليست نهائية: إعادة الإرسال تستبدل processedObjectKey، وحذف المهمة/الصورة يزيل آخر مرجع.
+    // نفحص الحالتين بعد TTL ونحذف فقط بعد إثبات غياب أي مرجع داخل معاملة مقفلة.
+    .where(sql`${productImageObjectStaging.touchedAt} < ${cutoff}`)
+    .orderBy(asc(productImageObjectStaging.touchedAt))
+    .limit(Math.max(1, Math.min(limit, 25)));
+  let removed = 0;
+  for (const candidate of candidates) {
+    const deleted = await withTx(async (tx) => {
+      const staging = (await tx.select().from(productImageObjectStaging)
+        .where(eq(productImageObjectStaging.objectKey, candidate.objectKey)).limit(1).for("update"))[0];
+      if (!staging || staging.touchedAt >= cutoff) return false;
+      const jobRef = await tx.select({ id: productImageJobs.id }).from(productImageJobs).where(or(
+          eq(productImageJobs.originalObjectKey, candidate.objectKey),
+          eq(productImageJobs.processedObjectKey, candidate.objectKey),
+        )).limit(1);
+      const imageRef = await tx.select({ id: productImages.id }).from(productImages).where(or(
+          eq(productImages.objectKey, candidate.objectKey),
+          eq(productImages.originalKey, candidate.objectKey),
+        )).limit(1);
+      if (jobRef.length || imageRef.length) {
+        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date(), touchedAt: new Date() })
+          .where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
+        return false;
+      }
+      await getImageStore().delete(candidate.objectKey);
+      await tx.delete(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
+      return true;
+    });
+    if (deleted) removed++;
+  }
+  return removed;
+}
+
+async function prepareSourceSnapshot(productId: number, requested: number | null | undefined) {
+  if (requested === null) return null; // إضافة صورة جديدة باختيارٍ صريح.
+  const db = requireDb();
+  const conditions = [eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")];
+  if (requested != null) conditions.push(eq(productImages.id, requested));
+  else conditions.push(eq(productImages.isPrimary, true));
+  const source = (await db.select({
+    id: productImages.id,
+    url: productImages.url,
+    objectKey: productImages.objectKey,
+    contentHash: productImages.contentHash,
+    mime: productImages.mime,
+  }).from(productImages).where(and(...conditions)).orderBy(desc(productImages.id)).limit(1))[0];
+  if (!source) {
+    if (requested != null) throw new TRPCError({ code: "BAD_REQUEST", message: "صورة المصدر لا تخص المنتج أو غير معتمدة" });
+    return null;
+  }
+
+  if (source.objectKey && source.contentHash && source.mime) {
+    if (!/^[0-9a-f]{64}$/i.test(source.contentHash) || !["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(source.mime)) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "بيانات صورة المصدر المخزنة غير صالحة" });
+    }
+    if (!(await getImageStore().head(source.objectKey)).exists) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "صورة المصدر غير موجودة في المخزن الخاص" });
+    }
+    await stageStudioObject(source.objectKey);
+    return {
+      sourceImageId: Number(source.id),
+      originalObjectKey: source.objectKey,
+      sourceContentHash: source.contentHash,
+      originalMime: source.mime,
+      expected: source,
+    };
+  }
+  const decoded = decodeStudioImage(source.url);
+  const originalObjectKey = objectKeyFor(decoded.hash, decoded.mime, studioObjectPrefix("original"));
+  await stageStudioObject(originalObjectKey);
+  await getImageStore().put(originalObjectKey, decoded.bytes, decoded.mime);
+  return {
+    sourceImageId: Number(source.id),
+    originalObjectKey,
+    sourceContentHash: decoded.hash,
+    originalMime: decoded.mime,
+    expected: source,
+  };
+}
+
+export async function assignStudioTask(
+  actor: ProductStudioActor,
+  input: { productId: number; assigneeId: number; sourceImageId?: number | null },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const snapshot = await prepareSourceSnapshot(input.productId, input.sourceImageId);
+  return withTx(async (tx) => {
+    const product = (await tx.select({ id: products.id, name: products.name, description: products.description })
+      .from(products).where(and(eq(products.id, input.productId), eq(products.isActive, true))).limit(1).for("update"))[0];
+    if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود أو معطل" });
+    const assignee = (await tx.select({
+      id: users.id,
+      role: users.role,
+      branchId: users.branchId,
+      permissionsOverride: users.permissionsOverride,
+    }).from(users).where(and(eq(users.id, input.assigneeId), eq(users.isActive, true))).limit(1).for("update"))[0];
+    if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
+    if (actor.role !== "admin" && !actor.isOwner && Number(assignee.branchId) !== Number(actor.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن الإسناد إلى فرع آخر" });
+    }
+    if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف لا يملك صلاحية استوديو المنتجات" });
+    }
+    if (snapshot) {
+      const current = (await tx.select({
+        id: productImages.id,
+        url: productImages.url,
+        objectKey: productImages.objectKey,
+        contentHash: productImages.contentHash,
+        mime: productImages.mime,
+        reviewStatus: productImages.reviewStatus,
+      }).from(productImages).where(and(
+        eq(productImages.id, snapshot.sourceImageId),
+        eq(productImages.productId, input.productId),
+      )).limit(1).for("update"))[0];
+      if (!current || current.reviewStatus !== "APPROVED" ||
+        current.url !== snapshot.expected.url || current.objectKey !== snapshot.expected.objectKey ||
+        current.contentHash !== snapshot.expected.contentHash || current.mime !== snapshot.expected.mime) {
+        throw new TRPCError({ code: "CONFLICT", message: "تغيّرت صورة المصدر أثناء الإسناد" });
+      }
+    }
+    try {
+      const [created] = await tx.insert(productImageJobs).values({
+        productId: input.productId,
+        branchId: assignee.branchId,
+        sourceImageId: snapshot?.sourceImageId ?? null,
+        originalObjectKey: snapshot?.originalObjectKey ?? null,
+        sourceContentHash: snapshot?.sourceContentHash ?? null,
+        originalMime: snapshot?.originalMime ?? null,
+        sourceProductHash: productContentHash(product),
+        mode: "FLATTEN",
+        status: "ASSIGNED",
+        assignedTo: input.assigneeId,
+        assignedBy: actor.userId,
+        createdBy: actor.userId,
+        activeSlot: 1,
+        templateVersion: 1,
+      }).$returningId();
+      const taskId = Number(created.id);
+      await tx.insert(auditLogs).values(auditValues(actor, "productStudio.assign", taskId, {
+        productId: input.productId,
+        assigneeId: input.assigneeId,
+        sourceImageId: snapshot?.sourceImageId ?? null,
+      }));
+      if (snapshot) {
+        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() })
+          .where(eq(productImageObjectStaging.objectKey, snapshot.originalObjectKey));
+      }
+      return { taskId };
+    } catch (error) {
+      if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
+        throw new TRPCError({ code: "CONFLICT", message: "للمنتج مهمة استوديو نشطة بالفعل" });
+      }
+      throw error;
+    }
+  });
+}
+
+export async function saveStudioDraft(
+  actor: ProductStudioActor,
+  input: { taskId: number; proposedName?: string | null; proposedDescription?: string | null; proposedMarketingCopy?: string | null },
+) {
+  return withTx(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    assertTaskAccess(actor, task);
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل مهمة بانتظار المراجعة أو مغلقة" });
+    }
+    if (task.uploadLeaseToken && task.uploadLeaseExpiresAt && task.uploadLeaseExpiresAt > new Date()) {
+      throw new TRPCError({ code: "CONFLICT", message: "الرفع قيد التنفيذ؛ انتظر اكتماله" });
+    }
+    await tx.update(productImageJobs).set({
+      proposedName: input.proposedName?.trim() || null,
+      proposedDescription: input.proposedDescription?.trim() || null,
+      proposedMarketingCopy: input.proposedMarketingCopy?.trim() || null,
+      status: "IN_PROGRESS",
+      activeSlot: 1,
+    }).where(eq(productImageJobs.id, input.taskId));
+    await tx.insert(auditLogs).values(auditValues(actor, "productStudio.saveDraft", input.taskId, {
+      hasName: Boolean(input.proposedName?.trim()),
+      hasDescription: Boolean(input.proposedDescription?.trim()),
+      hasMarketingCopy: Boolean(input.proposedMarketingCopy?.trim()),
+    }));
+    return { ok: true };
+  });
+}
+
+/** يسجّل نجاح المزود خادمياً ويرجع receipt أحادي المهمة قصير العمر، بلا أسرار المزود. */
+export async function attestStudioProcessing(
+  actor: ProductStudioActor,
+  taskId: number,
+  mode: "PRO" | "AI",
+): Promise<string> {
+  const receipt = randomUUID();
+  await withTx(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    assertTaskAccess(actor, task);
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل معالجة جديدة" });
+    }
+    await tx.update(productImageJobs).set({
+      processingProofTokenHash: contentHash(Buffer.from(receipt, "utf8")),
+      processingProofMode: mode,
+      processingProofCandidateHash: null,
+      processingProofExpiresAt: new Date(Date.now() + PROCESSING_PROOF_MS),
+    }).where(eq(productImageJobs.id, taskId));
+  });
+  return receipt;
+}
+
+/** يربط receipt بالناتج النهائي بعد تركيب/ضغط العميل؛ submit يرفض أي تبديل بايتات لاحق. */
+export async function bindStudioProcessingCandidate(
+  actor: ProductStudioActor,
+  input: { taskId: number; processingReceipt: string; candidateDataUrl: string },
+): Promise<{ ok: true }> {
+  const candidate = decodeStudioImage(input.candidateDataUrl);
+  const receiptHash = contentHash(Buffer.from(input.processingReceipt, "utf8"));
+  return withTx(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    assertTaskAccess(actor, task);
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل ربط معالجة جديدة" });
+    }
+    if (
+      task.processingProofTokenHash !== receiptHash ||
+      !task.processingProofMode ||
+      !task.processingProofExpiresAt ||
+      task.processingProofExpiresAt <= new Date()
+    ) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "إيصال المعالجة غير صالح أو منتهي" });
+    }
+    await tx.update(productImageJobs).set({ processingProofCandidateHash: candidate.hash })
+      .where(eq(productImageJobs.id, input.taskId));
+    return { ok: true as const };
+  });
+}
+
+export async function submitStudioCandidate(
+  actor: ProductStudioActor,
+  input: {
+    taskId: number;
+    originalDataUrl?: string | null;
+    processedDataUrl: string;
+    mode: "FLATTEN" | "CUT";
+    processingReceipt?: string | null;
+    proposedName?: string | null;
+    proposedDescription?: string | null;
+    proposedMarketingCopy?: string | null;
+  },
+) {
+  assertStoragePolicy();
+  const token = randomUUID();
+  const lease = await withTx(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    assertTaskAccess(actor, task);
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل مرشحاً جديداً" });
+    }
+    if (task.uploadLeaseToken && task.uploadLeaseExpiresAt && task.uploadLeaseExpiresAt > new Date()) {
+      throw new TRPCError({ code: "CONFLICT", message: "رفع آخر لهذه المهمة قيد التنفيذ" });
+    }
+    await tx.update(productImageJobs).set({
+      uploadLeaseToken: token,
+      uploadLeaseExpiresAt: new Date(Date.now() + UPLOAD_LEASE_MS),
+    }).where(eq(productImageJobs.id, input.taskId));
+    return {
+      originalObjectKey: task.originalObjectKey,
+      sourceContentHash: task.sourceContentHash,
+      originalMime: task.originalMime,
+    };
+  });
+
+  try {
+    const processed = decodeStudioImage(input.processedDataUrl);
+    const original = lease.originalObjectKey
+      ? null
+      : input.originalDataUrl
+        ? decodeStudioImage(input.originalDataUrl)
+        : null;
+    if (!lease.originalObjectKey && !original) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الصورة الأصلية مطلوبة لأول إرسال" });
+    }
+    const store = getImageStore();
+    const originalKey = lease.originalObjectKey ?? objectKeyFor(original!.hash, original!.mime, studioObjectPrefix("original"));
+    const processedKey = objectKeyFor(processed.hash, processed.mime, studioObjectPrefix("candidate"));
+    if (original) {
+      await stageStudioObject(originalKey);
+      await store.put(originalKey, original.bytes, original.mime);
+    }
+    await stageStudioObject(processedKey);
+    await store.put(processedKey, processed.bytes, processed.mime);
+
+    const result = await withTx(async (tx) => {
+      const task = await lockTask(tx, input.taskId);
+      assertTaskAccess(actor, task);
+      if (task.uploadLeaseToken !== token || !["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+        throw new TRPCError({ code: "CONFLICT", message: "انتهت ملكية الرفع أو تغيّرت حالة المهمة" });
+      }
+      const immutableOriginalHash = task.sourceContentHash ?? original?.hash;
+      const immutableOriginalMime = task.originalMime ?? original?.mime;
+      if (!immutableOriginalHash || !immutableOriginalMime) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لقطة الأصل غير مكتملة" });
+      }
+      const receiptHash = input.processingReceipt
+        ? contentHash(Buffer.from(input.processingReceipt, "utf8"))
+        : null;
+      let effectiveMode: "FLATTEN" | "CUT" | "PRO" | "AI" = input.mode;
+      if (input.processingReceipt) {
+        const proofValid = Boolean(
+          receiptHash &&
+          task.processingProofTokenHash === receiptHash &&
+          task.processingProofExpiresAt &&
+          task.processingProofExpiresAt > new Date() &&
+          task.processingProofCandidateHash === processed.hash &&
+          (task.processingProofMode === "PRO" || task.processingProofMode === "AI"),
+        );
+        if (!proofValid) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "إيصال المعالجة لا يطابق الصورة النهائية أو انتهت صلاحيته" });
+        }
+        effectiveMode = task.processingProofMode!;
+      }
+      await tx.update(productImageJobs).set({
+        // الأصل لقطة غير قابلة للكتابة: إن وُجد من الإسناد/الإرسال الأول لا يتغير بعد الرفض.
+        originalObjectKey: task.originalObjectKey ?? originalKey,
+        sourceContentHash: immutableOriginalHash,
+        originalMime: immutableOriginalMime,
+        processedObjectKey: processedKey,
+        processedContentHash: processed.hash,
+        processedMime: processed.mime,
+        processedBytes: processed.bytes.length,
+        processedWidth: processed.width,
+        processedHeight: processed.height,
+        processedUrl: null,
+        mode: effectiveMode,
+        proposedName: input.proposedName === undefined ? task.proposedName : input.proposedName?.trim() || null,
+        proposedDescription: input.proposedDescription === undefined ? task.proposedDescription : input.proposedDescription?.trim() || null,
+        proposedMarketingCopy: input.proposedMarketingCopy === undefined ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
+        status: "PENDING_REVIEW",
+        submittedAt: new Date(),
+        reviewedBy: null,
+        reviewedAt: null,
+        rejectionReason: null,
+        activeSlot: 1,
+        uploadLeaseToken: null,
+        uploadLeaseExpiresAt: null,
+        processingProofTokenHash: null,
+        processingProofMode: null,
+        processingProofCandidateHash: null,
+        processingProofExpiresAt: null,
+      }).where(eq(productImageJobs.id, input.taskId));
+      await tx.insert(auditLogs).values(auditValues(actor, "productStudio.submit", input.taskId, {
+        mode: effectiveMode,
+        originalHash: immutableOriginalHash,
+        processedHash: processed.hash,
+        processedBytes: processed.bytes.length,
+        contentIncluded: true,
+      }));
+      await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() })
+        .where(inArray(productImageObjectStaging.objectKey, original ? [originalKey, processedKey] : [processedKey]));
+      return { ok: true };
+    });
+    try {
+      await cleanupStudioStaging(5);
+    } catch (error) {
+      // نجاح المعاملة هو الحقيقة؛ تعثّر الكنس لا يحوّل الإرسال الناجح إلى خطأ كاذب، ويُعاد لاحقاً.
+      logger.warn({ err: error }, "productStudio: staging sweep deferred");
+    }
+    return result;
+  } catch (error) {
+    await requireDb().update(productImageJobs).set({ uploadLeaseToken: null, uploadLeaseExpiresAt: null }).where(and(
+      eq(productImageJobs.id, input.taskId),
+      eq(productImageJobs.uploadLeaseToken, token),
+    ));
+    throw error;
+  }
+}
+
+async function streamToBase64(key: string): Promise<string> {
+  const stream = await getImageStore().getStream(key);
+  if (!stream) throw new TRPCError({ code: "NOT_FOUND", message: "ملف الصورة غير موجود في المخزن الخاص" });
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.length;
+    if (total > MAX_PREVIEW_BYTES) throw new TRPCError({ code: "PAYLOAD_TOO_LARGE" });
+    chunks.push(bytes);
+  }
+  return Buffer.concat(chunks).toString("base64");
+}
+
+export async function getStudioCandidatePreview(actor: ProductStudioActor, taskId: number) {
+  const task = (await requireDb().select({
+    assignedTo: productImageJobs.assignedTo,
+    branchId: productImageJobs.branchId,
+    originalObjectKey: productImageJobs.originalObjectKey,
+    processedObjectKey: productImageJobs.processedObjectKey,
+    originalMime: productImageJobs.originalMime,
+    processedMime: productImageJobs.processedMime,
+  }).from(productImageJobs).where(eq(productImageJobs.id, taskId)).limit(1))[0];
+  if (!task) throw new TRPCError({ code: "NOT_FOUND" });
+  assertTaskAccess(actor, task, false, true);
+  if (!task.originalObjectKey || !task.processedObjectKey || !task.originalMime || !task.processedMime) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "لا يوجد مرشح مكتمل لهذه المهمة" });
+  }
+  const [originalBase64, processedBase64] = await Promise.all([
+    streamToBase64(task.originalObjectKey),
+    streamToBase64(task.processedObjectKey),
+  ]);
+  return { originalBase64, processedBase64, originalMime: task.originalMime, processedMime: task.processedMime };
+}
+
+/** يعيد لقطة المصدر للمحرر المصرّح فقط؛ لا يكشف objectKey ولا ينشئ رابطاً عاماً. */
+export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: number) {
+  const task = (await requireDb().select({
+    assignedTo: productImageJobs.assignedTo,
+    branchId: productImageJobs.branchId,
+    originalObjectKey: productImageJobs.originalObjectKey,
+    originalMime: productImageJobs.originalMime,
+  }).from(productImageJobs).where(eq(productImageJobs.id, taskId)).limit(1))[0];
+  if (!task) throw new TRPCError({ code: "NOT_FOUND" });
+  assertTaskAccess(actor, task);
+  if (!task.originalObjectKey || !task.originalMime) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "لا توجد صورة مصدر لهذه المهمة" });
+  }
+  return { base64: await streamToBase64(task.originalObjectKey), mime: task.originalMime };
+}
+
+export async function approveStudioTask(actor: ProductStudioActor, taskId: number) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  return withTx(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    assertTaskAccess(actor, task, true);
+    if (task.status !== "PENDING_REVIEW") {
+      throw new TRPCError({ code: "CONFLICT", message: "المهمة لم تعد بانتظار المراجعة" });
+    }
+    if (!task.productId || !task.processedObjectKey || !task.processedContentHash || !task.processedMime) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "بيانات المرشح غير مكتملة" });
+    }
+    const product = (await tx.select({ id: products.id, name: products.name, description: products.description })
+      .from(products).where(eq(products.id, task.productId)).limit(1).for("update"))[0];
+    if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+
+    const changesProductContent = Boolean(
+      task.proposedName?.trim() || task.proposedDescription?.trim() || task.proposedMarketingCopy?.trim(),
+    );
+    if (changesProductContent && task.sourceProductHash && productContentHash(product) !== task.sourceProductHash) {
+      throw new TRPCError({ code: "CONFLICT", message: "عُدّل محتوى المنتج بعد بدء المهمة؛ راجع النسخة الأحدث" });
+    }
+
+    let imageId: number;
+    let existingOriginalKey: string | null = null;
+    if (task.sourceImageId) {
+      const image = (await tx.select({
+        id: productImages.id,
+        productId: productImages.productId,
+        originalKey: productImages.originalKey,
+        url: productImages.url,
+        contentHash: productImages.contentHash,
+        reviewStatus: productImages.reviewStatus,
+      })
+        .from(productImages).where(eq(productImages.id, task.sourceImageId)).limit(1).for("update"))[0];
+      let currentSourceHash = image?.contentHash ?? null;
+      if (image && !currentSourceHash) {
+        try { currentSourceHash = decodeStudioImage(image.url).hash; } catch { currentSourceHash = null; }
+      }
+      if (!image || Number(image.productId) !== Number(task.productId) || image.reviewStatus !== "APPROVED" ||
+        !task.sourceContentHash || currentSourceHash !== task.sourceContentHash) {
+        throw new TRPCError({ code: "CONFLICT", message: "صورة المصدر لم تعد صالحة" });
+      }
+      imageId = Number(image.id);
+      existingOriginalKey = image.originalKey;
+    } else {
+      await tx.update(productImages).set({ isPrimary: false }).where(and(eq(productImages.productId, task.productId), eq(productImages.isPrimary, true)));
+      const [created] = await tx.insert(productImages).values({
+        productId: task.productId,
+        variantId: task.variantId,
+        url: "stored-object",
+        isPrimary: true,
+        sortOrder: 0,
+        reviewStatus: "APPROVED",
+        origin: task.mode === "AI" ? "STUDIO_AI" : task.mode === "PRO" ? "STUDIO_PRO" : "STUDIO_FREE",
+      }).$returningId();
+      imageId = Number(created.id);
+    }
+    const imageUrl = await publishedImageUrl(imageId, task.processedContentHash);
+    await tx.update(productImages).set({
+      url: imageUrl,
+      objectKey: task.processedObjectKey,
+      originalKey: existingOriginalKey ?? task.originalObjectKey,
+      contentHash: task.processedContentHash,
+      mime: task.processedMime,
+      width: task.processedWidth,
+      height: task.processedHeight,
+      bytes: task.processedBytes,
+      reviewStatus: "APPROVED",
+      origin: task.mode === "AI" ? "STUDIO_AI" : task.mode === "PRO" ? "STUDIO_PRO" : "STUDIO_FREE",
+      publishedStudioJobId: taskId,
+      migratedAt: new Date(),
+    }).where(eq(productImages.id, imageId));
+
+    const combinedDescription = [task.proposedDescription?.trim(), task.proposedMarketingCopy?.trim()].filter(Boolean).join("\n\n");
+    const productPatch: { name?: string; description?: string | null } = {};
+    if (task.proposedName?.trim()) productPatch.name = task.proposedName.trim();
+    if (combinedDescription) productPatch.description = combinedDescription;
+    if (Object.keys(productPatch).length) await tx.update(products).set(productPatch).where(eq(products.id, task.productId));
+
+    await tx.update(productImageJobs).set({
+      sourceImageId: imageId,
+      status: "APPROVED",
+      reviewedBy: actor.userId,
+      reviewedAt: new Date(),
+      rejectionReason: null,
+      activeSlot: null,
+    }).where(eq(productImageJobs.id, taskId));
+    await tx.insert(auditLogs).values(auditValues(actor, "productStudio.approve", taskId, {
+      productId: task.productId,
+      imageId,
+      processedHash: task.processedContentHash,
+      contentUpdated: Object.keys(productPatch).length > 0,
+    }));
+    return { imageId };
+  });
+}
+
+export async function rejectStudioTask(actor: ProductStudioActor, taskId: number, reason: string) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const cleanReason = reason.trim();
+  if (cleanReason.length < 5) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الرفض مطلوب بوضوح" });
+  return withTx(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    assertTaskAccess(actor, task, true);
+    if (task.status !== "PENDING_REVIEW") throw new TRPCError({ code: "CONFLICT", message: "المهمة لم تعد بانتظار المراجعة" });
+    await tx.update(productImageJobs).set({
+      status: "REJECTED",
+      reviewedBy: actor.userId,
+      reviewedAt: new Date(),
+      rejectionReason: cleanReason,
+      activeSlot: 1,
+    }).where(eq(productImageJobs.id, taskId));
+    await tx.insert(auditLogs).values(auditValues(actor, "productStudio.reject", taskId, { reason: cleanReason }));
+    return { ok: true };
+  });
+}
+
+export async function revertStudioTask(actor: ProductStudioActor, taskId: number) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const snapshot = (await requireDb().select({
+    assignedTo: productImageJobs.assignedTo,
+    branchId: productImageJobs.branchId,
+    status: productImageJobs.status,
+    originalObjectKey: productImageJobs.originalObjectKey,
+    sourceContentHash: productImageJobs.sourceContentHash,
+    originalMime: productImageJobs.originalMime,
+  }).from(productImageJobs).where(eq(productImageJobs.id, taskId)).limit(1))[0];
+  if (!snapshot) throw new TRPCError({ code: "NOT_FOUND" });
+  assertTaskAccess(actor, snapshot, true);
+  if (snapshot.status !== "APPROVED" || !snapshot.originalObjectKey || !snapshot.sourceContentHash || !snapshot.originalMime) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يوجد أصل قابل للاسترجاع لهذه المهمة" });
+  }
+  const originalStream = await getImageStore().getStream(snapshot.originalObjectKey);
+  if (!originalStream) throw new TRPCError({ code: "NOT_FOUND", message: "الأصل غير موجود في المخزن الخاص" });
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of originalStream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.length;
+    if (total > MAX_PREVIEW_BYTES) throw new TRPCError({ code: "PAYLOAD_TOO_LARGE" });
+    chunks.push(bytes);
+  }
+  const originalBytes = Buffer.concat(chunks);
+  if (contentHash(originalBytes) !== snapshot.sourceContentHash) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "بصمة الأصل لا تطابق سجل المهمة" });
+  }
+  const publishedOriginalKey = objectKeyFor(snapshot.sourceContentHash, snapshot.originalMime, studioObjectPrefix("candidate"));
+  await stageStudioObject(publishedOriginalKey);
+  await getImageStore().put(publishedOriginalKey, originalBytes, snapshot.originalMime);
+  const originalDimensions = parseImageDimensions(originalBytes, snapshot.originalMime);
+  return withTx(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    assertTaskAccess(actor, task, true);
+    if (task.status !== "APPROVED" || !task.sourceImageId || !task.originalObjectKey || !task.sourceContentHash || !task.originalMime) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يوجد أصل قابل للاسترجاع لهذه المهمة" });
+    }
+    const image = (await tx.select({
+      id: productImages.id,
+      productId: productImages.productId,
+      contentHash: productImages.contentHash,
+      reviewStatus: productImages.reviewStatus,
+      publishedStudioJobId: productImages.publishedStudioJobId,
+    }).from(productImages)
+      .where(eq(productImages.id, task.sourceImageId)).limit(1).for("update"))[0];
+    if (!image || Number(image.productId) !== Number(task.productId) || image.reviewStatus !== "APPROVED" ||
+      Number(image.publishedStudioJobId) !== taskId || image.contentHash !== task.processedContentHash) {
+      throw new TRPCError({ code: "CONFLICT", message: "نُشرت نسخة أحدث؛ لا يمكن استرجاع مهمة قديمة" });
+    }
+    await tx.update(productImages).set({
+      url: await publishedImageUrl(Number(image.id), task.sourceContentHash),
+      objectKey: publishedOriginalKey,
+      contentHash: task.sourceContentHash,
+      mime: task.originalMime,
+      width: originalDimensions?.width ?? null,
+      height: originalDimensions?.height ?? null,
+      bytes: originalBytes.length,
+      reviewStatus: "APPROVED",
+      origin: "ORIGINAL",
+      publishedStudioJobId: null,
+    }).where(eq(productImages.id, image.id));
+    await tx.update(productImageJobs).set({
+      status: "REVERTED",
+      reviewedBy: actor.userId,
+      reviewedAt: new Date(),
+      activeSlot: null,
+    }).where(eq(productImageJobs.id, taskId));
+    await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() })
+      .where(eq(productImageObjectStaging.objectKey, publishedOriginalKey));
+    await tx.insert(auditLogs).values(auditValues(actor, "productStudio.revert", taskId, {
+      productId: task.productId,
+      imageId: image.id,
+      originalHash: task.sourceContentHash,
+    }));
+    return { imageId: Number(image.id) };
+  });
+}

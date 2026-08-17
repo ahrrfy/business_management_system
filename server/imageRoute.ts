@@ -23,11 +23,14 @@ import { createHash } from "node:crypto";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { productImages, products, storeBanners } from "../drizzle/schema";
 import { getSessionContext } from "./auth/session";
-import { getDb } from "./db";
+import { getDb, isMultiTenantModeActive } from "./db";
+import { getImageStore, isCurrentTenantCandidateKey, shortHash } from "./lib/imageStore";
 import { logger } from "./logger";
 import { resolveKioskDevice } from "./services/kioskDeviceService";
 import { inspectStorefrontContext } from "./services/storefrontContextService";
 import type { Request, Response } from "express";
+import { companyCodeTenancyMiddleware } from "./tenancy/expressMiddleware";
+import { getCurrentCompanyId } from "./tenancy/context";
 
 /** سنة كاملة — آمنة لأن الرابط يحمل بصمة المحتوى (تغيّر المحتوى ⇒ تغيّر الرابط). */
 const ONE_YEAR = 60 * 60 * 24 * 365;
@@ -146,8 +149,59 @@ function sendImage(req: Request, res: Response, dataUrl: string | null, visibili
   res.setHeader("Content-Type", img.mime);
   // الصورة ليست مستنداً: نمنع أيّ محاولة تفسيرٍ كـHTML مهما كان المحتوى.
   res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   res.setHeader("Content-Length", String(img.bytes.length));
   return res.end(img.bytes);
+}
+
+type StoredProductImage = {
+  objectKey: string | null;
+  contentHash: string | null;
+  mime: string | null;
+  bytes: number | null;
+};
+
+/**
+ * يبثّ **المشتق المعتمد فقط** من المخزن الخاص. مفتاح المرشّح لا يصل للعميل ولا توجد نقطة للأصل:
+ * صف productImages هو بوابة النشر، ومفتاحه المقبول مقصور دفاعياً على نطاق الشركة وstudio/candidate/. كما تُطابق
+ * بصمة الرابط محتوى الصف قبل فتح R2 كي لا يصبح immutable صحيحاً لرابطٍ خاطئ.
+ */
+async function sendStoredProductImage(
+  req: Request,
+  res: Response,
+  image: StoredProductImage,
+  visibility: "public" | "private",
+): Promise<Response> {
+  const { objectKey, contentHash, mime, bytes } = image;
+  if (
+    !objectKey || !isCurrentTenantCandidateKey(objectKey) ||
+    !contentHash || !/^[0-9a-f]{64}$/i.test(contentHash) ||
+    !mime || !ALLOWED_MIME.has(mime.toLowerCase())
+  ) return res.status(404).end();
+
+  const version = shortHash(contentHash);
+  if (typeof req.query.v !== "string" || req.query.v !== version) return res.status(404).end();
+  const stream = await getImageStore().getStream(objectKey);
+  if (!stream) return res.status(404).end();
+
+  const etag = `"${version}"`;
+  res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
+  if (visibility === "private") res.setHeader("Vary", "Cookie");
+  res.setHeader("ETag", etag);
+  if (req.headers["if-none-match"] === etag) {
+    stream.destroy();
+    return res.status(304).end();
+  }
+  res.setHeader("Content-Type", mime.toLowerCase());
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  if (bytes != null && Number.isSafeInteger(bytes) && bytes > 0) res.setHeader("Content-Length", String(bytes));
+  stream.on("error", (error) => {
+    logger.error({ err: error }, "img: private object stream failed");
+    res.destroy(error);
+  });
+  stream.pipe(res);
+  return res;
 }
 
 /**
@@ -246,16 +300,24 @@ export function imageRouter(): Router {
    * وهو خلف مصادقة (مستخدم أو كوكي جهاز) بينما هذه النقطة مجهولة ⇒ جمهورٌ مختلف يستحقّ
    * نقطةً واعيةً بمصادقته، لا بوّابةً مُوسَّعة. يبقى الكشك على data URL حتى تُبنى تلك (راجع تقرير الجلسة).
    */
-  r.get("/product/:id", async (req, res) => {
+  const servePublicProduct = async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
+    // الرابط غير المسند لشركة متاح فقط في النشر الأحادي أو داخل جلسة شركة؛ المجهول في multi يستخدم /company/:code/.
+    if (isMultiTenantModeActive() && getCurrentCompanyId() == null) return res.status(404).end();
     const db = getDb();
     if (!db) return res.status(503).end();
 
     try {
       const row = (
         await db
-          .select({ url: productImages.url })
+          .select({
+            url: productImages.url,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            mime: productImages.mime,
+            bytes: productImages.bytes,
+          })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))
           .where(
@@ -272,12 +334,19 @@ export function imageRouter(): Router {
       )[0];
       if (!row) return res.status(404).end();
 
+      if (row.objectKey) return await sendStoredProductImage(req, res, row, "public");
       return sendImage(req, res, row.url, "public");
     } catch (e) {
       logger.error({ err: e, productImageId: id }, "img: product image fetch failed");
       return res.status(500).end();
     }
-  });
+  };
+
+  // في تعدد الشركات يحمل الرابط العام رمز الشركة نفسه، لأن الزائر المجهول لا يملك session
+  // يمكن اشتقاق المستأجر منها. الوسيط يحجز اتصال الشركة ويغلف القراءة وسلسلة R2 في ALS.
+  r.get("/company/:companyCode/product/:id", companyCodeTenancyMiddleware(), servePublicProduct);
+  // توافق أحادي الشركة وروابط الإرث؛ في multi-tenant يفشل getDb مغلقاً بلا سياق ولا يتسرب مستأجر آخر.
+  r.get("/product/:id", servePublicProduct);
 
   /**
    * صورة منتجٍ لكشك المعرض — **خلف مصادقة** (مستخدم نظام أو كوكي جهاز)، بخلاف النقطة العلنية.
@@ -299,7 +368,13 @@ export function imageRouter(): Router {
 
       const row = (
         await db
-          .select({ url: productImages.url })
+          .select({
+            url: productImages.url,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            mime: productImages.mime,
+            bytes: productImages.bytes,
+          })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))
           .where(and(
@@ -312,6 +387,7 @@ export function imageRouter(): Router {
       )[0];
       if (!row) return res.status(404).end();
 
+      if (row.objectKey) return await sendStoredProductImage(req, res, row, "private");
       return sendImage(req, res, row.url, "private");
     } catch (e) {
       logger.error({ err: e, productImageId: id }, "img: kiosk product image fetch failed");

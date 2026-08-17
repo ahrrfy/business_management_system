@@ -11,6 +11,7 @@ export type { ImageStore, ObjectHead, PutResult } from "./types";
 export { contentHash, extForMime, objectKeyFor, shortHash } from "./contentAddress";
 export { FsImageStore } from "./fsStore";
 export { R2ImageStore, readR2ImageStoreConfig } from "./r2Store";
+export { imageStoreTenantPrefix, isCurrentTenantCandidateKey, studioObjectPrefix } from "./tenantNamespace";
 
 let cached: ImageStore | null = null;
 

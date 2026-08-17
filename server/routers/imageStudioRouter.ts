@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { AI_STUDIO_PROVIDERS, buildAiStudioPrompt, MAX_STUDIO_PROMPT_LEN, MAX_USER_PROMPT_LEN } from "@shared/imageStudio/aiPrompt";
-import { adminProcedure, productsManagerProcedure, protectedProcedure, router } from "../trpc";
+import { adminProcedure, productStudioWriteProcedure, protectedProcedure, router } from "../trpc";
 import {
   getAiImageStudioSettings,
   getAiStudioConfig,
@@ -23,6 +23,16 @@ import {
 } from "../services/imageStudioUsageGuard";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { logAudit } from "../services/auditService";
+import { attestStudioProcessing, type ProductStudioActor } from "../services/productStudioService";
+
+function studioActor(ctx: { user: { id: number; branchId?: number | null; role: string; isOwner?: boolean } }): ProductStudioActor {
+  return {
+    userId: Number(ctx.user.id),
+    branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
+    role: ctx.user.role,
+    isOwner: ctx.user.isOwner === true,
+  };
+}
 
 /**
  * استوديو صور المنتجات — مسار Pro (remove.bg). شريحة ٥.
@@ -69,8 +79,8 @@ export const imageStudioRouter = router({
 
   proConfig: protectedProcedure.query(() => getProConfig()),
 
-  proCutout: productsManagerProcedure
-    .input(z.object({ imageDataUrl: z.string().min(1).max(6_000_000) }))
+  proCutout: productStudioWriteProcedure
+    .input(z.object({ imageDataUrl: z.string().min(1).max(6_000_000), taskId: z.number().int().positive().optional() }))
     .mutation(async ({ input, ctx }) => {
       // تحقّق أمني: data URL صورة صالحة (سحر البايتات) حتى ٢م.ب — نفس كتّاب صور المنتج.
       assertValidImageDataUrl(input.imageDataUrl, 2_000_000, true);
@@ -91,10 +101,14 @@ export const imageStudioRouter = router({
           userId: Number(ctx.user.id),
           run: () => callRemovebg(key, base64),
         });
+        const processingReceipt = input.taskId
+          ? await attestStudioProcessing(studioActor(ctx), input.taskId, "PRO")
+          : undefined;
         return {
           cutoutDataUrl: `data:image/png;base64,${result.cutout.toString("base64")}`,
           creditsCharged: result.creditsCharged,
           isPreview: result.isPreview ?? false,
+          processingReceipt,
         };
       } catch (e) {
         if (e instanceof ImageStudioGuardError) {
@@ -167,7 +181,7 @@ export const imageStudioRouter = router({
 
   aiConfig: protectedProcedure.query(() => getAiStudioConfig()),
 
-  aiStudioTransform: productsManagerProcedure
+  aiStudioTransform: productStudioWriteProcedure
     .input(
       z.object({
         /** صورة المنتج (وضع EDIT). data URL حتى ٦م.ب نصّاً (~٢م.ب خام). */
@@ -176,6 +190,7 @@ export const imageStudioRouter = router({
         userPrompt: z.string().max(MAX_USER_PROMPT_LEN).optional(),
         /** EDIT (الافتراضي): يُعيد تصميم صورة مرفوعة. GENERATE: يولّد من نصّ (يلزم userPrompt). */
         mode: z.enum(["EDIT", "GENERATE"]).default("EDIT"),
+        taskId: z.number().int().positive().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -217,10 +232,14 @@ export const imageStudioRouter = router({
             mimeType,
           }),
         });
+        const processingReceipt = input.taskId
+          ? await attestStudioProcessing(studioActor(ctx), input.taskId, "AI")
+          : undefined;
         return {
           imageDataUrl: `data:${result.mimeType};base64,${result.imageBase64}`,
           provider: runtime.provider,
           model: runtime.model,
+          processingReceipt,
         };
       } catch (e) {
         if (e instanceof ImageStudioGuardError) {

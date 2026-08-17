@@ -431,7 +431,7 @@ async function upsertVariantUnits(
 async function reconcileProductImages(tx: Tx, productId: number, desired: UpdateProductImageInput[]) {
   const items = desired.slice(0, 10); // نفس سقف الإنشاء (١٠ صور)
   const existing = await tx
-    .select({ id: productImages.id })
+    .select({ id: productImages.id, url: productImages.url })
     .from(productImages)
     .where(and(eq(productImages.productId, productId), isNull(productImages.variantId)));
   const existingIds = new Set(existing.map((r) => Number(r.id)));
@@ -445,10 +445,27 @@ async function reconcileProductImages(tx: Tx, productId: number, desired: Update
     if (it.id != null && existingIds.has(it.id)) {
       // صورة قائمة مملوكة ⇒ تحديثٌ في المكان (id ثابت)؛ البايتات تُكتَب فقط عند استبدالها.
       keep.add(it.id);
-      await tx
-        .update(productImages)
-        .set({ isPrimary, sortOrder, ...(url ? { url } : {}) })
-        .where(eq(productImages.id, it.id));
+      const current = existing.find((row) => Number(row.id) === it.id)!;
+      const replacesBytes = Boolean(url && url !== current.url);
+      await tx.update(productImages).set({
+        isPrimary,
+        sortOrder,
+        ...(replacesBytes ? {
+          url,
+          objectKey: null,
+          originalKey: null,
+          contentHash: null,
+          thumbDataUrl: null,
+          mime: null,
+          width: null,
+          height: null,
+          bytes: null,
+          publishedStudioJobId: null,
+          origin: "MANUAL" as const,
+          reviewStatus: "APPROVED" as const,
+          migratedAt: null,
+        } : {}),
+      }).where(eq(productImages.id, it.id));
     } else if (url) {
       // جديدة (أو id لا يخصّ هذا المنتج ⇒ يُتجاهَل ويُعامَل جديداً — لا IDOR على صفوف غيره).
       await tx.insert(productImages).values({ productId, variantId: null, url, isPrimary, sortOrder });
@@ -590,7 +607,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       if (v.image !== undefined) {
         const img = (v.image ?? "").trim();
         const existing = await tx
-          .select({ id: productImages.id })
+          .select({ id: productImages.id, url: productImages.url })
           .from(productImages)
           .where(eq(productImages.variantId, variantId))
           .orderBy(productImages.id);
@@ -599,7 +616,23 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
             // تحديث في المكان (يصون productImages.id فلا تتدلّى روابط /api/img المُفتَّحة بالـid:
             // كاش SW سنة/حافة CF/صفوف الأوفلاين)؛ ?v= يتغيّر فقط عند تغيّر المحتوى ⇒ إبطال صحيح.
             // راجع docs/product-image-studio-design-2026-07-21.md §٢.ب.
-            await tx.update(productImages).set({ url: img }).where(eq(productImages.id, existing[0].id));
+            if (img !== existing[0].url) {
+              await tx.update(productImages).set({
+                url: img,
+                objectKey: null,
+                originalKey: null,
+                contentHash: null,
+                thumbDataUrl: null,
+                mime: null,
+                width: null,
+                height: null,
+                bytes: null,
+                publishedStudioJobId: null,
+                origin: "MANUAL",
+                reviewStatus: "APPROVED",
+                migratedAt: null,
+              }).where(eq(productImages.id, existing[0].id));
+            }
             if (existing.length > 1)
               await tx.delete(productImages).where(inArray(productImages.id, existing.slice(1).map((r) => r.id)));
           } else {

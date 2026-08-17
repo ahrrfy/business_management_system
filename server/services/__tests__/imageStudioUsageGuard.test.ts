@@ -1,7 +1,7 @@
 /** حراس تكلفة/تحمل استوديو الصور: السقف اليومي محفوظ، والتزامن/المعدل يمنعان الإغراق. */
 import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { imageStudioUsageDaily } from "../../../drizzle/schema";
+import { imageStudioUsageDaily, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   __resetImageStudioUsageGuardForTests,
@@ -18,6 +18,12 @@ function db() {
 
 async function reset() {
   await db().execute(sql`TRUNCATE TABLE \`imageStudioUsageDaily\``);
+  await db().execute(sql`TRUNCATE TABLE \`imageStudioUserRateState\``);
+  await db().insert(users).values([1, 2, 3, 44, 70, 71].map((id) => ({
+    id,
+    openId: `image-studio-guard-${id}`,
+    name: `Guard ${id}`,
+  }))).onDuplicateKeyUpdate({ set: { openId: sql`${users.openId}` } });
   __resetImageStudioUsageGuardForTests();
 }
 
@@ -49,7 +55,7 @@ describe("imageStudioUsageGuard", () => {
     await expect(runGuardedImageStudioCall({ service: "AI", userId: 44, run: async () => "no" })).rejects.toMatchObject({ kind: "RATE_LIMITED" });
   });
 
-  it("لا يسمح بأكثر من اتصالين خارجيين نشطين في العامل الواحد", async () => {
+  it("لا يسمح بأكثر من اتصالين خارجيين عبر اتصالات MySQL المستقلة ويعيد الخانة بعد التحرير", async () => {
     let releaseFirst: (() => void) | undefined;
     let releaseSecond: (() => void) | undefined;
     let firstStarted!: () => void;
@@ -74,5 +80,17 @@ describe("imageStudioUsageGuard", () => {
     releaseSecond?.();
     await expect(first).resolves.toBe("first");
     await expect(second).resolves.toBe("second");
+    await expect(runGuardedImageStudioCall({ service: "AI", userId: 3, run: async () => "third-after-release" }))
+      .resolves.toBe("third-after-release");
+  });
+
+  it("يحرر القفل العالمي إذا رمى المزود خطأ", async () => {
+    await expect(runGuardedImageStudioCall({
+      service: "AI",
+      userId: 70,
+      run: async () => { throw new Error("provider failed"); },
+    })).rejects.toThrow("provider failed");
+    await expect(runGuardedImageStudioCall({ service: "AI", userId: 71, run: async () => "recovered" }))
+      .resolves.toBe("recovered");
   });
 });
