@@ -24,8 +24,17 @@ import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { imageRouter } from "../../imageRoute";
-import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor, shortHash } from "../../lib/imageStore";
+import {
+  __resetImageStoreForTest,
+  contentHash,
+  getImageStore,
+  ImageStoreUnavailableError,
+  MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
+  objectKeyFor,
+  shortHash,
+} from "../../lib/imageStore";
 import { storefrontProduct } from "../storefrontService";
+import { approveStudioTask, assignStudioTask, submitStudioCandidate } from "../productStudioService";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -51,6 +60,12 @@ async function withServer<T>(fn: (base: string) => Promise<T>): Promise<T> {
 /** أصغر JPEG صالح فعلاً: يبدأ FFD8 وينتهي FFD9 ⇒ يمرّ بالقائمة البيضاء ويُفكّ إلى بايتات. */
 const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x01, 0xff, 0xd9]);
 const JPEG_DATA_URL = `data:image/jpeg;base64,${JPEG_BYTES.toString("base64")}`;
+const PNG_1X1 =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const THUMB_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const THUMB_DATA_URL = `data:image/png;base64,${THUMB_BYTES.toString("base64")}`;
+const WEBP_1X1 =
+  "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
 let imageStoreDir = "";
 
 /** يزرع منتجاً كامل السلسلة (منتج→متغيّر→وحدة→سعر) + صورةً رئيسية، ويعيد معرّف الصورة. */
@@ -195,7 +210,11 @@ describe("GET /api/img/product/:id — XSS (العمود نصٌّ حرّ في DB
 });
 
 describe("GET /api/img/product/:id — مشتق معتمد من المخزن الخاص", () => {
-  async function seedStored(productId: number, prefix = "single/studio/candidate") {
+  async function seedStored(
+    productId: number,
+    prefix = "single/studio/candidate",
+    thumbDataUrl: string | null = THUMB_DATA_URL,
+  ) {
     const imageId = await seedProduct({ productId });
     const hash = contentHash(JPEG_BYTES);
     const objectKey = objectKeyFor(hash, "image/jpeg", prefix);
@@ -206,6 +225,7 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
       contentHash: hash,
       mime: "image/jpeg",
       bytes: JPEG_BYTES.length,
+      thumbDataUrl,
       reviewStatus: "APPROVED",
     });
     return { imageId, hash };
@@ -225,7 +245,7 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
 
   it("يعيد 304 من البصمة قبل فتح كائن المخزن", async () => {
     const { imageId, hash } = await seedStored(87);
-    const getStream = vi.spyOn(getImageStore(), "getStream");
+    const getBuffer = vi.spyOn(getImageStore(), "getBuffer");
     await withServer(async (base) => {
       const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`, {
         headers: { "If-None-Match": `"${shortHash(hash)}"` },
@@ -233,7 +253,151 @@ describe("GET /api/img/product/:id — مشتق معتمد من المخزن ا�
       expect(res.status).toBe(304);
       expect((await res.arrayBuffer()).byteLength).toBe(0);
     });
-    expect(getStream).not.toHaveBeenCalled();
+    expect(getBuffer).not.toHaveBeenCalled();
+  });
+
+  it("يقبل أكبر مشتق صالح وفق عقد submit المشترك دون خفض صامت للحد", async () => {
+    const imageId = await seedProduct({ productId: 96 });
+    const payload = Buffer.alloc(MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, 0x5a);
+    const hash = contentHash(payload);
+    const objectKey = objectKeyFor(hash, "image/jpeg", "single/studio/candidate");
+    await getImageStore().put(objectKey, payload, "image/jpeg");
+    await db().update(s.productImages).set({
+      url: `/api/img/product/${imageId}?v=${shortHash(hash)}`,
+      objectKey,
+      contentHash: hash,
+      mime: "image/jpeg",
+      bytes: payload.length,
+      reviewStatus: "APPROVED",
+    }).where(eq(s.productImages.id, imageId));
+    await withServer(async (base) => {
+      const response = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`);
+      expect(response.status).toBe(200);
+      expect(Number(response.headers.get("content-length"))).toBe(MAX_PUBLISHED_PRODUCT_IMAGE_BYTES);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(payload);
+    });
+  });
+
+  it("يسقط عند عطل R2 العابر إلى thumbDataUrl المعتمدة فقط وبلا كاش ثابت", async () => {
+    const { imageId, hash } = await seedStored(88);
+    // قيمة url مختلفة عمداً: لو استعملها fallback بدل thumbDataUrl لكشف الاختبار ذلك.
+    await db().update(s.productImages).set({ url: JPEG_DATA_URL }).where(eq(s.productImages.id, imageId));
+    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValueOnce(new ImageStoreUnavailableError("upstream", "get"));
+
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("image/png");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("etag")).toBeNull();
+      expect(res.headers.get("x-image-fallback")).toBe("thumbnail");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(THUMB_BYTES);
+    });
+  });
+
+  it("submit→approve ينشر WebP المصغّرة ثم يخدمها عند عطل R2 العابر", async () => {
+    await seedProduct({ productId: 92, imageValue: null });
+    await db().insert(s.users).values({
+      id: 2,
+      openId: "studio-route-worker",
+      name: "موظف الصور",
+      role: "print_operator",
+      branchId: 1,
+      loginMethod: "local",
+    });
+    const admin = { userId: 1, branchId: null, role: "admin" } as const;
+    const worker = { userId: 2, branchId: 1, role: "print_operator" } as const;
+    const { taskId } = await assignStudioTask(admin, { productId: 92, assigneeId: 2, sourceImageId: null });
+    await submitStudioCandidate(worker, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      thumbnailDataUrl: WEBP_1X1,
+      mode: "FLATTEN",
+    });
+    const { imageId } = await approveStudioTask(admin, taskId);
+    const [published] = await db().select().from(s.productImages).where(eq(s.productImages.id, imageId));
+    expect(published?.thumbDataUrl).toBe(WEBP_1X1);
+    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValueOnce(new ImageStoreUnavailableError("upstream", "get"));
+
+    await withServer(async (base) => {
+      const res = await fetch(`${base}${published!.url}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("image/webp");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("x-image-fallback")).toBe("thumbnail");
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(Buffer.from(WEBP_1X1.split(",")[1], "base64"));
+    });
+  });
+
+  it("لا يحول AccessDenied أو غياب الكائن إلى fallback ولا يخفي خطأ الإعداد", async () => {
+    const denied = await seedStored(89);
+    const missing = await seedStored(90);
+    const store = getImageStore();
+    vi.spyOn(store, "getBuffer")
+      .mockRejectedValueOnce(Object.assign(new Error("denied"), { name: "AccessDenied", $metadata: { httpStatusCode: 403 } }))
+      .mockResolvedValueOnce(null);
+
+    await withServer(async (base) => {
+      const deniedResponse = await fetch(`${base}/api/img/product/${denied.imageId}?v=${shortHash(denied.hash)}`);
+      expect(deniedResponse.status).toBe(500);
+      expect(deniedResponse.headers.get("cache-control")).toBe("no-store");
+      expect(deniedResponse.headers.get("etag")).toBeNull();
+      const missingResponse = await fetch(`${base}/api/img/product/${missing.imageId}?v=${shortHash(missing.hash)}`);
+      expect(missingResponse.status).toBe(404);
+      expect(missingResponse.headers.get("cache-control")).toBe("no-store");
+      expect(missingResponse.headers.get("etag")).toBeNull();
+    });
+  });
+
+  it("عطل عابر بلا مصغّرة آمنة ⇒ 503 ولا يسقط إلى url أو الأصل", async () => {
+    const { imageId, hash } = await seedStored(91, "single/studio/candidate", null);
+    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValueOnce(new ImageStoreUnavailableError("circuit_open", "get"));
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`);
+      expect(res.status).toBe(503);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect((await res.arrayBuffer()).byteLength).toBe(0);
+    });
+  });
+
+  it("خطأ body العابر قبل اكتماله يعيد المصغّرة وحدها بلا partial أو كاش", async () => {
+    const { imageId, hash } = await seedStored(93);
+    vi.spyOn(getImageStore(), "getBuffer").mockRejectedValueOnce(new ImageStoreUnavailableError(
+      "upstream",
+      "get",
+      Object.assign(new Error("body reset"), { code: "ECONNRESET" }),
+    ));
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("etag")).toBeNull();
+      expect(res.headers.get("x-image-fallback")).toBe("thumbnail");
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(THUMB_BYTES);
+    });
+  });
+
+  it("يفشل مغلقاً عند فساد البصمة أو metadata فوق سقف العرض ولا يستخدم المصغّرة", async () => {
+    const corrupt = await seedStored(94);
+    const oversized = await seedStored(95);
+    const wrongHash = "f".repeat(64);
+    await db().update(s.productImages).set({ contentHash: wrongHash }).where(eq(s.productImages.id, corrupt.imageId));
+    await db().update(s.productImages).set({ bytes: MAX_PUBLISHED_PRODUCT_IMAGE_BYTES + 1 }).where(eq(s.productImages.id, oversized.imageId));
+    const getBuffer = vi.spyOn(getImageStore(), "getBuffer");
+
+    await withServer(async (base) => {
+      const corruptResponse = await fetch(`${base}/api/img/product/${corrupt.imageId}?v=${shortHash(wrongHash)}`);
+      expect(corruptResponse.status).toBe(500);
+      expect(corruptResponse.headers.get("cache-control")).toBe("no-store");
+      expect(corruptResponse.headers.get("x-image-fallback")).toBeNull();
+      const oversizedResponse = await fetch(`${base}/api/img/product/${oversized.imageId}?v=${shortHash(oversized.hash)}`);
+      expect(oversizedResponse.status).toBe(500);
+      expect(oversizedResponse.headers.get("cache-control")).toBe("no-store");
+      expect(oversizedResponse.headers.get("x-image-fallback")).toBeNull();
+    });
+    expect(getBuffer).toHaveBeenCalledTimes(1);
   });
 
   it("يرفض بصمة رابط ناقصة/خاطئة ولا يفتح R2 كدليل ملفات", async () => {

@@ -19,7 +19,7 @@ import {
   rejectStudioTask,
   revertStudioTask,
   saveStudioDraft,
-  submitStudioCandidate,
+  submitStudioCandidate as submitStudioCandidateService,
   type ProductStudioActor,
 } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
@@ -28,6 +28,16 @@ const PNG_1X1 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const PNG_1X1_ALT =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nH0AAAAASUVORK5CYII=";
+const WEBP_1X1 =
+  "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
+
+type SubmitInput = Parameters<typeof submitStudioCandidateService>[1];
+function submitStudioCandidate(
+  actor: ProductStudioActor,
+  input: Omit<SubmitInput, "thumbnailDataUrl"> & { thumbnailDataUrl?: string },
+) {
+  return submitStudioCandidateService(actor, { ...input, thumbnailDataUrl: input.thumbnailDataUrl ?? WEBP_1X1 });
+}
 
 function db() {
   const value = getDb();
@@ -135,8 +145,8 @@ describe("product studio governed workflow", () => {
     expect(pending?.status).toBe("PENDING_REVIEW");
     expect(pending?.originalObjectKey).toMatch(/^single\/studio\/original\//);
     expect(pending?.processedObjectKey).toMatch(/^single\/studio\/candidate\//);
-    expect(pending?.processedUrl).toBeNull();
-    expect(JSON.stringify(pending)).not.toContain("data:image/");
+    expect(pending?.processedUrl).toBe(WEBP_1X1);
+    expect(JSON.stringify(pending)).not.toContain(PNG_1X1);
     expect(await db().select().from(s.productImages)).toHaveLength(0);
 
     const safeTask = (await listStudioTasks(worker, { scope: "MINE" }))[0];
@@ -156,11 +166,13 @@ describe("product studio governed workflow", () => {
     const [published] = await db().select().from(s.productImages).where(eq(s.productImages.productId, 1));
     expect(approvedJob?.status).toBe("APPROVED");
     expect(approvedJob?.activeSlot).toBeNull();
+    expect(approvedJob?.processedUrl).toBeNull();
     expect(published?.reviewStatus).toBe("APPROVED");
     expect(published?.objectKey).toBe(approvedJob?.processedObjectKey);
     expect(published?.originalKey).toBe(approvedJob?.originalObjectKey);
     expect(published?.url).toMatch(/^\/api\/img\/product\/\d+\?v=/);
     expect(published?.origin).toBe("STUDIO_AI");
+    expect(published?.thumbDataUrl).toBe(WEBP_1X1);
     const [updatedProduct] = await db().select().from(s.products).where(eq(s.products.id, 1));
     expect(updatedProduct?.name).toBe("قلم ألوان موثوق");
     expect(updatedProduct?.description).toContain("نص ترويجي صادق");
@@ -379,6 +391,32 @@ describe("product studio governed workflow", () => {
     const [task] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
     expect(task?.uploadLeaseToken).toBeNull();
     expect(task?.processedObjectKey).toBeNull();
+  });
+
+  it("يرفض مصغرة malformed/oversize/غير مطابقة ويعيد التحقق منها عند الاعتماد", async () => {
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
+    const common = { taskId, originalDataUrl: PNG_1X1, processedDataUrl: PNG_1X1, mode: "FLATTEN" as const };
+
+    await expect(submitStudioCandidate(worker, {
+      ...common,
+      thumbnailDataUrl: `data:image/png;base64,${Buffer.from("not-webp").toString("base64")}`,
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(submitStudioCandidate(worker, {
+      ...common,
+      thumbnailDataUrl: `data:image/webp;base64,${"A".repeat(180_000)}`,
+    })).rejects.toMatchObject({ code: "PAYLOAD_TOO_LARGE" });
+
+    const mismatchedBytes = Buffer.from(WEBP_1X1.slice(WEBP_1X1.indexOf(",") + 1), "base64");
+    mismatchedBytes.writeUInt16LE(2, 26); // المرشح 1×1؛ المصغرة المعلنة 2×1.
+    const mismatched = `data:image/webp;base64,${mismatchedBytes.toString("base64")}`;
+    await expect(submitStudioCandidate(worker, { ...common, thumbnailDataUrl: mismatched }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await submitStudioCandidate(worker, common);
+    // عبث DB بين submit وapprove: يعاد التحقق داخل قفل الاعتماد ولا تُنشر المصغرة المخالفة.
+    await db().update(s.productImageJobs).set({ processedUrl: mismatched }).where(eq(s.productImageJobs.id, taskId));
+    await expect(approveStudioTask(manager, taskId)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await db().select().from(s.productImages)).toHaveLength(0);
   });
 
   it("does not copy a legacy source or create a task on production without R2", async () => {

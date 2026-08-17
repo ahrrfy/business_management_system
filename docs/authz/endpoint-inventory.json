@@ -10082,7 +10082,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/productStudioRouter.ts:101"
+      "loc": "server/routers/productStudioRouter.ts:102"
     },
     {
       "surface": "trpc",
@@ -10218,7 +10218,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/productStudioRouter.ts:104"
+      "loc": "server/routers/productStudioRouter.ts:105"
     },
     {
       "surface": "trpc",
@@ -10235,7 +10235,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/productStudioRouter.ts:107"
+      "loc": "server/routers/productStudioRouter.ts:108"
     },
     {
       "surface": "trpc",
@@ -16363,7 +16363,7 @@
       "method": "GET",
       "path": "/banner/:id/:slot",
       "file": "server/imageRoute.ts",
-      "line": 248,
+      "line": 456,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -16374,7 +16374,7 @@
       "method": "GET",
       "path": "/company/:companyCode/product/:id",
       "file": "server/imageRoute.ts",
-      "line": 344,
+      "line": 553,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -16385,7 +16385,7 @@
       "method": "GET",
       "path": "/product/:id",
       "file": "server/imageRoute.ts",
-      "line": 346,
+      "line": 555,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -16396,7 +16396,7 @@
       "method": "GET",
       "path": "/kiosk-product/:id",
       "file": "server/imageRoute.ts",
-      "line": 357,
+      "line": 566,
       "authority": "device",
       "roles": "kiosk",
       "sensitivity": "MEDIUM",

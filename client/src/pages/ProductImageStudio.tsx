@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
+import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, CheckCircle2, ClipboardList, History, Image, Loader2, RefreshCw, RotateCcw, UserCheck, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -89,6 +90,7 @@ export default function ProductImageStudio() {
   const [rejectReason, setRejectReason] = useState("");
   const [studioMode, setStudioMode] = useState<"FLATTEN" | "CUT" | "AI">("FLATTEN");
   const [processingReceipt, setProcessingReceipt] = useState<string | null>(null);
+  const [isPreparingThumbnail, setIsPreparingThumbnail] = useState(false);
 
   const utils = trpc.useUtils();
   const dashboard = trpc.productStudio.dashboard.useQuery();
@@ -183,8 +185,31 @@ export default function ProductImageStudio() {
     setSelectedId(Number(task.id));
   }
 
+  async function submitForReview() {
+    if (!selected || !images[0]?.dataUrl) return;
+    setIsPreparingThumbnail(true);
+    try {
+      const thumbnailDataUrl = await createProductWebpThumbnail(images[0].dataUrl);
+      await submit.mutateAsync({
+        taskId: Number(selected.id),
+        originalDataUrl: originalDataUrl || null,
+        processedDataUrl: images[0].dataUrl,
+        thumbnailDataUrl,
+        mode: studioMode === "AI" ? "FLATTEN" : studioMode,
+        processingReceipt,
+        proposedName: name,
+        proposedDescription: description,
+        proposedMarketingCopy: marketingCopy,
+      });
+    } catch (error) {
+      notify.err(error);
+    } finally {
+      setIsPreparingThumbnail(false);
+    }
+  }
+
   const counts = dashboard.data?.counts;
-  const busy = saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending;
+  const busy = isPreparingThumbnail || saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending;
   const editable = selected && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status);
   const storageActionsDisabled = isStudioStorageActionDisabled(dashboard.data?.storageReady);
 
@@ -324,16 +349,10 @@ export default function ProductImageStudio() {
                       />
                       <div className="flex flex-wrap gap-2">
                         <Button variant="outline" disabled={busy} onClick={() => saveDraft.mutate({ taskId: Number(selected.id), proposedName: name, proposedDescription: description, proposedMarketingCopy: marketingCopy })}>حفظ المسودة</Button>
-                        <Button disabled={busy || (!selected.hasOriginal && !originalDataUrl) || !images[0]?.dataUrl} onClick={() => submit.mutate({
-                          taskId: Number(selected.id),
-                          originalDataUrl: originalDataUrl || null,
-                          processedDataUrl: images[0].dataUrl,
-                          mode: studioMode === "AI" ? "FLATTEN" : studioMode,
-                          processingReceipt,
-                          proposedName: name,
-                          proposedDescription: description,
-                          proposedMarketingCopy: marketingCopy,
-                        })}>إرسال المحتوى والصورة للمراجعة</Button>
+                        <Button disabled={busy || (!selected.hasOriginal && !originalDataUrl) || !images[0]?.dataUrl} onClick={() => void submitForReview()}>
+                          {isPreparingThumbnail && <Loader2 aria-hidden className="size-4 animate-spin" />}
+                          إرسال المحتوى والصورة للمراجعة
+                        </Button>
                       </div>
                     </>
                   )}

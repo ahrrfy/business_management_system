@@ -571,7 +571,10 @@ describe("updateProductWithVariants — الكتابة", () => {
       objectKey: "single/studio/candidate/old.webp",
       originalKey: "single/studio/original/old.webp",
       contentHash: "a".repeat(64),
+      thumbDataUrl: "data:image/webp;base64,OLD-THUMB",
       mime: "image/webp",
+      width: 320,
+      height: 160,
       bytes: 99,
       publishedStudioJobId: Number(job.id),
       origin: "STUDIO_FREE",
@@ -589,6 +592,11 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(after[0].objectKey).toBeNull();
     expect(after[0].originalKey).toBeNull();
     expect(after[0].contentHash).toBeNull();
+    expect(after[0].thumbDataUrl).toBeNull();
+    expect(after[0].mime).toBeNull();
+    expect(after[0].width).toBeNull();
+    expect(after[0].height).toBeNull();
+    expect(after[0].bytes).toBeNull();
     expect(after[0].publishedStudioJobId).toBeNull();
     expect(after[0].origin).toBe("MANUAL");
   });
@@ -793,7 +801,10 @@ describe("product-image-edit — صور المنتج العامّة (variantId=N
       objectKey: "single/studio/candidate/old.webp",
       originalKey: "single/studio/original/old.webp",
       contentHash: "b".repeat(64),
+      thumbDataUrl: "data:image/webp;base64,OLD-THUMB",
       mime: "image/webp",
+      width: 320,
+      height: 160,
       bytes: 100,
       publishedStudioJobId: Number(job.id),
       origin: "STUDIO_AI",
@@ -809,7 +820,11 @@ describe("product-image-edit — صور المنتج العامّة (variantId=N
     expect(imgs[0].objectKey).toBeNull();
     expect(imgs[0].originalKey).toBeNull();
     expect(imgs[0].contentHash).toBeNull();
+    expect(imgs[0].thumbDataUrl).toBeNull();
     expect(imgs[0].mime).toBeNull();
+    expect(imgs[0].width).toBeNull();
+    expect(imgs[0].height).toBeNull();
+    expect(imgs[0].bytes).toBeNull();
     expect(imgs[0].publishedStudioJobId).toBeNull();
     expect(imgs[0].origin).toBe("MANUAL");
   });

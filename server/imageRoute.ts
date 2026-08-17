@@ -24,11 +24,21 @@ import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { productImages, products, storeBanners } from "../drizzle/schema";
 import { getSessionContext } from "./auth/session";
 import { getDb, isMultiTenantModeActive } from "./db";
-import { getImageStore, isCurrentTenantCandidateKey, shortHash } from "./lib/imageStore";
+import {
+  getImageStore,
+  ImageStoreClientAbortError,
+  isCurrentTenantCandidateKey,
+  isImageStoreClientAbortError,
+  isImageStoreUnavailableError,
+  MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
+  recordImageStorePublicFallback,
+  shortHash,
+} from "./lib/imageStore";
 import { logger } from "./logger";
 import { resolveKioskDevice } from "./services/kioskDeviceService";
 import { inspectStorefrontContext } from "./services/storefrontContextService";
 import type { Request, Response } from "express";
+import type { Readable } from "node:stream";
 import { companyCodeTenancyMiddleware } from "./tenancy/expressMiddleware";
 import { getCurrentCompanyId } from "./tenancy/context";
 
@@ -37,6 +47,11 @@ const ONE_YEAR = 60 * 60 * 24 * 365;
 
 /** أنواع الصور المسموح خدمتها — قائمة بيضاء صريحة (لا نثق ببادئة data URL القادمة من DB). */
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"]);
+/** المصغّرة شبكة عرض فقط؛ حدها يمنع تحويل عمود DB إلى مسار بديل لصور كاملة كبيرة. */
+const MAX_FALLBACK_THUMB_BYTES = 256 * 1024;
+/** سقف مشتق العرض العام = عقد submit نفسه؛ أسوأ buffer افتراضي لكل worker = 4 × 900kB = 3.6MB. */
+const MAX_PUBLIC_STORED_IMAGE_BYTES = MAX_PUBLISHED_PRODUCT_IMAGE_BYTES;
+const MAX_PRIVATE_STORED_IMAGE_BYTES = 25 * 1024 * 1024;
 
 export interface DecodedImage {
   mime: string;
@@ -159,7 +174,115 @@ type StoredProductImage = {
   contentHash: string | null;
   mime: string | null;
   bytes: number | null;
+  thumbDataUrl?: string | null;
 };
+
+/**
+ * سقوط عرضي عام فقط عند تعثّر R2. لا ETag ولا immutable: لا يجوز تثبيت المصغّرة سنةً مكان
+ * المشتق المعتمد. المصدر الوحيد هو thumbDataUrl المنشور في نفس صف الصورة المعتمدة، لا url ولا الأصل.
+ */
+function sendPublicThumbnailFallback(res: Response, dataUrl: string | null | undefined): Response | null {
+  const img = decodeDataUrl(dataUrl);
+  if (!img || img.bytes.length > MAX_FALLBACK_THUMB_BYTES) return null;
+  res.removeHeader("ETag");
+  res.removeHeader("Content-Length");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Content-Type", img.mime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("X-Image-Fallback", "thumbnail");
+  res.setHeader("Content-Length", String(img.bytes.length));
+  return res.end(img.bytes);
+}
+
+function preventCachingStoredImageFailure(res: Response): void {
+  res.removeHeader("ETag");
+  res.removeHeader("Content-Length");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+}
+
+/**
+ * يربط دورة حياة بثّ الكشك باتصال العميل. قطع downstream قبل finish يدمر upstream بلا error
+ * فيراه runStream إلغاءً محايداً ويحرر permit؛ النجاح الطبيعي لا يدمر الجسم مبكراً. كل مسار
+ * terminal ينظف listeners مرة واحدة حتى لا تتراكم على keep-alive.
+ */
+export function bindStoredStreamLifecycle(
+  req: Request,
+  res: Response,
+  stream: Readable,
+  signal?: AbortSignal,
+): boolean {
+  let completed = false;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    req.off("aborted", onClientAbort);
+    res.off("close", onResponseClose);
+    res.off("finish", onResponseFinish);
+    stream.off("end", onStreamEnd);
+    stream.off("error", onStreamError);
+    stream.off("close", onStreamClose);
+    signal?.removeEventListener("abort", onSignalAbort);
+  };
+  const cancelUpstream = () => {
+    if (completed) return;
+    if (stream.destroyed) {
+      cleanup();
+      return;
+    }
+    stream.destroy(new ImageStoreClientAbortError());
+  };
+  const onClientAbort = () => cancelUpstream();
+  const onSignalAbort = () => cancelUpstream();
+  const onResponseClose = () => {
+    if (!completed) {
+      // destroy(error) يطلق error لاحقاً؛ أبقِ listener حتى يستهلك علامة الإلغاء ثم ينظف.
+      cancelUpstream();
+      return;
+    }
+    cleanup();
+  };
+  const onResponseFinish = () => {
+    completed = true;
+    cleanup();
+  };
+  const onStreamEnd = () => {
+    completed = true;
+    cleanup();
+  };
+  const onStreamError = (error: Error) => {
+    cleanup();
+    if (isImageStoreClientAbortError(error)) return;
+    logger.error({ err: error }, "img: object stream failed");
+    if (!res.destroyed) res.destroy(error);
+  };
+  const onStreamClose = () => {
+    cleanup();
+    if (!completed && !res.destroyed) {
+      const error = Object.assign(new Error("img: object stream closed before end"), { code: "ECONNRESET" });
+      logger.error({ err: error }, "img: object stream failed");
+      res.destroy(error);
+    }
+  };
+
+  req.once("aborted", onClientAbort);
+  res.once("close", onResponseClose);
+  res.once("finish", onResponseFinish);
+  stream.once("end", onStreamEnd);
+  stream.once("error", onStreamError);
+  stream.once("close", onStreamClose);
+  signal?.addEventListener("abort", onSignalAbort, { once: true });
+
+  // يغلق سباق disconnect بين بدء GET وربط دورة حياة stream؛ لا pipe إلى response ميتة.
+  if (signal?.aborted || req.aborted || res.destroyed) {
+    cancelUpstream();
+    return false;
+  }
+  return true;
+}
 
 /**
  * يبثّ **المشتق المعتمد فقط** من المخزن الخاص. مفتاح المرشّح لا يصل للعميل ولا توجد نقطة للأصل:
@@ -176,29 +299,114 @@ async function sendStoredProductImage(
   if (
     !objectKey || !isCurrentTenantCandidateKey(objectKey) ||
     !contentHash || !/^[0-9a-f]{64}$/i.test(contentHash) ||
-    !mime || !ALLOWED_MIME.has(mime.toLowerCase())
+    !mime || !ALLOWED_MIME.has(mime.toLowerCase()) ||
+    !Number.isSafeInteger(bytes) || bytes == null || bytes <= 0 || bytes > MAX_PRIVATE_STORED_IMAGE_BYTES
   ) return res.status(404).end();
 
   const version = shortHash(contentHash);
   if (typeof req.query.v !== "string" || req.query.v !== version) return res.status(404).end();
   const etag = `"${version}"`;
-  res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
-  if (visibility === "private") res.setHeader("Vary", "Cookie");
-  res.setHeader("ETag", etag);
-  if (req.headers["if-none-match"] === etag) return res.status(304).end();
+  if (req.headers["if-none-match"] === etag) {
+    res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
+    if (visibility === "private") res.setHeader("Vary", "Cookie");
+    res.setHeader("ETag", etag);
+    return res.status(304).end();
+  }
 
-  const stream = await getImageStore().getStream(objectKey);
-  if (!stream) return res.status(404).end();
-  res.setHeader("Content-Type", mime.toLowerCase());
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-  if (bytes != null && Number.isSafeInteger(bytes) && bytes > 0) res.setHeader("Content-Length", String(bytes));
-  stream.on("error", (error) => {
-    logger.error({ err: error }, "img: private object stream failed");
-    res.destroy(error);
-  });
-  stream.pipe(res);
-  return res;
+  if (visibility === "public") {
+    if (bytes > MAX_PUBLIC_STORED_IMAGE_BYTES) {
+      preventCachingStoredImageFailure(res);
+      return res.status(500).end();
+    }
+    let body: Buffer | null;
+    const abortController = new AbortController();
+    const abortRead = () => abortController.abort();
+    const abortOnEarlyClose = () => {
+      if (!res.writableEnded) abortController.abort();
+    };
+    req.once("aborted", abortRead);
+    res.once("close", abortOnEarlyClose);
+    try {
+      // لا ترويسة 200 ولا pipe قبل اكتمال الجسم داخل semaphore والقاطع.
+      body = await getImageStore().getBuffer(objectKey, bytes, { signal: abortController.signal });
+    } catch (error) {
+      if (isImageStoreClientAbortError(error)) {
+        preventCachingStoredImageFailure(res);
+        return res;
+      }
+      if (!isImageStoreUnavailableError(error)) {
+        preventCachingStoredImageFailure(res);
+        throw error;
+      }
+      const fallback = sendPublicThumbnailFallback(res, image.thumbDataUrl);
+      if (fallback) {
+        recordImageStorePublicFallback();
+        logger.warn({ component: "r2_image_store", reason: error.reason }, "img: serving approved thumbnail fallback");
+        return fallback;
+      }
+      preventCachingStoredImageFailure(res);
+      return res.status(503).end();
+    } finally {
+      req.off("aborted", abortRead);
+      res.off("close", abortOnEarlyClose);
+    }
+    if (!body) {
+      preventCachingStoredImageFailure(res);
+      return res.status(404).end();
+    }
+    if (body.length !== bytes || createHash("sha256").update(body).digest("hex") !== contentHash.toLowerCase()) {
+      preventCachingStoredImageFailure(res);
+      return res.status(500).end();
+    }
+    res.setHeader("Cache-Control", `public, max-age=${ONE_YEAR}, immutable`);
+    res.setHeader("ETag", etag);
+    res.setHeader("Content-Type", mime.toLowerCase());
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    res.setHeader("Content-Length", String(body.length));
+    return res.end(body);
+  }
+
+  const abortController = new AbortController();
+  const abortRead = () => abortController.abort();
+  const abortOnEarlyClose = () => {
+    if (!res.writableEnded) abortController.abort();
+  };
+  req.once("aborted", abortRead);
+  res.once("close", abortOnEarlyClose);
+  try {
+    const stream = await getImageStore().getStream(objectKey, { signal: abortController.signal });
+    if (abortController.signal.aborted || req.aborted || res.destroyed) {
+      stream?.destroy(new ImageStoreClientAbortError());
+      return res;
+    }
+    if (!stream) {
+      preventCachingStoredImageFailure(res);
+      return res.status(404).end();
+    }
+    if (!bindStoredStreamLifecycle(req, res, stream, abortController.signal)) return res;
+
+    res.setHeader("Cache-Control", `private, max-age=${ONE_YEAR}, immutable`);
+    res.setHeader("Vary", "Cookie");
+    res.setHeader("ETag", etag);
+    res.setHeader("Content-Type", mime.toLowerCase());
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    if (bytes != null && Number.isSafeInteger(bytes) && bytes > 0) res.setHeader("Content-Length", String(bytes));
+    stream.pipe(res);
+    return res;
+  } catch (error) {
+    if (isImageStoreClientAbortError(error)) return res;
+    if (!isImageStoreUnavailableError(error)) {
+      preventCachingStoredImageFailure(res);
+      throw error;
+    }
+    preventCachingStoredImageFailure(res);
+    return res.status(503).end();
+  } finally {
+    req.off("aborted", abortRead);
+    res.off("close", abortOnEarlyClose);
+  }
 }
 
 /**
@@ -314,6 +522,7 @@ export function imageRouter(): Router {
             contentHash: productImages.contentHash,
             mime: productImages.mime,
             bytes: productImages.bytes,
+            thumbDataUrl: productImages.thumbDataUrl,
           })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))

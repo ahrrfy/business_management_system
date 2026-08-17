@@ -5,12 +5,25 @@
 import path from "node:path";
 import { FsImageStore } from "./fsStore";
 import { R2ImageStore, readR2ImageStoreConfig } from "./r2Store";
+import { readR2ResilienceConfig, type R2ResilienceSnapshot } from "./resilience";
+import { logger } from "../../logger";
 import type { ImageStore } from "./types";
 
-export type { ImageStore, ObjectHead, PutResult } from "./types";
+export { MAX_PUBLISHED_PRODUCT_IMAGE_BYTES } from "./types";
+export type { ImageStore, ImageStoreReadOptions, ObjectHead, PutResult } from "./types";
 export { contentHash, extForMime, objectKeyFor, shortHash } from "./contentAddress";
 export { FsImageStore } from "./fsStore";
 export { R2ImageStore, readR2ImageStoreConfig } from "./r2Store";
+export {
+  ImageStoreUnavailableError,
+  ImageStoreClientAbortError,
+  R2ResilienceController,
+  classifyR2Failure,
+  isImageStoreUnavailableError,
+  isImageStoreClientAbortError,
+  readR2ResilienceConfig,
+} from "./resilience";
+export type { R2ResilienceConfig, R2ResilienceSnapshot } from "./resilience";
 export { imageStoreTenantPrefix, isCurrentTenantCandidateKey, studioObjectPrefix } from "./tenantNamespace";
 
 let cached: ImageStore | null = null;
@@ -29,6 +42,7 @@ export function assertImageStoreStartupConfiguration(env: NodeJS.ProcessEnv = pr
   if (!configuredDriver) return;
   if (configuredDriver === "r2") {
     readR2ImageStoreConfig(env);
+    readR2ResilienceConfig(env);
     return;
   }
   if (configuredDriver !== "fs") {
@@ -69,7 +83,16 @@ export function getImageStore(): ImageStore {
   const driver = normalizedImageStoreDriver(process.env) ?? "fs";
   if (cached && cachedDriver === driver) return cached;
   if (driver === "r2") {
-    cached = new R2ImageStore(readR2ImageStoreConfig());
+    cached = new R2ImageStore(readR2ImageStoreConfig(), {
+      onResilienceEvent: (event) => {
+        const fields = { component: "r2_image_store", ...event };
+        if (event.type === "state" || (event.type === "reject" && event.reason !== "circuit_open")) {
+          logger.warn(fields, "image-store R2 resilience event");
+        } else {
+          logger.debug(fields, "image-store R2 resilience event");
+        }
+      },
+    });
     cachedDriver = "r2";
     return cached;
   }
@@ -77,6 +100,16 @@ export function getImageStore(): ImageStore {
   cached = new FsImageStore(root);
   cachedDriver = "fs";
   return cached;
+}
+
+/** metrics محلية للـworker؛ null إذا لم يكن R2 قد أُنشئ بعد. */
+export function getImageStoreResilienceSnapshot(): R2ResilienceSnapshot | null {
+  return cached instanceof R2ImageStore ? cached.resilienceSnapshot() : null;
+}
+
+/** يعدّ سقوط العرض العام فقط، ولا ينشئ السائق أو يكشف شيئاً إن لم يكن R2 مُهيأً. */
+export function recordImageStorePublicFallback(): void {
+  if (cached instanceof R2ImageStore) cached.recordPublicFallback();
 }
 
 /** لإعادة التهيئة في الاختبارات (يُبطل المفرد المُخبَّأ). */

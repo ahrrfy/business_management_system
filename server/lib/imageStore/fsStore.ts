@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import type { Readable } from "node:stream";
-import type { ImageStore, ObjectHead, PutResult } from "./types";
+import { ImageStoreClientAbortError } from "./resilience";
+import type { ImageStore, ImageStoreReadOptions, ObjectHead, PutResult } from "./types";
 
 export class FsImageStore implements ImageStore {
   private readonly root: string;
@@ -44,9 +45,30 @@ export class FsImageStore implements ImageStore {
     }
   }
 
-  async getStream(key: string): Promise<Readable | null> {
+  async getStream(key: string, options: ImageStoreReadOptions = {}): Promise<Readable | null> {
+    if (options.signal?.aborted) throw new ImageStoreClientAbortError();
     if (!(await this.head(key)).exists) return null;
+    if (options.signal?.aborted) throw new ImageStoreClientAbortError();
     return createReadStream(this.full(key));
+  }
+
+  async getBuffer(key: string, expectedBytes: number, options: ImageStoreReadOptions = {}): Promise<Buffer | null> {
+    if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > 25 * 1024 * 1024) {
+      throw new Error("FsImageStore: حد القراءة غير صالح.");
+    }
+    if (options.signal?.aborted) throw new ImageStoreClientAbortError();
+    try {
+      const full = this.full(key);
+      const stat = await fs.stat(full);
+      if (stat.size !== expectedBytes) throw new Error("FsImageStore: حجم الكائن لا يطابق metadata المعتمدة.");
+      const body = await fs.readFile(full);
+      if (options.signal?.aborted) throw new ImageStoreClientAbortError();
+      if (body.length !== expectedBytes) throw new Error("FsImageStore: حجم الكائن لا يطابق metadata المعتمدة.");
+      return body;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      throw error;
+    }
   }
 
   async delete(key: string): Promise<void> {

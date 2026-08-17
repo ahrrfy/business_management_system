@@ -19,6 +19,7 @@ import {
   contentHash,
   getImageStore,
   isImageStoreOperational,
+  MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
   objectKeyFor,
   shortHash,
   studioObjectPrefix,
@@ -28,7 +29,8 @@ import { getCurrentCompanyId } from "../tenancy/context";
 import { isMultiTenantModeActive } from "../db";
 import { resolveCompanyById } from "../tenancy/registry";
 
-const MAX_STUDIO_IMAGE_BYTES = 900_000;
+const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
+const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
 const MAX_PREVIEW_BYTES = 1_000_000;
 const UPLOAD_LEASE_MS = 2 * 60_000;
 const PROCESSING_PROOF_MS = 15 * 60_000;
@@ -93,7 +95,7 @@ function assertTaskAccess(
 }
 
 function decodeStudioImage(dataUrl: string): { bytes: Buffer; mime: string; width: number | null; height: number | null; hash: string } {
-  assertValidImageDataUrl(dataUrl, MAX_STUDIO_IMAGE_BYTES, true);
+  assertValidImageDataUrl(dataUrl, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, true);
   const comma = dataUrl.indexOf(",");
   const mime = dataUrl.slice(5, dataUrl.indexOf(";"));
   const bytes = Buffer.from(dataUrl.slice(comma + 1), "base64");
@@ -109,6 +111,54 @@ function decodeStudioImage(dataUrl: string): { bytes: Buffer; mime: string; widt
     throw new TRPCError({ code: "BAD_REQUEST", message: "تعذّر التحقق من أبعاد الصورة" });
   }
   return { bytes, mime, width: dims.width, height: dims.height, hash: contentHash(bytes) };
+}
+
+function fittedThumbnailDimensions(width: number, height: number): { width: number; height: number } {
+  const scale = Math.min(1, MAX_STUDIO_THUMBNAIL_DIMENSION / Math.max(width, height));
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+}
+
+/**
+ * يفك base64 فعلياً ويتحقق من WebP/RIFF والأبعاد والحجم، ثم يربط أبعاد المصغرة بالمرشح.
+ * لا نثق ببادئة MIME وحدها ولا نقبل SVG/GIF/PNG في شبكة العرض الاحتياطية.
+ */
+export function decodeStudioThumbnail(
+  dataUrl: string,
+  processed: { width: number | null; height: number | null },
+): { dataUrl: string; bytes: Buffer; width: number; height: number; hash: string } {
+  if (!dataUrl.startsWith("data:image/webp;base64,")) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مصغّرة العرض يجب أن تكون WebP" });
+  }
+  assertValidImageDataUrl(dataUrl, MAX_STUDIO_THUMBNAIL_BYTES, true, MAX_STUDIO_THUMBNAIL_DIMENSION);
+  const bytes = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
+  const dimensions = parseImageDimensions(bytes, "image/webp");
+  const fourcc = bytes.length >= 20 ? bytes.toString("ascii", 12, 16) : "";
+  const chunkBytes = bytes.length >= 20 ? bytes.readUInt32LE(16) : -1;
+  const completeSingleChunk = chunkBytes >= 0 && 20 + chunkBytes + (chunkBytes % 2) === bytes.length;
+  const validFrameHeader = fourcc === "VP8 "
+    ? bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a
+    : fourcc === "VP8L"
+      ? bytes.length >= 25 && bytes[20] === 0x2f
+      : false;
+  if (
+    bytes.length < 20 || bytes.readUInt32LE(4) + 8 !== bytes.length ||
+    !completeSingleChunk || !validFrameHeader ||
+    !dimensions || dimensions.width < 1 || dimensions.height < 1 ||
+    dimensions.width > MAX_STUDIO_THUMBNAIL_DIMENSION || dimensions.height > MAX_STUDIO_THUMBNAIL_DIMENSION
+  ) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "بنية/إطار مصغّرة WebP غير مكتمل" });
+  }
+  if (!processed.width || !processed.height) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "تعذّر ربط المصغّرة بأبعاد المرشح" });
+  }
+  const expected = fittedThumbnailDimensions(processed.width, processed.height);
+  if (dimensions.width !== expected.width || dimensions.height !== expected.height) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "أبعاد المصغّرة لا تطابق المرشح النهائي" });
+  }
+  return { dataUrl, bytes, ...dimensions, hash: contentHash(bytes) };
 }
 
 function assertStoragePolicy(): void {
@@ -548,6 +598,7 @@ export async function submitStudioCandidate(
     taskId: number;
     originalDataUrl?: string | null;
     processedDataUrl: string;
+    thumbnailDataUrl: string;
     mode: "FLATTEN" | "CUT";
     processingReceipt?: string | null;
     proposedName?: string | null;
@@ -579,6 +630,7 @@ export async function submitStudioCandidate(
 
   try {
     const processed = decodeStudioImage(input.processedDataUrl);
+    const thumbnail = decodeStudioThumbnail(input.thumbnailDataUrl, processed);
     const original = lease.originalObjectKey
       ? null
       : input.originalDataUrl
@@ -642,7 +694,8 @@ export async function submitStudioCandidate(
         processedBytes: processed.bytes.length,
         processedWidth: processed.width,
         processedHeight: processed.height,
-        processedUrl: null,
+        // مصغّرة WebP فقط، مرتبطة بنفس المرشح المقفول؛ تُنقل للصف المنشور ثم تُمسح من المهمة.
+        processedUrl: thumbnail.dataUrl,
         mode: effectiveMode,
         proposedName: input.proposedName === undefined ? task.proposedName : input.proposedName?.trim() || null,
         proposedDescription: input.proposedDescription === undefined ? task.proposedDescription : input.proposedDescription?.trim() || null,
@@ -665,6 +718,7 @@ export async function submitStudioCandidate(
         originalHash: immutableOriginalHash,
         processedHash: processed.hash,
         processedBytes: processed.bytes.length,
+        thumbnailHash: thumbnail.hash,
         contentIncluded: true,
       }));
       await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() })
@@ -749,9 +803,13 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
     if (task.status !== "PENDING_REVIEW") {
       throw new TRPCError({ code: "CONFLICT", message: "المهمة لم تعد بانتظار المراجعة" });
     }
-    if (!task.productId || !task.processedObjectKey || !task.processedContentHash || !task.processedMime) {
+    if (!task.productId || !task.processedObjectKey || !task.processedContentHash || !task.processedMime || !task.processedUrl) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "بيانات المرشح غير مكتملة" });
     }
+    const thumbnail = decodeStudioThumbnail(task.processedUrl, {
+      width: task.processedWidth,
+      height: task.processedHeight,
+    });
     const product = (await tx.select({ id: products.id, name: products.name, description: products.description })
       .from(products).where(eq(products.id, task.productId)).limit(1).for("update"))[0];
     if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
@@ -808,6 +866,7 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       width: task.processedWidth,
       height: task.processedHeight,
       bytes: task.processedBytes,
+      thumbDataUrl: thumbnail.dataUrl,
       reviewStatus: "APPROVED",
       origin: task.mode === "AI" ? "STUDIO_AI" : task.mode === "PRO" ? "STUDIO_PRO" : "STUDIO_FREE",
       publishedStudioJobId: taskId,
@@ -827,11 +886,13 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       reviewedAt: new Date(),
       rejectionReason: null,
       activeSlot: null,
+      processedUrl: null,
     }).where(eq(productImageJobs.id, taskId));
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.approve", taskId, {
       productId: task.productId,
       imageId,
       processedHash: task.processedContentHash,
+      thumbnailHash: thumbnail.hash,
       contentUpdated: Object.keys(productPatch).length > 0,
     }));
     return { imageId };
@@ -848,6 +909,7 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
     if (task.status !== "PENDING_REVIEW") throw new TRPCError({ code: "CONFLICT", message: "المهمة لم تعد بانتظار المراجعة" });
     await tx.update(productImageJobs).set({
       status: "REJECTED",
+      processedUrl: null,
       reviewedBy: actor.userId,
       reviewedAt: new Date(),
       rejectionReason: cleanReason,

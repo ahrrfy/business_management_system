@@ -13,13 +13,16 @@
  *   • الردّ **`private`** لا `public`: يعتمد على المصادقة ⇒ لا تخزّنه ذاكرةٌ وسيطة مشتركة.
  */
 import express from "express";
+import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { beforeEach, describe, expect, it } from "vitest";
+import { PassThrough } from "node:stream";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { KIOSK_COOKIE_NAME, signKioskSession } from "../../auth/kioskSession";
 import { getDb } from "../../db";
-import { imageRouter } from "../../imageRoute";
+import { bindStoredStreamLifecycle, imageRouter } from "../../imageRoute";
+import { ImageStoreClientAbortError } from "../../lib/imageStore";
 import { kioskBanner } from "../kioskService";
 import { createKioskDevice, deviceLoginByToken } from "../kioskDeviceService";
 import { truncateTables } from "./__testUtils__";
@@ -45,6 +48,24 @@ async function withServer<T>(fn: (base: string) => Promise<T>): Promise<T> {
 
 const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x01, 0xff, 0xd9]);
 const JPEG_DATA_URL = `data:image/jpeg;base64,${JPEG_BYTES.toString("base64")}`;
+
+function lifecyclePeers() {
+  const req = new EventEmitter();
+  const res = new EventEmitter() as EventEmitter & {
+    writableEnded: boolean;
+    destroyed: boolean;
+    destroy: ReturnType<typeof vi.fn>;
+  };
+  res.writableEnded = false;
+  res.destroyed = false;
+  res.destroy = vi.fn(() => { res.destroyed = true; });
+  return {
+    req: req as unknown as Parameters<typeof bindStoredStreamLifecycle>[0],
+    res: res as unknown as Parameters<typeof bindStoredStreamLifecycle>[1],
+    rawReq: req,
+    rawRes: res,
+  };
+}
 
 /** كوكي جهاز كشك حقيقيّ: يُنشئ الجهاز ثم يسجّل دخوله ثم يوقّع جلسته — نفس مسار الإنتاج. */
 async function kioskDeviceCookie(branchId = 1): Promise<string> {
@@ -93,6 +114,67 @@ beforeEach(async () => {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+});
+
+describe("private stored stream lifecycle", () => {
+  it("قطع response يدمر upstream وينظف listeners", async () => {
+    const { req, res, rawReq, rawRes } = lifecyclePeers();
+    const body = new PassThrough({ autoDestroy: false });
+    const destroy = vi.spyOn(body, "destroy");
+    bindStoredStreamLifecycle(req, res, body);
+    rawRes.emit("close");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(destroy.mock.calls[0][0]).toBeInstanceOf(ImageStoreClientAbortError);
+    expect(body.destroyed).toBe(true);
+    expect(rawReq.listenerCount("aborted")).toBe(0);
+    expect(rawRes.listenerCount("close")).toBe(0);
+    expect(rawRes.listenerCount("finish")).toBe(0);
+  });
+
+  it("close مبكر من upstream ينهي response كعطل لا كإلغاء عميل", async () => {
+    const { req, res, rawRes } = lifecyclePeers();
+    const body = new PassThrough({ autoDestroy: false });
+    bindStoredStreamLifecycle(req, res, body);
+    body.destroy();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(rawRes.destroy).toHaveBeenCalledTimes(1);
+    expect((rawRes.destroy.mock.calls[0][0] as NodeJS.ErrnoException).code).toBe("ECONNRESET");
+  });
+
+  it("النهاية الطبيعية لا تدمر upstream مبكراً ولا تترك listeners", async () => {
+    const { req, res, rawReq, rawRes } = lifecyclePeers();
+    const body = new PassThrough({ autoDestroy: false });
+    const destroy = vi.spyOn(body, "destroy");
+    bindStoredStreamLifecycle(req, res, body);
+    const ended = new Promise<void>((resolve) => body.once("end", resolve));
+    body.resume();
+    body.end(Buffer.from("image"));
+    await ended;
+    rawRes.emit("finish");
+    rawRes.emit("close");
+    expect(destroy).not.toHaveBeenCalled();
+    expect(rawReq.listenerCount("aborted")).toBe(0);
+    expect(rawRes.listenerCount("close")).toBe(0);
+    expect(rawRes.listenerCount("finish")).toBe(0);
+  });
+
+  it("signal انقطع قبل bind يدمر الجسم فوراً وينظف listeners", async () => {
+    const { req, res, rawReq, rawRes } = lifecyclePeers();
+    const body = new PassThrough({ autoDestroy: false });
+    const destroy = vi.spyOn(body, "destroy");
+    const abort = new AbortController();
+    abort.abort();
+
+    bindStoredStreamLifecycle(req, res, body, abort.signal);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(destroy.mock.calls[0][0]).toBeInstanceOf(ImageStoreClientAbortError);
+    expect(rawReq.listenerCount("aborted")).toBe(0);
+    expect(rawRes.listenerCount("close")).toBe(0);
+    expect(rawRes.listenerCount("finish")).toBe(0);
+  });
 });
 
 describe("GET /api/img/kiosk-product/:id — المصادقة", () => {
