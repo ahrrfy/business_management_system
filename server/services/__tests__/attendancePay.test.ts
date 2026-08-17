@@ -414,3 +414,109 @@ describe("تفصيل أجر اليوم — أساس + إضافي = إجمالي 
     expect(sum("overtimeAmount")).toBeCloseTo(Number(r.overtimePay), 0);
   });
 });
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * الموجة ١ (١٧/٨/٢٦) — أربعة إصلاحاتٍ نجت من التفنيد العدائي.
+ * كلُّ حالةٍ هنا تحرس **الاتجاهين**: أن العطب لم يعد يقع، وأن السليم لم ينكسر.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+describe("الإجازة بلا راتب تسبق تاريخ السريان (س١٧)", () => {
+  it("إجازةٌ بلا راتب واقعة قبل السريان لم تعد تُدفع", () => {
+    // السريان من ١٥ تموز، وإجازةٌ بلا راتب ٦-٧ تموز (اثنان وثلاثاء = يوما دوام).
+    const r = base({ payFrom: "2026-07-15", unpaidLeaveDates: new Set(["2026-07-06", "2026-07-07"]) });
+    expect(r.unpaidLeaveDays).toBe(2);
+    expect(r.days.find((d) => d.date === "2026-07-06")?.state).toBe("unpaidLeave");
+  });
+
+  it("صفر انحدار: بقيّة أيام ما قبل السريان تبقى مدفوعة كاملةً", () => {
+    const r = base({ payFrom: "2026-07-15", unpaidLeaveDates: new Set(["2026-07-06"]) });
+    expect(r.days.find((d) => d.date === "2026-07-07")?.state).toBe("beforeStart");
+    expect(r.days.find((d) => d.date === "2026-07-07")?.countedHours).toBe("8.00");
+  });
+});
+
+describe("السعر الصريح يُحترَم في يوم الراحة والتعويض (س١٨)", () => {
+  it("عملُ يوم الراحة يُدفع بالسعر الصريح لا بالمُشتقّ", () => {
+    // الجمعة راحة بسعرٍ صريح ٤٥٠٠، وعُمل فيها ٨ ساعات (٣ جُمَعٍ في نافذةٍ مقصوصة).
+    const sc = sched({ الجمعة: 0 }) as Record<string, { hours: number; rate?: number }>;
+    sc["الجمعة"] = { hours: 0, rate: 4500 };
+    const r = computeAttendancePay({
+      salary: D(900000), employmentStart: "2026-07-03", employmentEnd: "2026-07-03",
+      schedule: sc as never, attendedHoursByDate: new Map([["2026-07-03", D(8)]]),
+      paidLeaveDates: new Set(), unpaidLeaveDates: new Set(), payFrom: "2026-07-01",
+    });
+    const row = r.days.find((d) => d.state === "restWorked")!;
+    expect(row.rate).toBe("4500.00");
+    expect(Number(row.amount)).toBeCloseTo(36000, 0);
+  });
+
+  it("صفر انحدار: بلا سعرٍ صريح يبقى المُشتقّ كما كان", () => {
+    const r = computeAttendancePay({
+      salary: D(900000), employmentStart: "2026-07-03", employmentEnd: "2026-07-03",
+      schedule: sched(), attendedHoursByDate: new Map([["2026-07-03", D(8)]]),
+      paidLeaveDates: new Set(), unpaidLeaveDates: new Set(), payFrom: "2026-07-01",
+    });
+    const row = r.days.find((d) => d.state === "restWorked")!;
+    expect(Number(row.rate)).toBeCloseTo(Number(r.hourlyRate), 2);
+  });
+});
+
+describe("تعويض الشهر القصير لا يُمنح بلا مستحقّ (س١٩)", () => {
+  const feb = (over = {}) =>
+    computeAttendancePay({
+      salary: D(900000), employmentStart: "2026-02-01", employmentEnd: "2026-02-28",
+      schedule: sched(), attendedHoursByDate: new Map(), paidLeaveDates: new Set(),
+      unpaidLeaveDates: new Set(), payFrom: "2026-02-01",
+      monthStart: "2026-02-01", monthEnd: "2026-02-28", ...over,
+    });
+
+  it("شباط بلا بصمةٍ واحدة ⇒ صفر تعويضٍ وصفر مستحقّ (فلا يُعمى حارس المسيّر)", () => {
+    const r = feb();
+    expect(r.shortMonthHours).toBe("0.00");
+    expect(r.payableHours).toBe("0.00");
+    expect(Number(r.basePay)).toBe(0);
+  });
+
+  it("صفر انحدار: شباط بحضورٍ كامل يُعوَّض ويُدفع الراتب كاملاً", () => {
+    const att = new Map<string, ReturnType<typeof D>>();
+    for (const d of daysBetween("2026-02-01", "2026-02-28")) {
+      if (dayNameOf(d) !== "الجمعة") att.set(d, D(8));
+    }
+    const r = feb({ attendedHoursByDate: att });
+    expect(Number(r.shortMonthHours)).toBeGreaterThan(0);
+    expect(Number(r.basePay)).toBeCloseTo(900000, 0);
+  });
+
+  it("الغياب الجزئيّ لا يُلغي التعويض — المقصود الصفر المطلق وحده", () => {
+    const att = new Map<string, ReturnType<typeof D>>();
+    let n = 0;
+    for (const d of daysBetween("2026-02-01", "2026-02-28")) {
+      if (dayNameOf(d) !== "الجمعة" && n++ < 5) att.set(d, D(8));
+    }
+    const r = feb({ attendedHoursByDate: att });
+    expect(Number(r.shortMonthHours)).toBeGreaterThan(0);
+  });
+});
+
+describe("الساعات غير المستحقّة تُقاس على نافذة العمل (س٢٠)", () => {
+  it("المعيَّن منتصف الشهر لا يُحمَّل ساعات ما قبل تعيينه", () => {
+    const att = new Map<string, ReturnType<typeof D>>();
+    for (const d of daysBetween("2026-07-16", "2026-07-31")) {
+      if (dayNameOf(d) !== "الجمعة") att.set(d, D(8));
+    }
+    const r = base({ employmentStart: "2026-07-16", attendedHoursByDate: att, monthStart: "2026-07-01", monthEnd: "2026-07-31" });
+    expect(r.unpaidHours).toBe("0.00");
+  });
+
+  it("صفر انحدار: الشهر الكامل بغياب يومين ⇒ ١٦ ساعة غير مستحقّة", () => {
+    const att = new Map<string, ReturnType<typeof D>>();
+    let skipped = 0;
+    for (const d of daysBetween("2026-07-01", "2026-07-31")) {
+      if (dayNameOf(d) === "الجمعة") continue;
+      if (skipped++ < 2) continue; // يوما غياب
+      att.set(d, D(8));
+    }
+    const r = base({ attendedHoursByDate: att, monthStart: "2026-07-01", monthEnd: "2026-07-31" });
+    expect(r.unpaidHours).toBe("16.00");
+  });
+});
