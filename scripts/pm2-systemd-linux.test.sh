@@ -13,9 +13,8 @@ if [[ "${EUID}" -ne 0 ]]; then
   echo "pm2 systemd linux test: root required" >&2
   exit 1
 fi
-systemd_state="$(systemctl is-system-running || true)"
-if [[ "${systemd_state}" != "running" && "${systemd_state}" != "degraded" ]]; then
-  echo "pm2 systemd linux test: a running systemd system instance is required" >&2
+if [[ "$(cat /proc/1/comm)" != "systemd" || ! -d /run/systemd/system ]]; then
+  echo "pm2 systemd linux test: systemd must be PID 1" >&2
   exit 1
 fi
 if id deploy >/dev/null 2>&1; then
