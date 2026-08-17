@@ -82,8 +82,9 @@ nginx -V 2>&1 | grep -o with-http_realip_module   # يجب أن يطبع اسم 
 sudo mkdir -p /etc/nginx/snippets
 sudo cp deploy/nginx-cloudflare-realip.conf /etc/nginx/snippets/alroya-cloudflare-realip.conf
 
-# 3) ثبّت عقد proxy وlocations المشتركين. هذا يلغي النسختين اليدويتين اللتين قد تنجرف إحداهما:
+# 3) ثبّت عقد proxy وموقع SPA المشترك، ثم مواقع API الكاملة للمضيف الداخلي:
 sudo cp deploy/nginx-proxy-common.conf  /etc/nginx/snippets/alroya-proxy-common.conf
+sudo cp deploy/nginx-spa-location.conf  /etc/nginx/snippets/alroya-spa-location.conf
 sudo cp deploy/nginx-app-locations.conf /etc/nginx/snippets/alroya-app-locations.conf
 
 # 4) أنشئ ملف السر الحي الواحد بصلاحية root فقط، ثم أدخل قيمة INTERNAL_PROXY_SECRET عبر sudoedit.
@@ -91,7 +92,7 @@ sudo cp deploy/nginx-app-locations.conf /etc/nginx/snippets/alroya-app-locations
 sudo install -o root -g root -m 600 /dev/null /etc/nginx/snippets/alroya-proxy-secret.conf
 sudoedit /etc/nginx/snippets/alroya-proxy-secret.conf
 
-# 5) ثبّت قالبَي المضيفين الملتزمين؛ كلاهما يضم السر والعقد وlocations نفسها:
+# 5) ثبّت قالبَي المضيفين؛ العام لا يستورد مواقع API الداخلية:
 sudo cp deploy/nginx-erp.conf    /etc/nginx/sites-available/alroya-erp
 sudo cp deploy/nginx-public.conf /etc/nginx/sites-available/alroya-public
 sudo chown root:root /etc/nginx/sites-available/alroya-erp /etc/nginx/sites-available/alroya-public

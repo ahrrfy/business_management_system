@@ -15,6 +15,9 @@ export function isPublicStorefrontHost(host: string | undefined): boolean {
 }
 
 export function isPublicStorefrontProcedure(procedure: string): boolean {
+  // أسماء tRPC لا تحتاج percent-encoding. رفضه قبل المهايئ يمنع تحويل `%2C`
+  // لاحقاً إلى فاصلة batch بعد أن تكون حراس المضيف/المعدل قد رأوا نداءً واحداً.
+  if (!/^[A-Za-z0-9_]+\.[A-Za-z0-9_]+$/.test(procedure)) return false;
   const [namespace, operation, ...rest] = procedure.split(".");
   if (rest.length || !namespace || !operation) return false;
   if (namespace === "storefront" || namespace === "courier") return true;

@@ -38,4 +38,22 @@ describe("public storefront host boundary", () => {
     );
     expect(next).toHaveBeenCalledOnce();
   });
+
+  it("يرفض مسار tRPC المرمّز قبل أن يفكّه المهايئ إلى دفعة", () => {
+    const status = vi.fn().mockReturnThis();
+    const end = vi.fn();
+    const next = vi.fn();
+    publicStorefrontHostBoundary(
+      {
+        hostname: "alarabiya.online",
+        method: "POST",
+        path: "/api/trpc/storefront.createOrder%2Cstorefront%2EcreateOrder",
+      } as any,
+      { status, end } as any,
+      next,
+    );
+    expect(status).toHaveBeenCalledWith(404);
+    expect(end).toHaveBeenCalledOnce();
+    expect(next).not.toHaveBeenCalled();
+  });
 });

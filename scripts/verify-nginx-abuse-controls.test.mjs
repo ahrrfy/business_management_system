@@ -33,8 +33,11 @@ const baseInput = {
 
 for (const [name, site] of [["internal", internal], ["public", publicSite]]) {
   assert.match(site, /include\s+snippets\/alroya-proxy-secret\.conf;/, `${name} vhost must use the shared live secret`);
-  assert.match(site, /include\s+snippets\/alroya-app-locations\.conf;/, `${name} vhost must use the same application locations`);
 }
+assert.match(internal, /include\s+snippets\/alroya-app-locations\.conf;/, "internal vhost must use the full application locations");
+assert.match(appLocations, /include\s+snippets\/alroya-spa-location\.conf;/, "full application locations must include the shared SPA location");
+assert.match(publicSite, /include\s+snippets\/alroya-spa-location\.conf;/, "public vhost must include only the shared SPA location after its API allowlist");
+assert.doesNotMatch(publicSite, /include\s+snippets\/alroya-app-locations\.conf;/, "public vhost must not re-import the generic /api/ location");
 
 const proxyPasses = appLocations.match(/proxy_pass\s+http:\/\/127\.0\.0\.1:3000;/g) ?? [];
 const protectedLocations = appLocations.match(/include\s+snippets\/alroya-proxy-common\.conf;/g) ?? [];
@@ -59,6 +62,15 @@ const missingPublicSecretErrors = verifyNginxConfiguration({
 assert.ok(
   missingPublicSecretErrors.some((error) => error.includes("public vhost is missing the shared live secret")),
   "verifier must fail when the public vhost loses the shared secret",
+);
+
+const duplicatePublicApiErrors = verifyNginxConfiguration({
+  ...baseInput,
+  publicSite: `${publicSite}\ninclude snippets/alroya-app-locations.conf;`,
+});
+assert.ok(
+  duplicatePublicApiErrors.some((error) => error.includes("must not include full application locations")),
+  "verifier must fail before nginx -t when the public vhost re-imports generic /api/",
 );
 
 const duplicateTimeoutErrors = verifyNginxConfiguration({
