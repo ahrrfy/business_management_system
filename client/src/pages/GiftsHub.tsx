@@ -1,6 +1,7 @@
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
 // GIFT_OUT + حوكمة SOD: فوق العتبة/غير المدير ⇒ اعتماد مدير آخر). القراءة/الكتابة خلف مفتاح `gifts`.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { confirm as confirmDialog } from "@/lib/confirm";
 import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, MessageCircle, Plus, Printer, Trash2, X } from "lucide-react";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
@@ -238,6 +239,16 @@ export default function GiftsHub() {
   // نطاق gifts.get المستعمَل للطباعة/الإشعار — سند الهدية لا يحمل حقول تكلفة أصلاً).
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const approvePreviewQ = trpc.gifts.get.useQuery({ giftId: approvingId! }, { enabled: approvingId != null });
+  // و-١: إلغاء طلبٍ معلَّق — المخرج الثاني الذي كان مفقوداً (كان الاعتماد وحده). صفر أثرٍ ماليّ.
+  const cancelGift = trpc.gifts.cancelGift.useMutation({
+    onSuccess: () => {
+      notify.ok("أُلغي طلب الهدية");
+      utils.gifts.list.invalidate();
+      utils.gifts.campaignList.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
   const approve = trpc.gifts.approveGift.useMutation({
     onSuccess: () => {
       notify.ok("تم اعتماد الهدية");
@@ -509,6 +520,29 @@ export default function GiftsHub() {
                               disabledReason: "جارٍ اعتماد السند",
                               // يفتح حواراً يعرض بنود السند أوّلاً — لا اعتماد مباشر بلا مراجعة.
                               onSelect: () => setApprovingId(Number(r.id)),
+                            },
+                            {
+                              key: "cancelRequest",
+                              kind: "other",
+                              label: "إلغاء الطلب",
+                              icon: X,
+                              // المعلَّق فقط: المُنجَز يُعالَج بعكسٍ محاسبيّ لا بإلغاء حالة.
+                              hidden: r.direction !== "OUT" || r.status !== "PENDING_APPROVAL",
+                              gate: { module: "gifts", level: "FULL" },
+                              disabled: cancelGift.isPending,
+                              disabledReason: "جارٍ الإلغاء",
+                              onSelect: async () => {
+                                if (
+                                  !(await confirmDialog({
+                                    variant: "warning",
+                                    title: "إلغاء طلب الهدية؟",
+                                    description: `سيُلغى الطلب «${r.giftNumber}» المعلَّق. لم يُنفَّذ بعد — الإلغاء لا يمسّ المخزون ولا الحسابات.`,
+                                    confirmText: "إلغاء الطلب",
+                                  }))
+                                )
+                                  return;
+                                cancelGift.mutate({ giftId: Number(r.id) });
+                              },
                             },
                             { key: "print", kind: "print", label: "طباعة السند", icon: Printer, gate: { module: "gifts", level: "READ" }, onSelect: () => printGift(Number(r.id)) },
                             { key: "share", kind: "other", label: "إشعار واتساب", icon: MessageCircle, hidden: !r.supplierName && !r.customerName, gate: { module: "gifts", level: "READ" }, onSelect: () => shareGift(Number(r.id)) },

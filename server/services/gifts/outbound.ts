@@ -341,3 +341,54 @@ export async function approveGift(giftId: number, actor: Actor): Promise<Approve
     return { giftVoucherId: giftId, status: "DELIVERED", totalCost: totalCost.toFixed(2) };
   });
 }
+
+export interface CancelGiftResult {
+  giftVoucherId: number;
+  status: "CANCELLED";
+}
+
+/**
+ * المسار و-١ (١٧/٨): إلغاء طلب هديةٍ صادرةٍ معلَّق — **المخرج الذي لم يكن موجوداً**.
+ *
+ * كانت الهدية المعلَّقة تملك مساراً واحداً: الاعتماد. فمن يكتشف خطأً في طلبه (صنفٌ غلط، كمية،
+ * زبونٌ آخر) أمام خيارين كلاهما سيّئ: أن يُعتمَد إنفاقٌ لا يريده، أو أن يبقى الطلب في الطابور
+ * أبداً يشوّش على المعتمِدين. الإلغاء هنا **صفر أثرٍ ماليّ** بحكم البناء: الأثر (حركة المخزون
+ * وقيد التكلفة) لا يُطبَّق إلّا في `approveGift` عبر `applyOutboundEffect` — فالمعلَّق لم يمسّ
+ * شيئاً بعد، والإلغاء تغييرُ حالةٍ محض.
+ *
+ * ومَن يُلغي: **صاحب الطلب** (سحبُ طلبك حقُّك) أو مديرٌ في فرع الهدية أو أدمن. لا يلزم فصل مهام
+ * هنا لأنّ الإلغاء لا يُنشئ إنفاقاً — بخلاف الاعتماد الذي يحرسه SOD-04.
+ */
+export async function cancelOutboundGift(
+  giftId: number,
+  actor: Actor,
+  reason?: string,
+): Promise<CancelGiftResult> {
+  const isAdmin = actor.role === "admin";
+  const isManager = actor.role === "manager";
+  return withTx(async (tx) => {
+    const gift = (await tx.select().from(giftVouchers).where(eq(giftVouchers.id, giftId)).for("update").limit(1))[0];
+    if (!gift) throw new TRPCError({ code: "NOT_FOUND", message: "سند الهدية غير موجود" });
+    if (gift.direction !== "OUT") throw new TRPCError({ code: "BAD_REQUEST", message: "الإلغاء للهدايا الصادرة فقط" });
+    if (gift.status !== "PENDING_APPROVAL") {
+      // المُنجَزة تُعالَج بعكسٍ محاسبيّ لا بإلغاء حالة (الأثر مُرحَّل فعلاً).
+      throw new TRPCError({ code: "BAD_REQUEST", message: `لا يُلغى إلّا طلبٌ معلَّق — حالة هذه الهدية ${gift.status}` });
+    }
+    const isOwnerOfRequest = Number(gift.createdBy) === actor.userId;
+    if (!isAdmin && !isOwnerOfRequest && !isManager) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "إلغاء طلب الهدية لصاحبه أو لمدير" });
+    }
+    if (!isAdmin && Number(gift.branchId) !== actor.branchId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الهدية لا تخصّ فرعك" });
+    }
+    const note = reason?.trim();
+    await tx
+      .update(giftVouchers)
+      .set({
+        status: "CANCELLED",
+        notes: note ? `${gift.notes ? `${gift.notes}\n` : ""}أُلغي الطلب: ${note}` : gift.notes,
+      })
+      .where(eq(giftVouchers.id, giftId));
+    return { giftVoucherId: giftId, status: "CANCELLED" };
+  });
+}
