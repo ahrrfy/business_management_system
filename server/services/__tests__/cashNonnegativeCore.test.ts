@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -522,31 +522,60 @@ describe("cash-nonnegative-core — اعتماد السند", () => {
 
 describe("cash-nonnegative-core — دلالة REVERSED موحّدة", () => {
   /**
-   * يوم القاعدة نفسه الذي تستعمله التقارير.
+   * يوم القاعدة الذي تستعمله تقارير «اليوم» في هذه الحزمة (جلسة MySQL مضبوطة UTC).
    *
-   * تقارير التدفّق تجمّع بـ`CURDATE()` (ساعة MySQL) بينما الاختباران أدناه كانا يحسبان
-   * «اليوم» بساعة Node **بعد** عدّة رحلات كتابة (إنشاء السند ← إلغاؤه ← اعتماده). فإن عبر
-   * منتصف ليل UTC خلال تلك الثواني، هبطت الصفوف على يومٍ وسأل الاستعلام عن آخر ⇒ سقوطٌ
-   * عشوائيّ مرّةً كل ليلة (حدث فعلاً ٢٣:٢٢ UTC في تشغيلة #614 فأوقف دمجاً سليماً).
+   * الفشلان المرصودان في CI كانا في PR #613 عند 22:29:42Z، ضمن نافذة علّة ختم يوم بغداد
+   * مقابل تقارير UTC. أصلح #615 تلك العلّة الإنتاجية وأضاف اختبار الختم أدناه؛ لم يكن PR #614
+   * هو التشغيل الأحمر. تبقى هنا علّة اختبار مستقلة ممكنة: قد يعبر اليوم بين تثبيت الصفوف وبين
+   * عدة قراءات تعتمد `CURDATE()`/ساعة Node.
    *
-   * (الاختبار الأول أعلاه يعالج قضيةً أخرى: **ختمُ** يوم UTC عند الإنشاء قرب منتصف الليل،
-   * بزمنٍ مزيَّف. أمّا هذان فمشكلتهما اختلافُ مصدر اليوم بين الكتابة والقراءة.)
-   *
-   * العلاج بشقّين: (١) اليوم يُقرأ من **مصدر التقارير نفسه**، و(٢) صفوف الاختبار تُثبَّت في
-   * منتصف ذلك اليوم مباشرةً **قبل** التأكيدات — فتصير النافذة أقلّ من ثانية بلا كتاباتٍ
-   * بطيئة داخلها، وبعيداً عن حدّ اليوم.
+   * لذلك لا تكفي قراءة اليوم مرةً واحدة. `withStableDbUtcDay` يقرأه قبل جولة التقارير وبعدها:
+   * إن تغيّر، يعيد الجولة بعد إعادة تثبيت الصفوف؛ وإن بقي ثابتاً، يمرّر أي فشل حقيقي بلا إخفاء.
    */
   async function dbUtcDay(): Promise<string> {
     const rows = await db().execute(sql`SELECT CAST(UTC_DATE() AS CHAR) AS d`);
     return (rows as unknown as [Array<{ d: string }>, unknown])[0][0].d;
   }
 
-  /** يُثبّت كل إيصالات الاختبار وقيودَه في منتصف اليوم المُعطى (بعيداً عن حدّ اليوم). */
-  async function pinToMidday(ymd: string): Promise<void> {
-    const noon = new Date(`${ymd}T12:00:00Z`);
-    await db().update(s.receipts).set({ createdAt: noon });
-    await db().update(s.accountingEntries).set({ entryDate: noon });
+  async function withStableDbUtcDay<T>(
+    run: (day: string) => Promise<T>,
+    readDay: () => Promise<string> = dbUtcDay,
+  ): Promise<T> {
+    let before = "";
+    let after = "";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      before = await readDay();
+      try {
+        const result = await run(before);
+        after = await readDay();
+        if (after === before) return result;
+      } catch (error) {
+        after = await readDay();
+        if (after === before) throw error;
+      }
+    }
+    throw new Error(`تعذّر تثبيت يوم قاعدة الاختبار بعد إعادة المحاولة (${before} → ${after})`);
   }
+
+  /** يثبت إيصالاً بعينه وقيده في منتصف اليوم، بلا تعديل صفوف مجاورة. */
+  async function pinReceiptToMidday(receiptId: number, ymd: string): Promise<void> {
+    const noon = new Date(`${ymd}T12:00:00Z`);
+    await db().update(s.receipts).set({ createdAt: noon }).where(eq(s.receipts.id, receiptId));
+    await db().update(s.accountingEntries).set({ entryDate: noon })
+      .where(eq(s.accountingEntries.receiptId, receiptId));
+  }
+
+  it("حاجز يوم القاعدة يعيد الجولة إذا عبر منتصف الليل", async () => {
+    const days = ["2026-08-16", "2026-08-17", "2026-08-17", "2026-08-17"];
+    let runs = 0;
+    const result = await withStableDbUtcDay(async (day) => {
+      runs += 1;
+      return day;
+    }, async () => days.shift()!);
+
+    expect(result).toBe("2026-08-17");
+    expect(runs).toBe(2);
+  });
 
   it("يختم السند الافتراضي بيوم UTC قرب منتصف الليل ولا يُسقطه من تقرير يومه", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -573,73 +602,74 @@ describe("cash-nonnegative-core — دلالة REVERSED موحّدة", () => {
       clientRequestId: "treasury-reversed-zero",
     }, admin);
     const cancellation = await cancelVoucher(created.receiptId, admin);
-    await approveVoucher(Number(cancellation.approvalReceiptId), manager);
+    const reversalReceiptId = Number(cancellation.approvalReceiptId);
+    await approveVoucher(reversalReceiptId, manager);
 
     await db().transaction(async (tx) => {
       expect((await computeTreasuryCashBalance(tx, 1)).toFixed(2)).toBe("0.00");
     });
 
-    // ثبّت اللحظة قبل أيّ تأكيد: اليوم من مصدر التقارير، والصفوف في منتصفه.
-    const day = await dbUtcDay();
-    await pinToMidday(day);
-
     const scope = { scopedBranchId: 1, role: "admin", userId: 1 };
-    const dashboard = await getDashboard({ branchId: 1 }, scope);
-    expect(dashboard.treasuryBalances.find((row) => row.branchId === 1)?.balance).toBe("0.00");
+    await withStableDbUtcDay(async (day) => {
+      await pinReceiptToMidday(created.receiptId, day);
+      await pinReceiptToMidday(reversalReceiptId, day);
 
-    const flow = await getCashFlowSeries({ days: 1, branchId: 1 }, scope);
-    expect(flow.at(-1)).toMatchObject({ inflow: "100.00", outflow: "100.00", net: "0.00" });
-    const methods = await getPaymentMethodBreakdown({ period: "today", branchId: 1 }, scope);
-    expect(methods.find((row) => row.key === "CASH")).toMatchObject({ inTotal: "100.00", outTotal: "100.00" });
-    const movements = await getRecentMovements({ branchId: 1, limit: 10 }, scope);
-    expect(movements.filter((row) => row.source === "RECEIPT")).toHaveLength(2);
+      const dashboard = await getDashboard({ branchId: 1 }, scope);
+      expect(dashboard.treasuryBalances.find((row) => row.branchId === 1)?.balance).toBe("0.00");
 
-    const orphans = await getCashOrphansReport({ branchId: 1, category: "TREASURY" });
-    expect(orphans.netTreasury).toBe("0.00");
-    const summary = await getTreasurySummary({ branchId: 1, from: day, to: day });
-    expect(summary.net).toBe("0.00");
-    const financialFlow = await getCashFlow({ branchId: 1, from: day, to: day });
-    expect(financialFlow).toMatchObject({ totalIn: "100.00", totalOut: "100.00", net: "0.00" });
+      const flow = await getCashFlowSeries({ days: 1, branchId: 1 }, scope);
+      expect(flow.at(-1)).toMatchObject({ inflow: "100.00", outflow: "100.00", net: "0.00" });
+      const methods = await getPaymentMethodBreakdown({ period: "today", branchId: 1 }, scope);
+      expect(methods.find((row) => row.key === "CASH")).toMatchObject({ inTotal: "100.00", outTotal: "100.00" });
+      const movements = await getRecentMovements({ branchId: 1, limit: 10 }, scope);
+      expect(movements.filter((row) => row.source === "RECEIPT")).toHaveLength(2);
+
+      const orphans = await getCashOrphansReport({ branchId: 1, category: "TREASURY" });
+      expect(orphans.netTreasury).toBe("0.00");
+      const summary = await getTreasurySummary({ branchId: 1, from: day, to: day });
+      expect(summary.net).toBe("0.00");
+      const financialFlow = await getCashFlow({ branchId: 1, from: day, to: day });
+      expect(financialFlow).toMatchObject({ totalIn: "100.00", totalOut: "100.00", net: "0.00" });
+    });
   });
 
   it("العكس في يوم لاحق يحفظ تدفق يوم الأصل ويصافر الرصيد الحالي", async () => {
-    // اليوم من مصدر التقارير، و«الأمس» مشتقٌّ منه — لا من ساعة Node التي قد تزحف.
-    const today = await dbUtcDay();
-    const yesterdayDay = new Date(new Date(`${today}T12:00:00Z`).getTime() - 86_400_000)
-      .toISOString().slice(0, 10);
-    const yesterday = new Date(`${yesterdayDay}T12:00:00Z`);
     const created = await createVoucher({
       voucherType: "RECEIPT", branchId: 1, amount: "100.00", paymentMethod: "CASH",
       partyType: "SUPPLIER", partyId: 1, description: "قبض أمس",
       clientRequestId: "treasury-period-reversal",
     }, admin);
-    await db().update(s.receipts).set({ createdAt: yesterday, voucherDate: yesterdayDay }).where(eq(s.receipts.id, created.receiptId));
-    await db().update(s.accountingEntries).set({ entryDate: yesterday }).where(eq(s.accountingEntries.receiptId, created.receiptId));
     const cancellation = await cancelVoucher(created.receiptId, admin);
-    await approveVoucher(Number(cancellation.approvalReceiptId), manager);
-    // صفوف الإلغاء كُتبت بساعة الخادم؛ نُثبّتها في منتصف «اليوم» فلا يزحف حدّه أثناء التأكيدات.
-    const todayNoon = new Date(`${today}T12:00:00Z`);
-    await db().update(s.receipts).set({ createdAt: todayNoon })
-      .where(gt(s.receipts.id, created.receiptId));
-    await db().update(s.accountingEntries).set({ entryDate: todayNoon })
-      .where(gt(s.accountingEntries.receiptId, created.receiptId));
+    const reversalReceiptId = Number(cancellation.approvalReceiptId);
+    await approveVoucher(reversalReceiptId, manager);
 
-    const flow = await getCashFlowSeries({ days: 2, branchId: 1 }, { scopedBranchId: 1, role: "admin", userId: 1 });
-    expect(flow.find((row) => row.day === yesterdayDay)).toMatchObject({ inflow: "100.00", outflow: "0.00", net: "100.00" });
-    expect(flow.at(-1)).toMatchObject({ inflow: "0.00", outflow: "100.00", net: "-100.00" });
+    await withStableDbUtcDay(async (today) => {
+      const yesterdayDay = new Date(new Date(`${today}T12:00:00Z`).getTime() - 86_400_000)
+        .toISOString().slice(0, 10);
+      const yesterday = new Date(`${yesterdayDay}T12:00:00Z`);
+      await db().update(s.receipts).set({ createdAt: yesterday, voucherDate: yesterdayDay })
+        .where(eq(s.receipts.id, created.receiptId));
+      await db().update(s.accountingEntries).set({ entryDate: yesterday })
+        .where(eq(s.accountingEntries.receiptId, created.receiptId));
+      await pinReceiptToMidday(reversalReceiptId, today);
 
-    expect((await getFinancialPosition({ branchId: 1, asOf: yesterdayDay })).cash).toBe("100.00");
-    expect((await getFinancialPosition({ branchId: 1 })).cash).toBe("0.00");
-    const summary = await getTreasurySummary({ branchId: 1, from: yesterdayDay, to: today });
-    expect(summary.net).toBe("0.00");
-    expect(await getCashFlow({ branchId: 1, from: yesterdayDay, to: yesterdayDay })).toMatchObject({
-      totalIn: "100.00", totalOut: "0.00", net: "100.00",
-    });
-    expect(await getCashFlow({ branchId: 1, from: today, to: today })).toMatchObject({
-      totalIn: "0.00", totalOut: "100.00", net: "-100.00",
-    });
-    expect(await getCashFlow({ branchId: 1, from: yesterdayDay, to: today })).toMatchObject({
-      totalIn: "100.00", totalOut: "100.00", net: "0.00",
+      const flow = await getCashFlowSeries({ days: 2, branchId: 1 }, { scopedBranchId: 1, role: "admin", userId: 1 });
+      expect(flow.find((row) => row.day === yesterdayDay)).toMatchObject({ inflow: "100.00", outflow: "0.00", net: "100.00" });
+      expect(flow.at(-1)).toMatchObject({ inflow: "0.00", outflow: "100.00", net: "-100.00" });
+
+      expect((await getFinancialPosition({ branchId: 1, asOf: yesterdayDay })).cash).toBe("100.00");
+      expect((await getFinancialPosition({ branchId: 1 })).cash).toBe("0.00");
+      const summary = await getTreasurySummary({ branchId: 1, from: yesterdayDay, to: today });
+      expect(summary.net).toBe("0.00");
+      expect(await getCashFlow({ branchId: 1, from: yesterdayDay, to: yesterdayDay })).toMatchObject({
+        totalIn: "100.00", totalOut: "0.00", net: "100.00",
+      });
+      expect(await getCashFlow({ branchId: 1, from: today, to: today })).toMatchObject({
+        totalIn: "0.00", totalOut: "100.00", net: "-100.00",
+      });
+      expect(await getCashFlow({ branchId: 1, from: yesterdayDay, to: today })).toMatchObject({
+        totalIn: "100.00", totalOut: "100.00", net: "0.00",
+      });
     });
   });
 });
