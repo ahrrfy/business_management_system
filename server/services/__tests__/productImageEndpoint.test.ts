@@ -14,12 +14,17 @@
  * للسلوك HTTP الحقيقي (الحالة + الترويسات + البايتات) لا لمحاكاةٍ له.
  */
 import express from "express";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { beforeEach, describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { imageRouter } from "../../imageRoute";
+import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor, shortHash } from "../../lib/imageStore";
 import { storefrontProduct } from "../storefrontService";
 import { truncateTables } from "./__testUtils__";
 
@@ -46,6 +51,7 @@ async function withServer<T>(fn: (base: string) => Promise<T>): Promise<T> {
 /** أصغر JPEG صالح فعلاً: يبدأ FFD8 وينتهي FFD9 ⇒ يمرّ بالقائمة البيضاء ويُفكّ إلى بايتات. */
 const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x01, 0xff, 0xd9]);
 const JPEG_DATA_URL = `data:image/jpeg;base64,${JPEG_BYTES.toString("base64")}`;
+let imageStoreDir = "";
 
 /** يزرع منتجاً كامل السلسلة (منتج→متغيّر→وحدة→سعر) + صورةً رئيسية، ويعيد معرّف الصورة. */
 async function seedProduct(opts: {
@@ -89,10 +95,22 @@ async function seedProduct(opts: {
 }
 
 beforeEach(async () => {
+  imageStoreDir = await mkdtemp(path.join(tmpdir(), "erp-product-image-route-"));
+  process.env.IMAGE_STORE_DRIVER = "fs";
+  process.env.IMAGE_STORE_DIR = imageStoreDir;
+  __resetImageStoreForTest();
   await truncateTables(["productImages", "productPrices", "productUnits", "productVariants", "products", "branches", "users"]);
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
+});
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  __resetImageStoreForTest();
+  delete process.env.IMAGE_STORE_DRIVER;
+  delete process.env.IMAGE_STORE_DIR;
+  if (imageStoreDir) await rm(imageStoreDir, { recursive: true, force: true });
 });
 
 describe("GET /api/img/product/:id — البوّابة (علنية مجهولة الهوية)", () => {
@@ -173,6 +191,75 @@ describe("GET /api/img/product/:id — XSS (العمود نصٌّ حرّ في DB
       expect((await fetch(`${base}/api/img/product/${html}`)).status).toBe(404);
       expect((await fetch(`${base}/api/img/product/${svg}`)).status).toBe(404);
     });
+  });
+});
+
+describe("GET /api/img/product/:id — مشتق معتمد من المخزن الخاص", () => {
+  async function seedStored(productId: number, prefix = "single/studio/candidate") {
+    const imageId = await seedProduct({ productId });
+    const hash = contentHash(JPEG_BYTES);
+    const objectKey = objectKeyFor(hash, "image/jpeg", prefix);
+    await getImageStore().put(objectKey, JPEG_BYTES, "image/jpeg");
+    await db().update(s.productImages).set({
+      url: `/api/img/product/${imageId}?v=${shortHash(hash)}`,
+      objectKey,
+      contentHash: hash,
+      mime: "image/jpeg",
+      bytes: JPEG_BYTES.length,
+      reviewStatus: "APPROVED",
+    });
+    return { imageId, hash };
+  }
+
+  it("يبث المشتق المعتمد عبر الخادم بلا redirect أو كشف objectKey", async () => {
+    const { imageId, hash } = await seedStored(81);
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`, { redirect: "manual" });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("location")).toBeNull();
+      expect(res.headers.get("content-type")).toBe("image/jpeg");
+      expect(res.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(JPEG_BYTES);
+    });
+  });
+
+  it("يعيد 304 من البصمة قبل فتح كائن المخزن", async () => {
+    const { imageId, hash } = await seedStored(87);
+    const getStream = vi.spyOn(getImageStore(), "getStream");
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`, {
+        headers: { "If-None-Match": `"${shortHash(hash)}"` },
+      });
+      expect(res.status).toBe(304);
+      expect((await res.arrayBuffer()).byteLength).toBe(0);
+    });
+    expect(getStream).not.toHaveBeenCalled();
+  });
+
+  it("يرفض بصمة رابط ناقصة/خاطئة ولا يفتح R2 كدليل ملفات", async () => {
+    const { imageId, hash } = await seedStored(82);
+    await withServer(async (base) => {
+      expect((await fetch(`${base}/api/img/product/${imageId}`)).status).toBe(404);
+      expect((await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}0`)).status).toBe(404);
+    });
+  });
+
+  it("لا يخدم مفتاح الأصل حتى لو أُدخل خطأً في صف صورة منشورة", async () => {
+    const { imageId, hash } = await seedStored(83, "single/studio/original");
+    await withServer(async (base) => {
+      expect((await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`)).status).toBe(404);
+    });
+  });
+
+  it("لا يخدم مشتقاً pending/rejected ولو كان كائنه موجوداً ومعرّفه معلوماً", async () => {
+    for (const [offset, reviewStatus] of ["PENDING_REVIEW", "REJECTED"].entries()) {
+      const { imageId, hash } = await seedStored(84 + offset);
+      await db().update(s.productImages).set({ reviewStatus: reviewStatus as "PENDING_REVIEW" | "REJECTED" })
+        .where(eq(s.productImages.id, imageId));
+      await withServer(async (base) => {
+        expect((await fetch(`${base}/api/img/product/${imageId}?v=${shortHash(hash)}`)).status).toBe(404);
+      });
+    }
   });
 });
 

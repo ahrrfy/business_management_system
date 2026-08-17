@@ -70,6 +70,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "treasury",     label: "الخزينة والمدفوعات",  description: "لوحة الخزينة، السندات، التحويلات النقدية، الورديات" },
   { key: "suppliers",    label: "الموردون",           description: "إدارة الموردين وكشوف الحساب" },
   { key: "products",     label: "المنتجات",           description: "إدارة المنتجات والأسعار والوحدات" },
+  { key: "productStudio", label: "استوديو المنتجات", description: "صور المنتجات ومحتواها فقط — بلا أسعار أو تكلفة أو مخزون" },
   { key: "expenses",     label: "المصروفات",          description: "إدخال وتعديل المصروفات اليومية" },
   { key: "reports",      label: "التقارير",           description: "تقارير المبيعات، الأرباح، أعمار الذمم" },
   { key: "assets",       label: "الأصول الثابتة",      description: "سجلّ الأصول، العهدة، الإهلاك، الصيانة، الاستبعاد" },
@@ -101,6 +102,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL", channels: "FULL", treasury: "FULL",
     tasks: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
+    productStudio: "FULL",
     users: "FULL", settings: "FULL",
     catalogAnomalies: "FULL",
     announcements: "FULL",
@@ -118,6 +120,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL", channels: "FULL", treasury: "FULL",
     tasks: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
+    productStudio: "FULL",
     users: "READ", settings: "READ",
     catalogAnomalies: "FULL",
     announcements: "FULL",
@@ -141,6 +144,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // READ: يراجع طلبات الخدمة/الدعم (سياق الذمم والتحصيل) بلا إسناد/إدارة تدفّق العمل.
     tasks: "READ",
     customers: "READ", suppliers: "READ", products: "NONE", expenses: "FULL", reports: "FULL",
+    productStudio: "NONE",
     users: "NONE", settings: "NONE",
     catalogAnomalies: "READ",
   },
@@ -163,6 +167,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // FULL: الكاشير يستقبل طلبات الخدمة/الدعم من زبائنه ويتابعها (نمط channels/workorders).
     tasks: "FULL",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "FULL", reports: "NONE",
+    productStudio: "NONE",
     users: "NONE", settings: "NONE",
   },
   warehouse: {
@@ -183,6 +188,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // #26). صدق القالب (قرار المالك: الخادم هو الحقيقة). أمين المخزن يقرأ المنتجات (مخزون/استلام)
     // ويبحثها للشراء (productsPurchaseProcedure #27) — لا يُنشئ/يُعدّل الكتالوج.
     customers: "READ", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
+    productStudio: "NONE",
     users: "NONE", settings: "NONE",
   },
   purchasing: {
@@ -198,6 +204,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     pos: "NONE", sales: "NONE", purchases: "FULL", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "NONE",
     tasks: "NONE",
     customers: "NONE", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
+    productStudio: "NONE",
     users: "NONE", settings: "NONE",
   },
   print_operator: {
@@ -221,6 +228,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // FULL: طلبات خدمة الطباعة/الاستقبال هي عمله الأساسي (نمط workorders).
     tasks: "FULL",
     customers: "READ", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
+    productStudio: "FULL",
     users: "NONE", settings: "NONE",
   },
   sales_rep: {
@@ -238,6 +246,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // FULL: يتابع طلبات/استفسارات عملائه (نمط crm/customers).
     tasks: "FULL",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
+    productStudio: "NONE",
     users: "NONE", settings: "NONE",
   },
   auditor: {
@@ -253,6 +262,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     pos: "READ", sales: "READ", purchases: "READ", inventory: "READ", workorders: "READ", channels: "READ", treasury: "READ",
     tasks: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "READ", reports: "READ",
+    productStudio: "READ",
     users: "READ", settings: "READ",
     catalogAnomalies: "READ",
     announcements: "READ",
@@ -269,6 +279,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "READ", workorders: "READ", channels: "NONE", treasury: "NONE",
     tasks: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "NONE", reports: "READ",
+    productStudio: "NONE",
     users: "NONE", settings: "NONE",
   },
   courier: {
@@ -282,6 +293,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "NONE", treasury: "NONE",
     tasks: "NONE",
     customers: "NONE", suppliers: "NONE", products: "NONE", expenses: "NONE", reports: "NONE",
+    productStudio: "NONE",
     users: "NONE", settings: "NONE",
   },
 };

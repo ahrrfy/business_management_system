@@ -464,6 +464,28 @@ const PROCEDURES = {
     roles: ["manager", "warehouse", "purchasing"],
     branch: "required",
   },
+  productStudioReadProcedure: {
+    authority: "module-map",
+    module: "productStudio",
+    level: "READ",
+    roles: [],
+    branch: "scoped",
+  },
+  productStudioWriteProcedure: {
+    authority: "module-map",
+    module: "productStudio",
+    level: "FULL",
+    roles: [],
+    branch: "scoped",
+  },
+  // managerProcedure + requireModule؛ الخدمة تعيد قفل المهمة وتفرض branchId لكل فعل إشرافي.
+  productStudioManagerProcedure: {
+    authority: "module-gate",
+    module: "productStudio",
+    level: "FULL",
+    roles: ["manager"],
+    branch: "asserted",
+  },
   expensesReadProcedure: {
     authority: "module-map",
     module: "expenses",

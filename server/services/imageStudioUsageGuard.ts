@@ -2,11 +2,16 @@
  * حارس استهلاك مزوّدي استوديو الصور.
  *
  * لا يكتفي بحماية واجهة الاستوديو: كل نداء مدفوع يمرّ من هنا قبل الشبكة. السقف اليومي
- * محفوظ في MySQL (لا ينسى بعد إعادة تشغيل PM2)، أمّا التزامن ومعدل المستخدم فهما حارسان
- * لحظيّان لتفادي احتجاز event loop أو إطلاق عدد كبير من الاتصالات الخارجية.
+ * محفوظ في MySQL (لا ينسى بعد إعادة تشغيل PM2). التزامن محميّ بقفلَي MySQL advisory على
+ * اتصالين مخصصين، ومعدل المستخدم صف ثابت مقفول؛ لذلك الحدود مشتركة بين جميع عمال PM2
+ * المتصلة بخادم MySQL نفسه، لا عدادات ذاكرة منفصلة.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { imageStudioUsageDaily } from "../../drizzle/schema";
+import { drizzle } from "drizzle-orm/mysql2";
+import type { PoolConnection, RowDataPacket } from "mysql2/promise";
+import * as schema from "../../drizzle/schema";
+import { imageStudioUsageDaily, imageStudioUserRateState } from "../../drizzle/schema";
+import { getPool } from "../db";
 import { withTx } from "./tx";
 
 export type ImageStudioService = "REMOVEBG" | "AI";
@@ -57,29 +62,92 @@ function baghdadDay(now = new Date()): string {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
-const recentCallsByUser = new Map<number, number[]>();
-let activeCalls = 0;
+const SLOT_NAMES = Array.from(
+  { length: MAX_CONCURRENT_CALLS },
+  (_, index) => `alroya:image-studio:slot:${index + 1}`,
+);
 
-function consumeUserRate(userId: number, now = Date.now()): void {
-  const recent = (recentCallsByUser.get(userId) ?? []).filter((at) => now - at < USER_WINDOW_MS);
-  if (recent.length >= MAX_REQUESTS_PER_USER_WINDOW) {
-    recentCallsByUser.set(userId, recent);
-    throw new ImageStudioGuardError("RATE_LIMITED");
+type LockResult = RowDataPacket & { acquired: number | null };
+type ReleaseResult = RowDataPacket & { released: number | null };
+
+async function acquireExecutionSlot(): Promise<{ connection: PoolConnection; name: string }> {
+  const connection = await getPool().getConnection();
+  try {
+    for (const name of SLOT_NAMES) {
+      // الاسم من قائمة ثابتة والمهلة صفر: لا query مبني نصياً ولا عامل ينتظر اتصالاً محجوزاً.
+      const [rows] = await connection.execute<LockResult[]>("SELECT GET_LOCK(?, 0) AS acquired", [name]);
+      if (Number(rows[0]?.acquired) === 1) return { connection, name };
+    }
+    connection.release();
+    throw new ImageStudioGuardError("BUSY");
+  } catch (error) {
+    if (!(error instanceof ImageStudioGuardError)) connection.destroy();
+    throw error;
   }
-  recent.push(now);
-  recentCallsByUser.set(userId, recent);
 }
 
-function acquireExecutionSlot(): () => void {
-  if (activeCalls >= MAX_CONCURRENT_CALLS) throw new ImageStudioGuardError("BUSY");
-  activeCalls += 1;
-  let released = false;
-  return () => {
-    if (!released) {
-      released = true;
-      activeCalls -= 1;
+async function releaseExecutionSlot(slot: { connection: PoolConnection; name: string }): Promise<void> {
+  try {
+    const [rows] = await slot.connection.execute<ReleaseResult[]>("SELECT RELEASE_LOCK(?) AS released", [slot.name]);
+    if (Number(rows[0]?.released) !== 1) {
+      slot.connection.destroy();
+      return;
     }
-  };
+    slot.connection.release();
+  } catch {
+    // قتل الاتصال هو مسار التحرير الآمن: MySQL يسقط named locks تلقائياً عند غلق مالكها.
+    slot.connection.destroy();
+  }
+}
+
+async function reserveSharedBudgets(
+  connection: PoolConnection,
+  service: ImageStudioService,
+  userId: number,
+  now = new Date(),
+): Promise<void> {
+  const usageDate = baghdadDay(now);
+  const dailyLimit = IMAGE_STUDIO_DAILY_LIMITS[service];
+  const connectionDb = drizzle(connection, { schema, mode: "default" });
+
+  // نفس الاتصال الذي يملك named lock: لا نطلب اتصالاً ثانياً من pool فنسبب starvation عند ضغط العاملين.
+  await connectionDb.transaction(async (tx) => {
+    await tx.insert(imageStudioUserRateState).values({
+      userId,
+      windowStartedAt: now,
+      requestCount: 0,
+      lastRequestedAt: now,
+    }).onDuplicateKeyUpdate({
+      set: { lastRequestedAt: sql`${imageStudioUserRateState.lastRequestedAt}` },
+    });
+    const [rate] = await tx.select().from(imageStudioUserRateState)
+      .where(eq(imageStudioUserRateState.userId, userId)).for("update");
+    if (!rate) throw new ImageStudioGuardError("RATE_LIMITED");
+    const withinWindow = now.getTime() - rate.windowStartedAt.getTime() < USER_WINDOW_MS;
+    if (withinWindow && rate.requestCount >= MAX_REQUESTS_PER_USER_WINDOW) {
+      throw new ImageStudioGuardError("RATE_LIMITED");
+    }
+    await tx.update(imageStudioUserRateState).set({
+      windowStartedAt: withinWindow ? rate.windowStartedAt : now,
+      requestCount: withinWindow ? rate.requestCount + 1 : 1,
+      lastRequestedAt: now,
+    }).where(eq(imageStudioUserRateState.userId, userId));
+
+    await tx.insert(imageStudioUsageDaily)
+      .values({ usageDate, service, requestCount: 0, lastRequestedAt: now })
+      .onDuplicateKeyUpdate({ set: { lastRequestedAt: sql`${imageStudioUsageDaily.lastRequestedAt}` } });
+    const [daily] = await tx.select({ id: imageStudioUsageDaily.id, requestCount: imageStudioUsageDaily.requestCount })
+      .from(imageStudioUsageDaily)
+      .where(and(eq(imageStudioUsageDaily.usageDate, usageDate), eq(imageStudioUsageDaily.service, service)))
+      .for("update");
+    if (!daily || daily.requestCount >= dailyLimit) {
+      throw new ImageStudioGuardError("DAILY_BUDGET_EXHAUSTED");
+    }
+    await tx.update(imageStudioUsageDaily).set({
+      requestCount: daily.requestCount + 1,
+      lastRequestedAt: now,
+    }).where(eq(imageStudioUsageDaily.id, daily.id));
+  });
 }
 
 /**
@@ -128,18 +196,14 @@ export async function runGuardedImageStudioCall<T>(args: {
     throw new ImageStudioGuardError("RATE_LIMITED");
   }
 
-  const release = acquireExecutionSlot();
+  const slot = await acquireExecutionSlot();
   try {
-    consumeUserRate(args.userId);
-    await reserveDailyImageStudioUse(args.service);
+    await reserveSharedBudgets(slot.connection, args.service, args.userId);
     return await args.run();
   } finally {
-    release();
+    await releaseExecutionSlot(slot);
   }
 }
 
 /** معزول للاختبارات فقط؛ لا يستخدمه مسار الإنتاج. */
-export function __resetImageStudioUsageGuardForTests(): void {
-  activeCalls = 0;
-  recentCallsByUser.clear();
-}
+export function __resetImageStudioUsageGuardForTests(): void {}

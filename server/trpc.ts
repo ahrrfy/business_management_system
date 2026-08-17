@@ -555,6 +555,13 @@ export const productsManagerProcedure = moduleProcedure(["manager"], "products",
 // رغم تخويلها إنشاءه (purchasesManagerProcedure)/استلامه (purchasesWarehouseProcedure). قراءة فقط،
 // ومحصور بأدوار الشراء + المدير ⇒ لا تتسرّب التكلفة للكاشير/المندوب/المستخدم العام.
 export const productsPurchaseProcedure = moduleProcedure(["manager", "warehouse", "purchasing"], "products", "READ");
+// استوديو المنتجات وحدة مستقلة: العامل يقرأ/يكتب الصور والمحتوى المقترح فقط، ولا يعبر بوابة
+// products التي تكشف السعر/التكلفة/المخزون. المدير يملك الإسناد والاعتماد النهائي.
+export const productStudioReadProcedure = branchScopedProcedure.use(requireModule("productStudio", "READ"));
+export const productStudioWriteProcedure = branchScopedProcedure.use(requireModule("productStudio", "FULL"));
+// الاعتماد/الرفض/الإسناد سلطة إشرافية فعلية: منح FULL لموظف يفتح أدوات التنفيذ فقط ولا يحوّله
+// إلى مدير. خدمة الاستوديو تعيد الفحص أيضاً؛ هذه البوابة تمنع حتى بلوغها وتوحّد عقد الواجهة.
+export const productStudioManagerProcedure = managerProcedure.use(requireModule("productStudio", "FULL"));
 // expenses — «محاسب» قالبه expenses=FULL ⇒ يدخل بوّابة الإدخال (الإلغاء يبقى مديرياً).
 export const expensesReadProcedure = branchScopedProcedure.use(requireModule("expenses", "READ"));
 export const expensesCashierProcedure = moduleProcedure(["cashier", "manager", "accountant"], "expenses", "FULL");
