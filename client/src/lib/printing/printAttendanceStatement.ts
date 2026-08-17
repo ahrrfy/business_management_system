@@ -32,7 +32,9 @@ export interface StatementDay {
   overtimeHours: string;
   rate: string;
   amount: string;
-  state: "present" | "absent" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
+  overtimeAmount?: string;
+  totalAmount?: string;
+  state: "present" | "absent" | "open" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
   checkIn?: string | null;
   checkOut?: string | null;
   needsReview?: boolean;
@@ -55,6 +57,7 @@ export interface AttendanceStatementData {
     overtimeHours: string;
     overtimePay: string;
     absentDays: number;
+    openDays?: number;
     unpaidLeaveDays: number;
     shortHours: string;
     reviewDays: number;
@@ -68,6 +71,7 @@ export interface AttendanceStatementData {
 const STATE_LABEL: Record<StatementDay["state"], string> = {
   present: "حضور",
   absent: "غياب",
+  open: "ينقص انصراف",
   paidLeave: "إجازة مدفوعة",
   unpaidLeave: "إجازة بلا راتب",
   beforeStart: "قبل السريان",
@@ -120,23 +124,29 @@ export function printAttendanceStatement(d: AttendanceStatementData, days: State
     [
       { key: "date", label: "التاريخ", width: 78 },
       { key: "day", label: "اليوم", width: 62 },
-      { key: "inOut", label: "من ← إلى", width: 92 },
-      { key: "sched", label: "مقرَّر", width: 52 },
-      { key: "counted", label: "محتسَب", width: 56 },
-      { key: "ot", label: "إضافي", width: 52 },
-      { key: "rate", label: "سعر الساعة", width: 78 },
-      { key: "amount", label: "أجر اليوم", width: 86, emphasize: true },
-      { key: "state", label: "الحالة", width: 82 },
+      { key: "checkIn", label: "من", width: 52 },
+      { key: "checkOut", label: "إلى", width: 52 },
+      { key: "sched", label: "مقرَّر", width: 48 },
+      { key: "counted", label: "محتسَب", width: 52 },
+      { key: "ot", label: "إضافي", width: 48 },
+      { key: "rate", label: "سعر الساعة", width: 70 },
+      { key: "amount", label: "أجر أساس", width: 74 },
+      { key: "otAmount", label: "أجر إضافي", width: 74 },
+      { key: "total", label: "إجمالي اليوم", width: 82, emphasize: true },
+      { key: "state", label: "الحالة", width: 78 },
     ],
     days.map((x) => ({
       date: x.date,
       day: x.dayName,
-      inOut: x.checkIn ? `${x.checkIn} ← ${x.checkOut ?? "—"}` : "—",
+      checkIn: x.checkIn ?? "—",
+      checkOut: x.checkOut ?? "—",
       sched: fmt(x.scheduledHours),
       counted: fmt(x.countedHours),
       ot: Number(x.overtimeHours) > 0 ? fmt(x.overtimeHours) : "—",
       rate: fmt(x.rate),
       amount: fmt(x.amount),
+      otAmount: Number(x.overtimeAmount ?? 0) > 0 ? fmt(x.overtimeAmount!) : "—",
+      total: fmt(x.totalAmount ?? x.amount),
       state: `${STATE_LABEL[x.state]}${x.needsReview ? " ⚠" : ""}`.replace("⚠", "(يحتاج تصحيح)"),
     })),
     { hideIndex: true },

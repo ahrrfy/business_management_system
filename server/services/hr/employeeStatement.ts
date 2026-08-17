@@ -112,6 +112,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   // مجموع ما سُجّل فعلياً في الحضور — أساس أجر الموظف الساعيّ في المسيّر.
   let actualPaid = 0;
   const attendedHoursByDate = new Map<string, ReturnType<typeof money>>();
+  const openDates = new Set<string>();
   const meta = new Map<string, (typeof attRows)[number]>();
   for (const r of attRows) {
     const d = String(r.date).slice(0, 10);
@@ -119,6 +120,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     if (r.status === "PRESENT" || r.status === "LATE") {
       attendedHoursByDate.set(d, money(r.hours ?? 0));
       actualPaid += Number(r.amount ?? 0);
+      // دخولٌ بلا انصراف ⇒ يومٌ مفتوح لا غائب (ساعاته صفرٌ لأنها لا تُخمَّن، لا لأنه تغيّب).
+      if (r.checkIn != null && r.checkOut == null) openDates.add(d);
     }
   }
 
@@ -141,6 +144,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     employmentEnd,
     schedule,
     attendedHoursByDate,
+    openDates,
     paidLeaveDates: expand(paidSpans, employmentStart, employmentEnd),
     unpaidLeaveDates: expand(unpaidSpans, employmentStart, employmentEnd),
     // الكشف يعرض الشهر كما يُحتسب فعلياً؛ غياب السريان ⇒ كل الأيام مدفوعة (السلوك نفسه).
@@ -230,6 +234,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       overtimeHours: pay.overtimeHours,
       overtimePay: pay.overtimePay,
       absentDays: pay.absentDays,
+      openDays: pay.openDays,
       unpaidLeaveDays: pay.unpaidLeaveDays,
       shortHours: pay.shortHours,
       restWorkedHours: pay.restWorkedHours,

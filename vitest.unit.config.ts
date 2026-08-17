@@ -97,6 +97,7 @@ export default defineConfig({
       "server/routers/__tests__/superAppAuthority.test.ts",
       "server/tenancy/__tests__/tenantPoolPolicy.test.ts",
       "shared/attendanceHours.test.ts",
+      "server/services/__tests__/attendancePay.test.ts",
     ],
   },
 });

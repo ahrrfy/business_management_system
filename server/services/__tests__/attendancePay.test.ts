@@ -311,3 +311,106 @@ describe("العمل في يوم الراحة (قرار المالك ٣١/٧: س
     expect(r.restWorkedHours).toBe("12.00");
   });
 });
+
+/*
+ * س٨) اليوم **المفتوح** (دخولٌ بلا انصراف) ليس غياباً — تدقيق ١٧/٨.
+ * كان يصل المحرّك بساعاتٍ صفرٍ فيقرأه غياباً ويدفعه صفراً صامتاً، ويضخّم «غياب N يوم»
+ * في ملاحظة المسيّر بأيامٍ لم يغبها الموظف. الفرق بين الحالتين أجرُ يومٍ كامل.
+ */
+describe("اليوم المفتوح — دخولٌ بلا انصراف (س٨)", () => {
+  const openDay = "2026-07-06"; // اثنين — يوم دوام
+
+  it("يُميَّز بحالة open ولا يُحتسب غياباً", () => {
+    const att = fullAttendance();
+    att.set(openDay, D(0)); // ساعاته صفرٌ لأنها لا تُخمَّن
+    const r = base({ attendedHoursByDate: att, openDates: new Set([openDay]) });
+
+    expect(r.openDays).toBe(1);
+    expect(r.openDates).toEqual([openDay]);
+    expect(r.absentDays).toBe(0); // ← جوهر الإصلاح: لم يعد يُعدّ غياباً
+    expect(r.days.find((x) => x.date === openDay)?.state).toBe("open");
+  });
+
+  it("بلا openDates يبقى السلوك السابق كما هو — غياب (صفر انحدار)", () => {
+    const att = fullAttendance();
+    att.set(openDay, D(0));
+    const r = base({ attendedHoursByDate: att });
+
+    expect(r.openDays).toBe(0);
+    expect(r.absentDays).toBe(1);
+    expect(r.days.find((x) => x.date === openDay)?.state).toBe("absent");
+  });
+
+  it("لا يُدفع أجرُه (ساعاته مجهولة) — والمسيّر يوقف نفسه عنده لا يخمّنه", () => {
+    const att = fullAttendance();
+    att.set(openDay, D(0));
+    const r = base({ attendedHoursByDate: att, openDates: new Set([openDay]) });
+    const day = r.days.find((x) => x.date === openDay)!;
+
+    expect(day.amount).toBe("0.00");
+    expect(day.totalAmount).toBe("0.00");
+  });
+});
+
+/*
+ * س٩) سقف اليوم الواحد يُطبَّق في مسار **يوم الدوام** لا في الطيّ ومسار الراحة وحدهما.
+ * كان المسار الأكثر استعمالاً يستهلك الساعات خامّاً، فيمرّ يومٌ مُدخَلٌ يدوياً بعشرين ساعة.
+ */
+describe("سقف اليوم الواحد في مسار يوم الدوام (س٩)", () => {
+  const day = "2026-07-06";
+
+  it("يقصّ الساعات عند السقف قبل تقسيمها أساساً وإضافياً", () => {
+    const att = new Map([[day, D(20)]]);
+    const r = base({ attendedHoursByDate: att, maxDailyHours: 12 });
+    const row = r.days.find((x) => x.date === day)!;
+
+    expect(row.countedHours).toBe("8.00"); // المقرَّر
+    expect(row.overtimeHours).toBe("4.00"); // 12 − 8 لا 20 − 8
+    expect(row.attendedHours).toBe("20.00"); // الخام يبقى ظاهراً للشفافية
+  });
+
+  it("لا يمسّ يوماً دون السقف — صفر انحدار على بيانات الطيّ", () => {
+    const att = new Map([[day, D(10)]]);
+    const r = base({ attendedHoursByDate: att, maxDailyHours: 12 });
+    const row = r.days.find((x) => x.date === day)!;
+
+    expect(row.countedHours).toBe("8.00");
+    expect(row.overtimeHours).toBe("2.00");
+  });
+});
+
+/*
+ * س١٠) تفصيل أجر اليوم: الأساس والإضافي والإجمالي. عمود «أجر اليوم» كان يعرض `amount`
+ * وحده (الأساس المقصوص عند المقرَّر) فيبدو الإضافي ضائعاً لمن يقرأ العمود.
+ */
+describe("تفصيل أجر اليوم — أساس + إضافي = إجمالي (س١٠)", () => {
+  const day = "2026-07-06";
+
+  it("الإجمالي يساوي مجموع الشقّين، والإضافي = السعر × الساعات الزائدة", () => {
+    const r = base({ attendedHoursByDate: new Map([[day, D(12)]]), maxDailyHours: 12 });
+    const row = r.days.find((x) => x.date === day)!;
+    const rate = Number(row.rate);
+
+    expect(Number(row.overtimeAmount)).toBeCloseTo(rate * 4, 0);
+    expect(Number(row.totalAmount)).toBeCloseTo(Number(row.amount) + Number(row.overtimeAmount), 2);
+  });
+
+  it("يومٌ بلا إضافي: الإجمالي = الأساس", () => {
+    const r = base({ attendedHoursByDate: new Map([[day, D(8)]]) });
+    const row = r.days.find((x) => x.date === day)!;
+
+    expect(row.overtimeAmount).toBe("0.00");
+    expect(row.totalAmount).toBe(row.amount);
+  });
+
+  it("مجموع أيام الشهر يطابق basePay وovertimePay", () => {
+    const att = fullAttendance();
+    att.set(day, D(12)); // يومٌ فيه أربع ساعات إضافية
+    const r = base({ attendedHoursByDate: att, maxDailyHours: 12 });
+    const sum = (k: "amount" | "overtimeAmount") =>
+      r.days.reduce((a, x) => a + Number(x[k]), 0);
+
+    expect(sum("amount")).toBeCloseTo(Number(r.basePay), 0);
+    expect(sum("overtimeAmount")).toBeCloseTo(Number(r.overtimePay), 0);
+  });
+});
