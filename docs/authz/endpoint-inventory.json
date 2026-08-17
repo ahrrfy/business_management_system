@@ -61,7 +61,7 @@
     },
     "flagCounts": {
       "LOCAL_GATE": 181,
-      "NO_BRANCH_SCOPE": 150,
+      "NO_BRANCH_SCOPE": 144,
       "SENSITIVE_ACTION": 135,
       "ADMIN_ONLY": 72,
       "RAW_ROLE_GATE": 65,
@@ -8274,11 +8274,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:106"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/leaveRouter.ts:114"
     },
     {
       "surface": "trpc",
@@ -8291,11 +8291,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:97"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/leaveRouter.ts:105"
     },
     {
       "surface": "trpc",
@@ -8308,11 +8308,11 @@
       "module": "hr",
       "level": "FULL",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/leaveRouter.ts:204"
+      "flags": "LOCAL_GATE|SENSITIVE_ACTION",
+      "loc": "server/routers/leaveRouter.ts:216"
     },
     {
       "surface": "trpc",
@@ -8325,11 +8325,11 @@
       "module": "hr",
       "level": "FULL",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:145"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/leaveRouter.ts:157"
     },
     {
       "surface": "trpc",
@@ -8342,11 +8342,11 @@
       "module": "hr",
       "level": "FULL",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:167"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/leaveRouter.ts:179"
     },
     {
       "surface": "trpc",
@@ -8359,11 +8359,11 @@
       "module": "hr",
       "level": "READ",
       "roles": "",
-      "branch": "none",
+      "branch": "scoped",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/leaveRouter.ts:52"
+      "flags": "LOCAL_GATE",
+      "loc": "server/routers/leaveRouter.ts:59"
     },
     {
       "surface": "trpc",
