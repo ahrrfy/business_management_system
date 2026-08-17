@@ -96,6 +96,7 @@ export default defineConfig({
       "server/routers/__tests__/voucherCategoryAccounting.test.ts",
       "server/routers/__tests__/superAppAuthority.test.ts",
       "server/tenancy/__tests__/tenantPoolPolicy.test.ts",
+      "shared/attendanceHours.test.ts",
     ],
   },
 });

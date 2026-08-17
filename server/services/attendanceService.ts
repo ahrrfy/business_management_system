@@ -7,6 +7,7 @@
  * ========================================================================== */
 import { and, desc, eq, getTableColumns, gte, inArray, like, lte, or, sql, type SQL } from "drizzle-orm";
 import { WEEK_DAYS, fullEmployeeName } from "@shared/hr";
+import { attendanceHoursViolation } from "@shared/attendanceHours";
 import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
@@ -623,6 +624,25 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     // ABSENT/LEAVE لا يولّدان أجراً مهما كانت الساعات. التصفير المزدوج (هنا + WHERE في تجميع المسيّر)
     // يحمي حتى عند تعديل صفّ موجود أو إدخال مباشر بـAPI يضع status=ABSENT مع ساعات (سهو/استيراد بصمة).
     const isPaidStatus = status === "PRESENT" || status === "LATE";
+
+    /*
+     * حارس اتّساق الساعات مع الأوقات (تدقيق ١٧/٨) — النواة النقيّة في `shared/attendanceHours.ts`
+     * ليُنفّذها الخادم وتُرشد بها الواجهة بالنصّ نفسه.
+     *
+     * الطيّ التلقائي يمرّ بلا مساس: مجموع فتراته المزاوَجة ≤ المدى حتماً (فالحارس لا يفرض
+     * المساواة)، وlastPairedOut لا يُضبط إلا باكتمال زوجٍ ⇒ ساعاته > 0، وpunchTimesOf يجلب
+     * بصمات اليوم نفسه فقط ⇒ الانصراف بعد الدخول دائماً.
+     */
+    const hoursViolation = attendanceHoursViolation({
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      hours: hoursDec.toNumber(),
+      isPaidStatus,
+    });
+    if (hoursViolation) throw new Error(hoursViolation);
+
+    const checkInAt = timeToTimestamp(input.attendanceDate, input.checkIn);
+    const checkOutAt = timeToTimestamp(input.attendanceDate, input.checkOut);
     const effectiveHours = isPaidStatus ? hoursDec : money(0);
     const rate = rateForDay(emp, input.attendanceDate);
     // الأجر بالدينار الصحيح (لا فئات أصغر من الدينار في المتجر): تقريب الناتج إلى عدد صحيح.
@@ -632,8 +652,8 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     const values = {
       employeeId: input.employeeId,
       attendanceDate: input.attendanceDate,
-      checkIn: timeToTimestamp(input.attendanceDate, input.checkIn),
-      checkOut: timeToTimestamp(input.attendanceDate, input.checkOut),
+      checkIn: checkInAt,
+      checkOut: checkOutAt,
       status,
       notes: input.notes?.trim() || null,
       hours: toDbMoney(effectiveHours),

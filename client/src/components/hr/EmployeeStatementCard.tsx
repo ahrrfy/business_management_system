@@ -20,6 +20,7 @@ import { notify } from "@/lib/notify";
 import { printAttendanceStatement } from "@/lib/printing/printAttendanceStatement";
 import { trpc } from "@/lib/trpc";
 import { whatsappLink } from "@/lib/intlPhone";
+import { attendanceHoursViolation, spanHours } from "@shared/attendanceHours";
 import { CalendarDays, FileSpreadsheet, PenLine, Printer, Send, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -51,6 +52,26 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
   const utils = trpc.useUtils();
   const [period, setPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [fix, setFix] = useState<{ date: string; checkIn: string; checkOut: string; hours: string } | null>(null);
+
+  /*
+   * تغيير أيّ من الوقتين يُعيد اشتقاق الساعات فوراً. قبل ذلك كان حقل الساعات يُملأ مرّةً عند
+   * الفتح ولا يتحرّك أبداً، فتُحفظ ساعاتٌ جامدة مع أوقاتٍ جديدة صحيحة — وأخطرها صفرٌ موروثٌ
+   * من يومٍ حُسب غياباً: يُكمل المديرُ الانصرافَ الناقص فيُحفظ اليوم بأجر صفر ويُرفع عنه وسم
+   * المراجعة، فلا يعود أحد ينتبه له. الاشتقاق التلقائي يمنع السهو، والخادم يمنع الالتفاف.
+   */
+  const setFixTime = (patch: { checkIn?: string; checkOut?: string }) =>
+    setFix((cur) => {
+      if (!cur) return cur;
+      const next = { ...cur, ...patch };
+      const auto = spanHours(next.checkIn, next.checkOut);
+      return auto == null ? next : { ...next, hours: auto.toFixed(2) };
+    });
+
+  const fixSpan = fix ? spanHours(fix.checkIn, fix.checkOut) : null;
+  /** مرآة حارس الخادم بالنواة نفسها — تمنع رحلةً بلا طائل وتشرح السبب مكان وقوعه. */
+  const fixError = fix
+    ? attendanceHoursViolation({ checkIn: fix.checkIn, checkOut: fix.checkOut, hours: Number(fix.hours), isPaidStatus: true })
+    : null;
 
   const q = trpc.attendance.employeeStatement.useQuery({ employeeId, period });
   const d = q.data;
@@ -222,7 +243,12 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
                   <td className="p-2 text-center">
                     <button
                       className="text-primary hover:underline inline-flex items-center gap-1"
-                      onClick={() => setFix({ date: x.date, checkIn: x.checkIn ?? "", checkOut: x.checkOut ?? "", hours: x.countedHours })}
+                      /*
+                       * تُملأ بالساعات **الفعلية** لا المحتسَبة: المحتسَب مقصوصٌ عند المقرَّر
+                       * (min(الفعلي، المقرَّر))، فتعبئتُه كانت تعني أن مجرّد فتح النافذة
+                       * والحفظ يهبط بساعات اليوم إلى المقرَّر ⇒ **يُمحى الأوفر تايم صامتاً**.
+                       */
+                      onClick={() => setFix({ date: x.date, checkIn: x.checkIn ?? "", checkOut: x.checkOut ?? "", hours: x.attendedHours ?? x.countedHours })}
                     >
                       <PenLine aria-hidden className="size-3" /> تصحيح
                     </button>
@@ -250,16 +276,25 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label htmlFor="fx-in">من</Label>
-                  <Input id="fx-in" type="time" dir="ltr" value={fix.checkIn} onChange={(e) => setFix({ ...fix, checkIn: e.target.value })} />
+                  <Input id="fx-in" type="time" dir="ltr" value={fix.checkIn} onChange={(e) => setFixTime({ checkIn: e.target.value })} />
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="fx-out">إلى</Label>
-                  <Input id="fx-out" type="time" dir="ltr" value={fix.checkOut} onChange={(e) => setFix({ ...fix, checkOut: e.target.value })} />
+                  <Input id="fx-out" type="time" dir="ltr" value={fix.checkOut} onChange={(e) => setFixTime({ checkOut: e.target.value })} />
                 </div>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="fx-h">الساعات المحتسَبة</Label>
                 <Input id="fx-h" type="number" min={0} max={24} step="0.25" dir="ltr" value={fix.hours} onChange={(e) => setFix({ ...fix, hours: e.target.value })} />
+                {fixError ? (
+                  <p className="text-xs leading-relaxed text-[var(--sem-neg)]">{fixError}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    {fixSpan != null
+                      ? `تُحسب تلقائياً من الوقتين (${fixSpan.toFixed(2)} ساعة) وتتغيّر معهما — عدّلها يدوياً فقط لطرح استراحةٍ غير مبصومة.`
+                      : "أكمِل وقتَي الدخول والانصراف لتُحسب الساعات تلقائياً."}
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   التصحيح اليدويّ يُثبّت اليوم ويرفع وسم المراجعة، ولا يطمسه الجهاز لاحقاً —
                   الجهاز يتبع المدير لا العكس. يُسجَّل في سجلّ التدقيق باسمك.
@@ -270,7 +305,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
           <DialogFooter>
             <Button variant="outline" onClick={() => setFix(null)}>إلغاء</Button>
             <Button
-              disabled={correct.isPending || !fix}
+              disabled={correct.isPending || !fix || !!fixError}
               onClick={() => fix && correct.mutate({
                 employeeId,
                 attendanceDate: fix.date,
