@@ -15,6 +15,7 @@ import {
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/employeeService";
+import { getEmployeeClearance } from "../services/hr/offboarding";
 import type { CreateUserInput } from "../services/userService";
 import { getEmployeeUsage } from "../services/entityUsage";
 import { adminProcedure, protectedProcedure, requireModule, router } from "../trpc";
@@ -103,6 +104,23 @@ const employeeInput = z.object({
 });
 
 export const employeeRouter = router({
+  /**
+   * تصفية خروج الموظّف — تجميعٌ للقراءة فقط عبر ستّ وحدات (وردية/عهدة/سلفة/عمولة/توصيل/جلسات).
+   * `hr/READ` كافٍ: لا يكشف إلا ما تكشفه شاشات تلك الوحدات لمن يملك صلاحيتها، ولا يكتب شيئاً.
+   */
+  clearance: hrRead
+    .input(z.object({ employeeId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      try {
+        return await getEmployeeClearance(input.employeeId);
+      } catch (error) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: error instanceof Error ? error.message : "تعذّر جلب تصفية الموظّف",
+        });
+      }
+    }),
+
   list: hrRead
     .input(
       z
