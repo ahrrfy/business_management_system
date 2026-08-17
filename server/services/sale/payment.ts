@@ -198,7 +198,16 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     const status = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
     await tx
       .update(invoices)
-      .set({ paidAmount: toDbMoney(newPaid), status, paymentDate: new Date(), paymentMethod: input.method })
+      .set({
+        paidAmount: toDbMoney(newPaid),
+        status,
+        paymentDate: new Date(),
+        // «آخر دفعة تفوز» كان يكذب على الفاتورة المختلطة: ٤٩٠٬٠٠٠ نقداً ثمّ ١٠٬٠٠٠ تحويلاً
+        // تُخزَّن «تحويل» فتسقط من فلتر «نقدي» كلياً، وفاتورةُ بطاقةٍ يليها فكٌّ نقديّ تخرج من
+        // قائمة CARD ⇒ تنهار مطابقة يوم البطاقات وهي الحاجة التشغيلية المعلَنة للفلتر نفسه.
+        // القيمة الصادقة عند الاختلاف هي MIXED؛ ومصدر الحقيقة التفصيليّ يبقى `receipts`.
+        paymentMethod: mixedAwarePaymentMethod(inv.paymentMethod, input.method),
+      })
       .where(eq(invoices.id, input.invoiceId));
 
     const paymentRole = paymentAssetRole(input.method, input.method === "CASH" ? "DRAWER" : null, "IN");
@@ -222,4 +231,18 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
 
     return { invoiceId: input.invoiceId, paidAmount: toDbMoney(newPaid), status };
   });
+}
+
+/**
+ * طريقة الدفع المعروضة على الفاتورة بعد دفعةٍ جديدة.
+ *
+ * فارغة ⇒ الطريقة الجديدة · مطابقة ⇒ كما هي · مختلفة ⇒ `MIXED`.
+ * لا تُستعمَل قطّ في حسابٍ ماليّ — العَرض والفلترة فقط؛ التفصيل الحاكم في `receipts`.
+ */
+export function mixedAwarePaymentMethod(
+  current: string | null | undefined,
+  incoming: string,
+): string {
+  if (!current) return incoming;
+  return current === incoming ? current : "MIXED";
 }

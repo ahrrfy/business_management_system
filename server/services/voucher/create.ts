@@ -1,6 +1,7 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
 import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
+import { allocateVoucherToInvoiceTx } from "./invoiceAllocation";
 import { eq } from "drizzle-orm";
 import { customers, invoices, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
@@ -617,7 +618,12 @@ export async function createVoucherTx(
         // المُستبدَلة كانت تمرّ: `correct.ts` يتركها بـ`total` كاملاً و`returnedTotal` مُصفَّراً
         // ⇒ تجتاز فلتر «مستحقّة» وتُعرَض للمحاسب في مُنتقي الفواتير بمتبقٍّ = إجماليها، فيُربَط
         // بها قبضٌ بينما الالتزام الحقيقيّ على البديلة (مالٌ يُنسَب لمستندٍ عُكِس بالكامل).
-        if (isDeadInvoiceStatus(inv.status)) {
+        // ⚠️ السند المضادّ (إلغاء) مُستثنى: عكسُ تخصيصٍ سابق يجب أن يبقى ممكناً مهما صارت
+        // حالة الفاتورة لاحقاً، وإلّا احتُجز مالٌ مخصَّصٌ لفاتورةٍ ماتت بلا أيّ مخرج.
+        if (
+          options?.systemRequest?.kind !== "VOUCHER_CANCELLATION" &&
+          isDeadInvoiceStatus(inv.status)
+        ) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: "لا يمكن الربط بفاتورة ملغاة أو مرتجعة أو مستبدَلة بمصحّحة",
@@ -756,6 +762,18 @@ export async function createVoucherTx(
         await adjustCustomerBalance(tx, input.partyId, direction === "IN" ? amount.neg() : amount);
       } else if (input.partyType === "SUPPLIER" && input.partyId) {
         await adjustSupplierBalance(tx, input.partyId, amount);
+      }
+
+      // تخصيص السند لفاتورته: الربط قرارُ تخصيصٍ ماليّ لا حاشية توثيقية (انظر invoiceAllocation.ts).
+      // بلا هذا كانت الفاتورة تعرض «المدفوع: ٠» فوق سجلّ دفعاتٍ يحوي هذا الإيصال نفسه، و`sales.pay`
+      // يشتقّ المتبقّي من `paidAmount` وحده ⇒ يُحصَّل المبلغ مرّةً ثانية بلا أيّ حارس.
+      if (input.partyType === "CUSTOMER" && input.invoiceId != null) {
+        await allocateVoucherToInvoiceTx(tx, {
+          invoiceId: input.invoiceId,
+          amount,
+          direction,
+          paymentMethod: input.paymentMethod,
+        });
       }
 
       // البَصمة بَعد كل الكتابات ⇒ تَختم السند بكل عناصره المُستقرّة.

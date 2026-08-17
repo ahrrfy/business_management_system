@@ -385,6 +385,7 @@ export const reportsRouter = router({
               "TRANSFER",
               "WALLET",
               "TELECOM",
+              "MIXED",
               "NONE",
             ]),
           )

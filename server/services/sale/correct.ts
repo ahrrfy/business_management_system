@@ -238,7 +238,7 @@ export async function correctSale(input: CorrectSaleInput, actor: Actor & { role
     }
     // returnedTotal=0 مضمونٌ أعلاه ⇒ المتبقّي القابل للعكس = كامل الكمية الأساس.
     const reverseLines = items.map((it) => ({ invoiceItemId: Number(it.id), baseQuantity: Number(it.baseQuantity) }));
-    await returnSaleInTx(tx, { invoiceId: input.originalInvoiceId, lines: reverseLines, refund: null, restock: true, clientRequestId: null }, actor);
+    await returnSaleInTx(tx, { invoiceId: input.originalInvoiceId, lines: reverseLines, refund: null, restock: true, clientRequestId: null, internalCorrectionReversal: true }, actor);
 
     // ── ٣) تصحيح الذمّة: العكس خصم −الإجمالي من AR (كأنّ المدفوع يُردّ رصيداً)؛ لكنّه لا يُردّ بل
     //    يُنقَل للجديدة ⇒ نعيده (+المدفوع) فيصير صافي عكس الأصل = −(الإجمالي − المدفوع). ──

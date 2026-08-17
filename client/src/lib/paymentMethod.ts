@@ -12,7 +12,7 @@ import {
   type InboundEnabledPaymentMethod,
 } from "@shared/inboundPaymentPolicy";
 
-export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM" | "EXCHANGE";
+export type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM" | "EXCHANGE" | "MIXED";
 
 export const METHOD_LABEL: Record<PaymentMethod, string> = {
   CASH: "نقدي",
@@ -26,6 +26,10 @@ export const METHOD_LABEL: Record<PaymentMethod, string> = {
   // الخزينة ولا الدرج. كان ناقصاً هنا ⇒ `paymentMethodLabel` تُرجع الرمز الإنجليزيّ خاماً على
   // شاشة الخزينة/السندات. القيمة موجودة في enum العمود منذ البداية.
   EXCHANGE: "صيرفة",
+  // MIXED — فاتورةٌ سُدّدت بأكثر من طريقة (نقد + تحويل مثلاً). قيمةُ عرضٍ وفلترةٍ فقط تكتبها
+  // `sale/payment.ts` عند اختلاف الدفعة الجديدة عن المخزَّن، بدل «آخر دفعة تفوز» التي كانت
+  // تُسقِط الفاتورة من فلتر رافدها الأكبر وتكسر مطابقة يوم البطاقات.
+  MIXED: "مختلطة",
 };
 
 /**
@@ -60,6 +64,8 @@ export const METHOD_CLS: Record<PaymentMethod, string> = {
   WALLET:   "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-200",
   TELECOM:  "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-200",
   EXCHANGE: "bg-slate-100 text-slate-800 dark:bg-slate-900 dark:text-slate-200",
+  // مختلطة: محايدة اللون — ليست رافداً بذاتها بل إفصاحٌ عن تعدّد الروافد.
+  MIXED: "badge-status-pending",
 };
 
 /**
@@ -70,7 +76,9 @@ export const METHOD_CLS: Record<PaymentMethod, string> = {
 /** ش٥: النوع مضيَّق على القيم الفعلية — CHECK محذوف بقرار المالك، وTELECOM (رصيد زين) مقصور
  *  على محطة الاستقبال خلف ضوابطها (لا يظهر في POS التجزئة/التسديد العام/تصحيح الطريقة).
  *  وEXCHANGE طريقةُ إيصالِ صيرفةٍ خادميّة بحتة — لا يختارها كاشيرٌ من شاشة. */
-export type PosPaymentMethod = Exclude<PaymentMethod, "CHECK" | "TELECOM" | "EXCHANGE">;
+// MIXED مُستثناة: قيمةٌ **مشتقّة للعرض** تكتبها الخدمة عند تعدّد روافد السداد — لا يختارها
+// كاشيرٌ قطّ، ولا تُرسَل في أيّ حمولة دفع.
+export type PosPaymentMethod = Exclude<PaymentMethod, "CHECK" | "TELECOM" | "EXCHANGE" | "MIXED">;
 
 export const POS_METHODS: readonly { v: PosPaymentMethod; label: string }[] = [
   { v: "CASH",     label: "نقدي" },

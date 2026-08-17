@@ -365,6 +365,13 @@ export async function cancelVoucher(
         paymentMethod: requestPaymentMethod,
         partyType: requestPartyType,
         partyId: r.partyId != null ? Number(r.partyId) : null,
+        // يحمل السند المضادّ فاتورةَ الأصل كي يعكس تخصيصها عند اعتماده (اتجاهٌ معاكس ⇒
+        // `paidAmount` ينقص بنفس المقدار). بلا هذا كان الإلغاء يُعيد رصيد العميل والقيد
+        // ويترك الفاتورة «مدفوعة» بمالٍ استُرجع — وهو ما يجعل الربط الماليّ نصفَ عكوس.
+        invoiceId:
+          requestPartyType === "CUSTOMER" && r.invoiceId != null
+            ? Number(r.invoiceId)
+            : null,
         counterpartyName:
           requestPartyType === "OTHER"
             ? r.counterpartyName?.trim() || `إلغاء سند ${r.voucherNumber}`

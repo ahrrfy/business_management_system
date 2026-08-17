@@ -134,6 +134,22 @@ export default function MonthlyAttendanceReport() {
                   { key: "basePay", header: "الأجر الأساس", money: true },
                   { key: "overtimePay", header: "أجر الإضافيّ", money: true },
                   { key: "totalDue", header: "المستحقّ", money: true },
+                  // مصدرُ الرقم يرافقه في الملف: جدولٌ يخلط أرقاماً مجمَّدة بأخرى حيّة بلا
+                  // تمييز يُقرأ كأنه صفٌّ واحد، وفرقُ شهرٍ مصروفٍ عن مسيّره يُقرأ خطأً.
+                  {
+                    key: "dueSource",
+                    header: "مصدر الرقم",
+                    map: (r: any) =>
+                      r.frozen
+                        ? "لقطة المسيّر (مجمَّد)"
+                        : r.dueBasis === "exempt"
+                          ? "راتب ثابت (معفى)"
+                          : r.dueBasis === "hourly"
+                            ? "أجرٌ بالساعة"
+                            : r.dueBasis === "fixedSalary"
+                              ? "راتب ثابت"
+                              : "احتساب الحضور",
+                  },
                   { key: "reviewDays", header: "أيام يحتاج تصحيح" },
                 ],
                 totalsRow: { totalDue: Number(d.totals.totalDue), overtimeHours: Number(d.totals.overtimeHours), absentDays: d.totals.absentDays },
@@ -198,10 +214,15 @@ export default function MonthlyAttendanceReport() {
                     <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(r.hourlyRate)}</td>
                     <td className="p-2 text-end tabular-nums font-bold" dir="ltr">
                       {iqd(r.totalDue)}
-                      {r.dueBasis !== "attendance" && (
-                        <div className="text-[10px] font-normal text-muted-foreground">
-                          {r.dueBasis === "exempt" ? "راتب ثابت (معفى)" : r.dueBasis === "hourly" ? "بالساعة" : "راتب ثابت"}
-                        </div>
+                      {/* الشهر المصروف (ق٣): الرقم من لقطة المسيّر — لا يتغيّر بترقيةٍ أو تصحيحٍ لاحق. */}
+                      {r.frozen ? (
+                        <div className="text-[10px] font-normal text-primary">من المسيّر (مجمَّد)</div>
+                      ) : (
+                        r.dueBasis !== "attendance" && (
+                          <div className="text-[10px] font-normal text-muted-foreground">
+                            {r.dueBasis === "exempt" ? "راتب ثابت (معفى)" : r.dueBasis === "hourly" ? "بالساعة" : "راتب ثابت"}
+                          </div>
+                        )
                       )}
                     </td>
                     <td className="p-2 text-center tabular-nums">

@@ -193,6 +193,39 @@ describe("delivery return — accounting mirrors", () => {
     await seedBase();
   });
 
+  /**
+   * عدّادات الأسطر كانت مُغفَلةً في مسار التوصيل وحده ⇒ عائلتا التقارير تتناقضان على نفس
+   * اليوم: مجاميع الرأس تُصفّر الإيراد عبر `returnedTotal`، وبُعد «الصنف» يشتقّ من السطر
+   * (`ii.total × (baseQuantity − returnedBaseQuantity) / baseQuantity`) فيُبقي الإرسالية
+   * المُرجَعة بيعاً كاملاً إلى الأبد. يسقط هذا الاختبار على الشيفرة قبل إصلاح ١٧/٨.
+   */
+  it("updates invoice line counters so both report families agree", async () => {
+    await addProduct({ id: 1, cost: "3000.00", stockAfterSale: 4 });
+    const consignmentId = await seedDispatchedInvoice({
+      invoiceId: 140,
+      subtotal: "5000.00",
+      tax: "0.00",
+      total: "5000.00",
+      costTotal: "3000.00",
+      lines: [{ productId: 1, unitPrice: "5000.00", unitCost: "3000.00", total: "5000.00", restoreStock: true }],
+    });
+
+    await returnConsignment(consignmentId, { ...MANAGER, clientRequestId: "return-line-counters" });
+
+    const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, 140));
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      // المرتجع كامل بحكم التصميم ⇒ الكمية المُرجَعة = كمية السطر كاملةً.
+      expect(Number(item.returnedBaseQuantity)).toBe(Number(item.baseQuantity));
+      // وقد عادت للرفّ فعلاً (restoreStock) ⇒ تكلفتها تُحيَّد في تقرير الربح.
+      expect(Number(item.returnedRestockedBaseQuantity)).toBe(Number(item.baseQuantity));
+    }
+    // ورأس الفاتورة متّسقٌ مع الأسطر — لا تناقض بين العائلتين.
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, 140)))[0];
+    expect(inv.status).toBe("RETURNED");
+    expect(Number(inv.returnedTotal)).toBe(Number(inv.total));
+  });
+
   it("reverses consignment payable and supplier balance when the parcel returns to stock", async () => {
     await db().insert(s.suppliers).values({
       id: 1,
