@@ -208,16 +208,33 @@ export async function generatePayroll(period: string, actor: Actor) {
 
     // ساعات الحضور لكل (موظف × يوم) — تُستعمل في نموذج الحضور فقط.
     const dailyAttendance = new Map<number, Map<string, Decimal>>();
+    /*
+     * أيامٌ **مفتوحة** (دخولٌ بلا انصراف) لكل موظف. كانت تصل المحرّك بساعاتٍ صفرٍ فيقرأها
+     * غياباً ويدفعها صفراً صامتاً — وهي ليست غياباً بل بصمةٌ ناقصة أو دوامٌ جارٍ (تدقيق ١٧/٨).
+     */
+    const openAttendance = new Map<number, Set<string>>();
     if (attendancePayOn) {
       const rows = await tx
-        .select({ employeeId: attendance.employeeId, date: attendance.attendanceDate, hours: attendance.hours })
+        .select({
+          employeeId: attendance.employeeId,
+          date: attendance.attendanceDate,
+          hours: attendance.hours,
+          checkIn: attendance.checkIn,
+          checkOut: attendance.checkOut,
+        })
         .from(attendance)
         .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE')`);
       for (const r of rows) {
         const k = Number(r.employeeId);
+        const ymd = String(r.date).slice(0, 10);
         const m = dailyAttendance.get(k) ?? new Map<string, Decimal>();
-        m.set(String(r.date).slice(0, 10), money(r.hours ?? 0));
+        m.set(ymd, money(r.hours ?? 0));
         dailyAttendance.set(k, m);
+        if (r.checkIn != null && r.checkOut == null) {
+          const o = openAttendance.get(k) ?? new Set<string>();
+          o.add(ymd);
+          openAttendance.set(k, o);
+        }
       }
     }
 
@@ -356,6 +373,7 @@ export async function generatePayroll(period: string, actor: Actor) {
           // جدول الموظف الخاصّ يتقدّم على العامّ — والجمعة قد تكون قصيرةً لا راحة.
           schedule: e.workSchedule && typeof e.workSchedule === "object" ? (e.workSchedule as WorkSchedule) : defaultSchedule,
           attendedHoursByDate: dailyAttendance.get(Number(e.id)) ?? new Map(),
+          openDates: openAttendance.get(Number(e.id)) ?? new Set(),
           paidLeaveDates: expandSpans(paidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
           unpaidLeaveDates: expandSpans(unpaidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
           payFrom,
@@ -385,6 +403,22 @@ export async function generatePayroll(period: string, actor: Actor) {
             message:
               `الموظف «${fullEmployeeName(e as never)}» بلا أي ساعة حضور في ${p} — وهذا غالباً ربطٌ ناقص بجهاز البصمة لا غياباً. ` +
               `اربطه من بطاقته، أو أشّر «راتب ثابت — لا يخضع للحضور» إن كان بلا جهاز (كالمُلّاك)، ثم أعد التوليد.`,
+          });
+        }
+        /*
+         * حارس اليوم المفتوح (تدقيق ١٧/٨): يومٌ بدخولٍ بلا انصراف ساعاتُه **مجهولة** لا صفر.
+         * كان يمرّ غياباً فيُدفع صفراً صامتاً — وهو بالضبط «دينارٌ يضيع بصمت» الذي يمنعه
+         * المبدأ المالي الحاكم. والفرق بين اليومين أجرُ يومٍ كامل، فالنظام يتوقّف ويسمّي
+         * التواريخ بدل أن يخمّن. الحسم بنافذة «تصحيح» في كشف الموظف ثم إعادة التوليد
+         * (المسيّر مسودةٌ تُعاد، لا التزامٌ ماليّ).
+         */
+        if (pay.openDays > 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              `الموظف «${fullEmployeeName(e as never)}» له ${pay.openDays} يوم بدخولٍ بلا انصراف في ${p} ` +
+              `(${pay.openDates.join("، ")}) — ساعاتها مجهولة لا صفر، ودفعُها صفراً يخصم أجر يومٍ كامل بلا وجه. ` +
+              `صحّح أوقاتها من كشف حضور الموظف ثم أعد التوليد.`,
           });
         }
         attendancePayByEmp.set(Number(e.id), pay);

@@ -20,6 +20,7 @@ import { notify } from "@/lib/notify";
 import { printAttendanceStatement } from "@/lib/printing/printAttendanceStatement";
 import { trpc } from "@/lib/trpc";
 import { whatsappLink } from "@/lib/intlPhone";
+import { attendanceHoursViolation, spanHours } from "@shared/attendanceHours";
 import { CalendarDays, FileSpreadsheet, PenLine, Printer, Send, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -29,6 +30,7 @@ const selectCls =
 const STATE_LABEL: Record<string, string> = {
   present: "حضور",
   absent: "غياب",
+  open: "ينقص انصراف",
   paidLeave: "إجازة مدفوعة",
   unpaidLeave: "إجازة بلا راتب",
   beforeStart: "قبل السريان",
@@ -51,6 +53,26 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
   const utils = trpc.useUtils();
   const [period, setPeriod] = useState(() => new Date().toISOString().slice(0, 7));
   const [fix, setFix] = useState<{ date: string; checkIn: string; checkOut: string; hours: string } | null>(null);
+
+  /*
+   * تغيير أيّ من الوقتين يُعيد اشتقاق الساعات فوراً. قبل ذلك كان حقل الساعات يُملأ مرّةً عند
+   * الفتح ولا يتحرّك أبداً، فتُحفظ ساعاتٌ جامدة مع أوقاتٍ جديدة صحيحة — وأخطرها صفرٌ موروثٌ
+   * من يومٍ حُسب غياباً: يُكمل المديرُ الانصرافَ الناقص فيُحفظ اليوم بأجر صفر ويُرفع عنه وسم
+   * المراجعة، فلا يعود أحد ينتبه له. الاشتقاق التلقائي يمنع السهو، والخادم يمنع الالتفاف.
+   */
+  const setFixTime = (patch: { checkIn?: string; checkOut?: string }) =>
+    setFix((cur) => {
+      if (!cur) return cur;
+      const next = { ...cur, ...patch };
+      const auto = spanHours(next.checkIn, next.checkOut);
+      return auto == null ? next : { ...next, hours: auto.toFixed(2) };
+    });
+
+  const fixSpan = fix ? spanHours(fix.checkIn, fix.checkOut) : null;
+  /** مرآة حارس الخادم بالنواة نفسها — تمنع رحلةً بلا طائل وتشرح السبب مكان وقوعه. */
+  const fixError = fix
+    ? attendanceHoursViolation({ checkIn: fix.checkIn, checkOut: fix.checkOut, hours: Number(fix.hours), isPaidStatus: true })
+    : null;
 
   const q = trpc.attendance.employeeStatement.useQuery({ employeeId, period });
   const d = q.data;
@@ -136,11 +158,18 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
               { key: "countedHours", header: "محتسَب" },
               { key: "overtimeHours", header: "إضافي" },
               { key: "rate", header: "سعر الساعة", money: true },
-              { key: "amount", header: "أجر اليوم", money: true },
+              { key: "amount", header: "أجر أساس", money: true },
+              { key: "overtimeAmount", header: "أجر إضافي", money: true },
+              { key: "totalAmount", header: "إجمالي اليوم", money: true },
               { key: "state", header: "الحالة", map: (r: any) => STATE_LABEL[r.state] ?? r.state },
               { key: "needsReview", header: "يحتاج تصحيح", map: (r: any) => (r.needsReview ? "نعم" : "") },
             ],
-            totalsRow: { amount: Number(d.totals.basePay), overtimeHours: Number(d.totals.overtimeHours) },
+            totalsRow: {
+              amount: Number(d.totals.basePay),
+              overtimeHours: Number(d.totals.overtimeHours),
+              overtimeAmount: Number(d.totals.overtimePay),
+              totalAmount: totalDue,
+            },
           })}>
             <FileSpreadsheet aria-hidden className="size-3.5" /> تصدير
           </Button>
@@ -166,6 +195,17 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
             الأجر بالحضور غير مفعَّل — الكشف يعرض الساعات والأسعار للمراجعة، لكنّ المسيّر
             ما زال يحتسب الراتب الثابت.
           </p>
+        )}
+        {d.totals.openDays > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-[var(--sem-neg)]/40 bg-[var(--sem-neg-bg)] p-2.5 text-xs">
+            <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-neg)]" />
+            <span>
+              <span className="font-medium text-[var(--sem-neg)]">{d.totals.openDays} يوم بدخولٍ بلا انصراف</span> —
+              ساعاتها مجهولةٌ لا صفر، ولذلك تُعرَض «ينقص انصراف» لا «غياب». صحّحها من زرّ «تصحيح»
+              في صفّها؛ <span className="font-medium">توليد مسيّر هذا الشهر متوقّف حتى تُحسم</span> كي لا يُخصَم
+              أجر يومٍ كامل بلا وجه.
+            </span>
+          </div>
         )}
         {d.totals.reviewDays > 0 && (
           <div className="flex items-start gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2.5 text-xs">
@@ -197,12 +237,18 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
               <tr>
                 <th className="p-2 text-start">التاريخ</th>
                 <th className="p-2 text-start">اليوم</th>
-                <th className="p-2 text-center">من ← إلى</th>
+                {/* عمودان لا عمودٌ واحد بسهم: الترويسة تُعرَض RTL والخلية كانت dir="ltr"،
+                    فيقع الدخول تحت «إلى» ⇒ كل صفٍّ يُقرأ مقلوباً (تدقيق ١٧/٨). */}
+                <th className="p-2 text-center">من</th>
+                <th className="p-2 text-center">إلى</th>
                 <th className="p-2 text-center">مقرَّر</th>
                 <th className="p-2 text-center">محتسَب</th>
                 <th className="p-2 text-center">إضافي</th>
                 <th className="p-2 text-end">سعر الساعة</th>
-                <th className="p-2 text-end">أجر اليوم</th>
+                {/* «أجر اليوم» كان يعرض الأساس وحده فيبدو الإضافي ضائعاً — ثلاثة أعمدة تُظهر المسار كاملاً. */}
+                <th className="p-2 text-end">أجر أساس</th>
+                <th className="p-2 text-end">أجر إضافي</th>
+                <th className="p-2 text-end">إجمالي اليوم</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2"></th>
               </tr>
@@ -212,17 +258,25 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
                 <tr key={x.date} className={`border-t ${x.needsReview ? "bg-[var(--sem-warn-bg)]/50" : ""}`}>
                   <td className="p-2 tabular-nums" dir="ltr">{x.date}</td>
                   <td className="p-2">{x.dayName}</td>
-                  <td className="p-2 text-center tabular-nums" dir="ltr">{x.checkIn ? `${x.checkIn} ← ${x.checkOut ?? "—"}` : "—"}</td>
+                  <td className="p-2 text-center tabular-nums" dir="ltr">{x.checkIn ?? "—"}</td>
+                  <td className="p-2 text-center tabular-nums" dir="ltr">{x.checkOut ?? "—"}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{x.scheduledHours}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{x.countedHours}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{Number(x.overtimeHours) > 0 ? x.overtimeHours : "—"}</td>
                   <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(x.rate)}</td>
-                  <td className="p-2 text-end tabular-nums font-medium" dir="ltr">{iqd(x.amount)}</td>
+                  <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(x.amount)}</td>
+                  <td className="p-2 text-end tabular-nums" dir="ltr">{Number(x.overtimeAmount) > 0 ? iqd(x.overtimeAmount) : "—"}</td>
+                  <td className="p-2 text-end tabular-nums font-medium" dir="ltr">{iqd(x.totalAmount)}</td>
                   <td className="p-2 text-center">{STATE_LABEL[x.state] ?? x.state}</td>
                   <td className="p-2 text-center">
                     <button
                       className="text-primary hover:underline inline-flex items-center gap-1"
-                      onClick={() => setFix({ date: x.date, checkIn: x.checkIn ?? "", checkOut: x.checkOut ?? "", hours: x.countedHours })}
+                      /*
+                       * تُملأ بالساعات **الفعلية** لا المحتسَبة: المحتسَب مقصوصٌ عند المقرَّر
+                       * (min(الفعلي، المقرَّر))، فتعبئتُه كانت تعني أن مجرّد فتح النافذة
+                       * والحفظ يهبط بساعات اليوم إلى المقرَّر ⇒ **يُمحى الأوفر تايم صامتاً**.
+                       */
+                      onClick={() => setFix({ date: x.date, checkIn: x.checkIn ?? "", checkOut: x.checkOut ?? "", hours: x.attendedHours ?? x.countedHours })}
                     >
                       <PenLine aria-hidden className="size-3" /> تصحيح
                     </button>
@@ -232,7 +286,9 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
             </tbody>
             <tfoot>
               <tr className="border-t-2 font-medium">
-                <td className="p-2" colSpan={7}>{dueLabel}</td>
+                <td className="p-2" colSpan={8}>{dueLabel}</td>
+                <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(d.totals.basePay)}</td>
+                <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(d.totals.overtimePay)}</td>
                 <td className="p-2 text-end tabular-nums" dir="ltr">{iqd(String(totalDue))}</td>
                 <td colSpan={2} />
               </tr>
@@ -250,16 +306,25 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label htmlFor="fx-in">من</Label>
-                  <Input id="fx-in" type="time" dir="ltr" value={fix.checkIn} onChange={(e) => setFix({ ...fix, checkIn: e.target.value })} />
+                  <Input id="fx-in" type="time" dir="ltr" value={fix.checkIn} onChange={(e) => setFixTime({ checkIn: e.target.value })} />
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="fx-out">إلى</Label>
-                  <Input id="fx-out" type="time" dir="ltr" value={fix.checkOut} onChange={(e) => setFix({ ...fix, checkOut: e.target.value })} />
+                  <Input id="fx-out" type="time" dir="ltr" value={fix.checkOut} onChange={(e) => setFixTime({ checkOut: e.target.value })} />
                 </div>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="fx-h">الساعات المحتسَبة</Label>
                 <Input id="fx-h" type="number" min={0} max={24} step="0.25" dir="ltr" value={fix.hours} onChange={(e) => setFix({ ...fix, hours: e.target.value })} />
+                {fixError ? (
+                  <p className="text-xs leading-relaxed text-[var(--sem-neg)]">{fixError}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    {fixSpan != null
+                      ? `تُحسب تلقائياً من الوقتين (${fixSpan.toFixed(2)} ساعة) وتتغيّر معهما — عدّلها يدوياً فقط لطرح استراحةٍ غير مبصومة.`
+                      : "أكمِل وقتَي الدخول والانصراف لتُحسب الساعات تلقائياً."}
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground leading-relaxed">
                   التصحيح اليدويّ يُثبّت اليوم ويرفع وسم المراجعة، ولا يطمسه الجهاز لاحقاً —
                   الجهاز يتبع المدير لا العكس. يُسجَّل في سجلّ التدقيق باسمك.
@@ -270,7 +335,7 @@ export function EmployeeStatementCard({ employeeId, phone }: { employeeId: numbe
           <DialogFooter>
             <Button variant="outline" onClick={() => setFix(null)}>إلغاء</Button>
             <Button
-              disabled={correct.isPending || !fix}
+              disabled={correct.isPending || !fix || !!fixError}
               onClick={() => fix && correct.mutate({
                 employeeId,
                 attendanceDate: fix.date,

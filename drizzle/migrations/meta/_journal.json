@@ -1401,6 +1401,13 @@
       "when": 1788052251000,
       "tag": "0200_workorder_material_edits",
       "breakpoints": true
+    },
+    {
+      "idx": 201,
+      "version": "5",
+      "when": 1788052252000,
+      "tag": "0201_night_shift_settings",
+      "breakpoints": true
     }
   ]
 }

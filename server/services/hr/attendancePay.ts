@@ -133,6 +133,12 @@ export interface AttendancePayInput {
   paidLeaveDates: Set<string>;
   /** أيام إجازة **بلا راتب** معتمدة (لا تُحتسب — وهي الخصم المقصود). */
   unpaidLeaveDates: Set<string>;
+  /**
+   * أيامٌ **مفتوحة**: دخولٌ مسجَّل بلا انصراف (بصمة ناقصة أو دوامٌ جارٍ). ساعاتها صفرٌ لأنها
+   * لا تُخمَّن — لكنها **ليست غياباً**، وخلطُها بالغياب كان يدفعها صفراً بلا أن يميّزها أحد:
+   * «ما زال في الدوام» و«نسي البصم» و«غاب فعلاً» ثلاثتها تُعرَض بالشكل نفسه (تدقيق ١٧/٨).
+   */
+  openDates?: Set<string>;
   /** تاريخ سريان الأجر بالحضور — ما قبله يُعامَل مدفوعاً كاملاً. null = بلا سريان (الكل مدفوع). */
   payFrom: string | null;
   /** سقف ساعات اليوم الواحد — يقصّ أيضاً العملَ في يوم الراحة. */
@@ -172,6 +178,10 @@ export interface AttendancePayResult {
   /** تفصيل للشفافية في ملاحظة البند. */
   absentDays: number;
   unpaidLeaveDays: number;
+  /** أيامٌ بدخولٍ بلا انصراف — تحتاج حسماً قبل المسيّر، ولا تُحتسب غياباً. */
+  openDays: number;
+  /** تواريخ تلك الأيام — يسمّيها المسيّر في رسالته ليعرف المدير ما يُصحّح بالضبط. */
+  openDates: string[];
   shortHours: string;
   /** صفٌّ لكل يوم دوام — يغذّي كشف الحضور المطبوع (من ← إلى، الساعات، السعر، الأجر). */
   days: Array<{
@@ -182,8 +192,13 @@ export interface AttendancePayResult {
     countedHours: string;
     overtimeHours: string;
     rate: string;
+    /** الأجر الأساس لليوم = السعر × المحتسَب (الشقّ الذي يدخل وعاء الضمان/الضريبة/نهاية الخدمة). */
     amount: string;
-    state: "present" | "absent" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
+    /** أجر الأوفر تايم لليوم = السعر × الإضافي — يُحسب هنا لا في الواجهة (المال بـdecimal.js). */
+    overtimeAmount: string;
+    /** إجمالي أجر اليوم = الأساس + الإضافي. ما كان عمود «أجر اليوم» يعرضه هو `amount` وحده. */
+    totalAmount: string;
+    state: "present" | "absent" | "open" | "paidLeave" | "unpaidLeave" | "beforeStart" | "restWorked";
   }>;
 }
 
@@ -214,6 +229,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
   let otPay = new Decimal(0);
   let absentDays = 0;
   let unpaidLeaveDays = 0;
+  const openDates: string[] = [];
   let shortHours = new Decimal(0);
   let restWorked = new Decimal(0);
   const days: AttendancePayResult["days"] = [];
@@ -231,6 +247,7 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
       ot: Decimal,
       amount: Decimal,
     ) => {
+      const otAmount = round2(rate.times(ot));
       days.push({
         date: d,
         dayName: dayNameOf(d),
@@ -240,6 +257,8 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
         overtimeHours: ot.toFixed(2),
         rate: round2(rate).toFixed(2),
         amount: round2(amount).toFixed(2),
+        overtimeAmount: otAmount.toFixed(2),
+        totalAmount: round2(round2(amount).plus(otAmount)).toFixed(2),
         state,
       });
     };
@@ -264,13 +283,30 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     }
     const attended = input.attendedHoursByDate.get(d) ?? new Decimal(0);
     if (attended.lte(0)) {
+      /*
+       * يومٌ **مفتوح** لا غائب: له دخولٌ مسجَّل بلا انصراف، فساعاته صفرٌ لأنها لا تُخمَّن.
+       * تمييزُه ضرورةٌ ماليّة لا تجميل: خلطُه بالغياب كان يمرّره إلى المسيّر بأجر صفرٍ
+       * صامت، ويضخّم «غياب N يوم» في ملاحظة البند بأيامٍ لم يغبها الموظف.
+       */
+      if (input.openDates?.has(d)) {
+        openDates.push(d);
+        push("open", new Decimal(0), new Decimal(0), new Decimal(0), new Decimal(0));
+        continue; // بلا أجر **مؤقّتاً** — والمسيّر يوقف نفسه حتى يُحسم اليوم
+      }
       absentDays += 1;
       push("absent", new Decimal(0), new Decimal(0), new Decimal(0), new Decimal(0));
       continue; // غياب — لا راتب لهذا اليوم
     }
+    /*
+     * سقف اليوم الواحد يُطبَّق هنا أيضاً لا في الطيّ وحده (تدقيق ١٧/٨): كان مسار يوم الدوام
+     * يستهلك الساعات خامّاً، فيمرّ يومٌ مُدخَلٌ يدوياً بعشرين ساعة بلا قصّ — والحارس المبنيّ
+     * لمنع «بصمة منسيّة تُنتج يوماً وهمياً مدفوعاً» كان معطَّلاً على المسار الأكثر استعمالاً.
+     * لبيانات الطيّ هذا لا-عمل (قُصّت سلفاً عند السقف نفسه) ⇒ صفر انحدار.
+     */
+    const capped = Decimal.min(attended, new Decimal(input.maxDailyHours ?? 12));
     // الزائد عن المقرَّر أوفر تايم ببندٍ مستقلّ (قرار المالك) — لا يتضخّم به الأساس.
-    const counted = Decimal.min(attended, daily);
-    const ot = Decimal.max(0, attended.minus(daily));
+    const counted = Decimal.min(capped, daily);
+    const ot = Decimal.max(0, capped.minus(daily));
     payable = payable.plus(counted);
     basePay = basePay.plus(rate.times(counted));
     otHours = otHours.plus(ot);
@@ -322,6 +358,9 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
       overtimeHours: "0.00",
       rate: round2(derivedRate).toFixed(2),
       amount: round2(derivedRate.times(counted)).toFixed(2),
+      // عمل يوم الراحة يُدفع بالسعر العاديّ كاملاً في الأساس ⇒ لا شقّ إضافيّ له.
+      overtimeAmount: "0.00",
+      totalAmount: round2(derivedRate.times(counted)).toFixed(2),
       state: "restWorked",
     });
   }
@@ -340,6 +379,8 @@ export function computeAttendancePay(input: AttendancePayInput): AttendancePayRe
     overtimePay: round2(otPay).toFixed(2),
     absentDays,
     unpaidLeaveDays,
+    openDays: openDates.length,
+    openDates,
     shortHours: shortHours.toFixed(2),
     days,
   };

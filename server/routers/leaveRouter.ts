@@ -11,10 +11,17 @@ import { createAppNotification } from "../services/appNotificationService";
 import { logAudit } from "../services/auditService";
 import { requireDb } from "../services/tx";
 import * as svc from "../services/leaveService";
-import { protectedProcedure, requireModule, router } from "../trpc";
+import { branchScopedProcedure, requireModule, router } from "../trpc";
 
-const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
-const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
+/*
+ * عزل الفرع (قرار المالك ١٢/٨) — `branchScopedProcedure` يحقن `ctx.scopedBranchId`:
+ * null للأدمن/المالك، وفرعُه المُسنَد لمن دونهما. كانت الوحدة بلا أيّ حاجز فرع كأختها
+ * الحضور (تدقيق ١٧/٨)، والإجازة **كتابةٌ ماليّة**: المدفوعة يومُ دوامٍ كامل وغيرُ المدفوعة
+ * خصمٌ، وكلتاهما تدخلان `computeAttendancePay` ⇒ تغييرُ أجرٍ في مسيّر فرعٍ لا يملكه الفاعل.
+ * والإجراء وحده لا يكفي: كلُّ نقطةٍ تُمرّر `scopedBranchId` إلى خدمتها، والخدمة تُنفّذ.
+ */
+const hrRead = branchScopedProcedure.use(requireModule("hr", "READ"));
+const hrWrite = branchScopedProcedure.use(requireModule("hr", "FULL"));
 
 const LEAVE_TYPE_KEYS = LEAVE_TYPES.map((t) => t.key) as [string, ...string[]];
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
@@ -63,11 +70,12 @@ export const leaveRouter = router({
         })
         .optional(),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const all = await svc.listLeaves({
         employeeId: input?.employeeId,
         status: input?.status,
         type: input?.type,
+        scopedBranchId: ctx.scopedBranchId,
       });
       const from = input?.from;
       const to = input?.to;
@@ -94,7 +102,7 @@ export const leaveRouter = router({
       };
     }),
 
-  balances: hrRead.query(() => svc.balances()),
+  balances: hrRead.query(({ ctx }) => svc.balances(ctx.scopedBranchId)),
 
   /**
    * تقرير أرصدة الإجازات — لكل موظف نشط: المستخدَم والمعلّق ضمن سنةٍ محدَّدة (افتراضياً السنة
@@ -105,11 +113,15 @@ export const leaveRouter = router({
    */
   balanceReport: hrRead
     .input(z.object({ year: z.number().int().min(2000).max(2100).optional() }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const year = input?.year ?? new Date().getUTCFullYear();
       const yearFrom = `${year}-01-01`;
       const yearTo = `${year}-12-31`;
-      const [emps, leaves] = await Promise.all([svc.balances(), svc.listLeaves()]);
+      // الطرفان مُقيَّدان بالفرع معاً — تقييد أحدهما وحده يُنتج صفوفاً بأرصدةٍ بلا أيامها.
+      const [emps, leaves] = await Promise.all([
+        svc.balances(ctx.scopedBranchId),
+        svc.listLeaves({ scopedBranchId: ctx.scopedBranchId }),
+      ]);
 
       const byEmp = new Map<number, { usedDays: number; pendingDays: number }>();
       for (const l of leaves) {
@@ -154,7 +166,7 @@ export const leaveRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const lv = await svc.createLeave(input as svc.LeaveInput);
+      const lv = await svc.createLeave({ ...input, scopedBranchId: ctx.scopedBranchId } as svc.LeaveInput);
       await logAudit(ctx, {
         action: "leave.create",
         entityType: "leaveRequest",
@@ -172,7 +184,7 @@ export const leaveRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const lv = await svc.decideLeave(input.id, input.decision, { userId: ctx.user.id });
+      const lv = await svc.decideLeave(input.id, input.decision, { userId: ctx.user.id, scopedBranchId: ctx.scopedBranchId });
       await logAudit(ctx, {
         action: "leave.decide",
         entityType: "leaveRequest",
@@ -204,7 +216,7 @@ export const leaveRouter = router({
   cancel: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const lv = await svc.cancelLeave(input.id, { userId: ctx.user.id });
+      const lv = await svc.cancelLeave(input.id, { userId: ctx.user.id, scopedBranchId: ctx.scopedBranchId });
       await logAudit(ctx, {
         action: "leave.cancel",
         entityType: "leaveRequest",

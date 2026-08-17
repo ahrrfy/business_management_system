@@ -19,6 +19,11 @@ export interface EmployeeStatementInput {
   employeeId: number;
   /** الشهر "YYYY-MM" — الكشف يغطّيه كاملاً مقصوصاً بنافذة عمل الموظف. */
   period: string;
+  /**
+   * عزل الفرع (قرار المالك ١٢/٨): رقمٌ = يُرفَض موظفُ فرعٍ آخر، null = عبورٌ (أدمن/مالك).
+   * الكشف يعرض الراتب وسعر الساعة وأجر كل يوم ⇒ تسريبُه بين الفروع تسريبُ رواتب.
+   */
+  scopedBranchId?: number | null;
 }
 
 /**
@@ -67,6 +72,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       terminationDate: employees.terminationDate,
       workSchedule: employees.workSchedule,
       attendanceExempt: employees.attendanceExempt,
+      branchId: employees.branchId,
       branchName: branches.name,
     })
     .from(employees)
@@ -74,6 +80,13 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     .where(eq(employees.id, input.employeeId))
     .limit(1);
   if (!emp) return null;
+  /*
+   * عزل الفرع: **رفضٌ صريح** لا تصفيةٌ صامتة — الطلب يحمل معرّفاً بعينه، فإعادة `null`
+   * تُقرأ «لا موظف بهذا المعرّف» وتُخفي المحاولة. الرفض يُظهرها في السجلّ.
+   */
+  if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
+    throw new Error("هذا الموظف من فرعٍ آخر — لا صلاحية لك على كشف حضوره");
+  }
 
   const [settings] = await db.select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
   // جدول الموظف وحده — الجدول العامّ أُلغي (0140) لأنه صار مكرّراً بعد دخوله بطاقةَ كل موظف.
@@ -112,6 +125,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
   // مجموع ما سُجّل فعلياً في الحضور — أساس أجر الموظف الساعيّ في المسيّر.
   let actualPaid = 0;
   const attendedHoursByDate = new Map<string, ReturnType<typeof money>>();
+  const openDates = new Set<string>();
   const meta = new Map<string, (typeof attRows)[number]>();
   for (const r of attRows) {
     const d = String(r.date).slice(0, 10);
@@ -119,6 +133,8 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     if (r.status === "PRESENT" || r.status === "LATE") {
       attendedHoursByDate.set(d, money(r.hours ?? 0));
       actualPaid += Number(r.amount ?? 0);
+      // دخولٌ بلا انصراف ⇒ يومٌ مفتوح لا غائب (ساعاته صفرٌ لأنها لا تُخمَّن، لا لأنه تغيّب).
+      if (r.checkIn != null && r.checkOut == null) openDates.add(d);
     }
   }
 
@@ -141,6 +157,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     employmentEnd,
     schedule,
     attendedHoursByDate,
+    openDates,
     paidLeaveDates: expand(paidSpans, employmentStart, employmentEnd),
     unpaidLeaveDates: expand(unpaidSpans, employmentStart, employmentEnd),
     // الكشف يعرض الشهر كما يُحتسب فعلياً؛ غياب السريان ⇒ كل الأيام مدفوعة (السلوك نفسه).
@@ -230,6 +247,7 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
       overtimeHours: pay.overtimeHours,
       overtimePay: pay.overtimePay,
       absentDays: pay.absentDays,
+      openDays: pay.openDays,
       unpaidLeaveDays: pay.unpaidLeaveDays,
       shortHours: pay.shortHours,
       restWorkedHours: pay.restWorkedHours,

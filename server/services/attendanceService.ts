@@ -7,6 +7,7 @@
  * ========================================================================== */
 import { and, desc, eq, getTableColumns, gte, inArray, like, lte, or, sql, type SQL } from "drizzle-orm";
 import { WEEK_DAYS, fullEmployeeName } from "@shared/hr";
+import { attendanceHoursViolation } from "@shared/attendanceHours";
 import { attendance, employees, hrAttendanceSettings, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
@@ -91,6 +92,14 @@ function rateForDay(
 }
 
 export interface AttendanceFilters {
+  /**
+   * عزل الفرع (قرار المالك ١٢/٨): `null` = يعبُر كلَّ الفروع (أدمن/مالك)، ورقمٌ = مقيَّدٌ
+   * بفرعه المُسنَد. يُحقَن من `ctx.scopedBranchId` في الموجّه، ولا تشتقّه الخدمة من `ctx`.
+   *
+   * كانت الوحدة كلُّها بلا أيّ حاجز فرعٍ — لا قراءةً ولا كتابةً (صفر إشارة إلى `branchId` في
+   * هذا الملف) — فمدير فرعٍ يقرأ رواتب موظفي الفرع الآخر ويكتب لهم حضوراً (تدقيق ١٧/٨).
+   */
+  scopedBranchId?: number | null;
   /** معرّف موظف بعينه. */
   employeeId?: number;
   /** الشهر بصيغة "YYYY-MM" — يُطابَق على attendanceDate بـ LIKE 'YYYY-MM%'. */
@@ -117,6 +126,8 @@ export interface AttendanceFilters {
  */
 function buildAttendanceConds(filters?: AttendanceFilters): SQL[] {
   const conds: SQL[] = [];
+  // عزل الفرع أوّلاً: كل استعلامات هذا الملف تصل الحضورَ بالموظف، وفرعُ الموظف هو الحاجز.
+  if (filters?.scopedBranchId != null) conds.push(eq(employees.branchId, filters.scopedBranchId));
   if (filters?.employeeId) conds.push(eq(attendance.employeeId, filters.employeeId));
   // المدى يتقدّم على الشهر (وقد يُرسَلان معاً من شاشةٍ قديمة) — ولا يُجمَعان فيتضاربا.
   if (filters?.dateFrom || filters?.dateTo) {
@@ -343,6 +354,9 @@ export async function listAttendance(filters?: AttendanceFilters & { limit?: num
       ? [filters.period]
       : [];
   const scanConds: SQL[] = [];
+  // عزل الفرع هنا أيضاً: هذا مسارُ شروطٍ **ثانٍ** يبني نفسه ولا يمرّ بـbuildAttendanceConds،
+  // فبدونه كان عدّاد «اللقطات القديمة» وأشهرُها يعدّان صفوف الشركة كلّها لمدير فرعٍ واحد.
+  if (filters?.scopedBranchId != null) scanConds.push(eq(employees.branchId, filters.scopedBranchId));
   if (periods.length) {
     // **كلّ** شهرٍ يمثّله المدى لا شهرَ نهايته وحده (Codex P2): «آخر ٧ أيام» في مطلع الشهر
     // يعبر شهرين، فقصرُ المسح على الأخير كان يُظهر صفوفاً مشطوبةً وعدّاداً صفراً ⇒ يختفي الزرّ.
@@ -390,6 +404,8 @@ export async function recomputeMonthRates(input: {
   period: string;
   employeeId?: number;
   actor?: { userId: number; role: string };
+  /** عزل الفرع: إعادة التسعير تمسّ صفوفاً ومبالغ ⇒ تُقصَر على فرع الفاعل المُسنَد. */
+  scopedBranchId?: number | null;
 }) {
   const period = String(input.period).slice(0, 7);
   return withTx(async (tx) => {
@@ -408,6 +424,9 @@ export async function recomputeMonthRates(input: {
     }
 
     const conds: SQL[] = [like(attendance.attendanceDate, `${period}%`)];
+    // عزل الفرع: إعادة تسعير شهرٍ كامل تُعيد كتابة `hourlyRate`/`amount` لكل صفٍّ مطابق —
+    // بلا هذا الحاجز كان مديرُ فرعٍ يُعيد تسعير موظفي الشركة كلِّها بضغطة (تدقيق ١٧/٨).
+    if (input.scopedBranchId != null) conds.push(eq(employees.branchId, input.scopedBranchId));
     if (input.employeeId) conds.push(eq(attendance.employeeId, input.employeeId));
     const rows = await tx
       .select({
@@ -484,7 +503,7 @@ export async function attendanceSummary(filters?: AttendanceFilters) {
  * تظهر **فارغة**: لا إدخال يدويّ ليومٍ فات، ولا فلترة بموظف. المُعفى يبقى مُدرَجاً (قد
  * يُسجَّل حضورُه للاطّلاع) وأجرُه ثابتٌ لا يتأثّر.
  */
-export async function formOptions() {
+export async function formOptions(scopedBranchId?: number | null) {
   const db = requireDb();
   const rows = await db
     .select({
@@ -496,7 +515,14 @@ export async function formOptions() {
       payType: employees.payType,
     })
     .from(employees)
-    .where(eq(employees.employmentStatus, "active"))
+    // عزل الفرع: القائمة تغذّي فلتر السجلّ **ونموذج التسجيل اليدوي** ⇒ تسريبُها هنا
+    // يمنح مديرَ فرعٍ معرّفاتِ موظفي غيره فيكتب لهم حضوراً (قرار المالك ١٢/٨).
+    .where(
+      and(
+        eq(employees.employmentStatus, "active"),
+        scopedBranchId != null ? eq(employees.branchId, scopedBranchId) : undefined,
+      ),
+    )
     .orderBy(employees.firstName);
   return rows.map((e) => ({ id: e.id, name: fullEmployeeName(e), payType: e.payType }));
 }
@@ -514,6 +540,8 @@ export async function getAttendanceSettings() {
     attendancePayEnabled: false,
     attendancePayFrom: null as string | null,
     maxDailyHours: "12.00",
+    nightShiftEnabled: false,
+    nightShiftCutoffHour: 8,
     updatedBy: null as number | null,
     updatedAt: new Date(),
   };
@@ -530,6 +558,8 @@ export async function updateAttendanceSettings(
     attendancePayEnabled?: boolean;
     attendancePayFrom?: string | null;
     maxDailyHours?: number;
+    nightShiftEnabled?: boolean;
+    nightShiftCutoffHour?: number;
   },
   actorUserId: number,
 ) {
@@ -542,6 +572,8 @@ export async function updateAttendanceSettings(
     ...(input.attendancePayEnabled !== undefined ? { attendancePayEnabled: input.attendancePayEnabled } : {}),
     ...(input.attendancePayFrom !== undefined ? { attendancePayFrom: input.attendancePayFrom || null } : {}),
     ...(input.maxDailyHours !== undefined ? { maxDailyHours: String(input.maxDailyHours) } : {}),
+    ...(input.nightShiftEnabled !== undefined ? { nightShiftEnabled: input.nightShiftEnabled } : {}),
+    ...(input.nightShiftCutoffHour !== undefined ? { nightShiftCutoffHour: input.nightShiftCutoffHour } : {}),
     updatedBy: actorUserId,
   };
   return withTx(async (tx) => {
@@ -568,6 +600,14 @@ export interface RecordAttendanceInput {
   reviewReason?: string | null;
   /** فاعل الإدخال اليدوي — لفرض «لا يسجّل أحدٌ ساعات نفسه». الطيّ التلقائي يمرّره null. */
   actor?: { userId: number; role: string } | null;
+  /** عزل الفرع: رقمٌ = يُرفَض موظفُ فرعٍ آخر؛ null/غياب = عبورٌ (أدمن/مالك أو الطيّ التلقائي). */
+  scopedBranchId?: number | null;
+  /**
+   * تاريخ **الانصراف** حين يخالف تاريخ الوردية (وردية ليلية عابرة منتصف الليل).
+   * غيابه = تاريخ الحضور نفسه (السلوك السابق حرفياً). يمرّره الطيّ وحده؛ الإدخال اليدوي لا
+   * يمرّره ⇒ يبقى حارسُ «الانصراف بعد الدخول» صارماً على البشر ولا يفتح باب خطأٍ صامت.
+   */
+  checkOutDate?: string | null;
 }
 
 /** يُحوّل وقت "HH:MM" في يوم الحضور إلى Date لعمود timestamp (أو null).
@@ -589,6 +629,15 @@ export async function recordAttendance(input: RecordAttendanceInput) {
   return withTx(async (tx) => {
     const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
     if (!emp) throw new Error("الموظف غير موجود");
+    /*
+     * عزل الفرع على **الكتابة** (قرار المالك ١٢/٨، تدقيق ١٧/٨): ساعات الحضور تتحوّل أجراً
+     * مباشرةً، فتسجيلُ مدير فرعٍ حضوراً لموظف فرعٍ آخر كتابةُ مالٍ خارج سلطته. كانت الوحدة
+     * بلا أيّ حاجز فرع، فيكفي معرّفُ موظفٍ من الفرع الآخر (تُسرّبه formOptions) لكتابة أجره.
+     * الطيّ التلقائي من الجهاز لا يمرّر scopedBranchId (لا فاعل بشريّ) فلا يتأثّر.
+     */
+    if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
+      throw new Error("لا يمكن تسجيل حضور لموظف من فرعٍ آخر");
+    }
     // لا يُسجَّل حضور لموظف منتهي الخدمة (الحضور بعد الإنهاء يولّد أجراً وهمياً عند توليد المسيّر).
     if (emp.employmentStatus === "terminated") {
       throw new Error("لا يمكن تسجيل حضور لموظف منتهي الخدمة");
@@ -623,6 +672,25 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     // ABSENT/LEAVE لا يولّدان أجراً مهما كانت الساعات. التصفير المزدوج (هنا + WHERE في تجميع المسيّر)
     // يحمي حتى عند تعديل صفّ موجود أو إدخال مباشر بـAPI يضع status=ABSENT مع ساعات (سهو/استيراد بصمة).
     const isPaidStatus = status === "PRESENT" || status === "LATE";
+
+    /*
+     * حارس اتّساق الساعات مع الأوقات (تدقيق ١٧/٨) — النواة النقيّة في `shared/attendanceHours.ts`
+     * ليُنفّذها الخادم وتُرشد بها الواجهة بالنصّ نفسه.
+     *
+     * الطيّ التلقائي يمرّ بلا مساس: مجموع فتراته المزاوَجة ≤ المدى حتماً (فالحارس لا يفرض
+     * المساواة)، وlastPairedOut لا يُضبط إلا باكتمال زوجٍ ⇒ ساعاته > 0، وpunchTimesOf يجلب
+     * بصمات اليوم نفسه فقط ⇒ الانصراف بعد الدخول دائماً.
+     */
+    const hoursViolation = attendanceHoursViolation({
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      hours: hoursDec.toNumber(),
+      isPaidStatus,
+    });
+    if (hoursViolation) throw new Error(hoursViolation);
+
+    const checkInAt = timeToTimestamp(input.attendanceDate, input.checkIn);
+    const checkOutAt = timeToTimestamp(input.checkOutDate || input.attendanceDate, input.checkOut);
     const effectiveHours = isPaidStatus ? hoursDec : money(0);
     const rate = rateForDay(emp, input.attendanceDate);
     // الأجر بالدينار الصحيح (لا فئات أصغر من الدينار في المتجر): تقريب الناتج إلى عدد صحيح.
@@ -632,8 +700,8 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     const values = {
       employeeId: input.employeeId,
       attendanceDate: input.attendanceDate,
-      checkIn: timeToTimestamp(input.attendanceDate, input.checkIn),
-      checkOut: timeToTimestamp(input.attendanceDate, input.checkOut),
+      checkIn: checkInAt,
+      checkOut: checkOutAt,
       status,
       notes: input.notes?.trim() || null,
       hours: toDbMoney(effectiveHours),
@@ -666,7 +734,7 @@ export async function recordAttendance(input: RecordAttendanceInput) {
 }
 
 /** ملخّص الشهر: لكل موظف بالساعة على رأس العمل، إجمالي ساعاته ومبلغه في الفترة. */
-export async function monthSummary(period: string) {
+export async function monthSummary(period: string, scopedBranchId?: number | null) {
   const db = requireDb();
   const emps = await db
     .select({
@@ -677,7 +745,13 @@ export async function monthSummary(period: string) {
       lastName: employees.lastName,
     })
     .from(employees)
-    .where(and(eq(employees.employmentStatus, "active"), eq(employees.payType, "hourly")))
+    .where(
+      and(
+        eq(employees.employmentStatus, "active"),
+        eq(employees.payType, "hourly"),
+        scopedBranchId != null ? eq(employees.branchId, scopedBranchId) : undefined,
+      ),
+    )
     .orderBy(employees.firstName);
 
   const agg = await db
