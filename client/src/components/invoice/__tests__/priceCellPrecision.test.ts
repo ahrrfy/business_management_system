@@ -47,6 +47,31 @@ describe("invoice price cell — precision & input normalization contract", () =
   });
 });
 
+describe("supplier invoice reconciliation — الشاشتان تحملان الضابط كاملاً", () => {
+  for (const page of ["PurchaseNew.tsx", "PurchaseEdit.tsx"]) {
+    it(`${page}: لوحةُ مطابقةٍ + إرسالُ القيمة + منعُ الحفظ عند الاختلاف`, () => {
+      const source = read(`../../../pages/${page}`);
+      // (١) اللوحة موجودة ومربوطة بحالة المحرّر — لا حقلَ يتيمٍ بلا أثر.
+      expect(source).toContain("<SupplierInvoiceMatch");
+      expect(source).toContain('field: "supplierInvoiceTotal"');
+      // (٢) القيمة تُرسَل فعلاً (كانت الشاشتان تمتنعان عن إرسال usdTotal ⇒ الضابط مُعطَّل عملياً).
+      expect(source).toContain("supplierInvoiceTotal: state.supplierInvoiceTotal.trim()");
+      // (٣) المقارنة بعملة الأمر: الدولاريّ بإجماليه الدولاريّ والدينارّي بالدينارّي.
+      expect(source).toContain('derivedTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}');
+      // (٤) الحفظ يُمنع عند الاختلاف برسالة الحكم نفسها (مرآة حارس الخادم).
+      expect(source).toContain('if (invoiceMatch.verdict !== "UNSET" && invoiceMatch.verdict !== "MATCH")');
+      // (٥) التوزيع يمرّ بالدالّة النقيّة المُختبَرة لا بحسابٍ مكرَّر في الصفحة.
+      expect(source).toContain("distributeToSubtotal(state.items, target, state.currency)");
+    });
+  }
+
+  it("الحقل يُرسَل باسم العقد الخادميّ ولا يبقى أثرٌ لاسم الحالة القديم usdTotal", () => {
+    const state = read("../types.ts");
+    expect(state).toContain("supplierInvoiceTotal: string;");
+    expect(state).not.toContain("usdTotal: string;");
+  });
+});
+
 describe("purchase payload — سعر الوحدة يُرسَل بدقّة عملته", () => {
   for (const page of ["PurchaseNew.tsx", "PurchaseEdit.tsx"]) {
     it(`${page}: يستعمل toUnitPriceStr ولا يقصّ السعر بـround2`, () => {

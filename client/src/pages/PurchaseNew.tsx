@@ -30,11 +30,15 @@ import {
   InvoiceHeader,
   ProductTable,
   ShortcutsBar,
+  SupplierInvoiceMatch,
   TermsAndNotes,
   TotalsPanel,
   calcTotals,
   createInitialState,
+  distributeToSubtotal,
   invoiceReducer,
+  matchSupplierInvoice,
+  subtotalForInvoiceTotal,
   type InvoiceActionKind,
 } from "@/components/invoice";
 
@@ -102,6 +106,33 @@ export default function PurchaseNew() {
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
 
+  /* ─── مطابقة فاتورة المورّد ─────────────────────────────────────── */
+  // يوزّع فرق المطابقة على أسعار البنود بنسبة القيمة **بعد أن يراه الموظّف**: الأسعار الجديدة
+  // تظهر في الجدول فوراً ولا يقع أيّ حفظٍ قبل مراجعتها — لا امتصاصَ خفيّ لفرقٍ ماليّ (§٥).
+  function distributeInvoiceDifference() {
+    const target = subtotalForInvoiceTotal(
+      state.supplierInvoiceTotal,
+      state.taxEnabled ? state.taxRatePercent || "0" : "0",
+    );
+    const res = distributeToSubtotal(state.items, target, state.currency);
+    if (!res.prices.length) {
+      notify.warn(res.error ?? "تعذّر توزيع الفرق على البنود.");
+      return;
+    }
+    res.prices.forEach((price, idx) => {
+      dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: price });
+      dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: price });
+    });
+    if (D(res.residual).isZero()) {
+      notify.ok("وُزّع الفرق على أسعار البنود — راجع الأسعار الجديدة ثم احفظ.");
+    } else {
+      // إفصاحٌ لا ادّعاء: هدفٌ لا تبلغه أسعارٌ ضمن دقّة العملة (كمّياتٌ كبيرة) يُعلَن متبقّيه.
+      notify.warn(
+        `وُزّع الفرق، وبقي ${res.residual} غير قابلٍ للتوزيع بدقّة العملة — عدّل سعر بندٍ يدوياً لإتمام المطابقة.`,
+      );
+    }
+  }
+
   const insightItems = useMemo(
     () => Array.from(new Map(state.items.map((item) => [
       `${item.variantId}:${item.productUnitId}`,
@@ -120,6 +151,7 @@ export default function PurchaseNew() {
     state.entityId != null ||
     state.items.length > 0 ||
     state.notes.trim() !== "" ||
+    state.supplierInvoiceTotal.trim() !== "" ||
     shippingCost.trim() !== "" ||
     customsCost.trim() !== "";
   useUnsavedGuard(isDirty);
@@ -186,6 +218,17 @@ export default function PurchaseNew() {
     state.taxRatePercent,
   ]);
 
+  // حكم المطابقة — يُحسَب مرّةً ويُستهلَك في التحقّق وفي اللوحة معاً (لا تعريفان ينجرفان).
+  const invoiceMatch = useMemo(
+    () =>
+      matchSupplierInvoice(
+        state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2),
+        state.supplierInvoiceTotal,
+        state.currency,
+      ),
+    [state.currency, state.supplierInvoiceTotal, totals.grandTotal, landed.grand],
+  );
+
   function validate(): string | null {
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
     if (!state.branchId) return "اختر الفرع.";
@@ -211,6 +254,10 @@ export default function PurchaseNew() {
     if (landed.hasLanded && !landed.hasBase) {
       return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
     }
+    // مطابقة فاتورة المورّد (مرآة حارس الخادم): رسالةٌ بالأرقام على الشاشة توفّر رحلة ذهابٍ وإياب.
+    if (invoiceMatch.verdict !== "UNSET" && invoiceMatch.verdict !== "MATCH") {
+      return invoiceMatch.message;
+    }
     return null;
   }
 
@@ -234,6 +281,11 @@ export default function PurchaseNew() {
       // بينما كانت الواجهة تشتقّ usdTotal من أسعارٍ كاملة الدقّة (مثل 4.1666) ⇒ الإجماليان يختلفان
       // بفروق تقريبٍ بحتة فيرفض الحارسُ الحفظَ زوراً. المرجع الوحيد هو حساب الخادم من البنود.
       agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
+      // مطابقة فاتورة المورّد: تُرسَل حين يملؤها الموظّف ⇒ الخادم يرفض حفظ أمرٍ يخالف مستنده.
+      // فارغةٌ ⇒ لا مطابقة (السلوك التاريخيّ) — الحقل ضابطٌ اختياريّ لا شرطُ حفظ.
+      supplierInvoiceTotal: state.supplierInvoiceTotal.trim()
+        ? round2(safeMoney(state.supplierInvoiceTotal)).toFixed(2)
+        : undefined,
       // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
       // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
       shippingCost: safeMoney(shippingCost).gt(0) ? round2(safeMoney(shippingCost)).toFixed(2) : undefined,
@@ -518,6 +570,16 @@ export default function PurchaseNew() {
             showPayment={false}
             showTaxToggle
             overrideGrandTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
+          />
+          {/* مطابقة فاتورة المورّد: الإجماليّ المشتقّ يُقارَن بعملة الأمر — الدولاريّ بإجماليه
+              الدولاريّ (مستند المورّد) والدينارّي بإجماليه الدينارّي، مطابقةً لحارس الخادم. */}
+          <SupplierInvoiceMatch
+            derivedTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
+            value={state.supplierInvoiceTotal}
+            onChange={(v) => dispatch({ type: "SET_FIELD", field: "supplierInvoiceTotal", value: v })}
+            currency={state.currency}
+            onDistribute={distributeInvoiceDifference}
+            canDistribute={D(totals.subtotal).gt(0)}
           />
           {state.currency === "USD" && landed.rate.gt(0) && (
             <section className="rounded-xl border bg-card px-4 py-3 text-sm">

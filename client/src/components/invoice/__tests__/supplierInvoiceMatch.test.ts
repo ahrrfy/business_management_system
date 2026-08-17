@@ -1,0 +1,134 @@
+import { describe, expect, it } from "vitest";
+import {
+  distributeToSubtotal,
+  matchSupplierInvoice,
+  subtotalForInvoiceTotal,
+} from "../supplierInvoiceMatch";
+
+/**
+ * بلاغ المالك (١٧/٨/٢٦): «لا يتم قبول الفاتورة ولا يمكن مطابقتها مع المورد وقيمة الفاتورة».
+ * هذه الحزمة تُثبّت منطق المطابقة: حكمٌ برقمٍ وسبب، وتوزيعٌ يبلغ الهدف بالضبط أو يُفصح عن متبقّيه.
+ */
+describe("matchSupplierInvoice — حكمُ المطابقة", () => {
+  it("بلا قيمة ⇒ UNSET بلا رسالة (الحقل اختياريّ، السلوك التاريخيّ محفوظ)", () => {
+    for (const empty of ["", "   "]) {
+      const r = matchSupplierInvoice("14509.90", empty, "IQD");
+      expect(r.verdict).toBe("UNSET");
+      expect(r.message).toBe("");
+      expect(r.derived).toBe("14509.90");
+    }
+  });
+
+  it("مطابقٌ تماماً ⇒ MATCH وفرقٌ صفر", () => {
+    const r = matchSupplierInvoice("14509.90", "14509.90", "IQD");
+    expect(r.verdict).toBe("MATCH");
+    expect(r.difference).toBe("0.00");
+    expect(r.message).toContain("مطابق");
+  });
+
+  it("بنودنا أعلى ⇒ OURS_HIGHER برسالةٍ تحمل الرقمين والفرق وسببه المعتاد (خصم المورّد)", () => {
+    const r = matchSupplierInvoice("14509.90", "14000", "IQD");
+    expect(r.verdict).toBe("OURS_HIGHER");
+    expect(r.difference).toBe("-509.90");
+    expect(r.message).toContain("14509.90");
+    expect(r.message).toContain("14000.00");
+    expect(r.message).toContain("509.90");
+    expect(r.message).toContain("خصم");
+  });
+
+  it("فاتورة المورّد أعلى ⇒ OURS_LOWER ويُلمّح لبندٍ ناقص أو شحنٍ مدرَج", () => {
+    const r = matchSupplierInvoice("17283.00", "17383.00", "USD");
+    expect(r.verdict).toBe("OURS_LOWER");
+    expect(r.difference).toBe("100.00");
+    expect(r.message).toContain("$");
+    expect(r.message).toContain("بندٌ لم يُدخَل");
+    expect(r.message).toContain("شحن");
+  });
+
+  it("قيمة سالبة أو نصّ تالف ⇒ INVALID/UNSET بلا انهيار", () => {
+    expect(matchSupplierInvoice("100", "-5", "IQD").verdict).toBe("INVALID");
+    expect(matchSupplierInvoice("100", "abc", "IQD").verdict).toBe("UNSET");
+    expect(matchSupplierInvoice("100", "1.2.3", "IQD").verdict).toBe("UNSET");
+  });
+
+  it("يقارن بدقّة Decimal لا بـfloat (فرق سنتٍ لا يضيع)", () => {
+    expect(matchSupplierInvoice("0.30", "0.30", "IQD").verdict).toBe("MATCH");
+    const r = matchSupplierInvoice("1000000.01", "1000000.00", "IQD");
+    expect(r.verdict).toBe("OURS_HIGHER");
+    expect(r.difference).toBe("-0.01");
+  });
+});
+
+describe("subtotalForInvoiceTotal — المجموع الفرعيّ اللازم لبلوغ إجماليّ الفاتورة", () => {
+  it("بلا ضريبة (الافتراضيّ في العراق) ⇒ الهدف نفسه بلا تقريب", () => {
+    expect(subtotalForInvoiceTotal("14000", "0")).toBe("14000.00");
+    expect(subtotalForInvoiceTotal("14000.55", 0)).toBe("14000.55");
+  });
+
+  it("مع ضريبة ⇒ يُنزَع أثرها: 11500 عند ١٥٪ ⇒ 10000", () => {
+    expect(subtotalForInvoiceTotal("11500", "15")).toBe("10000.00");
+  });
+});
+
+describe("distributeToSubtotal — توزيع الفرق على الأسعار", () => {
+  it("يبلغ الهدف بالضبط ويحفظ نسب البنود (توزيعٌ بنسبة القيمة)", () => {
+    const lines = [
+      { price: "100", qty: 10 }, // 1000
+      { price: "50", qty: 10 }, // 500
+    ];
+    const res = distributeToSubtotal(lines, "1350", "IQD");
+    expect(res.reachedSubtotal).toBe("1350.00");
+    expect(res.residual).toBe("0.00");
+    // خصم ١٠٪ موزَّعٌ بالنسبة: 90 و45.
+    expect(res.prices).toEqual(["90.00", "45.00"]);
+  });
+
+  it("آخر بندٍ يمتصّ باقي التقريب ⇒ المجموع = الهدف بالضبط لا انجراف سنتات", () => {
+    // التحجيم وحده يُعطي 333.32 (سنتٌ ناقص)؛ البند الأخير (كمّية ١) يمتصّ الفرق فيبلغ الهدف.
+    const lines = [
+      { price: "100", qty: 3 },
+      { price: "100", qty: 1 },
+    ];
+    const res = distributeToSubtotal(lines, "333.33", "IQD");
+    expect(res.reachedSubtotal).toBe("333.33");
+    expect(res.residual).toBe("0.00");
+    expect(res.prices).toEqual(["83.33", "83.34"]);
+  });
+
+  it("حدُّ حبيبة الكمّية: هدفٌ لا تبلغه أسعارُ ٢dp × كمّية ٣ ⇒ متبقٍّ مُعلَن لا تطابقٌ مُدّعى", () => {
+    // خطوةُ السعر الواحدة (0.01) تُحرّك المجموع ٠٫٠٣ ⇒ هدفٌ يبعد سنتاً واحداً غير بالغ.
+    const res = distributeToSubtotal([{ price: "33.33", qty: 3 }, { price: "66.67", qty: 3 }], "299.99", "IQD");
+    expect(res.reachedSubtotal).toBe("300.00");
+    expect(res.residual).toBe("-0.01");
+  });
+
+  it("الدولار يوزَّع بأربع منازل (دقّة عملته)", () => {
+    const res = distributeToSubtotal([{ price: "3.4566", qty: 5000 }], "17000", "USD");
+    expect(res.reachedSubtotal).toBe("17000.00");
+    expect(res.prices[0]).toBe("3.4000");
+  });
+
+  it("يُفصح عن المتبقّي حين لا يبلغ الهدفُ بأسعارٍ ضمن دقّة العملة (لا ادّعاء تطابق)", () => {
+    // كمّية ١٠٬٠٠٠ بالدينار: أصغر خطوةِ سعرٍ (0.01) تُحرّك المجموع ١٠٠ ⇒ هدفٌ بفرق ٥٠ غير بالغ.
+    const res = distributeToSubtotal([{ price: "10", qty: 10_000 }], "100050", "IQD");
+    expect(res.residual).not.toBe("0.00");
+    expect(Number(res.reachedSubtotal)).toBeGreaterThan(0);
+  });
+
+  it("بنودٌ بقيمةٍ صفرية ⇒ خطأٌ صريح بدل قسمةٍ على صفر", () => {
+    const res = distributeToSubtotal([{ price: "0", qty: 5 }], "1000", "IQD");
+    expect(res.prices).toEqual([]);
+    expect(res.error).toContain("صفرية");
+  });
+
+  it("هدفٌ سالب ⇒ يُرفض", () => {
+    const res = distributeToSubtotal([{ price: "10", qty: 1 }], "-5", "IQD");
+    expect(res.prices).toEqual([]);
+    expect(res.error).toBeTruthy();
+  });
+
+  it("لا يُنتج سعراً سالباً حتى مع هدفٍ صفر", () => {
+    const res = distributeToSubtotal([{ price: "10", qty: 2 }, { price: "20", qty: 1 }], "0", "IQD");
+    for (const p of res.prices) expect(Number(p)).toBeGreaterThanOrEqual(0);
+  });
+});

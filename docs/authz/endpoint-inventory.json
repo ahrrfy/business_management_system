@@ -10643,7 +10643,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:350"
+      "loc": "server/routers/purchaseRouter.ts:356"
     },
     {
       "surface": "trpc",
@@ -10660,7 +10660,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:223"
+      "loc": "server/routers/purchaseRouter.ts:229"
     },
     {
       "surface": "trpc",
@@ -10694,7 +10694,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:466"
+      "loc": "server/routers/purchaseRouter.ts:472"
     },
     {
       "surface": "trpc",
@@ -10711,7 +10711,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:369"
+      "loc": "server/routers/purchaseRouter.ts:375"
     },
     {
       "surface": "trpc",
@@ -10728,7 +10728,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:438"
+      "loc": "server/routers/purchaseRouter.ts:444"
     },
     {
       "surface": "trpc",
@@ -10762,7 +10762,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:253"
+      "loc": "server/routers/purchaseRouter.ts:259"
     },
     {
       "surface": "trpc",
@@ -10779,7 +10779,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: settle",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:319"
+      "loc": "server/routers/purchaseRouter.ts:325"
     },
     {
       "surface": "trpc",
@@ -10796,7 +10796,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:167"
+      "loc": "server/routers/purchaseRouter.ts:170"
     },
     {
       "surface": "trpc",

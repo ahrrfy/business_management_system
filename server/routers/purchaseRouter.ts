@@ -138,6 +138,9 @@ export const purchaseRouter = router({
         agreedCurrency: z.enum(["IQD", "USD"]).optional(),
         usdTotal: positiveMoneyString.optional(),
         agreedRate: positiveRateString.optional(),
+        // مطابقة فاتورة المورّد: قيمة الورقة بعملة الأمر. اختياريّة، وحين تُرسَل يفرض
+        // `computePurchaseDocument` تطابقها مع مجموع البنود برسالةٍ تحمل الرقمين والفرق.
+        supplierInvoiceTotal: nonNegMoneyString.optional(),
         // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
         // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
         shippingCost: nonNegMoneyString.optional(),
@@ -186,6 +189,9 @@ export const purchaseRouter = router({
         agreedCurrency: z.enum(["IQD", "USD"]).optional(),
         usdTotal: positiveMoneyString.optional(),
         agreedRate: positiveRateString.optional(),
+        // مطابقة فاتورة المورّد: قيمة الورقة بعملة الأمر. اختياريّة، وحين تُرسَل يفرض
+        // `computePurchaseDocument` تطابقها مع مجموع البنود برسالةٍ تحمل الرقمين والفرق.
+        supplierInvoiceTotal: nonNegMoneyString.optional(),
         shippingCost: nonNegMoneyString.optional(),
         customsCost: nonNegMoneyString.optional(),
       })

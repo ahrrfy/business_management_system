@@ -121,6 +121,72 @@ describe("دقّة سعر شراء الوحدة حسب عملة الأمر", () 
     }, actor)).rejects.toThrow(/منازل عشرية/);
   });
 
+  it("السعر الغائب لا يُنتج رسالة «منازل عشرية» مضلِّلة (يبقى صفراً كما كان)", async () => {
+    // حارس الدقّة يفحص **قيمةً حاضرة فقط**: المستدعي المباشر (بذرة/استيراد/اختبار) قد يُغفل
+    // الحقل، فتُعامَل صفراً منذ الأصل عبر `money()`. إقحامُها في فحص الدقّة كان يقول «يقبل
+    // منزلتين» عن حقلٍ لم يُرسَل إطلاقاً — أمسكه CI على أمرٍ بحقلٍ خاطئ الاسم.
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "1" } as never],
+    }, actor);
+    const { po, item } = await readOrder(created.purchaseOrderId);
+    expect(item.unitPrice).toBe("0.00");
+    expect(po.total).toBe("0.00");
+  });
+
+  it("مطابقة فاتورة المورّد: القيمة المطابِقة تمرّ، والمخالِفة تُرَدّ برسالةٍ تحمل الرقمين والفرق", async () => {
+    // مطابقة ⇒ الحفظ يمرّ، والأمر المحفوظ لا يخالف مستنده.
+    const ok = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1450.99" }],
+      supplierInvoiceTotal: "14509.90",
+    }, actor);
+    expect((await readOrder(ok.purchaseOrderId)).po.total).toBe("14509.90");
+
+    // مخالفة ⇒ رفضٌ **تشخيصيّ**: الرقمان والفرق واتّجاهه (كانت الرسالة «لا يطابق مجموع البنود» عمياء).
+    await expect(createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1450.99" }],
+      supplierInvoiceTotal: "14000.00",
+    }, actor)).rejects.toThrow(/14000\.00.*14509\.90.*509\.90/s);
+
+    // فارغة ⇒ لا مطابقة (السلوك التاريخيّ محفوظ: الضابط اختياريّ لا شرطُ حفظ).
+    const unset = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1450.99" }],
+    }, actor);
+    expect((await readOrder(unset.purchaseOrderId)).po.total).toBe("14509.90");
+  });
+
+  it("مطابقة الأمر الدولاريّ تكون بإجماليه **الدولاريّ** (مستند المورّد) لا الدينارّي", async () => {
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      agreedCurrency: "USD",
+      agreedRate: "1480",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "5000", unitPrice: "3.4566" }],
+      supplierInvoiceTotal: "17283.00",
+    }, actor);
+    const { po } = await readOrder(created.purchaseOrderId);
+    // `usdTotal` صار **مُعلَناً مُطابَقاً** لا مشتقّاً وحسب.
+    expect(po.usdTotal).toBe("17283.00");
+    expect(po.total).toBe("25578840.00");
+
+    // تمرير الإجماليّ الدينارّي مكان الدولاريّ خطأٌ يُمسَك بالرمز `$` في الرسالة.
+    await expect(createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      agreedCurrency: "USD",
+      agreedRate: "1480",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "5000", unitPrice: "3.4566" }],
+      supplierInvoiceTotal: "25578840.00",
+    }, actor)).rejects.toThrow(/\$/);
+  });
+
   it("تعديلُ أمرٍ دولاريّ لا يقصّ أسعاره (كان كلُّ حفظٍ يُنقص قيمة الفاتورة)", async () => {
     const created = await createPurchaseOrder({
       supplierId: 1,
