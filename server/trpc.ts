@@ -566,6 +566,16 @@ export const productStudioManagerProcedure = managerProcedure.use(requireModule(
 export const expensesReadProcedure = branchScopedProcedure.use(requireModule("expenses", "READ"));
 export const expensesCashierProcedure = moduleProcedure(["cashier", "manager", "accountant"], "expenses", "FULL");
 export const expensesManagerProcedure = moduleProcedure(["manager"], "expenses", "FULL");
+/**
+ * فئات المصروفات — بياناتٌ مرجعية عامّة (الجدول بلا `branchId`)، فلا معنى لاشتراط فرعٍ مُسنَد
+ * ولا لعزلٍ فرعيّ. القراءة بخريطة الوحدة وحدها كي يراها **كل من يُنشئ مصروفاً** (الكاشير منهم،
+ * وقالبه expenses=FULL) وإلّا ظهر له منتقٍ فارغ؛ والكتابة بقائمة الإدارة (مدير/محاسب) + المنح
+ * الصريح. نظير `treasuryGlobal*` لفئات السندات — راجع تعليقها لسبب فصل «العامّ» عن المقصور بالفرع.
+ */
+export const expensesGlobalReadProcedure = protectedProcedure.use(requireModule("expenses", "READ"));
+export const expensesGlobalProcedure = t.procedure.use(
+  requireModuleGate(["manager", "accountant"], "expenses", "FULL"),
+);
 // workorders (خدمة العملاء)
 export const workordersReadProcedure = branchScopedProcedure.use(requireModule("workorders", "READ"));
 export const workordersCashierProcedure = moduleProcedure(["cashier", "manager"], "workorders", "FULL");

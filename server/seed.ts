@@ -8,6 +8,7 @@ import { assertSeedPolicy } from "./config/seedPolicy";
 import { getDb } from "./db";
 import { createProduct } from "./services/catalogService";
 import { ensureDefaultVoucherCategories } from "./services/voucher/defaults";
+import { ensureDefaultExpenseCategories } from "./services/expenseCategoryService";
 import { setStock } from "./services/inventoryService";
 import { withTx } from "./services/tx";
 import { extractInsertId } from "./lib/insertId";
@@ -191,6 +192,22 @@ async function seed() {
   if (voucherCats.skipped.length) {
     console.log(
       `⚠ فئات بلا حساب مقابل واتجاهها يخالف الكتالوج — تُترك لقرار المالك: ${voucherCats.skipped.join("، ")}`,
+    );
+  }
+
+  // فئات المصروفات المُدارة — إنتاجاً وتطويراً أيضاً: منتقي المصروف يقرأ منها، وكل دلو محاسبيّ
+  // يلزمه فئةٌ احتياطية مفعَّلة وإلّا هبط المصروف القديم بلا تصنيف مُدار.
+  const expenseCats = await ensureDefaultExpenseCategories();
+  if (expenseCats.inserted.length || expenseCats.defaultsRepaired.length) {
+    console.log(
+      `✓ seeded expense categories: +${expenseCats.inserted.length} جديدة، ${expenseCats.defaultsRepaired.length} دلواً رُمِّمت احتياطيته (الإجمالي ${expenseCats.total})`,
+    );
+  } else {
+    console.log(`• expense categories already complete (${expenseCats.total})`);
+  }
+  if (expenseCats.bucketMismatch.length) {
+    console.log(
+      `⚠ فئات مصروفات باسم الكتالوج ودلوٍ مختلف — تُترك لقرار المالك: ${expenseCats.bucketMismatch.join("، ")}`,
     );
   }
 

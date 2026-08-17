@@ -2519,6 +2519,12 @@ export const expenses = mysqlTable(
     ])
       .default("OTHER")
       .notNull(),
+    /**
+     * الفئة المُدارة (هجرة 0203) — التصنيف التشغيليّ الذي يختاره المستخدم. الدلو أعلاه يبقى
+     * مصدر الحقيقة المحاسبيّ ويُشتقّ من `expenseCategories.bucket` عند الكتابة، فلا ينحرفان.
+     * NULL ممكنٌ للسجلّات التاريخية التي لم تُردَم (لا شيء يتعطّل بغيابها).
+     */
+    expenseCategoryId: bigint("expenseCategoryId", { mode: "number" }),
     // 0018: DB-level CHECK (amount >= 0) أُضيف في migration 0018.
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     paymentMethod: mysqlEnum("expensePaymentMethod", [
@@ -2573,6 +2579,7 @@ export const expenses = mysqlTable(
     branchIdx: index("idx_expense_branch").on(table.branchId),
     dateIdx: index("idx_expense_date").on(table.expenseDate),
     categoryIdx: index("idx_expense_category").on(table.category),
+    managedCategoryIdx: index("idx_expense_managed_category").on(table.expenseCategoryId),
     statusIdx: index("idx_expense_status").on(table.status),
     accrualMethodCheck: check(
       "chk_expense_accrual_method",
@@ -2586,6 +2593,50 @@ export const expenses = mysqlTable(
 
 export type Expense = typeof expenses.$inferSelect;
 export type InsertExpense = typeof expenses.$inferInsert;
+
+/* ==================== فئات المصروفات المُدارة (هجرة 0203) ====================
+ * طبقةٌ تشغيلية فوق `expenses.expenseCategory` لا بديلٌ عنه: الـENUM يبقى **الدلو المحاسبيّ**
+ * الذي يشتقّ منه `expenseRole()` حسابَ الدفتر وتطابقه استعلاماتُ إقفال الشهر نصّاً، بينما هذا
+ * الجدول يمنح المالك تصنيفاً دقيقاً يديره بنفسه (وقود/أحبار/مولّدة…). كل فئة تُعلن دلوها،
+ * والمصروف يكتب الاثنين معاً ⇒ صفر تغيير في الدفتر والتقارير والإقفال.
+ * لا تُحذف فئة بل تُعطَّل، ولا يتغيّر دلوها بعد ارتباطها بمصروف (حفاظاً على أثر التدقيق).
+ */
+export const expenseCategories = mysqlTable(
+  "expenseCategories",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 100 }).notNull().unique(),
+    /** الدلو المحاسبيّ — نفس قائمة `expenses.expenseCategory` حرفياً. */
+    bucket: mysqlEnum("expenseCategoryBucket", [
+      "RENT",
+      "UTILITIES",
+      "SUPPLIES",
+      "SALARY",
+      "TRANSPORT",
+      "MAINTENANCE",
+      "MARKETING",
+      "OTHER",
+    ]).notNull(),
+    description: varchar("description", { length: 300 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    /**
+     * فئة الدلو الاحتياطية: يُسنَد إليها أي طلبٍ قديم يحمل الدلو وحده (أندرويد/أوفلاين/استيراد)
+     * فلا يبقى مصروفٌ بلا فئة مُدارة. تضبطها الهجرة ولا تُدار من الواجهة، وتُمنع من التعطيل.
+     */
+    isBucketDefault: boolean("isBucketDefault").default(false).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    activeIdx: index("idx_expcat_active").on(table.isActive),
+    bucketIdx: index("idx_expcat_bucket").on(table.bucket, table.isBucketDefault),
+  }),
+);
+
+// اسمٌ بلاحقة Row عمداً: `ExpenseCategory` محجوزٌ في expenseService لاتّحاد الدلاء الثمانية
+// (النوع المحاسبيّ)، وخلطهما في ملفٍ واحد يُنتج تصادماً صامتاً في القراءة قبل المترجم.
+export type ExpenseCategoryRow = typeof expenseCategories.$inferSelect;
+export type InsertExpenseCategoryRow = typeof expenseCategories.$inferInsert;
 
 /* ============================ تحويل نقدي بين الفروع ============================
  * treasury-stage2 (٢١/٦): نقل نقد من خزينة فرع إلى خزينة فرع آخر بتدفّق ثنائي ذرّي.

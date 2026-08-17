@@ -12,11 +12,23 @@ import { logAudit } from "../services/auditService";
 import { nonNegMoneyString, ymdDate } from "../lib/schemas";
 import {
   expensesCashierProcedure,
+  expensesGlobalProcedure,
+  expensesGlobalReadProcedure,
   expensesManagerProcedure,
   expensesReadProcedure,
   ownerProcedure,
   router,
 } from "../trpc";
+import {
+  backfillExpenseCategories,
+  countUnclassifiedExpenses,
+  createExpenseCategory,
+  ensureDefaultExpenseCategories,
+  listExpenseCategories,
+  setExpenseCategoryActive,
+  updateExpenseCategory,
+} from "../services/expenseCategoryService";
+import { EXPENSE_BUCKETS } from "@shared/expenseCategories";
 import { isDupEntry } from "@shared/errorMap.ar";
 import {
   approveAccrualCorrection,
@@ -36,7 +48,113 @@ const category = z.enum([
   "MARKETING",
   "OTHER",
 ]);
+const expenseBucket = z.enum(EXPENSE_BUCKETS);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+
+/**
+ * فئات المصروفات المُدارة (هجرة 0203) — راوترٌ متداخل تحت `expenses.categories`.
+ * الفئة تُصنِّف والدلو يُحاسِب: الدلو (ENUM) يبقى مصدر الحقيقة المحاسبيّ، وهذه الطبقة تمنح
+ * المالك تصنيفاً دقيقاً يديره بنفسه بلا أي أثرٍ على الدفتر أو التقارير أو الإقفال.
+ */
+const expenseCategoryRouter = router({
+  list: expensesGlobalReadProcedure
+    .input(z.object({ includeInactive: z.boolean().default(false) }).optional())
+    .query(({ input }) => listExpenseCategories({ includeInactive: input?.includeInactive })),
+
+  /** عدد المصروفات التي ما تزال بلا فئة مُدارة — يقود ظهور زرّ المعالجة. */
+  unclassifiedCount: expensesGlobalReadProcedure.query(() => countUnclassifiedExpenses()),
+
+  create: expensesGlobalProcedure
+    .input(
+      z.object({
+        name: z.string().trim().min(1, "اسم الفئة مطلوب").max(100),
+        bucket: expenseBucket,
+        description: z.string().max(300).nullish(),
+        sortOrder: z.number().int().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await createExpenseCategory(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "expenseCategory.create",
+        entityType: "expenseCategory",
+        entityId: res.id,
+        newValue: input,
+      });
+      return res;
+    }),
+
+  update: expensesGlobalProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        name: z.string().trim().min(1).max(100).optional(),
+        bucket: expenseBucket.optional(),
+        description: z.string().max(300).nullish(),
+        sortOrder: z.number().int().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await updateExpenseCategory(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "expenseCategory.update",
+        entityType: "expenseCategory",
+        entityId: input.id,
+        newValue: { changed: res.changed },
+      });
+      return { ok: true };
+    }),
+
+  setActive: expensesGlobalProcedure
+    .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await setExpenseCategoryActive(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: input.isActive ? "expenseCategory.activate" : "expenseCategory.deactivate",
+        entityType: "expenseCategory",
+        entityId: input.id,
+      });
+      return res;
+    }),
+
+  /** استعادة الكتالوج الافتراضي وترميم فئة كل دلو الاحتياطية — idempotent. */
+  restoreDefaults: expensesGlobalProcedure.mutation(async ({ ctx }) => {
+    const res = await ensureDefaultExpenseCategories();
+    if (res.inserted.length || res.defaultsRepaired.length) {
+      await logAudit(ctx, {
+        action: "expenseCategory.restoreDefaults",
+        entityType: "expenseCategory",
+        newValue: res,
+      });
+    }
+    return res;
+  }),
+
+  /** إسناد المصروفات القديمة بلا فئة إلى فئة دلوها الاحتياطية — الدلو نفسه لا يُمَسّ. */
+  backfill: expensesGlobalProcedure.mutation(async ({ ctx }) => {
+    const res = await backfillExpenseCategories();
+    if (res.updated) {
+      await logAudit(ctx, {
+        action: "expenseCategory.backfill",
+        entityType: "expense",
+        newValue: res,
+      });
+    }
+    return res;
+  }),
+});
 const status = z.enum(["PENDING_APPROVAL", "ACTIVE", "REJECTED", "CANCELLED"]);
 const recurringFreq = z.enum([
   "DAILY",
@@ -47,12 +165,15 @@ const recurringFreq = z.enum([
 ]);
 
 export const expenseRouter = router({
+  categories: expenseCategoryRouter,
+
   list: expensesReadProcedure
     .input(
       z
         .object({
           branchId: z.number().int().positive().optional(),
           category: category.optional(),
+          expenseCategoryId: z.number().int().positive().optional(),
           status: status.optional(),
           from: ymdDate.optional(),
           to: ymdDate.optional(),
@@ -171,7 +292,10 @@ export const expenseRouter = router({
         branchId: z.number().int().positive(),
         shiftId: z.number().int().positive().nullish(),
         expenseDate: z.string().optional(),
+        // الدلو المحاسبيّ — يبقى في العقد للتوافق الخلفيّ (أندرويد/أوفلاين/استيراد). حين
+        // تُمرَّر `expenseCategoryId` تحكم هي، وتُشتقّ منه الخدمة الدلوَ وتتجاهل هذا الحقل.
         category,
+        expenseCategoryId: z.number().int().positive().nullish(),
         // STOCK لا يرسل مبلغاً (يُحتسب من الكلفة) ⇒ افتراضي "0".
         amount: z.string().default("0"),
         paymentMethod: method,

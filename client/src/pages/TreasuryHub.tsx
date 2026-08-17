@@ -9,6 +9,7 @@ import { PageTabs, type HubTab } from "@/components/PageTabs";
 const Treasury = lazy(() => import("@/pages/Treasury"));
 const TreasuryTransfers = lazy(() => import("@/pages/TreasuryTransfers"));
 const Expenses = lazy(() => import("@/pages/Expenses"));
+const ExpenseCategories = lazy(() => import("@/pages/ExpenseCategories"));
 const Vouchers = lazy(() => import("@/pages/Vouchers"));
 const VoucherCategories = lazy(() => import("@/pages/VoucherCategories"));
 const Shifts = lazy(() => import("@/pages/Shifts"));
@@ -22,6 +23,8 @@ const TABS: HubTab[] = [
   { value: "dashboard", label: "لوحة الخزينة", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury" }, Component: Treasury },
   { value: "transfers", label: "تحويلات نقدية", gate: { roles: ["manager", "accountant"], module: "treasury" }, Component: TreasuryTransfers },
   { value: "expenses", label: "المصروفات", gate: { roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "expenses" }, Component: Expenses },
+  // فئات المصروفات: إدارة (مدير/محاسب) — الكاشير يُنشئ مصروفاً ويقرأ المنتقي لكنه لا يديره.
+  { value: "expense-categories", label: "فئات المصروفات", gate: { roles: ["manager", "accountant"], module: "expenses" }, Component: ExpenseCategories },
   { value: "vouchers", label: "السندات", gate: { roles: ["manager", "accountant"], module: "treasury" }, Component: Vouchers },
   // فئات السندات: كانت شاشةً يتيمة بلا مدخلٍ في التنقّل — لا تُبلَغ إلّا من رابطٍ صغير داخل نموذج
   // السند، بينما فئتُها **إلزامية** لإتمام سند «أخرى». مكانها الطبيعيّ تبويبٌ في محور الخزينة.

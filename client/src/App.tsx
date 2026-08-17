@@ -59,6 +59,7 @@ const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
 const VoucherPaymentNew = lazy(() => import("@/pages/VoucherPaymentNew"));
 const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
 const VoucherCategories = lazy(() => import("@/pages/VoucherCategories"));
+const ExpenseCategories = lazy(() => import("@/pages/ExpenseCategories"));
 const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
 const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
@@ -389,6 +390,7 @@ export default function App() {
       {/* «محاسب» ينشئ السندات (المسارات أعلاه) وبوّابةُ الخادم لفئاتها تشمله (treasuryGlobalProcedure)،
           لكن حارس المسار كان يُسقطه ⇒ «لا تملك صلاحية» على الشاشة الوحيدة التي تُنشئ الفئة الإلزامية. */}
       <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
+      <Route path="/expense-categories"><Shell><RequireRole roles={["admin","manager","accountant"]} module="expenses" level="FULL"><ExpenseCategories /></RequireRole></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
       <Route path="/card-account"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CardAccount /></RequireRole></Shell></Route>
