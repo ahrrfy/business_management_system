@@ -78,9 +78,11 @@ jobs:
           set -o pipefail
           total="$(git ls-files "*.test.ts" | grep -cE "^(server|client/src|shared)/")"
           pnpm exec cross-env TZ=UTC vitest run --shard=${{ matrix.shard }}/2 2>&1 | tee /tmp/shard.log
-          line="$(grep -E "^ *Test Files" /tmp/shard.log | tail -1)"
-          ran="$(printf "%s" "$line" | grep -oE "([0-9]+)" | tail -1 | tr -d "()")"
-          test -n "$ran"
+          # ⚠️ مخرَج vitest ملوَّن: سطر النتيجة مسبوقٌ برموز ANSI، فمرساةُ "^ *Test Files" لا
+          # تطابقه ويَخرج $ran فارغاً فتسقط الوظيفة **رغم خضرة الاختبارات** (وقع فعلاً هنا).
+          line="$(grep -aE "Test Files" /tmp/shard.log | tail -1)"
+          ran="$(printf "%s" "$line" | grep -oE "[(][0-9]+[)]" | tail -1 | tr -d "()")"
+          if [ -z "$ran" ]; then echo "تعذّر استخراج عدد الملفات من مخرَج vitest" >&2; exit 1; fi
           echo "الشريحة ${{ matrix.shard }}/2 شغّلت $ran ملفاً من أصل $total"
           # حارسٌ ضدّ عودة العطل صامتاً: التجزئة الفعّالة تُشغّل ~نصف الملفات؛ تجاوز ٧٠٪ يعني
           # أنّ `--shard` لم يصل vitest. لا نقارن بالإجمالي مباشرةً لأنّ المجموعة المُجمَّعة
