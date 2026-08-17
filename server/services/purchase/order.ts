@@ -4,7 +4,7 @@ import Decimal from "decimal.js";
 import { desc, eq, inArray, like } from "drizzle-orm";
 import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { convertToBaseQuantity } from "../inventoryService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "../money";
 import {
@@ -21,8 +21,38 @@ const toDbRate = (x: Decimal): string => x.toDecimalPlaces(4, Decimal.ROUND_HALF
 export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
   return withTx(async (tx) => {
     // IDEM-06: idempotency check — نفس clientRequestId يعيد نفس المعرّف بدل إنشاء أمر مزدوج.
+    // المسار ج-٥ (١٧/٨): المفتاح وحده كان يُطابَق ⇒ طلبٌ بنفس المفتاح لكن **بمورّدٍ أو أسطرٍ أو
+    // مبالغ مختلفة** يتلقّى «نجاحاً» ويُعاد له معرّف الأمر الأوّل بلا أن يُنفَّذ شيء: أمرُ شراءٍ
+    // يظنّه المستخدم محفوظاً وهو غير موجود. صارت البصمة تشمل **كل حقلٍ يغيّر النتيجة** (الأسطر
+    // مرتّبةً كي لا يُغيّر ترتيبُ العرض البصمةَ)، والاختلاف يُرفض صراحةً بـCONFLICT من
+    // `checkIdempotency` بدل النجاح الكاذب.
+    const payloadFingerprint = {
+      supplierId: input.supplierId,
+      branchId: input.branchId,
+      status: input.status ?? null,
+      taxRatePercent: input.taxRatePercent ?? null,
+      agreedCurrency: input.agreedCurrency ?? null,
+      usdTotal: input.usdTotal ?? null,
+      agreedRate: input.agreedRate ?? null,
+      shippingCost: input.shippingCost ?? null,
+      customsCost: input.customsCost ?? null,
+      items: [...input.items]
+        .map((i) => ({
+          variantId: i.variantId,
+          productUnitId: i.productUnitId,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+        }))
+        .sort((a, b) =>
+          a.variantId - b.variantId ||
+          a.productUnitId - b.productUnitId ||
+          a.quantity.localeCompare(b.quantity) ||
+          a.unitPrice.localeCompare(b.unitPrice),
+        ),
+    };
+    const payloadHash = idempotencyHash(payloadFingerprint);
     if (input.clientRequestId) {
-      const existing = await findIdempotentRefId(tx, "purchase.create", input.clientRequestId);
+      const existing = await checkIdempotency(tx, "purchase.create", input.clientRequestId, payloadHash);
       if (existing != null) return { purchaseOrderId: existing, idempotent: true };
     }
 
@@ -198,7 +228,8 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     // قائمة الشراء غير الملغاة تخرج الصنف فوراً من أي جرد افتتاحي نشط في الفرع، حتى لو بدأ العد.
     await removeVariantsFromActiveOpeningStocktakes(tx, input.branchId, uniqueVariantIds);
     // IDEM-06: سجّل مفتاح الـidempotency — طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK).
-    if (input.clientRequestId) await recordIdempotencyKey(tx, "purchase.create", input.clientRequestId, purchaseOrderId);
+    if (input.clientRequestId)
+      await recordIdempotencyKey(tx, "purchase.create", input.clientRequestId, purchaseOrderId, payloadHash);
     return { purchaseOrderId, poNumber, total: total.toFixed(2) };
   });
 }
