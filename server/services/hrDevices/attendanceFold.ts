@@ -12,8 +12,15 @@
  *     فقط الأخطاء النهائية (منتهي خدمة/غير موجود) توسَم لتُستبعد نهائياً.
  *   - **لا تسقط طلبات الطيّ:** نداءٌ أثناء طيٍّ جارٍ يرفع علم إعادة تشغيل فيُعاد بعد الفراغ،
  *     وبلوغ سقف الدفعات يسلّم البقية إلى دورة متابعة منسّقة بدلاً من تركها معلّقة.
+ *   - **شهرٌ مسيّرُه معتمد لا يبتلع بصمةً بصمت (تدقيق ١٧/٨):** `recordAttendance` يرفض الكتابة
+ *     على شهرٍ مقفل. كان الرفض يُصنَّف «عابراً» فتبقى البصمة `processedAt=NULL` بلا أيّ وسم —
+ *     «بالانتظار» أبداً في شاشة الأجهزة (= أجرُ يومٍ يضيع صامتاً، ونقضُ §٥ من CLAUDE.md) —
+ *     مع إعادة محاولةٍ كل ١٥ ثانية بلا نهاية تُعيد مسح الدفعة كاملةً وتُجوّع البصمات الجديدة
+ *     عند سقف الدفعة. صار: **وسمٌ نهائيّ بملاحظةٍ تشرح**، و**استئنافٌ تلقائيّ** لحظةَ إلغاء
+ *     اعتماد المسيّر (وإلّا كان الوسم وعداً كاذباً: لا مسار إعادة طيٍّ في المستودع كلّه)،
+ *     و**تراجعٌ أُسّيّ** بدل الـ١٥ ثانية الثابتة.
  * ========================================================================== */
-import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, like, ne, or, sql } from "drizzle-orm";
 import {
   attendance,
   branches,
@@ -21,6 +28,7 @@ import {
   hrAttendancePunches,
   hrAttendanceSettings,
   hrFingerprintDevices,
+  payrollRuns,
 } from "../../../drizzle/schema";
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
@@ -115,30 +123,150 @@ let foldRequestsAccepting = true;
 let rerunRequested = false;
 let retryTimer: NodeJS.Timeout | null = null;
 
+/* ============================ تصنيف أخطاء الطيّ ============================
+ * **رمزٌ لا نصّ.** `recordAttendance` يعيش في `attendanceService.ts` ورسائلُه عربية قابلة
+ * لإعادة الصياغة في أيّ لحظة؛ ومَن يطابق النصّ يخسر التصنيف **صامتاً** عند أوّل تحرير
+ * صياغة — وهو حرفياً ما وقع مع رسالة قفل المسيّر (لم تكن ضمن العلامات ⇒ عُوملت عابرةً).
+ * فصار العقد: رمزٌ أوّلاً (`foldCode`/`code` على الخطأ نفسه — الطريق الصحيح حين ترمي الخدمة
+ * أخطاءً مرقَّمة)، ثمّ نصٌّ احتياطيّ **يحرسه اختبار تكامل** يمرّ بالخدمة الحيّة فيُحمَّر عند
+ * أيّ انجراف صياغة، ثمّ — لأخطر حالة — **سؤال الجدول نفسه** بلا اعتمادٍ على نصٍّ البتّة.
+ * ========================================================================== */
+export const FOLD_ERROR_CODES = {
+  /** شهر البصمة مقفل بمسيّر رواتب معتمد/مدفوع ⇒ لا كتابة حتى يُلغى الاعتماد. */
+  PAYROLL_PERIOD_LOCKED: "PAYROLL_PERIOD_LOCKED",
+  EMPLOYEE_TERMINATED: "EMPLOYEE_TERMINATED",
+  EMPLOYEE_NOT_FOUND: "EMPLOYEE_NOT_FOUND",
+  /** ساعات/أوقات غير متّسقة — إعادة المحاولة تُنتج الرفض نفسه حتماً. */
+  HOURS_INVALID: "HOURS_INVALID",
+  /** غير مصنَّف ⇒ يُفترض عابراً (انقطاع قاعدة/قفل) فتُعاد المحاولة ولا يضيع يوم. */
+  TRANSIENT: "TRANSIENT",
+} as const;
+export type FoldErrorCode = (typeof FOLD_ERROR_CODES)[keyof typeof FOLD_ERROR_CODES];
+
+const TERMINAL_FOLD_CODES: ReadonlySet<string> = new Set([
+  FOLD_ERROR_CODES.PAYROLL_PERIOD_LOCKED,
+  FOLD_ERROR_CODES.EMPLOYEE_TERMINATED,
+  FOLD_ERROR_CODES.EMPLOYEE_NOT_FOUND,
+  FOLD_ERROR_CODES.HOURS_INVALID,
+]);
+
+/**
+ * الجسر الاحتياطيّ نصّ⇒رمز إلى أن ترمي `attendanceService` رموزاً (تغييرٌ خارج ملكية هذا
+ * الملف — مرفوعٌ للقائد). `منتهي الخدمة`/`غير موجود`/`سالبة` هي العلامات النهائية الثلاث
+ * السابقة حرفياً ⇒ صفر انحدار في مجموعة «النهائيّ»، والباقي **إضافةٌ** كانت تدور عبثاً.
+ */
+const TERMINAL_MESSAGE_RULES: ReadonlyArray<{ code: FoldErrorCode; pattern: RegExp }> = [
+  { code: FOLD_ERROR_CODES.PAYROLL_PERIOD_LOCKED, pattern: /مسيّر رواتب شهر/ },
+  { code: FOLD_ERROR_CODES.EMPLOYEE_TERMINATED, pattern: /منتهي الخدمة/ },
+  { code: FOLD_ERROR_CODES.EMPLOYEE_NOT_FOUND, pattern: /غير موجود/ },
+  // رسائل `shared/attendanceHours.ts` + حارس الساعات السالبة: كلّها رفضُ شكلٍ لا عطلَ نقل.
+  { code: FOLD_ERROR_CODES.HOURS_INVALID, pattern: /سالبة|قيمةٌ غير صالحة|تتجاوز المدى|بعد وقت الدخول|لا تصحّ ساعاته صفراً/ },
+];
+
+/** رمز الخطأ كما تصنّفه هذه الوحدة. `TRANSIENT` = أعِد المحاولة، وما عداه = وَسْمٌ نهائيّ. */
+export function classifyFoldError(error: unknown): FoldErrorCode {
+  const declared = error as { foldCode?: unknown; code?: unknown } | null | undefined;
+  for (const candidate of [declared?.foldCode, declared?.code]) {
+    // نقبل الرمز المُعلَن فقط إن كان من مفرداتنا: أخطاء mysql2 تحمل code مثل ER_LOCK_DEADLOCK
+    // وهي **عابرة** بطبيعتها — قبولُها رمزاً نهائياً كان سيَسِم يوماً حيّاً بالخطأ.
+    if (typeof candidate === "string" && TERMINAL_FOLD_CODES.has(candidate)) return candidate as FoldErrorCode;
+  }
+  const msg = error instanceof Error ? error.message : "";
+  for (const rule of TERMINAL_MESSAGE_RULES) if (rule.pattern.test(msg)) return rule.code;
+  return FOLD_ERROR_CODES.TRANSIENT;
+}
+
+/**
+ * ⛔ **نصٌّ ثابت لا يُعاد صوغه:** صفوفُ الإنتاج المركونة تحمله، والاستئناف التلقائيّ يتعرّف
+ * عليها **به وحده** (لا عمود سبب في المخطّط). تغييرُه يُيتّم المركون القديم فلا يُستأنف أبداً.
+ */
+const PAYROLL_LOCK_NOTE_PREFIX = "شهر مقفل بمسيّر رواتب معتمد";
+function payrollLockNote(period: string): string {
+  return `${PAYROLL_LOCK_NOTE_PREFIX} (${period}) — أعد الطيّ بعد إلغاء اعتماد المسيّر (يُستأنف تلقائياً)`;
+}
+
+/*
+ * تراجعٌ أُسّيّ بدل ١٥ ثانية ثابتة أبداً: عطلٌ عابر مستمرّ كان يُشغّل ٥٧٦٠ دورةً يومياً، وكلّ
+ * دورةٍ تمسح الدفعة كاملةً (٥٠٠٠ صفّ) — عبءُ قاعدةٍ بلا فائدة. البداية تبقى ١٥ ثانية (استجابةٌ
+ * فورية للعطل القصير) والسقف ١٠ دقائق: لا نتخلّى عن يومٍ أبداً، ولا نُغرق القاعدة.
+ */
+const FOLD_RETRY_BASE_MS = 15_000;
+const FOLD_RETRY_MAX_MS = 600_000;
+let foldRetryStreak = 0;
+
+function foldRetryDelayMs(): number {
+  // 15س → 30 → 60 → 120 → 240 → 480 → 600 (سقف). القصّ يمنع تجاوز حدود العدد عند طول العطل.
+  return Math.min(FOLD_RETRY_BASE_MS * 2 ** Math.min(foldRetryStreak, 10), FOLD_RETRY_MAX_MS);
+}
+
+function scheduleFoldRetry(): void {
+  if (!foldRequestsAccepting || retryTimer) return;
+  const delayMs = foldRetryDelayMs();
+  foldRetryStreak += 1;
+  if (delayMs >= FOLD_RETRY_MAX_MS) {
+    // بلوغ السقف = عطلٌ مستمرّ لا ينحلّ بالانتظار ⇒ يلزم عينُ مشغّل، فلا يمرّ صامتاً.
+    logger.warn({ delayMs, attempts: foldRetryStreak }, "hrDevices: تراجع الطيّ بلغ سقفه — عطلٌ عابر مستمرّ");
+  }
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    foldSoon();
+  }, delayMs);
+  retryTimer.unref();
+}
+
 function safeFoldErrorCode(error: unknown): string {
-  const value = error instanceof Error ? error.name : "FOLD_FAILED";
+  // رمز السائق (mysql2 يضع ER_*/ECONN* في `code`) أدقّ تشخيصاً من `name` الذي هو "Error" دوماً.
+  const raw = (error as { code?: unknown } | null | undefined)?.code;
+  const value = typeof raw === "string" && raw ? raw : error instanceof Error ? error.name : "FOLD_FAILED";
   return value
     .toUpperCase()
     .replace(/[^A-Z0-9_]/g, "_")
     .slice(0, 48) || "FOLD_FAILED";
 }
 
-function scheduleFoldRetry(): void {
-  if (!foldRequestsAccepting || retryTimer) return;
-  retryTimer = setTimeout(() => {
-    retryTimer = null;
-    foldSoon();
-  }, 15_000);
-  retryTimer.unref();
+/**
+ * هل شهرُ البصمة مقفل بمسيّر معتمد/مدفوع؟ سؤالُ الجدول نفسه — لا نصّ ولا صياغة.
+ * **يفشل نحو «غير مقفل»** عمداً: تعذُّرُ السؤال (انقطاع قاعدة) لا يجوز أن يَسِم يوماً نهائياً.
+ */
+async function isPayrollPeriodLocked(period: string): Promise<boolean> {
+  try {
+    const [row] = await requireDb()
+      .select({ id: payrollRuns.id })
+      .from(payrollRuns)
+      .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+      .limit(1);
+    return !!row;
+  } catch {
+    return false;
+  }
 }
 
-/** علامات أخطاء recordAttendance النهائية (يوسَم بها المعالَج نهائياً) — أيّ خطأ آخر عابر يُعاد. */
-function isTerminalFoldError(msg: string): boolean {
-  return msg.includes("منتهي الخدمة") || msg.includes("غير موجود") || msg.includes("سالبة");
+/**
+ * البصمات المستحقّة للطيّ = المعلَّقة **زائد** المركونة لقفل مسيّرٍ زال عن شهرها.
+ *
+ * الاستئناف مدموجٌ في استعلام الالتقاط نفسه عمداً (لا كنسٌ دوريّ ولا مؤقّت): وسمُ القفل
+ * مشروطٌ بحالةٍ **تتغيّر** (إلغاء الاعتماد)، فمن وسم بلا إعادة تقييمٍ للشرط حوّل «عالقٌ
+ * ظاهرٌ» إلى «مفقودٌ نهائياً» — ولا مسار إعادة طيٍّ يدويّ في المستودع أصلاً. وبمجرّد نجاح
+ * الطيّ يُصفَّر processNote فيخرج الصفّ من هذا الشرط ⇒ لا دوران.
+ *
+ * التكلفة: فرعُ الاستئناف يقرأ processNote وهو **NULL في كل صفٍّ طُوي بنجاح**، فالمقارنة
+ * تسقط فوراً ولا يصل الاستعلام الفرعيّ إلا لصفوفٍ مركونةٍ نادرة.
+ */
+function duePunchesCondition() {
+  return and(
+    isNotNull(hrAttendancePunches.employeeId),
+    or(
+      isNull(hrAttendancePunches.processedAt),
+      and(
+        like(hrAttendancePunches.processNote, `${PAYROLL_LOCK_NOTE_PREFIX}%`),
+        sql`NOT EXISTS (SELECT 1 FROM ${payrollRuns} WHERE ${payrollRuns.period} = DATE_FORMAT(${hrAttendancePunches.punchAt}, '%Y-%m') AND ${payrollRuns.status} IN ('approved','paid'))`,
+      ),
+    ),
+  );
 }
 
 /** طيّ دفعة واحدة (≤٥٠٠٠ بصمة معلَّقة مربوطة). يُعيد days/parked/processedAny للتحكّم بالحلقة. */
-async function foldOneBatch(): Promise<{ days: number; parked: number; processedAny: boolean }> {
+async function foldOneBatch(): Promise<{ days: number; parked: number; transient: number; processedAny: boolean }> {
   const db = requireDb();
   const pending = await db
     .select({
@@ -147,10 +275,10 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
       punchAt: hrAttendancePunches.punchAt,
     })
     .from(hrAttendancePunches)
-    .where(and(isNull(hrAttendancePunches.processedAt), isNotNull(hrAttendancePunches.employeeId)))
+    .where(duePunchesCondition())
     .orderBy(asc(hrAttendancePunches.punchAt))
     .limit(5000);
-  if (pending.length === 0) return { days: 0, parked: 0, processedAny: false };
+  if (pending.length === 0) return { days: 0, parked: 0, transient: 0, processedAny: false };
   const { maxDailyHours, night } = await loadFoldSettings();
 
   // تجميع (موظف × يوم) — punchAt نص "YYYY-MM-DD HH:MM:SS" فاليوم = أول ١٠ خانات.
@@ -165,6 +293,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
 
   let days = 0;
   let parked = 0;
+  let transient = 0;
   for (const g of Array.from(groups.values())) {
     // حارس التصحيح اليدوي: لا نطمس يوماً كتبه المدير (تصحيح/إجازة). نوسمه معالَجاً كي لا يعيد المحاولة.
     const [manual] = await db
@@ -282,29 +411,43 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         .where(inArray(hrAttendancePunches.id, g.ids));
       days++;
     } catch (e) {
-      const note = e instanceof Error ? e.message.slice(0, 200) : "تعذر الطي";
-      if (isTerminalFoldError(note)) {
-        // نهائيّ (منتهي خدمة/غير موجود): يوسَم فلا يعيد المحاولة عبثاً.
+      const rawNote = e instanceof Error ? e.message.slice(0, 200) : "تعذر الطي";
+      let code = classifyFoldError(e);
+      /*
+       * شبكةُ أمانٍ **بنيويّة لا نصّية** لأخطر حالة: صياغة رسالة قفل المسيّر تعيش في
+       * `attendanceService.ts` (ليس ملكية هذه الوحدة)، وأيّ تحرير صياغةٍ هناك كان يُعيد
+       * العطب صامتاً — بصمةٌ «بالانتظار» أبداً + إعادة محاولة كل ١٥ ثانية. فنسأل جدول
+       * المسيّرات مباشرةً. تُغطّي أيضاً السباق: مسيّرٌ اعتُمد بين الحساب والكتابة.
+       */
+      if (code === FOLD_ERROR_CODES.TRANSIENT && (await isPayrollPeriodLocked(g.date.slice(0, 7)))) {
+        code = FOLD_ERROR_CODES.PAYROLL_PERIOD_LOCKED;
+      }
+      if (code !== FOLD_ERROR_CODES.TRANSIENT) {
+        // نهائيّ: يوسَم بملاحظةٍ يقرؤها المدير في شاشة الأجهزة («مركونة» + سببها) فلا يضيع
+        // يومٌ صامتاً ولا تدور الدفعة عبثاً. وملاحظةُ القفل بصيغتها الثابتة هي **مفتاح
+        // الاستئناف** لحظة إلغاء الاعتماد (راجع duePunchesCondition).
+        const note = code === FOLD_ERROR_CODES.PAYROLL_PERIOD_LOCKED ? payrollLockNote(g.date.slice(0, 7)) : rawNote;
         await db
           .update(hrAttendancePunches)
           .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: note })
           .where(inArray(hrAttendancePunches.id, g.ids));
         parked++;
         logger.warn(
-          { errorCode: safeFoldErrorCode(e) },
+          { code, errorCode: safeFoldErrorCode(e) },
           "hrDevices: بصمات مركونة نهائياً",
         );
       } else {
         // عابر (قفل/اتصال DB): لا يوسَم — تُعاد المحاولة في الدورة التالية فلا يضيع يوم.
+        transient++;
         logger.error(
-          { errorCode: safeFoldErrorCode(e) },
+          { code, errorCode: safeFoldErrorCode(e) },
           "hrDevices: خطأ عابر في الطيّ — سيُعاد",
         );
         scheduleFoldRetry();
       }
     }
   }
-  return { days, parked, processedAny: true };
+  return { days, parked, transient, processedAny: true };
 }
 
 /**
@@ -314,6 +457,9 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
 async function runPendingFolds(): Promise<FoldResult> {
   let days = 0;
   let parked = 0;
+  // دورةٌ بلا خطأ عابر واحد = القاعدة سليمة ⇒ يُصفَّر التراجع الأُسّيّ فيعود العطلُ التالي
+  // إلى استجابة الـ١٥ ثانية. بدون التصفير كان أوّل عطلٍ يُبقي كل الأعطال اللاحقة على السقف.
+  let transient = 0;
   do {
     rerunRequested = false;
     let reachedBatchCap = true;
@@ -322,6 +468,7 @@ async function runPendingFolds(): Promise<FoldResult> {
       const r = await foldOneBatch();
       days += r.days;
       parked += r.parked;
+      transient += r.transient;
       // shutdown ينتظر الدفعة التي بدأت فقط؛ لا نحجز مهلة العامل باستنزاف backlog كامل.
       if (!foldRequestsAccepting) return { days, parked };
       // توقّف حين لا يوجد معلَّق أصلاً، أو حين لم يتقدّم شيء (كل المتبقّي عابر الخطأ) لتفادي الدوران.
@@ -334,9 +481,11 @@ async function runPendingFolds(): Promise<FoldResult> {
       // حرّر الدورة الحالية كي تمنح event loop فرصة للإشارة/الإغلاق، ثم دع finally
       // يبدأ continuation مملوكة بالمنسّق. بذلك لا يترك سقف الحماية backlog بلا trigger.
       rerunRequested = true;
+      if (transient === 0) foldRetryStreak = 0;
       return { days, parked };
     }
   } while (foldRequestsAccepting && rerunRequested);
+  if (transient === 0) foldRetryStreak = 0;
   return { days, parked };
 }
 
@@ -392,6 +541,7 @@ export function foldSoon(): void {
 /** يمنع طلبات/retries جديدة وينتظر الطي الجاري قبل إغلاق DB. */
 export async function stopAndDrainAttendanceFolds(): Promise<void> {
   foldRequestsAccepting = false;
+  foldRetryStreak = 0;
   if (retryTimer) {
     clearTimeout(retryTimer);
     retryTimer = null;

@@ -209,8 +209,17 @@ export async function generatePayroll(period: string, actor: Actor) {
     // ساعات الحضور لكل (موظف × يوم) — تُستعمل في نموذج الحضور فقط.
     const dailyAttendance = new Map<number, Map<string, Decimal>>();
     /*
-     * أيامٌ **مفتوحة** (دخولٌ بلا انصراف) لكل موظف. كانت تصل المحرّك بساعاتٍ صفرٍ فيقرأها
-     * غياباً ويدفعها صفراً صامتاً — وهي ليست غياباً بل بصمةٌ ناقصة أو دوامٌ جارٍ (تدقيق ١٧/٨).
+     * أيامٌ **مفتوحة** = ساعاتُها معلومةُ النقص، بوجهين لا وجهٍ واحد (تدقيق ١٧/٨):
+     *
+     * ١) **دخولٌ بلا انصراف وبلا ساعات**: كانت تصل المحرّك بصفرٍ فيقرأها غياباً ويدفعها
+     *    صفراً صامتاً — وهي ليست غياباً بل بصمةٌ ناقصة أو دوامٌ جارٍ.
+     * ٢) **عددُ بصماتٍ فرديّ** (دخول·خروج·دخول بلا خروج): الطيّ يحتسبها **بأزواجها المكتملة
+     *    وحدها** ويوسمها `needsReview`، ولها انصرافٌ مسجَّل (آخر خروجٍ مُزاوَج) فلا يمسكها
+     *    الوجه الأول ⇒ **نصفُ يومٍ مدفوعٌ بصمت**. ودفعُ النصف تخمينٌ كدفع الصفر.
+     *
+     * والقيد على الوسم `needsReview` لا على النصّ وحده مقصود: **التصحيح اليدوي هو الحسم**
+     * (`recordAttendance` يُطفئ الوسم لكل إدخالٍ يدوي) ⇒ يومٌ حسمه المدير لا يعود «مفتوحاً»،
+     * ويومٌ يدويٌّ بدخولٍ بلا انصراف لكن بساعاتٍ موجبة يبقى مدفوعاً كما كان (صفر انحدار).
      */
     const openAttendance = new Map<number, Set<string>>();
     if (attendancePayOn) {
@@ -221,16 +230,22 @@ export async function generatePayroll(period: string, actor: Actor) {
           hours: attendance.hours,
           checkIn: attendance.checkIn,
           checkOut: attendance.checkOut,
+          needsReview: attendance.needsReview,
+          reviewReason: attendance.reviewReason,
         })
         .from(attendance)
         .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE')`);
       for (const r of rows) {
         const k = Number(r.employeeId);
         const ymd = String(r.date).slice(0, 10);
+        const hours = money(r.hours ?? 0);
         const m = dailyAttendance.get(k) ?? new Map<string, Decimal>();
-        m.set(ymd, money(r.hours ?? 0));
+        m.set(ymd, hours);
         dailyAttendance.set(k, m);
-        if (r.checkIn != null && r.checkOut == null) {
+        // ساعاتٌ مجهولة كلياً (دخولٌ بلا انصراف ولا ساعات) أو ناقصةٌ جزئياً (بصمة خروجٍ منسيّة).
+        const unknownHours = r.checkIn != null && r.checkOut == null && hours.lte(0);
+        const missingPunch = !!r.needsReview && String(r.reviewReason ?? "").includes("ينقص تسجيل");
+        if (unknownHours || missingPunch) {
           const o = openAttendance.get(k) ?? new Set<string>();
           o.add(ymd);
           openAttendance.set(k, o);
@@ -331,6 +346,22 @@ export async function generatePayroll(period: string, actor: Actor) {
     });
     const runId = extractInsertId(runRes);
     const attendancePayByEmp = new Map<number, AttendancePayResult>();
+    /*
+     * الموظفون المستبعَدون لبصماتٍ ناقصة (قرار المالك ١٧/٨/٢٦): البصمة الشاردة **تستبعد
+     * صاحبها وحده** ولا تُجمّد مسيّر الشركة كلِّها — كان الحارس يرمي فيتوقّف التوليد للجميع،
+     * فيصير يومٌ واحدٌ ناقصٌ لموظفٍ واحدٍ سبباً في تأخير رواتب المنشأة كلِّها. الباقون
+     * يُصرفون، وهؤلاء تُجمَع أسماؤهم وتواريخهم في نتيجة التوليد ليصحّحها المدير ثمّ يُعيد
+     * التوليد (المسيّر مسودةٌ تُحذَف وتُعاد، لا التزامٌ ماليّ).
+     */
+    const attendanceExcluded: Array<{
+      employeeId: number;
+      employeeName: string;
+      openDays: number;
+      openDates: string[];
+      /** عمولةٌ معتمدة لهذا الشهر لن تُصرف ما دام مستبعَداً — تُسمّى كي لا تضيع بصمت. */
+      pendingCommission: string;
+    }> = [];
+    let itemsInserted = 0;
 
     for (const e of emps) {
       const monthly = e.payType === "monthly";
@@ -394,9 +425,20 @@ export async function generatePayroll(period: string, actor: Actor) {
          * بصماتٌ فعلاً وأجرٌ يُدفع، فليس «بلا جهاز».
          */
         if (
-          Number(pay.payableHours) === 0 &&
+          /*
+           * الفحص على **المكتسَب قبل التعويض** لا على `payableHours`: تعويضُ الشهر القصير
+           * يُضاف إليها، فكان الحارس يعمى في شباط (١٤ ساعةً تعويضاً تجعلها موجبة) ويُصرف
+           * أجرٌ لموظفٍ بلا بصمةٍ واحدة. والنواة نفسها لم تعد تمنح التعويض بلا مستحقٍّ أصلاً.
+           */
+          Number(pay.earnedHours) === 0 &&
           Number(pay.restWorkedHours) === 0 &&
-          pay.absentDays > 0
+          pay.absentDays > 0 &&
+          /*
+           * والجدول الصفريّ صفرُه **مفسَّر** لا مجهول (قرار المالك ١٧/٨): سببُه جدولُ دوامٍ
+           * غير مضبوط لا جهازٌ غير مربوط، ورسالة «اربطه بجهاز البصمة» تُرسل المدير في اتجاهٍ
+           * خاطئ. يُصرف بنداً بملاحظةٍ تسمّي السبب بدل أن يتوقّف مسيّر الشركة كلِّه.
+           */
+          !pay.scheduleMissing
         ) {
           throw new TRPCError({
             code: "PRECONDITION_FAILED",
@@ -406,20 +448,23 @@ export async function generatePayroll(period: string, actor: Actor) {
           });
         }
         /*
-         * حارس اليوم المفتوح (تدقيق ١٧/٨): يومٌ بدخولٍ بلا انصراف ساعاتُه **مجهولة** لا صفر.
-         * كان يمرّ غياباً فيُدفع صفراً صامتاً — وهو بالضبط «دينارٌ يضيع بصمت» الذي يمنعه
-         * المبدأ المالي الحاكم. والفرق بين اليومين أجرُ يومٍ كامل، فالنظام يتوقّف ويسمّي
-         * التواريخ بدل أن يخمّن. الحسم بنافذة «تصحيح» في كشف الموظف ثم إعادة التوليد
-         * (المسيّر مسودةٌ تُعاد، لا التزامٌ ماليّ).
+         * اليوم المفتوح (تدقيق ١٧/٨): يومٌ ساعاتُه **مجهولة أو ناقصة** لا صفر — بصمةُ خروجٍ
+         * منسيّة في أوّل اليوم أو وسطه. دفعُه صفراً (أو نصفاً) «دينارٌ يضيع بصمت» يمنعه
+         * المبدأ المالي الحاكم، والفرق أجرُ يومٍ كامل ⇒ لا يُخمَّن.
+         *
+         * وقرار المالك (١٧/٨/٢٦): **يُستبعَد الموظف وحده** — لا بند له في هذا المسيّر،
+         * وتُسمّى تواريخه في نتيجة التوليد، والباقون يُصرفون طبيعياً. (كان يرمي فيجمّد
+         * مسيّر الشركة كلِّها من أجل بصمةٍ واحدة.)
          */
         if (pay.openDays > 0) {
-          throw new TRPCError({
-            code: "PRECONDITION_FAILED",
-            message:
-              `الموظف «${fullEmployeeName(e as never)}» له ${pay.openDays} يوم بدخولٍ بلا انصراف في ${p} ` +
-              `(${pay.openDates.join("، ")}) — ساعاتها مجهولة لا صفر، ودفعُها صفراً يخصم أجر يومٍ كامل بلا وجه. ` +
-              `صحّح أوقاتها من كشف حضور الموظف ثم أعد التوليد.`,
+          attendanceExcluded.push({
+            employeeId: Number(e.id),
+            employeeName: fullEmployeeName(e as never),
+            openDays: pay.openDays,
+            openDates: pay.openDates,
+            pendingCommission: money(commissionByEmp.get(Number(e.id)) ?? 0).toFixed(2),
           });
+          continue; // لا بند — يُصحَّح يومُه ثم يُعاد التوليد
         }
         attendancePayByEmp.set(Number(e.id), pay);
         gross = round2(money(pay.basePay).plus(allowances));
@@ -516,6 +561,12 @@ export async function generatePayroll(period: string, actor: Actor) {
           const parts = [
             `أجر بالحضور: ${ap.payableHours} من ${ap.scheduledHours} ساعة × ${ap.hourlyRate} د.ع/ساعة`,
           ];
+          /*
+           * الجدول الصفريّ يُسمّى صراحةً (قرار المالك ١٧/٨): بدونه يقرأ المديرُ بنداً بصفر
+           * دينار وصفر ساعة بلا سبب — والسبب جدولُ دوامٍ لم يُضبط، لا غيابُ الموظف ولا خللُ
+           * الجهاز. «لا دينار… ليس له مسار أو تبويب» يبدأ من تسمية السبب.
+           */
+          if (ap.scheduleMissing) parts.push("لا جدول دوام مضبوط — أيام الشهر محسوبة غياباً");
           if (ap.absentDays > 0) parts.push(`غياب ${ap.absentDays} يوم`);
           if (ap.unpaidLeaveDays > 0) parts.push(`إجازة بلا راتب ${ap.unpaidLeaveDays} يوم`);
           if (Number(ap.shortHours) > 0) parts.push(`نقص ${ap.shortHours} ساعة`);
@@ -547,6 +598,22 @@ export async function generatePayroll(period: string, actor: Actor) {
         endOfServiceAccrual: toDbMoney(legal.endOfServiceAccrual),
         net: toDbMoney(net),
       });
+      itemsInserted += 1;
+    }
+
+    /*
+     * لا مسيّر بلا بندٍ واحد: لو استُبعد **كلُّ** الموظفين لبصماتٍ ناقصة، فالمسودّة الفارغة
+     * فخّ — القيدُ الفريد على الشهر يمنع إعادة التوليد حتى تُحذَف يدوياً. الرمي هنا يُرجِع
+     * المعاملة كلَّها (لا رأسَ مسيّرٍ ولا التقاطَ عمولات) ويسمّي مَن يجب تصحيحه.
+     */
+    if (itemsInserted === 0) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          `لا يمكن توليد مسيّر ${p}: استُبعد كلُّ الموظفين لبصماتٍ ناقصة — ` +
+          attendanceExcluded.map((x) => `${x.employeeName} (${x.openDates.join("، ")})`).join(" · ") +
+          `. صحّح الأيام من كشف حضور الموظف ثم أعد التوليد.`,
+      });
     }
 
     await recomputeRunTotals(tx, runId);
@@ -555,6 +622,15 @@ export async function generatePayroll(period: string, actor: Actor) {
     if (commissionRun) {
       await tx.update(commissionRuns).set({ payrollRunId: runId }).where(eq(commissionRuns.id, Number(commissionRun.id)));
     }
-    return runId;
-  }).then((runId) => getRun(runId));
+    return { runId, attendanceExcluded };
+  }).then(async ({ runId, attendanceExcluded }) => {
+    const run = await getRun(runId);
+    /*
+     * `attendanceExcluded` تُرافق نتيجة التوليد لا سجلّاً جانبياً: هي الطريق الوحيد ليعرف
+     * المدير **من لم يُصرف ولماذا** بعد أن صار الاستبعاد فردياً (قرار المالك ١٧/٨/٢٦).
+     * وتحمل `pendingCommission` لأن عمولة المستبعَد المعتمدة تبقى مرتبطةً بهذا المسيّر ولا
+     * تُصرف فيه — تصحيحُ اليوم ثمّ حذفُ المسودّة وإعادةُ التوليد يفكّها ويصرفها.
+     */
+    return run ? { ...run, attendanceExcluded } : run;
+  });
 }
