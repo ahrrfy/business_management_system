@@ -12,10 +12,13 @@
 //       Content-Type: text/html من عمودٍ نصّيّ حرّ = XSS على نطاق المتجر).
 //   ص٥) لوحة الإدارة (`listBanners`) تبقى data URL — المحرّر يعرض الصورة ويعدّلها.
 import { eq } from "drizzle-orm";
+import express from "express";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { bannerImageUrl, decodeDataUrl, imageHash } from "../../imageRoute";
+import { bannerImageUrl, decodeDataUrl, imageHash, imageRouter } from "../../imageRoute";
 import { createBanner, listActiveBanners, listBanners } from "../storeAdmin/bannerService";
 import { truncateTables } from "./__testUtils__";
 
@@ -30,9 +33,23 @@ const JPEG_B64 = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00]).toStrin
 const JPEG_DATA_URL = `data:image/jpeg;base64,${JPEG_B64}`;
 const PNG_DATA_URL = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64")}`;
 
+async function withImageServer<T>(fn: (base: string) => Promise<T>): Promise<T> {
+  const app = express();
+  app.use("/api/img", imageRouter());
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    return await fn(`http://127.0.0.1:${port}`);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 beforeEach(async () => {
   await truncateTables(["storeBanners", "storeSettings", "branches", "users"]);
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+  await db().insert(s.branches).values({ id: 2, name: "مبيعات", code: "SALES", type: "SALES" });
   await db().insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
   // The public banner resource needs a configured active branch, not an open
   // catalog. A closed store is the valid zero-product fixture.
@@ -117,5 +134,40 @@ describe("listActiveBanners — رابط لا base64", () => {
     await createBanner({ title: "للوحة", imageUrl: JPEG_DATA_URL }, 1);
     const [row] = (await listBanners()).filter((x) => x.title === "للوحة");
     expect(row.imageUrl).toBe(JPEG_DATA_URL);
+  });
+});
+
+describe("GET /api/img/banner/:id/:slot — بوابة النشر", () => {
+  it("يخدم البنر المنشور في فرع المتجر", async () => {
+    const banner = await createBanner({ title: "منشور", imageUrl: JPEG_DATA_URL }, 1);
+    await withImageServer(async (base) => {
+      expect((await fetch(`${base}/api/img/banner/${banner.id}/main-0`)).status).toBe(200);
+    });
+  });
+
+  it("لا يخدم بنراً معطلاً أو خارج نافذته أو تابعاً لفرع آخر", async () => {
+    const disabled = await createBanner({ title: "معطل", imageUrl: JPEG_DATA_URL, isActive: false }, 1);
+    const future = await createBanner({ title: "مستقبل", imageUrl: JPEG_DATA_URL, effectiveFrom: "2099-01-01" }, 1);
+    const otherBranch = await createBanner({ title: "فرع آخر", imageUrl: JPEG_DATA_URL, branchId: 2 }, 1);
+    await withImageServer(async (base) => {
+      for (const banner of [disabled, future, otherBranch]) {
+        expect((await fetch(`${base}/api/img/banner/${banner.id}/main-0`)).status).toBe(404);
+      }
+    });
+  });
+
+  it("لا يخدم فتحة صورة معطلة أو مستقبلية داخل بنر منشور", async () => {
+    const disabled = await createBanner({
+      title: "فتحة معطلة",
+      images: [{ url: JPEG_DATA_URL, isActive: false }],
+    }, 1);
+    const future = await createBanner({
+      title: "فتحة مستقبلية",
+      images: [{ url: JPEG_DATA_URL, effectiveFrom: "2099-01-01" }],
+    }, 1);
+    await withImageServer(async (base) => {
+      expect((await fetch(`${base}/api/img/banner/${disabled.id}/main-0`)).status).toBe(404);
+      expect((await fetch(`${base}/api/img/banner/${future.id}/main-0`)).status).toBe(404);
+    });
   });
 });

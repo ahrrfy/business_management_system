@@ -39,6 +39,11 @@ import {
   trpcAwareRateLimitHandler,
 } from "./middleware/trpcError";
 import {
+  hasOverfilledPublicSensitiveBatch,
+  parseCanonicalTrpcProcedures,
+} from "./middleware/publicSensitiveBatch";
+import { publicStorefrontHostBoundary } from "./middleware/publicStorefrontHost";
+import {
   isBackgroundJobRunner,
   isClustered,
 } from "./lib/clusterRole";
@@ -60,6 +65,7 @@ import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
+import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -92,6 +98,10 @@ async function startServer() {
     process.exit(1);
   }
 
+  // لا نُفعّل R2 ضمنياً أثناء بقاء الصور القديمة في MySQL، لكن إذا فُعّل السائق صراحةً
+  // فيجب أن يكون عقده كاملاً قبل فتح منفذ HTTP لا عند أول طلب صورة.
+  assertImageStoreStartupConfiguration();
+
   const isDev = process.env.NODE_ENV === "development";
   // إنتاج آمن افتراضياً: غياب HOST أو الربط العام العرضي يوقف الإقلاع قبل فتح المنفذ.
   // النشر المقصود على LAN/واجهة عامة يتطلب ALLOW_PUBLIC_BIND=1 صراحةً مع جدار ناري.
@@ -112,9 +122,12 @@ async function startServer() {
   assertMobileProductionReadiness();
 
   const app = express();
-  // توحيد حساسية المسار مع Nginx: Express غير حساس للحالة افتراضياً، ما يسمح لمسار
-  // /API/TRPC بتجاوز locations الدقيقة/حدودها ثم الوصول للراوتر نفسه.
+  // يجب ضبطه قبل أول app.use: Express ينشئ الراوتر الداخلي عند أول middleware
+  // ويجمّد قيمة caseSensitive حينها؛ الضبط اللاحق لا يغيّر الراوتر القائم.
   app.set("case sensitive routing", true);
+  // alarabiya.online سطح العملاء فقط؛ لا يكفي تحويل React لأن API يظل قابلاً للوصول مباشرةً.
+  // يُركَّب قبل محللات الجسم وtRPC كي يُرفض API الداخلي مبكراً وبلا عمل قاعدة بيانات.
+  app.use(publicStorefrontHostBoundary);
   const server = createServer(app);
   // trust proxy مشروط: لا نثق برؤوس X-Forwarded-* إلا عند صحّة الإطار:
   //   - HOST=127.0.0.1 ⇒ خلف nginx/reverse-proxy موثوق (وضع الإنتاج على VPS).
@@ -312,6 +325,16 @@ async function startServer() {
     }
   });
 
+  // افحص المسار الخام قبل محددات المعدّل وقبل أن يفكّ tRPC percent-encoding. قبول `%2C` هنا
+  // يجعل دفعة إجراءات تبدو طلباً واحداً للمحدد ثم تتحول إلى batch لاحقاً؛ لذلك أي ترميز أو
+  // slash/حبيبة غير معيارية يُرفض fail-closed ولا يصل إلى أي عمل قاعدة أو عدّاد.
+  app.use("/api/trpc", (req, res, next) => {
+    if (!parseCanonicalTrpcProcedures(req.path || "")) {
+      return res.status(404).json({ error: "non-canonical tRPC path" });
+    }
+    next();
+  });
+
   // حدّ صارم على تسجيل الدخول (حماية من تخمين كلمات المرور).
   // ٦/٧/٢٦: كان ١٠ طلبات/١٥د لكل IP **يَعُدّ الناجح والفاشل معاً** — وكل أجهزة المتجر خلف
   // راوتر واحد = IP عام واحد يتشارك الميزانية، فصباح عمل عادي (عدة أجهزة + جلسات ١٢ ساعة
@@ -471,36 +494,14 @@ async function startServer() {
   // ضمن طلب واحد قبل اصطدامه بحدّ المعدّل. الحدّ التالي للنقاط العامة الحرجة لا يسمح بأكثر من
   // نداء واحد لكلّ طلب HTTP، فحدّ المعدّل القائم يعمل بدقّته الحقيقية بلا تمييع.
   app.use("/api/trpc", (req, res, next) => {
-    const PUBLIC_SENSITIVE = [
-      "auth.login",
-      "auth.twoFactorVerify",
-      "auth.resetPasswordWithToken",
-      "count.auth",
-      "kiosk.deviceLogin",
-      "recruitment.submit",
-      "platformAdmin.login",
-      // أحداث القياس كتابة علنية؛ نمنع حشو عشرات العدادات في دفعة HTTP واحدة.
-      "storefront.trackBanner",
-      "storefront.trackConversion",
-      // تتبّع الطلب: قابل للتعداد (رقم متسلسل) ⇒ نمنع حشو عشرات المحاولات في دفعة واحدة تتجاوز حدّه.
-      "storefront.trackOrder",
-    ];
-    // مسار البَتش يبدأ بـ"/api/trpc/x," مع فاصلة بين أسماء الإجراءات الموحَّدة.
     const path = req.path || "";
-    if (path.includes(",")) {
-      const procs = path.split("/").pop()?.split(",") ?? [];
-      let count = 0;
-      for (const p of procs) {
-        if (PUBLIC_SENSITIVE.some((s) => p.includes(s))) count++;
-      }
-      if (count > 1) {
-        sendTrpcError(res, {
-          httpStatus: 429,
-          code: "TOO_MANY_REQUESTS",
-          message: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة.",
-        });
-        return;
-      }
+    if (hasOverfilledPublicSensitiveBatch(path)) {
+      sendTrpcError(res, {
+        httpStatus: 429,
+        code: "TOO_MANY_REQUESTS",
+        message: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة.",
+      });
+      return;
     }
     next();
   });
@@ -513,16 +514,6 @@ async function startServer() {
   const tenancy = tenancyMiddleware();
 
   app.use("/api/trpc", tenancy);
-  // The adapter otherwise resolves the final segment, so `/x/auth.login` and
-  // `//auth.login` could reach auth while bypassing Nginx's exact abuse-control zone.
-  app.use("/api/trpc", (req, res, next) => {
-    // Inspect the original mounted path before normalization: exactly one leading
-    // slash followed by a single procedure/batch segment is canonical.
-    if (!/^\/[^/]+$/.test(req.path)) {
-      return res.status(404).json({ error: "non-canonical tRPC path" });
-    }
-    next();
-  });
   // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
   // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
   app.use(

@@ -19,6 +19,7 @@ export const NGINX_MANAGED_FILES = Object.freeze(
       "snippets/alroya-cloudflare-realip.conf",
     ],
     ["deploy/nginx-proxy-common.conf", "snippets/alroya-proxy-common.conf"],
+    ["deploy/nginx-spa-location.conf", "snippets/alroya-spa-location.conf"],
     ["deploy/nginx-app-locations.conf", "snippets/alroya-app-locations.conf"],
     ["deploy/nginx-erp.conf", "sites-available/alroya-erp"],
     ["deploy/nginx-public.conf", "sites-available/alroya-public"],

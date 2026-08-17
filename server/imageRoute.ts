@@ -20,12 +20,13 @@
  */
 import { Router } from "express";
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { productImages, products, storeBanners } from "../drizzle/schema";
 import { getSessionContext } from "./auth/session";
 import { getDb } from "./db";
 import { logger } from "./logger";
 import { resolveKioskDevice } from "./services/kioskDeviceService";
+import { inspectStorefrontContext } from "./services/storefrontContextService";
 import type { Request, Response } from "express";
 
 /** سنة كاملة — آمنة لأن الرابط يحمل بصمة المحتوى (تغيّر المحتوى ⇒ تغيّر الرابط). */
@@ -37,6 +38,24 @@ const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/gi
 export interface DecodedImage {
   mime: string;
   bytes: Buffer;
+}
+
+function todayYmdBaghdad(): string {
+  return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * يطابق سياق المتجر العام من دون استيراد storefrontService: ذلك الاستيراد يصنع دورة مع imageRoute.
+ * لا fallback: المتجر نفسه يرفض فرعاً مفقوداً/معطلاً، ومورد الصورة يجب أن يغلق مثله لا أن يكشف
+ * بنرات فرع افتراضي بالخطأ.
+ */
+async function resolvePublicStorefrontBranchId(): Promise<number | null> {
+  const db = getDb();
+  if (!db) return null;
+  const context = await inspectStorefrontContext(db);
+  return context.configured && context.branchActive && context.branchId != null
+    ? context.branchId
+    : null;
 }
 
 /**
@@ -148,8 +167,10 @@ async function kioskViewerAllowed(req: Request): Promise<boolean> {
   return (await resolveKioskDevice(req)) != null;
 }
 
-/** يختار الـdata URL المطلوب من صفّ البنر حسب الفتحة (main-<i> أو mobile). */
-function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUrl: string | null }, slot: string): string | null {
+type BannerImageSlot = { url: string; sortOrder?: number; isActive?: boolean; effectiveFrom?: string | null; effectiveTo?: string | null };
+
+/** يختار الـdata URL المنشور المطلوب من صفّ البنر حسب الفتحة (main-<i> أو mobile). */
+function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUrl: string | null }, slot: string, today: string): string | null {
   if (slot === "mobile") return row.mobileImageUrl;
   const m = /^main-(\d+)$/.exec(slot);
   if (!m) return null;
@@ -159,7 +180,11 @@ function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUr
   // مُهيّأة فالصورة الأحادية القديمة (imageUrl) عند الفهرس 0 حصراً.
   if (list.length) {
     const sorted = [...list]
-      .filter((x): x is { url: string; sortOrder?: number } => !!x && typeof (x as any).url === "string")
+      .filter((x): x is BannerImageSlot => {
+        if (!x || typeof x !== "object" || typeof (x as BannerImageSlot).url !== "string") return false;
+        const image = x as BannerImageSlot;
+        return image.isActive !== false && (!image.effectiveFrom || image.effectiveFrom <= today) && (!image.effectiveTo || image.effectiveTo >= today);
+      })
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     return sorted[idx]?.url ?? null;
   }
@@ -176,16 +201,25 @@ export function imageRouter(): Router {
     if (!db) return res.status(503).end();
 
     try {
+      const today = todayYmdBaghdad();
+      const branchId = await resolvePublicStorefrontBranchId();
+      if (branchId == null) return res.status(404).end();
       const row = (
         await db
           .select({ imageUrl: storeBanners.imageUrl, images: storeBanners.images, mobileImageUrl: storeBanners.mobileImageUrl })
           .from(storeBanners)
-          .where(eq(storeBanners.id, id))
+          .where(and(
+            eq(storeBanners.id, id),
+            eq(storeBanners.isActive, true),
+            or(isNull(storeBanners.effectiveFrom), sql`${storeBanners.effectiveFrom} <= ${today}`)!,
+            or(isNull(storeBanners.effectiveTo), sql`${storeBanners.effectiveTo} >= ${today}`)!,
+            or(isNull(storeBanners.branchId), eq(storeBanners.branchId, branchId))!,
+          ))
           .limit(1)
       )[0];
       if (!row) return res.status(404).end();
 
-      return sendImage(req, res, pickSlot(row, String(req.params.slot)), "public");
+      return sendImage(req, res, pickSlot(row, String(req.params.slot), today), "public");
     } catch (e) {
       logger.error({ err: e, bannerId: id }, "img: banner fetch failed");
       return res.status(500).end();
@@ -195,7 +229,8 @@ export function imageRouter(): Router {
   /**
    * صورة منتج — النقطة **علنية ومجهولة الهوية**، لذا الشرط أدناه ليس تجميلاً:
    *
-   * **البوّابة = رؤية المتجر على مستوى المنتج بالضبط** (`isActive && !isService && showInStore`)
+   * **البوّابة = رؤية المتجر على مستوى المنتج والصورة بالضبط**
+   * (`isActive && !isService && showInStore && reviewStatus=APPROVED`)
    * ⇒ صفر توسيعٍ لسطح الكشف: لا تُخدَم إلا صورةُ منتجٍ يعرضه `storefront` أصلاً لكل زائر.
    * `showInStore=false` قرارُ إخفاءٍ صريحٌ من المالك (لوحة hPanel) ⇒ تخطّيه هنا يجعل تخمين
    * عددٍ صحيحٍ كافياً لسحب صور ما أخفاه عمداً.
@@ -226,9 +261,11 @@ export function imageRouter(): Router {
           .where(
             and(
               eq(productImages.id, id),
+              eq(productImages.reviewStatus, "APPROVED"),
               eq(products.isActive, true),
               eq(products.isService, false),
-              eq(products.showInStore, true)
+              eq(products.showInStore, true),
+              eq(productImages.reviewStatus, "APPROVED")
             )
           )
           .limit(1)
@@ -265,7 +302,12 @@ export function imageRouter(): Router {
           .select({ url: productImages.url })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))
-          .where(and(eq(productImages.id, id), eq(products.isActive, true), eq(products.isService, false)))
+          .where(and(
+            eq(productImages.id, id),
+            eq(productImages.reviewStatus, "APPROVED"),
+            eq(products.isActive, true),
+            eq(products.isService, false),
+          ))
           .limit(1)
       )[0];
       if (!row) return res.status(404).end();

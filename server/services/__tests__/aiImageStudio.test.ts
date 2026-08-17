@@ -104,6 +104,24 @@ describe("generateStudioImage (fetch مُموَّه)", () => {
     await expect(generateStudioImage({ apiKey: "K", prompt: "P", imageBase64: "X" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "NETWORK" });
   });
 
+  it("مهلة المزود ⇒ TIMEOUT ولا يبقى النداء معلّقاً", async () => {
+    const fakeFetch: typeof fetch = async (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("timed out", "TimeoutError")), { once: true });
+      });
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, timeoutMs: 1 })).rejects.toMatchObject({ kind: "TIMEOUT" });
+  });
+
+  it("JSON أكبر من الحد ⇒ RESPONSE_TOO_LARGE قبل تحليله", async () => {
+    const fakeFetch: typeof fetch = async () => new Response("{\"x\":\"123\"}", { status: 200, headers: { "content-length": "11" } });
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch, maxResponseBytes: 2 })).rejects.toMatchObject({ kind: "RESPONSE_TOO_LARGE" });
+  });
+
+  it("نوع نتيجة غير صورة ⇒ SERVICE ولا يتحول إلى data URL قابل للعرض", async () => {
+    const fakeFetch: typeof fetch = async () => imageResponse("QUJD", "text/html");
+    await expect(generateStudioImage({ apiKey: "K", prompt: "P" }, { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "SERVICE" });
+  });
+
   it("promptFeedback.blockReason ⇒ BLOCKED", async () => {
     const fakeFetch: typeof fetch = async () =>
       new Response(JSON.stringify({ promptFeedback: { blockReason: "SAFETY" }, candidates: [] }), { status: 200, headers: { "content-type": "application/json" } });

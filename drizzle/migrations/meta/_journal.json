@@ -1380,6 +1380,13 @@
       "when": 1788052248000,
       "tag": "0197_year_end_reopen_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 198,
+      "version": "5",
+      "when": 1788052249000,
+      "tag": "0198_image_studio_usage_guard",
+      "breakpoints": true
     }
   ]
 }
