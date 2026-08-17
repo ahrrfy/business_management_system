@@ -4,6 +4,35 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { contentHash, extForMime, objectKeyFor, shortHash } from "../contentAddress";
 import { FsImageStore } from "../fsStore";
+import { assertImageStoreStartupConfiguration } from "../index";
+
+describe("ImageStore startup contract", () => {
+  const validR2 = {
+    NODE_ENV: "production",
+    IMAGE_STORE_DRIVER: "r2",
+    R2_ACCOUNT_ID: "a".repeat(32),
+    R2_IMAGE_BUCKET: "erp-private-media",
+    R2_ACCESS_KEY_ID: "access",
+    R2_SECRET_ACCESS_KEY: "secret",
+  } satisfies NodeJS.ProcessEnv;
+
+  it("يسمح ببقاء التخزين القديم ما دام سائق R2 غير مفعّل صراحةً", () => {
+    expect(() => assertImageStoreStartupConfiguration({ NODE_ENV: "production" })).not.toThrow();
+  });
+
+  it("يفشل عند الإقلاع إذا فُعّل R2 باعتماد ناقص ويقبل العقد الكامل", () => {
+    expect(() => assertImageStoreStartupConfiguration({ NODE_ENV: "production", IMAGE_STORE_DRIVER: "r2" }))
+      .toThrow(/R2_ACCOUNT_ID/);
+    expect(() => assertImageStoreStartupConfiguration(validR2)).not.toThrow();
+  });
+
+  it("يرفض fs والسائق المجهول في الإنتاج", () => {
+    expect(() => assertImageStoreStartupConfiguration({ NODE_ENV: "production", IMAGE_STORE_DRIVER: "fs" }))
+      .toThrow(/محظور في الإنتاج/);
+    expect(() => assertImageStoreStartupConfiguration({ NODE_ENV: "production", IMAGE_STORE_DRIVER: "unknown" }))
+      .toThrow(/fs أو r2/);
+  });
+});
 
 describe("contentAddress", () => {
   it("contentHash حتميّ وبطول ٦٤ hex ويتغيّر بتغيّر البايتات", () => {

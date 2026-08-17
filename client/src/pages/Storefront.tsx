@@ -11,7 +11,7 @@
  *   • هيرو + شريط ثقة + شارات خصم — سمات المتجر الناجح. مقصور على المتجر (لا يمسّ نظام الموظفين).
  *   • متجاوب أولوية-الجوال، ثيم فاتح/داكن، خطّ Cairo (ودود كـNunito الموصى به).
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import React, { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "wouter";
 import {
   AlertTriangle,
@@ -295,6 +295,12 @@ export type StorefrontCartProduct = {
   variantLabel?: string;
 };
 
+/** اختيارٌ واحد من نافذة المنتج. تبقى الأسعار معلومات عرض فقط؛ الخادم يعيد التسعير عند إنشاء الطلب. */
+export type StorefrontCartSelection = StorefrontCartProduct & {
+  effectivePrice: string;
+  quantity: number;
+};
+
 export function addStorefrontCartLine(
   current: Map<number, CartLine>,
   product: StorefrontCartProduct,
@@ -314,6 +320,28 @@ export function addStorefrontCartLine(
     variantLabel: product.variantLabel,
     qty: (existing?.qty ?? 0) + 1,
   });
+  return next;
+}
+
+/**
+ * إضافة عدة ألوان/متغيرات بضغطة واحدة مع دمج كل وحدة بيع في سطر سلتها القائم.
+ * لا نثق بالكمية أو السعر هنا عند الدفع: createOrder يعيد التحقق من المخزون والتسعير خادمياً.
+ */
+export function addStorefrontCartLines(
+  current: Map<number, CartLine>,
+  selections: StorefrontCartSelection[],
+): Map<number, CartLine> {
+  let next = new Map(current);
+  for (const selection of selections) {
+    if (!Number.isInteger(selection.quantity) || selection.quantity <= 0) continue;
+    const line = addStorefrontCartLine(next, selection, selection.effectivePrice);
+    const added = line.get(selection.productUnitId)!;
+    line.set(selection.productUnitId, {
+      ...added,
+      qty: Math.min((next.get(selection.productUnitId)?.qty ?? 0) + selection.quantity, 999),
+    });
+    next = line;
+  }
   return next;
 }
 
@@ -370,6 +398,56 @@ function ProductImage({
     );
   }
   return <img src={url} alt={alt} loading="lazy" className={`store-product-image object-cover ${className ?? ""}`} />;
+}
+
+/**
+ * يعرض صور مكوّنات البكج بالمرجع من دون إنشاء نسخ جديدة منها.
+ * الصورة التسويقية الخاصة بالبكج تبقى صاحبة الأولوية لأن الخادم لا يعيد
+ * bundleImageUrls عند وجودها.
+ */
+export function BundleMedia({
+  urls,
+  fallbackUrl,
+  alt,
+  className,
+  showFallbackLabel = false,
+}: {
+  urls?: string[];
+  fallbackUrl: string | null;
+  alt: string;
+  className?: string;
+  showFallbackLabel?: boolean;
+}) {
+  const componentImages = (urls ?? []).filter(Boolean).slice(0, 4);
+  if (componentImages.length <= 1) {
+    return (
+      <ProductImage
+        url={fallbackUrl ?? componentImages[0] ?? null}
+        alt={alt}
+        className={className}
+        showFallbackLabel={showFallbackLabel}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={`store-product-media grid grid-cols-2 grid-rows-2 overflow-hidden bg-slate-100 dark:bg-slate-800 ${className ?? ""}`}
+      role="img"
+      aria-label={`صور مكوّنات البكج: ${alt}`}
+    >
+      {componentImages.map((url, index) => (
+        <img
+          key={`${url}-${index}`}
+          src={url}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="size-full min-h-0 min-w-0 object-cover"
+        />
+      ))}
+    </div>
+  );
 }
 
 /** «تسوّق حسب القسم» — بطاقات فئات بصرية تقود التصفّح (نمط تجاريّ عالميّ). */
@@ -435,6 +513,7 @@ type RowProduct = {
   price: string | null;
   salePrice?: string | null;
   imageUrl: string | null;
+  bundleImageUrls?: string[];
   unitName: string;
   inStock?: boolean;
 };
@@ -444,7 +523,7 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
   return (
     <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
       <button onClick={onSelect} className="relative block text-right">
-        <ProductImage url={p.imageUrl} alt={p.productName} className="store-product-media aspect-square w-full" />
+        <BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
         {onSale && pct > 0 && (
           <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
         )}
@@ -638,6 +717,9 @@ export default function Storefront() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedStoreUnitId, setSelectedStoreUnitId] = useState<number | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<number | null>(null);
+  // اختيار متعدد للمتغيرات في ورقة المنتج. المفتاح هو وحدة البيع، لا معرّف المتغير،
+  // كي لا تختلط وحدات مختلفة للون نفسه داخل السلة أو عند التسعير الخادمي.
+  const [variantQuantities, setVariantQuantities] = useState<Map<number, number>>(new Map());
   const [panel, setPanel] = useState<Panel>(null);
   const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
 
@@ -726,17 +808,20 @@ export default function Storefront() {
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const bannersQ = trpc.storefront.banners.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const settingsQ = trpc.storefront.settings.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
-  // يطبّق الخادم مرشح التوفر قبل limit حتى لا تتحول الصفحة إلى نتيجة ناقصة بعد ترشيحٍ محلي.
-  // إبقاء الترشيح الدفاعي أدناه يحمي الواجهة أثناء ترقية عقد API تدريجياً.
+  // يطبّق الخادم مرشح التوفر قبل حدّ الصفحة. useInfiniteQuery يمرّر nextCursor فقط عند
+  // «تحميل المزيد»، فتصل كل المنتجات المنشورة بلا سقف 120 صامت ولا تكرار بطاقات.
   const catalogInput = {
     categoryId,
     search: search || undefined,
-    limit: 120,
+    limit: 48,
     availability,
   } as const;
-  const catalogQ = trpc.storefront.catalog.useQuery(
+  const catalogQ = trpc.storefront.catalog.useInfiniteQuery(
     catalogInput,
-    { placeholderData: (prev) => prev }
+    {
+      getNextPageParam: (last) => last.nextCursor ?? undefined,
+      placeholderData: (prev) => prev,
+    },
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const labelQ = trpc.storefront.labelSummary.useQuery(labelParams ?? { orderNumber: "-", token: "-" }, { enabled: labelParams != null, retry: false });
@@ -870,13 +955,16 @@ export default function Storefront() {
   useEffect(() => {
     setSelectedStoreUnitId(null);
     setSelectedVariantId(null);
+    setVariantQuantities(new Map());
   }, [selectedId]);
 
   useEffect(() => {
     if (labelQ.data) setPanel("label");
   }, [labelQ.data]);
 
-  const items = catalogQ.data?.items ?? [];
+  const items = useMemo(() => (catalogQ.data?.pages ?? []).flatMap((page) => page.items), [catalogQ.data]);
+  // فشل صفحة لاحقة لا يمحو ما رآه الزائر بالفعل؛ حالة الخطأ الكاملة تخص الصفحة الأولى فقط.
+  const catalogInitialError = catalogQ.isError && items.length === 0;
   const cats = categoriesQ.data ?? [];
   const offers = offersQ.data ?? [];
   const banners = bannersQ.data ?? [];
@@ -884,7 +972,7 @@ export default function Storefront() {
     settings: settingsQ.isError,
     categories: categoriesQ.isError,
     offers: offersQ.isError,
-    catalog: catalogQ.isError,
+    catalog: catalogInitialError,
   });
   const supportingFailures = sourceFailures.filter(
     (source) => source !== "catalog",
@@ -920,7 +1008,7 @@ export default function Storefront() {
     });
   }, [availability, brand, items, priceFilter, sort]);
   const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED";
-  // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الطلب الأساسي
+  // catalog يُرشّح البحث والفئة خادمياً، بينما السعر/الماركة عميلان. غياب العناصر من الصفحة الأولى
   // يعني كتالوجاً فارغاً حقاً؛ وأي غياب مع بحث/فئة/تنقيح يعني صفراً بسبب التصفية.
   const isEmptyCatalog = items.length === 0 && !search && categoryId == null;
 
@@ -1003,6 +1091,41 @@ export default function Storefront() {
     trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((prev) => addStorefrontCartLine(prev, p, eff));
+  }
+  function setVariantQuantity(productUnitId: number, quantity: number) {
+    setVariantQuantities((previous) => {
+      const next = new Map(previous);
+      if (quantity <= 0) next.delete(productUnitId);
+      else next.set(productUnitId, Math.min(Math.trunc(quantity), 999));
+      return next;
+    });
+  }
+  function addSelectedVariants() {
+    if (!detailQ.data) return;
+    const selections: StorefrontCartSelection[] = [];
+    for (const variant of detailQ.data.variants ?? []) {
+      // كل صف يختار وحدة البيع المتوفرة الأصغر تلقائياً؛ منتج القلم المعتاد يملك وحدة واحدة.
+      // تبقى واجهة وحدة البيع المفردة أدناه للمنتجات التي تُباع بدرزن/كرتون.
+      const unit = variant.units.find((candidate) => candidate.inStock);
+      const quantity = unit ? variantQuantities.get(unit.productUnitId) ?? 0 : 0;
+      const effectivePrice = unit?.salePrice ?? unit?.price;
+      if (!unit || !effectivePrice || quantity <= 0) continue;
+      selections.push({
+        productUnitId: unit.productUnitId,
+        productId: detailQ.data.productId,
+        productName: detailQ.data.productName,
+        imageUrl: detailQ.data.imageUrl,
+        unitName: unit.unitName,
+        variantLabel: variant.label,
+        effectivePrice,
+        quantity,
+      });
+    }
+    if (selections.length === 0) return;
+    trackConversion.mutate({ event: "ADD_TO_CART" });
+    recordStorefrontCartChange();
+    setCart((previous) => addStorefrontCartLines(previous, selections));
+    setSelectedId(null);
   }
   function setQty(productUnitId: number, qty: number) {
     recordStorefrontCartChange();
@@ -1370,7 +1493,7 @@ export default function Storefront() {
             <Loader2 aria-hidden className="size-8 animate-spin text-emerald-500" />
             <p className="mt-3 text-sm">جارٍ تحميل المنتجات…</p>
           </div>
-        ) : catalogQ.isError ? (
+        ) : catalogInitialError ? (
           <div className="flex flex-col items-center justify-center py-24 text-center" role="alert">
             <AlertTriangle aria-hidden className="size-10 text-[var(--sem-warn)]" />
             <p className="mt-3 text-sm font-bold text-slate-700 dark:text-slate-200">تعذّر تحميل المنتجات</p>
@@ -1405,7 +1528,8 @@ export default function Storefront() {
             )}
           </div>
         ) : (
-          <div id="store-results" className="scroll-mt-40 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+          <>
+            <div id="store-results" className="scroll-mt-40 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
             {filteredItems.flatMap((p, idx) => {
               const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
               const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
@@ -1417,7 +1541,13 @@ export default function Storefront() {
                   }`}
                 >
                   <button onClick={() => setSelectedId(p.productId)} className="relative block text-right">
-                    <ProductImage url={p.imageUrl} alt={p.productName} showFallbackLabel className="store-product-media aspect-square w-full" />
+                    <BundleMedia
+                      urls={p.bundleImageUrls}
+                      fallbackUrl={p.imageUrl}
+                      alt={p.productName}
+                      showFallbackLabel
+                      className="aspect-square w-full"
+                    />
                     {onSale && pct > 0 && (
                       <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">
                         −{pct}٪
@@ -1481,7 +1611,26 @@ export default function Storefront() {
               }
               return nodes;
             })}
-          </div>
+            </div>
+            {catalogQ.hasNextPage && (
+              <div className="mt-6 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => void catalogQ.fetchNextPage()}
+                  disabled={catalogQ.isFetchingNextPage}
+                  className="store-primary-action flex min-w-40 items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold text-white transition motion-safe:active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {catalogQ.isFetchingNextPage && <Loader2 aria-hidden className="size-4 animate-spin" />}
+                  {catalogQ.isFetchingNextPage ? "جارٍ تحميل المزيد…" : "تحميل المزيد"}
+                </button>
+              </div>
+            )}
+            {catalogQ.isError && (
+              <p className="mt-3 text-center text-xs font-medium text-[var(--sem-neg)]" role="alert">
+                تعذّر تحميل الصفحة التالية. اضغط «تحميل المزيد» لإعادة المحاولة.
+              </p>
+            )}
+          </>
         )}
       </main>
 
@@ -1554,8 +1703,8 @@ export default function Storefront() {
 
       {/* تفاصيل المنتج (ورقة سفلية) */}
       {selectedId != null && (
-        <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/50 backdrop-blur-sm" onClick={() => setSelectedId(null)}>
-          <div className="w-full max-w-2xl rounded-t-3xl bg-white p-4 pb-8 shadow-2xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/50 backdrop-blur-sm sm:items-center sm:p-4" onClick={() => setSelectedId(null)}>
+          <div className="max-h-[100dvh] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-4 pb-[calc(2rem+env(safe-area-inset-bottom))] shadow-2xl dark:bg-slate-900 sm:max-h-[calc(100dvh-2rem)] sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-extrabold text-slate-500 dark:text-slate-400">تفاصيل المنتج</h2>
               <button onClick={() => setSelectedId(null)} aria-label="إغلاق" className="flex size-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-400">
@@ -1569,38 +1718,63 @@ export default function Storefront() {
             ) : detailQ.data ? (
               <div>
                 <div className="flex gap-4">
-                  <ProductImage url={detailQ.data.imageUrl} alt={detailQ.data.productName} className="store-product-media size-28 shrink-0 rounded-2xl" />
+                  <BundleMedia
+                    urls={detailQ.data.bundleImageUrls}
+                    fallbackUrl={detailQ.data.imageUrl}
+                    alt={detailQ.data.productName}
+                    className="size-28 shrink-0 rounded-2xl"
+                  />
                   <div className="min-w-0 flex-1">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     <p className="mt-0.5 text-xs text-slate-500">الوحدة: {detailUnit?.unitName ?? detailQ.data.unitName}</p>
                     {(detailQ.data.variants?.length ?? 0) > 1 && (
-                      <div className="mt-3" aria-label="اختر اللون أو القياس المطلوب">
-                        <p className="mb-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر اللون / القياس</p>
-                        <div className="flex flex-wrap gap-1.5">
+                      <div className="mt-3" aria-label="اختر كميات الألوان أو المقاسات المطلوبة">
+                        <p className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر الكمية من كل لون / قياس</p>
+                        <p className="mb-2 text-[11px] text-slate-500">يمكنك إضافة عدة ألوان معاً بضغطة واحدة.</p>
+                        <div className="space-y-1.5">
                           {detailQ.data.variants!.map((variant) => {
-                            const selected = (detailVariant?.variantId ?? detailQ.data!.variantId) === variant.variantId;
+                            const unit = variant.units.find((candidate) => candidate.inStock);
+                            const quantity = unit ? variantQuantities.get(unit.productUnitId) ?? 0 : 0;
+                            const stockLimit = unit?.stockLeft == null ? 999 : Math.min(Math.floor(unit.stockLeft), 999);
                             return (
-                              <button
+                              <div
                                 key={variant.variantId}
-                                type="button"
-                                disabled={!variant.inStock}
-                                onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(null); }}
-                                className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-                                  selected ? "border-[var(--sem-pos)] bg-[var(--sem-pos)] text-white" : "border-slate-200 text-slate-700 hover:border-[var(--sem-pos)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:text-slate-200"
+                                className={`flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 ${
+                                  unit ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800" : "border-slate-100 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-900"
                                 }`}
                               >
-                                {variant.colorHex && <span className="size-3 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
-                                <span>{variant.label}</span>
-                                {!variant.inStock && <span className="text-[10px]">نفد</span>}
-                              </button>
+                                <div className="flex min-w-0 items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
+                                  {variant.colorHex && <span className="size-3 shrink-0 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
+                                  <span className="truncate">{variant.label}</span>
+                                  {unit && variant.units.length > 1 && <span className="shrink-0 text-[10px] font-medium text-slate-400">{unit.unitName}</span>}
+                                  {!unit && <span className="shrink-0 text-[10px] text-stock-out">نفد</span>}
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <button
+                                    type="button"
+                                    aria-label={`إنقاص كمية ${variant.label}`}
+                                    disabled={!unit || quantity === 0}
+                                    onClick={() => unit && setVariantQuantity(unit.productUnitId, quantity - 1)}
+                                    className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"
+                                  ><Minus aria-hidden className="size-3.5" /></button>
+                                  <span className="w-5 text-center text-sm font-extrabold tabular-nums">{quantity}</span>
+                                  <button
+                                    type="button"
+                                    aria-label={`زيادة كمية ${variant.label}`}
+                                    disabled={!unit || quantity >= stockLimit}
+                                    onClick={() => unit && setVariantQuantity(unit.productUnitId, quantity + 1)}
+                                    className="flex size-7 items-center justify-center rounded-full bg-[var(--sem-pos)] text-white disabled:cursor-not-allowed disabled:opacity-40"
+                                  ><Plus aria-hidden className="size-3.5" /></button>
+                                </div>
+                              </div>
                             );
                           })}
                         </div>
                       </div>
                     )}
-                    {(detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 1 && (
+                    {(detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 1 && (
                       <div className="mt-2 flex flex-wrap gap-1.5" aria-label="اختر وحدة البيع">
                         {(detailVariant?.units ?? detailQ.data.storeUnits ?? []).map((unit) => {
                           const selected = (detailUnit?.productUnitId ?? detailQ.data!.productUnitId) === unit.productUnitId;
@@ -1654,14 +1828,21 @@ export default function Storefront() {
                 </div>
                 <button
                   onClick={() => {
-                    if (detailQ.data && detailUnit) addToCart({ ...detailQ.data, ...detailUnit, variantLabel: detailVariant?.label });
-                    setSelectedId(null);
+                    if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants();
+                    else {
+                      if (detailQ.data && detailUnit) addToCart({ ...detailQ.data, ...detailUnit, variantLabel: detailVariant?.label });
+                      setSelectedId(null);
+                    }
                   }}
-                  disabled={!detailUnit?.inStock || detailUnit.price == null}
+                  disabled={(detailQ.data?.variants?.length ?? 0) > 1
+                    ? !Array.from(variantQuantities.values()).some((quantity) => quantity > 0)
+                    : !detailUnit?.inStock || detailUnit.price == null}
                   className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                 >
                   <Plus aria-hidden className="size-4" />
-                  {detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
+                  {(detailQ.data?.variants?.length ?? 0) > 1
+                    ? "أضف الاختيارات إلى السلة"
+                    : detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
                 </button>
 
                 {/* محتويات البكج */}

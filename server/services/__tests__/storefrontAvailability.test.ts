@@ -141,6 +141,44 @@ describe("storefront availability", () => {
     expect((await storefrontCatalog({ branchId: 1, limit: 2 })).items.map((item) => item.productId)).toEqual([1, 5]);
   });
 
+  it("يعيد الصفحات كلها بمؤشر استكمال بلا تكرار أو اقتطاع صامت", async () => {
+    const d = db();
+    await d.insert(s.products).values([
+      { id: 4, name: "Second catalog item", categoryId: 1, showInStore: true },
+      { id: 5, name: "Third catalog item", categoryId: 1, showInStore: true },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 4, productId: 4, sku: "CATALOG-2", costPrice: "1.00" },
+      { id: 5, productId: 5, sku: "CATALOG-3", costPrice: "1.00" },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 4, variantId: 4, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
+      { id: 5, variantId: 5, unitName: "piece", isBaseUnit: true, isStoreSaleUnit: true },
+    ]);
+    await d.insert(s.productPrices).values([
+      { productUnitId: 4, priceTier: "RETAIL", price: "1000.00" },
+      { productUnitId: 5, priceTier: "RETAIL", price: "1000.00" },
+    ]);
+    await d.insert(s.branchStock).values([
+      { variantId: 4, branchId: 1, quantity: 3 },
+      { variantId: 5, branchId: 1, quantity: 3 },
+    ]);
+
+    const first = await storefrontCatalog({ branchId: 1, limit: 2 });
+    expect(first.items).toHaveLength(2);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextCursor).toBe(first.items[1]?.productId);
+
+    const second = await storefrontCatalog({ branchId: 1, limit: 2, cursor: first.nextCursor });
+    expect(second.hasMore).toBe(false);
+    expect(second.nextCursor).toBeNull();
+    expect(second.items).toHaveLength(1);
+
+    const allIds = [...first.items, ...second.items].map((item) => item.productId);
+    expect(new Set(allIds).size).toBe(3);
+    expect([...allIds].sort((a, b) => a - b)).toEqual([1, 4, 5]);
+  });
+
   it("يختار بطاقة variant×unit حتمياً عند تعادل التوفّر والمعامل", async () => {
     const d = db();
     await d.insert(s.productVariants).values({ id: 9, productId: 1, sku: "AVAILABLE-SECOND", color: "أزرق", costPrice: "1.00" });

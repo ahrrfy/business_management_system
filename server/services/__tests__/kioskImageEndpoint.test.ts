@@ -55,7 +55,13 @@ async function kioskDeviceCookie(branchId = 1): Promise<string> {
   return `${KIOSK_COOKIE_NAME}=${token}`;
 }
 
-async function seedProduct(opts: { productId: number; showInStore?: boolean; isActive?: boolean; isService?: boolean }): Promise<number> {
+async function seedProduct(opts: {
+  productId: number;
+  showInStore?: boolean;
+  isActive?: boolean;
+  isService?: boolean;
+  reviewStatus?: "APPROVED" | "PENDING_REVIEW" | "REJECTED";
+}): Promise<number> {
   const d = db();
   const id = opts.productId;
   await d.insert(s.products).values({
@@ -69,7 +75,13 @@ async function seedProduct(opts: { productId: number; showInStore?: boolean; isA
   await d.insert(s.productUnits).values({ id, variantId: id, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isActive: true });
   await d.insert(s.productPrices).values({ productUnitId: id, priceTier: "RETAIL", price: "1000" });
   await d.insert(s.branchStock).values({ variantId: id, branchId: 1, quantity: 5 });
-  await d.insert(s.productImages).values({ id, productId: id, url: JPEG_DATA_URL, isPrimary: true });
+  await d.insert(s.productImages).values({
+    id,
+    productId: id,
+    url: JPEG_DATA_URL,
+    isPrimary: true,
+    reviewStatus: opts.reviewStatus ?? "APPROVED",
+  });
   return id;
 }
 
@@ -134,6 +146,18 @@ describe("GET /api/img/kiosk-product/:id — البوّابة تختلف عن ا
       expect((await fetch(`${base}/api/img/kiosk-product/${service}`, { headers: { cookie } })).status).toBe(404);
     });
   });
+
+  it.each(["PENDING_REVIEW", "REJECTED"] as const)(
+    "🔒 صورة %s ⇒ 404 في الكشك والعلن حتى مع معرفة المعرّف",
+    async (reviewStatus) => {
+      const id = await seedProduct({ productId: reviewStatus === "PENDING_REVIEW" ? 61 : 62, reviewStatus });
+      const cookie = await kioskDeviceCookie();
+      await withServer(async (base) => {
+        expect((await fetch(`${base}/api/img/kiosk-product/${id}`, { headers: { cookie } })).status).toBe(404);
+        expect((await fetch(`${base}/api/img/product/${id}`)).status).toBe(404);
+      });
+    },
+  );
 });
 
 describe("GET /api/img/kiosk-product/:id — قابلية التخبئة", () => {
@@ -216,6 +240,14 @@ describe("kioskService — الردّ يحمل روابط لا base64", () => {
       expect(r.imageUrl).not.toContain("base64");
     }
     expect(JSON.stringify(rows)).not.toContain("base64");
+  });
+
+  it("لا يختار صورة معلّقة أو مرفوضة للبنر حتى إن كانت رئيسية", async () => {
+    await seedProduct({ productId: 13, reviewStatus: "PENDING_REVIEW" });
+    await seedProduct({ productId: 14, reviewStatus: "REJECTED" });
+    const rows = await kioskBanner(1);
+    expect(rows.find((row) => row.productId === 13)?.imageUrl).toBeNull();
+    expect(rows.find((row) => row.productId === 14)?.imageUrl).toBeNull();
   });
 
   /** درس #207: تحويل أيّ قيمة ليست data URL إلى null ⇒ صورةٌ تعمل تختفي بصمت. */

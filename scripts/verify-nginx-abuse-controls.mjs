@@ -92,14 +92,21 @@ export function verifyNginxConfiguration(input) {
     ["internal", internalSite, /server_name\s+srv1548487\.hstgr\.cloud;/],
     ["public", publicSite, /server_name\s+alarabiya\.online\s+www\.alarabiya\.online;/],
   ];
+  const appLocations = input.appLocations;
   for (const [name, site, serverName] of sites) {
     requireMatch(errors, site, serverName, `${name} vhost has the wrong server_name`);
     requireMatch(errors, site, /include\s+snippets\/alroya-cloudflare-realip\.conf;/, `${name} vhost is missing Cloudflare real-IP`);
     requireMatch(errors, site, /include\s+snippets\/alroya-proxy-secret\.conf;/, `${name} vhost is missing the shared live secret`);
-    requireMatch(errors, site, /include\s+snippets\/alroya-app-locations\.conf;/, `${name} vhost is missing shared application locations`);
     if (/CHANGE_ME_INTERNAL_PROXY_SECRET/.test(site)) {
       errors.push(`${name} vhost embeds the placeholder secret instead of the protected snippet`);
     }
+  }
+
+  requireMatch(errors, internalSite, /include\s+snippets\/alroya-app-locations\.conf;/, "internal vhost is missing full application locations");
+  requireMatch(errors, appLocations, /include\s+snippets\/alroya-spa-location\.conf;/, "full application locations are missing the shared SPA location");
+  requireMatch(errors, publicSite, /include\s+snippets\/alroya-spa-location\.conf;/, "public vhost is missing the shared SPA location");
+  if (/include\s+snippets\/alroya-app-locations\.conf;/.test(publicSite)) {
+    errors.push("public vhost must not include full application locations because they contain generic /api/");
   }
 
   requireMatch(errors, proxySecretExample, /set\s+\$alroya_proxy_secret\s+"CHANGE_ME_INTERNAL_PROXY_SECRET";/, "missing documented live-secret file shape");
@@ -136,7 +143,6 @@ export function verifyNginxConfiguration(input) {
     }
   }
 
-  const appLocations = input.appLocations;
   requireMatch(errors, appLocations, /location\s+~\s+"\^\/api\/trpc\/.*auth\\\.login.*auth\\\.twoFactorVerify.*platformAdmin\\\.login/, "missing shared auth route limiter");
   requireMatch(errors, appLocations, /limit_req\s+zone=alroya_auth\s+burst=30\s+nodelay;/, "auth limiter must use alroya_auth");
   requireMatch(errors, appLocations, /auth\\\.resetPasswordWithToken/, "missing exact password-recovery route limiter");
