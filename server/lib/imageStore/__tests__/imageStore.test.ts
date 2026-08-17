@@ -26,6 +26,13 @@ describe("ImageStore startup contract", () => {
     expect(() => assertImageStoreStartupConfiguration(validR2)).not.toThrow();
   });
 
+  it("يفشل عند الإقلاع إذا كانت حدود R2 غير صحيحة بدلاً من حد غير مقصود", () => {
+    expect(() => assertImageStoreStartupConfiguration({ ...validR2, R2_MAX_CONCURRENCY: "0" }))
+      .toThrow(/R2_MAX_CONCURRENCY/);
+    expect(() => assertImageStoreStartupConfiguration({ ...validR2, R2_MAX_QUEUE: "100000" }))
+      .toThrow(/R2_MAX_QUEUE/);
+  });
+
   it("يرفض fs والسائق المجهول في الإنتاج", () => {
     expect(() => assertImageStoreStartupConfiguration({ NODE_ENV: "production", IMAGE_STORE_DRIVER: "fs" }))
       .toThrow(/محظور في الإنتاج/);

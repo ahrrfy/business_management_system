@@ -780,11 +780,19 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
     }
   });
 
-  it("تصحيح البيع المدفوع مؤجل fail-closed ولا يترك باب CASH OUT خامداً", () => {
+  // ⭐ قرار المالك (١٧/٨/٢٦): التصحيح صار ينقل المقبوض ويردّ الفرق الزائد، فلم يعد fail-closed.
+  //    كان هذا الاختبار يحرس الغياب (لا إيصال، لا assertCashOutAvailable) — وهو عقدٌ سقط بالقرار.
+  //    نستبدله بالعقد الذي **يهمّ الآن**: بابُ CASH OUT مفتوحٌ لكنّه **محروس** كأيّ باب درجٍ آخر.
+  it("تصحيح البيع يفتح باب CASH OUT من الدرج محروساً بحدّ الرصيد (كمرتجع البيع)", () => {
     const source = readFileSync(path.resolve(process.cwd(), "server/services/sale/correct.ts"), "utf8");
-    expect(source).toContain("خرق ثابت التصحيح: نشأ فرق زائد رغم حظر نقل المقبوضات");
-    expect(source).not.toMatch(/insert\(receipts\)/);
-    expect(source).not.toContain("assertCashOutAvailable");
+    // خروج نقدٍ من درجٍ يلزمه حدّ الرصيد الفعليّ — لا يُسحَب ما ليس في الدرج الآن.
+    expect(source).toContain("assertCashOutAvailable");
+    // ودلوه DRAWER صراحةً (لا خزينة) ⇒ يظهر في Z-report وتسوية النقد.
+    expect(source).toMatch(/cashBucket:\s*"DRAWER"/);
+    // ولا يُفتَح باب الخزينة من هنا (استثناءات الخزينة قائمةٌ مغلقة أعلاه، وهذا ليس منها).
+    expect(source).not.toContain("assertTreasuryOutException");
+    // والفرق الزائد لا يُبتلَع صامتاً: لكلّ رافدٍ مسارُه المكتوب.
+    expect(source).toContain("adjustCustomerBalance(tx, targetCustomerId, overpay.neg())");
   });
 
   it("المسارات المركبة تقفل مصدر النقد قبل المستند والطرف", () => {
@@ -794,6 +802,9 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
       { file: "purchase/receive.ts", source: "await lockCashSourceForUpdate", target: "await adjustSupplierBalance" },
       { file: "returnService.ts", source: "await lockCashSourceForUpdate", target: "await adjustSupplierBalance" },
       { file: "sale/cancel.ts", source: "await lockCashSourceForUpdate", target: "await adjustSupplierBalance" },
+      // تصحيح الفاتورة (١٧/٨): صار مساراً نقدياً مركّباً — يقفل الدرج قبل قفل الفاتورة، وإلّا
+      // تعاكس مع `returnSaleInTx` (الذي يستدعيه داخلياً) على نفس الدرج والمستند ⇒ deadlock.
+      { file: "sale/correct.ts", source: "await lockCashSourceForUpdate", target: ".for(\"update\").limit(1))[0]" },
       { file: "exchange/withdraw.ts", source: "await lockCashSourceForUpdate", target: "await lockHouse" },
       { file: "delivery/remittance.ts", source: "await lockCashSourceForUpdate", target: "const party =" },
       { file: "delivery/fees.ts", source: "await lockCashSourceForUpdate", target: "const party =" },

@@ -362,11 +362,13 @@ export default function InvoiceDetail() {
   // «تصحيح كامل» (عكس وإعادة إصدار، 0168) — أضيق من «تعديل البيانات»: يُقصَر على فاتورة بيعٍ
   // حيّة بلا مرتجعات ولا توصيلٍ نشط ولا أمر شغل (الخادم يرفض البقية برسالةٍ واضحة؛ هذا فلترٌ
   // بصريّ يمنع رحلةً تنتهي برفض). المُصحَّحة سابقاً (SUPERSEDED) والملغاة مستبعَدتان.
+  // ⭐ قرار المالك (١٧/٨/٢٦): رُفع شرط `paidAmount == 0`. كان مرآةً لحظر الخادم، وأثرُه أنّ
+  //    **كل فاتورة استقبالٍ عليها عربون لا يظهر لها زرّ تصحيحٍ إطلاقاً** — وهو جوهر الشكوى.
+  //    الآن المقبوض يُنقل للمصحّحة كما هو، والفرق الزائد يُردّ نقداً أو يُرصَّد (correct.ts خطوة ⑨).
   const canFullCorrect =
     canCorrectInvoice &&
     data.status !== "CANCELLED" &&
     data.status !== "SUPERSEDED" &&
-    D(data.paidAmount ?? "0").isZero() &&
     D(data.returnedTotal ?? "0").isZero() &&
     data.sourceType !== "WORKORDER" &&
     !data.consignmentNumber;
@@ -666,6 +668,17 @@ export default function InvoiceDetail() {
                 >
                   {paymentMethodLabel(data.paymentMethod)}
                 </span>
+              )}
+              {/* التمييز البصريّ «مُعدَّلة» (طلب المالك ١٧/٨): هذه الفاتورة صدرت تصحيحاً
+                  لفاتورةٍ سابقة. `correctionOfInvoiceId` كان يُكتَب ولا يُقرأ من أيّ استعلام. */}
+              {data.correctionOfInvoiceId != null && (
+                <Link
+                  href={`/invoices/${data.correctionOfInvoiceId}`}
+                  className="rounded-full bg-[var(--sem-warn-bg)] px-2.5 py-0.5 text-xs font-medium text-[var(--sem-warn)]"
+                  title="فاتورةٌ مُعدَّلة — اضغط لعرض الأصل المُستبدَل"
+                >
+                  مُعدَّلة
+                </Link>
               )}
               <span
                 className={`text-xs rounded-full px-2.5 py-0.5 font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}

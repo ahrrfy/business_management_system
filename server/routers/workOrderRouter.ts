@@ -21,6 +21,7 @@ import {
   createWorkOrder,
   deliverWorkOrder,
   markWorkOrderReady,
+  setWorkOrderMaterials,
   startWorkOrder,
   updateWorkOrder,
   updateWorkOrderDeliveryMethod,
@@ -49,6 +50,8 @@ import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
+/** محرّر البنود الأخير (0199) — اسمٌ يُعرَض بجانب وسم «مُعدَّل» فيُعرَف من غيّر ماذا. */
+const materialsEditorUser = alias(users, "materialsEditorUser");
 const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
   NULLIF(TRIM(${workOrderCreatorUser.name}), ''),
   NULLIF(TRIM(${workOrderCreatorUser.username}), ''),
@@ -534,6 +537,11 @@ export const workOrderRouter = router({
           deliveredAt: workOrders.deliveredAt,
           createdAt: workOrders.createdAt,
           updatedAt: workOrders.updatedAt,
+          // وسم «عُدِّلت بنوده» (0199) — التمييز البصريّ الذي طلبه المالك. مستقلٌّ عن
+          // `updatedAt` عمداً: ذاك يتحرّك مع كل كتابة فيفقد الوسم معناه.
+          materialsEditedAt: workOrders.materialsEditedAt,
+          materialsEditCount: workOrders.materialsEditCount,
+          materialsEditedByName: materialsEditorUser.name,
           // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — تُحجب أدناه بحسب canSeeDeliveryForUser.
           consignmentId: deliveryConsignments.id,
           consignmentStatus: deliveryConsignments.status,
@@ -548,6 +556,7 @@ export const workOrderRouter = router({
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
         .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+        .leftJoin(materialsEditorUser, eq(workOrders.materialsEditedBy, materialsEditorUser.id))
         .where(eq(workOrders.id, input.workOrderId))
         .limit(1)
     )[0];
@@ -1006,6 +1015,56 @@ export const workOrderRouter = router({
    * تغييرها بعد بدء التنفيذ يستلزم عكس حركة مخزون. الخدمة ترفض تحت DELIVERED/CANCELLED وتمنع
    * خفض السعر دون العربون المقبوض سلفاً.
    */
+  /**
+   * تحرير **بنود** أمر الشغل (إضافة/حذف/تغيير كمّية) — الفجوة التي اشتكاها المالك (١٧/٨/٢٦):
+   * «الكاشير لا يستطيع أن يضيف إليها منتجات أو يحذف منها ويحفظها ويعتمدها».
+   *
+   * الصلاحية `workordersCashierProcedure` بقرار المالك: التعديل روتينٌ يوميّ («الزبائن مزاجهم
+   * متقلّب ويطلبون مرتجع كثيراً أو يعدّلون طلباتهم») فلا يُعقَل أن يستدعي مديراً في كل مرّة.
+   * الحرّاس الحقيقية في الخدمة لا في الدور: الفرع مُلزِم، والأمر المُسلَّم/الملغى مرفوض،
+   * وبعد بدء التنفيذ يقابل كلَّ فرقٍ حركةُ مخزونٍ وقيدُ WIP مُكمِّل (لا تعديل صامت).
+   *
+   * العقد **تصريحيّ**: تُرسَل القائمة المطلوبة كاملةً ⇒ idempotent بطبيعته (إعادة الإرسال
+   * تُنتج فرقاً صفراً). لذلك لا يحتاج `clientRequestId`.
+   */
+  setMaterials: workordersCashierProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        materials: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              baseQuantity: z.number().int().positive(),
+            }),
+          )
+          .max(200),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await setWorkOrderMaterials(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "workOrder.setMaterials",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: {
+          added: res.added,
+          removed: res.removed,
+          changed: res.changed,
+          stockAdjusted: res.stockAdjusted,
+          materialsCost: res.materialsCost,
+        },
+      });
+      return res;
+    }),
+
   update: workordersManagerProcedure
     .input(
       z.object({

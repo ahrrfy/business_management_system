@@ -2751,6 +2751,13 @@ export const workOrders = mysqlTable(
     workStartedAt: timestamp("workStartedAt"),
     workSeconds: int("workSeconds"),
     deliveredAt: timestamp("deliveredAt"),
+    // تحرير بنود الأمر (0199) — التمييز البصريّ «مُعدَّل» الذي طلبه المالك (١٧/٨/٢٦).
+    // ⚠️ لا يصحّ اشتقاقه من `updatedAt`: ذاك يتحرّك مع **كل** كتابة (تغيّر حالة، سحب، إسناد)
+    // فيصبح كل أمرٍ «معدَّلاً» ويفقد الوسم معناه. هذه الأعمدة تُكتب من مسار تحرير البنود وحده.
+    materialsEditedAt: timestamp("materialsEditedAt"),
+    materialsEditedBy: int("materialsEditedBy").references(() => users.id),
+    /** عدّاد تحريرات البنود — يميّز «عُدِّل مرّة» من «عُدِّل ٤ مرات» في المتابعة والتدقيق. */
+    materialsEditCount: int("materialsEditCount").default(0).notNull(),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

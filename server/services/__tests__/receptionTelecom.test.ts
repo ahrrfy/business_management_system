@@ -436,12 +436,25 @@ describe("T13 — قرار مالك ٦/٨: مرتجع فاتورةٍ مدفوع�
     const invoiceId = r.regularSale!.invoiceId;
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
 
-    // الاسترداد بغير النقد (بطاقة) يبقى صفريّ السقف — المقبوض زينٌ لا بطاقة.
+    // قرار المالك (١٧/٨/٢٦): رافدا الردّ نقدٌ أو بطاقة **مهما كان رافد القبض** — فلم يعد
+    // ردُّ فاتورةِ زينٍ على البطاقة صفريَّ السقف. الحارس الباقي هو **الإثبات**: الردّ بالبطاقة
+    // يُنفَّذ على الجهاز أولاً ويُوثَّق بمرجعه، فبلا مرجعٍ يُرفض («إثباتٌ لا إقفال»).
     await expect(returnSale(
       {
         invoiceId,
         lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
         refund: { amount: "2000.00", method: "CARD" },
+        restock: true,
+      },
+      MANAGER,
+    )).rejects.toThrowError(/مرجع العملية من جهاز الدفع/);
+
+    // وما يتجاوز الوعاء يُرفض بالسقف حتى مع مرجعٍ صحيح (المقبوض 2,000 لا أكثر).
+    await expect(returnSale(
+      {
+        invoiceId,
+        lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }],
+        refund: { amount: "2500.00", method: "CARD", reference: "TERM-REFUND-1" },
         restock: true,
       },
       MANAGER,

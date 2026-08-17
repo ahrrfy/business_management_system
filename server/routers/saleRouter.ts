@@ -961,6 +961,10 @@ export const saleRouter = router({
           deviceId: invoices.posDeviceId,
           cancelledByName: invoices.cancelledByNameSnapshot,
           cancelledAt: invoices.cancelledAt,
+          // نسب التصحيح (0168) — كانت تُكتَب ولا يقرؤها أحد، فلا تعرف الشاشة أنّ الفاتورة
+          // نتيجةُ تعديل. يغذّيان وسم «مُعدَّلة» ورابط الأصل (طلب المالك ١٧/٨: تمييزٌ بصريّ).
+          correctionOfInvoiceId: invoices.correctionOfInvoiceId,
+          correctedByInvoiceId: invoices.correctedByInvoiceId,
           // إفصاح التوصيل (0152): الأجرة المقبوضة، وهل أُهديت، وقيمة ما تُنوزِل عنه — تُعرَض
           // في الشاشة وتُطبَع، فيميّز الزبون «توصيل مجّاني» عن «بلا توصيل».
           deliveryFee: invoices.deliveryFee,
