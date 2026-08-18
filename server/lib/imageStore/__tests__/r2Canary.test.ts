@@ -46,9 +46,33 @@ function cloudflareResponse(result: unknown, status = 200) {
 }
 
 function privateCloudflareFetch() {
-  return async (url: string) => url.endsWith("/domains/managed")
-    ? cloudflareResponse({ bucketId: "b".repeat(32), domain: "private.r2.dev", enabled: false })
-    : cloudflareResponse({ domains: [] });
+  return async (url: string) => {
+    if (url.endsWith("/domains/managed")) {
+      return cloudflareResponse({ bucketId: "b".repeat(32), domain: "private.r2.dev", enabled: false });
+    }
+    if (url.endsWith("/domains/custom")) return cloudflareResponse({ domains: [] });
+    if (url.endsWith("/lock")) {
+      return cloudflareResponse({
+        rules: [{
+          id: "retain-private-images-90d",
+          enabled: true,
+          prefix: "single/studio/",
+          condition: { type: "Age", maxAgeSeconds: 90 * 24 * 60 * 60 },
+        }],
+      });
+    }
+    if (url.endsWith("/lifecycle")) {
+      return cloudflareResponse({
+        rules: [{
+          id: "abort-incomplete-multipart",
+          enabled: true,
+          conditions: { prefix: "" },
+          abortMultipartUploadsTransition: { condition: { type: "Age", maxAge: 7 * 24 * 60 * 60 } },
+        }],
+      });
+    }
+    throw new Error("unexpected Cloudflare URL");
+  };
 }
 
 function privateConfiguration() {
@@ -186,7 +210,7 @@ describe("R2 production canary", () => {
         ...privateConfiguration(),
         fetchCloudflareApi: async (url: string) => url.endsWith("/domains/managed")
           ? cloudflareResponse({ bucketId: "b".repeat(32), domain: "public.r2.dev", enabled: true })
-          : cloudflareResponse({ domains: [] }),
+          : privateCloudflareFetch()(url),
       },
       fetchUnauthenticated: async () => ({ status: 404 }),
     })).rejects.toMatchObject({ code: "CANARY_R2_DEV_PUBLIC" });
@@ -198,8 +222,51 @@ describe("R2 production canary", () => {
       ...privateConfiguration(),
       fetchCloudflareApi: async (url: string) => url.endsWith("/domains/managed")
         ? cloudflareResponse({ bucketId: "b".repeat(32), domain: "private.r2.dev", enabled: false })
-        : cloudflareResponse({ domains: [{ domain: "secret.example", enabled: false }] }),
+        : url.endsWith("/domains/custom")
+          ? cloudflareResponse({ domains: [{ domain: "secret.example", enabled: false }] })
+          : privateCloudflareFetch()(url),
     })).rejects.toMatchObject({ code: "CANARY_CUSTOM_DOMAIN_CONFIGURED" });
+  });
+
+  it("يفشل إذا لم يغط Bucket Lock مسار single/studio/ مدة 90 يوماً", async () => {
+    await expect(verifyR2BucketPrivacyConfiguration({
+      ...privateConfiguration(),
+      fetchCloudflareApi: async (url: string) => url.endsWith("/lock")
+        ? cloudflareResponse({ rules: [] })
+        : privateCloudflareFetch()(url),
+    })).rejects.toMatchObject({ code: "CANARY_BUCKET_LOCK_MISSING" });
+  });
+
+  it("يفشل إذا غطّى Bucket Lock مسار canary ومنع تنظيفه", async () => {
+    await expect(verifyR2BucketPrivacyConfiguration({
+      ...privateConfiguration(),
+      fetchCloudflareApi: async (url: string) => url.endsWith("/lock")
+        ? cloudflareResponse({
+          rules: [{
+            id: "unsafe-global-lock",
+            enabled: true,
+            prefix: "",
+            condition: { type: "Age", maxAgeSeconds: 90 * 24 * 60 * 60 },
+          }],
+        })
+        : privateCloudflareFetch()(url),
+    })).rejects.toMatchObject({ code: "CANARY_BUCKET_LOCK_BLOCKS_CLEANUP" });
+  });
+
+  it("يفشل عند أي lifecycle delete مفعّل ولو بعد أكثر من 90 يوماً", async () => {
+    await expect(verifyR2BucketPrivacyConfiguration({
+      ...privateConfiguration(),
+      fetchCloudflareApi: async (url: string) => url.endsWith("/lifecycle")
+        ? cloudflareResponse({
+          rules: [{
+            id: "unsafe-delete",
+            enabled: true,
+            conditions: { prefix: "single/" },
+            deleteObjectsTransition: { condition: { type: "Age", maxAge: 365 * 24 * 60 * 60 } },
+          }],
+        })
+        : privateCloudflareFetch()(url),
+    })).rejects.toMatchObject({ code: "CANARY_LIFECYCLE_DELETE_CONFIGURED" });
   });
 
   it.each([
@@ -270,12 +337,17 @@ describe("R2 production canary", () => {
         calls.push({ url, options });
         return url === urls.managed
           ? cloudflareResponse({ bucketId: "b".repeat(32), domain: "private.r2.dev", enabled: false })
-          : cloudflareResponse({ domains: [] });
+          : privateCloudflareFetch()(url);
       },
     });
-    expect(calls.map((call) => call.url)).toEqual([urls.managed, urls.custom]);
+    expect(calls.map((call) => call.url)).toEqual([urls.managed, urls.custom, urls.lock, urls.lifecycle]);
     expect(calls.every((call) => (call.options.headers as Record<string, string>).Authorization === `Bearer ${API_TOKEN}`)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(API_TOKEN);
-    expect(result).toEqual({ managedR2DevEnabled: false, customDomainCount: 0 });
+    expect(result).toEqual({
+      managedR2DevEnabled: false,
+      customDomainCount: 0,
+      lifecycleDeleteRuleCount: 0,
+      protectedPrefixes: ["single/studio/"],
+    });
   });
 });

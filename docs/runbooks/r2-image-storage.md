@@ -16,13 +16,31 @@
 
 ## فحص ما قبل التفعيل
 
-1. أنشئ اعتماد S3 محدوداً بالـBucket للقراءة/الكتابة/الحذف، وخزّنه في مدير الأسرار فقط. وأنشئ
-   API Token منفصلاً، read-only للحساب بصلاحية `Workers R2 Storage Read`، لفحص إعدادات النشر.
+1. أنشئ اعتماد S3 محدوداً بالـBucket للقراءة/الكتابة/الحذف، وخزّنه في مدير الأسرار فقط. أنشئ
+   اعتماداً آخر للمرآة بصلاحية القراءة فقط، وAPI Token مؤقتاً يقرأ إعدادات R2 من Cloudflare API.
 2. تأكد من تعطيل Public Access و`r2.dev` وإزالة كل custom domain للـBucket. الـcanary يثبت ذلك من
    [managed-domain API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/managed/methods/list/)
    و[custom-domain list API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/custom/methods/list/)؛
-   403/404 من S3 وحده ليس دليلاً لأن مسارات النشر مستقلة.
-3. شغّل في shell آمنة بلا تسجيل أو `set -x`:
+   403/404 من S3 وحده ليس دليلاً لأن مسارات النشر مستقلة. كذلك يلزم Bucket Lock مفعّل مدة 90
+   يوماً على `single/studio/` وصفر lifecycle delete؛ يقرأهما canary من
+   [Lock API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/locks/)
+   و[Lifecycle API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/lifecycle/).
+   لا تغطِّ `canary/` بالقفل.
+3. شغّل المرآة الباردة الأولية من جهاز/قرص مستقل (copy لا sync)، ثم verify وتمرين استعادة فعلي
+   لعينة إلى مجلد منفصل. لا تُكمل إذا لم تطابق SHA-256:
+
+   ```bash
+   R2_MIRROR_CONFIRM=RUN_CUMULATIVE_PRIVATE_R2_MIRROR \
+     R2_COLD_MIRROR_DIR='/external/private-r2-mirror' \
+     node scripts/r2-cold-mirror.mjs
+   R2_MIRROR_MODE=verify R2_MIRROR_CONFIRM=RUN_CUMULATIVE_PRIVATE_R2_MIRROR \
+     R2_COLD_MIRROR_DIR='/external/private-r2-mirror' \
+     node scripts/r2-cold-mirror.mjs
+   ```
+
+   الأداة تتحقق من كل ملفات manifest، حتى الملفات التي لم تعد في المصدر، وتحتفظ بها. ثبّت بصمة
+   manifest في متغير إصدار محمي عند فتح نافذة GC، وسجّل وقت تمرين DR بصيغة UTC ISO.
+4. شغّل canary في shell آمنة بلا تسجيل أو `set -x`:
 
    ```bash
    IMAGE_STORE_DRIVER=r2 R2_CANARY_CONFIRM=RUN_PRIVATE_R2_CANARY \
@@ -30,7 +48,7 @@
      node --import tsx scripts/r2-image-store-canary.mjs
    ```
 
-4. النجاح الوحيد المقبول:
+5. النجاح الوحيد المقبول:
 
    ```text
    R2 canary: OK bytes=<n> privacy=403|404 cleanup=verified
@@ -40,7 +58,7 @@
    الأداة تستعمل مفتاحاً عشوائياً تحت `canary/r2-image-store/` وتحذف في `finally` ثم تؤكد غيابه.
    cleanup يستعمل عميلاً قصير المهلة خاصاً بالـCLI خارج circuit/queue التطبيق، كي لا يمنع قاطع فُتح
    بعد PUT غير محسوم حذف المفتاح؛ هذه البوابة غير مصدرة إلى runtime التطبيق.
-5. بعد النجاح، فعّل متغيرات R2 في نافذة نشر عادية وشغّل `pnpm prod:deploy`. لا تشغل canary عبر
+6. بعد النجاح، فعّل متغيرات R2 في نافذة نشر عادية وشغّل `pnpm prod:deploy`. لا تشغل canary عبر
    endpoint HTTP ولا تجعل تأكيده متغيراً دائماً في خدمة PM2.
 
 ## المقاييس والسجلات
@@ -68,8 +86,10 @@ mode: المتجر بقي قابلاً للعرض لكنه لا يثبت الم�
 
 1. إذا فتح القاطع: لا ترفع الحدود. تحقق من Cloudflare status، DNS، egress، صلاحية Token وحصة R2.
 2. AccessDenied ليس outage عابراً ولن يفتح القاطع؛ صحح الاعتماد/Policy ثم أعد canary.
-3. كثرة 404 تعني مرجع DB بلا كائن: أوقف GC، افحص سجل approve/GC ومرآة النسخ، ولا تخفها بالمصغرة.
+3. كثرة 404 تعني مرجع DB بلا كائن: ثبّت `R2_GC_MODE=audit`، افحص سجل approve/GC ومرآة النسخ،
+   ولا تخفها بالمصغرة.
 4. للتراجع أثناء انتقال legacy فقط: أزل `IMAGE_STORE_DRIVER` وأعد النشر؛ تبقى المنصة online بصور
    MySQL القديمة والاستوديو fail-closed. بعد اعتماد صور object-only، لا تفعل ذلك بلا خطة بيانات.
-5. لا تحوّل إلى `fs` ولا تنسخ originals إلى VPS. لا تحذف يدوياً من الـBucket؛ الحذف عبر GC
-   المعدود-مرجعياً، والـcanary يحذف مفتاحه المحجوز وحده.
+5. لا تحوّل إلى `fs` ولا تنسخ originals إلى VPS. لا تحذف يدوياً من الـBucket. GC audit-only
+   افتراضياً؛ delete يحتاج 90 يوماً من فقد المرجع + manifest حديثة وبصمتها + DR حديثاً + الإقرار
+   الصريح. الـcanary وحده يحذف مفتاحه المحجوز خارج Bucket Lock.

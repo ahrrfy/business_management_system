@@ -28,13 +28,18 @@ import { logger } from "../logger";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { isMultiTenantModeActive } from "../db";
 import { resolveCompanyById } from "../tenancy/registry";
+import {
+  evaluateStagingRetention,
+  loadR2GcDeletionAuthorization,
+  resolveR2GcMode,
+} from "../lib/imageStore/r2RetentionPolicy";
 
 const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
 const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
 const MAX_PREVIEW_BYTES = 1_000_000;
 const UPLOAD_LEASE_MS = 2 * 60_000;
 const PROCESSING_PROOF_MS = 15 * 60_000;
-const STAGING_TTL_MS = 24 * 60 * 60_000;
+const STAGING_AUDIT_INTERVAL_MS = 24 * 60 * 60_000;
 
 export interface ProductStudioActor {
   userId: number;
@@ -322,7 +327,12 @@ async function stageStudioObject(objectKey: string): Promise<void> {
  * ثم يعيد PUT بعد الحذف؛ فلا يقطع الكنس مرجعاً جديداً قيد الإنشاء عبر worker آخر.
  */
 export async function cleanupStudioStaging(limit = 5): Promise<number> {
-  const cutoff = new Date(Date.now() - STAGING_TTL_MS);
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - STAGING_AUDIT_INTERVAL_MS);
+  const gcMode = resolveR2GcMode(process.env);
+  const deletionAuthorization = gcMode === "delete"
+    ? await loadR2GcDeletionAuthorization(process.env, now)
+    : null;
   const candidates = await requireDb().select({ objectKey: productImageObjectStaging.objectKey })
     .from(productImageObjectStaging)
     // REFERENCED ليست نهائية: إعادة الإرسال تستبدل processedObjectKey، وحذف المهمة/الصورة يزيل آخر مرجع.
@@ -344,11 +354,39 @@ export async function cleanupStudioStaging(limit = 5): Promise<number> {
           eq(productImages.objectKey, candidate.objectKey),
           eq(productImages.originalKey, candidate.objectKey),
         )).limit(1);
-      if (jobRef.length || imageRef.length) {
-        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date(), touchedAt: new Date() })
+      const decision = evaluateStagingRetention({
+        state: staging.state,
+        touchedAt: staging.touchedAt,
+        referencedAt: staging.referencedAt,
+        hasReference: jobRef.length > 0 || imageRef.length > 0,
+        now,
+        deleteRequested: deletionAuthorization !== null,
+      });
+      if (decision.action === "MARK_REFERENCED") {
+        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: now, touchedAt: now })
           .where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
         return false;
       }
+      if (decision.action === "MARK_UNREFERENCED") {
+        await tx.update(productImageObjectStaging).set({
+          state: "PENDING",
+          referencedAt: decision.retentionStartedAt,
+          touchedAt: now,
+        }).where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
+        return false;
+      }
+      if (decision.action === "DEFER" || decision.action === "AUDIT_ELIGIBLE") {
+        // referencedAt يحمل هنا بداية نافذة الاحتفاظ (أو وقت الرفع إن لم يوجد مرجع قط).
+        // تحديث touchedAt يمنع صفاً مؤهلاً من احتكار كل دفعة audit صغيرة، من دون تصفير الـ90 يوماً.
+        await tx.update(productImageObjectStaging).set({
+          state: "PENDING",
+          referencedAt: decision.retentionStartedAt,
+          touchedAt: now,
+        }).where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
+        return false;
+      }
+      if (!deletionAuthorization) throw new Error("R2_GC_DELETE_AUTHORIZATION_REQUIRED");
+      deletionAuthorization.authorize(candidate.objectKey);
       await getImageStore().delete(candidate.objectKey);
       await tx.delete(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
       return true;
