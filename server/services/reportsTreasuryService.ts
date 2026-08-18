@@ -20,6 +20,8 @@ const PAY_METHOD_AR: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 
+// تسمياتٌ خاصّة بهذا التقرير (تشرح السياق: «رواتب (مُسجَّلة كمصروف)» ≠ مسير الأجور).
+// تسمية الواجهة العامة للدلو في shared/expenseCategories.ts — لا تُوحَّدا: هذه تحمل معنىً إضافياً.
 const EXPENSE_CATEGORY_AR: Record<string, string> = {
   RENT: "الإيجار",
   UTILITIES: "الخدمات",

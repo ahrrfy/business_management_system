@@ -32,6 +32,8 @@ function marginPct(
   return numerator.div(denominator).times(100).toDecimalPlaces(2).toString();
 }
 
+// تسمياتٌ خاصّة بهذا التقرير (تشرح السياق: «رواتب (مُسجَّلة كمصروف)» ≠ مسير الأجور).
+// تسمية الواجهة العامة للدلو في shared/expenseCategories.ts — لا تُوحَّدا: هذه تحمل معنىً إضافياً.
 const EXPENSE_CATEGORY_AR: Record<string, string> = {
   RENT: "الإيجار",
   UTILITIES: "الخدمات (ماء/كهرباء)",

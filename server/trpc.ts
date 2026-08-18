@@ -566,6 +566,16 @@ export const productStudioManagerProcedure = managerProcedure.use(requireModule(
 export const expensesReadProcedure = branchScopedProcedure.use(requireModule("expenses", "READ"));
 export const expensesCashierProcedure = moduleProcedure(["cashier", "manager", "accountant"], "expenses", "FULL");
 export const expensesManagerProcedure = moduleProcedure(["manager"], "expenses", "FULL");
+/**
+ * فئات المصروفات — بياناتٌ مرجعية عامّة (الجدول بلا `branchId`)، فلا معنى لاشتراط فرعٍ مُسنَد
+ * ولا لعزلٍ فرعيّ. القراءة بخريطة الوحدة وحدها كي يراها **كل من يُنشئ مصروفاً** (الكاشير منهم،
+ * وقالبه expenses=FULL) وإلّا ظهر له منتقٍ فارغ؛ والكتابة بقائمة الإدارة (مدير/محاسب) + المنح
+ * الصريح. نظير `treasuryGlobal*` لفئات السندات — راجع تعليقها لسبب فصل «العامّ» عن المقصور بالفرع.
+ */
+export const expensesGlobalReadProcedure = protectedProcedure.use(requireModule("expenses", "READ"));
+export const expensesGlobalProcedure = t.procedure.use(
+  requireModuleGate(["manager", "accountant"], "expenses", "FULL"),
+);
 // workorders (خدمة العملاء)
 export const workordersReadProcedure = branchScopedProcedure.use(requireModule("workorders", "READ"));
 export const workordersCashierProcedure = moduleProcedure(["cashier", "manager"], "workorders", "FULL");
@@ -579,6 +589,23 @@ export const treasuryManagerProcedure = moduleProcedure(["manager", "accountant"
 export const treasuryManagerReadProcedure = moduleProcedure(["manager", "accountant"], "treasury", "READ");
 export const treasuryReadProcedure = branchScopedProcedure.use(requireModule("treasury", "READ"));
 export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], "treasury", "READ");
+/**
+ * بيانات مرجعية عامّة للخزينة (فئات السندات) — **بلا اشتراط فرعٍ مُسنَد**.
+ *
+ * `moduleProcedure` يُلحق `requireOwnBranch` بكل إجراءاته، وهو الصواب لكل ما يمسّ صندوق فرعٍ
+ * أو سنداً. لكن `voucherCategories` جدولٌ عالميّ بلا عمود `branchId` أصلاً؛ فربطُ إدارته
+ * بالفرع كان يمنع محاسب الإدارة (بلا فرعٍ مُسنَد — وهو وضعٌ مشروع: يخدم الفرعين) من إنشاء
+ * فئةٍ أو تعديلها برسالة «لا فرع مُسنَد لهذا المستخدم»، بينما نفس الحساب يقرأ/يكتب في وحدة
+ * الخزينة. البوّابة الأمنية نفسها (treasury FULL/READ لـmanager/accountant + منح صريح) بلا
+ * تخفيف — الفارق الوحيد إسقاطُ شرطٍ لا معنى له لبيانات غير مقصورة بفرع.
+ * ⚠️ لا تستعملها لأيّ إجراءٍ يقرأ/يكتب `receipts` (المعالجة التاريخية والدمج يبقيان مقصورين).
+ */
+export const treasuryGlobalProcedure = t.procedure.use(
+  requireModuleGate(["manager", "accountant"], "treasury", "FULL"),
+);
+export const treasuryGlobalReadProcedure = t.procedure.use(
+  requireModuleGate(["manager", "accountant"], "treasury", "READ"),
+);
 
 // ─── الأهداف والعمولات «commissions» — خطط/أهداف شهرية/تشغيلات عمولات البائعين ───
 // الكتابة (خطط/إسناد/أهداف/احتساب/اعتماد) مديرية بقالبها + منح صريح عبر البوّابة

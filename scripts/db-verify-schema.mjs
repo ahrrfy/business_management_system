@@ -642,6 +642,9 @@ try {
     "monthCloseEvents",
     "monthCloseSequence",
     "yearEndReopenRequests",
+    // 0203: managed expense categories.  A missing table degrades the expense
+    // picker to an empty list rather than failing loudly at deploy time.
+    "expenseCategories",
   ];
   const CRITICAL_COLUMNS = [
     ["externalPaymentAttempts", "externalPaymentChannel"],
@@ -657,6 +660,7 @@ try {
     ["customers", "searchNorm"],
     ["suppliers", "searchNorm"], // 0035/0039
     ["receipts", "voucherCategoryId"],
+    ["expenses", "expenseCategoryId"], // 0203
     ["receipts", "counterpartyName"],
     ["receipts", "voucherDate"], // 0036
     ["receipts", "attachmentUrl"],

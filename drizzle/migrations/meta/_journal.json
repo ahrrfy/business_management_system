@@ -1408,6 +1408,20 @@
       "when": 1788052252000,
       "tag": "0201_night_shift_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "5",
+      "when": 1788052253000,
+      "tag": "0202_voucher_category_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "5",
+      "when": 1788052254000,
+      "tag": "0203_managed_expense_categories",
+      "breakpoints": true
     }
   ]
 }

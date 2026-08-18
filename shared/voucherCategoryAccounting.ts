@@ -103,8 +103,14 @@ export const IRAQI_DEFAULT_VOUCHER_CATEGORY_ROLE: Readonly<
   "فوائد بنكية": "OTHER_REVENUE",
 });
 
+/**
+ * فئات 0036 التي بقيت بلا تعيينٍ محاسبيّ لأنّها غامضة بنيوياً (كلٌّ منها يخفي معاملتين).
+ * هجرة 0202 حسمت «ضرائب ورسوم حكومية» (مصروفٌ موضوعيّ ⇒ OTHER_EXPENSE) فخرجت من القائمة،
+ * وبقي الثلاثة الغامضة فعلاً — وهي نفسها `RETIRED_VOUCHER_CATEGORIES` في
+ * `shared/voucherCategoryDefaults.ts` (يحرس التطابق اختبار وحدة). الواجهة تستعملها لتقول
+ * «تحتاج مساراً تخصصياً» بدل «غير معيّن» — رسالةٌ صادقة تُوجّه للبديل بدل أن تطلب تخميناً.
+ */
 export const UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES = Object.freeze([
-  "ضرائب ورسوم حكومية",
   "إيداع نقدي بنكي",
   "ردّ مَردودات/استرداد",
   "أخرى",

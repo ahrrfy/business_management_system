@@ -10,6 +10,7 @@ import {
   assetMaintenance,
   auditLogs,
   branches,
+  expenseCategories,
   expenseStockItems,
   expenses,
   fixedAssets,
@@ -34,6 +35,7 @@ import { getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { assertCashOutAvailable, lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
+import { resolveExpenseCategory } from "./expenseCategoryService";
 import { extractInsertId } from "../lib/insertId";
 import { parseSystemPaymentRequest } from "./voucher/create";
 import { computeSignature } from "./voucher/helpers";
@@ -181,7 +183,14 @@ export interface CreateExpenseInput {
   branchId: number;
   shiftId?: number | null;
   expenseDate?: string; // YYYY-MM-DD — default today
+  /**
+   * الدلو المحاسبيّ (يقود `expenseRole` وملفّ الترحيل واستعلامات الإقفال). حين تُمرَّر
+   * `expenseCategoryId` يُشتقّ منها الدلو ويُتجاهَل ما أرسله العميل هنا — الفئة هي الحاكمة
+   * فيستحيل انحراف التصنيف عن الحساب.
+   */
   category: ExpenseCategory;
+  /** الفئة المُدارة (هجرة 0203). غيابها يُبقي المسار القديم عاملاً بحرفه. */
+  expenseCategoryId?: number | null;
   amount: string;
   paymentMethod: ExpensePaymentMethod;
   /** اختيار إداري صريح لمصدر النقد. غيابه يحافظ على السلوك التاريخي الآمن. */
@@ -246,6 +255,11 @@ function expenseCreatePayloadHash(input: CreateExpenseInput, actor: Actor) {
     // ولا تتحول إلى حمولة مختلفة بسبب الساعة. تاريخ التنفيذ الفعلي يُحسم مرة واحدة أدناه.
     expenseDate: input.expenseDate?.trim() || null,
     category: input.category,
+    // يُضاف للبصمة **فقط حين يُرسَل** — الحمولات القديمة (بلا فئة مُدارة) تُنتج نفس البصمة
+    // السابقة بالحرف، فلا يتحوّل مفتاح idempotency قائم إلى طلبٍ جديد لحظة النشر.
+    ...(input.expenseCategoryId != null
+      ? { expenseCategoryId: input.expenseCategoryId }
+      : {}),
     paymentMethod: input.paymentMethod,
     source,
     description: input.description?.trim() || null,
@@ -464,6 +478,7 @@ async function createStockExpenseTx(
     shiftId: null,
     expenseDate: new Date(expDate),
     category: input.category,
+    expenseCategoryId: input.expenseCategoryId ?? null,
     amount: "0",
     paymentMethod: input.paymentMethod,
     source: "STOCK",
@@ -592,6 +607,21 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       if (!b)
         throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
 
+      // فئة المصروف المُدارة (هجرة 0203) — تُحلّ **قبل أي كتابة أو ترحيل**: حين تُمرَّر فئة
+      // يُشتقّ الدلو منها ويُتجاهَل ما أرسله العميل، فيستحيل أن يفترق التصنيف عن الحساب الذي
+      // يهبط فيه المصروف. وحين لا تُمرَّر (أندرويد/أوفلاين/استيراد) يبقى الدلو كما هو ويُسنَد
+      // المصروف إلى فئة الدلو الاحتياطية. نُعيد ربط `input` كي يرى كلُّ ما بعده القيمة المحسومة
+      // (مسار النقد ومسار المخزون معاً) بدل تمرير متغيّرين متوازيين ينحرفان.
+      const resolvedCategory = await resolveExpenseCategory(tx, {
+        expenseCategoryId: input.expenseCategoryId ?? null,
+        bucket: input.category,
+      });
+      input = {
+        ...input,
+        category: resolvedCategory.bucket,
+        expenseCategoryId: resolvedCategory.expenseCategoryId,
+      };
+
       // production-slice: صرف من المخزون (نثرية/تلف) — مسار منفصل لا يلمس الصندوق النقدي.
       if ((input.source ?? "CASH") === "STOCK") {
         assertStockExpenseAuthority(actor);
@@ -665,6 +695,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
         cashBucket,
         expenseDate: new Date(expDate),
         category: input.category,
+        expenseCategoryId: input.expenseCategoryId ?? null,
         amount: toDbMoney(amt),
         paymentMethod: input.paymentMethod,
         description: input.description?.trim() || null,
@@ -1876,7 +1907,10 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
 
 export interface ListExpensesInput {
   branchId?: number;
+  /** الدلو المحاسبيّ (فلترة خشنة، تشمل كل الفئات التابعة له). */
   category?: ExpenseCategory;
+  /** الفئة المُدارة بعينها (فلترة دقيقة — «وقود» وحده لا كل «مواصلات/شحن»). */
+  expenseCategoryId?: number;
   status?: "PENDING_APPROVAL" | "ACTIVE" | "REJECTED" | "CANCELLED";
   from?: string; // YYYY-MM-DD
   to?: string;
@@ -2159,6 +2193,10 @@ function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       branchCode: branches.code,
       expenseDate: expenses.expenseDate,
       category: expenses.category,
+      // الفئة المُدارة (0203): اسمٌ تشغيليّ دقيق يُعرض بجانب الدلو المحاسبيّ. NULL للسجلّات
+      // التي سبقت الهجرة ولم تُردَم — الشاشة تعرض الدلو وحده عندها كما كانت تماماً.
+      expenseCategoryId: expenses.expenseCategoryId,
+      expenseCategoryName: expenseCategories.name,
       amount: expenses.amount,
       paymentMethod: expenses.paymentMethod,
       cashBucket: expenses.cashBucket,
@@ -2238,6 +2276,10 @@ function expenseDetailedSelect(db: NonNullable<ReturnType<typeof getDb>>) {
     })
     .from(expenses)
     .leftJoin(branches, eq(expenses.branchId, branches.id))
+    .leftJoin(
+      expenseCategories,
+      eq(expenses.expenseCategoryId, expenseCategories.id),
+    )
     .leftJoin(expenseCreator, eq(expenses.createdBy, expenseCreator.id))
     .leftJoin(shifts, eq(expenses.shiftId, shifts.id))
     .leftJoin(accrualObligations, eq(accrualObligations.expenseId, expenses.id))
@@ -2409,6 +2451,8 @@ function buildExpenseConditions(input: ListExpensesInput) {
     conds.push(eq(expenses.createdBy, input.createdBy));
   if (input.shiftId) conds.push(eq(expenses.shiftId, input.shiftId));
   if (input.category) conds.push(eq(expenses.category, input.category));
+  if (input.expenseCategoryId)
+    conds.push(eq(expenses.expenseCategoryId, input.expenseCategoryId));
   if (input.status) conds.push(eq(expenses.status, input.status));
   if (input.paymentMethod)
     conds.push(eq(expenses.paymentMethod, input.paymentMethod));

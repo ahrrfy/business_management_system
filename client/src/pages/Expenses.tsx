@@ -30,6 +30,7 @@ import { D, fmt } from "@/lib/money";
 import { printDoc } from "@/lib/printing/print";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { EXPENSE_BUCKET_LABEL } from "@shared/expenseCategories";
 import { INBOUND_METHOD_OPTIONS } from "@/lib/paymentMethod";
 import type { InboundEnabledPaymentMethod } from "@shared/inboundPaymentPolicy";
 import {
@@ -67,16 +68,16 @@ import {
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const CATEGORY_LABEL: Record<string, string> = {
-  RENT: "إيجار",
-  UTILITIES: "خدمات/فواتير",
-  SUPPLIES: "لوازم",
-  SALARY: "مرتبات",
-  TRANSPORT: "مواصلات/شحن",
-  MAINTENANCE: "صيانة",
-  MARKETING: "تسويق",
-  OTHER: "أخرى",
-};
+// الدلو المحاسبيّ وتسميته من المصدر المشترك (كانت نسخةً محلّية رابعة تنجرف عن الباقي).
+const CATEGORY_LABEL: Record<string, string> = EXPENSE_BUCKET_LABEL;
+
+/** ما يُعرض للمستخدم: الفئة المُدارة إن وُجدت، وإلّا الدلو (سجلّات سبقت التصنيف). */
+function expenseCategoryText(row: {
+  category: string;
+  expenseCategoryName?: string | null;
+}): string {
+  return row.expenseCategoryName ?? CATEGORY_LABEL[row.category] ?? row.category;
+}
 
 const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي",
@@ -402,7 +403,7 @@ function ExpenseTracePanel({ expenseId }: { expenseId: number }) {
         extra: [
           {
             label: "الفئة / مركز التكلفة",
-            value: `${CATEGORY_LABEL[expense.category] ?? expense.category}${expense.costCenter ? ` · ${expense.costCenter}` : ""}`,
+            value: `${expenseCategoryText(expense)}${expense.costCenter ? ` · ${expense.costCenter}` : ""}`,
           },
           { label: "حالة الاعتماد", value: expense.approvalStatus },
           { label: "حالة الاستحقاق", value: expense.settlementStatus },
@@ -626,7 +627,7 @@ async function printExpenseReceipt(r: ExpenseRow) {
       `مصروف #${Number(r.id)}`,
       `التاريخ: ${r.expenseDate ? new Date(r.expenseDate as unknown as string).toISOString().slice(0, 10) : "—"}`,
       `الفرع: ${r.branchName ?? "—"}`,
-      `الفئة: ${CATEGORY_LABEL[r.category] ?? r.category}`,
+      `الفئة: ${expenseCategoryText(r)}`,
       `طريقة الدفع: ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}`,
       `مصدر التمويل: ${FUNDING_META[fundingKindOf(r)].short} — ${fundingDetail(r)}`,
       ...(r.description ? [`البيان: ${r.description}`] : []),
@@ -659,6 +660,11 @@ export default function Expenses() {
   const branches = trpc.branches.list.useQuery();
   const [branchId, setBranchId] = useState<number | "">("");
   const [category, setCategory] = useState<string>("");
+  // الفئة التفصيلية المُدارة (0203) — فلترٌ أدقّ من الدلو («وقود» وحده لا كل «مواصلات/شحن»).
+  const [expenseCategoryId, setExpenseCategoryId] = useState<string>("");
+  const expenseCategoryOptions = trpc.expenses.categories.list.useQuery({
+    includeInactive: true,
+  });
   const [status, setStatus] = useState<string>(() =>
     typeof window === "undefined"
       ? ""
@@ -713,6 +719,7 @@ export default function Expenses() {
   const listInput = {
     branchId: branchId ? Number(branchId) : undefined,
     category: (category || undefined) as any,
+    expenseCategoryId: expenseCategoryId ? Number(expenseCategoryId) : undefined,
     status: (status || undefined) as any,
     from: from || undefined,
     to: to || undefined,
@@ -723,6 +730,7 @@ export default function Expenses() {
   function resetFilters() {
     setBranchId("");
     setCategory("");
+    setExpenseCategoryId("");
     setStatus("");
     setFrom("");
     setTo("");
@@ -835,8 +843,19 @@ export default function Expenses() {
     category
       ? {
           key: "category",
-          label: `الفئة: ${CATEGORY_LABEL[category] ?? category}`,
+          label: `الدلو: ${CATEGORY_LABEL[category] ?? category}`,
           clear: () => setCategory(""),
+        }
+      : null,
+    expenseCategoryId
+      ? {
+          key: "expenseCategoryId",
+          label: `الفئة: ${
+            (expenseCategoryOptions.data ?? []).find(
+              (c) => String(c.id) === expenseCategoryId,
+            )?.name ?? expenseCategoryId
+          }`,
+          clear: () => setExpenseCategoryId(""),
         }
       : null,
     status
@@ -927,7 +946,7 @@ export default function Expenses() {
     {
       key: "category",
       header: "الفئة",
-      map: (r) => CATEGORY_LABEL[r.category] ?? r.category,
+      map: (r) => expenseCategoryText(r),
     },
     {
       key: "costCenter",
@@ -1096,7 +1115,14 @@ export default function Expenses() {
         branchId
           ? `الفرع: ${branches.data?.find((b) => b.id === branchId)?.name ?? branchId}`
           : null,
-        category ? `الفئة: ${CATEGORY_LABEL[category] ?? category}` : null,
+        category ? `الدلو: ${CATEGORY_LABEL[category] ?? category}` : null,
+        expenseCategoryId
+          ? `الفئة: ${
+              (expenseCategoryOptions.data ?? []).find(
+                (c) => String(c.id) === expenseCategoryId,
+              )?.name ?? expenseCategoryId
+            }`
+          : null,
         status ? `الحالة: ${STATUS_LABEL[status] ?? status}` : null,
         paymentMethod
           ? `طريقة الدفع: ${METHOD_LABEL[paymentMethod] ?? paymentMethod}`
@@ -1133,7 +1159,7 @@ export default function Expenses() {
           identity: `#${Number(r.id)}${r.receiptVoucherNumber ? ` / ${r.receiptVoucherNumber}` : r.receiptId ? ` / R#${r.receiptId}` : ""}`,
           date: `${fmtDate(r.expenseDate as unknown as string)} / ${fmtDateTime(r.createdAt as unknown as string)}`,
           branch: r.branchName ?? "—",
-          category: `${CATEGORY_LABEL[r.category] ?? r.category}${r.costCenter ? ` / ${r.costCenter}` : ""}`,
+          category: `${expenseCategoryText(r)}${r.costCenter ? ` / ${r.costCenter}` : ""}`,
           description: `${r.description ?? "لا يوجد شرح"}${r.payee ? ` / المستفيد: ${r.payee}` : ""}${r.referenceNumber ? ` / مرجع: ${r.referenceNumber}` : ""}`,
           funding: `${FUNDING_META[fundingKindOf(r)].short} / ${sourceLabel(r)}`,
           shift: fundingDetail(r),
@@ -1636,20 +1662,45 @@ export default function Expenses() {
             <div className="grid gap-2 border-t pt-2 sm:grid-cols-2 lg:grid-cols-3">
               <div className="space-y-1">
                 <Label htmlFor="expense-category" className="text-xs">
-                  الفئة المحاسبية
+                  الدلو المحاسبي
                 </Label>
                 <select
                   id="expense-category"
                   className={selectCls}
                   value={category}
-                  onChange={(event) => setCategory(event.target.value)}
+                  onChange={(event) => {
+                    setCategory(event.target.value);
+                    // الفلتران متداخلان: تغيير الدلو يُبطل فئةً دقيقةً قد لا تنتمي إليه،
+                    // وإلّا خرجت النتيجة فارغةً بلا سببٍ ظاهر للمستخدم.
+                    setExpenseCategoryId("");
+                  }}
                 >
-                  <option value="">كل الفئات</option>
+                  <option value="">كل الدلاء</option>
                   {Object.entries(CATEGORY_LABEL).map(([key, label]) => (
                     <option key={key} value={key}>
                       {label}
                     </option>
                   ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="expense-managed-category" className="text-xs">
+                  الفئة التفصيلية
+                </Label>
+                <select
+                  id="expense-managed-category"
+                  className={selectCls}
+                  value={expenseCategoryId}
+                  onChange={(event) => setExpenseCategoryId(event.target.value)}
+                >
+                  <option value="">كل الفئات</option>
+                  {(expenseCategoryOptions.data ?? [])
+                    .filter((c) => !category || c.bucket === category)
+                    .map((c) => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.name}
+                      </option>
+                    ))}
                 </select>
               </div>
               <div className="space-y-1">
@@ -1893,7 +1944,7 @@ export default function Expenses() {
                             الفئة / المركز
                           </dt>
                           <dd>
-                            {CATEGORY_LABEL[r.category] ?? r.category}
+                            {expenseCategoryText(r)}
                             {r.costCenter ? ` · ${r.costCenter}` : ""}
                           </dd>
                         </div>
@@ -2129,7 +2180,7 @@ export default function Expenses() {
                               <td className="p-2 text-xs">
                                 <div>{r.branchName ?? "—"}</div>
                                 <div className="mt-1 text-muted-foreground">
-                                  {CATEGORY_LABEL[r.category] ?? r.category}
+                                  {expenseCategoryText(r)}
                                 </div>
                                 {r.costCenter && (
                                   <div className="text-[11px] text-muted-foreground">

@@ -13,8 +13,12 @@ import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import {
+  EXPENSE_BUCKET_LABEL,
+  type ExpenseBucket,
+} from "@shared/expenseCategories";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Landmark } from "lucide-react";
@@ -37,16 +41,8 @@ import {
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const CATEGORIES: { value: string; label: string }[] = [
-  { value: "RENT", label: "إيجار" },
-  { value: "UTILITIES", label: "خدمات/فواتير (كهرباء/ماء/إنترنت)" },
-  { value: "SUPPLIES", label: "لوازم تشغيل" },
-  { value: "SALARY", label: "مرتبات/أجور" },
-  { value: "TRANSPORT", label: "مواصلات/شحن" },
-  { value: "MAINTENANCE", label: "صيانة" },
-  { value: "MARKETING", label: "تسويق/إعلان" },
-  { value: "OTHER", label: "أخرى" },
-];
+// حُذفت قائمة الدلاء الثابتة: المنتقي صار يقرأ الفئات المُدارة (جدول expenseCategories)
+// ويعرض دلوَها من `EXPENSE_BUCKET_LABEL` المشترك — نسخةٌ واحدة بدل أربع نسخٍ تنجرف.
 
 const METHODS: { value: string; label: string }[] = [
   { value: "CASH", label: "نقدي" },
@@ -130,7 +126,37 @@ export default function ExpenseNew() {
   const branches = trpc.branches.list.useQuery();
 
   const [branchId, setBranchId] = useState<number | "">("");
-  const [category, setCategory] = useState("RENT");
+  // الفئة المُدارة (0203) هي ما يختاره المستخدم، والدلو المحاسبيّ يُشتقّ منها هنا وعلى الخادم
+  // معاً — لا يُرسِل هذا النموذج دلواً يخالف الفئة أبداً.
+  const expenseCategories = trpc.expenses.categories.list.useQuery({
+    includeInactive: false,
+  });
+  const [expenseCategoryId, setExpenseCategoryId] = useState<number | "">("");
+  const selectedCategory = (expenseCategories.data ?? []).find(
+    (c) => c.id === expenseCategoryId,
+  );
+  const category = selectedCategory?.bucket ?? "OTHER";
+  // أول فئة فعّالة تُنتقى تلقائياً كي لا يقف المستخدم أمام حقلٍ إلزاميّ فارغ.
+  useEffect(() => {
+    const first = (expenseCategories.data ?? [])[0];
+    if (expenseCategoryId === "" && first) setExpenseCategoryId(first.id);
+  }, [expenseCategories.data, expenseCategoryId]);
+  // فئات مجمَّعة تحت دلوها — المستخدم يرى التصنيف الدقيق وأثره المحاسبيّ في آنٍ واحد.
+  const categoryGroups = useMemo(() => {
+    type CategoryRow = RouterOutputs["expenses"]["categories"]["list"][number];
+    const groups = new Map<ExpenseBucket, CategoryRow[]>();
+    for (const c of expenseCategories.data ?? []) {
+      const list = groups.get(c.bucket) ?? [];
+      list.push(c);
+      groups.set(c.bucket, list);
+    }
+    return Array.from(groups.entries());
+  }, [expenseCategories.data]);
+  /** تبويبات الصرف من المخزون تُثبّت الدلو؛ ننتقي أول فئةٍ فعّالة تحته بدل ضبط الدلو مباشرةً. */
+  function selectFirstCategoryOfBucket(target: ExpenseBucket) {
+    const match = (expenseCategories.data ?? []).find((c) => c.bucket === target);
+    if (match) setExpenseCategoryId(match.id);
+  }
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [cashSource, setCashSource] = useState<"OWN_DRAWER" | "TREASURY">(
@@ -211,6 +237,14 @@ export default function ExpenseNew() {
   async function submit() {
     setError("");
     if (!effectiveBranch) return setError("اختر الفرع.");
+    if (expenseCategoryId === "") {
+      document.getElementById("expense-category")?.focus();
+      return setError(
+        (expenseCategories.data ?? []).length === 0
+          ? "لا فئات مصروفات مهيأة — استعِدها من «الخزينة ← فئات المصروفات»."
+          : "اختر فئة المصروف.",
+      );
+    }
 
     // production-slice: صرف من المخزون (نثرية/تلف) — يُخصَم بالكلفة بلا صندوق.
     if (isStock) {
@@ -234,6 +268,7 @@ export default function ExpenseNew() {
         branchId: Number(effectiveBranch),
         expenseDate: expenseDate || undefined,
         category: category as any,
+        expenseCategoryId: Number(expenseCategoryId),
         amount: "0",
         paymentMethod: "CASH",
         source: "STOCK",
@@ -281,6 +316,7 @@ export default function ExpenseNew() {
       cashSource: paymentMethod === "CASH" ? cashSource : null,
       expenseDate: expenseDate || undefined,
       category: category as any,
+      expenseCategoryId: Number(expenseCategoryId),
       amount: D(amount).toFixed(2),
       paymentMethod: paymentMethod as any,
       description: description.trim() || null,
@@ -326,8 +362,8 @@ export default function ExpenseNew() {
                 onClick={() => {
                   setSource(t.value);
                   setError("");
-                  if (t.value === "INTERNAL_USE") setCategory("SUPPLIES");
-                  if (t.value === "WASTAGE") setCategory("OTHER");
+                  if (t.value === "INTERNAL_USE") selectFirstCategoryOfBucket("SUPPLIES");
+                  if (t.value === "WASTAGE") selectFirstCategoryOfBucket("OTHER");
                 }}
                 className={cn(
                   "rounded-full px-4 py-1.5 text-sm border transition",
@@ -408,18 +444,36 @@ export default function ExpenseNew() {
             />
           </div>
           <div className="space-y-1">
-            <Label>الفئة *</Label>
+            <Label htmlFor="expense-category">الفئة *</Label>
             <select
+              id="expense-category"
               className={selectCls}
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
+              value={expenseCategoryId === "" ? "" : String(expenseCategoryId)}
+              onChange={(e) =>
+                setExpenseCategoryId(
+                  e.target.value === "" ? "" : Number(e.target.value),
+                )
+              }
             >
-              {CATEGORIES.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label}
-                </option>
+              <option value="">— اختر فئة المصروف —</option>
+              {categoryGroups.map(([groupBucket, groupRows]) => (
+                <optgroup key={groupBucket} label={EXPENSE_BUCKET_LABEL[groupBucket]}>
+                  {groupRows.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
+            <p className="text-[11px] text-muted-foreground">
+              {selectedCategory
+                ? `الحساب المحاسبي: ${EXPENSE_BUCKET_LABEL[selectedCategory.bucket]}`
+                : "الفئة تحدّد الحساب المحاسبي الذي يهبط فيه المصروف."}{" "}
+              <Link href="/treasury?tab=expense-categories" className="underline">
+                إدارة الفئات
+              </Link>
+            </p>
           </div>
           {!isStock && (
             <>

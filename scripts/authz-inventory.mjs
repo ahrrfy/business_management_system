@@ -556,6 +556,39 @@ const PROCEDURES = {
     roles: [],
     branch: "scoped",
   },
+  // بيانات مرجعية عامّة للخزينة (فئات السندات): نفس بوّابة الوحدة تماماً، و`branch: "none"`
+  // لأنّ `voucherCategories` بلا عمود branchId ⇒ لا عزل فرعٍ ممكن ولا مطلوب. لا تُستعمل لأي
+  // إجراء يمسّ `receipts` (تلك تبقى على treasuryManagerProcedure بـbranch: "required").
+  treasuryGlobalProcedure: {
+    authority: "module-gate",
+    module: "treasury",
+    level: "FULL",
+    roles: ["manager", "accountant"],
+    branch: "none",
+  },
+  // فئات المصروفات: بيانات مرجعية عامّة بلا branchId. القراءة بخريطة الوحدة (كل من يُنشئ
+  // مصروفاً يحتاج المنتقي)، والكتابة بقائمة الإدارة. المصروف نفسه يبقى مقصوراً بالفرع.
+  expensesGlobalReadProcedure: {
+    authority: "module-map",
+    module: "expenses",
+    level: "READ",
+    roles: [],
+    branch: "none",
+  },
+  expensesGlobalProcedure: {
+    authority: "module-gate",
+    module: "expenses",
+    level: "FULL",
+    roles: ["manager", "accountant"],
+    branch: "none",
+  },
+  treasuryGlobalReadProcedure: {
+    authority: "module-gate",
+    module: "treasury",
+    level: "READ",
+    roles: ["manager", "accountant"],
+    branch: "none",
+  },
   treasuryCashierProcedure: {
     authority: "module-gate",
     module: "treasury",

@@ -31,7 +31,7 @@ import {
 } from "@/components/scan/BarcodeSearchCue";
 import { cn } from "@/lib/utils";
 import { isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
-import { AlertTriangle, Building2, Hourglass, Info, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
+import { AlertTriangle, Building2, Hourglass, Info, Plus, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import {
@@ -44,6 +44,12 @@ import {
   UNRESOLVED_DEFAULT_VOUCHER_CATEGORIES,
   voucherCategoryRoleLabel,
 } from "@shared/voucherCategoryAccounting";
+import {
+  moduleAccessAllowed,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
+import { VoucherCategoryQuickCreate } from "@/components/vouchers/VoucherCategoryQuickCreate";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -138,6 +144,36 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       selectedCategory.direction,
       selectedCategory.postingRole,
     );
+  /** فئات صالحة فعلاً لهذا الاتجاه (نشِطة + حساب مقابل متوافق) — صفرٌ يعني طريقاً مسدوداً. */
+  const readyCategoryCount = useMemo(
+    () =>
+      categoryOptions.filter((c) =>
+        isVoucherCategoryRoleCompatible(c.direction, c.postingRole),
+      ).length,
+    [categoryOptions],
+  );
+  // مرآة بوّابة الخادم لفئات السندات (treasuryGlobalProcedure) — إخفاء بصريّ فقط، والإنفاذ خادميّ.
+  const canManageCategories =
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "treasury",
+      "FULL",
+      ["manager", "accountant"],
+    );
+  const [showCategoryDialog, setShowCategoryDialog] = useState(false);
+  const restoreDefaults = trpc.voucherCategories.restoreDefaults.useMutation({
+    onSuccess: async (res) => {
+      await utils.voucherCategories.list.invalidate();
+      notify.ok(
+        res.inserted.length || res.mapped.length
+          ? `استُعيدت الفئات: +${res.inserted.length} جديدة، ${res.mapped.length} عُيّن حسابها`
+          : "الفئات الافتراضية مكتملة أصلاً",
+      );
+    },
+    onError: (e) => notify.err(e),
+  });
 
   // عميل/مورّد المُختار (لمعاينة الرَصيد).
   const customerData = trpc.customers.get.useQuery(
@@ -671,10 +707,23 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
               </div>
             )}
             <div className="space-y-1 md:col-span-2">
-              <Label>
-                فئة السند {direction === "OUT" ? "(مصروف)" : "(إيراد)"}
-                {partyType === "OTHER" ? " *" : ""}
-              </Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label>
+                  فئة السند {direction === "OUT" ? "(مصروف)" : "(إيراد)"}
+                  {partyType === "OTHER" ? " *" : ""}
+                </Label>
+                {canManageCategories && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => setShowCategoryDialog(true)}
+                  >
+                    <Plus aria-hidden className="size-3.5 ms-1" /> فئة جديدة
+                  </Button>
+                )}
+              </div>
               <select
                 className={selectCls}
                 value={
@@ -712,6 +761,42 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   </option>
                 ))}
               </select>
+              {/* حقلٌ إلزاميّ بقائمةٍ فارغة = طريقٌ مسدود. حين لا توجد ولا فئةٌ جاهزة لهذا الاتجاه
+                  نقول ذلك صراحةً ونعرض المخرجين: إنشاء فئة الآن، أو استعادة الكتالوج الافتراضي. */}
+              {partyType === "OTHER" && readyCategoryCount === 0 && !categories.isLoading && (
+                <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-[11px] text-[var(--sem-warn)] space-y-1.5">
+                  <p className="flex items-start gap-1.5 font-medium">
+                    <AlertTriangle aria-hidden className="size-3.5 mt-px shrink-0" />
+                    لا توجد فئة {isReceipt ? "قبض" : "صرف"} مهيأة محاسبياً — سند «أخرى» لا
+                    يُحفظ بدونها.
+                  </p>
+                  {canManageCategories && (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setShowCategoryDialog(true)}
+                      >
+                        إنشاء فئة الآن
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-xs"
+                        disabled={restoreDefaults.isPending}
+                        onClick={() => restoreDefaults.mutate()}
+                      >
+                        {restoreDefaults.isPending
+                          ? "جارٍ الاستعادة…"
+                          : "استعادة الفئات الافتراضية"}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
               <p
                 className={cn(
                   "text-[11px]",
@@ -1095,6 +1180,16 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           </span>
         )}
       </div>
+
+      {/* إنشاء الفئة الإلزامية دون مغادرة السند نصف المُدخَل — تُنتقى فور حفظها. */}
+      {canManageCategories && (
+        <VoucherCategoryQuickCreate
+          direction={direction}
+          open={showCategoryDialog}
+          onOpenChange={setShowCategoryDialog}
+          onCreated={(category) => setVoucherCategoryId(category.id)}
+        />
+      )}
     </div>
   );
 }
