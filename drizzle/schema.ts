@@ -3508,6 +3508,8 @@ export const onlineOrders = mysqlTable(
       () => invoices.id,
     ),
     orderDate: timestamp("orderDate").defaultNow().notNull(),
+    // لقطة 24 ساعة لطلبات المتجر PENDING؛ nullable فقط لتوافق الإدخالات الداخلية/الإرثية.
+    reservationExpiresAt: timestamp("reservationExpiresAt", { fsp: 3 }),
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     shippingCost: decimal("shippingCost", { precision: 15, scale: 2 })
       .default("0")
@@ -3545,6 +3547,10 @@ export const onlineOrders = mysqlTable(
     numberIdx: index("idx_order_number").on(table.orderNumber),
     customerIdx: index("idx_order_customer").on(table.customerId),
     statusIdx: index("idx_order_status").on(table.status),
+    statusReservationExpiryIdx: index("idx_order_status_reservation_expiry").on(
+      table.status,
+      table.reservationExpiresAt,
+    ),
     clientReqUq: unique("uq_online_order_client_req").on(table.clientRequestId),
     deliveryPartyIdx: index("idx_order_delivery_party").on(
       table.deliveryPartyId,
