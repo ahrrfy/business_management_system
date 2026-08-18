@@ -125,3 +125,21 @@ export function lineDiscountExceedsThreshold(refUnit: Decimal, quantity: Decimal
   if (refGross.lte(0)) return false;
   return refGross.minus(money(lineTotal)).div(refGross).gt(MANUAL_DISCOUNT_APPROVAL_THRESHOLD);
 }
+
+/**
+ * انحراف **رأس الفاتورة** عن مرجعها — النصف الثاني من H6.
+ *
+ * بوّابة السطر تقيس كل سطرٍ على حدة، فخصمُ رأس الفاتورة (`invoiceDiscount`) يفلت منها كلّياً:
+ * `computeInvoiceTotals` يقصّه إلى `[0, subtotal]` وحسب، فخصمٌ فاتوريّ بأربعين بالمئة يمرّ بلا
+ * اعتمادٍ ما دام الصافي فوق التكلفة — وهو بالضبط التنازل الذي وُضعت العتبة لتحكمه.
+ *
+ * المرجع هو مجموع (سعر المرجع × الكمية) للأسطر **غير المُهداة** (الهديّة قرارٌ خادميّ له بوّابته).
+ * وبلا مرجعٍ موجب (أصنافٌ بلا سعر قائمة) ⇒ لا قياس ولا بوّابة — تلك حالةُ H7 لا H6.
+ */
+export function invoiceDiscountExceedsThreshold(
+  referenceGross: Decimal,
+  invoiceNet: string | Decimal,
+): boolean {
+  if (referenceGross.lte(0)) return false;
+  return referenceGross.minus(money(invoiceNet)).div(referenceGross).gt(MANUAL_DISCOUNT_APPROVAL_THRESHOLD);
+}

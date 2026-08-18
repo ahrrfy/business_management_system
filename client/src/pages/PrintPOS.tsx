@@ -392,7 +392,10 @@ export default function PrintPOS() {
         });
         return;
       }
-      if (code === "PRECONDITION_FAILED") setCreditPrompt(e.message);
+      // بوّابات الاعتماد على هذه القناة ترمي FORBIDDEN لا PRECONDITION_FAILED (بيعٌ تحت التكلفة،
+      // وانحرافُ السعر اليدويّ H6) ⇒ مطابقةُ الرمز وحدها كانت تُظهر خطأً جامداً بلا حوارِ موافقة،
+      // فيعجز كاشير الطباعة عن إتمام بيعٍ مشروعٍ باعتماد مدير. نطابق العبارة الجامعة كما في POS.
+      if (code === "PRECONDITION_FAILED" || (e.message && e.message.includes("موافقة مدير"))) setCreditPrompt(e.message);
       else setMessage({ kind: "err", text: e.message });
     },
   });

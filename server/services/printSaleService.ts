@@ -27,13 +27,20 @@ import {
   receipts,
   shifts,
 } from "../../drizzle/schema";
-import { computeInvoiceCost, computeInvoiceTotals, computeLineTotal, isInvoiceBelowCost } from "./billing";
+import {
+  MANUAL_DISCOUNT_APPROVAL_THRESHOLD,
+  computeInvoiceCost,
+  computeInvoiceTotals,
+  computeLineTotal,
+  isInvoiceBelowCost,
+  lineDiscountExceedsThreshold,
+} from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "./accounting/postingEngine";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
 import { nextInvoiceNumber } from "./numbering";
-import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
+import { getUnitPrice, resolveTier, tryGetUnitPrice, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { extractInsertId } from "../lib/insertId";
@@ -325,14 +332,24 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       unitCost: string; // كلفة الوحدة (للعرض) = كلفة مواد السطر ÷ baseQuantity
     }> = [];
     const materialAgg = new Map<number, { baseQuantity: number; unitCost: Decimal }>();
+    // H6 (انجراف القناتين): كانت قناة الطباعة تحرس **تحت التكلفة** وحدها، بينما مسار البيع يحرس
+    // الانحراف عن السعر المرجعيّ أيضاً ⇒ سياستان مختلفتان لنفس القرار الماليّ على شاشتين. توحيدُهما
+    // هنا يُغلق الباب الخلفيّ: تنازلٌ سعريّ كبيرٌ فوق التكلفة كان يمرّ بلا اعتمادٍ ولا وسمٍ تدقيقيّ.
+    let manualDiscountGateTriggered = false;
 
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
+      // H6: مرجعُ القياس هو سعر القائمة (غير رامٍ) — القناة تُسعَّر يدوياً بطبيعتها، لكنّ وجود
+      // مرجعٍ يجعل الانحراف قابلاً للقياس. بلا مرجع ⇒ لا بوّابة (تلك حالة H7 لا H6).
+      const listRef = await tryGetUnitPrice(tx, l.productUnitId, tier);
       const unitPrice =
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)
-          : await getUnitPrice(tx, l.productUnitId, tier);
+          : (listRef ?? (await getUnitPrice(tx, l.productUnitId, tier)));
       const lineRes = computeLineTotal({ unitPrice, quantity: money(l.quantity) });
+      if (lineDiscountExceedsThreshold(listRef ?? money(0), money(l.quantity), lineRes.total)) {
+        manualDiscountGateTriggered = true;
+      }
 
       // كلفة المواد: وسّع وصفة الخدمة (إن وُجدت).
       let lineCost = new Decimal(0);
@@ -373,10 +390,12 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     //     المنطق مشترك في billing.isInvoiceBelowCost (نفس سياسة saleService)؛ خدمات بلا وصفة (تكلفة=صفر)
     //     تَبقى مسموحة بأي سعر.
     const belowCost = isInvoiceBelowCost(computed, totals.subtotal, totals.discountAmount, costTotal);
-    if (belowCost && !input.priceOverrideApproved) {
+    if ((belowCost || manualDiscountGateTriggered) && !input.priceOverrideApproved) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "بيع خدمة بأقل من تكلفة موادها يتطلب موافقة مدير.",
+        message: belowCost
+          ? "بيع خدمة بأقل من تكلفة موادها يتطلب موافقة مدير."
+          : `خصمٌ يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن السعر المرجعيّ يتطلب موافقة مدير.`,
       });
     }
 
@@ -649,7 +668,8 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       await recordIdempotencyKey(tx, "printSale.create", input.clientRequestId, invoiceId, requestFingerprint);
     }
 
-    return { invoiceId, invoiceNumber, shiftId: input.shiftId ?? null, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost };
+    // الوسم يشمل التنازل فوق التكلفة أيضاً (مرآة saleService) — وإلّا بقي تنازلٌ معتمَدٌ بلا أثرٍ رقابيّ.
+    return { invoiceId, invoiceNumber, shiftId: input.shiftId ?? null, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost || manualDiscountGateTriggered };
 }
 
 /** Public wrapper for callers that need a standalone atomic print sale. */

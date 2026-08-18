@@ -49,7 +49,9 @@ export default function EmployeeDetail() {
       // أثرا الفصل الأمنيّان يُصرَّح بهما بدل أن يمرّا صامتين.
       const extra = [
         r?.userDisabled ? "وعُطِّل حساب دخوله للنظام" : null,
-        r?.deviceLinksReleased ? `وحُرّر ربطه بجهاز الحضور (${r.deviceLinksReleased})` : null,
+        // 0204: الربط لم يعد يُقطع بل يُحدُّ بيوم الإنهاء — فبصماتُ آخر يومٍ تُنسَب ولا تضيع.
+        // الرسالة القديمة («حُرّر ربطه») صارت كاذبة، والفرق ماليّ: يومُ عملٍ كامل.
+        r?.deviceLinksReleased ? `وحُدَّ ربطه بجهاز الحضور بيوم الإنهاء (${r.deviceLinksReleased})` : null,
       ].filter(Boolean).join(" ");
       notify.ok(`تم تحديث حالة التوظيف${extra ? ` — ${extra}` : ""}`);
       setOpenTerminate(false); setTReason(""); await refresh();
