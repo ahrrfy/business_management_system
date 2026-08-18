@@ -1,6 +1,7 @@
 // إنشاء فاتورة بيع ذرّياً: idempotency + تسعير/تحويل الأسطر + بوّابة أقل-من-التكلفة +
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
+import type Decimal from "decimal.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productionRecipeLines, productionRecipes, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import {
@@ -446,13 +447,26 @@ export async function createSaleInTx(
         : (serverRef ?? (await getReferenceUnitPrice(tx, l.productUnitId, tier, tierPrice)));
       // H7 (قرار المالك ١٨/٨): بلا مرجعٍ موجب لا بيع — **حتى مع `unitPriceOverride`**، وهو المسار
       // المعتاد لا الاستثناء (POS/الاستقبال يُرسلان السعر دائماً) فكان الثقب يبتلع كلّ البيع.
-      const refUnit = rawRef != null && rawRef.gt(0)
-        ? rawRef
-        : requireListPriceReference(rawRef, {
-            itemLabel: v.label,
-            unitLabel: await unitNameFor(tx, l.productUnitId),
-            tier,
-          });
+      //
+      // **إلّا التقاطَ الأوفلاين** — نفس استثناء بوّابة H6 أدناه وللسبب نفسه، وهو هنا أوجب:
+      // البيعُ **وقع فعلاً** والنقدُ قُبض والزبون غادر بالبضاعة. رفضُ ترحيله لا يُلغي البيعة،
+      // بل يترك نقداً مقبوضاً بلا فاتورةٍ ولا قيد — «دينارٌ بلا مسارٍ ولا تبويب» (§٥)، وهو
+      // أسوأُ من بيعةٍ بلا مرجع. ولا يكفي أنّ الكاشير لا يبيع اليوم إلّا مسعَّراً: السعر قد
+      // يُمحى من المحرّر **بين** الالتقاط والترحيل، فيعلَق المال بلا مخرج. فالسياسة: يُرحَّل
+      // **ويُوسَم للمراجعة** (`priceOverride`) لا يُحظر.
+      let refUnit: Decimal;
+      if (rawRef != null && rawRef.gt(0)) {
+        refUnit = rawRef;
+      } else if (input.offlineCapture) {
+        refUnit = money(0);
+        manualDiscountGateTriggered = true;
+      } else {
+        refUnit = requireListPriceReference(rawRef, {
+          itemLabel: v.label,
+          unitLabel: await unitNameFor(tx, l.productUnitId),
+          tier,
+        });
+      }
       // السعر الفعليّ: override ← سعر الفئة/العقد ← رميٌ محفوظ «عرّف السعر أولاً» (لا المرجع،
       // كي لا يتحوّل سقوطُ القياس أعلاه إلى تحصيلٍ بسعر فئةٍ أخرى).
       const unitPrice = hasOverride

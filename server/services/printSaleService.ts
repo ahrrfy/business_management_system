@@ -348,13 +348,21 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       const tierPrice = await tryGetUnitPrice(tx, l.productUnitId, tier);
       // مرجعُ القياس يسقط على المفرد عند غياب سعر الفئة — للقياس وحده (انظر `getReferenceUnitPrice`).
       const listRef = await getReferenceUnitPrice(tx, l.productUnitId, tier, tierPrice);
-      const refUnit = listRef != null && listRef.gt(0)
-        ? listRef
-        : requireListPriceReference(listRef, {
-            itemLabel: await variantLabelFor(tx, l.variantId),
-            unitLabel: await unitNameFor(tx, l.productUnitId),
-            tier,
-          });
+      // استثناءُ التقاط الأوفلاين — انظر التعليل الكامل في `sale/create.ts`: البيعُ وقع
+      // ونقدُه قُبض، فرفضُ الترحيل يترك المال بلا فاتورةٍ ولا قيد. يُوسَم للمراجعة لا يُحظر.
+      let refUnit: Decimal;
+      if (listRef != null && listRef.gt(0)) {
+        refUnit = listRef;
+      } else if (input.offlineCapture) {
+        refUnit = money(0);
+        manualDiscountGateTriggered = true;
+      } else {
+        refUnit = requireListPriceReference(listRef, {
+          itemLabel: await variantLabelFor(tx, l.variantId),
+          unitLabel: await unitNameFor(tx, l.productUnitId),
+          tier,
+        });
+      }
       const unitPrice =
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)

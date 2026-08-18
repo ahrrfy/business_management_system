@@ -354,3 +354,47 @@ describe("حدُّ السياسة — سعرُ مفردٍ يكفي، والتح�
     ).rejects.toThrow(/لا يوجد سعر للوحدة/);
   });
 });
+
+/**
+ * **استثناء التقاط الأوفلاين** — أمسكه CI لا التصميم، وهو أهمّ ما في الشريحة.
+ *
+ * ثلاثةُ اختباراتٍ في `offlineRecovery.test.ts` سقطت على الحارس: صنفٌ بلا سعرٍ يُرحَّل من طابور
+ * الأوفلاين. والعلاجُ ليس ترقيع الثابتة (fixture) بل تصحيح السياسة: البيعُ **وقع فعلاً**
+ * والنقدُ قُبض والزبون غادر. رفضُ الترحيل لا يُلغي البيعة — يترك نقداً مقبوضاً بلا فاتورةٍ ولا
+ * قيد، وهو «دينارٌ بلا مسارٍ ولا تبويب» (§٥): أسوأُ بكثيرٍ من بيعةٍ بلا مرجع. ولا يكفي أنّ
+ * الكاشير لا يبيع اليوم إلّا مسعَّراً — السعر قد يُمحى من المحرّر **بين** الالتقاط والترحيل.
+ *
+ * وهو الاستثناء نفسه الذي تحمله بوّابة H6 سلفاً (`manualGate && !input.offlineCapture`) —
+ * فالسياستان متّسقتان: ما اكتمل يُوسَم للمراجعة لا يُحظر.
+ */
+describe("استثناء الأوفلاين — ما اكتمل يُوسَم لا يُحظر", () => {
+  const offlineCapture = { capturedAt: new Date("2026-08-18T09:00:00Z"), offlineReceiptNumber: "OFF-1", deviceId: "dev-1" };
+
+  it("ترحيلُ بيعٍ ملتقَطٍ لصنفٍ بلا سعر ⇒ يمرّ (لا يُحتجَز نقدٌ مقبوض)", async () => {
+    const res = await createSale(
+      saleInput({
+        lines: [{ variantId: 2, productUnitId: 2, quantity: "1", unitPriceOverride: "1500.00" }],
+        offlineCapture,
+      }),
+      cashier,
+    );
+    expect(res.invoiceId).toBeGreaterThan(0);
+  });
+
+  it("ويُوسَم `priceOverride` للمراجعة — المرورُ ليس تجاهلاً", async () => {
+    const res = await createSale(
+      saleInput({
+        lines: [{ variantId: 2, productUnitId: 2, quantity: "1", unitPriceOverride: "1500.00" }],
+        offlineCapture,
+      }),
+      cashier,
+    );
+    expect(res.priceOverride).toBe(true);
+  });
+
+  it("والاستثناءُ محصورٌ بالأوفلاين: نفسُ السطر أونلاين يُرفض", async () => {
+    await expect(
+      createSale(saleInput({ lines: [{ variantId: 2, productUnitId: 2, quantity: "1", unitPriceOverride: "1500.00" }] }), cashier),
+    ).rejects.toThrow(/سعر قائمة/);
+  });
+});
