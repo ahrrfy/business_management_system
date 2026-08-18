@@ -21,6 +21,7 @@
 
 const path = require("node:path");
 const dotenv = require("dotenv");
+const provisionRuntimePolicy = require("./scripts/provision-worker-runtime-policy.cjs");
 const artifactSmoke = process.env.HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE === "1";
 dotenv.config({ quiet: true });
 
@@ -33,6 +34,9 @@ const provisionPrivilegedEnvironment = Object.freeze({
   DB_CONTAINER: process.env.DB_CONTAINER,
   DB_ROOT_PW: process.env.DB_ROOT_PW,
 });
+const provisionWorkerEnvironment = Object.freeze(
+  provisionRuntimePolicy.buildWorkerEnvironment(process.env),
+);
 const webForbiddenEnvironmentKeys = Object.freeze([
   "DB_ROOT_PW",
   "DB_CONTAINER",
@@ -151,15 +155,17 @@ module.exports = {
       // يُعيد تشغيله دورياً بدل حلقة داخلية (أبسط: لا حالة معلّقة بين التشغيلات).
       autorestart: false,
       cron_restart: "*/2 * * * *", // كل دقيقتين — التوفير عملية نادرة، لا حاجة لأسرع.
+      // PM2 يدمج بيئة daemon/CLI افتراضياً. قائمةً تحوي سلسلة فارغة تحذف كل الموروث،
+      // ثم env تعيد فقط allowlist الموجبة. العامل نفسه يعيد التنقية عند الإقلاع أيضاً كي
+      // تبقى الحماية فعّالة قبل إعادة إنشاء تعريف PM2 القديم في الإنتاج.
+      filter_env: [""],
       env: {
+        ...provisionWorkerEnvironment,
         NODE_ENV: "production",
         TZ: "UTC",
-        CONTROL_DATABASE_URL: process.env.CONTROL_DATABASE_URL,
-        INTEGRATIONS_ENCRYPTION_KEY: process.env.INTEGRATIONS_ENCRYPTION_KEY,
         DB_CONTAINER:
           provisionPrivilegedEnvironment.DB_CONTAINER || "erp-mysql",
         DB_ROOT_PW: provisionPrivilegedEnvironment.DB_ROOT_PW,
-        DATABASE_URL: process.env.DATABASE_URL, // يُستعمَل فقط لاستنتاج host/port الافتراضيَّين لقواعد الشركات الجديدة.
       },
       log_date_format: "YYYY-MM-DD HH:mm:ss",
       error_file: "logs/provision-worker-error.log",
