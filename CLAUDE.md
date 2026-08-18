@@ -33,7 +33,7 @@ pnpm db:push                      # هجرة المخطط (محروسة بـ scr
 CONFIRM_SAMPLE_DATA_SEED=1 pnpm seed   # admin + فرعان + منتجات عيّنة (idempotent) — التأكيد إلزاميّ
 pnpm dev                          # http://localhost:3000
 pnpm check                        # فحص الأنواع (tsc --noEmit)
-pnpm check:guards                 # حزمة الحرّاس العشرة — بوّابة ما قبل الدفع (§٣.١)
+pnpm check:guards                 # حزمة الحرّاس الأحد عشر — بوّابة ما قبل الدفع (§٣.١)
 pnpm test:db:init                 # تهيئة قاعدة اختبار هذه الشجرة طازجةً (بعد تغيّر المخطط)
 pnpm test                         # الحزمة الكاملة (vitest، TZ=UTC، ٥٦٧ ملف اختبار)
 pnpm test:unit                    # ١٠٠ ملف منطقيّ بلا قاعدة — ثوانٍ، للتكرار السريع
@@ -78,8 +78,9 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 | `check:colors` | لون حالة/مالٍ خامّاً يتجاوز التوكنز |
 | `check:authz` | انحراف جرد الصلاحيات عن خطّ الأساس |
 | `check:nginx-abuse` | انحراف إعداد nginx عن عقد الحماية |
+| `check:compose` | تعذّر تحليل `docker-compose.yml` بقيم اختبار آمنة |
 
-- CI يشغّل هذه العشرة **عدا `check:authz`**؛ يحرسها بدلاً منه وظيفةٌ منفصلة `authz-guard` عبر `authz-guard-diff.mjs` (فرقُ قاعدة الدمج: ترفض ما **يُدخِله الـPR** من `raw-role` أو إجراءٍ بلا بوّابة وحدة، ولا تُحاسب على انحراف `main` القائم). ويشغّل CI أيضاً `check:mobile-release` و`db:verify` و`verify-digital-cards-integrity --selftest`.
+- CI يشغّل هذه الأحد عشر **عدا `check:authz`**؛ يحرسها بدلاً منه وظيفةٌ منفصلة `authz-guard` عبر `authz-guard-diff.mjs` (فرقُ قاعدة الدمج: ترفض ما **يُدخِله الـPR** من `raw-role` أو إجراءٍ بلا بوّابة وحدة، ولا تُحاسب على انحراف `main` القائم). ويشغّل CI أيضاً `check:mobile-release` و`db:verify` و`verify-digital-cards-integrity --selftest`.
 - ⇒ **`pnpm check:guards` محلياً أوسع من خطوات CI الفردية** — شغّله قبل الدفع.
 
 ## ٤. القاعدة الحاكمة (Definition of Done) — لا تُكسَر
