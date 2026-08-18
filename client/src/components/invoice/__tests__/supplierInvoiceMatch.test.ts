@@ -1,3 +1,5 @@
+import { readdirSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   deriveDocumentTotal,
@@ -7,6 +9,25 @@ import {
 } from "../supplierInvoiceMatching";
 import { calcTotals } from "../totals";
 import type { InvoiceLine, InvoiceState } from "../types";
+
+describe("invoice module portability", () => {
+  it("does not contain module stems that collide on case-insensitive filesystems", () => {
+    const moduleFiles = readdirSync(path.resolve(import.meta.dirname, ".."), {
+      withFileTypes: true,
+    })
+      .filter(entry => entry.isFile() && /\.[cm]?[jt]sx?$/u.test(entry.name))
+      .map(entry => entry.name);
+
+    const pathsByStem = new Map<string, string[]>();
+    for (const file of moduleFiles) {
+      const stem = path.basename(file, path.extname(file)).toLocaleLowerCase("en-US");
+      pathsByStem.set(stem, [...(pathsByStem.get(stem) ?? []), file]);
+    }
+
+    const collisions = [...pathsByStem.values()].filter(files => files.length > 1);
+    expect(collisions).toEqual([]);
+  });
+});
 
 /**
  * بلاغ المالك (١٧/٨/٢٦): «لا يتم قبول الفاتورة ولا يمكن مطابقتها مع المورد وقيمة الفاتورة».
