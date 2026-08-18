@@ -112,6 +112,7 @@ export default defineConfig({
       "shared/hr.test.ts",
       "server/services/__tests__/attendancePay.test.ts",
       "server/services/__tests__/dayHours.test.ts",
+      "scripts/__tests__/auditPayrollReadOnly.test.ts",
     ],
   },
 });
