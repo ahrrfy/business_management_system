@@ -19,12 +19,12 @@ services:
     environment:
       # لا كلمة مرور افتراضية مَخبوءة: يجب ضبط DB_ROOT_PW (في .env) وإلا يفشل الإقلاع بوضوح
       # بدل تشغيل قاعدة بكلمة مرور معروفة. راجع .env.example.
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PW:?DB_ROOT_PW مطلوب — اضبطه في .env (مثال: openssl rand -hex 24)}
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PW:?DB_ROOT_PW مطلوب — اضبطه في .env (مثال: openssl rand -hex 24)}"
       MYSQL_DATABASE: ${DB_NAME:-erp}
       # حساب التطبيق أقل امتيازاً من root ومحصور تلقائياً بقاعدة MYSQL_DATABASE.
       # لا تمنح خادم الويب DB_ROOT_PW؛ root مخصص للصيانة/التعافي خارج الويب فقط.
       MYSQL_USER: ${DB_APP_USER:-erp_app}
-      MYSQL_PASSWORD: ${DB_APP_PW:?DB_APP_PW مطلوب — اضبط كلمة مختلفة عن DB_ROOT_PW}
+      MYSQL_PASSWORD: "${DB_APP_PW:?DB_APP_PW مطلوب — اضبط كلمة مختلفة عن DB_ROOT_PW}"
     ports:
       # G1 (أخطر إصلاح): الربط على الحلقة المحلية فقط — Docker يثقب جدار النار (ufw) ويكشف
       # المنفذ للإنترنت العلني إن رُبط على كل الواجهات. التطبيق على نفس المضيف فلا يحتاج أكثر.
