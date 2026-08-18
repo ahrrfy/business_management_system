@@ -4,7 +4,7 @@ import {
   distributeToSubtotal,
   matchSupplierInvoice,
   subtotalForInvoiceTotal,
-} from "../supplierInvoiceMatch";
+} from "../supplierInvoiceMatching";
 import { calcTotals } from "../totals";
 import type { InvoiceLine, InvoiceState } from "../types";
 
