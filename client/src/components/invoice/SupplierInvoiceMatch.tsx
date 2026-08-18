@@ -3,7 +3,7 @@
  *
  * تُظهر قبل الحفظ: مجموع بنودنا · قيمة فاتورة المورّد · **الفرق بالرقم** · حكمٌ مشروح، وتُتيح
  * توزيع الفرق على أسعار البنود بنسبة القيمة **بعد أن يراه الموظّف ويؤكّده** — لا امتصاصَ خفيّ.
- * المنطق كلّه في `supplierInvoiceMatching.ts` (نقيٌّ ومُختبَر)؛ هذا الملف عرضٌ فقط.
+ * المنطق كلّه في `supplierInvoiceMatch.ts` (نقيٌّ ومُختبَر)؛ هذا الملف عرضٌ فقط.
  */
 import { AlertTriangle, BadgePercent, CheckCircle2, FileCheck2, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
