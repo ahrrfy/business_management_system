@@ -348,4 +348,35 @@ describe("خصم فاتورة المورّد على أمر الشراء", () => 
     expect(after.po.total).toBe("13500.00");
     expect(after.po.invoiceDiscount).toBe("1500.00");
   });
+
+  it("الثابت المحفوظ: Σ إجماليات البنود = المجموع الفرعيّ، والانحراف عن (سعر×كمّية) محدودٌ بفلوس", async () => {
+    // التوزيع يضمن **الدقّة حيث يُقيَّد المال**: مجموع `total` = الصافي بالضبط (وهو ما تُرحّله AP
+    // ويُطابق ورقة المورّد). في المقابل قد يفترق `unitPrice × qty` عن `total` بفلوسٍ معدودة على
+    // بندٍ واحد (البند الماصّ) حين لا يقبل الخصمُ القسمةَ على الكمّية — وهو نفس نمط الامتصاص
+    // المستعمَل في `allocateLineTax` وفي بقايا الاستلام. نُثبّت الحدّ صراحةً كي لا يتّسع صامتاً.
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "3", unitPrice: "333.33" },
+        { variantId: 2, productUnitId: 2, quantity: "7", unitPrice: "111.11" },
+      ],
+      invoiceDiscount: "100",
+    }, actor);
+    const { po } = await readOrder(created.purchaseOrderId);
+    const items = await db().select().from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
+
+    // (١) الثابت الصارم: Σ البنود = المجموع الفرعيّ = الإجماليّ قبل الخصم − الخصم.
+    const sumTotals = items.reduce((acc, r) => acc + Number(r.total), 0);
+    expect(Number(sumTotals.toFixed(2))).toBe(Number(po.subtotal));
+    expect(Number(po.subtotal)).toBe(Number((999.99 + 777.77 - 100).toFixed(2)));
+    expect(po.invoiceDiscount).toBe("100.00");
+
+    // (٢) الحدّ المُعلَن: انحراف (سعر × كمّية) عن إجمالي السطر ≤ ٥ فلوس على أيّ بند.
+    for (const r of items) {
+      const drift = Math.abs(Number(r.unitPrice) * Number(r.quantity) - Number(r.total));
+      expect(drift).toBeLessThanOrEqual(0.05);
+    }
+  });
 });
