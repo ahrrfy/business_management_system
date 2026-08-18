@@ -95,7 +95,7 @@ describe("حوكمة إنهاء الخدمة", () => {
     expect(new Date(u.sessionsValidFrom as unknown as string).getTime()).toBeGreaterThan(beforeValidFrom);
 
     /*
-     * ⚠️ **تُحدِّث هذه التوقّعات عمداً** (0204، بند ٢١). كانت تُثبّت `employeeId=null` —
+     * ⚠️ **تُحدِّث هذه التوقّعات عمداً** (0205، بند ٢١). كانت تُثبّت `employeeId=null` —
      * وهي آليّةُ العطب نفسها: القطعُ الفوريّ يقع يومَ العمل الأخير فتصل بصماتُ ذلك اليوم بلا
      * صاحبٍ ويُسجَّل صفر ساعات. والسلوكُ الذي كانت تحرسه حقاً («لا تُنسب بصماتُ الرقم للمفصول
      * بعد مغادرته») محفوظٌ بالحدّ، ويحرسه الاختبار التالي (ط٢) صراحةً.
@@ -115,7 +115,7 @@ describe("حوكمة إنهاء الخدمة", () => {
       { enrollId: 7, punchAt: "2026-07-31 16:00:00", mode: "face", inOut: null, raw: null },
     ]);
     const [p] = await db().select().from(s.hrAttendancePunches).where(eq(s.hrAttendancePunches.enrollId, 7));
-    expect(Number(p.employeeId)).toBe(1); // قبل 0204 كانت null ⇒ يومُ عملٍ بصفر ساعات
+    expect(Number(p.employeeId)).toBe(1); // قبل 0205 كانت null ⇒ يومُ عملٍ بصفر ساعات
   });
 
   it("ط٢) بعد الفصل لا تُنسب بصمات الرقم نفسه لأحد (يُعاد استعماله لموظف جديد)", async () => {
