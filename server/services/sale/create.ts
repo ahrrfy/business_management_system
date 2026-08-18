@@ -8,6 +8,7 @@ import {
   computeInvoiceTotals,
   computeLineTotal,
   isInvoiceBelowCost,
+  invoiceDiscountExceedsThreshold,
   lineDiscountExceedsThreshold,
   MANUAL_DISCOUNT_APPROVAL_THRESHOLD,
   snapshotUnitCost,
@@ -416,6 +417,9 @@ export async function createSaleInTx(
     const computed = [];
     // H6 (تدقيق ٢٧/٧): هل انحرف أيّ سطرٍ عن مرجعه بأكثر من العتبة؟ (خصمٌ/سعرٌ يدويّ فوق التكلفة يستوجب تفويضاً).
     let manualDiscountGateTriggered = false;
+    // ومرجعُ **رأس** الفاتورة: مجموع (سعر المرجع × الكمية) للأسطر غير المُهداة. بوّابة السطر لا تراه،
+    // فخصمُ الرأس كان يفلت منها كلّياً (يُقصّ إلى [0, subtotal] وحسب) — وهو نصف H6 الثاني.
+    let referenceGrossTotal = money(0);
     for (const l of input.lines) {
       const v = variantById.get(l.variantId);
       if (!v) throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${l.variantId} غير موجود` });
@@ -476,6 +480,7 @@ export async function createSaleInTx(
       // الهدية مُستثناة: مجّانيّتها **مقصودة ومصنَّفة** (قيد GIFT_OUT + بوّابة عتبة الهدايا أدناه)،
       // لا انحرافُ تسعيرٍ مستتر — وإلّا لَطالبت كلُّ هديةٍ بتفويضٍ بحجّة «خصم ١٠٠٪».
       if (!isGift && lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)) manualDiscountGateTriggered = true;
+      if (!isGift) referenceGrossTotal = referenceGrossTotal.plus(refUnit.times(money(l.quantity)));
 
       // promotions v2 (idempotent verification): إن مرّر POS `promotionId`، نُعيد الحلّ خادمياً
       // ونتحقّق أن `expectedPromoDiscount = discountForUnit × qty` يتّسق مع `discountAmount` (± 1 IQD).
@@ -598,11 +603,18 @@ export async function createSaleInTx(
     // H6/H7: بوّابة الخصم اليدويّ فوق التكلفة — تُفرَض على قناة POS الحيّة فقط، لا على إعادة تشغيل
     // الأوفلاين (offlineCapture): بيعٌ اكتمل والتقاطُه لا يُعاد حظره — يُوسَم للمراجعة لا غير. المرتفعون
     // والقنوات المُقِرّة سلفاً (بث/عرض سعر) يمرّون عبر priceOverrideApproved كما في بوّابة تحت-التكلفة.
+    // خصمُ الرأس يُقاس على الصافي (المجموع − خصم الفاتورة) مقابل المرجع الإجماليّ — بلا ضريبةٍ ولا
+    // أجرة توصيل (كلتاهما ليست تنازلاً سعرياً). فاتورةٌ بأسطرٍ بسعر القائمة وخصمِ رأسٍ ٤٠٪ تُمسَك هنا.
+    const invoiceNet = money(totals.subtotal).minus(money(totals.discountAmount));
+    const headDiscountGate = invoiceDiscountExceedsThreshold(referenceGrossTotal, invoiceNet);
+    if (headDiscountGate) manualDiscountGateTriggered = true;
     const manualGate = manualDiscountGateTriggered && !input.offlineCapture;
     if ((belowCost || manualGate) && !input.priceOverrideApproved) {
       const reason = belowCost
         ? "بيع بأقل من التكلفة"
-        : `خصمٌ يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن السعر المرجعيّ`;
+        : headDiscountGate
+          ? `خصم الفاتورة يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن مرجعها`
+          : `خصمٌ يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن السعر المرجعيّ`;
       throw new TRPCError({ code: "FORBIDDEN", message: `${reason} يتطلب موافقة مدير.` });
     }
 

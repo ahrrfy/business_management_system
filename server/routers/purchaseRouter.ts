@@ -142,6 +142,8 @@ export const purchaseRouter = router({
         // مطابقة فاتورة المورّد: قيمة الورقة بعملة الأمر. اختياريّة، وحين تُرسَل يفرض
         // `computePurchaseDocument` تطابقها مع مجموع البنود برسالةٍ تحمل الرقمين والفرق.
         supplierInvoiceTotal: nonNegMoneyString.optional(),
+        // خصم فاتورة المورّد بعملة الأمر (0204) — يُوزَّع بنسبة القيمة فتُخزَّن الأعمدة صافيةً.
+        invoiceDiscount: nonNegMoneyString.optional(),
         // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
         // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
         shippingCost: nonNegMoneyString.optional(),
@@ -193,6 +195,8 @@ export const purchaseRouter = router({
         // مطابقة فاتورة المورّد: قيمة الورقة بعملة الأمر. اختياريّة، وحين تُرسَل يفرض
         // `computePurchaseDocument` تطابقها مع مجموع البنود برسالةٍ تحمل الرقمين والفرق.
         supplierInvoiceTotal: nonNegMoneyString.optional(),
+        // خصم فاتورة المورّد بعملة الأمر (0204) — يُوزَّع بنسبة القيمة فتُخزَّن الأعمدة صافيةً.
+        invoiceDiscount: nonNegMoneyString.optional(),
         shippingCost: nonNegMoneyString.optional(),
         customsCost: nonNegMoneyString.optional(),
       })
@@ -526,6 +530,10 @@ export const purchaseRouter = router({
           agreedCurrency: purchaseOrders.agreedCurrency,
           usdTotal: purchaseOrders.usdTotal,
           agreedRate: purchaseOrders.agreedRate,
+          // خصم فاتورة المورّد (0204): إفصاحٌ في شاشة التفاصيل، وإعادةُ تحميلٍ لمحرّر التعديل
+          // (يُعاد الخصم كما أُدخل مع الأسعار **قبل** الخصم ⇒ إعادةُ الحفظ لا تخصم مرّتين).
+          invoiceDiscount: purchaseOrders.invoiceDiscount,
+          usdInvoiceDiscount: purchaseOrders.usdInvoiceDiscount,
         })
         .from(purchaseOrders)
         .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
@@ -547,6 +555,9 @@ export const purchaseRouter = router({
         total: purchaseOrderItems.total,
         usdUnitPrice: purchaseOrderItems.usdUnitPrice,
         usdTotal: purchaseOrderItems.usdTotal,
+        // السعر **قبل الخصم** — المحرّر يُعيد تحميله كي يُعاد توزيع الخصم من أصله لا من الصافي.
+        listUnitPrice: purchaseOrderItems.listUnitPrice,
+        usdListUnitPrice: purchaseOrderItems.usdListUnitPrice,
         productName: products.name,
         sku: productVariants.sku,
         variantName: productVariants.variantName,
@@ -566,11 +577,12 @@ export const purchaseRouter = router({
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
     if (!canSeeCostForUser(ctx.user)) {
-      const poMasked = { ...po, subtotal: null, taxAmount: null, taxRatePercent: null, shippingCost: null, customsCost: null, total: null, paidAmount: null, usdTotal: null, paidUsd: null, returnedUsd: null, agreedRate: null };
+      // 0204: الخصم وسعرُ ما قبله **تكلفةٌ أيضاً** (يكشفان بنية سعر المورّد) ⇒ يُحجبان مع البقيّة.
+      const poMasked = { ...po, subtotal: null, taxAmount: null, taxRatePercent: null, shippingCost: null, customsCost: null, total: null, paidAmount: null, usdTotal: null, paidUsd: null, returnedUsd: null, agreedRate: null, invoiceDiscount: null, usdInvoiceDiscount: null };
       // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
       // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
       // أساسه manager بـreports=NONE — تناقضٌ مع حجب الرأس؛ تدقيق ٢٥/٧، M2.)
-      const itemsMasked = items.map((row) => ({ ...row, unitPrice: null, usdUnitPrice: null, usdTotal: null, total: null }) as unknown as typeof row);
+      const itemsMasked = items.map((row) => ({ ...row, unitPrice: null, usdUnitPrice: null, usdTotal: null, total: null, listUnitPrice: null, usdListUnitPrice: null }) as unknown as typeof row);
       return { ...poMasked, items: itemsMasked };
     }
     return { ...po, items };

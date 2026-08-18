@@ -1422,6 +1422,27 @@
       "when": 1788052254000,
       "tag": "0203_managed_expense_categories",
       "breakpoints": true
+    },
+    {
+      "idx": 204,
+      "version": "5",
+      "when": 1788052255000,
+      "tag": "0204_purchase_invoice_discount",
+      "breakpoints": true
+    },
+    {
+      "idx": 206,
+      "version": "5",
+      "when": 1788052257000,
+      "tag": "0206_cost_revaluation_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 207,
+      "version": "5",
+      "when": 1788052258000,
+      "tag": "0207_device_link_effective_to",
+      "breakpoints": true
     }
   ]
 }

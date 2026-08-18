@@ -87,7 +87,12 @@ function stateFromOrder(order: PurchaseOrderData, branchId: number): InvoiceStat
   const base = createInitialState(INVOICE_TYPE, branchId);
   const isUsd = order.agreedCurrency === "USD";
   const items: InvoiceLine[] = order.items.map((it) => {
-    const unitPrice = isUsd ? (it.usdUnitPrice ?? "0") : (it.unitPrice ?? "0");
+    // السعر المُعاد تحميله هو **ما قبل الخصم** (`listUnitPrice`) متى وُجد: المحرّر يحمل الخصم
+    // في حقلٍ مستقلّ ويُعيد توزيعه عند الحفظ، فتحميلُ السعر الصافي كان سيخصم مرّتين.
+    // `null` = بلا خصم (أو أمرٌ سابقٌ للعمود) ⇒ الصافي هو الأصل نفسه.
+    const unitPrice = isUsd
+      ? (it.usdListUnitPrice ?? it.usdUnitPrice ?? "0")
+      : (it.listUnitPrice ?? it.unitPrice ?? "0");
     return {
       productId: Number(it.productId ?? 0),
       variantId: Number(it.variantId),
@@ -122,6 +127,12 @@ function stateFromOrder(order: PurchaseOrderData, branchId: number): InvoiceStat
     // ورقة المورّد تساوي مجموعَنا **بلا أن يكون أحدٌ طابقهما** — ادّعاءُ حقيقةٍ لا نعرفها. يبقى
     // فارغاً فيملؤه الموظّف من الورقة إن أراد تفعيل الضابط على هذا التعديل.
     supplierInvoiceTotal: isUsd ? String(order.usdTotal ?? "") : "",
+    // خصم فاتورة المورّد بعملة الأمر — يعود مبلغاً (لا نسبةً) كي يُعاد توزيعه كما أُدخل بالضبط.
+    globalDiscount: (() => {
+      const stored = isUsd ? order.usdInvoiceDiscount : order.invoiceDiscount;
+      return stored != null && Number(stored) > 0 ? String(stored) : "";
+    })(),
+    globalDiscountType: "amount",
     notes: order.notes ?? "",
     taxEnabled: Number(taxRate) > 0,
     taxRatePercent: taxRate,
@@ -136,6 +147,8 @@ function editorFingerprint(state: InvoiceState, shippingCost: string, customsCos
     currency: state.currency,
     agreedRate: state.agreedRate,
     supplierInvoiceTotal: state.supplierInvoiceTotal,
+    globalDiscount: state.globalDiscount,
+    globalDiscountType: state.globalDiscountType,
     notes: state.notes,
     taxEnabled: state.taxEnabled,
     taxRatePercent: state.taxRatePercent,
@@ -190,6 +203,24 @@ export default function PurchaseEdit() {
   const fingerprintRef = useRef(fingerprint);
   fingerprintRef.current = fingerprint;
 
+  /** يجعل فرقَ المطابقة **خصمَ فاتورةٍ** — المسار الطبيعيّ حين تكون ورقة المورّد أقلّ من بنودنا:
+   *  d' = المجموع قبل الخصم − الصافي اللازم لبلوغ قيمة الفاتورة (يُراعي الضريبة بالضبط). */
+  function applyDifferenceAsDiscount() {
+    const neededNet = subtotalForInvoiceTotal(
+      state.supplierInvoiceTotal,
+      state.taxEnabled ? state.taxRatePercent || "0" : "0",
+    );
+    const gross = D(deriveDocumentTotal(state.items).grossSubtotal);
+    const next = round2(gross.minus(D(neededNet)));
+    if (next.isNegative()) {
+      notify.warn("فاتورة المورّد أعلى من مجموع البنود — الخصم لا يُصلحها؛ راجع البنود الناقصة.");
+      return;
+    }
+    dispatch({ type: "SET_FIELD", field: "globalDiscountType", value: "amount" });
+    dispatch({ type: "SET_FIELD", field: "globalDiscount", value: next.toFixed(2) });
+    notify.ok(`سُجّل الفرق خصمَ فاتورةٍ بمقدار ${next.toFixed(2)} — يُوزَّع على البنود بنسبة قيمتها.`);
+  }
+
   const insightItems = useMemo(
     () => Array.from(new Map(state.items.map((item) => [
       `${item.variantId}:${item.productUnitId}`,
@@ -221,9 +252,25 @@ export default function PurchaseEdit() {
   // إجماليّ المستند بعملته **بترتيب تقريب الخادم** (سطراً سطراً ثمّ الجمع) — لا
   // `totals.grandTotal` الذي يجمع غير المقرَّب فيقرّب مرّةً واحدة. الفرق فلسٌ حقيقيّ
   // بالدولار ذي الأربع منازل، وهو ما تُبنى عليه المطابقة والعرض معاً («المعروض = المحفوظ»).
+  // خصم فاتورة المورّد (0204): يُدخَل مبلغاً أو نسبةً في لوحة المبالغ، ويُشتقّ المبلغُ من
+  // **قيمة البضاعة بترتيب تقريب الخادم** كي يطابق ما يوزّعه `computePurchaseDocument` بالضبط.
+  const invoiceDiscountAmount = useMemo(() => {
+    const gross = D(deriveDocumentTotal(state.items).grossSubtotal);
+    const raw = safeMoney(state.globalDiscount || "0");
+    const amount =
+      state.globalDiscountType === "percent" ? round2(gross.times(raw).dividedBy(100)) : round2(raw);
+    if (amount.isNegative()) return D(0);
+    return amount.gt(gross) ? gross : amount;
+  }, [state.items, state.globalDiscount, state.globalDiscountType]);
+
   const docTotals = useMemo(
-    () => deriveDocumentTotal(state.items, state.taxEnabled ? state.taxRatePercent || "0" : "0"),
-    [state.items, state.taxEnabled, state.taxRatePercent],
+    () =>
+      deriveDocumentTotal(
+        state.items,
+        state.taxEnabled ? state.taxRatePercent || "0" : "0",
+        invoiceDiscountAmount.toFixed(2),
+      ),
+    [state.items, state.taxEnabled, state.taxRatePercent, invoiceDiscountAmount],
   );
 
   // نفس معاينة PurchaseNew: الشحن/الكمرك **خارج** الإجمالي (مصروف نقلٍ لا ذمّة مورّد).
@@ -234,11 +281,17 @@ export default function PurchaseEdit() {
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
     // نفس ترتيب تقريب الخادم (سطراً سطراً ثمّ الجمع، والضريبة على المجموع الدينارّي) — انظر
     // التعليق المفصَّل في PurchaseNew: «المعروض = المحفوظ» شرطُ ألّا يدفع المالك ما لم يُحفَظ.
+    // الخصم فاتوريّ: نطبّق نسبته على كلّ سطرٍ قبل الترجمة تماماً كما يفعل `allocateByValue`.
+    const grossDoc = D(docTotals.grossSubtotal);
+    const netRatio = grossDoc.gt(0) ? D(docTotals.subtotal).dividedBy(grossDoc) : D(1);
     const goodsIqd =
       state.currency === "USD"
         ? round2(
             state.items.reduce(
-              (acc, l) => acc.plus(round2(round2(safeMoney(l.price).times(D(l.qty || 0))).times(rate))),
+              (acc, l) =>
+                acc.plus(
+                  round2(round2(round2(safeMoney(l.price).times(D(l.qty || 0))).times(netRatio)).times(rate)),
+                ),
               D(0),
             ),
           )
@@ -252,6 +305,7 @@ export default function PurchaseEdit() {
     shippingCost,
     customsCost,
     docTotals.subtotal,
+    docTotals.grossSubtotal,
     state.items,
     state.currency,
     state.agreedRate,
@@ -272,10 +326,13 @@ export default function PurchaseEdit() {
 
   /** يوزّع فرق المطابقة على أسعار البنود بنسبة القيمة — الأسعار الجديدة تظهر قبل الحفظ. */
   function distributeInvoiceDifference() {
-    const target = subtotalForInvoiceTotal(
+    // الهدف هو **المجموع قبل الخصم**: (إجمالي − خصم) × (١+ض) = قيمة الفاتورة ⇒ نحسب الصافي
+    // اللازم ثمّ نُعيد إليه الخصم القائم، وإلّا وُزّع الفرق مرّتين (مرّةً بالأسعار ومرّةً بالخصم).
+    const neededNet = subtotalForInvoiceTotal(
       state.supplierInvoiceTotal,
       state.taxEnabled ? state.taxRatePercent || "0" : "0",
     );
+    const target = round2(D(neededNet).plus(invoiceDiscountAmount)).toFixed(2);
     const res = distributeToSubtotal(state.items, target, state.currency);
     if (!res.prices.length) {
       notify.warn(res.error ?? "تعذّر توزيع الفرق على البنود.");
@@ -338,6 +395,8 @@ export default function PurchaseEdit() {
       // نظير createOrder: لا نُرسل usdTotal — الخادم يشتقّه من البنود بترتيب تقريبٍ محدَّد،
       // وإرسالُ إجماليٍّ مشتقٍّ من أسعارٍ كاملة الدقّة يُفشل حارسَ المطابقة بفرق تقريبٍ بحت.
       agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
+      // خصم فاتورة المورّد (0204): يُرسَل بعملة الأمر ويُوزّعه الخادم بنسبة القيمة.
+      invoiceDiscount: invoiceDiscountAmount.gt(0) ? invoiceDiscountAmount.toFixed(2) : undefined,
       // مطابقة فاتورة المورّد (نظير الإنشاء): الخادم يرفض حفظ تعديلٍ يخالف قيمة المستند.
       supplierInvoiceTotal: state.supplierInvoiceTotal.trim()
         ? round2(safeMoney(state.supplierInvoiceTotal)).toFixed(2)
@@ -571,7 +630,8 @@ export default function PurchaseEdit() {
             dispatch={dispatch}
             showShipping={false}
             showOtherExpenses={false}
-            showDiscount={false}
+            showDiscount
+            overrideDiscountAmount={invoiceDiscountAmount.toFixed(2)}
             showPayment={false}
             showTaxToggle
             overrideGrandTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
@@ -582,6 +642,7 @@ export default function PurchaseEdit() {
             onChange={(v) => dispatch({ type: "SET_FIELD", field: "supplierInvoiceTotal", value: v })}
             currency={state.currency}
             onDistribute={distributeInvoiceDifference}
+            onApplyAsDiscount={applyDifferenceAsDiscount}
             canDistribute={D(totals.subtotal).gt(0)}
           />
           {state.currency === "USD" && landed.rate.gt(0) && (
