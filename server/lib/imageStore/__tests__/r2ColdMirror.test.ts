@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
@@ -56,10 +56,11 @@ describe("R2 cumulative cold mirror", () => {
   });
 
   it("يحصر كل مفتاح داخل objects ويرفض traversal والمفاتيح الملتبسة", () => {
-    expect(resolveMirrorObjectPath("C:/cold-r2", "single/studio/candidate/aa/file.png"))
+    const coldRoot = resolve(tmpdir(), "cold-r2");
+    expect(resolveMirrorObjectPath(coldRoot, "single/studio/candidate/aa/file.png"))
       .toMatch(/cold-r2[\\/]objects[\\/]single[\\/]studio/);
-    expect(() => resolveMirrorObjectPath("C:/cold-r2", "../escape")).toThrow(/MIRROR_KEY_INVALID/);
-    expect(() => resolveMirrorObjectPath("C:/cold-r2", "single//file.png")).toThrow(/MIRROR_KEY_INVALID/);
+    expect(() => resolveMirrorObjectPath(coldRoot, "../escape")).toThrow(/MIRROR_KEY_INVALID/);
+    expect(() => resolveMirrorObjectPath(coldRoot, "single//file.png")).toThrow(/MIRROR_KEY_INVALID/);
   });
 
   it("لا يعيد تفاصيل المزوّد أو المسارات في رمز الفشل", () => {
