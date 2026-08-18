@@ -87,7 +87,7 @@ const variantSchema = z.object({
   openingStockByBranch: z
     .array(z.object({ branchId: z.number().int().positive(), qty: z.number().int().min(0).max(100_000_000) }))
     .optional(),
-  // product-variants: صورة مستقلّة لهذا اللون (data URL مضغوط) — تُخزَّن في productImages بـvariantId.
+  // توافق قديم فقط: الخدمة ترفض قيمةً جديدة؛ الصور تُنشَر عبر Product Studio/R2.
   image: z.string().max(5_000_000).optional(),
   units: z.array(unitSchema).min(1),
 });
@@ -114,7 +114,7 @@ const editVariantSchema = z.object({
   minStock: z.number().int().min(0).max(1_000_000).optional(),
   reorderPoint: z.number().int().min(0).max(1_000_000).optional(),
   isActive: z.boolean().optional(),
-  // product-variants: صورة هذا اللون — string ⇒ تُعيَّن، null/"" ⇒ تُزال (يُعاد التوفيق دائماً).
+  // صورة اللون: string مطابق للمخزَّن ⇒ بلا تغيير، null/"" ⇒ إزالة، وقيمة جديدة ⇒ رفض.
   image: z.string().max(5_000_000).nullish(),
   unitBarcodes: z.record(z.string(), z.string()),
   // توسعة بدائل الباركود من شاشة التعديل (٣/٨): بمفتاح اسم الوحدة، القائمة الكاملة المرغوبة لكل
@@ -123,7 +123,7 @@ const editVariantSchema = z.object({
   barcodeAliases: z.record(z.string(), z.array(barcodeAliasSchema).max(20)).optional(),
 });
 
-// v3-add-screens: صور المنتج (الإنشاء) — url إلزاميّ (كلّها جديدة).
+// توافق حمولة الإنشاء القديمة: url يبقى في العقد لإرجاع خطأ واضح، لكن الخدمة ترفض النشر المباشر.
 const imageSchema = z.object({
   // v3-add-screens(100%): TEXT في DB ⇒ نسمح بـdata URLs الكبيرة (5MB كحد عملي).
   url: z.string().min(1).max(5_000_000),
@@ -131,7 +131,7 @@ const imageSchema = z.object({
   sortOrder: z.number().int().min(0).optional(),
 });
 
-// product-image-edit: صور المنتج (التعديل) — id مملوك ⇒ تُبقى/تُحدَّث، url يُرسَل فقط للجديدة/المستبدَلة.
+// صور التعديل: id مملوك ⇒ metadata/إزالة؛ url جديد أو مستبدَل ترفضه الخدمة لصالح Product Studio.
 const editImageSchema = z.object({
   id: z.number().int().positive().optional(),
   url: z.string().min(1).max(5_000_000).nullish(),
@@ -582,10 +582,10 @@ export const catalogRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      for (const v of input.variants) assertValidImageDataUrl(v.image, 2_000_000, true);
-      // صور المنتج الجديدة/المستبدَلة فقط تحمل بايتات (data URL) — نتحقّق منها كما في الإنشاء
-      // (الصورة غير المتغيّرة تُرسَل بمعرّفها بلا url ⇒ تمرّ بلا فحص، assertValidImageDataUrl يقبل الفارغ).
-      for (const img of input.images ?? []) assertValidImageDataUrl(img.url, 2_000_000, true);
+      for (const v of input.variants) if (v.image?.startsWith("data:")) assertValidImageDataUrl(v.image, 2_000_000, true);
+      // URL قديم مطابق للمخزَّن يمر لتعديل metadata؛ الخدمة ترفض أيّ إضافة/استبدال خارج Product Studio.
+      // Data URL وحدها تحتاج فحص البايتات هنا قبل وصولها إلى حارس الخدمة fail-closed.
+      for (const img of input.images ?? []) if (img.url?.startsWith("data:")) assertValidImageDataUrl(img.url, 2_000_000, true);
       // priceSanity (٣٠/٧): كل متغيّر يمرّ بحرّاس التكلفة/السعر/المعامل من قالب الوحدات المشترك
       // (baseRetail يمرَّر عبر السطر ⇒ يتقدّم على المشترك للوحدة الأساس). المصدر: shared/priceSanity.
       for (const v of input.variants) {
