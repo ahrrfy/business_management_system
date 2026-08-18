@@ -24,7 +24,16 @@ import type { DeliveryTxActor } from "./types";
 /** إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون. مقيَّد بـDISPATCHED (collected==0). */
 export async function returnConsignment(
   consignmentId: number,
-  actor: DeliveryTxActor & { clientRequestId?: string | null; refundShiftId?: number | null },
+  actor: DeliveryTxActor & {
+    clientRequestId?: string | null;
+    refundShiftId?: number | null;
+    /**
+     * سببُ رجوع الطرد — **إلزاميّ عملياً حين يكون الطرد بيد السائق** (١٨/٨): عندئذٍ يُوسَم
+     * متعذّراً داخل نفس المعاملة قبل إرجاعه، والسببُ هو ما يميّز «العميل رفض» من «العنوان
+     * خاطئ» من «تعذّر الوصول» في تقارير المتابعة. غيابه على طردٍ لم يخرج بعد لا يضرّ.
+     */
+    returnReason?: string | null;
+  },
 ) {
   return withTx(async (tx) => {
     const payloadHash = idempotencyHash({ consignmentId, refundShiftId: actor.refundShiftId ?? null });
@@ -116,8 +125,39 @@ export async function returnConsignment(
     if (cn.parcelStatus === "DELIVERED" || cn.parcelStatus === "RETURNED") {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطرد مسلّم للعميل؛ نفّذ مرتجع بيع موثقاً بدل إرجاع الشحنة" });
     }
-    if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
-      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الطرد بعهدة السائق؛ سجّل تعذّر التوصيل وعودته للفرع قبل إرجاع البيع" });
+    // ١٨/٨ (بلاغ المالك: «المندوب يرجع الفاتورة والطلب إلى المكتبة» — حدثٌ يوميّ):
+    // كان الإرجاع محصوراً بـASSIGNED|FAILED، وتسجيلُ FAILED **حصريٌّ ببوّابة المندوب**؛ وأغلب
+    // الجهات بلا حسابات ⇒ طردٌ بيد السائق لا مخرج له إطلاقاً. الآن: الطرد الراجع فعلاً إلى
+    // الفرع يُوسَم متعذّراً **داخل نفس المعاملة** بسببٍ إلزاميّ (سلسلة أحداث سليمة: FAILED ثم
+    // RETURNED) بدل مطالبة الموظّف بزرٍّ لا يملكه.
+    const inTransitParcel = cn.parcelStatus === "ACCEPTED"
+      || cn.parcelStatus === "PICKED_UP"
+      || cn.parcelStatus === "OUT_FOR_DELIVERY";
+    if (inTransitParcel) {
+      const reason = (actor.returnReason ?? "").trim();
+      if (reason.length < 2) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الطرد بعهدة السائق — اذكر سبب رجوعه (رفض العميل / عنوان خاطئ / تعذّر الوصول…)",
+        });
+      }
+      const fromParcelStatus = cn.parcelStatus;
+      await tx
+        .update(deliveryConsignments)
+        .set({ parcelStatus: "FAILED", failedAt: new Date(), failureReason: reason.slice(0, 255) })
+        .where(eq(deliveryConsignments.id, consignmentId));
+      await appendDeliveryEvent(tx, {
+        eventKey: `PARCEL_FAILED:RETURN:${consignmentId}`,
+        consignmentId,
+        eventType: "PARCEL_FAILED",
+        fromParcelStatus,
+        toParcelStatus: "FAILED",
+        actorUserId: actor.userId,
+        payload: { reason, source: "STAFF_RETURN" },
+      });
+      cn.parcelStatus = "FAILED";
+    } else if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "حالة الطرد لا تسمح بالإرجاع من هنا" });
     }
     const inv = (await tx.select().from(invoices).where(eq(invoices.id, Number(cn.invoiceId))).for("update").limit(1))[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });

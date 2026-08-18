@@ -399,6 +399,9 @@ export const deliveryRouter = router({
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه ردّ العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
+      // ١٨/٨: سبب رجوع الطرد — تفرضه الخدمة حين يكون الطرد بيد السائق (يُوسَم متعذّراً قبل
+      // إرجاعه في نفس المعاملة)، وهو ما يفصل «رفض العميل» عن «عنوان خاطئ» في المتابعة.
+      returnReason: z.string().trim().min(2).max(255).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       // ٩/٨: ترتيب أقفال الإرجاع (إرسالية←جهة) يعاكس التوريد/الشطب (جهة←إرسالية) — تنافسٌ
@@ -407,6 +410,7 @@ export const deliveryRouter = router({
         ...actorOf(ctx),
         clientRequestId: input.clientRequestId,
         refundShiftId: input.refundShiftId ?? null,
+        returnReason: input.returnReason ?? null,
       }));
       await logAudit(ctx, { action: "delivery.return", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { invoiceId: (res as { invoiceId?: number }).invoiceId } });
       return res;

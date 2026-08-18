@@ -1,7 +1,7 @@
 // أدوات داخلية: ترقيم الأمر، تحميله تحت قفل صفّ، وعزل الفرع/المحطة — لا تُصدَّر من نقطة الدخول العامة.
 import { TRPCError } from "@trpc/server";
-import { desc, eq, like } from "drizzle-orm";
-import { workOrders } from "../../../drizzle/schema";
+import { and, desc, eq, like, notInArray } from "drizzle-orm";
+import { deliveryConsignments, workOrders } from "../../../drizzle/schema";
 import { toDateStr } from "../money";
 import type { Actor } from "../tx";
 
@@ -52,4 +52,44 @@ function assertOperatorOwns(
 }
 
 
-export { nextWorkOrderNumber, loadWorkOrder, assertWorkOrderBranch, assertOperatorOwns };
+/**
+ * حارس **الإرسالية الحيّة** (١٨/٨) — يمنع كل عمليةٍ تفترض أنّ البضاعة ما زالت في المكتبة
+ * بينما هي بيد المندوب فعلاً.
+ *
+ * لماذا لم يكن فحصُ الحالة كافياً: الإسناد **لا يمسّ** `workOrders.status` عمداً (يبقى READY
+ * حتى إثبات التسليم)، فكلّ حارسٍ يفحص الحالة وحدها كان أعمى عن الطرد الخارج. النتائج التي
+ * أثبتها الفحص: إلغاءُ أمرٍ خارجٍ مع مندوب يُعيد مواده للمخزون ويردّ عربونه بينما الفاتورة
+ * وقيدُ البيع وذمّةُ العميل وعهدةُ COD كلّها حيّة؛ وقلبُ `hasDelivery` يردّ أمانة الأجرة
+ * والطرد بالخارج؛ والتسليم المباشر يُنشئ فاتورةً وقيدَ بيعٍ **ثانيَين**.
+ *
+ * المخرج المشروع في كل هذه الحالات واحد: **استرجاع الإرسالية** (عكسٌ كامل Σ=0).
+ */
+async function assertNoLiveConsignment(
+  tx: any,
+  workOrderId: number,
+  action: "cancel" | "reclassify" | "deliver",
+) {
+  const rows = await tx
+    .select({ id: deliveryConsignments.id, number: deliveryConsignments.consignmentNumber })
+    .from(deliveryConsignments)
+    .where(
+      and(
+        eq(deliveryConsignments.workOrderId, workOrderId),
+        notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+      ),
+    )
+    .limit(1);
+  const live = rows[0];
+  if (!live) return;
+  const what = action === "cancel"
+    ? "لا يُلغى أمرٌ خرج مع مندوب"
+    : action === "reclassify"
+      ? "لا تُغيَّر طريقة تسليم أمرٍ خرج مع مندوب"
+      : "لا يُسلَّم مباشرةً أمرٌ خرج مع مندوب";
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: `${what} (الإرسالية ${live.number ?? live.id}) — استرجع الإرسالية أولاً من إدارة التوصيل، وهي تعكس البيع والمخزون والعربون معاً.`,
+  });
+}
+
+export { nextWorkOrderNumber, loadWorkOrder, assertWorkOrderBranch, assertOperatorOwns, assertNoLiveConsignment };

@@ -270,8 +270,42 @@ function DispatchTab() {
  * كثافةٌ عالية بلا ازدحام: صفٌّ واحد يحمل كلّ ما يلزم القرار، وأزرارُ التواصل في مكانها.
  */
 function InTransitTab() {
+  const utils = trpc.useUtils();
   const rows = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
   const [query, setQuery] = useState("");
+
+  // المخرج اليوميّ للطرد الذي أعاده المندوب (بلاغ المالك): استرجاعٌ بسببٍ موثَّق ⇒ عكسٌ كامل
+  // (مخزون + فاتورة + ذمّة + عربون + تحرير عهدة COD) في معاملةٍ واحدة.
+  const returnCn = trpc.delivery.returnConsignment.useMutation({
+    onSuccess: () => {
+      notify.ok("رجع الطرد للمكتبة", "عُكس البيع كاملاً: المخزون والفاتورة وذمّة العميل وعهدة المندوب.");
+      utils.delivery.inTransit.invalidate();
+      utils.delivery.readyForDispatch.invalidate();
+      utils.delivery.openConsignments.invalidate();
+      utils.delivery.listParties.invalidate();
+      utils.workOrders.list.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  async function askReturn(r: { id: number; consignmentNumber: string | null; parcelStatus: string | null }) {
+    const needsReason = r.parcelStatus === "ACCEPTED" || r.parcelStatus === "PICKED_UP" || r.parcelStatus === "OUT_FOR_DELIVERY";
+    const reason = needsReason
+      ? window.prompt("سبب رجوع الطرد (رفض العميل / عنوان خاطئ / تعذّر الوصول…):")?.trim()
+      : "";
+    if (needsReason && (!reason || reason.length < 2)) return;
+    const ok = await confirm({
+      title: `استرجاع الإرسالية ${r.consignmentNumber ?? r.id}`,
+      description: "يُعكَس البيع كاملاً: تعود البضاعة للمخزون، وتصير الفاتورة مرتجعة، وتسقط ذمّة العميل، ويُبرَّأ المندوب من تحصيلها. لا يُنفَّذ إلّا بعد استلام الطرد فعلياً في الفرع.",
+      confirmText: "نعم، استلمتُ الطرد",
+    });
+    if (!ok) return;
+    returnCn.mutate({
+      consignmentId: r.id,
+      clientRequestId: crypto.randomUUID(),
+      ...(needsReason && reason ? { returnReason: reason } : {}),
+    });
+  }
 
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -376,6 +410,15 @@ function InTransitTab() {
                             </Button>
                           </>
                         )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          title="رجع الطرد للمكتبة — عكسٌ كامل للبيع"
+                          disabled={returnCn.isPending}
+                          onClick={() => void askReturn(r)}
+                        >
+                          <RotateCcw aria-hidden className="size-3.5" /> استرجاع
+                        </Button>
                         <Button size="sm" variant="outline" asChild title="فتح جهة التوصيل وتسويتها">
                           <a href={`/delivery/parties/${r.partyId}`}>الجهة</a>
                         </Button>

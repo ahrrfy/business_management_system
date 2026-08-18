@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { workOrders } from "../../../drizzle/schema";
 import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
-import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { refundWorkOrderDeliveryFeeHeld, workOrderFeeHeldNet } from "./deliveryFeeRefund";
 
 export interface UpdateWorkOrderDeliveryMethodInput {
@@ -32,14 +32,16 @@ export async function updateWorkOrderDeliveryMethod(
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
-    // بعد التسليم/الإرسال: workOrders.status ينتقل ذرّياً إلى DELIVERED ضمن نفس معاملة
-    // deliverWorkOrder/dispatchToDelivery — فحص الحالة هنا كافٍ وحيد لمنع تعديل أمرٍ خرج من الطابور.
+    // ⚠️ تصحيح تعليقٍ كان كاذباً (١٨/٨): `dispatchToDelivery` **لا** ينقل الحالة إلى DELIVERED
+    // (يكتب `invoiceId` فقط ويترك الأمر READY حتى إثبات التسليم) ⇒ فحص الحالة وحده كان يسمح
+    // بقلب `hasDelivery` وردّ أمانة الأجرة **والطرد بيد المندوب**. الحارسان معاً هما العقد.
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED") {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: wo.status === "DELIVERED" ? "الأمر مُسلَّم/مُرسَل بالفعل — لا يمكن تعديل طريقة التسليم" : "لا يمكن تعديل أمرٍ ملغى",
       });
     }
+    await assertNoLiveConsignment(tx, input.workOrderId, "reclassify");
     if (input.hasDelivery && !input.deliveryAddress?.trim()) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "عنوان التوصيل مطلوب عند تفعيل التوصيل" });
     }

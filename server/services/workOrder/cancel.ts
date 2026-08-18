@@ -11,7 +11,7 @@ import { money, round2, toDbMoney } from "../money";
 import { appliedCollectionsForWorkOrder } from "../reception/deposits";
 import { assertCashOutAvailable, assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
-import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { logAuditTx } from "../auditService";
@@ -99,6 +99,9 @@ export async function cancelWorkOrder(
     assertWorkOrderBranch(wo, actor);
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED")
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء أمر مُسلَّم أو مُلغى" });
+    // ١٨/٨: الحالة وحدها لا تكفي — الأمر يبقى READY والطرد بيد المندوب. بلا هذا الحارس كان
+    // الإلغاء يعيد المواد للمخزون ويردّ العربون بينما الفاتورة وقيد البيع وعهدة COD حيّة.
+    await assertNoLiveConsignment(tx, workOrderId, "cancel");
     if (wo.status === "IN_PROGRESS" || wo.status === "READY") {
       const mats = await tx.select().from(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, workOrderId));
       mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
