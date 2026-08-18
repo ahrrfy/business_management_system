@@ -18,12 +18,14 @@ import {
   storefrontPublicReadProcedure,
 } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
-import { createOnlineOrder, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
-import { retryOnDup } from "../lib/retryDup";
+import { createOnlineOrder, findOwnedOnlineOrderReplay, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
 import { recordStoreConversionMetric } from "../services/storeAdmin/storeConversionMetricsService";
+import { verifyStorefrontTurnstile } from "../services/storefrontTurnstile";
+import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
+import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 
 const labelSummaryInput = z.object({
   orderNumber: z.string().trim().min(1).max(50),
@@ -142,19 +144,26 @@ export const storefrontRouter = router({
           .min(1)
           .max(100),
         expectedGrandTotal: z.string().regex(/^\d{1,18}(?:\.\d{1,2})?$/),
-        clientRequestId: z.string().max(80).optional(),
+        clientRequestId: z.string().trim().min(8).max(80),
+        turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH),
       })
     )
-    // retryOnDup: نقرة مزدوجة متزامنة بنفس clientRequestId قد يمرّ فحصُها الاستباقي معاً قبل الالتزام،
-    // فيصطدم الإدراج الثاني بقيد uq_online_order_client_req (ER_DUP_ENTRY). إعادة المحاولة تلتقط الطلب
-    // المُلتزَم فتُعيد replay بدل 500 (مراجعة عدائية ١٢/٧).
     .mutation(async ({ input }) => {
-      const result = await retryOnDup(() =>
-        createOnlineOrder({
-          ...input,
-          latitude: input.latitude ?? null,
-          longitude: input.longitude ?? null,
-        })
+      const { turnstileToken, ...rawOrderInput } = input;
+      const orderInput = {
+        ...rawOrderInput,
+        latitude: rawOrderInput.latitude ?? null,
+        longitude: rawOrderInput.longitude ?? null,
+      };
+      const result = await createVerifiedStorefrontOrder(
+        orderInput,
+        turnstileToken,
+        {
+          // يسبق token كي يستعيد الرد الضائع المملوك بلا استهلاك تحقق جديد.
+          findOwnedReplay: findOwnedOnlineOrderReplay,
+          verifyTurnstile: verifyStorefrontTurnstile,
+          createOrder: createOnlineOrder,
+        },
       );
       // نجاح إنشاء الطلب هو المصدر الموثوق لهذا الحدث؛ لا نأخذه من متصفح العميل.
       // الخدمة أفضل-جهد ولا تلمس بيانات الطلب أو العميل.

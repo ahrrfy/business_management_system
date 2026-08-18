@@ -14264,7 +14264,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:57"
+      "loc": "server/routers/storefrontRouter.ts:59"
     },
     {
       "surface": "trpc",
@@ -14281,7 +14281,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:77"
+      "loc": "server/routers/storefrontRouter.ts:79"
     },
     {
       "surface": "trpc",
@@ -14298,7 +14298,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:51"
+      "loc": "server/routers/storefrontRouter.ts:53"
     },
     {
       "surface": "trpc",
@@ -14315,7 +14315,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:126"
+      "loc": "server/routers/storefrontRouter.ts:128"
     },
     {
       "surface": "trpc",
@@ -14332,7 +14332,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/storefrontRouter.ts:173"
+      "loc": "server/routers/storefrontRouter.ts:182"
     },
     {
       "surface": "trpc",
@@ -14349,7 +14349,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:54"
+      "loc": "server/routers/storefrontRouter.ts:56"
     },
     {
       "surface": "trpc",
@@ -14366,7 +14366,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:100"
+      "loc": "server/routers/storefrontRouter.ts:102"
     },
     {
       "surface": "trpc",
@@ -14383,7 +14383,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:110"
+      "loc": "server/routers/storefrontRouter.ts:112"
     },
     {
       "surface": "trpc",
@@ -14400,7 +14400,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:105"
+      "loc": "server/routers/storefrontRouter.ts:107"
     },
     {
       "surface": "trpc",
@@ -14417,7 +14417,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:74"
+      "loc": "server/routers/storefrontRouter.ts:76"
     },
     {
       "surface": "trpc",
@@ -14434,7 +14434,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:60"
+      "loc": "server/routers/storefrontRouter.ts:62"
     },
     {
       "surface": "trpc",
@@ -14451,7 +14451,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "WRITE_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:69"
+      "loc": "server/routers/storefrontRouter.ts:71"
     },
     {
       "surface": "trpc",
@@ -14468,7 +14468,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "READ_WITHOUT_MODULE_GATE|UNAUTHENTICATED",
-      "loc": "server/routers/storefrontRouter.ts:168"
+      "loc": "server/routers/storefrontRouter.ts:177"
     },
     {
       "surface": "trpc",
@@ -16761,7 +16761,7 @@
       "method": "GET",
       "path": "/healthz",
       "file": "server/index.ts",
-      "line": 313,
+      "line": 347,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -16772,7 +16772,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 331,
+      "line": 365,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16783,7 +16783,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 488,
+      "line": 522,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16794,7 +16794,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 496,
+      "line": 530,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16805,7 +16805,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 516,
+      "line": 550,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16816,7 +16816,7 @@
       "method": "MOUNT",
       "path": "/api/print",
       "file": "server/index.ts",
-      "line": 531,
+      "line": 565,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16827,7 +16827,7 @@
       "method": "MOUNT",
       "path": "/api/img",
       "file": "server/index.ts",
-      "line": 537,
+      "line": 571,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16838,7 +16838,7 @@
       "method": "MOUNT",
       "path": "/api/backups",
       "file": "server/index.ts",
-      "line": 552,
+      "line": 586,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16849,7 +16849,7 @@
       "method": "MOUNT",
       "path": "/api/wa/media",
       "file": "server/index.ts",
-      "line": 556,
+      "line": 590,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16860,7 +16860,7 @@
       "method": "MOUNT",
       "path": "/api/hr/applicant-cv",
       "file": "server/index.ts",
-      "line": 560,
+      "line": 594,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16871,7 +16871,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks",
       "file": "server/index.ts",
-      "line": 584,
+      "line": 618,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16882,7 +16882,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks/company/:companyCode",
       "file": "server/index.ts",
-      "line": 585,
+      "line": 619,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -16903,7 +16903,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 665
+      "line": 699
     },
     {
       "kind": "interval",

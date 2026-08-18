@@ -1,0 +1,168 @@
+import React, { useEffect, useReducer, useRef } from "react";
+import {
+  STOREFRONT_TURNSTILE_ACTION,
+  STOREFRONT_TURNSTILE_SCRIPT_URL,
+} from "@shared/storefrontTurnstile";
+
+type TurnstileStatus = "loading" | "ready" | "verified" | "expired" | "error";
+type TurnstileEvent = "SCRIPT_READY" | "VERIFIED" | "EXPIRED" | "ERROR" | "RESET";
+
+export function reduceTurnstileStatus(
+  state: TurnstileStatus,
+  event: TurnstileEvent,
+): TurnstileStatus {
+  if (event === "SCRIPT_READY" || event === "RESET") return "ready";
+  if (event === "VERIFIED") return "verified";
+  if (event === "EXPIRED") return "expired";
+  if (event === "ERROR") return "error";
+  return state;
+}
+
+interface TurnstileApi {
+  render(
+    container: HTMLElement,
+    options: {
+      sitekey: string;
+      action: string;
+      theme: "light";
+      language: "ar";
+      size: "flexible";
+      callback: (token: string) => void;
+      "expired-callback": () => void;
+      "error-callback": () => void;
+    },
+  ): string;
+  reset(widgetId: string): void;
+  remove(widgetId: string): void;
+}
+
+declare global {
+  interface Window {
+    turnstile?: TurnstileApi;
+  }
+}
+
+let scriptPromise: Promise<void> | null = null;
+
+function loadTurnstileScript(): Promise<void> {
+  if (window.turnstile) return Promise.resolve();
+  if (scriptPromise) return scriptPromise;
+  scriptPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(
+      `script[src="${STOREFRONT_TURNSTILE_SCRIPT_URL}"]`,
+    );
+    const script = existing ?? document.createElement("script");
+    const loaded = () => window.turnstile ? resolve() : reject(new Error("TURNSTILE_API_MISSING"));
+    const failed = () => reject(new Error("TURNSTILE_SCRIPT_FAILED"));
+    script.addEventListener("load", loaded, { once: true });
+    script.addEventListener("error", failed, { once: true });
+    if (!existing) {
+      script.src = STOREFRONT_TURNSTILE_SCRIPT_URL;
+      script.async = true;
+      script.defer = true;
+      document.head.appendChild(script);
+    }
+  }).catch((error) => {
+    scriptPromise = null;
+    throw error;
+  });
+  return scriptPromise;
+}
+
+export interface TurnstileWidgetProps {
+  siteKey: string;
+  resetKey: number;
+  onTokenChange: (token: string | null) => void;
+}
+
+export function TurnstileWidget({ siteKey, resetKey, onTokenChange }: TurnstileWidgetProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef<string | null>(null);
+  const onTokenChangeRef = useRef(onTokenChange);
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [status, dispatch] = useReducer(reduceTurnstileStatus, "loading");
+  onTokenChangeRef.current = onTokenChange;
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadTurnstileScript()
+      .then(() => {
+        if (cancelled || !containerRef.current || !window.turnstile) return;
+        dispatch("SCRIPT_READY");
+        widgetIdRef.current = window.turnstile.render(containerRef.current, {
+          sitekey: siteKey,
+          action: STOREFRONT_TURNSTILE_ACTION,
+          theme: "light",
+          language: "ar",
+          size: "flexible",
+          callback: (token) => {
+            if (cancelled) return;
+            onTokenChangeRef.current(token);
+            dispatch("VERIFIED");
+          },
+          "expired-callback": () => {
+            if (cancelled) return;
+            onTokenChangeRef.current(null);
+            dispatch("EXPIRED");
+            if (widgetIdRef.current) window.turnstile?.reset(widgetIdRef.current);
+          },
+          "error-callback": () => {
+            if (cancelled) return;
+            onTokenChangeRef.current(null);
+            dispatch("ERROR");
+            resetTimerRef.current = setTimeout(() => {
+              if (widgetIdRef.current) window.turnstile?.reset(widgetIdRef.current);
+            }, 1_000);
+          },
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          onTokenChangeRef.current(null);
+          dispatch("ERROR");
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+      if (widgetIdRef.current) window.turnstile?.remove(widgetIdRef.current);
+      widgetIdRef.current = null;
+    };
+  }, [siteKey]);
+
+  useEffect(() => {
+    const widgetId = widgetIdRef.current;
+    if (!widgetId) return;
+    onTokenChangeRef.current(null);
+    window.turnstile?.reset(widgetId);
+    dispatch("RESET");
+  }, [resetKey]);
+
+  const message = status === "verified"
+    ? "اكتمل تحقق الأمان."
+    : status === "expired"
+      ? "انتهت صلاحية التحقق؛ أكمِل التحقق مرة أخرى."
+      : status === "error"
+        ? "تعذّر تحميل تحقق الأمان؛ تحقق من الاتصال ثم أعد المحاولة."
+        : "التحقق من أن الطلب صادر من شخص حقيقي";
+
+  return (
+    <div
+      dir="rtl"
+      role="group"
+      aria-label="تحقق أمان الطلب"
+      className="w-full overflow-hidden rounded-2xl bg-white p-3 ring-1 ring-slate-200"
+    >
+      <p className="mb-2 text-xs font-bold text-slate-600">
+        التحقق من أن الطلب صادر من شخص حقيقي
+      </p>
+      <div ref={containerRef} className="min-h-16 w-full" />
+      <p
+        aria-live="polite"
+        className={`mt-2 text-xs ${status === "error" || status === "expired" ? "text-rose-600" : "text-slate-500"}`}
+      >
+        {message}
+      </p>
+    </div>
+  );
+}
