@@ -528,15 +528,14 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(v.isActive).toBe(false);
   });
 
-  it("صورة اللون: تعيين ثم إزالة، وتُترَك بلا مساس عند image=undefined", async () => {
-    await updateProductWithVariants(
-      {
-        productId: 1,
-        unitTemplate: baseTemplate(),
-        variants: [{ id: 1, sku: "NB-100", costPrice: "500", image: "data:image/png;base64,AAA", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
-      },
-      actor,
-    );
+  it("صورة اللون القديمة: تُترَك بلا مساس عند image=undefined ويمكن إزالتها صراحةً", async () => {
+    await db().insert(s.productImages).values({
+      productId: 1,
+      variantId: 1,
+      url: "data:image/png;base64,AAA",
+      origin: "MANUAL",
+      reviewStatus: "APPROVED",
+    });
     let imgs = await db().select().from(s.productImages).where(eq(s.productImages.variantId, 1));
     expect(imgs).toHaveLength(1);
     expect(imgs[0].url).toBe("data:image/png;base64,AAA");
@@ -558,16 +557,12 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(imgs).toHaveLength(0);
   });
 
-  it("صورة اللون: إعادة الحفظ بصورة جديدة تصون productImages.id (لا تتدلّى روابط /api/img)", async () => {
-    await updateProductWithVariants(
-      { productId: 1, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", image: "data:image/png;base64,AAA", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
-      actor,
-    );
-    const before = await db().select().from(s.productImages).where(eq(s.productImages.variantId, 1));
-    expect(before).toHaveLength(1);
-    const id0 = before[0].id;
+  it("صورة اللون: الاستبدال المباشر يُرفض ويحافظ صفّ الاستوديو ومفاتيح R2", async () => {
     const [job] = await db().insert(s.productImageJobs).values({ productId: 1, mode: "FLATTEN", status: "APPROVED" }).$returningId();
-    await db().update(s.productImages).set({
+    await db().insert(s.productImages).values({
+      productId: 1,
+      variantId: 1,
+      url: "data:image/png;base64,AAA",
       objectKey: "single/studio/candidate/old.webp",
       originalKey: "single/studio/original/old.webp",
       contentHash: "a".repeat(64),
@@ -578,27 +573,25 @@ describe("updateProductWithVariants — الكتابة", () => {
       bytes: 99,
       publishedStudioJobId: Number(job.id),
       origin: "STUDIO_FREE",
-    }).where(eq(s.productImages.id, Number(id0)));
+      reviewStatus: "APPROVED",
+    });
+    const before = await db().select().from(s.productImages).where(eq(s.productImages.variantId, 1));
+    expect(before).toHaveLength(1);
+    const id0 = before[0].id;
 
-    // إعادة حفظ بصورة مختلفة ⇒ يُحدَّث الصفّ نفسه في مكانه (id ثابت)، لا حذف+إدراج (كان يبدّل الـid).
-    await updateProductWithVariants(
+    await expect(updateProductWithVariants(
       { productId: 1, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", image: "data:image/png;base64,BBB", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
       actor,
-    );
+    )).rejects.toMatchObject({ code: "BAD_REQUEST" });
     const after = await db().select().from(s.productImages).where(eq(s.productImages.variantId, 1));
     expect(after).toHaveLength(1);
-    expect(after[0].id).toBe(id0); // ← يفشل مع delete+insert القديم
-    expect(after[0].url).toBe("data:image/png;base64,BBB");
-    expect(after[0].objectKey).toBeNull();
-    expect(after[0].originalKey).toBeNull();
-    expect(after[0].contentHash).toBeNull();
-    expect(after[0].thumbDataUrl).toBeNull();
-    expect(after[0].mime).toBeNull();
-    expect(after[0].width).toBeNull();
-    expect(after[0].height).toBeNull();
-    expect(after[0].bytes).toBeNull();
-    expect(after[0].publishedStudioJobId).toBeNull();
-    expect(after[0].origin).toBe("MANUAL");
+    expect(after[0].id).toBe(id0);
+    expect(after[0].url).toBe("data:image/png;base64,AAA");
+    expect(after[0].objectKey).toBe("single/studio/candidate/old.webp");
+    expect(after[0].originalKey).toBe("single/studio/original/old.webp");
+    expect(after[0].contentHash).toBe("a".repeat(64));
+    expect(after[0].publishedStudioJobId).toBe(Number(job.id));
+    expect(after[0].origin).toBe("STUDIO_FREE");
   });
 
   it("رفض: باركود مكرّر بين متغيّرين داخل نفس الحمولة ⇒ CONFLICT، ولا شيء يتغيّر (rollback)", async () => {
@@ -753,16 +746,12 @@ describe("product-image-edit — صور المنتج العامّة (variantId=N
     expect(imgs[0].url).toBe("data:image/png;base64,KEEP");
   });
 
-  it("صورة جديدة (بلا id) ⇒ تُدرَج بـvariantId=NULL", async () => {
-    await updateProductWithVariants(
+  it("صورة جديدة (بلا id) ⇒ تُرفض خارج Product Studio ولا يُدرَج صف", async () => {
+    await expect(updateProductWithVariants(
       { productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [{ url: "data:image/png;base64,NEW", isPrimary: true, sortOrder: 0 }] },
       actor,
-    );
-    const imgs = await productImgs();
-    expect(imgs).toHaveLength(1);
-    expect(imgs[0].url).toBe("data:image/png;base64,NEW");
-    expect(imgs[0].isPrimary).toBe(true);
-    expect(imgs[0].variantId).toBeNull();
+    )).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(await productImgs()).toHaveLength(0);
   });
 
   it("صورة قائمة بمعرّفها بلا url ⇒ تُصان بايتاتها ويصون id (لا حذف+إدراج ⇒ لا تتدلّى روابط /api/img)", async () => {
@@ -789,7 +778,7 @@ describe("product-image-edit — صور المنتج العامّة (variantId=N
     expect(imgs[0].contentHash).toBe("c".repeat(64));
   });
 
-  it("صورة قائمة بمعرّفها + url جديد ⇒ تُحدَّث في المكان (id ثابت، بايتات جديدة)", async () => {
+  it("صورة قائمة بمعرّفها + url جديد ⇒ تُرفض وتبقى مفاتيح R2 وبيانات المراجعة", async () => {
     const [job] = await db().insert(s.productImageJobs).values({ productId: 1, mode: "AI", status: "APPROVED" }).$returningId();
     await db().insert(s.productImages).values({
       id: 101,
@@ -809,24 +798,19 @@ describe("product-image-edit — صور المنتج العامّة (variantId=N
       publishedStudioJobId: Number(job.id),
       origin: "STUDIO_AI",
     });
-    await updateProductWithVariants(
+    await expect(updateProductWithVariants(
       { productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [{ id: 101, url: "data:image/png;base64,FRESH", isPrimary: true, sortOrder: 0 }] },
       actor,
-    );
+    )).rejects.toMatchObject({ code: "BAD_REQUEST" });
     const imgs = await productImgs();
     expect(imgs).toHaveLength(1);
     expect(Number(imgs[0].id)).toBe(101);
-    expect(imgs[0].url).toBe("data:image/png;base64,FRESH");
-    expect(imgs[0].objectKey).toBeNull();
-    expect(imgs[0].originalKey).toBeNull();
-    expect(imgs[0].contentHash).toBeNull();
-    expect(imgs[0].thumbDataUrl).toBeNull();
-    expect(imgs[0].mime).toBeNull();
-    expect(imgs[0].width).toBeNull();
-    expect(imgs[0].height).toBeNull();
-    expect(imgs[0].bytes).toBeNull();
-    expect(imgs[0].publishedStudioJobId).toBeNull();
-    expect(imgs[0].origin).toBe("MANUAL");
+    expect(imgs[0].url).toBe("/api/img/product/101?v=old");
+    expect(imgs[0].objectKey).toBe("single/studio/candidate/old.webp");
+    expect(imgs[0].originalKey).toBe("single/studio/original/old.webp");
+    expect(imgs[0].contentHash).toBe("b".repeat(64));
+    expect(imgs[0].publishedStudioJobId).toBe(Number(job.id));
+    expect(imgs[0].origin).toBe("STUDIO_AI");
   });
 
   it("صورة قائمة غير مذكورة في الحمولة ⇒ تُحذَف", async () => {
@@ -853,15 +837,19 @@ describe("product-image-edit — صور المنتج العامّة (variantId=N
     expect(variantImgs).toHaveLength(1); // صورة اللون لم تُمَسّ
   });
 
-  it("لا رئيسية مُعلَّمة ⇒ الأولى رئيسيّة (يطابق منطق الإنشاء)", async () => {
+  it("لا رئيسية مُعلَّمة على صور قائمة ⇒ الأولى رئيسيّة بلا إعادة كتابة بايتات", async () => {
+    await db().insert(s.productImages).values([
+      { id: 110, productId: 1, variantId: null, url: "data:image/png;base64,X", sortOrder: 0 },
+      { id: 111, productId: 1, variantId: null, url: "data:image/png;base64,Y", sortOrder: 1 },
+    ]);
     await updateProductWithVariants(
       {
         productId: 1,
         unitTemplate: baseTemplate(),
         variants: baseVariant(),
         images: [
-          { url: "data:image/png;base64,X", sortOrder: 0 },
-          { url: "data:image/png;base64,Y", sortOrder: 1 },
+          { id: 110, sortOrder: 0 },
+          { id: 111, sortOrder: 1 },
         ],
       },
       actor,
@@ -872,20 +860,17 @@ describe("product-image-edit — صور المنتج العامّة (variantId=N
     expect(imgs[1].isPrimary).toBe(false);
   });
 
-  it("id لا يخصّ هذا المنتج ⇒ يُتجاهَل ولا يُعدَّل صفّ منتجٍ آخر (لا IDOR)", async () => {
+  it("id لا يخصّ هذا المنتج مع url جديد ⇒ يُرفض ولا يُعدَّل الأجنبي ولا يُدرَج محليّاً", async () => {
     // صورة تخصّ المنتج ٢.
     await db().insert(s.productImages).values({ id: 200, productId: 2, variantId: null, url: "data:image/png;base64,OTHER", isPrimary: true, sortOrder: 0 });
-    // نحاول تمرير id=200 (لغير المنتج ١) مع url جديد ⇒ لا يُعدَّل صفّ المنتج ٢، بل يُدرَج صفٌّ جديد للمنتج ١.
-    await updateProductWithVariants(
+    await expect(updateProductWithVariants(
       { productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [{ id: 200, url: "data:image/png;base64,HIJACK", isPrimary: true, sortOrder: 0 }] },
       actor,
-    );
+    )).rejects.toMatchObject({ code: "BAD_REQUEST" });
     const other = (await db().select().from(s.productImages).where(eq(s.productImages.id, 200)))[0];
     expect(other.url).toBe("data:image/png;base64,OTHER"); // لم يُمَسّ صفّ المنتج ٢
     expect(Number(other.productId)).toBe(2);
-    const mine = await productImgs();
-    expect(mine).toHaveLength(1);
-    expect(mine[0].url).toBe("data:image/png;base64,HIJACK"); // أُدرِجت للمنتج ١
+    expect(await productImgs()).toHaveLength(0);
   });
 });
 

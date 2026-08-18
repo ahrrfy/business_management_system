@@ -4,8 +4,7 @@
  * الثوابت المُختبَرة (جوهر الحفظ الاقتصاديّ الآمن):
  *   • القراءة تَسِم الصور القائمة بمعرّف القاعدة وتضبط dataUrl=url (تُعرَض مباشرةً).
  *   • الصورة القائمة غير المتغيّرة تُرسَل **بمعرّفها فقط** (بلا بايتات) ⇒ لا تكرار للشبكة، ويصون id خادمياً.
- *   • الجديدة (رفع) تُرسَل ببايتاتها بلا id.
- *   • الاستوديو يمسح url ويبدّل dataUrl ⇒ استبدالٌ في المكان (id باقٍ + بايتات جديدة).
+ *   • الجديدة/المستبدَلة لا تدخل حمولة كاتب الكتالوج إطلاقاً؛ النشر عبر Product Studio فقط.
  *   • جولة ذهاب-عودة (hydrate ثم build بلا لمس) لا تُرسِل أيّ بايتات.
  */
 import { describe, expect, it } from "vitest";
@@ -40,23 +39,19 @@ describe("buildProductImagesPayload", () => {
     ]);
   });
 
-  it("صورة جديدة (رفع، بلا url) ⇒ تُرسَل ببايتاتها بلا id", () => {
+  it("صورة جديدة (رفع، بلا url) ⇒ تُستبعَد ولا تُرسَل بايتاتها", () => {
     const items: ImageItem[] = [
       { id: "img_new1", dataUrl: "data:image/webp;base64,NEW", isPrimary: true },
     ];
-    expect(buildProductImagesPayload(items)).toEqual([
-      { id: undefined, url: "data:image/webp;base64,NEW", isPrimary: true, sortOrder: 0 },
-    ]);
+    expect(buildProductImagesPayload(items)).toEqual([]);
   });
 
-  it("صورة قائمة استبدلها الاستوديو (url مُمسوح، dataUrl جديد) ⇒ id باقٍ + بايتات جديدة", () => {
+  it("صورة قائمة تحمل بايتات بديلة ⇒ تُستبعَد ولا تتجاوز بوابة الاستوديو", () => {
     const items: ImageItem[] = [
       // ImageStudioUploader.accept يضبط dataUrl الجديد ويمسح url.
       { id: "dbimg:7", dataUrl: "data:image/webp;base64,STUDIO", url: undefined, isPrimary: true },
     ];
-    expect(buildProductImagesPayload(items)).toEqual([
-      { id: 7, url: "data:image/webp;base64,STUDIO", isPrimary: true, sortOrder: 0 },
-    ]);
+    expect(buildProductImagesPayload(items)).toEqual([]);
   });
 
   it("الترتيب = ترتيب المصفوفة (sortOrder = الفهرس)", () => {
@@ -66,18 +61,17 @@ describe("buildProductImagesPayload", () => {
       { id: "dbimg:2", dataUrl: "b", url: "b", isPrimary: false },
     ];
     const out = buildProductImagesPayload(items);
-    expect(out.map((o) => o.sortOrder)).toEqual([0, 1, 2]);
-    expect(out[1]).toEqual({ id: undefined, url: "data:image/png;base64,ZZZ", isPrimary: true, sortOrder: 1 });
+    expect(out).toEqual([
+      { id: 1, url: undefined, isPrimary: false, sortOrder: 0 },
+      { id: 2, url: undefined, isPrimary: false, sortOrder: 1 },
+    ]);
   });
 
-  it("معرّف مُشوَّه (ليس dbimg:رقم) ⇒ يُعامَل جديداً (id=undefined، ببايتاته)", () => {
+  it("معرّف مُشوَّه (ليس dbimg:رقم) ⇒ يُستبعَد fail-closed", () => {
     const items: ImageItem[] = [
       { id: `${DB_IMG_PREFIX}abc`, dataUrl: "data:image/png;base64,QQQ", url: "data:image/png;base64,QQQ", isPrimary: true },
     ];
-    // slice ⇒ Number("abc") = NaN ⇒ لا معرّف ⇒ جديدة ببايتاتها (لا نُرسِل id=NaN يرفضه zod).
-    expect(buildProductImagesPayload(items)).toEqual([
-      { id: undefined, url: "data:image/png;base64,QQQ", isPrimary: true, sortOrder: 0 },
-    ]);
+    expect(buildProductImagesPayload(items)).toEqual([]);
   });
 
   it("جولة ذهاب-عودة (hydrate ثم build بلا لمس) لا تُرسِل أيّ بايتات", () => {
