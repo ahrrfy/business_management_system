@@ -1,3 +1,7 @@
+import {
+  baseUnitPriceRequiredMessage,
+  isPositivePriceString,
+} from "../../shared/listPricePolicy";
 /**
  * productEditService.ts — تعديل منتج بنموذج المتغيّرات المستقلة (product-variants).
  *
@@ -477,6 +481,45 @@ async function reconcileProductImages(tx: Tx, productId: number, desired: Update
 }
 
 /** تعديل منتج بنموذج المتغيّرات ضمن معاملة ذرّية. لا يحذف متغيّراً (تعطيل فقط) حفظاً للمخزون. */
+/**
+ * **إلزام سعر القائمة عند المنبع** — H7، قرار المالك ١٨/٨/٢٦.
+ *
+ * حارسُ البيع (`requireListPriceReference`) يرفض بندَاً بلا مرجعٍ موجب، لكنّ الرفض هناك يقع
+ * **أمام الزبون** بينما الخطأ وُلد هنا: `upsertVariantUnits` كان يتخطّى السعر الفارغ بصمت
+ * (`if (price.trim())`) فيُولَد صنفٌ قابلٌ للبيع بلا سعرٍ إطلاقاً. فالمنعُ في هذه اللحظة
+ * الهادئة أرخص، وهو الفرق بين «لا تُنشئ الحالة الفاسدة» و«اكتشفها عند الكاشير».
+ *
+ * **النطاق مقصود ضيّق:**
+ * - **وحدة الأساس ومفردها وحدهما** إلزاميّان. وحدةٌ أخرى (درزن/كرتون) قد تكون للشراء فقط —
+ *   لا عمود يميّز ذلك في `productUnits`، ومطالبتُها بسعرٍ تمنع حالةً مشروعة. ومن باع بها
+ *   فعلاً يمسكه حارسُ البيع بالوحدة نفسها.
+ * - **المنتج المعطَّل يُستثنى**: غير المعروض للبيع لا يلزمه سعر، وهو المخرج الذي تذكره الرسالة.
+ * - **البطاقات الرقمية تُستثنى**: سعرُها في جداول تسعيرها لا في `productPrices` (صفٌّ نائبٌ
+ *   بصفرٍ عمداً)، وتمرّره خدمتُها مرجعاً صريحاً عند البيع.
+ */
+export function assertBaseRetailPricePresent(
+  input: Pick<UpdateProductVariantsInput, "unitTemplate" | "variants" | "isActive">,
+  productType: string | null,
+): void {
+  if (productType === "DIGITAL_CARD") return;
+  if (input.isActive === false) return;
+  const base = input.unitTemplate.find((u) => u.isBaseUnit);
+  if (!base) return; // حارسُ «وحدة أساسٍ واحدة» أعلاه يتكفّل بهذه الحالة برسالةٍ أدقّ.
+  const templateRetail = base.prices.find((pr) => pr.priceTier === "RETAIL")?.price ?? "";
+  for (const v of input.variants) {
+    if (v.isActive === false) continue;
+    const effective = (v.baseRetail ?? "").trim() || templateRetail;
+    if (isPositivePriceString(effective)) continue;
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: baseUnitPriceRequiredMessage({
+        variantLabel: v.sku.trim() || "متغيّر جديد",
+        unitLabel: base.unitName.trim(),
+      }),
+    });
+  }
+}
+
 export async function updateProductWithVariants(input: UpdateProductVariantsInput, actor: Actor) {
   return withTx(async (tx) => {
     const p = (await tx.select().from(products).where(eq(products.id, input.productId)).limit(1))[0];
@@ -492,6 +535,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
     // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١ (كان الحارس واجهياً فقط).
     assertValidUnitFactors(input.unitTemplate);
     if (input.variants.some((v) => !v.sku.trim())) throw new TRPCError({ code: "BAD_REQUEST", message: "كل متغيّر يحتاج SKU" });
+    assertBaseRetailPricePresent(input, p.productType ?? null);
 
     await assertEditUniqueness(tx, input);
 

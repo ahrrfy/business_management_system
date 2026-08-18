@@ -34,13 +34,14 @@ import {
   computeLineTotal,
   isInvoiceBelowCost,
   lineDiscountExceedsThreshold,
+  requireListPriceReference,
 } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "./accounting/postingEngine";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
 import { nextInvoiceNumber } from "./numbering";
-import { getUnitPrice, resolveTier, tryGetUnitPrice, type PriceTier } from "./pricing";
+import { getReferenceUnitPrice, getUnitPrice, resolveTier, tryGetUnitPrice, unitNameFor, variantLabelFor, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { extractInsertId } from "../lib/insertId";
@@ -339,15 +340,27 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
 
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
-      // H6: مرجعُ القياس هو سعر القائمة (غير رامٍ) — القناة تُسعَّر يدوياً بطبيعتها، لكنّ وجود
-      // مرجعٍ يجعل الانحراف قابلاً للقياس. بلا مرجع ⇒ لا بوّابة (تلك حالة H7 لا H6).
-      const listRef = await tryGetUnitPrice(tx, l.productUnitId, tier);
+      // H6: مرجعُ القياس هو سعر القائمة — القناة تُسعَّر يدوياً بطبيعتها، ووجودُ مرجعٍ هو ما
+      // يجعل الانحراف قابلاً للقياس أصلاً.
+      // H7 (قرار المالك ١٨/٨): وبلا مرجعٍ موجب لا بيع. خدماتُ الطباعة كلّها مبذورةٌ بأسعار
+      // قائمة (حتى «سعرها يدويّ» منها: جدول إكسل ٣٠٠٠، تصميم مطبوعة ١٠٬٠٠٠) — فالمرجع موجودٌ
+      // فعلاً وما يتغيّر هو أنّ خدمةً تُضاف لاحقاً بلا سعرٍ لن تعود تُباع بأيّ رقم.
+      const tierPrice = await tryGetUnitPrice(tx, l.productUnitId, tier);
+      // مرجعُ القياس يسقط على المفرد عند غياب سعر الفئة — للقياس وحده (انظر `getReferenceUnitPrice`).
+      const listRef = await getReferenceUnitPrice(tx, l.productUnitId, tier, tierPrice);
+      const refUnit = listRef != null && listRef.gt(0)
+        ? listRef
+        : requireListPriceReference(listRef, {
+            itemLabel: await variantLabelFor(tx, l.variantId),
+            unitLabel: await unitNameFor(tx, l.productUnitId),
+            tier,
+          });
       const unitPrice =
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)
-          : (listRef ?? (await getUnitPrice(tx, l.productUnitId, tier)));
+          : (tierPrice ?? (await getUnitPrice(tx, l.productUnitId, tier)));
       const lineRes = computeLineTotal({ unitPrice, quantity: money(l.quantity) });
-      if (lineDiscountExceedsThreshold(listRef ?? money(0), money(l.quantity), lineRes.total)) {
+      if (lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)) {
         manualDiscountGateTriggered = true;
       }
 

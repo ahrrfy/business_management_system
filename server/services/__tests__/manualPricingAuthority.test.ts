@@ -8,7 +8,9 @@
  *
  *  ١) **خصم رأس الفاتورة** كان يفلت من بوّابة السطر كلّياً (يُقصّ إلى `[0, subtotal]` وحسب).
  *  ٢) **قناة الطباعة** كانت تحرس تحت-التكلفة وحدها ⇒ سياستان مختلفتان لنفس القرار الماليّ.
- *  ٣) **ذيل H7**: بندٌ بلا سعرٍ مرجعيّ يفلت من البوّابتين — مُوثَّقٌ هنا بوصفه حدّاً معروفاً.
+ *  ٣) **ذيل H7**: بندٌ بلا سعرٍ مرجعيّ كان يفلت من البوّابتين. أُغلق بقرار المالك (١٨/٨):
+ *     «إلزام سعر قائمةٍ لكل صنفٍ يُباع» ⇒ لا يصل السطرُ إلى البوّابة أصلاً. التفصيل في
+ *     `listPriceRequired.test.ts`؛ وما يبقى هنا هو أثرُ الإغلاق على البوّابتين نفسيهما.
  */
 import Decimal from "decimal.js";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -198,15 +200,34 @@ describe("قناة الطباعة — إنهاء انجراف السياسة ب�
   });
 });
 
-/** حدٌّ معروفٌ مُوثَّق: بلا سعرٍ مرجعيّ لا قياسَ انحراف — وهو ذيل H7 لا H6. */
+/**
+ * ذيل H7 — **أُغلق** بقرار المالك (١٨/٨): لا يُباع بندٌ بلا سعر قائمة.
+ *
+ * كان هذا الاختبار يُثبّت العطب بوصفه «حدّاً معروفاً ينتظر قرار سياسة»: صنفٌ بلا سعرٍ ولا
+ * تكلفةٍ يُباع بصفرٍ ويعود `priceOverride = false` — أي بلا وسمِ تدقيقٍ حتى. صار التأكيد
+ * على السلوك الجديد: **رفضٌ عند السطر** قبل بلوغ أيّ بوّابة.
+ */
 describe("ذيل H7 — البند بلا مرجع", () => {
-  it("صنفٌ بلا سعر قائمة وتكلفته صفر يمرّ بأيّ سعر (حدٌّ معروف يلزمه قرار سياسة)", async () => {
+  it("صنفٌ بلا سعر قائمة لا يُباع أصلاً — ولو بسعرٍ يدويّ", async () => {
     await db().insert(s.branchStock).values({ variantId: 3, branchId: 1, quantity: 10 });
-    const res = await createSale(
-      saleInput({ lines: [{ variantId: 3, productUnitId: 3, quantity: "1", unitPriceOverride: "0.00" }] }),
-      cashier,
-    );
-    expect(res.invoiceId).toBeGreaterThan(0);
-    expect(res.priceOverride).toBe(false);
+    await expect(
+      createSale(
+        saleInput({ lines: [{ variantId: 3, productUnitId: 3, quantity: "1", unitPriceOverride: "0.00" }] }),
+        cashier,
+      ),
+    ).rejects.toThrow(/سعر قائمة/);
+  });
+
+  it("وبعد إعطائه سعراً: البيع بصفرٍ صار **يُمسَك** بالبوّابة (H6 استعادت مقامها)", async () => {
+    // جوهرُ الربط بين البندين: H6 كانت معطَّلةً على هذه الأصناف لأنّ مقامها صفر، لا لأنّ
+    // عتبتها خاطئة. فإلزامُ السعر لم يُضِف حارساً فحسب — بل **شغّل** الحارس القائم.
+    await db().insert(s.productPrices).values({ productUnitId: 3, priceTier: "RETAIL", price: "500.00" });
+    await db().insert(s.branchStock).values({ variantId: 3, branchId: 1, quantity: 10 });
+    await expect(
+      createSale(
+        saleInput({ lines: [{ variantId: 3, productUnitId: 3, quantity: "1", unitPriceOverride: "0.00" }] }),
+        cashier,
+      ),
+    ).rejects.toThrow(/موافقة مدير|اعتماد|تفويض/);
   });
 });

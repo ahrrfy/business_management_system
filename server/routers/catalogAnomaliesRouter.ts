@@ -2,7 +2,7 @@
  * catalogAnomaliesRouter.ts — راوتر لوحة تدقيق شذوذ الكتالوج (L2).
  *
  * ثلاث نقاط:
- *   - `list`         (READ): يُشغّل ست عدسات (L1-L6) على `productVariants`، يُطبِّق استثناءات المستخدم،
+ *   - `list`         (READ): يُشغّل سبع عدسات (L1-L7) على `productVariants`، يُطبِّق استثناءات المستخدم،
  *                    ويعيد الصفوف مصنَّفةً حسب الحدّة.
  *   - `markIntentional` (WRITE, manager): يُعلَّم صفٌّ بأنه «قصديّ» بتبريرٍ إلزاميّ + مدّة اختيارية.
  *   - `markIgnored`     (WRITE, manager): يُعلَّم صفٌّ «تجاهل نهائيّاً» (whitelist دائم بتبرير).
@@ -18,11 +18,11 @@ import { catalogAnomaliesReadProcedure, catalogAnomaliesManagerProcedure, router
 import { detectAll } from "../services/catalogAnomalies/detectors";
 import { logAudit } from "../services/auditService";
 
-const codeSchema = z.enum(["L1", "L2", "L3", "L4", "L5", "L6"]);
+const codeSchema = z.enum(["L1", "L2", "L3", "L4", "L5", "L6", "L7"]);
 
 export const catalogAnomaliesRouter = router({
   /**
-   * قائمة الشذوذ الكاملة (L1-L6) — يُطبَّق استثناءات المستخدم لاحقاً (LEFT JOIN مع catalogAnomalyOverrides).
+   * قائمة الشذوذ الكاملة (L1-L7) — يُطبَّق استثناءات المستخدم لاحقاً (LEFT JOIN مع catalogAnomalyOverrides).
    * `includeOverridden=true` يُعيدها في القائمة (للتاريخ/المراجعة)؛ الافتراضي `false` (الطابور النشط).
    */
   list: catalogAnomaliesReadProcedure

@@ -11,6 +11,7 @@ import {
   invoiceDiscountExceedsThreshold,
   lineDiscountExceedsThreshold,
   MANUAL_DISCOUNT_APPROVAL_THRESHOLD,
+  requireListPriceReference,
   snapshotUnitCost,
 } from "../billing";
 import { assertCreditLimit } from "../../lib/credit";
@@ -37,7 +38,7 @@ import { createPostingIntent, creditLine, debitLine, signedPostingLines, type Ac
 import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
-import { getUnitPrice, tryGetUnitPrice, resolveTier, type PriceTier } from "../pricing";
+import { getReferenceUnitPrice, getUnitPrice, tryGetUnitPrice, resolveTier, unitNameFor, type PriceTier } from "../pricing";
 import { type Actor, requireDb, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { flowNotify } from "../whatsapp";
@@ -250,17 +251,21 @@ export async function createSaleInTx(
         // تدقيق ١١/٨ (H4): تعطيل المنتج نفسه يجب أن يمنع البيع أيضاً — كان الحارس يفحص المتغيّر فقط،
         // فمنتجٌ عطّله المالك بمتغيّراتٍ نشطة يظلّ يُباع خادمياً عبر API/سلة قديمة/إعادة تشغيل أوفلاين.
         productActive: products.isActive,
+        // H7: اسمٌ للرسالة — رفضٌ يسمّي البند أرخص للموظّف من رقمٍ يبحث عنه.
+        productName: products.name,
+        variantName: productVariants.variantName,
       })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productVariants.id, uniqueVariantIds));
-    const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null; productActive: boolean | null }>();
+    const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null; productActive: boolean | null; label: string }>();
     for (const r of variantRows) {
       variantById.set(Number(r.id), {
         costPrice: String(r.costPrice),
         isActive: r.isActive,
         productType: r.productType ?? null,
         productActive: r.productActive,
+        label: [r.productName, r.variantName].filter(Boolean).join(" — ") || `الصنف ${Number(r.id)}`,
       });
     }
     const containsDigitalCard = Array.from(variantById.values()).some((v) => v.productType === "DIGITAL_CARD");
@@ -430,11 +435,29 @@ export async function createSaleInTx(
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
       const contractPrice = contractPrices.get(l.productUnitId);
       const hasOverride = l.unitPriceOverride != null && l.unitPriceOverride !== "";
-      // المرجع للقياس (H6): عقد ← سعر القائمة (غير رامٍ) ← بلا مرجع. لا نُجبر وجود سعرٍ عند وجود override.
-      const listRef = contractPrice != null ? money(contractPrice) : await tryGetUnitPrice(tx, l.productUnitId, tier);
-      const refUnit = listRef ?? money(0);
-      // السعر الفعليّ: override ← المرجع ← (بلا مرجعٍ ولا override) رميٌ محفوظ «عرّف السعر أولاً».
-      const unitPrice = hasOverride ? money(l.unitPriceOverride!) : (listRef ?? (await getUnitPrice(tx, l.productUnitId, tier)));
+      // سعرُ الفئة — أساسُ **التحصيل**. بلا سقوطٍ ضمنيّ بين الفئات (سعرُ مفردٍ لعميل جملةٍ خطأٌ ماليّ).
+      const tierPrice = contractPrice != null ? money(contractPrice) : await tryGetUnitPrice(tx, l.productUnitId, tier);
+      // ومرجعُ **القياس** (H6): عقد ← مرجعٌ خادميّ مفروض (البطاقات) ← سعر الفئة ← سعر المفرد.
+      // السقوطُ على المفرد هنا مقصود وللقياس وحده: صنفٌ مسعَّرٌ بالمفرد **له** سعر قائمة، فلا
+      // يُرفَض بيعُه لعميلٍ حكوميّ بسعرٍ يدويّ — وإلّا صار الإلزامُ ثلاثةَ أسعارٍ لا واحداً.
+      const serverRef = l.unitPriceReference != null && l.unitPriceReference !== "" ? money(l.unitPriceReference) : null;
+      const rawRef = contractPrice != null
+        ? money(contractPrice)
+        : (serverRef ?? (await getReferenceUnitPrice(tx, l.productUnitId, tier, tierPrice)));
+      // H7 (قرار المالك ١٨/٨): بلا مرجعٍ موجب لا بيع — **حتى مع `unitPriceOverride`**، وهو المسار
+      // المعتاد لا الاستثناء (POS/الاستقبال يُرسلان السعر دائماً) فكان الثقب يبتلع كلّ البيع.
+      const refUnit = rawRef != null && rawRef.gt(0)
+        ? rawRef
+        : requireListPriceReference(rawRef, {
+            itemLabel: v.label,
+            unitLabel: await unitNameFor(tx, l.productUnitId),
+            tier,
+          });
+      // السعر الفعليّ: override ← سعر الفئة/العقد ← رميٌ محفوظ «عرّف السعر أولاً» (لا المرجع،
+      // كي لا يتحوّل سقوطُ القياس أعلاه إلى تحصيلٍ بسعر فئةٍ أخرى).
+      const unitPrice = hasOverride
+        ? money(l.unitPriceOverride!)
+        : (tierPrice ?? (await getUnitPrice(tx, l.productUnitId, tier)));
       // bundles: تكلفة البكج محسوبة لحظياً من مجموع مكوّناته (لا `productVariants.costPrice`
       // لأن البكج نفسه بلا WAVG — تكلفته صافي مجموع مكوّناته الحيّ لحظة البيع، قرار مالك ٧/٧).
       const kind = kindByVariant.get(l.variantId) ?? "STOCKED";

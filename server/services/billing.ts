@@ -1,6 +1,10 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { clampMoney, money, round2, sumMoney } from "./money";
+import {
+  missingListPriceMessage,
+  type ListPriceTier,
+} from "../../shared/listPricePolicy";
 
 export interface LineInput {
   unitPrice: Decimal;
@@ -114,12 +118,36 @@ export function isInvoiceBelowCost(
   return lineBelowCost || revenue.lt(money(costTotal));
 }
 
+/**
+ * H7 (قرار المالك ١٨/٨/٢٦) — **لا يُباع بندٌ بلا مرجعٍ موجب.**
+ *
+ * البوّابتان أدناه تقيسان **نسبة** التنازل: `(refGross − net) / refGross`. فبندٌ بلا سعر قائمة
+ * مقامُه صفرٌ ⇒ كلتاهما تُرجع `false` مهما كان السعر، وبوّابةُ تحت-التكلفة لا تنطلق عند
+ * `costPrice = 0` ⇒ **البند بلا حارسٍ إطلاقاً**: يُباع بصفرٍ بلا اعتمادٍ ولا وسمِ تدقيق.
+ *
+ * إغلاقُه هنا لا هناك مقصود: ⛔ **لا تُصلحه بجعل البوّابة تُطلق عند مرجعٍ صفر** — تلك تُطالب
+ * بموافقة مدير عند **كلّ** بيعةٍ لبندٍ ناقص البيانات، فتصير الموافقةُ طقساً يُوقَّع بلا قراءة
+ * ويفقد الحارسُ معناه حيث يلزم فعلاً. الإلزام عند المنبع (سعرٌ للصنف) أصحّ وأرخص.
+ *
+ * والصفرُ ليس مرجعاً: صفٌّ بسعر `0.00` لا يختلف عن غيابه أمام القسمة. البطاقات الرقمية
+ * تُنشئ صفّاً نائباً بصفرٍ عمداً (سعرها الحقيقيّ في جداول تسعيرها) ⇒ تُمرّر مرجعها صراحةً
+ * عبر `SaleLineInput.unitPriceReference` بدل أن تُستثنى صامتةً.
+ */
+export function requireListPriceReference(
+  refUnit: Decimal | null,
+  ctx: { itemLabel: string; unitLabel?: string | null; tier: ListPriceTier },
+): Decimal {
+  if (refUnit != null && refUnit.gt(0)) return refUnit;
+  throw new TRPCError({ code: "PRECONDITION_FAILED", message: missingListPriceMessage(ctx) });
+}
+
 /** عتبة انحراف السعر اليدويّ (لكل سطر) عن مرجعه (عقد/قائمة) لأسفل التي تتجاوزها ⇒ اعتماد مدير.
  *  قرار المالك (٢٧/٧): ١٥٪. بيعٌ عند/فوق المرجع ⇒ لا تفويض (H6). */
 export const MANUAL_DISCOUNT_APPROVAL_THRESHOLD = 0.15;
 
 /** هل ينحرف صافي السطر (بعد الخصم) عن سعره المرجعيّ (refUnit×qty) لأسفل بأكثر من العتبة؟ بلا مرجعٍ
- *  موجب (بند بلا سعر قائمة) ⇒ false. يُغلق H7 أيضاً: إهداء صنفٍ مُدرَجٍ بسعر 0 = انحراف ١٠٠٪ ⇒ تفويض. */
+ *  موجب ⇒ false — وهو **فرعٌ دفاعيّ لا مسار** بعد H7: `requireListPriceReference` يمنع وصول
+ *  سطرٍ بلا مرجعٍ موجب إلى هنا، فالمقام موجبٌ حتماً والقياس يقع فعلاً. */
 export function lineDiscountExceedsThreshold(refUnit: Decimal, quantity: Decimal, lineTotal: string): boolean {
   const refGross = refUnit.times(quantity);
   if (refGross.lte(0)) return false;
@@ -134,7 +162,8 @@ export function lineDiscountExceedsThreshold(refUnit: Decimal, quantity: Decimal
  * اعتمادٍ ما دام الصافي فوق التكلفة — وهو بالضبط التنازل الذي وُضعت العتبة لتحكمه.
  *
  * المرجع هو مجموع (سعر المرجع × الكمية) للأسطر **غير المُهداة** (الهديّة قرارٌ خادميّ له بوّابته).
- * وبلا مرجعٍ موجب (أصنافٌ بلا سعر قائمة) ⇒ لا قياس ولا بوّابة — تلك حالةُ H7 لا H6.
+ * وبلا مرجعٍ موجب ⇒ لا قياس — **فرعٌ دفاعيّ لا مسار** بعد H7 (كان حالةَ الأصناف بلا سعر قائمة،
+ * وقد صارت مرفوضةً عند السطر قبل بلوغ الرأس).
  */
 export function invoiceDiscountExceedsThreshold(
   referenceGross: Decimal,

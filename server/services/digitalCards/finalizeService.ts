@@ -321,6 +321,12 @@ export async function finalize(tx: Tx, input: FinalizeInput, actor: Actor): Prom
           productUnitId: m.productUnitId,
           quantity: "1",
           unitPriceOverride: it.sellPriceSnapshot,
+          // H7: عرضُ البطاقة يُنشئ في `productPrices` صفّاً نائباً بسعر `0` عمداً — سعرُها
+          // الحقيقيّ هنا، مقروءاً من نيّةٍ **مقفولة** في القاعدة. تمريرُه مرجعاً يُبقي حارس
+          // «لا بيع بلا سعر قائمة» ساري المفعول على البطاقات أيضاً بدل استثنائها صامتةً:
+          // انحرافُ السطر يُقاس عن السعر المعتمَد نفسه ⇒ صفرٌ، فلا بوّابةَ تُزعج بلا سبب،
+          // وأيُّ تلاعبٍ لاحقٍ بـ`sellPriceSnapshot` يبقى محكوماً بمقارنة `expectedTotal`.
+          unitPriceReference: it.sellPriceSnapshot,
           unitCostOverride: it.providerShareSnapshot,
           internalLineToken: String(it.id),
         };

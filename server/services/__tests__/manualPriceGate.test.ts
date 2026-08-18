@@ -3,7 +3,11 @@
  *
  * قرار المالك: انحرافُ صافي السطر عن مرجعه (عقد/قائمة) لأسفل بأكثر من ١٥٪ يستوجب اعتماد مدير
  * (نفس آليّة تحت-التكلفة عبر priceOverrideApproved). H7 يُغلق تلقائياً: إهداء صنفٍ مُدرَجٍ بسعر 0
- * = انحراف ١٠٠٪. الأصنافُ بلا سعر قائمةٍ لا مرجع لها ⇒ لا بوّابة (ولا رميٌ رجعيّ من getUnitPrice).
+ * = انحراف ١٠٠٪.
+ *
+ * **تحديث ١٨/٨ (قرار المالك):** الأصنافُ بلا سعر قائمة لم تعد «بلا بوّابة» — صارت **بلا بيع**.
+ * ما يبقى من نيّة اختبار الانحدار الأصليّ صحيحاً هو أنّ `unitPriceOverride` لا يجرّ رمياً من
+ * `getUnitPrice`؛ وهو مُثبَّتٌ أدناه على صنفٍ **له** سعر قائمةٍ وفئتُه بلا سعر.
  */
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -98,8 +102,16 @@ describe("H7 — صنفٌ تكلفته صفر لا يُهدى مجاناً بل�
 });
 
 describe("انحدار: صنفٌ بلا سعر قائمة يُباع بسعرٍ يدويّ", () => {
-  it("بلا مرجعٍ ⇒ لا بوّابة ولا رميٌ من getUnitPrice (كان يفشل قبل الإصلاح)", async () => {
-    const res = await sale({ variantId: 3, productUnitId: 3, quantity: "1", unitPriceOverride: "20.00" });
+  it("بلا مرجعٍ ⇒ **لا بيع** (قرار المالك ١٨/٨ — كان يمرّ بلا بوّابةٍ ولا وسم)", async () => {
+    await expect(sale({ variantId: 3, productUnitId: 3, quantity: "1", unitPriceOverride: "20.00" }))
+      .rejects.toThrow(/سعر قائمة/);
+  });
+
+  it("والنيّةُ الأصلية محفوظة: السعرُ اليدويّ لا يجرّ رمياً من getUnitPrice حين للصنف سعرُ مفرد", async () => {
+    // فئةُ العميل بلا سعرٍ مُعرَّف، لكنّ الصنف مسعَّرٌ بالمفرد ⇒ مرجعٌ للقياس موجود، والتحصيل
+    // بالسعر اليدويّ. هذه هي الحالة التي وُلد اختبارُ الانحدار لأجلها فعلاً.
+    await db().update(s.customers).set({ defaultPriceTier: "GOVERNMENT" }).where(eq(s.customers.id, 1));
+    const res = await sale({ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "20.00" });
     expect(res.priceOverride).toBe(false);
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, res.invoiceId)))[0];
     expect(inv).toBeTruthy();

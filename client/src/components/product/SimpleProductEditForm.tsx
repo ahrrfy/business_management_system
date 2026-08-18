@@ -1,3 +1,4 @@
+import { baseUnitPriceRequiredMessage, isPositivePriceString } from "@shared/listPricePolicy";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { AlertCircle, CheckCircle2, Layers, X } from "lucide-react";
@@ -262,6 +263,17 @@ export default function SimpleProductEditForm({
     const dup = codes.find((c, i) => codes.indexOf(c) !== i);
     if (dup) return `باركود مكرّر داخل النموذج: ${dup} — لكل وحدة باركود فريد.`;
     if (consignment.isConsignment && !consignment.consignorId) return "صنف الأمانة يلزمه مودِع — اختر المودِع.";
+    // H7 (قرار المالك ١٨/٨): صنفٌ يُباع له سعر قائمةٍ موجب. مرآةُ حارس الخادم
+    // (`assertBaseRetailPricePresent`) — والإنفاذُ خادميّ دائماً؛ هذه لتقول له الآن لا بعد الحفظ.
+    if (isActive && productType.trim() !== "DIGITAL_CARD") {
+      const baseUnit = units.find((u) => u.isBase);
+      if (baseUnit && !isPositivePriceString(baseUnit.retail.trim())) {
+        return baseUnitPriceRequiredMessage({
+          variantLabel: sku.trim() || finalName || "هذا الصنف",
+          unitLabel: baseUnit.name.trim() || "الأساس",
+        });
+      }
+    }
     // حرّاس عقلانية الأسعار — يمنع «حادثة SINARLINE ٣٠/٧». المصدر: shared/priceSanity.ts.
     const unitPricings = units.map((u) => ({
       unitName: u.name.trim() || (u.isBase ? "الأساس" : "وحدة"),

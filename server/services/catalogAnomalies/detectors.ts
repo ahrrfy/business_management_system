@@ -17,7 +17,7 @@ import type { MySql2Database } from "drizzle-orm/mysql2";
 import { COST_ABOVE_RETAIL_HARD_RATIO, ABS_MAX_CONVERSION_FACTOR } from "../../../shared/priceSanity";
 
 /** رمز العدسة — ثابتٌ يُستعمَل في `catalogAnomalyOverrides.code` وفي عرض العميل. */
-export type LensCode = "L1" | "L2" | "L3" | "L4" | "L5" | "L6";
+export type LensCode = "L1" | "L2" | "L3" | "L4" | "L5" | "L6" | "L7";
 
 /** حدّة النتيجة — تتّبع تدرّج priceSanity (بلا catastrophic هنا: الكشف الرجعيّ يحسب على قيمة موجودة). */
 export type LensSeverity = "blocker" | "warning" | "info";
@@ -288,6 +288,54 @@ export async function detectL6(db: Db, limit = 200): Promise<AnomalyFinding[]> {
   });
 }
 
+
+/**
+ * L7 — **صنفٌ نشطٌ بلا سعر قائمةٍ موجب لوحدته الأساس** (blocker). H7، قرار المالك ١٨/٨/٢٦.
+ *
+ * هذه العدسةُ **شرطُ تشغيل** حارسِ البيع لا زينةٌ بجانبه: الحارس يرفض بيع بندٍ بلا مرجعٍ موجب،
+ * فلو فُعِّل على مخزونٍ فيه أصنافٌ ناقصة السعر لَتوقّف الكاشير أمام الزبون بلا أن يعرف أحدٌ
+ * كم صنفاً في هذه الحال. العدسةُ تُظهر القائمة **قبل** أن تُظهرها الطوابير — وهي نفسُ الدرس
+ * الذي كلّفنا #596 (إقفالٌ شاملٌ نُشر قبل التحقّق أنّ المسار يقبل حمولته).
+ *
+ * «بلا سعر» يشمل **الصفّ الغائب والصفّ الصفريّ معاً**: أمام القسمة في بوّابة الانحراف لا فرق
+ * بينهما — كلاهما مقامٌ صفر ⇒ لا حارس. تُستثنى البطاقات الرقمية (سعرُها في جداول تسعيرها،
+ * وصفُّها النائب بصفرٍ مقصود) والبكجات والخِدمات المركّبة تتبع نفس استثناءات بقيّة العدسات.
+ */
+export async function detectL7(db: Db, limit = 200): Promise<AnomalyFinding[]> {
+  const rows = await db.execute(sql`
+    SELECT p.id AS pid, v.id AS vid, v.sku, p.name,
+           pu.id AS uid, pu.unitName,
+           (SELECT COALESCE(MAX(pp.price), 0) FROM productPrices pp
+            WHERE pp.productUnitId = pu.id AND pp.priceTier = 'RETAIL') AS retail,
+           (SELECT COUNT(*) FROM invoiceItems ii WHERE ii.variantId = v.id) AS salesCount
+    FROM productVariants v
+    JOIN products p ON p.id = v.productId
+    JOIN productUnits pu ON pu.variantId = v.id AND pu.isBaseUnit = 1
+    WHERE COALESCE(v.isActive, 1) = 1
+      AND COALESCE(p.isActive, 1) = 1
+      AND COALESCE(pu.isActive, 1) = 1
+      AND COALESCE(p.productType, '') <> 'DIGITAL_CARD'
+      AND COALESCE(p.isConsignment, 0) = 0
+      AND (SELECT COALESCE(MAX(pp.price), 0) FROM productPrices pp
+           WHERE pp.productUnitId = pu.id AND pp.priceTier = 'RETAIL') <= 0
+    ORDER BY (SELECT COUNT(*) FROM invoiceItems ii WHERE ii.variantId = v.id) DESC, v.id ASC
+    LIMIT ${limit}
+  `);
+  const list = (rows as unknown as [Array<{ pid: number; vid: number; sku: string; name: string; uid: number; unitName: string; retail: string | null; salesCount: number }>, unknown])[0];
+  return list.map((r) => ({
+    variantId: r.vid,
+    productId: r.pid,
+    sku: r.sku,
+    productName: r.name,
+    code: "L7" as const,
+    severity: "blocker" as const,
+    metrics: { retail: Number(r.retail ?? 0), salesCount: Number(r.salesCount), unitId: r.uid, unitName: r.unitName },
+    note:
+      `بلا سعر مفرد للوحدة الأساس «${r.unitName}» — لا يُباع (سياسة إلزام سعر القائمة)، ` +
+      `و${Number(r.salesCount) > 0 ? `له ${r.salesCount} بيعة سابقة مرّت بلا مرجعٍ يُقاس عليه أيّ خصم` : "لم يُبع بعد"}.`,
+  }));
+}
+
 /** يشغّل كل العدسات ويعيد صفوفاً مدمجة (مُدَدَّة إن أخطأ متغيّرٌ من ٢ عدسة). */
 export async function detectAll(db: Db, limitPerLens = 200): Promise<AnomalyFinding[]> {
   const results = await Promise.all([
@@ -297,6 +345,7 @@ export async function detectAll(db: Db, limitPerLens = 200): Promise<AnomalyFind
     detectL4(db, limitPerLens),
     detectL5(db, limitPerLens),
     detectL6(db, limitPerLens),
+    detectL7(db, limitPerLens),
   ]);
   return results.flat();
 }

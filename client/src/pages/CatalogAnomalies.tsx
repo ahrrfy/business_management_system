@@ -1,7 +1,7 @@
 /**
  * CatalogAnomalies.tsx — لوحة تدقيق شذوذ الكتالوج (L2.3).
  *
- * **الغاية:** تعرض ست عدسات كشفٍ (L1-L6) على `productVariants` لأخطاء تكلفة/سعر/معامل
+ * **الغاية:** تعرض سبع عدسات كشفٍ (L1-L7) على `productVariants` لأخطاء تكلفة/سعر/معامل
  * (حادثة SINARLINE-class). لكل صفٍّ: عرض المُقاييس، deep-link للإصلاح، أو تسجيل «قصديّ»
  * (تصفية/بضاعة قديمة) أو «تجاهل نهائيّاً» (whitelist).
  *
@@ -25,7 +25,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 
 type Severity = "blocker" | "warning" | "info";
-type LensCode = "L1" | "L2" | "L3" | "L4" | "L5" | "L6";
+type LensCode = "L1" | "L2" | "L3" | "L4" | "L5" | "L6" | "L7";
 type Finding = RouterOutputs["catalogAnomalies"]["list"]["findings"][number];
 
 const LENS_LABELS: Record<LensCode, string> = {
@@ -35,6 +35,7 @@ const LENS_LABELS: Record<LensCode, string> = {
   L4: "L4 · تكلفة صفر مع نشاط",
   L5: "L5 · معامل شاذّ",
   L6: "L6 · تكلفة وحدة > سعرها",
+  L7: "L7 · بلا سعر قائمة (لا يُباع)",
 };
 
 // توكنز دلالية (tokens.css) بدل الألوان الخام — يتوافق مع حارس check-no-raw-status-colors:
@@ -128,7 +129,7 @@ export default function CatalogAnomalies() {
     <div className="space-y-4">
       <PageHeader
         title="تدقيق شذوذ الكتالوج"
-        description="كشف رجعيّ لأخطاء التكلفة/السعر/المعامل بست عدسات (L1-L6). الأفعال: إصلاح (deep-link)، قصديّ (تصفية/بضاعة قديمة)، تجاهل نهائيّاً."
+        description="كشف رجعيّ لأخطاء التكلفة/السعر/المعامل بسبع عدسات (L1-L7). الأفعال: إصلاح (deep-link)، قصديّ (تصفية/بضاعة قديمة)، تجاهل نهائيّاً."
       />
 
       {/* بطاقات الملخّص */}

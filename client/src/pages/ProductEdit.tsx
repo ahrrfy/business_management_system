@@ -1,3 +1,4 @@
+import { baseUnitPriceRequiredMessage, isPositivePriceString } from "@shared/listPricePolicy";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -408,6 +409,21 @@ export default function ProductEdit() {
     for (const v of variants) for (const u of units) { const c = (v.unitBarcodes[u.id] || "").trim(); if (c) codes.push(c); }
     const dupBc = codes.find((c, i) => codes.indexOf(c) !== i);
     if (dupBc) return `باركود مكرّر داخل النموذج: ${dupBc}.`;
+    // H7 (قرار المالك ١٨/٨): كل متغيّرٍ نشطٍ يُباع له سعر مفرد موجب لوحدة الأساس — إمّا سعر
+    // القالب أو تجاوزُه الخاص. مرآةُ `assertBaseRetailPricePresent` خادمياً (الإنفاذ هناك).
+    if (isActive && productType.trim() !== "DIGITAL_CARD") {
+      const baseUnitRow = units.find((u) => u.isBase);
+      const templateRetail = baseUnitRow?.retail.trim() ?? "";
+      for (const v of variants) {
+        if (v.isActive === false) continue;
+        const effective = (v.priceOverride && v.retail.trim() ? v.retail.trim() : "") || templateRetail;
+        if (isPositivePriceString(effective)) continue;
+        return baseUnitPriceRequiredMessage({
+          variantLabel: v.sku.trim() || "متغيّر جديد",
+          unitLabel: baseUnitRow?.name.trim() || "الأساس",
+        });
+      }
+    }
     // حرّاس عقلانية الأسعار — يمنع «حادثة SINARLINE ٣٠/٧» (تكلفة أُدخلت 16162 بينما البيع 2000 ⇒
     // «بيع تحت التكلفة» يوقف كل فاتورة تحوي الصنف). المصدر: shared/priceSanity.ts (يُشارَك خادمياً).
     for (const v of variants) {
