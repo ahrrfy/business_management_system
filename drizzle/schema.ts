@@ -3409,6 +3409,14 @@ export const purchaseOrders = mysqlTable(
       .notNull(),
     usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
     agreedRate: decimal("agreedRate", { precision: 15, scale: 4 }),
+    // خصم فاتورة المورّد (0204): يُدخَل فاتورياً ويُوزَّع بنسبة القيمة، فتُخزَّن أعمدةُ المال
+    // **صافيةً** (subtotal/total/unitPrice/usdUnitPrice) ⇒ AP وWAVG ومرتجع الشراء تلتقطه بلا
+    // تغييرٍ في قرّائها. هذان العمودان **إفصاحٌ وإعادةُ تحميلٍ للمحرّر** لا مدخلٌ في أيّ حساب:
+    // `invoiceDiscount` بالدينار، و`usdInvoiceDiscount` بالدولار للأمر الدولاريّ (نظير usdTotal).
+    invoiceDiscount: decimal("invoiceDiscount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    usdInvoiceDiscount: decimal("usdInvoiceDiscount", { precision: 15, scale: 2 }),
     paidUsd: decimal("paidUsd", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
@@ -3457,6 +3465,11 @@ export const purchaseOrderItems = mysqlTable(
     // لقطة فاتورة المورد الأصلية. تبقى unitPrice/total أعلاه بالدينار لتغذية WAVG والدفتر.
     usdUnitPrice: decimal("usdUnitPrice", { precision: 15, scale: 4 }),
     usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
+    // سعر الوحدة **قبل خصم الفاتورة** (0204) — لقطةُ ورقة المورّد سطراً سطراً. `unitPrice`
+    // أعلاه صافٍ (هو ما نَدين به ونُرسمله)، وهذا هو المُعلَن على المستند. `NULL` = بلا خصم
+    // (أو أمرٌ سابقٌ للعمود) ⇒ القارئ يسقط على `unitPrice` نفسه.
+    listUnitPrice: decimal("listUnitPrice", { precision: 15, scale: 2 }),
+    usdListUnitPrice: decimal("usdListUnitPrice", { precision: 15, scale: 4 }),
     receivedBaseQuantity: int("receivedBaseQuantity").default(0),
     // receivedNet: مجموع ما قُيِّد فعلياً للبند عبر استلامات متعدّدة. عند الـreceive
     // الذي يُكمل الكمية، يُستعمل (total − receivedNet) كقيمة remainder بالضبط ⇒

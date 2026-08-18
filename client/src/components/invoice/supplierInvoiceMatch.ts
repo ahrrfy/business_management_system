@@ -143,17 +143,32 @@ export function matchSupplierInvoice(
 export function deriveDocumentTotal(
   lines: MatchLine[],
   taxRatePercent: string | number = 0,
-): { subtotal: string; tax: string; total: string } {
-  const subtotal = d2(
+  invoiceDiscount: string | number = 0,
+): { grossSubtotal: string; discount: string; subtotal: string; tax: string; total: string } {
+  const grossSubtotal = d2(
     lines.reduce((acc, l) => {
       const price = safe(l.price) ?? new Decimal(0);
       const qty = safe(l.qty) ?? new Decimal(0);
       return acc.plus(d2(price.times(qty)));
     }, new Decimal(0)),
   );
+  // خصم فاتورة المورّد (0204): يُقصّ عند قيمة البضاعة — الخادم يرفض ما تجاوزها، والمعاينة
+  // لا تُظهر إجمالياً سالباً في أثناء الكتابة.
+  const rawDiscount = safe(invoiceDiscount) ?? new Decimal(0);
+  const discount = rawDiscount.isNegative()
+    ? new Decimal(0)
+    : Decimal.min(d2(rawDiscount), grossSubtotal);
+  const subtotal = d2(grossSubtotal.minus(discount));
   const rate = safe(taxRatePercent) ?? new Decimal(0);
+  // الضريبة على الوعاء **بعد الخصم** — مطابقةً لـ`computePurchaseDocument`.
   const tax = rate.gt(0) ? d2(subtotal.times(rate).dividedBy(100)) : new Decimal(0);
-  return { subtotal: subtotal.toFixed(2), tax: tax.toFixed(2), total: d2(subtotal.plus(tax)).toFixed(2) };
+  return {
+    grossSubtotal: grossSubtotal.toFixed(2),
+    discount: discount.toFixed(2),
+    subtotal: subtotal.toFixed(2),
+    tax: tax.toFixed(2),
+    total: d2(subtotal.plus(tax)).toFixed(2),
+  };
 }
 
 export interface DistributeResult {

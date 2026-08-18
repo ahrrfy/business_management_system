@@ -26,6 +26,12 @@ export interface TotalsPanelProps {
   showDiscount?: boolean;
   /** false = hide the payment block (method + paid amount) — screens that persist payment elsewhere (purchase receive) or via a dedicated control (return settlement). Default true. */
   showPayment?: boolean;
+  /**
+   * مبلغ الخصم المعروض (2dp) — يُمرَّر حين يشتقّه الأب بترتيب تقريبٍ مختلف عن `calcTotals`.
+   * الشراء يشتقّه بترتيب الخادم (سطراً سطراً) فقد يفترق عن اشتقاق `calcTotals` بفلسٍ على
+   * أسعار الدولار ذات الأربع منازل ⇒ يُعرض ما **يُرسَل فعلاً** لا رقماً موازياً («المعروض = المحفوظ»).
+   */
+  overrideDiscountAmount?: string;
   /** override the displayed/driving grand total (2dp string). SALE_RETURN passes the server-equivalent
    *  proportional refund so the panel's total, paid-placeholder and «الكل» button reflect what the server
    *  actually refunds — not the editor-derived value (which ignores the invoice-level discount/tax). */
@@ -49,6 +55,7 @@ export function TotalsPanel({
   showDiscount = true,
   showPayment = true,
   overrideGrandTotal,
+  overrideDiscountAmount,
   shippingLabel = "مصاريف شحن",
   allowFreeShipping = false,
   cashOnlyPayment = false,
@@ -125,8 +132,10 @@ export function TotalsPanel({
               {state.globalDiscountType === "percent" ? "%" : "#"}
             </Button>
           </div>
-          {Number(t.globalDiscAmt) > 0 && (
-            <span className={cn(valueCls, "text-rose-600")} dir="ltr">−{fmtNum(t.globalDiscAmt)}</span>
+          {Number(overrideDiscountAmount ?? t.globalDiscAmt) > 0 && (
+            <span className={cn(valueCls, "text-rose-600")} dir="ltr">
+              −{fmtNum(overrideDiscountAmount ?? t.globalDiscAmt)}
+            </span>
           )}
         </div>
         )}
