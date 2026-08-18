@@ -80,7 +80,7 @@ async function grantAndApprove(input: Parameters<typeof grantAdvance>[0]) {
 }
 
 describe("حوكمة إنهاء الخدمة", () => {
-  it("ط١+ط٢) الفصل يُعطّل الحساب ويُبطل جلساته ويُحرّر ربط الجهاز مع إبقاء المرآة", async () => {
+  it("ط١+ط٢) الفصل يُعطّل الحساب ويُبطل جلساته ويَحدُّ ربط الجهاز بيوم الإنهاء", async () => {
     const before = (await db().select().from(s.users).where(eq(s.users.id, 2)))[0];
     const beforeValidFrom = new Date(before.sessionsValidFrom as unknown as string).getTime();
 
@@ -94,12 +94,28 @@ describe("حوكمة إنهاء الخدمة", () => {
     // إبطال الجلسات القائمة فوراً — الختم يُدفَع للأمام فتسقط كل كوكيّة أقدم منه.
     expect(new Date(u.sessionsValidFrom as unknown as string).getTime()).toBeGreaterThan(beforeValidFrom);
 
-    // صفّ المرآة يبقى (الرقم والاسم تاريخٌ لا يُمحى) لكن بلا موظف ولا سريان.
+    /*
+     * ⚠️ **تُحدِّث هذه التوقّعات عمداً** (0204، بند ٢١). كانت تُثبّت `employeeId=null` —
+     * وهي آليّةُ العطب نفسها: القطعُ الفوريّ يقع يومَ العمل الأخير فتصل بصماتُ ذلك اليوم بلا
+     * صاحبٍ ويُسجَّل صفر ساعات. والسلوكُ الذي كانت تحرسه حقاً («لا تُنسب بصماتُ الرقم للمفصول
+     * بعد مغادرته») محفوظٌ بالحدّ، ويحرسه الاختبار التالي (ط٢) صراحةً.
+     */
     const [link] = await db().select().from(s.hrDeviceUsers).where(eq(s.hrDeviceUsers.deviceId, 10));
     expect(link.enrollId).toBe(7);
     expect(link.name).toBe("احمد");
-    expect(link.employeeId).toBeNull();
-    expect(link.effectiveFrom).toBeNull();
+    expect(Number(link.employeeId)).toBe(1); // الربط باقٍ — لا يُقطع
+    expect(String(link.effectiveTo)).toBe("2026-07-31"); // محدودٌ بيوم الإنهاء
+    expect(link.effectiveFrom).not.toBeNull(); // حدّ المباشرة لم يُمسّ
+  });
+
+  it("ط٢أ) بصمةُ **يوم الإنهاء نفسه** تُنسَب — وهي التي كانت تضيع (بند ٢١)", async () => {
+    await setEmploymentStatus(1, "terminated", { terminationDate: "2026-07-31", actorUserId: 1 });
+    const { ingestPunches } = await import("../hrDevices/punchStore");
+    await ingestPunches({ id: 10, serialNumber: "SNTERM1" } as never, [
+      { enrollId: 7, punchAt: "2026-07-31 16:00:00", mode: "face", inOut: null, raw: null },
+    ]);
+    const [p] = await db().select().from(s.hrAttendancePunches).where(eq(s.hrAttendancePunches.enrollId, 7));
+    expect(Number(p.employeeId)).toBe(1); // قبل 0204 كانت null ⇒ يومُ عملٍ بصفر ساعات
   });
 
   it("ط٢) بعد الفصل لا تُنسب بصمات الرقم نفسه لأحد (يُعاد استعماله لموظف جديد)", async () => {
