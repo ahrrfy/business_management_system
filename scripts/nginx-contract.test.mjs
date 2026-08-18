@@ -1296,6 +1296,61 @@ for (const rollbackPhase of ["prepared", "switched", "retiring"]) {
   }
 }
 
+{
+  const fixture = createFixture();
+  try {
+    const rotationDirectory = path.join(
+      fixture.root,
+      "var",
+      "lib",
+      "alroya-nginx",
+      "rotation-active",
+    );
+    fs.mkdirSync(path.dirname(rotationDirectory), {
+      recursive: true,
+      mode: 0o700,
+    });
+    const prepareOperations = makeOperations();
+    const prepareOptions = {
+      ...fixtureOptions(fixture, prepareOperations),
+      rotationDirectory,
+      generateSecret: () => NEXT_SECRET,
+    };
+    assert.equal(prepareProxySecretRotation(prepareOptions).state, "prepared");
+
+    const switchOperations = makeOperations();
+    switchOperations.setOriginSecrets(SECRET, NEXT_SECRET);
+    const switchOptions = {
+      ...fixtureOptions(fixture, switchOperations),
+      rotationDirectory,
+      generateSecret: () => {
+        throw new Error("restart must resume the existing rotation material");
+      },
+    };
+    assert.equal(
+      switchProxySecretRotation(switchOptions).state,
+      "switched",
+      "a process restart must resume from the same persistent rotation path",
+    );
+
+    const retireOperations = makeOperations();
+    retireOperations.setOriginSecrets(NEXT_SECRET, SECRET);
+    const retireOptions = {
+      ...fixtureOptions(fixture, retireOperations),
+      rotationDirectory,
+    };
+    assert.equal(retireProxySecretRotation(retireOptions).state, "retiring");
+    retireOperations.setOriginSecrets(NEXT_SECRET);
+    assert.equal(
+      retireProxySecretRotation(retireOptions).state,
+      "retired",
+      "a reboot-equivalent restart must complete from persistent state",
+    );
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
 for (const crashPoint of [
   "journal-preparing-staged",
   "journal-preparing-renamed",
@@ -1510,6 +1565,17 @@ for (const crashPoint of [
   assert.match(ci, /RELEASE_NGINX_MANIFEST_SHA256/u);
   assert.match(ci, /GITHUB_STEP_SUMMARY/u);
   assert.match(installer, /execFileSync\(\s*"\/usr\/bin\/flock"/u);
+  assert.match(
+    installer,
+    /\/var\/lib\/alroya-nginx\/rotation-active/u,
+    "production rotation state must survive a process or host restart",
+  );
+  assert.doesNotMatch(
+    installer,
+    /\?\s*"\/run\/erp-nginx-rotation/u,
+    "production rotation state must never default to volatile /run storage",
+  );
+  assert.match(installer, /const TRUSTED_NODE_PATH = "\/usr\/bin\/node"/u);
   assert.match(installer, /"\/usr\/sbin\/nginx"/u);
   assert.match(installer, /"\/usr\/bin\/systemctl"/u);
   assert.doesNotMatch(
