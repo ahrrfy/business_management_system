@@ -498,9 +498,7 @@ export async function createOnlineOrder(
   return retryOnDup(() => createOnlineOrderAttempt(input));
 }
 
-async function createOnlineOrderAttempt(
-  input: CreateOnlineOrderInput,
-): Promise<CreateOnlineOrderResult> {
+function normalizeOwnedReplayIdentity(input: CreateOnlineOrderInput) {
   const normalizedLines = normalizeOnlineOrderLines(input.lines);
   const gov = governorateById(input.governorate);
   if (!gov)
@@ -525,6 +523,43 @@ async function createOnlineOrderAttempt(
     input.notes && input.notes.trim()
       ? `${address}\nملاحظة: ${input.notes.trim()}`
       : address;
+  return {
+    normalizedLines,
+    name,
+    phone,
+    requestedLineQuantities,
+    requestedShippingAddress,
+  };
+}
+
+/**
+ * فحص replay علني ضيق يسبق Turnstile أحادي الاستعمال. يعيد نجاحاً فقط بعد مطابقة الهاتف
+ * والمحافظة والعنوان والبنود؛ اصطدام مفتاح لطرف آخر يفشل بلا كشف أي حقل من طلبه.
+ */
+export async function findOwnedOnlineOrderReplay(
+  input: CreateOnlineOrderInput,
+): Promise<CreateOnlineOrderResult | null> {
+  if (!input.clientRequestId) return null;
+  const identity = normalizeOwnedReplayIdentity(input);
+  return withTx((tx) => loadOwnedReplay(
+    tx,
+    input,
+    identity.phone,
+    identity.requestedShippingAddress,
+    identity.requestedLineQuantities,
+  ));
+}
+
+async function createOnlineOrderAttempt(
+  input: CreateOnlineOrderInput,
+): Promise<CreateOnlineOrderResult> {
+  const {
+    normalizedLines,
+    name,
+    phone,
+    requestedLineQuantities,
+    requestedShippingAddress,
+  } = normalizeOwnedReplayIdentity(input);
   return withTx(async (tx) => {
     // ① replay يسبق حالة المتجر/الفرع: نجاحٌ مُلتزَم سابقاً يبقى قابلاً للإعادة حتى
     // لو أُغلق المتجر أو تغيّر فرع التنفيذ بعده. الاستعلام معزول بهاتف صاحب الطلب؛

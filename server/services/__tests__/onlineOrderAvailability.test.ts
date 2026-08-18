@@ -2,7 +2,11 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createOnlineOrder, quoteOnlineOrder } from "../onlineOrderService";
+import {
+  createOnlineOrder,
+  findOwnedOnlineOrderReplay,
+  quoteOnlineOrder,
+} from "../onlineOrderService";
 import { listStockByUnitIds } from "../catalog/pos";
 import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
@@ -276,6 +280,13 @@ describe("createOnlineOrder availability guards", () => {
       lines: [{ productUnitId: 1, quantity: 1, expectedUnitPrice: "1000.00" }],
     };
     const committed = await createOnlineOrder(request); // الرد يُفقد عند العميل بعد هذه النقطة
+    const preflightReplay = await findOwnedOnlineOrderReplay(request);
+    expect(preflightReplay).toMatchObject({ orderId: committed.orderId, idempotentReplay: true });
+    await expect(findOwnedOnlineOrderReplay({
+      ...request,
+      customerPhone: "07801234567",
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+
     const retriedAfterReload = await createOnlineOrder(request);
     expect(retriedAfterReload).toMatchObject({ orderId: committed.orderId, idempotentReplay: true });
     expect(await db().select().from(s.onlineOrders)).toHaveLength(1);
