@@ -32,6 +32,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
 import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDeliveryState";
 import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice } from "@/lib/workOrderRefundPolicy";
@@ -49,10 +50,16 @@ type Detail = NonNullable<RouterOutputs["workOrders"]["get"]>;
 type Status = "RECEIVED" | "IN_PROGRESS" | "READY" | "DELIVERED";
 type DeliverTarget = { id: number; orderNumber: string; title: string; salePrice: string; deposit: string };
 
-function workOrderStatusLabel(o: Pick<WO, "status" | "consignmentId" | "courierDeliveredAt">): string {
+function workOrderStatusLabel(
+  o: Pick<WO, "status" | "consignmentId" | "courierDeliveredAt" | "consignmentStatus" | "parcelStatus">,
+): string {
   if (o.status === "DELIVERED" && o.consignmentId) {
     return o.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل";
   }
+  // ١٨/٨: الأمر يبقى READY طوال رحلة المندوب (الإسناد لا يمسّ حالته عمداً) — فكانت البطاقة
+  // تقول «جاهز للتسليم» لطردٍ خرج من المكتبة. الحالة المشتقّة تقول أين هو فعلاً.
+  const st = deriveWoDeliveryState(o.consignmentStatus, o.parcelStatus);
+  if (o.status === "READY" && st !== "NONE") return woDeliveryStateLabel(st)!;
   return STATUS_LABEL[o.status] ?? o.status;
 }
 
@@ -1342,8 +1349,20 @@ export default function WorkOrders() {
       // مرآة الخادم: deliver محصور بالكاشير/المدير (أو منح workorders=FULL صريح) — لا نفتح حوار تسليم سيفشل بـ403.
       if (!canDeliver) { notify.warn("التسليم من صلاحية الكاشير/المدير", "تقديم الأمر إلى «مُسلَّم» يُصدر فاتورة نهائية — يتولّاه الكاشير أو المدير."); return; }
       if (order.hasDelivery) {
-        notify.warn("هذا طلب توصيل", "يجب إنشاء إرسالية واختيار الجهة من إدارة التوصيل.");
-        navigate("/delivery");
+        // ١٨/٨ (بلاغ المالك): كانت الرسالة واحدةً لكل الحالات والتنقّل يقذف إلى شاشةٍ **لا أثر
+        // للطلب فيها** (الطرد المُسنَد كان خارج كل تبويباتها). الآن: رسالةٌ بحالته الحقيقية،
+        // والتنقّل إلى التبويب الذي يعرضه فعلاً.
+        const st = deriveWoDeliveryState(order.consignmentStatus, order.parcelStatus);
+        if (st === "NONE") {
+          notify.warn("هذا طلب توصيل", "أنشئ الإرسالية واختر الجهة من «جاهز للإرسال» في إدارة التوصيل.");
+          navigate("/delivery");
+        } else {
+          notify.warn(
+            `الطلب ${woDeliveryStateLabel(st)}`,
+            `${order.deliveryPartyName ? `مع ${order.deliveryPartyName}. ` : ""}يُغلَق بإثبات التسليم من تبويب «قيد التوصيل».`,
+          );
+          navigate("/delivery?tab=transit");
+        }
         return;
       }
       setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice, deposit: order.deposit ?? "0" });

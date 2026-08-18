@@ -42,6 +42,7 @@ export type { SettleInput, WriteOffInput, RecoverWriteOffInput } from "./deliver
 export { settleDeliveryBalance, writeOffDeliveryShortfall, recoverDeliveryWriteOff } from "./delivery/settle";
 export {
   listReadyForDispatch,
+  listInTransitConsignments,
   listOpenConsignments,
   listConsignmentsForParty,
   listPartyRemittances,

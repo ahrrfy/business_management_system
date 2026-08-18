@@ -316,7 +316,15 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
  */
 function canSeeDeliveryForUser(user: { role: string; permissionsOverride?: unknown }): boolean {
   if (user.role === "admin") return true;
-  return hasModuleAccess(user.role, (user.permissionsOverride as any) ?? null, "store", "READ");
+  const override = (user.permissionsOverride as any) ?? null;
+  if (hasModuleAccess(user.role, override, "store", "READ")) return true;
+  // ١٨/٨ (بلاغ المالك: «لا تظهر… ولا حتى لفنّي المطبعة»): **مشغّل المحطة** (`workorders:FULL`)
+  // هو من يُسنِد الطلب للمندوب فعلاً؛ إخفاءُ حالةِ ما أسنده عنه ليس تشديداً بل عمًى تشغيليّ —
+  // يرى الأمر «جاهز» ولا يعلم أنّه خرج، فيسحبه في الكانبان أو يحاول إسناده ثانيةً.
+  // النطاق هنا **معلومةٌ مضمّنة** (حالة/جهة/رقم الإرسالية) لا شاشةُ DeliveryHub وتسوياتها؛
+  // فتحُها لمن يشغّل الإسناد يوافق الحاجة بلا توسيع وحدة المتجر. قالب `print_operator` بلا
+  // مفتاح `store` إطلاقاً وكان يسقط إلى NONE صامتاً.
+  return hasModuleAccess(user.role, override, "workorders", "FULL");
 }
 
 export const workOrderRouter = router({
@@ -407,6 +415,9 @@ export const workOrderRouter = router({
           // ⇐ مُرسَل لجهة X). NULL طبيعي لأغلب الصفوف (لم تُرسَل بعد). تُحجب أدناه بحسب canSeeDeliveryForUser.
           consignmentId: deliveryConsignments.id,
           consignmentStatus: deliveryConsignments.status,
+          // ١٨/٨: حالةُ **الطرد** — بها وحدها يُعرَف «مُسنَد لم يخرج» من «بالطريق» من «تعذّر»
+          // (`deriveWoDeliveryState`). كانت الشاشة ترى حالة الإغلاق فقط فتقول «مُرسَل» لكلّها.
+          parcelStatus: deliveryConsignments.parcelStatus,
           consignmentNumber: deliveryConsignments.consignmentNumber,
           courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
           deliveryPartyId: deliveryConsignments.partyId,
@@ -443,6 +454,7 @@ export const workOrderRouter = router({
         thumbnailUrl: thumbs.get(Number(r.id)) ?? null,
         consignmentId: seeDelivery ? r.consignmentId : null,
         consignmentStatus: seeDelivery ? r.consignmentStatus : null,
+        parcelStatus: seeDelivery ? r.parcelStatus : null,
         consignmentNumber: seeDelivery ? r.consignmentNumber : null,
         courierDeliveredAt: seeDelivery ? r.courierDeliveredAt : null,
         deliveryPartyId: seeDelivery ? r.deliveryPartyId : null,
@@ -556,6 +568,9 @@ export const workOrderRouter = router({
           // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — تُحجب أدناه بحسب canSeeDeliveryForUser.
           consignmentId: deliveryConsignments.id,
           consignmentStatus: deliveryConsignments.status,
+          // ١٨/٨: حالةُ **الطرد** — بها وحدها يُعرَف «مُسنَد لم يخرج» من «بالطريق» من «تعذّر»
+          // (`deriveWoDeliveryState`). كانت الشاشة ترى حالة الإغلاق فقط فتقول «مُرسَل» لكلّها.
+          parcelStatus: deliveryConsignments.parcelStatus,
           consignmentNumber: deliveryConsignments.consignmentNumber,
           courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
           deliveryPartyId: deliveryConsignments.partyId,

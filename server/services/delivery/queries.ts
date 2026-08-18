@@ -17,7 +17,14 @@ export async function listReadyForDispatch(branchId: number | null) {
   const conds = [
     eq(workOrders.status, "READY"),
     eq(workOrders.hasDelivery, true),
-    sql`NOT EXISTS (SELECT 1 FROM deliveryConsignments dc WHERE dc.workOrderId = ${workOrders.id})`,
+    // ١٨/٨ (بلاغ المالك): الاستبعاد يخصّ الإرسالية **الحيّة** وحدها. كان `NOT EXISTS` غير
+    // مقيَّد بالحالة ⇒ إرساليةٌ ألغاها المدير (أو أُرجعت) تُسقط الأمر من هذا الطابور **إلى
+    // الأبد**: لا يظهر للإسناد ثانيةً ولا يُغلق — يعلق `READY` بلا مخرج.
+    sql`NOT EXISTS (
+      SELECT 1 FROM deliveryConsignments dc
+      WHERE dc.workOrderId = ${workOrders.id}
+        AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+    )`,
   ];
   if (branchId != null) conds.push(eq(workOrders.branchId, branchId));
   return db
@@ -100,6 +107,62 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       or(remittable, returnable, unpaidFee),
       branchId == null ? undefined : eq(deliveryConsignments.branchId, branchId),
     ))
+    .orderBy(deliveryConsignments.dispatchedAt);
+}
+
+/**
+ * **الطرود بالطريق** — تبويب «قيد التوصيل» (بلاغ المالك ١٨/٨: «الطلبات المُسنَدة للمندوب لا
+ * تظهر في شاشة التوصيل ولا أيّ شاشة أخرى»).
+ *
+ * الثقب الذي تسدّه: بين لحظة الإسناد ولحظة إثبات التسليم، الطرد يعيش في
+ * `parcelStatus ∈ (ASSIGNED, ACCEPTED, PICKED_UP, OUT_FOR_DELIVERY, FAILED)` — وهي حالةٌ **لا
+ * تطابقها أيّ قائمة تشغيلية**: خرج من «جاهز للإرسال» (له إرسالية)، وليس في «تسوية المناديب»
+ * (فروعها الثلاثة تشترط DELIVERED أو صفر تحصيل)، ولا وسمَ له في الكانبان (الأمر ما زال READY).
+ *
+ * الشرط هنا **حالة الإغلاق وحدها** (`consignmentStatus = 'DISPATCHED'`) لا أهليّةُ إجراءٍ ماليّ:
+ * هذه شاشة «أين طردي» لا شاشة «ماذا أستطيع أن أفعل به».
+ */
+export async function listInTransitConsignments(branchId: number | null, partyId?: number | null) {
+  const db = getDb();
+  if (!db) return [];
+  const conds = [eq(deliveryConsignments.status, "DISPATCHED")];
+  if (branchId != null) conds.push(eq(deliveryConsignments.branchId, branchId));
+  if (partyId != null) conds.push(eq(deliveryConsignments.partyId, partyId));
+  return db
+    .select({
+      id: deliveryConsignments.id,
+      consignmentNumber: deliveryConsignments.consignmentNumber,
+      invoiceId: deliveryConsignments.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      workOrderId: deliveryConsignments.workOrderId,
+      orderNumber: workOrders.orderNumber,
+      partyId: deliveryConsignments.partyId,
+      partyName: deliveryParties.name,
+      assignedUserId: deliveryConsignments.assignedUserId,
+      driverName: users.name,
+      parcelStatus: deliveryConsignments.parcelStatus,
+      moneyStatus: deliveryConsignments.moneyStatus,
+      codAmount: deliveryConsignments.codAmount,
+      collectedAmount: deliveryConsignments.collectedAmount,
+      /** المتبقّي تحصيله على هذا الطرد — التعرّض الفعليّ الظاهر للإدارة لحظةً بلحظة. */
+      codDue: sql<string>`GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)), 0)`,
+      recipientName: deliveryConsignments.recipientName,
+      recipientPhone: deliveryConsignments.recipientPhone,
+      // عنوان التسليم يعيش على أمر الشغل (لا عمود له على الإرسالية).
+      address: workOrders.deliveryAddress,
+      customerName: customers.name,
+      dispatchedAt: deliveryConsignments.dispatchedAt,
+      failureReason: deliveryConsignments.failureReason,
+      /** عمر الطرد بالساعات — أساس «أعمار الطرود» وتحديد المتعثّر بلا تقريرٍ منفصل. */
+      ageHours: sql<number>`TIMESTAMPDIFF(HOUR, ${deliveryConsignments.dispatchedAt}, NOW())`,
+    })
+    .from(deliveryConsignments)
+    .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
+    .leftJoin(workOrders, eq(deliveryConsignments.workOrderId, workOrders.id))
+    .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
+    .leftJoin(users, eq(users.id, deliveryConsignments.assignedUserId))
+    .leftJoin(customers, eq(deliveryConsignments.endCustomerId, customers.id))
+    .where(and(...conds))
     .orderBy(deliveryConsignments.dispatchedAt);
 }
 

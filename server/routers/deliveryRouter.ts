@@ -16,6 +16,7 @@ import {
   listCourierAccounts,
   listDeliveryPartyMembers,
   listDeliveryParties,
+  listInTransitConsignments,
   listOpenConsignments,
   listPartyRemittances,
   listReadyForDispatch,
@@ -230,6 +231,15 @@ export const deliveryRouter = router({
 
   // ─── قراءات الشاشة ───
   readyForDispatch: deliveryReadProcedure.query(({ ctx }) => listReadyForDispatch(ctx.scopedBranchId)),
+
+  /**
+   * **قيد التوصيل** — كل الطرود الخارجة التي لم تُغلق بعد، أياً كانت حالة الطرد (بلاغ المالك
+   * ١٨/٨). هي الشاشة المفقودة بين «جاهز للإرسال» و«تسوية المناديب»: الطرد الذي قبله المندوب
+   * أو خرج به كان يختفي من كليهما فلا يعرف أحدٌ أين هو ولا كم على المندوب أن يُحاسَب عنه.
+   */
+  inTransit: deliveryReadProcedure
+    .input(z.object({ partyId: z.number().int().positive().optional() }).optional())
+    .query(({ input, ctx }) => listInTransitConsignments(ctx.scopedBranchId, input?.partyId ?? null)),
 
   openConsignments: deliveryReadProcedure
     .input(z.object({ partyId: z.number().int().positive() }))

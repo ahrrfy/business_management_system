@@ -18,6 +18,7 @@ import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
+import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
 import { cn } from "@/lib/utils";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
@@ -261,8 +262,13 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
 }) {
   const isReady = r.status === "READY";
   const isFinal = r.status === "DELIVERED" || r.status === "CANCELLED";
+  // ١٨/٨: حالة التوصيل المشتقّة — مصدرها المشترك، فلا تُعاد تسميتها هنا.
+  const deliveryState = deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus);
+  const hasLiveConsignment = deliveryState !== "NONE";
   const actions: RowAction[] = [];
-  if (isReady && r.hasDelivery && onDispatch) {
+  // زرّ الإسناد كان يظهر لأيّ READY+توصيل **بلا فحص إرسالية قائمة** ⇒ النقر على طلبٍ مُسنَد
+  // أصلاً يصطدم بقيدٍ فريد برسالةٍ غامضة. الآن تحلّ محلّه شارةُ حالته (أدناه).
+  if (isReady && r.hasDelivery && !hasLiveConsignment && onDispatch) {
     actions.push({ key: "dispatch", kind: "approve", label: "إسناد لمندوب", icon: Truck, hidden: !canFulfill, onSelect: () => onDispatch(r), gate: DISPATCH_GATE });
   }
   if (isReady && !r.hasDelivery && onPickup) {
@@ -287,11 +293,21 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
               <Store aria-hidden className="size-3" /> استلام مباشر
             </span>
           )}
-          {r.consignmentNumber && (
+          {/* حالة الطرد صراحةً بدل «قيد التوصيل» العامّة: «مُسنَد لم يخرج» ≠ «بالطريق» ≠ «تعذّر». */}
+          {hasLiveConsignment ? (
+            <a
+              href="/delivery?tab=transit"
+              className={cn("rounded border px-1.5 py-0.5 text-[11px] font-extrabold", WO_DELIVERY_STATE_CLS[deliveryState])}
+              title="افتح تبويب «قيد التوصيل» لمتابعة الطرد"
+            >
+              {woDeliveryStateLabel(deliveryState)}{r.deliveryPartyName ? ` · ${r.deliveryPartyName}` : ""}
+            </a>
+          ) : r.consignmentNumber ? (
             <span className="text-[11px] text-muted-foreground">
-              {r.deliveryPartyName ? `⇐ ${r.deliveryPartyName}` : ""} ({r.consignmentStatus === "DISPATCHED" ? "قيد التوصيل" : r.consignmentStatus === "DELIVERED" ? "سُلِّمت" : r.consignmentStatus})
+              {r.deliveryPartyName ? `${r.deliveryPartyName} — ` : ""}
+              {r.consignmentStatus === "DELIVERED" ? "سُلِّمت" : r.consignmentStatus === "RETURNED" ? "أُرجعت" : "أُلغي الإسناد"}
             </span>
-          )}
+          ) : null}
           <span className="font-bold">{r.orderNumber}</span>
         </div>
         <p className="mt-0.5 truncate text-sm">{r.title}</p>

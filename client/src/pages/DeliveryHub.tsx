@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, Check, Printer, RotateCcw, Truck } from "lucide-react";
+import { AlertTriangle, Check, MessageCircle, Phone, Printer, RotateCcw, Truck } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
@@ -22,6 +22,7 @@ import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
 
 /**
  * إدارة التوصيل (COD) — شاشة مكرّسة (D5):
@@ -57,7 +58,13 @@ const tabBtn = (active: boolean) =>
   );
 
 export default function DeliveryHub() {
-  const [tab, setTab] = useState<"dispatch" | "settle">("dispatch");
+  // ١٨/٨: تبويبٌ ثالث «قيد التوصيل» — الشاشة المفقودة بين الإسناد والتسوية (بلاغ المالك).
+  // يُفتَح بـ`?tab=transit` كي يقود إليه تحذيرُ سحب البطاقة في الكانبان مباشرةً.
+  const initialTab = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "transit"
+    ? "transit" as const
+    : "dispatch" as const;
+  const [tab, setTab] = useState<"dispatch" | "transit" | "settle">(initialTab);
+  const transitCount = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 }).data?.length ?? 0;
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
       <PageHeader
@@ -75,9 +82,17 @@ export default function DeliveryHub() {
       />
       <div className="flex gap-2">
         <button className={tabBtn(tab === "dispatch")} onClick={() => setTab("dispatch")}>جاهز للإرسال</button>
+        <button className={tabBtn(tab === "transit")} onClick={() => setTab("transit")}>
+          قيد التوصيل
+          {transitCount > 0 && (
+            <span className="ms-1.5 rounded-full bg-[var(--sem-warn)] px-1.5 text-[10px] font-black text-white tabular-nums">
+              {transitCount}
+            </span>
+          )}
+        </button>
         <button className={tabBtn(tab === "settle")} onClick={() => setTab("settle")}>تسوية المناديب</button>
       </div>
-      {tab === "dispatch" ? <DispatchTab /> : <SettleTab />}
+      {tab === "dispatch" ? <DispatchTab /> : tab === "transit" ? <InTransitTab /> : <SettleTab />}
     </div>
   );
 }
@@ -244,6 +259,135 @@ function DispatchTab() {
           }
         }}
       />
+    </div>
+  );
+}
+
+// ───────────────────────── تبويب: قيد التوصيل ─────────────────────────
+/**
+ * «أين طردي؟» — الشاشة التي كانت مفقودة (بلاغ المالك ١٨/٨). تعرض كل طردٍ خرج ولم يُغلق،
+ * أياً كانت حالته، بتعرّضه الماليّ وعمره وجهته وسائقه — فلا يختفي طلبٌ بين الإسناد والتسليم.
+ * كثافةٌ عالية بلا ازدحام: صفٌّ واحد يحمل كلّ ما يلزم القرار، وأزرارُ التواصل في مكانها.
+ */
+function InTransitTab() {
+  const rows = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
+  const [query, setQuery] = useState("");
+
+  const list = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const all = rows.data ?? [];
+    if (!q) return all;
+    return all.filter((r) =>
+      [r.consignmentNumber, r.invoiceNumber, r.orderNumber, r.partyName, r.driverName, r.recipientName, r.customerName, r.recipientPhone]
+        .some((v) => (v ?? "").toLowerCase().includes(q)));
+  }, [rows.data, query]);
+
+  const totalDue = useMemo(
+    () => (rows.data ?? []).reduce((sum, r) => sum + Number(r.codDue || 0), 0),
+    [rows.data],
+  );
+
+  if (rows.isError) return <ErrorState onRetry={() => void rows.refetch()} />;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="بحث برقم الإرسالية/الفاتورة/الطلب، أو الجهة أو المستلم…"
+          className="h-10 max-w-md"
+        />
+        <div className="ms-auto flex flex-wrap items-center gap-2 text-xs">
+          <span className="rounded-md border bg-muted/40 px-2 py-1 font-bold">
+            طرود بالطريق: <span className="tabular-nums">{list.length}</span>
+          </span>
+          <span className="rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-2 py-1 font-bold text-[var(--sem-warn)]">
+            تعرّض التحصيل: <span className="tabular-nums" dir="ltr">{fmt(totalDue)}</span> د.ع
+          </span>
+        </div>
+      </div>
+
+      {list.length === 0 ? (
+        <EmptyState
+          icon={Truck}
+          title="لا طرود بالطريق"
+          description="كل ما أُسنِد للمناديب إمّا سُلّم وسُوّي أو أُرجع."
+        />
+      ) : (
+        <ScrollTableShell>
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-card">
+              <tr className="border-b text-xs text-muted-foreground">
+                <th className="p-2 text-start">الإرسالية / الطلب</th>
+                <th className="p-2 text-start">الجهة والسائق</th>
+                <th className="p-2 text-start">المستلم</th>
+                <th className="p-2 text-start">الحالة</th>
+                <th className="p-2 text-end">المطلوب تحصيله</th>
+                <th className="p-2 text-end">العمر</th>
+                <th className="p-2 text-start">تواصل</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((r) => {
+                // كل صفٍّ هنا `DISPATCHED` بحكم الاستعلام؛ التمييز من حالة الطرد وحدها.
+                const state = deriveWoDeliveryState("DISPATCHED", r.parcelStatus);
+                const label = state === "NONE" ? "بالطريق" : woDeliveryStateLabel(state)!;
+                const cls = state === "NONE" ? WO_DELIVERY_STATE_CLS.IN_TRANSIT : WO_DELIVERY_STATE_CLS[state];
+                const stale = Number(r.ageHours ?? 0) >= 48;
+                const phone = (r.recipientPhone ?? "").trim();
+                return (
+                  <tr key={r.id} className="border-b last:border-0 hover:bg-muted/40">
+                    <td className="p-2">
+                      <div className="font-bold tabular-nums" dir="ltr">{r.consignmentNumber}</div>
+                      <div className="text-[11px] text-muted-foreground" dir="ltr">
+                        {r.orderNumber ?? r.invoiceNumber ?? "—"}
+                      </div>
+                    </td>
+                    <td className="p-2">
+                      <div className="font-bold">{r.partyName ?? "—"}</div>
+                      <div className="text-[11px] text-muted-foreground">{r.driverName ?? "بلا سائق مُسنَد"}</div>
+                    </td>
+                    <td className="p-2">
+                      <div>{r.recipientName ?? r.customerName ?? "—"}</div>
+                      <div className="text-[11px] text-muted-foreground" dir="ltr">{phone || "—"}</div>
+                    </td>
+                    <td className="p-2">
+                      <span className={cn("rounded-md border px-1.5 py-0.5 text-[11px] font-extrabold", cls)}>{label}</span>
+                      {r.failureReason && (
+                        <div className="mt-0.5 max-w-40 text-[11px] text-[var(--sem-danger)]">{r.failureReason}</div>
+                      )}
+                    </td>
+                    <td className="p-2 text-end font-black tabular-nums" dir="ltr">{fmt(r.codDue)}</td>
+                    <td className={cn("p-2 text-end tabular-nums", stale && "font-black text-[var(--sem-danger)]")} dir="ltr">
+                      {Number(r.ageHours ?? 0)} س
+                    </td>
+                    <td className="p-2">
+                      <div className="flex items-center gap-1">
+                        {phone && (
+                          <>
+                            <Button size="sm" variant="outline" asChild title="اتصال بالمستلم">
+                              <a href={`tel:${phone}`}><Phone aria-hidden className="size-3.5" /></a>
+                            </Button>
+                            <Button size="sm" variant="outline" asChild title="واتساب المستلم">
+                              <a href={`https://wa.me/${phone.replace(/[^\d]/g, "")}`} target="_blank" rel="noreferrer">
+                                <MessageCircle aria-hidden className="size-3.5" />
+                              </a>
+                            </Button>
+                          </>
+                        )}
+                        <Button size="sm" variant="outline" asChild title="فتح جهة التوصيل وتسويتها">
+                          <a href={`/delivery/parties/${r.partyId}`}>الجهة</a>
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </ScrollTableShell>
+      )}
     </div>
   );
 }
