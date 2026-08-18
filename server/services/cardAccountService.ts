@@ -112,8 +112,15 @@ export async function getCardSummary(
       SELECT
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' THEN r.amount ELSE 0 END), 0) AS CHAR) AS totalIn,
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' THEN r.amount ELSE 0 END), 0) AS CHAR) AS totalOut,
-        CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' AND r.createdAt >= ${todayStart} THEN r.amount ELSE 0 END), 0) AS CHAR) AS todayIn,
-        CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' AND r.createdAt >= ${todayStart} THEN r.amount ELSE 0 END), 0) AS CHAR) AS todayOut,
+        -- حركةُ اليوم تستثني إيصالات **الرصيد الافتتاحيّ**: إدخال رصيد بطاقةٍ افتتاحيّ يُنشئ
+        -- إيصالاً بتاريخ اليوم، فيَظهر في «وارد اليوم» بمقدار الرصيد كلّه ويُوهم بحركةٍ لم تقع.
+        -- الإجماليّ (totalIn/totalOut) يبقى شاملاً له عمداً: هو رصيدٌ قائم فعلاً لا حركةَ يوم.
+        CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' AND r.createdAt >= ${todayStart}
+          AND NOT EXISTS (SELECT 1 FROM accountingEntries ae_open WHERE ae_open.receiptId = r.id AND ae_open.entryType = 'OPENING')
+          THEN r.amount ELSE 0 END), 0) AS CHAR) AS todayIn,
+        CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' AND r.createdAt >= ${todayStart}
+          AND NOT EXISTS (SELECT 1 FROM accountingEntries ae_open WHERE ae_open.receiptId = r.id AND ae_open.entryType = 'OPENING')
+          THEN r.amount ELSE 0 END), 0) AS CHAR) AS todayOut,
         COUNT(*) AS cnt
       FROM receipts r
       WHERE ${accountWhere(kind)} ${branchClause(branchId)}
