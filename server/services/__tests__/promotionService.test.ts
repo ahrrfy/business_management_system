@@ -18,6 +18,7 @@ import {
   listPromotions,
   listTerminations,
 } from "../promotionService";
+import { isLinkEffectiveOn } from "../hrDevices/punchStore";
 import { approveVoucher } from "../voucher/approval";
 import { withTx } from "../tx";
 import { approveRun } from "../payroll/lifecycle";
@@ -673,8 +674,18 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
     expect(new Date(userAfter.sessionsValidFrom).getTime()).toBeGreaterThan(
       new Date(beforeUser.sessionsValidFrom).getTime(),
     );
-    expect(linkAfter.employeeId).toBeNull();
-    expect(linkAfter.effectiveFrom).toBeNull();
+    /*
+     * الربط يُحَدُّ ولا يُقطَع (بند ٢١): كان الإكمال يُصفّر `employeeId`/`effectiveFrom` فوراً،
+     * ويومُ الإنهاء نفسه يومُ عملٍ وقع فعلاً ⇒ بصماتُه تصل بلا صاحبٍ فتُسجَّل صفر ساعات.
+     * فالتأكيد هنا انتقل من **آليّة** القطع إلى **الخاصّيّة** التي كان القطع يخدمها.
+     */
+    expect(linkAfter.effectiveTo).toBe("2026-06-30");
+    expect(linkAfter.employeeId).toBe(employee!.id);
+    expect(linkAfter.effectiveFrom).toBe("2026-01-01");
+    // وخاصّيّة SEC-03 نفسها ما زالت محروسة: ما بعد يوم الإنهاء لا يُنسَب إليه أبداً،
+    // ويومُ الإنهاء يبقى منسوباً — وهو بالضبط ما جاء العمود لينقذه.
+    expect(isLinkEffectiveOn(linkAfter, "2026-06-30")).toBe(true);
+    expect(isLinkEffectiveOn(linkAfter, "2026-07-01")).toBe(false);
     expect(terminationAfter.status).toBe("completed");
   });
 

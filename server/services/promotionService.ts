@@ -766,9 +766,14 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       }
     }
 
+    /*
+     * **حدٌّ لا قطع** (0207) — نفس علّة `setEmploymentStatus`، ومسارٌ ثانٍ للإنهاء كان يُبطلها:
+     * إكمالُ التسوية يقع بعد يوم العمل الأخير، فقطعُ الربط هنا يمحو نسبةَ بصمات ذلك اليوم
+     * إن لم تكن طُويت بعد. `t.lastDay` هو يوم العمل الأخير بعينه، وهو الحدّ الصحيح.
+     */
     const deviceRelease = await tx
       .update(hrDeviceUsers)
-      .set({ employeeId: null, effectiveFrom: null })
+      .set({ effectiveTo: t.lastDay })
       .where(eq(hrDeviceUsers.employeeId, t.employeeId));
     const deviceLinksReleased = Number(
       (deviceRelease as unknown as [{ affectedRows?: number }])[0]
