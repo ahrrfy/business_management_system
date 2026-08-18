@@ -197,6 +197,25 @@ export default function Promotions() {
     { employeeId: Number(tEmp) },
     { enabled: termOpen && !!tEmp },
   );
+
+  /*
+   * مطابقةُ أجر الشهر الأخير بمحرّك الحضور (بند ٤٣). الخادم يُنفّذها عند الالتزام؛ وهذه
+   * معاينةٌ تُري الرقم **قبل** الإرسال بدل أن يُردّ النموذج بخطأ بعد ملئه كاملاً.
+   * `employmentEndOverride` ضروريّ: بدونه يُحسب الشهر كاملاً فيُقارَن جزءُ شهرٍ بشهرٍ تامّ.
+   */
+  const wageStatement = trpc.attendance.employeeStatement.useQuery(
+    { employeeId: Number(tEmp), period: tLastDay.slice(0, 7), employmentEndOverride: tLastDay },
+    { enabled: Boolean(tEmp) && /^\d{4}-\d{2}-\d{2}$/.test(tLastDay) },
+  );
+  const expectedWage = wageStatement.data?.expectedEarnedGrossWages ?? null;
+  const enteredWage = tBreakdown.earnedGrossWages.trim();
+  const wageGap = expectedWage && enteredWage ? D(expectedWage).minus(D(enteredWage)).abs() : null;
+  // نفس عتبة الخادم — مرآةٌ تمنع رحلةً بلا طائل، والإنفاذ يبقى خادمياً.
+  const wageDiverged = wageGap != null && wageGap.gt(1000);
+  // إنهاءٌ مخطَّط: بصماتُ الأيام الباقية لم تصل بعد فالاشتقاق ناقصٌ بطبيعته — يُعرَض ولا يُلزم.
+  const wagePlannedAhead = tLastDay > new Date().toISOString().slice(0, 10);
+  const wageEnforced = wageDiverged && !wagePlannedAhead && wageStatement.data?.dueBasis === "attendance";
+  const [tWageReason, setTWageReason] = useState("");
   const [reverseTarget, setReverseTarget] = useState<{
     id: number;
     employeeName: string;
@@ -304,6 +323,7 @@ export default function Promotions() {
       settlementEvidenceNote: tEvidenceNote.trim(),
       zeroAmountsAttested: true,
       reason: tReason.trim() || undefined,
+      wageDivergenceReason: tWageReason.trim() || undefined,
     });
   };
 
@@ -779,6 +799,32 @@ export default function Promotions() {
                 <div className="space-y-1">
                   <Label htmlFor="t-earned-gross">إجمالي الأجور المكتسبة حتى آخر يوم (د.ع)</Label>
                   <MoneyInput id="t-earned-gross" value={tBreakdown.earnedGrossWages} onChange={(value) => setTBreakdown((current) => ({ ...current, earnedGrossWages: value }))} decimals={2} placeholder="0" />
+                  {expectedWage != null && (
+                    <div className={`text-[11px] rounded-md border p-2 leading-relaxed ${wageDiverged ? "border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]" : "text-muted-foreground"}`}>
+                      <span className="font-medium">سجلّ الحضور يقول {iqd(expectedWage)} د.ع</span>
+                      {" "}حتى {tLastDay} (بتركيب بند المسيّر: أساس + مخصّصات + أوفر تايم).
+                      {wageDiverged && (
+                        <> الفارق <b dir="ltr">{iqd(wageGap!.toFixed(2))}</b> د.ع.
+                          {wagePlannedAhead
+                            ? " إنهاءٌ مخطَّط — بصماتُ الأيام الباقية لم تصل بعد، فالاشتقاق ناقصٌ ولا يُلزمك."
+                            : wageEnforced
+                              ? " صحّح الرقم أو اذكر سبب الاختلاف أدناه."
+                              : " أساسُ أجر هذا الموظف ليس الحضور، فالمقارنة للاطّلاع."}
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {wageEnforced && (
+                    <div className="space-y-1">
+                      <Label htmlFor="t-wage-reason">سبب اختلاف الأجر عن سجلّ الحضور</Label>
+                      <Input
+                        id="t-wage-reason"
+                        value={tWageReason}
+                        onChange={(e) => setTWageReason(e.target.value)}
+                        placeholder="مثال: بدل إجازةٍ غير مسجّل، أو تصحيحُ بصمةٍ لم يُطوَ بعد"
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <Label htmlFor="t-wage-reductions">تخفيضات الأجر المعتمدة (د.ع)</Label>
