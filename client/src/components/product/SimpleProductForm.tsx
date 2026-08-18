@@ -10,7 +10,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
-import { type ImageItem } from "@/components/form/ImageUploader";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { trpc } from "@/lib/trpc";
@@ -110,7 +109,6 @@ export default function SimpleProductForm() {
   const [reorderPoint, setReorderPoint] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [isActive, setIsActive] = useState(true);
-  const [images, setImages] = useState<ImageItem[]>([]);
   // بضاعة الأمانة (٢٠/٧): وسم السلعة البسيطة + مودِعها (الحصة في costPrice).
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
@@ -329,9 +327,6 @@ export default function SimpleProductForm() {
           units: unitsPayload,
         },
       ],
-      images: images.length
-        ? images.map((i, idx) => ({ url: i.dataUrl, isPrimary: !!i.isPrimary, sortOrder: idx }))
-        : undefined,
     });
   }
 
@@ -615,8 +610,6 @@ export default function SimpleProductForm() {
       <ProductMediaContentSection
         description={description}
         onDescriptionChange={setDescription}
-        images={images}
-        onImagesChange={setImages}
       />
 
       {error && (

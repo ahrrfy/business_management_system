@@ -7,7 +7,6 @@ import { NumberInput } from "@/components/form/NumberInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { type ImageItem } from "@/components/form/ImageUploader";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { AlertCircle, Boxes, Layers, Package, Wrench, X } from "lucide-react";
 import ServiceForm from "@/components/product/ServiceForm";
@@ -127,9 +126,6 @@ export default function ProductNew() {
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
   const [variants, setVariants] = useState<ClientVariant[]>([]);
 
-  // ── الصور المشتركة على مستوى المنتج ──
-  const [images, setImages] = useState<ImageItem[]>([]);
-
   // ── الفرع المختار (لعمود المخزون) ──
   const branches = useMemo(
     () => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })),
@@ -150,7 +146,6 @@ export default function ProductNew() {
     [productType, brand, modelName]
   );
   const baseRetail = units.find((u) => u.isBase)?.retail.trim() ?? "";
-  const primaryImage = images.find((i) => i.isPrimary) ?? images[0];
 
   const includedCount = colors.length
     ? sizes.length
@@ -395,7 +390,6 @@ export default function ProductNew() {
           minStock: clampInt(v.minStock),
           reorderPoint: clampInt(v.reorderPoint),
           isActive: v.isActive,
-          image: v.image || undefined,
           openingStockByBranch: branches
             .map((b) => ({ branchId: b.id, qty: clampInt(v.stockByBranch[b.id] || "0") }))
             .filter((x) => x.qty > 0),
@@ -423,9 +417,6 @@ export default function ProductNew() {
           }),
         };
       }),
-      images: images.length
-        ? images.map((i, idx) => ({ url: i.dataUrl, isPrimary: !!i.isPrimary, sortOrder: idx }))
-        : undefined,
     };
   }
 
@@ -609,11 +600,7 @@ export default function ProductNew() {
           <CardContent>
             <div className="rounded-lg border bg-muted/30 overflow-hidden">
               <div className="aspect-[4/3] bg-card flex items-center justify-center text-muted-foreground text-xs">
-                {primaryImage ? (
-                  <img src={primaryImage.dataUrl || primaryImage.url} alt={productName.trim() || composedName} className="w-full h-full object-cover" />
-                ) : (
-                  <span className="font-mono text-[11px]">— لا صورة —</span>
-                )}
+                <span className="px-3 text-center font-mono text-[11px]">— تُضاف الصورة بعد الحفظ عبر الاستوديو —</span>
               </div>
               <div className="p-3 space-y-2">
                 <div className="text-sm font-semibold">
@@ -792,9 +779,6 @@ export default function ProductNew() {
       <ProductMediaContentSection
         description={description}
         onDescriptionChange={setDescription}
-        images={images}
-        onImagesChange={setImages}
-        hint="حتى 10 صور عامة للمنتج؛ الأولى رئيسية، ولكل لون صورته المستقلة في صف المتغيّر."
       />
 
       {error && (
