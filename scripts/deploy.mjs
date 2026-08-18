@@ -1715,15 +1715,27 @@ function readBridgeDeploymentEnvironment(policy, dotenvConfig) {
 
 function readWebHealthEnvironment(dotenvConfig) {
   const parsed = readDeploymentEnvironmentFile(dotenvConfig);
+  return normalizeWebHealthEnvironment(parsed);
+}
+
+export function normalizeWebHealthEnvironment(parsed) {
   const port = Number(parsed.PORT || 3000);
   const requireSecret =
     parsed.REQUIRE_INTERNAL_PROXY_SECRET === "1" ? "1" : "0";
   const secret = parsed.INTERNAL_PROXY_SECRET?.trim() ?? "";
+  const previousSecret =
+    parsed.INTERNAL_PROXY_SECRET_PREVIOUS?.trim() ?? "";
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw codedError("WEB_HEALTH_PORT_INVALID");
   }
   if (requireSecret === "1" && !/^[a-f0-9]{64}$/i.test(secret)) {
     throw codedError("WEB_HEALTH_PROXY_SECRET_INVALID");
+  }
+  if (
+    previousSecret &&
+    (!/^[a-f0-9]{64}$/i.test(previousSecret) || previousSecret === secret)
+  ) {
+    throw codedError("WEB_HEALTH_PROXY_PREVIOUS_SECRET_INVALID");
   }
   return {
     PORT: String(port),
@@ -2426,7 +2438,7 @@ function reportDeploymentFailure(error) {
       "   أُوقف النشر قبل البناء والهجرات لأن إعداد Nginx الحي لا يطابق العقد الملتزم.",
     );
     console.error(
-      '   أصلحه كـ root فقط: cd /home/deploy/erp && sudo "$(command -v node)" scripts/install-nginx-contract.mjs',
+      "   أصلحه بالمثبت root-owned: sudo /usr/bin/node /usr/local/libexec/erp/nginx/install-nginx-contract.mjs install",
     );
   }
   if (code === "HR_BRIDGE_ACTIVATION_FAILED_ROLLBACK_OK") {

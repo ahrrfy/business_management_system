@@ -8,10 +8,13 @@ import { createLogger } from "./logger";
 describe("HTTP log secret containment", () => {
   it("يحجب حقول الرؤوس بالكامل ويبقي بيانات الطلب التشغيلية", async () => {
     const previousProxySecret = process.env.INTERNAL_PROXY_SECRET;
+    const previousRotatedProxySecret =
+      process.env.INTERNAL_PROXY_SECRET_PREVIOUS;
     const previousEncryptionKey = process.env.INTEGRATIONS_ENCRYPTION_KEY;
     const previousServiceAccount = process.env.FCM_SERVICE_ACCOUNT_JSON;
     const previousR2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
     process.env.INTERNAL_PROXY_SECRET = "known-runtime-secret";
+    process.env.INTERNAL_PROXY_SECRET_PREVIOUS = "known-previous-runtime-secret";
     process.env.INTEGRATIONS_ENCRYPTION_KEY = "encryption-runtime-secret";
     process.env.FCM_SERVICE_ACCOUNT_JSON = "service-account-runtime-secret";
     process.env.R2_ACCESS_KEY_ID = "r2-access-id-runtime-secret";
@@ -60,6 +63,7 @@ describe("HTTP log secret containment", () => {
               clientSecret: "nested-client-secret",
               databaseUrl: "mysql://user:database-password@db.internal/erp",
               futureCredential: "known-runtime-secret",
+              rotationNote: "known-previous-runtime-secret",
               integrationsEncryptionKey: "nested-encryption-key",
               fcmServiceAccountJson: "nested-service-account",
               r2AccessKeyId: "nested-r2-access-id",
@@ -88,6 +92,12 @@ describe("HTTP log secret containment", () => {
         delete process.env.INTERNAL_PROXY_SECRET;
       } else {
         process.env.INTERNAL_PROXY_SECRET = previousProxySecret;
+      }
+      if (previousRotatedProxySecret === undefined) {
+        delete process.env.INTERNAL_PROXY_SECRET_PREVIOUS;
+      } else {
+        process.env.INTERNAL_PROXY_SECRET_PREVIOUS =
+          previousRotatedProxySecret;
       }
       if (previousEncryptionKey === undefined) {
         delete process.env.INTEGRATIONS_ENCRYPTION_KEY;
@@ -119,6 +129,7 @@ describe("HTTP log secret containment", () => {
     expect(output).not.toContain("nested-client-secret");
     expect(output).not.toContain("database-password");
     expect(output).not.toContain("known-runtime-secret");
+    expect(output).not.toContain("known-previous-runtime-secret");
     expect(output).not.toContain("encryption-runtime-secret");
     expect(output).not.toContain("service-account-runtime-secret");
     expect(output).not.toContain("r2-access-id-runtime-secret");

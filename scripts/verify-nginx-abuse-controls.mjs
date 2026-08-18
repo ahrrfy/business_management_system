@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -111,6 +112,12 @@ export function verifyNginxConfiguration(input) {
 
   requireMatch(errors, proxySecretExample, /set\s+\$alroya_proxy_secret\s+"CHANGE_ME_INTERNAL_PROXY_SECRET";/, "missing documented live-secret file shape");
   requireMatch(errors, internalSite, /-m\s+600\s+\/dev\/null\s+\/etc\/nginx\/snippets\/alroya-proxy-secret\.conf/, "install notes must protect the shared live-secret file");
+  requireMatch(errors, internalSite, /\/usr\/local\/libexec\/erp\/nginx\/install-nginx-contract\.mjs\s+install/, "nginx repair must use the installed root-owned helper");
+  for (const [name, site] of sites) {
+    if (/sudo[^\n]*scripts\/install-nginx-contract\.mjs/u.test(site)) {
+      errors.push(`${name} vhost suggests executing deploy-writable JavaScript as root`);
+    }
+  }
   requireMatch(errors, realIp, /real_ip_header\s+CF-Connecting-IP;/, "real-IP must come from Cloudflare's canonical header");
   requireMatch(errors, realIp, /set_real_ip_from\s+173\.245\.48\.0\/20;/, "missing trusted Cloudflare source ranges");
 
@@ -118,6 +125,7 @@ export function verifyNginxConfiguration(input) {
     [/proxy_set_header\s+Host\s+\$host;/, "shared proxy contract must preserve Host"],
     [/proxy_set_header\s+X-Forwarded-Proto\s+\$scheme;/, "shared proxy contract must preserve HTTPS scheme"],
     [/proxy_set_header\s+X-Internal-Proxy-Secret\s+\$alroya_proxy_secret;/, "shared proxy contract must attach the internal hop secret"],
+    [/proxy_set_header\s+X-Alroya-Worker-Probe\s+"";/, "shared proxy contract must strip the internal worker probe header"],
     [/proxy_set_header\s+X-Forwarded-For\s+\$remote_addr;/, "shared proxy contract must canonicalize X-Forwarded-For"],
     [/proxy_set_header\s+X-Real-IP\s+\$remote_addr;/, "shared proxy contract must canonicalize X-Real-IP"],
   ]) {
@@ -200,8 +208,53 @@ function loadRepositoryConfiguration() {
   };
 }
 
+export function verifyNginxReleaseManifest(projectRoot = root) {
+  const resolvedRoot = path.resolve(projectRoot);
+  const deployDirectory = path.join(resolvedRoot, "deploy");
+  const expected = [
+    ...fs.readdirSync(deployDirectory)
+      .filter((name) => /^nginx-.*\.conf$/u.test(name))
+      .map((name) => `deploy/${name}`),
+    "deploy/nginx-proxy-secret.conf.example",
+  ].sort();
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(deployDirectory, "nginx-release-manifest.json"), "utf8"));
+  } catch {
+    return ["nginx release manifest is missing or invalid JSON"];
+  }
+  if (
+    manifest?.version !== 3 ||
+    !manifest.files ||
+    Array.isArray(manifest.files) ||
+    JSON.stringify(Object.keys(manifest.files).sort()) !== JSON.stringify(expected)
+  ) {
+    return ["nginx release manifest keys do not match managed inputs"];
+  }
+  const errors = [];
+  for (const relative of expected) {
+    const bytes = manifest.files[relative];
+    const recorded =
+      Array.isArray(bytes) &&
+      bytes.length === 32 &&
+      bytes.every(
+        (byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255,
+      )
+        ? Buffer.from(bytes).toString("hex")
+        : null;
+    const actual = createHash("sha256").update(fs.readFileSync(path.join(resolvedRoot, relative))).digest("hex");
+    if (recorded !== actual) {
+      errors.push(`nginx release manifest hash drift: ${relative}`);
+    }
+  }
+  return errors;
+}
+
 function main() {
-  const errors = verifyNginxConfiguration(loadRepositoryConfiguration());
+  const errors = [
+    ...verifyNginxConfiguration(loadRepositoryConfiguration()),
+    ...verifyNginxReleaseManifest(),
+  ];
   if (errors.length) {
     for (const error of errors) console.error(`nginx abuse-control check: ${error}`);
     process.exitCode = 1;

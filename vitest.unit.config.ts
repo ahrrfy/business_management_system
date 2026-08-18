@@ -95,6 +95,7 @@ export default defineConfig({
       "server/config/listenHost.test.ts",
       "server/config/seedPolicy.test.ts",
       "server/logger.test.ts",
+      "server/security/internalProxySecret.test.ts",
       "server/middleware/__tests__/bodyParsersRestore.test.ts",
       "server/middleware/__tests__/csrf.test.ts",
       "server/tenancy/__tests__/expressMiddlewareLease.test.ts",
