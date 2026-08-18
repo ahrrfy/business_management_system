@@ -10762,7 +10762,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:385"
+      "loc": "server/routers/purchaseRouter.ts:389"
     },
     {
       "surface": "trpc",
@@ -10779,7 +10779,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:230"
+      "loc": "server/routers/purchaseRouter.ts:234"
     },
     {
       "surface": "trpc",
@@ -10813,7 +10813,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:501"
+      "loc": "server/routers/purchaseRouter.ts:505"
     },
     {
       "surface": "trpc",
@@ -10830,7 +10830,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:404"
+      "loc": "server/routers/purchaseRouter.ts:408"
     },
     {
       "surface": "trpc",
@@ -10847,7 +10847,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:473"
+      "loc": "server/routers/purchaseRouter.ts:477"
     },
     {
       "surface": "trpc",
@@ -10864,7 +10864,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:331"
+      "loc": "server/routers/purchaseRouter.ts:335"
     },
     {
       "surface": "trpc",
@@ -10898,7 +10898,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:260"
+      "loc": "server/routers/purchaseRouter.ts:264"
     },
     {
       "surface": "trpc",
@@ -10915,7 +10915,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: settle",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:354"
+      "loc": "server/routers/purchaseRouter.ts:358"
     },
     {
       "surface": "trpc",
@@ -10932,7 +10932,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:171"
+      "loc": "server/routers/purchaseRouter.ts:173"
     },
     {
       "surface": "trpc",

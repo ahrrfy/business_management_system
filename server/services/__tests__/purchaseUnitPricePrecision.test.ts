@@ -44,11 +44,15 @@ async function seed() {
     id: 1, openId: "price-precision", name: "منشئ", role: "manager", loginMethod: "local", branchId: 1,
   });
   await d.insert(s.suppliers).values({ id: 1, name: "مورد" });
-  await d.insert(s.products).values({ id: 1, name: "قلم" });
-  await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "0.00" });
-  await d.insert(s.productUnits).values({
-    id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true,
-  });
+  await d.insert(s.products).values([{ id: 1, name: "قلم" }, { id: 2, name: "دفتر" }]);
+  await d.insert(s.productVariants).values([
+    { id: 1, productId: 1, sku: "PEN-1", costPrice: "0.00" },
+    { id: 2, productId: 2, sku: "NOTE-1", costPrice: "0.00" },
+  ]);
+  await d.insert(s.productUnits).values([
+    { id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+    { id: 2, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
+  ]);
 }
 
 beforeEach(async () => {
@@ -208,5 +212,140 @@ describe("دقّة سعر شراء الوحدة حسب عملة الأمر", () 
     const { po, item } = await readOrder(created.purchaseOrderId);
     expect(item.usdUnitPrice).toBe("3.4566");
     expect(po.total).toBe("25578840.00");
+  });
+});
+
+/**
+ * خصم فاتورة المورّد (0204) — الفجوة التي كانت تجعل مطابقة فاتورةٍ فيها خصمٌ مستحيلة:
+ * الخصم غيرُ ممثَّل في المخطّط إطلاقاً (لا سطريّ ولا فاتوريّ). النموذج: يُوزَّع بنسبة القيمة
+ * فتُخزَّن أعمدةُ المال **صافيةً** ⇒ الذمّة (AP) وتكلفةُ المخزون (WAVG) ومرتجعُ الشراء تلتقطه
+ * بلا تغييرٍ في أيٍّ من قرّائها، ويبقى سعرُ ما قبل الخصم لقطةً لورقة المورّد.
+ */
+describe("خصم فاتورة المورّد على أمر الشراء", () => {
+  it("يُوزَّع بنسبة القيمة، ويُخزَّن صافياً مع لقطةِ السعر قبل الخصم", async () => {
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      // بندان: 1000×10 = 10,000 و500×10 = 5,000 ⇒ المجموع 15,000، وخصمُ 1,500 = ١٠٪.
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1000" },
+        { variantId: 2, productUnitId: 2, quantity: "10", unitPrice: "500" },
+      ],
+      invoiceDiscount: "1500",
+    }, actor);
+
+    const { po } = await readOrder(created.purchaseOrderId);
+    const items = await db().select().from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId))
+      .orderBy(s.purchaseOrderItems.id);
+
+    // (١) الأعمدة المالية صافية: 13,500 لا 15,000 ⇒ AP والتكلفة تلتقطان الخصم بلا تغييرٍ فيهما.
+    expect(po.subtotal).toBe("13500.00");
+    expect(po.total).toBe("13500.00");
+    // (٢) التوزيع بنسبة القيمة: ١٠٪ من كلّ بند.
+    expect(items[0].total).toBe("9000.00");
+    expect(items[1].total).toBe("4500.00");
+    expect(items[0].unitPrice).toBe("900.00");
+    expect(items[1].unitPrice).toBe("450.00");
+    // (٣) لقطةُ ورقة المورّد: السعر قبل الخصم محفوظٌ فلا يضيع سعرُ المورّد من التاريخ.
+    expect(items[0].listUnitPrice).toBe("1000.00");
+    expect(items[1].listUnitPrice).toBe("500.00");
+    // (٤) الخصم مُفصَحٌ على الأمر (إفصاحٌ وإعادةُ تحميل — لا يدخل أيّ حساب).
+    expect(po.invoiceDiscount).toBe("1500.00");
+  });
+
+  it("بلا خصم ⇒ صفر أثرٍ سلوكيّ: الأعمدة كما كانت و`listUnitPrice` فارغ", async () => {
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1450.99" }],
+    }, actor);
+    const { po, item } = await readOrder(created.purchaseOrderId);
+    expect(po.subtotal).toBe("14509.90");
+    expect(po.invoiceDiscount).toBe("0.00");
+    expect(item.listUnitPrice).toBeNull();
+    expect(item.unitPrice).toBe("1450.99");
+  });
+
+  it("مجموعُ البنود يساوي الصافي بالضبط ولو لم يقبل الخصمُ القسمة (لا انجراف فلس)", async () => {
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "3", unitPrice: "33.33" },
+        { variantId: 2, productUnitId: 2, quantity: "3", unitPrice: "66.67" },
+      ],
+      invoiceDiscount: "0.01",
+    }, actor);
+    const { po } = await readOrder(created.purchaseOrderId);
+    const items = await db().select().from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
+    const sum = items.reduce((acc, r) => acc + Number(r.total), 0);
+    expect(po.subtotal).toBe("299.99");
+    expect(Number(sum.toFixed(2))).toBe(299.99);
+    expect(po.invoiceDiscount).toBe("0.01");
+  });
+
+  it("خصمٌ يتجاوز قيمة البضاعة يُرفض بالرقمين (لا ذمّة سالبة ولا تكلفة سالبة)", async () => {
+    await expect(createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "1000" }],
+      invoiceDiscount: "1500",
+    }, actor)).rejects.toThrow(/1500\.00.*1000\.00/s);
+  });
+
+  it("الأمر الدولاريّ: الخصم بالدولار، والدينار ترجمتُه، والمطابقة على الصافي", async () => {
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      agreedCurrency: "USD",
+      agreedRate: "1480",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "5000", unitPrice: "3.4566" }],
+      invoiceDiscount: "283",              // 17,283 − 283 = 17,000 $
+      supplierInvoiceTotal: "17000.00",    // قيمة الورقة بعد الخصم
+    }, actor);
+    const { po, item } = await readOrder(created.purchaseOrderId);
+    expect(po.usdTotal).toBe("17000.00");
+    expect(po.usdInvoiceDiscount).toBe("283.00");
+    expect(item.usdTotal).toBe("17000.00");
+    // السعر الصافي بأربع منازل، ولقطةُ ما قبل الخصم محفوظة.
+    expect(item.usdListUnitPrice).toBe("3.4566");
+    expect(item.usdUnitPrice).toBe("3.4000");
+    // الدينار = ترجمةُ الصافي: 17,000 × 1480.
+    expect(po.total).toBe("25160000.00");
+    expect(po.invoiceDiscount).toBe("418840.00"); // (17283 − 17000) × 1480
+  });
+
+  it("إعادةُ الحفظ بالسعر قبل الخصم + الخصم نفسه ⇒ نفس النتيجة (لا خصمٌ مرّتين)", async () => {
+    // هذا هو عقدُ محرّر التعديل: يُعيد تحميل `listUnitPrice` (ما قبل الخصم) مع الخصم في حقله،
+    // فيُعاد التوزيع من الأصل. لو حمّل السعر الصافي لخُصم مرّتين وتآكلت الفاتورة كلّ حفظ.
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1000" },
+        { variantId: 2, productUnitId: 2, quantity: "10", unitPrice: "500" },
+      ],
+      invoiceDiscount: "1500",
+    }, actor);
+    const before = await readOrder(created.purchaseOrderId);
+
+    await updatePurchaseOrder({
+      purchaseOrderId: created.purchaseOrderId,
+      supplierId: 1,
+      notes: "إعادة حفظ",
+      // نفس ما يُعيد المحرّر إرساله: أسعارُ ما قبل الخصم + الخصم كما هو.
+      items: [
+        { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1000" },
+        { variantId: 2, productUnitId: 2, quantity: "10", unitPrice: "500" },
+      ],
+      invoiceDiscount: "1500",
+    }, actor);
+
+    const after = await readOrder(created.purchaseOrderId);
+    expect(after.po.subtotal).toBe(before.po.subtotal);
+    expect(after.po.total).toBe("13500.00");
+    expect(after.po.invoiceDiscount).toBe("1500.00");
   });
 });
