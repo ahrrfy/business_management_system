@@ -101,6 +101,7 @@ export default defineConfig({
       "server/services/hrDevices/__tests__/bridgeSecurity.test.ts",
       "server/services/hrDevices/__tests__/bridgeGate.test.ts",
       "server/services/hrDevices/__tests__/runtimeTasks.test.ts",
+      "server/services/hrDevices/__tests__/deviceLinkEffectiveWindow.test.ts",
       "server/routers/__tests__/periodLockAuthority.test.ts",
       "server/routers/__tests__/periodLockRouterRetry.test.ts",
       "server/routers/__tests__/yearEndRouter.test.ts",
