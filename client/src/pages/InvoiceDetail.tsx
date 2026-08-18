@@ -57,6 +57,7 @@ import {
   Paperclip,
   Pencil,
   Printer,
+  RotateCcw,
   Truck,
 } from "lucide-react";
 import { notify } from "@/lib/notify";
@@ -350,6 +351,25 @@ export default function InvoiceDetail() {
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
     data.sourceType !== "WORKORDER";
+  /**
+   * فاتورة أمر شغلٍ حيّة: مخرجها الوحيد هو المرتجع الموثَّق (الإلغاء والتصحيح يرفضهما الخادم
+   * لهذا المنشأ). البوّابة مرآةُ `returns.create` = مدير + `sales:FULL`. التوصيلُ النشط يُستثنى:
+   * الطرد بيد المندوب ⇒ المخرج هناك «استرجاع الإرسالية» لا مرتجعٌ من هنا.
+   */
+  const canReverseWorkOrderInvoice =
+    data.sourceType === "WORKORDER" &&
+    data.status !== "CANCELLED" &&
+    data.status !== "RETURNED" &&
+    data.status !== "SUPERSEDED" &&
+    !data.consignmentNumber &&
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "sales",
+      "FULL",
+      ["manager"],
+    );
   const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
@@ -630,6 +650,20 @@ export default function InvoiceDetail() {
             >
               <FileWarning aria-hidden className="size-4" />
               إلغاء الفاتورة
+            </Button>
+          )}
+          {/* ١٨/٨ — مخرج فاتورة أمر الشغل (بلاغ المالك: «لا نستطيع إلغاءها أو التعديل عليها»).
+              كانت أزرارُ الإلغاء والتصحيح تُخفى لها **بلا أيّ بديلٍ معروض**: الخادم يرفض
+              `sales.cancel` لمنشأ WORKORDER ويحيل إلى إلغاء أمر الشغل، وذاك يرفض المُسلَّم ⇒
+              الفاتورة بلا مخرجٍ ظاهر البتّة. المسار المشروع الوحيد هو **المرتجع الموثَّق**
+              (returnService يعرف WORKORDER: لا يعيدها للمخزون — منتَجٌ مخصّص لا يُباع لغيره)،
+              فنعرضه صراحةً بدل تركِ الموظف أمام شاشةٍ بلا أفعال. */}
+          {canReverseWorkOrderInvoice && (
+            <Button variant="destructive" size="sm" asChild title="المسار الموثَّق لعكس تسليم أمر شغل">
+              <Link href={`/returns?invoiceId=${data.id}`}>
+                <RotateCcw aria-hidden className="size-4" />
+                إرجاع / عكس التسليم
+              </Link>
             </Button>
           )}
           <Link
