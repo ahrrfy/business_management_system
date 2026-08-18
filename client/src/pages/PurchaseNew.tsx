@@ -16,7 +16,8 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Landmark, Truck } from "lucide-react";
-import { D, fmtAr, round2, toBase } from "@/lib/money";
+import { isWithinPriceDecimals, priceDecimalsMessage } from "@shared/moneyPrecision";
+import { D, fmtAr, round2, toBase, toUnitPriceStr } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -29,11 +30,16 @@ import {
   InvoiceHeader,
   ProductTable,
   ShortcutsBar,
+  SupplierInvoiceMatch,
   TermsAndNotes,
   TotalsPanel,
   calcTotals,
   createInitialState,
+  deriveDocumentTotal,
+  distributeToSubtotal,
   invoiceReducer,
+  matchSupplierInvoice,
+  subtotalForInvoiceTotal,
   type InvoiceActionKind,
 } from "@/components/invoice";
 
@@ -101,6 +107,33 @@ export default function PurchaseNew() {
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
 
+  /* ─── مطابقة فاتورة المورّد ─────────────────────────────────────── */
+  // يوزّع فرق المطابقة على أسعار البنود بنسبة القيمة **بعد أن يراه الموظّف**: الأسعار الجديدة
+  // تظهر في الجدول فوراً ولا يقع أيّ حفظٍ قبل مراجعتها — لا امتصاصَ خفيّ لفرقٍ ماليّ (§٥).
+  function distributeInvoiceDifference() {
+    const target = subtotalForInvoiceTotal(
+      state.supplierInvoiceTotal,
+      state.taxEnabled ? state.taxRatePercent || "0" : "0",
+    );
+    const res = distributeToSubtotal(state.items, target, state.currency);
+    if (!res.prices.length) {
+      notify.warn(res.error ?? "تعذّر توزيع الفرق على البنود.");
+      return;
+    }
+    res.prices.forEach((price, idx) => {
+      dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: price });
+      dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: price });
+    });
+    if (D(res.residual).isZero()) {
+      notify.ok("وُزّع الفرق على أسعار البنود — راجع الأسعار الجديدة ثم احفظ.");
+    } else {
+      // إفصاحٌ لا ادّعاء: هدفٌ لا تبلغه أسعارٌ ضمن دقّة العملة (كمّياتٌ كبيرة) يُعلَن متبقّيه.
+      notify.warn(
+        `وُزّع الفرق، وبقي ${res.residual} غير قابلٍ للتوزيع بدقّة العملة — عدّل سعر بندٍ يدوياً لإتمام المطابقة.`,
+      );
+    }
+  }
+
   const insightItems = useMemo(
     () => Array.from(new Map(state.items.map((item) => [
       `${item.variantId}:${item.productUnitId}`,
@@ -119,6 +152,7 @@ export default function PurchaseNew() {
     state.entityId != null ||
     state.items.length > 0 ||
     state.notes.trim() !== "" ||
+    state.supplierInvoiceTotal.trim() !== "" ||
     shippingCost.trim() !== "" ||
     customsCost.trim() !== "";
   useUnsavedGuard(isDirty);
@@ -144,14 +178,38 @@ export default function PurchaseNew() {
   /* ─── validation + submit ──────────────────────────────────────── */
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
 
+  // إجماليّ المستند بعملته **بترتيب تقريب الخادم** (سطراً سطراً ثمّ الجمع) — لا
+  // `totals.grandTotal` الذي يجمع غير المقرَّب فيقرّب مرّةً واحدة. الفرق فلسٌ حقيقيّ
+  // بالدولار ذي الأربع منازل، وهو ما تُبنى عليه المطابقة والعرض معاً («المعروض = المحفوظ»).
+  const docTotals = useMemo(
+    () => deriveDocumentTotal(state.items, state.taxEnabled ? state.taxRatePercent || "0" : "0"),
+    [state.items, state.taxEnabled, state.taxRatePercent],
+  );
+
   // landed-cost: الإجماليّ يشمل الشحن/الكمرك (يُوزَّعان بنسبة القيمة). التوزيع بالقيمة = نسبة رفعٍ
   // موحّدة على كلّ تكلفة وحدة: capUnit = price × (subtotal + شحن + كمرك) / subtotal. للمعاينة فقط.
   const landed = useMemo(() => {
     const sum = round2(safeMoney(shippingCost).plus(safeMoney(customsCost)));
-    const sourceSubtotal = D(totals.subtotal);
+    // المجموع الفرعيّ بترتيب تقريب الخادم (سطراً سطراً) لا بجمعٍ غير مقرَّب — مصدرٌ واحد.
+    const sourceSubtotal = D(docTotals.subtotal);
     const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
-    const goodsIqd = round2(sourceSubtotal.times(rate));
-    const taxIqd = round2(D(totals.totalTax).times(rate));
+    // «المعروض = المحفوظ» (درس فاتورة الشحن ٥/٨): الخادم يترجم **كلّ سطرٍ على حدة** ثمّ يجمع
+    // (subtotal = Σ round2(سطر$ × السعر))، فترجمةُ المجموع مرّةً واحدة هنا كانت تُظهر إجمالياً
+    // يخالف المحفوظ بدنانيرَ قليلة على الفواتير متعدّدة البنود. نُطابق ترتيبَ تقريبه حرفياً.
+    const goodsIqd =
+      state.currency === "USD"
+        ? round2(
+            state.items.reduce(
+              (acc, l) => acc.plus(round2(round2(safeMoney(l.price).times(D(l.qty || 0))).times(rate))),
+              D(0),
+            ),
+          )
+        : round2(sourceSubtotal.times(rate));
+    // الضريبة الدينارية تُحسَب على **المجموع الفرعيّ الدينارّي** كما يفعل الخادم حرفياً، لا
+    // بترجمة الضريبة الدولارية (ترتيبا تقريبٍ مختلفان ⇒ دينارٌ أو اثنان فرقاً في المعروض).
+    const taxIqd = state.taxEnabled
+      ? round2(goodsIqd.times(safeMoney(state.taxRatePercent || "0")).dividedBy(100))
+      : D(0);
     // قرار المالك (٥/٨/٢٦): **الإجمالي = البضاعة + الضريبة فقط** — الشحن خارجه (مصروفُ شركةٍ لا
     // ذمّةُ مورّد). كان يُجمَع هنا فيعرض للمستخدم إجمالياً لا يحفظه الخادم (٧٠٠ بينما المحفوظ ٣٠٠)
     // ⇒ يدفع للمورّد أكثر مما عليه — الخطأ نفسه الذي حُذِّر منه في شاشة البيع.
@@ -159,7 +217,27 @@ export default function PurchaseNew() {
     // معامل الرفع صار ١ دائماً: حصّة الشحن تُعرَض للعِلم ولا تُضاف إلى تكلفة الوحدة (لم تعُد تُرسمَل).
     const uplift = D(1);
     return { sum, goodsIqd, taxIqd, grand, uplift, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
-  }, [shippingCost, customsCost, totals.subtotal, totals.totalTax, state.currency, state.agreedRate]);
+  }, [
+    shippingCost,
+    customsCost,
+    docTotals.subtotal,
+    state.items,
+    state.currency,
+    state.agreedRate,
+    state.taxEnabled,
+    state.taxRatePercent,
+  ]);
+
+  // حكم المطابقة — يُحسَب مرّةً ويُستهلَك في التحقّق وفي اللوحة معاً (لا تعريفان ينجرفان).
+  const invoiceMatch = useMemo(
+    () =>
+      matchSupplierInvoice(
+        state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2),
+        state.supplierInvoiceTotal,
+        state.currency,
+      ),
+    [state.currency, state.supplierInvoiceTotal, docTotals.total, landed.grand],
+  );
 
   function validate(): string | null {
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
@@ -170,6 +248,11 @@ export default function PurchaseNew() {
       if (!qty.gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
       const price = D(l.price);
       if (price.lt(0)) return `سعر الشراء في «${l.name}» غير صالح.`;
+      // دقّة السعر حسب العملة (مرآة حارس الخادم): الحقل يحدّ المنازل أثناء الكتابة، وهذا يمسك
+      // ما دخل من لصقٍ أو من أمرٍ قديم — رسالةٌ صريحة بدل قصٍّ صامت أو رحلةِ ذهابٍ وإياب.
+      if (!isWithinPriceDecimals(l.price, state.currency)) {
+        return priceDecimalsMessage(state.currency, l.name, l.price);
+      }
       const base = toBase(l.qty, l.conversionFactor);
       if (!base.isInteger())
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
@@ -180,6 +263,10 @@ export default function PurchaseNew() {
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
       return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
+    }
+    // مطابقة فاتورة المورّد (مرآة حارس الخادم): رسالةٌ بالأرقام على الشاشة توفّر رحلة ذهابٍ وإياب.
+    if (invoiceMatch.verdict !== "UNSET" && invoiceMatch.verdict !== "MATCH") {
+      return invoiceMatch.message;
     }
     return null;
   }
@@ -204,6 +291,11 @@ export default function PurchaseNew() {
       // بينما كانت الواجهة تشتقّ usdTotal من أسعارٍ كاملة الدقّة (مثل 4.1666) ⇒ الإجماليان يختلفان
       // بفروق تقريبٍ بحتة فيرفض الحارسُ الحفظَ زوراً. المرجع الوحيد هو حساب الخادم من البنود.
       agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
+      // مطابقة فاتورة المورّد: تُرسَل حين يملؤها الموظّف ⇒ الخادم يرفض حفظ أمرٍ يخالف مستنده.
+      // فارغةٌ ⇒ لا مطابقة (السلوك التاريخيّ) — الحقل ضابطٌ اختياريّ لا شرطُ حفظ.
+      supplierInvoiceTotal: state.supplierInvoiceTotal.trim()
+        ? round2(safeMoney(state.supplierInvoiceTotal)).toFixed(2)
+        : undefined,
       // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
       // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
       shippingCost: safeMoney(shippingCost).gt(0) ? round2(safeMoney(shippingCost)).toFixed(2) : undefined,
@@ -213,8 +305,10 @@ export default function PurchaseNew() {
         productUnitId: l.productUnitId,
         // الكمية بنفس الوحدة المختارة (الخادم يضرب × conversionFactor للحصول على base).
         quantity: D(l.qty).toString(),
-        // سعر الشراء بالوحدة (price = costBase × convFactor عند الإضافة، قابل للتعديل).
-        unitPrice: round2(D(l.price)).toFixed(2),
+        // سعر الشراء بالوحدة **بعملة الأمر** (price = costBase × convFactor عند الإضافة، قابل
+        // للتعديل). كان `round2(...).toFixed(2)` يقصّ سعر الدولار 3.4566 إلى 3.46 صامتاً رغم أنّ
+        // العمود `usdUnitPrice` يحفظ ٤ منازل ⇒ فارقٌ في ذمّة المورّد بحجم الكمية.
+        unitPrice: toUnitPriceStr(l.price, state.currency),
       })),
     };
   }
@@ -485,7 +579,17 @@ export default function PurchaseNew() {
             showDiscount={false}
             showPayment={false}
             showTaxToggle
-            overrideGrandTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
+            overrideGrandTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
+          />
+          {/* مطابقة فاتورة المورّد: الإجماليّ المشتقّ يُقارَن بعملة الأمر — الدولاريّ بإجماليه
+              الدولاريّ (مستند المورّد) والدينارّي بإجماليه الدينارّي، مطابقةً لحارس الخادم. */}
+          <SupplierInvoiceMatch
+            derivedTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
+            value={state.supplierInvoiceTotal}
+            onChange={(v) => dispatch({ type: "SET_FIELD", field: "supplierInvoiceTotal", value: v })}
+            currency={state.currency}
+            onDistribute={distributeInvoiceDifference}
+            canDistribute={D(totals.subtotal).gt(0)}
           />
           {state.currency === "USD" && landed.rate.gt(0) && (
             <section className="rounded-xl border bg-card px-4 py-3 text-sm">

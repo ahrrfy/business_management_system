@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like } from "drizzle-orm";
 import { branches, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../../drizzle/schema";
+import { isWithinPriceDecimals, priceDecimalsMessage, type PriceCurrency } from "../../../shared/moneyPrecision";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { convertToBaseQuantity } from "../inventoryService";
@@ -49,6 +50,54 @@ async function assertPurchasableVariants(tx: Tx, uniqueVariantIds: number[]): Pr
 }
 
 /**
+ * تسمية صنفٍ مقروءة للرسائل — تُستدعى **في مسار الخطأ وحده** (استعلامٌ واحد لصنفٍ واحد) كي يعرف
+ * المستخدم أيّ سطرٍ يُصحّح بدل رسالةٍ عامّة. تعذّر القراءة ⇒ المعرّف الخام (لا نُفشل رسالة خطأ).
+ */
+async function variantLabel(tx: Tx, variantId: number): Promise<string> {
+  try {
+    const [row] = await tx
+      .select({ name: products.name, sku: productVariants.sku })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(eq(productVariants.id, variantId))
+      .limit(1);
+    if (!row) return `الصنف #${variantId}`;
+    return row.sku ? `${row.name} — ${row.sku}` : String(row.name);
+  } catch {
+    return `الصنف #${variantId}`;
+  }
+}
+
+/**
+ * ضابط **مطابقة فاتورة المورّد**: القيمة المُعلَنة على ورقة المورّد يجب أن تساوي الإجماليَّ
+ * المشتقّ من البنود بالضبط، وإلّا رُفض الحفظ.
+ *
+ * **الجذر (بلاغ المالك ١٧/٨/٢٦):** كانت الرسالة الوحيدة «إجمالي فاتورة المورد بالدولار لا يطابق
+ * مجموع البنود» — بلا الرقمين ولا الفرق ولا سببٍ محتمل، فلا يعرف الموظّف أين يُصحّح؛ حتى إنّ
+ * الشاشتين امتنعتا عن إرسال القيمة أصلاً هرباً من الرفض، فضاع الضابط كلّه وصار الأمر يُحفَظ بلا
+ * أيّ تحقّقٍ من مستنده. الرسالة الآن **تشخيصيّة**: الرقمان والفرق واتّجاهه وسببه المعتاد.
+ */
+function assertSupplierInvoiceMatch(declaredRaw: string, expected: Decimal, currency: "IQD" | "USD"): void {
+  const declared = round2(money(declaredRaw));
+  if (declared.lt(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة فاتورة المورّد لا تصحّ أن تكون سالبة" });
+  }
+  const expectedR = round2(expected);
+  if (declared.eq(expectedR)) return;
+  const cur = currency === "USD" ? "$" : "د.ع";
+  const diff = declared.minus(expectedR);
+  const hint = diff.isNegative()
+    ? "خصمٌ من المورّد لم يُدخَل، أو سعر وحدةٍ أعلى مما في الفاتورة"
+    : "بندٌ لم يُدخَل، أو سعر وحدةٍ أقلّ مما في الفاتورة، أو أجرة شحنٍ مدرَجة في الفاتورة (تُدخَل في حقل الشحن)";
+  throw new TRPCError({
+    code: "BAD_REQUEST",
+    message:
+      `قيمة فاتورة المورّد (${declared.toFixed(2)} ${cur}) لا تطابق مجموع البنود ` +
+      `(${expectedR.toFixed(2)} ${cur}) — الفرق ${diff.abs().toFixed(2)} ${cur}. السبب المعتاد: ${hint}.`,
+  });
+}
+
+/**
  * حساب أسطر أمر الشراء وإجمالياته — **مصدر الحقيقة الحسابيّ الوحيد للإنشاء والتعديل معاً.**
  *
  * استُخرِج من `createPurchaseOrder` بلا أيّ تغيير سلوكيّ. سببُ الاستخراج بنيويّ: تعديلُ الأمر
@@ -66,6 +115,10 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "سعر صرف تثبيت الفاتورة يجب أن يكون موجباً" });
   }
 
+  // عملةُ **أسعار البنود** ليست دائماً عملةَ الأمر: المسار القديم (agreedCurrency=USD بلا سعر
+  // تثبيت) يُدخل أسعاراً دينارية و`usdTotal` مرجعاً إجمالياً فقط. الحاسم هو وجود سعر التثبيت.
+  const linePriceCurrency: PriceCurrency = explicitUsdRate ? "USD" : "IQD";
+
   const rows = [];
   const lineNets: string[] = [];
   const usdLineNets: string[] = [];
@@ -74,6 +127,21 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     // (الخدمة تُستدعى أيضاً من importService/seed لا الراوتر فقط ⇒ دفاع متعمّق إلزامي).
     if (money(it.unitPrice).lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "سعر الشراء لا يصحّ أن يكون سالباً" });
     if (money(it.quantity).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الشراء يجب أن تكون موجبة" });
+    // دقّة السعر حسب عملته (`shared/moneyPrecision`): الدينار منزلتان (عمود decimal(15,2))
+    // والدولار أربع (عمود usdUnitPrice decimal(15,4)). **رفضٌ صريح لا قصٌّ صامت**: قصُّ 3.4566
+    // إلى 3.46 يبدو نجاحاً بينما يُنقص ذمّة المورّد ويُسمّم WAVG لكلّ بيعةٍ لاحقة من الصنف.
+    //
+    // ⚠️ الفحص على **قيمةٍ حاضرة فقط**: القيمة الغائبة/الفارغة يعاملها `money()` صفراً منذ الأصل
+    // (والراوتر يجعل الحقل إلزامياً أصلاً، فلا يبلغها إلا مستدعٍ مباشر). إقحامُها في فحص الدقّة
+    // يُنتج رسالة «يقبل منزلتين» عن حقلٍ لم يُرسَل إطلاقاً — تشخيصٌ مضلِّل. والصيغُ التالفة يردّها
+    // `money()` أعلاه برسالتها الصحيحة («قيمة غير صالحة») قبل الوصول إلى هنا.
+    const rawUnitPrice = it.unitPrice == null ? "" : String(it.unitPrice).trim();
+    if (rawUnitPrice !== "" && !isWithinPriceDecimals(rawUnitPrice, linePriceCurrency)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: priceDecimalsMessage(linePriceCurrency, await variantLabel(tx, it.variantId), rawUnitPrice),
+      });
+    }
     const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
     const qty = money(it.quantity);
     const sourceUnitPrice = money(it.unitPrice);
@@ -81,8 +149,14 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     const usdLineNet = usdUnitPrice ? round2(usdUnitPrice.times(qty)) : null;
     // المسار الجديد: سعر البند المُدخل USD ويُحوّل بسعر التثبيت. المسار القديم بلا agreedRate
     // يبقى متوافقاً: unitPrice ديناري وusdTotal مرجع إجمالي فقط.
+    // سعرُ الوحدة الدينارية يبقى ٢dp (عمودُه decimal(15,2)) — عرضٌ ومرجعُ تكلفةِ الوحدة عند الاستلام.
     const iqdUnitPrice = explicitUsdRate ? round2(sourceUnitPrice.times(explicitUsdRate)) : sourceUnitPrice;
-    const lineNet = round2(iqdUnitPrice.times(qty));
+    // إجماليُّ السطر بالدينار يُترجَم من **إجمالي السطر بالدولار**، لا من سعر الوحدة بعد تقريبه:
+    // الالتزام دولاريّ والدينارُ ترجمتُه بسعر التثبيت. الضربُ بعد التقريب كان يُراكم فرقَ التقريب
+    // × الكمية (٥٠٠٠ وحدة × فرق ٠٫٤ د.ع = ٢٠٠٠ د.ع) فيخالف إجماليُّ الأمر فاتورةَ المورّد وذمّته.
+    const lineNet = usdLineNet && explicitUsdRate
+      ? round2(usdLineNet.times(explicitUsdRate))
+      : round2(iqdUnitPrice.times(qty));
     lineNets.push(lineNet.toFixed(2));
     if (usdLineNet) usdLineNets.push(usdLineNet.toFixed(2));
     rows.push({
@@ -121,6 +195,7 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   // للفواتير التاريخية/الاستدعاءات التي ترسل إجمالياً دولارياً بعد إدخال أسعار دينارية.
   let usdTotalVal: Decimal | null = null;
   let agreedRateVal: Decimal | null = null;
+  let expectedInvoiceTotal = total; // الإجماليّ بعملة الأمر — مرجعُ مطابقة فاتورة المورّد.
   if (agreedCurrency === "USD") {
     const usdGoods = round2(sumMoney(usdLineNets));
     const usdTax = round2(usdGoods.times(taxRate).dividedBy(100));
@@ -129,10 +204,22 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     if (usdTotalVal.lte(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ بالدولار (فاتورة المورد) يجب أن يكون موجباً" });
     }
-    if (explicitUsdRate && input.usdTotal != null && !round2(input.usdTotal).eq(expectedUsdInvoiceTotal)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "إجمالي فاتورة المورد بالدولار لا يطابق مجموع البنود" });
+    if (explicitUsdRate) {
+      expectedInvoiceTotal = expectedUsdInvoiceTotal;
+      // `usdTotal` مسارٌ قديمٌ يحمل نفس معنى `supplierInvoiceTotal` ⇒ يمرّ بالحارس نفسه برسالته
+      // المُرقَّمة (كانت «لا يطابق مجموع البنود» عمياء: بلا رقمٍ ولا سببٍ ولا سبيلِ تسوية).
+      if (input.usdTotal != null) {
+        assertSupplierInvoiceMatch(input.usdTotal, expectedUsdInvoiceTotal, "USD");
+      }
     }
     agreedRateVal = explicitUsdRate ?? total.dividedBy(usdTotalVal);
+  }
+
+  // ضابط مطابقة فاتورة المورّد: يُفحَص بعملة **أسعار البنود** لا بـ`agreedCurrency` — فالمسار
+  // القديم (USD بلا سعر تثبيت) أسعارُه دينارية وإجماليّه دينارّي، فمقارنتُه بعلامة «$» كانت
+  // ستقارن رقمين بعملتين وتُسمّي الدينار دولاراً. `linePriceCurrency` هو المعيار الصادق الوحيد.
+  if (input.supplierInvoiceTotal != null && String(input.supplierInvoiceTotal).trim() !== "") {
+    assertSupplierInvoiceMatch(input.supplierInvoiceTotal, expectedInvoiceTotal, linePriceCurrency);
   }
 
   return { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal };

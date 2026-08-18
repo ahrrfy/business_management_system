@@ -65,8 +65,13 @@ export interface InvoiceState {
   paymentMethod: PaymentMethod;
   dueDate: string;
   currency: Currency;
-  /** usd-po-reconcile: مبلغ فاتورة المورد الفعلية بالدولار (PURCHASE فقط، حين currency=USD). */
-  usdTotal: string;
+  /**
+   * **قيمة فاتورة المورّد الورقيّة بعملة الأمر** (PURCHASE فقط) — ضابط مطابقةٍ اختياريّ يُرسَل
+   * كـ`supplierInvoiceTotal`؛ الخادم يرفض الحفظ إن خالفت مجموعَ البنود برسالةٍ تحمل الرقمين
+   * والفرق. كان اسمها `usdTotal` ومقصورةً على الدولار **بلا أيّ حقلٍ يملؤها في أيّ شاشة** ⇒
+   * الضابط كلّه مُعطَّل عملياً (بلاغ المالك ١٧/٨/٢٦: «لا يمكن مطابقتها مع المورد وقيمة الفاتورة»).
+   */
+  supplierInvoiceTotal: string;
   /** سعر تثبيت فاتورة الشراء: دينار عراقي لكل دولار. */
   agreedRate: string;
   salesRepId: number | "";

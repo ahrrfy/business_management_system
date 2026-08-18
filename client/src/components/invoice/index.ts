@@ -41,3 +41,14 @@ export { TotalsPanel, type TotalsPanelProps } from "./TotalsPanel";
 export { ActionButtons, type ActionButtonsProps, type InvoiceActionKind } from "./ActionButtons";
 export { TermsAndNotes, type TermsAndNotesProps } from "./TermsAndNotes";
 export { ShortcutsBar, type ShortcutsBarProps } from "./ShortcutsBar";
+export { SupplierInvoiceMatch, type SupplierInvoiceMatchProps } from "./SupplierInvoiceMatch";
+export {
+  matchSupplierInvoice,
+  deriveDocumentTotal,
+  distributeToSubtotal,
+  subtotalForInvoiceTotal,
+  type MatchLine,
+  type MatchResult,
+  type MatchVerdict,
+  type DistributeResult,
+} from "./supplierInvoiceMatch";

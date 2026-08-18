@@ -61,7 +61,9 @@ beforeEach(async () => {
 /** أمر شراء في فرع/مورد محدّدين. */
 async function po(branchId: number, supplierId: number) {
   return createPurchaseOrder(
-    { supplierId, branchId, items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitCost: "1000" }] },
+    // الحقل `unitPrice` لا `unitCost`: كان الاسم خاطئاً فيُهمَل الحقل ويُنشأ الأمر بسعر صفر (والـ
+    // typecheck لا يمسكه لأنّ `tsconfig` يستثني `*.test.ts`) ⇒ الحزمة كانت تعدّ أوامر بلا قيمة.
+    { supplierId, branchId, items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "1000" }] },
     { userId: 1, branchId },
   );
 }

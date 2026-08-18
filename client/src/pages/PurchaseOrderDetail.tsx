@@ -298,6 +298,8 @@ export default function PurchaseOrderDetail() {
               <Field label="المدفوع">{fmtAr(d.paidAmount)}</Field>
               {isUsd ? (
                 <>
+                  {/* مطابَقةٌ لا اشتقاق: منذ ضابط `supplierInvoiceTotal` يُرفض حفظ أمرٍ يخالف
+                      قيمة فاتورة المورّد، فهذا الرقم هو رقم الورقة نفسه. */}
                   <Field label="فاتورة المورّد ($)">{fmtAr(d.usdTotal)}</Field>
                   <Field label="المدفوع ($)">{fmtAr(d.paidUsd)}</Field>
                   <Field label="المُرتجَع ($)">{fmtAr(d.returnedUsd)}</Field>

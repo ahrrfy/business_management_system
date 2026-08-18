@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../schemas";
+import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString, unitPriceString } from "../schemas";
 
 /**
  * الموجة ١ — حدّ ثقة المال/الإشارة (اختبار وحدة نقي، بلا قاعدة بيانات).
@@ -33,6 +33,25 @@ describe("Wave 1 — money/qty/percent trust-boundary zod helpers", () => {
     for (const bad of ["0", "0.000", "-1", "1.2345", "-0.5"]) {
       expect(positiveQtyString.safeParse(bad).success).toBe(false);
     }
+  });
+
+  it("unitPriceString: سعر وحدةٍ غير سالب حتى ٤ منازل — يقبل 1450.99 و3.4566 (بلاغ ١٧/٨)", () => {
+    // نواة البلاغ: كلاهما كان يُردّ أو يُقصّ صامتاً على حدّ الـAPI رغم أنّ العمود
+    // `purchaseOrderItems.usdUnitPrice` مُعرَّف decimal(15,4).
+    for (const ok of ["1450.99", "3.4566", "0", "0.0001", "41.48", "999999.9999"]) {
+      expect(unitPriceString.safeParse(ok).success).toBe(true);
+    }
+    // السقف أربع منازل، والسالب/الصيغ التالفة/الفاصلة الألفية مردودة كما في بقيّة المخطّطات.
+    for (const bad of ["3.45666", "-1", "-0.0001", "1e3", "abc", "", "1,450.99", " 1", "1."]) {
+      expect(unitPriceString.safeParse(bad).success).toBe(false);
+    }
+  });
+
+  it("unitPriceString أوسع من nonNegMoneyString — التضييق حسب العملة مسؤولية الخدمة", () => {
+    // ٤ منازل تمرّ من عقد الراوتر ثمّ تُضيَّق داخل computePurchaseDocument (الدينار منزلتان)،
+    // لأنّ العملة معلومةٌ على مستوى المستند لا على مستوى الحقل.
+    expect(unitPriceString.safeParse("3.4566").success).toBe(true);
+    expect(nonNegMoneyString.safeParse("3.4566").success).toBe(false);
   });
 
   it("percentString: [0,100]، يَردّ السالب و>100 (PROC-03)", () => {

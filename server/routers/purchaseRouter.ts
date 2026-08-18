@@ -5,7 +5,7 @@ import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
-import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString, positiveRateString } from "../lib/schemas";
+import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString, positiveRateString, unitPriceString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase, settlePurchaseUsdDirect, updatePurchaseOrder } from "../services/purchaseService";
@@ -126,7 +126,10 @@ export const purchaseRouter = router({
               productUnitId: z.number().int().positive(),
               // PROC-01: سعر/كمية الشراء على حدّ الثقة — كانا z.string() ⇒ سعر سالب يُسمّم WAVG ويُخفّض AP.
               quantity: positiveQtyString,
-              unitPrice: nonNegMoneyString,
+              // سعرُ الوحدة **بعملة الأمر** (`agreedCurrency`): حتى ٤ منازل كسقفٍ أعلى، وتُضيّقه
+              // `computePurchaseDocument` حسب العملة (الدينار منزلتان). كان `nonNegMoneyString`
+              // فيقصّ سعر الدولار 3.4566 إلى 3.46 صامتاً رغم أنّ العمود `decimal(15,4)`.
+              unitPrice: unitPriceString,
             })
           )
           .min(1),
@@ -136,6 +139,9 @@ export const purchaseRouter = router({
         agreedCurrency: z.enum(["IQD", "USD"]).optional(),
         usdTotal: positiveMoneyString.optional(),
         agreedRate: positiveRateString.optional(),
+        // مطابقة فاتورة المورّد: قيمة الورقة بعملة الأمر. اختياريّة، وحين تُرسَل يفرض
+        // `computePurchaseDocument` تطابقها مع مجموع البنود برسالةٍ تحمل الرقمين والفرق.
+        supplierInvoiceTotal: nonNegMoneyString.optional(),
         // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
         // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
         shippingCost: nonNegMoneyString.optional(),
@@ -174,7 +180,9 @@ export const purchaseRouter = router({
               variantId: z.number().int().positive(),
               productUnitId: z.number().int().positive(),
               quantity: positiveQtyString,
-              unitPrice: nonNegMoneyString,
+              // نفس عقد الإنشاء: سعرٌ بعملة الأمر حتى ٤ منازل (تُضيَّق حسب العملة في الخدمة).
+              // تعديلُ أمرٍ دولاريّ كان يقصّ أسعاره إلى منزلتين عند كلّ حفظٍ ولو لم تُمَسّ.
+              unitPrice: unitPriceString,
             })
           )
           .min(1),
@@ -182,6 +190,9 @@ export const purchaseRouter = router({
         agreedCurrency: z.enum(["IQD", "USD"]).optional(),
         usdTotal: positiveMoneyString.optional(),
         agreedRate: positiveRateString.optional(),
+        // مطابقة فاتورة المورّد: قيمة الورقة بعملة الأمر. اختياريّة، وحين تُرسَل يفرض
+        // `computePurchaseDocument` تطابقها مع مجموع البنود برسالةٍ تحمل الرقمين والفرق.
+        supplierInvoiceTotal: nonNegMoneyString.optional(),
         shippingCost: nonNegMoneyString.optional(),
         customsCost: nonNegMoneyString.optional(),
       })
