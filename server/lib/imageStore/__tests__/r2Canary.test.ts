@@ -139,8 +139,33 @@ describe("R2 production canary", () => {
     expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("يفشل مغلقاً عند 200 غير مصادق ويحذف الكائن في finally", async () => {
+  it.each([400, 401])("يقبل %i كإثبات خصوصية فقط لاستجابة XML بطول لا يطابق الصورة ويلغي جسمها", async (status) => {
     const { store, calls } = fakeStore();
+    let cancelled = false;
+    const result = await runR2ImageStoreCanary({
+      store,
+      cleanupStore: independentCleanup(store),
+      key: KEY,
+      endpointUrl: URL,
+      bytes: BYTES,
+      privacyConfiguration: privateConfiguration(),
+      fetchUnauthenticated: async () => ({
+        status,
+        headers: new Headers({
+          "content-type": "application/xml; charset=UTF-8",
+          "content-length": String(BYTES.length + 100),
+        }),
+        body: { cancel: async () => { cancelled = true; } },
+      }),
+    });
+    expect(calls).toEqual(["put", "head", "get", "delete", "head"]);
+    expect(result).toMatchObject({ privacyStatus: status, cleaned: true });
+    expect(cancelled).toBe(true);
+  });
+
+  it.each([400, 401, 403, 404])("يرفض استجابة image غير المصادقة عند %i ويلغي جسمها", async (status) => {
+    const { store, calls } = fakeStore();
+    let cancelled = false;
     await expect(runR2ImageStoreCanary({
       store,
       cleanupStore: independentCleanup(store),
@@ -148,9 +173,60 @@ describe("R2 production canary", () => {
       endpointUrl: URL,
       bytes: BYTES,
       privacyConfiguration: privateConfiguration(),
-      fetchUnauthenticated: async () => ({ status: 200, body: { cancel: async () => undefined } }),
+      fetchUnauthenticated: async () => ({
+        status,
+        headers: new Headers({ "content-type": "image/png", "content-length": String(BYTES.length) }),
+        body: { cancel: async () => { cancelled = true; } },
+      }),
     })).rejects.toMatchObject({ code: "CANARY_OBJECT_PUBLIC" });
     expect(calls).toEqual(["put", "head", "delete", "head"]);
+    expect(cancelled).toBe(true);
+  });
+
+  it.each([
+    ["content-type مفقود", { "content-length": String(BYTES.length + 1) }],
+    ["content-type ليس application/xml", { "content-type": "text/xml", "content-length": String(BYTES.length + 1) }],
+    ["content-length مفقود", { "content-type": "application/xml" }],
+    ["content-length يطابق الصورة", { "content-type": "application/xml", "content-length": String(BYTES.length) }],
+    ["content-length غير صالح", { "content-type": "application/xml", "content-length": "unknown" }],
+  ])("يفشل مغلقاً عند 400 إذا كان %s", async (_case, headers) => {
+    const { store, calls } = fakeStore();
+    let cancelled = false;
+    await expect(runR2ImageStoreCanary({
+      store,
+      cleanupStore: independentCleanup(store),
+      key: KEY,
+      endpointUrl: URL,
+      bytes: BYTES,
+      privacyConfiguration: privateConfiguration(),
+      fetchUnauthenticated: async () => ({
+        status: 400,
+        headers: new Headers(headers),
+        body: { cancel: async () => { cancelled = true; } },
+      }),
+    })).rejects.toMatchObject({ code: "CANARY_OBJECT_PUBLIC" });
+    expect(calls).toEqual(["put", "head", "delete", "head"]);
+    expect(cancelled).toBe(true);
+  });
+
+  it("يفشل مغلقاً عند 200 غير مصادق ويحذف الكائن في finally", async () => {
+    const { store, calls } = fakeStore();
+    let cancelled = false;
+    await expect(runR2ImageStoreCanary({
+      store,
+      cleanupStore: independentCleanup(store),
+      key: KEY,
+      endpointUrl: URL,
+      bytes: BYTES,
+      privacyConfiguration: privateConfiguration(),
+      fetchUnauthenticated: async () => ({
+        status: 200,
+        headers: new Headers({ "content-type": "image/png", "content-length": String(BYTES.length) }),
+        body: { cancel: async () => { cancelled = true; } },
+      }),
+    })).rejects.toMatchObject({ code: "CANARY_OBJECT_PUBLIC" });
+    expect(calls).toEqual(["put", "head", "delete", "head"]);
+    expect(cancelled).toBe(true);
   });
 
   it("لا يحذف كائناً سابقاً عند تصادم المفتاح", async () => {

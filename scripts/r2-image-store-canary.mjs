@@ -182,6 +182,21 @@ async function streamBytes(stream, expectedMaximum) {
   return Buffer.concat(chunks);
 }
 
+function isConclusivePrivateResponse(response, expectedImageBytes) {
+  const contentType = response?.headers?.get?.("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType?.startsWith("image/")) return false;
+  if (response?.status === 403 || response?.status === 404) return true;
+  if (response?.status !== 400 && response?.status !== 401) return false;
+
+  const contentLengthHeader = response.headers?.get?.("content-length");
+  if (contentType !== "application/xml" || !/^[1-9]\d*$/.test(contentLengthHeader ?? "") ||
+      typeof response.body?.cancel !== "function") {
+    return false;
+  }
+  const contentLength = Number(contentLengthHeader);
+  return Number.isSafeInteger(contentLength) && contentLength !== expectedImageBytes;
+}
+
 function isNotFound(error) {
   if (!error || typeof error !== "object") return false;
   return error.name === "NotFound" || error.name === "NoSuchKey" || error.Code === "NoSuchKey" ||
@@ -266,10 +281,13 @@ export async function runR2ImageStoreCanary({
     } catch (error) {
       throw new R2CanaryError("CANARY_PRIVACY_PROBE_FAILED", error);
     }
-    if (privacyResponse.status !== 403 && privacyResponse.status !== 404) {
-      throw new R2CanaryError("CANARY_OBJECT_PUBLIC");
+    const conclusivePrivateResponse = isConclusivePrivateResponse(privacyResponse, bytes.length);
+    try {
+      await privacyResponse.body?.cancel?.();
+    } catch (error) {
+      throw new R2CanaryError("CANARY_PRIVACY_PROBE_FAILED", error);
     }
-    await privacyResponse.body?.cancel?.();
+    if (!conclusivePrivateResponse) throw new R2CanaryError("CANARY_OBJECT_PUBLIC");
 
     const stream = await store.getStream(key);
     if (!stream) throw new R2CanaryError("CANARY_GET_MISSING");
