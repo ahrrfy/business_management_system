@@ -93,6 +93,8 @@ afterEach(async () => {
   __resetImageStoreForTest();
   delete process.env.IMAGE_STORE_DIR;
   delete process.env.IMAGE_STORE_DRIVER;
+  delete process.env.R2_GC_MODE;
+  delete process.env.R2_GC_DELETE_CONFIRM;
   if (storeDir) await rm(storeDir, { recursive: true, force: true });
 });
 
@@ -487,29 +489,82 @@ describe("product studio governed workflow", () => {
     expect(await readdir(storeDir)).toHaveLength(0);
   });
 
-  it("sweeps old unreferenced pending and referenced staging objects", async () => {
+  it("keeps staging GC audit-only and starts 90-day retention when the last reference is first proven lost", async () => {
     const bytes = Buffer.from(PNG_1X1.slice(PNG_1X1.indexOf(",") + 1), "base64");
     const key = objectKeyFor(contentHash(bytes), "image/png", "single/studio/candidate");
     await getImageStore().put(key, bytes, "image/png");
     await db().insert(s.productImageObjectStaging).values({
       objectKey: key,
       state: "PENDING",
-      touchedAt: new Date(Date.now() - 48 * 60 * 60_000),
+      touchedAt: new Date(Date.now() - 91 * 24 * 60 * 60_000),
     });
-    await expect(cleanupStudioStaging()).resolves.toBe(1);
-    expect((await getImageStore().head(key)).exists).toBe(false);
-    expect(await db().select().from(s.productImageObjectStaging)).toHaveLength(0);
+    await expect(cleanupStudioStaging()).resolves.toBe(0);
+    expect((await getImageStore().head(key)).exists).toBe(true);
+    expect(await db().select().from(s.productImageObjectStaging)).toEqual([
+      expect.objectContaining({ objectKey: key, state: "PENDING", referencedAt: expect.any(Date) }),
+    ]);
 
     const referencedKey = objectKeyFor(contentHash(Buffer.concat([bytes, Buffer.from("orphan")])), "image/png", "single/studio/candidate");
     await getImageStore().put(referencedKey, bytes, "image/png");
+    const previousReference = new Date(Date.now() - 120 * 24 * 60 * 60_000);
     await db().insert(s.productImageObjectStaging).values({
       objectKey: referencedKey,
       state: "REFERENCED",
-      touchedAt: new Date(Date.now() - 48 * 60 * 60_000),
-      referencedAt: new Date(Date.now() - 48 * 60 * 60_000),
+      touchedAt: previousReference,
+      referencedAt: previousReference,
     });
-    await expect(cleanupStudioStaging()).resolves.toBe(1);
-    expect((await getImageStore().head(referencedKey)).exists).toBe(false);
+    const beforeSweep = Date.now();
+    await expect(cleanupStudioStaging()).resolves.toBe(0);
+    expect((await getImageStore().head(referencedKey)).exists).toBe(true);
+    const transitioned = (await db().select().from(s.productImageObjectStaging)
+      .where(eq(s.productImageObjectStaging.objectKey, referencedKey)))[0]!;
+    expect(transitioned.state).toBe("PENDING");
+    // MySQL TIMESTAMP here has second precision, so allow sub-second truncation only.
+    expect(transitioned.referencedAt!.getTime()).toBeGreaterThanOrEqual(beforeSweep - 1_000);
+  });
+
+  it("deletes only an eligible unreferenced object in explicit delete mode and preserves a referenced object", async () => {
+    const firstBytes = Buffer.from(PNG_1X1.slice(PNG_1X1.indexOf(",") + 1), "base64");
+    const secondBytes = Buffer.from(PNG_1X1_ALT.slice(PNG_1X1_ALT.indexOf(",") + 1), "base64");
+    const unreferencedKey = objectKeyFor(contentHash(firstBytes), "image/png", "single/studio/candidate");
+    const referencedKey = objectKeyFor(contentHash(secondBytes), "image/png", "single/studio/candidate");
+    await Promise.all([
+      getImageStore().put(unreferencedKey, firstBytes, "image/png"),
+      getImageStore().put(referencedKey, secondBytes, "image/png"),
+    ]);
+    const old = new Date(Date.now() - 91 * 24 * 60 * 60_000);
+    await db().insert(s.productImageObjectStaging).values([
+      { objectKey: unreferencedKey, state: "PENDING", referencedAt: old, touchedAt: old },
+      { objectKey: referencedKey, state: "REFERENCED", referencedAt: old, touchedAt: old },
+    ]);
+    await db().insert(s.productImages).values({
+      productId: 1,
+      url: "/api/img/product/referenced",
+      objectKey: referencedKey,
+      contentHash: contentHash(secondBytes),
+      mime: "image/png",
+      reviewStatus: "APPROVED",
+      isPrimary: true,
+    });
+    process.env.R2_GC_MODE = "delete";
+    process.env.R2_GC_DELETE_CONFIRM = "DELETE_RETAINED_R2_OBJECTS";
+    const authorize = vi.fn();
+
+    await expect(cleanupStudioStaging()).rejects.toMatchObject({ code: "R2_GC_MIRROR_MANIFEST_REQUIRED" });
+    expect((await getImageStore().head(unreferencedKey)).exists).toBe(true);
+    expect((await getImageStore().head(referencedKey)).exists).toBe(true);
+
+    await expect(cleanupStudioStaging(5, {
+      loadDeletionAuthorization: async () => ({ authorize }),
+    })).resolves.toBe(1);
+
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalledWith(unreferencedKey);
+    expect((await getImageStore().head(unreferencedKey)).exists).toBe(false);
+    expect((await getImageStore().head(referencedKey)).exists).toBe(true);
+    expect(await db().select().from(s.productImageObjectStaging)).toEqual([
+      expect.objectContaining({ objectKey: referencedKey, state: "REFERENCED" }),
+    ]);
   });
 
   it("rejects reverting an older job after a newer job published identical bytes", async () => {
