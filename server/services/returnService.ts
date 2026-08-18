@@ -365,6 +365,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
               baseQuantity: c.componentBaseQuantity * line.baseQuantity,
             });
           }
+        } else if (kind === "SERVICE") {
+          // ١٨/٨: **الخدمة لا تعود للمخزون** — لا رصيد لها أصلاً (طباعة، تجليد، تصميم). كانت
+          // تُكتب لها حركة RETURN ورصيدٌ في `branchStock` من العدم: مخزونٌ وهميّ يتضخّم مع كل
+          // مرتجع فاتورة طباعة، ويسمّم WAVG وتقارير المخزون. لا شيء يُضاف لـstockOps.
+          // (الإيراد والذمّة والقيد تُعكَس كالمعتاد — العكس ماليٌّ لا مخزنيّ.)
         } else {
           stockOps.push({ variantId: itemVariantId, baseQuantity: line.baseQuantity });
         }

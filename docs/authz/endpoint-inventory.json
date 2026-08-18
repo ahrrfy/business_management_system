@@ -4473,7 +4473,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: writeoff",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/deliveryRouter.ts:464"
+      "loc": "server/routers/deliveryRouter.ts:468"
     },
     {
       "surface": "trpc",
@@ -4558,7 +4558,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: settle",
       "flags": "RAW_ROLE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/deliveryRouter.ts:416"
+      "loc": "server/routers/deliveryRouter.ts:420"
     },
     {
       "surface": "trpc",
@@ -4609,7 +4609,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: writeoff",
       "flags": "RAW_ROLE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/deliveryRouter.ts:442"
+      "loc": "server/routers/deliveryRouter.ts:446"
     },
     {
       "surface": "trpc",
