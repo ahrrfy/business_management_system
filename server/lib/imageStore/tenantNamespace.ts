@@ -10,8 +10,13 @@ export function imageStoreTenantPrefix(): string {
   return companyId == null ? "single" : `company-${companyId}`;
 }
 
+/** جذر Studio هو أيضاً نطاق الاحتفاظ/المرآة؛ يُشتق دائماً من نفس سياق المستأجر. */
+export function studioObjectRoot(): string {
+  return `${imageStoreTenantPrefix()}/studio/`;
+}
+
 export function studioObjectPrefix(kind: "original" | "candidate"): string {
-  return `${imageStoreTenantPrefix()}/studio/${kind}`;
+  return `${studioObjectRoot()}${kind}`;
 }
 
 /** لا يسمح مسار HTTP إلا بمشتق المرشّح المنشور داخل نطاق الشركة الحالية. */

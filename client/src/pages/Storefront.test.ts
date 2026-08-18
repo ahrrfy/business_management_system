@@ -6,6 +6,7 @@ import {
   addStorefrontCartLine,
   addStorefrontCartLines,
   collectStorefrontFailures,
+  formatStorefrontReservationDeadline,
   loadCheckoutAttempt,
   recordStorefrontCartChange,
   reconcileStorefrontCartQuote,
@@ -15,9 +16,27 @@ import {
   setStorefrontCartQuantity,
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
+  storefrontTurnstileSubmissionReady,
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
+
+describe("storefront Turnstile submission gate", () => {
+  it("fails closed until ordering, public site key and a fresh token are all present", () => {
+    expect(storefrontTurnstileSubmissionReady(false, "site-key", "token")).toBe(false);
+    expect(storefrontTurnstileSubmissionReady(true, null, "token")).toBe(false);
+    expect(storefrontTurnstileSubmissionReady(true, "site-key", null)).toBe(false);
+    expect(storefrontTurnstileSubmissionReady(true, "site-key", "token")).toBe(true);
+  });
+});
+
+describe("storefront reservation deadline", () => {
+  it("يعرض لقطة المهلة بتوقيت بغداد بوضوح", () => {
+    const formatted = formatStorefrontReservationDeadline("2026-08-18T12:30:00.000Z");
+    expect(formatted).toContain("٢٠٢٦");
+    expect(formatted).toContain("٣:٣٠");
+  });
+});
 
 describe("storefront bundle media", () => {
   it("يعرض حتى أربع صور مكوّنات في شبكة واحدة دون تكرار النص البديل", () => {

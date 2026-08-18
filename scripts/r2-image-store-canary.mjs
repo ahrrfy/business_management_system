@@ -9,6 +9,11 @@ import { fileURLToPath } from "node:url";
 export const CANARY_CONFIRMATION = "RUN_PRIVATE_R2_CANARY";
 const MAX_CANARY_BYTES = 64 * 1024;
 const FETCH_TIMEOUT_MS = 10_000;
+const MIN_BUCKET_LOCK_SECONDS = 90 * 24 * 60 * 60;
+// Cloudflare Bucket Lock prefix literal لا يدعم wildcard. company- يغطي كل
+// company-{id}/studio/ الحالية والمستقبلية، بينما single يبقى أضيق نطاق ممكن.
+const REQUIRED_LOCK_PREFIXES = ["single/studio/", "company-"];
+const CANARY_PREFIX = "canary/r2-image-store/";
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
@@ -46,7 +51,14 @@ export function buildCloudflareBucketDomainUrls(accountId, bucket) {
   assertCanaryAccountAndBucket(accountId, bucket);
   const prefix = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
     `/r2/buckets/${encodeURIComponent(bucket)}/domains`;
-  return { managed: `${prefix}/managed`, custom: `${prefix}/custom` };
+  const bucketPrefix = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}` +
+    `/r2/buckets/${encodeURIComponent(bucket)}`;
+  return {
+    managed: `${prefix}/managed`,
+    custom: `${prefix}/custom`,
+    lock: `${bucketPrefix}/lock`,
+    lifecycle: `${bucketPrefix}/lifecycle`,
+  };
 }
 
 function isPlainObject(value) {
@@ -109,7 +121,50 @@ export async function verifyR2BucketPrivacyConfiguration({
   const custom = await fetchCloudflareApiResult(urls.custom, apiToken, fetchCloudflareApi);
   if (!Array.isArray(custom.domains)) throw new R2CanaryError("CANARY_PRIVACY_CONFIG_INVALID");
   if (custom.domains.length !== 0) throw new R2CanaryError("CANARY_CUSTOM_DOMAIN_CONFIGURED");
-  return { managedR2DevEnabled: false, customDomainCount: 0 };
+
+  const lock = await fetchCloudflareApiResult(urls.lock, apiToken, fetchCloudflareApi);
+  if (!Array.isArray(lock.rules)) throw new R2CanaryError("CANARY_BUCKET_LOCK_CONFIG_INVALID");
+  const enabledLocks = lock.rules.filter((rule) => {
+    if (!isPlainObject(rule) || typeof rule.enabled !== "boolean" ||
+        (rule.prefix !== undefined && typeof rule.prefix !== "string") || !isPlainObject(rule.condition)) {
+      throw new R2CanaryError("CANARY_BUCKET_LOCK_CONFIG_INVALID");
+    }
+    const condition = rule.condition;
+    if (condition.type === "Age") {
+      if (!Number.isSafeInteger(condition.maxAgeSeconds) || condition.maxAgeSeconds <= 0) {
+        throw new R2CanaryError("CANARY_BUCKET_LOCK_CONFIG_INVALID");
+      }
+    } else if (condition.type !== "Indefinite" && condition.type !== "Date") {
+      throw new R2CanaryError("CANARY_BUCKET_LOCK_CONFIG_INVALID");
+    }
+    return rule.enabled;
+  });
+  if (enabledLocks.some((rule) => CANARY_PREFIX.startsWith(rule.prefix ?? ""))) {
+    throw new R2CanaryError("CANARY_BUCKET_LOCK_BLOCKS_CLEANUP");
+  }
+  const protectedPrefixes = REQUIRED_LOCK_PREFIXES.filter((requiredPrefix) => enabledLocks.some((rule) => {
+    const prefix = rule.prefix ?? "";
+    const condition = rule.condition;
+    return requiredPrefix.startsWith(prefix) && (
+      condition.type === "Indefinite" ||
+      (condition.type === "Age" && condition.maxAgeSeconds >= MIN_BUCKET_LOCK_SECONDS)
+    );
+  }));
+  if (protectedPrefixes.length !== REQUIRED_LOCK_PREFIXES.length) {
+    throw new R2CanaryError("CANARY_BUCKET_LOCK_MISSING");
+  }
+
+  const lifecycle = await fetchCloudflareApiResult(urls.lifecycle, apiToken, fetchCloudflareApi);
+  if (!Array.isArray(lifecycle.rules)) throw new R2CanaryError("CANARY_LIFECYCLE_CONFIG_INVALID");
+  let lifecycleDeleteRuleCount = 0;
+  for (const rule of lifecycle.rules) {
+    if (!isPlainObject(rule) || typeof rule.enabled !== "boolean") {
+      throw new R2CanaryError("CANARY_LIFECYCLE_CONFIG_INVALID");
+    }
+    if (rule.enabled && rule.deleteObjectsTransition !== undefined) lifecycleDeleteRuleCount += 1;
+  }
+  if (lifecycleDeleteRuleCount > 0) throw new R2CanaryError("CANARY_LIFECYCLE_DELETE_CONFIGURED");
+  return { managedR2DevEnabled: false, customDomainCount: 0, lifecycleDeleteRuleCount, protectedPrefixes };
 }
 
 async function streamBytes(stream, expectedMaximum) {

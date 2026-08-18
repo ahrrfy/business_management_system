@@ -34,6 +34,7 @@ function actor(ctx: { user: { id: number; branchId?: number | null; role: string
 
 const taskId = z.number().int().positive();
 const nullableText = (max: number) => z.string().trim().max(max).nullable().optional();
+const adminOverrideReason = z.string().trim().min(5).max(500).optional();
 
 export const productStudioRouter = router({
   dashboard: productStudioReadProcedure.query(({ ctx }) => getStudioDashboard(actor(ctx))),
@@ -77,6 +78,7 @@ export const productStudioRouter = router({
       proposedName: nullableText(255),
       proposedDescription: nullableText(5_000),
       proposedMarketingCopy: nullableText(3_000),
+      adminOverrideReason,
     }))
     .mutation(({ ctx, input }) => saveStudioDraft(actor(ctx), input)),
   bindProcessingProof: productStudioWriteProcedure
@@ -84,6 +86,7 @@ export const productStudioRouter = router({
       taskId,
       processingReceipt: z.string().uuid(),
       candidateDataUrl: z.string().max(1_300_000),
+      adminOverrideReason,
     }))
     .mutation(({ ctx, input }) => bindStudioProcessingCandidate(actor(ctx), input)),
   submitCandidate: productStudioWriteProcedure
@@ -97,14 +100,15 @@ export const productStudioRouter = router({
       proposedName: nullableText(255),
       proposedDescription: nullableText(5_000),
       proposedMarketingCopy: nullableText(3_000),
+      adminOverrideReason,
     }))
     .mutation(({ ctx, input }) => submitStudioCandidate(actor(ctx), input)),
   approve: productStudioManagerProcedure
-    .input(z.object({ taskId }))
-    .mutation(({ ctx, input }) => approveStudioTask(actor(ctx), input.taskId)),
+    .input(z.object({ taskId, adminOverrideReason }))
+    .mutation(({ ctx, input }) => approveStudioTask(actor(ctx), input.taskId, input.adminOverrideReason)),
   reject: productStudioManagerProcedure
-    .input(z.object({ taskId, reason: z.string().trim().min(5).max(500) }))
-    .mutation(({ ctx, input }) => rejectStudioTask(actor(ctx), input.taskId, input.reason)),
+    .input(z.object({ taskId, reason: z.string().trim().min(5).max(500), adminOverrideReason }))
+    .mutation(({ ctx, input }) => rejectStudioTask(actor(ctx), input.taskId, input.reason, input.adminOverrideReason)),
   revert: productStudioManagerProcedure
     .input(z.object({ taskId }))
     .mutation(({ ctx, input }) => revertStudioTask(actor(ctx), input.taskId)),

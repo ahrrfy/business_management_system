@@ -8,6 +8,7 @@ import { branches, storeSettings } from "../../../drizzle/schema";
 import { getDb, type DB, type Tx } from "../../db";
 import { withTx } from "../tx";
 import { hasReadyStorefrontCatalog } from "./storefrontReadinessService";
+import { getPublicStorefrontTurnstileSettings } from "../storefrontTurnstile";
 
 export interface StoreSettingsValue {
   isOpen: boolean;
@@ -19,6 +20,13 @@ export interface StoreSettingsValue {
   whatsappNumber: string | null;
   /** عتبة التوصيل المجاني (د.ع نصّاً)؛ null/"0" = معطّل. */
   freeShippingThreshold: string | null;
+}
+
+export interface PublicStoreSettingsValue extends StoreSettingsValue {
+  /** بوابة الطلبات العامة؛ false تعني أن التصفح يعمل لكن إنشاء طلب جديد مغلق. */
+  orderingEnabled: boolean;
+  /** مفتاح Cloudflare العام فقط؛ السر لا يدخل هذا العقد إطلاقاً. */
+  turnstileSiteKey: string | null;
 }
 
 const DEFAULTS: StoreSettingsValue = {
@@ -198,10 +206,12 @@ export async function updateStoreSettings(
 }
 
 /** الإسقاط العام: عند فساد التهيئة يظهر المتجر مغلقاً، ولا تُعرض حالة فتح كاذبة. */
-export async function getPublicStoreSettings(): Promise<StoreSettingsValue> {
+export async function getPublicStoreSettings(): Promise<PublicStoreSettingsValue> {
   const settings = await getStoreSettings();
+  const turnstile = getPublicStorefrontTurnstileSettings();
   return {
     ...settings,
     isOpen: settings.isOpen && settings.configurationReady,
+    ...turnstile,
   };
 }

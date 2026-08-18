@@ -69,6 +69,8 @@ import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
 import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
+import { assertStorefrontOrderingReadiness } from "./services/storefrontTurnstile";
+import { STOREFRONT_TURNSTILE_SCRIPT_ORIGIN } from "@shared/storefrontTurnstile";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -104,6 +106,11 @@ async function startServer() {
   // لا نُفعّل R2 ضمنياً أثناء بقاء الصور القديمة في MySQL، لكن إذا فُعّل السائق صراحةً
   // فيجب أن يكون عقده كاملاً قبل فتح منفذ HTTP لا عند أول طلب صورة.
   assertImageStoreStartupConfiguration();
+
+  // الطلب العام سطح كتابة مجهول: تفعيله بلا Siteverify كامل ممنوع قبل فتح منفذ HTTP.
+  assertStorefrontOrderingReadiness();
+  const storefrontOrderingEnabled =
+    process.env.STOREFRONT_ORDERING_ENABLED === "1";
 
   const isDev = process.env.NODE_ENV === "development";
   // إنتاج آمن افتراضياً: غياب HOST أو الربط العام العرضي يوقف الإقلاع قبل فتح المنفذ.
@@ -200,13 +207,40 @@ async function startServer() {
         directives: {
           defaultSrc: ["'self'"],
           scriptSrc: isDev
-            ? ["'self'", "'unsafe-inline'", "'unsafe-eval'"]
-            : ["'self'"],
+            ? [
+                "'self'",
+                "'unsafe-inline'",
+                "'unsafe-eval'",
+                ...(storefrontOrderingEnabled
+                  ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+                  : []),
+              ]
+            : [
+                "'self'",
+                ...(storefrontOrderingEnabled
+                  ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+                  : []),
+              ],
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", "data:", "blob:"],
           connectSrc: isDev
-            ? ["'self'", "ws://localhost:*", "wss://localhost:*"]
-            : ["'self'"],
+            ? [
+                "'self'",
+                "ws://localhost:*",
+                "wss://localhost:*",
+                ...(storefrontOrderingEnabled
+                  ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+                  : []),
+              ]
+            : [
+                "'self'",
+                ...(storefrontOrderingEnabled
+                  ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+                  : []),
+              ],
+          frameSrc: storefrontOrderingEnabled
+            ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+            : ["'none'"],
           fontSrc: ["'self'", "data:"], // خط Cairo مستضاف محلياً (@fontsource) ⇒ لا حاجة لـgstatic.
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
@@ -631,6 +665,7 @@ async function startServer() {
   let stopNativePushOutboxWorker: (() => void) | null = null;
   let stopDeliveryOutboxWorker: (() => void) | null = null;
   let stopProductStudioStagingWorker: (() => void) | null = null;
+  let stopOnlineOrderExpirySweeper: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
@@ -682,6 +717,11 @@ async function startServer() {
     const { startReservationsSweeper } = await import("./services/reservations/sweeper");
     startReservationsSweeper();
 
+    // انتهاء حجز طلبات المتجر PENDING: العامل 0 وحده يلغي المستحقّ دورياً وبشكل idempotent.
+    const onlineOrderExpiry = await import("./services/onlineOrderExpirySweeper");
+    onlineOrderExpiry.startOnlineOrderExpirySweeper();
+    stopOnlineOrderExpirySweeper = onlineOrderExpiry.stopOnlineOrderExpirySweeper;
+
     logger.info(
       `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
     );
@@ -706,6 +746,7 @@ async function startServer() {
       stopNativePushOutboxWorker?.();
       stopDeliveryOutboxWorker?.();
       stopProductStudioStagingWorker?.();
+      stopOnlineOrderExpirySweeper?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       await closeControlDb();

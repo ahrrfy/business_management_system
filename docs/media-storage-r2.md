@@ -10,8 +10,10 @@
   تستدعي السائق الجديد. عند ضبط السائق صراحةً يفشل الإقلاع إذا كان `fs` في الإنتاج أو كان اعتماد
   R2 ناقصاً؛ لا يوجد سقوط إلى قرص الـVPS.
 - المفتاح خادمي ومقيد بالحروف الآمنة، والبايتات تقبل صور JPEG/PNG/WebP/GIF/AVIF فقط حتى 25 MiB.
-- PUT متعادِل: يفحص السائق المفتاح المعنون بالمحتوى قبل الكتابة. لا يستعمل الحذف إلا عامل كنس
-  لاحق معدود-مرجعياً؛ لا يُحذف كائن فور حذف صورة من قاعدة البيانات.
+- PUT متعادِل: يفحص السائق المفتاح المعنون بالمحتوى قبل الكتابة. GC **تدقيقي افتراضياً**؛ أول
+  إثبات لغياب آخر مرجع يبدأ نافذة 90 يوماً ولا يرسل `DeleteObject`. الحذف يحتاج معاً إقراراً
+  صريحاً، وmanifest مرآة حديثة مثبتة بالبصمة، وإيصال تمرين استعادة حديث مرتبطاً بها مع تحقق ملفات
+  الوجهة المستقلة فعلياً. timestamp يدوي ليس إثبات DR ولا تقبله البوابة.
 - اتصالات R2 محدودة زمنياً: 5 ثوانٍ للاتصال، 20 ثانية للطلب، و15 ثانية لخمول المقبس، مع ثلاث
   محاولات كحد أقصى؛ لا يبقى worker أو طلب HTTP معلّقاً بلا حد عند تعثّر المزوّد.
 - لكل worker حدّ 4 عمليات R2 متزامنة وطابور 8 لمدة ثانيتين. لا نمو غير محدود للذاكرة؛ عند الامتلاء
@@ -28,7 +30,12 @@
 
 ## إعداد الإنتاج
 
-1. أنشئ Bucket R2 باسم DNS صالح، **خاصاً**، ثم فعّل Object Versioning.
+1. أنشئ Bucket R2 باسم DNS صالح و**خاصاً**. لا تعتمد على Object Versioning: عقد الحماية هنا هو
+   Bucket Lock + مرآة باردة مستقلة. أضف قاعدتي Bucket Lock مفعّلتين بشرط
+   `Age >= 7776000` ثانية (90 يوماً): `single/studio/` و`company-`. بادئة Cloudflare حرفية ولا
+   تدعم wildcard؛ لذلك `company-` تغطي عمداً كل `company-{id}/studio/` الحالية والمستقبلية، كما
+   تحتفظ بأي كائن آخر يبدأ بـ`company-` للمدة نفسها. هذا هو أثر الاحتفاظ المقصود. لا تجعل القفل
+   عاماً ولا تغطِّ `canary/r2-image-store/` كي يستطيع canary تنظيف كائنه المحجوز.
 2. أنشئ API Token أقل صلاحية محصوراً بالـBucket: Object Read/Write/Delete فقط. لا تستخدم مفتاح
    Cloudflare العالمي، ولا تضعه في المتصفح أو Git.
 3. لا تضبط `IMAGE_STORE_DRIVER` قبل اكتمال بوابة الرفع والترحيل. عند نافذة الانتقال ضع أسرار
@@ -47,9 +54,36 @@
    R2_CIRCUIT_OPEN_MS=30000
    ```
 
-4. اضبط Lifecycle بحيث يبقى كل إصدار على الأقل 90 يوماً، وبما لا يقل عن أقصى تقادم جهاز أوفلاين.
-   لا تفعّل حذفاً صلباً تلقائياً قبل مرآة باردة متحققة وتمرين استعادة.
-5. قبل ضبط `IMAGE_STORE_DRIVER=r2` على أي خادم إنتاج: نفّذ canary المعزول أدناه. يختبر
+4. لا تضبط أي `deleteObjectsTransition` في Lifecycle، مهما كانت مدته. يسمح فقط بإجهاض multipart
+   غير المكتمل أو انتقال storage class. Bucket Lock هو مانع الحذف المبكر، وسياسة التطبيق تحسب
+   90 يوماً إضافية من أول إثبات لفقد آخر مرجع.
+5. أنشئ المرآة الأولية على جهاز/قرص خارج خادم التطبيق، ثم تحقق منها. الأداة تراكمية: تنسخ وتتحقق
+   وتحتفظ بما اختفى من المصدر؛ لا تحتوي sync أو حذفاً:
+
+   ```bash
+   R2_MIRROR_CONFIRM=RUN_CUMULATIVE_PRIVATE_R2_MIRROR \
+     R2_COLD_MIRROR_DIR='/external/private-r2-mirror' \
+     R2_MIRROR_PREFIX='single/studio/' \
+     node scripts/r2-cold-mirror.mjs
+
+   R2_MIRROR_MODE=verify R2_MIRROR_CONFIRM=RUN_CUMULATIVE_PRIVATE_R2_MIRROR \
+     R2_COLD_MIRROR_DIR='/external/private-r2-mirror' \
+     node scripts/r2-cold-mirror.mjs
+
+   R2_MIRROR_MODE=restore-drill R2_MIRROR_CONFIRM=RUN_CUMULATIVE_PRIVATE_R2_MIRROR \
+     R2_COLD_MIRROR_DIR='/external/private-r2-mirror' \
+     R2_DR_RESTORE_DIR='/another-device/r2-drills/2026-08-18' \
+     R2_DR_SAMPLE_LIMIT=5 \
+     node scripts/r2-cold-mirror.mjs
+   ```
+
+   استعمل اعتماد S3 منفصلاً للقراءة فقط. تحفظ الأداة `manifest.json` و`manifest.sha256` بصلاحية
+   محلية ضيقة. `restore-drill` لا يتصل بـR2: ينسخ عينة حقيقية من المرآة إلى وجهة على filesystem
+   device آخر؛ اختلاف المجلد أو كونه شقيقاً لا يكفي ويُرفض عند تطابق هوية الجهاز. يعيد التحقق من
+   SHA-256، ويسجل هويتي الجهاز وبصمة اسم مضيف التمرين، ثم يكتب `receipt.json` و`receipt.sha256`. تطبع الأداة الأعداد والبصمات
+   فقط بلا account/bucket/key/path. استخدم `R2_MIRROR_PREFIX=company-` في وضع تعدد الشركات، ولا
+   تعِد استعمال مجلد المرآة بين بادئتين؛ الأداة تفشل عند تغير نطاق المصدر.
+6. قبل ضبط `IMAGE_STORE_DRIVER=r2` على أي خادم إنتاج: نفّذ canary المعزول أدناه. يختبر
    `put → head → GET غير مصادق (403/404) → getStream+SHA-256 → delete → head(absent)` ويحذف في
    `finally` حتى عند الفشل. لا يطبع account/bucket/key/URL أو تفاصيل SDK:
 
@@ -59,10 +93,36 @@
      node --import tsx scripts/r2-image-store-canary.mjs
    ```
 
-   يفحص الطلب غير المصادق endpoint الحساب الرسمي فقط؛ راجع يدوياً في Cloudflare أن `r2.dev`
-   وأي custom domain/Public Access معطلة، لأن endpoint الرسمي وحده لا يثبت غياب مسار عام آخر.
-   أي فشل في الـcanary يبقي السائق غير مضبوط؛ يعمل الخادم والمتجر بصور MySQL القديمة وتبقى عمليات
-   الاستوديو متوقفة برسالة إعداد واضحة، ولا يحدث سقوط إلى قرص الـVPS.
+   يستعلم canary من Cloudflare API عن `r2.dev` وcustom domains وBucket Lock وLifecycle قبل PUT
+   وبعده: يلزم `r2.dev=off` وصفر custom domains وقفلَي `single/studio/` و`company-` لمدة 90 يوماً
+   وصفر lifecycle delete، كما يرفض أي قفل يغطي `canary/`. أي فشل يبقي السائق غير مضبوط؛ يعمل الخادم والمتجر بصور
+   MySQL القديمة وتبقى عمليات الاستوديو متوقفة برسالة إعداد واضحة، ولا سقوط إلى قرص الـVPS.
+
+## حذف GC المحكوم
+
+لا يلزم أي متغير للحالة الطبيعية: `R2_GC_MODE=audit` أو غيابه يعني صفر `DeleteObject`. عند أول
+مسح بلا مرجع يتحول الصف إلى `PENDING` ويثبت `referencedAt` كبداية للاحتفاظ؛ `touchedAt` يبقى وقت
+آخر تدقيق حتى لا يحتكر صف واحد الدفعات الصغيرة. بعد 90 يوماً يبقى Audit فقط.
+
+نافذة الحذف الاستثنائية تحتاج **كل** الآتي، وإلا يفشل العامل مغلقاً:
+
+```text
+R2_GC_MODE=delete
+R2_GC_DELETE_CONFIRM=DELETE_RETAINED_R2_OBJECTS
+R2_GC_MIRROR_MANIFEST=/absolute/external/manifest.json
+R2_GC_MIRROR_MANIFEST_SHA256=<sha256 المثبتة في متغير إصدار محمي>
+R2_GC_DR_RECEIPT=/absolute/independent-restore-target/receipt.json
+R2_GC_DR_RECEIPT_SHA256=<sha256 المثبتة في متغير إصدار محمي>
+```
+
+يلزم أن يكون manifest مكتمل التحقق خلال 7 أيام، وأن يثبت الكائن نفسه وبصمته المعنونة بالمحتوى،
+وأن يكون تمرين DR خلال 90 يوماً وبعد إنشاء manifest نفسها. يطابق العامل بصمة الإيصال وmanifest
+ونطاق المستأجر المشتق من `tenantNamespace`. كما يعيد اشتقاق `sourceScopeSha256` من
+`R2_ACCOUNT_ID + NUL + R2_IMAGE_BUCKET` الحاليين، فلا تقبل manifest صحيحة تخص bucket آخر. ثم يعيد
+قراءة ملفات الاستعادة ويتحقق من اختلاف filesystem device عن جهاز المرآة ومطابقة هويتيهما للإيصال،
+والحجم وSHA-256 ومنع symlink/traversal قبل فتح delete. مرآة `single/studio/` لا تفوض شركة، ومرآة
+`company-` لا تفوض إلا `company-{id}/studio/` الخاص بسياق العامل الحالي. لا تحفظ إقرار delete
+دائماً؛ أعد الوضع إلى audit بعد النافذة.
 
 تفاصيل المراقبة والتراجع في [دليل تشغيل R2](runbooks/r2-image-storage.md).
 
@@ -77,3 +137,4 @@
 - لا تُفعّل R2 دون الإعدادات أعلاه.
 - لا ترحّل الصور القديمة ولا تحذف `url`/بيانات الصور من MySQL.
 - لا تجعل endpoint قابلاً للإدخال من الطلبات أو من متغير بيئة حر؛ السائق يشتقه حصراً من Account ID.
+- لا تضف Versioning كشرط وهمي غير متحقق؛ الإثبات الآلي هو Bucket Lock والمرآة وrestore-drill.
