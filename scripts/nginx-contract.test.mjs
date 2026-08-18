@@ -1600,6 +1600,7 @@ if (
   const nobodyUid = 65_534;
   const nobodyGid = 65_534;
   try {
+    fs.chmodSync(root, 0o711);
     fs.mkdirSync(projectRoot, { mode: 0o700 });
     fs.writeFileSync(
       appEnvPath,
