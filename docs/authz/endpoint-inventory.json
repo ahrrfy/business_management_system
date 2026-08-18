@@ -868,7 +868,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:125"
+      "loc": "server/routers/attendanceRouter.ts:136"
     },
     {
       "surface": "trpc",
@@ -902,7 +902,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:196"
+      "loc": "server/routers/attendanceRouter.ts:207"
     },
     {
       "surface": "trpc",
@@ -919,7 +919,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:148"
+      "loc": "server/routers/attendanceRouter.ts:159"
     },
     {
       "surface": "trpc",
@@ -936,7 +936,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "LOCAL_GATE",
-      "loc": "server/routers/attendanceRouter.ts:137"
+      "loc": "server/routers/attendanceRouter.ts:148"
     },
     {
       "surface": "trpc",
@@ -10456,7 +10456,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:214"
+      "loc": "server/routers/promotionRouter.ts:216"
     },
     {
       "surface": "trpc",
@@ -10541,7 +10541,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE",
-      "loc": "server/routers/promotionRouter.ts:269"
+      "loc": "server/routers/promotionRouter.ts:271"
     },
     {
       "surface": "trpc",
@@ -10575,7 +10575,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reverse",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/promotionRouter.ts:239"
+      "loc": "server/routers/promotionRouter.ts:241"
     },
     {
       "surface": "trpc",
@@ -10592,7 +10592,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reverse",
       "flags": "NO_BRANCH_SCOPE|LOCAL_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/promotionRouter.ts:296"
+      "loc": "server/routers/promotionRouter.ts:298"
     },
     {
       "surface": "trpc",
