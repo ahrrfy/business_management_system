@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, isNull, lt, or, sql } from "drizzle-orm";
 import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
+import { nonNegMoneyString } from "../lib/schemas";
 import { alias } from "drizzle-orm/mysql-core";
 
 // استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
@@ -28,6 +29,13 @@ import {
   rejectStockAdjustment,
   listStockAdjustmentRequests,
 } from "../services/inventory/adjustmentApproval";
+import {
+  requestCostRevaluation,
+  approveCostRevaluation,
+  rejectCostRevaluation,
+  listCostRevaluations,
+  getCostRevaluationPreview,
+} from "../services/inventory/costRevaluationRequest";
 import { withTx } from "../services/tx";
 import { retryOnDup } from "../lib/retryDup";
 import { inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
@@ -500,6 +508,128 @@ export const inventoryRouter = router({
     }),
 
   // قائمة طلبات التسوية (المعلَّقة افتراضياً) — معزولةٌ بالفرع (admin يرى الكل).
+  /* ── إعادة تقييم تكلفة المخزون (حوكمة التكلفة — تدقيق ٢٧/٧ H3/H4/H5) ─────────────────
+   * التعديل اليدويّ لتكلفة صنفٍ **له رصيد** مُغلقٌ بنيوياً (`services/costRevaluation.ts`) لأنّه
+   * يحرّك أصل المخزون بلا قيدٍ مقابل. هذا هو المسار المحكوم البديل: طلبٌ معلَّق بغرضٍ محاسبيّ
+   * وسببٍ مكتوب، يعتمده مديرٌ ثانٍ فيُرحَّل قيد ADJUST لكل فرعٍ له رصيد — ومنه يسري حارس الفترة.
+   */
+  requestCostRevaluation: inventoryManagerProcedure
+    .input(
+      z.object({
+        variantId: z.number().int().positive(),
+        newCost: nonNegMoneyString,
+        purpose: z.enum(["CORRECTION", "IMPAIRMENT"]),
+        reason: z.string().min(10).max(500),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await requestCostRevaluation(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "inventory.costRevaluationRequest",
+        entityType: "costRevaluationRequest",
+        entityId: res.requestId,
+        newValue: {
+          variantId: input.variantId,
+          oldCost: res.oldCost,
+          newCost: res.newCost,
+          purpose: input.purpose,
+          expectedValueDelta: res.expectedValueDelta,
+        },
+      });
+      // إشعار المُعتمِدين المؤهَّلين (مرآة طلب التسوية): طلبٌ لا يراه أحدٌ = تكلفةٌ خاطئة تبقى
+      // في الميزانية إلى الأبد. المُنشئ مستثنى (لا يعتمد طلبه)، والفلترة بالصلاحية الفعلية.
+      const db = getDb();
+      if (db) {
+        const branchId = Number(ctx.user.branchId ?? 1);
+        const candidates = await db
+          .select({ id: users.id, role: users.role, permissionsOverride: users.permissionsOverride })
+          .from(users)
+          .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), and(eq(users.role, "manager"), eq(users.branchId, branchId)))));
+        await Promise.all(candidates.filter((user) =>
+          user.id !== ctx.user.id &&
+          resolvePermissions(user.role as RoleKey, (user.permissionsOverride ?? null) as Record<string, AccessLevel> | null).inventory === "FULL"
+        ).map((user) => createAppNotification({
+          userId: user.id,
+          kind: "APPROVAL_REQUIRED",
+          title: "إعادة تقييم تكلفة بانتظار قرار",
+          body: `طلب #${res.requestId} · ${res.oldCost} ← ${res.newCost} · أثر ${res.expectedValueDelta}`,
+          route: "/inventory",
+          eventKey: `cost-revaluation:${res.requestId}:approval:${user.id}`,
+          entityType: "costRevaluationRequest",
+          entityId: res.requestId,
+          requiresAction: true,
+        }).catch(() => undefined)));
+      }
+      return { ...res, status: "PENDING_APPROVAL" as const };
+    }),
+
+  approveCostRevaluation: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await approveCostRevaluation(input.id, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "inventory.costRevaluationApprove",
+        entityType: "costRevaluationRequest",
+        entityId: input.id,
+        newValue: { newCost: res.newCost, postedEntries: res.postedEntries, totalValueDelta: res.totalValueDelta },
+      });
+      return res;
+    }),
+
+  rejectCostRevaluation: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), reason: z.string().min(1).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      await rejectCostRevaluation(
+        input.id,
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+        input.reason,
+      );
+      await logAudit(ctx, {
+        action: "inventory.costRevaluationReject",
+        entityType: "costRevaluationRequest",
+        entityId: input.id,
+        newValue: { reason: input.reason },
+      });
+      return { ok: true };
+    }),
+
+  /** سجلّ إعادة التقييم — نطاق القراءة = نطاق الاعتماد (نمط pendingAdjustments). */
+  costRevaluations: inventoryReadProcedure
+    .input(
+      z
+        .object({ status: z.enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional() })
+        .optional()
+    )
+    .query(async ({ input, ctx }) => {
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد — لا يمكن عرض طلبات إعادة التقييم" });
+      }
+      const branchId = ctx.user.role === "admin" ? null : Number(ctx.user.branchId);
+      return listCostRevaluations(
+        { branchId, status: input?.status ?? "PENDING_APPROVAL" },
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+      );
+    }),
+
+  /** حالة الصنف قبل الطلب: التكلفة الحالية وكميّاته لكل فرع ⇒ أثر القيمة يُعرَض قبل الإرسال. */
+  costRevaluationPreview: inventoryReadProcedure
+    .input(z.object({ variantId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) =>
+      getCostRevaluationPreview(input.variantId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      })
+    ),
+
   pendingAdjustments: inventoryReadProcedure
     .input(z.object({ status: z.enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional() }).optional())
     .query(async ({ input, ctx }) => {

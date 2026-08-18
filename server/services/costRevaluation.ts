@@ -11,9 +11,11 @@ import { money } from "./money";
  * - Receipt/WAVG changes are accounted for by the purchase-receipt path.
  * - Approved stocktake changes are accounted for by the stocktake path.
  * - Consignment share edits and edits with no owned stock are audit-only.
- * - An owned item with non-zero stock fails closed until the caller can provide a
- *   controlled accounting purpose and counter-account (free `reason` text is not
- *   sufficient evidence and must never manufacture generic revenue or loss).
+ * - An owned item with non-zero stock fails closed here: free `reason` text is not an
+ *   accounting purpose and must never manufacture generic revenue or loss. The governed
+ *   path is `inventory/costRevaluationRequest.ts` — an explicit document (purpose +
+ *   counter-account + second approver) that posts `Δcost × qty` per branch, and therefore
+ *   inherits the period lock through `postEntry`.
  *
  * The caller invokes this inside the same transaction as the catalog update, so a
  * rejection rolls back both the attempted cost change and this audit event.
@@ -68,12 +70,13 @@ export async function postCostRevaluation(
     // `reason` is free audit text, not an accounting purpose or a controlled
     // counter-account. Treating every upward edit as revenue and every downward
     // edit as loss manufactures P&L without source evidence. Receipt/WAVG and
-    // stocktake approval retain their own documented posting paths; this manual
-    // editor is fail-closed until an explicit purpose/counter-account contract exists.
+    // stocktake approval retain their own documented posting paths; the manual editor
+    // stays fail-closed — and now names the governed alternative instead of dead-ending
+    // (there was previously no way at all to correct a wrong cost on a stocked item).
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
       message:
-        "لا يمكن تعديل تكلفة صنف مملوك له رصيد يدوياً بلا غرض محاسبي وحساب مقابل مصنّف؛ استخدم استلام شراء أو جرداً معتمداً موثقاً",
+        "لا تُعدَّل تكلفة صنفٍ مملوك له رصيد من هنا: تغييرها يحرّك أصل المخزون بلا قيدٍ مقابل. استعمل «إعادة تقييم التكلفة» من شاشة المخزون (غرضٌ محاسبيّ + سببٌ مكتوب + اعتماد مديرٍ ثانٍ)، أو استلامَ شراءٍ إن كانت التكلفة تتغيّر بشراءٍ فعليّ.",
     });
   }
 }

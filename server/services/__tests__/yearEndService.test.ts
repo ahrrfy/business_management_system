@@ -47,6 +47,9 @@ async function reset() {
     "accounts",
     "receipts",
     "shifts",
+    "branchStock",
+    "productVariants",
+    "products",
     "branches",
     "users",
   ]);
@@ -75,6 +78,21 @@ async function reset() {
       { id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" },
       { id: 2, name: "المبيعات", code: "SALES", type: "SALES" },
     ]);
+  // مخزونٌ قائم لحظة الإقفال — يُثبت أنّ اللقطة تلتقط أصل المخزون فعلاً (تدقيق ٢٧/٧، H5)،
+  // وبضاعةُ أمانةٍ تُثبت استبعادها (ليست ملك المكتبة، ومستبعَدة من أصل الميزانية).
+  await db().insert(s.products).values([
+    { id: 1, name: "دفتر" },
+    { id: 2, name: "بضاعة أمانة", isConsignment: true },
+  ]);
+  await db().insert(s.productVariants).values([
+    { id: 1, productId: 1, sku: "NB-1", costPrice: "250.00" },
+    { id: 2, productId: 2, sku: "CONS-1", costPrice: "900.00" },
+  ]);
+  await db().insert(s.branchStock).values([
+    { variantId: 1, branchId: 1, quantity: 8 },
+    { variantId: 1, branchId: 2, quantity: 2 },
+    { variantId: 2, branchId: 1, quantity: 5 },
+  ]);
   await db()
     .insert(s.accounts)
     .values([
@@ -458,6 +476,22 @@ describe("الإقفال السنوي الرسمي من اليومية المز�
     });
     expect(result.certificateId).toBeGreaterThan(0);
     expect(result.certificateNumber).toBe("MC-2025-12-R01");
+
+    // لقطة أصل المخزون لحظة الإقفال: بلا هذا الرقم تُحسب ميزانية السنة المقفلة من مخزون
+    // **اليوم** (القراءة حيّة بلا تاريخ) فلا تُعاد إنتاجها. الأمانة مستبعَدة كما في الميزانية.
+    const [snapshot] = await db()
+      .select()
+      .from(s.yearEndSnapshots)
+      .where(eq(s.yearEndSnapshots.year, YEAR));
+    const snapshotPayload = JSON.parse(String(snapshot.snapshotData)) as {
+      inventoryValue?: string;
+      inventoryValueByBranch?: Array<{ branchId: number; value: string }>;
+    };
+    expect(snapshotPayload.inventoryValue).toBe("2500.00");
+    expect(snapshotPayload.inventoryValueByBranch).toEqual([
+      { branchId: 1, value: "2000.00" },
+      { branchId: 2, value: "500.00" },
+    ]);
     const [request] = await db()
       .select()
       .from(s.monthCloseRequests)

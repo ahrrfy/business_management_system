@@ -10,7 +10,7 @@ import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
 import { withTx, type Actor } from "../tx";
 import { requestStockAdjustment } from "../inventory/adjustmentApproval";
-import { assertValidImageDataUrl } from "../../lib/imageValidation";
+import { rejectLegacyCatalogMediaWrite } from "../catalog/mediaWriteGuard";
 import { type StorefrontReadinessReason } from "../storefrontEligibilityService";
 import {
   loadStorefrontReadiness,
@@ -181,19 +181,20 @@ export async function setProductStoreVisible(input: { productId: number; showInS
   return { productId: input.productId, showInStore: input.showInStore };
 }
 
-/** صورة المنتج الرئيسية (يقرؤها المتجر). null ⇒ إزالة. تُضغط في العميل قبل الإرسال. */
+/** إزالة الصورة الرئيسية القديمة فقط؛ نشر/استبدال الصور الجديدة حصراً عبر Product Studio/R2. */
 export async function setProductPrimaryImage(input: { productId: number; url: string | null }) {
-  const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-  const cur = (await db.select({ id: products.id }).from(products).where(eq(products.id, input.productId)).limit(1))[0];
-  if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
-  if (input.url) assertValidImageDataUrl(input.url);
+  if (input.url) rejectLegacyCatalogMediaWrite();
   return withTx(async (tx) => {
+    // نفس قفل approveStudioTask وترتيبه: يمنع إزالة صورة بالتزامن مع نشر الاستوديو.
+    const [cur] = await tx
+      .select({ id: products.id })
+      .from(products)
+      .where(eq(products.id, input.productId))
+      .limit(1)
+      .for("update");
+    if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
     await tx.delete(productImages).where(and(eq(productImages.productId, input.productId), isNull(productImages.variantId), eq(productImages.isPrimary, true)));
-    if (input.url) {
-      await tx.insert(productImages).values({ productId: input.productId, variantId: null, url: input.url, isPrimary: true, sortOrder: 0 });
-    }
-    return { productId: input.productId, hasImage: input.url != null };
+    return { productId: input.productId, hasImage: false };
   });
 }
 
