@@ -2,7 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createPurchaseOrder, updatePurchaseOrder } from "../purchaseService";
+import { createPurchaseOrder, receivePurchase, updatePurchaseOrder } from "../purchaseService";
 
 /**
  * بلاغ المالك (١٧/٨/٢٦): «سعر الشراء لا يمكن أن يكون 1,450.99، وبالدولار لا يقبل 3.4566».
@@ -40,9 +40,10 @@ async function reset() {
 async function seed() {
   const d = db();
   await d.insert(s.branches).values({ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" });
-  await d.insert(s.users).values({
-    id: 1, openId: "price-precision", name: "منشئ", role: "manager", loginMethod: "local", branchId: 1,
-  });
+  await d.insert(s.users).values([
+    { id: 1, openId: "price-precision", name: "منشئ", role: "manager", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "price-precision-recv", name: "مستلم", role: "manager", loginMethod: "local", branchId: 1 },
+  ]);
   await d.insert(s.suppliers).values({ id: 1, name: "مورد" });
   await d.insert(s.products).values([{ id: 1, name: "قلم" }, { id: 2, name: "دفتر" }]);
   await d.insert(s.productVariants).values([
@@ -378,5 +379,31 @@ describe("خصم فاتورة المورّد على أمر الشراء", () => 
       const drift = Math.abs(Number(r.unitPrice) * Number(r.quantity) - Number(r.total));
       expect(drift).toBeLessThanOrEqual(0.05);
     }
+  });
+
+  it("الاستلام يلتقط الخصم تلقائياً: الذمّة والتكلفة (WAVG) صافيتان بلا تغييرٍ في قرّائهما", async () => {
+    // هذا هو **جوهر النموذج**: لأنّ الأعمدة مخزَّنة صافيةً، لم يُمَسّ `receive.ts` ولا
+    // `purchaseReturnsService` — فيلزم إثباتُ أنّ الخصم يصل فعلاً إلى ذمّة المورّد وتكلفة الصنف
+    // من طريق القرّاء القائمين، لا الاكتفاء بفحص أعمدة الأمر.
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      status: "CONFIRMED",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "1000" }],
+      invoiceDiscount: "1000", // ١٠٪ ⇒ الصافي 9,000 وتكلفة القطعة 900
+    }, actor);
+    const { item } = await readOrder(created.purchaseOrderId);
+
+    await receivePurchase({
+      purchaseOrderId: created.purchaseOrderId,
+      lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 }],
+    }, { userId: 2, branchId: 1, role: "manager" });
+
+    const supplier = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    const variant = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
+    // الذمّة = الصافي (9,000) لا الإجماليّ قبل الخصم (10,000).
+    expect(supplier.currentBalance).toBe("9000.00");
+    // تكلفة الوحدة الأساس = الصافي ÷ الكمّية (900) لا 1,000 ⇒ الخصم يَنقص COGS لكلّ بيعةٍ لاحقة.
+    expect(variant.costPrice).toBe("900.00");
   });
 });
