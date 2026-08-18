@@ -15,6 +15,7 @@ const sensitiveKeySuffixes = Object.freeze([
   "token",
   "jwt",
   "secret",
+  "secretprevious",
   "apikey",
   "accesskey",
   "accesskeyid",

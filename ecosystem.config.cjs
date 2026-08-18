@@ -131,6 +131,8 @@ module.exports = {
         REQUIRE_INTERNAL_PROXY_SECRET:
           process.env.REQUIRE_INTERNAL_PROXY_SECRET || "0",
         INTERNAL_PROXY_SECRET: process.env.INTERNAL_PROXY_SECRET,
+        INTERNAL_PROXY_SECRET_PREVIOUS:
+          process.env.INTERNAL_PROXY_SECRET_PREVIOUS,
         // يطابق عدد عمّال الويب المقصود في `instances` أعلاه.
         WEB_INSTANCES: String(process.env.WEB_INSTANCES || 2),
         DATABASE_URL: process.env.DATABASE_URL,

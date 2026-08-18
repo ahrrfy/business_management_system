@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "files": {
+    "deploy/nginx-app-locations.conf": ["ddc1fb836eeef8d0", "4053293bbb61c84d", "466bf03bd09ebbbb", "8b86b9d421a804c7"],
+    "deploy/nginx-cloudflare-realip.conf": ["8dbd989569c3d69c", "e0330312e78a1833", "6eb5e1c9f0e9fd8c", "d52aa5974cb3c917"],
+    "deploy/nginx-erp.conf": ["218152ef52ab8473", "0e6a49b2a07af07e", "5826a62b8d4d00c5", "79c18b20bad6b72b"],
+    "deploy/nginx-proxy-common.conf": ["f7bb6a1bd4a11c9a", "1a86d0724aad05f7", "0b0b5adb0f77d356", "75ecd28a612e4225"],
+    "deploy/nginx-proxy-secret.conf.example": ["ff7a28cbd1c05067", "1e26c6d2ef34961e", "be65a6a379e9ae71", "7eaac1f402d8bc67"],
+    "deploy/nginx-public.conf": ["dda0f43512513172", "f606f958c4756273", "a9fe2e1e8f4badc7", "79fc96836db1092c"],
+    "deploy/nginx-ratelimit.conf": ["f8cb5fb496753157", "842ff68b070a3e7d", "532496b8c50bbc99", "4b400dd313897843"],
+    "deploy/nginx-spa-location.conf": ["4f345de63c6d0fce", "ee87035b9dc1c232", "52eb58aaecec0805", "f9a3696504cc7992"]
+  }
+}
