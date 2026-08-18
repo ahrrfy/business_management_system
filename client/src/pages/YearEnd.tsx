@@ -33,6 +33,27 @@ export interface YearEndCloseRequestLike {
   requestedAt: Date | string;
 }
 
+/**
+ * قيمة المخزون المخزَّنة في لقطة الإقفال (`snapshotData.inventoryValue`).
+ *
+ * أصل المخزون في الميزانية يُقرأ **حيّاً** (`SUM(quantity × costPrice)`) بلا تاريخٍ مرجعيّ، فبلا
+ * هذه اللقطة تُحسب ميزانية السنة المقفلة من مخزون **اليوم** لا من مخزون تاريخ إقفالها — ولا يبقى
+ * لها أصلٌ يُعاد إنتاجه (تدقيق ٢٧/٧، H5). تُعيد `null` للإقفالات السابقة للّقطة أو للحمولة التالفة،
+ * فتُعرَض «غير مسجَّلة» بدل صفرٍ كاذبٍ يُقرأ مخزوناً فارغاً.
+ */
+export function readSnapshotInventoryValue(snapshotData: unknown): string | null {
+  if (typeof snapshotData !== "string" || snapshotData.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(snapshotData) as { inventoryValue?: unknown };
+    const raw = parsed?.inventoryValue;
+    if (typeof raw !== "string" && typeof raw !== "number") return null;
+    const text = String(raw).trim();
+    return text === "" || Number.isNaN(Number(text)) ? null : text;
+  } catch {
+    return null;
+  }
+}
+
 /** طلبات ديسمبر المعلّقة التي يمكن أن تسند إقفال السنة المحددة، بلا تسريب طلبات شهور أخرى. */
 export function pendingDecemberRequests(
   rows: readonly YearEndCloseRequestLike[] | undefined,
@@ -517,6 +538,9 @@ export default function YearEndPage() {
                     <th className="text-right p-2 border">التكلفة</th>
                     <th className="text-right p-2 border">المصاريف</th>
                     <th className="text-right p-2 border">صافي الربح</th>
+                    {/* أصل المخزون يُقرأ حيّاً بلا تاريخ ⇒ بلا هذه اللقطة تُحسب ميزانية السنة
+                        المقفلة من مخزون اليوم لا من مخزون تاريخ إقفالها (تدقيق ٢٧/٧، H5). */}
+                    <th className="text-right p-2 border">المخزون لحظة الإقفال</th>
                     <th className="text-right p-2 border">تاريخ الإقفال</th>
                     <th className="text-right p-2 border">فتح مدقّق</th>
                   </tr>
@@ -524,7 +548,7 @@ export default function YearEndPage() {
                 <tbody>
                   {(list.data?.rows.length ?? 0) === 0 ? (
                     <TableEmptyRow
-                      colSpan={9}
+                      colSpan={10}
                       message={
                         histFiltered
                           ? "لا إقفالات مطابقة للفلاتر"
@@ -575,6 +599,18 @@ export default function YearEndPage() {
                                 ? formatIqd(net.toFixed(2))
                                 : `(${formatIqd(net.abs().toFixed(2))})`}
                             </span>
+                          </td>
+                          <td className="p-2 border tabular-nums">
+                            {(() => {
+                              const snapshotInventory = readSnapshotInventoryValue(s.snapshotData);
+                              return snapshotInventory == null ? (
+                                <span className="text-xs text-muted-foreground">
+                                  غير مسجَّلة (إقفالٌ سابق للّقطة)
+                                </span>
+                              ) : (
+                                formatIqd(snapshotInventory)
+                              );
+                            })()}
                           </td>
                           <td className="p-2 border text-muted-foreground">
                             {fmtDate(s.closedAt)}
