@@ -5,7 +5,7 @@
  * توزيع الفرق على أسعار البنود بنسبة القيمة **بعد أن يراه الموظّف ويؤكّده** — لا امتصاصَ خفيّ.
  * المنطق كلّه في `supplierInvoiceMatch.ts` (نقيٌّ ومُختبَر)؛ هذا الملف عرضٌ فقط.
  */
-import { AlertTriangle, CheckCircle2, FileCheck2, Scale } from "lucide-react";
+import { AlertTriangle, BadgePercent, CheckCircle2, FileCheck2, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { cn } from "@/lib/utils";
@@ -22,6 +22,11 @@ export interface SupplierInvoiceMatchProps {
   currency: PriceCurrency;
   /** يوزّع الفرق على أسعار البنود. غيابه ⇒ لا يظهر الزرّ (لا سطور قابلة للتعديل). */
   onDistribute?: () => void;
+  /**
+   * يُسجّل الفرق **خصمَ فاتورةٍ** (0204) — المسار الطبيعيّ حين تكون ورقة المورّد أقلّ من بنودنا:
+   * يبقى سعرُ المورّد الأصليّ في البنود ويُسجَّل الخصم بذاته، بدل إعادة تسعيرٍ تُخفي أنّه خصم.
+   */
+  onApplyAsDiscount?: () => void;
   /** يُعطَّل الزرّ حين لا توجد بنودٌ بقيمةٍ موجبة. */
   canDistribute?: boolean;
 }
@@ -40,6 +45,7 @@ export function SupplierInvoiceMatch({
   onChange,
   currency,
   onDistribute,
+  onApplyAsDiscount,
   canDistribute = true,
 }: SupplierInvoiceMatchProps) {
   const result = matchSupplierInvoice(derivedTotal, value, currency);
@@ -103,8 +109,23 @@ export function SupplierInvoiceMatch({
           </p>
         )}
 
-        {mismatched && onDistribute && (
+        {mismatched && (onDistribute || onApplyAsDiscount) && (
           <div className="space-y-1.5 border-t pt-2">
+            {/* بنودنا أعلى ⇒ الفرق خصمٌ من المورّد في الأغلب: تسجيلُه خصماً يحفظ سعرَه الأصليّ
+                في التاريخ ويُظهر الخصم بذاته، وهو أصدق من إعادة تسعيرٍ تُخفي سببه. */}
+            {result.verdict === "OURS_HIGHER" && onApplyAsDiscount && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 w-full border-emerald-500/40 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-100/60"
+                onClick={onApplyAsDiscount}
+                disabled={!canDistribute}
+              >
+                <BadgePercent aria-hidden className="size-4" /> سجّل الفرق خصمَ فاتورة
+              </Button>
+            )}
+            {onDistribute && (
             <Button
               type="button"
               variant="outline"
@@ -115,10 +136,12 @@ export function SupplierInvoiceMatch({
             >
               <Scale aria-hidden className="size-4" /> وزّع الفرق على أسعار البنود
             </Button>
+            )}
             <p className="text-[11px] leading-relaxed text-muted-foreground">
-              يُعاد تسعير البنود بنسبة قيمتها ليبلغ المجموعُ قيمةَ الفاتورة — <strong>تظهر الأسعار
-              الجديدة في الجدول قبل الحفظ</strong>. استعمله حين يكون الفرق خصماً من المورّد أو
-              تقريباً؛ أمّا البند الناقص فأضِفه بنداً مستقلاً.
+              <strong>خصمُ فاتورة</strong> يُبقي سعر المورّد الأصليّ في البنود ويُسجّل الخصم بذاته
+              (يُوزَّع بنسبة القيمة فيَنقص الذمّة والتكلفة) — وهو الأنسب للخصم التجاريّ.
+              و<strong>توزيعُ الفرق</strong> يُعيد تسعير البنود نفسها، والأسعار الجديدة تظهر في
+              الجدول قبل الحفظ. أمّا البند الناقص فأضِفه بنداً مستقلاً.
             </p>
           </div>
         )}

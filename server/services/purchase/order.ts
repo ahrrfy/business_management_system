@@ -98,6 +98,30 @@ function assertSupplierInvoiceMatch(declaredRaw: string, expected: Decimal, curr
 }
 
 /**
+ * توزيعُ مبلغٍ على بنودٍ **بنسبة قيمتها**، مع ضمانٍ صارم أنّ المجموع = الهدف بالضبط.
+ *
+ * التقريبُ لكلّ بندٍ على حدة يترك باقياً (سنتات) لا يصحّ أن يضيع ولا أن يُضاف من العدم (§٥:
+ * «لا دينار يضيع بصمت»)، فيمتصّه **أكبرُ بندٍ قيمةً**. اختير الأكبر لا الأخير — كما في
+ * `allocateLineTax` — لأنّ الباقي قد يفوق قيمةَ بندٍ صغيرٍ جداً في فاتورةٍ كثيرة البنود فيقلبه
+ * سالباً؛ والأكبر يستوعبه دائماً. والاختيار حتميّ (أوّل أكبر) ⇒ إعادةُ حساب التعديل تُعطي نفس
+ * التوزيع بالضبط، فلا ينجرف الأمر بمجرّد إعادة حفظه.
+ */
+function allocateByValue(grossLines: Decimal[], target: Decimal): Decimal[] {
+  const grossTotal = grossLines.reduce((acc, g) => acc.plus(g), new Decimal(0));
+  if (grossTotal.lte(0)) return grossLines.map(() => new Decimal(0));
+  const allocated = grossLines.map((g) => round2(g.times(target).dividedBy(grossTotal)));
+  let absorbIdx = -1;
+  for (let i = 0; i < grossLines.length; i++) {
+    if (grossLines[i].gt(0) && (absorbIdx < 0 || grossLines[i].gt(grossLines[absorbIdx]))) absorbIdx = i;
+  }
+  if (absorbIdx >= 0) {
+    const sum = allocated.reduce((acc, a) => acc.plus(a), new Decimal(0));
+    allocated[absorbIdx] = round2(allocated[absorbIdx].plus(target.minus(sum)));
+  }
+  return allocated;
+}
+
+/**
  * حساب أسطر أمر الشراء وإجمالياته — **مصدر الحقيقة الحسابيّ الوحيد للإنشاء والتعديل معاً.**
  *
  * استُخرِج من `createPurchaseOrder` بلا أيّ تغيير سلوكيّ. سببُ الاستخراج بنيويّ: تعديلُ الأمر
@@ -119,9 +143,16 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
   // تثبيت) يُدخل أسعاراً دينارية و`usdTotal` مرجعاً إجمالياً فقط. الحاسم هو وجود سعر التثبيت.
   const linePriceCurrency: PriceCurrency = explicitUsdRate ? "USD" : "IQD";
 
-  const rows = [];
-  const lineNets: string[] = [];
-  const usdLineNets: string[] = [];
+  // ═══ تمريرة ١: قيم البنود **قبل خصم الفاتورة** بعملة المستند ═══════════════════
+  // الخصم فاتوريّ لا سطريّ (هكذا يُحرّره المورّد)، فيلزم معرفةُ المجموع الإجماليّ قبل توزيعه ⇒
+  // تمريرتان: الأولى تتحقّق وتحسب القيم الأصلية، والثانية تُنتج الصفوف الصافية.
+  const gross: Array<{
+    it: (typeof input.items)[number];
+    baseQuantity: number;
+    qty: Decimal;
+    grossUnitDoc: Decimal;
+    grossLineDoc: Decimal;
+  }> = [];
   for (const it of input.items) {
     // PROC-01: حدّ ثقة الخدمة — money() لا يَرفض السالب وحده، فنَفحص الإشارة صراحةً
     // (الخدمة تُستدعى أيضاً من importService/seed لا الراوتر فقط ⇒ دفاع متعمّق إلزامي).
@@ -144,37 +175,87 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     }
     const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
     const qty = money(it.quantity);
-    const sourceUnitPrice = money(it.unitPrice);
-    const usdUnitPrice = explicitUsdRate ? sourceUnitPrice : null;
-    const usdLineNet = usdUnitPrice ? round2(usdUnitPrice.times(qty)) : null;
+    const grossUnitDoc = money(it.unitPrice);
+    gross.push({ it, baseQuantity, qty, grossUnitDoc, grossLineDoc: round2(grossUnitDoc.times(qty)) });
+  }
+
+  // ═══ خصم فاتورة المورّد (0204) ═════════════════════════════════════════════════
+  // يُدخَل بعملة المستند ويُوزَّع **بنسبة القيمة**، فتُخزَّن أعمدةُ المال صافيةً ⇒ الذمّة وتكلفةُ
+  // المخزون ومرتجعُ الشراء تلتقطه بلا تغييرٍ في قرّائها (قرار المالك: «تكلفة الصنف = سعر المورّد
+  // وحده» — وخصمُ المورّد جزءٌ من سعره، فيَنقص التكلفة لا يُسجَّل إيراداً).
+  const grossSubtotalDoc = round2(sumMoney(gross.map((g) => g.grossLineDoc.toFixed(2))));
+  const discountDoc = round2(money(input.invoiceDiscount ?? "0"));
+  const docSym = linePriceCurrency === "USD" ? "$" : "د.ع";
+  if (discountDoc.lt(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "خصم فاتورة المورّد لا يصحّ أن يكون سالباً" });
+  }
+  if (discountDoc.gt(grossSubtotalDoc)) {
+    // خصمٌ يتجاوز البضاعة يقلب الذمّة والتكلفة سالبتَين — رفضٌ بالرقمين لا رسالةٌ عامّة.
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        `خصم فاتورة المورّد (${discountDoc.toFixed(2)} ${docSym}) يتجاوز قيمة البضاعة ` +
+        `(${grossSubtotalDoc.toFixed(2)} ${docSym}) — راجع الخصم أو أسعار البنود.`,
+    });
+  }
+  const netTargetDoc = grossSubtotalDoc.minus(discountDoc);
+  const netLinesDoc = allocateByValue(gross.map((g) => g.grossLineDoc), netTargetDoc);
+  // نسبةُ الصافي إلى الإجماليّ: تُشتقّ منها **أسعار الوحدة** الصافية. لا نشتقّها من إجمالي السطر
+  // مقسوماً على الكمّية: ذلك يُعيد تقريباً مركّباً يُزحزح سعر الدولار ذا الأربع منازل حتى بلا خصم.
+  const discountRatio = grossSubtotalDoc.gt(0) ? netTargetDoc.dividedBy(grossSubtotalDoc) : new Decimal(1);
+  const roundDocPrice = (x: Decimal) =>
+    linePriceCurrency === "USD" ? x.toDecimalPlaces(4, Decimal.ROUND_HALF_UP) : round2(x);
+
+  // ═══ تمريرة ٢: الصفوف النهائية (صافيةً بعد الخصم) ══════════════════════════════
+  const rows = [];
+  const lineNets: string[] = [];
+  const usdLineNets: string[] = [];
+  const grossLineIqds: string[] = [];
+  for (let i = 0; i < gross.length; i++) {
+    const g = gross[i];
+    // بلا خصم ⇒ النسبة ١ والسعر الصافي = الأصليّ **حرفياً** (صفر أثرٍ على السلوك القائم).
+    const netUnitDoc = discountDoc.isZero() ? g.grossUnitDoc : roundDocPrice(g.grossUnitDoc.times(discountRatio));
+    const netLineDoc = netLinesDoc[i];
+    const usdUnitPrice = explicitUsdRate ? netUnitDoc : null;
+    const usdLineNet = explicitUsdRate ? netLineDoc : null;
     // المسار الجديد: سعر البند المُدخل USD ويُحوّل بسعر التثبيت. المسار القديم بلا agreedRate
     // يبقى متوافقاً: unitPrice ديناري وusdTotal مرجع إجمالي فقط.
     // سعرُ الوحدة الدينارية يبقى ٢dp (عمودُه decimal(15,2)) — عرضٌ ومرجعُ تكلفةِ الوحدة عند الاستلام.
-    const iqdUnitPrice = explicitUsdRate ? round2(sourceUnitPrice.times(explicitUsdRate)) : sourceUnitPrice;
+    const iqdUnitPrice = explicitUsdRate ? round2(netUnitDoc.times(explicitUsdRate)) : netUnitDoc;
     // إجماليُّ السطر بالدينار يُترجَم من **إجمالي السطر بالدولار**، لا من سعر الوحدة بعد تقريبه:
     // الالتزام دولاريّ والدينارُ ترجمتُه بسعر التثبيت. الضربُ بعد التقريب كان يُراكم فرقَ التقريب
     // × الكمية (٥٠٠٠ وحدة × فرق ٠٫٤ د.ع = ٢٠٠٠ د.ع) فيخالف إجماليُّ الأمر فاتورةَ المورّد وذمّته.
-    const lineNet = usdLineNet && explicitUsdRate
-      ? round2(usdLineNet.times(explicitUsdRate))
-      : round2(iqdUnitPrice.times(qty));
+    const lineNet = explicitUsdRate ? round2(netLineDoc.times(explicitUsdRate)) : netLineDoc;
     lineNets.push(lineNet.toFixed(2));
     if (usdLineNet) usdLineNets.push(usdLineNet.toFixed(2));
+    grossLineIqds.push(
+      (explicitUsdRate ? round2(g.grossLineDoc.times(explicitUsdRate)) : g.grossLineDoc).toFixed(2),
+    );
     rows.push({
-      variantId: it.variantId,
-      productUnitId: it.productUnitId,
-      quantity: money(it.quantity).toFixed(3),
-      baseQuantity,
+      variantId: g.it.variantId,
+      productUnitId: g.it.productUnitId,
+      quantity: g.qty.toFixed(3),
+      baseQuantity: g.baseQuantity,
       unitPrice: toDbMoney(iqdUnitPrice),
       total: lineNet.toFixed(2),
       usdUnitPrice: usdUnitPrice ? toDbRate(usdUnitPrice) : null,
       usdTotal: usdLineNet ? usdLineNet.toFixed(2) : null,
+      // لقطةُ ورقة المورّد: السعر **قبل** الخصم. `null` بلا خصم ⇒ القارئ يسقط على `unitPrice`.
+      listUnitPrice: discountDoc.isZero()
+        ? null
+        : toDbMoney(explicitUsdRate ? round2(g.grossUnitDoc.times(explicitUsdRate)) : g.grossUnitDoc),
+      usdListUnitPrice: discountDoc.isZero() || !explicitUsdRate ? null : toDbRate(g.grossUnitDoc),
     });
   }
   // PROC-03: نسبة الضريبة في [٠، ١٠٠] — تَمنع ضريبة سالبة تُخفّض الإجمالي/AP، أو نسبة شاذّة.
   const taxRate = money(input.taxRatePercent ?? "0");
   if (taxRate.lt(0) || taxRate.gt(100)) throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة يجب أن تكون بين ٠ و١٠٠" });
   const subtotal = round2(sumMoney(lineNets));
+  // الضريبة على الوعاء **بعد الخصم** (المعالجة القياسية: الخصم التجاريّ يُنقص وعاء الضريبة).
   const tax = round2(subtotal.times(taxRate).dividedBy(100));
+  // الخصمُ بالدينار = فرقُ الإجماليَّين الدينارّيَين (للأمر الدولاريّ هو ترجمةُ خصمه بسعر التثبيت).
+  const invoiceDiscountIqd = round2(round2(sumMoney(grossLineIqds)).minus(subtotal));
+  const usdInvoiceDiscountVal = explicitUsdRate ? discountDoc : null;
 
   // landed-cost (تكلفة الشحن/الكمرك): قرار المالك (٥/٨/٢٦) — تُخزَّن على الأمر وتُسجَّل مصروفَ
   // نقلٍ مستقلاً لحظة الاستلام (`receive.ts`)، فهي **خارج الإجمالي وخارج ذمّة المورّد** ولا تدخل
@@ -222,7 +303,7 @@ async function computePurchaseDocument(tx: Tx, input: PurchaseDocumentInput) {
     assertSupplierInvoiceMatch(input.supplierInvoiceTotal, expectedInvoiceTotal, linePriceCurrency);
   }
 
-  return { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal };
+  return { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal };
 }
 
 export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
@@ -241,6 +322,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       agreedCurrency: input.agreedCurrency ?? null,
       usdTotal: input.usdTotal ?? null,
       agreedRate: input.agreedRate ?? null,
+      invoiceDiscount: input.invoiceDiscount ?? null,
       shippingCost: input.shippingCost ?? null,
       customsCost: input.customsCost ?? null,
       items: [...input.items]
@@ -289,7 +371,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     const uniqueVariantIds = Array.from(new Set(input.items.map((it) => it.variantId)));
     await assertPurchasableVariants(tx, uniqueVariantIds);
 
-    const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal } =
+    const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal } =
       await computePurchaseDocument(tx, input);
 
     const ymd = toDateStr().replace(/-/g, "");
@@ -317,6 +399,10 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       status: input.status ?? "CONFIRMED",
       agreedCurrency,
       usdTotal: usdTotalVal ? usdTotalVal.toFixed(2) : null,
+      // خصم فاتورة المورّد (0204): إفصاحٌ وإعادةُ تحميلٍ للمحرّر — الأعمدة المالية مخزَّنة صافيةً
+      // أصلاً، فلا يدخل هذا الحقل أيّ حساب (وإلّا خُصم مرّتين).
+      invoiceDiscount: invoiceDiscountIqd.toFixed(2),
+      usdInvoiceDiscount: usdInvoiceDiscountVal ? usdInvoiceDiscountVal.toFixed(2) : null,
       agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
       notes: input.notes ?? null,
       createdBy: actor.userId,
@@ -407,7 +493,7 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
     const nextVariantIds = Array.from(new Set(input.items.map((it) => it.variantId)));
     await assertPurchasableVariants(tx, nextVariantIds);
 
-    const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal } =
+    const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal } =
       await computePurchaseDocument(tx, input);
 
     await tx.update(purchaseOrders).set({
@@ -421,6 +507,10 @@ export async function updatePurchaseOrder(input: UpdatePurchaseOrderInput, actor
       // الحالة تبقى كما هي: التعديل ليس اعتماداً ولا سحباً للاعتماد (لكلٍّ إجراؤه).
       agreedCurrency,
       usdTotal: usdTotalVal ? usdTotalVal.toFixed(2) : null,
+      // خصم فاتورة المورّد (0204): إفصاحٌ وإعادةُ تحميلٍ للمحرّر — الأعمدة المالية مخزَّنة صافيةً
+      // أصلاً، فلا يدخل هذا الحقل أيّ حساب (وإلّا خُصم مرّتين).
+      invoiceDiscount: invoiceDiscountIqd.toFixed(2),
+      usdInvoiceDiscount: usdInvoiceDiscountVal ? usdInvoiceDiscountVal.toFixed(2) : null,
       agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
       notes: input.notes ?? null,
     }).where(eq(purchaseOrders.id, input.purchaseOrderId));
