@@ -474,11 +474,12 @@ export default function ProductEdit() {
           minStock: clampInt(v.minStock),
           reorderPoint: clampInt(v.reorderPoint),
           isActive: v.isActive,
-          image: v.image, // string ⇒ تُعيَّن، null ⇒ تُزال (يُعاد التوفيق دائماً)
+          // لا نعيد إرسال URL/data URL الإرثي في كل حفظ؛ null فقط إشارة إزالة صريحة.
+          image: v.image === null ? null : undefined,
           unitBarcodes,
         };
       }),
-      // صور المنتج العامّة: تُرسَل دائماً (ولو فارغة) ⇒ الحذف يُوفَّق أيضاً؛ غير المتغيّرة بمعرّفها بلا بايتات.
+      // صور المنتج العامّة: معرّفات وmetadata فقط؛ الفارغة توفّق الحذف ولا تمرّر بايتات.
       images: buildProductImagesPayload(images),
     };
   }
@@ -785,7 +786,7 @@ export default function ProductEdit() {
         onDescriptionChange={setDescription}
         images={images}
         onImagesChange={setImages}
-        hint="حتى 10 صور عامة للمنتج؛ الأولى رئيسية، ولكل لون صورته المستقلة في صف المتغيّر."
+        productExists
       />
 
       {/* gstack B12 (٧/٧/٢٦): تبويب وصفة البكج — يُعرض فقط لو المنتج بكج. المتغيّر الأول هو الأب حصراً

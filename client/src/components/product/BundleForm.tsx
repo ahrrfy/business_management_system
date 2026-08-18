@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { useLocation } from "wouter";
-import { AlertCircle, ListPlus, Package, Plus, Search, X } from "lucide-react";
+import { Link, useLocation } from "wouter";
+import { AlertCircle, Images, ListPlus, Package, Plus, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -9,7 +9,6 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -61,7 +60,6 @@ export default function BundleForm() {
   const [wholesale, setWholesale] = useState("");
   const [government, setGovernment] = useState("");
   const [isActive, setIsActive] = useState(true);
-  const [images, setImages] = useState<ImageItem[]>([]);
 
   // ── مكوّنات البكج ──
   const [components, setComponents] = useState<ComponentPick[]>([]);
@@ -309,9 +307,6 @@ export default function BundleForm() {
         componentBaseQuantity: c.componentBaseQuantity,
         sortOrder: idx,
       })),
-      images: images.length
-        ? images.map((i, idx) => ({ url: i.dataUrl, isPrimary: !!i.isPrimary, sortOrder: idx }))
-        : undefined,
     });
   }
 
@@ -585,13 +580,16 @@ export default function BundleForm() {
         </CardContent>
       </Card>
 
-      {/* ── الصور ── */}
+      {/* الصور لا تُنشَر من كاتب الكتالوج؛ البكج يُحفَظ أولاً ثم تُنشأ له مهمة Studio. */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">صور البكج (اختياري)</CardTitle>
+          <CardTitle className="text-base">صور البكج</CardTitle>
         </CardHeader>
-        <CardContent>
-          <ImageUploader value={images} onChange={setImages} />
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">احفظ البكج أولاً، ثم أضف صورته عبر مهمة مراجعة في استوديو صور المنتجات.</p>
+          <Button asChild type="button" variant="outline" className="w-full shrink-0 sm:w-auto">
+            <Link href="/catalog/image-studio"><Images aria-hidden className="size-4" /> فتح استوديو الصور</Link>
+          </Button>
         </CardContent>
       </Card>
 

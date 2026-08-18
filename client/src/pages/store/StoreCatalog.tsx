@@ -1,15 +1,15 @@
 /**
  * StoreCatalog — «الكتالوج والعرض» في لوحة hPanel (تبويب مديري).
  * مركز تحكّم واحد بعرض منتجات المتجر: تمييز منتج (يتصدّر)، إظهار/إخفاء من واجهة العميل،
- * ضبط المخزون (ذرّي عبر قيد ADJUST)، وتعيين صورة المنتج الرئيسية. المخزون/الصورة/الأعلام
+ * ضبط المخزون (ذرّي عبر قيد ADJUST)، وعرض/إزالة الصورة الرئيسية؛ النشر الجديد عبر Product Studio. المخزون/الصورة/الأعلام
  * كلّها تنعكس فوراً في المتجر العلني `/store`.
  */
 import { useState } from "react";
-import { AlertTriangle, Boxes, Check, Eye, EyeOff, ImagePlus, Loader2, PackageSearch, Save, Search, Star, X } from "lucide-react";
+import { AlertTriangle, Boxes, Eye, EyeOff, ImagePlus, Images, Loader2, PackageSearch, Save, Search, Star, Trash2, X } from "lucide-react";
+import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmt, fmtInt } from "@/lib/money";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 
 type Filter = "all" | "featured" | "hidden" | "noImage";
 const PAGE = 40;
@@ -120,11 +120,11 @@ export default function StoreCatalog() {
               <div key={p.productId} className="rounded-2xl border border-border bg-card p-3">
                 <div className="flex items-center gap-3">
                   {/* صورة */}
-                  <button onClick={() => { if (isAdmin) setImageFor({ productId: p.productId, name: p.name, imageUrl: p.imageUrl }); }} disabled={!isAdmin} title={isAdmin ? "تعيين الصورة" : "تعيين الصورة لمالك النظام فقط"} className="group relative size-16 shrink-0 overflow-hidden rounded-xl bg-muted disabled:cursor-default">
+                  <button onClick={() => { if (isAdmin) setImageFor({ productId: p.productId, name: p.name, imageUrl: p.imageUrl }); }} disabled={!isAdmin} title={isAdmin ? "عرض الصورة أو إزالتها" : "إدارة الصورة لمالك النظام فقط"} className="group relative size-16 shrink-0 overflow-hidden rounded-xl bg-muted disabled:cursor-default">
                     {p.imageUrl
                       ? <img src={p.imageUrl} alt={p.name} className="size-full object-cover" />
                       : <span className="flex size-full items-center justify-center text-muted-foreground"><ImagePlus aria-hidden className="size-6 opacity-40" /></span>}
-                    {isAdmin && <span className="absolute inset-0 hidden items-center justify-center bg-black/40 text-white group-hover:flex"><ImagePlus aria-hidden className="size-5" /></span>}
+                    {isAdmin && <span className="absolute inset-0 hidden items-center justify-center bg-black/40 text-white group-hover:flex"><Images aria-hidden className="size-5" /></span>}
                   </button>
 
                   {/* تفاصيل */}
@@ -231,23 +231,36 @@ function StockDialog({ target, onClose, onDone }: { target: { variantId: number;
   );
 }
 
-/** حوار تعيين/إزالة صورة المنتج الرئيسية (تُضغط في العميل، تظهر في المتجر). */
+/** عرض/إزالة الصورة الرئيسية فقط؛ الإضافة والاستبدال عبر Product Studio. */
 function ImageDialog({ target, onClose, onDone }: { target: { productId: number; name: string; imageUrl: string | null }; onClose: () => void; onDone: () => void }) {
-  const [images, setImages] = useState<ImageItem[]>(target.imageUrl ? [{ id: "cur", dataUrl: target.imageUrl, isPrimary: true }] : []);
   const setM = trpc.storeAdmin.catalog.setImage.useMutation({
-    onSuccess: () => { notify.ok("حُفظت الصورة"); onDone(); onClose(); },
+    onSuccess: () => { notify.ok("أُزيلت الصورة الرئيسية"); onDone(); onClose(); },
     onError: (e) => notify.err(e),
   });
-  const url = images[0]?.dataUrl ?? images[0]?.url ?? null;
 
   return (
     <Modal title={`صورة: ${target.name}`} onClose={onClose}>
-      <ImageUploader value={images} onChange={setImages} maxItems={1} singlePrimary={false} hint="صورة مربّعة واضحة (تُضغط تلقائياً)" />
+      <div className="space-y-3">
+        {target.imageUrl ? (
+          <img src={target.imageUrl} alt={target.name} className="mx-auto aspect-square w-full max-w-52 rounded-lg border object-cover" />
+        ) : (
+          <div className="flex aspect-video items-center justify-center rounded-lg border border-dashed bg-muted/30 text-sm text-muted-foreground">لا توجد صورة منشورة</div>
+        )}
+        <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+          <p className="font-medium">إضافة الصورة أو استبدالها تحتاج مهمة مراجعة.</p>
+          <p className="mt-1 text-xs text-muted-foreground">استخدم استوديو صور المنتجات؛ لا تُنشَر بايتات مباشرة من كتالوج المتجر.</p>
+          <Link href="/catalog/image-studio" className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-md border bg-background px-3 text-sm font-medium hover:bg-accent">
+            <Images aria-hidden className="size-4" /> فتح استوديو الصور
+          </Link>
+        </div>
+      </div>
       <div className="mt-4 flex justify-end gap-2">
         <button onClick={onClose} className="rounded-xl border border-border px-4 py-2 text-sm font-medium hover:bg-accent">إلغاء</button>
-        <button onClick={() => setM.mutate({ productId: target.productId, url })} disabled={setM.isPending} className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
-          {setM.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />} حفظ
-        </button>
+        {target.imageUrl && (
+          <button onClick={() => setM.mutate({ productId: target.productId, url: null })} disabled={setM.isPending} className="flex items-center gap-2 rounded-xl bg-destructive px-4 py-2 text-sm font-bold text-destructive-foreground transition hover:opacity-90 disabled:opacity-50">
+            {setM.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Trash2 aria-hidden className="size-4" />} إزالة الصورة
+          </button>
+        )}
       </div>
     </Modal>
   );
