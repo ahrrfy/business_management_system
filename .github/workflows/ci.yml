@@ -197,6 +197,8 @@ jobs:
         run: pnpm check:form-inputs
       - name: حارِس حدود nginx المشتركة خلف PM2 وCloudflare
         run: pnpm check:nginx-abuse
+      - name: حارِس صلاحية Docker Compose
+        run: pnpm check:compose
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
       - name: بناء الإنتاج

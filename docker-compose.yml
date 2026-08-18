@@ -19,7 +19,7 @@ services:
     environment:
       # لا كلمة مرور افتراضية مَخبوءة: يجب ضبط DB_ROOT_PW (في .env) وإلا يفشل الإقلاع بوضوح
       # بدل تشغيل قاعدة بكلمة مرور معروفة. راجع .env.example.
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PW:?DB_ROOT_PW مطلوب — اضبطه في .env (مثال: openssl rand -hex 24)}
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PW:?DB_ROOT_PW مطلوب — اضبطه في .env (مثال: openssl rand -hex 24)}"
       MYSQL_DATABASE: ${DB_NAME:-erp}
       # حساب التطبيق أقل امتيازاً من root ومحصور تلقائياً بقاعدة MYSQL_DATABASE.
       # لا تمنح خادم الويب DB_ROOT_PW؛ root مخصص للصيانة/التعافي خارج الويب فقط.
