@@ -144,11 +144,15 @@ if (
   !Number.isInteger(input.uid) ||
   input.uid <= 0 ||
   !Number.isInteger(input.gid) ||
-  input.gid < 0
+  input.gid <= 0
 ) throw new Error("APP_ENV_HELPER_INPUT_INVALID");
 if (process.getuid?.() !== input.uid || process.getgid?.() !== input.gid) {
   throw new Error("APP_ENV_HELPER_PRIVILEGE_INVALID");
 }
+if (
+  typeof process.getgroups !== "function" ||
+  process.getgroups().some((group) => group === 0 || group !== input.gid)
+) throw new Error("APP_ENV_HELPER_GROUPS_INVALID");
 
 const SECRET = /^[a-f0-9]{64}$/iu;
 const same = (left, right) =>
@@ -389,6 +393,8 @@ export function runAppEnvironmentOwnerHelper(input) {
   );
   if (
     projectStat.uid === 0 ||
+    projectStat.gid === 0 ||
+    (projectStat.mode & 0o022) !== 0 ||
     envStat.uid !== projectStat.uid ||
     envStat.gid !== projectStat.gid ||
     envStat.nlink !== 1 ||

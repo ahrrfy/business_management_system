@@ -1711,6 +1711,33 @@ if (
       "a root-owned app env must fail before privileged reading",
     );
     assert.equal(fs.readFileSync(protectedTarget, "utf8"), "root-safe\n");
+
+    fs.chownSync(projectRoot, nobodyUid, 0);
+    fs.chownSync(appEnvPath, nobodyUid, 0);
+    assert.throws(
+      () =>
+        runAppEnvironmentOwnerHelper({
+          projectRoot,
+          appEnvPath,
+          action: "read",
+        }),
+      (error) => error?.code === "NGINX_ROTATION_APP_ENV_OWNER_INVALID",
+      "a root-group project must never create a root-group helper",
+    );
+
+    fs.chownSync(projectRoot, nobodyUid, nobodyGid);
+    fs.chownSync(appEnvPath, nobodyUid, nobodyGid);
+    fs.chmodSync(projectRoot, 0o770);
+    assert.throws(
+      () =>
+        runAppEnvironmentOwnerHelper({
+          projectRoot,
+          appEnvPath,
+          action: "read",
+        }),
+      (error) => error?.code === "NGINX_ROTATION_APP_ENV_OWNER_INVALID",
+      "a shared-writable project must fail the owner contract",
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
