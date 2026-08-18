@@ -6,7 +6,8 @@
  * **الأجر النهائيّ** بلا اعتراض، وهو نقيض قرارات الحضور الثلاثة (المحرّك مرجعُ الأجر).
  *
  * الثوابت المحروسة:
- *   م١) رقمٌ مطابقٌ لاشتقاق المحرّك يمرّ بلا سبب.
+ *   م١) رقمٌ مطابقٌ لاشتقاق المحرّك يمرّ بلا سبب — وهو **أيضاً** إثباتُ القصّ: البذرة تغطّي
+ *       الشهر كلَّه، فلولا قصُّ الخدمة عند يوم الإنهاء لاشتقّت شهراً تامّاً ورفضت المطابق.
  *   م٢) انحرافٌ فوق العتبة بلا سبب ⇒ يُرفض، والرسالة تُسمّي الرقمين والفارق.
  *   م٣) نفس الانحراف **مع سبب** ⇒ يمرّ، والسبب يُكتب في مستند الإثبات (أثرٌ لا يضيع).
  *   م٤) إنهاءٌ مخطَّطٌ في المستقبل ⇒ **لا يُلزم** (بصمات الأيام الباقية لم تصل، فالاشتقاق
@@ -14,7 +15,7 @@
  *   م٥) الحدُّ الصريح يقصّ النافذة: أجرُ جزءٍ من شهر لا أجرُ شهرٍ تامّ (بدونه انحرافٌ كاذب
  *       في كل تسويةٍ منتصفَ الشهر).
  */
-import { eq } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -31,6 +32,12 @@ function db() {
 const ACTOR = { userId: 1, branchId: 1, role: "admin", isOwner: true } as never;
 const DAY_NAMES = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 const LAST_DAY = "2026-06-15";
+/**
+ * البذرة تغطّي **الشهر كلَّه** لا حتى يوم الإنهاء — وهذا شرطُ صحّةِ الاختبار لا تفصيلَ إعداد:
+ * القصُّ يستبعد أياماً **حضرها** الموظف بعد الحدّ؛ فإن لم تُبذر أيامٌ بعد الخامس عشر تساوى
+ * المقصوصُ والكاملُ (الغياب أجرُه صفر) وصار «م٥» يقارن الرقم بنفسه فيمرّ بلا أن يُثبت شيئاً.
+ */
+const MONTH_END = "2026-06-30";
 
 /** حضورٌ كامل من ١ حزيران حتى يومٍ محدَّد (الجمعة راحة). */
 async function seedAttendanceThrough(employeeId: number, through: string) {
@@ -71,7 +78,7 @@ beforeEach(async () => {
     employmentStatus: "active", isActive: true, branchId: 1, hireDate: "2025-01-01",
   });
   await d.insert(s.hrAttendanceSettings).values({ id: 1, attendancePayEnabled: true, attendancePayFrom: "2026-01-01" });
-  await seedAttendanceThrough(1, LAST_DAY);
+  await seedAttendanceThrough(1, MONTH_END);
 });
 
 /** ما يقوله المحرّك — مصدرُ التوقّع نفسه الذي يستعمله الخادم، لا رقمٌ مكتوبٌ بيدي. */
@@ -90,6 +97,14 @@ async function evidenceOf(id: number) {
 
 describe("مطابقة أجر نهاية الخدمة بسجلّ الحضور", () => {
   it("م٥) الحدُّ الصريح يقصّ النافذة — أجرُ نصف شهرٍ لا شهرٍ تامّ", async () => {
+    // شرطُ صحّة المقارنة أولاً: لا بدّ من أيام حضورٍ **بعد** يوم الإنهاء ليكون للقصّ ما يقصّه.
+    // بدونها يتساوى الطرفان بحقٍّ (الغياب أجرُه صفر) فيمرّ الاختبار بلا أن يُثبت القصّ.
+    const [{ after }] = await db()
+      .select({ after: sql<number>`count(*)` })
+      .from(s.attendance)
+      .where(and(eq(s.attendance.employeeId, 1), gt(s.attendance.attendanceDate, LAST_DAY)));
+    expect(Number(after)).toBeGreaterThan(0);
+
     const half = Number(await engineWage());
     const full = Number(
       (await getEmployeeStatement({ employeeId: 1, period: "2026-06" }))!.expectedEarnedGrossWages,
