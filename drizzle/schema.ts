@@ -3509,7 +3509,9 @@ export const onlineOrders = mysqlTable(
     ),
     orderDate: timestamp("orderDate").defaultNow().notNull(),
     // لقطة 24 ساعة لطلبات المتجر PENDING؛ nullable فقط لتوافق الإدخالات الداخلية/الإرثية.
-    reservationExpiresAt: timestamp("reservationExpiresAt", { fsp: 3 }),
+    reservationExpiresAt: timestamp("reservationExpiresAt", { fsp: 3 }).default(
+      sql`(DATE_ADD(orderDate, INTERVAL 24 HOUR))`,
+    ),
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     shippingCost: decimal("shippingCost", { precision: 15, scale: 2 })
       .default("0")

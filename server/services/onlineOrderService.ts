@@ -206,7 +206,7 @@ async function loadOwnedReplay(
       total: onlineOrders.total,
       governorate: onlineOrders.governorate,
       shippingAddress: onlineOrders.shippingAddress,
-      reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)`,
+      reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))) * 1000)`,
     })
     .from(onlineOrders)
     .where(eq(onlineOrders.clientRequestId, input.clientRequestId))

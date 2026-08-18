@@ -27,14 +27,14 @@ export async function sweepExpiredOnlineOrdersOnce(
   return withTx(async (tx) => {
     // الإنتاج يستعمل ساعة MySQL نفسها التي كوّنت اللقطة؛ حقن now محصور بالاختبار الحتمي.
     const dueCondition = now
-      ? sql`\`onlineOrders\`.\`reservationExpiresAt\` <= ${now}`
-      : sql`\`onlineOrders\`.\`reservationExpiresAt\` <= CURRENT_TIMESTAMP(3)`;
+      ? sql`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)) <= ${now}`
+      : sql`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)) <= CURRENT_TIMESTAMP(3)`;
     const due = await tx
       .select({ id: onlineOrders.id })
       .from(onlineOrders)
       .where(and(eq(onlineOrders.status, "PENDING"), dueCondition))
       .orderBy(
-        asc(sql`\`onlineOrders\`.\`reservationExpiresAt\``),
+        asc(sql`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))`),
         asc(onlineOrders.id),
       )
       .limit(batch)

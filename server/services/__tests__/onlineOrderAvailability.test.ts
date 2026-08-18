@@ -117,6 +117,29 @@ describe("createOnlineOrder availability guards", () => {
     expect(replay.reservationExpiresAt.getTime()).toBe(created.reservationExpiresAt.getTime());
   });
 
+  it("gives an old-version insert that omits the column a database 24-hour default", async () => {
+    await db().insert(s.customers).values({ id: 99, name: "Mixed version customer" });
+    await db().insert(s.onlineOrders).values({
+      orderNumber: "ORD-MIXED-VERSION-DEFAULT",
+      customerId: 99,
+      branchId: 1,
+      subtotal: "1000.00",
+      total: "1000.00",
+      status: "PENDING",
+    });
+    const timing = (
+      await db()
+        .select({
+          orderMs: sql<number>`ROUND(UNIX_TIMESTAMP(${s.onlineOrders.orderDate}) * 1000)`,
+          expiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(${s.onlineOrders.reservationExpiresAt}) * 1000)`,
+        })
+        .from(s.onlineOrders)
+        .where(eq(s.onlineOrders.orderNumber, "ORD-MIXED-VERSION-DEFAULT"))
+        .limit(1)
+    )[0];
+    expect(Number(timing.expiryMs) - Number(timing.orderMs)).toBe(24 * 60 * 60 * 1000);
+  });
+
   it("releases expired PENDING allocation from ATP immediately", async () => {
     const expired = await createOnlineOrder({
       ...baseOrder,
@@ -136,6 +159,58 @@ describe("createOnlineOrder availability guards", () => {
         lines: [{ productUnitId: 1, quantity: 3 }],
       }),
     ).resolves.toMatchObject({ itemCount: 1 });
+  });
+
+  it("derives mixed-version NULL expiry from orderDate for replay and ATP", async () => {
+    const request = {
+      ...baseOrder,
+      clientRequestId: "legacy-null-expiry",
+      lines: [{ productUnitId: 1, quantity: 3 }],
+    };
+    const legacy = await createOnlineOrder(request);
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET orderDate = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 25 HOUR),
+          reservationExpiresAt = NULL
+      WHERE id = ${legacy.orderId}
+    `);
+    const effectiveMs = (
+      await db()
+        .select({ value: sql<number>`ROUND(UNIX_TIMESTAMP(DATE_ADD(${s.onlineOrders.orderDate}, INTERVAL 24 HOUR)) * 1000)` })
+        .from(s.onlineOrders)
+        .where(eq(s.onlineOrders.id, legacy.orderId))
+        .limit(1)
+    )[0].value;
+
+    const replay = await createOnlineOrder(request);
+    expect(replay.reservationExpiresAt.getTime()).toBe(Number(effectiveMs));
+    await expect(
+      createOnlineOrder({
+        ...baseOrder,
+        clientRequestId: "after-legacy-null-expiry",
+        lines: [{ productUnitId: 1, quantity: 3 }],
+      }),
+    ).resolves.toMatchObject({ itemCount: 1 });
+  });
+
+  it("keeps a recent mixed-version NULL expiry allocated until orderDate plus 24 hours", async () => {
+    const legacy = await createOnlineOrder({
+      ...baseOrder,
+      clientRequestId: "recent-legacy-null-expiry",
+      lines: [{ productUnitId: 1, quantity: 3 }],
+    });
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = NULL
+      WHERE id = ${legacy.orderId}
+    `);
+    await expect(
+      createOnlineOrder({
+        ...baseOrder,
+        clientRequestId: "blocked-by-recent-legacy",
+        lines: [{ productUnitId: 1, quantity: 1 }],
+      }),
+    ).rejects.toThrow(/الكمية المطلوبة|الحجوزات النشطة/);
   });
 
   it("rejects a requested quantity above stock, including duplicate cart lines", async () => {

@@ -267,14 +267,14 @@ export async function setOnlineOrderStatus(
       const expiry = (
         await tx
           .select({
-            reservationExpiresAt: sql<Date | null>`\`onlineOrders\`.\`reservationExpiresAt\``,
-            expired: sql<number>`\`onlineOrders\`.\`reservationExpiresAt\` <= CURRENT_TIMESTAMP(3)`,
+            reservationExpiresAt: sql<Date>`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))`,
+            expired: sql<number>`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)) <= CURRENT_TIMESTAMP(3)`,
           })
           .from(onlineOrders)
           .where(eq(onlineOrders.id, input.id))
           .limit(1)
       )[0];
-      if (expiry?.reservationExpiresAt && Number(expiry.expired) === 1) {
+      if (expiry && Number(expiry.expired) === 1) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "انتهت مهلة حجز مخزون هذا الطلب — اطلب من الزبون إعادة الطلب حسب التوفر الحالي",

@@ -53,9 +53,20 @@ describe("storefront PENDING reservation expiry sweeper", () => {
     await seedOrder(1, "PENDING", new Date(now.getTime() - 1));
     await seedOrder(2, "PENDING", new Date(now.getTime() + 60_000));
     await seedOrder(3, "CONFIRMED", new Date(now.getTime() - 60_000));
+    await seedOrder(4, "PENDING", new Date(now.getTime() + 60_000));
+    await seedOrder(5, "PENDING", new Date(now.getTime() + 60_000));
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = NULL,
+          orderDate = CASE id
+            WHEN 4 THEN ${new Date(now.getTime() - 25 * 60 * 60 * 1000)}
+            ELSE ${new Date(now.getTime() - 23 * 60 * 60 * 1000)}
+          END
+      WHERE id IN (4, 5)
+    `);
 
     await expect(sweepExpiredOnlineOrdersOnce(now, 50)).resolves.toEqual({
-      cancelled: 1,
+      cancelled: 2,
     });
     const rows = (await db().execute(sql`
       SELECT id, orderStatus AS status, cancelReason
@@ -85,6 +96,8 @@ describe("storefront PENDING reservation expiry sweeper", () => {
       }),
       expect.objectContaining({ id: 2, status: "PENDING" }),
       expect.objectContaining({ id: 3, status: "CONFIRMED" }),
+      expect.objectContaining({ id: 4, status: "CANCELLED" }),
+      expect.objectContaining({ id: 5, status: "PENDING" }),
     ]);
     await expect(sweepExpiredOnlineOrdersOnce(now, 50)).resolves.toEqual({
       cancelled: 0,

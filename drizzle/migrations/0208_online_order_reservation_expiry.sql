@@ -12,5 +12,10 @@ SET `reservationExpiresAt` = DATE_ADD(`orderDate`, INTERVAL 24 HOUR)
 WHERE `reservationExpiresAt` IS NULL;
 --> statement-breakpoint
 
+ALTER TABLE `onlineOrders`
+  MODIFY COLUMN `reservationExpiresAt` TIMESTAMP(3) NULL
+    DEFAULT (DATE_ADD(`orderDate`, INTERVAL 24 HOUR));
+--> statement-breakpoint
+
 CREATE INDEX `idx_order_status_reservation_expiry`
   ON `onlineOrders` (`orderStatus`, `reservationExpiresAt`);

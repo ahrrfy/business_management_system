@@ -60,6 +60,21 @@ describe("setOnlineOrderStatus — سبب الإلغاء + مرحلة التجه
     expect((await getOrder(id)).status).toBe("PENDING");
   });
 
+  it("يرفض تأكيد PENDING قديم كتبه إصدار مختلط بلا لقطة انتهاء", async () => {
+    const id = await seedOrder("PENDING");
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = NULL,
+          orderDate = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 25 HOUR)
+      WHERE id = ${id}
+    `);
+
+    await expect(
+      setOnlineOrderStatus({ id, status: "CONFIRMED", scopedBranchId: null }, 1),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await getOrder(id)).status).toBe("PENDING");
+  });
+
   it("إلغاء يدويّ (بلا فاتورة) يُثبِّت سبب الإلغاء", async () => {
     const id = await seedOrder("PENDING");
     await setOnlineOrderStatus({ id, status: "CANCELLED", scopedBranchId: null, cancelReason: "نفد المخزون" }, 1);

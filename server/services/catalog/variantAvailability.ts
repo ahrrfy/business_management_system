@@ -77,16 +77,16 @@ export interface LoadVariantAvailabilityOptions {
   excludeOnlineOrderId?: number;
 }
 
-// PENDING يحجز حتى لقطته الزمنية فقط. NULL إرثي fail-safe يبقى حاجزاً حتى تُرحّله الهجرة.
+// أثناء النشر المختلط قد يكتب إصدارٌ قديم NULL؛ تاريخ الطلب هو fallback حتمي لا حجزٌ أبدي.
 const activeOnlineAllocationCondition = sql`
   (
     ${onlineOrders.status} IN ('CONFIRMED', 'PROCESSING')
     OR (
       ${onlineOrders.status} = 'PENDING'
-      AND (
-        \`onlineOrders\`.\`reservationExpiresAt\` IS NULL
-        OR \`onlineOrders\`.\`reservationExpiresAt\` > CURRENT_TIMESTAMP(3)
-      )
+      AND COALESCE(
+        \`onlineOrders\`.\`reservationExpiresAt\`,
+        DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)
+      ) > CURRENT_TIMESTAMP(3)
     )
   )
 `;
