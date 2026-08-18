@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 963,
+    "trpcTotal": 968,
     "byKind": {
-      "mutation": 499,
-      "query": 464
+      "mutation": 502,
+      "query": 466
     },
     "byAuthority": {
-      "module-gate": 438,
-      "module-map": 311,
+      "module-gate": 441,
+      "module-map": 313,
       "admin": 67,
       "raw-role": 55,
       "none": 53,
@@ -20,9 +20,9 @@
       "public-read": 1
     },
     "bySensitivity": {
-      "LOW": 462,
-      "MEDIUM": 364,
-      "HIGH": 137
+      "LOW": 464,
+      "MEDIUM": 365,
+      "HIGH": 139
     },
     "byModule": {
       "(none)": 202,
@@ -30,9 +30,9 @@
       "reports": 81,
       "digital_cards": 75,
       "treasury": 62,
+      "inventory": 48,
       "store": 48,
       "products": 47,
-      "inventory": 43,
       "sales": 30,
       "workorders": 30,
       "crm": 29,
@@ -63,7 +63,7 @@
     "flagCounts": {
       "LOCAL_GATE": 182,
       "NO_BRANCH_SCOPE": 144,
-      "SENSITIVE_ACTION": 137,
+      "SENSITIVE_ACTION": 139,
       "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 33,
@@ -75,12 +75,12 @@
     "expressMounts": 11,
     "jobs": 17,
     "routerFiles": 94,
-    "proposedPermissions": 819,
+    "proposedPermissions": 822,
     "proposedDomains": {
       "hr": 106,
       "treasury": 86,
       "reports": 84,
-      "inventory": 68,
+      "inventory": 73,
       "catalog": 64,
       "store": 48,
       "sales": 47,
@@ -7821,7 +7821,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: adjust",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/inventoryRouter.ts:403"
+      "loc": "server/routers/inventoryRouter.ts:411"
     },
     {
       "surface": "trpc",
@@ -7838,7 +7838,58 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/inventoryRouter.ts:452"
+      "loc": "server/routers/inventoryRouter.ts:460"
+    },
+    {
+      "surface": "trpc",
+      "router": "inventoryRouter",
+      "proposedPermission": "inventory.inventory.approve",
+      "name": "approveCostRevaluation",
+      "kind": "mutation",
+      "procedure": "inventoryManagerProcedure",
+      "authority": "module-gate",
+      "module": "inventory",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/inventoryRouter.ts:570"
+    },
+    {
+      "surface": "trpc",
+      "router": "inventoryRouter",
+      "proposedPermission": "inventory.inventory.cost_revaluation_preview",
+      "name": "costRevaluationPreview",
+      "kind": "query",
+      "procedure": "inventoryReadProcedure",
+      "authority": "module-map",
+      "module": "inventory",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/inventoryRouter.ts:623"
+    },
+    {
+      "surface": "trpc",
+      "router": "inventoryRouter",
+      "proposedPermission": "inventory.inventory.cost_revaluations",
+      "name": "costRevaluations",
+      "kind": "query",
+      "procedure": "inventoryReadProcedure",
+      "authority": "module-map",
+      "module": "inventory",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/inventoryRouter.ts:605"
     },
     {
       "surface": "trpc",
@@ -7855,7 +7906,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:937"
+      "loc": "server/routers/inventoryRouter.ts:1067"
     },
     {
       "surface": "trpc",
@@ -7872,7 +7923,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:842"
+      "loc": "server/routers/inventoryRouter.ts:972"
     },
     {
       "surface": "trpc",
@@ -7889,7 +7940,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:618"
+      "loc": "server/routers/inventoryRouter.ts:748"
     },
     {
       "surface": "trpc",
@@ -7906,7 +7957,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:642"
+      "loc": "server/routers/inventoryRouter.ts:772"
     },
     {
       "surface": "trpc",
@@ -7923,7 +7974,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:520"
+      "loc": "server/routers/inventoryRouter.ts:650"
     },
     {
       "surface": "trpc",
@@ -7940,7 +7991,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:503"
+      "loc": "server/routers/inventoryRouter.ts:633"
     },
     {
       "surface": "trpc",
@@ -7957,7 +8008,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:922"
+      "loc": "server/routers/inventoryRouter.ts:1052"
     },
     {
       "surface": "trpc",
@@ -7974,7 +8025,24 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reject",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/inventoryRouter.ts:477"
+      "loc": "server/routers/inventoryRouter.ts:485"
+    },
+    {
+      "surface": "trpc",
+      "router": "inventoryRouter",
+      "proposedPermission": "inventory.inventory.reject",
+      "name": "rejectCostRevaluation",
+      "kind": "mutation",
+      "procedure": "inventoryManagerProcedure",
+      "authority": "module-gate",
+      "module": "inventory",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reject",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/inventoryRouter.ts:587"
     },
     {
       "surface": "trpc",
@@ -7991,7 +8059,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:786"
+      "loc": "server/routers/inventoryRouter.ts:916"
+    },
+    {
+      "surface": "trpc",
+      "router": "inventoryRouter",
+      "proposedPermission": "inventory.inventory.request_cost_revaluation",
+      "name": "requestCostRevaluation",
+      "kind": "mutation",
+      "procedure": "inventoryManagerProcedure",
+      "authority": "module-gate",
+      "module": "inventory",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/inventoryRouter.ts:516"
     },
     {
       "surface": "trpc",
@@ -8008,7 +8093,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:885"
+      "loc": "server/routers/inventoryRouter.ts:1015"
     },
     {
       "surface": "trpc",
@@ -8025,7 +8110,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:900"
+      "loc": "server/routers/inventoryRouter.ts:1030"
     },
     {
       "surface": "trpc",
@@ -8042,7 +8127,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:818"
+      "loc": "server/routers/inventoryRouter.ts:948"
     },
     {
       "surface": "trpc",
@@ -8059,7 +8144,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:905"
+      "loc": "server/routers/inventoryRouter.ts:1035"
     },
     {
       "surface": "trpc",
@@ -8076,7 +8161,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:594"
+      "loc": "server/routers/inventoryRouter.ts:724"
     },
     {
       "surface": "trpc",
@@ -8093,7 +8178,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:148"
+      "loc": "server/routers/inventoryRouter.ts:156"
     },
     {
       "surface": "trpc",
@@ -8110,7 +8195,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:208"
+      "loc": "server/routers/inventoryRouter.ts:216"
     },
     {
       "surface": "trpc",
@@ -8127,7 +8212,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/inventoryRouter.ts:383"
+      "loc": "server/routers/inventoryRouter.ts:391"
     },
     {
       "surface": "trpc",
@@ -8144,7 +8229,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:319"
+      "loc": "server/routers/inventoryRouter.ts:327"
     },
     {
       "surface": "trpc",
@@ -8161,7 +8246,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:344"
+      "loc": "server/routers/inventoryRouter.ts:352"
     },
     {
       "surface": "trpc",
@@ -8178,7 +8263,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:278"
+      "loc": "server/routers/inventoryRouter.ts:286"
     },
     {
       "surface": "trpc",
@@ -8195,7 +8280,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/inventoryRouter.ts:330"
+      "loc": "server/routers/inventoryRouter.ts:338"
     },
     {
       "surface": "trpc",
