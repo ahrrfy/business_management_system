@@ -8,13 +8,14 @@
     },
     "byAuthority": {
       "module-gate": 441,
-      "module-map": 313,
+      "module-map": 309,
       "admin": 67,
       "raw-role": 55,
       "none": 53,
       "self-assignment": 19,
       "owner": 11,
       "platform": 5,
+      "unknown": 4,
       "token": 2,
       "device-bootstrap": 1,
       "public-read": 1
@@ -25,7 +26,7 @@
       "HIGH": 139
     },
     "byModule": {
-      "(none)": 202,
+      "(none)": 206,
       "hr": 100,
       "reports": 81,
       "digital_cards": 75,
@@ -33,10 +34,10 @@
       "inventory": 48,
       "store": 48,
       "products": 47,
-      "sales": 30,
       "workorders": 30,
       "crm": 29,
       "campaigns": 28,
+      "sales": 26,
       "assets": 21,
       "commissions": 16,
       "productStudio": 16,
@@ -69,7 +70,8 @@
       "UNAUTHENTICATED": 33,
       "READ_WITHOUT_MODULE_GATE": 30,
       "WRITE_WITHOUT_MODULE_GATE": 23,
-      "HANDLER_ROLE_CHECK": 6
+      "HANDLER_ROLE_CHECK": 6,
+      "PROCEDURE_UNKNOWN": 4
     },
     "expressRoutes": 17,
     "expressMounts": 11,
@@ -12853,7 +12855,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/saleRouter.ts:1127"
+      "loc": "server/routers/saleRouter.ts:1171"
     },
     {
       "surface": "trpc",
@@ -12870,7 +12872,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:345"
+      "loc": "server/routers/saleRouter.ts:376"
     },
     {
       "surface": "trpc",
@@ -12887,7 +12889,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:536"
+      "loc": "server/routers/saleRouter.ts:567"
     },
     {
       "surface": "trpc",
@@ -12904,7 +12906,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:738"
+      "loc": "server/routers/saleRouter.ts:769"
     },
     {
       "surface": "trpc",
@@ -12921,7 +12923,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:359"
+      "loc": "server/routers/saleRouter.ts:390"
     },
     {
       "surface": "trpc",
@@ -12938,7 +12940,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:952"
+      "loc": "server/routers/saleRouter.ts:991"
     },
     {
       "surface": "trpc",
@@ -12955,7 +12957,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:323"
+      "loc": "server/routers/saleRouter.ts:354"
     },
     {
       "surface": "trpc",
@@ -12963,16 +12965,16 @@
       "proposedPermission": "sales.sale.list",
       "name": "list",
       "kind": "query",
-      "procedure": "salesReadProcedure",
-      "authority": "module-map",
-      "module": "sales",
-      "level": "READ",
+      "procedure": "invoiceListProcedure",
+      "authority": "unknown",
+      "module": "",
+      "level": "",
       "roles": "",
-      "branch": "scoped",
+      "branch": "unknown",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
-      "loc": "server/routers/saleRouter.ts:768"
+      "flags": "PROCEDURE_UNKNOWN",
+      "loc": "server/routers/saleRouter.ts:799"
     },
     {
       "surface": "trpc",
@@ -12980,16 +12982,16 @@
       "proposedPermission": "sales.sale.list",
       "name": "listPage",
       "kind": "query",
-      "procedure": "salesReadProcedure",
-      "authority": "module-map",
-      "module": "sales",
-      "level": "READ",
+      "procedure": "invoiceListProcedure",
+      "authority": "unknown",
+      "module": "",
+      "level": "",
       "roles": "",
-      "branch": "scoped",
+      "branch": "unknown",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
-      "loc": "server/routers/saleRouter.ts:833"
+      "flags": "PROCEDURE_UNKNOWN",
+      "loc": "server/routers/saleRouter.ts:865"
     },
     {
       "surface": "trpc",
@@ -12997,16 +12999,16 @@
       "proposedPermission": "sales.sale.list",
       "name": "listSummary",
       "kind": "query",
-      "procedure": "salesReadProcedure",
-      "authority": "module-map",
-      "module": "sales",
-      "level": "READ",
+      "procedure": "invoiceListProcedure",
+      "authority": "unknown",
+      "module": "",
+      "level": "",
       "roles": "",
-      "branch": "scoped",
+      "branch": "unknown",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
-      "loc": "server/routers/saleRouter.ts:912"
+      "flags": "PROCEDURE_UNKNOWN",
+      "loc": "server/routers/saleRouter.ts:950"
     },
     {
       "surface": "trpc",
@@ -13023,7 +13025,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:476"
+      "loc": "server/routers/saleRouter.ts:507"
     },
     {
       "surface": "trpc",
@@ -13040,7 +13042,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/saleRouter.ts:659"
+      "loc": "server/routers/saleRouter.ts:690"
     },
     {
       "surface": "trpc",
@@ -13048,16 +13050,16 @@
       "proposedPermission": "sales.sale.salespeople",
       "name": "salespeople",
       "kind": "query",
-      "procedure": "salesReadProcedure",
-      "authority": "module-map",
-      "module": "sales",
-      "level": "READ",
+      "procedure": "invoiceListProcedure",
+      "authority": "unknown",
+      "module": "",
+      "level": "",
       "roles": "",
-      "branch": "scoped",
+      "branch": "unknown",
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
-      "flags": "",
-      "loc": "server/routers/saleRouter.ts:892"
+      "flags": "PROCEDURE_UNKNOWN",
+      "loc": "server/routers/saleRouter.ts:925"
     },
     {
       "surface": "trpc",

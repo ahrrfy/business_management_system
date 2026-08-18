@@ -31,7 +31,7 @@ import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { cancelSale, correctSale, processPayment } from "../services/saleService";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
-import { canSeeCostForUser, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -244,9 +244,31 @@ type SalesListInput = z.infer<typeof salesListInput>;
 
 /** يبني شروط WHERE لقائمة المبيعات — مستخدم في list و listSummary معاً
  *  ⇒ يضمن تطابق الفلترة بينهما للأبد (نفس عزل الفرع ونفس الحدّ نصف المفتوح [from, to+يوم)). */
-export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null, scopedOwnerId: number | null = null) {
+export function buildSalesListConds(
+  input: SalesListInput,
+  scopedBranchId: number | null,
+  scopedOwnerId: number | null = null,
+  /**
+   * نطاق القناة (١٨/٨) — مرآةُ `sales.get` على القائمة: نطاقُ الاستقبال/الطباعة يرى فواتير
+   * محطّته وحدها. يتطلّب `leftJoin(shifts)` في كل مستهلك (كما يتطلّب عزلُ الموظف join أوامر
+   * الشغل). `sales` (وغيابُ القيمة) = بلا حصر قناة — سلوك ما قبل التغيير حرفياً.
+   */
+  invoiceListScope: InvoiceScope | null = null,
+) {
   const conds = [];
   if (scopedBranchId) conds.push(eq(invoices.branchId, scopedBranchId));
+  if (invoiceListScope === "reception") {
+    conds.push(
+      or(
+        eq(shifts.shiftType, "RECEPTION"),
+        // فاتورة تسليم/إرسال أُنشئت بلا وردية استقبال مفتوحة (deliver.ts/dispatch.ts يختمان
+        // NULL عندئذٍ) — كانت تسقط من نطاق الاستقبال كلّياً رغم أنّها فاتورةُ طلبه.
+        and(isNull(invoices.shiftId), eq(invoices.sourceType, "WORKORDER")),
+      )!,
+    );
+  } else if (invoiceListScope === "print") {
+    conds.push(eq(shifts.shiftType, "PRINT_SERVICES"));
+  }
   // فلتر الفرع الصريح — else حتماً: العزل الحاكم (scopedBranchId) مقدَّم دائماً، فلا يستطيع
   // غير المرتفع توسيع نطاقه بإرسال branchId مغاير (يُتجاهَل مدخله بصمت ويبقى محصوراً بفرعه).
   else if (input?.branchId) conds.push(eq(invoices.branchId, input.branchId));
@@ -312,6 +334,15 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
       or(
         sql`${invoices.invoiceNumber} LIKE ${raw} ESCAPE '!'`,
         sql`coalesce(${customers.searchNorm}, '') LIKE ${folded} ESCAPE '!'`,
+        // ١٨/٨ (بلاغ المالك): **رقم أمر الشغل** — هو الرقم الذي بيد الزبون وعلى باركود
+        // التذكرة (`WO-1-…`)، بينما الفاتورة تُرقَّم من مولّدٍ آخر (`INV-1-…`) و`sourceId`
+        // يحمل المعرّف العدديّ `WO-{id}` لا رقم الأمر ⇒ مسحُ التذكرة في شاشة الفواتير كان
+        // يعيد «لا فواتير مطابقة» حتماً. الـleftJoin على workOrders قائمٌ في كل مستهلكي
+        // هذه الشروط (يفرضه عزل الموظف) فالتوسعة بلا كلفة بنيوية.
+        sql`coalesce(${workOrders.orderNumber}, '') LIKE ${raw} ESCAPE '!'`,
+        // مطابقةٌ تامّة لا LIKE: `sourceId` يحمل أيضاً clientRequestId (uuid) لفواتير POS،
+        // فـLIKE على جزءٍ قصير يلوّث النتائج.
+        eq(invoices.sourceId, input.q),
       )!,
     );
   }
@@ -765,12 +796,12 @@ export const saleRouter = router({
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
   // /simplify ٣٠/٦: list = listPage().rows ⇒ كاتب واحد للاستعلام، صفر تَكرار.
-  list: salesReadProcedure
+  list: invoiceListProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
+      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId, ctx.invoiceListScope);
       const page = await paginateKeyset({
         cursor: input?.cursor,
         limit: input?.limit,
@@ -813,6 +844,7 @@ export const saleRouter = router({
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
@@ -830,12 +862,12 @@ export const saleRouter = router({
 
   // S3+S4 (٣٠/٦): listPage — صياغة keyset رسمية تُعيد `{rows, nextCursor, hasMore}`.
   // للواجهات الجَديدة (useInfiniteQuery({getNextPageParam})).
-  listPage: salesReadProcedure
+  listPage: invoiceListProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return { rows: [], nextCursor: null as number | null, hasMore: false };
-      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
+      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId, ctx.invoiceListScope);
       const { rows, hasMore, nextCursor } = await paginateKeyset({
         cursor: input?.cursor,
         limit: input?.limit,
@@ -873,6 +905,7 @@ export const saleRouter = router({
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
@@ -889,12 +922,16 @@ export const saleRouter = router({
     }),
 
   /** موظفو المبيعات الذين لديهم فواتير ضمن نطاق صلاحية المستدعي — لتغذية الفلتر بلا كشف دليل المستخدمين. */
-  salespeople: salesReadProcedure.query(async ({ ctx }) => {
+  salespeople: invoiceListProcedure.query(async ({ ctx }) => {
     const db = getDb();
     if (!db) return [];
     const conds = [isNotNull(invoices.createdBy)];
     if (ctx.scopedBranchId != null) conds.push(eq(invoices.branchId, ctx.scopedBranchId));
-    if (ctx.scopedOwnerId != null) conds.push(eq(invoices.createdBy, ctx.scopedOwnerId));
+    // ١٨/٨: مرآةُ عزل القائمة حرفياً (`buildSalesListConds`) — كان القصّ على `createdBy` وحده
+    // بلا فرع أوامر الشغل، فتخلو قائمةُ فلتر «موظف المبيعات» ممّن ظهرت فواتيرهم في الجدول.
+    if (ctx.scopedOwnerId != null) {
+      conds.push(or(eq(invoices.createdBy, ctx.scopedOwnerId), eq(workOrders.createdBy, ctx.scopedOwnerId))!);
+    }
     return db
       .select({
         id: invoices.createdBy,
@@ -902,6 +939,7 @@ export const saleRouter = router({
       })
       .from(invoices)
       .leftJoin(users, eq(invoices.createdBy, users.id))
+      .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
       .where(and(...conds))
       .groupBy(invoices.createdBy)
       .orderBy(sql`name ASC`);
@@ -909,12 +947,12 @@ export const saleRouter = router({
 
   // مجاميع كل النتائج المطابقة للفلتر (لا الصفحة المعروضة فقط) — نفس شروط list حتماً
   // عبر buildSalesListConds. الأموال نصّية كما تعيدها mysql2 (SUM على decimal) — لا parseFloat.
-  listSummary: salesReadProcedure
+  listSummary: invoiceListProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return { count: 0, totalAmount: "0", paidAmount: "0", dueAmount: "0" };
-      const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
+      const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId, ctx.invoiceListScope);
       const row = (
         await db
           .select({
@@ -934,6 +972,7 @@ export const saleRouter = router({
           // leftJoin على مفتاح أجنبيّ أحاديّ ⇒ لا يُضاعف صفوف الفواتير ⇒ المجاميع تبقى صحيحة،
           // وcount يبقى مطابقاً تماماً لعدد صفوف list (نفس الشروط ونفس الجداول).
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
           .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
@@ -1036,7 +1075,12 @@ export const saleRouter = router({
     if (invoiceViewScope === "reception") {
       // Reception operators may reprint the branch reception queue, but the fallback must never
       // become a read path into retail invoices or the wider sales module.
-      if (inv.shiftType !== "RECEPTION") return null;
+      // ١٨/٨: فاتورة تسليم/إرسال أُنشئت بلا وردية استقبال مفتوحة تُختَم `shiftId = NULL` — كانت
+      // تسقط هنا فلا يفتحها ولا يعيد طباعتها مَن استقبل طلبها. تُقبَل بحصرٍ ضيّق على WORKORDER.
+      if (inv.shiftType !== "RECEPTION" && !(inv.shiftId == null && inv.sourceType === "WORKORDER")) return null;
+    } else if (invoiceViewScope === "print") {
+      // كاشير الطباعة: فواتير محطّته وحدها (لا تجزئة ولا استقبال).
+      if (inv.shiftType !== "PRINT_SERVICES") return null;
     } else if (
       invoiceViewScope === "sales"
       && ctx.scopedOwnerId != null

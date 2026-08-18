@@ -781,9 +781,12 @@ export default function Invoices() {
       <DataTable
         columns={columns}
         data={data}
-        searchPlaceholder="بحث برقم الفاتورة أو اسم العميل…"
+        // ١٨/٨: البحث صار يشمل رقم أمر الشغل — وهو الرقم الذي بيد الزبون وعلى باركود التذكرة.
+        searchPlaceholder="بحث برقم الفاتورة أو أمر الشغل أو اسم العميل…"
         barcodeSearch
         loading={rows.isLoading}
+        // صدق الخطأ: الرفض ٤٠٣/انقطاع الشبكة كان يُعرَض «لا فواتير مطابقة» فيُقرأ «لا فواتير لي».
+        errorState={{ isError: rows.isError, message: rows.error?.message, onRetry: () => void rows.refetch() }}
         emptyText="لا فواتير مطابقة."
         selection={sel}
         getRowId={(r) => r.id}
