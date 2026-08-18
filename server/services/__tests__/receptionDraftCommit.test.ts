@@ -93,7 +93,7 @@ describe("ش٣ — تثبيت المسوّدة", () => {
     expect(r1.regularSale).not.toBeNull();
     expect(r1.regularSale?.shiftId).toBe(shift.shiftId);
     expect(r1.workOrders.length).toBe(1);
-    expect(r1.workOrders[0].orderNumber).toMatch(/^WO-1-/);
+    expect(r1.workOrders[0].orderNumber).toMatch(/^\d+$/); // ١٨/٨: رقمٌ تسلسليّ قصير
     expect(r1.workOrders[0].deposit).toBe("45000.00");
 
     // فاتورة البيع المباشر: 2×1000 مدفوعة كاملاً؛ العربون الفائض 45000 ذهب لأمر الشغل.

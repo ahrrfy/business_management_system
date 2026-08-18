@@ -12,6 +12,7 @@
 
 import { createHmac } from "crypto";
 import Decimal from "decimal.js";
+import { docBarcode } from "@shared/documentNumber";
 import { money, round2 } from "./money";
 import type {
   BarcodeSet,
@@ -120,7 +121,9 @@ export function invoiceBarcodeSet(inv: InvoicePayloadFields): BarcodeSet {
   const sig = sign(dataFields);
 
   return {
-    barcode128: inv.invoiceNumber,
+    // ١٨/٨ — رقم العرض قصيرٌ (10023) لكن **رمز الآلة يبقى بادئياً**: الماسح يعرف نوع
+    // المستند من بادئته فيوجّه المسح صحيحاً؛ رقمٌ عارٍ من الأرقام كان سيُقرأ باركود منتج.
+    barcode128: docBarcode("INV", inv.invoiceNumber),
     qrPayload: [...dataFields, sig].join("|"),
     displayLabel: [
       `فاتورة: ${inv.invoiceNumber}`,
@@ -135,7 +138,7 @@ export function workOrderBarcodeSet(wo: WorkOrderPayloadFields): BarcodeSet {
   const sig = sign(dataFields);
 
   return {
-    barcode128: wo.orderNumber,
+    barcode128: docBarcode("WO", wo.orderNumber),
     qrPayload: [...dataFields, sig].join("|"),
     displayLabel: `طلب خدمة: ${wo.orderNumber}\n${toDisplayDate(isoDate)}`,
   };

@@ -59,6 +59,7 @@ export default defineConfig({
       "client/src/lib/unitPrice.test.ts",
       "shared/moneyPrecision.test.ts",
       "shared/__tests__/workOrderDeliveryState.test.ts",
+      "shared/__tests__/documentNumber.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",
       "server/auth/password.test.ts",

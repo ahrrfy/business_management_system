@@ -10983,3 +10983,19 @@ export const offlineRecoveryItems = mysqlTable(
   }),
 );
 export type OfflineRecoveryItem = typeof offlineRecoveryItems.$inferSelect;
+
+/**
+ * عدّادات المستندات (١٨/٨، هجرة 0211) — مصدر الأرقام التسلسلية القصيرة.
+ *
+ * لماذا جدولٌ مستقلّ بدل مسح `MAX(number)+1` كما كان: المسح `LIKE 'prefix%'` مع `FOR UPDATE`
+ * **لا يقفل صفوفاً غير موجودة** في InnoDB (تعليقٌ محفور في numbering.ts) فيقرأ متزامنان نفس
+ * القيمة؛ عولج بـGET_LOCK ترقيعاً لمولّدَين فقط، وبقيت سبعةُ مولّدات أخرى بلا حماية. الحجز
+ * هنا ذرّيٌّ بعمليةٍ واحدة (`LAST_INSERT_ID` داخل ON DUPLICATE KEY UPDATE) — لا قفلَ صريحاً
+ * ولا مسحَ ولا سباقَ ممكناً.
+ */
+export const documentCounters = mysqlTable("documentCounters", {
+  counterKey: varchar("counterKey", { length: 64 }).primaryKey(),
+  lastValue: bigint("lastValue", { mode: "number", unsigned: true }).notNull().default(0),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type DocumentCounter = typeof documentCounters.$inferSelect;

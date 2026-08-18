@@ -4,6 +4,7 @@ import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
+import { stripDocPrefix } from "@shared/documentNumber";
 import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { z } from "zod";
@@ -328,8 +329,12 @@ export function buildSalesListConds(
     // رقم الفاتورة يُطابَق خاماً (رموز/أرقام لا معنى للتطبيع العربي فيها)، واسم العميل عبر
     // customers.searchNorm المطبَّع عربياً (D2 ١/٧ — «احمد» يجد «أحمد»)، نفس نمط customerService.
     // ⚠️ يتطلّب join على customers في **كل** مستهلك لهذه الشروط (list وlistSummary معاً).
-    const raw = `%${escLike(input.q)}%`;
-    const folded = `%${escLike(normalizeSearchText(input.q))}%`;
+    // ١٨/٨: يُقبَل البحث بـ**رقم العرض القصير** (`10023`) وبـ**رمز الآلة** (`INV-10023`،
+    // وهو ما يرسله الماسح) — تُنزَع البادئة حين يكون الباقي رقماً. والصيغة التاريخية
+    // (`INV-1-20260818-00073`) تبقى كما هي فتُطابَق حرفياً.
+    const term = stripDocPrefix(input.q);
+    const raw = `%${escLike(term)}%`;
+    const folded = `%${escLike(normalizeSearchText(term))}%`;
     conds.push(
       or(
         sql`${invoices.invoiceNumber} LIKE ${raw} ESCAPE '!'`,
@@ -342,7 +347,7 @@ export function buildSalesListConds(
         sql`coalesce(${workOrders.orderNumber}, '') LIKE ${raw} ESCAPE '!'`,
         // مطابقةٌ تامّة لا LIKE: `sourceId` يحمل أيضاً clientRequestId (uuid) لفواتير POS،
         // فـLIKE على جزءٍ قصير يلوّث النتائج.
-        eq(invoices.sourceId, input.q),
+        eq(invoices.sourceId, term),
       )!,
     );
   }

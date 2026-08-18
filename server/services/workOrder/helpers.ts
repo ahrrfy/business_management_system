@@ -1,23 +1,20 @@
 // أدوات داخلية: ترقيم الأمر، تحميله تحت قفل صفّ، وعزل الفرع/المحطة — لا تُصدَّر من نقطة الدخول العامة.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, like, notInArray } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import { deliveryConsignments, workOrders } from "../../../drizzle/schema";
-import { toDateStr } from "../money";
+import { nextCounterValue } from "../numbering";
 import type { Actor } from "../tx";
 
-async function nextWorkOrderNumber(tx: any, branchId: number): Promise<string> {
-  const ymd = toDateStr().replace(/-/g, "");
-  const prefix = `WO-${branchId}-${ymd}-`;
-  const rows = await tx
-    .select({ n: workOrders.orderNumber })
-    .from(workOrders)
-    .where(like(workOrders.orderNumber, `${prefix}%`))
-    .orderBy(desc(workOrders.id))
-    .for("update")
-    .limit(1);
-  const last = rows[0]?.n;
-  const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
-  return prefix + String(seq).padStart(5, "0");
+/**
+ * رقم أمر الشغل — **عددٌ تسلسليّ قصير** يبدأ من 5001 (طلب المالك ١٨/٨؛ نطاقٌ متباعدٌ عن
+ * الفواتير 10001+ كي يُميَّز نوع المستند بالنظر). التفصيل والمقايضة في `services/numbering.ts`.
+ *
+ * الصيغة القديمة `WO-{فرع}-{YYYYMMDD}-{تسلسل}` كانت تُولَّد بمسح `LIKE` + `MAX+1` **بلا
+ * GET_LOCK إطلاقاً** — أحدُ سبعة مولّدات على النمط الذي وُصف صراحةً بأنه غير كافٍ ضدّ السباق.
+ * العدّاد الذرّيّ يُنهي ذلك بنيوياً (القيد الفريد يبقى الحارس الأخير).
+ */
+async function nextWorkOrderNumber(tx: any, _branchId: number): Promise<string> {
+  return String(await nextCounterValue(tx, "workOrder"));
 }
 
 async function loadWorkOrder(tx: any, workOrderId: number) {

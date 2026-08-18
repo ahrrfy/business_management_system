@@ -491,7 +491,15 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  // ── D6: فجوات تسلسل INV-{فرع}-{YYYYMMDD}-{seq5} لكل (فرع×يوم) ──
+  // ── D6: فجوات تسلسل الفواتير ──
+  //
+  // ⚠️ صيغتان تتعايشان (١٨/٨): التاريخية `INV-{فرع}-{YYYYMMDD}-{seq5}` تسلسلُها **لكل فرعٍ
+  // ويوم**؛ والجديدة رقمٌ عالميّ متسلسل من عدّادٍ ذرّيّ (هجرة 0211). الكاشف كان مقصوراً على
+  // `LIKE 'INV-%'` ⇒ مع الصيغة الجديدة يعيد صفر صفوف ويعمى **صامتاً** (لا خطأ ولا نتيجة) —
+  // أسوأ من الانهيار. الآن فرعان صريحان يجمعهما UNION، كلٌّ بدلالة تسلسله.
+  //
+  // في الصيغة الجديدة `ymd` هو تاريخُ الفاتورة لا جزءٌ من الرقم، والفجوة تُقاس على المدى
+  // (max−min+1) لا على البدء من ١: العدّاد عالميّ فلا يبدأ كلّ يومٍ من الواحد.
   const gapsP = safe(
     db.execute(sql`
       SELECT t.branchId, b.name AS branchName, t.ymd,
@@ -499,7 +507,8 @@ export async function getAnomalyWatch(opts: {
       FROM (
         SELECT i.branchId,
           SUBSTRING_INDEX(SUBSTRING_INDEX(i.invoiceNumber, '-', 3), '-', -1) AS ymd,
-          CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', -1) AS UNSIGNED) AS seq
+          CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', -1) AS UNSIGNED) AS seq,
+          0 AS isSequential
         FROM invoices i
         WHERE i.invoiceNumber LIKE 'INV-%'
           AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
@@ -508,7 +517,24 @@ export async function getAnomalyWatch(opts: {
       LEFT JOIN branches b ON b.id = t.branchId
       GROUP BY t.branchId, b.name, t.ymd
       HAVING MAX(t.seq) <> COUNT(*) OR MIN(t.seq) <> 1
-      ORDER BY t.ymd DESC
+
+      UNION ALL
+
+      SELECT t.branchId, b.name AS branchName, t.ymd,
+        COUNT(*) AS actualCount, MAX(t.seq) AS maxSeq, MIN(t.seq) AS minSeq
+      FROM (
+        SELECT i.branchId,
+          DATE_FORMAT(i.invoiceDate, '%Y%m%d') AS ymd,
+          CAST(i.invoiceNumber AS UNSIGNED) AS seq
+        FROM invoices i
+        WHERE i.invoiceNumber REGEXP '^[0-9]+$'
+          AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
+          ${branchInv}
+      ) t
+      LEFT JOIN branches b ON b.id = t.branchId
+      GROUP BY t.branchId, b.name, t.ymd
+      HAVING MAX(t.seq) - MIN(t.seq) + 1 <> COUNT(*)
+      ORDER BY ymd DESC
     `),
     null,
   );
