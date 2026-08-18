@@ -40,6 +40,46 @@ export type DeliveryMembership = {
   userId: number;
 };
 
+/**
+ * سلطةُ **كشف شركة التوصيل** (١٩/٨) — بديلٌ عن عضوية البوّابة حين تُثبِت الشركةُ التسليم
+ * بكشفها المستنديّ بدل حساب مندوب.
+ *
+ * لماذا: `resolveDeliveryMembership` يشترط حساب مستخدمٍ مرتبطاً بالجهة، وأغلب جهات التوصيل
+ * كيانُ بياناتٍ بلا حساب ⇒ لا سطر يُختَم مُسلَّماً فلا توريد ولا أجرة، والمال يعلق بلا مخرج.
+ * الكشف هو الدليل الذي أقرّه المالك، فتُشتقّ منه سلطةٌ بشكل العضوية نفسها كي يمرّ على **نفس
+ * المسار الماليّ** بلا نسخةٍ ثانية تنجرف.
+ *
+ * الدور `MANAGER` مقصود: يتجاوز حصر السائق بإرسالياته وحدَه (`assertMemberCanUseConsignment`)
+ * — الكشف مستندُ الشركة كلّها لا سجلَّ سائقٍ بعينه. و`userId = 0` علامةٌ صريحة على أنّ
+ * السلطة ليست لمستخدمٍ بل لمستند؛ هويّة **الفاعل الحقيقيّ** تبقى في `actor` وسجلّ التدقيق.
+ */
+export async function resolveStatementWitnessAuthority(
+  partyId: number,
+): Promise<DeliveryMembership | null> {
+  const db = getDb();
+  if (!db) return null;
+  const party = (
+    await db
+      .select({
+        id: deliveryParties.id,
+        name: deliveryParties.name,
+        partyType: deliveryParties.partyType,
+        isActive: deliveryParties.isActive,
+      })
+      .from(deliveryParties)
+      .where(eq(deliveryParties.id, partyId))
+      .limit(1)
+  )[0];
+  if (!party || party.isActive === false) return null;
+  return {
+    partyId: Number(party.id),
+    partyName: party.name,
+    partyType: party.partyType as "INDIVIDUAL" | "COMPANY",
+    memberRole: "MANAGER",
+    userId: 0,
+  };
+}
+
 /** Resolve the new membership model first, then the legacy one-account link. */
 export async function resolveDeliveryMembership(
   userId: number,

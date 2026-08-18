@@ -54,6 +54,25 @@ export interface RemittanceInput {
   countedCash: string;
   shiftType?: "RECEPTION" | "RETAIL";
   clientRequestId?: string | null;
+  /**
+   * **كشف شركة التوصيل** (١٩/٨) — مستند الشركة الذي قاد هذه التسوية (إطار المالك نسخة ٢:
+   * «كشف الشركة هو الدليل الأساسيّ للشركات التي لا تملك بوابة»).
+   *
+   * وجودُه يغيّر ثلاثة أشياء ولا يغيّر المسار الماليّ:
+   *  ① أسطرُه تُثبِت التسليم أوّلاً حين لا يكون الطرد مختوماً `DELIVERED` (عبر
+   *    `confirmConsignmentDelivery` بشاهد الكشف) — فالتسليم والتحصيل والتوريد عمليةٌ واحدة.
+   *  ② رقمُه **فريدٌ لكل جهة** (قيدٌ في القاعدة) ⇒ إعادةُ إدخال الكشف نفسه ترتدّ بدل أن
+   *    تضاعف القيود — مفتاح عدم التكرار الأعماليّ فوق idempotency التقنيّ.
+   *  ③ استقطاعاتُه **مصروف شركةٍ مستقلّ** يُوثَّق على المستند، لا تخفيضُ ذمّة عميل.
+   */
+  companyStatement?: {
+    statementNumber: string;
+    statementDate?: string | null;
+    attachmentUrl?: string | null;
+    /** استقطاعات الشركة من الحصيلة (أجور توصيل حسمتها قبل التوريد) — إفصاحٌ على المستند. */
+    deductionsTotal?: string | null;
+    notes?: string | null;
+  } | null;
 }
 
 export async function recordDeliveryRemittance(
@@ -285,10 +304,18 @@ export async function recordDeliveryRemittance(
       // New deliveries settle customer AR at the physical-delivery event and
       // move the amount to courier custody.  Legacy rows can still have a live
       // invoice remainder, so only that part is credited during remittance.
-      const invoiceCredit = Decimal.min(
-        collected,
-        Decimal.max(invRemaining, 0),
-      );
+      //
+      // ⚠️ ١٩/٨ — الشرط الحاسم `custodyRecognizedAt`: كان الائتمان يُحسب `min(المحصَّل,
+      // متبقّي الفاتورة)` وحدَه، وهو **صحيحٌ صدفةً** ما دام التسليم يقبض COD كاملاً (فيصير
+      // المتبقّي صفراً والائتمان صفراً). لكن كشف الشركة يُجيز تحصيلاً **جزئياً**: يُسدَّد
+      // ١٢٬٠٠٠ عند التسليم فيبقى ٨٬٠٠٠ حيّاً، فيأتي التوريد ويعتمدها ⇒ الفاتورة تُسدَّد
+      // ٢٠٬٠٠٠ ولم يُقبض إلّا ١٢٬٠٠٠، وذمّةٌ حيّةٌ تُمحى بلا مال. العلامة تفصل بدقّة: عهدةٌ
+      // معترَفٌ بها ⇒ ذمّة العميل سُوّيت لحظة التسليم بما قُبض فعلاً، والتوريد **نقلُ عهدةٍ
+      // إلى نقدٍ لا تسويةُ عميلٍ ثانية** (وهو نصّ التعليق أعلاه حرفياً). والصفوف الموروثة
+      // (بلا اعتراف) تبقى على سلوكها القديم حرفياً.
+      const invoiceCredit = cn.custodyRecognizedAt != null
+        ? new Decimal(0)
+        : Decimal.min(collected, Decimal.max(invRemaining, 0));
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
       const delivered = newCollected.gte(money(cn.codAmount));
       // ٥/٨ — الأجرة تُخصَم من التوريد فقط إذا كانت **ما زالت مستحقّةً علينا** للمندوب:
@@ -374,6 +401,15 @@ export async function recordDeliveryRemittance(
       ),
       status,
       receivedBy: actor.userId,
+      // كشف شركة التوصيل (١٩/٨) — مستند الشركة الذي قاد التسوية. القيد الفريد
+      // (partyId, companyStatementNumber) يجعل إعادةَ إدخال الكشف ترتدّ بدل مضاعفة القيود.
+      companyStatementNumber: input.companyStatement?.statementNumber?.trim() || null,
+      statementDate: input.companyStatement?.statementDate
+        ? new Date(input.companyStatement.statementDate)
+        : null,
+      statementAttachmentUrl: input.companyStatement?.attachmentUrl?.trim() || null,
+      deductionsTotal: toDbMoney(round2(money(input.companyStatement?.deductionsTotal ?? "0"))),
+      notes: input.companyStatement?.notes?.trim() || null,
     });
     const remittanceId = extractInsertId(rmRes);
 

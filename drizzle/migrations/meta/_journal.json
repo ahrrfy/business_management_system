@@ -1471,6 +1471,13 @@
       "when": 1788052262000,
       "tag": "0211_document_counters",
       "breakpoints": true
+    },
+    {
+      "idx": 212,
+      "version": "5",
+      "when": 1788052263000,
+      "tag": "0212_delivery_company_statement",
+      "breakpoints": true
     }
   ]
 }

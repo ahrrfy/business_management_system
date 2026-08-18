@@ -7603,6 +7603,13 @@ export const deliveryRemittances = mysqlTable(
     remittanceNumber: varchar("remittanceNumber", { length: 50 })
       .notNull()
       .unique(), // DR-{branch}-{YYYYMMDD}-{seq}
+    // كشف شركة التوصيل (١٩/٨، هجرة 0212) — مستند الشركة الذي قاد هذه التسوية.
+    // رقمه **فريدٌ لكل جهة** (فهرس uq_remittance_party_statement): إعادة إدخال نفس الكشف
+    // ترتدّ على القيد بدل أن تضاعف القيود. NULL = توريدٌ يدويّ بلا كشف (السلوك القديم).
+    companyStatementNumber: varchar("companyStatementNumber", { length: 64 }),
+    statementDate: date("statementDate"),
+    /** صورة/PDF الكشف — الدليل المستنديّ الذي يُراجَع عند أي خلاف. */
+    statementAttachmentUrl: text("statementAttachmentUrl"),
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
@@ -7618,6 +7625,14 @@ export const deliveryRemittances = mysqlTable(
     feesTotal: decimal("feesTotal", { precision: 15, scale: 2 })
       .default("0")
       .notNull(), // Σ الأجور (مستحقات الجهة)
+    /**
+     * Σ استقطاعات الشركة على الكشف (أجور توصيل حسمتها من الحصيلة قبل التوريد).
+     * **مصروف شركةٍ مستقلّ لا تخفيضُ ذمّة عميل** — الزبون دفع كامل COD، والشركة احتفظت
+     * بأجرتها؛ خصمُها من ذمّة العميل كان سيُسقط إيراداً لم يسقط. مرآةُ قرار الشحن/الكمرك.
+     */
+    deductionsTotal: decimal("deductionsTotal", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     netRemitted: decimal("netRemitted", { precision: 15, scale: 2 }).notNull(), // collectedTotal − feesTotal
     shortfallTotal: decimal("shortfallTotal", { precision: 15, scale: 2 })
       .default("0")

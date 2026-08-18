@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, Check, MessageCircle, Phone, Printer, RotateCcw, Truck } from "lucide-react";
+import { AlertTriangle, Check, FileText, MessageCircle, Phone, Printer, RotateCcw, Truck } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
@@ -20,6 +20,8 @@ import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
+import { Label } from "@/components/ui/label";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
 import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
@@ -513,6 +515,37 @@ function SettleTab() {
   // عميل تُخصَم مرّتين). يتجدّد عند تغيير الجهة وبعد كل نجاح. (نمط SettleDialog/recoverWriteOff.)
   const [remitReqId, setRemitReqId] = useState(() => crypto.randomUUID());
 
+  // ١٩/٨ — حقول كشف شركة التوصيل: مستند الشركة الذي قادت أسطرُه هذه التسوية.
+  const [statementNumber, setStatementNumber] = useState("");
+  const [statementDate, setStatementDate] = useState("");
+  const [statementDeductions, setStatementDeductions] = useState(0);
+  const [statementNotes, setStatementNotes] = useState("");
+
+  const resetAfterSettle = () => {
+    setRows({});
+    setCountedBreakdown({});
+    setCountedCash(0);
+    setStatementNumber("");
+    setStatementDate("");
+    setStatementDeductions(0);
+    setStatementNotes("");
+    setRemitReqId(crypto.randomUUID());
+    utils.delivery.openConsignments.invalidate();
+    utils.delivery.inTransit.invalidate();
+    utils.delivery.listParties.invalidate();
+  };
+
+  const companyStatement = trpc.delivery.recordCompanyStatement.useMutation({
+    onSuccess: (r) => {
+      notify.ok(
+        `سُجِّل كشف الشركة ${r.statementNumber}`,
+        `سند التوريد ${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع${r.deliveriesConfirmed > 0 ? ` · أثبت تسليم ${r.deliveriesConfirmed} طرداً` : ""}`,
+      );
+      resetAfterSettle();
+    },
+    onError: (e) => notify.err(e),
+  });
+
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
       notify.ok("سُجِّل التوريد", `${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع${Number(r.shortfallTotal) > 0 ? ` (عجز ${fmt(r.shortfallTotal)})` : ""}`);
@@ -609,6 +642,21 @@ function SettleTab() {
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
+    // ١٩/٨ — كشف الشركة: إن أُدخل رقمُه فالتسوية تمرّ بمسار الكشف (يُثبت التسليم لما لم
+    // يُختَم بعد، ورقمُه الفريد يمنع إدخاله مرّتين). بلا رقمٍ يبقى التوريد اليدويّ كما كان.
+    if (statementNumber.trim()) {
+      companyStatement.mutate({
+        partyId: Number(partyId),
+        statementNumber: statementNumber.trim(),
+        statementDate: statementDate || null,
+        deductionsTotal: statementDeductions ? String(statementDeductions) : null,
+        notes: statementNotes.trim() || null,
+        lines,
+        countedCash: countedCash.toFixed(2),
+        clientRequestId: remitReqId,
+      });
+      return;
+    }
     remit.mutate({ partyId: Number(partyId), lines, countedCash: countedCash.toFixed(2), clientRequestId: remitReqId });
   };
 
@@ -739,6 +787,44 @@ function SettleTab() {
             </table>
           </ScrollTableShell>
 
+          {/* ١٩/٨ — كشف شركة التوصيل: مستند الشركة الذي قادت أسطرُه هذه التسوية. بإدخال رقمه
+              تصير التسوية «كشفاً»: يُثبِت التسليم لما لم يُختَم بعد (فالشركات بلا بوّابة لم
+              يكن لطرودها مخرجٌ أصلاً)، ورقمُه الفريد لكل جهة يمنع إدخاله مرّتين. */}
+          <div className="rounded-xl border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)]/40 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-black text-[var(--sem-info)]">
+              <FileText aria-hidden className="size-4" />
+              كشف شركة التوصيل (اختياريّ — يملؤه من يسوّي بكشفٍ ورقيّ من الشركة)
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="space-y-1">
+                <Label htmlFor="stmt-no" className="text-xs">رقم الكشف</Label>
+                <Input id="stmt-no" value={statementNumber} maxLength={64} dir="ltr"
+                  onChange={(e) => setStatementNumber(e.target.value)} placeholder="STMT-…" className="h-9" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="stmt-date" className="text-xs">تاريخ الكشف</Label>
+                <Input id="stmt-date" type="date" value={statementDate}
+                  onChange={(e) => setStatementDate(e.target.value)} className="h-9" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="stmt-deduct" className="text-xs">استقطاعات الشركة (إفصاح)</Label>
+                <MoneyInput id="stmt-deduct" value={String(statementDeductions || "")}
+                  onChange={(v) => setStatementDeductions(Number(v) || 0)} ariaLabel="استقطاعات الشركة" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="stmt-notes" className="text-xs">ملاحظة</Label>
+                <Input id="stmt-notes" value={statementNotes} maxLength={500}
+                  onChange={(e) => setStatementNotes(e.target.value)} placeholder="سبب الفرق مثلاً…" className="h-9" />
+              </div>
+            </div>
+            {statementNumber.trim() && (
+              <p className="mt-2 text-[11px] font-bold text-[var(--sem-info)]">
+                ستُسجَّل التسوية ككشفٍ: الطرود غير المختومة يُثبِت الكشفُ تسليمها، والاستقطاع
+                إفصاحٌ على المستند لا يُخصَم من ذمّة أيّ عميل.
+              </p>
+            )}
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl border bg-card p-4 text-sm">
               <div className="flex justify-between border-b py-1.5"><span className="text-muted-foreground">إجمالي التحصيل (COD)</span><span dir="ltr" className="font-bold tabular-nums">{fmt(String(totals.collected))} د.ع</span></div>
@@ -753,7 +839,17 @@ function SettleTab() {
                 <span dir="ltr" className="tabular-nums">{fmt(String(countedCash - totals.net))} د.ع</span>
               </div>
               {canRemit && (
-                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending || Math.abs(countedCash - totals.net) > 0.01}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
+                <Button
+                  className="mt-3 w-full"
+                  onClick={submit}
+                  disabled={remit.isPending || companyStatement.isPending || Math.abs(countedCash - totals.net) > 0.01}
+                >
+                  {remit.isPending || companyStatement.isPending
+                    ? "جارٍ…"
+                    : statementNumber.trim()
+                      ? `تسجيل كشف الشركة ${statementNumber.trim()} وتوريد الصافي`
+                      : "تأكيد التسوية وتوريد الصافي"}
+                </Button>
               )}
             </div>
             <CashCounter value={countedBreakdown} onChange={(c, total) => { setCountedBreakdown(c); setCountedCash(Number(total)); }} />

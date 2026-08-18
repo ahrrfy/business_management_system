@@ -17,6 +17,7 @@ import {
   listDeliveryPartyMembers,
   listDeliveryParties,
   listInTransitConsignments,
+  recordCompanyStatement,
   listOpenConsignments,
   listPartyRemittances,
   listReadyForDispatch,
@@ -375,6 +376,78 @@ export const deliveryRouter = router({
         recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, countedCash: input.countedCash, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
       ));
       await logAudit(ctx, { action: "delivery.remit", entityType: "deliveryRemittance", entityId: res.remittanceId, newValue: { partyId: input.partyId, collectedTotal: res.collectedTotal, feesTotal: res.feesTotal, netRemitted: res.netRemitted, shortfallTotal: res.shortfallTotal } });
+      return res;
+    }),
+
+  /**
+   * **تسجيل كشف شركة التوصيل** (١٩/٨) — مستند التسوية الموحّد: سطرُه يُثبِت التسليم ثمّ
+   * التحصيل ثمّ التوريد. هو المسار اليوميّ للشركات التي لا تملك بوابة مندوب (وهي الغالبة)،
+   * وكان مالُها يعلق بلا مخرجٍ لأنّ ختم التسليم حصريٌّ ببوّابةٍ لا يملكونها.
+   *
+   * البوّابة `deliveryCashierProcedure` = **بوّابة وحدة** (`store:FULL` بأدوار كاشير/مدير)
+   * لا دورٌ خام: نفس أدوار `recordRemittance` مع إلزام مفتاح الوحدة صراحةً — فلا تُضاف نقطة
+   * سلطةٍ بدورٍ خامّ جديدة (حارس `check:authz`). النقد يدخل درج المستلم فعلاً فتُشترط
+   * ورديّته (أو الخزينة للمدير)، وعزل الفرع بـ`assertPartyInScope` كنظيره.
+   */
+  recordCompanyStatement: deliveryCashierProcedure
+    .input(
+      z.object({
+        partyId: z.number().int().positive(),
+        branchId: z.number().int().positive().nullish(),
+        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        statementNumber: z.string().trim().min(2).max(64),
+        statementDate: z.string().trim().min(8).max(10).nullish(),
+        attachmentUrl: z.string().trim().max(2000).nullish(),
+        deductionsTotal: moneyStr.nullish(),
+        notes: z.string().trim().max(500).nullish(),
+        lines: z
+          .array(z.object({ consignmentId: z.number().int().positive(), collectedAmount: moneyStr }))
+          .min(1)
+          .superRefine((lines, ctx) => {
+            const seen = new Set<number>();
+            lines.forEach((line, index) => {
+              if (seen.has(line.consignmentId)) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: [index, "consignmentId"],
+                  message: "الإرسالية مكررة داخل الكشف",
+                });
+              }
+              seen.add(line.consignmentId);
+            });
+          }),
+        countedCash: moneyStr,
+        clientRequestId: z.string().trim().min(8).max(64),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const branchId = effectiveBranch(ctx, input.branchId);
+      const res = await retryOnDeadlock(() => recordCompanyStatement({
+        branchId,
+        partyId: input.partyId,
+        statementNumber: input.statementNumber,
+        statementDate: input.statementDate ?? null,
+        attachmentUrl: input.attachmentUrl ?? null,
+        deductionsTotal: input.deductionsTotal ?? null,
+        notes: input.notes ?? null,
+        lines: input.lines,
+        countedCash: input.countedCash,
+        shiftType: input.shiftType,
+        clientRequestId: input.clientRequestId,
+      }, actorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.companyStatement",
+        entityType: "deliveryRemittance",
+        entityId: res.remittanceId,
+        newValue: {
+          partyId: input.partyId,
+          statementNumber: res.statementNumber,
+          deliveriesConfirmed: res.deliveriesConfirmed,
+          collectedTotal: res.collectedTotal,
+          netRemitted: res.netRemitted,
+        },
+      });
       return res;
     }),
 
