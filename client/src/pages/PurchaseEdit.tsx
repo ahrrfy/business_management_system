@@ -631,6 +631,7 @@ export default function PurchaseEdit() {
             showShipping={false}
             showOtherExpenses={false}
             showDiscount
+            overrideDiscountAmount={invoiceDiscountAmount.toFixed(2)}
             showPayment={false}
             showTaxToggle
             overrideGrandTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}
