@@ -56,6 +56,16 @@ const TRACK_STATUS: Record<string, { label: string; cls: string }> = {
   DELIVERED: { label: "تمّ التسليم", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" },
   CANCELLED: { label: "ملغى", cls: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400" },
 };
+
+export function formatStorefrontReservationDeadline(value: Date | string): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "وقت غير متاح";
+  return new Intl.DateTimeFormat("ar-IQ", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Baghdad",
+  }).format(date);
+}
 type TrackData = NonNullable<RouterOutputs["storefront"]["trackOrder"]>;
 import { fmtInt } from "@/lib/money";
 import { isPublicHost } from "@/lib/siteHosts";
@@ -734,7 +744,11 @@ export default function Storefront() {
   const acceptedQuoteRef = useRef<{ fingerprint: string; total: string } | null>(null);
   checkoutAttemptRef.current = checkoutAttempt;
   const [checkoutSafetyError, setCheckoutSafetyError] = useState<string | null>(null);
-  const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
+  const [confirmation, setConfirmation] = useState<{
+    orderNumber: string;
+    total: string;
+    reservationExpiresAt: Date | string;
+  } | null>(null);
   const viewedProductIds = useRef(new Set<number>());
 
   // تتبّع الطلب العلنيّ — نموذجٌ برقم الطلب + الهاتف يستدعي storefront.trackOrder عند الطلب.
@@ -849,7 +863,11 @@ export default function Storefront() {
       acceptedQuoteRef.current = null;
       setCheckoutAttempt(null);
       saveCheckoutAttempt(null);
-      setConfirmation({ orderNumber: res.orderNumber, total: res.total });
+      setConfirmation({
+        orderNumber: res.orderNumber,
+        total: res.total,
+        reservationExpiresAt: res.reservationExpiresAt,
+      });
       setCart(new Map());
       // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
       // ١٢/٧): المتجر علنيّ بلا جلسة ⇒ إبقاؤها يسرّبها للزبون التالي على جهازٍ مشترك/كشك. الاستعادة
@@ -2061,6 +2079,9 @@ export default function Storefront() {
             </div>
             <h3 className="mt-4 text-lg font-extrabold text-slate-900 dark:text-white">شكراً لك — تمّ استلام طلبك</h3>
             <p className="mt-1 text-sm text-slate-500">سنتواصل معك لتأكيد التوصيل.</p>
+            <p className="mt-3 rounded-xl bg-[var(--sem-warning)]/5 px-3 py-2 text-xs font-bold text-[var(--sem-warning)] ring-1 ring-[var(--sem-warning)]/40">
+              الكمية محجوزة حتى {formatStorefrontReservationDeadline(confirmation.reservationExpiresAt)}؛ بعد ذلك يلزم إعادة الطلب حسب التوفر.
+            </p>
             <div className="mt-5 w-full rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">رقم الطلب</span>
