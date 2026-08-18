@@ -26,6 +26,10 @@ import {
 } from "../../../drizzle/schema";
 import { fullEmployeeName } from "@shared/hr";
 import { requireDb } from "../tx";
+import type { Tx } from "../../db";
+
+/** قارئٌ موحَّد: اتصالٌ عاديّ أو معاملةٌ جارية — كلاهما يدعم نفس بنّاءات الاستعلام. */
+type Reader = Tx | ReturnType<typeof requireDb>;
 import { money, round2 } from "../money";
 import { computeAttendancePay, daysBetween, DEFAULT_WORK_SCHEDULE, type WorkSchedule } from "./attendancePay";
 
@@ -38,6 +42,18 @@ export interface EmployeeStatementInput {
    * الكشف يعرض الراتب وسعر الساعة وأجر كل يوم ⇒ تسريبُه بين الفروع تسريبُ رواتب.
    */
   scopedBranchId?: number | null;
+  /**
+   * معاملةٌ جارية (اختياري) — للقراءة **داخل** معاملة الكاتب لا خارجها. تحتاجه تسويةُ نهاية
+   * الخدمة: تُطابق الأجر المُدخَل يدوياً بما يقوله المحرّك **لحظة الالتزام**، وقراءةٌ خارج
+   * المعاملة قد ترى حالةً غير التي ستُثبَّت. غيابه ⇒ القراءة العادية (`requireDb`).
+   */
+  tx?: Tx;
+  /**
+   * حدُّ نهايةٍ صريح (YYYY-MM-DD) يقصّ نافذة العمل — لتسوية نهاية الخدمة **قبل** أن يُضبط
+   * `employees.terminationDate` (الإنشاء مرحلةٌ سابقة للإكمال). بدونه يُحسب الشهر كاملاً
+   * فيُقارَن أجرُ شهرٍ تامّ بأجرِ جزءٍ منه ⇒ انحرافٌ كاذبٌ لكل تسوية.
+   */
+  employmentEndOverride?: string | null;
 }
 
 /**
@@ -65,7 +81,7 @@ export type StatementDueBasis = "hourly" | "exempt" | "attendance" | "fixedSalar
  * القديمة مخزَّناً ⇒ نأخذ **بند مراجعة الرأس الحالية**؛ وإن غابت (انجرافُ بيانات) نأخذ
  * أعلى مراجعةٍ موجودة بدل أن نُرجع `null` فيعود الرقم إلى الاشتقاق الحيّ صامتاً.
  */
-async function loadPayrollSnapshot(db: ReturnType<typeof requireDb>, employeeId: number, period: string) {
+async function loadPayrollSnapshot(db: Reader, employeeId: number, period: string) {
   const [run] = await db
     .select({
       id: payrollRuns.id,
@@ -131,7 +147,7 @@ function expand(spans: Array<{ from: string; to: string }>, from: string, to: st
 }
 
 export async function getEmployeeStatement(input: EmployeeStatementInput) {
-  const db = requireDb();
+  const db: Reader = input.tx ?? requireDb();
   const p = input.period;
   const monthStart = `${p}-01`;
   const [py, pm] = p.split("-").map(Number);
@@ -180,7 +196,11 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
 
   // نافذة عمله داخل الشهر (تعيين/فصل في منتصفه).
   const employmentStart = emp.hireDate && emp.hireDate > monthStart ? String(emp.hireDate) : monthStart;
-  const employmentEnd = emp.terminationDate && emp.terminationDate < monthEnd ? String(emp.terminationDate) : monthEnd;
+  // أصغرُ الحدود الثلاثة: نهاية الشهر · تاريخ الإنهاء المسجَّل · الحدّ الصريح المُمرَّر.
+  const hardEnd = [monthEnd, emp.terminationDate ? String(emp.terminationDate) : null, input.employmentEndOverride || null]
+    .filter((d): d is string => !!d)
+    .reduce((a, b) => (b < a ? b : a));
+  const employmentEnd = hardEnd;
 
   const attRows = await db
     .select({
@@ -332,6 +352,23 @@ export async function getEmployeeStatement(input: EmployeeStatementInput) {
     /** المستحقّ الفعليّ عن الشهر وأساسُه — يُعرَض ويُطبَع ويُشارَك بدل حساب الحضور دائماً. */
     amountDue,
     dueBasis,
+    /**
+     * **الأجر المكتسب بتركيب بند المسيّر نفسه** — لا صيغةً مستقلّة.
+     *
+     * تسويةُ نهاية الخدمة تُدخل `earnedGrossWages` يدوياً، ودلالتُه محسومة: **الأجر الذي كان
+     * المسيّر سيدفعه** عن الفترة (المسيّر يسجّل «تغطية» كي لا يُدفع مرّتين —
+     * `encodeTerminationWageCoverage`). فالمقارَن يجب أن يطابق `gross + overtime` في
+     * [generate.ts](../payroll/generate.ts) حرفياً، وإلّا انحرفت المطابقة انحرافاً منهجياً:
+     *   • مسار الحضور: `gross = basePay + مخصّصات` و`overtime` عمودٌ مستقلّ
+     *     ⇒ هنا `amountDue (= basePay + overtimePay) + مخصّصات`.
+     *   • الثابت/المُعفى: `gross = (راتب + مخصّصات) × تناسب` = `fixedPay` بعينه ⇒ `amountDue`.
+     *   • الساعيّ: مجموع `attendance.amount` ⇒ `amountDue`.
+     * ولولا إضافةُ المخصّصات في المسار الأول لَظهر انحرافٌ كاذبٌ بمقدارها في **كل** تسوية.
+     */
+    expectedEarnedGrossWages:
+      dueBasis === "attendance"
+        ? round2(money(amountDue).plus(money(emp.allowances ?? 0))).toFixed(2)
+        : amountDue,
     /**
      * لقطةُ الشهر المصروف (ق٣) — `null` ما لم يُعتمد مسيّرُه. وجودُها يعني أن `amountDue`
      * أعلاه **مجمَّد** منها لا مشتقٌّ من بيانات اليوم.

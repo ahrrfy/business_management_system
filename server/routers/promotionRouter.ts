@@ -189,6 +189,8 @@ export const promotionRouter = router({
         settlementEvidenceNote: z.string().trim().min(10).max(500),
         zeroAmountsAttested: z.literal(true),
         reason: z.string().trim().optional(),
+        // سببُ انحراف الأجر عن اشتقاق سجلّ الحضور — يطلبه الخادم عند تجاوز العتبة (بند ٤٣).
+        wageDivergenceReason: z.string().trim().min(10).max(300).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

@@ -21,7 +21,9 @@ import {
 } from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { money, toDbMoney } from "./money";
+import Decimal from "decimal.js";
+import { money, round2, toDbMoney } from "./money";
+import { getEmployeeStatement } from "./hr/employeeStatement";
 import { createSystemPaymentRequestTx } from "./voucher/create";
 import {
   wageProfileColumns,
@@ -509,6 +511,72 @@ export interface TerminationInput {
   settlementEvidenceNote: string;
   zeroAmountsAttested: boolean;
   reason?: string | null;
+  /**
+   * سببُ انحراف الأجر المُدخَل عن اشتقاق محرّك الحضور — إلزاميٌّ عند تجاوز الفارق العتبة
+   * (بند ٤٣). لا يُخزَّن عموداً مستقلّاً: يُلحَق بـ`settlementEvidenceNote` المخزَّن أصلاً
+   * كي يبقى الأثر في مستندٍ واحد، وكي لا تُقحَم هجرةُ مخطّطٍ في شريحةٍ ماليّة.
+   */
+  wageDivergenceReason?: string | null;
+}
+
+/** فارقٌ يُتجاوَز عنه: تقريبُ قسمةٍ لا خلافٌ في الرقم (المحرّك يقسم الراتب على ساعات الشهر). */
+const WAGE_RECONCILE_TOLERANCE_IQD = 1000;
+
+/**
+ * يطابق `earnedGrossWages` المُدخَل يدوياً باشتقاق محرّك الحضور للشهر الأخير (بند ٤٣).
+ *
+ * **متى يُنفَّذ ومتى يُعرَض فقط** — التمييز جوهريّ، وبدونه يصير الحارس ضجيجاً يُتجاوَز:
+ *   • `lastDay` في المستقبل (إنهاءٌ مخطَّط) ⇒ **عرضٌ فقط**: بصمات الأيام الباقية لم تصل بعد،
+ *     فاشتقاق المحرّك ناقصٌ بطبيعته ومقارنتُه تُنتج انحرافاً كاذباً في كل تسويةٍ مسبقة.
+ *   • الموظف خارج مسار الحضور (ساعيّ/مُعفى/الأجر بالحضور معطَّل) ⇒ **عرضٌ فقط**: للكشف
+ *     أساسٌ آخر، والمقارنة به قائمة لكنّ إلزامها ليس من هذه الشريحة.
+ *   • غير ذلك ⇒ **يُنفَّذ**: الفارق فوق العتبة يلزمه سببٌ صريح.
+ */
+async function reconcileTerminationWage(
+  tx: Tx,
+  input: TerminationInput,
+  emp: { id: number; payType?: string | null; attendanceExempt?: boolean | null },
+): Promise<{
+  enforced: boolean;
+  diverged: boolean;
+  entered: string;
+  expected: string;
+  difference: string;
+  basis: string;
+  evidenceSuffix: string | null;
+}> {
+  const entered = money(input.breakdown?.earnedGrossWages ?? 0);
+  const period = input.lastDay.slice(0, 7);
+  const statement = await getEmployeeStatement({
+    employeeId: input.employeeId,
+    period,
+    tx,
+    employmentEndOverride: input.lastDay,
+  });
+  const expected = money(statement?.expectedEarnedGrossWages ?? 0);
+  const difference = expected.minus(entered).abs();
+  const diverged = difference.gt(WAGE_RECONCILE_TOLERANCE_IQD);
+  const plannedAhead = input.lastDay > baghdadToday();
+  const enforced = !plannedAhead && statement?.dueBasis === "attendance";
+
+  const fmt = (d: Decimal) => round2(d).toFixed(2);
+  // الأثر يُكتب متى انحرف الرقم — سواءٌ أُنفِذ الحارس أم عُرض فقط. تسويةٌ مسبقةٌ الدفع تمرّ
+  // بلا إلزام، لكنّ فارقها يبقى مكتوباً في مستندها فيُراجَع لاحقاً بدل أن يختفي.
+  const evidenceSuffix = diverged
+    ? ` [مطابقة الحضور: المحرّك ${fmt(expected)} · المُدخَل ${fmt(entered)} · فارق ${fmt(difference)} د.ع` +
+      `${plannedAhead ? " · إنهاءٌ مخطَّط فالاشتقاق ناقص" : ""}` +
+      `${input.wageDivergenceReason?.trim() ? ` · السبب: ${input.wageDivergenceReason.trim()}` : ""}]`
+    : null;
+
+  return {
+    enforced,
+    diverged,
+    entered: fmt(entered),
+    expected: fmt(expected),
+    difference: fmt(difference),
+    basis: statement?.dueBasis ?? "unknown",
+    evidenceSuffix,
+  };
 }
 
 export async function createTermination(
@@ -552,6 +620,27 @@ export async function createTermination(
       .limit(1);
     if (!emp)
       throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+
+    /*
+     * ⚖️ **مطابقةُ أجر الشهر الأخير بمحرّك الحضور** (بند ٤٣، تدقيق ١٧/٨).
+     *
+     * `earnedGrossWages` كان مُدخَلاً يدوياً محضاً بلا أيّ مقارنة — والمسيّر يعتمده «تغطيةً»
+     * فلا يدفع الشهر مرّتين. أي أن رقماً مكتوباً بالغلط يصير **الأجر النهائيّ** بلا اعتراض،
+     * وهو نقيض ما أقرّته قرارات الحضور الثلاثة (المحرّك مرجعُ الأجر الشهريّ).
+     *
+     * الاشتقاق من الكشف نفسه — لا صيغةً ثالثة — **داخل المعاملة** وبحدّ نهايةٍ صريح، لأنّ
+     * `employees.terminationDate` لا يُضبط إلا في الإكمال لا في الإنشاء.
+     */
+    const wageCheck = await reconcileTerminationWage(tx, input, emp);
+    if (wageCheck.enforced && wageCheck.diverged && !input.wageDivergenceReason?.trim()) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          `الأجر المُدخَل ${wageCheck.entered} د.ع يخالف اشتقاق سجلّ الحضور ${wageCheck.expected} د.ع ` +
+          `(فارق ${wageCheck.difference} د.ع). صحّح الرقم أو أدخل سبب الاختلاف صراحةً.`,
+      });
+    }
+
     const [res] = await tx.insert(employeeTerminations).values({
       employeeId: input.employeeId,
       terminationType: input.terminationType.trim(),
@@ -568,7 +657,10 @@ export async function createTermination(
       eosBenefit: toDbMoney(breakdown.eosBenefit),
       otherSettlement: toDbMoney(breakdown.otherSettlement),
       otherSettlementLabel: breakdown.otherSettlementLabel,
-      settlementEvidenceNote,
+      // سببُ الانحراف يُلحَق بمستند الإثبات نفسه — أثرٌ واحدٌ مكتفٍ بذاته لا حقلٌ منفصل يُقرأ وحده.
+      settlementEvidenceNote: wageCheck.evidenceSuffix
+        ? `${settlementEvidenceNote}${wageCheck.evidenceSuffix}`.slice(0, 1000)
+        : settlementEvidenceNote,
       zeroAmountsAttested: input.zeroAmountsAttested,
       settlementPaymentMethod: payment.method,
       settlementPaymentReference: payment.referenceNumber,
