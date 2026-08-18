@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "files": {
+    "deploy/nginx-app-locations.conf": "ddc1fb836eeef8d04053293bbb61c84d466bf03bd09ebbbb8b86b9d421a804c7",
+    "deploy/nginx-cloudflare-realip.conf": "8dbd989569c3d69ce0330312e78a18336eb5e1c9f0e9fd8cd52aa5974cb3c917",
+    "deploy/nginx-erp.conf": "218152ef52ab84730e6a49b2a07af07e5826a62b8d4d00c579c18b20bad6b72b",
+    "deploy/nginx-proxy-common.conf": "f7bb6a1bd4a11c9a1a86d0724aad05f70b0b5adb0f77d35675ecd28a612e4225",
+    "deploy/nginx-proxy-secret.conf.example": "ff7a28cbd1c050671e26c6d2ef34961ebe65a6a379e9ae717eaac1f402d8bc67",
+    "deploy/nginx-public.conf": "dda0f43512513172f606f958c4756273a9fe2e1e8f4badc779fc96836db1092c",
+    "deploy/nginx-ratelimit.conf": "f8cb5fb496753157842ff68b070a3e7d532496b8c50bbc994b400dd313897843",
+    "deploy/nginx-spa-location.conf": "4f345de63c6d0fceee87035b9dc1c23252eb58aaecec0805f9a3696504cc7992"
+  }
+}

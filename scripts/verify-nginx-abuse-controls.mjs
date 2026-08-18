@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -124,6 +125,7 @@ export function verifyNginxConfiguration(input) {
     [/proxy_set_header\s+Host\s+\$host;/, "shared proxy contract must preserve Host"],
     [/proxy_set_header\s+X-Forwarded-Proto\s+\$scheme;/, "shared proxy contract must preserve HTTPS scheme"],
     [/proxy_set_header\s+X-Internal-Proxy-Secret\s+\$alroya_proxy_secret;/, "shared proxy contract must attach the internal hop secret"],
+    [/proxy_set_header\s+X-Alroya-Worker-Probe\s+"";/, "shared proxy contract must strip the internal worker probe header"],
     [/proxy_set_header\s+X-Forwarded-For\s+\$remote_addr;/, "shared proxy contract must canonicalize X-Forwarded-For"],
     [/proxy_set_header\s+X-Real-IP\s+\$remote_addr;/, "shared proxy contract must canonicalize X-Real-IP"],
   ]) {
@@ -206,8 +208,45 @@ function loadRepositoryConfiguration() {
   };
 }
 
+export function verifyNginxReleaseManifest(projectRoot = root) {
+  const resolvedRoot = path.resolve(projectRoot);
+  const deployDirectory = path.join(resolvedRoot, "deploy");
+  const expected = [
+    ...fs.readdirSync(deployDirectory)
+      .filter((name) => /^nginx-.*\.conf$/u.test(name))
+      .map((name) => `deploy/${name}`),
+    "deploy/nginx-proxy-secret.conf.example",
+  ].sort();
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(deployDirectory, "nginx-release-manifest.json"), "utf8"));
+  } catch {
+    return ["nginx release manifest is missing or invalid JSON"];
+  }
+  if (
+    manifest?.version !== 1 ||
+    !manifest.files ||
+    Array.isArray(manifest.files) ||
+    JSON.stringify(Object.keys(manifest.files).sort()) !== JSON.stringify(expected)
+  ) {
+    return ["nginx release manifest keys do not match managed inputs"];
+  }
+  const errors = [];
+  for (const relative of expected) {
+    const recorded = manifest.files[relative];
+    const actual = createHash("sha256").update(fs.readFileSync(path.join(resolvedRoot, relative))).digest("hex");
+    if (!/^[a-f0-9]{64}$/u.test(recorded) || recorded !== actual) {
+      errors.push(`nginx release manifest hash drift: ${relative}`);
+    }
+  }
+  return errors;
+}
+
 function main() {
-  const errors = verifyNginxConfiguration(loadRepositoryConfiguration());
+  const errors = [
+    ...verifyNginxConfiguration(loadRepositoryConfiguration()),
+    ...verifyNginxReleaseManifest(),
+  ];
   if (errors.length) {
     for (const error of errors) console.error(`nginx abuse-control check: ${error}`);
     process.exitCode = 1;

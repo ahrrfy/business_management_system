@@ -67,7 +67,7 @@ chmod 600 /home/deploy/erp/.env    # إلزامي: لا تترك أسرار ال
 | `ALLOW_PUBLIC_BIND`                       | `0`                                         | ارفعه إلى `1` فقط إذا كان `HOST` العام/LAN مقصوداً ومعه جدار ناري؛ وإلا يفشل الإقلاع مغلقاً                    |
 | `PORT`                                    | `3000`                                      | يستمع داخلياً؛ nginx يُمرّر إليه                                                                               |
 | `INTERNAL_PROXY_SECRET`                   | `openssl rand -hex 32`                      | يطابق قيمة ملف nginx المحمي `/etc/nginx/snippets/alroya-proxy-secret.conf` ويمنع تجاوز البروكسي من عملية محلية |
-| `INTERNAL_PROXY_SECRET_PREVIOUS`          | فارغ عادةً                                  | نافذة تدوير مؤقتة فقط؛ إن وُجد فهو 64 hex مختلف، ويُحذف بعد `retire` الناجح                              |
+| `INTERNAL_PROXY_SECRET_PREVIOUS`          | فارغ عادةً                                  | نافذة تدوير مؤقتة فقط؛ إن وُجد فهو 64 hex مختلف، ويُحذف بعد `retire` الناجح                                    |
 | `DATABASE_URL`                            | `mysql://erp_app:<قوية>@127.0.0.1:3307/erp` | حساب التطبيق محصور بقاعدة `erp`؛ لا تشغّل الويب بـroot                                                         |
 | `DB_APP_USER` / `DB_APP_PW`               | `erp_app` / `openssl rand -hex 24`          | حساب الويب الأقل امتيازاً؛ كلمة مختلفة عن root                                                                 |
 | `DB_ROOT_PW` / `DB_NAME` / `DB_CONTAINER` | `<قوية>` / `erp` / `erp-mysql`              | root للصيانة/التعافي وcompose فقط، ولا يبقى في بيئة عامل الويب                                                 |
@@ -153,39 +153,56 @@ systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.
 
 **ثبّت مُثبّت Nginx الموثوق مرة لكل إصدار تغيّرت فيه ملفاته.** لا تشغّل JavaScript من
 `/home/deploy/erp` بصلاحية root. استعمل فقط SHA-256 المنشورين في summary تشغيل
-`check-test-build` الأخضر على push إلى `main` للإصدار نفسه:
+`check-test-build` الأخضر على push إلى `main` للإصدار نفسه. تشمل الحزمة المثبّت والعقد والمدقق
+والـmanifest الذي يثبت بصمات كل مدخل إعداد سيُنسخ إلى Nginx:
 
 ```bash
 cd /home/deploy/erp
 release_sha='<CI_GREEN_RELEASE_SHA>'
 installer_sha256='<RELEASE_NGINX_INSTALLER_SHA256>'
 contract_sha256='<RELEASE_NGINX_CONTRACT_SHA256>'
+verifier_sha256='<RELEASE_NGINX_VERIFIER_SHA256>'
+manifest_sha256='<RELEASE_NGINX_MANIFEST_SHA256>'
 test "$(git rev-parse HEAD)" = "$release_sha"
-case "$release_sha$installer_sha256$contract_sha256" in *'<'*|'') exit 1;; esac
+case "$release_sha$installer_sha256$contract_sha256$verifier_sha256$manifest_sha256" in *'<'*|'') exit 1;; esac
 sudo /usr/bin/install -d -o root -g root -m 0755 /usr/local/libexec/erp/nginx
 installer_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.install-nginx-contract.mjs.XXXXXX)"
 contract_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.nginx-contract.mjs.XXXXXX)"
-trap 'sudo /usr/bin/rm -f -- "$installer_tmp" "$contract_tmp"' EXIT HUP INT TERM
+verifier_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.verify-nginx-abuse-controls.mjs.XXXXXX)"
+manifest_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.nginx-release-manifest.json.XXXXXX)"
+trap 'sudo /usr/bin/rm -f -- "$installer_tmp" "$contract_tmp" "$verifier_tmp" "$manifest_tmp"' EXIT HUP INT TERM
 sudo /usr/bin/install -o root -g root -m 0555 scripts/install-nginx-contract.mjs "$installer_tmp"
 sudo /usr/bin/install -o root -g root -m 0555 scripts/nginx-contract.mjs "$contract_tmp"
+sudo /usr/bin/install -o root -g root -m 0555 scripts/verify-nginx-abuse-controls.mjs "$verifier_tmp"
+sudo /usr/bin/install -o root -g root -m 0444 deploy/nginx-release-manifest.json "$manifest_tmp"
 printf '%s  %s\n' "$installer_sha256" "$installer_tmp" | sudo /usr/bin/sha256sum -c -
 printf '%s  %s\n' "$contract_sha256" "$contract_tmp" | sudo /usr/bin/sha256sum -c -
+printf '%s  %s\n' "$verifier_sha256" "$verifier_tmp" | sudo /usr/bin/sha256sum -c -
+printf '%s  %s\n' "$manifest_sha256" "$manifest_tmp" | sudo /usr/bin/sha256sum -c -
+sudo /usr/bin/mv -Tf -- "$manifest_tmp" /usr/local/libexec/erp/nginx/nginx-release-manifest.json
+sudo /usr/bin/mv -Tf -- "$verifier_tmp" /usr/local/libexec/erp/nginx/verify-nginx-abuse-controls.mjs
 sudo /usr/bin/mv -Tf -- "$contract_tmp" /usr/local/libexec/erp/nginx/nginx-contract.mjs
 sudo /usr/bin/mv -Tf -- "$installer_tmp" /usr/local/libexec/erp/nginx/install-nginx-contract.mjs
 trap - EXIT HUP INT TERM
 test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/nginx/install-nginx-contract.mjs)" = root:root:555
+test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/nginx/verify-nginx-abuse-controls.mjs)" = root:root:555
+test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/nginx/nginx-release-manifest.json)" = root:root:444
 
 # الأمر الوحيد لتثبيت أو إصلاح العقد:
 sudo /usr/bin/node /usr/local/libexec/erp/nginx/install-nginx-contract.mjs install
 ```
 
-هذا المُثبّت root-operated ولا يستعمل `sudo` داخلياً. يفحص مسبقاً الهوية، وأن مجلدات Nginx
+هذا المُثبّت root-operated ولا يستعمل `sudo` داخلياً. ينفّذ كل عملية داخل قفل kernel حصري
+`/run/erp-nginx-contract.operation.lock` عبر `/usr/bin/flock`؛ فيتحرر القفل تلقائياً عند الانقطاع
+ولا توجد معالجة stale قابلة للسباق. يفحص مسبقاً الهوية، وأن مجلدات Nginx
 `root:root` وغير قابلة لكتابة المجموعة/العالم، والشهادات، وملكية/وضع ملف السر ومطابقته الصامتة
 مع `.env`. ويكتب attestation عامة تحوي بصمة SHA-256 وinode/ctime وmetadata فقط، كي يستطيع نشر
 `deploy` إثبات بقاء السرّين متطابقين من دون صلاحية قراءة ملف السر أو طباعة قيمته، بينما يعيد
 المثبّت المخوّل نفسه حساب بصمة المحتوى الفعلي. كما يفحص ناتج `nginx -T`: لكل اسم مدار كتلتان
-فقط (تحويل 80 + موقع 443)، وأي vhost قديم/متعارض خارج الرابطين المدارين يوقف العملية ولا يُحذف
-تلقائياً على الخادم المشترك. ثم يجهّز الملفات الستة والرابطين بجوار أهدافها، ويحفظ الحالة السابقة
+فقط (تحويل 80 + موقع 443)، ويعيد فحص بصمة النسخ المرحلية نفسها بعد النسخ وقبل rename، ثم يشغّل
+المدقق المثبّت root-owned على هذه البايتات عينها. لذلك لا يسمح تبديل ملف من checkout بين الفحص
+والنسخ بتشغيل أو تركيب محتوى آخر. وأي vhost قديم/متعارض خارج الرابطين المدارين يوقف العملية ولا يُحذف
+تلقائياً على الخادم المشترك. ثم يجهّز الملفات السبعة والرابطين بجوار أهدافها، ويحفظ الحالة السابقة
 كاملةً في `/var/backups/alroya-nginx/<معرّف>`، ويكتب `pending.json` متيناً قبل أول تبديل، وينفذ
 `nginx -t` ثم `systemctl reload nginx` ثم `/healthz` خارجياً عبر المضيفين. هذا الفحص يثبت TLS
 والتوجيه وسر القفزة من دون اشتراط أن يكون كتالوج الإصدار القديم غير فارغ (فتظل معالجة المتجر
@@ -200,8 +217,13 @@ sudo /usr/bin/node /usr/local/libexec/erp/nginx/install-nginx-contract.mjs insta
 
 ### تدوير سرّ القفزة بلا نافذة 403
 
-المُثبّت يولّد السر الجديد داخلياً ولا يضعه في argv أو stdout. ملفا النسخة والـjournal تحت
-`/var/backups/alroya-nginx` بوضع `0700/0600`. نفّذ المراحل بالترتيب؛ بعد كل `prod:deploy`
+المُثبّت يولّد السر الجديد داخلياً ولا يضعه في argv أو stdout. يحتفظ أثناء العملية فقط بالقديم
+والجديد والـjournal داخل `/var/lib/alroya-nginx/rotation-active` بوضع `0700/0600`، ولا ينسخ `.env`
+ولا بقية أسرار النظام. هذه الحالة persistent فتُستأنف بعد reboot، ويُنظّف المجلد بصورة resumable
+ومؤكدة بعد نجاح retire أو rollback. قبل أي تغيير في `prepare` و`switch`
+و`retire` و`rollback` يرسل فحص `/healthz` خارجي بعلامة غير حساسة وBearer اصطناعي، ثم يقرأ فقط
+الإضافة الجديدة إلى `logs/erp-out.log`: تبدل inode أو غياب العلامة أو ظهور السر/Bearer يوقف التدوير
+بلا طباعة أي قيمة. نفّذ المراحل بالترتيب؛ بعد كل `prod:deploy`
 يختبر helper الأصل مباشرةً، ومرحلة `switch` تختبر أيضاً المسار الخارجي عبر Nginx:
 
 ```bash

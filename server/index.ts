@@ -148,6 +148,7 @@ async function startServer() {
       ? 1
       : false;
   app.set("trust proxy", trustProxy);
+  const workerInstanceId = nanoid(16);
 
   // على VPS مشترك لا يكفي loopback وحده: أي عملية محلية تستطيع الاتصال بـ:3000 وتزوير
   // XFF متجاوزةً عدادات nginx. سرّ hop داخلي يثبت أن الطلب مرّ فعلاً عبر nginx.
@@ -159,6 +160,15 @@ async function startServer() {
     const proxySecrets = readInternalProxySecrets(process.env);
     app.use((req, res, next) => {
       const supplied = req.get("x-internal-proxy-secret") ?? "";
+      if (
+        req.path === "/healthz" &&
+        req.get("x-alroya-worker-probe") === "1" &&
+        ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
+          req.socket.remoteAddress ?? "",
+        )
+      ) {
+        res.setHeader("x-alroya-worker-instance", workerInstanceId);
+      }
       if (!matchesInternalProxySecret(supplied, proxySecrets)) {
         return res.status(403).send("forbidden");
       }

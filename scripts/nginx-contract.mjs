@@ -594,6 +594,7 @@ export function verifyLiveNginxContract(options = {}) {
     appEnvPath: path.resolve(
       options.appEnvPath ?? path.join(contract.projectRoot, ".env"),
     ),
+    expectedFileHashes: options.expectedFileHashes,
   };
   const issues = [];
   inspectContractDirectories(contract, normalized, issues);
@@ -620,7 +621,13 @@ export function verifyLiveNginxContract(options = {}) {
     ) {
       issues.push(`NGINX_LIVE_FILE_OWNER_INVALID:${entry.target}`);
     }
-    const expectedHash = sha256(fs.readFileSync(entry.source));
+    const expectedHash =
+      normalized.expectedFileHashes?.[entry.target] ??
+      sha256(fs.readFileSync(entry.source));
+    if (!/^[a-f0-9]{64}$/u.test(expectedHash)) {
+      issues.push(`NGINX_LIVE_FILE_EXPECTATION_INVALID:${entry.target}`);
+      continue;
+    }
     const actualHash = sha256(fs.readFileSync(entry.target));
     if (expectedHash !== actualHash) {
       issues.push(`NGINX_LIVE_FILE_DRIFT:${entry.target}`);
