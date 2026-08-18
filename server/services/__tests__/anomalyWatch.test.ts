@@ -286,7 +286,9 @@ describe("D6 — سلامة تسلسل الترقيم (كاشف عبث)", () => 
     expect(after.sequenceGaps.rows).toHaveLength(1);
     expect(after.sequenceGaps.rows[0].branchId).toBe(1);
     expect(after.sequenceGaps.rows[0].actualCount).toBe(2);
-    expect(after.sequenceGaps.rows[0].maxSeq).toBe(3);
+    // ١٨/٨: العدّاد عالميّ فلا يبدأ كل يومٍ من الواحد — الدلالة صارت **المدى** لا القيمة
+    // المطلقة: ثلاثة أرقام متتالية حُذف أوسطها ⇒ مدىً طوله ٣ فيه صفّان ⇒ مفقودٌ واحد.
+    expect(after.sequenceGaps.rows[0].maxSeq - after.sequenceGaps.rows[0].minSeq).toBe(2);
     expect(after.sequenceGaps.rows[0].missing).toBe(1);
     expect(after.kpis.sequenceGapDays).toBe(1);
   });

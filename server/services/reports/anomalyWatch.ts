@@ -870,8 +870,10 @@ export async function getAnomalyWatch(opts: {
       actualCount: actual,
       maxSeq,
       minSeq,
-      // المتوقع 1..maxSeq (التسلسل يبدأ من 1) ⇒ المفقود = maxSeq − الموجود (HAVING يضمن ≥ 1).
-      missing: Math.max(maxSeq - actual, 1),
+      // المفقود = طولُ المدى المرصود ناقصَ الموجود فيه. الصيغة التاريخية تبدأ من ١ لكل
+      // (فرع×يوم) فيؤول هذا إلى `maxSeq − actual`؛ والجديدة عدّادٌ عالميّ لا يبدأ من ١، ولو
+      // طُبّقت عليها المعادلة القديمة لأعلنت آلاف المفقودات زوراً في أوّل يوم. (HAVING يضمن ≥١.)
+      missing: Math.max(maxSeq - minSeq + 1 - actual, 1),
     };
   });
 
