@@ -28,6 +28,7 @@ describe("internal proxy secret rotation", () => {
     expect(secrets.previous).toBeUndefined();
     expect(matchesInternalProxySecret(CURRENT, secrets)).toBe(true);
     expect(matchesInternalProxySecret(PREVIOUS, secrets)).toBe(false);
+    expect(matchesInternalProxySecret("0".repeat(64), secrets)).toBe(false);
   });
 
   it.each(["short", "z".repeat(64)])(

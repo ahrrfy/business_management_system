@@ -54,5 +54,8 @@ export function matchesInternalProxySecret(
     candidate,
     secrets.previous ?? DUMMY_SECRET,
   );
-  return syntacticallyValid && (currentMatch || previousMatch);
+  return (
+    syntacticallyValid &&
+    (currentMatch || (secrets.previous !== undefined && previousMatch))
+  );
 }
