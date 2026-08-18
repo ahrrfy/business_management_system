@@ -1424,6 +1424,13 @@
       "breakpoints": true
     },
     {
+      "idx": 204,
+      "version": "5",
+      "when": 1788052255000,
+      "tag": "0204_purchase_invoice_discount",
+      "breakpoints": true
+    },
+    {
       "idx": 205,
       "version": "5",
       "when": 1788052256000,

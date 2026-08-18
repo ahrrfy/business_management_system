@@ -88,3 +88,38 @@ describe("purchase payload — سعر الوحدة يُرسَل بدقّة عم�
     });
   }
 });
+
+describe("purchase invoice discount (0204) — الشريحة موصولة في الشاشتين", () => {
+  for (const page of ["PurchaseNew.tsx", "PurchaseEdit.tsx"]) {
+    it(`${page}: محرّرُ خصمٍ + إرسالٌ بعملة الأمر + زرُّ «سجّل الفرق خصماً»`, () => {
+      const source = read(`../../../pages/${page}`);
+      // (١) محرّر الخصم ظاهرٌ في لوحة المبالغ (كان `showDiscount={false}` لأنّ الخدمة تتجاهله).
+      expect(source).toContain("showDiscount\n");
+      expect(source).not.toContain("showDiscount={false}");
+      // (٢) المبلغ يُشتقّ من قيمة البضاعة **بترتيب تقريب الخادم** ثمّ يُرسَل.
+      expect(source).toContain("const invoiceDiscountAmount = useMemo(");
+      expect(source).toContain("invoiceDiscount: invoiceDiscountAmount.gt(0)");
+      // (٣) المسار الطبيعيّ للفرق حين تكون ورقة المورّد أقلّ: يُسجَّل خصماً لا يُعاد التسعير.
+      expect(source).toContain("function applyDifferenceAsDiscount()");
+      expect(source).toContain("onApplyAsDiscount={applyDifferenceAsDiscount}");
+      // (٤) توزيعُ الفرق يستهدف **ما قبل الخصم** وإلّا وُزّع الفرق مرّتين.
+      expect(source).toContain("round2(D(neededNet).plus(invoiceDiscountAmount)).toFixed(2)");
+    });
+  }
+
+  it("محرّر التعديل يُعيد تحميل السعر **قبل** الخصم والخصمَ في حقله (لا خصمٌ مرّتين)", () => {
+    const source = read("../../../pages/PurchaseEdit.tsx");
+    expect(source).toContain("it.usdListUnitPrice ?? it.usdUnitPrice");
+    expect(source).toContain("it.listUnitPrice ?? it.unitPrice");
+    expect(source).toContain("isUsd ? order.usdInvoiceDiscount : order.invoiceDiscount");
+    expect(source).toContain('globalDiscountType: "amount"');
+  });
+
+  it("الخصم وسعرُ ما قبله محجوبان عمّن لا يرى التكلفة", () => {
+    const router = readFileSync(
+      new URL("../../../../../server/routers/purchaseRouter.ts", import.meta.url), "utf8",
+    );
+    expect(router).toContain("invoiceDiscount: null, usdInvoiceDiscount: null");
+    expect(router).toContain("listUnitPrice: null, usdListUnitPrice: null");
+  });
+});

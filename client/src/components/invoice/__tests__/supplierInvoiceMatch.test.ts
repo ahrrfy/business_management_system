@@ -93,7 +93,34 @@ describe("deriveDocumentTotal — الإجماليّ بترتيب تقريب ا�
   });
 
   it("بلا بنود ⇒ أصفار بلا انهيار", () => {
-    expect(deriveDocumentTotal([])).toEqual({ subtotal: "0.00", tax: "0.00", total: "0.00" });
+    expect(deriveDocumentTotal([])).toEqual({
+      grossSubtotal: "0.00", discount: "0.00", subtotal: "0.00", tax: "0.00", total: "0.00",
+    });
+  });
+
+  it("خصم الفاتورة (0204) يَنقص المجموع، والضريبة على الوعاء **بعده**", () => {
+    const r = deriveDocumentTotal([{ price: "1000", qty: 10 }, { price: "500", qty: 10 }], "0", "1500");
+    expect(r.grossSubtotal).toBe("15000.00");
+    expect(r.discount).toBe("1500.00");
+    expect(r.subtotal).toBe("13500.00");
+    expect(r.total).toBe("13500.00");
+
+    // مع ضريبة ١٠٪: الوعاء ١٣٬٥٠٠ لا ١٥٬٠٠٠ (مطابقةً لـcomputePurchaseDocument).
+    const taxed = deriveDocumentTotal([{ price: "1000", qty: 10 }, { price: "500", qty: 10 }], "10", "1500");
+    expect(taxed.tax).toBe("1350.00");
+    expect(taxed.total).toBe("14850.00");
+  });
+
+  it("خصمٌ يتجاوز البضاعة يُقصّ في المعاينة (لا إجماليّ سالب أثناء الكتابة)", () => {
+    const r = deriveDocumentTotal([{ price: "100", qty: 1 }], "0", "500");
+    expect(r.discount).toBe("100.00");
+    expect(r.subtotal).toBe("0.00");
+    expect(r.total).toBe("0.00");
+  });
+
+  it("خصمٌ سالب أو تالف ⇒ يُهمَل (صفر) بدل زيادة الإجمالي", () => {
+    expect(deriveDocumentTotal([{ price: "100", qty: 1 }], "0", "-50").discount).toBe("0.00");
+    expect(deriveDocumentTotal([{ price: "100", qty: 1 }], "0", "abc").discount).toBe("0.00");
   });
 });
 

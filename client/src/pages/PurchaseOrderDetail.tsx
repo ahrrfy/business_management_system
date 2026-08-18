@@ -291,6 +291,14 @@ export default function PurchaseOrderDetail() {
           ) : (
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
               <Field label="المجموع قبل الضريبة">{fmtAr(d.subtotal)}</Field>
+              {/* خصم فاتورة المورّد (0204): **مطبَّقٌ في الأعمدة أعلاه** — المجموع صافٍ بعده،
+                  والذمّة وتكلفة المخزون كذلك. يُعرَض إفصاحاً لا بنداً يُطرَح مرّةً أخرى. */}
+              {D(d.invoiceDiscount ?? 0).gt(0) && (
+                <Field label="خصم فاتورة المورّد (مطبَّق)">
+                  −{fmtAr(d.invoiceDiscount)}
+                  {isUsd && D(d.usdInvoiceDiscount ?? 0).gt(0) ? ` (${fmtAr(d.usdInvoiceDiscount)} $)` : ""}
+                </Field>
+              )}
               <Field label="الضريبة">{fmtAr(d.taxAmount)}</Field>
               <Field label="الشحن">{fmtAr(d.shippingCost)}</Field>
               <Field label="الكمرك">{fmtAr(d.customsCost)}</Field>
