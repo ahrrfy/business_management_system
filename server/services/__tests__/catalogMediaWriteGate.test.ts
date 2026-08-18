@@ -201,4 +201,12 @@ describe("catalog legacy media write gate", () => {
     const [product] = await db().select().from(s.products).where(eq(s.products.id, 1));
     expect(product.name).toBe("دفتر مُحدَّث");
   });
+
+  it("storeAdmin API rejects direct product image bytes outside Product Studio", async () => {
+    await expect(
+      caller().storeAdmin.catalog.setImage({ productId: 1, url: PNG_DATA_URL }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(await db().select().from(s.productImages).where(eq(s.productImages.productId, 1))).toHaveLength(0);
+  });
 });
