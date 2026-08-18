@@ -115,7 +115,18 @@ export const attendanceRouter = router({
    * يبني على نواة المسيّر نفسها فلا ينحرف المعروض عن المدفوع. قراءة صرفة.
    */
   employeeStatement: hrRead
-    .input(z.object({ employeeId: z.number().int().positive(), period: periodStr }))
+    .input(
+      z.object({
+        employeeId: z.number().int().positive(),
+        period: periodStr,
+        /**
+         * حدُّ نهايةٍ صريح — تستعمله شاشةُ إنهاء الخدمة لتعاين أجرَ الشهر الأخير **حتى يوم
+         * العمل الأخير** لا حتى نهاية الشهر. بدونه تُقارَن تسويةُ جزءٍ من شهرٍ بأجرِ شهرٍ تامّ.
+         * قراءةٌ فقط ولا يُوسّع صلاحية: نفس بوّابة `hrRead` وعزلُ الفرع كما هو.
+         */
+        employmentEndOverride: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+      }),
+    )
     .query(({ input, ctx }) => getEmployeeStatement({ ...input, scopedBranchId: ctx.scopedBranchId })),
 
   /**
