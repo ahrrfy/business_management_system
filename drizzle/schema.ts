@@ -6291,6 +6291,18 @@ export const hrDeviceUsers = mysqlTable(
      * null = بلا حدّ (سلوك ما قبل 0136 — يُستعمل فقط حين لا يُعرف تاريخ المباشرة).
      */
     effectiveFrom: date("effectiveFrom", { mode: "string" }),
+    /**
+     * انتهاء سريان الربط (0207) — **مرآةُ `effectiveFrom`، والطرفُ الذي كان مفقوداً**.
+     *
+     * كان إنهاءُ الخدمة يُصفّر `employeeId` **فوراً** أياً كان تاريخ الإنهاء، وهو الطبيعيّ أن
+     * يقع يومَ العمل الأخير نفسه ⇒ بصماتُ ذلك اليوم تصل بلا صاحبٍ فتُسجَّل **صفر ساعات**،
+     * ولا أحد يلاحظ لأن أجر شهر الفصل يُكتب يدوياً في تسوية نهاية الخدمة (تدقيق ١٧/٨، بند ٢١).
+     *
+     * فبدل قطع الربط، يُحدّ: تُنسَب البصمات حتى هذا التاريخ **شاملاً**، وما بعده لا يُنسَب —
+     * فيُحفظ اليوم الأخير ويبقى الحارسُ ضدّ إعادة استعمال رقم الجهاز قائماً.
+     * null = ربطٌ سارٍ بلا نهاية (الحالة الطبيعية لموظفٍ على رأس العمل).
+     */
+    effectiveTo: date("effectiveTo", { mode: "string" }),
     syncedAt: timestamp("syncedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
