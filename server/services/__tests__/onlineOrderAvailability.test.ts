@@ -92,6 +92,52 @@ beforeEach(async () => {
 });
 
 describe("createOnlineOrder availability guards", () => {
+  it("persists one immutable 24-hour reservation deadline and replays the same snapshot", async () => {
+    const before = Date.now();
+    const request = {
+      ...baseOrder,
+      clientRequestId: "reservation-expiry-snapshot",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    };
+    const created = await createOnlineOrder(request);
+    const after = Date.now();
+    expect(created.reservationExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000);
+    expect(created.reservationExpiresAt.getTime()).toBeLessThanOrEqual(after + 24 * 60 * 60 * 1000);
+    const stored = (
+      await db()
+        .select({ expiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)` })
+        .from(s.onlineOrders)
+        .where(eq(s.onlineOrders.id, created.orderId))
+        .limit(1)
+    )[0]?.expiryMs;
+    expect(Number(stored)).toBe(created.reservationExpiresAt.getTime());
+
+    const replay = await createOnlineOrder(request);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.reservationExpiresAt.getTime()).toBe(created.reservationExpiresAt.getTime());
+  });
+
+  it("releases expired PENDING allocation from ATP immediately", async () => {
+    const expired = await createOnlineOrder({
+      ...baseOrder,
+      clientRequestId: "expired-allocation",
+      lines: [{ productUnitId: 1, quantity: 3 }],
+    });
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
+      WHERE id = ${expired.orderId}
+    `);
+
+    await expect(
+      createOnlineOrder({
+        ...baseOrder,
+        clientRequestId: "replacement-after-expiry",
+        lines: [{ productUnitId: 1, quantity: 3 }],
+      }),
+    ).resolves.toMatchObject({ itemCount: 1 });
+  });
+
   it("rejects a requested quantity above stock, including duplicate cart lines", async () => {
     await expect(createOnlineOrder({ ...baseOrder, lines: [{ productUnitId: 1, quantity: 4 }] }))
       .rejects.toThrow(/الكمية المطلوبة/);

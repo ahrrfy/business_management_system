@@ -623,6 +623,7 @@ async function startServer() {
   let stopNativePushOutboxWorker: (() => void) | null = null;
   let stopDeliveryOutboxWorker: (() => void) | null = null;
   let stopProductStudioStagingWorker: (() => void) | null = null;
+  let stopOnlineOrderExpirySweeper: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
@@ -674,6 +675,11 @@ async function startServer() {
     const { startReservationsSweeper } = await import("./services/reservations/sweeper");
     startReservationsSweeper();
 
+    // انتهاء حجز طلبات المتجر PENDING: العامل 0 وحده يلغي المستحقّ دورياً وبشكل idempotent.
+    const onlineOrderExpiry = await import("./services/onlineOrderExpirySweeper");
+    onlineOrderExpiry.startOnlineOrderExpirySweeper();
+    stopOnlineOrderExpirySweeper = onlineOrderExpiry.stopOnlineOrderExpirySweeper;
+
     logger.info(
       `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
     );
@@ -698,6 +704,7 @@ async function startServer() {
       stopNativePushOutboxWorker?.();
       stopDeliveryOutboxWorker?.();
       stopProductStudioStagingWorker?.();
+      stopOnlineOrderExpirySweeper?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       await closeControlDb();

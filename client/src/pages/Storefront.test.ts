@@ -6,6 +6,7 @@ import {
   addStorefrontCartLine,
   addStorefrontCartLines,
   collectStorefrontFailures,
+  formatStorefrontReservationDeadline,
   loadCheckoutAttempt,
   recordStorefrontCartChange,
   reconcileStorefrontCartQuote,
@@ -18,6 +19,14 @@ import {
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
+
+describe("storefront reservation deadline", () => {
+  it("يعرض لقطة المهلة بتوقيت بغداد بوضوح", () => {
+    const formatted = formatStorefrontReservationDeadline("2026-08-18T12:30:00.000Z");
+    expect(formatted).toContain("٢٠٢٦");
+    expect(formatted).toContain("٣:٣٠");
+  });
+});
 
 describe("storefront bundle media", () => {
   it("يعرض حتى أربع صور مكوّنات في شبكة واحدة دون تكرار النص البديل", () => {
