@@ -11,7 +11,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { cn } from "@/lib/utils";
 import { fmtAr } from "@/lib/money";
 import type { PriceCurrency } from "@shared/moneyPrecision";
-import { matchSupplierInvoice, type MatchResult } from "./supplierInvoiceMatch";
+import { matchSupplierInvoice, type MatchResult } from "./supplierInvoiceMatching";
 
 export interface SupplierInvoiceMatchProps {
   /** إجماليّ الأمر المشتقّ من البنود **بعملة الأمر** (نظير `calcTotals().grandTotal`). */
