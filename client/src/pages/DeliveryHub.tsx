@@ -307,14 +307,28 @@ function InTransitTab() {
     });
   }
 
+  /**
+   * فصلُ «المرتجع المُعلَن» عن «المُستلَم» (إطار المالك، نسخة ٢): الطرد المتعثّر أعلنته الجهة
+   * ولم يصل الفرع بعد — **لا حركة مخزون ولا عكس فاتورة حتى يُستلَم ويُفحَص فعلاً**. هذا الفلتر
+   * يجعل تلك القائمة قابلةً للعثور بدل أن تضيع بين الطرود السائرة.
+   */
+  const [stateFilter, setStateFilter] = useState<"ALL" | "ASSIGNED" | "IN_TRANSIT" | "FAILED">("ALL");
+  const filtered = useMemo(() => {
+    const all = rows.data ?? [];
+    if (stateFilter === "ALL") return all;
+    return all.filter((r) => deriveWoDeliveryState("DISPATCHED", r.parcelStatus) === stateFilter);
+  }, [rows.data, stateFilter]);
+
   const list = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const all = rows.data ?? [];
-    if (!q) return all;
-    return all.filter((r) =>
+    if (!q) return filtered;
+    return filtered.filter((r) =>
       [r.consignmentNumber, r.invoiceNumber, r.orderNumber, r.partyName, r.driverName, r.recipientName, r.customerName, r.recipientPhone]
         .some((v) => (v ?? "").toLowerCase().includes(q)));
-  }, [rows.data, query]);
+  }, [filtered, query]);
+
+  const countOf = (s: "ASSIGNED" | "IN_TRANSIT" | "FAILED") =>
+    (rows.data ?? []).filter((r) => deriveWoDeliveryState("DISPATCHED", r.parcelStatus) === s).length;
 
   const totalDue = useMemo(
     () => (rows.data ?? []).reduce((sum, r) => sum + Number(r.codDue || 0), 0),
@@ -326,6 +340,29 @@ function InTransitTab() {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
+        <div className="flex h-10 items-center gap-1 rounded-lg border bg-muted/40 p-1" role="tablist" aria-label="حالة الطرد">
+          {([
+            { v: "ALL", label: "الكل", n: (rows.data ?? []).length },
+            { v: "ASSIGNED", label: "مُسنَد — لم يخرج", n: countOf("ASSIGNED") },
+            { v: "IN_TRANSIT", label: "بالطريق", n: countOf("IN_TRANSIT") },
+            { v: "FAILED", label: "بانتظار المرتجع", n: countOf("FAILED") },
+          ] as const).map((c) => (
+            <button
+              key={c.v}
+              type="button"
+              role="tab"
+              aria-selected={stateFilter === c.v}
+              onClick={() => setStateFilter(c.v)}
+              className={cn(
+                "h-8 rounded-md px-2.5 text-xs font-black transition-colors",
+                stateFilter === c.v ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {c.label}
+              <span className="ms-1 tabular-nums opacity-70">{c.n}</span>
+            </button>
+          ))}
+        </div>
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -345,8 +382,12 @@ function InTransitTab() {
       {list.length === 0 ? (
         <EmptyState
           icon={Truck}
-          title="لا طرود بالطريق"
-          description="كل ما أُسنِد للمناديب إمّا سُلّم وسُوّي أو أُرجع."
+          title={stateFilter === "FAILED" ? "لا طرود بانتظار المرتجع" : "لا طرود بالطريق"}
+          description={
+            stateFilter === "FAILED"
+              ? "لا طرد أعلنت الجهة تعذّر تسليمه وينتظر رجوعه للفرع."
+              : "كل ما أُسنِد للمناديب إمّا سُلّم وسُوّي أو أُرجع."
+          }
         />
       ) : (
         <ScrollTableShell>
