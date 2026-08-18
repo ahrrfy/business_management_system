@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,11 +13,15 @@ import {
   createNginxTopologyAttestation,
   createSecretAttestation,
   readInternalProxySecretFromEnv,
+  readInternalProxySecretsFromEnv,
   resolveNginxContract,
   verifyLiveNginxContract,
 } from "./nginx-contract.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const INSTALLED_SCRIPT_PATH =
+  "/usr/local/libexec/erp/nginx/install-nginx-contract.mjs";
+const PRODUCTION_PROJECT_ROOT = "/home/deploy/erp";
 function createExternalHealthScript(origins) {
   return String.raw`
 const origins = ${JSON.stringify(origins)};
@@ -51,6 +55,27 @@ const NGINX_EXTERNAL_HEALTH_SCRIPT = createExternalHealthScript([
 const NGINX_ROLLBACK_HEALTH_SCRIPT = createExternalHealthScript([
   "https://srv1548487.hstgr.cloud",
 ]);
+const ROTATION_JOURNAL_NAME = "proxy-secret-rotation.pending.json";
+const ORIGIN_SECRET_CANARY_SCRIPT = String.raw`
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const policy = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+for (const [secret, expected] of [
+  ...policy.accept.map((value) => [value, 200]),
+  ...policy.reject.map((value) => [value, 403]),
+]) {
+  let status = 0;
+  try {
+    const response = await fetch("http://127.0.0.1:" + policy.port + "/healthz", {
+      headers: { "X-Internal-Proxy-Secret": secret },
+      redirect: "error",
+      signal: AbortSignal.timeout(5000),
+    });
+    status = response.status;
+  } catch {}
+  if (status !== expected) throw new Error("INTERNAL_PROXY_SECRET_CANARY_FAILED");
+}
+`;
 
 function installerError(code, cause) {
   const error = new Error(code, cause ? { cause } : undefined);
@@ -109,6 +134,241 @@ function fsyncFile(file) {
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+function writeAtomicFile(target, content, mode, options) {
+  const existing = assertPlainFile(target, "NGINX_ROTATION_TARGET_INVALID");
+  const temporary = path.join(
+    path.dirname(target),
+    `.alroya-${path.basename(target)}-rotation-${randomUUID()}`,
+  );
+  try {
+    fs.writeFileSync(temporary, content, {
+      encoding: "utf8",
+      flag: "wx",
+      mode,
+    });
+    applyOwnerAndMode(temporary, mode, options, existing.uid, existing.gid);
+    fsyncFile(temporary);
+    fs.renameSync(temporary, target);
+    fsyncDirectory(path.dirname(target));
+  } finally {
+    if (lstatOrNull(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
+function renderAppSecrets(file, current, previous) {
+  const kept = fs
+    .readFileSync(file, "utf8")
+    .split(/\r?\n/u)
+    .filter(
+      (line) =>
+        !/^\s*(?:export\s+)?INTERNAL_PROXY_SECRET(?:_PREVIOUS)?\s*=/u.test(
+          line,
+        ),
+    );
+  while (kept.at(-1) === "") kept.pop();
+  return `${[
+    ...kept,
+    `INTERNAL_PROXY_SECRET=${current}`,
+    ...(previous ? [`INTERNAL_PROXY_SECRET_PREVIOUS=${previous}`] : []),
+  ].join("\n")}\n`;
+}
+
+function renderNginxSecret(secret) {
+  return `set $alroya_proxy_secret "${secret}";\n`;
+}
+
+function rotationJournalPath(backupRoot) {
+  return path.join(backupRoot, ROTATION_JOURNAL_NAME);
+}
+
+function writeRotationJournal(backupRoot, record, options) {
+  const target = rotationJournalPath(backupRoot);
+  const temporary = path.join(
+    backupRoot,
+    `.proxy-secret-rotation-${randomUUID()}.json`,
+  );
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    applyOwnerAndMode(temporary, 0o600, options);
+    fsyncFile(temporary);
+    fs.renameSync(temporary, target);
+    fsyncDirectory(backupRoot);
+  } finally {
+    if (lstatOrNull(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
+function readRotationJournal(backupRoot, options) {
+  const target = rotationJournalPath(backupRoot);
+  const stat = lstatOrNull(target);
+  if (!stat) return null;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4096) {
+    throw installerError("NGINX_ROTATION_JOURNAL_INVALID");
+  }
+  assertOwnedMode(stat, 0o600, options, "NGINX_ROTATION_JOURNAL_INVALID");
+  let record;
+  try {
+    record = JSON.parse(fs.readFileSync(target, "utf8"));
+  } catch {
+    throw installerError("NGINX_ROTATION_JOURNAL_INVALID");
+  }
+  const backupDirectory = path.resolve(record?.backupDirectory ?? "");
+  if (
+    record?.version !== 1 ||
+    ![
+      "prepared",
+      "switching",
+      "switched",
+      "retiring",
+      "rollback-primed",
+      "rolling-back",
+    ].includes(record?.state) ||
+    path.dirname(backupDirectory) !== backupRoot ||
+    path.basename(backupDirectory).length < 20
+  ) {
+    throw installerError("NGINX_ROTATION_JOURNAL_INVALID");
+  }
+  assertPlainDirectory(backupDirectory, "NGINX_ROTATION_BACKUP_INVALID");
+  assertOwnedMode(
+    fs.lstatSync(backupDirectory),
+    0o700,
+    options,
+    "NGINX_ROTATION_BACKUP_INVALID",
+  );
+  for (const name of ["app-env.bin", "nginx-secret.bin", "next-secret.bin"]) {
+    const backupStat = assertPlainFile(
+      path.join(backupDirectory, name),
+      "NGINX_ROTATION_BACKUP_INVALID",
+    );
+    assertOwnedMode(
+      backupStat,
+      0o600,
+      options,
+      "NGINX_ROTATION_BACKUP_INVALID",
+    );
+  }
+  return Object.freeze({ ...record, backupDirectory });
+}
+
+function createRotationBackup(contract, options, nextSecret) {
+  const backupDirectory = path.join(
+    options.backupRoot,
+    `proxy-secret-${new Date().toISOString().replace(/[:.]/gu, "-")}-${randomUUID()}`,
+  );
+  fs.mkdirSync(backupDirectory, { mode: 0o700 });
+  if (options.strictOwnership) {
+    fs.chownSync(backupDirectory, options.expectedUid, options.expectedGid);
+  }
+  for (const [source, name] of [
+    [options.appEnvPath, "app-env.bin"],
+    [contract.secretPath, "nginx-secret.bin"],
+  ]) {
+    assertPlainFile(source, "NGINX_ROTATION_SOURCE_INVALID");
+    const target = path.join(backupDirectory, name);
+    fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+    applyOwnerAndMode(target, 0o600, options);
+    fsyncFile(target);
+  }
+  const nextSecretPath = path.join(backupDirectory, "next-secret.bin");
+  fs.writeFileSync(nextSecretPath, `${nextSecret}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  applyOwnerAndMode(nextSecretPath, 0o600, options);
+  fsyncFile(nextSecretPath);
+  fsyncDirectory(backupDirectory);
+  fsyncDirectory(options.backupRoot);
+  return backupDirectory;
+}
+
+function rotationSecrets(record) {
+  const originalEnv = path.join(record.backupDirectory, "app-env.bin");
+  const original = readInternalProxySecretsFromEnv(originalEnv);
+  if (original.previous) {
+    throw installerError("NGINX_ROTATION_BASELINE_NOT_STEADY");
+  }
+  const next = fs
+    .readFileSync(path.join(record.backupDirectory, "next-secret.bin"), "utf8")
+    .trim();
+  if (
+    !INTERNAL_PROXY_SECRET_PATTERN.test(next) ||
+    secretsMatch(original.current, next)
+  ) {
+    throw installerError("NGINX_ROTATION_NEXT_SECRET_INVALID");
+  }
+  return Object.freeze({ old: original.current, next });
+}
+
+function setRotationState(record, state, options) {
+  const updated = Object.freeze({ ...record, state });
+  writeRotationJournal(options.backupRoot, updated, options);
+  return updated;
+}
+
+function removeRotationJournal(options) {
+  const target = rotationJournalPath(options.backupRoot);
+  if (lstatOrNull(target)) fs.unlinkSync(target);
+  fsyncDirectory(options.backupRoot);
+}
+
+function assertRotationRoot(options) {
+  if (
+    options.requireRoot &&
+    (process.platform !== "linux" ||
+      typeof process.getuid !== "function" ||
+      process.getuid() !== 0)
+  ) {
+    throw installerError("NGINX_ROTATION_ROOT_REQUIRED");
+  }
+}
+
+function writeAppSecretPair(options, current, previous) {
+  writeAtomicFile(
+    options.appEnvPath,
+    renderAppSecrets(options.appEnvPath, current, previous),
+    0o600,
+    options,
+  );
+}
+
+function appSecretsMatch(options, current, previous) {
+  try {
+    const actual = readInternalProxySecretsFromEnv(options.appEnvPath);
+    return (
+      secretsMatch(actual.current, current) &&
+      (previous
+        ? Boolean(actual.previous) && secretsMatch(actual.previous, previous)
+        : actual.previous === undefined)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeLiveNginxSecret(contract, options, secret) {
+  writeAtomicFile(
+    contract.secretPath,
+    renderNginxSecret(secret),
+    0o600,
+    options,
+  );
+}
+
+function rotationOptions(input) {
+  const options = normalizeOptions(input);
+  assertRotationRoot(options);
+  ensureBackupRoot(options.backupRoot, options);
+  const contract = resolveNginxContract(options);
+  assertPlainFile(options.appEnvPath, "NGINX_ROTATION_APP_ENV_INVALID");
+  parseNginxSecret(contract.secretPath, options);
+  return Object.freeze({ options, contract });
 }
 
 function parseNginxSecret(file, options) {
@@ -659,6 +919,25 @@ function defaultOperations(projectRoot) {
       }),
     smoke: () => externalHealth(NGINX_EXTERNAL_HEALTH_SCRIPT),
     rollbackSmoke: () => externalHealth(NGINX_ROLLBACK_HEALTH_SCRIPT),
+    originCanary: (policy) =>
+      execFileSync(
+        process.execPath,
+        ["--input-type=module", "-e", ORIGIN_SECRET_CANARY_SCRIPT],
+        {
+          cwd: projectRoot,
+          input: JSON.stringify(policy),
+          stdio: ["pipe", "ignore", "inherit"],
+          timeout: 30_000,
+          env: Object.fromEntries(
+            ["PATH", "LANG", "LC_ALL", "SystemRoot", "WINDIR"].flatMap(
+              (key) =>
+                typeof process.env[key] === "string"
+                  ? [[key, process.env[key]]]
+                  : [],
+            ),
+          ),
+        },
+      ),
   });
 }
 
@@ -670,6 +949,9 @@ function normalizeOptions(options) {
   const strictMode = options.strictMode ?? process.platform !== "win32";
   const operations = options.operations ?? defaultOperations(projectRoot);
   if (typeof operations.rollbackSmoke !== "function") {
+    throw installerError("NGINX_INSTALL_OPERATIONS_INVALID");
+  }
+  if (typeof operations.originCanary !== "function") {
     throw installerError("NGINX_INSTALL_OPERATIONS_INVALID");
   }
   return Object.freeze({
@@ -688,6 +970,9 @@ function normalizeOptions(options) {
     expectedGid: options.expectedGid ?? 0,
     requireRoot: options.requireRoot ?? true,
     faultInjection: options.faultInjection === true,
+    generateSecret:
+      options.generateSecret ?? (() => randomBytes(32).toString("hex")),
+    afterRotationMutation: options.afterRotationMutation,
     operations,
   });
 }
@@ -771,12 +1056,194 @@ export function installNginxContract(input = {}) {
   }
 }
 
+export function prepareProxySecretRotation(input = {}) {
+  const { options, contract } = rotationOptions(input);
+  let record = readRotationJournal(options.backupRoot, options);
+  if (record) {
+    if (record.state !== "prepared") {
+      throw installerError("NGINX_ROTATION_ALREADY_ACTIVE");
+    }
+  } else {
+    const baseline = readInternalProxySecretsFromEnv(options.appEnvPath);
+    const live = parseNginxSecret(contract.secretPath, options);
+    if (baseline.previous || !secretsMatch(baseline.current, live.secret)) {
+      throw installerError("NGINX_ROTATION_BASELINE_INVALID");
+    }
+    const nextSecret = options.generateSecret();
+    if (
+      !INTERNAL_PROXY_SECRET_PATTERN.test(nextSecret) ||
+      secretsMatch(baseline.current, nextSecret)
+    ) {
+      throw installerError("NGINX_ROTATION_NEXT_SECRET_INVALID");
+    }
+    const backupDirectory = createRotationBackup(
+      contract,
+      options,
+      nextSecret,
+    );
+    record = Object.freeze({ version: 1, state: "prepared", backupDirectory });
+    writeRotationJournal(options.backupRoot, record, options);
+  }
+  const secrets = rotationSecrets(record);
+  writeAppSecretPair(options, secrets.old, secrets.next);
+  options.afterRotationMutation?.("prepare-env");
+  return Object.freeze({ state: "prepared" });
+}
+
+export function switchProxySecretRotation(input = {}) {
+  const { options, contract } = rotationOptions(input);
+  let record = readRotationJournal(options.backupRoot, options);
+  if (!record || !["prepared", "switching"].includes(record.state)) {
+    throw installerError("NGINX_ROTATION_SWITCH_STATE_INVALID");
+  }
+  const secrets = rotationSecrets(record);
+  options.operations.originCanary({
+    port: 3000,
+    accept: [secrets.old, secrets.next],
+    reject: [],
+  });
+  record = setRotationState(record, "switching", options);
+  writeAppSecretPair(options, secrets.next, secrets.old);
+  options.afterRotationMutation?.("switch-env");
+  writeLiveNginxSecret(contract, options, secrets.next);
+  options.afterRotationMutation?.("switch-nginx");
+  try {
+    installNginxContract(options);
+  } catch (error) {
+    throw installerError("NGINX_ROTATION_SWITCH_FAILED", error);
+  }
+  setRotationState(record, "switched", options);
+  return Object.freeze({ state: "switched" });
+}
+
+export function retireProxySecretRotation(input = {}) {
+  const { options } = rotationOptions(input);
+  let record = readRotationJournal(options.backupRoot, options);
+  if (!record || !["switched", "retiring"].includes(record.state)) {
+    throw installerError("NGINX_ROTATION_RETIRE_STATE_INVALID");
+  }
+  const secrets = rotationSecrets(record);
+  if (record.state === "switched") {
+    record = setRotationState(record, "retiring", options);
+    options.afterRotationMutation?.("retire-journal");
+    writeAppSecretPair(options, secrets.next);
+    options.afterRotationMutation?.("retire-env");
+    return Object.freeze({ state: "retiring" });
+  }
+  if (!appSecretsMatch(options, secrets.next)) {
+    writeAppSecretPair(options, secrets.next);
+    options.afterRotationMutation?.("retire-env");
+    return Object.freeze({ state: "retiring" });
+  }
+  options.operations.originCanary({
+    port: 3000,
+    accept: [secrets.next],
+    reject: [secrets.old],
+  });
+  installNginxContract(options);
+  removeRotationJournal(options);
+  return Object.freeze({ state: "retired" });
+}
+
+export function rollbackProxySecretRotation(input = {}) {
+  const { options, contract } = rotationOptions(input);
+  let record = readRotationJournal(options.backupRoot, options);
+  if (!record) throw installerError("NGINX_ROTATION_ROLLBACK_STATE_INVALID");
+  const secrets = rotationSecrets(record);
+  if (record.state === "rolling-back") {
+    options.operations.originCanary({
+      port: 3000,
+      accept: [secrets.old],
+      reject: [secrets.next],
+    });
+    removeRotationJournal(options);
+    return Object.freeze({ state: "rolled-back" });
+  }
+  if (record.state === "rollback-primed") {
+    const live = parseNginxSecret(contract.secretPath, options);
+    const desiredCurrent = secretsMatch(live.secret, secrets.old)
+      ? secrets.old
+      : secretsMatch(live.secret, secrets.next)
+        ? secrets.next
+        : null;
+    const desiredPrevious = secretsMatch(live.secret, secrets.old)
+      ? secrets.next
+      : secrets.old;
+    if (
+      !desiredCurrent ||
+      !appSecretsMatch(options, desiredCurrent, desiredPrevious)
+    ) {
+      if (!desiredCurrent) {
+        throw installerError("NGINX_ROTATION_LIVE_SECRET_INVALID");
+      }
+      writeAppSecretPair(options, desiredCurrent, desiredPrevious);
+      options.afterRotationMutation?.("rollback-prime-env");
+      return Object.freeze({ state: "rollback-primed" });
+    }
+    options.operations.originCanary({
+      port: 3000,
+      accept: [secrets.old, secrets.next],
+      reject: [],
+    });
+    writeLiveNginxSecret(contract, options, secrets.old);
+    options.afterRotationMutation?.("rollback-nginx");
+    writeAppSecretPair(options, secrets.old);
+    options.afterRotationMutation?.("rollback-env");
+    installNginxContract(options);
+    setRotationState(record, "rolling-back", options);
+    return Object.freeze({ state: "rolling-back" });
+  }
+  const live = parseNginxSecret(contract.secretPath, options);
+  if (
+    !secretsMatch(live.secret, secrets.old) &&
+    !secretsMatch(live.secret, secrets.next)
+  ) {
+    throw installerError("NGINX_ROTATION_LIVE_SECRET_INVALID");
+  }
+  setRotationState(record, "rollback-primed", options);
+  options.afterRotationMutation?.("rollback-journal");
+  writeAppSecretPair(
+    options,
+    secretsMatch(live.secret, secrets.old) ? secrets.old : secrets.next,
+    secretsMatch(live.secret, secrets.old) ? secrets.next : secrets.old,
+  );
+  options.afterRotationMutation?.("rollback-prime-env");
+  return Object.freeze({ state: "rollback-primed" });
+}
+
 function main() {
-  if (process.argv.length !== 2)
+  const action = process.argv[2] ?? "install";
+  if (process.argv.length > 3) {
     throw installerError("NGINX_INSTALL_ARGUMENTS_INVALID");
-  const result = installNginxContract();
-  console.log("nginx contract install: OK");
-  console.log(`recoverable backup: ${result.backupDirectory}`);
+  }
+  const actions = {
+    install: installNginxContract,
+    prepare: prepareProxySecretRotation,
+    switch: switchProxySecretRotation,
+    retire: retireProxySecretRotation,
+    rollback: rollbackProxySecretRotation,
+  };
+  const operation = actions[action];
+  if (!operation) throw installerError("NGINX_INSTALL_ARGUMENTS_INVALID");
+  if (
+    process.platform === "linux" &&
+    typeof process.getuid === "function" &&
+    process.getuid() === 0 &&
+    path.resolve(SCRIPT_PATH) !== INSTALLED_SCRIPT_PATH
+  ) {
+    throw installerError("NGINX_INSTALL_UNTRUSTED_EXECUTABLE");
+  }
+  const result = operation(
+    path.resolve(SCRIPT_PATH) === INSTALLED_SCRIPT_PATH
+      ? { projectRoot: PRODUCTION_PROJECT_ROOT }
+      : {},
+  );
+  console.log(`nginx contract ${action}: OK`);
+  if (result.backupDirectory) {
+    console.log(`recoverable backup: ${result.backupDirectory}`);
+  } else {
+    console.log(`rotation state: ${result.state}`);
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {

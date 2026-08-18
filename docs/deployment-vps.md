@@ -67,6 +67,7 @@ chmod 600 /home/deploy/erp/.env    # إلزامي: لا تترك أسرار ال
 | `ALLOW_PUBLIC_BIND`                       | `0`                                         | ارفعه إلى `1` فقط إذا كان `HOST` العام/LAN مقصوداً ومعه جدار ناري؛ وإلا يفشل الإقلاع مغلقاً                    |
 | `PORT`                                    | `3000`                                      | يستمع داخلياً؛ nginx يُمرّر إليه                                                                               |
 | `INTERNAL_PROXY_SECRET`                   | `openssl rand -hex 32`                      | يطابق قيمة ملف nginx المحمي `/etc/nginx/snippets/alroya-proxy-secret.conf` ويمنع تجاوز البروكسي من عملية محلية |
+| `INTERNAL_PROXY_SECRET_PREVIOUS`          | فارغ عادةً                                  | نافذة تدوير مؤقتة فقط؛ إن وُجد فهو 64 hex مختلف، ويُحذف بعد `retire` الناجح                              |
 | `DATABASE_URL`                            | `mysql://erp_app:<قوية>@127.0.0.1:3307/erp` | حساب التطبيق محصور بقاعدة `erp`؛ لا تشغّل الويب بـroot                                                         |
 | `DB_APP_USER` / `DB_APP_PW`               | `erp_app` / `openssl rand -hex 24`          | حساب الويب الأقل امتيازاً؛ كلمة مختلفة عن root                                                                 |
 | `DB_ROOT_PW` / `DB_NAME` / `DB_CONTAINER` | `<قوية>` / `erp` / `erp-mysql`              | root للصيانة/التعافي وcompose فقط، ولا يبقى في بيئة عامل الويب                                                 |
@@ -150,10 +151,32 @@ systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.
 `sudoedit`؛ لا تمرّره وسيطاً ولا تنسخ المثال الوهمي. بعد إصدار الشهادات، التجديد المسموح هو
 `certbot renew`؛ لا تشغّل أمراً يعيد كتابة vhost الملتزم.
 
-**الأمر الوحيد لتثبيت أو إصلاح عقد Nginx** (بما فيه علاج 403 للمضيف العام):
+**ثبّت مُثبّت Nginx الموثوق مرة لكل إصدار تغيّرت فيه ملفاته.** لا تشغّل JavaScript من
+`/home/deploy/erp` بصلاحية root. استعمل فقط SHA-256 المنشورين في summary تشغيل
+`check-test-build` الأخضر على push إلى `main` للإصدار نفسه:
 
 ```bash
-cd /home/deploy/erp && sudo "$(command -v node)" scripts/install-nginx-contract.mjs
+cd /home/deploy/erp
+release_sha='<CI_GREEN_RELEASE_SHA>'
+installer_sha256='<RELEASE_NGINX_INSTALLER_SHA256>'
+contract_sha256='<RELEASE_NGINX_CONTRACT_SHA256>'
+test "$(git rev-parse HEAD)" = "$release_sha"
+case "$release_sha$installer_sha256$contract_sha256" in *'<'*|'') exit 1;; esac
+sudo /usr/bin/install -d -o root -g root -m 0755 /usr/local/libexec/erp/nginx
+installer_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.install-nginx-contract.mjs.XXXXXX)"
+contract_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.nginx-contract.mjs.XXXXXX)"
+trap 'sudo /usr/bin/rm -f -- "$installer_tmp" "$contract_tmp"' EXIT HUP INT TERM
+sudo /usr/bin/install -o root -g root -m 0555 scripts/install-nginx-contract.mjs "$installer_tmp"
+sudo /usr/bin/install -o root -g root -m 0555 scripts/nginx-contract.mjs "$contract_tmp"
+printf '%s  %s\n' "$installer_sha256" "$installer_tmp" | sudo /usr/bin/sha256sum -c -
+printf '%s  %s\n' "$contract_sha256" "$contract_tmp" | sudo /usr/bin/sha256sum -c -
+sudo /usr/bin/mv -Tf -- "$contract_tmp" /usr/local/libexec/erp/nginx/nginx-contract.mjs
+sudo /usr/bin/mv -Tf -- "$installer_tmp" /usr/local/libexec/erp/nginx/install-nginx-contract.mjs
+trap - EXIT HUP INT TERM
+test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/nginx/install-nginx-contract.mjs)" = root:root:555
+
+# الأمر الوحيد لتثبيت أو إصلاح العقد:
+sudo /usr/bin/node /usr/local/libexec/erp/nginx/install-nginx-contract.mjs install
 ```
 
 هذا المُثبّت root-operated ولا يستعمل `sudo` داخلياً. يفحص مسبقاً الهوية، وأن مجلدات Nginx
@@ -174,6 +197,36 @@ cd /home/deploy/erp && sudo "$(command -v node)" scripts/install-nginx-contract.
 انقطعت العملية أو الكهرباء بين التبديلات، فالتشغيل الجذري التالي يستعيد journal بصورة idempotent
 قبل أي تثبيت جديد. فشل الرجوع يخرج بالرمز 2 ويُبقي النسخة وjournal للتدخل. لا تُنسخ قيمة السر
 إلى النسخة ولا تُطبع في السجل.
+
+### تدوير سرّ القفزة بلا نافذة 403
+
+المُثبّت يولّد السر الجديد داخلياً ولا يضعه في argv أو stdout. ملفا النسخة والـjournal تحت
+`/var/backups/alroya-nginx` بوضع `0700/0600`. نفّذ المراحل بالترتيب؛ بعد كل `prod:deploy`
+يختبر helper الأصل مباشرةً، ومرحلة `switch` تختبر أيضاً المسار الخارجي عبر Nginx:
+
+```bash
+helper=/usr/local/libexec/erp/nginx/install-nginx-contract.mjs
+
+# 1) prime: القرص old/current + new/previous؛ Nginx يبقى old.
+sudo /usr/bin/node "$helper" prepare
+sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
+
+# 2) switch: يثبت قبول old+new، ثم يجعل القرص new/current + old/previous
+# ويبدّل Nginx إلى new ذرياً مع nginx -t/reload/smoke.
+sudo /usr/bin/node "$helper" switch
+sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
+
+# 3) retire: النداء الأول يحذف previous من .env؛ النشر يحمّل steady state؛
+# النداء الثاني يثبت current=200 وold=403 ثم يمحو journal.
+sudo /usr/bin/node "$helper" retire
+sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
+sudo /usr/bin/node "$helper" retire
+```
+
+للرجوع من أي مرحلة: نفّذ `rollback` ثم `prod:deploy` ثم كررهما مرةً ثانية، وبعدها نداء
+`rollback` أخير للتأكيد. النداء الأول يعيد نافذة القبول المزدوج بحسب سر Nginx الحي، والثاني
+يعيد Nginx و`.env` إلى القديم، والثالث لا يمحو journal إلا بعد canary يثبت القديم ويرفض الجديد.
+إعادة أي نداء بعد انقطاع آمنة؛ لا تعدّل `.env` أو ملف السر يدوياً أثناء وجود journal.
 
 ```bash
 # شهادة لا تتجدد = موقع يسقط بعد 90 يوماً:

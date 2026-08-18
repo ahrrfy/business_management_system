@@ -11,6 +11,7 @@ const {
   hasPendingWebActivation,
   installWebCandidate,
   isWebCandidateActive,
+  normalizeWebHealthEnvironment,
   prepareWebCandidate,
   pruneWebArtifactSnapshots,
   recoverPendingWebActivation,
@@ -18,6 +19,36 @@ const {
   snapshotWebArtifact,
   verifyRollbackWebArtifactCompatibility,
 } = await import("./deploy.mjs");
+
+{
+  const current = "a".repeat(64);
+  const previous = "b".repeat(64);
+  assert.deepEqual(
+    normalizeWebHealthEnvironment({
+      PORT: "3000",
+      REQUIRE_INTERNAL_PROXY_SECRET: "1",
+      INTERNAL_PROXY_SECRET: current,
+      INTERNAL_PROXY_SECRET_PREVIOUS: previous,
+    }),
+    {
+      PORT: "3000",
+      REQUIRE_INTERNAL_PROXY_SECRET: "1",
+      INTERNAL_PROXY_SECRET: current,
+      INTERNAL_PROXY_SECRET_PREVIOUS: previous,
+    },
+  );
+  for (const invalidPrevious of [current, "short", "z".repeat(64)]) {
+    assert.throws(
+      () =>
+        normalizeWebHealthEnvironment({
+          REQUIRE_INTERNAL_PROXY_SECRET: "1",
+          INTERNAL_PROXY_SECRET: current,
+          INTERNAL_PROXY_SECRET_PREVIOUS: invalidPrevious,
+        }),
+      (error) => error?.code === "WEB_HEALTH_PROXY_PREVIOUS_SECRET_INVALID",
+    );
+  }
+}
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const deploySource = fs.readFileSync(

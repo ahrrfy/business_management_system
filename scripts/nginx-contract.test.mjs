@@ -6,11 +6,19 @@ import {
   NGINX_MANAGED_FILES,
   NGINX_MANAGED_LINKS,
   PROJECT_ROOT,
+  readInternalProxySecretsFromEnv,
   verifyLiveNginxContract,
 } from "./nginx-contract.mjs";
-import { installNginxContract } from "./install-nginx-contract.mjs";
+import {
+  installNginxContract,
+  prepareProxySecretRotation,
+  retireProxySecretRotation,
+  rollbackProxySecretRotation,
+  switchProxySecretRotation,
+} from "./install-nginx-contract.mjs";
 
 const SECRET = "a".repeat(64);
+const NEXT_SECRET = "b".repeat(64);
 assert.equal(
   NGINX_MANAGED_LINKS.length,
   2,
@@ -83,6 +91,26 @@ function snapshotLive(fixture) {
   });
 }
 
+function secretPath(fixture) {
+  return path.join(
+    fixture.nginxRoot,
+    "snippets",
+    "alroya-proxy-secret.conf",
+  );
+}
+
+function writeAppSecrets(fixture, current, previous) {
+  fs.writeFileSync(
+    path.join(fixture.projectRoot, ".env"),
+    [
+      `INTERNAL_PROXY_SECRET=${current}`,
+      ...(previous ? [`INTERNAL_PROXY_SECRET_PREVIOUS=${previous}`] : []),
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
 function assertSnapshot(snapshot) {
   for (const entry of snapshot) {
     const stat = fs.lstatSync(entry.target);
@@ -145,6 +173,12 @@ function makeOperations(fault = null) {
     reload: () => maybeFail("reload"),
     smoke: () => maybeFail("smoke"),
     rollbackSmoke: () => maybeFail("rollback-smoke"),
+    originCanary: (policy) =>
+      maybeFail(
+        policy.reject.length > 0
+          ? "origin-steady-canary"
+          : "origin-dual-canary",
+      ),
   };
 }
 
@@ -508,6 +542,212 @@ if (process.platform !== "win32") {
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
+}
+
+{
+  const fixture = createFixture();
+  try {
+    writeAppSecrets(fixture, SECRET, NEXT_SECRET);
+    assert.deepEqual(readInternalProxySecretsFromEnv(path.join(fixture.projectRoot, ".env")), {
+      current: SECRET,
+      previous: NEXT_SECRET,
+    });
+    assert.doesNotThrow(() =>
+      installNginxContract(fixtureOptions(fixture, makeOperations())),
+    );
+
+    writeAppSecrets(fixture, NEXT_SECRET, SECRET);
+    assert.throws(
+      () => installNginxContract(fixtureOptions(fixture, makeOperations())),
+      (error) => error?.code === "NGINX_INSTALL_SECRET_MISMATCH",
+      "step zero must not accept nginx=old when app current=new, even if previous=old",
+    );
+
+    for (const previous of [SECRET, "short", "z".repeat(64)]) {
+      writeAppSecrets(fixture, SECRET, previous);
+      assert.throws(
+        () => readInternalProxySecretsFromEnv(path.join(fixture.projectRoot, ".env")),
+        (error) => error?.code === "NGINX_APP_SECRET_INVALID",
+      );
+    }
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+{
+  const fixture = createFixture();
+  try {
+    const operations = makeOperations();
+    const options = {
+      ...fixtureOptions(fixture, operations),
+      generateSecret: () => NEXT_SECRET,
+    };
+    const prepared = prepareProxySecretRotation(options);
+    assert.equal(prepared.state, "prepared");
+    assert.deepEqual(
+      readInternalProxySecretsFromEnv(path.join(fixture.projectRoot, ".env")),
+      { current: SECRET, previous: NEXT_SECRET },
+    );
+    assert.equal(fs.readFileSync(secretPath(fixture), "utf8").includes(SECRET), true);
+
+    const switched = switchProxySecretRotation(options);
+    assert.equal(switched.state, "switched");
+    assert.deepEqual(
+      readInternalProxySecretsFromEnv(path.join(fixture.projectRoot, ".env")),
+      { current: NEXT_SECRET, previous: SECRET },
+    );
+    assert.equal(fs.readFileSync(secretPath(fixture), "utf8").includes(NEXT_SECRET), true);
+    assert.equal(operations.calls.includes("origin-dual-canary"), true);
+
+    const retiring = retireProxySecretRotation(options);
+    assert.equal(retiring.state, "retiring");
+    assert.deepEqual(
+      readInternalProxySecretsFromEnv(path.join(fixture.projectRoot, ".env")),
+      { current: NEXT_SECRET },
+    );
+    assert.equal(retireProxySecretRotation(options).state, "retired");
+    assert.equal(operations.calls.includes("origin-steady-canary"), true);
+    assert.equal(
+      fs.existsSync(path.join(fixture.backupRoot, "proxy-secret-rotation.pending.json")),
+      false,
+    );
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+for (const rollbackPhase of ["prepared", "switched", "retiring"]) {
+  const fixture = createFixture();
+  try {
+    const operations = makeOperations();
+    const options = {
+      ...fixtureOptions(fixture, operations),
+      generateSecret: () => NEXT_SECRET,
+    };
+    prepareProxySecretRotation(options);
+    if (rollbackPhase !== "prepared") switchProxySecretRotation(options);
+    if (rollbackPhase === "retiring") retireProxySecretRotation(options);
+
+    assert.equal(rollbackProxySecretRotation(options).state, "rollback-primed");
+    assert.equal(rollbackProxySecretRotation(options).state, "rolling-back");
+    assert.deepEqual(
+      readInternalProxySecretsFromEnv(path.join(fixture.projectRoot, ".env")),
+      { current: SECRET },
+    );
+    assert.equal(fs.readFileSync(secretPath(fixture), "utf8").includes(SECRET), true);
+    assert.equal(rollbackProxySecretRotation(options).state, "rolled-back");
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+{
+  const fixture = createFixture();
+  try {
+    const options = {
+      ...fixtureOptions(fixture, makeOperations()),
+      generateSecret: () => NEXT_SECRET,
+    };
+    prepareProxySecretRotation(options);
+    assert.equal(
+      prepareProxySecretRotation(options).state,
+      "prepared",
+      "prepare must be safely retryable after a process crash",
+    );
+    const journal = path.join(
+      fixture.backupRoot,
+      "proxy-secret-rotation.pending.json",
+    );
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(journal).mode & 0o777, 0o600);
+    }
+    const serialized = fs.readFileSync(journal, "utf8");
+    assert.doesNotMatch(serialized, new RegExp(`${SECRET}|${NEXT_SECRET}`, "u"));
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+for (const crashPoint of [
+  "prepare-env",
+  "switch-env",
+  "retire-journal",
+  "rollback-journal",
+]) {
+  const fixture = createFixture();
+  try {
+    let fired = false;
+    const base = {
+      ...fixtureOptions(fixture, makeOperations()),
+      generateSecret: () => NEXT_SECRET,
+    };
+    const crashing = {
+      ...base,
+      afterRotationMutation: (point) => {
+        if (!fired && point === crashPoint) {
+          fired = true;
+          throw new Error("SIMULATED_ROTATION_PROCESS_LOSS");
+        }
+      },
+    };
+    if (crashPoint === "prepare-env") {
+      assert.throws(() => prepareProxySecretRotation(crashing));
+      assert.equal(prepareProxySecretRotation(base).state, "prepared");
+    } else {
+      prepareProxySecretRotation(base);
+      if (crashPoint === "switch-env") {
+        assert.throws(() => switchProxySecretRotation(crashing));
+        assert.equal(switchProxySecretRotation(base).state, "switched");
+      } else {
+        switchProxySecretRotation(base);
+        if (crashPoint === "retire-journal") {
+          assert.throws(() => retireProxySecretRotation(crashing));
+          assert.equal(retireProxySecretRotation(base).state, "retiring");
+          assert.equal(retireProxySecretRotation(base).state, "retired");
+        } else {
+          assert.throws(() => rollbackProxySecretRotation(crashing));
+          assert.equal(rollbackProxySecretRotation(base).state, "rolling-back");
+          assert.equal(rollbackProxySecretRotation(base).state, "rolled-back");
+        }
+      }
+    }
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+{
+  const installer = fs.readFileSync(
+    path.join(PROJECT_ROOT, "scripts", "install-nginx-contract.mjs"),
+    "utf8",
+  );
+  assert.match(
+    installer,
+    /NGINX_INSTALL_UNTRUSTED_EXECUTABLE/u,
+    "root must refuse an installer executed from the deploy-writable checkout",
+  );
+  assert.match(
+    installer,
+    /\/usr\/local\/libexec\/erp\/nginx\/install-nginx-contract\.mjs/u,
+  );
+  const docs = fs.readFileSync(
+    path.join(PROJECT_ROOT, "docs", "deployment-vps.md"),
+    "utf8",
+  );
+  const ci = fs.readFileSync(
+    path.join(PROJECT_ROOT, ".github", "workflows", "ci.yml"),
+    "utf8",
+  );
+  assert.match(docs, /<RELEASE_NGINX_INSTALLER_SHA256>/u);
+  assert.match(docs, /<RELEASE_NGINX_CONTRACT_SHA256>/u);
+  assert.doesNotMatch(
+    docs,
+    /sudo\s+"?\$\(command -v node\)"?\s+scripts\/install-nginx-contract/u,
+  );
+  assert.match(ci, /RELEASE_NGINX_INSTALLER_SHA256/u);
+  assert.match(ci, /RELEASE_NGINX_CONTRACT_SHA256/u);
+  assert.match(ci, /GITHUB_STEP_SUMMARY/u);
 }
 
 console.log("nginx atomic contract installer tests: OK");

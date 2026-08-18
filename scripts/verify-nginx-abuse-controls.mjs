@@ -111,6 +111,12 @@ export function verifyNginxConfiguration(input) {
 
   requireMatch(errors, proxySecretExample, /set\s+\$alroya_proxy_secret\s+"CHANGE_ME_INTERNAL_PROXY_SECRET";/, "missing documented live-secret file shape");
   requireMatch(errors, internalSite, /-m\s+600\s+\/dev\/null\s+\/etc\/nginx\/snippets\/alroya-proxy-secret\.conf/, "install notes must protect the shared live-secret file");
+  requireMatch(errors, internalSite, /\/usr\/local\/libexec\/erp\/nginx\/install-nginx-contract\.mjs\s+install/, "nginx repair must use the installed root-owned helper");
+  for (const [name, site] of sites) {
+    if (/sudo[^\n]*scripts\/install-nginx-contract\.mjs/u.test(site)) {
+      errors.push(`${name} vhost suggests executing deploy-writable JavaScript as root`);
+    }
+  }
   requireMatch(errors, realIp, /real_ip_header\s+CF-Connecting-IP;/, "real-IP must come from Cloudflare's canonical header");
   requireMatch(errors, realIp, /set_real_ip_from\s+173\.245\.48\.0\/20;/, "missing trusted Cloudflare source ranges");
 

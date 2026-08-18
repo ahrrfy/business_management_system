@@ -22,7 +22,6 @@ import compression from "compression";
 import rateLimit from "express-rate-limit";
 import { pinoHttp } from "pino-http";
 import { nanoid } from "nanoid";
-import { timingSafeEqual } from "node:crypto";
 import { createServer } from "http";
 import net from "net";
 import { createContext } from "./context";
@@ -33,6 +32,10 @@ import { serveStatic, setupVite } from "./vite";
 import { registerWellKnown } from "./wellKnown";
 import { applyBodyParsers } from "./middleware/bodyParsers";
 import { csrfGuard } from "./middleware/csrf";
+import {
+  matchesInternalProxySecret,
+  readInternalProxySecrets,
+} from "./security/internalProxySecret";
 import {
   isTrpcSurface,
   sendTrpcError,
@@ -153,15 +156,10 @@ async function startServer() {
     if (!isLoopbackHost(host)) {
       throw new Error("REQUIRE_INTERNAL_PROXY_SECRET=1 يتطلب HOST=127.0.0.1 خلف reverse proxy.");
     }
-    const proxySecret = process.env.INTERNAL_PROXY_SECRET?.trim();
-    if (!proxySecret || !/^[a-f0-9]{64}$/i.test(proxySecret)) {
-      throw new Error("INTERNAL_PROXY_SECRET يجب أن يكون 64 خانة hex عشوائية (openssl rand -hex 32) خلف nginx في الإنتاج.");
-    }
+    const proxySecrets = readInternalProxySecrets(process.env);
     app.use((req, res, next) => {
       const supplied = req.get("x-internal-proxy-secret") ?? "";
-      const expected = Buffer.from(proxySecret);
-      const actual = Buffer.from(supplied);
-      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      if (!matchesInternalProxySecret(supplied, proxySecrets)) {
         return res.status(403).send("forbidden");
       }
       next();

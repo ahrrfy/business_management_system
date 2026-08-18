@@ -70,29 +70,48 @@ function fingerprintsMatch(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function readInternalProxySecretFromEnv(file) {
+export function readInternalProxySecretsFromEnv(file) {
   assertPlainFile(file, "NGINX_APP_ENV_INVALID");
-  const matches = [];
+  const matches = { current: [], previous: [] };
   for (const rawLine of fs.readFileSync(file, "utf8").split(/\r?\n/u)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
-    const match = /^(?:export\s+)?INTERNAL_PROXY_SECRET\s*=\s*(.*)$/u.exec(
-      line,
-    );
+    const match =
+      /^(?:export\s+)?(INTERNAL_PROXY_SECRET|INTERNAL_PROXY_SECRET_PREVIOUS)\s*=\s*(.*)$/u.exec(
+        line,
+      );
     if (!match) continue;
-    let value = match[1].trim();
+    let value = match[2].trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))
     ) {
       value = value.slice(1, -1);
     }
-    matches.push(value);
+    matches[
+      match[1] === "INTERNAL_PROXY_SECRET" ? "current" : "previous"
+    ].push(value);
   }
-  if (matches.length !== 1 || !INTERNAL_PROXY_SECRET_PATTERN.test(matches[0])) {
+  if (
+    matches.current.length !== 1 ||
+    !INTERNAL_PROXY_SECRET_PATTERN.test(matches.current[0]) ||
+    matches.previous.length > 1 ||
+    (matches.previous.length === 1 &&
+      (!INTERNAL_PROXY_SECRET_PATTERN.test(matches.previous[0]) ||
+        fingerprintsMatch(matches.current[0], matches.previous[0])))
+  ) {
     throw contractError("NGINX_APP_SECRET_INVALID");
   }
-  return matches[0];
+  return Object.freeze({
+    current: matches.current[0],
+    ...(matches.previous.length === 1
+      ? { previous: matches.previous[0] }
+      : {}),
+  });
+}
+
+export function readInternalProxySecretFromEnv(file) {
+  return readInternalProxySecretsFromEnv(file).current;
 }
 
 export function createSecretAttestation(secret, secretStat) {
@@ -663,7 +682,7 @@ if (
     console.error(`nginx live contract: FAILED: ${code}`);
     for (const issue of error?.details ?? []) console.error(`- ${issue}`);
     console.error(
-      'repair: sudo "$(command -v node)" scripts/install-nginx-contract.mjs',
+      "repair: sudo /usr/bin/node /usr/local/libexec/erp/nginx/install-nginx-contract.mjs install",
     );
     process.exitCode = 1;
   }
