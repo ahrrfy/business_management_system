@@ -11,19 +11,23 @@ import {
   mkdir,
   open,
   readFile,
+  realpath,
   rename,
   stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { isAbsolute, parse as parsePath, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, parse as parsePath, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 export const MIRROR_MANIFEST_FORMAT = "alroya-r2-cold-mirror/v1";
+export const RESTORE_DRILL_RECEIPT_FORMAT = "alroya-r2-restore-drill/v1";
 export const MIRROR_CONFIRMATION = "RUN_CUMULATIVE_PRIVATE_R2_MIRROR";
 const MAX_OBJECT_BYTES = 25 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 50 * 1024 * 1024;
+const RESTORE_DESTINATION_FORMAT = "alroya-r2-restore-destination/v1";
+const MAX_RESTORE_SAMPLE_OBJECTS = 100;
 
 export class R2ColdMirrorError extends Error {
   constructor(code, cause) {
@@ -37,6 +41,14 @@ function assertSafeKey(key) {
   if (typeof key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}$/.test(key) ||
       key.includes("..") || key.includes("//")) {
     throw new R2ColdMirrorError("MIRROR_KEY_INVALID");
+  }
+}
+
+export function assertMirrorPrefix(prefix) {
+  if (prefix === "company-") return;
+  if (typeof prefix !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}\/$/.test(prefix) ||
+      prefix.includes("..") || prefix.includes("//")) {
+    throw new R2ColdMirrorError("MIRROR_PREFIX_INVALID");
   }
 }
 
@@ -127,6 +139,25 @@ async function assertNoSymlinkPath(root, destination) {
       if (error?.code !== "ENOENT") throw error;
       await mkdir(current, { recursive: false, mode: 0o700 });
     }
+  }
+}
+
+async function assertExistingNoSymlinkPath(root, destination) {
+  const objectRoot = resolve(root, "objects");
+  const rel = relative(objectRoot, destination);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new R2ColdMirrorError("MIRROR_KEY_INVALID");
+  }
+  let current = objectRoot;
+  for (const segment of rel.split(/[\\/]/)) {
+    current = resolve(current, segment);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      throw new R2ColdMirrorError("MIRROR_DR_SOURCE_INVALID", error);
+    }
+    if (info.isSymbolicLink()) throw new R2ColdMirrorError("MIRROR_SYMLINK_FORBIDDEN");
   }
 }
 
@@ -228,6 +259,109 @@ async function loadPreviousManifest(path) {
   }
 }
 
+function pathContains(parent, child) {
+  const relation = relative(parent, child);
+  return relation === "" || (!relation.startsWith(`..${sep}`) && relation !== ".." && !isAbsolute(relation));
+}
+
+function assertExternalDirectoryPath(root, code = "MIRROR_DIR_MUST_BE_EXTERNAL") {
+  const parsed = parsePath(root);
+  const relationToWorkspace = relative(process.cwd(), root);
+  if (!isAbsolute(root) || root === parsed.root ||
+      (!relationToWorkspace.startsWith("..") && !isAbsolute(relationToWorkspace))) {
+    throw new R2ColdMirrorError(code);
+  }
+}
+
+/**
+ * تمرين استعادة فعلي من المرآة الباردة إلى وجهة جديدة مستقلة. الإيصال وحده لا يكفي:
+ * GC يعيد قراءة ملفات الوجهة ويتحقق من بصماتها قبل فتح delete.
+ */
+export async function createRestoreDrill({ mirrorRoot, destinationRoot, now = new Date(), drillId = randomUUID(), sampleLimit = 5 }) {
+  if (!isAbsolute(mirrorRoot) || !isAbsolute(destinationRoot) || !Number.isFinite(now?.getTime?.()) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(drillId) ||
+      !Number.isSafeInteger(sampleLimit) || sampleLimit < 1 || sampleLimit > MAX_RESTORE_SAMPLE_OBJECTS) {
+    throw new R2ColdMirrorError("MIRROR_DR_INPUT_INVALID");
+  }
+  assertExternalDirectoryPath(mirrorRoot, "MIRROR_DR_INPUT_INVALID");
+  assertExternalDirectoryPath(destinationRoot, "MIRROR_DR_INPUT_INVALID");
+  let actualMirrorRoot;
+  let actualDestinationRoot;
+  try {
+    actualMirrorRoot = await realpath(mirrorRoot);
+    const destinationParent = await realpath(dirname(destinationRoot));
+    actualDestinationRoot = resolve(destinationParent, basename(destinationRoot));
+  } catch (error) {
+    throw new R2ColdMirrorError("MIRROR_DR_INPUT_INVALID", error);
+  }
+  if (pathContains(actualMirrorRoot, actualDestinationRoot) || pathContains(actualDestinationRoot, actualMirrorRoot)) {
+    throw new R2ColdMirrorError("MIRROR_DR_DESTINATION_NOT_INDEPENDENT");
+  }
+  try {
+    await lstat(actualDestinationRoot);
+    throw new R2ColdMirrorError("MIRROR_DR_DESTINATION_NOT_EMPTY");
+  } catch (error) {
+    if (error instanceof R2ColdMirrorError) throw error;
+    if (error?.code !== "ENOENT") throw new R2ColdMirrorError("MIRROR_DR_INPUT_INVALID", error);
+  }
+
+  const loaded = await loadPreviousManifest(resolve(actualMirrorRoot, "manifest.json"));
+  const manifest = loaded.value;
+  if (!loaded.exists || !loaded.digest || typeof manifest.sourcePrefix !== "string" ||
+      typeof manifest.sourceScopeSha256 !== "string" || !/^[0-9a-f]{64}$/.test(manifest.sourceScopeSha256)) {
+    throw new R2ColdMirrorError("MIRROR_MANIFEST_INVALID");
+  }
+  assertMirrorPrefix(manifest.sourcePrefix);
+  await verifyCumulativeMirrorFiles(actualMirrorRoot, manifest.entries);
+  const selected = Object.entries(manifest.entries).sort(([a], [b]) => a.localeCompare(b)).slice(0, sampleLimit);
+  if (selected.length === 0) throw new R2ColdMirrorError("MIRROR_DR_NO_OBJECTS");
+  await mkdir(actualDestinationRoot, { recursive: false, mode: 0o700 });
+  const restoredEntries = [];
+  for (const [key, entry] of selected) {
+    assertSafeKey(key);
+    if (!validEntry(entry)) throw new R2ColdMirrorError("MIRROR_MANIFEST_INVALID");
+    const source = resolveMirrorObjectPath(actualMirrorRoot, key);
+    await assertExistingNoSymlinkPath(actualMirrorRoot, source);
+    const sourceProof = await sha256File(source);
+    if (sourceProof.sha256 !== entry.sha256 || sourceProof.bytes !== entry.bytes) {
+      throw new R2ColdMirrorError("MIRROR_LOCAL_HASH_MISMATCH");
+    }
+    const destination = resolveMirrorObjectPath(actualDestinationRoot, key);
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    await copyFile(source, destination, fsConstants.COPYFILE_EXCL);
+    const destinationProof = await sha256File(destination);
+    if (destinationProof.sha256 !== entry.sha256 || destinationProof.bytes !== entry.bytes) {
+      throw new R2ColdMirrorError("MIRROR_DR_DESTINATION_VERIFY_FAILED");
+    }
+    restoredEntries.push({
+      key,
+      relativePath: `objects/${key}`,
+      sha256: entry.sha256,
+      bytes: entry.bytes,
+    });
+  }
+  const receipt = {
+    format: RESTORE_DRILL_RECEIPT_FORMAT,
+    completedAt: now.toISOString(),
+    manifestSha256: loaded.digest,
+    sourcePrefix: manifest.sourcePrefix,
+    sourceScopeSha256: manifest.sourceScopeSha256,
+    destination: {
+      format: RESTORE_DESTINATION_FORMAT,
+      drillId,
+      entries: restoredEntries,
+    },
+  };
+  const receiptBytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+  const receiptSha256 = createHash("sha256").update(receiptBytes).digest("hex");
+  await writeFile(resolve(actualDestinationRoot, "receipt.json"), receiptBytes, { flag: "wx", mode: 0o600 });
+  await writeFile(resolve(actualDestinationRoot, "receipt.sha256"), `${receiptSha256}  receipt.json\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  return { manifestSha256: loaded.digest, receiptSha256, restored: restoredEntries.length };
+}
+
 async function writeManifest(root, value) {
   const path = resolve(root, "manifest.json");
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
@@ -244,21 +378,33 @@ async function main() {
     throw new R2ColdMirrorError("MIRROR_CONFIRMATION_REQUIRED");
   }
   const mode = process.env.R2_MIRROR_MODE?.trim().toLowerCase() || "copy";
-  if (mode !== "copy" && mode !== "verify") throw new R2ColdMirrorError("MIRROR_MODE_INVALID");
+  if (mode !== "copy" && mode !== "verify" && mode !== "restore-drill") {
+    throw new R2ColdMirrorError("MIRROR_MODE_INVALID");
+  }
+  if (mode === "restore-drill") {
+    const mirrorRoot = resolve(requiredEnv("R2_COLD_MIRROR_DIR"));
+    const destinationRoot = resolve(requiredEnv("R2_DR_RESTORE_DIR"));
+    const sampleText = process.env.R2_DR_SAMPLE_LIMIT?.trim() || "5";
+    if (!/^[1-9][0-9]{0,2}$/.test(sampleText)) throw new R2ColdMirrorError("MIRROR_DR_INPUT_INVALID");
+    const result = await createRestoreDrill({
+      mirrorRoot,
+      destinationRoot,
+      sampleLimit: Number(sampleText),
+    });
+    process.stdout.write(
+      `R2 cold mirror: OK mode=restore-drill objects=${result.restored} ` +
+      `manifest_sha256=${result.manifestSha256} receipt_sha256=${result.receiptSha256}\n`,
+    );
+    return;
+  }
   const accountId = requiredEnv("R2_ACCOUNT_ID");
   const bucket = requiredEnv("R2_IMAGE_BUCKET");
   const accessKeyId = requiredEnv("R2_ACCESS_KEY_ID");
   const secretAccessKey = requiredEnv("R2_SECRET_ACCESS_KEY");
   const prefix = process.env.R2_MIRROR_PREFIX?.trim() || "single/studio/";
-  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}\/$/.test(prefix) || prefix.includes("..") || prefix.includes("//")) {
-    throw new R2ColdMirrorError("MIRROR_PREFIX_INVALID");
-  }
+  assertMirrorPrefix(prefix);
   const root = resolve(requiredEnv("R2_COLD_MIRROR_DIR"));
-  const rootParts = parsePath(root);
-  const relationToWorkspace = relative(process.cwd(), root);
-  if (!isAbsolute(root) || root === rootParts.root || (!relationToWorkspace.startsWith("..") && !isAbsolute(relationToWorkspace))) {
-    throw new R2ColdMirrorError("MIRROR_DIR_MUST_BE_EXTERNAL");
-  }
+  assertExternalDirectoryPath(root);
   await mkdir(resolve(root, "objects"), { recursive: true, mode: 0o700 });
   const [{ S3Client, ListObjectsV2Command, GetObjectCommand }] = await Promise.all([import("@aws-sdk/client-s3")]);
   const commands = { GetObjectCommand };
@@ -280,6 +426,9 @@ async function main() {
   const sourceScopeSha256 = createHash("sha256").update(`${accountId}\0${bucket}`).digest("hex");
   if (previous.sourceScopeSha256 !== undefined && previous.sourceScopeSha256 !== sourceScopeSha256) {
     throw new R2ColdMirrorError("MIRROR_SOURCE_SCOPE_MISMATCH");
+  }
+  if (previous.sourcePrefix !== undefined && previous.sourcePrefix !== prefix) {
+    throw new R2ColdMirrorError("MIRROR_SOURCE_PREFIX_MISMATCH");
   }
   const verified = [];
   let continuationToken;

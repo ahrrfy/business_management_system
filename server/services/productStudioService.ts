@@ -33,6 +33,7 @@ import {
   loadR2GcDeletionAuthorization,
   resolveR2GcMode,
 } from "../lib/imageStore/r2RetentionPolicy";
+import { studioObjectRoot } from "../lib/imageStore/tenantNamespace";
 
 const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
 const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
@@ -331,7 +332,7 @@ export async function cleanupStudioStaging(limit = 5): Promise<number> {
   const cutoff = new Date(now.getTime() - STAGING_AUDIT_INTERVAL_MS);
   const gcMode = resolveR2GcMode(process.env);
   const deletionAuthorization = gcMode === "delete"
-    ? await loadR2GcDeletionAuthorization(process.env, now)
+    ? await loadR2GcDeletionAuthorization(process.env, now, studioObjectRoot())
     : null;
   const candidates = await requireDb().select({ objectKey: productImageObjectStaging.objectKey })
     .from(productImageObjectStaging)

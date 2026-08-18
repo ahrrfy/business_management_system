@@ -10,7 +10,9 @@ export const CANARY_CONFIRMATION = "RUN_PRIVATE_R2_CANARY";
 const MAX_CANARY_BYTES = 64 * 1024;
 const FETCH_TIMEOUT_MS = 10_000;
 const MIN_BUCKET_LOCK_SECONDS = 90 * 24 * 60 * 60;
-const REQUIRED_LOCK_PREFIXES = ["single/studio/"];
+// Cloudflare Bucket Lock prefix literal لا يدعم wildcard. company- يغطي كل
+// company-{id}/studio/ الحالية والمستقبلية، بينما single يبقى أضيق نطاق ممكن.
+const REQUIRED_LOCK_PREFIXES = ["single/studio/", "company-"];
 const CANARY_PREFIX = "canary/r2-image-store/";
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",

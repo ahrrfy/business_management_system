@@ -22,7 +22,8 @@
    [managed-domain API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/managed/methods/list/)
    و[custom-domain list API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/domains/subresources/custom/methods/list/)؛
    403/404 من S3 وحده ليس دليلاً لأن مسارات النشر مستقلة. كذلك يلزم Bucket Lock مفعّل مدة 90
-   يوماً على `single/studio/` وصفر lifecycle delete؛ يقرأهما canary من
+   يوماً على `single/studio/` و`company-` وصفر lifecycle delete؛ `company-` قاعدة حرفية واسعة
+   تغطي كل `company-{id}/studio/` الحالية والمستقبلية لأن Bucket Lock لا يدعم wildcard. يقرأها canary من
    [Lock API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/locks/)
    و[Lifecycle API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/lifecycle/).
    لا تغطِّ `canary/` بالقفل.
@@ -36,10 +37,16 @@
    R2_MIRROR_MODE=verify R2_MIRROR_CONFIRM=RUN_CUMULATIVE_PRIVATE_R2_MIRROR \
      R2_COLD_MIRROR_DIR='/external/private-r2-mirror' \
      node scripts/r2-cold-mirror.mjs
+   R2_MIRROR_MODE=restore-drill R2_MIRROR_CONFIRM=RUN_CUMULATIVE_PRIVATE_R2_MIRROR \
+     R2_COLD_MIRROR_DIR='/external/private-r2-mirror' \
+     R2_DR_RESTORE_DIR='/another-device/r2-drills/2026-08-18' \
+     R2_DR_SAMPLE_LIMIT=5 \
+     node scripts/r2-cold-mirror.mjs
    ```
 
    الأداة تتحقق من كل ملفات manifest، حتى الملفات التي لم تعد في المصدر، وتحتفظ بها. ثبّت بصمة
-   manifest في متغير إصدار محمي عند فتح نافذة GC، وسجّل وقت تمرين DR بصيغة UTC ISO.
+   manifest وبصمة `receipt.json` في متغيري إصدار محميين عند فتح نافذة GC. لا تقبل timestamp
+   يدوياً: يجب أن يبقى الإيصال وملفات وجهة الاستعادة المستقلة متاحين للقراءة كي يعيد GC إثباتهما.
 4. شغّل canary في shell آمنة بلا تسجيل أو `set -x`:
 
    ```bash
@@ -91,5 +98,6 @@ mode: المتجر بقي قابلاً للعرض لكنه لا يثبت الم�
 4. للتراجع أثناء انتقال legacy فقط: أزل `IMAGE_STORE_DRIVER` وأعد النشر؛ تبقى المنصة online بصور
    MySQL القديمة والاستوديو fail-closed. بعد اعتماد صور object-only، لا تفعل ذلك بلا خطة بيانات.
 5. لا تحوّل إلى `fs` ولا تنسخ originals إلى VPS. لا تحذف يدوياً من الـBucket. GC audit-only
-   افتراضياً؛ delete يحتاج 90 يوماً من فقد المرجع + manifest حديثة وبصمتها + DR حديثاً + الإقرار
+   افتراضياً؛ delete يحتاج 90 يوماً من فقد المرجع + manifest حديثة وبصمتها + إيصال restore-drill
+   حديث وبصمته وملفات وجهته السليمة + الإقرار
    الصريح. الـcanary وحده يحذف مفتاحه المحجوز خارج Bucket Lock.

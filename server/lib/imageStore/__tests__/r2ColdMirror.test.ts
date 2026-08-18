@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { R2_GC_DELETE_CONFIRMATION, loadR2GcDeletionAuthorization } from "../r2RetentionPolicy";
 
 const cliUrl = new globalThis.URL("../../../../scripts/r2-cold-mirror.mjs", import.meta.url);
 const moduleDir = await mkdtemp(join(tmpdir(), "r2-mirror-vitest-"));
@@ -21,6 +22,8 @@ afterEach(async () => {
 const {
   MIRROR_MANIFEST_FORMAT,
   assertMirrorManifestCoversSource,
+  assertMirrorPrefix,
+  createRestoreDrill,
   mergeCumulativeMirrorEntries,
   resolveMirrorObjectPath,
   safeMirrorFailureCode,
@@ -61,6 +64,9 @@ describe("R2 cumulative cold mirror", () => {
       .toMatch(/cold-r2[\\/]objects[\\/]single[\\/]studio/);
     expect(() => resolveMirrorObjectPath(coldRoot, "../escape")).toThrow(/MIRROR_KEY_INVALID/);
     expect(() => resolveMirrorObjectPath(coldRoot, "single//file.png")).toThrow(/MIRROR_KEY_INVALID/);
+    expect(() => assertMirrorPrefix("single/studio/")).not.toThrow();
+    expect(() => assertMirrorPrefix("company-")).not.toThrow();
+    expect(() => assertMirrorPrefix("company-*/studio/")).toThrow(/MIRROR_PREFIX_INVALID/);
   });
 
   it("لا يعيد تفاصيل المزوّد أو المسارات في رمز الفشل", () => {
@@ -116,5 +122,71 @@ describe("R2 cumulative cold mirror", () => {
         verifiedAt: "2026-08-18T00:00:00.000Z",
       },
     }, [item])).not.toThrow();
+  });
+
+  it("ينفذ restore drill فعلياً إلى وجهة مستقلة ويصدر إيصالاً مربوطاً ببصمة manifest", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "r2-restore-drill-"));
+    mirrorRoots.push(parent);
+    const mirrorRoot = join(parent, "cold-mirror");
+    const destinationRoot = join(parent, "independent-target");
+    const bytes = Buffer.from("recoverable-cold-object");
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const key = `company-42/studio/candidate/${hash.slice(0, 2)}/${hash}.png`;
+    const objectPath = resolveMirrorObjectPath(mirrorRoot, key);
+    await mkdir(join(objectPath, ".."), { recursive: true });
+    await writeFile(objectPath, bytes);
+    const manifest = {
+      format: MIRROR_MANIFEST_FORMAT,
+      completedAt: "2026-08-18T00:00:00.000Z",
+      sourcePrefix: "company-",
+      sourceScopeSha256: "c".repeat(64),
+      entries: {
+        [key]: {
+          sha256: hash,
+          bytes: bytes.length,
+          sourcePresent: true,
+          lastSeenAt: "2026-08-18T00:00:00.000Z",
+          verifiedAt: "2026-08-18T00:00:00.000Z",
+        },
+      },
+    };
+    const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+    await writeFile(join(mirrorRoot, "manifest.json"), manifestBytes);
+
+    const result = await createRestoreDrill({
+      mirrorRoot,
+      destinationRoot,
+      now: new Date("2026-08-18T12:00:00.000Z"),
+      drillId: "11111111-1111-4111-8111-111111111111",
+      sampleLimit: 1,
+    });
+    expect(result.manifestSha256).toBe(createHash("sha256").update(manifestBytes).digest("hex"));
+    expect(result.receiptSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.restored).toBe(1);
+    const receipt = JSON.parse(await readFile(join(destinationRoot, "receipt.json"), "utf8"));
+    expect(receipt).toMatchObject({
+      format: "alroya-r2-restore-drill/v1",
+      manifestSha256: result.manifestSha256,
+      sourcePrefix: "company-",
+      destination: { entries: [{ key, sha256: hash, bytes: bytes.length }] },
+    });
+    expect(await readFile(join(destinationRoot, "objects", ...key.split("/")))).toEqual(bytes);
+    const authorization = await loadR2GcDeletionAuthorization({
+      R2_GC_MODE: "delete",
+      R2_GC_DELETE_CONFIRM: R2_GC_DELETE_CONFIRMATION,
+      R2_GC_MIRROR_MANIFEST: join(mirrorRoot, "manifest.json"),
+      R2_GC_MIRROR_MANIFEST_SHA256: result.manifestSha256,
+      R2_GC_DR_RECEIPT: join(destinationRoot, "receipt.json"),
+      R2_GC_DR_RECEIPT_SHA256: result.receiptSha256,
+    }, new Date("2026-08-18T12:00:01.000Z"), "company-42/studio/");
+    expect(() => authorization.authorize(key)).not.toThrow();
+
+    await expect(createRestoreDrill({
+      mirrorRoot,
+      destinationRoot: join(mirrorRoot, "nested-destination"),
+      now: new Date("2026-08-18T12:00:00.000Z"),
+      drillId: "22222222-2222-4222-8222-222222222222",
+      sampleLimit: 1,
+    })).rejects.toMatchObject({ code: "MIRROR_DR_DESTINATION_NOT_INDEPENDENT" });
   });
 });
