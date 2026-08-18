@@ -22,6 +22,26 @@ import type { CompanyBranchScope } from "../companyBranchScope";
 const MAX_ENROLL_ID = 2147483647;
 
 /** إدراج دفعة بصمات خام بشكل idempotent + حلّ الموظف من ربط مستخدمي الجهاز. */
+/**
+ * هل يسري ربطُ رقم الجهاز بالموظف في هذا اليوم؟ — نواةٌ نقيّة، **الطرفان معاً**.
+ *
+ * `effectiveFrom`: أرقام الأجهزة تُعاد استعمالها، فسحبُ تاريخ الجهاز كان ينسب حضور موظفٍ
+ * سابق للاحقٍ ورثَ رقمه فيدخل راتبَه (0136).
+ * `effectiveTo`: الطرف المقابل (0204). كان إنهاءُ الخدمة يقطع الربط **فوراً**، وهو يقع
+ * طبيعياً يومَ العمل الأخير نفسه ⇒ بصماتُ ذلك اليوم بلا صاحبٍ فيُسجَّل صفر ساعات.
+ *
+ * **الحدّان شاملان (inclusive)**: يومُ المباشرة يُحتسب، ويومُ الإنهاء يُحتسب — كلاهما يومُ
+ * عملٍ وقع فعلاً وأجرُه مستحقّ. الاستبعاد الحصريّ على أيٍّ منهما يُلغي يوماً مدفوعاً.
+ */
+export function isLinkEffectiveOn(
+  link: { effectiveFrom?: string | null; effectiveTo?: string | null },
+  day: string,
+): boolean {
+  if (link.effectiveFrom && day < link.effectiveFrom) return false;
+  if (link.effectiveTo && day > link.effectiveTo) return false;
+  return true;
+}
+
 export async function ingestPunches(
   device: DeviceRow,
   punches: RawPunch[]
@@ -50,6 +70,7 @@ export async function ingestPunches(
       enrollId: hrDeviceUsers.enrollId,
       employeeId: hrDeviceUsers.employeeId,
       effectiveFrom: hrDeviceUsers.effectiveFrom,
+      effectiveTo: hrDeviceUsers.effectiveTo,
     })
     .from(hrDeviceUsers)
     .where(and(eq(hrDeviceUsers.deviceId, device.id), inArray(hrDeviceUsers.enrollId, enrollIds)));
@@ -63,8 +84,7 @@ export async function ingestPunches(
   function resolveEmployee(enrollId: number, punchAt: string): number | null {
     const link = linkByEnroll.get(enrollId);
     if (!link?.employeeId) return null;
-    if (link.effectiveFrom && punchAt.slice(0, 10) < link.effectiveFrom) return null;
-    return link.employeeId;
+    return isLinkEffectiveOn(link, punchAt.slice(0, 10)) ? link.employeeId : null;
   }
 
   // إدراج مجزّأ مع no-op عند التكرار (نمط idempotency في §٥ — القيد يحسم لا الفحص المسبق).
@@ -194,6 +214,9 @@ export async function mapDeviceUserToEmployee(
     }
 
     // فكّ الربط يمسح السريان أيضاً، وإلا بقي حدٌّ قديم يحكم ربطاً لاحقاً بموظف آخر بصمت.
+    // والحدُّ الأعلى `effectiveTo` **يُمسح في كل ربطٍ أو فكّ** بلا استثناء (0204): موظفٌ أُنهيت
+    // خدمتُه ثم أُعيد ربطُه — أو رقمُه أُعطي لموظفٍ جديد — يرث حدَّ الإنهاء القديم فتُهمَل بصماته
+    // **صامتةً**. نفس علّة السطر أعلاه، على الطرف المقابل.
     const from = employeeId == null ? null : effectiveFrom || null;
     const [existing] = await tx
       .select({ id: hrDeviceUsers.id })
@@ -203,10 +226,10 @@ export async function mapDeviceUserToEmployee(
     if (existing) {
       await tx
         .update(hrDeviceUsers)
-        .set({ employeeId, effectiveFrom: from })
+        .set({ employeeId, effectiveFrom: from, effectiveTo: null })
         .where(eq(hrDeviceUsers.id, existing.id));
     } else {
-      await tx.insert(hrDeviceUsers).values({ deviceId, enrollId, employeeId, effectiveFrom: from });
+      await tx.insert(hrDeviceUsers).values({ deviceId, enrollId, employeeId, effectiveFrom: from, effectiveTo: null });
     }
     if (employeeId == null) return 0;
     const conds = [

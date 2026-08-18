@@ -4,9 +4,12 @@
  * أما حساب الرواتب/الحضور فشرائح لاحقة. المبالغ عبر money.ts (toDbMoney).
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, getTableColumns, isNull, like, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, isNotNull, isNull, like, ne, or, sql } from "drizzle-orm";
 import { fullEmployeeName, type EmployeeEducation } from "@shared/hr";
 import { branches, employees, hrDeviceUsers, roles, users } from "../../drizzle/schema";
+// اليوم التجاريّ ببغداد لا UTC: عند الواحدة ليلاً يكون تاريخ UTC هو **أمس**، فيُحدّ الربط
+// بيومٍ سابقٍ ويضيع يومُ الإنهاء نفسه — وهو عين ما جاء هذا التغيير لينقذه.
+import { baghdadToday } from "./businessDay";
 import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
 import { toDbMoney } from "./money";
@@ -357,7 +360,23 @@ export async function setEmploymentStatus(
       })
       .where(employeeByIdCondition(id, scope));
 
-    if (status !== "terminated") return { userDisabled: false, deviceLinksReleased: 0 };
+    /*
+     * **إعادةُ التفعيل ترفع الحدّ** (0204): الربط لم يعد يُقطع عند الإنهاء بل يُحدّ بـ`effectiveTo`،
+     * فصفُّه يبقى قائماً. وتركُ الحدّ مضروباً على موظفٍ عاد إلى رأس العمل يُهمل بصماته **صامتاً**
+     * — وهو نفس عطب «يومٍ يضيع بلا أثر» الذي جاء العمود لإصلاحه، معكوساً. يسبق العودةَ المبكرة
+     * عمداً: قبل 0204 كان القطع نهائياً فيلزم ربطٌ يدويّ جديد، والآن الصفّ حيٌّ فيلزم رفعُ حدّه.
+     */
+    if (status !== "terminated") {
+      const restored = await tx
+        .update(hrDeviceUsers)
+        .set({ effectiveTo: null })
+        .where(and(eq(hrDeviceUsers.employeeId, id), isNotNull(hrDeviceUsers.effectiveTo)));
+      return {
+        userDisabled: false,
+        deviceLinksReleased: 0,
+        deviceLinksRestored: Number((restored as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0),
+      };
+    }
 
     /*
      * إنهاء الخدمة يُغلق بابَي وصولٍ يبقيان مفتوحين لولا ذلك — ذرّياً مع تغيير الحالة:
@@ -400,12 +419,28 @@ export async function setEmploymentStatus(
         userDisabled = true;
       }
     }
+    /*
+     * ⛔ **لا يُقطع الربط — يُحدُّ بتاريخ الإنهاء** (0204، تدقيق ١٧/٨ بند ٢١).
+     *
+     * كان هنا `{ employeeId: null, effectiveFrom: null }`: قطعٌ فوريّ أياً كان تاريخ الإنهاء.
+     * وإنهاءُ الخدمة يقع طبيعياً **يومَ العمل الأخير نفسه**، فبصماتُ ذلك اليوم تصل بعد القطع
+     * بلا صاحبٍ ⇒ يومُ عملٍ كاملٌ يُسجَّل صفر ساعات. ولا يُكتشف: أجرُ شهر الفصل يُكتب يدوياً
+     * في تسوية نهاية الخدمة بلا مطابقةٍ مع سجلّ الحضور (بند ٤٣، شريحةٌ تالية).
+     *
+     * فبدل القطع نضع `effectiveTo` — والبصمات حتى ذلك اليوم **شاملاً** تُنسَب، وما بعده لا.
+     * حارسُ إعادة استعمال رقم الجهاز يبقى قائماً بالطرفين معاً.
+     *
+     * وغيابُ تاريخ الإنهاء (إنهاءٌ بلا تاريخ) يقع على **اليوم التجاريّ الجاري**: تركُه `null`
+     * يعني ربطاً بلا نهاية فتُنسب للمفصول بصماتُ من يرث رقمه — وهو العطب الذي بُني له
+     * `effectiveFrom` أصلاً، معكوساً.
+     */
+    const linkEndsOn = status === "terminated" ? opts?.terminationDate ?? baghdadToday() : null;
     const res = await tx
       .update(hrDeviceUsers)
-      .set({ employeeId: null, effectiveFrom: null })
+      .set({ effectiveTo: linkEndsOn })
       .where(eq(hrDeviceUsers.employeeId, id));
     const deviceLinksReleased = Number((res as unknown as [{ affectedRows?: number }])[0]?.affectedRows ?? 0);
-    return { userDisabled, deviceLinksReleased };
+    return { userDisabled, deviceLinksReleased, deviceLinksRestored: 0 };
   });
   const e = await getEmployee(id, scope);
   return { ...e!, ...effects };
