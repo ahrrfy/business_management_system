@@ -2807,13 +2807,16 @@ export const workOrders = mysqlTable(
     ),
     deposit: decimal("deposit", { precision: 15, scale: 2 }).default("0"),
     // ش٥: TELECOM — عربونٌ بأيّ طريقة (م٢) يشمل رصيد زين؛ توسيع enum قائم = 0154 + extras (V10).
+    // صدق طريقة الدفع (١٨/٨، هجرة 0210): بلا افتراض — الطريقة تخصّ **العربون**، وأمرٌ بلا
+    // عربون يبقى NULL. كان `default("CASH")` يسحق null الصريح فيُقرأ أمرٌ لم يُقبض فيه دينار
+    // كأنّه «دُفع نقداً» (بلاغ المالك: «جميع الفواتير تظهر نقدية»).
     paymentMethod: mysqlEnum("woPaymentMethod", [
       "CASH",
       "CARD",
       "TRANSFER",
       "WALLET",
       "TELECOM",
-    ]).default("CASH"),
+    ]),
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.
     paymentReceiptUrl: text("paymentReceiptUrl"),

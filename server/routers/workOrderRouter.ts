@@ -104,7 +104,9 @@ const receptionCheckoutSchema = z.object({
   branchId: z.number().int().positive(),
   shiftId: z.number().int().positive(),
   customerId: z.number().int().positive().nullish(),
-  paymentMethod: receptionPaymentMethod,
+  // صدق طريقة الدفع (١٨/٨): تلزم فقط حين يُقبض مالٌ الآن (حارس superRefine أدناه). سلّةٌ
+  // آجلة/COD/مموَّلة بعربون محتجَز تمرّ بلا طريقة فتُختَم الفاتورة NULL = «آجل» بالاشتقاق.
+  paymentMethod: receptionPaymentMethod.nullish(),
   paymentReference: z.string().trim().max(100).nullish(),
   paidAmount: nonNegMoneyString.nullish(),
   clientRequestId: z.string().min(1).max(60),
@@ -177,9 +179,18 @@ const receptionCheckoutSchema = z.object({
       message: "أوامر الشغل تتطلب عميلاً محفوظاً مع اسم ورقم هاتف",
     });
   }
+  // صدق طريقة الدفع: قبضٌ موجب بلا طريقة = إدخالٌ ناقص (والعكس — طريقةٌ بلا قبض — تُهمَل
+  // في الخدمة بدل أن تُختَم كذباً على الفاتورة).
+  if (money(input.paidAmount ?? "0").gt(0) && !input.paymentMethod) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["paymentMethod"],
+      message: "حدّد طريقة القبض للمبلغ المستلم",
+    });
+  }
   for (let index = 0; index < input.workOrders.length; index += 1) {
     const order = input.workOrders[index];
-    if (money(order.deposit ?? "0").gt(0) && order.paymentMethod !== input.paymentMethod) {
+    if (money(order.deposit ?? "0").gt(0) && (order.paymentMethod ?? null) !== (input.paymentMethod ?? null)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workOrders", index, "paymentMethod"], message: "طريقة دفع العربون لا تطابق طريقة دفع العملية" });
     }
   }

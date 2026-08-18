@@ -1465,8 +1465,10 @@ export default function Reception() {
         // مرجع الزبون العابر: يُكتب على الفاتورة وأمر الشغل حتى بلا سجلّ عميل.
         contactName: customerId == null ? (customerName ?? undefined) : undefined,
         contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
-        paymentMethod: method,
-        paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
+        // صدق طريقة الدفع (١٨/٨): الطريقة تُرسَل **فقط حين يُقبض مالٌ الآن**. كانت تُرسل دائماً
+        // فتُختَم «نقدي» على فاتورةٍ آجلة/COD لم يدخلها دينار (بلاغ المالك)، وتسقط من فلتر «آجل».
+        paymentMethod: appliedPaidD.gt(0) ? method : undefined,
+        paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
         paidAmount: round2(appliedPaidD).toFixed(2),
         cashRoundIQD: cashRoundActive,
         // ش٦: تسمية الفاتورة الحاملة لفرق التقريب المختلط (المبلغ مُبيَّتٌ فيها أعلاه).
