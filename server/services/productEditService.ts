@@ -26,6 +26,7 @@ import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { rejectLegacyCatalogMediaWrite } from "./catalog/mediaWriteGuard";
 
 /* ============================ القراءة (للتعديل) ============================ */
 
@@ -265,8 +266,8 @@ export interface UpdateVariantRow {
   unitBarcodes: Record<string, string>;
 }
 
-/** صورة منتج عامّة في حمولة التعديل — مطابقةٌ بالمعرّف: id مملوك ⇒ تُبقى/تُحدَّث، بلا id ⇒ جديدة.
- *  `url` (data URL) يُرسَل فقط للجديدة/المستبدَلة؛ الصورة غير المتغيّرة تُرسَل بمعرّفها بلا بايتات. */
+/** صورة منتج عامّة في حمولة التعديل — metadata لصورة مملوكة فقط.
+ *  `url` مقبول للتوافق إن طابق المخزَّن حرفياً؛ أي URL جديد/مختلف يُرفض لصالح Product Studio/R2. */
 export interface UpdateProductImageInput {
   id?: number;
   url?: string | null;
@@ -289,8 +290,8 @@ export interface UpdateProductVariantsInput {
   consignorId?: number | null;
   unitTemplate: UpdateUnitTemplate[];
   variants: UpdateVariantRow[];
-  /** صور المنتج العامّة (variantId=NULL). `undefined` ⇒ لا تُمَسّ؛ مصفوفة (ولو فارغة) ⇒ يُعاد التوفيق:
-   *  الموجود يُبقى/يُحدَّث بالمعرّف، الجديد يُدرَج، والمُزال يُحذَف. (مطابقٌ لدلالة `image` أعلاه لكن للمنتج.) */
+  /** صور المنتج العامّة (variantId=NULL). `undefined` ⇒ لا تُمَسّ؛ المعرّفات القائمة تُعاد ترتيباتها،
+   *  والمُزال يُحذف. الإضافة/الاستبدال المباشر مرفوضان لصالح Product Studio/R2. */
   images?: UpdateProductImageInput[];
 }
 
@@ -422,11 +423,10 @@ async function upsertVariantUnits(
 
 /**
  * يوفّق صور المنتج العامّة (variantId=NULL) بمطابقة المعرّف — دون مسّ صور الألوان (variantId مضبوط):
- *   • id مملوك ⇒ تحديثٌ في المكان (isPrimary/sortOrder، والبايتات فقط لو أُرسل `url`) ⇒ يصون
- *     `productImages.id` فلا تتدلّى روابط /api/img المُفتَّحة بالـid، ولا يُعاد إرسال بايتات لم تتغيّر.
- *   • بلا id (أو id غير مملوك) + `url` ⇒ إدراج صورة جديدة.
+ *   • id مملوك ⇒ تحديث metadata فقط (isPrimary/sortOrder)، و`url` لا بد أن يطابق المخزَّن.
+ *   • بلا id (أو id غير مملوك) + `url` ⇒ رفض؛ النشر الوحيد عبر Product Studio/R2.
  *   • صورة قائمة لم تُذكَر في الحمولة ⇒ حذف (المستخدم أزالها).
- * الرئيسية: تُحترَم `isPrimary` المُرسَلة، وإلّا فالأولى رئيسيّة (يطابق منطق الإنشاء createProduct).
+ * الرئيسية: تُحترَم `isPrimary` المُرسَلة، وإلّا فالأولى رئيسيّة ضمن الصور القائمة.
  */
 async function reconcileProductImages(tx: Tx, productId: number, desired: UpdateProductImageInput[]) {
   const items = desired.slice(0, 10); // نفس سقف الإنشاء (١٠ صور)
@@ -443,32 +443,20 @@ async function reconcileProductImages(tx: Tx, productId: number, desired: Update
     const sortOrder = it.sortOrder ?? i;
     const url = (it.url ?? "").trim();
     if (it.id != null && existingIds.has(it.id)) {
-      // صورة قائمة مملوكة ⇒ تحديثٌ في المكان (id ثابت)؛ البايتات تُكتَب فقط عند استبدالها.
+      // صورة قائمة مملوكة ⇒ metadata فقط. أيّ URL مختلف يعني محاولة نشر بايتات خارج
+      // Product Studio/R2، فنرفض المعاملة كاملةً ولا نعيد وسمها MANUAL+APPROVED.
       keep.add(it.id);
       const current = existing.find((row) => Number(row.id) === it.id)!;
       const replacesBytes = Boolean(url && url !== current.url);
+      if (replacesBytes) rejectLegacyCatalogMediaWrite();
       await tx.update(productImages).set({
         isPrimary,
         sortOrder,
-        ...(replacesBytes ? {
-          url,
-          objectKey: null,
-          originalKey: null,
-          contentHash: null,
-          thumbDataUrl: null,
-          mime: null,
-          width: null,
-          height: null,
-          bytes: null,
-          publishedStudioJobId: null,
-          origin: "MANUAL" as const,
-          reviewStatus: "APPROVED" as const,
-          migratedAt: null,
-        } : {}),
       }).where(eq(productImages.id, it.id));
     } else if (url) {
-      // جديدة (أو id لا يخصّ هذا المنتج ⇒ يُتجاهَل ويُعامَل جديداً — لا IDOR على صفوف غيره).
-      await tx.insert(productImages).values({ productId, variantId: null, url, isPrimary, sortOrder });
+      // جديدة أو id لا يخصّ المنتج: لا إدراج مباشر؛ المهمة المعتمدة في Product Studio هي
+      // منفذ النشر الوحيد، كما يمنع هذا تحويل id أجنبي إلى صورة محلية جديدة.
+      rejectLegacyCatalogMediaWrite();
     }
     // id مذكور بلا url ولا ملكية ⇒ تجاهُلٌ آمن (لا إدراج بلا بايتات).
   }
@@ -613,30 +601,13 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
           .orderBy(productImages.id);
         if (img) {
           if (existing.length > 0) {
-            // تحديث في المكان (يصون productImages.id فلا تتدلّى روابط /api/img المُفتَّحة بالـid:
-            // كاش SW سنة/حافة CF/صفوف الأوفلاين)؛ ?v= يتغيّر فقط عند تغيّر المحتوى ⇒ إبطال صحيح.
-            // راجع docs/product-image-studio-design-2026-07-21.md §٢.ب.
-            if (img !== existing[0].url) {
-              await tx.update(productImages).set({
-                url: img,
-                objectKey: null,
-                originalKey: null,
-                contentHash: null,
-                thumbDataUrl: null,
-                mime: null,
-                width: null,
-                height: null,
-                bytes: null,
-                publishedStudioJobId: null,
-                origin: "MANUAL",
-                reviewStatus: "APPROVED",
-                migratedAt: null,
-              }).where(eq(productImages.id, existing[0].id));
-            }
+            // تكرار URL القائم يعني «لا تغيير» ويحافظ توافق النماذج القديمة؛ أيّ قيمة
+            // مختلفة محاولة استبدال مباشر خارج مسار المهمة والمراجعة فتُرفض fail-closed.
+            if (img !== existing[0].url) rejectLegacyCatalogMediaWrite();
             if (existing.length > 1)
               await tx.delete(productImages).where(inArray(productImages.id, existing.slice(1).map((r) => r.id)));
           } else {
-            await tx.insert(productImages).values({ productId: input.productId, variantId, url: img, isPrimary: false, sortOrder: 0 });
+            rejectLegacyCatalogMediaWrite();
           }
         } else if (existing.length > 0) {
           await tx.delete(productImages).where(eq(productImages.variantId, variantId));
