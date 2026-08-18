@@ -216,6 +216,60 @@ function collectExchangeUsdMigrationAuditErrors({
   return errors;
 }
 
+// عقد trigger حجز طلب المتجر مستقل عن snapshot لأن Drizzle لا يمثل triggers.
+function collectOnlineOrderReservationGuardErrors(triggerRows) {
+  const errors = [];
+  const finalName = "trg_online_orders_expired_activation_bu";
+  const preName = "trg_online_orders_expired_activation_pre_bu";
+  const preRows = triggerRows.filter((row) => row.triggerName === preName);
+  if (preRows.length) {
+    errors.push("temporary reservation pre-trigger remains after migration");
+  }
+
+  const finalRows = triggerRows.filter((row) => row.triggerName === finalName);
+  if (finalRows.length !== 1) {
+    errors.push(
+      `final trigger must exist exactly once; found ${finalRows.length}`,
+    );
+    return errors;
+  }
+
+  const final = finalRows[0];
+  if (
+    final.eventObjectTable !== "onlineOrders" ||
+    String(final.actionTiming).toUpperCase() !== "BEFORE" ||
+    String(final.eventManipulation).toUpperCase() !== "UPDATE"
+  ) {
+    errors.push("final trigger must be BEFORE UPDATE on onlineOrders");
+  }
+
+  const body = String(final.actionStatement ?? "")
+    .replaceAll("`", "")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+  if (
+    !body.includes("NEW.ORDERSTATUSIN('CONFIRMED','PROCESSING')") ||
+    !body.includes("OLD.ORDERSTATUSNOTIN('CONFIRMED','PROCESSING')")
+  ) {
+    errors.push(
+      "final trigger body must guard inactive-to-CONFIRMED/PROCESSING activation",
+    );
+  }
+  if (
+    !body.includes(
+      "COALESCE(OLD.RESERVATIONEXPIRESAT,DATE_ADD(OLD.ORDERDATE,INTERVAL24HOUR))<=CURRENT_TIMESTAMP(3)",
+    )
+  ) {
+    errors.push(
+      "final trigger body must use COALESCE(reservationExpiresAt, orderDate + 24 hours)",
+    );
+  }
+  if (!body.includes("SIGNALSQLSTATE'45000'")) {
+    errors.push("final trigger body must fail closed with SQLSTATE 45000");
+  }
+  return errors;
+}
+
 function runOperationalContractSelftest({ quiet = false } = {}) {
   const validInput = {
     databaseName: "erp_contract_test",
@@ -405,6 +459,48 @@ function runOperationalContractSelftest({ quiet = false } = {}) {
   assert.equal(exchangeAuditErrors.length, 2);
   assert.ok(exchangeAuditErrors[0].includes("USD_CUSTODY_SOURCE_INVALID"));
   assert.ok(exchangeAuditErrors[1].includes("carryingResidualIqd=0.01"));
+
+  const validReservationGuard = {
+    triggerName: "trg_online_orders_expired_activation_bu",
+    eventObjectTable: "onlineOrders",
+    actionTiming: "BEFORE",
+    eventManipulation: "UPDATE",
+    actionStatement: `BEGIN
+      IF NEW.orderStatus IN ('CONFIRMED', 'PROCESSING')
+        AND OLD.orderStatus NOT IN ('CONFIRMED', 'PROCESSING')
+        AND COALESCE(OLD.reservationExpiresAt, DATE_ADD(OLD.orderDate, INTERVAL 24 HOUR)) <= CURRENT_TIMESTAMP(3) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'expired';
+      END IF;
+    END`,
+  };
+  assert.deepEqual(
+    collectOnlineOrderReservationGuardErrors([validReservationGuard]),
+    [],
+  );
+  assert.ok(
+    collectOnlineOrderReservationGuardErrors([]).some((error) =>
+      error.includes("final trigger"),
+    ),
+  );
+  assert.ok(
+    collectOnlineOrderReservationGuardErrors([
+      validReservationGuard,
+      {
+        ...validReservationGuard,
+        triggerName: "trg_online_orders_expired_activation_pre_bu",
+      },
+    ]).some((error) => error.includes("pre-trigger")),
+  );
+  assert.ok(
+    collectOnlineOrderReservationGuardErrors([
+      { ...validReservationGuard, actionTiming: "AFTER" },
+    ]).some((error) => error.includes("BEFORE UPDATE")),
+  );
+  assert.ok(
+    collectOnlineOrderReservationGuardErrors([
+      { ...validReservationGuard, actionStatement: "BEGIN END" },
+    ]).some((error) => error.includes("COALESCE")),
+  );
 
   if (!quiet) console.log("db schema operational contracts selftest: OK");
 }
@@ -897,6 +993,32 @@ try {
     process.exit(1);
   }
 
+  const [reservationGuardRows] = await conn.query(
+    `SELECT TRIGGER_NAME AS triggerName,
+            EVENT_OBJECT_TABLE AS eventObjectTable,
+            ACTION_TIMING AS actionTiming,
+            EVENT_MANIPULATION AS eventManipulation,
+            ACTION_STATEMENT AS actionStatement
+       FROM information_schema.TRIGGERS
+      WHERE TRIGGER_SCHEMA = ?
+        AND TRIGGER_NAME IN (?, ?)`,
+    [
+      dbName,
+      "trg_online_orders_expired_activation_bu",
+      "trg_online_orders_expired_activation_pre_bu",
+    ],
+  );
+  const reservationGuardErrors =
+    collectOnlineOrderReservationGuardErrors(reservationGuardRows);
+  if (reservationGuardErrors.length) {
+    console.error(
+      "⛔ online-order reservation trigger contract failed:",
+      reservationGuardErrors.join("; "),
+    );
+    await conn.end();
+    process.exit(1);
+  }
+
   const [exchangeCheckRows] = await conn.query(
     "SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'exchangeHouses' AND CONSTRAINT_TYPE = 'CHECK'",
     [dbName],
@@ -1108,6 +1230,9 @@ try {
   );
   console.log(
     "✓ عقود 0181/0182: فرع تنفيذ المتجر (نوع+فهرس+FK) ودورة اعتماد المصروفات مطابقة.",
+  );
+  console.log(
+    "✓ حارس حجز طلب المتجر: final BEFORE UPDATE صحيح وpre-trigger المؤقت غائب.",
   );
   console.log(
     `✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`,

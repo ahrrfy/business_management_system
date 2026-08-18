@@ -1457,13 +1457,6 @@
       "when": 1788052260000,
       "tag": "0209_product_studio_sod",
       "breakpoints": true
-    },
-    {
-      "idx": 210,
-      "version": "5",
-      "when": 1788052261000,
-      "tag": "0210_online_order_reservation_guard",
-      "breakpoints": true
     }
   ]
 }

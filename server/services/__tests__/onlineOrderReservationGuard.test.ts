@@ -7,10 +7,11 @@ import { getDb } from "../../db";
 import { sweepExpiredOnlineOrdersOnce } from "../onlineOrderExpirySweeper";
 import { truncateTables } from "./__testUtils__";
 
-const TRIGGER_NAME = "trg_online_orders_expired_activation_bu";
+const PRE_TRIGGER_NAME = "trg_online_orders_expired_activation_pre_bu";
+const FINAL_TRIGGER_NAME = "trg_online_orders_expired_activation_bu";
 const MIGRATION_PATH = resolve(
   process.cwd(),
-  "drizzle/migrations/0210_online_order_reservation_guard.sql",
+  "drizzle/migrations/0208_online_order_reservation_expiry.sql",
 );
 
 function db() {
@@ -19,13 +20,14 @@ function db() {
   return d;
 }
 
-async function dropGuard(): Promise<void> {
-  await db().execute(sql.raw(`DROP TRIGGER IF EXISTS \`${TRIGGER_NAME}\``));
+function resultRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return (result[0] as T[]) ?? [];
+  return (result as { rows?: T[] }).rows ?? [];
 }
 
-async function applyGuardMigration(): Promise<void> {
+async function migrationStatements(): Promise<string[]> {
   const migration = await readFile(MIGRATION_PATH, "utf8");
-  const statements = migration
+  return migration
     .split(/-->\s*statement-breakpoint/g)
     .map((statement) => statement.trim())
     .filter(Boolean)
@@ -35,29 +37,84 @@ async function applyGuardMigration(): Promise<void> {
           .split("\n")
           .every((line) => line.trim() === "" || line.trim().startsWith("--")),
     );
+}
+
+async function executeStatements(statements: string[]): Promise<void> {
   for (const statement of statements) {
     await db().execute(sql.raw(statement));
   }
 }
 
-async function seedPendingOrder(input: {
-  id: number;
-  orderDate: Date;
-  reservationExpiresAt: Date | null;
-}): Promise<void> {
-  await db()
-    .insert(s.onlineOrders)
-    .values({
-      id: input.id,
-      orderNumber: `ORD-GUARD-${input.id}`,
-      customerId: 1,
-      branchId: 1,
-      orderDate: input.orderDate,
-      reservationExpiresAt: input.reservationExpiresAt,
-      subtotal: "100.00",
-      total: "100.00",
-      status: "PENDING",
-    });
+async function apply0208Migration(): Promise<void> {
+  await executeStatements(await migrationStatements());
+}
+
+async function hasReservationExpiryColumn(): Promise<boolean> {
+  const result = await db().execute(sql`
+    SELECT COUNT(*) AS count
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'onlineOrders'
+      AND COLUMN_NAME = 'reservationExpiresAt'
+  `);
+  return (
+    Number(resultRows<{ count: number | string }>(result)[0]?.count ?? 0) === 1
+  );
+}
+
+async function triggerCount(name: string): Promise<number> {
+  const result = await db().execute(sql`
+    SELECT COUNT(*) AS count
+    FROM INFORMATION_SCHEMA.TRIGGERS
+    WHERE TRIGGER_SCHEMA = DATABASE()
+      AND EVENT_OBJECT_TABLE = 'onlineOrders'
+      AND TRIGGER_NAME = ${name}
+  `);
+  return Number(resultRows<{ count: number | string }>(result)[0]?.count ?? 0);
+}
+
+async function hasReservationExpiryIndex(): Promise<boolean> {
+  const result = await db().execute(sql`
+    SELECT COUNT(*) AS count
+    FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'onlineOrders'
+      AND INDEX_NAME = 'idx_order_status_reservation_expiry'
+  `);
+  return (
+    Number(resultRows<{ count: number | string }>(result)[0]?.count ?? 0) > 0
+  );
+}
+
+async function resetToPre0208Schema(): Promise<void> {
+  await db().execute(
+    sql.raw(`DROP TRIGGER IF EXISTS \`${FINAL_TRIGGER_NAME}\``),
+  );
+  await db().execute(sql.raw(`DROP TRIGGER IF EXISTS \`${PRE_TRIGGER_NAME}\``));
+  if (await hasReservationExpiryIndex()) {
+    await db().execute(
+      sql.raw(
+        "DROP INDEX `idx_order_status_reservation_expiry` ON `onlineOrders`",
+      ),
+    );
+  }
+  if (await hasReservationExpiryColumn()) {
+    await db().execute(
+      sql.raw("ALTER TABLE `onlineOrders` DROP COLUMN `reservationExpiresAt`"),
+    );
+  }
+}
+
+async function seedPendingOrder(id: number, orderDate: Date): Promise<void> {
+  await db().execute(sql`
+    INSERT INTO onlineOrders (
+      id, orderNumber, customerId, branchId, orderDate,
+      subtotal, shippingCost, taxAmount, total, orderStatus
+    ) VALUES (
+      ${id}, ${`ORD-GUARD-${id}`}, 1, 1, ${orderDate},
+      '100.00', '0.00', '0.00', '100.00', 'PENDING'
+    )
+  `);
 }
 
 async function directOldWorkerUpdate(
@@ -84,7 +141,7 @@ async function storedStatus(id: number): Promise<string> {
 }
 
 beforeEach(async () => {
-  await dropGuard();
+  await resetToPre0208Schema();
   await truncateTables([
     "onlineOrderItems",
     "onlineOrders",
@@ -97,102 +154,120 @@ beforeEach(async () => {
   await db().insert(s.customers).values({ id: 1, name: "زبون تجريبي" });
 });
 
-// يبقى مخطط قاعدة الاختبار مطابقاً للهجرة بعد كل حالة، حتى حالة RED التي تسقط الحارس عمداً.
-afterEach(applyGuardMigration);
+// لا يترك الاختبار قاعدة 3310 على مخطط ما قبل 0208 حتى عند فشل حالة وسط الهجرة.
+afterEach(async () => {
+  await resetToPre0208Schema();
+  await apply0208Migration();
+});
 
-describe("0210 mixed-version online-order reservation guard", () => {
+describe("0208 gapless mixed-version online-order reservation guard", () => {
+  it("creates the pre-guard before the column and the final guard before dropping the pre-guard", async () => {
+    const migration = await readFile(MIGRATION_PATH, "utf8");
+    const createPre = migration.indexOf(
+      `CREATE TRIGGER \`${PRE_TRIGGER_NAME}\``,
+    );
+    const addExpiry = migration.indexOf("ADD COLUMN `reservationExpiresAt`");
+    const createFinal = migration.indexOf(
+      `CREATE TRIGGER \`${FINAL_TRIGGER_NAME}\``,
+    );
+    const dropPre = migration.lastIndexOf(
+      `DROP TRIGGER IF EXISTS \`${PRE_TRIGGER_NAME}\``,
+    );
+
+    expect(createPre).toBeGreaterThanOrEqual(0);
+    expect(addExpiry).toBeGreaterThan(createPre);
+    expect(createFinal).toBeGreaterThan(addExpiry);
+    expect(dropPre).toBeGreaterThan(createFinal);
+  });
+
+  it("blocks an expired old-worker update before reservationExpiresAt exists", async () => {
+    const now = Date.now();
+    await seedPendingOrder(1, new Date(now - 25 * 60 * 60 * 1_000));
+    const statements = await migrationStatements();
+    const addExpiryAt = statements.findIndex((statement) =>
+      statement.includes("ADD COLUMN `reservationExpiresAt`"),
+    );
+    expect(addExpiryAt).toBeGreaterThan(0);
+
+    await executeStatements(statements.slice(0, addExpiryAt));
+    await expect(directOldWorkerUpdate(1, "CONFIRMED")).rejects.toMatchObject({
+      cause: { code: "ER_SIGNAL_EXCEPTION", sqlState: "45000" },
+    });
+    expect(await hasReservationExpiryColumn()).toBe(false);
+
+    await executeStatements(statements.slice(addExpiryAt));
+    expect(await triggerCount(FINAL_TRIGGER_NAME)).toBe(1);
+    expect(await triggerCount(PRE_TRIGGER_NAME)).toBe(0);
+    await expect(storedStatus(1)).resolves.toBe("PENDING");
+  });
+
   it("demonstrates the pre-guard vulnerability: an expired direct confirm succeeds", async () => {
     const now = Date.now();
-    await seedPendingOrder({
-      id: 1,
-      orderDate: new Date(now - 25 * 60 * 60 * 1_000),
-      reservationExpiresAt: new Date(now - 1_000),
-    });
+    await seedPendingOrder(2, new Date(now - 25 * 60 * 60 * 1_000));
 
     await expect(
-      directOldWorkerUpdate(1, "CONFIRMED"),
+      directOldWorkerUpdate(2, "CONFIRMED"),
     ).resolves.toBeUndefined();
-    await expect(storedStatus(1)).resolves.toBe("CONFIRMED");
+    await expect(storedStatus(2)).resolves.toBe("CONFIRMED");
   });
 
   it.each(["CONFIRMED", "PROCESSING"] as const)(
-    "rejects an expired direct PENDING -> %s activation",
+    "rejects an expired direct PENDING -> %s activation after 0208",
     async (status) => {
       const now = Date.now();
-      await applyGuardMigration();
-      await seedPendingOrder({
-        id: 2,
-        orderDate: new Date(now - 25 * 60 * 60 * 1_000),
-        reservationExpiresAt: new Date(now - 1_000),
-      });
+      await seedPendingOrder(3, new Date(now - 25 * 60 * 60 * 1_000));
+      await apply0208Migration();
 
-      await expect(directOldWorkerUpdate(2, status)).rejects.toMatchObject({
+      await expect(directOldWorkerUpdate(3, status)).rejects.toMatchObject({
         cause: {
           code: "ER_SIGNAL_EXCEPTION",
           errno: 1644,
           sqlState: "45000",
         },
       });
-      await expect(storedStatus(2)).resolves.toBe("PENDING");
+      await expect(storedStatus(3)).resolves.toBe("PENDING");
     },
   );
 
-  it("uses orderDate + 24 hours when a legacy worker left expiry NULL", async () => {
+  it("uses orderDate + 24 hours when a legacy worker leaves expiry NULL", async () => {
     const now = Date.now();
-    await applyGuardMigration();
-    await seedPendingOrder({
-      id: 3,
-      orderDate: new Date(now - 25 * 60 * 60 * 1_000),
-      reservationExpiresAt: null,
-    });
+    await seedPendingOrder(4, new Date(now - 25 * 60 * 60 * 1_000));
+    await apply0208Migration();
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = NULL
+      WHERE id = 4
+    `);
 
-    await expect(directOldWorkerUpdate(3, "CONFIRMED")).rejects.toMatchObject({
+    await expect(directOldWorkerUpdate(4, "CONFIRMED")).rejects.toMatchObject({
       cause: { sqlState: "45000" },
     });
-    await expect(storedStatus(3)).resolves.toBe("PENDING");
+    await expect(storedStatus(4)).resolves.toBe("PENDING");
   });
 
-  it("allows a future PENDING reservation to be confirmed", async () => {
+  it("allows a future reservation to confirm and an expired reservation to cancel", async () => {
     const now = Date.now();
-    await applyGuardMigration();
-    await seedPendingOrder({
-      id: 4,
-      orderDate: new Date(now),
-      reservationExpiresAt: new Date(now + 60_000),
-    });
+    await seedPendingOrder(5, new Date(now));
+    await seedPendingOrder(6, new Date(now - 25 * 60 * 60 * 1_000));
+    await apply0208Migration();
 
     await expect(
-      directOldWorkerUpdate(4, "CONFIRMED"),
+      directOldWorkerUpdate(5, "CONFIRMED"),
     ).resolves.toBeUndefined();
-    await expect(storedStatus(4)).resolves.toBe("CONFIRMED");
-  });
-
-  it("allows an expired PENDING reservation to be cancelled", async () => {
-    const now = Date.now();
-    await applyGuardMigration();
-    await seedPendingOrder({
-      id: 5,
-      orderDate: new Date(now - 25 * 60 * 60 * 1_000),
-      reservationExpiresAt: new Date(now - 1_000),
-    });
-
     await expect(
-      directOldWorkerUpdate(5, "CANCELLED"),
+      directOldWorkerUpdate(6, "CANCELLED"),
     ).resolves.toBeUndefined();
-    await expect(storedStatus(5)).resolves.toBe("CANCELLED");
+    await expect(storedStatus(5)).resolves.toBe("CONFIRMED");
+    await expect(storedStatus(6)).resolves.toBe("CANCELLED");
   });
 
   it("keeps an expired reservation cancelled in a direct-confirm versus sweeper race", async () => {
     const now = new Date();
-    await applyGuardMigration();
-    await seedPendingOrder({
-      id: 6,
-      orderDate: new Date(now.getTime() - 25 * 60 * 60 * 1_000),
-      reservationExpiresAt: new Date(now.getTime() - 1_000),
-    });
+    await seedPendingOrder(7, new Date(now.getTime() - 25 * 60 * 60 * 1_000));
+    await apply0208Migration();
 
     const [confirm, sweep] = await Promise.allSettled([
-      directOldWorkerUpdate(6, "CONFIRMED"),
+      directOldWorkerUpdate(7, "CONFIRMED"),
       sweepExpiredOnlineOrdersOnce(now, 50),
     ]);
 
@@ -201,21 +276,13 @@ describe("0210 mixed-version online-order reservation guard", () => {
       status: "fulfilled",
       value: { cancelled: 1 },
     });
-    await expect(storedStatus(6)).resolves.toBe("CANCELLED");
+    await expect(storedStatus(7)).resolves.toBe("CANCELLED");
   });
 
-  it("re-applies idempotently without creating a conflicting trigger", async () => {
-    const now = Date.now();
-    await applyGuardMigration();
-    await applyGuardMigration();
-    await seedPendingOrder({
-      id: 7,
-      orderDate: new Date(now - 25 * 60 * 60 * 1_000),
-      reservationExpiresAt: new Date(now - 1_000),
-    });
+  it("finishes 0208 with one final guard and no pre-guard", async () => {
+    await apply0208Migration();
 
-    await expect(directOldWorkerUpdate(7, "CONFIRMED")).rejects.toMatchObject({
-      cause: { sqlState: "45000" },
-    });
+    expect(await triggerCount(FINAL_TRIGGER_NAME)).toBe(1);
+    expect(await triggerCount(PRE_TRIGGER_NAME)).toBe(0);
   });
 });
