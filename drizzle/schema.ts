@@ -1117,6 +1117,70 @@ export const stockAdjustmentRequests = mysqlTable(
 export type StockAdjustmentRequest =
   typeof stockAdjustmentRequests.$inferSelect;
 
+/* ==================== إعادة تقييم تكلفة المخزون (حوكمة التكلفة — تدقيق ٢٧/٧ H3/H4) ====================
+ *
+ * `productVariants.costPrice` مصدر الحقيقة الوحيد لتقييم المخزون في الميزانية ولتكلفة البضاعة
+ * المباعة. تعديلُه يدوياً على صنفٍ **له رصيد** يحرّك أصلَ المخزون ⇒ تتحرّك حقوق الملكية (الرصيد
+ * المُكمِّل) بلا سطرٍ مقابلٍ في قائمة الدخل — فأُغلق ذلك المسار (`services/costRevaluation.ts`).
+ * هذا الجدول هو **المسار المحكوم البديل**: مستندٌ صريح بغرضٍ محاسبيّ وسببٍ مكتوب، يعتمده مديرٌ
+ * ثانٍ (فصل المهام)، فيُرحَّل عند الاعتماد قيدُ ADJUST بقيمة `Δالتكلفة × الكمية` **لكل فرعٍ** له
+ * رصيد — ومن ثمّ يخضع تلقائياً لحارس إقفال الفترة (`postEntry` ⇒ `assertPeriodOpen`).
+ */
+export const costRevaluationRequests = mysqlTable(
+  "costRevaluationRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    variantId: bigint("variantId", { mode: "number" })
+      .notNull()
+      .references(() => productVariants.id),
+    /** فرع الطالب — للفلترة والعزل؛ التكلفة نفسها عامّة لكل الفروع (عمودٌ على المتغيّر لا على الفرع). */
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    oldCost: decimal("oldCost", { precision: 15, scale: 2 }).notNull(),
+    newCost: decimal("newCost", { precision: 15, scale: 2 }).notNull(),
+    /**
+     * الغرض المحاسبيّ — هو ما يحدّد الحساب المقابل، ولذلك لا يُقبل طلبٌ بلا غرض:
+     * CORRECTION = تصحيح تكلفةٍ أُدخلت خطأً (الاتجاهان)، IMPAIRMENT = هبوط قيمة/تقادم (نزولاً فقط).
+     */
+    purpose: mysqlEnum("costRevaluationPurpose", [
+      "CORRECTION",
+      "IMPAIRMENT",
+    ]).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    /** لقطة إجمالي الكمية المملوكة لحظة الطلب — يُرفَض الاعتماد إن انحرفت (قيمة القيد تتبعها). */
+    expectedQuantity: int("expectedQuantity").notNull(),
+    /** لقطة الكمية لكل فرع: `[{ branchId, quantity }]` — منها تُشتقّ قيود الاعتماد فرعاً فرعاً. */
+    branchQuantities: json("branchQuantities"),
+    /** أثر القيمة المتوقَّع = (newCost − oldCost) × expectedQuantity — يُعرَض قبل الاعتماد. */
+    expectedValueDelta: decimal("expectedValueDelta", {
+      precision: 15,
+      scale: 2,
+    }).notNull(),
+    status: mysqlEnum("costRevaluationStatus", [
+      "PENDING_APPROVAL",
+      "APPROVED",
+      "REJECTED",
+    ])
+      .default("PENDING_APPROVAL")
+      .notNull(),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    statusIdx: index("idx_costreval_status").on(table.status, table.branchId),
+    variantIdx: index("idx_costreval_variant").on(table.variantId),
+  }),
+);
+
+export type CostRevaluationRequest =
+  typeof costRevaluationRequests.$inferSelect;
+
 /* ============================ تحويلات المخزون بخطوتين (بالطريق ← استلام) ============================ */
 
 /**
@@ -6227,6 +6291,18 @@ export const hrDeviceUsers = mysqlTable(
      * null = بلا حدّ (سلوك ما قبل 0136 — يُستعمل فقط حين لا يُعرف تاريخ المباشرة).
      */
     effectiveFrom: date("effectiveFrom", { mode: "string" }),
+    /**
+     * انتهاء سريان الربط (0207) — **مرآةُ `effectiveFrom`، والطرفُ الذي كان مفقوداً**.
+     *
+     * كان إنهاءُ الخدمة يُصفّر `employeeId` **فوراً** أياً كان تاريخ الإنهاء، وهو الطبيعيّ أن
+     * يقع يومَ العمل الأخير نفسه ⇒ بصماتُ ذلك اليوم تصل بلا صاحبٍ فتُسجَّل **صفر ساعات**،
+     * ولا أحد يلاحظ لأن أجر شهر الفصل يُكتب يدوياً في تسوية نهاية الخدمة (تدقيق ١٧/٨، بند ٢١).
+     *
+     * فبدل قطع الربط، يُحدّ: تُنسَب البصمات حتى هذا التاريخ **شاملاً**، وما بعده لا يُنسَب —
+     * فيُحفظ اليوم الأخير ويبقى الحارسُ ضدّ إعادة استعمال رقم الجهاز قائماً.
+     * null = ربطٌ سارٍ بلا نهاية (الحالة الطبيعية لموظفٍ على رأس العمل).
+     */
+    effectiveTo: date("effectiveTo", { mode: "string" }),
     syncedAt: timestamp("syncedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

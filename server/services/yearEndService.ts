@@ -32,6 +32,7 @@ import {
   yearEndSnapshots,
 } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
+import { readInventoryValuation } from "./inventory/valuation";
 import type { Tx } from "../db";
 import {
   createPostingIntent,
@@ -537,8 +538,14 @@ export async function closeYear(
     .where(eq(monthCloseRequests.id, requestId));
 
   // ٤. snapshot
+  // لقطة قيمة المخزون لحظة الإقفال (تدقيق ٢٧/٧، H5): أصل المخزون في الميزانية يُقرأ حيّاً بلا
+  // تاريخ، فبلا هذه اللقطة تكون ميزانيةُ السنة المقفلة **غير قابلةٍ لإعادة الإنتاج** — تُحسب من
+  // مخزون اليوم لا من مخزون تاريخ الإقفال. تُخزَّن في `snapshotData` (عمود قائم ⇒ بلا هجرة).
+  const inventoryValuation = await readInventoryValuation(tx);
   const snapshotData = JSON.stringify({
     closedAt: closedAt.toISOString(),
+    inventoryValue: inventoryValuation.total,
+    inventoryValueByBranch: inventoryValuation.branches,
     method: "official-double-entry-year-close",
     branchScope: "company-wide",
     cycleId: settings.cycleId,

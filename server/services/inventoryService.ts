@@ -6,6 +6,7 @@ import type { Tx } from "../db";
 import type { DecimalInput } from "./money";
 import { extractInsertId } from "../lib/insertId";
 import { loadVariantAvailability } from "./catalog/variantAvailability";
+import { assertPeriodOpen } from "./periodLockService";
 
 /** يَتحقّق إن كان المُتغيّر يَنتمي لمُنتج خِدمي (لا مَخزون). يُستعمَل لِتجاوز inventoryMovements/branchStock. */
 export async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
@@ -126,6 +127,29 @@ async function readNegativeFloorCap(tx: Tx): Promise<number> {
   return typeof cap === "number" && cap > 0 ? cap : 100;
 }
 
+
+/**
+ * حارس إقفال الفترة على المخزون (تدقيق ٢٧/٧، H5).
+ *
+ * كان `assertPeriodOpen` يُستدعى من `postEntry` (وفتحِ الرصيد الافتتاحيّ) فقط — أي أنّ الفترة
+ * المقفلة تحرس **الدفتر** ولا تحرس **المخزون**. والفارق ليس نظرياً: أصل المخزون في الميزانية
+ * يُقرأ **حيّاً** (`SUM(quantity × costPrice)`) بلا تاريخٍ مرجعيّ، فأيّ حركةِ مخزونٍ بعد الإقفال
+ * تُغيّر **ميزانيةَ الفترة المقفلة نفسها** بأثرٍ رجعيّ: تنحرف عن الأرباح المحتجزة المُرحَّلة،
+ * وتصير غير قابلةٍ لإعادة الإنتاج. وأخطر ما فيه أنّه صامت — لا رفض ولا تنبيه.
+ *
+ * الحركاتُ التي ترافقها قيود (بيع/شراء/مرتجع/تسوية معتمَدة) كانت محروسةً عرَضاً عبر `postEntry`؛
+ * أمّا **التحويل بين الفروع** و**التثبيت الافتتاحيّ** وكل مسارٍ لا يُرحّل قيداً فكانت تمرّ.
+ *
+ * التاريخ المُحتكَم إليه هو **الآن**: الرصيد كمّيةٌ حيّة لا سلسلةٌ مؤرَّخة، فتغييرُه اليوم يغيّر
+ * قيمة كل تاريخٍ سابق. ⇒ يُرفَض متى كان اليوم داخل الفترة المقفلة.
+ *
+ * لا كلفة قفلٍ إضافية: `withTx` يأخذ `lockFinancialPostingGate` (قفل مشترك) عند دخول كل معاملة،
+ * فالقراءة هنا مُسلسَلةٌ مع الإقفال بنفس ترتيب `postEntry`.
+ */
+async function assertInventoryPeriodOpen(tx: Tx): Promise<void> {
+  await assertPeriodOpen(tx, new Date());
+}
+
 /** Read current stock under a row lock, then write a movement + the new branchStock. */
 export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<ApplyMovementResult> {
   if (!Number.isInteger(a.baseQuantity) || a.baseQuantity <= 0) {
@@ -150,6 +174,10 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
       message: "لا يُمكن تحريك مخزون مباشرةً لمنتج بكج — البكج مركّب ومخزونه = مخزون مكوّناته",
     });
   }
+
+  // بعد المخارج التي لا تكتب شيئاً (الخِدميّ يعود، والبكج يرمي) وقبل أوّل كتابة: فترةٌ مقفلة
+  // تعني أنّ قيمة المخزون في ميزانيتها نهائية — فلا تُمَسّ الكمّية التي تُشتقّ منها.
+  await assertInventoryPeriodOpen(tx);
 
   // حارس الخصم المركزي: كل قناة (POS/API/dispatch/transfer) ترى الحجز الرسمي وتخصيصات
   // الطلبات الإلكترونية تحت الأقفال نفسها. dispatch يستثني طلبه وحده، فلا يخصم حصة B
@@ -343,6 +371,8 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
       message: "لا تُسوَّى مخزون بكجٍ مباشرةً — سوِّ مكوّناته",
     });
   }
+  // `setStock` يكتب حركته وصفَّه بنفسه (لا يمرّ بـapplyMovement) ⇒ يلزمه الحارس صراحةً.
+  await assertInventoryPeriodOpen(tx);
   // اضمن وجود الصفّ قبل القفل (نفس علّة FOR UPDATE على صفّ غير موجود).
   await tx
     .insert(branchStock)
