@@ -3325,6 +3325,9 @@ export const productImageJobs = mysqlTable(
     processingProofMode: mysqlEnum("processingProofMode", ["PRO", "AI"]),
     processingProofCandidateHash: varchar("processingProofCandidateHash", { length: 64 }),
     processingProofExpiresAt: timestamp("processingProofExpiresAt"),
+    /** حجز ذري مستقل يمنع استهلاك مزودين متوازيين للمهمة نفسها قبل إصدار الإثبات. */
+    processingLeaseTokenHash: varchar("processingLeaseTokenHash", { length: 64 }),
+    processingLeaseExpiresAt: timestamp("processingLeaseExpiresAt"),
     proposedName: varchar("proposedName", { length: 255 }),
     proposedDescription: text("proposedDescription"),
     proposedMarketingCopy: text("proposedMarketingCopy"),
@@ -3332,6 +3335,8 @@ export const productImageJobs = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     submittedAt: timestamp("submittedAt"),
+    /** آخر منفّذ أرسل المرشح؛ يثبَّت خادمياً ويمنع اعتماده حتى لو تغيّر الإسناد لاحقاً. */
+    submittedBy: int("submittedBy").references(() => users.id),
     reviewedAt: timestamp("reviewedAt"),
   },
   (table) => ({
@@ -3339,6 +3344,7 @@ export const productImageJobs = mysqlTable(
     statusIdx: index("idx_pijob_status").on(table.status),
     assigneeStatusIdx: index("idx_pijob_assignee_status").on(table.assignedTo, table.status),
     branchStatusIdx: index("idx_pijob_branch_status").on(table.branchId, table.status),
+    submitterStatusIdx: index("idx_pijob_submitter_status").on(table.submittedBy, table.status),
     oneActivePerProduct: unique("uq_pijob_product_active").on(table.productId, table.activeSlot),
   }),
 );
