@@ -15,8 +15,13 @@ const NOW = new Date("2026-08-18T12:00:00.000Z");
 const OBJECT_BYTES = Buffer.from("restored-from-independent-cold-mirror");
 const HASH = createHash("sha256").update(OBJECT_BYTES).digest("hex");
 const KEY = `single/studio/candidate/${HASH.slice(0, 2)}/${HASH}.png`;
-const SOURCE_SCOPE_SHA256 = "c".repeat(64);
+const R2_ACCOUNT_ID = "a".repeat(32);
+const R2_BUCKET = "private-images";
+const SOURCE_SCOPE_SHA256 = createHash("sha256").update(`${R2_ACCOUNT_ID}\0${R2_BUCKET}`).digest("hex");
 const temporaryDirectories: string[] = [];
+const distinctStorageIdentity = async (root: string) => ({
+  deviceId: root.includes("cold-mirror") ? "101" : "202",
+});
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -74,6 +79,12 @@ async function deletionEnvironment(options: {
     destination: {
       format: "alroya-r2-restore-destination/v1",
       drillId: "11111111-1111-4111-8111-111111111111",
+      identity: {
+        kind: "filesystem-device/v1",
+        drillHostSha256: "d".repeat(64),
+        mirrorDeviceId: "101",
+        destinationDeviceId: "202",
+      },
       entries: [{
         key: objectKey,
         relativePath: relativePath.replaceAll("\\", "/"),
@@ -88,11 +99,19 @@ async function deletionEnvironment(options: {
   return {
     R2_GC_MODE: "delete",
     R2_GC_DELETE_CONFIRM: R2_GC_DELETE_CONFIRMATION,
+    R2_ACCOUNT_ID,
+    R2_IMAGE_BUCKET: R2_BUCKET,
     R2_GC_MIRROR_MANIFEST: manifestPath,
     R2_GC_MIRROR_MANIFEST_SHA256: manifestSha256,
     R2_GC_DR_RECEIPT: receiptPath,
     R2_GC_DR_RECEIPT_SHA256: createHash("sha256").update(receiptBytes).digest("hex"),
   };
+}
+
+function loadAuthorization(env: NodeJS.ProcessEnv, tenantStudioPrefix: string, now = NOW) {
+  return loadR2GcDeletionAuthorization(env, now, tenantStudioPrefix, {
+    storageIdentityReader: distinctStorageIdentity,
+  });
 }
 
 describe("R2 retention policy", () => {
@@ -122,47 +141,60 @@ describe("R2 retention policy", () => {
   });
 
   it("لا يجيز الحذف إلا بعد إيصال تمرين استعادة حقيقي مرتبط بالـmanifest وملفات وجهة سليمة", async () => {
-    const authorization = await loadR2GcDeletionAuthorization(await deletionEnvironment(), NOW, "single/studio/");
+    const authorization = await loadAuthorization(await deletionEnvironment(), "single/studio/");
     expect(() => authorization.authorize(KEY)).not.toThrow();
     expect(() => authorization.authorize(`single/studio/candidate/bb/${"b".repeat(64)}.png`))
       .toThrow(/R2_GC_MIRROR_OBJECT_UNPROVEN/);
 
-    await expect(loadR2GcDeletionAuthorization({
+    await expect(loadAuthorization({
       ...await deletionEnvironment(),
       R2_GC_DR_RECEIPT: undefined,
       R2_GC_DR_RECEIPT_SHA256: undefined,
       R2_GC_DR_VERIFIED_AT: new Date(NOW.getTime() - DAY_MS).toISOString(),
-    }, NOW, "single/studio/")).rejects.toThrow(/R2_GC_DR_RECEIPT_REQUIRED/);
+    }, "single/studio/")).rejects.toThrow(/R2_GC_DR_RECEIPT_REQUIRED/);
   });
 
   it("يربط التفويض بنطاق Studio المشتق للشركة ولا يقبل manifest من نطاق آخر", async () => {
     const companyKey = `company-42/studio/candidate/${HASH.slice(0, 2)}/${HASH}.png`;
-    const authorization = await loadR2GcDeletionAuthorization(
+    const authorization = await loadAuthorization(
       await deletionEnvironment({ value: manifest(undefined, companyKey, "company-") }),
-      NOW,
       "company-42/studio/",
     );
     expect(() => authorization.authorize(companyKey)).not.toThrow();
     expect(() => authorization.authorize(KEY)).toThrow(/R2_GC_OBJECT_TENANT_SCOPE_MISMATCH/);
-    await expect(loadR2GcDeletionAuthorization(await deletionEnvironment(), NOW, "company-42/studio/"))
+    await expect(loadAuthorization(await deletionEnvironment(), "company-42/studio/"))
       .rejects.toThrow(/R2_GC_MIRROR_TENANT_SCOPE_MISMATCH/);
   });
 
   it("يفشل مغلقاً عند بصمة/مرآة/إيصال متقادم أو عند تلف ملفات وجهة الاستعادة", async () => {
-    await expect(loadR2GcDeletionAuthorization({
+    await expect(loadAuthorization({
       ...await deletionEnvironment(), R2_GC_MIRROR_MANIFEST_SHA256: "b".repeat(64),
-    }, NOW, "single/studio/")).rejects.toThrow(/R2_GC_MIRROR_MANIFEST_DIGEST_MISMATCH/);
-    await expect(loadR2GcDeletionAuthorization(
+    }, "single/studio/")).rejects.toThrow(/R2_GC_MIRROR_MANIFEST_DIGEST_MISMATCH/);
+    await expect(loadAuthorization(
       await deletionEnvironment({ value: manifest(new Date(NOW.getTime() - 8 * DAY_MS).toISOString()) }),
-      NOW, "single/studio/",
+      "single/studio/",
     )).rejects.toThrow(/R2_GC_MIRROR_PROOF_STALE/);
-    await expect(loadR2GcDeletionAuthorization(
+    await expect(loadAuthorization(
       await deletionEnvironment({ receiptCompletedAt: new Date(NOW.getTime() - 91 * DAY_MS).toISOString() }),
-      NOW, "single/studio/",
+      "single/studio/",
     )).rejects.toThrow(/R2_GC_DR_PROOF_STALE/);
-    await expect(loadR2GcDeletionAuthorization(
+    await expect(loadAuthorization(
       await deletionEnvironment({ restoredBytes: Buffer.from("tampered-restore") }),
-      NOW, "single/studio/",
+      "single/studio/",
     )).rejects.toThrow(/R2_GC_DR_DESTINATION_PROOF_INVALID/);
+  });
+
+  it("يعيد حساب نطاق R2 ويرفض الوجهة إذا كانت على جهاز المرآة نفسه", async () => {
+    await expect(loadAuthorization({
+      ...await deletionEnvironment(),
+      R2_IMAGE_BUCKET: "another-private-bucket",
+    }, "single/studio/")).rejects.toThrow(/R2_GC_SOURCE_SCOPE_MISMATCH/);
+
+    await expect(loadR2GcDeletionAuthorization(
+      await deletionEnvironment(),
+      NOW,
+      "single/studio/",
+      { storageIdentityReader: async () => ({ deviceId: "101" }) },
+    )).rejects.toThrow(/R2_GC_DR_DESTINATION_NOT_INDEPENDENT/);
   });
 });

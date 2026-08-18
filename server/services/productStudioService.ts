@@ -327,12 +327,19 @@ async function stageStudioObject(objectKey: string): Promise<void> {
  * مكنسة الرفع الفاشل: تقفل سجل المفتاح قبل الحذف. upsert لرفعٍ جديد على المفتاح نفسه ينتظر القفل،
  * ثم يعيد PUT بعد الحذف؛ فلا يقطع الكنس مرجعاً جديداً قيد الإنشاء عبر worker آخر.
  */
-export async function cleanupStudioStaging(limit = 5): Promise<number> {
-  const now = new Date();
+export async function cleanupStudioStaging(
+  limit = 5,
+  options: {
+    now?: Date;
+    loadDeletionAuthorization?: typeof loadR2GcDeletionAuthorization;
+  } = {},
+): Promise<number> {
+  const now = options.now ?? new Date();
   const cutoff = new Date(now.getTime() - STAGING_AUDIT_INTERVAL_MS);
   const gcMode = resolveR2GcMode(process.env);
+  const loadDeletionAuthorization = options.loadDeletionAuthorization ?? loadR2GcDeletionAuthorization;
   const deletionAuthorization = gcMode === "delete"
-    ? await loadR2GcDeletionAuthorization(process.env, now, studioObjectRoot())
+    ? await loadDeletionAuthorization(process.env, now, studioObjectRoot())
     : null;
   const candidates = await requireDb().select({ objectKey: productImageObjectStaging.objectKey })
     .from(productImageObjectStaging)

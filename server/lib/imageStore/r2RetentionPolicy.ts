@@ -17,6 +17,7 @@ const DR_DESTINATION_FORMAT = "alroya-r2-restore-destination/v1";
 export const R2_GC_DELETE_CONFIRMATION = "DELETE_RETAINED_R2_OBJECTS";
 
 type StagingState = "PENDING" | "REFERENCED";
+type StorageIdentityReader = (root: string) => Promise<{ deviceId: string }>;
 type StagingDecision =
   | { action: "MARK_REFERENCED" }
   | { action: "MARK_UNREFERENCED"; retentionStartedAt: Date }
@@ -66,6 +67,21 @@ function assertTenantStudioPrefix(value: string): void {
 function manifestCoversTenant(sourcePrefix: unknown, tenantStudioPrefix: string): sourcePrefix is string {
   if (tenantStudioPrefix === "single/studio/") return sourcePrefix === tenantStudioPrefix;
   return sourcePrefix === tenantStudioPrefix || sourcePrefix === "company-";
+}
+
+async function readFilesystemStorageIdentity(root: string): Promise<{ deviceId: string }> {
+  try {
+    const info = await stat(root, { bigint: true });
+    if (!info.isDirectory()) throw new R2RetentionPolicyError("R2_GC_DR_STORAGE_IDENTITY_UNAVAILABLE");
+    return { deviceId: info.dev.toString() };
+  } catch (error) {
+    if (error instanceof R2RetentionPolicyError) throw error;
+    throw new R2RetentionPolicyError("R2_GC_DR_STORAGE_IDENTITY_UNAVAILABLE", error);
+  }
+}
+
+function validStorageIdentity(value: unknown): value is { deviceId: string } {
+  return plainObject(value) && typeof value.deviceId === "string" && /^[0-9]+$/.test(value.deviceId);
 }
 
 function pathContains(parent: string, child: string): boolean {
@@ -129,6 +145,7 @@ export async function loadR2GcDeletionAuthorization(
   env: NodeJS.ProcessEnv,
   now = new Date(),
   tenantStudioPrefix: string,
+  options: { storageIdentityReader?: StorageIdentityReader } = {},
 ): Promise<{ authorize(objectKey: string): void }> {
   if (resolveR2GcMode(env) !== "delete") throw new R2RetentionPolicyError("R2_GC_DELETE_MODE_REQUIRED");
   assertTenantStudioPrefix(tenantStudioPrefix);
@@ -176,6 +193,16 @@ export async function loadR2GcDeletionAuthorization(
   if (!validSha256(parsed.sourceScopeSha256)) {
     throw new R2RetentionPolicyError("R2_GC_MIRROR_MANIFEST_INVALID");
   }
+  const accountId = env.R2_ACCOUNT_ID?.trim();
+  const bucket = env.R2_IMAGE_BUCKET?.trim();
+  if (!accountId || !/^[a-f0-9]{32}$/.test(accountId) || !bucket ||
+      !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) {
+    throw new R2RetentionPolicyError("R2_GC_SOURCE_SCOPE_REQUIRED");
+  }
+  const actualSourceScopeSha256 = createHash("sha256").update(`${accountId}\0${bucket}`).digest("hex");
+  if (parsed.sourceScopeSha256 !== actualSourceScopeSha256) {
+    throw new R2RetentionPolicyError("R2_GC_SOURCE_SCOPE_MISMATCH");
+  }
   const entries = parsed.entries;
 
   const receiptPath = env.R2_GC_DR_RECEIPT?.trim();
@@ -209,6 +236,12 @@ export async function loadR2GcDeletionAuthorization(
       !plainObject(receipt.destination) || receipt.destination.format !== DR_DESTINATION_FORMAT ||
       typeof receipt.destination.drillId !== "string" ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(receipt.destination.drillId) ||
+      !plainObject(receipt.destination.identity) || receipt.destination.identity.kind !== "filesystem-device/v1" ||
+      !validSha256(receipt.destination.identity.drillHostSha256) ||
+      typeof receipt.destination.identity.mirrorDeviceId !== "string" ||
+      typeof receipt.destination.identity.destinationDeviceId !== "string" ||
+      !/^[0-9]+$/.test(receipt.destination.identity.mirrorDeviceId) ||
+      !/^[0-9]+$/.test(receipt.destination.identity.destinationDeviceId) ||
       !Array.isArray(receipt.destination.entries) || receipt.destination.entries.length === 0 ||
       receipt.destination.entries.length > MAX_DR_RESTORED_OBJECTS) {
     throw new R2RetentionPolicyError("R2_GC_DR_RECEIPT_INVALID");
@@ -234,6 +267,29 @@ export async function loadR2GcDeletionAuthorization(
     throw new R2RetentionPolicyError("R2_GC_DR_DESTINATION_PROOF_INVALID", error);
   }
   if (pathContains(manifestRoot, restoreRoot) || pathContains(restoreRoot, manifestRoot)) {
+    throw new R2RetentionPolicyError("R2_GC_DR_DESTINATION_NOT_INDEPENDENT");
+  }
+  const storageIdentityReader = options.storageIdentityReader ?? readFilesystemStorageIdentity;
+  if (typeof storageIdentityReader !== "function") {
+    throw new R2RetentionPolicyError("R2_GC_DR_STORAGE_IDENTITY_UNAVAILABLE");
+  }
+  let mirrorIdentity: { deviceId: string };
+  let destinationIdentity: { deviceId: string };
+  try {
+    [mirrorIdentity, destinationIdentity] = await Promise.all([
+      storageIdentityReader(manifestRoot),
+      storageIdentityReader(restoreRoot),
+    ]);
+  } catch (error) {
+    if (error instanceof R2RetentionPolicyError) throw error;
+    throw new R2RetentionPolicyError("R2_GC_DR_STORAGE_IDENTITY_UNAVAILABLE", error);
+  }
+  if (!validStorageIdentity(mirrorIdentity) || !validStorageIdentity(destinationIdentity)) {
+    throw new R2RetentionPolicyError("R2_GC_DR_STORAGE_IDENTITY_UNAVAILABLE");
+  }
+  if (mirrorIdentity.deviceId === destinationIdentity.deviceId ||
+      receipt.destination.identity.mirrorDeviceId !== mirrorIdentity.deviceId ||
+      receipt.destination.identity.destinationDeviceId !== destinationIdentity.deviceId) {
     throw new R2RetentionPolicyError("R2_GC_DR_DESTINATION_NOT_INDEPENDENT");
   }
 

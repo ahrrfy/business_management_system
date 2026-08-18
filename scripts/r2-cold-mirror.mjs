@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * مرآة R2 باردة تراكمية: copy + manifest + verify فقط. لا يوجد مسار حذف أو sync.
+ * مرآة R2 باردة تراكمية: copy + manifest + verify + restore-drill. لا يوجد مسار حذف أو sync.
  * لا يطبع account/bucket/key/path أو تفاصيل SDK.
  */
 import { createHash, randomUUID } from "node:crypto";
@@ -18,6 +18,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, parse as parsePath, relative, resolve, sep } from "node:path";
+import { hostname } from "node:os";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -273,11 +274,36 @@ function assertExternalDirectoryPath(root, code = "MIRROR_DIR_MUST_BE_EXTERNAL")
   }
 }
 
+async function readFilesystemStorageIdentity(root) {
+  let info;
+  try {
+    info = await stat(root, { bigint: true });
+  } catch (error) {
+    throw new R2ColdMirrorError("MIRROR_DR_STORAGE_IDENTITY_UNAVAILABLE", error);
+  }
+  if (!info.isDirectory()) throw new R2ColdMirrorError("MIRROR_DR_STORAGE_IDENTITY_UNAVAILABLE");
+  return { deviceId: info.dev.toString() };
+}
+
+function assertStorageIdentity(value) {
+  if (!value || typeof value !== "object" || typeof value.deviceId !== "string" ||
+      !/^[0-9]+$/.test(value.deviceId)) {
+    throw new R2ColdMirrorError("MIRROR_DR_STORAGE_IDENTITY_UNAVAILABLE");
+  }
+}
+
 /**
  * تمرين استعادة فعلي من المرآة الباردة إلى وجهة جديدة مستقلة. الإيصال وحده لا يكفي:
  * GC يعيد قراءة ملفات الوجهة ويتحقق من بصماتها قبل فتح delete.
  */
-export async function createRestoreDrill({ mirrorRoot, destinationRoot, now = new Date(), drillId = randomUUID(), sampleLimit = 5 }) {
+export async function createRestoreDrill({
+  mirrorRoot,
+  destinationRoot,
+  now = new Date(),
+  drillId = randomUUID(),
+  sampleLimit = 5,
+  storageIdentityReader = readFilesystemStorageIdentity,
+}) {
   if (!isAbsolute(mirrorRoot) || !isAbsolute(destinationRoot) || !Number.isFinite(now?.getTime?.()) ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(drillId) ||
       !Number.isSafeInteger(sampleLimit) || sampleLimit < 1 || sampleLimit > MAX_RESTORE_SAMPLE_OBJECTS) {
@@ -285,12 +311,14 @@ export async function createRestoreDrill({ mirrorRoot, destinationRoot, now = ne
   }
   assertExternalDirectoryPath(mirrorRoot, "MIRROR_DR_INPUT_INVALID");
   assertExternalDirectoryPath(destinationRoot, "MIRROR_DR_INPUT_INVALID");
+  if (typeof storageIdentityReader !== "function") throw new R2ColdMirrorError("MIRROR_DR_INPUT_INVALID");
   let actualMirrorRoot;
   let actualDestinationRoot;
+  let actualDestinationParent;
   try {
     actualMirrorRoot = await realpath(mirrorRoot);
-    const destinationParent = await realpath(dirname(destinationRoot));
-    actualDestinationRoot = resolve(destinationParent, basename(destinationRoot));
+    actualDestinationParent = await realpath(dirname(destinationRoot));
+    actualDestinationRoot = resolve(actualDestinationParent, basename(destinationRoot));
   } catch (error) {
     throw new R2ColdMirrorError("MIRROR_DR_INPUT_INVALID", error);
   }
@@ -305,6 +333,16 @@ export async function createRestoreDrill({ mirrorRoot, destinationRoot, now = ne
     if (error?.code !== "ENOENT") throw new R2ColdMirrorError("MIRROR_DR_INPUT_INVALID", error);
   }
 
+  const [mirrorIdentity, destinationParentIdentity] = await Promise.all([
+    storageIdentityReader(actualMirrorRoot),
+    storageIdentityReader(actualDestinationParent),
+  ]);
+  assertStorageIdentity(mirrorIdentity);
+  assertStorageIdentity(destinationParentIdentity);
+  if (mirrorIdentity.deviceId === destinationParentIdentity.deviceId) {
+    throw new R2ColdMirrorError("MIRROR_DR_DESTINATION_NOT_INDEPENDENT");
+  }
+
   const loaded = await loadPreviousManifest(resolve(actualMirrorRoot, "manifest.json"));
   const manifest = loaded.value;
   if (!loaded.exists || !loaded.digest || typeof manifest.sourcePrefix !== "string" ||
@@ -316,6 +354,12 @@ export async function createRestoreDrill({ mirrorRoot, destinationRoot, now = ne
   const selected = Object.entries(manifest.entries).sort(([a], [b]) => a.localeCompare(b)).slice(0, sampleLimit);
   if (selected.length === 0) throw new R2ColdMirrorError("MIRROR_DR_NO_OBJECTS");
   await mkdir(actualDestinationRoot, { recursive: false, mode: 0o700 });
+  const destinationIdentity = await storageIdentityReader(actualDestinationRoot);
+  assertStorageIdentity(destinationIdentity);
+  if (destinationIdentity.deviceId !== destinationParentIdentity.deviceId ||
+      destinationIdentity.deviceId === mirrorIdentity.deviceId) {
+    throw new R2ColdMirrorError("MIRROR_DR_DESTINATION_NOT_INDEPENDENT");
+  }
   const restoredEntries = [];
   for (const [key, entry] of selected) {
     assertSafeKey(key);
@@ -340,6 +384,10 @@ export async function createRestoreDrill({ mirrorRoot, destinationRoot, now = ne
       bytes: entry.bytes,
     });
   }
+  const drillHostname = hostname().trim().toLowerCase();
+  if (!drillHostname || drillHostname.length > 255) {
+    throw new R2ColdMirrorError("MIRROR_DR_STORAGE_IDENTITY_UNAVAILABLE");
+  }
   const receipt = {
     format: RESTORE_DRILL_RECEIPT_FORMAT,
     completedAt: now.toISOString(),
@@ -349,6 +397,12 @@ export async function createRestoreDrill({ mirrorRoot, destinationRoot, now = ne
     destination: {
       format: RESTORE_DESTINATION_FORMAT,
       drillId,
+      identity: {
+        kind: "filesystem-device/v1",
+        drillHostSha256: createHash("sha256").update(drillHostname).digest("hex"),
+        mirrorDeviceId: mirrorIdentity.deviceId,
+        destinationDeviceId: destinationIdentity.deviceId,
+      },
       entries: restoredEntries,
     },
   };

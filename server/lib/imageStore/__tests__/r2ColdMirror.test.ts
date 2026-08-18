@@ -15,6 +15,12 @@ const source = (await readFile(fileURLToPath(cliUrl), "utf8"))
 await writeFile(modulePath, source, "utf8");
 afterAll(() => rm(moduleDir, { recursive: true, force: true }));
 const mirrorRoots: string[] = [];
+const R2_ACCOUNT_ID = "a".repeat(32);
+const R2_BUCKET = "private-images";
+const SOURCE_SCOPE_SHA256 = createHash("sha256").update(`${R2_ACCOUNT_ID}\0${R2_BUCKET}`).digest("hex");
+const distinctStorageIdentity = async (root: string) => ({
+  deviceId: root.includes("cold-mirror") ? "101" : "202",
+});
 afterEach(async () => {
   await Promise.all(mirrorRoots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -139,7 +145,7 @@ describe("R2 cumulative cold mirror", () => {
       format: MIRROR_MANIFEST_FORMAT,
       completedAt: "2026-08-18T00:00:00.000Z",
       sourcePrefix: "company-",
-      sourceScopeSha256: "c".repeat(64),
+      sourceScopeSha256: SOURCE_SCOPE_SHA256,
       entries: {
         [key]: {
           sha256: hash,
@@ -153,12 +159,21 @@ describe("R2 cumulative cold mirror", () => {
     const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
     await writeFile(join(mirrorRoot, "manifest.json"), manifestBytes);
 
+    await expect(createRestoreDrill({
+      mirrorRoot,
+      destinationRoot: join(parent, "same-device-target"),
+      now: new Date("2026-08-18T12:00:00.000Z"),
+      drillId: "33333333-3333-4333-8333-333333333333",
+      sampleLimit: 1,
+    })).rejects.toMatchObject({ code: "MIRROR_DR_DESTINATION_NOT_INDEPENDENT" });
+
     const result = await createRestoreDrill({
       mirrorRoot,
       destinationRoot,
       now: new Date("2026-08-18T12:00:00.000Z"),
       drillId: "11111111-1111-4111-8111-111111111111",
       sampleLimit: 1,
+      storageIdentityReader: distinctStorageIdentity,
     });
     expect(result.manifestSha256).toBe(createHash("sha256").update(manifestBytes).digest("hex"));
     expect(result.receiptSha256).toMatch(/^[0-9a-f]{64}$/);
@@ -168,17 +183,29 @@ describe("R2 cumulative cold mirror", () => {
       format: "alroya-r2-restore-drill/v1",
       manifestSha256: result.manifestSha256,
       sourcePrefix: "company-",
-      destination: { entries: [{ key, sha256: hash, bytes: bytes.length }] },
+      destination: {
+        identity: {
+          kind: "filesystem-device/v1",
+          mirrorDeviceId: "101",
+          destinationDeviceId: "202",
+          drillHostSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        },
+        entries: [{ key, sha256: hash, bytes: bytes.length }],
+      },
     });
     expect(await readFile(join(destinationRoot, "objects", ...key.split("/")))).toEqual(bytes);
     const authorization = await loadR2GcDeletionAuthorization({
       R2_GC_MODE: "delete",
       R2_GC_DELETE_CONFIRM: R2_GC_DELETE_CONFIRMATION,
+      R2_ACCOUNT_ID,
+      R2_IMAGE_BUCKET: R2_BUCKET,
       R2_GC_MIRROR_MANIFEST: join(mirrorRoot, "manifest.json"),
       R2_GC_MIRROR_MANIFEST_SHA256: result.manifestSha256,
       R2_GC_DR_RECEIPT: join(destinationRoot, "receipt.json"),
       R2_GC_DR_RECEIPT_SHA256: result.receiptSha256,
-    }, new Date("2026-08-18T12:00:01.000Z"), "company-42/studio/");
+    }, new Date("2026-08-18T12:00:01.000Z"), "company-42/studio/", {
+      storageIdentityReader: distinctStorageIdentity,
+    });
     expect(() => authorization.authorize(key)).not.toThrow();
 
     await expect(createRestoreDrill({
@@ -187,6 +214,7 @@ describe("R2 cumulative cold mirror", () => {
       now: new Date("2026-08-18T12:00:00.000Z"),
       drillId: "22222222-2222-4222-8222-222222222222",
       sampleLimit: 1,
+      storageIdentityReader: distinctStorageIdentity,
     })).rejects.toMatchObject({ code: "MIRROR_DR_DESTINATION_NOT_INDEPENDENT" });
   });
 });
