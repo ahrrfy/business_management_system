@@ -1,11 +1,16 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { STOREFRONT_TURNSTILE_ACTION } from "@shared/storefrontTurnstile";
 import {
   TurnstileWidget,
+  loadTurnstileScript,
   reduceTurnstileStatus,
 } from "./TurnstileWidget";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("managed Turnstile widget contract", () => {
   it("renders an explicit RTL/mobile verification region without putting the site key in text", () => {
@@ -31,5 +36,50 @@ describe("managed Turnstile widget contract", () => {
     expect(reduceTurnstileStatus("verified", "EXPIRED")).toBe("expired");
     expect(reduceTurnstileStatus("verified", "ERROR")).toBe("error");
     expect(reduceTurnstileStatus("error", "RESET")).toBe("ready");
+  });
+
+  it("removes a failed script so reopening checkout performs a real retry", async () => {
+    type Listener = () => void;
+    const scripts: Array<{
+      listeners: Map<string, Listener>;
+      remove: () => void;
+    }> = [];
+    let activeScript: (typeof scripts)[number] | null = null;
+
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("document", {
+      querySelector: () => activeScript,
+      createElement: () => {
+        const listeners = new Map<string, Listener>();
+        const script = {
+          listeners,
+          src: "",
+          async: false,
+          defer: false,
+          addEventListener: (type: string, listener: Listener) => listeners.set(type, listener),
+          remove: () => {
+            if (activeScript === script) activeScript = null;
+          },
+        };
+        scripts.push(script);
+        return script;
+      },
+      head: {
+        appendChild: (script: (typeof scripts)[number]) => {
+          activeScript = script;
+        },
+      },
+    });
+
+    const firstAttempt = loadTurnstileScript();
+    scripts[0]?.listeners.get("error")?.();
+    await expect(firstAttempt).rejects.toThrow("TURNSTILE_SCRIPT_FAILED");
+    expect(activeScript).toBeNull();
+
+    const retryAttempt = loadTurnstileScript();
+    expect(scripts).toHaveLength(2);
+    (window as Window).turnstile = {} as Window["turnstile"];
+    scripts[1]?.listeners.get("load")?.();
+    await expect(retryAttempt).resolves.toBeUndefined();
   });
 });

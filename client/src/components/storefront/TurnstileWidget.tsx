@@ -44,7 +44,7 @@ declare global {
 
 let scriptPromise: Promise<void> | null = null;
 
-function loadTurnstileScript(): Promise<void> {
+export function loadTurnstileScript(): Promise<void> {
   if (window.turnstile) return Promise.resolve();
   if (scriptPromise) return scriptPromise;
   scriptPromise = new Promise<void>((resolve, reject) => {
@@ -52,8 +52,16 @@ function loadTurnstileScript(): Promise<void> {
       `script[src="${STOREFRONT_TURNSTILE_SCRIPT_URL}"]`,
     );
     const script = existing ?? document.createElement("script");
-    const loaded = () => window.turnstile ? resolve() : reject(new Error("TURNSTILE_API_MISSING"));
-    const failed = () => reject(new Error("TURNSTILE_SCRIPT_FAILED"));
+    const rejectFailedLoad = (reason: string) => {
+      // لا نُبقِ عنصراً سبق أن أطلق error/load ناقصاً؛ إعادة فتح checkout يجب أن
+      // تنشئ طلب تحميل جديداً بدل ربط listeners متأخرة بعنصر لن يطلق حدثاً آخر.
+      script.remove();
+      reject(new Error(reason));
+    };
+    const failed = () => rejectFailedLoad("TURNSTILE_SCRIPT_FAILED");
+    const loaded = () => window.turnstile
+      ? resolve()
+      : rejectFailedLoad("TURNSTILE_API_MISSING");
     script.addEventListener("load", loaded, { once: true });
     script.addEventListener("error", failed, { once: true });
     if (!existing) {
