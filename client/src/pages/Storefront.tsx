@@ -56,15 +56,34 @@ const TRACK_STATUS: Record<string, { label: string; cls: string }> = {
   DELIVERED: { label: "تمّ التسليم", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" },
   CANCELLED: { label: "ملغى", cls: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400" },
 };
+
+export function formatStorefrontReservationDeadline(value: Date | string): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "وقت غير متاح";
+  return new Intl.DateTimeFormat("ar-IQ", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Baghdad",
+  }).format(date);
+}
 type TrackData = NonNullable<RouterOutputs["storefront"]["trackOrder"]>;
 import { fmtInt } from "@/lib/money";
 import { isPublicHost } from "@/lib/siteHosts";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
+import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
+
+export function storefrontTurnstileSubmissionReady(
+  orderingEnabled: boolean,
+  siteKey: string | null | undefined,
+  token: string | null | undefined,
+): boolean {
+  return orderingEnabled && !!siteKey?.trim() && !!token?.trim();
+}
 
 export interface CartLine {
   productUnitId: number;
@@ -734,7 +753,13 @@ export default function Storefront() {
   const acceptedQuoteRef = useRef<{ fingerprint: string; total: string } | null>(null);
   checkoutAttemptRef.current = checkoutAttempt;
   const [checkoutSafetyError, setCheckoutSafetyError] = useState<string | null>(null);
-  const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileResetKey, setTurnstileResetKey] = useState(0);
+  const [confirmation, setConfirmation] = useState<{
+    orderNumber: string;
+    total: string;
+    reservationExpiresAt: Date | string;
+  } | null>(null);
   const viewedProductIds = useRef(new Set<number>());
 
   // تتبّع الطلب العلنيّ — نموذجٌ برقم الطلب + الهاتف يستدعي storefront.trackOrder عند الطلب.
@@ -845,11 +870,16 @@ export default function Storefront() {
     },
     onSuccess: (res) => {
       orderInFlightRef.current = false;
+      setTurnstileToken(null);
       checkoutAttemptRef.current = null;
       acceptedQuoteRef.current = null;
       setCheckoutAttempt(null);
       saveCheckoutAttempt(null);
-      setConfirmation({ orderNumber: res.orderNumber, total: res.total });
+      setConfirmation({
+        orderNumber: res.orderNumber,
+        total: res.total,
+        reservationExpiresAt: res.reservationExpiresAt,
+      });
       setCart(new Map());
       // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
       // ١٢/٧): المتجر علنيّ بلا جلسة ⇒ إبقاؤها يسرّبها للزبون التالي على جهازٍ مشترك/كشك. الاستعادة
@@ -859,6 +889,10 @@ export default function Storefront() {
     },
     onError: async (error) => {
       orderInFlightRef.current = false;
+      // token أحادي الاستعمال: أي رد خطأ/ضائع يحتاج challenge جديداً. إن كان الطلب قد
+      // التزم فعلاً فـowned replay الخادمي يسبق استهلاك token الجديد.
+      setTurnstileToken(null);
+      setTurnstileResetKey((key) => key + 1);
       if (error.data?.code === "CONFLICT") {
         const failedAttempt = checkoutAttemptRef.current;
         checkoutAttemptRef.current = null;
@@ -985,6 +1019,8 @@ export default function Storefront() {
   // الفشل المغلق: لا نسمح بإرسال طلب قبل معرفة حالة المتجر فعلياً. خطأ الإعدادات له
   // تنبيه مستقل أدناه، فلا يتنكر في هيئة «مفتوح» ولا «مغلق».
   const storeOpen = settingsQ.isSuccess && settingsQ.data.isOpen;
+  const orderingEnabled =
+    settingsQ.isSuccess && settingsQ.data.orderingEnabled === true;
   const activeCatName = useMemo(
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
@@ -1139,15 +1175,25 @@ export default function Storefront() {
   }
 
   function openCheckout() {
-    if (!storeOpen) return; // المتجر مغلق — الإشعار ظاهر أعلى الصفحة
+    if (!storeOpen || !orderingEnabled) return; // بوابتا المتجر والطلب ظاهرتان للزبون.
     trackConversion.mutate({ event: "BEGIN_CHECKOUT" });
+    setTurnstileToken(null);
+    setTurnstileResetKey((key) => key + 1);
     setPanel("checkout");
   }
   function submitOrder() {
     const name = form.name.trim();
     const phone = form.phone.replace(/\s+/g, " ").trim();
     const address = form.address.trim();
-    if (!name || phone.replace(/\D/g, "").length < 8 || address.length < 3 || cartLines.length === 0) return;
+    if (
+      !name || phone.replace(/\D/g, "").length < 8 || address.length < 3 ||
+      cartLines.length === 0 ||
+      !storefrontTurnstileSubmissionReady(
+        orderingEnabled,
+        settingsQ.data?.turnstileSiteKey,
+        turnstileToken,
+      )
+    ) return;
     const fingerprint = storefrontCheckoutFingerprint(cart, form);
     const previous = checkoutAttemptRef.current;
     const acceptedQuote = acceptedQuoteRef.current?.fingerprint === fingerprint
@@ -1184,13 +1230,19 @@ export default function Storefront() {
       })),
       expectedGrandTotal: attempt.expectedGrandTotal,
       clientRequestId: attempt.clientRequestId,
+      turnstileToken: turnstileToken!,
     });
   }
   const canSubmit =
     form.name.trim().length > 0 &&
     form.phone.replace(/\D/g, "").length >= 8 &&
     form.address.trim().length >= 3 &&
-    cartLines.length > 0;
+    cartLines.length > 0 &&
+    storefrontTurnstileSubmissionReady(
+      orderingEnabled,
+      settingsQ.data?.turnstileSiteKey,
+      turnstileToken,
+    );
 
   const chip = (active: boolean) =>
     `whitespace-nowrap rounded-full px-4 py-1.5 text-xs font-bold transition ${
@@ -1946,10 +1998,10 @@ export default function Storefront() {
                 ))}
               <button
                 onClick={openCheckout}
-                disabled={!storeOpen}
+                disabled={!storeOpen || !orderingEnabled}
                 className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
               >
-                {storeOpen ? (
+                {storeOpen && orderingEnabled ? (
                   <>
                     متابعة إلى الدفع عند الاستلام
                     <ArrowRight aria-hidden className="size-4" />
@@ -1958,6 +2010,8 @@ export default function Storefront() {
                   "جارٍ التحقق من حالة المتجر"
                 ) : settingsQ.isError ? (
                   "تعذّر التحقق من استقبال الطلبات — أعد المحاولة"
+                ) : storeOpen && !orderingEnabled ? (
+                  "استقبال الطلبات متوقف مؤقتاً — التصفح متاح"
                 ) : (
                   "المتجر مغلق مؤقتاً — تعذّر إتمام الطلب"
                 )}
@@ -1985,7 +2039,10 @@ export default function Storefront() {
 
       {/* ═══ الدفع عند الاستلام ═══ */}
       {panel === "checkout" && (
-        <PanelShell title="الدفع عند الاستلام" onClose={() => setPanel("cart")}>
+        <PanelShell title="الدفع عند الاستلام" onClose={() => {
+          setTurnstileToken(null);
+          setPanel("cart");
+        }}>
           <div className="flex flex-col gap-3">
             <Field icon={<User aria-hidden className="size-4" />} label="الاسم الكامل">
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="اسمك" autoComplete="name" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
@@ -2031,6 +2088,18 @@ export default function Storefront() {
               </div>
             </div>
 
+            {orderingEnabled && settingsQ.data?.turnstileSiteKey ? (
+              <TurnstileWidget
+                siteKey={settingsQ.data.turnstileSiteKey}
+                resetKey={turnstileResetKey}
+                onTokenChange={setTurnstileToken}
+              />
+            ) : (
+              <p role="alert" className="rounded-xl bg-[var(--sem-danger)]/5 px-3 py-2 text-xs font-medium text-[var(--sem-danger)]">
+                استقبال الطلبات متوقف مؤقتاً؛ يمكنك متابعة التصفح والتواصل عبر واتساب.
+              </p>
+            )}
+
             {(createOrder.isError || checkoutSafetyError) && (
               <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-medium text-rose-600 dark:bg-rose-500/10">
                 {checkoutSafetyError ?? createOrder.error?.message ?? "تعذّر إرسال الطلب — أعد المحاولة"}
@@ -2061,6 +2130,9 @@ export default function Storefront() {
             </div>
             <h3 className="mt-4 text-lg font-extrabold text-slate-900 dark:text-white">شكراً لك — تمّ استلام طلبك</h3>
             <p className="mt-1 text-sm text-slate-500">سنتواصل معك لتأكيد التوصيل.</p>
+            <p className="mt-3 rounded-xl bg-[var(--sem-warning)]/5 px-3 py-2 text-xs font-bold text-[var(--sem-warning)] ring-1 ring-[var(--sem-warning)]/40">
+              الكمية محجوزة حتى {formatStorefrontReservationDeadline(confirmation.reservationExpiresAt)}؛ بعد ذلك يلزم إعادة الطلب حسب التوفر.
+            </p>
             <div className="mt-5 w-full rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">رقم الطلب</span>

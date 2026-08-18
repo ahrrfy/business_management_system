@@ -22,6 +22,8 @@ interface Props {
   onStudioModeChange?: (mode: "FLATTEN" | "CUT" | "AI") => void;
   studioTaskId?: number;
   onProcessingReceiptChange?: (receipt: string | null) => void;
+  onStudioBusyChange?: (busy: boolean) => void;
+  adminOverrideReason?: string;
   /** المنتج موجود في القاعدة ويمكن إنشاء مهمة له فوراً. */
   productExists?: boolean;
 }
@@ -41,6 +43,8 @@ export function ProductMediaContentSection({
   onStudioModeChange,
   studioTaskId,
   onProcessingReceiptChange,
+  onStudioBusyChange,
+  adminOverrideReason,
   productExists = false,
 }: Props) {
   const capturedIds = useRef(new Set<string>());
@@ -92,7 +96,7 @@ export function ProductMediaContentSection({
           </div>
         )}
         {studioTaskId != null ? (
-          <ImageStudioUploader value={images} onChange={handleImages} maxItems={maxImages} hint={hint} onStudioModeChange={onStudioModeChange} studioTaskId={studioTaskId} onProcessingReceiptChange={onProcessingReceiptChange} />
+          <ImageStudioUploader value={images} onChange={handleImages} maxItems={maxImages} hint={hint} onStudioModeChange={onStudioModeChange} studioTaskId={studioTaskId} onProcessingReceiptChange={onProcessingReceiptChange} onBusyChange={onStudioBusyChange} adminOverrideReason={adminOverrideReason} />
         ) : (
           <div className="space-y-3">
             <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3 sm:flex-row sm:items-center sm:justify-between">

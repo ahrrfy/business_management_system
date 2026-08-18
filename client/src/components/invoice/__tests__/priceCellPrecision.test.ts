@@ -11,7 +11,8 @@ import { describe, expect, it } from "vitest";
  * اختبارُ مصدرٍ لا رسمٍ: الحزمة تعمل في بيئة node بلا DOM (نمط `auditedUxContracts.test.ts`)،
  * والمقصود هنا منعُ **عودة** المُحلّل الخام لا محاكاةُ الكتابة.
  */
-const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+const read = (rel: string) =>
+  readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n?/gu, "\n");
 
 describe("invoice price cell — precision & input normalization contract", () => {
   const productTable = read("../ProductTable.tsx");

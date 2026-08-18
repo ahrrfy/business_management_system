@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   branchStock,
   bundleComponents,
@@ -77,7 +77,19 @@ export interface LoadVariantAvailabilityOptions {
   excludeOnlineOrderId?: number;
 }
 
-const ACTIVE_ONLINE_ALLOCATION_STATUSES = ["PENDING", "CONFIRMED", "PROCESSING"] as const;
+// أثناء النشر المختلط قد يكتب إصدارٌ قديم NULL؛ تاريخ الطلب هو fallback حتمي لا حجزٌ أبدي.
+const activeOnlineAllocationCondition = sql`
+  (
+    ${onlineOrders.status} IN ('CONFIRMED', 'PROCESSING')
+    OR (
+      ${onlineOrders.status} = 'PENDING'
+      AND COALESCE(
+        \`onlineOrders\`.\`reservationExpiresAt\`,
+        DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)
+      ) > CURRENT_TIMESTAMP(3)
+    )
+  )
+`;
 
 export interface LockedProductUnit {
   id: number;
@@ -136,7 +148,7 @@ export async function assertNoActiveOnlineOrderUnitChanges(
       .from(onlineOrderItems)
       .innerJoin(onlineOrders, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
       .where(and(
-        inArray(onlineOrders.status, [...ACTIVE_ONLINE_ALLOCATION_STATUSES]),
+        activeOnlineAllocationCondition,
         inArray(onlineOrderItems.productUnitId, ids),
       ))
       .for("update")
@@ -161,7 +173,7 @@ export async function assertNoActiveOnlineOrderBundleChange(
       .from(onlineOrderItems)
       .innerJoin(onlineOrders, eq(onlineOrderItems.onlineOrderId, onlineOrders.id))
       .where(and(
-        inArray(onlineOrders.status, [...ACTIVE_ONLINE_ALLOCATION_STATUSES]),
+        activeOnlineAllocationCondition,
         eq(onlineOrderItems.variantId, bundleVariantId),
       ))
       .for("update")
@@ -186,7 +198,7 @@ async function loadOnlineAllocatedBase(
 
   const orderConditions = [
     eq(onlineOrders.branchId, branchId),
-    inArray(onlineOrders.status, [...ACTIVE_ONLINE_ALLOCATION_STATUSES]),
+    activeOnlineAllocationCondition,
   ];
   if (options.excludeOnlineOrderId != null) {
     orderConditions.push(ne(onlineOrders.id, options.excludeOnlineOrderId));

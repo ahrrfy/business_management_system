@@ -2,8 +2,13 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createOnlineOrder, quoteOnlineOrder } from "../onlineOrderService";
+import {
+  createOnlineOrder,
+  findOwnedOnlineOrderReplay,
+  quoteOnlineOrder,
+} from "../onlineOrderService";
 import { listStockByUnitIds } from "../catalog/pos";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
 import { truncateAllTables } from "./__testUtils__";
 import { withTx } from "../tx";
@@ -92,6 +97,127 @@ beforeEach(async () => {
 });
 
 describe("createOnlineOrder availability guards", () => {
+  it("persists one immutable 24-hour reservation deadline and replays the same snapshot", async () => {
+    const before = Date.now();
+    const request = {
+      ...baseOrder,
+      clientRequestId: "reservation-expiry-snapshot",
+      lines: [{ productUnitId: 1, quantity: 1 }],
+    };
+    const created = await createOnlineOrder(request);
+    const after = Date.now();
+    expect(created.reservationExpiresAt.getTime()).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000);
+    expect(created.reservationExpiresAt.getTime()).toBeLessThanOrEqual(after + 24 * 60 * 60 * 1000);
+    const stored = (
+      await db()
+        .select({ expiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)` })
+        .from(s.onlineOrders)
+        .where(eq(s.onlineOrders.id, created.orderId))
+        .limit(1)
+    )[0]?.expiryMs;
+    expect(Number(stored)).toBe(created.reservationExpiresAt.getTime());
+
+    const replay = await createOnlineOrder(request);
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.reservationExpiresAt.getTime()).toBe(created.reservationExpiresAt.getTime());
+  });
+
+  it("gives an old-version insert that omits the column a database 24-hour default", async () => {
+    await db().insert(s.customers).values({ id: 99, name: "Mixed version customer" });
+    await db().insert(s.onlineOrders).values({
+      orderNumber: "ORD-MIXED-VERSION-DEFAULT",
+      customerId: 99,
+      branchId: 1,
+      subtotal: "1000.00",
+      total: "1000.00",
+      status: "PENDING",
+    });
+    const timing = (
+      await db()
+        .select({
+          orderMs: sql<number>`ROUND(UNIX_TIMESTAMP(${s.onlineOrders.orderDate}) * 1000)`,
+          expiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(${s.onlineOrders.reservationExpiresAt}) * 1000)`,
+        })
+        .from(s.onlineOrders)
+        .where(eq(s.onlineOrders.orderNumber, "ORD-MIXED-VERSION-DEFAULT"))
+        .limit(1)
+    )[0];
+    expect(Number(timing.expiryMs) - Number(timing.orderMs)).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("releases expired PENDING allocation from ATP immediately", async () => {
+    const expired = await createOnlineOrder({
+      ...baseOrder,
+      clientRequestId: "expired-allocation",
+      lines: [{ productUnitId: 1, quantity: 3 }],
+    });
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
+      WHERE id = ${expired.orderId}
+    `);
+
+    await expect(
+      createOnlineOrder({
+        ...baseOrder,
+        clientRequestId: "replacement-after-expiry",
+        lines: [{ productUnitId: 1, quantity: 3 }],
+      }),
+    ).resolves.toMatchObject({ itemCount: 1 });
+  });
+
+  it("derives mixed-version NULL expiry from orderDate for replay and ATP", async () => {
+    const request = {
+      ...baseOrder,
+      clientRequestId: "legacy-null-expiry",
+      lines: [{ productUnitId: 1, quantity: 3 }],
+    };
+    const legacy = await createOnlineOrder(request);
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET orderDate = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 25 HOUR),
+          reservationExpiresAt = NULL
+      WHERE id = ${legacy.orderId}
+    `);
+    const effectiveMs = (
+      await db()
+        .select({ value: sql<number>`ROUND(UNIX_TIMESTAMP(DATE_ADD(${s.onlineOrders.orderDate}, INTERVAL 24 HOUR)) * 1000)` })
+        .from(s.onlineOrders)
+        .where(eq(s.onlineOrders.id, legacy.orderId))
+        .limit(1)
+    )[0].value;
+
+    const replay = await createOnlineOrder(request);
+    expect(replay.reservationExpiresAt.getTime()).toBe(Number(effectiveMs));
+    await expect(
+      createOnlineOrder({
+        ...baseOrder,
+        clientRequestId: "after-legacy-null-expiry",
+        lines: [{ productUnitId: 1, quantity: 3 }],
+      }),
+    ).resolves.toMatchObject({ itemCount: 1 });
+  });
+
+  it("keeps a recent mixed-version NULL expiry allocated until orderDate plus 24 hours", async () => {
+    const legacy = await createOnlineOrder({
+      ...baseOrder,
+      clientRequestId: "recent-legacy-null-expiry",
+      lines: [{ productUnitId: 1, quantity: 3 }],
+    });
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = NULL
+      WHERE id = ${legacy.orderId}
+    `);
+    await expect(
+      createOnlineOrder({
+        ...baseOrder,
+        clientRequestId: "blocked-by-recent-legacy",
+        lines: [{ productUnitId: 1, quantity: 1 }],
+      }),
+    ).rejects.toThrow(/الكمية المطلوبة|الحجوزات النشطة/);
+  });
+
   it("rejects a requested quantity above stock, including duplicate cart lines", async () => {
     await expect(createOnlineOrder({ ...baseOrder, lines: [{ productUnitId: 1, quantity: 4 }] }))
       .rejects.toThrow(/الكمية المطلوبة/);
@@ -154,6 +280,13 @@ describe("createOnlineOrder availability guards", () => {
       lines: [{ productUnitId: 1, quantity: 1, expectedUnitPrice: "1000.00" }],
     };
     const committed = await createOnlineOrder(request); // الرد يُفقد عند العميل بعد هذه النقطة
+    const preflightReplay = await findOwnedOnlineOrderReplay(request);
+    expect(preflightReplay).toMatchObject({ orderId: committed.orderId, idempotentReplay: true });
+    await expect(findOwnedOnlineOrderReplay({
+      ...request,
+      customerPhone: "07801234567",
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+
     const retriedAfterReload = await createOnlineOrder(request);
     expect(retriedAfterReload).toMatchObject({ orderId: committed.orderId, idempotentReplay: true });
     expect(await db().select().from(s.onlineOrders)).toHaveLength(1);
@@ -404,5 +537,32 @@ describe("createOnlineOrder availability guards", () => {
       clientRequestId: "bundle-order-reserved",
       lines: [{ productUnitId: 2, quantity: 1 }],
     })).rejects.toThrow(/الحجوزات النشطة/);
+  });
+
+  it("releases an expired bundle allocation in both component and bundle ATP", async () => {
+    const d = db();
+    await d.insert(s.products).values({ id: 2, name: "Expiring bundle", showInStore: true, isBundle: true });
+    await d.insert(s.productVariants).values({ id: 2, productId: 2, sku: "EXPIRING-BUNDLE", costPrice: "1.00" });
+    await d.insert(s.productUnits).values({ id: 2, variantId: 2, unitName: "bundle", isBaseUnit: true, isStoreSaleUnit: true });
+    await d.insert(s.productPrices).values({ productUnitId: 2, priceTier: "RETAIL", price: "2500.00" });
+    await d.insert(s.bundleComponents).values({ bundleVariantId: 2, componentVariantId: 1, componentBaseQuantity: 2 });
+
+    const created = await createOnlineOrder({
+      ...baseOrder,
+      clientRequestId: "expiring-bundle-allocation",
+      lines: [{ productUnitId: 2, quantity: 1 }],
+    });
+    const before = await loadVariantAvailability(d, 1, [1, 2]);
+    expect(before.get(1)).toMatchObject({ reservedBase: 2, availableBase: 1 });
+    expect(before.get(2)).toMatchObject({ availableBase: 0 });
+
+    await d.execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
+      WHERE id = ${created.orderId}
+    `);
+    const after = await loadVariantAvailability(d, 1, [1, 2]);
+    expect(after.get(1)).toMatchObject({ reservedBase: 0, availableBase: 3 });
+    expect(after.get(2)).toMatchObject({ availableBase: 1 });
   });
 });

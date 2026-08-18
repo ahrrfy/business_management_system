@@ -155,6 +155,8 @@ export interface CreateOnlineOrderInput {
 export interface CreateOnlineOrderResult {
   orderId: number;
   orderNumber: string;
+  /** لقطة انتهاء حجز المخزون، تُحسب مرةً واحدة بساعة قاعدة البيانات. */
+  reservationExpiresAt: Date;
   /** The server-resolved storefront branch; never supplied by the browser. */
   branchId: number;
   subtotal: string;
@@ -204,6 +206,7 @@ async function loadOwnedReplay(
       total: onlineOrders.total,
       governorate: onlineOrders.governorate,
       shippingAddress: onlineOrders.shippingAddress,
+      reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))) * 1000)`,
     })
     .from(onlineOrders)
     .where(eq(onlineOrders.clientRequestId, input.clientRequestId))
@@ -272,6 +275,9 @@ async function loadOwnedReplay(
   return {
     orderId: Number(existing.id),
     orderNumber: existing.orderNumber,
+    reservationExpiresAt: existing.reservationExpiryMs != null ? new Date(Number(existing.reservationExpiryMs)) : (() => {
+      throw new Error("Existing online order is missing its reservation expiry snapshot");
+    })(),
     branchId: Number(existing.branchId),
     subtotal: String(existing.subtotal),
     deliveryFee: String(existing.shippingCost),
@@ -492,9 +498,7 @@ export async function createOnlineOrder(
   return retryOnDup(() => createOnlineOrderAttempt(input));
 }
 
-async function createOnlineOrderAttempt(
-  input: CreateOnlineOrderInput,
-): Promise<CreateOnlineOrderResult> {
+function normalizeOwnedReplayIdentity(input: CreateOnlineOrderInput) {
   const normalizedLines = normalizeOnlineOrderLines(input.lines);
   const gov = governorateById(input.governorate);
   if (!gov)
@@ -519,6 +523,43 @@ async function createOnlineOrderAttempt(
     input.notes && input.notes.trim()
       ? `${address}\nملاحظة: ${input.notes.trim()}`
       : address;
+  return {
+    normalizedLines,
+    name,
+    phone,
+    requestedLineQuantities,
+    requestedShippingAddress,
+  };
+}
+
+/**
+ * فحص replay علني ضيق يسبق Turnstile أحادي الاستعمال. يعيد نجاحاً فقط بعد مطابقة الهاتف
+ * والمحافظة والعنوان والبنود؛ اصطدام مفتاح لطرف آخر يفشل بلا كشف أي حقل من طلبه.
+ */
+export async function findOwnedOnlineOrderReplay(
+  input: CreateOnlineOrderInput,
+): Promise<CreateOnlineOrderResult | null> {
+  if (!input.clientRequestId) return null;
+  const identity = normalizeOwnedReplayIdentity(input);
+  return withTx((tx) => loadOwnedReplay(
+    tx,
+    input,
+    identity.phone,
+    identity.requestedShippingAddress,
+    identity.requestedLineQuantities,
+  ));
+}
+
+async function createOnlineOrderAttempt(
+  input: CreateOnlineOrderInput,
+): Promise<CreateOnlineOrderResult> {
+  const {
+    normalizedLines,
+    name,
+    phone,
+    requestedLineQuantities,
+    requestedShippingAddress,
+  } = normalizeOwnedReplayIdentity(input);
   return withTx(async (tx) => {
     // ① replay يسبق حالة المتجر/الفرع: نجاحٌ مُلتزَم سابقاً يبقى قابلاً للإعادة حتى
     // لو أُغلق المتجر أو تغيّر فرع التنفيذ بعده. الاستعلام معزول بهاتف صاحب الطلب؛
@@ -737,10 +778,29 @@ async function createOnlineOrderAttempt(
     });
     const orderId = extractInsertId(insOrder);
     const orderNumber = `ORD-${100000 + orderId}`;
+    // تُثبَّت داخل معاملة الإنشاء بساعة MySQL؛ لا يظهر طلب جديد بلا مهلة.
+    await tx.execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)
+      WHERE id = ${orderId}
+    `);
     await tx
       .update(onlineOrders)
       .set({ orderNumber })
       .where(eq(onlineOrders.id, orderId));
+    const persistedExpiry = (
+      await tx
+        .select({
+          reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)`,
+        })
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, orderId))
+        .limit(1)
+    )[0]?.reservationExpiryMs;
+    if (persistedExpiry == null) {
+      throw new Error("Online order reservation expiry snapshot was not persisted");
+    }
+    const reservationExpiresAt = new Date(Number(persistedExpiry));
 
     // ⑤ بنود الطلب (لقطة السعر الخادمي).
     for (const it of items) {
@@ -758,6 +818,7 @@ async function createOnlineOrderAttempt(
     return {
       orderId,
       orderNumber,
+      reservationExpiresAt,
       branchId,
       subtotal: toDbMoney(subtotal),
       deliveryFee: toDbMoney(deliveryFee),

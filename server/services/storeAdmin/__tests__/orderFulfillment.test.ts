@@ -3,7 +3,7 @@
  * يغطّي: تثبيت سبب الإلغاء عند CANCELLED، عدم مسّ cancelReason في انتقالٍ غير إلغاء (لا يطمس
  * سبباً سابقاً)، إلغاءٌ بلا سبب ⇒ null، وسماح انتقال CONFIRMED→PROCESSING.
  */
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../../drizzle/schema";
 import { getDb } from "../../../db";
@@ -46,6 +46,35 @@ beforeEach(async () => {
 });
 
 describe("setOnlineOrderStatus — سبب الإلغاء + مرحلة التجهيز", () => {
+  it("يرفض تأكيد طلب انتهت مهلة حجز مخزونه ويبقيه PENDING", async () => {
+    const id = await seedOrder("PENDING");
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
+      WHERE id = ${id}
+    `);
+
+    await expect(
+      setOnlineOrderStatus({ id, status: "CONFIRMED", scopedBranchId: null }, 1),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await getOrder(id)).status).toBe("PENDING");
+  });
+
+  it("يرفض تأكيد PENDING قديم كتبه إصدار مختلط بلا لقطة انتهاء", async () => {
+    const id = await seedOrder("PENDING");
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = NULL,
+          orderDate = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 25 HOUR)
+      WHERE id = ${id}
+    `);
+
+    await expect(
+      setOnlineOrderStatus({ id, status: "CONFIRMED", scopedBranchId: null }, 1),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await getOrder(id)).status).toBe("PENDING");
+  });
+
   it("إلغاء يدويّ (بلا فاتورة) يُثبِّت سبب الإلغاء", async () => {
     const id = await seedOrder("PENDING");
     await setOnlineOrderStatus({ id, status: "CANCELLED", scopedBranchId: null, cancelReason: "نفد المخزون" }, 1);

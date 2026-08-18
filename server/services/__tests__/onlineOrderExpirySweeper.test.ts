@@ -1,0 +1,134 @@
+import { sql } from "drizzle-orm";
+import { beforeEach, describe, expect, it } from "vitest";
+import * as s from "../../../drizzle/schema";
+import { getDb } from "../../db";
+import { sweepExpiredOnlineOrdersOnce } from "../onlineOrderExpirySweeper";
+import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
+import { truncateTables } from "./__testUtils__";
+
+function db() {
+  const d = getDb();
+  if (!d) throw new Error("DATABASE_URL not set for tests");
+  return d;
+}
+
+async function seedOrder(
+  id: number,
+  status: "PENDING" | "CONFIRMED",
+  expiry: Date,
+): Promise<void> {
+  await db()
+    .insert(s.onlineOrders)
+    .values({
+      id,
+      orderNumber: `ORD-SWEEP-${id}`,
+      customerId: 1,
+      branchId: 1,
+      subtotal: "100.00",
+      total: "100.00",
+      status,
+    });
+  await db().execute(sql`
+    UPDATE onlineOrders
+    SET reservationExpiresAt = ${expiry}
+    WHERE id = ${id}
+  `);
+}
+
+beforeEach(async () => {
+  await truncateTables([
+    "onlineOrderItems",
+    "onlineOrders",
+    "customers",
+    "branches",
+  ]);
+  await db()
+    .insert(s.branches)
+    .values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+  await db().insert(s.customers).values({ id: 1, name: "زبون تجريبي" });
+});
+
+describe("storefront PENDING reservation expiry sweeper", () => {
+  it("cancels only due PENDING rows and is idempotent", async () => {
+    const now = new Date("2026-08-18T12:00:00.000Z");
+    await seedOrder(1, "PENDING", new Date(now.getTime() - 1));
+    await seedOrder(2, "PENDING", new Date(now.getTime() + 60_000));
+    await seedOrder(3, "CONFIRMED", new Date(now.getTime() - 60_000));
+    await seedOrder(4, "PENDING", new Date(now.getTime() + 60_000));
+    await seedOrder(5, "PENDING", new Date(now.getTime() + 60_000));
+    await db().execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = NULL,
+          orderDate = CASE id
+            WHEN 4 THEN ${new Date(now.getTime() - 25 * 60 * 60 * 1000)}
+            ELSE ${new Date(now.getTime() - 23 * 60 * 60 * 1000)}
+          END
+      WHERE id IN (4, 5)
+    `);
+
+    await expect(sweepExpiredOnlineOrdersOnce(now, 50)).resolves.toEqual({
+      cancelled: 2,
+    });
+    const rows = (await db().execute(sql`
+      SELECT id, orderStatus AS status, cancelReason
+      FROM onlineOrders
+      ORDER BY id
+    `)) as unknown;
+    const values = Array.isArray(rows)
+      ? (rows[0] as Array<{
+          id: number;
+          status: string;
+          cancelReason: string | null;
+        }>)
+      : ((
+          rows as {
+            rows?: Array<{
+              id: number;
+              status: string;
+              cancelReason: string | null;
+            }>;
+          }
+        ).rows ?? []);
+    expect(values).toEqual([
+      expect.objectContaining({
+        id: 1,
+        status: "CANCELLED",
+        cancelReason: expect.stringMatching(/مهلة حجز المخزون/),
+      }),
+      expect.objectContaining({ id: 2, status: "PENDING" }),
+      expect.objectContaining({ id: 3, status: "CONFIRMED" }),
+      expect.objectContaining({ id: 4, status: "CANCELLED" }),
+      expect.objectContaining({ id: 5, status: "PENDING" }),
+    ]);
+    await expect(sweepExpiredOnlineOrdersOnce(now, 50)).resolves.toEqual({
+      cancelled: 0,
+    });
+  });
+
+  it("serializes an actual confirm-versus-sweeper race without reviving expired stock", async () => {
+    const due = new Date(Date.now() - 1_000);
+    await seedOrder(6, "PENDING", due);
+
+    const [sweep, confirm] = await Promise.allSettled([
+      sweepExpiredOnlineOrdersOnce(new Date(), 50),
+      setOnlineOrderStatus(
+        { id: 6, status: "CONFIRMED", scopedBranchId: null },
+        1,
+      ),
+    ]);
+
+    expect(sweep).toMatchObject({
+      status: "fulfilled",
+      value: { cancelled: 1 },
+    });
+    expect(confirm.status).toBe("rejected");
+    const final = (
+      await db()
+        .select({ status: s.onlineOrders.status })
+        .from(s.onlineOrders)
+        .where(sql`${s.onlineOrders.id} = 6`)
+        .limit(1)
+    )[0];
+    expect(final.status).toBe("CANCELLED");
+  });
+});

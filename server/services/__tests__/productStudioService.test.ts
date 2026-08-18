@@ -9,7 +9,8 @@ import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } fr
 import {
   approveStudioTask,
   assignStudioTask,
-  attestStudioProcessing,
+  attestStudioProcessing as finalizeStudioProcessing,
+  authorizeStudioProcessing,
   bindStudioProcessingCandidate,
   cleanupStudioStaging,
   getStudioDashboard,
@@ -30,6 +31,16 @@ const PNG_1X1_ALT =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nH0AAAAASUVORK5CYII=";
 const WEBP_1X1 =
   "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
+
+async function attestStudioProcessing(
+  actor: ProductStudioActor,
+  taskId: number,
+  mode: "PRO" | "AI",
+  adminOverrideReason?: string | null,
+): Promise<string> {
+  const authorization = await authorizeStudioProcessing(actor, taskId, mode, adminOverrideReason);
+  return finalizeStudioProcessing(actor, taskId, mode, authorization, adminOverrideReason);
+}
 
 type SubmitInput = Parameters<typeof submitStudioCandidateService>[1];
 function submitStudioCandidate(
@@ -93,10 +104,165 @@ afterEach(async () => {
   __resetImageStoreForTest();
   delete process.env.IMAGE_STORE_DIR;
   delete process.env.IMAGE_STORE_DRIVER;
+  delete process.env.R2_GC_MODE;
+  delete process.env.R2_GC_DELETE_CONFIRM;
   if (storeDir) await rm(storeDir, { recursive: true, force: true });
 });
 
 describe("product studio governed workflow", () => {
+  it("blocks manager edits on an employee task and requires an audited admin override", async () => {
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+
+    await expect(saveStudioDraft(manager, {
+      taskId,
+      proposedDescription: "تعديل المدير على مهمة العامل",
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(saveStudioDraft(admin, {
+      taskId,
+      proposedDescription: "تصحيح إداري بلا مسوغ",
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(saveStudioDraft(admin, {
+      taskId,
+      proposedDescription: "تصحيح إداري موثق",
+      adminOverrideReason: "معالجة تعذر العامل عن إكمال المهمة",
+    })).resolves.toEqual({ ok: true });
+
+    const overrideAudit = await db().select().from(s.auditLogs).where(and(
+      eq(s.auditLogs.entityId, String(taskId)),
+      eq(s.auditLogs.action, "productStudio.adminOverride.saveDraft"),
+    ));
+    expect(overrideAudit).toHaveLength(1);
+    expect(overrideAudit[0]?.newValue).toMatchObject({
+      reason: "معالجة تعذر العامل عن إكمال المهمة",
+      assignedTo: worker.userId,
+    });
+  });
+
+  it("rejects assign-to-self approval and permits only an audited admin correction", async () => {
+    const { taskId } = await assignStudioTask(admin, { productId: 1, assigneeId: admin.userId, sourceImageId: null });
+    await submitStudioCandidate(admin, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+    });
+
+    await expect(approveStudioTask(admin, taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(approveStudioTask(admin, taskId, "تصحيح إداري موثق بعد تعذر المراجعة المستقلة"))
+      .resolves.toMatchObject({ imageId: expect.any(Number) });
+
+    const [job] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
+    expect(job?.submittedBy).toBe(admin.userId);
+    expect(job?.reviewedBy).toBe(admin.userId);
+    expect(await db().select().from(s.auditLogs).where(and(
+      eq(s.auditLogs.entityId, String(taskId)),
+      eq(s.auditLogs.action, "productStudio.adminOverride.approve"),
+    ))).toHaveLength(1);
+  });
+
+  it("audits every admin provider override and requires a separate review reason", async () => {
+    const editReason = "إكمال موثق نيابة عن العامل المتعذر";
+    const reviewReason = "مراجعة إدارية طارئة لغياب مراجع مستقل";
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
+    const receipt = await attestStudioProcessing(admin, taskId, "PRO", editReason);
+    await bindStudioProcessingCandidate(admin, {
+      taskId,
+      processingReceipt: receipt,
+      candidateDataUrl: PNG_1X1,
+      adminOverrideReason: editReason,
+    });
+    await submitStudioCandidate(admin, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      mode: "CUT",
+      processingReceipt: receipt,
+      adminOverrideReason: editReason,
+    });
+
+    await expect(rejectStudioTask(admin, taskId, "النتيجة تحتاج معالجة أدق"))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    await rejectStudioTask(admin, taskId, "النتيجة تحتاج معالجة أدق", reviewReason);
+
+    const rows = await db().select({ action: s.auditLogs.action, newValue: s.auditLogs.newValue })
+      .from(s.auditLogs).where(eq(s.auditLogs.entityId, String(taskId)));
+    const overrides = new Map(rows
+      .filter((row) => row.action.startsWith("productStudio.adminOverride."))
+      .map((row) => [row.action, row.newValue as { reason?: string }]));
+    for (const action of ["processing", "processingAttestation", "bindProcessingProof", "submit"]) {
+      expect(overrides.get(`productStudio.adminOverride.${action}`)).toMatchObject({ reason: editReason });
+    }
+    expect(overrides.get("productStudio.adminOverride.reject")).toMatchObject({ reason: reviewReason });
+  });
+
+  it("rejects draft and submit while a provider processing lease is live", async () => {
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
+    const authorization = await authorizeStudioProcessing(worker, taskId, "PRO");
+    await expect(saveStudioDraft(worker, { taskId, proposedDescription: "نسخة أقدم أثناء المعالجة" }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(submitStudioCandidate(worker, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(finalizeStudioProcessing(worker, taskId, "PRO", authorization))
+      .resolves.toEqual(expect.any(String));
+  });
+
+  it("rejects provider authorization while a candidate upload lease is live", async () => {
+    const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
+    const store = getImageStore();
+    const originalPut = store.put.bind(store);
+    let releasePut!: () => void;
+    const blockedPut = new Promise<void>((resolve) => { releasePut = resolve; });
+    let putReached!: () => void;
+    const reachedPut = new Promise<void>((resolve) => { putReached = resolve; });
+    vi.spyOn(store, "put").mockImplementationOnce(async (key, data, mime) => {
+      putReached();
+      await blockedPut;
+      return originalPut(key, data, mime);
+    });
+
+    const upload = submitStudioCandidate(worker, {
+      taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+    });
+    await reachedPut;
+    await expect(authorizeStudioProcessing(worker, taskId, "PRO"))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    releasePut();
+    await expect(upload).resolves.toEqual({ ok: true });
+  });
+
+  it("keeps the last submitter disqualified after reassignment and fails closed for rolling-version NULL", async () => {
+    const first = await assignStudioTask(manager, { productId: 1, assigneeId: manager.userId, sourceImageId: null });
+    await submitStudioCandidate(manager, {
+      taskId: first.taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+    });
+    await db().update(s.productImageJobs).set({ assignedTo: worker.userId })
+      .where(eq(s.productImageJobs.id, first.taskId));
+    await expect(approveStudioTask(manager, first.taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const second = await assignStudioTask(manager, { productId: 2, assigneeId: manager.userId, sourceImageId: null });
+    await submitStudioCandidate(manager, {
+      taskId: second.taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1_ALT,
+      mode: "CUT",
+    });
+    // عقد نشر متدرج: عقدة قديمة قد تترك submittedBy=NULL؛ assignedTo هو البديل الآمن.
+    await db().update(s.productImageJobs).set({ submittedBy: null })
+      .where(eq(s.productImageJobs.id, second.taskId));
+    await expect(approveStudioTask(manager, second.taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
   it("enforces one active owner per product and rejects another employee's writes", async () => {
     const results = await Promise.allSettled([
       assignStudioTask(manager, { productId: 1, assigneeId: 2 }),
@@ -487,29 +653,82 @@ describe("product studio governed workflow", () => {
     expect(await readdir(storeDir)).toHaveLength(0);
   });
 
-  it("sweeps old unreferenced pending and referenced staging objects", async () => {
+  it("keeps staging GC audit-only and starts 90-day retention when the last reference is first proven lost", async () => {
     const bytes = Buffer.from(PNG_1X1.slice(PNG_1X1.indexOf(",") + 1), "base64");
     const key = objectKeyFor(contentHash(bytes), "image/png", "single/studio/candidate");
     await getImageStore().put(key, bytes, "image/png");
     await db().insert(s.productImageObjectStaging).values({
       objectKey: key,
       state: "PENDING",
-      touchedAt: new Date(Date.now() - 48 * 60 * 60_000),
+      touchedAt: new Date(Date.now() - 91 * 24 * 60 * 60_000),
     });
-    await expect(cleanupStudioStaging()).resolves.toBe(1);
-    expect((await getImageStore().head(key)).exists).toBe(false);
-    expect(await db().select().from(s.productImageObjectStaging)).toHaveLength(0);
+    await expect(cleanupStudioStaging()).resolves.toBe(0);
+    expect((await getImageStore().head(key)).exists).toBe(true);
+    expect(await db().select().from(s.productImageObjectStaging)).toEqual([
+      expect.objectContaining({ objectKey: key, state: "PENDING", referencedAt: expect.any(Date) }),
+    ]);
 
     const referencedKey = objectKeyFor(contentHash(Buffer.concat([bytes, Buffer.from("orphan")])), "image/png", "single/studio/candidate");
     await getImageStore().put(referencedKey, bytes, "image/png");
+    const previousReference = new Date(Date.now() - 120 * 24 * 60 * 60_000);
     await db().insert(s.productImageObjectStaging).values({
       objectKey: referencedKey,
       state: "REFERENCED",
-      touchedAt: new Date(Date.now() - 48 * 60 * 60_000),
-      referencedAt: new Date(Date.now() - 48 * 60 * 60_000),
+      touchedAt: previousReference,
+      referencedAt: previousReference,
     });
-    await expect(cleanupStudioStaging()).resolves.toBe(1);
-    expect((await getImageStore().head(referencedKey)).exists).toBe(false);
+    const beforeSweep = Date.now();
+    await expect(cleanupStudioStaging()).resolves.toBe(0);
+    expect((await getImageStore().head(referencedKey)).exists).toBe(true);
+    const transitioned = (await db().select().from(s.productImageObjectStaging)
+      .where(eq(s.productImageObjectStaging.objectKey, referencedKey)))[0]!;
+    expect(transitioned.state).toBe("PENDING");
+    // MySQL TIMESTAMP here has second precision, so allow sub-second truncation only.
+    expect(transitioned.referencedAt!.getTime()).toBeGreaterThanOrEqual(beforeSweep - 1_000);
+  });
+
+  it("deletes only an eligible unreferenced object in explicit delete mode and preserves a referenced object", async () => {
+    const firstBytes = Buffer.from(PNG_1X1.slice(PNG_1X1.indexOf(",") + 1), "base64");
+    const secondBytes = Buffer.from(PNG_1X1_ALT.slice(PNG_1X1_ALT.indexOf(",") + 1), "base64");
+    const unreferencedKey = objectKeyFor(contentHash(firstBytes), "image/png", "single/studio/candidate");
+    const referencedKey = objectKeyFor(contentHash(secondBytes), "image/png", "single/studio/candidate");
+    await Promise.all([
+      getImageStore().put(unreferencedKey, firstBytes, "image/png"),
+      getImageStore().put(referencedKey, secondBytes, "image/png"),
+    ]);
+    const old = new Date(Date.now() - 91 * 24 * 60 * 60_000);
+    await db().insert(s.productImageObjectStaging).values([
+      { objectKey: unreferencedKey, state: "PENDING", referencedAt: old, touchedAt: old },
+      { objectKey: referencedKey, state: "REFERENCED", referencedAt: old, touchedAt: old },
+    ]);
+    await db().insert(s.productImages).values({
+      productId: 1,
+      url: "/api/img/product/referenced",
+      objectKey: referencedKey,
+      contentHash: contentHash(secondBytes),
+      mime: "image/png",
+      reviewStatus: "APPROVED",
+      isPrimary: true,
+    });
+    process.env.R2_GC_MODE = "delete";
+    process.env.R2_GC_DELETE_CONFIRM = "DELETE_RETAINED_R2_OBJECTS";
+    const authorize = vi.fn();
+
+    await expect(cleanupStudioStaging()).rejects.toMatchObject({ code: "R2_GC_MIRROR_MANIFEST_REQUIRED" });
+    expect((await getImageStore().head(unreferencedKey)).exists).toBe(true);
+    expect((await getImageStore().head(referencedKey)).exists).toBe(true);
+
+    await expect(cleanupStudioStaging(5, {
+      loadDeletionAuthorization: async () => ({ authorize }),
+    })).resolves.toBe(1);
+
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalledWith(unreferencedKey);
+    expect((await getImageStore().head(unreferencedKey)).exists).toBe(false);
+    expect((await getImageStore().head(referencedKey)).exists).toBe(true);
+    expect(await db().select().from(s.productImageObjectStaging)).toEqual([
+      expect.objectContaining({ objectKey: referencedKey, state: "REFERENCED" }),
+    ]);
   });
 
   it("rejects reverting an older job after a newer job published identical bytes", async () => {

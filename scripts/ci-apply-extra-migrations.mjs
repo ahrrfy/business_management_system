@@ -131,6 +131,10 @@ const EXTRA_MIGRATIONS = [
   // وقيد الـFK** بيانات/قيود لا يُنتجها push ⇒ قاعدة CI تبقى بلا فئةٍ واحدة وبلا فئةٍ احتياطية
   // لكل دلو، فيسقط حلّ الفئة في إنشاء المصروف. idempotent وآمن للتكرار.
   "drizzle/migrations/0203_managed_expense_categories.sql",
+  // ١٨/٨/٢٦: db:push يمثل لقطة انتهاء حجز طلب المتجر وفهرسها لكنه لا يمثل BEFORE UPDATE trigger.
+  // repair مستقل idempotent يستبدل final تحت pre-trigger ثم يزيل المؤقت، فيطابق قواعد CI/الاختبار
+  // مسار migrator الحاكم في 0208 بلا نافذة حماية.
+  "drizzle/migrations/extras/0208_online_order_reservation_guard.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
