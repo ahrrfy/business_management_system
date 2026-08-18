@@ -17,7 +17,6 @@ import {
   PROJECT_ROOT,
   createNginxTopologyAttestation,
   createSecretAttestation,
-  readInternalProxySecretFromEnv,
   readInternalProxySecretsFromEnv,
   resolveNginxContract,
   verifyLiveNginxContract,
@@ -125,6 +124,181 @@ await new Promise((resolve) => setTimeout(resolve, 250));
 `;
 const LOGGER_REDACTION_ORIGIN = "https://srv1548487.hstgr.cloud";
 const LOGGER_REDACTION_MAX_APPEND = 2 * 1024 * 1024;
+const APP_ENV_OWNER_HELPER_SCRIPT = String.raw`
+import fs from "node:fs";
+import path from "node:path";
+
+const chunks = [];
+let inputSize = 0;
+for await (const chunk of process.stdin) {
+  inputSize += chunk.length;
+  if (inputSize > 2 * 1024 * 1024) throw new Error("APP_ENV_HELPER_INPUT_INVALID");
+  chunks.push(chunk);
+}
+const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+if (
+  !input ||
+  !["read", "write"].includes(input.action) ||
+  typeof input.target !== "string" ||
+  !path.isAbsolute(input.target) ||
+  !Number.isInteger(input.uid) ||
+  input.uid <= 0 ||
+  !Number.isInteger(input.gid) ||
+  input.gid < 0
+) throw new Error("APP_ENV_HELPER_INPUT_INVALID");
+if (process.getuid?.() !== input.uid || process.getgid?.() !== input.gid) {
+  throw new Error("APP_ENV_HELPER_PRIVILEGE_INVALID");
+}
+
+const SECRET = /^[a-f0-9]{64}$/iu;
+const same = (left, right) =>
+  Buffer.byteLength(left) === Buffer.byteLength(right) &&
+  Buffer.from(left).equals(Buffer.from(right));
+const assertOwnedFile = (stat) => {
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.nlink !== 1 ||
+    stat.uid !== input.uid ||
+    stat.gid !== input.gid ||
+    (stat.mode & 0o777) !== 0o600 ||
+    stat.size > 2 * 1024 * 1024
+  ) throw new Error("APP_ENV_HELPER_FILE_INVALID");
+};
+const descriptor = fs.openSync(
+  input.target,
+  fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+);
+let content;
+try {
+  assertOwnedFile(fs.fstatSync(descriptor));
+  content = fs.readFileSync(descriptor, "utf8");
+} finally {
+  fs.closeSync(descriptor);
+}
+
+const matches = { current: [], previous: [] };
+for (const rawLine of content.split(/\r?\n/u)) {
+  const line = rawLine.trim();
+  if (!line || line.startsWith("#")) continue;
+  const match = /^(?:export\s+)?(INTERNAL_PROXY_SECRET|INTERNAL_PROXY_SECRET_PREVIOUS)\s*=\s*(.*)$/u.exec(line);
+  if (!match) continue;
+  let value = match[2].trim();
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) value = value.slice(1, -1);
+  matches[match[1] === "INTERNAL_PROXY_SECRET" ? "current" : "previous"].push(value);
+}
+if (
+  matches.current.length !== 1 ||
+  !SECRET.test(matches.current[0]) ||
+  matches.previous.length > 1 ||
+  (matches.previous.length === 1 &&
+    (!SECRET.test(matches.previous[0]) || same(matches.current[0], matches.previous[0])))
+) throw new Error("APP_ENV_HELPER_SECRET_INVALID");
+
+const integerValue = (key, fallback, minimum, maximum) => {
+  const definition = new RegExp("^\\s*(?:export\\s+)?" + key + "\\s*=", "u");
+  const definitions = content.split(/\r?\n/u).filter((line) => definition.test(line));
+  if (definitions.length > 1) throw new Error("APP_ENV_HELPER_INTEGER_INVALID");
+  if (definitions.length === 0) return fallback;
+  const match = /^\s*(?:export\s+)?[A-Z_]+\s*=\s*(?:([0-9]+)|"([0-9]+)"|'([0-9]+)')\s*(?:#.*)?$/u.exec(definitions[0]);
+  const value = Number(match?.[1] ?? match?.[2] ?? match?.[3] ?? Number.NaN);
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error("APP_ENV_HELPER_INTEGER_INVALID");
+  }
+  return value;
+};
+const snapshot = {
+  current: matches.current[0],
+  ...(matches.previous.length === 1 ? { previous: matches.previous[0] } : {}),
+  ...(input.includeRuntime === true
+    ? {
+        port: integerValue("PORT", 3000, 1, 65535),
+        webInstances: integerValue("WEB_INSTANCES", 2, 1, 16),
+      }
+    : {}),
+};
+
+if (input.action === "read") {
+  process.stdout.write(JSON.stringify(snapshot));
+  process.exit(0);
+}
+if (
+  !SECRET.test(input.current ?? "") ||
+  (input.previous !== undefined &&
+    (!SECRET.test(input.previous) || same(input.current, input.previous)))
+) throw new Error("APP_ENV_HELPER_SECRET_INVALID");
+const kept = content
+  .split(/\r?\n/u)
+  .filter((line) => !/^\s*(?:export\s+)?INTERNAL_PROXY_SECRET(?:_PREVIOUS)?\s*=/u.test(line));
+while (kept.at(-1) === "") kept.pop();
+const rendered = [
+  ...kept,
+  "INTERNAL_PROXY_SECRET=" + input.current,
+  ...(input.previous ? ["INTERNAL_PROXY_SECRET_PREVIOUS=" + input.previous] : []),
+].join("\n") + "\n";
+const parent = path.dirname(input.target);
+const parentDescriptor = fs.openSync(
+  parent,
+  fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY ?? 0) | (fs.constants.O_NOFOLLOW ?? 0),
+);
+const parentStat = fs.fstatSync(parentDescriptor);
+if (!parentStat.isDirectory() || parentStat.uid !== input.uid || parentStat.gid !== input.gid) {
+  fs.closeSync(parentDescriptor);
+  throw new Error("APP_ENV_HELPER_PARENT_INVALID");
+}
+const temporary = path.join(parent, ".alroya-" + path.basename(input.target) + "-rotation-stage");
+let stageDescriptor;
+try {
+  try {
+    fs.unlinkSync(temporary);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  stageDescriptor = fs.openSync(
+    temporary,
+    fs.constants.O_WRONLY |
+      fs.constants.O_CREAT |
+      fs.constants.O_EXCL |
+      (fs.constants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  fs.writeFileSync(stageDescriptor, rendered, "utf8");
+  fs.fchmodSync(stageDescriptor, 0o600);
+  fs.fsyncSync(stageDescriptor);
+  fs.fsyncSync(parentDescriptor);
+  if (typeof input.testPausePath === "string") {
+    fs.writeFileSync(input.testPausePath + ".ready", "ready", { flag: "wx", mode: 0o600 });
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(input.testPausePath + ".continue") && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+    if (!fs.existsSync(input.testPausePath + ".continue")) {
+      throw new Error("APP_ENV_HELPER_TEST_TIMEOUT");
+    }
+  }
+  const descriptorStat = fs.fstatSync(stageDescriptor);
+  const pathStat = fs.lstatSync(temporary);
+  assertOwnedFile(descriptorStat);
+  assertOwnedFile(pathStat);
+  if (descriptorStat.dev !== pathStat.dev || descriptorStat.ino !== pathStat.ino) {
+    throw new Error("APP_ENV_HELPER_STAGE_REPLACED");
+  }
+  fs.renameSync(temporary, input.target);
+  fs.fsyncSync(parentDescriptor);
+} finally {
+  if (stageDescriptor !== undefined) fs.closeSync(stageDescriptor);
+  fs.closeSync(parentDescriptor);
+  try {
+    fs.unlinkSync(temporary);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+process.stdout.write(JSON.stringify({ ok: true }));
+`;
 
 function installerError(code, cause) {
   const error = new Error(code, cause ? { cause } : undefined);
@@ -191,6 +365,115 @@ function runtimeEnvironment() {
       typeof process.env[key] === "string" ? [[key, process.env[key]]] : [],
     ),
   );
+}
+
+export function runAppEnvironmentOwnerHelper(input) {
+  const projectRoot = path.resolve(input.projectRoot);
+  const appEnvPath = path.resolve(input.appEnvPath);
+  if (
+    process.platform !== "linux" ||
+    typeof process.getuid !== "function" ||
+    process.getuid() !== 0 ||
+    path.dirname(appEnvPath) !== projectRoot ||
+    !["read", "write"].includes(input.action)
+  ) {
+    throw installerError("NGINX_ROTATION_APP_ENV_OWNER_INVALID");
+  }
+  const projectStat = assertPlainDirectory(
+    projectRoot,
+    "NGINX_ROTATION_APP_ENV_OWNER_INVALID",
+  );
+  const envStat = assertPlainFile(
+    appEnvPath,
+    "NGINX_ROTATION_APP_ENV_OWNER_INVALID",
+  );
+  if (
+    projectStat.uid === 0 ||
+    envStat.uid !== projectStat.uid ||
+    envStat.gid !== projectStat.gid ||
+    envStat.nlink !== 1 ||
+    (envStat.mode & 0o777) !== 0o600
+  ) {
+    throw installerError("NGINX_ROTATION_APP_ENV_OWNER_INVALID");
+  }
+  const payload = {
+    action: input.action,
+    target: appEnvPath,
+    uid: projectStat.uid,
+    gid: projectStat.gid,
+    ...(input.action === "write"
+      ? {
+          current: input.current,
+          ...(input.previous ? { previous: input.previous } : {}),
+        }
+      : {}),
+    ...(typeof input.testPausePath === "string"
+      ? { testPausePath: input.testPausePath }
+      : {}),
+    ...(input.includeRuntime === true ? { includeRuntime: true } : {}),
+  };
+  const runtime =
+    path.resolve(SCRIPT_PATH) === INSTALLED_SCRIPT_PATH
+      ? TRUSTED_NODE_PATH
+      : process.execPath;
+  let output;
+  try {
+    output = execFileSync(
+      runtime,
+      ["--input-type=module", "-e", APP_ENV_OWNER_HELPER_SCRIPT],
+      {
+        cwd: projectRoot,
+        uid: projectStat.uid,
+        gid: projectStat.gid,
+        input: JSON.stringify(payload),
+        encoding: "utf8",
+        env: runtimeEnvironment(),
+        stdio: ["pipe", "pipe", "ignore"],
+        timeout: 15_000,
+        maxBuffer: 64 * 1024,
+      },
+    );
+  } catch {
+    throw installerError("NGINX_ROTATION_APP_ENV_HELPER_FAILED");
+  }
+  let result;
+  try {
+    result = JSON.parse(output);
+  } catch {
+    throw installerError("NGINX_ROTATION_APP_ENV_HELPER_FAILED");
+  }
+  if (input.action === "write") {
+    if (
+      JSON.stringify(result) !== JSON.stringify({ ok: true })
+    ) {
+      throw installerError("NGINX_ROTATION_APP_ENV_HELPER_FAILED");
+    }
+    return Object.freeze(result);
+  }
+  if (
+    !INTERNAL_PROXY_SECRET_PATTERN.test(result?.current ?? "") ||
+    (result?.previous !== undefined &&
+      (!INTERNAL_PROXY_SECRET_PATTERN.test(result.previous) ||
+        secretsMatch(result.current, result.previous))) ||
+    (input.includeRuntime === true &&
+      (!Number.isInteger(result?.port) ||
+        result.port < 1 ||
+        result.port > 65_535 ||
+        !Number.isInteger(result?.webInstances) ||
+        result.webInstances < 1 ||
+        result.webInstances > 16)) ||
+    JSON.stringify(Object.keys(result).sort()) !==
+      JSON.stringify(
+        [
+          "current",
+          ...(result.previous === undefined ? [] : ["previous"]),
+          ...(input.includeRuntime === true ? ["port", "webInstances"] : []),
+        ].sort(),
+      )
+  ) {
+    throw installerError("NGINX_ROTATION_APP_ENV_HELPER_FAILED");
+  }
+  return Object.freeze(result);
 }
 
 function sleepMilliseconds(milliseconds) {
@@ -788,7 +1071,37 @@ function assertRotationRoot(options) {
   }
 }
 
+function readAppEnvironment(options, includeRuntime = false) {
+  if (options.requireRoot) {
+    return runAppEnvironmentOwnerHelper({
+      projectRoot: options.projectRoot,
+      appEnvPath: options.appEnvPath,
+      action: "read",
+      includeRuntime,
+    });
+  }
+  return Object.freeze({
+    ...readInternalProxySecretsFromEnv(options.appEnvPath),
+    ...(includeRuntime
+      ? {
+          port: readInternalPort(options.appEnvPath),
+          webInstances: readWebInstanceCount(options.appEnvPath),
+        }
+      : {}),
+  });
+}
+
 function writeAppSecretPair(options, current, previous) {
+  if (options.requireRoot) {
+    runAppEnvironmentOwnerHelper({
+      projectRoot: options.projectRoot,
+      appEnvPath: options.appEnvPath,
+      action: "write",
+      current,
+      previous,
+    });
+    return;
+  }
   writeAtomicFile(
     options.appEnvPath,
     renderAppSecrets(options.appEnvPath, current, previous),
@@ -800,7 +1113,7 @@ function writeAppSecretPair(options, current, previous) {
 
 function appSecretsMatch(options, current, previous) {
   try {
-    const actual = readInternalProxySecretsFromEnv(options.appEnvPath);
+    const actual = readAppEnvironment(options);
     return (
       secretsMatch(actual.current, current) &&
       (previous
@@ -813,7 +1126,7 @@ function appSecretsMatch(options, current, previous) {
 }
 
 function assertSteadyProxySecret(options, contract, terminalCode) {
-  const app = readInternalProxySecretsFromEnv(options.appEnvPath);
+  const app = readAppEnvironment(options);
   const live = parseNginxSecret(contract.secretPath, options);
   if (app.previous || !secretsMatch(app.current, live.secret)) {
     throw installerError(terminalCode);
@@ -864,9 +1177,10 @@ function readInternalPort(file) {
 }
 
 function probeOrigin(options, secrets) {
-  const workers = readWebInstanceCount(options.appEnvPath);
+  const app = readAppEnvironment(options, true);
+  const workers = app.webInstances;
   const result = options.operations.originProbe({
-    port: readInternalPort(options.appEnvPath),
+    port: app.port,
     workers,
     secrets,
   });
@@ -914,7 +1228,8 @@ function rotationOptions(input) {
   ensureBackupRoot(options.backupRoot, options);
   const contract = resolveNginxContract(options);
   verifyReleaseInputs(contract, options);
-  assertPlainFile(options.appEnvPath, "NGINX_ROTATION_APP_ENV_INVALID");
+  if (options.requireRoot) readAppEnvironment(options);
+  else assertPlainFile(options.appEnvPath, "NGINX_ROTATION_APP_ENV_INVALID");
   parseNginxSecret(contract.secretPath, options);
   return Object.freeze({ options, contract });
 }
@@ -1628,7 +1943,7 @@ export function installNginxContract(input = {}) {
   const nginxSecret = parseNginxSecret(contract.secretPath, options);
   let appSecret;
   try {
-    appSecret = readInternalProxySecretFromEnv(options.appEnvPath);
+    appSecret = readAppEnvironment(options).current;
   } catch (error) {
     throw installerError("NGINX_INSTALL_APP_SECRET_INVALID", error);
   }
@@ -1696,7 +2011,7 @@ export function installNginxContract(input = {}) {
 export function prepareProxySecretRotation(input = {}) {
   const { options, contract } = rotationOptions(input);
   let record = readRotationJournal(options);
-  const appBeforePrepare = readInternalProxySecretsFromEnv(options.appEnvPath);
+  const appBeforePrepare = readAppEnvironment(options);
   options.operations.loggerRedactionGate({
     secrets: [appBeforePrepare.current, appBeforePrepare.previous].filter(
       Boolean,
@@ -1707,7 +2022,7 @@ export function prepareProxySecretRotation(input = {}) {
       throw installerError("NGINX_ROTATION_ALREADY_ACTIVE");
     }
   } else {
-    const baseline = readInternalProxySecretsFromEnv(options.appEnvPath);
+    const baseline = readAppEnvironment(options);
     const live = parseNginxSecret(contract.secretPath, options);
     if (baseline.previous || !secretsMatch(baseline.current, live.secret)) {
       throw installerError("NGINX_ROTATION_BASELINE_INVALID");

@@ -1741,9 +1741,6 @@ export function normalizeWebHealthEnvironment(parsed) {
     PORT: String(port),
     REQUIRE_INTERNAL_PROXY_SECRET: requireSecret,
     ...(requireSecret === "1" ? { INTERNAL_PROXY_SECRET: secret } : {}),
-    ...(previousSecret
-      ? { INTERNAL_PROXY_SECRET_PREVIOUS: previousSecret }
-      : {}),
   };
 }
 

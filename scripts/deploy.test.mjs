@@ -34,8 +34,19 @@ const {
       PORT: "3000",
       REQUIRE_INTERNAL_PROXY_SECRET: "1",
       INTERNAL_PROXY_SECRET: current,
-      INTERNAL_PROXY_SECRET_PREVIOUS: previous,
     },
+  );
+  assert.equal(
+    Object.hasOwn(
+      normalizeWebHealthEnvironment({
+        REQUIRE_INTERNAL_PROXY_SECRET: "1",
+        INTERNAL_PROXY_SECRET: current,
+        INTERNAL_PROXY_SECRET_PREVIOUS: previous,
+      }),
+      "INTERNAL_PROXY_SECRET_PREVIOUS",
+    ),
+    false,
+    "the deploy health child must never inherit the previous proxy secret",
   );
   for (const invalidPrevious of [current, "short", "z".repeat(64)]) {
     assert.throws(

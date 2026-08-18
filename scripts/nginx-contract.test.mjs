@@ -14,6 +14,7 @@ import {
 import {
   installNginxContract,
   prepareProxySecretRotation,
+  runAppEnvironmentOwnerHelper,
   retireProxySecretRotation,
   rollbackProxySecretRotation,
   switchProxySecretRotation,
@@ -1582,6 +1583,136 @@ for (const crashPoint of [
     installer,
     /execFileSync\([^)]*scripts\/verify-nginx-abuse-controls/u,
   );
+}
+
+if (
+  process.platform === "linux" &&
+  typeof process.getuid === "function" &&
+  process.getuid() === 0
+) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "app-env-owner-test-"));
+  const projectRoot = path.join(root, "project");
+  const appEnvPath = path.join(projectRoot, ".env");
+  const protectedTarget = path.join(root, "root-target");
+  const pausePath = path.join(projectRoot, "writer-pause");
+  const readyPath = `${pausePath}.ready`;
+  const continuePath = `${pausePath}.continue`;
+  const nobodyUid = 65_534;
+  const nobodyGid = 65_534;
+  try {
+    fs.mkdirSync(projectRoot, { mode: 0o700 });
+    fs.writeFileSync(
+      appEnvPath,
+      `PORT=3000\nWEB_INSTANCES=2\nINTERNAL_PROXY_SECRET=${SECRET}\n`,
+      { mode: 0o600 },
+    );
+    fs.writeFileSync(protectedTarget, "root-safe\n", { mode: 0o600 });
+    fs.chownSync(projectRoot, nobodyUid, nobodyGid);
+    fs.chownSync(appEnvPath, nobodyUid, nobodyGid);
+
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { runAppEnvironmentOwnerHelper } from ${JSON.stringify(new URL("./install-nginx-contract.mjs", import.meta.url).href)}; const chunks=[]; for await (const chunk of process.stdin) chunks.push(chunk); runAppEnvironmentOwnerHelper(JSON.parse(Buffer.concat(chunks).toString("utf8")));`,
+      ],
+      { stdio: ["pipe", "ignore", "ignore"] },
+    );
+    child.stdin.end(
+      JSON.stringify({
+        projectRoot,
+        appEnvPath,
+        action: "write",
+        current: NEXT_SECRET,
+        previous: SECRET,
+        testPausePath: pausePath,
+      }),
+    );
+    const deadline = Date.now() + 3_000;
+    while (!fs.existsSync(readyPath) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(fs.existsSync(readyPath), true, "owner writer must reach stage");
+    const stagePath = path.join(projectRoot, ".alroya-.env-rotation-stage");
+    fs.unlinkSync(stagePath);
+    fs.symlinkSync(protectedTarget, stagePath);
+    fs.writeFileSync(continuePath, "continue", "utf8");
+    const exitCode = await new Promise((resolve, reject) => {
+      child.once("exit", resolve);
+      child.once("error", reject);
+    });
+    assert.notEqual(exitCode, 0, "a replaced stage must fail closed");
+    assert.equal(fs.readFileSync(protectedTarget, "utf8"), "root-safe\n");
+    assert.equal(fs.statSync(protectedTarget).uid, 0);
+    assert.equal(fs.statSync(protectedTarget).mode & 0o777, 0o600);
+
+    fs.rmSync(stagePath, { force: true });
+    fs.rmSync(readyPath, { force: true });
+    fs.rmSync(continuePath, { force: true });
+
+    const targetRacePause = path.join(projectRoot, "target-race-pause");
+    const targetRaceChild = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { runAppEnvironmentOwnerHelper } from ${JSON.stringify(new URL("./install-nginx-contract.mjs", import.meta.url).href)}; const chunks=[]; for await (const chunk of process.stdin) chunks.push(chunk); runAppEnvironmentOwnerHelper(JSON.parse(Buffer.concat(chunks).toString("utf8")));`,
+      ],
+      { stdio: ["pipe", "ignore", "ignore"] },
+    );
+    targetRaceChild.stdin.end(
+      JSON.stringify({
+        projectRoot,
+        appEnvPath,
+        action: "write",
+        current: NEXT_SECRET,
+        previous: SECRET,
+        testPausePath: targetRacePause,
+      }),
+    );
+    const targetRaceDeadline = Date.now() + 3_000;
+    while (
+      !fs.existsSync(`${targetRacePause}.ready`) &&
+      Date.now() < targetRaceDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(fs.existsSync(`${targetRacePause}.ready`), true);
+    fs.unlinkSync(appEnvPath);
+    fs.symlinkSync(protectedTarget, appEnvPath);
+    fs.writeFileSync(`${targetRacePause}.continue`, "continue", "utf8");
+    const targetRaceExit = await new Promise((resolve, reject) => {
+      targetRaceChild.once("exit", resolve);
+      targetRaceChild.once("error", reject);
+    });
+    assert.equal(targetRaceExit, 0, "a target swap must be replaced safely");
+    const repairedEnv = fs.lstatSync(appEnvPath);
+    assert.equal(repairedEnv.isFile(), true);
+    assert.equal(repairedEnv.isSymbolicLink(), false);
+    assert.equal(repairedEnv.uid, nobodyUid);
+    assert.equal(repairedEnv.gid, nobodyGid);
+    assert.equal(repairedEnv.mode & 0o777, 0o600);
+    assert.equal(fs.readFileSync(protectedTarget, "utf8"), "root-safe\n");
+
+    fs.unlinkSync(appEnvPath);
+    fs.writeFileSync(appEnvPath, `INTERNAL_PROXY_SECRET=${SECRET}\n`, {
+      mode: 0o600,
+    });
+    assert.throws(
+      () =>
+        runAppEnvironmentOwnerHelper({
+          projectRoot,
+          appEnvPath,
+          action: "read",
+        }),
+      (error) => error?.code === "NGINX_ROTATION_APP_ENV_OWNER_INVALID",
+      "a root-owned app env must fail before privileged reading",
+    );
+    assert.equal(fs.readFileSync(protectedTarget, "utf8"), "root-safe\n");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 if (process.platform === "linux" && fs.existsSync("/usr/bin/flock")) {
