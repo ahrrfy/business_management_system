@@ -1436,6 +1436,13 @@
       "when": 1788052257000,
       "tag": "0206_cost_revaluation_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 207,
+      "version": "5",
+      "when": 1788052258000,
+      "tag": "0207_device_link_effective_to",
+      "breakpoints": true
     }
   ]
 }
