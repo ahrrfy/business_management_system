@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkerEligibleRequests,
   pendingDecemberRequests,
+  readSnapshotInventoryValue,
   yearEndReopenState,
   yearEndSelectionFromSearch,
   type YearEndCloseRequestLike,
@@ -79,6 +80,30 @@ describe("YearEnd December request selection", () => {
         { id: 2, snapshotId: 11, status: "APPROVED" },
       ]),
     ).toBe("APPROVED");
+  });
+
+  /**
+   * لقطة قيمة المخزون (تدقيق ٢٧/٧، H5): أصل المخزون يُقرأ حيّاً بلا تاريخ، فالسنة المقفلة بلا
+   * لقطةٍ تُحسب ميزانيتُها من مخزون اليوم. والقراءة تُميّز «غير مسجَّلة» عن «صفراً» عمداً.
+   */
+  describe("readSnapshotInventoryValue", () => {
+    it("يقرأ القيمة المخزَّنة كسلسلة بلا تحويلٍ رقميّ يقصّ الدقّة", () => {
+      expect(
+        readSnapshotInventoryValue(JSON.stringify({ inventoryValue: "1234567.89" })),
+      ).toBe("1234567.89");
+    });
+
+    it("الصفر قيمةٌ مسجَّلة لا غياب", () => {
+      expect(readSnapshotInventoryValue(JSON.stringify({ inventoryValue: "0.00" }))).toBe("0.00");
+    });
+
+    it("يُعيد null للإقفال السابق للّقطة أو للحمولة التالفة — لا صفراً كاذباً", () => {
+      expect(readSnapshotInventoryValue(JSON.stringify({ closedAt: "2026-01-01" }))).toBeNull();
+      expect(readSnapshotInventoryValue("{ليس JSON")).toBeNull();
+      expect(readSnapshotInventoryValue(null)).toBeNull();
+      expect(readSnapshotInventoryValue("")).toBeNull();
+      expect(readSnapshotInventoryValue(JSON.stringify({ inventoryValue: "غير رقم" }))).toBeNull();
+    });
   });
 
   it("يحافظ على DECIMAL كسلسلة دقيقة في عرض الربح والخسارة", () => {

@@ -1429,6 +1429,13 @@
       "when": 1788052255000,
       "tag": "0204_purchase_invoice_discount",
       "breakpoints": true
+    },
+    {
+      "idx": 206,
+      "version": "5",
+      "when": 1788052257000,
+      "tag": "0206_cost_revaluation_requests",
+      "breakpoints": true
     }
   ]
 }
