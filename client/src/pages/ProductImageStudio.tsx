@@ -9,6 +9,13 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
+import {
+  canEditStudioTask,
+  canReviewStudioTask,
+  hasStudioOverrideReason,
+  needsStudioEditOverride,
+  needsStudioReviewOverride,
+} from "@/lib/imageStudio/studioWorkflowPolicy";
 import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, CheckCircle2, ClipboardList, History, Image, Loader2, RefreshCw, RotateCcw, UserCheck, XCircle } from "lucide-react";
@@ -91,9 +98,13 @@ export default function ProductImageStudio() {
   const [studioMode, setStudioMode] = useState<"FLATTEN" | "CUT" | "AI">("FLATTEN");
   const [processingReceipt, setProcessingReceipt] = useState<string | null>(null);
   const [isPreparingThumbnail, setIsPreparingThumbnail] = useState(false);
+  const [isStudioProcessing, setIsStudioProcessing] = useState(false);
+  const [editOverrideReason, setEditOverrideReason] = useState("");
+  const [reviewOverrideReason, setReviewOverrideReason] = useState("");
 
   const utils = trpc.useUtils();
   const dashboard = trpc.productStudio.dashboard.useQuery();
+  const me = trpc.auth.me.useQuery();
   const tasks = trpc.productStudio.tasks.useQuery({ scope, limit: 100 });
   const products = trpc.productStudio.products.useQuery({ search: productSearch });
   const productImages = trpc.productStudio.productImages.useQuery(
@@ -102,13 +113,24 @@ export default function ProductImageStudio() {
   );
   const assignees = trpc.productStudio.assignees.useQuery(undefined, { enabled: dashboard.data?.canManage === true });
   const selected = tasks.data?.find((task) => Number(task.id) === selectedId) ?? null;
+  const workflowUser = {
+    userId: Number(me.data?.id ?? 0),
+    role: me.data?.role ?? "",
+    isOwner: me.data?.isOwner === true,
+  };
+  const editOverrideRequired = selected ? needsStudioEditOverride(selected, workflowUser) : false;
+  const reviewOverrideRequired = selected ? needsStudioReviewOverride(selected, workflowUser) : false;
+  const editable = selected ? canEditStudioTask(selected, workflowUser, editOverrideReason) : false;
+  const reviewable = selected ? canReviewStudioTask(selected, workflowUser, reviewOverrideReason) : false;
+  const editOverrideValue = hasStudioOverrideReason(editOverrideReason) ? editOverrideReason.trim() : undefined;
+  const reviewOverrideValue = hasStudioOverrideReason(reviewOverrideReason) ? reviewOverrideReason.trim() : undefined;
   const preview = trpc.productStudio.candidatePreview.useQuery(
     { taskId: selectedId ?? 0 },
     { enabled: Boolean(selectedId && selected?.hasCandidate && dashboard.data?.storageReady), staleTime: 0, gcTime: 0 },
   );
   const sourcePreview = trpc.productStudio.sourcePreview.useQuery(
     { taskId: selectedId ?? 0 },
-    { enabled: Boolean(selectedId && selected?.hasOriginal && dashboard.data?.storageReady && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status)), staleTime: 0, gcTime: 0 },
+    { enabled: Boolean(selectedId && selected?.hasOriginal && dashboard.data?.storageReady && editable), staleTime: 0, gcTime: 0 },
   );
 
   async function refresh() {
@@ -173,6 +195,8 @@ export default function ProductImageStudio() {
     setOriginalDataUrl("");
     setStudioMode("FLATTEN");
     setProcessingReceipt(null);
+    setEditOverrideReason("");
+    setReviewOverrideReason("");
   }, [selected?.id]);
 
   useEffect(() => {
@@ -197,6 +221,7 @@ export default function ProductImageStudio() {
         thumbnailDataUrl,
         mode: studioMode === "AI" ? "FLATTEN" : studioMode,
         processingReceipt,
+        adminOverrideReason: editOverrideValue,
         proposedName: name,
         proposedDescription: description,
         proposedMarketingCopy: marketingCopy,
@@ -209,8 +234,7 @@ export default function ProductImageStudio() {
   }
 
   const counts = dashboard.data?.counts;
-  const busy = isPreparingThumbnail || saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending;
-  const editable = selected && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status);
+  const busy = isStudioProcessing || isPreparingThumbnail || saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending;
   const storageActionsDisabled = isStudioStorageActionDisabled(dashboard.data?.storageReady);
 
   return (
@@ -327,6 +351,15 @@ export default function ProductImageStudio() {
                     </CardHeader>
                     <CardContent className="space-y-3">
                       <div className="space-y-1.5"><Label htmlFor="studio-name">اسم العرض</Label><Input id="studio-name" value={name} onChange={(event) => setName(event.target.value)} disabled={!editable || storageActionsDisabled} maxLength={255} /></div>
+                      {editOverrideRequired && (
+                        <div className="space-y-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3">
+                          <Label htmlFor="studio-admin-edit-override">سبب التصحيح الإداري</Label>
+                          <Textarea id="studio-admin-edit-override" rows={2} maxLength={500} value={editOverrideReason} onChange={(event) => setEditOverrideReason(event.target.value)} placeholder="سبب واضح للعمل نيابة عن مالك المهمة (يسجل في التدقيق)" />
+                        </div>
+                      )}
+                      {!editable && !editOverrideRequired && ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(selected.status) && (
+                        <p className="text-sm text-muted-foreground">المهمة للعرض فقط؛ التحرير والإرسال محصوران بالموظف المسند إليه.</p>
+                      )}
                     </CardContent>
                   </Card>
 
@@ -344,11 +377,13 @@ export default function ProductImageStudio() {
                         onOriginalCaptured={setOriginalDataUrl}
                         onStudioModeChange={setStudioMode}
                         studioTaskId={Number(selected.id)}
+                        adminOverrideReason={editOverrideValue}
                         onProcessingReceiptChange={setProcessingReceipt}
+                        onStudioBusyChange={setIsStudioProcessing}
                         hint="صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً."
                       />
                       <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" disabled={busy} onClick={() => saveDraft.mutate({ taskId: Number(selected.id), proposedName: name, proposedDescription: description, proposedMarketingCopy: marketingCopy })}>حفظ المسودة</Button>
+                        <Button variant="outline" disabled={busy} onClick={() => saveDraft.mutate({ taskId: Number(selected.id), proposedName: name, proposedDescription: description, proposedMarketingCopy: marketingCopy, adminOverrideReason: editOverrideValue })}>حفظ المسودة</Button>
                         <Button disabled={busy || (!selected.hasOriginal && !originalDataUrl) || !images[0]?.dataUrl} onClick={() => void submitForReview()}>
                           {isPreparingThumbnail && <Loader2 aria-hidden className="size-4 animate-spin" />}
                           إرسال المحتوى والصورة للمراجعة
@@ -365,10 +400,19 @@ export default function ProductImageStudio() {
                         {preview.data && <PreviewPair data={preview.data} />}
                         {dashboard.data?.canManage && selected.status === "PENDING_REVIEW" && (
                           <div className="space-y-3 border-t pt-4">
+                            {reviewOverrideRequired && (
+                              <div className="space-y-1.5 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3">
+                                <Label htmlFor="studio-admin-review-override">سبب تجاوز فصل الواجبات</Label>
+                                <Textarea id="studio-admin-review-override" rows={2} maxLength={500} value={reviewOverrideReason} onChange={(event) => setReviewOverrideReason(event.target.value)} placeholder="سبب تصحيح إداري موثق لاعتماد عمل شاركت في تنفيذه" />
+                              </div>
+                            )}
+                            {!reviewable && !reviewOverrideRequired && (
+                              <p className="text-sm text-destructive">لا يمكنك مراجعة مهمة أُسندت إليك أو كنت آخر من أرسلها.</p>
+                            )}
                             <div className="space-y-1.5"><Label htmlFor="studio-reject-reason">سبب الرفض عند الإعادة</Label><Textarea id="studio-reject-reason" rows={2} maxLength={500} value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="اذكر التعديل المطلوب بوضوح" disabled={storageActionsDisabled} /></div>
                             <div className="flex flex-wrap gap-2">
-                              <Button disabled={storageActionsDisabled || busy} onClick={() => approve.mutate({ taskId: Number(selected.id) })}><CheckCircle2 aria-hidden className="size-4" /> اعتماد ونشر</Button>
-                              <Button variant="destructive" disabled={storageActionsDisabled || busy || rejectReason.trim().length < 5} onClick={() => reject.mutate({ taskId: Number(selected.id), reason: rejectReason })}><XCircle aria-hidden className="size-4" /> إعادة للتعديل</Button>
+                              <Button disabled={storageActionsDisabled || busy || !reviewable} onClick={() => approve.mutate({ taskId: Number(selected.id), adminOverrideReason: reviewOverrideValue })}><CheckCircle2 aria-hidden className="size-4" /> اعتماد ونشر</Button>
+                              <Button variant="destructive" disabled={storageActionsDisabled || busy || !reviewable || rejectReason.trim().length < 5} onClick={() => reject.mutate({ taskId: Number(selected.id), reason: rejectReason, adminOverrideReason: reviewOverrideValue })}><XCircle aria-hidden className="size-4" /> إعادة للتعديل</Button>
                             </div>
                           </div>
                         )}

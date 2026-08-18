@@ -33,10 +33,13 @@ interface ImageStudioUploaderProps extends ImageUploaderProps {
   onStudioModeChange?: (mode: "FLATTEN" | "CUT" | "AI") => void;
   studioTaskId?: number;
   onProcessingReceiptChange?: (receipt: string | null) => void;
+  onBusyChange?: (busy: boolean) => void;
+  adminOverrideReason?: string;
 }
 
 export function ImageStudioUploader(props: ImageStudioUploaderProps) {
   const { value, onChange } = props;
+  const workflowTaskId = props.studioTaskId;
   const [busy, setBusy] = useState(false);
   // الاستهداف: أيّ الصور تُعدَّل الآن. «استوديو» على صورة ⇒ [تلك]، «تحديد الكل» ⇒ كلّها.
   const [targetIds, setTargetIds] = useState<string[]>([]);
@@ -48,16 +51,27 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
   // تُتجاهَل إن تغيّر الهدف قبل وصولها (وإلّا ظهرت/اعتُمدت معاينةٌ لصورةٍ غير المحدَّدة — سباق Codex P2).
   const runToken = useRef(0);
 
-  const proConfig = trpc.imageStudio.proConfig.useQuery(undefined, { staleTime: 60_000 });
+  const proConfig = trpc.imageStudio.proConfig.useQuery(undefined, {
+    enabled: workflowTaskId != null,
+    staleTime: 60_000,
+  });
   const proCutout = trpc.imageStudio.proCutout.useMutation();
   const bindProcessingProof = trpc.productStudio.bindProcessingProof.useMutation();
-  const proAvailable = proConfig.data?.proAvailable ?? false;
+  const proAvailable = workflowTaskId != null && (proConfig.data?.proAvailable ?? false);
 
-  const aiConfig = trpc.imageStudio.aiConfig.useQuery(undefined, { staleTime: 60_000 });
+  const aiConfig = trpc.imageStudio.aiConfig.useQuery(undefined, {
+    enabled: workflowTaskId != null,
+    staleTime: 60_000,
+  });
   const aiTransform = trpc.imageStudio.aiStudioTransform.useMutation();
-  const aiAvailable = aiConfig.data?.aiAvailable ?? false;
+  const aiAvailable = workflowTaskId != null && (aiConfig.data?.aiAvailable ?? false);
 
   const aiInPreview = !!previews?.some((p) => p.mode === "AI");
+
+  useEffect(() => {
+    props.onBusyChange?.(busy);
+    return () => props.onBusyChange?.(false);
+  }, [busy, props.onBusyChange]);
 
   // الصور المستهدَفة فعلياً (تقاطع مع القائمة الحالية — تُصان عند حذف صورة).
   const targetSet = new Set(targetIds);
@@ -112,7 +126,11 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
           let processingReceipt: string | undefined;
           if (proAvailable) {
             try {
-              const res = await proCutout.mutateAsync({ imageDataUrl: it.dataUrl, taskId: props.studioTaskId });
+              const res = await proCutout.mutateAsync({
+                imageDataUrl: it.dataUrl,
+                taskId: workflowTaskId!,
+                adminOverrideReason: props.adminOverrideReason,
+              });
               // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
               r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, { trustCutout: true });
               if (props.studioTaskId && res.processingReceipt) {
@@ -120,6 +138,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
                   taskId: props.studioTaskId,
                   processingReceipt: res.processingReceipt,
                   candidateDataUrl: r.dataUrl,
+                  adminOverrideReason: props.adminOverrideReason,
                 });
                 processingReceipt = res.processingReceipt;
               }
@@ -147,7 +166,7 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
   };
 
   const runAiStudio = async () => {
-    if (!targets.length) return;
+    if (!targets.length || workflowTaskId == null) return;
     const myToken = runToken.current; // لقطة الهدف؛ توليد الذكاء الاصطناعي بطيء ⇒ الحارس أهمّ هنا
     setBusy(true);
     setError(null);
@@ -162,13 +181,20 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
       let failedCount = 0;
       for (const it of targets) {
         try {
-          const res = await aiTransform.mutateAsync({ imageDataUrl: it.dataUrl, userPrompt, mode: "EDIT", taskId: props.studioTaskId });
+          const res = await aiTransform.mutateAsync({
+            imageDataUrl: it.dataUrl,
+            userPrompt,
+            mode: "EDIT",
+            taskId: workflowTaskId,
+            adminOverrideReason: props.adminOverrideReason,
+          });
           const norm = await normalizeAiStudioImage(res.imageDataUrl);
           if (props.studioTaskId && res.processingReceipt) {
             await bindProcessingProof.mutateAsync({
               taskId: props.studioTaskId,
               processingReceipt: res.processingReceipt,
               candidateDataUrl: norm.dataUrl,
+              adminOverrideReason: props.adminOverrideReason,
             });
           }
           ok.push({ id: it.id, before: it.dataUrl, after: norm.dataUrl, sizeKB: Math.round(norm.sizeKB), mode: "AI", processingReceipt: res.processingReceipt });

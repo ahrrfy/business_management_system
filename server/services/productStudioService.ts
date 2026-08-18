@@ -39,6 +39,7 @@ const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
 const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
 const MAX_PREVIEW_BYTES = 1_000_000;
 const UPLOAD_LEASE_MS = 2 * 60_000;
+const PROCESSING_AUTHORIZATION_MS = 2 * 60_000;
 const PROCESSING_PROOF_MS = 15 * 60_000;
 const STAGING_AUDIT_INTERVAL_MS = 24 * 60 * 60_000;
 
@@ -57,6 +58,15 @@ function isManager(actor: ProductStudioActor): boolean {
 
 function canCrossBranches(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.isOwner === true;
+}
+
+function isAdminActor(actor: ProductStudioActor): boolean {
+  return actor.role === "admin" || actor.isOwner === true;
+}
+
+function cleanAdminOverrideReason(reason: string | null | undefined): string | null {
+  const clean = reason?.trim() ?? "";
+  return clean.length >= 5 ? clean : null;
 }
 
 function productContentHash(value: { name: string; description: string | null }): string {
@@ -98,6 +108,62 @@ function assertTaskAccess(
   if (managerOnly || Number(task.assignedTo) !== actor.userId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة ليست مسندة إليك" });
   }
+}
+
+function processingAuthorizationHash(authorization: string, mode: "PRO" | "AI"): string {
+  return contentHash(Buffer.from(`${mode}:${authorization}`, "utf8"));
+}
+
+function assertTaskWriteAccess(
+  actor: ProductStudioActor,
+  task: { assignedTo: number | null; branchId: number | null },
+  adminOverrideReason?: string | null,
+): string | null {
+  if (!canCrossBranches(actor) && (actor.branchId == null || Number(task.branchId) !== Number(actor.branchId))) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "المهمة تتبع فرعاً آخر" });
+  }
+  if (Number(task.assignedTo) === actor.userId) return null;
+  const reason = cleanAdminOverrideReason(adminOverrideReason);
+  if (!isAdminActor(actor) || !reason) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: isAdminActor(actor)
+        ? "يلزم سبب تصحيح إداري واضح للعمل نيابة عن مالك المهمة"
+        : "لا يجوز للمدير تعديل مهمة عامل آخر",
+    });
+  }
+  return reason;
+}
+
+function assertIndependentReviewer(
+  actor: ProductStudioActor,
+  task: { assignedTo: number | null; submittedBy: number | null },
+  adminOverrideReason?: string | null,
+): string | null {
+  const lastSubmitter = task.submittedBy ?? task.assignedTo;
+  if (Number(task.assignedTo) !== actor.userId && Number(lastSubmitter) !== actor.userId) return null;
+  const reason = cleanAdminOverrideReason(adminOverrideReason);
+  if (!isAdminActor(actor) || !reason) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "يلزم مراجع مستقل عن منفذ المهمة" });
+  }
+  return reason;
+}
+
+type StudioTx = Parameters<Parameters<typeof withTx>[0]>[0];
+
+async function recordAdminOverride(
+  tx: StudioTx,
+  actor: ProductStudioActor,
+  taskId: number,
+  action: string,
+  reason: string | null,
+  assignedTo: number | null,
+): Promise<void> {
+  if (!reason) return;
+  await tx.insert(auditLogs).values(auditValues(actor, `productStudio.adminOverride.${action}`, taskId, {
+    reason,
+    assignedTo,
+  }));
 }
 
 function decodeStudioImage(dataUrl: string): { bytes: Buffer; mime: string; width: number | null; height: number | null; hash: string } {
@@ -292,6 +358,7 @@ export async function listStudioTasks(
       createdAt: productImageJobs.createdAt,
       updatedAt: productImageJobs.updatedAt,
       submittedAt: productImageJobs.submittedAt,
+      submittedBy: productImageJobs.submittedBy,
       reviewedAt: productImageJobs.reviewedAt,
     })
     .from(productImageJobs)
@@ -532,16 +599,25 @@ export async function assignStudioTask(
 
 export async function saveStudioDraft(
   actor: ProductStudioActor,
-  input: { taskId: number; proposedName?: string | null; proposedDescription?: string | null; proposedMarketingCopy?: string | null },
+  input: {
+    taskId: number;
+    proposedName?: string | null;
+    proposedDescription?: string | null;
+    proposedMarketingCopy?: string | null;
+    adminOverrideReason?: string | null;
+  },
 ) {
   return withTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
-    assertTaskAccess(actor, task);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل مهمة بانتظار المراجعة أو مغلقة" });
     }
     if (task.uploadLeaseToken && task.uploadLeaseExpiresAt && task.uploadLeaseExpiresAt > new Date()) {
       throw new TRPCError({ code: "CONFLICT", message: "الرفع قيد التنفيذ؛ انتظر اكتماله" });
+    }
+    if (task.processingLeaseTokenHash && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
+      throw new TRPCError({ code: "CONFLICT", message: "المعالجة عبر المزود قيد التنفيذ؛ انتظر اكتمالها" });
     }
     await tx.update(productImageJobs).set({
       proposedName: input.proposedName?.trim() || null,
@@ -559,33 +635,48 @@ export async function saveStudioDraft(
       hasDescription: Boolean(input.proposedDescription?.trim()),
       hasMarketingCopy: Boolean(input.proposedMarketingCopy?.trim()),
     }));
+    await recordAdminOverride(tx, actor, input.taskId, "saveDraft", overrideReason, task.assignedTo);
     return { ok: true };
   });
 }
 
 /**
  * يحرس استدعاء المزود قبل حجز الحصة/الاتصال الخارجي. الموظف لا يستهلك خدمة مدفوعة إلا لمهمة
- * نشطة مسندة إليه في فرعه؛ المدير يبقى قادراً على استعمال الأداة مباشرةً، وتُعاد مراجعة المهمة
- * تحت قفل عند إصدار receipt بعد نجاح المزود لسد سباق تغيّر الإسناد/الحالة.
+ * نشطة مسندة إليه في فرعه؛ لا مسار مباشر للمدير خارج المهمة، وتُعاد مراجعة المهمة تحت قفل عند
+ * إصدار receipt بعد نجاح المزود لسد سباق تغيّر الإسناد/الحالة.
  */
 export async function authorizeStudioProcessing(
   actor: ProductStudioActor,
-  taskId: number | undefined,
-): Promise<void> {
-  if (taskId == null) {
-    if (isManager(actor)) return;
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مهمة الاستوديو مطلوبة لتشغيل المعالجة" });
-  }
-  const task = (await requireDb().select({
-    assignedTo: productImageJobs.assignedTo,
-    branchId: productImageJobs.branchId,
-    status: productImageJobs.status,
-  }).from(productImageJobs).where(eq(productImageJobs.id, taskId)).limit(1))[0];
-  if (!task) throw new TRPCError({ code: "NOT_FOUND", message: "مهمة الاستوديو غير موجودة" });
-  assertTaskAccess(actor, task);
-  if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
-    throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل معالجة جديدة" });
-  }
+  taskId: number,
+  mode: "PRO" | "AI",
+  adminOverrideReason?: string | null,
+): Promise<string> {
+  const authorization = randomUUID();
+  await withTx(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
+    if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل معالجة جديدة" });
+    }
+    if (task.uploadLeaseToken && task.uploadLeaseExpiresAt && task.uploadLeaseExpiresAt > new Date()) {
+      throw new TRPCError({ code: "CONFLICT", message: "رفع مرشح لهذه المهمة قيد التنفيذ" });
+    }
+    // يجب أن تسبق جاهزية R2 حجز الحصة والاتصال بالمزوّد؛ لا استهلاك مدفوع لمرشح لا يمكن حفظه.
+    assertStoragePolicy();
+    if (
+      task.processingLeaseTokenHash &&
+      task.processingLeaseExpiresAt &&
+      task.processingLeaseExpiresAt > new Date()
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "معالجة أخرى لهذه المهمة قيد التنفيذ" });
+    }
+    await tx.update(productImageJobs).set({
+      processingLeaseTokenHash: processingAuthorizationHash(authorization, mode),
+      processingLeaseExpiresAt: new Date(Date.now() + PROCESSING_AUTHORIZATION_MS),
+    }).where(eq(productImageJobs.id, taskId));
+    await recordAdminOverride(tx, actor, taskId, "processing", overrideReason, task.assignedTo);
+  });
+  return authorization;
 }
 
 /** يسجّل نجاح المزود خادمياً ويرجع receipt أحادي المهمة قصير العمر، بلا أسرار المزود. */
@@ -593,34 +684,63 @@ export async function attestStudioProcessing(
   actor: ProductStudioActor,
   taskId: number,
   mode: "PRO" | "AI",
+  processingAuthorization: string,
+  adminOverrideReason?: string | null,
 ): Promise<string> {
   const receipt = randomUUID();
+  const authorizationHash = processingAuthorizationHash(processingAuthorization, mode);
   await withTx(async (tx) => {
     const task = await lockTask(tx, taskId);
-    assertTaskAccess(actor, task);
+    const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل معالجة جديدة" });
+    }
+    if (
+      task.processingLeaseTokenHash !== authorizationHash ||
+      !task.processingLeaseExpiresAt ||
+      task.processingLeaseExpiresAt <= new Date()
+    ) {
+      throw new TRPCError({ code: "CONFLICT", message: "انتهى حجز المعالجة أو استُبدل" });
     }
     await tx.update(productImageJobs).set({
       processingProofTokenHash: contentHash(Buffer.from(receipt, "utf8")),
       processingProofMode: mode,
       processingProofCandidateHash: null,
       processingProofExpiresAt: new Date(Date.now() + PROCESSING_PROOF_MS),
+      processingLeaseTokenHash: null,
+      processingLeaseExpiresAt: null,
     }).where(eq(productImageJobs.id, taskId));
+    await recordAdminOverride(tx, actor, taskId, "processingAttestation", overrideReason, task.assignedTo);
   });
   return receipt;
+}
+
+/** يحرّر حجز المزود عند الفشل فقط؛ الشرط يمنع طلباً قديماً من مسح receipt أحدث. */
+export async function releaseStudioProcessingAuthorization(
+  taskId: number,
+  mode: "PRO" | "AI",
+  processingAuthorization: string,
+): Promise<void> {
+  const authorizationHash = processingAuthorizationHash(processingAuthorization, mode);
+  await requireDb().update(productImageJobs).set({
+    processingLeaseTokenHash: null,
+    processingLeaseExpiresAt: null,
+  }).where(and(
+    eq(productImageJobs.id, taskId),
+    eq(productImageJobs.processingLeaseTokenHash, authorizationHash),
+  ));
 }
 
 /** يربط receipt بالناتج النهائي بعد تركيب/ضغط العميل؛ submit يرفض أي تبديل بايتات لاحق. */
 export async function bindStudioProcessingCandidate(
   actor: ProductStudioActor,
-  input: { taskId: number; processingReceipt: string; candidateDataUrl: string },
+  input: { taskId: number; processingReceipt: string; candidateDataUrl: string; adminOverrideReason?: string | null },
 ): Promise<{ ok: true }> {
   const candidate = decodeStudioImage(input.candidateDataUrl);
   const receiptHash = contentHash(Buffer.from(input.processingReceipt, "utf8"));
   return withTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
-    assertTaskAccess(actor, task);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل ربط معالجة جديدة" });
     }
@@ -634,6 +754,7 @@ export async function bindStudioProcessingCandidate(
     }
     await tx.update(productImageJobs).set({ processingProofCandidateHash: candidate.hash })
       .where(eq(productImageJobs.id, input.taskId));
+    await recordAdminOverride(tx, actor, input.taskId, "bindProcessingProof", overrideReason, task.assignedTo);
     return { ok: true as const };
   });
 }
@@ -650,18 +771,22 @@ export async function submitStudioCandidate(
     proposedName?: string | null;
     proposedDescription?: string | null;
     proposedMarketingCopy?: string | null;
+    adminOverrideReason?: string | null;
   },
 ) {
-  assertStoragePolicy();
   const token = randomUUID();
   const lease = await withTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
-    assertTaskAccess(actor, task);
+    const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
+    assertStoragePolicy();
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({ code: "CONFLICT", message: "حالة المهمة لا تقبل مرشحاً جديداً" });
     }
     if (task.uploadLeaseToken && task.uploadLeaseExpiresAt && task.uploadLeaseExpiresAt > new Date()) {
       throw new TRPCError({ code: "CONFLICT", message: "رفع آخر لهذه المهمة قيد التنفيذ" });
+    }
+    if (task.processingLeaseTokenHash && task.processingLeaseExpiresAt && task.processingLeaseExpiresAt > new Date()) {
+      throw new TRPCError({ code: "CONFLICT", message: "المعالجة عبر المزود قيد التنفيذ؛ لا يمكن إرسال نسخة أقدم" });
     }
     await tx.update(productImageJobs).set({
       uploadLeaseToken: token,
@@ -671,6 +796,8 @@ export async function submitStudioCandidate(
       originalObjectKey: task.originalObjectKey,
       sourceContentHash: task.sourceContentHash,
       originalMime: task.originalMime,
+      assignedTo: task.assignedTo,
+      overrideReason,
     };
   });
 
@@ -697,7 +824,7 @@ export async function submitStudioCandidate(
 
     const result = await withTx(async (tx) => {
       const task = await lockTask(tx, input.taskId);
-      assertTaskAccess(actor, task);
+      assertTaskWriteAccess(actor, task, input.adminOverrideReason);
       if (
         task.uploadLeaseToken !== token ||
         !task.uploadLeaseExpiresAt ||
@@ -748,6 +875,8 @@ export async function submitStudioCandidate(
         proposedMarketingCopy: input.proposedMarketingCopy === undefined ? task.proposedMarketingCopy : input.proposedMarketingCopy?.trim() || null,
         status: "PENDING_REVIEW",
         submittedAt: new Date(),
+        // هوية المرسل حقيقة خادمية من Actor، ولا نقبلها من الحمولة.
+        submittedBy: actor.userId,
         reviewedBy: null,
         reviewedAt: null,
         rejectionReason: null,
@@ -767,6 +896,7 @@ export async function submitStudioCandidate(
         thumbnailHash: thumbnail.hash,
         contentIncluded: true,
       }));
+      await recordAdminOverride(tx, actor, input.taskId, "submit", lease.overrideReason, lease.assignedTo);
       await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() })
         .where(inArray(productImageObjectStaging.objectKey, original ? [originalKey, processedKey] : [processedKey]));
       return { ok: true };
@@ -840,15 +970,16 @@ export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: 
   return { base64: await streamToBase64(task.originalObjectKey), mime: task.originalMime };
 }
 
-export async function approveStudioTask(actor: ProductStudioActor, taskId: number) {
+export async function approveStudioTask(actor: ProductStudioActor, taskId: number, adminOverrideReason?: string | null) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
-  assertStoragePolicy();
   return withTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     assertTaskAccess(actor, task, true);
     if (task.status !== "PENDING_REVIEW") {
       throw new TRPCError({ code: "CONFLICT", message: "المهمة لم تعد بانتظار المراجعة" });
     }
+    const overrideReason = assertIndependentReviewer(actor, task, adminOverrideReason);
+    assertStoragePolicy();
     if (!task.productId || !task.processedObjectKey || !task.processedContentHash || !task.processedMime || !task.processedUrl) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "بيانات المرشح غير مكتملة" });
     }
@@ -941,11 +1072,17 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       thumbnailHash: thumbnail.hash,
       contentUpdated: Object.keys(productPatch).length > 0,
     }));
+    await recordAdminOverride(tx, actor, taskId, "approve", overrideReason, task.assignedTo);
     return { imageId };
   });
 }
 
-export async function rejectStudioTask(actor: ProductStudioActor, taskId: number, reason: string) {
+export async function rejectStudioTask(
+  actor: ProductStudioActor,
+  taskId: number,
+  reason: string,
+  adminOverrideReason?: string | null,
+) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const cleanReason = reason.trim();
   if (cleanReason.length < 5) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الرفض مطلوب بوضوح" });
@@ -953,6 +1090,7 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
     const task = await lockTask(tx, taskId);
     assertTaskAccess(actor, task, true);
     if (task.status !== "PENDING_REVIEW") throw new TRPCError({ code: "CONFLICT", message: "المهمة لم تعد بانتظار المراجعة" });
+    const overrideReason = assertIndependentReviewer(actor, task, adminOverrideReason);
     await tx.update(productImageJobs).set({
       status: "REJECTED",
       processedUrl: null,
@@ -962,6 +1100,7 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
       activeSlot: 1,
     }).where(eq(productImageJobs.id, taskId));
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.reject", taskId, { reason: cleanReason }));
+    await recordAdminOverride(tx, actor, taskId, "reject", overrideReason, task.assignedTo);
     return { ok: true };
   });
 }
