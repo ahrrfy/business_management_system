@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { sweepExpiredOnlineOrdersOnce } from "../onlineOrderExpirySweeper";
+import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
 import { truncateTables } from "./__testUtils__";
 
 function db() {
@@ -102,5 +103,32 @@ describe("storefront PENDING reservation expiry sweeper", () => {
     await expect(sweepExpiredOnlineOrdersOnce(now, 50)).resolves.toEqual({
       cancelled: 0,
     });
+  });
+
+  it("serializes an actual confirm-versus-sweeper race without reviving expired stock", async () => {
+    const due = new Date(Date.now() - 1_000);
+    await seedOrder(6, "PENDING", due);
+
+    const [sweep, confirm] = await Promise.allSettled([
+      sweepExpiredOnlineOrdersOnce(new Date(), 50),
+      setOnlineOrderStatus(
+        { id: 6, status: "CONFIRMED", scopedBranchId: null },
+        1,
+      ),
+    ]);
+
+    expect(sweep).toMatchObject({
+      status: "fulfilled",
+      value: { cancelled: 1 },
+    });
+    expect(confirm.status).toBe("rejected");
+    const final = (
+      await db()
+        .select({ status: s.onlineOrders.status })
+        .from(s.onlineOrders)
+        .where(sql`${s.onlineOrders.id} = 6`)
+        .limit(1)
+    )[0];
+    expect(final.status).toBe("CANCELLED");
   });
 });

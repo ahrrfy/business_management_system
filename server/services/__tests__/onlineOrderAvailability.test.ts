@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createOnlineOrder, quoteOnlineOrder } from "../onlineOrderService";
 import { listStockByUnitIds } from "../catalog/pos";
+import { loadVariantAvailability } from "../catalog/variantAvailability";
 import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
 import { truncateAllTables } from "./__testUtils__";
 import { withTx } from "../tx";
@@ -525,5 +526,32 @@ describe("createOnlineOrder availability guards", () => {
       clientRequestId: "bundle-order-reserved",
       lines: [{ productUnitId: 2, quantity: 1 }],
     })).rejects.toThrow(/الحجوزات النشطة/);
+  });
+
+  it("releases an expired bundle allocation in both component and bundle ATP", async () => {
+    const d = db();
+    await d.insert(s.products).values({ id: 2, name: "Expiring bundle", showInStore: true, isBundle: true });
+    await d.insert(s.productVariants).values({ id: 2, productId: 2, sku: "EXPIRING-BUNDLE", costPrice: "1.00" });
+    await d.insert(s.productUnits).values({ id: 2, variantId: 2, unitName: "bundle", isBaseUnit: true, isStoreSaleUnit: true });
+    await d.insert(s.productPrices).values({ productUnitId: 2, priceTier: "RETAIL", price: "2500.00" });
+    await d.insert(s.bundleComponents).values({ bundleVariantId: 2, componentVariantId: 1, componentBaseQuantity: 2 });
+
+    const created = await createOnlineOrder({
+      ...baseOrder,
+      clientRequestId: "expiring-bundle-allocation",
+      lines: [{ productUnitId: 2, quantity: 1 }],
+    });
+    const before = await loadVariantAvailability(d, 1, [1, 2]);
+    expect(before.get(1)).toMatchObject({ reservedBase: 2, availableBase: 1 });
+    expect(before.get(2)).toMatchObject({ availableBase: 0 });
+
+    await d.execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
+      WHERE id = ${created.orderId}
+    `);
+    const after = await loadVariantAvailability(d, 1, [1, 2]);
+    expect(after.get(1)).toMatchObject({ reservedBase: 0, availableBase: 3 });
+    expect(after.get(2)).toMatchObject({ availableBase: 1 });
   });
 });
