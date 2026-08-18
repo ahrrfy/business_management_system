@@ -51,4 +51,4 @@ export {
   type MatchResult,
   type MatchVerdict,
   type DistributeResult,
-} from "./supplierInvoiceMatch";
+} from "./supplierInvoiceMatching";
