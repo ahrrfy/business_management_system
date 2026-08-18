@@ -223,17 +223,38 @@ describe("setProductFeatured / setProductStoreVisible", () => {
 });
 
 describe("setProductPrimaryImage", () => {
-  it("تعيين صورة رئيسية جديدة على مستوى المنتج (variantId=null)", async () => {
-    const r = await setProductPrimaryImage({ productId: 2, url: TINY_PNG });
-    expect(r.hasImage).toBe(true);
-    const imgs = await db().select().from(s.productImages).where(and(eq(s.productImages.productId, 2), isNull(s.productImages.variantId), eq(s.productImages.isPrimary, true)));
-    expect(imgs).toHaveLength(1);
+  it("يرفض بايتات الصورة خارج Product Studio ويحافظ النشر المعتمد بلا حذف أو استبدال", async () => {
+    const [before] = await db()
+      .select()
+      .from(s.productImages)
+      .where(and(eq(s.productImages.productId, 1), isNull(s.productImages.variantId), eq(s.productImages.isPrimary, true)));
+    await db().update(s.productImages).set({
+      objectKey: "single/studio/candidate/notebook.webp",
+      contentHash: "a".repeat(64),
+      origin: "STUDIO_PRO",
+      reviewStatus: "APPROVED",
+    }).where(eq(s.productImages.id, before.id));
+
+    await expect(setProductPrimaryImage({ productId: 1, url: TINY_PNG })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const [after] = await db().select().from(s.productImages).where(eq(s.productImages.id, before.id));
+    expect(after.objectKey).toBe("single/studio/candidate/notebook.webp");
+    expect(after.contentHash).toBe("a".repeat(64));
+    expect(after.origin).toBe("STUDIO_PRO");
+    expect(after.reviewStatus).toBe("APPROVED");
   });
 
-  it("استبدال الصورة الحالية (لا تكرار — حذف ثم إدراج)", async () => {
-    await setProductPrimaryImage({ productId: 1, url: TINY_PNG });
+  it("تعيين صورة رئيسية جديدة يُرفض خارج Product Studio", async () => {
+    await expect(setProductPrimaryImage({ productId: 2, url: TINY_PNG })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const imgs = await db().select().from(s.productImages).where(and(eq(s.productImages.productId, 2), isNull(s.productImages.variantId), eq(s.productImages.isPrimary, true)));
+    expect(imgs).toHaveLength(0);
+  });
+
+  it("استبدال الصورة الحالية يُرفض ولا يحذف الصف القائم", async () => {
+    const before = await db().select().from(s.productImages).where(and(eq(s.productImages.productId, 1), isNull(s.productImages.variantId), eq(s.productImages.isPrimary, true)));
+    await expect(setProductPrimaryImage({ productId: 1, url: TINY_PNG })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     const imgs = await db().select().from(s.productImages).where(and(eq(s.productImages.productId, 1), isNull(s.productImages.variantId), eq(s.productImages.isPrimary, true)));
-    expect(imgs).toHaveLength(1); // كانت صورة واحدة، بقيت واحدة
+    expect(imgs.map((image) => image.id)).toEqual(before.map((image) => image.id));
   });
 
   it("url=null ⇒ إزالة الصورة الرئيسية", async () => {
@@ -243,8 +264,8 @@ describe("setProductPrimaryImage", () => {
     expect(imgs).toHaveLength(0);
   });
 
-  it("رفض: صورة بصيغة غير صالحة ⇒ BAD_REQUEST", async () => {
-    await expect(setProductPrimaryImage({ productId: 1, url: "not-a-data-url" })).rejects.toThrow(/غير صالحة/);
+  it("رفض: أي URL غير فارغ ⇒ BAD_REQUEST من حارس الاستوديو", async () => {
+    await expect(setProductPrimaryImage({ productId: 1, url: "not-a-data-url" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });
 

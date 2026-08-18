@@ -19,7 +19,7 @@ import {
   type ClientUnit,
   type ClientVariant,
 } from "@/lib/variants";
-import { ColorPickerDot, Field, ImageSlot, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
+import { ColorPickerDot, Field, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
 import { UnitBarcodeAliases } from "./UnitBarcodeAliases";
 import { UnitPriceHistory } from "./UnitPriceHistory";
 import { ChevronLeft, X } from "lucide-react";
@@ -457,10 +457,23 @@ function VariantRow({
                 )}
               </div>
 
-              {/* صورة هذا اللون (مستقلّة عن صور المنتج العامّة) */}
+              {/* عرض/إزالة إرثية فقط؛ إضافة صورة اللون واستبدالها عبر Product Studio. */}
               <div className="border-t pt-3">
                 <p className="text-[11px] font-semibold text-muted-foreground mb-2">صورة هذا اللون</p>
-                <ImageSlot value={v.image} onChange={(img) => patch({ image: img })} />
+                {v.image ? (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <img src={v.image} alt={`صورة ${v.color || v.sku}`} className="size-20 rounded-md border object-cover" />
+                    <button
+                      type="button"
+                      className="min-h-9 rounded-md border px-3 text-xs text-destructive hover:bg-destructive/10"
+                      onClick={() => patch({ image: null })}
+                    >
+                      إزالة عند الحفظ
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">تُضاف صورة هذا اللون بعد حفظ المنتج عبر استوديو صور المنتجات.</p>
+                )}
               </div>
             </div>
           </td>

@@ -341,7 +341,7 @@ export default function SimpleProductEditForm({
           unitBarcodes,
         },
       ],
-      // صور المنتج العامّة: تُرسَل دائماً (ولو فارغة) ⇒ الحذف يُوفَّق؛ غير المتغيّرة بمعرّفها بلا بايتات.
+      // صور المنتج العامّة: معرّفات وmetadata فقط؛ الفارغة توفّق الحذف ولا تمرّر بايتات.
       images: buildProductImagesPayload(images),
     });
   }
@@ -604,6 +604,7 @@ export default function SimpleProductEditForm({
         onDescriptionChange={setDescription}
         images={images}
         onImagesChange={setImages}
+        productExists
       />
 
       {error && (
