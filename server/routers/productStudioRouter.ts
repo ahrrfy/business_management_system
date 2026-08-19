@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, createStudioCampaign, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, createStudioCampaign, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 
 function actor(ctx: {
   user: {
@@ -69,6 +69,14 @@ export const productStudioRouter = router({
       }),
     )
     .mutation(({ ctx, input }) => createStudioCampaign(actor(ctx), input)),
+  transitionCampaign: productStudioManagerProcedure
+    .input(z.object({
+      campaignId,
+      status: z.enum(["ACTIVE", "COMPLETED", "CANCELLED"]),
+      startsAt: z.coerce.date().nullable().optional(),
+      dueAt: z.coerce.date().nullable().optional(),
+    }))
+    .mutation(({ ctx, input }) => transitionStudioCampaign(actor(ctx), input)),
   previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx), input.campaignId)),
   createCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).mutation(({ ctx, input }) => createStudioCampaignBacklog(actor(ctx), input.campaignId)),
   campaignAnalytics: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignAnalytics(actor(ctx), input.campaignId)),

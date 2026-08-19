@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -172,6 +172,7 @@ describe("product studio governed workflow", () => {
       status: "ACTIVE",
       dueAt: new Date("2026-08-25T12:00:00.000Z"),
     });
+    expect(campaign.startsAt).toEqual(expect.any(Date));
 
     await expect(previewStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ count: 2, productIds: [3, 4] });
     await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 2 });
@@ -227,6 +228,39 @@ describe("product studio governed workflow", () => {
     await expect(previewStudioCampaignBacklog(managerTwo, campaign.campaignId)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
+  it("enforces branch-scoped legal campaign transitions and stamps activation start", async () => {
+    const draft = await createStudioCampaign(manager, {
+      name: "حملة انتقالات",
+      status: "DRAFT",
+    });
+    await expect(transitionStudioCampaign(managerTwo, {
+      campaignId: draft.campaignId,
+      status: "ACTIVE",
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(transitionStudioCampaign(manager, {
+      campaignId: draft.campaignId,
+      status: "ACTIVE",
+      dueAt: new Date("2026-08-29T12:00:00.000Z"),
+    })).resolves.toMatchObject({ status: "ACTIVE", startsAt: expect.any(Date) });
+    await expect(transitionStudioCampaign(manager, {
+      campaignId: draft.campaignId,
+      status: "DRAFT",
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(transitionStudioCampaign(manager, {
+      campaignId: draft.campaignId,
+      status: "COMPLETED",
+    })).resolves.toMatchObject({ status: "COMPLETED" });
+
+    const cancellable = await createStudioCampaign(manager, {
+      name: "حملة ملغاة",
+      status: "DRAFT",
+    });
+    await expect(transitionStudioCampaign(manager, {
+      campaignId: cancellable.campaignId,
+      status: "CANCELLED",
+    })).resolves.toMatchObject({ status: "CANCELLED" });
+  });
+
   it("deduplicates automatic assignment and rejection notifications by event key", async () => {
     const assigned = await assignStudioTask(manager, {
       productId: 1,
@@ -244,6 +278,22 @@ describe("product studio governed workflow", () => {
     const notices = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
     expect(notices.map((row) => row.eventKey).sort()).toEqual([`product-studio:${assigned.taskId}:assigned:${worker.userId}`, `product-studio:${assigned.taskId}:rejected:r3`]);
     expect(new Set(notices.map((row) => row.eventKey)).size).toBe(notices.length);
+  });
+
+  it("does not send routine assignment or rejection notices to managers", async () => {
+    const assigned = await assignStudioTask(admin, {
+      productId: 1,
+      assigneeId: manager.userId,
+    });
+    await submitStudioCandidate(manager, {
+      taskId: assigned.taskId,
+      originalDataUrl: PNG_1X1,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+      expectedRevision: assigned.revision,
+    });
+    await rejectStudioTask(admin, assigned.taskId, "الخلفية تحتاج تنظيفاً أدق", undefined, 2);
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, manager.userId))).toEqual([]);
   });
 
   it("deduplicates approaching-deadline alerts and sends managers overdue exceptions only", async () => {
@@ -352,11 +402,36 @@ describe("product studio governed workflow", () => {
       rejected: 1,
       completionPercent: 50,
       firstPassApprovalRate: 0,
-      medianCycleMinutes: 90,
+      medianCycleMinutes: 120,
       rejectionReasons: expect.arrayContaining([
         { reason: "الصورة غير حادة", count: 1 },
         { reason: "قص غير دقيق", count: 1 },
       ]),
+    });
+  });
+
+  it("uses every first review outcome as the first-pass denominator", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة رفض أولي",
+      status: "ACTIVE",
+    });
+    await db().insert(s.productImageJobs).values({
+      productId: 1,
+      campaignId: campaign.campaignId,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "REJECTED",
+      createdBy: manager.userId,
+      rejectionReason: "الصورة غير حادة",
+      reviewedAt: new Date("2026-08-19T12:00:00.000Z"),
+      activeSlot: 1,
+      revision: 2,
+    });
+    await expect(getStudioCampaignAnalytics(manager, campaign.campaignId)).resolves.toMatchObject({
+      approved: 0,
+      rejected: 1,
+      firstPassApprovalRate: 0,
+      medianCycleMinutes: null,
     });
   });
   it("rejects stale revisions without overwriting a newer mobile save", async () => {

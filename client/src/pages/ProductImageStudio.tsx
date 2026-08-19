@@ -145,6 +145,7 @@ export default function ProductImageStudio() {
   const [assignmentPriority, setAssignmentPriority] = useState<"LOW" | "NORMAL" | "HIGH" | "URGENT">("NORMAL");
   const [assignmentDueAt, setAssignmentDueAt] = useState("");
   const [campaignName, setCampaignName] = useState("");
+  const [campaignStartAt, setCampaignStartAt] = useState("");
   const [campaignDueAt, setCampaignDueAt] = useState("");
   const [campaignBranchId, setCampaignBranchId] = useState("");
   const [selectedCampaignId, setSelectedCampaignId] = useState<number | null>(null);
@@ -224,6 +225,9 @@ export default function ProductImageStudio() {
     {
       enabled: !offline && Boolean(selectedCampaignId) && dashboard.data?.canManage === true,
     },
+  );
+  const selectedCampaign = (campaigns.data ?? []).find(
+    (campaign) => Number(campaign.id) === selectedCampaignId,
   );
   const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
   const onlineSelected = taskItems.find((task) => Number(task.id) === selectedId) ?? null;
@@ -365,6 +369,7 @@ export default function ProductImageStudio() {
     onSuccess: async (campaign) => {
       setSelectedCampaignId(campaign.campaignId);
       setCampaignName("");
+      setCampaignStartAt("");
       setCampaignDueAt("");
       notify.ok("أُنشئت حملة الاستوديو وفُعّلت");
       await refresh();
@@ -374,6 +379,13 @@ export default function ProductImageStudio() {
   const createCampaignBacklog = trpc.productStudio.createCampaignBacklog.useMutation({
     onSuccess: async (result) => {
       notify.ok(result.createdCount > 0 ? `أُنشئت ${result.createdCount} مهمة غير مسندة` : "لا توجد منتجات ناقصة جديدة");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const transitionCampaign = trpc.productStudio.transitionCampaign.useMutation({
+    onSuccess: async () => {
+      notify.ok("حُدّثت حالة الحملة");
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -749,7 +761,7 @@ export default function ProductImageStudio() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
               <div className="space-y-1.5 xl:col-span-2">
                 <Label htmlFor="studio-campaign-name">اسم حملة جديدة</Label>
                 <Input id="studio-campaign-name" value={campaignName} onChange={(event) => setCampaignName(event.target.value)} placeholder="مثال: اكتمال صور القرطاسية" maxLength={180} />
@@ -766,6 +778,10 @@ export default function ProductImageStudio() {
                 </AppSelect>
               </div>
               <div className="space-y-1.5">
+                <Label htmlFor="studio-campaign-start">بداية الحملة</Label>
+                <Input id="studio-campaign-start" type="datetime-local" value={campaignStartAt} onChange={(event) => setCampaignStartAt(event.target.value)} />
+              </div>
+              <div className="space-y-1.5">
                 <Label htmlFor="studio-campaign-due">موعد الحملة</Label>
                 <Input id="studio-campaign-due" type="datetime-local" value={campaignDueAt} onChange={(event) => setCampaignDueAt(event.target.value)} />
               </div>
@@ -778,6 +794,7 @@ export default function ProductImageStudio() {
                       name: campaignName.trim(),
                       status: "ACTIVE",
                       branchId: Number(campaignBranchId || me.data?.branchId),
+                      startsAt: campaignStartAt ? new Date(campaignStartAt) : null,
                       dueAt: campaignDueAt ? new Date(campaignDueAt) : null,
                     })
                   }
@@ -786,6 +803,45 @@ export default function ProductImageStudio() {
                 </Button>
               </div>
             </div>
+
+            {selectedCampaign && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border p-3">
+                <span className="text-sm font-medium">الحالة: {selectedCampaign.status}</span>
+                {selectedCampaign.status === "DRAFT" && (
+                  <Button
+                    className="min-h-11"
+                    disabled={offline || transitionCampaign.isPending}
+                    onClick={() => transitionCampaign.mutate({
+                      campaignId: Number(selectedCampaign.id),
+                      status: "ACTIVE",
+                      startsAt: campaignStartAt ? new Date(campaignStartAt) : null,
+                      dueAt: campaignDueAt ? new Date(campaignDueAt) : selectedCampaign.dueAt,
+                    })}
+                  >
+                    تفعيل الحملة
+                  </Button>
+                )}
+                {selectedCampaign.status === "ACTIVE" && (
+                  <Button
+                    className="min-h-11"
+                    disabled={offline || transitionCampaign.isPending}
+                    onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "COMPLETED" })}
+                  >
+                    إكمال الحملة
+                  </Button>
+                )}
+                {(selectedCampaign.status === "DRAFT" || selectedCampaign.status === "ACTIVE") && (
+                  <Button
+                    variant="outline"
+                    className="min-h-11"
+                    disabled={offline || transitionCampaign.isPending}
+                    onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED" })}
+                  >
+                    إلغاء الحملة
+                  </Button>
+                )}
+              </div>
+            )}
 
             <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_auto_auto]">
               <div className="space-y-1.5">
@@ -822,6 +878,7 @@ export default function ProductImageStudio() {
             </div>
 
             {selectedCampaignId && campaignAnalytics.data && (
+              <div className="space-y-3">
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5" aria-label="مؤشرات الحملة">
                 {[
                   ["الإجمالي", campaignAnalytics.data.total],
@@ -835,6 +892,17 @@ export default function ProductImageStudio() {
                     <div className="mt-1 text-lg font-bold">{value}</div>
                   </div>
                 ))}
+              </div>
+              {campaignAnalytics.data.rejectionReasons.length > 0 && (
+                <div className="rounded-md border p-3">
+                  <div className="text-sm font-medium">أسباب الرفض</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {campaignAnalytics.data.rejectionReasons.map((item) => (
+                      <Badge key={item.reason} variant="warning">{item.reason} · {item.count}</Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
               </div>
             )}
           </CardContent>

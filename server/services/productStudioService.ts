@@ -514,7 +514,9 @@ export async function createStudioCampaign(
       message: "اسم الحملة يجب أن يكون بين 3 و180 حرفاً",
     });
   }
-  if (input.startsAt && input.dueAt && input.dueAt <= input.startsAt) {
+  const status = input.status ?? "DRAFT";
+  const startsAt = status === "ACTIVE" ? (input.startsAt ?? new Date()) : (input.startsAt ?? null);
+  if (startsAt && input.dueAt && input.dueAt <= startsAt) {
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "موعد الحملة يجب أن يكون بعد بدايتها",
@@ -527,8 +529,8 @@ export async function createStudioCampaign(
       .values({
         name,
         branchId,
-        status: input.status ?? "DRAFT",
-        startsAt: input.startsAt ?? null,
+        status,
+        startsAt,
         dueAt: input.dueAt ?? null,
         createdBy: actor.userId,
       })
@@ -540,16 +542,76 @@ export async function createStudioCampaign(
       action: "productStudio.campaign.create",
       entityType: "productStudioCampaign",
       entityId: String(campaignId),
-      newValue: { name, status: input.status ?? "DRAFT" },
+      newValue: { name, status },
     });
     return {
       campaignId,
       name,
       branchId,
-      status: input.status ?? "DRAFT",
-      startsAt: input.startsAt ?? null,
+      status,
+      startsAt,
       dueAt: input.dueAt ?? null,
     };
+  });
+}
+
+export async function transitionStudioCampaign(
+  actor: ProductStudioActor,
+  input: {
+    campaignId: number;
+    status: StudioCampaignStatus;
+    startsAt?: Date | null;
+    dueAt?: Date | null;
+  },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  return withTx(async (tx) => {
+    const campaign = (
+      await tx
+        .select()
+        .from(productStudioCampaigns)
+        .where(eq(productStudioCampaigns.id, input.campaignId))
+        .limit(1)
+        .for("update")
+    )[0];
+    if (!campaign) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "حملة الاستوديو غير موجودة" });
+    }
+    assertCampaignAccess(actor, campaign);
+    const legal =
+      (campaign.status === "DRAFT" &&
+        (input.status === "ACTIVE" || input.status === "CANCELLED")) ||
+      (campaign.status === "ACTIVE" &&
+        (input.status === "COMPLETED" || input.status === "CANCELLED"));
+    if (!legal) {
+      throw new TRPCError({ code: "CONFLICT", message: "انتقال حالة الحملة غير مسموح" });
+    }
+    const startsAt =
+      input.status === "ACTIVE"
+        ? (input.startsAt ?? campaign.startsAt ?? new Date())
+        : campaign.startsAt;
+    const dueAt = input.dueAt === undefined ? campaign.dueAt : input.dueAt;
+    if (startsAt && dueAt && dueAt <= startsAt) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "موعد الحملة يجب أن يكون بعد بدايتها" });
+    }
+    await tx
+      .update(productStudioCampaigns)
+      .set({ status: input.status, startsAt, dueAt })
+      .where(eq(productStudioCampaigns.id, input.campaignId));
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: Number(campaign.branchId),
+      action: "productStudio.campaign.transition",
+      entityType: "productStudioCampaign",
+      entityId: String(input.campaignId),
+      oldValue: { status: campaign.status },
+      newValue: {
+        status: input.status,
+        startsAt: startsAt?.toISOString() ?? null,
+        dueAt: dueAt?.toISOString() ?? null,
+      },
+    });
+    return { campaignId: input.campaignId, status: input.status, startsAt, dueAt };
   });
 }
 
@@ -711,7 +773,11 @@ export async function getStudioCampaignAnalytics(actor: ProductStudioActor, camp
           })
           .from(auditLogs)
           .where(and(eq(auditLogs.action, "productStudio.reject"), inArray(auditLogs.entityId, ids)));
-  const rejectedIds = new Set(rejects.map((row) => row.entityId));
+  const rejectedIds = new Set(
+    rejects
+      .map((row) => row.entityId)
+      .filter((entityId): entityId is string => entityId != null),
+  );
   const reasonCounts = new Map<string, number>();
   for (const row of rejects) {
     const reason = (row.newValue as { reason?: unknown } | null)?.reason;
@@ -727,13 +793,18 @@ export async function getStudioCampaignAnalytics(actor: ProductStudioActor, camp
     }
   }
   const approvedJobs = jobs.filter((job) => job.status === "APPROVED");
-  const cycleMinutes = jobs
+  const cycleMinutes = approvedJobs
     .filter((job): job is typeof job & { reviewedAt: Date } => job.reviewedAt != null)
     .map((job) => Math.max(0, Math.round((job.reviewedAt.getTime() - job.createdAt.getTime()) / 60_000)))
     .sort((a, b) => a - b);
   const middle = Math.floor(cycleMinutes.length / 2);
   const medianCycleMinutes = cycleMinutes.length === 0 ? null : cycleMinutes.length % 2 === 1 ? cycleMinutes[middle] : Math.round(((cycleMinutes[middle - 1] ?? 0) + (cycleMinutes[middle] ?? 0)) / 2);
   const firstPassApproved = approvedJobs.filter((job) => !rejectedIds.has(String(job.id))).length;
+  const firstReviewOutcomes = new Set<string>([
+    ...approvedJobs.map((job) => String(job.id)),
+    ...jobs.filter((job) => job.status === "REJECTED").map((job) => String(job.id)),
+    ...Array.from(rejectedIds),
+  ]).size;
   return {
     campaignId,
     total: jobs.length,
@@ -742,7 +813,7 @@ export async function getStudioCampaignAnalytics(actor: ProductStudioActor, camp
     pendingReview: jobs.filter((job) => job.status === "PENDING_REVIEW").length,
     unassigned: jobs.filter((job) => job.status === "ASSIGNED").length,
     completionPercent: jobs.length === 0 ? 0 : Math.round((approvedJobs.length / jobs.length) * 100),
-    firstPassApprovalRate: approvedJobs.length === 0 ? null : Math.round((firstPassApproved / approvedJobs.length) * 100),
+    firstPassApprovalRate: firstReviewOutcomes === 0 ? null : Math.round((firstPassApproved / firstReviewOutcomes) * 100),
     medianCycleMinutes,
     rejectionReasons: Array.from(reasonCounts, ([reason, count]) => ({
       reason,
@@ -1207,7 +1278,12 @@ async function prepareSourceSnapshot(productId: number, requested: number | null
   };
 }
 
-async function notifyStudioAssignment(taskId: number, assigneeId: number): Promise<void> {
+function isRoutineStudioRecipient(role: string | null | undefined): boolean {
+  return role !== "admin" && role !== "manager";
+}
+
+async function notifyStudioAssignment(taskId: number, assigneeId: number, assigneeRole: string): Promise<void> {
+  if (!isRoutineStudioRecipient(assigneeRole)) return;
   try {
     await createAppNotification({
       userId: assigneeId,
@@ -1225,7 +1301,8 @@ async function notifyStudioAssignment(taskId: number, assigneeId: number): Promi
   }
 }
 
-async function notifyStudioRejection(taskId: number, assigneeId: number, revision: number): Promise<void> {
+async function notifyStudioRejection(taskId: number, assigneeId: number, revision: number, assigneeRole: string | null): Promise<void> {
+  if (!isRoutineStudioRecipient(assigneeRole)) return;
   try {
     await createAppNotification({
       userId: assigneeId,
@@ -1349,6 +1426,7 @@ export async function assignStudioTask(
       return {
         taskId: Number(activeTask.id),
         revision: Number(activeTask.revision) + 1,
+        assigneeRole: assignee.role,
       };
     }
     if (snapshot) {
@@ -1410,7 +1488,7 @@ export async function assignStudioTask(
       if (snapshot) {
         await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() }).where(eq(productImageObjectStaging.objectKey, snapshot.originalObjectKey));
       }
-      return { taskId, revision: 1 };
+      return { taskId, revision: 1, assigneeRole: assignee.role };
     } catch (error) {
       if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
         throw new TRPCError({
@@ -1421,8 +1499,8 @@ export async function assignStudioTask(
       throw error;
     }
   });
-  await notifyStudioAssignment(result.taskId, input.assigneeId);
-  return result;
+  await notifyStudioAssignment(result.taskId, input.assigneeId, result.assigneeRole);
+  return { taskId: result.taskId, revision: result.revision };
 }
 
 export async function bulkAssignStudioTasks(
@@ -1578,9 +1656,10 @@ export async function bulkAssignStudioTasks(
     return {
       createdCount: productIds.length,
       taskIds: taskIds.map((row) => Number(row.id)),
+      assigneeRole: assignee.role,
     };
   });
-  await Promise.all(result.taskIds.map((taskId) => notifyStudioAssignment(taskId, input.assigneeId)));
+  await Promise.all(result.taskIds.map((taskId) => notifyStudioAssignment(taskId, input.assigneeId, result.assigneeRole)));
   return { createdCount: result.createdCount };
 }
 
@@ -2247,13 +2326,20 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
       }),
     );
     await recordAdminOverride(tx, actor, taskId, "reject", overrideReason, task.assignedTo);
+    const assigneeRole = task.assignedTo == null
+      ? null
+      : (await tx.select({ role: users.role }).from(users)
+          .where(eq(users.id, task.assignedTo)).limit(1))[0]?.role ?? null;
     return {
       response: expectedRevision === undefined ? { ok: true as const } : { ok: true as const, revision: nextRevision(task) },
       assignedTo: task.assignedTo,
       revision: nextRevision(task),
+      assigneeRole,
     };
   });
-  if (result.assignedTo != null) await notifyStudioRejection(taskId, Number(result.assignedTo), result.revision);
+  if (result.assignedTo != null) {
+    await notifyStudioRejection(taskId, Number(result.assignedTo), result.revision, result.assigneeRole);
+  }
   return result.response;
 }
 
