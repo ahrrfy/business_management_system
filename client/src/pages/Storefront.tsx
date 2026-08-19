@@ -412,7 +412,7 @@ function ProductImage({
       </div>
     );
   }
-  return <img src={url} alt={alt} loading="lazy" className={`store-product-image object-cover ${className ?? ""}`} />;
+  return <img src={url} alt={alt} loading="lazy" className={`store-product-image object-contain ${className ?? ""}`} />;
 }
 
 /**
@@ -536,9 +536,9 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   return (
-    <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 sm:w-44 lg:w-48 dark:bg-slate-900 dark:ring-slate-800">
+    <div className="store-product-card flex w-[150px] shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 sm:w-[168px] lg:w-[184px] dark:bg-slate-900 dark:ring-slate-800">
       <button onClick={onSelect} className="relative block text-right">
-        <BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
+        <BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} className="aspect-[1.12/1] w-full" />
         {onSale && pct > 0 && (
           <span className="absolute right-2 top-2 rounded-full bg-[#c94736] px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
         )}
@@ -546,7 +546,7 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
           <span className="absolute inset-x-0 bottom-0 bg-slate-900/70 py-1 text-center text-[11px] font-bold text-white">غير متوفّر</span>
         )}
       </button>
-      <div className="flex flex-1 flex-col gap-1 p-2.5">
+      <div className="flex flex-1 flex-col gap-1 p-2">
         <button onClick={onSelect} className="text-right">
           <span className="line-clamp-2 min-h-[2.4em] text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{p.productName}</span>
         </button>
@@ -557,7 +557,7 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
         <button
           onClick={onAdd}
           disabled={p.inStock === false}
-          className="store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-1.5 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+          className="store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
         >
           <Plus aria-hidden className="size-3.5" /> {p.inStock === false ? "غير متوفّر" : "اختر"}
         </button>
@@ -642,7 +642,7 @@ function ProductRow({
       <div
         ref={scrollerRef}
         dir="rtl"
-        className="flex min-w-0 cursor-grab touch-pan-y gap-3 overflow-x-auto overscroll-x-contain pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
+        className="flex min-w-0 cursor-grab touch-pan-y scroll-smooth gap-2.5 overflow-x-auto overscroll-x-contain pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -1516,12 +1516,12 @@ export default function Storefront() {
               </div>
             ) : detailQ.data ? (
               <div>
-                <div className="flex gap-4">
+                <div className="flex gap-3">
                   <BundleMedia
                     urls={detailQ.data.bundleImageUrls}
                     fallbackUrl={detailQ.data.imageUrl}
                     alt={detailQ.data.productName}
-                    className="size-28 shrink-0 rounded-xl"
+                    className="size-24 shrink-0 rounded-xl"
                   />
                   <div className="min-w-0 flex-1">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
@@ -1535,7 +1535,7 @@ export default function Storefront() {
                         <div className="space-y-2">
                           <div className="grid gap-1.5 sm:grid-cols-2">
                           {detailQ.data.variants!.map((variant) => (
-                            <div key={variant.variantId} className={`rounded-lg border p-2 ${variant.inStock ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800" : "border-slate-100 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-900"}`}>
+                            <div key={variant.variantId} className={`rounded-lg border p-1.5 ${variant.inStock ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800" : "border-slate-100 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-900"}`}>
                               <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-700 dark:text-slate-200">
                                 <div className="flex min-w-0 items-center gap-1.5">
                                   {variant.colorHex && <span className="size-4 shrink-0 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
@@ -1549,7 +1549,7 @@ export default function Storefront() {
                                   const quantity = variantQuantities.get(unit.productUnitId) ?? 0;
                                   const stockLimit = unit.stockLeft == null ? 999 : Math.min(Math.floor(unit.stockLeft), 999);
                                   return (
-                                    <div key={unit.productUnitId} className={`flex items-center justify-between gap-1.5 rounded-md border px-1.5 py-1 ${unit.inStock ? "border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900" : "border-slate-100 bg-white opacity-50 dark:border-slate-800 dark:bg-slate-800"}`}>
+                                    <div key={unit.productUnitId} className={`flex items-center justify-between gap-1 rounded-md border px-1.5 py-0.5 ${unit.inStock ? "border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900" : "border-slate-100 bg-white opacity-50 dark:border-slate-800 dark:bg-slate-800"}`}>
                                       <button type="button" disabled={!unit.inStock} onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(unit.productUnitId); if (quantity === 0) setVariantQuantity(unit.productUnitId, 1); }} className="min-w-0 flex-1 text-right text-[11px] font-bold text-slate-700 disabled:cursor-not-allowed dark:text-slate-200">
                                         <span className="block truncate">{unit.unitName}{variant.size ? ` · ${variant.size}` : ""}</span>
                                         <span className="mt-0.5 block text-[10px] font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock && " · نفد"}</span>
