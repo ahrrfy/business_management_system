@@ -6,7 +6,7 @@
  * تكوين المزوّد) ثمّ ترميز ≤700KB عبر مسار ImageUploader المُثبَت (WebP/JPEG الأصغر). الأصل لا يُمسّ:
  * هذا ناتج **مرشّح** للمعاينة والاعتماد البشريّ قبل استبدال الأصل. راجع README.md وaiPrompt.ts.
  */
-import { compressImageDataUrl } from "@/components/form/ImageUploader";
+import { compressCanvas } from "@/components/form/ImageUploader";
 import { STUDIO_TEMPLATE } from "@shared/imageStudio/template";
 import { loadImageEl } from "./compositor";
 
@@ -37,6 +37,6 @@ export async function normalizeAiStudioImage(aiDataUrl: string): Promise<AiStudi
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(img, Math.round((size - w) / 2), Math.round((size - h) / 2), w, h);
-  const { dataUrl, sizeKB } = await compressImageDataUrl(canvas.toDataURL("image/png"));
+  const { dataUrl, sizeKB } = await compressCanvas(canvas);
   return { dataUrl, sizeKB, mode: "AI" };
 }

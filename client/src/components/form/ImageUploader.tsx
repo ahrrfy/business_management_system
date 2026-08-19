@@ -125,6 +125,40 @@ export function __resetEncoderCache(): void {
 }
 
 /**
+ * `canvas.toBlob` مُوعَّداً. الفارق عن `toDataURL` ليس أسلوبياً:
+ * `toDataURL` يُرمّز **متزامناً على الخيط الرئيسي** ويبني نصّ base64 كاملاً قبل أن يعود،
+ * فترميز لوحةٍ ١٦٠٠×١٦٠٠ يُجمّد الصفحة. و`toBlob` يُرمّز خارج الخيط ويستدعي رجوعه لاحقاً.
+ * الرجوع إلى `toDataURL` يبقى لبيئةٍ بلا `toBlob` (jsdom والمتصفّحات القديمة).
+ */
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    if (typeof canvas.toBlob !== "function") {
+      try {
+        const dataUrl = canvas.toDataURL(type, quality);
+        const comma = dataUrl.indexOf(",");
+        const binary = atob(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        resolve(new Blob([bytes], { type: dataUrl.slice(5, comma > 0 ? dataUrl.indexOf(";") : undefined) || type }));
+      } catch {
+        resolve(null);
+      }
+      return;
+    }
+    canvas.toBlob((blob) => resolve(blob), type, quality);
+  });
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error ?? new Error("تعذّرت قراءة الصورة المرمَّزة"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
  * يُرمّز اللوحة بأصغر ناتجٍ فعليّ: **يُجرّب WebP وJPEG ويأخذ الأصغر قياساً لا ترجيحاً.**
  *
  * **القياس على صور الإنتاج الحقيقية (١٦/٧، بنراتك الأربعة):** WebP أصغر **٢٦٪** (١٠٥٤ ⇐ ٧٨٥ ك.ب،
@@ -134,14 +168,19 @@ export function __resetEncoderCache(): void {
  * ⚠️ **ولماذا نقيس بدل أن نفترض:** WebP **ليس أصغر دائماً**. قِيس فعلياً على صورةٍ عالية
  * الضوضاء: WebP **أكبر ٤٨٪** من JPEG بنفس الجودة (٣٧٧ مقابل ٢٥٥ ك.ب) — الضوضاء البكسليّة تُبطل
  * تنبّؤ WebP. مثل هذه الصور نادرة في كتالوج قرطاسية، لكنّ «الأصغر فعلياً» يجعل التحسين **مُبرهناً
- * لا مُرجَّحاً**: مستحيلٌ أن يُخرج هذا المسار ملفاً أكبر ممّا كان قبله. الثمن ترميزٌ ثانٍ (~عشرات
- * المللي ثانية) على فعلٍ يبادر به المستخدم — لا يُحسّ.
+ * لا مُرجَّحاً**: مستحيلٌ أن يُخرج هذا المسار ملفاً أكبر ممّا كان قبله.
+ *
+ * القياس على **حجم الـblob** لا على طول النصّ: هو الحجم الحقيقيّ، ويُجنّبنا بناء نصَّي base64
+ * ضخمَين لمجرّد المقارنة — لا يُحوَّل إلى نصّ إلا الفائز. مُصدَّرةٌ للاختبار.
  */
-function encodeSmallest(canvas: HTMLCanvasElement, quality: number): string {
-  const jpeg = canvas.toDataURL("image/jpeg", quality);
-  if (!webpSupported()) return jpeg;
-  const webp = canvas.toDataURL("image/webp", quality);
-  return webp.length < jpeg.length ? webp : jpeg;
+export async function encodeSmallest(canvas: HTMLCanvasElement, quality: number): Promise<{ blob: Blob; bytes: number } | null> {
+  const jpeg = await canvasToBlob(canvas, "image/jpeg", quality);
+  if (!webpSupported()) return jpeg ? { blob: jpeg, bytes: jpeg.size } : null;
+  const webp = await canvasToBlob(canvas, "image/webp", quality);
+  // نفس فخّ `toDataURL`: نوعٌ غير مدعوم يعود بـPNG بلا خطأ ⇒ الحكم على نوع الناتج لا على نجاح النداء.
+  if (!webp || webp.type !== "image/webp") return jpeg ? { blob: jpeg, bytes: jpeg.size } : null;
+  if (!jpeg) return { blob: webp, bytes: webp.size };
+  return webp.size < jpeg.size ? { blob: webp, bytes: webp.size } : { blob: jpeg, bytes: jpeg.size };
 }
 
 /**
@@ -149,13 +188,45 @@ function encodeSmallest(canvas: HTMLCanvasElement, quality: number): string {
  * وإلّا JPEG، وفق سلّم المحاولات حتى ≤ الحجم المستهدف. يعيد الأصل كما هو إن فشل الضغط
  * أو كان الأصل أصغر من الناتج (صور مضغوطة جيداً أصلاً).
  */
+/**
+ * يضغط **لوحةً** مباشرةً بلا المرور بـPNG وسيط.
+ *
+ * كان خطّ الاستوديو يفعل `compressImageDataUrl(canvas.toDataURL("image/png"))`: ترميز PNG
+ * بلا فقدٍ للوحة ١٦٠٠×١٦٠٠ (الأثقل على الإطلاق ومتزامن)، ثمّ فكّه صورةً، ثمّ رسمه على لوحةٍ
+ * جديدة، ثمّ ترميزه من جديد. الوسيط لم يكن له غرضٌ إلا تسليم نصٍّ للدالّة التالية.
+ * هنا يبدأ السلّم من اللوحة نفسها ⇒ يسقط الترميز الأثقل وفكّه معاً.
+ */
+export async function compressCanvas(source: HTMLCanvasElement): Promise<{ dataUrl: string; sizeKB: number }> {
+  let best: { blob: Blob; bytes: number } | null = null;
+  for (const step of COMPRESSION_LADDER) {
+    const { width, height } = fitDimensions(source.width, source.height, step.maxDim);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) break;
+    // الخلفية البيضاء لازمة: JPEG بلا قناة شفافية، والشفافية تصير سوداء لا بيضاء.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(source, 0, 0, width, height);
+    best = await encodeSmallest(canvas, step.quality);
+    if (!best) break;
+    if (Math.round(best.bytes / 1024) <= COMPRESSION_TARGET_KB) break;
+  }
+  if (!best) {
+    const fallback = source.toDataURL("image/png");
+    return { dataUrl: fallback, sizeKB: dataUrlSizeKB(fallback) };
+  }
+  return { dataUrl: await blobToDataUrl(best.blob), sizeKB: Math.round(best.bytes / 1024) };
+}
+
 export async function compressImageDataUrl(
   original: string
 ): Promise<{ dataUrl: string; sizeKB: number }> {
   const originalKB = dataUrlSizeKB(original);
   try {
     const img = await loadImage(original);
-    let best: string | null = null;
+    let best: { blob: Blob; bytes: number } | null = null;
     for (const step of COMPRESSION_LADDER) {
       const { width, height } = fitDimensions(img.naturalWidth, img.naturalHeight, step.maxDim);
       const canvas = document.createElement("canvas");
@@ -166,12 +237,15 @@ export async function compressImageDataUrl(
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
-      best = encodeSmallest(canvas, step.quality);
-      if (dataUrlSizeKB(best) <= COMPRESSION_TARGET_KB) break;
+      best = await encodeSmallest(canvas, step.quality);
+      if (!best) break;
+      if (Math.round(best.bytes / 1024) <= COMPRESSION_TARGET_KB) break;
     }
     if (!best) return { dataUrl: original, sizeKB: originalKB };
-    const bestKB = dataUrlSizeKB(best);
-    return bestKB < originalKB ? { dataUrl: best, sizeKB: bestKB } : { dataUrl: original, sizeKB: originalKB };
+    const bestKB = Math.round(best.bytes / 1024);
+    // الأصل أصغر ⇒ لا نُحوّل الفائز إلى نصّ أصلاً (نُوفّر base64 كاملاً لناتجٍ يُرمى).
+    if (bestKB >= originalKB) return { dataUrl: original, sizeKB: originalKB };
+    return { dataUrl: await blobToDataUrl(best.blob), sizeKB: bestKB };
   } catch {
     // فشل التحميل/الضغط ⇒ نمرّر الأصل ولا نُسقط الصورة (القاعدة تتّسع بعد mediumtext).
     return { dataUrl: original, sizeKB: originalKB };
