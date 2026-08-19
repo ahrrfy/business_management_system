@@ -134,49 +134,60 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
     let fellBackMsg = "";
     let lowResPreview = false;
     try {
-      const results = await Promise.all(
-        targets.map(async (it): Promise<StudioPreview> => {
-          let r: StudioResult;
-          let processingReceipt: string | undefined;
-          if (proAvailable) {
-            try {
-              const res = await proCutout.mutateAsync({
-                imageDataUrl: it.dataUrl,
-                taskId: workflowTaskId!,
+      // تسلسليّ لا متوازٍ — للسبب نفسه الموثَّق في مسار الذكاء الاصطناعي أدناه:
+      // httpBatchLink يجمع النداءات المتزامنة في طلبٍ HTTP واحد، فعدّة صور data-URL
+      // (~٧٠٠ك لكلٍّ) تتجاوز حدّ جسم 4mb ⇒ 413 قبل بلوغ الراوتر، برسالةٍ لا يفهمها المستخدم.
+      // ولا فائدة من التوازي أصلاً: للمزوّد فتحتا تنفيذٍ اثنتان وسقفُ ٣ نداءات لكل دقيقة
+      // لكل مستخدم ⇒ الباقي يعود BUSY/RATE_LIMITED. والتسلسل يُخلي الخيط بين الصور.
+      const processOne = async (it: (typeof targets)[number]): Promise<StudioPreview> => {
+        let r: StudioResult;
+        let processingReceipt: string | undefined;
+        if (proAvailable) {
+          try {
+            const res = await proCutout.mutateAsync({
+              imageDataUrl: it.dataUrl,
+              taskId: workflowTaskId!,
+              adminOverrideReason: props.adminOverrideReason,
+            });
+            // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
+            r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, {
+              trustCutout: true,
+            });
+            if (props.studioTaskId && res.processingReceipt) {
+              await bindProcessingProof.mutateAsync({
+                taskId: props.studioTaskId,
+                processingReceipt: res.processingReceipt,
+                candidateDataUrl: r.dataUrl,
                 adminOverrideReason: props.adminOverrideReason,
               });
-              // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
-              r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, {
-                trustCutout: true,
-              });
-              if (props.studioTaskId && res.processingReceipt) {
-                await bindProcessingProof.mutateAsync({
-                  taskId: props.studioTaskId,
-                  processingReceipt: res.processingReceipt,
-                  candidateDataUrl: r.dataUrl,
-                  adminOverrideReason: props.adminOverrideReason,
-                });
-                processingReceipt = res.processingReceipt;
-              }
-              if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
-            } catch (e) {
-              // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
-              fellBackMsg = String((e as { message?: string })?.message ?? "");
-              r = await runFreeStudio(it.dataUrl, { safeOnly: true });
+              processingReceipt = res.processingReceipt;
             }
-          } else {
+            if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
+          } catch (e) {
+            // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
+            fellBackMsg = String((e as { message?: string })?.message ?? "");
             r = await runFreeStudio(it.dataUrl, { safeOnly: true });
           }
-          return {
-            id: it.id,
-            before: it.dataUrl,
-            after: r.dataUrl,
-            sizeKB: Math.round(r.sizeKB),
-            mode: r.mode,
-            processingReceipt,
-          };
-        }),
-      );
+        } else {
+          r = await runFreeStudio(it.dataUrl, { safeOnly: true });
+        }
+        return {
+          id: it.id,
+          before: it.dataUrl,
+          after: r.dataUrl,
+          sizeKB: Math.round(r.sizeKB),
+          mode: r.mode,
+          processingReceipt,
+        };
+      };
+
+      const results: StudioPreview[] = [];
+      for (const it of targets) {
+        results.push(await processOne(it));
+        if (myToken !== runToken.current) return; // أُعيد الاستهداف ⇒ توقّف فوراً بلا إتمام الباقي
+        // إخلاء الخيط بين الصور كي تبقى الصفحة مستجيبة أثناء دفعةٍ طويلة.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
       if (myToken !== runToken.current) return; // أُعيد الاستهداف أثناء المعالجة ⇒ تجاهُل نتيجةٍ لهدفٍ قديم
       setPreviews(results);
       if (fellBackMsg)

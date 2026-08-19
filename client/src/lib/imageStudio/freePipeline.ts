@@ -5,7 +5,7 @@
  * - **CUT**: عزل الخلفية بـ@imgly ⇒ قناع ⇒ `analyzeMask` يقرّر ⇒ تركيب القصاصة (أو FLATTEN عند الشكّ).
  * **تدهور سلس:** فشل العزل (نموذج غير محمَّل/متصفّح عاجز) ⇒ FLATTEN. راجع docs/product-image-studio-design-2026-07-21.md §٥.
  */
-import { compressImageDataUrl } from "@/components/form/ImageUploader";
+import { compressCanvas } from "@/components/form/ImageUploader";
 import { STUDIO_TEMPLATE } from "@shared/imageStudio/template";
 import { compositeOnTemplate, loadImageEl } from "./compositor";
 import { analyzeMask, type ConfidenceResult, type StudioMode } from "./confidence";
@@ -23,7 +23,8 @@ export interface StudioResult {
 
 async function encodeCanvas(canvas: HTMLCanvasElement): Promise<{ dataUrl: string; sizeKB: number }> {
   // الترميز النهائيّ عبر مسار ImageUploader المُثبَت (WebP/JPEG الأصغر فعلياً، ≤700KB، على أبيض).
-  return compressImageDataUrl(canvas.toDataURL("image/png"));
+  // من اللوحة مباشرةً: وسيطُ PNG بلا فقدٍ كان أثقل خطوةٍ في المسار كلّه، وبلا غرضٍ سوى تمرير نصّ.
+  return compressCanvas(canvas);
 }
 
 /** المسار الآمن (FLATTEN): الأصل موسَّطاً على أبيض + ظلّ. لا عزل ⇒ صفر خطر على المنتج. */
