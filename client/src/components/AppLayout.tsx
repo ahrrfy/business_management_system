@@ -85,6 +85,9 @@ const NAV_LINKS: NavLink[] = [
   { href: "/crm", label: "CRM والعلاقات", icon: Users, module: "crm" },
   // نظام المهام الموحّد (S2/T2.3) — module فقط (بلا roles) ⇒ مرآة hasModuleAccess تماماً كبوّابة
   // الخادم tasksReadProcedure (requireModule("tasks","READ") — لا قائمة أدوار صريحة هناك أيضاً).
+  // ش٦ (١٩/٨): سطحُ «ما ينتظره منّي العمل». بلا بوّابة وحدة (protectedProcedure) — والمحتوى
+  // يُصفّى خادمياً بصلاحية كل مصدرٍ على حِدة، فلا يرى أحدٌ قراراً لا يملكه.
+  { href: "/my-work", label: "مطلوب مني الآن", icon: ClipboardCheck },
   { href: "/tasks", label: "المهام والتذاكر", icon: ListChecks, module: "tasks" },
   { href: "/invoices", label: "المبيعات", icon: Receipt, ...INVOICE_LIST_GATE },
   // (ب) يومي مالي/تشغيلي
@@ -182,7 +185,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   // أُضيفت `/invoices` و`/work-orders`. الخادم صار يقبلهما لهذه الأدوار بنطاقٍ يقصّ القناة،
   // وكانت القائمة البيضاء تحجبهما عرضاً — فيُرفَض الموظّف في الشاشة لا في الصلاحية. كلٌّ يبقى
   // محكوماً ببوّابته أدناه (`canSeeGate`)، فالإضافة هنا **إتاحةُ وصولٍ لا منحُ صلاحية**.
-  const CASHIER_NAV = ["/pos", "/price-checker", "/invoices", "/work-orders", "/delivery", "/tasks"];
+  const CASHIER_NAV = [
+  // ش٦: يظهر لكل دور — البوّابة `protectedProcedure` والمحتوى يُصفّى خادمياً بصلاحية كل مصدر.
+  "/my-work","/pos", "/price-checker", "/invoices", "/work-orders", "/delivery", "/tasks"];
   const visibleNav = isCourier
     ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
     : isCashier

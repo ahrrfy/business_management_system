@@ -44,6 +44,7 @@ const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
 const CardAccount = lazy(() => import("@/pages/CardAccount"));
 const ExchangeHub = lazy(() => import("@/pages/ExchangeHub"));
 const SalesHub = lazy(() => import("@/pages/SalesHub"));
+const MyWork = lazy(() => import("@/pages/MyWork"));
 const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
 const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
 const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
@@ -364,6 +365,11 @@ export default function App() {
           المزدحمة. استعادت شاشتَها (المكوّن يدعم الوضعين: `embedded` وغير المضمَّن). */}
       <Route path="/reservations"><Shell><ReservationsHub /></Shell></Route>
       {/* شاشتا المحطّة المفقودتان — كانتا لوحتين داخل السلّة بلا مسارٍ خاصّ بهما. */}
+      {/* ش٦ — «مطلوب منّي الآن». **على مسارٍ مسمّى لا على `/mobile`** (نقطةُ نقدٍ مُعتمَدة):
+          `safeInternalRoute` يُرجع `"/mobile"` **سقوطاً احتياطياً** لأيّ مسارٍ فاسد، فتسجيلُ
+          شاشةٍ عليه يجعل كلّ إشعارٍ بوجهةٍ مكسورة يهبط على شاشةٍ تبدو صحيحة ⇒ خطأُ الوجهة
+          **غير قابلٍ للاكتشاف**. */}
+      <Route path="/my-work"><Shell><MyWork /></Shell></Route>
       <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
       <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
