@@ -15,7 +15,8 @@ import {
 } from "../../drizzle/schema";
 import type { PermissionMap } from "@shared/permissions";
 import { hasModuleAccess } from "@shared/permissions";
-import { normalizeSearchText } from "@shared/searchNormalize";
+import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
+import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, parseImageDimensions } from "../lib/imageValidation";
@@ -263,7 +264,7 @@ export type StudioProductSearchInput = {
   includeInactive?: boolean;
 };
 
-type StudioProductCursor = { q: string; rank: number; name: string; id: number };
+type StudioProductCursor = { q: string; rank: number; name: string; id: number; includeInactive: boolean };
 
 const STUDIO_PRODUCT_PAGE_SIZE = 20;
 
@@ -271,18 +272,19 @@ function encodeStudioProductCursor(cursor: StudioProductCursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
-function decodeStudioProductCursor(value: string, query: string): StudioProductCursor {
+function decodeStudioProductCursor(value: string, query: string, includeInactive: boolean): StudioProductCursor {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<StudioProductCursor>;
-    const { q, rank, name, id } = parsed;
+    const { q, rank, name, id, includeInactive: cursorIncludeInactive } = parsed;
     if (
       typeof q !== "string" || q !== query ||
       typeof rank !== "number" || !Number.isInteger(rank) ||
       typeof name !== "string" ||
-      typeof id !== "number" || !Number.isSafeInteger(id)
+      typeof id !== "number" || !Number.isSafeInteger(id) ||
+      typeof cursorIncludeInactive !== "boolean" || cursorIncludeInactive !== includeInactive
     ) throw new Error("invalid cursor");
     if (id < 1) throw new Error("invalid cursor");
-    return { q, rank, name, id };
+    return { q, rank, name, id, includeInactive: cursorIncludeInactive };
   } catch {
     throw new TRPCError({ code: "BAD_REQUEST", message: "مؤشر نتائج المنتجات غير صالح" });
   }
@@ -290,16 +292,23 @@ function decodeStudioProductCursor(value: string, query: string): StudioProductC
 
 type StudioProductMatchKind = "BARCODE_PRIMARY" | "BARCODE_ALIAS" | "SKU" | "PRODUCT_ID" | "NAME_PREFIX" | "NAME_CONTAINS";
 
+function normalizedStudioVariantNameSql() {
+  let normalized = sql`lower(coalesce(${productVariants.variantName}, ''))`;
+  normalized = sql`regexp_replace(${normalized}, '[ً-ٰٟ]', '')`;
+  for (const [from, to] of ARABIC_FOLD_PAIRS) normalized = sql`replace(${normalized}, ${from}, ${to})`;
+  return foldDigitsSql(normalized);
+}
+
 export async function listStudioProducts(actor: ProductStudioActor, input: StudioProductSearchInput = {}) {
   const db = requireDb();
   const q = normalizeSearchText(input.search ?? "").slice(0, 80);
-  const cursor = input.cursor ? decodeStudioProductCursor(input.cursor, q) : null;
   const showInactive = input.includeInactive === true && isManager(actor);
+  const cursor = input.cursor ? decodeStudioProductCursor(input.cursor, q, showInactive) : null;
   const numericId = /^\d+$/.test(q) ? Number(q) : 0;
   const contains = `%${escLike(q)}%`;
   const prefix = `${escLike(q)}%`;
   const productName = sql<string>`coalesce(${products.searchNorm}, lower(${products.name}))`;
-  const variantName = sql<string>`lower(coalesce(${productVariants.variantName}, ''))`;
+  const variantName = normalizedStudioVariantNameSql();
   const exactBarcode = q ? or(eq(productUnits.barcode, q), eq(productUnitBarcodes.barcode, q)) : undefined;
   const exactSku = q ? sql`lower(${productVariants.sku}) = ${q}` : undefined;
   const exactProductId = numericId > 0 ? eq(products.id, numericId) : undefined;
@@ -359,11 +368,11 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   const contextFor = (row: typeof contexts[number]) => {
     const productNorm = normalizeSearchText(row.productName);
     const variantNorm = normalizeSearchText(row.variantName ?? "");
-    if (row.primaryBarcode === q) return { rank: 1, kind: "BARCODE_PRIMARY" as const, barcode: q };
-    if (row.aliasBarcode === q) return { rank: 1, kind: "BARCODE_ALIAS" as const, barcode: q };
-    if (normalizeSearchText(row.sku ?? "") === q) return { rank: 2, kind: "SKU" as const, barcode: null };
-    if (numericId > 0 && Number(row.productId) === numericId) return { rank: 2, kind: "PRODUCT_ID" as const, barcode: null };
-    if (productNorm.startsWith(q) || variantNorm.startsWith(q)) return { rank: 3, kind: "NAME_PREFIX" as const, barcode: null };
+    if (q && row.primaryBarcode === q) return { rank: 1, kind: "BARCODE_PRIMARY" as const, barcode: q };
+    if (q && row.aliasBarcode === q) return { rank: 1, kind: "BARCODE_ALIAS" as const, barcode: q };
+    if (q && normalizeSearchText(row.sku ?? "") === q) return { rank: 2, kind: "SKU" as const, barcode: null };
+    if (q && numericId > 0 && Number(row.productId) === numericId) return { rank: 2, kind: "PRODUCT_ID" as const, barcode: null };
+    if (q && (productNorm.startsWith(q) || variantNorm.startsWith(q))) return { rank: 3, kind: "NAME_PREFIX" as const, barcode: null };
     return { rank: 4, kind: "NAME_CONTAINS" as const, barcode: null };
   };
   const rows = page.map((product) => {
@@ -388,7 +397,7 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   return {
     rows,
     nextCursor: hasMore && last
-      ? encodeStudioProductCursor({ q, rank: Number(last.rank), name: last.name, id: Number(last.id) })
+      ? encodeStudioProductCursor({ q, rank: Number(last.rank), name: last.name, id: Number(last.id), includeInactive: showInactive })
       : null,
   };
 }

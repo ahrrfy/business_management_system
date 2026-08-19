@@ -4,9 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { createLatestBarcodeResolutionGate } from "@/lib/productStudio/barcodeResolution";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Camera, Loader2, Search } from "lucide-react";
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 type StudioProduct = RouterOutputs["productStudio"]["products"]["rows"][number];
 
@@ -28,6 +29,7 @@ export function StudioProductPicker({
   const [unknownBarcode, setUnknownBarcode] = useState("");
   const [isResolvingBarcode, setIsResolvingBarcode] = useState(false);
   const utils = trpc.useUtils();
+  const barcodeResolutionGate = useRef(createLatestBarcodeResolutionGate());
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 180);
@@ -39,9 +41,11 @@ export function StudioProductPicker({
     { getNextPageParam: (last) => last.nextCursor ?? undefined },
   );
   const resolveBarcode = async (barcode: string) => {
+    const token = barcodeResolutionGate.current.next();
     setIsResolvingBarcode(true);
     try {
       const match = await utils.productStudio.resolveBarcode.fetch({ barcode });
+      if (!barcodeResolutionGate.current.isCurrent(token)) return;
       if (!match.isActive) {
         setUnknownBarcode("المنتج معطّل ولا يمكن إسناد مهمة له.");
         return;
@@ -51,9 +55,9 @@ export function StudioProductPicker({
       setOpen(false);
       setUnknownBarcode("");
     } catch {
-      setUnknownBarcode("الباركود غير معروف. راجعه أو ابحث بالاسم.");
+      if (barcodeResolutionGate.current.isCurrent(token)) setUnknownBarcode("الباركود غير معروف. راجعه أو ابحث بالاسم.");
     } finally {
-      setIsResolvingBarcode(false);
+      if (barcodeResolutionGate.current.isCurrent(token)) setIsResolvingBarcode(false);
     }
   };
   const barcodeInput = useBarcodeInput((barcode) => {
@@ -106,7 +110,13 @@ export function StudioProductPicker({
           <Input
             id="studio-product-search"
             value={query}
-            onChange={(event) => { setQuery(event.target.value); setOpen(true); setUnknownBarcode(""); }}
+            onChange={(event) => {
+              barcodeResolutionGate.current.next();
+              setIsResolvingBarcode(false);
+              setQuery(event.target.value);
+              setOpen(true);
+              setUnknownBarcode("");
+            }}
             onFocus={() => setOpen(true)}
             onKeyDown={onKeyDown}
             placeholder="اسم المنتج أو SKU أو الباركود"

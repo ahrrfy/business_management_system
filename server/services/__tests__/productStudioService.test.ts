@@ -176,6 +176,33 @@ describe("product studio governed workflow", () => {
     expect(alias.rows).toEqual([expect.objectContaining({ productId: 101, unitId: 100, matchKind: "BARCODE_ALIAS" })]);
   });
 
+  it("normalizes Arabic variant names even when the parent product name does not match", async () => {
+    const d = db();
+    await d.insert(s.products).values({ id: 103, name: "منتج محايد" });
+    await d.insert(s.productVariants).values({
+      id: 103,
+      productId: 103,
+      sku: "MED-NEEDLE",
+      variantName: "إبرَة طبية",
+      costPrice: "1",
+    });
+
+    await expect(listStudioProducts(manager, { search: "ابره" })).resolves.toMatchObject({
+      rows: [expect.objectContaining({ productId: 103, variantId: 103, matchKind: "NAME_PREFIX" })],
+    });
+  });
+
+  it("rejects a cursor reused after the inactive-visibility scope changes", async () => {
+    const d = db();
+    await d.insert(s.products).values(
+      Array.from({ length: 21 }, (_, index) => ({ id: index + 300, name: `نطاق المؤشر ${index + 1}` })),
+    );
+    const first = await listStudioProducts(manager, { includeInactive: false });
+
+    await expect(listStudioProducts(manager, { cursor: first.nextCursor, includeInactive: true }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
   it("excludes inactive products unless a manager asks to inspect them and never exposes commercial fields", async () => {
     const d = db();
     await d.insert(s.products).values({ id: 102, name: "منتج متوقف", isActive: false });
