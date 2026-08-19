@@ -23,7 +23,7 @@ import { createWorkOrder } from "../workOrder/create";
 import { startWorkOrder, markWorkOrderReady } from "../workOrder/lifecycle";
 import { requestDesignApproval } from "../workOrder/approval";
 import { setWorkOrderDesign } from "../workOrder/design";
-import { resolveTask } from "../tasks/lifecycle";
+import { claimTask, resolveTask } from "../tasks/lifecycle";
 
 const TABLES = [
   "taskEvents", "tasks", "serviceTypes",
@@ -111,6 +111,9 @@ describe("ش٢ — حارس موافقة التصميم", () => {
   it("⭐ ② بعد إغلاق المهمّة يمرّ البدء", async () => {
     const woId = await order("ap-2");
     const res = await requestDesignApproval({ workOrderId: woId }, CASHIER);
+    // دورةُ المهمّة الحقيقيّة: NEW ⇒ (سحب) IN_PROGRESS ⇒ (حلّ) RESOLVED — `resolveTask`
+    // ترفض المهمّة NEW صراحةً، فالتسجيل يمرّ بالسحب أوّلاً.
+    await claimTask(res.taskId, MANAGER);
     await resolveTask(res.taskId, MANAGER, "وافق العميل هاتفياً");
 
     await startWorkOrder(woId, CASHIER);
@@ -122,6 +125,7 @@ describe("ش٢ — حارس موافقة التصميم", () => {
   it("⭐ ③ نسخةٌ تُفتَح أثناء التنفيذ تمنع الوسم جاهزاً", async () => {
     const woId = await order("ap-3");
     const first = await requestDesignApproval({ workOrderId: woId }, CASHIER);
+    await claimTask(first.taskId, MANAGER);
     await resolveTask(first.taskId, MANAGER, "وافق");
     await startWorkOrder(woId, CASHIER);
 

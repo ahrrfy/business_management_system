@@ -777,8 +777,13 @@ export const workOrderRouter = router({
      *   · `openLoad`/`overdueLoad` — تجميعٌ على `workOrders` نفسها.
      *   · `onShift` — من `shifts` المفتوحة لنفس الفرع؛ **مصدرٌ جاهزٌ لم يُستعمَل في أيّ مسار
      *     إسناد قطّ** رغم أنّه يقول من هو على رأس العمل الآن.
-     *   · الأهليّة **بالوحدة لا بالدور الخامّ**: كان `role = 'print_operator'` حرفياً، والأدوار
-     *     تُحلّ عبر `permissionsOverride` ⇒ فنّيٌّ بدورٍ مخصّص مؤهَّلٍ فعلاً كان محجوباً.
+     *
+     * ⚠️ **تصويبٌ (١٩/٨، أمسكه `rbacTightening`)**: وسّعتُ الأهليّة أوّلاً إلى «كلّ من يملك
+     * `workorders:FULL`» ظنّاً أنّ فنّيّاً بدورٍ مخصّص كان محجوباً — **وهو ظنٌّ خاطئ**: الدور
+     * المخصّص يحمل `baseRole` الأساس (كما `reception_clerk` أساسُه `cashier`)، ففنّيٌّ مخصّص
+     * يبقى `print_operator`. والتوسيعُ فتح **الأدمن والمدير والكاشير منفّذين** — وهم يملكون
+     * الوحدة لأنّهم *يديرون* أوامر الشغل لا لأنّهم *ينفّذونها*.
+     * فالدورُ يبقى المرشِّح، والوحدةُ **تشديدٌ فوقه**: فنّيٌّ سُحبت وحدتُه لا يُسنَد إليه.
      */
     const now = new Date();
     const rows = await db
@@ -804,7 +809,7 @@ export const workOrderRouter = router({
         )`,
       })
       .from(users)
-      .where(and(eq(users.isActive, true), branchCondition))
+      .where(and(eq(users.isActive, true), eq(users.role, "print_operator"), branchCondition))
       .orderBy(asc(users.name));
 
     return rows

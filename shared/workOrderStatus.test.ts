@@ -6,7 +6,7 @@
  * حارسٌ يقرأ من مصدرٍ غير الذي ينفّذ عليه ليس حارساً — لذا لا قائمةَ مكتوبةً بيدٍ هنا:
  * إضافةُ حالةٍ أو فعلٍ في الشيفرة **تُحمِّر هذا الملف** حتى يُسمَّى عربياً.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -38,12 +38,24 @@ function enumFromSchema(): string[] {
   return [...m[1].matchAll(/"([A-Z_]+)"/g)].map((x) => x[1]);
 }
 
-/** أفعال التدقيق الحيّة على entityType:"workOrder" من الراوتر. */
+/**
+ * أفعال التدقيق الحيّة على `entityType:"workOrder"` — **من الراوتر وخدماته معاً**.
+ *
+ * كان المسحُ على الراوتر وحده، ثمّ نقلت ش٣ كتابةَ التدقيق إلى الخدمات (`logAuditTx` داخل
+ * المعاملة بدل `logAudit` بعدها) فصار مصدرُ الحقيقة موضعين — وحمّرَ الحارسُ بـ«اسمٌ لفعلٍ
+ * لا يسجّله أحد» وهو في الواقع يسجّله ملفٌّ لا يمسحه. الحارسُ يتبع الشيفرة لا العكس.
+ */
 function timelineActionsFromRouter(): string[] {
-  const src = read("server/routers/workOrderRouter.ts");
+  const files = [
+    "server/routers/workOrderRouter.ts",
+    ...readdirSync(join(ROOT, "server/services/workOrder"))
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
+      .map((f) => `server/services/workOrder/${f}`),
+  ];
   const found = new Set<string>();
-  // نمطان: كائنٌ متعدّد الأسطر، وسطرٌ واحد logAudit(..., { action: "…", entityType: "workOrder" … }).
-  for (const m of src.matchAll(/action:\s*"(workOrder\.[A-Za-z]+)"/g)) found.add(m[1]);
+  for (const f of files) {
+    for (const m of read(f).matchAll(/action:\s*"(workOrder\.[A-Za-z]+)"/g)) found.add(m[1]);
+  }
   return [...found].sort();
 }
 
