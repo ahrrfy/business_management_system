@@ -756,6 +756,7 @@ export async function getStudioCampaignAnalytics(actor: ProductStudioActor, camp
     .select({
       id: productImageJobs.id,
       status: productImageJobs.status,
+      assignedTo: productImageJobs.assignedTo,
       rejectionReason: productImageJobs.rejectionReason,
       createdAt: productImageJobs.createdAt,
       reviewedAt: productImageJobs.reviewedAt,
@@ -842,7 +843,7 @@ export async function getStudioCampaignAnalytics(actor: ProductStudioActor, camp
     completed: completedJobs.length,
     rejected: jobs.filter((job) => job.status === "REJECTED").length,
     pendingReview: jobs.filter((job) => job.status === "PENDING_REVIEW").length,
-    unassigned: jobs.filter((job) => job.status === "ASSIGNED").length,
+    unassigned: jobs.filter((job) => job.assignedTo == null).length,
     completionPercent: jobs.length === 0 ? 0 : Math.round((completedJobs.length / jobs.length) * 100),
     firstPassApprovalRate: firstReviewOutcomes === 0 ? null : Math.round((firstPassApproved / firstReviewOutcomes) * 100),
     medianCycleMinutes,
@@ -991,6 +992,7 @@ type StudioTaskCursor = {
   priorities: StudioPriority[];
   overdue: boolean | null;
   assigneeId: number | null;
+  productId: number | null;
   campaignId: number | null;
   unassigned: boolean;
   updatedAt: string;
@@ -1004,7 +1006,7 @@ function encodeStudioTaskCursor(cursor: StudioTaskCursor): string {
 function decodeStudioTaskCursor(value: string, expected: Omit<StudioTaskCursor, "updatedAt" | "id">): StudioTaskCursor {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as StudioTaskCursor;
-    if (parsed.scope !== expected.scope || JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) || JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) || parsed.overdue !== expected.overdue || parsed.assigneeId !== expected.assigneeId || parsed.campaignId !== expected.campaignId || parsed.unassigned !== expected.unassigned || typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) || !Number.isSafeInteger(parsed.id) || parsed.id < 1) throw new Error("invalid cursor");
+    if (parsed.scope !== expected.scope || JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) || JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) || parsed.overdue !== expected.overdue || parsed.assigneeId !== expected.assigneeId || parsed.productId !== expected.productId || parsed.campaignId !== expected.campaignId || parsed.unassigned !== expected.unassigned || typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) || !Number.isSafeInteger(parsed.id) || parsed.id < 1) throw new Error("invalid cursor");
     return parsed;
   } catch {
     throw new TRPCError({
@@ -1024,6 +1026,7 @@ export async function listStudioTasks(
     priority?: StudioPriority[];
     overdue?: boolean;
     assigneeId?: number;
+    productId?: number;
     campaignId?: number;
     unassigned?: boolean;
     now?: Date;
@@ -1034,6 +1037,7 @@ export async function listStudioTasks(
   const priorities = Array.from(new Set(input.priority ?? [])).sort();
   const statuses = Array.from(new Set(input.statuses ?? [])).sort();
   const assigneeId = input.assigneeId ?? null;
+  const productId = input.productId ?? null;
   const campaignId = input.campaignId ?? null;
   const cursorScope = {
     scope: input.scope,
@@ -1041,6 +1045,7 @@ export async function listStudioTasks(
     priorities,
     overdue: input.overdue ?? null,
     assigneeId,
+    productId,
     campaignId,
     unassigned: input.unassigned === true,
   };
@@ -1060,6 +1065,7 @@ export async function listStudioTasks(
     if (!isManager(actor) && assigneeId !== actor.userId) throw new TRPCError({ code: "FORBIDDEN" });
     conds.push(eq(productImageJobs.assignedTo, assigneeId));
   }
+  if (productId != null) conds.push(eq(productImageJobs.productId, productId));
   if (campaignId != null) conds.push(eq(productImageJobs.campaignId, campaignId));
   if (input.unassigned === true) conds.push(isNull(productImageJobs.assignedTo));
   if (input.overdue === true) {

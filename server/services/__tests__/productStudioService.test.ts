@@ -421,6 +421,41 @@ describe("product studio governed workflow", () => {
     });
   });
 
+  it("counts only jobs without an assignee as campaign unassigned work", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة الإسناد",
+      status: "ACTIVE",
+    });
+    await db().insert(s.productImageJobs).values([
+      {
+        productId: 1,
+        campaignId: campaign.campaignId,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "ASSIGNED",
+        assignedTo: worker.userId,
+        createdBy: manager.userId,
+        activeSlot: 1,
+        revision: 1,
+      },
+      {
+        productId: 2,
+        campaignId: campaign.campaignId,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "ASSIGNED",
+        assignedTo: null,
+        createdBy: manager.userId,
+        activeSlot: 1,
+        revision: 1,
+      },
+    ]);
+
+    await expect(
+      getStudioCampaignAnalytics(manager, campaign.campaignId),
+    ).resolves.toMatchObject({ unassigned: 1 });
+  });
+
   it("uses every first review outcome as the first-pass denominator", async () => {
     const campaign = await createStudioCampaign(manager, {
       name: "حملة رفض أولي",
@@ -740,6 +775,57 @@ describe("product studio governed workflow", () => {
       productName: "المنتج البعيد المطلوب",
     });
     expect(result.nextCursor).toBeNull();
+  });
+
+  it("resolves an owned product task server-side beyond the first fifty rows", async () => {
+    const productRows = Array.from({ length: 51 }, (_, index) => ({
+      id: index + 10,
+      name: `منتج مهمة ${index + 1}`,
+    }));
+    await db().insert(s.products).values(productRows);
+    await db().insert(s.productImageJobs).values(
+      productRows.map((product) => ({
+        productId: product.id,
+        branchId: 1,
+        mode: "FLATTEN" as const,
+        status: "ASSIGNED" as const,
+        assignedTo: worker.userId,
+        createdBy: manager.userId,
+        activeSlot: 1,
+        revision: 1,
+      })),
+    );
+
+    const result = await listStudioTasks(worker, {
+      scope: "MINE",
+      productId: 10,
+      limit: 1,
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ productId: 10, assignedTo: worker.userId }),
+    ]);
+  });
+
+  it("does not reveal a scanned product task assigned to another employee", async () => {
+    await db().insert(s.productImageJobs).values({
+      productId: 1,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: otherWorker.userId,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+    });
+
+    await expect(
+      listStudioTasks(worker, {
+        scope: "MINE",
+        productId: 1,
+        limit: 1,
+      }),
+    ).resolves.toMatchObject({ items: [], nextCursor: null });
   });
 
   it("returns twenty products per opaque cursor page without repeating a product", async () => {

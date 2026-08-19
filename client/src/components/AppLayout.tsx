@@ -5,7 +5,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { openSearch } from "@/lib/searchEvents";
-import { resetSessionQueryCache } from "@/lib/offline/sessionBoundary";
+import { resetSessionForLogout } from "@/lib/offline/sessionBoundary";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import {
   getOfflineProfile,
@@ -171,7 +171,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
-      await resetSessionQueryCache(queryClient);
+      await resetSessionForLogout(queryClient);
       window.location.replace("/login");
     },
   });

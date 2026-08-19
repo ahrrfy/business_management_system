@@ -9,7 +9,7 @@ import { translateLoginError } from "@/lib/loginErrors";
 import { saveOfflineProfile } from "@/lib/offline/pinLock";
 import { studioOfflineProfileInput } from "@/lib/productStudio/coldOfflinePolicy";
 import { saveStudioDraftIdentity } from "@/lib/productStudio/studioDrafts";
-import { resetSessionQueryCache } from "@/lib/offline/sessionBoundary";
+import { resetSessionForLogin } from "@/lib/offline/sessionBoundary";
 import { trpc } from "@/lib/trpc";
 import { useQueryClient } from "@tanstack/react-query";
 import { INTERNAL_ORIGIN, isPublicHost } from "@/lib/siteHosts";
@@ -63,10 +63,12 @@ export default function Login() {
     if (multiTenant && companyCode.trim()) {
       localStorage.setItem(LAST_COMPANY_CODE_KEY, companyCode.trim());
     }
-    // مفاتيح الاستعلام لا تتضمن هوية المستخدم؛ امسح كل بيانات الجلسة السابقة قبل
-    // تحميل هوية الجلسة الجديدة كي لا تظهر وردية/صلاحيات موظف آخر ولو للحظة.
-    await resetSessionQueryCache(queryClient);
     const freshMe = await utils.client.auth.me.query();
+    // مفاتيح الاستعلام لا تتضمن هوية المستخدم؛ امسح كاش الجلسة دائماً، لكن احتفظ
+    // بمسودات الاستوديو عند دخول الموظف نفسه وامسحها فقط عند تبدّل الهوية.
+    if (freshMe?.id) {
+      await resetSessionForLogin(queryClient, Number(freshMe.id));
+    }
     utils.auth.me.setData(undefined, freshMe);
     if (freshMe?.id && (typeof navigator === "undefined" || navigator.onLine)) {
       await saveStudioDraftIdentity(Number(freshMe.id)).catch(() => undefined);

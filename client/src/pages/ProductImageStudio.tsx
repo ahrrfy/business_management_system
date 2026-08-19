@@ -12,7 +12,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { canEditStudioTask, canReviewStudioTask, hasStudioOverrideReason, needsStudioEditOverride, needsStudioReviewOverride } from "@/lib/imageStudio/studioWorkflowPolicy";
-import { adjustStudioReviewZoom, defaultStudioScope, findScannedOwnedTask, mobileStudioPanel, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
+import { adjustStudioReviewZoom, defaultStudioScope, mobileStudioPanel, STUDIO_REJECTION_PRESETS, type StudioReviewImage } from "@/lib/productStudio/mobileStudioUi";
 import { loadStudioDraft, purgeStudioDraft, purgeStudioDraftsForUser, reconcileStudioDraftAfterReconnect, saveStudioDraft, listStudioDraftsForUser, loadStudioDraftIdentity, saveStudioDraftIdentity, type StudioDraft, type StudioDraftTaskSnapshot } from "@/lib/productStudio/studioDrafts";
 import { studioOfflineCapabilities, studioOfflineProfileInput } from "@/lib/productStudio/coldOfflinePolicy";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
@@ -169,6 +169,7 @@ export default function ProductImageStudio() {
   const [reviewOverrideReason, setReviewOverrideReason] = useState("");
   const [scopeInitialized, setScopeInitialized] = useState(false);
   const [taskScannerOpen, setTaskScannerOpen] = useState(false);
+  const [scannedTask, setScannedTask] = useState<StudioTask | null>(null);
   const [draftConflict, setDraftConflict] = useState(false);
   const [draftReady, setDraftReady] = useState(false);
   const [offlineDrafts, setOfflineDrafts] = useState<StudioDraft[]>([]);
@@ -230,7 +231,9 @@ export default function ProductImageStudio() {
     (campaign) => Number(campaign.id) === selectedCampaignId,
   );
   const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
-  const onlineSelected = taskItems.find((task) => Number(task.id) === selectedId) ?? null;
+  const onlineSelected =
+    taskItems.find((task) => Number(task.id) === selectedId) ??
+    (scannedTask && Number(scannedTask.id) === selectedId ? scannedTask : null);
   const selected =
     onlineSelected ??
     (offline && offlineSelectedDraft
@@ -578,6 +581,7 @@ export default function ProductImageStudio() {
 
   function selectTask(task: StudioTask) {
     setOfflineSelectedDraft(null);
+    setScannedTask(null);
     setSelectedId(Number(task.id));
   }
 
@@ -588,12 +592,19 @@ export default function ProductImageStudio() {
       const product = await utils.productStudio.resolveBarcode.fetch({
         barcode,
       });
-      const task = findScannedOwnedTask(taskItems, product.productId);
+      const resolved = await utils.productStudio.tasks.fetch({
+        scope: "MINE",
+        productId: product.productId,
+        limit: 1,
+      });
+      const task = resolved.items[0];
       if (!task) {
-        notify.err("لا توجد مهمة مسندة إليك لهذا المنتج ضمن قائمة عملي.");
+        notify.err("لا توجد مهمة مسندة إليك لهذا المنتج.");
         return;
       }
-      selectTask(task);
+      setOfflineSelectedDraft(null);
+      setScannedTask(task);
+      setSelectedId(Number(task.id));
     } catch (error) {
       notify.err(error);
     }

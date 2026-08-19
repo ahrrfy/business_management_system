@@ -60,6 +60,7 @@ export default defineConfig({
       "client/src/lib/productStudio/mobileStudioUi.test.ts",
       "client/src/lib/productStudio/coldOfflinePolicy.test.ts",
       "client/src/lib/productStudio/studioDrafts.test.ts",
+      "client/src/lib/offline/sessionBoundary.test.ts",
       "shared/moneyPrecision.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",

@@ -52,6 +52,7 @@ export const productStudioRouter = router({
         priority: z.array(priority).max(4).optional(),
         overdue: z.boolean().optional(),
         assigneeId: z.number().int().positive().optional(),
+        productId: z.number().int().positive().optional(),
         campaignId: campaignId.optional(),
         unassigned: z.boolean().optional(),
       }),
