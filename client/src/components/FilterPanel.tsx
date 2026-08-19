@@ -64,7 +64,7 @@ export default function FilterPanel({
           <SlidersHorizontal aria-hidden className="size-3.5" />
           الفلاتر
           {chips.length > 0 && (
-            <span className="rounded-full bg-primary px-1.5 text-[10px] font-black text-primary-foreground">
+            <span className="rounded-full bg-primary px-1.5 text-2xs font-bold text-primary-foreground">
               {chips.length}
             </span>
           )}
@@ -93,7 +93,7 @@ export default function FilterPanel({
           {chips.map((c) => (
             <span
               key={c.key}
-              className="inline-flex items-center gap-1 rounded-full border bg-muted/60 py-0.5 pe-1 ps-2 text-[11px] font-bold"
+              className="inline-flex items-center gap-1 rounded-full border bg-muted/60 py-0.5 pe-1 ps-2 text-2xs font-semibold"
             >
               <span className="text-muted-foreground">{c.field}:</span>
               <span>{c.value}</span>

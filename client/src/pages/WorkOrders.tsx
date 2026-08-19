@@ -12,7 +12,7 @@ import { Link, useLocation } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -1381,6 +1381,17 @@ export default function WorkOrders() {
     <div className="wob">
       <div className="wob-topbar">
         <div>
+          {/* ١٩/٨ (طلب المالك): مخرجا الشاشة — محطّة العمل والرئيسيّة. اللوحة تُفتَح من بطاقة
+              «لوحة الإنتاج» في الرئيسيّة ومن رأس المحطّة، وكانت بلا طريقِ عودةٍ إلى أيٍّ منهما. */}
+          <div className="mb-1 flex items-center gap-3">
+            <a href="/pos?mode=RECEPTION" className="inline-flex items-center gap-1 text-2xs font-bold text-muted-foreground hover:text-foreground hover:underline">
+              <ArrowRight aria-hidden className="size-3.5" /> محطة خدمة العملاء
+            </a>
+            <span aria-hidden className="text-muted-foreground/40">·</span>
+            <a href="/" className="inline-flex items-center gap-1 text-2xs font-bold text-muted-foreground hover:text-foreground hover:underline">
+              <Home aria-hidden className="size-3.5" /> الرئيسية
+            </a>
+          </div>
           <div className="wob-title">أوامر الشغل</div>
           <div className="wob-sub">من الاستلام إلى التسليم — اسحب البطاقة بين المراحل. فاتورة تلقائية عند التسليم.</div>
         </div>

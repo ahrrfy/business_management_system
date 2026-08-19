@@ -10,7 +10,7 @@
  * ⛔ لا ألوان خامّة ولا إيموجي — التوكنز وأيقونات `lucide-react` وحدها. والاتّجاه منطقيّ
  * (`inline-start/end`) لا يساريّ/يمينيّ، فالواجهة RTL.
  */
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Home } from "lucide-react";
 import { Link } from "wouter";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
@@ -42,13 +42,23 @@ export default function StationPageHeader({
 }: StationPageHeaderProps) {
   return (
     <header className="mb-5 flex flex-col gap-3 border-b pb-4">
-      <Link
-        href={backHref}
-        className="inline-flex w-fit items-center gap-1.5 text-xs font-bold text-muted-foreground hover:text-foreground"
-      >
-        <ArrowRight aria-hidden className="size-3.5" />
-        {backLabel}
-      </Link>
+      <div className="flex items-center gap-3">
+        <Link
+          href={backHref}
+          className="inline-flex w-fit items-center gap-1.5 text-xs font-bold text-muted-foreground hover:text-foreground"
+        >
+          <ArrowRight aria-hidden className="size-3.5" />
+          {backLabel}
+        </Link>
+        <span aria-hidden className="text-muted-foreground/40">·</span>
+        <Link
+          href="/"
+          className="inline-flex w-fit items-center gap-1.5 text-xs font-bold text-muted-foreground hover:text-foreground"
+        >
+          <Home aria-hidden className="size-3.5" />
+          الرئيسية
+        </Link>
+      </div>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <span
@@ -69,7 +79,7 @@ export default function StationPageHeader({
                 </span>
               )}
             </div>
-            <p className="mt-1 max-w-[68ch] text-[13px] leading-relaxed text-muted-foreground">
+            <p className="mt-1 max-w-[68ch] text-xs leading-relaxed text-muted-foreground">
               {description}
             </p>
           </div>
