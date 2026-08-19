@@ -763,16 +763,27 @@ export async function getStudioCampaignAnalytics(actor: ProductStudioActor, camp
     .from(productImageJobs)
     .where(and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.branchId, Number(campaign.branchId))));
   const ids = jobs.map((job) => String(job.id));
-  const rejects =
+  const reviewAudits =
     ids.length === 0
       ? []
       : await requireDb()
           .select({
+            id: auditLogs.id,
             entityId: auditLogs.entityId,
+            action: auditLogs.action,
             newValue: auditLogs.newValue,
+            createdAt: auditLogs.createdAt,
           })
           .from(auditLogs)
-          .where(and(eq(auditLogs.action, "productStudio.reject"), inArray(auditLogs.entityId, ids)));
+          .where(
+            and(
+              eq(auditLogs.entityType, "productImageJob"),
+              inArray(auditLogs.action, ["productStudio.approve", "productStudio.reject"]),
+              inArray(auditLogs.entityId, ids),
+            ),
+          )
+          .orderBy(asc(auditLogs.createdAt), asc(auditLogs.id));
+  const rejects = reviewAudits.filter((row) => row.action === "productStudio.reject");
   const rejectedIds = new Set(
     rejects
       .map((row) => row.entityId)
@@ -793,26 +804,36 @@ export async function getStudioCampaignAnalytics(actor: ProductStudioActor, camp
     }
   }
   const approvedJobs = jobs.filter((job) => job.status === "APPROVED");
+  // REVERTED is terminal only after revertStudioApproval restores an APPROVED source image
+  // in the same transaction, so it is completed without being a currently approved candidate.
+  const completedJobs = jobs.filter((job) => job.status === "APPROVED" || job.status === "REVERTED");
   const cycleMinutes = approvedJobs
     .filter((job): job is typeof job & { reviewedAt: Date } => job.reviewedAt != null)
     .map((job) => Math.max(0, Math.round((job.reviewedAt.getTime() - job.createdAt.getTime()) / 60_000)))
     .sort((a, b) => a - b);
   const middle = Math.floor(cycleMinutes.length / 2);
   const medianCycleMinutes = cycleMinutes.length === 0 ? null : cycleMinutes.length % 2 === 1 ? cycleMinutes[middle] : Math.round(((cycleMinutes[middle - 1] ?? 0) + (cycleMinutes[middle] ?? 0)) / 2);
-  const firstPassApproved = approvedJobs.filter((job) => !rejectedIds.has(String(job.id))).length;
-  const firstReviewOutcomes = new Set<string>([
-    ...approvedJobs.map((job) => String(job.id)),
-    ...jobs.filter((job) => job.status === "REJECTED").map((job) => String(job.id)),
-    ...Array.from(rejectedIds),
-  ]).size;
+  const firstReviewOutcomeByJob = new Map<string, "APPROVED" | "REJECTED">();
+  for (const row of reviewAudits) {
+    if (!row.entityId || firstReviewOutcomeByJob.has(row.entityId)) continue;
+    firstReviewOutcomeByJob.set(
+      row.entityId,
+      row.action === "productStudio.approve" ? "APPROVED" : "REJECTED",
+    );
+  }
+  const firstReviewOutcomes = firstReviewOutcomeByJob.size;
+  const firstPassApproved = Array.from(firstReviewOutcomeByJob.values()).filter(
+    (outcome) => outcome === "APPROVED",
+  ).length;
   return {
     campaignId,
     total: jobs.length,
     approved: approvedJobs.length,
+    completed: completedJobs.length,
     rejected: jobs.filter((job) => job.status === "REJECTED").length,
     pendingReview: jobs.filter((job) => job.status === "PENDING_REVIEW").length,
     unassigned: jobs.filter((job) => job.status === "ASSIGNED").length,
-    completionPercent: jobs.length === 0 ? 0 : Math.round((approvedJobs.length / jobs.length) * 100),
+    completionPercent: jobs.length === 0 ? 0 : Math.round((completedJobs.length / jobs.length) * 100),
     firstPassApprovalRate: firstReviewOutcomes === 0 ? null : Math.round((firstPassApproved / firstReviewOutcomes) * 100),
     medianCycleMinutes,
     rejectionReasons: Array.from(reasonCounts, ([reason, count]) => ({

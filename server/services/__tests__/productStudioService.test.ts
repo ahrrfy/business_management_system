@@ -415,23 +415,82 @@ describe("product studio governed workflow", () => {
       name: "حملة رفض أولي",
       status: "ACTIVE",
     });
-    await db().insert(s.productImageJobs).values({
-      productId: 1,
-      campaignId: campaign.campaignId,
+    const [created] = await db()
+      .insert(s.productImageJobs)
+      .values({
+        productId: 1,
+        campaignId: campaign.campaignId,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "REJECTED",
+        createdBy: manager.userId,
+        rejectionReason: "الصورة غير حادة",
+        reviewedAt: new Date("2026-08-19T12:00:00.000Z"),
+        activeSlot: 1,
+        revision: 2,
+      })
+      .$returningId();
+    await db().insert(s.auditLogs).values({
+      userId: manager.userId,
       branchId: 1,
-      mode: "FLATTEN",
-      status: "REJECTED",
-      createdBy: manager.userId,
-      rejectionReason: "الصورة غير حادة",
-      reviewedAt: new Date("2026-08-19T12:00:00.000Z"),
-      activeSlot: 1,
-      revision: 2,
+      action: "productStudio.reject",
+      entityType: "productImageJob",
+      entityId: String(created.id),
+      newValue: { reason: "الصورة غير حادة" },
     });
     await expect(getStudioCampaignAnalytics(manager, campaign.campaignId)).resolves.toMatchObject({
       approved: 0,
       rejected: 1,
       firstPassApprovalRate: 0,
       medianCycleMinutes: null,
+    });
+  });
+
+  it("keeps an approve-first reverted job completed and first-pass approved", async () => {
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة استرجاع اعتماد",
+      status: "ACTIVE",
+    });
+    const [created] = await db()
+      .insert(s.productImageJobs)
+      .values({
+        productId: 1,
+        campaignId: campaign.campaignId,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "REVERTED",
+        createdBy: manager.userId,
+        reviewedAt: new Date("2026-08-19T12:05:00.000Z"),
+        activeSlot: null,
+        revision: 3,
+      })
+      .$returningId();
+    const taskId = Number(created.id);
+    await db().insert(s.auditLogs).values([
+      {
+        userId: manager.userId,
+        branchId: 1,
+        action: "productStudio.approve",
+        entityType: "productImageJob",
+        entityId: String(taskId),
+        createdAt: new Date("2026-08-19T12:00:00.000Z"),
+      },
+      {
+        userId: manager.userId,
+        branchId: 1,
+        action: "productStudio.revert",
+        entityType: "productImageJob",
+        entityId: String(taskId),
+        createdAt: new Date("2026-08-19T12:05:00.000Z"),
+      },
+    ]);
+
+    await expect(getStudioCampaignAnalytics(manager, campaign.campaignId)).resolves.toMatchObject({
+      total: 1,
+      approved: 0,
+      completed: 1,
+      completionPercent: 100,
+      firstPassApprovalRate: 100,
     });
   });
   it("rejects stale revisions without overwriting a newer mobile save", async () => {
