@@ -387,14 +387,25 @@ describe("product studio governed workflow", () => {
     const approved = (await db().select({ id: s.productImageJobs.id }).from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId)))[0]!;
     await db()
       .insert(s.auditLogs)
-      .values({
-        userId: manager.userId,
-        branchId: 1,
-        action: "productStudio.reject",
-        entityType: "productImageJob",
-        entityId: String(approved.id),
-        newValue: { reason: "قص غير دقيق" },
-      });
+      .values([
+        {
+          userId: manager.userId,
+          branchId: 1,
+          action: "productStudio.reject",
+          entityType: "productImageJob",
+          entityId: String(approved.id),
+          newValue: { reason: "قص غير دقيق" },
+          createdAt: new Date("2026-08-19T11:00:00.000Z"),
+        },
+        {
+          userId: manager.userId,
+          branchId: 1,
+          action: "productStudio.approve",
+          entityType: "productImageJob",
+          entityId: String(approved.id),
+          createdAt: new Date("2026-08-19T12:00:00.000Z"),
+        },
+      ]);
 
     await expect(getStudioCampaignAnalytics(manager, campaign.campaignId)).resolves.toMatchObject({
       total: 2,
@@ -460,6 +471,7 @@ describe("product studio governed workflow", () => {
         mode: "FLATTEN",
         status: "REVERTED",
         createdBy: manager.userId,
+        createdAt: new Date("2026-08-19T11:00:00.000Z"),
         reviewedAt: new Date("2026-08-19T12:05:00.000Z"),
         activeSlot: null,
         revision: 3,
@@ -491,6 +503,7 @@ describe("product studio governed workflow", () => {
       completed: 1,
       completionPercent: 100,
       firstPassApprovalRate: 100,
+      medianCycleMinutes: 60,
     });
   });
   it("rejects stale revisions without overwriting a newer mobile save", async () => {

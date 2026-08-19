@@ -807,20 +807,30 @@ export async function getStudioCampaignAnalytics(actor: ProductStudioActor, camp
   // REVERTED is terminal only after revertStudioApproval restores an APPROVED source image
   // in the same transaction, so it is completed without being a currently approved candidate.
   const completedJobs = jobs.filter((job) => job.status === "APPROVED" || job.status === "REVERTED");
-  const cycleMinutes = approvedJobs
-    .filter((job): job is typeof job & { reviewedAt: Date } => job.reviewedAt != null)
-    .map((job) => Math.max(0, Math.round((job.reviewedAt.getTime() - job.createdAt.getTime()) / 60_000)))
+  const firstReviewOutcomeByJob = new Map<string, "APPROVED" | "REJECTED">();
+  const firstApprovalAtByJob = new Map<string, Date>();
+  for (const row of reviewAudits) {
+    if (!row.entityId) continue;
+    if (!firstReviewOutcomeByJob.has(row.entityId)) {
+      firstReviewOutcomeByJob.set(
+        row.entityId,
+        row.action === "productStudio.approve" ? "APPROVED" : "REJECTED",
+      );
+    }
+    if (row.action === "productStudio.approve" && !firstApprovalAtByJob.has(row.entityId)) {
+      firstApprovalAtByJob.set(row.entityId, row.createdAt);
+    }
+  }
+  const cycleMinutes = completedJobs
+    .flatMap((job) => {
+      const approvedAt = firstApprovalAtByJob.get(String(job.id));
+      return approvedAt
+        ? [Math.max(0, Math.round((approvedAt.getTime() - job.createdAt.getTime()) / 60_000))]
+        : [];
+    })
     .sort((a, b) => a - b);
   const middle = Math.floor(cycleMinutes.length / 2);
   const medianCycleMinutes = cycleMinutes.length === 0 ? null : cycleMinutes.length % 2 === 1 ? cycleMinutes[middle] : Math.round(((cycleMinutes[middle - 1] ?? 0) + (cycleMinutes[middle] ?? 0)) / 2);
-  const firstReviewOutcomeByJob = new Map<string, "APPROVED" | "REJECTED">();
-  for (const row of reviewAudits) {
-    if (!row.entityId || firstReviewOutcomeByJob.has(row.entityId)) continue;
-    firstReviewOutcomeByJob.set(
-      row.entityId,
-      row.action === "productStudio.approve" ? "APPROVED" : "REJECTED",
-    );
-  }
   const firstReviewOutcomes = firstReviewOutcomeByJob.size;
   const firstPassApproved = Array.from(firstReviewOutcomeByJob.values()).filter(
     (outcome) => outcome === "APPROVED",
