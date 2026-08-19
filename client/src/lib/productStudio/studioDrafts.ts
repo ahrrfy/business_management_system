@@ -6,8 +6,19 @@ import {
 import { offlineDb } from "@/lib/offline/db";
 
 export const STUDIO_DRAFT_TTL_MS = 24 * 60 * 60 * 1_000;
+export const STUDIO_DRAFT_RESUME_LEASE_MS = 60_000;
 
 export type StudioDraftMode = "FLATTEN" | "CUT" | "AI";
+
+export interface StudioDraftTaskSnapshot {
+  taskId: number;
+  productName: string;
+  currentDescription: string | null;
+  status: "ASSIGNED" | "IN_PROGRESS" | "REJECTED";
+  hasOriginal: boolean;
+  hasCandidate: boolean;
+  updatedAt: string;
+}
 
 export interface StudioDraftInput {
   userId: number;
@@ -19,6 +30,7 @@ export interface StudioDraftInput {
   imageDataUrl: string | null;
   originalDataUrl: string | null;
   processingReceipt: string | null;
+  taskSnapshot: StudioDraftTaskSnapshot;
   mode: StudioDraftMode;
 }
 
@@ -26,14 +38,24 @@ export interface StudioDraft extends StudioDraftInput {
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
-  /** علامة مشفرة دائمة تمنع تطبيق المسودة مرتين بعد إعادة تحميل المتصفح. */
-  resumeClaimedAt: number | null;
+  /** lease مشفّر قصير: يصدّ الاستئناف المتزامن ولا يقفل المسودة بعد crash/reload. */
+  resumeLease: { sessionId: string; expiresAt: number } | null;
 }
 
 /** لا يحمل سجل IndexedDB أي محتوى قابل للقراءة؛ المفتاح فهرسة محلية فقط. */
 export interface StudioDraftRecord {
   id: string;
   envelope: EncryptedEnvelope;
+}
+
+export interface StudioDraftIdentityRecord {
+  id: "studio-identity";
+  envelope: EncryptedEnvelope;
+}
+
+export interface StudioDraftIdentity {
+  userId: number;
+  savedAt: number;
 }
 
 export interface StudioDraftPersistence {
@@ -98,12 +120,26 @@ function validDraft(value: unknown): value is StudioDraft {
       draft.originalDataUrl === null) &&
     (typeof draft.processingReceipt === "string" ||
       draft.processingReceipt === null) &&
+    typeof draft.taskSnapshot === "object" &&
+    draft.taskSnapshot !== null &&
+    Number.isInteger(draft.taskSnapshot.taskId) &&
+    typeof draft.taskSnapshot.productName === "string" &&
+    (typeof draft.taskSnapshot.currentDescription === "string" ||
+      draft.taskSnapshot.currentDescription === null) &&
+    ["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(
+      draft.taskSnapshot.status ?? "",
+    ) &&
+    typeof draft.taskSnapshot.hasOriginal === "boolean" &&
+    typeof draft.taskSnapshot.hasCandidate === "boolean" &&
+    typeof draft.taskSnapshot.updatedAt === "string" &&
     (draft.mode === "FLATTEN" || draft.mode === "CUT" || draft.mode === "AI") &&
     typeof draft.createdAt === "number" &&
     typeof draft.updatedAt === "number" &&
     typeof draft.expiresAt === "number" &&
-    (typeof draft.resumeClaimedAt === "number" ||
-      draft.resumeClaimedAt === null)
+    (draft.resumeLease === null ||
+      (typeof draft.resumeLease === "object" &&
+        typeof draft.resumeLease.sessionId === "string" &&
+        typeof draft.resumeLease.expiresAt === "number"))
   );
 }
 
@@ -116,6 +152,7 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
   const encrypt = options.encrypt ?? encryptJson;
   const decrypt = options.decrypt ?? decryptJson;
   const idFor = options.idFor ?? studioDraftOpaqueId;
+  const sessionId = crypto.randomUUID();
 
   async function readRow(
     row: StudioDraftRecord,
@@ -170,7 +207,7 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
         createdAt: existing?.createdAt ?? timestamp,
         updatedAt: timestamp,
         expiresAt: timestamp + STUDIO_DRAFT_TTL_MS,
-        resumeClaimedAt: unchanged ? existing.resumeClaimedAt : null,
+        resumeLease: unchanged ? existing.resumeLease : null,
       };
       await options.persistence.put({ id, envelope: await encrypt(draft) });
       return draft;
@@ -247,15 +284,65 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
         draft.revision !== context.revision
       )
         return { kind: "CONFLICT", draft };
-      if (draft.resumeClaimedAt != null)
+      if (draft.resumeLease && draft.resumeLease.expiresAt > now())
         return { kind: "ALREADY_RESUMED", draft };
-      const claimed = { ...draft, resumeClaimedAt: now() };
+      const claimed = {
+        ...draft,
+        resumeLease: {
+          sessionId,
+          expiresAt: now() + STUDIO_DRAFT_RESUME_LEASE_MS,
+        },
+      };
       await options.persistence.put({
         id: await idFor(context.userId, context.taskId),
         envelope: await encrypt(claimed),
       });
       return { kind: "RESUME", draft: claimed };
     },
+  };
+}
+
+interface StudioDraftIdentityStoreOptions {
+  persistence: Pick<StudioDraftPersistence, "get" | "put" | "delete">;
+  now?: () => number;
+  encrypt?: (value: unknown) => Promise<EncryptedEnvelope>;
+  decrypt?: <T>(envelope: EncryptedEnvelope) => Promise<T>;
+}
+
+/** هوية محلية مشفرة للاستعادة الباردة فقط؛ لا تصلح أبداً كإثبات صلاحية أو إذن شبكة. */
+export function createStudioDraftIdentityStore(
+  options: StudioDraftIdentityStoreOptions,
+) {
+  const now = options.now ?? Date.now;
+  const encrypt = options.encrypt ?? encryptJson;
+  const decrypt = options.decrypt ?? decryptJson;
+  const id = "studio-identity" as const;
+  return {
+    async save(userId: number): Promise<StudioDraftIdentity> {
+      const identity = { userId, savedAt: now() };
+      await options.persistence.put({ id, envelope: await encrypt(identity) });
+      return identity;
+    },
+    async load(): Promise<StudioDraftIdentity | null> {
+      const row = await options.persistence.get(id);
+      if (!row) return null;
+      try {
+        const identity = await decrypt<StudioDraftIdentity>(row.envelope);
+        if (
+          !Number.isInteger(identity?.userId) ||
+          identity.userId <= 0 ||
+          typeof identity.savedAt !== "number"
+        ) {
+          await options.persistence.delete(id);
+          return null;
+        }
+        return identity;
+      } catch {
+        await options.persistence.delete(id);
+        return null;
+      }
+    },
+    clear: () => options.persistence.delete(id),
   };
 }
 
@@ -266,17 +353,33 @@ const indexedDbPersistence: StudioDraftPersistence = {
   entries: () => offlineDb.studioDrafts.toArray(),
 };
 
+const indexedDbIdentityPersistence: StudioDraftIdentityStoreOptions["persistence"] =
+  {
+    get: (id) => offlineDb.studioDraftIdentity.get(id),
+    put: (row) =>
+      offlineDb.studioDraftIdentity.put(row as StudioDraftIdentityRecord),
+    delete: (id) => offlineDb.studioDraftIdentity.delete(id),
+  };
+
 const deviceStudioDrafts = createStudioDraftStore({
   persistence: indexedDbPersistence,
+});
+const deviceStudioDraftIdentity = createStudioDraftIdentityStore({
+  persistence: indexedDbIdentityPersistence,
 });
 
 export const saveStudioDraft = deviceStudioDrafts.save;
 export const loadStudioDraft = deviceStudioDrafts.load;
 export const purgeStudioDraft = deviceStudioDrafts.purge;
 export const purgeStudioDraftsForUser = deviceStudioDrafts.purgeUser;
-export const purgeAllStudioDrafts = deviceStudioDrafts.purgeAll;
+export async function purgeAllStudioDrafts(): Promise<void> {
+  await deviceStudioDrafts.purgeAll();
+  await deviceStudioDraftIdentity.clear();
+}
 export const purgeExpiredStudioDrafts = deviceStudioDrafts.purgeExpired;
 export const listStudioDraftsForUser = deviceStudioDrafts.listForUser;
+export const saveStudioDraftIdentity = deviceStudioDraftIdentity.save;
+export const loadStudioDraftIdentity = deviceStudioDraftIdentity.load;
 export const reconcileStudioDraftAfterReconnect =
   deviceStudioDrafts.reconcileAndClaimResume;
 

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { translateLoginError } from "@/lib/loginErrors";
+import { saveStudioDraftIdentity } from "@/lib/productStudio/studioDrafts";
 import { resetSessionQueryCache } from "@/lib/offline/sessionBoundary";
 import { trpc } from "@/lib/trpc";
 import { useQueryClient } from "@tanstack/react-query";
@@ -65,6 +66,9 @@ export default function Login() {
     await resetSessionQueryCache(queryClient);
     const freshMe = await utils.client.auth.me.query();
     utils.auth.me.setData(undefined, freshMe);
+    if (freshMe?.id && (typeof navigator === "undefined" || navigator.onLine)) {
+      await saveStudioDraftIdentity(Number(freshMe.id)).catch(() => undefined);
+    }
     const role = freshMe?.role;
     // سياسة الدومينَين: الدخول من الدومين العام مقصورٌ فعلياً على المندوب (تطبيقه مبنيّ عليه).
     // موظّفٌ آخر دخل من هناك يحصل على جلسةٍ لا تُقرأ على دومين الشركة (الكوكي مقصور بالمضيف) ⇒

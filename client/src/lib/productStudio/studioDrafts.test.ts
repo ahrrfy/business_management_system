@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { decryptJsonWithKey, encryptJsonWithKey } from "@/lib/offline/crypto";
 import {
+  createStudioDraftIdentityStore,
   createStudioDraftStore,
   type StudioDraftPersistence,
   type StudioDraftRecord,
@@ -30,17 +31,44 @@ async function makeHarness(now = 1_000) {
     ["encrypt", "decrypt"],
   );
   const persistence = memoryPersistence();
+  let clock = now;
   const create = () =>
     createStudioDraftStore({
       persistence,
-      now: () => now,
+      now: () => clock,
       // محاكاة فهرس HMAC: ثابت عبر إعادة التحميل ولا يحتوي userId/taskId كنص صريح.
       idFor: async (userId, taskId) =>
         `opaque-${(userId * 65_537 + taskId).toString(16)}`,
       encrypt: (value) => encryptJsonWithKey(value, key),
       decrypt: (envelope) => decryptJsonWithKey(envelope, key),
     });
-  return { persistence, create, store: create() };
+  const identityRows = new Map<string, StudioDraftRecord>();
+  const identityPersistence: StudioDraftPersistence = {
+    get: async (id) => identityRows.get(id),
+    put: async (row) => {
+      identityRows.set(row.id, row);
+    },
+    delete: async (id) => {
+      identityRows.delete(id);
+    },
+    entries: async () => [...identityRows.values()],
+  };
+  const createIdentity = () =>
+    createStudioDraftIdentityStore({
+      persistence: identityPersistence,
+      now: () => clock,
+      encrypt: (value) => encryptJsonWithKey(value, key),
+      decrypt: (envelope) => decryptJsonWithKey(envelope, key),
+    });
+  return {
+    persistence,
+    create,
+    store: create(),
+    createIdentity,
+    advance: (ms: number) => {
+      clock += ms;
+    },
+  };
 }
 
 const input = {
@@ -53,6 +81,15 @@ const input = {
   imageDataUrl: "data:image/webp;base64,secret-image-bytes",
   originalDataUrl: "data:image/webp;base64,secret-original-bytes",
   processingReceipt: "fc1ee68b-7e4a-461b-8448-25f18a64f8b4",
+  taskSnapshot: {
+    taskId: 41,
+    productName: "قلم أزرق",
+    currentDescription: "الوصف قبل التعديل",
+    status: "IN_PROGRESS" as const,
+    hasOriginal: true,
+    hasCandidate: false,
+    updatedAt: "2026-08-19T10:00:00.000Z",
+  },
   mode: "CUT" as const,
 };
 
@@ -121,8 +158,8 @@ describe("encrypted studio drafts", () => {
     expect(await store.load(input.userId, input.taskId)).toMatchObject(input);
   });
 
-  it("persists the exactly-once resume claim across a browser reload", async () => {
-    const { create, store } = await makeHarness();
+  it("holds a reload-safe resume lease only until its retry window expires", async () => {
+    const { advance, create, store } = await makeHarness();
     await store.save(input);
     const context = {
       userId: input.userId,
@@ -134,6 +171,10 @@ describe("encrypted studio drafts", () => {
     expect((await store.reconcileAndClaimResume(context)).kind).toBe("RESUME");
     expect((await create().reconcileAndClaimResume(context)).kind).toBe(
       "ALREADY_RESUMED",
+    );
+    advance(60_001);
+    expect((await create().reconcileAndClaimResume(context)).kind).toBe(
+      "RESUME",
     );
   });
 
@@ -159,6 +200,22 @@ describe("encrypted studio drafts", () => {
     const { create, store } = await makeHarness();
     await store.save(input);
     expect(await create().listForUser(input.userId)).toMatchObject([input]);
+  });
+
+  it("restores cold offline ownership and the effective task snapshot without an auth query", async () => {
+    const { create, createIdentity, store } = await makeHarness();
+    await store.save(input);
+    await createIdentity().save(input.userId);
+
+    const coldIdentity = await createIdentity().load();
+    expect(coldIdentity).toMatchObject({ userId: input.userId });
+    expect(await create().listForUser(coldIdentity!.userId)).toMatchObject([
+      {
+        taskSnapshot: input.taskSnapshot,
+        originalDataUrl: input.originalDataUrl,
+        processingReceipt: input.processingReceipt,
+      },
+    ]);
   });
 
   it("retains a draft as a conflict when its task disappears after reconnect", async () => {

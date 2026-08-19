@@ -32,8 +32,11 @@ import {
   reconcileStudioDraftAfterReconnect,
   saveStudioDraft,
   listStudioDraftsForUser,
+  loadStudioDraftIdentity,
+  saveStudioDraftIdentity,
   studioTaskRevision,
   type StudioDraft,
+  type StudioDraftTaskSnapshot,
 } from "@/lib/productStudio/studioDrafts";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
@@ -63,6 +66,18 @@ const CameraScanner = lazy(() =>
     default: module.CameraScanner,
   })),
 );
+
+function taskSnapshot(task: StudioTask): StudioDraftTaskSnapshot {
+  return {
+    taskId: Number(task.id),
+    productName: task.productName,
+    currentDescription: task.currentDescription ?? null,
+    status: task.status as StudioDraftTaskSnapshot["status"],
+    hasOriginal: task.hasOriginal,
+    hasCandidate: task.hasCandidate,
+    updatedAt: studioTaskRevision(task.updatedAt),
+  };
+}
 
 export const STUDIO_STORAGE_DISABLED_MESSAGE =
   "وضع القراءة القديم فعّال: مخزن R2 الخاص غير مهيأ. الإسناد ومعالجة الصور والاعتماد متوقفة بأمان، بينما تبقى الإحصاءات والمهام والسجل متاحة للقراءة.";
@@ -247,6 +262,11 @@ export default function ProductImageStudio() {
   const [draftConflict, setDraftConflict] = useState(false);
   const [draftReady, setDraftReady] = useState(false);
   const [offlineDrafts, setOfflineDrafts] = useState<StudioDraft[]>([]);
+  const [offlineSelectedDraft, setOfflineSelectedDraft] =
+    useState<StudioDraft | null>(null);
+  const [coldIdentityUserId, setColdIdentityUserId] = useState<number | null>(
+    null,
+  );
   const previousUserId = useRef<number | null>(null);
 
   const utils = trpc.useUtils();
@@ -264,8 +284,39 @@ export default function ProductImageStudio() {
   const assignees = trpc.productStudio.assignees.useQuery(undefined, {
     enabled: dashboard.data?.canManage === true,
   });
-  const selected =
+  const onlineSelected =
     tasks.data?.find((task) => Number(task.id) === selectedId) ?? null;
+  const selected =
+    onlineSelected ??
+    (offline && offlineSelectedDraft
+      ? ({
+          id: offlineSelectedDraft.taskSnapshot.taskId,
+          productId: null,
+          branchId: null,
+          productName: offlineSelectedDraft.taskSnapshot.productName,
+          currentDescription:
+            offlineSelectedDraft.taskSnapshot.currentDescription,
+          status: offlineSelectedDraft.taskSnapshot.status,
+          mode:
+            offlineSelectedDraft.mode === "AI"
+              ? "FLATTEN"
+              : offlineSelectedDraft.mode,
+          assignedTo: offlineSelectedDraft.userId,
+          assigneeName: null,
+          proposedName: offlineSelectedDraft.proposedName,
+          proposedDescription: offlineSelectedDraft.proposedDescription,
+          proposedMarketingCopy: offlineSelectedDraft.proposedMarketingCopy,
+          rejectionReason: null,
+          sourceImageId: null,
+          hasOriginal: offlineSelectedDraft.taskSnapshot.hasOriginal,
+          hasCandidate: offlineSelectedDraft.taskSnapshot.hasCandidate,
+          createdAt: new Date(offlineSelectedDraft.createdAt),
+          updatedAt: new Date(offlineSelectedDraft.taskSnapshot.updatedAt),
+          submittedAt: null,
+          submittedBy: null,
+          reviewedAt: null,
+        } as StudioTask)
+      : null);
   const selectedRevision = selected
     ? studioTaskRevision(selected.updatedAt)
     : "";
@@ -274,8 +325,8 @@ export default function ProductImageStudio() {
     role: me.data?.role ?? "",
     isOwner: me.data?.isOwner === true,
   };
-  const authenticatedUserId =
-    workflowUser.userId > 0 ? workflowUser.userId : null;
+  const onlineUserId = workflowUser.userId > 0 ? workflowUser.userId : null;
+  const authenticatedUserId = onlineUserId ?? coldIdentityUserId;
   const editOverrideRequired = selected
     ? needsStudioEditOverride(selected, workflowUser)
     : false;
@@ -283,7 +334,9 @@ export default function ProductImageStudio() {
     ? needsStudioReviewOverride(selected, workflowUser)
     : false;
   const editable = selected
-    ? canEditStudioTask(selected, workflowUser, editOverrideReason)
+    ? offline && offlineSelectedDraft != null
+      ? true
+      : canEditStudioTask(selected, workflowUser, editOverrideReason)
     : false;
   const reviewable = selected
     ? canReviewStudioTask(selected, workflowUser, reviewOverrideReason)
@@ -297,9 +350,11 @@ export default function ProductImageStudio() {
   const preview = trpc.productStudio.candidatePreview.useQuery(
     { taskId: selectedId ?? 0 },
     {
-      enabled: Boolean(
-        selectedId && selected?.hasCandidate && dashboard.data?.storageReady,
-      ),
+      enabled:
+        !offline &&
+        Boolean(
+          selectedId && selected?.hasCandidate && dashboard.data?.storageReady,
+        ),
       staleTime: 0,
       gcTime: 0,
     },
@@ -307,12 +362,14 @@ export default function ProductImageStudio() {
   const sourcePreview = trpc.productStudio.sourcePreview.useQuery(
     { taskId: selectedId ?? 0 },
     {
-      enabled: Boolean(
-        selectedId &&
-        selected?.hasOriginal &&
-        dashboard.data?.storageReady &&
-        editable,
-      ),
+      enabled:
+        !offline &&
+        Boolean(
+          selectedId &&
+          selected?.hasOriginal &&
+          dashboard.data?.storageReady &&
+          editable,
+        ),
       staleTime: 0,
       gcTime: 0,
     },
@@ -391,6 +448,19 @@ export default function ProductImageStudio() {
     }
     previousUserId.current = current;
   }, [authenticatedUserId]);
+
+  useEffect(() => {
+    if (!offline && onlineUserId) {
+      setColdIdentityUserId(onlineUserId);
+      void saveStudioDraftIdentity(onlineUserId).catch(() => undefined);
+      return;
+    }
+    if (offline && !onlineUserId) {
+      void loadStudioDraftIdentity()
+        .then((identity) => setColdIdentityUserId(identity?.userId ?? null))
+        .catch(() => setColdIdentityUserId(null));
+    }
+  }, [offline, onlineUserId]);
 
   useEffect(() => {
     if (!selected) return;
@@ -508,6 +578,7 @@ export default function ProductImageStudio() {
         imageDataUrl: images[0]?.dataUrl ?? null,
         originalDataUrl: originalDataUrl || null,
         processingReceipt,
+        taskSnapshot: taskSnapshot(selected),
         mode: studioMode,
       }).catch(() => undefined);
     }, 650);
@@ -542,6 +613,7 @@ export default function ProductImageStudio() {
   }, [images.length, selectedId, sourcePreview.data]);
 
   function selectTask(task: StudioTask) {
+    setOfflineSelectedDraft(null);
     setSelectedId(Number(task.id));
   }
 
@@ -655,6 +727,7 @@ export default function ProductImageStudio() {
                   className="min-h-11"
                   onClick={() => {
                     applyLocalDraft(draft);
+                    setOfflineSelectedDraft(draft);
                     setSelectedId(draft.taskId);
                     setDraftReady(true);
                     notify.ok(
@@ -798,6 +871,7 @@ export default function ProductImageStudio() {
         onValueChange={(value) => {
           setScope(value as Scope);
           setSelectedId(null);
+          setOfflineSelectedDraft(null);
         }}
       >
         <TabsList className="h-auto max-w-full flex-wrap justify-start">

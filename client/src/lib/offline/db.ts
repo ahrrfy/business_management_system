@@ -12,7 +12,10 @@ import type {
   OfflineStockRow,
 } from "@shared/offlineCatalog";
 import { LEGACY_OUTBOX_REVIEW_MESSAGE } from "./outboxIdentity";
-import type { StudioDraftRecord } from "../productStudio/studioDrafts";
+import type {
+  StudioDraftIdentityRecord,
+  StudioDraftRecord,
+} from "../productStudio/studioDrafts";
 
 export interface OfflineMetaRow {
   key: string;
@@ -74,6 +77,7 @@ class OfflineDb extends Dexie {
   keys!: Table<OfflineKeyRow, string>;
   profile!: Table<OfflineProfileRow, string>;
   studioDrafts!: Table<StudioDraftRecord, string>;
+  studioDraftIdentity!: Table<StudioDraftIdentityRecord, string>;
 
   constructor() {
     super("alroya-offline");
@@ -114,6 +118,9 @@ class OfflineDb extends Dexie {
     // مسودات استوديو المنتج: record يحمل envelope مشفراً فقط؛ لا حقول محتوى صريحة.
     this.version(4).stores({
       studioDrafts: "id",
+    });
+    this.version(5).stores({
+      studioDraftIdentity: "id",
     });
   }
 }
