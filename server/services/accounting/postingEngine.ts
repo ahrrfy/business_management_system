@@ -133,6 +133,7 @@ export type PostingProfile =
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
   | "ADJUST_WIP_CONSUME"
+  | "ADJUST_WIP_WASTE"
   | "ADJUST_WIP_CANCEL"
   | "ADJUST_CASH"
   | "ADJUST_AR"
@@ -291,6 +292,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "ADJUST_INVENTORY_LOSS",
     "ADJUST_WIP_CONSUME",
     "ADJUST_WIP_CANCEL",
+    "ADJUST_WIP_WASTE",
     "ADJUST_CASH",
     "ADJUST_AR",
     "ADJUST_AP",
@@ -1440,6 +1442,31 @@ export const PROFILE_POLICIES = Object.freeze({
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["INVENTORY"]),
       ],
       requireRoleComponents: ["INVENTORY", "WORK_IN_PROGRESS"],
+    },
+  ),
+  /**
+   * **هدرُ إلغاء أمر الشغل** (ش٤، ١٩/٨) — القيمةُ تنتقل من WIP إلى **خسارة** لا إلى مخزون.
+   *
+   * ولا يمكن إعادةُ استعمال `WASTAGE_INVENTORY`: دائنُه مثبَّتٌ على `INVENTORY`
+   * و`validatePostingIntentPolicy` تفرضه — والمادّة المُهدَرة **خرجت من المخزون فعلاً** عند
+   * بدء التنفيذ، فرصيدُها في WIP لا في INVENTORY. حسابُها هناك خطأٌ مزدوج.
+   *
+   * ⛔ **ولا حركةَ مخزونٍ لهذا القيد إطلاقاً**: `createStockExpenseTx` تستدعي `applyMovement`
+   * بـOUT، والمادّة مخصومةٌ سلفاً ⇒ **خصمٌ مزدوج** يُنتج رصيداً سالباً كاذباً أو رفضَ
+   * CONFLICT عند الإلغاء. الأثر قيدٌ فقط.
+   *
+   * والثابت المحروس: `ADJUST_WIP_CONSUME` (دخولٌ) − `ADJUST_WIP_CANCEL` (رجوع) −
+   * `ADJUST_WIP_WASTE` (هدر) = **صفر** لكل أمرٍ عند إغلاقه.
+   */
+  ADJUST_WIP_WASTE: profilePolicy(
+    "ADJUST",
+    ["LOSSES"],
+    ["WORK_IN_PROGRESS"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
+      ],
+      requireRoleComponents: ["LOSSES", "WORK_IN_PROGRESS"],
     },
   ),
   ADJUST_CASH: profilePolicy("ADJUST", CASH_ASSETS, ["ROUNDING_DIFF"], {

@@ -327,6 +327,8 @@ export const deliveryRouter = router({
         deliveryAddress: z.string().max(1000).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
         assignedUserId: z.number().int().positive().nullish(),
+        /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
+        partialDispatchConfirmed: z.boolean().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -336,7 +338,10 @@ export const deliveryRouter = router({
         action: "delivery.dispatchInvoice",
         entityType: "deliveryConsignment",
         entityId: res.consignmentId,
-        newValue: { invoiceId: input.invoiceId, partyId: input.partyId, codAmount: res.codAmount, deliveryFee: res.deliveryFee },
+        newValue: {
+          invoiceId: input.invoiceId, partyId: input.partyId, codAmount: res.codAmount, deliveryFee: res.deliveryFee,
+          partialDispatchConfirmed: input.partialDispatchConfirmed === true,
+        },
       });
       return res;
     }),

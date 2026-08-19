@@ -278,10 +278,18 @@ const woListFilters = {
   deliveredTo: z.string().optional(),
   /** فلتر الفنّي المسؤول — لا يوسّع النطاق: عزل الفرع/الموظف القائم يبقى حاكماً فوقه. */
   assignedTo: z.number().int().positive().optional(),
+  /**
+   * **«لم يحضر أصحابها»** (ش٤): أوامرُ `READY` مضى على **جاهزيّتها** كذا يوماً بلا تسليم.
+   *
+   * ولحظةُ الجاهزية **مشتقّة** لا عمود: `workStartedAt + workSeconds` — صحيحةٌ لأنّ
+   * `markWorkOrderReady` هو الكاتبُ الوحيد لـ`workSeconds` (يحسبه `TIMESTAMPDIFF` من البدء
+   * حتى لحظته). فلا عمودَ رابعَ يُضاف ولا كاتبَ جديدَ ينجرف.
+   */
+  awaitingPickupDays: z.number().int().min(1).max(365).optional(),
 };
 
 /** يحوّل فلاتر q/from/to/deliveredFrom/deliveredTo/assignedTo إلى شروط SQL — q على رقم الأمر/العنوان/اسم العميل (join العملاء قائم). */
-function buildWoFilterConds(input: { q?: string; from?: string; to?: string; deliveredFrom?: string; deliveredTo?: string; assignedTo?: number } | undefined): SQL[] {
+function buildWoFilterConds(input: { q?: string; from?: string; to?: string; deliveredFrom?: string; deliveredTo?: string; assignedTo?: number; awaitingPickupDays?: number } | undefined): SQL[] {
   const conds: SQL[] = [];
   const search = input?.q?.trim();
   if (search) {
@@ -314,6 +322,16 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
     }
   }
   if (input?.assignedTo != null) conds.push(eq(workOrders.assignedTo, input.assignedTo));
+  if (input?.awaitingPickupDays != null) {
+    // الأمرُ جاهزٌ فعلاً، ولحظةُ جاهزيّته أقدمُ من العتبة. `workSeconds IS NULL` تُستبعَد صراحةً:
+    // جاهزيّةٌ بلا مؤقّت (بياناتٌ قديمة) لا يُعرف عمرُها ⇒ ادّعاؤها «متأخّرة» كذبٌ، وادّعاؤها
+    // «حديثة» كذبٌ آخر — إخراجُها من الفلتر هو الصادق، وتبقى مرئيّةً في القائمة بلا فلتر.
+    conds.push(
+      sql`${workOrders.status} = 'READY' AND ${workOrders.workStartedAt} IS NOT NULL AND ${workOrders.workSeconds} IS NOT NULL
+          AND DATE_ADD(${workOrders.workStartedAt}, INTERVAL ${workOrders.workSeconds} SECOND)
+              < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ${input.awaitingPickupDays} DAY)`,
+    );
+  }
   return conds;
 }
 
@@ -1437,6 +1455,17 @@ export const workOrderRouter = router({
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه استرداد العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
       clientRequestId: z.string().trim().min(1).max(100).optional(),
+      /** سببُ الإلغاء — يُكتب على الأمر (0219) فيصير قابلاً للقراءة والتقرير لا حبيسَ التدقيق. */
+      reason: z.string().trim().min(3).max(500).optional(),
+      /**
+       * مصيرُ كلّ خامة مستهلَكة. **حذفُه = رجوعٌ كامل** (السلوك القائم حرفياً)، ووجودُه
+       * يلزمه تغطيةُ كلّ الأسطر بمجموعٍ يساوي المستهلَك بالضبط — تتحقّق منه الخدمة.
+       */
+      materials: z.array(z.object({
+        workOrderMaterialId: z.number().int().positive(),
+        returnBase: z.number().int().min(0),
+        wasteBase: z.number().int().min(0),
+      })).max(200).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const res = await cancelWorkOrder(
@@ -1445,9 +1474,16 @@ export const workOrderRouter = router({
         {
           refundShiftId: input.refundShiftId ?? null,
           clientRequestId: input.clientRequestId ?? null,
+          reason: input.reason ?? null,
+          materials: input.materials ?? null,
         },
       );
-      await logAudit(ctx, { action: "workOrder.cancel", entityType: "workOrder", entityId: input.workOrderId });
+      await logAudit(ctx, {
+        action: "workOrder.cancel",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { reason: input.reason ?? null, wastedLines: (input.materials ?? []).filter((m) => m.wasteBase > 0).length },
+      });
       return res;
     }),
 

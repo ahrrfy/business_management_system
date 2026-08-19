@@ -1,4 +1,5 @@
 import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
+import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
 import DesignFileCard from "@/components/workorder/DesignFileCard";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ChannelBadge } from "@/components/ChannelBadge";
@@ -160,6 +161,7 @@ export default function WorkOrderDetail() {
     onSuccess: async (r) => { setDone(`تم التسليم. فاتورة ${r.invoiceNumber} (${r.status}).`); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
     onError: (e) => setError(e.message),
   });
+  const [cancelOpen, setCancelOpen] = useState(false);
   const cancel = trpc.workOrders.cancel.useMutation({
     onSuccess: async (result) => {
       const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
@@ -690,20 +692,7 @@ export default function WorkOrderDetail() {
         {canCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
-            onClick={async () => {
-              if (!(await confirm({
-                variant: "warning",
-                title: "إلغاء طلب الخدمة",
-                description: `سيُلغى أمر «${data.title}» (${data.orderNumber})، وتُعاد المواد للمخزون إن كانت قد خُصمت. هل تريد المتابعة؟`,
-                confirmText: "إلغاء الأمر",
-              }))) return;
-              const key = `work-order-cancel-request:${workOrderId}`;
-              cancelRequestIdRef.current ??=
-                (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null)
-                ?? newClientRequestId();
-              if (typeof window !== "undefined") window.sessionStorage.setItem(key, cancelRequestIdRef.current);
-              cancel.mutate({ workOrderId, clientRequestId: cancelRequestIdRef.current });
-            }}
+            onClick={() => setCancelOpen(true)}
             disabled={cancel.isPending}
           >
             {cancel.isPending ? "جارٍ…" : "إلغاء الأمر"}
@@ -714,6 +703,39 @@ export default function WorkOrderDetail() {
           <Link href={`/invoices/${data.invoiceId}`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
         )}
       </div>
+
+      <CancelWorkOrderDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        orderNumber={data.orderNumber}
+        title={data.title}
+        // الخامة تُعرَض فقط بعد البدء — قبله لا استهلاك، فجدولُ الهدر يكذب لو ظهر.
+        materials={
+          data.status === "IN_PROGRESS" || data.status === "READY"
+            ? (data.materials ?? []).map((m) => ({
+                id: Number(m.id),
+                name: [m.productName, m.variantName].filter(Boolean).join(" — ") || m.sku || `#${m.variantId}`,
+                baseQuantity: Number(m.baseQuantity),
+                unitCost: m.unitCost ?? null,
+              }))
+            : []
+        }
+        pending={cancel.isPending}
+        onConfirm={(d) => {
+          const key = `work-order-cancel-request:${workOrderId}`;
+          cancelRequestIdRef.current ??=
+            (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null)
+            ?? newClientRequestId();
+          if (typeof window !== "undefined") window.sessionStorage.setItem(key, cancelRequestIdRef.current);
+          setCancelOpen(false);
+          cancel.mutate({
+            workOrderId,
+            clientRequestId: cancelRequestIdRef.current,
+            reason: d.reason,
+            materials: d.materials,
+          });
+        }}
+      />
     </div>
   );
 }

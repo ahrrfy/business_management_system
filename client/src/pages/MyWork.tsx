@@ -15,6 +15,7 @@
  * `approvalInbox` **الحيّ** (يقرأ الحالة الحقيقية)، والإشعاراتُ تُعرض **سجلّاً لا طابورَ
  * فعل** — وإلّا طالبت الشاشةُ بعملٍ منتهٍ.
  */
+import { useState } from "react";
 import { AlertCircle, Bell, CheckCircle2, ClipboardList, ExternalLink, Inbox as InboxIcon } from "lucide-react";
 import { Link } from "wouter";
 import { PageHeader } from "@/components/PageHeader";
@@ -28,7 +29,13 @@ export default function MyWork() {
   const me = trpc.auth.me.useQuery();
   // مركزُ القرارات الحيّ — بوّابتُه `superAppProcedure`، وقد يردّ فارغاً لمن لا سلطة له.
   const approvals = trpc.superApp.approvalInbox.useQuery({ limit: 30 }, { staleTime: 20_000 });
-  const notifications = trpc.superApp.notifications.useQuery({ limit: 20 }, { staleTime: 30_000 });
+  // ترشيحٌ **خادميّ**: الصندوق يُقتطع بـ`limit` قبل أن تراه الشاشة، فترشيحُه هنا يُخفي ما لم
+  // يصل أصلاً ويكذب العدّاد.
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const notifications = trpc.superApp.notifications.useQuery(
+    { limit: 20, unreadOnly },
+    { staleTime: 30_000 },
+  );
   const workspace = trpc.superApp.myWorkspace.useQuery(undefined, { staleTime: 60_000 });
 
   const items = approvals.data ?? [];
@@ -135,6 +142,16 @@ export default function MyWork() {
                     {unread} غير مقروء
                   </span>
                 )}
+                <button
+                  type="button"
+                  aria-pressed={unreadOnly}
+                  onClick={() => setUnreadOnly((v) => !v)}
+                  className={`ms-auto rounded-full border px-2 py-0.5 text-2xs font-bold transition-colors ${
+                    unreadOnly ? "border-transparent bg-primary text-primary-foreground" : "hover:bg-muted"
+                  }`}
+                >
+                  غير المقروء فقط
+                </button>
               </h2>
               {/*  **سجلٌّ لا طابورُ فعل**: الإشعار لا يُبطَل حين ينفّذ الإجراءَ شخصٌ آخر
                   (لا مسار كتابةٍ لـ`requiresAction` بعد الإنشاء) ⇒ عرضُه طابوراً يطالب بعملٍ

@@ -1143,7 +1143,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1177,6 +1177,9 @@ export default function WorkOrders() {
     // طلبات زميلتها كانت تعجز عن الردّ على زبونٍ سأل عن طلبٍ استقبلته الوردية السابقة.
     // الخادم يشترط `workorders:FULL` ويُبقي عزل الفرع حاكماً؛ ورقاقة «طلباتي» تعيد التضييق.
     branchQueue: f.scope !== "mine",
+    // ش٦: «لم يحضر أصحابها» — جاهزٌ منذ ٧ أيّامٍ فأكثر. لحظةُ الجاهزية مشتقّة خادمياً
+    // (`workStartedAt + workSeconds`) فلا عمودَ جديد ولا كاتبَ ينجرف.
+    awaitingPickupDays: f.stale === "1" ? 7 : undefined,
   };
   // العلة الجوهرية سابقاً: list({limit:200}) واحدة desc(id) — «مُسلَّم» المتراكمة بلا سقف كانت تملأ
   // النافذة فيسقط عملٌ نشط من اللوحة بصمت. الحل (نمط WorkOrderStation المُصلَح): استعلامان منفصلان —
@@ -1381,7 +1384,7 @@ export default function WorkOrders() {
     cancel.mutate({ workOrderId: d.id, clientRequestId });
   }
 
-  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || (f.scope || "branch") !== "branch";
+  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
 
@@ -1491,6 +1494,17 @@ export default function WorkOrders() {
             ))}
           </div>
         )}
+        {/* ش٦: رقاقةُ «لم يحضر أصحابها» بجوار النطاق — طابورٌ ثالثٌ لا يقوله أيّ عمود:
+            الأمرُ جاهزٌ (فليس متأخّراً في التنفيذ) ولا أحد يستلمه. */}
+        <button
+          type="button"
+          aria-pressed={f.stale === "1"}
+          onClick={() => setF({ stale: f.stale === "1" ? "" : "1" })}
+          className={`wob-scope-btn${f.stale === "1" ? " is-on" : ""}`}
+          title="طلبات جاهزة منذ أكثر من ٧ أيّام ولم يستلمها أصحابها"
+        >
+          لم يحضر أصحابها
+        </button>
         {/* ١٩/٨ (طلب المالك: «استثمار رأس الشاشة») — شريطُ الإحصاءات الخمس زال: أربعةٌ منه
             كانت تكرّر عدّادات الأعمدة حرفياً (نشطة/قيد التنفيذ/جاهز/مُسلَّم) فتأكل صفّاً
             كاملاً من ارتفاع اللوحة بلا خبر. بقي **المتأخّر** وحده لأنّه الوحيد الذي لا

@@ -1,6 +1,6 @@
 // قراءة المهام: قائمة مُرقَّمة (keyset) + تفاصيل مهمة + قائمة الموظفين القابلين للإسناد.
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { customers, suppliers, taskEvents, tasks, users } from "../../../drizzle/schema";
 import { paginateKeyset } from "../../lib/paginateKeyset";
 import { escLike } from "../../lib/sqlLike";
@@ -26,6 +26,13 @@ export interface ListTasksFilters {
   kind?: TaskKindFilter;
   priority?: TaskPriorityFilter;
   assignedTo?: number;
+  /**
+   * **بلا منفّذ** (ش٦، ١٩/٨) — مهمّةٌ مفتوحة لا مُسنَدَ لها. هي المقابلُ الصريح لـ`assignedTo`،
+   * وبدونها لا سبيل للمشرف أن يسأل «ما الذي لا يعمل عليه أحد؟»: تمرير `assignedTo`
+   * يُجيب «عملُ فلان» فقط، وغيابُه يُجيب «كلّ شيء» — والطابور اليتيم يبقى مبثوثاً بينهما
+   * فلا يراه أحدٌ حتى يتأخّر. يستثني النهائيّتين (منتهية/ملغاة) بحكم التعريف.
+   */
+  unassigned?: boolean;
   /** فرع صريح — يُستشار فقط حين scopedBranchId=null (مدير/أدمن). */
   branchId?: number | null;
   overdue?: boolean;
@@ -121,6 +128,10 @@ export async function listTasks(ctx: TaskListCtx, filters: ListTasksFilters = {}
   if (filters.kind) conds.push(eq(tasks.taskKind, filters.kind));
   if (filters.priority) conds.push(eq(tasks.priority, filters.priority));
   if (filters.assignedTo != null) conds.push(eq(tasks.assignedTo, filters.assignedTo));
+  if (filters.unassigned === true) {
+    conds.push(isNull(tasks.assignedTo));
+    conds.push(notInArray(tasks.taskStatus, ["RESOLVED", "CANCELLED"]));
+  }
   if (filters.from) {
     const from = new Date(filters.from);
     if (!isNaN(from.getTime())) conds.push(gte(tasks.createdAt, from));

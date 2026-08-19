@@ -8,8 +8,9 @@
 //
 // محاسبياً: الإسناد لا يُنشئ فاتورةً ثانية ولا يمسّ قيد SALE؛ والتسديد يمرّ بـprocessPayment
 // نفسها بحصرٍ بنيويّ (وردية إنشاء الفاتورة RECEPTION) — §٩.٢.
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Banknote,
   FileText,
   HandCoins,
@@ -124,15 +125,32 @@ export function ReceptionInvoiceQueue({
   const [printingId, setPrintingId] = useState<number | null>(null);
   const taxSettings = trpc.system.getTaxSettings.useQuery(undefined, { staleTime: 300_000 });
 
+  /** ش٥: رفضُ الإرسال الجزئيّ يُعرَض بأرقام الإخوة، ويُقرّ صراحةً — لا خانةَ سبقٍ تُنقَر بلا قراءة. */
+  const [partialNotice, setPartialNotice] = useState<string | null>(null);
+  const lastDispatchArgs = useRef<{
+    invoiceId: number; partyId: number; deliveryFee: string;
+    feeCollection: "COURIER" | "COUNTER" | "SHOP";
+    recipientName?: string; recipientPhone?: string; deliveryAddress?: string;
+    assignedUserId?: number; clientRequestId: string;
+  } | null>(null);
+
   const dispatchInvoice = trpc.delivery.dispatchInvoice.useMutation({
     onSuccess: (r) => {
       notify.ok("أُسنِدت للتوصيل", `إرسالية ${r.consignmentNumber} — تحصيل ${fmt(r.codAmount)} د.ع`);
+      setPartialNotice(null);
+      lastDispatchArgs.current = null;
       setDispatchTarget(null);
       resetPaging();
       void utils.reception.invoiceQueue.invalidate();
       void utils.workOrders.list.invalidate();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      if (e.data?.code === "PRECONDITION_FAILED" && e.message.includes("أمر شغل لم يجهز")) {
+        setPartialNotice(e.message);
+        return;
+      }
+      notify.err(e);
+    },
   });
 
   /** إعادة الطباعة تتبع نطاق قراءة الفرع لا الملكية (§٨.٥): قراءةٌ محضة من لقطة الفاتورة. */
@@ -392,9 +410,14 @@ export function ReceptionInvoiceQueue({
           row={dispatchTarget}
           parties={parties}
           pending={dispatchInvoice.isPending}
-          onClose={() => setDispatchTarget(null)}
-          onConfirm={(args) =>
-            dispatchInvoice.mutate({
+          partialNotice={partialNotice}
+          onClose={() => { setPartialNotice(null); setDispatchTarget(null); }}
+          onConfirmPartial={() => {
+            const prev = lastDispatchArgs.current;
+            if (prev) dispatchInvoice.mutate({ ...prev, partialDispatchConfirmed: true });
+          }}
+          onConfirm={(args) => {
+            const payload = {
               invoiceId: Number(dispatchTarget.id),
               partyId: args.partyId,
               deliveryFee: args.deliveryFee,
@@ -403,9 +426,13 @@ export function ReceptionInvoiceQueue({
               recipientPhone: args.recipientPhone,
               deliveryAddress: args.deliveryAddress,
               assignedUserId: args.assignedUserId,
+              // معرّفٌ ثابتٌ للمحاولة: إعادةُ الإرسال بالإقرار هي **نفس** العملية لا ثانيةً،
+              // فلو نجحت الأولى على الشبكة ثمّ أُعيدت لم تُنشئ إرساليةً مكرّرة.
               clientRequestId: `dispinv-${dispatchTarget.id}-${Date.now()}`,
-            })
-          }
+            };
+            lastDispatchArgs.current = payload;
+            dispatchInvoice.mutate(payload);
+          }}
         />
       )}
 
@@ -694,13 +721,18 @@ function InvoiceDispatchDialog({
   row,
   parties,
   pending,
+  partialNotice,
   onClose,
   onConfirm,
+  onConfirmPartial,
 }: {
   row: Row;
   parties: DispatchParty[];
   pending: boolean;
+  /** رسالةُ الخادم بأرقام الإخوة غير الجاهزين (ش٥) — تُقرأ قبل الإقرار لا بعده. */
+  partialNotice: string | null;
   onClose: () => void;
+  onConfirmPartial: () => void;
   onConfirm: (args: {
     partyId: number;
     deliveryFee: string;
@@ -805,6 +837,18 @@ function InvoiceDispatchDialog({
           لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
           {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
         </p>
+
+        {partialNotice && (
+          <div className="rounded-md border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] p-2.5">
+            <p className="flex items-start gap-1.5 text-[11px] font-bold leading-relaxed text-[var(--sem-warn)]">
+              <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+              {partialNotice}
+            </p>
+            <Button size="sm" variant="outline" className="mt-2 w-full" disabled={pending} onClick={onConfirmPartial}>
+              أقرّ الإرسال الجزئيّ وأرسل الآن
+            </Button>
+          </div>
+        )}
 
         <div className="flex gap-2">
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
