@@ -24,6 +24,7 @@ import { money } from "../money";
 import { withTx } from "../tx";
 import { decodeDataUrl, productImageUrl } from "../../imageRoute";
 import { onlineOrderLabelToken } from "../barcodeService";
+import { awardDeliveredOnlineOrderPoints } from "./loyaltyService";
 
 export type OnlineOrderStatus = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -311,6 +312,13 @@ export async function setOnlineOrderStatus(
         ? { status: input.status, cancelReason: input.cancelReason?.trim() ? input.cancelReason.trim().slice(0, 500) : null }
         : { status: input.status };
     await tx.update(onlineOrders).set(patch).where(eq(onlineOrders.id, input.id));
+    if (input.status === "DELIVERED") {
+      await awardDeliveredOnlineOrderPoints(tx, {
+        onlineOrderId: input.id,
+        customerId: Number(order.customerId),
+        total: String(order.total),
+      });
+    }
     return { id: input.id, from, to: input.status };
   });
 }

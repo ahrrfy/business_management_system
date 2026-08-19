@@ -26,6 +26,8 @@ import { recordStoreConversionMetric } from "../services/storeAdmin/storeConvers
 import { verifyStorefrontTurnstile } from "../services/storefrontTurnstile";
 import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
+import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
+import { claimFirebaseStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
 
 const labelSummaryInput = z.object({
   orderNumber: z.string().trim().min(1).max(50),
@@ -75,6 +77,16 @@ export const storefrontRouter = router({
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
   settings: publicProcedure.query(() => getPublicStoreSettings()),
 
+  /** يربط Firebase Phone OTP بسجل العميل ويصدر جلسة متجر قصيرة منفصلة عن جلسات الإدارة. */
+  claimFirebaseCustomer: publicProcedure
+    .input(z.object({ firebaseIdToken: z.string().trim().min(100).max(8_000), displayName: z.string().trim().min(2).max(120) }))
+    .mutation(({ input }) => claimFirebaseStorefrontCustomer(input)),
+
+  /** رصيد الولاء والقسائم الشخصية بعد تحقق الجلسة الموقعة فقط؛ لا تقبل هاتفاً يرسله التطبيق. */
+  customerBenefits: publicProcedure
+    .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
+    .query(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
+
   /** كتالوج المتجر: فلترة فئة + بحث نصّي + صفحات متسلسلة بلا اقتطاع صامت. */
   catalog: publicProcedure
     .input(
@@ -118,6 +130,22 @@ export const storefrontRouter = router({
       })).min(1).max(100),
     }))
     .query(({ input }) => quoteOnlineOrder(input)),
+
+  /** تسجيل جهاز العميل بعد موافقته الصريحة فقط. الرمز مشفّر خادمياً ولا يرافقه هاتف أو معلومات طلب. */
+  registerPushDevice: publicProcedure
+    .input(z.object({
+      expoPushToken: z.string().trim().min(20).max(300),
+      marketingOptIn: z.boolean(),
+      transactionalOptIn: z.boolean(),
+      platform: z.enum(["IOS", "ANDROID"]),
+      appVersion: z.string().trim().min(1).max(64),
+    }))
+    .mutation(({ input }) => registerStorefrontPushDevice(input)),
+
+  /** حدث فتح بلا هوية؛ يُقبل فقط لتسليم موجود من الحملة، ويحافظ على قياس الأداء من الداشبورد. */
+  trackPushInteraction: publicProcedure
+    .input(z.object({ deliveryId: z.number().int().positive(), event: z.enum(["OPEN", "CLICK"]) }))
+    .mutation(({ input }) => trackStorefrontPushInteraction(input)),
 
   /**
    * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.
