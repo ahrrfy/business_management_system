@@ -364,6 +364,38 @@ export default function WorkOrderDetail() {
               <Field label="الكمية">{data.quantity}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               <Field label="قناة الاستلام"><ChannelBadge channel={data.receptionChannel} handle={data.channelHandle} /></Field>
+              {/* ش٥ (0220): الزبون يرى **طلباً واحداً** — والأمرُ كان لا يعرف إخوته، فيُشحَن
+                  نصفُ الطلب صامتاً بينما نصفُه الآخر لم يبدأ. */}
+              {data.siblings && data.siblings.total > 1 && (
+                <Field label="ضمن الطلب">
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono" dir="ltr">{data.siblings.draftNumber ?? `#${data.siblings.draftId}`}</span>
+                    <span
+                      className={
+                        data.siblings.ready === data.siblings.total
+                          ? "rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-2xs font-extrabold text-[var(--sem-pos)]"
+                          : "rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-2xs font-extrabold text-[var(--sem-warn)]"
+                      }
+                    >
+                      {data.siblings.ready}/{data.siblings.total} جاهزة
+                    </span>
+                  </span>
+                  <div className="mt-1 flex flex-col gap-0.5">
+                    {data.siblings.items
+                      .filter((it) => Number(it.id) !== Number(data.id))
+                      .map((it) => (
+                        <a
+                          key={it.id}
+                          href={`/work-orders/${it.id}`}
+                          className="text-2xs text-muted-foreground hover:text-foreground hover:underline"
+                        >
+                          <span className="font-mono" dir="ltr">{it.orderNumber}</span> — {it.title}
+                          <span className="ms-1">({workOrderStatusLabel(it.status)})</span>
+                        </a>
+                      ))}
+                  </div>
+                </Field>
+              )}
               <Field label="الأولوية">{PRIORITY_LABEL[data.priority ?? "NORMAL"] ?? data.priority}</Field>
               <Field label="المنفّذ المسؤول">{data.assigneeName ?? "غير مُسنَد"}</Field>
               <Field label="تاريخ الإنشاء">{fmtDateTime(data.createdAt)}</Field>

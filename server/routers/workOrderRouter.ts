@@ -10,6 +10,7 @@ import {
   productVariants,
   products,
   users,
+  receptionDrafts,
   serviceTypes,
   shifts,
   tasks,
@@ -561,6 +562,8 @@ export const workOrderRouter = router({
         .select({
           id: workOrders.id,
           orderNumber: workOrders.orderNumber,
+          // ش٥ (0220): المسوّدة الجامعة — تُغذّي «ضمن الطلب D-… (٣ بنود)».
+          draftId: workOrders.draftId,
           title: workOrders.title,
           customizationText: workOrders.customizationText,
           quantity: workOrders.quantity,
@@ -690,6 +693,42 @@ export const workOrderRouter = router({
       )
       .limit(1);
     const blockingTask = blockingRows[0] ?? null;
+    /**
+     * ش٥ (0220) — **إخوةُ الطلب**: الزبون يرى طلباً واحداً، وأوامرُ السلّة الواحدة كانت لا
+     * يعرف بعضُها بعضاً. استعلامٌ مفهرسٌ واحد (`idx_wo_draft`) بدل مسحِ `idempotencyKeys`
+     * الذي كان الاشتقاق الوحيد الممكن وهو **أحاديُّ الاتجاه** و**بلا فهرس على `refId`**.
+     *
+     * قراءةٌ محضة — الحارسُ الذي يرفض الشحن الجزئيّ الصامت يأتي في نفس الشريحة لاحقاً،
+     * فيقرأ هذه الحقيقة بدل أن يخترعها.
+     */
+    const siblings = wo.draftId == null
+      ? null
+      : await (async () => {
+          const rows = await db
+            .select({
+              id: workOrders.id,
+              orderNumber: workOrders.orderNumber,
+              title: workOrders.title,
+              status: workOrders.status,
+            })
+            .from(workOrders)
+            .where(eq(workOrders.draftId, Number(wo.draftId)))
+            .orderBy(asc(workOrders.id));
+          const draft = (
+            await db
+              .select({ draftNumber: receptionDrafts.draftNumber })
+              .from(receptionDrafts)
+              .where(eq(receptionDrafts.id, Number(wo.draftId)))
+              .limit(1)
+          )[0];
+          return {
+            draftId: Number(wo.draftId),
+            draftNumber: draft?.draftNumber ?? null,
+            total: rows.length,
+            ready: rows.filter((r) => r.status === "READY" || r.status === "DELIVERED").length,
+            items: rows,
+          };
+        })();
     const qrPayload = workOrderBarcodeSet({
       orderNumber: wo.orderNumber,
       createdAt: wo.createdAt instanceof Date ? wo.createdAt : new Date(wo.createdAt),
@@ -707,10 +746,11 @@ export const workOrderRouter = router({
         materials: safeMaterials,
         images,
         blockingTask,
+        siblings,
         qrPayload,
       };
     }
-    return { ...wo, ...deliveryInfo, materials, images, blockingTask, qrPayload };
+    return { ...wo, ...deliveryInfo, materials, images, blockingTask, siblings, qrPayload };
   }),
 
   /**

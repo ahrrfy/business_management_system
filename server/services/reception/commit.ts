@@ -247,6 +247,10 @@ function materialize(
       // القناة مُضيَّقةٌ في العقد (١٩/٨) ⤇ لا `as never`. والمعرّف يُنقَل معها: كان عمود
       // `workOrders.channelHandle` ينتظر قيمةً والمسوّدة لا تحملها ⤇ طلبٌ من واتساب
       // يُثبّت فيفقد رقمَ مُرسِله كلّيّاً.
+      // ش٥ (0220): أوامرُ السلّة الواحدة تصير **إخوة** — فيعرف الأمرُ طلبَه الجامع.
+      // إضافةٌ محضة: عمودٌ يُكتب ولا يُقرأ بعد — الحارس الذي يقرؤه يأتي لاحقاً،
+      // فصفر تغيّرٍ سلوكيّ اليوم والصفوف القائمة تبقى NULL.
+      draftId: Number(draft.id),
       receptionChannel: toWorkOrderChannel(draft.channel),
       channelHandle: draft.channelHandle ?? null,
       hasDelivery: !!s.hasDelivery,

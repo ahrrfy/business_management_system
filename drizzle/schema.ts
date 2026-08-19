@@ -2858,6 +2858,26 @@ export const workOrders = mysqlTable(
     ])
       .default("RECEIVED")
       .notNull(),
+    /**
+     * ش٤ (0219) — سببُ الإلغاء ووقتُه وفاعله. نظيرُها موجودٌ في `receptionDrafts` و
+     * `onlineOrders` وكان غائباً عن `workOrders` وحده، فيذوب «لم يحضر العميل» في إلغاءٍ
+     * مجهول السبب. ⛔ ولا عمودَ **رمزٍ** ثانٍ: تقرير «لم يحضر أصحابها» يُشتقّ من عمر
+     * الجاهزية (`workStartedAt + workSeconds`) — العمودُ للمساءلة والتقريرُ اشتقاق.
+     */
+    cancelReason: varchar("cancelReason", { length: 500 }),
+    cancelledAt: timestamp("cancelledAt"),
+    cancelledBy: int("cancelledBy").references(() => users.id),
+    /**
+     * ش٥ (0220) — **الطلبُ الجامع**: أوامرُ السلّة الواحدة تصير إخوة. لا كيانَ «طلب» جديد —
+     * المسوّدة هي الطلب ولها `draftNumber`. والاشتقاق من `clientRequestId` **أحاديُّ
+     * الاتجاه**: أمرُ الشغل لا يحمله، والربط في `idempotencyKeys` بـ`refId` **بلا فهرس** ⇒
+     * سؤال «ما إخوةُ هذا الأمر؟» مسحٌ كاملٌ لجدولٍ ينمو بلا حدّ.
+     */
+    // ⚠️ بلا `.references()` **عمداً**: الثلاثة تُشكّل دورةً في استنتاج الأنواع
+    //    (conversations ← workOrders ← receptionDrafts ← conversations) فينهار النوع إلى `any`
+    //    ويسقط `pnpm check` في ملفّاتٍ لا علاقة لها. والمفتاح الأجنبيّ **مفروضٌ في القاعدة**
+    //    بـ`fk_wo_draft` (هجرة 0220) — والهجرات مكتوبةٌ يدوياً هنا لا مولَّدةً من المخطّط.
+    draftId: bigint("draftId", { mode: "number" }),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(
       () => invoices.id,
     ),

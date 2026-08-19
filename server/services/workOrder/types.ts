@@ -9,6 +9,8 @@ export interface WorkOrderMaterialInput {
 
 export interface CreateWorkOrderInput {
   branchId: number;
+  /** ش٥ (0220) — المسوّدة الجامعة: أوامرُ السلّة الواحدة تصير إخوة. */
+  draftId?: number | null;
   customerId?: number | null;
   // v3-add-screens(100%): اختياري لطلب خدمة خدمة تخصيص خالصة بلا منتج خام.
   baseVariantId?: number | null;
