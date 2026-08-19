@@ -52,25 +52,18 @@ export function BannerFrame({ banner, slot, active = true, preview = false }: { 
 
   const source = banner.imageUrl;
   const media = source ? (
-    mode === "PRESERVE_FULL" ? (
-      <>
-        <picture className="absolute inset-0 overflow-hidden">
-          {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
-          <img src={source} alt="" className="size-full scale-110 object-cover opacity-70 blur-2xl" style={{ objectPosition: focus }} />
-        </picture>
-        <div className="absolute inset-0 bg-slate-950/20" />
-        <picture className="absolute inset-0">
-          {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
-          <img src={source} alt={banner.title} className="size-full object-contain" style={{ objectPosition: focus }} />
-        </picture>
-      </>
+      mode === "PRESERVE_FULL" ? (
+      <picture className="absolute inset-0 flex items-center justify-center bg-[#f2eee7]">
+        {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
+        <img src={source} alt={banner.title} className="size-full object-contain" style={{ objectPosition: focus }} />
+      </picture>
     ) : (
       <picture className="absolute inset-0">
         {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
         <img src={source} alt={banner.title} className="size-full object-cover" style={{ objectPosition: focus }} />
       </picture>
     )
-  ) : <div className="absolute inset-0 bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500" />;
+  ) : <div className="absolute inset-0 bg-[#e9f7f2]" />;
 
   const showCopy = mode !== "PRESERVE_FULL" || !source;
   const content = (
@@ -96,15 +89,11 @@ export function BannerMedia({ banner }: { banner: StoreBannerCreative }) {
   const source = banner.imageUrl;
   const mode = banner.renderMode ?? "PRESERVE_FULL";
   const focus = `${Math.min(100, Math.max(0, banner.focusX ?? 50))}% ${Math.min(100, Math.max(0, banner.focusY ?? 50))}%`;
-  if (!source) return <div className="absolute inset-0 bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500" />;
-  if (mode === "PRESERVE_FULL") return <>
-    <picture className="absolute inset-0 overflow-hidden"><img src={source} alt="" className="size-full scale-110 object-cover opacity-70 blur-2xl" style={{ objectPosition: focus }} /></picture>
-    <div className="absolute inset-0 bg-slate-950/20" />
-    <picture className="absolute inset-0">
-      {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
-      <img src={source} alt={banner.title} className="size-full object-contain" style={{ objectPosition: focus }} />
-    </picture>
-  </>;
+  if (!source) return <div className="absolute inset-0 bg-[#e9f7f2]" />;
+  if (mode === "PRESERVE_FULL") return <picture className="absolute inset-0 flex items-center justify-center bg-[#f2eee7]">
+    {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
+    <img src={source} alt={banner.title} className="size-full object-contain" style={{ objectPosition: focus }} />
+  </picture>;
   return <picture className="absolute inset-0">
     {banner.mobileImageUrl && <source media="(max-width: 639px)" srcSet={banner.mobileImageUrl} />}
     <img src={source} alt={banner.title} className="size-full object-cover" style={{ objectPosition: focus }} />

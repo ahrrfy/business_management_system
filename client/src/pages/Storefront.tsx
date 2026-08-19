@@ -8,7 +8,7 @@
  * نظام عرض تجاري مستقل للمتجر: تنقل واضح، اكتشاف بالفئات، عروض مختارة، كتالوج قابل للتصفية، وسلة ودفع عند الاستلام.
  * الأولوية للوضوح والمقارنة وسرعة الوصول إلى قرار الشراء، مع الحفاظ على منطق البيانات الحقيقي في النظام.
  */
-import React, { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import React, { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import {
   AlertTriangle,
@@ -584,7 +584,7 @@ function ProductRow({
   return (
     <section className="mb-5">
       <h3 className="mb-2.5 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">{icon} {title}</h3>
-      <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="flex min-w-0 gap-3 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {products.map((p) => (
           <ProductRowCard key={p.productId} p={p} onSelect={() => onSelect(p.productId)} onAdd={() => onAdd(p)} />
         ))}
@@ -596,37 +596,6 @@ function ProductRow({
 /** بنر إعلانيّ ديناميكيّ: كاروسيل يتبدّل تلقائياً كل ٥ث (crossfade آمنٌ لـRTL) + نقاط تنقّل +
  *  ارتفاعٌ متجاوب (auto-scale). يُشتقّ من بنرات لوحة hPanel؛ بنرٌ واحد ⇒ يُعرَض ثابتاً بلا نقاط. */
 type BannerItem = StoreBannerCreative;
-
-/**
- * بنرات جانبية طولية (placement=SIDE): تملأ فراغَي جانبَي عمود المحتوى (max-w-6xl=1152px) على
- * الشاشات العريضة فقط (≥1600px حيث تتوفّر ≥224px لكل جانب). مثبّتة أثناء التمرير (نمط
- * skyscraper/half-page العالمي)، تتوزّع بالتناوب: الأول يمين (بداية RTL) والثاني يسار، بحدّ
- * بنرَين لكل جانب. لا تُزاحم المحتوى أبداً — موضعها محسوب من مركز الشاشة + نصف عرض العمود.
- */
-function SideRails({ banners }: { banners: BannerItem[] }) {
-  if (banners.length === 0) return null;
-  const right = banners.filter((_, i) => i % 2 === 0).slice(0, 1);
-  const left = banners.filter((_, i) => i % 2 === 1).slice(0, 1);
-  const rail = (list: BannerItem[], sideStyle: CSSProperties) =>
-    list.length > 0 && (
-      <div className="fixed top-1/2 z-10 hidden min-w-56 max-w-64 w-[15vw] -translate-y-1/2 flex-col gap-3 min-[1600px]:flex" style={sideStyle} aria-hidden={false}>
-        {list.map((b) => {
-          return (
-            <div key={`${b.id}-${b.imageIndex ?? 0}`} className="relative aspect-[1/2] w-full overflow-hidden rounded-xl shadow-sm ring-1 ring-slate-200/60">
-              <BannerFrame banner={b} slot="SIDE" />
-            </div>
-          );
-        })}
-      </div>
-    );
-  return (
-    <>
-      {/* CSS left/right فيزيائيتان لا منطقيتان: جهة البداية في RTL = يمين الشاشة = `left: 50%+592px`. */}
-      {rail(right, { left: "calc(50% + 592px)" })}
-      {rail(left, { right: "calc(50% + 592px)" })}
-    </>
-  );
-}
 
 /**
  * فاصل تسويقي عرضي داخل شبكة المنتجات (placement=INLINE) — يقطع سيل المنتجات كل عشرة أصناف
@@ -1009,7 +978,6 @@ export default function Storefront() {
   );
   // توزيع البنرات على مواضعها الثلاثة (الصفوف القديمة بلا placement = رئيسي).
   const heroBanners = useMemo(() => banners.filter((b) => (b.placement ?? "HERO") === "HERO"), [banners]);
-  const sideBanners = useMemo(() => banners.filter((b) => b.placement === "SIDE"), [banners]);
   const inlineBanners = useMemo(() => banners.filter((b) => b.placement === "INLINE"), [banners]);
   const announcement = settingsQ.data?.announcement ?? null;
   // الفشل المغلق: لا نسمح بإرسال طلب قبل معرفة حالة المتجر فعلياً. خطأ الإعدادات له
@@ -1255,7 +1223,7 @@ export default function Storefront() {
   ];
 
   return (
-    <div className="storefront min-h-dvh bg-[#f4f1ec] text-[#20252a] dark:bg-slate-950 dark:text-slate-100" dir="rtl">
+    <div className="storefront min-h-dvh overflow-x-clip bg-[#f4f1ec] text-[#20252a] dark:bg-slate-950 dark:text-slate-100" dir="rtl">
       <header className="sticky top-0 z-30 border-b border-[#ded8d0] bg-[#fbfaf8] dark:border-slate-800 dark:bg-slate-900">
         <div className="hidden border-b border-[#ebe6df] bg-[#f4f1ec] sm:block dark:border-slate-800 dark:bg-slate-950">
           <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-2 text-[11px] font-bold text-[#6c747b] lg:px-8">
@@ -1312,7 +1280,7 @@ export default function Storefront() {
         )}
       </header>
 
-      <main className="mx-auto max-w-[1500px] px-4 py-6 pb-28 lg:px-8">
+      <main className="mx-auto w-full max-w-[1500px] overflow-x-clip px-4 py-6 pb-28 lg:px-8">
         {supportingFailures.length > 0 && (
           <section role="alert" aria-live="polite" className="mb-5 flex items-start gap-3 border-r-4 border-[#b87835] bg-[#fbf3e5] p-4 text-[#754f2c]">
             <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0" />
@@ -1357,7 +1325,7 @@ export default function Storefront() {
 
             {offers.length > 0 && <section id="store-deals" className="mt-10 border-y border-[#d9d3ca] bg-[#fff9f2] py-6"><div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#a4513f]">عرض محدود</p><h2 className="mt-1 text-2xl font-black text-[#754f2c]">صفقات تستحق الإضافة</h2></div><BadgePercent aria-hidden className="size-6 text-[#e65f4a]" /></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{offers.slice(0, 3).map((o) => <div key={o.id} className="flex items-center justify-between gap-4 border border-[#ead8c8] bg-white p-4"><div><p className="text-sm font-black text-[#30383e]">{o.name}</p><p className="mt-1 text-xs font-bold text-[#8b6b50]">{offerLabel(o)} · {offerScopeLabel(o.scope)}</p></div><Tag aria-hidden className="size-5 shrink-0 text-[#e65f4a]" /></div>)}</div></section>}
 
-            <div id="store-picks" className="mt-10 grid gap-10 xl:grid-cols-2">
+            <div id="store-picks" className="mt-10 grid min-w-0 gap-10 xl:grid-cols-2">
               <ProductRow title="مختارات هذا الأسبوع" icon={<Tag aria-hidden className="size-4 text-[#e65f4a]" />} products={dealProducts} onSelect={setSelectedId} onAdd={(p) => setSelectedId(p.productId)} />
               <ProductRow title="الأكثر طلباً" icon={<TrendingUp aria-hidden className="size-4 text-[#1e4a63]" />} products={bestSellers} onSelect={setSelectedId} onAdd={(p) => setSelectedId(p.productId)} />
             </div>
@@ -1377,8 +1345,6 @@ export default function Storefront() {
         </section>
       </main>
 
-      {/* بنرات جانبية طولية (شاشات عريضة فقط) — خارج عمود المحتوى، لا تُزاحمه */}
-      <SideRails banners={sideBanners} />
 
       <div className="mx-auto max-w-6xl px-4">
         <StoreTrustAndHelp
@@ -1609,7 +1575,7 @@ export default function Storefront() {
                 {(relatedQ.data?.length ?? 0) > 0 && (
                   <div className="mt-5">
                     <h3 className="mb-2 text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
-                    <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    <div className="flex min-w-0 gap-3 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                       {relatedQ.data!.map((rp) => (
                         <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                           <button onClick={() => setSelectedId(rp.productId)} className="text-right">
