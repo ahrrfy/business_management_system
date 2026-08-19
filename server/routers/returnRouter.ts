@@ -8,7 +8,14 @@ import { logAudit } from "../services/auditService";
 import { returnSale } from "../services/returnService";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
-import { router, salesManagerProcedure } from "../trpc";
+import { router, salesManagerProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
+import {
+  createReturnRequest,
+  listReturnRequests,
+  loadApprovableRequest,
+  markRequestApproved,
+  rejectReturnRequest,
+} from "../services/returns/requests";
 import { nonNegMoneyString } from "../lib/schemas";
 import { escLike } from "../lib/sqlLike";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -61,6 +68,105 @@ export const returnRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام المرتجع (تكرار)" });
+    }),
+
+  // ════════ طلبات الإرجاع من المحطة (١٩/٨ — قرار المالك: طلب موظف + اعتماد مدير) ════════
+  // البلاغ: رفضُ الزبون وإرجاعُ المندوب حدثٌ يوميّ، والمرتجع محصورٌ بالمدير — فالعمل يتوقّف
+  // حتى يحضر، أو يُحفَظ بحسابه فتضيع نسبةُ الفاعل ويسقط فصلُ المهام. الطلب مستند نيّةٍ لا مال.
+
+  /** موظّف المحطة يطلب إرجاعاً — بلا أيّ أثرٍ ماليّ أو مخزنيّ حتى الاعتماد. */
+  request: workordersCashierProcedure
+    .input(z.object({
+      invoiceId: z.number().int().positive(),
+      lines: z.array(z.object({
+        invoiceItemId: z.number().int().positive(),
+        baseQuantity: z.number().int().positive(),
+      })).min(1),
+      reason: z.string().trim().min(3).max(500),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await createReturnRequest(input, {
+        userId: ctx.user.id, branchId: Number(ctx.user.branchId), role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "return.request", entityType: "invoice", entityId: input.invoiceId,
+        newValue: { requestId: res.requestId, reason: input.reason, lines: input.lines.length },
+      });
+      return res;
+    }),
+
+  /** قائمة الطلبات: المدير يرى طلبات فرعه، والموظّف يتابع طلباته وحدها. */
+  requests: workordersExecProcedure
+    .input(z.object({
+      status: z.enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional(),
+      mine: z.boolean().optional(),
+    }).optional())
+    .query(async ({ input, ctx }) => {
+      // مَن لا يملك سلطة الاعتماد يرى طلباته وحدها — لا نافذةَ على مرتجعات غيره.
+      const canApprove = ctx.user.role === "admin" || ctx.user.role === "manager";
+      return listReturnRequests({
+        branchId: ctx.user.role === "admin" ? null : Number(ctx.user.branchId ?? 0),
+        status: input?.status,
+        createdBy: !canApprove || input?.mine ? ctx.user.id : null,
+      });
+    }),
+
+  /**
+   * المدير يعتمد الطلب فيُنفَّذ المرتجع **بالمسار القائم نفسه** — لا نسخةَ منطقٍ ماليّ ثانية.
+   * الرافد والدرج والمرجع يقرّرها المدير لحظة الاعتماد كما يفعل في المرتجع المباشر.
+   */
+  approveRequest: salesManagerProcedure
+    .input(z.object({
+      requestId: z.number().int().positive(),
+      refund: z.object({
+        amount: nonNegMoneyString,
+        method,
+        shiftId: z.number().int().positive().optional(),
+        reference: z.string().trim().min(1).max(100).optional(),
+      }).optional(),
+      restock: z.boolean().optional(),
+      clientRequestId: z.string().min(1).max(80).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId), role: ctx.user.role };
+      // يتحقّق من الحالة وعزل الفرع وفصل المهام واللقطة التفاؤلية — قبل أيّ أثر.
+      const { lines, invoiceId } = await loadApprovableRequest(input.requestId, actor);
+      const res = await retryOnDeadlock(() => returnSale({
+        invoiceId,
+        lines,
+        refund: input.refund,
+        restock: input.restock,
+        clientRequestId: input.clientRequestId ?? `retreq-${input.requestId}`,
+      }, actor));
+      await markRequestApproved(input.requestId, ctx.user.id, invoiceId);
+      await logAudit(ctx, {
+        action: "return.approveRequest", entityType: "invoice", entityId: invoiceId,
+        newValue: { requestId: input.requestId, refund: input.refund?.amount ?? null },
+      });
+      return { ...res, requestId: input.requestId };
+    }),
+
+  /** رفضٌ بسببٍ إلزاميّ — الموظّف يرى لماذا بدل صمتٍ يُعيد الطلب نفسه. */
+  rejectRequest: salesManagerProcedure
+    .input(z.object({
+      requestId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await rejectReturnRequest(input.requestId, input.reason, {
+        userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "return.rejectRequest", entityType: "returnRequest", entityId: input.requestId,
+        newValue: { reason: input.reason },
+      });
+      return res;
     }),
 
   /** سجلّ مرتجعات البيع (قيود RETURN ذات فاتورة بلا مورد) — فلاتر عميل/فرع/فترة/رقم فاتورة/منفّذ

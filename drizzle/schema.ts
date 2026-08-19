@@ -11014,3 +11014,45 @@ export const documentCounters = mysqlTable("documentCounters", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 export type DocumentCounter = typeof documentCounters.$inferSelect;
+
+/**
+ * طلبات الإرجاع من المحطة (١٩/٨، هجرة 0213) — قرار المالك «طلب موظف + اعتماد مدير».
+ *
+ * لماذا: `returns.create` محصورٌ بالمدير، وموظّف الاستقبال يُقال له «استدعِ المدير» في
+ * شاشته — بينما رفضُ الزبون وإرجاعُ المندوب **حدثٌ يوميّ**. فإمّا يتوقّف العمل حتى يحضر
+ * المدير، أو يُحفَظ المرتجع بحسابه فتضيع نسبةُ الفاعل الحقيقيّ.
+ *
+ * النمط مستنسَخٌ من `stockAdjustmentRequests` حرفياً: الطلب **مستند نيّةٍ لا مال** (لا قيد
+ * ولا إيصال ولا حركة مخزون حتى الاعتماد)، ولقطةٌ تفاؤلية تمنع اعتماد طلبٍ بُني على حالةٍ
+ * لم تعد قائمة، والمُعتمِد ≠ المُنشئ.
+ */
+export const returnRequests = mysqlTable(
+  "returnRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull().references(() => invoices.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    /** [{ invoiceItemId, baseQuantity }] — تُنفَّذ حرفياً عند الاعتماد. */
+    linesJson: json("linesJson").notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    /** لقطة `invoices.returnedTotal` لحظة الطلب — حارسٌ تفاؤليّ عند الاعتماد. */
+    invoiceReturnedSnapshot: decimal("invoiceReturnedSnapshot", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    status: mysqlEnum("returnRequestStatus", ["PENDING_APPROVAL", "APPROVED", "REJECTED"])
+      .default("PENDING_APPROVAL")
+      .notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    resultReturnInvoiceId: bigint("resultReturnInvoiceId", { mode: "number" }),
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    statusBranchIdx: index("idx_retreq_status_branch").on(table.status, table.branchId),
+    invoiceIdx: index("idx_retreq_invoice").on(table.invoiceId),
+    creatorIdx: index("idx_retreq_creator").on(table.createdBy),
+  }),
+);
+export type ReturnRequest = typeof returnRequests.$inferSelect;

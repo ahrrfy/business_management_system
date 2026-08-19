@@ -564,7 +564,93 @@ function CollectPaymentDialog({
   );
 }
 
-/** م٧ — المرتجع مديريّ: المدير يُوجَّه لشاشة المرتجعات، وغيره يستدعي المدير (لا تنفيذ ذاتيّ). */
+/**
+ * نموذج **طلب الإرجاع** لموظّف المحطة (١٩/٨): الأصناف والسبب — لا مبالغَ ولا رافدَ ولا درج.
+ * قرارُ المال كلّه للمدير لحظة الاعتماد، فالطلب مستند نيّةٍ لا مال.
+ */
+function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => void }) {
+  const utils = trpc.useUtils();
+  const detail = trpc.sales.get.useQuery({ invoiceId: Number(row.id) });
+  const [qty, setQty] = useState<Record<number, number>>({});
+  const [reason, setReason] = useState("");
+
+  const req = trpc.returns.request.useMutation({
+    onSuccess: (r) => {
+      notify.ok("أُرسل طلب الإرجاع", `طلب #${r.requestId} — بانتظار اعتماد المدير. لا أثر ماليّ قبل الاعتماد.`);
+      utils.returns.requests.invalidate();
+      onClose();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const items = (detail.data?.items ?? []).map((it) => ({
+    id: Number(it.id),
+    name: it.productName ?? it.sku ?? `بند ${it.id}`,
+    remaining: Number(it.baseQuantity) - Number(it.returnedBaseQuantity ?? 0),
+  })).filter((it) => it.remaining > 0);
+
+  const lines = items
+    .map((it) => ({ invoiceItemId: it.id, baseQuantity: Math.min(qty[it.id] ?? 0, it.remaining) }))
+    .filter((l) => l.baseQuantity > 0);
+  const canSubmit = lines.length > 0 && reason.trim().length >= 3 && !req.isPending;
+
+  return (
+    <>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        حدّد المُرجَع واذكر السبب. <span className="font-bold">لا أثر ماليّ الآن</span> — المدير
+        يعتمده فيُنفَّذ المرتجع ويقرّر هو ردّ النقد إن لزم.
+      </p>
+      {detail.isLoading ? (
+        <p className="py-4 text-center text-xs text-muted-foreground">جارٍ تحميل البنود…</p>
+      ) : items.length === 0 ? (
+        <p className="py-4 text-center text-xs text-muted-foreground">لا بنود قابلة للإرجاع على هذه الفاتورة.</p>
+      ) : (
+        <div className="max-h-52 space-y-1.5 overflow-y-auto">
+          {items.map((it) => (
+            <div key={it.id} className="flex items-center gap-2 rounded-lg border p-2">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-bold">{it.name}</div>
+                <div className="text-[10px] text-muted-foreground">المتبقّي القابل للإرجاع: {it.remaining}</div>
+              </div>
+              <Input
+                type="number"
+                min={0}
+                max={it.remaining}
+                value={qty[it.id] ?? ""}
+                onChange={(e) => setQty((q) => ({ ...q, [it.id]: Math.max(0, Number(e.target.value) || 0) }))}
+                className="h-8 w-20 text-center tabular-nums"
+                aria-label={`كمية إرجاع ${it.name}`}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="space-y-1">
+        <Label htmlFor="ret-reason" className="text-xs">سبب الإرجاع</Label>
+        <Input
+          id="ret-reason"
+          value={reason}
+          maxLength={500}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="رفض العميل الاستلام / صنف خاطئ / تلف…"
+          className="h-9"
+        />
+      </div>
+      <div className="flex gap-2">
+        <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
+        <Button
+          className="flex-1"
+          disabled={!canSubmit}
+          onClick={() => req.mutate({ invoiceId: Number(row.id), lines, reason: reason.trim() })}
+        >
+          {req.isPending ? "جارٍ الإرسال…" : "إرسال الطلب للمدير"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+/** م٧ — المرتجع مديريّ: المدير يُوجَّه لشاشة المرتجعات، وغيره يقدّم طلباً يعتمده المدير. */
 function ReturnRequestDialog({ row, isManager, onClose }: { row: Row; isManager: boolean; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={onClose}>
@@ -588,15 +674,10 @@ function ReturnRequestDialog({ row, isManager, onClose }: { row: Row; isManager:
             </div>
           </>
         ) : (
-          <>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              الإرجاع صلاحية <span className="font-bold">مدير</span> (يعكس مخزوناً ونقداً وقيوداً).
-              استدعِ المدير وأعطه رقم الفاتورة
-              <span className="mx-1 rounded bg-muted px-1.5 py-0.5 font-bold" dir="ltr">{row.invoiceNumber}</span>
-              ليُنفّذه من شاشة المرتجعات.
-            </p>
-            <Button className="w-full" onClick={onClose}>فهمت</Button>
-          </>
+          /* ١٩/٨ (قرار المالك «طلب موظف + اعتماد مدير») — كان هنا نصٌّ يقول «استدعِ المدير»
+             ويقف: رفضُ الزبون حدثٌ يوميّ فيتوقّف العمل حتى يحضر، أو يُحفَظ المرتجع بحسابه
+             فتضيع نسبةُ الفاعل. الآن الموظّف يقدّم **طلباً موثّقاً** بلا أيّ أثرٍ ماليّ. */
+          <StaffReturnRequestForm row={row} onClose={onClose} />
         )}
       </div>
     </div>

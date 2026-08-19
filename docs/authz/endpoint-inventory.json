@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 970,
+    "trpcTotal": 974,
     "byKind": {
-      "mutation": 503,
-      "query": 467
+      "mutation": 506,
+      "query": 468
     },
     "byAuthority": {
-      "module-gate": 442,
+      "module-gate": 446,
       "module-map": 314,
       "admin": 67,
       "raw-role": 55,
@@ -20,9 +20,9 @@
       "public-read": 1
     },
     "bySensitivity": {
-      "LOW": 465,
-      "MEDIUM": 366,
-      "HIGH": 139
+      "LOW": 466,
+      "MEDIUM": 367,
+      "HIGH": 141
     },
     "byModule": {
       "(none)": 202,
@@ -33,10 +33,10 @@
       "store": 50,
       "inventory": 48,
       "products": 47,
-      "workorders": 30,
+      "workorders": 32,
       "crm": 29,
       "campaigns": 28,
-      "sales": 26,
+      "sales": 28,
       "assets": 21,
       "commissions": 16,
       "productStudio": 16,
@@ -64,7 +64,7 @@
     "flagCounts": {
       "LOCAL_GATE": 182,
       "NO_BRANCH_SCOPE": 144,
-      "SENSITIVE_ACTION": 139,
+      "SENSITIVE_ACTION": 141,
       "ADMIN_ONLY": 71,
       "RAW_ROLE_GATE": 65,
       "UNAUTHENTICATED": 33,
@@ -76,7 +76,7 @@
     "expressMounts": 11,
     "jobs": 18,
     "routerFiles": 94,
-    "proposedPermissions": 823,
+    "proposedPermissions": 827,
     "proposedDomains": {
       "hr": 106,
       "treasury": 86,
@@ -84,11 +84,11 @@
       "inventory": 73,
       "catalog": 64,
       "store": 50,
-      "sales": 47,
+      "sales": 49,
       "iam": 42,
       "admin": 40,
+      "workorders": 34,
       "crm": 33,
-      "workorders": 32,
       "purchasing": 28,
       "marketing": 28,
       "assets": 21,
@@ -12706,6 +12706,23 @@
     {
       "surface": "trpc",
       "router": "returnRouter",
+      "proposedPermission": "sales.return.approve",
+      "name": "approveRequest",
+      "kind": "mutation",
+      "procedure": "salesManagerProcedure",
+      "authority": "module-gate",
+      "module": "sales",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: approve",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/returnRouter.ts:121"
+    },
+    {
+      "surface": "trpc",
+      "router": "returnRouter",
       "proposedPermission": "sales.return.create",
       "name": "create",
       "kind": "mutation",
@@ -12718,7 +12735,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:23"
+      "loc": "server/routers/returnRouter.ts:30"
     },
     {
       "surface": "trpc",
@@ -12735,7 +12752,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:198"
+      "loc": "server/routers/returnRouter.ts:304"
     },
     {
       "surface": "trpc",
@@ -12752,7 +12769,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:69"
+      "loc": "server/routers/returnRouter.ts:175"
     },
     {
       "surface": "trpc",
@@ -12769,7 +12786,58 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/returnRouter.ts:163"
+      "loc": "server/routers/returnRouter.ts:269"
+    },
+    {
+      "surface": "trpc",
+      "router": "returnRouter",
+      "proposedPermission": "sales.return.reject",
+      "name": "rejectRequest",
+      "kind": "mutation",
+      "procedure": "salesManagerProcedure",
+      "authority": "module-gate",
+      "module": "sales",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "HIGH",
+      "sensitivityWhy": "فعل حسّاس: reject",
+      "flags": "SENSITIVE_ACTION",
+      "loc": "server/routers/returnRouter.ts:156"
+    },
+    {
+      "surface": "trpc",
+      "router": "returnRouter",
+      "proposedPermission": "workorders.return.request",
+      "name": "request",
+      "kind": "mutation",
+      "procedure": "workordersCashierProcedure",
+      "authority": "module-gate",
+      "module": "workorders",
+      "level": "FULL",
+      "roles": "cashier|manager",
+      "branch": "required",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/returnRouter.ts:78"
+    },
+    {
+      "surface": "trpc",
+      "router": "returnRouter",
+      "proposedPermission": "workorders.return.requests",
+      "name": "requests",
+      "kind": "query",
+      "procedure": "workordersExecProcedure",
+      "authority": "module-gate",
+      "module": "workorders",
+      "level": "FULL",
+      "roles": "cashier|manager|print_operator",
+      "branch": "required",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/returnRouter.ts:102"
     },
     {
       "surface": "trpc",

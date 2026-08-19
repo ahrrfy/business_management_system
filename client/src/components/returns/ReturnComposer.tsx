@@ -53,13 +53,19 @@ function unitsLabel(base: number, factor: number, unitName: string): string {
 
 export interface ReturnComposerProps {
   invoiceId: number;
+  /**
+   * اعتمادُ **طلب إرجاعٍ** من موظّف المحطة بدل مرتجعٍ مباشر (١٩/٨).
+   * الفارق كلّه في الإجراء المُستدعى: `approveRequest` يفرض فصل المهام واللقطة التفاؤلية
+   * ثمّ يُنفّذ **نفس** المسار الماليّ — فلا نسخةَ منطقٍ ثانية ولا شاشةَ اعتمادٍ موازية.
+   */
+  approvingRequestId?: number | null;
   /** يُستدعى بعد نجاح المرتجع (تحديث قوائم الصفحة المضيفة/التنقّل). */
   onDone?: (result: { fullyReturned: boolean; returnedTotal: string }) => void;
   /** رابط رجوعٍ اختياريّ تعرضه الصفحة المضيفة أسفل الإجراءات. */
   footer?: React.ReactNode;
 }
 
-export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProps) {
+export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
 
@@ -161,6 +167,21 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
     [qty],
   );
 
+  // اعتماد طلبٍ قائم — يشارك نفس معالجات النجاح/الخطأ (سلوكٌ واحد للمستخدم).
+  const approve = trpc.returns.approveRequest.useMutation({
+    onSuccess: async (res) => {
+      setDone("اعتُمد الطلب ونُفِّذ المرتجع.");
+      setQty({});
+      setManualAmount(null);
+      setCardReference("");
+      setClientRequestId(crypto.randomUUID());
+      await utils.returns.requests.invalidate();
+      await utils.returns.getInvoice.invalidate({ invoiceId });
+      onDone?.({ fullyReturned: !!res.fullyReturned, returnedTotal: String(res.returnedTotal ?? "0") });
+    },
+    onError: (e) => setError(e.message),
+  });
+
   const create = trpc.returns.create.useMutation({
     onSuccess: async (res) => {
       setDone(
@@ -253,6 +274,10 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
       }))
     ) return;
 
+    if (approvingRequestId) {
+      approve.mutate({ requestId: approvingRequestId, refund, restock, clientRequestId });
+      return;
+    }
     create.mutate({ invoiceId: inv.id, lines: selectedLines, refund, restock, clientRequestId });
   }
 
@@ -493,7 +518,7 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
       {done && <p className="text-sm text-money-positive">{done}</p>}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={submit} disabled={!!blockReason || create.isPending}>
+        <Button onClick={submit} disabled={!!blockReason || create.isPending || approve.isPending}>
           {create.isPending ? "جارٍ التسجيل…" : "تأكيد المرتجع"}
         </Button>
         <Button variant="outline" onClick={() => { setQty({}); setManualAmount(null); setCardReference(""); setError(""); setDone(""); }}>
