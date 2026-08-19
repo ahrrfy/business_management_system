@@ -8,7 +8,7 @@ import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize"
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
-import { assertValidImageDataUrl, parseImageDimensions } from "../lib/imageValidation";
+import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
 import { logger } from "../logger";
 import { getCurrentCompanyId } from "../tenancy/context";
@@ -16,6 +16,7 @@ import { isMultiTenantModeActive } from "../db";
 import { resolveCompanyById } from "../tenancy/registry";
 import { evaluateStagingRetention, loadR2GcDeletionAuthorization, resolveR2GcMode } from "../lib/imageStore/r2RetentionPolicy";
 import { studioObjectRoot } from "../lib/imageStore/tenantNamespace";
+import { canCrossBranches } from "../lib/branchAuthority";
 import { utcDayStart, utcNextDayStart } from "./businessDay";
 import { reserveStudioSubmitQuotaInTx, studioPayloadBytes } from "./productStudioSubmitQuota";
 import { createAppNotification } from "./appNotificationService";
@@ -50,9 +51,6 @@ function isManager(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
 }
 
-function canCrossBranches(actor: ProductStudioActor): boolean {
-  return actor.role === "admin" || actor.isOwner === true;
-}
 
 function isAdminActor(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.isOwner === true;
@@ -171,10 +169,11 @@ function decodeStudioImage(dataUrl: string): {
 } {
   assertValidImageDataUrl(dataUrl, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, true);
   const comma = dataUrl.indexOf(",");
-  const mime = dataUrl.slice(5, dataUrl.indexOf(";"));
+  // موحَّدٌ عند المدخل: image/jpg ⇐ image/jpeg، فلا يصل المخزنَ اسمٌ لا يعرفه.
+  const mime = canonicalImageMime(dataUrl.slice(5, dataUrl.indexOf(";")));
   const bytes = Buffer.from(dataUrl.slice(comma + 1), "base64");
   const dims = parseImageDimensions(bytes, mime);
-  const structurallyComplete = mime === "image/png" ? bytes.length >= 20 && bytes.readUInt32BE(bytes.length - 12) === 0 && bytes.toString("ascii", bytes.length - 8, bytes.length - 4) === "IEND" : mime === "image/jpeg" || mime === "image/jpg" ? bytes.length >= 4 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9 : mime === "image/webp" ? bytes.length >= 12 && bytes.readUInt32LE(4) + 8 === bytes.length : false;
+  const structurallyComplete = mime === "image/png" ? bytes.length >= 20 && bytes.readUInt32BE(bytes.length - 12) === 0 && bytes.toString("ascii", bytes.length - 8, bytes.length - 4) === "IEND" : mime === "image/jpeg" ? bytes.length >= 4 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9 : mime === "image/webp" ? bytes.length >= 12 && bytes.readUInt32LE(4) + 8 === bytes.length : false;
   if (!dims || dims.width < 1 || dims.height < 1 || !structurallyComplete) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -467,7 +466,7 @@ export async function listStudioAssignees(actor: ProductStudioActor) {
     .orderBy(asc(users.name));
   return rows
     .filter((u) => {
-      if (actor.role !== "admin" && !actor.isOwner && Number(u.branchId) !== Number(actor.branchId)) return false;
+      if (!canCrossBranches(actor) && Number(u.branchId) !== Number(actor.branchId)) return false;
       return hasModuleAccess(u.role, u.permissionsOverride as PermissionMap | null, "productStudio", "FULL");
     })
     .map(({ id, name, role, branchId }) => ({
@@ -965,7 +964,12 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
 }
 
 export async function getStudioDashboard(actor: ProductStudioActor, now = new Date()) {
-  const scope = canCrossBranches(actor) ? undefined : actor.role === "manager" || actor.role === "auditor" ? eq(productImageJobs.branchId, Number(actor.branchId)) : and(eq(productImageJobs.branchId, Number(actor.branchId)), eq(productImageJobs.assignedTo, actor.userId));
+  // نطاق المنفّذ مهامُه هو، ونطاق المدير/المدقّق فرعُه. الفارق جوهريّ للقارئ: الأرقام
+  // نفسها تحت العناوين نفسها تعني شيئين مختلفين، فتُعاد `scopeKind` كي تُسمّيها الشاشة
+  // بما هي («مهامي» لا «المهام النشطة») — منفّذٌ له مهمتان كان يقرأ «المهام النشطة ٢»
+  // بينما زميله غارقٌ في ثلاثمئة، فيستنتج أنّ الفرع خاملٌ.
+  const personalScope = !isManager(actor) && actor.role !== "auditor";
+  const scope = canCrossBranches(actor) ? undefined : personalScope ? and(eq(productImageJobs.branchId, Number(actor.branchId)), eq(productImageJobs.assignedTo, actor.userId)) : eq(productImageJobs.branchId, Number(actor.branchId));
   // المهمة «مملوكة» حين لها منفّذ فعليّ. الحالة ASSIGNED وحدها لا تدلّ على ذلك:
   // مهام الحملة تُولَد ASSIGNED بـassignedTo=null، فعدُّها «قيد العمل» يجعل اللوحة تكذب.
   const ownedExpr = sql<number>`case when ${productImageJobs.assignedTo} is null then 0 else 1 end`;
@@ -1045,9 +1049,13 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
     /** العمل الجاري فعلاً: مسنَدٌ لمنفّذ. لا يشمل طابور الحملة العاطل. */
     inProgress: ownedCounts.ASSIGNED + ownedCounts.IN_PROGRESS,
     rejected: counts.REJECTED,
-    unassigned: Number(exceptionMetrics?.unassigned ?? 0),
+    /** ‏"PERSONAL" = الأرقام مهامُ هذا المنفّذ وحده؛ "BRANCH" = فرعه؛ "ALL" = كل الفروع. */
+    scopeKind: canCrossBranches(actor) ? ("ALL" as const) : personalScope ? ("PERSONAL" as const) : ("BRANCH" as const),
+    // في النطاق الشخصيّ يستحيل أن يكون للمنفّذ مهمةٌ غير مسنَدة (الشرطان يتناقضان)،
+    // فالصفر هنا ليس «لا طابور» بل «لا ينطبق» — تُعاد null كي لا تعرض الشاشة صفراً كاذباً.
+    unassigned: personalScope ? null : Number(exceptionMetrics?.unassigned ?? 0),
     overdue: Number(exceptionMetrics?.overdue ?? 0),
-    overdueUnassigned: Number(exceptionMetrics?.overdueUnassigned ?? 0),
+    overdueUnassigned: personalScope ? null : Number(exceptionMetrics?.overdueUnassigned ?? 0),
     completedToday: Number(exceptionMetrics?.completedToday ?? 0),
     medianCycleMinutes,
     medianCycleWindowDays: CYCLE_WINDOW_DAYS,
@@ -1220,7 +1228,16 @@ export async function listStudioTasks(
   };
 }
 
-export async function listStudioProductImages(productId: number) {
+/**
+ * صور المنتج المعتمَدة، لاختيار مصدرٍ عند الإسناد.
+ *
+ * الفاعل إلزاميّ: كان هذا الإجراء الوحيد في راوترَي الاستوديو الذي لا يستقبله إطلاقاً،
+ * فكسَر قاعدة الطبقات (الخدمة تستقبل Actor لا ctx) وأتاح لأيّ حاملِ صلاحية قراءةٍ أن
+ * يتنقّل بين معرّفات المنتجات فيُعدّد جرد الصور المعتمدة للكتالوج كلّه — بياناتٌ وصفية
+ * لا بايتات، لكنّ التعداد نفسه لا مبرّر له.
+ */
+export async function listStudioProductImages(actor: ProductStudioActor, productId: number) {
+  if (!isManager(actor) && actor.role !== "auditor") throw new TRPCError({ code: "FORBIDDEN" });
   const product = (
     await requireDb()
       .select({ id: products.id })
@@ -1395,7 +1412,7 @@ async function prepareSourceSnapshot(productId: number, requested: number | null
   }
 
   if (source.objectKey && source.contentHash && source.mime) {
-    if (!/^[0-9a-f]{64}$/i.test(source.contentHash) || !["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(source.mime)) {
+    if (!/^[0-9a-f]{64}$/i.test(source.contentHash) || !["image/png", "image/jpeg", "image/webp"].includes(canonicalImageMime(source.mime))) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "بيانات صورة المصدر المخزنة غير صالحة",
@@ -1519,7 +1536,7 @@ export async function assignStudioTask(
         .for("share")
     )[0];
     if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
-    if (actor.role !== "admin" && !actor.isOwner && Number(assignee.branchId) !== Number(actor.branchId)) {
+    if (!canCrossBranches(actor) && Number(assignee.branchId) !== Number(actor.branchId)) {
       throw new TRPCError({
         code: "FORBIDDEN",
         message: "لا يمكن الإسناد إلى فرع آخر",

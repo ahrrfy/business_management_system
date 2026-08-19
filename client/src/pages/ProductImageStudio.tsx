@@ -806,13 +806,14 @@ export default function ProductImageStudio() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">المهام النشطة</div>
+            {/* العنوان يتبع النطاق: أرقامُ المنفّذ مهامُه هو، لا حال الفرع. */}
+            <div className="text-xs text-muted-foreground">{dashboard.data?.scopeKind === "PERSONAL" ? "مهامي النشطة" : "المهام النشطة"}</div>
             <div className="mt-1 text-2xl font-bold">{dashboard.data?.active ?? 0}</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">قيد العمل</div>
+            <div className="text-xs text-muted-foreground">{dashboard.data?.scopeKind === "PERSONAL" ? "قيد عملي" : "قيد العمل"}</div>
             {/* المسنَد لمنفّذ فقط. جمع ASSIGNED كاملةً كان يَعُدّ طابور الحملة عملاً جارياً. */}
             <div className="mt-1 text-2xl font-bold">{dashboard.data?.inProgress ?? 0}</div>
           </CardContent>
@@ -834,10 +835,10 @@ export default function ProductImageStudio() {
       {dashboard.data?.canManage && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {[
-            ["غير المسندة", dashboard.data.unassigned],
+            ["غير المسندة", dashboard.data.unassigned ?? "—"],
             ["المتأخرة", dashboard.data.overdue],
             // منها متأخّرٌ بلا منفّذ: يوضّح أنّ الخانتين تصفان المهام نفسها لا مشكلتين منفصلتين.
-            ["منها بلا منفّذ", dashboard.data.overdueUnassigned],
+            ["منها بلا منفّذ", dashboard.data.overdueUnassigned ?? "—"],
             ["مرفوضة (تنتظر التصحيح)", dashboard.data.rejected],
             ["المنجزة اليوم", dashboard.data.completedToday],
             [`وسيط زمن الدورة (${dashboard.data.medianCycleWindowDays} يوماً)`, dashboard.data.medianCycleMinutes == null ? "—" : `${dashboard.data.medianCycleMinutes} د`],

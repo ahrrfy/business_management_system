@@ -37,7 +37,7 @@ export const productStudioRouter = router({
     )
     .query(({ ctx, input }) => listStudioProducts(actor(ctx), input)),
   resolveBarcode: productStudioReadProcedure.input(z.object({ barcode: z.string().trim().min(1).max(64) })).query(({ ctx, input }) => resolveStudioBarcode(actor(ctx), input.barcode)),
-  productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ input }) => listStudioProductImages(input.productId)),
+  productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ ctx, input }) => listStudioProductImages(actor(ctx), input.productId)),
   assignees: productStudioManagerProcedure.query(({ ctx }) => listStudioAssignees(actor(ctx))),
   tasks: productStudioReadProcedure
     .input(

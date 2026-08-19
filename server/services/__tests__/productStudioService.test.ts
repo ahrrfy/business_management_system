@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const PNG_1X1_ALT = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nH0AAAAASUVORK5CYII=";
 const WEBP_1X1 = "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
+/** JPEG أساسيّ ١×١ صالح البصمة والبنية (يبدأ FFD8FF وينتهي FFD9) — لفحص توحيد image/jpg. */
+const JPEG_1X1 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
 
 async function attestStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null): Promise<string> {
   const authorization = await authorizeStudioProcessing(actor, taskId, mode, adminOverrideReason);
@@ -2078,6 +2080,58 @@ describe("product studio governed workflow", () => {
       if (previousMb === undefined) delete process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB;
       else process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB = previousMb;
     }
+  });
+
+  it("لوحة المنفّذ تُعلن نطاقها الشخصيّ ولا تعرض صفراً كاذباً لما لا ينطبق", async () => {
+    await db().insert(s.products).values({ id: 3, name: "منتج ثالث" });
+    await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await assignStudioTask(manager, { productId: 3, assigneeId: otherWorker.userId });
+    await db().insert(s.productImageJobs).values({
+      productId: 2,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+      templateVersion: 1,
+    });
+
+    const mine = await getStudioDashboard(worker);
+    // مهمةٌ واحدة له، لا الثلاث التي في الفرع — والعنوان يجب أن يقول ذلك.
+    expect(mine).toMatchObject({ scopeKind: "PERSONAL", inProgress: 1, active: 1 });
+    // «غير المسندة» في نطاقٍ شخصيّ شرطٌ متناقض (مسنَدةٌ لي وغير مسنَدة معاً) ⇒ لا ينطبق لا صفر.
+    expect(mine.unassigned).toBeNull();
+    expect(mine.overdueUnassigned).toBeNull();
+
+    const branch = await getStudioDashboard(manager);
+    expect(branch).toMatchObject({ scopeKind: "BRANCH", inProgress: 2, unassigned: 1, active: 3 });
+    expect(await getStudioDashboard(admin)).toMatchObject({ scopeKind: "ALL" });
+  });
+
+  it("صور المنتج لا تُقرأ بلا فاعل مخوَّل", async () => {
+    await expect(listStudioProductImages(worker, 1)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(listStudioProductImages(manager, 1)).resolves.toEqual([]);
+    await expect(listStudioProductImages(auditor, 1)).resolves.toEqual([]);
+  });
+
+  it("يقبل image/jpg ويخزّنه باسمه القياسيّ بلا مفتاحٍ بامتداد bin", async () => {
+    const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const jpgDataUrl = JPEG_1X1.replace("data:image/jpeg;", "data:image/jpg;");
+    await expect(
+      submitStudioCandidate(worker, {
+        taskId: task.taskId,
+        originalDataUrl: jpgDataUrl,
+        processedDataUrl: JPEG_1X1,
+        mode: "FLATTEN",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, task.taskId));
+    // كان الاسم غير القياسيّ يُنتج مفتاح `.bin` (يُبطل إزالة التكرار) ثمّ يسقط بخطأ ٥٠٠.
+    expect(row!.originalMime).toBe("image/jpeg");
+    expect(row!.originalObjectKey).toMatch(/\.jpg$/);
+    expect(row!.originalObjectKey).not.toMatch(/\.bin$/);
   });
 
   it("يعزل الإلغاء الجماعي بالفرع", async () => {
