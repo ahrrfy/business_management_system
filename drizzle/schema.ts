@@ -3360,6 +3360,9 @@ export const productImageJobs = mysqlTable(
     createdBy: int("createdBy").references(() => users.id), // users.id = int (لا bigint)
     assignedTo: int("assignedTo").references(() => users.id),
     assignedBy: int("assignedBy").references(() => users.id),
+    /** لحظةُ تسليم المهمة لمنفّذ. زمنُ الدورة يُقاس منها لا من الإنشاء: مهامُ الحملة
+        تُولَد بالآلاف في لحظةٍ واحدة، فقياسُها من الإنشاء يُبلّغ عمرَ الطابور لا زمنَ العمل. */
+    assignedAt: timestamp("assignedAt"),
     reviewedBy: int("reviewedBy").references(() => users.id),
     /** فتحة فريدة للمهمة النشطة: 1 أثناء العمل، NULL بعد الإغلاق؛ تمنع مهمتين لمنتج واحد. */
     activeSlot: tinyint("activeSlot"),

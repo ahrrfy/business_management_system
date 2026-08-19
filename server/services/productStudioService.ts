@@ -150,6 +150,19 @@ function assertIndependentReviewer(actor: ProductStudioActor, task: { assignedTo
 
 type StudioTx = Parameters<Parameters<typeof withTx>[0]>[0];
 
+/**
+ * كل معاملات هذه الوحدة **غير ماليّة**: لا قيدَ دفترٍ ولا إيصالَ ولا فاتورة تُكتب هنا
+ * (تحقّقٌ نصّيّ: صفر إشارة إلى postEntry/receipts/invoices في الملف كلّه).
+ *
+ * ومع ذلك كانت تأخذ البوّابة الافتراضية `FINANCIAL_WRITER` — قفلٌ مشارك على صفّ تسلسل
+ * إقفال الشهر — فتزاحم الكتابات الماليّة الحقيقية بلا داعٍ، والأسوأ: عمليةٌ طويلة على
+ * الصور (توليد طابور حملة، كنس المخزن) كانت تحجب **إقفال الشهر** طوال تنفيذها، لأنّ
+ * الإقفال يطلب الصورة الحصرية من البوّابة نفسها.
+ */
+function withStudioTx<T>(fn: (tx: StudioTx) => Promise<T>): Promise<T> {
+  return withTx(fn, { gate: "NONE" });
+}
+
 async function recordAdminOverride(tx: StudioTx, actor: ProductStudioActor, taskId: number, action: string, reason: string | null, assignedTo: number | null): Promise<void> {
   if (!reason) return;
   await tx.insert(auditLogs).values(
@@ -530,7 +543,7 @@ export async function createStudioCampaign(
     });
   }
   const branchId = campaignBranchId(actor, input.branchId);
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const [created] = await tx
       .insert(productStudioCampaigns)
       .values({
@@ -574,7 +587,7 @@ export async function transitionStudioCampaign(
   },
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const campaign = (
       await tx
         .select()
@@ -721,7 +734,7 @@ export async function previewStudioCampaignBacklog(actor: ProductStudioActor, ca
 
 export async function createStudioCampaignBacklog(actor: ProductStudioActor, campaignId: number) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const campaign = (await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1).for("update"))[0];
     if (!campaign)
       throw new TRPCError({
@@ -1023,6 +1036,7 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
   const cycleRows = await requireDb()
     .select({
       createdAt: productImageJobs.createdAt,
+      assignedAt: productImageJobs.assignedAt,
       reviewedAt: productImageJobs.reviewedAt,
     })
     .from(productImageJobs)
@@ -1037,8 +1051,10 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
     .orderBy(desc(productImageJobs.reviewedAt))
     .limit(CYCLE_SAMPLE_LIMIT);
   const cycleMinutes = cycleRows
-    .filter((row): row is { createdAt: Date; reviewedAt: Date } => row.reviewedAt != null)
-    .map((row) => Math.max(0, Math.round((row.reviewedAt.getTime() - row.createdAt.getTime()) / 60_000)))
+    .filter((row) => row.reviewedAt != null)
+    // من لحظة الإسناد لا الإنشاء: مهام الحملة تُولَد بالآلاف دفعةً ثمّ تنتظر، فالقياس من
+    // الإنشاء يُبلّغ عمرَ الطابور لا زمنَ العمل. الصفوف السابقة للعمود ترجع إلى createdAt.
+    .map((row) => Math.max(0, Math.round((row.reviewedAt!.getTime() - (row.assignedAt ?? row.createdAt).getTime()) / 60_000)))
     .sort((a, b) => a - b);
   const middle = Math.floor(cycleMinutes.length / 2);
   const medianCycleMinutes = cycleMinutes.length === 0 ? null : cycleMinutes.length % 2 === 1 ? cycleMinutes[middle] : Math.round(((cycleMinutes[middle - 1] ?? 0) + (cycleMinutes[middle] ?? 0)) / 2);
@@ -1297,7 +1313,7 @@ export async function cleanupStudioStaging(
   let removed = 0;
   for (const candidate of candidates) {
     // المرحلة الأولى: تقييمٌ تحت القفل، وتطبيقُ كل قرارٍ غير الحذف. لا تحميلَ للإثبات هنا.
-    const eligible = await withTx(async (tx) => {
+    const eligible = await withStudioTx(async (tx) => {
       const staging = (await tx.select().from(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey)).limit(1).for("update"))[0];
       if (!staging || staging.touchedAt >= cutoff) return false;
       const jobRef = await tx
@@ -1355,7 +1371,7 @@ export async function cleanupStudioStaging(
     const authorization = await deletionAuthorization();
     // المرحلة الثانية: إعادة القفل وإعادة إثبات غياب المرجع قبل الحذف فعلياً — النافذة
     // بين المرحلتين قد يظهر فيها مرجعٌ جديد (إعادة رفعٍ بنفس المحتوى).
-    const deleted = await withTx(async (tx) => {
+    const deleted = await withStudioTx(async (tx) => {
       const staging = (await tx.select().from(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey)).limit(1).for("update"))[0];
       if (!staging) return false;
       const jobRef = await tx
@@ -1450,7 +1466,12 @@ function isRoutineStudioRecipient(role: string | null | undefined): boolean {
   return role !== "admin" && role !== "manager";
 }
 
-async function notifyStudioAssignment(taskId: number, assigneeId: number, assigneeRole: string): Promise<void> {
+/**
+ * المفتاح يحمل `revision` لأنّ الإسناد يتكرّر على المهمة نفسها: تُسحَب من موظف ثمّ
+ * تُعاد إليه لاحقاً. بمفتاحٍ بلا مراجعة كان الإشعار الثاني يُبتلَع بوصفه مكرَّراً
+ * فلا يعلم الموظف أنّ المهمة عادت إليه — بخلاف مفتاح الرفض الذي يحملها أصلاً.
+ */
+async function notifyStudioAssignment(taskId: number, assigneeId: number, assigneeRole: string, revision: number): Promise<void> {
   if (!isRoutineStudioRecipient(assigneeRole)) return;
   try {
     await createAppNotification({
@@ -1459,7 +1480,7 @@ async function notifyStudioAssignment(taskId: number, assigneeId: number, assign
       title: "مهمة جديدة في استوديو المنتجات",
       body: `أُسندت إليك مهمة الاستوديو رقم ${taskId}.`,
       route: `/catalog/image-studio?task=${taskId}`,
-      eventKey: `product-studio:${taskId}:assigned:${assigneeId}`,
+      eventKey: `product-studio:${taskId}:assigned:${assigneeId}:r${revision}`,
       entityType: "productImageJob",
       entityId: taskId,
       requiresAction: true,
@@ -1501,7 +1522,7 @@ export async function assignStudioTask(
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   assertStoragePolicy();
   const snapshot = await prepareSourceSnapshot(input.productId, input.sourceImageId);
-  const result = await withTx(async (tx) => {
+  const result = await withStudioTx(async (tx) => {
     const product = (
       await tx
         .select({
@@ -1608,6 +1629,7 @@ export async function assignStudioTask(
         .set({
           assignedTo: input.assigneeId,
           assignedBy: actor.userId,
+          assignedAt: new Date(),
           priority: input.priority ?? activeTask.priority,
           dueAt: input.dueAt === undefined ? activeTask.dueAt : input.dueAt,
           // لقطة المصدر التي اختارها المدير تُحفَظ هنا أيضاً؛ إغفالها كان يُفقدها صامتاً
@@ -1661,6 +1683,7 @@ export async function assignStudioTask(
           revision: 1,
           assignedTo: input.assigneeId,
           assignedBy: actor.userId,
+          assignedAt: new Date(),
           createdBy: actor.userId,
           activeSlot: 1,
           templateVersion: 1,
@@ -1690,7 +1713,7 @@ export async function assignStudioTask(
       throw error;
     }
   });
-  await notifyStudioAssignment(result.taskId, input.assigneeId, result.assigneeRole);
+  await notifyStudioAssignment(result.taskId, input.assigneeId, result.assigneeRole, result.revision);
   return { taskId: result.taskId, revision: result.revision };
 }
 
@@ -1718,7 +1741,7 @@ export async function bulkAssignStudioTasks(
     });
   }
   assertStoragePolicy();
-  const result = await withTx(async (tx) => {
+  const result = await withStudioTx(async (tx) => {
     const assignee = (
       await tx
         .select({
@@ -1806,6 +1829,7 @@ export async function bulkAssignStudioTasks(
             revision: 1,
             assignedTo: input.assigneeId,
             assignedBy: actor.userId,
+            assignedAt: new Date(),
             createdBy: actor.userId,
             activeSlot: 1,
             templateVersion: 1,
@@ -1819,6 +1843,7 @@ export async function bulkAssignStudioTasks(
           .set({
             assignedTo: input.assigneeId,
             assignedBy: actor.userId,
+            assignedAt: new Date(),
             // أولوية المهمة القائمة تُصان ما لم يُصرّح المدير بغيرها؛ الحشو بـNORMAL
             // كان يخفض حزمة مهامٍ URGENT صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
             ...(input.priority === undefined ? {} : { priority: input.priority }),
@@ -1845,17 +1870,17 @@ export async function bulkAssignStudioTasks(
       }),
       entityId: "bulk",
     });
-    const taskIds = await tx
-      .select({ id: productImageJobs.id })
+    const assignedRows = await tx
+      .select({ id: productImageJobs.id, revision: productImageJobs.revision })
       .from(productImageJobs)
       .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.assignedTo, input.assigneeId), eq(productImageJobs.activeSlot, 1)));
     return {
       createdCount: productIds.length,
-      taskIds: taskIds.map((row) => Number(row.id)),
+      taskIds: assignedRows.map((row) => ({ id: Number(row.id), revision: Number(row.revision) })),
       assigneeRole: assignee.role,
     };
   });
-  await Promise.all(result.taskIds.map((taskId) => notifyStudioAssignment(taskId, input.assigneeId, result.assigneeRole)));
+  await Promise.all(result.taskIds.map((task) => notifyStudioAssignment(task.id, input.assigneeId, result.assigneeRole, task.revision)));
   return { createdCount: result.createdCount };
 }
 
@@ -1869,7 +1894,7 @@ export async function updateStudioTaskSchedule(
   },
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertTaskAccess(actor, task, true);
     assertExpectedRevision(task, input.expectedRevision);
@@ -1908,7 +1933,7 @@ export async function saveStudioDraft(
     expectedRevision?: number;
   },
 ) {
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
     const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
@@ -1964,7 +1989,7 @@ export async function saveStudioDraft(
  */
 export async function authorizeStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null): Promise<string> {
   const authorization = randomUUID();
-  await withTx(async (tx) => {
+  await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
@@ -2003,7 +2028,7 @@ export async function authorizeStudioProcessing(actor: ProductStudioActor, taskI
 export async function attestStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", processingAuthorization: string, adminOverrideReason?: string | null): Promise<string> {
   const receipt = randomUUID();
   const authorizationHash = processingAuthorizationHash(processingAuthorization, mode);
-  await withTx(async (tx) => {
+  await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     const overrideReason = assertTaskWriteAccess(actor, task, adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
@@ -2058,7 +2083,7 @@ export async function bindStudioProcessingCandidate(
 ): Promise<{ ok: true }> {
   const candidate = decodeStudioImage(input.candidateDataUrl);
   const receiptHash = contentHash(Buffer.from(input.processingReceipt, "utf8"));
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
@@ -2096,7 +2121,7 @@ export async function submitStudioCandidate(
   },
 ) {
   const token = randomUUID();
-  const lease = await withTx(async (tx) => {
+  const lease = await withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
     const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
@@ -2158,7 +2183,7 @@ export async function submitStudioCandidate(
     await stageStudioObject(processedKey);
     await store.put(processedKey, processed.bytes, processed.mime);
 
-    const result = await withTx(async (tx) => {
+    const result = await withStudioTx(async (tx) => {
       const task = await lockTask(tx, input.taskId);
       assertExpectedRevision(task, input.expectedRevision);
       assertTaskWriteAccess(actor, task, input.adminOverrideReason);
@@ -2337,7 +2362,7 @@ export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: 
 
 export async function approveStudioTask(actor: ProductStudioActor, taskId: number, adminOverrideReason?: string | null, expectedRevision?: number) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     assertExpectedRevision(task, expectedRevision);
     assertTaskAccess(actor, task, true);
@@ -2495,7 +2520,7 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
       code: "BAD_REQUEST",
       message: "سبب الرفض مطلوب بوضوح",
     });
-  const result = await withTx(async (tx) => {
+  const result = await withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     assertExpectedRevision(task, expectedRevision);
     assertTaskAccess(actor, task, true);
@@ -2581,7 +2606,7 @@ export async function cancelStudioTask(actor: ProductStudioActor, input: { taskI
       code: "BAD_REQUEST",
       message: "سبب الإلغاء مطلوب بوضوح",
     });
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
     assertExpectedRevision(task, input.expectedRevision);
     assertTaskAccess(actor, task, true);
@@ -2658,7 +2683,7 @@ export async function bulkCancelStudioBacklog(actor: ProductStudioActor, input: 
       code: "BAD_REQUEST",
       message: "سبب الإلغاء مطلوب بوضوح",
     });
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const campaign = (await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, input.campaignId)).limit(1))[0];
     if (!campaign)
       throw new TRPCError({
@@ -2722,7 +2747,7 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
   await stageStudioObject(publishedOriginalKey);
   await getImageStore().put(publishedOriginalKey, originalBytes, snapshot.originalMime);
   const originalDimensions = parseImageDimensions(originalBytes, snapshot.originalMime);
-  return withTx(async (tx) => {
+  return withStudioTx(async (tx) => {
     const task = await lockTask(tx, taskId);
     assertExpectedRevision(task, expectedRevision);
     assertTaskAccess(actor, task, true);

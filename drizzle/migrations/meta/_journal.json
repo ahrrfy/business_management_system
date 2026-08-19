@@ -1492,6 +1492,13 @@
       "when": 1788052265000,
       "tag": "0214_product_studio_gc_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "5",
+      "when": 1788052266000,
+      "tag": "0215_product_studio_assigned_at",
+      "breakpoints": true
     }
   ]
 }

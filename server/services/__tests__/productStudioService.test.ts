@@ -285,8 +285,16 @@ describe("product studio governed workflow", () => {
     await rejectStudioTask(manager, assigned.taskId, "الخلفية تحتاج تنظيفاً أدق", undefined, 2);
 
     const notices = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
-    expect(notices.map((row) => row.eventKey).sort()).toEqual([`product-studio:${assigned.taskId}:assigned:${worker.userId}`, `product-studio:${assigned.taskId}:rejected:r3`]);
+    expect(notices.map((row) => row.eventKey).sort()).toEqual([`product-studio:${assigned.taskId}:assigned:${worker.userId}:r${assigned.revision}`, `product-studio:${assigned.taskId}:rejected:r3`]);
     expect(new Set(notices.map((row) => row.eventKey)).size).toBe(notices.length);
+
+    // إعادة إسناد المهمة نفسها إلى الموظف نفسه تُشعِره من جديد. بمفتاحٍ بلا مراجعة كان
+    // الإشعار الثاني يُبتلَع بوصفه مكرَّراً فلا يعلم أنّ المهمة عادت إليه.
+    await cancelStudioTask(manager, { taskId: assigned.taskId, reason: "إعادة توزيع العمل" });
+    const reassigned = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const after = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
+    expect(after.filter((row) => row.eventKey.includes(":assigned:"))).toHaveLength(2);
+    expect(after.some((row) => row.eventKey === `product-studio:${reassigned.taskId}:assigned:${worker.userId}:r${reassigned.revision}`)).toBe(true);
   });
 
   it("does not send routine assignment or rejection notices to managers", async () => {
