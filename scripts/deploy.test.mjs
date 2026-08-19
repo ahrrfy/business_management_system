@@ -62,6 +62,67 @@ const {
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ecosystemProbeEnvironment = {
+  ...process.env,
+  HR_BRIDGE_ECOSYSTEM_ARTIFACT_SMOKE: "1",
+  REQUIRE_INTERNAL_PROXY_SECRET: "1",
+  INTERNAL_PROXY_SECRET: "a".repeat(64),
+};
+delete ecosystemProbeEnvironment.INTERNAL_PROXY_SECRET_PREVIOUS;
+const ecosystemProbe = spawnSync(
+  process.execPath,
+  [
+    "-e",
+    String.raw`
+const config = require("./ecosystem.config.cjs");
+const web = config.apps.find(({ name }) => name === "erp-server");
+process.stdout.write(JSON.stringify({
+  webExists: Boolean(web),
+  webPrevious: typeof web?.env?.INTERNAL_PROXY_SECRET_PREVIOUS === "string"
+    ? web.env.INTERNAL_PROXY_SECRET_PREVIOUS
+    : null,
+  nonWebAppsWithPrevious: config.apps
+    .filter(({ name }) => name !== "erp-server")
+    .filter(({ env }) => Object.hasOwn(env ?? {}, "INTERNAL_PROXY_SECRET_PREVIOUS"))
+    .map(({ name }) => name),
+}));
+`,
+  ],
+  {
+    cwd: root,
+    encoding: "utf8",
+    env: ecosystemProbeEnvironment,
+  },
+);
+assert.equal(
+  ecosystemProbe.status,
+  0,
+  `${ecosystemProbe.stdout}\n${ecosystemProbe.stderr}`,
+);
+const ecosystemContract = JSON.parse(ecosystemProbe.stdout);
+assert.equal(
+  ecosystemContract.webExists,
+  true,
+  "the PM2 web app contract must exist",
+);
+const stickyPm2EnvironmentAfterDeploy = {
+  INTERNAL_PROXY_SECRET_PREVIOUS: "b".repeat(64),
+  ...(ecosystemContract.webPrevious === null
+    ? {}
+    : {
+        INTERNAL_PROXY_SECRET_PREVIOUS: ecosystemContract.webPrevious,
+      }),
+};
+assert.equal(
+  stickyPm2EnvironmentAfterDeploy.INTERNAL_PROXY_SECRET_PREVIOUS,
+  "",
+  "deploy --update-env must explicitly clear a previous secret removed from disk",
+);
+assert.deepEqual(
+  ecosystemContract.nonWebAppsWithPrevious,
+  [],
+  "non-web PM2 apps must not receive the web-only previous proxy secret",
+);
 const deploySource = fs.readFileSync(
   path.join(root, "scripts/deploy.mjs"),
   "utf8",
