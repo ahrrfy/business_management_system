@@ -963,6 +963,7 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
     REJECTED: 0,
     FAILED: 0,
     REVERTED: 0,
+    CANCELLED: 0,
   };
   const ownedCounts: Record<StudioStatus, number> = { ...counts };
   for (const row of rows) {
@@ -1117,7 +1118,7 @@ export async function listStudioTasks(
   const exceptionView = input.overdue === true || input.unassigned === true;
   if (input.scope === "QUEUE") conds.push(inArray(productImageJobs.status, exceptionView ? ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"] : ["ASSIGNED", "IN_PROGRESS", "REJECTED"]));
   if (input.scope === "REVIEW") conds.push(eq(productImageJobs.status, "PENDING_REVIEW"));
-  if (input.scope === "HISTORY") conds.push(inArray(productImageJobs.status, ["APPROVED", "FAILED", "REVERTED"]));
+  if (input.scope === "HISTORY") conds.push(inArray(productImageJobs.status, ["APPROVED", "FAILED", "REVERTED", "CANCELLED"]));
   if (statuses.length) conds.push(inArray(productImageJobs.status, statuses));
   if (priorities.length) conds.push(inArray(productImageJobs.priority, priorities));
   if (assigneeId != null) {
@@ -1158,6 +1159,7 @@ export async function listStudioTasks(
       proposedDescription: productImageJobs.proposedDescription,
       proposedMarketingCopy: productImageJobs.proposedMarketingCopy,
       rejectionReason: productImageJobs.rejectionReason,
+      cancellationReason: productImageJobs.cancellationReason,
       sourceImageId: productImageJobs.sourceImageId,
       hasOriginal: sql<boolean>`${productImageJobs.originalObjectKey} is not null`,
       hasCandidate: sql<boolean>`${productImageJobs.processedObjectKey} is not null`,
@@ -2470,6 +2472,124 @@ export async function rejectStudioTask(actor: ProductStudioActor, taskId: number
     await notifyStudioRejection(taskId, Number(result.assignedTo), result.revision, result.assigneeRole);
   }
   return result.response;
+}
+
+/** الحالات التي يجوز إلغاؤها: عملٌ لم يُنشَر بعد. المعتمدة لها مسارها الخاصّ (استرجاع الأصل). */
+const CANCELLABLE_STUDIO_STATUSES: StudioStatus[] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
+
+/** الحقول التي يُفرغها الإلغاء: الحجوزات والإثباتات والمرشّح المعروض — لا مفاتيح المخزن (أثرٌ يُصان). */
+function cancelledTaskFields(actor: ProductStudioActor, reason: string, now: Date) {
+  return {
+    status: "CANCELLED" as const,
+    // تفريغ activeSlot هو جوهر الإصلاح: القيد الفريد (productId, activeSlot) كان يحتجز
+    // المنتج إلى الأبد خلف مهمةٍ خاطئة فلا يقبل مهمةً صحيحة بديلة.
+    activeSlot: null,
+    processedUrl: null,
+    cancellationReason: reason,
+    cancelledBy: actor.userId,
+    cancelledAt: now,
+    uploadLeaseToken: null,
+    uploadLeaseExpiresAt: null,
+    processingLeaseTokenHash: null,
+    processingLeaseExpiresAt: null,
+    processingProofTokenHash: null,
+    processingProofExpiresAt: null,
+    processingProofCandidateHash: null,
+    processingProofMode: null,
+    revision: sql`${productImageJobs.revision} + 1`,
+  };
+}
+
+/**
+ * إلغاء مهمة استوديو واحدة بقرار مدير موثَّق.
+ *
+ * كان توليدُ الحملة قادراً على إنشاء آلاف المهام بلا أيّ مسار تراجع: لا إجراء إلغاء في الراوتر،
+ * ولا إلغاءُ الحملة يمسّ مهامها. فتبقى في الطابور وفي المؤشّرات وفي إشعارات التأخّر أبداً،
+ * ويبقى المنتج محجوزاً خلفها.
+ */
+export async function cancelStudioTask(actor: ProductStudioActor, input: { taskId: number; reason: string; expectedRevision?: number }) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const cleanReason = input.reason.trim();
+  if (cleanReason.length < 5)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "سبب الإلغاء مطلوب بوضوح",
+    });
+  return withTx(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    assertExpectedRevision(task, input.expectedRevision);
+    assertTaskAccess(actor, task, true);
+    if (task.status === "APPROVED")
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "المهمة معتمدة ومنشورة؛ استعمل استرجاع الأصل بدل الإلغاء",
+      });
+    if (!CANCELLABLE_STUDIO_STATUSES.includes(task.status))
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "المهمة في حالة نهائية ولا تقبل الإلغاء",
+      });
+    await tx
+      .update(productImageJobs)
+      .set(cancelledTaskFields(actor, cleanReason, new Date()))
+      .where(eq(productImageJobs.id, input.taskId));
+    await tx.insert(auditLogs).values(
+      auditValues(actor, "productStudio.cancel", input.taskId, {
+        reason: cleanReason,
+        previousStatus: task.status,
+        previousAssignee: task.assignedTo,
+        campaignId: task.campaignId == null ? null : Number(task.campaignId),
+      }),
+    );
+    return input.expectedRevision === undefined ? { ok: true as const } : { ok: true as const, revision: nextRevision(task) };
+  });
+}
+
+/** سقف الإلغاء الجماعيّ في المعاملة الواحدة — نفس منطق سقف التوليد. */
+const CANCEL_BATCH_LIMIT = 500;
+
+/**
+ * إلغاء طابور حملةٍ وُلِّد خطأً.
+ *
+ * النطاق مُضيَّق عمداً: **المهام غير المسنَدة في حالة ASSIGNED فقط**. عملٌ بدأه موظف
+ * (IN_PROGRESS أو أُرسل للمراجعة) لا يُمحى بضغطةٍ جماعية — يُلغى فرداً فرداً بقرارٍ مرئيّ.
+ */
+export async function bulkCancelStudioBacklog(actor: ProductStudioActor, input: { campaignId: number; reason: string }) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const cleanReason = input.reason.trim();
+  if (cleanReason.length < 5)
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "سبب الإلغاء مطلوب بوضوح",
+    });
+  return withTx(async (tx) => {
+    const campaign = (await tx.select().from(productStudioCampaigns).where(eq(productStudioCampaigns.id, input.campaignId)).limit(1))[0];
+    if (!campaign)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "حملة الاستوديو غير موجودة",
+      });
+    assertCampaignAccess(actor, campaign);
+    const scope = and(eq(productImageJobs.campaignId, input.campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), eq(productImageJobs.activeSlot, 1));
+    const rows = await tx.select({ id: productImageJobs.id }).from(productImageJobs).where(scope).orderBy(asc(productImageJobs.id)).limit(CANCEL_BATCH_LIMIT).for("update");
+    if (rows.length === 0) return { cancelledCount: 0, remaining: 0 };
+    const ids = rows.map((row) => Number(row.id));
+    await tx
+      .update(productImageJobs)
+      .set(cancelledTaskFields(actor, cleanReason, new Date()))
+      .where(inArray(productImageJobs.id, ids));
+    const [remainingRow] = await tx.select({ count: sql<number>`count(*)` }).from(productImageJobs).where(scope);
+    const remaining = Number(remainingRow?.count ?? 0);
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: Number(campaign.branchId),
+      action: "productStudio.campaign.cancelBacklog",
+      entityType: "productStudioCampaign",
+      entityId: String(input.campaignId),
+      newValue: { cancelledCount: ids.length, remaining, reason: cleanReason },
+    });
+    return { cancelledCount: ids.length, remaining };
+  });
 }
 
 export async function revertStudioTask(actor: ProductStudioActor, taskId: number, expectedRevision?: number) {

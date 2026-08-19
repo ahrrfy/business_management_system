@@ -3340,6 +3340,8 @@ export const productImageJobs = mysqlTable(
       "REJECTED",
       "FAILED",
       "REVERTED",
+      /** أُلغيت بقرار مدير موثَّق: حالة نهائية تُفرغ activeSlot فيعود المنتج قابلاً لمهمة جديدة. */
+      "CANCELLED",
     ])
       .default("PENDING_REVIEW")
       .notNull(),
@@ -3373,6 +3375,11 @@ export const productImageJobs = mysqlTable(
     proposedDescription: text("proposedDescription"),
     proposedMarketingCopy: text("proposedMarketingCopy"),
     rejectionReason: varchar("rejectionReason", { length: 500 }),
+    /** أثر الإلغاء على الصفّ نفسه — لا يُحمَّل على rejectionReason فمعناهما مختلف:
+        «أعِدها للتعديل» ≠ «هذه المهمة لن تُنفَّذ». */
+    cancellationReason: varchar("cancellationReason", { length: 500 }),
+    cancelledBy: int("cancelledBy").references(() => users.id),
+    cancelledAt: timestamp("cancelledAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     submittedAt: timestamp("submittedAt"),

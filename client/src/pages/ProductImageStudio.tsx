@@ -57,6 +57,9 @@ function studioDatetimeLocal(value: Date | string | null): string {
 
 const PIN_SETUP_DISMISS_KEY = "studio:offline-pin-setup-dismissed";
 
+/** الحالات التي يجوز إلغاؤها — تُطابق حارس الخادم؛ المعتمدة لها «استرجاع الأصل». */
+const CANCELLABLE_STATUSES: StudioTask["status"][] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
+
 const STATUS_LABEL: Record<StudioTask["status"], string> = {
   ASSIGNED: "مسندة",
   IN_PROGRESS: "قيد العمل",
@@ -65,6 +68,7 @@ const STATUS_LABEL: Record<StudioTask["status"], string> = {
   REJECTED: "تحتاج تعديلاً",
   FAILED: "فشلت",
   REVERTED: "استُرجع الأصل",
+  CANCELLED: "ملغاة",
 };
 
 const STATUS_VARIANT: Record<StudioTask["status"], "neutral" | "info" | "warning" | "success" | "danger"> = {
@@ -75,6 +79,7 @@ const STATUS_VARIANT: Record<StudioTask["status"], "neutral" | "info" | "warning
   REJECTED: "danger",
   FAILED: "danger",
   REVERTED: "neutral",
+  CANCELLED: "neutral",
 };
 
 function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidatePreview"] }) {
@@ -184,6 +189,8 @@ export default function ProductImageStudio() {
   const [resumeRetry, setResumeRetry] = useState(0);
   const [offlineProfile, setOfflineProfile] = useState<OfflineProfile | null | undefined>(undefined);
   const [inlineAssigneeId, setInlineAssigneeId] = useState("");
+  const [cancelReason, setCancelReason] = useState("");
+  const [backlogCancelReason, setBacklogCancelReason] = useState("");
   const [taskSearch, setTaskSearch] = useState("");
   const [debouncedTaskSearch, setDebouncedTaskSearch] = useState("");
   const [setupPin, setSetupPin] = useState("");
@@ -383,6 +390,25 @@ export default function ProductImageStudio() {
     onSuccess: async () => {
       notify.ok("أُعيدت المهمة للموظف مع السبب");
       setRejectReason("");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const cancelTask = trpc.productStudio.cancel.useMutation({
+    onSuccess: async () => {
+      notify.ok("أُلغيت المهمة ونُقلت إلى السجلّ");
+      setCancelReason("");
+      setSelectedId(null);
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const cancelCampaignBacklog = trpc.productStudio.cancelCampaignBacklog.useMutation({
+    onSuccess: async (result) => {
+      // «تبقّى» صريحٌ لأنّ الإلغاء يجري على دفعات، كما في التوليد.
+      notify.ok(result.cancelledCount > 0 ? `أُلغيت ${result.cancelledCount} مهمة${result.remaining > 0 ? ` — تبقّى ${result.remaining}، أعد الإلغاء` : ""}` : "لا مهام غير مسندة في هذه الحملة");
+      setBacklogCancelReason("");
+      setSelectedId(null);
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -995,6 +1021,35 @@ export default function ProductImageStudio() {
               </div>
             </div>
 
+            {/* التراجع عن توليدٍ خاطئ. النطاق مُضيَّق خادمياً: غير المسنَدة فقط — عملٌ بدأه
+                موظف لا يُمحى بضغطةٍ جماعية، بل يُلغى فرداً فرداً من بطاقة المهمة. */}
+            {selectedCampaignId && (
+              <div className="space-y-2 rounded-md border p-3">
+                <Label htmlFor="studio-backlog-cancel-reason">إلغاء طابور هذه الحملة (غير المسنَد فقط)</Label>
+                <p className="text-xs text-muted-foreground">للتراجع عن توليدٍ خاطئ. لا يمسّ مهمةً أُسنِدت أو بدأ العمل عليها، ويحرّر منتجاتها لمهام جديدة. تُلغى ٥٠٠ مهمة في كل ضغطة.</p>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-52 flex-1">
+                    <Input id="studio-backlog-cancel-reason" value={backlogCancelReason} onChange={(event) => setBacklogCancelReason(event.target.value)} placeholder="سبب الإلغاء (٥ أحرف على الأقل)" maxLength={500} />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="min-h-11"
+                    disabled={offline || cancelCampaignBacklog.isPending || backlogCancelReason.trim().length < 5}
+                    onClick={() =>
+                      selectedCampaignId &&
+                      cancelCampaignBacklog.mutate({
+                        campaignId: selectedCampaignId,
+                        reason: backlogCancelReason,
+                      })
+                    }
+                  >
+                    <XCircle aria-hidden className="size-4" /> إلغاء الطابور
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {selectedCampaignId && campaignAnalytics.data && (
               <div className="space-y-3">
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5" aria-label="مؤشرات الحملة">
@@ -1333,6 +1388,36 @@ export default function ProductImageStudio() {
                           >
                             حفظ الأولوية والموعد
                           </Button>
+                        </div>
+                      )}
+                      {/* الإلغاء: كان توليدُ طابورٍ خاطئ نهائياً بلا تراجع — لا إلغاء للمهمة
+                          ولا حذف للطابور، فتبقى في المؤشرات وتحتجز المنتج إلى الأبد. */}
+                      {dashboard.data?.canManage && CANCELLABLE_STATUSES.includes(selected.status) && (
+                        <div className="space-y-2 rounded-md border p-3">
+                          <Label htmlFor="studio-cancel-reason">إلغاء المهمة نهائياً</Label>
+                          <p className="text-xs text-muted-foreground">تُنقل إلى السجلّ بحالة «ملغاة»، ويعود المنتج قابلاً لمهمة جديدة. السبب يُحفَظ في أثر التدقيق.</p>
+                          <Textarea id="studio-cancel-reason" rows={2} maxLength={500} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder="سبب الإلغاء (٥ أحرف على الأقل)" />
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            className="min-h-11"
+                            disabled={offline || cancelTask.isPending || cancelReason.trim().length < 5}
+                            onClick={() =>
+                              cancelTask.mutate({
+                                taskId: Number(selected.id),
+                                expectedRevision: selected.revision,
+                                reason: cancelReason,
+                              })
+                            }
+                          >
+                            <XCircle aria-hidden className="size-4" /> إلغاء المهمة
+                          </Button>
+                        </div>
+                      )}
+                      {selected.status === "CANCELLED" && selected.cancellationReason && (
+                        <div className="rounded-md border p-3 text-sm">
+                          <span className="text-muted-foreground">سبب الإلغاء: </span>
+                          {selected.cancellationReason}
                         </div>
                       )}
                       <div className="space-y-1.5">

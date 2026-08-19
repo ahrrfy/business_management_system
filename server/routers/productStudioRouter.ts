@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, createStudioCampaign, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, createStudioCampaign, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 
 function actor(ctx: {
   user: {
@@ -46,8 +46,8 @@ export const productStudioRouter = router({
         limit: z.number().int().min(1).max(100).default(50),
         cursor: z.string().max(1_000).nullable().optional(),
         statuses: z
-          .array(z.enum(["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "APPROVED", "REJECTED", "FAILED", "REVERTED"]))
-          .max(7)
+          .array(z.enum(["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "APPROVED", "REJECTED", "FAILED", "REVERTED", "CANCELLED"]))
+          .max(8)
           .optional(),
         priority: z.array(priority).max(4).optional(),
         overdue: z.boolean().optional(),
@@ -175,4 +175,21 @@ export const productStudioRouter = router({
     )
     .mutation(({ ctx, input }) => rejectStudioTask(actor(ctx), input.taskId, input.reason, input.adminOverrideReason, input.expectedRevision)),
   revert: productStudioManagerProcedure.input(z.object({ taskId, expectedRevision })).mutation(({ ctx, input }) => revertStudioTask(actor(ctx), input.taskId, input.expectedRevision)),
+  cancel: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskId,
+        reason: z.string().trim().min(5).max(500),
+        expectedRevision,
+      }),
+    )
+    .mutation(({ ctx, input }) => cancelStudioTask(actor(ctx), input)),
+  cancelCampaignBacklog: productStudioManagerProcedure
+    .input(
+      z.object({
+        campaignId,
+        reason: z.string().trim().min(5).max(500),
+      }),
+    )
+    .mutation(({ ctx, input }) => bulkCancelStudioBacklog(actor(ctx), input)),
 });

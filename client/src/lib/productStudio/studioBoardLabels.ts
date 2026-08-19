@@ -6,7 +6,7 @@
  * يقول «المسؤول: غير مسند». المنطق هنا يفصل المعنيين في موضعٍ واحد قابل للاختبار.
  */
 
-export type StudioBoardStatus = "ASSIGNED" | "IN_PROGRESS" | "PENDING_REVIEW" | "APPROVED" | "REJECTED" | "FAILED" | "REVERTED";
+export type StudioBoardStatus = "ASSIGNED" | "IN_PROGRESS" | "PENDING_REVIEW" | "APPROVED" | "REJECTED" | "FAILED" | "REVERTED" | "CANCELLED";
 
 /** المهمة في الطابور: حالتها ASSIGNED ولا منفّذ لها. */
 export function isQueuedStudioTask(task: { status: StudioBoardStatus; assigneeName?: string | null }): boolean {

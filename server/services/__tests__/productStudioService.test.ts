@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -1846,6 +1846,92 @@ describe("product studio governed workflow", () => {
     const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
     // الحشو بـNORMAL كان يخفض حزمة مهامٍ عاجلة صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
     expect(row).toMatchObject({ assignedTo: worker.userId, priority: "URGENT" });
+  });
+
+  it("يلغي مهمة الطابور فيحرّر المنتج لمهمة جديدة ويحفظ أثر الإلغاء", async () => {
+    await db().insert(s.productImageJobs).values({
+      productId: 1,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+      templateVersion: 1,
+    });
+    const [queued] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
+
+    await expect(cancelStudioTask(manager, { taskId: Number(queued!.id), reason: "قصر" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelStudioTask(worker, { taskId: Number(queued!.id), reason: "حملة وُلِّدت على الفرع الخطأ" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(cancelStudioTask(manager, { taskId: Number(queued!.id), reason: "حملة وُلِّدت على الفرع الخطأ", expectedRevision: 99 })).rejects.toMatchObject({ code: "CONFLICT" });
+
+    await expect(cancelStudioTask(manager, { taskId: Number(queued!.id), reason: "حملة وُلِّدت على الفرع الخطأ", expectedRevision: 1 })).resolves.toEqual({ ok: true, revision: 2 });
+    const [cancelled] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, Number(queued!.id)));
+    expect(cancelled).toMatchObject({
+      status: "CANCELLED",
+      // تفريغ activeSlot هو المقصد: القيد الفريد كان يحتجز المنتج خلف المهمة الخاطئة.
+      activeSlot: null,
+      cancellationReason: "حملة وُلِّدت على الفرع الخطأ",
+      cancelledBy: manager.userId,
+      revision: 2,
+    });
+    expect(cancelled!.cancelledAt).toEqual(expect.any(Date));
+
+    // المنتج صار يقبل مهمة صحيحة بديلة — وهذا ما كان مستحيلاً قبل الإلغاء.
+    await expect(assignStudioTask(manager, { productId: 1, assigneeId: worker.userId })).resolves.toMatchObject({ revision: 1 });
+    // ولا تُلغى مهمة ملغاة مرّتين.
+    await expect(cancelStudioTask(manager, { taskId: Number(queued!.id), reason: "محاولة ثانية للإلغاء" })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("يمنع إلغاء المهمة المعتمدة ويوجّه إلى استرجاع الأصل", async () => {
+    const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
+    await submitStudioCandidate(worker, {
+      taskId: task.taskId,
+      originalDataUrl: PNG_1X1_ALT,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+    });
+    await approveStudioTask(manager, task.taskId);
+    await expect(cancelStudioTask(manager, { taskId: task.taskId, reason: "إلغاء مهمة منشورة" })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("يلغي طابور الحملة جماعياً بلا مساس بعملٍ بدأه موظف", async () => {
+    await db()
+      .insert(s.products)
+      .values([
+        { id: 3, name: "منتج ثالث" },
+        { id: 4, name: "منتج رابع" },
+      ]);
+    const campaign = await createStudioCampaign(manager, { name: "حملة خاطئة", status: "ACTIVE" });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ createdCount: 4 });
+
+    // موظف بدأ العمل على إحداها: تُسنَد ثم تنتقل إلى IN_PROGRESS.
+    await assignStudioTask(manager, { productId: 3, assigneeId: worker.userId });
+    const [started] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 3));
+    await saveStudioDraft(worker, { taskId: Number(started!.id), proposedName: "اسم مقترح", expectedRevision: Number(started!.revision) });
+
+    await expect(bulkCancelStudioBacklog(manager, { campaignId: campaign.campaignId, reason: "الحملة وُلِّدت بنطاقٍ خاطئ" })).resolves.toEqual({ cancelledCount: 3, remaining: 0 });
+
+    const rows = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId));
+    const byProduct = new Map(rows.map((row) => [Number(row.productId), row]));
+    // الثلاثة غير المسنَدة أُلغيت وحُرِّرت خانتها.
+    for (const productId of [1, 2, 4]) {
+      expect(byProduct.get(productId)).toMatchObject({ status: "CANCELLED", activeSlot: null, cancelledBy: manager.userId });
+    }
+    // وعملُ الموظف لم يُمَسّ: الإلغاء الجماعيّ لا يمحو ما بدأه أحد.
+    expect(byProduct.get(3)).toMatchObject({ status: "IN_PROGRESS", assignedTo: worker.userId, activeSlot: 1, cancelledAt: null });
+
+    // النداء الثاني لا يجد ما يُلغيه.
+    await expect(bulkCancelStudioBacklog(manager, { campaignId: campaign.campaignId, reason: "الحملة وُلِّدت بنطاقٍ خاطئ" })).resolves.toEqual({ cancelledCount: 0, remaining: 0 });
+    // والملغاة تظهر في السجلّ لا تختفي.
+    expect((await listStudioTasks(manager, { scope: "HISTORY" })).items.filter((item) => item.status === "CANCELLED")).toHaveLength(3);
+  });
+
+  it("يعزل الإلغاء الجماعي بالفرع", async () => {
+    const campaign = await createStudioCampaign(manager, { name: "حملة فرع واحد", status: "ACTIVE" });
+    await expect(bulkCancelStudioBacklog(managerTwo, { campaignId: campaign.campaignId, reason: "محاولة من فرعٍ آخر" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(bulkCancelStudioBacklog(worker, { campaignId: campaign.campaignId, reason: "محاولة من موظف" })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("rejects reverting an older job after a newer job published identical bytes", async () => {
