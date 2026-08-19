@@ -1,4 +1,3 @@
-import { CameraScanner } from "@/components/scan/CameraScanner";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -7,9 +6,10 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { createLatestBarcodeResolutionGate } from "@/lib/productStudio/barcodeResolution";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Camera, Loader2, Search } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 type StudioProduct = RouterOutputs["productStudio"]["products"]["rows"][number];
+const CameraScanner = lazy(() => import("@/components/scan/CameraScanner").then((module) => ({ default: module.CameraScanner })));
 
 export function StudioProductPicker({
   canManage,
@@ -128,7 +128,7 @@ export function StudioProductPicker({
           />
           <BarcodeSearchCue />
         </div>
-        <Button type="button" variant="outline" size="icon" onClick={() => setCameraOpen(true)} aria-label="مسح باركود بالكاميرا">
+        <Button type="button" variant="outline" size="icon" className="size-11" onClick={() => setCameraOpen(true)} aria-label="مسح باركود بالكاميرا">
           <Camera className="size-4" />
         </Button>
       </div>
@@ -176,17 +176,21 @@ export function StudioProductPicker({
           )}
         </div>
       )}
-      <CameraScanner
-        open={cameraOpen}
-        onClose={() => setCameraOpen(false)}
-        onDetect={(barcode) => {
-          setCameraOpen(false);
-          setQuery(barcode);
-          setOpen(true);
-          setUnknownBarcode("");
-          void resolveBarcode(barcode);
-        }}
-      />
+      {cameraOpen && (
+        <Suspense fallback={null}>
+          <CameraScanner
+            open
+            onClose={() => setCameraOpen(false)}
+            onDetect={(barcode) => {
+              setCameraOpen(false);
+              setQuery(barcode);
+              setOpen(true);
+              setUnknownBarcode("");
+              void resolveBarcode(barcode);
+            }}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

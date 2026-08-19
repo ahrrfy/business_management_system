@@ -57,6 +57,7 @@ export default defineConfig({
       "client/src/components/invoice/__tests__/priceCellPrecision.test.ts",
       "client/src/components/invoice/__tests__/supplierInvoiceMatch.test.ts",
       "client/src/lib/unitPrice.test.ts",
+      "client/src/lib/productStudio/mobileStudioUi.test.ts",
       "shared/moneyPrecision.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",

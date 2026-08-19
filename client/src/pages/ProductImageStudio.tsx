@@ -17,13 +17,22 @@ import {
   needsStudioEditOverride,
   needsStudioReviewOverride,
 } from "@/lib/imageStudio/studioWorkflowPolicy";
+import {
+  adjustStudioReviewZoom,
+  defaultStudioScope,
+  findScannedOwnedTask,
+  mobileStudioPanel,
+  STUDIO_REJECTION_PRESETS,
+  type StudioReviewImage,
+} from "@/lib/productStudio/mobileStudioUi";
 import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { AlertTriangle, CheckCircle2, ClipboardList, History, Image, Loader2, RefreshCw, RotateCcw, UserCheck, XCircle } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Minus, Plus, RefreshCw, RotateCcw, ScanLine, UserCheck, XCircle } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
 type StudioTask = RouterOutputs["productStudio"]["tasks"][number];
+const CameraScanner = lazy(() => import("@/components/scan/CameraScanner").then((module) => ({ default: module.CameraScanner })));
 
 export const STUDIO_STORAGE_DISABLED_MESSAGE =
   "وضع القراءة القديم فعّال: مخزن R2 الخاص غير مهيأ. الإسناد ومعالجة الصور والاعتماد متوقفة بأمان، بينما تبقى الإحصاءات والمهام والسجل متاحة للقراءة.";
@@ -53,6 +62,8 @@ const STATUS_VARIANT: Record<StudioTask["status"], "neutral" | "info" | "warning
 };
 
 function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidatePreview"] }) {
+  const [mobileImage, setMobileImage] = useState<StudioReviewImage>("candidate");
+  const [zoom, setZoom] = useState(1);
   const urls = useMemo(() => {
     function make(base64: string, mime: string): string {
       const binary = atob(base64);
@@ -70,7 +81,24 @@ function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidate
     URL.revokeObjectURL(urls.processed);
   }, [urls]);
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
+    <div className="space-y-3">
+      <div className="sm:hidden">
+        <div className="grid grid-cols-2 gap-2" role="group" aria-label="اختيار صورة المراجعة">
+          <Button type="button" variant={mobileImage === "original" ? "default" : "outline"} className="min-h-11" onClick={() => setMobileImage("original")}>الصورة الأصلية</Button>
+          <Button type="button" variant={mobileImage === "candidate" ? "default" : "outline"} className="min-h-11" onClick={() => setMobileImage("candidate")}>المرشّح</Button>
+        </div>
+        <figure className="mt-3 space-y-2 overflow-hidden rounded-md border p-2">
+          <div className="flex min-h-11 items-center justify-between gap-2">
+            <figcaption className="text-xs text-muted-foreground">{mobileImage === "original" ? "الأصل المحفوظ" : "المرشّح قبل النشر"}</figcaption>
+            <div className="flex gap-1">
+              <Button type="button" size="icon" variant="outline" className="size-11" aria-label="تصغير الصورة" disabled={zoom <= 0.5} onClick={() => setZoom((current) => adjustStudioReviewZoom(current, "out"))}><Minus aria-hidden className="size-4" /></Button>
+              <Button type="button" size="icon" variant="outline" className="size-11" aria-label="تكبير الصورة" disabled={zoom >= 3} onClick={() => setZoom((current) => adjustStudioReviewZoom(current, "in"))}><Plus aria-hidden className="size-4" /></Button>
+            </div>
+          </div>
+          <img src={mobileImage === "original" ? urls.original : urls.processed} alt={mobileImage === "original" ? "الصورة الأصلية" : "الصورة المرشحة"} className="mx-auto aspect-square max-h-80 w-full object-contain transition-transform" style={{ transform: `scale(${zoom})` }} />
+        </figure>
+      </div>
+      <div className="hidden gap-3 sm:grid sm:grid-cols-2">
       <figure className="space-y-1 rounded-md border p-2">
         <img src={urls.original} alt="الصورة الأصلية" className="mx-auto aspect-square max-h-72 w-full object-contain" />
         <figcaption className="text-center text-xs text-muted-foreground">الأصل المحفوظ</figcaption>
@@ -79,6 +107,7 @@ function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidate
         <img src={urls.processed} alt="الصورة المرشحة" className="mx-auto aspect-square max-h-72 w-full object-contain" />
         <figcaption className="text-center text-xs text-muted-foreground">المرشّح قبل النشر</figcaption>
       </figure>
+      </div>
     </div>
   );
 }
@@ -101,6 +130,8 @@ export default function ProductImageStudio() {
   const [isStudioProcessing, setIsStudioProcessing] = useState(false);
   const [editOverrideReason, setEditOverrideReason] = useState("");
   const [reviewOverrideReason, setReviewOverrideReason] = useState("");
+  const [scopeInitialized, setScopeInitialized] = useState(false);
+  const [taskScannerOpen, setTaskScannerOpen] = useState(false);
 
   const utils = trpc.useUtils();
   const dashboard = trpc.productStudio.dashboard.useQuery();
@@ -178,11 +209,11 @@ export default function ProductImageStudio() {
   });
 
   useEffect(() => {
-    if (dashboard.data?.canAudit && !dashboard.data.canManage) {
-      setScope("HISTORY");
-      setSelectedId(null);
-    }
-  }, [dashboard.data?.canAudit, dashboard.data?.canManage]);
+    if (!dashboard.data || scopeInitialized) return;
+    setScope(defaultStudioScope(dashboard.data));
+    setSelectedId(null);
+    setScopeInitialized(true);
+  }, [dashboard.data, scopeInitialized]);
 
   useEffect(() => {
     if (!selected) return;
@@ -206,6 +237,21 @@ export default function ProductImageStudio() {
 
   function selectTask(task: StudioTask) {
     setSelectedId(Number(task.id));
+  }
+
+  async function selectScannedOwnedTask(barcode: string) {
+    setTaskScannerOpen(false);
+    try {
+      const product = await utils.productStudio.resolveBarcode.fetch({ barcode });
+      const task = findScannedOwnedTask(tasks.data ?? [], product.productId);
+      if (!task) {
+        notify.err("لا توجد مهمة مسندة إليك لهذا المنتج ضمن قائمة عملي.");
+        return;
+      }
+      selectTask(task);
+    } catch (error) {
+      notify.err(error);
+    }
   }
 
   async function submitForReview() {
@@ -235,9 +281,10 @@ export default function ProductImageStudio() {
   const counts = dashboard.data?.counts;
   const busy = isStudioProcessing || isPreparingThumbnail || saveDraft.isPending || submit.isPending || approve.isPending || reject.isPending || revert.isPending;
   const storageActionsDisabled = isStudioStorageActionDisabled(dashboard.data?.storageReady);
+  const mobilePanel = mobileStudioPanel(selected ? Number(selected.id) : null);
 
   return (
-    <div className="space-y-4 p-4 md:p-6">
+    <div className="min-w-0 space-y-4 overflow-x-hidden p-4 md:p-6">
       <PageHeader
         title="استوديو المنتجات"
         description="مركز مستقل للصور والمحتوى: إسناد، تنفيذ، مراجعة، واعتماد. لا يعرض أسعاراً أو تكلفة أو مخزوناً."
@@ -273,7 +320,7 @@ export default function ProductImageStudio() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="studio-source-image">نوع المهمة</Label>
-              <select id="studio-source-image" className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={sourceChoice} onChange={(event) => setSourceChoice(event.target.value)} disabled={!productId}>
+              <select id="studio-source-image" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={sourceChoice} onChange={(event) => setSourceChoice(event.target.value)} disabled={!productId}>
                 <option value="new">إضافة صورة جديدة</option>
                 {(productImages.data ?? []).map((image, index) => (
                   <option key={Number(image.id)} value={String(image.id)}>
@@ -285,7 +332,7 @@ export default function ProductImageStudio() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="studio-assignee">الموظف المصرح</Label>
-              <select id="studio-assignee" className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>
+              <select id="studio-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>
                 <option value="">اختر الموظف</option>
                 {(assignees.data ?? []).map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
               </select>
@@ -305,7 +352,7 @@ export default function ProductImageStudio() {
       )}
 
       <Tabs value={scope} onValueChange={(value) => { setScope(value as Scope); setSelectedId(null); }}>
-        <TabsList className="h-auto flex-wrap justify-start">
+        <TabsList className="h-auto max-w-full flex-wrap justify-start">
           <TabsTrigger value="QUEUE"><ClipboardList aria-hidden className="size-4" /> طابور العمل</TabsTrigger>
           <TabsTrigger value="MINE"><UserCheck aria-hidden className="size-4" /> عملي</TabsTrigger>
           <TabsTrigger value="REVIEW"><CheckCircle2 aria-hidden className="size-4" /> المراجعة</TabsTrigger>
@@ -313,8 +360,8 @@ export default function ProductImageStudio() {
         </TabsList>
         {(["QUEUE", "MINE", "REVIEW", "HISTORY"] as Scope[]).map((tab) => (
           <TabsContent key={tab} value={tab} className="mt-4">
-            <div className="grid gap-4 lg:grid-cols-[minmax(260px,360px)_1fr]">
-              <Card>
+            <div className="min-w-0 grid gap-4 lg:grid-cols-[minmax(260px,360px)_1fr]">
+              <Card className={mobilePanel === "DETAIL" ? "hidden lg:block" : undefined}>
                 <CardHeader><CardTitle className="text-base">المهام</CardTitle></CardHeader>
                 <CardContent className="space-y-2">
                   {tasks.isLoading && <div className="py-8 text-center"><Loader2 aria-hidden className="mx-auto size-6 animate-spin" /></div>}
@@ -324,7 +371,7 @@ export default function ProductImageStudio() {
                       key={Number(task.id)}
                       type="button"
                       onClick={() => selectTask(task)}
-                      className={`w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}
+                      className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <span className="text-sm font-medium">{task.productName}</span>
@@ -338,11 +385,12 @@ export default function ProductImageStudio() {
               </Card>
 
               {!selected ? (
-                <Card><CardContent className="py-16 text-center text-sm text-muted-foreground">اختر مهمة لعرض مسارها.</CardContent></Card>
+                <Card className="hidden lg:block"><CardContent className="py-16 text-center text-sm text-muted-foreground">اختر مهمة لعرض مسارها.</CardContent></Card>
               ) : (
                 <div className="space-y-4">
                   <Card>
                     <CardHeader>
+                      <Button type="button" variant="ghost" className="-mr-2 min-h-11 self-start lg:hidden" onClick={() => setSelectedId(null)}><ChevronRight aria-hidden className="size-4" /> عودة إلى المهام</Button>
                       <CardTitle className="flex items-center justify-between gap-2 text-base">
                         <span>{selected.productName}</span>
                         <Badge variant={STATUS_VARIANT[selected.status]}>{STATUS_LABEL[selected.status]}</Badge>
@@ -381,9 +429,9 @@ export default function ProductImageStudio() {
                         onStudioBusyChange={setIsStudioProcessing}
                         hint="صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً."
                       />
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" disabled={busy} onClick={() => saveDraft.mutate({ taskId: Number(selected.id), proposedName: name, proposedDescription: description, proposedMarketingCopy: marketingCopy, adminOverrideReason: editOverrideValue })}>حفظ المسودة</Button>
-                        <Button disabled={busy || (!selected.hasOriginal && !originalDataUrl) || !images[0]?.dataUrl} onClick={() => void submitForReview()}>
+                      <div className="sticky bottom-24 z-20 -mx-4 flex flex-wrap gap-2 border-y bg-background/95 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:border-0 lg:bg-transparent lg:p-0">
+                        <Button className="min-h-11" variant="outline" disabled={busy} onClick={() => saveDraft.mutate({ taskId: Number(selected.id), proposedName: name, proposedDescription: description, proposedMarketingCopy: marketingCopy, adminOverrideReason: editOverrideValue })}>حفظ المسودة</Button>
+                        <Button className="min-h-11" disabled={busy || (!selected.hasOriginal && !originalDataUrl) || !images[0]?.dataUrl} onClick={() => void submitForReview()}>
                           {isPreparingThumbnail && <Loader2 aria-hidden className="size-4 animate-spin" />}
                           إرسال المحتوى والصورة للمراجعة
                         </Button>
@@ -408,10 +456,14 @@ export default function ProductImageStudio() {
                             {!reviewable && !reviewOverrideRequired && (
                               <p className="text-sm text-destructive">لا يمكنك مراجعة مهمة أُسندت إليك أو كنت آخر من أرسلها.</p>
                             )}
-                            <div className="space-y-1.5"><Label htmlFor="studio-reject-reason">سبب الرفض عند الإعادة</Label><Textarea id="studio-reject-reason" rows={2} maxLength={500} value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="اذكر التعديل المطلوب بوضوح" disabled={storageActionsDisabled} /></div>
-                            <div className="flex flex-wrap gap-2">
-                              <Button disabled={storageActionsDisabled || busy || !reviewable} onClick={() => approve.mutate({ taskId: Number(selected.id), adminOverrideReason: reviewOverrideValue })}><CheckCircle2 aria-hidden className="size-4" /> اعتماد ونشر</Button>
-                              <Button variant="destructive" disabled={storageActionsDisabled || busy || !reviewable || rejectReason.trim().length < 5} onClick={() => reject.mutate({ taskId: Number(selected.id), reason: rejectReason, adminOverrideReason: reviewOverrideValue })}><XCircle aria-hidden className="size-4" /> إعادة للتعديل</Button>
+                            <div className="rounded-md border bg-muted/30 p-3 text-xs">
+                              <p className="font-medium">قائمة فحص سريعة</p>
+                              <ul className="mt-2 space-y-1 text-muted-foreground"><li>المنتج وتفاصيله مطابقة للأصل.</li><li>الخلفية والقصّ واضحان ولا يحجبان المنتج.</li><li>الاسم والوصف المقترحان صالحان للنشر.</li></ul>
+                            </div>
+                            <div className="space-y-1.5"><Label htmlFor="studio-reject-reason">سبب الرفض عند الإعادة</Label><div className="flex flex-wrap gap-2">{STUDIO_REJECTION_PRESETS.map((reason) => <Button key={reason} type="button" variant="outline" className="min-h-11 text-xs" disabled={storageActionsDisabled} onClick={() => setRejectReason(reason)}>{reason}</Button>)}</div><Textarea id="studio-reject-reason" rows={2} maxLength={500} value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="ملاحظة إضافية مطلوبة للتعديل" disabled={storageActionsDisabled} /></div>
+                            <div className="sticky bottom-24 z-20 -mx-4 flex flex-wrap gap-2 border-y bg-background/95 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:border-0 lg:bg-transparent lg:p-0">
+                              <Button className="min-h-11" disabled={storageActionsDisabled || busy || !reviewable} onClick={() => approve.mutate({ taskId: Number(selected.id), adminOverrideReason: reviewOverrideValue })}><CheckCircle2 aria-hidden className="size-4" /> اعتماد ونشر</Button>
+                              <Button className="min-h-11" variant="destructive" disabled={storageActionsDisabled || busy || !reviewable || rejectReason.trim().length < 5} onClick={() => reject.mutate({ taskId: Number(selected.id), reason: rejectReason, adminOverrideReason: reviewOverrideValue })}><XCircle aria-hidden className="size-4" /> إعادة للتعديل</Button>
                             </div>
                           </div>
                         )}
@@ -427,6 +479,12 @@ export default function ProductImageStudio() {
           </TabsContent>
         ))}
       </Tabs>
+      {scope === "MINE" && mobilePanel === "LIST" && (
+        <>
+          <Button type="button" className="fixed bottom-24 end-4 z-30 min-h-11 rounded-full px-4 shadow-lg lg:hidden" onClick={() => setTaskScannerOpen(true)}><ScanLine aria-hidden className="size-4" /> مسح مهمة</Button>
+          {taskScannerOpen && <Suspense fallback={null}><CameraScanner open onClose={() => setTaskScannerOpen(false)} onDetect={(barcode) => void selectScannedOwnedTask(barcode)} /></Suspense>}
+        </>
+      )}
     </div>
   );
 }
