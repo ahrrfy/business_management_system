@@ -135,6 +135,9 @@ const EXTRA_MIGRATIONS = [
   // repair مستقل idempotent يستبدل final تحت pre-trigger ثم يزيل المؤقت، فيطابق قواعد CI/الاختبار
   // مسار migrator الحاكم في 0208 بلا نافذة حماية.
   "drizzle/migrations/extras/0208_online_order_reservation_guard.sql",
+  // ٢٠/٨/٢٦: db:push قد يترك فهرس FK افتراضياً لمحفظة البطاقات الرقمية بدلاً من الاسم التعاقدي
+  // idx_dwt_wallet؛ الإصلاح idempotent ويحافظ على فهرس قراءات المحفظة واختبار الحماية.
+  "drizzle/migrations/extras/0212_repair_digital_wallet_index.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
