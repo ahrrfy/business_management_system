@@ -17,3 +17,10 @@
 ## Scope note
 
 - No server schema, provider API, approval, rejection, publishing, or offline replay path was added.
+
+## Follow-up hardening
+
+- Replaced plaintext `userId:taskId` record keys with a device-held non-extractable HMAC index.
+- Persisted the once-only resume claim inside the encrypted envelope, including protection from an unchanged autosave after reload.
+- Added encrypted original image and processing-receipt fields, offline discovery without a task-query cache, and an explicit conflict path for a disappeared task.
+- Focused suite now covers 10 end-to-end store-state cases, including reload and full submission state.

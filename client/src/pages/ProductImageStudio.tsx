@@ -31,6 +31,7 @@ import {
   purgeStudioDraftsForUser,
   reconcileStudioDraftAfterReconnect,
   saveStudioDraft,
+  listStudioDraftsForUser,
   studioTaskRevision,
   type StudioDraft,
 } from "@/lib/productStudio/studioDrafts";
@@ -245,6 +246,7 @@ export default function ProductImageStudio() {
   const [taskScannerOpen, setTaskScannerOpen] = useState(false);
   const [draftConflict, setDraftConflict] = useState(false);
   const [draftReady, setDraftReady] = useState(false);
+  const [offlineDrafts, setOfflineDrafts] = useState<StudioDraft[]>([]);
   const previousUserId = useRef<number | null>(null);
 
   const utils = trpc.useUtils();
@@ -425,31 +427,45 @@ export default function ProductImageStudio() {
         : [],
     );
     setStudioMode(draft.mode);
+    setOriginalDataUrl(draft.originalDataUrl ?? "");
+    setProcessingReceipt(draft.processingReceipt);
   }
 
   useEffect(() => {
-    if (!selected || !authenticatedUserId) return;
+    if (!offline || !authenticatedUserId) return;
+    let cancelled = false;
+    void listStudioDraftsForUser(authenticatedUserId)
+      .then((drafts) => {
+        if (!cancelled) setOfflineDrafts(drafts);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticatedUserId, offline]);
+
+  useEffect(() => {
+    if (!selectedId || !authenticatedUserId) return;
+    const taskId = Number(selected?.id ?? selectedId);
     let cancelled = false;
     void (async () => {
       try {
         if (offline) {
-          const draft = await loadStudioDraft(
-            authenticatedUserId,
-            Number(selected.id),
-          );
+          const draft = await loadStudioDraft(authenticatedUserId, taskId);
           if (draft && !cancelled) applyLocalDraft(draft);
           return;
         }
         const refreshed = await tasks.refetch();
-        const task = refreshed.data?.find(
-          (item) => Number(item.id) === Number(selected.id),
-        );
-        if (!task || cancelled) return;
+        const task = refreshed.data?.find((item) => Number(item.id) === taskId);
+        if (cancelled) return;
         const result = await reconcileStudioDraftAfterReconnect({
           userId: authenticatedUserId,
-          taskId: Number(task.id),
-          revision: studioTaskRevision(task.updatedAt),
-          editable: canEditStudioTask(task, workflowUser, editOverrideReason),
+          taskId,
+          taskFound: Boolean(task),
+          revision: task ? studioTaskRevision(task.updatedAt) : null,
+          editable: task
+            ? canEditStudioTask(task, workflowUser, editOverrideReason)
+            : false,
         });
         if (cancelled) return;
         if (result.kind === "RESUME") applyLocalDraft(result.draft);
@@ -467,7 +483,7 @@ export default function ProductImageStudio() {
     authenticatedUserId,
     editOverrideReason,
     offline,
-    selected?.id,
+    selectedId,
     selectedRevision,
   ]);
 
@@ -490,6 +506,8 @@ export default function ProductImageStudio() {
         proposedMarketingCopy: marketingCopy,
         // ImageUploader has already compressed every accepted image to WebP/JPEG when possible.
         imageDataUrl: images[0]?.dataUrl ?? null,
+        originalDataUrl: originalDataUrl || null,
+        processingReceipt,
         mode: studioMode,
       }).catch(() => undefined);
     }, 650);
@@ -503,6 +521,8 @@ export default function ProductImageStudio() {
     images,
     marketingCopy,
     name,
+    originalDataUrl,
+    processingReceipt,
     selected?.id,
     selectedRevision,
     studioMode,
@@ -605,6 +625,49 @@ export default function ProductImageStudio() {
           <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
           <span>{STUDIO_STORAGE_DISABLED_MESSAGE}</span>
         </div>
+      )}
+
+      {offline && offlineDrafts.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              مسودات محلية قابلة للاستعادة
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {offlineDrafts.map((draft) => (
+              <div
+                key={`${draft.userId}-${draft.taskId}`}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3"
+              >
+                <div className="min-w-0 text-sm">
+                  <p className="font-medium">
+                    {draft.proposedName || `مهمة الاستوديو #${draft.taskId}`}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    مهمة #{draft.taskId} · محفوظة محلياً حتى{" "}
+                    {new Date(draft.expiresAt).toLocaleString("ar-IQ")}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="min-h-11"
+                  onClick={() => {
+                    applyLocalDraft(draft);
+                    setSelectedId(draft.taskId);
+                    setDraftReady(true);
+                    notify.ok(
+                      "استُعيدت المسودة محلياً؛ سيُتحقق من المهمة عند عودة الاتصال.",
+                    );
+                  }}
+                >
+                  استعادة المسودة
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

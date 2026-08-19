@@ -17,6 +17,8 @@ export interface StudioDraftInput {
   proposedDescription: string;
   proposedMarketingCopy: string;
   imageDataUrl: string | null;
+  originalDataUrl: string | null;
+  processingReceipt: string | null;
   mode: StudioDraftMode;
 }
 
@@ -24,6 +26,8 @@ export interface StudioDraft extends StudioDraftInput {
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
+  /** علامة مشفرة دائمة تمنع تطبيق المسودة مرتين بعد إعادة تحميل المتصفح. */
+  resumeClaimedAt: number | null;
 }
 
 /** لا يحمل سجل IndexedDB أي محتوى قابل للقراءة؛ المفتاح فهرسة محلية فقط. */
@@ -44,6 +48,8 @@ interface StudioDraftStoreOptions {
   now?: () => number;
   encrypt?: (value: unknown) => Promise<EncryptedEnvelope>;
   decrypt?: <T>(envelope: EncryptedEnvelope) => Promise<T>;
+  /** فهرس معتم قابل لإعادة الحساب؛ لا يضع userId/taskId في مفتاح IndexedDB. */
+  idFor?: (userId: number, taskId: number) => Promise<string>;
 }
 
 export type StudioDraftReconciliation =
@@ -52,8 +58,29 @@ export type StudioDraftReconciliation =
   | { kind: "ALREADY_RESUMED"; draft: StudioDraft }
   | { kind: "CONFLICT"; draft: StudioDraft };
 
-function draftId(userId: number, taskId: number): string {
-  return `${userId}:${taskId}`;
+const STUDIO_DRAFT_INDEX_KEY = "studio-draft-index-hmac";
+
+async function studioDraftOpaqueId(
+  userId: number,
+  taskId: number,
+): Promise<string> {
+  let key = (await offlineDb.keys.get(STUDIO_DRAFT_INDEX_KEY))?.key;
+  if (!key) {
+    key = await crypto.subtle.generateKey(
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    await offlineDb.keys.put({ name: STUDIO_DRAFT_INDEX_KEY, key });
+  }
+  const signature = new Uint8Array(
+    await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode(`${userId}:${taskId}`),
+    ),
+  );
+  return `sd-${Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function validDraft(value: unknown): value is StudioDraft {
@@ -67,10 +94,16 @@ function validDraft(value: unknown): value is StudioDraft {
     typeof draft.proposedDescription === "string" &&
     typeof draft.proposedMarketingCopy === "string" &&
     (typeof draft.imageDataUrl === "string" || draft.imageDataUrl === null) &&
+    (typeof draft.originalDataUrl === "string" ||
+      draft.originalDataUrl === null) &&
+    (typeof draft.processingReceipt === "string" ||
+      draft.processingReceipt === null) &&
     (draft.mode === "FLATTEN" || draft.mode === "CUT" || draft.mode === "AI") &&
     typeof draft.createdAt === "number" &&
     typeof draft.updatedAt === "number" &&
-    typeof draft.expiresAt === "number"
+    typeof draft.expiresAt === "number" &&
+    (typeof draft.resumeClaimedAt === "number" ||
+      draft.resumeClaimedAt === null)
   );
 }
 
@@ -82,59 +115,72 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
   const now = options.now ?? Date.now;
   const encrypt = options.encrypt ?? encryptJson;
   const decrypt = options.decrypt ?? decryptJson;
-  const resumed = new Set<string>();
+  const idFor = options.idFor ?? studioDraftOpaqueId;
+
+  async function readRow(
+    row: StudioDraftRecord,
+    at: number,
+  ): Promise<StudioDraft | null> {
+    try {
+      const draft = await decrypt<StudioDraft>(row.envelope);
+      if (!validDraft(draft) || draft.expiresAt <= at) {
+        await options.persistence.delete(row.id);
+        return null;
+      }
+      return draft;
+    } catch {
+      await options.persistence.delete(row.id);
+      return null;
+    }
+  }
 
   async function load(
     userId: number,
     taskId: number,
     at = now(),
   ): Promise<StudioDraft | null> {
-    const id = draftId(userId, taskId);
+    const id = await idFor(userId, taskId);
     const row = await options.persistence.get(id);
     if (!row) return null;
-    try {
-      const draft = await decrypt<StudioDraft>(row.envelope);
-      if (
-        !validDraft(draft) ||
-        draft.userId !== userId ||
-        draft.taskId !== taskId ||
-        draft.expiresAt <= at
-      ) {
-        await options.persistence.delete(id);
-        resumed.delete(id);
-        return null;
-      }
-      return draft;
-    } catch {
-      // مفتاح جهاز آخر أو سجل تالف: لا نخاطر بعرض محتوى غير موثوق.
+    const draft = await readRow(row, at);
+    if (!draft || draft.userId !== userId || draft.taskId !== taskId) {
       await options.persistence.delete(id);
-      resumed.delete(id);
       return null;
     }
+    return draft;
   }
 
   return {
     async save(input: StudioDraftInput): Promise<StudioDraft> {
-      const id = draftId(input.userId, input.taskId);
+      const id = await idFor(input.userId, input.taskId);
       const existing = await load(input.userId, input.taskId);
       const timestamp = now();
+      const unchanged =
+        existing != null &&
+        existing.revision === input.revision &&
+        existing.proposedName === input.proposedName &&
+        existing.proposedDescription === input.proposedDescription &&
+        existing.proposedMarketingCopy === input.proposedMarketingCopy &&
+        existing.imageDataUrl === input.imageDataUrl &&
+        existing.originalDataUrl === input.originalDataUrl &&
+        existing.processingReceipt === input.processingReceipt &&
+        existing.mode === input.mode;
       const draft: StudioDraft = {
         ...input,
         createdAt: existing?.createdAt ?? timestamp,
         updatedAt: timestamp,
         expiresAt: timestamp + STUDIO_DRAFT_TTL_MS,
+        resumeClaimedAt: unchanged ? existing.resumeClaimedAt : null,
       };
       await options.persistence.put({ id, envelope: await encrypt(draft) });
-      resumed.delete(id);
       return draft;
     },
 
     load,
 
     async purge(userId: number, taskId: number): Promise<void> {
-      const id = draftId(userId, taskId);
+      const id = await idFor(userId, taskId);
       await options.persistence.delete(id);
-      resumed.delete(id);
     },
 
     async purgeUser(userId: number): Promise<void> {
@@ -145,11 +191,9 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
             const draft = await decrypt<StudioDraft>(row.envelope);
             if (!validDraft(draft) || draft.userId === userId) {
               await options.persistence.delete(row.id);
-              resumed.delete(row.id);
             }
           } catch {
             await options.persistence.delete(row.id);
-            resumed.delete(row.id);
           }
         }),
       );
@@ -160,7 +204,6 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
       await Promise.all(
         rows.map(async (row) => {
           await options.persistence.delete(row.id);
-          resumed.delete(row.id);
         }),
       );
     },
@@ -173,30 +216,45 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
             const draft = await decrypt<StudioDraft>(row.envelope);
             if (!validDraft(draft) || draft.expiresAt <= at) {
               await options.persistence.delete(row.id);
-              resumed.delete(row.id);
             }
           } catch {
             await options.persistence.delete(row.id);
-            resumed.delete(row.id);
           }
         }),
       );
     },
 
+    async listForUser(userId: number, at = now()): Promise<StudioDraft[]> {
+      const rows = await options.persistence.entries();
+      const drafts = await Promise.all(rows.map((row) => readRow(row, at)));
+      return drafts
+        .filter((draft): draft is StudioDraft => draft?.userId === userId)
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+    },
+
     async reconcileAndClaimResume(context: {
       userId: number;
       taskId: number;
-      revision: string;
+      taskFound: boolean;
+      revision: string | null;
       editable: boolean;
     }): Promise<StudioDraftReconciliation> {
       const draft = await load(context.userId, context.taskId);
       if (!draft) return { kind: "NONE" };
-      if (!context.editable || draft.revision !== context.revision)
+      if (
+        !context.taskFound ||
+        !context.editable ||
+        draft.revision !== context.revision
+      )
         return { kind: "CONFLICT", draft };
-      const id = draftId(context.userId, context.taskId);
-      if (resumed.has(id)) return { kind: "ALREADY_RESUMED", draft };
-      resumed.add(id);
-      return { kind: "RESUME", draft };
+      if (draft.resumeClaimedAt != null)
+        return { kind: "ALREADY_RESUMED", draft };
+      const claimed = { ...draft, resumeClaimedAt: now() };
+      await options.persistence.put({
+        id: await idFor(context.userId, context.taskId),
+        envelope: await encrypt(claimed),
+      });
+      return { kind: "RESUME", draft: claimed };
     },
   };
 }
@@ -218,6 +276,7 @@ export const purgeStudioDraft = deviceStudioDrafts.purge;
 export const purgeStudioDraftsForUser = deviceStudioDrafts.purgeUser;
 export const purgeAllStudioDrafts = deviceStudioDrafts.purgeAll;
 export const purgeExpiredStudioDrafts = deviceStudioDrafts.purgeExpired;
+export const listStudioDraftsForUser = deviceStudioDrafts.listForUser;
 export const reconcileStudioDraftAfterReconnect =
   deviceStudioDrafts.reconcileAndClaimResume;
 
