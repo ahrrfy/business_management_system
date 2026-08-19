@@ -16,8 +16,10 @@ import {
   getStudioDashboard,
   getStudioCandidatePreview,
   getStudioSourcePreview,
+  listStudioProducts,
   listStudioTasks,
   rejectStudioTask,
+  resolveStudioBarcode,
   revertStudioTask,
   saveStudioDraft,
   submitStudioCandidate as submitStudioCandidateService,
@@ -110,6 +112,94 @@ afterEach(async () => {
 });
 
 describe("product studio governed workflow", () => {
+  it("searches server-side beyond the former 40-row picker limit", async () => {
+    const d = db();
+    await d.insert(s.products).values(
+      Array.from({ length: 41 }, (_, index) => ({
+        id: index + 10,
+        name: `منتج تمهيدي ${index + 1}`,
+      })).concat({ id: 99, name: "المنتج البعيد المطلوب" }),
+    );
+
+    const result = await listStudioProducts(manager, { search: "البعيد" });
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ productId: 99, productName: "المنتج البعيد المطلوب" });
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("returns twenty products per opaque cursor page without repeating a product", async () => {
+    const d = db();
+    await d.insert(s.products).values(
+      Array.from({ length: 43 }, (_, index) => ({ id: index + 200, name: `صنف صفحة ${String(index + 1).padStart(2, "0")}` })),
+    );
+
+    const first = await listStudioProducts(manager, {});
+    expect(first.rows).toHaveLength(20);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    expect(first.nextCursor).not.toMatch(/^\d+$/);
+    const second = await listStudioProducts(manager, { cursor: first.nextCursor });
+    expect(second.rows).toHaveLength(20);
+    expect(new Set([...first.rows, ...second.rows].map((row) => row.productId)).size).toBe(40);
+  });
+
+  it("normalizes Arabic names and ranks SKU and barcode matches without duplicate products", async () => {
+    const d = db();
+    await d.insert(s.products).values([
+      { id: 100, name: "مكتبة عربية" },
+      { id: 101, name: "قلم باركود" },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 100, productId: 100, sku: "BOOK-AR", costPrice: "1" },
+      { id: 101, productId: 101, sku: "PEN-778", costPrice: "1" },
+    ]);
+    await d.insert(s.productUnits).values({
+      id: 100,
+      variantId: 101,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+      barcode: "6001000000017",
+    });
+    await d.insert(s.productUnitBarcodes).values({ productUnitId: 100, barcode: "6001000000093" });
+
+    await expect(listStudioProducts(manager, { search: "مكتبه" })).resolves.toMatchObject({
+      rows: [expect.objectContaining({ productId: 100, matchKind: "NAME_PREFIX" })],
+    });
+    await expect(listStudioProducts(manager, { search: "PEN-778" })).resolves.toMatchObject({
+      rows: [expect.objectContaining({ productId: 101, matchKind: "SKU" })],
+    });
+    await expect(listStudioProducts(manager, { search: "6001000000017" })).resolves.toMatchObject({
+      rows: [expect.objectContaining({ productId: 101, unitId: 100, matchKind: "BARCODE_PRIMARY" })],
+    });
+    const alias = await listStudioProducts(manager, { search: "6001000000093" });
+    expect(alias.rows).toEqual([expect.objectContaining({ productId: 101, unitId: 100, matchKind: "BARCODE_ALIAS" })]);
+  });
+
+  it("excludes inactive products unless a manager asks to inspect them and never exposes commercial fields", async () => {
+    const d = db();
+    await d.insert(s.products).values({ id: 102, name: "منتج متوقف", isActive: false });
+    await d.insert(s.productVariants).values({ id: 102, productId: 102, sku: "OFF-1", costPrice: "999.99" });
+    await d.insert(s.productUnits).values({
+      id: 102,
+      variantId: 102,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+      barcode: "6001000000024",
+    });
+
+    await expect(listStudioProducts(worker, { search: "OFF-1", includeInactive: true })).resolves.toEqual({ rows: [], nextCursor: null });
+    await expect(listStudioProducts(manager, { search: "OFF-1", includeInactive: true })).resolves.toMatchObject({
+      rows: [expect.objectContaining({ productId: 102, isActive: false })],
+    });
+    const resolved = await resolveStudioBarcode(manager, "6001000000024");
+    expect(resolved).toMatchObject({ productId: 102, variantId: 102, unitId: 102, isActive: false });
+    expect(resolved).not.toHaveProperty("costPrice");
+    expect(resolved).not.toHaveProperty("price");
+    expect(resolved).not.toHaveProperty("stock");
+  });
+
   it("blocks manager edits on an employee task and requires an audited admin override", async () => {
     const { taskId } = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
 

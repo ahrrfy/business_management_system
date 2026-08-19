@@ -7,11 +7,16 @@ import {
   productImageObjectStaging,
   productImageJobs,
   productImages,
+  productUnitBarcodes,
+  productUnits,
+  productVariants,
   products,
   users,
 } from "../../drizzle/schema";
 import type { PermissionMap } from "@shared/permissions";
 import { hasModuleAccess } from "@shared/permissions";
+import { normalizeSearchText } from "@shared/searchNormalize";
+import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, parseImageDimensions } from "../lib/imageValidation";
 import {
@@ -252,25 +257,159 @@ async function lockTask(tx: Parameters<Parameters<typeof withTx>[0]>[0], taskId:
   return task;
 }
 
-export async function listStudioProducts(search = "") {
+export type StudioProductSearchInput = {
+  search?: string;
+  cursor?: string | null;
+  includeInactive?: boolean;
+};
+
+type StudioProductCursor = { q: string; rank: number; name: string; id: number };
+
+const STUDIO_PRODUCT_PAGE_SIZE = 20;
+
+function encodeStudioProductCursor(cursor: StudioProductCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeStudioProductCursor(value: string, query: string): StudioProductCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<StudioProductCursor>;
+    const { q, rank, name, id } = parsed;
+    if (
+      typeof q !== "string" || q !== query ||
+      typeof rank !== "number" || !Number.isInteger(rank) ||
+      typeof name !== "string" ||
+      typeof id !== "number" || !Number.isSafeInteger(id)
+    ) throw new Error("invalid cursor");
+    if (id < 1) throw new Error("invalid cursor");
+    return { q, rank, name, id };
+  } catch {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مؤشر نتائج المنتجات غير صالح" });
+  }
+}
+
+type StudioProductMatchKind = "BARCODE_PRIMARY" | "BARCODE_ALIAS" | "SKU" | "PRODUCT_ID" | "NAME_PREFIX" | "NAME_CONTAINS";
+
+export async function listStudioProducts(actor: ProductStudioActor, input: StudioProductSearchInput = {}) {
   const db = requireDb();
-  const q = search.trim().slice(0, 80);
-  const condition = q
-    ? and(eq(products.isActive, true), or(like(products.name, `%${q.replace(/[\\%_]/g, "\\$&")}%`), eq(products.id, Number(q) || 0)))
-    : eq(products.isActive, true);
-  return db
+  const q = normalizeSearchText(input.search ?? "").slice(0, 80);
+  const cursor = input.cursor ? decodeStudioProductCursor(input.cursor, q) : null;
+  const showInactive = input.includeInactive === true && isManager(actor);
+  const numericId = /^\d+$/.test(q) ? Number(q) : 0;
+  const contains = `%${escLike(q)}%`;
+  const prefix = `${escLike(q)}%`;
+  const productName = sql<string>`coalesce(${products.searchNorm}, lower(${products.name}))`;
+  const variantName = sql<string>`lower(coalesce(${productVariants.variantName}, ''))`;
+  const exactBarcode = q ? or(eq(productUnits.barcode, q), eq(productUnitBarcodes.barcode, q)) : undefined;
+  const exactSku = q ? sql`lower(${productVariants.sku}) = ${q}` : undefined;
+  const exactProductId = numericId > 0 ? eq(products.id, numericId) : undefined;
+  const namePrefix = q ? or(like(productName, prefix), like(variantName, prefix)) : undefined;
+  const nameContains = q ? or(like(productName, contains), like(variantName, contains)) : undefined;
+  const matches = q ? or(exactBarcode, exactSku, exactProductId, nameContains) : undefined;
+  const rank = sql<number>`min(case
+    when ${exactBarcode ?? sql`false`} then 1
+    when ${exactSku ?? sql`false`} or ${exactProductId ?? sql`false`} then 2
+    when ${namePrefix ?? sql`false`} then 3
+    else 4
+  end)`;
+  const baseWhere = and(showInactive ? undefined : eq(products.isActive, true), matches);
+  const afterCursor = cursor
+    ? sql`(${rank} > ${cursor.rank} or (${rank} = ${cursor.rank} and (${products.name} > ${cursor.name} or (${products.name} = ${cursor.name} and ${products.id} > ${cursor.id}))))`
+    : undefined;
+  const productsPage = await db
     .select({
       id: products.id,
       name: products.name,
-      description: products.description,
-      categoryName: categories.name,
-      showInStore: products.showInStore,
+      isActive: products.isActive,
+      rank,
     })
     .from(products)
-    .leftJoin(categories, eq(categories.id, products.categoryId))
-    .where(condition)
-    .orderBy(asc(products.name))
-    .limit(40);
+    .leftJoin(productVariants, eq(productVariants.productId, products.id))
+    .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
+    .leftJoin(productUnitBarcodes, eq(productUnitBarcodes.productUnitId, productUnits.id))
+    .where(baseWhere)
+    .groupBy(products.id, products.name, products.isActive)
+    .having(afterCursor)
+    .orderBy(asc(rank), asc(products.name), asc(products.id))
+    .limit(STUDIO_PRODUCT_PAGE_SIZE + 1);
+  const hasMore = productsPage.length > STUDIO_PRODUCT_PAGE_SIZE;
+  const page = hasMore ? productsPage.slice(0, STUDIO_PRODUCT_PAGE_SIZE) : productsPage;
+  if (!page.length) return { rows: [], nextCursor: null };
+
+  const pageIds = page.map((row) => Number(row.id));
+  const contexts = await db
+    .select({
+      productId: products.id,
+      productName: products.name,
+      isActive: products.isActive,
+      variantId: productVariants.id,
+      variantName: productVariants.variantName,
+      sku: productVariants.sku,
+      unitId: productUnits.id,
+      unitName: productUnits.unitName,
+      primaryBarcode: productUnits.barcode,
+      aliasBarcode: productUnitBarcodes.barcode,
+    })
+    .from(products)
+    .leftJoin(productVariants, eq(productVariants.productId, products.id))
+    .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
+    .leftJoin(productUnitBarcodes, eq(productUnitBarcodes.productUnitId, productUnits.id))
+    .where(inArray(products.id, pageIds));
+
+  const contextFor = (row: typeof contexts[number]) => {
+    const productNorm = normalizeSearchText(row.productName);
+    const variantNorm = normalizeSearchText(row.variantName ?? "");
+    if (row.primaryBarcode === q) return { rank: 1, kind: "BARCODE_PRIMARY" as const, barcode: q };
+    if (row.aliasBarcode === q) return { rank: 1, kind: "BARCODE_ALIAS" as const, barcode: q };
+    if (normalizeSearchText(row.sku ?? "") === q) return { rank: 2, kind: "SKU" as const, barcode: null };
+    if (numericId > 0 && Number(row.productId) === numericId) return { rank: 2, kind: "PRODUCT_ID" as const, barcode: null };
+    if (productNorm.startsWith(q) || variantNorm.startsWith(q)) return { rank: 3, kind: "NAME_PREFIX" as const, barcode: null };
+    return { rank: 4, kind: "NAME_CONTAINS" as const, barcode: null };
+  };
+  const rows = page.map((product) => {
+    const candidates = contexts
+      .filter((context) => Number(context.productId) === Number(product.id))
+      .map((context) => ({ context, match: contextFor(context) }))
+      .sort((a, b) => a.match.rank - b.match.rank || Number(a.context.variantId ?? 0) - Number(b.context.variantId ?? 0) || Number(a.context.unitId ?? 0) - Number(b.context.unitId ?? 0));
+    const selected = candidates[0];
+    return {
+      productId: Number(product.id),
+      productName: product.name,
+      isActive: Boolean(product.isActive),
+      variantId: selected?.context.variantId == null ? null : Number(selected.context.variantId),
+      variantName: selected?.context.variantName ?? null,
+      unitId: selected?.context.unitId == null ? null : Number(selected.context.unitId),
+      unitName: selected?.context.unitName ?? null,
+      matchKind: selected?.match.kind ?? ("NAME_CONTAINS" as StudioProductMatchKind),
+      matchedBarcode: selected?.match.barcode ?? null,
+    };
+  });
+  const last = page[page.length - 1];
+  return {
+    rows,
+    nextCursor: hasMore && last
+      ? encodeStudioProductCursor({ q, rank: Number(last.rank), name: last.name, id: Number(last.id) })
+      : null,
+  };
+}
+
+export async function resolveStudioBarcode(actor: ProductStudioActor, barcode: string) {
+  const result = await listStudioProducts(actor, {
+    search: barcode,
+    includeInactive: isManager(actor),
+  });
+  const match = result.rows.find((row) => row.matchKind === "BARCODE_PRIMARY" || row.matchKind === "BARCODE_ALIAS");
+  if (!match) throw new TRPCError({ code: "NOT_FOUND", message: "الباركود غير معروف" });
+  return {
+    productId: match.productId,
+    productName: match.productName,
+    variantId: match.variantId,
+    variantName: match.variantName,
+    unitId: match.unitId,
+    unitName: match.unitName,
+    isActive: match.isActive,
+    matchKind: match.matchKind,
+  };
 }
 
 export async function listStudioAssignees(actor: ProductStudioActor) {

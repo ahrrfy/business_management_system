@@ -1,4 +1,5 @@
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
+import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
@@ -85,7 +86,6 @@ function PreviewPair({ data }: { data: RouterOutputs["productStudio"]["candidate
 export default function ProductImageStudio() {
   const [scope, setScope] = useState<Scope>("MINE");
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [productSearch, setProductSearch] = useState("");
   const [productId, setProductId] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
   const [sourceChoice, setSourceChoice] = useState("new");
@@ -106,7 +106,6 @@ export default function ProductImageStudio() {
   const dashboard = trpc.productStudio.dashboard.useQuery();
   const me = trpc.auth.me.useQuery();
   const tasks = trpc.productStudio.tasks.useQuery({ scope, limit: 100 });
-  const products = trpc.productStudio.products.useQuery({ search: productSearch });
   const productImages = trpc.productStudio.productImages.useQuery(
     { productId: Number(productId) || 0 },
     { enabled: Boolean(productId) && dashboard.data?.canManage === true },
@@ -266,11 +265,11 @@ export default function ProductImageStudio() {
           <CardContent className="grid gap-3 md:grid-cols-4">
             <div className="space-y-1.5">
               <Label htmlFor="studio-product-search">ابحث عن المنتج</Label>
-              <Input id="studio-product-search" value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="اسم المنتج أو رقمه" />
-              <select className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={productId} onChange={(event) => { setProductId(event.target.value); setSourceChoice("new"); }}>
-                <option value="">اختر المنتج</option>
-                {(products.data ?? []).map((product) => <option key={Number(product.id)} value={Number(product.id)}>{product.name}</option>)}
-              </select>
+              <StudioProductPicker
+                canManage={dashboard.data?.canManage === true}
+                value={Number(productId) || null}
+                onPick={(product) => { setProductId(String(product.productId)); setSourceChoice("new"); }}
+              />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="studio-source-image">نوع المهمة</Label>

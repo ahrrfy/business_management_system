@@ -17,6 +17,7 @@ import {
   listStudioProductImages,
   listStudioTasks,
   rejectStudioTask,
+  resolveStudioBarcode,
   revertStudioTask,
   saveStudioDraft,
   submitStudioCandidate,
@@ -39,8 +40,15 @@ const adminOverrideReason = z.string().trim().min(5).max(500).optional();
 export const productStudioRouter = router({
   dashboard: productStudioReadProcedure.query(({ ctx }) => getStudioDashboard(actor(ctx))),
   products: productStudioReadProcedure
-    .input(z.object({ search: z.string().trim().max(80).default("") }))
-    .query(({ input }) => listStudioProducts(input.search)),
+    .input(z.object({
+      search: z.string().trim().max(80).default(""),
+      cursor: z.string().max(500).nullable().optional(),
+      includeInactive: z.boolean().optional(),
+    }))
+    .query(({ ctx, input }) => listStudioProducts(actor(ctx), input)),
+  resolveBarcode: productStudioReadProcedure
+    .input(z.object({ barcode: z.string().trim().min(1).max(64) }))
+    .query(({ ctx, input }) => resolveStudioBarcode(actor(ctx), input.barcode)),
   productImages: productStudioReadProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => listStudioProductImages(input.productId)),
