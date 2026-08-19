@@ -3301,6 +3301,35 @@ export const productImages = mysqlTable(
 export type ProductImage = typeof productImages.$inferSelect;
 export type InsertProductImage = typeof productImages.$inferInsert;
 
+/** حملات تشغيل الاستوديو: تجمع مهام النواقص دون إسناد أو نشر تلقائي. */
+export const productStudioCampaigns = mysqlTable(
+  "productStudioCampaigns",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 180 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    status: mysqlEnum("status", ["DRAFT", "ACTIVE", "COMPLETED", "CANCELLED"])
+      .default("DRAFT")
+      .notNull(),
+    startsAt: timestamp("startsAt"),
+    dueAt: timestamp("dueAt"),
+    createdBy: int("createdBy")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_pscampaign_branch_status").on(table.branchId, table.status),
+    branchDueIdx: index("idx_pscampaign_branch_due").on(table.branchId, table.dueAt),
+  }),
+);
+
+export type ProductStudioCampaign = typeof productStudioCampaigns.$inferSelect;
+export type InsertProductStudioCampaign = typeof productStudioCampaigns.$inferInsert;
+
 /**
  * image-studio (0096): طابور/سجلّ عمليات الاستوديو. **يحتجز المرشّح المعالَج (`processedUrl`) حتى
  * الاعتماد** (§٥ #١: لا يُجسَّد كصفّ productImages قابل للخدمة قبل المراجعة، سدّاً لتجاوز البوّابة
@@ -3318,6 +3347,10 @@ export const productImageJobs = mysqlTable(
     variantId: bigint("variantId", { mode: "number" }).references(
       () => productVariants.id,
       { onDelete: "cascade" },
+    ),
+    campaignId: bigint("campaignId", { mode: "number" }).references(
+      () => productStudioCampaigns.id,
+      { onDelete: "set null" },
     ),
     sourceContentHash: varchar("sourceContentHash", { length: 64 }),
     /** لقطة الفرع عند الإسناد؛ المدير محصور بفرعه، والمالك/الأدمن فقط يعبران. */
@@ -3352,6 +3385,14 @@ export const productImageJobs = mysqlTable(
     ])
       .default("PENDING_REVIEW")
       .notNull(),
+    /** أولوية تشغيلية للمهمة؛ لا تغيّر صلاحياتها أو ترتيب المراجعة الأمني. */
+    priority: mysqlEnum("priority", ["LOW", "NORMAL", "HIGH", "URGENT"])
+      .default("NORMAL")
+      .notNull(),
+    /** موعد الإنجاز التشغيلي، ويظل NULL للمهام بلا SLA محدد. */
+    dueAt: timestamp("dueAt"),
+    /** قفل تفاؤلي لكل تعديل من الهاتف أو سطح المكتب. */
+    revision: int("revision").default(1).notNull(),
     templateVersion: int("templateVersion"),
     createdBy: int("createdBy").references(() => users.id), // users.id = int (لا bigint)
     assignedTo: int("assignedTo").references(() => users.id),
@@ -3383,9 +3424,15 @@ export const productImageJobs = mysqlTable(
   },
   (table) => ({
     prodIdx: index("idx_pijob_product").on(table.productId),
+    campaignStatusIdx: index("idx_pijob_campaign_status").on(table.campaignId, table.status),
     statusIdx: index("idx_pijob_status").on(table.status),
     assigneeStatusIdx: index("idx_pijob_assignee_status").on(table.assignedTo, table.status),
     branchStatusIdx: index("idx_pijob_branch_status").on(table.branchId, table.status),
+    branchPriorityDueIdx: index("idx_pijob_branch_priority_due").on(
+      table.branchId,
+      table.priority,
+      table.dueAt,
+    ),
     submitterStatusIdx: index("idx_pijob_submitter_status").on(table.submittedBy, table.status),
     oneActivePerProduct: unique("uq_pijob_product_active").on(table.productId, table.activeSlot),
   }),

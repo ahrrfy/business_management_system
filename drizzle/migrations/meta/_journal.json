@@ -1459,6 +1459,20 @@
       "breakpoints": true
     },
     {
+      "idx": 210,
+      "version": "5",
+      "when": 1788052261000,
+      "tag": "0210_product_studio_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "5",
+      "when": 1788052262000,
+      "tag": "0211_product_studio_campaigns",
+      "breakpoints": true
+    },
+    {
       "idx": 212,
       "version": "5",
       "when": 1788052263000,
@@ -1518,8 +1532,7 @@
       "idx": 220,
       "version": "5",
       "when": 1788052271000,
-      "tag": "0220_work_order_draft_link",
-      "breakpoints": true
+      "tag": "0220_work_order_draft_link",      "breakpoints": true
     }
   ]
 }

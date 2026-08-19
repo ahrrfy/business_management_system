@@ -114,15 +114,27 @@ export async function verifyOfflinePin(pin: string): Promise<boolean> {
 
 type UnlockListener = () => void;
 let unlocked = false;
+let unlockedProfile: Pick<OfflineProfile, "userId" | "role"> | null = null;
 const listeners = new Set<UnlockListener>();
 
 export function isOfflineUnlocked(): boolean {
   return unlocked;
 }
 
-export function markOfflineUnlocked(): void {
+export function markOfflineUnlocked(
+  profile?: Pick<OfflineProfile, "userId" | "role">,
+): void {
   unlocked = true;
+  unlockedProfile = profile ?? null;
   listeners.forEach((cb) => cb());
+}
+
+/** ملف جلسة PIN عابر للذاكرة؛ لا يكفي وحده لفتح Studio بلا مطابقة هوية المسودة. */
+export function getOfflineUnlockedProfile(): Pick<
+  OfflineProfile,
+  "userId" | "role"
+> | null {
+  return unlockedProfile;
 }
 
 export function subscribeOfflineUnlock(cb: UnlockListener): () => void {

@@ -5,7 +5,19 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { openSearch } from "@/lib/searchEvents";
-import { resetSessionQueryCache } from "@/lib/offline/sessionBoundary";
+import { resetSessionForLogout } from "@/lib/offline/sessionBoundary";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import {
+  getOfflineProfile,
+  getOfflineUnlockedProfile,
+  isOfflineUnlocked,
+  subscribeOfflineUnlock,
+  type OfflineProfile,
+} from "@/lib/offline/pinLock";
+import {
+  coldStudioShellCapabilities,
+  shouldSkipColdStudioAuth,
+} from "@/lib/productStudio/coldOfflinePolicy";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -17,7 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { ROLE_LABEL } from "@/lib/roles";
 import {
@@ -138,15 +150,31 @@ function isModuleActive(loc: string, href: string): boolean {
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const [loc] = useLocation();
   const queryClient = useQueryClient();
-  const me = trpc.auth.me.useQuery();
+  const connectivity = useConnectivity();
+  const unlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const coldStudio = shouldSkipColdStudioAuth({
+    location: loc,
+    offline:
+      isDisconnected(connectivity) ||
+      (typeof navigator !== "undefined" && !navigator.onLine),
+    pinVerified: unlocked,
+    localProfile: getOfflineUnlockedProfile(),
+  });
+  const [coldProfile, setColdProfile] = useState<OfflineProfile | null>(null);
+  const shellCapabilities = coldStudioShellCapabilities(coldStudio);
+  const me = trpc.auth.me.useQuery(undefined, { enabled: !coldStudio });
   const myStocktakes = trpc.count.mine.useQuery(undefined, {
-    enabled: Boolean(me.data),
+    enabled: !coldStudio && Boolean(me.data),
     refetchInterval: 30_000,
   });
   const printer = usePrinterConnection();
   const logout = trpc.auth.logout.useMutation({
     onSuccess: async () => {
-      await resetSessionQueryCache(queryClient);
+      await resetSessionForLogout(queryClient);
       window.location.replace("/login");
     },
   });
@@ -155,6 +183,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(false);
   const [navWorkspace, setNavWorkspace] = useState<NavWorkspace>({ favorites: [], recent: [] });
   const mainRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!coldStudio) {
+      setColdProfile(null);
+      return;
+    }
+    void getOfflineProfile().then(setColdProfile);
+  }, [coldStudio]);
   useEffect(() => {
     setNavOpen(false);
     // عند تغيّر المسار: صفّر تمرير المحتوى وانقل التركيز إليه (WCAG focus-on-route-change) —
@@ -188,7 +223,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const CASHIER_NAV = [
   // ش٦: يظهر لكل دور — البوّابة `protectedProcedure` والمحتوى يُصفّى خادمياً بصلاحية كل مصدر.
   "/my-work","/pos", "/price-checker", "/invoices", "/work-orders", "/delivery", "/tasks"];
-  const visibleNav = isCourier
+  // `coldStudio` (من main): شلٌّ كاملٌ للتنقّل في وضع الاستوديو البارد — يبقى **قبل** كلّ
+  // فرعٍ آخر، فالإضافةُ أعلاه لا تفتح مدخلاً في وضعٍ صُمّم ليكون بلا مداخل.
+  const visibleNav = coldStudio
+    ? []
+    : isCourier
     ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
     : isCashier
       ? NAV_LINKS.filter((m) => CASHIER_NAV.includes(m.href) && canSeeGate(m, role, permsOverride))
@@ -234,21 +273,40 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     return item && !favoritePaths.has(path) ? [item] : [];
   }).slice(0, 3);
   const favoritesFull = navWorkspace.favorites.length >= NAV_FAVORITES_LIMIT;
+  const displayName =
+    me.data?.name ?? me.data?.email ?? coldProfile?.name ?? "—";
+  const displayRole = me.data?.role ?? coldProfile?.role;
+
+  const coldStudioSidebar = (
+    <div className="flex flex-1 flex-col justify-end p-3">
+      <div className="rounded-md border p-3 text-sm">
+        <div className="font-medium">{displayName}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {displayRole ? ROLE_LABEL[displayRole] ?? displayRole : "استعادة محلية"}
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          هذه الجلسة مخصصة لمسودة الاستوديو المحلية فقط.
+        </p>
+      </div>
+    </div>
+  );
 
   const sidebarInner = (
     <>
         {/* شريط البحث — يفتح CommandPalette */}
-        <div className="px-2 pt-2 pb-1">
-          <button
-            type="button"
-            onClick={openSearch}
-            className="sb-search flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs transition-colors"
-          >
-            <Search className="size-3.5 shrink-0" />
-            <span className="flex-1 text-start">بحث…</span>
-            <kbd className="rounded px-1 font-mono text-[10px]">Ctrl+K</kbd>
-          </button>
-        </div>
+        {shellCapabilities.mountGlobalSearch && (
+          <div className="px-2 pt-2 pb-1">
+            <button
+              type="button"
+              onClick={openSearch}
+              className="sb-search flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs transition-colors"
+            >
+              <Search className="size-3.5 shrink-0" />
+              <span className="flex-1 text-start">بحث…</span>
+              <kbd className="rounded px-1 font-mono text-[10px]">Ctrl+K</kbd>
+            </button>
+          </div>
+        )}
 
         <nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="التنقّل الرئيسي">
           {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب والكاشير: مساحتاهما مركّزتان) */}
@@ -381,7 +439,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             الآن: أيقونة مُلوَّنة + الاسم/الدور بوضوح + شارة nav-item + hover واضح + aria-current. */}
         <div className="sb-footer p-2 space-y-1">
           <Link
-            href="/account"
+            href={coldStudio ? "/catalog/image-studio" : "/account"}
             aria-label="حسابي"
             aria-current={loc === "/account" ? "page" : undefined}
             className={cn(
@@ -396,13 +454,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               <UserCircle2 className="size-5" aria-hidden />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate font-medium leading-tight">{me.data?.name ?? me.data?.email ?? "—"}</div>
+              <div className="truncate font-medium leading-tight">{displayName}</div>
               <div className={cn(
                 "truncate text-[11px] leading-tight",
                 loc === "/account" ? "opacity-80" : "sb-sub",
               )}>
                 {/* تسمية الدور الحقيقية بالعربية (الدور المخصّص أولاً) — كان يعرض المفتاح الخام «cashier». */}
-                حسابي{me.data?.role ? ` · ${(me.data as any).isOwner ? "مالك النظام" : (me.data.customRoleLabel ?? ROLE_LABEL[me.data.role] ?? me.data.role)}` : ""}
+                حسابي{displayRole ? ` · ${me.data?.isOwner ? "مالك النظام" : (me.data?.customRoleLabel ?? ROLE_LABEL[displayRole] ?? displayRole)}` : ""}
               </div>
             </div>
             <ChevronLeft className="size-4 shrink-0 opacity-60" aria-hidden />
@@ -412,7 +470,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             size="sm"
             className="sb-logout w-full justify-start gap-2"
             onClick={() => logout.mutate()}
-            disabled={logout.isPending}
+            disabled={coldStudio || logout.isPending}
           >
             <LogOut className="size-4" aria-hidden />
             تسجيل الخروج
@@ -432,7 +490,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             <ThemeToggle />
           </div>
         </div>
-        {sidebarInner}
+        {shellCapabilities.allowRemoteNavigation ? sidebarInner : coldStudioSidebar}
       </aside>
 
       {/* الشريط العلوي + درج التنقّل — اللوحي/الأصغر (<lg). Sheet جذرٌ بلا DOM فيبقى
@@ -460,18 +518,20 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <SheetHeader className="sb-header px-4 py-4 text-start">
             <SheetTitle className="text-[color:var(--sidebar-on-strong)]">الرؤية العربية</SheetTitle>
           </SheetHeader>
-          {sidebarInner}
+          {shellCapabilities.allowRemoteNavigation ? sidebarInner : coldStudioSidebar}
         </SheetContent>
       </Sheet>
 
       <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
 
       {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}
-      <MobileBottomNav
-        role={role}
-        permsOverride={permsOverride}
-        onOpenMenu={() => setNavOpen(true)}
-      />
+      {shellCapabilities.mountMobileBottomNav && (
+        <MobileBottomNav
+          role={role}
+          permsOverride={permsOverride}
+          onOpenMenu={() => setNavOpen(true)}
+        />
+      )}
     </div>
   );
 }

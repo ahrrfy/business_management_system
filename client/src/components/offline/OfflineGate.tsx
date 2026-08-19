@@ -1,6 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { useConnectivity } from "@/lib/offline/connectivity";
 import {
+  coldOfflineStudioActor,
+  isColdOfflineStudioRoute,
+} from "@/lib/productStudio/coldOfflinePolicy";
+import { loadStudioDraftIdentity } from "@/lib/productStudio/studioDrafts";
+import {
   getOfflineProfile,
   isOfflineUnlocked,
   markOfflineUnlocked,
@@ -58,12 +63,45 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
   const [fails, setFails] = useState(0);
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [draftIdentityUserId, setDraftIdentityUserId] = useState<
+    number | null | undefined
+  >(undefined);
 
   useEffect(() => {
     void getOfflineProfile().then((p) => setProfile(p ?? null));
   }, []);
 
+  useEffect(() => {
+    if (!isColdOfflineStudioRoute(loc)) {
+      setDraftIdentityUserId(null);
+      return;
+    }
+    void loadStudioDraftIdentity()
+      .then((identity) => setDraftIdentityUserId(identity?.userId ?? null))
+      .catch(() => setDraftIdentityUserId(null));
+  }, [loc]);
+
+  const studioActor = coldOfflineStudioActor({
+    pinVerified: unlocked,
+    profile: profile ?? null,
+    draftIdentityUserId:
+      draftIdentityUserId === undefined ? null : draftIdentityUserId,
+  });
+
   if (unlocked) {
+    if (isColdOfflineStudioRoute(loc)) {
+      if (profile === undefined || draftIdentityUserId === undefined) {
+        return <div className="min-h-screen flex items-center justify-center text-muted-foreground">جارٍ التحقق من ملف الجهاز…</div>;
+      }
+      if (studioActor) return <>{children}</>;
+      return (
+        <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6 text-center">
+          <WifiOff aria-hidden className="size-10 text-muted-foreground" />
+          <p className="text-lg font-semibold">لا يطابق ملف الجهاز مالك مسودة الاستوديو</p>
+          <p className="text-sm text-muted-foreground">لا يمكن فتح المسودة المحلية إلا بملف المستخدم ودوره اللذين ضُبط لهما رمز PIN.</p>
+        </div>
+      );
+    }
     // مفتوح: الكاشير فقط — أي مسار آخر يُدَلّ على نقطة البيع بدل شاشات ستفشل استعلاماتها حتماً.
     if (loc === "/pos" || loc.startsWith("/pos?")) return <>{children}</>;
     return (
@@ -92,7 +130,7 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
     void verifyOfflinePin(pin).then((ok) => {
       setBusy(false);
       if (ok) {
-        markOfflineUnlocked();
+        markOfflineUnlocked(profile);
         return;
       }
       setPin("");
@@ -148,13 +186,19 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
  * بياناتها المعروضة — الشريط العلوي يكفي إعلاماً.
  * التنفيذ مزلاج أحادي الاتجاه: يُفتح عند أول لحظة اتصال ويبقى مفتوحاً (انقطاع لاحق لا يُخفي الشاشة).
  */
-export function OnlineGate({ children }: { children: React.ReactNode }) {
+export function OnlineGate({
+  children,
+  allowColdOffline = false,
+}: {
+  children: React.ReactNode;
+  allowColdOffline?: boolean;
+}) {
   const state = useConnectivity();
   const [unblocked, setUnblocked] = useState(state === "online" || state === "syncing");
   useEffect(() => {
     if (state === "online" || state === "syncing") setUnblocked(true);
   }, [state]);
-  if (!unblocked) {
+  if (!unblocked && !allowColdOffline) {
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 p-6 text-center">
         <WifiOff aria-hidden className="size-10 text-muted-foreground" />

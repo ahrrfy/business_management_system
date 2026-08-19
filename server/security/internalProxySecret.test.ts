@@ -23,6 +23,7 @@ describe("internal proxy secret rotation", () => {
   it("keeps the one-secret steady state", () => {
     const secrets = readInternalProxySecrets({
       INTERNAL_PROXY_SECRET: CURRENT,
+      INTERNAL_PROXY_SECRET_PREVIOUS: "",
     });
 
     expect(secrets.previous).toBeUndefined();
