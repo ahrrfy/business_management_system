@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
 import {
   auditLogs,
   categories,
@@ -40,6 +40,7 @@ import {
   resolveR2GcMode,
 } from "../lib/imageStore/r2RetentionPolicy";
 import { studioObjectRoot } from "../lib/imageStore/tenantNamespace";
+import { utcDayStart, utcNextDayStart } from "./businessDay";
 
 const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
 const MAX_STUDIO_THUMBNAIL_DIMENSION = 320;
@@ -57,6 +58,7 @@ export interface ProductStudioActor {
 }
 
 type StudioStatus = typeof productImageJobs.$inferSelect.status;
+export type StudioPriority = typeof productImageJobs.$inferSelect.priority;
 
 function isManager(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.role === "manager" || actor.isOwner === true;
@@ -272,6 +274,19 @@ function encodeStudioProductCursor(cursor: StudioProductCursor): string {
   return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 }
 
+function assertExpectedRevision(task: { revision: number }, expectedRevision?: number): void {
+  if (expectedRevision !== undefined && task.revision !== expectedRevision) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "تغيّرت المهمة منذ فتحها؛ حدّثها قبل إعادة المحاولة",
+    });
+  }
+}
+
+function nextRevision(task: { revision: number }): number {
+  return task.revision + 1;
+}
+
 function decodeStudioProductCursor(value: string, query: string, includeInactive: boolean): StudioProductCursor {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<StudioProductCursor>;
@@ -442,7 +457,7 @@ export async function listStudioAssignees(actor: ProductStudioActor) {
     .map(({ id, name, role, branchId }) => ({ id, name: name || `مستخدم ${id}`, role, branchId }));
 }
 
-export async function getStudioDashboard(actor: ProductStudioActor) {
+export async function getStudioDashboard(actor: ProductStudioActor, now = new Date()) {
   const scope = canCrossBranches(actor)
     ? undefined
     : actor.role === "manager" || actor.role === "auditor"
@@ -463,20 +478,106 @@ export async function getStudioDashboard(actor: ProductStudioActor) {
     REVERTED: 0,
   };
   for (const row of rows) counts[row.status] = Number(row.count);
+  const activeStatuses: StudioStatus[] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
+  const day = now.toISOString().slice(0, 10);
+  const todayStart = utcDayStart(day);
+  const tomorrowStart = utcNextDayStart(day);
+  const metricScope = scope;
+  const [exceptionMetrics] = await requireDb()
+    .select({
+      unassigned: sql<number>`sum(case when ${productImageJobs.status} in (${sql.join(activeStatuses.map((status) => sql`${status}`), sql`, `)}) and ${productImageJobs.assignedTo} is null then 1 else 0 end)`,
+      overdue: sql<number>`sum(case when ${productImageJobs.status} in (${sql.join(activeStatuses.map((status) => sql`${status}`), sql`, `)}) and ${productImageJobs.dueAt} is not null and ${productImageJobs.dueAt} < ${now} then 1 else 0 end)`,
+      completedToday: sql<number>`sum(case when ${productImageJobs.status} = 'APPROVED' and ${productImageJobs.reviewedAt} >= ${todayStart} and ${productImageJobs.reviewedAt} < ${tomorrowStart} then 1 else 0 end)`,
+    })
+    .from(productImageJobs)
+    .where(metricScope);
+  const cycleRows = await requireDb()
+    .select({ createdAt: productImageJobs.createdAt, reviewedAt: productImageJobs.reviewedAt })
+    .from(productImageJobs)
+    .where(and(metricScope, eq(productImageJobs.status, "APPROVED"), sql`${productImageJobs.reviewedAt} is not null`));
+  const cycleMinutes = cycleRows
+    .filter((row): row is { createdAt: Date; reviewedAt: Date } => row.reviewedAt != null)
+    .map((row) => Math.max(0, Math.round((row.reviewedAt.getTime() - row.createdAt.getTime()) / 60_000)))
+    .sort((a, b) => a - b);
+  const middle = Math.floor(cycleMinutes.length / 2);
+  const medianCycleMinutes = cycleMinutes.length === 0
+    ? null
+    : cycleMinutes.length % 2 === 1
+      ? cycleMinutes[middle]
+      : Math.round(((cycleMinutes[middle - 1] ?? 0) + (cycleMinutes[middle] ?? 0)) / 2);
   return {
     counts,
     active: counts.ASSIGNED + counts.IN_PROGRESS + counts.PENDING_REVIEW + counts.REJECTED,
+    unassigned: Number(exceptionMetrics?.unassigned ?? 0),
+    overdue: Number(exceptionMetrics?.overdue ?? 0),
+    completedToday: Number(exceptionMetrics?.completedToday ?? 0),
+    medianCycleMinutes,
     canManage: isManager(actor),
     canAudit: actor.role === "auditor",
     storageReady: isImageStoreOperational(),
   };
 }
 
+type StudioTaskScope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
+type StudioTaskCursor = {
+  scope: StudioTaskScope;
+  statuses: StudioStatus[];
+  priorities: StudioPriority[];
+  overdue: boolean | null;
+  assigneeId: number | null;
+  updatedAt: string;
+  id: number;
+};
+
+function encodeStudioTaskCursor(cursor: StudioTaskCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeStudioTaskCursor(value: string, expected: Omit<StudioTaskCursor, "updatedAt" | "id">): StudioTaskCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as StudioTaskCursor;
+    if (
+      parsed.scope !== expected.scope ||
+      JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) ||
+      JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) ||
+      parsed.overdue !== expected.overdue ||
+      parsed.assigneeId !== expected.assigneeId ||
+      typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) ||
+      !Number.isSafeInteger(parsed.id) || parsed.id < 1
+    ) throw new Error("invalid cursor");
+    return parsed;
+  } catch {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مؤشر مهام الاستوديو غير صالح" });
+  }
+}
+
 export async function listStudioTasks(
   actor: ProductStudioActor,
-  input: { scope: "QUEUE" | "MINE" | "REVIEW" | "HISTORY"; limit?: number },
+  input: {
+    scope: StudioTaskScope;
+    limit?: number;
+    cursor?: string | null;
+    statuses?: StudioStatus[];
+    priority?: StudioPriority[];
+    overdue?: boolean;
+    assigneeId?: number;
+    now?: Date;
+  },
 ) {
   const conds = [];
+  const limit = Math.min(input.limit ?? 50, 100);
+  const priorities = Array.from(new Set(input.priority ?? [])).sort();
+  const statuses = Array.from(new Set(input.statuses ?? [])).sort();
+  const assigneeId = input.assigneeId ?? null;
+  const cursorScope = {
+    scope: input.scope,
+    statuses,
+    priorities,
+    overdue: input.overdue ?? null,
+    assigneeId,
+  };
+  const cursor = input.cursor ? decodeStudioTaskCursor(input.cursor, cursorScope) : null;
+  const now = input.now ?? new Date();
   if (!canCrossBranches(actor)) conds.push(eq(productImageJobs.branchId, Number(actor.branchId)));
   const branchAuditHistory = actor.role === "auditor" && input.scope === "HISTORY";
   if ((!isManager(actor) && !branchAuditHistory) || input.scope === "MINE") {
@@ -485,7 +586,26 @@ export async function listStudioTasks(
   if (input.scope === "QUEUE") conds.push(inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "REJECTED"]));
   if (input.scope === "REVIEW") conds.push(eq(productImageJobs.status, "PENDING_REVIEW"));
   if (input.scope === "HISTORY") conds.push(inArray(productImageJobs.status, ["APPROVED", "FAILED", "REVERTED"]));
-  return requireDb()
+  if (statuses.length) conds.push(inArray(productImageJobs.status, statuses));
+  if (priorities.length) conds.push(inArray(productImageJobs.priority, priorities));
+  if (assigneeId != null) {
+    if (!isManager(actor) && assigneeId !== actor.userId) throw new TRPCError({ code: "FORBIDDEN" });
+    conds.push(eq(productImageJobs.assignedTo, assigneeId));
+  }
+  if (input.overdue === true) {
+    conds.push(lt(productImageJobs.dueAt, now));
+    conds.push(inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]));
+  } else if (input.overdue === false) {
+    conds.push(or(isNull(productImageJobs.dueAt), gte(productImageJobs.dueAt, now))!);
+  }
+  if (cursor) {
+    const updatedAt = new Date(cursor.updatedAt);
+    conds.push(or(
+      lt(productImageJobs.updatedAt, updatedAt),
+      and(eq(productImageJobs.updatedAt, updatedAt), lt(productImageJobs.id, cursor.id)),
+    )!);
+  }
+  const rows = await requireDb()
     .select({
       id: productImageJobs.id,
       productId: productImageJobs.productId,
@@ -508,13 +628,32 @@ export async function listStudioTasks(
       submittedAt: productImageJobs.submittedAt,
       submittedBy: productImageJobs.submittedBy,
       reviewedAt: productImageJobs.reviewedAt,
+      priority: productImageJobs.priority,
+      dueAt: productImageJobs.dueAt,
+      revision: productImageJobs.revision,
+      overdue: sql<boolean>`${productImageJobs.dueAt} is not null and ${productImageJobs.dueAt} < ${now} and ${productImageJobs.status} in ('ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'REJECTED')`,
     })
     .from(productImageJobs)
     .innerJoin(products, eq(products.id, productImageJobs.productId))
     .leftJoin(users, eq(users.id, productImageJobs.assignedTo))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(productImageJobs.updatedAt), desc(productImageJobs.id))
-    .limit(Math.min(input.limit ?? 100, 200));
+    .limit(limit + 1);
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+  const items = pageRows.map((row) => ({
+    ...row,
+    hasOriginal: Boolean(row.hasOriginal),
+    hasCandidate: Boolean(row.hasCandidate),
+    overdue: Boolean(row.overdue),
+  }));
+  const last = items[items.length - 1];
+  return {
+    items,
+    nextCursor: hasMore && last
+      ? encodeStudioTaskCursor({ ...cursorScope, updatedAt: last.updatedAt.toISOString(), id: Number(last.id) })
+      : null,
+  };
 }
 
 export async function listStudioProductImages(productId: number) {
@@ -668,7 +807,13 @@ async function prepareSourceSnapshot(productId: number, requested: number | null
 
 export async function assignStudioTask(
   actor: ProductStudioActor,
-  input: { productId: number; assigneeId: number; sourceImageId?: number | null },
+  input: {
+    productId: number;
+    assigneeId: number;
+    sourceImageId?: number | null;
+    priority?: StudioPriority;
+    dueAt?: Date | null;
+  },
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   assertStoragePolicy();
@@ -719,6 +864,9 @@ export async function assignStudioTask(
         sourceProductHash: productContentHash(product),
         mode: "FLATTEN",
         status: "ASSIGNED",
+        priority: input.priority ?? "NORMAL",
+        dueAt: input.dueAt ?? null,
+        revision: 1,
         assignedTo: input.assigneeId,
         assignedBy: actor.userId,
         createdBy: actor.userId,
@@ -730,18 +878,132 @@ export async function assignStudioTask(
         productId: input.productId,
         assigneeId: input.assigneeId,
         sourceImageId: snapshot?.sourceImageId ?? null,
+        priority: input.priority ?? "NORMAL",
+        dueAt: input.dueAt?.toISOString() ?? null,
       }));
       if (snapshot) {
         await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() })
           .where(eq(productImageObjectStaging.objectKey, snapshot.originalObjectKey));
       }
-      return { taskId };
+      return { taskId, revision: 1 };
     } catch (error) {
       if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
         throw new TRPCError({ code: "CONFLICT", message: "للمنتج مهمة استوديو نشطة بالفعل" });
       }
       throw error;
     }
+  });
+}
+
+export async function bulkAssignStudioTasks(
+  actor: ProductStudioActor,
+  input: {
+    productIds: number[];
+    assigneeId: number;
+    priority?: StudioPriority;
+    dueAt?: Date | null;
+  },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const productIds = Array.from(new Set(input.productIds.map(Number)));
+  if (productIds.length === 0 || productIds.length > 100 || productIds.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر من منتج واحد إلى 100 منتج" });
+  }
+  if (productIds.length !== input.productIds.length) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "قائمة المنتجات تحتوي تكراراً" });
+  }
+  assertStoragePolicy();
+  return withTx(async (tx) => {
+    const assignee = (await tx.select({
+      id: users.id,
+      role: users.role,
+      branchId: users.branchId,
+      permissionsOverride: users.permissionsOverride,
+    }).from(users).where(and(eq(users.id, input.assigneeId), eq(users.isActive, true))).limit(1).for("update"))[0];
+    if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
+    if (!canCrossBranches(actor) && Number(assignee.branchId) !== Number(actor.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن الإسناد إلى فرع آخر" });
+    }
+    if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف لا يملك صلاحية استوديو المنتجات" });
+    }
+    const selectedProducts = await tx.select({ id: products.id, name: products.name, description: products.description })
+      .from(products)
+      .where(and(inArray(products.id, productIds), eq(products.isActive, true)))
+      .for("update");
+    if (selectedProducts.length !== productIds.length) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "أحد المنتجات غير موجود أو معطل" });
+    }
+    const active = await tx.select({ productId: productImageJobs.productId })
+      .from(productImageJobs)
+      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.activeSlot, 1)))
+      .for("update");
+    if (active.length) {
+      throw new TRPCError({ code: "CONFLICT", message: "أحد المنتجات لديه مهمة استوديو نشطة بالفعل" });
+    }
+    const productById = new Map(selectedProducts.map((product) => [Number(product.id), product]));
+    try {
+      await tx.insert(productImageJobs).values(productIds.map((productId) => ({
+        productId,
+        branchId: assignee.branchId,
+        sourceProductHash: productContentHash(productById.get(productId)!),
+        mode: "FLATTEN" as const,
+        status: "ASSIGNED" as const,
+        priority: input.priority ?? "NORMAL",
+        dueAt: input.dueAt ?? null,
+        revision: 1,
+        assignedTo: input.assigneeId,
+        assignedBy: actor.userId,
+        createdBy: actor.userId,
+        activeSlot: 1,
+        templateVersion: 1,
+      })));
+    } catch (error) {
+      if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
+        throw new TRPCError({ code: "CONFLICT", message: "تغيّرت المهام النشطة أثناء الإسناد الجماعي" });
+      }
+      throw error;
+    }
+    await tx.insert(auditLogs).values({
+      ...auditValues(actor, "productStudio.bulkAssign", 0, {
+        productIds,
+        assigneeId: input.assigneeId,
+        priority: input.priority ?? "NORMAL",
+        dueAt: input.dueAt?.toISOString() ?? null,
+      }),
+      entityId: "bulk",
+    });
+    return { createdCount: productIds.length };
+  });
+}
+
+export async function updateStudioTaskSchedule(
+  actor: ProductStudioActor,
+  input: {
+    taskId: number;
+    expectedRevision: number;
+    priority: StudioPriority;
+    dueAt?: Date | null;
+  },
+) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  return withTx(async (tx) => {
+    const task = await lockTask(tx, input.taskId);
+    assertTaskAccess(actor, task, true);
+    assertExpectedRevision(task, input.expectedRevision);
+    if (!["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(task.status)) {
+      throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل موعد مهمة مغلقة" });
+    }
+    await tx.update(productImageJobs).set({
+      priority: input.priority,
+      dueAt: input.dueAt ?? null,
+      revision: sql`${productImageJobs.revision} + 1`,
+    }).where(eq(productImageJobs.id, input.taskId));
+    await tx.insert(auditLogs).values(auditValues(actor, "productStudio.updateSchedule", input.taskId, {
+      priority: input.priority,
+      dueAt: input.dueAt?.toISOString() ?? null,
+    }));
+    return { ok: true as const, revision: nextRevision(task) };
   });
 }
 
@@ -753,10 +1015,12 @@ export async function saveStudioDraft(
     proposedDescription?: string | null;
     proposedMarketingCopy?: string | null;
     adminOverrideReason?: string | null;
+    expectedRevision?: number;
   },
 ) {
   return withTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
+    assertExpectedRevision(task, input.expectedRevision);
     const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
       throw new TRPCError({ code: "CONFLICT", message: "لا يمكن تعديل مهمة بانتظار المراجعة أو مغلقة" });
@@ -777,6 +1041,7 @@ export async function saveStudioDraft(
       // من الالتزام بعد حفظ هذه المسودة الأحدث.
       uploadLeaseToken: null,
       uploadLeaseExpiresAt: null,
+      revision: sql`${productImageJobs.revision} + 1`,
     }).where(eq(productImageJobs.id, input.taskId));
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.saveDraft", input.taskId, {
       hasName: Boolean(input.proposedName?.trim()),
@@ -784,7 +1049,9 @@ export async function saveStudioDraft(
       hasMarketingCopy: Boolean(input.proposedMarketingCopy?.trim()),
     }));
     await recordAdminOverride(tx, actor, input.taskId, "saveDraft", overrideReason, task.assignedTo);
-    return { ok: true };
+    return input.expectedRevision === undefined
+      ? { ok: true as const }
+      : { ok: true as const, revision: nextRevision(task) };
   });
 }
 
@@ -920,11 +1187,13 @@ export async function submitStudioCandidate(
     proposedDescription?: string | null;
     proposedMarketingCopy?: string | null;
     adminOverrideReason?: string | null;
+    expectedRevision?: number;
   },
 ) {
   const token = randomUUID();
   const lease = await withTx(async (tx) => {
     const task = await lockTask(tx, input.taskId);
+    assertExpectedRevision(task, input.expectedRevision);
     const overrideReason = assertTaskWriteAccess(actor, task, input.adminOverrideReason);
     assertStoragePolicy();
     if (!["ASSIGNED", "IN_PROGRESS", "REJECTED"].includes(task.status)) {
@@ -972,6 +1241,7 @@ export async function submitStudioCandidate(
 
     const result = await withTx(async (tx) => {
       const task = await lockTask(tx, input.taskId);
+      assertExpectedRevision(task, input.expectedRevision);
       assertTaskWriteAccess(actor, task, input.adminOverrideReason);
       if (
         task.uploadLeaseToken !== token ||
@@ -1035,6 +1305,7 @@ export async function submitStudioCandidate(
         processingProofMode: null,
         processingProofCandidateHash: null,
         processingProofExpiresAt: null,
+        revision: sql`${productImageJobs.revision} + 1`,
       }).where(eq(productImageJobs.id, input.taskId));
       await tx.insert(auditLogs).values(auditValues(actor, "productStudio.submit", input.taskId, {
         mode: effectiveMode,
@@ -1047,7 +1318,9 @@ export async function submitStudioCandidate(
       await recordAdminOverride(tx, actor, input.taskId, "submit", lease.overrideReason, lease.assignedTo);
       await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() })
         .where(inArray(productImageObjectStaging.objectKey, original ? [originalKey, processedKey] : [processedKey]));
-      return { ok: true };
+      return input.expectedRevision === undefined
+        ? { ok: true as const }
+        : { ok: true as const, revision: nextRevision(task) };
     });
     try {
       await cleanupStudioStaging(5);
@@ -1118,10 +1391,16 @@ export async function getStudioSourcePreview(actor: ProductStudioActor, taskId: 
   return { base64: await streamToBase64(task.originalObjectKey), mime: task.originalMime };
 }
 
-export async function approveStudioTask(actor: ProductStudioActor, taskId: number, adminOverrideReason?: string | null) {
+export async function approveStudioTask(
+  actor: ProductStudioActor,
+  taskId: number,
+  adminOverrideReason?: string | null,
+  expectedRevision?: number,
+) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   return withTx(async (tx) => {
     const task = await lockTask(tx, taskId);
+    assertExpectedRevision(task, expectedRevision);
     assertTaskAccess(actor, task, true);
     if (task.status !== "PENDING_REVIEW") {
       throw new TRPCError({ code: "CONFLICT", message: "المهمة لم تعد بانتظار المراجعة" });
@@ -1212,6 +1491,7 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       rejectionReason: null,
       activeSlot: null,
       processedUrl: null,
+      revision: sql`${productImageJobs.revision} + 1`,
     }).where(eq(productImageJobs.id, taskId));
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.approve", taskId, {
       productId: task.productId,
@@ -1221,7 +1501,9 @@ export async function approveStudioTask(actor: ProductStudioActor, taskId: numbe
       contentUpdated: Object.keys(productPatch).length > 0,
     }));
     await recordAdminOverride(tx, actor, taskId, "approve", overrideReason, task.assignedTo);
-    return { imageId };
+    return expectedRevision === undefined
+      ? { imageId }
+      : { imageId, revision: nextRevision(task) };
   });
 }
 
@@ -1230,12 +1512,14 @@ export async function rejectStudioTask(
   taskId: number,
   reason: string,
   adminOverrideReason?: string | null,
+  expectedRevision?: number,
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const cleanReason = reason.trim();
   if (cleanReason.length < 5) throw new TRPCError({ code: "BAD_REQUEST", message: "سبب الرفض مطلوب بوضوح" });
   return withTx(async (tx) => {
     const task = await lockTask(tx, taskId);
+    assertExpectedRevision(task, expectedRevision);
     assertTaskAccess(actor, task, true);
     if (task.status !== "PENDING_REVIEW") throw new TRPCError({ code: "CONFLICT", message: "المهمة لم تعد بانتظار المراجعة" });
     const overrideReason = assertIndependentReviewer(actor, task, adminOverrideReason);
@@ -1246,14 +1530,17 @@ export async function rejectStudioTask(
       reviewedAt: new Date(),
       rejectionReason: cleanReason,
       activeSlot: 1,
+      revision: sql`${productImageJobs.revision} + 1`,
     }).where(eq(productImageJobs.id, taskId));
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.reject", taskId, { reason: cleanReason }));
     await recordAdminOverride(tx, actor, taskId, "reject", overrideReason, task.assignedTo);
-    return { ok: true };
+    return expectedRevision === undefined
+      ? { ok: true as const }
+      : { ok: true as const, revision: nextRevision(task) };
   });
 }
 
-export async function revertStudioTask(actor: ProductStudioActor, taskId: number) {
+export async function revertStudioTask(actor: ProductStudioActor, taskId: number, expectedRevision?: number) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   assertStoragePolicy();
   const snapshot = (await requireDb().select({
@@ -1263,8 +1550,10 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
     originalObjectKey: productImageJobs.originalObjectKey,
     sourceContentHash: productImageJobs.sourceContentHash,
     originalMime: productImageJobs.originalMime,
+    revision: productImageJobs.revision,
   }).from(productImageJobs).where(eq(productImageJobs.id, taskId)).limit(1))[0];
   if (!snapshot) throw new TRPCError({ code: "NOT_FOUND" });
+  assertExpectedRevision(snapshot, expectedRevision);
   assertTaskAccess(actor, snapshot, true);
   if (snapshot.status !== "APPROVED" || !snapshot.originalObjectKey || !snapshot.sourceContentHash || !snapshot.originalMime) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يوجد أصل قابل للاسترجاع لهذه المهمة" });
@@ -1289,6 +1578,7 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
   const originalDimensions = parseImageDimensions(originalBytes, snapshot.originalMime);
   return withTx(async (tx) => {
     const task = await lockTask(tx, taskId);
+    assertExpectedRevision(task, expectedRevision);
     assertTaskAccess(actor, task, true);
     if (task.status !== "APPROVED" || !task.sourceImageId || !task.originalObjectKey || !task.sourceContentHash || !task.originalMime) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يوجد أصل قابل للاسترجاع لهذه المهمة" });
@@ -1322,6 +1612,7 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
       reviewedBy: actor.userId,
       reviewedAt: new Date(),
       activeSlot: null,
+      revision: sql`${productImageJobs.revision} + 1`,
     }).where(eq(productImageJobs.id, taskId));
     await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() })
       .where(eq(productImageObjectStaging.objectKey, publishedOriginalKey));
@@ -1330,6 +1621,8 @@ export async function revertStudioTask(actor: ProductStudioActor, taskId: number
       imageId: image.id,
       originalHash: task.sourceContentHash,
     }));
-    return { imageId: Number(image.id) };
+    return expectedRevision === undefined
+      ? { imageId: Number(image.id) }
+      : { imageId: Number(image.id), revision: nextRevision(task) };
   });
 }

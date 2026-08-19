@@ -45,6 +45,15 @@ describe("mobile studio workflow", () => {
     expect(page).toContain("المرشّح");
     expect(page).toContain("تكبير الصورة");
     expect(page).toContain("STUDIO_REJECTION_PRESETS");
+    expect(page).toContain("bulkAssign.mutate");
+    expect(page).toContain("إسناد ${bulkProductIds.length} مهام");
+    expect(page).toContain("studio-task-priority-filter");
+    expect(page).toContain("studio-due-at");
+    expect(page).toContain("studio-selected-due-at");
+    expect(page).toContain("updateSchedule.mutate");
+    expect(page).toContain("المتأخرة فقط");
+    expect(page).toContain("وسيط زمن الدورة");
+    expect(page).toContain("expectedRevision: selected.revision");
     expect(uploader).toContain("التقاط بالكاميرا الخلفية");
     expect(uploader).toContain("اختيار من المعرض");
     expect(uploader).toContain("إعادة الالتقاط");

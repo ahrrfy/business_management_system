@@ -8,6 +8,7 @@ import {
 import {
   approveStudioTask,
   assignStudioTask,
+  bulkAssignStudioTasks,
   bindStudioProcessingCandidate,
   getStudioCandidatePreview,
   getStudioSourcePreview,
@@ -21,6 +22,7 @@ import {
   revertStudioTask,
   saveStudioDraft,
   submitStudioCandidate,
+  updateStudioTaskSchedule,
   type ProductStudioActor,
 } from "../services/productStudioService";
 
@@ -34,6 +36,8 @@ function actor(ctx: { user: { id: number; branchId?: number | null; role: string
 }
 
 const taskId = z.number().int().positive();
+const expectedRevision = z.number().int().positive();
+const priority = z.enum(["LOW", "NORMAL", "HIGH", "URGENT"]);
 const nullableText = (max: number) => z.string().trim().max(max).nullable().optional();
 const adminOverrideReason = z.string().trim().min(5).max(500).optional();
 
@@ -56,7 +60,12 @@ export const productStudioRouter = router({
   tasks: productStudioReadProcedure
     .input(z.object({
       scope: z.enum(["QUEUE", "MINE", "REVIEW", "HISTORY"]),
-      limit: z.number().int().min(1).max(200).default(100),
+      limit: z.number().int().min(1).max(100).default(50),
+      cursor: z.string().max(1_000).nullable().optional(),
+      statuses: z.array(z.enum(["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "APPROVED", "REJECTED", "FAILED", "REVERTED"])).max(7).optional(),
+      priority: z.array(priority).max(4).optional(),
+      overdue: z.boolean().optional(),
+      assigneeId: z.number().int().positive().optional(),
     }))
     .query(({ ctx, input }) => listStudioTasks(actor(ctx), input)),
   candidatePreview: productStudioReadProcedure
@@ -78,8 +87,26 @@ export const productStudioRouter = router({
       productId: z.number().int().positive(),
       assigneeId: z.number().int().positive(),
       sourceImageId: z.number().int().positive().nullable().optional(),
+      priority: priority.optional(),
+      dueAt: z.coerce.date().nullable().optional(),
     }))
     .mutation(({ ctx, input }) => assignStudioTask(actor(ctx), input)),
+  bulkAssign: productStudioManagerProcedure
+    .input(z.object({
+      productIds: z.array(z.number().int().positive()).min(1).max(100),
+      assigneeId: z.number().int().positive(),
+      priority: priority.optional(),
+      dueAt: z.coerce.date().nullable().optional(),
+    }))
+    .mutation(({ ctx, input }) => bulkAssignStudioTasks(actor(ctx), input)),
+  updateSchedule: productStudioManagerProcedure
+    .input(z.object({
+      taskId,
+      expectedRevision,
+      priority,
+      dueAt: z.coerce.date().nullable().optional(),
+    }))
+    .mutation(({ ctx, input }) => updateStudioTaskSchedule(actor(ctx), input)),
   saveDraft: productStudioWriteProcedure
     .input(z.object({
       taskId,
@@ -87,6 +114,7 @@ export const productStudioRouter = router({
       proposedDescription: nullableText(5_000),
       proposedMarketingCopy: nullableText(3_000),
       adminOverrideReason,
+      expectedRevision,
     }))
     .mutation(({ ctx, input }) => saveStudioDraft(actor(ctx), input)),
   bindProcessingProof: productStudioWriteProcedure
@@ -109,15 +137,16 @@ export const productStudioRouter = router({
       proposedDescription: nullableText(5_000),
       proposedMarketingCopy: nullableText(3_000),
       adminOverrideReason,
+      expectedRevision,
     }))
     .mutation(({ ctx, input }) => submitStudioCandidate(actor(ctx), input)),
   approve: productStudioManagerProcedure
-    .input(z.object({ taskId, adminOverrideReason }))
-    .mutation(({ ctx, input }) => approveStudioTask(actor(ctx), input.taskId, input.adminOverrideReason)),
+    .input(z.object({ taskId, adminOverrideReason, expectedRevision }))
+    .mutation(({ ctx, input }) => approveStudioTask(actor(ctx), input.taskId, input.adminOverrideReason, input.expectedRevision)),
   reject: productStudioManagerProcedure
-    .input(z.object({ taskId, reason: z.string().trim().min(5).max(500), adminOverrideReason }))
-    .mutation(({ ctx, input }) => rejectStudioTask(actor(ctx), input.taskId, input.reason, input.adminOverrideReason)),
+    .input(z.object({ taskId, reason: z.string().trim().min(5).max(500), adminOverrideReason, expectedRevision }))
+    .mutation(({ ctx, input }) => rejectStudioTask(actor(ctx), input.taskId, input.reason, input.adminOverrideReason, input.expectedRevision)),
   revert: productStudioManagerProcedure
-    .input(z.object({ taskId }))
-    .mutation(({ ctx, input }) => revertStudioTask(actor(ctx), input.taskId)),
+    .input(z.object({ taskId, expectedRevision }))
+    .mutation(({ ctx, input }) => revertStudioTask(actor(ctx), input.taskId, input.expectedRevision)),
 });

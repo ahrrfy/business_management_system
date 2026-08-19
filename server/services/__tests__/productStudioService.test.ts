@@ -9,6 +9,7 @@ import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } fr
 import {
   approveStudioTask,
   assignStudioTask,
+  bulkAssignStudioTasks,
   attestStudioProcessing as finalizeStudioProcessing,
   authorizeStudioProcessing,
   bindStudioProcessingCandidate,
@@ -23,6 +24,7 @@ import {
   revertStudioTask,
   saveStudioDraft,
   submitStudioCandidate as submitStudioCandidateService,
+  updateStudioTaskSchedule,
   type ProductStudioActor,
 } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
@@ -112,6 +114,175 @@ afterEach(async () => {
 });
 
 describe("product studio governed workflow", () => {
+  it("rejects stale revisions without overwriting a newer mobile save", async () => {
+    const { taskId, revision } = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: worker.userId,
+      priority: "HIGH",
+      dueAt: new Date("2026-08-20T09:00:00.000Z"),
+    });
+
+    await expect(saveStudioDraft(worker, {
+      taskId,
+      expectedRevision: revision,
+      proposedDescription: "المسودة الأحدث",
+    })).resolves.toEqual({ ok: true, revision: 2 });
+
+    await expect(saveStudioDraft(worker, {
+      taskId,
+      expectedRevision: revision,
+      proposedDescription: "مسودة قديمة يجب ألا تطمس الأحدث",
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const [stored] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, taskId));
+    expect(stored).toMatchObject({
+      proposedDescription: "المسودة الأحدث",
+      priority: "HIGH",
+      revision: 2,
+    });
+    expect(stored?.dueAt?.toISOString()).toBe("2026-08-20T09:00:00.000Z");
+  });
+
+  it("rolls back an entire bulk assignment when any product already has an active task", async () => {
+    await db().insert(s.products).values({ id: 3, name: "منتج ثالث" });
+    await assignStudioTask(manager, { productId: 2, assigneeId: worker.userId });
+
+    await expect(bulkAssignStudioTasks(manager, {
+      productIds: [1, 2, 3],
+      assigneeId: worker.userId,
+      priority: "URGENT",
+      dueAt: new Date("2026-08-21T09:00:00.000Z"),
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const rows = await db().select().from(s.productImageJobs);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.productId).toBe(2);
+  });
+
+  it("lets only the branch manager revise an active task priority and deadline", async () => {
+    const { taskId, revision } = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: worker.userId,
+    });
+    await expect(updateStudioTaskSchedule(managerTwo, {
+      taskId,
+      expectedRevision: revision,
+      priority: "URGENT",
+      dueAt: new Date("2026-08-20T10:00:00.000Z"),
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(updateStudioTaskSchedule(manager, {
+      taskId,
+      expectedRevision: revision,
+      priority: "URGENT",
+      dueAt: new Date("2026-08-20T10:00:00.000Z"),
+    })).resolves.toEqual({ ok: true, revision: 2 });
+  });
+
+  it("paginates task filters and reports exception-focused SLA metrics", async () => {
+    const now = new Date("2026-08-19T12:00:00.000Z");
+    await db().insert(s.products).values([
+      { id: 3, name: "منتج ثالث" },
+      { id: 4, name: "منتج رابع" },
+      { id: 5, name: "منتج عند الحد" },
+    ]);
+    await db().insert(s.productImageJobs).values([
+      {
+        productId: 1,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "ASSIGNED",
+        assignedTo: null,
+        assignedBy: manager.userId,
+        createdBy: manager.userId,
+        activeSlot: 1,
+        priority: "URGENT",
+        dueAt: new Date("2026-08-19T11:59:59.000Z"),
+        revision: 1,
+        templateVersion: 1,
+      },
+      {
+        productId: 3,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "IN_PROGRESS",
+        assignedTo: worker.userId,
+        assignedBy: manager.userId,
+        createdBy: manager.userId,
+        activeSlot: 1,
+        priority: "HIGH",
+        dueAt: new Date("2026-08-19T11:59:58.000Z"),
+        revision: 1,
+        templateVersion: 1,
+      },
+      {
+        productId: 4,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "APPROVED",
+        assignedTo: worker.userId,
+        assignedBy: manager.userId,
+        createdBy: manager.userId,
+        activeSlot: null,
+        priority: "NORMAL",
+        revision: 3,
+        createdAt: new Date("2026-08-19T08:00:00.000Z"),
+        reviewedAt: new Date("2026-08-19T10:00:00.000Z"),
+        templateVersion: 1,
+      },
+      {
+        productId: 5,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "PENDING_REVIEW",
+        assignedTo: worker.userId,
+        assignedBy: manager.userId,
+        createdBy: manager.userId,
+        activeSlot: 1,
+        priority: "LOW",
+        dueAt: now,
+        revision: 1,
+        templateVersion: 1,
+      },
+    ]);
+
+    const queue = await listStudioTasks(manager, { scope: "QUEUE", limit: 10, now });
+    expect(queue.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ productId: 1, priority: "URGENT", overdue: true }),
+    ]));
+    expect((await listStudioTasks(manager, { scope: "QUEUE", priority: ["URGENT"], now })).items)
+      .toEqual([expect.objectContaining({ productId: 1 })]);
+    expect((await listStudioTasks(manager, { scope: "REVIEW", overdue: true, now })).items)
+      .toEqual([]);
+    const first = await listStudioTasks(manager, {
+      scope: "QUEUE",
+      priority: ["URGENT", "HIGH"],
+      overdue: true,
+      limit: 1,
+      now,
+    });
+    expect(first.items).toEqual([expect.objectContaining({ overdue: true, revision: 1 })]);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = await listStudioTasks(manager, {
+      scope: "QUEUE",
+      priority: ["URGENT", "HIGH"],
+      overdue: true,
+      limit: 1,
+      cursor: first.nextCursor,
+      now,
+    });
+    expect(second.items).toEqual([expect.objectContaining({ overdue: true, revision: 1 })]);
+    expect(new Set([...first.items, ...second.items].map((item) => item.productId)))
+      .toEqual(new Set([1, 3]));
+
+    const dashboard = await getStudioDashboard(manager, now);
+    expect(dashboard).toMatchObject({
+      unassigned: 1,
+      overdue: 2,
+      completedToday: 1,
+      medianCycleMinutes: 120,
+    });
+  });
+
   it("searches server-side beyond the former 40-row picker limit", async () => {
     const d = db();
     await d.insert(s.products).values(
@@ -432,7 +603,7 @@ describe("product studio governed workflow", () => {
     expect(JSON.stringify(pending)).not.toContain(PNG_1X1);
     expect(await db().select().from(s.productImages)).toHaveLength(0);
 
-    const safeTask = (await listStudioTasks(worker, { scope: "MINE" }))[0];
+    const safeTask = (await listStudioTasks(worker, { scope: "MINE" })).items[0];
     expect(safeTask).toBeDefined();
     expect(Object.keys(safeTask ?? {})).not.toEqual(expect.arrayContaining([
       "costPrice", "price", "stock", "objectKey", "originalObjectKey", "processedObjectKey",
@@ -469,7 +640,7 @@ describe("product studio governed workflow", () => {
     expect(auditDashboard.canManage).toBe(false);
     expect(auditDashboard.counts.APPROVED).toBe(1);
     await expect(listStudioTasks(auditor, { scope: "HISTORY" }))
-      .resolves.toEqual([expect.objectContaining({ id: taskId, status: "APPROVED" })]);
+      .resolves.toMatchObject({ items: [expect.objectContaining({ id: taskId, status: "APPROVED" })] });
     await expect(getStudioCandidatePreview(auditor, taskId))
       .resolves.toMatchObject({ processedMime: "image/png" });
 
@@ -513,7 +684,7 @@ describe("product studio governed workflow", () => {
       processedDataUrl: PNG_1X1_ALT,
       mode: "CUT",
     });
-    expect(await listStudioTasks(manager, { scope: "REVIEW" })).toHaveLength(0);
+    expect((await listStudioTasks(manager, { scope: "REVIEW" })).items).toHaveLength(0);
     await expect(getStudioCandidatePreview(manager, taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(getStudioSourcePreview(manager, taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(approveStudioTask(manager, taskId)).rejects.toMatchObject({ code: "FORBIDDEN" });

@@ -34,7 +34,6 @@ import {
   listStudioDraftsForUser,
   loadStudioDraftIdentity,
   saveStudioDraftIdentity,
-  studioTaskRevision,
   type StudioDraft,
   type StudioDraftTaskSnapshot,
 } from "@/lib/productStudio/studioDrafts";
@@ -70,7 +69,7 @@ import {
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
-type StudioTask = RouterOutputs["productStudio"]["tasks"][number];
+type StudioTask = RouterOutputs["productStudio"]["tasks"]["items"][number];
 const CameraScanner = lazy(() =>
   import("@/components/scan/CameraScanner").then((module) => ({
     default: module.CameraScanner,
@@ -85,7 +84,7 @@ function taskSnapshot(task: StudioTask): StudioDraftTaskSnapshot {
     status: task.status as StudioDraftTaskSnapshot["status"],
     hasOriginal: task.hasOriginal,
     hasCandidate: task.hasCandidate,
-    updatedAt: studioTaskRevision(task.updatedAt),
+    updatedAt: String(task.revision),
   };
 }
 
@@ -96,6 +95,14 @@ export function isStudioStorageActionDisabled(
   storageReady: boolean | undefined,
 ): boolean {
   return storageReady !== true;
+}
+
+function studioDatetimeLocal(value: Date | string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16);
 }
 
 const STATUS_LABEL: Record<StudioTask["status"], string> = {
@@ -250,6 +257,18 @@ export default function ProductImageStudio() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [productId, setProductId] = useState("");
   const [assigneeId, setAssigneeId] = useState("");
+  const [bulkProductIds, setBulkProductIds] = useState<number[]>([]);
+  const [assignmentPriority, setAssignmentPriority] =
+    useState<"LOW" | "NORMAL" | "HIGH" | "URGENT">("NORMAL");
+  const [assignmentDueAt, setAssignmentDueAt] = useState("");
+  const [taskPriorityFilter, setTaskPriorityFilter] = useState<
+    "ALL" | "LOW" | "NORMAL" | "HIGH" | "URGENT"
+  >("ALL");
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [selectedPriority, setSelectedPriority] = useState<
+    "LOW" | "NORMAL" | "HIGH" | "URGENT"
+  >("NORMAL");
+  const [selectedDueAt, setSelectedDueAt] = useState("");
   const [sourceChoice, setSourceChoice] = useState("new");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -295,9 +314,18 @@ export default function ProductImageStudio() {
     enabled: !offline,
   });
   const me = trpc.auth.me.useQuery(undefined, { enabled: !offline });
-  const tasks = trpc.productStudio.tasks.useQuery(
-    { scope, limit: 100 },
-    { enabled: !offline },
+  const tasks = trpc.productStudio.tasks.useInfiniteQuery(
+    {
+      scope,
+      limit: 50,
+      priority:
+        taskPriorityFilter === "ALL" ? undefined : [taskPriorityFilter],
+      overdue: overdueOnly ? true : undefined,
+    },
+    {
+      enabled: !offline,
+      getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    },
   );
   const productImages = trpc.productStudio.productImages.useQuery(
     { productId: Number(productId) || 0 },
@@ -309,8 +337,10 @@ export default function ProductImageStudio() {
   const assignees = trpc.productStudio.assignees.useQuery(undefined, {
     enabled: !offline && dashboard.data?.canManage === true,
   });
+  const taskItems =
+    tasks.data?.pages.flatMap((page) => page.items) ?? [];
   const onlineSelected =
-    tasks.data?.find((task) => Number(task.id) === selectedId) ?? null;
+    taskItems.find((task) => Number(task.id) === selectedId) ?? null;
   const selected =
     onlineSelected ??
     (offline && offlineSelectedDraft
@@ -340,11 +370,13 @@ export default function ProductImageStudio() {
           submittedAt: null,
           submittedBy: null,
           reviewedAt: null,
+          priority: "NORMAL",
+          dueAt: null,
+          revision: Number(offlineSelectedDraft.revision) || 1,
+          overdue: false,
         } as StudioTask)
       : null);
-  const selectedRevision = selected
-    ? studioTaskRevision(selected.updatedAt)
-    : "";
+  const selectedRevision = selected ? String(selected.revision) : "";
   const workflowUser = {
     userId: Number(me.data?.id ?? 0),
     role: me.data?.role ?? "",
@@ -415,6 +447,16 @@ export default function ProductImageStudio() {
       setProductId("");
       setAssigneeId("");
       setSourceChoice("new");
+      setBulkProductIds([]);
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const bulkAssign = trpc.productStudio.bulkAssign.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(`أُسندت ${result.createdCount} مهام`);
+      setProductId("");
+      setBulkProductIds([]);
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -454,6 +496,13 @@ export default function ProductImageStudio() {
   const revert = trpc.productStudio.revert.useMutation({
     onSuccess: async () => {
       notify.ok("استُرجعت الصورة الأصلية");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const updateSchedule = trpc.productStudio.updateSchedule.useMutation({
+    onSuccess: async () => {
+      notify.ok("حُدّثت أولوية المهمة وموعدها");
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -528,6 +577,8 @@ export default function ProductImageStudio() {
     setProcessingReceipt(null);
     setEditOverrideReason("");
     setReviewOverrideReason("");
+    setSelectedPriority(selected.priority);
+    setSelectedDueAt(studioDatetimeLocal(selected.dueAt));
     setDraftConflict(false);
     setDraftReady(false);
   }, [selected?.id]);
@@ -579,13 +630,15 @@ export default function ProductImageStudio() {
           return;
         }
         const refreshed = await tasks.refetch();
-        const task = refreshed.data?.find((item) => Number(item.id) === taskId);
+        const task = refreshed.data?.pages
+          .flatMap((page) => page.items)
+          .find((item) => Number(item.id) === taskId);
         if (cancelled) return;
         const result = await reconcileStudioDraftAfterReconnect({
           userId: authenticatedUserId,
           taskId,
           taskFound: Boolean(task),
-          revision: task ? studioTaskRevision(task.updatedAt) : null,
+          revision: task ? String(task.revision) : null,
           editable: task
             ? canEditStudioTask(task, workflowUser, editOverrideReason)
             : false,
@@ -685,7 +738,7 @@ export default function ProductImageStudio() {
       const product = await utils.productStudio.resolveBarcode.fetch({
         barcode,
       });
-      const task = findScannedOwnedTask(tasks.data ?? [], product.productId);
+      const task = findScannedOwnedTask(taskItems, product.productId);
       if (!task) {
         notify.err("لا توجد مهمة مسندة إليك لهذا المنتج ضمن قائمة عملي.");
         return;
@@ -705,6 +758,7 @@ export default function ProductImageStudio() {
       );
       await submit.mutateAsync({
         taskId: Number(selected.id),
+        expectedRevision: selected.revision,
         originalDataUrl: originalDataUrl || null,
         processedDataUrl: images[0].dataUrl,
         thumbnailDataUrl,
@@ -732,7 +786,8 @@ export default function ProductImageStudio() {
     submit.isPending ||
     approve.isPending ||
     reject.isPending ||
-    revert.isPending;
+    revert.isPending ||
+    updateSchedule.isPending;
   const capabilities = studioOfflineCapabilities({
     offline,
     storageReady: dashboard.data?.storageReady,
@@ -887,11 +942,35 @@ export default function ProductImageStudio() {
       </div>
 
       {dashboard.data?.canManage && (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {[
+            ["غير المسندة", dashboard.data.unassigned],
+            ["المتأخرة", dashboard.data.overdue],
+            ["بانتظار المراجعة", counts?.PENDING_REVIEW ?? 0],
+            ["المنجزة اليوم", dashboard.data.completedToday],
+            [
+              "وسيط زمن الدورة",
+              dashboard.data.medianCycleMinutes == null
+                ? "—"
+                : `${dashboard.data.medianCycleMinutes} د`,
+            ],
+          ].map(([label, value]) => (
+            <Card key={String(label)}>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">{label}</div>
+                <div className="mt-1 text-xl font-bold">{value}</div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {dashboard.data?.canManage && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">إسناد مهمة جديدة</CardTitle>
           </CardHeader>
-          <CardContent className="grid gap-3 md:grid-cols-4">
+          <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
             <div className="space-y-1.5">
               <Label htmlFor="studio-product-search">ابحث عن المنتج</Label>
               <StudioProductPicker
@@ -899,9 +978,31 @@ export default function ProductImageStudio() {
                 value={Number(productId) || null}
                 onPick={(product) => {
                   setProductId(String(product.productId));
+                  setBulkProductIds((current) =>
+                    current.includes(product.productId)
+                      ? current
+                      : [...current, product.productId],
+                  );
                   setSourceChoice("new");
                 }}
               />
+              {bulkProductIds.length > 0 && (
+                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>{bulkProductIds.length} منتج محدد</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="min-h-11"
+                    onClick={() => {
+                      setBulkProductIds([]);
+                      setProductId("");
+                    }}
+                  >
+                    مسح التحديد
+                  </Button>
+                </div>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="studio-source-image">نوع المهمة</Label>
@@ -910,7 +1011,7 @@ export default function ProductImageStudio() {
                 className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9"
                 value={sourceChoice}
                 onChange={(event) => setSourceChoice(event.target.value)}
-                disabled={!productId}
+                disabled={!productId || bulkProductIds.length > 1}
               >
                 <option value="new">إضافة صورة جديدة</option>
                 {(productImages.data ?? []).map((image, index) => (
@@ -945,6 +1046,33 @@ export default function ProductImageStudio() {
                 من موظف.
               </p>
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="studio-priority">الأولوية</Label>
+              <select
+                id="studio-priority"
+                className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9"
+                value={assignmentPriority}
+                onChange={(event) =>
+                  setAssignmentPriority(
+                    event.target.value as typeof assignmentPriority,
+                  )
+                }
+              >
+                <option value="LOW">منخفضة</option>
+                <option value="NORMAL">عادية</option>
+                <option value="HIGH">عالية</option>
+                <option value="URGENT">عاجلة</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="studio-due-at">موعد الإنجاز</Label>
+              <Input
+                id="studio-due-at"
+                type="datetime-local"
+                value={assignmentDueAt}
+                onChange={(event) => setAssignmentDueAt(event.target.value)}
+              />
+            </div>
             <div className="flex items-end">
               <Button
                 className="w-full"
@@ -953,19 +1081,38 @@ export default function ProductImageStudio() {
                   storageActionsDisabled ||
                   !productId ||
                   !assigneeId ||
-                  assign.isPending
+                  assign.isPending ||
+                  bulkAssign.isPending
                 }
-                onClick={() =>
+                onClick={() => {
+                  const dueAt = assignmentDueAt
+                    ? new Date(assignmentDueAt)
+                    : null;
+                  if (bulkProductIds.length > 1) {
+                    bulkAssign.mutate({
+                      productIds: bulkProductIds,
+                      assigneeId: Number(assigneeId),
+                      priority: assignmentPriority,
+                      dueAt,
+                    });
+                    return;
+                  }
                   assign.mutate({
                     productId: Number(productId),
                     assigneeId: Number(assigneeId),
                     sourceImageId:
                       sourceChoice === "new" ? null : Number(sourceChoice),
-                  })
-                }
+                    priority: assignmentPriority,
+                    dueAt,
+                  });
+                }}
               >
                 <UserCheck aria-hidden className="size-4" />{" "}
-                {assign.isPending ? "جارٍ الإسناد" : "إسناد المهمة"}
+                {assign.isPending || bulkAssign.isPending
+                  ? "جارٍ الإسناد"
+                  : bulkProductIds.length > 1
+                    ? `إسناد ${bulkProductIds.length} مهام`
+                    : "إسناد المهمة"}
               </Button>
             </div>
           </CardContent>
@@ -994,6 +1141,36 @@ export default function ProductImageStudio() {
             <History aria-hidden className="size-4" /> السجل
           </TabsTrigger>
         </TabsList>
+        <div className="mt-3 flex flex-wrap items-end gap-2">
+          <div className="min-w-40 space-y-1">
+            <Label htmlFor="studio-task-priority-filter">تصفية الأولوية</Label>
+            <select
+              id="studio-task-priority-filter"
+              className="h-11 rounded-md border border-input bg-background px-3 text-sm md:h-9"
+              value={taskPriorityFilter}
+              onChange={(event) =>
+                setTaskPriorityFilter(
+                  event.target.value as typeof taskPriorityFilter,
+                )
+              }
+            >
+              <option value="ALL">كل الأولويات</option>
+              <option value="URGENT">عاجلة</option>
+              <option value="HIGH">عالية</option>
+              <option value="NORMAL">عادية</option>
+              <option value="LOW">منخفضة</option>
+            </select>
+          </div>
+          <Button
+            type="button"
+            variant={overdueOnly ? "default" : "outline"}
+            className="min-h-11"
+            onClick={() => setOverdueOnly((current) => !current)}
+          >
+            <AlertTriangle aria-hidden className="size-4" />
+            المتأخرة فقط
+          </Button>
+        </div>
         {(["QUEUE", "MINE", "REVIEW", "HISTORY"] as Scope[]).map((tab) => (
           <TabsContent key={tab} value={tab} className="mt-4">
             <div className="min-w-0 grid gap-4 lg:grid-cols-[minmax(260px,360px)_1fr]">
@@ -1014,12 +1191,12 @@ export default function ProductImageStudio() {
                       />
                     </div>
                   )}
-                  {!tasks.isLoading && (tasks.data?.length ?? 0) === 0 && (
+                  {!tasks.isLoading && taskItems.length === 0 && (
                     <p className="py-8 text-center text-sm text-muted-foreground">
                       لا مهام في هذا المسار.
                     </p>
                   )}
-                  {(tasks.data ?? []).map((task) => (
+                  {taskItems.map((task) => (
                     <button
                       key={Number(task.id)}
                       type="button"
@@ -1037,6 +1214,25 @@ export default function ProductImageStudio() {
                       <div className="mt-1 text-xs text-muted-foreground">
                         المسؤول: {task.assigneeName ?? "غير مسند"}
                       </div>
+                      <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
+                        <span>
+                          الأولوية: {task.priority === "URGENT"
+                            ? "عاجلة"
+                            : task.priority === "HIGH"
+                              ? "عالية"
+                              : task.priority === "LOW"
+                                ? "منخفضة"
+                                : "عادية"}
+                        </span>
+                        {task.dueAt && (
+                          <span>
+                            الموعد: {new Date(task.dueAt).toLocaleString("ar-IQ")}
+                          </span>
+                        )}
+                        {task.overdue && (
+                          <Badge variant="danger">متأخرة</Badge>
+                        )}
+                      </div>
                       {task.rejectionReason && (
                         <div className="mt-2 text-xs text-destructive">
                           سبب الإعادة: {task.rejectionReason}
@@ -1044,6 +1240,22 @@ export default function ProductImageStudio() {
                       )}
                     </button>
                   ))}
+                  {tasks.hasNextPage && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="min-h-11 w-full"
+                      disabled={tasks.isFetchingNextPage}
+                      onClick={() => void tasks.fetchNextPage()}
+                    >
+                      {tasks.isFetchingNextPage ? (
+                        <Loader2 aria-hidden className="size-4 animate-spin" />
+                      ) : (
+                        <Plus aria-hidden className="size-4" />
+                      )}
+                      تحميل المزيد
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
 
@@ -1073,6 +1285,64 @@ export default function ProductImageStudio() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
+                      {dashboard.data?.canManage &&
+                        ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(
+                          selected.status,
+                        ) && (
+                          <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-[1fr_1fr_auto]">
+                            <div className="space-y-1">
+                              <Label htmlFor="studio-selected-priority">
+                                أولوية المهمة
+                              </Label>
+                              <select
+                                id="studio-selected-priority"
+                                className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm"
+                                value={selectedPriority}
+                                onChange={(event) =>
+                                  setSelectedPriority(
+                                    event.target.value as typeof selectedPriority,
+                                  )
+                                }
+                              >
+                                <option value="LOW">منخفضة</option>
+                                <option value="NORMAL">عادية</option>
+                                <option value="HIGH">عالية</option>
+                                <option value="URGENT">عاجلة</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label htmlFor="studio-selected-due-at">
+                                موعد الإنجاز
+                              </Label>
+                              <Input
+                                id="studio-selected-due-at"
+                                type="datetime-local"
+                                value={selectedDueAt}
+                                onChange={(event) =>
+                                  setSelectedDueAt(event.target.value)
+                                }
+                              />
+                            </div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="min-h-11 self-end"
+                              disabled={offline || updateSchedule.isPending}
+                              onClick={() =>
+                                updateSchedule.mutate({
+                                  taskId: Number(selected.id),
+                                  expectedRevision: selected.revision,
+                                  priority: selectedPriority,
+                                  dueAt: selectedDueAt
+                                    ? new Date(selectedDueAt)
+                                    : null,
+                                })
+                              }
+                            >
+                              حفظ الأولوية والموعد
+                            </Button>
+                          </div>
+                        )}
                       <div className="space-y-1.5">
                         <Label htmlFor="studio-name">اسم العرض</Label>
                         <Input
@@ -1161,6 +1431,7 @@ export default function ProductImageStudio() {
                           onClick={() =>
                             saveDraft.mutate({
                               taskId: Number(selected.id),
+                              expectedRevision: selected.revision,
                               proposedName: name,
                               proposedDescription: description,
                               proposedMarketingCopy: marketingCopy,
@@ -1287,6 +1558,7 @@ export default function ProductImageStudio() {
                                   onClick={() =>
                                     approve.mutate({
                                       taskId: Number(selected.id),
+                                      expectedRevision: selected.revision,
                                       adminOverrideReason: reviewOverrideValue,
                                     })
                                   }
@@ -1310,6 +1582,7 @@ export default function ProductImageStudio() {
                                   onClick={() =>
                                     reject.mutate({
                                       taskId: Number(selected.id),
+                                      expectedRevision: selected.revision,
                                       reason: rejectReason,
                                       adminOverrideReason: reviewOverrideValue,
                                     })
@@ -1329,7 +1602,10 @@ export default function ProductImageStudio() {
                                 offline || storageActionsDisabled || busy
                               }
                               onClick={() =>
-                                revert.mutate({ taskId: Number(selected.id) })
+                                revert.mutate({
+                                  taskId: Number(selected.id),
+                                  expectedRevision: selected.revision,
+                                })
                               }
                             >
                               <RotateCcw aria-hidden className="size-4" />{" "}
