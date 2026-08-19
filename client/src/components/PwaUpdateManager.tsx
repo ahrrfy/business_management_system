@@ -308,10 +308,16 @@ export function PwaUpdateManager() {
 
   useEffect(() => {
     if (!import.meta.env.PROD) {
-      if ("serviceWorker" in navigator) {
-        void navigator.serviceWorker.getRegistrations().then((registrations) => {
-          registrations.forEach((registration) => void registration.unregister());
-        });
+      const resetKey = "storefront-preview-sw-reset-v2";
+      if (sessionStorage.getItem(resetKey) !== "1") {
+        sessionStorage.setItem(resetKey, "1");
+        const unregister = "serviceWorker" in navigator
+          ? navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+          : Promise.resolve([]);
+        const clearCaches = "caches" in window
+          ? caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+          : Promise.resolve([]);
+        void Promise.all([unregister, clearCaches]).then(() => window.location.reload());
       }
       return;
     }

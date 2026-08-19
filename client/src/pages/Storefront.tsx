@@ -580,11 +580,80 @@ function ProductRow({
   onSelect: (id: number) => void;
   onAdd: (p: RowProduct) => void;
 }) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
+  const [paused, setPaused] = useState(false);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || products.length < 4) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) return;
+    const timer = window.setInterval(() => {
+      if (paused || document.hidden) return;
+      const maxScroll = scroller.scrollWidth - scroller.clientWidth;
+      if (maxScroll <= 4) return;
+      const atEnd = Math.abs(scroller.scrollLeft) >= maxScroll - 4;
+      if (atEnd) {
+        scroller.scrollTo({ left: 0, behavior: "smooth" });
+        return;
+      }
+      scroller.scrollBy({ left: -Math.max(220, Math.floor(scroller.clientWidth * 0.72)), behavior: "smooth" });
+    }, 4200);
+    return () => window.clearInterval(timer);
+  }, [paused, products.length]);
+
   if (products.length === 0) return null;
+  const moveRow = (direction: -1 | 1) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    scroller.scrollBy({ left: direction * Math.max(220, Math.floor(scroller.clientWidth * 0.72)), behavior: "smooth" });
+  };
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    dragRef.current = { active: true, startX: event.clientX, startScroll: scroller.scrollLeft, moved: false };
+    scroller.setPointerCapture(event.pointerId);
+    setPaused(true);
+  };
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !dragRef.current.active) return;
+    const delta = event.clientX - dragRef.current.startX;
+    if (Math.abs(delta) > 6) dragRef.current.moved = true;
+    scroller.scrollLeft = dragRef.current.startScroll - delta;
+  };
+  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const scroller = scrollerRef.current;
+    dragRef.current.active = false;
+    if (scroller?.hasPointerCapture(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
+    window.setTimeout(() => { dragRef.current.moved = false; }, 0);
+    setPaused(false);
+  };
   return (
-    <section className="mb-5">
-      <h3 className="mb-2.5 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">{icon} {title}</h3>
-      <div className="flex min-w-0 gap-3 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <section className="mb-5 min-w-0">
+      <div className="mb-2.5 flex items-center justify-between gap-3">
+        <h3 className="flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">{icon} {title}</h3>
+        <div className="flex items-center gap-1" aria-label={`تنقل ${title}`}>
+          <button type="button" onClick={() => moveRow(1)} onFocus={() => setPaused(true)} onBlur={() => setPaused(false)} className="flex size-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" aria-label={`مرر ${title} إلى اليسار`}><ArrowRight aria-hidden className="size-4 rotate-180" /></button>
+          <button type="button" onClick={() => moveRow(-1)} onFocus={() => setPaused(true)} onBlur={() => setPaused(false)} className="flex size-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700" aria-label={`مرر ${title} إلى اليمين`}><ArrowRight aria-hidden className="size-4" /></button>
+        </div>
+      </div>
+      <div
+        ref={scrollerRef}
+        dir="rtl"
+        className="flex min-w-0 cursor-grab touch-pan-y gap-3 overflow-x-auto overscroll-x-contain pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onPointerEnter={() => setPaused(true)}
+        onPointerLeave={() => { if (!dragRef.current.active) setPaused(false); }}
+        onFocusCapture={() => setPaused(true)}
+        onBlurCapture={() => setPaused(false)}
+        onClickCapture={(event) => { if (dragRef.current.moved) { event.preventDefault(); event.stopPropagation(); } }}
+        aria-label={`${title} — اسحب لاكتشاف المزيد`}
+      >
         {products.map((p) => (
           <ProductRowCard key={p.productId} p={p} onSelect={() => onSelect(p.productId)} onAdd={() => onAdd(p)} />
         ))}
@@ -1104,27 +1173,47 @@ export default function Storefront() {
     if (!detailQ.data) return;
     const selections: StorefrontCartSelection[] = [];
     for (const variant of detailQ.data.variants ?? []) {
-      // كل صف يختار وحدة البيع المتوفرة الأصغر تلقائياً؛ منتج القلم المعتاد يملك وحدة واحدة.
-      // تبقى واجهة وحدة البيع المفردة أدناه للمنتجات التي تُباع بدرزن/كرتون.
-      const unit = variant.units.find((candidate) => candidate.inStock);
-      const quantity = unit ? variantQuantities.get(unit.productUnitId) ?? 0 : 0;
-      const effectivePrice = unit?.salePrice ?? unit?.price;
-      if (!unit || !effectivePrice || quantity <= 0) continue;
-      selections.push({
-        productUnitId: unit.productUnitId,
-        productId: detailQ.data.productId,
-        productName: detailQ.data.productName,
-        imageUrl: detailQ.data.imageUrl,
-        unitName: unit.unitName,
-        variantLabel: variant.label,
-        effectivePrice,
-        quantity,
-      });
+      // كل وحدة بيع لها مخزون وسعر مستقلان: نضيف كل لون/قياس/تعبئة اختار الزبون كخط مستقل.
+      for (const unit of variant.units) {
+        const quantity = variantQuantities.get(unit.productUnitId) ?? 0;
+        const effectivePrice = unit.salePrice ?? unit.price;
+        if (!unit.inStock || !effectivePrice || quantity <= 0) continue;
+        selections.push({
+          productUnitId: unit.productUnitId,
+          productId: detailQ.data.productId,
+          productName: detailQ.data.productName,
+          imageUrl: detailQ.data.imageUrl,
+          unitName: unit.unitName,
+          variantLabel: variant.label,
+          effectivePrice,
+          quantity,
+        });
+      }
     }
     if (selections.length === 0) return;
     trackConversion.mutate({ event: "ADD_TO_CART" });
     recordStorefrontCartChange();
     setCart((previous) => addStorefrontCartLines(previous, selections));
+    setSelectedId(null);
+  }
+  function addSelectedUnit() {
+    if (!detailQ.data || !detailUnit || !detailUnit.inStock) return;
+    const effectivePrice = detailUnit.salePrice ?? detailUnit.price;
+    if (!effectivePrice) return;
+    const quantity = Math.max(1, variantQuantities.get(detailUnit.productUnitId) ?? 1);
+    const selection: StorefrontCartSelection = {
+      productUnitId: detailUnit.productUnitId,
+      productId: detailQ.data.productId,
+      productName: detailQ.data.productName,
+      imageUrl: detailQ.data.imageUrl,
+      unitName: detailUnit.unitName,
+      variantLabel: detailVariant?.label,
+      effectivePrice,
+      quantity,
+    };
+    trackConversion.mutate({ event: "ADD_TO_CART" });
+    recordStorefrontCartChange();
+    setCart((previous) => addStorefrontCartLines(previous, [selection]));
     setSelectedId(null);
   }
   function setQty(productUnitId: number, qty: number) {
@@ -1439,69 +1528,67 @@ export default function Storefront() {
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     <p className="mt-0.5 text-xs text-slate-500">الوحدة: {detailUnit?.unitName ?? detailQ.data.unitName}</p>
                     {(detailQ.data.variants?.length ?? 0) > 1 && (
-                      <div className="mt-3" aria-label="اختر كميات الألوان أو المقاسات المطلوبة">
-                        <p className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر الكمية من كل لون / قياس</p>
-                        <p className="mb-2 text-[11px] text-slate-500">يمكنك إضافة عدة ألوان معاً بضغطة واحدة.</p>
-                        <div className="space-y-1.5">
-                          {detailQ.data.variants!.map((variant) => {
-                            const unit = variant.units.find((candidate) => candidate.inStock);
-                            const quantity = unit ? variantQuantities.get(unit.productUnitId) ?? 0 : 0;
-                            const stockLimit = unit?.stockLeft == null ? 999 : Math.min(Math.floor(unit.stockLeft), 999);
-                            return (
-                              <div
-                                key={variant.variantId}
-                                className={`flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 ${
-                                  unit ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800" : "border-slate-100 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-900"
-                                }`}
-                              >
-                                <div className="flex min-w-0 items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-200">
-                                  {variant.colorHex && <span className="size-3 shrink-0 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
-                                  <span className="truncate">{variant.label}</span>
-                                  {unit && variant.units.length > 1 && <span className="shrink-0 text-[10px] font-medium text-slate-400">{unit.unitName}</span>}
-                                  {!unit && <span className="shrink-0 text-[10px] text-stock-out">نفد</span>}
+                      <div className="mt-3" aria-label="اختر الألوان والمقاسات والكميات المطلوبة">
+                        <p className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر اللون أو القياس والكمية</p>
+                        <p className="mb-2 text-[11px] text-slate-500">يمكنك اختيار أكثر من لون أو قياس، ولكل اختيار كمية مستقلة.</p>
+                        <div className="space-y-2">
+                          {detailQ.data.variants!.map((variant) => (
+                            <div key={variant.variantId} className={`rounded-xl border p-2.5 ${variant.inStock ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800" : "border-slate-100 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-900"}`}>
+                              <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-700 dark:text-slate-200">
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  {variant.colorHex && <span className="size-4 shrink-0 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
+                                  <span className="truncate">{variant.color || variant.label}</span>
+                                  {variant.size && <span className="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-700 dark:text-slate-300">المقاس {variant.size}</span>}
                                 </div>
-                                <div className="flex shrink-0 items-center gap-2">
-                                  <button
-                                    type="button"
-                                    aria-label={`إنقاص كمية ${variant.label}`}
-                                    disabled={!unit || quantity === 0}
-                                    onClick={() => unit && setVariantQuantity(unit.productUnitId, quantity - 1)}
-                                    className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"
-                                  ><Minus aria-hidden className="size-3.5" /></button>
+                                <span className="shrink-0 text-[10px] text-slate-400">{variant.inStock ? `${variant.units.filter((unit) => unit.inStock).length} خيارات` : "نفد"}</span>
+                              </div>
+                              <div className="mt-2 space-y-1.5">
+                                {variant.units.map((unit) => {
+                                  const quantity = variantQuantities.get(unit.productUnitId) ?? 0;
+                                  const stockLimit = unit.stockLeft == null ? 999 : Math.min(Math.floor(unit.stockLeft), 999);
+                                  return (
+                                    <div key={unit.productUnitId} className={`flex items-center justify-between gap-2 rounded-lg border px-2 py-1.5 ${unit.inStock ? "border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900" : "border-slate-100 bg-white opacity-50 dark:border-slate-800 dark:bg-slate-800"}`}>
+                                      <button type="button" disabled={!unit.inStock} onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(unit.productUnitId); if (quantity === 0) setVariantQuantity(unit.productUnitId, 1); }} className="min-w-0 flex-1 text-right text-[11px] font-bold text-slate-700 disabled:cursor-not-allowed dark:text-slate-200">
+                                        <span className="block truncate">{unit.unitName}{variant.size ? ` · ${variant.size}` : ""}</span>
+                                        <span className="mt-0.5 block text-[10px] font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock && " · نفد"}</span>
+                                      </button>
+                                      <div className="flex shrink-0 items-center gap-1.5">
+                                        <button type="button" aria-label={`إنقاص ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity === 0} onClick={() => setVariantQuantity(unit.productUnitId, quantity - 1)} className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"><Minus aria-hidden className="size-3.5" /></button>
+                                        <span className="w-5 text-center text-sm font-extrabold tabular-nums">{quantity}</span>
+                                        <button type="button" aria-label={`زيادة ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity >= stockLimit} onClick={() => setVariantQuantity(unit.productUnitId, quantity + 1)} className="flex size-7 items-center justify-center rounded-full bg-[var(--sem-pos)] text-white disabled:cursor-not-allowed disabled:opacity-40"><Plus aria-hidden className="size-3.5" /></button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {(detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 0 && (
+                      <div className="mt-3" aria-label="اختر القياس أو وحدة البيع والكمية">
+                        {(detailVariant?.color || detailVariant?.size) && <p className="mb-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">الاختيار: {[detailVariant.color, detailVariant.size].filter(Boolean).join(" · ")}</p>}
+                        <div className="space-y-1.5">
+                          {(detailVariant?.units ?? detailQ.data.storeUnits ?? []).map((unit) => {
+                            const selected = (detailUnit?.productUnitId ?? detailQ.data!.productUnitId) === unit.productUnitId;
+                            const quantity = variantQuantities.get(unit.productUnitId) ?? (selected ? 1 : 0);
+                            const stockLimit = unit.stockLeft == null ? 999 : Math.min(Math.floor(unit.stockLeft), 999);
+                            return (
+                              <div key={unit.productUnitId} className={`flex items-center justify-between gap-2 rounded-xl border px-2.5 py-2 ${selected ? "border-[var(--sem-pos)] bg-emerald-50/60 dark:bg-emerald-500/10" : "border-slate-200 dark:border-slate-700"}`}>
+                                <button type="button" disabled={!unit.inStock} onClick={() => { setSelectedStoreUnitId(unit.productUnitId); if (!variantQuantities.has(unit.productUnitId)) setVariantQuantity(unit.productUnitId, 1); }} className="min-w-0 flex-1 text-right text-xs font-bold text-slate-700 disabled:opacity-50 dark:text-slate-200">
+                                  <span className="block truncate">{unit.unitName}</span>
+                                  <span className="mt-0.5 block text-[10px] font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock && " · نفد"}</span>
+                                </button>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  <button type="button" aria-label={`إنقاص ${unit.unitName}`} disabled={!unit.inStock || quantity === 0} onClick={() => setVariantQuantity(unit.productUnitId, quantity - 1)} className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"><Minus aria-hidden className="size-3.5" /></button>
                                   <span className="w-5 text-center text-sm font-extrabold tabular-nums">{quantity}</span>
-                                  <button
-                                    type="button"
-                                    aria-label={`زيادة كمية ${variant.label}`}
-                                    disabled={!unit || quantity >= stockLimit}
-                                    onClick={() => unit && setVariantQuantity(unit.productUnitId, quantity + 1)}
-                                    className="flex size-7 items-center justify-center rounded-full bg-[var(--sem-pos)] text-white disabled:cursor-not-allowed disabled:opacity-40"
-                                  ><Plus aria-hidden className="size-3.5" /></button>
+                                  <button type="button" aria-label={`زيادة ${unit.unitName}`} disabled={!unit.inStock || quantity >= stockLimit} onClick={() => { setSelectedStoreUnitId(unit.productUnitId); setVariantQuantity(unit.productUnitId, quantity + 1); }} className="flex size-7 items-center justify-center rounded-full bg-[var(--sem-pos)] text-white disabled:opacity-40"><Plus aria-hidden className="size-3.5" /></button>
                                 </div>
                               </div>
                             );
                           })}
                         </div>
-                      </div>
-                    )}
-                    {(detailQ.data.variants?.length ?? 0) <= 1 && (detailVariant?.units.length ?? detailQ.data.storeUnits?.length ?? 0) > 1 && (
-                      <div className="mt-2 flex flex-wrap gap-1.5" aria-label="اختر وحدة البيع">
-                        {(detailVariant?.units ?? detailQ.data.storeUnits ?? []).map((unit) => {
-                          const selected = (detailUnit?.productUnitId ?? detailQ.data!.productUnitId) === unit.productUnitId;
-                          return (
-                            <button
-                              key={unit.productUnitId}
-                              type="button"
-                              onClick={() => setSelectedStoreUnitId(unit.productUnitId)}
-                              className={`rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
-                                selected
-                                  ? "border-[var(--sem-pos)] bg-[var(--sem-pos)] text-white"
-                                  : "border-slate-200 text-slate-600 hover:border-[var(--sem-pos)] dark:border-slate-700 dark:text-slate-300"
-                              }`}
-                            >
-                              {unit.unitName} · {priceLabel(unit.salePrice ?? unit.price)}
-                            </button>
-                          );
-                        })}
                       </div>
                     )}
                     {detailQ.data.colors && detailQ.data.colors.length > 0 && (
@@ -1539,8 +1626,7 @@ export default function Storefront() {
                   onClick={() => {
                     if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants();
                     else {
-                      if (detailQ.data && detailUnit) addToCart({ ...detailQ.data, ...detailUnit, variantLabel: detailVariant?.label });
-                      setSelectedId(null);
+                      addSelectedUnit();
                     }
                   }}
                   disabled={(detailQ.data?.variants?.length ?? 0) > 1
