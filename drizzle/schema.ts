@@ -649,6 +649,72 @@ export const products = mysqlTable(
 export type Product = typeof products.$inferSelect;
 export type InsertProduct = typeof products.$inferInsert;
 
+export type ProductCustomizationOption = {
+  value: string;
+  label: string;
+  priceDelta?: string;
+};
+
+export type ProductCustomizationDependency = {
+  fieldKey: string;
+  operator: "equals" | "notEquals";
+  value: string | string[];
+};
+
+/** قالب تخصيص واحد اختياري لكل منتج — يحدد نوع النموذج وعنوانه وحالته. */
+export const productCustomizationTemplates = mysqlTable(
+  "productCustomizationTemplates",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productId: bigint("productId", { mode: "number" })
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    kind: mysqlEnum("kind", ["PRINT", "GIFT", "GENERAL"]).default("GENERAL").notNull(),
+    title: varchar("title", { length: 160 }).notNull(),
+    description: text("description"),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    productIdx: index("idx_custom_template_product").on(table.productId),
+    productUnique: unique("uq_custom_template_product").on(table.productId),
+  }),
+);
+
+export type ProductCustomizationTemplate = typeof productCustomizationTemplates.$inferSelect;
+export type InsertProductCustomizationTemplate = typeof productCustomizationTemplates.$inferInsert;
+
+/** حقول قالب التخصيص — الخيارات والتبعيات تُخزّن كـJSON صغير مُتحقق منه خادمياً. */
+export const productCustomizationFields = mysqlTable(
+  "productCustomizationFields",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    templateId: bigint("templateId", { mode: "number" })
+      .notNull()
+      .references(() => productCustomizationTemplates.id, { onDelete: "cascade" }),
+    fieldKey: varchar("fieldKey", { length: 80 }).notNull(),
+    label: varchar("label", { length: 160 }).notNull(),
+    fieldType: mysqlEnum("fieldType", ["TEXT", "TEXTAREA", "SELECT", "FILE", "NUMBER", "SWATCH"]).notNull(),
+    isRequired: boolean("isRequired").default(false).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    maxLength: int("maxLength"),
+    optionsJson: json("optionsJson").$type<ProductCustomizationOption[]>(),
+    dependencyJson: json("dependencyJson").$type<ProductCustomizationDependency | null>(),
+    priceDelta: decimal("priceDelta", { precision: 15, scale: 2 }).default("0").notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    templateIdx: index("idx_custom_field_template_sort").on(table.templateId, table.sortOrder),
+    keyUnique: unique("uq_custom_field_template_key").on(table.templateId, table.fieldKey),
+  }),
+);
+
+export type ProductCustomizationField = typeof productCustomizationFields.$inferSelect;
+export type InsertProductCustomizationField = typeof productCustomizationFields.$inferInsert;
+
 /** متغيّر المنتج (لون/قياس). المخزون يُحسب على مستواه بالوحدة الأساس. */
 export const productVariants = mysqlTable(
   "productVariants",

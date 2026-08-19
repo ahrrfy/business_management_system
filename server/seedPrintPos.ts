@@ -17,6 +17,8 @@ import {
   products,
   productionRecipeLines,
   productionRecipes,
+  productCustomizationFields,
+  productCustomizationTemplates,
   users,
 } from "../drizzle/schema";
 import { getDb } from "./db";
@@ -26,6 +28,95 @@ import { withTx } from "./services/tx";
 import { extractInsertId } from "./lib/insertId";
 
 const insertId = extractInsertId;
+
+async function ensurePrintCustomizationTemplate(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  productId: number,
+  productName: string,
+) {
+  const existing = (await db
+    .select({ id: productCustomizationTemplates.id })
+    .from(productCustomizationTemplates)
+    .where(eq(productCustomizationTemplates.productId, productId))
+    .limit(1))[0];
+  const templateId = existing
+    ? Number(existing.id)
+    : insertId(await db.insert(productCustomizationTemplates).values({
+        productId,
+        kind: "PRINT",
+        title: "خصّص طلبك قبل الإضافة",
+        description: `خيارات تنفيذ ${productName} تُراجع قبل تجهيز الطلب.`,
+        isActive: true,
+      }));
+  if (existing) {
+    await db.update(productCustomizationTemplates).set({ kind: "PRINT", isActive: true }).where(eq(productCustomizationTemplates.id, templateId));
+  }
+
+  const fields = [
+    {
+      fieldKey: "service",
+      label: "نوع التنفيذ",
+      fieldType: "SELECT" as const,
+      isRequired: true,
+      sortOrder: 10,
+      optionsJson: [
+        { value: "text", label: "اسم أو عبارة", priceDelta: "0" },
+        { value: "file", label: "صورة أو تصميم", priceDelta: "0" },
+        { value: "full", label: "طباعة كاملة", priceDelta: "0" },
+      ],
+    },
+    {
+      fieldKey: "packaging",
+      label: "التغليف",
+      fieldType: "SELECT" as const,
+      isRequired: false,
+      sortOrder: 20,
+      optionsJson: [
+        { value: "standard", label: "تغليف عادي", priceDelta: "0" },
+        { value: "gift", label: "تغليف هدية", priceDelta: "0" },
+      ],
+    },
+    {
+      fieldKey: "message",
+      label: "رسالة أو تفاصيل إضافية",
+      fieldType: "TEXTAREA" as const,
+      isRequired: false,
+      sortOrder: 30,
+      maxLength: 300,
+      dependencyJson: { fieldKey: "service", operator: "equals" as const, value: ["text", "full"] },
+    },
+    {
+      fieldKey: "designFile",
+      label: "مرجع ملف التصميم",
+      fieldType: "FILE" as const,
+      isRequired: true,
+      sortOrder: 40,
+      dependencyJson: { fieldKey: "service", operator: "equals" as const, value: ["file", "full"] },
+    },
+  ];
+
+  for (const field of fields) {
+    const exists = (await db
+      .select({ id: productCustomizationFields.id })
+      .from(productCustomizationFields)
+      .where(and(eq(productCustomizationFields.templateId, templateId), eq(productCustomizationFields.fieldKey, field.fieldKey)))
+      .limit(1))[0];
+    if (exists) continue;
+    await db.insert(productCustomizationFields).values({
+      templateId,
+      fieldKey: field.fieldKey,
+      label: field.label,
+      fieldType: field.fieldType,
+      isRequired: field.isRequired,
+      sortOrder: field.sortOrder,
+      maxLength: field.maxLength,
+      optionsJson: field.optionsJson,
+      dependencyJson: field.dependencyJson,
+      priceDelta: "0",
+      isActive: true,
+    });
+  }
+}
 
 async function main() {
   const dbOrNull = getDb();
@@ -118,6 +209,7 @@ async function main() {
 
   let created = 0;
   for (const s of SERVICES) {
+    let productId: number;
     let variantId: number;
     let productUnitId: number;
     const exVar = (await db.select().from(productVariants).where(eq(productVariants.sku, s.sku)).limit(1))[0];
@@ -125,6 +217,7 @@ async function main() {
       // خدمات الطباعة/الاستنساخ تحتاج مدخلات تنفيذ أو ملفاً قبل الطلب؛ ثبّت العلم صراحةً
       // أيضاً للبيانات القديمة التي أُنشئت قبل إضافة isCustomizable.
       await db.update(products).set({ isCustomizable: true }).where(eq(products.id, Number(exVar.productId)));
+      productId = Number(exVar.productId);
       variantId = Number(exVar.id);
       const exUnit = (await db.select().from(productUnits).where(eq(productUnits.variantId, variantId)).limit(1))[0];
       if (exUnit) {
@@ -137,7 +230,7 @@ async function main() {
       }
     } else {
       const pr = await db.insert(products).values({ name: s.name, productType: PRINT_SERVICE_TYPE, categoryId: s.categoryId, isCustomizable: true });
-      const productId = insertId(pr);
+      productId = insertId(pr);
       const vr = await db.insert(productVariants).values({ productId, sku: s.sku, costPrice: "0" });
       variantId = insertId(vr);
       const ur = await db.insert(productUnits).values({ variantId, unitName: s.unit, conversionFactor: "1", isBaseUnit: true });
@@ -145,6 +238,8 @@ async function main() {
       await db.insert(productPrices).values({ productUnitId, priceTier: "RETAIL", price: s.price });
       created++;
     }
+    await ensurePrintCustomizationTemplate(db, productId, s.name);
+
     // الوصفة (idempotent بالاسم الفريد) — اسم مميّز بالـSKU كي لا يصطدم بوصفات الإنتاج.
     if (s.recipe?.length) {
       const recipeName = `[طباعة] ${s.name} (${s.sku})`;
