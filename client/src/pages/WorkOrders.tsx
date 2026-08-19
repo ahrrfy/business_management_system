@@ -403,31 +403,6 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
 // ─────────────── الإحصاءات ───────────────
 // من عدّ الخادم (workOrders.counts) لا من صفوف الشاشة: القائمة تجلب النشطة كاملةً لكن «مُسلَّم»
 // محدودة بالأحدث، فالعدّ من الصفوف كان سيَعرض نافذة العرض لا الحقيقة.
-function Stats({ counts }: { counts?: RouterOutputs["workOrders"]["counts"] }) {
-  const active = (counts?.received ?? 0) + (counts?.inProgress ?? 0) + (counts?.ready ?? 0);
-  const late = counts?.late ?? 0;
-  const inProg = counts?.inProgress ?? 0;
-  const ready = counts?.ready ?? 0;
-  const delivered = counts?.delivered ?? 0;
-  const cards: { c: string; label: React.ReactNode; val: number; sub: string }[] = [
-    { c: "var(--primary)", label: (<><Receipt aria-hidden className="size-4 inline-block align-text-bottom me-1" /> أوامر نشطة</>), val: active, sub: "قيد المعالجة الآن" },
-    { c: "oklch(0.577 0.245 27.325)", label: (<><Timer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> متأخرة عن الاستحقاق</>), val: late, sub: "تحتاج تدخّلاً فورياً" },
-    { c: "oklch(0.60 0.16 250)", label: (<><Wrench aria-hidden className="size-4 inline-block align-text-bottom me-1" /> قيد التنفيذ</>), val: inProg, sub: "تحت الإنتاج" },
-    { c: "oklch(0.58 0.22 293)", label: (<><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> جاهز للتسليم</>), val: ready, sub: "بانتظار العميل" },
-    { c: "oklch(0.62 0.16 155)", label: (<><Package aria-hidden className="size-4 inline-block align-text-bottom me-1" /> مُسلَّم</>), val: delivered, sub: "اكتمل وصدرت الفاتورة" },
-  ];
-  return (
-    <div className="wob-stats">
-      {cards.map((s, i) => (
-        <div className="wob-stat" key={i} style={{ ["--stat-c" as string]: s.c } as React.CSSProperties}>
-          <div className="wob-stat-label">{s.label}</div>
-          <div className="wob-stat-val">{fmtInt(s.val)}</div>
-          <div className="wob-stat-sub">{s.sub}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // ─────────────── حوار التسليم (مالي — تأكيد صريح) ───────────────
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -1476,8 +1451,6 @@ export default function WorkOrders() {
         </div>
       )}
 
-      <Stats counts={serverCounts} />
-
       <div className="wob-toolbar">
         {/* رقاقة النطاق (قرار المالك ١٩/٨) — «كل طلبات الفرع» هو الافتراضيّ، و«طلباتي» تضييقٌ
             اختياريّ. لا تُعرَض للمشرفين: نطاقُهم كلُّ الفرع أصلاً فتكون الرقاقة بلا أثر. */}
@@ -1498,6 +1471,19 @@ export default function WorkOrders() {
               </button>
             ))}
           </div>
+        )}
+        {/* ١٩/٨ (طلب المالك: «استثمار رأس الشاشة») — شريطُ الإحصاءات الخمس زال: أربعةٌ منه
+            كانت تكرّر عدّادات الأعمدة حرفياً (نشطة/قيد التنفيذ/جاهز/مُسلَّم) فتأكل صفّاً
+            كاملاً من ارتفاع اللوحة بلا خبر. بقي **المتأخّر** وحده لأنّه الوحيد الذي لا
+            يقوله عمودٌ — ويُخفى عند الصفر. */}
+        {(serverCounts?.late ?? 0) > 0 && (
+          <span
+            className="inline-flex flex-none items-center gap-1.5 rounded-lg border border-[var(--sem-neg)] bg-[var(--sem-neg-bg)] px-2.5 py-1.5 text-xs font-extrabold text-[var(--sem-neg)]"
+            title="أوامر تجاوزت تاريخ استحقاقها"
+          >
+            <Timer aria-hidden className="size-3.5" />
+            {fmtInt(serverCounts?.late ?? 0)} متأخّر
+          </span>
         )}
         <div className="wob-search">
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
