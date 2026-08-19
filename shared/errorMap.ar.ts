@@ -137,6 +137,10 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  uq_loyalty_program_customer: { msg: "حساب الولاء لهذا العميل في هذا البرنامج موجود مسبقاً." },
+  uq_loyalty_order_earn: { msg: "نقاط الولاء لهذا الطلب مُنحت مسبقاً." },
+  uq_storefront_push_token_hash: { msg: "هذا الجهاز مسجّل مسبقاً لإشعارات المتجر." },
+  uq_storefront_push_delivery: { msg: "تم إنشاء تسليم هذه الحملة لهذا الجهاز مسبقاً." },
   uq_image_studio_usage_daily_service: { msg: "سجلّ حصة خدمة الاستوديو لهذا اليوم موجود مسبقاً." },
   uq_pijob_product_active: {
     msg: "توجد مهمة استوديو نشطة لهذا المنتج بالفعل — افتح المهمة الحالية بدلاً من إنشاء مهمة مكرّرة.",
