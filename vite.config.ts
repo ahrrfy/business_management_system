@@ -154,6 +154,8 @@ export default defineConfig({
   },
   server: {
     host: true,
+    // Allow the temporary Manus preview proxy without accepting arbitrary Host headers.
+    allowedHosts: [".manus.computer", "localhost"],
     fs: {
       strict: true,
       deny: ["**/.*"],
