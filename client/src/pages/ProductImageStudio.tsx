@@ -45,10 +45,6 @@ function taskSnapshot(task: StudioTask): StudioDraftTaskSnapshot {
 
 export const STUDIO_STORAGE_DISABLED_MESSAGE = "وضع القراءة القديم فعّال: مخزن R2 الخاص غير مهيأ. الإسناد ومعالجة الصور والاعتماد متوقفة بأمان، بينما تبقى الإحصاءات والمهام والسجل متاحة للقراءة.";
 
-export function isStudioStorageActionDisabled(storageReady: boolean | undefined): boolean {
-  return storageReady !== true;
-}
-
 function studioDatetimeLocal(value: Date | string | null): string {
   if (!value) return "";
   const date = new Date(value);
@@ -56,6 +52,9 @@ function studioDatetimeLocal(value: Date | string | null): string {
 }
 
 const PIN_SETUP_DISMISS_KEY = "studio:offline-pin-setup-dismissed";
+
+/** سقف الإسناد الجماعيّ في النداء الواحد — يطابق حدّ الراوتر. */
+const BULK_ASSIGN_MAX = 100;
 
 /** الحالات التي يجوز إلغاؤها — تُطابق حارس الخادم؛ المعتمدة لها «استرجاع الأصل». */
 const CANCELLABLE_STATUSES: StudioTask["status"][] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
@@ -191,6 +190,10 @@ export default function ProductImageStudio() {
   const [inlineAssigneeId, setInlineAssigneeId] = useState("");
   const [cancelReason, setCancelReason] = useState("");
   const [backlogCancelReason, setBacklogCancelReason] = useState("");
+  /** منتجاتٌ محدَّدة للإسناد الجماعيّ (بمعرّف المنتج — لأنّ عقد الخادم بالمنتجات لا بالمهام). */
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
+  const [bulkAssigneeId, setBulkAssigneeId] = useState("");
+  const [assigneeFilter, setAssigneeFilter] = useState("ALL");
   const [taskSearch, setTaskSearch] = useState("");
   const [debouncedTaskSearch, setDebouncedTaskSearch] = useState("");
   const [setupPin, setSetupPin] = useState("");
@@ -220,9 +223,10 @@ export default function ProductImageStudio() {
       limit: 50,
       priority: taskPriorityFilter === "ALL" ? undefined : [taskPriorityFilter],
       overdue: overdueOnly || savedView === "OVERDUE" ? true : undefined,
-      unassigned: savedView === "UNASSIGNED" ? true : undefined,
+      unassigned: savedView === "UNASSIGNED" || savedView === "MISSING_IMAGE" ? true : undefined,
       campaignId: selectedCampaignId ?? undefined,
       search: debouncedTaskSearch || undefined,
+      assigneeId: assigneeFilter === "ALL" ? undefined : Number(assigneeFilter),
     },
     {
       enabled: !offline,
@@ -270,6 +274,19 @@ export default function ProductImageStudio() {
     .filter(([query]) => query.isError)
     .map(([, label]) => label);
   const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
+
+  const canBulkAssign = dashboard.data?.canManage === true && !offline;
+  const queuedProductIds = taskItems.filter((task) => isQueuedStudioTask(task)).map((task) => Number(task.productId));
+  const allQueuedSelected = queuedProductIds.length > 0 && queuedProductIds.every((id) => selectedTaskIds.has(id));
+  const toggleTaskSelection = (productId: number) =>
+    setSelectedTaskIds((current) => {
+      const next = new Set(current);
+      if (next.has(productId)) next.delete(productId);
+      else next.add(productId);
+      return next;
+    });
+  const toggleSelectAllQueued = () => setSelectedTaskIds(allQueuedSelected ? new Set() : new Set(queuedProductIds));
+
   const onlineSelected =
     taskItems.find((task) => Number(task.id) === selectedId) ??
     (scannedTask && Number(scannedTask.id) === selectedId ? scannedTask : null);
@@ -356,6 +373,8 @@ export default function ProductImageStudio() {
   const bulkAssign = trpc.productStudio.bulkAssign.useMutation({
     onSuccess: async (result) => {
       notify.ok(`أُسندت ${result.createdCount} مهام`);
+      setSelectedTaskIds(new Set());
+      setBulkAssigneeId("");
       setProductId("");
       setBulkProductIds([]);
       await refresh();
@@ -1195,6 +1214,11 @@ export default function ProductImageStudio() {
           setScope(value as Scope);
           setSelectedId(null);
           setOfflineSelectedDraft(null);
+          // العرض المحفوظ يخصّ مساره؛ إبقاؤه مطبَّقاً على مسارٍ جديد يُخفي صفوفاً
+          // بلا دليلٍ سوى إبراز زرٍّ في الأعلى.
+          setSavedView("ALL");
+          setOverdueOnly(false);
+          setSelectedTaskIds(new Set());
         }}
       >
         <TabsList className="h-auto max-w-full flex-wrap justify-start">
@@ -1232,7 +1256,7 @@ export default function ProductImageStudio() {
                   if (value === "UNASSIGNED" || value === "OVERDUE") setScope("QUEUE");
                   if (value === "PENDING_REVIEW") setScope("REVIEW");
                   if (value === "MISSING_IMAGE" && !selectedCampaignId) {
-                    notify.ok("اختر حملة لعرض عدد المنتجات الناقصة وتوليد مهامها");
+                    notify.err("اختر حملة أولاً لعرض عدد المنتجات الناقصة وتوليد مهامها");
                   }
                   setSelectedId(null);
                 }}
@@ -1241,6 +1265,21 @@ export default function ProductImageStudio() {
               </Button>
             ))}
           </div>
+          {dashboard.data?.canManage && (
+            <div className="min-w-40 space-y-1">
+              <Label htmlFor="studio-assignee-filter">الموظف</Label>
+              {/* الخادم يدعم الترشيح بالمنفّذ منذ البداية بلا مدخلٍ في الشاشة،
+                  فتعذّر على المدير أن يسأل «ماذا على طاولة عليّ؟». */}
+              <AppSelect id="studio-assignee-filter" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={assigneeFilter} onValueChange={setAssigneeFilter} disabled={assignees.isError}>
+                <option value="ALL">كل الموظفين</option>
+                {(assignees.data ?? []).map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.name}
+                  </option>
+                ))}
+              </AppSelect>
+            </div>
+          )}
           {/* البحث بالاسم: المخرج الوحيد العمليّ من طابورٍ بآلاف الصفوف. */}
           <div className="min-w-52 flex-1 space-y-1">
             <Label htmlFor="studio-task-search">بحث باسم المنتج</Label>
@@ -1270,6 +1309,39 @@ export default function ProductImageStudio() {
                   <CardTitle className="text-base">المهام</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
+                  {canBulkAssign && queuedProductIds.length > 0 && (
+                    <div className="space-y-2 rounded-md border bg-muted/30 p-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <button type="button" className="min-h-11 underline underline-offset-2" onClick={toggleSelectAllQueued}>
+                          {allQueuedSelected ? "إلغاء تحديد الكل" : `تحديد كل المعروض (${queuedProductIds.length})`}
+                        </button>
+                        <span className="text-muted-foreground">{selectedTaskIds.size} محدَّدة</span>
+                      </div>
+                      {selectedTaskIds.size > 0 && (
+                        <div className="flex flex-wrap items-end gap-2">
+                          <div className="min-w-40 flex-1">
+                            <AppSelect id="studio-bulk-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={bulkAssigneeId} onValueChange={setBulkAssigneeId} disabled={assignees.isError}>
+                              <option value="">اختر الموظف</option>
+                              {(assignees.data ?? []).map((user) => (
+                                <option key={user.id} value={user.id}>
+                                  {user.name}
+                                </option>
+                              ))}
+                            </AppSelect>
+                          </div>
+                          <Button
+                            type="button"
+                            className="min-h-11"
+                            disabled={offline || bulkAssign.isPending || !bulkAssigneeId}
+                            onClick={() => bulkAssign.mutate({ productIds: Array.from(selectedTaskIds).slice(0, BULK_ASSIGN_MAX), assigneeId: Number(bulkAssigneeId) })}
+                          >
+                            <UserCheck aria-hidden className="size-4" /> إسناد المحدَّد
+                          </Button>
+                          {selectedTaskIds.size > BULK_ASSIGN_MAX && <p className="w-full text-xs text-[var(--sem-warn)]">يُسنَد {BULK_ASSIGN_MAX} في المرّة؛ كرّر للباقي.</p>}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {tasks.isLoading && (
                     <div className="py-8 text-center">
                       <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />
@@ -1286,7 +1358,19 @@ export default function ProductImageStudio() {
                   )}
                   {!tasks.isLoading && !tasks.isError && taskItems.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">لا مهام في هذا المسار.</p>}
                   {taskItems.map((task) => (
-                    <button key={Number(task.id)} type="button" onClick={() => selectTask(task)} className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}>
+                    <div key={Number(task.id)} className="flex items-start gap-2">
+                      {/* التحديد المتعدّد: الخادم يدعم الإسناد الجماعيّ منذ البداية، ولم يكن له
+                          مدخلٌ في القائمة — فتفريغ طابورٍ كبير كان يعني بحثاً فرديّاً عن كل منتج. */}
+                      {canBulkAssign && isQueuedStudioTask(task) && (
+                        <input
+                          type="checkbox"
+                          className="mt-4 size-4 shrink-0"
+                          aria-label={`تحديد ${task.productName}`}
+                          checked={selectedTaskIds.has(Number(task.productId))}
+                          onChange={() => toggleTaskSelection(Number(task.productId))}
+                        />
+                      )}
+                    <button type="button" onClick={() => selectTask(task)} className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}>
                       <div className="flex items-start justify-between gap-2">
                         <span className="text-sm font-medium">{task.productName}</span>
                         {/* ASSIGNED بلا منفّذ = «في الطابور»، لا «مسندة». الوسم القديم كان يناقض
@@ -1301,6 +1385,7 @@ export default function ProductImageStudio() {
                       </div>
                       {task.rejectionReason && <div className="mt-2 text-xs text-destructive">سبب الإعادة: {task.rejectionReason}</div>}
                     </button>
+                    </div>
                   ))}
                   {tasks.hasNextPage && (
                     <Button type="button" variant="outline" className="min-h-11 w-full" disabled={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()}>
