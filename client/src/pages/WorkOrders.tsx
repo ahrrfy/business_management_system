@@ -241,7 +241,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   /** عند توفّره: تظهر شريط الإسناد inline في عَمود «طابور وارد» (مَدير فَقط). */
   inboxAssign?: (orderId: number, staffId: number) => void;
   /** بَيانات الفنّيين من `assignableStaff` (name قد يَكون null في DB ⇒ يُعرَض «بلا اسم»). */
-  staff?: { id: number; name: string | null; role: string }[];
+  staff?: { id: number; name: string | null; role: string; openLoad?: number; overdueLoad?: number; onShift?: boolean }[];
   assignPending?: boolean;
   onOpenCustomer?: (customerId: number) => void;
 }) {
@@ -375,9 +375,17 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
             disabled={assignPending}
             aria-label={`إسناد ${o.orderNumber} لفنّي`}
           >
-            <option value="">— اختر فنّياً —</option>
+            {/* ش٣: القائمة الفارغة تُفسَّر صراحةً بدل منتقٍ صامتٍ لا يقول لماذا. */}
+            <option value="">{staff.length === 0 ? "— لا فنّيّ مؤهَّل في هذا الفرع —" : "— اختر فنّياً —"}</option>
             {staff.map((s) => (
-              <option key={s.id} value={s.id}>{s.name ?? "بلا اسم"}{s.role ? ` — ${s.role}` : ""}</option>
+              // ش٣ — **إسنادٌ مستنير**: الحملُ والتأخّرُ والمداومة في السطر نفسه، فيقع القرار
+              // على حقيقةٍ لا على اسم. والترتيب خادميّ بالأقلّ حملاً ⇒ الصوابُ أوّلُ خيار.
+              <option key={s.id} value={s.id}>
+                {s.name ?? "بلا اسم"}
+                {typeof s.openLoad === "number" ? ` · ${s.openLoad} مفتوحة` : ""}
+                {s.overdueLoad ? ` · ${s.overdueLoad} متأخّرة` : ""}
+                {s.onShift === false ? " · خارج الوردية" : s.onShift ? " · على رأس العمل" : ""}
+              </option>
             ))}
           </select>
           <button

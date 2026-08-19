@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState } from "@/components/PageState";
-import { Banknote, CalendarDays, Check, CheckCircle2, ChevronRight, ClipboardList, CornerDownLeft, Layers, MapPin, Phone, Ruler, Truck, Timer as TimerIcon, UserRound } from "lucide-react";
+import { Banknote, CalendarDays, Check, Undo2, CheckCircle2, ChevronRight, ClipboardList, CornerDownLeft, Layers, MapPin, Phone, Ruler, Truck, Timer as TimerIcon, UserRound } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
 import { confirm } from "@/lib/confirm";
@@ -211,6 +211,19 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
     quantity: d.quantity,
     dueDate: d.dueDate ? String(d.dueDate) : null,
     amountDue: d.status === "READY" ? remainingDue.toString() : null,
+  });
+
+  /**
+   * ش٣ — **طريقُ خروجِ الفنّي**: أمرٌ سحبه ولم يبدأه يعود للطابور بنفسه بلا انتظار مدير.
+   * والخادمُ يرفضه بعد البدء (المواد مستهلَكة) ⇒ لا انسحابَ صامتٌ يخلق يتيماً.
+   */
+  const release = trpc.workOrders.release.useMutation({
+    onSuccess: () => {
+      notify.ok("أُعيد الأمر إلى الطابور العام");
+      void utils.workOrders.list.invalidate();
+      void utils.workOrders.get.invalidate();
+    },
+    onError: (e) => notify.err(e),
   });
 
   async function doStart() {
@@ -486,7 +499,20 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
 
           {/* زر الإجراء المتدرّج */}
           {d.status === "RECEIVED" && (
-            <Button className="w-full h-12 text-base" disabled={busy} onClick={doStart}><ChevronRight aria-hidden className="size-4 me-1" /> بدء التنفيذ (خصم المواد)</Button>
+            <div className="space-y-2">
+              <Button className="w-full h-12 text-base" disabled={busy} onClick={doStart}><ChevronRight aria-hidden className="size-4 me-1" /> بدء التنفيذ (خصم المواد)</Button>
+              {/* ش٣: المخرجُ المشروع قبل البدء — بعده يرفضه الخادم ويُوجّه إلى النقل بسبب. */}
+              {d.assignedTo != null && (
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  disabled={busy || release.isPending}
+                  onClick={() => release.mutate({ workOrderId: Number(d.id) })}
+                >
+                  <Undo2 aria-hidden className="size-4 me-1" /> أعِد إلى الطابور
+                </Button>
+              )}
+            </div>
           )}
           {d.status === "IN_PROGRESS" && (
             <Button className="w-full h-12 text-base bg-[var(--status-done)] hover:opacity-90 text-white" disabled={busy} onClick={doReady}><Check aria-hidden className="size-4 me-1" /> وضع علامة: جاهز</Button>

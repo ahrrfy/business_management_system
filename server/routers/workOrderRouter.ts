@@ -11,6 +11,7 @@ import {
   products,
   users,
   serviceTypes,
+  shifts,
   tasks,
   workOrderImages,
   workOrderMaterials,
@@ -36,6 +37,7 @@ import {
 } from "../services/workOrder/cancel";
 import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
+import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
 import { requestDesignApproval } from "../services/workOrder/approval";
 import { setWorkOrderDesign } from "../services/workOrder/design";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
@@ -729,56 +731,97 @@ export const workOrderRouter = router({
     const branchCondition = targetBranch == null
       ? undefined
       : or(eq(users.branchId, targetBranch), isNull(users.branchId));
-    return db
-      .select({ id: users.id, name: users.name, role: users.role })
+    /**
+     * ش٣ (١٩/٨) — **إسنادٌ مستنير**: كانت القائمة اسماً ودوراً فقط، فيُسنِد المديرُ على العمياء
+     * لفنّيٍّ عليه عشرة أوامر متأخّرة أو غائبٍ اليوم. والحقائق الثلاث **كلّها مشتقّة، بلا عمود**:
+     *   · `openLoad`/`overdueLoad` — تجميعٌ على `workOrders` نفسها.
+     *   · `onShift` — من `shifts` المفتوحة لنفس الفرع؛ **مصدرٌ جاهزٌ لم يُستعمَل في أيّ مسار
+     *     إسناد قطّ** رغم أنّه يقول من هو على رأس العمل الآن.
+     *   · الأهليّة **بالوحدة لا بالدور الخامّ**: كان `role = 'print_operator'` حرفياً، والأدوار
+     *     تُحلّ عبر `permissionsOverride` ⇒ فنّيٌّ بدورٍ مخصّص مؤهَّلٍ فعلاً كان محجوباً.
+     */
+    const now = new Date();
+    const rows = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        role: users.role,
+        permissionsOverride: users.permissionsOverride,
+        openLoad: sql<number>`(
+          SELECT COUNT(*) FROM ${workOrders} wo
+          WHERE wo.assignedTo = ${users.id}
+            AND wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS')
+        )`,
+        overdueLoad: sql<number>`(
+          SELECT COUNT(*) FROM ${workOrders} wo
+          WHERE wo.assignedTo = ${users.id}
+            AND wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS')
+            AND wo.dueDate IS NOT NULL AND wo.dueDate < ${now}
+        )`,
+        onShift: sql<number>`(
+          SELECT COUNT(*) FROM ${shifts} sh
+          WHERE sh.userId = ${users.id} AND sh.shiftStatus = 'OPEN'
+        )`,
+      })
       .from(users)
-      .where(and(
-        eq(users.isActive, true),
-        eq(users.role, "print_operator"),
-        branchCondition,
-      ))
+      .where(and(eq(users.isActive, true), branchCondition))
       .orderBy(asc(users.name));
+
+    return rows
+      .filter((u) => hasModuleAccess(u.role, (u.permissionsOverride as never) ?? null, "workorders", "FULL"))
+      .map((u) => ({
+        id: u.id,
+        name: u.name,
+        role: u.role,
+        openLoad: Number(u.openLoad ?? 0),
+        overdueLoad: Number(u.overdueLoad ?? 0),
+        onShift: Number(u.onShift ?? 0) > 0,
+      }))
+      // الأقلّ حملاً أوّلاً ⇒ **القرارُ الصحيح أوّلُ خيار** بدل ترتيبٍ أبجديٍّ لا يقول شيئاً.
+      .sort((a, b) =>
+        Number(b.onShift) - Number(a.onShift)
+        || a.overdueLoad - b.overdueLoad
+        || a.openLoad - b.openLoad
+        || (a.name ?? "").localeCompare(b.name ?? "", "ar"),
+      );
   }),
 
   /** إسناد/إعادة إسناد المنفّذ المسؤول عن طلب الخدمة (null = إلغاء الإسناد). مدير فأعلى + تدقيق. */
+  /**
+   * ش٣ (١٩/٨): الجسمُ نُقل إلى `reassignWorkOrder` — كان `db.update` عارياً **خارج أيّ معاملة**،
+   * ويشترط `role === "print_operator"` حرفياً بينما الأدوار تُحلّ عبر `permissionsOverride`،
+   * وبلا سببٍ عند النقل بعد بدء التنفيذ، وبلا `oldValue` فلا يُعرف مِمَّن نُقل الأمر.
+   */
   assign: workordersManagerProcedure
-    .input(z.object({ workOrderId: z.number().int().positive(), assignedTo: z.number().int().positive().nullable() }))
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-      const wo = (
-        await db.select({ id: workOrders.id, branchId: workOrders.branchId, status: workOrders.status }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
-      )[0];
-      if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
-      // عزل مدير الفرع (قرار المالك ١٢/٨): لا يُسنِد مديرٌ طلبَ فرعٍ آخر (المالك/الأدمن يعبُران الفروع).
-      if (ctx.user.role !== "admin" && Number(wo.branchId) !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
-      }
-      if (wo.status === "DELIVERED" || wo.status === "CANCELLED") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تغيير فني أمر منتهٍ" });
-      }
-      if (input.assignedTo != null) {
-        const u = (
-          await db.select({ id: users.id, isActive: users.isActive, branchId: users.branchId, role: users.role }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
-        )[0];
-        if (!u || !u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
-        if (u.role !== "print_operator") {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "إسناد أمر الشغل مخصص لفني تنفيذ بدور «فني طباعة»" });
-        }
-        // منع إسناد الطلب لموظفٍ من فرعٍ آخر لا يستطيع تنفيذه (تدقيق ٢٥/٧). الموظف بلا فرع (مشترك) مسموح.
-        if (u.branchId != null && Number(u.branchId) !== Number(wo.branchId)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد الطلب لموظفٍ من فرعٍ آخر" });
-        }
-      }
-      await db.update(workOrders).set({ assignedTo: input.assignedTo }).where(eq(workOrders.id, input.workOrderId));
-      await logAudit(ctx, {
-        action: "workOrder.assign",
-        entityType: "workOrder",
-        entityId: input.workOrderId,
-        newValue: { assignedTo: input.assignedTo },
-      });
-      return { ok: true };
-    }),
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        assignedTo: z.number().int().positive().nullable(),
+        reason: z.string().trim().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      reassignWorkOrder(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+      }),
+    ),
+
+  /**
+   * ش٣ — **طريقُ خروجِ الفنّي**: يُعيد أمراً سحبه ولم يبدأه إلى الطابور بنفسه بلا انتظار مدير.
+   * `Exec` لا `Manager`: صاحبُ الأمر يتصرّف في إسناد نفسه، والخدمةُ تحرس ألّا يمسّ إسناد غيره.
+   */
+  release: workordersExecProcedure
+    .input(z.object({ workOrderId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      releaseWorkOrder(input.workOrderId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      }),
+    ),
 
   /**
    * الخط الزمني للأمر — أحداث حقيقية من سجلّ التدقيق (استلام/بدء/جاهز/تسليم/إلغاء/إسناد).
