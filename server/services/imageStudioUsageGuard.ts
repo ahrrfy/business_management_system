@@ -12,6 +12,7 @@ import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import * as schema from "../../drizzle/schema";
 import { imageStudioUsageDaily, imageStudioUserRateState } from "../../drizzle/schema";
 import { getPool } from "../db";
+import { imageStoreTenantPrefix } from "../lib/imageStore/tenantNamespace";
 import { withTx } from "./tx";
 
 export type ImageStudioService = "REMOVEBG" | "AI";
@@ -62,10 +63,16 @@ function baghdadDay(now = new Date()): string {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
-const SLOT_NAMES = Array.from(
-  { length: MAX_CONCURRENT_CALLS },
-  (_, index) => `alroya:image-studio:slot:${index + 1}`,
-);
+/**
+ * أسماء `GET_LOCK` منطاقُها **خادم MySQL** لا المخطّط، فاسمٌ ثابت يجعل فتحتَي التنفيذ
+ * مشتركةً بين كل قواعد الخادم الواحد: في وضع تعدّد الشركات (أو أيّ نشرٍ يتشارك المثيل)
+ * تحجب شركةٌ الأخرى بالكامل، وتنتظر الثانية حتى مهلة المزوّد قبل أن تُردّ بـBUSY.
+ * التنطيق بالمستأجر يجعل السقف لكل شركة كما هو مقصود.
+ */
+function slotNames(): string[] {
+  const tenant = imageStoreTenantPrefix();
+  return Array.from({ length: MAX_CONCURRENT_CALLS }, (_, index) => `alroya:${tenant}:image-studio:slot:${index + 1}`);
+}
 
 type LockResult = RowDataPacket & { acquired: number | null };
 type ReleaseResult = RowDataPacket & { released: number | null };
@@ -73,7 +80,7 @@ type ReleaseResult = RowDataPacket & { released: number | null };
 async function acquireExecutionSlot(): Promise<{ connection: PoolConnection; name: string }> {
   const connection = await getPool().getConnection();
   try {
-    for (const name of SLOT_NAMES) {
+    for (const name of slotNames()) {
       // الاسم من قائمة ثابتة والمهلة صفر: لا query مبني نصياً ولا عامل ينتظر اتصالاً محجوزاً.
       const [rows] = await connection.execute<LockResult[]>("SELECT GET_LOCK(?, 0) AS acquired", [name]);
       if (Number(rows[0]?.acquired) === 1) return { connection, name };
@@ -147,42 +154,6 @@ async function reserveSharedBudgets(
       requestCount: daily.requestCount + 1,
       lastRequestedAt: now,
     }).where(eq(imageStudioUsageDaily.id, daily.id));
-  });
-}
-
-/**
- * يحجز نداءً واحداً بذرياً. لا توجد عملية «استرداد» بعد بدء الطريق الخارجي: انقطاع الشبكة
- * لا يثبت أبداً أن remove.bg/Gemini لم يتلقّ الطلب أو لم يقتطع الرصيد.
- */
-export async function reserveDailyImageStudioUse(
-  service: ImageStudioService,
-  now = new Date(),
-): Promise<{ usageDate: string; requestCount: number; dailyLimit: number }> {
-  const usageDate = baghdadDay(now);
-  const dailyLimit = IMAGE_STUDIO_DAILY_LIMITS[service];
-
-  return withTx(async (tx) => {
-    // يُنشئ الصف أو يقفل الموجود بلا زيادة؛ الزيادة لا تحدث إلا بعد فحص السقف تحت FOR UPDATE.
-    await tx
-      .insert(imageStudioUsageDaily)
-      .values({ usageDate, service, requestCount: 0, lastRequestedAt: now })
-      .onDuplicateKeyUpdate({ set: { lastRequestedAt: sql`${imageStudioUsageDaily.lastRequestedAt}` } });
-
-    const [current] = await tx
-      .select({ id: imageStudioUsageDaily.id, requestCount: imageStudioUsageDaily.requestCount })
-      .from(imageStudioUsageDaily)
-      .where(and(eq(imageStudioUsageDaily.usageDate, usageDate), eq(imageStudioUsageDaily.service, service)))
-      .for("update");
-
-    const requestCount = current?.requestCount ?? 0;
-    if (!current || requestCount >= dailyLimit) throw new ImageStudioGuardError("DAILY_BUDGET_EXHAUSTED");
-
-    const nextCount = requestCount + 1;
-    await tx
-      .update(imageStudioUsageDaily)
-      .set({ requestCount: nextCount, lastRequestedAt: now })
-      .where(eq(imageStudioUsageDaily.id, current.id));
-    return { usageDate, requestCount: nextCount, dailyLimit };
   });
 }
 

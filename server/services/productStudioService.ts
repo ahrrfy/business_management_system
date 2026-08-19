@@ -52,6 +52,29 @@ function isManager(actor: ProductStudioActor): boolean {
 }
 
 
+/**
+ * فرعُ المُسنَد إليه يجب أن يطابق فرع المُسنِد، وكلاهما يجب أن يكون **معروفاً**.
+ *
+ * كان الفحص `Number(assignee.branchId) !== Number(actor.branchId)` وحده، و`Number(null)`
+ * يساوي صفراً ⇒ مديرٌ بلا فرعٍ يُسنِد إلى موظفٍ بلا فرع فيمرّ الشرط (0 !== 0 كاذب)،
+ * وتُنشأ مهمةٌ بـ`branchId = NULL` لا يراها أحد بعدها: حرّاس الوصول تفشل مغلقةً على
+ * فرعٍ مجهول، فتصير المهمة يتيمةً لا يبلغها إلّا مديرُ النظام.
+ */
+function assertAssignableBranch(actor: ProductStudioActor, assigneeBranchId: number | null): void {
+  // مدير النظام/المالك يعبر الفروع، فمهمةٌ بلا فرعٍ تبقى في متناوله ويعملها بنفسه —
+  // مسارٌ قائمٌ ومقصود. الحظر يخصّ من لا يعبر.
+  if (canCrossBranches(actor)) return;
+  if (actor.branchId == null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لك؛ لا يمكنك إسناد مهام الاستوديو" });
+  }
+  if (assigneeBranchId == null) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف بلا فرع مُسنَد؛ عيّن فرعه قبل إسناد مهام الاستوديو" });
+  }
+  if (Number(assigneeBranchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن الإسناد إلى فرع آخر" });
+  }
+}
+
 function isAdminActor(actor: ProductStudioActor): boolean {
   return actor.role === "admin" || actor.isOwner === true;
 }
@@ -1557,12 +1580,7 @@ export async function assignStudioTask(
         .for("share")
     )[0];
     if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
-    if (!canCrossBranches(actor) && Number(assignee.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يمكن الإسناد إلى فرع آخر",
-      });
-    }
+    assertAssignableBranch(actor, assignee.branchId);
     if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -1759,12 +1777,7 @@ export async function bulkAssignStudioTasks(
         .for("share")
     )[0];
     if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
-    if (!canCrossBranches(actor) && Number(assignee.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "لا يمكن الإسناد إلى فرع آخر",
-      });
-    }
+    assertAssignableBranch(actor, assignee.branchId);
     if (!hasModuleAccess(assignee.role, assignee.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
       throw new TRPCError({
         code: "BAD_REQUEST",
