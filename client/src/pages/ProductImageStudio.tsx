@@ -38,8 +38,17 @@ import {
   type StudioDraft,
   type StudioDraftTaskSnapshot,
 } from "@/lib/productStudio/studioDrafts";
-import { studioOfflineCapabilities } from "@/lib/productStudio/coldOfflinePolicy";
+import {
+  studioOfflineCapabilities,
+  studioOfflineProfileInput,
+} from "@/lib/productStudio/coldOfflinePolicy";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import {
+  getOfflineProfile,
+  saveOfflineProfile,
+  setOfflinePin,
+  type OfflineProfile,
+} from "@/lib/offline/pinLock";
 import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
@@ -269,6 +278,12 @@ export default function ProductImageStudio() {
     null,
   );
   const [resumeRetry, setResumeRetry] = useState(0);
+  const [offlineProfile, setOfflineProfile] = useState<
+    OfflineProfile | null | undefined
+  >(undefined);
+  const [setupPin, setSetupPin] = useState("");
+  const [setupPinError, setSetupPinError] = useState<string | null>(null);
+  const [settingPin, setSettingPin] = useState(false);
   const previousUserId = useRef<number | null>(null);
 
   const utils = trpc.useUtils();
@@ -472,6 +487,32 @@ export default function ProductImageStudio() {
         .catch(() => setColdIdentityUserId(null));
     }
   }, [offline, onlineUserId]);
+
+  useEffect(() => {
+    if (offline || !me.data?.id) return;
+    void saveOfflineProfile(studioOfflineProfileInput(me.data))
+      .then(() => getOfflineProfile())
+      .then(setOfflineProfile)
+      .catch(() => setOfflineProfile(null));
+  }, [offline, me.data]);
+
+  async function configureOfflinePin() {
+    if (settingPin || !setupPin) return;
+    setSettingPin(true);
+    setSetupPinError(null);
+    try {
+      const result = await setOfflinePin(setupPin);
+      if (!result.ok) {
+        setSetupPinError(result.error ?? "تعذّر حفظ رمز PIN");
+        return;
+      }
+      setSetupPin("");
+      setOfflineProfile(await getOfflineProfile());
+      notify.ok("ضُبط رمز PIN لاستعادة مسودات الاستوديو دون اتصال.");
+    } finally {
+      setSettingPin(false);
+    }
+  }
 
   useEffect(() => {
     if (!selected) return;
@@ -727,6 +768,42 @@ export default function ProductImageStudio() {
           <span>{STUDIO_STORAGE_DISABLED_MESSAGE}</span>
         </div>
       )}
+
+      {!offline &&
+        onlineUserId != null &&
+        offlineProfile?.userId === onlineUserId &&
+        !offlineProfile.hasPin && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">تجهيز استعادة المسودة دون اتصال</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-wrap items-end gap-2">
+              <div className="min-w-56 flex-1 space-y-1.5">
+                <Label htmlFor="studio-offline-pin">رمز PIN للجهاز</Label>
+                <Input
+                  id="studio-offline-pin"
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="new-password"
+                  value={setupPin}
+                  onChange={(event) => setSetupPin(event.target.value)}
+                  placeholder="٤ إلى ٨ أرقام"
+                  maxLength={8}
+                />
+                {setupPinError && (
+                  <p className="text-sm text-destructive">{setupPinError}</p>
+                )}
+              </div>
+              <Button
+                className="min-h-11"
+                disabled={settingPin || !setupPin}
+                onClick={() => void configureOfflinePin()}
+              >
+                {settingPin ? "جارٍ الحفظ…" : "تعيين PIN للجهاز"}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
       {offline && offlineDrafts.length > 0 && (
         <Card>

@@ -34,6 +34,42 @@ export function coldOfflineStudioActor({
   return { userId: profile.userId, role: profile.role };
 }
 
+/** يكتب الحقلـات العامة لملف PIN فقط؛ PIN لا ينشأ ولا ينتقل من الجلسة. */
+export function studioOfflineProfileInput(user: {
+  id: number;
+  name: string | null | undefined;
+  email?: string | null;
+  role: string | null | undefined;
+  branchId: number | null | undefined;
+}) {
+  return {
+    id: Number(user.id),
+    name: user.name?.trim() || user.email?.trim() || "",
+    role: user.role ?? "",
+    branchId: user.branchId ?? null,
+  };
+}
+
+/** AppLayout لا يوقف auth.me إلا بعد أن يثبت المسار وPIN وملف جلسة محلي. */
+export function shouldSkipColdStudioAuth({
+  location,
+  offline,
+  pinVerified,
+  localProfile,
+}: {
+  location: string;
+  offline: boolean;
+  pinVerified: boolean;
+  localProfile: { userId: number; role: string } | null;
+}): boolean {
+  return (
+    isColdOfflineStudioRoute(location) &&
+    offline &&
+    pinVerified &&
+    localProfile != null
+  );
+}
+
 /**
  * الفصل بين التحرير المحلي والسلطة البعيدة متعمّد: الهوية المشفرة تساعد في إيجاد
  * المسودة فقط، ولا تسمح بطلب خادم أو مخزن أو مزود AI.

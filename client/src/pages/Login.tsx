@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { translateLoginError } from "@/lib/loginErrors";
+import { saveOfflineProfile } from "@/lib/offline/pinLock";
+import { studioOfflineProfileInput } from "@/lib/productStudio/coldOfflinePolicy";
 import { saveStudioDraftIdentity } from "@/lib/productStudio/studioDrafts";
 import { resetSessionQueryCache } from "@/lib/offline/sessionBoundary";
 import { trpc } from "@/lib/trpc";
@@ -68,6 +70,9 @@ export default function Login() {
     utils.auth.me.setData(undefined, freshMe);
     if (freshMe?.id && (typeof navigator === "undefined" || navigator.onLine)) {
       await saveStudioDraftIdentity(Number(freshMe.id)).catch(() => undefined);
+      await saveOfflineProfile(studioOfflineProfileInput(freshMe)).catch(
+        () => undefined,
+      );
     }
     const role = freshMe?.role;
     // سياسة الدومينَين: الدخول من الدومين العام مقصورٌ فعلياً على المندوب (تطبيقه مبنيّ عليه).

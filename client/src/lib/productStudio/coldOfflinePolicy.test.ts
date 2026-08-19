@@ -3,6 +3,8 @@ import {
   COLD_OFFLINE_STUDIO_PATH,
   isColdOfflineStudioRoute,
   coldOfflineStudioActor,
+  studioOfflineProfileInput,
+  shouldSkipColdStudioAuth,
   studioOfflineCapabilities,
 } from "./coldOfflinePolicy";
 
@@ -62,5 +64,49 @@ describe("cold offline product studio policy", () => {
         draftIdentityUserId: 7,
       }),
     ).toEqual({ userId: 7, role: "print_operator" });
+  });
+
+  it("provisions the existing device profile from an online Studio/login identity without a PIN", () => {
+    expect(
+      studioOfflineProfileInput({
+        id: 7,
+        name: "موظف الصور",
+        email: "studio@example.test",
+        role: "print_operator",
+        branchId: 1,
+      }),
+    ).toEqual({
+      id: 7,
+      name: "موظف الصور",
+      role: "print_operator",
+      branchId: 1,
+    });
+  });
+
+  it("skips AppLayout auth only for a PIN-verified cold Studio session", () => {
+    expect(
+      shouldSkipColdStudioAuth({
+        location: COLD_OFFLINE_STUDIO_PATH,
+        offline: true,
+        pinVerified: true,
+        localProfile: { userId: 7, role: "print_operator" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldSkipColdStudioAuth({
+        location: COLD_OFFLINE_STUDIO_PATH,
+        offline: true,
+        pinVerified: false,
+        localProfile: { userId: 7, role: "print_operator" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldSkipColdStudioAuth({
+        location: "/inventory",
+        offline: true,
+        pinVerified: true,
+        localProfile: { userId: 7, role: "print_operator" },
+      }),
+    ).toBe(false);
   });
 });

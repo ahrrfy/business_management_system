@@ -45,3 +45,10 @@
 - Opening a local Studio draft requires a successful device PIN in the current reload, a PIN-enabled local profile, a matching encrypted draft-identity `userId`, and an allowed local Studio role. The encrypted identity alone never authorizes access.
 - The verified local actor is memory-only and is used solely for the exact cold Studio route; all tRPC queries, server mutations, storage/provider actions, refresh, and scanner calls remain disabled while offline.
 - Focused suite now covers 20 assertions, including no-PIN, wrong-user, wrong-role, and valid PIN/profile/identity combinations.
+
+## Studio PIN provisioning and cold shell
+
+- A successful online login and an online Studio visit both refresh the existing device profile with user ID, name, role, and branch only. They never generate or store a PIN.
+- Studio now presents a small explicit 4–8 digit PIN setup card whenever that authenticated device profile has no PIN, allowing staff who never opened POS to enable cold draft recovery.
+- During a verified cold Studio session, AppLayout disables `auth.me` and its dependent count query, uses the local profile only for display, hides normal navigation, and disables account/logout navigation. No remote call is introduced.
+- Focused suite now covers 22 assertions, including profile provisioning and the cold AppLayout auth-disable contract.
