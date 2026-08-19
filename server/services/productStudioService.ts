@@ -17,6 +17,7 @@ import { resolveCompanyById } from "../tenancy/registry";
 import { evaluateStagingRetention, loadR2GcDeletionAuthorization, resolveR2GcMode } from "../lib/imageStore/r2RetentionPolicy";
 import { studioObjectRoot } from "../lib/imageStore/tenantNamespace";
 import { utcDayStart, utcNextDayStart } from "./businessDay";
+import { reserveStudioSubmitQuotaInTx, studioPayloadBytes } from "./productStudioSubmitQuota";
 import { createAppNotification } from "./appNotificationService";
 
 const MAX_STUDIO_THUMBNAIL_BYTES = 128 * 1024;
@@ -2072,6 +2073,9 @@ export async function submitStudioCandidate(
         message: "المعالجة عبر المزود قيد التنفيذ؛ لا يمكن إرسال نسخة أقدم",
       });
     }
+    // الحجز قبل الرفع وداخل معاملة الحجز نفسها: لا يُكتب بايتٌ في المخزن قبل إثبات رصيده.
+    // كان هذا المسار المجّاني بلا سقفٍ إطلاقاً بينما يكتب كائنَين لا يُستبدَلان ولا يُستردّان.
+    await reserveStudioSubmitQuotaInTx(tx, actor.userId, studioPayloadBytes(input.processedDataUrl, input.thumbnailDataUrl, task.originalObjectKey ? null : input.originalDataUrl));
     await tx
       .update(productImageJobs)
       .set({

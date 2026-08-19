@@ -1978,6 +1978,58 @@ describe("product studio governed workflow", () => {
     expect((await db().select().from(s.productStudioCampaigns).where(eq(s.productStudioCampaigns.id, second.campaignId)))[0]).toMatchObject({ status: "CANCELLED" });
   });
 
+  it("يوقف الإرسال عند بلوغ سقف العدد اليوميّ للمنفّذ", async () => {
+    const previous = process.env.PRODUCT_STUDIO_SUBMIT_DAILY_LIMIT;
+    process.env.PRODUCT_STUDIO_SUBMIT_DAILY_LIMIT = "2";
+    try {
+      const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+      await submitStudioCandidate(worker, { taskId: task.taskId, originalDataUrl: PNG_1X1_ALT, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+      await rejectStudioTask(manager, task.taskId, "أعد المحاولة بخلفية أوضح");
+      await submitStudioCandidate(worker, { taskId: task.taskId, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+      await rejectStudioTask(manager, task.taskId, "أعد المحاولة مرة أخرى");
+
+      // الثالث يتجاوز السقف ⇒ يُرفض **قبل** أي كتابة في المخزن.
+      await expect(submitStudioCandidate(worker, { taskId: task.taskId, processedDataUrl: PNG_1X1, mode: "FLATTEN" })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+
+      const [quota] = await db().select().from(s.productStudioSubmitQuota).where(eq(s.productStudioSubmitQuota.userId, worker.userId));
+      expect(quota).toMatchObject({ submitCount: 2 });
+      expect(Number(quota!.bytesWritten)).toBeGreaterThan(0);
+
+      // السقف لكل منفّذ لا للشركة: زميلٌ آخر لا يتأثر برصيد غيره.
+      const otherTask = await assignStudioTask(manager, { productId: 2, assigneeId: otherWorker.userId });
+      await expect(submitStudioCandidate(otherWorker, { taskId: otherTask.taskId, originalDataUrl: PNG_1X1_ALT, processedDataUrl: PNG_1X1, mode: "FLATTEN" })).resolves.toMatchObject({ ok: true });
+
+      // ولم تُترك حجزُ رفعٍ معلّقة على المهمة المرفوضة.
+      const [blocked] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, task.taskId));
+      expect(blocked).toMatchObject({ uploadLeaseToken: null, status: "REJECTED" });
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_STUDIO_SUBMIT_DAILY_LIMIT;
+      else process.env.PRODUCT_STUDIO_SUBMIT_DAILY_LIMIT = previous;
+    }
+  });
+
+  it("يوقف الإرسال عند بلوغ سقف الحجم اليوميّ ولو بقي العدد متاحاً", async () => {
+    const previousMb = process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB;
+    // أصغر سقف ممكن (١ ميغابايت) مع رصيدٍ مستهلكٍ سلفاً: الحجم يمنع وحده.
+    process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB = "1";
+    try {
+      await db().insert(s.productStudioSubmitQuota).values({
+        usageDate: new Date().toISOString().slice(0, 10),
+        userId: worker.userId,
+        submitCount: 1,
+        bytesWritten: 1024 * 1024,
+      });
+      const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+      await expect(submitStudioCandidate(worker, { taskId: task.taskId, originalDataUrl: PNG_1X1_ALT, processedDataUrl: PNG_1X1, mode: "FLATTEN" })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+      // العدد لم يبلغ سقفه (١ من ٢٠٠) — المانع هو الحجم، والرصيد لم يُستهلك بالمحاولة المرفوضة.
+      const [quota] = await db().select().from(s.productStudioSubmitQuota).where(eq(s.productStudioSubmitQuota.userId, worker.userId));
+      expect(quota).toMatchObject({ submitCount: 1 });
+    } finally {
+      if (previousMb === undefined) delete process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB;
+      else process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB = previousMb;
+    }
+  });
+
   it("يعزل الإلغاء الجماعي بالفرع", async () => {
     const campaign = await createStudioCampaign(manager, { name: "حملة فرع واحد", status: "ACTIVE" });
     await expect(bulkCancelStudioBacklog(managerTwo, { campaignId: campaign.campaignId, reason: "محاولة من فرعٍ آخر" })).rejects.toMatchObject({ code: "FORBIDDEN" });

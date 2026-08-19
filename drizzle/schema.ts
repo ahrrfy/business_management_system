@@ -3407,6 +3407,33 @@ export type ProductImageJob = typeof productImageJobs.$inferSelect;
 export type InsertProductImageJob = typeof productImageJobs.$inferInsert;
 
 /** سجل ثابت المفتاح لكنس كائنات الرفع التي لم تُربط بصف DB بعد فشل/انقطاع. */
+/**
+ * سقف الإرسال اليوميّ لكل منفّذ في استوديو المنتجات.
+ *
+ * حارس الاستهلاك القائم يغطّي المزوّدين المدفوعين وحدهم؛ ومسار الإرسال المجّاني
+ * (FLATTEN/CUT) كان بلا أيّ سقف: كل إرسال يكتب حتى كائنَين معنونَين بمحتواهما — لا
+ * يُستبدَلان أبداً ولا يُستردّان (الكنس معطَّل افتراضياً) — فسقفه الوحيد كان محدّد
+ * المعدّل العامّ للـIP.
+ *
+ * العدّ بالبايتات لا بعدد النداءات وحده: الكلفة تخزينٌ لا استدعاء.
+ */
+export const productStudioSubmitQuota = mysqlTable(
+  "productStudioSubmitQuota",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** يوم UTC — نفس حدّ اليوم المعتمد في هذه الوحدة (businessDay). */
+    usageDate: date("usageDate", { mode: "string" }).notNull(),
+    userId: int("userId").notNull().references(() => users.id),
+    submitCount: int("submitCount").default(0).notNull(),
+    bytesWritten: bigint("bytesWritten", { mode: "number" }).default(0).notNull(),
+    lastSubmittedAt: timestamp("lastSubmittedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userDayUq: unique("uq_pssq_user_day").on(table.usageDate, table.userId),
+  }),
+);
+
 export const productImageObjectStaging = mysqlTable(
   "productImageObjectStaging",
   {
