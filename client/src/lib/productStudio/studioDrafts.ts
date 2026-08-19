@@ -4,6 +4,7 @@ import {
   type EncryptedEnvelope,
 } from "@/lib/offline/crypto";
 import { offlineDb } from "@/lib/offline/db";
+import Dexie from "dexie";
 
 export const STUDIO_DRAFT_TTL_MS = 24 * 60 * 60 * 1_000;
 export const STUDIO_DRAFT_RESUME_LEASE_MS = 60_000;
@@ -63,6 +64,8 @@ export interface StudioDraftPersistence {
   put(row: StudioDraftRecord): Promise<unknown>;
   delete(id: string): Promise<unknown>;
   entries(): Promise<StudioDraftRecord[]>;
+  /** يضم القراءة والتحقق والكتابة في معاملة واحدة لمنع تبويبين من claim واحد. */
+  readwrite<T>(work: () => Promise<T>): Promise<T>;
 }
 
 interface StudioDraftStoreOptions {
@@ -77,7 +80,7 @@ interface StudioDraftStoreOptions {
 export type StudioDraftReconciliation =
   | { kind: "NONE" }
   | { kind: "RESUME"; draft: StudioDraft }
-  | { kind: "ALREADY_RESUMED"; draft: StudioDraft }
+  | { kind: "ALREADY_RESUMED"; draft: StudioDraft; retryAt: number }
   | { kind: "CONFLICT"; draft: StudioDraft };
 
 const STUDIO_DRAFT_INDEX_KEY = "studio-draft-index-hmac";
@@ -276,28 +279,35 @@ export function createStudioDraftStore(options: StudioDraftStoreOptions) {
       revision: string | null;
       editable: boolean;
     }): Promise<StudioDraftReconciliation> {
-      const draft = await load(context.userId, context.taskId);
-      if (!draft) return { kind: "NONE" };
-      if (
-        !context.taskFound ||
-        !context.editable ||
-        draft.revision !== context.revision
-      )
-        return { kind: "CONFLICT", draft };
-      if (draft.resumeLease && draft.resumeLease.expiresAt > now())
-        return { kind: "ALREADY_RESUMED", draft };
-      const claimed = {
-        ...draft,
-        resumeLease: {
-          sessionId,
-          expiresAt: now() + STUDIO_DRAFT_RESUME_LEASE_MS,
-        },
-      };
-      await options.persistence.put({
-        id: await idFor(context.userId, context.taskId),
-        envelope: await encrypt(claimed),
+      const id = await idFor(context.userId, context.taskId);
+      return options.persistence.readwrite(async () => {
+        const row = await options.persistence.get(id);
+        if (!row) return { kind: "NONE" };
+        const draft = await readRow(row, now());
+        if (!draft || draft.userId !== context.userId || draft.taskId !== context.taskId)
+          return { kind: "NONE" };
+        if (
+          !context.taskFound ||
+          !context.editable ||
+          draft.revision !== context.revision
+        )
+          return { kind: "CONFLICT", draft };
+        if (draft.resumeLease && draft.resumeLease.expiresAt > now())
+          return {
+            kind: "ALREADY_RESUMED",
+            draft,
+            retryAt: draft.resumeLease.expiresAt,
+          };
+        const claimed = {
+          ...draft,
+          resumeLease: {
+            sessionId,
+            expiresAt: now() + STUDIO_DRAFT_RESUME_LEASE_MS,
+          },
+        };
+        await options.persistence.put({ id, envelope: await encrypt(claimed) });
+        return { kind: "RESUME", draft: claimed };
       });
-      return { kind: "RESUME", draft: claimed };
     },
   };
 }
@@ -351,6 +361,10 @@ const indexedDbPersistence: StudioDraftPersistence = {
   put: (row) => offlineDb.studioDrafts.put(row),
   delete: (id) => offlineDb.studioDrafts.delete(id),
   entries: () => offlineDb.studioDrafts.toArray(),
+  readwrite: (work) =>
+    offlineDb.transaction("rw", offlineDb.studioDrafts, () =>
+      Dexie.waitFor(work()),
+    ),
 };
 
 const indexedDbIdentityPersistence: StudioDraftIdentityStoreOptions["persistence"] =

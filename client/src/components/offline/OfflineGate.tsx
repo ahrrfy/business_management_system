@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { useConnectivity } from "@/lib/offline/connectivity";
+import { isColdOfflineStudioRoute } from "@/lib/productStudio/coldOfflinePolicy";
 import {
   getOfflineProfile,
   isOfflineUnlocked,
@@ -62,6 +63,9 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
   useEffect(() => {
     void getOfflineProfile().then((p) => setProfile(p ?? null));
   }, []);
+
+  // استثناء ضيّق: مسودة Studio المشفّرة محلياً لا تحتاج PIN الكاشير ولا سلطة خادم.
+  if (isColdOfflineStudioRoute(loc)) return <>{children}</>;
 
   if (unlocked) {
     // مفتوح: الكاشير فقط — أي مسار آخر يُدَلّ على نقطة البيع بدل شاشات ستفشل استعلاماتها حتماً.
@@ -148,13 +152,19 @@ export function OfflineBootGate({ onRetry, children }: { onRetry: () => void; ch
  * بياناتها المعروضة — الشريط العلوي يكفي إعلاماً.
  * التنفيذ مزلاج أحادي الاتجاه: يُفتح عند أول لحظة اتصال ويبقى مفتوحاً (انقطاع لاحق لا يُخفي الشاشة).
  */
-export function OnlineGate({ children }: { children: React.ReactNode }) {
+export function OnlineGate({
+  children,
+  allowColdOffline = false,
+}: {
+  children: React.ReactNode;
+  allowColdOffline?: boolean;
+}) {
   const state = useConnectivity();
   const [unblocked, setUnblocked] = useState(state === "online" || state === "syncing");
   useEffect(() => {
     if (state === "online" || state === "syncing") setUnblocked(true);
   }, [state]);
-  if (!unblocked) {
+  if (!unblocked && !allowColdOffline) {
     return (
       <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 p-6 text-center">
         <WifiOff aria-hidden className="size-10 text-muted-foreground" />

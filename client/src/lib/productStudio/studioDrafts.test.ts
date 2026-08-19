@@ -11,6 +11,7 @@ function memoryPersistence(): StudioDraftPersistence & {
   rows: Map<string, StudioDraftRecord>;
 } {
   const rows = new Map<string, StudioDraftRecord>();
+  let transaction = Promise.resolve();
   return {
     rows,
     get: async (id) => rows.get(id),
@@ -21,6 +22,14 @@ function memoryPersistence(): StudioDraftPersistence & {
       rows.delete(id);
     },
     entries: async () => [...rows.values()],
+    readwrite: async (work) => {
+      const next = transaction.then(work, work);
+      transaction = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    },
   };
 }
 
@@ -52,6 +61,7 @@ async function makeHarness(now = 1_000) {
       identityRows.delete(id);
     },
     entries: async () => [...identityRows.values()],
+    readwrite: async (work) => work(),
   };
   const createIdentity = () =>
     createStudioDraftIdentityStore({
@@ -169,13 +179,37 @@ describe("encrypted studio drafts", () => {
       editable: true,
     };
     expect((await store.reconcileAndClaimResume(context)).kind).toBe("RESUME");
-    expect((await create().reconcileAndClaimResume(context)).kind).toBe(
-      "ALREADY_RESUMED",
-    );
+    const blocked = await create().reconcileAndClaimResume(context);
+    expect(blocked).toMatchObject({
+      kind: "ALREADY_RESUMED",
+      retryAt: 1_000 + 60_000,
+    });
     advance(60_001);
     expect((await create().reconcileAndClaimResume(context)).kind).toBe(
       "RESUME",
     );
+  });
+
+  it("grants a resume lease to only one of two concurrent tabs", async () => {
+    const { create, store } = await makeHarness();
+    await store.save(input);
+    const context = {
+      userId: input.userId,
+      taskId: input.taskId,
+      taskFound: true,
+      revision: input.revision,
+      editable: true,
+    };
+
+    const outcomes = await Promise.all([
+      create().reconcileAndClaimResume(context),
+      create().reconcileAndClaimResume(context),
+    ]);
+
+    expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual([
+      "ALREADY_RESUMED",
+      "RESUME",
+    ]);
   });
 
   it("does not erase a durable resume claim during an unchanged autosave", async () => {

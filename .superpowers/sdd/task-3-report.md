@@ -31,3 +31,10 @@
 - Drafts now contain a non-sensitive encrypted task snapshot, so a cold offline editor has an effective selected task without a TanStack task cache.
 - Added encrypted, device-bound studio identity metadata. The successful online login path records it; logout/session reset clears it. It is used only to find the local owner's drafts and never authorizes an online operation.
 - Focused suite now covers 11 cases, including lease retry and cold offline identity + full task snapshot recovery.
+
+## Atomic lease and cold-route hardening
+
+- Resume claims now execute inside one IndexedDB read/write transaction, held across WebCrypto work with `Dexie.waitFor`; two concurrent tabs produce one `RESUME` and one `ALREADY_RESUMED` result.
+- An occupied lease returns its precise retry time and the Studio page schedules one retry after expiry. The atomic transaction remains the authority, so the retry cannot duplicate a concurrent claim.
+- Only `/catalog/image-studio` is allowed through the cold-offline boot and online gates. Its encrypted local draft editor remains available without dashboard/auth query data, while remote queries, server mutations, storage, providers, refresh, and scanner actions stay disabled.
+- Focused suite now covers 19 assertions across atomic tabs, cold-route policy, local-only capability, and mobile Studio contracts.

@@ -38,6 +38,7 @@ import {
   type StudioDraft,
   type StudioDraftTaskSnapshot,
 } from "@/lib/productStudio/studioDrafts";
+import { studioOfflineCapabilities } from "@/lib/productStudio/coldOfflinePolicy";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -267,6 +268,7 @@ export default function ProductImageStudio() {
   const [coldIdentityUserId, setColdIdentityUserId] = useState<number | null>(
     null,
   );
+  const [resumeRetry, setResumeRetry] = useState(0);
   const previousUserId = useRef<number | null>(null);
 
   const utils = trpc.useUtils();
@@ -274,15 +276,23 @@ export default function ProductImageStudio() {
   const offline =
     isDisconnected(connectivity) ||
     (typeof navigator !== "undefined" && !navigator.onLine);
-  const dashboard = trpc.productStudio.dashboard.useQuery();
-  const me = trpc.auth.me.useQuery();
-  const tasks = trpc.productStudio.tasks.useQuery({ scope, limit: 100 });
+  const dashboard = trpc.productStudio.dashboard.useQuery(undefined, {
+    enabled: !offline,
+  });
+  const me = trpc.auth.me.useQuery(undefined, { enabled: !offline });
+  const tasks = trpc.productStudio.tasks.useQuery(
+    { scope, limit: 100 },
+    { enabled: !offline },
+  );
   const productImages = trpc.productStudio.productImages.useQuery(
     { productId: Number(productId) || 0 },
-    { enabled: Boolean(productId) && dashboard.data?.canManage === true },
+    {
+      enabled:
+        !offline && Boolean(productId) && dashboard.data?.canManage === true,
+    },
   );
   const assignees = trpc.productStudio.assignees.useQuery(undefined, {
-    enabled: dashboard.data?.canManage === true,
+    enabled: !offline && dashboard.data?.canManage === true,
   });
   const onlineSelected =
     tasks.data?.find((task) => Number(task.id) === selectedId) ?? null;
@@ -376,6 +386,7 @@ export default function ProductImageStudio() {
   );
 
   async function refresh() {
+    if (offline) return;
     await Promise.all([
       utils.productStudio.dashboard.invalidate(),
       utils.productStudio.tasks.invalidate(),
@@ -518,6 +529,7 @@ export default function ProductImageStudio() {
     if (!selectedId || !authenticatedUserId) return;
     const taskId = Number(selected?.id ?? selectedId);
     let cancelled = false;
+    let retryTimer: number | undefined;
     void (async () => {
       try {
         if (offline) {
@@ -539,6 +551,12 @@ export default function ProductImageStudio() {
         });
         if (cancelled) return;
         if (result.kind === "RESUME") applyLocalDraft(result.draft);
+        if (result.kind === "ALREADY_RESUMED") {
+          retryTimer = window.setTimeout(
+            () => setResumeRetry((attempt) => attempt + 1),
+            Math.max(0, result.retryAt - Date.now()) + 25,
+          );
+        }
         if (result.kind === "CONFLICT") setDraftConflict(true);
       } catch {
         // IndexedDB is best-effort; a local failure must not block the online editor.
@@ -548,6 +566,7 @@ export default function ProductImageStudio() {
     })();
     return () => {
       cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
     };
   }, [
     authenticatedUserId,
@@ -555,6 +574,7 @@ export default function ProductImageStudio() {
     offline,
     selectedId,
     selectedRevision,
+    resumeRetry,
   ]);
 
   useEffect(() => {
@@ -618,6 +638,7 @@ export default function ProductImageStudio() {
   }
 
   async function selectScannedOwnedTask(barcode: string) {
+    if (offline) return;
     setTaskScannerOpen(false);
     try {
       const product = await utils.productStudio.resolveBarcode.fetch({
@@ -635,7 +656,7 @@ export default function ProductImageStudio() {
   }
 
   async function submitForReview() {
-    if (!selected || !images[0]?.dataUrl) return;
+    if (offline || !selected || !images[0]?.dataUrl) return;
     setIsPreparingThumbnail(true);
     try {
       const thumbnailDataUrl = await createProductWebpThumbnail(
@@ -671,9 +692,12 @@ export default function ProductImageStudio() {
     approve.isPending ||
     reject.isPending ||
     revert.isPending;
-  const storageActionsDisabled = isStudioStorageActionDisabled(
-    dashboard.data?.storageReady,
-  );
+  const capabilities = studioOfflineCapabilities({
+    offline,
+    storageReady: dashboard.data?.storageReady,
+  });
+  const storageActionsDisabled = !capabilities.canUseProviderOrStorage;
+  const localEditingDisabled = !editable || !capabilities.canEditLocalDraft;
   const mobilePanel = mobileStudioPanel(selected ? Number(selected.id) : null);
 
   return (
@@ -683,7 +707,12 @@ export default function ProductImageStudio() {
         description="مركز مستقل للصور والمحتوى: إسناد، تنفيذ، مراجعة، واعتماد. لا يعرض أسعاراً أو تكلفة أو مخزوناً."
         icon={<Image aria-hidden className="size-6" />}
         actions={
-          <Button variant="outline" size="sm" onClick={() => refresh()}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!capabilities.canCallServer}
+            onClick={() => refresh()}
+          >
             <RefreshCw aria-hidden className="size-4" /> تحديث
           </Button>
         }
@@ -957,8 +986,7 @@ export default function ProductImageStudio() {
                         className="-mr-2 min-h-11 self-start lg:hidden"
                         onClick={() => setSelectedId(null)}
                       >
-                        <ChevronRight aria-hidden className="size-4" /> عودة إلى
-                        المهام
+                        <ChevronRight aria-hidden className="size-4" /> عودة إلى المهام
                       </Button>
                       <CardTitle className="flex items-center justify-between gap-2 text-base">
                         <span>{selected.productName}</span>
@@ -974,7 +1002,7 @@ export default function ProductImageStudio() {
                           id="studio-name"
                           value={name}
                           onChange={(event) => setName(event.target.value)}
-                          disabled={!editable || storageActionsDisabled}
+                          disabled={localEditingDisabled}
                           maxLength={255}
                         />
                       </div>
@@ -1019,7 +1047,7 @@ export default function ProductImageStudio() {
                     </div>
                   )}
 
-                  {editable && !storageActionsDisabled && (
+                  {editable && capabilities.canEditLocalDraft && (
                     <>
                       <ProductMediaContentSection
                         title="تنفيذ المهمة — الصور والمحتوى"
@@ -1245,6 +1273,7 @@ export default function ProductImageStudio() {
           <Button
             type="button"
             className="fixed bottom-24 end-4 z-30 min-h-11 rounded-full px-4 shadow-lg lg:hidden"
+            disabled={offline}
             onClick={() => setTaskScannerOpen(true)}
           >
             <ScanLine aria-hidden className="size-4" /> مسح مهمة
