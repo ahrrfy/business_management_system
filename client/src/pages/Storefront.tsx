@@ -1090,9 +1090,15 @@ export default function Storefront() {
       stockLeft: product.stockLeft,
     };
   }, [detailQ.data, detailVariant, selectedStoreUnitId]);
+  const customizationPreviewMode = import.meta.env.DEV && new URLSearchParams(window.location.search).get("preview") === "customization";
   const customizationConfig = useMemo(
-    () => detailQ.data ? getStorefrontCustomizationConfig(detailQ.data.isCustomizable === true, detailQ.data.customizationKind) : null,
-    [detailQ.data],
+    () => detailQ.data
+      ? getStorefrontCustomizationConfig(
+          detailQ.data.isCustomizable === true || (customizationPreviewMode && detailQ.data.category === "المطبوعات التجارية"),
+          detailQ.data.customizationKind ?? (customizationPreviewMode && detailQ.data.category === "المطبوعات التجارية" ? "PRINT" : null),
+        )
+      : null,
+    [detailQ.data, customizationPreviewMode],
   );
   const customizationValidation = useMemo(() => {
     if (!customizationConfig) return null;
