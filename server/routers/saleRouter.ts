@@ -1,5 +1,6 @@
+import { INVOICE_CHANNELS } from "@shared/invoiceChannel";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, not, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
@@ -213,6 +214,8 @@ const salesListInput = z
     to: ymd.optional(),
     status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED", "SUPERSEDED"]).optional(),
     sourceType: z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]).optional(),
+    /** قناة الإصدار — مرآة `INVOICE_CHANNELS` المشتركة (المحطّة لا المصدر الخام). */
+    channel: z.enum(INVOICE_CHANNELS).optional(),
     balanceState: z.enum(["DEPOSIT_DUE", "OUTSTANDING", "UNPAID", "SETTLED"]).optional(),
     customerId: z.number().int().positive().optional(),
     salespersonId: z.number().int().positive().optional(),
@@ -290,6 +293,34 @@ export function buildSalesListConds(
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
   if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
+  // فلتر القناة (١٩/٨) — مرآة `deriveInvoiceChannel` المشتركة حرفيّاً. يُطبّق خادميّاً
+  // لا في الصفحة وحدها، وإلّا كذب العدّاد والمجاميع (يرشّح ما في الصفحة لا ما في المدى).
+  if (input?.channel) {
+    const workOrderSourced = inArray(invoices.sourceType, ["WORKORDER", "ORDER"]);
+    switch (input.channel) {
+      case "RECEPTION":
+        conds.push(or(workOrderSourced, eq(shifts.shiftType, "RECEPTION"))!);
+        break;
+      case "PRINT":
+        // أمر الشغل استقبالٌ مهما كانت وردية مُسلّمه — مطابقةً للاشتقاق المشترك.
+        conds.push(and(not(workOrderSourced), eq(shifts.shiftType, "PRINT_SERVICES"))!);
+        break;
+      case "STORE":
+        conds.push(eq(invoices.sourceType, "ONLINE"));
+        break;
+      case "RETAIL":
+        conds.push(
+          and(
+            eq(invoices.sourceType, "POS"),
+            or(isNull(shifts.shiftType), eq(shifts.shiftType, "RETAIL"))!,
+          )!,
+        );
+        break;
+      default:
+        // OTHER: ليس POS ولا أمر شغل ولا متجراً.
+        conds.push(not(inArray(invoices.sourceType, ["POS", "ONLINE", "WORKORDER", "ORDER"])));
+    }
+  }
   if (input?.paymentMethod)
     conds.push(
       input.paymentMethod === "NONE"
@@ -836,6 +867,17 @@ export const saleRouter = router({
             customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
+            // قناة الفاتورة (١٩/٨): `sourceType` وحده لا يميّز الكاشيرات الثلاثة (كلّها POS).
+            // والـ`leftJoin(shifts)` قائمٌ أصلاً لعزل النطاق ⤇ القناة مجّانية بلا عمود.
+            shiftType: shifts.shiftType,
+            // رقم أمر الشغل: الـjoin قائمٌ والبحث يطابقه (سطر ٣٤٧)، لكنّه **لم يُسقَط قطّ**
+            // ⤇ الموظّف يبحث بالرقم فيجد الفاتورة ولا يرى في الصفّ ما يربطها بأمره.
+            workOrderId: workOrders.id,
+            workOrderNumber: workOrders.orderNumber,
+            // شارة التصحيح في القائمة (طلب المالك ١٧/٨): كانت تُعاد في `get` وحدها
+            // ⤇ فاتورةٌ مُستبدَلة تبدو في القائمة كأيّ غيرها.
+            correctionOfInvoiceId: invoices.correctionOfInvoiceId,
+            correctedByInvoiceId: invoices.correctedByInvoiceId,
             deviceId: invoices.posDeviceId,
             // التوصيل (٩/٨): شارة «توصيل — بيد فلان» وفلترها في شاشة الفواتير. صفّ واحد كحدّ
             // أقصى لكل فاتورة (uq_consignment_invoice) ⇒ لا مضاعفة صفوف.
@@ -898,6 +940,17 @@ export const saleRouter = router({
             customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
+            // قناة الفاتورة (١٩/٨): `sourceType` وحده لا يميّز الكاشيرات الثلاثة (كلّها POS).
+            // والـ`leftJoin(shifts)` قائمٌ أصلاً لعزل النطاق ⤇ القناة مجّانية بلا عمود.
+            shiftType: shifts.shiftType,
+            // رقم أمر الشغل: الـjoin قائمٌ والبحث يطابقه (سطر ٣٤٧)، لكنّه **لم يُسقَط قطّ**
+            // ⤇ الموظّف يبحث بالرقم فيجد الفاتورة ولا يرى في الصفّ ما يربطها بأمره.
+            workOrderId: workOrders.id,
+            workOrderNumber: workOrders.orderNumber,
+            // شارة التصحيح في القائمة (طلب المالك ١٧/٨): كانت تُعاد في `get` وحدها
+            // ⤇ فاتورةٌ مُستبدَلة تبدو في القائمة كأيّ غيرها.
+            correctionOfInvoiceId: invoices.correctionOfInvoiceId,
+            correctedByInvoiceId: invoices.correctedByInvoiceId,
             deviceId: invoices.posDeviceId,
             // التوصيل (٩/٨) — مرآة list حرفياً (نفس الشروط تتطلّب نفس الـjoin).
             consignmentId: deliveryConsignments.id,

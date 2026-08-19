@@ -17,6 +17,7 @@
  *  · النقد يخرج من **وردية المنفّذ المفتوحة** افتراضاً، أو يختار وردية مفتوحة أخرى صراحةً.
  *  · الردّ بالبطاقة يُنفَّذ على الجهاز ثمّ يُوثَّق بمرجعه (إثباتٌ لا إقفال).
  */
+import { shiftTypeLabel } from "@/lib/labels";
 import { AlertTriangle, CreditCard, Info, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { LoadingState } from "@/components/PageState";
@@ -39,9 +40,6 @@ const RAIL_HINT: Record<RefundRail, string> = {
   CARD: "نفّذ الاسترداد على جهاز الدفع ثمّ أدخِل مرجع العملية",
 };
 
-function shiftTypeLabel(t: string): string {
-  return t === "RECEPTION" ? "استقبال" : t === "PRINT_SERVICES" ? "خدمات طباعة" : "تجزئة";
-}
 
 /** «٢ درزن (٢٤ قطعة)» — وللوحدة الأساس أو الكسور: «٢٤ قطعة». */
 function unitsLabel(base: number, factor: number, unitName: string): string {

@@ -1,3 +1,5 @@
+import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
+import { shiftTypeLabel, sourceTypeLabel } from "@/lib/labels";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -80,12 +82,6 @@ const STATUS_CLS: Record<string, string> = {
   RETURNED: "bg-rose-100 text-rose-700",
   CANCELLED: "bg-rose-100 text-rose-700",
   SUPERSEDED: "badge-status-cancelled",
-};
-const SOURCE: Record<string, string> = {
-  POS: "نقطة بيع",
-  ONLINE: "أونلاين",
-  ORDER: "طلب",
-  WORKORDER: "طلب خدمة",
 };
 // METHOD_LABEL / METHODS → مستوردة من lib/paymentMethod.ts (مصدر واحد مع POS + Invoices + حوار الوردية).
 const PAY_STATUS: Record<string, string> = {
@@ -767,14 +763,17 @@ export default function InvoiceDetail() {
           <div className="grid gap-5 md:grid-cols-3">
             {/* البيانات الوصفية */}
             <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
-              <Field label="المصدر">
-                {SOURCE[data.sourceType] ?? data.sourceType}
+              <Field label="القناة">
+                <span className="inline-flex items-center gap-1.5">
+                  <InvoiceChannelBadge row={data} />
+                  <span className="text-xs text-muted-foreground">{sourceTypeLabel(data.sourceType)}</span>
+                </span>
               </Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
               <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
               <Field label="الوردية">
                 {data.shiftId
-                  ? `#${data.shiftId} — ${data.shiftType ?? "—"}`
+                  ? `#${data.shiftId} — ${shiftTypeLabel(data.shiftType)}`
                   : "—"}
               </Field>
               <Field label="محطة البيع">

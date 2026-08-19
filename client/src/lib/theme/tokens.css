@@ -61,6 +61,13 @@
   --sem-neg: oklch(0.530 0.170 27);   --sem-neg-bg: oklch(0.955 0.022 27);
   --sem-warn: oklch(0.520 0.110 80);  --sem-warn-bg: oklch(0.958 0.038 80);
   --sem-info: oklch(0.505 0.120 240); --sem-info-bg: oklch(0.955 0.024 240);
+  /* قناة الفاتورة (١٩/٨) — **هويّة لا حالة**: تَدرجٌ خفيفة تُميّز المحطّة بلا أن
+     تُزاحم ألوان الحالة (sem-*) التي تحمل الإنذار والمال — التشبّع أدنى عمداً. */
+  --chan-retail: oklch(0.480 0.075 262);   --chan-retail-bg: oklch(0.960 0.020 262);
+  --chan-reception: oklch(0.480 0.075 300); --chan-reception-bg: oklch(0.960 0.020 300);
+  --chan-print: oklch(0.480 0.075 190);    --chan-print-bg: oklch(0.960 0.020 190);
+  --chan-store: oklch(0.480 0.075 145);    --chan-store-bg: oklch(0.960 0.020 145);
+  --chan-other: oklch(0.500 0.010 260);    --chan-other-bg: oklch(0.958 0.004 260);
   /* لَوحة POS — مَربوطة بـtokens لِإلغاء MutationObserver */
   --pos-bg: oklch(0.958 0.010 82);
   --pos-card: oklch(0.976 0.006 82);
@@ -134,6 +141,11 @@
   --sem-neg: oklch(0.725 0.150 27);   --sem-neg-bg: oklch(0.315 0.058 27);
   --sem-warn: oklch(0.800 0.130 80);  --sem-warn-bg: oklch(0.315 0.050 80);
   --sem-info: oklch(0.740 0.100 240); --sem-info-bg: oklch(0.300 0.045 240);
+  --chan-retail: oklch(0.760 0.070 262);   --chan-retail-bg: oklch(0.290 0.035 262);
+  --chan-reception: oklch(0.760 0.070 300); --chan-reception-bg: oklch(0.290 0.035 300);
+  --chan-print: oklch(0.760 0.070 190);    --chan-print-bg: oklch(0.290 0.035 190);
+  --chan-store: oklch(0.760 0.070 145);    --chan-store-bg: oklch(0.290 0.035 145);
+  --chan-other: oklch(0.740 0.010 260);    --chan-other-bg: oklch(0.285 0.005 260);
   --pos-bg: #010409;
   --pos-card: #0d1117;
   --pos-border: #21262d;
