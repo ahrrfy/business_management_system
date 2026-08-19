@@ -1502,13 +1502,14 @@ export default function Storefront() {
       {/* تفاصيل المنتج (ورقة سفلية) */}
       {selectedId != null && (
         <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/50 backdrop-blur-sm sm:items-center sm:p-4" onClick={() => setSelectedId(null)}>
-          <div className="max-h-[100dvh] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-4 pb-[calc(2rem+env(safe-area-inset-bottom))] shadow-2xl dark:bg-slate-900 sm:max-h-[calc(100dvh-2rem)] sm:rounded-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="flex max-h-[min(780px,calc(100dvh-2rem))] w-[calc(100%-1rem)] max-w-xl flex-col overflow-hidden overscroll-contain rounded-2xl bg-white p-3 shadow-2xl dark:bg-slate-900 sm:w-full sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-extrabold text-slate-500 dark:text-slate-400">تفاصيل المنتج</h2>
               <button onClick={() => setSelectedId(null)} aria-label="إغلاق" className="flex size-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-400">
                 <X aria-hidden className="size-4" />
               </button>
             </div>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-0.5 pb-1">
             {detailQ.isLoading ? (
               <div className="flex justify-center py-12 text-emerald-500">
                 <Loader2 aria-hidden className="size-6 animate-spin" />
@@ -1532,8 +1533,9 @@ export default function Storefront() {
                         <p className="mb-1 text-xs font-extrabold text-slate-700 dark:text-slate-200">اختر اللون أو القياس والكمية</p>
                         <p className="mb-2 text-[11px] text-slate-500">يمكنك اختيار أكثر من لون أو قياس، ولكل اختيار كمية مستقلة.</p>
                         <div className="space-y-2">
+                          <div className="grid gap-1.5 sm:grid-cols-2">
                           {detailQ.data.variants!.map((variant) => (
-                            <div key={variant.variantId} className={`rounded-xl border p-2.5 ${variant.inStock ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800" : "border-slate-100 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-900"}`}>
+                            <div key={variant.variantId} className={`rounded-lg border p-2 ${variant.inStock ? "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800" : "border-slate-100 bg-slate-50 opacity-60 dark:border-slate-800 dark:bg-slate-900"}`}>
                               <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-700 dark:text-slate-200">
                                 <div className="flex min-w-0 items-center gap-1.5">
                                   {variant.colorHex && <span className="size-4 shrink-0 rounded-full ring-1 ring-black/20" style={{ backgroundColor: variant.colorHex }} aria-hidden />}
@@ -1542,20 +1544,20 @@ export default function Storefront() {
                                 </div>
                                 <span className="shrink-0 text-[10px] text-slate-400">{variant.inStock ? `${variant.units.filter((unit) => unit.inStock).length} خيارات` : "نفد"}</span>
                               </div>
-                              <div className="mt-2 space-y-1.5">
+                              <div className="mt-1.5 space-y-1">
                                 {variant.units.map((unit) => {
                                   const quantity = variantQuantities.get(unit.productUnitId) ?? 0;
                                   const stockLimit = unit.stockLeft == null ? 999 : Math.min(Math.floor(unit.stockLeft), 999);
                                   return (
-                                    <div key={unit.productUnitId} className={`flex items-center justify-between gap-2 rounded-lg border px-2 py-1.5 ${unit.inStock ? "border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900" : "border-slate-100 bg-white opacity-50 dark:border-slate-800 dark:bg-slate-800"}`}>
+                                    <div key={unit.productUnitId} className={`flex items-center justify-between gap-1.5 rounded-md border px-1.5 py-1 ${unit.inStock ? "border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900" : "border-slate-100 bg-white opacity-50 dark:border-slate-800 dark:bg-slate-800"}`}>
                                       <button type="button" disabled={!unit.inStock} onClick={() => { setSelectedVariantId(variant.variantId); setSelectedStoreUnitId(unit.productUnitId); if (quantity === 0) setVariantQuantity(unit.productUnitId, 1); }} className="min-w-0 flex-1 text-right text-[11px] font-bold text-slate-700 disabled:cursor-not-allowed dark:text-slate-200">
                                         <span className="block truncate">{unit.unitName}{variant.size ? ` · ${variant.size}` : ""}</span>
                                         <span className="mt-0.5 block text-[10px] font-extrabold text-[var(--sem-pos)]">{priceLabel(unit.salePrice ?? unit.price)}{!unit.inStock && " · نفد"}</span>
                                       </button>
                                       <div className="flex shrink-0 items-center gap-1.5">
-                                        <button type="button" aria-label={`إنقاص ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity === 0} onClick={() => setVariantQuantity(unit.productUnitId, quantity - 1)} className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"><Minus aria-hidden className="size-3.5" /></button>
+                                        <button type="button" aria-label={`إنقاص ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity === 0} onClick={() => setVariantQuantity(unit.productUnitId, quantity - 1)} className="flex size-6 items-center justify-center rounded-full bg-slate-100 text-slate-600 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"><Minus aria-hidden className="size-3" /></button>
                                         <span className="w-5 text-center text-sm font-extrabold tabular-nums">{quantity}</span>
-                                        <button type="button" aria-label={`زيادة ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity >= stockLimit} onClick={() => setVariantQuantity(unit.productUnitId, quantity + 1)} className="flex size-7 items-center justify-center rounded-full bg-[var(--sem-pos)] text-white disabled:cursor-not-allowed disabled:opacity-40"><Plus aria-hidden className="size-3.5" /></button>
+                                        <button type="button" aria-label={`زيادة ${variant.label} ${unit.unitName}`} disabled={!unit.inStock || quantity >= stockLimit} onClick={() => setVariantQuantity(unit.productUnitId, quantity + 1)} className="flex size-6 items-center justify-center rounded-full bg-[var(--sem-pos)] text-white disabled:cursor-not-allowed disabled:opacity-40"><Plus aria-hidden className="size-3" /></button>
                                       </div>
                                     </div>
                                   );
@@ -1563,6 +1565,7 @@ export default function Storefront() {
                               </div>
                             </div>
                           ))}
+                          </div>
                         </div>
                       </div>
                     )}
@@ -1622,6 +1625,7 @@ export default function Storefront() {
                     )}
                   </div>
                 </div>
+                <div className="sticky bottom-0 mt-2 border-t border-slate-100 bg-white/95 pt-2 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/95">
                 <button
                   onClick={() => {
                     if ((detailQ.data?.variants?.length ?? 0) > 1) addSelectedVariants();
@@ -1639,6 +1643,7 @@ export default function Storefront() {
                     ? "أضف الاختيارات إلى السلة"
                     : detailUnit?.inStock ? "أضف إلى السلة" : "غير متوفّر"}
                 </button>
+                </div>
 
                 {/* محتويات البكج */}
                 {detailQ.data.isBundle && detailQ.data.bundleItems && detailQ.data.bundleItems.length > 0 && (
@@ -1683,6 +1688,7 @@ export default function Storefront() {
             ) : (
               <p className="py-8 text-center text-sm text-slate-400">تعذّر تحميل تفاصيل المنتج</p>
             )}
+            </div>
           </div>
         </div>
       )}
