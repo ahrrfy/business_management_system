@@ -1,3 +1,4 @@
+import FilterPanel from "@/components/FilterPanel";
 import { deriveInvoiceChannel, invoiceChannelLabel, invoiceChannelOptions } from "@shared/invoiceChannel";
 import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
 import { CopyInline } from "@/components/CopyButton";
@@ -277,6 +278,38 @@ export default function Invoices() {
     f.delivery, f.deliveryPartyId,
     isElevated ? f.branchId : "",
   ].filter(Boolean).length;
+
+  /**
+   * رقاقاتُ الفلاتر المفعَّلة (١٩/٨) — بديلُ تسعةِ منتقياتٍ مفتوحةٍ دائماً. كلٌّ تقول
+   * **الحقل وقيمته المقروءة** وتُزال بنقرة، فيعرف الموظّف لماذا نتيجتُه هذه.
+   */
+  const filterChips = useMemo(() => {
+    const out: { key: string; field: string; value: string; onClear: () => void }[] = [];
+    const add = (key: string, field: string, value: string | undefined, clear: () => void) => {
+      if (value) out.push({ key, field, value, onClear: clear });
+    };
+    add("status", "الحالة", f.status ? invoiceStatusLabel(f.status) : "", () => setF({ status: "" }));
+    add("channel", "القناة", f.channel ? (invoiceChannelOptions().find((c) => c.value === f.channel)?.label ?? f.channel) : "", () => setF({ channel: "" }));
+    add("source", "نوع العملية", f.sourceType ? sourceTypeLabel(f.sourceType) : "", () => setF({ sourceType: "" }));
+    add("method", "طريقة الدفع", f.paymentMethod ? (f.paymentMethod === "NONE" ? "آجل (بلا قبض)" : paymentMethodLabel(f.paymentMethod)) : "", () => setF({ paymentMethod: "" }));
+    add("balance", "حالة التحصيل", f.balanceState ? (BALANCE_FILTER[f.balanceState as keyof typeof BALANCE_FILTER] ?? f.balanceState) : "", () => setF({ balanceState: "" }));
+    add("delivery", "التوصيل", f.delivery ? (DELIVERY_FILTER[f.delivery as keyof typeof DELIVERY_FILTER] ?? f.delivery) : "", () => setF({ delivery: "", deliveryPartyId: "" }));
+    add("party", "جهة التوصيل", f.deliveryPartyId ? ((deliveryParties.data ?? []).find((dp) => String(dp.id) === f.deliveryPartyId)?.name ?? `#${f.deliveryPartyId}`) : "", () => setF({ deliveryPartyId: "" }));
+    add("seller", "موظف المبيعات", f.salespersonId ? ((salespeople.data ?? []).find((u) => String(u.id) === f.salespersonId)?.name ?? `#${f.salespersonId}`) : "", () => setF({ salespersonId: "" }));
+    add("customer", "العميل", f.customerId ? `#${f.customerId}` : "", () => setF({ customerId: "" }));
+    if (isElevated) {
+      add("branch", "الفرع", f.branchId ? (branchNames.get(Number(f.branchId)) ?? `#${f.branchId}`) : "", () => setF({ branchId: "" }));
+    }
+    if (f.from || f.to) {
+      out.push({
+        key: "period",
+        field: "الفترة",
+        value: [f.from, f.to].filter(Boolean).join(" ← ") || "مخصّصة",
+        onClear: () => setF({ from: "", to: "", preset: "" }),
+      });
+    }
+    return out;
+  }, [f, isElevated, deliveryParties.data, salespeople.data, branchNames, setF]);
 
   // منتقي الفترة السريع — «فارغ» = كل التواريخ (بخلاف التقارير لا نفرض شهراً افتراضياً هنا).
   const periodValue: PeriodValue = { from: f.from, to: f.to, preset: (f.preset || "custom") as PresetKey };
@@ -737,14 +770,19 @@ export default function Invoices() {
         description="قائمة الفواتير المباعة — ابحث عن الفاتورة ثم أعد طباعتها على طابعة الكاشير الحرارية عند الحاجة."
       />
 
-      <Card>
-        <CardContent className="space-y-3 pt-6">
-          {/* «مسح الفلاتر» + عدّاد الفلاتر المفعّلة — البحث يبقى في شريط الجدول (DataTable). */}
-          <ListToolbar title="الفلاتر" activeFilterCount={activeFilterCount} onResetFilters={resetF} />
+      {/* ١٩/٨ (بلاغ المالك: «الفلاتر فوضوية») — تسعةُ منتقياتٍ كانت مفتوحةً دائماً تأكل الشاشة
+          قبل أن يظهر صفٌّ واحد، وثمانيةٌ منها فارغةٌ غالباً. صارت **مطويّةً برقاقاتِ المفعَّل**
+          على نمط Odoo: يرى الموظّف ما يُصفّي نتائجه في سطر، ويفتح اللوحة حين يضيف فلتراً. */}
+      <FilterPanel
+        chips={filterChips}
+        onResetAll={resetF}
+        quickSlot={
           <PeriodFilter
             value={periodValue}
             onChange={(v) => setF({ from: v.from, to: v.to, preset: v.preset === "custom" ? "" : v.preset })}
           />
+        }
+      >
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-4">
             <div className="space-y-1">
               <Label htmlFor="inv-f-status" className="text-xs">الحالة</Label>
@@ -834,8 +872,7 @@ export default function Invoices() {
               />
             </div>
           </div>
-        </CardContent>
-      </Card>
+      </FilterPanel>
 
       <DataTable
         columns={columns}
