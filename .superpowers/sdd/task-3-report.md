@@ -38,3 +38,10 @@
 - An occupied lease returns its precise retry time and the Studio page schedules one retry after expiry. The atomic transaction remains the authority, so the retry cannot duplicate a concurrent claim.
 - Only `/catalog/image-studio` is allowed through the cold-offline boot and online gates. Its encrypted local draft editor remains available without dashboard/auth query data, while remote queries, server mutations, storage, providers, refresh, and scanner actions stay disabled.
 - Focused suite now covers 19 assertions across atomic tabs, cold-route policy, local-only capability, and mobile Studio contracts.
+
+## PIN-bound cold Studio access
+
+- Removed the direct Studio bypass. Cold launch now remains inside `Protected`, `OfflineBootGate`, and `RequireRole`.
+- Opening a local Studio draft requires a successful device PIN in the current reload, a PIN-enabled local profile, a matching encrypted draft-identity `userId`, and an allowed local Studio role. The encrypted identity alone never authorizes access.
+- The verified local actor is memory-only and is used solely for the exact cold Studio route; all tRPC queries, server mutations, storage/provider actions, refresh, and scanner calls remain disabled while offline.
+- Focused suite now covers 20 assertions, including no-PIN, wrong-user, wrong-role, and valid PIN/profile/identity combinations.

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   COLD_OFFLINE_STUDIO_PATH,
   isColdOfflineStudioRoute,
+  coldOfflineStudioActor,
   studioOfflineCapabilities,
 } from "./coldOfflinePolicy";
 
@@ -23,5 +24,43 @@ describe("cold offline product studio policy", () => {
       canCallServer: false,
       canUseProviderOrStorage: false,
     });
+  });
+
+  it("denies a direct cold Studio URL until PIN, local user, and local role all match", () => {
+    const profile = {
+      userId: 7,
+      name: "موظف الصور",
+      role: "print_operator",
+      branchId: 1,
+      hasPin: true,
+    };
+    expect(
+      coldOfflineStudioActor({
+        pinVerified: false,
+        profile,
+        draftIdentityUserId: 7,
+      }),
+    ).toBeNull();
+    expect(
+      coldOfflineStudioActor({
+        pinVerified: true,
+        profile,
+        draftIdentityUserId: 8,
+      }),
+    ).toBeNull();
+    expect(
+      coldOfflineStudioActor({
+        pinVerified: true,
+        profile: { ...profile, role: "cashier" },
+        draftIdentityUserId: 7,
+      }),
+    ).toBeNull();
+    expect(
+      coldOfflineStudioActor({
+        pinVerified: true,
+        profile,
+        draftIdentityUserId: 7,
+      }),
+    ).toEqual({ userId: 7, role: "print_operator" });
   });
 });

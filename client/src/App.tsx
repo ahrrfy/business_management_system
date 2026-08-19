@@ -11,7 +11,7 @@
 // حَدّ Suspense واحد حَول `Switch` (لا حَول كل Route) ⇒ تَنقّل المَسارات يُظهر fallback
 // مَرّة واحدة فَقط أثناء جَلب chunk الوِجهة، والـAppLayout (الشَريط الجانبي/الترويسة) يَبقى
 // مَرسوماً. fallback نَفس نَصّ `Protected` ⇒ تَتابع بصري سَلِس.
-import { Suspense, useCallback, useEffect, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OfflineBootGate, OnlineGate } from "@/components/offline/OfflineGate";
@@ -21,6 +21,11 @@ import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { RouteFallback } from "@/components/RouteFallback";
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import {
+  getOfflineUnlockedProfile,
+  isOfflineUnlocked,
+  subscribeOfflineUnlock,
+} from "@/lib/offline/pinLock";
 import { isColdOfflineStudioRoute } from "@/lib/productStudio/coldOfflinePolicy";
 import { trpc } from "@/lib/trpc";
 import Login from "@/pages/Login";
@@ -159,7 +164,8 @@ function Protected({ children }: { children: React.ReactNode }) {
   const retry = useCallback(() => {
     void me.refetch();
   }, [me.refetch]);
-  if (coldOfflineStudio) return <>{children}</>;
+  if (coldOfflineStudio)
+    return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
   // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.
   if (me.data) {
     // إلزام 2FA (قرار المالك ٢٣/٧): الأدمن/المدير بلا 2FA يُحجَبون على شاشة التفعيل حتى يُفعّلوها.
@@ -203,18 +209,23 @@ function Shell({
   );
 }
 
-/** لا تتجاوز الصلاحيات عن بعد: الإعفاء محصور في تحرير مسودة Studio المحلية المشفرة. */
 function StudioRouteAccess({ children }: { children: React.ReactNode }) {
   const connectivity = useConnectivity();
   const offline =
     isDisconnected(connectivity) ||
     (typeof navigator !== "undefined" && !navigator.onLine);
-  if (offline) return <>{children}</>;
+  const unlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const localProfile = unlocked ? getOfflineUnlockedProfile() : null;
   return (
     <RequireRole
       roles={["admin", "manager", "print_operator", "auditor"]}
       module="productStudio"
       level="READ"
+      localOfflineActor={offline ? localProfile : undefined}
     >
       {children}
     </RequireRole>
