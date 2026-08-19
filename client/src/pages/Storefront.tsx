@@ -473,18 +473,18 @@ export function BundleMedia({
 function CategoryTiles({ cats, onPick }: { cats: { id: number; name: string }[]; onPick: (id: number) => void }) {
   if (cats.length === 0) return null;
   return (
-    <section className="mb-5">
+    <section className="mb-6">
       <h3 className="mb-2.5 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">
         <LayoutGrid aria-hidden className="size-4 text-emerald-600" /> تسوّق حسب القسم
       </h3>
-      <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4 md:grid-cols-6">
+      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 lg:gap-2.5">
         {cats.map((c) => (
           <button
             key={c.id}
             onClick={() => onPick(c.id)}
-            className="group flex flex-col items-center gap-2 rounded-2xl bg-white p-3 text-center ring-1 ring-slate-100 transition motion-safe:hover:-translate-y-0.5 hover:ring-emerald-300 dark:bg-slate-900 dark:ring-slate-800 dark:hover:ring-emerald-500/40"
+            className="group flex min-h-[92px] flex-col items-center gap-1.5 rounded-2xl bg-white p-2.5 text-center ring-1 ring-slate-100 transition motion-safe:hover:-translate-y-0.5 hover:ring-emerald-300 dark:bg-slate-900 dark:ring-slate-800 dark:hover:ring-emerald-500/40"
           >
-            <span className="flex size-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 transition group-hover:bg-emerald-600 group-hover:text-white dark:bg-emerald-500/10 dark:text-emerald-400">
+            <span className="flex size-10 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 transition group-hover:bg-emerald-600 group-hover:text-white dark:bg-emerald-500/10 dark:text-emerald-400">
               <Store aria-hidden className="size-6" />
             </span>
             <span className="line-clamp-2 text-[11px] font-bold leading-tight text-slate-700 dark:text-slate-200">{c.name}</span>
@@ -540,11 +540,11 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   return (
-    <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+    <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 sm:w-44 lg:w-48 dark:bg-slate-900 dark:ring-slate-800">
       <button onClick={onSelect} className="relative block text-right">
         <BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
         {onSale && pct > 0 && (
-          <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
+          <span className="absolute right-2 top-2 rounded-full bg-[#c94736] px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
         )}
         {p.inStock === false && (
           <span className="absolute inset-x-0 bottom-0 bg-slate-900/70 py-1 text-center text-[11px] font-bold text-white">غير متوفّر</span>
@@ -1247,16 +1247,16 @@ export default function Storefront() {
   const chip = (active: boolean) =>
     `whitespace-nowrap rounded-full px-4 py-1.5 text-xs font-bold transition ${
       active
-        ? "bg-emerald-600 text-white shadow-sm shadow-emerald-600/30"
+        ? "bg-emerald-600 text-white shadow-sm shadow-[#1e4a63]/25"
         : "bg-white text-slate-600 ring-1 ring-slate-200 hover:ring-emerald-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700"
     }`;
 
   return (
-    <div className="storefront min-h-dvh bg-emerald-50/50 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
+    <div className="storefront min-h-dvh bg-[#f7f3ee] text-[#1b1b1b] dark:bg-slate-950 dark:text-slate-100" dir="rtl">
       {/* الترويسة */}
       <header className="sticky top-0 z-20 border-b border-emerald-100/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/85">
-        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-sm shadow-emerald-600/30">
+        <div className="mx-auto flex max-w-[1440px] items-center gap-3 px-3 py-3 sm:px-4 lg:px-5">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[#1e4a63] to-[#2b677f] text-white shadow-sm shadow-[#1e4a63]/25">
             <ShoppingBag aria-hidden className="size-5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -1288,7 +1288,7 @@ export default function Storefront() {
           )}
         </div>
 
-        <div className="mx-auto max-w-6xl px-4 pb-3">
+        <div className="mx-auto max-w-[1440px] px-3 pb-3 sm:px-4 lg:px-5">
           <div className="relative">
             <Search aria-hidden className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
             <input
@@ -1312,7 +1312,7 @@ export default function Storefront() {
         </div>
 
         {cats.length > 0 && (
-          <div className="mx-auto max-w-6xl overflow-x-auto px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="mx-auto max-w-[1440px] overflow-x-auto px-3 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:px-4 lg:px-5">
             <div className="flex w-max gap-2">
               <button onClick={() => selectCategory(null)} className={chip(categoryId == null)}>
                 الكل
@@ -1329,7 +1329,7 @@ export default function Storefront() {
       </header>
 
       {/* المحتوى */}
-      <main className="mx-auto max-w-6xl px-4 py-4 pb-28">
+      <main className="mx-auto max-w-[1440px] px-3 py-4 pb-28 sm:px-4 lg:px-5">
         {supportingFailures.length > 0 && (
           <section
             role="alert"
@@ -1362,7 +1362,7 @@ export default function Storefront() {
         )}
         {/* شريط إعلان الموظف */}
         {announcement && (
-          <div className="mb-3 flex items-center gap-2 rounded-2xl bg-amber-100 px-4 py-2.5 text-sm font-bold text-amber-900 dark:bg-amber-500/15 dark:text-amber-300">
+          <div className="mb-3 flex items-center gap-2 rounded-2xl bg-[#f3e3d2] px-4 py-2.5 text-sm font-bold text-[#81492b] dark:bg-[#4b2c22] dark:text-[#f3c2ad]">
             <BadgePercent aria-hidden className="size-4 shrink-0" />
             <span>{announcement}</span>
           </div>
@@ -1375,7 +1375,7 @@ export default function Storefront() {
         )}
 
         {/* مصفاة قصيرة وواضحة: تبقي العميل داخل مسار الاكتشاف بدلاً من تمرير كتالوج غير منتهٍ. */}
-        <section aria-label="تصفية وترتيب المنتجات" className="mb-4 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-emerald-100/80 dark:bg-slate-900 dark:ring-slate-800">
+        <section aria-label="تصفية وترتيب المنتجات" className="mb-4 rounded-2xl border border-emerald-100/80 bg-white p-3 shadow-sm shadow-emerald-900/[0.03] dark:bg-slate-900 dark:ring-slate-800">
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs font-extrabold text-slate-700 dark:text-slate-200">تسوّق بسهولة</p>
             {(hasRefinements || categoryId != null || search) && (
@@ -1439,7 +1439,7 @@ export default function Storefront() {
             {heroBanners.length > 0 ? (
               <BannerCarousel banners={heroBanners} />
             ) : (
-              <section className="relative mb-4 overflow-hidden rounded-3xl bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500 p-5 text-white shadow-lg shadow-emerald-600/20">
+              <section className="relative mb-4 overflow-hidden rounded-3xl bg-gradient-to-l from-[#1e4a63] via-[#2b677f] to-[#4c8397] p-5 text-white shadow-lg shadow-[#1e4a63]/20">
                 <Sparkles aria-hidden className="absolute -left-3 -top-3 size-24 opacity-15" />
                 <p className="text-xs font-bold text-emerald-50/90">أهلاً بك في</p>
                 <h2 className="mt-0.5 text-2xl font-extrabold leading-tight">{STORE_NAME}</h2>
@@ -1447,7 +1447,7 @@ export default function Storefront() {
                   كل ما تحتاجه من القرطاسية والطباعة والهدايا — اطلب الآن وادفع عند الاستلام.
                 </p>
                 {offers.length > 0 && (
-                  <span className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold text-amber-950 shadow">
+                  <span className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-[#e65f4a] px-3 py-1 text-xs font-extrabold text-white shadow">
                     <BadgePercent aria-hidden className="size-4" />
                     عروض اليوم متاحة الآن
                   </span>
@@ -1581,7 +1581,7 @@ export default function Storefront() {
           </div>
         ) : (
           <>
-            <div id="store-results" className="scroll-mt-40 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+            <div id="store-results" className="scroll-mt-40 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 lg:grid-cols-4 xl:grid-cols-6 xl:gap-3.5">
             {filteredItems.flatMap((p, idx) => {
               const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
               const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
@@ -1601,7 +1601,7 @@ export default function Storefront() {
                       className="aspect-square w-full"
                     />
                     {onSale && pct > 0 && (
-                      <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">
+                      <span className="absolute right-2 top-2 rounded-full bg-[#c94736] px-2 py-0.5 text-[11px] font-extrabold text-white shadow">
                         −{pct}٪
                       </span>
                     )}

@@ -309,21 +309,22 @@ option:disabled {
   /* Storefront only: a deliberately small marketing palette.  Green carries trust,
      while gold is reserved for a customer action that moves the order forward. */
   .storefront {
-    --store-brand: #087e6b;
-    --store-brand-strong: #056455;
-    --store-accent: #e99b00;
-    --store-accent-strong: #bd7600;
-    --store-canvas: #f5fbf8;
-    --store-ink: #15312c;
-    --store-muted: #637873;
+    --store-brand: #1e4a63;
+    --store-brand-strong: #16384b;
+    --store-accent: #e65f4a;
+    --store-accent-strong: #c94736;
+    --store-canvas: #f7f3ee;
+    --store-ink: #1b1b1b;
+    --store-muted: #746f69;
     --store-sale: #c23a2b;
     background-color: var(--store-canvas);
     color: var(--store-ink);
+    background-image: linear-gradient(180deg, #fbf8f4 0%, #f7f3ee 48%, #f1ebe4 100%);
   }
 
   .storefront .store-product-card {
-    border: 1px solid color-mix(in srgb, var(--store-brand) 9%, white);
-    box-shadow: 0 1px 2px rgb(21 49 44 / 5%);
+    border: 1px solid #e8e0d8;
+    box-shadow: 0 2px 8px rgb(27 27 27 / 6%);
   }
 
   .storefront .store-product-card:hover {
@@ -333,7 +334,7 @@ option:disabled {
   }
 
   .storefront .store-product-media {
-    background: radial-gradient(circle at 50% 28%, #fff 0, #edf8f3 62%, #d7eee4 100%);
+    background: linear-gradient(145deg, #f4eee7 0%, #e9dfd5 100%);
   }
 
   .storefront .store-product-image {
@@ -345,14 +346,14 @@ option:disabled {
   }
 
   .storefront .store-product-image-placeholder {
-    background: linear-gradient(145deg, #effaf5, #d9f1e6);
+    background: linear-gradient(145deg, #f1e9e1, #e4d8cc);
     color: var(--store-brand);
   }
 
   .storefront .store-primary-action {
     background-color: var(--store-accent);
     color: #fff;
-    box-shadow: 0 6px 14px rgb(233 155 0 / 20%);
+    box-shadow: 0 7px 15px rgb(230 95 74 / 22%);
   }
 
   .storefront .store-primary-action:hover:not(:disabled) {
@@ -367,6 +368,10 @@ option:disabled {
   /* Thumb-friendly CTAs: purchase controls stay comfortably tappable without
      expanding desktop cards unnecessarily. */
   @media (max-width: 639px) {
+    .storefront {
+      background-image: linear-gradient(180deg, #fbf8f4 0%, #f7f3ee 55%, #f1ebe4 100%);
+    }
+
     .storefront .store-mobile-action {
       min-height: 44px;
     }
@@ -384,9 +389,21 @@ option:disabled {
     }
   }
 
+  .storefront .bg-emerald-600 { background-color: var(--store-brand) !important; }
+  .storefront .hover\:bg-emerald-700:hover { background-color: var(--store-brand-strong) !important; }
+  .storefront .bg-emerald-50 { background-color: #f1ebe4 !important; }
+  .storefront .text-emerald-600, .storefront .text-emerald-700, .storefront .text-emerald-500 { color: var(--store-brand) !important; }
+  .storefront .bg-amber-500 { background-color: var(--store-accent) !important; }
+  .storefront .hover\:bg-amber-600:hover { background-color: var(--store-accent-strong) !important; }
+  .storefront .bg-amber-100 { background-color: #f3e3d2 !important; }
+  .storefront .text-amber-700 { color: #9a5b2b !important; }
+  .storefront .border-emerald-100, .storefront .border-emerald-100\/70 { border-color: #e8e0d8 !important; }
+  .storefront .ring-emerald-100\/80 { --tw-ring-color: #e8e0d8 !important; }
+  .storefront .focus\:ring-emerald-400:focus { --tw-ring-color: var(--store-accent) !important; }
+
   .dark .storefront {
-    --store-canvas: #0b1714;
-    --store-ink: #edf7f2;
+    --store-canvas: #272421;
+    --store-ink: #fbf8f4;
   }
 
   .dark .storefront .store-product-card {
