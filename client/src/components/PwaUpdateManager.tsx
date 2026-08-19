@@ -307,6 +307,14 @@ export function PwaUpdateManager() {
   };
 
   useEffect(() => {
+    if (!import.meta.env.PROD) {
+      if ("serviceWorker" in navigator) {
+        void navigator.serviceWorker.getRegistrations().then((registrations) => {
+          registrations.forEach((registration) => void registration.unregister());
+        });
+      }
+      return;
+    }
     if (!("serviceWorker" in navigator)) return;
     let disposed = false;
 

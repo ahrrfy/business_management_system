@@ -156,6 +156,14 @@ export default defineConfig({
     host: true,
     // Allow the temporary Manus preview proxy without accepting arbitrary Host headers.
     allowedHosts: [".manus.computer", "localhost"],
+    // The preview consumes the current public storefront API; no database copy or mock catalog.
+    proxy: {
+      "/api": {
+        target: "https://alarabiya.online",
+        changeOrigin: true,
+        secure: true,
+      },
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],

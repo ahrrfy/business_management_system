@@ -306,26 +306,55 @@ option:disabled {
 }
 
 @layer components {
-  /* Storefront only: a deliberately small marketing palette.  Green carries trust,
-     while gold is reserved for a customer action that moves the order forward. */
+  /* Storefront only: a joyful stationery palette anchored by a calm navy. */
   .storefront {
-    --store-brand: #1e4a63;
-    --store-brand-strong: #16384b;
-    --store-accent: #e65f4a;
-    --store-accent-strong: #c94736;
-    --store-canvas: #f7f3ee;
-    --store-ink: #1b1b1b;
-    --store-muted: #746f69;
-    --store-sale: #c23a2b;
+    --store-brand: #25406f;
+    --store-brand-strong: #1b3158;
+    --store-accent: #ef6a5b;
+    --store-accent-strong: #d95245;
+    --store-sun: #f4c84d;
+    --store-mint: #dff4ee;
+    --store-lilac: #eee6f6;
+    --store-peach: #ffe5d5;
+    --store-canvas: #fbf8f2;
+    --store-ink: #20252a;
+    --store-muted: #727b80;
+    --store-sale: #d95245;
     background-color: var(--store-canvas);
     color: var(--store-ink);
-    background-image: none;
+    background-image: radial-gradient(circle at 10px 10px, rgb(37 64 111 / 7%) 1.25px, transparent 1.5px);
+    background-size: 24px 24px;
   }
 
   .storefront .store-product-card {
     border: 1px solid #e8e0d8;
     box-shadow: 0 2px 8px rgb(27 27 27 / 6%);
   }
+
+  .storefront .store-category-grid > button {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1rem;
+  }
+
+  .storefront .store-category-grid > button::after {
+    position: absolute;
+    inset: auto -18px -24px auto;
+    width: 72px;
+    height: 72px;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 42%);
+    content: "";
+    pointer-events: none;
+  }
+
+  .storefront .store-category-grid > button:nth-child(3n + 1) { background: #fff8df; border-color: #f0d991; }
+  .storefront .store-category-grid > button:nth-child(3n + 2) { background: #e9f7f2; border-color: #c5e8dc; }
+  .storefront .store-category-grid > button:nth-child(3n) { background: #f3ebf8; border-color: #dfcdea; }
+  .storefront .store-category-grid > button:hover { transform: translateY(-2px); }
+  .storefront .store-category-grid > button:nth-child(3n + 1) > span:first-child { background: #f4c84d; color: #25406f; }
+  .storefront .store-category-grid > button:nth-child(3n + 2) > span:first-child { background: #8ed8c3; color: #25406f; }
+  .storefront .store-category-grid > button:nth-child(3n) > span:first-child { background: #d7b4e8; color: #5e3e6e; }
 
   .storefront .store-product-card:hover {
     border-color: color-mix(in srgb, var(--store-brand) 32%, white);
@@ -334,8 +363,13 @@ option:disabled {
   }
 
   .storefront .store-product-media {
-    background: #eee7df;
+    background: #f1ece4;
   }
+
+  .storefront .store-product-card:nth-child(4n + 1) .store-product-media { background: #fff8df; }
+  .storefront .store-product-card:nth-child(4n + 2) .store-product-media { background: #e9f7f2; }
+  .storefront .store-product-card:nth-child(4n + 3) .store-product-media { background: #f3ebf8; }
+  .storefront .store-product-card:nth-child(4n) .store-product-media { background: #ffe9dd; }
 
   .storefront .store-product-image {
     transition: transform 180ms ease;
@@ -346,19 +380,19 @@ option:disabled {
   }
 
   .storefront .store-product-image-placeholder {
-    background: #eee7df;
+    background: #f1ece4;
     color: var(--store-brand);
   }
 
   .storefront .store-primary-action {
     background-color: var(--store-accent);
     color: #fff;
-    box-shadow: 0 7px 15px rgb(230 95 74 / 22%);
+    box-shadow: 0 8px 0 rgb(37 64 111 / 10%);
   }
 
   .storefront .store-primary-action:hover:not(:disabled) {
     background-color: var(--store-accent-strong);
-    box-shadow: 0 8px 18px rgb(189 118 0 / 24%);
+    box-shadow: 0 5px 0 rgb(37 64 111 / 12%);
   }
 
   .storefront .store-primary-action:disabled {
@@ -402,8 +436,9 @@ option:disabled {
   .storefront .focus\:ring-emerald-400:focus { --tw-ring-color: var(--store-accent) !important; }
 
   .dark .storefront {
-    --store-canvas: #272421;
-    --store-ink: #fbf8f4;
+    --store-canvas: #202532;
+    --store-ink: #fbf8f2;
+    background-image: radial-gradient(circle at 10px 10px, rgb(255 255 255 / 6%) 1.25px, transparent 1.5px);
   }
 
   .dark .storefront .store-product-card {
