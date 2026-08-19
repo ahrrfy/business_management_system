@@ -16,6 +16,7 @@ import {
   publicProcedure,
   router,
   storefrontPublicReadProcedure,
+  storefrontPublicWriteProcedure,
 } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
 import { createOnlineOrder, findOwnedOnlineOrderReplay, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
@@ -78,12 +79,12 @@ export const storefrontRouter = router({
   settings: publicProcedure.query(() => getPublicStoreSettings()),
 
   /** يربط Firebase Phone OTP بسجل العميل ويصدر جلسة متجر قصيرة منفصلة عن جلسات الإدارة. */
-  claimFirebaseCustomer: publicProcedure
+  claimFirebaseCustomer: storefrontPublicWriteProcedure
     .input(z.object({ firebaseIdToken: z.string().trim().min(100).max(8_000), displayName: z.string().trim().min(2).max(120) }))
     .mutation(({ input }) => claimFirebaseStorefrontCustomer(input)),
 
   /** رصيد الولاء والقسائم الشخصية بعد تحقق الجلسة الموقعة فقط؛ لا تقبل هاتفاً يرسله التطبيق. */
-  customerBenefits: publicProcedure
+  customerBenefits: storefrontPublicReadProcedure
     .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
     .query(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
 
@@ -132,7 +133,7 @@ export const storefrontRouter = router({
     .query(({ input }) => quoteOnlineOrder(input)),
 
   /** تسجيل جهاز العميل بعد موافقته الصريحة فقط. الرمز مشفّر خادمياً ولا يرافقه هاتف أو معلومات طلب. */
-  registerPushDevice: publicProcedure
+  registerPushDevice: storefrontPublicWriteProcedure
     .input(z.object({
       expoPushToken: z.string().trim().min(20).max(300),
       marketingOptIn: z.boolean(),
@@ -143,7 +144,7 @@ export const storefrontRouter = router({
     .mutation(({ input }) => registerStorefrontPushDevice(input)),
 
   /** حدث فتح بلا هوية؛ يُقبل فقط لتسليم موجود من الحملة، ويحافظ على قياس الأداء من الداشبورد. */
-  trackPushInteraction: publicProcedure
+  trackPushInteraction: storefrontPublicWriteProcedure
     .input(z.object({ deliveryId: z.number().int().positive(), event: z.enum(["OPEN", "CLICK"]) }))
     .mutation(({ input }) => trackStorefrontPushInteraction(input)),
 
