@@ -416,9 +416,21 @@ function InTransitTab() {
                 return (
                   <tr key={r.id} className="border-b last:border-0 hover:bg-muted/40">
                     <td className="p-2">
-                      <div className="font-bold tabular-nums" dir="ltr">{r.consignmentNumber}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold tabular-nums" dir="ltr">{r.consignmentNumber}</span>
+                        {/* ١٩/٨ (طلب المالك): مصدرُ الطرد. الطابور محايدُ المصدر أصلاً — طلبُ
+                            المتجر المُسنَد لشركةٍ يظهر كما يظهر أمرُ الشغل — لكنّ الصفّ كان لا
+                            يقول أيَّهما، و`orderNumber` يبقى NULL لطلب المتجر فيبدو بلا هويّة. */}
+                        <span className="rounded bg-muted px-1.5 py-px text-[10px] font-bold text-muted-foreground">
+                          {r.sourceType === "WORK_ORDER"
+                            ? "أمر شغل"
+                            : r.sourceType === "ONLINE_ORDER"
+                              ? "طلب متجر"
+                              : "فاتورة"}
+                        </span>
+                      </div>
                       <div className="text-[11px] text-muted-foreground" dir="ltr">
-                        {r.orderNumber ?? r.invoiceNumber ?? "—"}
+                        {r.orderNumber ?? r.invoiceNumber ?? `#${r.sourceId}`}
                       </div>
                     </td>
                     <td className="p-2">

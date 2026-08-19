@@ -136,6 +136,14 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       invoiceNumber: invoices.invoiceNumber,
       workOrderId: deliveryConsignments.workOrderId,
       orderNumber: workOrders.orderNumber,
+      /**
+       * مصدر الطرد (١٩/٨، طلب المالك) — الاستعلام محايدُ المصدر أصلاً (كل إرسالية
+       * `DISPATCHED`)، فطلبُ المتجر المُسنَد لشركةٍ يظهر هنا كما يظهر أمرُ الشغل. لكنّ الصفّ
+       * كان **لا يقول أيَّهما**: `orderNumber` يبقى NULL لطلب المتجر فيبدو الطرد بلا هويّة.
+       * والعمود موجودٌ على الجدول ولم يكن يُسقَط.
+       */
+      sourceType: deliveryConsignments.sourceType,
+      sourceId: deliveryConsignments.sourceId,
       partyId: deliveryConsignments.partyId,
       partyName: deliveryParties.name,
       assignedUserId: deliveryConsignments.assignedUserId,
