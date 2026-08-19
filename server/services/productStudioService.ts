@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, like, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, like, lt, notInArray, or, sql } from "drizzle-orm";
 import {
   auditLogs,
   categories,
@@ -596,7 +596,11 @@ export async function listStudioTasks(
     conds.push(lt(productImageJobs.dueAt, now));
     conds.push(inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]));
   } else if (input.overdue === false) {
-    conds.push(or(isNull(productImageJobs.dueAt), gte(productImageJobs.dueAt, now))!);
+    conds.push(or(
+      isNull(productImageJobs.dueAt),
+      gte(productImageJobs.dueAt, now),
+      notInArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]),
+    )!);
   }
   if (cursor) {
     const updatedAt = new Date(cursor.updatedAt);

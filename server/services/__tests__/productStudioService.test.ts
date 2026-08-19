@@ -224,6 +224,7 @@ describe("product studio governed workflow", () => {
         createdBy: manager.userId,
         activeSlot: null,
         priority: "NORMAL",
+        dueAt: new Date("2026-08-19T07:59:59.000Z"),
         revision: 3,
         createdAt: new Date("2026-08-19T08:00:00.000Z"),
         reviewedAt: new Date("2026-08-19T10:00:00.000Z"),
@@ -253,6 +254,8 @@ describe("product studio governed workflow", () => {
       .toEqual([expect.objectContaining({ productId: 1 })]);
     expect((await listStudioTasks(manager, { scope: "REVIEW", overdue: true, now })).items)
       .toEqual([]);
+    expect((await listStudioTasks(manager, { scope: "HISTORY", overdue: false, now })).items)
+      .toEqual([expect.objectContaining({ productId: 4, status: "APPROVED", overdue: false })]);
     const first = await listStudioTasks(manager, {
       scope: "QUEUE",
       priority: ["URGENT", "HIGH"],
