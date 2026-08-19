@@ -208,8 +208,19 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
 async function notifyOrderReady(params: { workOrderId: number; branchId: number; customerId: number | null; orderNumber: string }): Promise<void> {
   if (params.customerId == null) return;
   const db = requireDb();
+  // رقمٌ واحدٌ للزبون (١٩/٨): كان يقرأ `customers.phone` وحده ويعود مبكّراً عند خلوّه،
+  // بينما عمود `whatsapp` قائمٌ ومُنشئُ المحادثة يشتقّ رقمَه بـCOALESCE نفسه
+  // (`workOrderRouter.ts:215`) ⤇ عميلُ واتسابٍ رقمُه في العمود المخصّص **لا يصله إشعار الجاهزية
+  // إطلاقاً**، وإن اختلف الرقمان هبط ردُّه في محادثةٍ ثانية. الاشتقاق موحَّدٌ الآن.
   const cust = (
-    await db.select({ name: customers.name, phone: customers.phone }).from(customers).where(eq(customers.id, params.customerId)).limit(1)
+    await db
+      .select({
+        name: customers.name,
+        phone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${customers.phone2}, ''), NULLIF(${customers.phone3}, ''))`,
+      })
+      .from(customers)
+      .where(eq(customers.id, params.customerId))
+      .limit(1)
   )[0];
   if (!cust?.phone) return;
   await flowNotify({

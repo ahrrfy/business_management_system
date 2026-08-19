@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { conversationMessages, conversations, customers, users, workOrders } from "../../drizzle/schema";
 import { getDb } from "../db";
+import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
 
 /**
@@ -188,19 +189,65 @@ export async function markConversationRead(conversationId: number, _actor: Actor
   });
 }
 
-/** يَربط محادثة بأَمر شَغل (الكاشير اختار «أمر شَغل» مِن الـinbox drawer). */
-export async function linkConversationToWorkOrder(conversationId: number, workOrderId: number | null) {
-  return withTx(async (tx) => {
-    if (workOrderId != null) {
-      // تَحقَّق أن أَمر الشَغل مَوجود.
-      const wo = (
-        await tx.select({ id: workOrders.id }).from(workOrders).where(eq(workOrders.id, workOrderId)).limit(1)
-      )[0];
-      if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "أَمر الشَغل غَير مَوجود" });
+/**
+ * يَربط محادثة بأَمر شَغل — **داخل معاملةٍ قائمة** (ش١، ١٩/٨).
+ *
+ * الحارس الذي كان ناقصاً: الدالّة كانت تتحقّق من **وجود** أمر الشغل وحده ولا تسأل عن فرعه
+ * ⇒ محادثةُ فرعٍ تُربَط بأمر فرعٍ آخر، فتُسرَّب بيانات الطلب (عنوانه وعميله) عبر الخيط إلى
+ * موظّفٍ لا يملك رؤيتها — خرقُ قرار «عزل مدير الفرع». والرفضُ **NOT_FOUND لا FORBIDDEN**:
+ * «ممنوع» يؤكّد للسائل أنّ الرقم موجود، فيُعَدّ كاشفَ وجود.
+ *
+ * `actor.branchId` هو المرجع، ويُستثنى عابرُ الفروع (admin/isOwner) عبر `scopedBranchId=null`.
+ */
+export async function linkConversationToWorkOrderTx(
+  tx: Tx,
+  conversationId: number,
+  workOrderId: number | null,
+  actor: { branchId?: number | null; scopedBranchId?: number | null },
+) {
+  const scoped = actor.scopedBranchId !== undefined ? actor.scopedBranchId : actor.branchId ?? null;
+
+  const conv = (
+    await tx
+      .select({ id: conversations.id, branchId: conversations.branchId })
+      .from(conversations)
+      .where(eq(conversations.id, conversationId))
+      .limit(1)
+  )[0];
+  if (!conv) throw new TRPCError({ code: "NOT_FOUND", message: "المحادثة غَير مَوجودة" });
+  if (scoped != null && Number(conv.branchId) !== Number(scoped)) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "المحادثة غَير مَوجودة" });
+  }
+
+  if (workOrderId != null) {
+    const wo = (
+      await tx
+        .select({ id: workOrders.id, branchId: workOrders.branchId })
+        .from(workOrders)
+        .where(eq(workOrders.id, workOrderId))
+        .limit(1)
+    )[0];
+    if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "أَمر الشَغل غَير مَوجود" });
+    // ولا يُربَط أمرُ فرعٍ بمحادثة فرعٍ آخر ولو ملك الفاعلُ عبور الفروع: الخيط يعيش في فرعه.
+    if (Number(wo.branchId) !== Number(conv.branchId)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "أمر الشغل يخصّ فرعاً آخر — لا يُربَط بمحادثة هذا الفرع",
+      });
     }
-    await tx.update(conversations).set({ linkedWorkOrderId: workOrderId }).where(eq(conversations.id, conversationId));
-    return { conversationId, linkedWorkOrderId: workOrderId };
-  });
+  }
+
+  await tx.update(conversations).set({ linkedWorkOrderId: workOrderId }).where(eq(conversations.id, conversationId));
+  return { conversationId, linkedWorkOrderId: workOrderId };
+}
+
+/** يَربط محادثة بأَمر شَغل (الكاشير اختار «أمر شَغل» مِن الـinbox drawer). */
+export async function linkConversationToWorkOrder(
+  conversationId: number,
+  workOrderId: number | null,
+  actor: { branchId?: number | null; scopedBranchId?: number | null },
+) {
+  return withTx((tx) => linkConversationToWorkOrderTx(tx, conversationId, workOrderId, actor));
 }
 
 /** قائمة الـinbox — مَفروزة بـlastMessageAt تَنازُلياً، غَير مُؤرشَفة افتراضياً. */

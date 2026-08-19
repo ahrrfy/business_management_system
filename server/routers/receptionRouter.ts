@@ -4,6 +4,7 @@
 // workorders=FULL) — نفس بوّابة الالتزام receptionCheckout والطابور القديم بالضبط، فلا مدخل
 // جديد في authz-inventory. (workordersReadProcedure مرفوضة هنا عمداً — V9: بوّابة خريطةٍ بلا
 // قائمة أدوار تفتح الطابور لـwarehouse/user/auditor.)
+import { WORK_ORDER_CHANNELS } from "@shared/receptionChannel";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -68,7 +69,12 @@ const draftHeaderSchema = z.object({
   contactName: z.string().trim().max(255).nullish(),
   contactPhone: z.string().trim().max(32).nullish(),
   priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
-  channel: z.string().trim().max(20).nullish(),
+  // القناة من القاموس الحاكم لا نصّاً حرّاً (١٩/٨): كان `z.string().max(20)` يقبل أيّ شيءٍ
+  // ثمّ يصُبّه `commit.ts` بـ`as never` إلى عمود enum يرفضه ⤇ خطأ قاعدةٍ عند التثبيت
+  // لا عند الإدخال، بعد أن أتمّ الموظّف السلّة كلّها.
+  channel: z.enum(WORK_ORDER_CHANNELS).nullish(),
+  channelHandle: z.string().trim().max(120).nullish(),
+  conversationId: z.number().int().positive().nullish(),
   notes: z.string().max(2000).nullish(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
 });

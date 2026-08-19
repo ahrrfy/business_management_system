@@ -1,3 +1,5 @@
+import type { StartOrderFromConversation } from "@/pages/Inbox";
+import { toWorkOrderChannel } from "@shared/receptionChannel";
 import { ChannelMark } from "@/components/ChannelBadge";
 import { receptionChannelOptions } from "@shared/receptionChannel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -357,6 +359,8 @@ export default function Reception() {
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
   // معرّف القناة مستقل عن الهاتف: رقم الهاتف هو هوية العميل الإلزامية في جميع القنوات.
   const [channelHandle, setChannelHandle] = useState("");
+  /** المحادثة التي وُلد منها الطلب (ش١) — تُرسَل مع الرأس فيُربَط أمرُ الشغل بها ذرّيّاً. */
+  const [linkedConversationId, setLinkedConversationId] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({
@@ -970,6 +974,34 @@ export default function Reception() {
    *  `ensureCustomerId()` فوراً بينما `setCustomer` **لا يُحدِّث** المتغيّر الملتقَط في هذا
    *  الاستدعاء (React لا يزامن الحالة داخل نفس الدورة) ⇒ كانت المسوّدة تُزامَن بـ`customerId:null`
    *  فتُثبَّت الفاتورة/أوامر الشغل باسمٍ عابرٍ لا بالعميل الذي أُنشئ للتوّ. نمرّره صراحةً. */
+  /**
+   * ش١ (١٩/٨) — **من الرسالة إلى السلّة بنقرتين**: خيطُ المحادثة يملأ رأس الطلب (العميل،
+   * القناة، معرّفها) ويُغلق طبقةَ الوارد، فيبقى للموظّف اختيارُ ما يريده الزبون وحده.
+   *
+   * لا يُنشئ عميلاً: محادثةٌ بلا عميلٍ مربوط تملأ **الاسم والهاتف** فقط ويبقى القرار للموظّف
+   * (زرّ «+ عميل جديد» بنقرةٍ حيث يلزم) — إنشاءٌ صامتٌ من رسالةٍ واردة يُلوّث الكتالوج
+   * بعملاء وهميّين لكل من راسل المكتبة مرّة.
+   */
+  function startOrderFromConversation(v: StartOrderFromConversation) {
+    setLinkedConversationId(v.conversationId);
+    setChannel(toWorkOrderChannel(v.channel) === "OTHER" ? "WALK_IN" : (toWorkOrderChannel(v.channel) as typeof channel));
+    setChannelHandle(v.channelHandle);
+    // ⚠ الرقم يصل من القناة بصيغة E.164 (`+9647…`) وحقلُ المحطّة يطلب المحليّة
+    // (`07…`) ويحرسها `isValidIqMobile` عند الإتمام ⤇ بلا هذا التطبيع يفتح الموظّف الطلب
+    // ويملأ السلّة ثمّ يصطدم بـ«رقم الهاتف إلزامي» رغم أنّ الرقم وصل مع المحادثة.
+    // (ومعرّفُ إنستغرام/تيك توك ليس هاتفاً ⤇ يُترك الحقل ليملأه الموظّف.)
+    const localPhone = toLocalIqMobileDigits(v.channelHandle);
+    if (isValidIqMobile(localPhone)) setReceptionPhone(localPhone);
+    setCustomer({
+      customerId: v.customerId,
+      name: v.displayName ?? "",
+      phone: isValidIqMobile(localPhone) ? localPhone : null,
+      isNew: false,
+    });
+    setShowInbox(false);
+    notify.ok(`فُتح طلبٌ من محادثة ${v.displayName ?? v.channelHandle} — أضف ما يطلبه الزبون`);
+  }
+
   function buildDraftPayload(customerIdOverride?: number | null) {
     const effectiveCustomerId = customerIdOverride ?? customer.customerId ?? null;
     const header = {
@@ -978,6 +1010,9 @@ export default function Reception() {
       contactPhone: effectiveCustomerId == null ? (customer.phone?.trim() || null) : null,
       priceTier: effectiveTier,
       channel,
+      // ش١: المعرّف والمحادثة يسافران مع الرأس — وإلّا ضاع رقم مُرسِل الطلب عند التثبيت.
+      channelHandle: channelHandle.trim() || null,
+      conversationId: linkedConversationId,
     };
     const lines = cart.map((c, i) => {
       const eff = round2(D(effectivePrice(c))).toFixed(2);
@@ -1079,7 +1114,7 @@ export default function Reception() {
       if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, activeDraft?.id]);
+  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, channelHandle, linkedConversationId, activeDraft?.id]);
 
   /** استئناف مسوّدة (من هذا الجهاز أو جهاز زميل): صفوفٌ حيّة عبر catalog.byUnitIds + مواصفة CUSTOM من printSpec. */
   async function resumeDraft(draftId: number) {
@@ -1740,6 +1775,7 @@ export default function Reception() {
       setCustomer({ customerId: null, name: "", phone: null, isNew: false });
       setReceptionPhone("");
       setChannel("WALK_IN");
+    setLinkedConversationId(null);
       setChannelHandle("");
       reqIdRef.current = crypto.randomUUID();
       // تحديث القوائم.
@@ -1950,6 +1986,7 @@ export default function Reception() {
     setCustomer({ customerId: null, name: "", phone: null, isNew: false });
     setReceptionPhone("");
     setChannel("WALK_IN");
+    setLinkedConversationId(null);
     setChannelHandle("");
     reqIdRef.current = crypto.randomUUID();
     return true;
@@ -2915,7 +2952,7 @@ export default function Reception() {
               <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
             </Button>
           </div>
-          <Inbox />
+          <Inbox onStartOrder={startOrderFromConversation} />
         </div>
       )}
       {customerContextId != null && (

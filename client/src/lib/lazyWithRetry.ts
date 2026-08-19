@@ -33,7 +33,14 @@ function isChunkLoadError(err: unknown): boolean {
   );
 }
 
-export function lazyWithRetry<T extends ComponentType<unknown>>(
+/**
+ * القَيد `ComponentType<any>` هو **قَيد React.lazy نَفسه** — وكان هنا
+ * `ComponentType<unknown>` فَلا يَقبل مُكوّناً ذا خَصائص إطلاقاً (١٩/٨: أوّل صَفحة
+ * مُحمَّلة كَسولاً تَأخذ prop كَشَفَته). الخَصائص تَبقى مَفحوصةً عِند الاستعمال لأن
+ * `lazy` يُعيد `LazyExoticComponent<T>` بِـT الأصليّ لا المُوسَّع.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function lazyWithRetry<T extends ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
 ): ReturnType<typeof lazy<T>> {
   return lazy(async () => {

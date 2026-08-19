@@ -37,6 +37,22 @@ export const WORK_ORDER_CHANNELS = [
   "OTHER",
 ] as const satisfies readonly ReceptionChannel[];
 
+/** نوعُ القيم الستّ المسموحة على أمر الشغل — يُضيّق العقود بدل `z.string()` الحرّة. */
+export type WorkOrderChannel = (typeof WORK_ORDER_CHANNELS)[number];
+
+/**
+ * أيُّ قناةٍ نصّية ⇒ قناةُ أمر شغلٍ صالحة. مصدراها: خيطُ المحادثة (`conversations.channel`)
+ * ورأسُ المسوّدة (`receptionDrafts.channel` عمودُ varchar قد يحمل صفوفاً قديمة).
+ *
+ * `STORE` لا وجود لها على `workOrders.receptionChannel` (طلبُ المتجر مسارُه `onlineOrders`
+ * لا أمرَ شغل) ⇒ تُطوى إلى `OTHER` بدل صبٍّ أعمى يكتب قيمةً يرفضها العمود فيسقط الطلب
+ * بخطأ قاعدةٍ **عند التثبيت** بعد أن أتمّ الموظّف السلّة كلّها.
+ */
+export function toWorkOrderChannel(v: string | null | undefined): WorkOrderChannel {
+  if (v == null) return "WALK_IN";
+  return (WORK_ORDER_CHANNELS as readonly string[]).includes(v) ? (v as WorkOrderChannel) : "OTHER";
+}
+
 /** الاسم العربيّ الوحيد لكل قناة. */
 const LABELS: Record<ReceptionChannel, string> = {
   WALK_IN: "حضوري",

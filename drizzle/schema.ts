@@ -2943,6 +2943,16 @@ export const receptionDrafts = mysqlTable(
       .default("RETAIL")
       .notNull(),
     channel: varchar("channel", { length: 20 }),
+    /** معرّف العميل على القناة (رقم واتساب/اسم حساب) — 0214. كان `channel` بلا معرّفٍ
+     *  مقابل، فتُفقَد وسيلةُ الرجوع للزبون عند تثبيت المسوّدة رغم أنّ
+     *  `workOrders.channelHandle` قائمٌ ينتظر قيمة. */
+    channelHandle: varchar("channelHandle", { length: 120 }),
+    /** المحادثة التي وُلد منها الطلب (0214) — يجعل الربط يقع **داخل معاملة التثبيت**
+     *  فإمّا (أمر شغل + محادثة مربوطة) وإمّا لا شيء. */
+    conversationId: bigint("conversationId", { mode: "number" }).references(
+      () => conversations.id,
+      { onDelete: "set null" },
+    ),
     notes: text("notes"),
     dueDate: date("dueDate"),
     /** ذاكرة عرضٍ فقط — تُعاد حسابها خادمياً في كل كتابةٍ وعند التثبيت (لا يُقرأ منها قرار). */
@@ -2978,6 +2988,7 @@ export const receptionDrafts = mysqlTable(
     committedInvoiceUq: unique("uq_draft_committed_invoice").on(
       table.committedInvoiceId,
     ),
+    conversationIdx: index("idx_draft_conversation").on(table.conversationId),
     branchStatusIdx: index("idx_draft_branch_status_id").on(
       table.branchId,
       table.status,

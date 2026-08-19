@@ -4,6 +4,8 @@
 //   **الخادميّ** يصير sourceId `{uuid}-sale` فيصطدم بـuq_invoice_source حتى لو سقط القفلان.
 // إعادة التشغيل (ملاحظة ٢.١٠): النتيجة **تُعاد بناؤها من مفاتيح idempotency** لا من أعمدة
 // الرأس — نفس منطق isCompleteReplay القائم، فلا تعود workOrderIds فارغةً أبداً.
+import { toWorkOrderChannel } from "@shared/receptionChannel";
+import { linkConversationToWorkOrderTx } from "../conversationService";
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import {
@@ -242,7 +244,11 @@ function materialize(
       deposit: "0.00", // العرابين الحقيقية على المسوّدة تُخصَّص في ش٤ (orderPayments/allocateAtCommit)
       paymentMethod: null,
       paymentReference: null,
-      receptionChannel: (draft.channel as never) ?? "WALK_IN",
+      // القناة مُضيَّقةٌ في العقد (١٩/٨) ⤇ لا `as never`. والمعرّف يُنقَل معها: كان عمود
+      // `workOrders.channelHandle` ينتظر قيمةً والمسوّدة لا تحملها ⤇ طلبٌ من واتساب
+      // يُثبّت فيفقد رقمَ مُرسِله كلّيّاً.
+      receptionChannel: toWorkOrderChannel(draft.channel),
+      channelHandle: draft.channelHandle ?? null,
       hasDelivery: !!s.hasDelivery,
       deliveryAddress: s.deliveryAddress || null,
       deliveryPhone: s.deliveryPhone || null,
@@ -481,6 +487,18 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
     // قُبضت فعلاً بطريقة العربون. نشتقّها الآن من طرق القبضات المطبَّقة عليها — بعد
     // allocateAtCommit حيث تُعرف الحصص — بنفس طيّ `mixedAwarePaymentMethod` (تعدّد ⇒ MIXED).
     await stampDerivedPaymentMethods(tx, appliedPayments);
+
+    // ربط المحادثة بأمر الشغل **داخل معاملة التثبيت** (١٩/٨): إمّا (أمر شغل +
+    // محادثةٌ مربوطة) وإمّا لا شيء — لا ظنٌّ لاحق يسقط إن انقطعت الشبكة.
+    // والأوّل وحده: العمود علاقةٌ واحدٌ-لواحد، وسلّةٌ فيها أوامرُ عدّة خيطُها واحد.
+    if (draft.conversationId != null && result.workOrders.length > 0) {
+      await linkConversationToWorkOrderTx(
+        tx,
+        Number(draft.conversationId),
+        Number(result.workOrders[0].workOrderId),
+        actor,
+      );
+    }
 
     await tx
       .update(receptionDrafts)
