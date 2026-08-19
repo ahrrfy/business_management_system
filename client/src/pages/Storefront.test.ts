@@ -7,6 +7,7 @@ import {
   addStorefrontCartLines,
   collectStorefrontFailures,
   formatStorefrontReservationDeadline,
+  getStorefrontCustomizationConfig,
   loadCheckoutAttempt,
   recordStorefrontCartChange,
   reconcileStorefrontCartQuote,
@@ -27,6 +28,18 @@ describe("storefront Turnstile submission gate", () => {
     expect(storefrontTurnstileSubmissionReady(true, null, "token")).toBe(false);
     expect(storefrontTurnstileSubmissionReady(true, "site-key", null)).toBe(false);
     expect(storefrontTurnstileSubmissionReady(true, "site-key", "token")).toBe(true);
+  });
+});
+
+describe("storefront customization", () => {
+  it("requires dependencies for printing products and keeps different customizations as separate cart lines", () => {
+    const config = getStorefrontCustomizationConfig("طباعة دعوة زفاف مخصصة", "المطبوعات التجارية");
+    expect(config?.kind).toBe("PRINT");
+    expect(config?.requiresService).toBe(true);
+    const base = new Map<string, CartLine>();
+    const first = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", customization: { kind: "PRINT", service: "اسم أو عبارة", message: "سارة" } }, "2500");
+    const second = addStorefrontCartLine(first, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", customization: { kind: "PRINT", service: "اسم أو عبارة", message: "ليان" } }, "2500");
+    expect(second.size).toBe(2);
   });
 });
 
@@ -112,6 +125,7 @@ describe("storefront persistence safety", () => {
     notes: "",
   };
   const line: CartLine = {
+    cartKey: "11:",
     productUnitId: 11,
     productId: 7,
     name: "دفتر",
@@ -127,7 +141,7 @@ describe("storefront persistence safety", () => {
       removeItem: vi.fn(),
     };
 
-    expect(saveStorefrontSnapshot(new Map([[line.productUnitId, line]]), form, storage)).toBe(true);
+    expect(saveStorefrontSnapshot(new Map([[line.cartKey, line]]), form, storage)).toBe(true);
     expect(storage.setItem).toHaveBeenCalledTimes(2);
   });
 
@@ -142,7 +156,7 @@ describe("storefront persistence safety", () => {
       removeItem: vi.fn(),
     };
 
-    expect(saveStorefrontSnapshot(new Map([[line.productUnitId, line]]), form, storage)).toBe(false);
+    expect(saveStorefrontSnapshot(new Map([[line.cartKey, line]]), form, storage)).toBe(false);
     expect(storage.setItem).toHaveBeenCalledTimes(2);
   });
 
@@ -160,20 +174,20 @@ describe("storefront persistence safety", () => {
       line.price,
     );
     recordStorefrontCartChange(markChanged);
-    const increased = setStorefrontCartQuantity(added, line.productUnitId, 3);
+    const increased = setStorefrontCartQuantity(added, line.cartKey, 3);
     recordStorefrontCartChange(markChanged);
-    const removed = setStorefrontCartQuantity(increased, line.productUnitId, 0);
+    const removed = setStorefrontCartQuantity(increased, line.cartKey, 0);
     recordStorefrontCartChange(markChanged);
 
-    expect(added.get(line.productUnitId)?.qty).toBe(1);
-    expect(increased.get(line.productUnitId)?.qty).toBe(3);
-    expect(removed.has(line.productUnitId)).toBe(false);
+    expect(added.get(line.cartKey)?.qty).toBe(1);
+    expect(increased.get(line.cartKey)?.qty).toBe(3);
+    expect(removed.has(line.cartKey)).toBe(false);
     expect(markChanged).toHaveBeenCalledTimes(3);
   });
 
   it("adds several colours in one operation while preserving each variant as its own order line", () => {
-    const existing: CartLine = { ...line, qty: 2 };
-    const result = addStorefrontCartLines(new Map([[existing.productUnitId, existing]]), [
+    const existing: CartLine = { ...line, cartKey: "11:", qty: 2 };
+    const result = addStorefrontCartLines(new Map([[existing.cartKey, existing]]), [
       {
         productUnitId: existing.productUnitId,
         productId: existing.productId,
@@ -196,8 +210,8 @@ describe("storefront persistence safety", () => {
       },
     ]);
 
-    expect(result.get(11)).toMatchObject({ qty: 5, name: "قلم — أزرق" });
-    expect(result.get(12)).toMatchObject({ qty: 2, name: "قلم — أحمر" });
+    expect(result.get("11:")).toMatchObject({ qty: 5, name: "قلم — أزرق" });
+    expect(result.get("12:")).toMatchObject({ qty: 2, name: "قلم — أحمر" });
     expect(result.size).toBe(2);
   });
 
@@ -229,7 +243,7 @@ describe("storefront persistence safety", () => {
       setItem: vi.fn((key: string, value: string) => { values.set(key, value); }),
       removeItem: vi.fn((key: string) => { values.delete(key); }),
     };
-    const cart = new Map([[line.productUnitId, line]]);
+    const cart = new Map([[line.cartKey, line]]);
     const fingerprint = storefrontCheckoutFingerprint(cart, form);
     const attempt = { clientRequestId: "sf-stable", fingerprint, expectedGrandTotal: "500.00", createdAt: 123 };
     expect(saveCheckoutAttempt(attempt, storage)).toBe(true);
@@ -238,13 +252,13 @@ describe("storefront persistence safety", () => {
   });
 
   it("changes the retry fingerprint when the monetary/cart intent changes", () => {
-    const cart = new Map([[line.productUnitId, line]]);
-    const changed = new Map([[line.productUnitId, { ...line, price: "750", qty: 2 }]]);
+    const cart = new Map([[line.cartKey, line]]);
+    const changed = new Map([[line.cartKey, { ...line, price: "750", qty: 2 }]]);
     expect(storefrontCheckoutFingerprint(changed, form)).not.toBe(storefrontCheckoutFingerprint(cart, form));
   });
 
   it("refreshes a conflicted cart price so the next confirmation carries a new accepted fingerprint", () => {
-    const original = new Map([[line.productUnitId, line]]);
+    const original = new Map([[line.cartKey, line]]);
     const originalFingerprint = storefrontCheckoutFingerprint(original, form);
     const refreshed = reconcileStorefrontCartPricing(original, new Map([
       [line.productId, {
@@ -254,12 +268,12 @@ describe("storefront persistence safety", () => {
     ]));
 
     expect(refreshed).toMatchObject({ priceChanged: 1, unavailable: 0, unresolved: 0 });
-    expect(refreshed.cart.get(line.productUnitId)?.price).toBe("750.00");
+    expect(refreshed.cart.get(line.cartKey)?.price).toBe("750.00");
     expect(storefrontCheckoutFingerprint(refreshed.cart, form)).not.toBe(originalFingerprint);
   });
 
   it("applies a quantity-threshold quote instead of repeating the qty=1 catalog price", () => {
-    const twoItems = new Map([[line.productUnitId, { ...line, price: "100.00", qty: 2 }]]);
+    const twoItems = new Map([[line.cartKey, { ...line, price: "100.00", qty: 2 }]]);
     const refreshed = reconcileStorefrontCartQuote(twoItems, [{
       productUnitId: line.productUnitId,
       quantity: 2,
@@ -267,6 +281,6 @@ describe("storefront persistence safety", () => {
     }]);
 
     expect(refreshed).toMatchObject({ priceChanged: 1, unresolved: 0 });
-    expect(refreshed.cart.get(line.productUnitId)).toMatchObject({ qty: 2, price: "90.00" });
+    expect(refreshed.cart.get(line.cartKey)).toMatchObject({ qty: 2, price: "90.00" });
   });
 });

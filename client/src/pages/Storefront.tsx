@@ -81,7 +81,67 @@ export function storefrontTurnstileSubmissionReady(
   return orderingEnabled && !!siteKey?.trim() && !!token?.trim();
 }
 
+export type StorefrontCustomizationKind = "PRINT" | "GIFT";
+
+export type StorefrontCustomization = {
+  kind: StorefrontCustomizationKind;
+  service?: string;
+  packaging?: "standard" | "gift";
+  recipient?: string;
+  message?: string;
+  uploadName?: string;
+};
+
+export type StorefrontCustomizationConfig = {
+  kind: StorefrontCustomizationKind;
+  title: string;
+  services: string[];
+  allowPackaging: boolean;
+  allowMessage: boolean;
+  requiresService: boolean;
+};
+
+export function getStorefrontCustomizationConfig(
+  productName: string,
+  category?: string | null,
+): StorefrontCustomizationConfig | null {
+  const source = `${productName} ${category ?? ""}`.trim();
+  if (!/(مخصص|تخصيص|طباعة|مطبوع|دعوة|بطاقة|ستيكر|ملصق|بنر|اعلان|نقش|حفر|تغليف|هدية)/i.test(source)) return null;
+  const isPrint = /(طباعة|مطبوع|دعوة|بطاقة|ستيكر|ملصق|بنر|اعلان|نقش|حفر)/i.test(source);
+  return isPrint
+    ? {
+        kind: "PRINT",
+        title: "خصّص طلبك قبل الإضافة",
+        services: ["اسم أو عبارة", "صورة أو تصميم", "طباعة كاملة"],
+        allowPackaging: true,
+        allowMessage: true,
+        requiresService: true,
+      }
+    : {
+        kind: "GIFT",
+        title: "أضف لمسة الهدية",
+        services: ["تغليف هدية", "بطاقة إهداء", "تغليف وبطاقة"],
+        allowPackaging: false,
+        allowMessage: true,
+        requiresService: false,
+      };
+}
+
+function serializeCustomization(customization?: StorefrontCustomization): string {
+  return customization ? JSON.stringify(customization) : "";
+}
+
+function customizationCartKey(productUnitId: number, customization?: StorefrontCustomization): string {
+  return `${productUnitId}:${serializeCustomization(customization)}`;
+}
+
+export function summarizeStorefrontCustomization(customization?: StorefrontCustomization): string | null {
+  if (!customization) return null;
+  return [customization.service, customization.packaging === "gift" ? "تغليف هدية" : null, customization.recipient ? `إلى: ${customization.recipient}` : null, customization.message ? `رسالة: ${customization.message}` : null, customization.uploadName ? `ملف: ${customization.uploadName}` : null].filter(Boolean).join(" • ") || null;
+}
+
 export interface CartLine {
+  cartKey: string;
   productUnitId: number;
   productId: number;
   name: string;
@@ -89,6 +149,7 @@ export interface CartLine {
   imageUrl: string | null;
   unitName: string;
   variantLabel?: string;
+  customization?: StorefrontCustomization;
   qty: number;
 }
 
@@ -109,9 +170,9 @@ export interface StorefrontPricingSnapshot {
 }
 
 export function reconcileStorefrontCartPricing(
-  current: Map<number, CartLine>,
+  current: Map<string, CartLine>,
   latestByProduct: Map<number, StorefrontPricingSnapshot | null | undefined>,
-): { cart: Map<number, CartLine>; priceChanged: number; unavailable: number; unresolved: number } {
+): { cart: Map<string, CartLine>; priceChanged: number; unavailable: number; unresolved: number } {
   const cart = new Map(current);
   let priceChanged = 0;
   let unavailable = 0;
@@ -129,12 +190,12 @@ export function reconcileStorefrontCartPricing(
     const unit = units.find((candidate) => candidate.productUnitId === line.productUnitId);
     const currentPrice = unit?.salePrice ?? unit?.price ?? null;
     if (currentPrice == null) {
-      cart.delete(line.productUnitId);
+      cart.delete(line.cartKey);
       unavailable += 1;
       continue;
     }
     if (Number(currentPrice).toFixed(2) !== Number(line.price).toFixed(2)) {
-      cart.set(line.productUnitId, { ...line, price: Number(currentPrice).toFixed(2) });
+      cart.set(line.cartKey, { ...line, price: Number(currentPrice).toFixed(2) });
       priceChanged += 1;
     }
   }
@@ -142,9 +203,9 @@ export function reconcileStorefrontCartPricing(
 }
 
 export function reconcileStorefrontCartQuote(
-  current: Map<number, CartLine>,
+  current: Map<string, CartLine>,
   quotedLines: Array<{ productUnitId: number; quantity: number; unitPrice: string }>,
-): { cart: Map<number, CartLine>; priceChanged: number; unresolved: number } {
+): { cart: Map<string, CartLine>; priceChanged: number; unresolved: number } {
   const cart = new Map(current);
   const quotedByUnit = new Map(quotedLines.map((line) => [line.productUnitId, line]));
   let priceChanged = 0;
@@ -157,7 +218,7 @@ export function reconcileStorefrontCartQuote(
     }
     const price = Number(quoted.unitPrice).toFixed(2);
     if (price !== Number(line.price).toFixed(2)) {
-      cart.set(line.productUnitId, { ...line, price });
+      cart.set(line.cartKey, { ...line, price });
       priceChanged += 1;
     }
   }
@@ -180,15 +241,18 @@ export type StorefrontCheckoutAttempt = {
   createdAt: number;
 };
 
-function loadCart(): Map<number, CartLine> {
-  const m = new Map<number, CartLine>();
+function loadCart(): Map<string, CartLine> {
+  const m = new Map<string, CartLine>();
   try {
     const raw = localStorage.getItem(CART_STORAGE_KEY);
     if (!raw) return m;
     const arr = JSON.parse(raw) as unknown;
     if (!Array.isArray(arr)) return m;
-    for (const l of arr as CartLine[]) {
-      if (l && typeof l.productUnitId === "number" && typeof l.qty === "number" && l.qty > 0) m.set(l.productUnitId, l);
+    for (const rawLine of arr as Partial<CartLine>[]) {
+      if (rawLine && typeof rawLine.productUnitId === "number" && typeof rawLine.qty === "number" && rawLine.qty > 0) {
+        const line = { ...rawLine, cartKey: typeof rawLine.cartKey === "string" && rawLine.cartKey ? rawLine.cartKey : customizationCartKey(rawLine.productUnitId, rawLine.customization) } as CartLine;
+        m.set(line.cartKey, line);
+      }
     }
   } catch {
     /* تالف/محظور (وضع خاص) — سلّة فارغة */
@@ -199,7 +263,7 @@ type StorefrontStorage = Pick<Storage, "setItem" | "removeItem">;
 type StorefrontReadStorage = Pick<Storage, "getItem" | "removeItem">;
 
 export function saveCart(
-  cart: Map<number, CartLine>,
+  cart: Map<string, CartLine>,
   storage: StorefrontStorage = localStorage,
 ): boolean {
   try {
@@ -274,10 +338,10 @@ export function saveCheckoutAttempt(
   }
 }
 
-export function storefrontCheckoutFingerprint(cart: Map<number, CartLine>, form: CheckoutForm): string {
+export function storefrontCheckoutFingerprint(cart: Map<string, CartLine>, form: CheckoutForm): string {
   const lines = Array.from(cart.values())
-    .sort((a, b) => a.productUnitId - b.productUnitId)
-    .map((line) => [line.productUnitId, line.qty, Number(line.price).toFixed(2)]);
+    .sort((a, b) => a.cartKey.localeCompare(b.cartKey))
+    .map((line) => [line.cartKey, line.productUnitId, line.qty, Number(line.price).toFixed(2), serializeCustomization(line.customization)]);
   return JSON.stringify({
     lines,
     name: form.name.trim(),
@@ -289,7 +353,7 @@ export function storefrontCheckoutFingerprint(cart: Map<number, CartLine>, form:
 }
 
 export function saveStorefrontSnapshot(
-  cart: Map<number, CartLine>,
+  cart: Map<string, CartLine>,
   form: CheckoutForm,
   storage: StorefrontStorage = localStorage,
   attempt: StorefrontCheckoutAttempt | null = null,
@@ -308,6 +372,7 @@ export type StorefrontCartProduct = {
   imageUrl: string | null;
   unitName: string;
   variantLabel?: string;
+  customization?: StorefrontCustomization;
 };
 
 /** اختيارٌ واحد من نافذة المنتج. تبقى الأسعار معلومات عرض فقط؛ الخادم يعيد التسعير عند إنشاء الطلب. */
@@ -317,13 +382,16 @@ export type StorefrontCartSelection = StorefrontCartProduct & {
 };
 
 export function addStorefrontCartLine(
-  current: Map<number, CartLine>,
+  current: Map<string, CartLine>,
   product: StorefrontCartProduct,
   effectivePrice: string,
-): Map<number, CartLine> {
+): Map<string, CartLine> {
   const next = new Map(current);
-  const existing = next.get(product.productUnitId);
-  next.set(product.productUnitId, {
+  const cartKey = customizationCartKey(product.productUnitId, product.customization);
+  const existing = next.get(cartKey);
+  const customizationLabel = summarizeStorefrontCustomization(product.customization);
+  next.set(cartKey, {
+    cartKey,
     productUnitId: product.productUnitId,
     productId: product.productId,
     name: product.variantLabel
@@ -333,7 +401,9 @@ export function addStorefrontCartLine(
     imageUrl: product.imageUrl,
     unitName: product.unitName,
     variantLabel: product.variantLabel,
+    customization: product.customization,
     qty: (existing?.qty ?? 0) + 1,
+    ...(customizationLabel ? { customization: product.customization } : {}),
   });
   return next;
 }
@@ -343,17 +413,18 @@ export function addStorefrontCartLine(
  * لا نثق بالكمية أو السعر هنا عند الدفع: createOrder يعيد التحقق من المخزون والتسعير خادمياً.
  */
 export function addStorefrontCartLines(
-  current: Map<number, CartLine>,
+  current: Map<string, CartLine>,
   selections: StorefrontCartSelection[],
-): Map<number, CartLine> {
+): Map<string, CartLine> {
   let next = new Map(current);
   for (const selection of selections) {
     if (!Number.isInteger(selection.quantity) || selection.quantity <= 0) continue;
     const line = addStorefrontCartLine(next, selection, selection.effectivePrice);
-    const added = line.get(selection.productUnitId)!;
-    line.set(selection.productUnitId, {
+    const cartKey = customizationCartKey(selection.productUnitId, selection.customization);
+    const added = line.get(cartKey)!;
+    line.set(cartKey, {
       ...added,
-      qty: Math.min((next.get(selection.productUnitId)?.qty ?? 0) + selection.quantity, 999),
+      qty: Math.min((next.get(cartKey)?.qty ?? 0) + selection.quantity, 999),
     });
     next = line;
   }
@@ -361,15 +432,15 @@ export function addStorefrontCartLines(
 }
 
 export function setStorefrontCartQuantity(
-  current: Map<number, CartLine>,
-  productUnitId: number,
+  current: Map<string, CartLine>,
+  cartKey: string,
   quantity: number,
-): Map<number, CartLine> {
-  const line = current.get(productUnitId);
+): Map<string, CartLine> {
+  const line = current.get(cartKey);
   if (!line) return current;
   const next = new Map(current);
-  if (quantity <= 0) next.delete(productUnitId);
-  else next.set(productUnitId, { ...line, qty: Math.min(quantity, 999) });
+  if (quantity <= 0) next.delete(cartKey);
+  else next.set(cartKey, { ...line, qty: Math.min(quantity, 999) });
   return next;
 }
 
@@ -412,7 +483,7 @@ function ProductImage({
       </div>
     );
   }
-  return <img src={url} alt={alt} loading="lazy" className={`store-product-image object-contain ${className ?? ""}`} />;
+  return <img src={url} alt={alt} loading="lazy" decoding="async" className={`store-product-image object-contain ${className ?? ""}`} />;
 }
 
 /**
@@ -773,8 +844,9 @@ export default function Storefront() {
   // اختيار متعدد للمتغيرات في ورقة المنتج. المفتاح هو وحدة البيع، لا معرّف المتغير،
   // كي لا تختلط وحدات مختلفة للون نفسه داخل السلة أو عند التسعير الخادمي.
   const [variantQuantities, setVariantQuantities] = useState<Map<number, number>>(new Map());
+  const [customizationDraft, setCustomizationDraft] = useState<StorefrontCustomization>({ kind: "PRINT" });
   const [panel, setPanel] = useState<Panel>(null);
-  const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
+  const [cart, setCart] = useState<Map<string, CartLine>>(loadCart);
 
   const [form, setForm] = useState<CheckoutForm>(loadForm);
   const cartRef = useRef(cart);
@@ -1019,11 +1091,30 @@ export default function Storefront() {
       stockLeft: product.stockLeft,
     };
   }, [detailQ.data, detailVariant, selectedStoreUnitId]);
+  const customizationConfig = useMemo(
+    () => detailQ.data ? getStorefrontCustomizationConfig(detailQ.data.productName, detailQ.data.category) : null,
+    [detailQ.data],
+  );
+  const customizationValidation = useMemo(() => {
+    if (!customizationConfig) return null;
+    if (customizationConfig.requiresService && !customizationDraft.service) return "اختر نوع التخصيص أولاً";
+    if (customizationDraft.service === "اسم أو عبارة" && !customizationDraft.message?.trim()) return "اكتب الاسم أو العبارة المطلوبة";
+    if (customizationDraft.service === "صورة أو تصميم" && !customizationDraft.uploadName) return "اكتب اسم الملف أو أرفق التصميم قبل الإضافة";
+    if (customizationDraft.service?.includes("بطاقة") && !customizationDraft.message?.trim()) return "اكتب رسالة بطاقة الإهداء";
+    return null;
+  }, [customizationConfig, customizationDraft]);
+  function selectedCustomization(): StorefrontCustomization | undefined {
+    if (!customizationConfig) return undefined;
+    const value = { ...customizationDraft, kind: customizationConfig.kind };
+    const hasDetail = [value.service, value.recipient, value.message, value.uploadName].some((item) => Boolean(item?.trim())) || value.packaging === "gift";
+    return hasDetail ? value : undefined;
+  }
 
   useEffect(() => {
     setSelectedStoreUnitId(null);
     setSelectedVariantId(null);
     setVariantQuantities(new Map());
+    setCustomizationDraft({ kind: "PRINT" });
   }, [selectedId]);
 
   useEffect(() => {
@@ -1153,7 +1244,7 @@ export default function Storefront() {
 
   function addToCart(p: {
     productUnitId: number; productId: number; productName: string; price: string | null;
-    salePrice?: string | null; imageUrl: string | null; unitName: string; variantLabel?: string; inStock?: boolean;
+    salePrice?: string | null; imageUrl: string | null; unitName: string; variantLabel?: string; inStock?: boolean; customization?: StorefrontCustomization;
   }) {
     const eff = p.salePrice ?? p.price;
     if (eff == null || p.inStock === false) return;
@@ -1170,8 +1261,9 @@ export default function Storefront() {
     });
   }
   function addSelectedVariants() {
-    if (!detailQ.data) return;
+    if (!detailQ.data || customizationValidation) return;
     const selections: StorefrontCartSelection[] = [];
+    const customization = selectedCustomization();
     for (const variant of detailQ.data.variants ?? []) {
       // كل وحدة بيع لها مخزون وسعر مستقلان: نضيف كل لون/قياس/تعبئة اختار الزبون كخط مستقل.
       for (const unit of variant.units) {
@@ -1185,6 +1277,7 @@ export default function Storefront() {
           imageUrl: detailQ.data.imageUrl,
           unitName: unit.unitName,
           variantLabel: variant.label,
+          customization,
           effectivePrice,
           quantity,
         });
@@ -1197,7 +1290,7 @@ export default function Storefront() {
     setSelectedId(null);
   }
   function addSelectedUnit() {
-    if (!detailQ.data || !detailUnit || !detailUnit.inStock) return;
+    if (!detailQ.data || !detailUnit || !detailUnit.inStock || customizationValidation) return;
     const effectivePrice = detailUnit.salePrice ?? detailUnit.price;
     if (!effectivePrice) return;
     const quantity = Math.max(1, variantQuantities.get(detailUnit.productUnitId) ?? 1);
@@ -1208,6 +1301,7 @@ export default function Storefront() {
       imageUrl: detailQ.data.imageUrl,
       unitName: detailUnit.unitName,
       variantLabel: detailVariant?.label,
+      customization: selectedCustomization(),
       effectivePrice,
       quantity,
     };
@@ -1216,9 +1310,9 @@ export default function Storefront() {
     setCart((previous) => addStorefrontCartLines(previous, [selection]));
     setSelectedId(null);
   }
-  function setQty(productUnitId: number, qty: number) {
+  function setQty(cartKey: string, qty: number) {
     recordStorefrontCartChange();
-    setCart((prev) => setStorefrontCartQuantity(prev, productUnitId, qty));
+    setCart((prev) => setStorefrontCartQuantity(prev, cartKey, qty));
   }
   function offerLabel(o: { type: "PERCENT" | "AMOUNT"; discountPercent: string; discountAmount: string }): string {
     return o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`;
@@ -1270,12 +1364,17 @@ export default function Storefront() {
     checkoutAttemptRef.current = attempt;
     setCheckoutAttempt(attempt);
     orderInFlightRef.current = true;
+    const customizationNotes = cartLines
+      .filter((line) => line.customization)
+      .map((line) => `تخصيص ${line.name}: ${summarizeStorefrontCustomization(line.customization)}`)
+      .join("\n");
+    const orderNotes = [form.notes.trim(), customizationNotes].filter(Boolean).join("\n");
     createOrder.mutate({
       customerName: name,
       customerPhone: phone,
       governorate: form.governorate,
       addressText: address,
-      notes: form.notes.trim() || undefined,
+      notes: orderNotes || undefined,
       lines: cartLines.map((l) => ({
         productUnitId: l.productUnitId,
         quantity: l.qty,
@@ -1600,6 +1699,19 @@ export default function Storefront() {
                         <ColorSwatches colors={detailQ.data.colors} max={12} size={16} />
                       </div>
                     )}
+                    {customizationConfig && (
+                      <section className="mt-3 rounded-2xl border border-[#f0d991] bg-[#fff8df] p-3" aria-label="خيارات تخصيص المنتج">
+                        <div className="flex items-start justify-between gap-3">
+                          <div><p className="text-xs font-black text-[#25406f]">{customizationConfig.title}</p><p className="mt-1 text-[11px] leading-relaxed text-[#806b3a]">هذه الخيارات تُحفظ مع المنتج في السلة والطلب، ويمكن اختيارها لكل لون أو قياس.</p></div>
+                          <Tag aria-hidden className="size-4 shrink-0 text-[#d39c27]" />
+                        </div>
+                        {customizationConfig.services.length > 0 && <label className="mt-3 block text-[11px] font-black text-[#25406f]">نوع التخصيص {customizationConfig.requiresService && <span className="text-[#e65f4a]">*</span>}<select value={customizationDraft.service ?? ""} onChange={(event) => setCustomizationDraft((previous) => ({ ...previous, kind: customizationConfig.kind, service: event.target.value || undefined }))} className="mt-1.5 w-full rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none focus:border-[#e65f4a]"><option value="">{customizationConfig.requiresService ? "اختر نوع التخصيص" : "بدون تخصيص إضافي"}</option>{customizationConfig.services.map((service) => <option key={service} value={service}>{service}</option>)}</select></label>}
+                        {customizationConfig.allowPackaging && <label className="mt-2.5 block text-[11px] font-black text-[#25406f]">التغليف<select value={customizationDraft.packaging ?? "standard"} onChange={(event) => setCustomizationDraft((previous) => ({ ...previous, packaging: event.target.value as "standard" | "gift" }))} className="mt-1.5 w-full rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none focus:border-[#e65f4a]"><option value="standard">تغليف عادي</option><option value="gift">تغليف هدية</option></select></label>}
+                        {customizationConfig.allowMessage && <label className="mt-2.5 block text-[11px] font-black text-[#25406f]">{customizationDraft.service?.includes("بطاقة") ? "رسالة بطاقة الإهداء" : customizationDraft.service === "اسم أو عبارة" ? "الاسم أو العبارة" : "رسالة أو تفاصيل إضافية"}{(customizationDraft.service === "اسم أو عبارة" || customizationDraft.service?.includes("بطاقة")) && <span className="text-[#e65f4a]"> *</span>}<textarea value={customizationDraft.message ?? ""} onChange={(event) => setCustomizationDraft((previous) => ({ ...previous, kind: customizationConfig.kind, message: event.target.value }))} rows={2} maxLength={300} placeholder="اكتب التفاصيل التي تريدها للفريق…" className="mt-1.5 w-full resize-none rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none placeholder:text-[#a49a8e] focus:border-[#e65f4a]" /></label>}
+                        {customizationDraft.service === "صورة أو تصميم" && <label className="mt-2.5 block text-[11px] font-black text-[#25406f]">مرجع ملف التصميم <input value={customizationDraft.uploadName ?? ""} onChange={(event) => setCustomizationDraft((previous) => ({ ...previous, kind: customizationConfig.kind, uploadName: event.target.value }))} placeholder="اسم الملف أو وصفه" className="mt-1.5 block w-full rounded-xl border border-dashed border-[#e6b94d] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none placeholder:text-[#a49a8e] focus:border-[#e65f4a]" /><span className="mt-1 block text-[10px] font-medium text-[#8f7b58]">سيؤكد الفريق الملف أو يستلمه عبر واتساب بعد الطلب.</span></label>}
+                        {customizationValidation && <p role="alert" className="mt-2 rounded-xl bg-[#e65f4a]/10 px-2.5 py-2 text-[11px] font-bold text-[#b74435]">{customizationValidation}</p>}
+                      </section>
+                    )}
                     <div className="mt-3 flex items-baseline gap-2">
                       <p className="text-xl font-extrabold text-money-positive">{priceLabel(detailUnit?.salePrice ?? detailUnit?.price ?? null)}</p>
                       {detailUnit?.salePrice != null && detailUnit.price != null && Number(detailUnit.salePrice) < Number(detailUnit.price) && (
@@ -1633,9 +1745,9 @@ export default function Storefront() {
                       addSelectedUnit();
                     }
                   }}
-                  disabled={(detailQ.data?.variants?.length ?? 0) > 1
+                  disabled={!!customizationValidation || ((detailQ.data?.variants?.length ?? 0) > 1
                     ? !Array.from(variantQuantities.values()).some((quantity) => quantity > 0)
-                    : !detailUnit?.inStock || detailUnit.price == null}
+                    : !detailUnit?.inStock || detailUnit.price == null)}
                   className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                 >
                   <Plus aria-hidden className="size-4" />
@@ -1705,23 +1817,24 @@ export default function Storefront() {
             <>
               <div className="flex flex-col gap-3">
                 {cartLines.map((l) => (
-                  <div key={l.productUnitId} className="flex items-center gap-3 rounded-xl bg-white p-2.5 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                  <div key={l.cartKey} className="flex items-center gap-3 rounded-xl bg-white p-2.5 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                     <ProductImage url={l.imageUrl} alt={l.name} className="size-16 shrink-0 rounded-xl" />
                     <div className="min-w-0 flex-1">
                       <p className="line-clamp-2 text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{l.name}</p>
+                      {summarizeStorefrontCustomization(l.customization) && <p className="mt-1 line-clamp-2 text-[10px] font-bold leading-relaxed text-[#a16b2a]">تخصيص: {summarizeStorefrontCustomization(l.customization)}</p>}
                       <p className="mt-1 text-sm font-extrabold text-emerald-600 dark:text-emerald-400">{money(l.price)} د.ع</p>
                     </div>
                     <div className="flex flex-col items-center gap-1.5">
                       <div className="flex items-center gap-2">
-                        <button onClick={() => setQty(l.productUnitId, l.qty - 1)} aria-label="إنقاص" className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300">
+                        <button onClick={() => setQty(l.cartKey, l.qty - 1)} aria-label="إنقاص" className="flex size-7 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300">
                           <Minus aria-hidden className="size-3.5" />
                         </button>
                         <span className="w-6 text-center text-sm font-extrabold tabular-nums">{l.qty}</span>
-                        <button onClick={() => setQty(l.productUnitId, l.qty + 1)} aria-label="زيادة" className="flex size-7 items-center justify-center rounded-full bg-emerald-600 text-white transition hover:bg-emerald-700">
+                        <button onClick={() => setQty(l.cartKey, l.qty + 1)} aria-label="زيادة" className="flex size-7 items-center justify-center rounded-full bg-emerald-600 text-white transition hover:bg-emerald-700">
                           <Plus aria-hidden className="size-3.5" />
                         </button>
                       </div>
-                      <button onClick={() => setQty(l.productUnitId, 0)} aria-label="حذف" className="flex items-center gap-1 text-[11px] font-medium text-rose-500 hover:underline">
+                      <button onClick={() => setQty(l.cartKey, 0)} aria-label="حذف" className="flex items-center gap-1 text-[11px] font-medium text-rose-500 hover:underline">
                         <Trash2 aria-hidden className="size-3" />
                         حذف
                       </button>
@@ -1771,7 +1884,7 @@ export default function Storefront() {
                     openWhatsApp(
                       settingsQ.data!.whatsappNumber,
                       buildStorefrontCartMessage(
-                        cartLines.map((l) => ({ name: l.name, quantity: l.qty, total: Number(l.price) * l.qty })),
+                        cartLines.map((l) => ({ name: summarizeStorefrontCustomization(l.customization) ? `${l.name} — تخصيص: ${summarizeStorefrontCustomization(l.customization)}` : l.name, quantity: l.qty, total: Number(l.price) * l.qty })),
                         cartSubtotal
                       )
                     )
