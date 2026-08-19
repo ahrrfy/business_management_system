@@ -3310,6 +3310,14 @@ export const productImageJobs = mysqlTable(
     ])
       .default("PENDING_REVIEW")
       .notNull(),
+    /** أولوية تشغيلية للمهمة؛ لا تغيّر صلاحياتها أو ترتيب المراجعة الأمني. */
+    priority: mysqlEnum("priority", ["LOW", "NORMAL", "HIGH", "URGENT"])
+      .default("NORMAL")
+      .notNull(),
+    /** موعد الإنجاز التشغيلي، ويظل NULL للمهام بلا SLA محدد. */
+    dueAt: timestamp("dueAt"),
+    /** قفل تفاؤلي لكل تعديل من الهاتف أو سطح المكتب. */
+    revision: int("revision").default(1).notNull(),
     templateVersion: int("templateVersion"),
     createdBy: int("createdBy").references(() => users.id), // users.id = int (لا bigint)
     assignedTo: int("assignedTo").references(() => users.id),
@@ -3344,6 +3352,11 @@ export const productImageJobs = mysqlTable(
     statusIdx: index("idx_pijob_status").on(table.status),
     assigneeStatusIdx: index("idx_pijob_assignee_status").on(table.assignedTo, table.status),
     branchStatusIdx: index("idx_pijob_branch_status").on(table.branchId, table.status),
+    branchPriorityDueIdx: index("idx_pijob_branch_priority_due").on(
+      table.branchId,
+      table.priority,
+      table.dueAt,
+    ),
     submitterStatusIdx: index("idx_pijob_submitter_status").on(table.submittedBy, table.status),
     oneActivePerProduct: unique("uq_pijob_product_active").on(table.productId, table.activeSlot),
   }),
