@@ -5,6 +5,8 @@ import {
   coldOfflineStudioActor,
   studioOfflineProfileInput,
   shouldSkipColdStudioAuth,
+  coldStudioShellCapabilities,
+  shouldMountGlobalStudioTools,
   studioOfflineCapabilities,
 } from "./coldOfflinePolicy";
 
@@ -108,5 +110,33 @@ describe("cold offline product studio policy", () => {
         localProfile: { userId: 7, role: "print_operator" },
       }),
     ).toBe(false);
+  });
+
+  it("mounts neither global search nor mobile navigation for the verified cold Studio shell", () => {
+    expect(coldStudioShellCapabilities(true)).toEqual({
+      mountGlobalSearch: false,
+      mountMobileBottomNav: false,
+      allowRemoteNavigation: false,
+    });
+    expect(coldStudioShellCapabilities(false)).toEqual({
+      mountGlobalSearch: true,
+      mountMobileBottomNav: true,
+      allowRemoteNavigation: true,
+    });
+  });
+
+  it("never mounts the global search/barcode surface on the cold Studio URL", () => {
+    expect(
+      shouldMountGlobalStudioTools({
+        location: COLD_OFFLINE_STUDIO_PATH,
+        offline: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldMountGlobalStudioTools({
+        location: COLD_OFFLINE_STUDIO_PATH,
+        offline: false,
+      }),
+    ).toBe(true);
   });
 });

@@ -70,6 +70,26 @@ export function shouldSkipColdStudioAuth({
   );
 }
 
+/** مساحة الاستعادة الباردة لا تملك أي مدخل يوسّعها إلى تدفق شبكي آخر. */
+export function coldStudioShellCapabilities(coldStudio: boolean) {
+  return {
+    mountGlobalSearch: !coldStudio,
+    mountMobileBottomNav: !coldStudio,
+    allowRemoteNavigation: !coldStudio,
+  };
+}
+
+/** CommandPalette يضم البحث العالمي وماسح الباركود؛ لا يركبان على URL Studio البارد. */
+export function shouldMountGlobalStudioTools({
+  location,
+  offline,
+}: {
+  location: string;
+  offline: boolean;
+}): boolean {
+  return !offline || !isColdOfflineStudioRoute(location);
+}
+
 /**
  * الفصل بين التحرير المحلي والسلطة البعيدة متعمّد: الهوية المشفرة تساعد في إيجاد
  * المسودة فقط، ولا تسمح بطلب خادم أو مخزن أو مزود AI.

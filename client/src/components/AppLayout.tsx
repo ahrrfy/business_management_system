@@ -14,7 +14,10 @@ import {
   subscribeOfflineUnlock,
   type OfflineProfile,
 } from "@/lib/offline/pinLock";
-import { shouldSkipColdStudioAuth } from "@/lib/productStudio/coldOfflinePolicy";
+import {
+  coldStudioShellCapabilities,
+  shouldSkipColdStudioAuth,
+} from "@/lib/productStudio/coldOfflinePolicy";
 import { usePrinterConnection } from "@/hooks/usePrinterConnection";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -159,6 +162,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     localProfile: getOfflineUnlockedProfile(),
   });
   const [coldProfile, setColdProfile] = useState<OfflineProfile | null>(null);
+  const shellCapabilities = coldStudioShellCapabilities(coldStudio);
   const me = trpc.auth.me.useQuery(undefined, { enabled: !coldStudio });
   const myStocktakes = trpc.count.mine.useQuery(undefined, {
     enabled: !coldStudio && Boolean(me.data),
@@ -262,20 +266,36 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     me.data?.name ?? me.data?.email ?? coldProfile?.name ?? "—";
   const displayRole = me.data?.role ?? coldProfile?.role;
 
+  const coldStudioSidebar = (
+    <div className="flex flex-1 flex-col justify-end p-3">
+      <div className="rounded-md border p-3 text-sm">
+        <div className="font-medium">{displayName}</div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          {displayRole ? ROLE_LABEL[displayRole] ?? displayRole : "استعادة محلية"}
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          هذه الجلسة مخصصة لمسودة الاستوديو المحلية فقط.
+        </p>
+      </div>
+    </div>
+  );
+
   const sidebarInner = (
     <>
         {/* شريط البحث — يفتح CommandPalette */}
-        <div className="px-2 pt-2 pb-1">
-          <button
-            type="button"
-            onClick={openSearch}
-            className="sb-search flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs transition-colors"
-          >
-            <Search className="size-3.5 shrink-0" />
-            <span className="flex-1 text-start">بحث…</span>
-            <kbd className="rounded px-1 font-mono text-[10px]">Ctrl+K</kbd>
-          </button>
-        </div>
+        {shellCapabilities.mountGlobalSearch && (
+          <div className="px-2 pt-2 pb-1">
+            <button
+              type="button"
+              onClick={openSearch}
+              className="sb-search flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs transition-colors"
+            >
+              <Search className="size-3.5 shrink-0" />
+              <span className="flex-1 text-start">بحث…</span>
+              <kbd className="rounded px-1 font-mono text-[10px]">Ctrl+K</kbd>
+            </button>
+          </div>
+        )}
 
         <nav className="sb-scroll flex-1 overflow-y-auto py-2" aria-label="التنقّل الرئيسي">
           {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب والكاشير: مساحتاهما مركّزتان) */}
@@ -459,7 +479,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             <ThemeToggle />
           </div>
         </div>
-        {sidebarInner}
+        {shellCapabilities.allowRemoteNavigation ? sidebarInner : coldStudioSidebar}
       </aside>
 
       {/* الشريط العلوي + درج التنقّل — اللوحي/الأصغر (<lg). Sheet جذرٌ بلا DOM فيبقى
@@ -487,18 +507,20 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <SheetHeader className="sb-header px-4 py-4 text-start">
             <SheetTitle className="text-[color:var(--sidebar-on-strong)]">الرؤية العربية</SheetTitle>
           </SheetHeader>
-          {sidebarInner}
+          {shellCapabilities.allowRemoteNavigation ? sidebarInner : coldStudioSidebar}
         </SheetContent>
       </Sheet>
 
       <main ref={mainRef} tabIndex={-1} className="app-main flex-1 p-3 md:p-6 pb-24 lg:pb-6 overflow-auto outline-none">{children}</main>
 
       {/* شريط التنقل السريع للهاتف أسفل الشاشة (<lg) */}
-      <MobileBottomNav
-        role={role}
-        permsOverride={permsOverride}
-        onOpenMenu={() => setNavOpen(true)}
-      />
+      {shellCapabilities.mountMobileBottomNav && (
+        <MobileBottomNav
+          role={role}
+          permsOverride={permsOverride}
+          onOpenMenu={() => setNavOpen(true)}
+        />
+      )}
     </div>
   );
 }

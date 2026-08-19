@@ -52,3 +52,10 @@
 - Studio now presents a small explicit 4–8 digit PIN setup card whenever that authenticated device profile has no PIN, allowing staff who never opened POS to enable cold draft recovery.
 - During a verified cold Studio session, AppLayout disables `auth.me` and its dependent count query, uses the local profile only for display, hides normal navigation, and disables account/logout navigation. No remote call is introduced.
 - Focused suite now covers 22 assertions, including profile provisioning and the cold AppLayout auth-disable contract.
+
+## Cold Studio shell isolation
+
+- The verified cold Studio shell renders a display-only local profile card instead of the normal search/navigation tree, and does not mount `MobileBottomNav`.
+- The root overlay now omits `CommandPalette` on the exact cold Studio URL, which also removes its global barcode listener and makes `globalSearch.search` unreachable.
+- Online navigation, global search, barcode scanning, and bottom navigation remain unchanged.
+- Focused suite now covers 24 assertions, including the runtime shell and global-tool mounting contracts.
