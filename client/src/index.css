@@ -319,7 +319,7 @@ option:disabled {
     --store-sale: #c23a2b;
     background-color: var(--store-canvas);
     color: var(--store-ink);
-    background-image: linear-gradient(180deg, #fbf8f4 0%, #f7f3ee 48%, #f1ebe4 100%);
+    background-image: none;
   }
 
   .storefront .store-product-card {
@@ -329,12 +329,12 @@ option:disabled {
 
   .storefront .store-product-card:hover {
     border-color: color-mix(in srgb, var(--store-brand) 32%, white);
-    box-shadow: 0 12px 24px rgb(21 49 44 / 10%);
-    transform: translateY(-2px);
+    box-shadow: 0 6px 14px rgb(27 27 27 / 10%);
+    transform: translateY(-1px);
   }
 
   .storefront .store-product-media {
-    background: linear-gradient(145deg, #f4eee7 0%, #e9dfd5 100%);
+    background: #eee7df;
   }
 
   .storefront .store-product-image {
@@ -346,7 +346,7 @@ option:disabled {
   }
 
   .storefront .store-product-image-placeholder {
-    background: linear-gradient(145deg, #f1e9e1, #e4d8cc);
+    background: #eee7df;
     color: var(--store-brand);
   }
 
@@ -369,7 +369,7 @@ option:disabled {
      expanding desktop cards unnecessarily. */
   @media (max-width: 639px) {
     .storefront {
-      background-image: linear-gradient(180deg, #fbf8f4 0%, #f7f3ee 55%, #f1ebe4 100%);
+      background-image: none;
     }
 
     .storefront .store-mobile-action {
@@ -417,11 +417,11 @@ option:disabled {
   }
 
   .dark .storefront .store-product-media {
-    background: radial-gradient(circle at 50% 28%, #1f3831 0, #152821 62%, #0f1d19 100%);
+    background: #2d2a27;
   }
 
   .dark .storefront .store-product-image-placeholder {
-    background: linear-gradient(145deg, #19362c, #10251e);
+    background: #2d2a27;
   }
 
   .container {

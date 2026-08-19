@@ -37,7 +37,6 @@ import {
   ShieldCheck,
   ShoppingBag,
   ShoppingCart,
-  Sparkles,
   Tag,
   Trash2,
   Truck,
@@ -482,9 +481,9 @@ function CategoryTiles({ cats, onPick }: { cats: { id: number; name: string }[];
           <button
             key={c.id}
             onClick={() => onPick(c.id)}
-            className="group flex min-h-[92px] flex-col items-center gap-1.5 rounded-2xl bg-white p-2.5 text-center ring-1 ring-slate-100 transition motion-safe:hover:-translate-y-0.5 hover:ring-emerald-300 dark:bg-slate-900 dark:ring-slate-800 dark:hover:ring-emerald-500/40"
+            className="group flex min-h-[92px] flex-col items-center gap-1.5 rounded-xl bg-white p-2.5 text-center ring-1 ring-slate-100 transition motion-safe:hover:-translate-y-0.5 hover:ring-emerald-300 dark:bg-slate-900 dark:ring-slate-800 dark:hover:ring-emerald-500/40"
           >
-            <span className="flex size-10 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 transition group-hover:bg-emerald-600 group-hover:text-white dark:bg-emerald-500/10 dark:text-emerald-400">
+            <span className="flex size-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 transition group-hover:bg-emerald-600 group-hover:text-white dark:bg-emerald-500/10 dark:text-emerald-400">
               <Store aria-hidden className="size-6" />
             </span>
             <span className="line-clamp-2 text-[11px] font-bold leading-tight text-slate-700 dark:text-slate-200">{c.name}</span>
@@ -540,7 +539,7 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   return (
-    <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 sm:w-44 lg:w-48 dark:bg-slate-900 dark:ring-slate-800">
+    <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 sm:w-44 lg:w-48 dark:bg-slate-900 dark:ring-slate-800">
       <button onClick={onSelect} className="relative block text-right">
         <BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
         {onSale && pct > 0 && (
@@ -616,7 +615,7 @@ function SideRails({ banners }: { banners: BannerItem[] }) {
       <div className="fixed top-1/2 z-10 hidden min-w-56 max-w-64 w-[15vw] -translate-y-1/2 flex-col gap-3 min-[1600px]:flex" style={sideStyle} aria-hidden={false}>
         {list.map((b) => {
           return (
-            <div key={`${b.id}-${b.imageIndex ?? 0}`} className="relative aspect-[1/2] w-full overflow-hidden rounded-2xl shadow-md ring-1 ring-slate-200/60">
+            <div key={`${b.id}-${b.imageIndex ?? 0}`} className="relative aspect-[1/2] w-full overflow-hidden rounded-xl shadow-sm ring-1 ring-slate-200/60">
               <BannerFrame banner={b} slot="SIDE" />
             </div>
           );
@@ -639,7 +638,7 @@ function SideRails({ banners }: { banners: BannerItem[] }) {
  */
 function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
   return (
-    <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-2xl shadow-sm">
+    <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-xl shadow-sm">
       <BannerFrame banner={banner} slot="INLINE" />
     </div>
   );
@@ -655,7 +654,7 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
   const active = cur % banners.length;
   return (
     <section className="mb-4">
-      <div className="relative aspect-[2/1] overflow-hidden rounded-3xl shadow-md">
+      <div className="relative aspect-[2/1] overflow-hidden rounded-xl shadow-sm">
         {banners.map((b, i) => {
           const inner = <BannerFrame banner={b} slot="HERO" active={i === active} />;
           return (
@@ -1254,9 +1253,9 @@ export default function Storefront() {
   return (
     <div className="storefront min-h-dvh bg-[#f7f3ee] text-[#1b1b1b] dark:bg-slate-950 dark:text-slate-100" dir="rtl">
       {/* الترويسة */}
-      <header className="sticky top-0 z-20 border-b border-emerald-100/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/85">
+      <header className="sticky top-0 z-20 border-b border-emerald-100/70 bg-white dark:border-slate-800 dark:bg-slate-900/85">
         <div className="mx-auto flex max-w-[1440px] items-center gap-3 px-3 py-3 sm:px-4 lg:px-5">
-          <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[#1e4a63] to-[#2b677f] text-white shadow-sm shadow-[#1e4a63]/25">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#1e4a63] text-white">
             <ShoppingBag aria-hidden className="size-5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -1266,7 +1265,7 @@ export default function Storefront() {
           <button
             onClick={() => setPanel("cart")}
             aria-label="السلة"
-            className="relative flex size-10 shrink-0 items-center justify-center rounded-2xl bg-white text-slate-700 ring-1 ring-slate-200 transition motion-safe:active:scale-95 hover:ring-emerald-300 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700"
+            className="relative flex size-10 shrink-0 items-center justify-center rounded-xl bg-white text-slate-700 ring-1 ring-slate-200 transition motion-safe:active:scale-95 hover:ring-emerald-300 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700"
           >
             <ShoppingCart aria-hidden className="size-5" />
             {cartCount > 0 && (
@@ -1296,7 +1295,7 @@ export default function Storefront() {
               value={rawSearch}
               onChange={(e) => setRawSearch(e.target.value)}
               placeholder="ابحث عن منتج أو ماركة…"
-              className="w-full rounded-2xl border-0 bg-white py-3 pr-11 pl-10 text-sm text-slate-900 shadow-sm ring-1 ring-slate-200 outline-none transition placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700"
+              className="w-full rounded-xl border-0 bg-white py-3 pr-11 pl-10 text-sm text-slate-900 shadow-sm ring-1 ring-slate-200 outline-none transition placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700"
             />
             {rawSearch && (
               <button
@@ -1334,7 +1333,7 @@ export default function Storefront() {
           <section
             role="alert"
             aria-live="polite"
-            className="mb-4 rounded-2xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-4 text-[var(--sem-warn)] shadow-sm"
+            className="mb-4 rounded-xl border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-4 text-[var(--sem-warn)] shadow-sm"
           >
             <div className="flex items-start gap-3">
               <AlertTriangle aria-hidden className="mt-0.5 size-5 shrink-0" />
@@ -1362,20 +1361,20 @@ export default function Storefront() {
         )}
         {/* شريط إعلان الموظف */}
         {announcement && (
-          <div className="mb-3 flex items-center gap-2 rounded-2xl bg-[#f3e3d2] px-4 py-2.5 text-sm font-bold text-[#81492b] dark:bg-[#4b2c22] dark:text-[#f3c2ad]">
+          <div className="mb-3 flex items-center gap-2 rounded-xl bg-[#f3e3d2] px-4 py-2.5 text-sm font-bold text-[#81492b] dark:bg-[#4b2c22] dark:text-[#f3c2ad]">
             <BadgePercent aria-hidden className="size-4 shrink-0" />
             <span>{announcement}</span>
           </div>
         )}
         {/* المتجر مغلق مؤقتاً */}
         {settingsQ.isSuccess && !storeOpen && (
-          <div className="mb-4 rounded-2xl bg-rose-100 px-4 py-3 text-center text-sm font-bold text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
+          <div className="mb-4 rounded-xl bg-rose-100 px-4 py-3 text-center text-sm font-bold text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
             المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً. تصفّح المنتجات وعُد لاحقاً.
           </div>
         )}
 
         {/* مصفاة قصيرة وواضحة: تبقي العميل داخل مسار الاكتشاف بدلاً من تمرير كتالوج غير منتهٍ. */}
-        <section aria-label="تصفية وترتيب المنتجات" className="mb-4 rounded-2xl border border-emerald-100/80 bg-white p-3 shadow-sm shadow-emerald-900/[0.03] dark:bg-slate-900 dark:ring-slate-800">
+        <section aria-label="تصفية وترتيب المنتجات" className="mb-4 rounded-xl border border-emerald-100/80 bg-white p-3 shadow-sm shadow-emerald-900/[0.03] dark:bg-slate-900 dark:ring-slate-800">
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs font-extrabold text-slate-700 dark:text-slate-200">تسوّق بسهولة</p>
             {(hasRefinements || categoryId != null || search) && (
@@ -1439,11 +1438,10 @@ export default function Storefront() {
             {heroBanners.length > 0 ? (
               <BannerCarousel banners={heroBanners} />
             ) : (
-              <section className="relative mb-4 overflow-hidden rounded-3xl bg-gradient-to-l from-[#1e4a63] via-[#2b677f] to-[#4c8397] p-5 text-white shadow-lg shadow-[#1e4a63]/20">
-                <Sparkles aria-hidden className="absolute -left-3 -top-3 size-24 opacity-15" />
-                <p className="text-xs font-bold text-emerald-50/90">أهلاً بك في</p>
+              <section className="relative mb-4 overflow-hidden rounded-xl bg-[#1e4a63] p-5 text-white">
+                <p className="text-xs font-bold text-white/80">أهلاً بك في</p>
                 <h2 className="mt-0.5 text-2xl font-extrabold leading-tight">{STORE_NAME}</h2>
-                <p className="mt-1.5 max-w-[85%] text-sm text-emerald-50/90">
+                <p className="mt-1.5 max-w-[85%] text-sm text-white/80">
                   كل ما تحتاجه من القرطاسية والطباعة والهدايا — اطلب الآن وادفع عند الاستلام.
                 </p>
                 {offers.length > 0 && (
@@ -1462,7 +1460,7 @@ export default function Storefront() {
                 { icon: <Truck aria-hidden className="size-5" />, label: "توصيل لكل المحافظات" },
                 { icon: <ShieldCheck aria-hidden className="size-5" />, label: "منتجات أصلية" },
               ].map((t, i) => (
-                <div key={i} className="flex flex-col items-center gap-1.5 rounded-2xl bg-white p-3 text-center ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                <div key={i} className="flex flex-col items-center gap-1.5 rounded-xl bg-white p-3 text-center ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                   <span className="flex size-9 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">
                     {t.icon}
                   </span>
@@ -1484,7 +1482,7 @@ export default function Storefront() {
                   {offers.map((o) => (
                     <div
                       key={o.id}
-                      className="flex min-w-[230px] max-w-[270px] shrink-0 items-center gap-3 rounded-2xl bg-gradient-to-l from-amber-500 to-orange-500 p-4 text-white shadow-md shadow-amber-500/20"
+                      className="flex min-w-[230px] max-w-[270px] shrink-0 items-center gap-3 rounded-xl bg-[#1e4a63] p-4 text-white shadow-sm"
                     >
                       <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-white/25">
                         <Tag aria-hidden className="size-5" />
@@ -1588,8 +1586,8 @@ export default function Storefront() {
               const card = (
                 <div
                   key={p.productId}
-                  className={`store-product-card flex h-full flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
-                    p.inStock ? "hover:shadow-md hover:ring-emerald-200 dark:hover:ring-emerald-500/30" : "opacity-70"
+                  className={`store-product-card flex h-full flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
+                    p.inStock ? "hover:shadow-sm hover:ring-emerald-200 dark:hover:ring-emerald-500/30" : "opacity-70"
                   }`}
                 >
                   <button onClick={() => setSelectedId(p.productId)} className="relative block text-right">
@@ -1741,7 +1739,7 @@ export default function Storefront() {
           <div className="mx-auto max-w-6xl px-4 py-3">
             <button
               onClick={() => setPanel("cart")}
-              className="flex w-full items-center justify-between rounded-2xl bg-emerald-600 px-4 py-3.5 text-white shadow-lg shadow-emerald-600/25 transition motion-safe:active:scale-[0.98] hover:bg-emerald-700"
+              className="flex w-full items-center justify-between rounded-xl bg-emerald-600 px-4 py-3.5 text-white shadow-sm shadow-emerald-600/25 transition motion-safe:active:scale-[0.98] hover:bg-emerald-700"
             >
               <span className="flex items-center gap-2 text-sm font-extrabold">
                 <span className="flex size-6 items-center justify-center rounded-full bg-white/20 text-xs">{cartCount}</span>
@@ -1756,7 +1754,7 @@ export default function Storefront() {
       {/* تفاصيل المنتج (ورقة سفلية) */}
       {selectedId != null && (
         <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/50 backdrop-blur-sm sm:items-center sm:p-4" onClick={() => setSelectedId(null)}>
-          <div className="max-h-[100dvh] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-4 pb-[calc(2rem+env(safe-area-inset-bottom))] shadow-2xl dark:bg-slate-900 sm:max-h-[calc(100dvh-2rem)] sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
+          <div className="max-h-[100dvh] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-t-3xl bg-white p-4 pb-[calc(2rem+env(safe-area-inset-bottom))] shadow-2xl dark:bg-slate-900 sm:max-h-[calc(100dvh-2rem)] sm:rounded-xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-extrabold text-slate-500 dark:text-slate-400">تفاصيل المنتج</h2>
               <button onClick={() => setSelectedId(null)} aria-label="إغلاق" className="flex size-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-400">
@@ -1774,7 +1772,7 @@ export default function Storefront() {
                     urls={detailQ.data.bundleImageUrls}
                     fallbackUrl={detailQ.data.imageUrl}
                     alt={detailQ.data.productName}
-                    className="size-28 shrink-0 rounded-2xl"
+                    className="size-28 shrink-0 rounded-xl"
                   />
                   <div className="min-w-0 flex-1">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
@@ -1889,7 +1887,7 @@ export default function Storefront() {
                   disabled={(detailQ.data?.variants?.length ?? 0) > 1
                     ? !Array.from(variantQuantities.values()).some((quantity) => quantity > 0)
                     : !detailUnit?.inStock || detailUnit.price == null}
-                  className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+                  className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                 >
                   <Plus aria-hidden className="size-4" />
                   {(detailQ.data?.variants?.length ?? 0) > 1
@@ -1899,7 +1897,7 @@ export default function Storefront() {
 
                 {/* محتويات البكج */}
                 {detailQ.data.isBundle && detailQ.data.bundleItems && detailQ.data.bundleItems.length > 0 && (
-                  <div className="mt-4 rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+                  <div className="mt-4 rounded-xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
                     <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-400">
                       <Package aria-hidden className="size-3.5" /> يحتوي البكج على:
                     </p>
@@ -1920,7 +1918,7 @@ export default function Storefront() {
                     <h3 className="mb-2 text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
                     <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                       {relatedQ.data!.map((rp) => (
-                        <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                        <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                           <button onClick={() => setSelectedId(rp.productId)} className="text-right">
                             <ProductImage url={rp.imageUrl} alt={rp.productName} className="store-product-media aspect-square w-full" />
                           </button>
@@ -1956,7 +1954,7 @@ export default function Storefront() {
             <>
               <div className="flex flex-col gap-3">
                 {cartLines.map((l) => (
-                  <div key={l.productUnitId} className="flex items-center gap-3 rounded-2xl bg-white p-2.5 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                  <div key={l.productUnitId} className="flex items-center gap-3 rounded-xl bg-white p-2.5 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                     <ProductImage url={l.imageUrl} alt={l.name} className="size-16 shrink-0 rounded-xl" />
                     <div className="min-w-0 flex-1">
                       <p className="line-clamp-2 text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{l.name}</p>
@@ -1980,7 +1978,7 @@ export default function Storefront() {
                   </div>
                 ))}
               </div>
-              <div className="mt-4 rounded-2xl bg-white p-3.5 text-sm ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+              <div className="mt-4 rounded-xl bg-white p-3.5 text-sm ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <div className="flex justify-between text-slate-500">
                   <span>المجموع الفرعي</span>
                   <span className="font-extrabold text-slate-800 tabular-nums dark:text-slate-100">{money(cartSubtotal)} د.ع</span>
@@ -1999,7 +1997,7 @@ export default function Storefront() {
               <button
                 onClick={openCheckout}
                 disabled={!storeOpen || !orderingEnabled}
-                className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+                className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-sm shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
               >
                 {storeOpen && orderingEnabled ? (
                   <>
@@ -2027,7 +2025,7 @@ export default function Storefront() {
                       )
                     )
                   }
-                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-500 bg-emerald-50 py-3 text-sm font-bold text-emerald-700 transition motion-safe:active:scale-[0.98] hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-400"
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500 bg-emerald-50 py-3 text-sm font-bold text-emerald-700 transition motion-safe:active:scale-[0.98] hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-400"
                 >
                   <MessageCircle aria-hidden className="size-4" /> أو أرسل سلّتك عبر واتساب
                 </button>
@@ -2050,7 +2048,7 @@ export default function Storefront() {
             <Field icon={<Phone aria-hidden className="size-4" />} label="رقم الهاتف">
               <input value={form.phone} onChange={(e) => setForm({ ...form, phone: `+964 ${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}` })} inputMode="tel" autoComplete="tel" placeholder="+964 7XX XXX XXXX" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </Field>
-            <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+            <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
               <label className="mb-1 block text-xs font-bold text-slate-500">المحافظة</label>
               <select value={form.governorate} onChange={(e) => setForm({ ...form, governorate: e.target.value })} className="w-full bg-transparent text-sm outline-none">
                 {GOVERNORATES.map((g) => (
@@ -2060,16 +2058,16 @@ export default function Storefront() {
                 ))}
               </select>
             </div>
-            <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+            <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
               <label className="mb-1 block text-xs font-bold text-slate-500">العنوان بالتفصيل</label>
               <textarea value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} rows={2} placeholder="المنطقة، الشارع، أقرب نقطة دالة…" className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </div>
-            <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+            <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
               <label className="mb-1 block text-xs font-bold text-slate-500">ملاحظة (اختياري)</label>
               <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="مثال: الاتصال قبل التوصيل" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </div>
 
-            <div className="rounded-2xl bg-white p-3.5 text-sm ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+            <div className="rounded-xl bg-white p-3.5 text-sm ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
               <div className="flex justify-between text-slate-500">
                 <span>المجموع الفرعي</span>
                 <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(cartSubtotal)} د.ع</span>
@@ -2109,7 +2107,7 @@ export default function Storefront() {
             <button
               onClick={submitOrder}
               disabled={!canSubmit || createOrder.isPending}
-              className="store-primary-action store-mobile-action flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+              className="store-primary-action store-mobile-action flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-sm shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
             >
               {createOrder.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}
               تأكيد الطلب (الدفع عند الاستلام)
@@ -2133,7 +2131,7 @@ export default function Storefront() {
             <p className="mt-3 rounded-xl bg-[var(--sem-warning)]/5 px-3 py-2 text-xs font-bold text-[var(--sem-warning)] ring-1 ring-[var(--sem-warning)]/40">
               الكمية محجوزة حتى {formatStorefrontReservationDeadline(confirmation.reservationExpiresAt)}؛ بعد ذلك يلزم إعادة الطلب حسب التوفر.
             </p>
-            <div className="mt-5 w-full rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+            <div className="mt-5 w-full rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">رقم الطلب</span>
                 <span className="font-extrabold tracking-wider text-slate-900 dark:text-white">{confirmation.orderNumber}</span>
@@ -2148,13 +2146,13 @@ export default function Storefront() {
                 setPanel(null);
                 setConfirmation(null);
               }}
-              className="mt-6 w-full rounded-2xl bg-emerald-600 py-4 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-emerald-700"
+              className="mt-6 w-full rounded-xl bg-emerald-600 py-4 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-emerald-700"
             >
               متابعة التسوّق
             </button>
             <button
               onClick={() => openTrack(confirmation.orderNumber)}
-              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-2xl bg-white py-3.5 text-sm font-extrabold text-emerald-700 ring-1 ring-emerald-200 transition hover:bg-emerald-50 dark:bg-slate-900 dark:text-emerald-400 dark:ring-slate-700"
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl bg-white py-3.5 text-sm font-extrabold text-emerald-700 ring-1 ring-emerald-200 transition hover:bg-emerald-50 dark:bg-slate-900 dark:text-emerald-400 dark:ring-slate-700"
             >
               <Package aria-hidden className="size-4" /> تتبّع هذا الطلب
             </button>
@@ -2168,13 +2166,13 @@ export default function Storefront() {
             <div className="flex justify-center py-12 text-[var(--sem-info)]"><Loader2 aria-hidden className="size-7 animate-spin" /></div>
           ) : labelQ.data ? (
             <div className="space-y-3 text-sm">
-              <div className="rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+              <div className="rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <div className="flex items-center justify-between"><span className="font-extrabold" dir="ltr">{labelQ.data.orderNumber}</span><span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${TRACK_STATUS[labelQ.data.status]?.cls ?? "bg-slate-100 text-slate-600"}`}>{TRACK_STATUS[labelQ.data.status]?.label ?? labelQ.data.status}</span></div>
                 <p className="mt-3 text-base font-extrabold text-slate-900 dark:text-white">{labelQ.data.customerName ?? "العميل"}</p>
                 {labelQ.data.customerPhone && <p dir="ltr" className="mt-1 font-extrabold text-[var(--sem-info)]">{labelQ.data.customerPhone}</p>}
                 <p className="mt-2 leading-relaxed text-slate-600 dark:text-slate-300">{labelQ.data.addressText ?? labelQ.data.governorate ?? "—"}</p>
               </div>
-              <div className="rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+              <div className="rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <p className="mb-2 text-xs font-extrabold text-slate-500">منتجات الطلب</p>
                 <div className="space-y-2">{labelQ.data.items.map((it, index) => <div key={index} className="flex justify-between gap-3 border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-800"><span>{it.productName}{it.unitName ? ` — ${it.unitName}` : ""}</span><b className="shrink-0 tabular-nums">×{it.quantity}</b></div>)}</div>
                 <div className="mt-3 flex justify-between border-t border-slate-200 pt-3 text-base font-extrabold dark:border-slate-700"><span>المبلغ عند الاستلام</span><span dir="ltr" className="text-money-positive">{money(labelQ.data.total)} د.ع</span></div>
@@ -2188,7 +2186,7 @@ export default function Storefront() {
         <PanelShell title="تتبّع طلبك" onClose={() => setPanel(null)}>
           <div className="space-y-4">
             <p className="text-sm text-slate-500 dark:text-slate-400">أدخل رقم طلبك ورقم هاتفك لعرض حالته.</p>
-            <div className="space-y-3 rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+            <div className="space-y-3 rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
               <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-600 dark:text-slate-300">رقم الطلب</label>
                 <input
@@ -2221,18 +2219,18 @@ export default function Storefront() {
             </div>
 
             {trackState === "notfound" && (
-              <div className="rounded-2xl bg-amber-50 p-4 text-center text-sm font-bold text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20">
+              <div className="rounded-xl bg-amber-50 p-4 text-center text-sm font-bold text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20">
                 لا يوجد طلبٌ بهذا الرقم والهاتف. تأكّد من رقم الطلب والهاتف المُستخدَم عند الطلب.
               </div>
             )}
             {trackState === "error" && (
-              <div className="rounded-2xl bg-rose-50 p-4 text-center text-sm font-bold text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20">
+              <div className="rounded-xl bg-rose-50 p-4 text-center text-sm font-bold text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20">
                 تعذّر جلب الحالة الآن — حاول مرّةً أخرى.
               </div>
             )}
 
             {trackResult && (
-              <div className="space-y-3 rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+              <div className="space-y-3 rounded-xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <div className="flex items-center justify-between">
                   <span className="font-extrabold tracking-wider text-slate-900 dark:text-white" dir="ltr">{trackResult.orderNumber}</span>
                   <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${TRACK_STATUS[trackResult.status]?.cls ?? "bg-slate-100 text-slate-600"}`}>
@@ -2281,7 +2279,7 @@ function StoreTrustAndHelp({
   const whatsappHref = whatsappNumber ? `https://wa.me/${whatsappNumber.replace(/[^\d]/g, "")}` : null;
 
   return (
-    <section aria-labelledby="store-help-title" className="mt-8 rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-5">
+    <section aria-labelledby="store-help-title" className="mt-8 rounded-xl border border-emerald-100 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400">تسوّق بوضوح</p>
@@ -2300,24 +2298,24 @@ function StoreTrustAndHelp({
       </div>
 
       <div className="mt-4 grid gap-2.5 sm:grid-cols-3">
-        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+        <div className="rounded-xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
           <Banknote aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
           <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">الدفع عند الاستلام</p>
           <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">ادفع نقداً للمندوب بعد تأكيد طلبك.</p>
         </div>
-        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+        <div className="rounded-xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
           <Truck aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
           <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">التوصيل محسوب بوضوح</p>
           <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">اختر محافظتك لترى الأجرة قبل تأكيد الطلب.</p>
         </div>
-        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+        <div className="rounded-xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
           <ShieldCheck aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
           <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">تأكيد قبل الإرسال</p>
           <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">نتواصل معك لتأكيد بيانات الطلب والتوصيل.</p>
         </div>
       </div>
 
-      <div className="mt-4 divide-y divide-slate-100 rounded-2xl border border-slate-100 px-3 dark:divide-slate-800 dark:border-slate-800">
+      <div className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-100 px-3 dark:divide-slate-800 dark:border-slate-800">
         <details className="group py-3" open>
           <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
             <span className="flex items-center justify-between gap-3">كيف أعرف السعر النهائي؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
@@ -2364,7 +2362,7 @@ function PanelShell({ title, onClose, children }: { title: string; onClose: () =
 
 function Field({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+    <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
       <label className="mb-1 flex items-center gap-1.5 text-xs font-bold text-slate-500">
         <span className="text-emerald-500">{icon}</span>
         {label}
