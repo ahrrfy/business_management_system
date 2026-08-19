@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { backlogButtonSuffix, canApproveStudioCandidate, isQueuedStudioTask } from "@/lib/productStudio/studioBoardLabels";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { canEditStudioTask, canReviewStudioTask, hasStudioOverrideReason, needsStudioEditOverride, needsStudioReviewOverride } from "@/lib/imageStudio/studioWorkflowPolicy";
@@ -19,7 +20,7 @@ import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { getOfflineProfile, saveOfflineProfile, setOfflinePin, type OfflineProfile } from "@/lib/offline/pinLock";
 import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, Plus, RefreshCw, RotateCcw, ScanLine, UserCheck, XCircle } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, XCircle } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
@@ -53,6 +54,8 @@ function studioDatetimeLocal(value: Date | string | null): string {
   const date = new Date(value);
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
+
+const PIN_SETUP_DISMISS_KEY = "studio:offline-pin-setup-dismissed";
 
 const STATUS_LABEL: Record<StudioTask["status"], string> = {
   ASSIGNED: "مسندة",
@@ -166,6 +169,9 @@ export default function ProductImageStudio() {
   const [isPreparingThumbnail, setIsPreparingThumbnail] = useState(false);
   const [isStudioProcessing, setIsStudioProcessing] = useState(false);
   const [editOverrideReason, setEditOverrideReason] = useState("");
+  /** أحدث قيمة للسبب بلا إدراجها في اعتماديات أثر المصالحة (انظر التعليق عند الأثر). */
+  const editOverrideReasonRef = useRef(editOverrideReason);
+  editOverrideReasonRef.current = editOverrideReason;
   const [reviewOverrideReason, setReviewOverrideReason] = useState("");
   const [scopeInitialized, setScopeInitialized] = useState(false);
   const [taskScannerOpen, setTaskScannerOpen] = useState(false);
@@ -177,9 +183,21 @@ export default function ProductImageStudio() {
   const [coldIdentityUserId, setColdIdentityUserId] = useState<number | null>(null);
   const [resumeRetry, setResumeRetry] = useState(0);
   const [offlineProfile, setOfflineProfile] = useState<OfflineProfile | null | undefined>(undefined);
+  const [inlineAssigneeId, setInlineAssigneeId] = useState("");
+  const [taskSearch, setTaskSearch] = useState("");
+  const [debouncedTaskSearch, setDebouncedTaskSearch] = useState("");
   const [setupPin, setSetupPin] = useState("");
+  const [setupPinConfirm, setSetupPinConfirm] = useState("");
   const [setupPinError, setSetupPinError] = useState<string | null>(null);
   const [settingPin, setSettingPin] = useState(false);
+  const [pinSetupOpen, setPinSetupOpen] = useState(false);
+  const [pinSetupDismissed, setPinSetupDismissed] = useState(() => {
+    try {
+      return window.localStorage.getItem(PIN_SETUP_DISMISS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const previousUserId = useRef<number | null>(null);
 
   const utils = trpc.useUtils();
@@ -197,6 +215,7 @@ export default function ProductImageStudio() {
       overdue: overdueOnly || savedView === "OVERDUE" ? true : undefined,
       unassigned: savedView === "UNASSIGNED" ? true : undefined,
       campaignId: selectedCampaignId ?? undefined,
+      search: debouncedTaskSearch || undefined,
     },
     {
       enabled: !offline,
@@ -230,6 +249,19 @@ export default function ProductImageStudio() {
   const selectedCampaign = (campaigns.data ?? []).find(
     (campaign) => Number(campaign.id) === selectedCampaignId,
   );
+  // فشل أي استعلام كان يُعرَض كصفرٍ أو كقائمةٍ فارغة: «لا مهام» بدل «تعذّر الجلب»،
+  // وسقوط لوحة المؤشرات كان يُسقط معه canManage فتختفي أدوات المدير بلا تفسير.
+  const loadFailures = (
+    [
+      [dashboard, "لوحة المؤشرات"],
+      [tasks, "قائمة المهام"],
+      [campaigns, "الحملات"],
+      [assignees, "قائمة الموظفين"],
+      [campaignPreview, "معاينة المهام الناقصة"],
+    ] as const
+  )
+    .filter(([query]) => query.isError)
+    .map(([, label]) => label);
   const taskItems = tasks.data?.pages.flatMap((page) => page.items) ?? [];
   const onlineSelected =
     taskItems.find((task) => Number(task.id) === selectedId) ??
@@ -305,6 +337,7 @@ export default function ProductImageStudio() {
   const assign = trpc.productStudio.assign.useMutation({
     onSuccess: async () => {
       notify.ok("أُسندت المهمة");
+      setInlineAssigneeId("");
       setProductId("");
       setAssigneeId("");
       setSourceChoice("new");
@@ -381,7 +414,8 @@ export default function ProductImageStudio() {
   });
   const createCampaignBacklog = trpc.productStudio.createCampaignBacklog.useMutation({
     onSuccess: async (result) => {
-      notify.ok(result.createdCount > 0 ? `أُنشئت ${result.createdCount} مهمة غير مسندة` : "لا توجد منتجات ناقصة جديدة");
+      // «تبقّى» صريحٌ لأنّ التوليد يجري على دفعات: بدونه يظنّ المدير أنّ الطابور اكتمل.
+      notify.ok(result.createdCount > 0 ? `أُنشئت ${result.createdCount} مهمة غير مسندة${result.remaining > 0 ? ` — تبقّى ${result.remaining} منتجاً، أعد التوليد` : ""}` : "لا توجد منتجات ناقصة جديدة");
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -437,6 +471,10 @@ export default function ProductImageStudio() {
 
   async function configureOfflinePin() {
     if (settingPin || !setupPin) return;
+    if (setupPin !== setupPinConfirm) {
+      setSetupPinError("الرمزان غير متطابقين");
+      return;
+    }
     setSettingPin(true);
     setSetupPinError(null);
     try {
@@ -446,10 +484,26 @@ export default function ProductImageStudio() {
         return;
       }
       setSetupPin("");
+      setSetupPinConfirm("");
+      setPinSetupOpen(false);
       setOfflineProfile(await getOfflineProfile());
       notify.ok("ضُبط رمز PIN لاستعادة مسودات الاستوديو دون اتصال.");
+    } catch (error) {
+      // بلا هذا الالتقاط كان رفض IndexedDB (تصفّح خاص/تخزين محجوب) يهرب كوعدٍ غير معالَج:
+      // يتوقّف مؤشّر الانتظار ولا يحدث شيء ولا يُقال شيء.
+      setSetupPinError(error instanceof Error ? error.message : "تعذّر حفظ رمز PIN على هذا الجهاز");
     } finally {
       setSettingPin(false);
+    }
+  }
+
+  function dismissPinSetup() {
+    setPinSetupOpen(false);
+    setPinSetupDismissed(true);
+    try {
+      window.localStorage.setItem(PIN_SETUP_DISMISS_KEY, "1");
+    } catch {
+      /* التخزين المحجوب لا يمنع الإخفاء ضمن الجلسة الحالية. */
     }
   }
 
@@ -493,6 +547,11 @@ export default function ProductImageStudio() {
   }
 
   useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedTaskSearch(taskSearch.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [taskSearch]);
+
+  useEffect(() => {
     if (!offline || !authenticatedUserId) return;
     let cancelled = false;
     void listStudioDraftsForUser(authenticatedUserId)
@@ -525,7 +584,7 @@ export default function ProductImageStudio() {
           taskId,
           taskFound: Boolean(task),
           revision: task ? String(task.revision) : null,
-          editable: task ? canEditStudioTask(task, workflowUser, editOverrideReason) : false,
+          editable: task ? canEditStudioTask(task, workflowUser, editOverrideReasonRef.current) : false,
         });
         if (cancelled) return;
         if (result.kind === "RESUME") applyLocalDraft(result.draft);
@@ -543,7 +602,10 @@ export default function ProductImageStudio() {
       cancelled = true;
       if (retryTimer) window.clearTimeout(retryTimer);
     };
-  }, [authenticatedUserId, editOverrideReason, offline, selectedId, selectedRevision, resumeRetry]);
+    // ⚠️ لا تُضِف editOverrideReason إلى المصفوفة: هذا الأثر يُعيد جلب **كل** صفحات قائمة
+    // المهام المحمَّلة، فكان كلّ حرفٍ يُكتب في سبب التصحيح الإداري يُطلق جولة جلبٍ كاملة.
+    // القيمة الحيّة تُقرأ من الref أعلاه فلا تُفقَد الصحّة.
+  }, [authenticatedUserId, offline, selectedId, selectedRevision, resumeRetry]);
 
   useEffect(() => {
     if (!selected || !authenticatedUserId || !editable || !draftReady || draftConflict) return;
@@ -666,22 +728,17 @@ export default function ProductImageStudio() {
         </div>
       )}
 
-      {!offline && onlineUserId != null && offlineProfile?.userId === onlineUserId && !offlineProfile.hasPin && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">تجهيز استعادة المسودة دون اتصال</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-wrap items-end gap-2">
-            <div className="min-w-56 flex-1 space-y-1.5">
-              <Label htmlFor="studio-offline-pin">رمز PIN للجهاز</Label>
-              <Input id="studio-offline-pin" type="password" inputMode="numeric" autoComplete="new-password" value={setupPin} onChange={(event) => setSetupPin(event.target.value)} placeholder="٤ إلى ٨ أرقام" maxLength={8} />
-              {setupPinError && <p className="text-sm text-destructive">{setupPinError}</p>}
-            </div>
-            <Button className="min-h-11" disabled={settingPin || !setupPin} onClick={() => void configureOfflinePin()}>
-              {settingPin ? "جارٍ الحفظ…" : "تعيين PIN للجهاز"}
-            </Button>
-          </CardContent>
-        </Card>
+      {loadFailures.length > 0 && (
+        <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+          <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">تعذّر جلب: {loadFailures.join("، ")}.</p>
+            <p className="text-xs">الأرقام والقوائم أدناه قد تكون ناقصة أو صفراً بسبب هذا الفشل — لا لأنّ العمل منتهٍ. أعد المحاولة قبل اتخاذ قرار.</p>
+          </div>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={() => refresh()}>
+            إعادة المحاولة
+          </Button>
+        </div>
       )}
 
       {offline && offlineDrafts.length > 0 && (
@@ -728,7 +785,8 @@ export default function ProductImageStudio() {
         <Card>
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground">قيد العمل</div>
-            <div className="mt-1 text-2xl font-bold">{(counts?.ASSIGNED ?? 0) + (counts?.IN_PROGRESS ?? 0)}</div>
+            {/* المسنَد لمنفّذ فقط. جمع ASSIGNED كاملةً كان يَعُدّ طابور الحملة عملاً جارياً. */}
+            <div className="mt-1 text-2xl font-bold">{dashboard.data?.inProgress ?? 0}</div>
           </CardContent>
         </Card>
         <Card>
@@ -746,13 +804,15 @@ export default function ProductImageStudio() {
       </div>
 
       {dashboard.data?.canManage && (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {[
             ["غير المسندة", dashboard.data.unassigned],
             ["المتأخرة", dashboard.data.overdue],
-            ["بانتظار المراجعة", counts?.PENDING_REVIEW ?? 0],
+            // منها متأخّرٌ بلا منفّذ: يوضّح أنّ الخانتين تصفان المهام نفسها لا مشكلتين منفصلتين.
+            ["منها بلا منفّذ", dashboard.data.overdueUnassigned],
+            ["مرفوضة (تنتظر التصحيح)", dashboard.data.rejected],
             ["المنجزة اليوم", dashboard.data.completedToday],
-            ["وسيط زمن الدورة", dashboard.data.medianCycleMinutes == null ? "—" : `${dashboard.data.medianCycleMinutes} د`],
+            [`وسيط زمن الدورة (${dashboard.data.medianCycleWindowDays} يوماً)`, dashboard.data.medianCycleMinutes == null ? "—" : `${dashboard.data.medianCycleMinutes} د`],
           ].map(([label, value]) => (
             <Card key={String(label)}>
               <CardContent className="p-4">
@@ -761,6 +821,51 @@ export default function ProductImageStudio() {
               </CardContent>
             </Card>
           ))}
+        </div>
+      )}
+
+      {/* تجهيزٌ اختياريّ لاستعادة المسودة عند الانقطاع. كان بطاقةً كاملة فوق المؤشرات
+          تُعرَض لكل مستخدمٍ متصل بلا مسودات ولا مخرجَ منها؛ صار شريطاً مؤجَّلاً أسفلها. */}
+      {!offline && onlineUserId != null && offlineProfile?.userId === onlineUserId && !offlineProfile.hasPin && !pinSetupDismissed && (
+        <div className="rounded-md border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-start gap-2 text-sm">
+              <ShieldCheck aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <div>
+                <p className="font-medium">تجهيز استعادة المسودة دون اتصال (اختياري)</p>
+                <p className="text-xs text-muted-foreground">اضبط رمز PIN لهذا الجهاز لتتمكّن من استعادة مسودتك بعد إعادة تحميل الصفحة أثناء انقطاع الاتصال.</p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setPinSetupOpen((open) => !open)}>
+                {pinSetupOpen ? "إخفاء" : "ضبط الآن"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={dismissPinSetup}>
+                لاحقاً
+              </Button>
+            </div>
+          </div>
+          {pinSetupOpen && (
+            <div className="mt-3 flex flex-wrap items-end gap-2">
+              <div className="min-w-48 flex-1 space-y-1.5">
+                <Label htmlFor="studio-offline-pin">رمز PIN للجهاز</Label>
+                <Input id="studio-offline-pin" type="password" inputMode="numeric" autoComplete="new-password" value={setupPin} onChange={(event) => setSetupPin(event.target.value)} placeholder="٤ إلى ٨ أرقام" maxLength={8} />
+              </div>
+              {/* تأكيدٌ إلزاميّ: بلا هذا الحقل كان خطأٌ مطبعيّ يقفل الاستعادة خلف رمزٍ مجهول. */}
+              <div className="min-w-48 flex-1 space-y-1.5">
+                <Label htmlFor="studio-offline-pin-confirm">تأكيد الرمز</Label>
+                <Input id="studio-offline-pin-confirm" type="password" inputMode="numeric" autoComplete="new-password" value={setupPinConfirm} onChange={(event) => setSetupPinConfirm(event.target.value)} placeholder="أعد إدخال الرمز" maxLength={8} />
+              </div>
+              <Button className="min-h-11" disabled={settingPin || !setupPin || !setupPinConfirm} onClick={() => void configureOfflinePin()}>
+                {settingPin ? "جارٍ الحفظ…" : "تعيين PIN للجهاز"}
+              </Button>
+              {setupPinError && (
+                <p role="alert" className="w-full text-sm text-destructive">
+                  {setupPinError}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -878,7 +983,9 @@ export default function ProductImageStudio() {
                     })
                   }
                 >
-                  توليد مهام الناقصة ({campaignPreview.data?.count ?? 0})
+                  {/* الصفر الصريح كان يُطبَع أيضاً حين لا تُنفَّذ المعاينة أصلاً (بلا حملة مختارة)
+                      أو حين تفشل — فيقرأ المدير «لا ناقص» بينما الطابور مليء. */}
+                  توليد مهام الناقصة {backlogButtonSuffix({ campaignSelected: Boolean(selectedCampaignId), isError: campaignPreview.isError, isPending: campaignPreview.isPending, count: campaignPreview.data?.count, batchLimit: campaignPreview.data?.batchLimit })}
                 </Button>
               </div>
               <div className="flex items-end">
@@ -957,36 +1064,36 @@ export default function ProductImageStudio() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="studio-source-image">نوع المهمة</Label>
-              <select id="studio-source-image" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={sourceChoice} onChange={(event) => setSourceChoice(event.target.value)} disabled={!productId || bulkProductIds.length > 1}>
+              <AppSelect id="studio-source-image" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={sourceChoice} onValueChange={setSourceChoice} disabled={!productId || bulkProductIds.length > 1}>
                 <option value="new">إضافة صورة جديدة</option>
                 {(productImages.data ?? []).map((image, index) => (
                   <option key={Number(image.id)} value={String(image.id)}>
                     {image.isPrimary ? "استبدال الصورة الرئيسية" : `استبدال الصورة ${index + 1}`}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
               <p className="text-xs text-muted-foreground">الاستبدال يلتقط النسخة المنشورة خادمياً قبل بدء العمل.</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="studio-assignee">الموظف المصرح</Label>
-              <select id="studio-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)}>
+              <AppSelect id="studio-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={assigneeId} onValueChange={setAssigneeId} disabled={assignees.isError}>
                 <option value="">اختر الموظف</option>
                 {(assignees.data ?? []).map((user) => (
                   <option key={user.id} value={user.id}>
                     {user.name}
                   </option>
                 ))}
-              </select>
+              </AppSelect>
               <p className="text-xs text-muted-foreground">لكل منتج مهمة نشطة واحدة ومالك واحد؛ وزّع منتجات مختلفة على أكثر من موظف.</p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="studio-priority">الأولوية</Label>
-              <select id="studio-priority" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={assignmentPriority} onChange={(event) => setAssignmentPriority(event.target.value as typeof assignmentPriority)}>
+              <AppSelect id="studio-priority" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={assignmentPriority} onValueChange={(value) => setAssignmentPriority(value as typeof assignmentPriority)}>
                 <option value="LOW">منخفضة</option>
                 <option value="NORMAL">عادية</option>
                 <option value="HIGH">عالية</option>
                 <option value="URGENT">عاجلة</option>
-              </select>
+              </AppSelect>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="studio-due-at">موعد الإنجاز</Label>
@@ -1075,17 +1182,22 @@ export default function ProductImageStudio() {
               </Button>
             ))}
           </div>
+          {/* البحث بالاسم: المخرج الوحيد العمليّ من طابورٍ بآلاف الصفوف. */}
+          <div className="min-w-52 flex-1 space-y-1">
+            <Label htmlFor="studio-task-search">بحث باسم المنتج</Label>
+            <Input id="studio-task-search" value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="اكتب جزءاً من اسم المنتج" maxLength={80} />
+          </div>
           <div className="min-w-40 space-y-1">
             <Label htmlFor="studio-task-priority-filter">تصفية الأولوية</Label>
-            <select id="studio-task-priority-filter" className="h-11 rounded-md border border-input bg-background px-3 text-sm md:h-9" value={taskPriorityFilter} onChange={(event) => setTaskPriorityFilter(event.target.value as typeof taskPriorityFilter)}>
+            <AppSelect id="studio-task-priority-filter" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={taskPriorityFilter} onValueChange={(value) => setTaskPriorityFilter(value as typeof taskPriorityFilter)}>
               <option value="ALL">كل الأولويات</option>
               <option value="URGENT">عاجلة</option>
               <option value="HIGH">عالية</option>
               <option value="NORMAL">عادية</option>
               <option value="LOW">منخفضة</option>
-            </select>
+            </AppSelect>
           </div>
-          <Button type="button" variant={overdueOnly ? "default" : "outline"} className="min-h-11" onClick={() => setOverdueOnly((current) => !current)}>
+          <Button type="button" variant={overdueOnly ? "default" : "outline"} className="min-h-11" disabled={savedView === "OVERDUE"} onClick={() => setOverdueOnly((current) => !current)}>
             <AlertTriangle aria-hidden className="size-4" />
             المتأخرة فقط
           </Button>
@@ -1104,12 +1216,23 @@ export default function ProductImageStudio() {
                       <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />
                     </div>
                   )}
-                  {!tasks.isLoading && taskItems.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">لا مهام في هذا المسار.</p>}
+                  {/* «لا مهام» و«تعذّر الجلب» ليسا الشيء نفسه: الأولى تُطمئن والثانية تُنذر. */}
+                  {tasks.isError && (
+                    <div role="alert" className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                      <p className="font-medium">تعذّر جلب المهام — هذه ليست قائمة فارغة.</p>
+                      <Button variant="outline" size="sm" onClick={() => void tasks.refetch()}>
+                        إعادة المحاولة
+                      </Button>
+                    </div>
+                  )}
+                  {!tasks.isLoading && !tasks.isError && taskItems.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">لا مهام في هذا المسار.</p>}
                   {taskItems.map((task) => (
                     <button key={Number(task.id)} type="button" onClick={() => selectTask(task)} className={`min-h-11 w-full rounded-md border p-3 text-start transition-colors hover:bg-muted/50 active:bg-muted ${selectedId === Number(task.id) ? "border-primary bg-muted/40" : ""}`}>
                       <div className="flex items-start justify-between gap-2">
                         <span className="text-sm font-medium">{task.productName}</span>
-                        <Badge variant={STATUS_VARIANT[task.status]}>{STATUS_LABEL[task.status]}</Badge>
+                        {/* ASSIGNED بلا منفّذ = «في الطابور»، لا «مسندة». الوسم القديم كان يناقض
+                            السطر التالي مباشرةً («المسؤول: غير مسند»). */}
+                        <Badge variant={isQueuedStudioTask(task) ? "warning" : STATUS_VARIANT[task.status]}>{isQueuedStudioTask(task) ? "في الطابور" : STATUS_LABEL[task.status]}</Badge>
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">المسؤول: {task.assigneeName ?? "غير مسند"}</div>
                       <div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground">
@@ -1146,16 +1269,49 @@ export default function ProductImageStudio() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3">
+                      {/* إسنادٌ من موضع المهمة نفسها. كان على المدير أن يعود لأعلى الصفحة
+                          ويبحث عن المنتج بالاسم في المنتقي — فيبقى طابور الحملة بلا مخرج عمليّ. */}
+                      {dashboard.data?.canManage && selected.status === "ASSIGNED" && selected.assigneeName == null && (
+                        <div className="grid gap-2 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 sm:grid-cols-[1fr_auto]">
+                          <div className="space-y-1">
+                            <Label htmlFor="studio-inline-assignee">إسناد هذه المهمة إلى موظف</Label>
+                            <AppSelect id="studio-inline-assignee" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={inlineAssigneeId} onValueChange={setInlineAssigneeId} disabled={assignees.isError}>
+                              <option value="">اختر الموظف</option>
+                              {(assignees.data ?? []).map((user) => (
+                                <option key={user.id} value={user.id}>
+                                  {user.name}
+                                </option>
+                              ))}
+                            </AppSelect>
+                            {assignees.isError && <p className="text-xs text-destructive">تعذّر جلب قائمة الموظفين — أعد المحاولة قبل الإسناد.</p>}
+                          </div>
+                          <Button
+                            type="button"
+                            className="min-h-11 self-end"
+                            disabled={offline || assign.isPending || !inlineAssigneeId}
+                            onClick={() =>
+                              assign.mutate({
+                                productId: Number(selected.productId),
+                                assigneeId: Number(inlineAssigneeId),
+                                priority: selectedPriority,
+                                dueAt: selectedDueAt ? new Date(selectedDueAt) : null,
+                              })
+                            }
+                          >
+                            <UserCheck aria-hidden className="size-4" /> إسناد
+                          </Button>
+                        </div>
+                      )}
                       {dashboard.data?.canManage && ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"].includes(selected.status) && (
                         <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-[1fr_1fr_auto]">
                           <div className="space-y-1">
                             <Label htmlFor="studio-selected-priority">أولوية المهمة</Label>
-                            <select id="studio-selected-priority" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={selectedPriority} onChange={(event) => setSelectedPriority(event.target.value as typeof selectedPriority)}>
+                            <AppSelect id="studio-selected-priority" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm" value={selectedPriority} onValueChange={(value) => setSelectedPriority(value as typeof selectedPriority)}>
                               <option value="LOW">منخفضة</option>
                               <option value="NORMAL">عادية</option>
                               <option value="HIGH">عالية</option>
                               <option value="URGENT">عاجلة</option>
-                            </select>
+                            </AppSelect>
                           </div>
                           <div className="space-y-1">
                             <Label htmlFor="studio-selected-due-at">موعد الإنجاز</Label>
@@ -1241,6 +1397,19 @@ export default function ProductImageStudio() {
                       <CardContent className="space-y-4">
                         {preview.isLoading && <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />}
                         {preview.data && <PreviewPair data={preview.data} />}
+                        {/* اعتمادٌ بلا رؤية = نشرُ صورةٍ لم يرها المراجع. يُمنع صراحةً ويُفسَّر. */}
+                        {preview.isError && (
+                          <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium">تعذّر عرض الأصل والمرشّح.</p>
+                              <p className="text-xs">الاعتماد موقوف حتى تظهر الصورتان — لا يُعتمد ما لم يُرَ.</p>
+                            </div>
+                            <Button variant="outline" size="sm" className="shrink-0" onClick={() => void preview.refetch()}>
+                              إعادة المحاولة
+                            </Button>
+                          </div>
+                        )}
                         {dashboard.data?.canManage && selected.status === "PENDING_REVIEW" && (
                           <div className="space-y-3 border-t pt-4">
                             {reviewOverrideRequired && (
@@ -1272,7 +1441,7 @@ export default function ProductImageStudio() {
                             <div className="sticky bottom-24 z-20 -mx-4 mt-16 flex flex-wrap gap-2 border-y bg-background/95 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:mt-0 lg:border-0 lg:bg-transparent lg:p-0">
                               <Button
                                 className="min-h-11"
-                                disabled={offline || storageActionsDisabled || busy || !reviewable}
+                                disabled={!canApproveStudioCandidate({ offline, storageDisabled: storageActionsDisabled, busy, reviewable, previewLoaded: Boolean(preview.data) })}
                                 onClick={() =>
                                   approve.mutate({
                                     taskId: Number(selected.id),

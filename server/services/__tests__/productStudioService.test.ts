@@ -174,9 +174,16 @@ describe("product studio governed workflow", () => {
     });
     expect(campaign.startsAt).toEqual(expect.any(Date));
 
-    await expect(previewStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ count: 2, productIds: [3, 4] });
-    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 2 });
-    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 0 });
+    await expect(previewStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({
+      count: 2,
+      items: [
+        { id: 3, name: "منتج ناقص أول" },
+        { id: 4, name: "منتج ناقص ثان" },
+      ],
+      truncated: false,
+    });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 2, remaining: 0 });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 0, remaining: 0 });
 
     const rows = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId));
     expect(rows).toHaveLength(2);
@@ -341,12 +348,33 @@ describe("product studio governed workflow", () => {
         kind: "TASK_ASSIGNED",
       }),
     ]);
+    // المتأخّرات تُجمَّع في إشعارٍ واحد للمدير في اليوم، لا إشعاراً لكل مهمة:
+    // حملةٌ تَسِم آلاف المهام بموعدٍ واحد كانت تُغرق المدير وتُعيد المحاولة كل خمس دقائق.
     expect(managerNotices).toEqual([
       expect.objectContaining({
-        eventKey: expect.stringContaining(":overdue:"),
+        eventKey: `product-studio:overdue-digest:2026-08-19:branch:1:manager:${manager.userId}`,
         kind: "APPROVAL_REQUIRED",
+        body: "لديك 1 مهمة استوديو تجاوزت موعدها.",
       }),
     ]);
+
+    // مهمة متأخرة إضافية في اليوم نفسه لا تُنشئ إشعاراً ثانياً.
+    await db().insert(s.products).values({ id: 4, name: "منتج متأخر ثانٍ" });
+    await db()
+      .insert(s.productImageJobs)
+      .values({
+        productId: 4,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "ASSIGNED",
+        assignedTo: null,
+        createdBy: manager.userId,
+        activeSlot: 1,
+        dueAt: new Date("2026-08-19T09:00:00.000Z"),
+        revision: 1,
+      });
+    await expect(sendStudioDueNotifications(manager, now)).resolves.toEqual({ createdCount: 0 });
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, manager.userId))).toHaveLength(1);
   });
 
   it("reports campaign progress, first-pass approval, rejection reasons and median cycle time", async () => {
@@ -756,6 +784,14 @@ describe("product studio governed workflow", () => {
       completedToday: 1,
       medianCycleMinutes: 120,
     });
+    // مهمة المنتج ١ حالتها ASSIGNED بلا منفّذ (طابور حملة). لا تُعَدّ عملاً جارياً:
+    // عدُّها كذلك هو ما جعل الإنتاج يعرض «قيد العمل ٤٢٨٥» و«غير المسندة ٤٢٨٥» معاً.
+    expect(dashboard.counts.ASSIGNED).toBe(1);
+    expect(dashboard.ownedCounts.ASSIGNED).toBe(0);
+    expect(dashboard.inProgress).toBe(1);
+    expect(dashboard.active).toBe(3);
+    // المتأخّر بلا منفّذ يظهر في العدّادين، ويُعاد صراحةً كي لا تعرضه الشاشة مشكلتين.
+    expect(dashboard.overdueUnassigned).toBe(1);
   });
 
   it("searches server-side beyond the former 40-row picker limit", async () => {
@@ -1734,6 +1770,82 @@ describe("product studio governed workflow", () => {
         state: "REFERENCED",
       }),
     ]);
+  });
+
+  it("keeps the chosen source image and the existing priority when adopting a backlog task", async () => {
+    // مهمة أولى تُنتج صورةً معتمدة تصلح مصدراً لاحقاً.
+    const first = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: worker.userId,
+      sourceImageId: null,
+    });
+    await submitStudioCandidate(worker, {
+      taskId: first.taskId,
+      originalDataUrl: PNG_1X1_ALT,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+    });
+    const { imageId } = await approveStudioTask(manager, first.taskId);
+
+    // مهمة طابور حملة: ASSIGNED بلا منفّذ، بأولوية عاجلة.
+    await db().insert(s.productImageJobs).values({
+      productId: 1,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      priority: "URGENT",
+      revision: 1,
+      templateVersion: 1,
+    });
+
+    const adopted = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: worker.userId,
+      sourceImageId: imageId,
+    });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, adopted.taskId));
+    // كانت لقطة المصدر تُهمَل عند التبنّي، فيصطدم المنفّذ بـ«الصورة الأصلية مطلوبة لأول إرسال».
+    expect(row).toMatchObject({
+      assignedTo: worker.userId,
+      sourceImageId: Number(imageId),
+      priority: "URGENT",
+    });
+    expect(row!.originalObjectKey).toEqual(expect.any(String));
+    expect(row!.sourceContentHash).toEqual(expect.any(String));
+    // ومفتاح المصدر يصير مرجَعاً فلا يلتقطه كنس المخزون.
+    expect(await db().select().from(s.productImageObjectStaging).where(eq(s.productImageObjectStaging.objectKey, row!.originalObjectKey!))).toEqual([expect.objectContaining({ state: "REFERENCED" })]);
+    // والمنفّذ يستطيع الإرسال بلا أصلٍ جديد لأنّ الأصل محفوظ.
+    await expect(
+      submitStudioCandidate(worker, {
+        taskId: adopted.taskId,
+        processedDataUrl: PNG_1X1,
+        mode: "FLATTEN",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const [submitted] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, adopted.taskId));
+    expect(submitted).toMatchObject({ status: "PENDING_REVIEW" });
+  });
+
+  it("preserves backlog priority on bulk assign unless the manager states one", async () => {
+    await db().insert(s.productImageJobs).values({
+      productId: 1,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      priority: "URGENT",
+      revision: 1,
+      templateVersion: 1,
+    });
+    await expect(bulkAssignStudioTasks(manager, { productIds: [1], assigneeId: worker.userId })).resolves.toEqual({ createdCount: 1 });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
+    // الحشو بـNORMAL كان يخفض حزمة مهامٍ عاجلة صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
+    expect(row).toMatchObject({ assignedTo: worker.userId, priority: "URGENT" });
   });
 
   it("rejects reverting an older job after a newer job published identical bytes", async () => {

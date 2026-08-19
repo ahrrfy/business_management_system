@@ -55,6 +55,7 @@ export const productStudioRouter = router({
         productId: z.number().int().positive().optional(),
         campaignId: campaignId.optional(),
         unassigned: z.boolean().optional(),
+        search: z.string().trim().max(80).optional(),
       }),
     )
     .query(({ ctx, input }) => listStudioTasks(actor(ctx), input)),

@@ -26,6 +26,13 @@ const UPLOAD_LEASE_MS = 2 * 60_000;
 const PROCESSING_AUTHORIZATION_MS = 2 * 60_000;
 const PROCESSING_PROOF_MS = 15 * 60_000;
 const STAGING_AUDIT_INTERVAL_MS = 24 * 60 * 60_000;
+/** سقف مهام الحملة المولَّدة في المعاملة الواحدة؛ الباقي يُولَّد باستدعاءٍ تالٍ. */
+const BACKLOG_BATCH_LIMIT = 500;
+/** سقف مسح تذكيرات المواعيد في النبضة الواحدة. */
+const DUE_REMINDER_SCAN_LIMIT = 500;
+/** نافذة وسيط زمن الدورة وسقف عيّنته — تمنعان تحميل تاريخ الاعتماد كلّه لحساب رقمٍ واحد. */
+const CYCLE_WINDOW_DAYS = 90;
+const CYCLE_SAMPLE_LIMIT = 500;
 
 export interface ProductStudioActor {
   userId: number;
@@ -645,41 +652,52 @@ async function loadCampaign(actor: ProductStudioActor, campaignId: number): Prom
   return campaign;
 }
 
-async function missingStudioProducts(db: ReturnType<typeof requireDb> | StudioTx) {
-  const activeProducts = await db
+/**
+ * «ناقص» = منتج نشط بلا صورةٍ معتمدة وبلا مهمة استوديو نشطة.
+ * الاستبعاد يجري داخل SQL لا في ذاكرة Node: النسخة السابقة كانت تسحب كل المنتجات النشطة
+ * وكل صفوف الصور والمهام المطابقة ثم تطرح بينها بـSet — تكلفةٌ تنمو مع الكتالوج كلّه في كل معاينة.
+ */
+function missingStudioProductConditions() {
+  return and(
+    eq(products.isActive, true),
+    sql`not exists (select 1 from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED')`,
+    sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.activeSlot} = 1)`,
+  );
+}
+
+async function countMissingStudioProducts(db: ReturnType<typeof requireDb> | StudioTx) {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(products)
+    .where(missingStudioProductConditions());
+  return Number(row?.count ?? 0);
+}
+
+async function missingStudioProducts(db: ReturnType<typeof requireDb> | StudioTx, limit: number) {
+  return db
     .select({
       id: products.id,
       name: products.name,
       description: products.description,
     })
     .from(products)
-    .where(eq(products.isActive, true))
-    .orderBy(asc(products.id));
-  if (activeProducts.length === 0) return [];
-  const productIds = activeProducts.map((product) => Number(product.id));
-  const [approvedImages, activeTasks] = await Promise.all([
-    db
-      .select({ productId: productImages.productId })
-      .from(productImages)
-      .where(and(inArray(productImages.productId, productIds), eq(productImages.reviewStatus, "APPROVED"))),
-    db
-      .select({ productId: productImageJobs.productId })
-      .from(productImageJobs)
-      .where(and(inArray(productImageJobs.productId, productIds), eq(productImageJobs.activeSlot, 1))),
-  ]);
-  const excluded = new Set<number>([...approvedImages.map((row) => Number(row.productId)), ...activeTasks.map((row) => Number(row.productId))]);
-  return activeProducts.filter((product) => !excluded.has(Number(product.id)));
+    .where(missingStudioProductConditions())
+    .orderBy(asc(products.id))
+    .limit(limit);
 }
 
 export async function previewStudioCampaignBacklog(actor: ProductStudioActor, campaignId: number) {
   const campaign = await loadCampaign(actor, campaignId);
-  const missing = await missingStudioProducts(requireDb());
+  const db = requireDb();
+  const count = await countMissingStudioProducts(db);
+  const items = count === 0 ? [] : await missingStudioProducts(db, 100);
   return {
     campaignId: Number(campaign.id),
-    count: missing.length,
-    productIds: missing.map((product) => Number(product.id)),
-    items: missing.slice(0, 100).map((product) => ({ id: Number(product.id), name: product.name })),
-    truncated: missing.length > 100,
+    count,
+    items: items.map((product) => ({ id: Number(product.id), name: product.name })),
+    truncated: count > items.length,
+    /** أقصى ما تُنشئه دفعةٌ واحدة؛ تُظهره الشاشة كي يعرف المدير أنّ عليه تكرار التوليد. */
+    batchLimit: BACKLOG_BATCH_LIMIT,
   };
 }
 
@@ -700,53 +718,41 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
       });
     }
 
-    const initial = await missingStudioProducts(tx);
-    if (initial.length === 0) return { createdCount: 0 };
-    const ids = initial.map((product) => Number(product.id));
+    // دفعةٌ محدودة لكل استدعاء. النسخة السابقة كانت تقفل كل منتجٍ نشط بـFOR UPDATE في
+    // معاملةٍ واحدة (٤٢٨٥ صفاً في الإنتاج) فتحجب أيّ كتابةٍ على الكتالوج طوال تنفيذها،
+    // وتُبقي بوّابة القيد المالي المشتركة محجوزةً معها.
+    const missing = await missingStudioProducts(tx, BACKLOG_BATCH_LIMIT);
+    if (missing.length === 0) return { createdCount: 0, remaining: 0 };
+    const ids = missing.map((product) => Number(product.id));
     await tx.select({ id: products.id }).from(products).where(inArray(products.id, ids)).for("update");
-    const [approvedImages, activeTasks] = await Promise.all([
-      tx
-        .select({ productId: productImages.productId })
-        .from(productImages)
-        .where(and(inArray(productImages.productId, ids), eq(productImages.reviewStatus, "APPROVED"))),
-      tx
-        .select({ productId: productImageJobs.productId })
-        .from(productImageJobs)
-        .where(and(inArray(productImageJobs.productId, ids), eq(productImageJobs.activeSlot, 1))),
-    ]);
-    const excluded = new Set<number>([...approvedImages.map((row) => Number(row.productId)), ...activeTasks.map((row) => Number(row.productId))]);
-    const missing = initial.filter((product) => !excluded.has(Number(product.id)));
-    for (let offset = 0; offset < missing.length; offset += 500) {
-      const batch = missing.slice(offset, offset + 500);
-      if (batch.length === 0) continue;
-      await tx.insert(productImageJobs).values(
-        batch.map((product) => ({
-          productId: Number(product.id),
-          campaignId,
-          branchId: Number(campaign.branchId),
-          sourceProductHash: productContentHash(product),
-          mode: "FLATTEN" as const,
-          status: "ASSIGNED" as const,
-          priority: "NORMAL" as const,
-          dueAt: campaign.dueAt,
-          revision: 1,
-          assignedTo: null,
-          assignedBy: null,
-          createdBy: actor.userId,
-          activeSlot: 1,
-          templateVersion: 1,
-        })),
-      );
-    }
+    await tx.insert(productImageJobs).values(
+      missing.map((product) => ({
+        productId: Number(product.id),
+        campaignId,
+        branchId: Number(campaign.branchId),
+        sourceProductHash: productContentHash(product),
+        mode: "FLATTEN" as const,
+        status: "ASSIGNED" as const,
+        priority: "NORMAL" as const,
+        dueAt: campaign.dueAt,
+        revision: 1,
+        assignedTo: null,
+        assignedBy: null,
+        createdBy: actor.userId,
+        activeSlot: 1,
+        templateVersion: 1,
+      })),
+    );
+    const remaining = await countMissingStudioProducts(tx);
     await tx.insert(auditLogs).values({
       userId: actor.userId,
       branchId: Number(campaign.branchId),
       action: "productStudio.campaign.createBacklog",
       entityType: "productStudioCampaign",
       entityId: String(campaignId),
-      newValue: { createdCount: missing.length },
+      newValue: { createdCount: missing.length, remaining },
     });
-    return { createdCount: missing.length };
+    return { createdCount: missing.length, remaining };
   });
 }
 
@@ -858,6 +864,8 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const horizon = new Date(now.getTime() + Math.max(1, Math.min(horizonHours, 168)) * 60 * 60_000);
   const branchScope = canCrossBranches(actor) ? undefined : eq(productImageJobs.branchId, Number(actor.branchId));
+  // تذكيرٌ فرديّ للمهام المسنَدة فقط والتي لم يفت موعدها بعد.
+  // كان المسح يشمل المهام غير المسنَدة أيضاً (طابور الحملة كلّه) بلا سقف.
   const jobs = await requireDb()
     .select({
       id: productImageJobs.id,
@@ -867,8 +875,18 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
       assigneeRole: users.role,
     })
     .from(productImageJobs)
-    .leftJoin(users, eq(users.id, productImageJobs.assignedTo))
-    .where(and(branchScope, inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]), lte(productImageJobs.dueAt, horizon)));
+    .innerJoin(users, eq(users.id, productImageJobs.assignedTo))
+    .where(and(branchScope, inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]), gte(productImageJobs.dueAt, now), lte(productImageJobs.dueAt, horizon)))
+    .orderBy(asc(productImageJobs.dueAt))
+    .limit(DUE_REMINDER_SCAN_LIMIT);
+  // المتأخّرات تُبلَّغ للمدير **مُجمَّعةً مرّةً في اليوم**، لا إشعاراً لكل مهمة.
+  // الحملةُ تَسِم آلاف المهام بموعدٍ واحد، فكان كل نبضٍ (٥ د) يحاول إدراج
+  // (عدد المتأخرات × عدد المديرين) إشعاراً تفشل كلّها على المفتاح الفريد — أبداً.
+  const overdueByBranch = await requireDb()
+    .select({ branchId: productImageJobs.branchId, count: sql<number>`count(*)` })
+    .from(productImageJobs)
+    .where(and(branchScope, inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]), lt(productImageJobs.dueAt, now)))
+    .groupBy(productImageJobs.branchId);
   const managerRows = await requireDb()
     .select({
       id: users.id,
@@ -886,10 +904,30 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
     managersByBranch.set(branchId, [...(managersByBranch.get(branchId) ?? []), Number(user.id)]);
   }
   let createdCount = 0;
+  const overdueDayKey = now.toISOString().slice(0, 10);
+  for (const row of overdueByBranch) {
+    if (row.branchId == null) continue;
+    const overdueCount = Number(row.count);
+    if (overdueCount === 0) continue;
+    for (const managerId of managersByBranch.get(Number(row.branchId)) ?? []) {
+      const result = await createAppNotification({
+        userId: managerId,
+        kind: "APPROVAL_REQUIRED",
+        title: "استثناء: مهام استوديو متأخرة",
+        body: `لديك ${overdueCount} مهمة استوديو تجاوزت موعدها.`,
+        route: "/catalog/image-studio?view=overdue",
+        eventKey: `product-studio:overdue-digest:${overdueDayKey}:branch:${Number(row.branchId)}:manager:${managerId}`,
+        entityType: "productStudioOverdueDigest",
+        entityId: Number(row.branchId),
+        requiresAction: true,
+      });
+      if (result.created) createdCount++;
+    }
+  }
   for (const job of jobs) {
     if (!job.dueAt) continue;
     const dueKey = job.dueAt.toISOString();
-    if (job.dueAt >= now && job.assignedTo != null && job.assigneeRole !== "manager" && job.assigneeRole !== "admin") {
+    if (job.assignedTo != null && job.assigneeRole !== "manager" && job.assigneeRole !== "admin") {
       const result = await createAppNotification({
         userId: Number(job.assignedTo),
         kind: "TASK_ASSIGNED",
@@ -903,33 +941,20 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
       });
       if (result.created) createdCount++;
     }
-    if (job.dueAt < now && job.branchId != null) {
-      for (const managerId of managersByBranch.get(Number(job.branchId)) ?? []) {
-        const result = await createAppNotification({
-          userId: managerId,
-          kind: "APPROVAL_REQUIRED",
-          title: "استثناء: مهمة استوديو متأخرة",
-          body: `تجاوزت مهمة الاستوديو رقم ${job.id} موعدها.`,
-          route: `/catalog/image-studio?task=${job.id}`,
-          eventKey: `product-studio:${job.id}:overdue:${dueKey}:manager:${managerId}`,
-          entityType: "productImageJob",
-          entityId: Number(job.id),
-          requiresAction: true,
-        });
-        if (result.created) createdCount++;
-      }
-    }
   }
   return { createdCount };
 }
 
 export async function getStudioDashboard(actor: ProductStudioActor, now = new Date()) {
   const scope = canCrossBranches(actor) ? undefined : actor.role === "manager" || actor.role === "auditor" ? eq(productImageJobs.branchId, Number(actor.branchId)) : and(eq(productImageJobs.branchId, Number(actor.branchId)), eq(productImageJobs.assignedTo, actor.userId));
+  // المهمة «مملوكة» حين لها منفّذ فعليّ. الحالة ASSIGNED وحدها لا تدلّ على ذلك:
+  // مهام الحملة تُولَد ASSIGNED بـassignedTo=null، فعدُّها «قيد العمل» يجعل اللوحة تكذب.
+  const ownedExpr = sql<number>`case when ${productImageJobs.assignedTo} is null then 0 else 1 end`;
   const rows = await requireDb()
-    .select({ status: productImageJobs.status, count: sql<number>`count(*)` })
+    .select({ status: productImageJobs.status, owned: ownedExpr, count: sql<number>`count(*)` })
     .from(productImageJobs)
     .where(scope)
-    .groupBy(productImageJobs.status);
+    .groupBy(productImageJobs.status, ownedExpr);
   const counts: Record<StudioStatus, number> = {
     ASSIGNED: 0,
     IN_PROGRESS: 0,
@@ -939,7 +964,11 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
     FAILED: 0,
     REVERTED: 0,
   };
-  for (const row of rows) counts[row.status] = Number(row.count);
+  const ownedCounts: Record<StudioStatus, number> = { ...counts };
+  for (const row of rows) {
+    counts[row.status] += Number(row.count);
+    if (Number(row.owned) === 1) ownedCounts[row.status] += Number(row.count);
+  }
   const activeStatuses: StudioStatus[] = ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"];
   const day = now.toISOString().slice(0, 10);
   const todayStart = utcDayStart(day);
@@ -955,17 +984,34 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
         activeStatuses.map((status) => sql`${status}`),
         sql`, `,
       )}) and ${productImageJobs.dueAt} is not null and ${productImageJobs.dueAt} < ${now} then 1 else 0 end)`,
+      // المتأخّر بلا منفّذ يُعَدّ في الخانتين؛ تُعاد صراحةً كي لا تعرض الشاشة المشكلة الواحدة مشكلتين.
+      overdueUnassigned: sql<number>`sum(case when ${productImageJobs.status} in (${sql.join(
+        activeStatuses.map((status) => sql`${status}`),
+        sql`, `,
+      )}) and ${productImageJobs.assignedTo} is null and ${productImageJobs.dueAt} is not null and ${productImageJobs.dueAt} < ${now} then 1 else 0 end)`,
       completedToday: sql<number>`sum(case when ${productImageJobs.status} = 'APPROVED' and ${productImageJobs.reviewedAt} >= ${todayStart} and ${productImageJobs.reviewedAt} < ${tomorrowStart} then 1 else 0 end)`,
     })
     .from(productImageJobs)
     .where(metricScope);
+  // نافذة متدحرجة + سقف صريح: بلا حدٍّ كانت تُحمَّل كل المهام المعتمدة منذ نشأة النظام
+  // إلى ذاكرة Node عند كل إبطالٍ للوحة (بعد كل اعتماد/رفض) — نموّ لا يتوقّف لقيمةٍ عدديّة واحدة.
+  const cycleWindowStart = new Date(now.getTime() - CYCLE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const cycleRows = await requireDb()
     .select({
       createdAt: productImageJobs.createdAt,
       reviewedAt: productImageJobs.reviewedAt,
     })
     .from(productImageJobs)
-    .where(and(metricScope, eq(productImageJobs.status, "APPROVED"), sql`${productImageJobs.reviewedAt} is not null`));
+    .where(
+      and(
+        metricScope,
+        eq(productImageJobs.status, "APPROVED"),
+        sql`${productImageJobs.reviewedAt} is not null`,
+        gte(productImageJobs.reviewedAt, cycleWindowStart),
+      ),
+    )
+    .orderBy(desc(productImageJobs.reviewedAt))
+    .limit(CYCLE_SAMPLE_LIMIT);
   const cycleMinutes = cycleRows
     .filter((row): row is { createdAt: Date; reviewedAt: Date } => row.reviewedAt != null)
     .map((row) => Math.max(0, Math.round((row.reviewedAt.getTime() - row.createdAt.getTime()) / 60_000)))
@@ -974,11 +1020,17 @@ export async function getStudioDashboard(actor: ProductStudioActor, now = new Da
   const medianCycleMinutes = cycleMinutes.length === 0 ? null : cycleMinutes.length % 2 === 1 ? cycleMinutes[middle] : Math.round(((cycleMinutes[middle - 1] ?? 0) + (cycleMinutes[middle] ?? 0)) / 2);
   return {
     counts,
+    ownedCounts,
     active: counts.ASSIGNED + counts.IN_PROGRESS + counts.PENDING_REVIEW + counts.REJECTED,
+    /** العمل الجاري فعلاً: مسنَدٌ لمنفّذ. لا يشمل طابور الحملة العاطل. */
+    inProgress: ownedCounts.ASSIGNED + ownedCounts.IN_PROGRESS,
+    rejected: counts.REJECTED,
     unassigned: Number(exceptionMetrics?.unassigned ?? 0),
     overdue: Number(exceptionMetrics?.overdue ?? 0),
+    overdueUnassigned: Number(exceptionMetrics?.overdueUnassigned ?? 0),
     completedToday: Number(exceptionMetrics?.completedToday ?? 0),
     medianCycleMinutes,
+    medianCycleWindowDays: CYCLE_WINDOW_DAYS,
     canManage: isManager(actor),
     canAudit: actor.role === "auditor",
     storageReady: isImageStoreOperational(),
@@ -995,6 +1047,7 @@ type StudioTaskCursor = {
   productId: number | null;
   campaignId: number | null;
   unassigned: boolean;
+  search: string;
   updatedAt: string;
   id: number;
 };
@@ -1006,7 +1059,7 @@ function encodeStudioTaskCursor(cursor: StudioTaskCursor): string {
 function decodeStudioTaskCursor(value: string, expected: Omit<StudioTaskCursor, "updatedAt" | "id">): StudioTaskCursor {
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as StudioTaskCursor;
-    if (parsed.scope !== expected.scope || JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) || JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) || parsed.overdue !== expected.overdue || parsed.assigneeId !== expected.assigneeId || parsed.productId !== expected.productId || parsed.campaignId !== expected.campaignId || parsed.unassigned !== expected.unassigned || typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) || !Number.isSafeInteger(parsed.id) || parsed.id < 1) throw new Error("invalid cursor");
+    if (parsed.scope !== expected.scope || JSON.stringify(parsed.statuses) !== JSON.stringify(expected.statuses) || JSON.stringify(parsed.priorities) !== JSON.stringify(expected.priorities) || parsed.overdue !== expected.overdue || parsed.assigneeId !== expected.assigneeId || parsed.productId !== expected.productId || parsed.campaignId !== expected.campaignId || parsed.unassigned !== expected.unassigned || parsed.search !== expected.search || typeof parsed.updatedAt !== "string" || Number.isNaN(Date.parse(parsed.updatedAt)) || !Number.isSafeInteger(parsed.id) || parsed.id < 1) throw new Error("invalid cursor");
     return parsed;
   } catch {
     throw new TRPCError({
@@ -1029,11 +1082,13 @@ export async function listStudioTasks(
     productId?: number;
     campaignId?: number;
     unassigned?: boolean;
+    search?: string;
     now?: Date;
   },
 ) {
   const conds = [];
   const limit = Math.min(input.limit ?? 50, 100);
+  const search = normalizeSearchText(input.search ?? "").slice(0, 80);
   const priorities = Array.from(new Set(input.priority ?? [])).sort();
   const statuses = Array.from(new Set(input.statuses ?? [])).sort();
   const assigneeId = input.assigneeId ?? null;
@@ -1048,6 +1103,7 @@ export async function listStudioTasks(
     productId,
     campaignId,
     unassigned: input.unassigned === true,
+    search,
   };
   const cursor = input.cursor ? decodeStudioTaskCursor(input.cursor, cursorScope) : null;
   const now = input.now ?? new Date();
@@ -1056,7 +1112,10 @@ export async function listStudioTasks(
   if ((!isManager(actor) && !branchAuditHistory) || input.scope === "MINE") {
     conds.push(eq(productImageJobs.assignedTo, actor.userId));
   }
-  if (input.scope === "QUEUE") conds.push(inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "REJECTED"]));
+  // عرض الاستثناءات (متأخّر/بلا منفّذ) يشمل ما ينتظر المراجعة أيضاً، وإلّا خالف العدّادَ
+  // في اللوحة: بطاقةٌ تقول ١٢ وقائمةٌ تعرض ٩، والثلاثة الغائبة هي المتأخّرة قيد المراجعة.
+  const exceptionView = input.overdue === true || input.unassigned === true;
+  if (input.scope === "QUEUE") conds.push(inArray(productImageJobs.status, exceptionView ? ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"] : ["ASSIGNED", "IN_PROGRESS", "REJECTED"]));
   if (input.scope === "REVIEW") conds.push(eq(productImageJobs.status, "PENDING_REVIEW"));
   if (input.scope === "HISTORY") conds.push(inArray(productImageJobs.status, ["APPROVED", "FAILED", "REVERTED"]));
   if (statuses.length) conds.push(inArray(productImageJobs.status, statuses));
@@ -1068,6 +1127,11 @@ export async function listStudioTasks(
   if (productId != null) conds.push(eq(productImageJobs.productId, productId));
   if (campaignId != null) conds.push(eq(productImageJobs.campaignId, campaignId));
   if (input.unassigned === true) conds.push(isNull(productImageJobs.assignedTo));
+  // بحثٌ باسم المنتج/الرمز داخل الطابور. بدونه كان الوصول إلى مهمةٍ بعينها بين آلاف الصفوف
+  // يعني الضغط على «تحميل المزيد» عشرات المرّات ثمّ المسح البصريّ.
+  if (search) {
+    conds.push(like(sql<string>`coalesce(${products.searchNorm}, lower(${products.name}))`, `%${escLike(search)}%`));
+  }
   if (input.overdue === true) {
     conds.push(lt(productImageJobs.dueAt, now));
     conds.push(inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "REJECTED"]));
@@ -1399,7 +1463,10 @@ export async function assignStudioTask(
         .from(users)
         .where(and(eq(users.id, input.assigneeId), eq(users.isActive, true)))
         .limit(1)
-        .for("update")
+        // قفل مشارك: القراءة هنا تحقّقُ صلاحيةٍ لا تعديل. قفل X على users يصطدم بأقفال FK
+        // المشتركة لكل إدراجٍ بـcreatedBy لنفس المستخدم (إيصال/وردية/فاتورة)، وكان يعكس
+        // ترتيب القفل بين assign (products→users) وbulkAssign (users→products) فيولّد deadlock.
+        .for("share")
     )[0];
     if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
     if (actor.role !== "admin" && !actor.isOwner && Number(assignee.branchId) !== Number(actor.branchId)) {
@@ -1414,6 +1481,32 @@ export async function assignStudioTask(
         message: "الموظف لا يملك صلاحية استوديو المنتجات",
       });
     }
+    // تُستعمل في مسارَي الإسناد معاً: إنشاء مهمة جديدة، وتبنّي مهمة طابورٍ قائمة.
+    // كان التحقّق حكراً على مسار الإنشاء، فكان تبنّي مهمة الطابور يمرّ بلا تحقّقٍ ثم يُهمل اللقطة.
+    const assertSourceSnapshotCurrent = async () => {
+      if (!snapshot) return;
+      const current = (
+        await tx
+          .select({
+            id: productImages.id,
+            url: productImages.url,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            mime: productImages.mime,
+            reviewStatus: productImages.reviewStatus,
+          })
+          .from(productImages)
+          .where(and(eq(productImages.id, snapshot.sourceImageId), eq(productImages.productId, input.productId)))
+          .limit(1)
+          .for("update")
+      )[0];
+      if (!current || current.reviewStatus !== "APPROVED" || current.url !== snapshot.expected.url || current.objectKey !== snapshot.expected.objectKey || current.contentHash !== snapshot.expected.contentHash || current.mime !== snapshot.expected.mime) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تغيّرت صورة المصدر أثناء الإسناد",
+        });
+      }
+    };
     const activeTask = (
       await tx
         .select({
@@ -1442,6 +1535,7 @@ export async function assignStudioTask(
           message: "المهمة غير المسندة تتبع فرعاً آخر",
         });
       }
+      await assertSourceSnapshotCurrent();
       await tx
         .update(productImageJobs)
         .set({
@@ -1449,13 +1543,28 @@ export async function assignStudioTask(
           assignedBy: actor.userId,
           priority: input.priority ?? activeTask.priority,
           dueAt: input.dueAt === undefined ? activeTask.dueAt : input.dueAt,
+          // لقطة المصدر التي اختارها المدير تُحفَظ هنا أيضاً؛ إغفالها كان يُفقدها صامتاً
+          // فيصطدم المنفّذ لاحقاً بـ«الصورة الأصلية مطلوبة لأول إرسال».
+          ...(snapshot
+            ? {
+                sourceImageId: snapshot.sourceImageId,
+                originalObjectKey: snapshot.originalObjectKey,
+                sourceContentHash: snapshot.sourceContentHash,
+                originalMime: snapshot.originalMime,
+              }
+            : {}),
+          sourceProductHash: productContentHash(product),
           revision: sql`${productImageJobs.revision} + 1`,
         })
         .where(eq(productImageJobs.id, activeTask.id));
+      if (snapshot) {
+        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: new Date() }).where(eq(productImageObjectStaging.objectKey, snapshot.originalObjectKey));
+      }
       await tx.insert(auditLogs).values(
         auditValues(actor, "productStudio.assignBacklog", Number(activeTask.id), {
           productId: input.productId,
           assigneeId: input.assigneeId,
+          sourceImageId: snapshot?.sourceImageId ?? null,
           priority: input.priority ?? activeTask.priority,
           dueAt: input.dueAt === undefined ? (activeTask.dueAt?.toISOString() ?? null) : (input.dueAt?.toISOString() ?? null),
         }),
@@ -1466,29 +1575,7 @@ export async function assignStudioTask(
         assigneeRole: assignee.role,
       };
     }
-    if (snapshot) {
-      const current = (
-        await tx
-          .select({
-            id: productImages.id,
-            url: productImages.url,
-            objectKey: productImages.objectKey,
-            contentHash: productImages.contentHash,
-            mime: productImages.mime,
-            reviewStatus: productImages.reviewStatus,
-          })
-          .from(productImages)
-          .where(and(eq(productImages.id, snapshot.sourceImageId), eq(productImages.productId, input.productId)))
-          .limit(1)
-          .for("update")
-      )[0];
-      if (!current || current.reviewStatus !== "APPROVED" || current.url !== snapshot.expected.url || current.objectKey !== snapshot.expected.objectKey || current.contentHash !== snapshot.expected.contentHash || current.mime !== snapshot.expected.mime) {
-        throw new TRPCError({
-          code: "CONFLICT",
-          message: "تغيّرت صورة المصدر أثناء الإسناد",
-        });
-      }
-    }
+    await assertSourceSnapshotCurrent();
     try {
       const [created] = await tx
         .insert(productImageJobs)
@@ -1576,7 +1663,10 @@ export async function bulkAssignStudioTasks(
         .from(users)
         .where(and(eq(users.id, input.assigneeId), eq(users.isActive, true)))
         .limit(1)
-        .for("update")
+        // قفل مشارك: القراءة هنا تحقّقُ صلاحيةٍ لا تعديل. قفل X على users يصطدم بأقفال FK
+        // المشتركة لكل إدراجٍ بـcreatedBy لنفس المستخدم (إيصال/وردية/فاتورة)، وكان يعكس
+        // ترتيب القفل بين assign (products→users) وbulkAssign (users→products) فيولّد deadlock.
+        .for("share")
     )[0];
     if (!assignee) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير متاح" });
     if (!canCrossBranches(actor) && Number(assignee.branchId) !== Number(actor.branchId)) {
@@ -1662,7 +1752,9 @@ export async function bulkAssignStudioTasks(
           .set({
             assignedTo: input.assigneeId,
             assignedBy: actor.userId,
-            priority: input.priority ?? "NORMAL",
+            // أولوية المهمة القائمة تُصان ما لم يُصرّح المدير بغيرها؛ الحشو بـNORMAL
+            // كان يخفض حزمة مهامٍ URGENT صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
+            ...(input.priority === undefined ? {} : { priority: input.priority }),
             ...(input.dueAt === undefined ? {} : { dueAt: input.dueAt }),
             revision: sql`${productImageJobs.revision} + 1`,
           })
