@@ -57,6 +57,7 @@ export function ReceptionInvoiceQueue({
   parties,
   canFulfill,
   isManager,
+  defaultPayChip,
 }: {
   branchId: number;
   /** وردية الاستقبال المفتوحة (رقاقة «ورديتي» + حوار التسديد «سيدخل درجك أنت»). */
@@ -66,10 +67,15 @@ export function ReceptionInvoiceQueue({
   canFulfill: boolean;
   /** م٧: المرتجع مديريّ — للمدير رابط /returns، ولغيره حوار «استدعِ المدير». */
   isManager: boolean;
+  /**
+   * الفلتر الافتراضيّ عند الفتح (١٩/٨). شاشة «فواتير للتحصيل» تفتح على **غير المسدَّدة**
+   * لأنّ غرضها في اسمها؛ واللوحة العامّة تبقى على `ALL`. الفلتر يبقى قابلاً للتبديل بعدها.
+   */
+  defaultPayChip?: PayChip;
 }) {
   const utils = trpc.useUtils();
   const [range, setRange] = useState<RangeChip>(currentShiftId ? "MY_SHIFT" : "TODAY");
-  const [payChip, setPayChip] = useState<PayChip>("ALL");
+  const [payChip, setPayChip] = useState<PayChip>(defaultPayChip ?? "ALL");
   const [search, setSearch] = useState("");
   const debouncedQ = useDebouncedValue(search, 250);
   // صفحات keyset متراكمة (تحميل المزيد) — تُصفَّر عند تغيّر أي فلتر.

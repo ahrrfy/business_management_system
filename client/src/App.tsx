@@ -44,6 +44,10 @@ const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
 const CardAccount = lazy(() => import("@/pages/CardAccount"));
 const ExchangeHub = lazy(() => import("@/pages/ExchangeHub"));
 const SalesHub = lazy(() => import("@/pages/SalesHub"));
+const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
+const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
+const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
+
 const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
 const PrintHub = lazy(() => import("@/pages/PrintHub"));
 const AssetsHub = lazy(() => import("@/pages/AssetsHub"));
@@ -355,8 +359,13 @@ export default function App() {
           </RequireRole>
         </Shell>
       </Route>
-      {/* الحجوزات نُقلت إلى مساحة خدمة العملاء داخل غلاف الاستقبال؛ لا صفحة تشغيل مستقلة بعد الآن. */}
-      <Route path="/reservations"><Redirect to="/pos?mode=RECEPTION&workspace=reservations" /></Route>
+      {/* ١٩/٨ (طلب المالك): **لكل مفهومٍ شاشةٌ واحدة**. كان `/reservations` يُحوَّل إلى طبقةٍ فوق
+          شاشة الكاشير — فلا شاشةَ للحجوزات أصلاً، والبطاقةُ في الرئيسية تعيدك إلى الشاشة نفسها
+          المزدحمة. استعادت شاشتَها (المكوّن يدعم الوضعين: `embedded` وغير المضمَّن). */}
+      <Route path="/reservations"><Shell><ReservationsHub /></Shell></Route>
+      {/* شاشتا المحطّة المفقودتان — كانتا لوحتين داخل السلّة بلا مسارٍ خاصّ بهما. */}
+      <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
+      <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>

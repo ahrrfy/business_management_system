@@ -1245,20 +1245,22 @@ function CashierHome() {
   const stationTiles: Tile[] = isReception
     ? [
         {
-          href: "/pos?mode=RECEPTION&workspace=orders",
+          // ⛔ **شاشةٌ حقيقية لا عودةٌ إلى الكاشير** (طلب المالك ١٩/٨): البطاقة التي تُعيدك إلى
+          // الشاشة الرئيسية ليست فصلاً — تُضيف طبقةَ تكرارٍ ثالثة فتفشل المعالجة.
+          href: "/reception/orders",
           name: "طلبات محطّتي",
-          desc: "من الاستلام حتى التسليم — وإسناد التوصيل",
+          desc: "طابور التسليم والإسناد — ما جهُز بانتظار صاحبه",
           badge: woCounts.data?.ready ?? 0,
           badgeHint: "جاهز بانتظار العميل",
         },
         {
-          href: "/pos?mode=RECEPTION&workspace=invoices",
+          href: "/reception/invoices",
           name: "فواتير للتحصيل",
-          desc: "فواتير محطّتي — اقبض المتبقّي من هنا",
+          desc: "ما عليه مبلغٌ متبقٍّ — اقبضه من الصفّ",
         },
         ...(can("channels")
           ? [{
-              href: "/pos?mode=RECEPTION&workspace=inbox",
+              href: "/crm?tab=inbox",
               name: "رسائل العملاء",
               desc: "واتساب واتصالات — وافتح طلباً من المحادثة",
               badge: unread,
@@ -1267,16 +1269,16 @@ function CashierHome() {
           : []),
         ...(can("reservations")
           ? [{
-              href: "/pos?mode=RECEPTION&workspace=reservations",
+              href: "/reservations",
               name: "الحجوزات",
               desc: "حجز صنف لعميل حتى موعد الاستلام",
             }]
           : []),
         ...(can("store")
           ? [{
-              href: "/pos?mode=RECEPTION&workspace=store",
+              href: "/store-admin?tab=orders",
               name: "طلبات الموقع",
-              desc: "طلبات المتجر الإلكتروني — ثبّتها كطلب محطّة",
+              desc: "طلبات المتجر الإلكتروني — ثبّتها وأسنِدها",
             }]
           : []),
       ]

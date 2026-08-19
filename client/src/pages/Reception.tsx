@@ -61,10 +61,7 @@ import { cn } from "@/lib/utils";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import ReservationsHub from "@/pages/ReservationsHub";
 import Inbox from "@/pages/Inbox";
-import OrderFulfillment from "@/pages/OrderFulfillment";
-import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
 import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
 import { DraftStrip } from "@/components/reception/DraftStrip";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
@@ -84,7 +81,6 @@ import {
   type PayMethod,
   type PosRow,
   type Tier,
-  type Workshop,
 } from "@/components/reception/cartMath";
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
@@ -153,7 +149,6 @@ export default function Reception() {
     () => new URLSearchParams(pageSearch).get("workspace") ?? "",
     [pageSearch],
   );
-  const reservationsRequested = requestedWorkspace === "reservations";
   const reservationPermissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   const canReadReservations = me.data != null && moduleAccessAllowed(
     me.data.role,
@@ -183,17 +178,6 @@ export default function Reception() {
   const canReadStoreOrders = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "store", "READ", STORE_READ_ROLES,
   );
-  const showReservations = reservationsRequested && canReadReservations;
-  const closeReservations = useCallback(
-    () => navigate("/pos?mode=RECEPTION", { replace: true }),
-    [navigate],
-  );
-
-  useEffect(() => {
-    if (!reservationsRequested || me.isLoading || canReadReservations) return;
-    notify.err("لا تملك صلاحية قراءة الحجوزات");
-    closeReservations();
-  }, [reservationsRequested, me.isLoading, canReadReservations, closeReservations]);
   // الأدمن/المدير بلا فرع مُسنَد: يختار الفرع صراحةً قبل فتح وردية الخدمة بدل الإسناد الصامت للفرع ١
   // (نمط POS/PrintPOS، #274 — الوردية تحمل الفرع والطلبات تتبعها). لا يمسّ مستخدماً له فرع (يبقى فرعه).
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
@@ -308,29 +292,23 @@ export default function Reception() {
   const [showInbox, setShowInbox] = useState(false);
   // ش١ (§٨.١): ورش عمود العمل — الفواتير/الطلبات/طلبات الموقع تُركَّب داخل عمود السلة
   // (لوحة الدفع لا تُغطّى أبداً). الحجوزات/الرسائل تبقيان طبقتين (قرار §١٤.٦).
-  const [workshop, setWorkshop] = useState<Workshop>("CART");
   /**
    * تطبيقُ اللوحة المطلوبة من الرابط **مرّةً واحدة لكل قيمة** — لا في كل رسم، وإلّا لم
    * يستطع الموظّف الرجوع إلى السلّة ما دام الرابط يحمل اللوحة. والرابط يُنظَّف بعد التطبيق
    * (`replace`) فلا يبقى في التاريخ ولا يُعيد فتح اللوحة عند التحديث.
    */
+  /**
+   * ١٩/٨ — لم يبقَ من `?workspace=` إلا **المحادثة**: الفواتير والطلبات وطلبات الموقع
+   * والحجوزات صارت **شاشاتٍ قائمةً بذاتها** (طلب المالك)، والمحادثةُ تبقى **أداةَ سلّة**
+   * (تملأ رأس الطلب) لا وجهةً — فمكانُها طبقةٌ فوق السلّة لا صفحةٌ تُغادر إليها.
+   */
   const appliedWorkspaceRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!requestedWorkspace || appliedWorkspaceRef.current === requestedWorkspace) return;
+    if (requestedWorkspace !== "inbox" || appliedWorkspaceRef.current === requestedWorkspace) return;
     appliedWorkspaceRef.current = requestedWorkspace;
-    // ⛔ الحارس هنا لا عند إظهار الزرّ: الأزرار خرجت إلى الرئيسية، ورابطٌ مكتوبٌ باليد
-    // (`?workspace=store`) كان سيفتح لوحةً لمن لا يملك وحدتها. الإنفاذ النهائيّ خادميّ
-    // كما هو، وهذا يمنع عرضاً فارغاً/مضلّلاً قبل أن يردّ الخادم.
-    switch (requestedWorkspace) {
-      case "invoices": setWorkshop("INVOICES"); break;
-      case "orders": setWorkshop("ORDERS"); break;
-      case "store": if (canReadStoreOrders) setWorkshop("STORE"); break;
-      case "inbox": if (canReadChannels) setShowInbox(true); break;
-      // reservations لها مسارُها القائم (طبقةٌ مستقلّة تقرأ الرابط وتفحص صلاحيتها) — لا تُلمَس.
-      default: return;
-    }
+    if (canReadChannels) setShowInbox(true);
     navigate("/pos?mode=RECEPTION", { replace: true });
-  }, [requestedWorkspace, navigate, canReadStoreOrders, canReadChannels]);
+  }, [requestedWorkspace, navigate, canReadChannels]);
   // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
   const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null);
   const [showReceiptOverlay, setShowReceiptOverlay] = useState(false);
@@ -356,7 +334,7 @@ export default function Reception() {
   // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
-    { enabled: workshop === "INVOICES" || deliveryDialogOpen || orderDelivery != null, staleTime: 60_000 },
+    { enabled: deliveryDialogOpen || orderDelivery != null, staleTime: 60_000 },
   );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
@@ -1189,7 +1167,6 @@ export default function Reception() {
       // ش٤: صافي المقبوض سلفاً يرافق الاستئناف — «المتوقّع الآن» يهبط به فوراً.
       setDraftHeld(String((d as { heldTotal?: string }).heldTotal ?? "0.00"));
       setDraftInfo({ draftNumber: d.draftNumber });
-      setWorkshop("CART");
       const heldNote = Number((d as { heldTotal?: string }).heldTotal ?? 0) > 0
         ? ` — عليها عربون مقبوض ${fmt(Number((d as { heldTotal?: string }).heldTotal))} د.ع`
         : "";
@@ -2047,13 +2024,6 @@ export default function Reception() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (showCustomization) return;
-      if (showReservations) {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          closeReservations();
-        }
-        return;
-      }
       if (showReceiptOverlay) {
         if (e.key === "Escape") { e.preventDefault(); setShowReceiptOverlay(false); }
         if (e.key === "F9") { e.preventDefault(); reprintLastRef.current?.(); }
@@ -2061,10 +2031,6 @@ export default function Reception() {
       }
       if (cashDropping || approvalAsk) {
         if (e.key === "Escape") { e.preventDefault(); setCashDropping(false); setApprovalAsk(null); }
-        return;
-      }
-      if (workshop !== "CART") {
-        if (e.key === "Escape") { e.preventDefault(); setWorkshop("CART"); }
         return;
       }
       if (e.key === "F2") {
@@ -2088,7 +2054,7 @@ export default function Reception() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReservations, workshop, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor, closeReservations]);
+  }, [showInbox, showDrop, showCustomization, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor]);
 
   /** F12 — تفريغ بتأكيد (clearCart تُعرَّف بعد هذا الأثر ⇒ ref يحمل أحدث نسخة). */
   const clearCartRef = useRef<() => Promise<void>>(async () => {});
@@ -2178,14 +2144,8 @@ export default function Reception() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background" dir="rtl">
-      {/* مساحة الحجوزات جزء من شاشة الاستقبال نفسها؛ تبقى السلة محفوظة خلفها عند الرجوع. */}
-      {showReservations && (
-        <div className="absolute inset-0 z-30 bg-background">
-          <ReservationsHub embedded fixedBranchId={branchId} currentShiftId={shift?.id ?? null} onClose={closeReservations} />
-        </div>
-      )}
-      {/* ش١ (§٨.١): ورشتا الطلبات وطلبات الموقع لم تعودا طبقتين تُغطّيان لوحة الدفع —
-          صارتا تبويبين داخل عمود العمل أدناه (زرّ التثبيت وشارة الوردية مرئيان دائماً). */}
+      {/* ١٩/٨: طبقةُ الحجوزات زالت — لها **شاشتُها** `/reservations` (طلب المالك: لكل مفهومٍ
+          شاشةٌ واحدة). وهذه الشاشة صارت ما اسمُها: سلّةُ بيعٍ ودفع. */}
       {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
       {closing && (
         <div
@@ -2340,6 +2300,19 @@ export default function Reception() {
             <div className="mb-1.5 flex items-center gap-2">
               <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">١</span>
               <h2 id="reception-channel-title" className="text-xs font-black">قناة وصول الطلب</h2>
+              {/* ١٩/٨ — مدخلُ المحادثة **سياقيّ** لا زرٌّ في الرأس: الوارد هنا **أداةُ سلّة**
+                  تملأ رأس الطلب (ش١)، لا وجهةً يُغادَر إليها — ووجهتُه شاشةُ `/crm?tab=inbox`.
+                  ووضعُه بجوار القناة هو موضعُه المنطقيّ: منه تُعرَف القناة ومعرّفُها. */}
+              {canReadChannels && (
+                <button
+                  type="button"
+                  onClick={() => setShowInbox(true)}
+                  className="ms-auto inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-extrabold text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title="افتح طلباً من رسالة زبون"
+                >
+                  <MessageCircle aria-hidden className="size-3" /> من محادثة
+                </button>
+              )}
             </div>
             <div className="grid grid-cols-5 gap-1">
               {receptionChannelOptions(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE"]).map(({ value, label }) => (
@@ -2689,74 +2662,43 @@ export default function Reception() {
               هنا — نقاط الدخول إليها صارت في الشريط العلوي المشترك (بجانب زرّ «الفواتير» الأصلي،
               انظر portal أدناه) بدل التكرار. هذا الصفّ الآن مؤشّر «أين أنا» فقط: اسم السلّة
               وأدواتها حين workshop=CART، أو زرّ رجوعٍ موحَّد لأي ورشةٍ أخرى. */}
+          {/* ١٩/٨ (طلب المالك: «لكل بطاقة شاشة خاصّة بها») — **الورش الثلاث حُذفت من هنا**.
+              كانت «الفواتير» و«الطلبات» و«طلبات الموقع» تُركَّب داخل عمود السلّة، فيصير للمفهوم
+              الواحد مكانان: لوحةٌ هنا وصفحةٌ في الشريط الجانبيّ. صار لكلٍّ **شاشتُه**:
+              `/reception/invoices` · `/reception/orders` · `/store-admin?tab=orders`.
+              وهذه الشاشة صارت ما اسمُها: **سلّة بيع**. */}
           <div className="flex h-12 flex-shrink-0 items-center gap-2 border-b bg-muted/40 px-3">
-            {workshop === "CART" ? (
-              <>
-                <span className="inline-flex items-center gap-1.5 text-xs font-extrabold">
-                  <ShoppingCart aria-hidden className="size-4" />
-                  {cart.length > 0 ? `السلة (${cart.length})` : "السلة"}
-                </span>
-                {cart.length > 0 && (
-                  <div className="ms-auto flex items-center gap-2">
-                    <span className="hidden text-[11px] text-muted-foreground sm:inline">{cartCount} وحدة</span>
-                    <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
-                      تفريغ
-                    </Button>
-                  </div>
-                )}
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setWorkshop("CART")}
-                className="inline-flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs font-extrabold hover:bg-muted"
-              >
-                <ArrowRight aria-hidden className="size-4" /> رجوع إلى السلة
-                <span className="text-muted-foreground">
-                  ·{" "}
-                  {workshop === "INVOICES" ? "الفواتير" : workshop === "ORDERS" ? "الطلبات" : "طلبات الموقع"}
-                </span>
-              </button>
+            <span className="inline-flex items-center gap-1.5 text-xs font-extrabold">
+              <ShoppingCart aria-hidden className="size-4" />
+              {cart.length > 0 ? `السلة (${cart.length})` : "السلة"}
+            </span>
+            {cart.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="hidden text-[11px] text-muted-foreground sm:inline">{cartCount} وحدة</span>
+                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
+                  تفريغ
+                </Button>
+              </div>
             )}
-            {/* ١٩/٨ — محطّة الاستقبال تُركَّب بلا شريطٍ جانبيّ (App.tsx: بلا Shell)، فموظّفها
-                كان بلا أيّ رابطٍ إلى كانبان الإنتاج أو قائمة فواتيره من داخل شاشة عمله
-                اليومية — يعرف حاله فقط بكتابة العنوان يدوياً. هذان مخرجاه. */}
+            {/* مخارجُ الموظّف من شاشة عمله (المحطّة بلا شريطٍ جانبيّ). */}
             <div className="ms-auto flex items-center gap-1.5">
               <a
-                href="/work-orders"
+                href="/reception/orders"
                 className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="كانبان الإنتاج — كل مراحل التنفيذ"
+                title="طابور التسليم والإسناد"
               >
-                <Printer aria-hidden className="size-3.5" /> لوحة الإنتاج
+                <ClipboardList aria-hidden className="size-3.5" /> طلبات محطّتي
               </a>
               <a
-                href="/invoices"
+                href="/reception/invoices"
                 className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="صفحة المبيعات — بحثٌ وفلترةٌ وإعادة طباعة"
+                title="ما عليه مبلغٌ متبقٍّ"
               >
-                <ReceiptIcon aria-hidden className="size-3.5" /> كل فواتيري
+                <ReceiptIcon aria-hidden className="size-3.5" /> فواتير للتحصيل
               </a>
             </div>
           </div>
 
-          {workshop === "INVOICES" ? (
-            <ReceptionInvoiceQueue
-              branchId={branchId}
-              currentShiftId={shift ? Number(shift.id) : null}
-              branchName={branchName}
-              parties={(partiesQ.data ?? []) as DispatchParty[]}
-              canFulfill={me.data?.role === "cashier" || isElevatedRole}
-              isManager={isElevatedRole}
-            />
-          ) : workshop === "ORDERS" ? (
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <ReceptionOrderQueue branchId={branchId} />
-            </div>
-          ) : workshop === "STORE" ? (
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <OrderFulfillment />
-            </div>
-          ) : (
             <CartTable
               branchId={branchId}
               cart={cart}
@@ -2773,7 +2715,6 @@ export default function Reception() {
               grandTotal={grandTotal}
               cartCount={cartCount}
             />
-          )}
         </div>
       </div>
 
