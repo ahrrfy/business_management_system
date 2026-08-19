@@ -17,6 +17,7 @@ import {
 import { getDb } from "../db";
 import {
   cancelWorkOrder,
+  reverseServiceInvoice,
   claimWorkOrder,
   createWorkOrder,
   deliverWorkOrder,
@@ -1187,6 +1188,34 @@ export const workOrderRouter = router({
     }),
 
   // الإلغاء يعكس مخزوناً/قيوداً ⇒ مدير فأعلى.
+  /**
+   * **عكس فاتورة خدمةٍ صفريّة البنود** (١٩/٨) — المخرج الأخير الناقص.
+   *
+   * أمرُ تخصيصٍ خالصٍ بلا منتجٍ كتالوجيّ تُنشأ فاتورتُه بصفر بنود (قيد FK)، فتُرفَض من
+   * المرتجع (يشترط أسطراً) ومن التصحيح (يشترط بنوداً) ومن الإلغاء (يرفض منشأ WORKORDER)
+   * ⇒ فاتورةٌ حيّةٌ بلا فعلٍ واحد. الخدمة تحصر نفسها بنيوياً في هذه الحالة وحدها.
+   */
+  reverseServiceInvoice: workordersManagerProcedure
+    .input(z.object({
+      workOrderId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+      clientRequestId: z.string().trim().min(1).max(100).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await reverseServiceInvoice(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "workOrder.reverseServiceInvoice",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { reason: input.reason, invoiceId: (res as { invoiceId?: number }).invoiceId },
+      });
+      return res;
+    }),
+
   cancel: workordersManagerProcedure
     .input(z.object({
       workOrderId: z.number().int().positive(),

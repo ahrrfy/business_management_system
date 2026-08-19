@@ -248,6 +248,21 @@ export default function InvoiceDetail() {
   const [correctionReason, setCorrectionReason] = useState("");
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [cancelDeliveryOpen, setCancelDeliveryOpen] = useState(false);
+  // عكس فاتورة الخدمة الصفريّة (١٩/٨) — المقبوض يبقى أمانةً يردّها سند صرفٍ موثَّق.
+  const reverseService = trpc.workOrders.reverseServiceInvoice.useMutation({
+    onSuccess: (r) => {
+      const refundable = Number((r as { refundableAmount?: string }).refundableAmount ?? 0);
+      notify.ok(
+        "عُكس التسليم",
+        refundable > 0
+          ? `الفاتورة مرتجعة. المقبوض ${refundable.toLocaleString()} د.ع يبقى أمانةً — اصرفه للزبون بسند صرفٍ موثَّق.`
+          : "الفاتورة مرتجعة وأمر الشغل مُلغى.",
+      );
+      void utils.sales.get.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
   const correctInvoice = trpc.sales.correct.useMutation({
     onSuccess: async () => {
       setCorrectionOpen(false);
@@ -356,6 +371,16 @@ export default function InvoiceDetail() {
    * لهذا المنشأ). البوّابة مرآةُ `returns.create` = مدير + `sales:FULL`. التوصيلُ النشط يُستثنى:
    * الطرد بيد المندوب ⇒ المخرج هناك «استرجاع الإرسالية» لا مرتجعٌ من هنا.
    */
+  /**
+   * ١٩/٨ — الفاتورة الصفريّة البنود (أمرُ تخصيصٍ خالصٍ بلا منتجٍ كتالوجيّ) لا يقبلها
+   * المرتجع (يشترط أسطراً) ⇒ مخرجها عكسٌ رأسيّ مخصّص. وذاتُ البنود مخرجها المرتجع المُختبَر.
+   */
+  const isZeroItemServiceInvoice = data.sourceType === "WORKORDER" && data.items.length === 0;
+  /** مُعرّف أمر الشغل مشتقٌّ من `sourceId` (`WO-{id}`) — الحقل الرابط الوحيد على الفاتورة. */
+  const linkedWorkOrderId = (() => {
+    const m = /^WO-(\d+)$/.exec(String(data.sourceId ?? ""));
+    return m ? Number(m[1]) : null;
+  })();
   const canReverseWorkOrderInvoice =
     data.sourceType === "WORKORDER" &&
     data.status !== "CANCELLED" &&
@@ -658,14 +683,33 @@ export default function InvoiceDetail() {
               الفاتورة بلا مخرجٍ ظاهر البتّة. المسار المشروع الوحيد هو **المرتجع الموثَّق**
               (returnService يعرف WORKORDER: لا يعيدها للمخزون — منتَجٌ مخصّص لا يُباع لغيره)،
               فنعرضه صراحةً بدل تركِ الموظف أمام شاشةٍ بلا أفعال. */}
-          {canReverseWorkOrderInvoice && (
+          {canReverseWorkOrderInvoice && (isZeroItemServiceInvoice ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              title="فاتورة خدمةٍ بلا بنود — تُعكَس رأسياً (لا مخزون لها)"
+              disabled={reverseService.isPending || linkedWorkOrderId == null}
+              onClick={() => {
+                const reason = window.prompt("سبب عكس التسليم (يُوثَّق في الفاتورة وسجلّ التدقيق):")?.trim();
+                if (!reason || reason.length < 3) return;
+                reverseService.mutate({
+                  workOrderId: Number(linkedWorkOrderId),
+                  reason,
+                  clientRequestId: crypto.randomUUID(),
+                });
+              }}
+            >
+              <RotateCcw aria-hidden className="size-4" />
+              عكس التسليم (خدمة)
+            </Button>
+          ) : (
             <Button variant="destructive" size="sm" asChild title="المسار الموثَّق لعكس تسليم أمر شغل">
               <Link href={`/returns?invoiceId=${data.id}`}>
                 <RotateCcw aria-hidden className="size-4" />
                 إرجاع / عكس التسليم
               </Link>
             </Button>
-          )}
+          ))}
           <Link
             href="/invoices"
             className="text-sm text-muted-foreground hover:text-foreground"

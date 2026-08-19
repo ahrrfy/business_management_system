@@ -1002,6 +1002,9 @@ export const saleRouter = router({
           id: invoices.id,
           invoiceNumber: invoices.invoiceNumber,
           sourceType: invoices.sourceType,
+          // ١٩/٨: الرابط البنيويّ بأمر الشغل (`WO-{id}`) — تشتقّ منه الشاشة مُعرّف الأمر
+          // لتفتح مسار عكس فاتورة الخدمة الصفريّة (لا عمود `workOrderId` على الفاتورة).
+          sourceId: invoices.sourceId,
           branchId: invoices.branchId,
           // العميل هنا مرجع عرضٍ وتشغيل لفاتورة COD فقط؛ الطرف المالي يبقى جهة التوصيل.
           // ١٠/٨: + الزبون العابر ومستلم الإرسالية (مرآة list — «عميل نقدي» للمجهول حقاً فقط).
