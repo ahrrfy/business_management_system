@@ -162,6 +162,28 @@ export default function WorkOrderDetail() {
     onError: (e) => setError(e.message),
   });
   const [cancelOpen, setCancelOpen] = useState(false);
+  /**
+   * ٢٠/٨ — الاسترجاع بعد التسليم: كان **بلا زرّ ولا مسار** إطلاقاً؛ الأمرُ المُسلَّم يرفضه
+   * الإلغاء، وفاتورتُه يرفضها `sales.cancel` و`sales.correct`، والمرتجعُ يشترط بنداً
+   * والفاتورةُ الخدميّة بلا بنود. فكان الردّ العمليّ الوحيد «لا شيء يمكن فعله».
+   */
+  const [reverseOpen, setReverseOpen] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
+  const [reverseReopen, setReverseReopen] = useState(false);
+  const reverse = trpc.workOrders.reverseDelivery.useMutation({
+    onSuccess: async (r) => {
+      setDone(
+        r.delegatedToReturn
+          ? "سُجِّل الاسترجاع كمرتجعٍ كامل للفاتورة."
+          : `عُكِس التسليم — أُرجع ${fmtAr(String(r.refundedTotal ?? "0"))} وسقطت الذمّة.`
+            + (r.status === "READY" ? " والطلب عاد للطابور جاهزاً لإعادة التسليم." : ""),
+      );
+      setReverseOpen(false);
+      setError("");
+      await refresh();
+    },
+    onError: (e) => setError(e.message),
+  });
   const cancel = trpc.workOrders.cancel.useMutation({
     onSuccess: async (result) => {
       const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
@@ -698,11 +720,64 @@ export default function WorkOrderDetail() {
             {cancel.isPending ? "جارٍ…" : "إلغاء الأمر"}
           </Button>
         )}
+        {canCancel && data.status === "DELIVERED" && data.invoiceId && (
+          <Button variant="destructive" onClick={() => setReverseOpen(true)} disabled={reverse.isPending}>
+            {reverse.isPending ? "جارٍ…" : "استرجاع الطلب المُسلَّم"}
+          </Button>
+        )}
         {/* رابط الفاتورة كان يوجّه لقائمة الفواتير العامة بدل الفاتورة المحدَّدة. */}
         {data.status === "DELIVERED" && data.invoiceId && (
           <Link href={`/invoices/${data.invoiceId}`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
         )}
       </div>
+
+      {reverseOpen && (
+        <div role="dialog" aria-label="استرجاع الطلب المُسلَّم"
+             className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+             onClick={() => !reverse.isPending && setReverseOpen(false)}>
+          <div className="w-full max-w-lg rounded-lg border bg-background p-5 shadow-lg"
+               onClick={(e) => e.stopPropagation()}>
+            <h2 className="mb-1 text-base font-extrabold">استرجاع الطلب المُسلَّم</h2>
+            <p className="mb-3 text-2xs text-muted-foreground">
+              «{data.title}» — <span dir="ltr" className="font-mono">{data.orderNumber}</span>
+            </p>
+            {/* الأرقام تُعرَض **قبل** التأكيد: لا امتصاصَ خفيّ ولا مفاجأةَ بعد النقر (§٥). */}
+            <div className="mb-3 space-y-1 rounded-md border p-3 text-xs">
+              <div className="flex justify-between"><span>صافي الفاتورة</span>
+                <span dir="ltr" className="tabular-nums font-bold">{fmtAr(String(data.salePrice ?? "0"))}</span></div>
+              <div className="flex justify-between"><span>المقبوض فعلاً — سيُردّ بطريقة قبضه</span>
+                <span dir="ltr" className="tabular-nums font-bold">{fmtAr(String(data.deposit ?? "0"))}</span></div>
+            </div>
+            <label className="mb-1 block text-xs font-bold">سبب الاسترجاع</label>
+            <Input value={reverseReason} onChange={(e) => setReverseReason(e.target.value)}
+                   placeholder="رفض الزبون العمل المُسلَّم / أعاده المندوب…" maxLength={500} />
+            <label className="mt-3 flex items-start gap-2 text-2xs text-muted-foreground">
+              <input type="checkbox" className="mt-0.5" checked={reverseReopen}
+                     onChange={(e) => setReverseReopen(e.target.checked)} />
+              <span>
+                <b className="text-foreground">أعِده للطابور</b> جاهزاً لإعادة التسليم مصحَّحاً
+                (بدل إغلاقه ملغىً). تُفكّ الفاتورة المرتجعة عنه فيمكن تسليمه ثانيةً.
+              </span>
+            </label>
+            <p className="mt-3 rounded-md bg-muted/50 p-2 text-2xs leading-relaxed text-muted-foreground">
+              يُعكَس قيد البيع والتكلفة، وتسقط ذمّةُ العميل غير المسدَّدة، ويُردّ المقبوض.
+              ولا تعود الخامة للمخزون — استُهلكت فعلاً، واسترجاعُ الخردة تسويةُ مخزونٍ منفصلة.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setReverseOpen(false)} disabled={reverse.isPending}>تراجع</Button>
+              <Button variant="destructive" disabled={reverse.isPending || reverseReason.trim().length < 3}
+                onClick={() => reverse.mutate({
+                  workOrderId,
+                  reason: reverseReason.trim(),
+                  reopen: reverseReopen,
+                  clientRequestId: newClientRequestId(),
+                })}>
+                {reverse.isPending ? "جارٍ…" : "أكّد الاسترجاع"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <CancelWorkOrderDialog
         open={cancelOpen}

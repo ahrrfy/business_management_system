@@ -6,7 +6,7 @@
 //
 // keyset (paginateKeyset) على idx_invoice_shift/idx_invoice_branch — الطابور القديم كان
 // sinceDays:1 مثبَّتاً وlimit 300 بلا ترقيم ⇒ فاتورة الأمس غير قابلة للوصول إطلاقاً (§٨.٥).
-import { and, desc, eq, gte, inArray, like, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like, or, sql, type SQL } from "drizzle-orm";
 import {
   customers,
   deliveryConsignments,
@@ -38,7 +38,19 @@ export async function listReceptionInvoices(input: ReceptionInvoiceQueueInput) {
 
   const baseConds: SQL[] = [
     eq(invoices.branchId, input.branchId),
-    eq(shifts.shiftType, "RECEPTION"),
+    // ٢٠/٨ — **تسامحٌ لا إجبار**: فاتورةُ تسليمٍ تُنشأ بلا وردية RECEPTION مفتوحة (مديرٌ
+    // يُسلّم، أو إسنادٌ من الإدارة) تُختَم `shiftId = NULL`، فكان `innerJoin` يُسقطها من
+    // الطابور نهائياً: فاتورةٌ حقيقيّةٌ بذمّةٍ قائمة لا تُرى في المكان الذي يعمل فيه الموظّف
+    // — وهي بعينها شكوى المالك «تُنشأ ولا تُرى ولا تُدار». والقائمةُ العامّة و`sales.get`
+    // عالجاه سلفاً بنفس الاستثناء ([saleRouter.ts:270] و[:1123])؛ المحطّةُ وحدها تخلّفت.
+    //
+    // ⛔ والحصرُ بـ`sourceType='WORKORDER'` **مقصود**: بلا قيدٍ يبتلع الطابورُ كلَّ فاتورةٍ
+    // بلا وردية أياً كانت قناتُها. ولا وردية شكلية للمدير — النقد يدخل درج **القابض**
+    // لحظة التحصيل (المسار القائم يفرضه)، فلا يتغيّر شيءٌ في المحاسبة، يتغيّر **من يُرى**.
+    or(
+      eq(shifts.shiftType, "RECEPTION"),
+      and(isNull(invoices.shiftId), eq(invoices.sourceType, "WORKORDER")),
+    ) as SQL,
   ];
   if (input.shiftIds && input.shiftIds.length > 0) {
     baseConds.push(inArray(invoices.shiftId, input.shiftIds));
@@ -130,7 +142,7 @@ export async function listReceptionInvoices(input: ReceptionInvoiceQueueInput) {
           partyName: deliveryParties.name,
         })
         .from(invoices)
-        .innerJoin(shifts, eq(shifts.id, invoices.shiftId))
+        .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
         .leftJoin(customers, eq(customers.id, invoices.customerId))
         .leftJoin(users, eq(users.id, invoices.createdBy))
         .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))

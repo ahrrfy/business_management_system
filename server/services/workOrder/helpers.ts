@@ -64,7 +64,7 @@ function assertOperatorOwns(
 async function assertNoLiveConsignment(
   tx: any,
   workOrderId: number,
-  action: "cancel" | "reclassify" | "deliver",
+  action: "cancel" | "reclassify" | "deliver" | "reverse",
 ) {
   const rows = await tx
     .select({ id: deliveryConsignments.id, number: deliveryConsignments.consignmentNumber })
@@ -82,7 +82,10 @@ async function assertNoLiveConsignment(
     ? "لا يُلغى أمرٌ خرج مع مندوب"
     : action === "reclassify"
       ? "لا تُغيَّر طريقة تسليم أمرٍ خرج مع مندوب"
-      : "لا يُسلَّم مباشرةً أمرٌ خرج مع مندوب";
+      : action === "reverse"
+        // العكسُ يُسقط الذمّة بينما عهدةُ المندوب وتحصيلُه قائمان ⇒ نقدٌ بلا مالك.
+        ? "لا يُسترجَع أمرٌ ما زال مع مندوب"
+        : "لا يُسلَّم مباشرةً أمرٌ خرج مع مندوب";
   throw new TRPCError({
     code: "PRECONDITION_FAILED",
     message: `${what} (الإرسالية ${live.number ?? live.id}) — استرجع الإرسالية أولاً من إدارة التوصيل، وهي تعكس البيع والمخزون والعربون معاً.`,

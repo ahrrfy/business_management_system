@@ -36,6 +36,7 @@ import {
   getWorkOrderCancellationRefundStatus,
   listPendingWorkOrderCancellationRefunds,
 } from "../services/workOrder/cancel";
+import { reverseWorkOrderDelivery } from "../services/workOrder/reverseDelivery";
 import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
 import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
@@ -1483,6 +1484,42 @@ export const workOrderRouter = router({
         entityType: "workOrder",
         entityId: input.workOrderId,
         newValue: { reason: input.reason ?? null, wastedLines: (input.materials ?? []).filter((m) => m.wasteBase > 0).length },
+      });
+      return res;
+    }),
+
+  /**
+   * **استرجاعُ أمر شغلٍ مُسلَّم** (٢٠/٨) — البابُ الذي لم يكن موجوداً.
+   *
+   * سلطتُه سلطةُ الإلغاء نفسها (`workordersManagerProcedure`): أثرٌ ماليٌّ عاكسٌ يستحقّ
+   * نفس مستوى الثقة. والخدمةُ تفرض الحرّاس كلَّها (مُسلَّم فقط · لا إرسالية حيّة · فاتورةٌ
+   * غير ميتة · ردُّ كلّ ما قُبض).
+   */
+  reverseDelivery: workordersManagerProcedure
+    .input(z.object({
+      workOrderId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+      /** يعيده للطابور جاهزاً لإعادة تسليمٍ مصحَّح بدل إغلاقه ملغىً. */
+      reopen: z.boolean().optional(),
+      refundShiftId: z.number().int().positive().optional(),
+      clientRequestId: z.string().trim().min(1).max(100).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await reverseWorkOrderDelivery(
+        {
+          workOrderId: input.workOrderId,
+          reason: input.reason,
+          reopen: input.reopen === true,
+          refundShiftId: input.refundShiftId ?? null,
+          clientRequestId: input.clientRequestId ?? null,
+        },
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+      );
+      await logAudit(ctx, {
+        action: "workOrder.reverseDelivery",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { reason: input.reason, reopen: input.reopen === true },
       });
       return res;
     }),

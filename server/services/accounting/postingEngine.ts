@@ -122,6 +122,7 @@ export type PostingProfile =
   | "RETURN_SALE_INVENTORY"
   | "RETURN_SALE_SERVICE"
   | "RETURN_SALE_FLEX"
+  | "RETURN_SALE_FLEX_WORKORDER"
   | "RETURN_SALE_FIXED_ASSET"
   | "RETURN_SALE_DIGITAL"
   | "RETURN_SALE_CONSIGNMENT"
@@ -278,6 +279,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "RETURN_SALE_INVENTORY",
     "RETURN_SALE_SERVICE",
     "RETURN_SALE_FLEX",
+    "RETURN_SALE_FLEX_WORKORDER",
     "RETURN_SALE_FIXED_ASSET",
     "RETURN_SALE_DIGITAL",
     "RETURN_SALE_CONSIGNMENT",
@@ -1262,6 +1264,39 @@ export const PROFILE_POLICIES = Object.freeze({
         "DELIVERY_REVENUE",
         "TAX_PAYABLE",
         "AR",
+      ],
+    },
+  ),
+  /**
+   * **عكسُ تسليم أمر شغل** (٢٠/٨) — مرآةُ `SALE_SERVICE_FLEX` دوراً بدور.
+   *
+   * `RETURN_SALE_FLEX` القائم لا يكفي: مدينُه `SALES_FLEX/DELIVERY_REVENUE/TAX_PAYABLE`
+   * ودائنُه `AR` وحده، و`requireRoleComponents` تفرض ذلك ⇒ لا مكانَ لعكس COGS/WIP ولا
+   * لإعادة فتح أمانة العربون (`OTHER_LIABILITY`). فالعكسُ به يترك التكلفةَ معترَفاً بها
+   * لبيعٍ أُلغي، والعربونَ مُقفَلاً وقد صار دَيناً على المكتبة.
+   *
+   * الثابت المحروس: `Σ(SALE_SERVICE_FLEX) + Σ(RETURN_SALE_FLEX_WORKORDER) = 0` لكل دور.
+   */
+  RETURN_SALE_FLEX_WORKORDER: profilePolicy(
+    "RETURN",
+    ["SALES_FLEX", "DELIVERY_REVENUE", "TAX_PAYABLE", "WORK_IN_PROGRESS", "AR"],
+    ["AR", "OTHER_LIABILITY", "COGS"],
+    {
+      reversible: false,
+      requiredDebitRoles: ["SALES_FLEX"],
+      requiredCreditRoles: ["AR"],
+      sourceAssertions: [
+        sourceAssertion("revenue", "DEBIT_MINUS_CREDIT", ["SALES_FLEX", "DELIVERY_REVENUE"]),
+        sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["COGS"]),
+      ],
+      requireRoleComponents: [
+        "AR",
+        "OTHER_LIABILITY",
+        "COGS",
+        "SALES_FLEX",
+        "DELIVERY_REVENUE",
+        "TAX_PAYABLE",
+        "WORK_IN_PROGRESS",
       ],
     },
   ),
