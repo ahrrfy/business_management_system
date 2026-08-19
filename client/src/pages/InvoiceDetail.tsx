@@ -1226,12 +1226,14 @@ export default function InvoiceDetail() {
                 </p>
               )}
             {(corrections.data ?? []).map((entry) => {
+              // ⛔ لا `paymentMethod`/`receipts` (تجريد ١٩/٨): كان `sales.correct` يكتبهما
+              // **متطابقَين** في طرفَي التدقيق ولا يمسّهما، وهذه الشاشة ترسم لهما سطر
+              // «طريقة الدفع: كذا ← كذا» لا يظهر أبداً ⤇ وعدٌ بقدرةٍ لا وجود لها. الصفوف
+              // التاريخية قد تحمل المفتاحَين وتُتجاهَلان بلا ضرر (متطابقان فيها أصلاً).
               const oldFields =
                 (entry.oldValue as {
                   notes?: string | null;
                   dueDate?: string | null;
-                  paymentMethod?: string | null;
-                  receipts?: { receiptId: number; method: string }[];
                 } | null) ?? {};
               const newValue =
                 (entry.newValue as {
@@ -1322,25 +1324,6 @@ export default function InvoiceDetail() {
                         </span>
                       </p>
                     )}
-                    {(newFields.receipts ?? []).map((receipt) => {
-                      const oldReceipt = oldFields.receipts?.find(
-                        (old) => old.receiptId === receipt.receiptId,
-                      );
-                      if (!oldReceipt || oldReceipt.method === receipt.method)
-                        return null;
-                      return (
-                        <p key={receipt.receiptId}>
-                          طريقة الدفع:{" "}
-                          <span className="line-through">
-                            {paymentMethodLabel(oldReceipt.method)}
-                          </span>{" "}
-                          ←{" "}
-                          <span className="text-foreground">
-                            {paymentMethodLabel(receipt.method)}
-                          </span>
-                        </p>
-                      );
-                    })}
                   </div>
                 </div>
               );
@@ -1352,10 +1335,12 @@ export default function InvoiceDetail() {
       <Dialog open={correctionOpen} onOpenChange={setCorrectionOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>تصحيح الفاتورة</DialogTitle>
+            <DialogTitle>تعديل بيانات الفاتورة</DialogTitle>
             <DialogDescription>
-              متاح للمدير والمالك فقط. يُسجَّل السبب والقيم قبل وبعد التعديل
-              باسمك.
+              الملاحظات وتاريخ الاستحقاق فقط — لا يمسّ البنود ولا المبالغ ولا
+              طريقة الدفع. لتغيير البنود أو الأسعار استعمل «تصحيح الفاتورة»
+              (عكسٌ وإعادةُ إصدار). متاح للمدير والمالك وحدهما، ويُسجّل السبب
+              والقيم قبل وبعد باسمك.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

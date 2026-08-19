@@ -641,27 +641,15 @@ export const saleRouter = router({
           });
         }
 
-        const invoiceReceipts = await tx
-          .select({
-            id: receipts.id,
-            paymentMethod: receipts.paymentMethod,
-            cashBucket: receipts.cashBucket,
-            shiftId: receipts.shiftId,
-            status: receipts.status,
-          })
-          .from(receipts)
-          .where(eq(receipts.invoiceId, input.invoiceId))
-          .for("update");
-
+        // ⛔ لا إيصالات هنا (تجريد ١٩/٨): كان هذا المسار يقفل **كل إيصالات الفاتورة**
+        // بـ`FOR UPDATE` ثمّ يكتب طريقتَها في طرفَي التدقيق **متطابقتَين** — فلا يتغيّر
+        // شيءٌ ولا تُقرأ المقارنة أبداً، ومع ذلك يمنع القفلُ قبضاً متزامناً على الفاتورة طوال
+        // تعديل مديرٍ لملاحظة. وإعادةُ تصنيف طريقة القبض فعلاً (نقدٌ ↔ بطاقة) تمسّ
+        // الدرج والـZ والدفتر ⤇ مسارها مستندٌ مستقلٌّ يُبنى بقرار مالك، لا أثرٌ جانبيٌّ هنا.
+        // هذا الإجراء **رأسٌ فقط**: ملاحظاتٌ وتاريخُ استحقاق، والبنود/المال مسارُها `reissue`.
         const oldFields = {
           notes: inv.notes ?? null,
           dueDate: inv.dueDate ? String(inv.dueDate).slice(0, 10) : null,
-          paymentMethod: inv.paymentMethod ?? null,
-          receipts: invoiceReceipts.map((receipt) => ({
-            receiptId: Number(receipt.id),
-            method: receipt.paymentMethod,
-            cashBucket: receipt.cashBucket,
-          })),
         };
 
         const nextNotes =
@@ -697,12 +685,6 @@ export const saleRouter = router({
         const newFields = {
           notes: nextNotes,
           dueDate: nextDueDate,
-          paymentMethod: inv.paymentMethod ?? null,
-          receipts: invoiceReceipts.map((receipt) => ({
-            receiptId: Number(receipt.id),
-            method: receipt.paymentMethod,
-            cashBucket: receipt.cashBucket,
-          })),
         };
         await logAuditTx(tx, ctx, {
           action: "sale.invoiceCorrect",
