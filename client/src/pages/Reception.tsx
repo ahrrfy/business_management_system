@@ -2694,6 +2694,25 @@ export default function Reception() {
                 </span>
               </button>
             )}
+            {/* ١٩/٨ — محطّة الاستقبال تُركَّب بلا شريطٍ جانبيّ (App.tsx: بلا Shell)، فموظّفها
+                كان بلا أيّ رابطٍ إلى كانبان الإنتاج أو قائمة فواتيره من داخل شاشة عمله
+                اليومية — يعرف حاله فقط بكتابة العنوان يدوياً. هذان مخرجاه. */}
+            <div className="ms-auto flex items-center gap-1.5">
+              <a
+                href="/work-orders"
+                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
+                title="متابعة الطلبات في لوحة الإنتاج"
+              >
+                <Printer aria-hidden className="size-3.5" /> متابعة الطلبات
+              </a>
+              <a
+                href="/invoices"
+                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
+                title="قائمة فواتير محطّتي"
+              >
+                <ReceiptIcon aria-hidden className="size-3.5" /> فواتيري
+              </a>
+            </div>
           </div>
 
           {workshop === "INVOICES" ? (

@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState } from "react";
-import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { ROLE_LABEL } from "@/lib/roles";
 import {
   NAV_FAVORITES_LIMIT,
@@ -81,12 +81,12 @@ const NAV_LINKS: NavLink[] = [
   // (أ) الأكثر استعمالاً يومياً — تشغيل الواجهة الأمامية
   { href: "/pos", label: "نقطة البيع", icon: ShoppingCart },
   { href: "/price-checker", label: "قارئ الأسعار", icon: ScanLine },
-  { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer },
+  { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer, module: "workorders" },
   { href: "/crm", label: "CRM والعلاقات", icon: Users, module: "crm" },
   // نظام المهام الموحّد (S2/T2.3) — module فقط (بلا roles) ⇒ مرآة hasModuleAccess تماماً كبوّابة
   // الخادم tasksReadProcedure (requireModule("tasks","READ") — لا قائمة أدوار صريحة هناك أيضاً).
   { href: "/tasks", label: "المهام والتذاكر", icon: ListChecks, module: "tasks" },
-  { href: "/invoices", label: "المبيعات", icon: Receipt },
+  { href: "/invoices", label: "المبيعات", icon: Receipt, ...INVOICE_LIST_GATE },
   // (ب) يومي مالي/تشغيلي
   // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط
   // أمين المخزن/الفني على hub بلا تبويبات = صفحة فارغة (نفس مبدأ الأصول/الموارد أدناه).
@@ -178,7 +178,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   // للإدارة (كتالوج/بنرات/إعدادات) ولا يُشتّت قائمة الكاشير اليومية.
   // «/delivery» (٩/٨): الكاشير هو منفِّذ توريد المناديب الطبيعي وكان مخوَّلاً بلا مدخل مرئي
   // (الوصول بالبحث فقط) ⇒ تتراكم التسويات أو تُنفَّذ من زرّ «تسوية» المجمّع الخطأ.
-  const CASHIER_NAV = ["/pos", "/price-checker", "/delivery", "/tasks"];
+  // ١٩/٨ (بلاغ المالك «الفواتير لا تظهر للمستخدم المنفّذ… ولا يرى فواتيره التي أنشأها»):
+  // أُضيفت `/invoices` و`/work-orders`. الخادم صار يقبلهما لهذه الأدوار بنطاقٍ يقصّ القناة،
+  // وكانت القائمة البيضاء تحجبهما عرضاً — فيُرفَض الموظّف في الشاشة لا في الصلاحية. كلٌّ يبقى
+  // محكوماً ببوّابته أدناه (`canSeeGate`)، فالإضافة هنا **إتاحةُ وصولٍ لا منحُ صلاحية**.
+  const CASHIER_NAV = ["/pos", "/price-checker", "/invoices", "/work-orders", "/delivery", "/tasks"];
   const visibleNav = isCourier
     ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
     : isCashier
