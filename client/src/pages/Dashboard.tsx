@@ -1218,13 +1218,75 @@ function CashierHome() {
   const role = me.data?.role ?? "";
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   const roleLabel = me.data?.customRoleLabel ?? "كاشير";
-  const canTasks = !!role && hasModuleAccess(role, override, "tasks", "READ");
-  const canStore = !!role && hasModuleAccess(role, override, "store", "READ");
+  const branchId = me.data?.branchId ?? null;
 
-  const tiles: { href: string; name: string; desc: string }[] = [
+  const can = (mod: string, lvl: "READ" | "FULL" = "READ") =>
+    !!role && hasModuleAccess(role, override, mod, lvl);
+  // محطّة الاستقبال بوّابتها وحدة `workorders` (POS_STATION_GATES) — من لا يملكها لا يرى لوحاتها.
+  const isReception = can("workorders", "FULL");
+
+  // عدّادان فقط — وهما اللذان يغيّران ترتيب اليوم: كم طلباً ينتظر صاحبه، وكم رسالةً لم تُقرأ.
+  const woCounts = trpc.workOrders.counts.useQuery(
+    { branchId: branchId ?? 0 },
+    { enabled: isReception && branchId != null, staleTime: 30_000 },
+  );
+  const convs = trpc.conversations.list.useQuery(
+    { branchId: branchId ?? 0, limit: 50 },
+    { enabled: isReception && can("channels") && branchId != null, staleTime: 30_000 },
+  );
+  const unread = (convs.data?.rows ?? []).reduce((n, c) => n + (c.unreadCount ?? 0), 0);
+
+  /**
+   * ١٩/٨ (طلب المالك) — **مركز الإطلاق**: اللوحات الخمس خرجت من رأس شاشة الكاشير إلى هنا.
+   * كان الرأس صفّاً واحداً من ثمانية أزرارٍ متساوية الوزن يفيض أفقياً بشريط تمرير، يختلط فيه
+   * ما يُفتَح مرّةً في اليوم بما يُضغَط كل دقيقة. والتجميع هنا يحمل الفرق: مجموعةٌ لِما يفتحه
+   * الموظّف **داخل محطّته**، وأخرى لأدواته العامّة.
+   */
+  const stationTiles: Tile[] = isReception
+    ? [
+        {
+          href: "/pos?mode=RECEPTION&workspace=orders",
+          name: "طلبات محطّتي",
+          desc: "من الاستلام حتى التسليم — وإسناد التوصيل",
+          badge: woCounts.data?.ready ?? 0,
+          badgeHint: "جاهز بانتظار العميل",
+        },
+        {
+          href: "/pos?mode=RECEPTION&workspace=invoices",
+          name: "فواتير للتحصيل",
+          desc: "فواتير محطّتي — اقبض المتبقّي من هنا",
+        },
+        ...(can("channels")
+          ? [{
+              href: "/pos?mode=RECEPTION&workspace=inbox",
+              name: "رسائل العملاء",
+              desc: "واتساب واتصالات — وافتح طلباً من المحادثة",
+              badge: unread,
+              badgeHint: "رسالة لم تُقرأ",
+            }]
+          : []),
+        ...(can("reservations")
+          ? [{
+              href: "/pos?mode=RECEPTION&workspace=reservations",
+              name: "الحجوزات",
+              desc: "حجز صنف لعميل حتى موعد الاستلام",
+            }]
+          : []),
+        ...(can("store")
+          ? [{
+              href: "/pos?mode=RECEPTION&workspace=store",
+              name: "طلبات الموقع",
+              desc: "طلبات المتجر الإلكتروني — ثبّتها كطلب محطّة",
+            }]
+          : []),
+      ]
+    : [];
+
+  const toolTiles: Tile[] = [
     { href: "/price-checker", name: "قارئ الأسعار", desc: "فحص سعر أي منتج بالباركود" },
-    ...(canTasks ? [{ href: "/tasks", name: "المهام والتذاكر", desc: "طلبات العملاء المُسنَدة إليك" }] : []),
-    ...(canStore ? [{ href: "/store-admin", name: "طلبات المتجر", desc: "تثبيت طلبات المتجر الإلكتروني" }] : []),
+    ...(isReception ? [{ href: "/work-orders", name: "لوحة الإنتاج", desc: "كانبان الطلبات ومراحل التنفيذ" }] : []),
+    ...(can("sales") ? [{ href: "/invoices", name: "كل فواتيري", desc: "بحثٌ وفلترةٌ وإعادة طباعة" }] : []),
+    ...(can("tasks") ? [{ href: "/tasks", name: "المهام والتذاكر", desc: "طلبات العملاء المُسنَدة إليك" }] : []),
     { href: "/account", name: "حسابي", desc: "بياناتك وكلمة المرور وجلساتك" },
   ];
 
@@ -1236,62 +1298,132 @@ function CashierHome() {
         direction: "rtl",
         fontFamily: "'Cairo', sans-serif",
         margin: "-24px",
-        padding: "28px 24px 32px",
+        // مساحاتٌ مفتوحة (طلب المالك): حشوةٌ أوسع وسقفُ عرضٍ مقروء بدل مدٍّ لا نهائيّ.
+        padding: "clamp(24px, 4vw, 44px) clamp(20px, 4vw, 48px) 56px",
         display: "flex",
         flexDirection: "column",
-        gap: 18,
+        alignItems: "center",
+        gap: 32,
       }}
     >
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 800, color: T.text, margin: 0 }}>
-          أهلاً {me.data?.name ?? ""} — {roleLabel}
-        </h1>
-        <p style={{ fontSize: 13, color: T.sub, margin: "4px 0 0" }}>
-          محطة عملك: افتح ورديتك، بِع لعملائك، أغلق وسلّم الصندوق.
-        </p>
+      <div style={{ width: "100%", maxWidth: 1180, display: "flex", flexDirection: "column", gap: 32 }}>
+        <div>
+          <h1 style={{ fontSize: "clamp(22px, 2.4vw, 30px)", fontWeight: 800, color: T.text, margin: 0, letterSpacing: "-0.01em" }}>
+            أهلاً {me.data?.name ?? ""}
+          </h1>
+          <p style={{ fontSize: 14, color: T.sub, margin: "8px 0 0", lineHeight: 1.7 }}>
+            {roleLabel} · محطة عملك: افتح ورديتك، استقبل طلبات عملائك، أغلق وسلّم الصندوق.
+          </p>
+        </div>
+
+        <Link
+          href={isReception ? "/pos?mode=RECEPTION" : "/pos"}
+          style={{
+            display: "block",
+            background: T.featuredBg,
+            border: `2px solid ${T.featuredBd}`,
+            borderRadius: 18,
+            padding: "clamp(28px, 3.5vw, 40px) clamp(24px, 3vw, 36px)",
+            textDecoration: "none",
+          }}
+        >
+          <div style={{ fontSize: "clamp(24px, 2.6vw, 32px)", fontWeight: 800, color: T.text, letterSpacing: "-0.01em" }}>
+            {isReception ? "محطة خدمة العملاء" : "نقطة البيع"}
+          </div>
+          <div style={{ fontSize: 14, color: T.sub, marginTop: 10, lineHeight: 1.7, maxWidth: "62ch" }}>
+            {isReception
+              ? "افتح الوردية واستقبل الطلب — السلّة والعميل والدفع في شاشة واحدة، وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."
+              : "افتح الوردية وابدأ البيع — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها."}
+          </div>
+        </Link>
+
+        {stationTiles.length > 0 && (
+          <TileGroup T={T} label="لوحات محطّتي" hint="تفتح داخل شاشة عملك" tiles={stationTiles} />
+        )}
+        <TileGroup T={T} label="أدوات" tiles={toolTiles} />
       </div>
 
-      <Link
-        href="/pos"
-        style={{
-          display: "block",
-          background: T.featuredBg,
-          border: `2px solid ${T.featuredBd}`,
-          borderRadius: 14,
-          padding: "26px 24px",
-          textDecoration: "none",
-        }}
-      >
-        <div style={{ fontSize: 22, fontWeight: 800, color: T.text }}>نقطة البيع</div>
-        <div style={{ fontSize: 13, color: T.sub, marginTop: 6 }}>
-          افتح الوردية وابدأ البيع — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها.
-        </div>
-      </Link>
+      {/* طابور مهامه الشخصي (إن وُجد وسمحت صلاحيته) — نفس مكوّن اللوحة العامة */}
+      <div style={{ width: "100%", maxWidth: 1180 }}>
+        <TasksBrief />
+      </div>
+    </div>
+  );
+}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+interface Tile {
+  href: string;
+  name: string;
+  desc: string;
+  /** عدّادٌ يستحقّ نظرةً قبل فتح البطاقة (صفرٌ ⇒ لا يُعرَض — لا ضوضاءَ بلا خبر). */
+  badge?: number;
+  badgeHint?: string;
+}
+
+/** مجموعةُ بطاقاتٍ بعنوانٍ — الفاصلُ بينها هو ما يُنهي «صفَّ أزرارٍ متساوية الوزن». */
+function TileGroup({
+  T: Tk,
+  label,
+  hint,
+  tiles,
+}: {
+  T: typeof T;
+  label: string;
+  hint?: string;
+  tiles: Tile[];
+}) {
+  return (
+    <section style={{ display: "flex", flexDirection: "column", gap: 14 }} aria-label={label}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+        <h2 style={{ fontSize: 13, fontWeight: 800, color: Tk.secLabel, margin: 0, letterSpacing: "0.04em" }}>
+          {label}
+        </h2>
+        {hint && <span style={{ fontSize: 12, color: Tk.muted }}>{hint}</span>}
+        <div style={{ flex: 1, height: 1, background: Tk.secLine }} aria-hidden />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(264px, 1fr))", gap: 14 }}>
         {tiles.map((t) => (
           <Link
             key={t.href}
             href={t.href}
             style={{
-              background: T.cardBg,
-              border: `1px solid ${T.cardBord}`,
-              borderRadius: 12,
-              padding: "16px 14px",
+              position: "relative",
+              background: Tk.cardBg,
+              border: `1px solid ${Tk.cardBord}`,
+              borderRadius: 14,
+              padding: "20px 18px",
               textDecoration: "none",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              minHeight: 92,
             }}
           >
-            <div style={{ fontSize: 15, fontWeight: 700, color: T.text }}>{t.name}</div>
-            <div style={{ fontSize: 12, color: T.muted, marginTop: 4 }}>{t.desc}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 16, fontWeight: 700, color: Tk.text }}>{t.name}</span>
+              {!!t.badge && t.badge > 0 && (
+                <span
+                  title={t.badgeHint}
+                  style={{
+                    minWidth: 22,
+                    padding: "1px 7px",
+                    borderRadius: 999,
+                    background: "var(--sem-warn-bg)",
+                    color: "var(--sem-warn)",
+                    fontSize: 12,
+                    fontWeight: 800,
+                    textAlign: "center",
+                  }}
+                >
+                  {t.badge}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 12.5, color: Tk.muted, lineHeight: 1.6 }}>{t.desc}</div>
           </Link>
         ))}
       </div>
-
-      {/* طابور مهامه الشخصي (إن وُجد وسمحت صلاحيته) — نفس مكوّن اللوحة العامة */}
-      <div style={{ margin: "0 -24px" }}>
-        <TasksBrief />
-      </div>
-    </div>
+    </section>
   );
 }
 

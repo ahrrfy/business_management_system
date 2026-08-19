@@ -144,10 +144,16 @@ export default function Reception() {
   const [, navigate] = useLocation();
   const pageSearch = useSearch();
   const me = trpc.auth.me.useQuery();
-  const reservationsRequested = useMemo(
-    () => new URLSearchParams(pageSearch).get("workspace") === "reservations",
+  /**
+   * ١٩/٨ (طلب المالك): اللوحاتُ الخمس خرجت من رأس المحطّة إلى **الصفحة الرئيسية** — رأسُ
+   * الكاشير كان صفّاً واحداً من ثمانية أزرارٍ متساوية الوزن يفيض أفقياً بشريط تمرير. صار
+   * الرأسُ للوردية وحدها، والدخولُ إلى اللوحة يقع من بطاقتها في الرئيسية عبر `?workspace=`.
+   */
+  const requestedWorkspace = useMemo(
+    () => new URLSearchParams(pageSearch).get("workspace") ?? "",
     [pageSearch],
   );
+  const reservationsRequested = requestedWorkspace === "reservations";
   const reservationPermissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   const canReadReservations = me.data != null && moduleAccessAllowed(
     me.data.role,
@@ -178,10 +184,6 @@ export default function Reception() {
     me.data.role, reservationPermissions, "store", "READ", STORE_READ_ROLES,
   );
   const showReservations = reservationsRequested && canReadReservations;
-  const openReservations = useCallback(
-    () => navigate("/pos?mode=RECEPTION&workspace=reservations", { replace: true }),
-    [navigate],
-  );
   const closeReservations = useCallback(
     () => navigate("/pos?mode=RECEPTION", { replace: true }),
     [navigate],
@@ -216,8 +218,6 @@ export default function Reception() {
   const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId });
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
   // اِستقبال (تكامل التوصيل، ٤/٨): عدّاد «جاهز» على زرّ طابور الطلبات — مؤشّر سريع بلا فتح الطابور.
-  const woCountsQ = trpc.workOrders.counts.useQuery({ branchId });
-  const woReadyCount = woCountsQ.data?.ready ?? 0;
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0");
   const [closing, setClosing] = useState(false);
@@ -309,6 +309,28 @@ export default function Reception() {
   // ش١ (§٨.١): ورش عمود العمل — الفواتير/الطلبات/طلبات الموقع تُركَّب داخل عمود السلة
   // (لوحة الدفع لا تُغطّى أبداً). الحجوزات/الرسائل تبقيان طبقتين (قرار §١٤.٦).
   const [workshop, setWorkshop] = useState<Workshop>("CART");
+  /**
+   * تطبيقُ اللوحة المطلوبة من الرابط **مرّةً واحدة لكل قيمة** — لا في كل رسم، وإلّا لم
+   * يستطع الموظّف الرجوع إلى السلّة ما دام الرابط يحمل اللوحة. والرابط يُنظَّف بعد التطبيق
+   * (`replace`) فلا يبقى في التاريخ ولا يُعيد فتح اللوحة عند التحديث.
+   */
+  const appliedWorkspaceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!requestedWorkspace || appliedWorkspaceRef.current === requestedWorkspace) return;
+    appliedWorkspaceRef.current = requestedWorkspace;
+    // ⛔ الحارس هنا لا عند إظهار الزرّ: الأزرار خرجت إلى الرئيسية، ورابطٌ مكتوبٌ باليد
+    // (`?workspace=store`) كان سيفتح لوحةً لمن لا يملك وحدتها. الإنفاذ النهائيّ خادميّ
+    // كما هو، وهذا يمنع عرضاً فارغاً/مضلّلاً قبل أن يردّ الخادم.
+    switch (requestedWorkspace) {
+      case "invoices": setWorkshop("INVOICES"); break;
+      case "orders": setWorkshop("ORDERS"); break;
+      case "store": if (canReadStoreOrders) setWorkshop("STORE"); break;
+      case "inbox": if (canReadChannels) setShowInbox(true); break;
+      // reservations لها مسارُها القائم (طبقةٌ مستقلّة تقرأ الرابط وتفحص صلاحيتها) — لا تُلمَس.
+      default: return;
+    }
+    navigate("/pos?mode=RECEPTION", { replace: true });
+  }, [requestedWorkspace, navigate, canReadStoreOrders, canReadChannels]);
   // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
   const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null);
   const [showReceiptOverlay, setShowReceiptOverlay] = useState(false);
@@ -2566,71 +2588,19 @@ export default function Reception() {
             الموقع/حجوزات/رسائل/سحب نقدي/طابعة/آخر فاتورة/حالة الوردية) تُرسَل بـportal إلى
             الشريط العلوي المشترك — بجانب موضع زرّ «الفواتير» الأصلي — بدل تكديسها هنا. تُبقي كل
             الحالة والمنطق داخل هذا المكوّن (شرط الـportal: نفس شجرة React، موضعٌ مختلف في DOM). */}
+        {/* ١٩/٨ (طلب المالك): **اللوحاتُ الخمس خرجت من هنا** — «الفواتير» و«الطلبات» و«طلبات
+            الموقع» و«الحجوزات» و«رسائل وطلبات العملاء» صارت بطاقاتٍ في الصفحة الرئيسية
+            (`CashierHome`) تفتح المحطّة على لوحتها عبر `?workspace=`.
+
+            السبب مقيس: كان الرأس صفّاً واحداً من ثمانية أزرارٍ **متساوية الوزن** يفيض أفقياً
+            بشريط تمرير، فيختلط فيه ما يُفتَح مرّةً في اليوم (الحجوزات) بما يُضغَط كل دقيقة
+            (إنهاء الوردية). وثلاثةٌ من أسمائها كانت تصطدم بأسماء أخرى في نفس الشاشة
+            («الطلبات» مقابل «متابعة الطلبات» مقابل «تصفّح الطلبات»).
+
+            ما بقي هنا **أدواتُ الوردية وحدها**: الطابعة · آخر فاتورة · سحب نقديّ · إنهاء
+            الوردية — أي ما يخصّ الجلسة لا ما يخصّ المستندات. */}
         {headerActionsNode && createPortal(
           <>
-            <button
-              type="button"
-              onClick={() => setWorkshop("INVOICES")}
-              title="فواتيري — كل ما بعتُه من هذه المحطة"
-              className={cn(
-                "inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
-                workshop === "INVOICES" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
-              )}
-            >
-              <ReceiptIcon aria-hidden className="size-4" />
-              <span>الفواتير</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setWorkshop("ORDERS")}
-              title="طابور الطلبات والتوصيل — من الاستلام حتى التسليم"
-              className={cn(
-                "relative inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
-                workshop === "ORDERS" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
-              )}
-            >
-              <Truck aria-hidden className="size-4" />
-              <span>الطلبات</span>
-              {woReadyCount > 0 && (
-                <Badge variant="secondary" className="ms-0.5 tabular-nums">{woReadyCount}</Badge>
-              )}
-            </button>
-            {canReadStoreOrders && (
-              <button
-                type="button"
-                onClick={() => setWorkshop("STORE")}
-                title="طلبات الموقع — طلبات العملاء عبر المتجر الإلكتروني"
-                className={cn(
-                  "inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
-                  workshop === "STORE" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
-                )}
-              >
-                <Package aria-hidden className="size-4" />
-                <span>طلبات الموقع</span>
-              </button>
-            )}
-            {canReadReservations && (
-              <button
-                type="button"
-                onClick={openReservations}
-                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/5 px-3 text-sm font-bold text-primary transition-colors hover:bg-primary/10"
-              >
-                <CalendarClock aria-hidden className="size-4" />
-                <span>الحجوزات</span>
-              </button>
-            )}
-            {canReadChannels && (
-              <button
-                type="button"
-                onClick={() => setShowInbox(true)}
-                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold hover:bg-muted"
-              >
-                <MessageCircle aria-hidden className="size-4" />
-                <span className="hidden lg:inline">رسائل وطلبات العملاء</span>
-              </button>
-            )}
-
-            <div className="mx-1 h-6 w-px shrink-0 bg-border" aria-hidden />
 
             {bridge.enabled && (
               <button
@@ -2755,16 +2725,16 @@ export default function Reception() {
               <a
                 href="/work-orders"
                 className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="متابعة الطلبات في لوحة الإنتاج"
+                title="كانبان الإنتاج — كل مراحل التنفيذ"
               >
-                <Printer aria-hidden className="size-3.5" /> متابعة الطلبات
+                <Printer aria-hidden className="size-3.5" /> لوحة الإنتاج
               </a>
               <a
                 href="/invoices"
                 className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
-                title="قائمة فواتير محطّتي"
+                title="صفحة المبيعات — بحثٌ وفلترةٌ وإعادة طباعة"
               >
-                <ReceiptIcon aria-hidden className="size-3.5" /> فواتيري
+                <ReceiptIcon aria-hidden className="size-3.5" /> كل فواتيري
               </a>
             </div>
           </div>

@@ -197,7 +197,7 @@ export function DraftStrip({
       aria-expanded={menuOpen}
       className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border bg-card px-2 text-[11px] font-bold hover:bg-muted"
     >
-      {compact && rows.length > 0 ? `${rows.length} طلبات محفوظة` : "تصفّح الطلبات"}
+      {compact && rows.length > 0 ? `${rows.length} مسوّدات محفوظة` : "مسوّدات محفوظة"}
       <ChevronDown aria-hidden className="size-3" />
     </button>
   );
