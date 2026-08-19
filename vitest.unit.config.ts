@@ -62,6 +62,7 @@ export default defineConfig({
       "shared/__tests__/documentNumber.test.ts",
       "shared/receptionChannel.test.ts",
       "shared/invoiceChannel.test.ts",
+      "shared/workOrderStatus.test.ts",
       "client/src/lib/__tests__/invoiceNavGate.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",

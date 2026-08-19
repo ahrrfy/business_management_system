@@ -1,3 +1,11 @@
+import {
+  type WorkOrderStatus,
+  WO_NEXT_STATUS,
+  WO_STAGE_INDEX,
+  workOrderStatusHue,
+  workOrderStatusLabel,
+  workOrderTimelineLabel,
+} from "@shared/workOrderStatus";
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -52,7 +60,7 @@ type Detail = NonNullable<RouterOutputs["workOrders"]["get"]>;
 type Status = "RECEIVED" | "IN_PROGRESS" | "READY" | "DELIVERED";
 type DeliverTarget = { id: number; orderNumber: string; title: string; salePrice: string; deposit: string };
 
-function workOrderStatusLabel(
+function workOrderCardLabel(
   o: Pick<WO, "status" | "consignmentId" | "courierDeliveredAt" | "consignmentStatus" | "parcelStatus">,
 ): string {
   if (o.status === "DELIVERED" && o.consignmentId) {
@@ -62,7 +70,7 @@ function workOrderStatusLabel(
   // تقول «جاهز للتسليم» لطردٍ خرج من المكتبة. الحالة المشتقّة تقول أين هو فعلاً.
   const st = deriveWoDeliveryState(o.consignmentStatus, o.parcelStatus);
   if (o.status === "READY" && st !== "NONE") return woDeliveryStateLabel(st)!;
-  return STATUS_LABEL[o.status] ?? o.status;
+  return workOrderStatusLabel(o.status);
 }
 
 // ── المراحل (أعمدة الكانبان) — مطابقة لحالات النظام الحقيقية ──
@@ -72,12 +80,6 @@ const STATUSES: { key: Status; label: string; hint: string; hue: number }[] = [
   { key: "READY", label: "جاهز للتسليم", hint: "جاهز — بانتظار العميل", hue: 293 },
   { key: "DELIVERED", label: "مُغلق/مُرسل", hint: "فاتورة أو إرسالية توصيل", hue: 155 },
 ];
-const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "مُستلَم", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
-};
-const STATUS_HUE: Record<string, number> = { RECEIVED: 72, IN_PROGRESS: 250, READY: 293, DELIVERED: 155 };
-const STAGE_INDEX: Record<string, number> = { RECEIVED: 0, IN_PROGRESS: 1, READY: 2, DELIVERED: 3 };
-const NEXT: Record<string, Status> = { RECEIVED: "IN_PROGRESS", IN_PROGRESS: "READY", READY: "DELIVERED" };
 const ADV_LABEL: Record<string, React.ReactNode> = {
   IN_PROGRESS: (<><ChevronRight aria-hidden className="size-4 inline-block align-text-bottom me-1" /> بدء التنفيذ (خصم المواد)</>),
   READY: (<><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> وضع علامة: جاهز</>),
@@ -108,14 +110,6 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
   CARD: "بطاقة",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
-};
-const TL_LABEL: Record<string, string> = {
-  "workOrder.create": "استُلم الطلب",
-  "workOrder.start": "بدأ التنفيذ — خُصمت المواد",
-  "workOrder.markReady": "جاهز للتسليم",
-  "workOrder.deliver": "سُلّم وصدرت الفاتورة",
-  "workOrder.cancel": "أُلغي الأمر",
-  "workOrder.assign": "أُعيد الإسناد",
 };
 
 function colVars(hue: number): React.CSSProperties {
@@ -150,7 +144,7 @@ function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok
   if (days === 1) return { state: "soon", text: "غداً" };
   return { state: "ok", text: `باقٍ ${days} يوم` };
 }
-function progressOf(status: string) { const i = STAGE_INDEX[status] ?? 0; return { idx: i, pct: Math.round((i / 3) * 100) }; }
+function progressOf(status: string) { const i = Math.max(WO_STAGE_INDEX[status as WorkOrderStatus] ?? 0, 0); return { idx: i, pct: Math.round((i / 3) * 100) }; }
 function workOrderContactMessage(o: {
   orderNumber: string;
   title: string;
@@ -255,7 +249,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   const di = dueInfo(o);
   const chLabel = receptionChannelLabel(o.receptionChannel);
   const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
-  const hue = STATUS_HUE[o.status] ?? 255;
+  const hue = workOrderStatusHue(o.status);
   const late = di.state === "late";
   const cls = ["wob-card", late ? "wob-late" : "", dragging ? "wob-dragging" : "", ghost ? "wob-ghost" : ""].filter(Boolean).join(" ");
   // حالة محلّية لاختيار الفنّي في شريط الإسناد — لكل بطاقة على حِدة.
@@ -685,14 +679,14 @@ function Drawer({
   const d = detail.data ?? null;
   const di = d ? dueInfo(d) : null;
   const pri = d ? (PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL) : null;
-  const next = d ? NEXT[d.status] : undefined;
-  const hue = d ? (STATUS_HUE[d.status] ?? 255) : 255;
-  const cur = d ? (STAGE_INDEX[d.status] ?? 0) : 0;
+  const next = d ? WO_NEXT_STATUS[d.status as WorkOrderStatus] : undefined;
+  const hue = workOrderStatusHue(d?.status);
+  const cur = d ? Math.max(WO_STAGE_INDEX[d.status as WorkOrderStatus] ?? 0, 0) : 0;
 
   // أحداث الخط الزمني: من سجلّ التدقيق إن توفّر، وإلا اشتقاق صادق من الطوابع.
   const tlRows = timeline.data ?? [];
   const tlItems = tlRows.length
-    ? tlRows.map((r) => ({ ev: TL_LABEL[r.action] ?? r.action, at: r.createdAt, by: r.userName as string | null }))
+    ? tlRows.map((r) => ({ ev: workOrderTimelineLabel(r.action), at: r.createdAt, by: r.userName as string | null }))
     : d ? [
         { ev: "استُلم الطلب", at: d.createdAt, by: null as string | null },
         ...(d.deliveredAt ? [{ ev: "سُلّم وصدرت الفاتورة", at: d.deliveredAt, by: null as string | null }] : []),
@@ -720,7 +714,7 @@ function Drawer({
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", alignItems: "center" }}>
-                <span className="wob-meta-pill" style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})`, display: "inline-flex", alignItems: "center", gap: 6 }}><span className="inline-block size-2 rounded-full" style={{ background: `oklch(0.45 0.17 ${hue})` }} />{workOrderStatusLabel(d)}</span>
+                <span className="wob-meta-pill" style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})`, display: "inline-flex", alignItems: "center", gap: 6 }}><span className="inline-block size-2 rounded-full" style={{ background: `oklch(0.45 0.17 ${hue})` }} />{workOrderCardLabel(d)}</span>
                 {pri && <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>}
                 {di && <span className={`wob-due wob-${di.state}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{di.state === "late" ? <Timer aria-hidden className="size-3.5" /> : <Calendar aria-hidden className="size-3.5" />} {di.text}</span>}
               </div>
@@ -818,7 +812,7 @@ function Drawer({
                   date: d.createdAt,
                   customer: d.customerName,
                   description: d.customizationText,
-                  status: STATUS_LABEL[d.status] ?? d.status,
+                  status: workOrderStatusLabel(d.status),
                   items: [{ name: d.title, qty: d.quantity, unit: "نُسخة" }],
                   deposit: d.deposit,
                   total: d.salePrice,
@@ -829,7 +823,7 @@ function Drawer({
                   date: d.createdAt,
                   customer: d.customerName,
                   description: d.customizationText,
-                  status: STATUS_LABEL[d.status] ?? d.status,
+                  status: workOrderStatusLabel(d.status),
                   items: [{ name: d.title, qty: d.quantity, unit: "نُسخة" }],
                   deposit: d.deposit,
                   total: d.salePrice,
@@ -963,13 +957,13 @@ function OrdersTable({
       header: "الحالة",
       cell: ({ row }) => {
         const o = row.original;
-        const hue = STATUS_HUE[o.status] ?? 255;
+        const hue = workOrderStatusHue(o.status);
         return (
           <span
             className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
             style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})` }}
           >
-            {workOrderStatusLabel(o)}
+            {workOrderCardLabel(o)}
           </span>
         );
       },
@@ -1047,7 +1041,7 @@ function OrdersTable({
       cell: ({ row }) => {
         const o = row.original;
         const isFinal = o.status === "DELIVERED" || o.status === "CANCELLED";
-        const next = NEXT[o.status as Status];
+        const next = WO_NEXT_STATUS[o.status as WorkOrderStatus];
         const actions: RowAction[] = [
           { key: "open", kind: "view", label: "فتح التفاصيل", onSelect: () => onOpen(o.id) },
           { key: "edit", kind: "edit", label: "تعديل", icon: Pencil, hidden: isFinal, onSelect: () => onEdit(o.id), gate: { managerOnly: true } },
@@ -1093,14 +1087,14 @@ function OrdersTable({
       mobileCardRenderer={(o) => {
         const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
         const due = positiveDiff(o.salePrice, o.deposit ?? 0);
-        const next = NEXT[o.status as Status];
+        const next = WO_NEXT_STATUS[o.status as WorkOrderStatus];
         return (
           <MobileDataCard
             key={o.id}
             title={o.title}
             subtitle={`${o.orderNumber} · ${o.customerName ?? "عميل نقدي"}`}
             badge={{
-              label: workOrderStatusLabel(o),
+              label: workOrderCardLabel(o),
               variant: o.status === "DELIVERED" ? "success" : o.status === "READY" ? "default" : o.status === "IN_PROGRESS" ? "warning" : "secondary",
             }}
             amount={{
@@ -1318,7 +1312,7 @@ export default function WorkOrders() {
 
   // ── الانتقال بين المراحل (الخطوة التالية فقط — التسليم خلف تأكيد مالي) ──
   async function attemptMove(order: WO, to: Status) {
-    if (NEXT[order.status] !== to) {
+    if (WO_NEXT_STATUS[order.status as WorkOrderStatus] !== to) {
       notify.warn("انتقال غير مسموح", "اتبع التسلسل: مُستلَم ← قيد التنفيذ ← جاهز ← مُسلَّم.");
       return;
     }
@@ -1438,7 +1432,7 @@ export default function WorkOrders() {
                 { key: "priority", header: "الأولوية", map: (r) => PRIORITIES[r.priority ?? "NORMAL"]?.label ?? "" },
                 { key: "receptionChannel", header: "القناة", map: (r) => receptionChannelLabel(r.receptionChannel) },
                 { key: "assigneeName", header: "المسؤول", map: (r) => r.assigneeName ?? "" },
-                { key: "status", header: "الحالة", map: (r) => workOrderStatusLabel(r) },
+                { key: "status", header: "الحالة", map: (r) => workOrderCardLabel(r) },
               ],
             })}><FileText aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تصدير Excel</button>
           <Link href="/pos?mode=RECEPTION" className="wob-btn wob-btn-primary">شاشة الاستقبال الموحدة</Link>
@@ -1556,7 +1550,7 @@ export default function WorkOrders() {
           <div className="wob-board">
             {COLUMNS.map((s) => {
               const list = byCol[s.key] ?? [];
-              const isOver = drag && drag.overCol === s.key && NEXT[drag.order.status] === s.status;
+              const isOver = drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
               return (
                 <div className="wob-col" style={colVars(s.hue)} key={s.key}>
                   <div className="wob-col-head">

@@ -1,3 +1,4 @@
+import { WO_PROGRESS_STAGES, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ChannelMark } from "@/components/ChannelBadge";
 import { receptionChannelLabel } from "@shared/receptionChannel";
 import { Badge } from "@/components/ui/badge";
@@ -43,14 +44,6 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
   TRANSFER: "تحويل",
   WALLET: "محفظة",
 };
-const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "مُستلَم", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
-};
-const STAGES: { key: string; label: string }[] = [
-  { key: "RECEIVED", label: "مُستلَم" },
-  { key: "IN_PROGRESS", label: "قيد التنفيذ" },
-  { key: "READY", label: "جاهز للتسليم" },
-];
 const STAGE_INDEX: Record<string, number> = { RECEIVED: 0, IN_PROGRESS: 1, READY: 2, DELIVERED: 3 };
 
 function pad2(n: number) { return String(n).padStart(2, "0"); }
@@ -136,7 +129,7 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
       <div className="font-medium text-sm mt-0.5 line-clamp-1">{o.title}</div>
       <div className="flex items-center justify-between mt-1 text-[11px] text-muted-foreground">
         <span title={chLabel} className="inline-flex min-w-0 items-center gap-1"><ChannelMark channel={o.receptionChannel} className="size-3.5" /> <span className="truncate">{o.customerName ?? "عميل نقدي"}</span></span>
-        {mine ? <span>{STATUS_LABEL[o.status]}</span> : <span className="text-stock-low">سحب ←</span>}
+        {mine ? <span>{workOrderStatusLabel(o.status)}</span> : <span className="text-stock-low">سحب ←</span>}
       </div>
     </button>
   );
@@ -482,7 +475,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-sm">المراحل</CardTitle></CardHeader>
             <CardContent className="space-y-2">
-              {STAGES.map((s, i) => (
+              {WO_PROGRESS_STAGES.map((s, i) => (
                 <div key={s.key} className="flex items-center gap-2">
                   <div className={`w-5 h-5 rounded-md grid place-items-center text-[11px] text-white ${i < cur ? "bg-[var(--status-active)]" : i === cur ? "bg-primary" : "bg-muted-foreground/30"}`}>{i < cur ? <Check aria-hidden className="size-3" /> : i + 1}</div>
                   <span className={`text-sm ${i === cur ? "font-semibold" : "text-muted-foreground"}`}>{s.label}</span>
@@ -504,7 +497,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
             </div>
           )}
           {(d.status === "DELIVERED" || d.status === "CANCELLED") && (
-            <div className="rounded-lg border bg-muted/30 p-3 text-center text-sm text-muted-foreground">{STATUS_LABEL[d.status]}</div>
+            <div className="rounded-lg border bg-muted/30 p-3 text-center text-sm text-muted-foreground">{workOrderStatusLabel(d.status)}</div>
           )}
         </div>
       </div>

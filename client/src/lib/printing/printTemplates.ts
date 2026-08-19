@@ -6,6 +6,7 @@
  * receipts، shift، barcode labels) خارج نطاق التسليم وتُبقى بتصميمها السابق (يستفيد كل الطباعة من ألوان
  * وخطّ التذييل الجديدة عبر brand.ts + docHtml.ts).
  */
+import { workOrderStatusLabel, workOrderStatusPrintColor } from "@shared/workOrderStatus";
 import { BRAND as B, CO, RECEIPT_PHONES, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
 import { fmtDate, fmtDateTime } from '../date';
 import {
@@ -341,20 +342,12 @@ export interface WorkOrderPrintData {
   total: string | number;
 }
 
-const WO_STATUS_COLOR: Record<string, string> = {
-  RECEIVED: '#1A9B78', IN_PROGRESS: '#CC7E3F', READY: '#3B82F6',
-  DELIVERED: '#059669', CANCELLED: '#DC2626',
-};
-const WO_STATUS_AR: Record<string, string> = {
-  RECEIVED: 'مُستلَم', IN_PROGRESS: 'قيد التنفيذ', READY: 'جاهز للتسليم',
-  DELIVERED: 'مُسلَّم', CANCELLED: 'ملغى',
-};
 
 export function printWorkOrder(d: WorkOrderPrintData): void {
   // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printWorkOrderV2 بالتصميم المرجعي (بلا عمود ضريبة، توقيعا الفني والعميل،
   // شارة الحالة الملوّنة أعلى الترويسة). notes القديم = ملاحظات التشغيل الجديدة.
-  const statusLabel = WO_STATUS_AR[d.status ?? ''] ?? (d.status ?? '');
-  const statusColor = WO_STATUS_COLOR[d.status ?? ''] ?? '#92400E';
+  const statusLabel = workOrderStatusLabel(d.status);
+  const statusColor = workOrderStatusPrintColor(d.status);
   printWorkOrderV2({
     woNumber: d.woNumber,
     woDate: d.woDate,
@@ -1020,10 +1013,6 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
 
 import type { WorkOrderReceiptData } from './workOrderRaster';
 
-const WO_STATUS_HTML: Record<string, string> = {
-  RECEIVED: 'مُستلَم', IN_PROGRESS: 'قيد التنفيذ', READY: 'جاهز للتسليم',
-  DELIVERED: 'مُسلَّم', CANCELLED: 'ملغى',
-};
 
 export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   const logo = logoUrl();
@@ -1034,7 +1023,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
     barSvg = bc.svg;
   } catch { /* بلا باركود */ }
 
-  const statusLabel = WO_STATUS_HTML[d.status ?? ''] ?? (d.status ?? '');
+  const statusLabel = workOrderStatusLabel(d.status);
 
   const infoRows = [
     ['رقم الأمر', esc(d.orderNumber)],

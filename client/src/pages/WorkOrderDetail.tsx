@@ -1,3 +1,4 @@
+import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,20 +29,6 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
 
-const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "مُستلَم",
-  IN_PROGRESS: "قيد التنفيذ",
-  READY: "جاهز للتسليم",
-  DELIVERED: "مُسلَّم",
-  CANCELLED: "ملغى",
-};
-const STATUS_CLS: Record<string, string> = {
-  RECEIVED: "bg-muted text-foreground/70",
-  IN_PROGRESS: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-  READY: "bg-amber-100 text-amber-700",
-  DELIVERED: "bg-emerald-100 text-emerald-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
-};
 
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
 const PRIORITY_LABEL: Record<string, string> = { LOW: "منخفض", NORMAL: "عادي", URGENT: "عاجل" };
@@ -218,7 +205,7 @@ export default function WorkOrderDetail() {
   const data = wo.data;
   const displayStatus = data.status === "DELIVERED" && data.consignmentId
     ? (data.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل")
-    : (STATUS_LABEL[data.status] ?? data.status);
+    : workOrderStatusLabel(data.status);
 
   const fmt = fmtAr;
   // الرصيد المستحق = سعر البيع − العربون المقبوض، عبر decimal.js (لا Number() على المال، §٥) —
@@ -240,7 +227,7 @@ export default function WorkOrderDetail() {
               date: data.createdAt,
               customer: data.customerName,
               description: data.customizationText,
-              status: STATUS_LABEL[data.status] ?? data.status,
+              status: workOrderStatusLabel(data.status),
               items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
               total: data.salePrice,
               deliveryDate: data.dueDate,
@@ -250,7 +237,7 @@ export default function WorkOrderDetail() {
               date: data.createdAt,
               customer: data.customerName,
               description: data.customizationText,
-              status: STATUS_LABEL[data.status] ?? data.status,
+              status: workOrderStatusLabel(data.status),
               items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
               total: data.salePrice,
               deliveryDate: data.dueDate,
@@ -359,7 +346,7 @@ export default function WorkOrderDetail() {
                   {Number(data.materialsEditCount) > 1 ? ` ×${data.materialsEditCount}` : ""}
                 </span>
               )}
-              <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
+              <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${workOrderStatusBadgeCls(data.status)}`}>
                 {displayStatus}
               </span>
             </span>
