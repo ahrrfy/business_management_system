@@ -83,9 +83,32 @@ export function storefrontTurnstileSubmissionReady(
 
 export type StorefrontCustomizationKind = "PRINT" | "GIFT";
 
+export type StorefrontCustomizationField = {
+  id: number;
+  fieldKey: string;
+  label: string;
+  fieldType: "TEXT" | "TEXTAREA" | "SELECT" | "FILE" | "NUMBER" | "SWATCH";
+  isRequired: boolean;
+  sortOrder: number;
+  maxLength: number | null;
+  options: { value: string; label: string; priceDelta: string }[];
+  dependency: { fieldKey: string; operator: "equals" | "notEquals"; value: string | string[] } | null;
+  priceDelta: string;
+};
+
+export type StorefrontCustomizationTemplate = {
+  id: number;
+  kind: StorefrontCustomizationKind | "GENERAL";
+  title: string;
+  description: string | null;
+  fields: StorefrontCustomizationField[];
+};
+
 export type StorefrontCustomization = {
   kind: StorefrontCustomizationKind;
+  values?: Record<string, string>;
   service?: string;
+  serviceLabel?: string;
   packaging?: "standard" | "gift";
   recipient?: string;
   message?: string;
@@ -95,35 +118,69 @@ export type StorefrontCustomization = {
 export type StorefrontCustomizationConfig = {
   kind: StorefrontCustomizationKind;
   title: string;
-  services: string[];
-  allowPackaging: boolean;
-  allowMessage: boolean;
-  requiresService: boolean;
+  description: string | null;
+  fields: StorefrontCustomizationField[];
 };
 
 export function getStorefrontCustomizationConfig(
   isCustomizable: boolean,
   customizationKind: "PRINT" | "GIFT" | null | undefined,
+  template?: StorefrontCustomizationTemplate | null,
 ): StorefrontCustomizationConfig | null {
-  if (!isCustomizable || !customizationKind) return null;
-  const isPrint = customizationKind === "PRINT";
-  return isPrint
-    ? {
-        kind: "PRINT",
-        title: "خصّص طلبك قبل الإضافة",
-        services: ["اسم أو عبارة", "صورة أو تصميم", "طباعة كاملة"],
-        allowPackaging: true,
-        allowMessage: true,
-        requiresService: true,
-      }
-    : {
-        kind: "GIFT",
-        title: "أضف لمسة الهدية",
-        services: ["تغليف هدية", "بطاقة إهداء", "تغليف وبطاقة"],
-        allowPackaging: false,
-        allowMessage: true,
-        requiresService: false,
-      };
+  if (!isCustomizable || !customizationKind || !template) return null;
+  if (template.kind !== customizationKind && template.kind !== "GENERAL") return null;
+  return {
+    kind: customizationKind,
+    title: template.title,
+    description: template.description,
+    fields: template.fields.filter((field) => field.isActive !== false).sort((a, b) => a.sortOrder - b.sortOrder),
+  };
+}
+
+function dependencyMatches(
+  dependency: StorefrontCustomizationField["dependency"],
+  values: Record<string, string>,
+): boolean {
+  if (!dependency) return true;
+  const current = values[dependency.fieldKey] ?? "";
+  const expected = Array.isArray(dependency.value) ? dependency.value : [dependency.value];
+  const matches = expected.includes(current);
+  return dependency.operator === "notEquals" ? !matches : matches;
+}
+
+function CustomizationFieldControl({
+  field,
+  value,
+  onChange,
+}: {
+  field: StorefrontCustomizationField;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const common = "mt-1.5 w-full rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none transition focus:border-[#e65f4a]";
+  if (field.fieldType === "SELECT") {
+    return (
+      <select value={value} onChange={(event) => onChange(event.target.value)} className={common}>
+        <option value="">اختر {field.label}</option>
+        {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}{option.priceDelta !== "0" ? ` (+${option.priceDelta} د.ع)` : ""}</option>)}
+      </select>
+    );
+  }
+  if (field.fieldType === "SWATCH") {
+    return (
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {field.options.map((option) => (
+          <button key={option.value} type="button" onClick={() => onChange(option.value)} className={`rounded-full border px-3 py-1.5 text-[11px] font-bold transition ${value === option.value ? "border-[#25406f] bg-[#25406f] text-white" : "border-[#ead8c8] bg-white text-[#5b5147] hover:border-[#e65f4a]"}`}>
+            {option.label}{option.priceDelta !== "0" ? ` · +${option.priceDelta}` : ""}
+          </button>
+        ))}
+      </div>
+    );
+  }
+  if (field.fieldType === "TEXTAREA") {
+    return <textarea value={value} onChange={(event) => onChange(event.target.value)} maxLength={field.maxLength ?? undefined} rows={3} placeholder={field.label} className={`${common} resize-none placeholder:text-[#a49a8e]`} />;
+  }
+  return <input type={field.fieldType === "NUMBER" ? "number" : "text"} value={value} onChange={(event) => onChange(event.target.value)} maxLength={field.maxLength ?? undefined} inputMode={field.fieldType === "NUMBER" ? "numeric" : undefined} placeholder={field.fieldType === "FILE" ? "اسم الملف أو مرجع التصميم" : field.label} className={`${common} placeholder:text-[#a49a8e]`} />;
 }
 
 function serializeCustomization(customization?: StorefrontCustomization): string {
@@ -1091,27 +1148,69 @@ export default function Storefront() {
     };
   }, [detailQ.data, detailVariant, selectedStoreUnitId]);
   const customizationPreviewMode = import.meta.env.DEV && new URLSearchParams(window.location.search).get("preview") === "customization";
+  const previewCustomizationTemplate = customizationPreviewMode && detailQ.data?.category === "المطبوعات التجارية"
+    ? {
+        id: 0,
+        kind: "PRINT" as const,
+        title: "خصّص طلبك قبل الإضافة",
+        description: "وضع معاينة تطويري فقط — القالب الحقيقي يأتي من الخادم بعد تطبيق الهجرة.",
+        fields: [
+          { id: 0, fieldKey: "service", label: "نوع التنفيذ", fieldType: "SELECT" as const, isRequired: true, sortOrder: 10, maxLength: null, priceDelta: "0", dependency: null, options: [{ value: "text", label: "اسم أو عبارة", priceDelta: "0" }, { value: "file", label: "صورة أو تصميم", priceDelta: "0" }, { value: "full", label: "طباعة كاملة", priceDelta: "0" }] },
+          { id: 1, fieldKey: "packaging", label: "التغليف", fieldType: "SELECT" as const, isRequired: false, sortOrder: 20, maxLength: null, priceDelta: "0", dependency: null, options: [{ value: "standard", label: "تغليف عادي", priceDelta: "0" }, { value: "gift", label: "تغليف هدية", priceDelta: "0" }] },
+          { id: 2, fieldKey: "message", label: "رسالة أو تفاصيل إضافية", fieldType: "TEXTAREA" as const, isRequired: false, sortOrder: 30, maxLength: 300, priceDelta: "0", dependency: { fieldKey: "service", operator: "equals" as const, value: ["text", "full"] }, options: [] },
+          { id: 3, fieldKey: "designFile", label: "مرجع ملف التصميم", fieldType: "FILE" as const, isRequired: true, sortOrder: 40, maxLength: null, priceDelta: "0", dependency: { fieldKey: "service", operator: "equals" as const, value: ["file", "full"] }, options: [] },
+        ],
+      }
+    : null;
   const customizationConfig = useMemo(
     () => detailQ.data
       ? getStorefrontCustomizationConfig(
-          detailQ.data.isCustomizable === true || (customizationPreviewMode && detailQ.data.category === "المطبوعات التجارية"),
-          detailQ.data.customizationKind ?? (customizationPreviewMode && detailQ.data.category === "المطبوعات التجارية" ? "PRINT" : null),
+          detailQ.data.isCustomizable === true || previewCustomizationTemplate != null,
+          detailQ.data.customizationKind ?? (previewCustomizationTemplate ? "PRINT" : null),
+          detailQ.data.customizationTemplate ?? previewCustomizationTemplate,
         )
       : null,
-    [detailQ.data, customizationPreviewMode],
+    [detailQ.data, previewCustomizationTemplate],
+  );
+  const customizationValues = customizationDraft.values ?? {};
+  const visibleCustomizationFields = useMemo(
+    () => (customizationConfig?.fields ?? []).filter((field) => dependencyMatches(field.dependency, customizationValues)),
+    [customizationConfig, customizationValues],
   );
   const customizationValidation = useMemo(() => {
     if (!customizationConfig) return null;
-    if (customizationConfig.requiresService && !customizationDraft.service) return "اختر نوع التخصيص أولاً";
-    if (customizationDraft.service === "اسم أو عبارة" && !customizationDraft.message?.trim()) return "اكتب الاسم أو العبارة المطلوبة";
-    if (customizationDraft.service === "صورة أو تصميم" && !customizationDraft.uploadName) return "اكتب اسم الملف أو أرفق التصميم قبل الإضافة";
-    if (customizationDraft.service?.includes("بطاقة") && !customizationDraft.message?.trim()) return "اكتب رسالة بطاقة الإهداء";
+    for (const field of visibleCustomizationFields) {
+      const value = customizationValues[field.fieldKey]?.trim() ?? "";
+      if (field.isRequired && !value) return `أكمل الحقل «${field.label}» قبل الإضافة`;
+      if (["SELECT", "SWATCH"].includes(field.fieldType) && value && !field.options.some((option) => option.value === value)) {
+        return `اختر قيمة صحيحة للحقل «${field.label}»`;
+      }
+      if (field.maxLength && value.length > field.maxLength) return `الحقل «${field.label}» يتجاوز الحد المسموح`;
+    }
     return null;
-  }, [customizationConfig, customizationDraft]);
+  }, [customizationConfig, visibleCustomizationFields, customizationValues]);
+  function updateCustomizationField(field: StorefrontCustomizationField, value: string) {
+    setCustomizationDraft((previous) => {
+      const values = { ...(previous.values ?? {}), [field.fieldKey]: value };
+      for (const candidate of customizationConfig?.fields ?? []) {
+        if (candidate.fieldKey !== field.fieldKey && !dependencyMatches(candidate.dependency, values)) delete values[candidate.fieldKey];
+      }
+      const next: StorefrontCustomization = { ...previous, kind: customizationConfig?.kind ?? previous.kind, values };
+      if (field.fieldKey === "service") {
+        next.service = value;
+        next.serviceLabel = field.options.find((option) => option.value === value)?.label;
+      }
+      if (field.fieldKey === "packaging") next.packaging = value as "standard" | "gift";
+      if (field.fieldKey === "recipient") next.recipient = value;
+      if (field.fieldKey === "message") next.message = value;
+      if (field.fieldKey === "designFile") next.uploadName = value;
+      return next;
+    });
+  }
   function selectedCustomization(): StorefrontCustomization | undefined {
     if (!customizationConfig) return undefined;
-    const value = { ...customizationDraft, kind: customizationConfig.kind };
-    const hasDetail = [value.service, value.recipient, value.message, value.uploadName].some((item) => Boolean(item?.trim())) || value.packaging === "gift";
+    const value = { ...customizationDraft, kind: customizationConfig.kind, values: { ...(customizationDraft.values ?? {}) } };
+    const hasDetail = Object.values(value.values ?? {}).some((item) => Boolean(item?.trim()));
     return hasDetail ? value : undefined;
   }
 
@@ -1119,7 +1218,7 @@ export default function Storefront() {
     setSelectedStoreUnitId(null);
     setSelectedVariantId(null);
     setVariantQuantities(new Map());
-    setCustomizationDraft({ kind: "PRINT" });
+    setCustomizationDraft({ kind: "PRINT", values: {} });
   }, [selectedId]);
 
   useEffect(() => {
@@ -1707,13 +1806,21 @@ export default function Storefront() {
                     {customizationConfig && (
                       <section className="mt-3 rounded-2xl border border-[#f0d991] bg-[#fff8df] p-3" aria-label="خيارات تخصيص المنتج">
                         <div className="flex items-start justify-between gap-3">
-                          <div><p className="text-xs font-black text-[#25406f]">{customizationConfig.title}</p><p className="mt-1 text-[11px] leading-relaxed text-[#806b3a]">هذه الخيارات تُحفظ مع المنتج في السلة والطلب، ويمكن اختيارها لكل لون أو قياس.</p></div>
+                          <div>
+                            <p className="text-xs font-black text-[#25406f]">{customizationConfig.title}</p>
+                            <p className="mt-1 text-[11px] leading-relaxed text-[#806b3a]">{customizationConfig.description ?? "أكمل الحقول المطلوبة قبل إضافة المنتج للسلة."}</p>
+                          </div>
                           <Tag aria-hidden className="size-4 shrink-0 text-[#d39c27]" />
                         </div>
-                        {customizationConfig.services.length > 0 && <label className="mt-3 block text-[11px] font-black text-[#25406f]">نوع التخصيص {customizationConfig.requiresService && <span className="text-[#e65f4a]">*</span>}<select value={customizationDraft.service ?? ""} onChange={(event) => setCustomizationDraft((previous) => ({ ...previous, kind: customizationConfig.kind, service: event.target.value || undefined }))} className="mt-1.5 w-full rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none focus:border-[#e65f4a]"><option value="">{customizationConfig.requiresService ? "اختر نوع التخصيص" : "بدون تخصيص إضافي"}</option>{customizationConfig.services.map((service) => <option key={service} value={service}>{service}</option>)}</select></label>}
-                        {customizationConfig.allowPackaging && <label className="mt-2.5 block text-[11px] font-black text-[#25406f]">التغليف<select value={customizationDraft.packaging ?? "standard"} onChange={(event) => setCustomizationDraft((previous) => ({ ...previous, packaging: event.target.value as "standard" | "gift" }))} className="mt-1.5 w-full rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none focus:border-[#e65f4a]"><option value="standard">تغليف عادي</option><option value="gift">تغليف هدية</option></select></label>}
-                        {customizationConfig.allowMessage && <label className="mt-2.5 block text-[11px] font-black text-[#25406f]">{customizationDraft.service?.includes("بطاقة") ? "رسالة بطاقة الإهداء" : customizationDraft.service === "اسم أو عبارة" ? "الاسم أو العبارة" : "رسالة أو تفاصيل إضافية"}{(customizationDraft.service === "اسم أو عبارة" || customizationDraft.service?.includes("بطاقة")) && <span className="text-[#e65f4a]"> *</span>}<textarea value={customizationDraft.message ?? ""} onChange={(event) => setCustomizationDraft((previous) => ({ ...previous, kind: customizationConfig.kind, message: event.target.value }))} rows={2} maxLength={300} placeholder="اكتب التفاصيل التي تريدها للفريق…" className="mt-1.5 w-full resize-none rounded-xl border border-[#ead8c8] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none placeholder:text-[#a49a8e] focus:border-[#e65f4a]" /></label>}
-                        {customizationDraft.service === "صورة أو تصميم" && <label className="mt-2.5 block text-[11px] font-black text-[#25406f]">مرجع ملف التصميم <input value={customizationDraft.uploadName ?? ""} onChange={(event) => setCustomizationDraft((previous) => ({ ...previous, kind: customizationConfig.kind, uploadName: event.target.value }))} placeholder="اسم الملف أو وصفه" className="mt-1.5 block w-full rounded-xl border border-dashed border-[#e6b94d] bg-white px-3 py-2 text-xs font-bold text-[#30383e] outline-none placeholder:text-[#a49a8e] focus:border-[#e65f4a]" /><span className="mt-1 block text-[10px] font-medium text-[#8f7b58]">سيؤكد الفريق الملف أو يستلمه عبر واتساب بعد الطلب.</span></label>}
+                        <div className="mt-3 space-y-2.5">
+                          {visibleCustomizationFields.map((field) => (
+                            <label key={field.id} className="block text-[11px] font-black text-[#25406f]">
+                              {field.label}{field.isRequired && <span className="text-[#e65f4a]"> *</span>}
+                              <CustomizationFieldControl field={field} value={customizationValues[field.fieldKey] ?? ""} onChange={(value) => updateCustomizationField(field, value)} />
+                              {field.fieldType === "FILE" && <span className="mt-1 block text-[10px] font-medium text-[#8f7b58]">أدخل اسم الملف أو مرجع التصميم؛ يرفق الملف عبر الفريق أو واتساب.</span>}
+                            </label>
+                          ))}
+                        </div>
                         {customizationValidation && <p role="alert" className="mt-2 rounded-xl bg-[#e65f4a]/10 px-2.5 py-2 text-[11px] font-bold text-[#b74435]">{customizationValidation}</p>}
                       </section>
                     )}

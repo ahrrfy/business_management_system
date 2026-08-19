@@ -32,12 +32,32 @@ describe("storefront Turnstile submission gate", () => {
 });
 
 describe("storefront customization", () => {
-  it("requires dependencies for printing products and keeps different customizations as separate cart lines", () => {
+  it("requires an active server template for printing products and keeps different customizations as separate cart lines", () => {
     expect(getStorefrontCustomizationConfig(false, "PRINT")).toBeNull();
     expect(getStorefrontCustomizationConfig(true, null)).toBeNull();
-    const config = getStorefrontCustomizationConfig(true, "PRINT");
+    expect(getStorefrontCustomizationConfig(true, "PRINT")).toBeNull();
+    const template = {
+      id: 10,
+      kind: "PRINT" as const,
+      title: "خصّص طلبك",
+      description: "أكمل البيانات",
+      fields: [{
+        id: 1,
+        fieldKey: "service",
+        label: "نوع التنفيذ",
+        fieldType: "SELECT" as const,
+        isRequired: true,
+        sortOrder: 10,
+        maxLength: null,
+        options: [{ value: "text", label: "اسم أو عبارة", priceDelta: "0" }],
+        dependency: null,
+        priceDelta: "0",
+      }],
+    };
+    const config = getStorefrontCustomizationConfig(true, "PRINT", template);
     expect(config?.kind).toBe("PRINT");
-    expect(config?.requiresService).toBe(true);
+    expect(config?.fields[0]?.fieldKey).toBe("service");
+    expect(config?.fields[0]?.isRequired).toBe(true);
     const base = new Map<string, CartLine>();
     const first = addStorefrontCartLine(base, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", customization: { kind: "PRINT", service: "اسم أو عبارة", message: "سارة" } }, "2500");
     const second = addStorefrontCartLine(first, { productUnitId: 21, productId: 9, productName: "دعوة", imageUrl: null, unitName: "قطعة", customization: { kind: "PRINT", service: "اسم أو عبارة", message: "ليان" } }, "2500");

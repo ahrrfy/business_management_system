@@ -21,6 +21,11 @@ import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
 import { canSeeCostForUser, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../shared/priceSanity";
+import {
+  getProductCustomizationTemplate,
+  saveProductCustomizationTemplate,
+  setProductCustomizationTemplateActive,
+} from "../services/productCustomizationService";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
 
@@ -55,6 +60,33 @@ function redactPosCostOne<T extends { costPriceBase?: string | null }>(row: T | 
 }
 
 const priceSchema = z.object({ priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]), price: z.string() });
+const customizationOptionSchema = z.object({ value: z.string().min(1).max(120), label: z.string().min(1).max(160), priceDelta: z.string().max(32).optional() });
+const customizationDependencySchema = z.object({
+  fieldKey: z.string().min(1).max(80),
+  operator: z.enum(["equals", "notEquals"]),
+  value: z.union([z.string().min(1).max(120), z.array(z.string().min(1).max(120)).min(1).max(50)]),
+});
+const customizationFieldSchema = z.object({
+  id: z.number().int().positive().optional(),
+  fieldKey: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{1,79}$/),
+  label: z.string().min(1).max(160),
+  fieldType: z.enum(["TEXT", "TEXTAREA", "SELECT", "FILE", "NUMBER", "SWATCH"]),
+  isRequired: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).max(10_000).optional(),
+  maxLength: z.number().int().min(1).max(10_000).nullish(),
+  options: z.array(customizationOptionSchema).max(100).optional(),
+  dependency: customizationDependencySchema.nullish(),
+  priceDelta: z.string().max(32).optional(),
+  isActive: z.boolean().optional(),
+});
+const customizationTemplateSchema = z.object({
+  productId: z.number().int().positive(),
+  kind: z.enum(["PRINT", "GIFT", "GENERAL"]),
+  title: z.string().min(1).max(160),
+  description: z.string().max(2000).nullish(),
+  isActive: z.boolean().optional(),
+  fields: z.array(customizationFieldSchema).max(50),
+});
 const barcodeAliasSchema = z.object({
   barcode: z.string().min(1).max(64),
   note: z.string().max(255).optional().nullable(),
@@ -553,6 +585,47 @@ export const catalogRouter = router({
         },
       });
       return res;
+    }),
+
+  /** قالب التخصيص المنظم لصفحة إدارة المنتج — يقرأه المدير فقط. */
+  customizationTemplate: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => getProductCustomizationTemplate(input.productId)),
+
+  /** حفظ قالب التخصيص وحقوله وتبعياته بشكل ذري. */
+  saveCustomizationTemplate: productsManagerProcedure
+    .input(customizationTemplateSchema)
+    .mutation(async ({ input, ctx }) => {
+      const result = await saveProductCustomizationTemplate(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "product.customizationTemplate.save",
+        entityType: "productCustomizationTemplate",
+        entityId: result.id,
+        newValue: { productId: input.productId, kind: input.kind, fieldCount: input.fields.length },
+      });
+      return result;
+    }),
+
+  /** إيقاف/تفعيل قالب التخصيص دون حذف تاريخه. */
+  setCustomizationTemplateActive: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), isActive: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const result = await setProductCustomizationTemplateActive(input.productId, input.isActive, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: input.isActive ? "product.customizationTemplate.activate" : "product.customizationTemplate.deactivate",
+        entityType: "productCustomizationTemplate",
+        entityId: input.productId,
+        newValue: { isActive: input.isActive },
+      });
+      return result;
     }),
 
   // product-variants: قراءة منتج بكامل متغيّراته للتعديل (يكشف costPrice ⇒ مدير فأعلى).
