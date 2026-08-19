@@ -12,9 +12,16 @@
  * يعتمد على trpc.auth.me — يُستخدم داخل <Protected> الذي ضمن وجود جلسة،
  * فلا حاجة للتعامل مع حالة "بلا مستخدم" هنا.
  */
+import {
+  getOfflineUnlockedProfile,
+  isOfflineUnlocked,
+  subscribeOfflineUnlock,
+} from "@/lib/offline/pinLock";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { trpc } from "@/lib/trpc";
 import { moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Lock } from "lucide-react";
+import { useSyncExternalStore } from "react";
 
 type Props = {
   /** الأدوار المسموح لها بالوصول. لا تقبل قائمة فارغة. */
@@ -26,14 +33,35 @@ type Props = {
   module?: string;
   /** المستوى الأدنى المطلوب عند تمرير module (الافتراضي READ). */
   level?: AccessLevel;
+  /** لا يمرر إلا من بوابة PIN+مطابقة الهوية لمسار Studio البارد. */
+  localOfflineActor?: { userId: number; role: string } | null;
   children: React.ReactNode;
 };
 
-export function RequireRole({ roles, module, level, children }: Props) {
-  const me = trpc.auth.me.useQuery();
+export function RequireRole({
+  roles,
+  module,
+  level,
+  localOfflineActor,
+  children,
+}: Props) {
+  const connectivity = useConnectivity();
+  const unlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const offline =
+    isDisconnected(connectivity) ||
+    (typeof navigator !== "undefined" && !navigator.onLine);
+  const localActor =
+    offline && unlocked && localOfflineActor !== undefined
+      ? localOfflineActor
+      : undefined;
+  const me = trpc.auth.me.useQuery(undefined, { enabled: localActor === undefined });
 
   // أثناء التحميل: لا نكشف عن المحتوى — تجربة هادئة بلا وميض.
-  if (me.isLoading) {
+  if (localActor === undefined && me.isLoading) {
     return (
       <div className="min-h-[40vh] flex items-center justify-center text-muted-foreground">
         جارٍ التحقّق من الصلاحيات…
@@ -41,7 +69,7 @@ export function RequireRole({ roles, module, level, children }: Props) {
     );
   }
 
-  const role = me.data?.role as RoleKey | undefined;
+  const role = (localActor?.role ?? me.data?.role) as RoleKey | undefined;
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   const allowed = !!role && (module
     ? moduleAccessAllowed(role, override, module, level ?? "READ", roles)

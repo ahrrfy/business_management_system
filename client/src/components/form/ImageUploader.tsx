@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { Camera, ImagePlus, Trash2, WandSparkles } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
 /**
@@ -202,15 +203,18 @@ export function ImageUploader({
   onEditImage,
   activeEditIds,
 }: ImageUploaderProps) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string>("");
+  const [replaceId, setReplaceId] = useState<string | null>(null);
 
   const intake = useCallback(
-    async (files: File[]) => {
+    async (files: File[], replacingId: string | null = null) => {
       setError("");
       if (!files.length) return;
-      const remaining = Math.max(0, maxItems - value.length);
+      const retained = replacingId ? value.filter((item) => item.id !== replacingId) : value;
+      const remaining = Math.max(0, maxItems - retained.length);
       if (remaining <= 0) {
         setError(`بلغت الحد الأقصى (${maxItems} صور).`);
         return;
@@ -236,7 +240,7 @@ export function ImageUploader({
           sizeKB,
         });
       }
-      const merged = [...value, ...out];
+      const merged = [...retained, ...out];
       // اضبط الرئيسية: إن كانت أوّل إضافة، الأولى = رئيسية.
       if (singlePrimary && !merged.some((m) => m.isPrimary) && merged[0]) {
         merged[0].isPrimary = true;
@@ -259,6 +263,11 @@ export function ImageUploader({
     onChange(next);
   }
 
+  function openRearCamera(id?: string) {
+    setReplaceId(id ?? null);
+    cameraInputRef.current?.click();
+  }
+
   return (
     <div className={cn("space-y-2", className)}>
       <div
@@ -270,13 +279,13 @@ export function ImageUploader({
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
-          intake(Array.from(e.dataTransfer.files));
+          void intake(Array.from(e.dataTransfer.files));
         }}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => galleryInputRef.current?.click()}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            inputRef.current?.click();
+            galleryInputRef.current?.click();
           }
         }}
         className={cn(
@@ -292,64 +301,85 @@ export function ImageUploader({
           {hint || `PNG · JPG · WEBP — حتى ${maxItems} صور، ${maxSizeMB}MB لكل صورة (تُضغط تلقائياً قبل الحفظ)`}
         </div>
         <input
-          ref={inputRef}
+          ref={galleryInputRef}
           type="file"
           accept={accept}
           multiple
           className="hidden"
-          onChange={(e) => intake(Array.from(e.target.files || []))}
+          onChange={(e) => void intake(Array.from(e.target.files || []))}
         />
       </div>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <Button type="button" variant="outline" className="min-h-11" onClick={() => openRearCamera()}>
+          <Camera aria-hidden className="size-4" /> التقاط بالكاميرا الخلفية
+        </Button>
+        <Button type="button" variant="outline" className="min-h-11" onClick={() => galleryInputRef.current?.click()}>
+          <ImagePlus aria-hidden className="size-4" /> اختيار من المعرض
+        </Button>
+      </div>
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept={accept}
+        capture="environment"
+        className="sr-only"
+        onChange={(e) => {
+          void intake(Array.from(e.target.files || []), replaceId);
+          setReplaceId(null);
+          e.currentTarget.value = "";
+        }}
+      />
 
       {error && <p className="text-xs text-destructive">{error}</p>}
 
       {value.length > 0 && (
-        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+        <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:grid-cols-4 md:grid-cols-5">
           {value.map((img) => (
             <div
               key={img.id}
               className={cn(
-                "group relative aspect-square rounded-md overflow-hidden border bg-card",
+                "overflow-hidden rounded-md border bg-card",
                 activeEditIds?.has(img.id)
                   ? "ring-2 ring-violet-500"
                   : img.isPrimary && singlePrimary && "ring-2 ring-primary"
               )}
             >
-              <img src={img.dataUrl || img.url} alt={img.name || "صورة"} className="w-full h-full object-cover" />
-              {img.isPrimary && singlePrimary && (
-                <div className="absolute top-1 right-1 bg-primary text-primary-foreground text-[10px] font-medium px-1.5 py-0.5 rounded">
-                  رئيسية
-                </div>
-              )}
-              {activeEditIds?.has(img.id) && (
-                <div className="absolute top-1 left-1 bg-violet-600 text-white text-[10px] font-medium px-1.5 py-0.5 rounded">
-                  قيد التعديل
-                </div>
-              )}
-              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1 p-1">
+              <div className="relative aspect-square bg-muted/30">
+                <img src={img.dataUrl || img.url} alt={img.name || "صورة"} className="size-full object-cover" />
+                {img.isPrimary && singlePrimary && (
+                  <div className="absolute top-1 right-1 rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
+                    رئيسية
+                  </div>
+                )}
+                {activeEditIds?.has(img.id) && (
+                  <div className="absolute top-1 left-1 rounded bg-violet-600 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                    قيد التعديل
+                  </div>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-px border-t bg-border">
                 {onEditImage && (
                   <Button
                     type="button"
-                    size="sm"
                     variant="secondary"
-                    className="h-6 text-[10px] px-2 bg-violet-600 text-white hover:bg-violet-700"
-                    onClick={(e) => {
-                      e.stopPropagation();
+                    className="min-h-11 rounded-none bg-card px-2 text-xs"
+                    onClick={() => {
                       onEditImage(img.id);
                     }}
-                    title="تعديل هذه الصورة في الاستوديو"
                   >
-                    استوديو
+                    <WandSparkles aria-hidden className="size-3.5" /> معالجة في الاستوديو
                   </Button>
                 )}
+                <Button type="button" variant="outline" className="min-h-11 rounded-none border-0 bg-card px-2 text-xs" onClick={() => openRearCamera(img.id)}>
+                  <Camera aria-hidden className="size-3.5" /> إعادة الالتقاط
+                </Button>
                 {singlePrimary && !img.isPrimary && (
                   <Button
                     type="button"
-                    size="sm"
                     variant="secondary"
-                    className="h-6 text-[10px] px-2"
-                    onClick={(e) => {
-                      e.stopPropagation();
+                    className="min-h-11 rounded-none bg-card px-2 text-xs"
+                    onClick={() => {
                       makePrimary(img.id);
                     }}
                   >
@@ -358,15 +388,13 @@ export function ImageUploader({
                 )}
                 <Button
                   type="button"
-                  size="sm"
                   variant="destructive"
-                  className="h-6 text-[10px] px-2"
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  className="min-h-11 rounded-none px-2 text-xs"
+                  onClick={() => {
                     remove(img.id);
                   }}
                 >
-                  حذف
+                  <Trash2 aria-hidden className="size-3.5" /> إزالة
                 </Button>
               </div>
             </div>

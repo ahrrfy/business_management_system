@@ -1457,6 +1457,20 @@
       "when": 1788052260000,
       "tag": "0209_product_studio_sod",
       "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "5",
+      "when": 1788052261000,
+      "tag": "0210_product_studio_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "5",
+      "when": 1788052262000,
+      "tag": "0211_product_studio_campaigns",
+      "breakpoints": true
     }
   ]
 }
