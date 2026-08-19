@@ -72,6 +72,10 @@ export interface StorefrontProduct {
   /** متوفّر: رصيد الفرع بالأساس يغطي معامل وحدة البيع — نعم/لا فقط، لا نكشف الرصيد الكامل. */
   inStock: boolean;
   imageUrl: string | null;
+  /** المنتج معلّم صراحةً من النظام كقابل للتخصيص؛ لا يُستنتج من الاسم أو الفئة. */
+  isCustomizable: boolean;
+  /** نوع التخصيص الذي حدده الخادم؛ null للمنتجات العادية. */
+  customizationKind: "PRINT" | "GIFT" | null;
   /** بكج (مجموعة مُجمّعة) — يُعرَض بشارة «بكج» ومحتوياته في التفاصيل. */
   isBundle: boolean;
   /**
@@ -163,6 +167,8 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       price: productPrices.price,
       imageId: productImages.id,
       imageUrl: productImages.url,
+      productType: products.productType,
+      isCustomizable: products.isCustomizable,
       isBundle: products.isBundle,
     })
     .from(productUnits)
@@ -289,7 +295,7 @@ function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
   variantName: string | null; color: string | null; colorHex: string | null; size: string | null;
   category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
-  imageId?: number | null; imageUrl: string | null; isBundle: boolean | null;
+  imageId?: number | null; imageUrl: string | null; productType: string | null; isCustomizable: boolean | null; isBundle: boolean | null;
   stockQty: number; reservedQty: number; availableQty: number; hasStockRow: boolean;
 }): StorefrontProduct {
   const factor = Math.max(1, Number(r.conversionFactor) || 1);
@@ -308,6 +314,8 @@ function toStorefront(r: {
     promotionName: null,
     inStock: availableUnits > 0,
     imageUrl: toPublicProductImage(r.imageId, r.imageUrl ?? null),
+    isCustomizable: r.isCustomizable === true,
+    customizationKind: r.isCustomizable === true ? (r.productType === "PRINT_SERVICE" ? "PRINT" : "GIFT") : null,
     isBundle: !!r.isBundle,
     stockLeft: availableUnits > 0 && availableUnits <= LOW_STOCK_THRESHOLD ? availableUnits : null,
     soldCount: 0,

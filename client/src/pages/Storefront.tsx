@@ -102,12 +102,11 @@ export type StorefrontCustomizationConfig = {
 };
 
 export function getStorefrontCustomizationConfig(
-  productName: string,
-  category?: string | null,
+  isCustomizable: boolean,
+  customizationKind: "PRINT" | "GIFT" | null | undefined,
 ): StorefrontCustomizationConfig | null {
-  const source = `${productName} ${category ?? ""}`.trim();
-  if (!/(مخصص|تخصيص|طباعة|مطبوع|دعوة|بطاقة|ستيكر|ملصق|بنر|اعلان|نقش|حفر|تغليف|هدية)/i.test(source)) return null;
-  const isPrint = /(طباعة|مطبوع|دعوة|بطاقة|ستيكر|ملصق|بنر|اعلان|نقش|حفر)/i.test(source);
+  if (!isCustomizable || !customizationKind) return null;
+  const isPrint = customizationKind === "PRINT";
   return isPrint
     ? {
         kind: "PRINT",
@@ -1092,7 +1091,7 @@ export default function Storefront() {
     };
   }, [detailQ.data, detailVariant, selectedStoreUnitId]);
   const customizationConfig = useMemo(
-    () => detailQ.data ? getStorefrontCustomizationConfig(detailQ.data.productName, detailQ.data.category) : null,
+    () => detailQ.data ? getStorefrontCustomizationConfig(detailQ.data.isCustomizable === true, detailQ.data.customizationKind) : null,
     [detailQ.data],
   );
   const customizationValidation = useMemo(() => {

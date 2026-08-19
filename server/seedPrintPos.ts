@@ -122,6 +122,9 @@ async function main() {
     let productUnitId: number;
     const exVar = (await db.select().from(productVariants).where(eq(productVariants.sku, s.sku)).limit(1))[0];
     if (exVar) {
+      // خدمات الطباعة/الاستنساخ تحتاج مدخلات تنفيذ أو ملفاً قبل الطلب؛ ثبّت العلم صراحةً
+      // أيضاً للبيانات القديمة التي أُنشئت قبل إضافة isCustomizable.
+      await db.update(products).set({ isCustomizable: true }).where(eq(products.id, Number(exVar.productId)));
       variantId = Number(exVar.id);
       const exUnit = (await db.select().from(productUnits).where(eq(productUnits.variantId, variantId)).limit(1))[0];
       if (exUnit) {
@@ -133,7 +136,7 @@ async function main() {
         await db.insert(productPrices).values({ productUnitId, priceTier: "RETAIL", price: s.price });
       }
     } else {
-      const pr = await db.insert(products).values({ name: s.name, productType: PRINT_SERVICE_TYPE, categoryId: s.categoryId });
+      const pr = await db.insert(products).values({ name: s.name, productType: PRINT_SERVICE_TYPE, categoryId: s.categoryId, isCustomizable: true });
       const productId = insertId(pr);
       const vr = await db.insert(productVariants).values({ productId, sku: s.sku, costPrice: "0" });
       variantId = insertId(vr);

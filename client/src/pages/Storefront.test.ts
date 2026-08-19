@@ -33,7 +33,9 @@ describe("storefront Turnstile submission gate", () => {
 
 describe("storefront customization", () => {
   it("requires dependencies for printing products and keeps different customizations as separate cart lines", () => {
-    const config = getStorefrontCustomizationConfig("طباعة دعوة زفاف مخصصة", "المطبوعات التجارية");
+    expect(getStorefrontCustomizationConfig(false, "PRINT")).toBeNull();
+    expect(getStorefrontCustomizationConfig(true, null)).toBeNull();
+    const config = getStorefrontCustomizationConfig(true, "PRINT");
     expect(config?.kind).toBe("PRINT");
     expect(config?.requiresService).toBe(true);
     const base = new Map<string, CartLine>();
