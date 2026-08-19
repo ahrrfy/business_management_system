@@ -1,4 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { purgeAllStudioDrafts } from "@/lib/productStudio/studioDrafts";
 
 /**
  * A browser tab can authenticate several employees over its lifetime. Query keys
@@ -10,4 +11,6 @@ export async function resetSessionQueryCache(
 ): Promise<void> {
   await queryClient.cancelQueries();
   queryClient.removeQueries();
+  // لا تبقى مسودة نص/صورة قابلة للاستعادة بعد تبدّل الموظف أو تسجيل الخروج.
+  await purgeAllStudioDrafts().catch(() => undefined);
 }
