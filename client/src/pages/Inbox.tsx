@@ -1,3 +1,4 @@
+import { receptionChannelLabel } from "@shared/receptionChannel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,14 +49,15 @@ import { Link, useLocation } from "wouter";
 type Conv = RouterOutputs["conversations"]["list"]["rows"][number];
 type Msg = RouterOutputs["conversations"]["messages"][number];
 
+// التسمية من `@shared/receptionChannel` (المصدر الحاكم) — واللون/الأيقونة عرضٌ خاصٌّ بصندوق الوارد.
 const CHANNEL_META: Record<string, { label: string; Icon: typeof MessageSquare; cls: string }> = {
-  WHATSAPP: { label: "واتساب", Icon: MessageSquare, cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
-  INSTAGRAM: { label: "انستغرام", Icon: User, cls: "bg-pink-500/10 text-pink-700 dark:text-pink-400" },
-  TIKTOK: { label: "تيك توك", Icon: User, cls: "bg-muted text-muted-foreground" },
-  STORE: { label: "المتجر", Icon: ShoppingBag, cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
-  PHONE: { label: "اتصال", Icon: Phone, cls: "bg-amber-500/10 text-amber-700 dark:text-amber-400" },
-  WALK_IN: { label: "حضوري", Icon: Store, cls: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
-  OTHER: { label: "أخرى", Icon: MessageSquare, cls: "bg-muted text-muted-foreground" },
+  WHATSAPP: { label: receptionChannelLabel("WHATSAPP"), Icon: MessageSquare, cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  INSTAGRAM: { label: receptionChannelLabel("INSTAGRAM"), Icon: User, cls: "bg-pink-500/10 text-pink-700 dark:text-pink-400" },
+  TIKTOK: { label: receptionChannelLabel("TIKTOK"), Icon: User, cls: "bg-muted text-muted-foreground" },
+  STORE: { label: receptionChannelLabel("STORE"), Icon: ShoppingBag, cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
+  PHONE: { label: receptionChannelLabel("PHONE"), Icon: Phone, cls: "bg-amber-500/10 text-amber-700 dark:text-amber-400" },
+  WALK_IN: { label: receptionChannelLabel("WALK_IN"), Icon: Store, cls: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
+  OTHER: { label: receptionChannelLabel("OTHER"), Icon: MessageSquare, cls: "bg-muted text-muted-foreground" },
 };
 
 /** مفاتيح القنوات بترتيب العرض — تقود فلتر القناة وقائمة «محادثة جديدة» معاً. */

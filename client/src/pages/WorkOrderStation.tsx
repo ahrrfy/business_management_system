@@ -1,3 +1,5 @@
+import { ChannelMark } from "@/components/ChannelBadge";
+import { receptionChannelLabel } from "@shared/receptionChannel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,14 +32,6 @@ import { Link } from "wouter";
 
 type WO = RouterOutputs["workOrders"]["list"][number];
 
-const CHANNELS: Record<string, { label: string; icon: string }> = {
-  WHATSAPP: { label: "واتساب", icon: "💬" },
-  INSTAGRAM: { label: "انستغرام", icon: "📷" },
-  TIKTOK: { label: "تيك توك", icon: "🎵" },
-  PHONE: { label: "اتصال", icon: "📞" },
-  WALK_IN: { label: "عميل نقدي", icon: "🏪" },
-  OTHER: { label: "أخرى", icon: "✳️" },
-};
 const PRIORITIES: Record<string, { label: string; cls: string }> = {
   URGENT: { label: "عاجل", cls: "badge-stock-out border-transparent" },
   NORMAL: { label: "عادي", cls: "badge-status-pending border-transparent" },
@@ -58,14 +52,6 @@ const STAGES: { key: string; label: string }[] = [
   { key: "READY", label: "جاهز للتسليم" },
 ];
 const STAGE_INDEX: Record<string, number> = { RECEIVED: 0, IN_PROGRESS: 1, READY: 2, DELIVERED: 3 };
-
-function ChannelMark({ channel, className = "size-4" }: { channel: string | null | undefined; className?: string }) {
-  if (channel === "WHATSAPP") {
-    return <WhatsAppIcon className={`${className} text-[var(--brand-whatsapp)]`} />;
-  }
-  const ch = CHANNELS[channel ?? "WALK_IN"] ?? CHANNELS.OTHER;
-  return <span role="img" aria-label={ch.label}>{ch.icon}</span>;
-}
 
 function pad2(n: number) { return String(n).padStart(2, "0"); }
 function fmtElapsed(ms: number): string {
@@ -135,7 +121,7 @@ function parseCustomSpecs(text: string | null | undefined): { size: string | nul
 }
 
 function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClick: () => void; mine?: boolean }) {
-  const ch = CHANNELS[o.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+  const chLabel = receptionChannelLabel(o.receptionChannel);
   const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   return (
     <button
@@ -149,7 +135,7 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
       </div>
       <div className="font-medium text-sm mt-0.5 line-clamp-1">{o.title}</div>
       <div className="flex items-center justify-between mt-1 text-[11px] text-muted-foreground">
-        <span title={ch.label} className="inline-flex min-w-0 items-center gap-1"><ChannelMark channel={o.receptionChannel} className="size-3.5" /> <span className="truncate">{o.customerName ?? "عميل نقدي"}</span></span>
+        <span title={chLabel} className="inline-flex min-w-0 items-center gap-1"><ChannelMark channel={o.receptionChannel} className="size-3.5" /> <span className="truncate">{o.customerName ?? "عميل نقدي"}</span></span>
         {mine ? <span>{STATUS_LABEL[o.status]}</span> : <span className="text-stock-low">سحب ←</span>}
       </div>
     </button>
@@ -220,7 +206,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
       : <div className="grid place-items-center h-full text-muted-foreground">اختر أمراً من القائمة.</div>;
   }
 
-  const ch = CHANNELS[d.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+  const chLabel = receptionChannelLabel(d.receptionChannel);
   const pri = PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const cur = STAGE_INDEX[d.status] ?? 0;
   const remainingDue = positiveDiff(d.salePrice, d.deposit ?? 0);
@@ -252,7 +238,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
           <h2 className="flex items-center gap-2 text-xl font-bold"><ChannelMark channel={d.receptionChannel} className="size-5" /> {d.title}</h2>
           <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
             <Badge variant="outline" className={pri.cls}>{pri.label}</Badge>
-            <span>{ch.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</span>
+            <span>{chLabel}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</span>
             <span>· {d.customerName ?? "عميل نقدي"}</span>
           </div>
         </div>
@@ -303,7 +289,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
                 </div>
                 <div className="rounded-lg border bg-muted/20 p-3">
                   <div className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"><ChannelMark channel={d.receptionChannel} className="size-3.5" /> قناة الاستلام</div>
-                  <div className="mt-1 font-bold">{ch.label}</div>
+                  <div className="mt-1 font-bold">{chLabel}</div>
                   {d.channelHandle && <div className="mt-0.5 text-[11px] text-muted-foreground" dir="ltr">{d.channelHandle}</div>}
                 </div>
                 <div className="rounded-lg border bg-muted/20 p-3">
@@ -436,7 +422,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
               <div>
                 <div className="font-bold">{d.customerName ?? "العميل"}</div>
                 <div className="mt-0.5 text-xs text-muted-foreground">
-                  القناة الأصلية: <span className="inline-flex items-center gap-1"><ChannelMark channel={d.receptionChannel} className="size-3.5" /> {ch.label}</span>
+                  القناة الأصلية: <span className="inline-flex items-center gap-1"><ChannelMark channel={d.receptionChannel} className="size-3.5" /> {chLabel}</span>
                   {d.channelHandle ? <span dir="ltr"> · {d.channelHandle}</span> : null}
                 </div>
               </div>

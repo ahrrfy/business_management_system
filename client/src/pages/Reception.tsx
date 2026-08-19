@@ -1,3 +1,5 @@
+import { ChannelMark } from "@/components/ChannelBadge";
+import { receptionChannelOptions } from "@shared/receptionChannel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -2281,13 +2283,7 @@ export default function Reception() {
               <h2 id="reception-channel-title" className="text-xs font-black">قناة وصول الطلب</h2>
             </div>
             <div className="grid grid-cols-5 gap-1">
-              {([
-                { value: "WALK_IN", label: "مباشر", Icon: Store },
-                { value: "WHATSAPP", label: "واتساب", Icon: MessageCircle },
-                { value: "INSTAGRAM", label: "إنستغرام", Icon: Instagram },
-                { value: "TIKTOK", label: "تيك توك", Icon: Music2 },
-                { value: "PHONE", label: "اتصال", Icon: Phone },
-              ] as const).map(({ value, label, Icon }) => (
+              {receptionChannelOptions(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE"]).map(({ value, label }) => (
                 <button
                   key={value}
                   type="button"
@@ -2303,7 +2299,7 @@ export default function Reception() {
                       : "bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground",
                   )}
                 >
-                  <Icon aria-hidden className="size-3.5" />
+                  <ChannelMark channel={value} />
                   <span className="truncate">{label}</span>
                 </button>
               ))}

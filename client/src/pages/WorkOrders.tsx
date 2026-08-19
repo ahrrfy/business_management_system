@@ -22,6 +22,8 @@ import { RowActions, type RowAction } from "@/components/list";
 import { DataTable } from "@/components/data-table/DataTable";
 import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
+import { ChannelBadge, ChannelMark } from "@/components/ChannelBadge";
+import { WORK_ORDER_CHANNELS, receptionChannelLabel, receptionChannelOptions } from "@shared/receptionChannel";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -96,26 +98,11 @@ const COLUMNS: { key: ColKey; label: string; hint: string; hue: number; status: 
   { key: "DELIVERED", label: "مُغلق/مُرسل", hint: "استلام مباشر أو خرج للتوصيل — يُعرض الأحدث", hue: 155, status: "DELIVERED", match: (o) => o.status === "DELIVERED" },
 ];
 
-const CHANNELS: Record<string, { label: string; icon: string }> = {
-  WHATSAPP: { label: "واتساب", icon: "💬" },
-  INSTAGRAM: { label: "انستغرام", icon: "📷" },
-  TIKTOK: { label: "تيك توك", icon: "🎵" },
-  PHONE: { label: "اتصال", icon: "📞" },
-  WALK_IN: { label: "عميل نقدي", icon: "🏪" },
-  OTHER: { label: "أخرى", icon: "✳️" },
-};
 const PRIORITIES: Record<string, { label: string; cls: string; rank: number }> = {
   URGENT: { label: "عاجل", cls: "wob-urgent", rank: 3 },
   NORMAL: { label: "عادي", cls: "wob-normal", rank: 2 },
   LOW: { label: "منخفض", cls: "wob-low", rank: 1 },
 };
-function WorkOrderChannelMark({ channel, className = "size-3.5" }: { channel: string | null | undefined; className?: string }) {
-  if (channel === "WHATSAPP") {
-    return <WhatsAppIcon className={`${className} text-[var(--brand-whatsapp)]`} />;
-  }
-  const ch = CHANNELS[channel ?? "WALK_IN"] ?? CHANNELS.OTHER;
-  return <span aria-hidden>{ch.icon}</span>;
-}
 const PAYMENT_METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي",
   CARD: "بطاقة",
@@ -266,7 +253,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
 }) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
-  const ch = CHANNELS[o.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+  const chLabel = receptionChannelLabel(o.receptionChannel);
   const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
   const hue = STATUS_HUE[o.status] ?? 255;
   const late = di.state === "late";
@@ -289,9 +276,9 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
           </span>
         )}
         {/* شارة قَناة المَصدر — مَوضوعة في رأس البطاقة per README §5.2 (لإبراز جانب المبيعات). */}
-        <span className="wob-ch-chip" title={`القناة: ${ch.label}`}>
-          <WorkOrderChannelMark channel={o.receptionChannel} />
-          <span className="wob-ch-chip-l">{ch.label}</span>
+        <span className="wob-ch-chip" title={`القناة: ${chLabel}`}>
+          <ChannelMark channel={o.receptionChannel} />
+          <span className="wob-ch-chip-l">{chLabel}</span>
         </span>
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
         {!ghost && (
@@ -640,7 +627,7 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
                 <div className="space-y-1">
                   <Label>قناة الاستلام</Label>
                   <select className={dlgInput} value={form.receptionChannel} onChange={(e) => setForm({ ...form, receptionChannel: e.target.value as EditForm["receptionChannel"] })}>
-                    {Object.entries(CHANNELS).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                    {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                   </select>
                 </div>
               </div>
@@ -697,7 +684,6 @@ function Drawer({
 
   const d = detail.data ?? null;
   const di = d ? dueInfo(d) : null;
-  const ch = d ? (CHANNELS[d.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER) : null;
   const pri = d ? (PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL) : null;
   const next = d ? NEXT[d.status] : undefined;
   const hue = d ? (STATUS_HUE[d.status] ?? 255) : 255;
@@ -754,7 +740,7 @@ function Drawer({
                     </div>
                   </div>
                   {d.customerPhone && <div><div className="wob-k">هاتف العميل</div><div className="wob-v" dir="ltr">{d.customerPhone}</div></div>}
-                  <div><div className="wob-k">قناة الاستلام</div><div className="wob-v inline-flex items-center gap-1"><WorkOrderChannelMark channel={d.receptionChannel} /> {ch?.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</div></div>
+                  <div><div className="wob-k">قناة الاستلام</div><div className="wob-v inline-flex items-center gap-1"><ChannelBadge channel={d.receptionChannel} handle={d.channelHandle} /></div></div>
                   <div><div className="wob-k">الكمية</div><div className="wob-v">{fmtInt(d.quantity)}</div></div>
                   <div><div className="wob-k">سعر البيع</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.salePrice)} د.ع</div></div>
                   {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">العربون</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.deposit)} د.ع</div></div>}
@@ -1027,8 +1013,7 @@ function OrdersTable({
       id: "channel",
       header: "القناة",
       cell: ({ row }) => {
-        const ch = CHANNELS[row.original.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
-        return <span title={ch.label}>{ch.icon} {ch.label}</span>;
+        return <ChannelBadge channel={row.original.receptionChannel} />;
       },
     },
     {
@@ -1451,7 +1436,7 @@ export default function WorkOrders() {
                 { key: "salePrice", header: "السعر", map: (r) => Number(r.salePrice ?? 0) },
                 { key: "dueDate", header: "الاستحقاق", map: (r) => (r.dueDate ? String(r.dueDate).slice(0, 10) : "") },
                 { key: "priority", header: "الأولوية", map: (r) => PRIORITIES[r.priority ?? "NORMAL"]?.label ?? "" },
-                { key: "receptionChannel", header: "القناة", map: (r) => CHANNELS[r.receptionChannel ?? "WALK_IN"]?.label ?? "" },
+                { key: "receptionChannel", header: "القناة", map: (r) => receptionChannelLabel(r.receptionChannel) },
                 { key: "assigneeName", header: "المسؤول", map: (r) => r.assigneeName ?? "" },
                 { key: "status", header: "الحالة", map: (r) => workOrderStatusLabel(r) },
               ],
@@ -1517,7 +1502,7 @@ export default function WorkOrders() {
         </AppSelect>
         <AppSelect value={f.ch} onValueChange={(v) => setF({ ch: v })} className="w-auto min-w-32" aria-label="فلتر القناة">
           <option value="all">كل القنوات</option>
-          {Object.entries(CHANNELS).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+          {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </AppSelect>
         {isManager && (assignableStaff.data?.length ?? 0) > 0 && (
           <AppSelect value={f.tech} onValueChange={(v) => setF({ tech: v })} className="w-auto min-w-32" aria-label="فلتر الفنّي">

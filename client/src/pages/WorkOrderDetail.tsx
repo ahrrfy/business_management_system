@@ -1,3 +1,4 @@
+import { ChannelBadge } from "@/components/ChannelBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -43,10 +44,6 @@ const STATUS_CLS: Record<string, string> = {
 };
 
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
-const CHANNEL_LABEL: Record<string, string> = {
-  WHATSAPP: "واتساب", INSTAGRAM: "انستغرام", TIKTOK: "تيك توك",
-  PHONE: "اتصال هاتفي", WALK_IN: "عميل نقدي", OTHER: "أخرى",
-};
 const PRIORITY_LABEL: Record<string, string> = { LOW: "منخفض", NORMAL: "عادي", URGENT: "عاجل" };
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
@@ -377,7 +374,7 @@ export default function WorkOrderDetail() {
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
               <Field label="الكمية">{data.quantity}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
-              <Field label="قناة الاستلام">{CHANNEL_LABEL[data.receptionChannel ?? "WALK_IN"] ?? data.receptionChannel}{data.channelHandle ? ` · ${data.channelHandle}` : ""}</Field>
+              <Field label="قناة الاستلام"><ChannelBadge channel={data.receptionChannel} handle={data.channelHandle} /></Field>
               <Field label="الأولوية">{PRIORITY_LABEL[data.priority ?? "NORMAL"] ?? data.priority}</Field>
               <Field label="المنفّذ المسؤول">{data.assigneeName ?? "غير مُسنَد"}</Field>
               <Field label="تاريخ الإنشاء">{fmtDateTime(data.createdAt)}</Field>

@@ -1306,6 +1306,16 @@ export default function POS() {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
       return;
     }
+    // الحدّ قبل الوعد (١٩/٨): الشاشة كانت تفحص **وجود** العميل وحده ثمّ ترسل،
+    // فيردّ الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلة والزبون واقفٌ أمامه. وحدُّ
+    // صفرٍ هو **الافتراضي** لكلّ عميلٍ يُنشأ من الكاشير ⤇ الحالة الغالبة لا النادرة.
+    if (isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
+        && selectedCustomer.creditLimit != null) {
+      notify.errBig(
+        "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
+      );
+      return;
+    }
     // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل.
     if (offline) {
       void captureOfflineSale();
@@ -2196,6 +2206,12 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
                   onCustomerChange={(id) => { setCustId(id); setShowCustPicker(false); }}
                   balance={selectedCustomer?.currentBalance ?? null}
                 />
+                {selectedCustomer != null && selectedCustomer.creditLimit != null
+                  && Number(selectedCustomer.creditLimit) === 0 && (
+                  <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700, color: C.mutedFg, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px" }}>
+                    نقديٌّ فقط — لا يقبل الآجل (حدّ ائتمانه صفر)
+                  </div>
+                )}
                 <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <label style={{ fontSize: 12, color: C.mutedFg }}>فئة السعر:</label>
