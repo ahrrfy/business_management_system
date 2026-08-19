@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq, sql } from "drizzle-orm";
 import {
+  accountingEntries,
   deliveryConsignments,
   deliveryParties,
   deliveryRemittanceLines,
@@ -305,15 +306,25 @@ export async function recordDeliveryRemittance(
       // move the amount to courier custody.  Legacy rows can still have a live
       // invoice remainder, so only that part is credited during remittance.
       //
-      // ⚠️ ١٩/٨ — الشرط الحاسم `custodyRecognizedAt`: كان الائتمان يُحسب `min(المحصَّل,
-      // متبقّي الفاتورة)` وحدَه، وهو **صحيحٌ صدفةً** ما دام التسليم يقبض COD كاملاً (فيصير
-      // المتبقّي صفراً والائتمان صفراً). لكن كشف الشركة يُجيز تحصيلاً **جزئياً**: يُسدَّد
-      // ١٢٬٠٠٠ عند التسليم فيبقى ٨٬٠٠٠ حيّاً، فيأتي التوريد ويعتمدها ⇒ الفاتورة تُسدَّد
-      // ٢٠٬٠٠٠ ولم يُقبض إلّا ١٢٬٠٠٠، وذمّةٌ حيّةٌ تُمحى بلا مال. العلامة تفصل بدقّة: عهدةٌ
-      // معترَفٌ بها ⇒ ذمّة العميل سُوّيت لحظة التسليم بما قُبض فعلاً، والتوريد **نقلُ عهدةٍ
-      // إلى نقدٍ لا تسويةُ عميلٍ ثانية** (وهو نصّ التعليق أعلاه حرفياً). والصفوف الموروثة
-      // (بلا اعتراف) تبقى على سلوكها القديم حرفياً.
-      const invoiceCredit = cn.custodyRecognizedAt != null
+      // ⚠️ ١٩/٨ — الشرط الحاسم: **هل سُوّيت ذمّةُ العميل لحظة التسليم لهذه الإرسالية؟**
+      // كان الائتمان `min(المحصَّل, متبقّي الفاتورة)` وحدَه، وهو **صحيحٌ صدفةً** ما دام
+      // التسليم يقبض COD كاملاً (فيصير المتبقّي صفراً والائتمان صفراً). لكن كشف الشركة يُجيز
+      // تحصيلاً **جزئياً**: يُسدَّد ١٢٬٠٠٠ عند التسليم فيبقى ٨٬٠٠٠ حيّاً، فيأتي التوريد
+      // ويعتمدها ⇒ الفاتورة تُسدَّد ٢٠٬٠٠٠ ولم يُقبض إلّا ١٢٬٠٠٠، وذمّةٌ حيّةٌ تُمحى بلا مال.
+      //
+      // الدليل القاطع هو **قيد التسديد المكتوب لحظة التسليم نفسه** (`PAYMENT_IN:COURIER_
+      // DELIVERY:{cn}` في courier.ts) لا `custodyRecognizedAt`: الصفوف الموروثة قد تحمل
+      // اعترافاً بالعهدة **بلا تسوية فاتورة** (نموذج ما قبل المرحلة الثانية — يحرسه اختبار
+      // receptionReviewFixes/F2)، فالعلامة تكذب عليها بينما وجودُ القيد لا يكذب أبداً.
+      // ووجودُه يعني: التوريد **نقلُ عهدةٍ إلى نقدٍ لا تسويةُ عميلٍ ثانية** (نصّ التعليق أعلاه).
+      const settledAtDelivery = (
+        await tx
+          .select({ id: accountingEntries.id })
+          .from(accountingEntries)
+          .where(eq(accountingEntries.dedupeKey, `PAYMENT_IN:COURIER_DELIVERY:${Number(cn.id)}`))
+          .limit(1)
+      ).length > 0;
+      const invoiceCredit = settledAtDelivery
         ? new Decimal(0)
         : Decimal.min(collected, Decimal.max(invRemaining, 0));
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
