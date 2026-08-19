@@ -41,6 +41,7 @@ describe("mobile studio workflow", () => {
 
     expect(page).toContain("عودة إلى المهام");
     expect(page).toContain("fixed bottom-24");
+    expect(page.match(/sticky bottom-24[^\n]*mt-16/g)).toHaveLength(2);
     expect(page).toContain("الصورة الأصلية");
     expect(page).toContain("المرشّح");
     expect(page).toContain("تكبير الصورة");

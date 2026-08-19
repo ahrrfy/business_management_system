@@ -1196,7 +1196,7 @@ export default function ProductImageStudio() {
                           تُحفظ تعديلاتك محلياً ومشفّرةً حتى 24 ساعة. الإرسال والاعتماد والرفض والنشر متوقفة إلى أن يعود الاتصال.
                         </p>
                       )}
-                      <div className="sticky bottom-24 z-20 -mx-4 flex flex-wrap gap-2 border-y bg-background/95 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:border-0 lg:bg-transparent lg:p-0">
+                      <div className="sticky bottom-24 z-20 -mx-4 mt-16 flex flex-wrap gap-2 border-y bg-background/95 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:mt-0 lg:border-0 lg:bg-transparent lg:p-0">
                         <Button
                           className="min-h-11"
                           variant="outline"
@@ -1258,7 +1258,7 @@ export default function ProductImageStudio() {
                               </div>
                               <Textarea id="studio-reject-reason" rows={2} maxLength={500} value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="ملاحظة إضافية مطلوبة للتعديل" disabled={storageActionsDisabled} />
                             </div>
-                            <div className="sticky bottom-24 z-20 -mx-4 flex flex-wrap gap-2 border-y bg-background/95 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:border-0 lg:bg-transparent lg:p-0">
+                            <div className="sticky bottom-24 z-20 -mx-4 mt-16 flex flex-wrap gap-2 border-y bg-background/95 px-4 py-3 backdrop-blur lg:static lg:mx-0 lg:mt-0 lg:border-0 lg:bg-transparent lg:p-0">
                               <Button
                                 className="min-h-11"
                                 disabled={offline || storageActionsDisabled || busy || !reviewable}
