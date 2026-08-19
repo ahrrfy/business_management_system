@@ -1142,6 +1142,8 @@ export default function WorkOrders() {
   const isManager = canCancel;
   const isOwner = me.data?.isOwner === true;
   const canCrossBranches = me.data?.role === "admin";
+  // المشرف (أدمن/مالك/مدير) نطاقُه كلُّ الفرع بحكم `scopedOwnerId=null` — فالرقاقة بلا أثرٍ له.
+  const isSupervisor = me.data?.role === "admin" || me.data?.role === "manager" || !!me.data?.isOwner;
   // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
   // فنّي المطبعة (workordersExecProcedure) يقدّم المراحل لكن التسليم/الفوترة مال ونقد (كاشير/مدير أو منح صريح).
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
@@ -1158,7 +1160,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1188,6 +1190,10 @@ export default function WorkOrders() {
     to: f.to || undefined,
     assignedTo: f.tech !== "all" ? Number(f.tech) : undefined,
     branchId: canCrossBranches && f.branch !== "all" ? Number(f.branch) : undefined,
+    // قرار المالك (١٩/٨): الشاشات التشغيلية تعرض **أوامر الفرع كلّها** افتراضياً. موظّفةٌ لا ترى
+    // طلبات زميلتها كانت تعجز عن الردّ على زبونٍ سأل عن طلبٍ استقبلته الوردية السابقة.
+    // الخادم يشترط `workorders:FULL` ويُبقي عزل الفرع حاكماً؛ ورقاقة «طلباتي» تعيد التضييق.
+    branchQueue: f.scope !== "mine",
   };
   // العلة الجوهرية سابقاً: list({limit:200}) واحدة desc(id) — «مُسلَّم» المتراكمة بلا سقف كانت تملأ
   // النافذة فيسقط عملٌ نشط من اللوحة بصمت. الحل (نمط WorkOrderStation المُصلَح): استعلامان منفصلان —
@@ -1392,7 +1398,7 @@ export default function WorkOrders() {
     cancel.mutate({ workOrderId: d.id, clientRequestId });
   }
 
-  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all";
+  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || (f.scope || "branch") !== "branch";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
 
@@ -1473,6 +1479,26 @@ export default function WorkOrders() {
       <Stats counts={serverCounts} />
 
       <div className="wob-toolbar">
+        {/* رقاقة النطاق (قرار المالك ١٩/٨) — «كل طلبات الفرع» هو الافتراضيّ، و«طلباتي» تضييقٌ
+            اختياريّ. لا تُعرَض للمشرفين: نطاقُهم كلُّ الفرع أصلاً فتكون الرقاقة بلا أثر. */}
+        {!isSupervisor && (
+          <div className="wob-scope" role="group" aria-label="نطاق العرض">
+            {([
+              { v: "branch", label: "كل طلبات الفرع" },
+              { v: "mine", label: "طلباتي" },
+            ] as const).map((o) => (
+              <button
+                key={o.v}
+                type="button"
+                aria-pressed={(f.scope || "branch") === o.v}
+                onClick={() => setF({ scope: o.v })}
+                className={`wob-scope-btn${(f.scope || "branch") === o.v ? " is-on" : ""}`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="wob-search">
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
           <input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث (رقم / عنوان / عميل)" />

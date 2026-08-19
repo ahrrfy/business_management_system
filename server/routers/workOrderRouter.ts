@@ -328,6 +328,16 @@ function canSeeDeliveryForUser(user: { role: string; permissionsOverride?: unkno
   return hasModuleAccess(user.role, override, "workorders", "FULL");
 }
 
+/**
+ * مشغّلُ المحطّة فعلاً (`workorders:FULL`) — بوّابةُ «طابور الفرع». دالّةٌ مستقلّة عن
+ * `canSeeDeliveryForUser` عمداً رغم تطابقهما اليوم: هذه تُجيب «هل يعمل في المحطّة؟»
+ * وتلك تُجيب «هل يرى حالة التوصيل؟» — ودمجُهما يجعل توسيعَ إحداهما يفتح الأخرى صامتاً.
+ */
+function workOrdersFullAccess(user: { role: string; permissionsOverride?: unknown }): boolean {
+  if (user.role === "admin") return true;
+  return hasModuleAccess(user.role, (user.permissionsOverride as never) ?? null, "workorders", "FULL");
+}
+
 export const workOrderRouter = router({
   // §٧ IDOR: الكاشير لا يجب أن يرى أوامر فروع أخرى. branchScopedProcedure يحقن
   // scopedBranchId=null للأدمن، ورقم الفرع للمدير وغيره.
@@ -347,6 +357,16 @@ export const workOrderRouter = router({
           assignedToMe: z.boolean().optional(),
           /** أوامر غير مُسنَدة لأحد (الطابور العام المشترك). */
           unassignedOnly: z.boolean().optional(),
+          /**
+           * **طابور الفرع** (قرار المالك ١٩/٨): الشاشات التشغيلية — الكانبان وطابور المحطّة —
+           * تعرض أوامر الفرع كلّها لا ما أنشأه الموظّف وحده. موظّفةُ استقبالٍ لا ترى طلبات
+           * زميلتها كانت تعجز عن الردّ على زبونٍ سألها عن طلبٍ استقبلته الوردية السابقة.
+           *
+           * يُسقط **عزل الموظّف وحده**؛ وعزلُ الفرع يبقى حاكماً دائماً (`scopedBranchId`).
+           * وبوّابته `workorders:FULL` — أي مَن يعمل في المحطّة فعلاً، لا كل من يقرأ الوحدة.
+           * والعزل الماليّ (فواتيره/مبيعاته/تقاريره) **لا يتأثّر**: مسارُه `sales` لا هذا.
+           */
+          branchQueue: z.boolean().optional(),
           ...woListFilters,
           // keyset للتصدير الكامل: id < cursor مع الحفاظ على الشكل المُعاد مصفوفةً صرفة
           // (WorkOrderStation وشاشات أخرى تعتمد RouterOutputs["workOrders"]["list"] مصفوفة).
@@ -372,8 +392,10 @@ export const workOrderRouter = router({
       // حين unassignedOnly=true ⇒ لا يكشف سجلَّ أيّ موظفٍ آخر (الأمر بلا مالك بحكم التعريف).
       // سياسة عزل سجلّات الموظف (٢٤/٦) تبقى كما هي لكل ما عداه.
       const sharedQueue = input?.unassignedOnly === true;
+      // طابور الفرع: يلزمه `workorders:FULL` صراحةً — لا يكفي أن يطلبه العميل.
+      const branchQueue = input?.branchQueue === true && workOrdersFullAccess(ctx.user);
       const ownerCond =
-        ctx.scopedOwnerId != null && !sharedQueue
+        ctx.scopedOwnerId != null && !sharedQueue && !branchQueue
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
       const extra = [
@@ -473,6 +495,8 @@ export const workOrderRouter = router({
       z
         .object({
           branchId: z.number().int().positive().optional(),
+          /** مرآةُ `list.branchQueue` — وإلّا كذبت العدّادات على الشاشة التي تعرض الصفوف. */
+          branchQueue: z.boolean().optional(),
           ...woListFilters,
         })
         .optional()
@@ -484,7 +508,7 @@ export const workOrderRouter = router({
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
       const branchCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
       const ownerCond =
-        ctx.scopedOwnerId != null
+        ctx.scopedOwnerId != null && !(input?.branchQueue === true && workOrdersFullAccess(ctx.user))
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
       const allConds = [branchCond, ownerCond, ...buildWoFilterConds(input)].filter(Boolean) as SQL[];
