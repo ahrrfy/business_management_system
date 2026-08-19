@@ -1360,10 +1360,10 @@ export default function Storefront() {
           )}
         </div>
         {cats.length > 0 && (
-          <div className="border-t border-[#ebe6df] dark:border-slate-800">
+          <div className="border-t border-[#f0e2d5] bg-[#fffaf5] dark:border-slate-800 dark:bg-slate-900">
             <div className="mx-auto flex max-w-[1500px] items-center gap-2 overflow-x-auto px-4 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:px-8">
-              <button onClick={() => selectCategory(null)} className={`shrink-0 border-b-2 px-1 py-1 text-xs font-black ${categoryId == null ? "border-[#e65f4a] text-[#1e4a63]" : "border-transparent text-[#6c747b] hover:text-[#1e4a63]"}`}>كل الأقسام</button>
-              {cats.map((c) => <button key={c.id} onClick={() => selectCategory(c.id)} className={`shrink-0 border-b-2 px-1 py-1 text-xs font-bold ${categoryId === c.id ? "border-[#e65f4a] text-[#1e4a63]" : "border-transparent text-[#6c747b] hover:text-[#1e4a63]"}`}>{c.name}</button>)}
+              <button onClick={() => selectCategory(null)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-black transition ${categoryId == null ? "border-[#25406f] bg-[#25406f] text-white shadow-sm" : "border-[#ead8c8] bg-white text-[#667078] hover:border-[#e65f4a] hover:text-[#25406f]"}`}>كل الأقسام</button>
+              {cats.map((c, index) => <button key={c.id} onClick={() => selectCategory(c.id)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold transition ${categoryId === c.id ? "border-[#e65f4a] bg-[#e65f4a] text-white shadow-sm" : index % 3 === 0 ? "border-[#f0d991] bg-[#fff8df] text-[#6d5524] hover:border-[#e65f4a]" : index % 3 === 1 ? "border-[#c5e8dc] bg-[#e9f7f2] text-[#276c5d] hover:border-[#25406f]" : "border-[#dfcdea] bg-[#f3ebf8] text-[#684c78] hover:border-[#25406f]"}`}>{c.name}</button>)}
             </div>
           </div>
         )}
@@ -1788,18 +1788,27 @@ export default function Storefront() {
 
       {/* ═══ الدفع عند الاستلام ═══ */}
       {panel === "checkout" && (
-        <PanelShell title="الدفع عند الاستلام" onClose={() => {
+        <PanelShell title="إتمام الطلب" onClose={() => {
           setTurnstileToken(null);
           setPanel("cart");
         }}>
           <div className="flex flex-col gap-3">
+            <div className="rounded-2xl border border-[#f0d991] bg-[#fff8df] p-3.5">
+              <div className="flex items-center justify-between gap-3">
+                <div><p className="text-[11px] font-black uppercase tracking-[0.14em] text-[#9a7427]">الخطوة الأخيرة</p><p className="mt-1 text-sm font-black text-[#25406f]">أكمل بياناتك وسنؤكد الطلب قبل التوصيل</p></div>
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-[#f4c84d] text-sm font-black text-[#25406f]">{cartCount}</span>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-1.5 text-center text-[10px] font-black"><span className="rounded-lg bg-[#25406f] px-2 py-1.5 text-white">بياناتك</span><span className="rounded-lg bg-white/80 px-2 py-1.5 text-[#6d5524]">التوصيل</span><span className="rounded-lg bg-white/80 px-2 py-1.5 text-[#6d5524]">التأكيد</span></div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
             <Field icon={<User aria-hidden className="size-4" />} label="الاسم الكامل">
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="اسمك" autoComplete="name" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </Field>
             <Field icon={<Phone aria-hidden className="size-4" />} label="رقم الهاتف">
               <input value={form.phone} onChange={(e) => setForm({ ...form, phone: `+964 ${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}` })} inputMode="tel" autoComplete="tel" placeholder="+964 7XX XXX XXXX" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </Field>
-            <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+            </div>
+            <div className="rounded-2xl border border-[#ead8c8] bg-white p-3 ring-1 ring-[#f3e5da] dark:bg-slate-900 dark:ring-slate-700">
               <label className="mb-1 block text-xs font-bold text-slate-500">المحافظة</label>
               <select value={form.governorate} onChange={(e) => setForm({ ...form, governorate: e.target.value })} className="w-full bg-transparent text-sm outline-none">
                 {GOVERNORATES.map((g) => (
@@ -1809,16 +1818,16 @@ export default function Storefront() {
                 ))}
               </select>
             </div>
-            <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+            <div className="rounded-2xl border border-[#c5e8dc] bg-[#f7fffc] p-3 ring-1 ring-[#e9f7f2] dark:bg-slate-900 dark:ring-slate-700">
               <label className="mb-1 block text-xs font-bold text-slate-500">العنوان بالتفصيل</label>
               <textarea value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} rows={2} placeholder="المنطقة، الشارع، أقرب نقطة دالة…" className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </div>
-            <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+            <div className="rounded-2xl border border-[#dfcdea] bg-[#fcf8ff] p-3 ring-1 ring-[#f3ebf8] dark:bg-slate-900 dark:ring-slate-700">
               <label className="mb-1 block text-xs font-bold text-slate-500">ملاحظة (اختياري)</label>
               <input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="مثال: الاتصال قبل التوصيل" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </div>
 
-            <div className="rounded-xl bg-white p-3.5 text-sm ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+            <div className="rounded-2xl border border-[#ead8c8] bg-[#fffdf9] p-3.5 text-sm ring-1 ring-[#f3e5da] dark:bg-slate-900 dark:ring-slate-800">
               <div className="flex justify-between text-slate-500">
                 <span>المجموع الفرعي</span>
                 <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(cartSubtotal)} د.ع</span>
@@ -1861,7 +1870,7 @@ export default function Storefront() {
               className="store-primary-action store-mobile-action flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-sm shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
             >
               {createOrder.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}
-              تأكيد الطلب (الدفع عند الاستلام)
+              تأكيد الطلب — الدفع عند الاستلام
             </button>
             <p className="flex items-center justify-center gap-1 text-center text-[11px] text-slate-400">
               <Banknote aria-hidden className="size-3.5" /> تدفع نقداً عند استلام الطلب من المندوب.
@@ -2099,21 +2108,21 @@ function StoreTrustAndHelp({
 /** غلاف لوح بملء الشاشة (سلة/دفع/تأكيد) — ترويسة ثابتة + محتوى قابل للتمرير. */
 function PanelShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-emerald-50 dark:bg-slate-950" dir="rtl">
-      <header className="sticky top-0 flex items-center gap-3 border-b border-emerald-100 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+    <div className="fixed inset-0 z-50 flex flex-col bg-[#fff8ef] dark:bg-slate-950" dir="rtl">
+      <header className="sticky top-0 flex items-center gap-3 border-b border-[#f0e2d5] bg-white/95 px-4 py-3 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900">
         <button onClick={onClose} aria-label="رجوع" className="flex size-9 items-center justify-center rounded-full transition hover:bg-slate-100 dark:hover:bg-slate-800">
           <ArrowRight aria-hidden className="size-5 rotate-180 text-slate-600 dark:text-slate-300" />
         </button>
         <h2 className="text-base font-extrabold text-slate-900 dark:text-white">{title}</h2>
       </header>
-      <div className="mx-auto w-full max-w-2xl flex-1 overflow-y-auto px-4 py-4" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>{children}</div>
+      <div className="mx-auto w-full max-w-2xl flex-1 overflow-y-auto px-4 py-4 sm:px-6" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>{children}</div>
     </div>
   );
 }
 
 function Field({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
+    <div className="rounded-2xl border border-[#ead8c8] bg-white p-3 ring-1 ring-[#f3e5da] dark:bg-slate-900 dark:ring-slate-700">
       <label className="mb-1 flex items-center gap-1.5 text-xs font-bold text-slate-500">
         <span className="text-emerald-500">{icon}</span>
         {label}
