@@ -204,7 +204,16 @@ export type ReceptionCustomerResolution = {
   phone: string;
   defaultPriceTier: PriceTier;
   created: boolean;
-  /** الاستقبال يعدّ الهوية مكتملة فقط برقم موبايل عراقي صارم وعميل فعّال. */
+  /**
+   * حدّ ائتمان العميل كما هو: `null` = بلا حدّ · `"0"` = نقديٌّ فقط · موجب = سقفٌ يُفحَص.
+   * تعرضه الشاشة كي لا تَعِد بما يرفضه `assertCreditLimit`.
+   */
+  creditLimit: string | null;
+  /**
+   * أهليّة **البيع الآجل** فعلياً: هويةٌ مكتملة (موبايل عراقي صارم وعميل فعّال) **و**
+   * حدُّ ائتمانٍ يسمح (ليس صفراً). كانت تُعلَن `true` ثابتةً لكل عميلٍ مرتبط — فتَعِد
+   * الشاشة بالآجل ويرفضه الخادم (بلاغ المالك الحيّ ١٩/٨).
+   */
   deferredEligible: boolean;
 };
 
@@ -238,6 +247,10 @@ export async function resolveReceptionCustomerByPhone(
           phone: customers.phone,
           defaultPriceTier: customers.defaultPriceTier,
           isActive: customers.isActive,
+          // ١٩/٨ (بلاغ حيّ): الشاشة كانت تَعِد بـ«البيع بدون عربون متاح» لكل عميلٍ مرتبط
+          // نصّاً ثابتاً، ثم يرفض الخادم لأنّ حدّه صفر (وهو **افتراضي كل عميلٍ جديد** بقرار
+          // المالك). لتقول الشاشة الحقيقة لزمها الحدّ نفسه — لا استنتاجٌ من كون العميل مرتبطاً.
+          creditLimit: customers.creditLimit,
         })
         .from(customers)
         .where(or(
@@ -266,7 +279,10 @@ export async function resolveReceptionCustomerByPhone(
       phone,
       defaultPriceTier: existing.defaultPriceTier as PriceTier,
       created: false,
-      deferredEligible: true,
+      // `null` = بلا حدّ (سماحٌ كامل) · `"0"` = نقديٌّ فقط · موجب = سقفٌ يُفحَص عند البيع.
+      creditLimit: existing.creditLimit,
+      // أهليّةُ الآجل الحقيقية = مرتبطٌ **و** حدُّه ليس صفراً (مرآةُ `assertCreditLimit`).
+      deferredEligible: existing.creditLimit == null || Number(existing.creditLimit) !== 0,
     };
   }
 
@@ -279,6 +295,7 @@ export async function resolveReceptionCustomerByPhone(
       phone,
       defaultPriceTier: "RETAIL",
       created: false,
+      creditLimit: null,
       deferredEligible: false,
     };
   }
@@ -304,7 +321,11 @@ export async function resolveReceptionCustomerByPhone(
       phone,
       defaultPriceTier: row.defaultPriceTier as PriceTier,
       created: !created.idempotentReplay,
-      deferredEligible: true,
+      creditLimit: row.creditLimit ?? null,
+      // ⚠️ جذر التناقض الذي رآه المالك: العميل يُنشأ هنا بـ`creditLimit: "0"` (نقديّ فقط —
+      // قرار المالك الافتراضيّ) ثمّ يُعلَن `deferredEligible: true` ثابتاً ⇒ الشاشة تَعِد
+      // بالآجل والخادم يرفضه. الأهليّة تُشتقّ الآن من الحدّ نفسه فيتطابق الوعد والتنفيذ.
+      deferredEligible: row.creditLimit == null || Number(row.creditLimit) !== 0,
     };
   } catch (error) {
     // سباق رقم مع عملية قديمة لا تحمل مفتاحنا: أعد قراءة الهاتف بعد التزام الفائز.
@@ -318,7 +339,8 @@ export async function resolveReceptionCustomerByPhone(
           phone,
           defaultPriceTier: won.defaultPriceTier as PriceTier,
           created: false,
-          deferredEligible: true,
+          creditLimit: won.creditLimit,
+          deferredEligible: won.creditLimit == null || Number(won.creditLimit) !== 0,
         };
       }
     }

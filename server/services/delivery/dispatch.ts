@@ -223,7 +223,9 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       ? priorInvoice!.invoiceNumber
       : await nextInvoiceNumber(tx, Number(wo.branchId));
     const invStatus = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(depositPaid));
-    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    // نسبة البيع لمنشئ الطلب لا للمُرسِل (نفس قاعدة deliver.ts — العمولة تتبع البائع الأصليّ).
+    const sellerUserId = wo.createdBy != null ? Number(wo.createdBy) : actor.userId;
+    const salespersonNameSnapshot = await userNameSnapshot(tx, sellerUserId);
     // ش١ (٥/٨): فاتورة الإرسال تنتمي لوردية مُرسِلها (مرآة deliver.ts) — تظهر في طابور فواتير
     // المحطة بحالتها التسليمية بدل أن تختفي بلا shiftId.
     // مراجعة عدائية (٥/٨): الختم بوردية RECEPTION **حصراً أو null** — الحلّ المرن كان يلتقط
@@ -262,7 +264,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       paymentDate: depositPaid.gt(0) ? new Date() : null,
       notes: `توصيل طلب خدمة ${wo.orderNumber}: ${wo.title}`,
       salespersonNameSnapshot,
-      createdBy: actor.userId,
+      createdBy: sellerUserId,
     });
     const invoiceId = reusingInvoice ? Number(priorInvoice!.id) : extractInsertId(invRes!);
 

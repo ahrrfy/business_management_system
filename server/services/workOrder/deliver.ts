@@ -145,7 +145,18 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
     const sourceId = `WO-${wo.id}`;
-    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    /**
+     * **نسبة البيع لمنشئ الطلب لا للمُسلِّم** (١٩/٨ — قاعدة #638: «العمولة تتبع البائع
+     * الأصليّ»). فاتورة أمر الشغل تُنشأ لحظة التسليم، وقد ينفّذه كاشيرٌ آخر عن الذي استقبل
+     * الطلب وباعه فعلاً — فكان `createdBy = actor` ينسب البيعَ والعمولةَ للمُسلِّم، وتقارير
+     * الموظفين تعرض اسمه، بينما البائع الحقيقيّ لا أثر له.
+     *
+     * وأثرُ المُسلِّم **يبقى كاملاً بلا عمودٍ جديد**: إيصال القبض بـ`createdBy = actor`،
+     * والفاتورة تُختم بوردية المُسلِّم (`deliveryShiftId` أدناه) ⇒ النقد والدرج وZ كلّها
+     * عليه — وهو الصحيح مالياً: النقد في درجه هو.
+     */
+    const sellerUserId = wo.createdBy != null ? Number(wo.createdBy) : actor.userId;
+    const salespersonNameSnapshot = await userNameSnapshot(tx, sellerUserId);
     // ش١ (٥/٨): فاتورة التسليم تنتمي لوردية مُسلِّمها — كانت تُنشأ بلا shiftId فتسقط خارج
     // طابور فواتير المحطة (innerJoin shifts) وخارج نطاق reception.collectOnInvoice، بينما هي
     // **الحالة الأولى** لتسديد المتبقّي (عربونٌ مقبوض والباقي عند الاستلام). تُحلّ مبكراً وتُعاد
@@ -192,7 +203,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       paymentDate: totalPaid.gt(0) ? new Date() : null,
       notes: `طلب خدمة ${wo.orderNumber}: ${wo.title}`,
       salespersonNameSnapshot,
-      createdBy: actor.userId,
+      createdBy: sellerUserId,
     });
     const invoiceId = extractInsertId(invRes);
 

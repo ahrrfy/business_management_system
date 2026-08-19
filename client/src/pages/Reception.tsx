@@ -337,6 +337,12 @@ export default function Reception() {
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
   const [receptionPhone, setReceptionPhone] = useState("");
   const [phoneResolution, setPhoneResolution] = useState<"EMPTY" | "INCOMPLETE" | "CHECKING" | "NEEDS_NAME" | "RESOLVED" | "ERROR">("EMPTY");
+  /**
+   * أهليّة **البيع الآجل** للعميل المربوط — مصدرها الخادم (`deferredEligible`) لا استنتاجُ
+   * الشاشة (١٩/٨، بلاغ المالك الحيّ): كانت الشارة تَعِد بالآجل لكل عميلٍ مرتبط، ثمّ يرفضه
+   * `assertCreditLimit` لأنّ حدّه صفر — وهو **افتراضي كل عميلٍ جديد** بقرار المالك.
+   */
+  const [customerDeferredEligible, setCustomerDeferredEligible] = useState(false);
   const [phoneResolutionError, setPhoneResolutionError] = useState<string | null>(null);
   const [resolvedCustomerTier, setResolvedCustomerTier] = useState<Tier | null>(null);
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
@@ -404,6 +410,7 @@ export default function Reception() {
       if (result.status === "NEEDS_NAME") {
         setCustomer((previous) => ({ customerId: null, name: previous.name, phone: receptionPhone, isNew: true }));
         setResolvedCustomerTier(null);
+        setCustomerDeferredEligible(false);
         setPhoneResolution("NEEDS_NAME");
         return result;
       }
@@ -414,6 +421,7 @@ export default function Reception() {
         isNew: false,
       });
       setResolvedCustomerTier(result.defaultPriceTier as Tier);
+      setCustomerDeferredEligible(!!result.deferredEligible);
       setPhoneResolution("RESOLVED");
       if (announce) notify.ok(result.created ? "تم إنشاء العميل وربطه بالطلب" : "تم ربط العميل الموجود بالطلب");
       return result;
@@ -574,6 +582,8 @@ export default function Reception() {
   const hasCustom = cart.some(isCustomKind);
   const deferredAvailable = customer.customerId != null
     && phoneResolution === "RESOLVED"
+    // حدُّ الائتمان جزءٌ من الأهليّة لا شرطٌ يُكتشَف بالرفض بعد الضغط.
+    && customerDeferredEligible
     && !activeDraft
     && !orderDelivery
     && sumDirect > 0;
@@ -1762,9 +1772,18 @@ export default function Reception() {
       }
       // لا توجد حالة التزام جزئي. عند غياب رد الشبكة قد تكون المعاملة كلها التزمت أو كلها
       // تراجعت؛ المفتاح الثابت يجعل إعادة الإرسال تستعيد النتيجة بلا تكرار.
+      //
+      // ⚠️ ١٩/٨ (بلاغ حيّ من المالك): كانت جملة «لم يصل تأكيد العملية… أعد المحاولة بأمان»
+      // تُلحَق بـ**كل** خطأ — بما فيه الرفض السياسيّ الواضح (حدّ ائتمان، صلاحية، شرط عمل).
+      // فيقرأ الموظّف رسالتين متناقضتين: الخادم يقول «العميل نقديّ فقط» والشاشة تقول «غالباً
+      // شبكة، أعد المحاولة» — فيعيد المحاولة بلا جدوى بدل أن يحصّل أو يستأذن المدير.
+      // الغموضُ حقيقيٌّ **فقط** حين لا يردّ الخادم بكودٍ أصلاً؛ ومع كودٍ صريح تُعرَض رسالته وحدها.
+      const serverAnswered = (e as { data?: { code?: string } } | null)?.data?.code != null;
       notify.err(e, checkoutCommitted
         ? "تم حفظ العملية كاملة، لكن تعذّر إكمال تجهيز المستندات؛ راجع الفواتير وأوامر الشغل"
-        : "لم يصل تأكيد العملية؛ لا يمكن أن يكون جزء منها محفوظاً وحده. أعد المحاولة بأمان");
+        : serverAnswered
+          ? undefined
+          : "لم يصل تأكيد العملية؛ لا يمكن أن يكون جزء منها محفوظاً وحده. أعد المحاولة بأمان");
     } finally {
       setSubmitting(false);
     }
@@ -2363,7 +2382,9 @@ export default function Reception() {
                     <BadgeCheck aria-label="عميل موثوق" className="size-3.5 shrink-0 text-money-positive" />
                   </div>
                   <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{receptionPhone}</div>
-                  <div className="text-[9px] font-bold text-money-positive">مرتبط · البيع بدون عربون متاح</div>
+                  <div className={cn("text-[9px] font-bold", customerDeferredEligible ? "text-money-positive" : "text-[var(--sem-warn)]")}>
+                    {customerDeferredEligible ? "مرتبط · البيع بدون عربون متاح" : "مرتبط · نقديٌّ فقط (حدّ ائتمانه صفر)"}
+                  </div>
                 </div>
                 {canReadCustomerContext && (
                   <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => setCustomerContextId(customer.customerId)}>
