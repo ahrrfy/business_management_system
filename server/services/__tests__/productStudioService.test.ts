@@ -1772,6 +1772,56 @@ describe("product studio governed workflow", () => {
     ]);
   });
 
+  it("لا يقرأ إثبات النسخ الاحتياطي إلا حين يوجد كائنٌ مؤهَّلٌ للحذف فعلاً", async () => {
+    const bytes = Buffer.from(PNG_1X1.slice(PNG_1X1.indexOf(",") + 1), "base64");
+    const referencedKey = objectKeyFor(contentHash(bytes), "image/png", "single/studio/candidate");
+    await getImageStore().put(referencedKey, bytes, "image/png");
+    const old = new Date(Date.now() - 91 * 24 * 60 * 60_000);
+    await db().insert(s.productImageObjectStaging).values({ objectKey: referencedKey, state: "REFERENCED", referencedAt: old, touchedAt: old });
+    await db().insert(s.productImages).values({
+      productId: 1,
+      url: "/api/img/product/referenced",
+      objectKey: referencedKey,
+      contentHash: contentHash(bytes),
+      mime: "image/png",
+      reviewStatus: "APPROVED",
+      isPrimary: true,
+    });
+    process.env.R2_GC_MODE = "delete";
+    process.env.R2_GC_DELETE_CONFIRM = "DELETE_RETAINED_R2_OBJECTS";
+    const loadDeletionAuthorization = vi.fn(async () => ({ authorize: vi.fn() }));
+
+    // الكائن مرجَعٌ حيّ ⇒ لا مرشّح للحذف. كان الإثبات يُحمَّل في رأس الدالّة دائماً،
+    // وهو قراءةٌ وتجزئةٌ قد تبلغ غيغابايتات — بلا داعٍ إطلاقاً في هذه الحالة.
+    await expect(cleanupStudioStaging(5, { loadDeletionAuthorization })).resolves.toBe(0);
+    expect(loadDeletionAuthorization).not.toHaveBeenCalled();
+    expect((await getImageStore().head(referencedKey)).exists).toBe(true);
+  });
+
+  it("لا يُحمّل الإثبات أكثر من مرّة مهما تعدّد المؤهَّلون في المسح الواحد", async () => {
+    const old = new Date(Date.now() - 91 * 24 * 60 * 60_000);
+    const keys: string[] = [];
+    for (const source of [PNG_1X1, PNG_1X1_ALT, WEBP_1X1]) {
+      const raw = Buffer.from(source.slice(source.indexOf(",") + 1), "base64");
+      const mime = source.startsWith("data:image/webp") ? "image/webp" : "image/png";
+      const key = objectKeyFor(contentHash(raw), mime, "single/studio/candidate");
+      await getImageStore().put(key, raw, mime);
+      await db().insert(s.productImageObjectStaging).values({ objectKey: key, state: "PENDING", referencedAt: old, touchedAt: old });
+      keys.push(key);
+    }
+    process.env.R2_GC_MODE = "delete";
+    process.env.R2_GC_DELETE_CONFIRM = "DELETE_RETAINED_R2_OBJECTS";
+    const authorize = vi.fn();
+    const loadDeletionAuthorization = vi.fn(async () => ({ authorize }));
+
+    await expect(cleanupStudioStaging(10, { loadDeletionAuthorization })).resolves.toBe(3);
+    // ثلاثة حُذفت، والإثبات قُرئ مرّةً واحدة لا ثلاثاً.
+    expect(loadDeletionAuthorization).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalledTimes(3);
+    for (const key of keys) expect((await getImageStore().head(key)).exists).toBe(false);
+    expect(await db().select().from(s.productImageObjectStaging)).toEqual([]);
+  });
+
   it("keeps the chosen source image and the existing priority when adopting a backlog task", async () => {
     // مهمة أولى تُنتج صورةً معتمدة تصلح مصدراً لاحقاً.
     const first = await assignStudioTask(manager, {

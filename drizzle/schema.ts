@@ -3253,6 +3253,9 @@ export const productImages = mysqlTable(
   (table) => ({
     prodIdx: index("idx_pimg_product").on(table.productId),
     variantIdx: index("idx_pimg_variant").on(table.variantId),
+    // نفس سبب فهرسة مفاتيح المهام: إثبات غياب المرجع قبل الحذف.
+    objectKeyIdx: index("idx_pimg_object_key").on(table.objectKey),
+    originalKeyIdx: index("idx_pimg_original_key").on(table.originalKey),
   }),
 );
 
@@ -3400,6 +3403,10 @@ export const productImageJobs = mysqlTable(
     ),
     submitterStatusIdx: index("idx_pijob_submitter_status").on(table.submittedBy, table.status),
     oneActivePerProduct: unique("uq_pijob_product_active").on(table.productId, table.activeSlot),
+    // كنس المخزن يسأل «هل ما زال لهذا المفتاح مرجع؟» لكل مرشّح تحت قفل؛ بلا فهرسٍ
+    // كان كلّ سؤالٍ مسحاً كاملاً للجدول.
+    originalKeyIdx: index("idx_pijob_original_key").on(table.originalObjectKey),
+    processedKeyIdx: index("idx_pijob_processed_key").on(table.processedObjectKey),
   }),
 );
 

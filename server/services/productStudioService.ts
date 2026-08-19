@@ -1265,7 +1265,10 @@ export async function cleanupStudioStaging(
   const cutoff = new Date(now.getTime() - STAGING_AUDIT_INTERVAL_MS);
   const gcMode = resolveR2GcMode(process.env);
   const loadDeletionAuthorization = options.loadDeletionAuthorization ?? loadR2GcDeletionAuthorization;
-  const deletionAuthorization = gcMode === "delete" ? await loadDeletionAuthorization(process.env, now, studioObjectRoot()) : null;
+  // تحميلٌ كسولٌ مرّةً واحدة لكل مسح، وخارج أيّ معاملة. كان يُحمَّل في رأس الدالّة دائماً
+  // — حتى حين لا مرشّح مؤهّلاً للحذف أصلاً — وهو قراءةٌ وتجزئةٌ قد تبلغ غيغابايتات.
+  let authorizationOnce: Promise<{ authorize(objectKey: string): void }> | null = null;
+  const deletionAuthorization = () => (authorizationOnce ??= loadDeletionAuthorization(process.env, now, studioObjectRoot()));
   const candidates = await requireDb()
     .select({ objectKey: productImageObjectStaging.objectKey })
     .from(productImageObjectStaging)
@@ -1273,10 +1276,11 @@ export async function cleanupStudioStaging(
     // نفحص الحالتين بعد TTL ونحذف فقط بعد إثبات غياب أي مرجع داخل معاملة مقفلة.
     .where(sql`${productImageObjectStaging.touchedAt} < ${cutoff}`)
     .orderBy(asc(productImageObjectStaging.touchedAt))
-    .limit(Math.max(1, Math.min(limit, 25)));
+    .limit(Math.max(1, Math.min(limit, STAGING_SWEEP_MAX_BATCH)));
   let removed = 0;
   for (const candidate of candidates) {
-    const deleted = await withTx(async (tx) => {
+    // المرحلة الأولى: تقييمٌ تحت القفل، وتطبيقُ كل قرارٍ غير الحذف. لا تحميلَ للإثبات هنا.
+    const eligible = await withTx(async (tx) => {
       const staging = (await tx.select().from(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey)).limit(1).for("update"))[0];
       if (!staging || staging.touchedAt >= cutoff) return false;
       const jobRef = await tx
@@ -1295,7 +1299,8 @@ export async function cleanupStudioStaging(
         referencedAt: staging.referencedAt,
         hasReference: jobRef.length > 0 || imageRef.length > 0,
         now,
-        deleteRequested: deletionAuthorization !== null,
+        // الوضع المُعلَن هو المعيار، لا كون الإثبات قد حُمِّل بعد — التحميل صار كسولاً.
+        deleteRequested: gcMode === "delete",
       });
       if (decision.action === "MARK_REFERENCED") {
         await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: now, touchedAt: now }).where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
@@ -1325,8 +1330,32 @@ export async function cleanupStudioStaging(
           .where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
         return false;
       }
-      if (!deletionAuthorization) throw new Error("R2_GC_DELETE_AUTHORIZATION_REQUIRED");
-      deletionAuthorization.authorize(candidate.objectKey);
+      // مؤهَّلٌ للحذف: لا نحذف هنا كي لا يُحمَّل الإثبات داخل معاملةٍ تمسك قفلاً.
+      return true;
+    });
+    if (!eligible) continue;
+    if (gcMode !== "delete") throw new Error("R2_GC_DELETE_AUTHORIZATION_REQUIRED");
+    const authorization = await deletionAuthorization();
+    // المرحلة الثانية: إعادة القفل وإعادة إثبات غياب المرجع قبل الحذف فعلياً — النافذة
+    // بين المرحلتين قد يظهر فيها مرجعٌ جديد (إعادة رفعٍ بنفس المحتوى).
+    const deleted = await withTx(async (tx) => {
+      const staging = (await tx.select().from(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey)).limit(1).for("update"))[0];
+      if (!staging) return false;
+      const jobRef = await tx
+        .select({ id: productImageJobs.id })
+        .from(productImageJobs)
+        .where(or(eq(productImageJobs.originalObjectKey, candidate.objectKey), eq(productImageJobs.processedObjectKey, candidate.objectKey)))
+        .limit(1);
+      const imageRef = await tx
+        .select({ id: productImages.id })
+        .from(productImages)
+        .where(or(eq(productImages.objectKey, candidate.objectKey), eq(productImages.originalKey, candidate.objectKey)))
+        .limit(1);
+      if (jobRef.length > 0 || imageRef.length > 0) {
+        await tx.update(productImageObjectStaging).set({ state: "REFERENCED", referencedAt: now, touchedAt: now }).where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
+        return false;
+      }
+      authorization.authorize(candidate.objectKey);
       await getImageStore().delete(candidate.objectKey);
       await tx.delete(productImageObjectStaging).where(eq(productImageObjectStaging.objectKey, candidate.objectKey));
       return true;
@@ -2195,12 +2224,10 @@ export async function submitStudioCandidate(
         .where(inArray(productImageObjectStaging.objectKey, original ? [originalKey, processedKey] : [processedKey]));
       return input.expectedRevision === undefined ? { ok: true as const } : { ok: true as const, revision: nextRevision(task) };
     });
-    try {
-      await cleanupStudioStaging(5);
-    } catch (error) {
-      // نجاح المعاملة هو الحقيقة؛ تعثّر الكنس لا يحوّل الإرسال الناجح إلى خطأ كاذب، ويُعاد لاحقاً.
-      logger.warn({ err: error }, "productStudio: staging sweep deferred");
-    }
+    // الكنس ليس من عمل هذا الطلب. كان يُستدعى هنا بعد كل إرسال ناجح، وفي وضع الحذف
+    // يقرأ إثبات النسخ الاحتياطي ويجزّئه (بيانٌ حتى ٥٠ م.ب + حتى ١٠٠ كائنٍ مستعاد بحدّ
+    // ٢٥ م.ب لكلٍّ) ⇒ إضافةُ غيغابايتات من القراءة المتزامنة إلى مسار طلب الموظف.
+    // مكانه العامل الدوريّ المحروس بمُشغّلٍ واحد في العنقود.
     return result;
   } catch (error) {
     await requireDb()
@@ -2566,6 +2593,9 @@ export async function cancelStudioTask(actor: ProductStudioActor, input: { taskI
     return input.expectedRevision === undefined ? { ok: true as const } : { ok: true as const, revision: nextRevision(task) };
   });
 }
+
+/** سقف مرشّحي الكنس في المسح الواحد. رُفع من ٢٥ بعد إخراج الكنس من مسار الطلب. */
+const STAGING_SWEEP_MAX_BATCH = 500;
 
 /** سقف الإلغاء الجماعيّ في المعاملة الواحدة — نفس منطق سقف التوليد. */
 const CANCEL_BATCH_LIMIT = 500;

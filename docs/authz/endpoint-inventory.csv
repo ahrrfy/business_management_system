@@ -1022,7 +1022,7 @@
 "job","(scheduled)","interval","","interval","interval","none","","","","","","","JOB_NO_PRINCIPAL","server/services/nativePushOutboxWorker.ts:293"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/onlineOrderExpirySweeper.ts:74"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/productStudioNotificationWorker.ts:50"
-"job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/productStudioStagingWorker.ts:33"
+"job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/productStudioStagingWorker.ts:43"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/reservations/sweeper.ts:46"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/reservations/sweeper.ts:62"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/services/whatsapp/outboxSweeper.ts:126"
