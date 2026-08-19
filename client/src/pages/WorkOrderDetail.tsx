@@ -1,3 +1,5 @@
+import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
+import DesignFileCard from "@/components/workorder/DesignFileCard";
 import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ChannelBadge } from "@/components/ChannelBadge";
 import { Button } from "@/components/ui/button";
@@ -380,6 +382,21 @@ export default function WorkOrderDetail() {
               <div className="text-xs text-muted-foreground mb-1">التخصيص</div>
               <div className="whitespace-pre-wrap">{data.customizationText}</div>
             </div>
+          )}
+
+          {/* ش٢ (١٩/٨): بطاقةُ الموافقة — الحالة مشتقّةٌ من مهمّةٍ حاجزة مفتوحة لا من عَلَم. */}
+          <DesignApprovalCard
+            workOrderId={Number(data.id)}
+            status={String(data.status)}
+            blockingTask={(data.blockingTask as never) ?? null}
+            canManage={canCancel}
+          />
+
+          {/* **ملفّ التصميم** — كان الخادم يُرسل `images` والشاشة تُهملها كلّياً (صفر استعمال
+              في ٦٨٣ سطراً)، فيقف الفنّيّ أمام أمرٍ لا يرى تصميمه. النسخةُ العليا أوّلاً،
+              والسابقةُ تُعرَض مطويّةً — سجلٌّ بلا حذف. */}
+          {data.images && data.images.length > 0 && (
+            <DesignFileCard images={data.images as never} workOrderId={Number(data.id)} canEdit={data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
           )}
         </CardContent>
       </Card>

@@ -1,4 +1,5 @@
 // إنشاء مهمة (NEW) — تذكرة موحّدة لأي طلب خدمة/دعم/استفسار بغضّ النظر عن قناة الورود.
+import { hasModuleAccess } from "@shared/permissions";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { serviceTypes, taskEvents, tasks, users } from "../../../drizzle/schema";
@@ -50,7 +51,7 @@ export async function createTask(input: CreateTaskInput, actor: CreateTaskActor,
 
     if (input.assignedTo != null) {
       const assignee = (await t
-        .select({ id: users.id, branchId: users.branchId, role: users.role, isActive: users.isActive, isOwner: users.isOwner })
+        .select({ id: users.id, branchId: users.branchId, role: users.role, isActive: users.isActive, isOwner: users.isOwner, permissionsOverride: users.permissionsOverride })
         .from(users)
         .where(eq(users.id, input.assignedTo))
         .limit(1))[0];
@@ -62,6 +63,15 @@ export async function createTask(input: CreateTaskInput, actor: CreateTaskActor,
       const elevatedAssignee = canCrossBranches({ role: assignee.role, isOwner: assignee.isOwner });
       if (!elevatedAssignee && Number(assignee.branchId) !== input.branchId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد المهمة إلى موظف من فرع آخر" });
+      }
+      // ش٢ (١٩/٨): الفحص كان **الفرعَ والتفعيل فقط** — فتُسنَد المهمّة لمن لا تفتح له شاشة
+      // `/tasks` أصلاً، فتقف الخامة على شخصٍ لا يرى ما يُنتظر منه. وأثرُه يتضاعف مع المهمّة
+      // **الحاجزة**: أمرُ شغلٍ محجوزٌ على مسؤولٍ لا يعلم أنّه مسؤول. (نمط `productStudioService`.)
+      if (!hasModuleAccess(assignee.role, (assignee.permissionsOverride as never) ?? null, "tasks", "FULL")) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "لا يمكن إسناد المهمة إلى موظف لا يملك صلاحية المهام — اختر موظفاً آخر أو امنحه الصلاحية",
+        });
       }
     }
 

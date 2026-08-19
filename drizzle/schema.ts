@@ -3205,10 +3205,18 @@ export const workOrderImages = mysqlTable(
     url: mediumtext("url").notNull(),
     caption: varchar("caption", { length: 255 }),
     sortOrder: int("sortOrder").default(0).notNull(),
+    /**
+     * نسخةُ ملفّ التصميم (0218، ش٢). «الحاليّ» = `MAX(revision)`، و«المُبطَل» ما دونه،
+     * و«عدد التعديلات» = `MAX−1` — كلّها مشتقّة، فلا `supersededBy` ولا `approvedAt/By`
+     * (الموافقة كلّها في `tasks`/`taskEvents` بطرفها وزمنها وسجلّها).
+     * والصفوف القائمة تصير النسخة ١ بحكم الافتراضيّ.
+     */
+    revision: int("revision").default(1).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     woIdx: index("idx_woimg_wo").on(table.workOrderId),
+    woRevIdx: index("idx_woimg_wo_revision").on(table.workOrderId, table.revision),
   }),
 );
 
@@ -7204,6 +7212,13 @@ export const serviceTypes = mysqlTable(
       .default("NORMAL")
       .notNull(),
     slaHours: int("slaHours"),
+    /**
+     * هل يحجز هذا النوعُ **تنفيذَ أمر الشغل**؟ (0217، ش٢) — قرارُ سياسةٍ بشريّ لا تحمله
+     * بيانات. الافتراضيّ `false` ⇒ صفر أثرٍ سلوكيّ، ومفتاحُ الإيقاف الفوريّ بلا نشرٍ محفوظ.
+     * ⛔ ليس عَلَماً على أمر الشغل: الحجزُ يُقرأ بـ«هل ثمّة مهمّةٌ حاجزة مفتوحة؟» فلا عَلَمٌ
+     * ثانٍ ينجرف عن الواقع، والموافقةُ تبطل بحكم البناء حين تُفتَح مهمّةٌ جديدة.
+     */
+    blocksExecution: boolean("blocksExecution").default(false).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

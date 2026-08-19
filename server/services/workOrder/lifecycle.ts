@@ -11,7 +11,7 @@ import { money, round2 } from "../money";
 import { readOpeningWindowState } from "../openingModeService";
 import { type Actor, requireDb, withTx } from "../tx";
 import { flowNotify } from "../whatsapp";
-import { assertOperatorOwns, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertNoBlockingTask, assertOperatorOwns, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 
 /**
  * السحب الذاتي (Pull/Claim): يضبط assignedTo = المستخدم الحالي على أمرٍ **في الطابور الوارد**
@@ -38,6 +38,9 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
     assertWorkOrderBranch(wo, actor);
     assertOperatorOwns(wo, actor);
     if (wo.status !== "RECEIVED") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن بدء أمر ليس في حالة الاستلام" });
+    // ش٢ (١٩/٨): لا دينارَ خامةٍ يُستهلَك على تصميمٍ لم يُقرّه العميل. **قبل قفل `branchStock`**
+    // عمداً ⇒ يفشل مغلقاً بلا حركةِ مخزونٍ ولا قيدٍ ولا صفٍّ مُدرَج.
+    await assertNoBlockingTask(tx, workOrderId, "start");
 
     const mats = await tx.select().from(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, workOrderId));
     // Deterministic lock order: ascending variantId.
@@ -172,6 +175,9 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
     const wo = await loadWorkOrder(tx, workOrderId);
     if (actor) { assertWorkOrderBranch(wo, actor); assertOperatorOwns(wo, actor); }
     if (wo.status !== "IN_PROGRESS") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس قيد التنفيذ" });
+    // ونسخةُ تصميمٍ جديدة تُفتَح **أثناء** التنفيذ تمنع الوسم جاهزاً: ما بُني على النسخة
+    // المُبطَلة ليس ما وافق عليه العميل.
+    await assertNoBlockingTask(tx, workOrderId, "ready");
     await tx
       .update(workOrders)
       .set({

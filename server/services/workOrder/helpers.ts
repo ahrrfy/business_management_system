@@ -1,7 +1,7 @@
 // أدوات داخلية: ترقيم الأمر، تحميله تحت قفل صفّ، وعزل الفرع/المحطة — لا تُصدَّر من نقطة الدخول العامة.
 import { TRPCError } from "@trpc/server";
-import { and, eq, notInArray } from "drizzle-orm";
-import { deliveryConsignments, workOrders } from "../../../drizzle/schema";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { deliveryConsignments, serviceTypes, tasks, workOrders } from "../../../drizzle/schema";
 import { nextCounterValue } from "../numbering";
 import type { Actor } from "../tx";
 
@@ -89,4 +89,44 @@ async function assertNoLiveConsignment(
   });
 }
 
-export { nextWorkOrderNumber, loadWorkOrder, assertWorkOrderBranch, assertOperatorOwns, assertNoLiveConsignment };
+/**
+ * **حارس المهمّة الحاجزة** (ش٢، ١٩/٨) — على نمط `assertNoLiveConsignment` حرفياً.
+ *
+ * الحجزُ يُقرأ من الواقع لا من عَلَم: «هل لهذا الأمر مهمّةٌ مفتوحةٌ نوعُها حاجز؟». وبهذا
+ * **تبطل الموافقة السابقة بحكم البناء** حين تُفتَح مهمّةٌ جديدة لنسخة تصميمٍ جديدة — لا
+ * عَلَمَ `approved` ثانٍ يمكن أن ينجرف عن الواقع فيُنتَج تصميمٌ لم يُقرَّ.
+ *
+ * ⛔ **يُستدعى قبل أيّ قفلٍ أو حركة** (قبل `branchStock` في `startWorkOrder`) ⇒ يفشل مغلقاً
+ * بلا حركةِ مخزونٍ ولا قيدٍ ولا صفٍّ يُترك خلفه.
+ *
+ * `WAITING_CUSTOMER` **تحجز أيضاً**: انتظارُ ردّ العميل هو عينُ سبب الحجز، لا استثناءٌ منه.
+ */
+async function assertNoBlockingTask(
+  tx: any,
+  workOrderId: number,
+  action: "start" | "ready",
+) {
+  const rows = await tx
+    .select({ id: tasks.id, number: tasks.taskNumber, title: tasks.title })
+    .from(tasks)
+    .innerJoin(serviceTypes, eq(serviceTypes.id, tasks.serviceTypeId))
+    .where(
+      and(
+        eq(tasks.linkedWorkOrderId, workOrderId),
+        inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
+        eq(serviceTypes.blocksExecution, true),
+      ),
+    )
+    .limit(1);
+  const blocking = rows[0];
+  if (!blocking) return;
+  const what = action === "start"
+    ? "لا يبدأ التنفيذ قبل إغلاق"
+    : "لا يُوسَم الأمر جاهزاً قبل إغلاق";
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: `${what} «${blocking.title}» (${blocking.number}) — سجّل موافقة العميل من بطاقة التصميم، أو أغلق المهمّة بسببٍ من شاشة المهام.`,
+  });
+}
+
+export { nextWorkOrderNumber, loadWorkOrder, assertWorkOrderBranch, assertOperatorOwns, assertNoLiveConsignment, assertNoBlockingTask };

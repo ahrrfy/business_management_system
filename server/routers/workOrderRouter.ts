@@ -10,6 +10,8 @@ import {
   productVariants,
   products,
   users,
+  serviceTypes,
+  tasks,
   workOrderImages,
   workOrderMaterials,
   workOrders,
@@ -34,6 +36,8 @@ import {
 } from "../services/workOrder/cancel";
 import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
+import { requestDesignApproval } from "../services/workOrder/approval";
+import { setWorkOrderDesign } from "../services/workOrder/design";
 import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
@@ -464,7 +468,15 @@ export const workOrderRouter = router({
           .select({ workOrderId: workOrderImages.workOrderId, url: workOrderImages.url })
           .from(workOrderImages)
           .where(inArray(workOrderImages.workOrderId, ids))
-          .orderBy(asc(workOrderImages.workOrderId), asc(workOrderImages.sortOrder), asc(workOrderImages.id));
+          .orderBy(
+            asc(workOrderImages.workOrderId),
+            // ش٢ (0218): **النسخةُ العليا أوّلاً** — وليس تخفيفاً للحجم بل **صحّةَ عرض**:
+            // بلا هذا الترتيب تعرض بطاقةُ الأمر تصميماً **مهجوراً** أبطلته نسخةٌ أحدث،
+            // فيبني الفنّيّ على صورةٍ لم يوافق عليها العميل.
+            desc(workOrderImages.revision),
+            asc(workOrderImages.sortOrder),
+            asc(workOrderImages.id),
+          );
         for (const im of imgs) {
           const k = Number(im.workOrderId);
           if (!thumbs.has(k)) thumbs.set(k, im.url);
@@ -642,10 +654,40 @@ export const workOrderRouter = router({
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
     // صور نموذج العمل (مرفقات) — للوحة التفاصيل.
     const images = await db
-      .select({ id: workOrderImages.id, url: workOrderImages.url, caption: workOrderImages.caption })
+      .select({
+        id: workOrderImages.id,
+        url: workOrderImages.url,
+        caption: workOrderImages.caption,
+        // ش٢ (0218): النسخة — تُغذّي شارة «نسخة ٣ من ٣» ومبدّل النسخ السابقة.
+        revision: workOrderImages.revision,
+      })
       .from(workOrderImages)
       .where(eq(workOrderImages.workOrderId, input.workOrderId))
-      .orderBy(asc(workOrderImages.sortOrder), asc(workOrderImages.id));
+      .orderBy(desc(workOrderImages.revision), asc(workOrderImages.sortOrder), asc(workOrderImages.id));
+    /**
+     * ش٢ — **الأمر يقول حالة حجزه بنفسه**: مهمّةٌ مفتوحةٌ نوعُها حاجز. استعلامٌ واحد بدل
+     * إجراءٍ جديد أو فلترةٍ في الواجهة، والحالةُ مشتقّةٌ من الواقع فلا تكذب البطاقة حين
+     * تُفتَح نسخةٌ جديدة (تعود «بانتظار الموافقة» تلقائياً).
+     */
+    const blockingRows = await db
+      .select({
+        id: tasks.id,
+        taskNumber: tasks.taskNumber,
+        title: tasks.title,
+        status: tasks.taskStatus,
+        dueAt: tasks.dueAt,
+      })
+      .from(tasks)
+      .innerJoin(serviceTypes, eq(serviceTypes.id, tasks.serviceTypeId))
+      .where(
+        and(
+          eq(tasks.linkedWorkOrderId, input.workOrderId),
+          inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
+          eq(serviceTypes.blocksExecution, true),
+        ),
+      )
+      .limit(1);
+    const blockingTask = blockingRows[0] ?? null;
     const qrPayload = workOrderBarcodeSet({
       orderNumber: wo.orderNumber,
       createdAt: wo.createdAt instanceof Date ? wo.createdAt : new Date(wo.createdAt),
@@ -662,10 +704,11 @@ export const workOrderRouter = router({
         laborCost: null as unknown as string,
         materials: safeMaterials,
         images,
+        blockingTask,
         qrPayload,
       };
     }
-    return { ...wo, ...deliveryInfo, materials, images, qrPayload };
+    return { ...wo, ...deliveryInfo, materials, images, blockingTask, qrPayload };
   }),
 
   /**
@@ -1152,6 +1195,65 @@ export const workOrderRouter = router({
    * السحب الذاتي للفني (محطة التنفيذ): يُسنِد الأمر الوارد لنفسه ليظهر في «أوامري».
    * workOrderExecProcedure = كاشير/مدير/فني مطبعة + فرع مُسنَد. الخدمة تمنع سحب أمر زميل.
    */
+  /**
+   * ش٢ — طلبُ موافقة العميل على التصميم. `workordersExecProcedure`: **مَن ينفّذ هو من يطلب**
+   * (رأى التصميم وعرف أنّه يحتاج إقراراً)، والتسجيلُ والإغلاق يبقيان في شاشة المهام بمفرداتها.
+   */
+  requestDesignApproval: workordersExecProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        note: z.string().trim().max(2000).nullish(),
+        assignedTo: z.number().int().positive().nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await requestDesignApproval(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "workOrder.requestDesignApproval",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { taskNumber: res.taskNumber, created: res.created },
+      });
+      return res;
+    }),
+
+  /**
+   * ش٢ — حفظُ نسخةِ تصميم. `workordersCashierProcedure` لا `Manager`: **الكاشير الذي كتب
+   * المواصفة هو من يصحّحها** (اليوم `update` مديريّ حصراً، فالتصحيح يمرّ بالمدير بلا سبب).
+   * والعقد تصريحيّ: القائمة الكاملة تُرسَل ويُشتقّ الفرق.
+   */
+  setDesign: workordersCashierProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        images: z
+          .array(
+            z.object({
+              url: z.string().min(1),
+              caption: z.string().trim().max(255).nullish(),
+              sortOrder: z.number().int().min(0).max(99).nullish(),
+            }),
+          )
+          .max(10),
+        customizationText: z.string().max(5000).nullish(),
+        note: z.string().trim().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await setWorkOrderDesign(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      // سجلُّ التدقيق يُكتب داخل المعاملة (`design.ts`) — لا تكرار هنا.
+      return res;
+    }),
+
   claim: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
