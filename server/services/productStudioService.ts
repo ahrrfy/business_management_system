@@ -569,6 +569,8 @@ export async function transitionStudioCampaign(
     status: StudioCampaignStatus;
     startsAt?: Date | null;
     dueAt?: Date | null;
+    /** سبب إلغاء الحملة — يُنسَخ على كل مهمة طابورٍ تُلغى معها. */
+    reason?: string | null;
   },
 ) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
@@ -618,7 +620,23 @@ export async function transitionStudioCampaign(
         dueAt: dueAt?.toISOString() ?? null,
       },
     });
-    return { campaignId: input.campaignId, status: input.status, startsAt, dueAt };
+    // إلغاء الحملة يجرّ طابورها: كان الانتقال يمسّ صفّ الحملة وحده، فتبقى مهامها في
+    // الطابور وفي المؤشّرات وتحتجز منتجاتها رغم أنّ حملتها أُلغيت.
+    // النطاق هو نفسه المُضيَّق في الإلغاء الصريح — غير المسنَد فقط: عملٌ بدأه موظف
+    // لا يُمحى تبعاً لقرارٍ إداريّ على الحملة، بل يُلغى فرداً فرداً بقرارٍ مرئيّ.
+    const cascade =
+      input.status === "CANCELLED"
+        ? await cancelCampaignQueuedTasksInTx(tx, actor, campaign, input.reason?.trim() || `أُلغيت مع حملة «${campaign.name}» (#${input.campaignId})`, "productStudio.campaign.cancelWithCampaign")
+        : { cancelledCount: 0, remaining: 0 };
+    return {
+      campaignId: input.campaignId,
+      status: input.status,
+      startsAt,
+      dueAt,
+      cancelledTasks: cascade.cancelledCount,
+      /** مهام طابورٍ لم تُلغَ بعد لأنّ الدفعة محدودة — تُستكمل بزرّ إلغاء الطابور. */
+      remainingTasks: cascade.remaining,
+    };
   });
 }
 
@@ -2554,6 +2572,33 @@ const CANCEL_BATCH_LIMIT = 500;
  * النطاق مُضيَّق عمداً: **المهام غير المسنَدة في حالة ASSIGNED فقط**. عملٌ بدأه موظف
  * (IN_PROGRESS أو أُرسل للمراجعة) لا يُمحى بضغطةٍ جماعية — يُلغى فرداً فرداً بقرارٍ مرئيّ.
  */
+/**
+ * نواة إلغاء طابور حملة، مشتركةٌ بين الإلغاء الصريح وإلغاء الحملة نفسها.
+ * تفترض أنّ صلاحية الفاعل على الحملة قد فُحصت، وتعمل داخل معاملة القادم.
+ */
+async function cancelCampaignQueuedTasksInTx(tx: Parameters<Parameters<typeof withTx>[0]>[0], actor: ProductStudioActor, campaign: { id: number | string; branchId: number | string | null }, reason: string, action: string) {
+  const campaignId = Number(campaign.id);
+  const scope = and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), eq(productImageJobs.activeSlot, 1));
+  const rows = await tx.select({ id: productImageJobs.id }).from(productImageJobs).where(scope).orderBy(asc(productImageJobs.id)).limit(CANCEL_BATCH_LIMIT).for("update");
+  if (rows.length === 0) return { cancelledCount: 0, remaining: 0 };
+  const ids = rows.map((row) => Number(row.id));
+  await tx
+    .update(productImageJobs)
+    .set(cancelledTaskFields(actor, reason, new Date()))
+    .where(inArray(productImageJobs.id, ids));
+  const [remainingRow] = await tx.select({ count: sql<number>`count(*)` }).from(productImageJobs).where(scope);
+  const remaining = Number(remainingRow?.count ?? 0);
+  await tx.insert(auditLogs).values({
+    userId: actor.userId,
+    branchId: campaign.branchId == null ? null : Number(campaign.branchId),
+    action,
+    entityType: "productStudioCampaign",
+    entityId: String(campaignId),
+    newValue: { cancelledCount: ids.length, remaining, reason },
+  });
+  return { cancelledCount: ids.length, remaining };
+}
+
 export async function bulkCancelStudioBacklog(actor: ProductStudioActor, input: { campaignId: number; reason: string }) {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const cleanReason = input.reason.trim();
@@ -2570,25 +2615,7 @@ export async function bulkCancelStudioBacklog(actor: ProductStudioActor, input: 
         message: "حملة الاستوديو غير موجودة",
       });
     assertCampaignAccess(actor, campaign);
-    const scope = and(eq(productImageJobs.campaignId, input.campaignId), eq(productImageJobs.status, "ASSIGNED"), isNull(productImageJobs.assignedTo), eq(productImageJobs.activeSlot, 1));
-    const rows = await tx.select({ id: productImageJobs.id }).from(productImageJobs).where(scope).orderBy(asc(productImageJobs.id)).limit(CANCEL_BATCH_LIMIT).for("update");
-    if (rows.length === 0) return { cancelledCount: 0, remaining: 0 };
-    const ids = rows.map((row) => Number(row.id));
-    await tx
-      .update(productImageJobs)
-      .set(cancelledTaskFields(actor, cleanReason, new Date()))
-      .where(inArray(productImageJobs.id, ids));
-    const [remainingRow] = await tx.select({ count: sql<number>`count(*)` }).from(productImageJobs).where(scope);
-    const remaining = Number(remainingRow?.count ?? 0);
-    await tx.insert(auditLogs).values({
-      userId: actor.userId,
-      branchId: Number(campaign.branchId),
-      action: "productStudio.campaign.cancelBacklog",
-      entityType: "productStudioCampaign",
-      entityId: String(input.campaignId),
-      newValue: { cancelledCount: ids.length, remaining, reason: cleanReason },
-    });
-    return { cancelledCount: ids.length, remaining };
+    return cancelCampaignQueuedTasksInTx(tx, actor, campaign, cleanReason, "productStudio.campaign.cancelBacklog");
   });
 }
 

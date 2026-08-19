@@ -447,8 +447,10 @@ export default function ProductImageStudio() {
     onError: (error) => notify.err(error),
   });
   const transitionCampaign = trpc.productStudio.transitionCampaign.useMutation({
-    onSuccess: async () => {
-      notify.ok("حُدّثت حالة الحملة");
+    onSuccess: async (result) => {
+      // إلغاء الحملة يجرّ طابورها؛ والعدد يُذكر صراحةً كي لا يكون المسح الجماعي صامتاً.
+      notify.ok(result.status === "CANCELLED" ? `أُلغيت الحملة و${result.cancelledTasks} مهمة من طابورها${result.remainingTasks > 0 ? ` — تبقّى ${result.remainingTasks}، أكمِل بزرّ «إلغاء الطابور»` : ""}` : "حُدّثت حالة الحملة");
+      setBacklogCancelReason("");
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -976,10 +978,11 @@ export default function ProductImageStudio() {
                   <Button
                     variant="outline"
                     className="min-h-11"
-                    disabled={offline || transitionCampaign.isPending}
-                    onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED" })}
+                    disabled={offline || transitionCampaign.isPending || backlogCancelReason.trim().length < 5}
+                    title={backlogCancelReason.trim().length < 5 ? "اكتب سبب الإلغاء في الحقل أدناه أولاً" : undefined}
+                    onClick={() => transitionCampaign.mutate({ campaignId: Number(selectedCampaign.id), status: "CANCELLED", reason: backlogCancelReason })}
                   >
-                    إلغاء الحملة
+                    إلغاء الحملة ومهام طابورها
                   </Button>
                 )}
               </div>
@@ -1025,8 +1028,8 @@ export default function ProductImageStudio() {
                 موظف لا يُمحى بضغطةٍ جماعية، بل يُلغى فرداً فرداً من بطاقة المهمة. */}
             {selectedCampaignId && (
               <div className="space-y-2 rounded-md border p-3">
-                <Label htmlFor="studio-backlog-cancel-reason">إلغاء طابور هذه الحملة (غير المسنَد فقط)</Label>
-                <p className="text-xs text-muted-foreground">للتراجع عن توليدٍ خاطئ. لا يمسّ مهمةً أُسنِدت أو بدأ العمل عليها، ويحرّر منتجاتها لمهام جديدة. تُلغى ٥٠٠ مهمة في كل ضغطة.</p>
+                <Label htmlFor="studio-backlog-cancel-reason">سبب الإلغاء — يلزم لإلغاء الحملة أو طابورها</Label>
+                <p className="text-xs text-muted-foreground">للتراجع عن توليدٍ خاطئ. الإلغاء — سواء للحملة أو للطابور وحده — لا يمسّ مهمةً أُسنِدت أو بدأ العمل عليها، ويحرّر منتجاتها لمهام جديدة. تُلغى ٥٠٠ مهمة في كل ضغطة.</p>
                 <div className="flex flex-wrap items-end gap-2">
                   <div className="min-w-52 flex-1">
                     <Input id="studio-backlog-cancel-reason" value={backlogCancelReason} onChange={(event) => setBacklogCancelReason(event.target.value)} placeholder="سبب الإلغاء (٥ أحرف على الأقل)" maxLength={500} />

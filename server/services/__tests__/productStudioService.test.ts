@@ -1928,6 +1928,56 @@ describe("product studio governed workflow", () => {
     expect((await listStudioTasks(manager, { scope: "HISTORY" })).items.filter((item) => item.status === "CANCELLED")).toHaveLength(3);
   });
 
+  it("إلغاء الحملة يجرّ طابورها ويُبقي عمل الموظف", async () => {
+    await db()
+      .insert(s.products)
+      .values([
+        { id: 3, name: "منتج ثالث" },
+        { id: 4, name: "منتج رابع" },
+      ]);
+    const campaign = await createStudioCampaign(manager, { name: "حملة تُلغى", status: "ACTIVE" });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ createdCount: 4 });
+    await assignStudioTask(manager, { productId: 3, assigneeId: worker.userId });
+
+    await expect(transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "CANCELLED", reason: "الحملة أُنشئت بالخطأ" })).resolves.toMatchObject({
+      status: "CANCELLED",
+      // ثلاثةٌ غير مسنَدة تُلغى مع الحملة؛ المُسنَدة لا.
+      cancelledTasks: 3,
+      remainingTasks: 0,
+    });
+
+    const rows = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId));
+    const byProduct = new Map(rows.map((row) => [Number(row.productId), row]));
+    for (const productId of [1, 2, 4]) {
+      expect(byProduct.get(productId)).toMatchObject({
+        status: "CANCELLED",
+        activeSlot: null,
+        cancellationReason: "الحملة أُنشئت بالخطأ",
+        cancelledBy: manager.userId,
+      });
+    }
+    // عملُ الموظف لم يُمَسّ بقرارٍ إداريّ على الحملة.
+    expect(byProduct.get(3)).toMatchObject({ status: "ASSIGNED", assignedTo: worker.userId, activeSlot: 1, cancelledAt: null });
+    // والمنتجات المحرَّرة تقبل مهاماً جديدة رغم أنّ حملتها ملغاة.
+    await expect(assignStudioTask(manager, { productId: 4, assigneeId: worker.userId })).resolves.toMatchObject({ revision: 1 });
+  });
+
+  it("إكمال الحملة لا يلغي شيئاً، وبلا سببٍ صريح يُنسَب الإلغاء إلى الحملة", async () => {
+    const campaign = await createStudioCampaign(manager, { name: "حملة القياس", status: "ACTIVE" });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ createdCount: 2 });
+
+    // الإكمال حالةٌ نهائية أخرى ولا يجرّ إلغاءً.
+    await expect(transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "COMPLETED" })).resolves.toMatchObject({ cancelledTasks: 0, remainingTasks: 0 });
+    expect((await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId))).every((row) => row.status === "ASSIGNED")).toBe(true);
+
+    const second = await createStudioCampaign(manager, { name: "حملة بلا سبب", status: "ACTIVE" });
+    await transitionStudioCampaign(manager, { campaignId: second.campaignId, status: "CANCELLED" });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, second.campaignId));
+    // لا مهام لهذه الحملة، لكن العقد يبقى: السبب المشتقّ يسمّي الحملة حين لا يكتب المدير سبباً.
+    expect(row).toBeUndefined();
+    expect((await db().select().from(s.productStudioCampaigns).where(eq(s.productStudioCampaigns.id, second.campaignId)))[0]).toMatchObject({ status: "CANCELLED" });
+  });
+
   it("يعزل الإلغاء الجماعي بالفرع", async () => {
     const campaign = await createStudioCampaign(manager, { name: "حملة فرع واحد", status: "ACTIVE" });
     await expect(bulkCancelStudioBacklog(managerTwo, { campaignId: campaign.campaignId, reason: "محاولة من فرعٍ آخر" })).rejects.toMatchObject({ code: "FORBIDDEN" });

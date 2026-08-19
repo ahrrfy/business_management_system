@@ -77,6 +77,7 @@ export const productStudioRouter = router({
       status: z.enum(["ACTIVE", "COMPLETED", "CANCELLED"]),
       startsAt: z.coerce.date().nullable().optional(),
       dueAt: z.coerce.date().nullable().optional(),
+      reason: z.string().trim().max(500).optional(),
     }))
     .mutation(({ ctx, input }) => transitionStudioCampaign(actor(ctx), input)),
   previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx), input.campaignId)),
