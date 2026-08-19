@@ -19,6 +19,7 @@ describe("provision worker runtime environment", () => {
       CONTROL_DB_POOL_LIMIT: "3",
       JWT_SECRET: "jwt-secret-must-not-pass",
       INTERNAL_PROXY_SECRET: "proxy-secret-must-not-pass",
+      INTERNAL_PROXY_SECRET_PREVIOUS: "previous-proxy-secret-must-not-pass",
       R2_SECRET_ACCESS_KEY: "r2-secret-must-not-pass",
       R2_ACCESS_KEY_ID: "r2-key-id-must-not-pass",
       GEMINI_API_KEY: "ai-secret-must-not-pass",
