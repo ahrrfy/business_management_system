@@ -6,6 +6,9 @@
 //   pnpm coord:status [--json]
 //   pnpm coord:heartbeat
 //   pnpm coord:reclaim [<شريحة>] [--live-session-ids a,b] [--dry-run]
+//   pnpm coord:migration reserve <slug> [--count N] [--json]   ← حجزٌ ذرّيّ لرقم الهجرة
+//   pnpm coord:migration list [--json]
+//   pnpm coord:migration release <idx...> | --mine | --merged
 // أكواد الخروج: 0 نجح/أملكها · 3 متنازَع (مالك حيّ آخر) · 4 معطوب (استرجاع متاح) · 1 خطأ استخدام/IO.
 import { rmSync, existsSync, renameSync } from "node:fs";
 import path from "node:path";
@@ -14,6 +17,8 @@ import {
   buildClaimRecord, claimAtomic, claimPath, readClaim, readAllClaims,
   readJson, writeJson, isStale, isLive, leaseRemainingMs, appendEvent,
   sessionsDir, reclaimedDir, coordInitialized, hostname, INTEGRATION_SLICE,
+  reserveNextMigration, readAllMigrationReservations, mainJournalCeiling,
+  fulfilledReservations, migrationsResDir, slugify,
 } from "./coord-core.mjs";
 
 const [, , sub, ...rest] = process.argv;
@@ -199,7 +204,101 @@ function cmdReclaim() {
   process.exit(0);
 }
 
+
+// ───────────────────────── حجز رقم الهجرة ─────────────────────────
+// الرقم مورِدٌ مشترَك بين الفروع، وكان يُحجَز بالنيّة لا بقفل ⇒ تصادمَ أربع مرّات في ثلاثة أيام.
+// هنا يصير قفلاً ذرّياً بنفس مِفتاح الشرائح (O_EXCL): من يفوز بالرقم يملكه، والباقي ينتقل للتالي.
+function cmdMigration() {
+  const [action = "list", ...args] = positional;
+  const branch = info.branch;
+  const repoRoot = info.root;
+  ensureCoordDirs(coordRoot);
+
+  if (action === "reserve") {
+    const slugRaw = args[0];
+    if (!slugRaw) fail("اسمٌ مختصرٌ للهجرة مطلوب: pnpm coord:migration reserve <slug>");
+    // وسوم الهجرات في هذا المستودع بـ«_» لا «-» (0238_work_order_draft_link) — `slugify`
+    // مصنوعةٌ لأسماء الشرائح فتُنتج شُرَطاً. نُطبّعها هنا كي يكون الوسم صالحاً للنسخ حرفياً.
+    const slug = slugify(slugRaw).replace(/-+/g, "_").replace(/^_+|_+$/g, "");
+    if (!slug) fail("الاسم المختصر فارغٌ بعد التطبيع — استعمل حروفاً/أرقاماً.");
+    const count = Math.max(1, Math.min(20, Number(valueOf("--count") ?? 1)));
+    const ceiling = mainJournalCeiling(repoRoot);
+    if (!ceiling) {
+      console.error("⚠  تعذّرت قراءة origin/main — شغّل: git fetch origin main");
+      console.error("   الحجز سيبني على الحجوزات القائمة وحدها، وقد يقلّ عن أرقام main.");
+    }
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      const res = reserveNextMigration(coordRoot, {
+        slug: count > 1 ? `${slug}_${i + 1}` : slug,
+        branch, worktree: repoRoot, sessionKey: mySessionKey,
+      }, { cwd: repoRoot });
+      if (!res.ok) fail(`تعذّر الحجز: ${res.code} ${res.err ?? ""}`);
+      out.push(res.record);
+      appendEvent(coordRoot, { kind: "migration.reserve", idx: res.record.idx, tag: res.record.tag, branch });
+    }
+    if (JSONOUT) { console.log(JSON.stringify(out, null, 2)); return; }
+    console.log(`✓ حُجِز ${out.length > 1 ? out.length + " أرقام" : "الرقم"} للفرع ${branch}:`);
+    for (const r of out) {
+      console.log(`  ${String(r.idx).padStart(4, "0")}  when=${r.when}  ${r.tag}`);
+    }
+    console.log("");
+    console.log("  استعمله حرفياً في اسم الملف وفي مدخل _journal.json (idx و tag و when معاً).");
+    console.log("  حرّره بعد الدمج: pnpm coord:migration release --merged");
+    return;
+  }
+
+  if (action === "release") {
+    const all = readAllMigrationReservations(coordRoot);
+    let targets = [];
+    if (has("--merged")) {
+      targets = fulfilledReservations(coordRoot, repoRoot);
+      if (!targets.length) { console.log("• لا حجوزات مُتحقّقة على origin/main بعد."); return; }
+    } else if (has("--mine")) {
+      targets = all.filter((r) => r.branch === branch);
+      if (!targets.length) { console.log(`• لا حجوزات لهذا الفرع (${branch}).`); return; }
+    } else {
+      const ids = args.map((a) => Number(a)).filter((n) => Number.isInteger(n) && n > 0);
+      if (!ids.length) fail("حدّد رقماً أو أكثر، أو --mine، أو --merged");
+      targets = all.filter((r) => ids.includes(Number(r.idx)));
+      const missing = ids.filter((n) => !all.some((r) => Number(r.idx) === n));
+      if (missing.length) console.error(`⚠  غير محجوزة أصلاً: ${missing.join(", ")}`);
+      // حاجزٌ ضدّ تحرير رقم فرعٍ آخر بالخطأ — التحرير القسريّ متاح صراحةً.
+      const foreign = targets.filter((r) => r.branch && r.branch !== branch);
+      if (foreign.length && !has("--force")) {
+        fail(`${foreign.length} رقماً يملكها فرعٌ آخر (${foreign.map((f) => f.branch).join(", ")}) — استعمل --force إن كنت واثقاً`, 3);
+      }
+    }
+    for (const r of targets) {
+      const f = path.join(migrationsResDir(coordRoot), `${String(r.idx).padStart(4, "0")}.json`);
+      if (existsSync(f)) rmSync(f);
+      appendEvent(coordRoot, { kind: "migration.release", idx: r.idx, tag: r.tag, branch });
+    }
+    console.log(`✓ حُرِّر ${targets.length}: ${targets.map((r) => r.tag).join(", ")}`);
+    return;
+  }
+
+  // list (الافتراضي)
+  const rows = readAllMigrationReservations(coordRoot);
+  const ceiling = mainJournalCeiling(repoRoot);
+  if (JSONOUT) { console.log(JSON.stringify({ ceiling, reservations: rows }, null, 2)); return; }
+  console.log(`أرقام الهجرات المحجوزة (السجلّ: ${migrationsResDir(coordRoot)}):`);
+  console.log(ceiling
+    ? `  أرضية origin/main: idx=${ceiling.idx} · when=${ceiling.when}`
+    : "  ⚠ تعذّرت قراءة origin/main (git fetch origin main)");
+  if (!rows.length) { console.log(""); console.log("  لا حجوزات."); return; }
+  const merged = new Set(fulfilledReservations(coordRoot, repoRoot).map((r) => Number(r.idx)));
+  console.log("");
+  for (const r of rows) {
+    const age = Math.round((Date.now() - Date.parse(r.reservedAt)) / 60000);
+    const state = merged.has(Number(r.idx)) ? "مدموج ✓ (حرّره)" : `${age}د`;
+    console.log(`  ${String(r.idx).padStart(4, "0")}  when=${r.when}  ${String(r.tag).padEnd(44)} ${String(r.branch ?? "—").padEnd(46)} ${state}`);
+  }
+  if (merged.size) { console.log(""); console.log(`  ${merged.size} حجزاً تحقّق على origin/main — نظّفها: pnpm coord:migration release --merged`); }
+}
+
 switch (sub) {
+  case "migration": case "migrations": cmdMigration(); break;
   case "claim": cmdClaim(); break;
   case "release": cmdRelease(); break;
   case "list": cmdList(); break;

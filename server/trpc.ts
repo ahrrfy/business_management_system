@@ -153,6 +153,13 @@ const requireStorefrontPublicPath = t.middleware(({ path, next }) => {
 export const storefrontPublicReadProcedure = t.procedure.use(requireStorefrontPublicPath);
 
 /**
+ * كتابة المتجر العامة المنخفضة المخاطر فقط: الحماية الإلزامية تبقى داخل كل معالج
+ * (Firebase ID token، Turnstile أحادي الاستخدام، أو رمز جهاز Expo مضبوط) مع حد المعدل
+ * الشامل لمسار storefront في index.ts. لا تُستعمل للبيانات الإدارية أو التسعير أو البيع المالي.
+ */
+export const storefrontPublicWriteProcedure = t.procedure.use(requireStorefrontPublicPath);
+
+/**
  * Self-service boundary for the mobile workspace. Handlers using this
  * procedure must derive the subject from ctx.user and must not accept a
  * caller-supplied user or employee identifier.

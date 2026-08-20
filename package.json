@@ -71,7 +71,11 @@
     "coord:status": "node scripts/coord.mjs status",
     "coord:heartbeat": "node scripts/coord.mjs heartbeat",
     "coord:reclaim": "node scripts/coord.mjs reclaim-stale",
-    "coord:test": "node scripts/coord-core.test.mjs && node scripts/coord-race.test.mjs",
+    "coord:migration": "node scripts/coord.mjs migration",
+    "coord:migration:reserve": "node scripts/coord.mjs migration reserve",
+    "coord:migration:list": "node scripts/coord.mjs migration list",
+    "coord:migration:release": "node scripts/coord.mjs migration release",
+    "coord:test": "node scripts/coord-core.test.mjs && node scripts/coord-race.test.mjs && node scripts/coord-migration-race.test.mjs",
     "db:restore-drill": "node scripts/backup-restore-drill.mjs"
   },
   "dependencies": {

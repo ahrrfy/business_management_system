@@ -137,6 +137,10 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  uq_loyalty_program_customer: { msg: "حساب الولاء لهذا العميل في هذا البرنامج موجود مسبقاً." },
+  uq_loyalty_order_earn: { msg: "نقاط الولاء لهذا الطلب مُنحت مسبقاً." },
+  uq_storefront_push_token_hash: { msg: "هذا الجهاز مسجّل مسبقاً لإشعارات المتجر." },
+  uq_storefront_push_delivery: { msg: "تم إنشاء تسليم هذه الحملة لهذا الجهاز مسبقاً." },
   // ── موجات الأسعار (0226) ──
   // يُصاب حين يضغط مديران «تراجع» على الموجة نفسها في اللحظة ذاتها: الخدمة تفحص أوّلاً
   // وتردّ برسالةٍ واضحة، لكنّ السباق قد يبلغ القيدَ نفسه ⇒ هذه رسالتُه بدل خطأ MySQL خامّ.

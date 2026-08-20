@@ -77,6 +77,7 @@ const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
 const Storefront = lazy(() => import("@/pages/Storefront"));
+const MobileTurnstile = lazy(() => import("@/pages/MobileTurnstile"));
 const StoreHub = lazy(() => import("@/pages/StoreHub"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
@@ -324,6 +325,8 @@ export default function App() {
       <Route path="/kiosk" component={Kiosk} />
       {/* متجر الزبون (B2C) — صفحة علنية بملء الشاشة، نقطة دخول تطبيق الجوال. بلا جلسة وبلا AppLayout. */}
       <Route path="/store" component={Storefront} />
+      {/* تحقق ضيق لتطبيق الهاتف: يعيد رمز Turnstile فقط، ولا يعرض المتجر أو بيانات العميل. */}
+      <Route path="/store/mobile-turnstile" component={MobileTurnstile} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       <Route path="/my-stocktake/:code"><Shell><MyStocktakeWorkspace /></Shell></Route>

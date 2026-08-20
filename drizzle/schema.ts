@@ -1941,6 +1941,65 @@ export type CouponProgram = typeof couponPrograms.$inferSelect;
 export type Coupon = typeof coupons.$inferSelect;
 export type CouponRedemption = typeof couponRedemptions.$inferSelect;
 
+/* ============================ متجر العملاء — الولاء والنقاط ============================ */
+
+/** برنامج ولاء واحد أو أكثر، لا يلمس التطبيق قيمه مباشرةً؛ الإدارة تفعله وتضبط قواعده من الداشبورد. */
+export const loyaltyPrograms = mysqlTable(
+  "loyaltyPrograms",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 120 }).notNull(),
+    status: mysqlEnum("loyaltyProgramStatus", ["DRAFT", "ACTIVE", "PAUSED"]).default("DRAFT").notNull(),
+    /** نقاط لكل دينار عراقي؛ Decimal يمنع تراكم خطأ floating point في القيمة التسويقية. */
+    pointsPerIqd: decimal("pointsPerIqd", { precision: 16, scale: 6 }).default("0").notNull(),
+    /** قيمة الخصم بالدينار لكل نقطة عند الاستبدال. */
+    iqdDiscountPerPoint: decimal("iqdDiscountPerPoint", { precision: 15, scale: 2 }).default("0").notNull(),
+    minRedeemPoints: int("minRedeemPoints").default(0).notNull(),
+    maxRedeemPercent: tinyint("maxRedeemPercent").default(0).notNull(),
+    expiresAfterDays: int("expiresAfterDays"),
+    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({ statusIdx: index("idx_loyalty_program_status").on(table.status) }),
+);
+
+/** حساب العميل لا يحمل أي بيانات عرض؛ الرصيد والسجل يحكمان من الخادم حصراً. */
+export const loyaltyAccounts = mysqlTable(
+  "loyaltyAccounts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    programId: bigint("programId", { mode: "number" }).notNull().references(() => loyaltyPrograms.id),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
+    pointsBalance: decimal("pointsBalance", { precision: 18, scale: 2 }).default("0").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({ programCustomerUq: unique("uq_loyalty_program_customer").on(table.programId, table.customerId), customerIdx: index("idx_loyalty_account_customer").on(table.customerId) }),
+);
+
+/** دفتر نقاط غير قابل للتعديل؛ كل منح أو صرف أو عكس يترك أثراً تدقيقياً قابلاً للمراجعة. */
+export const loyaltyLedgerEntries = mysqlTable(
+  "loyaltyLedgerEntries",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    accountId: bigint("accountId", { mode: "number" }).notNull().references(() => loyaltyAccounts.id),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
+    onlineOrderId: bigint("onlineOrderId", { mode: "number" }),
+    entryType: mysqlEnum("loyaltyEntryType", ["ORDER_EARN", "ORDER_REVERSE", "REDEEM", "ADJUSTMENT", "EXPIRE"]).notNull(),
+    pointsDelta: decimal("pointsDelta", { precision: 18, scale: 2 }).notNull(),
+    balanceAfter: decimal("balanceAfter", { precision: 18, scale: 2 }).notNull(),
+    note: varchar("note", { length: 255 }),
+    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({ accountCreatedIdx: index("idx_loyalty_ledger_account_created").on(table.accountId, table.createdAt), orderEarnUq: unique("uq_loyalty_order_earn").on(table.onlineOrderId, table.entryType) }),
+);
+
+export type LoyaltyProgram = typeof loyaltyPrograms.$inferSelect;
+export type LoyaltyAccount = typeof loyaltyAccounts.$inferSelect;
+export type LoyaltyLedgerEntry = typeof loyaltyLedgerEntries.$inferSelect;
+
 /* ============================ عروض الأسعار (Quotations) ============================ */
 
 /** عرض سعر — مستند تفاوضي بلا أثر على المخزون أو الدفتر حتى يُحوَّل إلى فاتورة. */
@@ -8649,6 +8708,83 @@ export const nativePushDevices = mysqlTable(
 );
 export type NativePushDevice = typeof nativePushDevices.$inferSelect;
 export type InsertNativePushDevice = typeof nativePushDevices.$inferInsert;
+
+/** أجهزة عملاء متجر العملاء: رمز Expo Push مشفر، ومعرّفه التجزئي فقط للفهرسة ومنع التكرار. لا يرتبط
+ * برقم هاتف؛ الربط الاختياري بالعميل يتم بعد تحقق Firebase في طبقة هوية منفصلة. */
+export const storefrontPushDevices = mysqlTable(
+  "storefrontPushDevices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id, { onDelete: "set null" }),
+    tokenHash: char("tokenHash", { length: 64 }).notNull().unique(),
+    tokenCiphertext: text("tokenCiphertext").notNull(),
+    platform: mysqlEnum("platform", ["IOS", "ANDROID"]).notNull(),
+    appVersion: varchar("appVersion", { length: 64 }).notNull(),
+    marketingOptIn: boolean("marketingOptIn").notNull().default(false),
+    transactionalOptIn: boolean("transactionalOptIn").notNull().default(true),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
+    revokedAt: timestamp("revokedAt"),
+  },
+  (table) => ({
+    activeMarketingIdx: index("idx_storefront_push_active_marketing").on(table.marketingOptIn, table.revokedAt),
+    customerActiveIdx: index("idx_storefront_push_customer").on(table.customerId, table.revokedAt),
+  }),
+);
+export type StorefrontPushDevice = typeof storefrontPushDevices.$inferSelect;
+
+/** حملة متجر تمر بمسار مسودة ← اعتماد ← جدولة، ولا تخرج إلى صندوق التسليم قبل اعتمادها. */
+export const storefrontPushCampaigns = mysqlTable(
+  "storefrontPushCampaigns",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 160 }).notNull(),
+    kind: mysqlEnum("kind", ["MARKETING", "TRANSACTIONAL"]).notNull().default("MARKETING"),
+    status: mysqlEnum("status", ["DRAFT", "APPROVED", "SCHEDULED", "RUNNING", "COMPLETED", "CANCELLED"]).notNull().default("DRAFT"),
+    title: varchar("title", { length: 80 }).notNull(),
+    body: varchar("body", { length: 180 }).notNull(),
+    destination: varchar("destination", { length: 180 }).notNull(),
+    throttlePerMinute: int("throttlePerMinute").notNull().default(120),
+    scheduledAt: timestamp("scheduledAt"),
+    approvedBy: int("approvedBy").references(() => users.id, { onDelete: "set null" }),
+    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    launchedAt: timestamp("launchedAt"),
+    completedAt: timestamp("completedAt"),
+    recipientCount: int("recipientCount").notNull().default(0),
+    sentCount: int("sentCount").notNull().default(0),
+    openedCount: int("openedCount").notNull().default(0),
+    clickedCount: int("clickedCount").notNull().default(0),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({ dueIdx: index("idx_storefront_push_campaign_due").on(table.status, table.scheduledAt) }),
+);
+export type StorefrontPushCampaign = typeof storefrontPushCampaigns.$inferSelect;
+
+/** صندوق تسليم منفصل لكل جهاز، يعيد المحاولة بتراجع محدود ويحفظ الفتح والنقر من دون تخزين محتوى حساس. */
+export const storefrontPushDeliveries = mysqlTable(
+  "storefrontPushDeliveries",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    campaignId: bigint("campaignId", { mode: "number" }).notNull().references(() => storefrontPushCampaigns.id, { onDelete: "cascade" }),
+    deviceId: bigint("deviceId", { mode: "number" }).notNull().references(() => storefrontPushDevices.id, { onDelete: "cascade" }),
+    status: mysqlEnum("status", ["PENDING", "PROCESSING", "RETRY", "SENT", "GONE", "FAILED"]).notNull().default("PENDING"),
+    attemptCount: tinyint("attemptCount").notNull().default(0),
+    availableAt: timestamp("availableAt").defaultNow().notNull(),
+    lockedAt: timestamp("lockedAt"),
+    providerTicketId: varchar("providerTicketId", { length: 255 }),
+    errorCode: varchar("errorCode", { length: 64 }),
+    sentAt: timestamp("sentAt"),
+    openedAt: timestamp("openedAt"),
+    clickedAt: timestamp("clickedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    campaignDeviceUnique: unique("uq_storefront_push_delivery").on(table.campaignId, table.deviceId),
+    dueIdx: index("idx_storefront_push_delivery_due").on(table.status, table.availableAt),
+  }),
+);
+export type StorefrontPushDelivery = typeof storefrontPushDeliveries.$inferSelect;
 
 /** سجل إرسال FCM بلا محتوى الرسالة الحسّاس. */
 export const nativePushDeliveryLog = mysqlTable(
