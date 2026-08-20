@@ -666,9 +666,7 @@ export const productCustomizationTemplates = mysqlTable(
   "productCustomizationTemplates",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    productId: bigint("productId", { mode: "number" })
-      .notNull()
-      .references(() => products.id, { onDelete: "cascade" }),
+    productId: bigint("productId", { mode: "number" }).notNull(),
     kind: mysqlEnum("kind", ["PRINT", "GIFT", "GENERAL"]).default("GENERAL").notNull(),
     title: varchar("title", { length: 160 }).notNull(),
     description: text("description"),
@@ -679,6 +677,11 @@ export const productCustomizationTemplates = mysqlTable(
   (table) => ({
     productIdx: index("idx_custom_template_product").on(table.productId),
     productUnique: unique("uq_custom_template_product").on(table.productId),
+    productFk: foreignKey({
+      columns: [table.productId],
+      foreignColumns: [products.id],
+      name: "fk_custom_template_product",
+    }).onDelete("cascade"),
   }),
 );
 
@@ -690,9 +693,7 @@ export const productCustomizationFields = mysqlTable(
   "productCustomizationFields",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    templateId: bigint("templateId", { mode: "number" })
-      .notNull()
-      .references(() => productCustomizationTemplates.id, { onDelete: "cascade" }),
+    templateId: bigint("templateId", { mode: "number" }).notNull(),
     fieldKey: varchar("fieldKey", { length: 80 }).notNull(),
     label: varchar("label", { length: 160 }).notNull(),
     fieldType: mysqlEnum("fieldType", ["TEXT", "TEXTAREA", "SELECT", "FILE", "NUMBER", "SWATCH"]).notNull(),
@@ -709,6 +710,11 @@ export const productCustomizationFields = mysqlTable(
   (table) => ({
     templateIdx: index("idx_custom_field_template_sort").on(table.templateId, table.sortOrder),
     keyUnique: unique("uq_custom_field_template_key").on(table.templateId, table.fieldKey),
+    templateFk: foreignKey({
+      columns: [table.templateId],
+      foreignColumns: [productCustomizationTemplates.id],
+      name: "fk_custom_field_template",
+    }).onDelete("cascade"),
   }),
 );
 

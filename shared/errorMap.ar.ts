@@ -137,6 +137,8 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  uq_custom_template_product: { msg: "قالب التخصيص لهذا المنتج موجود مسبقاً." },
+  uq_custom_field_template_key: { msg: "مفتاح حقل التخصيص مستخدم مسبقاً داخل هذا القالب." },
   uq_image_studio_usage_daily_service: { msg: "سجلّ حصة خدمة الاستوديو لهذا اليوم موجود مسبقاً." },
   uq_pijob_product_active: {
     msg: "توجد مهمة استوديو نشطة لهذا المنتج بالفعل — افتح المهمة الحالية بدلاً من إنشاء مهمة مكرّرة.",

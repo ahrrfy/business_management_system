@@ -12,7 +12,7 @@ CREATE TABLE `productCustomizationTemplates` (
   `updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT `productCustomizationTemplates_id` PRIMARY KEY(`id`),
   CONSTRAINT `uq_custom_template_product` UNIQUE(`productId`),
-  CONSTRAINT `productCustomizationTemplates_productId_products_id_fk`
+  CONSTRAINT `fk_custom_template_product`
     FOREIGN KEY (`productId`) REFERENCES `products` (`id`) ON DELETE cascade ON UPDATE no action
 );
 --> statement-breakpoint
@@ -38,7 +38,7 @@ CREATE TABLE `productCustomizationFields` (
   `updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT `productCustomizationFields_id` PRIMARY KEY(`id`),
   CONSTRAINT `uq_custom_field_template_key` UNIQUE(`templateId`,`fieldKey`),
-  CONSTRAINT `productCustomizationFields_templateId_productCustomizationTemplates_id_fk`
+  CONSTRAINT `fk_custom_field_template`
     FOREIGN KEY (`templateId`) REFERENCES `productCustomizationTemplates` (`id`) ON DELETE cascade ON UPDATE no action
 );
 --> statement-breakpoint
