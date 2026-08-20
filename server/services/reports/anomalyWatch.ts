@@ -534,7 +534,8 @@ export async function getAnomalyWatch(opts: {
         WHERE i.invoiceNumber REGEXP '^[0-9]+$'
           AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
       ) t
-      WHERE ${branchId == null ? sql`1 = 1` : sql`1 = 0`}
+      -- ولا يُقيَّد بفرع **إطلاقاً**: الفجوةُ في عدّادٍ عالميّ حقيقةٌ عالميّة، وتصفيتُها
+      -- بفرعٍ هي بعينها ما كان يُنتج الكذب. الصفُّ يُعنوَن «كل الفروع» كي لا يُنسَب لفرع.
       HAVING COUNT(*) > 0 AND MAX(t.seq) - MIN(t.seq) + 1 <> COUNT(*)
       ORDER BY ymd DESC
     `),

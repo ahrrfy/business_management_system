@@ -18,9 +18,15 @@ import {
 const ROOT = join(__dirname, "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
-/** الملفّات التي تنتج الرفض أو تتعرّف عليه. */
+/**
+ * الملفّات التي تنتج الرفض أو تتعرّف عليه.
+ *
+ * ⚠️ المُنتِجُ **انتقل** (٢٠/٨) من `delivery/dispatchInvoice.ts` إلى الحارس المشترك
+ * `workOrder/siblings.ts` حين وُسّع ليشمل مخارج التسليم والإرسال الثلاثة. والقائمةُ تتبع
+ * المُنتِجَ الحقيقيّ — وهذا الحارسُ بعينه أمسك الانتقال حين نسيتُ تحديثها.
+ */
 const CONSUMERS = [
-  "server/services/delivery/dispatchInvoice.ts",
+  "server/services/workOrder/siblings.ts",
   "client/src/components/delivery/InvoiceDispatchDialog.tsx",
   "client/src/components/reception/ReceptionInvoiceQueue.tsx",
 ];

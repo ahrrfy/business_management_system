@@ -18,6 +18,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { dispatchToDelivery } from "../delivery/dispatch";
 import { recordCompanyStatement } from "../delivery/companyStatement";
+import { money, round2 } from "../money";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
 
@@ -166,22 +167,50 @@ describe("كشف شركة التوصيل — الدليل البديل عن بو
     expect(await balanceOf(1)).toBe(8000); // المتبقّي لم يُمحَ — يبقى مطالَباً به
   });
 
-  it("الاستقطاعات تُوثَّق على المستند إفصاحاً (لا تخفيضَ ذمّة عميل)", async () => {
+  it("⭐ الاستقطاع نقدٌ لم يدخل الدرج: يُطرح من الصافي ويُقيَّد مصروفاً — بلا مسّ ذمّة العميل", async () => {
+    // ٢٠/٨ (تصويب مراجعة Codex): كان هذا الاختبار يُسلّم **كامل** الحصيلة نقداً ويُعلن
+    // استقطاعاً ١٥٠٠ في الوقت نفسه — تناقضٌ يُسجّل نقداً لم يدخل الدرج ويترك الاستقطاع
+    // خارج الدفتر. والهجرةُ نفسها تعرّفه «أجور التوصيل التي تحسمها الشركة **من الحصيلة**»
+    // ⇒ المُسلَّم نقداً هو **الصافي**. والثابتُ الذي يحرسه اسمُ الاختبار باقٍ: ذمّةُ العميل
+    // لا تُمَسّ — الاستقطاع مصروفُ شركةٍ لا تخفيضُ مطالبة.
     const a = await dispatchedOrder("st-4", "10000.00");
 
     await recordCompanyStatement({
       branchId: 1, partyId: 1, statementNumber: "DEDUCT-001",
       deductionsTotal: "1500.00", notes: "أجور توصيل حسمتها الشركة",
       lines: [{ consignmentId: a.consignmentId, collectedAmount: "10000.00" }],
-      countedCash: "10000.00", clientRequestId: "stmt-req-4",
+      countedCash: "8500.00", clientRequestId: "stmt-req-4",
     }, CASHIER);
 
     const rm = (await db().select().from(s.deliveryRemittances))[0];
     expect(rm.deductionsTotal).toBe("1500.00");
     expect(rm.notes).toBe("أجور توصيل حسمتها الشركة");
-    // الزبون دفع كامل COD ⇒ ذمّته صفر بصرف النظر عن استقطاع الشركة.
+    expect(round2(money(rm.netRemitted)).toFixed(2)).toBe("8500.00");
+
+    // الزبون دفع كامل COD ⇒ ذمّته صفر، والفاتورة مدفوعة — الاستقطاع لا يمسّها.
     expect(await balanceOf(1)).toBe(0);
     expect((await invoiceOf(a.invoiceId)).status).toBe("PAID");
+
+    // ولا يضيع بصمت (§٥): إيصالُ OUT بقيمته + قيدُ مصروفٍ مصنَّف.
+    const dedOut = (await db().select().from(s.receipts))
+      .filter((r) => r.direction === "OUT" && (r.description ?? "").includes("استقطاع"));
+    expect(dedOut).toHaveLength(1);
+    expect(round2(money(dedOut[0].amount)).toFixed(2)).toBe("1500.00");
+    const expenseEntry = (await db().select().from(s.accountingEntries))
+      .filter((e) => (e.dedupeKey ?? "").startsWith("DLV-STMT-DEDUCTION:"));
+    expect(expenseEntry).toHaveLength(1);
+    expect(round2(money(expenseEntry[0].amount)).toFixed(2)).toBe("1500.00");
+  });
+
+  it("استقطاعٌ يتجاوز المُحصَّل يُرفض قبل أيّ كتابة", async () => {
+    const a = await dispatchedOrder("st-4b", "5000.00");
+    await expect(recordCompanyStatement({
+      branchId: 1, partyId: 1, statementNumber: "DEDUCT-TOOBIG",
+      deductionsTotal: "6000.00",
+      lines: [{ consignmentId: a.consignmentId, collectedAmount: "5000.00" }],
+      countedCash: "0.00", clientRequestId: "stmt-req-4b",
+    }, CASHIER)).rejects.toThrowError(/يتجاوز المُحصَّل/);
+    expect(await db().select().from(s.deliveryRemittances)).toHaveLength(0);
   });
 
   it("سطرٌ لجهةٍ أخرى أو فرعٍ آخر ⇒ يُرفض قبل أيّ كتابة", async () => {
