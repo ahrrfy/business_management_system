@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 991,
+    "trpcTotal": 993,
     "byKind": {
-      "mutation": 519,
-      "query": 472
+      "mutation": 520,
+      "query": 473
     },
     "byAuthority": {
-      "module-gate": 460,
+      "module-gate": 462,
       "module-map": 317,
       "admin": 67,
       "raw-role": 55,
@@ -20,8 +20,8 @@
       "public-read": 1
     },
     "bySensitivity": {
-      "LOW": 470,
-      "MEDIUM": 375,
+      "LOW": 471,
+      "MEDIUM": 376,
       "HIGH": 146
     },
     "byModule": {
@@ -31,8 +31,8 @@
       "digital_cards": 75,
       "treasury": 62,
       "store": 50,
+      "products": 49,
       "inventory": 48,
-      "products": 47,
       "workorders": 37,
       "crm": 29,
       "campaigns": 28,
@@ -76,13 +76,13 @@
     "expressMounts": 11,
     "jobs": 19,
     "routerFiles": 94,
-    "proposedPermissions": 839,
+    "proposedPermissions": 841,
     "proposedDomains": {
       "hr": 106,
       "treasury": 86,
       "reports": 84,
       "inventory": 73,
-      "catalog": 64,
+      "catalog": 66,
       "store": 50,
       "sales": 49,
       "iam": 42,
@@ -9777,7 +9777,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:53"
+      "loc": "server/routers/priceWavesRouter.ts:118"
     },
     {
       "surface": "trpc",
@@ -9794,7 +9794,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:82"
+      "loc": "server/routers/priceWavesRouter.ts:186"
     },
     {
       "surface": "trpc",
@@ -9811,7 +9811,41 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:34"
+      "loc": "server/routers/priceWavesRouter.ts:99"
+    },
+    {
+      "surface": "trpc",
+      "router": "priceWavesRouter",
+      "proposedPermission": "catalog.price_wave.reverse",
+      "name": "revert",
+      "kind": "mutation",
+      "procedure": "productsManagerProcedure",
+      "authority": "module-gate",
+      "module": "products",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "MEDIUM",
+      "sensitivityWhy": "كتابة",
+      "flags": "",
+      "loc": "server/routers/priceWavesRouter.ts:152"
+    },
+    {
+      "surface": "trpc",
+      "router": "priceWavesRouter",
+      "proposedPermission": "catalog.price_wave.scope_count",
+      "name": "scopeCount",
+      "kind": "query",
+      "procedure": "productsManagerProcedure",
+      "authority": "module-gate",
+      "module": "products",
+      "level": "FULL",
+      "roles": "manager",
+      "branch": "required",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/priceWavesRouter.ts:91"
     },
     {
       "surface": "trpc",
@@ -9828,7 +9862,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:94"
+      "loc": "server/routers/priceWavesRouter.ts:211"
     },
     {
       "surface": "trpc",
@@ -9845,7 +9879,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:121"
+      "loc": "server/routers/priceWavesRouter.ts:255"
     },
     {
       "surface": "trpc",
