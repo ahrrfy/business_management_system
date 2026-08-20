@@ -1618,6 +1618,13 @@
       "when": 1788052295000,
       "tag": "0244_product_customization_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "5",
+      "when": 1788052296000,
+      "tag": "0245_purchase_order_settlement_type",
+      "breakpoints": true
     }
   ]
 }

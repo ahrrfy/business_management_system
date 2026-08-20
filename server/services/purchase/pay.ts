@@ -22,9 +22,16 @@
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { purchaseOrders, suppliers } from "../../../drizzle/schema";
+import { findIdempotentRefId, idempotencyHash } from "../idempotency";
+import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { money, round2, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
 import { createSystemPaymentRequestTx } from "../voucher/create";
+import {
+  assertPurchaseBranch,
+  pendingPurchaseSupplierPaymentsTx,
+  purchaseOrderPayableBalanceTx,
+} from "./internal";
 
 export interface PayPurchaseOrderInput {
   purchaseOrderId: number;
@@ -51,6 +58,23 @@ export async function payPurchaseOrder(
   }
 
   return withTx(async (tx) => {
+    const preview = (
+      await tx
+        .select()
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, input.purchaseOrderId))
+        .limit(1)
+    )[0];
+    if (!preview) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    assertPurchaseBranch(preview, actor);
+
+    // ترتيب القفل موحّد مع الاستلام والاعتماد: مصدر النقد ← PO ← المورد.
+    // كان هذا المسار يقفل PO أولاً بينما الاعتماد يقفل الخزينة أولاً، فتتكوّن دورة deadlock.
+    await lockCashSourceForUpdate(tx, {
+      branchId: Number(preview.branchId),
+      cashBucket: "TREASURY",
+      shiftId: null,
+    });
     const po = (
       await tx
         .select()
@@ -59,12 +83,11 @@ export async function payPurchaseOrder(
         .for("update")
         .limit(1)
     )[0];
-    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
-
-    // عزل الفرع (مرآة returnService/correctSale): مدير فرعٍ لا يصرف على أمر فرعٍ آخر.
-    if (actor.role !== "admin" && Number(po.branchId) !== Number(actor.branchId)) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "أمر الشراء لا يخصّ فرعك" });
+    if (!po || Number(po.branchId) !== Number(preview.branchId)) {
+      throw new TRPCError({ code: "CONFLICT", message: "تغيّر أمر الشراء أثناء طلب الدفع؛ أعد المحاولة" });
     }
+
+    assertPurchaseBranch(po, actor);
     if (po.status === "CANCELLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُسدَّد أمر شراءٍ ملغى" });
     }
@@ -76,7 +99,52 @@ export async function payPurchaseOrder(
       });
     }
 
-    const remaining = round2(money(po.total).minus(money(po.paidAmount ?? "0")));
+    // عقد الاعتماد يقبل رمز مصدر canonical من 16 خانة hex فقط؛ المفتاح الخام كان ينشئ
+    // طلباً يبدو ناجحاً ثم يستحيل اعتماده. تبقى idempotency مربوطة بالمفتاح الخام أدناه.
+    const requestToken = idempotencyHash({
+      purchaseOrderId: input.purchaseOrderId,
+      clientRequestId: input.clientRequestId,
+    }).slice(0, 16);
+    const voucherClientRequestId = `purchase-supplier-${input.clientRequestId}`;
+    const referenceNumber = `PO-PAY-${po.poNumber}-${requestToken}`;
+
+    // replay الحي يمرّ إلى عقد السند نفسه قبل فحص الحجز؛ وإلا سيخصم الطلب نفسه من
+    // available ثم يحوّل نجاح شبكة سابقاً إلى «لا يوجد مستحق» مضلّل.
+    const replayReceiptId = await findIdempotentRefId(tx, "voucher.create", voucherClientRequestId);
+    if (replayReceiptId != null) {
+      const replay = await createSystemPaymentRequestTx(
+        tx,
+        {
+          branchId: Number(po.branchId),
+          amount: toDbMoney(amount),
+          paymentMethod: input.method,
+          partyType: "SUPPLIER",
+          partyId: Number(po.supplierId),
+          description: `تسديد أمر الشراء ${po.poNumber}`,
+          referenceNumber,
+          clientRequestId: voucherClientRequestId,
+        },
+        actor,
+        {
+          kind: "PURCHASE_SUPPLIER",
+          purchaseOrderId: input.purchaseOrderId,
+          requestToken,
+          expectedAmount: toDbMoney(amount),
+          sourceTotal: toDbMoney(money(po.total)),
+        },
+      );
+      return {
+        purchaseOrderId: input.purchaseOrderId,
+        paymentRequestReceiptId: replay.receiptId,
+        remainingBefore: "0.00",
+      };
+    }
+
+    // المستحق الحقيقي هو GL المعترف به لهذا PO بعد الاستلامات والمرتجعات والمدفوعات،
+    // ناقص الطلبات المعلّقة. po.total/paidAmount يسمحان بدفع بضاعة لم تُستلم أو حجزها مرتين.
+    const payable = await purchaseOrderPayableBalanceTx(tx, input.purchaseOrderId);
+    const pending = await pendingPurchaseSupplierPaymentsTx(tx, String(po.poNumber));
+    const remaining = round2(payable.minus(pending));
     if (!remaining.gt(0)) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا يوجد مبلغ مستحق على أمر الشراء" });
     }
@@ -88,11 +156,14 @@ export async function payPurchaseOrder(
     }
 
     const sup = (
-      await tx.select().from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).limit(1)
+      await tx.select().from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).for("update").limit(1)
     )[0];
     if (!sup) throw new TRPCError({ code: "NOT_FOUND", message: "المورد غير موجود" });
     if (!sup.isActive) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الصرف لمورد مُعطَّل" });
+    }
+    if (amount.gt(money(sup.currentBalance))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الدفعة تتجاوز رصيد المورد الجاري" });
     }
 
     // نفس آلية الاستلام: طلبٌ معلَّق يُحدّث `paidAmount` عند الاعتماد ويعيد فحص السقف تحت القفل.
@@ -105,14 +176,14 @@ export async function payPurchaseOrder(
         partyType: "SUPPLIER",
         partyId: Number(po.supplierId),
         description: `تسديد أمر الشراء ${po.poNumber}`,
-        referenceNumber: `PO-PAY-${po.poNumber}-${input.clientRequestId}`,
-        clientRequestId: `purchase-supplier-${input.clientRequestId}`,
+        referenceNumber,
+        clientRequestId: voucherClientRequestId,
       },
       actor,
       {
         kind: "PURCHASE_SUPPLIER",
         purchaseOrderId: input.purchaseOrderId,
-        requestToken: input.clientRequestId,
+        requestToken,
         expectedAmount: toDbMoney(amount),
         sourceTotal: toDbMoney(money(po.total)),
       },

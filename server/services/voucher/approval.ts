@@ -94,6 +94,10 @@ import {
   parseExpensePaymentResubmitKey,
 } from "./resubmitLineage";
 import { withMysqlDeadlockRetry } from "./deadlockRetry";
+import {
+  pendingPurchaseSupplierPaymentsTx,
+  purchaseOrderPayableBalanceTx,
+} from "../purchase/internal";
 
 type VoucherPostingPlan = {
   intent: PostingIntent;
@@ -333,13 +337,21 @@ function approvedVoucherPostingPlan(args: {
     return fixedAssetAccrualSettlement(assetRole, args.amount);
   }
   if (args.systemKind === "PURCHASE_SUPPLIER") {
-    return twoRolePostingPlan(
-      "PAYMENT_OUT_SUPPLIER",
-      "PAYMENT_OUT",
-      "AP",
-      assetRole,
-      args.amount,
-    );
+    return args.direction === "OUT"
+      ? twoRolePostingPlan(
+          "PAYMENT_OUT_SUPPLIER",
+          "PAYMENT_OUT",
+          "AP",
+          assetRole,
+          args.amount,
+        )
+      : twoRolePostingPlan(
+          "PAYMENT_IN_SUPPLIER_REFUND",
+          "PAYMENT_IN",
+          assetRole,
+          "AP",
+          args.amount,
+        );
   }
   if (
     args.systemKind === "PURCHASE_SHIPPING" ||
@@ -766,6 +778,8 @@ export async function approveVoucher(
     }
     let cancellationOriginal: typeof r | null = null;
     let cancellationSourceRequest: SystemPaymentRequest | null = null;
+    let cancellationPurchaseOrder: typeof purchaseOrders.$inferSelect | null =
+      null;
     if (systemRequest?.kind === "VOUCHER_CANCELLATION") {
       cancellationOriginal =
         lockedReceiptRows.find(
@@ -834,6 +848,7 @@ export async function approveVoucher(
           amount: accountingEntries.amount,
           customerId: accountingEntries.customerId,
           supplierId: accountingEntries.supplierId,
+          purchaseOrderId: accountingEntries.purchaseOrderId,
         })
         .from(accountingEntries)
         .where(eq(accountingEntries.receiptId, Number(cancellationOriginal.id)))
@@ -880,6 +895,54 @@ export async function approveVoucher(
           message:
             "مرجع السند الأصلي نظامي بلا payload موثوق — أوقف الإلغاء وراجع التدقيق",
         });
+      }
+      if (cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER") {
+        cancellationPurchaseOrder =
+          (
+            await tx
+              .select()
+              .from(purchaseOrders)
+              .where(
+                eq(
+                  purchaseOrders.id,
+                  cancellationSourceRequest.purchaseOrderId,
+                ),
+              )
+              .for("update")
+              .limit(1)
+          )[0] ?? null;
+        if (
+          !cancellationPurchaseOrder ||
+          cancellationOriginal.direction !== "OUT" ||
+          cancellationOriginal.partyType !== "SUPPLIER" ||
+          cancellationOriginal.partyId == null ||
+          Number(cancellationPurchaseOrder.branchId) !==
+            Number(cancellationOriginal.branchId) ||
+          Number(cancellationPurchaseOrder.supplierId) !==
+            Number(cancellationOriginal.partyId) ||
+          !/^[0-9a-f]{16}$/i.test(cancellationSourceRequest.requestToken) ||
+          cancellationOriginal.referenceNumber !==
+            `PO-PAY-${cancellationPurchaseOrder.poNumber}-${cancellationSourceRequest.requestToken}` ||
+          typeof cancellationSourceRequest.expectedAmount !== "string" ||
+          !money(cancellationSourceRequest.expectedAmount).eq(
+            money(cancellationOriginal.amount),
+          ) ||
+          typeof cancellationSourceRequest.sourceTotal !== "string" ||
+          !money(cancellationPurchaseOrder.total).eq(
+            money(cancellationSourceRequest.sourceTotal),
+          ) ||
+          Number(materialized.purchaseOrderId ?? 0) !==
+            Number(cancellationPurchaseOrder.id) ||
+          money(cancellationPurchaseOrder.paidAmount).lt(
+            money(cancellationOriginal.amount),
+          )
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "رابط دفعة أمر الشراء أو تخصيصها تغيّر؛ أوقف الإلغاء وراجع التدقيق",
+          });
+        }
       }
       const cancellationAttempts = await tx
         .select({
@@ -930,7 +993,8 @@ export async function approveVoucher(
       }
       if (
         cancellationSourceRequest &&
-        cancellationSourceRequest.kind !== "EMPLOYEE_ADVANCE"
+        cancellationSourceRequest.kind !== "EMPLOYEE_ADVANCE" &&
+        cancellationSourceRequest.kind !== "PURCHASE_SUPPLIER"
       ) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -1444,6 +1508,18 @@ export async function approveVoucher(
           message: "دفعة المورد المعلّقة تتجاوز المتبقي على أمر الشراء",
         });
       }
+      if (systemRequest.kind === "PURCHASE_SUPPLIER") {
+        const payableBalance = await purchaseOrderPayableBalanceTx(
+          tx,
+          Number(systemPurchaseOrder.id),
+        );
+        if (amount.gt(payableBalance)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `الرصيد الدفتري المستحق على أمر الشراء (${payableBalance.toFixed(2)}) أقل من طلب الدفع — راجع المرتجعات والمدفوعات اللاحقة`,
+          });
+        }
+      }
     }
 
     // كل دفعة مورد تعيد فحص AP الحالي تحت القفل؛ مرتجع أو دفعة أخرى بين الطلب
@@ -1753,7 +1829,9 @@ export async function approveVoucher(
         supplierId: partyType === "SUPPLIER" ? partyId : null,
         purchaseOrderId: systemPurchaseOrder
           ? Number(systemPurchaseOrder.id)
-          : null,
+          : cancellationPurchaseOrder
+            ? Number(cancellationPurchaseOrder.id)
+            : null,
         amount,
         paymentMethod,
         postingIntent: standardPosting.intent,
@@ -1853,6 +1931,18 @@ export async function approveVoucher(
           ),
         })
         .where(eq(purchaseOrders.id, Number(systemPurchaseOrder.id)));
+    } else if (
+      cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER" &&
+      cancellationPurchaseOrder
+    ) {
+      await tx
+        .update(purchaseOrders)
+        .set({
+          paidAmount: toDbMoney(
+            money(cancellationPurchaseOrder.paidAmount).minus(amount),
+          ),
+        })
+        .where(eq(purchaseOrders.id, Number(cancellationPurchaseOrder.id)));
     }
 
     if (systemRequest?.kind === "EMPLOYEE_ADVANCE") {
@@ -2105,7 +2195,7 @@ export async function rejectVoucher(
 }
 
 /**
- * إعادة تقديم صريحة لمحاولة دفع نظامية مرفوضة (مصروف أو تسوية نهاية خدمة).
+ * إعادة تقديم صريحة لمحاولة دفع نظامية مرفوضة (مورد أو مصروف/أصل).
  * يبقى المصدر والسند المرفوض وسببهما للتدقيق، ويُنشأ طلب clearing واحد بلا أثر مسبق.
  * اسم التصدير القديم باقٍ لتوافق الراوتر والعملاء الحاليين.
  */
@@ -2178,6 +2268,7 @@ export async function resubmitRejectedExpensePayment(
         });
       }
       if (
+        previewRequest?.kind !== "PURCHASE_SUPPLIER" &&
         previewRequest?.kind !== "PURCHASE_SHIPPING" &&
         previewRequest?.kind !== "ASSET_MAINTENANCE" &&
         previewRequest?.kind !== "ASSET_ACQUISITION"
@@ -2185,7 +2276,7 @@ export async function resubmitRejectedExpensePayment(
         throw new TRPCError({
           code: "BAD_REQUEST",
           message:
-            "إعادة التقديم الصريحة متاحة لطلب دفع مصروف أو اقتناء أصل فقط",
+            "إعادة التقديم الصريحة متاحة لطلب دفع مورد أو مصروف أو اقتناء أصل فقط",
         });
       }
       const branchId = Number(preview.branchId);
@@ -2217,7 +2308,8 @@ export async function resubmitRejectedExpensePayment(
         !rejected ||
         !request ||
         !isCanonicalSystemPaymentRequest(request, rejected.referenceNumber) ||
-        (request?.kind !== "PURCHASE_SHIPPING" &&
+        (request?.kind !== "PURCHASE_SUPPLIER" &&
+          request?.kind !== "PURCHASE_SHIPPING" &&
           request?.kind !== "ASSET_MAINTENANCE" &&
           request?.kind !== "ASSET_ACQUISITION") ||
         rejected.approvalStatus !== "REJECTED" ||
@@ -2342,6 +2434,190 @@ export async function resubmitRejectedExpensePayment(
         rootReceiptId,
         attempt,
       });
+      if (request.kind === "PURCHASE_SUPPLIER") {
+        if (
+          !Number.isSafeInteger(request.purchaseOrderId) ||
+          request.purchaseOrderId <= 0 ||
+          !/^[0-9a-f]{16}$/i.test(request.requestToken) ||
+          typeof request.expectedAmount !== "string" ||
+          typeof request.sourceTotal !== "string" ||
+          rejected.direction !== "OUT" ||
+          rejected.partyType !== "SUPPLIER" ||
+          rejected.partyId == null ||
+          !money(request.expectedAmount).eq(money(rejected.amount))
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "ارتباط طلب دفع المورد المرفوض غير صالح",
+          });
+        }
+        const [purchaseOrder] = await tx
+          .select()
+          .from(purchaseOrders)
+          .where(eq(purchaseOrders.id, request.purchaseOrderId))
+          .for("update")
+          .limit(1);
+        if (
+          !purchaseOrder ||
+          Number(purchaseOrder.branchId) !== branchId ||
+          Number(purchaseOrder.supplierId) !== Number(rejected.partyId) ||
+          !money(purchaseOrder.total).eq(money(request.sourceTotal)) ||
+          rejected.referenceNumber !==
+            `PO-PAY-${purchaseOrder.poNumber}-${request.requestToken}`
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "أمر الشراء المرتبط بطلب المورد تغيّر أو فُقد",
+          });
+        }
+
+        const replacementDescription = [
+          `إعادة تقديم دفعة مورد — أمر الشراء ${purchaseOrder.poNumber}`,
+          correction.note?.trim(),
+          expensePaymentResubmitDescriptionSuffix({
+            attempt,
+            priorReceiptId: receiptId,
+            reissueReason,
+          }),
+        ]
+          .filter(Boolean)
+          .join(" — ");
+        const replacementAttachmentUrl =
+          correction.attachmentUrl?.trim() || rejected.attachmentUrl || null;
+        const [existingKey] = await tx
+          .select({ refId: idempotencyKeys.refId })
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.operation, "voucher.create"),
+              eq(idempotencyKeys.clientRequestId, clientRequestId),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (existingKey) {
+          const [replacement] = await tx
+            .select()
+            .from(receipts)
+            .where(eq(receipts.id, Number(existingKey.refId)))
+            .for("update")
+            .limit(1);
+          const replayableState =
+            (replacement?.status === "PENDING" &&
+              replacement.approvalStatus === "PENDING_APPROVAL") ||
+            (replacement?.status === "FAILED" &&
+              replacement.approvalStatus === "REJECTED") ||
+            (replacement?.status === "COMPLETED" &&
+              replacement.approvalStatus === "APPROVED");
+          if (
+            !replacement ||
+            !replayableState ||
+            replacement.voucherNumber == null ||
+            Number(replacement.branchId) !== branchId ||
+            replacement.direction !== "OUT" ||
+            replacement.paymentMethod !== rejected.paymentMethod ||
+            replacement.shiftId != null ||
+            (replacement.status === "COMPLETED" &&
+            replacement.paymentMethod === "CASH"
+              ? replacement.cashBucket !== "TREASURY"
+              : replacement.cashBucket != null) ||
+            replacement.partyType !== "SUPPLIER" ||
+            Number(replacement.partyId ?? 0) !== Number(rejected.partyId) ||
+            replacement.referenceNumber !== rejected.referenceNumber ||
+            replacement.internalNote !== rejected.internalNote ||
+            replacement.description !== replacementDescription ||
+            (replacement.attachmentUrl ?? null) !== replacementAttachmentUrl ||
+            !money(replacement.amount).eq(money(rejected.amount))
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "تعارض مفتاح إعادة تقديم دفعة المورد مع سند مختلف",
+            });
+          }
+          return {
+            receiptId: Number(replacement.id),
+            voucherNumber: String(replacement.voucherNumber),
+            approvalStatus: replacement.approvalStatus as
+              | "APPROVED"
+              | "PENDING_APPROVAL"
+              | "REJECTED",
+            rootReceiptId,
+            attempt,
+            priorReceiptId: receiptId,
+            reissueReason,
+            replayed: true,
+          };
+        }
+
+        const latestAttempt = lineage.at(-1)?.parsed?.attempt ?? 0;
+        if (latestAttempt !== priorAttempt) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "المحاولة المختارة ليست أحدث محاولة مرفوضة؛ أعد تحميل السجل قبل إعادة الإصدار",
+          });
+        }
+        const payable = await purchaseOrderPayableBalanceTx(
+          tx,
+          request.purchaseOrderId,
+        );
+        const pending = await pendingPurchaseSupplierPaymentsTx(
+          tx,
+          String(purchaseOrder.poNumber),
+        );
+        const available = payable.minus(pending);
+        if (money(rejected.amount).gt(available)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `لم يعد على أمر الشراء رصيد متاح كافٍ لإعادة الطلب (${available.toFixed(2)})`,
+          });
+        }
+        const [supplier] = await tx
+          .select({ currentBalance: suppliers.currentBalance })
+          .from(suppliers)
+          .where(eq(suppliers.id, Number(rejected.partyId)))
+          .for("update")
+          .limit(1);
+        if (
+          !supplier ||
+          money(rejected.amount).gt(money(supplier.currentBalance ?? "0"))
+        ) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "لم يعد رصيد المورد الحالي كافياً لإعادة طلب الدفع — راجع الكشف",
+          });
+        }
+        const replacement = await createSystemPaymentRequestTx(
+          tx,
+          {
+            branchId,
+            amount: toDbMoney(rejected.amount),
+            paymentMethod: rejected.paymentMethod as PaymentMethod,
+            checkNumber: rejected.checkNumber,
+            cardLastFour: rejected.cardLastFour,
+            partyType: "SUPPLIER",
+            partyId: Number(rejected.partyId),
+            description: replacementDescription,
+            referenceNumber: rejected.referenceNumber,
+            attachmentUrl: replacementAttachmentUrl,
+            voucherDate: toDateStr(),
+            clientRequestId,
+          },
+          actor,
+          request,
+        );
+        return {
+          receiptId: replacement.receiptId,
+          voucherNumber: replacement.voucherNumber,
+          approvalStatus: replacement.approvalStatus,
+          rootReceiptId,
+          attempt,
+          priorReceiptId: receiptId,
+          reissueReason,
+          replayed: false,
+        };
+      }
       const rejectedAccrualObligation =
         await assertAccrualSettlementReceiptBindingTx(tx, rejected, request, [
           "ACCRUED_UNPAID",

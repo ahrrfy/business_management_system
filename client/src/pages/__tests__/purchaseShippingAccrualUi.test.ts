@@ -33,17 +33,22 @@ describe("واجهة استحقاق وتسوية شحن المشتريات", () 
     expect(source).not.toContain("رقم الصك");
   });
 
-  /**
-   * دفعةُ المورّد لحظة الاستلام نقديّة فقط: `receivePurchase` يرفض غيرها من أوّل سطر داخل
-   * `withTx`، والرفض يُسقِط الاستلام كلّه (لا مخزون ولا ذمّة ولا قيد شراء). عرضُ طريقةٍ
-   * يرفضها العقد = إدخالٌ كاملٌ يضيع — نمط #596 الذي يحذّر منه CLAUDE.md §٦.
-   */
-  it("منتقي دفعة المورّد نقديّ فقط — لا يَعِد بما يرفضه الخادم", () => {
-    expect(source).toContain("SUPPLIER_PAYMENT_METHODS");
-    const list = source.match(/const SUPPLIER_PAYMENT_METHODS[^;]+;/s)?.[0] ?? "";
-    expect(list).toContain('v: "CASH"');
+  it("تسوية المورّد نقديّة فقط بلا منتقيٍ يَعِد بما يرفضه الخادم", () => {
+    expect(source).not.toContain("SUPPLIER_PAYMENT_METHODS");
+    expect(source).not.toContain("payMethod");
+    const inlinePayment =
+      source.match(
+        /const payment = data\.settlementType[\s\S]*?: undefined;/,
+      )?.[0] ?? "";
+    const laterPayment =
+      source.match(
+        /async function submitLaterSupplierPayment\(\)[\s\S]*?\r?\n  }\r?\n\r?\n  async function submit\(\)/,
+      )?.[0] ?? "";
+    expect(inlinePayment).toContain('method: "CASH"');
+    expect(laterPayment).toContain('method: "CASH"');
     for (const rejected of ["CARD", "TRANSFER", "WALLET", "CHECK"]) {
-      expect(list).not.toContain(rejected);
+      expect(inlinePayment).not.toContain(rejected);
+      expect(laterPayment).not.toContain(rejected);
     }
   });
 });

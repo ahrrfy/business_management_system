@@ -1124,15 +1124,24 @@ export default function Vouchers() {
                                 "TERM-SETTLEMENT-",
                               )
                                 ? "إعادة تقديم تسوية نهاية الخدمة"
-                                : r.referenceNumber?.startsWith("ASSET-ACQ-")
-                                  ? "إعادة تقديم تسوية اقتناء الأصل"
-                                  : "إعادة تقديم دفع المصروف",
-                              hidden: !canShowAccrualPaymentResubmit({
-                                referenceNumber: r.referenceNumber,
-                                approvalStatus: r.approvalStatus,
-                                resubmitLineageStatus: r.resubmitLineageStatus,
-                                canManage,
-                              }),
+                                : r.referenceNumber?.startsWith("PO-PAY-")
+                                  ? "إعادة تقديم دفعة المورد"
+                                  : r.referenceNumber?.startsWith("ASSET-ACQ-")
+                                    ? "إعادة تقديم تسوية اقتناء الأصل"
+                                    : "إعادة تقديم دفع المصروف",
+                              hidden:
+                                !canShowAccrualPaymentResubmit({
+                                  referenceNumber: r.referenceNumber,
+                                  approvalStatus: r.approvalStatus,
+                                  resubmitLineageStatus: r.resubmitLineageStatus,
+                                  canManage,
+                                }) &&
+                                !(
+                                  canManage &&
+                                  r.approvalStatus === "REJECTED" &&
+                                  r.resubmitLineageStatus !== "BROKEN" &&
+                                  r.referenceNumber?.startsWith("PO-PAY-")
+                                ),
                               disabled: resubmitSystemPaymentMut.isPending,
                               disabledReason: "توجد إعادة تقديم قيد التنفيذ",
                               onSelect: () => openResubmitSystemPayment(r),
@@ -1241,13 +1250,15 @@ export default function Vouchers() {
             <DialogDescription>
               {rejectTarget?.referenceNumber?.startsWith("TERM-SETTLEMENT-")
                 ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى إنهاء الخدمة مثبتاً وتبقى التسوية غير مدفوعة، ويمكن إعادة تقديمها صراحةً من السجل بلا تكرار."
-                : rejectTarget?.referenceNumber?.startsWith("ASSET-ACQ-")
-                  ? "سبب الرفض إلزامي. يُرفض طلب التسوية فقط؛ يبقى الأصل والتزام اقتنائه مثبتين، ويمكن إعادة تقديم الدفع صراحةً بلا تكرار الأصل أو القيد."
-                  : rejectTarget?.referenceNumber &&
-                      (rejectTarget.referenceNumber.startsWith("SHIP-") ||
-                        rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
-                    ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
-                    : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
+                : rejectTarget?.referenceNumber?.startsWith("PO-PAY-")
+                  ? "سبب الرفض إلزامي. لا تتغير ذمة المورد أو أمر الشراء، ويمكن إعادة تقديم الطلب مرتبطاً بالأمر نفسه بعد التصحيح."
+                  : rejectTarget?.referenceNumber?.startsWith("ASSET-ACQ-")
+                    ? "سبب الرفض إلزامي. يُرفض طلب التسوية فقط؛ يبقى الأصل والتزام اقتنائه مثبتين، ويمكن إعادة تقديم الدفع صراحةً بلا تكرار الأصل أو القيد."
+                    : rejectTarget?.referenceNumber &&
+                        (rejectTarget.referenceNumber.startsWith("SHIP-") ||
+                          rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
+                      ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
+                      : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1">
@@ -1295,13 +1306,28 @@ export default function Vouchers() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              إعادة إصدار طلب الدفع {resubmitTarget?.voucherNumber ?? ""}
+              {resubmitTarget?.referenceNumber?.startsWith("PO-PAY-")
+                ? "إعادة إصدار دفعة المورد"
+                : "إعادة إصدار طلب الدفع"}{" "}
+              {resubmitTarget?.voucherNumber ?? ""}
             </DialogTitle>
             <DialogDescription>
-              يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
-              {(resubmitTarget?.resubmitAttempt ?? 0) + 1}
-              مرتبطة بالسند #{resubmitTarget?.id ?? "—"}، بلا تكرار للمصروف أو
-              الأصل أو قيد الاعتراف وبلا أثر نقدي قبل اعتماد المالك.
+              {resubmitTarget?.referenceNumber?.startsWith("PO-PAY-") ? (
+                <>
+                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
+                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
+                  {resubmitTarget?.id ?? "—"} وبأمر الشراء نفسه، بعد إعادة فحص
+                  رصيده الدفتري، بلا تغيير ذمة المورد أو أثر نقدي قبل اعتماد
+                  المالك.
+                </>
+              ) : (
+                <>
+                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
+                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
+                  {resubmitTarget?.id ?? "—"}، بلا تكرار للمصروف أو الأصل أو قيد
+                  الاعتراف وبلا أثر نقدي قبل اعتماد المالك.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1">
