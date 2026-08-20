@@ -70,6 +70,7 @@ export default defineConfig({
       "shared/workOrderStatus.test.ts",
       "shared/partialDispatch.test.ts",
       "client/src/lib/__tests__/invoiceNavGate.test.ts",
+      "client/src/lib/__tests__/cashierNavReachability.test.ts",
       "shared/priceWaveRule.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",
