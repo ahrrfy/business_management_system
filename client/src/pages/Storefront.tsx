@@ -94,6 +94,7 @@ export type StorefrontCustomizationField = {
   options: { value: string; label: string; priceDelta: string }[];
   dependency: { fieldKey: string; operator: "equals" | "notEquals"; value: string | string[] } | null;
   priceDelta: string;
+  isActive?: boolean;
 };
 
 export type StorefrontCustomizationTemplate = {

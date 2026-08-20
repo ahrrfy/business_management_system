@@ -7,7 +7,7 @@
  * الأسعار/الكلف تقريبية للعرض — يعدّلها المالك من شاشة المنتجات/التسعير لاحقاً.
  */
 import "dotenv/config";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   branches,
   categories,

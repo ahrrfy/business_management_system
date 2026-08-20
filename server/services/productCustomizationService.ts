@@ -7,9 +7,9 @@ import {
   type ProductCustomizationDependency,
   type ProductCustomizationOption,
 } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { getDb, type Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
-import { withTx, type Actor, type Tx } from "./tx";
+import { withTx, type Actor } from "./tx";
 
 export type CustomizationFieldInput = {
   id?: number;
@@ -142,7 +142,7 @@ async function mapTemplate(exec: Pick<Tx, "select">, productId: number): Promise
     title: template.title,
     description: template.description ?? null,
     isActive: !!template.isActive,
-    fields: fields.map((field) => ({
+    fields: fields.map((field: typeof productCustomizationFields.$inferSelect) => ({
       id: Number(field.id),
       fieldKey: field.fieldKey,
       label: field.label,

@@ -52,7 +52,7 @@ function fieldFromApi(field: {
   isRequired: boolean;
   sortOrder: number;
   maxLength: number | null;
-  options: Array<{ value: string; label: string; priceDelta: string }>;
+  options: Array<{ value: string; label: string; priceDelta?: string }>;
   dependency: { fieldKey: string; operator: "equals" | "notEquals"; value: string | string[] } | null;
   priceDelta: string;
   isActive: boolean;
@@ -65,7 +65,7 @@ function fieldFromApi(field: {
     isRequired: field.isRequired,
     sortOrder: field.sortOrder,
     maxLength: field.maxLength == null ? "" : String(field.maxLength),
-    optionsText: field.options.map((option) => `${option.value} | ${option.label} | ${option.priceDelta}`).join("\n"),
+    optionsText: field.options.map((option) => `${option.value} | ${option.label} | ${option.priceDelta ?? "0"}`).join("\n"),
     dependencyKey: field.dependency?.fieldKey ?? "",
     dependencyValues: field.dependency ? (Array.isArray(field.dependency.value) ? field.dependency.value : [field.dependency.value]).join(",") : "",
     dependencyOperator: field.dependency?.operator ?? "equals",
