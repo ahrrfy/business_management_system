@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;500;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *{box-sizing:border-box;margin:0}.slide-container{width:1280px;min-height:720px;background:#F8F9FA;font-family:Cairo,Arial,sans-serif;color:#2B2D42;padding-top:58px}.wrap{width:1090px;margin:auto}.eyebrow{font-size:15px;font-weight:700;color:#457B9D}.title{font-size:42px;font-weight:800;margin-top:8px}.subtitle{font-size:18px;color:#657080;font-weight:300;margin-top:10px}.diagram{margin-top:60px;display:grid;grid-template-columns:1fr 96px 1.08fr 96px 1.22fr;align-items:center;direction:rtl}.entity{background:#FFFFFF;border:1px solid #D7E2E8;border-radius:8px;min-height:340px}.entity-header{background:#2B2D42;color:#F8F9FA;padding:18px 22px;border-radius:7px 7px 0 0}.entity-header.blue{background:#457B9D}.entity-header h2{font-size:20px;font-weight:800;direction:ltr;text-align:left}.entity-header p{font-size:12px;color:#D9E7EE;margin-top:4px;direction:rtl;text-align:right}.rows{padding-top:13px}.row{display:flex;justify-content:space-between;align-items:center;padding:10px 22px;border-top:1px solid #EEF1F4;font-size:14px}.row b{font-family:monospace;font-size:13px;direction:ltr}.row span{color:#657080;font-size:13px}.key{color:#457B9D!important;font-weight:800}.relation{text-align:center;display:flex;flex-direction:column;align-items:center;gap:10px;color:#457B9D}.relation .line{height:2px;width:72px;background:#457B9D}.relation strong{font-size:14px;background:#E5F0F5;padding:6px 10px;border-radius:8px}.relation small{font-size:13px;color:#657080}.foot{margin-top:34px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}.note{border-top:3px solid #8D99AE;padding-top:12px;font-size:14px;line-height:1.65;color:#4C5664}.note b{display:block;font-size:15px;color:#2B2D42;margin-bottom:3px}.badge{color:#457B9D;font-family:monospace;font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="slide-container">
+    <main class="wrap">
+      <div class="eyebrow">هجرة 0210 · تصميم قابل للتوسع</div>
+      <h1 class="title">مخطط قاعدة البيانات</h1>
+      <p class="subtitle">فصل قرار التخصيص عن تعريف النموذج يجعل الحقول قابلة للإدارة والتحقق دون تعديل الواجهة.</p>
+      <section class="diagram" aria-label="علاقات جداول قوالب التخصيص">
+        <article class="entity">
+          <div class="entity-header"><h2>products</h2><p>المنتج الأب ومصدر التفعيل</p></div>
+          <div class="rows"><div class="row"><b class="key">id</b><span>المعرّف</span></div><div class="row"><b>isCustomizable</b><span>يفتح مسار التخصيص</span></div><div class="row"><b>productType</b><span>نوع المنتج أو الخدمة</span></div><div class="row"><b>name</b><span>اسم المنتج فقط</span></div></div>
+        </article>
+        <div class="relation"><div class="line"></div><strong>1 : 0..1</strong><small>قالب اختياري واحد</small></div>
+        <article class="entity">
+          <div class="entity-header blue"><h2>productCustomizationTemplates</h2><p>رأس قالب التخصيص</p></div>
+          <div class="rows"><div class="row"><b class="key">productId</b><span>مرجع المنتج</span></div><div class="row"><b>kind</b><span>PRINT / GIFT / GENERAL</span></div><div class="row"><b>title</b><span>عنوان النموذج</span></div><div class="row"><b>isActive</b><span>حالة النشر</span></div></div>
+        </article>
+        <div class="relation"><div class="line"></div><strong>1 : N</strong><small>حقول مرتبة</small></div>
+        <article class="entity">
+          <div class="entity-header"><h2>productCustomizationFields</h2><p>تعريف الحقول والسلوك</p></div>
+          <div class="rows"><div class="row"><b class="key">templateId</b><span>مرجع القالب</span></div><div class="row"><b>fieldType</b><span>TEXT / SELECT / FILE…</span></div><div class="row"><b>optionsJson</b><span>خيارات وسعر إضافي</span></div><div class="row"><b>dependencyJson</b><span>شرط الظهور</span></div><div class="row"><b>isRequired</b><span>تحقق قبل السلة</span></div></div>
+        </article>
+      </section>
+      <section class="foot"><div class="note"><b>قرار التفعيل</b><span class="badge">isCustomizable</span> يمنع ظهور نموذج التخصيص للمنتجات العادية.</div><div class="note"><b>قابلية الإدارة</b>كل منتج يملك قالباً واحداً، ويمكن تغيير حقوله دون نشر واجهة جديدة.</div><div class="note"><b>قابلية التحقق</b>الخيارات والتبعيات مخزنة كبيانات منظمة، وليست نصوصاً حرة.</div></section>
+    </main>
+  </div>
+</body>
+</html>

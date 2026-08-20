@@ -15,6 +15,8 @@ import {
   categories,
   invoiceItems,
   productImages,
+  productCustomizationFields,
+  productCustomizationTemplates,
   productPrices,
   productUnits,
   productVariants,
@@ -52,6 +54,27 @@ export async function resolveStorefrontBranchId(explicit?: number | null): Promi
   return (await requireStorefrontContext()).branchId;
 }
 
+export interface StorefrontCustomizationField {
+  id: number;
+  fieldKey: string;
+  label: string;
+  fieldType: "TEXT" | "TEXTAREA" | "SELECT" | "FILE" | "NUMBER" | "SWATCH";
+  isRequired: boolean;
+  sortOrder: number;
+  maxLength: number | null;
+  options: { value: string; label: string; priceDelta: string }[];
+  dependency: { fieldKey: string; operator: "equals" | "notEquals"; value: string | string[] } | null;
+  priceDelta: string;
+}
+
+export interface StorefrontCustomizationTemplate {
+  id: number;
+  kind: "PRINT" | "GIFT" | "GENERAL";
+  title: string;
+  description: string | null;
+  fields: StorefrontCustomizationField[];
+}
+
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون ولا أسعار جملة/حكومي. */
 export interface StorefrontProduct {
   productId: number;
@@ -72,6 +95,12 @@ export interface StorefrontProduct {
   /** متوفّر: رصيد الفرع بالأساس يغطي معامل وحدة البيع — نعم/لا فقط، لا نكشف الرصيد الكامل. */
   inStock: boolean;
   imageUrl: string | null;
+  /** المنتج معلّم صراحةً من النظام كقابل للتخصيص؛ لا يُستنتج من الاسم أو الفئة. */
+  isCustomizable: boolean;
+  /** نوع التخصيص الذي حدده الخادم؛ null للمنتجات العادية. */
+  customizationKind: "PRINT" | "GIFT" | null;
+  /** قالب الحقول المنظم؛ لا يُعاد للمنتجات غير القابلة للتخصيص. */
+  customizationTemplate: StorefrontCustomizationTemplate | null;
   /** بكج (مجموعة مُجمّعة) — يُعرَض بشارة «بكج» ومحتوياته في التفاصيل. */
   isBundle: boolean;
   /**
@@ -122,6 +151,65 @@ export interface StorefrontVariantOption {
   units: StorefrontUnitOption[];
 }
 
+async function loadStorefrontCustomizationTemplate(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  productId: number,
+): Promise<StorefrontCustomizationTemplate | null> {
+  const template = (await db
+    .select({
+      id: productCustomizationTemplates.id,
+      kind: productCustomizationTemplates.kind,
+      title: productCustomizationTemplates.title,
+      description: productCustomizationTemplates.description,
+    })
+    .from(productCustomizationTemplates)
+    .where(and(eq(productCustomizationTemplates.productId, productId), eq(productCustomizationTemplates.isActive, true)))
+    .limit(1))[0];
+  if (!template) return null;
+
+  const fieldRows = await db
+    .select({
+      id: productCustomizationFields.id,
+      fieldKey: productCustomizationFields.fieldKey,
+      label: productCustomizationFields.label,
+      fieldType: productCustomizationFields.fieldType,
+      isRequired: productCustomizationFields.isRequired,
+      sortOrder: productCustomizationFields.sortOrder,
+      maxLength: productCustomizationFields.maxLength,
+      optionsJson: productCustomizationFields.optionsJson,
+      dependencyJson: productCustomizationFields.dependencyJson,
+      priceDelta: productCustomizationFields.priceDelta,
+    })
+    .from(productCustomizationFields)
+    .where(and(eq(productCustomizationFields.templateId, Number(template.id)), eq(productCustomizationFields.isActive, true)))
+    .orderBy(asc(productCustomizationFields.sortOrder), asc(productCustomizationFields.id));
+
+  return {
+    id: Number(template.id),
+    kind: template.kind,
+    title: template.title,
+    description: template.description ?? null,
+    fields: fieldRows.map((field) => ({
+      id: Number(field.id),
+      fieldKey: field.fieldKey,
+      label: field.label,
+      fieldType: field.fieldType,
+      isRequired: field.isRequired,
+      sortOrder: Number(field.sortOrder ?? 0),
+      maxLength: field.maxLength == null ? null : Number(field.maxLength),
+      options: Array.isArray(field.optionsJson)
+        ? field.optionsJson.map((option) => ({
+            value: String(option.value),
+            label: String(option.label),
+            priceDelta: String(option.priceDelta ?? "0"),
+          }))
+        : [],
+      dependency: field.dependencyJson ?? null,
+      priceDelta: String(field.priceDelta ?? "0"),
+    })),
+  };
+}
+
 /** عتبة «كمية محدودة» — الكمية تُكشَف للزبون فقط عندها فأقلّ (ندرة، لا تسريب مخزون كامل). */
 const LOW_STOCK_THRESHOLD = 5;
 
@@ -163,6 +251,8 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       price: productPrices.price,
       imageId: productImages.id,
       imageUrl: productImages.url,
+      productType: products.productType,
+      isCustomizable: products.isCustomizable,
       isBundle: products.isBundle,
     })
     .from(productUnits)
@@ -289,7 +379,7 @@ function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
   variantName: string | null; color: string | null; colorHex: string | null; size: string | null;
   category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
-  imageId?: number | null; imageUrl: string | null; isBundle: boolean | null;
+  imageId?: number | null; imageUrl: string | null; productType: string | null; isCustomizable: boolean | null; isBundle: boolean | null;
   stockQty: number; reservedQty: number; availableQty: number; hasStockRow: boolean;
 }): StorefrontProduct {
   const factor = Math.max(1, Number(r.conversionFactor) || 1);
@@ -308,6 +398,9 @@ function toStorefront(r: {
     promotionName: null,
     inStock: availableUnits > 0,
     imageUrl: toPublicProductImage(r.imageId, r.imageUrl ?? null),
+    isCustomizable: r.isCustomizable === true,
+    customizationKind: r.isCustomizable === true ? (r.productType === "PRINT_SERVICE" ? "PRINT" : "GIFT") : null,
+    customizationTemplate: null,
     isBundle: !!r.isBundle,
     stockLeft: availableUnits > 0 && availableUnits <= LOW_STOCK_THRESHOLD ? availableUnits : null,
     soldCount: 0,
@@ -724,6 +817,9 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   const primaryVariant = byVariant.get(item.variantId)!;
   item.storeUnits = primaryVariant.units;
   item.variants = Array.from(byVariant.values());
+  if (item.isCustomizable) {
+    item.customizationTemplate = await loadStorefrontCustomizationTemplate(db, item.productId);
+  }
   await attachSoldCounts(db, [item]);
   await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);

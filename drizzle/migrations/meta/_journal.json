@@ -1611,6 +1611,13 @@
       "when": 1788052294000,
       "tag": "0243_image_studio_branch_budget",
       "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "5",
+      "when": 1788052295000,
+      "tag": "0244_product_customization_templates",
+      "breakpoints": true
     }
   ]
 }

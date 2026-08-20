@@ -36,6 +36,7 @@ import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productIm
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import BundleRecipeCard from "@/components/product/BundleRecipeCard";
+import { ProductCustomizationTemplateEditor } from "@/components/product/ProductCustomizationTemplateEditor";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import {
@@ -650,6 +651,10 @@ export default function ProductEdit() {
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span></div></Field>
         </CardContent>
       </Card>
+
+      <div className="mt-4">
+        <ProductCustomizationTemplateEditor productId={productId} enabled={isCustomizable} />
+      </div>
 
       {/* قالب الوحدات */}
       <Card>
