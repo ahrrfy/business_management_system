@@ -117,6 +117,9 @@ const EXTRA_MIGRATIONS = [
   // immutable allocations, operational ledger, events and outbox. This runs
   // after the reception repair because it builds on those consignment fields.
   "drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
+  // 18/8/2026: db:push creates storeSettings but can miss the fulfillment
+  // branch index/FK. Replay the idempotent migration before schema verification.
+  "drizzle/migrations/0181_store_fulfillment_branch.sql",
   // 0185 المسار أ: عمود مولَّد STORED + فهرس فريد يمنع تكرار رقم السحب النقديّ لنفس الاتجاه
   //   (db:push لا يُنشئ الأعمدة المولَّدة ⇒ لولا هذا السطر لَمَرّ الاختبار خضراءَ زوراً في CI).
   "drizzle/migrations/0185_cash_drop_reference_uniqueness.sql",
