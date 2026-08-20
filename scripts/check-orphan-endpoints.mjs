@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
 const BASELINE_PATH = path.join(__dirname, "orphan-endpoints-baseline.json");
+const EXTERNAL_CONSUMERS_PATH = path.join(REPO, "docs", "storefront", "mobile-trpc-consumers.json");
 
 // (١) خريطة مفتاح appRouter → ملف الراوتر، من server/routers.ts.
 const routersSrc = readFileSync(path.join(REPO, "server", "routers.ts"), "utf8");
@@ -88,6 +89,17 @@ function walkAndroidClient(dir) {
   }
 }
 walkAndroidClient(path.join(REPO, "android-native", "app", "src", "main", "java"));
+
+// تطبيق مكتبة العربية عميل Expo مستقل في مستودع/مشروع منفصل، لذلك لا يظهر ضمن client/src أو
+// android-native. نحفظ عقده في بيان JSON مُراجع بدلاً من توسعة baseline اليتامى: كل إجراء فيه
+// يظل معلناً كمسار مستهلك ويمكن تدقيقه مع تغييرات التطبيق نفسه.
+if (existsSync(EXTERNAL_CONSUMERS_PATH)) {
+  const externalConsumers = JSON.parse(readFileSync(EXTERNAL_CONSUMERS_PATH, "utf8"));
+  if (!Array.isArray(externalConsumers.procedures) || !externalConsumers.procedures.every((procedure) => typeof procedure === "string" && /^[\w.]+$/.test(procedure))) {
+    throw new Error(`بيان مستهلك متجر الجوال غير صالح: ${EXTERNAL_CONSUMERS_PATH}`);
+  }
+  for (const procedure of externalConsumers.procedures) addUsedProcedure(procedure);
+}
 
 // (٤) احسب اليتامى: إجراء خادميّ اسمه الورقيّ لا يظهر في أيّ سلسلة trpc واجهية.
 const orphans = [];
