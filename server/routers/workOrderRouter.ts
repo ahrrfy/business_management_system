@@ -1410,6 +1410,8 @@ export const workOrderRouter = router({
           reference: z.string().trim().max(100).nullish(),
         }).optional(),
         clientRequestId: z.string().optional().nullable(),
+        /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
+        partialDispatchConfirmed: z.boolean().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {

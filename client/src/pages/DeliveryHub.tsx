@@ -604,11 +604,29 @@ function SettleTab() {
   const isRemittable = (c: OpenConsignment) => c.parcelStatus === "DELIVERED"
     && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL")
     && remainingOf(c) > 0;
+  /**
+   * **كشفُ الشركة يُثبت التسليم بنفسه** (تصويب مراجعة Codex، ٢٠/٨).
+   *
+   * `isRemittable` تشترط `parcelStatus = DELIVERED` — وهو ختمٌ **حصريٌّ ببوّابة المندوب**.
+   * وجهاتُ التوصيل بلا حسابِ بوّابة هي بالضبط **الحالةُ التي بُني الكشفُ من أجلها**، فكان
+   * سطرُها لا يظهر ولا يُختار ⇒ `deliveriesConfirmed` لا يتجاوز الصفر أبداً من الشاشة
+   * والميزةُ غيرُ قابلةٍ للاستعمال. والخادمُ يقبلها فعلاً (`needConfirm` يختم التسليم).
+   *
+   * فحين يُدخَل رقمُ الكشف تتّسع الأهليّةُ لكلّ طردٍ **حيّ** له متبقٍّ — والطردُ الملغى أو
+   * المُرجَع يبقى خارجها (لا تُثبَّت عليه تسوية). وبلا رقمِ كشفٍ لا يتغيّر شيء.
+   */
+  const statementMode = statementNumber.trim().length > 0;
+  const isStatementConfirmable = (c: OpenConsignment) => c.status === "DISPATCHED"
+    && c.parcelStatus !== "CANCELLED" && c.parcelStatus !== "RETURNED"
+    && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL" || c.moneyStatus === "NOT_APPLICABLE")
+    && remainingOf(c) > 0;
+  /** الأهليّةُ الفعليّة للتسوية — تتّسع بالكشف وحده. */
+  const isSettleable = (c: OpenConsignment) => isRemittable(c) || (statementMode && isStatementConfirmable(c));
   const isReturnable = (c: OpenConsignment) => c.status === "DISPATCHED"
     && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED")
     && (c.moneyStatus === "NOT_APPLICABLE" || c.moneyStatus === "UNSETTLED")
     && Number(c.collectedAmount) === 0;
-  const get = (c: OpenConsignment) => rows[c.id] ?? (isRemittable(c)
+  const get = (c: OpenConsignment) => rows[c.id] ?? (isSettleable(c)
     ? { outcome: "COLLECTED" as const, collected: String(remainingOf(c)) }
     : { outcome: "NONE" as const, collected: "0" });
 
@@ -618,7 +636,7 @@ function SettleTab() {
     // تدخل عجز هذا المستند، وإلا ناقض حوارُ التأكيد الإيصالَ المطبوع وسجلَّ التوريدات.
     let collected = 0, expected = 0, leftInTransit = 0;
     for (const c of list) {
-      if (!isRemittable(c)) continue;
+      if (!isSettleable(c)) continue;
       const remaining = remainingOf(c);
       const st = get(c);
       const col = st.outcome === "COLLECTED" ? Math.min(remaining, Math.max(0, Number(st.collected) || 0)) : 0;
@@ -633,13 +651,13 @@ function SettleTab() {
       }
     }
     return { collected, fees: 0, net: collected, shortfall: expected - collected, expected, leftInTransit };
-  }, [list, rows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [list, rows, statementMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
     // الأسطر الصفرية تُستثنى (٩/٨): غير المحصَّل ليس توريداً — يبقى بالطريق (كان الصفر يقلب
     // الإرسالية PARTIAL كاذبةً ويقفل باب إرجاعها). الخادم يرفضها أيضاً — الاستثناء هنا أوضح.
     const lines = list
-      .filter((c) => isRemittable(c) && get(c).outcome === "COLLECTED")
+      .filter((c) => isSettleable(c) && get(c).outcome === "COLLECTED")
       .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
       .filter((l) => Number(l.collectedAmount) > 0);
     if (lines.length === 0) { notify.err("لا مبالغ للتوريد — أدخل المُحصَّل فعلاً؛ غير المحصَّل يبقى بالطريق"); return; }
@@ -707,7 +725,7 @@ function SettleTab() {
                 {list.map((c) => {
                   const st = get(c);
                   const remaining = remainingOf(c);
-                  const remittable = isRemittable(c);
+                  const remittable = isSettleable(c);
                   const returnable = isReturnable(c);
                   const feeDue = Math.max(0, Number(c.feeDue ?? 0));
                   return (

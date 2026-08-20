@@ -12,6 +12,7 @@ import {
   receipts,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import {
   checkIdempotency,
@@ -377,7 +378,27 @@ export async function recordDeliveryRemittance(
         message: `مبلغ التوريد (${collectedTotal.toFixed(2)}) يتجاوز النقد المثبت بذمة الجهة (${custodyBalance.toFixed(2)}). شغّل المطابقة المالية قبل المتابعة.`,
       });
     }
-    const netRemitted = round2(collectedTotal.minus(feesTotal));
+    /**
+     * **استقطاعُ الشركة نقدٌ لم يدخل الدرج قطّ** (تصويب مراجعة Codex، ٢٠/٨).
+     *
+     * كان يُخزَّن **بياناً وصفياً فقط**: `netRemitted` والنقدُ المعدود يُحسبان على المُحصَّل
+     * كاملاً ⇒ إدخالُ النقد المستلَم فعلاً **يفشل في التحقّق**، وإدخالُ الإجماليّ ليمرّ
+     * **يسجّل نقداً لم يدخل** ويترك الاستقطاع المُفصَح عنه خارج الدفتر — خرقٌ مزدوج لـ§٥.
+     *
+     * الآن يُطرح من الصافي، ويخرج بإيصال OUT ومصروفٍ مصنَّف `DELIVERY_EXPENSE` — مطابقةً
+     * لقرار المالك في الشحن/الكمرك: مصروفُ شركةٍ يُعترف به لحظته ولا يمسّ ذمّة عميل.
+     */
+    const deductionsTotal = round2(money(input.companyStatement?.deductionsTotal ?? "0"));
+    if (deductionsTotal.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "استقطاع الكشف لا يصحّ أن يكون سالباً" });
+    }
+    if (deductionsTotal.gt(collectedTotal)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `استقطاع الكشف (${deductionsTotal.toFixed(2)}) يتجاوز المُحصَّل (${collectedTotal.toFixed(2)})`,
+      });
+    }
+    const netRemitted = round2(collectedTotal.minus(feesTotal).minus(deductionsTotal));
     const countedCash = round2(money(input.countedCash));
     if (countedCash.lt(0)) {
       throw new TRPCError({
@@ -419,7 +440,7 @@ export async function recordDeliveryRemittance(
         ? new Date(input.companyStatement.statementDate)
         : null,
       statementAttachmentUrl: input.companyStatement?.attachmentUrl?.trim() || null,
-      deductionsTotal: toDbMoney(round2(money(input.companyStatement?.deductionsTotal ?? "0"))),
+      deductionsTotal: toDbMoney(deductionsTotal),
       notes: input.companyStatement?.notes?.trim() || null,
     });
     const remittanceId = extractInsertId(rmRes);
@@ -460,6 +481,47 @@ export async function recordDeliveryRemittance(
         createdBy: actor.userId,
       });
       receiptOutId = extractInsertId(rOut);
+    }
+    // استقطاعُ الشركة: نقدٌ خرج بحكم أنّه لم يصل — إيصالُ OUT مستقلٌّ عن الأجور كي يبقى
+    // كلُّ مبلغٍ منسوباً إلى سببه في تسوية الدرج وZ-report، ومصروفٌ مصنَّف يظهر في تقريره.
+    if (deductionsTotal.gt(0)) {
+      if (cashBucket === "TREASURY") assertTreasuryOutException("DELIVERY_REMITTANCE_CLEARING");
+      const rDed = await tx.insert(receipts).values({
+        branchId: input.branchId,
+        shiftId,
+        direction: "OUT",
+        amount: toDbMoney(deductionsTotal),
+        paymentMethod: "CASH",
+        cashBucket,
+        status: "COMPLETED",
+        referenceNumber: remittanceNumber,
+        partyType: "OTHER",
+        description: `استقطاع شركة التوصيل — كشف ${input.companyStatement?.statementNumber?.trim() ?? remittanceNumber}`,
+        createdBy: actor.userId,
+      });
+      const deductionReceiptId = extractInsertId(rDed);
+      const assetRole = paymentAccountRole("CASH", cashBucket, "OUT");
+      const src = {
+        roleDebits: { DELIVERY_EXPENSE: deductionsTotal },
+        roleCredits: { [assetRole]: deductionsTotal },
+      };
+      await postEntry(tx, {
+        entryType: "PAYMENT_OUT",
+        dedupeKey: `DLV-STMT-DEDUCTION:${remittanceId}`,
+        branchId: input.branchId,
+        receiptId: deductionReceiptId,
+        deliveryPartyId: input.partyId,
+        amount: deductionsTotal,
+        cost: deductionsTotal,
+        notes: `استقطاع كشف شركة التوصيل ${remittanceNumber}`,
+        postingIntent: createPostingIntent(
+          "PAYMENT_OUT_EXPENSE",
+          "PAYMENT_OUT",
+          [debitLine("DELIVERY_EXPENSE", deductionsTotal), creditLine(assetRole, deductionsTotal)],
+          src,
+        ),
+        postingSourceComponents: src,
+      });
     }
     await tx
       .update(deliveryRemittances)

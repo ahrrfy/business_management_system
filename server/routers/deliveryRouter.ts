@@ -298,6 +298,8 @@ export const deliveryRouter = router({
         deliveryAddress: z.string().max(1000).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
         assignedUserId: z.number().int().positive().nullish(),
+        /** إقرارُ إخراج جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
+        partialDispatchConfirmed: z.boolean().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {

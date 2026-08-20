@@ -24,7 +24,7 @@ import { nextConsignmentNumber } from "./numbering";
 import { assertFloatLimitTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
-import { partialDispatchMessage } from "@shared/partialDispatch";
+import { assertSiblingsReady } from "../workOrder/siblings";
 
 export interface DispatchInvoiceInput {
   invoiceId: number;
@@ -202,28 +202,21 @@ export async function dispatchInvoiceInTx(
     // وحدها. فبلا هذا الفحص يخرج نصفُ الطلب مع المندوب بينما نصفُه الآخر ما زال على الطاولة —
     // ولا شاشةَ تقول ذلك لأحد. (`draftId` كُتب في 0220 ولم يُقرأ حتى الآن — هذا قارئُه الأوّل.)
     // فشلٌ **مغلق**: يمرّ فقط بإقرارٍ صريح يُسجَّل في حدث الإرسالية.
-    const siblingRows = await tx
-      .select({ id: workOrders.id, orderNumber: workOrders.orderNumber, status: workOrders.status })
-      .from(workOrders)
-      .innerJoin(receptionDrafts, eq(workOrders.draftId, receptionDrafts.id))
-      .where(and(
-        or(
+    const draftRow = (
+      await tx
+        .select({ id: receptionDrafts.id })
+        .from(receptionDrafts)
+        .where(or(
           eq(receptionDrafts.committedInvoiceId, input.invoiceId),
           eq(receptionDrafts.committedPrintInvoiceId, input.invoiceId),
-        ),
-        // غيرُ الجاهز فقط: READY خرج للتسليم، والمُسلَّم/الملغى مُغلَقان.
-        notInArray(workOrders.status, ["READY", "DELIVERED", "CANCELLED"]),
-      ))
-      .limit(20);
-    if (siblingRows.length > 0 && input.partialDispatchConfirmed !== true) {
-      const names = siblingRows.slice(0, 3).map((r) => r.orderNumber).join("، ");
-      throw new TRPCError({
-        code: "PRECONDITION_FAILED",
-        // الرسالةُ من المصدر المشترك: الشاشتان تتعرّفان عليها بعينها لتعرضا زرّ الإقرار،
-        // فنصٌّ حرفيٌّ هنا يفكّ الارتباط صامتاً عند أوّل تحرير.
-        message: partialDispatchMessage(siblingRows.length, names, siblingRows.length > 3),
-      });
-    }
+        ))
+        .limit(1)
+    )[0];
+    const siblingRows = await assertSiblingsReady(tx, {
+      draftId: draftRow ? Number(draftRow.id) : null,
+      confirmed: input.partialDispatchConfirmed === true,
+      action: "dispatch",
+    });
 
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
     if (fee.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });

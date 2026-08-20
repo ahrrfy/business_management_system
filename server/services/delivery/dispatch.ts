@@ -24,6 +24,7 @@ import { openShiftIdTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import { assertFloatLimitTx } from "./parties";
+import { assertSiblingsReady } from "../workOrder/siblings";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
@@ -42,6 +43,8 @@ export interface DispatchInput {
   deliveryAddress?: string | null;
   clientRequestId?: string | null;
   assignedUserId?: number | null;
+  /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
+  partialDispatchConfirmed?: boolean;
 }
 
 export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTxActor) {
@@ -128,7 +131,10 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // = **مالُنا** الذي يحصّله المندوب ويورّده. الأجرة رقمٌ موازٍ لا يدخل الفاتورة ولا الإيراد.
     // كان الحارس القديم يرفض fee > codAmount لأن الأجرة كانت مضمومةً داخل codAmount؛ وبعد فصلها
     // صار الرفض خاطئاً بنيوياً — بل هو الحالة العادية في الطلب المدفوع كاملاً (codAmount=0).
-    const codAmount = round2(salePrice.minus(depositPaid)); // >= 0
+    // على الإسناد الأوّل تُنشأ الفاتورة هنا فيتطابق هذا مع متبقّيها. أمّا **إعادة الإسناد**
+    // فتُعيد استعمال فاتورةٍ حيّة قد تكون قُبضت جزئياً أو كلّياً بعد الإلغاء ⇒ يُعاد اشتقاقه
+    // من الفاتورة أدناه (تصويب مراجعة Codex، ٢٠/٨).
+    let codAmount = round2(salePrice.minus(depositPaid)); // >= 0
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
     if (fee.lt(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
@@ -216,6 +222,29 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       });
     }
     const reusingInvoice = priorInvoice != null;
+    // إخوةُ السلّة الواحدة — نفس حارس التسليم المباشر وإرسال الفاتورة.
+    await assertSiblingsReady(tx, {
+      draftId: wo.draftId,
+      excludeWorkOrderId: Number(input.workOrderId),
+      confirmed: input.partialDispatchConfirmed === true,
+      action: "dispatch",
+    });
+    if (priorInvoice) {
+      /**
+       * **متبقّي الفاتورة الحيّة هو الحقيقة** — مرآةُ `dispatchInvoice.ts` حرفياً.
+       *
+       * حارسُ التوصيل يمنع القبض على إرساليةٍ **مُرسَلة** فقط؛ وبعد إلغاء الإسناد تعود
+       * الفاتورة قابلةً للسداد على الكاونتر. فلو دفع الزبون ثمّ أُعيد الإسناد، كان
+       * `salePrice − deposit` يطلب من المندوب تحصيلَ مبلغٍ **مسدَّدٍ سلفاً** — ثمّ يفشل
+       * تأكيدُ التسليم على فحص متبقّي الفاتورة، فيعلق الطرد بلا مخرج.
+       */
+      codAmount = round2(
+        money(priorInvoice.total)
+          .minus(money(priorInvoice.returnedTotal ?? "0"))
+          .minus(money(priorInvoice.paidAmount ?? "0")),
+      );
+      if (codAmount.lt(0)) codAmount = round2(money(0));
+    }
 
     // الفاتورة تبقى منسوبة إلى عميل أمر الشغل كي تظهر في كشفه وأعمار الذمم. جهة التوصيل
     // هي حائز النقد/الطرد، وليست بديلاً عن هوية العميل على المستند التجاري.

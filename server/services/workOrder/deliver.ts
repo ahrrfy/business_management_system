@@ -13,6 +13,7 @@ import { readOpeningWindowState } from "../openingModeService";
 import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
@@ -21,6 +22,8 @@ export interface DeliverWorkOrderInput {
   workOrderId: number;
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
   clientRequestId?: string | null;
+  /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
+  partialDispatchConfirmed?: boolean;
 }
 
 /** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
@@ -41,6 +44,14 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
+    // إخوةُ السلّة الواحدة: التسليمُ المباشر مخرجٌ ثالثٌ كان يفلت من حارس الإرسال الجزئيّ،
+    // ومسوّدةٌ كلُّها أوامرُ شغل لا تصل إليه أصلاً (لا فاتورة بضاعةٍ لها).
+    await assertSiblingsReady(tx, {
+      draftId: wo.draftId,
+      excludeWorkOrderId: input.workOrderId,
+      confirmed: input.partialDispatchConfirmed === true,
+      action: "deliver",
+    });
     // أمرٌ مخصّص للتوصيل لا يجوز إغلاقه من مسار الاستلام المباشر. هذا المسار لا ينشئ
     // deliveryConsignment؛ السماح به كان يحوّل الأمر إلى DELIVERED ثم يُسقطه من طابور
     // التوصيل بلا أي سجل يستطيع المندوب/الشركة رؤيته.

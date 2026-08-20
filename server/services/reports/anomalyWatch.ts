@@ -520,20 +520,22 @@ export async function getAnomalyWatch(opts: {
 
       UNION ALL
 
-      SELECT t.branchId, b.name AS branchName, t.ymd,
+      -- ٢٠/٨ (تصويب مراجعة Codex): الترقيمُ الجديد **عدّادٌ عالميّ** لا يُعاد لكلّ فرعٍ
+      -- ويوم. فتجزئتُه بـ(فرع×يوم) تُعلن فجواتٍ كاذبةً من التداخل الطبيعيّ: الفرع ١ يأخذ
+      -- 10001 والفرع ٢ يأخذ 10002 والفرع ١ يأخذ 10003 ⇒ مجموعةُ الفرع ١ تُبلّغ عن «10002
+      -- مفقود» وهو فاتورةٌ صحيحةٌ في فرعٍ آخر. وحدُّ اليوم يفعل الشيء نفسه عند منتصف الليل.
+      -- ⇒ يُفحَص المدى **عالمياً** بلا تجميع. ويُسكَت الفحصُ كلّياً حين يكون النطاق مقيَّداً
+      -- بفرع، إذ لا معنى لاتّصال عدّادٍ عالميّ داخل شريحةِ فرعٍ واحد.
+      SELECT NULL AS branchId, NULL AS branchName, NULL AS ymd,
         COUNT(*) AS actualCount, MAX(t.seq) AS maxSeq, MIN(t.seq) AS minSeq
       FROM (
-        SELECT i.branchId,
-          DATE_FORMAT(i.invoiceDate, '%Y%m%d') AS ymd,
-          CAST(i.invoiceNumber AS UNSIGNED) AS seq
+        SELECT CAST(i.invoiceNumber AS UNSIGNED) AS seq
         FROM invoices i
         WHERE i.invoiceNumber REGEXP '^[0-9]+$'
           AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
-          ${branchInv}
       ) t
-      LEFT JOIN branches b ON b.id = t.branchId
-      GROUP BY t.branchId, b.name, t.ymd
-      HAVING MAX(t.seq) - MIN(t.seq) + 1 <> COUNT(*)
+      WHERE ${branchId == null ? sql`1 = 1` : sql`1 = 0`}
+      HAVING COUNT(*) > 0 AND MAX(t.seq) - MIN(t.seq) + 1 <> COUNT(*)
       ORDER BY ymd DESC
     `),
     null,
@@ -863,9 +865,12 @@ export async function getAnomalyWatch(opts: {
     const actual = Number(r.actualCount ?? 0);
     const maxSeq = Number(r.maxSeq ?? 0);
     const minSeq = Number(r.minSeq ?? 0);
+    // الصفُّ العالميّ (عدّاد الترقيم الجديد) يصل بـ`branchId = NULL` — لا يُصبّ رقماً
+    // كاذباً (`Number(null) = 0` كان سيُظهر «فرع #0»).
+    const isGlobal = r.branchId == null;
     return {
-      branchId: Number(r.branchId),
-      branchName: r.branchName ?? String(r.branchId),
+      branchId: isGlobal ? 0 : Number(r.branchId),
+      branchName: isGlobal ? "كل الفروع (تسلسل عامّ)" : (r.branchName ?? String(r.branchId)),
       day: String(r.ymd ?? ""),
       actualCount: actual,
       maxSeq,
