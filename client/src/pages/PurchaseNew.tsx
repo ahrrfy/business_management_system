@@ -99,8 +99,8 @@ export default function PurchaseNew() {
   const [clientRequestId] = useState(() => crypto.randomUUID());
 
   /* ─── landed cost (شحن/كمرك) ────────────────────────────────────── */
-  // تُرسمَل في تكلفة المخزون (WAVG) عند الاستلام وتُضاف إلى ذمّة المورّد — لا مصروف P&L. تُوزَّع
-  // على الأصناف بنسبة القيمة خادمياً؛ المعاينة هنا بـdecimal.js فقط (الخادم يُعيد الحساب مرجعياً).
+  // تُسجَّل مصروف نقل عند الاستلام ولا تُضاف إلى ذمّة المورّد أو تكلفة الصنف. تُوزَّع
+  // على الأصناف بنسبة القيمة للعرض فقط؛ المعاينة هنا بـdecimal.js والخادم يعيد الحساب مرجعياً.
   const [shippingCost, setShippingCost] = useState("");
   const [customsCost, setCustomsCost] = useState("");
 
@@ -305,6 +305,9 @@ export default function PurchaseNew() {
     if (state.currency === "USD" && !safeMoney(state.agreedRate).gt(0)) {
       return "أدخل سعر الصرف المثبت للفاتورة.";
     }
+    if (state.currency === "USD" && state.paymentTerms === "CASH") {
+      return "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة؛ اختر «آجل» ثم سجّل التسديد الفعلي بعد الاستلام.";
+    }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
       return "أضِف منتجات بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
@@ -324,6 +327,9 @@ export default function PurchaseNew() {
       branchId: state.branchId,
       taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
       status,
+      // المصطلح المشترك INSTALLMENT هو تسوية مؤجلة في المشتريات؛ أمر CASH وحده يولّد طلب
+      // صرف تلقائياً بقيمة كل استلام، ولا يعود اختيار الواجهة معلومةً مهدورة.
+      settlementType: state.paymentTerms === "CASH" ? ("CASH" as const) : ("CREDIT" as const),
       // IDEMPOTENCY (تدقيق ٢/٧): كان المفتاح يُولَّد ويُعلَّق في DOM مخفيّ فقط ولا يُرسَل ⇒ النقر
       // المزدوج يُنشئ أمرَي شراء. الآن نمرّره في الحمولة فيَحرس الخادم من الازدواج.
       clientRequestId,
@@ -545,9 +551,8 @@ export default function PurchaseNew() {
         </div>
 
         <aside className="flex w-full shrink-0 flex-col gap-2 lg:w-80">
-          {/* landed-cost (تدقيق ١٧/٧، خطر #2 — الآن مُنفَّذ لا مُخفى): الشحن/الكمرك يُحفظان ويُرسمَلان
-              في تكلفة المخزون (WAVG) عند الاستلام ويُضافان إلى ذمّة المورّد — لا مصروف P&L. باقي حقول
-              المحرّر (خصم/مصاريف أخرى/دفع) تبقى مخفيّة لأنّ createOrder لا يحفظها؛ الدفع عند الاستلام. */}
+          {/* الشحن/الكمرك يُحفظان على الأمر ويُسجّلان مصروف نقل عند الاستلام، خارج ذمة المورد
+              وتكلفة الصنف. باقي حقول المحرر غير المدعومة تبقى مخفية. */}
           <section className="overflow-hidden rounded-xl border bg-card">
             <header className="flex items-center gap-2 border-b bg-muted px-4 py-2.5">
               <Truck aria-hidden className="size-5" />
@@ -615,6 +620,20 @@ export default function PurchaseNew() {
                 </p>
               )}
             </div>
+          </section>
+
+          <section className="rounded-xl border bg-card px-4 py-3 text-sm">
+            <div className="font-extrabold">سياسة تسوية المورد</div>
+            {state.paymentTerms === "CASH" ? (
+              <p className="mt-1 text-muted-foreground">
+                نقدي: عند كل استلام ينشئ النظام طلب صرف من الخزينة بكامل قيمة الجزء المستلم. لا يخرج
+                النقد ولا تُطفأ الذمة إلا بعد اعتماد شخص آخر.
+              </p>
+            ) : (
+              <p className="mt-1 text-muted-foreground">
+                آجل: قيمة المستلم تُثبت ذمة على المورد، ولا تُسدد إلا بدفعة صريحة لاحقاً.
+              </p>
+            )}
           </section>
 
           <TotalsPanel

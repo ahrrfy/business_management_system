@@ -8,8 +8,14 @@ import { escLike } from "../lib/sqlLike";
 import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString, positiveRateString, unitPriceString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
-import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase, settlePurchaseUsdDirect, updatePurchaseOrder } from "../services/purchaseService";
-import { withTx } from "../services/tx";
+import {
+  cancelPurchaseOrder,
+  confirmPurchaseOrder,
+  createPurchaseOrder,
+  receivePurchase,
+  settlePurchaseUsdDirect,
+  updatePurchaseOrder,
+} from "../services/purchaseService";
 import { payPurchaseOrder } from "../services/purchase/pay";
 import { canSeeCostForUser, purchasesManagerProcedure, purchasesReadProcedure, purchasesWarehouseProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -119,6 +125,7 @@ export const purchaseRouter = router({
         // PROC-03: نسبة الضريبة مُقيّدة [٠،١٠٠] على حدّ الثقة (كانت z.string() بلا قيد ⇒ ضريبة سالبة).
         taxRatePercent: percentString.optional(),
         status: z.enum(["DRAFT", "SENT", "CONFIRMED"]).optional(),
+        settlementType: z.enum(["CASH", "CREDIT"]).optional(),
         items: z
           .array(
             z.object({
@@ -134,7 +141,7 @@ export const purchaseRouter = router({
           )
           .min(1),
         notes: z.string().optional(),
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(80),
         // usd-po-reconcile: مطابقة سعر الشراء بالدولار (إعلامي — لا يمسّ total/paidAmount الديناريَين).
         agreedCurrency: z.enum(["IQD", "USD"]).optional(),
         usdTotal: positiveMoneyString.optional(),
@@ -237,20 +244,10 @@ export const purchaseRouter = router({
       if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن اعتماد أمر شراء" });
       }
-      // withTx يستدعي requireDb() داخلياً (يرمي نفس الخطأ إن غابت قاعدة البيانات) — لا فحص مكرَّر هنا.
-      const res = await withTx(async (tx) => {
-        const [po] = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update").limit(1);
-        if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
-        // عزل الفرع: مطابق لـassertPurchaseBranch في purchaseService (غير المرتفع محصور بفرعه).
-        const elevated = ctx.user.role === "admin"; // عزل مدير الفرع (قرار المالك ١٢/٨): المالك/الأدمن فقط
-        if (!elevated && Number(po.branchId) !== Number(ctx.user.branchId)) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع اعتماد أمر شراء فرع آخر" });
-        }
-        if (po.status !== "DRAFT") {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعتمَد إلا أمر شراء بحالة مسوّدة" });
-        }
-        await tx.update(purchaseOrders).set({ status: "CONFIRMED" }).where(eq(purchaseOrders.id, input.purchaseOrderId));
-        return { purchaseOrderId: input.purchaseOrderId, status: "CONFIRMED" as const };
+      const res = await confirmPurchaseOrder(input.purchaseOrderId, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId),
+        role: ctx.user.role,
       });
       await logAudit(ctx, {
         action: "purchase.confirmOrder",
@@ -289,7 +286,7 @@ export const purchaseRouter = router({
         shippingBeneficiaryName: z.string().trim().min(2).max(200).nullish(),
         shippingEvidenceReference: z.string().trim().min(2).max(191).nullish(),
         // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(80),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -363,7 +360,7 @@ export const purchaseRouter = router({
       feeIqd: nonNegMoneyString.optional(),
       method: z.enum(["CARD", "TRANSFER", "WALLET"]),
       referenceNumber: z.string().trim().min(1).max(100),
-      clientRequestId: z.string().min(1).max(80).optional(),
+      clientRequestId: z.string().min(1).max(80),
     }))
     .mutation(async ({ input, ctx }) => {
       const res = await settlePurchaseUsdDirect(input, {
@@ -447,6 +444,7 @@ export const purchaseRouter = router({
             branchId: purchaseOrders.branchId,
             total: purchaseOrders.total,
             paidAmount: purchaseOrders.paidAmount,
+            settlementType: purchaseOrders.settlementType,
             shippingCost: purchaseOrders.shippingCost,
             customsCost: purchaseOrders.customsCost,
             agreedCurrency: purchaseOrders.agreedCurrency,
@@ -522,6 +520,7 @@ export const purchaseRouter = router({
           customsCost: purchaseOrders.customsCost,
           total: purchaseOrders.total,
           paidAmount: purchaseOrders.paidAmount,
+          settlementType: purchaseOrders.settlementType,
           paidUsd: purchaseOrders.paidUsd,
           returnedUsd: purchaseOrders.returnedUsd,
           status: purchaseOrders.status,

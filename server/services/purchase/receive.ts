@@ -4,7 +4,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
-import { accountingEntries, branchStock, expenses, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
+import { accountingEntries, branchStock, expenses, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
@@ -14,7 +14,11 @@ import { money, round2, toDbMoney } from "../money";
 import { assertNonPhysicalOutReceipt, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { createSystemPaymentRequestTx } from "../voucher/create";
-import { assertPurchaseBranch } from "./internal";
+import {
+  assertPurchaseBranch,
+  pendingPurchaseSupplierPaymentsTx,
+  purchaseOrderPayableBalanceTx,
+} from "./internal";
 import type { ReceivePurchaseInput } from "./types";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { expenseAccrualRecognition } from "../accounting/accrualPosting";
@@ -85,7 +89,13 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       : null;
     const paymentRequestToken = receiveRequestHash?.slice(0, 16) ?? randomUUID().replaceAll("-", "").slice(0, 16);
     if (input.clientRequestId) {
-      const existingRefId = await checkIdempotency(tx, "purchase.receive", input.clientRequestId, receiveRequestHash);
+      const existingRefId = await checkIdempotency(
+        tx,
+        "purchase.receive",
+        input.clientRequestId,
+        receiveRequestHash,
+        { requireStoredHash: true },
+      );
       if (existingRefId != null) {
         if (existingRefId !== input.purchaseOrderId) {
           throw new TRPCError({
@@ -202,7 +212,8 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         ? `أمر الشراء ${poPreview.poNumber}`
         : rawShippingEvidence;
     const mayPaySupplierCash =
-      input.payment?.method === "CASH" && money(input.payment.amount).gt(0);
+      poPreview.settlementType === "CASH" ||
+      (input.payment?.method === "CASH" && money(input.payment.amount).gt(0));
     let treasuryPrelocked = false;
     if (mayPaySupplierCash) {
       await lockCashSourceForUpdate(tx, {
@@ -300,22 +311,23 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     });
     work.sort((a, b) => Number(a.item.variantId) - Number(b.item.variantId));
 
-    // Batch-load all required data before the loop (eliminates N×3 queries → 3 queries total).
+    // Batch-load all required data before the loop.
     const variantIds = work.map(({ item }) => Number(item.variantId));
-    const unitIds = work.map(({ item }) => Number(item.productUnitId));
 
-    const unitRows = await tx
-      .select({ id: productUnits.id, factor: productUnits.conversionFactor })
-      .from(productUnits)
-      .where(inArray(productUnits.id, unitIds));
-    const unitFactorMap = new Map(unitRows.map((u) => [Number(u.id), u.factor]));
-
-    // INV-004: التحقّق من قابلية الكمية المستلَمة للقسمة على معامل الوحدة (conversionFactor > 1).
-    // مثال: وحدة «درزن» factor=12 ⇒ receivedBaseQuantity يجب أن يكون مضاعفاً لـ12.
+    // معامل الوحدة لقطة ثابتة مشتقة من baseQuantity/quantity المخزنين في سطر الأمر.
+    // إعادة قراءة productUnits هنا كانت تجعل تعديل الوحدة بعد إنشاء PO يغيّر تكلفة الاستلام أو يعطله.
+    const unitFactorMap = new Map<number, Decimal>();
     for (const { line, item } of work) {
-      const factor = Number(unitFactorMap.get(Number(item.productUnitId)) ?? 1);
-      if (factor > 1 && line.receivedBaseQuantity % factor !== 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `الكمية المستلَمة (${line.receivedBaseQuantity}) غير قابلة للقسمة على معامل الوحدة (${factor})` });
+      const orderedQty = new Decimal(item.quantity);
+      const factor = orderedQty.gt(0)
+        ? new Decimal(item.baseQuantity).dividedBy(orderedQty)
+        : new Decimal(1);
+      if (factor.lte(0)) {
+        throw new TRPCError({ code: "CONFLICT", message: `معامل الوحدة المخزّن لبند الشراء ${item.id} غير صالح` });
+      }
+      unitFactorMap.set(Number(item.id), factor);
+      if (factor.gt(1) && !new Decimal(line.receivedBaseQuantity).modulo(factor).isZero()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `الكمية المستلَمة (${line.receivedBaseQuantity}) غير قابلة للقسمة على معامل الوحدة الأصلي (${factor.toString()})` });
       }
     }
 
@@ -353,7 +365,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     let receivedUsd = new Decimal(0);
     let receivedLanded = new Decimal(0);
     for (const { line, item } of work) {
-      const factor = new Decimal(unitFactorMap.get(Number(item.productUnitId)) ?? "1");
+      const factor = unitFactorMap.get(Number(item.id)) ?? new Decimal(1);
       const costPerBase = round2(money(item.unitPrice).dividedBy(factor.lte(0) ? new Decimal(1) : factor));
 
       // قرار المالك (٥/٨/٢٦) — **الشحن/الكمرك لا يُرسمَلان في تكلفة الصنف**: «تكلفة الصنف سعر
@@ -643,9 +655,20 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       }
     }
 
-    // Optional payment to supplier.
+    // تسوية المورد: أمر CASH يطلب تلقائياً كامل قيمة **هذا الاستلام**، فلا يتحول اختيار
+    // «نقدي» الظاهر في أمر الشراء إلى ذمّة صامتة. الطلب يبقى معلّقاً حتى اعتماد مالك آخر
+    // (فصل المهام)، وعند الاعتماد فقط يخرج النقد وتُطفأ AP ويزيد paidAmount.
     let supplierPaymentRequestReceiptId: number | null = null;
-    const paidNow = money(input.payment?.amount ?? "0");
+    const explicitPaidNow = money(input.payment?.amount ?? "0");
+    const automaticCashSettlement = po.settlementType === "CASH";
+    if (automaticCashSettlement && input.payment && !explicitPaidNow.eq(receivedTotal)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `أمر الشراء نقدي: يجب أن تساوي دفعة هذا الاستلام كامل قيمته (${receivedTotal.toFixed(2)})`,
+      });
+    }
+    const paidNow = automaticCashSettlement ? receivedTotal : explicitPaidNow;
+    const supplierPaymentMethod = input.payment?.method ?? "CASH";
     if (paidNow.gt(0)) {
       if (po.agreedCurrency === "USD") {
         throw new TRPCError({
@@ -660,18 +683,18 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       if (paidNow.gt(supAfter)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})` });
       }
-      // #7 (تدقيق التثبيت): سقف ثانٍ — المتبقّي على أمر الشراء نفسه. كان الدفع الداخلي يُنسب كاملاً
-      // لـpo.paidAmount حتى لو تجاوز po.total، مضخّماً هذا PO ومُلوّثاً كل تقارير AP لكل PO (بمورد
-      // له عدّة أوامر مفتوحة). الدفع الزائد المتعمَّد شأن سند صرف مستقلّ — لا مسار «استلام + دفع
-      // إجمالي > المتبقّي».
-      const poRemaining = money(po.total).minus(money(po.paidAmount));
-      if (paidNow.gt(poRemaining)) {
+      // السقف الحقيقي = رصيد GL المعترف به لهذا PO ناقص طلباته المعلّقة، لا إجمالي الأمر الاسمي.
+      // يمنع دفع قيمة غير مستلمة، كما يمنع حجز المبلغ مرتين قبل الاعتماد.
+      const poPayable = await purchaseOrderPayableBalanceTx(tx, input.purchaseOrderId);
+      const pendingReserved = await pendingPurchaseSupplierPaymentsTx(tx, String(po.poNumber));
+      const poAvailable = Decimal.max(poPayable.minus(pendingReserved), 0);
+      if (paidNow.gt(poAvailable)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز المتبقّي على أمر الشراء (${poRemaining.toFixed(2)}) — للمبالغ الزائدة استعمل سند صرف مستقلّاً`,
+          message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز المستحق المتاح على أمر الشراء (${poAvailable.toFixed(2)}) بعد الطلبات المعلّقة`,
         });
       }
-      if (input.payment!.method === "CASH") {
+      if (supplierPaymentMethod === "CASH") {
         if (!treasuryPrelocked) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر طلب دفعة المورد النقدية" });
         }

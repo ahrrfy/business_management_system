@@ -6,7 +6,7 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
@@ -20,8 +20,24 @@ export async function settlePurchaseUsdDirect(
   actor: Actor & { role?: string },
 ) {
   return withTx(async (tx) => {
+    const settlementRequestHash = input.clientRequestId
+      ? idempotencyHash({
+          purchaseOrderId: input.purchaseOrderId,
+          settledUsd: money(input.settledUsd).toFixed(2),
+          chargedIqd: money(input.chargedIqd).toFixed(2),
+          feeIqd: money(input.feeIqd ?? "0").toFixed(2),
+          method: input.method,
+          referenceNumber: input.referenceNumber.trim(),
+        })
+      : null;
     if (input.clientRequestId) {
-      const existing = await findIdempotentRefId(tx, "purchase.usd-settle", input.clientRequestId);
+      const existing = await checkIdempotency(
+        tx,
+        "purchase.usd-settle",
+        input.clientRequestId,
+        settlementRequestHash,
+        { requireStoredHash: true },
+      );
       if (existing != null) return { receiptId: existing, idempotent: true };
     }
 
@@ -169,7 +185,7 @@ export async function settlePurchaseUsdDirect(
       });
     }
     if (input.clientRequestId) {
-      await recordIdempotencyKey(tx, "purchase.usd-settle", input.clientRequestId, receiptId);
+      await recordIdempotencyKey(tx, "purchase.usd-settle", input.clientRequestId, receiptId, settlementRequestHash);
     }
     return {
       receiptId,

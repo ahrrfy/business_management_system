@@ -69,12 +69,18 @@ export async function getRecentMovements(
     effectiveBranch != null ? sql`AND r.branchId = ${effectiveBranch}` : sql``;
   const branchFilterE =
     effectiveBranch != null ? sql`AND e.branchId = ${effectiveBranch}` : sql``;
-  // مدى تاريخ اختياري (createdAt) — to شامل ليومه كاملاً (نمط getCardMovements: < بداية اليوم التالي).
+  // زمن الحركة النقدية = approvedAt لطلبات اعتماد فصل المهام، وcreatedAt للحركات الفورية.
+  // طلب D1 اعتُمِد D2 يجب أن يظهر في D2، لا بأثر رجعي في يوم إنشائه.
+  const receiptCashEventAtSql = sql`CASE
+    WHEN r.approvedBy IS NOT NULL AND r.approvedBy <> r.createdBy AND r.approvedAt IS NOT NULL
+      THEN r.approvedAt
+    ELSE r.createdAt
+  END`;
   const fromFilterR = input.from
-    ? sql`AND r.createdAt >= ${input.from}`
+    ? sql`AND ${receiptCashEventAtSql} >= ${input.from}`
     : sql``;
   const toFilterR = input.to
-    ? sql`AND r.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)`
+    ? sql`AND ${receiptCashEventAtSql} < DATE_ADD(${input.to}, INTERVAL 1 DAY)`
     : sql``;
   const fromFilterE = input.from
     ? sql`AND e.createdAt >= ${input.from}`
@@ -142,7 +148,7 @@ export async function getRecentMovements(
           ex.costCenter AS costCenter,
           (SELECT ae.id FROM accountingEntries ae WHERE ae.receiptId = r.id ORDER BY ae.id DESC LIMIT 1) AS ledgerEntryId,
           COALESCE(ex.expenseDate, r.voucherDate, DATE(r.createdAt)) AS documentDate,
-          r.createdAt AS createdAt
+          ${receiptCashEventAtSql} AS createdAt
         FROM receipts r
         LEFT JOIN branches b ON b.id = r.branchId
         LEFT JOIN expenses ex ON ex.receiptId = r.id

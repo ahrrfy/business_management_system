@@ -12,6 +12,7 @@ import {
   fixedAssets,
   productVariants,
   products,
+  purchaseOrderItems,
   purchaseOrders,
   suppliers,
   tasks,
@@ -405,8 +406,21 @@ export async function deactivateSupplier(supplierId: number, _actor: Actor) {
         .where(and(
           eq(purchaseOrders.supplierId, supplierId),
           sql`${purchaseOrders.status} IN ('CONFIRMED','RECEIVED') AND (
-            (${purchaseOrders.agreedCurrency} = 'USD' AND ${purchaseOrders.paidUsd} + ${purchaseOrders.returnedUsd} < ${purchaseOrders.usdTotal})
-            OR (${purchaseOrders.agreedCurrency} <> 'USD' AND ${purchaseOrders.paidAmount} < ${purchaseOrders.total})
+            EXISTS (
+              SELECT 1 FROM ${purchaseOrderItems} poi
+              WHERE poi.purchaseOrderId = ${purchaseOrders.id}
+                AND poi.receivedBaseQuantity < poi.baseQuantity
+            )
+            OR EXISTS (
+              SELECT 1 FROM ${accountingEntries} ae
+              WHERE ae.purchaseOrderId = ${purchaseOrders.id}
+                AND ae.supplierId = ${supplierId}
+              GROUP BY ae.purchaseOrderId
+              HAVING ABS(SUM(CASE
+                WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount
+                WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
+                ELSE 0 END)) > 0.004
+            )
           )`,
         ))
         .limit(1)

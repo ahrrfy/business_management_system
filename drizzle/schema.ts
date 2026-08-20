@@ -3732,6 +3732,12 @@ export const purchaseOrders = mysqlTable(
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    // تصنيف التسوية التعاقدي للأمر، مستقل عن وسيلة التنفيذ. التاريخي CREDIT لأن النظام
+    // قبل 0240 كان لا ينشئ دفعة إلا إذا أُدخل مبلغ صريح عند الاستلام؛ هذا يمنع تحويل
+    // الأوامر القديمة إلى صرف نقدي تلقائي بعد الترقية.
+    settlementType: mysqlEnum("settlementType", ["CASH", "CREDIT"])
+      .default("CREDIT")
+      .notNull(),
     status: mysqlEnum("poStatus", [
       "DRAFT",
       "SENT",
@@ -8838,8 +8844,8 @@ export const storefrontPushDeliveries = mysqlTable(
   "storefrontPushDeliveries",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    campaignId: bigint("campaignId", { mode: "number" }).notNull().references(() => storefrontPushCampaigns.id, { onDelete: "cascade" }),
-    deviceId: bigint("deviceId", { mode: "number" }).notNull().references(() => storefrontPushDevices.id, { onDelete: "cascade" }),
+    campaignId: bigint("campaignId", { mode: "number" }).notNull(),
+    deviceId: bigint("deviceId", { mode: "number" }).notNull(),
     status: mysqlEnum("status", ["PENDING", "PROCESSING", "RETRY", "SENT", "GONE", "FAILED"]).notNull().default("PENDING"),
     attemptCount: tinyint("attemptCount").notNull().default(0),
     availableAt: timestamp("availableAt").defaultNow().notNull(),
@@ -8854,6 +8860,16 @@ export const storefrontPushDeliveries = mysqlTable(
   (table) => ({
     campaignDeviceUnique: unique("uq_storefront_push_delivery").on(table.campaignId, table.deviceId),
     dueIdx: index("idx_storefront_push_delivery_due").on(table.status, table.availableAt),
+    campaignFk: foreignKey({
+      columns: [table.campaignId],
+      foreignColumns: [storefrontPushCampaigns.id],
+      name: "fk_storefront_push_delivery_campaign",
+    }).onDelete("cascade"),
+    deviceFk: foreignKey({
+      columns: [table.deviceId],
+      foreignColumns: [storefrontPushDevices.id],
+      name: "fk_storefront_push_delivery_device",
+    }).onDelete("cascade"),
   }),
 );
 export type StorefrontPushDelivery = typeof storefrontPushDeliveries.$inferSelect;

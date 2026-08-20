@@ -1,7 +1,12 @@
 // إلغاء سند قبض/صرف مستقلّ — المرآة الدقيقة لـcreateVoucher (إيصال تعويضي + قيد معاكس + عكس رصيد).
 import { TRPCError } from "@trpc/server";
 import { asc, eq, inArray } from "drizzle-orm";
-import { accountingEntries, receipts, shifts } from "../../../drizzle/schema";
+import {
+  accountingEntries,
+  purchaseOrders,
+  receipts,
+  shifts,
+} from "../../../drizzle/schema";
 import { money, toDbMoney } from "../money";
 import { getActiveLock } from "../periodLockService";
 import { type Actor, withTx } from "../tx";
@@ -161,7 +166,8 @@ export async function cancelVoucher(
     }
     if (
       originalSystemRequest &&
-      originalSystemRequest.kind !== "EMPLOYEE_ADVANCE"
+      originalSystemRequest.kind !== "EMPLOYEE_ADVANCE" &&
+      originalSystemRequest.kind !== "PURCHASE_SUPPLIER"
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -227,6 +233,7 @@ export async function cancelVoucher(
         amount: accountingEntries.amount,
         customerId: accountingEntries.customerId,
         supplierId: accountingEntries.supplierId,
+        purchaseOrderId: accountingEntries.purchaseOrderId,
       })
       .from(accountingEntries)
       .where(eq(accountingEntries.receiptId, receiptId))
@@ -250,8 +257,45 @@ export async function cancelVoucher(
           "تعذر إثبات القيد المالي المنفذ للسند؛ أوقف الإلغاء وراجع التدقيق",
       });
     }
+    if (originalSystemRequest?.kind === "PURCHASE_SUPPLIER") {
+      const [purchaseOrder] = await tx
+        .select()
+        .from(purchaseOrders)
+        .where(eq(purchaseOrders.id, originalSystemRequest.purchaseOrderId))
+        .for("update")
+        .limit(1);
+      if (
+        !purchaseOrder ||
+        direction !== "OUT" ||
+        r.partyType !== "SUPPLIER" ||
+        r.partyId == null ||
+        Number(purchaseOrder.branchId) !== Number(r.branchId) ||
+        Number(purchaseOrder.supplierId) !== Number(r.partyId) ||
+        !/^[0-9a-f]{16}$/i.test(originalSystemRequest.requestToken) ||
+        r.referenceNumber !==
+          `PO-PAY-${purchaseOrder.poNumber}-${originalSystemRequest.requestToken}` ||
+        typeof originalSystemRequest.expectedAmount !== "string" ||
+        !money(originalSystemRequest.expectedAmount).eq(amount) ||
+        typeof originalSystemRequest.sourceTotal !== "string" ||
+        !money(purchaseOrder.total).eq(
+          money(originalSystemRequest.sourceTotal),
+        ) ||
+        Number(materialized.purchaseOrderId ?? 0) !==
+          Number(purchaseOrder.id) ||
+        money(purchaseOrder.paidAmount).lt(amount)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "رابط دفعة أمر الشراء أو تخصيصها تغيّر؛ أوقف الإلغاء وراجع التدقيق",
+        });
+      }
+    }
 
-    const requestPaymentMethod = r.paymentMethod as Exclude<PaymentMethod, "EXCHANGE">;
+    const requestPaymentMethod = r.paymentMethod as Exclude<
+      PaymentMethod,
+      "EXCHANGE"
+    >;
     const requestPartyType = (r.partyType as PartyType | null) ?? "OTHER";
     if (originalSystemRequest?.kind === "EMPLOYEE_ADVANCE") {
       await assertEmployeeAdvanceVoucherRequestTx(
@@ -321,7 +365,8 @@ export async function cancelVoucher(
       ) {
         throw new TRPCError({
           code: "CONFLICT",
-          message: "سجل محاولات إلغاء السند غير canonical؛ أوقف الإلغاء وراجع التدقيق",
+          message:
+            "سجل محاولات إلغاء السند غير canonical؛ أوقف الإلغاء وراجع التدقيق",
         });
       }
     }
@@ -389,8 +434,7 @@ export async function cancelVoucher(
         systemRequest: {
           kind: "VOUCHER_CANCELLATION",
           originalReceiptId: receiptId,
-          originalCreatorId:
-            r.createdBy != null ? Number(r.createdBy) : null,
+          originalCreatorId: r.createdBy != null ? Number(r.createdBy) : null,
           originalDirection: direction,
           originalPaymentMethod: requestPaymentMethod,
           originalReferenceNumber: r.referenceNumber?.trim() || null,

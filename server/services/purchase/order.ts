@@ -317,6 +317,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     const payloadFingerprint = {
       supplierId: input.supplierId,
       branchId: input.branchId,
+      settlementType: input.settlementType ?? "CREDIT",
       status: input.status ?? null,
       taxRatePercent: input.taxRatePercent ?? null,
       agreedCurrency: input.agreedCurrency ?? null,
@@ -341,7 +342,13 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     };
     const payloadHash = idempotencyHash(payloadFingerprint);
     if (input.clientRequestId) {
-      const existing = await checkIdempotency(tx, "purchase.create", input.clientRequestId, payloadHash);
+      const existing = await checkIdempotency(
+        tx,
+        "purchase.create",
+        input.clientRequestId,
+        payloadHash,
+        { requireStoredHash: true },
+      );
       if (existing != null) return { purchaseOrderId: existing, idempotent: true };
     }
 
@@ -373,6 +380,13 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
 
     const { rows, subtotal, tax, taxRate, shippingCost, customsCost, total, agreedCurrency, usdTotalVal, agreedRateVal, invoiceDiscountIqd, usdInvoiceDiscountVal } =
       await computePurchaseDocument(tx, input);
+    const settlementType = input.settlementType ?? "CREDIT";
+    if (agreedCurrency === "USD" && settlementType === "CASH") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "فاتورة المورد الدولارية تُسدَّد من مسار الصيرفة؛ اختر تسوية آجلة لأمر الشراء",
+      });
+    }
 
     const ymd = toDateStr().replace(/-/g, "");
     const prefix = `PO-${input.branchId}-${ymd}-`;
@@ -396,6 +410,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       shippingCost: shippingCost.toFixed(2),
       customsCost: customsCost.toFixed(2),
       total: total.toFixed(2),
+      settlementType,
       status: input.status ?? "CONFIRMED",
       agreedCurrency,
       usdTotal: usdTotalVal ? usdTotalVal.toFixed(2) : null,
@@ -418,6 +433,25 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     if (input.clientRequestId)
       await recordIdempotencyKey(tx, "purchase.create", input.clientRequestId, purchaseOrderId, payloadHash);
     return { purchaseOrderId, poNumber, total: total.toFixed(2) };
+  });
+}
+
+/** اعتماد مسودة أمر شراء: انتقال حالة فقط؛ لا مخزون ولا قيد ولا ذمة قبل الاستلام. */
+export async function confirmPurchaseOrder(purchaseOrderId: number, actor: Actor & { role?: string }) {
+  return withTx(async (tx) => {
+    const [po] = await tx
+      .select()
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, purchaseOrderId))
+      .for("update")
+      .limit(1);
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    assertPurchaseBranch(po, actor);
+    if (po.status !== "DRAFT" && po.status !== "SENT") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُعتمَد إلا أمر شراء مسوّدة أو مُرسَل" });
+    }
+    await tx.update(purchaseOrders).set({ status: "CONFIRMED" }).where(eq(purchaseOrders.id, purchaseOrderId));
+    return { purchaseOrderId, status: "CONFIRMED" as const };
   });
 }
 

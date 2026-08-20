@@ -32,6 +32,11 @@ const PO_STATUS: Record<string, string> = {
   CANCELLED: "ملغى",
 };
 
+const SETTLEMENT_TYPE: Record<string, string> = {
+  CASH: "نقدي",
+  CREDIT: "آجل",
+};
+
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -166,7 +171,7 @@ export default function Purchases() {
         qrSvg: qrSvg || null,
         invoiceNumber: d.poNumber,
         invoiceDate: d.orderDate as unknown as string | null,
-        statusLabel: PO_STATUS[d.status] ?? d.status,
+        statusLabel: `${PO_STATUS[d.status] ?? d.status} · ${SETTLEMENT_TYPE[d.settlementType] ?? d.settlementType}`,
         statusColor,
         supplierName: d.supplierName,
         items: d.items.map((it, index) => ({
@@ -270,6 +275,7 @@ export default function Purchases() {
                 { key: "usdTotal", header: "فاتورة المورد $", map: (r) => Number(r.usdTotal ?? 0) },
                 { key: "agreedRate", header: "سعر التثبيت", map: (r) => Number(r.agreedRate ?? 0) },
                 { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount ?? 0) },
+                { key: "settlementType", header: "التسوية", map: (r) => SETTLEMENT_TYPE[r.settlementType] ?? r.settlementType },
                 { key: "status", header: "الحالة", map: (r) => PO_STATUS[r.status] ?? r.status },
               ],
             }}
@@ -290,6 +296,7 @@ export default function Purchases() {
                 <th className="p-2 text-right">فاتورة المورد</th>
                 <th className="p-2 text-right">سعر التثبيت</th>
                 <th className="p-2 text-right">المتبقي</th>
+                <th className="p-2">التسوية</th>
                 <th className="p-2">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -297,7 +304,7 @@ export default function Purchases() {
             <tbody>
               {rows.map((p) => {
                 const terminal = p.status === "RECEIVED" || p.status === "CANCELLED";
-                const isDraft = p.status === "DRAFT";
+                const needsConfirmation = p.status === "DRAFT" || p.status === "SENT";
                 const fr = rowProps(p.id);
                 return (
                   <tr key={p.id} ref={fr.ref} className={`border-t ${fr.className}`}>
@@ -315,6 +322,7 @@ export default function Purchases() {
                         ? `${D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).toFixed(2)} $`
                         : `${positiveDiff(p.total ?? 0, p.paidAmount ?? 0).toFixed(2)} د.ع`}
                     </td>
+                    <td className="p-2">{SETTLEMENT_TYPE[p.settlementType] ?? p.settlementType}</td>
                     <td className="p-2">{PO_STATUS[p.status] ?? p.status}</td>
                     <td className="p-2 text-center">
                       <RowActions
@@ -340,7 +348,7 @@ export default function Purchases() {
                             kind: "approve",
                             label: "اعتماد الأمر",
                             // اعتماد المسوّدة (DRAFT ← CONFIRMED) — بعده يصبح قابلاً للاستلام.
-                            hidden: !isDraft,
+                            hidden: !needsConfirmation,
                             disabled: confirmMut.isPending,
                             disabledReason: "توجد عملية اعتماد قيد التنفيذ",
                             onSelect: () => void confirmOrder({ id: p.id, poNumber: p.poNumber }),
@@ -362,7 +370,7 @@ export default function Purchases() {
                             label: terminal ? "عرض" : "استلام",
                             href: `/purchases/${p.id}/receive`,
                             // مسوّدة غير قابلة للاستلام قبل الاعتماد (receive يشترط status=CONFIRMED خادمياً).
-                            hidden: isDraft,
+                            hidden: needsConfirmation,
                             gate: terminal
                               ? { module: "purchases", level: "READ" }
                               : { roles: ["warehouse", "manager", "purchasing"], module: "purchases", level: "FULL" },
@@ -410,7 +418,7 @@ export default function Purchases() {
                 );
               })}
               {!query.isLoading && rows.length === 0 && (
-                <tr><td colSpan={showBranchCol ? 10 : 9} className="p-6 text-center text-muted-foreground">لا أوامر شراء مطابقة.</td></tr>
+                <tr><td colSpan={showBranchCol ? 11 : 10} className="p-6 text-center text-muted-foreground">لا أوامر شراء مطابقة.</td></tr>
               )}
             </tbody>
           </table>

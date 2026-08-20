@@ -21,7 +21,8 @@ export type {
   SettlePurchaseUsdDirectInput,
   ReceiveLineInput,
   ReceivePurchaseInput,
+  PurchaseSettlementType,
 } from "./purchase/types";
-export { createPurchaseOrder, updatePurchaseOrder, cancelPurchaseOrder } from "./purchase/order";
+export { createPurchaseOrder, updatePurchaseOrder, confirmPurchaseOrder, cancelPurchaseOrder } from "./purchase/order";
 export { assertUniqueReceiveLines, cumulativePurchaseTax, receivePurchase } from "./purchase/receive";
 export { settlePurchaseUsdDirect } from "./purchase/usdSettlement";

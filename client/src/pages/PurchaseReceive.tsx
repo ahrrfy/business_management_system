@@ -36,12 +36,6 @@ const SHIPPING_METHODS: { v: "CASH" | "CARD" | "TRANSFER" | "WALLET"; label: str
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];
-
-// دفعةُ المورّد لحظة الاستلام: **نقديّة فقط**. `receivePurchase` يرفض غيرها من أوّل سطر داخل
-// المعاملة، والرفض يُسقِط الاستلام كلّه (لا مخزون ولا ذمّة ولا قيد). عرضُ خمس طرقٍ هنا كان
-// يعني أنّ أربعاً منها تُضيّع إدخال أمين المخزن كاملاً برسالةٍ تحيله إلى سندٍ لا مسار له.
-const SUPPLIER_PAYMENT_METHODS: { v: "CASH"; label: string }[] = [{ v: "CASH", label: "نقدي" }];
-
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -60,10 +54,15 @@ export default function PurchaseReceive() {
     "gifts",
     "FULL",
   );
+  const canManagePurchases = hasModuleAccess(
+    me.data?.role ?? "",
+    (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null,
+    "purchases",
+    "FULL",
+  );
   const [free, setFree] = useState<Record<number, string>>({});
   const [payAmount, setPayAmount] = useState("");
-  const [payMethod, setPayMethod] = useState<(typeof SUPPLIER_PAYMENT_METHODS)[number]["v"]>("CASH");
-  // طريقة دفع **مصروف الشحن/الكمرك** (لشركة النقل) — مستقلّة تماماً عن دفعة المورّد أعلاه.
+  // طريقة دفع **مصروف الشحن/الكمرك** (لشركة النقل) — مستقلّة تماماً عن تسوية المورّد.
   const [shipMethod, setShipMethod] = useState<(typeof SHIPPING_METHODS)[number]["v"]>("CASH");
   const [shipPaymentReference, setShipPaymentReference] = useState("");
   const [shipCardLastFour, setShipCardLastFour] = useState("");
@@ -74,6 +73,8 @@ export default function PurchaseReceive() {
   const [shipBeneficiaryName, setShipBeneficiaryName] = useState("");
   const [shipEvidenceReference, setShipEvidenceReference] = useState("");
   const suppliersQuery = trpc.suppliers.list.useQuery();
+  const [laterPayAmount, setLaterPayAmount] = useState("");
+  const [laterPayRequestId, setLaterPayRequestId] = useState(() => crypto.randomUUID());
   const [directUsd, setDirectUsd] = useState("");
   const [directIqd, setDirectIqd] = useState("");
   const [directFee, setDirectFee] = useState("");
@@ -98,7 +99,9 @@ export default function PurchaseReceive() {
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const receive = trpc.purchases.receive.useMutation({
     onSuccess: async (r) => {
-      const recognized = r.fullyReceived ? "تم الاستلام الكامل وإثبات المخزون وذمّة المورّد." : "تم الاستلام الجزئي وإثبات المخزون وذمّة المورّد.";
+      const recognized = r.fullyReceived
+        ? "تم الاستلام الكامل وإثبات المخزون واستحقاق المورد."
+        : "تم الاستلام الجزئي وإثبات المخزون واستحقاق المورد.";
       const pending: string[] = [];
       if (r.shippingPaymentRequestReceiptId) pending.push("أُثبت مصروف الشحن والتزامه، وتسويته معلّقة لاعتماد مالكٍ آخر");
       if (r.supplierPaymentRequestReceiptId) pending.push("دفعة المورّد النقدية معلّقة لاعتماد مالكٍ آخر");
@@ -131,6 +134,18 @@ export default function PurchaseReceive() {
         utils.purchases.get.invalidate({ purchaseOrderId }),
         utils.purchases.list.invalidate(),
         utils.suppliers.list.invalidate(),
+      ]);
+    },
+    onError: (e) => setError(e.message),
+  });
+  const requestSupplierPayment = trpc.purchases.pay.useMutation({
+    onSuccess: async (r) => {
+      setDone(`أُنشئ طلب صرف المورد #${r.paymentRequestReceiptId} وبقي معلّقاً لاعتماد مالكٍ آخر.`);
+      setLaterPayAmount("");
+      setLaterPayRequestId(crypto.randomUUID());
+      await Promise.all([
+        utils.purchases.get.invalidate({ purchaseOrderId }),
+        utils.purchases.list.invalidate(),
       ]);
     },
     onError: (e) => setError(e.message),
@@ -180,6 +195,31 @@ export default function PurchaseReceive() {
     });
   }
 
+  async function submitLaterSupplierPayment() {
+    setError("");
+    setDone("");
+    let amount;
+    try {
+      amount = round2(D(laterPayAmount));
+    } catch {
+      setError("تحقق من مبلغ طلب دفع المورد.");
+      return;
+    }
+    if (amount.lte(0)) return setError("أدخل مبلغاً موجباً لطلب دفع المورد.");
+    if (!(await confirm({
+      variant: "info",
+      title: `طلب دفع المورد — ${data.poNumber}`,
+      description: `سيُنشأ طلب صرف نقدي بمبلغ ${amount.toFixed(2)} د.ع بلا أثر حتى يعتمدَه مالك آخر.`,
+      confirmText: "إنشاء الطلب",
+    }))) return;
+    requestSupplierPayment.mutate({
+      purchaseOrderId,
+      amount: amount.toFixed(2),
+      method: "CASH",
+      clientRequestId: laterPayRequestId,
+    });
+  }
+
   async function submit() {
     setError("");
     setDone("");
@@ -192,7 +232,11 @@ export default function PurchaseReceive() {
       const remaining = it.baseQuantity - (it.receivedBaseQuantity ?? 0);
       if (want > remaining) return setError(`الكمية المستلمة للمنتج «${it.productName}» تتجاوز المتبقّي (${remaining}).`);
     }
-    const payment = D(payAmount).gt(0) ? { amount: round2(D(payAmount)).toFixed(2), method: payMethod } : undefined;
+    // أمر CASH لا يعتمد على مبلغ يدخله المستخدم: الخادم يطلب تلقائياً كامل قيمة هذا
+    // الاستلام. أمر CREDIT وحده يقبل دفعة نقدية جزئية صريحة.
+    const payment = data.settlementType === "CREDIT" && D(payAmount).gt(0)
+      ? { amount: round2(D(payAmount)).toFixed(2), method: "CASH" as const }
+      : undefined;
     if (shipMethod === "TRANSFER" && !shipPaymentReference.trim()) {
       return setError("أدخل مرجع تحويل الشحن.");
     }
@@ -203,7 +247,9 @@ export default function PurchaseReceive() {
       !(await confirm({
         variant: "info",
         title: `استلام أمر الشراء ${data.poNumber}`,
-        description: "استلام الكميات سيضيف للمخزون ويغيّر الذمم. تأكيد؟",
+        description: data.settlementType === "CASH"
+          ? "سيُضاف المخزون ويُثبت استحقاق المورد، ثم يُنشأ طلب صرف نقدي تلقائياً بكامل قيمة هذا الاستلام لاعتماده من شخص آخر. تأكيد؟"
+          : "سيُضاف المخزون وتُثبت القيمة ذمةً على المورد. تأكيد؟",
         confirmText: "استلام",
       }))
     )
@@ -250,37 +296,52 @@ export default function PurchaseReceive() {
   // استلام لا أمر شراء مجرّد — لا حاجة لقالب جديد.
   async function printReceiveSlip() {
     try {
-      const remaining = positiveDiff(data.total ?? "0", data.paidAmount ?? "0");
+      const receivedItems = data.items
+        .filter((item) => (item.receivedBaseQuantity ?? 0) > 0)
+        .map((item) => {
+          const portion = D(item.receivedBaseQuantity ?? 0).dividedBy(D(item.baseQuantity || 1));
+          return {
+            ...item,
+            receivedPurchaseQuantity: D(item.quantity).times(portion),
+            receivedLineTotal: round2(D(item.total ?? 0).times(portion)),
+          };
+        });
+      const receivedSubtotal = round2(receivedItems.reduce((sum, item) => sum.plus(item.receivedLineTotal), D(0)));
+      const receivedTax = D(data.subtotal ?? 0).gt(0)
+        ? round2(D(data.taxAmount ?? 0).times(receivedSubtotal).dividedBy(D(data.subtotal ?? 1)))
+        : D(0);
+      const receivedTotal = round2(receivedSubtotal.plus(receivedTax));
+      const remaining = positiveDiff(receivedTotal.toFixed(2), data.paidAmount ?? "0");
       const taxShares = allocateLineTax(
-        data.items.map((it) => ({ total: String(it.total ?? "0") })),
-        String(data.taxAmount ?? "0"),
-        round2(D(data.subtotal ?? "0")).toFixed(2),
+        receivedItems.map((item) => ({ total: item.receivedLineTotal.toFixed(2) })),
+        receivedTax.toFixed(2),
+        receivedSubtotal.toFixed(2),
       );
       const statusColor =
         data.status === "RECEIVED" ? "#0D6B52" : data.status === "CANCELLED" ? "#8A1F11" : "#92400E";
       const qrSvg = await qrCodeSvg(
-        [CO.sub, `سند استلام: ${data.poNumber}`, `الإجمالي: ${fmtAr(data.total ?? 0)} د.ع`].join("\n"),
+        [CO.sub, `سند استلام تراكمي: ${data.poNumber}`, `الإجمالي المستلم: ${fmtAr(receivedTotal.toFixed(2))} د.ع`].join("\n"),
         { size: 88, margin: 1 },
       ).catch(() => "");
       printPurchaseInvoiceV2({
         qrSvg: qrSvg || null,
         invoiceNumber: data.poNumber,
         invoiceDate: data.orderDate as unknown as string | null,
-        statusLabel: `سند استلام — ${PO_STATUS[data.status] ?? data.status}`,
+        statusLabel: `سند استلام تراكمي — ${PO_STATUS[data.status] ?? data.status} · ${data.settlementType === "CASH" ? "نقدي" : "آجل"}`,
         statusColor,
         supplierName: data.supplierName,
-        items: data.items.map((it, index) => ({
+        items: receivedItems.map((it, index) => ({
           productName: it.productName ?? "",
           unitName: it.unitName,
-          quantity: it.quantity,
+          quantity: it.receivedPurchaseQuantity.toFixed(3),
           unitPrice: it.unitPrice,
           taxAmount: taxShares[index] ?? "0",
-          total: it.total,
+          total: it.receivedLineTotal.toFixed(2),
         })),
-        subtotal: data.subtotal ?? "0",
-        taxAmount: data.taxAmount ?? "0",
+        subtotal: receivedSubtotal.toFixed(2),
+        taxAmount: receivedTax.toFixed(2),
         taxRate: Number(data.taxRatePercent ?? 0),
-        total: data.total ?? "0",
+        total: receivedTotal.toFixed(2),
         paidAmount: data.paidAmount ?? "0",
         remainingAmount: remaining.toFixed(2),
       });
@@ -303,6 +364,7 @@ export default function PurchaseReceive() {
           <div><div className="text-muted-foreground text-xs">رقم الأمر</div><div className="font-mono" dir="ltr">{data.poNumber}</div></div>
           <div><div className="text-muted-foreground text-xs">المورد</div><div>{data.supplierName ?? "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">الحالة</div><div>{PO_STATUS[data.status] ?? data.status}</div></div>
+          <div><div className="text-muted-foreground text-xs">نوع التسوية</div><div>{data.settlementType === "CASH" ? "نقدي — طلب صرف تلقائي" : "آجل — ذمة مورد"}</div></div>
           <div><div className="text-muted-foreground text-xs">تكلفة المخزون / المسدد دفترياً</div><div dir="ltr">{fmt(data.total)} / {fmt(data.paidAmount)}</div></div>
           {data.agreedCurrency === "USD" && data.usdTotal && (
             <>
@@ -400,8 +462,8 @@ export default function PurchaseReceive() {
       {!closed && D(data.shippingCost ?? 0).plus(D(data.customsCost ?? 0)).gt(0) && (
         <Card>
           <CardHeader><CardTitle className="text-base">مصروف الشحن/الكمرك</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
-            <p className="text-sm text-muted-foreground sm:col-span-2">
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
               شحن هذا الأمر{" "}
               <span dir="ltr" className="font-bold tabular-nums text-foreground">
                 {fmt(D(data.shippingCost ?? 0).plus(D(data.customsCost ?? 0)).toFixed(2))} د.ع
@@ -488,19 +550,46 @@ export default function PurchaseReceive() {
           </CardContent>
         </Card>
       )}
-      {!closed && data.agreedCurrency !== "USD" && (
+      {!closed && data.agreedCurrency !== "USD" && data.settlementType === "CASH" && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">تسوية المورد النقدية</CardTitle></CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              عند الاستلام ينشئ النظام تلقائياً طلب صرف نقدي من الخزينة بكامل قيمة الكميات المستلمة.
+              يبقى الطلب معلّقاً حتى يعتمدَه شخص آخر؛ عندها فقط ينخفض رصيد المورد ويُسجّل خروج النقد.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+      {!closed && data.agreedCurrency !== "USD" && data.settlementType === "CREDIT" && (
         <Card>
           <CardHeader><CardTitle className="text-base">دفعة للمورد (اختياري)</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
             <div className="space-y-1">
-              <Label>المبلغ المدفوع الآن</Label>
+              <Label>طلب دفعة نقدية مع هذا الاستلام</Label>
               <MoneyInput value={payAmount} onChange={setPayAmount} placeholder="0" />
             </div>
+            <p className="text-sm text-muted-foreground">
+              يُنشأ طلب صرف نقدي معلّق لاعتماد شخص آخر. البطاقة والتحويل يُسجّلان من سند صرف موثّق بمرجعهما.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+      {canManagePurchases && hasAnyReceived && data.agreedCurrency !== "USD" && data.status !== "CANCELLED" && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">طلب سداد ذمة مرتبطة بالأمر</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
             <div className="space-y-1">
-              <Label>طريقة الدفع</Label>
-              <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
-                {SUPPLIER_PAYMENT_METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
-              </select>
+              <Label>مبلغ طلب الصرف النقدي</Label>
+              <MoneyInput value={laterPayAmount} onChange={setLaterPayAmount} placeholder="0" />
+            </div>
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                يعتمد السقف على رصيد دفتر الأستاذ لهذا الأمر بعد الاستلامات والمرتجعات، ويخصم الطلبات المعلّقة؛ فلا تُدفع بضاعة غير مستلمة ولا يُحجز المبلغ مرتين.
+              </p>
+              <Button onClick={() => void submitLaterSupplierPayment()} disabled={requestSupplierPayment.isPending}>
+                {requestSupplierPayment.isPending ? "جارٍ إنشاء الطلب…" : "إنشاء طلب دفع"}
+              </Button>
             </div>
           </CardContent>
         </Card>
