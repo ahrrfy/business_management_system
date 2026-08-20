@@ -264,6 +264,42 @@ function fittedThumbnailDimensions(width: number, height: number): { width: numb
  * يفك base64 فعلياً ويتحقق من WebP/RIFF والأبعاد والحجم، ثم يربط أبعاد المصغرة بالمرشح.
  * لا نثق ببادئة MIME وحدها ولا نقبل SVG/GIF/PNG في شبكة العرض الاحتياطية.
  */
+/**
+ * هل هذه بايتات WebP **كاملةٌ لصورةٍ ساكنةٍ واحدة**؟ يمشي على مقاطع RIFF بدل افتراض شكلٍ بعينه.
+ *
+ * **العطب الذي أغلقه (٢٠/٨، جولةٌ حيّة):** الفحص السابق كان يشترط **مقطعاً واحداً** بترويسة
+ * `VP8 ` أو `VP8L`. لكنّ Chromium الحديث يُخرج من `canvas.toDataURL("image/webp")` حاوية
+ * **`VP8X`** يتبعها **`ICCP`** (ملفّ ألوان sRGB يُضمّنه المتصفّح) ثمّ `VP8 ` — ثلاثةُ مقاطع.
+ * فكان الخادم يرفض **كل** مصغّرةٍ يُنتجها Chrome/Edge برسالة «بنية/إطار مصغّرة WebP غير
+ * مكتمل»، والمصوّر يُمنع من الإرسال. أثبتَته جولةٌ حيّة: `chunks = [VP8X 10, ICCP 456, VP8  50]`.
+ * (ولاحظ أنّ `parseImageDimensions` كان يفكّ `VP8X` أصلاً — فالرافض والقارئ كانا مختلفَين
+ * في فهم الصيغة نفسها داخل الملفّ الواحد.)
+ *
+ * والمشي على المقاطع **أدقّ** من الفحص القديم لا أرخى: يرفض الملفّ المبتور وذيلَ البايتات
+ * الزائد ويرفض المتحرّك (`ANIM`/`ANMF`) — والمصغّرة إطارٌ ساكنٌ واحدٌ بحكم التعريف — ويشترط
+ * مقطعَ صورةٍ واحداً بالضبط.
+ */
+export function isCompleteStillWebp(bytes: Buffer): boolean {
+  if (bytes.length < 20) return false;
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP") return false;
+  // حجم RIFF يجب أن يصف الملفّ كلّه: يمنع البتر والذيل الزائد معاً.
+  if (bytes.readUInt32LE(4) + 8 !== bytes.length) return false;
+  let offset = 12;
+  let imageChunks = 0;
+  let animated = false;
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.toString("ascii", offset, offset + 4);
+    const size = bytes.readUInt32LE(offset + 4);
+    // حجمٌ يتجاوز ما تبقّى = ملفٌّ مبتورٌ أو مُتلاعَبٌ به.
+    if (size < 0 || offset + 8 + size > bytes.length) return false;
+    if (id === "VP8 " || id === "VP8L") imageChunks++;
+    if (id === "ANIM" || id === "ANMF") animated = true;
+    offset += 8 + size + (size % 2); // حشوٌ إلى حدّ زوجيّ
+  }
+  // الوقوف عند النهاية بالضبط: أيّ بايتٍ زائدٍ أو ناقصٍ يُسقِط الملفّ.
+  return offset === bytes.length && imageChunks === 1 && !animated;
+}
+
 export function decodeStudioThumbnail(
   dataUrl: string,
   processed: { width: number | null; height: number | null },
@@ -292,11 +328,7 @@ export function decodeStudioThumbnail(
   const dimensions = parseImageDimensions(bytes, isWebp ? "image/webp" : "image/jpeg");
   let structureOk: boolean;
   if (isWebp) {
-    const fourcc = bytes.length >= 20 ? bytes.toString("ascii", 12, 16) : "";
-    const chunkBytes = bytes.length >= 20 ? bytes.readUInt32LE(16) : -1;
-    const completeSingleChunk = chunkBytes >= 0 && 20 + chunkBytes + (chunkBytes % 2) === bytes.length;
-    const validFrameHeader = fourcc === "VP8 " ? bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a : fourcc === "VP8L" ? bytes.length >= 25 && bytes[20] === 0x2f : false;
-    structureOk = bytes.length >= 20 && bytes.readUInt32LE(4) + 8 === bytes.length && completeSingleChunk && validFrameHeader;
+    structureOk = isCompleteStillWebp(bytes);
   } else {
     // JPEG: SOI في المقدّمة وEOI في الخاتمة ⇒ ملفٌّ كاملٌ غير مبتور، ومقطعُ SOF مقروءٌ
     // (وإلّا رجع `dimensions` فارغاً فسقط الفحص أدناه).
