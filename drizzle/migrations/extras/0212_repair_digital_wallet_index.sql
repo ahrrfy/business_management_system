@@ -91,7 +91,7 @@ SET @has_idx_promo_application := (
 );
 SET @sql_idx_promo_application := IF(
   @has_idx_promo_application = 0,
-  'CREATE INDEX `idx_promo_application` ON `promotions` (`applicationMode`, `isActive`)',
+  'CREATE INDEX `idx_promo_application` ON `promotions` (`promotionApplicationMode`, `isActive`)',
   'SELECT 1'
 );
 PREPARE stmt_idx_promo_application FROM @sql_idx_promo_application;
