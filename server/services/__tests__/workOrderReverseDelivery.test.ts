@@ -75,6 +75,22 @@ async function deliveredServiceOrder(reqId: string, deposit = "0") {
   return woId;
 }
 
+/** أمرٌ خدميّ بعربونٍ **ودفعةِ تسليم** معاً — الحالةُ التي لم تغطِّها الاختبارات الأولى. */
+async function deliveredServiceOrderWithBoth(reqId: string, deposit: string, atDelivery: string) {
+  const r = await createWorkOrder({
+    branchId: 1, customerId: 1, title: "خدمة بعربون ودفعة", quantity: 1,
+    salePrice: "30000.00", deposit, paymentMethod: "CASH", shiftId: 1,
+    materials: [], clientRequestId: reqId,
+  } as never, { ...CASHIER, shiftId: 1 } as never);
+  const woId = Number((r as { workOrderId: number }).workOrderId);
+  await db().update(s.workOrders).set({ status: "READY" }).where(eq(s.workOrders.id, woId));
+  await deliverWorkOrder(
+    { workOrderId: woId, payment: { amount: atDelivery, method: "CASH" }, clientRequestId: `${reqId}-dlv` } as never,
+    CASHIER as never,
+  );
+  return woId;
+}
+
 const woOf = async (id: number) =>
   (await db().select().from(s.workOrders).where(eq(s.workOrders.id, id)))[0];
 const invOf = async (id: number) =>
@@ -198,6 +214,33 @@ describe("استرجاع أمر شغل مُسلَّم", () => {
     const after = Number((await db().select().from(s.branchStock)
       .where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0].quantity);
     expect(after).toBe(before);
+  });
+
+  it("⭐ عربونٌ **ودفعةُ تسليم** معاً: كلُّ شقٍّ يُبرئ حسابَه — لا أمانةَ سالبة", async () => {
+    // الثغرةُ التي أمسكتها مراجعة Codex ولم تغطِّها اختباراتي: كان العكسُ يُعيد فتح
+    // **العربون وحده** كأمانة ثمّ يخصم الأمانةَ بكامل المردود ⇒ أمانةٌ سالبة بفارق دفعة
+    // التسليم، ودفترٌ لا يوافق `customers.currentBalance`.
+    const woId = await deliveredServiceOrderWithBoth("rv-8", "10000.00", "20000.00");
+
+    await reverseWorkOrderDelivery({ workOrderId: woId, reason: "رفض بعد الاستلام" }, MANAGER);
+
+    // ⚠️ `postingSourceComponents` **ليست عموداً** في القاعدة (تُستعمل للتحقّق في الذاكرة
+    // فقط) — التأكيدُ عليها يقرأ `undefined` دائماً = أخضرُ كاذب، تماماً كـ`postingProfile`.
+    // فالمرصدُ هو ما يُخزَّن فعلاً: قيدان منفصلان بمبلغَيهما وحاشيتَيهما.
+    const outs = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    const byNote = (needle: string) =>
+      round2(outs.filter((e) => (e.notes ?? "").includes(needle))
+        .reduce((acc, e) => acc.plus(money(e.amount)), money(0)));
+
+    // العربونُ ١٠٬٠٠٠ يُبرئ الأمانة، ودفعةُ التسليم ٢٠٬٠٠٠ تُعيد الذمّة — لا العكس.
+    expect(byNote("حصّة العربون").toFixed(2)).toBe("10000.00");
+    expect(byNote("حصّة دفعة التسليم").toFixed(2)).toBe("20000.00");
+    // ومجموعُ ما خرج = كلُّ ما قُبض، لا أكثر ولا أقلّ.
+    expect(round2(outs.reduce((a, e) => a.plus(money(e.amount)), money(0))).toFixed(2)).toBe("30000.00");
+
+    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    expect(round2(money(cust.currentBalance)).toFixed(2)).toBe("0.00");
   });
 
   it("لا يُعكَس ما عُكِس: الفاتورة المرتجعة تُرفَض ثانيةً", async () => {

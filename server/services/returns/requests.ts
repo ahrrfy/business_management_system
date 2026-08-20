@@ -22,6 +22,7 @@ import { getDb } from "../../db";
 import { isDeadInvoiceStatus, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { money, round2 } from "../money";
 import type { Actor } from "../tx";
+import type { Tx } from "../../db";
 
 export interface ReturnRequestLine {
   invoiceItemId: number;
@@ -164,9 +165,41 @@ export async function listReturnRequests(opts: {
  * يقرأ طلباً معلَّقاً ويتحقّق من صلاحيته للاعتماد — **بلا تنفيذ**.
  * التنفيذ الماليّ يبقى في `returns.create` القائم كي لا يوجد مسارٌ ماليّ ثانٍ.
  */
+/**
+ * **اعتمادٌ ذرّيّ** (تصويب مراجعة Codex، ٢٠/٨): يقفل الطلب `FOR UPDATE` داخل معاملةٍ قائمة،
+ * فيصير التحقّقُ والتنفيذُ والختمُ وحدةً واحدة.
+ *
+ * كان المسارُ ثلاثَ خطواتٍ منفصلة: `loadApprovableRequest` ثمّ `returnSale` (بمعاملتها
+ * الخاصّة) ثمّ `markRequestApproved`. وفيه عطبان:
+ *  · **فشلُ الختم بعد نجاح المرتجع** يترك الطلب معلَّقاً ومرتجعَه منفَّذاً — وإعادةُ
+ *    المحاولة يرفضها الحارسُ التفاؤليّ لأنّ `returnedTotal` تغيّر ⇒ طريقٌ مسدود.
+ *  · **معتمدان متزامنان** يقرآن الطلب معلَّقاً كلاهما فيُنفّذان المرتجع **مرّتين** ما دامت
+ *    الكمّية تكفي.
+ * القفلُ يحسم الثانية، ووحدةُ المعاملة تحسم الأولى.
+ */
+export async function loadApprovableRequestTx(
+  tx: Tx,
+  requestId: number,
+  actor: Actor & { role?: string },
+) {
+  const req = (
+    await tx.select().from(returnRequests).where(eq(returnRequests.id, requestId)).for("update").limit(1)
+  )[0];
+  return assertApprovable(tx, req, actor);
+}
+
 export async function loadApprovableRequest(requestId: number, actor: Actor & { role?: string }) {
   const d = db();
   const req = (await d.select().from(returnRequests).where(eq(returnRequests.id, requestId)).limit(1))[0];
+  return assertApprovable(d, req, actor);
+}
+
+/** التحقّقُ المشترك — يعمل على معاملةٍ أو على الاتصال المباشر بلا فرق. */
+async function assertApprovable(
+  d: Tx | ReturnType<typeof db>,
+  req: typeof returnRequests.$inferSelect | undefined,
+  actor: Actor & { role?: string },
+) {
   if (!req) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الإرجاع غير موجود" });
   if (req.status !== "PENDING_APPROVAL") {
     throw new TRPCError({ code: "CONFLICT", message: "الطلب محسومٌ سلفاً" });
@@ -197,6 +230,24 @@ export async function loadApprovableRequest(requestId: number, actor: Actor & { 
     lines: (req.linesJson as ReturnRequestLine[]) ?? [],
     invoiceId: Number(req.invoiceId),
   };
+}
+
+/** ختمُ الاعتماد **داخل معاملة التنفيذ** — لا يُفصَل عنها (انظر `loadApprovableRequestTx`). */
+export async function markRequestApprovedTx(
+  tx: Tx,
+  requestId: number,
+  actorUserId: number,
+  resultInvoiceId: number | null,
+) {
+  await tx
+    .update(returnRequests)
+    .set({
+      status: "APPROVED",
+      approvedBy: actorUserId,
+      approvedAt: new Date(),
+      resultReturnInvoiceId: resultInvoiceId,
+    })
+    .where(eq(returnRequests.id, requestId));
 }
 
 /** يختم الطلب مُعتمَداً بعد تنفيذ المرتجع فعلياً (يُستدعى من الراوتر بعد `returns.create`). */

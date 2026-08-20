@@ -5,7 +5,8 @@ import { accountingEntries, customers, invoiceItems, invoices, productUnits, pro
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { returnSale } from "../services/returnService";
+import { returnSale, returnSaleInTx } from "../services/returnService";
+import { withTx } from "../services/tx";
 import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
 import { getOpenShifts } from "../services/treasury/openShifts";
 import { router, salesManagerProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
@@ -13,7 +14,8 @@ import {
   createReturnRequest,
   listReturnRequests,
   loadApprovableRequest,
-  markRequestApproved,
+  loadApprovableRequestTx,
+  markRequestApprovedTx,
   rejectReturnRequest,
 } from "../services/returns/requests";
 import { nonNegMoneyString } from "../lib/schemas";
@@ -131,20 +133,33 @@ export const returnRouter = router({
       clientRequestId: z.string().min(1).max(80).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null) {
+      // ٢٠/٨ (تصويب مراجعة Codex): الأدمن **عابرُ فروعٍ بحكم التصميم** وقد يكون
+      // `branchId = null`؛ وكان يُرفَض هنا **قبل قراءة الطلب** فيرى الطلبات المعلّقة
+      // ولا يستطيع اعتماد أيٍّ منها. الفرعُ يُشتقّ من الطلب نفسه له، ويبقى الإسنادُ
+      // شرطاً لغير الأدمن.
+      const isAdmin = ctx.user.role === "admin";
+      if (ctx.user.branchId == null && !isAdmin) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
-      const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId), role: ctx.user.role };
-      // يتحقّق من الحالة وعزل الفرع وفصل المهام واللقطة التفاؤلية — قبل أيّ أثر.
-      const { lines, invoiceId } = await loadApprovableRequest(input.requestId, actor);
-      const res = await retryOnDeadlock(() => returnSale({
-        invoiceId,
-        lines,
-        refund: input.refund,
-        restock: input.restock,
-        clientRequestId: input.clientRequestId ?? `retreq-${input.requestId}`,
-      }, actor));
-      await markRequestApproved(input.requestId, ctx.user.id, invoiceId);
+      // ⚛️ **وحدةٌ ذرّية**: قفلُ الطلب ثمّ التنفيذ ثمّ الختم في معاملةٍ واحدة. كانت ثلاثاً
+      // منفصلة ⇒ فشلُ الختم يترك مرتجعاً منفَّذاً وطلباً معلَّقاً لا تُعاد محاولته (الحارس
+      // التفاؤليّ يرفضه)، ومعتمدان متزامنان يُنفّذان المرتجع مرّتين.
+      const res = await retryOnDeadlock(() => withTx(async (tx) => {
+        const probe = { userId: ctx.user.id, branchId: ctx.user.branchId ?? null, role: ctx.user.role } as never;
+        const { request, lines, invoiceId } = await loadApprovableRequestTx(tx, input.requestId, probe);
+        // الفاعلُ الماليّ يحمل فرعَ **الطلب** — لا فرعاً مفقوداً ولا فرعَ المعتمِد.
+        const actor = { userId: ctx.user.id, branchId: Number(request.branchId), role: ctx.user.role };
+        const out = await returnSaleInTx(tx, {
+          invoiceId,
+          lines,
+          refund: input.refund,
+          restock: input.restock,
+          clientRequestId: input.clientRequestId ?? `retreq-${input.requestId}`,
+        }, actor);
+        await markRequestApprovedTx(tx, input.requestId, ctx.user.id, invoiceId);
+        return { ...out, invoiceId };
+      }));
+      const invoiceId = res.invoiceId;
       await logAudit(ctx, {
         action: "return.approveRequest", entityType: "invoice", entityId: invoiceId,
         newValue: { requestId: input.requestId, refund: input.refund?.amount ?? null },

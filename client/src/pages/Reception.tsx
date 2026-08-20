@@ -1,5 +1,5 @@
 import type { StartOrderFromConversation } from "@/pages/Inbox";
-import { toWorkOrderChannel } from "@shared/receptionChannel";
+import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel } from "@shared/receptionChannel";
 import { ChannelMark } from "@/components/ChannelBadge";
 import { receptionChannelOptions } from "@shared/receptionChannel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -356,7 +356,9 @@ export default function Reception() {
   const [couponOpen, setCouponOpen] = useState(false);
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
-  const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
+  // النوعُ من القاموس المشترك لا اتّحاداً مكتوباً بيد: كان يُسقِط `OTHER` فتُصبّ عليه
+  // قناةُ المتجر/غيرِها قسراً إلى `WALK_IN` (تصويب مراجعة Codex ٢٠/٨).
+  const [channel, setChannel] = useState<WorkOrderChannel>("WALK_IN");
   // معرّف القناة مستقل عن الهاتف: رقم الهاتف هو هوية العميل الإلزامية في جميع القنوات.
   const [channelHandle, setChannelHandle] = useState("");
   /** المحادثة التي وُلد منها الطلب (ش١) — تُرسَل مع الرأس فيُربَط أمرُ الشغل بها ذرّيّاً. */
@@ -984,7 +986,9 @@ export default function Reception() {
    */
   function startOrderFromConversation(v: StartOrderFromConversation) {
     setLinkedConversationId(v.conversationId);
-    setChannel(toWorkOrderChannel(v.channel) === "OTHER" ? "WALK_IN" : (toWorkOrderChannel(v.channel) as typeof channel));
+    // ⛔ لا تحويلَ `OTHER → WALK_IN`: محادثةُ المتجر/غيرِها كانت تُسجَّل **طلبَ حضورٍ
+    // شخصيّ** فتكذب نسبةُ القنوات وتقريرُها — والقاموس المشترك يعرّف `STORE → OTHER` صراحةً.
+    setChannel(toWorkOrderChannel(v.channel));
     setChannelHandle(v.channelHandle);
     // ⚠ الرقم يصل من القناة بصيغة E.164 (`+9647…`) وحقلُ المحطّة يطلب المحليّة
     // (`07…`) ويحرسها `isValidIqMobile` عند الإتمام ⤇ بلا هذا التطبيع يفتح الموظّف الطلب
@@ -2315,7 +2319,7 @@ export default function Reception() {
               )}
             </div>
             <div className="grid grid-cols-5 gap-1">
-              {receptionChannelOptions(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE"]).map(({ value, label }) => (
+              {receptionChannelOptions(WORK_ORDER_CHANNELS).map(({ value, label }) => (
                 <button
                   key={value}
                   type="button"

@@ -249,10 +249,36 @@ export async function reverseWorkOrderDelivery(
         ))
         .for("update");
 
+      // ⚠️ **تخصيصٌ حتميّ**: إيصالُ العربون أوّلاً كي لا يتغيّر توزيعُ الأدوار بترتيب القاعدة.
+      const depositReceiptId = wo.depositReceiptId != null ? Number(wo.depositReceiptId) : 0;
+      inRows.sort((a, b) => {
+        const ra = Number(a.id) === depositReceiptId ? 0 : 1;
+        const rb = Number(b.id) === depositReceiptId ? 0 : 1;
+        return ra - rb || Number(a.id) - Number(b.id);
+      });
+
+      /**
+       * **الحسابُ الذي يُبرئه الردّ يتبع ما سدّده القبضُ أصلاً** (تصويب مراجعة Codex، ٢٠/٨):
+       *
+       *  · **عربونٌ قُبض قبل التسليم** ⇒ كان محتجَزاً في `OTHER_LIABILITY`، وقيدُ البيع أقفله.
+       *    فالعكسُ يُعيد فتحه (أعلاه) والردُّ يُبرئه ⇒ الخصمُ على `OTHER_LIABILITY`.
+       *  · **دفعةٌ قُبضت عند التسليم أو بعده** ⇒ لم تمرّ بالأمانة قطّ: قيدُها
+       *    `PAYMENT_IN` سدّد **`AR`** مباشرةً. فالخصمُ عليها لا على الأمانة.
+       *
+       * وكان الكودُ يخصم `OTHER_LIABILITY` لكلّ إيصالٍ مردود بينما يُعيد فتح **العربون وحده**:
+       * أمرٌ بعربون ٢٠٬٠٠٠ ودفعةِ تسليمٍ ٨٠٬٠٠٠ يفتح ٢٠٬٠٠٠ ويخصم ١٠٠٬٠٠٠ ⇒ **أمانةٌ سالبة
+       * بـ٨٠٬٠٠٠** ودفترٌ لا يوافق `customers.currentBalance`. (جولتي البصريّة أنتجت هذا
+       * بالضبط ولم ألحظه: تحقّقتُ من `amount/revenue` لا من مكوّنات الأدوار.)
+       */
+      let liabilityLeft = depositPaid;
+
       let cashShiftId: number | null = null;
       for (const r of inRows) {
         const amt = round2(money(r.amount));
         if (amt.lte(0)) continue;
+        const liabilityPart = liabilityLeft.gte(amt) ? amt : liabilityLeft;
+        const arPart = round2(amt.minus(liabilityPart));
+        liabilityLeft = round2(liabilityLeft.minus(liabilityPart));
         const collected = r.paymentMethod ?? "CASH";
         const refundMethod = collected === "TELECOM" ? "CASH" : collected;
         let shiftId: number | null = null;
@@ -268,6 +294,15 @@ export async function reverseWorkOrderDelivery(
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
               message: "الردّ غير النقديّ يحتاج عميلاً مرتبطاً كي يمرّ بسند واعتماد مالك",
+            });
+          }
+          // إيصالٌ واحدٌ يقع نصفُه أمانةً ونصفُه ذمّةً: حالةٌ مرضيّة (تعني أنّ `paidAmount`
+          // أقلّ من عربون الأمر) ولا يسع نوعٌ واحدٌ في الملاحظة تمثيلَ قيمتَين. **نفشل
+          // مغلقين** بدل تخمين أحد الحسابين وتسميم الدفتر بصمت.
+          if (liabilityPart.gt(0) && arPart.gt(0)) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: `إيصال القبض #${Number(r.id)} موزّعٌ بين أمانة العربون وذمّة العميل — لا يُردّ آلياً بطريقةٍ غير نقدية؛ راجع الإيصالات`,
             });
           }
           assertNonPhysicalOutReceipt({
@@ -295,8 +330,10 @@ export async function reverseWorkOrderDelivery(
             : `طلب ردّ غير نقديّ معلّق — استرجاع تسليم أمر الشغل ${wo.orderNumber}`,
           partyType: wo.customerId ? "CUSTOMER" : "OTHER",
           partyId: wo.customerId ?? null,
+          // النوعُ يحمل **الحسابَ المقابل** كي يستعمله مسارُ الاعتماد المؤجَّل نفسَه
+          // بلا إعادة اشتقاق (وإلّا خصم الأمانةَ لدفعةٍ سدّدت الذمّة).
           internalNote: refundMethod !== "CASH"
-            ? `WORK_ORDER_CUSTOMER_REFUND:REVERSE:${workOrderId}:${Number(r.id)}`
+            ? `WORK_ORDER_CUSTOMER_REFUND:${liabilityPart.gt(0) ? "REVERSE_LIABILITY" : "REVERSE_AR"}:${workOrderId}:${Number(r.id)}`
             : null,
           createdBy: actor.userId,
         });
@@ -304,19 +341,38 @@ export async function reverseWorkOrderDelivery(
         if (refundMethod !== "CASH") pendingRefundReceiptIds.push(refundReceiptId);
         if (refundMethod === "CASH") {
           const assetRole = paymentAssetRole(refundMethod, "DRAWER", "OUT");
-          // مدين OTHER_LIABILITY: الأمانةُ التي أُعيد فتحها أعلاه تُبرَّأ الآن بخروج النقد
-          // ⇒ `Σ(قيود الاحتجاز) = 0` (§٥). وما كان بيعاً مسدَّداً صار ذمّةً ثمّ نقداً خارجاً.
-          const src = { roleDebits: { OTHER_LIABILITY: amt }, roleCredits: { [assetRole]: amt } };
-          await postEntry(tx, {
-            entryType: "PAYMENT_OUT",
-            branchId: Number(wo.branchId),
-            receiptId: refundReceiptId,
-            customerId: wo.customerId ?? null,
-            amount: amt,
-            notes: `ردّ مقبوض — استرجاع تسليم أمر الشغل ${wo.orderNumber}${collected === "TELECOM" ? " (أصل القبض: رصيد زين — رُدّ نقداً)" : ""}`,
-            postingIntent: createPostingIntent("PAYMENT_OUT_OTHER", "PAYMENT_OUT", [debitLine("OTHER_LIABILITY", amt), creditLine(assetRole, amt)], src),
-            postingSourceComponents: src,
-          });
+          const note = `ردّ مقبوض — استرجاع تسليم أمر الشغل ${wo.orderNumber}${collected === "TELECOM" ? " (أصل القبض: رصيد زين — رُدّ نقداً)" : ""}`;
+          // شقّان مستقلّان بقيدَين: `PAYMENT_OUT_OTHER` لا يقبل `AR` مديناً و
+          // `PAYMENT_OUT_CUSTOMER_REFUND` لا يقبل `OTHER_LIABILITY` — والفصلُ يُبقي كلَّ
+          // قيدٍ مطابقاً لسياسة profile الخاصّة به بدل توسيعِ إحداهما لتبتلع الأخرى.
+          if (liabilityPart.gt(0)) {
+            // الأمانةُ التي أُعيد فتحها أعلاه تُبرَّأ الآن بخروج النقد ⇒ Σ(قيود الاحتجاز) = 0 (§٥).
+            const src = { roleDebits: { OTHER_LIABILITY: liabilityPart }, roleCredits: { [assetRole]: liabilityPart } };
+            await postEntry(tx, {
+              entryType: "PAYMENT_OUT",
+              branchId: Number(wo.branchId),
+              receiptId: refundReceiptId,
+              customerId: wo.customerId ?? null,
+              amount: liabilityPart,
+              notes: `${note} — حصّة العربون`,
+              postingIntent: createPostingIntent("PAYMENT_OUT_OTHER", "PAYMENT_OUT", [debitLine("OTHER_LIABILITY", liabilityPart), creditLine(assetRole, liabilityPart)], src),
+              postingSourceComponents: src,
+            });
+          }
+          if (arPart.gt(0)) {
+            // دفعةُ التسليم سدّدت `AR` مباشرةً ⇒ ردُّها يُعيد الذمّة قبل أن يُسقطها عكسُ البيع.
+            const src = { roleDebits: { AR: arPart }, roleCredits: { [assetRole]: arPart } };
+            await postEntry(tx, {
+              entryType: "PAYMENT_OUT",
+              branchId: Number(wo.branchId),
+              receiptId: refundReceiptId,
+              customerId: wo.customerId ?? null,
+              amount: arPart,
+              notes: `${note} — حصّة دفعة التسليم`,
+              postingIntent: createPostingIntent("PAYMENT_OUT_CUSTOMER_REFUND", "PAYMENT_OUT", [debitLine("AR", arPart), creditLine(assetRole, arPart)], src),
+              postingSourceComponents: src,
+            });
+          }
         }
       }
     }

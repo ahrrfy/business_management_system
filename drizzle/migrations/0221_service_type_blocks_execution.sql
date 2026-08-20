@@ -27,3 +27,12 @@ PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 INSERT INTO `serviceTypes` (`name`, `defaultKind`, `defaultPriority`, `slaHours`, `isActive`, `blocksExecution`)
 SELECT 'موافقة تصميم', 'SERVICE_REQUEST', 'HIGH', 24, 1, 1
 WHERE NOT EXISTS (SELECT 1 FROM `serviceTypes` WHERE `name` = 'موافقة تصميم');
+--> statement-breakpoint
+
+-- وإن كان الصفُّ موجوداً سلفاً (بيئةٌ أنشأه فيها المالك بيده) فالإدراجُ أعلاه يتخطّاه
+-- ويتركُ العمودَ الجديد على `false` الافتراضيّ. عندئذٍ يُنشئ `requestDesignApprovalTx`
+-- مهامَّه بنجاح بينما `assertNoBlockingTask` **لا تراها** ⇒ يبدأ التنفيذ ويصير الأمرُ
+-- جاهزاً بلا موافقة العميل: الحارسُ مركَّبٌ ولا يحرس. نُصحّح العَلَم وحده — ولا نلمس
+-- المهلة ولا الأولوية ولا التفعيل، فقد يكون المالك ضبطها بيده.
+UPDATE `serviceTypes` SET `blocksExecution` = 1
+WHERE `name` = 'موافقة تصميم' AND `blocksExecution` = 0;

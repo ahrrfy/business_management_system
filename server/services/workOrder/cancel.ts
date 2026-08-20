@@ -621,15 +621,26 @@ export async function approveWorkOrderCancellationRefund(
     const noteParts = refund.internalNote.split(":");
     const refundKind = noteParts[1];
     const noteWorkOrderId = Number(noteParts[2] ?? 0);
+    /**
+     * ٢٠/٨ (تصويب مراجعة Codex) — `reverseDelivery` يُنشئ ردوداً غير نقدية بنوعَي
+     * `REVERSE_LIABILITY`/`REVERSE_AR`، وكان هذا الحارس يرفض كلَّ ما ليس DIRECT/APPLIED
+     * بـCONFLICT ⇒ **لا تصير COMPLETED أبداً ولا تُرحَّل قيداً**: مالُ الزبون محتجَزٌ إلى
+     * الأبد وفاتورتُه مرتجعةٌ سلفاً. وهما يسلكان مسار DIRECT نفسه (مصدرٌ مُشفَّرٌ بهويّته
+     * ومبلغٌ مطابق) ويختلفان في **الحساب المقابل** وحده.
+     */
+    const REVERSE_KINDS = ["REVERSE_LIABILITY", "REVERSE_AR"] as const;
+    const isReverseKind = (REVERSE_KINDS as readonly string[]).includes(String(refundKind));
+    /** المصدرُ مُشفَّرٌ بهويّته في NOTE — كما في DIRECT تماماً. */
+    const resolvesLikeDirect = refundKind === "DIRECT" || isReverseKind;
     if (
       noteWorkOrderId !== workOrderId ||
-      (refundKind !== "DIRECT" && refundKind !== "APPLIED")
+      (refundKind !== "DIRECT" && refundKind !== "APPLIED" && !isReverseKind)
     ) {
       throw new TRPCError({ code: "CONFLICT", message: "رابط طلب الرد بأمر الشغل غير صحيح" });
     }
 
     let sourceReceiptId = 0;
-    if (refundKind === "DIRECT") {
+    if (resolvesLikeDirect) {
       const encodedSourceReceiptId = Number(noteParts[3] ?? 0);
       sourceReceiptId = encodedSourceReceiptId > 0
         ? encodedSourceReceiptId
@@ -727,7 +738,7 @@ export async function approveWorkOrderCancellationRefund(
       source.direction !== "IN" ||
       source.status !== "COMPLETED" ||
       source.approvalStatus !== "APPROVED" ||
-      (refundKind === "DIRECT" && !round2(money(source.amount)).eq(round2(money(refund.amount))))
+      (resolvesLikeDirect && !round2(money(source.amount)).eq(round2(money(refund.amount))))
     ) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مصدر العربون لم يعد إيصال IN منفذاً ومعتمداً" });
     }
@@ -772,8 +783,13 @@ export async function approveWorkOrderCancellationRefund(
       }
       throw error;
     }
+    // الحسابُ المقابل يتبع نوعَ الردّ: العربونُ أمانةٌ تُبرَّأ، ودفعةُ التسليم ذمّةٌ تعود.
+    // `PAYMENT_OUT_OTHER` لا يقبل `AR` مديناً، ولذلك يُختار profile بحسب النوع لا بتوسيعه.
+    const refundIsAr = refundKind === "REVERSE_AR";
+    const counterRole = refundIsAr ? "AR" : "OTHER_LIABILITY";
+    const refundProfile = refundIsAr ? "PAYMENT_OUT_CUSTOMER_REFUND" : "PAYMENT_OUT_OTHER";
     const postingSource = {
-      roleDebits: { OTHER_LIABILITY: amount },
+      roleDebits: { [counterRole]: amount },
       roleCredits: { [assetRole]: amount },
     };
     await tx.update(receipts).set({
@@ -792,9 +808,9 @@ export async function approveWorkOrderCancellationRefund(
       paymentMethod: refund.paymentMethod,
       notes: `اعتماد رد عربون أمر شغل ملغى #${workOrderId}`,
       postingIntent: createPostingIntent(
-        "PAYMENT_OUT_OTHER",
+        refundProfile,
         "PAYMENT_OUT",
-        [debitLine("OTHER_LIABILITY", amount), creditLine(assetRole, amount)],
+        [debitLine(counterRole, amount), creditLine(assetRole, amount)],
         postingSource,
       ),
       postingSourceComponents: postingSource,
