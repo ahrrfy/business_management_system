@@ -1155,8 +1155,13 @@ export async function revokeTemporaryCampaignPhotographers(actor: ProductStudioA
     if (rows.length === 0) return { revoked: 0 };
     const ids = rows.map((row) => Number(row.userId));
     const now = new Date();
-    // `sessionsValidFrom` يُبطل أيّ توكن قائم فوراً، و`accessExpiresAt` يمنع أيّ دخولٍ جديد.
-    await tx.update(users).set({ accessExpiresAt: now, isActive: false, sessionsValidFrom: now }).where(inArray(users.id, ids));
+    // الانتهاء يُضبط في **الماضي** لا على «الآن»: عمود TIMESTAMP يقرّب ما دون الثانية لأعلى،
+    // فضبطه على اللحظة نفسها قد يُخزَّن جزءاً من ثانيةٍ في المستقبل — أي «مُبطَلٌ» يقرؤه
+    // حارس الجلسة صالحاً. ثانيةٌ إلى الوراء تُغلق النافذة يقيناً.
+    const revokedAt = new Date(now.getTime() - 1000);
+    // ثلاثيّ الإبطال: `accessExpiresAt` يمنع دخولاً جديداً، `isActive` يُسقط الحساب،
+    // و`sessionsValidFrom` يُبطل كل توكنٍ قائم — لا يُعوَّل على واحدٍ منها وحده.
+    await tx.update(users).set({ accessExpiresAt: revokedAt, isActive: false, sessionsValidFrom: now }).where(inArray(users.id, ids));
     await tx.insert(auditLogs).values({
       userId: actor.userId,
       branchId: Number(campaign.branchId),

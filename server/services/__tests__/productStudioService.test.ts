@@ -2286,7 +2286,8 @@ describe("product studio governed workflow", () => {
     await expect(revokeTemporaryCampaignPhotographers(manager, campaign.campaignId)).resolves.toEqual({ revoked: 1 });
     const [revoked] = await db().select().from(s.users).where(eq(s.users.id, issued.userId));
     expect(revoked).toMatchObject({ isActive: false });
-    expect(revoked!.accessExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    // الانتهاء في الماضي يقيناً — لا على «الآن» الذي قد يقرّبه TIMESTAMP لأعلى فيصير مستقبلاً.
+    expect(revoked!.accessExpiresAt!.getTime()).toBeLessThan(Date.now());
   });
 
   it("يرفض إنشاء مصوّر مؤقّت لحملةٍ منتهية أو لغير المدير", async () => {
