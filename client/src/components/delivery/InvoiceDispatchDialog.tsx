@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Decimal from "decimal.js";
-import { Truck } from "lucide-react";
+import { AlertTriangle, Truck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { notify } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,8 +69,16 @@ export function InvoiceDispatchDialog({
     );
   }, [invoice]);
 
+  /**
+   * ش٥: الخادم يرفض إرسالَ فاتورةٍ لطلبٍ إخوتُه لم يجهزوا. لا نُظهر خانةَ إقرارٍ **مسبقاً**
+   * (فتُنقَر بلا قراءة ويصير الحارس شكلياً) — بل نُظهر رسالته بأرقام الإخوة، ثمّ زرَّ إقرارٍ
+   * صريحاً بجوارها. الحمولة لا تحمل العَلَم إلّا بعد أن يقرأ الموظّف ماذا يترك خلفه.
+   */
+  const [partialNotice, setPartialNotice] = useState<string | null>(null);
+
   const dispatch = trpc.delivery.dispatchInvoice.useMutation({
     onSuccess: async (result) => {
+      setPartialNotice(null);
       notify.ok(
         "تم إسناد الفاتورة للتوصيل",
         `الإرسالية ${result.consignmentNumber}`,
@@ -82,11 +91,34 @@ export function InvoiceDispatchDialog({
       onOpenChange(false);
       onCompleted?.();
     },
-    onError: (error) => notify.err(error),
+    onError: (error) => {
+      if (isPartialDispatchRejection(error)) {
+        setPartialNotice(error.message);
+        return;
+      }
+      notify.err(error);
+    },
   });
+
+  const submit = (partialDispatchConfirmed?: boolean) => {
+    if (!invoice) return;
+    dispatch.mutate({
+      invoiceId: invoice.id,
+      partyId: Number(partyId),
+      deliveryFee: new Decimal(fee || 0).toDecimalPlaces(2).toFixed(2),
+      feeCollection,
+      recipientName: name.trim(),
+      recipientPhone: phone.trim(),
+      deliveryAddress: address.trim(),
+      assignedUserId: assignedUserId ? Number(assignedUserId) : undefined,
+      clientRequestId: crypto.randomUUID(),
+      ...(partialDispatchConfirmed ? { partialDispatchConfirmed: true } : {}),
+    });
+  };
 
   useEffect(() => {
     if (!open || !invoice) return;
+    setPartialNotice(null);
     setPartyId("");
     setFee("0");
     setFeeCollection("COURIER");
@@ -211,6 +243,24 @@ export function InvoiceDispatchDialog({
           </div>
         </div>
 
+        {partialNotice && (
+          <div className="rounded-md border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] p-3">
+            <p className="flex items-start gap-2 text-2xs font-bold leading-relaxed text-[var(--sem-warn)]">
+              <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+              {partialNotice}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-2"
+              disabled={dispatch.isPending}
+              onClick={() => submit(true)}
+            >
+              أقرّ الإرسال الجزئيّ وأرسل الآن
+            </Button>
+          </div>
+        )}
+
         <DialogFooter className="gap-2 sm:justify-start">
           <Button
             variant="outline"
@@ -228,24 +278,7 @@ export function InvoiceDispatchDialog({
               !address.trim() ||
               dispatch.isPending
             }
-            onClick={() =>
-              invoice &&
-              dispatch.mutate({
-                invoiceId: invoice.id,
-                partyId: Number(partyId),
-                deliveryFee: new Decimal(fee || 0)
-                  .toDecimalPlaces(2)
-                  .toFixed(2),
-                feeCollection,
-                recipientName: name.trim(),
-                recipientPhone: phone.trim(),
-                deliveryAddress: address.trim(),
-                assignedUserId: assignedUserId
-                  ? Number(assignedUserId)
-                  : undefined,
-                clientRequestId: crypto.randomUUID(),
-              })
-            }
+            onClick={() => submit()}
           >
             {dispatch.isPending ? "جارٍ الإسناد…" : "تأكيد الإسناد"}
           </Button>

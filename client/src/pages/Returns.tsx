@@ -21,7 +21,10 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { INVOICE_STATUSES, invoiceStatusLabel, type InvoiceStatus } from "@shared/invoiceStatus";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useSearch } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
+import { AlertTriangle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { notify } from "@/lib/notify";
 
 /** حالات فلتر الفاتورة — مرآة enum الخادم (`salesListInput.status`) عبر المصدر المشترك.
  *  `SUPERSEDED` كانت مفقودةً من القاموس المحلّي ⇒ يقبلها الخادم ولا سبيل لاختيارها من الشاشة،
@@ -40,6 +43,16 @@ export default function Returns() {
     const p = new URLSearchParams(searchStr);
     const v = p.get("invoiceId");
     return v ? parseInt(v, 10) : null;
+  }, [searchStr]);
+  /**
+   * ١٩/٨ — اعتمادُ طلبِ إرجاعٍ من موظّف: لوحةُ الطلبات المعلَّقة تُرسل `?requestId=` مع
+   * الفاتورة، فيتحوّل المُنشئ من «مرتجعٍ مباشر» إلى «اعتمادِ طلب» — نفس الشاشة ونفس المسار
+   * الماليّ، والفارق أنّ الاعتماد يفرض فصل المهام واللقطة التفاؤلية ويختم الطلب.
+   */
+  const approvingRequestId = useMemo(() => {
+    const v = new URLSearchParams(searchStr).get("requestId");
+    const n = v ? parseInt(v, 10) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
   }, [searchStr]);
 
   const [selectedId, setSelectedId] = useState<number | null>(urlInvoiceId);
@@ -86,6 +99,8 @@ export default function Returns() {
         description="خطوتان: اختر الفاتورة، ثم حدّد ما يرجع — المبلغ وطريقة الردّ والدرج تأتي جاهزةً من الفاتورة نفسها."
         actions={<Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>}
       />
+
+      <PendingReturnRequests />
 
       <div className="grid items-start gap-4 lg:grid-cols-2">
         <Card>
@@ -213,6 +228,7 @@ export default function Returns() {
           ) : (
             <ReturnComposer
               invoiceId={selectedId}
+              approvingRequestId={approvingRequestId}
               onDone={() => {
                 void utils.sales.listPage.invalidate();
                 void utils.sales.listSummary.invalidate();
@@ -222,5 +238,79 @@ export default function Returns() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * **طلبات الإرجاع المعلَّقة** (١٩/٨) — الطرف الثاني من «طلب موظف + اعتماد مدير».
+ *
+ * بلا هذه اللوحة يبقى الطلب في القاعدة بلا من يراه: الموظّف أرسل والمدير لا يعلم. تظهر
+ * أعلى الشاشة كي تكون أوّل ما يراه المدير حين يفتح المرتجعات — فالطلب المعلَّق **عملٌ
+ * متوقّف** وزبونٌ ينتظر، لا صفٌّ في أرشيف.
+ */
+function PendingReturnRequests() {
+  const utils = trpc.useUtils();
+  const [, navigate] = useLocation();
+  const requests = trpc.returns.requests.useQuery(
+    { status: "PENDING_APPROVAL" },
+    { refetchInterval: 30_000, retry: false },
+  );
+  const reject = trpc.returns.rejectRequest.useMutation({
+    onSuccess: () => {
+      notify.ok("رُفض الطلب", "يرى الموظّف السبب في شاشته.");
+      utils.returns.requests.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const rows = requests.data ?? [];
+  if (requests.isError || rows.length === 0) return null;
+
+  return (
+    <Card className="border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)]/30">
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-2 text-sm font-black text-[var(--sem-warn)]">
+          <AlertTriangle aria-hidden className="size-4" />
+          طلبات إرجاع بانتظار اعتمادك ({rows.length})
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0">
+        {rows.map((r) => (
+          <div key={r.id} className="flex flex-wrap items-center gap-3 rounded-lg border bg-card p-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-black tabular-nums" dir="ltr">{r.invoiceNumber ?? `#${r.invoiceId}`}</span>
+                <span className="text-muted-foreground">طلبه {r.createdByName ?? `مستخدم ${r.createdBy}`}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5 tabular-nums">
+                  {((r.linesJson as { baseQuantity: number }[]) ?? []).length} بند
+                </span>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">السبب: {r.reason}</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                onClick={() => navigate(`/returns?invoiceId=${r.invoiceId}&requestId=${r.id}`)}
+                title="راجع البنود ثم نفّذ المرتجع بالرافد والدرج الصحيحين"
+              >
+                مراجعة واعتماد
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={reject.isPending}
+                onClick={() => {
+                  const reason = window.prompt("سبب رفض الطلب (يراه الموظّف):")?.trim();
+                  if (!reason || reason.length < 3) return;
+                  reject.mutate({ requestId: Number(r.id), reason });
+                }}
+              >
+                رفض
+              </Button>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }

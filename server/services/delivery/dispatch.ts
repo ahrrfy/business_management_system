@@ -18,11 +18,13 @@ import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
+import { isDeadInvoiceStatus, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { nextInvoiceNumber } from "../numbering";
 import { openShiftIdTx } from "../shiftService";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import { assertFloatLimitTx } from "./parties";
+import { assertSiblingsReady } from "../workOrder/siblings";
 import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
@@ -41,6 +43,8 @@ export interface DispatchInput {
   deliveryAddress?: string | null;
   clientRequestId?: string | null;
   assignedUserId?: number | null;
+  /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
+  partialDispatchConfirmed?: boolean;
 }
 
 export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTxActor) {
@@ -127,7 +131,10 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // = **مالُنا** الذي يحصّله المندوب ويورّده. الأجرة رقمٌ موازٍ لا يدخل الفاتورة ولا الإيراد.
     // كان الحارس القديم يرفض fee > codAmount لأن الأجرة كانت مضمومةً داخل codAmount؛ وبعد فصلها
     // صار الرفض خاطئاً بنيوياً — بل هو الحالة العادية في الطلب المدفوع كاملاً (codAmount=0).
-    const codAmount = round2(salePrice.minus(depositPaid)); // >= 0
+    // على الإسناد الأوّل تُنشأ الفاتورة هنا فيتطابق هذا مع متبقّيها. أمّا **إعادة الإسناد**
+    // فتُعيد استعمال فاتورةٍ حيّة قد تكون قُبضت جزئياً أو كلّياً بعد الإلغاء ⇒ يُعاد اشتقاقه
+    // من الفاتورة أدناه (تصويب مراجعة Codex، ٢٠/٨).
+    let codAmount = round2(salePrice.minus(depositPaid)); // >= 0
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
     if (fee.lt(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
@@ -172,11 +179,82 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // مخزون/عهدة) وتحت قفل صفّ الجهة أعلاه ⇒ الرفض لا يترك فاتورةً يتيمة.
     if (codAmount.gt(0)) await assertFloatLimitTx(tx, party, codAmount);
 
+    // ═══ إعادة الإسناد بعد إلغائه (١٩/٨) ═══
+    // بلا هذا الفرع كان `cancelDeliveryAssignment` يحبس الأمر **إلى الأبد**: يعود إلى طابور
+    // «جاهز للإرسال» (بعد إصلاح NOT EXISTS) لكن أيّ إسنادٍ ثانٍ يصطدم بقيدَين فريدين —
+    // `uq_wo_invoice` (للأمر فاتورةٌ سلفاً) و`uq_consignment_source` — فيفشل بخطأ قاعدةٍ خامّ.
+    // السابقة المُختبَرة في `dispatchInvoice.ts`: **إعادة تنشيط الصفّ الملغى في مكانه** بدل
+    // إدراج ثانٍ — تحفظ سلسلة المسؤولية (deliveryEvents append-only) وتُبقي القيدَين حارسَين
+    // بنيويَّين، بلا هجرة. والفاتورة تُعاد استعمالها فلا SALE ثانٍ ولا ذمّةٌ مضاعفة.
+    const priorCn = (await tx
+      .select()
+      .from(deliveryConsignments)
+      .where(and(
+        eq(deliveryConsignments.sourceType, "WORK_ORDER"),
+        eq(deliveryConsignments.sourceId, Number(wo.id)),
+      ))
+      .for("update")
+      .limit(1))[0];
+    if (priorCn && (
+      priorCn.status !== "CANCELLED"
+      || priorCn.parcelStatus !== "CANCELLED"
+      || priorCn.moneyStatus !== "CANCELLED"
+    )) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `الأمر مُسنَد أصلاً للإرسالية ${priorCn.consignmentNumber} — ألغِ إسنادها أو استرجعها قبل إسنادٍ جديد`,
+      });
+    }
+    if (priorCn && (!round2(money(priorCn.collectedAmount ?? "0")).isZero() || priorCn.remittanceId != null)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "الإرسالية الملغاة تحمل تحصيلاً أو توريداً؛ لا يمكن إعادة تنشيطها",
+      });
+    }
+    // الفاتورة القائمة (من الإسناد الملغى) تُعاد استعمالها — ما لم تكن ميتة.
+    const priorInvoice = wo.invoiceId != null
+      ? (await tx.select().from(invoices).where(eq(invoices.id, Number(wo.invoiceId))).for("update").limit(1))[0]
+      : undefined;
+    if (priorInvoice && isDeadInvoiceStatus(priorInvoice.status)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `فاتورة الأمر ${priorInvoice.invoiceNumber} ${invoiceStatusLabel(priorInvoice.status)} — أنشئ بيعاً جديداً بدل إعادة الإسناد`,
+      });
+    }
+    const reusingInvoice = priorInvoice != null;
+    // إخوةُ السلّة الواحدة — نفس حارس التسليم المباشر وإرسال الفاتورة.
+    await assertSiblingsReady(tx, {
+      draftId: wo.draftId,
+      excludeWorkOrderId: Number(input.workOrderId),
+      confirmed: input.partialDispatchConfirmed === true,
+      action: "dispatch",
+    });
+    if (priorInvoice) {
+      /**
+       * **متبقّي الفاتورة الحيّة هو الحقيقة** — مرآةُ `dispatchInvoice.ts` حرفياً.
+       *
+       * حارسُ التوصيل يمنع القبض على إرساليةٍ **مُرسَلة** فقط؛ وبعد إلغاء الإسناد تعود
+       * الفاتورة قابلةً للسداد على الكاونتر. فلو دفع الزبون ثمّ أُعيد الإسناد، كان
+       * `salePrice − deposit` يطلب من المندوب تحصيلَ مبلغٍ **مسدَّدٍ سلفاً** — ثمّ يفشل
+       * تأكيدُ التسليم على فحص متبقّي الفاتورة، فيعلق الطرد بلا مخرج.
+       */
+      codAmount = round2(
+        money(priorInvoice.total)
+          .minus(money(priorInvoice.returnedTotal ?? "0"))
+          .minus(money(priorInvoice.paidAmount ?? "0")),
+      );
+      if (codAmount.lt(0)) codAmount = round2(money(0));
+    }
+
     // الفاتورة تبقى منسوبة إلى عميل أمر الشغل كي تظهر في كشفه وأعمار الذمم. جهة التوصيل
     // هي حائز النقد/الطرد، وليست بديلاً عن هوية العميل على المستند التجاري.
-    const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
+    const invoiceNumber = reusingInvoice
+      ? priorInvoice!.invoiceNumber
+      : await nextInvoiceNumber(tx, Number(wo.branchId));
     const invStatus = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(depositPaid));
-    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    // نسبة البيع لمنشئ الطلب لا للمُرسِل (نفس قاعدة deliver.ts — العمولة تتبع البائع الأصليّ).
+    const sellerUserId = wo.createdBy != null ? Number(wo.createdBy) : actor.userId;
+    const salespersonNameSnapshot = await userNameSnapshot(tx, sellerUserId);
     // ش١ (٥/٨): فاتورة الإرسال تنتمي لوردية مُرسِلها (مرآة deliver.ts) — تظهر في طابور فواتير
     // المحطة بحالتها التسليمية بدل أن تختفي بلا shiftId.
     // مراجعة عدائية (٥/٨): الختم بوردية RECEPTION **حصراً أو null** — الحلّ المرن كان يلتقط
@@ -194,7 +272,9 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         .limit(1)
     )[0];
     const dispatchShiftId = dispatchShiftRow ? Number(dispatchShiftRow.id) : null;
-    const invRes = await tx.insert(invoices).values({
+    // الفاتورة القائمة تُعاد استعمالها كما هي: لا رقمَ جديداً ولا SALE ثانياً ولا ذمّةً
+    // مضاعفة على العميل — البيعُ وقع مرّةً واحدة، وما تغيّر هو **حائز الطرد** لا المستند.
+    const invRes = reusingInvoice ? null : await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
       sourceId: `WO-${wo.id}`,
@@ -213,11 +293,12 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       paymentDate: depositPaid.gt(0) ? new Date() : null,
       notes: `توصيل طلب خدمة ${wo.orderNumber}: ${wo.title}`,
       salespersonNameSnapshot,
-      createdBy: actor.userId,
+      createdBy: sellerUserId,
     });
-    const invoiceId = extractInsertId(invRes);
+    const invoiceId = reusingInvoice ? Number(priorInvoice!.id) : extractInsertId(invRes!);
 
-    if (wo.baseVariantId != null) {
+    // البنود والقيد والذمّة تُكتب **مرّةً واحدة** مع الفاتورة؛ إعادة التنشيط تتخطّاها كلّها.
+    if (!reusingInvoice && wo.baseVariantId != null) {
       const baseUnit = (await tx.select({ id: productUnits.id }).from(productUnits).where(eq(productUnits.variantId, Number(wo.baseVariantId))).limit(1))[0];
       const unitPrice = round2(salePrice.dividedBy(quantity));
       await tx.insert(invoiceItems).values({
@@ -235,6 +316,9 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     }
 
     // SALE: حافظ على هوية العميل كي يبقى القيد والفاتورة وكشف العميل مترابطة.
+    // ⚠️ عند إعادة التنشيط: القيد والذمّة وربط العربون وقعت كلّها في الإسناد الأول ولم
+    // يعكسها الإلغاء (هو «فكّ إسنادٍ» لا عكسُ بيع) ⇒ تكرارُها هنا يضاعف الإيراد والذمّة.
+    if (!reusingInvoice) {
     await postEntry(tx, {
       entryType: "SALE",
       postingIntent: deliveryWorkOrderSaleIntent(salePrice, depositPaid, materialsCost),
@@ -279,8 +363,11 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
             )).limit(1))[0]?.id;
       if (depRcptId != null) await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcptId)));
     }
+    }
 
-    const consignmentNumber = await nextConsignmentNumber(tx, Number(wo.branchId));
+    const consignmentNumber = priorCn
+      ? priorCn.consignmentNumber
+      : await nextConsignmentNumber(tx, Number(wo.branchId));
     const codPositive = codAmount.gt(0);
     // الأجرة تُسوَّى لحظة الإرسال متى كان النقد بأيدينا أو لا توريدَ يُنتظَر:
     //   COUNTER ⇒ قبضناها أمانةً في الاستقبال والمندوب واقفٌ الآن ⇒ تُدفَع له نقداً من الدرج.
@@ -289,7 +376,44 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // ما عدا ذلك (COURIER بـCOD موجب) لا يمرّ بدفترنا إطلاقاً؛ وSHOP بـCOD موجب يُخصَم مصروفاً
     // عند التوريد كما كان.
     // Phase 2: fees are earned only after physical delivery.
-    const cnRes = await tx.insert(deliveryConsignments).values({
+    // إعادة التنشيط: تحديثُ الصفّ الملغى في مكانه (سابقة dispatchInvoice.ts) — يحفظ سلسلة
+    // أحداثه وتاريخه، ويُبقي القيدَين الفريدَين حارسَين بنيويَّين بلا هجرة ولا شواهد قبور.
+    if (priorCn) {
+      await tx.update(deliveryConsignments).set({
+        branchId: Number(wo.branchId),
+        partyId: input.partyId,
+        invoiceId,
+        assignedUserId,
+        endCustomerId: wo.customerId ?? null,
+        codAmount: toDbMoney(codAmount),
+        collectedAmount: "0",
+        deliveryFee: toDbMoney(fee),
+        recipientName: input.recipientName ?? null,
+        recipientPhone: input.recipientPhone ?? wo.deliveryPhone ?? null,
+        deliveryAddress: input.deliveryAddress ?? wo.deliveryAddress ?? null,
+        feeCollection,
+        feeSettledAt: null,
+        parcelStatus: "ASSIGNED",
+        moneyStatus: codPositive ? "UNSETTLED" : "NOT_APPLICABLE",
+        status: "DISPATCHED",
+        remittanceId: null,
+        settledAt: codPositive ? null : new Date(),
+        dispatchedBy: actor.userId,
+        dispatchedAt: new Date(),
+        acceptedAt: null,
+        pickedUpAt: null,
+        outForDeliveryAt: null,
+        courierDeliveredAt: null,
+        custodyRecognizedAt: null,
+        failedAt: null,
+        failureReason: null,
+        cancelledAt: null,
+        cancellationReason: null,
+        cancelledBy: null,
+        returnedAt: null,
+      }).where(eq(deliveryConsignments.id, Number(priorCn.id)));
+    }
+    const cnRes = priorCn ? null : await tx.insert(deliveryConsignments).values({
       consignmentNumber,
       branchId: Number(wo.branchId),
       partyId: input.partyId,
@@ -317,10 +441,14 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       settledAt: codPositive ? null : new Date(),
       dispatchedBy: actor.userId,
     });
-    const consignmentId = extractInsertId(cnRes);
+    const consignmentId = priorCn ? Number(priorCn.id) : extractInsertId(cnRes!);
 
     await appendDeliveryEvent(tx, {
-      eventKey: `CN:${consignmentId}:ASSIGNED`,
+      // مفتاحُ حدثٍ فريدٌ لكل إسناد (append-only): إعادةُ التنشيط حدثٌ مستقلّ لا استبدالٌ
+      // للأول — فيبقى تاريخ الطرد كاملاً: أُسنِد، أُلغي، أُعيد إسناده لجهةٍ أخرى.
+      eventKey: priorCn
+        ? `CN:${consignmentId}:REASSIGNED:${input.clientRequestId ?? Date.now()}`
+        : `CN:${consignmentId}:ASSIGNED`,
       consignmentId,
       eventType: "ASSIGNED",
       toParcelStatus: "ASSIGNED",
@@ -330,7 +458,10 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     });
     if (codPositive) {
       await appendDeliveryLedgerEntry(tx, {
-        eventKey: `CN:${consignmentId}:COD_ASSIGNED`,
+        // تعرّضٌ جديد لجهةٍ جديدة ⇒ قيدٌ جديد (الأول حُرِّر بـCOD_RELEASED عند الإلغاء).
+        eventKey: priorCn
+          ? `CN:${consignmentId}:COD_ASSIGNED:REACTIVATED:${input.clientRequestId ?? Date.now()}`
+          : `CN:${consignmentId}:COD_ASSIGNED`,
         partyId: input.partyId,
         consignmentId,
         branchId: Number(wo.branchId),

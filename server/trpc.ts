@@ -402,14 +402,45 @@ export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL
 // فلتر الفرع داخل الاستعلام يُرجِع null لفاتورة فرعٍ آخر ⇒ لا IDOR). دورٌ-محايد: يعمل لأيّ دور استقبال.
 export function invoiceViewScopeForUser(
   user: { role: string; permissionsOverride?: unknown },
-): "sales" | "reception" | null {
+): InvoiceScope | null {
   if (user.role === "admin") return "sales";
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   const map = resolvePermissions(user.role as RoleKey, override);
   if (map.sales === "FULL" || map.sales === "READ") return "sales";
   if (map.workorders === "FULL") return "reception";
+  // ١٨/٨: كاشير الطباعة (`pos:FULL`, `sales:NONE`) لم يكن يفتح **حتى فاتورته المفردة** — نطاقه
+  // كان null. نطاقٌ ثالثٌ يحصره في فواتير وردية PRINT_SERVICES: يرى ما أصدره، ولا يُفتَح له
+  // بابٌ على مبيعات التجزئة ولا على عروض الأسعار (تبقى على salesReadProcedure).
+  if (map.pos === "FULL") return "print";
   return null;
 }
+
+/**
+ * نطاق رؤية الفواتير — ثلاثة أوجه لبابٍ واحد:
+ *  · `sales`     — وحدة المبيعات (مدير/محاسب/كاشير تجزئة/موظف استقبال بعد 0148): بلا حصر قناة.
+ *  · `reception` — صلاحية الاستقبال (`workorders:FULL`): فواتير وردية RECEPTION وحدها.
+ *  · `print`     — كاشير الطباعة (`pos:FULL`): فواتير وردية PRINT_SERVICES وحدها.
+ */
+export type InvoiceScope = "sales" | "reception" | "print";
+
+/**
+ * بوّابة **قوائم** الفواتير (١٨/٨) — كانت البوّابة المزدوجة مُطبَّقةً على المستند المفرد
+ * (`invoiceViewProcedure`) ولم تُطبَّق قطّ على قائمة: `sales.list` على `salesReadProcedure`
+ * وحده ⇒ فنّي المطبعة وكاشير الطباعة (`sales:NONE`) يتلقّون ٤٠٣، وموظف الاستقبال يمرّ بحكم
+ * منحةٍ لاحقة (هجرة 0148) لا بحكم التصميم. الآن القائمة والمستند على **نفس المفردة**، ونطاقُ
+ * القائمة يُحقن في السياق فتُقصّه شروط الاستعلام (مرآة `sales.get` حرفياً).
+ *
+ * البديل المرفوض: منح `sales:READ` لأدوار الطباعة عبر هجرةٍ كـ0148 — يفتح **عروض الأسعار**
+ * (`quotationRouter` جالسٌ على `salesReadProcedure`) وهو تسريبٌ أُغلق عمداً.
+ */
+export const invoiceListProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const invoiceListScope = invoiceViewScopeForUser(ctx.user);
+    if (!invoiceListScope) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    return next({ ctx: { ...ctx, user: ctx.user, invoiceListScope } });
+  }),
+);
 
 export const invoiceViewProcedure = branchScopedProcedure.use(
   t.middleware(async ({ ctx, next }) => {

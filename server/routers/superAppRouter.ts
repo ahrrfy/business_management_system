@@ -1606,11 +1606,20 @@ export const superAppRouter = router({
   notifications: selfServiceProcedure
     .input(
       z
-        .object({ limit: z.number().int().min(1).max(100).default(40) })
+        .object({
+          limit: z.number().int().min(1).max(100).default(40),
+          /** ش٦: غير المقروء وحده — ترشيحٌ خادميّ لأنّ `limit` يقتطع قبل أن ترى الشاشة الصندوق. */
+          unreadOnly: z.boolean().optional(),
+          /** ما وُسِم «يتطلّب إجراءً» عند إنشائه. سجلٌّ مضيَّق لا طابورُ فعلٍ حيّ (انظر تعليق الخدمة). */
+          requiresActionOnly: z.boolean().optional(),
+        })
         .optional(),
     )
     .query(({ ctx, input }) =>
-      listUserNotifications(ctx.user.id, input?.limit ?? 40),
+      listUserNotifications(ctx.user.id, input?.limit ?? 40, {
+        unreadOnly: input?.unreadOnly === true,
+        requiresActionOnly: input?.requiresActionOnly === true,
+      }),
     ),
 
   /** مركز قرارات موحّد: يجمّع الأعمال المعلّقة من سلطاتها الأصلية من دون نسخ منطق القرار.

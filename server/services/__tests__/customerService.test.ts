@@ -188,7 +188,12 @@ describe("resolveReceptionCustomerByPhone — هوية عميل الاستقبا
     const created = await resolveReceptionCustomerByPhone({ phone: "07701234567", name: "أحمد كريم" }, actor as any);
     expect(created.status).toBe("RESOLVED");
     expect(created.created).toBe(true);
-    expect(created.deferredEligible).toBe(true);
+    // ⭐ تصحيحُ توقّعٍ كان يُثبّت كذبةً (١٩/٨): العميل يُنشأ هنا بـ`creditLimit: "0"` — نقديٌّ
+    // فقط بقرار المالك الافتراضيّ — وكان `deferredEligible` يُعلَن `true` **ثابتاً**، فتَعِد
+    // شاشةُ الاستقبال بالآجل ويرفضه الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلّة والزبونُ
+    // واقفٌ أمامه. الأهليّة تُشتقّ الآن من الحدّ نفسه فيتطابق الوعد والتنفيذ.
+    expect(created.creditLimit).toBe("0.00");
+    expect(created.deferredEligible).toBe(false);
 
     const existing = await resolveReceptionCustomerByPhone({ phone: "+9647701234567" }, actor as any);
     expect(existing.customerId).toBe(created.customerId);

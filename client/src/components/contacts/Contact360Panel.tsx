@@ -5,6 +5,7 @@
 // بلا شاشة مستقلة/route جديد — يُفتح كلوحة جانبية (Sheet) من ContactsBank.tsx. الحجب المالي
 // (رصيد/حدّ ائتمان) يُطبَّق خادمياً (maskCustomerSensitive/maskSupplierSensitive) — نعرض القيمة
 // كما وصلت بلا افتراض وجود حقول إضافية.
+import { receptionChannelLabel } from "@shared/receptionChannel";
 import { useState } from "react";
 import { Link } from "wouter";
 import {
@@ -301,15 +302,6 @@ function OpenTasksCard({ tasks }: { tasks: Extract<Contact360Data, { kind: "cust
 
 /* ═══════════ المحادثات ═══════════ */
 
-const CHANNEL_LABEL: Record<string, string> = {
-  WHATSAPP: "واتساب",
-  INSTAGRAM: "انستغرام",
-  TIKTOK: "تيك توك",
-  STORE: "المتجر",
-  PHONE: "اتصال",
-  WALK_IN: "حُضوري",
-  OTHER: "أخرى",
-};
 
 function ConversationsCard({ conversations }: { conversations: Contact360Data["conversations"] }) {
   return (
@@ -324,7 +316,7 @@ function ConversationsCard({ conversations }: { conversations: Contact360Data["c
                 href="/crm?tab=inbox"
                 className="flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
               >
-                <span className="shrink-0">{CHANNEL_LABEL[c.channel] ?? c.channel}</span>
+                <span className="shrink-0">{receptionChannelLabel(c.channel)}</span>
                 <span className="truncate flex-1 text-xs text-muted-foreground">{c.lastMessagePreview ?? "—"}</span>
                 <span className="text-xs text-muted-foreground shrink-0" dir="ltr">{fmtDateTime(c.lastMessageAt)}</span>
                 {c.unreadCount > 0 && (

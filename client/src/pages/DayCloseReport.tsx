@@ -1,6 +1,7 @@
 // تقرير «مطابقة إقفال اليوم للنقد» — يوازن نقد الدرج لكل وردية في يومٍ وفرع:
 //   المتوقَّع (من الدفتر) مقابل المعدود (نقد الإغلاق) مقابل الفرق (drift = variance الوردية).
 // تسليمات الخزينة تُعرَض منفصلةً (لا تُطرَح من المتوقَّع) — راجع reportsDayCloseService للتعليل.
+import { shiftTypeLabel } from "@/lib/labels";
 import { useState } from "react";
 import { CheckCircle2, AlertTriangle, Wallet, Building2, Clock, ArrowLeftRight, ChevronLeft, ChevronRight } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -30,9 +31,6 @@ function todayUtc(): string {
 }
 
 /** تسمية عربية لنوع الوردية (درجٌ مستقلّ لكل نوع: تجزئة / استقبال / خدمات طباعة). */
-function shiftTypeLabel(t: string): string {
-  return t === "RECEPTION" ? "استقبال" : t === "PRINT_SERVICES" ? "خدمات طباعة" : "تجزئة";
-}
 
 export default function DayCloseReport() {
   const [date, setDate] = useState<string>(todayUtc);

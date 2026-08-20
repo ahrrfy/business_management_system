@@ -43,6 +43,11 @@
   --font-sans: "Cairo", system-ui, -apple-system, sans-serif;
 
   /* Larger, heavier type tokens for clear Arabic text across every screen. */
+  /* الأرضيّة العملية (١٩/٨): الشاشات تهرب من `--text-xs` **٦٣٣ مرّة** إلى أرقامٍ حرفية
+     (416× 11px · 168× 10px · 20× 9px) — وCairo تحت 12px يفقد تمييز النقاط والهمزات على
+     شاشة لمس. هذه الدرجة تُنهي الهروب بأرضيّةٍ مقروءة. */
+  --text-2xs: 0.75rem;
+  --text-2xs--line-height: 1.125rem;
   --text-xs: 0.8125rem;
   --text-xs--line-height: 1.25rem;
   --text-sm: 0.9375rem;
@@ -59,8 +64,15 @@
   --text-3xl--line-height: 2.5rem;
   --text-4xl: 2.375rem;
   --text-4xl--line-height: 2.75rem;
-  --font-weight-normal: 600;
-  --font-weight-medium: 700;
+  /* سلّم الأوزان (مُصلَح ١٩/٨) — كان **مكسوراً من جهتين**، وهو أحد جذرَي «التصميم غير المرتّب»:
+     ① `medium` و`semibold` كانا **٧٠٠ حرفياً كلاهما** ⇒ `font-medium` و`font-semibold` لا
+        يفترقان بصرياً، فتضيع رتبةُ هرمٍ كاملة ويستوي الثانويّ بالأساسيّ في كل شاشة.
+     ② `normal: 600` هنا بينما `body { font-weight: 500 }` في `comfort.css:36` **خارج أيّ
+        طبقة** فيغلب بحكم Cascade Layers ⇒ المتن يُرسَم بوزنٍ ليس على السلّم أصلاً، وأيّ
+        `font-normal` يقفز إلى ٦٠٠ بلا سببٍ ظاهر.
+     الأربعة محمَّلةٌ فعلاً من الخطّ (`main.tsx` يستورد 400/500/600/700/800). */
+  --font-weight-normal: 500;
+  --font-weight-medium: 600;
   --font-weight-semibold: 700;
   --font-weight-bold: 800;
 }

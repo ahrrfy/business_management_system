@@ -8,6 +8,7 @@
 //        ولا يُخفَض إجماليها دون المقبوض، وإلغاؤها مديريّ.
 //  I22 — التدقيق يحمل قبل/بعد ولا يحمل designImages/printSpec أبداً.
 //  ق٤  — الفارغة تنقضي بعد ٢٤ ساعة (تتجدّد بكل نشاط)؛ المموّلة لا تُطوى أبداً.
+import type { WorkOrderChannel } from "@shared/receptionChannel";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, inArray, like, lt, or, sql, type SQL } from "drizzle-orm";
 import {
@@ -50,7 +51,12 @@ export interface DraftHeaderInput {
   contactName?: string | null;
   contactPhone?: string | null;
   priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT" | null;
-  channel?: string | null;
+  /** قناة وصول الطلب — من القاموس الحاكم `@shared/receptionChannel` لا نصّاً حرّاً. */
+  channel?: WorkOrderChannel | null;
+  /** معرّف العميل على القناة (رقم واتساب/اسم حساب) — يُنقَل إلى أمر الشغل عند التثبيت. */
+  channelHandle?: string | null;
+  /** المحادثة التي وُلد منها الطلب — يُربَط بها أمرُ الشغل **داخل معاملة التثبيت**. */
+  conversationId?: number | null;
   notes?: string | null;
   dueDate?: string | null;
 }
@@ -137,6 +143,8 @@ export async function promoteDraft(
       contactPhone: input.header.contactPhone?.trim() || null,
       priceTier: input.header.priceTier ?? "RETAIL",
       channel: input.header.channel ?? null,
+      channelHandle: input.header.channelHandle?.trim() || null,
+      conversationId: input.header.conversationId ?? null,
       notes: input.header.notes ?? null,
       dueDate: input.header.dueDate ? new Date(input.header.dueDate) : null,
       subtotal: toDbMoney(totals.subtotal),
@@ -255,6 +263,8 @@ export async function syncDraft(
         contactPhone: input.header.contactPhone?.trim() || null,
         priceTier: input.header.priceTier ?? row.priceTier,
         channel: input.header.channel ?? row.channel,
+        channelHandle: input.header.channelHandle?.trim() || row.channelHandle,
+        conversationId: input.header.conversationId ?? row.conversationId,
         notes: input.header.notes ?? row.notes,
         dueDate: input.header.dueDate ? new Date(input.header.dueDate) : row.dueDate,
         subtotal: toDbMoney(totals.subtotal),

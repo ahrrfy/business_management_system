@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, createStudioCampaign, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, claimStudioProductByBarcode, createStudioCampaign, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, getStudioCampaignBoard, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 
 function actor(ctx: {
   user: {
@@ -39,6 +39,9 @@ export const productStudioRouter = router({
   resolveBarcode: productStudioReadProcedure.input(z.object({ barcode: z.string().trim().min(1).max(64) })).query(({ ctx, input }) => resolveStudioBarcode(actor(ctx), input.barcode)),
   productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ ctx, input }) => listStudioProductImages(actor(ctx), input.productId)),
   assignees: productStudioManagerProcedure.query(({ ctx }) => listStudioAssignees(actor(ctx))),
+  grantStudioAccess: productStudioManagerProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(({ ctx, input }) => grantStudioAccess(actor(ctx), input.userId)),
   tasks: productStudioReadProcedure
     .input(
       z.object({
@@ -68,6 +71,11 @@ export const productStudioRouter = router({
         status: z.enum(["DRAFT", "ACTIVE"]).default("DRAFT"),
         startsAt: z.coerce.date().nullable().optional(),
         dueAt: z.coerce.date().nullable().optional(),
+        scopeKind: z.enum(["ALL", "CATEGORY", "PRODUCTS"]).default("ALL"),
+        scopeCategoryId: z.number().int().positive().nullable().optional(),
+        scopeProductIds: z.array(z.number().int().positive()).max(5_000).optional(),
+        requiredImages: z.number().int().min(1).max(10).optional(),
+        assigneeIds: z.array(z.number().int().positive()).max(50).optional(),
       }),
     )
     .mutation(({ ctx, input }) => createStudioCampaign(actor(ctx), input)),
@@ -83,6 +91,14 @@ export const productStudioRouter = router({
   previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx), input.campaignId)),
   createCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).mutation(({ ctx, input }) => createStudioCampaignBacklog(actor(ctx), input.campaignId)),
   campaignAnalytics: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignAnalytics(actor(ctx), input.campaignId)),
+  campaignBoard: productStudioReadProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => getStudioCampaignBoard(actor(ctx), input.campaignId)),
+  createTemporaryPhotographer: productStudioManagerProcedure
+    .input(z.object({ campaignId, name: z.string().trim().min(3).max(80) }))
+    .mutation(({ ctx, input }) => createTemporaryCampaignPhotographer(actor(ctx), input)),
+  revokeTemporaryPhotographers: productStudioManagerProcedure
+    .input(z.object({ campaignId }))
+    .mutation(({ ctx, input }) => revokeTemporaryCampaignPhotographers(actor(ctx), input.campaignId)),
+  claimByBarcode: productStudioWriteProcedure.input(z.object({ barcode: z.string().trim().min(1).max(64) })).mutation(({ ctx, input }) => claimStudioProductByBarcode(actor(ctx), input.barcode)),
   sendDueNotifications: productStudioManagerProcedure.input(z.object({ horizonHours: z.number().int().min(1).max(168).default(24) })).mutation(({ ctx, input }) => sendStudioDueNotifications(actor(ctx), new Date(), input.horizonHours)),
   candidatePreview: productStudioReadProcedure.input(z.object({ taskId })).query(({ ctx, input }) => {
     ctx.res.setHeader("Cache-Control", "private, no-store, max-age=0");

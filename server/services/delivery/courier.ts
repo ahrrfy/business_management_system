@@ -45,6 +45,7 @@ import {
   getDeliveryFinancialSummary,
   memberVisibilityCondition,
   resolveDeliveryMembership,
+  resolveStatementWitnessAuthority,
   type ParcelStatus,
 } from "./lifecycle";
 import {
@@ -531,10 +532,32 @@ export interface ConfirmConsignmentResult {
  * المرحّلة الموسومة custodyRecognizedAt لا تضاعف العهدة القديمة. العملية idempotent بمفتاح إلزامي.
  */
 export async function confirmConsignmentDelivery(
-  input: { consignmentId: number; clientRequestId?: string },
+  input: {
+    consignmentId: number;
+    clientRequestId?: string;
+    /**
+     * **إثباتُ كشف شركة التوصيل** (١٩/٨) — تفويضٌ داخليّ تضبطه `recordCompanyStatement`
+     * حصراً؛ لا يقبله أيّ راوتر (نمط `receptionDeferredAuthorized` في سلّة الاستقبال).
+     *
+     * لماذا وُجد: ختمُ التسليم كان حصريّاً ببوّابة المندوب (عضوية جهةٍ نشطة)، وأغلب جهات
+     * التوصيل كيانُ بياناتٍ **بلا حساب نظام** ⇒ لا سطر يُختَم مُسلَّماً، فلا توريد ولا أجرة،
+     * والمال يعلق بلا مخرج. كشفُ الشركة هو الدليل البديل الذي أقرّه المالك.
+     *
+     * والمسار الماليّ **واحدٌ لا اثنان**: نفس الجسم أدناه ينفّذ الحالتين بالحرف — لا نسخة
+     * ثانية تنجرف عن الأولى. الفارق كلّه في مصدر السلطة وحدَه، ويُدوَّن في حدث التسليم.
+     */
+    statementWitness?: {
+      partyId: number;
+      statementNumber: string;
+      /** ما تُعلن الشركةُ أنّها حصّلته على هذا الطرد — قد يقلّ عن COD (تحصيلٌ جزئيّ). */
+      collectedAmount?: string;
+    };
+  },
   actor: { userId: number },
 ): Promise<ConfirmConsignmentResult> {
-  const membership = await resolveDeliveryMembership(actor.userId);
+  const membership = input.statementWitness
+    ? await resolveStatementWitnessAuthority(input.statementWitness.partyId)
+    : await resolveDeliveryMembership(actor.userId);
   if (!membership) {
     throw new TRPCError({
       code: "FORBIDDEN",
@@ -635,22 +658,53 @@ export async function confirmConsignmentDelivery(
         alreadyDelivered: true,
       };
     }
-    if (cn.parcelStatus !== "OUT_FOR_DELIVERY") {
+    // تدرّجُ الحالات انضباطٌ تشغيليّ **لبوّابة المندوب**: من يستعملها يقبل الطرد ويستلمه
+    // ويخرج به ثمّ يختم. أمّا كشفُ الشركة (١٩/٨) فيصل بعد وقوع التسليم فعلاً وقد لا تكون
+    // الشركة سجّلت أيّ خطوةٍ وسيطة في نظامنا أصلاً — فاشتراطُ `OUT_FOR_DELIVERY` عليه يعني
+    // رفض الدليل المستنديّ الذي أقرّه المالك. يبقى الحارس الحقيقيّ قائماً: الطرد **خارجٌ
+    // فعلاً** (الحالة نهائيةٌ ⇒ مردودةٌ أعلاه، والملغاة/المرتجعة خارج نطاق الكشف).
+    const parcelOut = cn.parcelStatus === "ASSIGNED"
+      || cn.parcelStatus === "ACCEPTED"
+      || cn.parcelStatus === "PICKED_UP"
+      || cn.parcelStatus === "OUT_FOR_DELIVERY";
+    if (input.statementWitness ? !parcelOut : cn.parcelStatus !== "OUT_FOR_DELIVERY") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: "يجب قبول الطرد واستلامه ووضعه «خرج للتوصيل» قبل ختم التسليم",
+        message: input.statementWitness
+          ? "لا يُثبَت تسليم طردٍ ملغى أو مرتجع من كشف الشركة"
+          : "يجب قبول الطرد واستلامه ووضعه «خرج للتوصيل» قبل ختم التسليم",
       });
     }
 
     const deliveredAt = new Date();
-    const cod = round2(
+    const codRemaining = round2(
       money(cn.codAmount).minus(money(cn.collectedAmount ?? "0")),
     );
-    if (cod.lt(0))
+    if (codRemaining.lt(0))
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "تسويات الإرسالية تتجاوز مبلغ التحصيل الأصلي",
       });
+    /**
+     * **التحصيل الجزئيّ من الكشف** (١٩/٨): بوّابة المندوب تفترض أنّ الختم يعني قبض COD
+     * كاملاً (وهو صحيحٌ لمن يختم بيده لحظة التسليم). أمّا كشف الشركة فقد يقول صراحةً
+     * «حُصِّل ١٢٬٠٠٠ من ٢٠٬٠٠٠» — فلو سجّلنا الكامل لأسقطنا ذمّةً لم تُدفع وأثقلنا الشركة
+     * بنقدٍ لم تقبضه. نسجّل **ما وقع فعلاً**، ويبقى المتبقّي مطالَباً به على العميل
+     * (قرار المالك: «التحصيل الجزئي يُترك متبقّيه على العميل»).
+     */
+    const declared = input.statementWitness?.collectedAmount;
+    const cod = declared != null
+      ? round2(money(declared))
+      : codRemaining;
+    if (cod.gt(codRemaining)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الكشف يعلن تحصيل ${cod.toFixed(2)} وهو أكثر من المتبقّي على الطرد (${codRemaining.toFixed(2)})`,
+      });
+    }
+    if (cod.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ تحصيلٍ سالب على الكشف" });
+    }
     await tx
       .update(deliveryConsignments)
       .set({
@@ -672,6 +726,11 @@ export async function confirmConsignmentDelivery(
       fromMoneyStatus: cn.moneyStatus,
       toMoneyStatus: cn.moneyStatus,
       actorUserId: actor.userId,
+      // مصدر السلطة يُدوَّن دائماً: بوّابةُ المندوب أم كشفُ الشركة (وبأيّ رقم كشف) — هو
+      // الأثر الذي يُراجَع عند أيّ خلافٍ على تسليمٍ لم يعترف به الزبون.
+      payload: input.statementWitness
+        ? { source: "COMPANY_STATEMENT", statementNumber: input.statementWitness.statementNumber }
+        : { source: "COURIER_PORTAL" },
     });
 
     if (cod.gt(0)) {
@@ -693,10 +752,18 @@ export async function confirmConsignmentDelivery(
           .minus(money(inv.returnedTotal ?? "0"))
           .minus(money(inv.paidAmount)),
       );
-      if (!invoiceRemaining.eq(cod)) {
+      // بوّابة المندوب: الختمُ يعني قبض المتبقّي **كاملاً** ⇒ تطابقٌ تامّ يمسك أيّ انحراف.
+      // كشفُ الشركة: قد يُعلن تحصيلاً **جزئياً**، فالشرط يصير سقفاً لا تطابقاً — والمتبقّي
+      // يبقى على العميل مطالَباً به (قرار المالك)، ولا يجوز بحال تجاوزُ متبقّي الفاتورة.
+      const collectionMismatch = input.statementWitness
+        ? cod.gt(invoiceRemaining)
+        : !invoiceRemaining.eq(cod);
+      if (collectionMismatch) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `متبقي الفاتورة (${invoiceRemaining.toFixed(2)}) لا يطابق مبلغ التحصيل على الطرد (${cod.toFixed(2)}) — صحّح الدفعات قبل التسليم`,
+          message: input.statementWitness
+            ? `الكشف يعلن تحصيل ${cod.toFixed(2)} وهو أكثر من متبقّي الفاتورة (${invoiceRemaining.toFixed(2)})`
+            : `متبقي الفاتورة (${invoiceRemaining.toFixed(2)}) لا يطابق مبلغ التحصيل على الطرد (${cod.toFixed(2)}) — صحّح الدفعات قبل التسليم`,
         });
       }
       if (cn.custodyRecognizedAt == null) {

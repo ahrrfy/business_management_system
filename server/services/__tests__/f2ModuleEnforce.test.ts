@@ -67,7 +67,13 @@ beforeEach(async () => { await reset(); await seed(); });
 
 // نقطة قراءة تمثيلية لكل وحدة (query ⇒ requireModule READ).
 const READ_CASES: Array<{ mod: string; name: string; call: (c: any) => Promise<unknown> }> = [
-  { mod: "sales", name: "sales.list", call: (c) => c.sales.list({}) },
+  // ⚠️ `sales.list` **خارج هذه الحلقة عمداً** (١٨/٨): صار على `invoiceListProcedure` ببوّابةٍ
+  // مزدوجة — `sales≥READ` **أو** صلاحية المحطة (`workorders:FULL` استقبالاً، `pos:FULL` طباعةً)
+  // — مرآةً للبوّابة التي يحملها المستند المفرد (`invoiceViewProcedure`) منذ زمن. أي أنّ
+  // «sales:NONE ⇒ منعٌ مطلق» لم يكن قطّ عقد الفواتير: مَن يُنشئ فاتورة المحطة يقرؤها ويطبعها.
+  // والحدّ الحقيقيّ ليس المنع بل **قصّ القناة**: نطاق المحطة يرى فواتير محطّته وحدها ولا يفتح
+  // باباً على مبيعات التجزئة — وذلك مُثبَتٌ في `invoiceListVisibility.test.ts` (حالة
+  // «نطاق الاستقبال يرى فاتورة محطّته ولا يرى فاتورة التجزئة»). الحالة المكرَّسة أدناه.
   { mod: "purchases", name: "purchases.list", call: (c) => c.purchases.list({}) },
   { mod: "inventory", name: "inventory.stockByBranch", call: (c) => c.inventory.stockByBranch({ branchId: 1 }) },
   { mod: "customers", name: "customers.list", call: (c) => c.customers.list() },
@@ -98,6 +104,17 @@ describe("F2 — مدير قالبيّ (بلا override) يمرّ (لا انحد
   });
   it("workOrders.list يمرّ", async () => {
     await expect(caller("manager", null).workOrders.list()).resolves.toBeDefined();
+  });
+
+  // العقد المكرَّس لقائمة الفواتير (١٨/٨) — بديلُ حالتها في الحلقة أعلاه:
+  it("sales.list: صلاحية المحطة تكفي (بوّابة مزدوجة)، وبلا أيّ منهما يُرفَض", async () => {
+    // مديرٌ نُزعت عنه `sales` صراحةً يبقى له `workorders:FULL` قالبياً ⇒ يقرأ **فواتير
+    // المحطة وحدها** (لا التجزئة). القصّ نفسه مُثبَتٌ في invoiceListVisibility.test.ts.
+    await expect(caller("manager", { sales: "NONE" }).sales.list({})).resolves.toBeDefined();
+    // وبلا `sales` ولا صلاحية محطةٍ (استقبالاً أو طباعةً) ⇒ منعٌ كامل.
+    await expect(
+      caller("manager", { sales: "NONE", workorders: "NONE", pos: "NONE" }).sales.list({}),
+    ).rejects.toThrow(FORBIDDEN);
   });
 });
 

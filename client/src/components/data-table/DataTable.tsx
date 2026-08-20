@@ -27,7 +27,7 @@ import {
   type VisibilityState,
 } from "@tanstack/react-table";
 import { useEffect, useMemo, useState } from "react";
-import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, Columns3, Rows3, RotateCcw } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown, Columns3, Rows3, RotateCcw, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -83,6 +83,12 @@ type DataTableProps<T, K = string> = {
   emptyText?: string;
   /** أثناء التحميل: تُعرض صفوف هيكلية (skeleton) بدل النصّ الفارغ — إحساس سرعة أفضل بلا قفزة تخطيط. */
   loading?: boolean;
+  /**
+   * صدق الخطأ (بلاغ المالك ١٨/٨) — فشلُ الجلب **ليس** «لا نتائج»: بلا هذه الخاصية كان الردّ
+   * ٤٠٣/انقطاعُ الشبكة يُعرَض «لا فواتير مطابقة» حرفياً، فيظنّ الموظف أنّ فواتيره غير موجودة
+   * بينما الخادم رفض الطلب. الأولوية: تحميل ⇐ خطأ ⇐ فراغ.
+   */
+  errorState?: { isError: boolean; message?: string; onRetry?: () => void };
   toolbar?: React.ReactNode; // أزرار إضافية (تصدير/إضافة) تظهر بجانب البحث
   // === التَحديد المُتَعَدِّد (اختِياري) ===
   selection?: DataTableSelection<K>;
@@ -178,6 +184,7 @@ export function DataTable<T, K = string>({
   barcodeSearch = false,
   emptyText = "لا بيانات",
   loading = false,
+  errorState,
   toolbar,
   selection,
   getRowId,
@@ -256,6 +263,26 @@ export function DataTable<T, K = string>({
   }
 
   const visibleRows = table.getRowModel().rows;
+
+  /**
+   * صدق الخطأ: ما يُعرَض حين لا صفوف — رسالةُ الفشل الحقيقية (بزرّ إعادة) إن فشل الجلب،
+   * وإلّا نصّ الفراغ. بلا هذا التمييز يُقرأ الرفض ٤٠٣ «لا بيانات» فيُضلّل الموظف والإدارة.
+   */
+  const emptyOrError = errorState?.isError ? (
+    <div className="flex flex-col items-center gap-2 text-sm">
+      <span className="inline-flex items-center gap-1.5 font-bold text-[var(--sem-danger)]">
+        <AlertTriangle aria-hidden className="size-4" />
+        {errorState.message?.trim() || "تعذّر جلب البيانات — تحقّق من الصلاحية أو الاتصال."}
+      </span>
+      {errorState.onRetry && (
+        <Button size="sm" variant="outline" onClick={errorState.onRetry}>
+          <RotateCcw aria-hidden className="size-3.5" /> إعادة المحاولة
+        </Button>
+      )}
+    </div>
+  ) : (
+    emptyText
+  );
 
   // مُعَرِّفات الصُفوف المَرئية (للأَزرار الكُلِّية + شِفت‑range).
   const visibleIds = useMemo<K[]>(() => {
@@ -402,7 +429,7 @@ export function DataTable<T, K = string>({
             ))}
             {!loading && visibleRows.length === 0 && (
               <div className="p-8 text-center text-muted-foreground text-sm bg-card border border-border/60 rounded-xl">
-                {emptyText}
+                {emptyOrError}
               </div>
             )}
           </div>
@@ -510,7 +537,7 @@ export function DataTable<T, K = string>({
                     );
                   })}
                   {!loading && visibleRows.length === 0 && (
-                    <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyText}</td></tr>
+                    <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyOrError}</td></tr>
                   )}
                 </tbody>
               </table>
@@ -619,7 +646,7 @@ export function DataTable<T, K = string>({
                 );
               })}
               {!loading && visibleRows.length === 0 && (
-                <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyText}</td></tr>
+                <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyOrError}</td></tr>
               )}
             </tbody>
           </table>

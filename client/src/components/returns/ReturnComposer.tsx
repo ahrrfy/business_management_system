@@ -17,7 +17,8 @@
  *  · النقد يخرج من **وردية المنفّذ المفتوحة** افتراضاً، أو يختار وردية مفتوحة أخرى صراحةً.
  *  · الردّ بالبطاقة يُنفَّذ على الجهاز ثمّ يُوثَّق بمرجعه (إثباتٌ لا إقفال).
  */
-import { AlertTriangle, CreditCard, Wallet } from "lucide-react";
+import { shiftTypeLabel } from "@/lib/labels";
+import { AlertTriangle, CreditCard, Info, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -39,9 +40,6 @@ const RAIL_HINT: Record<RefundRail, string> = {
   CARD: "نفّذ الاسترداد على جهاز الدفع ثمّ أدخِل مرجع العملية",
 };
 
-function shiftTypeLabel(t: string): string {
-  return t === "RECEPTION" ? "استقبال" : t === "PRINT_SERVICES" ? "خدمات طباعة" : "تجزئة";
-}
 
 /** «٢ درزن (٢٤ قطعة)» — وللوحدة الأساس أو الكسور: «٢٤ قطعة». */
 function unitsLabel(base: number, factor: number, unitName: string): string {
@@ -53,13 +51,19 @@ function unitsLabel(base: number, factor: number, unitName: string): string {
 
 export interface ReturnComposerProps {
   invoiceId: number;
+  /**
+   * اعتمادُ **طلب إرجاعٍ** من موظّف المحطة بدل مرتجعٍ مباشر (١٩/٨).
+   * الفارق كلّه في الإجراء المُستدعى: `approveRequest` يفرض فصل المهام واللقطة التفاؤلية
+   * ثمّ يُنفّذ **نفس** المسار الماليّ — فلا نسخةَ منطقٍ ثانية ولا شاشةَ اعتمادٍ موازية.
+   */
+  approvingRequestId?: number | null;
   /** يُستدعى بعد نجاح المرتجع (تحديث قوائم الصفحة المضيفة/التنقّل). */
   onDone?: (result: { fullyReturned: boolean; returnedTotal: string }) => void;
   /** رابط رجوعٍ اختياريّ تعرضه الصفحة المضيفة أسفل الإجراءات. */
   footer?: React.ReactNode;
 }
 
-export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProps) {
+export function ReturnComposer({ invoiceId, approvingRequestId, onDone, footer }: ReturnComposerProps) {
   const utils = trpc.useUtils();
   const detail = trpc.returns.getInvoice.useQuery({ invoiceId }, { enabled: invoiceId > 0 });
 
@@ -141,10 +145,10 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
   // الرافد الافتراضيّ: النقد ما دام ممكناً، وإلّا أوّل رافدٍ غير محجوب — فلا يبدأ الموظف
   // على خيارٍ سيُرفض. يُعاد التقييم كلّما تغيّرت السقوف (تحميل/تحديث بعد مرتجعٍ جزئيّ).
   useEffect(() => {
-    if (!options.length) return;
+    if (!options.length || !suggestedRefund.gt(0)) return;
     const usable = options.find((o) => !o.blockedReason);
     if (activeOption?.blockedReason && usable) setRail(usable.method as RefundRail);
-  }, [options, activeOption?.blockedReason]);
+  }, [options, activeOption?.blockedReason, suggestedRefund]);
 
   // الدرج الافتراضيّ: درج المنفّذ نفسه إن كان مفتوحاً (قرار المالك)، وإلّا الوحيد المفتوح.
   useEffect(() => {
@@ -160,6 +164,21 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
       .filter((l) => l.baseQuantity > 0),
     [qty],
   );
+
+  // اعتماد طلبٍ قائم — يشارك نفس معالجات النجاح/الخطأ (سلوكٌ واحد للمستخدم).
+  const approve = trpc.returns.approveRequest.useMutation({
+    onSuccess: async (res) => {
+      setDone("اعتُمد الطلب ونُفِّذ المرتجع.");
+      setQty({});
+      setManualAmount(null);
+      setCardReference("");
+      setClientRequestId(crypto.randomUUID());
+      await utils.returns.requests.invalidate();
+      await utils.returns.getInvoice.invalidate({ invoiceId });
+      onDone?.({ fullyReturned: !!res.fullyReturned, returnedTotal: String(res.returnedTotal ?? "0") });
+    },
+    onError: (e) => setError(e.message),
+  });
 
   const create = trpc.returns.create.useMutation({
     onSuccess: async (res) => {
@@ -202,18 +221,27 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
   const isLocked = inv?.status === "RETURNED" || inv?.status === "CANCELLED";
   const needsShift = rail === "CASH" && refundD.gt(0);
   const needsReference = rail === "CARD" && refundD.gt(0);
+  /**
+   * مرتجعٌ بلا ردّ نقديّ (بلاغ المالك ١٨/٨) — فاتورةٌ لم يُقبض عليها دينار (آجلة/COD/عربونٌ
+   * أقلّ) أو قيمةُ المرتجع تُغطّيها الذمّة: **لا مال يخرج**، فلا رافدَ ولا درجَ ولا مرجع.
+   * الخادم يقبل هذا أصلاً (returnService: كتلة الردّ تُتخطّى عند صفر)، لكن الشاشة كانت تُعطّل
+   * زرّ التأكيد كلّياً لأنّ كلا الرافدين «محجوب» حين يكون وعاء المقبوض صفراً — فيُقرأ ذلك
+   * «النظام يجبرني على اختيار درجٍ لردّ نقودٍ لم تُقبض».
+   */
+  const noRefundNeeded = refundD.lte(0);
 
   /** سببُ تعطيل الحفظ — نصٌّ واحدٌ يُعرَض دائماً بدل رفضٍ متأخّر من الخادم. */
   const blockReason = useMemo(() => {
     if (isLocked) return "هذه الفاتورة مرتجعة/ملغاة — لا يمكن تسجيل مرتجع جديد.";
     if (!selectedLines.length) return "حدّد كمية إرجاع واحدة على الأقل.";
-    if (activeOption?.blockedReason) return activeOption.blockedReason;
+    // حجبُ الرافد يسري على ردٍّ **موجب** فقط — لا معنى لسقفٍ حين لا يخرج مال.
+    if (!noRefundNeeded && activeOption?.blockedReason) return activeOption.blockedReason;
     if (overCap) return `المبلغ يتجاوز المسموح (${fmt(railCap.toFixed(2))} د.ع).`;
     if (needsShift && !shifts.length) return "لا توجد وردية مفتوحة في هذا الفرع — افتح وردية أو استردّ على البطاقة.";
     if (needsShift && shiftId == null) return "حدّد الدرج الذي سيخرج منه النقد فعلياً.";
     if (needsReference && !cardReference.trim()) return "أدخِل مرجع عملية الاسترداد من جهاز الدفع.";
     return null;
-  }, [isLocked, selectedLines.length, activeOption?.blockedReason, overCap, railCap, needsShift, shifts.length, shiftId, needsReference, cardReference]);
+  }, [isLocked, selectedLines.length, noRefundNeeded, activeOption?.blockedReason, overCap, railCap, needsShift, shifts.length, shiftId, needsReference, cardReference]);
 
   async function submit() {
     setError("");
@@ -244,6 +272,10 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
       }))
     ) return;
 
+    if (approvingRequestId) {
+      approve.mutate({ requestId: approvingRequestId, refund, restock, clientRequestId });
+      return;
+    }
     create.mutate({ invoiceId: inv.id, lines: selectedLines, refund, restock, clientRequestId });
   }
 
@@ -366,7 +398,26 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
         </CardContent>
       </Card>
 
-      {/* ④ كيف يستلم الزبون ماله — رافدان فقط، سقفُ كلٍّ من الخادم، والمحجوب معطَّلٌ بسببه ظاهراً. */}
+      {/* ④ كيف يستلم الزبون ماله — رافدان فقط، سقفُ كلٍّ من الخادم، والمحجوب معطَّلٌ بسببه ظاهراً.
+          بلا مالٍ يخرج (فاتورةٌ لم تُقبض، أو الذمّة تغطّي المرتجع) تُستبدل البطاقةُ كلّها
+          بإفصاحٍ صريح: لا رافد ولا درج ولا مرجع — والحفظ متاح (بلاغ المالك ١٨/٨). */}
+      {noRefundNeeded ? (
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-base">لا يُرَدّ نقد</CardTitle></CardHeader>
+        <CardContent>
+          <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-info)]/45 bg-[var(--sem-info-bg)] p-3 text-sm font-bold text-[var(--sem-info)]">
+            <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+            <div>
+              <div>لم يُقبض من هذه الفاتورة ما يُستردّ — قيمة المرتجع تُخصَم من المتبقّي عليها{inv?.customerId != null ? " ومن ذمّة العميل" : ""}.</div>
+              <div className="mt-1 text-[11px] font-normal">
+                المرتجع {fmt(returnValue.toFixed(2))} د.ع · المدفوع على الفاتورة {fmt(D(inv?.paidAmount ?? "0").toFixed(2))} د.ع
+                {customerStillOwes.gt(0) ? ` · يبقى على العميل ${fmt(customerStillOwes.toFixed(2))} د.ع` : ""}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      ) : (
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-base">كيف يستلم الزبون ماله؟</CardTitle></CardHeader>
         <CardContent className="space-y-3">
@@ -458,13 +509,14 @@ export function ReturnComposer({ invoiceId, onDone, footer }: ReturnComposerProp
           )}
         </CardContent>
       </Card>
+      )}
 
       {blockReason && !error && <p className="text-sm text-muted-foreground">{blockReason}</p>}
       {error && <p className="text-sm text-destructive">{error}</p>}
       {done && <p className="text-sm text-money-positive">{done}</p>}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={submit} disabled={!!blockReason || create.isPending}>
+        <Button onClick={submit} disabled={!!blockReason || create.isPending || approve.isPending}>
           {create.isPending ? "جارٍ التسجيل…" : "تأكيد المرتجع"}
         </Button>
         <Button variant="outline" onClick={() => { setQty({}); setManualAmount(null); setCardReference(""); setError(""); setDone(""); }}>

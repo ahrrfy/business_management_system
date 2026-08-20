@@ -1,3 +1,5 @@
+import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
+import { shiftTypeLabel, sourceTypeLabel } from "@/lib/labels";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -57,6 +59,7 @@ import {
   Paperclip,
   Pencil,
   Printer,
+  RotateCcw,
   Truck,
 } from "lucide-react";
 import { notify } from "@/lib/notify";
@@ -79,12 +82,6 @@ const STATUS_CLS: Record<string, string> = {
   RETURNED: "bg-rose-100 text-rose-700",
   CANCELLED: "bg-rose-100 text-rose-700",
   SUPERSEDED: "badge-status-cancelled",
-};
-const SOURCE: Record<string, string> = {
-  POS: "نقطة بيع",
-  ONLINE: "أونلاين",
-  ORDER: "طلب",
-  WORKORDER: "طلب خدمة",
 };
 // METHOD_LABEL / METHODS → مستوردة من lib/paymentMethod.ts (مصدر واحد مع POS + Invoices + حوار الوردية).
 const PAY_STATUS: Record<string, string> = {
@@ -247,6 +244,21 @@ export default function InvoiceDetail() {
   const [correctionReason, setCorrectionReason] = useState("");
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [cancelDeliveryOpen, setCancelDeliveryOpen] = useState(false);
+  // عكس فاتورة الخدمة الصفريّة (١٩/٨) — المقبوض يبقى أمانةً يردّها سند صرفٍ موثَّق.
+  const reverseService = trpc.workOrders.reverseServiceInvoice.useMutation({
+    onSuccess: (r) => {
+      const refundable = Number((r as { refundableAmount?: string }).refundableAmount ?? 0);
+      notify.ok(
+        "عُكس التسليم",
+        refundable > 0
+          ? `الفاتورة مرتجعة. المقبوض ${refundable.toLocaleString()} د.ع يبقى أمانةً — اصرفه للزبون بسند صرفٍ موثَّق.`
+          : "الفاتورة مرتجعة وأمر الشغل مُلغى.",
+      );
+      void utils.sales.get.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
   const correctInvoice = trpc.sales.correct.useMutation({
     onSuccess: async () => {
       setCorrectionOpen(false);
@@ -350,6 +362,35 @@ export default function InvoiceDetail() {
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
     data.sourceType !== "WORKORDER";
+  /**
+   * فاتورة أمر شغلٍ حيّة: مخرجها الوحيد هو المرتجع الموثَّق (الإلغاء والتصحيح يرفضهما الخادم
+   * لهذا المنشأ). البوّابة مرآةُ `returns.create` = مدير + `sales:FULL`. التوصيلُ النشط يُستثنى:
+   * الطرد بيد المندوب ⇒ المخرج هناك «استرجاع الإرسالية» لا مرتجعٌ من هنا.
+   */
+  /**
+   * ١٩/٨ — الفاتورة الصفريّة البنود (أمرُ تخصيصٍ خالصٍ بلا منتجٍ كتالوجيّ) لا يقبلها
+   * المرتجع (يشترط أسطراً) ⇒ مخرجها عكسٌ رأسيّ مخصّص. وذاتُ البنود مخرجها المرتجع المُختبَر.
+   */
+  const isZeroItemServiceInvoice = data.sourceType === "WORKORDER" && data.items.length === 0;
+  /** مُعرّف أمر الشغل مشتقٌّ من `sourceId` (`WO-{id}`) — الحقل الرابط الوحيد على الفاتورة. */
+  const linkedWorkOrderId = (() => {
+    const m = /^WO-(\d+)$/.exec(String(data.sourceId ?? ""));
+    return m ? Number(m[1]) : null;
+  })();
+  const canReverseWorkOrderInvoice =
+    data.sourceType === "WORKORDER" &&
+    data.status !== "CANCELLED" &&
+    data.status !== "RETURNED" &&
+    data.status !== "SUPERSEDED" &&
+    !data.consignmentNumber &&
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "sales",
+      "FULL",
+      ["manager"],
+    );
   const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
@@ -632,6 +673,39 @@ export default function InvoiceDetail() {
               إلغاء الفاتورة
             </Button>
           )}
+          {/* ١٨/٨ — مخرج فاتورة أمر الشغل (بلاغ المالك: «لا نستطيع إلغاءها أو التعديل عليها»).
+              كانت أزرارُ الإلغاء والتصحيح تُخفى لها **بلا أيّ بديلٍ معروض**: الخادم يرفض
+              `sales.cancel` لمنشأ WORKORDER ويحيل إلى إلغاء أمر الشغل، وذاك يرفض المُسلَّم ⇒
+              الفاتورة بلا مخرجٍ ظاهر البتّة. المسار المشروع الوحيد هو **المرتجع الموثَّق**
+              (returnService يعرف WORKORDER: لا يعيدها للمخزون — منتَجٌ مخصّص لا يُباع لغيره)،
+              فنعرضه صراحةً بدل تركِ الموظف أمام شاشةٍ بلا أفعال. */}
+          {canReverseWorkOrderInvoice && (isZeroItemServiceInvoice ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              title="فاتورة خدمةٍ بلا بنود — تُعكَس رأسياً (لا مخزون لها)"
+              disabled={reverseService.isPending || linkedWorkOrderId == null}
+              onClick={() => {
+                const reason = window.prompt("سبب عكس التسليم (يُوثَّق في الفاتورة وسجلّ التدقيق):")?.trim();
+                if (!reason || reason.length < 3) return;
+                reverseService.mutate({
+                  workOrderId: Number(linkedWorkOrderId),
+                  reason,
+                  clientRequestId: crypto.randomUUID(),
+                });
+              }}
+            >
+              <RotateCcw aria-hidden className="size-4" />
+              عكس التسليم (خدمة)
+            </Button>
+          ) : (
+            <Button variant="destructive" size="sm" asChild title="المسار الموثَّق لعكس تسليم أمر شغل">
+              <Link href={`/returns?invoiceId=${data.id}`}>
+                <RotateCcw aria-hidden className="size-4" />
+                إرجاع / عكس التسليم
+              </Link>
+            </Button>
+          ))}
           <Link
             href="/invoices"
             className="text-sm text-muted-foreground hover:text-foreground"
@@ -689,14 +763,17 @@ export default function InvoiceDetail() {
           <div className="grid gap-5 md:grid-cols-3">
             {/* البيانات الوصفية */}
             <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
-              <Field label="المصدر">
-                {SOURCE[data.sourceType] ?? data.sourceType}
+              <Field label="القناة">
+                <span className="inline-flex items-center gap-1.5">
+                  <InvoiceChannelBadge row={data} />
+                  <span className="text-xs text-muted-foreground">{sourceTypeLabel(data.sourceType)}</span>
+                </span>
               </Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
               <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
               <Field label="الوردية">
                 {data.shiftId
-                  ? `#${data.shiftId} — ${data.shiftType ?? "—"}`
+                  ? `#${data.shiftId} — ${shiftTypeLabel(data.shiftType)}`
                   : "—"}
               </Field>
               <Field label="محطة البيع">
@@ -1149,12 +1226,14 @@ export default function InvoiceDetail() {
                 </p>
               )}
             {(corrections.data ?? []).map((entry) => {
+              // ⛔ لا `paymentMethod`/`receipts` (تجريد ١٩/٨): كان `sales.correct` يكتبهما
+              // **متطابقَين** في طرفَي التدقيق ولا يمسّهما، وهذه الشاشة ترسم لهما سطر
+              // «طريقة الدفع: كذا ← كذا» لا يظهر أبداً ⤇ وعدٌ بقدرةٍ لا وجود لها. الصفوف
+              // التاريخية قد تحمل المفتاحَين وتُتجاهَلان بلا ضرر (متطابقان فيها أصلاً).
               const oldFields =
                 (entry.oldValue as {
                   notes?: string | null;
                   dueDate?: string | null;
-                  paymentMethod?: string | null;
-                  receipts?: { receiptId: number; method: string }[];
                 } | null) ?? {};
               const newValue =
                 (entry.newValue as {
@@ -1245,25 +1324,6 @@ export default function InvoiceDetail() {
                         </span>
                       </p>
                     )}
-                    {(newFields.receipts ?? []).map((receipt) => {
-                      const oldReceipt = oldFields.receipts?.find(
-                        (old) => old.receiptId === receipt.receiptId,
-                      );
-                      if (!oldReceipt || oldReceipt.method === receipt.method)
-                        return null;
-                      return (
-                        <p key={receipt.receiptId}>
-                          طريقة الدفع:{" "}
-                          <span className="line-through">
-                            {paymentMethodLabel(oldReceipt.method)}
-                          </span>{" "}
-                          ←{" "}
-                          <span className="text-foreground">
-                            {paymentMethodLabel(receipt.method)}
-                          </span>
-                        </p>
-                      );
-                    })}
                   </div>
                 </div>
               );
@@ -1275,10 +1335,12 @@ export default function InvoiceDetail() {
       <Dialog open={correctionOpen} onOpenChange={setCorrectionOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>تصحيح الفاتورة</DialogTitle>
+            <DialogTitle>تعديل بيانات الفاتورة</DialogTitle>
             <DialogDescription>
-              متاح للمدير والمالك فقط. يُسجَّل السبب والقيم قبل وبعد التعديل
-              باسمك.
+              الملاحظات وتاريخ الاستحقاق فقط — لا يمسّ البنود ولا المبالغ ولا
+              طريقة الدفع. لتغيير البنود أو الأسعار استعمل «تصحيح الفاتورة»
+              (عكسٌ وإعادةُ إصدار). متاح للمدير والمالك وحدهما، ويُسجّل السبب
+              والقيم قبل وبعد باسمك.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

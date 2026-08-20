@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq, sql } from "drizzle-orm";
 import {
+  accountingEntries,
   deliveryConsignments,
   deliveryParties,
   deliveryRemittanceLines,
@@ -11,6 +12,7 @@ import {
   receipts,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import {
   checkIdempotency,
@@ -54,6 +56,25 @@ export interface RemittanceInput {
   countedCash: string;
   shiftType?: "RECEPTION" | "RETAIL";
   clientRequestId?: string | null;
+  /**
+   * **كشف شركة التوصيل** (١٩/٨) — مستند الشركة الذي قاد هذه التسوية (إطار المالك نسخة ٢:
+   * «كشف الشركة هو الدليل الأساسيّ للشركات التي لا تملك بوابة»).
+   *
+   * وجودُه يغيّر ثلاثة أشياء ولا يغيّر المسار الماليّ:
+   *  ① أسطرُه تُثبِت التسليم أوّلاً حين لا يكون الطرد مختوماً `DELIVERED` (عبر
+   *    `confirmConsignmentDelivery` بشاهد الكشف) — فالتسليم والتحصيل والتوريد عمليةٌ واحدة.
+   *  ② رقمُه **فريدٌ لكل جهة** (قيدٌ في القاعدة) ⇒ إعادةُ إدخال الكشف نفسه ترتدّ بدل أن
+   *    تضاعف القيود — مفتاح عدم التكرار الأعماليّ فوق idempotency التقنيّ.
+   *  ③ استقطاعاتُه **مصروف شركةٍ مستقلّ** يُوثَّق على المستند، لا تخفيضُ ذمّة عميل.
+   */
+  companyStatement?: {
+    statementNumber: string;
+    statementDate?: string | null;
+    attachmentUrl?: string | null;
+    /** استقطاعات الشركة من الحصيلة (أجور توصيل حسمتها قبل التوريد) — إفصاحٌ على المستند. */
+    deductionsTotal?: string | null;
+    notes?: string | null;
+  } | null;
 }
 
 export async function recordDeliveryRemittance(
@@ -285,10 +306,28 @@ export async function recordDeliveryRemittance(
       // New deliveries settle customer AR at the physical-delivery event and
       // move the amount to courier custody.  Legacy rows can still have a live
       // invoice remainder, so only that part is credited during remittance.
-      const invoiceCredit = Decimal.min(
-        collected,
-        Decimal.max(invRemaining, 0),
-      );
+      //
+      // ⚠️ ١٩/٨ — الشرط الحاسم: **هل سُوّيت ذمّةُ العميل لحظة التسليم لهذه الإرسالية؟**
+      // كان الائتمان `min(المحصَّل, متبقّي الفاتورة)` وحدَه، وهو **صحيحٌ صدفةً** ما دام
+      // التسليم يقبض COD كاملاً (فيصير المتبقّي صفراً والائتمان صفراً). لكن كشف الشركة يُجيز
+      // تحصيلاً **جزئياً**: يُسدَّد ١٢٬٠٠٠ عند التسليم فيبقى ٨٬٠٠٠ حيّاً، فيأتي التوريد
+      // ويعتمدها ⇒ الفاتورة تُسدَّد ٢٠٬٠٠٠ ولم يُقبض إلّا ١٢٬٠٠٠، وذمّةٌ حيّةٌ تُمحى بلا مال.
+      //
+      // الدليل القاطع هو **قيد التسديد المكتوب لحظة التسليم نفسه** (`PAYMENT_IN:COURIER_
+      // DELIVERY:{cn}` في courier.ts) لا `custodyRecognizedAt`: الصفوف الموروثة قد تحمل
+      // اعترافاً بالعهدة **بلا تسوية فاتورة** (نموذج ما قبل المرحلة الثانية — يحرسه اختبار
+      // receptionReviewFixes/F2)، فالعلامة تكذب عليها بينما وجودُ القيد لا يكذب أبداً.
+      // ووجودُه يعني: التوريد **نقلُ عهدةٍ إلى نقدٍ لا تسويةُ عميلٍ ثانية** (نصّ التعليق أعلاه).
+      const settledAtDelivery = (
+        await tx
+          .select({ id: accountingEntries.id })
+          .from(accountingEntries)
+          .where(eq(accountingEntries.dedupeKey, `PAYMENT_IN:COURIER_DELIVERY:${Number(cn.id)}`))
+          .limit(1)
+      ).length > 0;
+      const invoiceCredit = settledAtDelivery
+        ? new Decimal(0)
+        : Decimal.min(collected, Decimal.max(invRemaining, 0));
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
       const delivered = newCollected.gte(money(cn.codAmount));
       // ٥/٨ — الأجرة تُخصَم من التوريد فقط إذا كانت **ما زالت مستحقّةً علينا** للمندوب:
@@ -339,7 +378,27 @@ export async function recordDeliveryRemittance(
         message: `مبلغ التوريد (${collectedTotal.toFixed(2)}) يتجاوز النقد المثبت بذمة الجهة (${custodyBalance.toFixed(2)}). شغّل المطابقة المالية قبل المتابعة.`,
       });
     }
-    const netRemitted = round2(collectedTotal.minus(feesTotal));
+    /**
+     * **استقطاعُ الشركة نقدٌ لم يدخل الدرج قطّ** (تصويب مراجعة Codex، ٢٠/٨).
+     *
+     * كان يُخزَّن **بياناً وصفياً فقط**: `netRemitted` والنقدُ المعدود يُحسبان على المُحصَّل
+     * كاملاً ⇒ إدخالُ النقد المستلَم فعلاً **يفشل في التحقّق**، وإدخالُ الإجماليّ ليمرّ
+     * **يسجّل نقداً لم يدخل** ويترك الاستقطاع المُفصَح عنه خارج الدفتر — خرقٌ مزدوج لـ§٥.
+     *
+     * الآن يُطرح من الصافي، ويخرج بإيصال OUT ومصروفٍ مصنَّف `DELIVERY_EXPENSE` — مطابقةً
+     * لقرار المالك في الشحن/الكمرك: مصروفُ شركةٍ يُعترف به لحظته ولا يمسّ ذمّة عميل.
+     */
+    const deductionsTotal = round2(money(input.companyStatement?.deductionsTotal ?? "0"));
+    if (deductionsTotal.lt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "استقطاع الكشف لا يصحّ أن يكون سالباً" });
+    }
+    if (deductionsTotal.gt(collectedTotal)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `استقطاع الكشف (${deductionsTotal.toFixed(2)}) يتجاوز المُحصَّل (${collectedTotal.toFixed(2)})`,
+      });
+    }
+    const netRemitted = round2(collectedTotal.minus(feesTotal).minus(deductionsTotal));
     const countedCash = round2(money(input.countedCash));
     if (countedCash.lt(0)) {
       throw new TRPCError({
@@ -374,6 +433,15 @@ export async function recordDeliveryRemittance(
       ),
       status,
       receivedBy: actor.userId,
+      // كشف شركة التوصيل (١٩/٨) — مستند الشركة الذي قاد التسوية. القيد الفريد
+      // (partyId, companyStatementNumber) يجعل إعادةَ إدخال الكشف ترتدّ بدل مضاعفة القيود.
+      companyStatementNumber: input.companyStatement?.statementNumber?.trim() || null,
+      statementDate: input.companyStatement?.statementDate
+        ? new Date(input.companyStatement.statementDate)
+        : null,
+      statementAttachmentUrl: input.companyStatement?.attachmentUrl?.trim() || null,
+      deductionsTotal: toDbMoney(deductionsTotal),
+      notes: input.companyStatement?.notes?.trim() || null,
     });
     const remittanceId = extractInsertId(rmRes);
 
@@ -413,6 +481,47 @@ export async function recordDeliveryRemittance(
         createdBy: actor.userId,
       });
       receiptOutId = extractInsertId(rOut);
+    }
+    // استقطاعُ الشركة: نقدٌ خرج بحكم أنّه لم يصل — إيصالُ OUT مستقلٌّ عن الأجور كي يبقى
+    // كلُّ مبلغٍ منسوباً إلى سببه في تسوية الدرج وZ-report، ومصروفٌ مصنَّف يظهر في تقريره.
+    if (deductionsTotal.gt(0)) {
+      if (cashBucket === "TREASURY") assertTreasuryOutException("DELIVERY_REMITTANCE_CLEARING");
+      const rDed = await tx.insert(receipts).values({
+        branchId: input.branchId,
+        shiftId,
+        direction: "OUT",
+        amount: toDbMoney(deductionsTotal),
+        paymentMethod: "CASH",
+        cashBucket,
+        status: "COMPLETED",
+        referenceNumber: remittanceNumber,
+        partyType: "OTHER",
+        description: `استقطاع شركة التوصيل — كشف ${input.companyStatement?.statementNumber?.trim() ?? remittanceNumber}`,
+        createdBy: actor.userId,
+      });
+      const deductionReceiptId = extractInsertId(rDed);
+      const assetRole = paymentAccountRole("CASH", cashBucket, "OUT");
+      const src = {
+        roleDebits: { DELIVERY_EXPENSE: deductionsTotal },
+        roleCredits: { [assetRole]: deductionsTotal },
+      };
+      await postEntry(tx, {
+        entryType: "PAYMENT_OUT",
+        dedupeKey: `DLV-STMT-DEDUCTION:${remittanceId}`,
+        branchId: input.branchId,
+        receiptId: deductionReceiptId,
+        deliveryPartyId: input.partyId,
+        amount: deductionsTotal,
+        cost: deductionsTotal,
+        notes: `استقطاع كشف شركة التوصيل ${remittanceNumber}`,
+        postingIntent: createPostingIntent(
+          "PAYMENT_OUT_EXPENSE",
+          "PAYMENT_OUT",
+          [debitLine("DELIVERY_EXPENSE", deductionsTotal), creditLine(assetRole, deductionsTotal)],
+          src,
+        ),
+        postingSourceComponents: src,
+      });
     }
     await tx
       .update(deliveryRemittances)

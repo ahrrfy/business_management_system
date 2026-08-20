@@ -20,7 +20,8 @@
   --shadow-lift: 0 12px 30px oklch(0.2 0.04 264 / 0.18), 0 4px 10px oklch(0.2 0.04 264 / 0.12);
   --shadow-pop: 0 10px 40px oklch(0.2 0.04 264 / 0.16);
   --wob-radius: 0.75rem;
-  --wob-col-w: 320px;
+  --wob-col-w: 320px;   /* عرض شبح السحب وحده (الأعمدة مرنة) */
+  --wob-col-min: 196px;
 
   display: flex;
   flex-direction: column;
@@ -84,10 +85,22 @@
 .wob-date { width: 148px; padding-inline: 10px; background-image: none; appearance: auto; }
 .wob-chip-clear { font-size: 12.5px; color: var(--primary); font-weight: 700; padding: 6px 8px; background: none; border: none; cursor: pointer; font-family: inherit; }
 
+/* رقاقة النطاق (١٩/٨): «كل طلبات الفرع» افتراضياً · «طلباتي» تضييق. مجموعةٌ واحدة بحدٍّ
+   واحد — لا زرّان منفصلان — كي يُقرأ الخياران على أنّهما وجهان لسؤالٍ واحد. */
+.wob-scope { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; background: var(--muted); }
+.wob-scope-btn { font-family: inherit; font-size: 12.5px; font-weight: 700; padding: 7px 12px; background: none; border: none; color: var(--muted-fg); cursor: pointer; white-space: nowrap; }
+.wob-scope-btn + .wob-scope-btn { border-inline-start: 1px solid var(--border); }
+.wob-scope-btn.is-on { background: var(--background); color: var(--foreground); }
+.wob-scope-btn:hover:not(.is-on) { color: var(--foreground); }
+
 /* ─── اللوحة ─── */
+/* ١٩/٨ (طلب المالك: «بلا تمرير جانبيّ») — كانت الأعمدة **ثابتةً** 320px×٥ + الفجوات =
+   ١٦٦٤px، أي أوسع من أيّ شاشةٍ عمليّة ⇒ شريطُ تمريرٍ أفقيّ **دائماً** وعمودٌ مخفيٌّ أبداً.
+   صارت تتقاسم العرض المتاح (`flex: 1 1 0`) بحدٍّ أدنى مقروء — فتظهر الخمسة معاً على أيّ
+   شاشةٍ من ١١٠٠px فصاعداً، ويبقى التمرير مخرجاً للشاشات الأضيق وحدها. */
 .wob-board-wrap { flex: 1; overflow-x: auto; overflow-y: hidden; min-height: 0; margin: 0 -4px; padding: 0 4px; }
-.wob-board { display: flex; gap: 16px; height: 100%; min-width: min-content; }
-.wob-col { width: var(--wob-col-w); flex: 0 0 var(--wob-col-w); display: flex; flex-direction: column; min-height: 0; background: var(--muted); border: 1px solid var(--border); border-radius: var(--wob-radius); padding: 6px; }
+.wob-board { display: flex; gap: 12px; height: 100%; min-width: 0; }
+.wob-col { flex: 1 1 0; min-width: var(--wob-col-min); display: flex; flex-direction: column; min-height: 0; background: var(--muted); border: 1px solid var(--border); border-radius: var(--wob-radius); padding: 6px; }
 .wob-col-head { display: flex; align-items: center; gap: 9px; padding: 4px 4px 10px; }
 .wob-col-pip { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 4px; background: var(--c-solid); box-shadow: 0 0 0 4px var(--c-soft); }
 .wob-col-head-txt { flex: 1; min-width: 0; }
@@ -215,9 +228,9 @@
 
 /* استجابة لوحة الكانبان — كانت ٥ أَعمدة ثابتة ١٦٠٠px تَكسر على الشاشات الصَغيرة. */
 @media (max-width: 1366px) {
-  .wob { --wob-col-w: 280px; }
+  .wob { --wob-col-w: 280px; --wob-col-min: 172px; }
 }
 @media (max-width: 768px) {
-  .wob { --wob-col-w: 88vw; }
+  .wob { --wob-col-w: 88vw; --wob-col-min: 84vw; }
   .wob-stats { grid-template-columns: 1fr 1fr; gap: 8px; }
 }

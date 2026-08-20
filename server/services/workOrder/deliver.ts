@@ -13,6 +13,7 @@ import { readOpeningWindowState } from "../openingModeService";
 import { appliedCollectionsForWorkOrder, linkSoleTargetCollectionsToInvoice } from "../reception/deposits";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
@@ -21,6 +22,8 @@ export interface DeliverWorkOrderInput {
   workOrderId: number;
   payment?: { amount: string; method: PaymentMethod; reference?: string | null } | null;
   clientRequestId?: string | null;
+  /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا — يفشل مغلقاً بدونه (ش٥). */
+  partialDispatchConfirmed?: boolean;
 }
 
 /** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
@@ -41,6 +44,14 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
+    // إخوةُ السلّة الواحدة: التسليمُ المباشر مخرجٌ ثالثٌ كان يفلت من حارس الإرسال الجزئيّ،
+    // ومسوّدةٌ كلُّها أوامرُ شغل لا تصل إليه أصلاً (لا فاتورة بضاعةٍ لها).
+    await assertSiblingsReady(tx, {
+      draftId: wo.draftId,
+      excludeWorkOrderId: input.workOrderId,
+      confirmed: input.partialDispatchConfirmed === true,
+      action: "deliver",
+    });
     // أمرٌ مخصّص للتوصيل لا يجوز إغلاقه من مسار الاستلام المباشر. هذا المسار لا ينشئ
     // deliveryConsignment؛ السماح به كان يحوّل الأمر إلى DELIVERED ثم يُسقطه من طابور
     // التوصيل بلا أي سجل يستطيع المندوب/الشركة رؤيته.
@@ -48,6 +59,16 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "هذا الطلب مخصّص للتوصيل — أسنده من «إدارة التوصيل» ولا تستخدم التسليم المباشر",
+      });
+    }
+    // ١٨/٨: للأمر فاتورةٌ سلفاً (أُرسل للتوصيل ثمّ أُلغي إسنادُه، فبقيت فاتورتُه وقيدُ بيعها
+    // حيَّين وتحوّل إلى استلامٍ مباشر). التسليم هنا كان سيُنشئ **فاتورةً وقيدَ بيعٍ ثانيَين**
+    // لبضاعةٍ واحدة ⇒ إيرادٌ وذمّةٌ مضاعفان. المخرج المشروع: تحصيلُ الفاتورة القائمة من طابور
+    // المحطة، أو استرجاعُ الإرسالية أوّلاً (عكسٌ كامل) ثمّ إعادة البيع.
+    if (wo.invoiceId != null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "لهذا الطلب فاتورةٌ صادرة سلفاً — حصّلها من طابور الفواتير، أو استرجع إرساليّته أوّلاً ثمّ أعد البيع",
       });
     }
 
@@ -135,7 +156,18 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
     const sourceId = `WO-${wo.id}`;
-    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
+    /**
+     * **نسبة البيع لمنشئ الطلب لا للمُسلِّم** (١٩/٨ — قاعدة #638: «العمولة تتبع البائع
+     * الأصليّ»). فاتورة أمر الشغل تُنشأ لحظة التسليم، وقد ينفّذه كاشيرٌ آخر عن الذي استقبل
+     * الطلب وباعه فعلاً — فكان `createdBy = actor` ينسب البيعَ والعمولةَ للمُسلِّم، وتقارير
+     * الموظفين تعرض اسمه، بينما البائع الحقيقيّ لا أثر له.
+     *
+     * وأثرُ المُسلِّم **يبقى كاملاً بلا عمودٍ جديد**: إيصال القبض بـ`createdBy = actor`،
+     * والفاتورة تُختم بوردية المُسلِّم (`deliveryShiftId` أدناه) ⇒ النقد والدرج وZ كلّها
+     * عليه — وهو الصحيح مالياً: النقد في درجه هو.
+     */
+    const sellerUserId = wo.createdBy != null ? Number(wo.createdBy) : actor.userId;
+    const salespersonNameSnapshot = await userNameSnapshot(tx, sellerUserId);
     // ش١ (٥/٨): فاتورة التسليم تنتمي لوردية مُسلِّمها — كانت تُنشأ بلا shiftId فتسقط خارج
     // طابور فواتير المحطة (innerJoin shifts) وخارج نطاق reception.collectOnInvoice، بينما هي
     // **الحالة الأولى** لتسديد المتبقّي (عربونٌ مقبوض والباقي عند الاستلام). تُحلّ مبكراً وتُعاد
@@ -182,7 +214,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       paymentDate: totalPaid.gt(0) ? new Date() : null,
       notes: `طلب خدمة ${wo.orderNumber}: ${wo.title}`,
       salespersonNameSnapshot,
-      createdBy: actor.userId,
+      createdBy: sellerUserId,
     });
     const invoiceId = extractInsertId(invRes);
 

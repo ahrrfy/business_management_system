@@ -1,6 +1,7 @@
 // الراسم الحراري لطلب الخدمة — يرسم تذكرة 80مم على Canvas ثم يحوّلها نقطية ESC/POS.
 // البنية مماثلة لـreceiptRaster.ts (نفس W=576، نفس الخطوط، نفس أسلوب الرسم).
 // التصميم: رأس شركة → باركود رقم الأمر → معلومات العمل → الإجمالي → ملاحظة → تذييل.
+import { workOrderStatusLabel } from "@shared/workOrderStatus";
 import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
@@ -31,13 +32,6 @@ export interface WorkOrderReceiptData {
   notes?: string | null;
 }
 
-const STATUS_AR: Record<string, string> = {
-  RECEIVED: "مُستلَم",
-  IN_PROGRESS: "قيد التنفيذ",
-  READY: "جاهز للتسليم",
-  DELIVERED: "مُسلَّم",
-  CANCELLED: "ملغى",
-};
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
@@ -169,7 +163,7 @@ export async function workOrderToCanvas(
   if (d.customerName) infoRow("العميل:", d.customerName);
   if (d.customerPhone) infoRow("الهاتف:", d.customerPhone);
   if (d.employeeName) infoRow("الموظف:", d.employeeName);
-  if (d.status) infoRow("الحالة:", STATUS_AR[d.status] ?? d.status);
+  if (d.status) infoRow("الحالة:", workOrderStatusLabel(d.status));
 
   y += 4; dashedLine(ctx, y); y += 28;
 

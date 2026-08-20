@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, Check, Printer, RotateCcw, Truck } from "lucide-react";
+import { AlertTriangle, Check, FileText, MessageCircle, Phone, Printer, RotateCcw, Truck } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
@@ -20,8 +20,11 @@ import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { printDeliverySlip, printReadyOrderLabel } from "@/lib/printing/deliveryDocs";
 import { RowActions } from "@/components/list";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
+import { Label } from "@/components/ui/label";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { DispatchDialog } from "@/components/delivery/DispatchDialog";
 import { buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
 
 /**
  * إدارة التوصيل (COD) — شاشة مكرّسة (D5):
@@ -57,7 +60,13 @@ const tabBtn = (active: boolean) =>
   );
 
 export default function DeliveryHub() {
-  const [tab, setTab] = useState<"dispatch" | "settle">("dispatch");
+  // ١٨/٨: تبويبٌ ثالث «قيد التوصيل» — الشاشة المفقودة بين الإسناد والتسوية (بلاغ المالك).
+  // يُفتَح بـ`?tab=transit` كي يقود إليه تحذيرُ سحب البطاقة في الكانبان مباشرةً.
+  const initialTab = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "transit"
+    ? "transit" as const
+    : "dispatch" as const;
+  const [tab, setTab] = useState<"dispatch" | "transit" | "settle">(initialTab);
+  const transitCount = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 30_000 }).data?.length ?? 0;
   return (
     <div className="space-y-5 p-4 md:p-6" dir="rtl">
       <PageHeader
@@ -75,9 +84,17 @@ export default function DeliveryHub() {
       />
       <div className="flex gap-2">
         <button className={tabBtn(tab === "dispatch")} onClick={() => setTab("dispatch")}>جاهز للإرسال</button>
+        <button className={tabBtn(tab === "transit")} onClick={() => setTab("transit")}>
+          قيد التوصيل
+          {transitCount > 0 && (
+            <span className="ms-1.5 rounded-full bg-[var(--sem-warn)] px-1.5 text-[10px] font-black text-white tabular-nums">
+              {transitCount}
+            </span>
+          )}
+        </button>
         <button className={tabBtn(tab === "settle")} onClick={() => setTab("settle")}>تسوية المناديب</button>
       </div>
-      {tab === "dispatch" ? <DispatchTab /> : <SettleTab />}
+      {tab === "dispatch" ? <DispatchTab /> : tab === "transit" ? <InTransitTab /> : <SettleTab />}
     </div>
   );
 }
@@ -248,6 +265,231 @@ function DispatchTab() {
   );
 }
 
+// ───────────────────────── تبويب: قيد التوصيل ─────────────────────────
+/**
+ * «أين طردي؟» — الشاشة التي كانت مفقودة (بلاغ المالك ١٨/٨). تعرض كل طردٍ خرج ولم يُغلق،
+ * أياً كانت حالته، بتعرّضه الماليّ وعمره وجهته وسائقه — فلا يختفي طلبٌ بين الإسناد والتسليم.
+ * كثافةٌ عالية بلا ازدحام: صفٌّ واحد يحمل كلّ ما يلزم القرار، وأزرارُ التواصل في مكانها.
+ */
+function InTransitTab() {
+  const utils = trpc.useUtils();
+  const rows = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
+  const [query, setQuery] = useState("");
+
+  // المخرج اليوميّ للطرد الذي أعاده المندوب (بلاغ المالك): استرجاعٌ بسببٍ موثَّق ⇒ عكسٌ كامل
+  // (مخزون + فاتورة + ذمّة + عربون + تحرير عهدة COD) في معاملةٍ واحدة.
+  const returnCn = trpc.delivery.returnConsignment.useMutation({
+    onSuccess: () => {
+      notify.ok("رجع الطرد للمكتبة", "عُكس البيع كاملاً: المخزون والفاتورة وذمّة العميل وعهدة المندوب.");
+      utils.delivery.inTransit.invalidate();
+      utils.delivery.readyForDispatch.invalidate();
+      utils.delivery.openConsignments.invalidate();
+      utils.delivery.listParties.invalidate();
+      utils.workOrders.list.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  async function askReturn(r: { id: number; consignmentNumber: string | null; parcelStatus: string | null }) {
+    const needsReason = r.parcelStatus === "ACCEPTED" || r.parcelStatus === "PICKED_UP" || r.parcelStatus === "OUT_FOR_DELIVERY";
+    const reason = needsReason
+      ? window.prompt("سبب رجوع الطرد (رفض العميل / عنوان خاطئ / تعذّر الوصول…):")?.trim()
+      : "";
+    if (needsReason && (!reason || reason.length < 2)) return;
+    const ok = await confirm({
+      title: `استرجاع الإرسالية ${r.consignmentNumber ?? r.id}`,
+      description: "يُعكَس البيع كاملاً: تعود البضاعة للمخزون، وتصير الفاتورة مرتجعة، وتسقط ذمّة العميل، ويُبرَّأ المندوب من تحصيلها. لا يُنفَّذ إلّا بعد استلام الطرد فعلياً في الفرع.",
+      confirmText: "نعم، استلمتُ الطرد",
+    });
+    if (!ok) return;
+    returnCn.mutate({
+      consignmentId: r.id,
+      clientRequestId: crypto.randomUUID(),
+      ...(needsReason && reason ? { returnReason: reason } : {}),
+    });
+  }
+
+  /**
+   * فصلُ «المرتجع المُعلَن» عن «المُستلَم» (إطار المالك، نسخة ٢): الطرد المتعثّر أعلنته الجهة
+   * ولم يصل الفرع بعد — **لا حركة مخزون ولا عكس فاتورة حتى يُستلَم ويُفحَص فعلاً**. هذا الفلتر
+   * يجعل تلك القائمة قابلةً للعثور بدل أن تضيع بين الطرود السائرة.
+   */
+  const [stateFilter, setStateFilter] = useState<"ALL" | "ASSIGNED" | "IN_TRANSIT" | "FAILED">("ALL");
+  const filtered = useMemo(() => {
+    const all = rows.data ?? [];
+    if (stateFilter === "ALL") return all;
+    return all.filter((r) => deriveWoDeliveryState("DISPATCHED", r.parcelStatus) === stateFilter);
+  }, [rows.data, stateFilter]);
+
+  const list = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return filtered;
+    return filtered.filter((r) =>
+      [r.consignmentNumber, r.invoiceNumber, r.orderNumber, r.partyName, r.driverName, r.recipientName, r.customerName, r.recipientPhone]
+        .some((v) => (v ?? "").toLowerCase().includes(q)));
+  }, [filtered, query]);
+
+  const countOf = (s: "ASSIGNED" | "IN_TRANSIT" | "FAILED") =>
+    (rows.data ?? []).filter((r) => deriveWoDeliveryState("DISPATCHED", r.parcelStatus) === s).length;
+
+  const totalDue = useMemo(
+    () => (rows.data ?? []).reduce((sum, r) => sum + Number(r.codDue || 0), 0),
+    [rows.data],
+  );
+
+  if (rows.isError) return <ErrorState onRetry={() => void rows.refetch()} />;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex h-10 items-center gap-1 rounded-lg border bg-muted/40 p-1" role="tablist" aria-label="حالة الطرد">
+          {([
+            { v: "ALL", label: "الكل", n: (rows.data ?? []).length },
+            { v: "ASSIGNED", label: "مُسنَد — لم يخرج", n: countOf("ASSIGNED") },
+            { v: "IN_TRANSIT", label: "بالطريق", n: countOf("IN_TRANSIT") },
+            { v: "FAILED", label: "بانتظار المرتجع", n: countOf("FAILED") },
+          ] as const).map((c) => (
+            <button
+              key={c.v}
+              type="button"
+              role="tab"
+              aria-selected={stateFilter === c.v}
+              onClick={() => setStateFilter(c.v)}
+              className={cn(
+                "h-8 rounded-md px-2.5 text-xs font-black transition-colors",
+                stateFilter === c.v ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {c.label}
+              <span className="ms-1 tabular-nums opacity-70">{c.n}</span>
+            </button>
+          ))}
+        </div>
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="بحث برقم الإرسالية/الفاتورة/الطلب، أو الجهة أو المستلم…"
+          className="h-10 max-w-md"
+        />
+        <div className="ms-auto flex flex-wrap items-center gap-2 text-xs">
+          <span className="rounded-md border bg-muted/40 px-2 py-1 font-bold">
+            طرود بالطريق: <span className="tabular-nums">{list.length}</span>
+          </span>
+          <span className="rounded-md border border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-2 py-1 font-bold text-[var(--sem-warn)]">
+            تعرّض التحصيل: <span className="tabular-nums" dir="ltr">{fmt(totalDue)}</span> د.ع
+          </span>
+        </div>
+      </div>
+
+      {list.length === 0 ? (
+        <EmptyState
+          icon={Truck}
+          title={stateFilter === "FAILED" ? "لا طرود بانتظار المرتجع" : "لا طرود بالطريق"}
+          description={
+            stateFilter === "FAILED"
+              ? "لا طرد أعلنت الجهة تعذّر تسليمه وينتظر رجوعه للفرع."
+              : "كل ما أُسنِد للمناديب إمّا سُلّم وسُوّي أو أُرجع."
+          }
+        />
+      ) : (
+        <ScrollTableShell>
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-card">
+              <tr className="border-b text-xs text-muted-foreground">
+                <th className="p-2 text-start">الإرسالية / الطلب</th>
+                <th className="p-2 text-start">الجهة والسائق</th>
+                <th className="p-2 text-start">المستلم</th>
+                <th className="p-2 text-start">الحالة</th>
+                <th className="p-2 text-end">المطلوب تحصيله</th>
+                <th className="p-2 text-end">العمر</th>
+                <th className="p-2 text-start">تواصل</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((r) => {
+                // كل صفٍّ هنا `DISPATCHED` بحكم الاستعلام؛ التمييز من حالة الطرد وحدها.
+                const state = deriveWoDeliveryState("DISPATCHED", r.parcelStatus);
+                const label = state === "NONE" ? "بالطريق" : woDeliveryStateLabel(state)!;
+                const cls = state === "NONE" ? WO_DELIVERY_STATE_CLS.IN_TRANSIT : WO_DELIVERY_STATE_CLS[state];
+                const stale = Number(r.ageHours ?? 0) >= 48;
+                const phone = (r.recipientPhone ?? "").trim();
+                return (
+                  <tr key={r.id} className="border-b last:border-0 hover:bg-muted/40">
+                    <td className="p-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold tabular-nums" dir="ltr">{r.consignmentNumber}</span>
+                        {/* ١٩/٨ (طلب المالك): مصدرُ الطرد. الطابور محايدُ المصدر أصلاً — طلبُ
+                            المتجر المُسنَد لشركةٍ يظهر كما يظهر أمرُ الشغل — لكنّ الصفّ كان لا
+                            يقول أيَّهما، و`orderNumber` يبقى NULL لطلب المتجر فيبدو بلا هويّة. */}
+                        <span className="rounded bg-muted px-1.5 py-px text-[10px] font-bold text-muted-foreground">
+                          {r.sourceType === "WORK_ORDER"
+                            ? "أمر شغل"
+                            : r.sourceType === "ONLINE_ORDER"
+                              ? "طلب متجر"
+                              : "فاتورة"}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground" dir="ltr">
+                        {r.orderNumber ?? r.invoiceNumber ?? `#${r.sourceId}`}
+                      </div>
+                    </td>
+                    <td className="p-2">
+                      <div className="font-bold">{r.partyName ?? "—"}</div>
+                      <div className="text-[11px] text-muted-foreground">{r.driverName ?? "بلا سائق مُسنَد"}</div>
+                    </td>
+                    <td className="p-2">
+                      <div>{r.recipientName ?? r.customerName ?? "—"}</div>
+                      <div className="text-[11px] text-muted-foreground" dir="ltr">{phone || "—"}</div>
+                    </td>
+                    <td className="p-2">
+                      <span className={cn("rounded-md border px-1.5 py-0.5 text-[11px] font-extrabold", cls)}>{label}</span>
+                      {r.failureReason && (
+                        <div className="mt-0.5 max-w-40 text-[11px] text-[var(--sem-danger)]">{r.failureReason}</div>
+                      )}
+                    </td>
+                    <td className="p-2 text-end font-black tabular-nums" dir="ltr">{fmt(r.codDue)}</td>
+                    <td className={cn("p-2 text-end tabular-nums", stale && "font-black text-[var(--sem-danger)]")} dir="ltr">
+                      {Number(r.ageHours ?? 0)} س
+                    </td>
+                    <td className="p-2">
+                      <div className="flex items-center gap-1">
+                        {phone && (
+                          <>
+                            <Button size="sm" variant="outline" asChild title="اتصال بالمستلم">
+                              <a href={`tel:${phone}`}><Phone aria-hidden className="size-3.5" /></a>
+                            </Button>
+                            <Button size="sm" variant="outline" asChild title="واتساب المستلم">
+                              <a href={`https://wa.me/${phone.replace(/[^\d]/g, "")}`} target="_blank" rel="noreferrer">
+                                <MessageCircle aria-hidden className="size-3.5" />
+                              </a>
+                            </Button>
+                          </>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          title="رجع الطرد للمكتبة — عكسٌ كامل للبيع"
+                          disabled={returnCn.isPending}
+                          onClick={() => void askReturn(r)}
+                        >
+                          <RotateCcw aria-hidden className="size-3.5" /> استرجاع
+                        </Button>
+                        <Button size="sm" variant="outline" asChild title="فتح جهة التوصيل وتسويتها">
+                          <a href={`/delivery/parties/${r.partyId}`}>الجهة</a>
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </ScrollTableShell>
+      )}
+    </div>
+  );
+}
+
 // ───────────────────────── تبويب: تسوية المناديب ─────────────────────────
 function SettleTab() {
   const utils = trpc.useUtils();
@@ -284,6 +526,37 @@ function SettleTab() {
   // PARTIAL بمتبقٍّ يقبل نفس المبلغ ثانيةً ⇒ إيصالا IN لنقدٍ واحد، فاتورة تُدفع زوراً، ذمّة
   // عميل تُخصَم مرّتين). يتجدّد عند تغيير الجهة وبعد كل نجاح. (نمط SettleDialog/recoverWriteOff.)
   const [remitReqId, setRemitReqId] = useState(() => crypto.randomUUID());
+
+  // ١٩/٨ — حقول كشف شركة التوصيل: مستند الشركة الذي قادت أسطرُه هذه التسوية.
+  const [statementNumber, setStatementNumber] = useState("");
+  const [statementDate, setStatementDate] = useState("");
+  const [statementDeductions, setStatementDeductions] = useState(0);
+  const [statementNotes, setStatementNotes] = useState("");
+
+  const resetAfterSettle = () => {
+    setRows({});
+    setCountedBreakdown({});
+    setCountedCash(0);
+    setStatementNumber("");
+    setStatementDate("");
+    setStatementDeductions(0);
+    setStatementNotes("");
+    setRemitReqId(crypto.randomUUID());
+    utils.delivery.openConsignments.invalidate();
+    utils.delivery.inTransit.invalidate();
+    utils.delivery.listParties.invalidate();
+  };
+
+  const companyStatement = trpc.delivery.recordCompanyStatement.useMutation({
+    onSuccess: (r) => {
+      notify.ok(
+        `سُجِّل كشف الشركة ${r.statementNumber}`,
+        `سند التوريد ${r.remittanceNumber} — صافٍ ${fmt(r.netRemitted)} د.ع${r.deliveriesConfirmed > 0 ? ` · أثبت تسليم ${r.deliveriesConfirmed} طرداً` : ""}`,
+      );
+      resetAfterSettle();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const remit = trpc.delivery.recordRemittance.useMutation({
     onSuccess: (r) => {
@@ -331,11 +604,29 @@ function SettleTab() {
   const isRemittable = (c: OpenConsignment) => c.parcelStatus === "DELIVERED"
     && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL")
     && remainingOf(c) > 0;
+  /**
+   * **كشفُ الشركة يُثبت التسليم بنفسه** (تصويب مراجعة Codex، ٢٠/٨).
+   *
+   * `isRemittable` تشترط `parcelStatus = DELIVERED` — وهو ختمٌ **حصريٌّ ببوّابة المندوب**.
+   * وجهاتُ التوصيل بلا حسابِ بوّابة هي بالضبط **الحالةُ التي بُني الكشفُ من أجلها**، فكان
+   * سطرُها لا يظهر ولا يُختار ⇒ `deliveriesConfirmed` لا يتجاوز الصفر أبداً من الشاشة
+   * والميزةُ غيرُ قابلةٍ للاستعمال. والخادمُ يقبلها فعلاً (`needConfirm` يختم التسليم).
+   *
+   * فحين يُدخَل رقمُ الكشف تتّسع الأهليّةُ لكلّ طردٍ **حيّ** له متبقٍّ — والطردُ الملغى أو
+   * المُرجَع يبقى خارجها (لا تُثبَّت عليه تسوية). وبلا رقمِ كشفٍ لا يتغيّر شيء.
+   */
+  const statementMode = statementNumber.trim().length > 0;
+  const isStatementConfirmable = (c: OpenConsignment) => c.status === "DISPATCHED"
+    && c.parcelStatus !== "CANCELLED" && c.parcelStatus !== "RETURNED"
+    && (c.moneyStatus === "UNSETTLED" || c.moneyStatus === "PARTIAL" || c.moneyStatus === "NOT_APPLICABLE")
+    && remainingOf(c) > 0;
+  /** الأهليّةُ الفعليّة للتسوية — تتّسع بالكشف وحده. */
+  const isSettleable = (c: OpenConsignment) => isRemittable(c) || (statementMode && isStatementConfirmable(c));
   const isReturnable = (c: OpenConsignment) => c.status === "DISPATCHED"
     && (c.parcelStatus === "ASSIGNED" || c.parcelStatus === "FAILED")
     && (c.moneyStatus === "NOT_APPLICABLE" || c.moneyStatus === "UNSETTLED")
     && Number(c.collectedAmount) === 0;
-  const get = (c: OpenConsignment) => rows[c.id] ?? (isRemittable(c)
+  const get = (c: OpenConsignment) => rows[c.id] ?? (isSettleable(c)
     ? { outcome: "COLLECTED" as const, collected: String(remainingOf(c)) }
     : { outcome: "NONE" as const, collected: "0" });
 
@@ -345,7 +636,7 @@ function SettleTab() {
     // تدخل عجز هذا المستند، وإلا ناقض حوارُ التأكيد الإيصالَ المطبوع وسجلَّ التوريدات.
     let collected = 0, expected = 0, leftInTransit = 0;
     for (const c of list) {
-      if (!isRemittable(c)) continue;
+      if (!isSettleable(c)) continue;
       const remaining = remainingOf(c);
       const st = get(c);
       const col = st.outcome === "COLLECTED" ? Math.min(remaining, Math.max(0, Number(st.collected) || 0)) : 0;
@@ -360,13 +651,13 @@ function SettleTab() {
       }
     }
     return { collected, fees: 0, net: collected, shortfall: expected - collected, expected, leftInTransit };
-  }, [list, rows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [list, rows, statementMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
     // الأسطر الصفرية تُستثنى (٩/٨): غير المحصَّل ليس توريداً — يبقى بالطريق (كان الصفر يقلب
     // الإرسالية PARTIAL كاذبةً ويقفل باب إرجاعها). الخادم يرفضها أيضاً — الاستثناء هنا أوضح.
     const lines = list
-      .filter((c) => isRemittable(c) && get(c).outcome === "COLLECTED")
+      .filter((c) => isSettleable(c) && get(c).outcome === "COLLECTED")
       .map((c) => ({ consignmentId: c.id, collectedAmount: String(Math.max(0, Number(get(c).collected) || 0)) }))
       .filter((l) => Number(l.collectedAmount) > 0);
     if (lines.length === 0) { notify.err("لا مبالغ للتوريد — أدخل المُحصَّل فعلاً؛ غير المحصَّل يبقى بالطريق"); return; }
@@ -381,6 +672,21 @@ function SettleTab() {
       confirmText: "تأكيد التسوية",
     });
     if (!ok) return;
+    // ١٩/٨ — كشف الشركة: إن أُدخل رقمُه فالتسوية تمرّ بمسار الكشف (يُثبت التسليم لما لم
+    // يُختَم بعد، ورقمُه الفريد يمنع إدخاله مرّتين). بلا رقمٍ يبقى التوريد اليدويّ كما كان.
+    if (statementNumber.trim()) {
+      companyStatement.mutate({
+        partyId: Number(partyId),
+        statementNumber: statementNumber.trim(),
+        statementDate: statementDate || null,
+        deductionsTotal: statementDeductions ? String(statementDeductions) : null,
+        notes: statementNotes.trim() || null,
+        lines,
+        countedCash: countedCash.toFixed(2),
+        clientRequestId: remitReqId,
+      });
+      return;
+    }
     remit.mutate({ partyId: Number(partyId), lines, countedCash: countedCash.toFixed(2), clientRequestId: remitReqId });
   };
 
@@ -419,7 +725,7 @@ function SettleTab() {
                 {list.map((c) => {
                   const st = get(c);
                   const remaining = remainingOf(c);
-                  const remittable = isRemittable(c);
+                  const remittable = isSettleable(c);
                   const returnable = isReturnable(c);
                   const feeDue = Math.max(0, Number(c.feeDue ?? 0));
                   return (
@@ -511,6 +817,44 @@ function SettleTab() {
             </table>
           </ScrollTableShell>
 
+          {/* ١٩/٨ — كشف شركة التوصيل: مستند الشركة الذي قادت أسطرُه هذه التسوية. بإدخال رقمه
+              تصير التسوية «كشفاً»: يُثبِت التسليم لما لم يُختَم بعد (فالشركات بلا بوّابة لم
+              يكن لطرودها مخرجٌ أصلاً)، ورقمُه الفريد لكل جهة يمنع إدخاله مرّتين. */}
+          <div className="rounded-xl border border-[var(--sem-info)]/40 bg-[var(--sem-info-bg)]/40 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-black text-[var(--sem-info)]">
+              <FileText aria-hidden className="size-4" />
+              كشف شركة التوصيل (اختياريّ — يملؤه من يسوّي بكشفٍ ورقيّ من الشركة)
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="space-y-1">
+                <Label htmlFor="stmt-no" className="text-xs">رقم الكشف</Label>
+                <Input id="stmt-no" value={statementNumber} maxLength={64} dir="ltr"
+                  onChange={(e) => setStatementNumber(e.target.value)} placeholder="STMT-…" className="h-9" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="stmt-date" className="text-xs">تاريخ الكشف</Label>
+                <Input id="stmt-date" type="date" value={statementDate}
+                  onChange={(e) => setStatementDate(e.target.value)} className="h-9" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="stmt-deduct" className="text-xs">استقطاعات الشركة (إفصاح)</Label>
+                <MoneyInput id="stmt-deduct" value={String(statementDeductions || "")}
+                  onChange={(v) => setStatementDeductions(Number(v) || 0)} ariaLabel="استقطاعات الشركة" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="stmt-notes" className="text-xs">ملاحظة</Label>
+                <Input id="stmt-notes" value={statementNotes} maxLength={500}
+                  onChange={(e) => setStatementNotes(e.target.value)} placeholder="سبب الفرق مثلاً…" className="h-9" />
+              </div>
+            </div>
+            {statementNumber.trim() && (
+              <p className="mt-2 text-[11px] font-bold text-[var(--sem-info)]">
+                ستُسجَّل التسوية ككشفٍ: الطرود غير المختومة يُثبِت الكشفُ تسليمها، والاستقطاع
+                إفصاحٌ على المستند لا يُخصَم من ذمّة أيّ عميل.
+              </p>
+            )}
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl border bg-card p-4 text-sm">
               <div className="flex justify-between border-b py-1.5"><span className="text-muted-foreground">إجمالي التحصيل (COD)</span><span dir="ltr" className="font-bold tabular-nums">{fmt(String(totals.collected))} د.ع</span></div>
@@ -525,7 +869,17 @@ function SettleTab() {
                 <span dir="ltr" className="tabular-nums">{fmt(String(countedCash - totals.net))} د.ع</span>
               </div>
               {canRemit && (
-                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending || Math.abs(countedCash - totals.net) > 0.01}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
+                <Button
+                  className="mt-3 w-full"
+                  onClick={submit}
+                  disabled={remit.isPending || companyStatement.isPending || Math.abs(countedCash - totals.net) > 0.01}
+                >
+                  {remit.isPending || companyStatement.isPending
+                    ? "جارٍ…"
+                    : statementNumber.trim()
+                      ? `تسجيل كشف الشركة ${statementNumber.trim()} وتوريد الصافي`
+                      : "تأكيد التسوية وتوريد الصافي"}
+                </Button>
               )}
             </div>
             <CashCounter value={countedBreakdown} onChange={(c, total) => { setCountedBreakdown(c); setCountedCash(Number(total)); }} />

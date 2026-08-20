@@ -11,7 +11,7 @@ import { money, round2, toDbMoney } from "../money";
 import { appliedCollectionsForWorkOrder } from "../reception/deposits";
 import { assertCashOutAvailable, assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { type Actor, withTx } from "../tx";
-import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
+import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import { paymentAssetRole } from "../sale/paymentPosting";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { logAuditTx } from "../auditService";
@@ -55,15 +55,47 @@ async function resolveLockedReceptionCashShift(
 }
 
 /** Cancel: restocks consumed materials if status was IN_PROGRESS/READY. */
+/**
+ * **قرارُ مصير الخامة عند الإلغاء** (ش٤، ١٩/٨) — سطرٌ لكلّ مادّة، تصريحيّاً.
+ *
+ * `returnBase + wasteBase` **يجب** أن يساوي `baseQuantity` بالضبط: لا كمّيةَ تتبخّر بين
+ * الرقمين، ولا فرقَ يُمتصّ صامتاً (§٥). وحذفُ الحقل كلّياً = **رجوعٌ كامل** — أي السلوك
+ * القائم حرفياً، فلا تتغيّر نتيجةُ أيّ مستدعٍ لم يُعدَّل.
+ */
+export interface WorkOrderCancelMaterialDecision {
+  workOrderMaterialId: number;
+  /** ما يعود للمخزون صالحاً (حركة IN). */
+  returnBase: number;
+  /** ما تلف فعلاً — يخرج من WIP إلى **خسارة** بلا أيّ حركة مخزون. */
+  wasteBase: number;
+}
+
 export async function cancelWorkOrder(
   workOrderId: number,
   actor: Actor & { role?: string },
-  opts: { refundShiftId?: number | null; clientRequestId?: string | null } = {},
+  opts: {
+    refundShiftId?: number | null;
+    clientRequestId?: string | null;
+    /** سببُ الإلغاء — يُكتب على الأمر نفسه لا في سجلّ التدقيق وحده (0237). */
+    reason?: string | null;
+    /**
+     * مصيرُ كلّ مادّة. **غيابُه = رجوعٌ كامل** (السلوك القائم). ووجودُه يلزمه أن يغطّي
+     * **كلّ** أسطر المواد بالضبط — لا سطرَ ضمنيّ ولا مكرَّر.
+     */
+    materials?: readonly WorkOrderCancelMaterialDecision[] | null;
+  } = {},
 ) {
   return withTx(async (tx) => {
     const clientRequestId = opts.clientRequestId?.trim() || null;
     const requestFingerprint = clientRequestId
-      ? idempotencyHash({ workOrderId, refundShiftId: opts.refundShiftId ?? null })
+      // القرارُ جزءٌ من البصمة: إعادةُ محاولةٍ بقرارِ هدرٍ مختلف **ليست** نفس الطلب.
+      ? idempotencyHash({
+          workOrderId,
+          refundShiftId: opts.refundShiftId ?? null,
+          materials: (opts.materials ?? [])
+            .map((m) => [Number(m.workOrderMaterialId), Number(m.returnBase), Number(m.wasteBase)])
+            .sort((a, b) => a[0] - b[0]),
+        })
       : null;
     if (clientRequestId) {
       const existingId = await checkIdempotency(
@@ -99,33 +131,118 @@ export async function cancelWorkOrder(
     assertWorkOrderBranch(wo, actor);
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED")
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء أمر مُسلَّم أو مُلغى" });
+    // ١٨/٨: الحالة وحدها لا تكفي — الأمر يبقى READY والطرد بيد المندوب. بلا هذا الحارس كان
+    // الإلغاء يعيد المواد للمخزون ويردّ العربون بينما الفاتورة وقيد البيع وعهدة COD حيّة.
+    await assertNoLiveConsignment(tx, workOrderId, "cancel");
+    // ش٤ (١٩/٨): `workOrders.invoiceId` **يُكتَب** عند الإرسال (`delivery/dispatch.ts`) ولا
+    // **يُقرأ** في أيّ حارس. فأمرٌ أُرسِلت فاتورتُه ثمّ أُلغيت إرساليّتُه (⇒ `assertNoLiveConsignment`
+    // تمرّ) كان يُلغى هنا فتعود المواد ويُردّ العربون **وفاتورتُه وقيدُ بيعها قائمان**: إيرادٌ بلا
+    // بضاعة وذمّةٌ على عميلٍ لطلبٍ ملغى. المخرجُ الصحيح استرجاعٌ لا إلغاء.
+    if (wo.invoiceId != null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `صدرت فاتورة لهذا الطلب (#${Number(wo.invoiceId)}) — لا يُلغى بعد الفوترة؛ استعمل الاسترجاع (مرتجع) ليُعكس البيع والذمّة معاً`,
+      });
+    }
     if (wo.status === "IN_PROGRESS" || wo.status === "READY") {
       const mats = await tx.select().from(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, workOrderId));
       mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
-      for (const m of mats) {
-        await applyMovement(tx, {
-          variantId: Number(m.variantId),
-          branchId: Number(wo.branchId),
-          baseQuantity: m.baseQuantity,
-          movementType: "IN",
-          referenceType: "WORK_ORDER_CANCEL",
-          referenceId: workOrderId,
-          createdBy: actor.userId,
-        });
+
+      // ── قرارُ مصير الخامة (ش٤) ─────────────────────────────────────────────────
+      // بلا قرارٍ صريح: **رجوعٌ كامل** — نفسُ ما كان يفعله هذا المسار حرفياً.
+      const decisions = new Map<number, { returnBase: number; wasteBase: number }>();
+      if (opts.materials && opts.materials.length > 0) {
+        const known = new Map(mats.map((m) => [Number(m.id), Number(m.baseQuantity)]));
+        for (const d of opts.materials) {
+          const id = Number(d.workOrderMaterialId);
+          const consumed = known.get(id);
+          if (consumed == null) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `سطر خامة غير موجود في هذا الأمر (#${id})` });
+          }
+          if (decisions.has(id)) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: `سطر الخامة #${id} مكرّر في القرار` });
+          }
+          const ret = Number(d.returnBase);
+          const waste = Number(d.wasteBase);
+          if (!Number.isInteger(ret) || !Number.isInteger(waste) || ret < 0 || waste < 0) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "كمّيات الرجوع والهدر أعدادٌ صحيحة غير سالبة" });
+          }
+          // ⛔ لا فرقَ يُمتصّ صامتاً: ما استُهلك إمّا عاد وإمّا تلف — الرقمان يجمعانه بالضبط.
+          if (ret + waste !== consumed) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: `مجموع الرجوع والهدر (${ret + waste}) لا يساوي المستهلَك (${consumed}) في سطر الخامة #${id}`,
+            });
+          }
+          decisions.set(id, { returnBase: ret, wasteBase: waste });
+        }
+        const missing = mats.filter((m) => !decisions.has(Number(m.id)));
+        if (missing.length > 0) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `قرار الخامة ناقص: ${missing.length} سطراً بلا قرار — حدّد مصير كلّ سطر`,
+          });
+        }
       }
+
+      let returnedCost = money(0);
+      for (const m of mats) {
+        const consumed = Number(m.baseQuantity);
+        const d = decisions.get(Number(m.id)) ?? { returnBase: consumed, wasteBase: 0 };
+        if (d.returnBase > 0) {
+          await applyMovement(tx, {
+            variantId: Number(m.variantId),
+            branchId: Number(wo.branchId),
+            baseQuantity: d.returnBase,
+            movementType: "IN",
+            referenceType: "WORK_ORDER_CANCEL",
+            referenceId: workOrderId,
+            createdBy: actor.userId,
+          });
+        }
+        // التكلفةُ بلقطة `unitCost` المختومة عند البدء — لا بتكلفةِ اليوم: الرجوعُ يعيد
+        // للمخزون ما خرج منه بقيمته وقتَها، وإلّا حرّك حقوقاً بفرق تقييمٍ لا سببَ له.
+        returnedCost = returnedCost.plus(round2(money(m.unitCost ?? "0").times(d.returnBase)));
+      }
+      returnedCost = round2(returnedCost);
+
       const materialsCost = round2(money(wo.materialsCost ?? "0"));
-      if (materialsCost.gt(0)) {
+      // الهدرُ **باقٍ** لا حاصلَ ضربٍ ثانٍ: `مُهدَر = إجمالي − راجع` ⇒ لا دينارَ يسقط بين
+      // التقريبين مهما كثرت الأسطر (§٥). وحين لا هدر، الباقي صفرٌ حسابياً فيبقى السلوك كما كان.
+      const wastedCost = round2(materialsCost.minus(returnedCost));
+      if (returnedCost.gt(0)) {
         await postEntry(tx, {
           entryType: "ADJUST",
           dedupeKey: `WO-WIP-CANCEL:${workOrderId}`,
           branchId: Number(wo.branchId),
-          cost: materialsCost,
-          amount: materialsCost,
+          cost: returnedCost,
+          amount: returnedCost,
           notes: `عكس إنتاج تحت التشغيل لأمر الشغل الملغى ${wo.orderNumber}`,
-          postingIntent: createPostingIntent("ADJUST_WIP_CANCEL", "ADJUST", [debitLine("INVENTORY", materialsCost), creditLine("WORK_IN_PROGRESS", materialsCost)], { roleDebits: { INVENTORY: materialsCost }, roleCredits: { WORK_IN_PROGRESS: materialsCost } }),
-          postingSourceComponents: { roleDebits: { INVENTORY: materialsCost }, roleCredits: { WORK_IN_PROGRESS: materialsCost } },
+          postingIntent: createPostingIntent("ADJUST_WIP_CANCEL", "ADJUST", [debitLine("INVENTORY", returnedCost), creditLine("WORK_IN_PROGRESS", returnedCost)], { roleDebits: { INVENTORY: returnedCost }, roleCredits: { WORK_IN_PROGRESS: returnedCost } }),
+          postingSourceComponents: { roleDebits: { INVENTORY: returnedCost }, roleCredits: { WORK_IN_PROGRESS: returnedCost } },
         });
       }
+      if (wastedCost.gt(0)) {
+        // ⛔ **بلا حركة مخزون**: المادّة خرجت من المخزون عند البدء (`ADJUST_WIP_CONSUME`)،
+        // فرصيدُها في WIP. خصمُها ثانيةً بـ`createStockExpenseTx` خصمٌ مزدوج يُنتج سالباً كاذباً.
+        // القيدُ وحده هو الأثر — والثابت: CONSUME − CANCEL − WASTE = 0 لكلّ أمر.
+        await postEntry(tx, {
+          entryType: "ADJUST",
+          dedupeKey: `WO-WIP-WASTE:${workOrderId}`,
+          branchId: Number(wo.branchId),
+          cost: wastedCost,
+          amount: wastedCost,
+          notes: `هدر خامة أمر الشغل الملغى ${wo.orderNumber}`,
+          postingIntent: createPostingIntent("ADJUST_WIP_WASTE", "ADJUST", [debitLine("LOSSES", wastedCost), creditLine("WORK_IN_PROGRESS", wastedCost)], { roleDebits: { LOSSES: wastedCost }, roleCredits: { WORK_IN_PROGRESS: wastedCost } }),
+          postingSourceComponents: { roleDebits: { LOSSES: wastedCost }, roleCredits: { WORK_IN_PROGRESS: wastedCost } },
+        });
+      }
+    } else if (opts.materials && opts.materials.length > 0) {
+      // أمرٌ لم يبدأ ⇒ لا خامةَ مستهلَكة أصلاً. قبولُ قرارِ هدرٍ هنا يُوهم الموظّف بأنّه سُجِّل.
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا خامة مستهلَكة في هذا الأمر (لم يبدأ التنفيذ) — لا محلّ لقرار الرجوع والهدر",
+      });
     }
     // استرداد العربون المقبوض (إن وُجد ولم يُربَط بفاتورة): نقدٌ يخرج من الدُرج الآن ⇒ receipt(OUT)+PAYMENT_OUT
     // يعكس قيد PAYMENT_IN المُسجَّل عند الإنشاء (صافي الدفتر = صفر)، ويظهر خروجاً في Z-report يوم الإلغاء.
@@ -408,7 +525,14 @@ export async function cancelWorkOrder(
       });
     }
 
-    await tx.update(workOrders).set({ status: "CANCELLED" }).where(eq(workOrders.id, workOrderId));
+    await tx.update(workOrders).set({
+      status: "CANCELLED",
+      // 0237: السببُ على المستند لا في سجلّ التدقيق وحده — الأخير بذلٌ أفضل ومُعقَّم وليس
+      // سطحَ قراءةٍ للأعمال، فبلا هذه الأعمدة يذوب «لم يحضر العميل» في إلغاءٍ مجهول.
+      cancelReason: opts.reason?.trim() || null,
+      cancelledAt: new Date(),
+      cancelledBy: actor.userId,
+    }).where(eq(workOrders.id, workOrderId));
     if (clientRequestId) {
       await recordIdempotencyKey(
         tx,
@@ -497,15 +621,26 @@ export async function approveWorkOrderCancellationRefund(
     const noteParts = refund.internalNote.split(":");
     const refundKind = noteParts[1];
     const noteWorkOrderId = Number(noteParts[2] ?? 0);
+    /**
+     * ٢٠/٨ (تصويب مراجعة Codex) — `reverseDelivery` يُنشئ ردوداً غير نقدية بنوعَي
+     * `REVERSE_LIABILITY`/`REVERSE_AR`، وكان هذا الحارس يرفض كلَّ ما ليس DIRECT/APPLIED
+     * بـCONFLICT ⇒ **لا تصير COMPLETED أبداً ولا تُرحَّل قيداً**: مالُ الزبون محتجَزٌ إلى
+     * الأبد وفاتورتُه مرتجعةٌ سلفاً. وهما يسلكان مسار DIRECT نفسه (مصدرٌ مُشفَّرٌ بهويّته
+     * ومبلغٌ مطابق) ويختلفان في **الحساب المقابل** وحده.
+     */
+    const REVERSE_KINDS = ["REVERSE_LIABILITY", "REVERSE_AR"] as const;
+    const isReverseKind = (REVERSE_KINDS as readonly string[]).includes(String(refundKind));
+    /** المصدرُ مُشفَّرٌ بهويّته في NOTE — كما في DIRECT تماماً. */
+    const resolvesLikeDirect = refundKind === "DIRECT" || isReverseKind;
     if (
       noteWorkOrderId !== workOrderId ||
-      (refundKind !== "DIRECT" && refundKind !== "APPLIED")
+      (refundKind !== "DIRECT" && refundKind !== "APPLIED" && !isReverseKind)
     ) {
       throw new TRPCError({ code: "CONFLICT", message: "رابط طلب الرد بأمر الشغل غير صحيح" });
     }
 
     let sourceReceiptId = 0;
-    if (refundKind === "DIRECT") {
+    if (resolvesLikeDirect) {
       const encodedSourceReceiptId = Number(noteParts[3] ?? 0);
       sourceReceiptId = encodedSourceReceiptId > 0
         ? encodedSourceReceiptId
@@ -603,7 +738,7 @@ export async function approveWorkOrderCancellationRefund(
       source.direction !== "IN" ||
       source.status !== "COMPLETED" ||
       source.approvalStatus !== "APPROVED" ||
-      (refundKind === "DIRECT" && !round2(money(source.amount)).eq(round2(money(refund.amount))))
+      (resolvesLikeDirect && !round2(money(source.amount)).eq(round2(money(refund.amount))))
     ) {
       throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مصدر العربون لم يعد إيصال IN منفذاً ومعتمداً" });
     }
@@ -648,8 +783,13 @@ export async function approveWorkOrderCancellationRefund(
       }
       throw error;
     }
+    // الحسابُ المقابل يتبع نوعَ الردّ: العربونُ أمانةٌ تُبرَّأ، ودفعةُ التسليم ذمّةٌ تعود.
+    // `PAYMENT_OUT_OTHER` لا يقبل `AR` مديناً، ولذلك يُختار profile بحسب النوع لا بتوسيعه.
+    const refundIsAr = refundKind === "REVERSE_AR";
+    const counterRole = refundIsAr ? "AR" : "OTHER_LIABILITY";
+    const refundProfile = refundIsAr ? "PAYMENT_OUT_CUSTOMER_REFUND" : "PAYMENT_OUT_OTHER";
     const postingSource = {
-      roleDebits: { OTHER_LIABILITY: amount },
+      roleDebits: { [counterRole]: amount },
       roleCredits: { [assetRole]: amount },
     };
     await tx.update(receipts).set({
@@ -668,9 +808,9 @@ export async function approveWorkOrderCancellationRefund(
       paymentMethod: refund.paymentMethod,
       notes: `اعتماد رد عربون أمر شغل ملغى #${workOrderId}`,
       postingIntent: createPostingIntent(
-        "PAYMENT_OUT_OTHER",
+        refundProfile,
         "PAYMENT_OUT",
-        [debitLine("OTHER_LIABILITY", amount), creditLine(assetRole, amount)],
+        [debitLine(counterRole, amount), creditLine(assetRole, amount)],
         postingSource,
       ),
       postingSourceComponents: postingSource,
