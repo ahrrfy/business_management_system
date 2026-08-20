@@ -3299,12 +3299,19 @@ export const productStudioCampaignProducts = mysqlTable(
   "productStudioCampaignProducts",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    // المفاتيح مُعلَنة هنا أيضاً لا في الهجرة وحدها: `db:push` (مسار قواعد التطوير
+    // والاختبار) يبني من هذا الملف، فإغفالها يُنتج قواعدَ بلا قيودٍ ولا cascade —
+    // شكلٌ مختلف عن الإنتاج، وصفوفُ عضويةٍ يتيمة تمرّ في الاختبار وتسقط في الواقع.
     campaignId: bigint("campaignId", { mode: "number" }).notNull(),
     productId: bigint("productId", { mode: "number" }).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     uq: unique("uq_pscp_campaign_product").on(table.campaignId, table.productId),
+    // بأسماء صريحة قصيرة: التسمية التلقائية هنا تتجاوز ٦٤ محرفاً فتُفشل `db:push`
+    // على MySQL 8.4 (راجع docs/local-test-db.md). والأسماء تطابق هجرة 0225 حرفاً بحرف.
+    campaignFk: foreignKey({ columns: [table.campaignId], foreignColumns: [productStudioCampaigns.id], name: "fk_pscp_campaign" }).onDelete("cascade"),
+    productFk: foreignKey({ columns: [table.productId], foreignColumns: [products.id], name: "fk_pscp_product" }).onDelete("cascade"),
   }),
 );
 
@@ -3323,6 +3330,8 @@ export const productStudioCampaignAssignees = mysqlTable(
   },
   (table) => ({
     uq: unique("uq_psca_campaign_user").on(table.campaignId, table.userId),
+    campaignFk: foreignKey({ columns: [table.campaignId], foreignColumns: [productStudioCampaigns.id], name: "fk_psca_campaign" }).onDelete("cascade"),
+    userFk: foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "fk_psca_user" }),
   }),
 );
 

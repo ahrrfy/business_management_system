@@ -70,8 +70,9 @@ export function StudioCaptureStation({
     claim.mutate({ barcode: clean });
   };
 
-  // ماسحٌ سلكيّ (لوحة مفاتيح) يعمل بلا تركيزٍ على الحقل — الشائع في محطّات التصوير.
-  useBarcodeInput((scanned) => submitCode(scanned), { enabled: !offline && !claim.isPending });
+  // ⚠️ `useBarcodeInput` يُعيد مُعالِجاً يُركَّب على الحقل — لا يُثبّت مستمعاً عامّاً.
+  // إهمالُ قيمته كان يجعل الماسح السلكيّ بلا أثر إطلاقاً، خلافاً لما زعمتُه هنا سابقاً.
+  const barcodeInput = useBarcodeInput((scanned) => submitCode(scanned), { enabled: !offline && !claim.isPending });
 
   // بعد كل إفراغٍ للمنتج يعود التركيز للحقل: الدورة التالية تبدأ بلا لمس الشاشة.
   useEffect(() => {
@@ -98,6 +99,7 @@ export function StudioCaptureStation({
                 placeholder="وجّه الماسح أو اكتب الباركود ثم Enter"
                 onChange={(event) => setCode(event.target.value)}
                 onKeyDown={(event) => {
+                  barcodeInput.handleKeyDown(event, setCode);
                   if (event.key === "Enter") {
                     event.preventDefault();
                     submitCode(code);

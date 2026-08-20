@@ -526,8 +526,15 @@ async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, r
     })
     .from(productStudioCampaigns)
     .innerJoin(productStudioCampaignAssignees, and(eq(productStudioCampaignAssignees.campaignId, productStudioCampaigns.id), eq(productStudioCampaignAssignees.userId, actor.userId)))
-    .where(eq(productStudioCampaigns.status, "ACTIVE"));
+    .where(eq(productStudioCampaigns.status, "ACTIVE"))
+    // أولويّةٌ معلَنة عند تداخل حملتين على المنتج نفسه: الأقرب موعداً ثمّ الأقدم إنشاءً.
+    // بلا ترتيبٍ كان الاختيار يتبع ما تُرجعه MySQL أوّلاً — فيُنسَب العمل لحملةٍ عشوائية.
+    .orderBy(asc(productStudioCampaigns.dueAt), asc(productStudioCampaigns.id));
   for (const campaign of campaigns) {
+    // الفرع يُعاد فحصه من **الحملة** لا من صفّ العضوية: الموظف قد يكون نُقل بعد إضافته،
+    // فتبقى عضويّته قائمةً بينما فرعه تغيّر — وإنشاءُ مهمةٍ في فرعٍ آخر يُنتج عملاً
+    // لا يستطيع صاحبه فتحه لاحقاً (الحرّاس مُفرَّعة).
+    if (!canCrossBranches(actor) && (actor.branchId == null || Number(campaign.branchId) !== Number(actor.branchId))) continue;
     const [inScope] = await tx
       .select({ id: products.id, name: products.name, description: products.description })
       .from(products)
@@ -553,7 +560,15 @@ async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, r
         activeSlot: 1,
         templateVersion: 1,
       })
-      .$returningId();
+      .$returningId()
+      .catch((error: unknown) => {
+        // ماسحان متزامنان على منتجٍ بلا مهمة: القيد الفريد (productId, activeSlot) يمنع
+        // التكرار، لكنّ الخطأ الخام كان يصل الخاسرَ عطلاً داخلياً بدل «بيد زميل».
+        if ((error as { code?: string }).code === "ER_DUP_ENTRY") {
+          throw new TRPCError({ code: "CONFLICT", message: `«${resolved.productName}» فتحه زميلٌ قبلك للتوّ` });
+        }
+        throw error;
+      });
     const taskId = Number(created.id);
     await tx.insert(auditLogs).values(auditValues(actor, "productStudio.claimByBarcode.created", taskId, { productId, campaignId: Number(campaign.id) }));
     return { taskId, productName: resolved.productName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id))) };
@@ -1061,16 +1076,32 @@ export async function getStudioCampaignBoard(actor: ProductStudioActor, campaign
     .leftJoin(productImageJobs, and(eq(productImageJobs.campaignId, campaignId), eq(productImageJobs.assignedTo, users.id)))
     .where(eq(productStudioCampaignAssignees.campaignId, campaignId))
     .groupBy(users.id, users.name);
-  const done = Number(counts?.done ?? 0);
-  const remaining = Number(counts?.queued ?? 0) + Number(counts?.inProgress ?? 0) + Number(counts?.awaitingReview ?? 0) + Number(counts?.needsFix ?? 0) + notGenerated;
+  // الوحدة **منتجات** في الرقمين معاً. كان `done` يعُدّ مهامّ معتمَدة و`remaining` يخلط
+  // مهامّاً بمنتجاتٍ لم تُولَّد ⇒ في حملةٍ تطلب ثلاث صور لمنتجٍ واحد تقرأ اللوحة
+  // «أُنجز ١ · متبقٍّ ١» بعد أوّل صورة، وكلاهما عن الشيء نفسه.
+  const required = Math.max(1, Number(campaign.requiredImages ?? 1));
+  const [scopeTotals] = await db
+    .select({
+      total: sql<number>`count(*)`,
+      complete: sql<number>`sum(case when (select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') >= ${required} then 1 else 0 end)`,
+    })
+    .from(products)
+    .where(and(eq(products.isActive, true), campaignScopeCondition(campaign)));
+  const totalProducts = Number(scopeTotals?.total ?? 0);
+  const done = Number(scopeTotals?.complete ?? 0);
+  const remaining = Math.max(0, totalProducts - done);
   return {
     campaignId,
     name: campaign.name,
     status: campaign.status,
     scopeKind: campaign.scopeKind,
     requiredImages: Number(campaign.requiredImages ?? 1),
+    /** منتجاتٌ بلغت عدد الصور المطلوب. */
     done,
+    /** منتجاتٌ لم تبلغه بعد — نفس وحدة `done`. */
     remaining,
+    totalProducts,
+    /** توزيعُ **المهام** الجارية (وحدةٌ أخرى: مهمّة لا منتج) — يُسمّى كذلك في الشاشة. */
     breakdown: {
       notGenerated,
       queued: Number(counts?.queued ?? 0),

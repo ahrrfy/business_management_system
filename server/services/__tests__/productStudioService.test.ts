@@ -2214,6 +2214,9 @@ describe("product studio governed workflow", () => {
     const board = await getStudioCampaignBoard(manager, campaign.campaignId);
     expect(board.requiredImages).toBe(3);
     expect(board.breakdown.notGenerated).toBe(1);
+    // وحدةُ الرقمين **منتجات** لا مهامّ: منتجٌ واحد لم يبلغ الثلاث ⇒ ٠ مكتمل من ١، ومتبقٍّ ١.
+    // كان `done` يعُدّ المهام المعتمدة فتقرأ اللوحة «أُنجز ١ · متبقٍّ ١» عن الشيء نفسه.
+    expect(board).toMatchObject({ done: 0, remaining: 1, totalProducts: 1 });
   });
 
   it("المصوّر يمسح فيُنشأ عمله فوراً بلا انتظار توليد المدير", async () => {

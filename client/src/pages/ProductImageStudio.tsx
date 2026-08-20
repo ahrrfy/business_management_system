@@ -200,6 +200,8 @@ export default function ProductImageStudio() {
   /** نطاق الحملة وفريقها وتوجيهها — يُرسَلان مع الإنشاء. */
   const [campaignScope, setCampaignScope] = useState<"ALL" | "CATEGORY" | "PRODUCTS">("ALL");
   const [campaignCategoryId, setCampaignCategoryId] = useState("");
+  /** تحديدٌ مستقلّ لنطاق الحملة — كان يتشارك `bulkProductIds` مع إسناد المهام، فتتسرّب منتجات حملةٍ إلى إسنادٍ لاحق. */
+  const [campaignProductIds, setCampaignProductIds] = useState<number[]>([]);
   const [campaignRequiredImages, setCampaignRequiredImages] = useState("1");
   const [campaignAssigneeIds, setCampaignAssigneeIds] = useState<number[]>([]);
   const [taskSearch, setTaskSearch] = useState("");
@@ -373,7 +375,7 @@ export default function ProductImageStudio() {
 
   async function refresh() {
     if (offline) return;
-    await Promise.all([utils.productStudio.dashboard.invalidate(), utils.productStudio.tasks.invalidate(), utils.productStudio.products.invalidate(), utils.productStudio.campaigns.invalidate(), utils.productStudio.previewCampaignBacklog.invalidate(), utils.productStudio.campaignAnalytics.invalidate()]);
+    await Promise.all([utils.productStudio.dashboard.invalidate(), utils.productStudio.tasks.invalidate(), utils.productStudio.products.invalidate(), utils.productStudio.campaigns.invalidate(), utils.productStudio.previewCampaignBacklog.invalidate(), utils.productStudio.campaignAnalytics.invalidate(), utils.productStudio.campaignBoard.invalidate()]);
   }
 
   const assign = trpc.productStudio.assign.useMutation({
@@ -478,6 +480,7 @@ export default function ProductImageStudio() {
       setCampaignCategoryId("");
       setCampaignRequiredImages("1");
       setCampaignAssigneeIds([]);
+      setCampaignProductIds([]);
       notify.ok(`أُنشئت حملة الاستوديو وفُعّلت${campaign.assigneeIds.length > 0 ? ` — ${campaign.assigneeIds.length} مصوّراً` : ""}`);
       await refresh();
     },
@@ -856,8 +859,18 @@ export default function ProductImageStudio() {
           offline={offline}
           onClaimed={(claimed) => {
             setCaptured(claimed);
-            setSelectedId(claimed.taskId);
+            // تصفيرُ كل مرشّحٍ قد يُخفي المهمة المسحوبة: بدونه يُسنِد الخادمُ المهمة
+            // ولا تظهر في القائمة، فيبقى المحرّر مغلقاً والمصوّر أمام شاشةٍ لا تستجيب.
             setScope("MINE");
+            setSavedView("ALL");
+            setOverdueOnly(false);
+            setTaskPriorityFilter("ALL");
+            setAssigneeFilter("ALL");
+            setTaskSearch("");
+            setDebouncedTaskSearch("");
+            setSelectedCampaignId(null);
+            setSelectedTaskIds(new Set());
+            setSelectedId(claimed.taskId);
             void refresh();
           }}
           onClear={() => {
@@ -994,7 +1007,6 @@ export default function ProductImageStudio() {
                 <Label htmlFor="studio-campaign-due">موعد الحملة</Label>
                 <Input id="studio-campaign-due" type="datetime-local" value={campaignDueAt} onChange={(event) => setCampaignDueAt(event.target.value)} />
               </div>
-              <div className="flex items-end">
               <div className="space-y-1.5">
                 <Label htmlFor="studio-campaign-scope">نطاق الحملة</Label>
                 <AppSelect id="studio-campaign-scope" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={campaignScope} onValueChange={(value) => setCampaignScope(value as typeof campaignScope)}>
@@ -1022,9 +1034,17 @@ export default function ProductImageStudio() {
                 <div className="space-y-1.5">
                   <Label>المنتجات المختارة</Label>
                   {/* يُعاد استعمال منتقي المنتجات نفسه أسفل الشاشة — التحديد يظهر هنا. */}
-                  <p className="rounded-md border p-2 text-sm">
-                    {bulkProductIds.length > 0 ? `${bulkProductIds.length} منتجاً محدَّداً` : "اختر المنتجات من «إسناد مهمة جديدة» أدناه"}
-                  </p>
+                  <div className="space-y-2">
+                    <StudioProductPicker canManage value={null} onPick={(product) => setCampaignProductIds((current) => (current.includes(Number(product.productId)) ? current : [...current, Number(product.productId)]))} />
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2 text-sm">
+                      <span>{campaignProductIds.length > 0 ? `${campaignProductIds.length} منتجاً في نطاق الحملة` : "ابحث وأضِف منتجات النطاق"}</span>
+                      {campaignProductIds.length > 0 && (
+                        <Button type="button" variant="ghost" size="sm" className="min-h-11" onClick={() => setCampaignProductIds([])}>
+                          مسح
+                        </Button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
               <div className="space-y-1.5">
@@ -1054,9 +1074,10 @@ export default function ProductImageStudio() {
                 </div>
                 <p className="text-xs text-muted-foreground">هؤلاء وحدهم يفتحون منتجات الحملة بمسح الباركود.</p>
               </div>
+              <div className="flex items-end">
                 <Button
                   className="min-h-11 w-full"
-                  disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || me.data?.branchId) || (campaignScope === "CATEGORY" && !campaignCategoryId) || (campaignScope === "PRODUCTS" && bulkProductIds.length === 0)}
+                  disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || me.data?.branchId) || (campaignScope === "CATEGORY" && !campaignCategoryId) || (campaignScope === "PRODUCTS" && campaignProductIds.length === 0)}
                   onClick={() =>
                     createCampaign.mutate({
                       name: campaignName.trim(),
@@ -1066,7 +1087,7 @@ export default function ProductImageStudio() {
                       dueAt: campaignDueAt ? new Date(campaignDueAt) : null,
                       scopeKind: campaignScope,
                       scopeCategoryId: campaignScope === "CATEGORY" ? Number(campaignCategoryId) : null,
-                      scopeProductIds: campaignScope === "PRODUCTS" ? bulkProductIds : undefined,
+                      scopeProductIds: campaignScope === "PRODUCTS" ? campaignProductIds : undefined,
                       requiredImages: Math.max(1, Math.min(10, Number(campaignRequiredImages) || 1)),
                       assigneeIds: campaignAssigneeIds,
                     })
@@ -1191,14 +1212,18 @@ export default function ProductImageStudio() {
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border bg-[var(--sem-ok-bg,transparent)] p-3">
-                    <div className="text-xs text-muted-foreground">أُنجز واعتُمد</div>
-                    <div className="mt-1 text-2xl font-bold">{campaignBoard.data.done}</div>
+                    <div className="text-xs text-muted-foreground">منتجات اكتملت صورها</div>
+                    <div className="mt-1 text-2xl font-bold">
+                      {campaignBoard.data.done}
+                      <span className="text-sm font-normal text-muted-foreground"> / {campaignBoard.data.totalProducts}</span>
+                    </div>
                   </div>
                   <div className="rounded-md border p-3">
-                    <div className="text-xs text-muted-foreground">المتبقّي</div>
+                    <div className="text-xs text-muted-foreground">منتجات متبقّية</div>
                     <div className="mt-1 text-2xl font-bold">{campaignBoard.data.remaining}</div>
                   </div>
                 </div>
+                <div className="text-xs text-muted-foreground">المهام الجارية (وحدةُ مهمّة لا منتج)</div>
                 <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
                   {(
                     [
@@ -1689,7 +1714,7 @@ export default function ProductImageStudio() {
 
                   {editable && capabilities.canEditLocalDraft && (
                     <>
-                      <ProductMediaContentSection title="تنفيذ المهمة — الصور والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={captured && captured.taskId === Number(selected.id) ? Math.max(1, captured.requiredImages - captured.approvedImages) : 1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint={captured && captured.taskId === Number(selected.id) && captured.requiredImages > 1 ? `حملةٌ تطلب ${captured.requiredImages} صور لهذا المنتج — اعتُمدت ${captured.approvedImages}. تُرسَل صورةٌ في كل دورة مراجعة؛ امسح الباركود ثانيةً للصورة التالية.` : "صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً."} />
+                      <ProductMediaContentSection title="تنفيذ المهمة — الصور والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint={captured && captured.taskId === Number(selected.id) && captured.requiredImages > 1 ? `حملةٌ تطلب ${captured.requiredImages} صور لهذا المنتج — اعتُمدت ${captured.approvedImages}. تُرسَل صورةٌ في كل دورة مراجعة؛ امسح الباركود ثانيةً للصورة التالية.` : "صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً."} />
                       {offline && (
                         <p role="status" className="text-sm text-muted-foreground">
                           تُحفظ تعديلاتك محلياً ومشفّرةً حتى 24 ساعة. الإرسال والاعتماد والرفض والنشر متوقفة إلى أن يعود الاتصال.
