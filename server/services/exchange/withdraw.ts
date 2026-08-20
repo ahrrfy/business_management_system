@@ -87,6 +87,7 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
       await postEntry(tx, {
         entryType: "EXCHANGE_WITHDRAW",
         branchId: input.branchId,
+        createdBy: actor.userId,
         exchangeHouseId: input.exchangeHouseId,
         amount: carryingIqd,
         dedupeKey: `EXWD:${txnNumber}`,
@@ -109,6 +110,7 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
         afterSignedIqd: movement.balanceCarryingIqd,
         sourceKey: txnNumber,
         notes: `تصنيف ذمة الصيرفة لسحب الدولار ${txnNumber}`,
+        createdBy: actor.userId,
       });
 
       if (input.clientRequestId) {
@@ -168,6 +170,7 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
     await postEntry(tx, {
       entryType: "EXCHANGE_WITHDRAW",
       branchId: input.branchId,
+      createdBy: actor.userId,
       exchangeHouseId: input.exchangeHouseId,
       receiptId,
       amount,
@@ -189,6 +192,7 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
       afterSignedIqd: balIqdAfter,
       sourceKey: txnNumber,
       notes: `تصنيف ذمة الصيرفة لسحب الدينار ${txnNumber}`,
+      createdBy: actor.userId,
     });
 
     if (input.clientRequestId) {

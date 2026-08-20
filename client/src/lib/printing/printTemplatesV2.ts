@@ -407,6 +407,8 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
 export interface SalesReportV2Data {
   /** الفترة كنصّ عربي: «01/06 — 01/07/2026». */
   periodLabel: string;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
   branchLabel?: string | null;
 
   invoiceCount: number;
@@ -753,6 +755,8 @@ export interface StatementV2Data {
   partyPhone?: string | null;
 
   periodLabel: string;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
   openingBalance: string | number;
   currentBalance?: string | number | null;
   transactionsCount: number;
@@ -770,6 +774,7 @@ export interface StatementV2Data {
     typeColor?: string | null;
     /** نص التفاصيل الإضافيّة أسفل قيم الصف — يشرح محتوى الفاتورة/السند. */
     details: string;
+    actor?: string | null;
   }[];
 
   totalDebit: string | number;
@@ -786,6 +791,8 @@ export function printStatementV2(d: StatementV2Data): boolean {
     subtitle: 'بيان تفصيلي — يوضح محتوى كل فاتورة وسند مرتبط بالحركة',
     fields: [
       { label: 'الفترة', value: d.periodLabel },
+      ...(d.printedByName ? [{ label: 'طالب الطباعة', value: d.printedByName }] : []),
+      ...(d.printRequestedAt ? [{ label: 'وقت طلب الطباعة', value: d.printRequestedAt }] : []),
     ],
   }, d.settings);
 
@@ -845,7 +852,8 @@ export function printStatementV2(d: StatementV2Data): boolean {
       <td style="${cellStyle(creditColor, 11.75, { money: true, noBottom: true })}">${esc(credit)}</td>
       <td style="${cellStyle(B.ink, 12, { money: true, noBottom: true })};font-weight:900">${esc(fmtIQD(t.balance))}</td>
     </tr>`;
-    const detailRow = docTableDetailRow(i, t.typeLabel, t.typeColor ?? B.alert, t.details, cols.length);
+    const details = t.actor ? `${t.details} — المنفّذ: ${t.actor}` : t.details;
+    const detailRow = docTableDetailRow(i, t.typeLabel, t.typeColor ?? B.alert, details, cols.length);
     return valueRow + detailRow;
   }).join('');
 

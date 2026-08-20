@@ -398,7 +398,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
             </FieldGroup>
           )}
 
-          {isReturn && (
+          {isReturn && !isPurchase && (
             <FieldGroup label="رقم الفاتورة المرجعية" icon={Pin} required>
               <Input
                 value={state.refInvoice}
@@ -409,11 +409,11 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps, statusB
           )}
 
           {isPurchase && (
-            <FieldGroup label="رقم أمر الشراء المرجعي" icon={Pin}>
+            <FieldGroup label="رقم أمر الشراء المرجعي" icon={Pin} required={invoiceType === "PURCHASE_RETURN"}>
               <Input
                 value={state.poReference}
                 onChange={(e) => dispatch({ type: "SET_FIELD", field: "poReference", value: e.target.value })}
-                placeholder="PO-REF"
+                placeholder="PO-1-20260820-00042"
               />
             </FieldGroup>
           )}

@@ -21,4 +21,11 @@ describe("ExchangeStatement financial presentation", () => {
     expect(source).toContain("ليست نقداً فعلياً");
     expect(source).toContain("مبلغ ديناري / قيمة دفترية (د.ع)");
   });
+
+  it("يعرض المورد والمنفذ ويسجل طلب طباعة الصيرفة", () => {
+    expect(source).toContain('header: "المورد / الطرف"');
+    expect(source).toContain('accessorKey: "createdByName"');
+    expect(source).toContain('documentType: "EXCHANGE_TRANSACTION"');
+    expect(source).toContain("printRequestedAt");
+  });
 });

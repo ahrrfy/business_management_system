@@ -746,6 +746,7 @@ export async function createVoucherTx(
       await postEntry(tx, {
         entryType: direction === "IN" ? "PAYMENT_IN" : "PAYMENT_OUT",
         branchId: input.branchId,
+        createdBy: actor.userId,
         receiptId,
         customerId: input.partyType === "CUSTOMER" ? (input.partyId ?? null) : null,
         supplierId: input.partyType === "SUPPLIER" ? (input.partyId ?? null) : null,
