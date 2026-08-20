@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createProductWebpThumbnail, fitProductThumbnailDimensions } from "./productImageThumbnail";
+import { createProductDisplayThumbnail, fitProductThumbnailDimensions } from "./productImageThumbnail";
 
 describe("fitProductThumbnailDimensions", () => {
   it("يصغّر أطول ضلع إلى 320 مع حفظ النسبة ولا يكبّر الصور الصغيرة", () => {
@@ -14,12 +14,12 @@ describe("fitProductThumbnailDimensions", () => {
   });
 });
 
-describe("createProductWebpThumbnail", () => {
-  it("يرسم الأبعاد المحسوبة ويعيد WebP فقط", async () => {
+describe("createProductDisplayThumbnail", () => {
+  it("يرسم الأبعاد المحسوبة ويفضّل WebP حين يدعمه المتصفح", async () => {
     const drawImage = vi.fn();
     const fillRect = vi.fn();
     const toDataURL = vi.fn(() => "data:image/webp;base64,UklGRg==");
-    const result = await createProductWebpThumbnail("data:image/png;base64,AAAA", {
+    const result = await createProductDisplayThumbnail("data:image/png;base64,AAAA", {
       loadImage: async () => ({ naturalWidth: 800, naturalHeight: 400 } as HTMLImageElement),
       createCanvas: (width, height) => ({
         width,
@@ -34,19 +34,54 @@ describe("createProductWebpThumbnail", () => {
     expect(toDataURL).toHaveBeenCalledWith("image/webp", 0.78);
   });
 
-  it("يرفض fallback المتصفح إلى PNG أو ناتجاً يتجاوز سقف المصغرة", async () => {
-    const runtime = (output: string) => ({
-      loadImage: async () => ({ naturalWidth: 10, naturalHeight: 10 } as HTMLImageElement),
-      createCanvas: () => ({
-        getContext: () => ({ drawImage: vi.fn(), fillRect: vi.fn() }),
-        toDataURL: () => output,
-      } as unknown as HTMLCanvasElement),
-    });
-    await expect(createProductWebpThumbnail("data:image/png;base64,AAAA", runtime("data:image/png;base64,AAAA")))
-      .rejects.toThrow(/WebP/);
-    await expect(createProductWebpThumbnail(
-      "data:image/png;base64,AAAA",
-      runtime(`data:image/webp;base64,${"A".repeat(180_000)}`),
-    )).rejects.toThrow(/حجم/);
+  /** مصنعُ زمنِ تشغيلٍ يحاكي متصفّحاً يدعم صيغاً بعينها ويسقط لغيرها إلى PNG (سلوك Safari). */
+  const runtimeSupporting = (supported: string[], oversizedFor: string[] = []) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      runtime: {
+        loadImage: async () => ({ naturalWidth: 10, naturalHeight: 10 }) as HTMLImageElement,
+        createCanvas: () =>
+          ({
+            getContext: () => ({ drawImage: vi.fn(), fillRect: vi.fn() }),
+            toDataURL: (mime: string) => {
+              calls.push(mime);
+              if (!supported.includes(mime)) return "data:image/png;base64,AAAA";
+              const payload = oversizedFor.includes(mime) ? "A".repeat(180_000) : "AAAA";
+              return `data:${mime};base64,${payload}`;
+            },
+          }) as unknown as HTMLCanvasElement,
+      },
+    };
+  };
+
+  it("⭐ Safari/iOS بلا ترميز WebP: يسقط إلى JPEG بدل منع المصوّر من الإرسال", async () => {
+    // البلاغ الحقيقيّ: `toDataURL("image/webp")` يُرجع PNG صامتاً على iOS، فكان الحارس
+    // يشتعل ويُمنع الإرسال نهائياً — مشتقُّ عرضٍ يوقف عملاً منجَزاً.
+    const { runtime, calls } = runtimeSupporting(["image/jpeg"]);
+    await expect(createProductDisplayThumbnail("data:image/png;base64,AAAA", runtime)).resolves.toBe(
+      "data:image/jpeg;base64,AAAA",
+    );
+    expect(calls).toEqual(["image/webp", "image/jpeg"]);
+  });
+
+  it("لا يقبل سقوط المتصفح الصامت إلى PNG بوصفه ناتجاً صالحاً", async () => {
+    const { runtime } = runtimeSupporting([]);
+    await expect(createProductDisplayThumbnail("data:image/png;base64,AAAA", runtime)).rejects.toThrow(
+      /تعذّر على المتصفح/,
+    );
+  });
+
+  it("يتخطّى صيغةً تجاوزت السقف إلى التالية بدل الفشل فوراً", async () => {
+    const { runtime, calls } = runtimeSupporting(["image/webp", "image/jpeg"], ["image/webp"]);
+    await expect(createProductDisplayThumbnail("data:image/png;base64,AAAA", runtime)).resolves.toBe(
+      "data:image/jpeg;base64,AAAA",
+    );
+    expect(calls).toEqual(["image/webp", "image/jpeg"]);
+  });
+
+  it("يميّز «كبيرة» عن «غير مدعومة» — السببان لهما علاجان مختلفان", async () => {
+    const { runtime } = runtimeSupporting(["image/webp", "image/jpeg"], ["image/webp", "image/jpeg"]);
+    await expect(createProductDisplayThumbnail("data:image/png;base64,AAAA", runtime)).rejects.toThrow(/حجم/);
   });
 });

@@ -35,8 +35,19 @@ const browserRuntime: ThumbnailRuntime = {
   },
 };
 
-/** إعادة ترميز مشتق العرض محلياً: 320px WebP، بلا رفع أصل إضافي أو معالجة ثقيلة على الخادم. */
-export async function createProductWebpThumbnail(
+/**
+ * إعادة ترميز مشتق العرض محلياً: 320px، بلا رفع أصلٍ إضافيّ أو معالجةٍ ثقيلة على الخادم.
+ *
+ * **WebP أوّلاً ثمّ JPEG (٢٠/٨ — بلاغ إنتاج):** كانت الدالّة تفرض WebP فترمي «المتصفح لا
+ * يدعم إنشاء مصغّرة WebP آمنة». و`canvas.toDataURL("image/webp")` **غير مدعوم على
+ * Safari/iOS** قبل ١٧ — يُرجع PNG بصمتٍ فيشتعل الحارس. النتيجة: مصوّرٌ على iPhone يلتقط
+ * الصورة ويعالجها ثمّ **يُمنع من الإرسال نهائياً** بسبب مشتقّ عرضٍ لا علاقة له بجودة عمله.
+ *
+ * JPEG هو الاحتياطيّ لا PNG: كلّ متصفّحٍ يرمّزه من canvas، وحجمُه لصورة ٣٢٠px يبقى تحت
+ * السقف بينما PNG قد يتجاوزه فيرتدّ الرفض من بابٍ آخر. والخادم يتحقّق من الاثنين بنفس
+ * الصرامة (مغناطيس + بنية + مطابقة الأبعاد للمرشّح).
+ */
+export async function createProductDisplayThumbnail(
   sourceDataUrl: string,
   runtime: ThumbnailRuntime = browserRuntime,
 ): Promise<string> {
@@ -52,13 +63,29 @@ export async function createProductWebpThumbnail(
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, size.width, size.height);
   context.drawImage(image, 0, 0, size.width, size.height);
-  const dataUrl = canvas.toDataURL("image/webp", 0.78);
-  if (!dataUrl.startsWith("data:image/webp;base64,")) {
-    throw new Error("المتصفح لا يدعم إنشاء مصغّرة WebP آمنة");
+  // الترتيب مقصود: WebP أصغر حجماً فيُجرَّب أوّلاً، وJPEG احتياطيٌّ مضمونٌ في كل متصفّح.
+  // Safari يُرجع PNG صامتاً حين لا يدعم الصيغة المطلوبة، فالفحص على **بادئة الناتج**
+  // لا على `toDataURL` نفسها — «الدالّة لم ترمِ» ليست دليلاً على أنّها رمّزت ما طُلب.
+  const candidates: { mime: "image/webp" | "image/jpeg"; quality: number }[] = [
+    { mime: "image/webp", quality: 0.78 },
+    { mime: "image/jpeg", quality: 0.82 },
+  ];
+  let oversized = false;
+  for (const candidate of candidates) {
+    const dataUrl = canvas.toDataURL(candidate.mime, candidate.quality);
+    if (!dataUrl.startsWith(`data:${candidate.mime};base64,`)) continue;
+    const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+    if (base64.length * 0.75 > THUMBNAIL_MAX_BYTES) {
+      oversized = true;
+      continue;
+    }
+    return dataUrl;
   }
-  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-  if (base64.length * 0.75 > THUMBNAIL_MAX_BYTES) {
-    throw new Error("حجم مصغّرة WebP أكبر من المسموح");
-  }
-  return dataUrl;
+  // تمييزُ السببين مقصود: «كبيرة» قابلةٌ للعلاج بصورةٍ أصغر، و«غير مدعومة» ليست كذلك.
+  throw new Error(
+    oversized ? "حجم مصغّرة العرض أكبر من المسموح" : "تعذّر على المتصفح إنشاء مصغّرة عرضٍ صالحة",
+  );
 }
+
+/** @deprecated الاسم القديم — أُبقي لئلّا ينكسر مستدعٍ خارج هذا الملف. */
+export const createProductWebpThumbnail = createProductDisplayThumbnail;

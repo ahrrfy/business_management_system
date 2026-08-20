@@ -432,12 +432,16 @@ export function ImageUploader({
                   </div>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-px border-t bg-border">
+              {/* ٢٠/٨ (لقطة المالك): عمودان ثابتان + `whitespace-nowrap` الافتراضيّ في Button
+                  ⇒ «معالجة في الاستوديو» و«إعادة الالتقاط» يفيضان عن خليّتيهما فيتراكب النصّان
+                  ويصيران غير مقروءَين على الهاتف. عمودٌ واحد في الضيّق، ولفٌّ للنصّ لا اقتطاع
+                  (اسم الفعل العربيّ يفقد معناه إذا بُتِر). */}
+              <div className="grid grid-cols-1 gap-px border-t bg-border min-[220px]:grid-cols-2">
                 {onEditImage && (
                   <Button
                     type="button"
                     variant="secondary"
-                    className="min-h-11 rounded-none bg-card px-2 text-xs"
+                    className="min-h-11 min-w-0 whitespace-normal rounded-none bg-card px-2 text-xs leading-tight"
                     onClick={() => {
                       onEditImage(img.id);
                     }}
@@ -445,14 +449,14 @@ export function ImageUploader({
                     <WandSparkles aria-hidden className="size-3.5" /> معالجة في الاستوديو
                   </Button>
                 )}
-                <Button type="button" variant="outline" className="min-h-11 rounded-none border-0 bg-card px-2 text-xs" onClick={() => openRearCamera(img.id)}>
+                <Button type="button" variant="outline" className="min-h-11 min-w-0 whitespace-normal rounded-none border-0 bg-card px-2 text-xs leading-tight" onClick={() => openRearCamera(img.id)}>
                   <Camera aria-hidden className="size-3.5" /> إعادة الالتقاط
                 </Button>
                 {singlePrimary && !img.isPrimary && (
                   <Button
                     type="button"
                     variant="secondary"
-                    className="min-h-11 rounded-none bg-card px-2 text-xs"
+                    className="min-h-11 min-w-0 whitespace-normal rounded-none bg-card px-2 text-xs leading-tight"
                     onClick={() => {
                       makePrimary(img.id);
                     }}
@@ -463,7 +467,7 @@ export function ImageUploader({
                 <Button
                   type="button"
                   variant="destructive"
-                  className="min-h-11 rounded-none px-2 text-xs"
+                  className="min-h-11 min-w-0 whitespace-normal rounded-none px-2 text-xs leading-tight"
                   onClick={() => {
                     remove(img.id);
                   }}

@@ -116,6 +116,7 @@ export default defineConfig({
       "server/tenancy/__tests__/tenantPoolLifecycle.test.ts",
       "server/services/__tests__/jobApplicantCvService.test.ts",
       "server/services/__tests__/imageStudioProviderGuard.unit.test.ts",
+      "server/services/__tests__/studioThumbnailFormats.unit.test.ts",
       "server/services/__tests__/initTestDbContract.test.ts",
       "server/routes/__tests__/jobApplicantCvHeaders.test.ts",
       "server/services/hrDevices/__tests__/bridgeSecurity.test.ts",
