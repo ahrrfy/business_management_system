@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { CASHIER_NAV_PATHS, INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { ROLE_LABEL } from "@/lib/roles";
 import {
   NAV_FAVORITES_LIMIT,
@@ -220,9 +220,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   // أُضيفت `/invoices` و`/work-orders`. الخادم صار يقبلهما لهذه الأدوار بنطاقٍ يقصّ القناة،
   // وكانت القائمة البيضاء تحجبهما عرضاً — فيُرفَض الموظّف في الشاشة لا في الصلاحية. كلٌّ يبقى
   // محكوماً ببوّابته أدناه (`canSeeGate`)، فالإضافة هنا **إتاحةُ وصولٍ لا منحُ صلاحية**.
-  const CASHIER_NAV = [
-  // ش٦: يظهر لكل دور — البوّابة `protectedProcedure` والمحتوى يُصفّى خادمياً بصلاحية كل مصدر.
-  "/my-work","/pos", "/price-checker", "/invoices", "/work-orders", "/delivery", "/tasks"];
+  // القائمة البيضاء صارت في `navVisibility.ts` بجوار البوّابة التي تُطبَّق معها — ويحرسها
+  // اختبارُ تطابقٍ مع الخادم بعد أن أخفت مدخلاً مسموحاً (بلاغ ٢٠/٨).
+  const CASHIER_NAV = CASHIER_NAV_PATHS;
   // `coldStudio` (من main): شلٌّ كاملٌ للتنقّل في وضع الاستوديو البارد — يبقى **قبل** كلّ
   // فرعٍ آخر، فالإضافةُ أعلاه لا تفتح مدخلاً في وضعٍ صُمّم ليكون بلا مداخل.
   const visibleNav = coldStudio

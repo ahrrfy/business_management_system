@@ -37,6 +37,10 @@ export default function MyWork() {
     { staleTime: 30_000 },
   );
   const workspace = trpc.superApp.myWorkspace.useQuery(undefined, { staleTime: 60_000 });
+  // فتحُ الإشعار يَسِمه مقروءاً: الوسمُ أثرُ الفتح لا زرٌّ منفصل، وإلّا بقي العدّاد يكذب.
+  const markRead = trpc.superApp.markNotificationRead.useMutation({
+    onSuccess: () => void notifications.refetch(),
+  });
 
   const items = approvals.data ?? [];
   // العقد يعيد {rows, unreadCount} — والعدّاد يأتي مجّاناً بلا حسابٍ في الواجهة.
@@ -163,22 +167,49 @@ export default function MyWork() {
                 <p className="py-4 text-center text-2xs text-muted-foreground">لا إشعارات</p>
               ) : (
                 <ul className="space-y-2">
-                  {notes.map((n) => (
-                    <li key={n.id} className="rounded-md border p-2">
+                  {notes.map((n) => {
+                    // ٢٠/٨ (بلاغ إنتاج): البطاقة كانت `li` صمّاء — تُسمّي المهمة ولا تفتحها.
+                    // فموظّفٌ أُسندت إليه مهمّةُ استوديو يقرأ «أُسندت إليك مهمة رقم ٤٢٨٦» ولا
+                    // يجد إليها سبيلاً. و`route` كان مُعاداً من الخادم أصلاً (`db.select()`
+                    // كامل) ومُعقَّماً عند الكتابة بـ`safeInternalRoute` — الشاشة وحدها كانت
+                    // تُهمله. لا إشعارَ ذا وجهةٍ يبقى طريقاً مسدوداً بعد اليوم.
+                    const body = (
                       <div className="flex items-start gap-2">
                         {n.requiresAction ? (
                           <AlertCircle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-[var(--sem-warn)]" />
                         ) : (
                           <Bell aria-hidden className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
                         )}
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <p className="text-xs font-bold">{n.title}</p>
                           {n.body && <p className="mt-0.5 text-2xs text-muted-foreground">{n.body}</p>}
                           <p className="mt-0.5 text-2xs text-muted-foreground">{fmtDateTime(n.createdAt)}</p>
                         </div>
+                        {n.route && <ExternalLink aria-hidden className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />}
                       </div>
-                    </li>
-                  ))}
+                    );
+                    if (!n.route) {
+                      return (
+                        <li key={n.id} className="rounded-md border p-2">
+                          {body}
+                        </li>
+                      );
+                    }
+                    return (
+                      <li key={n.id}>
+                        <Link
+                          href={n.route}
+                          // ارتفاعٌ لمسيّ كامل: البطاقة تُفتح من الهاتف قبل المكتب.
+                          className="block min-h-11 rounded-md border p-2 transition-colors hover:bg-muted/50"
+                          onClick={() => {
+                            if (!n.readAt) markRead.mutate({ id: n.id });
+                          }}
+                        >
+                          {body}
+                        </Link>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </CardContent>
