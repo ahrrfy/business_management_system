@@ -35,5 +35,7 @@ WHERE `i`.`paymentMethod` IS NOT NULL
     SELECT 1 FROM `receipts` `r`
     WHERE `r`.`invoiceId` = `i`.`id`
       AND `r`.`direction` = 'IN'
-      AND `r`.`status` = 'COMPLETED'
+      -- ⚠️ اسمُ العمود في القاعدة `receiptStatus` لا `status` (خاصيّةُ Drizzle تُخالف العمود).
+      -- SQL الخامّ لا يمرّ بالـORM ⇒ `r`.`status` سقط على الإنتاج بـER_BAD_FIELD_ERROR.
+      AND `r`.`receiptStatus` = 'COMPLETED'
   );
