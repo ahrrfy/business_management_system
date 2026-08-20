@@ -80,6 +80,12 @@ export const users = mysqlTable(
       .notNull(),
     branchId: bigint("branchId", { mode: "number" }),
     isActive: boolean("isActive").default(true),
+    /**
+     * انتهاء صلاحية الحساب — للحسابات المؤقّتة (مصوّر حملةٍ بلا حساب دائم مثلاً).
+     * `null` = حسابٌ دائم بلا انتهاء (كل الحسابات القائمة). يُفرَض **مركزياً في الجلسة**
+     * لا في كل شاشة: حسابٌ منتهٍ يسقط من أوّل طلبٍ حتى لو كانت جلسته مفتوحة.
+     */
+    accessExpiresAt: timestamp("accessExpiresAt"),
     // v3-add-screens: HR + جدول صلاحيات مخصّص. permissionsOverride: JSON ⇒ NULL=اتّبع قالب الدور.
     jobTitle: varchar("jobTitle", { length: 120 }),
     hiredAt: date("hiredAt"),

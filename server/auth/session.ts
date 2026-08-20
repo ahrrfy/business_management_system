@@ -249,6 +249,12 @@ export async function getSessionContext(req: Request): Promise<SessionContext> {
   const user = rows[0];
   if (!user || !user.isActive) return { user: null, sessionId: null };
 
+  // انتهاء الحساب المؤقّت (0226): يُفحَص هنا لا في الشاشات، فيسقط الوصول من **أوّل طلب**
+  // حتى لو بقيت الجلسة مفتوحة بين يدي صاحبها. `null` = حسابٌ دائم ⇒ لا أثر على القائم.
+  if (user.accessExpiresAt && user.accessExpiresAt.getTime() <= Date.now()) {
+    return { user: null, sessionId: null };
+  }
+
   // إبطال الجلسات (AUTH-02): أيّ توكن iat <= sessionsValidFrom (بالثواني) يُرفض —
   // بما فيه ما صُكّ في **نفس ثانية** الإبطال (يسدّ النافذة العمياء دون الثانية). صاحب
   // الجلسة في تغيير كلمة المرور لا يُطرَد لأنّ الراوتر يُعيد إصدار كوكيه بـiat = validFromSec+1.

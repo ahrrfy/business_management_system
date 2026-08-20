@@ -202,6 +202,9 @@ export default function ProductImageStudio() {
   const [campaignCategoryId, setCampaignCategoryId] = useState("");
   /** تحديدٌ مستقلّ لنطاق الحملة — كان يتشارك `bulkProductIds` مع إسناد المهام، فتتسرّب منتجات حملةٍ إلى إسنادٍ لاحق. */
   const [campaignProductIds, setCampaignProductIds] = useState<number[]>([]);
+  const [tempPhotographerName, setTempPhotographerName] = useState("");
+  /** رمز الدخول المؤقّت — يُعرَض مرّةً واحدة ولا يُسترجَع؛ يُمسح فور إغلاق البطاقة. */
+  const [issuedAccess, setIssuedAccess] = useState<{ name: string; username: string; code: string; expiresAt: Date } | null>(null);
   const [campaignRequiredImages, setCampaignRequiredImages] = useState("1");
   const [campaignAssigneeIds, setCampaignAssigneeIds] = useState<number[]>([]);
   const [taskSearch, setTaskSearch] = useState("");
@@ -452,6 +455,21 @@ export default function ProductImageStudio() {
       notify.ok(result.cancelledCount > 0 ? `أُلغيت ${result.cancelledCount} مهمة${result.remaining > 0 ? ` — تبقّى ${result.remaining}، أعد الإلغاء` : ""}` : "لا مهام غير مسندة في هذه الحملة");
       setBacklogCancelReason("");
       setSelectedId(null);
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const createTemporaryPhotographer = trpc.productStudio.createTemporaryPhotographer.useMutation({
+    onSuccess: async (result) => {
+      setIssuedAccess(result);
+      setTempPhotographerName("");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const revokeTemporaryPhotographers = trpc.productStudio.revokeTemporaryPhotographers.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(result.revoked > 0 ? `أُغلق وصول ${result.revoked} مصوّراً مؤقّتاً` : "لا مصوّرين مؤقّتين نشطين في هذه الحملة");
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -1239,6 +1257,48 @@ export default function ProductImageStudio() {
                       <div className="mt-0.5 font-bold">{value}</div>
                     </div>
                   ))}
+                </div>
+                {/* مصوّرٌ مؤقّت: حسابٌ بصلاحية استوديو فقط ينتهي بانتهاء الحملة. */}
+                <div className="space-y-2 rounded-md border p-3">
+                  <Label htmlFor="studio-temp-photographer">مصوّر مؤقّت (بلا حساب دائم)</Label>
+                  <p className="text-xs text-muted-foreground">حسابٌ بصلاحية استوديو المنتجات وحدها، ينتهي وصوله تلقائياً بموعد الحملة. الرمز يُعرَض مرّةً واحدة فقط.</p>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="min-w-48 flex-1">
+                      <Input id="studio-temp-photographer" value={tempPhotographerName} onChange={(event) => setTempPhotographerName(event.target.value)} placeholder="اسم المصوّر" maxLength={80} />
+                    </div>
+                    <Button
+                      type="button"
+                      className="min-h-11"
+                      disabled={offline || createTemporaryPhotographer.isPending || tempPhotographerName.trim().length < 3}
+                      onClick={() => selectedCampaignId && createTemporaryPhotographer.mutate({ campaignId: selectedCampaignId, name: tempPhotographerName })}
+                    >
+                      <UserCheck aria-hidden className="size-4" /> إنشاء وصول مؤقّت
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="min-h-11"
+                      disabled={offline || revokeTemporaryPhotographers.isPending}
+                      onClick={() => selectedCampaignId && revokeTemporaryPhotographers.mutate({ campaignId: selectedCampaignId })}
+                    >
+                      إغلاق الوصول المؤقّت
+                    </Button>
+                  </div>
+                  {issuedAccess && (
+                    <div role="alert" className="space-y-1 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm">
+                      <p className="font-medium">سلّم هذه البيانات لـ«{issuedAccess.name}» الآن — لن تظهر مرّةً أخرى.</p>
+                      <p>
+                        اسم الدخول: <span className="font-mono">{issuedAccess.username}</span>
+                      </p>
+                      <p>
+                        الرمز: <span className="font-mono text-base">{issuedAccess.code}</span>
+                      </p>
+                      <p className="text-xs text-muted-foreground">ينتهي: {new Date(issuedAccess.expiresAt).toLocaleString("ar-IQ")}</p>
+                      <Button type="button" variant="outline" size="sm" className="min-h-11" onClick={() => setIssuedAccess(null)}>
+                        سلّمتُه — أخفِ الرمز
+                      </Button>
+                    </div>
+                  )}
                 </div>
                 {campaignBoard.data.photographers.length > 0 && (
                   <div className="space-y-1">

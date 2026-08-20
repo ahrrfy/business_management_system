@@ -1506,6 +1506,13 @@
       "when": 1788052276000,
       "tag": "0225_studio_campaign_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "5",
+      "when": 1788052277000,
+      "tag": "0226_user_access_expiry",
+      "breakpoints": true
     }
   ]
 }

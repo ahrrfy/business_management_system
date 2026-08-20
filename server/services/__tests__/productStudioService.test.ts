@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -2258,6 +2258,44 @@ describe("product studio governed workflow", () => {
     expect(board).toMatchObject({ done: 0, remaining: 3 });
     expect(board.breakdown).toMatchObject({ queued: 2, inProgress: 1, awaitingReview: 0, notGenerated: 0 });
     expect(board.photographers).toEqual([expect.objectContaining({ userId: worker.userId, active: 1, done: 0 })]);
+  });
+
+  it("المصوّر المؤقّت: صلاحية استوديو فقط، وانتهاءٌ يتبع الحملة، ورمزٌ يُعرض مرّةً", async () => {
+    const due = new Date(Date.now() + 7 * 24 * 60 * 60_000);
+    const campaign = await createStudioCampaign(manager, { name: "حملة مؤقّتة", status: "ACTIVE", dueAt: due });
+    const issued = await createTemporaryCampaignPhotographer(manager, { campaignId: campaign.campaignId, name: "مصوّر خارجي" });
+
+    // الرمز قويّ لا PIN: عشرون محرفاً بمجموعاتٍ للقراءة.
+    expect(issued.code.replace(/-/g, "")).toHaveLength(20);
+    // MySQL TIMESTAMP يجبر ما دون الثانية (اقتطاعاً أو تقريباً) ⇒ نافذة ثانيةٍ واحدة.
+    expect(Math.abs(issued.expiresAt.getTime() - due.getTime())).toBeLessThanOrEqual(1000);
+
+    const [account] = await db().select().from(s.users).where(eq(s.users.id, issued.userId));
+    expect(account).toMatchObject({ role: "print_operator", branchId: 1, isActive: true });
+    expect(Math.abs(account!.accessExpiresAt!.getTime() - due.getTime())).toBeLessThanOrEqual(1000);
+    // كل الوحدات مغلقة عدا الاستوديو — قالب print_operator وحده يفتح CRM وأوامر الشغل.
+    const perms = account!.permissionsOverride as Record<string, string>;
+    expect(perms.productStudio).toBe("FULL");
+    expect(Object.entries(perms).filter(([key, level]) => key !== "productStudio" && level !== "NONE")).toEqual([]);
+    // ولا يُخزَّن الرمز نصّاً في أيّ عمود.
+    expect(JSON.stringify(account)).not.toContain(issued.code.replace(/-/g, ""));
+    // وأُضيف مصوّراً للحملة تلقائياً.
+    expect(await db().select().from(s.productStudioCampaignAssignees).where(eq(s.productStudioCampaignAssignees.userId, issued.userId))).toHaveLength(1);
+
+    // الإغلاق يُبطل الوصول والجلسات القائمة معاً.
+    await expect(revokeTemporaryCampaignPhotographers(manager, campaign.campaignId)).resolves.toEqual({ revoked: 1 });
+    const [revoked] = await db().select().from(s.users).where(eq(s.users.id, issued.userId));
+    expect(revoked).toMatchObject({ isActive: false });
+    expect(revoked!.accessExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("يرفض إنشاء مصوّر مؤقّت لحملةٍ منتهية أو لغير المدير", async () => {
+    const campaign = await createStudioCampaign(manager, { name: "حملة الرفض", status: "ACTIVE", dueAt: new Date(Date.now() + 86_400_000) });
+    await expect(createTemporaryCampaignPhotographer(worker, { campaignId: campaign.campaignId, name: "محاولة موظف" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(createTemporaryCampaignPhotographer(managerTwo, { campaignId: campaign.campaignId, name: "مدير فرع آخر" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "CANCELLED", reason: "أُلغيت الحملة" });
+    await expect(createTemporaryCampaignPhotographer(manager, { campaignId: campaign.campaignId, name: "بعد الإلغاء" })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("يعزل الإلغاء الجماعي بالفرع", async () => {

@@ -1,15 +1,16 @@
 import { TRPCError } from "@trpc/server";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import { auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import type { PermissionMap } from "@shared/permissions";
-import { hasModuleAccess } from "@shared/permissions";
+import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
 import { foldDigitsSql } from "../lib/similarMatch";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { assertValidImageDataUrl, canonicalImageMime, parseImageDimensions } from "../lib/imageValidation";
 import { assertImageStoreOperationalConfiguration, contentHash, getImageStore, isImageStoreOperational, MAX_PUBLISHED_PRODUCT_IMAGE_BYTES, objectKeyFor, shortHash, studioObjectPrefix } from "../lib/imageStore";
+import { hashPassword } from "../auth/password";
 import { logger } from "../logger";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { isMultiTenantModeActive } from "../db";
@@ -1047,6 +1048,127 @@ export async function createStudioCampaignBacklog(actor: ProductStudioActor, cam
  * «المتبقّي» ليس رقماً واحداً بل ثلاثة أرقامٍ مختلفة المعنى — لم تُصوَّر بعد، وقيد
  * التصوير، وتنتظر اعتمادك. جمعُها في رقمٍ واحد يُخفي أين يقف العمل فعلاً.
  */
+/** سقفٌ افتراضيّ لعمر الحساب المؤقّت حين تكون الحملة بلا موعد — لا حسابَ بلا نهاية. */
+const TEMP_ACCOUNT_FALLBACK_DAYS = 30;
+
+/**
+ * خريطة صلاحيات: **كل شيء مغلق عدا استوديو المنتجات**.
+ * تُبنى بحلّ قالب الدور ثمّ إغلاق كل مفاتيحه — لا بقائمةٍ يدوية تشيخ كلّما أُضيفت وحدة.
+ */
+function studioOnlyPermissions(): PermissionMap {
+  const resolved = resolvePermissions("print_operator", null);
+  const locked: PermissionMap = {};
+  for (const key of Object.keys(resolved)) locked[key] = "NONE";
+  locked.productStudio = "FULL";
+  return locked;
+}
+
+/** طول رمز الدخول المؤقّت — قويٌّ لا PIN. عشرون محرفاً من أبجديةٍ بلا أحرفٍ ملتبسة. */
+const TEMP_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const TEMP_CODE_LENGTH = 20;
+
+function generateTemporaryCode(): string {
+  const bytes = randomBytes(TEMP_CODE_LENGTH);
+  let code = "";
+  for (let i = 0; i < TEMP_CODE_LENGTH; i++) code += TEMP_CODE_ALPHABET[bytes[i]! % TEMP_CODE_ALPHABET.length];
+  // مجموعاتٌ من خمسة للقراءة الصوتيّة عند التسليم.
+  return (code.match(/.{1,5}/g) ?? [code]).join("-");
+}
+
+/**
+ * حسابُ مصوّرٍ مؤقّت لحملةٍ بعينها — بديلُ «PIN مؤقّت» الذي طلبه المالك.
+ *
+ * **لماذا لا PIN:** رمزٌ قصير ليس باباً إلى الاستوديو بل إلى النظام كلّه (نقد، رواتب،
+ * ذمم موردّين) — ومن دخل به يصل إلى ما تصله صلاحيته. البديل يعطي الفائدة نفسها بلا
+ * الثغرة: حسابٌ حقيقيّ يمرّ بمسار المصادقة المُحصَّن نفسه، برمزٍ **مولَّدٍ قويّ** يُعرَض
+ * مرّةً واحدة، وبصلاحيةٍ زمنيّة تنتهي وحدها.
+ *
+ * ثلاثة قيود تجعله آمناً:
+ * ١) `permissionsOverride` يُغلق **كل** الوحدات ويفتح `productStudio` وحدها — قالب
+ *    `print_operator` وحده يفتح CRM وأوامر الشغل وغيرها، وهو أوسع بكثير من مصوّرٍ مؤقّت.
+ * ٢) `accessExpiresAt` يُفرَض مركزياً في الجلسة ⇒ ينغلق الوصول وحده ولو بقيت الجلسة مفتوحة.
+ * ٣) الرمز لا يُخزَّن ولا يُسترجَع — يُعرَض مرّةً للمدير ليسلّمه، وبعدها لا سبيل إليه إلّا التوليد من جديد.
+ */
+export async function createTemporaryCampaignPhotographer(actor: ProductStudioActor, input: { campaignId: number; name: string }) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const name = input.name.trim();
+  if (name.length < 3 || name.length > 80) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المصوّر يجب أن يكون بين ٣ و٨٠ حرفاً" });
+  }
+  const campaign = await loadCampaign(actor, input.campaignId);
+  if (campaign.status !== "ACTIVE" && campaign.status !== "DRAFT") {
+    throw new TRPCError({ code: "CONFLICT", message: "لا يُنشَأ مصوّر مؤقّت لحملةٍ منتهية أو ملغاة" });
+  }
+  // الانتهاء يتبع موعد الحملة، وبسقفٍ افتراضيّ إن كانت بلا موعد — لا حسابَ بلا نهاية.
+  const expiresAt = campaign.dueAt ?? new Date(Date.now() + TEMP_ACCOUNT_FALLBACK_DAYS * 24 * 60 * 60_000);
+  if (expiresAt.getTime() <= Date.now()) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "موعد الحملة مضى؛ حدّثه قبل إنشاء مصوّر مؤقّت" });
+  }
+  const code = generateTemporaryCode();
+  const passwordHash = await hashPassword(code);
+  const username = `cam-${input.campaignId}-${randomBytes(4).toString("hex")}`;
+  const result = await withStudioTx(async (tx) => {
+    const [created] = await tx
+      .insert(users)
+      .values({
+        openId: `studio-temp:${username}`,
+        name,
+        username,
+        passwordHash,
+        role: "print_operator",
+        branchId: Number(campaign.branchId),
+        isActive: true,
+        accessExpiresAt: expiresAt,
+        // كل الوحدات مغلقة عدا الاستوديو — القالب وحده أوسع من الحاجة بكثير.
+        permissionsOverride: studioOnlyPermissions(),
+      })
+      .$returningId();
+    const userId = Number(created.id);
+    await tx.insert(productStudioCampaignAssignees).values({ campaignId: input.campaignId, userId, createdBy: actor.userId });
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: Number(campaign.branchId),
+      action: "productStudio.campaign.temporaryPhotographer",
+      entityType: "productStudioCampaign",
+      entityId: String(input.campaignId),
+      newValue: { temporaryUserId: userId, name, username, expiresAt: expiresAt.toISOString() },
+    });
+    return { userId, username };
+  });
+  // الرمز يُعاد مرّةً واحدة فقط — لا يُخزَّن نصّاً ولا يُسترجَع لاحقاً.
+  return { ...result, name, code, expiresAt };
+}
+
+/**
+ * إغلاق وصول مصوّري الحملة المؤقّتين فوراً. يُستدعى عند إلغاء الحملة أو إكمالها،
+ * وبطلبٍ صريح من المدير. لا يحذف الحساب — الأثر التدقيقيّ يبقى منسوباً لصاحبه.
+ */
+export async function revokeTemporaryCampaignPhotographers(actor: ProductStudioActor, campaignId: number) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const campaign = await loadCampaign(actor, campaignId);
+  return withStudioTx(async (tx) => {
+    const rows = await tx
+      .select({ userId: users.id })
+      .from(productStudioCampaignAssignees)
+      .innerJoin(users, eq(users.id, productStudioCampaignAssignees.userId))
+      .where(and(eq(productStudioCampaignAssignees.campaignId, campaignId), like(users.openId, "studio-temp:%"), eq(users.isActive, true)));
+    if (rows.length === 0) return { revoked: 0 };
+    const ids = rows.map((row) => Number(row.userId));
+    const now = new Date();
+    // `sessionsValidFrom` يُبطل أيّ توكن قائم فوراً، و`accessExpiresAt` يمنع أيّ دخولٍ جديد.
+    await tx.update(users).set({ accessExpiresAt: now, isActive: false, sessionsValidFrom: now }).where(inArray(users.id, ids));
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: Number(campaign.branchId),
+      action: "productStudio.campaign.revokeTemporary",
+      entityType: "productStudioCampaign",
+      entityId: String(campaignId),
+      newValue: { revoked: ids },
+    });
+    return { revoked: ids.length };
+  });
+}
+
 export async function getStudioCampaignBoard(actor: ProductStudioActor, campaignId: number) {
   const campaign = await loadCampaign(actor, campaignId);
   const db = requireDb();
