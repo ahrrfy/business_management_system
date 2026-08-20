@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { productStudioManagerProcedure, productStudioReadProcedure, productStudioWriteProcedure, router } from "../trpc";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, createStudioCampaign, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, createStudioCampaign, createStudioCampaignBacklog, bindStudioProcessingCandidate, getStudioCandidatePreview, getStudioSourcePreview, getStudioDashboard, getStudioCampaignAnalytics, listStudioAssignees, listStudioCampaigns, listStudioProducts, listStudioProductImages, listStudioTasks, rejectStudioTask, previewStudioCampaignBacklog, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../services/productStudioService";
 
 function actor(ctx: {
   user: {
@@ -37,7 +37,7 @@ export const productStudioRouter = router({
     )
     .query(({ ctx, input }) => listStudioProducts(actor(ctx), input)),
   resolveBarcode: productStudioReadProcedure.input(z.object({ barcode: z.string().trim().min(1).max(64) })).query(({ ctx, input }) => resolveStudioBarcode(actor(ctx), input.barcode)),
-  productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ input }) => listStudioProductImages(input.productId)),
+  productImages: productStudioReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ ctx, input }) => listStudioProductImages(actor(ctx), input.productId)),
   assignees: productStudioManagerProcedure.query(({ ctx }) => listStudioAssignees(actor(ctx))),
   tasks: productStudioReadProcedure
     .input(
@@ -46,8 +46,8 @@ export const productStudioRouter = router({
         limit: z.number().int().min(1).max(100).default(50),
         cursor: z.string().max(1_000).nullable().optional(),
         statuses: z
-          .array(z.enum(["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "APPROVED", "REJECTED", "FAILED", "REVERTED"]))
-          .max(7)
+          .array(z.enum(["ASSIGNED", "IN_PROGRESS", "PENDING_REVIEW", "APPROVED", "REJECTED", "FAILED", "REVERTED", "CANCELLED"]))
+          .max(8)
           .optional(),
         priority: z.array(priority).max(4).optional(),
         overdue: z.boolean().optional(),
@@ -55,6 +55,7 @@ export const productStudioRouter = router({
         productId: z.number().int().positive().optional(),
         campaignId: campaignId.optional(),
         unassigned: z.boolean().optional(),
+        search: z.string().trim().max(80).optional(),
       }),
     )
     .query(({ ctx, input }) => listStudioTasks(actor(ctx), input)),
@@ -76,6 +77,7 @@ export const productStudioRouter = router({
       status: z.enum(["ACTIVE", "COMPLETED", "CANCELLED"]),
       startsAt: z.coerce.date().nullable().optional(),
       dueAt: z.coerce.date().nullable().optional(),
+      reason: z.string().trim().max(500).optional(),
     }))
     .mutation(({ ctx, input }) => transitionStudioCampaign(actor(ctx), input)),
   previewCampaignBacklog: productStudioManagerProcedure.input(z.object({ campaignId })).query(({ ctx, input }) => previewStudioCampaignBacklog(actor(ctx), input.campaignId)),
@@ -174,4 +176,21 @@ export const productStudioRouter = router({
     )
     .mutation(({ ctx, input }) => rejectStudioTask(actor(ctx), input.taskId, input.reason, input.adminOverrideReason, input.expectedRevision)),
   revert: productStudioManagerProcedure.input(z.object({ taskId, expectedRevision })).mutation(({ ctx, input }) => revertStudioTask(actor(ctx), input.taskId, input.expectedRevision)),
+  cancel: productStudioManagerProcedure
+    .input(
+      z.object({
+        taskId,
+        reason: z.string().trim().min(5).max(500),
+        expectedRevision,
+      }),
+    )
+    .mutation(({ ctx, input }) => cancelStudioTask(actor(ctx), input)),
+  cancelCampaignBacklog: productStudioManagerProcedure
+    .input(
+      z.object({
+        campaignId,
+        reason: z.string().trim().min(5).max(500),
+      }),
+    )
+    .mutation(({ ctx, input }) => bulkCancelStudioBacklog(actor(ctx), input)),
 });

@@ -5,6 +5,18 @@ import { TRPCError } from "@trpc/server";
 const DEFAULT_MAX_DIMENSION = 4096;
 
 /**
+ * يوحّد اسم الصيغة عند الحدّ: `image/jpg` ⇐ `image/jpeg`.
+ *
+ * الاسمان يصفان البايتات نفسها، لكنّ `image/jpg` ليس نوعاً مسجَّلاً. كان يُقبَل هنا ويُرفَض
+ * عند المخزن: `extForMime` لا يعرفه فيُنتج مفتاحاً بامتداد `.bin` — يُبطل إزالة التكرار
+ * (نفس البايتات تحت الاسمين ⇒ مفتاحان) — ثمّ يسقط الرفع بخطأ ٥٠٠ بدل خطأ طلبٍ مفهوم،
+ * بعد أن يكون صفّ التجهيز قد أُدرج. التوحيد عند المدخل يُغني عن ترقيع كل مستهلك.
+ */
+export function canonicalImageMime(mime: string): string {
+  return mime.trim().toLowerCase() === "image/jpg" ? "image/jpeg" : mime.trim().toLowerCase();
+}
+
+/**
  * يقرأ أبعاد الصورة من ترويستها (PNG IHDR / JPEG SOFn / WebP VP8·VP8L·VP8X) دون فكّ الصورة كاملةً.
  * يعيد null إن تعذّر التحليل (ترويسة أقصر من المتوقّع/صيغة غير معروفة) ⇒ يتساهل الفاحص عندها
  * (فحص المغناطيس والحجم يبقيان حارسَين). يتعامل فقط مع الصيغ المسموحة (png/jpeg/webp).
@@ -94,11 +106,11 @@ export function assertValidImageDataUrl(
   }
   if (!strictMagic) return;
   const bytes = Buffer.from(base64, "base64");
-  const mime = s.slice(5, s.indexOf(";"));
+  const mime = canonicalImageMime(s.slice(5, s.indexOf(";")));
   const png = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
   const jpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
   const webp = bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
-  if (!((mime === "image/png" && png) || (mime === "image/jpeg" && jpeg) || (mime === "image/jpg" && jpeg) || (mime === "image/webp" && webp))) {
+  if (!((mime === "image/png" && png) || (mime === "image/jpeg" && jpeg) || (mime === "image/webp" && webp))) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "محتوى الصورة لا يطابق صيغتها المعلنة" });
   }
   // حارس «قنبلة البكسلات»: نرفض ما يتجاوز الحدّ في أيّ بُعد. تعذّر التحليل ⇒ تساهل (المغناطيس والحجم يحرسان).

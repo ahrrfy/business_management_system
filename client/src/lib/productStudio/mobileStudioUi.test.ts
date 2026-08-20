@@ -34,7 +34,13 @@ describe("mobile studio workflow", () => {
     expect(adjustStudioReviewZoom(0.5, "out")).toBe(0.5);
   });
 
-  it("keeps mobile task, review, and image actions visible without hover", () => {
+  /**
+   * ⚠️ **حدُّ هذا الاختبار:** يقرأ **نصّ الملفات** ولا يُصيّر شيئاً — فهو شبكةُ ارتدادٍ على
+   * رموزٍ في الشيفرة، لا دليلٌ على أنّ زرّاً يظهر أو لا يحجبه شيء. مرورُه أخضرَ يتعايش مع
+   * شاشةٍ مكسورة تماماً. لا تُعامله كإثباتٍ بصريّ ولا تُوسّعه؛ المنطق القابل للاختبار
+   * فعلاً يُستخرَج إلى هذا الملف ويُختبَر كالدوالّ أعلاه.
+   */
+  it("markup regression net: key mobile tokens still present in source", () => {
     const page = readFileSync(new URL("../../pages/ProductImageStudio.tsx", import.meta.url), "utf8");
     const uploader = readFileSync(new URL("../../components/form/ImageUploader.tsx", import.meta.url), "utf8");
     const picker = readFileSync(new URL("../../components/product-studio/StudioProductPicker.tsx", import.meta.url), "utf8");

@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const PNG_1X1_ALT = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nH0AAAAASUVORK5CYII=";
 const WEBP_1X1 = "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
+/** JPEG أساسيّ ١×١ صالح البصمة والبنية (يبدأ FFD8FF وينتهي FFD9) — لفحص توحيد image/jpg. */
+const JPEG_1X1 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==";
 
 async function attestStudioProcessing(actor: ProductStudioActor, taskId: number, mode: "PRO" | "AI", adminOverrideReason?: string | null): Promise<string> {
   const authorization = await authorizeStudioProcessing(actor, taskId, mode, adminOverrideReason);
@@ -174,9 +176,16 @@ describe("product studio governed workflow", () => {
     });
     expect(campaign.startsAt).toEqual(expect.any(Date));
 
-    await expect(previewStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ count: 2, productIds: [3, 4] });
-    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 2 });
-    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 0 });
+    await expect(previewStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({
+      count: 2,
+      items: [
+        { id: 3, name: "منتج ناقص أول" },
+        { id: 4, name: "منتج ناقص ثان" },
+      ],
+      truncated: false,
+    });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 2, remaining: 0 });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toEqual({ createdCount: 0, remaining: 0 });
 
     const rows = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId));
     expect(rows).toHaveLength(2);
@@ -276,8 +285,16 @@ describe("product studio governed workflow", () => {
     await rejectStudioTask(manager, assigned.taskId, "الخلفية تحتاج تنظيفاً أدق", undefined, 2);
 
     const notices = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
-    expect(notices.map((row) => row.eventKey).sort()).toEqual([`product-studio:${assigned.taskId}:assigned:${worker.userId}`, `product-studio:${assigned.taskId}:rejected:r3`]);
+    expect(notices.map((row) => row.eventKey).sort()).toEqual([`product-studio:${assigned.taskId}:assigned:${worker.userId}:r${assigned.revision}`, `product-studio:${assigned.taskId}:rejected:r3`]);
     expect(new Set(notices.map((row) => row.eventKey)).size).toBe(notices.length);
+
+    // إعادة إسناد المهمة نفسها إلى الموظف نفسه تُشعِره من جديد. بمفتاحٍ بلا مراجعة كان
+    // الإشعار الثاني يُبتلَع بوصفه مكرَّراً فلا يعلم أنّ المهمة عادت إليه.
+    await cancelStudioTask(manager, { taskId: assigned.taskId, reason: "إعادة توزيع العمل" });
+    const reassigned = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const after = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
+    expect(after.filter((row) => row.eventKey.includes(":assigned:"))).toHaveLength(2);
+    expect(after.some((row) => row.eventKey === `product-studio:${reassigned.taskId}:assigned:${worker.userId}:r${reassigned.revision}`)).toBe(true);
   });
 
   it("does not send routine assignment or rejection notices to managers", async () => {
@@ -341,12 +358,33 @@ describe("product studio governed workflow", () => {
         kind: "TASK_ASSIGNED",
       }),
     ]);
+    // المتأخّرات تُجمَّع في إشعارٍ واحد للمدير في اليوم، لا إشعاراً لكل مهمة:
+    // حملةٌ تَسِم آلاف المهام بموعدٍ واحد كانت تُغرق المدير وتُعيد المحاولة كل خمس دقائق.
     expect(managerNotices).toEqual([
       expect.objectContaining({
-        eventKey: expect.stringContaining(":overdue:"),
+        eventKey: `product-studio:overdue-digest:2026-08-19:branch:1:manager:${manager.userId}`,
         kind: "APPROVAL_REQUIRED",
+        body: "لديك 1 مهمة استوديو تجاوزت موعدها.",
       }),
     ]);
+
+    // مهمة متأخرة إضافية في اليوم نفسه لا تُنشئ إشعاراً ثانياً.
+    await db().insert(s.products).values({ id: 4, name: "منتج متأخر ثانٍ" });
+    await db()
+      .insert(s.productImageJobs)
+      .values({
+        productId: 4,
+        branchId: 1,
+        mode: "FLATTEN",
+        status: "ASSIGNED",
+        assignedTo: null,
+        createdBy: manager.userId,
+        activeSlot: 1,
+        dueAt: new Date("2026-08-19T09:00:00.000Z"),
+        revision: 1,
+      });
+    await expect(sendStudioDueNotifications(manager, now)).resolves.toEqual({ createdCount: 0 });
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, manager.userId))).toHaveLength(1);
   });
 
   it("reports campaign progress, first-pass approval, rejection reasons and median cycle time", async () => {
@@ -756,6 +794,14 @@ describe("product studio governed workflow", () => {
       completedToday: 1,
       medianCycleMinutes: 120,
     });
+    // مهمة المنتج ١ حالتها ASSIGNED بلا منفّذ (طابور حملة). لا تُعَدّ عملاً جارياً:
+    // عدُّها كذلك هو ما جعل الإنتاج يعرض «قيد العمل ٤٢٨٥» و«غير المسندة ٤٢٨٥» معاً.
+    expect(dashboard.counts.ASSIGNED).toBe(1);
+    expect(dashboard.ownedCounts.ASSIGNED).toBe(0);
+    expect(dashboard.inProgress).toBe(1);
+    expect(dashboard.active).toBe(3);
+    // المتأخّر بلا منفّذ يظهر في العدّادين، ويُعاد صراحةً كي لا تعرضه الشاشة مشكلتين.
+    expect(dashboard.overdueUnassigned).toBe(1);
   });
 
   it("searches server-side beyond the former 40-row picker limit", async () => {
@@ -1734,6 +1780,372 @@ describe("product studio governed workflow", () => {
         state: "REFERENCED",
       }),
     ]);
+  });
+
+  it("لا يقرأ إثبات النسخ الاحتياطي إلا حين يوجد كائنٌ مؤهَّلٌ للحذف فعلاً", async () => {
+    const bytes = Buffer.from(PNG_1X1.slice(PNG_1X1.indexOf(",") + 1), "base64");
+    const referencedKey = objectKeyFor(contentHash(bytes), "image/png", "single/studio/candidate");
+    await getImageStore().put(referencedKey, bytes, "image/png");
+    const old = new Date(Date.now() - 91 * 24 * 60 * 60_000);
+    await db().insert(s.productImageObjectStaging).values({ objectKey: referencedKey, state: "REFERENCED", referencedAt: old, touchedAt: old });
+    await db().insert(s.productImages).values({
+      productId: 1,
+      url: "/api/img/product/referenced",
+      objectKey: referencedKey,
+      contentHash: contentHash(bytes),
+      mime: "image/png",
+      reviewStatus: "APPROVED",
+      isPrimary: true,
+    });
+    process.env.R2_GC_MODE = "delete";
+    process.env.R2_GC_DELETE_CONFIRM = "DELETE_RETAINED_R2_OBJECTS";
+    const loadDeletionAuthorization = vi.fn(async () => ({ authorize: vi.fn() }));
+
+    // الكائن مرجَعٌ حيّ ⇒ لا مرشّح للحذف. كان الإثبات يُحمَّل في رأس الدالّة دائماً،
+    // وهو قراءةٌ وتجزئةٌ قد تبلغ غيغابايتات — بلا داعٍ إطلاقاً في هذه الحالة.
+    await expect(cleanupStudioStaging(5, { loadDeletionAuthorization })).resolves.toBe(0);
+    expect(loadDeletionAuthorization).not.toHaveBeenCalled();
+    expect((await getImageStore().head(referencedKey)).exists).toBe(true);
+  });
+
+  it("لا يُحمّل الإثبات أكثر من مرّة مهما تعدّد المؤهَّلون في المسح الواحد", async () => {
+    const old = new Date(Date.now() - 91 * 24 * 60 * 60_000);
+    const keys: string[] = [];
+    for (const source of [PNG_1X1, PNG_1X1_ALT, WEBP_1X1]) {
+      const raw = Buffer.from(source.slice(source.indexOf(",") + 1), "base64");
+      const mime = source.startsWith("data:image/webp") ? "image/webp" : "image/png";
+      const key = objectKeyFor(contentHash(raw), mime, "single/studio/candidate");
+      await getImageStore().put(key, raw, mime);
+      await db().insert(s.productImageObjectStaging).values({ objectKey: key, state: "PENDING", referencedAt: old, touchedAt: old });
+      keys.push(key);
+    }
+    process.env.R2_GC_MODE = "delete";
+    process.env.R2_GC_DELETE_CONFIRM = "DELETE_RETAINED_R2_OBJECTS";
+    const authorize = vi.fn();
+    const loadDeletionAuthorization = vi.fn(async () => ({ authorize }));
+
+    await expect(cleanupStudioStaging(10, { loadDeletionAuthorization })).resolves.toBe(3);
+    // ثلاثة حُذفت، والإثبات قُرئ مرّةً واحدة لا ثلاثاً.
+    expect(loadDeletionAuthorization).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalledTimes(3);
+    for (const key of keys) expect((await getImageStore().head(key)).exists).toBe(false);
+    expect(await db().select().from(s.productImageObjectStaging)).toEqual([]);
+  });
+
+  it("keeps the chosen source image and the existing priority when adopting a backlog task", async () => {
+    // مهمة أولى تُنتج صورةً معتمدة تصلح مصدراً لاحقاً.
+    const first = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: worker.userId,
+      sourceImageId: null,
+    });
+    await submitStudioCandidate(worker, {
+      taskId: first.taskId,
+      originalDataUrl: PNG_1X1_ALT,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+    });
+    const { imageId } = await approveStudioTask(manager, first.taskId);
+
+    // مهمة طابور حملة: ASSIGNED بلا منفّذ، بأولوية عاجلة.
+    await db().insert(s.productImageJobs).values({
+      productId: 1,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      priority: "URGENT",
+      revision: 1,
+      templateVersion: 1,
+    });
+
+    const adopted = await assignStudioTask(manager, {
+      productId: 1,
+      assigneeId: worker.userId,
+      sourceImageId: imageId,
+    });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, adopted.taskId));
+    // كانت لقطة المصدر تُهمَل عند التبنّي، فيصطدم المنفّذ بـ«الصورة الأصلية مطلوبة لأول إرسال».
+    expect(row).toMatchObject({
+      assignedTo: worker.userId,
+      sourceImageId: Number(imageId),
+      priority: "URGENT",
+    });
+    expect(row!.originalObjectKey).toEqual(expect.any(String));
+    expect(row!.sourceContentHash).toEqual(expect.any(String));
+    // ومفتاح المصدر يصير مرجَعاً فلا يلتقطه كنس المخزون.
+    expect(await db().select().from(s.productImageObjectStaging).where(eq(s.productImageObjectStaging.objectKey, row!.originalObjectKey!))).toEqual([expect.objectContaining({ state: "REFERENCED" })]);
+    // والمنفّذ يستطيع الإرسال بلا أصلٍ جديد لأنّ الأصل محفوظ.
+    await expect(
+      submitStudioCandidate(worker, {
+        taskId: adopted.taskId,
+        processedDataUrl: PNG_1X1,
+        mode: "FLATTEN",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const [submitted] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, adopted.taskId));
+    expect(submitted).toMatchObject({ status: "PENDING_REVIEW" });
+  });
+
+  it("preserves backlog priority on bulk assign unless the manager states one", async () => {
+    await db().insert(s.productImageJobs).values({
+      productId: 1,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      priority: "URGENT",
+      revision: 1,
+      templateVersion: 1,
+    });
+    await expect(bulkAssignStudioTasks(manager, { productIds: [1], assigneeId: worker.userId })).resolves.toEqual({ createdCount: 1 });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
+    // الحشو بـNORMAL كان يخفض حزمة مهامٍ عاجلة صامتاً لمجرّد أنّ الإسناد الجماعي لم يمرّر أولوية.
+    expect(row).toMatchObject({ assignedTo: worker.userId, priority: "URGENT" });
+  });
+
+  it("يلغي مهمة الطابور فيحرّر المنتج لمهمة جديدة ويحفظ أثر الإلغاء", async () => {
+    await db().insert(s.productImageJobs).values({
+      productId: 1,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+      templateVersion: 1,
+    });
+    const [queued] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 1));
+
+    await expect(cancelStudioTask(manager, { taskId: Number(queued!.id), reason: "قصر" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(cancelStudioTask(worker, { taskId: Number(queued!.id), reason: "حملة وُلِّدت على الفرع الخطأ" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(cancelStudioTask(manager, { taskId: Number(queued!.id), reason: "حملة وُلِّدت على الفرع الخطأ", expectedRevision: 99 })).rejects.toMatchObject({ code: "CONFLICT" });
+
+    await expect(cancelStudioTask(manager, { taskId: Number(queued!.id), reason: "حملة وُلِّدت على الفرع الخطأ", expectedRevision: 1 })).resolves.toEqual({ ok: true, revision: 2 });
+    const [cancelled] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, Number(queued!.id)));
+    expect(cancelled).toMatchObject({
+      status: "CANCELLED",
+      // تفريغ activeSlot هو المقصد: القيد الفريد كان يحتجز المنتج خلف المهمة الخاطئة.
+      activeSlot: null,
+      cancellationReason: "حملة وُلِّدت على الفرع الخطأ",
+      cancelledBy: manager.userId,
+      revision: 2,
+    });
+    expect(cancelled!.cancelledAt).toEqual(expect.any(Date));
+
+    // المنتج صار يقبل مهمة صحيحة بديلة — وهذا ما كان مستحيلاً قبل الإلغاء.
+    await expect(assignStudioTask(manager, { productId: 1, assigneeId: worker.userId })).resolves.toMatchObject({ revision: 1 });
+    // ولا تُلغى مهمة ملغاة مرّتين.
+    await expect(cancelStudioTask(manager, { taskId: Number(queued!.id), reason: "محاولة ثانية للإلغاء" })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("يمنع إلغاء المهمة المعتمدة ويوجّه إلى استرجاع الأصل", async () => {
+    const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId, sourceImageId: null });
+    await submitStudioCandidate(worker, {
+      taskId: task.taskId,
+      originalDataUrl: PNG_1X1_ALT,
+      processedDataUrl: PNG_1X1,
+      mode: "FLATTEN",
+    });
+    await approveStudioTask(manager, task.taskId);
+    await expect(cancelStudioTask(manager, { taskId: task.taskId, reason: "إلغاء مهمة منشورة" })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("يلغي طابور الحملة جماعياً بلا مساس بعملٍ بدأه موظف", async () => {
+    await db()
+      .insert(s.products)
+      .values([
+        { id: 3, name: "منتج ثالث" },
+        { id: 4, name: "منتج رابع" },
+      ]);
+    const campaign = await createStudioCampaign(manager, { name: "حملة خاطئة", status: "ACTIVE" });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ createdCount: 4 });
+
+    // موظف بدأ العمل على إحداها: تُسنَد ثم تنتقل إلى IN_PROGRESS.
+    await assignStudioTask(manager, { productId: 3, assigneeId: worker.userId });
+    const [started] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.productId, 3));
+    await saveStudioDraft(worker, { taskId: Number(started!.id), proposedName: "اسم مقترح", expectedRevision: Number(started!.revision) });
+
+    await expect(bulkCancelStudioBacklog(manager, { campaignId: campaign.campaignId, reason: "الحملة وُلِّدت بنطاقٍ خاطئ" })).resolves.toEqual({ cancelledCount: 3, remaining: 0 });
+
+    const rows = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId));
+    const byProduct = new Map(rows.map((row) => [Number(row.productId), row]));
+    // الثلاثة غير المسنَدة أُلغيت وحُرِّرت خانتها.
+    for (const productId of [1, 2, 4]) {
+      expect(byProduct.get(productId)).toMatchObject({ status: "CANCELLED", activeSlot: null, cancelledBy: manager.userId });
+    }
+    // وعملُ الموظف لم يُمَسّ: الإلغاء الجماعيّ لا يمحو ما بدأه أحد.
+    expect(byProduct.get(3)).toMatchObject({ status: "IN_PROGRESS", assignedTo: worker.userId, activeSlot: 1, cancelledAt: null });
+
+    // النداء الثاني لا يجد ما يُلغيه.
+    await expect(bulkCancelStudioBacklog(manager, { campaignId: campaign.campaignId, reason: "الحملة وُلِّدت بنطاقٍ خاطئ" })).resolves.toEqual({ cancelledCount: 0, remaining: 0 });
+    // والملغاة تظهر في السجلّ لا تختفي.
+    expect((await listStudioTasks(manager, { scope: "HISTORY" })).items.filter((item) => item.status === "CANCELLED")).toHaveLength(3);
+  });
+
+  it("إلغاء الحملة يجرّ طابورها ويُبقي عمل الموظف", async () => {
+    await db()
+      .insert(s.products)
+      .values([
+        { id: 3, name: "منتج ثالث" },
+        { id: 4, name: "منتج رابع" },
+      ]);
+    const campaign = await createStudioCampaign(manager, { name: "حملة تُلغى", status: "ACTIVE" });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ createdCount: 4 });
+    await assignStudioTask(manager, { productId: 3, assigneeId: worker.userId });
+
+    await expect(transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "CANCELLED", reason: "الحملة أُنشئت بالخطأ" })).resolves.toMatchObject({
+      status: "CANCELLED",
+      // ثلاثةٌ غير مسنَدة تُلغى مع الحملة؛ المُسنَدة لا.
+      cancelledTasks: 3,
+      remainingTasks: 0,
+    });
+
+    const rows = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId));
+    const byProduct = new Map(rows.map((row) => [Number(row.productId), row]));
+    for (const productId of [1, 2, 4]) {
+      expect(byProduct.get(productId)).toMatchObject({
+        status: "CANCELLED",
+        activeSlot: null,
+        cancellationReason: "الحملة أُنشئت بالخطأ",
+        cancelledBy: manager.userId,
+      });
+    }
+    // عملُ الموظف لم يُمَسّ بقرارٍ إداريّ على الحملة.
+    expect(byProduct.get(3)).toMatchObject({ status: "ASSIGNED", assignedTo: worker.userId, activeSlot: 1, cancelledAt: null });
+    // والمنتجات المحرَّرة تقبل مهاماً جديدة رغم أنّ حملتها ملغاة.
+    await expect(assignStudioTask(manager, { productId: 4, assigneeId: worker.userId })).resolves.toMatchObject({ revision: 1 });
+  });
+
+  it("إكمال الحملة لا يلغي شيئاً، وبلا سببٍ صريح يُنسَب الإلغاء إلى الحملة", async () => {
+    const campaign = await createStudioCampaign(manager, { name: "حملة القياس", status: "ACTIVE" });
+    await expect(createStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ createdCount: 2 });
+
+    // الإكمال حالةٌ نهائية أخرى ولا يجرّ إلغاءً.
+    await expect(transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "COMPLETED" })).resolves.toMatchObject({ cancelledTasks: 0, remainingTasks: 0 });
+    expect((await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId))).every((row) => row.status === "ASSIGNED")).toBe(true);
+
+    const second = await createStudioCampaign(manager, { name: "حملة بلا سبب", status: "ACTIVE" });
+    await transitionStudioCampaign(manager, { campaignId: second.campaignId, status: "CANCELLED" });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, second.campaignId));
+    // لا مهام لهذه الحملة، لكن العقد يبقى: السبب المشتقّ يسمّي الحملة حين لا يكتب المدير سبباً.
+    expect(row).toBeUndefined();
+    expect((await db().select().from(s.productStudioCampaigns).where(eq(s.productStudioCampaigns.id, second.campaignId)))[0]).toMatchObject({ status: "CANCELLED" });
+  });
+
+  it("يوقف الإرسال عند بلوغ سقف العدد اليوميّ للمنفّذ", async () => {
+    const previous = process.env.PRODUCT_STUDIO_SUBMIT_DAILY_LIMIT;
+    process.env.PRODUCT_STUDIO_SUBMIT_DAILY_LIMIT = "2";
+    try {
+      const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+      await submitStudioCandidate(worker, { taskId: task.taskId, originalDataUrl: PNG_1X1_ALT, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+      await rejectStudioTask(manager, task.taskId, "أعد المحاولة بخلفية أوضح");
+      await submitStudioCandidate(worker, { taskId: task.taskId, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+      await rejectStudioTask(manager, task.taskId, "أعد المحاولة مرة أخرى");
+
+      // الثالث يتجاوز السقف ⇒ يُرفض **قبل** أي كتابة في المخزن.
+      await expect(submitStudioCandidate(worker, { taskId: task.taskId, processedDataUrl: PNG_1X1, mode: "FLATTEN" })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+
+      const [quota] = await db().select().from(s.productStudioSubmitQuota).where(eq(s.productStudioSubmitQuota.userId, worker.userId));
+      expect(quota).toMatchObject({ submitCount: 2 });
+      expect(Number(quota!.bytesWritten)).toBeGreaterThan(0);
+
+      // السقف لكل منفّذ لا للشركة: زميلٌ آخر لا يتأثر برصيد غيره.
+      const otherTask = await assignStudioTask(manager, { productId: 2, assigneeId: otherWorker.userId });
+      await expect(submitStudioCandidate(otherWorker, { taskId: otherTask.taskId, originalDataUrl: PNG_1X1_ALT, processedDataUrl: PNG_1X1, mode: "FLATTEN" })).resolves.toMatchObject({ ok: true });
+
+      // ولم تُترك حجزُ رفعٍ معلّقة على المهمة المرفوضة.
+      const [blocked] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, task.taskId));
+      expect(blocked).toMatchObject({ uploadLeaseToken: null, status: "REJECTED" });
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_STUDIO_SUBMIT_DAILY_LIMIT;
+      else process.env.PRODUCT_STUDIO_SUBMIT_DAILY_LIMIT = previous;
+    }
+  });
+
+  it("يوقف الإرسال عند بلوغ سقف الحجم اليوميّ ولو بقي العدد متاحاً", async () => {
+    const previousMb = process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB;
+    // أصغر سقف ممكن (١ ميغابايت) مع رصيدٍ مستهلكٍ سلفاً: الحجم يمنع وحده.
+    process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB = "1";
+    try {
+      await db().insert(s.productStudioSubmitQuota).values({
+        usageDate: new Date().toISOString().slice(0, 10),
+        userId: worker.userId,
+        submitCount: 1,
+        bytesWritten: 1024 * 1024,
+      });
+      const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+      await expect(submitStudioCandidate(worker, { taskId: task.taskId, originalDataUrl: PNG_1X1_ALT, processedDataUrl: PNG_1X1, mode: "FLATTEN" })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+      // العدد لم يبلغ سقفه (١ من ٢٠٠) — المانع هو الحجم، والرصيد لم يُستهلك بالمحاولة المرفوضة.
+      const [quota] = await db().select().from(s.productStudioSubmitQuota).where(eq(s.productStudioSubmitQuota.userId, worker.userId));
+      expect(quota).toMatchObject({ submitCount: 1 });
+    } finally {
+      if (previousMb === undefined) delete process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB;
+      else process.env.PRODUCT_STUDIO_SUBMIT_DAILY_MB = previousMb;
+    }
+  });
+
+  it("لوحة المنفّذ تُعلن نطاقها الشخصيّ ولا تعرض صفراً كاذباً لما لا ينطبق", async () => {
+    await db().insert(s.products).values({ id: 3, name: "منتج ثالث" });
+    await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await assignStudioTask(manager, { productId: 3, assigneeId: otherWorker.userId });
+    await db().insert(s.productImageJobs).values({
+      productId: 2,
+      branchId: 1,
+      mode: "FLATTEN",
+      status: "ASSIGNED",
+      assignedTo: null,
+      createdBy: manager.userId,
+      activeSlot: 1,
+      revision: 1,
+      templateVersion: 1,
+    });
+
+    const mine = await getStudioDashboard(worker);
+    // مهمةٌ واحدة له، لا الثلاث التي في الفرع — والعنوان يجب أن يقول ذلك.
+    expect(mine).toMatchObject({ scopeKind: "PERSONAL", inProgress: 1, active: 1 });
+    // «غير المسندة» في نطاقٍ شخصيّ شرطٌ متناقض (مسنَدةٌ لي وغير مسنَدة معاً) ⇒ لا ينطبق لا صفر.
+    expect(mine.unassigned).toBeNull();
+    expect(mine.overdueUnassigned).toBeNull();
+
+    const branch = await getStudioDashboard(manager);
+    expect(branch).toMatchObject({ scopeKind: "BRANCH", inProgress: 2, unassigned: 1, active: 3 });
+    expect(await getStudioDashboard(admin)).toMatchObject({ scopeKind: "ALL" });
+  });
+
+  it("صور المنتج لا تُقرأ بلا فاعل مخوَّل", async () => {
+    await expect(listStudioProductImages(worker, 1)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(listStudioProductImages(manager, 1)).resolves.toEqual([]);
+    await expect(listStudioProductImages(auditor, 1)).resolves.toEqual([]);
+  });
+
+  it("يقبل image/jpg ويخزّنه باسمه القياسيّ بلا مفتاحٍ بامتداد bin", async () => {
+    const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    const jpgDataUrl = JPEG_1X1.replace("data:image/jpeg;", "data:image/jpg;");
+    await expect(
+      submitStudioCandidate(worker, {
+        taskId: task.taskId,
+        originalDataUrl: jpgDataUrl,
+        processedDataUrl: JPEG_1X1,
+        mode: "FLATTEN",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, task.taskId));
+    // كان الاسم غير القياسيّ يُنتج مفتاح `.bin` (يُبطل إزالة التكرار) ثمّ يسقط بخطأ ٥٠٠.
+    expect(row!.originalMime).toBe("image/jpeg");
+    expect(row!.originalObjectKey).toMatch(/\.jpg$/);
+    expect(row!.originalObjectKey).not.toMatch(/\.bin$/);
+  });
+
+  it("يعزل الإلغاء الجماعي بالفرع", async () => {
+    const campaign = await createStudioCampaign(manager, { name: "حملة فرع واحد", status: "ACTIVE" });
+    await expect(bulkCancelStudioBacklog(managerTwo, { campaignId: campaign.campaignId, reason: "محاولة من فرعٍ آخر" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(bulkCancelStudioBacklog(worker, { campaignId: campaign.campaignId, reason: "محاولة من موظف" })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("rejects reverting an older job after a newer job published identical bytes", async () => {

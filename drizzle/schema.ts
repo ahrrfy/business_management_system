@@ -3295,6 +3295,9 @@ export const productImages = mysqlTable(
   (table) => ({
     prodIdx: index("idx_pimg_product").on(table.productId),
     variantIdx: index("idx_pimg_variant").on(table.variantId),
+    // نفس سبب فهرسة مفاتيح المهام: إثبات غياب المرجع قبل الحذف.
+    objectKeyIdx: index("idx_pimg_object_key").on(table.objectKey),
+    originalKeyIdx: index("idx_pimg_original_key").on(table.originalKey),
   }),
 );
 
@@ -3382,6 +3385,8 @@ export const productImageJobs = mysqlTable(
       "REJECTED",
       "FAILED",
       "REVERTED",
+      /** أُلغيت بقرار مدير موثَّق: حالة نهائية تُفرغ activeSlot فيعود المنتج قابلاً لمهمة جديدة. */
+      "CANCELLED",
     ])
       .default("PENDING_REVIEW")
       .notNull(),
@@ -3397,6 +3402,9 @@ export const productImageJobs = mysqlTable(
     createdBy: int("createdBy").references(() => users.id), // users.id = int (لا bigint)
     assignedTo: int("assignedTo").references(() => users.id),
     assignedBy: int("assignedBy").references(() => users.id),
+    /** لحظةُ تسليم المهمة لمنفّذ. زمنُ الدورة يُقاس منها لا من الإنشاء: مهامُ الحملة
+        تُولَد بالآلاف في لحظةٍ واحدة، فقياسُها من الإنشاء يُبلّغ عمرَ الطابور لا زمنَ العمل. */
+    assignedAt: timestamp("assignedAt"),
     reviewedBy: int("reviewedBy").references(() => users.id),
     /** فتحة فريدة للمهمة النشطة: 1 أثناء العمل، NULL بعد الإغلاق؛ تمنع مهمتين لمنتج واحد. */
     activeSlot: tinyint("activeSlot"),
@@ -3415,6 +3423,11 @@ export const productImageJobs = mysqlTable(
     proposedDescription: text("proposedDescription"),
     proposedMarketingCopy: text("proposedMarketingCopy"),
     rejectionReason: varchar("rejectionReason", { length: 500 }),
+    /** أثر الإلغاء على الصفّ نفسه — لا يُحمَّل على rejectionReason فمعناهما مختلف:
+        «أعِدها للتعديل» ≠ «هذه المهمة لن تُنفَّذ». */
+    cancellationReason: varchar("cancellationReason", { length: 500 }),
+    cancelledBy: int("cancelledBy").references(() => users.id),
+    cancelledAt: timestamp("cancelledAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     submittedAt: timestamp("submittedAt"),
@@ -3435,6 +3448,10 @@ export const productImageJobs = mysqlTable(
     ),
     submitterStatusIdx: index("idx_pijob_submitter_status").on(table.submittedBy, table.status),
     oneActivePerProduct: unique("uq_pijob_product_active").on(table.productId, table.activeSlot),
+    // كنس المخزن يسأل «هل ما زال لهذا المفتاح مرجع؟» لكل مرشّح تحت قفل؛ بلا فهرسٍ
+    // كان كلّ سؤالٍ مسحاً كاملاً للجدول.
+    originalKeyIdx: index("idx_pijob_original_key").on(table.originalObjectKey),
+    processedKeyIdx: index("idx_pijob_processed_key").on(table.processedObjectKey),
   }),
 );
 
@@ -3442,6 +3459,33 @@ export type ProductImageJob = typeof productImageJobs.$inferSelect;
 export type InsertProductImageJob = typeof productImageJobs.$inferInsert;
 
 /** سجل ثابت المفتاح لكنس كائنات الرفع التي لم تُربط بصف DB بعد فشل/انقطاع. */
+/**
+ * سقف الإرسال اليوميّ لكل منفّذ في استوديو المنتجات.
+ *
+ * حارس الاستهلاك القائم يغطّي المزوّدين المدفوعين وحدهم؛ ومسار الإرسال المجّاني
+ * (FLATTEN/CUT) كان بلا أيّ سقف: كل إرسال يكتب حتى كائنَين معنونَين بمحتواهما — لا
+ * يُستبدَلان أبداً ولا يُستردّان (الكنس معطَّل افتراضياً) — فسقفه الوحيد كان محدّد
+ * المعدّل العامّ للـIP.
+ *
+ * العدّ بالبايتات لا بعدد النداءات وحده: الكلفة تخزينٌ لا استدعاء.
+ */
+export const productStudioSubmitQuota = mysqlTable(
+  "productStudioSubmitQuota",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** يوم UTC — نفس حدّ اليوم المعتمد في هذه الوحدة (businessDay). */
+    usageDate: date("usageDate", { mode: "string" }).notNull(),
+    userId: int("userId").notNull().references(() => users.id),
+    submitCount: int("submitCount").default(0).notNull(),
+    bytesWritten: bigint("bytesWritten", { mode: "number" }).default(0).notNull(),
+    lastSubmittedAt: timestamp("lastSubmittedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userDayUq: unique("uq_pssq_user_day").on(table.usageDate, table.userId),
+  }),
+);
+
 export const productImageObjectStaging = mysqlTable(
   "productImageObjectStaging",
   {
