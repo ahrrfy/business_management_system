@@ -6,7 +6,17 @@ import { getCurrentCompanyId } from "../tenancy/context";
 import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { cleanupStudioStaging } from "./productStudioService";
 
-const SWEEP_BATCH = 25;
+/**
+ * حجم المسح لكل دورة. رُفع من ٢٥ وصارت الدورة ساعيةً لا كل ٦ ساعات، لأنّ الكنس أُخرج
+ * من مسار طلب الإرسال (كان يُستدعى بعد كل إرسال ناجح) فلم يعد له رافدٌ آخر — و٢٥ كل
+ * ٦ ساعات = ١٠٠ كائنٍ يومياً، لا تُفرّغ متراكماً حقيقياً أبداً.
+ */
+function boundedEnvInt(name: string, fallback: number, minimum: number, maximum: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value >= minimum && value <= maximum ? value : fallback;
+}
+
+const SWEEP_BATCH = boundedEnvInt("PRODUCT_STUDIO_STAGING_SWEEP_BATCH", 100, 1, 500);
 
 /** دورة صغيرة محدودة لكل شركة؛ الدورات اللاحقة تواصل التفريغ بلا ضغط مفاجئ على R2 أو MySQL. */
 export async function sweepProductStudioStagingOnce(): Promise<number> {
@@ -30,7 +40,7 @@ export function startProductStudioStagingWorker(): void {
   void sweepProductStudioStagingOnce()
     .then((removed) => removed > 0 && logger.info({ removed }, "productStudio.staging.swept"))
     .catch((error) => logger.warn({ err: error }, "productStudio.staging.startup_sweep_failed"));
-  task = cron.schedule("17 */6 * * *", async () => {
+  task = cron.schedule("17 * * * *", async () => {
     if (running) return;
     running = true;
     try {

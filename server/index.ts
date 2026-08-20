@@ -666,6 +666,7 @@ async function startServer() {
   let stopStorefrontPushCampaignWorker: (() => void) | null = null;
   let stopDeliveryOutboxWorker: (() => void) | null = null;
   let stopProductStudioStagingWorker: (() => void) | null = null;
+  let stopProductStudioNotificationWorker: (() => void) | null = null;
   let stopOnlineOrderExpirySweeper: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
@@ -701,6 +702,14 @@ async function startServer() {
     const studioStaging = await import("./services/productStudioStagingWorker");
     studioStaging.startProductStudioStagingWorker();
     stopProductStudioStagingWorker = studioStaging.stopProductStudioStagingWorker;
+
+    // تنبيهات مواعيد الاستوديو: عامل 0 فقط، كل خمس دقائق، ومفاتيح الحدث تمنع التكرار.
+    const studioNotifications = await import(
+      "./services/productStudioNotificationWorker"
+    );
+    studioNotifications.startProductStudioNotificationWorker();
+    stopProductStudioNotificationWorker =
+      studioNotifications.stopProductStudioNotificationWorker;
 
     // ش٢ (ق٤): كنّاس مسوّدات المحطة — يطوي الفارغة المنقضية (٢٤س بلا نشاط) ليلاً وعلى الإقلاع؛
     // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
@@ -753,6 +762,7 @@ async function startServer() {
       stopStorefrontPushCampaignWorker?.();
       stopDeliveryOutboxWorker?.();
       stopProductStudioStagingWorker?.();
+      stopProductStudioNotificationWorker?.();
       stopOnlineOrderExpirySweeper?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();

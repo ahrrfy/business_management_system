@@ -3,13 +3,21 @@ import { ConfirmHost } from "@/components/ConfirmHost";
 import { Toaster } from "@/components/ui/sonner";
 import { InteractionDraftSafety } from "@/components/InteractionDraftSafety";
 import { PwaUpdateManager } from "@/components/PwaUpdateManager";
-import { initConnectivity, noteRequestFailure, noteRequestSuccess } from "@/lib/offline/connectivity";
+import {
+  initConnectivity,
+  isDisconnected,
+  noteRequestFailure,
+  noteRequestSuccess,
+  useConnectivity,
+} from "@/lib/offline/connectivity";
+import { shouldMountGlobalStudioTools } from "@/lib/productStudio/coldOfflinePolicy";
 import { trpc } from "@/lib/trpc";
 import { UNAUTHED_ERR_MSG } from "@shared/const";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { ThemeProvider } from "next-themes";
 import { createRoot } from "react-dom/client";
+import { useLocation } from "wouter";
 import superjson from "superjson";
 import App from "./App";
 // خط Cairo مستضاف محلياً (بلا اعتماد على Google Fonts CDN) ⇒ يعمل النظام كاملاً بلا إنترنت.
@@ -22,6 +30,24 @@ import "./index.css";
 import "./lib/theme/tokens.css";
 import "./lib/theme/comfort.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
+
+/** أدوات عامة قد تفتح بحثاً/مسحاً شبكياً؛ لا تُركب على Studio البارد. */
+function GlobalOverlays() {
+  const [loc] = useLocation();
+  const connectivity = useConnectivity();
+  const offline =
+    isDisconnected(connectivity) ||
+    (typeof navigator !== "undefined" && !navigator.onLine);
+  return (
+    <>
+      {shouldMountGlobalStudioTools({ location: loc, offline }) && (
+        <CommandPalette />
+      )}
+      <ConfirmHost />
+      <Toaster richColors position="top-center" dir="rtl" />
+    </>
+  );
+}
 
 // إعدادات عامة لكل استعلامات النظام (كانت `new QueryClient()` الخام ⇒ افتراضات v5:
 // staleTime=0 + refetchOnWindowFocus + retry=3 بتراجع أُسّي). على VPS مشترك ببيانات
@@ -116,9 +142,7 @@ createRoot(document.getElementById("root")!).render(
         <App />
         <InteractionDraftSafety />
         <PwaUpdateManager />
-        <CommandPalette />
-        <ConfirmHost />
-        <Toaster richColors position="top-center" dir="rtl" />
+        <GlobalOverlays />
       </ThemeProvider>
     </QueryClientProvider>
   </trpc.Provider>

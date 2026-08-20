@@ -24,6 +24,8 @@ interface Props {
   onProcessingReceiptChange?: (receipt: string | null) => void;
   onStudioBusyChange?: (busy: boolean) => void;
   adminOverrideReason?: string;
+  /** يعمل المحرر المحلي فقط؛ لا تُقرأ إعدادات مزود الصورة ولا تُستدعى أثناء الانقطاع. */
+  offline?: boolean;
   /** المنتج موجود في القاعدة ويمكن إنشاء مهمة له فوراً. */
   productExists?: boolean;
 }
@@ -45,6 +47,7 @@ export function ProductMediaContentSection({
   onProcessingReceiptChange,
   onStudioBusyChange,
   adminOverrideReason,
+  offline = false,
   productExists = false,
 }: Props) {
   const capturedIds = useRef(new Set<string>());
@@ -52,7 +55,9 @@ export function ProductMediaContentSection({
     // أي تعديل/رفع يدوي يبطل receipt سابقاً؛ اعتماد معاينة Pro/AI يعيده فوراً من المكوّن بعد onChange.
     onProcessingReceiptChange?.(null);
     if (onOriginalCaptured) {
-      const fresh = next.find((item) => !capturedIds.current.has(item.id) && item.dataUrl);
+      const fresh = next.find(
+        (item) => !capturedIds.current.has(item.id) && item.dataUrl,
+      );
       if (fresh) {
         capturedIds.current.add(fresh.id);
         onOriginalCaptured(fresh.dataUrl);
@@ -96,36 +101,74 @@ export function ProductMediaContentSection({
           </div>
         )}
         {studioTaskId != null ? (
-          <ImageStudioUploader value={images} onChange={handleImages} maxItems={maxImages} hint={hint} onStudioModeChange={onStudioModeChange} studioTaskId={studioTaskId} onProcessingReceiptChange={onProcessingReceiptChange} onBusyChange={onStudioBusyChange} adminOverrideReason={adminOverrideReason} />
+          <ImageStudioUploader
+            value={images}
+            onChange={handleImages}
+            maxItems={maxImages}
+            hint={hint}
+            onStudioModeChange={onStudioModeChange}
+            studioTaskId={studioTaskId}
+            onProcessingReceiptChange={onProcessingReceiptChange}
+            onBusyChange={onStudioBusyChange}
+            adminOverrideReason={adminOverrideReason}
+            offline={offline}
+          />
         ) : (
           <div className="space-y-3">
             <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0 text-sm">
-                <p className="font-medium">إضافة الصور واستبدالها تتم عبر استوديو صور المنتجات.</p>
+                <p className="font-medium">
+                  إضافة الصور واستبدالها تتم عبر استوديو صور المنتجات.
+                </p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {productExists ? "افتح الاستوديو وأنشئ مهمة مراجعة لهذا المنتج." : "احفظ المنتج أولاً، ثم افتح الاستوديو وأنشئ مهمة مراجعة له."}
+                  {productExists
+                    ? "افتح الاستوديو وأنشئ مهمة مراجعة لهذا المنتج."
+                    : "احفظ المنتج أولاً، ثم افتح الاستوديو وأنشئ مهمة مراجعة له."}
                 </p>
               </div>
-              <Button asChild type="button" variant="outline" className="w-full shrink-0 sm:w-auto">
-                <Link href="/catalog/image-studio"><Images aria-hidden className="size-4" /> فتح استوديو الصور</Link>
+              <Button
+                asChild
+                type="button"
+                variant="outline"
+                className="w-full shrink-0 sm:w-auto"
+              >
+                <Link href="/catalog/image-studio">
+                  <Images aria-hidden className="size-4" /> فتح استوديو الصور
+                </Link>
               </Button>
             </div>
             {images.length > 0 && (
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-5">
                 {images.map((image, index) => (
-                  <div key={image.id} className="overflow-hidden rounded-md border bg-card">
+                  <div
+                    key={image.id}
+                    className="overflow-hidden rounded-md border bg-card"
+                  >
                     <div className="relative aspect-square bg-muted/30">
-                      <img src={image.dataUrl || image.url} alt={`صورة المنتج ${index + 1}`} className="size-full object-cover" />
-                      {image.isPrimary && <span className="absolute right-1 top-1 rounded bg-primary px-1.5 py-0.5 text-[10px] text-primary-foreground">رئيسية</span>}
+                      <img
+                        src={image.dataUrl || image.url}
+                        alt={`صورة المنتج ${index + 1}`}
+                        className="size-full object-cover"
+                      />
+                      {image.isPrimary && (
+                        <span className="absolute right-1 top-1 rounded bg-primary px-1.5 py-0.5 text-[10px] text-primary-foreground">
+                          رئيسية
+                        </span>
+                      )}
                     </div>
                     <button
                       type="button"
                       className="flex min-h-9 w-full items-center justify-center gap-1 border-t px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-                      onClick={() => onImagesChange?.(images.filter((item) => item.id !== image.id))}
+                      onClick={() =>
+                        onImagesChange?.(
+                          images.filter((item) => item.id !== image.id),
+                        )
+                      }
                       disabled={!onImagesChange}
                       aria-label={`إزالة صورة المنتج ${index + 1} عند الحفظ`}
                     >
-                      <Trash2 aria-hidden className="size-3.5" /> إزالة عند الحفظ
+                      <Trash2 aria-hidden className="size-3.5" /> إزالة عند
+                      الحفظ
                     </button>
                   </div>
                 ))}

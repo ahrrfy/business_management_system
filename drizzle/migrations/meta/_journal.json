@@ -1457,6 +1457,55 @@
       "when": 1788052260000,
       "tag": "0209_product_studio_sod",
       "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "5",
+      "when": 1788052261000,
+      "tag": "0210_product_studio_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "5",
+      "when": 1788052262000,
+      "tag": "0211_product_studio_campaigns",
+      "breakpoints": true
+    },
+    {
+      "idx": 212,
+      "version": "5",
+      "when": 1788052263000,
+      "tag": "0212_product_studio_cancel",
+      "breakpoints": true
+    },
+    {
+      "idx": 213,
+      "version": "5",
+      "when": 1788052264000,
+      "tag": "0213_product_studio_submit_quota",
+      "breakpoints": true
+    },
+    {
+      "idx": 214,
+      "version": "5",
+      "when": 1788052265000,
+      "tag": "0214_product_studio_gc_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "5",
+      "when": 1788052266000,
+      "tag": "0215_product_studio_assigned_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "5",
+      "when": 1788052277000,
+      "tag": "0226_price_wave_revert",
+      "breakpoints": true
     }
   ]
 }
