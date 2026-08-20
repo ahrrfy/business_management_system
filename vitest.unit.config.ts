@@ -135,6 +135,7 @@ export default defineConfig({
       "server/services/__tests__/dayHours.test.ts",
       "scripts/__tests__/auditPayrollReadOnly.test.ts",
       "scripts/provision-worker-runtime-policy.test.ts",
+      "scripts/__tests__/hrBridgeIntentLock.test.ts",
     ],
   },
 });
