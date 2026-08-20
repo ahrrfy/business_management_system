@@ -92,6 +92,13 @@ export function ProductCustomizationTemplateEditor({ productId, enabled }: { pro
     onSuccess: () => setStatus("تم حفظ قالب التخصيص بنجاح."),
     onError: (error) => setStatus(error.message),
   });
+  const setActive = trpc.catalog.setCustomizationTemplateActive.useMutation({
+    onSuccess: ({ isActive: active }) => {
+      setIsActive(active);
+      setStatus(active ? "تم تفعيل قالب التخصيص." : "تم إيقاف قالب التخصيص.");
+    },
+    onError: (error) => setStatus(error.message),
+  });
   const [kind, setKind] = useState<Kind>("PRINT");
   const [title, setTitle] = useState("خصّص طلبك قبل الإضافة");
   const [description, setDescription] = useState("");
@@ -127,6 +134,10 @@ export function ProductCustomizationTemplateEditor({ productId, enabled }: { pro
   const changeKind = (next: Kind) => {
     setKind(next);
     if (!query.data) setFields(starterFields(next));
+  };
+  const changeActive = (next: boolean) => {
+    setIsActive(next);
+    if (query.data) setActive.mutate({ productId, isActive: next });
   };
 
   const handleSave = () => {
@@ -165,7 +176,7 @@ export function ProductCustomizationTemplateEditor({ productId, enabled }: { pro
     <Card className="border-amber-200 bg-amber-50/40">
       <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
         <div><CardTitle className="text-base">قالب التخصيص المنظم</CardTitle><CardDescription>عرّف الحقول التي تظهر للزبون وتبعياتها. المنتج العادي لا يعرض هذا النموذج.</CardDescription></div>
-        <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={isActive} onChange={(event) => setIsActive(event.target.checked)} /> مفعّل</label>
+        <label className="flex items-center gap-2 text-xs font-bold"><input type="checkbox" checked={isActive} disabled={setActive.isPending} onChange={(event) => changeActive(event.target.checked)} /> مفعّل</label>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 md:grid-cols-3">
