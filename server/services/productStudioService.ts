@@ -274,23 +274,43 @@ export function decodeStudioThumbnail(
   height: number;
   hash: string;
 } {
-  if (!dataUrl.startsWith("data:image/webp;base64,")) {
+  // ٢٠/٨ (بلاغ إنتاج): كان WebP إلزامياً — و`canvas.toDataURL("image/webp")` غير مدعوم على
+  // Safari/iOS قبل ١٧، فكان المصوّر على iPhone يُمنع من الإرسال نهائياً بسبب **مشتقّ عرضٍ**
+  // لا علاقة له بجودة عمله ولا بسلامة المال. الاحتياطيّ JPEG لأنّ كل متصفّحٍ يرمّزه من
+  // canvas ويبقى تحت السقف. ⛔ التساهل في **الصيغة** لا في **التحقّق**: لكلٍّ فحصُ بنيةٍ
+  // كامل، ومطابقةُ الأبعاد للمرشّح تبقى الحارس المشترك أياً كانت الصيغة.
+  const isWebp = dataUrl.startsWith("data:image/webp;base64,");
+  const isJpeg = dataUrl.startsWith("data:image/jpeg;base64,");
+  if (!isWebp && !isJpeg) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مصغّرة العرض يجب أن تكون WebP",
+      message: "مصغّرة العرض يجب أن تكون WebP أو JPEG",
     });
   }
   assertValidImageDataUrl(dataUrl, MAX_STUDIO_THUMBNAIL_BYTES, true, MAX_STUDIO_THUMBNAIL_DIMENSION);
   const bytes = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
-  const dimensions = parseImageDimensions(bytes, "image/webp");
-  const fourcc = bytes.length >= 20 ? bytes.toString("ascii", 12, 16) : "";
-  const chunkBytes = bytes.length >= 20 ? bytes.readUInt32LE(16) : -1;
-  const completeSingleChunk = chunkBytes >= 0 && 20 + chunkBytes + (chunkBytes % 2) === bytes.length;
-  const validFrameHeader = fourcc === "VP8 " ? bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a : fourcc === "VP8L" ? bytes.length >= 25 && bytes[20] === 0x2f : false;
-  if (bytes.length < 20 || bytes.readUInt32LE(4) + 8 !== bytes.length || !completeSingleChunk || !validFrameHeader || !dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > MAX_STUDIO_THUMBNAIL_DIMENSION || dimensions.height > MAX_STUDIO_THUMBNAIL_DIMENSION) {
+  const dimensions = parseImageDimensions(bytes, isWebp ? "image/webp" : "image/jpeg");
+  let structureOk: boolean;
+  if (isWebp) {
+    const fourcc = bytes.length >= 20 ? bytes.toString("ascii", 12, 16) : "";
+    const chunkBytes = bytes.length >= 20 ? bytes.readUInt32LE(16) : -1;
+    const completeSingleChunk = chunkBytes >= 0 && 20 + chunkBytes + (chunkBytes % 2) === bytes.length;
+    const validFrameHeader = fourcc === "VP8 " ? bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a : fourcc === "VP8L" ? bytes.length >= 25 && bytes[20] === 0x2f : false;
+    structureOk = bytes.length >= 20 && bytes.readUInt32LE(4) + 8 === bytes.length && completeSingleChunk && validFrameHeader;
+  } else {
+    // JPEG: SOI في المقدّمة وEOI في الخاتمة ⇒ ملفٌّ كاملٌ غير مبتور، ومقطعُ SOF مقروءٌ
+    // (وإلّا رجع `dimensions` فارغاً فسقط الفحص أدناه).
+    structureOk =
+      bytes.length >= 4 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[bytes.length - 2] === 0xff &&
+      bytes[bytes.length - 1] === 0xd9;
+  }
+  if (!structureOk || !dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > MAX_STUDIO_THUMBNAIL_DIMENSION || dimensions.height > MAX_STUDIO_THUMBNAIL_DIMENSION) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "بنية/إطار مصغّرة WebP غير مكتمل",
+      message: isWebp ? "بنية/إطار مصغّرة WebP غير مكتمل" : "بنية مصغّرة JPEG غير مكتملة",
     });
   }
   if (!processed.width || !processed.height) {
