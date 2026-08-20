@@ -119,7 +119,7 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
 
 **🚀 الإنتاج:** `https://srv1548487.hstgr.cloud` على Hostinger VPS **مشترك** (⛔ سراج وأودو خطّ أحمر — لا يُلمسان؛ لا reboot/ufw/توقيت بلا موافقة المالك). MySQL حاوية على `127.0.0.1:3307` محجوبة عن الإنترنت + PM2 تحت مستخدم `deploy` (`pm2-deploy.service`، الويب cluster) + nginx/TLS/HSTS + نسخ ليليّ مشفَّر gpg + سحب يوميّ لجهاز المتجر (`backup:pull-vps`). **التحديث بأمر واحد: `pnpm prod:deploy`** — سكربت ذرّيّ (`git pull --ff-only` → `install --frozen-lockfile` → `db:backup` → `db:migrate:safe` → `db:verify` → `build` → `pm2 reload`) يتوقّف عند أوّل فشل بلا مسّ الخادم القديم. التفصيل: [`docs/deployment-vps.md`](docs/deployment-vps.md).
 
-**🗃️ الهجرات:** ملفات SQL مولَّدة (`pnpm db:generate` محلياً) تُطبَّق عبر drizzle-orm migrator — آخرها **`0220_work_order_draft_link.sql`** (حملةُ الفواتير/الطلبات أخذت **0212-0220**، وmain أخذ 0210/0211؛ **ابدأ من 0221** بعد `git fetch origin main && pnpm check:migrations` — §٧-٤ب). ⛔ لا `db:push` عارياً على الإنتاج (حارس `db-push-guard.mjs`)، ولا `drizzle-kit migrate` (يفشل صامتاً).
+**🗃️ الهجرات:** ملفات SQL مولَّدة (`pnpm db:generate` محلياً) تُطبَّق عبر drizzle-orm migrator — آخرها **`0220_work_order_draft_link.sql`** (حملةُ الفواتير/الطلبات أخذت **0216-0224**، وmain أخذ 0210/0211؛ **ابدأ من 0221** بعد `git fetch origin main && pnpm check:migrations` — §٧-٤ب). ⛔ لا `db:push` عارياً على الإنتاج (حارس `db-push-guard.mjs`)، ولا `drizzle-kit migrate` (يفشل صامتاً).
 
 **📱 تطبيق أندرويد أصيل «سوبر العربية»** (`android-native/`، Kotlin/Compose، مصادقة تشفيريّة بمفتاح جهاز EC P-256): على Google Play بمسار **Internal testing** فقط — **قرار المالك: لا Production ولا مراجعة Google** (الحساب شخصيّ). كل تحديثٍ للمختبِرين يلزمه رفع `versionCode` في **كل مواضعه المتزامنة** (`android-native/app/build.gradle.kts` بشقَّيه + `scripts/verify-mobile-release-env.mjs` + `.github/workflows/android-release.yml` — يحرسها `pnpm check:mobile-release`) ثم بناء AAB موقَّع عبر `android-release.yml` **ورفعٌ يدويّ** (CI لا يوصِل إلى Play).
 
@@ -212,7 +212,7 @@ pnpm exec cross-env TZ=UTC vitest run server/services/__tests__/sale.test.ts -t 
   > **قبل بناء أيّ شيءٍ على بندٍ هنا: افتح الشيفرة وتحقّق أنه ما زال قائماً.** وإن وجدتَه
   > مُغلقاً فانقله إلى الأرشيف أدناه بدليله — تركُه يُضلّل من بعدك (Claude وCodex معاً).
 - **الحملة الجارية (١٨-٢٠/٨) — منظومة الفواتير والطلبات** (فرع `claude/invoices-orders-system-149fd0`،
-  هجرات **0212-0220**): سبعُ مراحلَ بإطار المالك من الفحص الجنائيّ إلى إغلاق آخر بابٍ مسدود.
+  هجرات **0216-0224**): سبعُ مراحلَ بإطار المالك من الفحص الجنائيّ إلى إغلاق آخر بابٍ مسدود.
   التفصيل الكامل في [`docs/campaign-log.md`](docs/campaign-log.md) — وهذه **القيود السارية** منها:
   - **ثلاثةُ قواميس حاكمة جديدة** يحرس كلاًّ منها اختبارٌ نصّيّ: [`shared/receptionChannel.ts`](shared/receptionChannel.ts)
     (كانت تسعَ تعريفات) · [`shared/invoiceChannel.ts`](shared/invoiceChannel.ts) (قناةُ الفاتورة

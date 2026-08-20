@@ -47,7 +47,7 @@ const auditCtx = (actor: Actor) =>
 
 export interface ReverseWorkOrderDeliveryInput {
   workOrderId: number;
-  /** سببٌ إلزاميّ — يُكتب على المستند (0219) فيصير قابلاً للقراءة والتقرير. */
+  /** سببٌ إلزاميّ — يُكتب على المستند (0223) فيصير قابلاً للقراءة والتقرير. */
   reason: string;
   /** `true` ⇒ يعود الأمر `READY` لإعادة تسليمٍ مصحَّح. `false`/غيابه ⇒ يُغلَق `CANCELLED`. */
   reopen?: boolean;

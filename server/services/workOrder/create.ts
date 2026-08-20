@@ -130,7 +130,7 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     const insRes = await tx.insert(workOrders).values({
       orderNumber,
       branchId: input.branchId,
-      // ش٥ (0220): المسوّدة الجامعة — أوامرُ السلّة الواحدة تصير إخوة.
+      // ش٥ (0224): المسوّدة الجامعة — أوامرُ السلّة الواحدة تصير إخوة.
       draftId: input.draftId ?? null,
       customerId: input.customerId ?? null,
       baseVariantId: input.baseVariantId ?? null,
