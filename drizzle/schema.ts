@@ -80,6 +80,12 @@ export const users = mysqlTable(
       .notNull(),
     branchId: bigint("branchId", { mode: "number" }),
     isActive: boolean("isActive").default(true),
+    /**
+     * انتهاء صلاحية الحساب — للحسابات المؤقّتة (مصوّر حملةٍ بلا حساب دائم مثلاً).
+     * `null` = حسابٌ دائم بلا انتهاء (كل الحسابات القائمة). يُفرَض **مركزياً في الجلسة**
+     * لا في كل شاشة: حسابٌ منتهٍ يسقط من أوّل طلبٍ حتى لو كانت جلسته مفتوحة.
+     */
+    accessExpiresAt: timestamp("accessExpiresAt"),
     // v3-add-screens: HR + جدول صلاحيات مخصّص. permissionsOverride: JSON ⇒ NULL=اتّبع قالب الدور.
     jobTitle: varchar("jobTitle", { length: 120 }),
     hiredAt: date("hiredAt"),
@@ -3292,6 +3298,12 @@ export const productStudioCampaigns = mysqlTable(
       .notNull(),
     startsAt: timestamp("startsAt"),
     dueAt: timestamp("dueAt"),
+    /** نطاق الحملة: كل المنتجات الناقصة · فئةٌ بعينها · مجموعةٌ مختارة صراحةً. */
+    scopeKind: mysqlEnum("scopeKind", ["ALL", "CATEGORY", "PRODUCTS"]).default("ALL").notNull(),
+    /** الفئة حين يكون النطاق CATEGORY — تشمل فئاتها الفرعية (مستويان). */
+    scopeCategoryId: bigint("scopeCategoryId", { mode: "number" }),
+    /** التوجيه الإداريّ: كم صورةً مطلوبة لكل منتج في هذه الحملة. */
+    requiredImages: int("requiredImages").default(1).notNull(),
     createdBy: int("createdBy")
       .notNull()
       .references(() => users.id),
@@ -3301,6 +3313,47 @@ export const productStudioCampaigns = mysqlTable(
   (table) => ({
     branchStatusIdx: index("idx_pscampaign_branch_status").on(table.branchId, table.status),
     branchDueIdx: index("idx_pscampaign_branch_due").on(table.branchId, table.dueAt),
+  }),
+);
+
+/** منتجات الحملة حين يكون نطاقها PRODUCTS — اختيارٌ صريح لا اشتقاق. */
+export const productStudioCampaignProducts = mysqlTable(
+  "productStudioCampaignProducts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    // المفاتيح مُعلَنة هنا أيضاً لا في الهجرة وحدها: `db:push` (مسار قواعد التطوير
+    // والاختبار) يبني من هذا الملف، فإغفالها يُنتج قواعدَ بلا قيودٍ ولا cascade —
+    // شكلٌ مختلف عن الإنتاج، وصفوفُ عضويةٍ يتيمة تمرّ في الاختبار وتسقط في الواقع.
+    campaignId: bigint("campaignId", { mode: "number" }).notNull(),
+    productId: bigint("productId", { mode: "number" }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    uq: unique("uq_pscp_campaign_product").on(table.campaignId, table.productId),
+    // بأسماء صريحة قصيرة: التسمية التلقائية هنا تتجاوز ٦٤ محرفاً فتُفشل `db:push`
+    // على MySQL 8.4 (راجع docs/local-test-db.md). والأسماء تطابق هجرة 0225 حرفاً بحرف.
+    campaignFk: foreignKey({ columns: [table.campaignId], foreignColumns: [productStudioCampaigns.id], name: "fk_pscp_campaign" }).onDelete("cascade"),
+    productFk: foreignKey({ columns: [table.productId], foreignColumns: [products.id], name: "fk_pscp_product" }).onDelete("cascade"),
+  }),
+);
+
+/**
+ * مصوّرو الحملة. الحملة تُسنَد إلى **عدّة** موظفين، ومنها يسحب كلٌّ منهم المنتج الذي
+ * يمسح باركوده — بدل إسنادٍ فرديّ مسبَق لكل مهمة على حدة.
+ */
+export const productStudioCampaignAssignees = mysqlTable(
+  "productStudioCampaignAssignees",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    campaignId: bigint("campaignId", { mode: "number" }).notNull(),
+    userId: int("userId").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    uq: unique("uq_psca_campaign_user").on(table.campaignId, table.userId),
+    campaignFk: foreignKey({ columns: [table.campaignId], foreignColumns: [productStudioCampaigns.id], name: "fk_psca_campaign" }).onDelete("cascade"),
+    userFk: foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "fk_psca_user" }),
   }),
 );
 

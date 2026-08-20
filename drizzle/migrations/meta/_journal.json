@@ -1506,6 +1506,20 @@
       "when": 1788052277000,
       "tag": "0226_price_wave_revert",
       "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "5",
+      "when": 1788052278000,
+      "tag": "0227_studio_campaign_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 229,
+      "version": "5",
+      "when": 1788052280000,
+      "tag": "0229_user_access_expiry",
+      "breakpoints": true
     }
   ]
 }
