@@ -1499,6 +1499,13 @@
       "when": 1788052266000,
       "tag": "0215_product_studio_assigned_at",
       "breakpoints": true
+    },
+    {
+      "idx": 225,
+      "version": "5",
+      "when": 1788052276000,
+      "tag": "0225_studio_campaign_scope",
+      "breakpoints": true
     }
   ]
 }
