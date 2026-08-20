@@ -672,17 +672,59 @@ export async function listStudioAssignees(actor: ProductStudioActor) {
     .from(users)
     .where(eq(users.isActive, true))
     .orderBy(asc(users.name));
+  // تُعاد **كل** كوادر الفرع، لا من يملك الصلاحية فقط، مع علَمٍ يفصل بينهم.
+  // كان الترشيح يُخفي الكاشير والمندوب وغيرهم فيبدو للمدير أنّ موظفيه «ناقصون» بلا سبب
+  // ظاهر — ولا يعرف أنّ العلّة صلاحيةٌ مفقودة ولا أين يمنحها.
   return rows
-    .filter((u) => {
-      if (!canCrossBranches(actor) && Number(u.branchId) !== Number(actor.branchId)) return false;
-      return hasModuleAccess(u.role, u.permissionsOverride as PermissionMap | null, "productStudio", "FULL");
-    })
-    .map(({ id, name, role, branchId }) => ({
+    .filter((u) => canCrossBranches(actor) || Number(u.branchId) === Number(actor.branchId))
+    .map(({ id, name, role, branchId, permissionsOverride }) => ({
       id,
       name: name || `مستخدم ${id}`,
       role,
       branchId,
+      canStudio: hasModuleAccess(role, permissionsOverride as PermissionMap | null, "productStudio", "FULL"),
     }));
+}
+
+/**
+ * منحُ صلاحية استوديو المنتجات لموظفٍ في فرع المدير — بفعلٍ صريحٍ مُدقَّق.
+ *
+ * لماذا من هنا: المدير يرى فريقه في شاشة الحملة، وإرسالُه إلى شاشة المستخدمين ليمنح
+ * وحدةً واحدة ثمّ يعود احتكاكٌ بلا فائدة. ولماذا **بزرٍّ لا تلقائياً عند الاختيار**:
+ * توسيعُ صلاحيةٍ فعلٌ يستحقّ قصداً صريحاً وأثراً، لا أثراً جانبياً لاختيارٍ في نموذج.
+ *
+ * النطاق ضيّقٌ عمداً: يفتح `productStudio` وحده ولا يمسّ أيّ وحدةٍ أخرى، ولا يعمل عبر
+ * الفروع لغير من يعبرها، ولا يرفع دور المستخدم.
+ */
+export async function grantStudioAccess(actor: ProductStudioActor, userId: number) {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  return withStudioTx(async (tx) => {
+    const [target] = await tx
+      .select({ id: users.id, name: users.name, role: users.role, branchId: users.branchId, permissionsOverride: users.permissionsOverride })
+      .from(users)
+      .where(and(eq(users.id, userId), eq(users.isActive, true)))
+      .limit(1)
+      .for("update");
+    if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير متاح" });
+    if (!canCrossBranches(actor) && (actor.branchId == null || Number(target.branchId) !== Number(actor.branchId))) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن منح صلاحية لموظفٍ من فرعٍ آخر" });
+    }
+    if (hasModuleAccess(target.role, target.permissionsOverride as PermissionMap | null, "productStudio", "FULL")) {
+      return { granted: false as const, name: target.name };
+    }
+    const nextOverride: PermissionMap = { ...((target.permissionsOverride as PermissionMap | null) ?? {}), productStudio: "FULL" };
+    await tx.update(users).set({ permissionsOverride: nextOverride }).where(eq(users.id, userId));
+    await tx.insert(auditLogs).values({
+      userId: actor.userId,
+      branchId: actor.branchId,
+      action: "productStudio.grantAccess",
+      entityType: "user",
+      entityId: String(userId),
+      oldValue: { productStudio: hasModuleAccess(target.role, target.permissionsOverride as PermissionMap | null, "productStudio", "READ") ? "READ" : "NONE" },
+      newValue: { productStudio: "FULL" },
+    });
+    return { granted: true as const, name: target.name };
+  });
 }
 
 type StudioCampaignRow = typeof productStudioCampaigns.$inferSelect;
