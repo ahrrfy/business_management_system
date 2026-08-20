@@ -1,4 +1,5 @@
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
+import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
@@ -194,6 +195,8 @@ export default function ProductImageStudio() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
   const [bulkAssigneeId, setBulkAssigneeId] = useState("");
   const [assigneeFilter, setAssigneeFilter] = useState("ALL");
+  /** المنتج الذي بيد المصوّر الآن (من مسح الباركود) — يقود محطّة التصوير. */
+  const [captured, setCaptured] = useState<ClaimedStudioProduct | null>(null);
   const [taskSearch, setTaskSearch] = useState("");
   const [debouncedTaskSearch, setDebouncedTaskSearch] = useState("");
   const [setupPin, setSetupPin] = useState("");
@@ -252,6 +255,12 @@ export default function ProductImageStudio() {
     },
   );
   const campaignAnalytics = trpc.productStudio.campaignAnalytics.useQuery(
+    { campaignId: selectedCampaignId ?? 0 },
+    {
+      enabled: !offline && Boolean(selectedCampaignId) && dashboard.data?.canManage === true,
+    },
+  );
+  const campaignBoard = trpc.productStudio.campaignBoard.useQuery(
     { campaignId: selectedCampaignId ?? 0 },
     {
       enabled: !offline && Boolean(selectedCampaignId) && dashboard.data?.canManage === true,
@@ -394,6 +403,10 @@ export default function ProductImageStudio() {
       setImages([]);
       setOriginalDataUrl("");
       setProcessingReceipt(null);
+      // إغلاق دورة المصوّر: بعد الرفع تُفرَغ المحطّة ويعود التركيز للباركود جاهزاً
+      // للمنتج التالي — بلا تنقّلٍ في التبويبات ولا بحثٍ عن الصفّ التالي.
+      setCaptured(null);
+      setSelectedId(null);
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -822,6 +835,25 @@ export default function ProductImageStudio() {
         </Card>
       )}
 
+      {/* محطّة التصوير أوّلاً للمصوّر: هو يمسك المنتج ويمسح، لا يتصفّح طوابير.
+          المدير يراها أيضاً كي يجرّب المسار الذي يعمل به فريقه. */}
+      {!offline && (
+        <StudioCaptureStation
+          active={captured}
+          offline={offline}
+          onClaimed={(claimed) => {
+            setCaptured(claimed);
+            setSelectedId(claimed.taskId);
+            setScope("MINE");
+            void refresh();
+          }}
+          onClear={() => {
+            setCaptured(null);
+            setSelectedId(null);
+          }}
+        />
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardContent className="p-4">
@@ -1070,6 +1102,55 @@ export default function ProductImageStudio() {
                     <XCircle aria-hidden className="size-4" /> إلغاء الطابور
                   </Button>
                 </div>
+              </div>
+            )}
+
+            {/* طابور الإنجاز والمتبقّي — و«المتبقّي» بمعانيه لا رقماً واحداً يُخفي أين يقف العمل. */}
+            {selectedCampaignId && campaignBoard.data && (
+              <div className="space-y-3 rounded-md border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium">طابور الحملة</span>
+                  <span className="text-xs text-muted-foreground">التوجيه: {campaignBoard.data.requiredImages} صورة لكل منتج</span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-md border bg-[var(--sem-ok-bg,transparent)] p-3">
+                    <div className="text-xs text-muted-foreground">أُنجز واعتُمد</div>
+                    <div className="mt-1 text-2xl font-bold">{campaignBoard.data.done}</div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">المتبقّي</div>
+                    <div className="mt-1 text-2xl font-bold">{campaignBoard.data.remaining}</div>
+                  </div>
+                </div>
+                <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
+                  {(
+                    [
+                      ["لم تُولَّد بعد", campaignBoard.data.breakdown.notGenerated],
+                      ["في الطابور", campaignBoard.data.breakdown.queued],
+                      ["قيد التصوير", campaignBoard.data.breakdown.inProgress],
+                      ["تنتظر اعتمادك", campaignBoard.data.breakdown.awaitingReview],
+                      ["تحتاج تصحيحاً", campaignBoard.data.breakdown.needsFix],
+                    ] as const
+                  ).map(([label, value]) => (
+                    <div key={label} className="rounded-md border p-2">
+                      <div className="text-muted-foreground">{label}</div>
+                      <div className="mt-0.5 font-bold">{value}</div>
+                    </div>
+                  ))}
+                </div>
+                {campaignBoard.data.photographers.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">المصوّرون</div>
+                    {campaignBoard.data.photographers.map((person) => (
+                      <div key={person.userId} className="flex items-center justify-between rounded-md border p-2 text-sm">
+                        <span>{person.name}</span>
+                        <span className="text-xs text-muted-foreground">
+                          أنجز {person.done} · بيده {person.active}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1531,7 +1612,7 @@ export default function ProductImageStudio() {
 
                   {editable && capabilities.canEditLocalDraft && (
                     <>
-                      <ProductMediaContentSection title="تنفيذ المهمة — الصور والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint="صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً." />
+                      <ProductMediaContentSection title="تنفيذ المهمة — الصور والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={captured && captured.taskId === Number(selected.id) ? Math.max(1, captured.requiredImages - captured.approvedImages) : 1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint={captured && captured.taskId === Number(selected.id) && captured.requiredImages > 1 ? `حملةٌ تطلب ${captured.requiredImages} صور لهذا المنتج — اعتُمدت ${captured.approvedImages}. تُرسَل صورةٌ في كل دورة مراجعة؛ امسح الباركود ثانيةً للصورة التالية.` : "صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً."} />
                       {offline && (
                         <p role="status" className="text-sm text-muted-foreground">
                           تُحفظ تعديلاتك محلياً ومشفّرةً حتى 24 ساعة. الإرسال والاعتماد والرفض والنشر متوقفة إلى أن يعود الاتصال.

@@ -494,6 +494,73 @@ export async function listStudioProducts(actor: ProductStudioActor, input: Studi
   };
 }
 
+/** تقدّم صور المنتج مقابل توجيه حملته: «الصورة ٢ من ٣». */
+async function studioImageProgress(tx: StudioTx, productId: number, campaignId: number | null) {
+  const [approved] = await tx
+    .select({ count: sql<number>`count(*)` })
+    .from(productImages)
+    .where(and(eq(productImages.productId, productId), eq(productImages.reviewStatus, "APPROVED")));
+  let requiredImages = 1;
+  if (campaignId != null) {
+    const [campaign] = await tx.select({ requiredImages: productStudioCampaigns.requiredImages }).from(productStudioCampaigns).where(eq(productStudioCampaigns.id, campaignId)).limit(1);
+    requiredImages = Math.max(1, Number(campaign?.requiredImages ?? 1));
+  }
+  return { approvedImages: Number(approved?.count ?? 0), requiredImages };
+}
+
+/**
+ * إنشاءُ مهمةٍ لحظةَ المسح داخل حملةٍ نشطة يكون الماسحُ أحد مصوّريها.
+ * يُعيد استعمال القيد الفريد `(productId, activeSlot)` حارساً ضدّ ماسحَين متزامنين.
+ */
+async function claimFreshCampaignTask(tx: StudioTx, actor: ProductStudioActor, resolved: { productId: number; productName: string }) {
+  const productId = Number(resolved.productId);
+  const campaigns = await tx
+    .select({
+      id: productStudioCampaigns.id,
+      name: productStudioCampaigns.name,
+      branchId: productStudioCampaigns.branchId,
+      dueAt: productStudioCampaigns.dueAt,
+      scopeKind: productStudioCampaigns.scopeKind,
+      scopeCategoryId: productStudioCampaigns.scopeCategoryId,
+      requiredImages: productStudioCampaigns.requiredImages,
+    })
+    .from(productStudioCampaigns)
+    .innerJoin(productStudioCampaignAssignees, and(eq(productStudioCampaignAssignees.campaignId, productStudioCampaigns.id), eq(productStudioCampaignAssignees.userId, actor.userId)))
+    .where(eq(productStudioCampaigns.status, "ACTIVE"));
+  for (const campaign of campaigns) {
+    const [inScope] = await tx
+      .select({ id: products.id, name: products.name, description: products.description })
+      .from(products)
+      .where(and(eq(products.id, productId), missingStudioProductConditions(Number(campaign.requiredImages ?? 1)), campaignScopeCondition(campaign)))
+      .limit(1);
+    if (!inScope) continue;
+    const [created] = await tx
+      .insert(productImageJobs)
+      .values({
+        productId,
+        campaignId: Number(campaign.id),
+        branchId: Number(campaign.branchId),
+        sourceProductHash: productContentHash(inScope),
+        mode: "FLATTEN",
+        status: "ASSIGNED",
+        priority: "NORMAL",
+        dueAt: campaign.dueAt,
+        revision: 1,
+        assignedTo: actor.userId,
+        assignedBy: actor.userId,
+        assignedAt: new Date(),
+        createdBy: actor.userId,
+        activeSlot: 1,
+        templateVersion: 1,
+      })
+      .$returningId();
+    const taskId = Number(created.id);
+    await tx.insert(auditLogs).values(auditValues(actor, "productStudio.claimByBarcode.created", taskId, { productId, campaignId: Number(campaign.id) }));
+    return { taskId, productName: resolved.productName, claimed: true as const, revision: 1, ...(await studioImageProgress(tx, productId, Number(campaign.id))) };
+  }
+  throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» ليس ضمن حملة تصوير نشطة مُسنَدة إليك، أو اكتملت صوره` });
+}
+
 /**
  * مسحُ باركودٍ يفتح العمل مباشرةً — قلب شاشة المصوّر.
  *
@@ -515,10 +582,13 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
         .for("update")
     )[0];
     if (!active) {
-      throw new TRPCError({ code: "NOT_FOUND", message: `«${resolved.productName}» ليس ضمن أيّ حملة تصوير نشطة` });
+      // لا مهمّة نشطة ⇒ نُنشئها فوراً إن كان المنتج داخل نطاق حملةٍ نشطة والماسحُ أحد
+      // مصوّريها ولم يبلغ المنتج عدد الصور المطلوب. بدون هذا كان المصوّر يقف عاجزاً حتى
+      // يُولّد المدير الطابور يدوياً — وهو ما يكسر انسيابية «امسح ثم صوّر».
+      return claimFreshCampaignTask(tx, actor, resolved);
     }
     if (Number(active.assignedTo) === actor.userId) {
-      return { taskId: Number(active.id), productName: resolved.productName, claimed: false as const, revision: Number(active.revision) };
+      return { taskId: Number(active.id), productName: resolved.productName, claimed: false as const, revision: Number(active.revision), ...(await studioImageProgress(tx, productId, active.campaignId == null ? null : Number(active.campaignId))) };
     }
     if (active.assignedTo != null) {
       throw new TRPCError({ code: "CONFLICT", message: `«${resolved.productName}» بيد زميلٍ آخر الآن` });
@@ -550,7 +620,7 @@ export async function claimStudioProductByBarcode(actor: ProductStudioActor, bar
     await tx.insert(auditLogs).values(
       auditValues(actor, "productStudio.claimByBarcode", Number(active.id), { productId, barcode: barcode.slice(0, 64), campaignId: Number(active.campaignId) }),
     );
-    return { taskId: Number(active.id), productName: resolved.productName, claimed: true as const, revision: Number(active.revision) + 1 };
+    return { taskId: Number(active.id), productName: resolved.productName, claimed: true as const, revision: Number(active.revision) + 1, ...(await studioImageProgress(tx, productId, Number(active.campaignId))) };
   });
 }
 
@@ -847,21 +917,29 @@ function campaignScopeCondition(campaign: { id: number | string; scopeKind: "ALL
   return undefined;
 }
 
-function missingStudioProductConditions() {
+/**
+ * «ناقص» = منتج نشط لم يبلغ **عدد الصور الذي تطلبه الحملة** وبلا مهمة نشطة.
+ *
+ * كان التعريف «بلا أيّ صورة معتمدة» — أي أنّ المنتج يخرج من الطابور بعد أوّل صورة.
+ * فتوجيهُ «ثلاث صور» كان سيبقى زينةً: لا شيء يُطالب بالثانية والثالثة. العدّ يجعل
+ * التوجيه نافذاً بلا تغيير عقد الإرسال: دورةٌ لكل صورة على المسار المُثبَت نفسه.
+ */
+function missingStudioProductConditions(requiredImages = 1) {
+  const required = Math.max(1, Math.trunc(requiredImages));
   return and(
     eq(products.isActive, true),
-    sql`not exists (select 1 from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED')`,
+    sql`(select count(*) from ${productImages} where ${productImages.productId} = ${products.id} and ${productImages.reviewStatus} = 'APPROVED') < ${required}`,
     sql`not exists (select 1 from ${productImageJobs} where ${productImageJobs.productId} = ${products.id} and ${productImageJobs.activeSlot} = 1)`,
   );
 }
 
-type CampaignScope = { id: number | string; scopeKind: "ALL" | "CATEGORY" | "PRODUCTS"; scopeCategoryId: number | null };
+type CampaignScope = { id: number | string; scopeKind: "ALL" | "CATEGORY" | "PRODUCTS"; scopeCategoryId: number | null; requiredImages?: number | null };
 
 async function countMissingStudioProducts(db: ReturnType<typeof requireDb> | StudioTx, campaign?: CampaignScope) {
   const [row] = await db
     .select({ count: sql<number>`count(*)` })
     .from(products)
-    .where(and(missingStudioProductConditions(), campaign ? campaignScopeCondition(campaign) : undefined));
+    .where(and(missingStudioProductConditions(campaign?.requiredImages ?? 1), campaign ? campaignScopeCondition(campaign) : undefined));
   return Number(row?.count ?? 0);
 }
 
@@ -873,7 +951,7 @@ async function missingStudioProducts(db: ReturnType<typeof requireDb> | StudioTx
       description: products.description,
     })
     .from(products)
-    .where(and(missingStudioProductConditions(), campaign ? campaignScopeCondition(campaign) : undefined))
+    .where(and(missingStudioProductConditions(campaign?.requiredImages ?? 1), campaign ? campaignScopeCondition(campaign) : undefined))
     .orderBy(asc(products.id))
     .limit(limit);
 }

@@ -2200,6 +2200,45 @@ describe("product studio governed workflow", () => {
     await expect(claimStudioProductByBarcode(otherWorker, "6001000000772")).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
+  it("توجيه عدد الصور نافذٌ: المنتج يبقى ناقصاً حتى يبلغ العدد المطلوب", async () => {
+    const campaign = await createStudioCampaign(manager, { name: "حملة ثلاث صور", status: "ACTIVE", scopeKind: "PRODUCTS", scopeProductIds: [1], requiredImages: 3 });
+    await createStudioCampaignBacklog(manager, campaign.campaignId);
+
+    const task = await assignStudioTask(manager, { productId: 1, assigneeId: worker.userId });
+    await submitStudioCandidate(worker, { taskId: task.taskId, originalDataUrl: PNG_1X1_ALT, processedDataUrl: PNG_1X1, mode: "FLATTEN" });
+    await approveStudioTask(manager, task.taskId);
+
+    // بالتعريف القديم («بلا أيّ صورة معتمدة») كان المنتج يخرج من الطابور بعد الأولى
+    // فيصير التوجيه زينةً. الآن يبقى ناقصاً حتى الثالثة.
+    await expect(previewStudioCampaignBacklog(manager, campaign.campaignId)).resolves.toMatchObject({ count: 1 });
+    const board = await getStudioCampaignBoard(manager, campaign.campaignId);
+    expect(board.requiredImages).toBe(3);
+    expect(board.breakdown.notGenerated).toBe(1);
+  });
+
+  it("المصوّر يمسح فيُنشأ عمله فوراً بلا انتظار توليد المدير", async () => {
+    await db().insert(s.productVariants).values({ id: 901, productId: 1, sku: "SCAN-A", costPrice: "1" });
+    await db().insert(s.productUnits).values({ id: 901, variantId: 901, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "6001000000901" });
+    const campaign = await createStudioCampaign(manager, {
+      name: "حملة بلا توليد",
+      status: "ACTIVE",
+      scopeKind: "PRODUCTS",
+      scopeProductIds: [1],
+      requiredImages: 2,
+      assigneeIds: [worker.userId],
+    });
+    // لم يُولَّد أيّ طابور إطلاقاً.
+    expect(await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.campaignId, campaign.campaignId))).toEqual([]);
+
+    const claimed = await claimStudioProductByBarcode(worker, "6001000000901");
+    expect(claimed).toMatchObject({ claimed: true, approvedImages: 0, requiredImages: 2 });
+    const [row] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.id, claimed.taskId));
+    expect(row).toMatchObject({ assignedTo: worker.userId, campaignId: campaign.campaignId, activeSlot: 1 });
+
+    // ومن ليس مصوّراً في الحملة لا يُنشئ شيئاً بالمسح.
+    await expect(claimStudioProductByBarcode(otherWorker, "6001000000901")).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
   it("لوحة الحملة تفصل المنجَز عن المتبقّي بمعانيه لا برقمٍ واحد", async () => {
     await db().insert(s.products).values([{ id: 3, name: "منتج ثالث" }, { id: 4, name: "منتج رابع" }]);
     const campaign = await createStudioCampaign(manager, {
