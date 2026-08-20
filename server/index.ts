@@ -669,6 +669,7 @@ async function startServer() {
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
   let stopNativePushOutboxWorker: (() => void) | null = null;
+  let stopStorefrontPushCampaignWorker: (() => void) | null = null;
   let stopDeliveryOutboxWorker: (() => void) | null = null;
   let stopProductStudioStagingWorker: (() => void) | null = null;
   let stopProductStudioNotificationWorker: (() => void) | null = null;
@@ -692,6 +693,11 @@ async function startServer() {
     const nativePush = await import("./services/nativePushOutboxWorker");
     nativePush.startNativePushOutboxWorker();
     stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
+
+    // حملات متجر العملاء: صندوق Expo Push منفصل عن تطبيق الموظفين، مع موافقة العميل وحدود دفعات ثابتة.
+    const storefrontPush = await import("./services/storeAdmin/storefrontPushCampaignService");
+    storefrontPush.startStorefrontPushCampaignWorker();
+    stopStorefrontPushCampaignWorker = storefrontPush.stopStorefrontPushCampaignWorker;
 
     // أحداث التوصيل: إشعارات أعضاء الشركة/السائقين من outbox ذرّي قابل لإعادة المحاولة.
     const { startDeliveryOutboxWorker, stopDeliveryOutboxWorker: stopDeliveryWorker } = await import("./services/delivery/outboxWorker");
@@ -759,6 +765,7 @@ async function startServer() {
     }, 10_000);
     try {
       stopNativePushOutboxWorker?.();
+      stopStorefrontPushCampaignWorker?.();
       stopDeliveryOutboxWorker?.();
       stopProductStudioStagingWorker?.();
       stopProductStudioNotificationWorker?.();

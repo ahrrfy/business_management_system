@@ -117,6 +117,9 @@ const EXTRA_MIGRATIONS = [
   // immutable allocations, operational ledger, events and outbox. This runs
   // after the reception repair because it builds on those consignment fields.
   "drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
+  // 18/8/2026: db:push creates storeSettings but can miss the fulfillment
+  // branch index/FK. Replay the idempotent migration before schema verification.
+  "drizzle/migrations/0181_store_fulfillment_branch.sql",
   // 0185 المسار أ: عمود مولَّد STORED + فهرس فريد يمنع تكرار رقم السحب النقديّ لنفس الاتجاه
   //   (db:push لا يُنشئ الأعمدة المولَّدة ⇒ لولا هذا السطر لَمَرّ الاختبار خضراءَ زوراً في CI).
   "drizzle/migrations/0185_cash_drop_reference_uniqueness.sql",
@@ -135,6 +138,9 @@ const EXTRA_MIGRATIONS = [
   // repair مستقل idempotent يستبدل final تحت pre-trigger ثم يزيل المؤقت، فيطابق قواعد CI/الاختبار
   // مسار migrator الحاكم في 0208 بلا نافذة حماية.
   "drizzle/migrations/extras/0208_online_order_reservation_guard.sql",
+  // ٢٠/٨/٢٦: db:push قد يترك فهرس FK افتراضياً لمحفظة البطاقات الرقمية بدلاً من الاسم التعاقدي
+  // idx_dwt_wallet؛ الإصلاح idempotent ويحافظ على فهرس قراءات المحفظة واختبار الحماية.
+  "drizzle/migrations/extras/0212_repair_digital_wallet_index.sql",
   // ٢٠/٨/٢٦: موجة **التراجع** عن موجة تسعير. سببان لوجودها هنا لا في مسار migrator وحده:
   //   ١) `db:push` لا يوسّع enum موثوقاً على MySQL 8 (قيمة `REVERT`).
   //   ٢) والأهمّ: قيدا CHECK للموجات يُنشئهما `extras/0057_0060_bundle_check_constraints.sql`

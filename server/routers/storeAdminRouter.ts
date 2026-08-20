@@ -53,6 +53,14 @@ import { resolveStorefrontBranchId } from "../services/storefrontService";
 import { withTx } from "../services/tx";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { assertSafeBannerCtaUrl } from "../lib/bannerSafety";
+import { listLoyaltyPrograms, loyaltyOverview, saveLoyaltyProgram } from "../services/storeAdmin/loyaltyService";
+import {
+  approveStorefrontPushCampaign,
+  cancelStorefrontPushCampaign,
+  createStorefrontPushCampaign,
+  listStorefrontPushCampaigns,
+  scheduleStorefrontPushCampaign,
+} from "../services/storeAdmin/storefrontPushCampaignService";
 
 const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]);
 
@@ -450,6 +458,55 @@ const customersRouter = router({
     }),
 });
 
+const loyaltyRouter = router({
+  programs: storeGlobalAdminProcedure.query(() => listLoyaltyPrograms()),
+  overview: storeGlobalAdminProcedure.query(() => loyaltyOverview()),
+  saveProgram: storeGlobalAdminProcedure.input(z.object({
+    id: z.number().int().positive().optional(),
+    name: z.string().trim().min(2).max(120),
+    status: z.enum(["DRAFT", "ACTIVE", "PAUSED"]),
+    pointsPerIqd: z.string().regex(/^\d{1,10}(?:\.\d{1,6})?$/),
+    iqdDiscountPerPoint: z.string().regex(/^\d{1,10}(?:\.\d{1,2})?$/),
+    minRedeemPoints: z.number().int().min(0).max(10_000_000),
+    maxRedeemPercent: z.number().int().min(0).max(100),
+    expiresAfterDays: z.number().int().min(1).max(3650).nullable(),
+  })).mutation(async ({ input, ctx }) => saveLoyaltyProgram(input, ctx.user.id)),
+});
+
+/** حملات إشعارات العملاء: فصل مسودة/اعتماد/جدولة يمنع إطلاق الإعلان من شاشة التحرير مباشرة. */
+const notificationsRouter = router({
+  list: storeGlobalAdminProcedure.query(() => listStorefrontPushCampaigns()),
+  create: storeGlobalAdminProcedure.input(z.object({
+    name: z.string().trim().min(2).max(160),
+    kind: z.enum(["MARKETING", "TRANSACTIONAL"]),
+    title: z.string().trim().min(2).max(80),
+    body: z.string().trim().min(2).max(180),
+    destination: z.string().trim().min(1).max(180),
+    throttlePerMinute: z.number().int().min(10).max(240).default(120),
+  })).mutation(async ({ input, ctx }) => {
+    const result = await createStorefrontPushCampaign(input, ctx.user.id);
+    await logAudit(ctx, { action: "store.notification_campaign.create", entityType: "storefrontPushCampaign", entityId: result.campaignId, newValue: { name: input.name, kind: input.kind, destination: input.destination } });
+    return result;
+  }),
+  approve: storeGlobalAdminProcedure.input(z.object({ campaignId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+    const result = await approveStorefrontPushCampaign(input.campaignId, ctx.user.id);
+    await logAudit(ctx, { action: "store.notification_campaign.approve", entityType: "storefrontPushCampaign", entityId: input.campaignId });
+    return result;
+  }),
+  schedule: storeGlobalAdminProcedure.input(z.object({ campaignId: z.number().int().positive(), scheduledAt: z.string().trim().min(10).max(40) })).mutation(async ({ input, ctx }) => {
+    const scheduledAt = new Date(input.scheduledAt);
+    if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now() - 60_000) throw new TRPCError({ code: "BAD_REQUEST", message: "موعد الحملة يجب أن يكون حالياً أو في المستقبل." });
+    const result = await scheduleStorefrontPushCampaign(input.campaignId, scheduledAt);
+    await logAudit(ctx, { action: "store.notification_campaign.schedule", entityType: "storefrontPushCampaign", entityId: input.campaignId, newValue: { scheduledAt: scheduledAt.toISOString() } });
+    return result;
+  }),
+  cancel: storeGlobalAdminProcedure.input(z.object({ campaignId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+    const result = await cancelStorefrontPushCampaign(input.campaignId);
+    await logAudit(ctx, { action: "store.notification_campaign.cancel", entityType: "storefrontPushCampaign", entityId: input.campaignId });
+    return result;
+  }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
@@ -459,4 +516,6 @@ export const storeAdminRouter = router({
   promotions: promotionsRouter,
   analytics: analyticsRouter,
   customers: customersRouter,
+  loyalty: loyaltyRouter,
+  notifications: notificationsRouter,
 });
