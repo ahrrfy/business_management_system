@@ -425,7 +425,8 @@ export default function Vouchers() {
             header: "نوع الطرف",
             map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—",
           },
-          { key: "counterpartyName", header: "اسم المُستفيد" },
+          { key: "partyName", header: "اسم الطرف", map: (r) => r.partyName ?? r.counterpartyName ?? "" },
+          { key: "createdByName", header: "المنفذ", map: (r) => r.createdByName ?? (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق") },
           {
             key: "voucherCategoryId",
             header: "الفئة",
@@ -906,10 +907,7 @@ export default function Vouchers() {
                   </tr>
                 )}
                 {rows.map((r) => {
-                  const partyDisplay =
-                    r.partyType === "OTHER"
-                      ? (r.counterpartyName ?? "—")
-                      : (PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—");
+                  const partyDisplay = r.partyName?.trim() || r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
                   const isPending = r.approvalStatus === "PENDING_APPROVAL";
                   const isRejected = r.approvalStatus === "REJECTED";
                   return (
@@ -984,11 +982,14 @@ export default function Vouchers() {
                       </td>
                       <td className="p-2 text-xs">
                         {partyDisplay}
-                        {r.partyType !== "OTHER" && r.counterpartyName && (
+                        {r.partyType !== "OTHER" && r.counterpartyName && r.counterpartyName !== partyDisplay && (
                           <div className="text-[10px] text-muted-foreground">
                             {r.counterpartyName}
                           </div>
                         )}
+                        <div className="text-[11px] text-muted-foreground">
+                          نفّذ: {r.createdByName ?? (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق")}
+                        </div>
                         {r.invoiceNumber && (
                           <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
                             <Link2 aria-hidden className="size-3" /> فاتورة #

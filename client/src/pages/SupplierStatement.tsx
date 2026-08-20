@@ -8,7 +8,10 @@ import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { printSupplierStmt } from "@/lib/printing/printTemplates";
 import { exportRows } from "@/lib/export";
-import { fmtDate } from "@/lib/date";
+import { fmtDate, fmtDateTime } from "@/lib/date";
+import { notify } from "@/lib/notify";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -82,6 +85,7 @@ export default function SupplierStatement() {
     { supplierId: supplierId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!supplierId }
   );
+  const printAudit = usePrintAudit();
 
   // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُشارَك بين الطباعة وتصدير Excel.
   const ledger = useMemo(() => {
@@ -91,6 +95,7 @@ export default function SupplierStatement() {
       t: new Date(p.orderDate).getTime(),
       date: fmtDate(p.orderDate),
       ref: p.poNumber, description: "أمر شراء",
+      actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
       debit: null as string | null, credit: p.total as string | null,
     }));
     // F7 (تدقيق ٢/٧): إشارة الأثر على AP لكل نوع قيد (مطابقة reconcileSupplierBalances):
@@ -116,6 +121,7 @@ export default function SupplierStatement() {
         date: fmtDate(p.entryDate),
         ref: "دفعة",
         description,
+        actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
         debit: signed.isNegative() ? signed.neg().toFixed(2) : (null as string | null),
         credit: signed.isPositive() ? signed.toFixed(2) : (null as string | null),
       };
@@ -167,11 +173,12 @@ export default function SupplierStatement() {
       asOfDate: to || undefined,
     });
     const tsv = formatTableAsTSV(
-      ["التاريخ", "المرجع", "البيان", "مدين", "دائن", "الرصيد"],
+      ["التاريخ", "المرجع", "البيان", "المنفذ", "مدين", "دائن", "الرصيد"],
       ledger.rows.map((r) => ({
         "التاريخ": r.date,
         "المرجع": r.ref,
         "البيان": r.description,
+        "المنفذ": r.actor,
         "مدين": r.debit == null ? "" : r.debit,
         "دائن": r.credit == null ? "" : r.credit,
         "الرصيد": r.balance,
@@ -181,20 +188,32 @@ export default function SupplierStatement() {
   }, [stmt.data, ledger, to]);
 
   // يفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF»).
-  const printStatement = () => {
+  const printStatement = async () => {
     if (!stmt.data || !ledger) return;
+    if (!reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
     const d = stmt.data;
-    printSupplierStmt({
-      supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
-      fromDate: from ? fmtDate(new Date(`${from}T00:00:00`)) : undefined,
-      toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
-      transactions: ledger.rows,
-      // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
-      totalDebit: ledger.totalDebit, totalCredit: ledger.totalCredit,
-      openingBalance: from ? d.summary.openingBalance : undefined,
-      currentBalance: d.summary.currentBalance,
-      closingBalance: ledger.closingBalance,
-    });
+    try {
+      await printAudit.run({
+        documentType: "SUPPLIER_STATEMENT",
+        documentId: Number(d.supplier.id),
+        channel: "PDF",
+        open: (audit) => printSupplierStmt({
+          supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
+          fromDate: from ? fmtDate(new Date(`${from}T00:00:00`)) : undefined,
+          toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
+          transactions: ledger.rows,
+          totalDebit: ledger.totalDebit, totalCredit: ledger.totalCredit,
+          openingBalance: from ? d.summary.openingBalance : undefined,
+          currentBalance: d.summary.currentBalance,
+          closingBalance: ledger.closingBalance,
+          printedByName: audit.actorName,
+          printRequestedAt: fmtDateTime(audit.requestedAt),
+        }),
+      });
+    } catch (error) {
+      releaseReservedPrintWindow();
+      notify.err(error instanceof Error ? error.message : "تعذّر تسجيل طلب الطباعة");
+    }
   };
 
   // يصدّر دفتر الحركات نفسه (تاريخ/مرجع/بيان/مدين/دائن/رصيد) إلى Excel.
@@ -206,6 +225,7 @@ export default function SupplierStatement() {
         { key: "date", header: "التاريخ" },
         { key: "ref", header: "المرجع" },
         { key: "description", header: "البيان" },
+        { key: "actor", header: "المنفذ" },
         { key: "debit", header: "مدين", map: (r) => (r.debit == null ? null : Number(r.debit)) },
         { key: "credit", header: "دائن", map: (r) => (r.credit == null ? null : Number(r.credit)) },
         { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
@@ -222,7 +242,7 @@ export default function SupplierStatement() {
         actions={
           <>
             {stmt.data && (
-              <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
+              <Button variant="outline" size="sm" disabled={printAudit.pending} onClick={() => void printStatement()}>طباعة / PDF الكشف</Button>
             )}
             {stmt.data && (
               <Button
@@ -352,6 +372,7 @@ export default function SupplierStatement() {
                     <th className="p-2 text-right">المدفوع</th>
                     <th className="p-2 text-right">المتبقّي</th>
                     <th className="p-2">الحالة</th>
+                    <th className="p-2">المنفذ</th>
                     <th className="p-2 text-center">فتح</th>
                   </tr>
                 </thead>
@@ -363,7 +384,7 @@ export default function SupplierStatement() {
                       <td className="p-2 text-xs" dir="ltr">{fmtDate(from)}</td>
                       <td className="p-2 text-xs text-muted-foreground" colSpan={3}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
                       <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
-                      <td className="p-2" colSpan={2} />
+                      <td className="p-2" colSpan={3} />
                     </tr>
                   )}
                   {stmt.data.purchaseOrders.map((p) => {
@@ -382,6 +403,7 @@ export default function SupplierStatement() {
                             {PO_STATUS_LABEL[p.status] ?? p.status}
                           </span>
                         </td>
+                        <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
                         <td className="p-2 text-center">
                           <Link href={`/purchases/${p.id}/receive`}>
                             <Button variant="outline" size="sm">فتح</Button>
@@ -391,7 +413,7 @@ export default function SupplierStatement() {
                     );
                   })}
                   {stmt.data.purchaseOrders.length === 0 && (
-                    <TableEmptyRow colSpan={8} message="لا أوامر شراء لهذا المورد." />
+                    <TableEmptyRow colSpan={9} message="لا أوامر شراء لهذا المورد." />
                   )}
                 </tbody>
               </table>
@@ -408,6 +430,7 @@ export default function SupplierStatement() {
                     <th className="p-2">أمر الشراء</th>
                     <th className="p-2 text-right">المبلغ</th>
                     <th className="p-2">ملاحظات</th>
+                    <th className="p-2">المنفذ</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -434,10 +457,11 @@ export default function SupplierStatement() {
                       </td>
                       <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
                       <td className="p-2 text-xs">{p.notes ?? "—"}</td>
+                      <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
                     </tr>
                   ))}
                   {stmt.data.payments.length === 0 && (
-                    <TableEmptyRow colSpan={4} message="لا دفعات مسجّلة لهذا المورد." />
+                    <TableEmptyRow colSpan={5} message="لا دفعات مسجّلة لهذا المورد." />
                   )}
                 </tbody>
               </table>

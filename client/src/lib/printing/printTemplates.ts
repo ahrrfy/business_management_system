@@ -383,6 +383,8 @@ export interface CustomerStmtPrintData {
   customerAddress?: string | null;
   fromDate?: string | null;
   toDate?: string | null;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
   transactions: {
     date: string;
     ref: string;
@@ -390,6 +392,7 @@ export interface CustomerStmtPrintData {
     debit?: string | number | null;
     credit?: string | number | null;
     balance: string | number;
+    actor?: string | null;
   }[];
   totalDebit: string | number;
   totalCredit: string | number;
@@ -398,15 +401,17 @@ export interface CustomerStmtPrintData {
   closingBalance: string | number;
 }
 
-export function printCustomerStmt(d: CustomerStmtPrintData): void {
+export function printCustomerStmt(d: CustomerStmtPrintData): boolean {
   // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (كشف مفصّل). صف تفاصيل تحت كل حركة يشرح
   // محتوى الفاتورة/السند. النوع = "customer".
   const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
-  printStatementV2({
+  return printStatementV2({
     partyKind: 'customer',
     partyName: d.customerName,
     partyPhone: d.customerPhone,
     periodLabel,
+    printedByName: d.printedByName,
+    printRequestedAt: d.printRequestedAt,
     openingBalance: d.openingBalance ?? 0,
     currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
@@ -422,6 +427,7 @@ export function printCustomerStmt(d: CustomerStmtPrintData): void {
         typeLabel: label,
         typeColor: color,
         details: t.description,
+        actor: t.actor,
       };
     }),
     totalDebit: d.totalDebit,
@@ -502,6 +508,8 @@ export interface SupplierStmtPrintData {
   supplierAddress?: string | null;
   fromDate?: string | null;
   toDate?: string | null;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
   transactions: {
     date: string;
     ref: string;
@@ -509,6 +517,7 @@ export interface SupplierStmtPrintData {
     debit?: string | number | null;
     credit?: string | number | null;
     balance: string | number;
+    actor?: string | null;
   }[];
   totalDebit: string | number;
   totalCredit: string | number;
@@ -517,7 +526,7 @@ export interface SupplierStmtPrintData {
   closingBalance: string | number;
 }
 
-export function printSupplierStmt(d: SupplierStmtPrintData): void {
+export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
   // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (النوع = "supplier").
   // ⚠️ الرصيد المُمرَّر هنا (openingBalance/balance/closingBalance) موقَّع فعلاً بنفس اصطلاح
   // suppliers.currentBalance (موجب="علينا له")، مطابقاً لبناء ledger في SupplierStatement.tsx
@@ -525,11 +534,13 @@ export function printSupplierStmt(d: SupplierStmtPrintData): void {
   // الاتجاه (لنا/علينا) من الإشارة نفسها ويَعرض القيمة المطلقة بجانبه، فتُحفَظ دلالة رصيد
   // دائن/تسديد زائد للمورّد (سالب ⇒ «لنا») بدل ابتلاعها بقيمة مطلقة صامتة.
   const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
-  printStatementV2({
+  return printStatementV2({
     partyKind: 'supplier',
     partyName: d.supplierName,
     partyPhone: d.supplierPhone,
     periodLabel,
+    printedByName: d.printedByName,
+    printRequestedAt: d.printRequestedAt,
     openingBalance: Number(d.openingBalance ?? 0),
     currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
@@ -547,6 +558,7 @@ export function printSupplierStmt(d: SupplierStmtPrintData): void {
         typeLabel: label,
         typeColor: color,
         details: t.description,
+        actor: t.actor,
       };
     }),
     totalDebit: d.totalDebit,

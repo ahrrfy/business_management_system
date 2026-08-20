@@ -18,7 +18,7 @@ const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie()
 const caller = () => appRouter.createCaller(adminCtx);
 
 const TABLES = [
-  "voucherCategories",
+  "voucherCategories", "purchaseReturnItems", "purchaseReturns",
   "idempotencyKeys", "accountingEntries", "receipts", "expenses", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "workOrderImages", "workOrderItems", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
@@ -167,14 +167,35 @@ describe("#3 تقريب IQD النقدي على الخادم", () => {
   });
 });
 
-describe("#4 سقف مرتجع الشراء (لا تضخيم قيمة)", () => {
-  it("سعر إرجاع وحدة يتجاوز التكلفة المسجّلة ⇒ يُرفض", async () => {
-    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "100.00" });
-    await setStock(1, 1, 10); // مخزون كافٍ للإخراج
-    // costPrice=4.00؛ نحاول الإرجاع بسعر 10.00 (>التكلفة) ⇒ رفض.
-    await expect(createPurchaseReturn({ supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "10.00" }] }, actor)).rejects.toThrow();
-    // بسعر ≤ التكلفة (4.00) ⇒ يُقبل.
-    await expect(createPurchaseReturn({ supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "4.00" }] }, actor)).resolves.toBeTruthy();
+describe("#4 سعر مرتجع الشراء مشتق من أمر الشراء", () => {
+  it("يتجاهل سعر إدخال مزور ويعيد بسعر بند الأمر المثبت", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0.00" });
+    const po = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      status: "CONFIRMED",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "4.00" }],
+    }, actor);
+    const poItem = (await db().select().from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+    await receivePurchase({
+      purchaseOrderId: po.purchaseOrderId,
+      lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 10 }],
+    }, actor);
+
+    const result = await createPurchaseReturn({
+      clientRequestId: "purchase-return-price-source",
+      supplierId: 1,
+      branchId: 1,
+      purchaseOrderRefId: po.purchaseOrderId,
+      settlement: "CREDIT",
+      items: [{ purchaseOrderItemId: Number(poItem.id), quantity: "1", unitPrice: "10.00" }],
+    } as any, actor);
+
+    expect(result.returnedTotal).toBe("4.00");
+    const [document] = await db().select().from(s.purchaseReturns);
+    expect(document.totalAmount).toBe("4.00");
   });
 });
 

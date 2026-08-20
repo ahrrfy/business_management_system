@@ -129,6 +129,7 @@ export async function approveExchangeDeposit(
     await postEntry(tx, {
       entryType: "EXCHANGE_DEPOSIT",
       branchId: txn.branchId != null ? Number(txn.branchId) : null,
+      createdBy: actor.userId,
       exchangeHouseId: houseId,
       amount: carryingIqd,
       dedupeKey: `EXDEP:${txn.txnNumber}`,
@@ -152,6 +153,7 @@ export async function approveExchangeDeposit(
       await postEntry(tx, {
         entryType: "EXCHANGE_FX_DIFF",
         branchId: txn.branchId != null ? Number(txn.branchId) : null,
+        createdBy: actor.userId,
         exchangeHouseId: houseId,
         amount: movement.fxGainIqd,
         dedupeKey: `EXDEP:FX:${txn.txnNumber}`,
@@ -170,6 +172,7 @@ export async function approveExchangeDeposit(
       afterSignedIqd: movement.balanceCarryingIqd,
       sourceKey: txn.txnNumber,
       notes: `تصنيف ذمة الصيرفة لإيداع الدولار ${txn.txnNumber}`,
+      createdBy: actor.userId,
     });
 
     return { txnId, txnNumber: txn.txnNumber, status: "ACTIVE" as const };

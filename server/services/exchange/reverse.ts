@@ -556,6 +556,7 @@ export async function reverseExchangeTransaction(
       await postEntry(tx, {
         entryType: e.entryType as never,
         branchId: e.branchId != null ? Number(e.branchId) : null,
+        createdBy: actor.userId,
         purchaseOrderId: e.purchaseOrderId != null ? Number(e.purchaseOrderId) : null,
         exchangeHouseId: houseId,
         supplierId: e.supplierId != null ? Number(e.supplierId) : null,
@@ -591,6 +592,7 @@ export async function reverseExchangeTransaction(
         : recomputedHouse.balanceIqd,
       sourceKey: `REV:${txn.txnNumber}`,
       notes: `إعادة تصنيف ذمة الصيرفة بعد عكس ${txn.txnNumber}`,
+      createdBy: actor.userId,
     });
 
     return { txnId, txnNumber: txn.txnNumber, status: "REVERSED" as const };
