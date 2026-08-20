@@ -8,7 +8,7 @@
  * اختبارُ وحدةٍ بلا قاعدة: الدالّة نقيّة (تأخذ نصّاً وأبعاداً وترمي أو تُرجع).
  */
 import { describe, expect, it } from "vitest";
-import { decodeStudioThumbnail, isCompleteStillWebp } from "../productStudioService";
+import { decodeStudioThumbnail, isCompleteStillWebp, locateStillWebpFrame } from "../productStudioService";
 
 /** WebP صالح ١×١ (VP8L، مقطعٌ واحد كامل) — نفس ما ينتجه canvas. */
 const WEBP_1X1 = "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA";
@@ -52,6 +52,38 @@ describe("بنية WebP: مشيٌ على مقاطع RIFF لا افتراضُ ش�
     const raw = Buffer.from(bytesOf(CHROME_VP8X_4X3));
     raw.writeUInt32LE(0x7fffffff, 16); // حجم مقطع VP8X
     expect(isCompleteStillWebp(raw)).toBe(false);
+  });
+
+  it("⭐ يرفض مقطعاً اسمه VP8 وحمولتُه أصفار — الاسم ليس دليلاً على صورة", () => {
+    // أمسكها Codex على أوّل نسخةٍ من هذا الإصلاح: المشي على المقاطع وحده يقبل إطاراً
+    // لا يُفكّ ترميزه، بينما ترويسة VP8X **غير المَمسوسة** تُصرّح بأبعادٍ سليمة ⇒ يُخزَّن
+    // ويُنشَر «مرشّحٌ» لا يعرضه أيّ متصفّح. فحصُ ترويسة الإطار هو ما يمنع ذلك.
+    const raw = Buffer.from(bytesOf(CHROME_VP8X_4X3));
+    // موضع حمولة مقطع VP8 : بعد VP8X(8+10) وICCP(8+456) ثمّ ترويسة المقطع (8).
+    const frameAt = 12 + 8 + 10 + 8 + 456 + 8;
+    expect(raw.toString("ascii", frameAt - 8, frameAt - 4)).toBe("VP8 ");
+    raw.fill(0, frameAt, raw.length);
+    expect(isCompleteStillWebp(raw)).toBe(false);
+  });
+
+  it("يرفض رمز بدء VP8 مُتلاعَباً به في ملفٍّ بسيط", () => {
+    const raw = Buffer.from(bytesOf(WEBP_1X1));
+    const frameAt = 20; // ملفٌّ بسيطٌ بمقطعٍ واحد: الحمولة تبدأ بعد ترويستَي RIFF والمقطع.
+    // رمز البدء 9D 01 2A يقع بعد وسم الإطار (٣ بايتات) — هو ما يُميّز إطاراً حقيقياً.
+    expect([raw[frameAt + 3], raw[frameAt + 4], raw[frameAt + 5]]).toEqual([0x9d, 0x01, 0x2a]);
+    raw[frameAt + 4] = 0x00;
+    expect(isCompleteStillWebp(raw)).toBe(false);
+  });
+
+  it("⭐ الأبعاد تُقرأ من الإطار لا من تصريح VP8X — عند اختلافهما تُصدَّق الصورة", () => {
+    const raw = Buffer.from(bytesOf(CHROME_VP8X_4X3));
+    // ترويسة VP8X تُصرّح بالعرض/الارتفاع ناقصاً واحداً في ٣ بايتات لكلٍّ (تبدأ عند 12+8+4).
+    raw[24] = 0x63; // تصريحٌ كاذب: عرضٌ = ١٠٠
+    expect(locateStillWebpFrame(raw)).toMatchObject({ width: 4, height: 3 });
+    // ولأنّ الأبعاد تُقرأ من الإطار، يبقى ربطُها بالمرشّح صادقاً رغم التصريح الكاذب.
+    expect(() => decodeStudioThumbnail(`data:image/webp;base64,${raw.toString("base64")}`, { width: 100, height: 3 })).toThrow(
+      /أبعاد المصغّرة/,
+    );
   });
 
   it("يرفض ما ليس RIFF/WEBP", () => {
