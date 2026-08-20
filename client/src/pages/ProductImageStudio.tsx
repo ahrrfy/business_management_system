@@ -197,6 +197,11 @@ export default function ProductImageStudio() {
   const [assigneeFilter, setAssigneeFilter] = useState("ALL");
   /** المنتج الذي بيد المصوّر الآن (من مسح الباركود) — يقود محطّة التصوير. */
   const [captured, setCaptured] = useState<ClaimedStudioProduct | null>(null);
+  /** نطاق الحملة وفريقها وتوجيهها — يُرسَلان مع الإنشاء. */
+  const [campaignScope, setCampaignScope] = useState<"ALL" | "CATEGORY" | "PRODUCTS">("ALL");
+  const [campaignCategoryId, setCampaignCategoryId] = useState("");
+  const [campaignRequiredImages, setCampaignRequiredImages] = useState("1");
+  const [campaignAssigneeIds, setCampaignAssigneeIds] = useState<number[]>([]);
   const [taskSearch, setTaskSearch] = useState("");
   const [debouncedTaskSearch, setDebouncedTaskSearch] = useState("");
   const [setupPin, setSetupPin] = useState("");
@@ -260,6 +265,10 @@ export default function ProductImageStudio() {
       enabled: !offline && Boolean(selectedCampaignId) && dashboard.data?.canManage === true,
     },
   );
+  const categoryOptions = trpc.catalog.categories.useQuery(undefined, {
+    enabled: !offline && dashboard.data?.canManage === true,
+    staleTime: 300_000,
+  });
   const campaignBoard = trpc.productStudio.campaignBoard.useQuery(
     { campaignId: selectedCampaignId ?? 0 },
     {
@@ -465,7 +474,11 @@ export default function ProductImageStudio() {
       setCampaignName("");
       setCampaignStartAt("");
       setCampaignDueAt("");
-      notify.ok("أُنشئت حملة الاستوديو وفُعّلت");
+      setCampaignScope("ALL");
+      setCampaignCategoryId("");
+      setCampaignRequiredImages("1");
+      setCampaignAssigneeIds([]);
+      notify.ok(`أُنشئت حملة الاستوديو وفُعّلت${campaign.assigneeIds.length > 0 ? ` — ${campaign.assigneeIds.length} مصوّراً` : ""}`);
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -982,9 +995,68 @@ export default function ProductImageStudio() {
                 <Input id="studio-campaign-due" type="datetime-local" value={campaignDueAt} onChange={(event) => setCampaignDueAt(event.target.value)} />
               </div>
               <div className="flex items-end">
+              <div className="space-y-1.5">
+                <Label htmlFor="studio-campaign-scope">نطاق الحملة</Label>
+                <AppSelect id="studio-campaign-scope" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={campaignScope} onValueChange={(value) => setCampaignScope(value as typeof campaignScope)}>
+                  <option value="ALL">كل المنتجات الناقصة</option>
+                  <option value="CATEGORY">فئة (وفئاتها الفرعية)</option>
+                  <option value="PRODUCTS">منتجات مختارة</option>
+                </AppSelect>
+              </div>
+              {campaignScope === "CATEGORY" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="studio-campaign-category">الفئة</Label>
+                  <AppSelect id="studio-campaign-category" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={campaignCategoryId} onValueChange={setCampaignCategoryId} disabled={categoryOptions.isError}>
+                    <option value="">اختر الفئة</option>
+                    {(categoryOptions.data ?? []).map((category) => (
+                      <option key={Number(category.id)} value={Number(category.id)}>
+                        {category.parentId ? "— " : ""}
+                        {category.name}
+                      </option>
+                    ))}
+                  </AppSelect>
+                  {categoryOptions.isError && <p className="text-xs text-destructive">تعذّر جلب الفئات.</p>}
+                </div>
+              )}
+              {campaignScope === "PRODUCTS" && (
+                <div className="space-y-1.5">
+                  <Label>المنتجات المختارة</Label>
+                  {/* يُعاد استعمال منتقي المنتجات نفسه أسفل الشاشة — التحديد يظهر هنا. */}
+                  <p className="rounded-md border p-2 text-sm">
+                    {bulkProductIds.length > 0 ? `${bulkProductIds.length} منتجاً محدَّداً` : "اختر المنتجات من «إسناد مهمة جديدة» أدناه"}
+                  </p>
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor="studio-campaign-required">صور مطلوبة لكل منتج</Label>
+                <Input id="studio-campaign-required" type="number" min={1} max={10} value={campaignRequiredImages} onChange={(event) => setCampaignRequiredImages(event.target.value)} />
+                <p className="text-xs text-muted-foreground">التوجيه الإداريّ — يراه المصوّر ويبقى المنتج ناقصاً حتى يبلغه.</p>
+              </div>
+              <div className="space-y-1.5 xl:col-span-2">
+                <Label>مصوّرو الحملة</Label>
+                <div className="flex flex-wrap gap-2 rounded-md border p-2">
+                  {(assignees.data ?? []).length === 0 && <span className="text-xs text-muted-foreground">لا موظفين متاحين.</span>}
+                  {(assignees.data ?? []).map((user) => {
+                    const picked = campaignAssigneeIds.includes(user.id);
+                    return (
+                      <Button
+                        key={user.id}
+                        type="button"
+                        size="sm"
+                        variant={picked ? "default" : "outline"}
+                        className="min-h-11"
+                        onClick={() => setCampaignAssigneeIds((current) => (picked ? current.filter((id) => id !== user.id) : [...current, user.id]))}
+                      >
+                        {user.name}
+                      </Button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground">هؤلاء وحدهم يفتحون منتجات الحملة بمسح الباركود.</p>
+              </div>
                 <Button
                   className="min-h-11 w-full"
-                  disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || me.data?.branchId)}
+                  disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || me.data?.branchId) || (campaignScope === "CATEGORY" && !campaignCategoryId) || (campaignScope === "PRODUCTS" && bulkProductIds.length === 0)}
                   onClick={() =>
                     createCampaign.mutate({
                       name: campaignName.trim(),
@@ -992,6 +1064,11 @@ export default function ProductImageStudio() {
                       branchId: Number(campaignBranchId || me.data?.branchId),
                       startsAt: campaignStartAt ? new Date(campaignStartAt) : null,
                       dueAt: campaignDueAt ? new Date(campaignDueAt) : null,
+                      scopeKind: campaignScope,
+                      scopeCategoryId: campaignScope === "CATEGORY" ? Number(campaignCategoryId) : null,
+                      scopeProductIds: campaignScope === "PRODUCTS" ? bulkProductIds : undefined,
+                      requiredImages: Math.max(1, Math.min(10, Number(campaignRequiredImages) || 1)),
+                      assigneeIds: campaignAssigneeIds,
                     })
                   }
                 >
