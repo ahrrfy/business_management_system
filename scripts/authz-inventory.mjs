@@ -48,6 +48,13 @@ const PROCEDURES = {
     roles: [],
     branch: false,
   },
+  storefrontPublicWriteProcedure: {
+    authority: "public",
+    module: "storefront",
+    level: "WRITE",
+    roles: [],
+    branch: false,
+  },
   passwordResetTokenProcedure: {
     authority: "token",
     module: "users",

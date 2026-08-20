@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "server/services/storeAdmin/storefrontPushCampaignService.ts",
+    "server/services/storefrontCustomerIdentityService.ts",
+    "server/routers/storefrontRouter.ts",
+    "server/routers/storeAdminRouter.ts",
+    "drizzle/schema.ts"
+  ],
+  "exclude": ["node_modules"],
+  "compilerOptions": {
+    "incremental": false
+  }
+}
