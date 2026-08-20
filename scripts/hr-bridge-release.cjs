@@ -686,23 +686,39 @@ function readIntentRecord(file, namespace) {
 }
 
 function writeIntentRecord(file, record, replace = false) {
-  if (!replace) {
-    const fd = fs.openSync(file, "wx", 0o600);
-    try {
-      fs.writeFileSync(fd, `${JSON.stringify(record)}\n`, "utf8");
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    return;
-  }
+  // ٢٠/٨ — **الإنشاء صار ذرّياً كالاستبدال.** كان يفتح الاسم النهائيّ بـ`wx` ثمّ يكتب ثمّ
+  // يُزامن ثمّ يُغلق، فيبقى الملفّ **فارغاً** طوال تلك النافذة. وقارئٌ متزامن يقرؤه فيفشل
+  // `JSON.parse("")` ⇒ `HR_BRIDGE_LOCK_INTENT_INVALID` — وهو خطأٌ بلا `code` فلا يتخطّاه
+  // `liveIntentRecords` (يتخطّى ENOENT وحده) بل يُعيد رميَه ⇒ يخرج من
+  // `acquireRuntimeIntentLock` غيرَ رمز الانشغال فيسقط المُدّعي.
+  //
+  // ولأنّ النافذة تقع على الطرفين بالتناظر كان **الطفلان معاً** يسقطان — وهو `[1,1]` الذي
+  // أوقف `pnpm prod:deploy` (الفحص في ذيل `pnpm build`، فتتّسع النافذة تحت حِمل البناء؛
+  // ولهذا يمرّ منفرداً ويسقط بعد بناءٍ ثقيل).
+  //
+  // العلاج: اكتب في اسمٍ مؤقّت (يتخطّاه الماسح بلاحقة `.tmp-`) ثمّ `rename` — وهي **ذرّية**
+  // على POSIX ⇒ لا يرى قارئٌ الاسمَ النهائيّ إلّا بمحتواه كاملاً. والتفرّد محفوظ: المؤقّت
+  // يُفتح بـ`wx`، والاسم النهائيّ يحمل UUID لكلّ مُدّعٍ فلا تصادم.
   const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
   const fd = fs.openSync(temporary, "wx", 0o600);
   try {
-    fs.writeFileSync(fd, `${JSON.stringify(record)}\n`, "utf8");
+    fs.writeFileSync(fd, `${JSON.stringify(record)}
+`, "utf8");
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
+  }
+  if (!replace) {
+    // إنشاءٌ: نحفظ دلالة «لا تدُس اسماً قائماً» — الرابطُ الصلب يفشل بـEEXIST ذرّياً،
+    // ثمّ نُزيل المؤقّت. (rename يدوس صامتاً، وهو ما لا نريده في مسار الإنشاء.)
+    try {
+      fs.linkSync(temporary, file);
+    } finally {
+      try { fs.unlinkSync(temporary); } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    return;
   }
   fs.renameSync(temporary, file);
 }

@@ -8501,6 +8501,45 @@ export const imageStudioUsageDaily = mysqlTable(
 export type ImageStudioUsageDaily = typeof imageStudioUsageDaily.$inferSelect;
 export type InsertImageStudioUsageDaily = typeof imageStudioUsageDaily.$inferInsert;
 
+/**
+ * سقفٌ يوميّ **اختياريّ** لكل (فرع × خدمة). غياب الصفّ = بلا حدٍّ فرعيّ، فالسقف الشركيّ
+ * في `imageStudioUsageDaily` يبقى وحده — صفر أثرٍ سلوكيّ حتى يضبطه المدير صراحةً.
+ * مفتاحٌ مركّبٌ طبيعيّ: الصفّ هو (الفرع، الخدمة) ولا معنى لمعرّفٍ بديلٍ له.
+ */
+export const imageStudioBranchBudgets = mysqlTable(
+  "imageStudioBranchBudgets",
+  {
+    // ⚠️ `branches.id` هو bigint — و`int` هنا يُفشل إنشاء الـFK بـ«أعمدة غير متوافقة».
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    service: mysqlEnum("service", ["REMOVEBG", "AI"]).notNull(),
+    dailyLimit: int("dailyLimit").notNull(),
+    updatedBy: int("updatedBy"),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.branchId, table.service] }),
+    branchFk: foreignKey({ columns: [table.branchId], foreignColumns: [branches.id], name: "fk_isbb_branch" }).onDelete("cascade"),
+  }),
+);
+export type ImageStudioBranchBudget = typeof imageStudioBranchBudgets.$inferSelect;
+
+/** عدّاد الاستهلاك اليوميّ لكل (يوم × خدمة × فرع) — نظير `imageStudioUsageDaily` مُنطَّقاً بالفرع. */
+export const imageStudioBranchUsageDaily = mysqlTable(
+  "imageStudioBranchUsageDaily",
+  {
+    usageDate: date("usageDate", { mode: "string" }).notNull(),
+    service: mysqlEnum("service", ["REMOVEBG", "AI"]).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    requestCount: int("requestCount").default(0).notNull(),
+    lastRequestedAt: timestamp("lastRequestedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.usageDate, table.service, table.branchId] }),
+    branchFk: foreignKey({ columns: [table.branchId], foreignColumns: [branches.id], name: "fk_isbud_branch" }).onDelete("cascade"),
+  }),
+);
+export type ImageStudioBranchUsageDaily = typeof imageStudioBranchUsageDaily.$inferSelect;
+
 /** صف ثابت لكل مستخدم لمعدل مزودي الصور؛ لا يتراكم مع الطلبات ويُقفل عبر جميع عمال PM2. */
 export const imageStudioUserRateState = mysqlTable("imageStudioUserRateState", {
   userId: int("userId").primaryKey().references(() => users.id, { onDelete: "cascade" }),

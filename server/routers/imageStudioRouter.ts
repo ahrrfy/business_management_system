@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { AI_STUDIO_PROVIDERS, buildAiStudioPrompt, MAX_STUDIO_PROMPT_LEN, MAX_USER_PROMPT_LEN } from "@shared/imageStudio/aiPrompt";
-import { adminProcedure, productStudioWriteProcedure, protectedProcedure, router } from "../trpc";
+import { adminProcedure, productStudioAdminProcedure, productStudioWriteProcedure, protectedProcedure, router } from "../trpc";
 import {
   getAiImageStudioSettings,
   getAiStudioConfig,
@@ -20,8 +20,10 @@ import {
   ImageStudioGuardError,
   imageStudioGuardErrorMessageAr,
   runGuardedImageStudioCall,
+  baghdadDay,
 } from "../services/imageStudioUsageGuard";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
+import { listBranchBudgets, setBranchBudget, MAX_BRANCH_DAILY_LIMIT, MIN_BRANCH_DAILY_LIMIT } from "../services/imageStudioBranchBudget";
 import { logAudit } from "../services/auditService";
 import {
   attestStudioProcessing,
@@ -82,6 +84,32 @@ export const imageStudioRouter = router({
     return result;
   }),
 
+  /**
+   * حصص المزوّد المدفوع لكل فرع — إعدادٌ ماليّ (كل نداءٍ كلفة) ⇒ بوّابة الوحدة ثمّ admin.
+   * القراءة تُظهر الحصّة والاستهلاك اليوم معاً: رقمٌ بلا استهلاكه لا يُقرَّر عليه.
+   */
+  branchBudgets: productStudioAdminProcedure.query(() => listBranchBudgets(baghdadDay())),
+
+  setBranchBudget: productStudioAdminProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        service: z.enum(["REMOVEBG", "AI"]),
+        /** null = ارفع الحصّة كلّياً (بلا حدٍّ فرعيّ)؛ 0 = أوقف المزوّد لهذا الفرع. */
+        dailyLimit: z.number().int().min(MIN_BRANCH_DAILY_LIMIT).max(MAX_BRANCH_DAILY_LIMIT).nullable(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await setBranchBudget(Number(ctx.user.id), input.branchId, input.service, input.dailyLimit);
+      await logAudit(ctx, {
+        action: "imageStudio.setBranchBudget",
+        entityType: "imageStudioBranchBudget",
+        entityId: input.branchId,
+        newValue: { service: input.service, dailyLimit: input.dailyLimit },
+      });
+      return result;
+    }),
+
   proConfig: protectedProcedure.query(() => getProConfig()),
 
   proCutout: productStudioWriteProcedure
@@ -110,6 +138,7 @@ export const imageStudioRouter = router({
         const result = await runGuardedImageStudioCall({
           service: "REMOVEBG",
           userId: Number(ctx.user.id),
+          branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
           run: () => callRemovebg(key, base64),
         });
         const processingReceipt = await attestStudioProcessing(
@@ -242,6 +271,7 @@ export const imageStudioRouter = router({
         const result = await runGuardedImageStudioCall({
           service: "AI",
           userId: Number(ctx.user.id),
+          branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
           run: () => generateStudioImage({
             apiKey: runtime.apiKey,
             model: runtime.model,
