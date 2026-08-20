@@ -26,6 +26,9 @@ export interface MovementRow {
   shiftOwnerName: string | null;
   createdBy: number | null;
   createdByName: string | null;
+  partyType: string | null;
+  partyId: number | null;
+  partyName: string | null;
   approvedBy: number | null;
   approvedByName: string | null;
   referenceNumber: string | null;
@@ -120,6 +123,13 @@ export async function getRecentMovements(
           su.name AS shiftOwnerName,
           r.createdBy AS createdBy,
           cu.name AS createdByName,
+          r.voucherPartyType AS partyType,
+          r.partyId AS partyId,
+          CASE
+            WHEN r.voucherPartyType = 'CUSTOMER' THEN cust.name
+            WHEN r.voucherPartyType = 'SUPPLIER' THEN supp.name
+            ELSE r.counterpartyName
+          END AS partyName,
           r.approvedBy AS approvedBy,
           au.name AS approvedByName,
           COALESCE(ex.referenceNumber, r.referenceNumber) AS referenceNumber,
@@ -137,6 +147,8 @@ export async function getRecentMovements(
         LEFT JOIN branches b ON b.id = r.branchId
         LEFT JOIN expenses ex ON ex.receiptId = r.id
         LEFT JOIN users cu ON cu.id = r.createdBy
+        LEFT JOIN customers cust ON r.voucherPartyType = 'CUSTOMER' AND cust.id = r.partyId
+        LEFT JOIN suppliers supp ON r.voucherPartyType = 'SUPPLIER' AND supp.id = r.partyId
         LEFT JOIN users au ON au.id = r.approvedBy
         LEFT JOIN shifts s ON s.id = r.shiftId
         LEFT JOIN users su ON su.id = s.userId
@@ -170,6 +182,9 @@ export async function getRecentMovements(
           su.name AS shiftOwnerName,
           e.createdBy AS createdBy,
           cu.name AS createdByName,
+          'OTHER' AS partyType,
+          NULL AS partyId,
+          e.payee AS partyName,
           NULL AS approvedBy,
           NULL AS approvedByName,
           e.referenceNumber AS referenceNumber,
@@ -257,6 +272,9 @@ export async function getRecentMovements(
         r.shiftOwnerName == null ? null : String(r.shiftOwnerName),
       createdBy: asId(r.createdBy),
       createdByName: r.createdByName == null ? null : String(r.createdByName),
+      partyType: r.partyType == null ? null : String(r.partyType),
+      partyId: asId(r.partyId),
+      partyName: r.partyName == null ? null : String(r.partyName),
       approvedBy: asId(r.approvedBy),
       approvedByName:
         r.approvedByName == null ? null : String(r.approvedByName),

@@ -15,6 +15,8 @@ import { notify } from "@/lib/notify";
 import { selectCls, type ExchangeRow } from "@/components/exchange/shared";
 import { RowActions, type RowAction } from "@/components/list";
 import { printExchangeSlipSmart, type ExchangeSlipData } from "@/lib/printing/printExchangeSlip";
+import { releaseReservedPrintWindow, reservePrintWindow } from "@/lib/printing/brand";
+import { usePrintAudit } from "@/hooks/usePrintAudit";
 
 const TYPE_AR: Record<string, string> = {
   DEPOSIT: "إيداع",
@@ -59,6 +61,7 @@ export default function ExchangeStatement() {
     { exchangeHouseId: houseId, from: from || undefined, to: to || undefined },
     { enabled: houseId > 0 },
   );
+  const printAudit = usePrintAudit();
 
   // عكس عملية صيرفة خاطئة (فصل مهام خادميّ: مُنشئ ≠ مُنفِّذ). يُعيد الأرصدة وWAVG وذمّة المورد،
   // ويستثني العملية من إجماليات الكشف. تأكيدٌ صريح لأنه إجراءٌ ماليّ لا يُتراجَع عنه.
@@ -89,7 +92,8 @@ export default function ExchangeStatement() {
     async (t: TxnRow, mode: "thermal" | "a4") => {
       const house = houseRows.find((h) => h.id === houseId);
       if (!house) return;
-      const data: ExchangeSlipData = {
+      if (mode === "a4" && !reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
+      const baseData: ExchangeSlipData = {
         txnNumber: t.txnNumber,
         type: t.type as ExchangeSlipData["type"],
         currency: t.currency as ExchangeSlipData["currency"],
@@ -110,10 +114,24 @@ export default function ExchangeStatement() {
         balanceUsdAfter: t.balanceUsdAfter,
         notes: t.notes,
       };
-      const res = await printExchangeSlipSmart(data, mode);
-      if ("ok" in res && !res.ok) notify.err("تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.");
+      try {
+        const result = await printAudit.run({
+          documentType: "EXCHANGE_TRANSACTION",
+          documentId: t.id,
+          channel: mode === "a4" ? "PDF" : "THERMAL",
+          open: async (audit) => {
+            const data = { ...baseData, printedByName: audit.actorName, printRequestedAt: fmtDateTime(audit.requestedAt) };
+            const res = await printExchangeSlipSmart(data, mode);
+            return "ok" in res ? res.ok : res;
+          },
+        });
+        if (typeof result === "boolean" && !result) notify.err("تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.");
+      } catch (error) {
+        releaseReservedPrintWindow();
+        notify.err(error instanceof Error ? error.message : "تعذّر تسجيل طلب الطباعة");
+      }
     },
-    [houseRows, houseId],
+    [houseRows, houseId, printAudit],
   );
 
   const cols: ColumnDef<TxnRow>[] = useMemo(
@@ -121,6 +139,8 @@ export default function ExchangeStatement() {
       { header: "التاريخ", accessorKey: "createdAt", cell: ({ row }) => <span dir="ltr" className="text-xs text-muted-foreground">{fmtDT(row.original.createdAt)}</span> },
       { header: "الرقم", accessorKey: "txnNumber", cell: ({ row }) => <span dir="ltr" className="text-xs">{row.original.txnNumber}</span> },
       { header: "النوع", accessorKey: "type", cell: ({ row }) => TYPE_AR[row.original.type] ?? row.original.type },
+      { header: "المورد / الطرف", accessorKey: "supplierName", cell: ({ row }) => <span className="text-xs font-medium">{row.original.supplierName ?? "—"}</span> },
+      { header: "المنفّذ", accessorKey: "createdByName", cell: ({ row }) => <span className="text-xs">{row.original.createdByName ?? "غير موثق"}</span> },
       { header: "مبلغ ديناري / قيمة دفترية (د.ع)", accessorKey: "iqdAmount", cell: ({ row }) => <span dir="ltr" className="tabular-nums">{D(row.original.iqdAmount).isZero() ? "—" : fmtAr(row.original.iqdAmount)}</span> },
       { header: "دولار", accessorKey: "usdAmount", cell: ({ row }) => <span dir="ltr" className="tabular-nums">{D(row.original.usdAmount).isZero() ? "—" : fmtAr(row.original.usdAmount)}</span> },
       {

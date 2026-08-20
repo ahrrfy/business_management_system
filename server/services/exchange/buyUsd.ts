@@ -86,6 +86,7 @@ export async function buyUsdAtExchange(input: BuyUsdInput, actor: Actor): Promis
     await postEntry(tx, {
       entryType: "EXCHANGE_FX_BUY",
       branchId: input.branchId,
+      createdBy: actor.userId,
       exchangeHouseId: input.exchangeHouseId,
       amount: iqdSpent,
       dedupeKey: `EXFXB:${txnNumber}`,
@@ -112,6 +113,7 @@ export async function buyUsdAtExchange(input: BuyUsdInput, actor: Actor): Promis
       await postEntry(tx, {
         entryType: "EXCHANGE_FX_DIFF",
         branchId: input.branchId,
+        createdBy: actor.userId,
         exchangeHouseId: input.exchangeHouseId,
         amount: movement.fxGainIqd,
         dedupeKey: `EXFXB:FX:${txnNumber}`,
@@ -130,6 +132,7 @@ export async function buyUsdAtExchange(input: BuyUsdInput, actor: Actor): Promis
       afterSignedIqd: movement.balanceCarryingIqd,
       sourceKey: txnNumber,
       notes: `تصنيف ذمة الصيرفة لشراء الدولار ${txnNumber}`,
+      createdBy: actor.userId,
     });
 
     if (input.clientRequestId) {

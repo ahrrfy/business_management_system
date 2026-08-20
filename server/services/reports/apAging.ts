@@ -1,6 +1,7 @@
 // شيخوخة الذمم الدائنة (AP) + كشف حساب مورد.
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
-import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
+import { alias } from "drizzle-orm/mysql-core";
+import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
 import { nextDayStr, type StatementPeriod } from "./shared";
@@ -95,6 +96,8 @@ export interface SupplierStatementPO {
   total: string;
   paidAmount: string;
   status: string;
+  createdBy: number | null;
+  createdByName: string | null;
 }
 
 export interface SupplierStatementPayment {
@@ -111,10 +114,12 @@ export interface SupplierStatementPayment {
   referenceNumber: string | null;
   exchangeHouseId: number | null;
   exchangeHouseName: string | null;
+  createdBy: number | null;
+  createdByName: string | null;
 }
 
 export interface SupplierStatementResult {
-  supplier: typeof suppliers.$inferSelect;
+  supplier: Pick<typeof suppliers.$inferSelect, "id" | "name" | "phone" | "city" | "paymentTerms" | "currentBalance" | "currentBalanceUsd">;
   purchaseOrders: SupplierStatementPO[];
   payments: SupplierStatementPayment[];
   summary: {
@@ -194,7 +199,15 @@ export async function getSupplierStatement(
 ): Promise<SupplierStatementResult | null> {
   const db = getDb();
   if (!db) return null;
-  const s = (await db.select().from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0];
+  const s = (await db.select({
+    id: suppliers.id,
+    name: suppliers.name,
+    phone: suppliers.phone,
+    city: suppliers.city,
+    paymentTerms: suppliers.paymentTerms,
+    currentBalance: suppliers.currentBalance,
+    currentBalanceUsd: suppliers.currentBalanceUsd,
+  }).from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0];
   if (!s) return null;
   const { from, to, branchId } = period;
 
@@ -206,6 +219,7 @@ export async function getSupplierStatement(
   if (from) poConds.push(sql`${purchaseOrders.orderDate} >= ${`${from} 00:00:00`}`);
   if (to) poConds.push(sql`${purchaseOrders.orderDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   if (branchId) poConds.push(eq(purchaseOrders.branchId, branchId));
+  const poActor = alias(users, "supplierStatementPoActor");
   const pos = await db
     .select({
       id: purchaseOrders.id,
@@ -219,8 +233,11 @@ export async function getSupplierStatement(
       // paidAmount هو الحقل التراكمي المرجعي للأمر (والاسترداد يظهر كحركة PAYMENT_IN مستقلة).
       paidAmount: purchaseOrders.paidAmount,
       status: purchaseOrders.status,
+      createdBy: purchaseOrders.createdBy,
+      createdByName: sql<string | null>`COALESCE(${poActor.name}, ${poActor.username})`,
     })
     .from(purchaseOrders)
+    .leftJoin(poActor, eq(poActor.id, purchaseOrders.createdBy))
     .where(and(...poConds))
     .orderBy(desc(purchaseOrders.orderDate));
 
@@ -270,6 +287,7 @@ export async function getSupplierStatement(
   if (branchId) payConds.push(eq(accountingEntries.branchId, branchId));
   if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
   if (to) payConds.push(sql`${accountingEntries.entryDate} <= ${to}`);
+  const paymentActor = alias(users, "supplierStatementPaymentActor");
   const payments = await db
     .select({
       id: accountingEntries.id,
@@ -284,11 +302,14 @@ export async function getSupplierStatement(
       referenceNumber: receipts.referenceNumber,
       exchangeHouseId: exchangeTransactions.exchangeHouseId,
       exchangeHouseName: exchangeHouses.name,
+      createdBy: sql<number | null>`COALESCE(${accountingEntries.createdBy}, ${receipts.createdBy})`,
+      createdByName: sql<string | null>`COALESCE(${accountingEntries.createdByNameSnapshot}, ${paymentActor.name}, ${paymentActor.username})`,
     })
     .from(accountingEntries)
     .leftJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
     .leftJoin(exchangeTransactions, eq(exchangeTransactions.receiptId, receipts.id))
     .leftJoin(exchangeHouses, eq(exchangeHouses.id, exchangeTransactions.exchangeHouseId))
+    .leftJoin(paymentActor, eq(paymentActor.id, sql`COALESCE(${accountingEntries.createdBy}, ${receipts.createdBy})`))
     .where(and(...payConds))
     .orderBy(asc(accountingEntries.entryDate), asc(accountingEntries.id));
 
@@ -315,6 +336,8 @@ export async function getSupplierStatement(
       total: String(p.total),
       paidAmount: String(p.paidAmount),
       status: p.status,
+      createdBy: p.createdBy ? Number(p.createdBy) : null,
+      createdByName: p.createdByName,
     })),
     payments: payments.map((p) => ({
       id: Number(p.id),
@@ -331,6 +354,8 @@ export async function getSupplierStatement(
       referenceNumber: p.referenceNumber,
       exchangeHouseId: p.exchangeHouseId ? Number(p.exchangeHouseId) : null,
       exchangeHouseName: p.exchangeHouseName,
+      createdBy: p.createdBy ? Number(p.createdBy) : null,
+      createdByName: p.createdByName,
     })),
     summary: {
       totalPurchases: toDbMoney(totalPurchases),

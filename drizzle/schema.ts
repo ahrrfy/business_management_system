@@ -3679,6 +3679,9 @@ export const purchaseOrderItems = mysqlTable(
     listUnitPrice: decimal("listUnitPrice", { precision: 15, scale: 2 }),
     usdListUnitPrice: decimal("usdListUnitPrice", { precision: 15, scale: 4 }),
     receivedBaseQuantity: int("receivedBaseQuantity").default(0),
+    // مرتجعات الشراء المرجعية: عدّاد ذري على بند الأمر نفسه. يُقفَل البند عند إنشاء المرتجع
+    // ويُزاد داخل المعاملة كي لا تتمكن معاملتان متزامنتان من تجاوز المستلَم.
+    returnedBaseQuantity: int("returnedBaseQuantity").default(0).notNull(),
     // receivedNet: مجموع ما قُيِّد فعلياً للبند عبر استلامات متعدّدة. عند الـreceive
     // الذي يُكمل الكمية، يُستعمل (total − receivedNet) كقيمة remainder بالضبط ⇒
     // مجموع AP/PURCHASE يطابق إجمالي الـPO تماماً (لا انجراف 0.01 IQD).
@@ -3698,6 +3701,84 @@ export const purchaseOrderItems = mysqlTable(
 
 export type PurchaseOrderItem = typeof purchaseOrderItems.$inferSelect;
 export type InsertPurchaseOrderItem = typeof purchaseOrderItems.$inferInsert;
+
+/** مستند مرتجع شراء مستقلّ؛ لا نستخدم قيد الدفتر أو أمر الشراء كهوية للمرتجع. */
+export const purchaseReturns = mysqlTable(
+  "purchaseReturns",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    returnNumber: varchar("returnNumber", { length: 50 }).notNull().unique(),
+    clientRequestId: varchar("clientRequestId", { length: 80 }).notNull().unique(),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseOrders.id),
+    supplierId: bigint("supplierId", { mode: "number" })
+      .notNull()
+      .references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" })
+      .notNull()
+      .references(() => branches.id),
+    accountingEntryId: bigint("accountingEntryId", { mode: "number" }).unique().references(
+      () => accountingEntries.id,
+      { onDelete: "set null" },
+    ),
+    settlement: mysqlEnum("purchaseReturnSettlement", ["CREDIT", "CASH"])
+      .default("CREDIT")
+      .notNull(),
+    paymentMethod: mysqlEnum("purchaseReturnPaymentMethod", [
+      "CASH",
+      "CARD",
+      "CHECK",
+      "TRANSFER",
+      "WALLET",
+    ]).default("CASH").notNull(),
+    netAmount: decimal("netAmount", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    cashRefundAmount: decimal("cashRefundAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    creditOffsetAmount: decimal("creditOffsetAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    reason: varchar("reason", { length: 500 }),
+    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    createdByNameSnapshot: varchar("createdByNameSnapshot", { length: 255 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    poIdx: index("idx_purchase_returns_po").on(table.purchaseOrderId),
+    supplierDateIdx: index("idx_purchase_returns_supplier_date").on(table.supplierId, table.createdAt),
+    branchDateIdx: index("idx_purchase_returns_branch_date").on(table.branchId, table.createdAt),
+  }),
+);
+
+export const purchaseReturnItems = mysqlTable(
+  "purchaseReturnItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    purchaseReturnId: bigint("purchaseReturnId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseReturns.id, { onDelete: "cascade" }),
+    purchaseOrderItemId: bigint("purchaseOrderItemId", { mode: "number" })
+      .notNull()
+      .references(() => purchaseOrderItems.id),
+    variantId: bigint("variantId", { mode: "number" })
+      .notNull()
+      .references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
+    lineTotal: decimal("lineTotal", { precision: 15, scale: 2 }).notNull(),
+    productNameSnapshot: varchar("productNameSnapshot", { length: 255 }).notNull(),
+    variantNameSnapshot: varchar("variantNameSnapshot", { length: 120 }),
+    unitNameSnapshot: varchar("unitNameSnapshot", { length: 80 }),
+  },
+  (table) => ({
+    returnIdx: index("idx_purchase_return_items_return").on(table.purchaseReturnId),
+    poItemIdx: index("idx_purchase_return_items_po_item").on(table.purchaseOrderItemId),
+  }),
+);
+
+export type PurchaseReturn = typeof purchaseReturns.$inferSelect;
+export type PurchaseReturnItem = typeof purchaseReturnItems.$inferSelect;
 
 /* ============================ الطلبات الإلكترونية (الشحن/التتبع) ============================ */
 
@@ -4189,6 +4270,34 @@ export const printJobs = mysqlTable(
 
 export type PrintJob = typeof printJobs.$inferSelect;
 export type InsertPrintJob = typeof printJobs.$inferInsert;
+
+/** سجل تدقيق طباعة append-only. كل انتقال (طلب/فتح حوار/إرسال/فشل) صف مستقل لا يُعدَّل. */
+export const documentPrintEvents = mysqlTable(
+  "documentPrintEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    requestId: varchar("requestId", { length: 80 }).notNull(),
+    documentType: varchar("documentType", { length: 40 }).notNull(),
+    documentId: bigint("documentId", { mode: "number" }),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    actorUserId: int("actorUserId").notNull().references(() => users.id),
+    actorNameSnapshot: varchar("actorNameSnapshot", { length: 255 }).notNull(),
+    channel: mysqlEnum("documentPrintChannel", ["BROWSER", "PDF", "THERMAL", "SERVER_BRIDGE"]).notNull(),
+    outcome: mysqlEnum("documentPrintOutcome", ["REQUESTED", "DIALOG_OPENED", "DISPATCHED", "FAILED"]).notNull(),
+    copies: int("copies").default(1).notNull(),
+    failureCode: varchar("failureCode", { length: 80 }),
+    reprintOfRequestId: varchar("reprintOfRequestId", { length: 80 }),
+    eventAt: timestamp("eventAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    requestOutcomeUq: unique("uq_print_event_request_outcome").on(table.requestId, table.outcome),
+    documentIdx: index("idx_print_event_document").on(table.documentType, table.documentId, table.eventAt),
+    actorDateIdx: index("idx_print_event_actor_date").on(table.actorUserId, table.eventAt),
+    branchDateIdx: index("idx_print_event_branch_date").on(table.branchId, table.eventAt),
+  }),
+);
+
+export type DocumentPrintEvent = typeof documentPrintEvents.$inferSelect;
 
 export const auditLogs = mysqlTable(
   "auditLogs",

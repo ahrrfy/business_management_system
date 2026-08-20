@@ -91,6 +91,7 @@ const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
 const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
 const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
+const PurchaseReturnDetail = lazy(() => import("@/pages/PurchaseReturnDetail"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
 const TasksHub = lazy(() => import("@/pages/TasksHub"));
@@ -362,6 +363,7 @@ export default function App() {
       <Route path="/sales-returns/new"><Shell><SalesReturnNew /></Shell></Route>
       <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
       <Route path="/purchase-returns/new"><Shell><PurchaseReturnNew /></Shell></Route>
+      <Route path="/purchase-returns/:id"><Shell><PurchaseReturnDetail /></Shell></Route>
       <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
       <Route path="/purchases"><Shell><PurchasesHub /></Shell></Route>
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>

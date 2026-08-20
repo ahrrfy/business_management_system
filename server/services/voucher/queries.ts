@@ -1,5 +1,6 @@
 // قراءات السندات: القائمة المفلترة، سند منفرد موسَّع، والسندات الأخيرة لنفس الطرف (تحذير الازدواج).
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import { customers, exchangeHouses, exchangeTransactions, idempotencyKeys, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
@@ -119,6 +120,9 @@ export interface ListVouchersInput {
 export async function listVouchers(input: ListVouchersInput = {}) {
   const db = getDb();
   if (!db) return [];
+  const creator = alias(users, "voucherListCreator");
+  const partyCustomer = alias(customers, "voucherListCustomer");
+  const partySupplier = alias(suppliers, "voucherListSupplier");
   const wheres: any[] = [isNotNull(receipts.voucherNumber)];
   if (input.status) wheres.push(eq(receipts.status, input.status));
   if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
@@ -137,6 +141,9 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       sql`coalesce(${receipts.referenceNumber}, '') LIKE ${like} ESCAPE '!'`,
       sql`coalesce(${receipts.checkNumber}, '') LIKE ${like} ESCAPE '!'`,
       sql`coalesce(${invoices.invoiceNumber}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${creator.name}, ${creator.username}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${partyCustomer.name}, '') LIKE ${like} ESCAPE '!'`,
+      sql`coalesce(${partySupplier.name}, '') LIKE ${like} ESCAPE '!'`,
     ));
   }
   if (input.from) wheres.push(gte(receipts.createdAt, localDayStart(input.from)));
@@ -160,9 +167,15 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       status: receipts.status,
       createdAt: receipts.createdAt,
       createdBy: receipts.createdBy,
+      createdByName: sql<string | null>`COALESCE(${creator.name}, ${creator.username})`,
       // vouchers-pro:
       voucherCategoryId: receipts.voucherCategoryId,
       counterpartyName: receipts.counterpartyName,
+      partyName: sql<string | null>`CASE
+        WHEN ${receipts.partyType} = 'CUSTOMER' THEN ${partyCustomer.name}
+        WHEN ${receipts.partyType} = 'SUPPLIER' THEN ${partySupplier.name}
+        ELSE ${receipts.counterpartyName}
+      END`,
       voucherDate: receipts.voucherDate,
       attachmentUrl: receipts.attachmentUrl,
       approvalStatus: receipts.approvalStatus,
@@ -180,6 +193,9 @@ export async function listVouchers(input: ListVouchersInput = {}) {
     })
     .from(receipts)
     .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+    .leftJoin(creator, eq(creator.id, receipts.createdBy))
+    .leftJoin(partyCustomer, and(eq(receipts.partyType, "CUSTOMER"), eq(partyCustomer.id, receipts.partyId)))
+    .leftJoin(partySupplier, and(eq(receipts.partyType, "SUPPLIER"), eq(partySupplier.id, receipts.partyId)))
     .leftJoin(exchangeTransactions, eq(exchangeTransactions.receiptId, receipts.id))
     .leftJoin(exchangeHouses, eq(exchangeHouses.id, exchangeTransactions.exchangeHouseId))
     .where(and(...wheres))

@@ -487,6 +487,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     await postEntry(tx, {
       entryType: "PURCHASE",
       branchId: Number(po.branchId),
+      createdBy: actor.userId,
       purchaseOrderId: input.purchaseOrderId,
       supplierId: Number(po.supplierId),
       cost: round2(receivedNet),
@@ -556,6 +557,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         await postEntry(tx, {
           entryType: "ADJUST",
           branchId: Number(po.branchId),
+          createdBy: actor.userId,
           purchaseOrderId: input.purchaseOrderId,
           // الاعتراف مستقل عن محاولة السداد الحالية؛ expense.receiptId يحمل
           // رابط الطلب القابل للاستبدال بعد الرفض من دون قيد ثانٍ.
@@ -718,6 +720,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         await postEntry(tx, {
           entryType: "PAYMENT_OUT",
           branchId: Number(po.branchId),
+          createdBy: actor.userId,
           purchaseOrderId: input.purchaseOrderId,
           supplierId: Number(po.supplierId),
           receiptId,
