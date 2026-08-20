@@ -59,11 +59,21 @@ export default function CancelWorkOrderDialog({
   const [waste, setWaste] = useState<Record<number, number>>({});
 
   const hasMaterials = materials.length > 0;
+  const anyWaste = materials.some((m) => (waste[m.id] ?? 0) > 0);
+  /**
+   * **الكلفة محجوبةٌ عن بعض الأدوار** (`redactPosCost` — الكاشير يرى الكمّيات لا الأسعار)
+   * فتصل `unitCost = null`. و`Number(null ?? 0)` كان يُنتج **صفراً يُعرَض رقماً حقيقياً**:
+   * «يُسجَّل هدرٌ بقيمة ٠» على أربع قطعٍ تالفة — كذبةٌ تُطمئن الموظّف إلى أنّ إتلافه بلا ثمن.
+   * فحين تُحجَب كلفةُ **أيّ** سطرٍ مُهدَر لا نَدّعي قيمةً إطلاقاً: نُظهر الكمّية ونقول إنّ
+   * القيمة غير مرئيّة لهذا الدور. والخادم يحسبها من كلفته الحقيقيّة في كلّ الأحوال.
+   */
+  const wastedLines = materials.filter((m) => (waste[m.id] ?? 0) > 0);
+  const costVisible = wastedLines.length > 0 && wastedLines.every((m) => m.unitCost != null);
   const wastedValue = useMemo(
     () => materials.reduce((sum, m) => sum + (waste[m.id] ?? 0) * Number(m.unitCost ?? 0), 0),
     [materials, waste],
   );
-  const anyWaste = materials.some((m) => (waste[m.id] ?? 0) > 0);
+  const wastedPieces = wastedLines.reduce((n, m) => n + (waste[m.id] ?? 0), 0);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -142,7 +152,7 @@ export default function CancelWorkOrderDialog({
                           </td>
                           <td className="p-2 text-center font-bold tabular-nums">{m.baseQuantity - w}</td>
                           <td className="p-2 text-end tabular-nums" dir="ltr">
-                            {w > 0 ? fmtAr(String(w * Number(m.unitCost ?? 0))) : "—"}
+                            {w > 0 ? (m.unitCost != null ? fmtAr(String(w * Number(m.unitCost))) : "—") : "—"}
                           </td>
                         </tr>
                       );
@@ -153,7 +163,16 @@ export default function CancelWorkOrderDialog({
               {anyWaste && (
                 <p className="mt-2 flex items-center gap-1.5 rounded-md bg-[var(--sem-warn-bg)] p-2 text-2xs font-bold text-[var(--sem-warn)]">
                   <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
-                  يُسجَّل هدرٌ بقيمة <span dir="ltr" className="tabular-nums">{fmtAr(String(wastedValue))}</span> خسارةً على المكتبة — ولا يعود للمخزون.
+                  {costVisible ? (
+                    <span>
+                      يُسجَّل هدرٌ بقيمة <span dir="ltr" className="tabular-nums">{fmtAr(String(wastedValue))}</span> خسارةً على المكتبة — ولا يعود للمخزون.
+                    </span>
+                  ) : (
+                    <span>
+                      يُسجَّل إتلافُ <span dir="ltr" className="tabular-nums">{wastedPieces}</span> وحدة خسارةً على المكتبة — ولا تعود للمخزون.
+                      قيمتُها لا تظهر لدورك، ويحسبها النظام بكلفة الشراء المختومة.
+                    </span>
+                  )}
                 </p>
               )}
             </div>

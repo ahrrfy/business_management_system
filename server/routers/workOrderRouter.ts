@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   auditLogs,
   customers,
+  invoices,
   deliveryConsignments,
   deliveryParties,
   productVariants,
@@ -607,6 +608,12 @@ export const workOrderRouter = router({
           paymentReceiptUrl: workOrders.paymentReceiptUrl,
           dueDate: workOrders.dueDate,
           invoiceId: workOrders.invoiceId,
+          // ٢٠/٨ (أمسكته الجولة البصرية): حوارُ الاسترجاع كان يعرض **`deposit`** بوصفه
+          // «المقبوض فعلاً» — وهو صفرٌ حين يُدفع المبلغ **عند التسليم** لا عربوناً، فيَعِد
+          // الحوارُ بردّ صفرٍ بينما يخرج من الدرج ٤٠ ألفاً. المقبوضُ الحقيقيّ على الفاتورة.
+          invoicePaidAmount: invoices.paidAmount,
+          invoiceTotal: invoices.total,
+          invoiceReturnedTotal: invoices.returnedTotal,
           hasDelivery: workOrders.hasDelivery,
           deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
@@ -644,6 +651,7 @@ export const workOrderRouter = router({
         .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
         .leftJoin(materialsEditorUser, eq(workOrders.materialsEditedBy, materialsEditorUser.id))
+        .leftJoin(invoices, eq(workOrders.invoiceId, invoices.id))
         .where(eq(workOrders.id, input.workOrderId))
         .limit(1)
     )[0];

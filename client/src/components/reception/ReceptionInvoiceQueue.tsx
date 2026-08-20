@@ -39,6 +39,7 @@ import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printReceipt } from "@/lib/printing/print";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/date";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
@@ -145,7 +146,7 @@ export function ReceptionInvoiceQueue({
       void utils.workOrders.list.invalidate();
     },
     onError: (e) => {
-      if (e.data?.code === "PRECONDITION_FAILED" && e.message.includes("أمر شغل لم يجهز")) {
+      if (isPartialDispatchRejection(e)) {
         setPartialNotice(e.message);
         return;
       }

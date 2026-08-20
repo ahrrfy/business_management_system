@@ -24,6 +24,7 @@ import { nextConsignmentNumber } from "./numbering";
 import { assertFloatLimitTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { partialDispatchMessage } from "@shared/partialDispatch";
 
 export interface DispatchInvoiceInput {
   invoiceId: number;
@@ -218,9 +219,9 @@ export async function dispatchInvoiceInTx(
       const names = siblingRows.slice(0, 3).map((r) => r.orderNumber).join("، ");
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message:
-          `الطلب نفسه يحوي ${siblingRows.length} أمر شغل لم يجهز بعد (${names}${siblingRows.length > 3 ? "…" : ""}) — `
-          + "إرسالُ الفاتورة الآن يُخرج جزءاً من الطلب ويترك باقيه. أكمِلها أوّلاً، أو أقرّ الإرسال الجزئيّ صراحةً.",
+        // الرسالةُ من المصدر المشترك: الشاشتان تتعرّفان عليها بعينها لتعرضا زرّ الإقرار،
+        // فنصٌّ حرفيٌّ هنا يفكّ الارتباط صامتاً عند أوّل تحرير.
+        message: partialDispatchMessage(siblingRows.length, names, siblingRows.length > 3),
       });
     }
 

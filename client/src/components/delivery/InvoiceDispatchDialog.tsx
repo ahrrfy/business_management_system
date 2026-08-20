@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import Decimal from "decimal.js";
 import { AlertTriangle, Truck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { notify } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import {
@@ -91,7 +92,7 @@ export function InvoiceDispatchDialog({
       onCompleted?.();
     },
     onError: (error) => {
-      if (error.data?.code === "PRECONDITION_FAILED" && error.message.includes("أمر شغل لم يجهز")) {
+      if (isPartialDispatchRejection(error)) {
         setPartialNotice(error.message);
         return;
       }

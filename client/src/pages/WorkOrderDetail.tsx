@@ -741,12 +741,30 @@ export default function WorkOrderDetail() {
             <p className="mb-3 text-2xs text-muted-foreground">
               «{data.title}» — <span dir="ltr" className="font-mono">{data.orderNumber}</span>
             </p>
-            {/* الأرقام تُعرَض **قبل** التأكيد: لا امتصاصَ خفيّ ولا مفاجأةَ بعد النقر (§٥). */}
+            {/* الأرقام تُعرَض **قبل** التأكيد: لا امتصاصَ خفيّ ولا مفاجأةَ بعد النقر (§٥).
+                تنبيه: المقبوضُ من **الفاتورة** لا من `deposit`: الدفعُ عند التسليم لا يمرّ بالعربون
+                إطلاقاً، فكان الحوار يَعِد بردّ صفرٍ بينما يخرج من الدرج كامل المبلغ. */}
             <div className="mb-3 space-y-1 rounded-md border p-3 text-xs">
               <div className="flex justify-between"><span>صافي الفاتورة</span>
-                <span dir="ltr" className="tabular-nums font-bold">{fmtAr(String(data.salePrice ?? "0"))}</span></div>
+                <span dir="ltr" className="tabular-nums font-bold">
+                  {fmtAr(String(data.invoiceTotal ?? data.salePrice ?? "0"))}
+                </span></div>
               <div className="flex justify-between"><span>المقبوض فعلاً — سيُردّ بطريقة قبضه</span>
-                <span dir="ltr" className="tabular-nums font-bold">{fmtAr(String(data.deposit ?? "0"))}</span></div>
+                <span dir="ltr" className="tabular-nums font-bold">
+                  {fmtAr(String(data.invoicePaidAmount ?? "0"))}
+                </span></div>
+              <div className="flex justify-between text-muted-foreground"><span>يسقط من ذمّة العميل</span>
+                <span dir="ltr" className="tabular-nums">
+                  {fmtAr(
+                    String(
+                      Math.max(
+                        0,
+                        Number(data.invoiceTotal ?? data.salePrice ?? 0)
+                          - Number(data.invoicePaidAmount ?? 0),
+                      ),
+                    ),
+                  )}
+                </span></div>
             </div>
             <label className="mb-1 block text-xs font-bold">سبب الاسترجاع</label>
             <Input value={reverseReason} onChange={(e) => setReverseReason(e.target.value)}
