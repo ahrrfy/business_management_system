@@ -20,7 +20,8 @@ function db() {
   return d;
 }
 const TABLES = [
-  "idempotencyKeys", "auditLogs", "accountingEntries", "receipts", "inventoryMovements",
+  "documentPrintEvents", "purchaseReturnItems", "purchaseReturns", "idempotencyKeys",
+  "auditLogs", "accountingEntries", "receipts", "inventoryMovements",
   "deliveryRemittances", "deliveryConsignments", "deliveryParties",
   "purchaseOrderItems", "purchaseOrders", "invoiceItems", "invoices",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
@@ -125,7 +126,14 @@ describe("F7 #3 — رياضة كشف حساب المورّد تتّزن مع cu
     const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
     await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 5 }] }, actor);
     await createPurchaseReturn(
-      { supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "200.00" }], settlement: "CREDIT" },
+      {
+        clientRequestId: "f7-supplier-statement-return",
+        supplierId: 1,
+        branchId: 1,
+        purchaseOrderRefId: po.purchaseOrderId,
+        items: [{ purchaseOrderItemId: Number(item.id), quantity: "1" }],
+        settlement: "CREDIT",
+      },
       actor,
     );
 
