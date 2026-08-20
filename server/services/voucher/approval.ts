@@ -1689,6 +1689,7 @@ export async function approveVoucher(
         afterSignedIqd: nextIqd,
         sourceKey: systemExchangeTxn.txnNumber,
         notes: `إعادة تصنيف رصيد بيت الصرافة بعد اعتماد إيداع ${systemExchangeTxn.txnNumber}`,
+        createdBy: actor.userId,
       });
     }
 

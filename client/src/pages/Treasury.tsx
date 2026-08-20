@@ -82,6 +82,9 @@ interface MovementRow {
   shiftOwnerName: string | null;
   createdBy: number | null;
   createdByName: string | null;
+  partyType: string | null;
+  partyId: number | null;
+  partyName: string | null;
   approvedBy: number | null;
   approvedByName: string | null;
   referenceNumber: string | null;
@@ -342,7 +345,7 @@ export default function Treasury() {
               {row.original.description || "لا يوجد شرح للعملية"}
             </p>
             <p className="text-muted-foreground">
-              المستفيد: {row.original.expensePayee || "—"}
+              الطرف: {row.original.partyName || row.original.expensePayee || "—"}
             </p>
             {(row.original.expenseCategory || row.original.costCenter) && (
               <p className="text-[11px] text-muted-foreground">
@@ -562,8 +565,8 @@ export default function Treasury() {
           },
           {
             key: "expensePayee",
-            header: "المستفيد",
-            map: (r) => r.expensePayee ?? "",
+            header: "الطرف / المستفيد",
+            map: (r) => r.partyName ?? r.expensePayee ?? "",
           },
           {
             key: "expenseCategory",

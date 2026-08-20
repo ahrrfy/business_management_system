@@ -1,14 +1,18 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import {
   accountingEntries, branchStock, inventoryMovements,
   products,
+  productUnits,
   productVariants,
   purchaseOrderItems,
   purchaseOrders,
+  purchaseReturnItems,
+  purchaseReturns,
   receipts,
   suppliers,
+  users,
 } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { localDayStart } from "./dateRange";
@@ -24,7 +28,7 @@ import { money, round2, sumMoney, toDbMoney } from "./money";
 import { shiftIdForCashTx } from "./shiftService";
 import { lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
-import { extractInsertId } from "../lib/insertId";
+import { extractAffectedRows, extractInsertId } from "../lib/insertId";
 import { paymentAssetRole } from "./sale/paymentPosting";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -35,18 +39,16 @@ export function refundablePurchaseCash(returned: Decimal, paid: Decimal, priorRe
 }
 
 export interface PurchaseReturnLineInput {
-  variantId: number;
-  productUnitId: number;
+  purchaseOrderItemId: number;
   quantity: string; // بوحدة الشراء
-  unitPrice: string; // سعر بوحدة الشراء (تكلفة الإرجاع)
 }
 
 export interface CreatePurchaseReturnInput {
-  clientRequestId?: string;
+  clientRequestId: string;
   supplierId: number;
   branchId: number;
-  /** أمر شراء مرجعي اختياري — يُحدّ من كمّيات الإرجاع بما لا يتجاوز المستلَم−المُرتجَع سابقاً */
-  purchaseOrderRefId?: number;
+  /** كل مرتجع قياسي يجب أن يرجع إلى أمر شراء مثبت ومستلم كلياً أو جزئياً. */
+  purchaseOrderRefId: number;
   items: PurchaseReturnLineInput[];
   reason?: string | null;
   paymentMethod?: PaymentMethod; // CASH = استرداد فوري؛ غيره = خصم من ذمم المورد فقط
@@ -57,22 +59,18 @@ export interface CreatePurchaseReturnInput {
 function purchaseReturnFingerprint(input: CreatePurchaseReturnInput): string {
   const items = input.items
     .map((item) => ({
-      variantId: item.variantId,
-      productUnitId: item.productUnitId,
+      purchaseOrderItemId: item.purchaseOrderItemId,
       quantity: new Decimal(item.quantity).toString(),
-      unitPrice: money(item.unitPrice).toFixed(2),
     }))
     .sort((a, b) =>
-      a.variantId - b.variantId ||
-      a.productUnitId - b.productUnitId ||
-      a.quantity.localeCompare(b.quantity) ||
-      a.unitPrice.localeCompare(b.unitPrice),
+      a.purchaseOrderItemId - b.purchaseOrderItemId ||
+      a.quantity.localeCompare(b.quantity),
     );
   return idempotencyHash({
     version: 1,
     supplierId: input.supplierId,
     branchId: input.branchId,
-    sourcePurchaseOrderId: input.purchaseOrderRefId ?? null,
+    sourcePurchaseOrderId: input.purchaseOrderRefId,
     settlement: input.settlement ?? "CREDIT",
     paymentMethod: input.paymentMethod ?? "CASH",
     reason: input.reason?.trim() || null,
@@ -95,49 +93,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
   const requestFingerprint = purchaseReturnFingerprint(input);
 
   return withTx(async (tx) => {
-    // idempotency: جدول idempotencyKeys ذو القيد الفريد (operation,clientRequestId) — ذرّي بلا سباق TOCTOU
-    // (بخلاف البحث القديم في notes غير المفهرس). نفس المفتاح ⇒ يُعاد بنتيجة المرتجع الأول.
-    if (input.clientRequestId) {
-      const existingRefId = await checkIdempotency(
-        tx,
-        "purchase.return",
-        input.clientRequestId,
-        requestFingerprint,
-        { requireStoredHash: true },
-      );
-      if (existingRefId != null) {
-        const prior = (await tx
-          .select({
-            amount: accountingEntries.amount,
-            supplierId: accountingEntries.supplierId,
-            branchId: accountingEntries.branchId,
-          })
-          .from(accountingEntries)
-          .where(eq(accountingEntries.id, existingRefId))
-          .limit(1))[0];
-        // تحقّق البصمة (تدقيق ١٧/٧): نفس مفتاح idempotency بمورّد/فرع مختلف ⇒ CONFLICT — لا نعيد نتيجة
-        // مرتجعٍ آخر (كان returnService يتحقّق بينما مسار الشراء يعيد الأول عمياءً). مرآةٌ لـsale.pay.
-        if (prior && (Number(prior.supplierId) !== input.supplierId || Number(prior.branchId) !== input.branchId)) {
-          throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مُستعمَل بمورّد أو فرع مختلف" });
-        }
-        return {
-          purchaseReturnEntryId: existingRefId,
-          returnedTotal: money(prior?.amount ?? "0").neg().toFixed(2),
-          idempotent: true as const,
-        };
-      }
-    }
-
     const settlement = input.settlement ?? "CREDIT";
     const method = input.paymentMethod ?? "CASH";
-    if (settlement === "CASH" && input.purchaseOrderRefId == null) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message:
-          "الاسترداد النقدي يتطلب أمر شراء مرجعياً وإيصال دفع سابقاً مكتملًا ومعتمداً",
-      });
-    }
     let prelockedCash: { shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" } | null = null;
+    let cashRefundAmount = new Decimal(0);
     if (settlement === "CASH") {
       if (method !== "CASH") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد غير النقدي يتطلب سند قبض موثقاً" });
@@ -165,57 +124,104 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     if (!supplier) {
       throw new TRPCError({ code: "NOT_FOUND", message: "المورّد غير موجود" });
     }
-    if (input.purchaseOrderRefId == null && supplier.kind === "CONSIGNOR") {
+    if (supplier.kind === "CONSIGNOR") {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message:
-          "لا يُنشأ مرتجع شراء بلا أمر مرجعي لمودِع أمانة؛ استخدم سند سحب/استبدال الأمانة",
+          "مرتجع مودِع الأمانة يُسجّل بسند سحب/استبدال الأمانة، لا كمرتجع شراء",
       });
     }
 
     // إن وُجد أمر شراء مرجعي ⇒ تحقّق ملكية المورد/الفرع + سقف الكميّات.
     let refPo: typeof purchaseOrders.$inferSelect | undefined;
     let refItems: (typeof purchaseOrderItems.$inferSelect)[] = [];
-    if (input.purchaseOrderRefId) {
-      const r = await tx
-        .select()
-        .from(purchaseOrders)
-        .where(eq(purchaseOrders.id, input.purchaseOrderRefId))
-        .for("update")
-        .limit(1);
-      refPo = r[0];
-      if (!refPo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء المرجعي غير موجود" });
-      if (Number(refPo.supplierId) !== input.supplierId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء لا يخصّ هذا المورد" });
+    const r = await tx
+      .select()
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, input.purchaseOrderRefId))
+      .for("update")
+      .limit(1);
+    refPo = r[0];
+    if (!refPo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء المرجعي غير موجود" });
+    if (!(["CONFIRMED", "RECEIVED"] as const).includes(refPo.status as "CONFIRMED" | "RECEIVED")) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُرجع إلا من أمر شراء مثبت ومستلم كلياً أو جزئياً" });
+    }
+    if (Number(refPo.supplierId) !== input.supplierId) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء لا يخصّ هذا المورد" });
+    }
+    if (Number(refPo.branchId) !== input.branchId) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء لا يخصّ هذا الفرع" });
+    }
+    refItems = await tx.select().from(purchaseOrderItems)
+      .where(eq(purchaseOrderItems.purchaseOrderId, Number(refPo.id)))
+      .orderBy(purchaseOrderItems.id)
+      .for("update");
+
+    // يجب أن يأتي فحص idempotency بعد القفل الجاري للأمر وبنوده. بهذا لا تُنشئ قراءةٌ
+    // متّسقة مبكرة snapshot قديماً تحت REPEATABLE READ قبل فحص سقف المرتجع.
+    const existingRefId = await checkIdempotency(
+      tx,
+      "purchase.return",
+      input.clientRequestId,
+      requestFingerprint,
+      { requireStoredHash: true },
+    );
+    if (existingRefId != null) {
+      const prior = (await tx
+        .select({
+          totalAmount: purchaseReturns.totalAmount,
+          supplierId: purchaseReturns.supplierId,
+          branchId: purchaseReturns.branchId,
+          accountingEntryId: purchaseReturns.accountingEntryId,
+        })
+        .from(purchaseReturns)
+        .where(eq(purchaseReturns.id, existingRefId))
+        .limit(1))[0];
+      if (!prior || Number(prior.supplierId) !== input.supplierId || Number(prior.branchId) !== input.branchId) {
+        throw new TRPCError({ code: "CONFLICT", message: "مفتاح الطلب مستعمل بمرتجع مختلف" });
       }
-      if (Number(refPo.branchId) !== input.branchId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء لا يخصّ هذا الفرع" });
-      }
-      refItems = await tx.select().from(purchaseOrderItems)
-        .where(eq(purchaseOrderItems.purchaseOrderId, Number(refPo.id)));
+      return {
+        purchaseReturnId: existingRefId,
+        purchaseReturnEntryId: Number(prior.accountingEntryId ?? 0),
+        returnedTotal: money(prior.totalAmount).toFixed(2),
+        idempotent: true as const,
+      };
     }
 
-    // حضِّر العمل: حوِّل لوحدة الأساس + احسب صافي البند.
+    // حضِّر العمل من بنود أمر الشراء المقفلة. السعر/الوحدة/المورد لا تُقبل من العميل.
     type Work = {
       input: PurchaseReturnLineInput;
+      refItem: typeof purchaseOrderItems.$inferSelect;
+      variantId: number;
+      productUnitId: number;
+      productName: string;
+      variantName: string | null;
+      unitName: string | null;
       baseQuantity: number;
       lineTotal: Decimal;
       usdTotal: Decimal;
-      /** التكلفة الدفترية (WAVG) لكلّ وحدة أساس — تُستعمَل لسقف خسارة الشحن/الكمرك (landed) عند الإرجاع. */
       bookCostPerBase: Decimal;
     };
-    const variantIds = Array.from(new Set(input.items.map((item) => item.variantId))).sort((a, b) => a - b);
+    const refItemById = new Map(refItems.map((item) => [Number(item.id), item]));
+    const requestedItemIds = input.items.map((item) => item.purchaseOrderItemId);
+    if (new Set(requestedItemIds).size !== requestedItemIds.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يجوز تكرار بند أمر الشراء في المرتجع" });
+    }
+    const selectedRefItems = input.items.map((item) => {
+      const refItem = refItemById.get(item.purchaseOrderItemId);
+      if (!refItem) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `البند ${item.purchaseOrderItemId} لا ينتمي إلى أمر الشراء المرجعي` });
+      }
+      return refItem;
+    });
+    const variantIds = Array.from(new Set(selectedRefItems.map((item) => Number(item.variantId)))).sort((a, b) => a - b);
     await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, variantIds)).for("update");
-      // سقف القيمة: سعر إرجاع الوحدة لا يتجاوز التكلفة المسجّلة للصنف (book cost) ⇒ يمنع تضخيم تخفيض AP/الاسترداد
-      //  بقيمة عشوائية (الثغرة الحرجة للمرتجع بلا أمر مرجعي). الكمية مُقيّدة بالمخزون المتاح في applyMovement.
     const lockedVariants = await tx
       .select({
         id: productVariants.id,
         costPrice: productVariants.costPrice,
-        isConsignment: products.isConsignment,
-        consignorId: products.consignorId,
-        isService: products.isService,
-        isBundle: products.isBundle,
+        productName: products.name,
+        variantName: productVariants.variantName,
       })
       .from(productVariants)
       .innerJoin(products, eq(products.id, productVariants.productId))
@@ -224,128 +230,63 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     const variantById = new Map(
       lockedVariants.map((variant) => [Number(variant.id), variant]),
     );
+    const unitIds = Array.from(new Set(selectedRefItems.map((item) => Number(item.productUnitId)).filter(Boolean)));
+    const unitRows = unitIds.length
+      ? await tx.select({ id: productUnits.id, unitName: productUnits.unitName }).from(productUnits).where(inArray(productUnits.id, unitIds))
+      : [];
+    const unitNameById = new Map(unitRows.map((unit) => [Number(unit.id), unit.unitName]));
     const work: Work[] = [];
     for (const it of input.items) {
-      const variant = variantById.get(it.variantId);
+      const refItem = refItemById.get(it.purchaseOrderItemId)!;
+      const variantId = Number(refItem.variantId);
+      const productUnitId = Number(refItem.productUnitId);
+      const variant = variantById.get(variantId);
       if (!variant) {
-        throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${it.variantId} غير موجود` });
+        throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${variantId} غير موجود` });
       }
-      if (
-        input.purchaseOrderRefId == null &&
-        (variant.isConsignment ||
-          variant.consignorId != null ||
-          variant.isService ||
-          variant.isBundle)
-      ) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            `المتغيّر ${it.variantId} ليس مخزوناً مملوكاً قابلاً لمرتجع شراء بلا أمر مرجعي`,
-        });
-      }
-      const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
-      // سقف القيمة: سعر إرجاع الوحدة لا يتجاوز التكلفة المسجّلة للصنف (book cost) ⇒ يمنع تضخيم تخفيض AP/الاسترداد
-      //  بقيمة عشوائية (الثغرة الحرجة للمرتجع بلا أمر مرجعي). الكمية مُقيّدة بالمخزون المتاح في applyMovement.
+      const { baseQuantity } = await convertToBaseQuantity(tx, productUnitId, it.quantity, variantId);
       const bookCostPerBase = money(variant.costPrice ?? "0");
-      const factor = money(baseQuantity).dividedBy(money(it.quantity)); // وحدات الأساس لكل وحدة شراء
-      const bookUnitCost = round2(bookCostPerBase.times(factor)); // تكلفة وحدة الشراء بالكتب
-      let reqUnit = money(it.unitPrice);
-      let refItem: (typeof purchaseOrderItems.$inferSelect) | undefined;
-      if (refPo) {
-        const matching = refItems.filter(
-          (row) => Number(row.variantId) === it.variantId && Number(row.productUnitId) === it.productUnitId,
-        );
-        if (matching.length !== 1) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: `تعذرت مطابقة المتغيّر ${it.variantId} ببند مرجعي واحد` });
-        }
-        refItem = matching[0];
-        const poUnitPrice = money(matching[0].unitPrice);
-        if (!reqUnit.eq(poUnitPrice)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: `سعر المرتجع يجب أن يطابق سعر أمر الشراء (${poUnitPrice.toFixed(2)})` });
-        }
-        reqUnit = poUnitPrice;
-      }
-      // PROC-02: سعر الإرجاع لا يصحّ أن يكون سالباً — السقف العلوي وحده أعمى عن الإشارة
-      // (reqUnit.gt(bookUnitCost) يَمرّ على السالب) ⇒ كان سعرٌ سالب يَعكس اتجاه AP ويَحقن قيمة.
+      const reqUnit = money(refItem.unitPrice);
       if (reqUnit.lt(0)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "سعر إرجاع الشراء لا يصحّ أن يكون سالباً" });
       }
-      if (reqUnit.gt(bookUnitCost)) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `سعر إرجاع المتغيّر ${it.variantId} (${reqUnit.toFixed(2)}) يتجاوز تكلفته المسجّلة (${bookUnitCost.toFixed(2)}) — لا يُسمح بتضخيم قيمة المرتجع.`,
-        });
-      }
       const lineTotal = round2(reqUnit.times(money(it.quantity)));
-      const usdTotal = refPo?.agreedCurrency === "USD" && refItem?.usdTotal
+      const usdTotal = refPo.agreedCurrency === "USD" && refItem.usdTotal
         ? round2(money(refItem.usdTotal).times(new Decimal(baseQuantity).dividedBy(refItem.baseQuantity)))
         : new Decimal(0);
-      work.push({ input: it, baseQuantity, lineTotal, usdTotal, bookCostPerBase });
-    }
-
-    // سقف الكميّات حسب أمر الشراء المرجعي: لا يتجاوز (مستلم − مُرتجَع سابقاً) لكل (variantId).
-    if (refPo) {
-      const receivedByVariant = new Map<number, number>();
-      for (const ri of refItems) {
-        receivedByVariant.set(
-          Number(ri.variantId),
-          (receivedByVariant.get(Number(ri.variantId)) ?? 0) + (ri.receivedBaseQuantity ?? 0)
-        );
+      const remaining = Number(refItem.receivedBaseQuantity ?? 0) - Number(refItem.returnedBaseQuantity ?? 0);
+      if (baseQuantity > remaining) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `كمية المرتجع في بند ${refItem.id} تتجاوز المتبقّي القابل للإرجاع (${remaining} بالوحدة الأساس)`,
+        });
       }
-      // كميّات مُرتجَعة سابقاً من نفس الأمر (مجموع OUT بحركات referenceType='PURCHASE_RETURN_REF' + referenceId=poId).
-      const priorMoves = await tx
-        .select({
-          variantId: inventoryMovements.variantId,
-          q: sql<number>`COALESCE(SUM(${inventoryMovements.quantity}), 0)`,
-        })
-        .from(inventoryMovements)
-        .where(
-          and(
-            eq(inventoryMovements.referenceType, "PURCHASE_RETURN_REF"),
-            eq(inventoryMovements.referenceId, Number(refPo.id)),
-            eq(inventoryMovements.movementType, "OUT")
-          )
-        )
-        .groupBy(inventoryMovements.variantId);
-      const priorByVariant = new Map<number, number>();
-      for (const m of priorMoves) {
-        priorByVariant.set(Number(m.variantId), Number(m.q));
-      }
-      // اجمع الطلب الحالي حسب variantId.
-      const requestedByVariant = new Map<number, number>();
-      for (const w of work) {
-        requestedByVariant.set(
-          w.input.variantId,
-          (requestedByVariant.get(w.input.variantId) ?? 0) + w.baseQuantity
-        );
-      }
-      requestedByVariant.forEach((reqQty, vid) => {
-        const received = receivedByVariant.get(vid) ?? 0;
-        const priorReturned = priorByVariant.get(vid) ?? 0;
-        const remaining = received - priorReturned;
-        if (reqQty > remaining) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `كمية المرتجع للمتغيّر ${vid} تتجاوز المتبقّي القابل للإرجاع (المستلَم=${received}، المُرتجَع سابقاً=${priorReturned})`,
-          });
-        }
+      work.push({
+        input: it,
+        refItem,
+        variantId,
+        productUnitId,
+        productName: variant.productName,
+        variantName: variant.variantName,
+        unitName: unitNameById.get(productUnitId) ?? null,
+        baseQuantity,
+        lineTotal,
+        usdTotal,
+        bookCostPerBase,
       });
     }
 
-    // ترتيب حركات OUT حسب variantId (قفل حتمي ⇒ يمنع deadlock).
-    const ordered = [...work].sort((a, b) => a.input.variantId - b.input.variantId);
-    const refType = input.purchaseOrderRefId ? "PURCHASE_RETURN_REF" : "PURCHASE_RETURN";
-    const refId = input.purchaseOrderRefId ?? undefined;
-    for (const w of ordered) {
-      await applyMovement(tx, {
-        variantId: w.input.variantId,
-        branchId: input.branchId,
-        baseQuantity: w.baseQuantity,
-        movementType: "OUT",
-        referenceType: refType,
-        referenceId: refId,
-        createdBy: actor.userId,
-      });
+    // تحديث شرطي ذري إضافةً إلى FOR UPDATE: دفاعٌ مزدوج ضد over-return تحت التزامن.
+    for (const w of work) {
+      const updated = await tx.update(purchaseOrderItems)
+        .set({ returnedBaseQuantity: sql`${purchaseOrderItems.returnedBaseQuantity} + ${w.baseQuantity}` })
+        .where(and(
+          eq(purchaseOrderItems.id, Number(w.refItem.id)),
+          sql`${purchaseOrderItems.returnedBaseQuantity} + ${w.baseQuantity} <= ${purchaseOrderItems.receivedBaseQuantity}`,
+        ));
+      if (extractAffectedRows(updated) !== 1) {
+        throw new TRPCError({ code: "CONFLICT", message: "تغيّرت الكمية القابلة للإرجاع؛ حدّث أمر الشراء وأعد المحاولة" });
+      }
     }
 
     const returnedNet = round2(sumMoney(work.map((w) => w.lineTotal.toFixed(2))));
@@ -364,6 +305,58 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       ? round2(returnedUsdNet.times(money(refPo.taxRatePercent ?? "0")).dividedBy(100))
       : new Decimal(0);
     const returnedUsd = round2(returnedUsdNet.plus(returnedUsdTax));
+    const actorRow = (await tx
+      .select({ name: users.name, username: users.username })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .limit(1))[0];
+    const actorName = actorRow?.name?.trim() || actorRow?.username?.trim() || `مستخدم #${actor.userId}`;
+    const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+    const returnNumber = `PR-${input.branchId}-${today}-${idempotencyHash(input.clientRequestId).slice(0, 16).toUpperCase()}`;
+    const returnInsert = await tx.insert(purchaseReturns).values({
+      returnNumber,
+      clientRequestId: input.clientRequestId,
+      purchaseOrderId: input.purchaseOrderRefId,
+      supplierId: input.supplierId,
+      branchId: input.branchId,
+      settlement,
+      paymentMethod: method,
+      netAmount: toDbMoney(returnedNet),
+      taxAmount: toDbMoney(returnedTax),
+      totalAmount: toDbMoney(returnedTotal),
+      cashRefundAmount: "0.00",
+      creditOffsetAmount: toDbMoney(returnedTotal),
+      reason: input.reason?.trim() || null,
+      createdBy: actor.userId,
+      createdByNameSnapshot: actorName,
+    });
+    const purchaseReturnId = extractInsertId(returnInsert);
+    await tx.insert(purchaseReturnItems).values(work.map((w) => ({
+      purchaseReturnId,
+      purchaseOrderItemId: Number(w.refItem.id),
+      variantId: w.variantId,
+      productUnitId: w.productUnitId,
+      quantity: money(w.input.quantity).toFixed(3),
+      baseQuantity: w.baseQuantity,
+      unitPrice: toDbMoney(w.refItem.unitPrice),
+      lineTotal: toDbMoney(w.lineTotal),
+      productNameSnapshot: w.productName,
+      variantNameSnapshot: w.variantName,
+      unitNameSnapshot: w.unitName,
+    })));
+
+    // هوية حركة المخزون هي مستند المرتجع نفسه، لا أمر الشراء؛ يبقى PO متاحاً عبر رأس المرتجع.
+    for (const w of [...work].sort((a, b) => a.variantId - b.variantId)) {
+      await applyMovement(tx, {
+        variantId: w.variantId,
+        branchId: input.branchId,
+        baseQuantity: w.baseQuantity,
+        movementType: "OUT",
+        referenceType: "PURCHASE_RETURN",
+        referenceId: purchaseReturnId,
+        createdBy: actor.userId,
+      });
+    }
     const purchaseReturnPostingSource = {
       roleDebits: {
         AP: returnedTotal,
@@ -384,41 +377,38 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     await postEntry(tx, {
       entryType: "RETURN",
       branchId: input.branchId,
-      purchaseOrderId: input.purchaseOrderRefId ?? null,
+      purchaseOrderId: input.purchaseOrderRefId,
       supplierId: input.supplierId,
       cost: returnedNet.neg(),
       taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
       notes: input.reason ?? undefined,
+      dedupeKey: `PURCHASE_RETURN:${purchaseReturnId}`,
+      createdBy: actor.userId,
+      createdByNameSnapshot: actorName,
       postingIntent: createPostingIntent("RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine("AP", returnedTotal), creditLine("INVENTORY", returnedInventoryBook), ...(returnedTax.isZero() ? [] : [creditLine("TAX_PAYABLE", returnedTax)]), ...(purchasePriceVariance.gt(0) ? [debitLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance)] : purchasePriceVariance.lt(0) ? [creditLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance.abs())] : [])], purchaseReturnPostingSource),
       postingSourceComponents: purchaseReturnPostingSource,
     });
 
-    // التقط معرف قيد المرتجع للإرجاع للعميل (للتتبّع/idempotency).
+    // التقط القيد بمفتاح بنيوي فريد، لا ببحث «آخر مبلغ لنفس المورد» القابل للالتباس.
     const last = await tx
       .select({ id: accountingEntries.id })
       .from(accountingEntries)
-      .where(
-        and(
-          eq(accountingEntries.entryType, "RETURN"),
-          eq(accountingEntries.supplierId, input.supplierId),
-          eq(accountingEntries.amount, toDbMoney(returnedTotal.neg()))
-        )
-      )
-      .orderBy(sql`id DESC`)
+      .where(eq(accountingEntries.dedupeKey, `PURCHASE_RETURN:${purchaseReturnId}`))
       .limit(1);
     const purchaseReturnEntryId = Number(last[0]?.id ?? 0);
+    await tx.update(purchaseReturns)
+      .set({ accountingEntryId: purchaseReturnEntryId })
+      .where(eq(purchaseReturns.id, purchaseReturnId));
 
-    // Idempotency: سجّل المفتاح (refId = قيد المرتجع). سباق نفس المفتاح ⇒ ER_DUP_ENTRY فيُعاد المحاولة replay.
-    if (input.clientRequestId) {
-      await recordIdempotencyKey(
-        tx,
-        "purchase.return",
-        input.clientRequestId,
-        purchaseReturnEntryId,
-        requestFingerprint,
-      );
-    }
+    // refId = مستند المرتجع القانوني، لا القيد المساعد.
+    await recordIdempotencyKey(
+      tx,
+      "purchase.return",
+      input.clientRequestId,
+      purchaseReturnId,
+      requestFingerprint,
+    );
 
     // AP: المورد يدين لنا الآن بقيمة المرتجع ⇒ ننقص رصيده الدائن لدينا (suppliers.currentBalance) بالسالب.
     await adjustSupplierBalance(tx, input.supplierId, returnedTotal.neg());
@@ -492,6 +482,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       if (cashRefund.lte(0)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا توجد دفعة سابقة تبرر استرداداً نقدياً؛ استخدم خصماً من الذمة" });
       }
+      cashRefundAmount = cashRefund;
       // G14 (١٩/٦/٢٦): استرداد نقدي من المورد يَلزم وردية مفتوحة (متّسق مع receivePurchase).
       if (!prelockedCash) {
         throw new TRPCError({
@@ -519,16 +510,25 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
-        purchaseOrderId: input.purchaseOrderRefId ?? null,
+        purchaseOrderId: input.purchaseOrderRefId,
         supplierId: input.supplierId,
         receiptId,
         amount: cashRefund,
+        createdBy: actor.userId,
+        createdByNameSnapshot: actorName,
         postingIntent: createPostingIntent("PAYMENT_IN_SUPPLIER_REFUND", "PAYMENT_IN", [debitLine(refundAssetRole, cashRefund), creditLine("AP", cashRefund)], refundPostingSource),
         postingSourceComponents: refundPostingSource,
       });
       // العاكس: لأنّ النقد دخل صندوقنا، نُلغي خصم الذمم بمقدار النقد المُسترد.
       await adjustSupplierBalance(tx, input.supplierId, cashRefund);
     }
+
+    await tx.update(purchaseReturns)
+      .set({
+        cashRefundAmount: toDbMoney(cashRefundAmount),
+        creditOffsetAmount: toDbMoney(returnedTotal.minus(cashRefundAmount)),
+      })
+      .where(eq(purchaseReturns.id, purchaseReturnId));
 
     // ── الشحن/الكمرك على مرتجع الشراء: لا منطق (قرار المالك ٥/٨/٢٦) ──
     // أُزيلت هنا كتلةُ «خسارة الشحن غير المستردّ». كانت لازمةً حين كان الشحن يُرسمَل في WAVG
@@ -539,8 +539,12 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     // والمصروف وقع فعلاً ولا يُستردّ (البضاعة شُحنت إلينا بالفعل). إبقاء الكتلة كان يقيّد الخسارة مرّتين.
 
     return {
+      purchaseReturnId,
       purchaseReturnEntryId,
+      returnNumber,
       returnedTotal: returnedTotal.toFixed(2),
+      cashRefundAmount: cashRefundAmount.toFixed(2),
+      creditOffsetAmount: returnedTotal.minus(cashRefundAmount).toFixed(2),
       idempotent: false as const,
     };
   });
@@ -583,6 +587,8 @@ export async function listPurchaseReturns(input: ListPurchaseReturnsInput = {}) 
         sql`CAST(${accountingEntries.id} AS CHAR) LIKE ${pat} ESCAPE '!'`,
         sql`CAST(${accountingEntries.purchaseOrderId} AS CHAR) LIKE ${pat} ESCAPE '!'`,
         sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
+        sql`${purchaseReturns.returnNumber} LIKE ${pat} ESCAPE '!'`,
+        sql`${purchaseOrders.poNumber} LIKE ${pat} ESCAPE '!'`,
       ) as any,
     );
   }
@@ -590,15 +596,27 @@ export async function listPurchaseReturns(input: ListPurchaseReturnsInput = {}) 
   const rows = await db
     .select({
       id: accountingEntries.id,
+      purchaseReturnId: purchaseReturns.id,
+      returnNumber: purchaseReturns.returnNumber,
       entryDate: accountingEntries.entryDate,
       supplierId: accountingEntries.supplierId,
+      supplierName: suppliers.name,
       branchId: accountingEntries.branchId,
       purchaseOrderId: accountingEntries.purchaseOrderId,
-      amount: accountingEntries.amount,
+      purchaseOrderNumber: purchaseOrders.poNumber,
+      amount: sql<string>`ABS(${accountingEntries.amount})`,
       notes: accountingEntries.notes,
+      createdBy: accountingEntries.createdBy,
+      createdByName: sql<string | null>`COALESCE(${purchaseReturns.createdByNameSnapshot}, ${accountingEntries.createdByNameSnapshot})`,
+      createdAt: purchaseReturns.createdAt,
+      settlement: purchaseReturns.settlement,
+      cashRefundAmount: purchaseReturns.cashRefundAmount,
+      creditOffsetAmount: purchaseReturns.creditOffsetAmount,
     })
     .from(accountingEntries)
     .leftJoin(suppliers, eq(accountingEntries.supplierId, suppliers.id))
+    .leftJoin(purchaseReturns, eq(purchaseReturns.accountingEntryId, accountingEntries.id))
+    .leftJoin(purchaseOrders, eq(accountingEntries.purchaseOrderId, purchaseOrders.id))
     .where(and(...where))
     .orderBy(sql`${accountingEntries.id} DESC`)
     .limit(limit)
@@ -608,7 +626,146 @@ export async function listPurchaseReturns(input: ListPurchaseReturnsInput = {}) 
     .select({ c: sql<number>`COUNT(*)` })
     .from(accountingEntries)
     .leftJoin(suppliers, eq(accountingEntries.supplierId, suppliers.id))
+    .leftJoin(purchaseReturns, eq(purchaseReturns.accountingEntryId, accountingEntries.id))
+    .leftJoin(purchaseOrders, eq(accountingEntries.purchaseOrderId, purchaseOrders.id))
     .where(and(...where));
 
   return { rows, total: Number(totalRow[0]?.c ?? 0) };
+}
+
+export interface EligiblePurchaseOrdersInput {
+  branchId: number;
+  q?: string;
+  limit?: number;
+}
+
+/** أوامر مثبتة لها كمية مستلمة لم تُرجع بعد؛ لا تُعيد أية بيانات مورد حساسة. */
+export async function listEligiblePurchaseOrders(input: EligiblePurchaseOrdersInput) {
+  const { getDb } = await import("../db");
+  const db = getDb();
+  if (!db) return [];
+  const where = [
+    eq(purchaseOrders.branchId, input.branchId),
+    inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+    sql`${purchaseOrderItems.receivedBaseQuantity} > ${purchaseOrderItems.returnedBaseQuantity}`,
+  ];
+  if (input.q?.trim()) {
+    const pat = `%${escLike(input.q.trim())}%`;
+    where.push(or(
+      sql`${purchaseOrders.poNumber} LIKE ${pat} ESCAPE '!'`,
+      sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
+      sql`CAST(${purchaseOrders.id} AS CHAR) LIKE ${pat} ESCAPE '!'`,
+    ) as any);
+  }
+  return db.select({
+    id: purchaseOrders.id,
+    poNumber: purchaseOrders.poNumber,
+    supplierId: purchaseOrders.supplierId,
+    supplierName: suppliers.name,
+    branchId: purchaseOrders.branchId,
+    orderDate: purchaseOrders.orderDate,
+    status: purchaseOrders.status,
+    returnableLines: sql<number>`COUNT(${purchaseOrderItems.id})`,
+  })
+    .from(purchaseOrders)
+    .innerJoin(suppliers, eq(suppliers.id, purchaseOrders.supplierId))
+    .innerJoin(purchaseOrderItems, eq(purchaseOrderItems.purchaseOrderId, purchaseOrders.id))
+    .where(and(...where))
+    .groupBy(purchaseOrders.id, purchaseOrders.poNumber, purchaseOrders.supplierId, suppliers.name, purchaseOrders.branchId, purchaseOrders.orderDate, purchaseOrders.status)
+    .orderBy(desc(purchaseOrders.orderDate), desc(purchaseOrders.id))
+    .limit(input.limit ?? 20);
+}
+
+/** يحل المرجع حلّاً تاماً: الرقم المرئي يُطابق poNumber كاملاً، والرقم الصرف فقط يطابق id. */
+export async function resolveReturnablePurchaseOrder(input: { branchId: number; reference: string }) {
+  const { getDb } = await import("../db");
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const raw = input.reference.trim();
+  const numericId = /^\d+$/.test(raw) ? Number(raw) : null;
+  const po = (await db.select({
+    id: purchaseOrders.id,
+    poNumber: purchaseOrders.poNumber,
+    supplierId: purchaseOrders.supplierId,
+    supplierName: suppliers.name,
+    branchId: purchaseOrders.branchId,
+    status: purchaseOrders.status,
+    taxAmount: purchaseOrders.taxAmount,
+    taxRatePercent: purchaseOrders.taxRatePercent,
+    agreedCurrency: purchaseOrders.agreedCurrency,
+  })
+    .from(purchaseOrders)
+    .innerJoin(suppliers, eq(suppliers.id, purchaseOrders.supplierId))
+    .where(and(
+      eq(purchaseOrders.branchId, input.branchId),
+      inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+      numericId != null ? eq(purchaseOrders.id, numericId) : eq(purchaseOrders.poNumber, raw),
+    ))
+    .limit(1))[0];
+  if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "لم يُعثر على أمر شراء مثبت بهذا الرقم في الفرع" });
+
+  const items = await db.select({
+    purchaseOrderItemId: purchaseOrderItems.id,
+    variantId: purchaseOrderItems.variantId,
+    productUnitId: purchaseOrderItems.productUnitId,
+    productName: products.name,
+    variantName: productVariants.variantName,
+    sku: productVariants.sku,
+    unitName: productUnits.unitName,
+    conversionFactor: productUnits.conversionFactor,
+    unitPrice: purchaseOrderItems.unitPrice,
+    receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity,
+    returnedBaseQuantity: purchaseOrderItems.returnedBaseQuantity,
+    remainingBaseQuantity: sql<number>`${purchaseOrderItems.receivedBaseQuantity} - ${purchaseOrderItems.returnedBaseQuantity}`,
+    remainingQuantity: sql<string>`(${purchaseOrderItems.receivedBaseQuantity} - ${purchaseOrderItems.returnedBaseQuantity}) / NULLIF(${productUnits.conversionFactor}, 0)`,
+  })
+    .from(purchaseOrderItems)
+    .innerJoin(productVariants, eq(productVariants.id, purchaseOrderItems.variantId))
+    .innerJoin(products, eq(products.id, productVariants.productId))
+    .innerJoin(productUnits, eq(productUnits.id, purchaseOrderItems.productUnitId))
+    .where(and(
+      eq(purchaseOrderItems.purchaseOrderId, Number(po.id)),
+      sql`${purchaseOrderItems.receivedBaseQuantity} > ${purchaseOrderItems.returnedBaseQuantity}`,
+    ))
+    .orderBy(purchaseOrderItems.id);
+  if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا توجد كمية متبقية قابلة للإرجاع في هذا الأمر" });
+  return { ...po, items };
+}
+
+export async function getPurchaseReturn(id: number, branchId?: number) {
+  const { getDb } = await import("../db");
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const where = [eq(purchaseReturns.id, id)];
+  if (branchId != null) where.push(eq(purchaseReturns.branchId, branchId));
+  const header = (await db.select({
+    id: purchaseReturns.id,
+    returnNumber: purchaseReturns.returnNumber,
+    purchaseOrderId: purchaseReturns.purchaseOrderId,
+    purchaseOrderNumber: purchaseOrders.poNumber,
+    supplierId: purchaseReturns.supplierId,
+    supplierName: suppliers.name,
+    branchId: purchaseReturns.branchId,
+    settlement: purchaseReturns.settlement,
+    paymentMethod: purchaseReturns.paymentMethod,
+    netAmount: purchaseReturns.netAmount,
+    taxAmount: purchaseReturns.taxAmount,
+    totalAmount: purchaseReturns.totalAmount,
+    cashRefundAmount: purchaseReturns.cashRefundAmount,
+    creditOffsetAmount: purchaseReturns.creditOffsetAmount,
+    reason: purchaseReturns.reason,
+    createdBy: purchaseReturns.createdBy,
+    createdByName: purchaseReturns.createdByNameSnapshot,
+    createdAt: purchaseReturns.createdAt,
+  })
+    .from(purchaseReturns)
+    .innerJoin(purchaseOrders, eq(purchaseOrders.id, purchaseReturns.purchaseOrderId))
+    .innerJoin(suppliers, eq(suppliers.id, purchaseReturns.supplierId))
+    .where(and(...where))
+    .limit(1))[0];
+  if (!header) throw new TRPCError({ code: "NOT_FOUND", message: "مستند مرتجع الشراء غير موجود" });
+  const items = await db.select().from(purchaseReturnItems)
+    .where(eq(purchaseReturnItems.purchaseReturnId, id))
+    .orderBy(purchaseReturnItems.id);
+  return { ...header, items };
 }

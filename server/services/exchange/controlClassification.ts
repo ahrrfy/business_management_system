@@ -32,6 +32,7 @@ export async function postExchangeControlReclassification(
     afterSignedIqd: DecimalInput;
     sourceKey: string;
     notes: string;
+    createdBy: number;
   },
 ): Promise<void> {
   const before = round2(input.beforeSignedIqd);
@@ -74,6 +75,7 @@ export async function postExchangeControlReclassification(
   await postEntry(tx, {
     entryType: "ADJUST",
     branchId: null, // control is company-level; physical FOREIGN_CASH_USD remains branch-scoped.
+    createdBy: input.createdBy,
     exchangeHouseId: input.exchangeHouseId,
     amount: delta,
     dedupeKey: `EXCTRL:${input.sourceKey}`,

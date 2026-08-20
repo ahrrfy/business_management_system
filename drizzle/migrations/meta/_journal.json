@@ -1588,7 +1588,14 @@
       "idx": 239,
       "version": "5",
       "when": 1788052290000,
-      "tag": "0239_product_customization_templates",
+      "tag": "0239_financial_trace_purchase_returns",
+      "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "5",
+      "when": 1788052291000,
+      "tag": "0240_product_customization_templates",
       "breakpoints": true
     }
   ]

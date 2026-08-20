@@ -163,7 +163,8 @@ export function ProductTable({
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   // مرتجع البيع: السعر والخصم يُعرَضان للقراءة فقط — الخادم يتجاهل تسعير المحرّر ويحسب الاسترداد
   // تناسبياً من إجماليّات بنود الفاتورة المصدر المخزَّنة، فتحريرهما وهمٌ يضلّل الموظّف.
-  const readOnlyPricing = invoiceType === "SALE_RETURN";
+  const readOnlyPricing = invoiceType === "SALE_RETURN" || invoiceType === "PURCHASE_RETURN";
+  const sourceLocked = invoiceType === "PURCHASE_RETURN";
   const showCostCol = showCost && !isPurchase;
   // خصم البند مخفيّ في الشراء: خدمة الشراء (`createPurchaseOrder`) تتجاهله تماماً (التكلفة = سعر
   // الوحدة كاملاً) ⇒ إظهاره يوهم بأثرٍ لا يقع ويجعل الإجمالي المعروض ≠ المحفوظ. البيع يُبقيه.
@@ -228,15 +229,17 @@ export function ProductTable({
 
   return (
     <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card print:overflow-visible">
-      <div className="shrink-0 border-b px-3.5 py-3">
-        <ProductSearchBar
-          invoiceType={invoiceType}
-          branchId={branchId}
-          tier={tier}
-          onAddProduct={(line) => dispatch({ type: "ADD_ITEM", item: line })}
-          onNotify={onNotify}
-        />
-      </div>
+      {!sourceLocked && (
+        <div className="shrink-0 border-b px-3.5 py-3">
+          <ProductSearchBar
+            invoiceType={invoiceType}
+            branchId={branchId}
+            tier={tier}
+            onAddProduct={(line) => dispatch({ type: "ADD_ITEM", item: line })}
+            onNotify={onNotify}
+          />
+        </div>
+      )}
 
       <div className="flex shrink-0 items-center justify-between border-b bg-muted px-3.5 py-1.5">
         <div className="flex items-center gap-2">
@@ -250,15 +253,17 @@ export function ProductTable({
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
-            onClick={onOpenBulkPicker}
-          >
-            <Package aria-hidden className="size-4" /> إضافة متعددة
-          </Button>
+          {!sourceLocked && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
+              onClick={onOpenBulkPicker}
+            >
+              <Package aria-hidden className="size-4" /> إضافة متعددة
+            </Button>
+          )}
           {items.length > 0 && (
             <Button
               type="button"

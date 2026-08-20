@@ -267,6 +267,7 @@ export async function settleSupplierViaExchange(
     await postEntry(tx, {
       entryType: "EXCHANGE_SETTLE",
       branchId: input.branchId,
+      createdBy: actor.userId,
       receiptId,
       purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
       exchangeHouseId: input.exchangeHouseId,
@@ -292,6 +293,7 @@ export async function settleSupplierViaExchange(
       await postEntry(tx, {
         entryType: "EXCHANGE_FX_DIFF",
         branchId: input.branchId,
+        createdBy: actor.userId,
         purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
         exchangeHouseId: input.exchangeHouseId,
         supplierId: input.supplierId,
@@ -324,6 +326,7 @@ export async function settleSupplierViaExchange(
       await postEntry(tx, {
         entryType: "EXCHANGE_FEE",
         branchId: input.branchId,
+        createdBy: actor.userId,
         purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
         exchangeHouseId: input.exchangeHouseId,
         supplierId: input.supplierId,
@@ -349,6 +352,7 @@ export async function settleSupplierViaExchange(
       afterSignedIqd: controlAfterIqd,
       sourceKey: txnNumber,
       notes: `تصنيف ذمة الصيرفة لتسوية المورد ${txnNumber}`,
+      createdBy: actor.userId,
     });
 
     if (input.clientRequestId) {

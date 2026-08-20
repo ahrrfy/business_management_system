@@ -386,9 +386,9 @@ export default function Purchases() {
                             key: "preturn",
                             kind: "reverse",
                             label: "مرتجع شراء",
-                            href: "/purchase-returns/new",
+                            href: `/purchase-returns/new?po=${encodeURIComponent(p.poNumber)}`,
                             // الإرجاع للمورد ممكن فقط بعد استلام البضاعة فعلياً.
-                            hidden: p.status !== "RECEIVED",
+                            hidden: p.status !== "RECEIVED" && p.status !== "CONFIRMED",
                             gate: { roles: ["manager", "purchasing"], module: "purchases", level: "FULL" },
                           },
                           {

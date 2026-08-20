@@ -98,6 +98,7 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
       await postEntry(tx, {
         entryType: "OPENING",
         branchId: actor.branchId || null,
+        createdBy: actor.userId,
         exchangeHouseId: id,
         amount: round2(openingIqdValue),
         entryDate: new Date(),
