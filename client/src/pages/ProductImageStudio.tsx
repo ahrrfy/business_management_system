@@ -1,4 +1,5 @@
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
+import { StudioCaptureStation, type ClaimedStudioProduct } from "@/components/product-studio/StudioCaptureStation";
 import { StudioProductPicker } from "@/components/product-studio/StudioProductPicker";
 import type { ImageItem } from "@/components/form/ImageUploader";
 import { PageHeader } from "@/components/PageHeader";
@@ -194,6 +195,18 @@ export default function ProductImageStudio() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<number>>(new Set());
   const [bulkAssigneeId, setBulkAssigneeId] = useState("");
   const [assigneeFilter, setAssigneeFilter] = useState("ALL");
+  /** المنتج الذي بيد المصوّر الآن (من مسح الباركود) — يقود محطّة التصوير. */
+  const [captured, setCaptured] = useState<ClaimedStudioProduct | null>(null);
+  /** نطاق الحملة وفريقها وتوجيهها — يُرسَلان مع الإنشاء. */
+  const [campaignScope, setCampaignScope] = useState<"ALL" | "CATEGORY" | "PRODUCTS">("ALL");
+  const [campaignCategoryId, setCampaignCategoryId] = useState("");
+  /** تحديدٌ مستقلّ لنطاق الحملة — كان يتشارك `bulkProductIds` مع إسناد المهام، فتتسرّب منتجات حملةٍ إلى إسنادٍ لاحق. */
+  const [campaignProductIds, setCampaignProductIds] = useState<number[]>([]);
+  const [tempPhotographerName, setTempPhotographerName] = useState("");
+  /** رمز الدخول المؤقّت — يُعرَض مرّةً واحدة ولا يُسترجَع؛ يُمسح فور إغلاق البطاقة. */
+  const [issuedAccess, setIssuedAccess] = useState<{ name: string; username: string; code: string; expiresAt: Date } | null>(null);
+  const [campaignRequiredImages, setCampaignRequiredImages] = useState("1");
+  const [campaignAssigneeIds, setCampaignAssigneeIds] = useState<number[]>([]);
   const [taskSearch, setTaskSearch] = useState("");
   const [debouncedTaskSearch, setDebouncedTaskSearch] = useState("");
   const [setupPin, setSetupPin] = useState("");
@@ -252,6 +265,16 @@ export default function ProductImageStudio() {
     },
   );
   const campaignAnalytics = trpc.productStudio.campaignAnalytics.useQuery(
+    { campaignId: selectedCampaignId ?? 0 },
+    {
+      enabled: !offline && Boolean(selectedCampaignId) && dashboard.data?.canManage === true,
+    },
+  );
+  const categoryOptions = trpc.catalog.categories.useQuery(undefined, {
+    enabled: !offline && dashboard.data?.canManage === true,
+    staleTime: 300_000,
+  });
+  const campaignBoard = trpc.productStudio.campaignBoard.useQuery(
     { campaignId: selectedCampaignId ?? 0 },
     {
       enabled: !offline && Boolean(selectedCampaignId) && dashboard.data?.canManage === true,
@@ -355,7 +378,7 @@ export default function ProductImageStudio() {
 
   async function refresh() {
     if (offline) return;
-    await Promise.all([utils.productStudio.dashboard.invalidate(), utils.productStudio.tasks.invalidate(), utils.productStudio.products.invalidate(), utils.productStudio.campaigns.invalidate(), utils.productStudio.previewCampaignBacklog.invalidate(), utils.productStudio.campaignAnalytics.invalidate()]);
+    await Promise.all([utils.productStudio.dashboard.invalidate(), utils.productStudio.tasks.invalidate(), utils.productStudio.products.invalidate(), utils.productStudio.campaigns.invalidate(), utils.productStudio.previewCampaignBacklog.invalidate(), utils.productStudio.campaignAnalytics.invalidate(), utils.productStudio.campaignBoard.invalidate()]);
   }
 
   const assign = trpc.productStudio.assign.useMutation({
@@ -394,6 +417,10 @@ export default function ProductImageStudio() {
       setImages([]);
       setOriginalDataUrl("");
       setProcessingReceipt(null);
+      // إغلاق دورة المصوّر: بعد الرفع تُفرَغ المحطّة ويعود التركيز للباركود جاهزاً
+      // للمنتج التالي — بلا تنقّلٍ في التبويبات ولا بحثٍ عن الصفّ التالي.
+      setCaptured(null);
+      setSelectedId(null);
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -432,6 +459,21 @@ export default function ProductImageStudio() {
     },
     onError: (error) => notify.err(error),
   });
+  const createTemporaryPhotographer = trpc.productStudio.createTemporaryPhotographer.useMutation({
+    onSuccess: async (result) => {
+      setIssuedAccess(result);
+      setTempPhotographerName("");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
+  const revokeTemporaryPhotographers = trpc.productStudio.revokeTemporaryPhotographers.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(result.revoked > 0 ? `أُغلق وصول ${result.revoked} مصوّراً مؤقّتاً` : "لا مصوّرين مؤقّتين نشطين في هذه الحملة");
+      await refresh();
+    },
+    onError: (error) => notify.err(error),
+  });
   const revert = trpc.productStudio.revert.useMutation({
     onSuccess: async () => {
       notify.ok("استُرجعت الصورة الأصلية");
@@ -452,7 +494,12 @@ export default function ProductImageStudio() {
       setCampaignName("");
       setCampaignStartAt("");
       setCampaignDueAt("");
-      notify.ok("أُنشئت حملة الاستوديو وفُعّلت");
+      setCampaignScope("ALL");
+      setCampaignCategoryId("");
+      setCampaignRequiredImages("1");
+      setCampaignAssigneeIds([]);
+      setCampaignProductIds([]);
+      notify.ok(`أُنشئت حملة الاستوديو وفُعّلت${campaign.assigneeIds.length > 0 ? ` — ${campaign.assigneeIds.length} مصوّراً` : ""}`);
       await refresh();
     },
     onError: (error) => notify.err(error),
@@ -822,6 +869,35 @@ export default function ProductImageStudio() {
         </Card>
       )}
 
+      {/* محطّة التصوير أوّلاً للمصوّر: هو يمسك المنتج ويمسح، لا يتصفّح طوابير.
+          المدير يراها أيضاً كي يجرّب المسار الذي يعمل به فريقه. */}
+      {!offline && (
+        <StudioCaptureStation
+          active={captured}
+          offline={offline}
+          onClaimed={(claimed) => {
+            setCaptured(claimed);
+            // تصفيرُ كل مرشّحٍ قد يُخفي المهمة المسحوبة: بدونه يُسنِد الخادمُ المهمة
+            // ولا تظهر في القائمة، فيبقى المحرّر مغلقاً والمصوّر أمام شاشةٍ لا تستجيب.
+            setScope("MINE");
+            setSavedView("ALL");
+            setOverdueOnly(false);
+            setTaskPriorityFilter("ALL");
+            setAssigneeFilter("ALL");
+            setTaskSearch("");
+            setDebouncedTaskSearch("");
+            setSelectedCampaignId(null);
+            setSelectedTaskIds(new Set());
+            setSelectedId(claimed.taskId);
+            void refresh();
+          }}
+          onClear={() => {
+            setCaptured(null);
+            setSelectedId(null);
+          }}
+        />
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardContent className="p-4">
@@ -949,10 +1025,77 @@ export default function ProductImageStudio() {
                 <Label htmlFor="studio-campaign-due">موعد الحملة</Label>
                 <Input id="studio-campaign-due" type="datetime-local" value={campaignDueAt} onChange={(event) => setCampaignDueAt(event.target.value)} />
               </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="studio-campaign-scope">نطاق الحملة</Label>
+                <AppSelect id="studio-campaign-scope" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={campaignScope} onValueChange={(value) => setCampaignScope(value as typeof campaignScope)}>
+                  <option value="ALL">كل المنتجات الناقصة</option>
+                  <option value="CATEGORY">فئة (وفئاتها الفرعية)</option>
+                  <option value="PRODUCTS">منتجات مختارة</option>
+                </AppSelect>
+              </div>
+              {campaignScope === "CATEGORY" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="studio-campaign-category">الفئة</Label>
+                  <AppSelect id="studio-campaign-category" className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm md:h-9" value={campaignCategoryId} onValueChange={setCampaignCategoryId} disabled={categoryOptions.isError}>
+                    <option value="">اختر الفئة</option>
+                    {(categoryOptions.data ?? []).map((category) => (
+                      <option key={Number(category.id)} value={Number(category.id)}>
+                        {category.parentId ? "— " : ""}
+                        {category.name}
+                      </option>
+                    ))}
+                  </AppSelect>
+                  {categoryOptions.isError && <p className="text-xs text-destructive">تعذّر جلب الفئات.</p>}
+                </div>
+              )}
+              {campaignScope === "PRODUCTS" && (
+                <div className="space-y-1.5">
+                  <Label>المنتجات المختارة</Label>
+                  {/* يُعاد استعمال منتقي المنتجات نفسه أسفل الشاشة — التحديد يظهر هنا. */}
+                  <div className="space-y-2">
+                    <StudioProductPicker canManage value={null} onPick={(product) => setCampaignProductIds((current) => (current.includes(Number(product.productId)) ? current : [...current, Number(product.productId)]))} />
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2 text-sm">
+                      <span>{campaignProductIds.length > 0 ? `${campaignProductIds.length} منتجاً في نطاق الحملة` : "ابحث وأضِف منتجات النطاق"}</span>
+                      {campaignProductIds.length > 0 && (
+                        <Button type="button" variant="ghost" size="sm" className="min-h-11" onClick={() => setCampaignProductIds([])}>
+                          مسح
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor="studio-campaign-required">صور مطلوبة لكل منتج</Label>
+                <Input id="studio-campaign-required" type="number" min={1} max={10} value={campaignRequiredImages} onChange={(event) => setCampaignRequiredImages(event.target.value)} />
+                <p className="text-xs text-muted-foreground">التوجيه الإداريّ — يراه المصوّر ويبقى المنتج ناقصاً حتى يبلغه.</p>
+              </div>
+              <div className="space-y-1.5 xl:col-span-2">
+                <Label>مصوّرو الحملة</Label>
+                <div className="flex flex-wrap gap-2 rounded-md border p-2">
+                  {(assignees.data ?? []).length === 0 && <span className="text-xs text-muted-foreground">لا موظفين متاحين.</span>}
+                  {(assignees.data ?? []).map((user) => {
+                    const picked = campaignAssigneeIds.includes(user.id);
+                    return (
+                      <Button
+                        key={user.id}
+                        type="button"
+                        size="sm"
+                        variant={picked ? "default" : "outline"}
+                        className="min-h-11"
+                        onClick={() => setCampaignAssigneeIds((current) => (picked ? current.filter((id) => id !== user.id) : [...current, user.id]))}
+                      >
+                        {user.name}
+                      </Button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground">هؤلاء وحدهم يفتحون منتجات الحملة بمسح الباركود.</p>
+              </div>
               <div className="flex items-end">
                 <Button
                   className="min-h-11 w-full"
-                  disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || me.data?.branchId)}
+                  disabled={offline || campaignName.trim().length < 3 || createCampaign.isPending || !(campaignBranchId || me.data?.branchId) || (campaignScope === "CATEGORY" && !campaignCategoryId) || (campaignScope === "PRODUCTS" && campaignProductIds.length === 0)}
                   onClick={() =>
                     createCampaign.mutate({
                       name: campaignName.trim(),
@@ -960,6 +1103,11 @@ export default function ProductImageStudio() {
                       branchId: Number(campaignBranchId || me.data?.branchId),
                       startsAt: campaignStartAt ? new Date(campaignStartAt) : null,
                       dueAt: campaignDueAt ? new Date(campaignDueAt) : null,
+                      scopeKind: campaignScope,
+                      scopeCategoryId: campaignScope === "CATEGORY" ? Number(campaignCategoryId) : null,
+                      scopeProductIds: campaignScope === "PRODUCTS" ? campaignProductIds : undefined,
+                      requiredImages: Math.max(1, Math.min(10, Number(campaignRequiredImages) || 1)),
+                      assigneeIds: campaignAssigneeIds,
                     })
                   }
                 >
@@ -1070,6 +1218,101 @@ export default function ProductImageStudio() {
                     <XCircle aria-hidden className="size-4" /> إلغاء الطابور
                   </Button>
                 </div>
+              </div>
+            )}
+
+            {/* طابور الإنجاز والمتبقّي — و«المتبقّي» بمعانيه لا رقماً واحداً يُخفي أين يقف العمل. */}
+            {selectedCampaignId && campaignBoard.data && (
+              <div className="space-y-3 rounded-md border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium">طابور الحملة</span>
+                  <span className="text-xs text-muted-foreground">التوجيه: {campaignBoard.data.requiredImages} صورة لكل منتج</span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="rounded-md border bg-[var(--sem-ok-bg,transparent)] p-3">
+                    <div className="text-xs text-muted-foreground">منتجات اكتملت صورها</div>
+                    <div className="mt-1 text-2xl font-bold">
+                      {campaignBoard.data.done}
+                      <span className="text-sm font-normal text-muted-foreground"> / {campaignBoard.data.totalProducts}</span>
+                    </div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">منتجات متبقّية</div>
+                    <div className="mt-1 text-2xl font-bold">{campaignBoard.data.remaining}</div>
+                  </div>
+                </div>
+                <div className="text-xs text-muted-foreground">المهام الجارية (وحدةُ مهمّة لا منتج)</div>
+                <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
+                  {(
+                    [
+                      ["لم تُولَّد بعد", campaignBoard.data.breakdown.notGenerated],
+                      ["في الطابور", campaignBoard.data.breakdown.queued],
+                      ["قيد التصوير", campaignBoard.data.breakdown.inProgress],
+                      ["تنتظر اعتمادك", campaignBoard.data.breakdown.awaitingReview],
+                      ["تحتاج تصحيحاً", campaignBoard.data.breakdown.needsFix],
+                    ] as const
+                  ).map(([label, value]) => (
+                    <div key={label} className="rounded-md border p-2">
+                      <div className="text-muted-foreground">{label}</div>
+                      <div className="mt-0.5 font-bold">{value}</div>
+                    </div>
+                  ))}
+                </div>
+                {/* مصوّرٌ مؤقّت: حسابٌ بصلاحية استوديو فقط ينتهي بانتهاء الحملة. */}
+                <div className="space-y-2 rounded-md border p-3">
+                  <Label htmlFor="studio-temp-photographer">مصوّر مؤقّت (بلا حساب دائم)</Label>
+                  <p className="text-xs text-muted-foreground">حسابٌ بصلاحية استوديو المنتجات وحدها، ينتهي وصوله تلقائياً بموعد الحملة. الرمز يُعرَض مرّةً واحدة فقط.</p>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="min-w-48 flex-1">
+                      <Input id="studio-temp-photographer" value={tempPhotographerName} onChange={(event) => setTempPhotographerName(event.target.value)} placeholder="اسم المصوّر" maxLength={80} />
+                    </div>
+                    <Button
+                      type="button"
+                      className="min-h-11"
+                      disabled={offline || createTemporaryPhotographer.isPending || tempPhotographerName.trim().length < 3}
+                      onClick={() => selectedCampaignId && createTemporaryPhotographer.mutate({ campaignId: selectedCampaignId, name: tempPhotographerName })}
+                    >
+                      <UserCheck aria-hidden className="size-4" /> إنشاء وصول مؤقّت
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="min-h-11"
+                      disabled={offline || revokeTemporaryPhotographers.isPending}
+                      onClick={() => selectedCampaignId && revokeTemporaryPhotographers.mutate({ campaignId: selectedCampaignId })}
+                    >
+                      إغلاق الوصول المؤقّت
+                    </Button>
+                  </div>
+                  {issuedAccess && (
+                    <div role="alert" className="space-y-1 rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm">
+                      <p className="font-medium">سلّم هذه البيانات لـ«{issuedAccess.name}» الآن — لن تظهر مرّةً أخرى.</p>
+                      <p>
+                        اسم الدخول: <span className="font-mono">{issuedAccess.username}</span>
+                      </p>
+                      <p>
+                        الرمز: <span className="font-mono text-base">{issuedAccess.code}</span>
+                      </p>
+                      <p className="text-xs text-muted-foreground">ينتهي: {new Date(issuedAccess.expiresAt).toLocaleString("ar-IQ")}</p>
+                      <Button type="button" variant="outline" size="sm" className="min-h-11" onClick={() => setIssuedAccess(null)}>
+                        سلّمتُه — أخفِ الرمز
+                      </Button>
+                    </div>
+                  )}
+                </div>
+                {campaignBoard.data.photographers.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-xs text-muted-foreground">المصوّرون</div>
+                    {campaignBoard.data.photographers.map((person) => (
+                      <div key={person.userId} className="flex items-center justify-between rounded-md border p-2 text-sm">
+                        <span>{person.name}</span>
+                        <span className="text-xs text-muted-foreground">
+                          أنجز {person.done} · بيده {person.active}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1531,7 +1774,7 @@ export default function ProductImageStudio() {
 
                   {editable && capabilities.canEditLocalDraft && (
                     <>
-                      <ProductMediaContentSection title="تنفيذ المهمة — الصور والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint="صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً." />
+                      <ProductMediaContentSection title="تنفيذ المهمة — الصور والمحتوى" description={description} onDescriptionChange={setDescription} marketingCopy={marketingCopy} onMarketingCopyChange={setMarketingCopy} images={images} onImagesChange={setImages} maxImages={1} onOriginalCaptured={setOriginalDataUrl} onStudioModeChange={setStudioMode} studioTaskId={Number(selected.id)} adminOverrideReason={editOverrideValue} onProcessingReceiptChange={setProcessingReceipt} onStudioBusyChange={setIsStudioProcessing} offline={offline} hint={captured && captured.taskId === Number(selected.id) && captured.requiredImages > 1 ? `حملةٌ تطلب ${captured.requiredImages} صور لهذا المنتج — اعتُمدت ${captured.approvedImages}. تُرسَل صورةٌ في كل دورة مراجعة؛ امسح الباركود ثانيةً للصورة التالية.` : "صورة واحدة في كل دورة مراجعة. الأصل يودع في المخزن الخاص، والنسخة المعدّلة تبقى مرشّحاً محجوزاً."} />
                       {offline && (
                         <p role="status" className="text-sm text-muted-foreground">
                           تُحفظ تعديلاتك محلياً ومشفّرةً حتى 24 ساعة. الإرسال والاعتماد والرفض والنشر متوقفة إلى أن يعود الاتصال.

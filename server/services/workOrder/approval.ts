@@ -22,7 +22,7 @@ import { createTask } from "../tasks/create";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 
-/** اسمُ نوع الخدمة الحاجز المبذور في هجرة 0234 — مصدرُ الحقيقة الوحيد لاسمه. */
+/** اسمُ نوع الخدمة الحاجز المبذور في هجرة 0235 — مصدرُ الحقيقة الوحيد لاسمه. */
 export const DESIGN_APPROVAL_SERVICE_TYPE = "موافقة تصميم";
 
 /** المهمّة الحاجزة المفتوحة لهذا الأمر (إن وُجدت) — نفس تعريف الحارس حرفياً. */
@@ -89,7 +89,7 @@ export async function requestDesignApprovalTx(
     // غيرِ حاجزة تُعطي إحساساً كاذباً بالحماية.
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: `نوع الخدمة «${DESIGN_APPROVAL_SERVICE_TYPE}» غير موجود أو معطَّل — فعّله من إعدادات أنواع الخدمات أو طبّق الهجرة 0234.`,
+      message: `نوع الخدمة «${DESIGN_APPROVAL_SERVICE_TYPE}» غير موجود أو معطَّل — فعّله من إعدادات أنواع الخدمات أو طبّق الهجرة 0236.`,
     });
   }
 

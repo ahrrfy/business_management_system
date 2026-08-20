@@ -493,7 +493,7 @@ export const workOrderRouter = router({
           .where(inArray(workOrderImages.workOrderId, ids))
           .orderBy(
             asc(workOrderImages.workOrderId),
-            // ش٢ (0235): **النسخةُ العليا أوّلاً** — وليس تخفيفاً للحجم بل **صحّةَ عرض**:
+            // ش٢ (0236): **النسخةُ العليا أوّلاً** — وليس تخفيفاً للحجم بل **صحّةَ عرض**:
             // بلا هذا الترتيب تعرض بطاقةُ الأمر تصميماً **مهجوراً** أبطلته نسخةٌ أحدث،
             // فيبني الفنّيّ على صورةٍ لم يوافق عليها العميل.
             desc(workOrderImages.revision),
@@ -582,7 +582,7 @@ export const workOrderRouter = router({
         .select({
           id: workOrders.id,
           orderNumber: workOrders.orderNumber,
-          // ش٥ (0237): المسوّدة الجامعة — تُغذّي «ضمن الطلب D-… (٣ بنود)».
+          // ش٥ (0238): المسوّدة الجامعة — تُغذّي «ضمن الطلب D-… (٣ بنود)».
           draftId: workOrders.draftId,
           title: workOrders.title,
           customizationText: workOrders.customizationText,
@@ -690,7 +690,7 @@ export const workOrderRouter = router({
         id: workOrderImages.id,
         url: workOrderImages.url,
         caption: workOrderImages.caption,
-        // ش٢ (0235): النسخة — تُغذّي شارة «نسخة ٣ من ٣» ومبدّل النسخ السابقة.
+        // ش٢ (0236): النسخة — تُغذّي شارة «نسخة ٣ من ٣» ومبدّل النسخ السابقة.
         revision: workOrderImages.revision,
       })
       .from(workOrderImages)
@@ -721,7 +721,7 @@ export const workOrderRouter = router({
       .limit(1);
     const blockingTask = blockingRows[0] ?? null;
     /**
-     * ش٥ (0237) — **إخوةُ الطلب**: الزبون يرى طلباً واحداً، وأوامرُ السلّة الواحدة كانت لا
+     * ش٥ (0238) — **إخوةُ الطلب**: الزبون يرى طلباً واحداً، وأوامرُ السلّة الواحدة كانت لا
      * يعرف بعضُها بعضاً. استعلامٌ مفهرسٌ واحد (`idx_wo_draft`) بدل مسحِ `idempotencyKeys`
      * الذي كان الاشتقاق الوحيد الممكن وهو **أحاديُّ الاتجاه** و**بلا فهرس على `refId`**.
      *
@@ -1466,7 +1466,7 @@ export const workOrderRouter = router({
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه استرداد العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
       clientRequestId: z.string().trim().min(1).max(100).optional(),
-      /** سببُ الإلغاء — يُكتب على الأمر (0236) فيصير قابلاً للقراءة والتقرير لا حبيسَ التدقيق. */
+      /** سببُ الإلغاء — يُكتب على الأمر (0237) فيصير قابلاً للقراءة والتقرير لا حبيسَ التدقيق. */
       reason: z.string().trim().min(3).max(500).optional(),
       /**
        * مصيرُ كلّ خامة مستهلَكة. **حذفُه = رجوعٌ كامل** (السلوك القائم حرفياً)، ووجودُه
