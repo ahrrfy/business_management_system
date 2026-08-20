@@ -66,7 +66,7 @@ beforeEach(async () => {
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
   await d.insert(s.branchStock).values([{ variantId: 1, branchId: 1, quantity: 100 }]);
 
-  // النوعان: الحاجز (كما تبذره الهجرة 0217) وغيرُ الحاجز.
+  // النوعان: الحاجز (كما تبذره الهجرة 0234) وغيرُ الحاجز.
   blockingTypeId = getInsertId(await d.insert(s.serviceTypes).values({
     name: "موافقة تصميم", defaultKind: "SERVICE_REQUEST", defaultPriority: "HIGH",
     slaHours: 24, isActive: true, blocksExecution: true,

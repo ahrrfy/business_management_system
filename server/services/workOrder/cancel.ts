@@ -76,7 +76,7 @@ export async function cancelWorkOrder(
   opts: {
     refundShiftId?: number | null;
     clientRequestId?: string | null;
-    /** سببُ الإلغاء — يُكتب على الأمر نفسه لا في سجلّ التدقيق وحده (0223). */
+    /** سببُ الإلغاء — يُكتب على الأمر نفسه لا في سجلّ التدقيق وحده (0236). */
     reason?: string | null;
     /**
      * مصيرُ كلّ مادّة. **غيابُه = رجوعٌ كامل** (السلوك القائم). ووجودُه يلزمه أن يغطّي
@@ -527,7 +527,7 @@ export async function cancelWorkOrder(
 
     await tx.update(workOrders).set({
       status: "CANCELLED",
-      // 0223: السببُ على المستند لا في سجلّ التدقيق وحده — الأخير بذلٌ أفضل ومُعقَّم وليس
+      // 0236: السببُ على المستند لا في سجلّ التدقيق وحده — الأخير بذلٌ أفضل ومُعقَّم وليس
       // سطحَ قراءةٍ للأعمال، فبلا هذه الأعمدة يذوب «لم يحضر العميل» في إلغاءٍ مجهول.
       cancelReason: opts.reason?.trim() || null,
       cancelledAt: new Date(),
