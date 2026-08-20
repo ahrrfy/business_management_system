@@ -1506,6 +1506,13 @@
       "when": 1788052267000,
       "tag": "0216_product_customization_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "5",
+      "when": 1788052277000,
+      "tag": "0226_price_wave_revert",
+      "breakpoints": true
     }
   ]
 }

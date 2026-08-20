@@ -216,9 +216,15 @@ internal object ProductsWire {
             active = root.optBoolean("isActive", true), service = root.optBoolean("isService"), variants = drafts,
         )
     }
+    // النطاق صريحٌ في عقد الخادم (W6): فلاتر فارغة **لا تعني** «كل الكتالوج» ضمناً بل تُرَدّ.
+    // الخادم يشتقّه للنسخ القديمة توافقياً، لكنّ الإرسال الصريح هو العقد الصحيح — والاشتقاق
+    // هنا مطابقٌ لاشتقاق الخادم كي لا ينحرف الطرفان.
     private fun filters(draft: PriceWaveDraft) = JSONObject().also { filters ->
-        draft.productSearch.trim().takeIf { it.isNotEmpty() }?.let { filters.put("productSearch", it.take(120)) }
+        val search = draft.productSearch.trim().takeIf { it.isNotEmpty() }
+        search?.let { filters.put("productSearch", it.take(120)) }
         draft.tier?.let { filters.put("priceTier", it.name) }
+        val scope = if (search != null || draft.tier != null) "FILTERED" else "ALL"
+        filters.put("scope", scope)
     }
 
     fun wavePreview(draft: PriceWaveDraft) = JSONObject()

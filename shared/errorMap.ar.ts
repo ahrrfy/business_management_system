@@ -139,6 +139,10 @@ type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: stri
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_custom_template_product: { msg: "قالب التخصيص لهذا المنتج موجود مسبقاً." },
   uq_custom_field_template_key: { msg: "مفتاح حقل التخصيص مستخدم مسبقاً داخل هذا القالب." },
+  // ── موجات الأسعار (0226) ──
+  // يُصاب حين يضغط مديران «تراجع» على الموجة نفسها في اللحظة ذاتها: الخدمة تفحص أوّلاً
+  // وتردّ برسالةٍ واضحة، لكنّ السباق قد يبلغ القيدَ نفسه ⇒ هذه رسالتُه بدل خطأ MySQL خامّ.
+  uq_wave_reverts: { msg: "سبق التراجع عن هذه الموجة — حدّث الصفحة لترى موجة التراجع المسجَّلة." },
   uq_image_studio_usage_daily_service: { msg: "سجلّ حصة خدمة الاستوديو لهذا اليوم موجود مسبقاً." },
   uq_pijob_product_active: {
     msg: "توجد مهمة استوديو نشطة لهذا المنتج بالفعل — افتح المهمة الحالية بدلاً من إنشاء مهمة مكرّرة.",
