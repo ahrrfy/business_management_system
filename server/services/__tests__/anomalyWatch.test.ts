@@ -284,7 +284,11 @@ describe("D6 — سلامة تسلسل الترقيم (كاشف عبث)", () => 
 
     const after = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
     expect(after.sequenceGaps.rows).toHaveLength(1);
-    expect(after.sequenceGaps.rows[0].branchId).toBe(1);
+    // ٢٠/٨ (تصويب مراجعة Codex): العدّادُ الرقميّ **عالميّ** لا يُعاد لكلّ فرعٍ ويوم، فنسبةُ
+    // فجوته إلى فرعٍ بعينه **نسبةٌ كاذبة** — وهي التي كانت تُنتج فجواتٍ وهمية من التداخل
+    // الطبيعيّ بين الفروع. الصفُّ يُعنوَن «كل الفروع» (branchId = 0) صراحةً.
+    expect(after.sequenceGaps.rows[0].branchId).toBe(0);
+    expect(after.sequenceGaps.rows[0].branchName).toContain("كل الفروع");
     expect(after.sequenceGaps.rows[0].actualCount).toBe(2);
     // ١٨/٨: العدّاد عالميّ فلا يبدأ كل يومٍ من الواحد — الدلالة صارت **المدى** لا القيمة
     // المطلقة: ثلاثة أرقام متتالية حُذف أوسطها ⇒ مدىً طوله ٣ فيه صفّان ⇒ مفقودٌ واحد.
