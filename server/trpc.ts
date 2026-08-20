@@ -593,6 +593,17 @@ export const productStudioWriteProcedure = branchScopedProcedure.use(requireModu
 // الاعتماد/الرفض/الإسناد سلطة إشرافية فعلية: منح FULL لموظف يفتح أدوات التنفيذ فقط ولا يحوّله
 // إلى مدير. خدمة الاستوديو تعيد الفحص أيضاً؛ هذه البوابة تمنع حتى بلوغها وتوحّد عقد الواجهة.
 export const productStudioManagerProcedure = managerProcedure.use(requireModule("productStudio", "FULL"));
+/**
+ * إعدادات مزوّد الصور المدفوع (حصص الفروع): بوّابة `productStudio:FULL` **ثمّ** admin —
+ * نظيرُ `inventoryAdminProcedure`. لماذا لا `adminProcedure` عارياً: سلطةٌ بلا بوّابة وحدة
+ * لا تظهر في خريطة الصلاحيات ولا يمكن سحبُها بمنحٍ صريح، ويرفضها حارس CI التفاضليّ.
+ *
+ * وبلا `requireOwnBranch`: العملية **شركةٌ لا فرع** (تضبط حصص كل الفروع معاً)، فإلزامُ
+ * فرعٍ مُسنَد يرفض مديراً عاماً بلا فرع — نفس علّة الإقفال الشهريّ ونفس علاجها.
+ */
+export const productStudioAdminProcedure = protectedProcedure
+  .use(requireModuleGate(["manager"], "productStudio", "FULL"))
+  .use(requireAdmin);
 // expenses — «محاسب» قالبه expenses=FULL ⇒ يدخل بوّابة الإدخال (الإلغاء يبقى مديرياً).
 export const expensesReadProcedure = branchScopedProcedure.use(requireModule("expenses", "READ"));
 export const expensesCashierProcedure = moduleProcedure(["cashier", "manager", "accountant"], "expenses", "FULL");
