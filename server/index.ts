@@ -221,6 +221,12 @@ async function startServer() {
                   ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
                   : []),
               ],
+          // ⚠️ `worker-src` **يجب** أن يُصرَّح: بغيابه يسقط إلى `script-src` الذي لا يسمح
+          // بـ`blob:` ⇒ المتصفّح يحجب عامل عزل الخلفية (@imgly يعمل بـproxyToWorker)،
+          // فيتدهور مسار القصّ المجّانيّ (CUT) بصمتٍ إلى FLATTEN — «معالجةٌ» لا تقصّ شيئاً.
+          // أمسكه فحصٌ بصريّ لسجلّ المتصفّح، ولم تكشفه أيّ اختبارات (لا متصفّح فيها).
+          // `blob:` هنا لا يُوسّع `script-src`: العمّال معزولون ولا يصلون DOM.
+          workerSrc: ["'self'", "blob:"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", "data:", "blob:"],
           connectSrc: isDev

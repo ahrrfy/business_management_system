@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -2297,6 +2297,35 @@ describe("product studio governed workflow", () => {
 
     await transitionStudioCampaign(manager, { campaignId: campaign.campaignId, status: "CANCELLED", reason: "أُلغيت الحملة" });
     await expect(createTemporaryCampaignPhotographer(manager, { campaignId: campaign.campaignId, name: "بعد الإلغاء" })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("قائمة المصوّرين تُظهر كل الكادر مع علَم الصلاحية، والمنح صريحٌ ومُدقَّق", async () => {
+    const listed = await listStudioAssignees(manager);
+    const byId = new Map(listed.map((u) => [u.id, u]));
+    // الكاشير/المندوب كانوا يُحذفون من القائمة فيبدو الكادر ناقصاً بلا سبب ظاهر.
+    expect(byId.has(worker.userId)).toBe(true);
+    expect(byId.get(worker.userId)?.canStudio).toBe(true);
+    const [plain] = await db().insert(s.users).values({ openId: "studio-plain", name: "كاشير بلا صلاحية", role: "cashier", branchId: 1, isActive: true }).$returningId();
+    const plainId = Number(plain.id);
+    const withPlain = new Map((await listStudioAssignees(manager)).map((u) => [u.id, u]));
+    expect(withPlain.get(plainId)).toMatchObject({ canStudio: false });
+
+    // ولا يُسنَد قبل المنح.
+    const campaign = await createStudioCampaign(manager, { name: "حملة المنح", status: "ACTIVE" });
+    await expect(createStudioCampaign(manager, { name: "حملة بموظفٍ بلا صلاحية", status: "ACTIVE", assigneeIds: [plainId] })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    await expect(grantStudioAccess(manager, plainId)).resolves.toMatchObject({ granted: true });
+    expect((await listStudioAssignees(manager)).find((u) => u.id === plainId)?.canStudio).toBe(true);
+    // المنح لا يمسّ وحدةً أخرى ولا يرفع الدور.
+    const [after] = await db().select().from(s.users).where(eq(s.users.id, plainId));
+    expect(after).toMatchObject({ role: "cashier" });
+    expect((after!.permissionsOverride as Record<string, string>).productStudio).toBe("FULL");
+    // ويصير قابلاً للإسناد فعلاً.
+    await expect(createStudioCampaign(manager, { name: "حملة بعد المنح", status: "ACTIVE", assigneeIds: [plainId] })).resolves.toMatchObject({ assigneeIds: [plainId] });
+    // وإعادة المنح لا تُكرّر شيئاً، ومديرُ فرعٍ آخر يُرفض.
+    await expect(grantStudioAccess(manager, plainId)).resolves.toMatchObject({ granted: false });
+    await expect(grantStudioAccess(managerTwo, plainId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    void campaign;
   });
 
   it("يعزل الإلغاء الجماعي بالفرع", async () => {

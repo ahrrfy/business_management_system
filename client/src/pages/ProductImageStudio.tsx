@@ -467,6 +467,13 @@ export default function ProductImageStudio() {
     },
     onError: (error) => notify.err(error),
   });
+  const grantStudioAccess = trpc.productStudio.grantStudioAccess.useMutation({
+    onSuccess: async (result) => {
+      notify.ok(result.granted ? `مُنح «${result.name}» صلاحية استوديو المنتجات` : `«${result.name}» يملك الصلاحية أصلاً`);
+      await utils.productStudio.assignees.invalidate();
+    },
+    onError: (error) => notify.err(error),
+  });
   const revokeTemporaryPhotographers = trpc.productStudio.revokeTemporaryPhotographers.useMutation({
     onSuccess: async (result) => {
       notify.ok(result.revoked > 0 ? `أُغلق وصول ${result.revoked} مصوّراً مؤقّتاً` : "لا مصوّرين مؤقّتين نشطين في هذه الحملة");
@@ -1076,6 +1083,18 @@ export default function ProductImageStudio() {
                   {(assignees.data ?? []).length === 0 && <span className="text-xs text-muted-foreground">لا موظفين متاحين.</span>}
                   {(assignees.data ?? []).map((user) => {
                     const picked = campaignAssigneeIds.includes(user.id);
+                    // من لا يملك صلاحية الاستوديو يظهر أيضاً — إخفاؤه كان يجعل الكادر
+                    // يبدو ناقصاً بلا سبب. ويُمنح بزرٍّ صريح لا بمجرّد اختياره.
+                    if (!user.canStudio) {
+                      return (
+                        <span key={user.id} className="inline-flex items-center gap-1 rounded-md border border-dashed px-2 py-1 text-xs text-muted-foreground">
+                          {user.name}
+                          <Button type="button" size="sm" variant="ghost" className="min-h-11 px-2 text-xs" disabled={offline || grantStudioAccess.isPending} onClick={() => grantStudioAccess.mutate({ userId: user.id })}>
+                            امنح الصلاحية
+                          </Button>
+                        </span>
+                      );
+                    }
                     return (
                       <Button
                         key={user.id}
@@ -1090,7 +1109,7 @@ export default function ProductImageStudio() {
                     );
                   })}
                 </div>
-                <p className="text-xs text-muted-foreground">هؤلاء وحدهم يفتحون منتجات الحملة بمسح الباركود.</p>
+                <p className="text-xs text-muted-foreground">هؤلاء وحدهم يفتحون منتجات الحملة بمسح الباركود. والمُحاط بخطٍّ متقطّع بلا صلاحية استوديو — امنحها له ليصير قابلاً للاختيار.</p>
               </div>
               <div className="flex items-end">
                 <Button
