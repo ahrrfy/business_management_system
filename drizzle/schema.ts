@@ -902,9 +902,16 @@ export type InsertInvoiceItemBundleComponent =
  *   DECREASE_PERCENT — تخفيض بنسبة.
  *   INCREASE_AMOUNT  — إضافة مبلغ ثابت لكل وحدة (مثل +500 د.ع).
  *   DECREASE_AMOUNT  — طرح مبلغ ثابت.
- *   SET_MARGIN       — تعيين هامش ربح على التكلفة (newPrice = cost × (1 + margin%)) — يقرأ تكلفة WAVG.
+ *   SET_MARGIN       — تعيين هامش ربح على التكلفة (newPrice = تكلفة **الوحدة** × (1 + margin%))،
+ *                      وتكلفة الوحدة = تكلفة الأساس × conversionFactor (وللبكج: من وصفته).
+ *   REVERT           — (هجرة 0226) موجةُ **تراجع**: تستعيد `priceChangeLog.oldPrice` صفّاً صفّاً
+ *                      لموجةٍ سابقة. `changeValue = 0` (لا نسبة لها)، ولذلك وُسِّع قيدا CHECK.
  *
- * الفلاتر (`filtersJson`): categoryId, productSearch (name/sku LIKE), priceTier, onlyBelowMargin (%).
+ * `filtersJson` (v2، ٢٠/٨/٢٦): مستند النطاق الكامل —
+ *   { v:2, scope: FILTERED|SELECTED|ALL, categoryId, productSearch, priceTier, productIds,
+ *     roundToDenom, excludedCount, skippedCount }
+ * ولموجة التراجع: { v:2, revertsWaveId, conflicts, forced }.
+ * ⚠️ الحقل `onlyBelowMargin` المذكور سابقاً هنا **لم يُنفَّذ قطّ** — أُزيل من التوثيق كي لا يُبنى عليه.
  */
 export const priceUpdateWaves = mysqlTable(
   "priceUpdateWaves",
@@ -918,20 +925,29 @@ export const priceUpdateWaves = mysqlTable(
       "INCREASE_AMOUNT",
       "DECREASE_AMOUNT",
       "SET_MARGIN",
+      "REVERT",
     ]).notNull(),
     // قيمة التغيير: نسبة (0..1000) أو مبلغ ثابت أو نسبة الهامش. الدلالة تعتمد على changeType.
+    // REVERT وحده يحمل صفراً (الاستعادة تأخذ قيمها من السجلّ لا من قاعدةٍ حسابية).
     changeValue: decimal("changeValue", { precision: 15, scale: 2 }).notNull(),
-    // فلاتر الاختيار كـJSON — للتدقيق (من غيّر ولمن ولمتى).
+    // مستند النطاق كـJSON — للتدقيق (من غيّر ولمن ولمتى وبأيّ تقريب واستثناءات).
     filtersJson: text("filtersJson"),
     totalRows: int("totalRows").default(0).notNull(),
     appliedBy: int("appliedBy")
       .notNull()
       .references(() => users.id),
     appliedAt: timestamp("appliedAt").defaultNow().notNull(),
+    // هجرة 0226: الموجة التي تتراجع عنها هذه الموجة. فهرسٌ **فريد** ⇒ لا يُتراجَع عن موجةٍ مرّتين،
+    // ويجعل «مُتراجَعٌ عنها» قابلاً للاستعلام بضمّةٍ واحدة بدل مسحٍ للسجلّ.
+    // ⚠️ بلا FK عمداً: drizzle-kit يُسقط UNIQUE حين يجتمع مع FK على العمود نفسه (فخٌّ موثَّق)،
+    // والتكامل مضمونٌ تطبيقياً — `revertPriceWave` تقرأ الموجة الأصلية قبل الكتابة، ولا مسار حذفٍ
+    // لـ`priceUpdateWaves` في النظام أصلاً.
+    revertsWaveId: bigint("revertsWaveId", { mode: "number" }),
   },
   (table) => ({
     appliedAtIdx: index("idx_wave_applied_at").on(table.appliedAt),
     appliedByIdx: index("idx_wave_applied_by").on(table.appliedBy),
+    revertsIdx: unique("uq_wave_reverts").on(table.revertsWaveId),
   }),
 );
 

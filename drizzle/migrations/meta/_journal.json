@@ -1501,17 +1501,24 @@
       "breakpoints": true
     },
     {
-      "idx": 225,
-      "version": "5",
-      "when": 1788052276000,
-      "tag": "0225_studio_campaign_scope",
-      "breakpoints": true
-    },
-    {
       "idx": 226,
       "version": "5",
       "when": 1788052277000,
-      "tag": "0226_user_access_expiry",
+      "tag": "0226_price_wave_revert",
+      "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "5",
+      "when": 1788052278000,
+      "tag": "0227_studio_campaign_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 228,
+      "version": "5",
+      "when": 1788052279000,
+      "tag": "0228_user_access_expiry",
       "breakpoints": true
     }
   ]
