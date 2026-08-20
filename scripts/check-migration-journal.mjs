@@ -72,4 +72,35 @@ try {
   // لا origin/main محلياً (CI بعمق ١، أو بلا ريموت) ⇒ تخطٍّ صامت.
 }
 
+// ── حجز الرقم في coord (٢٠/٨/٢٦) — تنبيهٌ لا حاجز ────────────────────────────────────────
+// `check:migrations` أعلاه يقارن بـ`origin/main` فيمسك التصادم مع **المدموج** فقط، وهو أعمى
+// تماماً عن فرعٍ متوازٍ لم يُدمج بعد — وهناك يقع التصادم فعلاً (أربع مرّات في ثلاثة أيام:
+// 0204 لثلاثة فروع، ثمّ 0216 و0226 لفرعَين لكلٍّ). الحجز الذرّي في coord يغلق تلك الفجوة.
+//
+// تنبيهٌ لا حاجز عمداً: الفروع القائمة أُنشئت قبل وجود الحجز، وحاجزٌ هنا كان سيوقفها كلّها بلا
+// ذنب. يُشدَّد لاحقاً حين تصير كل الفروع الحيّة محجوزة.
+try {
+  const { execFileSync } = await import("node:child_process");
+  const out = execFileSync(process.execPath, ["scripts/coord.mjs", "migration", "list", "--json"], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+  });
+  const { ceiling, reservations } = JSON.parse(out);
+  if (ceiling) {
+    const mine = tags.filter((t) => Number(t.slice(0, 4)) > Number(ceiling.idx));
+    const reserved = new Set((reservations ?? []).map((r) => String(r.tag)));
+    const unreserved = mine.filter((t) => !reserved.has(t));
+    if (unreserved.length) {
+      console.warn(
+        `⚠  هجراتٌ فوق أرضية origin/main بلا حجزٍ في coord: ${unreserved.join(", ")}
+` +
+        `   الرقم مورِدٌ مشترَك بين الفروع؛ هذا الفحص لا يرى فرعاً متوازياً لم يُدمج.
+` +
+        `   احجزه ذرّياً: pnpm coord:migration reserve <slug>   (وحرّره بعد الدمج: --merged)`,
+      );
+    }
+  }
+} catch {
+  // coord غير مُهيّأ أو غير متاح ⇒ تخطٍّ صامت (حارسٌ يفشل مفتوحاً).
+}
+
 console.log(`Migration journal check passed through ${tags.at(-1)}.`);
