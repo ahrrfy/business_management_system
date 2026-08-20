@@ -63,6 +63,7 @@ export default defineConfig({
       "client/src/lib/productStudio/studioBoardLabels.test.ts",
       "client/src/lib/offline/sessionBoundary.test.ts",
       "shared/moneyPrecision.test.ts",
+      "shared/priceWaveRule.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",
       "server/auth/password.test.ts",

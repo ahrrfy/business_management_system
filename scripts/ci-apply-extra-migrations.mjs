@@ -135,6 +135,13 @@ const EXTRA_MIGRATIONS = [
   // repair مستقل idempotent يستبدل final تحت pre-trigger ثم يزيل المؤقت، فيطابق قواعد CI/الاختبار
   // مسار migrator الحاكم في 0208 بلا نافذة حماية.
   "drizzle/migrations/extras/0208_online_order_reservation_guard.sql",
+  // ٢٠/٨/٢٦: موجة **التراجع** عن موجة تسعير. سببان لوجودها هنا لا في مسار migrator وحده:
+  //   ١) `db:push` لا يوسّع enum موثوقاً على MySQL 8 (قيمة `REVERT`).
+  //   ٢) والأهمّ: قيدا CHECK للموجات يُنشئهما `extras/0057_0060_bundle_check_constraints.sql`
+  //      أعلاه **بصيغتهما القديمة** التي ترفض `changeValue = 0` ⇒ لولا هذا السطر لبَنت قاعدةُ
+  //      CI/الاختبار القيدَ القديم فيسقط كل تراجعٍ بـER_CHECK_CONSTRAINT_VIOLATED بينما الإنتاج
+  //      (مسار migrator) يعمل. **يجب أن يبقى بعد 0057_0060 في الترتيب.** idempotent وآمن للتكرار.
+  "drizzle/migrations/0226_price_wave_revert.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without
