@@ -1604,6 +1604,13 @@
       "when": 1788052293000,
       "tag": "0242_storefront_push_campaigns",
       "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "5",
+      "when": 1788052294000,
+      "tag": "0243_image_studio_branch_budget",
+      "breakpoints": true
     }
   ]
 }

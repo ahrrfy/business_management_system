@@ -503,6 +503,15 @@ const PROCEDURES = {
     roles: ["manager"],
     branch: "asserted",
   },
+  // إعدادات مزوّد الصور المدفوع: بوّابة الوحدة ثمّ admin — نظير inventoryAdminProcedure.
+  // بلا فرع: العملية شركةٌ لا فرع (تضبط حصص كل الفروع معاً).
+  productStudioAdminProcedure: {
+    authority: "module-gate",
+    module: "productStudio",
+    level: "FULL",
+    roles: ["admin"],
+    branch: false,
+  },
   expensesReadProcedure: {
     authority: "module-map",
     module: "expenses",

@@ -12,6 +12,7 @@ import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import * as schema from "../../drizzle/schema";
 import { imageStudioUsageDaily, imageStudioUserRateState } from "../../drizzle/schema";
 import { getPool } from "../db";
+import { reserveBranchBudgetInTx } from "./imageStudioBranchBudget";
 import { imageStoreTenantPrefix } from "../lib/imageStore/tenantNamespace";
 import { withTx } from "./tx";
 
@@ -52,7 +53,8 @@ export function imageStudioGuardErrorMessageAr(kind: ImageStudioGuardErrorKind):
   }
 }
 
-function baghdadDay(now = new Date()): string {
+/** يوم الاستهلاك بتوقيت بغداد — مُصدَّرٌ ليقرأ الإعدادُ نفسَ حدّ اليوم الذي يُحاسِب عليه الحارس. */
+export function baghdadDay(now = new Date()): string {
   const values = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Baghdad",
     year: "numeric",
@@ -111,6 +113,7 @@ async function reserveSharedBudgets(
   connection: PoolConnection,
   service: ImageStudioService,
   userId: number,
+  branchId: number | null,
   now = new Date(),
 ): Promise<void> {
   const usageDate = baghdadDay(now);
@@ -154,12 +157,19 @@ async function reserveSharedBudgets(
       requestCount: daily.requestCount + 1,
       lastRequestedAt: now,
     }).where(eq(imageStudioUsageDaily.id, daily.id));
+
+    // حصّة الفرع **داخل المعاملة نفسها**: لو حُجز الشركيّ ثمّ رُفض الفرعيّ خارجها لبقي
+    // النداء محسوباً على الشركة بلا مقابل — عدّادٌ ينزف على كل رفضٍ فرعيّ. والرفض هنا
+    // يُرجِع الحجز الشركيّ معه. غياب الإعداد = بلا حدٍّ فرعيّ (صفر أثر).
+    await reserveBranchBudgetInTx(tx, service, branchId, usageDate, now);
   });
 }
 
 export async function runGuardedImageStudioCall<T>(args: {
   service: ImageStudioService;
   userId: number;
+  /** فرع المستدعي — `null` لمستخدمٍ بلا فرع: السقف الشركيّ وحده، بلا اختراع فرعٍ افتراضيّ. */
+  branchId?: number | null;
   run: () => Promise<T>;
 }): Promise<T> {
   if (!Number.isSafeInteger(args.userId) || args.userId <= 0) {
@@ -169,7 +179,7 @@ export async function runGuardedImageStudioCall<T>(args: {
 
   const slot = await acquireExecutionSlot();
   try {
-    await reserveSharedBudgets(slot.connection, args.service, args.userId);
+    await reserveSharedBudgets(slot.connection, args.service, args.userId, args.branchId ?? null);
     return await args.run();
   } finally {
     await releaseExecutionSlot(slot);

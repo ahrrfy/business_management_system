@@ -21,7 +21,7 @@ import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { getOfflineProfile, saveOfflineProfile, setOfflinePin, type OfflineProfile } from "@/lib/offline/pinLock";
 import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, XCircle } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, Wallet, XCircle } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 type Scope = "QUEUE" | "MINE" | "REVIEW" | "HISTORY";
@@ -352,6 +352,16 @@ export default function ProductImageStudio() {
     isOwner: me.data?.isOwner === true,
   };
   const onlineUserId = workflowUser.userId > 0 ? workflowUser.userId : null;
+  // حصص المزوّد المدفوع قرارٌ ماليّ (كل نداءٍ كلفة) ⇒ للمدير العام وحده، كبقيّة إعدادات Pro.
+  const isStudioAdmin = me.data?.role === "admin";
+  const branchBudgets = trpc.imageStudio.branchBudgets.useQuery(undefined, { enabled: !offline && isStudioAdmin });
+  const setBranchBudget = trpc.imageStudio.setBranchBudget.useMutation({
+    onSuccess: () => {
+      void branchBudgets.refetch();
+      notify.ok("حُفظت حصّة الفرع");
+    },
+    onError: (error) => notify.err(error),
+  });
   const authenticatedUserId = onlineUserId ?? coldIdentityUserId;
   const editOverrideRequired = selected ? needsStudioEditOverride(selected, workflowUser) : false;
   const reviewOverrideRequired = selected ? needsStudioReviewOverride(selected, workflowUser) : false;
@@ -998,6 +1008,67 @@ export default function ProductImageStudio() {
             </div>
           )}
         </div>
+      )}
+
+      {isStudioAdmin && !offline && (branchBudgets.data ?? []).length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Wallet aria-hidden className="size-4" /> حصص المزوّد المدفوع لكل فرع
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {/* السقف الشركيّ يبقى الأعلى؛ هذه حصّةٌ تُقتطع منه. تُعرض مع الاستهلاك اليوم:
+                رقمٌ بلا استهلاكه لا يُقرَّر عليه. الفراغ = بلا حدٍّ فرعيّ (السلوك الافتراضيّ). */}
+            <p className="text-xs text-muted-foreground">
+              اترك الخانة فارغة لرفع الحدّ الفرعيّ (يبقى السقف الشركيّ وحده)، أو اكتب صفراً لإيقاف المزوّد المدفوع لهذا الفرع.
+              الاستهلاك يُصفَّر يومياً بتوقيت بغداد.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[32rem] text-sm">
+                <thead>
+                  <tr className="text-right text-xs text-muted-foreground">
+                    <th className="p-2 font-medium">الفرع</th>
+                    <th className="p-2 font-medium">الخدمة</th>
+                    <th className="p-2 font-medium">استُهلك اليوم</th>
+                    <th className="p-2 font-medium">الحصّة اليومية</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(branchBudgets.data ?? []).flatMap((branch) =>
+                    branch.services.map((row) => (
+                      <tr key={`${branch.branchId}:${row.service}`} className="border-t">
+                        <td className="p-2">{branch.branchName}</td>
+                        <td className="p-2">{row.service === "REMOVEBG" ? "قصّ الخلفية (Pro)" : "الذكاء الاصطناعي"}</td>
+                        <td className="p-2 tabular-nums">{row.usedToday}</td>
+                        <td className="p-2">
+                          <Input
+                            className="max-w-32"
+                            type="number"
+                            min={0}
+                            max={100000}
+                            inputMode="numeric"
+                            defaultValue={row.dailyLimit == null ? "" : String(row.dailyLimit)}
+                            placeholder="بلا حدّ"
+                            disabled={setBranchBudget.isPending}
+                            aria-label={`حصّة ${branch.branchName} — ${row.service}`}
+                            onBlur={(event) => {
+                              const raw = event.target.value.trim();
+                              const next = raw === "" ? null : Number(raw);
+                              if (next != null && (!Number.isInteger(next) || next < 0)) return;
+                              if (next === (row.dailyLimit ?? null)) return;
+                              setBranchBudget.mutate({ branchId: branch.branchId, service: row.service, dailyLimit: next });
+                            }}
+                          />
+                        </td>
+                      </tr>
+                    )),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {dashboard.data?.canManage && (
