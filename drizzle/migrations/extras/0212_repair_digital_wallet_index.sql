@@ -65,7 +65,7 @@ SET @has_idx_receipt_bucket_status := (
 );
 SET @sql_idx_receipt_bucket_status := IF(
   @has_idx_receipt_bucket_status = 0,
-  'CREATE INDEX `idx_receipt_bucket_status` ON `receipts` (`cashBucket`, `status`)',
+  'CREATE INDEX `idx_receipt_bucket_status` ON `receipts` (`cashBucket`, `receiptStatus`)',
   'SELECT 1'
 );
 PREPARE stmt_idx_receipt_bucket_status FROM @sql_idx_receipt_bucket_status;
@@ -78,7 +78,7 @@ SET @has_idx_crm_campaign_branch_status := (
 );
 SET @sql_idx_crm_campaign_branch_status := IF(
   @has_idx_crm_campaign_branch_status = 0,
-  'CREATE INDEX `idx_crm_campaign_branch_status` ON `crmCampaigns` (`branchId`, `status`)',
+  'CREATE INDEX `idx_crm_campaign_branch_status` ON `crmCampaigns` (`branchId`, `crmCampaignStatus`)',
   'SELECT 1'
 );
 PREPARE stmt_idx_crm_campaign_branch_status FROM @sql_idx_crm_campaign_branch_status;
@@ -156,7 +156,7 @@ SET @has_idx_exchange_custody_scope := (
 );
 SET @sql_idx_exchange_custody_scope := IF(
   @has_idx_exchange_custody_scope = 0,
-  'CREATE INDEX `idx_exchange_custody_scope` ON `exchangeTransactions` (`exchangeHouseId`, `branchId`, `status`, `currency`, `type`, `id`)',
+  'CREATE INDEX `idx_exchange_custody_scope` ON `exchangeTransactions` (`exchangeHouseId`, `branchId`, `exchangeTxnStatus`, `currency`, `type`, `id`)',
   'SELECT 1'
 );
 PREPARE stmt_idx_exchange_custody_scope FROM @sql_idx_exchange_custody_scope;
