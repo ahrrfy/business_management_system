@@ -1515,12 +1515,11 @@ export const workOrderRouter = router({
         },
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
       );
-      await logAudit(ctx, {
-        action: "workOrder.reverseDelivery",
-        entityType: "workOrder",
-        entityId: input.workOrderId,
-        newValue: { reason: input.reason, reopen: input.reopen === true },
-      });
+      // ⛔ لا `logAudit` هنا: الخدمةُ تكتب `workOrder.reverseDelivery` **داخل المعاملة**
+      // بمبالغها الحقيقية (المعكوس والمردود). تكرارُه هنا يُنتج صفَّي تدقيقٍ لعمليةٍ واحدة
+      // ⇒ حدثان في الخطّ الزمنيّ للأمر الواحد، أحدهما أفقرُ بياناً — والقارئُ لا يعرف
+      // أوقعت العمليةُ مرّتين أم لا. (النمط نفسه في `cancel.ts`: خدمتُه تُدقّق فعلاً
+      // مغايراً — `workOrder.refund.approve` — فلا تكرار هناك.)
       return res;
     }),
 

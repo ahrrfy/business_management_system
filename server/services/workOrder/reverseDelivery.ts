@@ -43,7 +43,7 @@ import { assertNoLiveConsignment, assertWorkOrderBranch, loadWorkOrder } from ".
  * لأنّ الخدمةَ لا تملكها ولا يصحّ أن تختلقها.
  */
 const auditCtx = (actor: Actor) =>
-  ({ user: { id: actor.userId }, req: undefined }) as unknown as Parameters<typeof logAuditTx>[1];
+  ({ user: { id: actor.userId, branchId: actor.branchId }, req: undefined }) as unknown as Parameters<typeof logAuditTx>[1];
 
 export interface ReverseWorkOrderDeliveryInput {
   workOrderId: number;

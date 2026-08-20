@@ -127,6 +127,15 @@ describe("استرجاع أمر شغل مُسلَّم", () => {
     expect(wo.status).toBe("CANCELLED");
     expect(wo.cancelReason).toBe("رفض الزبون العمل المُسلَّم");
     expect(Number(wo.cancelledBy)).toBe(MANAGER.userId);
+
+    // **صفٌّ تدقيقيٌّ واحدٌ لا صفّان**: كان الراوتر يكتب `workOrder.reverseDelivery` أيضاً
+    // فوق كتابة الخدمة ⇒ حدثان في الخطّ الزمنيّ لعمليةٍ واحدة، أحدهما أفقرُ بياناً،
+    // والقارئُ لا يعرف أوقعت مرّتين أم لا. والفرعُ يُكتب (كان يسقط في ctx المُصنَّع).
+    const logs = await db().select().from(s.auditLogs)
+      .where(eq(s.auditLogs.action, "workOrder.reverseDelivery"));
+    expect(logs).toHaveLength(1);
+    expect(Number(logs[0].branchId)).toBe(1);
+    expect((logs[0].newValue as { refundedTotal: string }).refundedTotal).toBe("0.00");
   });
 
   it("⭐ (ب) المقبوض يُردّ فعلاً بإيصال OUT نقديّ من درج الاستقبال", async () => {
