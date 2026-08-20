@@ -437,8 +437,10 @@ export async function applyPriceWave(
   const rows = excludedSet.size
     ? computed.rows.filter((r) => !excludedSet.has(rowKey(r)))
     : computed.rows;
+  // القياس على المجموعة المُزالة التكرار لا على طول المصفوفة: زوجٌ مكرّر في حمولة العميل
+  // يُنقص صفّاً واحداً فقط، فمقارنتُه بالطول تُنتج «تعارضاً» كاذباً يمنع موجةً سليمة.
   const unknownExcluded =
-    excluded.length - (computed.rows.length - rows.length);
+    excludedSet.size - (computed.rows.length - rows.length);
   if (unknownExcluded > 0) {
     throw new TRPCError({
       code: "CONFLICT",
@@ -478,7 +480,7 @@ export async function applyPriceWave(
       ? input.filters.productIds.map(Number)
       : null,
     roundToDenom: Number(input.roundToDenom ?? 0),
-    excludedCount: excluded.length,
+    excludedCount: excludedSet.size,
     skippedCount: computed.skipped.length,
   };
 
@@ -503,7 +505,7 @@ export async function applyPriceWave(
     waveId,
     totalRows: rows.length,
     skippedRows: computed.skipped.length,
-    excludedRows: excluded.length,
+    excludedRows: excludedSet.size,
   };
 }
 
