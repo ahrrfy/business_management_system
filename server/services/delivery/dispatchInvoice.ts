@@ -6,13 +6,15 @@
 // هنا نربط فاتورةً موجودةً بإرسالية: نفس محاسبة العهدة، بلا إنشاء فاتورةٍ ثانية وبلا لمس قيد
 // SALE الأصليّ (الإيراد اعتُرف به لحظة البيع؛ التوصيل تسليمٌ لا بيع).
 import { TRPCError } from "@trpc/server";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import {
   deliveryConsignments,
   deliveryParties,
   deliveryPartyMembers,
   invoices,
   receipts,
+  receptionDrafts,
+  workOrders,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
@@ -22,6 +24,7 @@ import { nextConsignmentNumber } from "./numbering";
 import { assertFloatLimitTx } from "./parties";
 import type { DeliveryTxActor } from "./types";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { assertSiblingsReady } from "../workOrder/siblings";
 
 export interface DispatchInvoiceInput {
   invoiceId: number;
@@ -39,6 +42,15 @@ export interface DispatchInvoiceInput {
   /** Internal bridge used by store fulfillment while onlineOrders is retired. */
   onlineOrderId?: number | null;
   assignedUserId?: number | null;
+  /**
+   * **إرسالٌ جزئيّ مُقَرٌّ به** (ش٥، ١٩/٨): يمرّ رغم وجود إخوةٍ لم يجهزوا بعد.
+   *
+   * افتراضُه `false` كي **يفشل مغلقاً**: السلّة الواحدة قد تُنتج فاتورةَ بضاعةٍ جاهزة **و**
+   * أوامرَ شغلٍ ما زالت تحت التنفيذ؛ إرسالُ الأولى وحدها يعني أنّ الزبون يستلم نصف طلبه
+   * والباقي يبقى في المكتبة بلا من يذكّر به — وهو نصفٌ لا يُلام عليه المندوب ولا الاستقبال.
+   * ومن يقرّه صراحةً يُكتب قراره في حدث الإرسالية.
+   */
+  partialDispatchConfirmed?: boolean;
 }
 
 export async function dispatchInvoiceToDelivery(input: DispatchInvoiceInput, actor: DeliveryTxActor) {
@@ -185,6 +197,27 @@ export async function dispatchInvoiceInTx(
       });
     }
 
+    // ── ش٥: إخوةُ السلّة الواحدة (١٩/٨) ────────────────────────────────────────────
+    // المسوّدةُ الواحدة تُنتج فاتورةَ بضاعةٍ **وأوامرَ شغلٍ** معاً؛ والإرسال يمسّ الفاتورة
+    // وحدها. فبلا هذا الفحص يخرج نصفُ الطلب مع المندوب بينما نصفُه الآخر ما زال على الطاولة —
+    // ولا شاشةَ تقول ذلك لأحد. (`draftId` كُتب في 0220 ولم يُقرأ حتى الآن — هذا قارئُه الأوّل.)
+    // فشلٌ **مغلق**: يمرّ فقط بإقرارٍ صريح يُسجَّل في حدث الإرسالية.
+    const draftRow = (
+      await tx
+        .select({ id: receptionDrafts.id })
+        .from(receptionDrafts)
+        .where(or(
+          eq(receptionDrafts.committedInvoiceId, input.invoiceId),
+          eq(receptionDrafts.committedPrintInvoiceId, input.invoiceId),
+        ))
+        .limit(1)
+    )[0];
+    const siblingRows = await assertSiblingsReady(tx, {
+      draftId: draftRow ? Number(draftRow.id) : null,
+      confirmed: input.partialDispatchConfirmed === true,
+      action: "dispatch",
+    });
+
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
     if (fee.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
 
@@ -314,6 +347,14 @@ export async function dispatchInvoiceInTx(
           : Number(already.sourceId),
         previousPartyId: already == null ? null : Number(already.partyId),
         reactivated: already != null,
+        // إقرارُ الإرسال الجزئيّ يُكتَب بأرقام إخوته — وإلّا صار «من أذن بخروج نصف الطلب؟»
+        // سؤالاً بلا جواب بعد أسبوع.
+        ...(siblingRows.length > 0
+          ? {
+              partialDispatch: true,
+              unreadySiblings: siblingRows.map((r) => ({ id: Number(r.id), orderNumber: r.orderNumber, status: r.status })),
+            }
+          : {}),
       },
     });
 

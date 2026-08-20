@@ -14,6 +14,7 @@
  *  7. باركود منتج (EAN-13 / ALR* / أي نص آخر)
  */
 import type { ScanResult } from "@shared/barcodeTypes";
+import { stripDocPrefix } from "@shared/documentNumber";
 import { normalizeKnownSystemBarcode } from "@/lib/barcodeScannerInput";
 
 const PIPE_PREFIX = /^(INV|WO|PO|QUO|CUST|EMP|USER)\|/;
@@ -32,13 +33,21 @@ export function parseScan(raw: string): ScanResult {
     if (docType === "CUST") return { type: "customer", id: parseInt(number, 10) };
     if (docType === "EMP") return { type: "employee", id: parseInt(number, 10) };
     if (docType === "USER") return { type: "user", id: parseInt(number, 10) };
-    return parseScan(number); // تفويض: "INV-1-…" → invoice
+    // ١٨/٨: النوع معلومٌ من الحمولة نفسها — نستعمله مباشرةً بدل إعادة تحليل الرقم. مع أرقام
+    // العرض القصيرة (10023) كان التفويض يُعيد تصنيفها «باركود منتج» لأنّها أرقامٌ عارية.
+    if (docType === "INV") return { type: "invoice", number };
+    if (docType === "WO") return { type: "workOrder", number };
+    if (docType === "PO") return { type: "purchaseOrder", number };
+    if (docType === "QUO") return { type: "quotation", number };
+    return parseScan(number);
   }
 
-  if (s.startsWith("INV-"))  return { type: "invoice",       number: s };
-  if (s.startsWith("WO-"))   return { type: "workOrder",     number: s };
-  if (s.startsWith("PO-"))   return { type: "purchaseOrder", number: s };
-  if (s.startsWith("QUO-"))  return { type: "quotation",     number: s };
+  // رمز الآلة بادئيّ دائماً؛ ونُعيد **رقم العرض** مجرَّداً من بادئته حين تكون الصيغة الجديدة
+  // (`INV-10023` ⇒ `10023`)، بينما الرقم التاريخيّ يبقى كاملاً لأنّه هو رقم عرضه.
+  if (s.startsWith("INV-"))  return { type: "invoice",       number: stripDocPrefix(s) };
+  if (s.startsWith("WO-"))   return { type: "workOrder",     number: stripDocPrefix(s) };
+  if (s.startsWith("PO-"))   return { type: "purchaseOrder", number: stripDocPrefix(s) };
+  if (s.startsWith("QUO-"))  return { type: "quotation",     number: stripDocPrefix(s) };
 
   // CUST-NNNNN (بطاقة العميل) · EMP-N (بطاقة الموظف) · USER-N (بطاقة المستخدم)
   if (/^CUST-\d+$/i.test(s)) return { type: "customer", id: parseInt(s.slice(5), 10) };

@@ -1,3 +1,8 @@
+import DesignApprovalCard from "@/components/workorder/DesignApprovalCard";
+import CancelWorkOrderDialog from "@/components/workorder/CancelWorkOrderDialog";
+import DesignFileCard from "@/components/workorder/DesignFileCard";
+import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
+import { ChannelBadge } from "@/components/ChannelBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -27,26 +32,8 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
 import { newClientRequestId } from "@/lib/countQueue";
 import { canCancelWorkOrder, cancellationRefundNotice, durableRefundStatusNotice } from "@/lib/workOrderRefundPolicy";
 
-const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "مُستلَم",
-  IN_PROGRESS: "قيد التنفيذ",
-  READY: "جاهز للتسليم",
-  DELIVERED: "مُسلَّم",
-  CANCELLED: "ملغى",
-};
-const STATUS_CLS: Record<string, string> = {
-  RECEIVED: "bg-muted text-foreground/70",
-  IN_PROGRESS: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-  READY: "bg-amber-100 text-amber-700",
-  DELIVERED: "bg-emerald-100 text-emerald-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
-};
 
 /** إثراء سياق بطاقة الأمر (كان فقيراً — قناة/أولوية/منفّذ غائبة رغم توفّرها من الخادم). */
-const CHANNEL_LABEL: Record<string, string> = {
-  WHATSAPP: "واتساب", INSTAGRAM: "انستغرام", TIKTOK: "تيك توك",
-  PHONE: "اتصال هاتفي", WALK_IN: "عميل نقدي", OTHER: "أخرى",
-};
 const PRIORITY_LABEL: Record<string, string> = { LOW: "منخفض", NORMAL: "عادي", URGENT: "عاجل" };
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
@@ -174,6 +161,29 @@ export default function WorkOrderDetail() {
     onSuccess: async (r) => { setDone(`تم التسليم. فاتورة ${r.invoiceNumber} (${r.status}).`); setAwaitingOwnerRefund(false); setError(""); await refresh(); },
     onError: (e) => setError(e.message),
   });
+  const [cancelOpen, setCancelOpen] = useState(false);
+  /**
+   * ٢٠/٨ — الاسترجاع بعد التسليم: كان **بلا زرّ ولا مسار** إطلاقاً؛ الأمرُ المُسلَّم يرفضه
+   * الإلغاء، وفاتورتُه يرفضها `sales.cancel` و`sales.correct`، والمرتجعُ يشترط بنداً
+   * والفاتورةُ الخدميّة بلا بنود. فكان الردّ العمليّ الوحيد «لا شيء يمكن فعله».
+   */
+  const [reverseOpen, setReverseOpen] = useState(false);
+  const [reverseReason, setReverseReason] = useState("");
+  const [reverseReopen, setReverseReopen] = useState(false);
+  const reverse = trpc.workOrders.reverseDelivery.useMutation({
+    onSuccess: async (r) => {
+      setDone(
+        r.delegatedToReturn
+          ? "سُجِّل الاسترجاع كمرتجعٍ كامل للفاتورة."
+          : `عُكِس التسليم — أُرجع ${fmtAr(String(r.refundedTotal ?? "0"))} وسقطت الذمّة.`
+            + (r.status === "READY" ? " والطلب عاد للطابور جاهزاً لإعادة التسليم." : ""),
+      );
+      setReverseOpen(false);
+      setError("");
+      await refresh();
+    },
+    onError: (e) => setError(e.message),
+  });
   const cancel = trpc.workOrders.cancel.useMutation({
     onSuccess: async (result) => {
       const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
@@ -221,7 +231,7 @@ export default function WorkOrderDetail() {
   const data = wo.data;
   const displayStatus = data.status === "DELIVERED" && data.consignmentId
     ? (data.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل")
-    : (STATUS_LABEL[data.status] ?? data.status);
+    : workOrderStatusLabel(data.status);
 
   const fmt = fmtAr;
   // الرصيد المستحق = سعر البيع − العربون المقبوض، عبر decimal.js (لا Number() على المال، §٥) —
@@ -243,7 +253,7 @@ export default function WorkOrderDetail() {
               date: data.createdAt,
               customer: data.customerName,
               description: data.customizationText,
-              status: STATUS_LABEL[data.status] ?? data.status,
+              status: workOrderStatusLabel(data.status),
               items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
               total: data.salePrice,
               deliveryDate: data.dueDate,
@@ -253,7 +263,7 @@ export default function WorkOrderDetail() {
               date: data.createdAt,
               customer: data.customerName,
               description: data.customizationText,
-              status: STATUS_LABEL[data.status] ?? data.status,
+              status: workOrderStatusLabel(data.status),
               items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
               total: data.salePrice,
               deliveryDate: data.dueDate,
@@ -362,7 +372,7 @@ export default function WorkOrderDetail() {
                   {Number(data.materialsEditCount) > 1 ? ` ×${data.materialsEditCount}` : ""}
                 </span>
               )}
-              <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
+              <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${workOrderStatusBadgeCls(data.status)}`}>
                 {displayStatus}
               </span>
             </span>
@@ -377,7 +387,39 @@ export default function WorkOrderDetail() {
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
               <Field label="الكمية">{data.quantity}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
-              <Field label="قناة الاستلام">{CHANNEL_LABEL[data.receptionChannel ?? "WALK_IN"] ?? data.receptionChannel}{data.channelHandle ? ` · ${data.channelHandle}` : ""}</Field>
+              <Field label="قناة الاستلام"><ChannelBadge channel={data.receptionChannel} handle={data.channelHandle} /></Field>
+              {/* ش٥ (0220): الزبون يرى **طلباً واحداً** — والأمرُ كان لا يعرف إخوته، فيُشحَن
+                  نصفُ الطلب صامتاً بينما نصفُه الآخر لم يبدأ. */}
+              {data.siblings && data.siblings.total > 1 && (
+                <Field label="ضمن الطلب">
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono" dir="ltr">{data.siblings.draftNumber ?? `#${data.siblings.draftId}`}</span>
+                    <span
+                      className={
+                        data.siblings.ready === data.siblings.total
+                          ? "rounded-full bg-[var(--sem-pos-bg)] px-2 py-0.5 text-2xs font-extrabold text-[var(--sem-pos)]"
+                          : "rounded-full bg-[var(--sem-warn-bg)] px-2 py-0.5 text-2xs font-extrabold text-[var(--sem-warn)]"
+                      }
+                    >
+                      {data.siblings.ready}/{data.siblings.total} جاهزة
+                    </span>
+                  </span>
+                  <div className="mt-1 flex flex-col gap-0.5">
+                    {data.siblings.items
+                      .filter((it) => Number(it.id) !== Number(data.id))
+                      .map((it) => (
+                        <a
+                          key={it.id}
+                          href={`/work-orders/${it.id}`}
+                          className="text-2xs text-muted-foreground hover:text-foreground hover:underline"
+                        >
+                          <span className="font-mono" dir="ltr">{it.orderNumber}</span> — {it.title}
+                          <span className="ms-1">({workOrderStatusLabel(it.status)})</span>
+                        </a>
+                      ))}
+                  </div>
+                </Field>
+              )}
               <Field label="الأولوية">{PRIORITY_LABEL[data.priority ?? "NORMAL"] ?? data.priority}</Field>
               <Field label="المنفّذ المسؤول">{data.assigneeName ?? "غير مُسنَد"}</Field>
               <Field label="تاريخ الإنشاء">{fmtDateTime(data.createdAt)}</Field>
@@ -396,6 +438,21 @@ export default function WorkOrderDetail() {
               <div className="text-xs text-muted-foreground mb-1">التخصيص</div>
               <div className="whitespace-pre-wrap">{data.customizationText}</div>
             </div>
+          )}
+
+          {/* ش٢ (١٩/٨): بطاقةُ الموافقة — الحالة مشتقّةٌ من مهمّةٍ حاجزة مفتوحة لا من عَلَم. */}
+          <DesignApprovalCard
+            workOrderId={Number(data.id)}
+            status={String(data.status)}
+            blockingTask={(data.blockingTask as never) ?? null}
+            canManage={canCancel}
+          />
+
+          {/* **ملفّ التصميم** — كان الخادم يُرسل `images` والشاشة تُهملها كلّياً (صفر استعمال
+              في ٦٨٣ سطراً)، فيقف الفنّيّ أمام أمرٍ لا يرى تصميمه. النسخةُ العليا أوّلاً،
+              والسابقةُ تُعرَض مطويّةً — سجلٌّ بلا حذف. */}
+          {data.images && data.images.length > 0 && (
+            <DesignFileCard images={data.images as never} workOrderId={Number(data.id)} canEdit={data.status !== "DELIVERED" && data.status !== "CANCELLED"} />
           )}
         </CardContent>
       </Card>
@@ -657,23 +714,15 @@ export default function WorkOrderDetail() {
         {canCancel && (data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
           <Button
             variant="outline"
-            onClick={async () => {
-              if (!(await confirm({
-                variant: "warning",
-                title: "إلغاء طلب الخدمة",
-                description: `سيُلغى أمر «${data.title}» (${data.orderNumber})، وتُعاد المواد للمخزون إن كانت قد خُصمت. هل تريد المتابعة؟`,
-                confirmText: "إلغاء الأمر",
-              }))) return;
-              const key = `work-order-cancel-request:${workOrderId}`;
-              cancelRequestIdRef.current ??=
-                (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null)
-                ?? newClientRequestId();
-              if (typeof window !== "undefined") window.sessionStorage.setItem(key, cancelRequestIdRef.current);
-              cancel.mutate({ workOrderId, clientRequestId: cancelRequestIdRef.current });
-            }}
+            onClick={() => setCancelOpen(true)}
             disabled={cancel.isPending}
           >
             {cancel.isPending ? "جارٍ…" : "إلغاء الأمر"}
+          </Button>
+        )}
+        {canCancel && data.status === "DELIVERED" && data.invoiceId && (
+          <Button variant="destructive" onClick={() => setReverseOpen(true)} disabled={reverse.isPending}>
+            {reverse.isPending ? "جارٍ…" : "استرجاع الطلب المُسلَّم"}
           </Button>
         )}
         {/* رابط الفاتورة كان يوجّه لقائمة الفواتير العامة بدل الفاتورة المحدَّدة. */}
@@ -681,6 +730,105 @@ export default function WorkOrderDetail() {
           <Link href={`/invoices/${data.invoiceId}`}><Button variant="outline">فتح الفاتورة #{data.invoiceId}</Button></Link>
         )}
       </div>
+
+      {reverseOpen && (
+        <div role="dialog" aria-label="استرجاع الطلب المُسلَّم"
+             className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+             onClick={() => !reverse.isPending && setReverseOpen(false)}>
+          <div className="w-full max-w-lg rounded-lg border bg-background p-5 shadow-lg"
+               onClick={(e) => e.stopPropagation()}>
+            <h2 className="mb-1 text-base font-extrabold">استرجاع الطلب المُسلَّم</h2>
+            <p className="mb-3 text-2xs text-muted-foreground">
+              «{data.title}» — <span dir="ltr" className="font-mono">{data.orderNumber}</span>
+            </p>
+            {/* الأرقام تُعرَض **قبل** التأكيد: لا امتصاصَ خفيّ ولا مفاجأةَ بعد النقر (§٥).
+                تنبيه: المقبوضُ من **الفاتورة** لا من `deposit`: الدفعُ عند التسليم لا يمرّ بالعربون
+                إطلاقاً، فكان الحوار يَعِد بردّ صفرٍ بينما يخرج من الدرج كامل المبلغ. */}
+            <div className="mb-3 space-y-1 rounded-md border p-3 text-xs">
+              <div className="flex justify-between"><span>صافي الفاتورة</span>
+                <span dir="ltr" className="tabular-nums font-bold">
+                  {fmtAr(String(data.invoiceTotal ?? data.salePrice ?? "0"))}
+                </span></div>
+              <div className="flex justify-between"><span>المقبوض فعلاً — سيُردّ بطريقة قبضه</span>
+                <span dir="ltr" className="tabular-nums font-bold">
+                  {fmtAr(String(data.invoicePaidAmount ?? "0"))}
+                </span></div>
+              <div className="flex justify-between text-muted-foreground"><span>يسقط من ذمّة العميل</span>
+                <span dir="ltr" className="tabular-nums">
+                  {fmtAr(
+                    String(
+                      Math.max(
+                        0,
+                        Number(data.invoiceTotal ?? data.salePrice ?? 0)
+                          - Number(data.invoicePaidAmount ?? 0),
+                      ),
+                    ),
+                  )}
+                </span></div>
+            </div>
+            <label className="mb-1 block text-xs font-bold">سبب الاسترجاع</label>
+            <Input value={reverseReason} onChange={(e) => setReverseReason(e.target.value)}
+                   placeholder="رفض الزبون العمل المُسلَّم / أعاده المندوب…" maxLength={500} />
+            <label className="mt-3 flex items-start gap-2 text-2xs text-muted-foreground">
+              <input type="checkbox" className="mt-0.5" checked={reverseReopen}
+                     onChange={(e) => setReverseReopen(e.target.checked)} />
+              <span>
+                <b className="text-foreground">أعِده للطابور</b> جاهزاً لإعادة التسليم مصحَّحاً
+                (بدل إغلاقه ملغىً). تُفكّ الفاتورة المرتجعة عنه فيمكن تسليمه ثانيةً.
+              </span>
+            </label>
+            <p className="mt-3 rounded-md bg-muted/50 p-2 text-2xs leading-relaxed text-muted-foreground">
+              يُعكَس قيد البيع والتكلفة، وتسقط ذمّةُ العميل غير المسدَّدة، ويُردّ المقبوض.
+              ولا تعود الخامة للمخزون — استُهلكت فعلاً، واسترجاعُ الخردة تسويةُ مخزونٍ منفصلة.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setReverseOpen(false)} disabled={reverse.isPending}>تراجع</Button>
+              <Button variant="destructive" disabled={reverse.isPending || reverseReason.trim().length < 3}
+                onClick={() => reverse.mutate({
+                  workOrderId,
+                  reason: reverseReason.trim(),
+                  reopen: reverseReopen,
+                  clientRequestId: newClientRequestId(),
+                })}>
+                {reverse.isPending ? "جارٍ…" : "أكّد الاسترجاع"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <CancelWorkOrderDialog
+        open={cancelOpen}
+        onOpenChange={setCancelOpen}
+        orderNumber={data.orderNumber}
+        title={data.title}
+        // الخامة تُعرَض فقط بعد البدء — قبله لا استهلاك، فجدولُ الهدر يكذب لو ظهر.
+        materials={
+          data.status === "IN_PROGRESS" || data.status === "READY"
+            ? (data.materials ?? []).map((m) => ({
+                id: Number(m.id),
+                name: [m.productName, m.variantName].filter(Boolean).join(" — ") || m.sku || `#${m.variantId}`,
+                baseQuantity: Number(m.baseQuantity),
+                unitCost: m.unitCost ?? null,
+              }))
+            : []
+        }
+        pending={cancel.isPending}
+        onConfirm={(d) => {
+          const key = `work-order-cancel-request:${workOrderId}`;
+          cancelRequestIdRef.current ??=
+            (typeof window !== "undefined" ? window.sessionStorage.getItem(key) : null)
+            ?? newClientRequestId();
+          if (typeof window !== "undefined") window.sessionStorage.setItem(key, cancelRequestIdRef.current);
+          setCancelOpen(false);
+          cancel.mutate({
+            workOrderId,
+            clientRequestId: cancelRequestIdRef.current,
+            reason: d.reason,
+            materials: d.materials,
+          });
+        }}
+      />
     </div>
   );
 }

@@ -8,8 +8,9 @@
 //
 // محاسبياً: الإسناد لا يُنشئ فاتورةً ثانية ولا يمسّ قيد SALE؛ والتسديد يمرّ بـprocessPayment
 // نفسها بحصرٍ بنيويّ (وردية إنشاء الفاتورة RECEPTION) — §٩.٢.
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Banknote,
   FileText,
   HandCoins,
@@ -38,6 +39,7 @@ import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
 import { printReceipt } from "@/lib/printing/print";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { isPartialDispatchRejection } from "@shared/partialDispatch";
 import { cn } from "@/lib/utils";
 import { fmtDate } from "@/lib/date";
 import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
@@ -57,6 +59,7 @@ export function ReceptionInvoiceQueue({
   parties,
   canFulfill,
   isManager,
+  defaultPayChip,
 }: {
   branchId: number;
   /** وردية الاستقبال المفتوحة (رقاقة «ورديتي» + حوار التسديد «سيدخل درجك أنت»). */
@@ -66,10 +69,15 @@ export function ReceptionInvoiceQueue({
   canFulfill: boolean;
   /** م٧: المرتجع مديريّ — للمدير رابط /returns، ولغيره حوار «استدعِ المدير». */
   isManager: boolean;
+  /**
+   * الفلتر الافتراضيّ عند الفتح (١٩/٨). شاشة «فواتير للتحصيل» تفتح على **غير المسدَّدة**
+   * لأنّ غرضها في اسمها؛ واللوحة العامّة تبقى على `ALL`. الفلتر يبقى قابلاً للتبديل بعدها.
+   */
+  defaultPayChip?: PayChip;
 }) {
   const utils = trpc.useUtils();
   const [range, setRange] = useState<RangeChip>(currentShiftId ? "MY_SHIFT" : "TODAY");
-  const [payChip, setPayChip] = useState<PayChip>("ALL");
+  const [payChip, setPayChip] = useState<PayChip>(defaultPayChip ?? "ALL");
   const [search, setSearch] = useState("");
   const debouncedQ = useDebouncedValue(search, 250);
   // صفحات keyset متراكمة (تحميل المزيد) — تُصفَّر عند تغيّر أي فلتر.
@@ -118,15 +126,32 @@ export function ReceptionInvoiceQueue({
   const [printingId, setPrintingId] = useState<number | null>(null);
   const taxSettings = trpc.system.getTaxSettings.useQuery(undefined, { staleTime: 300_000 });
 
+  /** ش٥: رفضُ الإرسال الجزئيّ يُعرَض بأرقام الإخوة، ويُقرّ صراحةً — لا خانةَ سبقٍ تُنقَر بلا قراءة. */
+  const [partialNotice, setPartialNotice] = useState<string | null>(null);
+  const lastDispatchArgs = useRef<{
+    invoiceId: number; partyId: number; deliveryFee: string;
+    feeCollection: "COURIER" | "COUNTER" | "SHOP";
+    recipientName?: string; recipientPhone?: string; deliveryAddress?: string;
+    assignedUserId?: number; clientRequestId: string;
+  } | null>(null);
+
   const dispatchInvoice = trpc.delivery.dispatchInvoice.useMutation({
     onSuccess: (r) => {
       notify.ok("أُسنِدت للتوصيل", `إرسالية ${r.consignmentNumber} — تحصيل ${fmt(r.codAmount)} د.ع`);
+      setPartialNotice(null);
+      lastDispatchArgs.current = null;
       setDispatchTarget(null);
       resetPaging();
       void utils.reception.invoiceQueue.invalidate();
       void utils.workOrders.list.invalidate();
     },
-    onError: (e) => notify.err(e),
+    onError: (e) => {
+      if (isPartialDispatchRejection(e)) {
+        setPartialNotice(e.message);
+        return;
+      }
+      notify.err(e);
+    },
   });
 
   /** إعادة الطباعة تتبع نطاق قراءة الفرع لا الملكية (§٨.٥): قراءةٌ محضة من لقطة الفاتورة. */
@@ -386,9 +411,14 @@ export function ReceptionInvoiceQueue({
           row={dispatchTarget}
           parties={parties}
           pending={dispatchInvoice.isPending}
-          onClose={() => setDispatchTarget(null)}
-          onConfirm={(args) =>
-            dispatchInvoice.mutate({
+          partialNotice={partialNotice}
+          onClose={() => { setPartialNotice(null); setDispatchTarget(null); }}
+          onConfirmPartial={() => {
+            const prev = lastDispatchArgs.current;
+            if (prev) dispatchInvoice.mutate({ ...prev, partialDispatchConfirmed: true });
+          }}
+          onConfirm={(args) => {
+            const payload = {
               invoiceId: Number(dispatchTarget.id),
               partyId: args.partyId,
               deliveryFee: args.deliveryFee,
@@ -397,9 +427,13 @@ export function ReceptionInvoiceQueue({
               recipientPhone: args.recipientPhone,
               deliveryAddress: args.deliveryAddress,
               assignedUserId: args.assignedUserId,
+              // معرّفٌ ثابتٌ للمحاولة: إعادةُ الإرسال بالإقرار هي **نفس** العملية لا ثانيةً،
+              // فلو نجحت الأولى على الشبكة ثمّ أُعيدت لم تُنشئ إرساليةً مكرّرة.
               clientRequestId: `dispinv-${dispatchTarget.id}-${Date.now()}`,
-            })
-          }
+            };
+            lastDispatchArgs.current = payload;
+            dispatchInvoice.mutate(payload);
+          }}
         />
       )}
 
@@ -564,7 +598,93 @@ function CollectPaymentDialog({
   );
 }
 
-/** م٧ — المرتجع مديريّ: المدير يُوجَّه لشاشة المرتجعات، وغيره يستدعي المدير (لا تنفيذ ذاتيّ). */
+/**
+ * نموذج **طلب الإرجاع** لموظّف المحطة (١٩/٨): الأصناف والسبب — لا مبالغَ ولا رافدَ ولا درج.
+ * قرارُ المال كلّه للمدير لحظة الاعتماد، فالطلب مستند نيّةٍ لا مال.
+ */
+function StaffReturnRequestForm({ row, onClose }: { row: Row; onClose: () => void }) {
+  const utils = trpc.useUtils();
+  const detail = trpc.sales.get.useQuery({ invoiceId: Number(row.id) });
+  const [qty, setQty] = useState<Record<number, number>>({});
+  const [reason, setReason] = useState("");
+
+  const req = trpc.returns.request.useMutation({
+    onSuccess: (r) => {
+      notify.ok("أُرسل طلب الإرجاع", `طلب #${r.requestId} — بانتظار اعتماد المدير. لا أثر ماليّ قبل الاعتماد.`);
+      utils.returns.requests.invalidate();
+      onClose();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const items = (detail.data?.items ?? []).map((it) => ({
+    id: Number(it.id),
+    name: it.productName ?? it.sku ?? `بند ${it.id}`,
+    remaining: Number(it.baseQuantity) - Number(it.returnedBaseQuantity ?? 0),
+  })).filter((it) => it.remaining > 0);
+
+  const lines = items
+    .map((it) => ({ invoiceItemId: it.id, baseQuantity: Math.min(qty[it.id] ?? 0, it.remaining) }))
+    .filter((l) => l.baseQuantity > 0);
+  const canSubmit = lines.length > 0 && reason.trim().length >= 3 && !req.isPending;
+
+  return (
+    <>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        حدّد المُرجَع واذكر السبب. <span className="font-bold">لا أثر ماليّ الآن</span> — المدير
+        يعتمده فيُنفَّذ المرتجع ويقرّر هو ردّ النقد إن لزم.
+      </p>
+      {detail.isLoading ? (
+        <p className="py-4 text-center text-xs text-muted-foreground">جارٍ تحميل البنود…</p>
+      ) : items.length === 0 ? (
+        <p className="py-4 text-center text-xs text-muted-foreground">لا بنود قابلة للإرجاع على هذه الفاتورة.</p>
+      ) : (
+        <div className="max-h-52 space-y-1.5 overflow-y-auto">
+          {items.map((it) => (
+            <div key={it.id} className="flex items-center gap-2 rounded-lg border p-2">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-bold">{it.name}</div>
+                <div className="text-[10px] text-muted-foreground">المتبقّي القابل للإرجاع: {it.remaining}</div>
+              </div>
+              <Input
+                type="number"
+                min={0}
+                max={it.remaining}
+                value={qty[it.id] ?? ""}
+                onChange={(e) => setQty((q) => ({ ...q, [it.id]: Math.max(0, Number(e.target.value) || 0) }))}
+                className="h-8 w-20 text-center tabular-nums"
+                aria-label={`كمية إرجاع ${it.name}`}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="space-y-1">
+        <Label htmlFor="ret-reason" className="text-xs">سبب الإرجاع</Label>
+        <Input
+          id="ret-reason"
+          value={reason}
+          maxLength={500}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="رفض العميل الاستلام / صنف خاطئ / تلف…"
+          className="h-9"
+        />
+      </div>
+      <div className="flex gap-2">
+        <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
+        <Button
+          className="flex-1"
+          disabled={!canSubmit}
+          onClick={() => req.mutate({ invoiceId: Number(row.id), lines, reason: reason.trim() })}
+        >
+          {req.isPending ? "جارٍ الإرسال…" : "إرسال الطلب للمدير"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+/** م٧ — المرتجع مديريّ: المدير يُوجَّه لشاشة المرتجعات، وغيره يقدّم طلباً يعتمده المدير. */
 function ReturnRequestDialog({ row, isManager, onClose }: { row: Row; isManager: boolean; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" dir="rtl" onClick={onClose}>
@@ -588,15 +708,10 @@ function ReturnRequestDialog({ row, isManager, onClose }: { row: Row; isManager:
             </div>
           </>
         ) : (
-          <>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              الإرجاع صلاحية <span className="font-bold">مدير</span> (يعكس مخزوناً ونقداً وقيوداً).
-              استدعِ المدير وأعطه رقم الفاتورة
-              <span className="mx-1 rounded bg-muted px-1.5 py-0.5 font-bold" dir="ltr">{row.invoiceNumber}</span>
-              ليُنفّذه من شاشة المرتجعات.
-            </p>
-            <Button className="w-full" onClick={onClose}>فهمت</Button>
-          </>
+          /* ١٩/٨ (قرار المالك «طلب موظف + اعتماد مدير») — كان هنا نصٌّ يقول «استدعِ المدير»
+             ويقف: رفضُ الزبون حدثٌ يوميّ فيتوقّف العمل حتى يحضر، أو يُحفَظ المرتجع بحسابه
+             فتضيع نسبةُ الفاعل. الآن الموظّف يقدّم **طلباً موثّقاً** بلا أيّ أثرٍ ماليّ. */
+          <StaffReturnRequestForm row={row} onClose={onClose} />
         )}
       </div>
     </div>
@@ -607,13 +722,18 @@ function InvoiceDispatchDialog({
   row,
   parties,
   pending,
+  partialNotice,
   onClose,
   onConfirm,
+  onConfirmPartial,
 }: {
   row: Row;
   parties: DispatchParty[];
   pending: boolean;
+  /** رسالةُ الخادم بأرقام الإخوة غير الجاهزين (ش٥) — تُقرأ قبل الإقرار لا بعده. */
+  partialNotice: string | null;
   onClose: () => void;
+  onConfirmPartial: () => void;
   onConfirm: (args: {
     partyId: number;
     deliveryFee: string;
@@ -718,6 +838,18 @@ function InvoiceDispatchDialog({
           لصالح المكتبة (المتبقّي على الفاتورة). أجرة التوصيل مبلغٌ مستقلّ لا يدخل الفاتورة ولا الإيراد
           {feeCollection === "SHOP" && " — وتتحمّلها المكتبة كمصروف"}.
         </p>
+
+        {partialNotice && (
+          <div className="rounded-md border border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] p-2.5">
+            <p className="flex items-start gap-1.5 text-[11px] font-bold leading-relaxed text-[var(--sem-warn)]">
+              <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+              {partialNotice}
+            </p>
+            <Button size="sm" variant="outline" className="mt-2 w-full" disabled={pending} onClick={onConfirmPartial}>
+              أقرّ الإرسال الجزئيّ وأرسل الآن
+            </Button>
+          </div>
+        )}
 
         <div className="flex gap-2">
           <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>

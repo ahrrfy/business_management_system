@@ -462,7 +462,9 @@ describe("أوامر الشغل/المطبعة", () => {
       },
       actor
     );
-    expect(r.orderNumber).toMatch(/^WO-1-\d{8}-00001$/);
+    // ١٨/٨: رقمٌ تسلسليّ قصير (عدّاد ذرّيّ، أرضيّته ٥٠٠٠) بدل `WO-{فرع}-{تاريخ}-{تسلسل}`.
+    expect(r.orderNumber).toMatch(/^\d+$/);
+    expect(Number(r.orderNumber)).toBeGreaterThan(5000);
 
     // RECEIVED → IN_PROGRESS: خصم المادة (1 من INK-BL)
     await startWorkOrder(r.workOrderId, actor);

@@ -27,7 +27,10 @@ export interface ReceptionCheckoutInput {
    *  يُغني عن إجبار الكاشير على إنشاء عميلٍ (وكان يفشل بـFORBIDDEN لأدوار الاستقبال بلا crm=FULL). */
   contactName?: string | null;
   contactPhone?: string | null;
-  paymentMethod: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM">;
+  /** طريقة القبض — **تلزم فقط حين يُقبض مالٌ جديد الآن**. سلّةٌ بلا قبض (آجل/عربون محتجَز
+   *  سلفاً/COD) تُمرَّر `null` فتُختَم الفاتورة `paymentMethod = NULL` = «آجل» بحكم الاشتقاق.
+   *  كانت إلزاميةً فيُختلَق «نقدي» لعمليةٍ صفريّة القبض (بلاغ المالك ١٨/٨). */
+  paymentMethod?: Extract<PaymentMethod, "CASH" | "CARD" | "TRANSFER" | "WALLET" | "TELECOM"> | null;
   paymentReference?: string | null;
   /** المبلغ المطبّق على الطلب كله. البيع المباشر يُغطّى أولاً، ثم أوامر الشغل بالترتيب. */
   paidAmount?: string | null;
@@ -129,8 +132,22 @@ async function isCompleteReplay(tx: Parameters<Parameters<typeof withTx>[0]>[0],
  * (workOrders.receptionCheckout المباشر + offline.replayReception — يبقيان إلى الأبد).
  */
 export async function checkoutReception(input: ReceptionCheckoutInput, actor: Actor) {
-  assertPosPaymentMethodEnabled(input.paymentMethod);
+  assertReceptionPaymentMethod(input);
   return withTx((tx) => checkoutReceptionInTx(tx, input, actor));
+}
+
+/**
+ * صدق طريقة الدفع (١٨/٨) — الطريقة تُفحَص وتلزم **فقط حين يُقبض مالٌ جديد الآن**:
+ * قبضٌ موجب بلا طريقة = إدخالٌ ناقص يُرفض؛ وصفر قبض بطريقةٍ مُرسَلة سهواً تُهمَل الطريقة
+ * (لا تُختَم على الفاتورة) بدل اختلاق «نقدي» لعمليةٍ لم يدخل فيها دينار.
+ */
+function assertReceptionPaymentMethod(input: ReceptionCheckoutInput) {
+  const newCash = round2(money(input.paidAmount ?? "0"));
+  if (newCash.lte(0)) return;
+  if (!input.paymentMethod) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد طريقة القبض للمبلغ المستلم" });
+  }
+  assertPosPaymentMethodEnabled(input.paymentMethod);
 }
 
 export async function checkoutReceptionInTx(
@@ -140,7 +157,7 @@ export async function checkoutReceptionInTx(
 ) {
   // commitDraft يستدعي النواة داخل معاملته بلا الغلاف؛ لذلك الحارس هنا أيضاً.
   // يسبق isCompleteReplay حتى لا يكشف مفتاحٌ مخمّن فاتورةً قديمة غير نقدية.
-  assertPosPaymentMethodEnabled(input.paymentMethod);
+  assertReceptionPaymentMethod(input);
   {
     // إعادة ردّ عملية سبق التزامها لا تحتاج وردية ما زالت مفتوحة. هذا مهم إذا وصل الالتزام
     // إلى القاعدة ثم انقطع الرد وأُغلقت الوردية قبل إعادة المحاولة. أي عملية جديدة/ناقصة تمرّ
@@ -306,7 +323,7 @@ export async function checkoutReceptionInTx(
           deposit: deposit.toFixed(2),
           depositPreCollected: woPre.toFixed(2),
           // طريقة/مرجع إيصال العربون الجديد — تلزم فقط حين يوجد جزءٌ جديد N يُقبض الآن.
-          paymentMethod: newDeposit.gt(0) ? input.paymentMethod : null,
+          paymentMethod: newDeposit.gt(0) ? (input.paymentMethod ?? null) : null,
           paymentReference: newDeposit.gt(0) && input.paymentMethod !== "CASH"
             ? input.paymentReference?.trim() || null
             : null,
@@ -335,6 +352,10 @@ export async function checkoutReceptionInTx(
     const workTotalServerD = round2(
       normalizedWorkOrders.reduce((sum, order) => sum.plus(money(order.salePrice)), money("0")),
     );
+    // النقد **الجديد** لكل فاتورة = المخصَّص لها ناقصَ حصّتها من المقبوض سلفاً (P له إيصالاته
+    // منذ قبضه — I5). موجبٌ ⇒ دفعةٌ بطريقةٍ حقيقية؛ صفرٌ ⇒ لا دفعة ولا طريقة.
+    const saleNewCashD = round2(saleApplied.minus(money(preSplit.sale)));
+    const printNewCashD = round2(printApplied.minus(money(preSplit.print)));
     const buildSale = async (basketOthers: string | null) =>
       input.regularSale
         ? await createSaleInTx(tx, {
@@ -352,12 +373,17 @@ export async function checkoutReceptionInTx(
           // ش٤: حصة البيع المباشر من المقبوض سلفاً — تدخل paidAmount بلا إيصالٍ ثانٍ (I5)،
           // والدفعة الجديدة payment.amount تُقلَّص بها (الفاتورة تستلم P + N = أمانها الكامل).
           preCollected: money(preSplit.sale).gt(0) ? { amount: preSplit.sale, receiptIds: [] } : null,
-          payment: {
-            // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
-            amount: round2(saleApplied.minus(money(preSplit.sale))).toFixed(2),
-            method: input.paymentMethod,
-            reference: input.paymentReference?.trim() || null,
-          },
+          // صدق طريقة الدفع (١٨/٨): الدفعة تُبنى **فقط حين يُقبض نقدٌ جديد الآن**. كان الكائن
+          // يُبنى دائماً ولو بصفر، فيموت فرع `?? null` في sale/create.ts ويُختَم «نقدي» على
+          // فاتورةٍ لم يدخلها دينار. صفر ⇒ null ⇒ paymentMethod NULL = «آجل» بالاشتقاق.
+          payment: saleNewCashD.gt(0)
+            ? {
+              // ش٧: المدفوع = **المخصَّص فعلاً** لا مبلغ الفاتورة — مع COD يبقى الفرق عهدةَ مندوب.
+              amount: saleNewCashD.toFixed(2),
+              method: input.paymentMethod!,
+              reference: input.paymentReference?.trim() || null,
+            }
+            : null,
           codDispatchPending: input.delivery != null,
           // الاستقبال (٨/٨): يفتح السالب لطلب COD في وضع الافتتاح بتأكيد الموظّف — رِيلات الأمان في createSaleInTx.
           openingSellUnavailableConfirmed: input.openingSellUnavailableConfirmed === true,
@@ -384,12 +410,15 @@ export async function checkoutReceptionInTx(
           lines: input.printSale.lines,
           cashRoundingBasketOthers: overrideTarget === "PRINT" ? basketOthers : null,
           preCollected: money(preSplit.print).gt(0) ? { amount: preSplit.print, receiptIds: [] } : null,
-          payment: {
-            // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
-            amount: round2(printApplied.minus(money(preSplit.print))).toFixed(2),
-            method: input.paymentMethod,
-            reference: input.paymentReference?.trim() || null,
-          },
+          // صدق طريقة الدفع (١٨/٨) — انظر التعليق في buildSale.
+          payment: printNewCashD.gt(0)
+            ? {
+              // ش٧: المخصَّص فعلاً (الطباعة تُسدَّد كاملةً عند التوصيل بحاملٍ SALE — حارسٌ أعلاه).
+              amount: printNewCashD.toFixed(2),
+              method: input.paymentMethod!,
+              reference: input.paymentReference?.trim() || null,
+            }
+            : null,
           codDispatchPending: input.delivery != null,
           clientRequestId: `${input.clientRequestId}-print`,
           offlineCapture: input.offlineCapture ?? null,

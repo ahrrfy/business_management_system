@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionMap } from "@shared/permissions";
+import { INVOICE_LIST_GATE, canSeeGate, type RoleGate } from "@/lib/navVisibility";
 
 interface BottomNavItem {
   href?: string;
@@ -24,6 +25,8 @@ interface BottomNavItem {
   icon: LucideIcon;
   isAction?: boolean;
   actionType?: "menu";
+  /** بوّابة الظهور — نفس بوّابات الشريط الجانبي (مرآةُ الخادم بلا ازدواج منطق). */
+  gate?: RoleGate;
 }
 
 interface MobileBottomNavProps {
@@ -42,7 +45,7 @@ function triggerHaptic() {
   }
 }
 
-export function MobileBottomNav({ role, onOpenMenu }: MobileBottomNavProps) {
+export function MobileBottomNav({ role, permsOverride, onOpenMenu }: MobileBottomNavProps) {
   const [loc] = useLocation();
 
   const isCourier = role === "courier";
@@ -58,11 +61,20 @@ export function MobileBottomNav({ role, onOpenMenu }: MobileBottomNavProps) {
       { label: "القائمة", icon: Menu, isAction: true, actionType: "menu" },
     ];
   } else if (isCashier) {
-    items = [
+    // ١٩/٨ — `permsOverride` كان يُستقبَل ويُهمَل، فكان شريط الهاتف واحداً لكل أدوار الكاشير
+    // مهما اختلفت صلاحياتها. الآن يُرشَّح بنفس بوّابات الشريط الجانبي: موظّف الاستقبال يرى
+    // «فواتيري» و«المطبعة»، وكاشير التجزئة يرى فواتيره بلا المطبعة — كلٌّ حسب نطاقه الفعليّ.
+    // أربعةٌ بالأولوية ثمّ «المزيد» (مساحة الهاتف)، والباقي يبقى في القائمة الكاملة.
+    const candidates: BottomNavItem[] = [
       { href: "/pos", label: "نقطة البيع", icon: ShoppingCart },
-      { href: "/price-checker", label: "الماسح", icon: ScanLine },
+      { href: "/invoices", label: "فواتيري", icon: Receipt, gate: INVOICE_LIST_GATE },
+      { href: "/work-orders", label: "المطبعة", icon: Printer, gate: { module: "workorders" } },
       { href: "/delivery", label: "التوصيل", icon: Truck },
+      { href: "/price-checker", label: "الماسح", icon: ScanLine },
       { href: "/tasks", label: "المهام", icon: ListChecks },
+    ];
+    items = [
+      ...candidates.filter((it) => canSeeGate(it.gate, role, permsOverride)).slice(0, 4),
       { label: "المزيد", icon: Menu, isAction: true, actionType: "menu" },
     ];
   } else if (isWarehouse) {

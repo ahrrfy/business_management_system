@@ -1,3 +1,5 @@
+import { ChannelMark } from "@/components/ChannelBadge";
+import { WORK_ORDER_CHANNELS, receptionChannelHandleInput, receptionChannelLabel, receptionChannelOptions } from "@shared/receptionChannel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -41,14 +43,6 @@ import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/p
  * عند تحرير الجلسة المالكة، يمكن نقل المفاتيح إلى أعمدة DB المضافة في `drizzle/schema.ts`.
  */
 
-const CHANNELS: { v: string; label: string; icon: string; placeholder: string; dir: "ltr" | "rtl" }[] = [
-  { v: "WHATSAPP",  label: "واتساب",       icon: "💬", placeholder: "+9647701234567", dir: "ltr" },
-  { v: "INSTAGRAM", label: "انستغرام",     icon: "📷", placeholder: "@username",       dir: "ltr" },
-  { v: "TIKTOK",    label: "تيك توك",       icon: "🎵", placeholder: "@username",       dir: "ltr" },
-  { v: "PHONE",     label: "اتصال هاتفي",   icon: "📞", placeholder: "+9647701234567", dir: "ltr" },
-  { v: "WALK_IN",   label: "عميل نقدي",    icon: "🏪", placeholder: "—",               dir: "rtl" },
-  { v: "OTHER",     label: "أخرى",          icon: "📩", placeholder: "—",               dir: "rtl" },
-];
 
 const PRIORITIES: { v: "LOW" | "NORMAL" | "URGENT"; label: string; cls: string }[] = [
   { v: "LOW",     label: "منخفض",   cls: "badge-status-active" },
@@ -419,7 +413,7 @@ export default function WorkOrderNew() {
       </head><body>
       <h1>طلب خدمة — معاينة</h1>
       <p class="muted">العميل: ${esc(customerSel.name || "—")} ${customerSel.isNew ? "(جديد)" : ""}</p>
-      <p class="muted">القناة: ${esc(CHANNELS.find((c) => c.v === channel)?.label || "—")} ${channelHandle ? `· <bdi>${esc(channelHandle)}</bdi>` : ""}</p>
+      <p class="muted">القناة: ${esc(receptionChannelLabel(channel))} ${channelHandle ? `· <bdi>${esc(channelHandle)}</bdi>` : ""}</p>
       <p class="muted">الأولوية: ${esc(PRIORITIES.find((p) => p.v === priority)?.label || "عادي")}</p>
       <table><thead><tr><th>المنتج</th><th>الوحدة</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">لا منتجات</td></tr>`}</tbody></table>
       ${title ? `<p><b>خدمة التخصيص:</b> ${esc(title)}</p>` : ""}
@@ -450,7 +444,7 @@ export default function WorkOrderNew() {
       salePrice.trim() !== "",
   );
 
-  const channelDef = CHANNELS.find((c) => c.v === channel)!;
+  const channelDef = receptionChannelHandleInput(channel);
   const customerNeedsPhone = customerSel.isNew && !customerSel.phone;
 
   return (
@@ -505,17 +499,17 @@ export default function WorkOrderNew() {
           <CardHeader><CardTitle className="text-base">قناة الاستلام</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-wrap gap-2">
-              {CHANNELS.map((c) => (
+              {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => (
                 <button
-                  key={c.v}
+                  key={c.value}
                   type="button"
-                  onClick={() => setChannel(c.v)}
+                  onClick={() => setChannel(c.value)}
                   className={cn(
                     "h-9 px-3 rounded-md border text-sm flex items-center gap-1.5 transition-colors",
-                    channel === c.v ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent"
+                    channel === c.value ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent"
                   )}
                 >
-                  <span>{c.icon}</span>
+                  <ChannelMark channel={c.value} />
                   <span>{c.label}</span>
                 </button>
               ))}

@@ -511,8 +511,12 @@ export const conversationRouter = router({
       workOrderId: z.number().int().positive().nullable(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await assertConversationBranch(input.conversationId, deriveScopedBranchId(ctx.user));
-      return linkConversationToWorkOrder(input.conversationId, input.workOrderId);
+      const scopedBranchId = deriveScopedBranchId(ctx.user);
+      await assertConversationBranch(input.conversationId, scopedBranchId);
+      return linkConversationToWorkOrder(input.conversationId, input.workOrderId, {
+        branchId: ctx.user.branchId ?? null,
+        scopedBranchId,
+      });
     }),
 
   /** تَأرشيف/إغلاق مُحادثة. */

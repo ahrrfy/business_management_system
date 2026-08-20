@@ -130,6 +130,8 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
     const insRes = await tx.insert(workOrders).values({
       orderNumber,
       branchId: input.branchId,
+      // ش٥ (0238): المسوّدة الجامعة — أوامرُ السلّة الواحدة تصير إخوة.
+      draftId: input.draftId ?? null,
       customerId: input.customerId ?? null,
       baseVariantId: input.baseVariantId ?? null,
       title: input.title.trim(),
@@ -147,7 +149,10 @@ export async function createWorkOrderInTx(tx: Tx, input: CreateWorkOrderInput, a
       channelHandle: input.channelHandle?.trim() || null,
       priority: input.priority ?? "NORMAL",
       deposit: input.deposit ? round2(money(input.deposit)).toFixed(2) : "0.00",
-      paymentMethod: input.paymentMethod ?? "CASH",
+      // صدق طريقة الدفع (١٨/٨): الطريقة تخصّ **العربون**؛ أمرٌ بلا عربون يُختَم NULL. كان
+      // `?? "CASH"` (ومعه default القاعدة) يسحق null الصريح القادم من المسوّدة/الواجهة فيُقرأ
+      // أمرٌ لم يُقبض فيه دينار كأنّه «دُفع نقداً».
+      paymentMethod: round2(money(input.deposit ?? "0")).gt(0) ? (input.paymentMethod ?? null) : null,
       paymentReference: input.paymentReference?.trim() || null,
       paymentReceiptUrl: input.paymentReceiptUrl?.trim() || null,
       hasDelivery: !!input.hasDelivery,

@@ -1,23 +1,20 @@
 // أدوات داخلية: ترقيم الأمر، تحميله تحت قفل صفّ، وعزل الفرع/المحطة — لا تُصدَّر من نقطة الدخول العامة.
 import { TRPCError } from "@trpc/server";
-import { desc, eq, like } from "drizzle-orm";
-import { workOrders } from "../../../drizzle/schema";
-import { toDateStr } from "../money";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { deliveryConsignments, serviceTypes, tasks, workOrders } from "../../../drizzle/schema";
+import { nextCounterValue } from "../numbering";
 import type { Actor } from "../tx";
 
-async function nextWorkOrderNumber(tx: any, branchId: number): Promise<string> {
-  const ymd = toDateStr().replace(/-/g, "");
-  const prefix = `WO-${branchId}-${ymd}-`;
-  const rows = await tx
-    .select({ n: workOrders.orderNumber })
-    .from(workOrders)
-    .where(like(workOrders.orderNumber, `${prefix}%`))
-    .orderBy(desc(workOrders.id))
-    .for("update")
-    .limit(1);
-  const last = rows[0]?.n;
-  const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
-  return prefix + String(seq).padStart(5, "0");
+/**
+ * رقم أمر الشغل — **عددٌ تسلسليّ قصير** يبدأ من 5001 (طلب المالك ١٨/٨؛ نطاقٌ متباعدٌ عن
+ * الفواتير 10001+ كي يُميَّز نوع المستند بالنظر). التفصيل والمقايضة في `services/numbering.ts`.
+ *
+ * الصيغة القديمة `WO-{فرع}-{YYYYMMDD}-{تسلسل}` كانت تُولَّد بمسح `LIKE` + `MAX+1` **بلا
+ * GET_LOCK إطلاقاً** — أحدُ سبعة مولّدات على النمط الذي وُصف صراحةً بأنه غير كافٍ ضدّ السباق.
+ * العدّاد الذرّيّ يُنهي ذلك بنيوياً (القيد الفريد يبقى الحارس الأخير).
+ */
+async function nextWorkOrderNumber(tx: any, _branchId: number): Promise<string> {
+  return String(await nextCounterValue(tx, "workOrder"));
 }
 
 async function loadWorkOrder(tx: any, workOrderId: number) {
@@ -52,4 +49,87 @@ function assertOperatorOwns(
 }
 
 
-export { nextWorkOrderNumber, loadWorkOrder, assertWorkOrderBranch, assertOperatorOwns };
+/**
+ * حارس **الإرسالية الحيّة** (١٨/٨) — يمنع كل عمليةٍ تفترض أنّ البضاعة ما زالت في المكتبة
+ * بينما هي بيد المندوب فعلاً.
+ *
+ * لماذا لم يكن فحصُ الحالة كافياً: الإسناد **لا يمسّ** `workOrders.status` عمداً (يبقى READY
+ * حتى إثبات التسليم)، فكلّ حارسٍ يفحص الحالة وحدها كان أعمى عن الطرد الخارج. النتائج التي
+ * أثبتها الفحص: إلغاءُ أمرٍ خارجٍ مع مندوب يُعيد مواده للمخزون ويردّ عربونه بينما الفاتورة
+ * وقيدُ البيع وذمّةُ العميل وعهدةُ COD كلّها حيّة؛ وقلبُ `hasDelivery` يردّ أمانة الأجرة
+ * والطرد بالخارج؛ والتسليم المباشر يُنشئ فاتورةً وقيدَ بيعٍ **ثانيَين**.
+ *
+ * المخرج المشروع في كل هذه الحالات واحد: **استرجاع الإرسالية** (عكسٌ كامل Σ=0).
+ */
+async function assertNoLiveConsignment(
+  tx: any,
+  workOrderId: number,
+  action: "cancel" | "reclassify" | "deliver" | "reverse",
+) {
+  const rows = await tx
+    .select({ id: deliveryConsignments.id, number: deliveryConsignments.consignmentNumber })
+    .from(deliveryConsignments)
+    .where(
+      and(
+        eq(deliveryConsignments.workOrderId, workOrderId),
+        notInArray(deliveryConsignments.status, ["CANCELLED", "RETURNED"]),
+      ),
+    )
+    .limit(1);
+  const live = rows[0];
+  if (!live) return;
+  const what = action === "cancel"
+    ? "لا يُلغى أمرٌ خرج مع مندوب"
+    : action === "reclassify"
+      ? "لا تُغيَّر طريقة تسليم أمرٍ خرج مع مندوب"
+      : action === "reverse"
+        // العكسُ يُسقط الذمّة بينما عهدةُ المندوب وتحصيلُه قائمان ⇒ نقدٌ بلا مالك.
+        ? "لا يُسترجَع أمرٌ ما زال مع مندوب"
+        : "لا يُسلَّم مباشرةً أمرٌ خرج مع مندوب";
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: `${what} (الإرسالية ${live.number ?? live.id}) — استرجع الإرسالية أولاً من إدارة التوصيل، وهي تعكس البيع والمخزون والعربون معاً.`,
+  });
+}
+
+/**
+ * **حارس المهمّة الحاجزة** (ش٢، ١٩/٨) — على نمط `assertNoLiveConsignment` حرفياً.
+ *
+ * الحجزُ يُقرأ من الواقع لا من عَلَم: «هل لهذا الأمر مهمّةٌ مفتوحةٌ نوعُها حاجز؟». وبهذا
+ * **تبطل الموافقة السابقة بحكم البناء** حين تُفتَح مهمّةٌ جديدة لنسخة تصميمٍ جديدة — لا
+ * عَلَمَ `approved` ثانٍ يمكن أن ينجرف عن الواقع فيُنتَج تصميمٌ لم يُقرَّ.
+ *
+ * ⛔ **يُستدعى قبل أيّ قفلٍ أو حركة** (قبل `branchStock` في `startWorkOrder`) ⇒ يفشل مغلقاً
+ * بلا حركةِ مخزونٍ ولا قيدٍ ولا صفٍّ يُترك خلفه.
+ *
+ * `WAITING_CUSTOMER` **تحجز أيضاً**: انتظارُ ردّ العميل هو عينُ سبب الحجز، لا استثناءٌ منه.
+ */
+async function assertNoBlockingTask(
+  tx: any,
+  workOrderId: number,
+  action: "start" | "ready",
+) {
+  const rows = await tx
+    .select({ id: tasks.id, number: tasks.taskNumber, title: tasks.title })
+    .from(tasks)
+    .innerJoin(serviceTypes, eq(serviceTypes.id, tasks.serviceTypeId))
+    .where(
+      and(
+        eq(tasks.linkedWorkOrderId, workOrderId),
+        inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
+        eq(serviceTypes.blocksExecution, true),
+      ),
+    )
+    .limit(1);
+  const blocking = rows[0];
+  if (!blocking) return;
+  const what = action === "start"
+    ? "لا يبدأ التنفيذ قبل إغلاق"
+    : "لا يُوسَم الأمر جاهزاً قبل إغلاق";
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: `${what} «${blocking.title}» (${blocking.number}) — سجّل موافقة العميل من بطاقة التصميم، أو أغلق المهمّة بسببٍ من شاشة المهام.`,
+  });
+}
+
+export { nextWorkOrderNumber, loadWorkOrder, assertWorkOrderBranch, assertOperatorOwns, assertNoLiveConsignment, assertNoBlockingTask };

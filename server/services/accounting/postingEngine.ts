@@ -122,6 +122,7 @@ export type PostingProfile =
   | "RETURN_SALE_INVENTORY"
   | "RETURN_SALE_SERVICE"
   | "RETURN_SALE_FLEX"
+  | "RETURN_SALE_FLEX_WORKORDER"
   | "RETURN_SALE_FIXED_ASSET"
   | "RETURN_SALE_DIGITAL"
   | "RETURN_SALE_CONSIGNMENT"
@@ -133,6 +134,7 @@ export type PostingProfile =
   | "ADJUST_INVENTORY_GAIN"
   | "ADJUST_INVENTORY_LOSS"
   | "ADJUST_WIP_CONSUME"
+  | "ADJUST_WIP_WASTE"
   | "ADJUST_WIP_CANCEL"
   | "ADJUST_CASH"
   | "ADJUST_AR"
@@ -277,6 +279,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "RETURN_SALE_INVENTORY",
     "RETURN_SALE_SERVICE",
     "RETURN_SALE_FLEX",
+    "RETURN_SALE_FLEX_WORKORDER",
     "RETURN_SALE_FIXED_ASSET",
     "RETURN_SALE_DIGITAL",
     "RETURN_SALE_CONSIGNMENT",
@@ -291,6 +294,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "ADJUST_INVENTORY_LOSS",
     "ADJUST_WIP_CONSUME",
     "ADJUST_WIP_CANCEL",
+    "ADJUST_WIP_WASTE",
     "ADJUST_CASH",
     "ADJUST_AR",
     "ADJUST_AP",
@@ -1263,6 +1267,39 @@ export const PROFILE_POLICIES = Object.freeze({
       ],
     },
   ),
+  /**
+   * **عكسُ تسليم أمر شغل** (٢٠/٨) — مرآةُ `SALE_SERVICE_FLEX` دوراً بدور.
+   *
+   * `RETURN_SALE_FLEX` القائم لا يكفي: مدينُه `SALES_FLEX/DELIVERY_REVENUE/TAX_PAYABLE`
+   * ودائنُه `AR` وحده، و`requireRoleComponents` تفرض ذلك ⇒ لا مكانَ لعكس COGS/WIP ولا
+   * لإعادة فتح أمانة العربون (`OTHER_LIABILITY`). فالعكسُ به يترك التكلفةَ معترَفاً بها
+   * لبيعٍ أُلغي، والعربونَ مُقفَلاً وقد صار دَيناً على المكتبة.
+   *
+   * الثابت المحروس: `Σ(SALE_SERVICE_FLEX) + Σ(RETURN_SALE_FLEX_WORKORDER) = 0` لكل دور.
+   */
+  RETURN_SALE_FLEX_WORKORDER: profilePolicy(
+    "RETURN",
+    ["SALES_FLEX", "DELIVERY_REVENUE", "TAX_PAYABLE", "WORK_IN_PROGRESS", "AR"],
+    ["AR", "OTHER_LIABILITY", "COGS"],
+    {
+      reversible: false,
+      requiredDebitRoles: ["SALES_FLEX"],
+      requiredCreditRoles: ["AR"],
+      sourceAssertions: [
+        sourceAssertion("revenue", "DEBIT_MINUS_CREDIT", ["SALES_FLEX", "DELIVERY_REVENUE"]),
+        sourceAssertion("cost", "CREDIT_MINUS_DEBIT", ["COGS"]),
+      ],
+      requireRoleComponents: [
+        "AR",
+        "OTHER_LIABILITY",
+        "COGS",
+        "SALES_FLEX",
+        "DELIVERY_REVENUE",
+        "TAX_PAYABLE",
+        "WORK_IN_PROGRESS",
+      ],
+    },
+  ),
   RETURN_SALE_FLEX: profilePolicy(
     "RETURN",
     ["SALES_FLEX", "DELIVERY_REVENUE", "TAX_PAYABLE"],
@@ -1440,6 +1477,31 @@ export const PROFILE_POLICIES = Object.freeze({
         sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["INVENTORY"]),
       ],
       requireRoleComponents: ["INVENTORY", "WORK_IN_PROGRESS"],
+    },
+  ),
+  /**
+   * **هدرُ إلغاء أمر الشغل** (ش٤، ١٩/٨) — القيمةُ تنتقل من WIP إلى **خسارة** لا إلى مخزون.
+   *
+   * ولا يمكن إعادةُ استعمال `WASTAGE_INVENTORY`: دائنُه مثبَّتٌ على `INVENTORY`
+   * و`validatePostingIntentPolicy` تفرضه — والمادّة المُهدَرة **خرجت من المخزون فعلاً** عند
+   * بدء التنفيذ، فرصيدُها في WIP لا في INVENTORY. حسابُها هناك خطأٌ مزدوج.
+   *
+   * ⛔ **ولا حركةَ مخزونٍ لهذا القيد إطلاقاً**: `createStockExpenseTx` تستدعي `applyMovement`
+   * بـOUT، والمادّة مخصومةٌ سلفاً ⇒ **خصمٌ مزدوج** يُنتج رصيداً سالباً كاذباً أو رفضَ
+   * CONFLICT عند الإلغاء. الأثر قيدٌ فقط.
+   *
+   * والثابت المحروس: `ADJUST_WIP_CONSUME` (دخولٌ) − `ADJUST_WIP_CANCEL` (رجوع) −
+   * `ADJUST_WIP_WASTE` (هدر) = **صفر** لكل أمرٍ عند إغلاقه.
+   */
+  ADJUST_WIP_WASTE: profilePolicy(
+    "ADJUST",
+    ["LOSSES"],
+    ["WORK_IN_PROGRESS"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", ["LOSSES"]),
+      ],
+      requireRoleComponents: ["LOSSES", "WORK_IN_PROGRESS"],
     },
   ),
   ADJUST_CASH: profilePolicy("ADJUST", CASH_ASSETS, ["ROUNDING_DIFF"], {

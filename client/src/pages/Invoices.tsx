@@ -1,3 +1,6 @@
+import FilterPanel from "@/components/FilterPanel";
+import { deriveInvoiceChannel, invoiceChannelLabel, invoiceChannelOptions } from "@shared/invoiceChannel";
+import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
 import { CopyInline } from "@/components/CopyButton";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ListToolbar, RowActions, SelectionBar, useRowSelection } from "@/components/list";
@@ -189,7 +192,7 @@ export default function Invoices() {
   // تعيش مع فتح التفاصيل والرجوع وتُشارَك رابطاً. كل القيم نصوص (تُحوَّل عند حدود الـAPI).
   const [f, setF, resetF] = useUrlFilters({
     from: "", to: "", preset: "",
-    status: "", sourceType: "", balanceState: "",
+    status: "", sourceType: "", channel: "", balanceState: "",
     salespersonId: "", paymentMethod: "", branchId: "", customerId: "",
     delivery: "", deliveryPartyId: "",
     q: "",
@@ -254,6 +257,7 @@ export default function Invoices() {
       to: f.to || undefined,
       status: (f.status || undefined) as Row["status"] | undefined,
       sourceType: (f.sourceType || undefined) as Row["sourceType"] | undefined,
+      channel: (f.channel || undefined) as "RETAIL" | "RECEPTION" | "PRINT" | "STORE" | "OTHER" | undefined,
       balanceState: (f.balanceState || undefined) as keyof typeof BALANCE_FILTER | undefined,
       salespersonId: f.salespersonId ? Number(f.salespersonId) : undefined,
       // "NONE" = آجل (IS NULL خادمياً) — قيمةٌ إضافية على قائمة الفلترة لا عضوٌ في `PaymentMethod`.
@@ -264,16 +268,48 @@ export default function Invoices() {
       deliveryPartyId: f.deliveryPartyId ? Number(f.deliveryPartyId) : undefined,
       q: qDebounced || undefined,
     }),
-    [f.from, f.to, f.status, f.sourceType, f.balanceState, f.salespersonId, f.paymentMethod, f.branchId, f.customerId, f.delivery, f.deliveryPartyId, qDebounced],
+    [f.from, f.to, f.status, f.sourceType, f.channel, f.balanceState, f.salespersonId, f.paymentMethod, f.branchId, f.customerId, f.delivery, f.deliveryPartyId, qDebounced],
   );
 
   // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
   const activeFilterCount = [
-    f.from || f.to, f.status, f.sourceType, f.balanceState,
+    f.from || f.to, f.status, f.sourceType, f.channel, f.balanceState,
     f.salespersonId, f.paymentMethod, f.customerId,
     f.delivery, f.deliveryPartyId,
     isElevated ? f.branchId : "",
   ].filter(Boolean).length;
+
+  /**
+   * رقاقاتُ الفلاتر المفعَّلة (١٩/٨) — بديلُ تسعةِ منتقياتٍ مفتوحةٍ دائماً. كلٌّ تقول
+   * **الحقل وقيمته المقروءة** وتُزال بنقرة، فيعرف الموظّف لماذا نتيجتُه هذه.
+   */
+  const filterChips = useMemo(() => {
+    const out: { key: string; field: string; value: string; onClear: () => void }[] = [];
+    const add = (key: string, field: string, value: string | undefined, clear: () => void) => {
+      if (value) out.push({ key, field, value, onClear: clear });
+    };
+    add("status", "الحالة", f.status ? invoiceStatusLabel(f.status) : "", () => setF({ status: "" }));
+    add("channel", "القناة", f.channel ? (invoiceChannelOptions().find((c) => c.value === f.channel)?.label ?? f.channel) : "", () => setF({ channel: "" }));
+    add("source", "نوع العملية", f.sourceType ? sourceTypeLabel(f.sourceType) : "", () => setF({ sourceType: "" }));
+    add("method", "طريقة الدفع", f.paymentMethod ? (f.paymentMethod === "NONE" ? "آجل (بلا قبض)" : paymentMethodLabel(f.paymentMethod)) : "", () => setF({ paymentMethod: "" }));
+    add("balance", "حالة التحصيل", f.balanceState ? (BALANCE_FILTER[f.balanceState as keyof typeof BALANCE_FILTER] ?? f.balanceState) : "", () => setF({ balanceState: "" }));
+    add("delivery", "التوصيل", f.delivery ? (DELIVERY_FILTER[f.delivery as keyof typeof DELIVERY_FILTER] ?? f.delivery) : "", () => setF({ delivery: "", deliveryPartyId: "" }));
+    add("party", "جهة التوصيل", f.deliveryPartyId ? ((deliveryParties.data ?? []).find((dp) => String(dp.id) === f.deliveryPartyId)?.name ?? `#${f.deliveryPartyId}`) : "", () => setF({ deliveryPartyId: "" }));
+    add("seller", "موظف المبيعات", f.salespersonId ? ((salespeople.data ?? []).find((u) => String(u.id) === f.salespersonId)?.name ?? `#${f.salespersonId}`) : "", () => setF({ salespersonId: "" }));
+    add("customer", "العميل", f.customerId ? `#${f.customerId}` : "", () => setF({ customerId: "" }));
+    if (isElevated) {
+      add("branch", "الفرع", f.branchId ? (branchNames.get(Number(f.branchId)) ?? `#${f.branchId}`) : "", () => setF({ branchId: "" }));
+    }
+    if (f.from || f.to) {
+      out.push({
+        key: "period",
+        field: "الفترة",
+        value: [f.from, f.to].filter(Boolean).join(" ← ") || "مخصّصة",
+        onClear: () => setF({ from: "", to: "", preset: "" }),
+      });
+    }
+    return out;
+  }, [f, isElevated, deliveryParties.data, salespeople.data, branchNames, setF]);
 
   // منتقي الفترة السريع — «فارغ» = كل التواريخ (بخلاف التقارير لا نفرض شهراً افتراضياً هنا).
   const periodValue: PeriodValue = { from: f.from, to: f.to, preset: (f.preset || "custom") as PresetKey };
@@ -420,6 +456,8 @@ export default function Invoices() {
           { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
           { key: "customerName", header: "العميل", map: (r) => custName(r.customerName) },
           { key: "sourceType", header: "المصدر", map: (r) => sourceTypeLabel(r.sourceType) },
+          { key: "channel", header: "القناة", map: (r) => invoiceChannelLabel(deriveInvoiceChannel(r)) },
+          { key: "workOrderNumber", header: "رقم أمر الشغل", map: (r) => r.workOrderNumber ?? "" },
           { key: "consignmentStatus", header: "التوصيل", map: (r) => deliveryCell(r) },
           { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
           { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
@@ -438,7 +476,30 @@ export default function Invoices() {
   }
 
   const columns = useMemo<ColumnDef<Row, unknown>[]>(() => [
-    { accessorKey: "invoiceNumber", header: "رقم الفاتورة", cell: (c) => <CopyInline value={c.getValue() as string} /> },
+    {
+      accessorKey: "invoiceNumber",
+      header: "رقم الفاتورة",
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <div className="flex min-w-0 flex-col items-start gap-0.5">
+            <CopyInline value={r.invoiceNumber} />
+            {/* نسب التصحيح (0168): كانت تُكتَب ويقرؤها `get` وحده ⤇ فاتورةٌ
+                مُستبدَلة تبدو في القائمة كأيّ غيرها (طلب المالك ١٧/٨). */}
+            {r.correctedByInvoiceId != null && (
+              <span className="rounded bg-[var(--sem-warn-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-warn)]">
+                مُستبدَلة — لها تصحيح
+              </span>
+            )}
+            {r.correctionOfInvoiceId != null && (
+              <span className="rounded bg-[var(--sem-info-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-info)]">
+                تصحيحٌ لفاتورة سابقة
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
     { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => fmtDate(c.getValue() as string) },
     { accessorKey: "customerName", header: "العميل", cell: (c) => custName(c.getValue() as string | null) },
     // عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (سطر واحد لكل فرع لا معنى لتمييزه).
@@ -449,7 +510,29 @@ export default function Invoices() {
           cell: ({ row }) => branchNames.get(row.original.branchId) ?? `#${row.original.branchId}`,
         } as ColumnDef<Row, unknown>]
       : []),
-    { accessorKey: "sourceType", header: "المصدر", cell: (c) => sourceTypeLabel(c.getValue() as string) },
+    {
+      id: "channel",
+      header: "القناة",
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <div className="flex min-w-0 flex-col items-start gap-0.5">
+            <InvoiceChannelBadge row={r} />
+            {r.workOrderNumber ? (
+              <button
+                type="button"
+                onClick={() => navigate(`/work-orders/${r.workOrderId}`)}
+                className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+                dir="ltr"
+                title="فتح أمر الشغل"
+              >
+                {r.workOrderNumber}
+              </button>
+            ) : null}
+          </div>
+        );
+      },
+    },
     {
       id: "delivery",
       header: "التوصيل",
@@ -644,6 +727,8 @@ export default function Invoices() {
       "التاريخ": fmtDate(r.invoiceDate),
       "العميل": custName(r.customerName),
       "المصدر": sourceTypeLabel(r.sourceType),
+      "القناة": invoiceChannelLabel(deriveInvoiceChannel(r)),
+      "رقم أمر الشغل": r.workOrderNumber ?? "",
       "التوصيل": deliveryCell(r),
       "موظف المبيعات": r.salespersonName ?? "",
       "الوردية": r.shiftId ?? "",
@@ -685,14 +770,19 @@ export default function Invoices() {
         description="قائمة الفواتير المباعة — ابحث عن الفاتورة ثم أعد طباعتها على طابعة الكاشير الحرارية عند الحاجة."
       />
 
-      <Card>
-        <CardContent className="space-y-3 pt-6">
-          {/* «مسح الفلاتر» + عدّاد الفلاتر المفعّلة — البحث يبقى في شريط الجدول (DataTable). */}
-          <ListToolbar title="الفلاتر" activeFilterCount={activeFilterCount} onResetFilters={resetF} />
+      {/* ١٩/٨ (بلاغ المالك: «الفلاتر فوضوية») — تسعةُ منتقياتٍ كانت مفتوحةً دائماً تأكل الشاشة
+          قبل أن يظهر صفٌّ واحد، وثمانيةٌ منها فارغةٌ غالباً. صارت **مطويّةً برقاقاتِ المفعَّل**
+          على نمط Odoo: يرى الموظّف ما يُصفّي نتائجه في سطر، ويفتح اللوحة حين يضيف فلتراً. */}
+      <FilterPanel
+        chips={filterChips}
+        onResetAll={resetF}
+        quickSlot={
           <PeriodFilter
             value={periodValue}
             onChange={(v) => setF({ from: v.from, to: v.to, preset: v.preset === "custom" ? "" : v.preset })}
           />
+        }
+      >
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-4">
             <div className="space-y-1">
               <Label htmlFor="inv-f-status" className="text-xs">الحالة</Label>
@@ -724,6 +814,13 @@ export default function Invoices() {
                 {(salespeople.data ?? []).map((u) => u.id != null ? (
                   <option key={u.id} value={String(u.id)}>{u.name}</option>
                 ) : null)}
+              </AppSelect>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="inv-f-channel" className="text-xs">القناة</Label>
+              <AppSelect id="inv-f-channel" value={f.channel || "ALL"} onValueChange={(v) => setF({ channel: v === "ALL" ? "" : v })}>
+                <option value="ALL">— كل القنوات —</option>
+                {invoiceChannelOptions().map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
               </AppSelect>
             </div>
             <div className="space-y-1">
@@ -775,15 +872,17 @@ export default function Invoices() {
               />
             </div>
           </div>
-        </CardContent>
-      </Card>
+      </FilterPanel>
 
       <DataTable
         columns={columns}
         data={data}
-        searchPlaceholder="بحث برقم الفاتورة أو اسم العميل…"
+        // ١٨/٨: البحث صار يشمل رقم أمر الشغل — وهو الرقم الذي بيد الزبون وعلى باركود التذكرة.
+        searchPlaceholder="بحث برقم الفاتورة أو أمر الشغل أو اسم العميل…"
         barcodeSearch
         loading={rows.isLoading}
+        // صدق الخطأ: الرفض ٤٠٣/انقطاع الشبكة كان يُعرَض «لا فواتير مطابقة» فيُقرأ «لا فواتير لي».
+        errorState={{ isError: rows.isError, message: rows.error?.message, onRetry: () => void rows.refetch() }}
         emptyText="لا فواتير مطابقة."
         selection={sel}
         getRowId={(r) => r.id}

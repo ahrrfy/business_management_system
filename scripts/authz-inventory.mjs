@@ -192,6 +192,16 @@ const PROCEDURES = {
     roles: [],
     branch: "scoped",
   },
+  // بوابة **قوائم** الفواتير (١٨/٨): نفس سلطة المستند المفرد موسَّعةً بنطاق كاشير الطباعة
+  // (pos=FULL)، والنطاق يقصّ القناة داخل الاستعلام (RECEPTION/PRINT_SERVICES) مع عزل الفرع
+  // وعزل الموظف. تُسجَّل كسلطة مركبة كي لا تُصنَّف نقاطها «مجهولة الإجراء».
+  invoiceListProcedure: {
+    authority: "module-map",
+    module: "sales|workorders|pos",
+    level: "READ|FULL|FULL",
+    roles: [],
+    branch: "scoped",
+  },
   salesCashierProcedure: {
     authority: "module-gate",
     module: "sales",

@@ -46,6 +46,8 @@ export const tasksRouter = router({
           kind: taskKind.optional(),
           priority: taskPriority.optional(),
           assignedTo: z.number().int().positive().optional(),
+          /** «بلا منفّذ» (ش٦): طابور المهام المفتوحة التي لا مالك لها — سؤال المشرف المفقود. */
+          unassigned: z.boolean().optional(),
           branchId: z.number().int().positive().optional(),
           overdue: z.boolean().optional(),
           // مدى تاريخ الإنشاء (YYYY-MM-DD) — نمط buildWoFilterConds في workOrderRouter.ts.

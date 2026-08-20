@@ -4,8 +4,10 @@
 //   **الخادميّ** يصير sourceId `{uuid}-sale` فيصطدم بـuq_invoice_source حتى لو سقط القفلان.
 // إعادة التشغيل (ملاحظة ٢.١٠): النتيجة **تُعاد بناؤها من مفاتيح idempotency** لا من أعمدة
 // الرأس — نفس منطق isCompleteReplay القائم، فلا تعود workOrderIds فارغةً أبداً.
+import { toWorkOrderChannel } from "@shared/receptionChannel";
+import { linkConversationToWorkOrderTx } from "../conversationService";
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import {
   invoices,
   orderPayments,
@@ -24,7 +26,42 @@ import {
 } from "../receptionCheckoutService";
 import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
+import { mixedAwarePaymentMethod } from "../sale/payment";
 import { allocateAtCommit, heldNetOfDraft, type AllocationTarget } from "./deposits";
+
+/**
+ * صدق طريقة الدفع (١٨/٨) — يختم على كل فاتورة **مموَّلة من عربونٍ محتجَز** طريقةَ قبضها
+ * الحقيقية المشتقّة من طرق القبضات المطبَّقة عليها (تعدّدٌ ⇒ MIXED، بنفس طيّ سائر المسارات).
+ *
+ * لماذا هنا: `checkoutReceptionInTx` لا يبني دفعةً لمالٍ قُبض سلفاً (إيصاله قائمٌ منذ قبضه —
+ * I5)، فلولا هذا الختم لبقيت الفاتورة `paymentMethod = NULL` فتُقرأ «آجلة» وهي مقبوضة.
+ * والكتابة **مشروطةٌ بـNULL** حصراً: لا تُلمَس فاتورةٌ ختمت طريقتها من نقدٍ جديد.
+ */
+async function stampDerivedPaymentMethods(
+  tx: Tx,
+  appliedPayments: Array<{ paymentId: number; appliedKind: "INVOICE" | "WORKORDER"; appliedId: number }>,
+) {
+  const invoiceTargets = appliedPayments.filter((p) => p.appliedKind === "INVOICE");
+  if (!invoiceTargets.length) return;
+  const methodRows = await tx
+    .select({ id: orderPayments.id, method: orderPayments.method })
+    .from(orderPayments)
+    .where(inArray(orderPayments.id, Array.from(new Set(invoiceTargets.map((p) => p.paymentId)))));
+  const methodOf = new Map(methodRows.map((r) => [Number(r.id), r.method]));
+
+  const foldedByInvoice = new Map<number, string>();
+  for (const p of invoiceTargets) {
+    const method = methodOf.get(p.paymentId);
+    if (!method) continue;
+    foldedByInvoice.set(p.appliedId, mixedAwarePaymentMethod(foldedByInvoice.get(p.appliedId), method));
+  }
+  for (const [invoiceId, method] of Array.from(foldedByInvoice.entries())) {
+    await tx
+      .update(invoices)
+      .set({ paymentMethod: method as never })
+      .where(and(eq(invoices.id, invoiceId), isNull(invoices.paymentMethod)));
+  }
+}
 
 export interface CommitDraftInput {
   draftId: number;
@@ -207,7 +244,15 @@ function materialize(
       deposit: "0.00", // العرابين الحقيقية على المسوّدة تُخصَّص في ش٤ (orderPayments/allocateAtCommit)
       paymentMethod: null,
       paymentReference: null,
-      receptionChannel: (draft.channel as never) ?? "WALK_IN",
+      // القناة مُضيَّقةٌ في العقد (١٩/٨) ⤇ لا `as never`. والمعرّف يُنقَل معها: كان عمود
+      // `workOrders.channelHandle` ينتظر قيمةً والمسوّدة لا تحملها ⤇ طلبٌ من واتساب
+      // يُثبّت فيفقد رقمَ مُرسِله كلّيّاً.
+      // ش٥ (0238): أوامرُ السلّة الواحدة تصير **إخوة** — فيعرف الأمرُ طلبَه الجامع.
+      // إضافةٌ محضة: عمودٌ يُكتب ولا يُقرأ بعد — الحارس الذي يقرؤه يأتي لاحقاً،
+      // فصفر تغيّرٍ سلوكيّ اليوم والصفوف القائمة تبقى NULL.
+      draftId: Number(draft.id),
+      receptionChannel: toWorkOrderChannel(draft.channel),
+      channelHandle: draft.channelHandle ?? null,
       hasDelivery: !!s.hasDelivery,
       deliveryAddress: s.deliveryAddress || null,
       deliveryPhone: s.deliveryPhone || null,
@@ -223,7 +268,10 @@ function materialize(
     customerId: draft.customerId != null ? Number(draft.customerId) : null,
     contactName: draft.customerId == null ? draft.contactName : null,
     contactPhone: draft.customerId == null ? draft.contactPhone : null,
-    paymentMethod: input.collectNow?.method ?? "CASH",
+    // صدق طريقة الدفع (١٨/٨): بلا قبضٍ الآن ⇒ **لا طريقة**. كان `?? "CASH"` يختلق «نقدي»
+    // لتثبيتٍ صفريّ القبض (سلّة تخصيصٍ خالصة بلا عربون مسموحةٌ صراحةً) فتُقرأ الفاتورة مدفوعةً
+    // نقداً وهي آجلة، وتسقط من فلتر «آجل» (paymentMethod IS NULL) — بلاغ المالك.
+    paymentMethod: input.collectNow?.method ?? null,
     paymentReference: input.collectNow?.reference ?? null,
     paidAmount: input.collectNow ? money(input.collectNow.amount).toFixed(2) : null,
     // ش٤: صافي المحتجز على المسوّدة يدخل التوزيع أولاً — الإيصالات قائمة منذ القبض (I5).
@@ -437,6 +485,24 @@ export async function commitDraft(input: CommitDraftInput, actor: Actor & { role
     const { appliedPayments } = targets.length
       ? await allocateAtCommit(tx, { draftId: input.draftId, targets, actor })
       : { appliedPayments: [] };
+
+    // صدق طريقة الدفع (١٨/٨) — فاتورةٌ مموَّلةٌ من عربونٍ محتجَز: `checkoutReceptionInTx` لا
+    // يبني لها دفعةً (المال قُبض سابقاً وله إيصاله — I5) فتُختَم NULL. لكنّها **ليست آجلة**:
+    // قُبضت فعلاً بطريقة العربون. نشتقّها الآن من طرق القبضات المطبَّقة عليها — بعد
+    // allocateAtCommit حيث تُعرف الحصص — بنفس طيّ `mixedAwarePaymentMethod` (تعدّد ⇒ MIXED).
+    await stampDerivedPaymentMethods(tx, appliedPayments);
+
+    // ربط المحادثة بأمر الشغل **داخل معاملة التثبيت** (١٩/٨): إمّا (أمر شغل +
+    // محادثةٌ مربوطة) وإمّا لا شيء — لا ظنٌّ لاحق يسقط إن انقطعت الشبكة.
+    // والأوّل وحده: العمود علاقةٌ واحدٌ-لواحد، وسلّةٌ فيها أوامرُ عدّة خيطُها واحد.
+    if (draft.conversationId != null && result.workOrders.length > 0) {
+      await linkConversationToWorkOrderTx(
+        tx,
+        Number(draft.conversationId),
+        Number(result.workOrders[0].workOrderId),
+        actor,
+      );
+    }
 
     await tx
       .update(receptionDrafts)

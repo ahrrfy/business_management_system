@@ -205,17 +205,24 @@ describe("correctSale — تصحيح الفاتورة (عكس + إعادة تر�
     expect((await getInvoice(corrected.correctedInvoiceId)).status).toBe("PENDING");
   });
 
-  it("يرفض عكس فاتورة خدمة كتعديل مخزني ويبقي الأصل بلا تغيير", async () => {
+  // ⭐ تغيّر العقد (١٨/٨): كان يُرفَض تصحيحُ أيّ فاتورةٍ فيها سطر خدمة — لأنّ العكس كان يكتب
+  //    حركة مخزونٍ لصنفٍ بلا رصيد (مخزونٌ وهميّ). عولجت العلّة في جذرها (returnSaleInTx يتخطّى
+  //    applyMovement لأصناف الخدمة) فرُفع الحارس، وبه صارت **فواتير خدمات الطباعة** — نصف سلّة
+  //    الاستقبال — قابلةً للتصحيح بعد أن كانت بلا أيّ مسار (بلاغ المالك: «شاشة التصحيح بدائية»).
+  it("فاتورة خدمة تُصحَّح: عكسٌ ماليّ كامل بلا حركة مخزونٍ للخدمة", async () => {
     await seed({ withCustomer: true });
     await db().update(s.products).set({ isService: true }).where(eq(s.products.id, 1));
     const sale = await creditSale(1);
 
-    await expect(correctSale({ originalInvoiceId: sale.invoiceId, lines: [line(1)] }, admin))
-      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    const corrected = await correctSale({ originalInvoiceId: sale.invoiceId, lines: [line(2)] }, admin);
 
     const original = await getInvoice(sale.invoiceId);
-    expect(original.status).toBe("PENDING");
-    expect(original.correctedByInvoiceId).toBeNull();
+    expect(original.status).toBe("SUPERSEDED");
+    expect(Number(original.correctedByInvoiceId)).toBe(corrected.correctedInvoiceId);
+    expect((await getInvoice(corrected.correctedInvoiceId)).total).toBe("2000.00");
+    // ولا أثر مخزنيّ للخدمة في أيّ اتجاه (لا عكسٌ ولا إعادة بيع).
+    const movements = await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.variantId, 1));
+    expect(movements).toHaveLength(0);
   });
 
   it("رفض: منشأ WORKORDER / مرتجعة سابقاً / فرعٌ آخر / مُستبدَلة سلفاً", async () => {

@@ -2829,13 +2829,16 @@ export const workOrders = mysqlTable(
     ),
     deposit: decimal("deposit", { precision: 15, scale: 2 }).default("0"),
     // ش٥: TELECOM — عربونٌ بأيّ طريقة (م٢) يشمل رصيد زين؛ توسيع enum قائم = 0154 + extras (V10).
+    // صدق طريقة الدفع (١٨/٨، هجرة 0210): بلا افتراض — الطريقة تخصّ **العربون**، وأمرٌ بلا
+    // عربون يبقى NULL. كان `default("CASH")` يسحق null الصريح فيُقرأ أمرٌ لم يُقبض فيه دينار
+    // كأنّه «دُفع نقداً» (بلاغ المالك: «جميع الفواتير تظهر نقدية»).
     paymentMethod: mysqlEnum("woPaymentMethod", [
       "CASH",
       "CARD",
       "TRANSFER",
       "WALLET",
       "TELECOM",
-    ]).default("CASH"),
+    ]),
     paymentReference: varchar("paymentReference", { length: 100 }),
     // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.
     paymentReceiptUrl: text("paymentReceiptUrl"),
@@ -2877,6 +2880,26 @@ export const workOrders = mysqlTable(
     ])
       .default("RECEIVED")
       .notNull(),
+    /**
+     * ش٤ (0219) — سببُ الإلغاء ووقتُه وفاعله. نظيرُها موجودٌ في `receptionDrafts` و
+     * `onlineOrders` وكان غائباً عن `workOrders` وحده، فيذوب «لم يحضر العميل» في إلغاءٍ
+     * مجهول السبب. ⛔ ولا عمودَ **رمزٍ** ثانٍ: تقرير «لم يحضر أصحابها» يُشتقّ من عمر
+     * الجاهزية (`workStartedAt + workSeconds`) — العمودُ للمساءلة والتقريرُ اشتقاق.
+     */
+    cancelReason: varchar("cancelReason", { length: 500 }),
+    cancelledAt: timestamp("cancelledAt"),
+    cancelledBy: int("cancelledBy").references(() => users.id),
+    /**
+     * ش٥ (0220) — **الطلبُ الجامع**: أوامرُ السلّة الواحدة تصير إخوة. لا كيانَ «طلب» جديد —
+     * المسوّدة هي الطلب ولها `draftNumber`. والاشتقاق من `clientRequestId` **أحاديُّ
+     * الاتجاه**: أمرُ الشغل لا يحمله، والربط في `idempotencyKeys` بـ`refId` **بلا فهرس** ⇒
+     * سؤال «ما إخوةُ هذا الأمر؟» مسحٌ كاملٌ لجدولٍ ينمو بلا حدّ.
+     */
+    // ⚠️ بلا `.references()` **عمداً**: الثلاثة تُشكّل دورةً في استنتاج الأنواع
+    //    (conversations ← workOrders ← receptionDrafts ← conversations) فينهار النوع إلى `any`
+    //    ويسقط `pnpm check` في ملفّاتٍ لا علاقة لها. والمفتاح الأجنبيّ **مفروضٌ في القاعدة**
+    //    بـ`fk_wo_draft` (هجرة 0220) — والهجرات مكتوبةٌ يدوياً هنا لا مولَّدةً من المخطّط.
+    draftId: bigint("draftId", { mode: "number" }),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(
       () => invoices.id,
     ),
@@ -2962,6 +2985,16 @@ export const receptionDrafts = mysqlTable(
       .default("RETAIL")
       .notNull(),
     channel: varchar("channel", { length: 20 }),
+    /** معرّف العميل على القناة (رقم واتساب/اسم حساب) — 0214. كان `channel` بلا معرّفٍ
+     *  مقابل، فتُفقَد وسيلةُ الرجوع للزبون عند تثبيت المسوّدة رغم أنّ
+     *  `workOrders.channelHandle` قائمٌ ينتظر قيمة. */
+    channelHandle: varchar("channelHandle", { length: 120 }),
+    /** المحادثة التي وُلد منها الطلب (0214) — يجعل الربط يقع **داخل معاملة التثبيت**
+     *  فإمّا (أمر شغل + محادثة مربوطة) وإمّا لا شيء. */
+    conversationId: bigint("conversationId", { mode: "number" }).references(
+      () => conversations.id,
+      { onDelete: "set null" },
+    ),
     notes: text("notes"),
     dueDate: date("dueDate"),
     /** ذاكرة عرضٍ فقط — تُعاد حسابها خادمياً في كل كتابةٍ وعند التثبيت (لا يُقرأ منها قرار). */
@@ -2997,6 +3030,7 @@ export const receptionDrafts = mysqlTable(
     committedInvoiceUq: unique("uq_draft_committed_invoice").on(
       table.committedInvoiceId,
     ),
+    conversationIdx: index("idx_draft_conversation").on(table.conversationId),
     branchStatusIdx: index("idx_draft_branch_status_id").on(
       table.branchId,
       table.status,
@@ -3213,10 +3247,18 @@ export const workOrderImages = mysqlTable(
     url: mediumtext("url").notNull(),
     caption: varchar("caption", { length: 255 }),
     sortOrder: int("sortOrder").default(0).notNull(),
+    /**
+     * نسخةُ ملفّ التصميم (0218، ش٢). «الحاليّ» = `MAX(revision)`، و«المُبطَل» ما دونه،
+     * و«عدد التعديلات» = `MAX−1` — كلّها مشتقّة، فلا `supersededBy` ولا `approvedAt/By`
+     * (الموافقة كلّها في `tasks`/`taskEvents` بطرفها وزمنها وسجلّها).
+     * والصفوف القائمة تصير النسخة ١ بحكم الافتراضيّ.
+     */
+    revision: int("revision").default(1).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     woIdx: index("idx_woimg_wo").on(table.workOrderId),
+    woRevIdx: index("idx_woimg_wo_revision").on(table.workOrderId, table.revision),
   }),
 );
 
@@ -7350,6 +7392,13 @@ export const serviceTypes = mysqlTable(
       .default("NORMAL")
       .notNull(),
     slaHours: int("slaHours"),
+    /**
+     * هل يحجز هذا النوعُ **تنفيذَ أمر الشغل**؟ (0217، ش٢) — قرارُ سياسةٍ بشريّ لا تحمله
+     * بيانات. الافتراضيّ `false` ⇒ صفر أثرٍ سلوكيّ، ومفتاحُ الإيقاف الفوريّ بلا نشرٍ محفوظ.
+     * ⛔ ليس عَلَماً على أمر الشغل: الحجزُ يُقرأ بـ«هل ثمّة مهمّةٌ حاجزة مفتوحة؟» فلا عَلَمٌ
+     * ثانٍ ينجرف عن الواقع، والموافقةُ تبطل بحكم البناء حين تُفتَح مهمّةٌ جديدة.
+     */
+    blocksExecution: boolean("blocksExecution").default(false).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -7760,6 +7809,13 @@ export const deliveryRemittances = mysqlTable(
     remittanceNumber: varchar("remittanceNumber", { length: 50 })
       .notNull()
       .unique(), // DR-{branch}-{YYYYMMDD}-{seq}
+    // كشف شركة التوصيل (١٩/٨، هجرة 0212) — مستند الشركة الذي قاد هذه التسوية.
+    // رقمه **فريدٌ لكل جهة** (فهرس uq_remittance_party_statement): إعادة إدخال نفس الكشف
+    // ترتدّ على القيد بدل أن تضاعف القيود. NULL = توريدٌ يدويّ بلا كشف (السلوك القديم).
+    companyStatementNumber: varchar("companyStatementNumber", { length: 64 }),
+    statementDate: date("statementDate"),
+    /** صورة/PDF الكشف — الدليل المستنديّ الذي يُراجَع عند أي خلاف. */
+    statementAttachmentUrl: text("statementAttachmentUrl"),
     branchId: bigint("branchId", { mode: "number" })
       .notNull()
       .references(() => branches.id),
@@ -7775,6 +7831,14 @@ export const deliveryRemittances = mysqlTable(
     feesTotal: decimal("feesTotal", { precision: 15, scale: 2 })
       .default("0")
       .notNull(), // Σ الأجور (مستحقات الجهة)
+    /**
+     * Σ استقطاعات الشركة على الكشف (أجور توصيل حسمتها من الحصيلة قبل التوريد).
+     * **مصروف شركةٍ مستقلّ لا تخفيضُ ذمّة عميل** — الزبون دفع كامل COD، والشركة احتفظت
+     * بأجرتها؛ خصمُها من ذمّة العميل كان سيُسقط إيراداً لم يسقط. مرآةُ قرار الشحن/الكمرك.
+     */
+    deductionsTotal: decimal("deductionsTotal", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     netRemitted: decimal("netRemitted", { precision: 15, scale: 2 }).notNull(), // collectedTotal − feesTotal
     shortfallTotal: decimal("shortfallTotal", { precision: 15, scale: 2 })
       .default("0")
@@ -11140,3 +11204,61 @@ export const offlineRecoveryItems = mysqlTable(
   }),
 );
 export type OfflineRecoveryItem = typeof offlineRecoveryItems.$inferSelect;
+
+/**
+ * عدّادات المستندات (١٨/٨، هجرة 0211) — مصدر الأرقام التسلسلية القصيرة.
+ *
+ * لماذا جدولٌ مستقلّ بدل مسح `MAX(number)+1` كما كان: المسح `LIKE 'prefix%'` مع `FOR UPDATE`
+ * **لا يقفل صفوفاً غير موجودة** في InnoDB (تعليقٌ محفور في numbering.ts) فيقرأ متزامنان نفس
+ * القيمة؛ عولج بـGET_LOCK ترقيعاً لمولّدَين فقط، وبقيت سبعةُ مولّدات أخرى بلا حماية. الحجز
+ * هنا ذرّيٌّ بعمليةٍ واحدة (`LAST_INSERT_ID` داخل ON DUPLICATE KEY UPDATE) — لا قفلَ صريحاً
+ * ولا مسحَ ولا سباقَ ممكناً.
+ */
+export const documentCounters = mysqlTable("documentCounters", {
+  counterKey: varchar("counterKey", { length: 64 }).primaryKey(),
+  lastValue: bigint("lastValue", { mode: "number", unsigned: true }).notNull().default(0),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type DocumentCounter = typeof documentCounters.$inferSelect;
+
+/**
+ * طلبات الإرجاع من المحطة (١٩/٨، هجرة 0213) — قرار المالك «طلب موظف + اعتماد مدير».
+ *
+ * لماذا: `returns.create` محصورٌ بالمدير، وموظّف الاستقبال يُقال له «استدعِ المدير» في
+ * شاشته — بينما رفضُ الزبون وإرجاعُ المندوب **حدثٌ يوميّ**. فإمّا يتوقّف العمل حتى يحضر
+ * المدير، أو يُحفَظ المرتجع بحسابه فتضيع نسبةُ الفاعل الحقيقيّ.
+ *
+ * النمط مستنسَخٌ من `stockAdjustmentRequests` حرفياً: الطلب **مستند نيّةٍ لا مال** (لا قيد
+ * ولا إيصال ولا حركة مخزون حتى الاعتماد)، ولقطةٌ تفاؤلية تمنع اعتماد طلبٍ بُني على حالةٍ
+ * لم تعد قائمة، والمُعتمِد ≠ المُنشئ.
+ */
+export const returnRequests = mysqlTable(
+  "returnRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull().references(() => invoices.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    /** [{ invoiceItemId, baseQuantity }] — تُنفَّذ حرفياً عند الاعتماد. */
+    linesJson: json("linesJson").notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    /** لقطة `invoices.returnedTotal` لحظة الطلب — حارسٌ تفاؤليّ عند الاعتماد. */
+    invoiceReturnedSnapshot: decimal("invoiceReturnedSnapshot", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
+    status: mysqlEnum("returnRequestStatus", ["PENDING_APPROVAL", "APPROVED", "REJECTED"])
+      .default("PENDING_APPROVAL")
+      .notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    resultReturnInvoiceId: bigint("resultReturnInvoiceId", { mode: "number" }),
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    statusBranchIdx: index("idx_retreq_status_branch").on(table.status, table.branchId),
+    invoiceIdx: index("idx_retreq_invoice").on(table.invoiceId),
+    creatorIdx: index("idx_retreq_creator").on(table.createdBy),
+  }),
+);
+export type ReturnRequest = typeof returnRequests.$inferSelect;

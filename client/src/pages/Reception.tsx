@@ -1,3 +1,7 @@
+import type { StartOrderFromConversation } from "@/pages/Inbox";
+import { toWorkOrderChannel, WORK_ORDER_CHANNELS, type WorkOrderChannel } from "@shared/receptionChannel";
+import { ChannelMark } from "@/components/ChannelBadge";
+import { receptionChannelOptions } from "@shared/receptionChannel";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -57,10 +61,7 @@ import { cn } from "@/lib/utils";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import ReservationsHub from "@/pages/ReservationsHub";
 import Inbox from "@/pages/Inbox";
-import OrderFulfillment from "@/pages/OrderFulfillment";
-import ReceptionOrderQueue from "@/components/reception/ReceptionOrderQueue";
 import { ReceptionInvoiceQueue } from "@/components/reception/ReceptionInvoiceQueue";
 import { DraftStrip } from "@/components/reception/DraftStrip";
 import { printDraftTicket } from "@/lib/printing/draftTicket";
@@ -80,7 +81,6 @@ import {
   type PayMethod,
   type PosRow,
   type Tier,
-  type Workshop,
 } from "@/components/reception/cartMath";
 import { CartTable } from "@/components/reception/CartTable";
 import { PaymentPanel } from "@/components/reception/PaymentPanel";
@@ -140,8 +140,13 @@ export default function Reception() {
   const [, navigate] = useLocation();
   const pageSearch = useSearch();
   const me = trpc.auth.me.useQuery();
-  const reservationsRequested = useMemo(
-    () => new URLSearchParams(pageSearch).get("workspace") === "reservations",
+  /**
+   * ١٩/٨ (طلب المالك): اللوحاتُ الخمس خرجت من رأس المحطّة إلى **الصفحة الرئيسية** — رأسُ
+   * الكاشير كان صفّاً واحداً من ثمانية أزرارٍ متساوية الوزن يفيض أفقياً بشريط تمرير. صار
+   * الرأسُ للوردية وحدها، والدخولُ إلى اللوحة يقع من بطاقتها في الرئيسية عبر `?workspace=`.
+   */
+  const requestedWorkspace = useMemo(
+    () => new URLSearchParams(pageSearch).get("workspace") ?? "",
     [pageSearch],
   );
   const reservationPermissions = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
@@ -173,21 +178,6 @@ export default function Reception() {
   const canReadStoreOrders = me.data != null && moduleAccessAllowed(
     me.data.role, reservationPermissions, "store", "READ", STORE_READ_ROLES,
   );
-  const showReservations = reservationsRequested && canReadReservations;
-  const openReservations = useCallback(
-    () => navigate("/pos?mode=RECEPTION&workspace=reservations", { replace: true }),
-    [navigate],
-  );
-  const closeReservations = useCallback(
-    () => navigate("/pos?mode=RECEPTION", { replace: true }),
-    [navigate],
-  );
-
-  useEffect(() => {
-    if (!reservationsRequested || me.isLoading || canReadReservations) return;
-    notify.err("لا تملك صلاحية قراءة الحجوزات");
-    closeReservations();
-  }, [reservationsRequested, me.isLoading, canReadReservations, closeReservations]);
   // الأدمن/المدير بلا فرع مُسنَد: يختار الفرع صراحةً قبل فتح وردية الخدمة بدل الإسناد الصامت للفرع ١
   // (نمط POS/PrintPOS، #274 — الوردية تحمل الفرع والطلبات تتبعها). لا يمسّ مستخدماً له فرع (يبقى فرعه).
   const [pickedBranch, setPickedBranch] = useState<number | null>(null);
@@ -212,8 +202,6 @@ export default function Reception() {
   const staffQ = trpc.workOrders.assignableStaff.useQuery({ branchId });
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
   // اِستقبال (تكامل التوصيل، ٤/٨): عدّاد «جاهز» على زرّ طابور الطلبات — مؤشّر سريع بلا فتح الطابور.
-  const woCountsQ = trpc.workOrders.counts.useQuery({ branchId });
-  const woReadyCount = woCountsQ.data?.ready ?? 0;
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0");
   const [closing, setClosing] = useState(false);
@@ -304,7 +292,23 @@ export default function Reception() {
   const [showInbox, setShowInbox] = useState(false);
   // ش١ (§٨.١): ورش عمود العمل — الفواتير/الطلبات/طلبات الموقع تُركَّب داخل عمود السلة
   // (لوحة الدفع لا تُغطّى أبداً). الحجوزات/الرسائل تبقيان طبقتين (قرار §١٤.٦).
-  const [workshop, setWorkshop] = useState<Workshop>("CART");
+  /**
+   * تطبيقُ اللوحة المطلوبة من الرابط **مرّةً واحدة لكل قيمة** — لا في كل رسم، وإلّا لم
+   * يستطع الموظّف الرجوع إلى السلّة ما دام الرابط يحمل اللوحة. والرابط يُنظَّف بعد التطبيق
+   * (`replace`) فلا يبقى في التاريخ ولا يُعيد فتح اللوحة عند التحديث.
+   */
+  /**
+   * ١٩/٨ — لم يبقَ من `?workspace=` إلا **المحادثة**: الفواتير والطلبات وطلبات الموقع
+   * والحجوزات صارت **شاشاتٍ قائمةً بذاتها** (طلب المالك)، والمحادثةُ تبقى **أداةَ سلّة**
+   * (تملأ رأس الطلب) لا وجهةً — فمكانُها طبقةٌ فوق السلّة لا صفحةٌ تُغادر إليها.
+   */
+  const appliedWorkspaceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (requestedWorkspace !== "inbox" || appliedWorkspaceRef.current === requestedWorkspace) return;
+    appliedWorkspaceRef.current = requestedWorkspace;
+    if (canReadChannels) setShowInbox(true);
+    navigate("/pos?mode=RECEPTION", { replace: true });
+  }, [requestedWorkspace, navigate, canReadChannels]);
   // ش١: نافذة الإيصال بعد الإتمام + سحب نقدي + خصم داخل الصفّ + اعتماد مدير للخصم >١٠٪.
   const [lastSale, setLastSale] = useState<LastSaleSummary | null>(null);
   const [showReceiptOverlay, setShowReceiptOverlay] = useState(false);
@@ -330,13 +334,19 @@ export default function Reception() {
   // ش١: جهات التوصيل لورشة الفواتير (الإسناد من الصفّ) — تُجلب عند فتح الورشة فقط.
   const partiesQ = trpc.delivery.listParties.useQuery(
     { activeOnly: true },
-    { enabled: workshop === "INVOICES" || deliveryDialogOpen || orderDelivery != null, staleTime: 60_000 },
+    { enabled: deliveryDialogOpen || orderDelivery != null, staleTime: 60_000 },
   );
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
   const [receptionPhone, setReceptionPhone] = useState("");
   const [phoneResolution, setPhoneResolution] = useState<"EMPTY" | "INCOMPLETE" | "CHECKING" | "NEEDS_NAME" | "RESOLVED" | "ERROR">("EMPTY");
+  /**
+   * أهليّة **البيع الآجل** للعميل المربوط — مصدرها الخادم (`deferredEligible`) لا استنتاجُ
+   * الشاشة (١٩/٨، بلاغ المالك الحيّ): كانت الشارة تَعِد بالآجل لكل عميلٍ مرتبط، ثمّ يرفضه
+   * `assertCreditLimit` لأنّ حدّه صفر — وهو **افتراضي كل عميلٍ جديد** بقرار المالك.
+   */
+  const [customerDeferredEligible, setCustomerDeferredEligible] = useState(false);
   const [phoneResolutionError, setPhoneResolutionError] = useState<string | null>(null);
   const [resolvedCustomerTier, setResolvedCustomerTier] = useState<Tier | null>(null);
   // فئة السعر: تلقائية من فئة العميل الافتراضية، وقابلة للتجاوز يدوياً (نمط POS.tsx effectiveTier).
@@ -346,9 +356,13 @@ export default function Reception() {
   const [couponOpen, setCouponOpen] = useState(false);
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
-  const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
+  // النوعُ من القاموس المشترك لا اتّحاداً مكتوباً بيد: كان يُسقِط `OTHER` فتُصبّ عليه
+  // قناةُ المتجر/غيرِها قسراً إلى `WALK_IN` (تصويب مراجعة Codex ٢٠/٨).
+  const [channel, setChannel] = useState<WorkOrderChannel>("WALK_IN");
   // معرّف القناة مستقل عن الهاتف: رقم الهاتف هو هوية العميل الإلزامية في جميع القنوات.
   const [channelHandle, setChannelHandle] = useState("");
+  /** المحادثة التي وُلد منها الطلب (ش١) — تُرسَل مع الرأس فيُربَط أمرُ الشغل بها ذرّيّاً. */
+  const [linkedConversationId, setLinkedConversationId] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({
@@ -404,6 +418,7 @@ export default function Reception() {
       if (result.status === "NEEDS_NAME") {
         setCustomer((previous) => ({ customerId: null, name: previous.name, phone: receptionPhone, isNew: true }));
         setResolvedCustomerTier(null);
+        setCustomerDeferredEligible(false);
         setPhoneResolution("NEEDS_NAME");
         return result;
       }
@@ -414,6 +429,7 @@ export default function Reception() {
         isNew: false,
       });
       setResolvedCustomerTier(result.defaultPriceTier as Tier);
+      setCustomerDeferredEligible(!!result.deferredEligible);
       setPhoneResolution("RESOLVED");
       if (announce) notify.ok(result.created ? "تم إنشاء العميل وربطه بالطلب" : "تم ربط العميل الموجود بالطلب");
       return result;
@@ -574,6 +590,8 @@ export default function Reception() {
   const hasCustom = cart.some(isCustomKind);
   const deferredAvailable = customer.customerId != null
     && phoneResolution === "RESOLVED"
+    // حدُّ الائتمان جزءٌ من الأهليّة لا شرطٌ يُكتشَف بالرفض بعد الضغط.
+    && customerDeferredEligible
     && !activeDraft
     && !orderDelivery
     && sumDirect > 0;
@@ -958,6 +976,36 @@ export default function Reception() {
    *  `ensureCustomerId()` فوراً بينما `setCustomer` **لا يُحدِّث** المتغيّر الملتقَط في هذا
    *  الاستدعاء (React لا يزامن الحالة داخل نفس الدورة) ⇒ كانت المسوّدة تُزامَن بـ`customerId:null`
    *  فتُثبَّت الفاتورة/أوامر الشغل باسمٍ عابرٍ لا بالعميل الذي أُنشئ للتوّ. نمرّره صراحةً. */
+  /**
+   * ش١ (١٩/٨) — **من الرسالة إلى السلّة بنقرتين**: خيطُ المحادثة يملأ رأس الطلب (العميل،
+   * القناة، معرّفها) ويُغلق طبقةَ الوارد، فيبقى للموظّف اختيارُ ما يريده الزبون وحده.
+   *
+   * لا يُنشئ عميلاً: محادثةٌ بلا عميلٍ مربوط تملأ **الاسم والهاتف** فقط ويبقى القرار للموظّف
+   * (زرّ «+ عميل جديد» بنقرةٍ حيث يلزم) — إنشاءٌ صامتٌ من رسالةٍ واردة يُلوّث الكتالوج
+   * بعملاء وهميّين لكل من راسل المكتبة مرّة.
+   */
+  function startOrderFromConversation(v: StartOrderFromConversation) {
+    setLinkedConversationId(v.conversationId);
+    // ⛔ لا تحويلَ `OTHER → WALK_IN`: محادثةُ المتجر/غيرِها كانت تُسجَّل **طلبَ حضورٍ
+    // شخصيّ** فتكذب نسبةُ القنوات وتقريرُها — والقاموس المشترك يعرّف `STORE → OTHER` صراحةً.
+    setChannel(toWorkOrderChannel(v.channel));
+    setChannelHandle(v.channelHandle);
+    // ⚠ الرقم يصل من القناة بصيغة E.164 (`+9647…`) وحقلُ المحطّة يطلب المحليّة
+    // (`07…`) ويحرسها `isValidIqMobile` عند الإتمام ⤇ بلا هذا التطبيع يفتح الموظّف الطلب
+    // ويملأ السلّة ثمّ يصطدم بـ«رقم الهاتف إلزامي» رغم أنّ الرقم وصل مع المحادثة.
+    // (ومعرّفُ إنستغرام/تيك توك ليس هاتفاً ⤇ يُترك الحقل ليملأه الموظّف.)
+    const localPhone = toLocalIqMobileDigits(v.channelHandle);
+    if (isValidIqMobile(localPhone)) setReceptionPhone(localPhone);
+    setCustomer({
+      customerId: v.customerId,
+      name: v.displayName ?? "",
+      phone: isValidIqMobile(localPhone) ? localPhone : null,
+      isNew: false,
+    });
+    setShowInbox(false);
+    notify.ok(`فُتح طلبٌ من محادثة ${v.displayName ?? v.channelHandle} — أضف ما يطلبه الزبون`);
+  }
+
   function buildDraftPayload(customerIdOverride?: number | null) {
     const effectiveCustomerId = customerIdOverride ?? customer.customerId ?? null;
     const header = {
@@ -966,6 +1014,9 @@ export default function Reception() {
       contactPhone: effectiveCustomerId == null ? (customer.phone?.trim() || null) : null,
       priceTier: effectiveTier,
       channel,
+      // ش١: المعرّف والمحادثة يسافران مع الرأس — وإلّا ضاع رقم مُرسِل الطلب عند التثبيت.
+      channelHandle: channelHandle.trim() || null,
+      conversationId: linkedConversationId,
     };
     const lines = cart.map((c, i) => {
       const eff = round2(D(effectivePrice(c))).toFixed(2);
@@ -1067,7 +1118,7 @@ export default function Reception() {
       if (draftSyncTimer.current) clearTimeout(draftSyncTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, activeDraft?.id]);
+  }, [cart, customer.customerId, customer.name, customer.phone, effectiveTier, channel, channelHandle, linkedConversationId, activeDraft?.id]);
 
   /** استئناف مسوّدة (من هذا الجهاز أو جهاز زميل): صفوفٌ حيّة عبر catalog.byUnitIds + مواصفة CUSTOM من printSpec. */
   async function resumeDraft(draftId: number) {
@@ -1120,7 +1171,6 @@ export default function Reception() {
       // ش٤: صافي المقبوض سلفاً يرافق الاستئناف — «المتوقّع الآن» يهبط به فوراً.
       setDraftHeld(String((d as { heldTotal?: string }).heldTotal ?? "0.00"));
       setDraftInfo({ draftNumber: d.draftNumber });
-      setWorkshop("CART");
       const heldNote = Number((d as { heldTotal?: string }).heldTotal ?? 0) > 0
         ? ` — عليها عربون مقبوض ${fmt(Number((d as { heldTotal?: string }).heldTotal))} د.ع`
         : "";
@@ -1465,8 +1515,10 @@ export default function Reception() {
         // مرجع الزبون العابر: يُكتب على الفاتورة وأمر الشغل حتى بلا سجلّ عميل.
         contactName: customerId == null ? (customerName ?? undefined) : undefined,
         contactPhone: customerId == null ? (receiptPhone ?? undefined) : undefined,
-        paymentMethod: method,
-        paymentReference: method === "CASH" ? undefined : paymentReference.trim(),
+        // صدق طريقة الدفع (١٨/٨): الطريقة تُرسَل **فقط حين يُقبض مالٌ الآن**. كانت تُرسل دائماً
+        // فتُختَم «نقدي» على فاتورةٍ آجلة/COD لم يدخلها دينار (بلاغ المالك)، وتسقط من فلتر «آجل».
+        paymentMethod: appliedPaidD.gt(0) ? method : undefined,
+        paymentReference: appliedPaidD.gt(0) && method !== "CASH" ? paymentReference.trim() : undefined,
         paidAmount: round2(appliedPaidD).toFixed(2),
         cashRoundIQD: cashRoundActive,
         // ش٦: تسمية الفاتورة الحاملة لفرق التقريب المختلط (المبلغ مُبيَّتٌ فيها أعلاه).
@@ -1726,6 +1778,7 @@ export default function Reception() {
       setCustomer({ customerId: null, name: "", phone: null, isNew: false });
       setReceptionPhone("");
       setChannel("WALK_IN");
+    setLinkedConversationId(null);
       setChannelHandle("");
       reqIdRef.current = crypto.randomUUID();
       // تحديث القوائم.
@@ -1760,9 +1813,18 @@ export default function Reception() {
       }
       // لا توجد حالة التزام جزئي. عند غياب رد الشبكة قد تكون المعاملة كلها التزمت أو كلها
       // تراجعت؛ المفتاح الثابت يجعل إعادة الإرسال تستعيد النتيجة بلا تكرار.
+      //
+      // ⚠️ ١٩/٨ (بلاغ حيّ من المالك): كانت جملة «لم يصل تأكيد العملية… أعد المحاولة بأمان»
+      // تُلحَق بـ**كل** خطأ — بما فيه الرفض السياسيّ الواضح (حدّ ائتمان، صلاحية، شرط عمل).
+      // فيقرأ الموظّف رسالتين متناقضتين: الخادم يقول «العميل نقديّ فقط» والشاشة تقول «غالباً
+      // شبكة، أعد المحاولة» — فيعيد المحاولة بلا جدوى بدل أن يحصّل أو يستأذن المدير.
+      // الغموضُ حقيقيٌّ **فقط** حين لا يردّ الخادم بكودٍ أصلاً؛ ومع كودٍ صريح تُعرَض رسالته وحدها.
+      const serverAnswered = (e as { data?: { code?: string } } | null)?.data?.code != null;
       notify.err(e, checkoutCommitted
         ? "تم حفظ العملية كاملة، لكن تعذّر إكمال تجهيز المستندات؛ راجع الفواتير وأوامر الشغل"
-        : "لم يصل تأكيد العملية؛ لا يمكن أن يكون جزء منها محفوظاً وحده. أعد المحاولة بأمان");
+        : serverAnswered
+          ? undefined
+          : "لم يصل تأكيد العملية؛ لا يمكن أن يكون جزء منها محفوظاً وحده. أعد المحاولة بأمان");
     } finally {
       setSubmitting(false);
     }
@@ -1927,6 +1989,7 @@ export default function Reception() {
     setCustomer({ customerId: null, name: "", phone: null, isNew: false });
     setReceptionPhone("");
     setChannel("WALK_IN");
+    setLinkedConversationId(null);
     setChannelHandle("");
     reqIdRef.current = crypto.randomUUID();
     return true;
@@ -1965,13 +2028,6 @@ export default function Reception() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (showCustomization) return;
-      if (showReservations) {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          closeReservations();
-        }
-        return;
-      }
       if (showReceiptOverlay) {
         if (e.key === "Escape") { e.preventDefault(); setShowReceiptOverlay(false); }
         if (e.key === "F9") { e.preventDefault(); reprintLastRef.current?.(); }
@@ -1979,10 +2035,6 @@ export default function Reception() {
       }
       if (cashDropping || approvalAsk) {
         if (e.key === "Escape") { e.preventDefault(); setCashDropping(false); setApprovalAsk(null); }
-        return;
-      }
-      if (workshop !== "CART") {
-        if (e.key === "Escape") { e.preventDefault(); setWorkshop("CART"); }
         return;
       }
       if (e.key === "F2") {
@@ -2006,7 +2058,7 @@ export default function Reception() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showInbox, showDrop, showCustomization, showReservations, workshop, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor, closeReservations]);
+  }, [showInbox, showDrop, showCustomization, showReceiptOverlay, cashDropping, approvalAsk, depositMenuOpen, discountFor]);
 
   /** F12 — تفريغ بتأكيد (clearCart تُعرَّف بعد هذا الأثر ⇒ ref يحمل أحدث نسخة). */
   const clearCartRef = useRef<() => Promise<void>>(async () => {});
@@ -2096,14 +2148,8 @@ export default function Reception() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background" dir="rtl">
-      {/* مساحة الحجوزات جزء من شاشة الاستقبال نفسها؛ تبقى السلة محفوظة خلفها عند الرجوع. */}
-      {showReservations && (
-        <div className="absolute inset-0 z-30 bg-background">
-          <ReservationsHub embedded fixedBranchId={branchId} currentShiftId={shift?.id ?? null} onClose={closeReservations} />
-        </div>
-      )}
-      {/* ش١ (§٨.١): ورشتا الطلبات وطلبات الموقع لم تعودا طبقتين تُغطّيان لوحة الدفع —
-          صارتا تبويبين داخل عمود العمل أدناه (زرّ التثبيت وشارة الوردية مرئيان دائماً). */}
+      {/* ١٩/٨: طبقةُ الحجوزات زالت — لها **شاشتُها** `/reservations` (طلب المالك: لكل مفهومٍ
+          شاشةٌ واحدة). وهذه الشاشة صارت ما اسمُها: سلّةُ بيعٍ ودفع. */}
       {/* نافذة إغلاق وردية خدمة العملاء (Z-report مستقلّ) */}
       {closing && (
         <div
@@ -2258,15 +2304,22 @@ export default function Reception() {
             <div className="mb-1.5 flex items-center gap-2">
               <span className="grid size-5 place-items-center rounded-full bg-primary text-[10px] font-black text-primary-foreground">١</span>
               <h2 id="reception-channel-title" className="text-xs font-black">قناة وصول الطلب</h2>
+              {/* ١٩/٨ — مدخلُ المحادثة **سياقيّ** لا زرٌّ في الرأس: الوارد هنا **أداةُ سلّة**
+                  تملأ رأس الطلب (ش١)، لا وجهةً يُغادَر إليها — ووجهتُه شاشةُ `/crm?tab=inbox`.
+                  ووضعُه بجوار القناة هو موضعُه المنطقيّ: منه تُعرَف القناة ومعرّفُها. */}
+              {canReadChannels && (
+                <button
+                  type="button"
+                  onClick={() => setShowInbox(true)}
+                  className="ms-auto inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-extrabold text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title="افتح طلباً من رسالة زبون"
+                >
+                  <MessageCircle aria-hidden className="size-3" /> من محادثة
+                </button>
+              )}
             </div>
             <div className="grid grid-cols-5 gap-1">
-              {([
-                { value: "WALK_IN", label: "مباشر", Icon: Store },
-                { value: "WHATSAPP", label: "واتساب", Icon: MessageCircle },
-                { value: "INSTAGRAM", label: "إنستغرام", Icon: Instagram },
-                { value: "TIKTOK", label: "تيك توك", Icon: Music2 },
-                { value: "PHONE", label: "اتصال", Icon: Phone },
-              ] as const).map(({ value, label, Icon }) => (
+              {receptionChannelOptions(WORK_ORDER_CHANNELS).map(({ value, label }) => (
                 <button
                   key={value}
                   type="button"
@@ -2282,7 +2335,7 @@ export default function Reception() {
                       : "bg-background text-muted-foreground hover:border-primary/40 hover:text-foreground",
                   )}
                 >
-                  <Icon aria-hidden className="size-3.5" />
+                  <ChannelMark channel={value} />
                   <span className="truncate">{label}</span>
                 </button>
               ))}
@@ -2361,7 +2414,9 @@ export default function Reception() {
                     <BadgeCheck aria-label="عميل موثوق" className="size-3.5 shrink-0 text-money-positive" />
                   </div>
                   <div className="text-[10px] font-semibold text-muted-foreground" dir="ltr">{receptionPhone}</div>
-                  <div className="text-[9px] font-bold text-money-positive">مرتبط · البيع بدون عربون متاح</div>
+                  <div className={cn("text-[9px] font-bold", customerDeferredEligible ? "text-money-positive" : "text-[var(--sem-warn)]")}>
+                    {customerDeferredEligible ? "مرتبط · البيع بدون عربون متاح" : "مرتبط · نقديٌّ فقط (حدّ ائتمانه صفر)"}
+                  </div>
                 </div>
                 {canReadCustomerContext && (
                   <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => setCustomerContextId(customer.customerId)}>
@@ -2510,71 +2565,19 @@ export default function Reception() {
             الموقع/حجوزات/رسائل/سحب نقدي/طابعة/آخر فاتورة/حالة الوردية) تُرسَل بـportal إلى
             الشريط العلوي المشترك — بجانب موضع زرّ «الفواتير» الأصلي — بدل تكديسها هنا. تُبقي كل
             الحالة والمنطق داخل هذا المكوّن (شرط الـportal: نفس شجرة React، موضعٌ مختلف في DOM). */}
+        {/* ١٩/٨ (طلب المالك): **اللوحاتُ الخمس خرجت من هنا** — «الفواتير» و«الطلبات» و«طلبات
+            الموقع» و«الحجوزات» و«رسائل وطلبات العملاء» صارت بطاقاتٍ في الصفحة الرئيسية
+            (`CashierHome`) تفتح المحطّة على لوحتها عبر `?workspace=`.
+
+            السبب مقيس: كان الرأس صفّاً واحداً من ثمانية أزرارٍ **متساوية الوزن** يفيض أفقياً
+            بشريط تمرير، فيختلط فيه ما يُفتَح مرّةً في اليوم (الحجوزات) بما يُضغَط كل دقيقة
+            (إنهاء الوردية). وثلاثةٌ من أسمائها كانت تصطدم بأسماء أخرى في نفس الشاشة
+            («الطلبات» مقابل «متابعة الطلبات» مقابل «تصفّح الطلبات»).
+
+            ما بقي هنا **أدواتُ الوردية وحدها**: الطابعة · آخر فاتورة · سحب نقديّ · إنهاء
+            الوردية — أي ما يخصّ الجلسة لا ما يخصّ المستندات. */}
         {headerActionsNode && createPortal(
           <>
-            <button
-              type="button"
-              onClick={() => setWorkshop("INVOICES")}
-              title="فواتيري — كل ما بعتُه من هذه المحطة"
-              className={cn(
-                "inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
-                workshop === "INVOICES" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
-              )}
-            >
-              <ReceiptIcon aria-hidden className="size-4" />
-              <span>الفواتير</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setWorkshop("ORDERS")}
-              title="طابور الطلبات والتوصيل — من الاستلام حتى التسليم"
-              className={cn(
-                "relative inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
-                workshop === "ORDERS" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
-              )}
-            >
-              <Truck aria-hidden className="size-4" />
-              <span>الطلبات</span>
-              {woReadyCount > 0 && (
-                <Badge variant="secondary" className="ms-0.5 tabular-nums">{woReadyCount}</Badge>
-              )}
-            </button>
-            {canReadStoreOrders && (
-              <button
-                type="button"
-                onClick={() => setWorkshop("STORE")}
-                title="طلبات الموقع — طلبات العملاء عبر المتجر الإلكتروني"
-                className={cn(
-                  "inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border px-3 text-sm font-bold transition-colors",
-                  workshop === "STORE" ? "border-primary bg-primary/10 text-primary" : "bg-muted/40 text-foreground hover:bg-muted",
-                )}
-              >
-                <Package aria-hidden className="size-4" />
-                <span>طلبات الموقع</span>
-              </button>
-            )}
-            {canReadReservations && (
-              <button
-                type="button"
-                onClick={openReservations}
-                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/5 px-3 text-sm font-bold text-primary transition-colors hover:bg-primary/10"
-              >
-                <CalendarClock aria-hidden className="size-4" />
-                <span>الحجوزات</span>
-              </button>
-            )}
-            {canReadChannels && (
-              <button
-                type="button"
-                onClick={() => setShowInbox(true)}
-                className="inline-flex h-[var(--ui-control)] items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold hover:bg-muted"
-              >
-                <MessageCircle aria-hidden className="size-4" />
-                <span className="hidden lg:inline">رسائل وطلبات العملاء</span>
-              </button>
-            )}
-
-            <div className="mx-1 h-6 w-px shrink-0 bg-border" aria-hidden />
 
             {bridge.enabled && (
               <button
@@ -2663,55 +2666,43 @@ export default function Reception() {
               هنا — نقاط الدخول إليها صارت في الشريط العلوي المشترك (بجانب زرّ «الفواتير» الأصلي،
               انظر portal أدناه) بدل التكرار. هذا الصفّ الآن مؤشّر «أين أنا» فقط: اسم السلّة
               وأدواتها حين workshop=CART، أو زرّ رجوعٍ موحَّد لأي ورشةٍ أخرى. */}
+          {/* ١٩/٨ (طلب المالك: «لكل بطاقة شاشة خاصّة بها») — **الورش الثلاث حُذفت من هنا**.
+              كانت «الفواتير» و«الطلبات» و«طلبات الموقع» تُركَّب داخل عمود السلّة، فيصير للمفهوم
+              الواحد مكانان: لوحةٌ هنا وصفحةٌ في الشريط الجانبيّ. صار لكلٍّ **شاشتُه**:
+              `/reception/invoices` · `/reception/orders` · `/store-admin?tab=orders`.
+              وهذه الشاشة صارت ما اسمُها: **سلّة بيع**. */}
           <div className="flex h-12 flex-shrink-0 items-center gap-2 border-b bg-muted/40 px-3">
-            {workshop === "CART" ? (
-              <>
-                <span className="inline-flex items-center gap-1.5 text-xs font-extrabold">
-                  <ShoppingCart aria-hidden className="size-4" />
-                  {cart.length > 0 ? `السلة (${cart.length})` : "السلة"}
-                </span>
-                {cart.length > 0 && (
-                  <div className="ms-auto flex items-center gap-2">
-                    <span className="hidden text-[11px] text-muted-foreground sm:inline">{cartCount} وحدة</span>
-                    <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
-                      تفريغ
-                    </Button>
-                  </div>
-                )}
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setWorkshop("CART")}
-                className="inline-flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs font-extrabold hover:bg-muted"
-              >
-                <ArrowRight aria-hidden className="size-4" /> رجوع إلى السلة
-                <span className="text-muted-foreground">
-                  ·{" "}
-                  {workshop === "INVOICES" ? "الفواتير" : workshop === "ORDERS" ? "الطلبات" : "طلبات الموقع"}
-                </span>
-              </button>
+            <span className="inline-flex items-center gap-1.5 text-xs font-extrabold">
+              <ShoppingCart aria-hidden className="size-4" />
+              {cart.length > 0 ? `السلة (${cart.length})` : "السلة"}
+            </span>
+            {cart.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="hidden text-[11px] text-muted-foreground sm:inline">{cartCount} وحدة</span>
+                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
+                  تفريغ
+                </Button>
+              </div>
             )}
+            {/* مخارجُ الموظّف من شاشة عمله (المحطّة بلا شريطٍ جانبيّ). */}
+            <div className="ms-auto flex items-center gap-1.5">
+              <a
+                href="/reception/orders"
+                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
+                title="طابور التسليم والإسناد"
+              >
+                <ClipboardList aria-hidden className="size-3.5" /> طلبات محطّتي
+              </a>
+              <a
+                href="/reception/invoices"
+                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-extrabold hover:bg-muted"
+                title="ما عليه مبلغٌ متبقٍّ"
+              >
+                <ReceiptIcon aria-hidden className="size-3.5" /> فواتير للتحصيل
+              </a>
+            </div>
           </div>
 
-          {workshop === "INVOICES" ? (
-            <ReceptionInvoiceQueue
-              branchId={branchId}
-              currentShiftId={shift ? Number(shift.id) : null}
-              branchName={branchName}
-              parties={(partiesQ.data ?? []) as DispatchParty[]}
-              canFulfill={me.data?.role === "cashier" || isElevatedRole}
-              isManager={isElevatedRole}
-            />
-          ) : workshop === "ORDERS" ? (
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <ReceptionOrderQueue branchId={branchId} />
-            </div>
-          ) : workshop === "STORE" ? (
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
-              <OrderFulfillment />
-            </div>
-          ) : (
             <CartTable
               branchId={branchId}
               cart={cart}
@@ -2728,7 +2719,6 @@ export default function Reception() {
               grandTotal={grandTotal}
               cartCount={cartCount}
             />
-          )}
         </div>
       </div>
 
@@ -2877,7 +2867,7 @@ export default function Reception() {
               <ArrowRight aria-hidden className="size-4 me-1" /> العودة إلى الطلب
             </Button>
           </div>
-          <Inbox />
+          <Inbox onStartOrder={startOrderFromConversation} />
         </div>
       )}
       {customerContextId != null && (

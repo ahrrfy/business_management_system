@@ -1520,6 +1520,69 @@
       "when": 1788052280000,
       "tag": "0229_user_access_expiry",
       "breakpoints": true
+    },
+    {
+      "idx": 230,
+      "version": "5",
+      "when": 1788052281000,
+      "tag": "0230_truthful_payment_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 231,
+      "version": "5",
+      "when": 1788052282000,
+      "tag": "0231_document_counters",
+      "breakpoints": true
+    },
+    {
+      "idx": 232,
+      "version": "5",
+      "when": 1788052283000,
+      "tag": "0232_delivery_company_statement",
+      "breakpoints": true
+    },
+    {
+      "idx": 233,
+      "version": "5",
+      "when": 1788052284000,
+      "tag": "0233_return_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 234,
+      "version": "5",
+      "when": 1788052285000,
+      "tag": "0234_draft_channel_handle_conversation",
+      "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "5",
+      "when": 1788052286000,
+      "tag": "0235_service_type_blocks_execution",
+      "breakpoints": true
+    },
+    {
+      "idx": 236,
+      "version": "5",
+      "when": 1788052287000,
+      "tag": "0236_work_order_image_revision",
+      "breakpoints": true
+    },
+    {
+      "idx": 237,
+      "version": "5",
+      "when": 1788052288000,
+      "tag": "0237_work_order_cancel_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 238,
+      "version": "5",
+      "when": 1788052289000,
+      "tag": "0238_work_order_draft_link",
+      "breakpoints": true
     }
   ]
 }

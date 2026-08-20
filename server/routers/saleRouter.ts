@@ -1,9 +1,11 @@
+import { INVOICE_CHANNELS } from "@shared/invoiceChannel";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, not, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
+import { stripDocPrefix } from "@shared/documentNumber";
 import { DEAD_INVOICE_STATUSES, isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import { canCrossBranches } from "../lib/branchAuthority";
 import { z } from "zod";
@@ -31,7 +33,7 @@ import { verifyPassword } from "../auth/password";
 import { logAudit, logAuditTx } from "../services/auditService";
 import { cancelSale, correctSale, processPayment } from "../services/saleService";
 import { assertNoInTransitConsignment } from "../services/delivery/guards";
-import { canSeeCostForUser, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure } from "../trpc";
+import { canSeeCostForUser, invoiceListProcedure, invoiceViewProcedure, invoiceViewScopeForUser, router, salesCashierProcedure, salesManagerProcedure, salesReadProcedure, type InvoiceScope } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -212,6 +214,8 @@ const salesListInput = z
     to: ymd.optional(),
     status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED", "SUPERSEDED"]).optional(),
     sourceType: z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]).optional(),
+    /** قناة الإصدار — مرآة `INVOICE_CHANNELS` المشتركة (المحطّة لا المصدر الخام). */
+    channel: z.enum(INVOICE_CHANNELS).optional(),
     balanceState: z.enum(["DEPOSIT_DUE", "OUTSTANDING", "UNPAID", "SETTLED"]).optional(),
     customerId: z.number().int().positive().optional(),
     salespersonId: z.number().int().positive().optional(),
@@ -244,9 +248,31 @@ type SalesListInput = z.infer<typeof salesListInput>;
 
 /** يبني شروط WHERE لقائمة المبيعات — مستخدم في list و listSummary معاً
  *  ⇒ يضمن تطابق الفلترة بينهما للأبد (نفس عزل الفرع ونفس الحدّ نصف المفتوح [from, to+يوم)). */
-export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null, scopedOwnerId: number | null = null) {
+export function buildSalesListConds(
+  input: SalesListInput,
+  scopedBranchId: number | null,
+  scopedOwnerId: number | null = null,
+  /**
+   * نطاق القناة (١٨/٨) — مرآةُ `sales.get` على القائمة: نطاقُ الاستقبال/الطباعة يرى فواتير
+   * محطّته وحدها. يتطلّب `leftJoin(shifts)` في كل مستهلك (كما يتطلّب عزلُ الموظف join أوامر
+   * الشغل). `sales` (وغيابُ القيمة) = بلا حصر قناة — سلوك ما قبل التغيير حرفياً.
+   */
+  invoiceListScope: InvoiceScope | null = null,
+) {
   const conds = [];
   if (scopedBranchId) conds.push(eq(invoices.branchId, scopedBranchId));
+  if (invoiceListScope === "reception") {
+    conds.push(
+      or(
+        eq(shifts.shiftType, "RECEPTION"),
+        // فاتورة تسليم/إرسال أُنشئت بلا وردية استقبال مفتوحة (deliver.ts/dispatch.ts يختمان
+        // NULL عندئذٍ) — كانت تسقط من نطاق الاستقبال كلّياً رغم أنّها فاتورةُ طلبه.
+        and(isNull(invoices.shiftId), eq(invoices.sourceType, "WORKORDER")),
+      )!,
+    );
+  } else if (invoiceListScope === "print") {
+    conds.push(eq(shifts.shiftType, "PRINT_SERVICES"));
+  }
   // فلتر الفرع الصريح — else حتماً: العزل الحاكم (scopedBranchId) مقدَّم دائماً، فلا يستطيع
   // غير المرتفع توسيع نطاقه بإرسال branchId مغاير (يُتجاهَل مدخله بصمت ويبقى محصوراً بفرعه).
   else if (input?.branchId) conds.push(eq(invoices.branchId, input.branchId));
@@ -267,6 +293,34 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
   if (input?.sourceType) conds.push(eq(invoices.sourceType, input.sourceType));
+  // فلتر القناة (١٩/٨) — مرآة `deriveInvoiceChannel` المشتركة حرفيّاً. يُطبّق خادميّاً
+  // لا في الصفحة وحدها، وإلّا كذب العدّاد والمجاميع (يرشّح ما في الصفحة لا ما في المدى).
+  if (input?.channel) {
+    const workOrderSourced = inArray(invoices.sourceType, ["WORKORDER", "ORDER"]);
+    switch (input.channel) {
+      case "RECEPTION":
+        conds.push(or(workOrderSourced, eq(shifts.shiftType, "RECEPTION"))!);
+        break;
+      case "PRINT":
+        // أمر الشغل استقبالٌ مهما كانت وردية مُسلّمه — مطابقةً للاشتقاق المشترك.
+        conds.push(and(not(workOrderSourced), eq(shifts.shiftType, "PRINT_SERVICES"))!);
+        break;
+      case "STORE":
+        conds.push(eq(invoices.sourceType, "ONLINE"));
+        break;
+      case "RETAIL":
+        conds.push(
+          and(
+            eq(invoices.sourceType, "POS"),
+            or(isNull(shifts.shiftType), eq(shifts.shiftType, "RETAIL"))!,
+          )!,
+        );
+        break;
+      default:
+        // OTHER: ليس POS ولا أمر شغل ولا متجراً.
+        conds.push(not(inArray(invoices.sourceType, ["POS", "ONLINE", "WORKORDER", "ORDER"])));
+    }
+  }
   if (input?.paymentMethod)
     conds.push(
       input.paymentMethod === "NONE"
@@ -306,12 +360,25 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
     // رقم الفاتورة يُطابَق خاماً (رموز/أرقام لا معنى للتطبيع العربي فيها)، واسم العميل عبر
     // customers.searchNorm المطبَّع عربياً (D2 ١/٧ — «احمد» يجد «أحمد»)، نفس نمط customerService.
     // ⚠️ يتطلّب join على customers في **كل** مستهلك لهذه الشروط (list وlistSummary معاً).
-    const raw = `%${escLike(input.q)}%`;
-    const folded = `%${escLike(normalizeSearchText(input.q))}%`;
+    // ١٨/٨: يُقبَل البحث بـ**رقم العرض القصير** (`10023`) وبـ**رمز الآلة** (`INV-10023`،
+    // وهو ما يرسله الماسح) — تُنزَع البادئة حين يكون الباقي رقماً. والصيغة التاريخية
+    // (`INV-1-20260818-00073`) تبقى كما هي فتُطابَق حرفياً.
+    const term = stripDocPrefix(input.q);
+    const raw = `%${escLike(term)}%`;
+    const folded = `%${escLike(normalizeSearchText(term))}%`;
     conds.push(
       or(
         sql`${invoices.invoiceNumber} LIKE ${raw} ESCAPE '!'`,
         sql`coalesce(${customers.searchNorm}, '') LIKE ${folded} ESCAPE '!'`,
+        // ١٨/٨ (بلاغ المالك): **رقم أمر الشغل** — هو الرقم الذي بيد الزبون وعلى باركود
+        // التذكرة (`WO-1-…`)، بينما الفاتورة تُرقَّم من مولّدٍ آخر (`INV-1-…`) و`sourceId`
+        // يحمل المعرّف العدديّ `WO-{id}` لا رقم الأمر ⇒ مسحُ التذكرة في شاشة الفواتير كان
+        // يعيد «لا فواتير مطابقة» حتماً. الـleftJoin على workOrders قائمٌ في كل مستهلكي
+        // هذه الشروط (يفرضه عزل الموظف) فالتوسعة بلا كلفة بنيوية.
+        sql`coalesce(${workOrders.orderNumber}, '') LIKE ${raw} ESCAPE '!'`,
+        // مطابقةٌ تامّة لا LIKE: `sourceId` يحمل أيضاً clientRequestId (uuid) لفواتير POS،
+        // فـLIKE على جزءٍ قصير يلوّث النتائج.
+        eq(invoices.sourceId, term),
       )!,
     );
   }
@@ -574,27 +641,15 @@ export const saleRouter = router({
           });
         }
 
-        const invoiceReceipts = await tx
-          .select({
-            id: receipts.id,
-            paymentMethod: receipts.paymentMethod,
-            cashBucket: receipts.cashBucket,
-            shiftId: receipts.shiftId,
-            status: receipts.status,
-          })
-          .from(receipts)
-          .where(eq(receipts.invoiceId, input.invoiceId))
-          .for("update");
-
+        // ⛔ لا إيصالات هنا (تجريد ١٩/٨): كان هذا المسار يقفل **كل إيصالات الفاتورة**
+        // بـ`FOR UPDATE` ثمّ يكتب طريقتَها في طرفَي التدقيق **متطابقتَين** — فلا يتغيّر
+        // شيءٌ ولا تُقرأ المقارنة أبداً، ومع ذلك يمنع القفلُ قبضاً متزامناً على الفاتورة طوال
+        // تعديل مديرٍ لملاحظة. وإعادةُ تصنيف طريقة القبض فعلاً (نقدٌ ↔ بطاقة) تمسّ
+        // الدرج والـZ والدفتر ⤇ مسارها مستندٌ مستقلٌّ يُبنى بقرار مالك، لا أثرٌ جانبيٌّ هنا.
+        // هذا الإجراء **رأسٌ فقط**: ملاحظاتٌ وتاريخُ استحقاق، والبنود/المال مسارُها `reissue`.
         const oldFields = {
           notes: inv.notes ?? null,
           dueDate: inv.dueDate ? String(inv.dueDate).slice(0, 10) : null,
-          paymentMethod: inv.paymentMethod ?? null,
-          receipts: invoiceReceipts.map((receipt) => ({
-            receiptId: Number(receipt.id),
-            method: receipt.paymentMethod,
-            cashBucket: receipt.cashBucket,
-          })),
         };
 
         const nextNotes =
@@ -630,12 +685,6 @@ export const saleRouter = router({
         const newFields = {
           notes: nextNotes,
           dueDate: nextDueDate,
-          paymentMethod: inv.paymentMethod ?? null,
-          receipts: invoiceReceipts.map((receipt) => ({
-            receiptId: Number(receipt.id),
-            method: receipt.paymentMethod,
-            cashBucket: receipt.cashBucket,
-          })),
         };
         await logAuditTx(tx, ctx, {
           action: "sale.invoiceCorrect",
@@ -765,12 +814,12 @@ export const saleRouter = router({
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
   // /simplify ٣٠/٦: list = listPage().rows ⇒ كاتب واحد للاستعلام، صفر تَكرار.
-  list: salesReadProcedure
+  list: invoiceListProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
+      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId, ctx.invoiceListScope);
       const page = await paginateKeyset({
         cursor: input?.cursor,
         limit: input?.limit,
@@ -800,6 +849,17 @@ export const saleRouter = router({
             customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''), NULLIF(${invoices.contactPhone}, ''), NULLIF(${deliveryConsignments.recipientPhone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
+            // قناة الفاتورة (١٩/٨): `sourceType` وحده لا يميّز الكاشيرات الثلاثة (كلّها POS).
+            // والـ`leftJoin(shifts)` قائمٌ أصلاً لعزل النطاق ⤇ القناة مجّانية بلا عمود.
+            shiftType: shifts.shiftType,
+            // رقم أمر الشغل: الـjoin قائمٌ والبحث يطابقه (سطر ٣٤٧)، لكنّه **لم يُسقَط قطّ**
+            // ⤇ الموظّف يبحث بالرقم فيجد الفاتورة ولا يرى في الصفّ ما يربطها بأمره.
+            workOrderId: workOrders.id,
+            workOrderNumber: workOrders.orderNumber,
+            // شارة التصحيح في القائمة (طلب المالك ١٧/٨): كانت تُعاد في `get` وحدها
+            // ⤇ فاتورةٌ مُستبدَلة تبدو في القائمة كأيّ غيرها.
+            correctionOfInvoiceId: invoices.correctionOfInvoiceId,
+            correctedByInvoiceId: invoices.correctedByInvoiceId,
             deviceId: invoices.posDeviceId,
             // التوصيل (٩/٨): شارة «توصيل — بيد فلان» وفلترها في شاشة الفواتير. صفّ واحد كحدّ
             // أقصى لكل فاتورة (uq_consignment_invoice) ⇒ لا مضاعفة صفوف.
@@ -813,6 +873,7 @@ export const saleRouter = router({
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
@@ -830,12 +891,12 @@ export const saleRouter = router({
 
   // S3+S4 (٣٠/٦): listPage — صياغة keyset رسمية تُعيد `{rows, nextCursor, hasMore}`.
   // للواجهات الجَديدة (useInfiniteQuery({getNextPageParam})).
-  listPage: salesReadProcedure
+  listPage: invoiceListProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return { rows: [], nextCursor: null as number | null, hasMore: false };
-      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
+      const baseConds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId, ctx.invoiceListScope);
       const { rows, hasMore, nextCursor } = await paginateKeyset({
         cursor: input?.cursor,
         limit: input?.limit,
@@ -861,6 +922,17 @@ export const saleRouter = router({
             customerPhone: sql<string | null>`COALESCE(NULLIF(${customers.whatsapp}, ''), NULLIF(${customers.phone}, ''), NULLIF(${workOrderInvoiceCustomer.whatsapp}, ''), NULLIF(${workOrderInvoiceCustomer.phone}, ''))`,
             salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
             shiftId: invoices.shiftId,
+            // قناة الفاتورة (١٩/٨): `sourceType` وحده لا يميّز الكاشيرات الثلاثة (كلّها POS).
+            // والـ`leftJoin(shifts)` قائمٌ أصلاً لعزل النطاق ⤇ القناة مجّانية بلا عمود.
+            shiftType: shifts.shiftType,
+            // رقم أمر الشغل: الـjoin قائمٌ والبحث يطابقه (سطر ٣٤٧)، لكنّه **لم يُسقَط قطّ**
+            // ⤇ الموظّف يبحث بالرقم فيجد الفاتورة ولا يرى في الصفّ ما يربطها بأمره.
+            workOrderId: workOrders.id,
+            workOrderNumber: workOrders.orderNumber,
+            // شارة التصحيح في القائمة (طلب المالك ١٧/٨): كانت تُعاد في `get` وحدها
+            // ⤇ فاتورةٌ مُستبدَلة تبدو في القائمة كأيّ غيرها.
+            correctionOfInvoiceId: invoices.correctionOfInvoiceId,
+            correctedByInvoiceId: invoices.correctedByInvoiceId,
             deviceId: invoices.posDeviceId,
             // التوصيل (٩/٨) — مرآة list حرفياً (نفس الشروط تتطلّب نفس الـjoin).
             consignmentId: deliveryConsignments.id,
@@ -873,6 +945,7 @@ export const saleRouter = router({
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(workOrderInvoiceCustomer, eq(workOrders.customerId, workOrderInvoiceCustomer.id))
           .leftJoin(users, eq(invoices.createdBy, users.id))
@@ -889,12 +962,16 @@ export const saleRouter = router({
     }),
 
   /** موظفو المبيعات الذين لديهم فواتير ضمن نطاق صلاحية المستدعي — لتغذية الفلتر بلا كشف دليل المستخدمين. */
-  salespeople: salesReadProcedure.query(async ({ ctx }) => {
+  salespeople: invoiceListProcedure.query(async ({ ctx }) => {
     const db = getDb();
     if (!db) return [];
     const conds = [isNotNull(invoices.createdBy)];
     if (ctx.scopedBranchId != null) conds.push(eq(invoices.branchId, ctx.scopedBranchId));
-    if (ctx.scopedOwnerId != null) conds.push(eq(invoices.createdBy, ctx.scopedOwnerId));
+    // ١٨/٨: مرآةُ عزل القائمة حرفياً (`buildSalesListConds`) — كان القصّ على `createdBy` وحده
+    // بلا فرع أوامر الشغل، فتخلو قائمةُ فلتر «موظف المبيعات» ممّن ظهرت فواتيرهم في الجدول.
+    if (ctx.scopedOwnerId != null) {
+      conds.push(or(eq(invoices.createdBy, ctx.scopedOwnerId), eq(workOrders.createdBy, ctx.scopedOwnerId))!);
+    }
     return db
       .select({
         id: invoices.createdBy,
@@ -902,6 +979,7 @@ export const saleRouter = router({
       })
       .from(invoices)
       .leftJoin(users, eq(invoices.createdBy, users.id))
+      .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
       .where(and(...conds))
       .groupBy(invoices.createdBy)
       .orderBy(sql`name ASC`);
@@ -909,12 +987,12 @@ export const saleRouter = router({
 
   // مجاميع كل النتائج المطابقة للفلتر (لا الصفحة المعروضة فقط) — نفس شروط list حتماً
   // عبر buildSalesListConds. الأموال نصّية كما تعيدها mysql2 (SUM على decimal) — لا parseFloat.
-  listSummary: salesReadProcedure
+  listSummary: invoiceListProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return { count: 0, totalAmount: "0", paidAmount: "0", dueAmount: "0" };
-      const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
+      const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId, ctx.invoiceListScope);
       const row = (
         await db
           .select({
@@ -934,6 +1012,7 @@ export const saleRouter = router({
           // leftJoin على مفتاح أجنبيّ أحاديّ ⇒ لا يُضاعف صفوف الفواتير ⇒ المجاميع تبقى صحيحة،
           // وcount يبقى مطابقاً تماماً لعدد صفوف list (نفس الشروط ونفس الجداول).
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(shifts, eq(shifts.id, invoices.shiftId))
           .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
           .leftJoin(deliveryConsignments, eq(deliveryConsignments.invoiceId, invoices.id))
           .leftJoin(onlineOrders, eq(onlineOrders.invoiceId, invoices.id))
@@ -958,6 +1037,9 @@ export const saleRouter = router({
           id: invoices.id,
           invoiceNumber: invoices.invoiceNumber,
           sourceType: invoices.sourceType,
+          // ١٩/٨: الرابط البنيويّ بأمر الشغل (`WO-{id}`) — تشتقّ منه الشاشة مُعرّف الأمر
+          // لتفتح مسار عكس فاتورة الخدمة الصفريّة (لا عمود `workOrderId` على الفاتورة).
+          sourceId: invoices.sourceId,
           branchId: invoices.branchId,
           // العميل هنا مرجع عرضٍ وتشغيل لفاتورة COD فقط؛ الطرف المالي يبقى جهة التوصيل.
           // ١٠/٨: + الزبون العابر ومستلم الإرسالية (مرآة list — «عميل نقدي» للمجهول حقاً فقط).
@@ -1036,7 +1118,12 @@ export const saleRouter = router({
     if (invoiceViewScope === "reception") {
       // Reception operators may reprint the branch reception queue, but the fallback must never
       // become a read path into retail invoices or the wider sales module.
-      if (inv.shiftType !== "RECEPTION") return null;
+      // ١٨/٨: فاتورة تسليم/إرسال أُنشئت بلا وردية استقبال مفتوحة تُختَم `shiftId = NULL` — كانت
+      // تسقط هنا فلا يفتحها ولا يعيد طباعتها مَن استقبل طلبها. تُقبَل بحصرٍ ضيّق على WORKORDER.
+      if (inv.shiftType !== "RECEPTION" && !(inv.shiftId == null && inv.sourceType === "WORKORDER")) return null;
+    } else if (invoiceViewScope === "print") {
+      // كاشير الطباعة: فواتير محطّته وحدها (لا تجزئة ولا استقبال).
+      if (inv.shiftType !== "PRINT_SERVICES") return null;
     } else if (
       invoiceViewScope === "sales"
       && ctx.scopedOwnerId != null

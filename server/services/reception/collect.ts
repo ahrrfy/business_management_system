@@ -31,12 +31,13 @@ export async function collectOnReceptionInvoice(
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير مهيّأة" });
 
-  // الحصر البنيويّ: الفاتورة وُلدت على وردية استقبال. (فواتير التجزئة/أوامر الشغل المُسلَّمة
-  // خارج النطاق — تُسدَّد من شاشة الفواتير لمن يملكها.) القراءة استرشادية بلا قفل — processPayment
+  // الحصر البنيويّ: الفاتورة وُلدت على وردية استقبال — **أو** هي فاتورةُ أمر شغلٍ بلا وردية
+  // (٢٠/٨، انظر أدناه). فواتير التجزئة تبقى خارج النطاق: تُسدَّد من شاشة الفواتير لمن يملكها.
+  // القراءة استرشادية بلا قفل — processPayment
   // يعيد التحقّق من كل شيءٍ ماليّ تحت FOR UPDATE داخل معاملته.
   const inv = (
     await db
-      .select({ id: invoices.id, branchId: invoices.branchId, shiftId: invoices.shiftId })
+      .select({ id: invoices.id, branchId: invoices.branchId, shiftId: invoices.shiftId, sourceType: invoices.sourceType })
       .from(invoices)
       .where(eq(invoices.id, input.invoiceId))
       .limit(1)
@@ -45,7 +46,12 @@ export async function collectOnReceptionInvoice(
   const invShift = inv.shiftId != null
     ? (await db.select({ shiftType: shifts.shiftType }).from(shifts).where(eq(shifts.id, Number(inv.shiftId))).limit(1))[0]
     : null;
-  if (!invShift || invShift.shiftType !== "RECEPTION") {
+  // ٢٠/٨ — نظيرُ التسامح في `listReceptionInvoices` بالضبط: فاتورةُ أمر شغلٍ خُتِمت
+  // `shiftId = NULL` (تسليمٌ بلا وردية RECEPTION مفتوحة) كانت تظهر في الطابور بعد الإصلاح
+  // ثمّ **تُرفَض عند القبض** — وهو أسوأ من إخفائها: يراها الموظّف ولا يستطيع تحصيلها.
+  // الشرطان يتغيّران معاً أو لا يتغيّران.
+  const nullShiftWorkOrder = inv.shiftId == null && inv.sourceType === "WORKORDER";
+  if (!nullShiftWorkOrder && (!invShift || invShift.shiftType !== "RECEPTION")) {
     throw new TRPCError({
       code: "FORBIDDEN",
       message: "هذه الفاتورة خارج نطاق محطة خدمة الزبائن — تُسدَّد من شاشة الفواتير",

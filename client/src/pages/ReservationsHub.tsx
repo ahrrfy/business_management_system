@@ -1,6 +1,7 @@
 // الحجوزات — واجهة R-م٣ (النواة). قائمة الحجوزات + حوار حجز جديد (استعلام منتج + بنود) + إلغاء/تمديد.
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
+import { receptionChannelLabel } from "@shared/receptionChannel";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -74,7 +75,12 @@ const STATUS_VARIANT: Record<ReservationStatus, "default" | "secondary" | "destr
   CANCELLED: "destructive",
   RELEASED: "secondary",
 };
-const CHANNEL_LABEL: Record<Channel, string> = { PHONE: "هاتف", WALK_IN: "حضور", WHATSAPP: "واتساب", STORE: "متجر" };
+const CHANNEL_LABEL: Record<Channel, string> = {
+  PHONE: receptionChannelLabel("PHONE"),
+  WALK_IN: receptionChannelLabel("WALK_IN"),
+  WHATSAPP: receptionChannelLabel("WHATSAPP"),
+  STORE: receptionChannelLabel("STORE"),
+};
 const CHANNELS = Object.keys(CHANNEL_LABEL) as Channel[];
 const CLOSEABLE: ReservationStatus[] = ["ACTIVE", "PARTIALLY_FULFILLED"];
 
