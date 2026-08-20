@@ -156,7 +156,7 @@ SET @has_idx_exchange_custody_scope := (
 );
 SET @sql_idx_exchange_custody_scope := IF(
   @has_idx_exchange_custody_scope = 0,
-  'CREATE INDEX `idx_exchange_custody_scope` ON `exchangeTransactions` (`exchangeHouseId`, `branchId`, `exchangeTxnStatus`, `currency`, `type`, `id`)',
+  'CREATE INDEX `idx_exchange_custody_scope` ON `exchangeTransactions` (`exchangeHouseId`, `branchId`, `exchangeTxnStatus`, `exchangeTxnCurrency`, `exchangeTxnType`, `id`)',
   'SELECT 1'
 );
 PREPARE stmt_idx_exchange_custody_scope FROM @sql_idx_exchange_custody_scope;
