@@ -57,7 +57,7 @@
 ## Slide 8
 ### التحقق والتشغيل التالي
 - اختبارات Storefront: 18 اختباراً ناجحاً.
-- فحص migration journal ناجح حتى `0240_product_customization_templates`.
+- فحص migration journal ناجح حتى `0243_product_customization_templates`.
 - parser للخدمة والراوتر والواجهة ومحرر الإدارة ناجح.
 - الخطوة التشغيلية: تطبيق الهجرة ونشر الخادم ثم إنشاء القوالب من ProductEdit.
 

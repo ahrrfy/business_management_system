@@ -1592,10 +1592,24 @@
       "breakpoints": true
     },
     {
-      "idx": 240,
+      "idx": 241,
       "version": "5",
-      "when": 1788052291000,
-      "tag": "0240_product_customization_templates",
+      "when": 1788052292000,
+      "tag": "0241_storefront_loyalty",
+      "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "5",
+      "when": 1788052293000,
+      "tag": "0242_storefront_push_campaigns",
+      "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "5",
+      "when": 1788052294000,
+      "tag": "0243_product_customization_templates",
       "breakpoints": true
     }
   ]
