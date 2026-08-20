@@ -24,14 +24,35 @@ import { productsManagerProcedure, router } from "../trpc";
 
 const tierSchema = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 
-/** النطاق جزءٌ من العقد لا اشتقاقٌ من فراغ الفلاتر — الخدمة تفرض تماسكه (W6). */
-const filtersSchema = z.object({
-  scope: z.enum(["FILTERED", "SELECTED", "ALL"]),
-  categoryId: z.number().int().positive().nullish(),
-  productSearch: z.string().max(120).nullish(),
-  priceTier: tierSchema.nullish(),
-  productIds: z.array(z.number().int().positive()).max(500).nullish(),
-});
+/**
+ * النطاق جزءٌ من العقد لا اشتقاقٌ من فراغ الفلاتر — الخدمة تفرض تماسكه (W6).
+ *
+ * ⚠️ **`scope` اختياريٌّ في العقد وإلزاميٌّ في الخدمة، عمداً.** تطبيق أندرويد «سوبر العربية»
+ * المنشور على Internal testing يبني `filters` بـ`productSearch`/`priceTier` فقط
+ * (`ProductsRepository.kt`)، فجعلُ الحقل إلزامياً هنا كان **يُسقط مسار موجات الأسعار كلّه**
+ * في نسخةٍ لا نملك تحديثها فوراً (يلزمها رفع versionCode وبناء AAB ورفعٌ يدويّ إلى Play).
+ * ⇒ الطلب الذي يصل بلا `scope` يُشتقّ له واحدٌ **صريح** أدناه، ثمّ تسري عليه حرّاس الخدمة نفسها.
+ * الاشتقاق آمنٌ الآن لأنّ جذر الخطر زال: لم يعد أيّ فلترٍ يسقط بصمت (ع١)، فغيابُ الفلاتر
+ * صار يعني «الكل» **حقيقةً** لا نتيجةَ مصطلحٍ ابتلعه الخادم.
+ */
+const filtersSchema = z
+  .object({
+    scope: z.enum(["FILTERED", "SELECTED", "ALL"]).optional(),
+    categoryId: z.number().int().positive().nullish(),
+    productSearch: z.string().max(120).nullish(),
+    priceTier: tierSchema.nullish(),
+    productIds: z.array(z.number().int().positive()).max(500).nullish(),
+  })
+  .transform((f) => {
+    if (f.scope) return { ...f, scope: f.scope };
+    const hasIds = !!f.productIds?.length;
+    const hasFilter =
+      !!f.productSearch?.trim() ||
+      (f.categoryId != null && f.categoryId > 0) ||
+      !!f.priceTier;
+    const derived = hasIds ? "SELECTED" : hasFilter ? "FILTERED" : "ALL";
+    return { ...f, scope: derived as "FILTERED" | "SELECTED" | "ALL" };
+  });
 
 const changeTypeSchema = z.enum([
   "INCREASE_PERCENT",
@@ -134,6 +155,8 @@ export const priceWavesRouter = router({
         waveId: z.number().int().positive(),
         /** يستعيد الصفوف غير المتعارضة ويترك ما تغيّر بعد الموجة — بعد إقرار المدير بالتعارض. */
         force: z.boolean().optional(),
+        /** إقرارٌ صريح بأنّ سعراً مُستعاداً صار تحت تكلفة وحدته الحاليّة (ارتفعت التكلفة بعد الموجة). */
+        allowBelowCost: z.boolean().optional(),
         reason: z.string().max(255).nullish(),
       }),
     )
@@ -141,6 +164,7 @@ export const priceWavesRouter = router({
       const res = await withTx((tx) =>
         revertPriceWave(tx, input.waveId, ctx.user.id, {
           force: input.force,
+          allowBelowCost: input.allowBelowCost,
           reason: input.reason,
         }),
       );

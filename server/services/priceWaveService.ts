@@ -56,7 +56,7 @@ import {
 } from "../../shared/priceWaveRule";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
-import { loadBundleUnitCosts } from "./bundleService";
+import { loadBundleUnitCostsResolved } from "./bundleService";
 import { buildCatalogSearchWhere } from "./catalog/search";
 import { money, toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
@@ -163,6 +163,59 @@ export function priceWaveFingerprint(
 
 function rowKey(k: PriceRowKey | PriceWaveRow): string {
   return `${k.productUnitId}:${k.priceTier}`;
+}
+
+/**
+ * تكلفة **الوحدة** لمجموعة `productUnits` — نقطةٌ واحدة تُطبّق القاعدتين معاً:
+ * `تكلفة الأساس × conversionFactor`، وللبكج تكلفةُ وصفته (وعمودُه صفرٌ بحكم التصميم).
+ * تُرجع الوحدات المعروفة التكلفة فقط؛ المجهولة تغيب عن الخريطة فلا يُبنى عليها حكم.
+ */
+async function loadUnitCostsFor(
+  tx: Tx,
+  productUnitIds: number[],
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  const ids = Array.from(new Set(productUnitIds.map(Number))).filter(
+    (n) => Number.isSafeInteger(n) && n > 0,
+  );
+  if (!ids.length) return out;
+
+  const rows = await tx
+    .select({
+      unitId: productUnits.id,
+      conversionFactor: productUnits.conversionFactor,
+      variantId: productVariants.id,
+      baseCost: productVariants.costPrice,
+      isBundle: products.isBundle,
+    })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productUnits.id, ids));
+
+  const bundleIds = Array.from(
+    new Set(rows.filter((r) => !!r.isBundle).map((r) => Number(r.variantId))),
+  );
+  const bundleCosts = bundleIds.length
+    ? await loadBundleUnitCostsResolved(tx, bundleIds)
+    : new Map<number, { cost: string; resolved: boolean }>();
+
+  for (const r of rows) {
+    const factor = money(r.conversionFactor ?? "1");
+    const bundle = r.isBundle
+      ? (bundleCosts.get(Number(r.variantId)) ?? null)
+      : null;
+    const baseRaw = r.isBundle
+      ? bundle?.resolved
+        ? bundle.cost
+        : null
+      : r.baseCost;
+    if (baseRaw == null) continue;
+    const base = money(baseRaw);
+    if (!base.gt(0) || !factor.gt(0)) continue;
+    out.set(Number(r.unitId), toDbMoney(base.mul(factor)));
+  }
+  return out;
 }
 
 /**
@@ -309,12 +362,14 @@ async function computeAffectedRows(
     .orderBy(asc(productPrices.productUnitId), asc(productPrices.priceTier));
 
   // ع٣: تكلفة البكج من وصفته لا من عموده (صفرٌ بحكم التصميم) — قراءةٌ واحدة لكل البكجات.
+  // النسخة `Resolved` تُفرّق بين تكلفةٍ محسوبة وأخرى **ناقصة** (مكوّنٌ بتكلفة صفر يجمع صفراً
+  // فيبقى المجموع موجباً لكنه منقوص) ⇒ الناقص يُعامَل كمجهول لا كرقمٍ يُسعَّر عليه.
   const bundleVariantIds = Array.from(
     new Set(raw.filter((r) => !!r.isBundle).map((r) => Number(r.variantId))),
   );
   const bundleBaseCosts = bundleVariantIds.length
-    ? await loadBundleUnitCosts(tx, bundleVariantIds)
-    : new Map<number, string>();
+    ? await loadBundleUnitCostsResolved(tx, bundleVariantIds)
+    : new Map<number, { cost: string; resolved: boolean }>();
 
   const rows: PriceWaveRow[] = [];
   const skipped: PriceWaveSkippedRow[] = [];
@@ -324,8 +379,13 @@ async function computeAffectedRows(
     const factor = money(r.conversionFactor ?? "1");
     // ع٢: تكلفة **الوحدة** = تكلفة الأساس × معامل التحويل. القطعة معاملها ١ فلا فرق،
     // والدرزن/الكرتون كان يُقارَن سعرُه بتكلفة قطعةٍ واحدة ⇒ الحارس لا يشتعل أبداً.
-    const baseCostRaw = isBundle
+    const bundleCost = isBundle
       ? (bundleBaseCosts.get(Number(r.variantId)) ?? null)
+      : null;
+    const baseCostRaw = isBundle
+      ? bundleCost?.resolved
+        ? bundleCost.cost
+        : null
       : r.baseCost;
     const baseCost = baseCostRaw == null ? null : money(baseCostRaw);
     const unitCostD: Decimal | null =
@@ -458,6 +518,37 @@ export async function applyPriceWave(
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: `الموجة تشمل ${rows.length.toLocaleString("en-US")} صفّاً وهو فوق السقف (${MAX_WAVE_ROWS.toLocaleString("en-US")}). ضيّق النطاق ونفّذها على دفعات.`,
+    });
+  }
+
+  // ⭐ W7-ب: البصمة وحدها تحرس **التتابع** لا **التزامن**. موجتان متزامنتان تقرآن الأسعار نفسها
+  // بلا قفل، فتنجح بصمتاهما معاً ثمّ تكتبان بالتتابع ⇒ الثانية تدهس الأولى وكلا الرأسين يدّعي
+  // النجاح. لذا نُقفل صفوف الأسعار المعنيّة **قبل الكتابة**، ثمّ نتحقّق أنّ ما قرأناه ما يزال قائماً
+  // تحت القفل. المعاملة الثانية تنتظر القفل، ثمّ ترى سعراً تغيّر ⇒ CONFLICT بدل الدهس الصامت.
+  // القفل على `productPrices` وحده (بمفتاحها) — لا على المنتجات/المتغيّرات كي لا نُعطّل البيع.
+  const lockedRows = await tx
+    .select({ id: productPrices.id, price: productPrices.price })
+    .from(productPrices)
+    .where(
+      inArray(
+        productPrices.id,
+        rows.map((r) => r.priceRowId),
+      ),
+    )
+    .for("update");
+  const lockedPrice = new Map(
+    lockedRows.map((r) => [Number(r.id), String(r.price)]),
+  );
+  const drifted = rows.filter((r) => {
+    const now = lockedPrice.get(r.priceRowId);
+    return now == null || !money(now).equals(money(r.oldPrice));
+  });
+  if (drifted.length) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        `${drifted.length} صفّاً تغيّر سعره أثناء تنفيذ هذه الموجة (موجةٌ أخرى تعمل الآن، أو تعديلٌ يدويّ). ` +
+        "لم يُكتب شيء — أعِد المعاينة لترى الوضع الحاليّ.",
     });
   }
 
@@ -713,13 +804,11 @@ export async function countPriceWaveScope(
   // عيّنةٌ حقيقية من نطاق المدير نفسه ⇒ «المثال الحيّ» في خطوة القاعدة يتحدّث ببياناته لا بأرقامٍ مخترعة.
   const sampleRows = await tx
     .select({
+      productUnitId: productPrices.productUnitId,
       productName: products.name,
       unitName: productUnits.unitName,
       priceTier: productPrices.priceTier,
       price: productPrices.price,
-      baseCost: productVariants.costPrice,
-      conversionFactor: productUnits.conversionFactor,
-      isBundle: products.isBundle,
     })
     .from(productPrices)
     .innerJoin(productUnits, eq(productPrices.productUnitId, productUnits.id))
@@ -730,18 +819,19 @@ export async function countPriceWaveScope(
     .limit(1);
 
   const s = sampleRows[0];
+  // تكلفة العيّنة تمرّ بنفس مسار المعاينة (بكجاً كان أو صنفاً عادياً): كانت تُرجع `null` لأيّ بكج،
+  // فيقول «المثال الحيّ» لموجة SET_MARGIN «لا تغيير» بينما المعاينة التالية تُسعّره فعلاً —
+  // تناقضٌ يكسر وعدَ الشاشة بأنّ المثال محسوبٌ بنفس دالّة الخادم.
+  const sampleCosts = s
+    ? await loadUnitCostsFor(tx, [Number(s.productUnitId)])
+    : new Map<number, string>();
   const sample = s
     ? {
         productName: s.productName,
         unitName: s.unitName,
         priceTier: s.priceTier as PriceTier,
         price: toDbMoney(money(s.price)),
-        unitCost:
-          s.isBundle || s.baseCost == null || money(s.baseCost).lte(0)
-            ? null
-            : toDbMoney(
-                money(s.baseCost).mul(money(s.conversionFactor ?? "1")),
-              ),
+        unitCost: sampleCosts.get(Number(s.productUnitId)) ?? null,
       }
     : null;
 
@@ -777,8 +867,10 @@ export interface RevertConflict {
   priceTier: PriceTier;
   /** ما تركته الموجة. */
   waveNewPrice: string;
-  /** ما هو عليه الآن (تغيّر بعد الموجة). */
+  /** ما هو عليه الآن (تغيّر بعد الموجة)، أو «—» إن حُذف صفّ السعر. */
   currentPrice: string;
+  /** سببٌ مقروء حين لا يكون التعارض مجرّد «تغيّر السعر». */
+  note?: string;
 }
 
 /**
@@ -797,7 +889,11 @@ export async function revertPriceWave(
   tx: Tx,
   waveId: number,
   actorUserId: number,
-  opts: { force?: boolean; reason?: string | null } = {},
+  opts: {
+    force?: boolean;
+    allowBelowCost?: boolean;
+    reason?: string | null;
+  } = {},
 ): Promise<{
   waveId: number;
   restoredRows: number;
@@ -877,8 +973,33 @@ export async function revertPriceWave(
     const key = `${Number(l.productUnitId)}:${l.priceTier}`;
     const cur = currentMap.get(key);
     const meta = names.get(Number(l.productUnitId));
-    if (!cur) continue; // حُذف صفّ السعر منذ الموجة — لا شيء لاستعادته.
-    if (l.oldPrice == null) continue; // سعرٌ أُنشئ لا عُدِّل ⇒ التراجع عنه حذفٌ، وليس مسار هذه الدالّة.
+    // صفُّ سعرٍ حُذف منذ الموجة (تعديلُ منتجٍ أزال فئة السعر): كان يُتخطّى **بصمت** ثمّ تُوسَم
+    // الموجةُ «مُتراجَعٌ عنها» بفهرسٍ فريد ⇒ يستحيل الرجوع إليه أبداً. يُبلَّغ كتعارضٍ بدل ذلك.
+    if (!cur) {
+      conflicts.push({
+        productUnitId: Number(l.productUnitId),
+        productName: meta?.productName ?? "—",
+        unitName: meta?.unitName ?? "—",
+        priceTier: l.priceTier as PriceTier,
+        waveNewPrice: toDbMoney(money(l.newPrice)),
+        currentPrice: "—",
+        note: "حُذف صفّ السعر بعد الموجة — لا شيء لاستعادته",
+      });
+      continue;
+    }
+    // سعرٌ أُنشئ لا عُدِّل ⇒ التراجع عنه **حذفٌ** لا استعادة، وهو خارج تعاقد هذه الدالّة.
+    if (l.oldPrice == null) {
+      conflicts.push({
+        productUnitId: Number(l.productUnitId),
+        productName: meta?.productName ?? "—",
+        unitName: meta?.unitName ?? "—",
+        priceTier: l.priceTier as PriceTier,
+        waveNewPrice: toDbMoney(money(l.newPrice)),
+        currentPrice: toDbMoney(money(cur.price)),
+        note: "أنشأت الموجةُ هذا السعر ولم تعدّله — التراجع عنه حذفٌ يدويّ",
+      });
+      continue;
+    }
     if (!money(cur.price).equals(money(l.newPrice))) {
       conflicts.push({
         productUnitId: Number(l.productUnitId),
@@ -912,6 +1033,27 @@ export async function revertPriceWave(
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "لا صفّ قابلٌ للاستعادة — كل صفوف الموجة تغيّرت بعدها.",
+    });
+  }
+
+  // ⭐ W3 يسري على التراجع أيضاً. الاستعادة تكتب سعراً **قديماً** بينما التكلفة قد ارتفعت بعده
+  // (استلامُ شراءٍ بسعرٍ أعلى يرفع WAVG). موجةٌ رفعت السعر من ١٠٠٠ إلى ١٢٠٠ ثمّ صارت التكلفة
+  // ١١٠٠ ⇒ التراجع يُعيد ١٠٠٠ = بيعٌ بخسارة، بينما موجةٌ عادية كانت سترفضه بلا إذنٍ صريح.
+  // ⇒ نُعيد حساب تكلفة الوحدة **الآن** ونطلب الإذن نفسه.
+  const restoreCosts = await loadUnitCostsFor(
+    tx,
+    restorable.map((r) => r.productUnitId),
+  );
+  const restoreBelowCost = restorable.filter((r) => {
+    const c = restoreCosts.get(r.productUnitId);
+    return c != null && money(r.newPrice).lt(money(c));
+  });
+  if (restoreBelowCost.length && !opts.allowBelowCost) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        `${restoreBelowCost.length} صفّاً سعرُه المُستعاد تحت تكلفة وحدته الحاليّة (ارتفعت التكلفة بعد الموجة). ` +
+        "أكّد الاستعادة رغم البيع بخسارة، أو صحّح السعر يدوياً بدل التراجع.",
     });
   }
 

@@ -20,7 +20,11 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, inArray } from "drizzle-orm";
-import { bundleComponents, productVariants, products } from "../../drizzle/schema";
+import {
+  bundleComponents,
+  productVariants,
+  products,
+} from "../../drizzle/schema";
 import type { DB, Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
@@ -50,7 +54,9 @@ export interface BundleComponentInput {
 }
 
 /** نتيجة التحقّق من صحّة الوصفة قبل الحفظ — تُستعمَل داخل معاملة الكتابة. */
-export interface ValidatedComponent extends Required<Pick<BundleComponentInput, "componentVariantId" | "componentBaseQuantity">> {
+export interface ValidatedComponent extends Required<
+  Pick<BundleComponentInput, "componentVariantId" | "componentBaseQuantity">
+> {
   componentUnitId: number | null;
   sortOrder: number;
   notes: string | null;
@@ -64,7 +70,10 @@ export type VariantKind = "STOCKED" | "SERVICE" | "BUNDLE";
  * نوع كل متغيّر (bulk): STOCKED = سلعة عادية بمخزون، SERVICE = خدمة، BUNDLE = بكج (تُوسَّع مكوّناته).
  * يُستعمَل في `sale/create.ts` لتوجيه المنطق بلا استعلامات إفرادية.
  */
-export async function classifyVariants(tx: Tx, variantIds: number[]): Promise<Map<number, VariantKind>> {
+export async function classifyVariants(
+  tx: Tx,
+  variantIds: number[],
+): Promise<Map<number, VariantKind>> {
   const map = new Map<number, VariantKind>();
   if (!variantIds.length) return map;
   const ids = Array.from(new Set(variantIds));
@@ -96,18 +105,24 @@ export async function classifyVariants(tx: Tx, variantIds: number[]): Promise<Ma
 export async function validateBundleComponents(
   tx: Tx,
   bundleVariantId: number,
-  raw: BundleComponentInput[]
+  raw: BundleComponentInput[],
 ): Promise<ValidatedComponent[]> {
   if (!raw.length) {
     // B6: بكج بلا مكوّنات = خطأ منطقي (لا يمكن بيعه ولا تحسب تكلفته). نمنعه عند الإنشاء والتعديل.
-    throw new TRPCError({ code: "BAD_REQUEST", message: "البكج يحتاج مكوّناً واحداً على الأقلّ" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "البكج يحتاج مكوّناً واحداً على الأقلّ",
+    });
   }
 
   // فرادة داخلية قبل ضرب DB — رسالة أوضح للمستخدم.
   const seen = new Set<number>();
   for (const c of raw) {
     if (!Number.isFinite(c.componentVariantId) || c.componentVariantId <= 0) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف المكوّن غير صالح" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "معرّف المكوّن غير صالح",
+      });
     }
     if (seen.has(c.componentVariantId)) {
       throw new TRPCError({
@@ -116,7 +131,10 @@ export async function validateBundleComponents(
       });
     }
     seen.add(c.componentVariantId);
-    if (!Number.isInteger(c.componentBaseQuantity) || c.componentBaseQuantity <= 0) {
+    if (
+      !Number.isInteger(c.componentBaseQuantity) ||
+      c.componentBaseQuantity <= 0
+    ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `كميّة المكوّن يجب أن تكون عدداً صحيحاً موجباً (المكوّن #${c.componentVariantId})`,
@@ -124,7 +142,10 @@ export async function validateBundleComponents(
     }
     // B1 الاحترازي: بكج لا يحوي نفسه (سيمسكه أيضاً فحص isBundle أدناه، لكن رسالة أوضح هنا).
     if (Number(c.componentVariantId) === Number(bundleVariantId)) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "البكج لا يمكن أن يحوي نفسه كمكوّن" });
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "البكج لا يمكن أن يحوي نفسه كمكوّن",
+      });
     }
   }
 
@@ -152,7 +173,10 @@ export async function validateBundleComponents(
   for (const c of raw) {
     const r = byId.get(c.componentVariantId);
     if (!r) {
-      throw new TRPCError({ code: "NOT_FOUND", message: `المكوّن #${c.componentVariantId} غير موجود` });
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: `المكوّن #${c.componentVariantId} غير موجود`,
+      });
     }
     // B2:
     if (r.variantActive === false || r.productActive === false) {
@@ -205,21 +229,30 @@ export async function validateBundleComponents(
 export async function replaceBundleComponents(
   tx: Tx,
   bundleVariantId: number,
-  raw: BundleComponentInput[]
+  raw: BundleComponentInput[],
 ): Promise<ValidatedComponent[]> {
   // احترازي: تأكيد أن bundleVariantId ينتمي لمنتج isBundle=true — يمنع الكتابة على متغيّر عادي بالخطأ.
   const parent = await tx
-    .select({ isBundle: products.isBundle, variantActive: productVariants.isActive })
+    .select({
+      isBundle: products.isBundle,
+      variantActive: productVariants.isActive,
+    })
     .from(productVariants)
     .innerJoin(products, eq(productVariants.productId, products.id))
     .where(eq(productVariants.id, bundleVariantId))
     .for("update")
     .limit(1);
   if (!parent[0]) {
-    throw new TRPCError({ code: "NOT_FOUND", message: "متغيّر البكج غير موجود" });
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "متغيّر البكج غير موجود",
+    });
   }
   if (!parent[0].isBundle) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "هذا المتغيّر لا ينتمي لمنتج بكج" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "هذا المتغيّر لا ينتمي لمنتج بكج",
+    });
   }
   // نفس mutex الذي يقفله createOnlineOrder قبل قراءة الوصفة. إمّا أن تلتزم الوصفة
   // أولاً فيقرأها الطلب كاملة، أو يلتزم الطلب أولاً فتُرفض إعادة الكتابة حتى حسمه.
@@ -228,7 +261,9 @@ export async function replaceBundleComponents(
   const validated = await validateBundleComponents(tx, bundleVariantId, raw);
 
   // حذف ثم إدراج — أبسط وأسلم من مطابقة الأسطر (الوصفة صغيرة عادةً — ≤٢٠ صفّاً).
-  await tx.delete(bundleComponents).where(eq(bundleComponents.bundleVariantId, bundleVariantId));
+  await tx
+    .delete(bundleComponents)
+    .where(eq(bundleComponents.bundleVariantId, bundleVariantId));
   for (const v of validated) {
     await tx.insert(bundleComponents).values({
       bundleVariantId,
@@ -248,7 +283,7 @@ export async function replaceBundleComponents(
  */
 export async function getBundleDefinitions(
   tx: BundleQueryDb,
-  bundleVariantIds: number[]
+  bundleVariantIds: number[],
 ): Promise<Map<number, BundleComponentRow[]>> {
   const map = new Map<number, BundleComponentRow[]>();
   if (!bundleVariantIds.length) return map;
@@ -265,14 +300,17 @@ export async function getBundleDefinitions(
       bundleVariantId: bid,
       componentVariantId: Number(r.componentVariantId),
       componentBaseQuantity: Number(r.componentBaseQuantity),
-      componentUnitId: r.componentUnitId == null ? null : Number(r.componentUnitId),
+      componentUnitId:
+        r.componentUnitId == null ? null : Number(r.componentUnitId),
       sortOrder: Number(r.sortOrder ?? 0),
       notes: r.notes,
     });
     map.set(bid, list);
   }
   // ترتيب داخل كل مجموعة بحسب sortOrder (استقرار العرض).
-  Array.from(map.values()).forEach((list: BundleComponentRow[]) => list.sort((a, b) => a.sortOrder - b.sortOrder));
+  Array.from(map.values()).forEach((list: BundleComponentRow[]) =>
+    list.sort((a, b) => a.sortOrder - b.sortOrder),
+  );
   return map;
 }
 
@@ -286,7 +324,7 @@ export async function getBundleDefinitions(
 export async function computeBundleUnitCosts(
   tx: BundleQueryDb,
   bundleVariantIds: number[],
-  defsByBundle: Map<number, BundleComponentRow[]>
+  defsByBundle: Map<number, BundleComponentRow[]>,
 ): Promise<Map<number, string>> {
   const costMap = new Map<number, string>();
   if (!bundleVariantIds.length) return costMap;
@@ -330,10 +368,87 @@ export async function computeBundleUnitCosts(
  */
 export async function loadBundleUnitCosts(
   db: BundleQueryDb,
-  bundleVariantIds: number[]
+  bundleVariantIds: number[],
 ): Promise<Map<number, string>> {
-  const ids = Array.from(new Set(bundleVariantIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0)));
+  const ids = Array.from(
+    new Set(
+      bundleVariantIds
+        .map(Number)
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  );
   if (!ids.length) return new Map<number, string>();
   const defs = await getBundleDefinitions(db, ids);
   return computeBundleUnitCosts(db, ids, defs);
+}
+
+/** تكلفة بكجٍ مع **حالة حلّها**: `resolved=false` تعني أنّ الرقم ناقصٌ لا صفر. */
+export interface BundleUnitCostResolution {
+  cost: string;
+  resolved: boolean;
+}
+
+/**
+ * كـ`loadBundleUnitCosts` لكنها تُفرّق بين «تكلفةٍ محسوبة» و«تكلفةٍ **ناقصة**».
+ *
+ * **الجذر (مراجعة Codex على #675):** `computeBundleUnitCosts` تجمع المكوّنات، ومكوّنٌ بتكلفة صفر
+ * (أو صفٌّ محذوف) يُضيف صفراً فيبقى المجموع **موجباً لكنه منقوص**. أيّ مستدعٍ يفحص «هل التكلفة > 0؟»
+ * يظنّها محلولةً، فيُسعّر بهامشٍ على تكلفةٍ أقلّ من الحقيقة ويُخرِس حارس «تحت التكلفة» في آنٍ واحد —
+ * وهو بالضبط الخطأ الذي يُخفيه صفرُ عمود تكلفة البكج أصلاً.
+ *
+ * ⇒ البكج محلولٌ فقط إذا كانت له وصفة **وكلّ** مكوّناتها بتكلفةٍ موجبة معروفة.
+ * (لا تُغيَّر `loadBundleUnitCosts` كي لا يتبدّل سلوك قرّائها الحاليين — هذه إضافةٌ لمن يحتاج الحكم.)
+ */
+export async function loadBundleUnitCostsResolved(
+  db: BundleQueryDb,
+  bundleVariantIds: number[],
+): Promise<Map<number, BundleUnitCostResolution>> {
+  const out = new Map<number, BundleUnitCostResolution>();
+  const ids = Array.from(
+    new Set(
+      bundleVariantIds
+        .map(Number)
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  );
+  if (!ids.length) return out;
+
+  const defs = await getBundleDefinitions(db, ids);
+  const componentIds = new Set<number>();
+  for (const bid of ids)
+    for (const c of defs.get(bid) ?? []) componentIds.add(c.componentVariantId);
+
+  const costRows = componentIds.size
+    ? await db
+        .select({
+          id: productVariants.id,
+          costPrice: productVariants.costPrice,
+        })
+        .from(productVariants)
+        .where(inArray(productVariants.id, Array.from(componentIds)))
+    : [];
+  const costOf = new Map<number, string>();
+  for (const r of costRows)
+    costOf.set(Number(r.id), String(r.costPrice ?? "0"));
+
+  for (const bid of ids) {
+    const list = defs.get(bid) ?? [];
+    if (!list.length) {
+      out.set(bid, { cost: "0", resolved: false }); // بكجٌ بلا وصفة — لا تكلفة له أصلاً.
+      continue;
+    }
+    let sum = new Decimal(0);
+    let resolved = true;
+    for (const c of list) {
+      const raw = costOf.get(c.componentVariantId);
+      const componentCost = raw == null ? null : money(raw);
+      // مكوّنٌ غائب أو بتكلفةٍ غير موجبة ⇒ المجموع ناقص، مهما بدا موجباً.
+      if (componentCost == null || !componentCost.gt(0)) resolved = false;
+      sum = sum.plus(
+        (componentCost ?? new Decimal(0)).mul(c.componentBaseQuantity),
+      );
+    }
+    out.set(bid, { cost: toDbMoney(sum), resolved: resolved && sum.gt(0) });
+  }
+  return out;
 }

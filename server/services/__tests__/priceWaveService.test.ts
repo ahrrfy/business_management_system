@@ -60,15 +60,13 @@ async function seedBase() {
   await d
     .insert(s.branches)
     .values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
-  await d
-    .insert(s.users)
-    .values({
-      id: 1,
-      openId: "local_test",
-      name: "admin",
-      role: "admin",
-      loginMethod: "local",
-    });
+  await d.insert(s.users).values({
+    id: 1,
+    openId: "local_test",
+    name: "admin",
+    role: "admin",
+    loginMethod: "local",
+  });
   await d.insert(s.categories).values([
     { id: 1, name: "قرطاسية" },
     { id: 2, name: "هدايا" },
@@ -82,6 +80,8 @@ async function seedBase() {
     { id: 5, name: "طقم هدايا", categoryId: 2, isBundle: true },
     { id: 6, name: "بكج بلا وصفة", categoryId: 2, isBundle: true },
     { id: 7, name: "صنف معطَّل", categoryId: 1, isActive: false },
+    { id: 8, name: "مكوّن بلا تكلفة", categoryId: 1 },
+    { id: 9, name: "بكج بوصفة ناقصة", categoryId: 2, isBundle: true },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "PEN-B", costPrice: "4.00" },
@@ -91,6 +91,8 @@ async function seedBase() {
     { id: 5, productId: 5, sku: "BDL-1", costPrice: "0" },
     { id: 6, productId: 6, sku: "BDL-2", costPrice: "0" },
     { id: 7, productId: 7, sku: "OFF-1", costPrice: "5.00" },
+    { id: 8, productId: 8, sku: "NOCOST-1", costPrice: "0" },
+    { id: 9, productId: 9, sku: "BDL-3", costPrice: "0" },
   ]);
   await d.insert(s.productUnits).values([
     {
@@ -151,9 +153,36 @@ async function seedBase() {
       conversionFactor: "1",
       isBaseUnit: true,
     },
+    {
+      id: 9,
+      variantId: 8,
+      unitName: "قطعة",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
+    {
+      id: 10,
+      variantId: 9,
+      unitName: "طقم",
+      conversionFactor: "1",
+      isBaseUnit: true,
+    },
   ]);
   // وصفة البكج: قلمان (تكلفة 4 لكلٍّ) + دفتر (10) ⇒ تكلفة الطقم الحقيقية 18، لا صفر.
+  // والبكج ٩ وصفتُه **ناقصة** عمداً: مكوّنٌ بتكلفة ٤ وآخر بتكلفة صفر ⇒ المجموع ٤ موجبٌ لكنه كاذب.
   await d.insert(s.bundleComponents).values([
+    {
+      bundleVariantId: 9,
+      componentVariantId: 1,
+      componentBaseQuantity: 1,
+      sortOrder: 0,
+    },
+    {
+      bundleVariantId: 9,
+      componentVariantId: 8,
+      componentBaseQuantity: 1,
+      sortOrder: 1,
+    },
     {
       bundleVariantId: 5,
       componentVariantId: 1,
@@ -178,6 +207,8 @@ async function seedBase() {
     { productUnitId: 6, priceTier: "RETAIL", price: "30.00" },
     { productUnitId: 7, priceTier: "RETAIL", price: "25.00" },
     { productUnitId: 8, priceTier: "RETAIL", price: "9.00" },
+    { productUnitId: 9, priceTier: "RETAIL", price: "12.00" },
+    { productUnitId: 10, priceTier: "RETAIL", price: "60.00" },
   ]);
 }
 
@@ -404,6 +435,139 @@ describe("ع٣ — البكج: تكلفةٌ من الوصفة لا هامشٌ ١
     const noRecipe = skipped.find((r) => r.productUnitId === 7)!;
     expect(noRecipe).toBeTruthy();
     expect(noRecipe.reason).toBe("BUNDLE_COST_UNRESOLVED");
+  });
+});
+
+// ══════════ مراجعة Codex على #675 — حواف أُغلقت ══════════
+describe("Codex — تكلفة بكجٍ ناقصة لا تُعامَل كمحسوبة", () => {
+  it("⭐ بكجٌ أحد مكوّناته بتكلفة صفر ⇒ BUNDLE_COST_UNRESOLVED لا تسعيرٌ على مجموعٍ منقوص", async () => {
+    const { rows, skipped } = await withTx((tx) =>
+      previewPriceWave(tx, {
+        filters: { scope: "SELECTED", productIds: [9] },
+        changeType: "SET_MARGIN",
+        changeValue: "50",
+        roundToDenom: 0,
+      }),
+    );
+    // المجموع الخامّ ٤ (٤ + ٠) وهو موجبٌ لكنه كاذب ⇒ لا يُسعَّر عليه.
+    expect(rows.length).toBe(0);
+    expect(skipped.find((r) => r.productUnitId === 10)?.reason).toBe(
+      "BUNDLE_COST_UNRESOLVED",
+    );
+  });
+
+  it("ولا يُوسَم «تحت التكلفة» بتكلفةٍ منقوصة (لا تكلفة ⇒ لا حكم)", async () => {
+    const { rows } = await withTx((tx) =>
+      previewPriceWave(tx, {
+        filters: { scope: "SELECTED", productIds: [9] },
+        changeType: "DECREASE_AMOUNT",
+        changeValue: "55",
+        roundToDenom: 0,
+      }),
+    );
+    const r = rows.find((x) => x.productUnitId === 10)!;
+    expect(r.unitCost).toBeNull();
+    expect(r.belowCost).toBe(false);
+  });
+});
+
+describe("Codex — التراجع يحرس التكلفة الحاليّة ويُبلّغ عن الصفوف المفقودة", () => {
+  it("⭐ تكلفةٌ ارتفعت بعد الموجة ⇒ الاستعادة تحت التكلفة تُرفَض بلا إذن صريح", async () => {
+    const wave = await withTx((tx) =>
+      applyPriceWave(
+        tx,
+        {
+          name: "رفع القلم",
+          filters: { scope: "SELECTED", productIds: [1] },
+          changeType: "INCREASE_PERCENT",
+          changeValue: "50",
+          roundToDenom: 0,
+        },
+        1,
+      ),
+    );
+    // القطعة: 10 ⇒ 15. ثمّ ترتفع تكلفة الأساس إلى 12 ⇒ استعادةُ 10 بيعٌ بخسارة.
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "12.00" })
+      .where(eq(s.productVariants.id, 1));
+
+    await expect(
+      withTx((tx) => revertPriceWave(tx, wave.waveId, 1)),
+    ).rejects.toThrow(/تحت تكلفة وحدته الحاليّة/);
+
+    // ولم يُكتب شيء: السعر ما يزال ما تركته الموجة.
+    const pen = await db()
+      .select()
+      .from(s.productPrices)
+      .where(
+        and(
+          eq(s.productPrices.productUnitId, 1),
+          eq(s.productPrices.priceTier, "RETAIL"),
+        ),
+      );
+    expect(String(pen[0].price)).toBe("15.00");
+    expect((await db().select().from(s.priceUpdateWaves)).length).toBe(1);
+  });
+
+  it("ومع allowBelowCost يمرّ صراحةً", async () => {
+    const wave = await withTx((tx) =>
+      applyPriceWave(
+        tx,
+        {
+          name: "رفع القلم",
+          filters: { scope: "SELECTED", productIds: [1] },
+          changeType: "INCREASE_PERCENT",
+          changeValue: "50",
+          roundToDenom: 0,
+        },
+        1,
+      ),
+    );
+    await db()
+      .update(s.productVariants)
+      .set({ costPrice: "12.00" })
+      .where(eq(s.productVariants.id, 1));
+    const rev = await withTx((tx) =>
+      revertPriceWave(tx, wave.waveId, 1, { allowBelowCost: true }),
+    );
+    expect(rev.restoredRows).toBeGreaterThan(0);
+  });
+
+  it("⭐ صفُّ سعرٍ حُذف بعد الموجة يُبلَّغ كتعارضٍ لا يُتخطّى بصمت", async () => {
+    const wave = await withTx((tx) =>
+      applyPriceWave(
+        tx,
+        {
+          name: "رفع القلم",
+          filters: { scope: "SELECTED", productIds: [1] },
+          changeType: "INCREASE_PERCENT",
+          changeValue: "10",
+          roundToDenom: 0,
+        },
+        1,
+      ),
+    );
+    // تعديلُ منتجٍ يُزيل فئة سعرٍ كانت ضمن الموجة.
+    await db()
+      .delete(s.productPrices)
+      .where(
+        and(
+          eq(s.productPrices.productUnitId, 1),
+          eq(s.productPrices.priceTier, "WHOLESALE"),
+        ),
+      );
+
+    await expect(
+      withTx((tx) => revertPriceWave(tx, wave.waveId, 1)),
+    ).rejects.toThrow(/تغيّر سعره بعد هذه الموجة/);
+
+    const rev = await withTx((tx) =>
+      revertPriceWave(tx, wave.waveId, 1, { force: true }),
+    );
+    const missing = rev.conflicts.find((c) => c.priceTier === "WHOLESALE")!;
+    expect(missing).toBeTruthy();
+    expect(missing.note).toMatch(/حُذف/);
   });
 });
 

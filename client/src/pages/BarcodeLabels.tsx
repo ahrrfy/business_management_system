@@ -371,14 +371,24 @@ export default function BarcodeLabels() {
     seedConsumedRef.current = true;
     const bId = branchId;
     const fetchTier = tier;
+    // الفئة تأتي من الباعث: موجةٌ على «الجملة» تُطبَع بأسعار الجملة، وإلّا طبعنا «المفرد»
+    // (الفئة الافتراضية) فخرجت ملصقاتٌ لا علاقة لها بالسعر الذي تغيّر أصلاً.
+    if (seed.tier && seed.tier !== fetchTier) setTier(seed.tier);
     void (async () => {
       try {
-        const rows = await utils.catalog.byUnitIds.fetch({ branchId: bId, tier: fetchTier, productUnitIds: seed.productUnitIds });
+        const rows = await utils.catalog.byUnitIds.fetch(
+          { branchId: bId, tier: fetchTier, productUnitIds: seed.productUnitIds },
+          // البذرة تصل بعد موجةٍ غيّرت الأسعار للتوّ ⇒ لا نقبل نسخةً مخزَّنة مسبقاً،
+          // وإلّا طبعنا بالضبط الأسعار القديمة التي جاء هذا الجسر ليستبدلها.
+          { staleTime: 0 },
+        );
         const added = addRows(rows, fetchTier);
+        const rest = seed.remaining ?? 0;
         setInfo(
-          added
+          (added
             ? `أُضيف ${added} صنفاً إلى قائمة الطباعة${seed.note ? ` — ${seed.note}` : ""}. راجع الأسعار ثم اطبع.`
-            : "أصناف الموجة مضافة أصلاً إلى قائمة الطباعة.",
+            : "أصناف الموجة مضافة أصلاً إلى قائمة الطباعة.") +
+            (rest ? ` وبقي ${rest} صنفاً في دفعةٍ تالية — عُد إلى هذا التبويب بعد الطباعة لتحميلها.` : ""),
         );
       } catch {
         setError("تعذّر جلب أصناف الموجة — أضِفها يدوياً بالبحث.");

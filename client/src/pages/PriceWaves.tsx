@@ -190,6 +190,10 @@ export default function PriceWaves() {
     onSuccess: async (res) => {
       await utils.priceWaves.list.invalidate();
       await utils.priceWaves.scopeCount.invalidate();
+      // الموجة غيّرت أسعاراً ⇒ كلّ قراءةٍ للكتالوج صارت قديمة. بلا هذا يظلّ `catalog.byUnitIds`
+      // مخزَّناً (staleTime عامّ) فيطبع جسرُ الملصقات **الأسعار السابقة** — أي الملصق الكاذب
+      // الذي وُجد الجسر أصلاً ليستبدله.
+      await utils.catalog.invalidate();
       setInfo(
         `طُبِّقت الموجة «${name.trim()}» على ${res.totalRows} صفّاً` +
           (res.excludedRows ? ` (استُثني ${res.excludedRows})` : "") +

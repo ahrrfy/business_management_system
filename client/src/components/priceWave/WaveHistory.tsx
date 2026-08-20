@@ -67,6 +67,8 @@ export function WaveHistory({
     const res = await revertM.mutateAsync({ waveId: wave.id, force });
     await utils.priceWaves.list.invalidate();
     await utils.priceWaves.waveDetails.invalidate();
+    // التراجع تغييرُ أسعارٍ كالموجة تماماً ⇒ الكتالوج المخزَّن صار قديماً.
+    await utils.catalog.invalidate();
     onError("");
     onInfo(
       `تمّت الاستعادة: ${res.restoredRows} صفّاً عاد لسعره السابق (موجة تراجع #${res.waveId})` +
@@ -118,12 +120,25 @@ export function WaveHistory({
 
   function printLabelsFor(
     waveId: number,
-    rows: Array<{ productUnitId: number }>,
+    rows: Array<{ productUnitId: number; priceTier: string }>,
     waveName: string,
   ) {
+    // ملصق الرفّ يحمل سعر فئةٍ واحدة. موجةٌ مسّت أكثر من فئة ⇒ نطبع «المفرد» إن كان ضمنها
+    // (وهو سعر الرفّ)، وإلّا فئةَ الموجة الوحيدة. الخلط كان يطبع أسعار المفرد لموجة جملةٍ صرفة.
+    const tiers = Array.from(new Set(rows.map((r) => r.priceTier)));
+    const tier = (tiers.includes("RETAIL") ? "RETAIL" : tiers[0]) as
+      | "RETAIL"
+      | "WHOLESALE"
+      | "GOVERNMENT";
+    const scoped = rows.filter((r) => r.priceTier === tier);
     const n = seedLabelQueue(
-      rows.map((r) => r.productUnitId),
-      `أسعارها تغيّرت بموجة «${waveName}» #${waveId}`,
+      scoped.map((r) => r.productUnitId),
+      {
+        tier,
+        note:
+          `أسعارها تغيّرت بموجة «${waveName}» #${waveId}` +
+          (tiers.length > 1 ? ` (فئة ${priceTierLabel(tier)} وحدها)` : ""),
+      },
     );
     if (!n) {
       onError(

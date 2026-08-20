@@ -9742,7 +9742,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:97"
+      "loc": "server/routers/priceWavesRouter.ts:118"
     },
     {
       "surface": "trpc",
@@ -9759,7 +9759,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:162"
+      "loc": "server/routers/priceWavesRouter.ts:186"
     },
     {
       "surface": "trpc",
@@ -9776,7 +9776,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:78"
+      "loc": "server/routers/priceWavesRouter.ts:99"
     },
     {
       "surface": "trpc",
@@ -9793,7 +9793,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:131"
+      "loc": "server/routers/priceWavesRouter.ts:152"
     },
     {
       "surface": "trpc",
@@ -9810,7 +9810,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:70"
+      "loc": "server/routers/priceWavesRouter.ts:91"
     },
     {
       "surface": "trpc",
@@ -9827,7 +9827,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:187"
+      "loc": "server/routers/priceWavesRouter.ts:211"
     },
     {
       "surface": "trpc",
@@ -9844,7 +9844,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/priceWavesRouter.ts:231"
+      "loc": "server/routers/priceWavesRouter.ts:255"
     },
     {
       "surface": "trpc",

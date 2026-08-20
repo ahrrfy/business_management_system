@@ -82,12 +82,15 @@ export const MAX_PERCENT_VALUE = 1000;
 export type PriceWaveSkipReason =
   | "NO_COST"
   | "BUNDLE_COST_UNRESOLVED"
-  | "UNCHANGED";
+  | "UNCHANGED"
+  | "ROUNDING_REVERSES";
 
 export const PRICE_WAVE_SKIP_LABELS: Record<PriceWaveSkipReason, string> = {
   NO_COST: "لا تكلفة معروفة لهذه الوحدة — «تعيين هامش» يحتاج تكلفة",
   BUNDLE_COST_UNRESOLVED: "بكج لم تُحَلّ تكلفة وصفته (مكوّن ناقص أو معطَّل)",
   UNCHANGED: "القاعدة لا تُغيّر هذا السعر",
+  ROUNDING_REVERSES:
+    "التقريب يعكس اتجاه التغيير على هذا السعر — صغّر وحدة التقريب أو كبّر القيمة",
 };
 
 export interface PriceWaveRule {
@@ -175,9 +178,32 @@ export function applyPriceWaveRule(
   }
 
   const exact = raw.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-  const roundedVal = roundToDenom(exact, rule.roundToDenom);
-  const wasRounded = !roundedVal.equals(exact);
+  let roundedVal = roundToDenom(exact, rule.roundToDenom);
 
+  // (أ) سعرٌ أصغر من نصف حبيبة التقريب يُقرَّب إلى **صفر** ثمّ يُقصّ إلى 0.01 — سعرٌ عبثيّ.
+  //     حبيبةُ ٢٥٠ لا تنطبق أصلاً على صنفٍ سعره ١٠٠، فنتركه بدقّته الحسابية بلا تقريب.
+  if (roundedVal.lte(0) && exact.gt(0)) roundedVal = exact;
+
+  // (ب) ⭐ التقريب **لا يعكس اتجاه الموجة أبداً**: «رفعٌ ١٪» على ‎1,260 يعطي ‎1,272.60 ويقرَّب
+  //     لأقرب ٢٥٠ إلى ‎1,250 — أي أنّ موجةَ رفعٍ مضبوطةً تُنزِل السعر بصمت (والعكس بالعكس).
+  //     لا نُصلحها بتقريبٍ اتجاهيّ (يقفز ‎1,260 إلى ‎1,500 = ‎+19٪ بلا طلب)، بل **نُسقِط الصفّ
+  //     مُعلَّلاً** فيراه المدير في «الصفوف الساقطة» ويقرّر: حبيبةٌ أصغر أو قيمةٌ أكبر.
+  //     يخصّ الأنواع الاتجاهية وحدها؛ `SET_MARGIN` هدفٌ مطلق لا اتجاه له مقابل السعر القديم.
+  const directional = rule.changeType !== "SET_MARGIN";
+  if (directional && !exact.equals(oldP)) {
+    const wantedUp = exact.gt(oldP);
+    const gotUp = roundedVal.gt(oldP);
+    if (roundedVal.equals(oldP) === false && wantedUp !== gotUp) {
+      return {
+        newPrice: null,
+        skipReason: "ROUNDING_REVERSES",
+        rounded: true,
+        clampedMin: false,
+      };
+    }
+  }
+
+  const wasRounded = !roundedVal.equals(exact);
   const floor = new Decimal(MIN_PRICE);
   const clampedMin = roundedVal.lt(floor);
   const finalVal = clampedMin ? floor : roundedVal;

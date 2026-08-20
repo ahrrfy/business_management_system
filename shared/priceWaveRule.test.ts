@@ -142,6 +142,59 @@ describe("التقريب داخل القاعدة — قرار المالك ٢٠/
   });
 });
 
+describe("⭐ التقريب لا يعكس اتجاه الموجة (مراجعة Codex على #675)", () => {
+  it("رفعٌ ١٪ على ‎1,260 لا يهبط إلى ‎1,250 — يسقط الصفّ مُعلَّلاً بدل عكس الاتجاه", () => {
+    const r = applyPriceWaveRule("1260", "600", {
+      changeType: "INCREASE_PERCENT",
+      changeValue: "1",
+      roundToDenom: 250,
+    });
+    // 1260 × 1.01 = 1272.60 ⇒ أقرب ٢٥٠ = 1250 وهو **أقلّ** من السعر القديم.
+    expect(r.newPrice).toBeNull();
+    expect(r.skipReason).toBe("ROUNDING_REVERSES");
+  });
+
+  it("تخفيضٌ ١٪ على ‎1,240 لا يرتفع إلى ‎1,250", () => {
+    const r = applyPriceWaveRule("1240", "600", {
+      changeType: "DECREASE_PERCENT",
+      changeValue: "1",
+      roundToDenom: 250,
+    });
+    expect(r.newPrice).toBeNull();
+    expect(r.skipReason).toBe("ROUNDING_REVERSES");
+  });
+
+  it("ويمرّ حين يحفظ التقريبُ الاتجاه: ‎2,800 + ‎5٪ ⇒ ‎3,000", () => {
+    const r = applyPriceWaveRule("2800", "1800", {
+      changeType: "INCREASE_PERCENT",
+      changeValue: "5",
+      roundToDenom: 250,
+    });
+    expect(r.newPrice).toBe("3000.00");
+  });
+
+  it("سعرٌ دون نصف الحبيبة لا يُسحق إلى 0.01: ‎100 − ‎10 يبقى ‎90 بلا تقريب", () => {
+    const r = applyPriceWaveRule("100", "40", {
+      changeType: "DECREASE_AMOUNT",
+      changeValue: "10",
+      roundToDenom: 250,
+    });
+    // بلا الحارس: التقريب لأقرب ٢٥٠ يعطي صفراً ثمّ يُقصّ إلى 0.01 — سعرٌ عبثيّ.
+    expect(r.newPrice).toBe("90.00");
+    expect(r.clampedMin).toBe(false);
+  });
+
+  it("SET_MARGIN هدفٌ مطلق لا اتجاه له ⇒ لا يخضع لحارس الاتجاه", () => {
+    // تكلفة ‎1,000 وهامش ‎10٪ ⇒ ‎1,100 ⇒ تقريب ٢٥٠ ⇒ ‎1,000، وهو أقلّ من السعر القديم ‎1,260.
+    const r = applyPriceWaveRule("1260", "1000", {
+      changeType: "SET_MARGIN",
+      changeValue: "10",
+      roundToDenom: 250,
+    });
+    expect(r.newPrice).toBe("1000.00");
+  });
+});
+
 describe("W2 — الأرضية المطلقة", () => {
   it("تخفيضٌ ٩٩٪ يُقصّ إلى 0.01 لا صفر", () => {
     const r = applyPriceWaveRule("1000", "400", {
@@ -160,14 +213,16 @@ describe("W2 — الأرضية المطلقة", () => {
     expect(deep.clampedMin).toBe(true);
   });
 
-  it("التقريب لا يُنتج صفراً: ‎100 بتقريب ٢٥٠ ⇒ يُقصّ إلى الأرضية", () => {
+  it("التقريب لا يسحق سعراً دون نصف الحبيبة: ‎1,000 − ‎900 يبقى ‎100 لا 0.01", () => {
     const r = applyPriceWaveRule("1000", null, {
       changeType: "DECREASE_AMOUNT",
       changeValue: "900",
       roundToDenom: 250,
     });
-    expect(r.newPrice).toBe("0.01");
-    expect(r.clampedMin).toBe(true);
+    // كان يُقرَّب إلى صفر ثمّ يُقصّ إلى 0.01 — سعرٌ عبثيّ لصنفٍ ثمنه مئة دينار.
+    // حبيبةُ ٢٥٠ لا تنطبق أصلاً على ما دونها، فيبقى الناتج بدقّته الحسابية.
+    expect(r.newPrice).toBe("100.00");
+    expect(r.clampedMin).toBe(false);
   });
 });
 
