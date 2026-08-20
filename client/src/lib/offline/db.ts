@@ -6,8 +6,16 @@
 // وسياسة «لا مسح والطابور غير فارغ» (الشريحة ٥).
 
 import Dexie, { type Table } from "dexie";
-import type { OfflineCatalogRow, OfflineCustomerRow, OfflineStockRow } from "@shared/offlineCatalog";
+import type {
+  OfflineCatalogRow,
+  OfflineCustomerRow,
+  OfflineStockRow,
+} from "@shared/offlineCatalog";
 import { LEGACY_OUTBOX_REVIEW_MESSAGE } from "./outboxIdentity";
+import type {
+  StudioDraftIdentityRecord,
+  StudioDraftRecord,
+} from "../productStudio/studioDrafts";
 
 export interface OfflineMetaRow {
   key: string;
@@ -68,6 +76,8 @@ class OfflineDb extends Dexie {
   outbox!: Table<OfflineOutboxItem, string>;
   keys!: Table<OfflineKeyRow, string>;
   profile!: Table<OfflineProfileRow, string>;
+  studioDrafts!: Table<StudioDraftRecord, string>;
+  studioDraftIdentity!: Table<StudioDraftIdentityRecord, string>;
 
   constructor() {
     super("alroya-offline");
@@ -89,15 +99,29 @@ class OfflineDb extends Dexie {
         outbox: "clientRequestId, status, capturedAt, capturedByUserId",
       })
       .upgrade(async (tx) => {
-        await tx.table("outbox").toCollection().modify((item: OfflineOutboxItem) => {
-          if (Number.isInteger(item.capturedByUserId) && Number(item.capturedByUserId) > 0) return;
-          item.capturedByUserId = null;
-          if (item.status === "QUEUED" || item.status === "SENDING") {
-            item.status = "PARKED";
-            item.lastError = LEGACY_OUTBOX_REVIEW_MESSAGE;
-          }
-        });
+        await tx
+          .table("outbox")
+          .toCollection()
+          .modify((item: OfflineOutboxItem) => {
+            if (
+              Number.isInteger(item.capturedByUserId) &&
+              Number(item.capturedByUserId) > 0
+            )
+              return;
+            item.capturedByUserId = null;
+            if (item.status === "QUEUED" || item.status === "SENDING") {
+              item.status = "PARKED";
+              item.lastError = LEGACY_OUTBOX_REVIEW_MESSAGE;
+            }
+          });
       });
+    // مسودات استوديو المنتج: record يحمل envelope مشفراً فقط؛ لا حقول محتوى صريحة.
+    this.version(4).stores({
+      studioDrafts: "id",
+    });
+    this.version(5).stores({
+      studioDraftIdentity: "id",
+    });
   }
 }
 

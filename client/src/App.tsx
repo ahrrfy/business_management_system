@@ -11,7 +11,7 @@
 // حَدّ Suspense واحد حَول `Switch` (لا حَول كل Route) ⇒ تَنقّل المَسارات يُظهر fallback
 // مَرّة واحدة فَقط أثناء جَلب chunk الوِجهة، والـAppLayout (الشَريط الجانبي/الترويسة) يَبقى
 // مَرسوماً. fallback نَفس نَصّ `Protected` ⇒ تَتابع بصري سَلِس.
-import { Suspense, useCallback, useEffect, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OfflineBootGate, OnlineGate } from "@/components/offline/OfflineGate";
@@ -20,6 +20,13 @@ import { RequireRole } from "@/components/RequireRole";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { RouteFallback } from "@/components/RouteFallback";
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import {
+  getOfflineUnlockedProfile,
+  isOfflineUnlocked,
+  subscribeOfflineUnlock,
+} from "@/lib/offline/pinLock";
+import { isColdOfflineStudioRoute } from "@/lib/productStudio/coldOfflinePolicy";
 import { trpc } from "@/lib/trpc";
 import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
@@ -147,10 +154,18 @@ const MyStocktakes = lazy(() => import("@/pages/MyStocktakes"));
 const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
 
 function Protected({ children }: { children: React.ReactNode }) {
-  const me = trpc.auth.me.useQuery();
+  const [loc] = useLocation();
+  const connectivity = useConnectivity();
+  const coldOfflineStudio =
+    isColdOfflineStudioRoute(loc) &&
+    (isDisconnected(connectivity) ||
+      (typeof navigator !== "undefined" && !navigator.onLine));
+  const me = trpc.auth.me.useQuery(undefined, { enabled: !coldOfflineStudio });
   const retry = useCallback(() => {
     void me.refetch();
   }, [me.refetch]);
+  if (coldOfflineStudio)
+    return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
   // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.
   if (me.data) {
     // إلزام 2FA (قرار المالك ٢٣/٧): الأدمن/المدير بلا 2FA يُحجَبون على شاشة التفعيل حتى يُفعّلوها.
@@ -174,17 +189,46 @@ function Protected({ children }: { children: React.ReactNode }) {
   return <Redirect to="/login" />;
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({
+  children,
+  allowColdOffline = false,
+}: {
+  children: React.ReactNode;
+  allowColdOffline?: boolean;
+}) {
   return (
     <Protected>
       <AppLayout>
         {/* حدّ خطأ لكل صفحة: عطل شاشة واحدة لا يُعطّل التنقّل/الشريط الجانبي. */}
         {/* OnlineGate: من فتح الشاشة والاتصال مقطوع يرى رسالة صادقة بدل استعلامات تفشل (ش١ أوفلاين). */}
         <RouteErrorBoundary>
-          <OnlineGate>{children}</OnlineGate>
+          <OnlineGate allowColdOffline={allowColdOffline}>{children}</OnlineGate>
         </RouteErrorBoundary>
       </AppLayout>
     </Protected>
+  );
+}
+
+function StudioRouteAccess({ children }: { children: React.ReactNode }) {
+  const connectivity = useConnectivity();
+  const offline =
+    isDisconnected(connectivity) ||
+    (typeof navigator !== "undefined" && !navigator.onLine);
+  const unlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const localProfile = unlocked ? getOfflineUnlockedProfile() : null;
+  return (
+    <RequireRole
+      roles={["admin", "manager", "print_operator", "auditor"]}
+      module="productStudio"
+      level="READ"
+      localOfflineActor={offline ? localProfile : undefined}
+    >
+      {children}
+    </RequireRole>
   );
 }
 
@@ -286,7 +330,7 @@ export default function App() {
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
-      <Route path="/catalog/image-studio"><Shell><RequireRole roles={["admin","manager","print_operator","auditor"]} module="productStudio" level="READ"><ProductImageStudio /></RequireRole></Shell></Route>
+      <Route path="/catalog/image-studio"><Shell allowColdOffline><StudioRouteAccess><ProductImageStudio /></StudioRouteAccess></Shell></Route>
       {/* gstack B10 (٧/٧/٢٦): موجات الأسعار — تبويب داخل InventoryHub. المسار المستقلّ يبقى للحفاظ على الروابط. */}
       <Route path="/price-waves"><Redirect to="/inventory?tab=price-waves" /></Route>
       {/* العروض والحملات والكوبونات مملوكة لوحدة CRM؛ الرابط القديم محفوظ. */}

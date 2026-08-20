@@ -1,10 +1,17 @@
 import { ArrowLeft, Check, Info, Sparkles, Wand2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { ImageUploader, type ImageUploaderProps } from "@/components/form/ImageUploader";
+import {
+  ImageUploader,
+  type ImageUploaderProps,
+} from "@/components/form/ImageUploader";
 import { Button } from "@/components/ui/button";
 import { normalizeAiStudioImage } from "@/lib/imageStudio/aiStudio";
 import { applyStudioPreviews } from "@/lib/imageStudio/applyPreviews";
-import { finishCutFromCutout, runFreeStudio, type StudioResult } from "@/lib/imageStudio/freePipeline";
+import {
+  finishCutFromCutout,
+  runFreeStudio,
+  type StudioResult,
+} from "@/lib/imageStudio/freePipeline";
 import { trpc } from "@/lib/trpc";
 
 interface StudioPreview {
@@ -35,11 +42,13 @@ interface ImageStudioUploaderProps extends ImageUploaderProps {
   onProcessingReceiptChange?: (receipt: string | null) => void;
   onBusyChange?: (busy: boolean) => void;
   adminOverrideReason?: string;
+  offline?: boolean;
 }
 
 export function ImageStudioUploader(props: ImageStudioUploaderProps) {
   const { value, onChange } = props;
   const workflowTaskId = props.studioTaskId;
+  const offline = props.offline === true;
   const [busy, setBusy] = useState(false);
   // الاستهداف: أيّ الصور تُعدَّل الآن. «استوديو» على صورة ⇒ [تلك]، «تحديد الكل» ⇒ كلّها.
   const [targetIds, setTargetIds] = useState<string[]>([]);
@@ -52,19 +61,24 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
   const runToken = useRef(0);
 
   const proConfig = trpc.imageStudio.proConfig.useQuery(undefined, {
-    enabled: workflowTaskId != null,
+    enabled: workflowTaskId != null && !offline,
     staleTime: 60_000,
   });
   const proCutout = trpc.imageStudio.proCutout.useMutation();
-  const bindProcessingProof = trpc.productStudio.bindProcessingProof.useMutation();
-  const proAvailable = workflowTaskId != null && (proConfig.data?.proAvailable ?? false);
+  const bindProcessingProof =
+    trpc.productStudio.bindProcessingProof.useMutation();
+  const proAvailable =
+    !offline &&
+    workflowTaskId != null &&
+    (proConfig.data?.proAvailable ?? false);
 
   const aiConfig = trpc.imageStudio.aiConfig.useQuery(undefined, {
-    enabled: workflowTaskId != null,
+    enabled: workflowTaskId != null && !offline,
     staleTime: 60_000,
   });
   const aiTransform = trpc.imageStudio.aiStudioTransform.useMutation();
-  const aiAvailable = workflowTaskId != null && (aiConfig.data?.aiAvailable ?? false);
+  const aiAvailable =
+    !offline && workflowTaskId != null && (aiConfig.data?.aiAvailable ?? false);
 
   const aiInPreview = !!previews?.some((p) => p.mode === "AI");
 
@@ -120,53 +134,82 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
     let fellBackMsg = "";
     let lowResPreview = false;
     try {
-      const results = await Promise.all(
-        targets.map(async (it): Promise<StudioPreview> => {
-          let r: StudioResult;
-          let processingReceipt: string | undefined;
-          if (proAvailable) {
-            try {
-              const res = await proCutout.mutateAsync({
-                imageDataUrl: it.dataUrl,
-                taskId: workflowTaskId!,
+      // تسلسليّ لا متوازٍ — للسبب نفسه الموثَّق في مسار الذكاء الاصطناعي أدناه:
+      // httpBatchLink يجمع النداءات المتزامنة في طلبٍ HTTP واحد، فعدّة صور data-URL
+      // (~٧٠٠ك لكلٍّ) تتجاوز حدّ جسم 4mb ⇒ 413 قبل بلوغ الراوتر، برسالةٍ لا يفهمها المستخدم.
+      // ولا فائدة من التوازي أصلاً: للمزوّد فتحتا تنفيذٍ اثنتان وسقفُ ٣ نداءات لكل دقيقة
+      // لكل مستخدم ⇒ الباقي يعود BUSY/RATE_LIMITED. والتسلسل يُخلي الخيط بين الصور.
+      const processOne = async (it: (typeof targets)[number]): Promise<StudioPreview> => {
+        let r: StudioResult;
+        let processingReceipt: string | undefined;
+        if (proAvailable) {
+          try {
+            const res = await proCutout.mutateAsync({
+              imageDataUrl: it.dataUrl,
+              taskId: workflowTaskId!,
+              adminOverrideReason: props.adminOverrideReason,
+            });
+            // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
+            r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, {
+              trustCutout: true,
+            });
+            if (props.studioTaskId && res.processingReceipt) {
+              await bindProcessingProof.mutateAsync({
+                taskId: props.studioTaskId,
+                processingReceipt: res.processingReceipt,
+                candidateDataUrl: r.dataUrl,
                 adminOverrideReason: props.adminOverrideReason,
               });
-              // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
-              r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, { trustCutout: true });
-              if (props.studioTaskId && res.processingReceipt) {
-                await bindProcessingProof.mutateAsync({
-                  taskId: props.studioTaskId,
-                  processingReceipt: res.processingReceipt,
-                  candidateDataUrl: r.dataUrl,
-                  adminOverrideReason: props.adminOverrideReason,
-                });
-                processingReceipt = res.processingReceipt;
-              }
-              if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
-            } catch (e) {
-              // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
-              fellBackMsg = String((e as { message?: string })?.message ?? "");
-              r = await runFreeStudio(it.dataUrl, { safeOnly: true });
+              processingReceipt = res.processingReceipt;
             }
-          } else {
+            if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
+          } catch (e) {
+            // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
+            fellBackMsg = String((e as { message?: string })?.message ?? "");
             r = await runFreeStudio(it.dataUrl, { safeOnly: true });
           }
-          return { id: it.id, before: it.dataUrl, after: r.dataUrl, sizeKB: Math.round(r.sizeKB), mode: r.mode, processingReceipt };
-        }),
-      );
+        } else {
+          r = await runFreeStudio(it.dataUrl, { safeOnly: true });
+        }
+        return {
+          id: it.id,
+          before: it.dataUrl,
+          after: r.dataUrl,
+          sizeKB: Math.round(r.sizeKB),
+          mode: r.mode,
+          processingReceipt,
+        };
+      };
+
+      const results: StudioPreview[] = [];
+      for (const it of targets) {
+        results.push(await processOne(it));
+        if (myToken !== runToken.current) return; // أُعيد الاستهداف ⇒ توقّف فوراً بلا إتمام الباقي
+        // إخلاء الخيط بين الصور كي تبقى الصفحة مستجيبة أثناء دفعةٍ طويلة.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
       if (myToken !== runToken.current) return; // أُعيد الاستهداف أثناء المعالجة ⇒ تجاهُل نتيجةٍ لهدفٍ قديم
       setPreviews(results);
-      if (fellBackMsg) setNotice(`تعذّر القصّ الاحترافي (${fellBackMsg}) — استُعمل المسار المجاني الآمن.`);
-      else if (lowResPreview) setNotice("قُصّت الخلفية بدقّة معاينة منخفضة (الباقة المجانيّة). للنتيجة الاحترافيّة كاملة الدقّة، اشحن رصيد remove.bg.");
+      if (fellBackMsg)
+        setNotice(
+          `تعذّر القصّ الاحترافي (${fellBackMsg}) — استُعمل المسار المجاني الآمن.`,
+        );
+      else if (lowResPreview)
+        setNotice(
+          "قُصّت الخلفية بدقّة معاينة منخفضة (الباقة المجانيّة). للنتيجة الاحترافيّة كاملة الدقّة، اشحن رصيد remove.bg.",
+        );
     } catch (e) {
-      if (myToken === runToken.current) setError("تعذّرت معالجة الاستوديو: " + String((e as Error)?.message ?? e));
+      if (myToken === runToken.current)
+        setError(
+          "تعذّرت معالجة الاستوديو: " + String((e as Error)?.message ?? e),
+        );
     } finally {
       setBusy(false);
     }
   };
 
   const runAiStudio = async () => {
-    if (!targets.length || workflowTaskId == null) return;
+    if (!targets.length || workflowTaskId == null || offline) return;
     const myToken = runToken.current; // لقطة الهدف؛ توليد الذكاء الاصطناعي بطيء ⇒ الحارس أهمّ هنا
     setBusy(true);
     setError(null);
@@ -197,10 +240,18 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
               adminOverrideReason: props.adminOverrideReason,
             });
           }
-          ok.push({ id: it.id, before: it.dataUrl, after: norm.dataUrl, sizeKB: Math.round(norm.sizeKB), mode: "AI", processingReceipt: res.processingReceipt });
+          ok.push({
+            id: it.id,
+            before: it.dataUrl,
+            after: norm.dataUrl,
+            sizeKB: Math.round(norm.sizeKB),
+            mode: "AI",
+            processingReceipt: res.processingReceipt,
+          });
         } catch (e) {
           failedCount++;
-          if (!firstErr) firstErr = String((e as { message?: string })?.message ?? e ?? "");
+          if (!firstErr)
+            firstErr = String((e as { message?: string })?.message ?? e ?? "");
         }
       }
       if (myToken !== runToken.current) return; // أُعيد الاستهداف أثناء التوليد ⇒ تجاهُل النتيجة القديمة
@@ -210,10 +261,16 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
       }
       setPreviews(ok);
       if (failedCount > 0) {
-        setNotice(`تعذّر تحويل ${failedCount} من ${targets.length} صورة (${firstErr}).`);
+        setNotice(
+          `تعذّر تحويل ${failedCount} من ${targets.length} صورة (${firstErr}).`,
+        );
       }
     } catch (e) {
-      if (myToken === runToken.current) setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + String((e as Error)?.message ?? e));
+      if (myToken === runToken.current)
+        setError(
+          "تعذّر إنشاء استوديو الذكاء الاصطناعي: " +
+            String((e as Error)?.message ?? e),
+        );
     } finally {
       setBusy(false);
     }
@@ -229,13 +286,17 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
         ? "CUT"
         : "FLATTEN";
     props.onStudioModeChange?.(acceptedMode);
-    props.onProcessingReceiptChange?.(previews.find((preview) => preview.processingReceipt)?.processingReceipt ?? null);
+    props.onProcessingReceiptChange?.(
+      previews.find((preview) => preview.processingReceipt)
+        ?.processingReceipt ?? null,
+    );
     setPreviews(null);
     setNotice(null);
     setTargetIds([]);
   };
 
-  const modeLabel = (m: StudioPreview["mode"]) => (m === "AI" ? "ذكاء اصطناعي" : m === "CUT" ? "قصّ" : "آمن");
+  const modeLabel = (m: StudioPreview["mode"]) =>
+    m === "AI" ? "ذكاء اصطناعي" : m === "CUT" ? "قصّ" : "آمن";
 
   const targetLabel =
     targets.length === 1
@@ -244,7 +305,11 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
 
   return (
     <div className="space-y-3">
-      <ImageUploader {...props} onEditImage={selectOne} activeEditIds={targetSet} />
+      <ImageUploader
+        {...props}
+        onEditImage={selectOne}
+        activeEditIds={targetSet}
+      />
 
       {value.length > 0 && !previews && (
         <div className="space-y-3">
@@ -266,11 +331,21 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
                     title={`تعديل ${it.name || "الصورة"} في الاستوديو`}
                     aria-label={`تعديل ${it.name || "الصورة"} في الاستوديو`}
                   >
-                    <img src={it.dataUrl || it.url} alt={it.name || "صورة"} className="h-full w-full object-cover" />
+                    <img
+                      src={it.dataUrl || it.url}
+                      alt={it.name || "صورة"}
+                      className="h-full w-full object-cover"
+                    />
                   </button>
                 ))}
                 {value.length > 1 && (
-                  <Button type="button" variant="outline" size="sm" onClick={selectAll} className="h-14">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={selectAll}
+                    className="h-14"
+                  >
                     تحديد الكل
                   </Button>
                 )}
@@ -281,22 +356,41 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             <div className="space-y-3 rounded-md border border-violet-500/30 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-sm font-medium">
-                  الاستوديو يعمل على: <span className="text-violet-700 dark:text-violet-300">{targetLabel}</span>
+                  الاستوديو يعمل على:{" "}
+                  <span className="text-violet-700 dark:text-violet-300">
+                    {targetLabel}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   {value.length > 1 && targets.length < value.length && (
-                    <Button type="button" variant="ghost" size="sm" onClick={selectAll}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={selectAll}
+                    >
                       تحديد الكل
                     </Button>
                   )}
-                  <Button type="button" variant="ghost" size="sm" onClick={clearTargets}>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearTargets}
+                  >
                     <X aria-hidden className="size-4" /> إلغاء التحديد
                   </Button>
                 </div>
               </div>
 
               <div className="space-y-1">
-                <Button type="button" variant="outline" size="sm" onClick={runStudio} disabled={busy}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={runStudio}
+                  disabled={busy}
+                >
                   <Sparkles aria-hidden className="size-4" />
                   {busy
                     ? "جارٍ التحويل…"
@@ -306,7 +400,9 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
                 </Button>
                 {!proAvailable && (
                   <p className="text-[11px] text-muted-foreground">
-                    المسار المجانيّ يوسّط الصورة على أبيض فقط (لا يُزيل الخلفية). إزالة الخلفية الاحترافيّة تحتاج تفعيل remove.bg من الإعدادات.
+                    المسار المجانيّ يوسّط الصورة على أبيض فقط (لا يُزيل
+                    الخلفية). إزالة الخلفية الاحترافيّة تحتاج تفعيل remove.bg من
+                    الإعدادات.
                   </p>
                 )}
               </div>
@@ -314,11 +410,13 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
               {aiAvailable && (
                 <div className="space-y-2 rounded-md border border-violet-500/30 bg-violet-500/[0.03] p-2.5">
                   <div className="flex items-center gap-1.5 text-sm font-medium text-violet-700 dark:text-violet-300">
-                    <Wand2 aria-hidden className="size-4" /> استوديو الذكاء الاصطناعي (استوديو موحّد)
+                    <Wand2 aria-hidden className="size-4" /> استوديو الذكاء
+                    الاصطناعي (استوديو موحّد)
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    يُعيد تصميم الصورة كتصوير استوديو موحّد (خلفية بيضاء + إضاءة + ظلّ) بحفظ المنتج. برومت
-                    الاستوديو الجاهز مُطبَّق تلقائياً — أضِف تعليمات اختيارية للخلفية/الإطار فقط.
+                    يُعيد تصميم الصورة كتصوير استوديو موحّد (خلفية بيضاء + إضاءة
+                    + ظلّ) بحفظ المنتج. برومت الاستوديو الجاهز مُطبَّق تلقائياً
+                    — أضِف تعليمات اختيارية للخلفية/الإطار فقط.
                   </p>
                   <textarea
                     value={aiPromptText}
@@ -328,7 +426,13 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
                     maxLength={2000}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
-                  <Button type="button" size="sm" onClick={runAiStudio} disabled={busy} className="bg-violet-600 hover:bg-violet-700 text-white">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={runAiStudio}
+                    disabled={busy}
+                    className="bg-violet-600 hover:bg-violet-700 text-white"
+                  >
                     <Wand2 aria-hidden className="size-4" />
                     {busy ? "جارٍ الإنشاء…" : "إنشاء استوديو بالذكاء الاصطناعي"}
                   </Button>
@@ -354,19 +458,37 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
             <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 text-xs text-amber-700 dark:text-amber-400">
               <Info aria-hidden className="size-4 shrink-0 mt-0.5" />
               <span>
-                صورة مُولَّدة بالذكاء الاصطناعي. راجِع تطابق تفاصيل المنتج وكتابته (الأرقام/الحروف) مع الأصل قبل
-                الاعتماد — قد يغيّر الذكاء الاصطناعي تفاصيل دقيقة. <b>الأصل محفوظ ولا يُستبدَل إلا باعتمادك.</b>
+                صورة مُولَّدة بالذكاء الاصطناعي. راجِع تطابق تفاصيل المنتج
+                وكتابته (الأرقام/الحروف) مع الأصل قبل الاعتماد — قد يغيّر الذكاء
+                الاصطناعي تفاصيل دقيقة.{" "}
+                <b>الأصل محفوظ ولا يُستبدَل إلا باعتمادك.</b>
               </span>
             </div>
           )}
-          {notice && <p className="text-xs text-amber-600 dark:text-amber-500">{notice}</p>}
+          {notice && (
+            <p className="text-xs text-amber-600 dark:text-amber-500">
+              {notice}
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {previews.map((p) => (
               <div key={p.id} className="space-y-1 text-center">
                 <div className="flex items-center justify-center gap-1">
-                  <img src={p.after} alt="بعد" className="size-16 rounded border object-contain" style={{ background: "#ffffff" }} />
-                  <ArrowLeft aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-                  <img src={p.before} alt="قبل" className="size-16 rounded border bg-muted object-contain" />
+                  <img
+                    src={p.after}
+                    alt="بعد"
+                    className="size-16 rounded border object-contain"
+                    style={{ background: "#ffffff" }}
+                  />
+                  <ArrowLeft
+                    aria-hidden
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <img
+                    src={p.before}
+                    alt="قبل"
+                    className="size-16 rounded border bg-muted object-contain"
+                  />
                 </div>
                 <span className="text-xs text-muted-foreground">
                   {p.sizeKB}KB · {modeLabel(p.mode)}
@@ -376,9 +498,18 @@ export function ImageStudioUploader(props: ImageStudioUploaderProps) {
           </div>
           <div className="flex gap-2">
             <Button type="button" size="sm" onClick={accept}>
-              <Check aria-hidden className="size-4" /> اعتماد {previews.length > 1 ? "الكل" : ""}
+              <Check aria-hidden className="size-4" /> اعتماد{" "}
+              {previews.length > 1 ? "الكل" : ""}
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => { setPreviews(null); setNotice(null); }}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setPreviews(null);
+                setNotice(null);
+              }}
+            >
               <X aria-hidden className="size-4" /> إلغاء
             </Button>
           </div>

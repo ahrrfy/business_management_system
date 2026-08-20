@@ -1462,7 +1462,49 @@
       "idx": 210,
       "version": "5",
       "when": 1788052261000,
-      "tag": "0210_product_customization_templates",
+      "tag": "0210_product_studio_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "5",
+      "when": 1788052262000,
+      "tag": "0211_product_studio_campaigns",
+      "breakpoints": true
+    },
+    {
+      "idx": 212,
+      "version": "5",
+      "when": 1788052263000,
+      "tag": "0212_product_studio_cancel",
+      "breakpoints": true
+    },
+    {
+      "idx": 213,
+      "version": "5",
+      "when": 1788052264000,
+      "tag": "0213_product_studio_submit_quota",
+      "breakpoints": true
+    },
+    {
+      "idx": 214,
+      "version": "5",
+      "when": 1788052265000,
+      "tag": "0214_product_studio_gc_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "5",
+      "when": 1788052266000,
+      "tag": "0215_product_studio_assigned_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 216,
+      "version": "5",
+      "when": 1788052267000,
+      "tag": "0216_product_customization_templates",
       "breakpoints": true
     }
   ]

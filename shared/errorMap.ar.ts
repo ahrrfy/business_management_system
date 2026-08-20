@@ -141,6 +141,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_pijob_product_active: {
     msg: "توجد مهمة استوديو نشطة لهذا المنتج بالفعل — افتح المهمة الحالية بدلاً من إنشاء مهمة مكرّرة.",
   },
+  uq_pssq_user_day: { msg: "سجلّ سقف إرسال الاستوديو لهذا الموظف اليوم موجود مسبقاً." },
   // ── الرواتب/الإقفال/الاستحقاقات (0185–0194) ──
   uq_payroll_obligation_source: { msg: "التزام الرواتب لهذا المصدر مسجّل مسبقاً." },
   uq_payroll_obligation_revision: { msg: "مراجعة التزام الرواتب مسجّلة مسبقاً." },

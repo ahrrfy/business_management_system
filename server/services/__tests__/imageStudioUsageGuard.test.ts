@@ -6,7 +6,6 @@ import { getDb } from "../../db";
 import {
   __resetImageStudioUsageGuardForTests,
   IMAGE_STUDIO_DAILY_LIMITS,
-  reserveDailyImageStudioUse,
   runGuardedImageStudioCall,
 } from "../imageStudioUsageGuard";
 
@@ -31,21 +30,23 @@ describe("imageStudioUsageGuard", () => {
   beforeEach(reset);
   afterEach(() => __resetImageStudioUsageGuardForTests());
 
-  it("يحجز الاستخدام اليومي ذرّياً ويرفض النداء الذي يتجاوز السقف", async () => {
-    const now = new Date("2030-01-02T12:00:00.000Z");
-    const first = await reserveDailyImageStudioUse("AI", now);
-    expect(first.requestCount).toBe(1);
-
+  /**
+   * كان هذا الاختبار يستدعي `reserveDailyImageStudioUse` — دالّةً مُصدَّرةً بلا أيّ مستدعٍ
+   * إنتاجيّ. فكان يُثبت ذرّيّة مسارٍ لا يسلكه أحد، بينما مسار الإنتاج الحقيقيّ
+   * (`reserveSharedBudgets` داخل `runGuardedImageStudioCall`) بلا تغطيةٍ لسقفه اليوميّ.
+   * حُذفت الميتة ووُجّه الاختبار إلى الحيّ.
+   */
+  it("يرفض النداء الذي يتجاوز السقف اليومي على مسار الإنتاج", async () => {
+    const usageDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     await db().insert(imageStudioUsageDaily).values({
-      usageDate: first.usageDate,
+      usageDate,
       service: "REMOVEBG",
-      requestCount: IMAGE_STUDIO_DAILY_LIMITS.REMOVEBG - 1,
-      lastRequestedAt: now,
-    });
-    await expect(reserveDailyImageStudioUse("REMOVEBG", now)).resolves.toMatchObject({
       requestCount: IMAGE_STUDIO_DAILY_LIMITS.REMOVEBG,
+      lastRequestedAt: new Date(),
     });
-    await expect(reserveDailyImageStudioUse("REMOVEBG", now)).rejects.toMatchObject({ kind: "DAILY_BUDGET_EXHAUSTED" });
+    await expect(runGuardedImageStudioCall({ service: "REMOVEBG", userId: 70, run: async () => "no" })).rejects.toMatchObject({ kind: "DAILY_BUDGET_EXHAUSTED" });
+    // وخدمةٌ أخرى لها ميزانيتها المستقلّة فلا تتأثّر.
+    await expect(runGuardedImageStudioCall({ service: "AI", userId: 71, run: async () => "ok" })).resolves.toBe("ok");
   });
 
   it("يمنع أكثر من ثلاث محاولات للمستخدم نفسه في الدقيقة", async () => {
