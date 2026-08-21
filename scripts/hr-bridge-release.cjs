@@ -816,7 +816,8 @@ function intentCandidateWins(entries, ownFile) {
 function scanIntentRecords(directory, namespace, ownFile) {
   const live = [];
   const vanished = [];
-  for (const name of fs.readdirSync(directory)) {
+  const names = fs.readdirSync(directory);
+  for (const name of names) {
     if (name.includes(".tmp-")) continue;
     if (!/^[0-9]+-[0-9a-f-]{36}\.json$/i.test(name)) {
       throw new Error("HR_BRIDGE_LOCK_INTENT_INVALID");
@@ -858,19 +859,79 @@ function scanIntentRecords(directory, namespace, ownFile) {
       }
     }
   }
-  return { live, vanished };
+  return { live, vanished, names };
+}
+
+// **شاهدُ الغياب الحاسم: الملفُّ المؤقّت.** «الاسمُ ليس مسروداً الآن» لا يُثبت شيئاً
+// وحده — قد نكون داخل نافذة الاستبدال ذاتها التي غيّبته (أمسكها Codex على #696: تحقّقي
+// الأوّل كان يقبل الغيابَ إن لم يَعُد الاسمُ **فوراً**، وهو احتمالٌ لا برهان).
+//
+// لكنّ بروتوكولَ `writeIntentRecord` يمنحنا برهاناً: كلُّ كتابةٍ تمرّ بملفٍّ مؤقّتٍ اسمُه
+// `<الاسم النهائيّ>.tmp-…` يبقى قائماً حتى تكتمل النقلة. فلا توجد لحظةٌ يغيب فيها الاسمُ
+// النهائيّ **ومؤقّتُه معاً** ما دام هناك كاتبٌ يعمل. إذاً:
+//
+//     غاب الاسم  ∧  لا مؤقّتَ له  ⇒  حُذف فعلاً  (لا منافس)
+//     غاب الاسم  ∧  له مؤقّت     ⇒  كتابةٌ جارية (منافسٌ حيّ) ⇒ أعِد المسح
+//
+// وهذا **حاسمٌ لا احتماليّ**، ويُضاف إليه انتظارٌ وجيزٌ قبل إعادة السرد لئلّا نلتقط
+// المجلّد في اللحظة نفسها. وعند نفاد المحاولات **نفشل مغلقين** (بلاغُ انشغال): منحُ
+// قفلٍ عند الشكّ هو العطبُ بعينه.
+//
+// ⚠️ **بلا تفريعٍ بحسب المنصّة.** كان هنا `platform !== "win32"` يعود فوراً — فكان
+// السلوكُ يختلف بين آلة التطوير وCI، ويستحيل أن يحرس اختبارٌ ما لا يعمل على لينكس
+// (أمسكه Codex أيضاً). الكلفةُ على لينكس معدومةٌ عملياً: سردٌ إضافيٌّ واحد **فقط** حين
+// يغيب اسمٌ أصلاً، وهناك لا يغيب إلّا بحذفٍ حقيقيّ فيعود من أوّل تحقّق.
+// كتابةُ السجلّ تستغرق ميكروثانيات؛ ثانيتان هامشٌ سخيّ. وما تجاوز ذلك فهو بقيّةُ عمليةٍ
+// ماتت — **تُتجاهَل ولا تُحذف**: مؤقّتٌ يتيمٌ يُعامَل «كتابةً جارية» أبداً يَحبس القفلَ
+// حبساً دائماً، وحذفُ مؤقّتِ غيرِنا يُخاطر بكاتبٍ بطيء. التجاهلُ يتجنّب الخطرين.
+const INTENT_TEMP_INFLIGHT_MS = 2_000;
+
+function freshWriteTemps(directory, names) {
+  const now = Date.now();
+  const fresh = [];
+  for (const name of names) {
+    if (!name.includes(".tmp-")) continue;
+    let stat;
+    try {
+      stat = fs.lstatSync(path.join(directory, name));
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (now - stat.mtimeMs <= INTENT_TEMP_INFLIGHT_MS) fresh.push(name);
+  }
+  return fresh;
+}
+
+function intentSnapshotUnstable(directory, vanished) {
+  const present = fs.readdirSync(directory);
+  // (أ) اسمٌ رأيناه ثمّ تعذّر قراءتُه، وما زال مسروداً أو له مؤقّت ⇒ كتابةٌ جارية.
+  if (
+    vanished.some(
+      (name) =>
+        present.includes(name) ||
+        present.some((entry) => entry.startsWith(`${name}.tmp-`)),
+    )
+  ) {
+    return true;
+  }
+  // (ب) أيُّ مؤقّتٍ طازج ⇒ كاتبٌ يعمل الآن، ولقطتُنا قد تكون ناقصةً **بلا أن ندري**:
+  // إن أسقط النظامُ المدخلةَ من السرد أثناء النقلة لم يصل الاسمُ إلى `vanished` أصلاً،
+  // فلا ينفع تتبّعُ الغائبين وحده. المؤقّتُ هو الشاهدُ الوحيد الباقي عندئذٍ.
+  return freshWriteTemps(directory, present).length > 0;
 }
 
 function liveIntentRecords(directory, namespace, ownFile = null) {
   for (let attempt = 1; ; attempt += 1) {
-    const { live, vanished } = scanIntentRecords(directory, namespace, ownFile);
-    // POSIX: `rename` ذرّية ⇒ اسمٌ ارتدّ ENOENT فهو مفقودٌ حقاً، ولا إعادةَ مسحٍ إطلاقاً.
-    if (vanished.length === 0 || process.platform !== "win32") return live;
-    const present = new Set(fs.readdirSync(directory));
-    if (!vanished.some((name) => present.has(name))) return live;
-    // اسمٌ «غاب» ثمّ عاد ⇒ استبدالٌ كان جارياً، لا حذف. لم نرَ الحقيقةَ بعد.
+    const { live, vanished, names } = scanIntentRecords(directory, namespace, ownFile);
+    if (vanished.length === 0 && freshWriteTemps(directory, names).length === 0) {
+      return live;
+    }
+    // انتظارٌ **قبل** إعادة السرد: التحقّقُ الفوريّ قد يقع داخل النافذة نفسها التي
+    // غيّبت الاسمَ فيبدو الغيابُ دائماً وهو لحظيّ (أمسكها Codex على #696).
+    intentWait(2 * attempt);
+    if (!intentSnapshotUnstable(directory, vanished)) return live;
     if (attempt >= 5) throw new Error("HR_BRIDGE_LOCK_INTENT_UNSTABLE");
-    intentWait(5 * attempt);
   }
 }
 

@@ -18,7 +18,7 @@
  */
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -260,6 +260,39 @@ for (let i = 0; i < 40; i++) {
     } finally {
       (process as unknown as { kill: typeof process.kill }).kill = realKill;
     }
+  });
+
+  it("⭐ مؤقّتٌ طازجٌ يعني كتابةً جارية ⇒ اللقطةُ غيرُ مستقرّة، والقفلُ لا يُمنح", () => {
+    // الحالةُ التي لا يمسكها تتبّعُ «الغائبين»: إن أسقط النظامُ مدخلةَ المنافس من **السرد**
+    // أثناء النقلة، لم يصل اسمُه إلى `vanished` إطلاقاً فلا شيء نُعيد التحقّق منه.
+    // الشاهدُ الوحيد الباقي عندئذٍ هو المؤقّتُ الطازج: بروتوكولُ الكتابة يضمن بقاءه حتى
+    // تكتمل النقلة، فوجودُه ⇒ كاتبٌ يعمل ⇒ لقطتُنا قد تكون ناقصة.
+    const directory = join(root, ".runtime", "hr-bridge", "sync-locks");
+    mkdirSync(directory, { recursive: true });
+    const token = "44444444-4444-4444-8444-444444444444";
+    // مؤقّتُ منافسٍ في منتصف كتابته — والاسمُ النهائيّ غائبٌ عن السرد تماماً (نافذةُ النقلة).
+    writeFileSync(
+      join(directory, `${process.pid}-${token}.json.tmp-${process.pid}-abc`),
+      "{}",
+      { encoding: "utf8", mode: 0o600, flag: "wx" },
+    );
+    expect(() => tools.acquireRuntimeIntentLock(root, "sync"))
+      .toThrowError(/HR_BRIDGE_DEPLOY_SYNC_ALREADY_RUNNING/);
+  });
+
+  it("⭐ مؤقّتٌ يتيمٌ (عمليةٌ ماتت) لا يَحبس القفل أبداً", () => {
+    // النقيضُ الضروريّ: لو عُوملت كلُّ المؤقّتات «كتابةً جارية» لَحبس مؤقّتٌ واحدٌ خلّفته
+    // عمليةٌ ميّتة **كلَّ نشرٍ لاحق** بلاغَ انشغالٍ دائم — بابٌ مسدودٌ لا مخرج منه.
+    // العمرُ هو الفيصل: كتابةُ السجلّ ميكروثانيات، فما تجاوز الثانيتين يتيمٌ يُتجاهَل.
+    const directory = join(root, ".runtime", "hr-bridge", "sync-locks");
+    mkdirSync(directory, { recursive: true });
+    const orphan = join(directory, `9999-55555555-5555-4555-8555-555555555555.json.tmp-9999-x`);
+    writeFileSync(orphan, "{}", { encoding: "utf8", mode: 0o600, flag: "wx" });
+    const old = new Date(Date.now() - 10 * 60_000);
+    utimesSync(orphan, old, old);
+    // يُمنح فوراً: لا منافسَ حيّ، والمؤقّتُ اليتيم لا يُعطّل شيئاً — ولا يُحذف كذلك.
+    tools.acquireRuntimeIntentLock(root, "sync")();
+    expect(existsSync(orphan)).toBe(true);
   });
 
   it("⭐ سباقٌ حقيقيّ بعمليّتين: فائزٌ واحدٌ ومحجوبٌ واحد", { timeout: 180_000 }, () => {
