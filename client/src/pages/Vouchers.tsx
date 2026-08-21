@@ -33,15 +33,21 @@ import {
   printVoucherA4,
   type VoucherPrintData,
 } from "@/lib/printing/voucherPrint";
+import {
+  releaseReservedPrintWindow,
+  reservePrintWindow,
+} from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import {
   moduleAccessAllowed,
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import type { PrintOpenResult } from "@shared/printAudit";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import {
@@ -88,6 +94,7 @@ const SYSTEM_PAYMENT_PREFIXES = [
   "ASSET-MAINT-",
   "ASSET-SUP-SETTLE-",
   "PO-PAY-",
+  "PO-USD-PAY-",
   "SHIP-",
   "EXCHANGE-IQD-DEP-",
   "DIGITAL-WALLET-DEP-",
@@ -103,8 +110,18 @@ function isSystemPaymentReference(reference?: string | null): boolean {
   );
 }
 
+function isPurchaseSupplierPaymentReference(
+  reference?: string | null,
+): boolean {
+  return (
+    !!reference &&
+    (reference.startsWith("PO-PAY-") || reference.startsWith("PO-USD-PAY-"))
+  );
+}
+
 export default function Vouchers() {
   const utils = trpc.useUtils();
+  const printAudit = usePrintAudit();
   const me = trpc.auth.me.useQuery();
   const canManage =
     !!me.data &&
@@ -425,8 +442,18 @@ export default function Vouchers() {
             header: "نوع الطرف",
             map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—",
           },
-          { key: "partyName", header: "اسم الطرف", map: (r) => r.partyName ?? r.counterpartyName ?? "" },
-          { key: "createdByName", header: "المنفذ", map: (r) => r.createdByName ?? (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق") },
+          {
+            key: "partyName",
+            header: "اسم الطرف",
+            map: (r) => r.partyName ?? r.counterpartyName ?? "",
+          },
+          {
+            key: "createdByName",
+            header: "المنفذ",
+            map: (r) =>
+              r.createdByName ??
+              (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق"),
+          },
           {
             key: "voucherCategoryId",
             header: "الفئة",
@@ -524,6 +551,12 @@ export default function Vouchers() {
       );
       return;
     }
+    if (mode === "a4" && !reservePrintWindow()) {
+      notify.err(
+        "تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة",
+      );
+      return;
+    }
     try {
       const v = await utils.vouchers.get.fetch({ receiptId: Number(r.id) });
       if (!v) {
@@ -534,10 +567,7 @@ export default function Vouchers() {
       const payload: VoucherPrintData = {
         voucherNumber: v.voucherNumber ?? "",
         direction: v.direction as "IN" | "OUT",
-        voucherDate: String(v.voucherDate ?? fmtDate(v.createdAt)).slice(
-          0,
-          10,
-        ),
+        voucherDate: String(v.voucherDate ?? fmtDate(v.createdAt)).slice(0, 10),
         createdAt: String(v.createdAt),
         branchName,
         amount: fmt(v.amount),
@@ -564,9 +594,29 @@ export default function Vouchers() {
         attachmentUrl: v.attachmentUrl,
         relatedInvoiceNumber: v.invoiceNumber ?? null,
       };
-      if (mode === "a4") await printVoucherA4(payload);
-      else await printVoucherReceipt(payload);
+      const result = await printAudit.run({
+        documentType: "VOUCHER",
+        documentId: Number(r.id),
+        branchId: v.branchId == null ? null : Number(v.branchId),
+        channel: mode === "a4" ? "BROWSER" : "THERMAL",
+        open: (audit): Promise<PrintOpenResult> => {
+          const auditedPayload = {
+            ...payload,
+            printedByName: audit.actorName,
+            printRequestedAt: String(audit.requestedAt),
+          };
+          return mode === "a4"
+            ? printVoucherA4(auditedPayload)
+            : printVoucherReceipt(auditedPayload);
+        },
+      });
+      if (typeof result === "boolean" && !result) {
+        notify.err(
+          "تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.",
+        );
+      }
     } catch (e) {
+      if (mode === "a4") releaseReservedPrintWindow();
       notify.err(e);
     }
   }
@@ -907,7 +957,11 @@ export default function Vouchers() {
                   </tr>
                 )}
                 {rows.map((r) => {
-                  const partyDisplay = r.partyName?.trim() || r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
+                  const partyDisplay =
+                    r.partyName?.trim() ||
+                    r.counterpartyName?.trim() ||
+                    PARTY_LABEL[r.partyType ?? "OTHER"] ||
+                    "—";
                   const isPending = r.approvalStatus === "PENDING_APPROVAL";
                   const isRejected = r.approvalStatus === "REJECTED";
                   return (
@@ -982,13 +1036,19 @@ export default function Vouchers() {
                       </td>
                       <td className="p-2 text-xs">
                         {partyDisplay}
-                        {r.partyType !== "OTHER" && r.counterpartyName && r.counterpartyName !== partyDisplay && (
-                          <div className="text-[10px] text-muted-foreground">
-                            {r.counterpartyName}
-                          </div>
-                        )}
+                        {r.partyType !== "OTHER" &&
+                          r.counterpartyName &&
+                          r.counterpartyName !== partyDisplay && (
+                            <div className="text-[10px] text-muted-foreground">
+                              {r.counterpartyName}
+                            </div>
+                          )}
                         <div className="text-[11px] text-muted-foreground">
-                          نفّذ: {r.createdByName ?? (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق")}
+                          نفّذ:{" "}
+                          {r.createdByName ??
+                            (r.createdBy
+                              ? `مستخدم #${r.createdBy}`
+                              : "غير موثق")}
                         </div>
                         {r.invoiceNumber && (
                           <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
@@ -1124,15 +1184,31 @@ export default function Vouchers() {
                                 "TERM-SETTLEMENT-",
                               )
                                 ? "إعادة تقديم تسوية نهاية الخدمة"
-                                : r.referenceNumber?.startsWith("ASSET-ACQ-")
-                                  ? "إعادة تقديم تسوية اقتناء الأصل"
-                                  : "إعادة تقديم دفع المصروف",
-                              hidden: !canShowAccrualPaymentResubmit({
-                                referenceNumber: r.referenceNumber,
-                                approvalStatus: r.approvalStatus,
-                                resubmitLineageStatus: r.resubmitLineageStatus,
-                                canManage,
-                              }),
+                                : isPurchaseSupplierPaymentReference(
+                                      r.referenceNumber,
+                                    )
+                                  ? r.referenceNumber?.startsWith("PO-USD-PAY-")
+                                    ? "إعادة تقديم تسديد USD"
+                                    : "إعادة تقديم دفعة المورد"
+                                  : r.referenceNumber?.startsWith("ASSET-ACQ-")
+                                    ? "إعادة تقديم تسوية اقتناء الأصل"
+                                    : "إعادة تقديم دفع المصروف",
+                              hidden:
+                                !canShowAccrualPaymentResubmit({
+                                  referenceNumber: r.referenceNumber,
+                                  approvalStatus: r.approvalStatus,
+                                  resubmitLineageStatus:
+                                    r.resubmitLineageStatus,
+                                  canManage,
+                                }) &&
+                                !(
+                                  canManage &&
+                                  r.approvalStatus === "REJECTED" &&
+                                  r.resubmitLineageStatus !== "BROKEN" &&
+                                  isPurchaseSupplierPaymentReference(
+                                    r.referenceNumber,
+                                  )
+                                ),
                               disabled: resubmitSystemPaymentMut.isPending,
                               disabledReason: "توجد إعادة تقديم قيد التنفيذ",
                               onSelect: () => openResubmitSystemPayment(r),
@@ -1170,7 +1246,10 @@ export default function Vouchers() {
                                 !canManage ||
                                 r.status === "REVERSED" ||
                                 r.paymentMethod === "EXCHANGE" ||
-                                isSystemPaymentReference(r.referenceNumber),
+                                (isSystemPaymentReference(r.referenceNumber) &&
+                                  !isPurchaseSupplierPaymentReference(
+                                    r.referenceNumber,
+                                  )),
                               disabled: cancelMut.isPending,
                               disabledReason: "توجد عملية إلغاء قيد التنفيذ",
                               onSelect: () => void cancelVoucher(r),
@@ -1241,13 +1320,19 @@ export default function Vouchers() {
             <DialogDescription>
               {rejectTarget?.referenceNumber?.startsWith("TERM-SETTLEMENT-")
                 ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى إنهاء الخدمة مثبتاً وتبقى التسوية غير مدفوعة، ويمكن إعادة تقديمها صراحةً من السجل بلا تكرار."
-                : rejectTarget?.referenceNumber?.startsWith("ASSET-ACQ-")
-                  ? "سبب الرفض إلزامي. يُرفض طلب التسوية فقط؛ يبقى الأصل والتزام اقتنائه مثبتين، ويمكن إعادة تقديم الدفع صراحةً بلا تكرار الأصل أو القيد."
-                  : rejectTarget?.referenceNumber &&
-                      (rejectTarget.referenceNumber.startsWith("SHIP-") ||
-                        rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
-                    ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
-                    : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
+                : isPurchaseSupplierPaymentReference(
+                      rejectTarget?.referenceNumber,
+                    )
+                  ? "سبب الرفض إلزامي. لا تتغير ذمة المورد أو أمر الشراء، ويمكن إعادة تقديم الطلب مرتبطاً بالأمر نفسه بعد التصحيح."
+                  : rejectTarget?.referenceNumber?.startsWith("ASSET-ACQ-")
+                    ? "سبب الرفض إلزامي. يُرفض طلب التسوية فقط؛ يبقى الأصل والتزام اقتنائه مثبتين، ويمكن إعادة تقديم الدفع صراحةً بلا تكرار الأصل أو القيد."
+                    : rejectTarget?.referenceNumber &&
+                        (rejectTarget.referenceNumber.startsWith("SHIP-") ||
+                          rejectTarget.referenceNumber.startsWith(
+                            "ASSET-MAINT-",
+                          ))
+                      ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
+                      : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1">
@@ -1295,13 +1380,34 @@ export default function Vouchers() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              إعادة إصدار طلب الدفع {resubmitTarget?.voucherNumber ?? ""}
+              {isPurchaseSupplierPaymentReference(
+                resubmitTarget?.referenceNumber,
+              )
+                ? resubmitTarget?.referenceNumber?.startsWith("PO-USD-PAY-")
+                  ? "إعادة إصدار تسديد USD"
+                  : "إعادة إصدار دفعة المورد"
+                : "إعادة إصدار طلب الدفع"}{" "}
+              {resubmitTarget?.voucherNumber ?? ""}
             </DialogTitle>
             <DialogDescription>
-              يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
-              {(resubmitTarget?.resubmitAttempt ?? 0) + 1}
-              مرتبطة بالسند #{resubmitTarget?.id ?? "—"}، بلا تكرار للمصروف أو
-              الأصل أو قيد الاعتراف وبلا أثر نقدي قبل اعتماد المالك.
+              {isPurchaseSupplierPaymentReference(
+                resubmitTarget?.referenceNumber,
+              ) ? (
+                <>
+                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
+                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
+                  {resubmitTarget?.id ?? "—"} وبأمر الشراء نفسه، بعد إعادة فحص
+                  رصيده الدفتري، بلا تغيير ذمة المورد أو أثر نقدي قبل اعتماد
+                  المالك.
+                </>
+              ) : (
+                <>
+                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
+                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
+                  {resubmitTarget?.id ?? "—"}، بلا تكرار للمصروف أو الأصل أو قيد
+                  الاعتراف وبلا أثر نقدي قبل اعتماد المالك.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1">

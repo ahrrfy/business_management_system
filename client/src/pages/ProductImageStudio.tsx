@@ -19,7 +19,7 @@ import { loadStudioDraft, purgeStudioDraft, purgeStudioDraftsForUser, reconcileS
 import { studioOfflineCapabilities, studioOfflineProfileInput } from "@/lib/productStudio/coldOfflinePolicy";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { getOfflineProfile, saveOfflineProfile, setOfflinePin, type OfflineProfile } from "@/lib/offline/pinLock";
-import { createProductWebpThumbnail } from "@/lib/productImageThumbnail";
+import { createProductDisplayThumbnail } from "@/lib/productImageThumbnail";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, Bell, CheckCircle2, ChevronRight, ClipboardList, History, Image, Loader2, Megaphone, Minus, Plus, RefreshCw, RotateCcw, ScanLine, ShieldCheck, UserCheck, Wallet, XCircle } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -787,7 +787,7 @@ export default function ProductImageStudio() {
     if (offline || !selected || !images[0]?.dataUrl) return;
     setIsPreparingThumbnail(true);
     try {
-      const thumbnailDataUrl = await createProductWebpThumbnail(images[0].dataUrl);
+      const thumbnailDataUrl = await createProductDisplayThumbnail(images[0].dataUrl);
       await submit.mutateAsync({
         taskId: Number(selected.id),
         expectedRevision: selected.revision,

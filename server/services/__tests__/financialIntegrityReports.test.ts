@@ -116,10 +116,16 @@ describe.sequential("سلامة مصادر التقارير المالية", () 
       orderDate: new Date("2026-07-01T10:00:00Z"), subtotal: "100.00",
       total: "100.00", status: "RECEIVED",
     });
-    await db().insert(s.accountingEntries).values({
-      entryType: "RETURN", branchId: 1, purchaseOrderId: 1, supplierId: 1,
-      amount: "-40.00", cost: "-40.00", entryDate: new Date("2026-07-02"),
-    });
+    await db().insert(s.accountingEntries).values([
+      {
+        entryType: "PURCHASE", branchId: 1, purchaseOrderId: 1, supplierId: 1,
+        amount: "100.00", cost: "100.00", entryDate: new Date("2026-07-01"),
+      },
+      {
+        entryType: "RETURN", branchId: 1, purchaseOrderId: 1, supplierId: 1,
+        amount: "-40.00", cost: "-40.00", entryDate: new Date("2026-07-02"),
+      },
+    ]);
 
     const detail = await getArApAgingDetail({ side: "AP", branchId: 1 });
     expect(detail.rows).toHaveLength(1);

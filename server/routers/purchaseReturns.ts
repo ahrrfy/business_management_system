@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -78,7 +79,11 @@ export const purchaseReturnsRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام مرتجع الشراء" });
+          failOpaque(e, {
+            op: "purchaseReturns.create",
+            userMessage: "تعذّر إتمام مرتجع الشراء",
+            context: { userId: ctx.user.id, branchId, supplierId: input.supplierId, purchaseOrderRefId: input.purchaseOrderRefId, items: input.items.length },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام مرتجع الشراء (تكرار)" });

@@ -8,18 +8,19 @@
  * التصميم المُختبَر هنا: إعادة استعمال آلية `PURCHASE_SUPPLIER` نفسها التي يستعملها الاستلام
  * ⇒ الأثر الماليّ عند **الاعتماد** لا الطلب، و`paidAmount` يتحرّك هناك تحت القفل.
  */
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { payPurchaseOrder } from "../purchase/pay";
 import { money } from "../money";
+import { truncateTables } from "./__testUtils__";
 
 const admin = { userId: 1, branchId: 1, role: "admin" as const };
 const otherBranchMgr = { userId: 2, branchId: 2, role: "manager" as const };
 
 const TABLES = [
-  "auditLogs", "idempotencyKeys", "accountingEntries", "receipts",
+  "auditLogs", "idempotencyKeys", "journalLines", "journalEntries", "accountingEntries", "receipts",
   "purchaseOrderItems", "purchaseOrders", "shifts", "suppliers", "branches", "users",
 ];
 
@@ -29,13 +30,11 @@ function db() {
   return d;
 }
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 async function seed(opts: { paid?: string; currency?: "IQD" | "USD"; status?: "RECEIVED" | "CANCELLED" } = {}) {
   const d = db();
+  const paid = opts.paid ?? "0.00";
   await d.insert(s.branches).values([
     { id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "فرع", code: "BR2", type: "SALES" },
@@ -50,9 +49,27 @@ async function seed(opts: { paid?: string; currency?: "IQD" | "USD"; status?: "R
     id: 1, poNumber: "PO-1", supplierId: 1, branchId: 1,
     status: opts.status ?? "RECEIVED",
     agreedCurrency: opts.currency ?? "IQD",
-    subtotal: "10000.00", total: "10000.00", paidAmount: opts.paid ?? "0.00",
+    subtotal: "10000.00", total: "10000.00", paidAmount: paid,
     createdBy: 1,
   });
+  await d.insert(s.accountingEntries).values({
+    entryType: "PURCHASE",
+    branchId: 1,
+    purchaseOrderId: 1,
+    supplierId: 1,
+    amount: "10000.00",
+    entryDate: new Date(),
+  });
+  if (money(paid).gt(0)) {
+    await d.insert(s.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      branchId: 1,
+      purchaseOrderId: 1,
+      supplierId: 1,
+      amount: paid,
+      entryDate: new Date(),
+    });
+  }
 }
 async function po() {
   return (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, 1)))[0];
@@ -102,7 +119,7 @@ describe("purchases.pay — تسديد أمر شراءٍ بعد الاستلام
     await seed();
     await expect(
       payPurchaseOrder({ purchaseOrderId: 1, amount: "100.00", method: "CASH", clientRequestId: "pp-5" }, otherBranchMgr),
-    ).rejects.toThrow(/لا يخصّ فرعك/);
+    ).rejects.toThrow(/فرع آخر/);
   });
 
   it("يرفض الأمر الملغى، ويحيل الدولاريّ إلى مساره الخاصّ", async () => {

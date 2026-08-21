@@ -267,6 +267,18 @@ export async function plSnapshot(
     `),
   )[0] ?? { amount: "0" };
 
+  // فرق سعر مرتجع الشراء عن WAVG الحالي محفوظ على قيد RETURN القانوني نفسه؛
+  // profit موجب=مكسب، سالب=خسارة. لا ADJUST ثانياً كي لا يتكرر خط PPV في دفتر القيد المزدوج.
+  const prv = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.profit), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'RETURN' AND ae.supplierId IS NOT NULL
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   // FA-02 (تكامل الأصول↔P&L، تحقيق عدائي ٢٠/٦): ربح/خسارة التصرّف بالأصول قيدُ ADJUST بمفتاح
   // ASSET_DISP_PL، revenue=الربح موقَّعاً (موجب ربح/سالب خسارة). كان يُهمَل في P&L (يَجمع SALE/RETURN
   // فقط) ⇒ صافي الربح لا يَعكس بيع الأصول. نَجمعه هنا ونُدرجه سطراً غير تشغيليّ في صافي الربح.
@@ -453,6 +465,17 @@ export async function plSnapshot(
       amount: toDbMoney(purchReturnLandedLoss),
     });
     totalExpenses = totalExpenses.add(purchReturnLandedLoss);
+  }
+
+  const purchaseReturnPriceVariance = money(prv.amount ?? 0); // موجب=مكسب
+  if (!purchaseReturnPriceVariance.isZero()) {
+    const expenseEffect = purchaseReturnPriceVariance.neg();
+    expenseLines.push({
+      key: "PURCH_RETURN_PRICE_VARIANCE",
+      label: "فرق سعر مرتجع الشراء عن متوسط المخزون",
+      amount: toDbMoney(expenseEffect),
+    });
+    totalExpenses = totalExpenses.add(expenseEffect);
   }
 
   // FI-02: مصروف إهلاك الأصول الثابتة (غير نقديّ) — سطر مستقلّ يَخفض صافي الربح.
@@ -750,11 +773,11 @@ export async function getGeneralLedger(opts: {
         r.shiftId AS shiftId,
         shiftOwner.name AS shiftOwnerName,
         ae.createdBy AS createdBy,
-        COALESCE(entryUser.name, ae.createdByNameSnapshot) AS createdByName,
+        COALESCE(ae.createdByNameSnapshot, entryUser.name, entryUser.username) AS createdByName,
         r.createdBy AS receiptCreatedBy,
-        receiptUser.name AS receiptCreatedByName,
+        COALESCE(receiptUser.name, receiptUser.username) AS receiptCreatedByName,
         r.approvedBy AS approvedBy,
-        approver.name AS approvedByName,
+        COALESCE(approver.name, approver.username) AS approvedByName,
         DATE_FORMAT(r.approvedAt, '%Y-%m-%d %H:%i:%s') AS approvedAt,
         DATE_FORMAT(ae.createdAt, '%Y-%m-%d %H:%i:%s') AS createdAt,
         ae.dedupeKey AS dedupeKey

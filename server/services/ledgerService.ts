@@ -1,11 +1,14 @@
 import type Decimal from "decimal.js";
 import { eq, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/mysql-core";
 import {
   accountingEntries,
   customers,
   deliveryParties,
   exchangeHouses,
+  receipts,
   suppliers,
+  users,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -108,6 +111,75 @@ export interface EntryInput {
   paymentMethod?: string | null;
 }
 
+const ACTOR_ATTRIBUTED_ENTRY_TYPES = new Set<EntryType>([
+  "PAYMENT_IN",
+  "PAYMENT_OUT",
+  "RETURN",
+]);
+
+/**
+ * يثبّت هوية منفّذ الحركات التي تغيّر نقداً/ذمّةً في لحظة الترحيل:
+ * - الكاتب المباشر يمرّر createdBy، فنلتقط الاسم الحالي لقطةً غير متأثرة بتعديل المستخدم لاحقاً.
+ * - مسار Maker/Checker يرحّل عند الاعتماد ولا يمرّر actor إلى postEntry؛ عندئذٍ يكون
+ *   receipts.approvedBy هو المنفّذ الفعلي، مع fallback إلى منشئ السند للسند المعتمد مباشرةً.
+ * لا نفرض تخميناً من الفاتورة/أمر الشراء عند غياب المصدرين: منشئ المستند ليس بالضرورة منفّذ
+ * الدفع أو المرتجع، فتبقى الفجوة NULL بدلاً من إسناد جنائي كاذب.
+ */
+async function resolveEntryActor(
+  tx: Tx,
+  e: EntryInput,
+): Promise<{ createdBy: number | null; createdByNameSnapshot: string | null }> {
+  let createdBy = e.createdBy ?? null;
+  // لا نقبل لقطة اسم يتيمة بلا actorId؛ فقد تخص مستخدماً مختلفاً عن actor المستعاد من السند.
+  let createdByNameSnapshot =
+    createdBy == null ? null : e.createdByNameSnapshot?.trim() || null;
+  if (!ACTOR_ATTRIBUTED_ENTRY_TYPES.has(e.entryType)) {
+    return { createdBy, createdByNameSnapshot };
+  }
+
+  if (createdBy == null && e.receiptId != null) {
+    const receiptActor = alias(users, "ledgerReceiptActor");
+    const row = (
+      await tx
+        .select({
+          createdBy: sql<
+            number | null
+          >`COALESCE(${receipts.approvedBy}, ${receipts.createdBy})`,
+          createdByNameSnapshot: sql<
+            string | null
+          >`COALESCE(${receiptActor.name}, ${receiptActor.username})`,
+        })
+        .from(receipts)
+        .leftJoin(
+          receiptActor,
+          eq(
+            receiptActor.id,
+            sql`COALESCE(${receipts.approvedBy}, ${receipts.createdBy})`,
+          ),
+        )
+        .where(eq(receipts.id, e.receiptId))
+        .limit(1)
+    )[0];
+    createdBy = row?.createdBy == null ? null : Number(row.createdBy);
+    createdByNameSnapshot = row?.createdByNameSnapshot ?? null;
+  }
+
+  if (createdBy != null && createdByNameSnapshot == null) {
+    const row = (
+      await tx
+        .select({
+          name: sql<string | null>`COALESCE(${users.name}, ${users.username})`,
+        })
+        .from(users)
+        .where(eq(users.id, createdBy))
+        .limit(1)
+    )[0];
+    createdByNameSnapshot = row?.name ?? null;
+  }
+
+  return { createdBy, createdByNameSnapshot };
+}
+
 /** Insert one ledger entry. RETURN entries carry negative values by convention.
  *  حارس Period-Lock: يرفض القيود بـentryDate ≤ أحدث cutoffDate نشِط (assertPeriodOpen). */
 export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
@@ -137,6 +209,7 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
       postingValidationError = error;
     }
   }
+  const actorAttribution = await resolveEntryActor(tx, e);
   const res = await tx.insert(accountingEntries).values({
     entryType: e.entryType,
     dedupeKey: e.dedupeKey ?? null,
@@ -160,8 +233,8 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     postingIntentHash: evidence?.postingIntentHash ?? null,
     entryDate,
     notes: e.notes,
-    createdBy: e.createdBy ?? null,
-    createdByNameSnapshot: e.createdByNameSnapshot ?? null,
+    createdBy: actorAttribution.createdBy,
+    createdByNameSnapshot: actorAttribution.createdByNameSnapshot,
   });
   // نقطة الحقن الوحيدة للدفتر المزدوج (P2). داخل **نفس المعاملة** ⇒ تراجعُ العملية يتراجع معه
   // القيد. في SHADOW يبقى النشر best-effort: الخلل يُوسَم فجوةً ولا يفشل عملية الأعمال؛

@@ -160,6 +160,21 @@ try {
           }),
       ),
     );
+    // ٢٠/٨ — **أظهِر ما جمعتَه قبل أن تسقط.** كان stderr الأطفال يُجمَع ثمّ يُبتلع، فيسقط
+    // النشر برسالة `[1,1] ≠ [0,0]` **بلا أيّ دليل**: ثلاثةُ تحقيقاتٍ متتالية عملت عمياء،
+    // وكلُّها استنتجت آليةً مختلفة. الخطأ الحقيقيّ كان في stderr طوال الوقت.
+    const failed = results.some((r) => r.status !== 0)
+      || results.filter((r) => /WINNER/.test(r.stdout)).length !== 1
+      || results.filter((r) => /BLOCKED/.test(r.stdout)).length !== 1;
+    if (failed) {
+      console.error(`\n✗ سباق قفل «${namespace}» — تشخيصُ الأطفال:`);
+      results.forEach((r, index) => {
+        console.error(`  طفل ${index}: exit=${r.status} stdout=${JSON.stringify(r.stdout.trim())}`);
+        const lines = String(r.stderr).split("\n").filter(Boolean).slice(0, 8);
+        console.error(lines.length ? lines.map((l) => `      ${l}`).join("\n") : "      (بلا stderr)");
+      });
+      console.error("");
+    }
     assert.deepEqual(results.map((result) => result.status), [0, 0]);
     assert.equal(results.filter((result) => /WINNER/.test(result.stdout)).length, 1);
     assert.equal(results.filter((result) => /BLOCKED/.test(result.stdout)).length, 1);

@@ -13,6 +13,12 @@ export interface DailyPoint {
   net: string;
 }
 
+const RECEIPT_CASH_EVENT_AT_SQL = sql`CASE
+  WHEN r.approvedBy IS NOT NULL AND r.approvedBy <> r.createdBy AND r.approvedAt IS NOT NULL
+    THEN r.approvedAt
+  ELSE r.createdAt
+END`;
+
 export async function getCashFlowSeries(
   input: { days?: number; branchId?: number },
   scope: { scopedBranchId: number | null; role: string },
@@ -33,16 +39,16 @@ export async function getCashFlowSeries(
   const rows = rowsOf(
     await db.execute(sql`
       SELECT
-        DATE(r.createdAt) AS day,
+        DATE(${RECEIPT_CASH_EVENT_AT_SQL}) AS day,
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' THEN r.amount ELSE 0 END), 0) AS CHAR) AS inflow,
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' THEN r.amount ELSE 0 END), 0) AS CHAR) AS outflow
       FROM receipts r
       WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND r.receiptApprovalStatus = 'APPROVED'
-        AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL ${days - 1} DAY)
+        AND ${RECEIPT_CASH_EVENT_AT_SQL} >= DATE_SUB(CURDATE(), INTERVAL ${days - 1} DAY)
         ${branchFilter}
         ${bucketFilter}
-      GROUP BY DATE(r.createdAt)
+      GROUP BY DATE(${RECEIPT_CASH_EVENT_AT_SQL})
       ORDER BY day ASC
     `),
   );

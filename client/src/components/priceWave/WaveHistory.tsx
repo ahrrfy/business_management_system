@@ -27,7 +27,7 @@ import { priceTierLabel } from "@/lib/labels";
 import { seedLabelQueue } from "@/lib/labelQueueSeed";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { useLocation } from "wouter";
+import { Link, useLocation } from "wouter";
 
 const nf = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 const th = "px-3 py-2 text-right font-medium whitespace-nowrap";
@@ -50,7 +50,14 @@ export function WaveHistory({
   // ترقيم تاريخ الموجات: يبدأ بـ٥٠ ويتوسّع بزرّ «تحميل المزيد» (السقف الخادمي ٢٠٠).
   const [historyLimit, setHistoryLimit] = useState(50);
   const wavesQ = trpc.priceWaves.list.useQuery({ limit: historyLimit });
-  const [detailsWaveId, setDetailsWaveId] = useState<number | null>(null);
+  // فتحٌ مباشر من رابطٍ خارجيّ (`?wave=N` من سجلّ سعر الوحدة في شاشة المنتج): بلا هذا يكون
+  // الرابط وعداً كاذباً — ينقلك للتبويب ثمّ يتركك تبحث عن الموجة يدوياً في قائمةٍ من مئتين.
+  const [detailsWaveId, setDetailsWaveId] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const raw = new URLSearchParams(window.location.search).get("wave");
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  });
   const detailsQ = trpc.priceWaves.waveDetails.useQuery(
     { waveId: detailsWaveId! },
     { enabled: detailsWaveId != null },
@@ -154,8 +161,11 @@ export function WaveHistory({
     navigate("/inventory?tab=barcodes");
   }
 
-  const detailRows = detailsQ.data ?? [];
-  const detailWave = waves.find((w) => Number(w.id) === detailsWaveId);
+  const detailRows = detailsQ.data?.rows ?? [];
+  // الرأس من الاستعلام نفسه أوّلاً، ومن القائمة كاحتياط: الرابط العميق قد يستهدف موجةً أقدم
+  // من الخمسين المعروضة، فالاعتماد على القائمة وحدها كان يفتح تفاصيلَ بلا اسمٍ ولا زرّ تراجع.
+  const detailWave =
+    detailsQ.data?.wave ?? waves.find((w) => Number(w.id) === detailsWaveId);
 
   return (
     <Card>
@@ -309,12 +319,27 @@ export function WaveHistory({
                       <th className={th}>فئة السعر</th>
                       <th className={th}>السعر القديم</th>
                       <th className={th}>السعر الجديد</th>
+                      <th className={th}>الهامش قبل ← بعد</th>
                     </tr>
                   </thead>
                   <tbody>
                     {detailRows.map((r) => (
                       <tr key={r.id} className="border-t">
-                        <td className={td}>{r.productName ?? "—"}</td>
+                        <td className={td}>
+                          {/* رابطٌ لتحرير المنتج: التفاصيل كانت طريقاً مسدوداً — ترى أنّ سعراً
+                              تغيّر ولا تصل إلى الصنف لتصحيحه. */}
+                          {r.productId != null ? (
+                            <Link
+                              href={`/products/${r.productId}/edit`}
+                              className="underline-offset-2 hover:underline"
+                              title="فتح تحرير المنتج"
+                            >
+                              {r.productName ?? "—"}
+                            </Link>
+                          ) : (
+                            (r.productName ?? "—")
+                          )}
+                        </td>
                         <td className={cn(td, "text-xs text-muted-foreground")}>
                           {r.sku ?? "—"}
                         </td>
@@ -332,6 +357,23 @@ export function WaveHistory({
                           dir="ltr"
                         >
                           {nf.format(Number(r.newPrice))}
+                        </td>
+                        <td
+                          className={cn(td, "tabular-nums text-xs")}
+                          dir="ltr"
+                          title={
+                            r.unitCost
+                              ? `تكلفة الوحدة الحاليّة: ${nf.format(Number(r.unitCost))}`
+                              : "لا تكلفة معروفة لهذه الوحدة"
+                          }
+                        >
+                          {r.oldMarginPct == null ? "—" : `${r.oldMarginPct}%`}{" "}
+                          <span aria-hidden>←</span>{" "}
+                          <b>
+                            {r.newMarginPct == null
+                              ? "—"
+                              : `${r.newMarginPct}%`}
+                          </b>
                         </td>
                       </tr>
                     ))}

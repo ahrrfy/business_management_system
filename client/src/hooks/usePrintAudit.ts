@@ -1,5 +1,11 @@
 import { trpc } from "@/lib/trpc";
-import type { PrintChannel, PrintDocumentType } from "@shared/printAudit";
+import {
+  derivePrintAuditOutcome,
+  printFailureCodeFromError,
+  type PrintChannel,
+  type PrintDocumentType,
+  type PrintOpenResult,
+} from "@shared/printAudit";
 
 const newRequestId = () => typeof crypto !== "undefined" && "randomUUID" in crypto
   ? crypto.randomUUID()
@@ -12,7 +18,7 @@ export interface PrintAuditMetadata {
   reprint: boolean;
 }
 
-/** يسجل REQUESTED ثم نتيجة النقل كسطر append-only آخر؛ BROWSER لا يتحول أبداً إلى PRINTED. */
+/** يسجل REQUESTED ثم نتيجة النقل كسطر append-only آخر؛ BROWSER/PDF لا يسجلان DISPATCHED. */
 export function usePrintAudit() {
   const requestPurchase = trpc.printAudit.requestPurchase.useMutation();
   const requestTreasury = trpc.printAudit.requestTreasury.useMutation();
@@ -21,7 +27,7 @@ export function usePrintAudit() {
   const outcomeTreasury = trpc.printAudit.outcomeTreasury.useMutation();
   const outcomeReport = trpc.printAudit.outcomeReport.useMutation();
 
-  async function run<T extends boolean | { via: "server" | "thermal" | "browser" }>(input: {
+  async function run<T extends PrintOpenResult>(input: {
     documentType: PrintDocumentType;
     documentId: number;
     branchId?: number | null;
@@ -45,16 +51,11 @@ export function usePrintAudit() {
     const complete = authority === "purchase" ? outcomePurchase : authority === "treasury" ? outcomeTreasury : outcomeReport;
     try {
       const result = await input.open({ ...audit, requestId });
-      const success = typeof result === "boolean" ? result : true;
-      const via = typeof result === "boolean" ? input.channel : result.via === "server" ? "SERVER_BRIDGE" : result.via === "thermal" ? "THERMAL" : "BROWSER";
-      await complete.mutateAsync({
-        requestId,
-        outcome: success ? (via === "BROWSER" || via === "PDF" ? "DIALOG_OPENED" : "DISPATCHED") : "FAILED",
-        failureCode: success ? undefined : "POPUP_BLOCKED",
-      });
+      const completion = derivePrintAuditOutcome(input.channel, result);
+      await complete.mutateAsync({ requestId, ...completion });
       return result;
     } catch (error) {
-      await complete.mutateAsync({ requestId, outcome: "FAILED", failureCode: error instanceof Error ? error.name.slice(0, 80) : "UNKNOWN" }).catch(() => undefined);
+      await complete.mutateAsync({ requestId, outcome: "FAILED", failureCode: printFailureCodeFromError(error) }).catch(() => undefined);
       throw error;
     }
   }

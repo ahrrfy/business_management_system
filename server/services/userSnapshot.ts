@@ -6,10 +6,10 @@ import type { Tx } from "../db";
 export async function userNameSnapshot(tx: Tx, userId: number): Promise<string | null> {
   const row = (
     await tx
-      .select({ name: users.name })
+      .select({ name: users.name, username: users.username })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1)
   )[0];
-  return row?.name?.trim() || null;
+  return row?.name?.trim() || row?.username?.trim() || `user-${userId}`;
 }

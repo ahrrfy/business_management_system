@@ -1,6 +1,7 @@
 // عقد الشراء المشترك (أمر الشراء/الاستلام/تسديد فاتورة الدولار).
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+export type PurchaseSettlementType = "CASH" | "CREDIT";
 
 export interface PurchaseLineInput {
   variantId: number;
@@ -50,6 +51,8 @@ export interface PurchaseDocumentInput {
 export interface CreatePurchaseOrderInput extends PurchaseDocumentInput {
   supplierId: number;
   branchId: number;
+  /** CASH = طلب صرف تلقائي لقيمة كل استلام؛ CREDIT = تبقى ذمة حتى دفع صريح. */
+  settlementType?: PurchaseSettlementType;
   status?: "DRAFT" | "SENT" | "CONFIRMED";
   notes?: string | null;
   clientRequestId?: string;
@@ -71,8 +74,10 @@ export interface SettlePurchaseUsdDirectInput {
   chargedIqd: string;
   feeIqd?: string | null;
   method: "CARD" | "TRANSFER" | "WALLET";
+  /** إلزامي للبطاقة فقط، ولا يُشتقّ من المرجع تخميناً. */
+  cardLastFour?: string | null;
   referenceNumber: string;
-  clientRequestId?: string | null;
+  clientRequestId: string;
 }
 
 export interface ReceiveLineInput {

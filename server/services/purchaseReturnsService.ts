@@ -21,7 +21,7 @@ import {
   idempotencyHash,
   recordIdempotencyKey,
 } from "./idempotency";
-import { applyMovement, convertToBaseQuantity } from "./inventoryService";
+import { applyMovement } from "./inventoryService";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "./ledgerService";
 import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { money, round2, sumMoney, toDbMoney } from "./money";
@@ -244,7 +244,18 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       if (!variant) {
         throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${variantId} غير موجود` });
       }
-      const { baseQuantity } = await convertToBaseQuantity(tx, productUnitId, it.quantity, variantId);
+      // معامل الوحدة لقطة ثابتة من سطر PO. قراءة productUnits الحيّة هنا تجعل تعديل الوحدة
+      // بعد الشراء يغيّر كمية المرتجع أو يمنعه رغم ثبات المستند الأصلي.
+      const orderedQuantity = money(refItem.quantity);
+      if (orderedQuantity.lte(0)) {
+        throw new TRPCError({ code: "CONFLICT", message: `كمية بند أمر الشراء ${refItem.id} غير صالحة` });
+      }
+      const baseQuantityDecimal = money(it.quantity)
+        .times(new Decimal(refItem.baseQuantity).dividedBy(orderedQuantity));
+      if (!baseQuantityDecimal.isInteger() || baseQuantityDecimal.lte(0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "كمية المرتجع لا تتحول إلى كمية أساس صحيحة موجبة وفق معامل أمر الشراء" });
+      }
+      const baseQuantity = baseQuantityDecimal.toNumber();
       const bookCostPerBase = money(variant.costPrice ?? "0");
       const reqUnit = money(refItem.unitPrice);
       if (reqUnit.lt(0)) {
@@ -290,8 +301,6 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     }
 
     const returnedNet = round2(sumMoney(work.map((w) => w.lineTotal.toFixed(2))));
-    // المرتجع المرجعي يرث نسبة ضريبة أمر الشراء؛ لا نسمح بإنشاء نسبة جديدة في المرتجع.
-    // المرتجع غير المرجعي يبقى بلا ضريبة لغياب مستند أصل يمكن تدقيقه.
     const returnedInventoryBook = round2(sumMoney(work.map((w) => w.bookCostPerBase.times(w.baseQuantity).toFixed(2))));
     const purchasePriceVariance = round2(returnedInventoryBook.minus(returnedNet));
     // المرتجع المرجعي يرث نسبة ضريبة أمر الشراء؛ لا نسمح بإنشاء نسبة جديدة في المرتجع.
@@ -379,7 +388,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       branchId: input.branchId,
       purchaseOrderId: input.purchaseOrderRefId,
       supplierId: input.supplierId,
-      cost: returnedNet.neg(),
+      cost: returnedInventoryBook.neg(),
+      // موجب = مكسب حين تنخفض AP بسعر الفاتورة أكثر من قيمة المخزون الخارجة بـWAVG.
+      // يحتفظ قيد RETURN الواحد بهوية المستند، بينما postingIntent يحمل خط PPV الموازن.
+      profit: purchasePriceVariance.neg(),
       taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
       notes: input.reason ?? undefined,
@@ -704,6 +716,9 @@ export async function resolveReturnablePurchaseOrder(input: { branchId: number; 
     .limit(1))[0];
   if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "لم يُعثر على أمر شراء مثبت بهذا الرقم في الفرع" });
 
+  // الوحدة التاريخية لسطر الأمر هي baseQuantity / quantity. لا نقرأ معامل productUnits
+  // الحي هنا: تعديله لاحقاً يجب ألا يغيّر الكمية القابلة للإرجاع في مستند شراء مثبت.
+  const orderUnitConversionFactor = sql<string>`${purchaseOrderItems.baseQuantity} / NULLIF(${purchaseOrderItems.quantity}, 0)`;
   const items = await db.select({
     purchaseOrderItemId: purchaseOrderItems.id,
     variantId: purchaseOrderItems.variantId,
@@ -712,12 +727,12 @@ export async function resolveReturnablePurchaseOrder(input: { branchId: number; 
     variantName: productVariants.variantName,
     sku: productVariants.sku,
     unitName: productUnits.unitName,
-    conversionFactor: productUnits.conversionFactor,
+    conversionFactor: orderUnitConversionFactor,
     unitPrice: purchaseOrderItems.unitPrice,
     receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity,
     returnedBaseQuantity: purchaseOrderItems.returnedBaseQuantity,
     remainingBaseQuantity: sql<number>`${purchaseOrderItems.receivedBaseQuantity} - ${purchaseOrderItems.returnedBaseQuantity}`,
-    remainingQuantity: sql<string>`(${purchaseOrderItems.receivedBaseQuantity} - ${purchaseOrderItems.returnedBaseQuantity}) / NULLIF(${productUnits.conversionFactor}, 0)`,
+    remainingQuantity: sql<string>`(${purchaseOrderItems.receivedBaseQuantity} - ${purchaseOrderItems.returnedBaseQuantity}) * ${purchaseOrderItems.quantity} / NULLIF(${purchaseOrderItems.baseQuantity}, 0)`,
   })
     .from(purchaseOrderItems)
     .innerJoin(productVariants, eq(productVariants.id, purchaseOrderItems.variantId))

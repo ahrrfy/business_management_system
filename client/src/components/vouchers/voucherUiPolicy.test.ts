@@ -80,10 +80,29 @@ describe("voucher owner-disbursement UI policy", () => {
 
   it("blocks official printing until approval", () => {
     expect(
-      canPrintOfficialVoucher({ approvalStatus: "PENDING_APPROVAL" }),
+      canPrintOfficialVoucher({
+        approvalStatus: "PENDING_APPROVAL",
+        status: "COMPLETED",
+      }),
     ).toBe(false);
-    expect(canPrintOfficialVoucher({ approvalStatus: "REJECTED" })).toBe(false);
-    expect(canPrintOfficialVoucher({ approvalStatus: "APPROVED" })).toBe(true);
+    expect(
+      canPrintOfficialVoucher({
+        approvalStatus: "REJECTED",
+        status: "COMPLETED",
+      }),
+    ).toBe(false);
+    expect(
+      canPrintOfficialVoucher({
+        approvalStatus: "APPROVED",
+        status: "REVERSED",
+      }),
+    ).toBe(false);
+    expect(
+      canPrintOfficialVoucher({
+        approvalStatus: "APPROVED",
+        status: "COMPLETED",
+      }),
+    ).toBe(true);
   });
 
   it("never requires the OUT maker's drawer and keeps the IN shift rule", () => {

@@ -25,7 +25,12 @@ import { nanoid } from "nanoid";
 import { createServer } from "http";
 import net from "net";
 import { createContext } from "./context";
-import { getDb, closeDb, isMultiTenantModeActive, validateTenantConnectionBudget } from "./db";
+import {
+  getDb,
+  closeDb,
+  isMultiTenantModeActive,
+  validateTenantConnectionBudget,
+} from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
@@ -46,10 +51,7 @@ import {
   parseCanonicalTrpcProcedures,
 } from "./middleware/publicSensitiveBatch";
 import { publicStorefrontHostBoundary } from "./middleware/publicStorefrontHost";
-import {
-  isBackgroundJobRunner,
-  isClustered,
-} from "./lib/clusterRole";
+import { isBackgroundJobRunner, isClustered } from "./lib/clusterRole";
 import {
   createOverloadGuard,
   startLagMonitor,
@@ -124,8 +126,14 @@ async function startServer() {
   // Validate the complete tenant/control connection budget before opening the HTTP port.
   if (isMultiTenantModeActive()) validateTenantConnectionBudget();
   void sweepStaleRestoreArtifacts()
-    .then((removed) => removed > 0 && logger.warn({ removed }, "restore.stale_artifacts.removed"))
-    .catch((err) => logger.warn({ err }, "restore.stale_artifacts.sweep_failed"));
+    .then(
+      (removed) =>
+        removed > 0 &&
+        logger.warn({ removed }, "restore.stale_artifacts.removed"),
+    )
+    .catch((err) =>
+      logger.warn({ err }, "restore.stale_artifacts.sweep_failed"),
+    );
 
   // نشر التطبيق الأصلي يعلن اعتماده على FCM و2FA وجسر جهاز الحضور. عند تفعيل العلم
   // الصريح في الإنتاج نفشل قبل فتح المنفذ إذا كانت أي حلقة ناقصة، لا بعد دخول الموظفين.
@@ -151,18 +159,21 @@ async function startServer() {
   // express-rate-limit يفهرس بـreq.ip. مع `1` يُطابق nginx واحداً ⇒ req.ip = IP العميل الحقيقي
   // كما يسجّله البروكسي ويُتجاهَل أي XFF محقون. (كانت 1 ثم صارت true بالخطأ في b757623.)
   const trustProxy =
-    process.env.TRUST_PROXY === "1" || isLoopbackHost(host)
-      ? 1
-      : false;
+    process.env.TRUST_PROXY === "1" || isLoopbackHost(host) ? 1 : false;
   app.set("trust proxy", trustProxy);
   const workerInstanceId = nanoid(16);
 
   // على VPS مشترك لا يكفي loopback وحده: أي عملية محلية تستطيع الاتصال بـ:3000 وتزوير
   // XFF متجاوزةً عدادات nginx. سرّ hop داخلي يثبت أن الطلب مرّ فعلاً عبر nginx.
   // حتى healthz يمرّ بالسر؛ nginx هو عميل الإنتاج الوحيد، وفحوص PM2 تستعمل النطاق العام.
-  if (process.env.NODE_ENV === "production" && process.env.REQUIRE_INTERNAL_PROXY_SECRET === "1") {
+  if (
+    process.env.NODE_ENV === "production" &&
+    process.env.REQUIRE_INTERNAL_PROXY_SECRET === "1"
+  ) {
     if (!isLoopbackHost(host)) {
-      throw new Error("REQUIRE_INTERNAL_PROXY_SECRET=1 يتطلب HOST=127.0.0.1 خلف reverse proxy.");
+      throw new Error(
+        "REQUIRE_INTERNAL_PROXY_SECRET=1 يتطلب HOST=127.0.0.1 خلف reverse proxy.",
+      );
     }
     const proxySecrets = readInternalProxySecrets(process.env);
     app.use((req, res, next) => {
@@ -594,7 +605,9 @@ async function startServer() {
       limit: Number(process.env.RESTORE_UPLOAD_RATE_LIMIT_MAX ?? 3),
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      handler: rateLimitHandler("محاولات استعادة كثيرة؛ انتظر قبل المحاولة التالية."),
+      handler: rateLimitHandler(
+        "محاولات استعادة كثيرة؛ انتظر قبل المحاولة التالية.",
+      ),
     }),
   );
   app.use("/api/backups", tenancy, csrfGuard, backupRouter());
@@ -674,19 +687,18 @@ async function startServer() {
   let stopProductStudioStagingWorker: (() => void) | null = null;
   let stopProductStudioNotificationWorker: (() => void) | null = null;
   let stopOnlineOrderExpirySweeper: (() => void) | null = null;
+  let stopPurchaseIntegrityMonitor: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
-    const { startMorningPushCron } = await import(
-      "./services/morningPushScheduler"
-    );
+    const { startMorningPushCron } =
+      await import("./services/morningPushScheduler");
     startMorningPushCron();
 
     // كنّاس صندوق واتساب الصادر (waOutbox) — إرسال فعلي + إعادة محاولة بتراجع أسّي + إعادة محاولة
     // أحداث webhook الفاشلة (سباق ترتيب). لا cron في بيئة الاختبار (NODE_ENV=test).
-    const { startWaOutboxSweeper } = await import(
-      "./services/whatsapp/outboxSweeper"
-    );
+    const { startWaOutboxSweeper } =
+      await import("./services/whatsapp/outboxSweeper");
     startWaOutboxSweeper();
 
     // إشعارات Android الأصلية: عامل صندوق موثوق يعيد المحاولة ولا يعمل دون إعداد FCM.
@@ -695,24 +707,29 @@ async function startServer() {
     stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
 
     // حملات متجر العملاء: صندوق Expo Push منفصل عن تطبيق الموظفين، مع موافقة العميل وحدود دفعات ثابتة.
-    const storefrontPush = await import("./services/storeAdmin/storefrontPushCampaignService");
+    const storefrontPush =
+      await import("./services/storeAdmin/storefrontPushCampaignService");
     storefrontPush.startStorefrontPushCampaignWorker();
-    stopStorefrontPushCampaignWorker = storefrontPush.stopStorefrontPushCampaignWorker;
+    stopStorefrontPushCampaignWorker =
+      storefrontPush.stopStorefrontPushCampaignWorker;
 
     // أحداث التوصيل: إشعارات أعضاء الشركة/السائقين من outbox ذرّي قابل لإعادة المحاولة.
-    const { startDeliveryOutboxWorker, stopDeliveryOutboxWorker: stopDeliveryWorker } = await import("./services/delivery/outboxWorker");
+    const {
+      startDeliveryOutboxWorker,
+      stopDeliveryOutboxWorker: stopDeliveryWorker,
+    } = await import("./services/delivery/outboxWorker");
     startDeliveryOutboxWorker();
     stopDeliveryOutboxWorker = stopDeliveryWorker;
 
     // كنس كائنات رفع الاستوديو غير المرتبطة عبر جميع الشركات، على عامل الخلفية الوحيد.
     const studioStaging = await import("./services/productStudioStagingWorker");
     studioStaging.startProductStudioStagingWorker();
-    stopProductStudioStagingWorker = studioStaging.stopProductStudioStagingWorker;
+    stopProductStudioStagingWorker =
+      studioStaging.stopProductStudioStagingWorker;
 
     // تنبيهات مواعيد الاستوديو: عامل 0 فقط، كل خمس دقائق، ومفاتيح الحدث تمنع التكرار.
-    const studioNotifications = await import(
-      "./services/productStudioNotificationWorker"
-    );
+    const studioNotifications =
+      await import("./services/productStudioNotificationWorker");
     studioNotifications.startProductStudioNotificationWorker();
     stopProductStudioNotificationWorker =
       studioNotifications.stopProductStudioNotificationWorker;
@@ -735,13 +752,24 @@ async function startServer() {
     // كنّاس الحجوزات المنتهية (١٢/٨) — كلّ ٥ دقائق UTC. الفحص الكسول في list/get لا يكفي:
     // لو لم يفتح أحدٌ شاشة الحجوزات لأيّام، تبقى المنتهية ACTIVE وتحبس مخزوناً بلا داعٍ.
     // شكوى المالك «الحجز يبقى نشطاً بعد الانقضاء» تُغلَق فقط بالكنس المستقلّ عن المستخدم.
-    const { startReservationsSweeper } = await import("./services/reservations/sweeper");
+    const { startReservationsSweeper } =
+      await import("./services/reservations/sweeper");
     startReservationsSweeper();
 
     // انتهاء حجز طلبات المتجر PENDING: العامل 0 وحده يلغي المستحقّ دورياً وبشكل idempotent.
-    const onlineOrderExpiry = await import("./services/onlineOrderExpirySweeper");
+    const onlineOrderExpiry =
+      await import("./services/onlineOrderExpirySweeper");
     onlineOrderExpiry.startOnlineOrderExpirySweeper();
-    stopOnlineOrderExpirySweeper = onlineOrderExpiry.stopOnlineOrderExpirySweeper;
+    stopOnlineOrderExpirySweeper =
+      onlineOrderExpiry.stopOnlineOrderExpirySweeper;
+
+    // تدقيق جنائي يومي للمشتريات: قراءة GL فقط، فرعاً فرعاً، ويصدر ملخصاً منظماً في سجل
+    // العامل. لا يصحح cache ولا يرحّل سنداً/قيداً، والعامل 0 يمنع تكراره في وضع cluster.
+    const purchaseIntegrity =
+      await import("./services/purchase/purchaseIntegrityMonitor");
+    purchaseIntegrity.startPurchaseIntegrityMonitor();
+    stopPurchaseIntegrityMonitor =
+      purchaseIntegrity.stopPurchaseIntegrityMonitor;
 
     logger.info(
       `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
@@ -770,6 +798,7 @@ async function startServer() {
       stopProductStudioStagingWorker?.();
       stopProductStudioNotificationWorker?.();
       stopOnlineOrderExpirySweeper?.();
+      stopPurchaseIntegrityMonitor?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       await closeControlDb();

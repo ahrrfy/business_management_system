@@ -1623,7 +1623,21 @@
       "idx": 245,
       "version": "5",
       "when": 1788052296000,
-      "tag": "0245_product_related_products",
+      "tag": "0245_purchase_order_settlement_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "5",
+      "when": 1788052297000,
+      "tag": "0246_declared_return",
+      "breakpoints": true
+    },
+    {
+      "idx": 247,
+      "version": "5",
+      "when": 1788052298000,
+      "tag": "0247_product_related_products",
       "breakpoints": true
     }
   ]

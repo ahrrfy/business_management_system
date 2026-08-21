@@ -275,7 +275,7 @@ export async function getGeneralLedger(input: {
           ae.supplierId AS supplierId,
           s.name AS supplierName,
           ae.createdBy AS createdBy,
-          COALESCE(u.name, ae.createdByNameSnapshot) AS createdByName,
+          COALESCE(ae.createdByNameSnapshot, u.name, u.username) AS createdByName,
           COALESCE(ae.dedupeKey, je.sourceKey) AS dedupeKey,
           DATE_FORMAT(COALESCE(ae.createdAt, je.createdAt), '%Y-%m-%d %H:%i:%s') AS createdAt
         FROM journalEntries je
@@ -299,7 +299,7 @@ export async function getGeneralLedger(input: {
           je.id, je.entryId, je.sourceType, je.postingProfile, je.entryDate, ae.entryType, je.branchId, b.name,
           ae.notes, ae.invoiceId, i.invoiceNumber, ae.purchaseOrderId,
           ae.receiptId, r.voucherNumber, ae.customerId, c.name, ae.supplierId,
-          s.name, ae.createdBy, u.name, ae.createdByNameSnapshot, ae.dedupeKey,
+          s.name, ae.createdBy, u.name, u.username, ae.createdByNameSnapshot, ae.dedupeKey,
           ae.createdAt
       ), running AS (
         SELECT

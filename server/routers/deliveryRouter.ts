@@ -32,6 +32,7 @@ import {
   updateDeliveryParty,
   writeOffDeliveryShortfall,
 } from "../services/deliveryService";
+import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
 import { logAudit } from "../services/auditService";
 
@@ -493,6 +494,36 @@ export const deliveryRouter = router({
         returnReason: input.returnReason ?? null,
       }));
       await logAudit(ctx, { action: "delivery.return", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { invoiceId: (res as { invoiceId?: number }).invoiceId } });
+      return res;
+    }),
+
+  /**
+   * **إعلانُ رجوع طرد** — الشركةُ تقول «راجعٌ إليكم» قبل أن يصل (0246).
+   *
+   * `storeFulfillProcedure` كنظيره `returnConsignment`: كلاهما يمسّ تعرّضَ جهة التوصيل.
+   * لكنّ هذا **لا يمسّ مخزوناً ولا فاتورةً ولا نقداً** — فلا يلزمه درجٌ ولا وردية.
+   */
+  declareReturn: storeFulfillProcedure
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+      /** رقمُ كشف الشركة الذي أُعلن فيه الرجوع — توثيقيّ. */
+      statementNumber: z.string().trim().max(64).optional(),
+      clientRequestId: z.string().trim().min(8).max(64).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await retryOnDeadlock(() => declareConsignmentReturn({
+        consignmentId: input.consignmentId,
+        reason: input.reason,
+        statementNumber: input.statementNumber ?? null,
+        clientRequestId: input.clientRequestId ?? null,
+      }, actorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.declareReturn",
+        entityType: "deliveryConsignment",
+        entityId: input.consignmentId,
+        newValue: { reason: input.reason, statementNumber: input.statementNumber ?? null },
+      });
       return res;
     }),
 

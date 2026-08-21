@@ -1113,6 +1113,8 @@ export async function createSaleInTx(
       profit: revenue.minus(ledgerOwnedCogs),
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
+      createdBy: sellerUserId,
+      createdByNameSnapshot: salespersonNameSnapshot,
       notes: analyticalInvoiceCost.eq(ledgerOwnedCogs)
         ? undefined
         : `تكلفة تحليلية للفاتورة=${toDbMoney(analyticalInvoiceCost)}؛ COGS مملوك في قيد البيع=${toDbMoney(ledgerOwnedCogs)}؛ حصة الأمانة في قيود PURCHASE_CONSIGNMENT المستقلة`,

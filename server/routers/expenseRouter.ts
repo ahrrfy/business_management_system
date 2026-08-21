@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import {
   approveExpense,
@@ -368,9 +369,10 @@ export const expenseRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "تعذّر تسجيل المصروف",
+          failOpaque(e, {
+            op: "expenses.create",
+            userMessage: "تعذّر تسجيل المصروف",
+            context: { userId: ctx.user.id },
           });
         }
       }
