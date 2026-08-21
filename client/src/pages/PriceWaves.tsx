@@ -267,6 +267,20 @@ export default function PriceWaves() {
     [previewed, excluded],
   );
   const activeBelowCost = activeRows.filter((r) => r.belowCost).length;
+  // التغطية التعاقدية تُشتقّ من **الصفوف الحيّة** بعد الاستثناء: عددٌ محسوبٌ على المجموعة
+  // الأصلية يبقى معروضاً بعد أن يستثني المدير صفوفاً، فيكذب على تقدير أثر الإيراد.
+  const activeContractUnits = useMemo(
+    () =>
+      new Set(
+        activeRows.filter((r) => r.contractCovered).map((r) => r.productUnitId),
+      ).size,
+    [activeRows],
+  );
+  // عدد العملاء دقيقٌ للمجموعة الكاملة فقط — الخادم لا يُرسل عملاء كل وحدة (بيانات طرفٍ ثالث
+  // لا داعي لتسريبها للشاشة). فإن استُثني صفٌّ مغطًّى نعرض الوحدات بلا رقم عملاء، بدل رقمٍ
+  // لم يعد صحيحاً: لا نُخمّن ولا نُبقي رقماً قديماً.
+  const contractCountExact =
+    previewed != null && activeContractUnits === previewed.contractCoveredRows;
   const avgChangePct = useMemo(() => {
     if (!activeRows.length) return 0;
     const sum = activeRows.reduce((acc, r) => {
@@ -775,7 +789,7 @@ export default function PriceWaves() {
                   يُخفي معلومةً مالية: مديرٌ يرفع ١٠٪ ظانّاً أنّ الإيراد يرتفع ١٠٪، بينما عملاؤه
                   المتعاقدون (وهم غالباً الأكبر) يدفعون سعرهم القديم. الرقم لا يمنع ولا يغيّر —
                   يجعل الأثر الحقيقيّ مرئياً قبل الالتزام. */}
-              {previewed.contractCoveredRows > 0 && (
+              {activeContractUnits > 0 && (
                 <div className="flex items-start gap-2 rounded-md border border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)] p-3 text-sm">
                   <FileSignature
                     aria-hidden
@@ -783,15 +797,23 @@ export default function PriceWaves() {
                   />
                   <div>
                     <b className="tabular-nums">
-                      {nf.format(previewed.contractCoveredRows)}
+                      {nf.format(activeContractUnits)}
                     </b>{" "}
-                    وحدةً ضمن هذه الموجة لها <b>سعرٌ تعاقديّ نشط</b> مع{" "}
-                    <b className="tabular-nums">
-                      {nf.format(previewed.contractCustomers)}
-                    </b>{" "}
-                    عميلاً — أسعارهم <b>لن تتغيّر</b> بهذه الموجة (السعر
-                    التعاقدي يفوز دائماً). احتسِب ذلك عند تقدير أثر الزيادة على
-                    الإيراد.
+                    وحدةً ضمن هذه الموجة لها <b>سعرٌ تعاقديّ نشط</b>
+                    {contractCountExact ? (
+                      <>
+                        {" "}
+                        مع{" "}
+                        <b className="tabular-nums">
+                          {nf.format(previewed.contractCustomers)}
+                        </b>{" "}
+                        عميلاً
+                      </>
+                    ) : (
+                      " مع عملاء متعاقدين"
+                    )}{" "}
+                    — أسعارهم <b>لن تتغيّر</b> بهذه الموجة (السعر التعاقدي يفوز
+                    دائماً). احتسِب ذلك عند تقدير أثر الزيادة على الإيراد.
                   </div>
                 </div>
               )}

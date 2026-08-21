@@ -12,7 +12,6 @@ import {
 import { fmtDateTime } from "@/lib/date";
 import { toPriceHistoryDisplay } from "@/lib/priceHistory";
 import { trpc } from "@/lib/trpc";
-import { Link } from "wouter";
 import { cn } from "@/lib/utils";
 
 interface UnitPriceHistoryProps {
@@ -153,13 +152,19 @@ export function UnitPriceHistory({
                               إليها لترى بقيّة ما مسّته أو لتتراجع عنها. */}
                           <div className="mt-0.5 text-xs text-muted-foreground">
                             {row.waveId != null ? (
-                              <Link
+                              // ⚠️ تبويبٌ جديد عمداً — لا تنقّل SPA. هذا المكوّن مُضمَّنٌ داخل
+                              // محرّر المنتج، والتنقّل الداخليّ يُفكّك المحرّر فيضيع تعديلٌ غير
+                              // محفوظ بلا سؤال (`useUnsavedGuard` يغطّي `beforeunload` وحده ولا
+                              // يعترض تنقّل wouter). رابطٌ جانبيّ لا يجوز أن يُتلف عمل المستخدم.
+                              <a
                                 href={`/inventory?tab=price-waves&wave=${row.waveId}`}
+                                target="_blank"
+                                rel="noreferrer"
                                 className="underline-offset-2 hover:underline"
-                                title="فتح موجة التسعير هذه"
+                                title="فتح موجة التسعير في تبويب جديد (حفاظاً على تعديلاتك غير المحفوظة)"
                               >
                                 {display.source}
-                              </Link>
+                              </a>
                             ) : (
                               display.source
                             )}

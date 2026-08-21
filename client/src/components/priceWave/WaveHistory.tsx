@@ -161,8 +161,11 @@ export function WaveHistory({
     navigate("/inventory?tab=barcodes");
   }
 
-  const detailRows = detailsQ.data ?? [];
-  const detailWave = waves.find((w) => Number(w.id) === detailsWaveId);
+  const detailRows = detailsQ.data?.rows ?? [];
+  // الرأس من الاستعلام نفسه أوّلاً، ومن القائمة كاحتياط: الرابط العميق قد يستهدف موجةً أقدم
+  // من الخمسين المعروضة، فالاعتماد على القائمة وحدها كان يفتح تفاصيلَ بلا اسمٍ ولا زرّ تراجع.
+  const detailWave =
+    detailsQ.data?.wave ?? waves.find((w) => Number(w.id) === detailsWaveId);
 
   return (
     <Card>

@@ -128,6 +128,9 @@ export interface PriceWaveRow {
   rounded: boolean;
   clampedMin: boolean;
   isBundle: boolean;
+  /** لهذه الوحدة سعرٌ تعاقديّ نشطٌ مع عميلٍ ما ⇒ سعرُه لا يتغيّر بهذه الموجة.
+   *  يُوسَم على الصفّ كي تُعيد الواجهة العدّ بعد استثناء المدير صفوفاً. */
+  contractCovered: boolean;
 }
 
 export interface PriceWaveSkippedRow {
@@ -434,18 +437,22 @@ async function computeAffectedRows(
       rounded: outcome.rounded,
       clampedMin: outcome.clampedMin,
       isBundle,
+      contractCovered: false, // يُوسَم بعد قراءةٍ واحدة أدناه
     });
   }
 
+  // التغطية تُوسَم **على الصفّ** لا تُجمَع مرّةً واحدة: المدير يستثني صفوفاً في المعاينة، فعددٌ
+  // محسوبٌ على المجموعة الأصلية يبقى معروضاً بعد الاستثناء ويكذب على تقدير أثر الإيراد.
   const contract = await countContractCovered(
     tx,
     rows.map((r) => r.productUnitId),
   );
+  for (const r of rows) r.contractCovered = contract.units.has(r.productUnitId);
   return {
     rows,
     skipped,
     fingerprint: priceWaveFingerprint(rows),
-    contractCoveredRows: contract.rows,
+    contractCoveredRows: contract.units.size,
     contractCustomers: contract.customers,
   };
 }
@@ -464,15 +471,17 @@ async function computeAffectedRows(
 async function countContractCovered(
   tx: Tx,
   productUnitIds: number[],
-): Promise<{ rows: number; customers: number }> {
+): Promise<{ units: Set<number>; customers: number }> {
   const ids = Array.from(new Set(productUnitIds.map(Number))).filter(
     (n) => Number.isSafeInteger(n) && n > 0,
   );
-  if (!ids.length) return { rows: 0, customers: 0 };
-  const [agg] = await tx
-    .select({
-      units: sql<number>`count(distinct ${customerContractPrices.productUnitId})`,
-      customers: sql<number>`count(distinct ${customerContractPrices.customerId})`,
+  if (!ids.length) return { units: new Set<number>(), customers: 0 };
+  // أزواج (وحدة × عميل) لا عدّاً مُجمَّعاً: الواجهة تحتاج **أيّ** الوحدات مغطّاة كي تُعيد الحساب
+  // بعد استثناء المدير صفوفاً، ولا يكفيها رقمٌ إجماليّ.
+  const pairs = await tx
+    .selectDistinct({
+      productUnitId: customerContractPrices.productUnitId,
+      customerId: customerContractPrices.customerId,
     })
     .from(customerContractPrices)
     .where(
@@ -482,8 +491,8 @@ async function countContractCovered(
       ),
     );
   return {
-    rows: Number(agg?.units ?? 0),
-    customers: Number(agg?.customers ?? 0),
+    units: new Set(pairs.map((r) => Number(r.productUnitId))),
+    customers: new Set(pairs.map((r) => Number(r.customerId))).size,
   };
 }
 
