@@ -17,10 +17,12 @@ import {
   setStorefrontCartQuantity,
   storefrontCheckoutFingerprint,
   storefrontCategoryCount,
+  shouldAutoLoadStorefrontNextPage,
   storefrontTurnstileSubmissionReady,
   type CartLine,
   type CheckoutForm,
 } from "./Storefront";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 
 describe("storefront Turnstile submission gate", () => {
   it("fails closed until ordering, public site key and a fresh token are all present", () => {
@@ -123,6 +125,25 @@ describe("storefront source failures", () => {
     ).toEqual(["categories"]);
   });
 
+});
+
+describe("storefront automatic product loading", () => {
+  it("loads the next page only when the sentinel is visible and no request/error is active", () => {
+    expect(shouldAutoLoadStorefrontNextPage({ isIntersecting: true, hasNextPage: true, isFetchingNextPage: false, isError: false })).toBe(true);
+    expect(shouldAutoLoadStorefrontNextPage({ isIntersecting: false, hasNextPage: true, isFetchingNextPage: false, isError: false })).toBe(false);
+    expect(shouldAutoLoadStorefrontNextPage({ isIntersecting: true, hasNextPage: false, isFetchingNextPage: false, isError: false })).toBe(false);
+    expect(shouldAutoLoadStorefrontNextPage({ isIntersecting: true, hasNextPage: true, isFetchingNextPage: true, isError: false })).toBe(false);
+    expect(shouldAutoLoadStorefrontNextPage({ isIntersecting: true, hasNextPage: true, isFetchingNextPage: false, isError: true })).toBe(false);
+  });
+});
+
+describe("storefront checkout phone direction", () => {
+  it("renders the country code control and national number in an LTR wrapper", () => {
+    const html = renderToStaticMarkup(createElement(IntlPhoneInput, { value: "+9647701234567", onChange: vi.fn() }));
+    expect(html).toContain('dir="ltr"');
+    expect(html.indexOf("مفتاح الدولة")).toBeLessThan(html.indexOf("<input"));
+    expect(html).toContain('value="7701234567"');
+  });
 });
 
 describe("storefront availability contract", () => {
