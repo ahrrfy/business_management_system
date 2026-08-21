@@ -6,6 +6,7 @@ import { priceChangeLog } from "../../drizzle/schema";
 import {
   MAX_PERCENT_VALUE,
   PRICE_ROUND_DENOMS,
+  marginPct,
 } from "../../shared/priceWaveRule";
 import { logAudit } from "../services/auditService";
 import {
@@ -16,6 +17,7 @@ import {
   findRevertedWaveIds,
   getPriceUnitHistory,
   listPriceWaves,
+  loadUnitCostsFor,
   previewPriceWave,
   revertPriceWave,
 } from "../services/priceWaveService";
@@ -99,13 +101,19 @@ export const priceWavesRouter = router({
   preview: productsManagerProcedure
     .input(z.object(ruleSchema))
     .mutation(async ({ input }) => {
-      const { rows, skipped, fingerprint } = await withTx((tx) =>
-        previewPriceWave(tx, input),
-      );
+      const {
+        rows,
+        skipped,
+        fingerprint,
+        contractCoveredRows,
+        contractCustomers,
+      } = await withTx((tx) => previewPriceWave(tx, input));
       return {
         rows,
         skipped,
         fingerprint,
+        contractCoveredRows,
+        contractCustomers,
         totalRows: rows.length,
         belowCostCount: rows.filter((r) => r.belowCost).length,
         roundedCount: rows.filter((r) => r.rounded).length,
@@ -268,6 +276,14 @@ export const priceWavesRouter = router({
           tx,
           rows.map((r) => ({ productUnitId: Number(r.productUnitId) })),
         );
+        // هوامش التفاصيل تُحسب بتكلفة **الوحدة الحاليّة** (الأساس × المعامل، والبكج من وصفته):
+        // المعاينة تعرض الهامش، فكان غيابه هنا يجعل التفاصيل أفقر من الشاشة التي أنتجتها.
+        // ⚠️ التكلفة **حاليّة لا تاريخية** — لا نخزّن لقطة تكلفة في `priceChangeLog`، فالهامش
+        // المعروض هو «ماذا يعني هذا السعر اليوم» لا «ماذا كان يعنيه لحظة الموجة».
+        const costs = await loadUnitCostsFor(
+          tx,
+          rows.map((r) => Number(r.productUnitId)),
+        );
         return rows.map((r) => ({
           ...r,
           id: Number(r.id),
@@ -278,6 +294,19 @@ export const priceWavesRouter = router({
             enrichment.get(Number(r.productUnitId))?.productName ?? null,
           unitName: enrichment.get(Number(r.productUnitId))?.unitName ?? null,
           sku: enrichment.get(Number(r.productUnitId))?.sku ?? null,
+          productId: enrichment.get(Number(r.productUnitId))?.productId ?? null,
+          unitCost: costs.get(Number(r.productUnitId)) ?? null,
+          oldMarginPct:
+            r.oldPrice == null
+              ? null
+              : marginPct(
+                  r.oldPrice,
+                  costs.get(Number(r.productUnitId)) ?? null,
+                ),
+          newMarginPct: marginPct(
+            r.newPrice,
+            costs.get(Number(r.productUnitId)) ?? null,
+          ),
         }));
       });
     }),

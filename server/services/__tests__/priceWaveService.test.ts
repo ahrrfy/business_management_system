@@ -20,6 +20,8 @@ const TABLES = [
   "priceUpdateWaves",
   "promotionTargets",
   "promotions",
+  "customerContractPrices",
+  "customers",
   "bundleComponents",
   "productPrices",
   "productUnits",
@@ -568,6 +570,59 @@ describe("Codex — التراجع يحرس التكلفة الحاليّة وي
     const missing = rev.conflicts.find((c) => c.priceTier === "WHOLESALE")!;
     expect(missing).toBeTruthy();
     expect(missing.note).toMatch(/حُذف/);
+  });
+});
+
+describe("تغطية السعر التعاقدي — إظهار الأثر الحقيقيّ للموجة", () => {
+  it("يعدّ الوحدات المغطّاة بعقدٍ نشط وعدد عملائها", async () => {
+    await db()
+      .insert(s.customers)
+      .values([
+        { id: 1, name: "تاجر أ" },
+        { id: 2, name: "شركة ب" },
+      ]);
+    await db()
+      .insert(s.customerContractPrices)
+      .values([
+        { customerId: 1, productUnitId: 1, price: "9.00", isActive: true },
+        { customerId: 2, productUnitId: 1, price: "9.50", isActive: true },
+        { customerId: 1, productUnitId: 2, price: "95.00", isActive: true },
+      ]);
+
+    const res = await withTx((tx) =>
+      previewPriceWave(tx, {
+        filters: { scope: "SELECTED", productIds: [1] },
+        ...RULE,
+      }),
+    );
+    // وحدتان مغطّاتان (1 و2)، وعميلان متميّزان.
+    expect(res.contractCoveredRows).toBe(2);
+    expect(res.contractCustomers).toBe(2);
+  });
+
+  it("العقد المعطَّل لا يُحتسب", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "تاجر أ" });
+    await db().insert(s.customerContractPrices).values({
+      customerId: 1,
+      productUnitId: 1,
+      price: "9.00",
+      isActive: false,
+    });
+    const res = await withTx((tx) =>
+      previewPriceWave(tx, {
+        filters: { scope: "SELECTED", productIds: [1] },
+        ...RULE,
+      }),
+    );
+    expect(res.contractCoveredRows).toBe(0);
+    expect(res.contractCustomers).toBe(0);
+  });
+
+  it("بلا عقودٍ ⇒ صفر (لا تنبيه في الشاشة)", async () => {
+    const res = await withTx((tx) =>
+      previewPriceWave(tx, { filters: ALL, ...RULE }),
+    );
+    expect(res.contractCoveredRows).toBe(0);
   });
 });
 

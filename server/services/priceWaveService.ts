@@ -37,6 +37,7 @@ import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   categories,
+  customerContractPrices,
   priceChangeLog,
   priceUpdateWaves,
   productPrices,
@@ -144,6 +145,10 @@ export interface PriceWaveComputation {
   skipped: PriceWaveSkippedRow[];
   /** W7 — بصمة حتميّة للمجموعة (الترتيب مضمون بـW5). */
   fingerprint: string;
+  /** كم صفّاً من صفوف الموجة يحمل سعراً تعاقدياً نشطاً لعميلٍ ما (انظر `countContractCovered`). */
+  contractCoveredRows: number;
+  /** كم عميلاً متميّزاً يشملهم ذلك. */
+  contractCustomers: number;
 }
 
 /**
@@ -170,7 +175,7 @@ function rowKey(k: PriceRowKey | PriceWaveRow): string {
  * `تكلفة الأساس × conversionFactor`، وللبكج تكلفةُ وصفته (وعمودُه صفرٌ بحكم التصميم).
  * تُرجع الوحدات المعروفة التكلفة فقط؛ المجهولة تغيب عن الخريطة فلا يُبنى عليها حكم.
  */
-async function loadUnitCostsFor(
+export async function loadUnitCostsFor(
   tx: Tx,
   productUnitIds: number[],
 ): Promise<Map<number, string>> {
@@ -432,7 +437,54 @@ async function computeAffectedRows(
     });
   }
 
-  return { rows, skipped, fingerprint: priceWaveFingerprint(rows) };
+  const contract = await countContractCovered(
+    tx,
+    rows.map((r) => r.productUnitId),
+  );
+  return {
+    rows,
+    skipped,
+    fingerprint: priceWaveFingerprint(rows),
+    contractCoveredRows: contract.rows,
+    contractCustomers: contract.customers,
+  };
+}
+
+/**
+ * كم صفّاً من صفوف الموجة **مغطًّى بسعرٍ تعاقديّ نشط**، وكم عميلاً يخصّهم.
+ *
+ * **لماذا يهمّ:** ترويسة الشاشة تعد بأنّ «السعر التعاقدي لا يُمَسّ» — وهو صحيح، لكنّ الصمت عن
+ * **الحجم** يُخفي معلومةً ماليةً عن متّخذ القرار: مديرٌ يرفع ١٠٪ ظانّاً أنّ الإيراد يرتفع ١٠٪،
+ * بينما عملاؤه المتعاقدون (وهم غالباً الأكبر: تجار وشركات ودوائر) يدفعون سعرهم القديم كما هو.
+ * الرقم لا يمنع الموجة ولا يغيّرها — يجعل أثرها الحقيقيّ مرئياً قبل الالتزام.
+ *
+ * استعلامٌ واحد على مفاتيح الصفوف المتأثّرة (`productUnitId`)؛ العقد مُعرَّف بـ(عميل × وحدة)
+ * لا بفئة سعر، فالتغطية تُقاس بالوحدة.
+ */
+async function countContractCovered(
+  tx: Tx,
+  productUnitIds: number[],
+): Promise<{ rows: number; customers: number }> {
+  const ids = Array.from(new Set(productUnitIds.map(Number))).filter(
+    (n) => Number.isSafeInteger(n) && n > 0,
+  );
+  if (!ids.length) return { rows: 0, customers: 0 };
+  const [agg] = await tx
+    .select({
+      units: sql<number>`count(distinct ${customerContractPrices.productUnitId})`,
+      customers: sql<number>`count(distinct ${customerContractPrices.customerId})`,
+    })
+    .from(customerContractPrices)
+    .where(
+      and(
+        inArray(customerContractPrices.productUnitId, ids),
+        eq(customerContractPrices.isActive, true),
+      ),
+    );
+  return {
+    rows: Number(agg?.units ?? 0),
+    customers: Number(agg?.customers ?? 0),
+  };
 }
 
 /** معاينة الموجة — قراءة فقط، بدون كتابة. */
@@ -725,12 +777,13 @@ export async function enrichLogRows(
   if (!ids.length)
     return new Map<
       number,
-      { productName: string; unitName: string; sku: string }
+      { productId: number; productName: string; unitName: string; sku: string }
     >();
   const found = await tx
     .select({
       id: productUnits.id,
       unitName: productUnits.unitName,
+      productId: products.id,
       productName: products.name,
       sku: productVariants.sku,
     })
@@ -740,10 +793,11 @@ export async function enrichLogRows(
     .where(inArray(productUnits.id, ids));
   const map = new Map<
     number,
-    { productName: string; unitName: string; sku: string }
+    { productId: number; productName: string; unitName: string; sku: string }
   >();
   for (const r of found)
     map.set(Number(r.id), {
+      productId: Number(r.productId),
       productName: r.productName,
       unitName: r.unitName,
       sku: r.sku,

@@ -17,6 +17,7 @@ import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
+  FileSignature,
   Info,
   Play,
   RefreshCw,
@@ -74,6 +75,8 @@ interface PreviewResult {
   totalRows: number;
   belowCostCount: number;
   roundedCount: number;
+  contractCoveredRows: number;
+  contractCustomers: number;
   productCount: number;
 }
 
@@ -760,7 +763,38 @@ export default function PriceWaves() {
                   value={nf.format(excluded.size)}
                   tone={excluded.size ? "warn" : undefined}
                 />
+                {previewed.roundedCount > 0 && (
+                  <StatTile
+                    label="عدّله التقريب"
+                    value={nf.format(previewed.roundedCount)}
+                  />
+                )}
               </div>
+
+              {/* تنبيه: الترويسة تقول «السعر التعاقدي لا يُمَسّ» — وهو صحيح، لكنّ الصمت عن **الحجم**
+                  يُخفي معلومةً مالية: مديرٌ يرفع ١٠٪ ظانّاً أنّ الإيراد يرتفع ١٠٪، بينما عملاؤه
+                  المتعاقدون (وهم غالباً الأكبر) يدفعون سعرهم القديم. الرقم لا يمنع ولا يغيّر —
+                  يجعل الأثر الحقيقيّ مرئياً قبل الالتزام. */}
+              {previewed.contractCoveredRows > 0 && (
+                <div className="flex items-start gap-2 rounded-md border border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)] p-3 text-sm">
+                  <FileSignature
+                    aria-hidden
+                    className="mt-0.5 size-4 shrink-0 text-[var(--sem-info)]"
+                  />
+                  <div>
+                    <b className="tabular-nums">
+                      {nf.format(previewed.contractCoveredRows)}
+                    </b>{" "}
+                    وحدةً ضمن هذه الموجة لها <b>سعرٌ تعاقديّ نشط</b> مع{" "}
+                    <b className="tabular-nums">
+                      {nf.format(previewed.contractCustomers)}
+                    </b>{" "}
+                    عميلاً — أسعارهم <b>لن تتغيّر</b> بهذه الموجة (السعر
+                    التعاقدي يفوز دائماً). احتسِب ذلك عند تقدير أثر الزيادة على
+                    الإيراد.
+                  </div>
+                </div>
+              )}
 
               <SkippedPanel
                 skipped={previewed.skipped}
