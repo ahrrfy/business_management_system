@@ -312,8 +312,7 @@ export default function PurchaseReceive() {
     }
     // أمر CASH لا يعتمد على مبلغ يدخله المستخدم: الخادم يطلب تلقائياً كامل قيمة هذا
     // الاستلام. أمر CREDIT وحده يقبل دفعة نقدية جزئية صريحة.
-    const payment =
-      data.settlementType === "CREDIT" && D(payAmount).gt(0)
+    const payment = data.settlementType === "CREDIT" && D(payAmount).gt(0)
         ? { amount: round2(D(payAmount)).toFixed(2), method: "CASH" as const }
         : undefined;
     if (shipMethod === "TRANSFER" && !shipPaymentReference.trim()) {
@@ -678,8 +677,8 @@ export default function PurchaseReceive() {
                   د.ع
                 </span>{" "}
                 يُثبَت <strong>مصروف نقلٍ والتزامٌ على الشركة</strong> بحصّة ما
-                تستلمه الآن — لا يُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف. لا
-                تُسجّله مرةً ثانية من شاشة المصروفات؛ اختر أداة التسوية المتوقعة
+                تستلمه الآن — لا يُضاف إلى ذمّة المورّد ولا إلى تكلفة الصنف.
+                لا تُسجّله مرةً ثانية من شاشة المصروفات؛ اختر أداة التسوية المتوقعة
                 هنا، ويبقى السداد معلّقاً حتى اعتماد مالكٍ آخر.
               </p>
               <div className="space-y-1">

@@ -1604,11 +1604,12 @@ export async function approveVoucher(
       });
     }
 
+    const isAccrualCorrectionRefundMovement = systemRequest?.kind === "ACCRUAL_CORRECTION_REFUND";
     const specializedAssetMovement =
       systemRequest?.kind === "EXCHANGE_IQD_DEPOSIT" ||
       systemRequest?.kind === "DIGITAL_WALLET_CASH_DEPOSIT" ||
       systemRequest?.kind === "TERMINATION_SETTLEMENT" ||
-      systemRequest?.kind === "ACCRUAL_CORRECTION_REFUND" ||
+      isAccrualCorrectionRefundMovement ||
       systemRequest?.kind === "PURCHASE_SUPPLIER_USD" ||
       cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER_USD";
     const terminationSettlementPlan =

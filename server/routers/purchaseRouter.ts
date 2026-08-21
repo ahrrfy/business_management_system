@@ -855,8 +855,7 @@ export const purchaseRouter = router({
           paidUsd: null,
           returnedUsd: null,
           agreedRate: null,
-          invoiceDiscount: null,
-          usdInvoiceDiscount: null,
+          invoiceDiscount: null, usdInvoiceDiscount: null,
         };
         // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
         // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
@@ -869,8 +868,7 @@ export const purchaseRouter = router({
               usdUnitPrice: null,
               usdTotal: null,
               total: null,
-              listUnitPrice: null,
-              usdListUnitPrice: null,
+              listUnitPrice: null, usdListUnitPrice: null,
             }) as unknown as typeof row,
         );
         return { ...poMasked, items: itemsMasked };
