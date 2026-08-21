@@ -264,6 +264,87 @@ function fittedThumbnailDimensions(width: number, height: number): { width: numb
  * يفك base64 فعلياً ويتحقق من WebP/RIFF والأبعاد والحجم، ثم يربط أبعاد المصغرة بالمرشح.
  * لا نثق ببادئة MIME وحدها ولا نقبل SVG/GIF/PNG في شبكة العرض الاحتياطية.
  */
+/**
+ * هل هذه بايتات WebP **كاملةٌ لصورةٍ ساكنةٍ واحدة**؟ يمشي على مقاطع RIFF بدل افتراض شكلٍ بعينه.
+ *
+ * **العطب الذي أغلقه (٢٠/٨، جولةٌ حيّة):** الفحص السابق كان يشترط **مقطعاً واحداً** بترويسة
+ * `VP8 ` أو `VP8L`. لكنّ Chromium الحديث يُخرج من `canvas.toDataURL("image/webp")` حاوية
+ * **`VP8X`** يتبعها **`ICCP`** (ملفّ ألوان sRGB يُضمّنه المتصفّح) ثمّ `VP8 ` — ثلاثةُ مقاطع.
+ * فكان الخادم يرفض **كل** مصغّرةٍ يُنتجها Chrome/Edge برسالة «بنية/إطار مصغّرة WebP غير
+ * مكتمل»، والمصوّر يُمنع من الإرسال. أثبتَته جولةٌ حيّة: `chunks = [VP8X 10, ICCP 456, VP8  50]`.
+ * (ولاحظ أنّ `parseImageDimensions` كان يفكّ `VP8X` أصلاً — فالرافض والقارئ كانا مختلفَين
+ * في فهم الصيغة نفسها داخل الملفّ الواحد.)
+ *
+ * والمشي على المقاطع **أدقّ** من الفحص القديم لا أرخى: يرفض الملفّ المبتور وذيلَ البايتات
+ * الزائد ويرفض المتحرّك (`ANIM`/`ANMF`) — والمصغّرة إطارٌ ساكنٌ واحدٌ بحكم التعريف — ويشترط
+ * مقطعَ صورةٍ واحداً بالضبط.
+ */
+export function isCompleteStillWebp(bytes: Buffer): boolean {
+  return locateStillWebpFrame(bytes) !== null;
+}
+
+/**
+ * يحدّد **إطار الصورة الوحيد** داخل ملفّ WebP كامل، ويعيد أبعاده المقروءة **من الإطار نفسه**.
+ * يعيد `null` لأيّ ملفٍّ ناقصٍ أو مُتلاعَبٍ به أو متحرّك.
+ *
+ * لماذا المشي على المقاطع: الفحص السابق كان يشترط **مقطعاً واحداً** بترويسة `VP8 `/`VP8L`،
+ * وChromium يُخرج `[VP8X, ICCP, VP8 ]` (يُضمّن ملفّ ألوان sRGB) ⇒ **كل مصغّرةٍ ينتجها
+ * Chrome/Edge مرفوضة** والمصوّر ممنوعٌ من التسليم (جولةٌ حيّة ٢٠/٨).
+ *
+ * ⚠️ ولماذا يُفحص **حِمل** الإطار لا اسمُ مقطعه فقط (أمسكه Codex على أوّل نسخةٍ من هذا
+ * الإصلاح): المشي وحده يقبل مقطعاً اسمه `VP8 ` وحمولتُه أصفارٌ — ملفٌّ لا يُفكّ ترميزه —
+ * بينما `parseImageDimensions` يصدّق أبعاد ترويسة `VP8X` **غير المَمسوسة**، فيُخزَّن
+ * ويُنشَر «مرشّحٌ» لا يعرضه أيّ متصفّح. الفحص القديم كان يحرس هذا بترويسة الإطار، وإسقاطُه
+ * انحدارٌ لا تبسيط.
+ *
+ * **والأبعاد تُقرأ من الإطار لا من ترويسة `VP8X`:** الترويسة تصريحٌ يكتبه المُنتِج والإطار
+ * هو الصورة فعلاً، فحين يختلفان تُصدَّق الصورة. وبها تبقى مطابقةُ أبعاد المرشّح صادقة.
+ */
+export function locateStillWebpFrame(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length < 20) return null;
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP") return null;
+  // حجم RIFF يجب أن يصف الملفّ كلّه: يمنع البتر والذيل الزائد معاً.
+  if (bytes.readUInt32LE(4) + 8 !== bytes.length) return null;
+  let offset = 12;
+  let frame: { fourcc: string; at: number; size: number } | null = null;
+  let frames = 0;
+  let animated = false;
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.toString("ascii", offset, offset + 4);
+    const size = bytes.readUInt32LE(offset + 4);
+    // حجمٌ يتجاوز ما تبقّى = ملفٌّ مبتورٌ أو مُتلاعَبٌ به.
+    if (size < 0 || offset + 8 + size > bytes.length) return null;
+    if (id === "VP8 " || id === "VP8L") {
+      frames++;
+      frame = { fourcc: id, at: offset + 8, size };
+    }
+    if (id === "ANIM" || id === "ANMF") animated = true;
+    offset += 8 + size + (size % 2); // حشوٌ إلى حدّ زوجيّ
+  }
+  // الوقوف عند النهاية بالضبط: أيّ بايتٍ زائدٍ أو ناقصٍ يُسقِط الملفّ.
+  if (offset !== bytes.length || frames !== 1 || animated || !frame) return null;
+
+  if (frame.fourcc === "VP8 ") {
+    // VP8 المضغوط: وسمُ إطارٍ ٣ بايتات، ثمّ رمز البدء 9D 01 2A، ثمّ العرض والارتفاع ١٤ بتّاً لكلٍّ.
+    if (frame.size < 10) return null;
+    const p = frame.at;
+    if (bytes[p + 3] !== 0x9d || bytes[p + 4] !== 0x01 || bytes[p + 5] !== 0x2a) return null;
+    return { width: bytes.readUInt16LE(p + 6) & 0x3fff, height: bytes.readUInt16LE(p + 8) & 0x3fff };
+  }
+  // VP8L (بلا فقد): توقيعٌ 0x2F ثمّ ١٤ بتّاً للعرض و١٤ للارتفاع (ناقصاً واحداً).
+  if (frame.size < 5) return null;
+  const p = frame.at;
+  if (bytes[p] !== 0x2f) return null;
+  const b1 = bytes[p + 1];
+  const b2 = bytes[p + 2];
+  const b3 = bytes[p + 3];
+  const b4 = bytes[p + 4];
+  return {
+    width: 1 + (b1 | ((b2 & 0x3f) << 8)),
+    height: 1 + (((b2 & 0xc0) >> 6) | (b3 << 2) | ((b4 & 0x0f) << 10)),
+  };
+}
+
 export function decodeStudioThumbnail(
   dataUrl: string,
   processed: { width: number | null; height: number | null },
@@ -289,14 +370,13 @@ export function decodeStudioThumbnail(
   }
   assertValidImageDataUrl(dataUrl, MAX_STUDIO_THUMBNAIL_BYTES, true, MAX_STUDIO_THUMBNAIL_DIMENSION);
   const bytes = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
-  const dimensions = parseImageDimensions(bytes, isWebp ? "image/webp" : "image/jpeg");
+  // للـWebP تُقرأ الأبعاد **من إطار الصورة** لا من ترويسة `VP8X`: الترويسة تصريحٌ يكتبه
+  // المُنتِج، والإطار هو الصورة فعلاً — وعند اختلافهما تُصدَّق الصورة لا التصريح.
+  const frame = isWebp ? locateStillWebpFrame(bytes) : null;
+  const dimensions = isWebp ? frame : parseImageDimensions(bytes, "image/jpeg");
   let structureOk: boolean;
   if (isWebp) {
-    const fourcc = bytes.length >= 20 ? bytes.toString("ascii", 12, 16) : "";
-    const chunkBytes = bytes.length >= 20 ? bytes.readUInt32LE(16) : -1;
-    const completeSingleChunk = chunkBytes >= 0 && 20 + chunkBytes + (chunkBytes % 2) === bytes.length;
-    const validFrameHeader = fourcc === "VP8 " ? bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a : fourcc === "VP8L" ? bytes.length >= 25 && bytes[20] === 0x2f : false;
-    structureOk = bytes.length >= 20 && bytes.readUInt32LE(4) + 8 === bytes.length && completeSingleChunk && validFrameHeader;
+    structureOk = frame !== null;
   } else {
     // JPEG: SOI في المقدّمة وEOI في الخاتمة ⇒ ملفٌّ كاملٌ غير مبتور، ومقطعُ SOF مقروءٌ
     // (وإلّا رجع `dimensions` فارغاً فسقط الفحص أدناه).
