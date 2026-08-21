@@ -670,10 +670,6 @@ function CategoryChipStrip({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onPointerEnter={() => setPaused(true)}
-        onPointerLeave={() => { if (!dragRef.current.active) setPaused(false); }}
-        onFocusCapture={() => setPaused(true)}
-        onBlurCapture={() => setPaused(false)}
         onClickCapture={(event) => { if (dragRef.current.moved) { event.preventDefault(); event.stopPropagation(); } }}
         aria-label="أقسام المنتجات — اسحب لاكتشاف المزيد"
       >
