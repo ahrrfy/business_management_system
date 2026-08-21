@@ -783,10 +783,7 @@ export default function Vouchers() {
               onChange={(e) => applyFilter({ to: e.target.value })}
             />
           </FilterField>
-          <FilterField
-            label="بحث (رقم/وصف/اسم مُستفيد)"
-            className="md:col-span-3 lg:col-span-5"
-          >
+          <FilterField label="بحث (رقم/وصف/اسم مُستفيد)" className="md:col-span-3 lg:col-span-5">
             <Input
               type="search"
               value={f.q}
