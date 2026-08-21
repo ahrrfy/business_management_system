@@ -50,6 +50,7 @@
     "db:migrate:extra": "node scripts/ci-apply-extra-migrations.mjs",
     "db:verify": "node scripts/db-verify-schema.mjs",
     "audit:payroll": "node scripts/audit-payroll-decisions.mjs",
+    "audit:financial-actors": "node scripts/audit-financial-actor-provenance.mjs",
     "prod:deploy": "node scripts/deploy.mjs",
     "nginx:repair": "node scripts/install-nginx-contract.mjs",
     "test:nginx-contract": "node scripts/nginx-contract.test.mjs && node scripts/deploy.test.mjs",

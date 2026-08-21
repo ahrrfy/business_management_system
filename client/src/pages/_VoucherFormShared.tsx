@@ -21,16 +21,22 @@ import {
   printVoucherReceipt,
   printVoucherA4,
 } from "@/lib/printing/voucherPrint";
+import {
+  releaseReservedPrintWindow,
+  reservePrintWindow,
+} from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useBarcodeInput } from "@/hooks/useBarcodeInput";
+import { usePrintAudit } from "@/hooks/usePrintAudit";
 import {
   BarcodeSearchCue,
   barcodeSearchInputClass,
 } from "@/components/scan/BarcodeSearchCue";
 import { cn } from "@/lib/utils";
 import { isInboundPaymentMethodEnabled } from "@shared/inboundPaymentPolicy";
+import type { PrintOpenResult } from "@shared/printAudit";
 import { AlertTriangle, Building2, Hourglass, Info, Plus, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
@@ -84,6 +90,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const [, navigate] = useLocation();
   const search = useSearch();
   const utils = trpc.useUtils();
+  const printAudit = usePrintAudit();
   const isReceipt = voucherType === "RECEIPT";
   const direction: "IN" | "OUT" = isReceipt ? "IN" : "OUT";
 
@@ -312,13 +319,18 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       if (isReceipt && pendingPrintRef && res.approvalStatus === "APPROVED") {
         await tryPrintAfterCreate(res.receiptId);
       } else if (pendingPrintRef && res.approvalStatus !== "APPROVED") {
+        if (pendingPrintRef === "a4") releaseReservedPrintWindow();
         notify.err(
           "حُفظ الطلب بلا أثر مالي؛ تتاح الطباعة الرسمية بعد الاعتماد والتنفيذ.",
         );
       }
       navigate("/vouchers");
     },
-    onError: (e) => setErr(e.message),
+    onError: (e) => {
+      if (pendingPrintRef === "a4") releaseReservedPrintWindow();
+      setPendingPrintRef(null);
+      setErr(e.message);
+    },
   });
 
   // الحَفظ + الطَباعة الفورية — نَحفظ مرجع طلب الطباعة.
@@ -326,9 +338,11 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     "thermal" | "a4" | null
   >(null);
   async function tryPrintAfterCreate(receiptId: number) {
+    const printMode = pendingPrintRef;
     try {
+      if (!printMode) return;
       const v = await utils.vouchers.get.fetch({ receiptId });
-      if (!v) return;
+      if (!v) throw new Error("PRINT_FAILED");
       const branchName = (branches.data ?? []).find(
         (b) => Number(b.id) === Number(v.branchId),
       )?.name;
@@ -371,9 +385,29 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         attachmentUrl: v.attachmentUrl,
         relatedInvoiceNumber: v.invoiceNumber ?? null,
       };
-      if (pendingPrintRef === "a4") await printVoucherA4(payload);
-      else await printVoucherReceipt(payload);
+      const result = await printAudit.run({
+        documentType: "VOUCHER",
+        documentId: receiptId,
+        branchId: v.branchId == null ? branchId : Number(v.branchId),
+        channel: printMode === "a4" ? "BROWSER" : "THERMAL",
+        open: (audit): Promise<PrintOpenResult> => {
+          const auditedPayload = {
+            ...payload,
+            printedByName: audit.actorName,
+            printRequestedAt: String(audit.requestedAt),
+          };
+          return printMode === "a4"
+            ? printVoucherA4(auditedPayload)
+            : printVoucherReceipt(auditedPayload);
+        },
+      });
+      if (typeof result === "boolean" && !result) {
+        notify.err(
+          "تَمّ الحفظ، لكن نافذة الطباعة حُجبت. أعِد الطباعة من قائمة السندات.",
+        );
+      }
     } catch (e) {
+      if (printMode === "a4") releaseReservedPrintWindow();
       console.warn("[voucher] فشلت الطباعة الفورية:", e);
       notify.err(
         "تَمّ الحفظ، لكن الطباعة فشلت. أعِد الطباعة من قائمة السندات.",
@@ -450,6 +484,16 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     const v = validate();
     if (v) {
       setErr(v);
+      return;
+    }
+    if (
+      isReceipt &&
+      printAfter === "a4" &&
+      !reservePrintWindow()
+    ) {
+      notify.err(
+        "تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة",
+      );
       return;
     }
     // حارس تجربة مستخدم فقط: سند الصرف المعلّق لا يطلب طباعة رسمية.

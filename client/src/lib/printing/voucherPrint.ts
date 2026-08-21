@@ -32,6 +32,8 @@ export interface VoucherPrintData {
   approvedByName?: string | null;
   approvedAt?: string | null;
   createdByName?: string | null;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
   cashBucket?: "DRAWER" | "TREASURY" | null;
   signatureHash?: string | null;
   attachmentUrl?: string | null;
@@ -55,6 +57,17 @@ function bucketLabel(b?: "DRAWER" | "TREASURY" | null): string | null {
   return null;
 }
 
+function printRequestedAtLabel(value?: string | null): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : parsed.toLocaleString("ar-IQ", {
+        dateStyle: "medium",
+        timeStyle: "medium",
+      });
+}
+
 /** طباعة السند الحرارية (٨٠مم) — تَمُرّ بـprintDoc لتَستفيد من السَلسلة الكاملة. */
 export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "server" | "thermal" | "browser" }> {
   const title = d.direction === "IN" ? "سَند قَبض" : "سَند صَرف";
@@ -76,6 +89,9 @@ export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "
   if (d.cashBucket) meta.push(`نَوع النَقد: ${bucketLabel(d.cashBucket)}`);
   if (d.createdByName) meta.push(`المُنشئ: ${d.createdByName}`);
   if (d.approvedByName) meta.push(`المُعتمِد: ${d.approvedByName}`);
+  if (d.printedByName) meta.push(`الطابع: ${d.printedByName}`);
+  const printRequestedAt = printRequestedAtLabel(d.printRequestedAt);
+  if (printRequestedAt) meta.push(`وقت طلب الطباعة: ${printRequestedAt}`);
   meta.push(`الحالة: ${STATUS_LABEL[d.approvalStatus]}`);
 
   const totals: { label: string; value: string }[] = [
@@ -121,6 +137,9 @@ export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
   if (d.branchName) parts.push(`الفرع: ${d.branchName}`);
   if (d.createdByName) parts.push(`المُنشئ: ${d.createdByName}`);
   if (d.approvedByName) parts.push(`المُعتمِد: ${d.approvedByName}`);
+  if (d.printedByName) parts.push(`الطابع: ${d.printedByName}`);
+  const printRequestedAt = printRequestedAtLabel(d.printRequestedAt);
+  if (printRequestedAt) parts.push(`وقت طلب الطباعة: ${printRequestedAt}`);
   const description = parts.filter(Boolean).join(' · ');
 
   // شارة الحالة تُلوَّن حسب approvalStatus.

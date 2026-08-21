@@ -113,6 +113,8 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
     expect(sale.revenue).toBe("1250.00");
     expect(sale.cost).toBe("275.00");
     expect(sale.profit).toBe("975.00");
+    expect(sale.createdBy).toBe(actor.userId);
+    expect(sale.createdByNameSnapshot).toBe("admin");
     expect(es.some((e: any) => e.entryType === "PAYMENT_IN" && e.amount === "1250.00")).toBe(true);
     // إيصال منسوب للوردية (تسوية الصندوق).
     const rec = (await db().select().from(s.receipts))[0];
