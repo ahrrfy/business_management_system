@@ -1,13 +1,13 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1025,
+    "trpcTotal": 1026,
     "byKind": {
       "mutation": 542,
-      "query": 483
+      "query": 484
     },
     "byAuthority": {
-      "module-gate": 488,
+      "module-gate": 489,
       "module-map": 319,
       "admin": 67,
       "raw-role": 55,
@@ -21,7 +21,7 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 481,
+      "LOW": 482,
       "MEDIUM": 394,
       "HIGH": 150
     },
@@ -40,7 +40,7 @@
       "campaigns": 28,
       "sales": 28,
       "assets": 21,
-      "purchases": 18,
+      "purchases": 19,
       "commissions": 16,
       "expenses": 14,
       "suppliers": 13,
@@ -75,9 +75,9 @@
     },
     "expressRoutes": 17,
     "expressMounts": 11,
-    "jobs": 20,
+    "jobs": 21,
     "routerFiles": 95,
-    "proposedPermissions": 865,
+    "proposedPermissions": 866,
     "proposedDomains": {
       "hr": 106,
       "treasury": 88,
@@ -89,7 +89,7 @@
       "iam": 42,
       "admin": 40,
       "workorders": 39,
-      "purchasing": 33,
+      "purchasing": 34,
       "crm": 33,
       "productstudio": 31,
       "marketing": 28,
@@ -11461,7 +11461,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:391"
+      "loc": "server/routers/purchaseRouter.ts:576"
     },
     {
       "surface": "trpc",
@@ -11478,7 +11478,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:242"
+      "loc": "server/routers/purchaseRouter.ts:359"
     },
     {
       "surface": "trpc",
@@ -11495,7 +11495,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:121"
+      "loc": "server/routers/purchaseRouter.ts:225"
     },
     {
       "surface": "trpc",
@@ -11512,7 +11512,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:508"
+      "loc": "server/routers/purchaseRouter.ts:758"
+    },
+    {
+      "surface": "trpc",
+      "router": "purchaseRouter",
+      "proposedPermission": "purchasing.purchase.integrity_report",
+      "name": "integrityReport",
+      "kind": "query",
+      "procedure": "purchasesManagerProcedure",
+      "authority": "module-gate",
+      "module": "purchases",
+      "level": "FULL",
+      "roles": "manager|purchasing",
+      "branch": "required",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/purchaseRouter.ts:604"
     },
     {
       "surface": "trpc",
@@ -11529,7 +11546,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:410"
+      "loc": "server/routers/purchaseRouter.ts:648"
     },
     {
       "surface": "trpc",
@@ -11546,7 +11563,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:480"
+      "loc": "server/routers/purchaseRouter.ts:728"
     },
     {
       "surface": "trpc",
@@ -11563,7 +11580,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:337"
+      "loc": "server/routers/purchaseRouter.ts:491"
     },
     {
       "surface": "trpc",
@@ -11580,7 +11597,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:81"
+      "loc": "server/routers/purchaseRouter.ts:115"
     },
     {
       "surface": "trpc",
@@ -11597,7 +11614,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:262"
+      "loc": "server/routers/purchaseRouter.ts:382"
     },
     {
       "surface": "trpc",
@@ -11614,7 +11631,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: settle",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/purchaseRouter.ts:360"
+      "loc": "server/routers/purchaseRouter.ts:520"
     },
     {
       "surface": "trpc",
@@ -11631,7 +11648,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/purchaseRouter.ts:181"
+      "loc": "server/routers/purchaseRouter.ts:295"
     },
     {
       "surface": "trpc",
@@ -17732,7 +17749,7 @@
       "method": "GET",
       "path": "/healthz",
       "file": "server/index.ts",
-      "line": 361,
+      "line": 372,
       "authority": "public",
       "roles": "public",
       "sensitivity": "LOW",
@@ -17743,7 +17760,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 379,
+      "line": 390,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17754,7 +17771,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 536,
+      "line": 547,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17765,7 +17782,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 544,
+      "line": 555,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17776,7 +17793,7 @@
       "method": "MOUNT",
       "path": "/api/trpc",
       "file": "server/index.ts",
-      "line": 564,
+      "line": 575,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17787,7 +17804,7 @@
       "method": "MOUNT",
       "path": "/api/print",
       "file": "server/index.ts",
-      "line": 579,
+      "line": 590,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17798,7 +17815,7 @@
       "method": "MOUNT",
       "path": "/api/img",
       "file": "server/index.ts",
-      "line": 585,
+      "line": 596,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17809,7 +17826,7 @@
       "method": "MOUNT",
       "path": "/api/backups",
       "file": "server/index.ts",
-      "line": 600,
+      "line": 613,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17820,7 +17837,7 @@
       "method": "MOUNT",
       "path": "/api/wa/media",
       "file": "server/index.ts",
-      "line": 604,
+      "line": 617,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17831,7 +17848,7 @@
       "method": "MOUNT",
       "path": "/api/hr/applicant-cv",
       "file": "server/index.ts",
-      "line": 608,
+      "line": 621,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17842,7 +17859,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks",
       "file": "server/index.ts",
-      "line": 632,
+      "line": 645,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17853,7 +17870,7 @@
       "method": "MOUNT",
       "path": "/api/webhooks/company/:companyCode",
       "file": "server/index.ts",
-      "line": 633,
+      "line": 646,
       "authority": "mount",
       "roles": "",
       "sensitivity": "",
@@ -17874,7 +17891,7 @@
     {
       "kind": "cron",
       "file": "server/index.ts",
-      "line": 728
+      "line": 745
     },
     {
       "kind": "interval",
@@ -17940,6 +17957,11 @@
       "kind": "cron",
       "file": "server/services/productStudioStagingWorker.ts",
       "line": 43
+    },
+    {
+      "kind": "cron",
+      "file": "server/services/purchase/purchaseIntegrityMonitor.ts",
+      "line": 108
     },
     {
       "kind": "cron",
