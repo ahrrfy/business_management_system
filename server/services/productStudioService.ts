@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
-import { auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import type { PermissionMap } from "@shared/permissions";
 import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
@@ -1572,6 +1572,106 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
   return { createdCount };
 }
 
+/** سقفُ **العمل** لا سقفُ الرؤية: الاستعلام يُرجع الناقص وحده، فالحدّ يقصّ ما يُنشأ في النبضة. */
+const ASSIGNMENT_RECONCILE_CREATE_LIMIT = 200;
+
+/**
+ * مهلةُ سماحٍ قبل اعتبار الإشعار مفقوداً — تمنع سباق المصالحة مع المُرسِل المباشر.
+ * بدونها قد تُدرج النبضةُ إشعاراً ثانياً لإسنادٍ وقع قبل ثوانٍ ولمّا يكتمل إرسالُه.
+ */
+const ASSIGNMENT_RECONCILE_GRACE_MS = 10 * 60_000;
+
+/**
+ * **مصالحةُ إشعار الإسناد**: تُنشئ ما فُقد منه، بلا جدولٍ جديد ولا عاملٍ جديد.
+ *
+ * **العطب:** `notifyStudioAssignment` تُستدعى **بعد** إغلاق المعاملة وتبتلع أيّ فشلٍ
+ * بتحذير. فانقطاعٌ لحظيّ ⇒ مهمّةٌ مُسنَدةٌ وموظّفٌ لا يعلم بها أبداً، بلا أثرٍ وبلا إعادة
+ * محاولة. وخطورتُه تضاعفت بعد #683: بطاقةُ الإشعار صارت مدخلَ المصوّر إلى مهمّته.
+ *
+ * ثلاثةُ قيودٍ هنا **كلٌّ منها أمسكته مراجعةُ Codex على النسخة الأولى**، وبدونها تُنتج
+ * الميزةُ عكسَ غرضها — إشعاراتٌ زائفةٌ تُدرّب الموظّف على تجاهل الإشعارات كلّها:
+ *
+ * **١) الوجودُ يُقاس بالكيان لا بمفتاح الحدث.** المفتاح يحمل `revision`، و`saveStudioDraft`
+ * و`updateStudioTaskSchedule` **يرفعان `revision`** بلا إسنادٍ جديد ⇒ كل حفظِ مسودةٍ كان
+ * يُولّد مفتاحاً جديداً لا يُوجَد، فتُنشئ المصالحة إشعار «مهمة جديدة» **بعد كل تعديل**.
+ * الآن السؤال: «هل لهذا الموظّف إشعارٌ عن هذه المهمّة أصلاً؟» — سؤالٌ لا يتأثّر بالتنقيح
+ * ولا بتغيّر صيغة المفاتيح لاحقاً.
+ *
+ * **٢) المسحُ الذاتيّ ليس إسناداً.** `claimStudioProductByBarcode` يضع
+ * `assignedBy = assignedTo` **ولا يُشعر عمداً** — الماسح يعلم بما مسح. وبما أنّ المسح هو
+ * مسار العمل الأساسيّ في الحملات، كانت المصالحة ستُشعر كلّ مصوّرٍ بمنتجٍ مسحه بيده للتوّ،
+ * وتعُدّ ذلك «إصلاح فشل» في السجلّ. الشرط `assignedBy <> assignedTo` يفصلهما.
+ *
+ * **٣) لا تجويعَ للأقدم.** جلبُ أحدث ٥٠٠ ثمّ الترشيح يعني أنّ حملةً بآلاف المهام تُبقي
+ * النبضةَ تفحص الصفوف الحديثة نفسها أبداً، فلا يُصلَح القديمُ قطّ — وهو نقضٌ للوعد
+ * بالتصحيح الرجعيّ. الاستعلام الآن **يُرجع الناقص وحده** (`NOT EXISTS`)، فالسقف يقصّ
+ * العمل لا الرؤية، والنبضة التالية تلتقط ما تبقّى.
+ *
+ * **نطاقُها إشعارُ الإسناد وحده** — لا الرفض: مفتاح الرفض يحمل `revision` بدوره، ومهمّةٌ
+ * مرفوضةٌ يحفظ صاحبُها مسودّتها ترفعه، فمصالحتُه بنفس المنطق تُعيد إنتاج العطب ١. والمهمّة
+ * المرفوضة تظهر لصاحبها في طابوره على كلّ حال.
+ */
+export async function reconcileStudioAssignmentNotifications(
+  actor: ProductStudioActor,
+  now = new Date(),
+  limit = ASSIGNMENT_RECONCILE_CREATE_LIMIT,
+): Promise<{ createdCount: number; missing: number }> {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const branchScope = canCrossBranches(actor) ? undefined : eq(productImageJobs.branchId, Number(actor.branchId));
+  const cutoff = new Date(now.getTime() - ASSIGNMENT_RECONCILE_GRACE_MS);
+  const missing = await requireDb()
+    .select({
+      id: productImageJobs.id,
+      assignedTo: productImageJobs.assignedTo,
+      revision: productImageJobs.revision,
+      assigneeRole: users.role,
+    })
+    .from(productImageJobs)
+    .innerJoin(users, eq(users.id, productImageJobs.assignedTo))
+    .where(
+      and(
+        branchScope,
+        eq(users.isActive, true),
+        // الحالات التي ينتظر فيها الموظّفُ فعلاً. المعتمَدة والمُلغاة لا تنتظر أحداً،
+        // وPENDING_REVIEW بيد المدير لا المصوّر.
+        inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "REJECTED"]),
+        // إسنادٌ من غيره — لا مسحٌ ذاتيّ (القيد ٢ أعلاه).
+        isNotNull(productImageJobs.assignedBy),
+        sql`${productImageJobs.assignedBy} <> ${productImageJobs.assignedTo}`,
+        // مهلةُ سماحٍ: لا نسابق المُرسِل المباشر.
+        isNotNull(productImageJobs.assignedAt),
+        lte(productImageJobs.assignedAt, cutoff),
+        // القيد ١: أيّ إشعارٍ لهذا الموظّف عن هذه المهمّة يكفي — بأيّ مفتاحٍ وأيّ تنقيح.
+        sql`not exists (select 1 from ${appNotifications} n where n.userId = ${productImageJobs.assignedTo} and n.entityType = 'productImageJob' and n.entityId = ${productImageJobs.id})`,
+      ),
+    )
+    .orderBy(desc(productImageJobs.id))
+    .limit(Math.max(1, Math.min(limit, ASSIGNMENT_RECONCILE_CREATE_LIMIT)));
+
+  let createdCount = 0;
+  for (const job of missing) {
+    if (!isRoutineStudioRecipient(job.assigneeRole)) continue;
+    const result = await createAppNotification({
+      userId: Number(job.assignedTo),
+      kind: "TASK_ASSIGNED",
+      title: "مهمة جديدة في استوديو المنتجات",
+      body: `أُسندت إليك مهمة الاستوديو رقم ${job.id}.`,
+      route: `/catalog/image-studio?task=${job.id}`,
+      eventKey: studioAssignedEventKey(Number(job.id), Number(job.assignedTo), Number(job.revision)),
+      entityType: "productImageJob",
+      entityId: Number(job.id),
+      requiresAction: true,
+    });
+    if (result.created) createdCount++;
+  }
+  if (createdCount > 0) {
+    // تحذيرٌ عمداً: تكرارُه يعني أنّ المُرسِل المباشر يفشل بانتظام، والمصالحة تستر العطب
+    // بدل أن تكشفه. وبعد القيدين ١ و٢ صار السجلّ يدلّ على فشلٍ حقيقيّ لا على عملٍ عاديّ.
+    logger.warn({ createdCount, missing: missing.length }, "productStudio.notifications.reconciled_missing");
+  }
+  return { createdCount, missing: missing.length };
+}
+
 export async function getStudioDashboard(actor: ProductStudioActor, now = new Date()) {
   // نطاق المنفّذ مهامُه هو، ونطاق المدير/المدقّق فرعُه. الفارق جوهريّ للقارئ: الأرقام
   // نفسها تحت العناوين نفسها تعني شيئين مختلفين، فتُعاد `scopeKind` كي تُسمّيها الشاشة
@@ -2067,6 +2167,22 @@ function isRoutineStudioRecipient(role: string | null | undefined): boolean {
  * تُعاد إليه لاحقاً. بمفتاحٍ بلا مراجعة كان الإشعار الثاني يُبتلَع بوصفه مكرَّراً
  * فلا يعلم الموظف أنّ المهمة عادت إليه — بخلاف مفتاح الرفض الذي يحملها أصلاً.
  */
+/**
+ * مفاتيح أحداث إشعارات الاستوديو — **مصدرُ اشتقاقٍ واحد** يستعمله المُرسِل والمُصالِح معاً.
+ *
+ * كانت السلاسل مكتوبةً في موضع الإرسال وحده. ولمّا صار للمصالحة (أدناه) أن تُعيد بناء
+ * المفتاح نفسه، فأيّ اختلاف حرفٍ بينهما يجعلها تُعيد إنشاء إشعارٍ موجودٍ أبداً — أو تظنّ
+ * المفقودَ موجوداً فلا تُصلحه. الاشتقاق من دالّةٍ واحدة يجعل الانحراف مستحيلاً لا مستبعَداً.
+ * و`appNotifications.eventKey` **فريدٌ**، فإعادة الإدراج تُرجع `created:false` بلا ضرر.
+ */
+function studioAssignedEventKey(taskId: number, assigneeId: number, revision: number): string {
+  return `product-studio:${taskId}:assigned:${assigneeId}:r${revision}`;
+}
+
+function studioRejectedEventKey(taskId: number, revision: number): string {
+  return `product-studio:${taskId}:rejected:r${revision}`;
+}
+
 async function notifyStudioAssignment(taskId: number, assigneeId: number, assigneeRole: string, revision: number): Promise<void> {
   if (!isRoutineStudioRecipient(assigneeRole)) return;
   try {
@@ -2076,7 +2192,7 @@ async function notifyStudioAssignment(taskId: number, assigneeId: number, assign
       title: "مهمة جديدة في استوديو المنتجات",
       body: `أُسندت إليك مهمة الاستوديو رقم ${taskId}.`,
       route: `/catalog/image-studio?task=${taskId}`,
-      eventKey: `product-studio:${taskId}:assigned:${assigneeId}:r${revision}`,
+      eventKey: studioAssignedEventKey(taskId, assigneeId, revision),
       entityType: "productImageJob",
       entityId: taskId,
       requiresAction: true,
@@ -2095,7 +2211,7 @@ async function notifyStudioRejection(taskId: number, assigneeId: number, revisio
       title: "مهمة استوديو تحتاج تعديلاً",
       body: `أُعيدت مهمة الاستوديو رقم ${taskId} للتعديل.`,
       route: `/catalog/image-studio?task=${taskId}`,
-      eventKey: `product-studio:${taskId}:rejected:r${revision}`,
+      eventKey: studioRejectedEventKey(taskId, revision),
       entityType: "productImageJob",
       entityId: taskId,
       requiresAction: true,

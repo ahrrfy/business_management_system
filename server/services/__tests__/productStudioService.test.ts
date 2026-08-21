@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { __resetImageStoreForTest, contentHash, getImageStore, objectKeyFor } from "../../lib/imageStore";
-import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
+import { approveStudioTask, assignStudioTask, bulkAssignStudioTasks, bulkCancelStudioBacklog, cancelStudioTask, attestStudioProcessing as finalizeStudioProcessing, authorizeStudioProcessing, bindStudioProcessingCandidate, cleanupStudioStaging, createStudioCampaign, createStudioCampaignBacklog, getStudioCampaignAnalytics, getStudioDashboard, getStudioCandidatePreview, getStudioSourcePreview, claimStudioProductByBarcode, createTemporaryCampaignPhotographer, revokeTemporaryCampaignPhotographers, grantStudioAccess, listStudioAssignees, getStudioCampaignBoard, listStudioProductImages, listStudioProducts, previewStudioCampaignBacklog, listStudioTasks, reconcileStudioAssignmentNotifications, rejectStudioTask, resolveStudioBarcode, revertStudioTask, saveStudioDraft, sendStudioDueNotifications, submitStudioCandidate as submitStudioCandidateService, transitionStudioCampaign, updateStudioTaskSchedule, type ProductStudioActor } from "../productStudioService";
 import { sweepProductStudioStagingOnce } from "../productStudioStagingWorker";
 
 const PNG_1X1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -385,6 +385,70 @@ describe("product studio governed workflow", () => {
       });
     await expect(sendStudioDueNotifications(manager, now)).resolves.toEqual({ createdCount: 0 });
     expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, manager.userId))).toHaveLength(1);
+  });
+
+  it("⭐ يُصالح إشعارَ الإسناد المفقود — مهمّةٌ مُسنَدةٌ وموظّفٌ لا يعلم", async () => {
+    // العطب: `notifyStudioAssignment` تُستدعى **بعد** المعاملة وتبتلع الفشل بتحذير.
+    // فانقطاعٌ لحظيّ ⇒ مهمّةٌ مُسنَدةٌ بلا إشعار، بلا أثر، وبلا إعادة محاولة.
+    await db().insert(s.productImageJobs).values({
+      productId: 1, branchId: 1, mode: "FLATTEN", status: "ASSIGNED",
+      assignedTo: worker.userId, assignedBy: manager.userId, assignedAt: new Date(Date.now() - 60 * 60_000),
+      createdBy: manager.userId, activeSlot: 1, revision: 1,
+    });
+    const [job] = await db().select().from(s.productImageJobs).where(eq(s.productImageJobs.assignedTo, worker.userId));
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId))).toHaveLength(0);
+
+    await expect(reconcileStudioAssignmentNotifications(manager)).resolves.toMatchObject({ createdCount: 1 });
+    const notices = await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId));
+    expect(notices).toEqual([
+      expect.objectContaining({ route: `/catalog/image-studio?task=${job.id}`, requiresAction: true }),
+    ]);
+
+    await expect(reconcileStudioAssignmentNotifications(manager)).resolves.toMatchObject({ createdCount: 0 });
+  });
+
+  it("⭐ حفظُ مسودةٍ يرفع revision ولا يُنتج إشعاراً ثانياً (مراجعة Codex)", async () => {
+    // النسخة الأولى قاست الوجود بمفتاح الحدث، والمفتاح يحمل `revision` — و`saveStudioDraft`
+    // يرفعه. فكان كل حفظٍ يُولّد مفتاحاً «مفقوداً» ⇒ إشعار «مهمة جديدة» بعد كل تعديل.
+    await db().insert(s.productImageJobs).values({
+      productId: 1, branchId: 1, mode: "FLATTEN", status: "ASSIGNED",
+      assignedTo: worker.userId, assignedBy: manager.userId, assignedAt: new Date(Date.now() - 60 * 60_000),
+      createdBy: manager.userId, activeSlot: 1, revision: 1,
+    });
+    await expect(reconcileStudioAssignmentNotifications(manager)).resolves.toMatchObject({ createdCount: 1 });
+    // يرتفع التنقيح كما يفعل حفظُ المسودة تماماً.
+    await db().update(s.productImageJobs).set({ revision: 7 }).where(eq(s.productImageJobs.assignedTo, worker.userId));
+    await expect(reconcileStudioAssignmentNotifications(manager)).resolves.toMatchObject({ createdCount: 0 });
+    expect(await db().select().from(s.appNotifications).where(eq(s.appNotifications.userId, worker.userId))).toHaveLength(1);
+  });
+
+  it("⭐ المسحُ الذاتيّ بالباركود ليس إسناداً — لا يُصالَح (مراجعة Codex)", async () => {
+    // `claimStudioProductByBarcode` يضع assignedBy = assignedTo ولا يُشعر عمداً: الماسح
+    // يعلم بما مسح. وهو مسار العمل الأساسيّ في الحملات — فمصالحتُه تُشعر كل مصوّرٍ بمنتجٍ
+    // مسحه بيده، وتعُدّ ذلك «إصلاح فشل» في السجلّ.
+    await db().insert(s.productImageJobs).values({
+      productId: 1, branchId: 1, mode: "FLATTEN", status: "ASSIGNED",
+      assignedTo: worker.userId, assignedBy: worker.userId, assignedAt: new Date(Date.now() - 60 * 60_000),
+      createdBy: worker.userId, activeSlot: 1, revision: 1,
+    });
+    await expect(reconcileStudioAssignmentNotifications(manager)).resolves.toMatchObject({ createdCount: 0, missing: 0 });
+  });
+
+  it("لا يُصالح إسناداً جديداً داخل مهلة السماح — لا نسابق المُرسِل المباشر", async () => {
+    await db().insert(s.productImageJobs).values({
+      productId: 1, branchId: 1, mode: "FLATTEN", status: "ASSIGNED",
+      assignedTo: worker.userId, assignedBy: manager.userId, assignedAt: new Date(),
+      createdBy: manager.userId, activeSlot: 1, revision: 1,
+    });
+    await expect(reconcileStudioAssignmentNotifications(manager)).resolves.toMatchObject({ createdCount: 0 });
+  });
+
+  it("لا يُصالح ما لا ينتظر الموظّف: المعتمَدة وقيد المراجعة", async () => {
+    await db().insert(s.productImageJobs).values([
+      { productId: 1, branchId: 1, mode: "FLATTEN", status: "APPROVED", assignedTo: worker.userId, assignedBy: manager.userId, assignedAt: new Date(Date.now() - 60 * 60_000), createdBy: manager.userId, activeSlot: null, revision: 2 },
+      { productId: 2, branchId: 1, mode: "FLATTEN", status: "PENDING_REVIEW", assignedTo: worker.userId, assignedBy: manager.userId, assignedAt: new Date(Date.now() - 60 * 60_000), createdBy: manager.userId, activeSlot: 1, revision: 1 },
+    ]);
+    await expect(reconcileStudioAssignmentNotifications(manager)).resolves.toMatchObject({ createdCount: 0 });
   });
 
   it("reports campaign progress, first-pass approval, rejection reasons and median cycle time", async () => {
