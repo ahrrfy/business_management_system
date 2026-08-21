@@ -6,6 +6,7 @@ import {
   MAX_PURCHASE_INTEGRITY_LIMIT,
   getPurchaseIntegrityReport,
 } from "../purchaseIntegrityService";
+import { runPurchaseIntegrityMonitorOnce } from "../purchase/purchaseIntegrityMonitor";
 import { truncateTables } from "./__testUtils__";
 
 const AS_OF = new Date("2026-08-21T12:00:00.000Z");
@@ -180,6 +181,28 @@ beforeEach(async () => {
 });
 
 describe("getPurchaseIntegrityReport — GL forensic read model", () => {
+  it("يشغّل المراقب اليومي على الفروع النشطة بلا أي كتابة", async () => {
+    await insertPo({ id: 1, total: "100.00", paidAmount: "35.00" });
+    await insertEntry({
+      id: 11,
+      purchaseOrderId: 1,
+      type: "PURCHASE",
+      amount: "100.00",
+    });
+    const before = await relevantCounts();
+
+    const summary = await runPurchaseIntegrityMonitorOnce();
+
+    expect(summary).toMatchObject({
+      branchCount: 2,
+      scannedOrderCount: 1,
+      findingCount: 2,
+      severityCounts: { CRITICAL: 1, HIGH: 1, MEDIUM: 0, INFO: 0 },
+      truncatedBranchIds: [],
+    });
+    expect(await relevantCounts()).toEqual(before);
+  });
+
   it("يكشف فجوة CASH وانحراف paidAmount والرصيد الدفتري السالب، بلا كتابة أو تسريب فرع", async () => {
     await insertPo({ id: 1, total: "100.00", paidAmount: "35.00" });
     await insertEntry({

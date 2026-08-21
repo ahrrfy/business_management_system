@@ -74,8 +74,10 @@ export interface SettlePurchaseUsdDirectInput {
   chargedIqd: string;
   feeIqd?: string | null;
   method: "CARD" | "TRANSFER" | "WALLET";
+  /** إلزامي للبطاقة فقط، ولا يُشتقّ من المرجع تخميناً. */
+  cardLastFour?: string | null;
   referenceNumber: string;
-  clientRequestId?: string | null;
+  clientRequestId: string;
 }
 
 export interface ReceiveLineInput {
