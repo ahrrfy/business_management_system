@@ -18,6 +18,7 @@ import {
   productCustomizationFields,
   productCustomizationTemplates,
   productPrices,
+  productRelatedProducts,
   productUnits,
   productVariants,
   products,
@@ -841,6 +842,78 @@ async function getBundleItems(
     .orderBy(asc(bundleComponents.sortOrder))
     .limit(30);
   return rows.map((r) => ({ name: r.name, quantity: Number(r.qty) }));
+}
+
+/**
+ * توصيات «أكمل تجهيزك» للسلة: تبدأ بالعلاقات التي ضبطها المدير، ثم تهبط إلى نفس الفئة
+ * كخطة احتياطية حتى لا تظهر السلة بلا مساعدة قبل أن تتراكم علاقات يدوية.
+ */
+export async function storefrontCartRecommendations(
+  productIds: number[],
+  branchIdInput?: number,
+  limit = 4,
+): Promise<StorefrontProduct[]> {
+  const db = getDb();
+  if (!db) return [];
+  const sourceIds = Array.from(new Set(productIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))).slice(0, 24);
+  if (!sourceIds.length) return [];
+  const branchId = await resolveStorefrontBranchId(branchIdInput);
+  const cap = Math.min(Math.max(limit, 1), 8);
+  const relationRows = await db
+    .select({
+      sourceProductId: productRelatedProducts.sourceProductId,
+      relatedProductId: productRelatedProducts.relatedProductId,
+      relationType: productRelatedProducts.relationType,
+      sortOrder: productRelatedProducts.sortOrder,
+      relationId: productRelatedProducts.id,
+    })
+    .from(productRelatedProducts)
+    .where(and(inArray(productRelatedProducts.sourceProductId, sourceIds), eq(productRelatedProducts.isActive, true)))
+    .orderBy(asc(productRelatedProducts.sortOrder), asc(productRelatedProducts.id));
+
+  const sourceSet = new Set(sourceIds);
+  const ranked = new Map<number, { score: number; relationId: number }>();
+  const relationWeight: Record<string, number> = { COMPATIBLE: 0, COMPLETE_KIT: 1, SAME_THEME: 2, UPSELL: 3 };
+  for (const row of relationRows) {
+    const target = Number(row.relatedProductId);
+    if (sourceSet.has(target)) continue;
+    const score = Number(row.sortOrder ?? 0) * 10 + (relationWeight[String(row.relationType)] ?? 9);
+    const previous = ranked.get(target);
+    if (!previous || score < previous.score) ranked.set(target, { score, relationId: Number(row.relationId) });
+  }
+  const manualIds = Array.from(ranked.entries())
+    .sort((a, b) => a[1].score - b[1].score || a[1].relationId - b[1].relationId)
+    .slice(0, cap)
+    .map(([id]) => id);
+
+  let selectedIds = manualIds;
+  if (!selectedIds.length) {
+    // fallback محافظ: السلوك القديم كان يقترح نفس الفئة، لكنه لا يعرض البدائل الموجودة في السلة.
+    const fallback = await storefrontRelated(sourceIds[0]!, branchId, cap + sourceIds.length);
+    return fallback.filter((item) => !sourceSet.has(item.productId)).slice(0, cap);
+  }
+
+  const conds = [storefrontPublishableCondition(), inArray(products.id, selectedIds)];
+  const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+  const availableIds = chooseCandidateProductIds(await attachAvailability(db, branchId, candidateRows), cap, "IN_STOCK");
+  const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
+  const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, availableIds)));
+  const rows = (await attachAvailability(db, branchId, rawRows))
+    .filter((row) => row.availableQty >= Number(row.conversionFactor))
+    .sort((a, b) => (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap));
+  const seen = new Set<number>();
+  const items: StorefrontProduct[] = [];
+  for (const row of rows) {
+    const pid = Number(row.productId);
+    if (seen.has(pid) || sourceSet.has(pid)) continue;
+    seen.add(pid);
+    items.push(toStorefront(row));
+    if (items.length >= cap) break;
+  }
+  await applyStorefrontPromotions(items, branchId);
+  await attachSoldCounts(db, items);
+  await attachVariantColors(db, items, branchId);
+  return items;
 }
 
 /**

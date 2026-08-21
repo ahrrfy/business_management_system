@@ -904,6 +904,40 @@ export type BundleComponent = typeof bundleComponents.$inferSelect;
 export type InsertBundleComponent = typeof bundleComponents.$inferInsert;
 
 /**
+ * productRelatedProducts: علاقات ترويجية بين المنتجات وليست وصفة مخزون.
+ * المصدر = المنتج الموجود في السلة، والهدف = منتج مكمل يظهر تحت «أكمل تجهيزك».
+ * لا تغيّر هذه العلاقات السعر أو المخزون؛ هي إشارات merchandising يراجعها المدير.
+ */
+export const productRelatedProducts = mysqlTable(
+  "productRelatedProducts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sourceProductId: bigint("sourceProductId", { mode: "number" })
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    relatedProductId: bigint("relatedProductId", { mode: "number" })
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    relationType: mysqlEnum("relationType", ["COMPLETE_KIT", "COMPATIBLE", "SAME_THEME", "UPSELL"])
+      .default("COMPLETE_KIT")
+      .notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    sourceIdx: index("idx_prod_related_source").on(table.sourceProductId, table.isActive, table.sortOrder),
+    relatedIdx: index("idx_prod_related_target").on(table.relatedProductId),
+    pairUq: unique("uq_prod_related_pair").on(table.sourceProductId, table.relatedProductId),
+    selfCheck: check("chk_prod_related_not_self", sql`${table.sourceProductId} <> ${table.relatedProductId}`),
+  }),
+);
+
+export type ProductRelatedProduct = typeof productRelatedProducts.$inferSelect;
+export type InsertProductRelatedProduct = typeof productRelatedProducts.$inferInsert;
+
+/**
  * invoiceItemBundleComponents (٧/٧/٢٦، gstack B6): لقطة مكوّنات البكج لحظة إنشاء `invoiceItem`.
  *
  * السبب: `bundleComponents` وصفة حيّة قابلة للتعديل عبر `bundlesRouter.setComponents`. مسار المرتجع

@@ -6,9 +6,9 @@
 // RBAC: نطاق `products` (نفس بوّابة إضافة/تعديل المنتجات) — المدير فقط يعدّل بكجاً، والقارئ يشاهد الوصفة.
 // Idempotency: التعديل يستبدل الوصفة كاملةً — لا حاجة لمفتاح idempotency (نمط PUT بلا مضاعفات).
 import { TRPCError } from "@trpc/server";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
-import { bundleComponents, invoiceItems, products, productUnits, productVariants } from "../../drizzle/schema";
+import { bundleComponents, invoiceItems, productRelatedProducts, products, productUnits, productVariants } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
 import { getBundleDefinitions, replaceBundleComponents } from "../services/bundleService";
@@ -24,7 +24,63 @@ const componentInputSchema = z.object({
   notes: z.string().max(500).nullish(),
 });
 
+const relatedProductInputSchema = z.object({
+  relatedProductId: z.number().int().positive(),
+  relationType: z.enum(["COMPLETE_KIT", "COMPATIBLE", "SAME_THEME", "UPSELL"]).default("COMPLETE_KIT"),
+  sortOrder: z.number().int().min(0).max(999).default(0),
+});
+
 export const bundlesRouter = router({
+  /** روابط «أكمل تجهيزك» التي ضبطها المدير لمنتج واحد. */
+  getRelatedProducts: productsReadProcedure
+    .input(z.object({ sourceProductId: z.number().int().positive() }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return { items: [] };
+      const rows = await db
+        .select({
+          id: productRelatedProducts.id,
+          relatedProductId: productRelatedProducts.relatedProductId,
+          relationType: productRelatedProducts.relationType,
+          sortOrder: productRelatedProducts.sortOrder,
+          productName: products.name,
+          isActive: products.isActive,
+        })
+        .from(productRelatedProducts)
+        .innerJoin(products, eq(productRelatedProducts.relatedProductId, products.id))
+        .where(and(eq(productRelatedProducts.sourceProductId, input.sourceProductId), eq(productRelatedProducts.isActive, true)))
+        .orderBy(productRelatedProducts.sortOrder, productRelatedProducts.id);
+      return { items: rows.map((row) => ({ ...row, id: Number(row.id), relatedProductId: Number(row.relatedProductId), sortOrder: Number(row.sortOrder ?? 0), isActive: row.isActive !== false })) };
+    }),
+
+  /** حفظ روابط «أكمل تجهيزك» كاملةً بشكل ذري — الإدارة تراجع المنتجات، والمتجر يقرأ النشط فقط. */
+  setRelatedProducts: productsManagerProcedure
+    .input(z.object({ sourceProductId: z.number().int().positive(), items: z.array(relatedProductInputSchema).max(30) }))
+    .mutation(async ({ input, ctx }) => {
+      const ids = input.items.map((item) => item.relatedProductId);
+      if (new Set(ids).size !== ids.length || ids.includes(input.sourceProductId)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "رابط المنتج مكرّر أو يشير إلى المنتج نفسه" });
+      }
+      const result = await withTx(async (tx) => {
+        const rows = await tx.select({ id: products.id, isActive: products.isActive }).from(products).where(inArray(products.id, [input.sourceProductId, ...ids]));
+        if (rows.length !== new Set([input.sourceProductId, ...ids]).size) throw new TRPCError({ code: "NOT_FOUND", message: "أحد المنتجات المرتبطة غير موجود" });
+        if (rows.some((row) => row.isActive === false)) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن ربط منتج معطّل في توصية المتجر" });
+        await tx.delete(productRelatedProducts).where(eq(productRelatedProducts.sourceProductId, input.sourceProductId));
+        if (input.items.length) {
+          await tx.insert(productRelatedProducts).values(input.items.map((item) => ({
+            sourceProductId: input.sourceProductId,
+            relatedProductId: item.relatedProductId,
+            relationType: item.relationType,
+            sortOrder: item.sortOrder,
+            isActive: true,
+          })));
+        }
+        return input.items.length;
+      });
+      await logAudit(ctx, { action: "productRelatedProducts.set", entityType: "product", entityId: input.sourceProductId, newValue: { count: result, items: input.items } });
+      return { ok: true, count: result };
+    }),
+
   /** بحث على المكوّنات المؤهّلة (سلعة نشطة غير بكج وغير خدمة) — يكشف التكلفة ⇒ productsManagerProcedure.
    *  يُستعمَل في شاشة إنشاء البكج + شاشة تعديل الوصفة كي يفلتر البكجات/الخدمات مبكّراً بدل رفضها بعد الإرسال.
    *  يقبل نصّاً حرّاً و/أو فئة — أحدهما إلزامي (لتفادي مسح جدول كامل بلا فلتر). */

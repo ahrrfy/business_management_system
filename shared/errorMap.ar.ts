@@ -139,6 +139,7 @@ type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: stri
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_custom_template_product: { msg: "قالب التخصيص لهذا المنتج موجود مسبقاً." },
   uq_custom_field_template_key: { msg: "مفتاح حقل التخصيص مستخدم مسبقاً داخل هذا القالب." },
+  uq_prod_related_pair: { msg: "هذا المنتج مرتبط مسبقاً بهذا المنتج المكمل — عدّل العلاقة الموجودة بدل تكرارها." },
   uq_loyalty_program_customer: { msg: "حساب الولاء لهذا العميل في هذا البرنامج موجود مسبقاً." },
   uq_loyalty_order_earn: { msg: "نقاط الولاء لهذا الطلب مُنحت مسبقاً." },
   uq_storefront_push_token_hash: { msg: "هذا الجهاز مسجّل مسبقاً لإشعارات المتجر." },
