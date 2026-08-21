@@ -8227,6 +8227,15 @@ export const deliveryConsignments = mysqlTable(
     custodyRecognizedAt: timestamp("custodyRecognizedAt"),
     failedAt: timestamp("failedAt"),
     failureReason: varchar("failureReason", { length: 500 }),
+    /**
+     * **المرتجعُ المُعلَن** (0246): الشركةُ أعلنت أنّ الطرد راجعٌ إلينا — **ولم يصل بعد**.
+     * يُغلق توقّعَ التحصيل وحده؛ والمخزونُ والفاتورةُ والعربون تنتظر الاستلامَ والفحص
+     * (`returnConsignment`). ⛔ ليست قيمةَ `parcelStatus` عمداً: القيمةُ الجديدة تُعمي كلّ
+     * حارسٍ يقارن الحالة صامتاً — والطردُ يبقى `DISPATCHED` لأنّه حيٌّ فعلاً.
+     */
+    returnDeclaredAt: timestamp("returnDeclaredAt"),
+    returnDeclaredBy: int("returnDeclaredBy").references(() => users.id),
+    returnDeclaredReason: varchar("returnDeclaredReason", { length: 500 }),
     cancelledAt: timestamp("cancelledAt"),
     cancellationReason: varchar("cancellationReason", { length: 500 }),
     cancelledBy: int("cancelledBy").references(() => users.id),

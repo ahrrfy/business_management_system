@@ -161,6 +161,12 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       customerName: customers.name,
       dispatchedAt: deliveryConsignments.dispatchedAt,
       failureReason: deliveryConsignments.failureReason,
+      /**
+       * **رجوعٌ مُعلَن** (0246): الشركةُ أعلنت أنّ الطرد راجعٌ ولم يصل بعد. تعرّضُه حُرِّر
+       * سلفاً، وينتظر الاستلامَ والفحص — فيُميَّز في الطابور عن الطرد الذي ما زال يُحاوَل.
+       */
+      returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
+      returnDeclaredReason: deliveryConsignments.returnDeclaredReason,
       /** عمر الطرد بالساعات — أساس «أعمار الطرود» وتحديد المتعثّر بلا تقريرٍ منفصل. */
       ageHours: sql<number>`TIMESTAMPDIFF(HOUR, ${deliveryConsignments.dispatchedAt}, NOW())`,
     })

@@ -441,8 +441,13 @@ export async function returnConsignment(
     // الإسناد. أما الصفوف المرحّلة فتحمل custodyRecognizedAt لأن رصيدها القديم
     // كان تعرّضاً مُسجلاً في currentBalance؛ نعكس منه ما بقي فعلاً، ثم نحرر
     // الباقي كتعرّض غير محصّل حتى تبقى معادلتا العهدة والتعرض متوازنتين.
+    // ⚠️ **تحريرٌ واحدٌ لا اثنان** (0246): إن كان الرجوعُ **مُعلَناً** سلفاً فتعرّضُه حُرِّر
+    // لحظةَ الإعلان. و`deliveryLedgerEntries.eventKey` **بلا فهرسٍ فريد** في المخطّط ⇒ إدراجٌ
+    // ثانٍ يمرّ بلا خطأ ويُحرّر المبلغ **مرّتين**، فيظهر للجهة رصيدٌ دائنٌ وهميّ. الحارسُ
+    // صريحٌ هنا لأنّ القاعدة لا تحرسه.
+    const alreadyReleasedOnDeclaration = cn.returnDeclaredAt != null;
     const outstanding = round2(money(cn.codAmount).minus(money(cn.collectedAmount)));
-    if (outstanding.gt(0)) {
+    if (outstanding.gt(0) && !alreadyReleasedOnDeclaration) {
       const cachedCustody = money(party?.currentBalance ?? "0");
       const legacyCustody = cn.custodyRecognizedAt == null
         ? money(0)

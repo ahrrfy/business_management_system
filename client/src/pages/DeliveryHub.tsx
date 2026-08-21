@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, Check, FileText, MessageCircle, Phone, Printer, RotateCcw, Truck } from "lucide-react";
+import { AlertTriangle, Check, FileText, MessageCircle, Phone, Printer, RotateCcw, Truck, Undo2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
@@ -290,6 +290,42 @@ function InTransitTab() {
     onError: (e) => notify.err(e),
   });
 
+  const declareReturn = trpc.delivery.declareReturn.useMutation({
+    onSuccess: (res) => {
+      notify.ok(
+        "سُجّل رجوعٌ مُعلَن",
+        `تحرّر تحصيلٌ متوقّع ${fmt(res.releasedExposure ?? "0")} د.ع — والبضاعة تنتظر الاستلام والفحص`,
+      );
+      utils.delivery.inTransit.invalidate();
+      utils.delivery.listParties.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  /**
+   * **إعلانُ الرجوع** — الشركةُ قالت «راجعٌ إليكم» والطردُ لم يصل بعد.
+   * يُغلق توقّعَ التحصيل وحده؛ والمخزونُ والفاتورة تنتظر `askReturn` بعد الاستلام والفحص.
+   */
+  async function askDeclareReturn(r: { id: number; consignmentNumber: string | null }) {
+    const reason = window.prompt("سبب رجوع الطرد كما أعلنته الشركة (رفض العميل / عنوان خاطئ / لم يُعثر عليه…):")?.trim();
+    if (!reason || reason.length < 3) return;
+    const statementNumber = window.prompt("رقم كشف الشركة (اختياريّ — للتوثيق):")?.trim() || undefined;
+    const ok = await confirm({
+      title: `إعلان رجوع ${r.consignmentNumber ?? r.id}`,
+      description:
+        "يُغلق توقّع التحصيل على الجهة فوراً، ويضع الطرد في «بانتظار المرتجع». "
+        + "تنبيه: لا تعود البضاعة للمخزون ولا تُرجَع الفاتورة — ذلك يقع عند الاستلام والفحص في الفرع.",
+      confirmText: "نعم، أعلنت الشركة رجوعه",
+    });
+    if (!ok) return;
+    declareReturn.mutate({
+      consignmentId: r.id,
+      reason,
+      ...(statementNumber ? { statementNumber } : {}),
+      clientRequestId: crypto.randomUUID(),
+    });
+  }
+
   async function askReturn(r: { id: number; consignmentNumber: string | null; parcelStatus: string | null }) {
     const needsReason = r.parcelStatus === "ACCEPTED" || r.parcelStatus === "PICKED_UP" || r.parcelStatus === "OUT_FOR_DELIVERY";
     const reason = needsReason
@@ -314,11 +350,15 @@ function InTransitTab() {
    * ولم يصل الفرع بعد — **لا حركة مخزون ولا عكس فاتورة حتى يُستلَم ويُفحَص فعلاً**. هذا الفلتر
    * يجعل تلك القائمة قابلةً للعثور بدل أن تضيع بين الطرود السائرة.
    */
-  const [stateFilter, setStateFilter] = useState<"ALL" | "ASSIGNED" | "IN_TRANSIT" | "FAILED">("ALL");
+  const [stateFilter, setStateFilter] = useState<"ALL" | "ASSIGNED" | "IN_TRANSIT" | "FAILED" | "RETURN_DECLARED">("ALL");
   const filtered = useMemo(() => {
     const all = rows.data ?? [];
     if (stateFilter === "ALL") return all;
-    return all.filter((r) => deriveWoDeliveryState("DISPATCHED", r.parcelStatus) === stateFilter);
+    // «رجوعٌ مُعلَن» بُعدٌ مستقلٌّ عن `parcelStatus` عمداً (لا قيمةَ enum جديدة تُعمي الحرّاس)،
+    // ولذلك يُرشَّح بعمودِه لا بالحالة المشتقّة.
+    if (stateFilter === "RETURN_DECLARED") return all.filter((r) => r.returnDeclaredAt != null);
+    return all.filter((r) => r.returnDeclaredAt == null
+      && deriveWoDeliveryState("DISPATCHED", r.parcelStatus) === stateFilter);
   }, [rows.data, stateFilter]);
 
   const list = useMemo(() => {
@@ -330,7 +370,8 @@ function InTransitTab() {
   }, [filtered, query]);
 
   const countOf = (s: "ASSIGNED" | "IN_TRANSIT" | "FAILED") =>
-    (rows.data ?? []).filter((r) => deriveWoDeliveryState("DISPATCHED", r.parcelStatus) === s).length;
+    (rows.data ?? []).filter((r) => r.returnDeclaredAt == null
+      && deriveWoDeliveryState("DISPATCHED", r.parcelStatus) === s).length;
 
   const totalDue = useMemo(
     () => (rows.data ?? []).reduce((sum, r) => sum + Number(r.codDue || 0), 0),
@@ -347,7 +388,12 @@ function InTransitTab() {
             { v: "ALL", label: "الكل", n: (rows.data ?? []).length },
             { v: "ASSIGNED", label: "مُسنَد — لم يخرج", n: countOf("ASSIGNED") },
             { v: "IN_TRANSIT", label: "بالطريق", n: countOf("IN_TRANSIT") },
-            { v: "FAILED", label: "بانتظار المرتجع", n: countOf("FAILED") },
+            { v: "FAILED", label: "تعذّر التسليم", n: countOf("FAILED") },
+            {
+              v: "RETURN_DECLARED",
+              label: "بانتظار المرتجع",
+              n: (rows.data ?? []).filter((r) => r.returnDeclaredAt != null).length,
+            },
           ] as const).map((c) => (
             <button
               key={c.v}
@@ -465,14 +511,29 @@ function InTransitTab() {
                             </Button>
                           </>
                         )}
+                        {/* الإعلانُ يسبق الاستلام: يُخفى بعد تسجيله فلا يُعلَن الطردُ مرّتين. */}
+                        {r.returnDeclaredAt == null && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title="الشركة أعلنت رجوعه ولم يصل بعد — يُغلق توقّع التحصيل وحده"
+                            disabled={declareReturn.isPending}
+                            onClick={() => void askDeclareReturn(r)}
+                          >
+                            <Undo2 aria-hidden className="size-3.5" /> إعلان رجوع
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="outline"
-                          title="رجع الطرد للمكتبة — عكسٌ كامل للبيع"
+                          title={r.returnDeclaredAt != null
+                            ? "وصل الطرد وفُحص — أكمل العكس الكامل"
+                            : "رجع الطرد للمكتبة — عكسٌ كامل للبيع"}
                           disabled={returnCn.isPending}
                           onClick={() => void askReturn(r)}
                         >
-                          <RotateCcw aria-hidden className="size-3.5" /> استرجاع
+                          <RotateCcw aria-hidden className="size-3.5" />
+                          {r.returnDeclaredAt != null ? "استلمتُه — أكمل" : "استرجاع"}
                         </Button>
                         <Button size="sm" variant="outline" asChild title="فتح جهة التوصيل وتسويتها">
                           <a href={`/delivery/parties/${r.partyId}`}>الجهة</a>
