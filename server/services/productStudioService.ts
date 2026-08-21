@@ -1572,36 +1572,56 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
   return { createdCount };
 }
 
-/** سقفُ مسحٍ للمصالحة — الأحدث أوّلاً، فالمهمّة المنسيّة حديثاً أمسُّ. */
-const ASSIGNMENT_RECONCILE_SCAN_LIMIT = 500;
+/** سقفُ **العمل** لا سقفُ الرؤية: الاستعلام يُرجع الناقص وحده، فالحدّ يقصّ ما يُنشأ في النبضة. */
+const ASSIGNMENT_RECONCILE_CREATE_LIMIT = 200;
 
 /**
- * **مصالحةُ إشعارات الإسناد**: تُنشئ ما فُقد منها، بلا جدولٍ جديد ولا عاملٍ جديد.
+ * مهلةُ سماحٍ قبل اعتبار الإشعار مفقوداً — تمنع سباق المصالحة مع المُرسِل المباشر.
+ * بدونها قد تُدرج النبضةُ إشعاراً ثانياً لإسنادٍ وقع قبل ثوانٍ ولمّا يكتمل إرسالُه.
+ */
+const ASSIGNMENT_RECONCILE_GRACE_MS = 10 * 60_000;
+
+/**
+ * **مصالحةُ إشعار الإسناد**: تُنشئ ما فُقد منه، بلا جدولٍ جديد ولا عاملٍ جديد.
  *
- * **العطب الذي تُغلقه:** `notifyStudioAssignment` و`notifyStudioRejection` تُستدعيان **بعد**
- * إغلاق المعاملة، وتبتلعان أيّ فشلٍ بتحذيرٍ في السجلّ. فانقطاعُ قاعدةٍ لحظيّ أو قفلٌ متزاحم
- * يعني: **مهمّةٌ مُسنَدةٌ وموظّفٌ لا يعلم بها أبداً** — ولا أثرَ يقول إنّ الإشعار ضاع، ولا
- * إعادةَ محاولة. وخطورتُه ازدادت بعد ٢٠/٨: بطاقةُ الإشعار صارت المدخلَ الذي يفتح به المصوّر
- * مهمّته، فضياعُها يعني عملاً مُسنَداً بلا بابٍ إليه.
+ * **العطب:** `notifyStudioAssignment` تُستدعى **بعد** إغلاق المعاملة وتبتلع أيّ فشلٍ
+ * بتحذير. فانقطاعٌ لحظيّ ⇒ مهمّةٌ مُسنَدةٌ وموظّفٌ لا يعلم بها أبداً، بلا أثرٍ وبلا إعادة
+ * محاولة. وخطورتُه تضاعفت بعد #683: بطاقةُ الإشعار صارت مدخلَ المصوّر إلى مهمّته.
  *
- * **لماذا مصالحةٌ لا صندوقُ صادرٍ (outbox):** الصندوق يلزمه جدولٌ وهجرةٌ وعاملُ تسليمٍ
- * وسياسةُ إعادةِ محاولةٍ وحلُّ تكرار. وهنا **الحالة المرغوبة مشتقّةٌ من الحقائق أصلاً**:
- * لكل مهمّةٍ مُسنَدةٍ حيّة إشعارٌ مفتاحُه حتميّ. فالمسح يُعيد بناء المفاتيح المتوقَّعة ويُدرج
- * الناقص — و`eventKey` الفريد يجعل العملية **idempotent بالبناء** لا بالاتفاق. أثرٌ أقلّ،
- * وتصحيحٌ **بأثرٍ رجعيّ** يشمل ما ضاع قبل كتابة هذا الكود.
+ * ثلاثةُ قيودٍ هنا **كلٌّ منها أمسكته مراجعةُ Codex على النسخة الأولى**، وبدونها تُنتج
+ * الميزةُ عكسَ غرضها — إشعاراتٌ زائفةٌ تُدرّب الموظّف على تجاهل الإشعارات كلّها:
  *
- * تحترم نفس شرط المستلِم (`isRoutineStudioRecipient`) — فلا تُغرق مديراً استثناه التصميم.
+ * **١) الوجودُ يُقاس بالكيان لا بمفتاح الحدث.** المفتاح يحمل `revision`، و`saveStudioDraft`
+ * و`updateStudioTaskSchedule` **يرفعان `revision`** بلا إسنادٍ جديد ⇒ كل حفظِ مسودةٍ كان
+ * يُولّد مفتاحاً جديداً لا يُوجَد، فتُنشئ المصالحة إشعار «مهمة جديدة» **بعد كل تعديل**.
+ * الآن السؤال: «هل لهذا الموظّف إشعارٌ عن هذه المهمّة أصلاً؟» — سؤالٌ لا يتأثّر بالتنقيح
+ * ولا بتغيّر صيغة المفاتيح لاحقاً.
+ *
+ * **٢) المسحُ الذاتيّ ليس إسناداً.** `claimStudioProductByBarcode` يضع
+ * `assignedBy = assignedTo` **ولا يُشعر عمداً** — الماسح يعلم بما مسح. وبما أنّ المسح هو
+ * مسار العمل الأساسيّ في الحملات، كانت المصالحة ستُشعر كلّ مصوّرٍ بمنتجٍ مسحه بيده للتوّ،
+ * وتعُدّ ذلك «إصلاح فشل» في السجلّ. الشرط `assignedBy <> assignedTo` يفصلهما.
+ *
+ * **٣) لا تجويعَ للأقدم.** جلبُ أحدث ٥٠٠ ثمّ الترشيح يعني أنّ حملةً بآلاف المهام تُبقي
+ * النبضةَ تفحص الصفوف الحديثة نفسها أبداً، فلا يُصلَح القديمُ قطّ — وهو نقضٌ للوعد
+ * بالتصحيح الرجعيّ. الاستعلام الآن **يُرجع الناقص وحده** (`NOT EXISTS`)، فالسقف يقصّ
+ * العمل لا الرؤية، والنبضة التالية تلتقط ما تبقّى.
+ *
+ * **نطاقُها إشعارُ الإسناد وحده** — لا الرفض: مفتاح الرفض يحمل `revision` بدوره، ومهمّةٌ
+ * مرفوضةٌ يحفظ صاحبُها مسودّتها ترفعه، فمصالحتُه بنفس المنطق تُعيد إنتاج العطب ١. والمهمّة
+ * المرفوضة تظهر لصاحبها في طابوره على كلّ حال.
  */
 export async function reconcileStudioAssignmentNotifications(
   actor: ProductStudioActor,
-  limit = ASSIGNMENT_RECONCILE_SCAN_LIMIT,
-): Promise<{ createdCount: number; scanned: number }> {
+  now = new Date(),
+  limit = ASSIGNMENT_RECONCILE_CREATE_LIMIT,
+): Promise<{ createdCount: number; missing: number }> {
   if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
   const branchScope = canCrossBranches(actor) ? undefined : eq(productImageJobs.branchId, Number(actor.branchId));
-  const jobs = await requireDb()
+  const cutoff = new Date(now.getTime() - ASSIGNMENT_RECONCILE_GRACE_MS);
+  const missing = await requireDb()
     .select({
       id: productImageJobs.id,
-      status: productImageJobs.status,
       assignedTo: productImageJobs.assignedTo,
       revision: productImageJobs.revision,
       assigneeRole: users.role,
@@ -1611,51 +1631,33 @@ export async function reconcileStudioAssignmentNotifications(
     .where(
       and(
         branchScope,
-        isNotNull(productImageJobs.assignedTo),
         eq(users.isActive, true),
-        // الحالات التي **ينتظر فيها الموظّفُ فعلاً**: مُسنَدة، أو جارية، أو مُعادةٌ للتعديل.
-        // المعتمَدة والمُلغاة لا تنتظر أحداً، وPENDING_REVIEW بيد المدير لا المصوّر.
+        // الحالات التي ينتظر فيها الموظّفُ فعلاً. المعتمَدة والمُلغاة لا تنتظر أحداً،
+        // وPENDING_REVIEW بيد المدير لا المصوّر.
         inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "REJECTED"]),
+        // إسنادٌ من غيره — لا مسحٌ ذاتيّ (القيد ٢ أعلاه).
+        isNotNull(productImageJobs.assignedBy),
+        sql`${productImageJobs.assignedBy} <> ${productImageJobs.assignedTo}`,
+        // مهلةُ سماحٍ: لا نسابق المُرسِل المباشر.
+        isNotNull(productImageJobs.assignedAt),
+        lte(productImageJobs.assignedAt, cutoff),
+        // القيد ١: أيّ إشعارٍ لهذا الموظّف عن هذه المهمّة يكفي — بأيّ مفتاحٍ وأيّ تنقيح.
+        sql`not exists (select 1 from ${appNotifications} n where n.userId = ${productImageJobs.assignedTo} and n.entityType = 'productImageJob' and n.entityId = ${productImageJobs.id})`,
       ),
     )
     .orderBy(desc(productImageJobs.id))
-    .limit(Math.max(1, Math.min(limit, ASSIGNMENT_RECONCILE_SCAN_LIMIT)));
-
-  const expected = jobs
-    .filter((job) => isRoutineStudioRecipient(job.assigneeRole))
-    .map((job) => ({
-      job,
-      eventKey:
-        job.status === "REJECTED"
-          ? studioRejectedEventKey(Number(job.id), Number(job.revision))
-          : studioAssignedEventKey(Number(job.id), Number(job.assignedTo), Number(job.revision)),
-    }));
-  if (expected.length === 0) return { createdCount: 0, scanned: jobs.length };
-
-  // استعلامٌ واحد لكل المفاتيح: المصالحة تمرّ على كل نبضةٍ للعامل، فقراءةُ صفٍّ لكل مهمّة
-  // كانت ستُحوّل حارساً رخيصاً إلى حِملٍ دائم.
-  const present = new Set(
-    (
-      await requireDb()
-        .select({ eventKey: appNotifications.eventKey })
-        .from(appNotifications)
-        .where(inArray(appNotifications.eventKey, expected.map((row) => row.eventKey)))
-    ).map((row) => row.eventKey),
-  );
+    .limit(Math.max(1, Math.min(limit, ASSIGNMENT_RECONCILE_CREATE_LIMIT)));
 
   let createdCount = 0;
-  for (const { job, eventKey } of expected) {
-    if (present.has(eventKey)) continue;
-    const rejected = job.status === "REJECTED";
+  for (const job of missing) {
+    if (!isRoutineStudioRecipient(job.assigneeRole)) continue;
     const result = await createAppNotification({
       userId: Number(job.assignedTo),
       kind: "TASK_ASSIGNED",
-      title: rejected ? "مهمة استوديو تحتاج تعديلاً" : "مهمة جديدة في استوديو المنتجات",
-      body: rejected
-        ? `أُعيدت مهمة الاستوديو رقم ${job.id} للتعديل.`
-        : `أُسندت إليك مهمة الاستوديو رقم ${job.id}.`,
+      title: "مهمة جديدة في استوديو المنتجات",
+      body: `أُسندت إليك مهمة الاستوديو رقم ${job.id}.`,
       route: `/catalog/image-studio?task=${job.id}`,
-      eventKey,
+      eventKey: studioAssignedEventKey(Number(job.id), Number(job.assignedTo), Number(job.revision)),
       entityType: "productImageJob",
       entityId: Number(job.id),
       requiresAction: true,
@@ -1663,11 +1665,11 @@ export async function reconcileStudioAssignmentNotifications(
     if (result.created) createdCount++;
   }
   if (createdCount > 0) {
-    // يُسجَّل صراحةً: تكرارُه المستمرّ يعني أنّ مسار الإرسال المباشر يفشل بانتظام،
-    // والمصالحة تستر العطب بدل أن تكشفه.
-    logger.warn({ createdCount, scanned: jobs.length }, "productStudio.notifications.reconciled_missing");
+    // تحذيرٌ عمداً: تكرارُه يعني أنّ المُرسِل المباشر يفشل بانتظام، والمصالحة تستر العطب
+    // بدل أن تكشفه. وبعد القيدين ١ و٢ صار السجلّ يدلّ على فشلٍ حقيقيّ لا على عملٍ عاديّ.
+    logger.warn({ createdCount, missing: missing.length }, "productStudio.notifications.reconciled_missing");
   }
-  return { createdCount, scanned: jobs.length };
+  return { createdCount, missing: missing.length };
 }
 
 export async function getStudioDashboard(actor: ProductStudioActor, now = new Date()) {
