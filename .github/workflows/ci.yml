@@ -192,6 +192,10 @@ jobs:
         run: pnpm check:branch
       - name: حارِس سجل الهجرات وترقيمها
         run: pnpm check:migrations
+      # قاعدةُ الاختبار تُبنى بـdb:push من schema.ts، وملفّاتُ SQL لا تُنفَّذ قطّ قبل الإنتاج
+      # (CLAUDE.md §٤-ج) ⇒ اسمُ عمودٍ يخالف ما أنشأته الهجرة يمرّ أخضرَ ويسقط على الإنتاج وحده.
+      - name: حارِس انحراف أسماء الأعمدة بين schema.ts والهجرات
+        run: pnpm check:schema-drift
       - name: حارِس الإجراءات اليتيمة (DoD)
         run: pnpm check:orphans
       - name: حارِس حدود اليوم المحلية (TZ #٧)

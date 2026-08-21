@@ -2021,7 +2021,7 @@ export const loyaltyPrograms = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 120 }).notNull(),
-    status: mysqlEnum("loyaltyProgramStatus", ["DRAFT", "ACTIVE", "PAUSED"]).default("DRAFT").notNull(),
+    status: mysqlEnum("status", ["DRAFT", "ACTIVE", "PAUSED"]).default("DRAFT").notNull(),
     /** نقاط لكل دينار عراقي؛ Decimal يمنع تراكم خطأ floating point في القيمة التسويقية. */
     pointsPerIqd: decimal("pointsPerIqd", { precision: 16, scale: 6 }).default("0").notNull(),
     /** قيمة الخصم بالدينار لكل نقطة عند الاستبدال. */
@@ -2058,7 +2058,7 @@ export const loyaltyLedgerEntries = mysqlTable(
     accountId: bigint("accountId", { mode: "number" }).notNull().references(() => loyaltyAccounts.id),
     customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
     onlineOrderId: bigint("onlineOrderId", { mode: "number" }),
-    entryType: mysqlEnum("loyaltyEntryType", ["ORDER_EARN", "ORDER_REVERSE", "REDEEM", "ADJUSTMENT", "EXPIRE"]).notNull(),
+    entryType: mysqlEnum("entryType", ["ORDER_EARN", "ORDER_REVERSE", "REDEEM", "ADJUSTMENT", "EXPIRE"]).notNull(),
     pointsDelta: decimal("pointsDelta", { precision: 18, scale: 2 }).notNull(),
     balanceAfter: decimal("balanceAfter", { precision: 18, scale: 2 }).notNull(),
     note: varchar("note", { length: 255 }),
@@ -3859,10 +3859,10 @@ export const purchaseReturns = mysqlTable(
       () => accountingEntries.id,
       { onDelete: "set null" },
     ),
-    settlement: mysqlEnum("purchaseReturnSettlement", ["CREDIT", "CASH"])
+    settlement: mysqlEnum("settlement", ["CREDIT", "CASH"])
       .default("CREDIT")
       .notNull(),
-    paymentMethod: mysqlEnum("purchaseReturnPaymentMethod", [
+    paymentMethod: mysqlEnum("paymentMethod", [
       "CASH",
       "CARD",
       "CHECK",
@@ -4419,8 +4419,8 @@ export const documentPrintEvents = mysqlTable(
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     actorUserId: int("actorUserId").notNull().references(() => users.id),
     actorNameSnapshot: varchar("actorNameSnapshot", { length: 255 }).notNull(),
-    channel: mysqlEnum("documentPrintChannel", ["BROWSER", "PDF", "THERMAL", "SERVER_BRIDGE"]).notNull(),
-    outcome: mysqlEnum("documentPrintOutcome", ["REQUESTED", "DIALOG_OPENED", "DISPATCHED", "FAILED"]).notNull(),
+    channel: mysqlEnum("channel", ["BROWSER", "PDF", "THERMAL", "SERVER_BRIDGE"]).notNull(),
+    outcome: mysqlEnum("outcome", ["REQUESTED", "DIALOG_OPENED", "DISPATCHED", "FAILED"]).notNull(),
     copies: int("copies").default(1).notNull(),
     failureCode: varchar("failureCode", { length: 80 }),
     reprintOfRequestId: varchar("reprintOfRequestId", { length: 80 }),
@@ -11005,7 +11005,7 @@ export const monthCloseRequests = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     month: varchar("month", { length: 7 }).notNull(),
-    status: mysqlEnum("monthCloseStatus", [
+    status: mysqlEnum("status", [
       "PENDING_APPROVAL",
       "APPROVED",
       "REJECTED",
