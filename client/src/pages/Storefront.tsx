@@ -1072,6 +1072,10 @@ export default function Storefront() {
   const [customizationDraft, setCustomizationDraft] = useState<StorefrontCustomization>({ kind: "PRINT" });
   const [panel, setPanel] = useState<Panel>(null);
   const [cart, setCart] = useState<Map<string, CartLine>>(loadCart);
+  const cartRecommendationProductIds = useMemo(
+    () => Array.from(cart.values()).map((line) => line.productId).slice(0, 24),
+    [cart],
+  );
 
   const [form, setForm] = useState<CheckoutForm>(loadForm);
   const cartRef = useRef(cart);
@@ -1183,6 +1187,14 @@ export default function Storefront() {
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const labelQ = trpc.storefront.labelSummary.useQuery(labelParams ?? { orderNumber: "-", token: "-" }, { enabled: labelParams != null, retry: false });
   const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
+  const cartRecommendationsQ = trpc.storefront.cartRecommendations.useQuery(
+    { productIds: cartRecommendationProductIds },
+    {
+      enabled: panel === "cart" && cartRecommendationProductIds.length > 0,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    },
+  );
   const trackConversion = trpc.storefront.trackConversion.useMutation();
 
   // كل فتح متعمد لتفاصيل منتج = مشاهدة؛ لا نرسل اسم المنتج أو هويّة/جلسة الزائر.
@@ -2136,6 +2148,18 @@ export default function Storefront() {
                   </div>
                 ))}
               </div>
+              {cartRecommendationsQ.data && cartRecommendationsQ.data.length > 0 && (
+                <div className="mt-5 rounded-2xl bg-[#fff8df] px-3 py-3 ring-1 ring-[#f0d991]">
+                  <ProductRow
+                    title="أكمل تجهيزك"
+                    icon={<Tag aria-hidden className="size-4 text-[#c58d22]" />}
+                    products={cartRecommendationsQ.data}
+                    onSelect={setSelectedId}
+                    onAdd={addFeaturedToCart}
+                    recentlyAddedId={recentlyAddedProductId}
+                  />
+                </div>
+              )}
               <div className="mt-4 rounded-xl bg-white p-3.5 text-sm ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                 <div className="flex justify-between text-slate-500">
                   <span>المجموع الفرعي</span>

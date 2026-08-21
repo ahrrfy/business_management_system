@@ -37,6 +37,7 @@ import { ImportModal, LabelPrintModal } from "@/components/product/variantModals
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import BundleRecipeCard from "@/components/product/BundleRecipeCard";
 import { ProductCustomizationTemplateEditor } from "@/components/product/ProductCustomizationTemplateEditor";
+import { ProductRelatedProductsEditor } from "@/components/product/ProductRelatedProductsEditor";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import {
@@ -654,6 +655,10 @@ export default function ProductEdit() {
 
       <div className="mt-4">
         <ProductCustomizationTemplateEditor productId={productId} enabled={isCustomizable} />
+      </div>
+
+      <div className="mt-4">
+        <ProductRelatedProductsEditor productId={productId} />
       </div>
 
       {/* قالب الوحدات */}
