@@ -1,5 +1,6 @@
 // راوتر التحويلات النقدية بين الفروع. managerProcedure (تأثير مالي مباشر).
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -54,7 +55,11 @@ export const cashTransfersRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إرسال التحويل" });
+          failOpaque(e, {
+            op: "cashTransfers.send",
+            userMessage: "تعذّر إرسال التحويل",
+            context: { userId: ctx.user.id, amount: input.amount },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إرسال التحويل (تكرار)" });

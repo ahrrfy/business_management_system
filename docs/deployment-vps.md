@@ -469,10 +469,46 @@ rolling reload. لذلك فحتى انقطاع العملية عند حدّ ال
 > عامل الجسر يبدأ دائماً fresh لأن `startOrReload --update-env` يدمج المفاتيح القديمة. تعريف الإصدار يصفّر البيئة الموروثة ثم يعيد allowlist فقط، والـbootstrap يحذف أي مفتاح زائد **قبل** تحميل كود العامل. البوابة تدقق `pm2_env.env` الفعلية من دون طباعة الأسماء أو القيم.
 
 **بعد النجاح — تحقّق حيّ فوريّ:** بوابة المرحلة ١٠ تكون قد أثبتت أن كلا المضيفين يعيدان صفحة
-المتجر وإعداداته وفئاته ومنتجاته بأعداد غير صفرية. لفحص حالة الطباعة أيضاً:
+المتجر وإعداداته وفئاته ومنتجاته بأعداد غير صفرية. افصل فحص الصحة العام عن فحص جسر الطباعة
+المحمي بالجلسة:
 
 ```bash
-curl -sf https://srv1548487.hstgr.cloud/api/print/status || pm2 logs erp-server --lines 20
+(
+  set -euo pipefail
+  erp_origin='https://srv1548487.hstgr.cloud'
+
+  # الصحة العامة: يجب أن تنجح بلا جلسة.
+  curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+    "$erp_origin/healthz"
+
+  # حائط المصادقة: 401 بلا كوكي هو السلوك الأمني الصحيح، وليس نجاحاً للطباعة.
+  unauth_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 5 --max-time 15 "$erp_origin/api/print/status")"
+  test "$unauth_code" = '401' || {
+    printf 'expected 401 without a session, got %s\n' "$unauth_code" >&2
+    exit 1
+  }
+
+  # المتغير يحمل مسار ملف cookie-jar فقط؛ جهّزه من جلسة مسجّلة عبر قناة آمنة.
+  # لا تضع قيمة app_session_id في الأمر أو history، ولا تحفظ الملف داخل المستودع.
+  : "${PRINT_SESSION_COOKIE_JAR:?set it to a private cookie-jar path}"
+  test -f "$PRINT_SESSION_COOKIE_JAR" && test ! -L "$PRINT_SESSION_COOKIE_JAR"
+  test "$(stat -c '%u' -- "$PRINT_SESSION_COOKIE_JAR")" = "$(id -u)"
+  test "$(stat -c '%a' -- "$PRINT_SESSION_COOKIE_JAR")" = '600'
+
+  # هذا هو فحص حالة الجسر الفعلي: يجب أن يعيد 200 وJSON الجسر من جلسة صالحة.
+  curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+    --cookie "$PRINT_SESSION_COOKIE_JAR" "$erp_origin/api/print/status"
+)
+```
+
+اجعل ملف الـcookie-jar مؤقتاً تحت مجلد المستخدم الخاص (مثل `/run/user/$(id -u)`) وبوضع `0600`،
+ثم احذفه بعد الفحص. نجاح `status` يثبت قراءة إعداد الجسر ولا يرسل ورقة اختبار. وإن تعذّر تجهيز
+جلسة، افحص آخر السجل للـERP فقط كبديل تشخيصي محدود وغير متدفق؛ لا تعدّه بديلاً عن فحص الحالة
+الموثق ولا دليلاً على طباعة فعلية:
+
+```bash
+pm2 logs erp-server --lines 20 --nostream
 ```
 
 > ⚠️ **خادمٌ مشترك (سراج/أودو خطّ أحمر):** `prod:deploy` لا يمسّ إلّا حزمة ERP وقاعدتها؛ لا `reboot` ولا `ufw` ولا تغيير توقيتٍ بلا موافقة المالك (§٦ + ذاكرة قيود VPS).

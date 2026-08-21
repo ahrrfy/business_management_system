@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
-import { auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { appNotifications, auditLogs, categories, productImageObjectStaging, productImageJobs, productImages, productStudioCampaignAssignees, productStudioCampaignProducts, productStudioCampaigns, productUnitBarcodes, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import type { PermissionMap } from "@shared/permissions";
 import { hasModuleAccess, resolvePermissions } from "@shared/permissions";
 import { ARABIC_FOLD_PAIRS, normalizeSearchText } from "@shared/searchNormalize";
@@ -264,6 +264,87 @@ function fittedThumbnailDimensions(width: number, height: number): { width: numb
  * يفك base64 فعلياً ويتحقق من WebP/RIFF والأبعاد والحجم، ثم يربط أبعاد المصغرة بالمرشح.
  * لا نثق ببادئة MIME وحدها ولا نقبل SVG/GIF/PNG في شبكة العرض الاحتياطية.
  */
+/**
+ * هل هذه بايتات WebP **كاملةٌ لصورةٍ ساكنةٍ واحدة**؟ يمشي على مقاطع RIFF بدل افتراض شكلٍ بعينه.
+ *
+ * **العطب الذي أغلقه (٢٠/٨، جولةٌ حيّة):** الفحص السابق كان يشترط **مقطعاً واحداً** بترويسة
+ * `VP8 ` أو `VP8L`. لكنّ Chromium الحديث يُخرج من `canvas.toDataURL("image/webp")` حاوية
+ * **`VP8X`** يتبعها **`ICCP`** (ملفّ ألوان sRGB يُضمّنه المتصفّح) ثمّ `VP8 ` — ثلاثةُ مقاطع.
+ * فكان الخادم يرفض **كل** مصغّرةٍ يُنتجها Chrome/Edge برسالة «بنية/إطار مصغّرة WebP غير
+ * مكتمل»، والمصوّر يُمنع من الإرسال. أثبتَته جولةٌ حيّة: `chunks = [VP8X 10, ICCP 456, VP8  50]`.
+ * (ولاحظ أنّ `parseImageDimensions` كان يفكّ `VP8X` أصلاً — فالرافض والقارئ كانا مختلفَين
+ * في فهم الصيغة نفسها داخل الملفّ الواحد.)
+ *
+ * والمشي على المقاطع **أدقّ** من الفحص القديم لا أرخى: يرفض الملفّ المبتور وذيلَ البايتات
+ * الزائد ويرفض المتحرّك (`ANIM`/`ANMF`) — والمصغّرة إطارٌ ساكنٌ واحدٌ بحكم التعريف — ويشترط
+ * مقطعَ صورةٍ واحداً بالضبط.
+ */
+export function isCompleteStillWebp(bytes: Buffer): boolean {
+  return locateStillWebpFrame(bytes) !== null;
+}
+
+/**
+ * يحدّد **إطار الصورة الوحيد** داخل ملفّ WebP كامل، ويعيد أبعاده المقروءة **من الإطار نفسه**.
+ * يعيد `null` لأيّ ملفٍّ ناقصٍ أو مُتلاعَبٍ به أو متحرّك.
+ *
+ * لماذا المشي على المقاطع: الفحص السابق كان يشترط **مقطعاً واحداً** بترويسة `VP8 `/`VP8L`،
+ * وChromium يُخرج `[VP8X, ICCP, VP8 ]` (يُضمّن ملفّ ألوان sRGB) ⇒ **كل مصغّرةٍ ينتجها
+ * Chrome/Edge مرفوضة** والمصوّر ممنوعٌ من التسليم (جولةٌ حيّة ٢٠/٨).
+ *
+ * ⚠️ ولماذا يُفحص **حِمل** الإطار لا اسمُ مقطعه فقط (أمسكه Codex على أوّل نسخةٍ من هذا
+ * الإصلاح): المشي وحده يقبل مقطعاً اسمه `VP8 ` وحمولتُه أصفارٌ — ملفٌّ لا يُفكّ ترميزه —
+ * بينما `parseImageDimensions` يصدّق أبعاد ترويسة `VP8X` **غير المَمسوسة**، فيُخزَّن
+ * ويُنشَر «مرشّحٌ» لا يعرضه أيّ متصفّح. الفحص القديم كان يحرس هذا بترويسة الإطار، وإسقاطُه
+ * انحدارٌ لا تبسيط.
+ *
+ * **والأبعاد تُقرأ من الإطار لا من ترويسة `VP8X`:** الترويسة تصريحٌ يكتبه المُنتِج والإطار
+ * هو الصورة فعلاً، فحين يختلفان تُصدَّق الصورة. وبها تبقى مطابقةُ أبعاد المرشّح صادقة.
+ */
+export function locateStillWebpFrame(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length < 20) return null;
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP") return null;
+  // حجم RIFF يجب أن يصف الملفّ كلّه: يمنع البتر والذيل الزائد معاً.
+  if (bytes.readUInt32LE(4) + 8 !== bytes.length) return null;
+  let offset = 12;
+  let frame: { fourcc: string; at: number; size: number } | null = null;
+  let frames = 0;
+  let animated = false;
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.toString("ascii", offset, offset + 4);
+    const size = bytes.readUInt32LE(offset + 4);
+    // حجمٌ يتجاوز ما تبقّى = ملفٌّ مبتورٌ أو مُتلاعَبٌ به.
+    if (size < 0 || offset + 8 + size > bytes.length) return null;
+    if (id === "VP8 " || id === "VP8L") {
+      frames++;
+      frame = { fourcc: id, at: offset + 8, size };
+    }
+    if (id === "ANIM" || id === "ANMF") animated = true;
+    offset += 8 + size + (size % 2); // حشوٌ إلى حدّ زوجيّ
+  }
+  // الوقوف عند النهاية بالضبط: أيّ بايتٍ زائدٍ أو ناقصٍ يُسقِط الملفّ.
+  if (offset !== bytes.length || frames !== 1 || animated || !frame) return null;
+
+  if (frame.fourcc === "VP8 ") {
+    // VP8 المضغوط: وسمُ إطارٍ ٣ بايتات، ثمّ رمز البدء 9D 01 2A، ثمّ العرض والارتفاع ١٤ بتّاً لكلٍّ.
+    if (frame.size < 10) return null;
+    const p = frame.at;
+    if (bytes[p + 3] !== 0x9d || bytes[p + 4] !== 0x01 || bytes[p + 5] !== 0x2a) return null;
+    return { width: bytes.readUInt16LE(p + 6) & 0x3fff, height: bytes.readUInt16LE(p + 8) & 0x3fff };
+  }
+  // VP8L (بلا فقد): توقيعٌ 0x2F ثمّ ١٤ بتّاً للعرض و١٤ للارتفاع (ناقصاً واحداً).
+  if (frame.size < 5) return null;
+  const p = frame.at;
+  if (bytes[p] !== 0x2f) return null;
+  const b1 = bytes[p + 1];
+  const b2 = bytes[p + 2];
+  const b3 = bytes[p + 3];
+  const b4 = bytes[p + 4];
+  return {
+    width: 1 + (b1 | ((b2 & 0x3f) << 8)),
+    height: 1 + (((b2 & 0xc0) >> 6) | (b3 << 2) | ((b4 & 0x0f) << 10)),
+  };
+}
+
 export function decodeStudioThumbnail(
   dataUrl: string,
   processed: { width: number | null; height: number | null },
@@ -274,23 +355,42 @@ export function decodeStudioThumbnail(
   height: number;
   hash: string;
 } {
-  if (!dataUrl.startsWith("data:image/webp;base64,")) {
+  // ٢٠/٨ (بلاغ إنتاج): كان WebP إلزامياً — و`canvas.toDataURL("image/webp")` غير مدعوم على
+  // Safari/iOS قبل ١٧، فكان المصوّر على iPhone يُمنع من الإرسال نهائياً بسبب **مشتقّ عرضٍ**
+  // لا علاقة له بجودة عمله ولا بسلامة المال. الاحتياطيّ JPEG لأنّ كل متصفّحٍ يرمّزه من
+  // canvas ويبقى تحت السقف. ⛔ التساهل في **الصيغة** لا في **التحقّق**: لكلٍّ فحصُ بنيةٍ
+  // كامل، ومطابقةُ الأبعاد للمرشّح تبقى الحارس المشترك أياً كانت الصيغة.
+  const isWebp = dataUrl.startsWith("data:image/webp;base64,");
+  const isJpeg = dataUrl.startsWith("data:image/jpeg;base64,");
+  if (!isWebp && !isJpeg) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "مصغّرة العرض يجب أن تكون WebP",
+      message: "مصغّرة العرض يجب أن تكون WebP أو JPEG",
     });
   }
   assertValidImageDataUrl(dataUrl, MAX_STUDIO_THUMBNAIL_BYTES, true, MAX_STUDIO_THUMBNAIL_DIMENSION);
   const bytes = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
-  const dimensions = parseImageDimensions(bytes, "image/webp");
-  const fourcc = bytes.length >= 20 ? bytes.toString("ascii", 12, 16) : "";
-  const chunkBytes = bytes.length >= 20 ? bytes.readUInt32LE(16) : -1;
-  const completeSingleChunk = chunkBytes >= 0 && 20 + chunkBytes + (chunkBytes % 2) === bytes.length;
-  const validFrameHeader = fourcc === "VP8 " ? bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a : fourcc === "VP8L" ? bytes.length >= 25 && bytes[20] === 0x2f : false;
-  if (bytes.length < 20 || bytes.readUInt32LE(4) + 8 !== bytes.length || !completeSingleChunk || !validFrameHeader || !dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > MAX_STUDIO_THUMBNAIL_DIMENSION || dimensions.height > MAX_STUDIO_THUMBNAIL_DIMENSION) {
+  // للـWebP تُقرأ الأبعاد **من إطار الصورة** لا من ترويسة `VP8X`: الترويسة تصريحٌ يكتبه
+  // المُنتِج، والإطار هو الصورة فعلاً — وعند اختلافهما تُصدَّق الصورة لا التصريح.
+  const frame = isWebp ? locateStillWebpFrame(bytes) : null;
+  const dimensions = isWebp ? frame : parseImageDimensions(bytes, "image/jpeg");
+  let structureOk: boolean;
+  if (isWebp) {
+    structureOk = frame !== null;
+  } else {
+    // JPEG: SOI في المقدّمة وEOI في الخاتمة ⇒ ملفٌّ كاملٌ غير مبتور، ومقطعُ SOF مقروءٌ
+    // (وإلّا رجع `dimensions` فارغاً فسقط الفحص أدناه).
+    structureOk =
+      bytes.length >= 4 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[bytes.length - 2] === 0xff &&
+      bytes[bytes.length - 1] === 0xd9;
+  }
+  if (!structureOk || !dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > MAX_STUDIO_THUMBNAIL_DIMENSION || dimensions.height > MAX_STUDIO_THUMBNAIL_DIMENSION) {
     throw new TRPCError({
       code: "BAD_REQUEST",
-      message: "بنية/إطار مصغّرة WebP غير مكتمل",
+      message: isWebp ? "بنية/إطار مصغّرة WebP غير مكتمل" : "بنية مصغّرة JPEG غير مكتملة",
     });
   }
   if (!processed.width || !processed.height) {
@@ -1472,6 +1572,106 @@ export async function sendStudioDueNotifications(actor: ProductStudioActor, now 
   return { createdCount };
 }
 
+/** سقفُ **العمل** لا سقفُ الرؤية: الاستعلام يُرجع الناقص وحده، فالحدّ يقصّ ما يُنشأ في النبضة. */
+const ASSIGNMENT_RECONCILE_CREATE_LIMIT = 200;
+
+/**
+ * مهلةُ سماحٍ قبل اعتبار الإشعار مفقوداً — تمنع سباق المصالحة مع المُرسِل المباشر.
+ * بدونها قد تُدرج النبضةُ إشعاراً ثانياً لإسنادٍ وقع قبل ثوانٍ ولمّا يكتمل إرسالُه.
+ */
+const ASSIGNMENT_RECONCILE_GRACE_MS = 10 * 60_000;
+
+/**
+ * **مصالحةُ إشعار الإسناد**: تُنشئ ما فُقد منه، بلا جدولٍ جديد ولا عاملٍ جديد.
+ *
+ * **العطب:** `notifyStudioAssignment` تُستدعى **بعد** إغلاق المعاملة وتبتلع أيّ فشلٍ
+ * بتحذير. فانقطاعٌ لحظيّ ⇒ مهمّةٌ مُسنَدةٌ وموظّفٌ لا يعلم بها أبداً، بلا أثرٍ وبلا إعادة
+ * محاولة. وخطورتُه تضاعفت بعد #683: بطاقةُ الإشعار صارت مدخلَ المصوّر إلى مهمّته.
+ *
+ * ثلاثةُ قيودٍ هنا **كلٌّ منها أمسكته مراجعةُ Codex على النسخة الأولى**، وبدونها تُنتج
+ * الميزةُ عكسَ غرضها — إشعاراتٌ زائفةٌ تُدرّب الموظّف على تجاهل الإشعارات كلّها:
+ *
+ * **١) الوجودُ يُقاس بالكيان لا بمفتاح الحدث.** المفتاح يحمل `revision`، و`saveStudioDraft`
+ * و`updateStudioTaskSchedule` **يرفعان `revision`** بلا إسنادٍ جديد ⇒ كل حفظِ مسودةٍ كان
+ * يُولّد مفتاحاً جديداً لا يُوجَد، فتُنشئ المصالحة إشعار «مهمة جديدة» **بعد كل تعديل**.
+ * الآن السؤال: «هل لهذا الموظّف إشعارٌ عن هذه المهمّة أصلاً؟» — سؤالٌ لا يتأثّر بالتنقيح
+ * ولا بتغيّر صيغة المفاتيح لاحقاً.
+ *
+ * **٢) المسحُ الذاتيّ ليس إسناداً.** `claimStudioProductByBarcode` يضع
+ * `assignedBy = assignedTo` **ولا يُشعر عمداً** — الماسح يعلم بما مسح. وبما أنّ المسح هو
+ * مسار العمل الأساسيّ في الحملات، كانت المصالحة ستُشعر كلّ مصوّرٍ بمنتجٍ مسحه بيده للتوّ،
+ * وتعُدّ ذلك «إصلاح فشل» في السجلّ. الشرط `assignedBy <> assignedTo` يفصلهما.
+ *
+ * **٣) لا تجويعَ للأقدم.** جلبُ أحدث ٥٠٠ ثمّ الترشيح يعني أنّ حملةً بآلاف المهام تُبقي
+ * النبضةَ تفحص الصفوف الحديثة نفسها أبداً، فلا يُصلَح القديمُ قطّ — وهو نقضٌ للوعد
+ * بالتصحيح الرجعيّ. الاستعلام الآن **يُرجع الناقص وحده** (`NOT EXISTS`)، فالسقف يقصّ
+ * العمل لا الرؤية، والنبضة التالية تلتقط ما تبقّى.
+ *
+ * **نطاقُها إشعارُ الإسناد وحده** — لا الرفض: مفتاح الرفض يحمل `revision` بدوره، ومهمّةٌ
+ * مرفوضةٌ يحفظ صاحبُها مسودّتها ترفعه، فمصالحتُه بنفس المنطق تُعيد إنتاج العطب ١. والمهمّة
+ * المرفوضة تظهر لصاحبها في طابوره على كلّ حال.
+ */
+export async function reconcileStudioAssignmentNotifications(
+  actor: ProductStudioActor,
+  now = new Date(),
+  limit = ASSIGNMENT_RECONCILE_CREATE_LIMIT,
+): Promise<{ createdCount: number; missing: number }> {
+  if (!isManager(actor)) throw new TRPCError({ code: "FORBIDDEN" });
+  const branchScope = canCrossBranches(actor) ? undefined : eq(productImageJobs.branchId, Number(actor.branchId));
+  const cutoff = new Date(now.getTime() - ASSIGNMENT_RECONCILE_GRACE_MS);
+  const missing = await requireDb()
+    .select({
+      id: productImageJobs.id,
+      assignedTo: productImageJobs.assignedTo,
+      revision: productImageJobs.revision,
+      assigneeRole: users.role,
+    })
+    .from(productImageJobs)
+    .innerJoin(users, eq(users.id, productImageJobs.assignedTo))
+    .where(
+      and(
+        branchScope,
+        eq(users.isActive, true),
+        // الحالات التي ينتظر فيها الموظّفُ فعلاً. المعتمَدة والمُلغاة لا تنتظر أحداً،
+        // وPENDING_REVIEW بيد المدير لا المصوّر.
+        inArray(productImageJobs.status, ["ASSIGNED", "IN_PROGRESS", "REJECTED"]),
+        // إسنادٌ من غيره — لا مسحٌ ذاتيّ (القيد ٢ أعلاه).
+        isNotNull(productImageJobs.assignedBy),
+        sql`${productImageJobs.assignedBy} <> ${productImageJobs.assignedTo}`,
+        // مهلةُ سماحٍ: لا نسابق المُرسِل المباشر.
+        isNotNull(productImageJobs.assignedAt),
+        lte(productImageJobs.assignedAt, cutoff),
+        // القيد ١: أيّ إشعارٍ لهذا الموظّف عن هذه المهمّة يكفي — بأيّ مفتاحٍ وأيّ تنقيح.
+        sql`not exists (select 1 from ${appNotifications} n where n.userId = ${productImageJobs.assignedTo} and n.entityType = 'productImageJob' and n.entityId = ${productImageJobs.id})`,
+      ),
+    )
+    .orderBy(desc(productImageJobs.id))
+    .limit(Math.max(1, Math.min(limit, ASSIGNMENT_RECONCILE_CREATE_LIMIT)));
+
+  let createdCount = 0;
+  for (const job of missing) {
+    if (!isRoutineStudioRecipient(job.assigneeRole)) continue;
+    const result = await createAppNotification({
+      userId: Number(job.assignedTo),
+      kind: "TASK_ASSIGNED",
+      title: "مهمة جديدة في استوديو المنتجات",
+      body: `أُسندت إليك مهمة الاستوديو رقم ${job.id}.`,
+      route: `/catalog/image-studio?task=${job.id}`,
+      eventKey: studioAssignedEventKey(Number(job.id), Number(job.assignedTo), Number(job.revision)),
+      entityType: "productImageJob",
+      entityId: Number(job.id),
+      requiresAction: true,
+    });
+    if (result.created) createdCount++;
+  }
+  if (createdCount > 0) {
+    // تحذيرٌ عمداً: تكرارُه يعني أنّ المُرسِل المباشر يفشل بانتظام، والمصالحة تستر العطب
+    // بدل أن تكشفه. وبعد القيدين ١ و٢ صار السجلّ يدلّ على فشلٍ حقيقيّ لا على عملٍ عاديّ.
+    logger.warn({ createdCount, missing: missing.length }, "productStudio.notifications.reconciled_missing");
+  }
+  return { createdCount, missing: missing.length };
+}
+
 export async function getStudioDashboard(actor: ProductStudioActor, now = new Date()) {
   // نطاق المنفّذ مهامُه هو، ونطاق المدير/المدقّق فرعُه. الفارق جوهريّ للقارئ: الأرقام
   // نفسها تحت العناوين نفسها تعني شيئين مختلفين، فتُعاد `scopeKind` كي تُسمّيها الشاشة
@@ -1967,6 +2167,22 @@ function isRoutineStudioRecipient(role: string | null | undefined): boolean {
  * تُعاد إليه لاحقاً. بمفتاحٍ بلا مراجعة كان الإشعار الثاني يُبتلَع بوصفه مكرَّراً
  * فلا يعلم الموظف أنّ المهمة عادت إليه — بخلاف مفتاح الرفض الذي يحملها أصلاً.
  */
+/**
+ * مفاتيح أحداث إشعارات الاستوديو — **مصدرُ اشتقاقٍ واحد** يستعمله المُرسِل والمُصالِح معاً.
+ *
+ * كانت السلاسل مكتوبةً في موضع الإرسال وحده. ولمّا صار للمصالحة (أدناه) أن تُعيد بناء
+ * المفتاح نفسه، فأيّ اختلاف حرفٍ بينهما يجعلها تُعيد إنشاء إشعارٍ موجودٍ أبداً — أو تظنّ
+ * المفقودَ موجوداً فلا تُصلحه. الاشتقاق من دالّةٍ واحدة يجعل الانحراف مستحيلاً لا مستبعَداً.
+ * و`appNotifications.eventKey` **فريدٌ**، فإعادة الإدراج تُرجع `created:false` بلا ضرر.
+ */
+function studioAssignedEventKey(taskId: number, assigneeId: number, revision: number): string {
+  return `product-studio:${taskId}:assigned:${assigneeId}:r${revision}`;
+}
+
+function studioRejectedEventKey(taskId: number, revision: number): string {
+  return `product-studio:${taskId}:rejected:r${revision}`;
+}
+
 async function notifyStudioAssignment(taskId: number, assigneeId: number, assigneeRole: string, revision: number): Promise<void> {
   if (!isRoutineStudioRecipient(assigneeRole)) return;
   try {
@@ -1976,7 +2192,7 @@ async function notifyStudioAssignment(taskId: number, assigneeId: number, assign
       title: "مهمة جديدة في استوديو المنتجات",
       body: `أُسندت إليك مهمة الاستوديو رقم ${taskId}.`,
       route: `/catalog/image-studio?task=${taskId}`,
-      eventKey: `product-studio:${taskId}:assigned:${assigneeId}:r${revision}`,
+      eventKey: studioAssignedEventKey(taskId, assigneeId, revision),
       entityType: "productImageJob",
       entityId: taskId,
       requiresAction: true,
@@ -1995,7 +2211,7 @@ async function notifyStudioRejection(taskId: number, assigneeId: number, revisio
       title: "مهمة استوديو تحتاج تعديلاً",
       body: `أُعيدت مهمة الاستوديو رقم ${taskId} للتعديل.`,
       route: `/catalog/image-studio?task=${taskId}`,
-      eventKey: `product-studio:${taskId}:rejected:r${revision}`,
+      eventKey: studioRejectedEventKey(taskId, revision),
       entityType: "productImageJob",
       entityId: taskId,
       requiresAction: true,

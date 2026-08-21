@@ -4,6 +4,7 @@ import { logger } from "../logger";
 import { runAcrossActiveTenants } from "../tenancy/backgroundTenants";
 import { getCurrentCompanyId } from "../tenancy/context";
 import {
+  reconcileStudioAssignmentNotifications,
   sendStudioDueNotifications,
   type ProductStudioActor,
 } from "./productStudioService";
@@ -32,7 +33,20 @@ export async function sweepProductStudioNotificationsOnce(
       ),
     };
   }
-  return sendStudioDueNotifications(SYSTEM_ACTOR, now, 24);
+  // نداءان في نبضةٍ واحدة، وترتيبُهما مقصود:
+  //  ١) **المصالحة أوّلاً** — تُنشئ إشعارَ الإسناد المفقود. فالموظّف يحتاج أن يعرف **أنّ**
+  //     لديه مهمّة قبل أن يُذكَّر بقرب موعدها؛ العكسُ يُنتج تذكيراً بمهمّةٍ لم يسمع بها.
+  //  ٢) ثمّ تذكيراتُ المواعيد كما كانت.
+  // وفشلُ إحداهما لا يُسقط الأخرى: كلٌّ منهما مستقلٌّ وidempotent بالمفتاح الفريد.
+  let createdCount = 0;
+  try {
+    const reconciled = await reconcileStudioAssignmentNotifications(SYSTEM_ACTOR);
+    createdCount += reconciled.createdCount;
+  } catch (error) {
+    logger.warn({ err: error }, "productStudio.notifications.reconcile_failed");
+  }
+  const due = await sendStudioDueNotifications(SYSTEM_ACTOR, now, 24);
+  return { createdCount: createdCount + due.createdCount };
 }
 
 let task: ScheduledTask | null = null;

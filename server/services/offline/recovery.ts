@@ -197,7 +197,10 @@ export async function postRecoveryItem(
         priceOverrideApproved: true,
       },
       actor,
-      { skipCaptureWindow: true },
+      {
+        skipCaptureWindow: true,
+        attributeToUserId: item.submittedByUserId ?? actor.userId,
+      },
     );
   } catch (e) {
     // فشل الترحيل يُعيد العنصر إلى الطابور — وإلّا بقي «مُرحَّلاً» بلا فاتورة.

@@ -9,7 +9,12 @@ import {
   suppliers,
   users,
 } from "../../drizzle/schema";
-import type { PrintChannel, PrintDocumentType, PrintOutcome } from "@shared/printAudit";
+import {
+  sanitizePrintFailureCode,
+  type PrintChannel,
+  type PrintDocumentType,
+  type PrintOutcome,
+} from "@shared/printAudit";
 import { getDb } from "../db";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { extractInsertId } from "../lib/insertId";
@@ -32,7 +37,16 @@ async function assertDocumentScope(type: PrintDocumentType, documentId: number, 
   } else if (type === "EXCHANGE_TRANSACTION") {
     foundBranch = (await db.select({ branchId: exchangeTransactions.branchId }).from(exchangeTransactions).where(eq(exchangeTransactions.id, documentId)).limit(1))[0]?.branchId;
   } else if (type === "VOUCHER") {
-    foundBranch = (await db.select({ branchId: receipts.branchId }).from(receipts).where(eq(receipts.id, documentId)).limit(1))[0]?.branchId;
+    const voucher = (await db.select({
+      branchId: receipts.branchId,
+      status: receipts.status,
+      approvalStatus: receipts.approvalStatus,
+    }).from(receipts).where(eq(receipts.id, documentId)).limit(1))[0];
+    if (!voucher) throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+    if (voucher.status !== "COMPLETED" || voucher.approvalStatus !== "APPROVED") {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "لا تُطبع وثيقة رسمية لسند غير نافذ أو معكوس" });
+    }
+    foundBranch = voucher.branchId;
   } else if (type === "CUSTOMER_STATEMENT") {
     const exists = (await db.select({ id: customers.id }).from(customers).where(eq(customers.id, documentId)).limit(1))[0];
     if (!exists) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
@@ -64,6 +78,42 @@ async function insertEvent(values: typeof documentPrintEvents.$inferInsert) {
   }
 }
 
+type RequestedEvent = typeof documentPrintEvents.$inferSelect;
+
+function requestResponse(event: RequestedEvent) {
+  return {
+    id: Number(event.id),
+    requestId: event.requestId,
+    actorName: event.actorNameSnapshot,
+    requestedAt: event.eventAt,
+    reprint: event.reprintOfRequestId != null,
+  };
+}
+
+function assertExactRequestReplay(event: RequestedEvent, input: {
+  documentType: PrintDocumentType;
+  documentId: number;
+  branchId: number | null;
+  channel: PrintChannel;
+  copies: number;
+}, actor: PrintActor) {
+  if (Number(event.actorUserId) !== actor.userId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن إعادة الطلب بهوية منفذ أخرى" });
+  }
+  if (actor.branchId != null && event.branchId != null && Number(event.branchId) !== actor.branchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن إعادة الطلب من فرع آخر" });
+  }
+  const eventBranchId = event.branchId == null ? null : Number(event.branchId);
+  const sameRequest = event.documentType === input.documentType
+    && Number(event.documentId) === input.documentId
+    && eventBranchId === input.branchId
+    && event.channel === input.channel
+    && event.copies === input.copies;
+  if (!sameRequest) {
+    throw new TRPCError({ code: "CONFLICT", message: "إعادة الطلب لا تطابق طلب الطباعة الأصلي" });
+  }
+}
+
 export async function requestDocumentPrint(input: {
   requestId: string;
   documentType: PrintDocumentType;
@@ -72,12 +122,24 @@ export async function requestDocumentPrint(input: {
   channel: PrintChannel;
   copies: number;
 }, actor: PrintActor) {
-  const branchId = await assertDocumentScope(input.documentType, input.documentId, input.branchId);
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const documentBranchId = await assertDocumentScope(input.documentType, input.documentId, input.branchId);
+  // كشف الطرف لا يحمل branchId بنيوياً؛ جلسة موظف الفرع تصبح هي النطاق canonical.
+  // يبقى admin بلا فرع قادراً على طلب كشف عام صريحاً بـNULL.
+  const branchId = documentBranchId ?? actor.branchId;
   if (actor.branchId != null && branchId != null && actor.branchId !== branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن طباعة مستند من فرع آخر" });
   }
+  const replay = (await db.select().from(documentPrintEvents).where(and(
+    eq(documentPrintEvents.requestId, input.requestId),
+    eq(documentPrintEvents.outcome, "REQUESTED"),
+  )).limit(1))[0];
+  if (replay) {
+    assertExactRequestReplay(replay, { ...input, branchId }, actor);
+    return requestResponse(replay);
+  }
   const actorName = await actorSnapshot(actor.userId);
-  const db = getDb()!;
   const previous = (await db.select({ requestId: documentPrintEvents.requestId })
     .from(documentPrintEvents)
     .where(and(
@@ -99,7 +161,8 @@ export async function requestDocumentPrint(input: {
     copies: input.copies,
     reprintOfRequestId: previous?.requestId ?? null,
   });
-  return { id: Number(event.id), requestId: event.requestId, actorName: event.actorNameSnapshot, requestedAt: event.eventAt, reprint: event.reprintOfRequestId != null };
+  assertExactRequestReplay(event, { ...input, branchId }, actor);
+  return requestResponse(event);
 }
 
 export async function recordDocumentPrintOutcome(input: {
@@ -115,6 +178,12 @@ export async function recordDocumentPrintOutcome(input: {
   )).limit(1))[0];
   if (!request) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الطباعة غير موجود" });
   if (Number(request.actorUserId) !== actor.userId) throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إكمال طلب طباعة لمستخدم آخر" });
+  if (actor.branchId != null && request.branchId != null && Number(request.branchId) !== actor.branchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إكمال طلب طباعة من فرع آخر" });
+  }
+  if (input.outcome === "DISPATCHED" && (request.channel === "BROWSER" || request.channel === "PDF")) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "قناة المتصفح لا تثبت نجاح إرسال مباشر" });
+  }
   return insertEvent({
     requestId: request.requestId,
     documentType: request.documentType,
@@ -125,7 +194,7 @@ export async function recordDocumentPrintOutcome(input: {
     channel: request.channel,
     outcome: input.outcome,
     copies: request.copies,
-    failureCode: input.outcome === "FAILED" ? input.failureCode?.slice(0, 80) || "UNKNOWN" : null,
+    failureCode: input.outcome === "FAILED" ? sanitizePrintFailureCode(input.failureCode) : null,
     reprintOfRequestId: request.reprintOfRequestId,
   });
 }

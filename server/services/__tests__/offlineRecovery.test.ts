@@ -137,6 +137,16 @@ describe("المسار و-٤ — استرداد البيع الأوفلايني�
     // محرّك العمولات ينسب بـcreatedBy ⇒ لولا الإعادة لتحوّلت عمولة الكاشير إلى المدير.
     expect(Number(inv.createdBy)).toBe(CASHIER);
     expect(inv.salespersonNameSnapshot).toBe("كاشير");
+    const saleEntry = (
+      await db()
+        .select()
+        .from(s.accountingEntries)
+        .where(eq(s.accountingEntries.invoiceId, posted.invoiceId))
+    ).find((entry) => entry.entryType === "SALE");
+    expect(saleEntry).toMatchObject({
+      createdBy: CASHIER,
+      createdByNameSnapshot: "كاشير",
+    });
   });
 
   it("لا يُرحَّل بيع التجزئة إلى وردية استقبال/طباعة", async () => {

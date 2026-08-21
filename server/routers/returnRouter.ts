@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, users } from "../../drizzle/schema";
@@ -66,7 +67,11 @@ export const returnRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue; // سباق نفس المفتاح ⇒ أعد المحاولة فيُرى المرتجع الأول replay
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام المرتجع" });
+          failOpaque(e, {
+            op: "returns.create",
+            userMessage: "تعذّر إتمام المرتجع",
+            context: { userId: ctx.user.id, invoiceId: input.invoiceId, lines: input.lines.length },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام المرتجع (تكرار)" });

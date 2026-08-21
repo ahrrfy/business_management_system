@@ -69,6 +69,7 @@ import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
 import { TurnstileWidget } from "@/components/storefront/TurnstileWidget";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -619,6 +620,71 @@ function CategoryTiles({ cats, onPick }: { cats: { id: number; name: string }[];
   );
 }
 
+function CategoryChipStrip({
+  cats,
+  selectedId,
+  onPick,
+}: {
+  cats: { id: number; name: string }[];
+  selectedId: number | null;
+  onPick: (id: number | null) => void;
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
+  const move = (direction: -1 | 1) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    scroller.scrollBy({ left: direction * Math.max(220, Math.floor(scroller.clientWidth * 0.65)), behavior: "smooth" });
+  };
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest("button")) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    dragRef.current = { active: true, startX: event.clientX, startScroll: scroller.scrollLeft, moved: false };
+    scroller.setPointerCapture(event.pointerId);
+  };
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !dragRef.current.active) return;
+    const delta = event.clientX - dragRef.current.startX;
+    if (Math.abs(delta) > 6) dragRef.current.moved = true;
+    scroller.scrollLeft = dragRef.current.startScroll - delta;
+  };
+  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const scroller = scrollerRef.current;
+    dragRef.current.active = false;
+    if (scroller?.hasPointerCapture(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
+    window.setTimeout(() => { dragRef.current.moved = false; }, 0);
+  };
+
+  return (
+    <div className="mx-auto flex max-w-[1500px] items-center gap-1.5 px-2 lg:px-6">
+      <button type="button" onClick={() => move(1)} aria-label="مرر الأقسام إلى اليسار" className="flex size-8 shrink-0 items-center justify-center rounded-full border border-[#ead8c8] bg-white text-[#25406f] shadow-sm transition hover:-translate-y-0.5 hover:border-[#e65f4a] active:scale-95">
+        <ArrowRight aria-hidden className="size-4 rotate-180" />
+      </button>
+      <div
+        ref={scrollerRef}
+        dir="rtl"
+        className="flex min-w-0 flex-1 cursor-grab touch-pan-x scroll-smooth gap-2 overflow-x-auto py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onClickCapture={(event) => { if (dragRef.current.moved) { event.preventDefault(); event.stopPropagation(); } }}
+        aria-label="أقسام المنتجات — اسحب لاكتشاف المزيد"
+      >
+        <button type="button" onClick={() => onPick(null)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-black transition hover:-translate-y-0.5 active:scale-95 ${selectedId == null ? "border-[#25406f] bg-[#25406f] text-white shadow-sm" : "border-[#ead8c8] bg-white text-[#667078] hover:border-[#e65f4a] hover:text-[#25406f]"}`}>كل الأقسام</button>
+        {cats.map((c, index) => (
+          <button type="button" key={c.id} onClick={() => onPick(c.id)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold transition hover:-translate-y-0.5 active:scale-95 ${selectedId === c.id ? "border-[#e65f4a] bg-[#e65f4a] text-white shadow-sm" : index % 3 === 0 ? "border-[#f0d991] bg-[#fff8df] text-[#6d5524] hover:border-[#e65f4a]" : index % 3 === 1 ? "border-[#c5e8dc] bg-[#e9f7f2] text-[#276c5d] hover:border-[#25406f]" : "border-[#dfcdea] bg-[#f3ebf8] text-[#684c78] hover:border-[#25406f]"}`}>{c.name}</button>
+        ))}
+      </div>
+      <button type="button" onClick={() => move(-1)} aria-label="مرر الأقسام إلى اليمين" className="flex size-8 shrink-0 items-center justify-center rounded-full border border-[#ead8c8] bg-white text-[#25406f] shadow-sm transition hover:-translate-y-0.5 hover:border-[#e65f4a] active:scale-95">
+        <ArrowRight aria-hidden className="size-4" />
+      </button>
+    </div>
+  );
+}
+
 /**
  * سواتش ألوان المنتج (اسم + لون حقيقي «#RRGGBB» + توفّر) — صفّ نقاط صغيرة على البطاقة/التفاصيل.
  * تُعرَض ألوان المنتج **كاملةً** بما فيها النافدة، لكنّ النافد يظهر **باهتاً بلا تشبّع** مع وسم «نافد»
@@ -660,7 +726,7 @@ type RowProduct = {
   unitName: string;
   inStock?: boolean;
 };
-function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () => void; onAdd: () => void }) {
+function ProductRowCard({ p, onSelect, onAdd, recentlyAdded = false }: { p: RowProduct; onSelect: () => void; onAdd: () => void; recentlyAdded?: boolean }) {
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   return (
@@ -685,9 +751,9 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
         <button
           onClick={onAdd}
           disabled={p.inStock === false}
-          className="store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+          className={`store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 ${recentlyAdded ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-500 hover:bg-amber-600"} disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800`}
         >
-          <Plus aria-hidden className="size-3.5" /> {p.inStock === false ? "غير متوفّر" : "اختر"}
+          {recentlyAdded ? <Check aria-hidden className="size-3.5" /> : <Plus aria-hidden className="size-3.5" />} {p.inStock === false ? "غير متوفّر" : recentlyAdded ? "تمت الإضافة" : "أضف للسلة"}
         </button>
       </div>
     </div>
@@ -701,12 +767,14 @@ function ProductRow({
   products,
   onSelect,
   onAdd,
+  recentlyAddedId,
 }: {
   title: string;
   icon: React.ReactNode;
   products: RowProduct[];
   onSelect: (id: number) => void;
   onAdd: (p: RowProduct) => void;
+  recentlyAddedId?: number | null;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
@@ -738,6 +806,7 @@ function ProductRow({
     scroller.scrollBy({ left: direction * Math.max(220, Math.floor(scroller.clientWidth * 0.72)), behavior: "smooth" });
   };
   const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest("button")) return;
     const scroller = scrollerRef.current;
     if (!scroller) return;
     dragRef.current = { active: true, startX: event.clientX, startScroll: scroller.scrollLeft, moved: false };
@@ -783,10 +852,84 @@ function ProductRow({
         aria-label={`${title} — اسحب لاكتشاف المزيد`}
       >
         {products.map((p) => (
-          <ProductRowCard key={p.productId} p={p} onSelect={() => onSelect(p.productId)} onAdd={() => onAdd(p)} />
+          <ProductRowCard key={p.productId} p={p} onSelect={() => onSelect(p.productId)} onAdd={() => onAdd(p)} recentlyAdded={recentlyAddedId === p.productId} />
         ))}
       </div>
     </section>
+  );
+}
+
+type RelatedProduct = {
+  productId: number;
+  productName: string;
+  imageUrl: string | null;
+  price: string | null;
+  salePrice?: string | null;
+};
+
+function RelatedProductStrip({ products, onSelect }: { products: RelatedProduct[]; onSelect: (id: number) => void }) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef({ active: false, startX: 0, startScroll: 0, moved: false });
+  const move = (direction: -1 | 1) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    scroller.scrollBy({ left: direction * Math.max(180, Math.floor(scroller.clientWidth * 0.72)), behavior: "smooth" });
+  };
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest("button")) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    dragRef.current = { active: true, startX: event.clientX, startScroll: scroller.scrollLeft, moved: false };
+    scroller.setPointerCapture(event.pointerId);
+  };
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !dragRef.current.active) return;
+    const delta = event.clientX - dragRef.current.startX;
+    if (Math.abs(delta) > 6) dragRef.current.moved = true;
+    scroller.scrollLeft = dragRef.current.startScroll - delta;
+  };
+  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const scroller = scrollerRef.current;
+    dragRef.current.active = false;
+    if (scroller?.hasPointerCapture(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
+    window.setTimeout(() => { dragRef.current.moved = false; }, 0);
+  };
+
+  return (
+    <div className="mt-5 min-w-0">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h3 className="text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
+        <div className="flex items-center gap-1" aria-label="تنقل المنتجات المقترحة">
+          <button type="button" onClick={() => move(1)} className="flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700 active:scale-95" aria-label="مرر المنتجات المقترحة إلى اليسار"><ArrowRight aria-hidden className="size-3.5 rotate-180" /></button>
+          <button type="button" onClick={() => move(-1)} className="flex size-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700 active:scale-95" aria-label="مرر المنتجات المقترحة إلى اليمين"><ArrowRight aria-hidden className="size-3.5" /></button>
+        </div>
+      </div>
+      <div
+        ref={scrollerRef}
+        dir="rtl"
+        className="flex min-w-0 cursor-grab touch-pan-y scroll-smooth gap-3 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden active:cursor-grabbing"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onClickCapture={(event) => { if (dragRef.current.moved) { event.preventDefault(); event.stopPropagation(); } }}
+        aria-label="منتجات مقترحة — اسحب لاكتشاف المزيد"
+      >
+        {products.map((rp) => (
+          <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+            <button type="button" onClick={() => onSelect(rp.productId)} className="text-right">
+              <ProductImage url={rp.imageUrl} alt={rp.productName} className="store-product-media aspect-square w-full" />
+            </button>
+            <div className="flex flex-1 flex-col gap-1 p-2">
+              <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
+              <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
+              <button type="button" onClick={() => onSelect(rp.productId)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95"><Plus aria-hidden className="size-3" /> اختر</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -806,35 +949,50 @@ function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber
     </div>
   );
 }
-function BannerCarousel({ banners }: { banners: BannerItem[] }) {
+function BannerCarousel({ banners, slot = "HERO", className = "" }: { banners: BannerItem[]; slot?: "HERO" | "INLINE"; className?: string }) {
   const [cur, setCur] = useState(0);
+  const [paused, setPaused] = useState(false);
   useEffect(() => {
-    if (banners.length <= 1) return;
-    const t = setInterval(() => setCur((i) => (i + 1) % banners.length), 5000);
+    if (banners.length <= 1 || paused || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const t = setInterval(() => setCur((i) => (i + 1) % banners.length), 4500);
     return () => clearInterval(t);
+  }, [banners.length, paused]);
+  useEffect(() => {
+    setCur((current) => Math.min(current, Math.max(0, banners.length - 1)));
   }, [banners.length]);
   if (banners.length === 0) return null;
   const active = cur % banners.length;
+  const aspect = slot === "HERO" ? "aspect-[2/1]" : "aspect-[3.2/1]";
   return (
-    <section className="mb-4">
-      <div className="relative aspect-[2/1] overflow-hidden rounded-xl shadow-sm">
-        {banners.map((b, i) => {
-          const inner = <BannerFrame banner={b} slot="HERO" active={i === active} />;
-          return (
-            <div key={`${b.id}-${b.imageIndex ?? 0}`} className={`absolute inset-0 transition-opacity duration-700 ${i === active ? "opacity-100" : "pointer-events-none opacity-0"}`}>
-              {inner}
-            </div>
-          );
-        })}
+    <section
+      className={`mb-4 ${className}`}
+      aria-roledescription="carousel"
+      aria-label={slot === "HERO" ? "العروض الرئيسية" : "العروض الترويجية بين المنتجات"}
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocusCapture={() => setPaused(true)}
+      onBlurCapture={() => setPaused(false)}
+      onPointerDown={() => setPaused(true)}
+    >
+      <div className={`relative overflow-hidden rounded-2xl shadow-sm ring-1 ring-black/5 ${aspect}`}>
+        {banners.map((b, i) => (
+          <div key={`${b.id}-${b.imageIndex ?? 0}`} className={`absolute inset-0 transition-opacity duration-700 motion-reduce:transition-none ${i === active ? "opacity-100" : "pointer-events-none opacity-0"}`}>
+            <BannerFrame banner={b} slot={slot} active={i === active} />
+          </div>
+        ))}
+        {banners.length > 1 && <span className="absolute right-3 top-3 rounded-full bg-[#183d36]/85 px-2.5 py-1 text-[10px] font-black text-white shadow-sm">{active + 1} / {banners.length}</span>}
       </div>
       {banners.length > 1 && (
-        <div className="mt-2.5 flex justify-center gap-1.5">
+        <div className="mt-2.5 flex justify-center gap-1.5" role="tablist" aria-label="اختيار البنر">
           {banners.map((b, i) => (
             <button
+              type="button"
               key={`${b.id}-${b.imageIndex ?? 0}`}
-              onClick={() => setCur(i)}
+              onClick={() => { setCur(i); setPaused(true); }}
+              role="tab"
+              aria-selected={i === active}
               aria-label={`الانتقال للبنر ${i + 1}`}
-              className={`h-1.5 rounded-full transition-all ${i === active ? "w-5 bg-emerald-600" : "w-1.5 bg-emerald-200 dark:bg-slate-700"}`}
+              className={`h-1.5 rounded-full transition-all motion-reduce:transition-none ${i === active ? "w-5 bg-[#f05d53]" : "w-1.5 bg-[#f3b85a]/60 hover:bg-[#f05d53]"}`}
             />
           ))}
         </div>
@@ -877,6 +1035,15 @@ export function storefrontCategoryCount(
     : category.productCount;
 }
 
+export function shouldAutoLoadStorefrontNextPage(input: {
+  isIntersecting: boolean;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  isError: boolean;
+}): boolean {
+  return input.isIntersecting && input.hasNextPage && !input.isFetchingNextPage && !input.isError;
+}
+
 function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
   switch (filter) {
     case "UNDER_5000": return price < 5_000;
@@ -896,6 +1063,7 @@ export default function Storefront() {
   const [brand, setBrand] = useState("");
   const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<number | null>(null);
   const [selectedStoreUnitId, setSelectedStoreUnitId] = useState<number | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<number | null>(null);
   // اختيار متعدد للمتغيرات في ورقة المنتج. المفتاح هو وحدة البيع، لا معرّف المتغير،
@@ -924,6 +1092,7 @@ export default function Storefront() {
     reservationExpiresAt: Date | string;
   } | null>(null);
   const viewedProductIds = useRef(new Set<number>());
+  const catalogLoadMoreRef = useRef<HTMLDivElement | null>(null);
 
   // تتبّع الطلب العلنيّ — نموذجٌ برقم الطلب + الهاتف يستدعي storefront.trackOrder عند الطلب.
   const utils = trpc.useUtils();
@@ -1227,6 +1396,25 @@ export default function Storefront() {
   }, [labelQ.data]);
 
   const items = useMemo(() => (catalogQ.data?.pages ?? []).flatMap((page) => page.items), [catalogQ.data]);
+  useEffect(() => {
+    const sentinel = catalogLoadMoreRef.current;
+    if (!sentinel || !catalogQ.hasNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (shouldAutoLoadStorefrontNextPage({
+          isIntersecting: entries.some((entry) => entry.isIntersecting),
+          hasNextPage: catalogQ.hasNextPage,
+          isFetchingNextPage: catalogQ.isFetchingNextPage,
+          isError: catalogQ.isError,
+        })) {
+          void catalogQ.fetchNextPage();
+        }
+      },
+      { rootMargin: "520px 0px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [catalogQ.fetchNextPage, catalogQ.hasNextPage, catalogQ.isError, catalogQ.isFetchingNextPage]);
   // فشل صفحة لاحقة لا يمحو ما رآه الزائر بالفعل؛ حالة الخطأ الكاملة تخص الصفحة الأولى فقط.
   const catalogInitialError = catalogQ.isError && items.length === 0;
   const cats = categoriesQ.data ?? [];
@@ -1307,15 +1495,20 @@ export default function Storefront() {
   // (فلسفة in-feed العالمية: لا يمرّ الزبون بأكثر من ~عشرة منتجات دون محفّز شراء).
   const feedStrips = useMemo<BannerItem[]>(() => {
     if (inlineBanners.length) return inlineBanners;
-    return offers.slice(0, 4).map((o) => ({
-      id: -o.id,
-      title: o.name,
-      subtitle: o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`,
-      ctaLabel: "عرض اليوم",
-    }));
-  }, [inlineBanners, offers]);
+    if (offers.length) {
+      return offers.slice(0, 4).map((o) => ({
+        id: -o.id,
+        title: o.name,
+        subtitle: o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`,
+        ctaLabel: "عرض اليوم",
+      }));
+    }
+    // إذا لم تُعرّف لوحة الإدارة مواضع INLINE بعد، نعيد استخدام حملات HERO الحقيقية
+    // في الفواصل البينية حتى لا يبقى مسار الشراء بلا محفّز ترويجي.
+    return heroBanners.slice(1, 4);
+  }, [heroBanners, inlineBanners, offers]);
 
-  // أقسام البيع الموجّه تُشتق من الكتالوج الحي فقط. لا نعرض في صفٍّ تسويقي منتجاً لا يمكن شراؤه؛
+  // أقسام البيع الموجّه تُشتق من المنتجات الحية فقط. لا نعرض في صفٍّ تسويقي منتجاً لا يمكن شراؤه؛
   // فلا تتحول حملة «الأكثر مبيعاً» أو «الباقات» إلى طريق مسدود للزبون.
   const dealProducts = useMemo(
     () => items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
@@ -1357,6 +1550,13 @@ export default function Storefront() {
     recordStorefrontCartChange();
     setCart((prev) => addStorefrontCartLine(prev, p, eff));
   }
+  function addFeaturedToCart(p: RowProduct) {
+    if (p.inStock === false || (p.salePrice == null && p.price == null)) return;
+    addToCart(p);
+    setRecentlyAddedProductId(p.productId);
+    window.setTimeout(() => setRecentlyAddedProductId((current) => current === p.productId ? null : current), 1600);
+  }
+
   function setVariantQuantity(productUnitId: number, quantity: number) {
     setVariantQuantities((previous) => {
       const next = new Map(previous);
@@ -1537,7 +1737,7 @@ export default function Storefront() {
           <nav className="hidden items-center gap-5 text-xs font-extrabold text-[#46515a] lg:flex" aria-label="التنقل الرئيسي">
             <a href="#store-start" className="transition hover:text-[#1e4a63]">اكتشف</a>
             <a href="#store-picks" className="transition hover:text-[#1e4a63]">مختاراتنا</a>
-            <a href="#store-results" className="transition hover:text-[#1e4a63]">الكتالوج</a>
+            <a href="#store-results" className="transition hover:text-[#1e4a63]">المنتجات</a>
             <a href="#store-deals" className="transition hover:text-[#a4513f]">العروض</a>
           </nav>
           <div className="relative min-w-0 flex-1">
@@ -1565,10 +1765,7 @@ export default function Storefront() {
         </div>
         {cats.length > 0 && (
           <div className="border-t border-[#f0e2d5] bg-[#fffaf5] dark:border-slate-800 dark:bg-slate-900">
-            <div className="mx-auto flex max-w-[1500px] items-center gap-2 overflow-x-auto px-4 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:px-8">
-              <button onClick={() => selectCategory(null)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-black transition ${categoryId == null ? "border-[#25406f] bg-[#25406f] text-white shadow-sm" : "border-[#ead8c8] bg-white text-[#667078] hover:border-[#e65f4a] hover:text-[#25406f]"}`}>كل الأقسام</button>
-              {cats.map((c, index) => <button key={c.id} onClick={() => selectCategory(c.id)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold transition ${categoryId === c.id ? "border-[#e65f4a] bg-[#e65f4a] text-white shadow-sm" : index % 3 === 0 ? "border-[#f0d991] bg-[#fff8df] text-[#6d5524] hover:border-[#e65f4a]" : index % 3 === 1 ? "border-[#c5e8dc] bg-[#e9f7f2] text-[#276c5d] hover:border-[#25406f]" : "border-[#dfcdea] bg-[#f3ebf8] text-[#684c78] hover:border-[#25406f]"}`}>{c.name}</button>)}
-            </div>
+            <CategoryChipStrip cats={cats} selectedId={categoryId} onPick={selectCategory} />
           </div>
         )}
       </header>
@@ -1586,7 +1783,7 @@ export default function Storefront() {
 
         {!search && categoryId == null && (
           <>
-            <section id="store-start" className="grid overflow-hidden border border-[#d5d9da] bg-[#1e4a63] lg:grid-cols-[1.02fr_0.98fr]">
+            <section id="store-start" className="grid overflow-hidden rounded-[28px] border border-[#d5d9da] bg-[#183d36] shadow-[0_22px_55px_-34px_rgba(24,61,54,0.9)] lg:grid-cols-[1.02fr_0.98fr]">
               <div className="flex flex-col justify-center p-6 text-white sm:p-10 lg:p-14">
                 <p className="mb-3 text-xs font-black uppercase tracking-[0.16em] text-[#d9e6ea]">قرطاسية • طباعة • هدايا</p>
                 <h1 className="max-w-xl text-3xl font-black leading-[1.25] tracking-tight sm:text-5xl">كل ما تحتاجه ليومك،<br /><span className="text-[#f1b0a4]">بترتيب أسهل.</span></h1>
@@ -1597,44 +1794,46 @@ export default function Storefront() {
                 </div>
                 <div className="mt-8 grid max-w-md grid-cols-3 gap-4 border-t border-white/20 pt-4 text-[11px] font-bold text-[#d7e4e7]"><span>دفع عند الاستلام</span><span>توصيل للمحافظات</span><span>تأكيد قبل الإرسال</span></div>
               </div>
-              <div className="min-h-[280px] bg-[#e7e2da] lg:min-h-[410px]">
-                {featuredHero ? <BannerFrame banner={featuredHero} slot="HERO" active /> : <div className="flex h-full items-end bg-[#d9d1c5] p-8"><div className="max-w-sm border-r-4 border-[#e65f4a] pr-4 text-[#1e4a63]"><p className="text-xs font-black uppercase tracking-[0.14em]">اختيار الأسبوع</p><p className="mt-2 text-3xl font-black">أدوات تجعل العمل أخف.</p></div></div>}
+              <div className="min-h-[280px] bg-[#f3eadf] p-2 sm:p-3 lg:min-h-[410px]">
+                {heroBanners.length > 0 ? <BannerCarousel banners={heroBanners} slot="HERO" className="mb-0 h-full" /> : featuredHero ? <BannerFrame banner={featuredHero} slot="HERO" active /> : <div className="flex h-full items-end rounded-2xl bg-[#e8ddcf] p-8"><div className="max-w-sm border-r-4 border-[#f05d53] pr-4 text-[#183d36]"><p className="text-xs font-black uppercase tracking-[0.14em]">اختيار الأسبوع</p><p className="mt-2 text-3xl font-black">أدوات تجعل العمل أخف.</p></div></div>}
               </div>
             </section>
 
-            <section className="mt-5 grid grid-cols-2 border-y border-[#ddd8d1] bg-white sm:grid-cols-4">
+            <section className="mt-5 grid grid-cols-2 overflow-hidden rounded-2xl border border-[#e6ded4] bg-white shadow-sm sm:grid-cols-4">
               {[{icon: <Banknote aria-hidden className="size-5" />, title: "دفع عند الاستلام", text: "ادفع بعد تأكيد الطلب"}, {icon: <Truck aria-hidden className="size-5" />, title: "توصيل واضح", text: "أجرة التوصيل قبل التأكيد"}, {icon: <ShieldCheck aria-hidden className="size-5" />, title: "اختيار موثوق", text: "منتجات أصلية ومراجعة"}, {icon: <MessageCircle aria-hidden className="size-5" />, title: "نساعدك مباشرة", text: "استفسار سريع عبر واتساب"}].map((item) => <div key={item.title} className="flex items-center gap-3 border-l border-[#eee9e2] px-4 py-4 last:border-l-0"><span className="text-[#1e4a63]">{item.icon}</span><span><span className="block text-xs font-black text-[#30383e]">{item.title}</span><span className="mt-0.5 block text-[10px] font-semibold text-[#7a817f]">{item.text}</span></span></div>)}
             </section>
 
-            <section className="mt-10">
-              <div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#a4513f]">ابدأ من هنا</p><h2 className="mt-1 text-2xl font-black tracking-tight text-[#1e4a63]">اختَر طريق الشراء المناسب</h2></div><button onClick={() => scrollToResults()} className="hidden text-xs font-black text-[#1e4a63] hover:underline sm:block">عرض كل المنتجات ←</button></div>
+            <section className="mt-10 rounded-[28px] bg-[#fff7ed] px-4 py-5 sm:px-6 sm:py-7">
+              <div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#f05d53]">ابدأ من هنا</p><h2 className="mt-1 text-2xl font-black tracking-tight text-[#183d36]">اختَر طريق الشراء المناسب</h2></div><button onClick={() => scrollToResults()} className="hidden text-xs font-black text-[#183d36] hover:underline sm:block">عرض كل المنتجات ←</button></div>
               <div className="grid gap-3 md:grid-cols-3">{buyingPaths.map((path) => <button key={path.title} onClick={() => scrollToResults()} className={`flex min-h-36 flex-col justify-between p-5 text-right transition hover:-translate-y-0.5 hover:shadow-md ${path.tone}`}><span className="flex size-10 items-center justify-center rounded-lg bg-white/70">{path.icon}</span><span><span className="block text-lg font-black">{path.title}</span><span className="mt-1 block text-xs font-bold opacity-75">{path.description}</span></span></button>)}</div>
             </section>
 
-            <section className="mt-10" aria-labelledby="store-category-title">
+            <section className="mt-10 rounded-[28px] bg-[#eef8f4] px-4 py-5 sm:px-6 sm:py-7" aria-labelledby="store-category-title">
               <div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#a4513f]">تصفح حسب الحاجة</p><h2 id="store-category-title" className="mt-1 text-2xl font-black tracking-tight text-[#1e4a63]">الأقسام الرئيسية</h2></div><span className="text-xs font-bold text-[#7a817f]">{cats.length} أقسام متاحة</span></div>
               <div className="store-category-grid grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">{cats.slice(0, 12).map((c, index) => <button key={c.id} onClick={() => selectCategory(c.id)} className="group border border-[#ddd8d1] bg-white p-4 text-right transition hover:border-[#1e4a63] hover:shadow-sm"><span className="mb-8 flex size-9 items-center justify-center rounded-lg bg-[#f0ece7] text-[#1e4a63] group-hover:bg-[#1e4a63] group-hover:text-white"><Store aria-hidden className="size-4" /></span><span className="block text-sm font-black text-[#30383e]">{c.name}</span><span className="mt-1 block text-[11px] font-bold text-[#8a918f]">{storefrontCategoryCount(c, availability)} منتج</span></button>)}</div>
             </section>
 
-            {offers.length > 0 && <section id="store-deals" className="mt-10 border-y border-[#d9d3ca] bg-[#fff9f2] py-6"><div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#a4513f]">عرض محدود</p><h2 className="mt-1 text-2xl font-black text-[#754f2c]">صفقات تستحق الإضافة</h2></div><BadgePercent aria-hidden className="size-6 text-[#e65f4a]" /></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{offers.slice(0, 3).map((o) => <div key={o.id} className="flex items-center justify-between gap-4 border border-[#ead8c8] bg-white p-4"><div><p className="text-sm font-black text-[#30383e]">{o.name}</p><p className="mt-1 text-xs font-bold text-[#8b6b50]">{offerLabel(o)} · {offerScopeLabel(o.scope)}</p></div><Tag aria-hidden className="size-5 shrink-0 text-[#e65f4a]" /></div>)}</div></section>}
+            {feedStrips.length > 0 && <div className="mt-8 rounded-[28px] bg-[#183d36] p-3 shadow-[0_18px_45px_-30px_rgba(24,61,54,0.85)] sm:p-4"><BannerCarousel banners={feedStrips} slot="INLINE" /></div>}
 
-            <div id="store-picks" className="mt-10 grid min-w-0 grid-cols-1 gap-10">
-              <ProductRow title="مختارات هذا الأسبوع" icon={<Tag aria-hidden className="size-4 text-[#e65f4a]" />} products={dealProducts} onSelect={setSelectedId} onAdd={(p) => setSelectedId(p.productId)} />
-              <ProductRow title="الأكثر طلباً" icon={<TrendingUp aria-hidden className="size-4 text-[#1e4a63]" />} products={bestSellers} onSelect={setSelectedId} onAdd={(p) => setSelectedId(p.productId)} />
+            {offers.length > 0 && <section id="store-deals" className="mt-10 rounded-[28px] border border-[#f0dfc7] bg-[#fff5e7] px-4 py-6 shadow-sm sm:px-6"><div className="mb-4 flex items-end justify-between"><div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#f05d53]">عرض محدود</p><h2 className="mt-1 text-2xl font-black text-[#754f2c]">صفقات تستحق الإضافة</h2></div><BadgePercent aria-hidden className="size-6 text-[#f05d53]" /></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{offers.slice(0, 3).map((o) => <div key={o.id} className="flex items-center justify-between gap-4 rounded-2xl border border-[#ead8c8] bg-white p-4 transition hover:-translate-y-0.5 hover:shadow-md"><div><p className="text-sm font-black text-[#30383e]">{o.name}</p><p className="mt-1 text-xs font-bold text-[#8b6b50]">{offerLabel(o)} · {offerScopeLabel(o.scope)}</p></div><Tag aria-hidden className="size-5 shrink-0 text-[#f05d53]" /></div>)}</div></section>}
+
+            <div id="store-picks" className="mt-10 grid min-w-0 grid-cols-1 gap-10 rounded-[28px] bg-[#f7f0fa] px-4 py-5 sm:px-6 sm:py-7">
+              <ProductRow title="مختارات هذا الأسبوع" icon={<Tag aria-hidden className="size-4 text-[#e65f4a]" />} products={dealProducts} onSelect={setSelectedId} onAdd={addFeaturedToCart} recentlyAddedId={recentlyAddedProductId} />
+              <ProductRow title="الأكثر طلباً" icon={<TrendingUp aria-hidden className="size-4 text-[#1e4a63]" />} products={bestSellers} onSelect={setSelectedId} onAdd={addFeaturedToCart} recentlyAddedId={recentlyAddedProductId} />
             </div>
           </>
         )}
 
-        <section id="store-results" className="mt-12 scroll-mt-36">
+        <section id="store-results" className="mt-12 scroll-mt-36 rounded-[28px] bg-white/80 px-4 py-5 shadow-sm ring-1 ring-[#e7e0d8] sm:px-6 sm:py-7">
           <div className="mb-5 flex flex-col gap-3 border-b border-[#d9d3ca] pb-5 sm:flex-row sm:items-end sm:justify-between">
-            <div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#a4513f]">الكتالوج</p><h2 className="mt-1 text-3xl font-black tracking-tight text-[#1e4a63]">كل المنتجات</h2><p className="mt-2 text-xs font-bold text-[#7a817f]">{search ? `نتائج البحث عن «${search}»` : activeCatName ? `منتجات فئة «${activeCatName}»` : "تصفح المجموعة الكاملة واختر ما يناسبك"}</p></div><span className="text-sm font-black text-[#1e4a63]">{filteredItems.length} منتج</span>
+            <div><p className="text-[11px] font-black uppercase tracking-[0.15em] text-[#a4513f]">المنتجات</p><h2 className="mt-1 text-3xl font-black tracking-tight text-[#1e4a63]">كل المنتجات</h2><p className="mt-2 text-xs font-bold text-[#7a817f]">{search ? `نتائج البحث عن «${search}»` : activeCatName ? `منتجات فئة «${activeCatName}»` : "تصفح المجموعة الكاملة واختر ما يناسبك"}</p></div><span className="text-sm font-black text-[#1e4a63]">{filteredItems.length} منتج</span>
           </div>
           <div className="mb-6 flex flex-col gap-3 border border-[#d9d3ca] bg-white p-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"><button type="button" onClick={() => { setAvailability((value) => value === "IN_STOCK" ? "ALL" : "IN_STOCK"); scrollToResults(); }} aria-pressed={availability === "IN_STOCK"} className={`shrink-0 border px-3 py-2 text-xs font-black ${availability === "IN_STOCK" ? "border-[#1e4a63] bg-[#1e4a63] text-white" : "border-[#d7d2ca] text-[#59636a]"}`}>{availability === "IN_STOCK" ? "متوفر الآن" : "كل المنتجات"}</button><label className="relative shrink-0"><span className="sr-only">نطاق السعر</span><select value={priceFilter} onChange={(e) => { setPriceFilter(e.target.value as PriceFilter); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="ALL">كل الأسعار</option><option value="UNDER_5000">أقل من 5,000 د.ع</option><option value="FROM_5000_TO_15000">5,000 – 15,000 د.ع</option><option value="OVER_15000">أكثر من 15,000 د.ع</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{brands.length > 0 && <label className="relative shrink-0"><span className="sr-only">الماركة</span><select value={brand} onChange={(e) => { setBrand(e.target.value); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="">كل الماركات</option>{brands.map((name) => <option key={name} value={name}>{name}</option>)}</select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>}</div><div className="flex items-center justify-between gap-3"><label className="relative shrink-0"><span className="sr-only">ترتيب النتائج</span><select value={sort} onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }} className="appearance-none border border-[#d7d2ca] bg-white py-2 pr-3 pl-8 text-xs font-bold text-[#59636a] outline-none focus:border-[#1e4a63]"><option value="RECOMMENDED">الترتيب المقترح</option><option value="BEST_SELLERS">الأكثر مبيعاً</option><option value="PRICE_ASC">السعر: الأقل أولاً</option><option value="PRICE_DESC">السعر: الأعلى أولاً</option></select><ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-[#8b9395]" /></label>{(hasRefinements || categoryId != null || search) && <button type="button" onClick={clearCatalogFilters} className="text-xs font-black text-[#a4513f] hover:underline">مسح الفلاتر</button>}</div>
           </div>
-          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة ككتالوج فارغ.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} className={`store-product-card group flex h-full flex-col overflow-hidden border border-[#ddd8d1] bg-white transition ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button onClick={() => setSelectedId(p.productId)} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => setSelectedId(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={() => setSelectedId(p.productId)} disabled={!p.inStock} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]"><Plus aria-hidden className="size-4" />{p.inStock ? "اختر المنتج" : "غير متوفر"}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
-          {catalogQ.hasNextPage && <div className="mt-8 flex justify-center"><button type="button" onClick={() => void catalogQ.fetchNextPage()} disabled={catalogQ.isFetchingNextPage} className="store-primary-action flex min-w-44 items-center justify-center gap-2 bg-[#1e4a63] px-6 py-3 text-sm font-black text-white disabled:opacity-60">{catalogQ.isFetchingNextPage && <Loader2 aria-hidden className="size-4 animate-spin" />}{catalogQ.isFetchingNextPage ? "جارٍ تحميل المزيد…" : "تحميل المزيد"}</button></div>}
-          {catalogQ.isError && <p className="mt-3 text-center text-xs font-bold text-rose-700" role="alert">تعذّر تحميل الصفحة التالية. اضغط «تحميل المزيد» لإعادة المحاولة.</p>}
+          {catalogQ.isLoading ? <div className="flex flex-col items-center justify-center py-24 text-[#7a817f]"><Loader2 aria-hidden className="size-8 animate-spin text-[#1e4a63]" /><p className="mt-3 text-sm font-bold">جارٍ تحميل المنتجات…</p></div> : catalogInitialError ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center" role="alert"><AlertTriangle aria-hidden className="size-10 text-[#b87835]" /><p className="mt-3 text-sm font-black text-[#30383e]">تعذّر تحميل المنتجات</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">تحقق من الاتصال ثم أعد المحاولة. لم نعرض هذه الحالة كمنتجات فارغة.</p><button type="button" onClick={() => void catalogQ.refetch()} className="store-primary-action mt-4 bg-[#e65f4a] px-5 py-2.5 text-xs font-black text-white">إعادة المحاولة</button></div> : filteredItems.length === 0 ? <div className="flex flex-col items-center justify-center border border-[#ddd8d1] bg-white py-24 text-center"><Package aria-hidden className="size-10 text-[#7a817f]" /><p className="mt-3 text-sm font-black text-[#30383e]">{isEmptyCatalog ? "لا توجد منتجات معروضة حالياً" : "لا توجد نتائج مطابقة للبحث أو الفلاتر"}</p><p className="mt-1 max-w-sm text-xs font-semibold text-[#7a817f]">{isEmptyCatalog ? "ستظهر المنتجات هنا عند إضافتها إلى المتجر." : "جرّب مسح البحث والفلاتر لعرض المنتجات المتاحة."}</p>{!isEmptyCatalog && <button type="button" onClick={clearCatalogFilters} className="mt-4 bg-[#1e4a63] px-5 py-2.5 text-xs font-black text-white">مسح البحث والفلاتر</button>}</div> : <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">{filteredItems.flatMap((p, idx) => { const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price); const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0; const card = <article key={p.productId} className={`store-product-card group flex h-full flex-col overflow-hidden border border-[#ddd8d1] bg-white transition ${p.inStock ? "hover:-translate-y-0.5 hover:border-[#1e4a63] hover:shadow-md" : "opacity-70"}`}><button onClick={() => setSelectedId(p.productId)} className="relative block text-right"><BundleMedia urls={p.bundleImageUrls} fallbackUrl={p.imageUrl} alt={p.productName} showFallbackLabel className="aspect-[4/3] w-full" />{onSale && pct > 0 && <span className="absolute right-3 top-3 bg-[#e65f4a] px-2 py-1 text-[10px] font-black text-white">خصم {pct}٪</span>}{p.isBundle && <span className="absolute left-3 top-3 bg-[#1e4a63] px-2 py-1 text-[10px] font-black text-white">بكج</span>}{!p.inStock && <span className="absolute inset-x-0 bottom-0 bg-[#20252a]/80 py-2 text-center text-[11px] font-black text-white">غير متوفر حالياً</span>}</button><div className="flex flex-1 flex-col p-4"><span className="min-h-4 text-[10px] font-black uppercase tracking-wide text-[#a4513f]">{p.brand ?? "مكتبة العربية"}</span><button onClick={() => setSelectedId(p.productId)} className="mt-2 text-right"><span className="line-clamp-2 min-h-[2.8em] text-sm font-black leading-6 text-[#30383e]">{p.productName}</span></button><div className="mt-3 flex items-baseline gap-2"><span className="text-lg font-black text-[#1e4a63]">{priceLabel(p.salePrice ?? p.price)}</span>{onSale && <span className="text-xs font-bold text-[#9aa09f] line-through">{money(p.price)}</span>}</div><div className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[10px] font-bold text-[#8b9395]">{p.stockLeft != null ? <span className="text-[#a4513f]">بقي {p.stockLeft} فقط</span> : <span>{p.unitName}</span>}{p.soldCount >= 3 && <span>الأكثر طلباً</span>}</div><button onClick={() => setSelectedId(p.productId)} disabled={!p.inStock} className="store-primary-action mt-5 flex w-full items-center justify-center gap-2 bg-[#e65f4a] py-3 text-xs font-black text-white transition hover:bg-[#c94736] disabled:cursor-not-allowed disabled:bg-[#e4e2df] disabled:text-[#969c9c]"><Plus aria-hidden className="size-4" />{p.inStock ? "اختر المنتج" : "غير متوفر"}</button></div></article>; const nodes: ReactNode[] = [card]; if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) { const k = ((idx + 1) / 10 - 1) % feedStrips.length; nodes.push(<InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />); } return nodes; })}</div>}
+          {catalogQ.hasNextPage && <div ref={catalogLoadMoreRef} className="mt-8 flex min-h-12 items-center justify-center" aria-live="polite">{catalogQ.isFetchingNextPage ? <span className="flex items-center gap-2 text-xs font-bold text-[#1e4a63]"><Loader2 aria-hidden className="size-4 animate-spin" /> جارٍ تحميل منتجات إضافية…</span> : <span className="text-[11px] font-bold text-[#8b9395]">نحمّل المزيد تلقائياً عند الاقتراب</span>}</div>}
+          {catalogQ.isError && <div className="mt-3 flex flex-col items-center gap-2 text-center" role="alert"><p className="text-xs font-bold text-rose-700">تعذّر تحميل المنتجات الإضافية تلقائياً.</p><button type="button" onClick={() => void catalogQ.fetchNextPage()} disabled={catalogQ.isFetchingNextPage} className="text-xs font-black text-[#1e4a63] underline disabled:opacity-50">إعادة المحاولة</button></div>}
         </section>
       </main>
 
@@ -1889,25 +2088,7 @@ export default function Storefront() {
 
                 {/* قد يعجبك أيضاً (cross-sell) */}
                 {(relatedQ.data?.length ?? 0) > 0 && (
-                  <div className="mt-5">
-                    <h3 className="mb-2 text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
-                    <div className="flex min-w-0 gap-3 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                      {relatedQ.data!.map((rp) => (
-                        <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
-                          <button onClick={() => setSelectedId(rp.productId)} className="text-right">
-                            <ProductImage url={rp.imageUrl} alt={rp.productName} className="store-product-media aspect-square w-full" />
-                          </button>
-                          <div className="flex flex-1 flex-col gap-1 p-2">
-                            <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
-                            <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-                            <button onClick={() => setSelectedId(rp.productId)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-bold transition motion-safe:active:scale-95">
-                              <Plus aria-hidden className="size-3" /> اختر
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  <RelatedProductStrip products={relatedQ.data!} onSelect={setSelectedId} />
                 )}
               </div>
             ) : (
@@ -2031,7 +2212,13 @@ export default function Storefront() {
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="اسمك" autoComplete="name" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
             </Field>
             <Field icon={<Phone aria-hidden className="size-4" />} label="رقم الهاتف">
-              <input value={form.phone} onChange={(e) => setForm({ ...form, phone: `+964 ${e.target.value.replace(/\D/g, "").replace(/^964/, "").replace(/^0+/, "")}` })} inputMode="tel" autoComplete="tel" placeholder="+964 7XX XXX XXXX" className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" />
+              <IntlPhoneInput
+                value={form.phone}
+                onChange={(phone) => setForm({ ...form, phone })}
+                ariaLabel="رقم الهاتف"
+                placeholder="770 123 4567"
+                className="border-0 shadow-none"
+              />
             </Field>
             </div>
             <div className="rounded-2xl border border-[#ead8c8] bg-white p-3 ring-1 ring-[#f3e5da] dark:bg-slate-900 dark:ring-slate-700">

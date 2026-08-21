@@ -34,6 +34,7 @@ export interface PreviewRow {
   rounded: boolean;
   clampedMin: boolean;
   isBundle: boolean;
+  contractCovered: boolean;
 }
 
 export interface SkippedRow {

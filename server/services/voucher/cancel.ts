@@ -23,6 +23,10 @@ import { assertEmployeeAdvanceVoucherRequestTx } from "../advancesService";
 import type { PartyType, PaymentMethod } from "./types";
 import { loadVoucherCategoryForPosting } from "./categoryAccounting";
 import { lockUntouchedEmployeeAdvanceForCancellationTx } from "./employeeAdvanceCancellation";
+import {
+  assertPurchaseUsdSettlementMaterializedTx,
+  repairLegacyPurchaseUsdSettlementReceiptTx,
+} from "../purchase/usdSettlement";
 
 export interface CancelVoucherResult {
   receiptId: number;
@@ -49,13 +53,19 @@ export async function cancelVoucher(
   actor: Actor,
 ): Promise<CancelVoucherResult> {
   return withTx(async (tx) => {
-    const [preview] = await tx
+    let [preview] = await tx
       .select()
       .from(receipts)
       .where(eq(receipts.id, receiptId))
       .limit(1);
-    if (!preview || preview.voucherNumber == null) {
+    if (!preview) {
       throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+    }
+    if (preview.voucherNumber == null) {
+      // الإصدار القديم من settlePurchaseUsdDirect كتب إيصالاً بلا envelope.
+      // حتى مع اكتمال قيوده لا يمكن إثبات أن caches الحالية ما زالت تحمل تخصيص
+      // هذا الإيصال بعينه؛ لذلك يبقى للقراءة والتدقيق ويُرفض عكسه تلقائياً.
+      preview = await repairLegacyPurchaseUsdSettlementReceiptTx(tx, receiptId);
     }
     const cancellationReference = `CANCEL-VCH-${receiptId}`;
     const previewAttemptIds = (
@@ -147,6 +157,16 @@ export async function cancelVoucher(
       "سند",
     );
     const originalSystemRequest = parseSystemPaymentRequest(r.internalNote);
+    if (
+      originalSystemRequest?.kind === "PURCHASE_SUPPLIER_USD" &&
+      originalSystemRequest.legacyReceiptId != null
+    ) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          "تسديد USD التاريخي متاح للتدقيق فقط؛ يلزم تصحيح مالي موثق بعد المطابقة قبل العكس",
+      });
+    }
     const reservedSystemSource =
       hasSystemPaymentRequestEnvelope(r.internalNote) ||
       isSystemPaymentReference(r.referenceNumber);
@@ -167,7 +187,8 @@ export async function cancelVoucher(
     if (
       originalSystemRequest &&
       originalSystemRequest.kind !== "EMPLOYEE_ADVANCE" &&
-      originalSystemRequest.kind !== "PURCHASE_SUPPLIER"
+      originalSystemRequest.kind !== "PURCHASE_SUPPLIER" &&
+      originalSystemRequest.kind !== "PURCHASE_SUPPLIER_USD"
     ) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -238,9 +259,15 @@ export async function cancelVoucher(
       .from(accountingEntries)
       .where(eq(accountingEntries.receiptId, receiptId))
       .for("update")
-      .limit(2);
+      .limit(originalSystemRequest?.kind === "PURCHASE_SUPPLIER_USD" ? 4 : 2);
     const materialized = materializedEntries[0];
-    if (
+    if (originalSystemRequest?.kind === "PURCHASE_SUPPLIER_USD") {
+      await assertPurchaseUsdSettlementMaterializedTx(
+        tx,
+        r,
+        originalSystemRequest,
+      );
+    } else if (
       materializedEntries.length !== 1 ||
       !materialized ||
       materialized.entryType !==

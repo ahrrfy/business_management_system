@@ -1,5 +1,6 @@
 // راوتر سندات القبض/الصرف المستقلّة. managerProcedure (تأثير مالي مباشر على الذمم + الصندوق).
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { logAudit, logAuditTx } from "../services/auditService";
 import {
@@ -131,7 +132,11 @@ export const voucherRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء السند" });
+          failOpaque(e, {
+            op: "vouchers.create",
+            userMessage: "تعذّر إنشاء السند",
+            context: { userId: ctx.user.id },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء السند (تكرار)" });

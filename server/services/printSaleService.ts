@@ -594,6 +594,8 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       profit: revenue.minus(costTotal),
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
+      createdBy: actor.userId,
+      createdByNameSnapshot: salespersonNameSnapshot,
     postingIntent: createPostingIntent("SALE_SERVICE", "SALE", [debitLine("AR", money(totals.total)), creditLine("SALES_PRINT", revenue), ...(money(totals.taxAmount).isZero() ? [] : [creditLine("TAX_PAYABLE", money(totals.taxAmount))]), ...(costTotal.isZero() ? [] : [debitLine("COGS", costTotal), creditLine("INVENTORY", costTotal)]), ...(preCollectedD.isZero() ? [] : [debitLine("OTHER_LIABILITY", preCollectedD), creditLine("AR", preCollectedD)])], salePostingSource),
     postingSourceComponents: salePostingSource,
   });

@@ -36,6 +36,38 @@ if (unregisteredCurrent.length) {
   fail(`SQL file is not registered in _journal.json: ${unregisteredCurrent.join(", ")}`);
 }
 
+// ── حارس الملف اليتيم (٢٠/٨/٢٦): **كلّ** ملفّ SQL له مدخلٌ في السجلّ، لا الأحدث فقط ───────
+//
+// **الجذر:** الفحص أعلاه يقتصر على الملفّات ذات رقمٍ **≥ أحدث رقم** (`latestPrefix`). ودُمج
+// #671 حاملاً `0210_storefront_loyalty.sql` و`0211_storefront_push_campaigns.sql` — رقمان
+// **أقلّ** من الأحدث وقتها (0238) ⇒ سقطا خارج النطاق تماماً فلم يُفحَصا.
+//
+// وملفٌّ بلا مدخلٍ في السجلّ **لا يُنفّذه migrator أبداً**: مرّ عبر CI أخضرَ (قاعدةُ الاختبار
+// تُبنى بـ`db:push` من `schema.ts` والجداول موجودةٌ فيه) بينما الإنتاج بلا **ستّة جداول**،
+// والشيفرةُ التي تستعملها منشورة. قِيس فعلياً بعد الدمج: الجداول الستّة غائبة.
+//
+// ⚠️ ولا يُغني عنه حجزُ الرقم الذرّيّ (`coord:migration`): ذاك يحرس **الرقم**، وهذا يحرس
+// **الوجود في السجلّ**. الملفُّ اليتيم لا رقمَ محجوزاً له ولا وسمَ مسجَّلاً ⇒ لا يدخل أيّ فحصٍ منهما.
+//
+// خطُّ أساسٍ مجمَّد ليتيمَين تاريخيَّين سبقا هذا الحارس. ⛔ لا يُضاف إليه شيء: أيّ ملفٍّ جديد
+// بلا مدخل يعني هجرةً لن تُطبَّق قطّ — أصلح السجلّ لا الخطّ.
+const LEGACY_ORPHANS = new Set([
+  "0010_credit_limit_null_default",
+  "0114_purchase_usd_ledger",
+]);
+const orphans = migrationFiles
+  .map((name) => name.replace(/\.sql$/, ""))
+  .filter((tag) => !tags.includes(tag) && !LEGACY_ORPHANS.has(tag));
+if (orphans.length) {
+  fail(
+    `ملفّ هجرةٍ بلا مدخل في _journal.json — لن يُطبَّق أبداً: ${orphans.join(", ")}
+` +
+    `  أضِف لكلٍّ مدخلاً (idx و tag و when) بـ\`when\` فوق أحدث ما على origin/main،
+` +
+    `  واحجز رقمه ذرّياً: pnpm coord:migration reserve <slug>`,
+  );
+}
+
 const latestFiles = migrationFiles.filter((name) => Number(name.slice(0, 4)) === latestPrefix);
 if (latestFiles.length !== 1) {
   fail(`migration number ${String(latestPrefix).padStart(4, "0")} is used by ${latestFiles.length} files`);

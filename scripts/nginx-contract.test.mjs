@@ -336,6 +336,30 @@ function runRollbackFault(fault) {
       "renewing a TLS dependency directory must not block a legitimate deploy",
     );
 
+    // انحدار (٢١/٨/٢٦): الخادم **مشترَك**، وخدمة `siraj-auto-deploy` (نشر سراج القرآن
+    // التلقائيّ من GitHub) تكتب في `/etc/nginx` و`sites-available` كلّما تحدّث فرعُها —
+    // فيتغيّر **توقيت المجلّد** بلا مساس بأيّ ملفٍّ من ملفّاتنا. أسقط ذلك نشرَنا بـ
+    // TOPOLOGY_DRIFT بينما الملفّات الأربعة عشر متطابقةٌ في المحتوى والحجم والصلاحيات
+    // والمالك. وهذان المجلّدان **لا يُحمّلهما nginx بالتعميم** ⇒ توقيتهما ليس إشارةَ أمان.
+    // (نُبقي استثناء sites-enabled من الخطوة السابقة كي نعزل ما نختبره هنا وحده.)
+    for (const shared of [fixture.nginxRoot, path.join(fixture.nginxRoot, "sites-available")]) {
+      const neighbourDeployedAt = new Date(Date.now() + 120_000);
+      fs.utimesSync(shared, neighbourDeployedAt, neighbourDeployedAt);
+    }
+    const afterNeighbourDeploy = verifyLiveNginxContract({
+      projectRoot: fixture.projectRoot,
+      nginxRoot: fixture.nginxRoot,
+      strictOwnership: false,
+      strictMode: false,
+      managedLinks: [],
+      tlsDependencies: [path.join(tlsDirectory, "fullchain.pem")],
+    });
+    assert.equal(
+      afterNeighbourDeploy.files,
+      NGINX_MANAGED_FILES.length,
+      "a neighbour tenant deploying on the shared host must not block our deploy",
+    );
+
     fs.writeFileSync(
       path.join(fixture.nginxRoot, "sites-enabled", "legacy-storefront"),
       "server_name alarabiya.online;\n",

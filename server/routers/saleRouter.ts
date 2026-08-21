@@ -1,4 +1,5 @@
 import { INVOICE_CHANNELS } from "@shared/invoiceChannel";
+import { failOpaque } from "../lib/opaqueFailure";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, not, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -525,16 +526,12 @@ export const saleRouter = router({
           // لا نبتلع السبب الجذري: نُسجّله كاملاً (رسالة + كود SQL + الاستعلام) قبل
           // إرجاع رسالة عامة للواجهة — وإلا صار تشخيص أعطال الإنتاج تخميناً (درس ١٢/٦:
           // عمود مخطط ناقص ظهر للمستخدم كـ«تعذّر إتمام البيع» بلا أثرٍ يكشف العمود).
-          logger.error(
-            {
-              err: { message: e?.message, code: e?.code, sqlMessage: e?.sqlMessage, sql: e?.sql },
-              userId: actor.userId,
-              branchId: actor.branchId,
-              lines: input.lines.length,
-            },
-            "sale.create فشل بخطأ غير متوقّع (السبب الجذري أدناه)"
-          );
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام البيع" });
+          // كان هذا هو الموضعَ الوحيد الذي يفعلها بين عشرة نظائر ⇒ استُخرج إلى `failOpaque`.
+          failOpaque(e, {
+            op: "sales.create",
+            userMessage: "تعذّر إتمام البيع",
+            context: { userId: actor.userId, branchId: actor.branchId, lines: input.lines.length },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
@@ -592,7 +589,11 @@ export const saleRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام الدفعة" });
+          failOpaque(e, {
+            op: "sales.pay",
+            userMessage: "تعذّر إتمام الدفعة",
+            context: { userId: ctx.user.id, invoiceId: input.invoiceId },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الدفعة (تكرار)" });
