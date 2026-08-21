@@ -716,6 +716,9 @@ export async function resolveReturnablePurchaseOrder(input: { branchId: number; 
     .limit(1))[0];
   if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "لم يُعثر على أمر شراء مثبت بهذا الرقم في الفرع" });
 
+  // الوحدة التاريخية لسطر الأمر هي baseQuantity / quantity. لا نقرأ معامل productUnits
+  // الحي هنا: تعديله لاحقاً يجب ألا يغيّر الكمية القابلة للإرجاع في مستند شراء مثبت.
+  const orderUnitConversionFactor = sql<string>`${purchaseOrderItems.baseQuantity} / NULLIF(${purchaseOrderItems.quantity}, 0)`;
   const items = await db.select({
     purchaseOrderItemId: purchaseOrderItems.id,
     variantId: purchaseOrderItems.variantId,
@@ -724,12 +727,12 @@ export async function resolveReturnablePurchaseOrder(input: { branchId: number; 
     variantName: productVariants.variantName,
     sku: productVariants.sku,
     unitName: productUnits.unitName,
-    conversionFactor: productUnits.conversionFactor,
+    conversionFactor: orderUnitConversionFactor,
     unitPrice: purchaseOrderItems.unitPrice,
     receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity,
     returnedBaseQuantity: purchaseOrderItems.returnedBaseQuantity,
     remainingBaseQuantity: sql<number>`${purchaseOrderItems.receivedBaseQuantity} - ${purchaseOrderItems.returnedBaseQuantity}`,
-    remainingQuantity: sql<string>`(${purchaseOrderItems.receivedBaseQuantity} - ${purchaseOrderItems.returnedBaseQuantity}) / NULLIF(${productUnits.conversionFactor}, 0)`,
+    remainingQuantity: sql<string>`(${purchaseOrderItems.receivedBaseQuantity} - ${purchaseOrderItems.returnedBaseQuantity}) * ${purchaseOrderItems.quantity} / NULLIF(${purchaseOrderItems.baseQuantity}, 0)`,
   })
     .from(purchaseOrderItems)
     .innerJoin(productVariants, eq(productVariants.id, purchaseOrderItems.variantId))
