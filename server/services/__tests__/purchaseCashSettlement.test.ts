@@ -18,7 +18,8 @@ import { getCashFlowSeries } from "../treasury/cashFlow";
 import { getRecentMovements } from "../treasury/movements";
 import { getTreasurySummary } from "../reportsTreasuryService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
-import { plSnapshot } from "../reportsFinancialService";
+import { getFinancialPosition, plSnapshot } from "../reportsFinancialService";
+import { reconcileSupplierBalances } from "../reconcileService";
 import { truncateTables } from "./__testUtils__";
 
 const creator = { userId: 1, branchId: 1, role: "purchasing" as const };
@@ -29,6 +30,7 @@ const TABLES = [
   "idempotencyKeys",
   "journalLines",
   "journalEntries",
+  "doubleEntrySettings",
   "purchaseReturnItems",
   "purchaseReturns",
   "accountingEntries",
@@ -202,7 +204,7 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       .from(s.inventoryMovements)
       .where(eq(s.inventoryMovements.referenceId, created.purchaseOrderId));
 
-    expect(supplierBeforeApproval.currentBalance).toBe("1000.00");
+    expect(supplierBeforeApproval.currentBalance).toBe("0.00");
     expect(order.paidAmount).toBe("0.00");
     expect(entriesBeforeApproval).toHaveLength(1);
     expect(entriesBeforeApproval[0]).toMatchObject({
@@ -212,7 +214,11 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       receiptId: null,
       amount: "1000.00",
       cost: "1000.00",
+      purchaseLiabilityAccount: "CASH_CLEARING",
     });
+    expect(await getAPAging()).toEqual([]);
+    expect((await getArApAgingDetail({ side: "AP" })).rows).toEqual([]);
+    expect(await reconcileSupplierBalances()).toEqual([]);
     expect(stock[0].quantity).toBe(10);
     expect(movements).toHaveLength(1);
     expect(movements[0]).toMatchObject({
@@ -223,6 +229,12 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
     });
     expect(await treasuryBalance()).toBe("5000.00");
     expect(await expectedDrawerCash()).toBe("250.00");
+    expect(await getFinancialPosition({ verify: true })).toMatchObject({
+      apCredit: "0.00",
+      cashPurchaseClearingDebit: "0.00",
+      cashPurchaseClearingCredit: "1000.00",
+      apReconciled: true,
+    });
 
     const approved = await approveVoucher(requestId, approver);
     const replayed = await approveVoucher(requestId, approver);
@@ -256,10 +268,106 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       supplierId: 1,
       receiptId: requestId,
       amount: "1000.00",
+      purchaseLiabilityAccount: "CASH_CLEARING",
     });
     expect(await treasuryBalance()).toBe("4000.00");
     expect(await expectedDrawerCash()).toBe("250.00");
     expect(await db().select().from(s.inventoryMovements)).toHaveLength(1);
+    expect(await getFinancialPosition({ verify: true })).toMatchObject({
+      apCredit: "0.00",
+      cashPurchaseClearingDebit: "0.00",
+      cashPurchaseClearingCredit: "0.00",
+      apReconciled: true,
+    });
+  });
+
+  it("يرحّل SHADOW المخزون مقابل تسوية نقدية ثم يطفئها مقابل الخزينة بلا AP", async () => {
+    await db().insert(s.doubleEntrySettings).values({
+      id: 1,
+      mode: "SHADOW",
+      shadowCycleId: "cash-purchase-clearing-test",
+    });
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      status: "CONFIRMED",
+      settlementType: "CASH",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+    }, creator);
+    const [item] = await db().select().from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
+    const received = await receivePurchase({
+      purchaseOrderId: created.purchaseOrderId,
+      lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 }],
+      clientRequestId: "cash-po-shadow-receive",
+    }, receiver);
+
+    let lines = await db().select({
+      profile: s.journalEntries.postingProfile,
+      role: s.journalLines.role,
+      debit: s.journalLines.debit,
+      credit: s.journalLines.credit,
+    }).from(s.journalLines)
+      .innerJoin(s.journalEntries, eq(s.journalEntries.id, s.journalLines.journalId));
+    expect(lines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ profile: "PURCHASE_INVENTORY_CASH_CLEARING", role: "INVENTORY", debit: "1000.00", credit: "0.00" }),
+      expect.objectContaining({ profile: "PURCHASE_INVENTORY_CASH_CLEARING", role: "OTHER_LIABILITY", debit: "0.00", credit: "1000.00" }),
+    ]));
+    expect(lines.some((line) => line.role === "AP")).toBe(false);
+
+    await approveVoucher(Number(received.supplierPaymentRequestReceiptId), approver);
+    lines = await db().select({
+      profile: s.journalEntries.postingProfile,
+      role: s.journalLines.role,
+      debit: s.journalLines.debit,
+      credit: s.journalLines.credit,
+    }).from(s.journalLines)
+      .innerJoin(s.journalEntries, eq(s.journalEntries.id, s.journalLines.journalId));
+    expect(lines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ profile: "PAYMENT_OUT_PURCHASE_CASH_CLEARING", role: "OTHER_LIABILITY", debit: "1000.00", credit: "0.00" }),
+      expect.objectContaining({ profile: "PAYMENT_OUT_PURCHASE_CASH_CLEARING", role: "TREASURY_CASH", debit: "0.00", credit: "1000.00" }),
+    ]));
+    expect(lines.some((line) => line.role === "AP")).toBe(false);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
+    expect(await treasuryBalance()).toBe("4000.00");
+  });
+
+  it("يبقي قيد CASH التاريخي غير الموسوم على AP حتى تُعتمد دفعته القديمة بأمان", async () => {
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      status: "CONFIRMED",
+      settlementType: "CASH",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+    }, creator);
+    await db().insert(s.accountingEntries).values({
+      entryType: "PURCHASE",
+      branchId: 1,
+      purchaseOrderId: created.purchaseOrderId,
+      supplierId: 1,
+      amount: "1000.00",
+      cost: "1000.00",
+      entryDate: "2026-08-22",
+      dedupeKey: `TEST:LEGACY:CASH:${created.purchaseOrderId}`,
+    });
+    await db().update(s.suppliers).set({ currentBalance: "1000.00" }).where(eq(s.suppliers.id, 1));
+    await db().update(s.purchaseOrders).set({ status: "RECEIVED" }).where(eq(s.purchaseOrders.id, created.purchaseOrderId));
+
+    const request = await payPurchaseOrder({
+      purchaseOrderId: created.purchaseOrderId,
+      amount: "1000.00",
+      method: "CASH",
+      clientRequestId: "legacy-cash-po-payment",
+    }, creator);
+    await approveVoucher(request.paymentRequestReceiptId, approver);
+
+    const entries = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.purchaseOrderId, created.purchaseOrderId))
+      .orderBy(asc(s.accountingEntries.id));
+    expect(entries.map((entry) => entry.purchaseLiabilityAccount)).toEqual([null, "AP"]);
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
+    expect(await treasuryBalance()).toBe("4000.00");
+    expect(await reconcileSupplierBalances()).toEqual([]);
   });
 
   it("الاستلام الجزئي ينشئ طلباً بقيمة كل دفعة، ويقبل اعتماد الطلبات بأي ترتيب", async () => {
@@ -291,7 +399,7 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
       .where(eq(s.receipts.id, Number(second.supplierPaymentRequestReceiptId)));
     expect(firstRequest.amount).toBe("400.00");
     expect(secondRequest.amount).toBe("600.00");
-    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("1000.00");
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
     expect(await treasuryBalance()).toBe("5000.00");
 
     await approveVoucher(Number(secondRequest.id), approver);
@@ -304,7 +412,63 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
     expect(await expectedDrawerCash()).toBe("250.00");
   });
 
-  it("رفض دفعة PO ثم إعادة تقديمها وإلغاؤها وإعادة طلبها يحافظ على AP والتخصيص والنقد", async () => {
+  it("مرتجع الشراء النقدي واسترداده يعكسان التسوية والمخزون والدرج بلا لمس ذمة المورد", async () => {
+    const created = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      status: "CONFIRMED",
+      settlementType: "CASH",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+    }, creator);
+    const [item] = await db().select().from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, created.purchaseOrderId));
+    const received = await receivePurchase({
+      purchaseOrderId: created.purchaseOrderId,
+      lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 }],
+      clientRequestId: "cash-po-return-receive",
+    }, receiver);
+    await approveVoucher(Number(received.supplierPaymentRequestReceiptId), approver);
+
+    const returned = await createPurchaseReturn({
+      clientRequestId: "cash-po-return-refund",
+      supplierId: 1,
+      branchId: 1,
+      purchaseOrderRefId: created.purchaseOrderId,
+      items: [{ purchaseOrderItemId: Number(item.id), quantity: "4" }],
+      settlement: "CASH",
+      paymentMethod: "CASH",
+    }, creator);
+
+    expect(returned).toMatchObject({
+      returnedTotal: "400.00",
+      cashRefundAmount: "400.00",
+      creditOffsetAmount: "0.00",
+    });
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
+    expect((await db().select().from(s.branchStock).where(eq(s.branchStock.variantId, 1)))[0].quantity).toBe(6);
+    expect(await treasuryBalance()).toBe("4000.00");
+    expect(await expectedDrawerCash()).toBe("650.00");
+    expect(await getAPAging()).toEqual([]);
+    expect(await reconcileSupplierBalances()).toEqual([]);
+    expect(await getFinancialPosition({ verify: true })).toMatchObject({
+      apCredit: "0.00",
+      cashPurchaseClearingDebit: "0.00",
+      cashPurchaseClearingCredit: "0.00",
+      apReconciled: true,
+    });
+    const entries = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.purchaseOrderId, created.purchaseOrderId))
+      .orderBy(asc(s.accountingEntries.id));
+    expect(entries.map((entry) => entry.entryType)).toEqual([
+      "PURCHASE",
+      "PAYMENT_OUT",
+      "RETURN",
+      "PAYMENT_IN",
+    ]);
+    expect(entries.every((entry) => entry.purchaseLiabilityAccount === "CASH_CLEARING")).toBe(true);
+  });
+
+  it("رفض دفعة PO ثم إعادة تقديمها وإلغاؤها وإعادة طلبها يحافظ على التسوية والتخصيص والنقد بلا ذمة مورد", async () => {
     const created = await createPurchaseOrder({
       supplierId: 1,
       branchId: 1,
@@ -322,7 +486,7 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
     const rejectedId = Number(received.supplierPaymentRequestReceiptId);
 
     await rejectVoucher(rejectedId, approver, "مراجعة مستند المورد");
-    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("1000.00");
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
     expect((await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, created.purchaseOrderId)))[0].paidAmount).toBe("0.00");
     expect(await treasuryBalance()).toBe("5000.00");
 
@@ -340,7 +504,7 @@ describe("أمر الشراء النقدي — مسار المال الكامل"
     const cancellation = await cancelVoucher(replacement.receiptId, creator);
     expect(cancellation.status).toBe("PENDING_APPROVAL");
     await approveVoucher(Number(cancellation.approvalReceiptId), approver);
-    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("1000.00");
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0].currentBalance).toBe("0.00");
     expect((await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, created.purchaseOrderId)))[0].paidAmount).toBe("0.00");
     expect(await treasuryBalance()).toBe("5000.00");
     const linkedEntries = await db().select().from(s.accountingEntries)

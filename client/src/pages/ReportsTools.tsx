@@ -81,9 +81,11 @@ export default function ReportsTools() {
         const rows = [
           { label: "النقد", amount: Number(fp.cash) },
           { label: "ذمم مدينة (عملاء)", amount: Number(fp.arDebit) },
+          { label: "تسوية مشتريات نقدية لنا", amount: Number(fp.cashPurchaseClearingDebit) },
           { label: "المخزون", amount: Number(fp.inventory) },
           { label: "أصول ثابتة", amount: Number(fp.fixedAssets) },
           { label: "ذمم دائنة (موردون)", amount: Number(fp.apCredit) },
+          { label: "تسوية مشتريات نقدية معلّقة", amount: Number(fp.cashPurchaseClearingCredit) },
           { label: "حقوق الملكية", amount: Number(fp.equity) },
         ];
         return { sheetName: SHEET_LABEL.position, title: SHEET_LABEL.position, meta, rows, columns: [{ key: "label", header: "البند" }, moneyCol("amount", "المبلغ")] };

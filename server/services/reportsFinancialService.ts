@@ -875,6 +875,10 @@ export interface FinancialPosition {
   fixedAssets: string;
   apCredit: string; // ذمم دائنة (نحن نَدين للموردين)
   apDebit: string; // سُلف للموردين
+  /** صافي حساب تسوية الشراء النقدي حين يكون مديناً (مبلغ واجب الاسترداد من المورد). */
+  cashPurchaseClearingDebit: string;
+  /** صافي حساب تسوية الشراء النقدي حين يكون دائناً (صرف نقدي معلّق بلا ذمة مورد). */
+  cashPurchaseClearingCredit: string;
   // FIN-05: سُلف العملاء على أوامر الشغل غير المُسلَّمة (عرابين مقبوضة نقداً لكن الإيراد لم يُعترف به بعد) —
   // التزامٌ على الشركة (خدمةٌ لم تُنجَز)، يقابل النقدَ الداخل فلا تتضخّم حقوق الملكية.
   // مراجعة PR #495: يشمل الآن **عرابين الطلبات المحفوظة المفتوحة** (`draftAdvances` أدناه).
@@ -958,6 +962,8 @@ export async function getFinancialPosition(
     fixedAssets: zero,
     apCredit: zero,
     apDebit: zero,
+    cashPurchaseClearingDebit: zero,
+    cashPurchaseClearingCredit: zero,
     customerAdvances: zero,
     draftAdvances: zero,
     exchangeDebit: zero,
@@ -1044,6 +1050,7 @@ export async function getFinancialPosition(
         CAST(COALESCE(SUM(CASE WHEN t.net < 0 THEN -t.net ELSE 0 END), 0) AS CHAR) AS d
       FROM (
         SELECT ae.supplierId AS supplierId, SUM(CASE
+          WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
           WHEN ae.entryType = 'PURCHASE' THEN CAST(ae.amount AS DECIMAL(15,2))
           WHEN ae.entryType = 'PAYMENT_OUT' THEN -CAST(ae.amount AS DECIMAL(15,2))
           WHEN ae.entryType = 'PAYMENT_IN' THEN CAST(ae.amount AS DECIMAL(15,2))
@@ -1150,6 +1157,22 @@ export async function getFinancialPosition(
       `),
       )[0] ?? { v: "0" });
 
+  // الشراء النقدي لا يمرّ بذمة المورد. يبقى بين إثبات المخزون واعتماد الصرف في حساب
+  // تسوية مستقل، وقد ينقلب مديناً عند مرتجع لم يُستردّ نقده بعد.
+  const cashPurchaseClearingRow = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(CASE
+        WHEN ae.entryType = 'PAYMENT_OUT'
+          THEN -CAST(ae.amount AS DECIMAL(15,2))
+        ELSE CAST(ae.amount AS DECIMAL(15,2))
+      END), 0) AS CHAR) AS v
+      FROM accountingEntries ae
+      WHERE ae.purchaseLiabilityAccount = 'CASH_CLEARING'
+      ${bId ? sql`AND ae.branchId = ${bId}` : sql``}
+      ${asOf ? sql`AND ae.entryDate <= ${asOf}` : sql``}
+    `),
+  )[0] ?? { v: "0" };
+
   // بضاعة الأمانة (ش٤): تُستبعَد من أصول المخزون — ليست ملك المكتبة (تظهر التزاماً في AP بعد البيع فقط).
   const inv = rowsOf(
     await db.execute(sql`
@@ -1227,6 +1250,13 @@ export async function getFinancialPosition(
   const fixedAssets = money(fa.v ?? 0);
   const apCredit = money(ap.c ?? 0);
   const apDebit = money(ap.d ?? 0);
+  const cashPurchaseClearingNet = money(cashPurchaseClearingRow.v ?? 0);
+  const cashPurchaseClearingCredit = cashPurchaseClearingNet.gt(0)
+    ? cashPurchaseClearingNet
+    : money(0);
+  const cashPurchaseClearingDebit = cashPurchaseClearingNet.lt(0)
+    ? cashPurchaseClearingNet.abs()
+    : money(0);
   // FIN-05 + مراجعة PR #495: عرابين أوامر الشغل غير المُسلَّمة **وعرابين المسوّدات المفتوحة**.
   const draftAdvancesRaw = money(da.v ?? 0);
   const draftAdvances = draftAdvancesRaw.gt(0) ? draftAdvancesRaw : money(0); // صافٍ سالب مستحيلٌ بنيوياً (I2) — حزام أمان
@@ -1468,6 +1498,7 @@ export async function getFinancialPosition(
     .add(digitalWalletAsset)
     .add(arDebit)
     .add(apDebit)
+    .add(cashPurchaseClearingDebit)
     .add(inventory)
     .add(fixedAssets)
     .add(exchangeDebit)
@@ -1477,6 +1508,7 @@ export async function getFinancialPosition(
   // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين
   //          + أمانات أجور توصيل معلّقة (١٠/٨ — نقدها داخل «النقد» والتزامها للمندوب).
   const totalLiabilities = apCredit
+    .add(cashPurchaseClearingCredit)
     .add(arCredit)
     .add(customerAdvances)
     .add(exchangeCredit)
@@ -1522,6 +1554,8 @@ export async function getFinancialPosition(
     fixedAssets: toDbMoney(fixedAssets),
     apCredit: toDbMoney(apCredit),
     apDebit: toDbMoney(apDebit),
+    cashPurchaseClearingDebit: toDbMoney(cashPurchaseClearingDebit),
+    cashPurchaseClearingCredit: toDbMoney(cashPurchaseClearingCredit),
     customerAdvances: toDbMoney(customerAdvances),
     draftAdvances: toDbMoney(draftAdvances),
     exchangeDebit: toDbMoney(exchangeDebit),

@@ -627,7 +627,7 @@ export default function PurchaseNew() {
             {state.paymentTerms === "CASH" ? (
               <p className="mt-1 text-muted-foreground">
                 نقدي: عند كل استلام ينشئ النظام طلب صرف من الخزينة بكامل قيمة الجزء المستلم. لا يخرج
-                النقد ولا تُطفأ الذمة إلا بعد اعتماد شخص آخر.
+                النقد حتى يعتمد شخص آخر، ويظل المبلغ في حساب تسوية مستقل بلا إنشاء ذمة على المورد.
               </p>
             ) : (
               <p className="mt-1 text-muted-foreground">

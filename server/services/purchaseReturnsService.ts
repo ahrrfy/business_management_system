@@ -30,6 +30,7 @@ import { lockCashSourceForUpdate } from "./cash/cashAvailability";
 import { withTx, type Actor } from "./tx";
 import { extractAffectedRows, extractInsertId } from "../lib/insertId";
 import { paymentAssetRole } from "./sale/paymentPosting";
+import { purchaseCashSettlementUsesClearingTx } from "./purchase/internal";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -52,7 +53,7 @@ export interface CreatePurchaseReturnInput {
   items: PurchaseReturnLineInput[];
   reason?: string | null;
   paymentMethod?: PaymentMethod; // CASH = استرداد فوري؛ غيره = خصم من ذمم المورد فقط
-  /** افتراضياً CREDIT (خصم من رصيد المورد). CASH ⇒ يُسجَّل receipt OUT */
+  /** افتراضياً CREDIT (خصم من الرصيد المقابل). CASH ⇒ يُسجَّل receipt IN للاسترداد */
   settlement?: "CASH" | "CREDIT";
 }
 
@@ -82,8 +83,8 @@ function purchaseReturnFingerprint(input: CreatePurchaseReturnInput): string {
  * مرتجع مشتريات (إرجاع بضاعة للمورد):
  *  - OUT حركة مخزون عن كل بند (بقفل ذرّي على branchStock).
  *  - قيد RETURN في الدفتر بقيم سالبة (cost سالب، amount سالب).
- *  - تخفيض ذمم المورد: AP موجب = نحن مدينون له ⇒ المرتجع يُنقصها ⇒ delta = -returnedTotal.
- *    (إن دفع المورد نقداً ⇒ نسجّل receipt IN ⇒ يزيد الصندوق، ويُلغى أثر تخفيض الذمم بمقدار النقد).
+ *  - الآجل يخفض AP؛ النقدي يخفض clearing ولا يمسّ ذمة المورد.
+ *    (إن دفع المورد نقداً ⇒ نسجّل receipt IN ⇒ يزيد الصندوق ويعكس الجزء المسترد من الحساب المقابل).
  *  - idempotency على clientRequestId عبر تخزينه في accountingEntries.notes (مفتاح فريد منطقي).
  */
 export async function createPurchaseReturn(input: CreatePurchaseReturnInput, actor: Actor) {
@@ -156,6 +157,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       .where(eq(purchaseOrderItems.purchaseOrderId, Number(refPo.id)))
       .orderBy(purchaseOrderItems.id)
       .for("update");
+    const useCashClearing = refPo.settlementType === "CASH"
+      ? await purchaseCashSettlementUsesClearingTx(tx, Number(refPo.id))
+      : false;
+    const purchaseLiabilityRole = useCashClearing ? "OTHER_LIABILITY" as const : "AP" as const;
 
     // يجب أن يأتي فحص idempotency بعد القفل الجاري للأمر وبنوده. بهذا لا تُنشئ قراءةٌ
     // متّسقة مبكرة snapshot قديماً تحت REPEATABLE READ قبل فحص سقف المرتجع.
@@ -368,7 +373,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     }
     const purchaseReturnPostingSource = {
       roleDebits: {
-        AP: returnedTotal,
+        [purchaseLiabilityRole]: returnedTotal,
         ...(purchasePriceVariance.gt(0)
           ? { PURCHASE_PRICE_VARIANCE: purchasePriceVariance }
           : {}),
@@ -387,6 +392,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       entryType: "RETURN",
       branchId: input.branchId,
       purchaseOrderId: input.purchaseOrderRefId,
+      purchaseLiabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
       supplierId: input.supplierId,
       cost: returnedInventoryBook.neg(),
       // موجب = مكسب حين تنخفض AP بسعر الفاتورة أكثر من قيمة المخزون الخارجة بـWAVG.
@@ -398,7 +404,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       dedupeKey: `PURCHASE_RETURN:${purchaseReturnId}`,
       createdBy: actor.userId,
       createdByNameSnapshot: actorName,
-      postingIntent: createPostingIntent("RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine("AP", returnedTotal), creditLine("INVENTORY", returnedInventoryBook), ...(returnedTax.isZero() ? [] : [creditLine("TAX_PAYABLE", returnedTax)]), ...(purchasePriceVariance.gt(0) ? [debitLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance)] : purchasePriceVariance.lt(0) ? [creditLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance.abs())] : [])], purchaseReturnPostingSource),
+      postingIntent: createPostingIntent(useCashClearing ? "RETURN_PURCHASE_INVENTORY_CASH_CLEARING" : "RETURN_PURCHASE_INVENTORY", "RETURN", [debitLine(purchaseLiabilityRole, returnedTotal), creditLine("INVENTORY", returnedInventoryBook), ...(returnedTax.isZero() ? [] : [creditLine("TAX_PAYABLE", returnedTax)]), ...(purchasePriceVariance.gt(0) ? [debitLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance)] : purchasePriceVariance.lt(0) ? [creditLine("PURCHASE_PRICE_VARIANCE", purchasePriceVariance.abs())] : [])], purchaseReturnPostingSource),
       postingSourceComponents: purchaseReturnPostingSource,
     });
 
@@ -422,22 +428,25 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       requestFingerprint,
     );
 
-    // AP: المورد يدين لنا الآن بقيمة المرتجع ⇒ ننقص رصيده الدائن لدينا (suppliers.currentBalance) بالسالب.
-    await adjustSupplierBalance(tx, input.supplierId, returnedTotal.neg());
+    // الشراء الآجل يعكس ذمة المورد؛ الشراء النقدي يعكس حساب التسوية المستقل ولا يمس الذمة.
+    if (!useCashClearing) {
+      await adjustSupplierBalance(tx, input.supplierId, returnedTotal.neg());
+    }
     if (refPo?.agreedCurrency === "USD" && returnedUsd.gt(0)) {
       const returnableUsd = money(refPo.usdTotal ?? 0).minus(money(refPo.returnedUsd));
       if (returnedUsd.gt(returnableUsd)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة المرتجع الدولارية تتجاوز قيمة الفاتورة القابلة للإرجاع" });
       }
-      await adjustSupplierBalanceUsd(tx, input.supplierId, returnedUsd.neg());
+      if (!useCashClearing) {
+        await adjustSupplierBalanceUsd(tx, input.supplierId, returnedUsd.neg());
+      }
       await tx.update(purchaseOrders)
         .set({ returnedUsd: toDbMoney(money(refPo.returnedUsd).plus(returnedUsd)) })
         .where(eq(purchaseOrders.id, Number(refPo.id)));
     }
 
-    // الاسترداد النقدي اختياري: لو CASH ⇒ المورد ردّ النقد ⇒ receipt IN ⇒ يزيد الصندوق،
-    // ولأنّنا أنقصنا الذمم بكامل القيمة فإن استلامنا نقداً يجب أن "يُعيد" قيمة النقد للذمم
-    // كي يظل صافي الأثر: AP -= (returnedTotal − cashReceived). يُحقّق ذلك بـ PAYMENT_IN + adjustSupplier(+cash).
+    // الاسترداد النقدي اختياري: receipt IN يزيد الصندوق ويعيد قيمة النقد إلى الحساب المقابل.
+    // في الآجل يكون AP؛ وفي الشراء النقدي يكون clearing المستقل بلا مساس بذمة المورد.
     if (settlement === "CASH") {
       if (refPo?.agreedCurrency === "USD") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "استرداد فاتورة دولارية يُسجَّل عبر عملية صيرفة مرتبطة، لا كقبض نقدي ديناري مباشر" });
@@ -455,10 +464,12 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
           .innerJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
           .where(and(
             eq(accountingEntries.entryType, "PAYMENT_IN"),
-            or(
-              eq(accountingEntries.postingProfile, "PAYMENT_IN_SUPPLIER_REFUND"),
-              sql`${accountingEntries.postingProfile} IS NULL`,
-            ),
+            useCashClearing
+              ? eq(accountingEntries.purchaseLiabilityAccount, "CASH_CLEARING")
+              : or(
+                  eq(accountingEntries.postingProfile, "PAYMENT_IN_SUPPLIER_REFUND"),
+                  sql`${accountingEntries.postingProfile} IS NULL`,
+                ),
             eq(accountingEntries.purchaseOrderId, Number(refPo.id)),
             eq(accountingEntries.supplierId, input.supplierId),
             eq(receipts.direction, "IN"),
@@ -474,10 +485,12 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
           .innerJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
           .where(and(
             eq(accountingEntries.entryType, "PAYMENT_OUT"),
-            or(
-              eq(accountingEntries.postingProfile, "PAYMENT_OUT_SUPPLIER"),
-              sql`${accountingEntries.postingProfile} IS NULL`,
-            ),
+            useCashClearing
+              ? eq(accountingEntries.purchaseLiabilityAccount, "CASH_CLEARING")
+              : or(
+                  eq(accountingEntries.postingProfile, "PAYMENT_OUT_SUPPLIER"),
+                  sql`${accountingEntries.postingProfile} IS NULL`,
+                ),
             eq(accountingEntries.purchaseOrderId, Number(refPo.id)),
             eq(accountingEntries.supplierId, input.supplierId),
             eq(receipts.direction, "OUT"),
@@ -517,22 +530,25 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       const refundAssetRole = paymentAssetRole(method, prelockedCash.cashBucket, "IN");
       const refundPostingSource = {
         roleDebits: { [refundAssetRole]: cashRefund },
-        roleCredits: { AP: cashRefund },
+        roleCredits: { [purchaseLiabilityRole]: cashRefund },
       };
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
         purchaseOrderId: input.purchaseOrderRefId,
+        purchaseLiabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
         supplierId: input.supplierId,
         receiptId,
         amount: cashRefund,
         createdBy: actor.userId,
         createdByNameSnapshot: actorName,
-        postingIntent: createPostingIntent("PAYMENT_IN_SUPPLIER_REFUND", "PAYMENT_IN", [debitLine(refundAssetRole, cashRefund), creditLine("AP", cashRefund)], refundPostingSource),
+        postingIntent: createPostingIntent(useCashClearing ? "PAYMENT_IN_PURCHASE_CASH_CLEARING" : "PAYMENT_IN_SUPPLIER_REFUND", "PAYMENT_IN", [debitLine(refundAssetRole, cashRefund), creditLine(purchaseLiabilityRole, cashRefund)], refundPostingSource),
         postingSourceComponents: refundPostingSource,
       });
       // العاكس: لأنّ النقد دخل صندوقنا، نُلغي خصم الذمم بمقدار النقد المُسترد.
-      await adjustSupplierBalance(tx, input.supplierId, cashRefund);
+      if (!useCashClearing) {
+        await adjustSupplierBalance(tx, input.supplierId, cashRefund);
+      }
     }
 
     await tx.update(purchaseReturns)

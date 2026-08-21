@@ -2614,6 +2614,14 @@ export const accountingEntries = mysqlTable(
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).references(
       () => purchaseOrders.id,
     ),
+    /**
+     * تصنيف التزام أمر الشراء المستقل عن وضع الدفتر المزدوج. NULL = قيد تاريخي/AP؛
+     * CASH_CLEARING يمنع خلط تسوية الشراء النقدي بذمة المورد حتى في وضع OFF.
+     */
+    purchaseLiabilityAccount: mysqlEnum("purchaseLiabilityAccount", [
+      "AP",
+      "CASH_CLEARING",
+    ]),
     receiptId: bigint("receiptId", { mode: "number" }).references(
       () => receipts.id,
     ),

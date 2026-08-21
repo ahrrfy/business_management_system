@@ -84,6 +84,8 @@ export interface EntryInput {
   branchId?: number | null;
   invoiceId?: number | null;
   purchaseOrderId?: number | null;
+  /** تصنيف تشغيلي دائم لتسوية أمر الشراء، مستقل عن SHADOW/ACTIVE posting evidence. */
+  purchaseLiabilityAccount?: "AP" | "CASH_CLEARING" | null;
   receiptId?: number | null;
   customerId?: number | null;
   supplierId?: number | null;
@@ -216,6 +218,7 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     branchId: e.branchId ?? null,
     invoiceId: e.invoiceId ?? null,
     purchaseOrderId: e.purchaseOrderId ?? null,
+    purchaseLiabilityAccount: e.purchaseLiabilityAccount ?? null,
     receiptId: e.receiptId ?? null,
     customerId: e.customerId ?? null,
     supplierId: e.supplierId ?? null,

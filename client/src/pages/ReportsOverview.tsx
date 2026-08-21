@@ -177,7 +177,14 @@ export default function ReportsOverview() {
   const cur = pl.data?.current;
   const prev = pl.data?.previous;
   const fp = fin.data;
-  const netPosition = fp ? D(fp.cash).add(D(fp.arDebit)).sub(D(fp.apCredit)).toFixed(2) : null;
+  const netPosition = fp
+    ? D(fp.cash)
+        .add(D(fp.arDebit))
+        .add(D(fp.cashPurchaseClearingDebit))
+        .sub(D(fp.apCredit))
+        .sub(D(fp.cashPurchaseClearingCredit))
+        .toFixed(2)
+    : null;
   const topAr = (ar.data ?? []).filter((x) => Number(x.unpaidTotal) > 0).slice(0, 5);
   const topAp = (ap.data ?? []).filter((x) => Number(x.unpaidTotal) > 0).slice(0, 5);
 
@@ -231,7 +238,7 @@ export default function ReportsOverview() {
           value={netPosition != null ? formatIqd(netPosition) : (fin.isLoading ? "…" : "—")}
           icon={Coins}
           tone="positive"
-          sub="نقد + ذمم مدينة − دائنة"
+          sub="نقد + ذمم مدينة + صافي تسوية الشراء النقدي"
         />
         <StatCard
           label="مستحقّ التحصيل"
