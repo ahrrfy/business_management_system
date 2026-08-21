@@ -21,8 +21,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { dispatchToDelivery } from "../delivery/dispatch";
+import { listInTransitConsignments } from "../delivery/queries";
 import { declareConsignmentReturn } from "../delivery/declaredReturn";
 import { returnConsignment } from "../delivery/returns";
+import { cancelDeliveryAssignment } from "../delivery/cancellation";
 import { money, round2 } from "../money";
 import { openShift } from "../shiftService";
 import { checkoutReception } from "../receptionCheckoutService";
@@ -205,6 +207,51 @@ describe("المرتجع المُعلَن ≠ المستلَم", () => {
       { consignmentId: b.consignmentId, reason: "رفض العميل" },
       { userId: 3, branchId: 2, role: "cashier" } as never,
     )).rejects.toThrowError(/فرعاً آخر/);
+  });
+
+  it("⭐ بعد الإعلان: لا إلغاءَ إسناد — وإلّا حُرِّر التعرّض مرّتين", async () => {
+    // تصويبُ مراجعة Codex: وسمُ الإعلان أعمدةٌ إضافية، فالحرّاسُ القائمة **لا تراه**؛
+    // و`cancelDeliveryAssignment` يقبل ASSIGNED ويكتب `COD_RELEASED` ثانياً.
+    const a = await dispatchedOrder("dr-7", "12000.00");
+    await declareConsignmentReturn(
+      { consignmentId: a.consignmentId, reason: "رفض العميل" }, CASHIER as never,
+    );
+    // الإلغاءُ صلاحيةُ مدير — نستعمله كي يبلغ الحارسَ المقصود لا حارسَ الدور.
+    await expect(cancelDeliveryAssignment(
+      { consignmentId: a.consignmentId, reason: "إلغاء", clientRequestId: "cancel-after-decl" } as never,
+      { userId: 1, branchId: 1, role: "manager" } as never,
+    )).rejects.toThrowError(/أُعلن رجوعُه/);
+    // التحريرُ ما زال مرّةً واحدة.
+    expect((await releasedTotal(a.consignmentId)).toFixed(2)).toBe("12000.00");
+  });
+
+  it("⭐ التعرّضُ المعروض يصفر بعد الإعلان — لا تُضخَّم لوحةُ التحصيل بمبلغٍ حُرِّر", async () => {
+    const a = await dispatchedOrder("dr-8", "8000.00");
+    const before = await db().select().from(s.deliveryConsignments)
+      .where(eq(s.deliveryConsignments.id, a.consignmentId));
+    expect(Number(before[0].codAmount)).toBe(8000);
+
+    await declareConsignmentReturn(
+      { consignmentId: a.consignmentId, reason: "عنوان خاطئ" }, CASHIER as never,
+    );
+    const rows = await listInTransitConsignments(1);
+    const row = rows.find((r) => Number(r.id) === a.consignmentId)!;
+    // `codAmount` يبقى كما هو (تاريخُ المستند)، لكنّ **المتبقّي المعروض** صفرٌ لأنّه حُرِّر.
+    expect(Number(row.codDue)).toBe(0);
+    expect(row.returnDeclaredAt).toBeTruthy();
+    expect(row.returnDeclaredReason).toBe("عنوان خاطئ");
+  });
+
+  it("السببُ ورقمُ الكشف يبقيان ضمن حدّ العمود (500)", async () => {
+    const a = await dispatchedOrder("dr-9", "4000.00");
+    await declareConsignmentReturn({
+      consignmentId: a.consignmentId,
+      reason: "س".repeat(500),          // السببُ وحده يبلغ الحدّ
+      statementNumber: "STMT-VERY-LONG-0001",
+    }, CASHIER as never);
+    const cn = await cnOf(a.consignmentId);
+    expect((cn.returnDeclaredReason ?? "").length).toBeLessThanOrEqual(500);
+    expect(cn.returnDeclaredReason).toContain("STMT-VERY-LONG-0001"); // الرقمُ يُصان
   });
 
   it("إعادةُ الإعلان بنفس المفتاح لا تُحرّر ثانيةً", async () => {

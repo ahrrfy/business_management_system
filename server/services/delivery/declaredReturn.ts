@@ -28,6 +28,36 @@ import { withTx } from "../tx";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import type { DeliveryTxActor } from "./types";
 
+/**
+ * **الرجوعُ المُعلَن يُغلق كلَّ مخرجٍ إلّا الاسترجاع** (تصويب مراجعة Codex، ٢١/٨).
+ *
+ * وسمُ الإعلان أعمدةٌ إضافيةٌ لا قيمةُ `parcelStatus` — وهو الصواب (القيمةُ الجديدة تُعمي
+ * عشرات الحرّاس صامتاً)، لكنّ ثمنَه أنّ الحرّاس القائمة **لا تراه**، فيبقى الطردُ مقبولاً في:
+ *
+ *  · `cancelDeliveryAssignment` — يقبل ASSIGNED/FAILED ويكتب `COD_RELEASED` **ثانياً**
+ *    (ولا فهرسَ فريد على `eventKey` يمنعه) ⇒ تحريرٌ مزدوجٌ ورصيدٌ دائنٌ وهميّ للجهة.
+ *  · تأكيدُ التسليم (بوّابة المندوب أو كشف الشركة) — يُسجّل تحصيلاً على طردٍ حُرِّر تعرّضُه
+ *    ⇒ متبقٍّ سالبٌ، ويصير الاسترجاعُ الفعليّ لاحقاً متعذّراً لأنّ مالاً قُبض.
+ *
+ * فالمخرجُ الوحيد من الحالة المُعلَنة هو **الاسترجاع بعد الاستلام** — وهو مفتوحٌ دائماً،
+ * فلا طريقَ مسدود.
+ */
+export function assertNotReturnDeclared(
+  cn: { returnDeclaredAt?: Date | null; consignmentNumber?: string | null },
+  action: "cancel" | "deliver" | "collect",
+): void {
+  if (cn.returnDeclaredAt == null) return;
+  const what = action === "cancel"
+    ? "لا يُلغى إسنادُ طردٍ أُعلن رجوعُه"
+    : action === "deliver"
+      ? "لا يُختَم تسليمُ طردٍ أُعلن رجوعُه"
+      : "لا يُسجَّل تحصيلٌ على طردٍ أُعلن رجوعُه";
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: `${what} (${cn.consignmentNumber ?? ""}) — تعرّضُه حُرِّر سلفاً؛ أكمِل الاسترجاع بعد استلامه وفحصه.`,
+  });
+}
+
 export interface DeclareReturnInput {
   consignmentId: number;
   /** سببُ الرجوع — إلزاميّ: «رفض العميل» و«العنوان خاطئ» قراراتُ متابعةٍ مختلفة. */
@@ -35,6 +65,14 @@ export interface DeclareReturnInput {
   /** رقمُ كشف الشركة الذي أُعلن فيه الرجوع (توثيقيّ). */
   statementNumber?: string | null;
   clientRequestId?: string | null;
+}
+
+/** يضمّ السبب ورقم الكشف ضمن حدّ العمود (500) — الرقمُ يُصان والسببُ يُقتطع إن لزم. */
+function buildDeclarationNote(reason: string, statementNumber?: string | null): string {
+  const stmt = statementNumber?.trim();
+  if (!stmt) return reason.slice(0, 500);
+  const suffix = ` (كشف ${stmt})`;
+  return `${reason.slice(0, Math.max(0, 500 - suffix.length))}${suffix}`;
 }
 
 export async function declareConsignmentReturn(input: DeclareReturnInput, actor: DeliveryTxActor) {
@@ -61,6 +99,17 @@ export async function declareConsignmentReturn(input: DeclareReturnInput, actor:
         .where(eq(deliveryConsignments.id, consignmentId)).for("update").limit(1)
     )[0];
     if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+
+    // **إعادةُ الفحص بعد القفل** (تصويب مراجعة Codex): طلبان متزامنان بنفس المفتاح يمرّان
+    // كلاهما من الفحص الأوّل قبل أن يُسجّله أحدهما، ثمّ يتسلسلان على هذا القفل. بلا إعادة
+    // الفحص هنا يسقط الثاني على حارس `returnDeclaredAt` بـCONFLICT — أي أنّ **تكراراً
+    // عادياً لطلبٍ ناجح يُبلَّغ خطأً** بدل الإعادة الصامتة الموعودة. (نفس نمط الإلغاء.)
+    if (input.clientRequestId) {
+      const afterLock = await checkIdempotency(tx, "delivery.declareReturn", input.clientRequestId, payloadHash);
+      if (afterLock != null) {
+        return { consignmentId, declared: true as const, idempotentReplay: true as const };
+      }
+    }
 
     // عزلُ الفرع — نفس حارس `returnConsignment` حرفياً (الأدمن وحده يعبُر الفروع).
     const scopedBranch = actor.role === "admin" ? null : (actor.branchId ?? null);
@@ -137,9 +186,10 @@ export async function declareConsignmentReturn(input: DeclareReturnInput, actor:
     await tx.update(deliveryConsignments).set({
       returnDeclaredAt: new Date(),
       returnDeclaredBy: actor.userId,
-      returnDeclaredReason: input.statementNumber?.trim()
-        ? `${reason} (كشف ${input.statementNumber.trim()})`
-        : reason,
+      // العمودُ `varchar(500)`: السببُ وحده قد يبلغ ٥٠٠، وضمُّ رقم الكشف إليه يتجاوزه ⇒
+      // `Data too long` تحت الوضع الصارم، أو بترٌ صامتٌ للنصّ التدقيقيّ تحت المتساهل.
+      // نقتطع **بحدود العمود** ونُبقي رقم الكشف (وهو الأقصر والأهمّ للربط بالمستند).
+      returnDeclaredReason: buildDeclarationNote(reason, input.statementNumber),
     }).where(eq(deliveryConsignments.id, consignmentId));
 
     await appendDeliveryEvent(tx, {

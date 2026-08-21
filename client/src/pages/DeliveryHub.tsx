@@ -273,8 +273,24 @@ function DispatchTab() {
  */
 function InTransitTab() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
   const rows = trpc.delivery.inTransit.useQuery(undefined, { refetchInterval: 20_000, refetchOnWindowFocus: true });
   const [query, setQuery] = useState("");
+
+  /**
+   * هذا التبويب يُقرأ بـ`store=READ` (المحاسب والمدقّق منهم)، بينما الإعلانُ والاسترجاع
+   * كلاهما `storeFulfillProcedure` (`store=FULL`). فإظهارُ الزرَّين للجميع يُوقع القارئَ في
+   * `FORBIDDEN` **بعد** ملء الحقول والتأكيد. نستعمل **دالّة الخادم نفسها** لا قائمةَ أدوارٍ
+   * حرفية، فلا يتباعد الطرفان. (وزرُّ الاسترجاع كان غيرَ محميٍّ هنا أصلاً — نفس الصنف.)
+   */
+  const canFulfil = !!me.data
+    && moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "store",
+      "FULL",
+      ["manager", "cashier", "sales_rep"],
+    );
 
   // المخرج اليوميّ للطرد الذي أعاده المندوب (بلاغ المالك): استرجاعٌ بسببٍ موثَّق ⇒ عكسٌ كامل
   // (مخزون + فاتورة + ذمّة + عربون + تحرير عهدة COD) في معاملةٍ واحدة.
@@ -365,7 +381,8 @@ function InTransitTab() {
     const q = query.trim().toLowerCase();
     if (!q) return filtered;
     return filtered.filter((r) =>
-      [r.consignmentNumber, r.invoiceNumber, r.orderNumber, r.partyName, r.driverName, r.recipientName, r.customerName, r.recipientPhone]
+      // سببُ الإعلان (وفيه رقمُ كشف الشركة) قابلٌ للبحث — به يُستردّ الطردُ من رقم الكشف.
+      [r.consignmentNumber, r.invoiceNumber, r.orderNumber, r.partyName, r.driverName, r.recipientName, r.customerName, r.recipientPhone, r.returnDeclaredReason]
         .some((v) => (v ?? "").toLowerCase().includes(q)));
   }, [filtered, query]);
 
@@ -489,6 +506,11 @@ function InTransitTab() {
                     </td>
                     <td className="p-2">
                       <span className={cn("rounded-md border px-1.5 py-0.5 text-[11px] font-extrabold", cls)}>{label}</span>
+                      {r.returnDeclaredAt != null && (
+                        <div className="mt-0.5 max-w-56 text-[11px] font-bold text-[var(--sem-warn)]">
+                          رجوعٌ مُعلَن — {r.returnDeclaredReason ?? "بلا سبب"}
+                        </div>
+                      )}
                       {r.failureReason && (
                         <div className="mt-0.5 max-w-40 text-[11px] text-[var(--sem-danger)]">{r.failureReason}</div>
                       )}
@@ -512,7 +534,7 @@ function InTransitTab() {
                           </>
                         )}
                         {/* الإعلانُ يسبق الاستلام: يُخفى بعد تسجيله فلا يُعلَن الطردُ مرّتين. */}
-                        {r.returnDeclaredAt == null && (
+                        {canFulfil && r.returnDeclaredAt == null && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -523,18 +545,20 @@ function InTransitTab() {
                             <Undo2 aria-hidden className="size-3.5" /> إعلان رجوع
                           </Button>
                         )}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          title={r.returnDeclaredAt != null
-                            ? "وصل الطرد وفُحص — أكمل العكس الكامل"
-                            : "رجع الطرد للمكتبة — عكسٌ كامل للبيع"}
-                          disabled={returnCn.isPending}
-                          onClick={() => void askReturn(r)}
-                        >
-                          <RotateCcw aria-hidden className="size-3.5" />
-                          {r.returnDeclaredAt != null ? "استلمتُه — أكمل" : "استرجاع"}
-                        </Button>
+                        {canFulfil && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title={r.returnDeclaredAt != null
+                              ? "وصل الطرد وفُحص — أكمل العكس الكامل"
+                              : "رجع الطرد للمكتبة — عكسٌ كامل للبيع"}
+                            disabled={returnCn.isPending}
+                            onClick={() => void askReturn(r)}
+                          >
+                            <RotateCcw aria-hidden className="size-3.5" />
+                            {r.returnDeclaredAt != null ? "استلمتُه — أكمل" : "استرجاع"}
+                          </Button>
+                        )}
                         <Button size="sm" variant="outline" asChild title="فتح جهة التوصيل وتسويتها">
                           <a href={`/delivery/parties/${r.partyId}`}>الجهة</a>
                         </Button>
