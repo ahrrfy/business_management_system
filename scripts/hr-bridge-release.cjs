@@ -645,6 +645,11 @@ function intentProcessIsAlive(pid) {
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    // EPERM من `kill(pid, 0)` يعني أنّ العمليةَ **قائمة** ولا نملك إشارتَها (pid أُعيد
+    // تدويره إلى عمليةِ مستخدمٍ آخر — root مثلاً). رميُه كان يُخرج خطأً غيرَ رمز الانشغال
+    // من `acquireRuntimeIntentLock` فيسقط النشر؛ والصوابُ اعتبارُها حيّة: الأسوأُ عندئذٍ
+    // انتظارٌ زائد، والأسوأُ في المقابل حذفُ سجلِّ قفلٍ لمالكٍ حيّ.
+    if (error?.code === "EPERM") return true;
     throw error;
   }
 }
@@ -658,14 +663,48 @@ function intentWait(milliseconds) {
   );
 }
 
+// ويندوز يردّ `EPERM`/`EBUSY`/`EACCES` حين تُمَسّ مدخلةٌ يفتحها قارئٌ متزامن (مخالفةُ
+// مشاركة). هي أخطاءٌ **عابرة** لا دليلَ فيها على فساد — بخلاف لينكس (خادمُ الإنتاج وCI)
+// الذي لا يُنتجها أصلاً، فيبقى تصنيفُه صارماً كما هو.
+const WINDOWS_TRANSIENT = new Set(["EPERM", "EBUSY", "EACCES"]);
+function isTransientSharingError(error) {
+  return process.platform === "win32" && WINDOWS_TRANSIENT.has(error?.code);
+}
+
 function readIntentRecord(file, namespace) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024) {
     throw new Error("HR_BRIDGE_LOCK_INTENT_INVALID");
   }
+  // ⭐ ٢١/٨ — **القراءةُ خارج مِظلّة `JSON.parse`.** كانت الاثنتان في `try` واحدٍ بـ`catch`
+  // عارٍ يبتلع `errno` ويرمي `HR_BRIDGE_LOCK_INTENT_INVALID` **بلا `code`**. فملفٌّ يختفي
+  // بين `lstatSync` و`readFileSync` — وهو ما يقع كلَّ يوم: المنافسُ ينظّف سجلاً ميّتاً في
+  // `liveIntentRecords` أو يحرّر سجلَّه بعد خسارته — كان يُصنَّف **فساداً** لا اختفاءً.
+  // و`liveIntentRecords` يتخطّى `ENOENT` وحده، فيُعيد رميَ الخطأ المُصنَّع ⇒ يخرج من
+  // `acquireRuntimeIntentLock` غيرَ رمز الانشغال ⇒ يسقط المُدّعي وينهار الفحص.
+  //
+  // ⚠️ وهذا **السببُ الثاني**، وهو غيرُ الأوّل (نافذةُ الملفّ الفارغ التي أُغلقت بالكتابة
+  // الذرّية) وغيرُ متناظر: يُصيب **مُدّعياً واحداً**، ثمّ يموت الآخرُ تبعاً بمهلته لأنّ
+  // البروتوكول ينتظر منه إشارةً لن تصل — ولهذا بدا `[1,1]` تناظرياً وليس كذلك.
+  //
+  // العلاج: تمرير `errno` كما هو. لا تُصنّع خطأً في مسارٍ تُميّز فيه المُناداةُ اللاحقة
+  // بـ`code`.
+  let raw;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      raw = fs.readFileSync(file, "utf8");
+      break;
+    } catch (error) {
+      // `ENOENT` يمرّ فوراً بـ`code` سليمٍ ليتخطّاه الماسح. أمّا مخالفةُ المشاركة على
+      // ويندوز فعابرةٌ تزول بمحاولةٍ ثانية — ونُصرّ لأنّ **الملفّ موجود**: تخطّيه يكسر
+      // الإقصاء المتبادل، وتركُه بلا محاولةٍ ثانية يُسقط النشر بلا سبب.
+      if (attempt >= 5 || !isTransientSharingError(error)) throw error;
+      intentWait(5 * attempt);
+    }
+  }
   let record;
   try {
-    record = JSON.parse(fs.readFileSync(file, "utf8"));
+    record = JSON.parse(raw);
   } catch {
     throw new Error("HR_BRIDGE_LOCK_INTENT_INVALID");
   }
@@ -720,7 +759,20 @@ function writeIntentRecord(file, record, replace = false) {
     }
     return;
   }
-  fs.renameSync(temporary, file);
+  // على لينكس `rename` ذرّيّةٌ ولا تفشل لمشاركةٍ قطّ ⇒ محاولةٌ واحدة. وعلى ويندوز قد تردّ
+  // `EPERM` لأنّ ماسحاً متزامناً يفتح الوجهة — عابرٌ يزول بمحاولةٍ ثانية.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fs.renameSync(temporary, file);
+      return;
+    } catch (error) {
+      if (attempt >= 5 || !isTransientSharingError(error)) {
+        try { fs.unlinkSync(temporary); } catch { /* المؤقّت لا يُخلَّف وراءنا */ }
+        throw error;
+      }
+      intentWait(5 * attempt);
+    }
+  }
 }
 
 function fsyncIntentDirectory(directory) {
@@ -746,9 +798,26 @@ function intentCandidateWins(entries, ownFile) {
   return [...entries].sort(compareIntent)[0]?.file === ownFile;
 }
 
-function liveIntentRecords(directory, namespace, ownFile = null) {
+// ⭐⭐ ٢١/٨ — **الغيابُ لا يُصدَّق حتى يَثبت دوامُه** (السببُ الثالث، أخطرُ الثلاثة).
+//
+// الماسحُ يتخطّى `ENOENT` لأنّ «الاسمُ غير موجود ⇒ لا منافس». هذا صحيحٌ على POSIX: هناك
+// `rename(2)` **ذرّية** فلا تُغيّب الوجهةَ لحظةً واحدة. وليس صحيحاً على ويندوز:
+// `MoveFileEx(REPLACE_EXISTING)` قد يكشف غياباً وجيزاً للوجهة — وكلُّ مُدّعٍ يُنفّذ
+// استبدالاً واحداً (كتابةُ `held:true`) في كلّ ادّعاء.
+//
+// والنتيجة **ليست خطأً بل أسوأ منه: فائزان معاً.** أُثبت حتميّاً: منافسٌ حيٌّ محتجِزٌ
+// يرتدّ اسمُه `ENOENT` في **الطورَين** (الترشيح ثمّ التثبّت) ⇒ يُمنح القفل. مرّةً واحدةً
+// لا تكفي — الطورُ الثاني شبكةُ أمانٍ تمسكها؛ فلزم غيابٌ مزدوج، وهو ما يقع تحت الحِمل.
+// وقد رُصد فعلاً على ويندوز مرّتين (`EEXIST` على ملفّ `winner` في الفاحص).
+//
+// العلاج: على ويندوز وحده، لا نُصدّق الغيابَ حتى نُعيد سرد المجلّد؛ فإن كان الاسمُ ما
+// زال مسروداً فالغيابُ كان وهمَ استبدالٍ جارٍ ⇒ أعِد المسح. وعند نفاد المحاولات **نفشل
+// مغلقين** (بلاغُ انشغال) لا مفتوحين: منحُ قفلٍ عند الشكّ هو العطبُ بعينه.
+function scanIntentRecords(directory, namespace, ownFile) {
   const live = [];
-  for (const name of fs.readdirSync(directory)) {
+  const vanished = [];
+  const names = fs.readdirSync(directory);
+  for (const name of names) {
     if (name.includes(".tmp-")) continue;
     if (!/^[0-9]+-[0-9a-f-]{36}\.json$/i.test(name)) {
       throw new Error("HR_BRIDGE_LOCK_INTENT_INVALID");
@@ -758,7 +827,16 @@ function liveIntentRecords(directory, namespace, ownFile = null) {
     try {
       record = readIntentRecord(file, namespace);
     } catch (error) {
-      if (error?.code === "ENOENT") continue;
+      // اختفاءُ سجلٍّ أثناء المسح شرعيّ **على POSIX**: منافسٌ نظّف ميّتاً أو حرّر سجلَّه.
+      // وعلى ويندوز يُسجَّل ليُتحقَّق من دوامه قبل تصديقه (انظر `liveIntentRecords`).
+      //
+      // ⛔ ولا يُتخطّى سجلٌّ **موجودٌ متعذّرُ القراءة**. جرّبتُ ذلك (٢١/٨) فكسرتُ الإقصاء
+      // المتبادل فوراً: على ويندوز يردّ النظامُ `EPERM` لحظةَ يفتح منافسٌ الملفّ، فتخطّاه
+      // كلٌّ منهما ⇒ ظنّ كلٌّ أنّه وحده ⇒ **فائزان معاً** (أمسكه الفاحصُ بـ`EEXIST` على
+      // ملفّ `winner`). «لم أستطع قراءته» ≠ «ليس موجوداً»: الأولى تستوجب إعادةَ محاولةٍ
+      // ثمّ فشلاً صريحاً، والثانية وحدها تستوجب التخطّي. المعالجةُ صارت في
+      // `readIntentRecord` بإعادة محاولةٍ محدودة.
+      if (error?.code === "ENOENT") { vanished.push(name); continue; }
       throw error;
     }
     const [, filePid, fileToken] = name.match(
@@ -781,7 +859,80 @@ function liveIntentRecords(directory, namespace, ownFile = null) {
       }
     }
   }
-  return live;
+  return { live, vanished, names };
+}
+
+// **شاهدُ الغياب الحاسم: الملفُّ المؤقّت.** «الاسمُ ليس مسروداً الآن» لا يُثبت شيئاً
+// وحده — قد نكون داخل نافذة الاستبدال ذاتها التي غيّبته (أمسكها Codex على #696: تحقّقي
+// الأوّل كان يقبل الغيابَ إن لم يَعُد الاسمُ **فوراً**، وهو احتمالٌ لا برهان).
+//
+// لكنّ بروتوكولَ `writeIntentRecord` يمنحنا برهاناً: كلُّ كتابةٍ تمرّ بملفٍّ مؤقّتٍ اسمُه
+// `<الاسم النهائيّ>.tmp-…` يبقى قائماً حتى تكتمل النقلة. فلا توجد لحظةٌ يغيب فيها الاسمُ
+// النهائيّ **ومؤقّتُه معاً** ما دام هناك كاتبٌ يعمل. إذاً:
+//
+//     غاب الاسم  ∧  لا مؤقّتَ له  ⇒  حُذف فعلاً  (لا منافس)
+//     غاب الاسم  ∧  له مؤقّت     ⇒  كتابةٌ جارية (منافسٌ حيّ) ⇒ أعِد المسح
+//
+// وهذا **حاسمٌ لا احتماليّ**، ويُضاف إليه انتظارٌ وجيزٌ قبل إعادة السرد لئلّا نلتقط
+// المجلّد في اللحظة نفسها. وعند نفاد المحاولات **نفشل مغلقين** (بلاغُ انشغال): منحُ
+// قفلٍ عند الشكّ هو العطبُ بعينه.
+//
+// ⚠️ **بلا تفريعٍ بحسب المنصّة.** كان هنا `platform !== "win32"` يعود فوراً — فكان
+// السلوكُ يختلف بين آلة التطوير وCI، ويستحيل أن يحرس اختبارٌ ما لا يعمل على لينكس
+// (أمسكه Codex أيضاً). الكلفةُ على لينكس معدومةٌ عملياً: سردٌ إضافيٌّ واحد **فقط** حين
+// يغيب اسمٌ أصلاً، وهناك لا يغيب إلّا بحذفٍ حقيقيّ فيعود من أوّل تحقّق.
+// كتابةُ السجلّ تستغرق ميكروثانيات؛ ثانيتان هامشٌ سخيّ. وما تجاوز ذلك فهو بقيّةُ عمليةٍ
+// ماتت — **تُتجاهَل ولا تُحذف**: مؤقّتٌ يتيمٌ يُعامَل «كتابةً جارية» أبداً يَحبس القفلَ
+// حبساً دائماً، وحذفُ مؤقّتِ غيرِنا يُخاطر بكاتبٍ بطيء. التجاهلُ يتجنّب الخطرين.
+const INTENT_TEMP_INFLIGHT_MS = 2_000;
+
+function freshWriteTemps(directory, names) {
+  const now = Date.now();
+  const fresh = [];
+  for (const name of names) {
+    if (!name.includes(".tmp-")) continue;
+    let stat;
+    try {
+      stat = fs.lstatSync(path.join(directory, name));
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (now - stat.mtimeMs <= INTENT_TEMP_INFLIGHT_MS) fresh.push(name);
+  }
+  return fresh;
+}
+
+function intentSnapshotUnstable(directory, vanished) {
+  const present = fs.readdirSync(directory);
+  // (أ) اسمٌ رأيناه ثمّ تعذّر قراءتُه، وما زال مسروداً أو له مؤقّت ⇒ كتابةٌ جارية.
+  if (
+    vanished.some(
+      (name) =>
+        present.includes(name) ||
+        present.some((entry) => entry.startsWith(`${name}.tmp-`)),
+    )
+  ) {
+    return true;
+  }
+  // (ب) أيُّ مؤقّتٍ طازج ⇒ كاتبٌ يعمل الآن، ولقطتُنا قد تكون ناقصةً **بلا أن ندري**:
+  // إن أسقط النظامُ المدخلةَ من السرد أثناء النقلة لم يصل الاسمُ إلى `vanished` أصلاً،
+  // فلا ينفع تتبّعُ الغائبين وحده. المؤقّتُ هو الشاهدُ الوحيد الباقي عندئذٍ.
+  return freshWriteTemps(directory, present).length > 0;
+}
+
+function liveIntentRecords(directory, namespace, ownFile = null) {
+  for (let attempt = 1; ; attempt += 1) {
+    const { live, vanished, names } = scanIntentRecords(directory, namespace, ownFile);
+    if (vanished.length === 0 && freshWriteTemps(directory, names).length === 0) {
+      return live;
+    }
+    // انتظارٌ **قبل** إعادة السرد: التحقّقُ الفوريّ قد يقع داخل النافذة نفسها التي
+    // غيّبت الاسمَ فيبدو الغيابُ دائماً وهو لحظيّ (أمسكها Codex على #696).
+    intentWait(2 * attempt);
+    if (!intentSnapshotUnstable(directory, vanished)) return live;
+    if (attempt >= 5) throw new Error("HR_BRIDGE_LOCK_INTENT_UNSTABLE");
+  }
 }
 
 function acquireRuntimeIntentLock(projectRoot, namespace) {
@@ -830,6 +981,10 @@ function acquireRuntimeIntentLock(projectRoot, namespace) {
       fsyncIntentDirectory(directory);
     } catch (cleanupError) {
       if (cleanupError?.code !== "ENOENT") throw cleanupError;
+    }
+    // مسحٌ لم يستقرّ = شكٌّ في وجود منافس ⇒ **انشغال** (فشلٌ مغلق)، لا خطأٌ يُسقط النشر.
+    if (error?.message === "HR_BRIDGE_LOCK_INTENT_UNSTABLE") {
+      throw new Error(busyCode);
     }
     throw error;
   }
