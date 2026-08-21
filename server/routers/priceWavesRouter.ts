@@ -2,10 +2,11 @@
 // RBAC: managerProcedure حصراً (يكشف التكلفة + يعدّل أسعاراً جماعياً).
 import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { priceChangeLog } from "../../drizzle/schema";
+import { priceChangeLog, priceUpdateWaves } from "../../drizzle/schema";
 import {
   MAX_PERCENT_VALUE,
   PRICE_ROUND_DENOMS,
+  marginPct,
 } from "../../shared/priceWaveRule";
 import { logAudit } from "../services/auditService";
 import {
@@ -16,6 +17,7 @@ import {
   findRevertedWaveIds,
   getPriceUnitHistory,
   listPriceWaves,
+  loadUnitCostsFor,
   previewPriceWave,
   revertPriceWave,
 } from "../services/priceWaveService";
@@ -99,13 +101,19 @@ export const priceWavesRouter = router({
   preview: productsManagerProcedure
     .input(z.object(ruleSchema))
     .mutation(async ({ input }) => {
-      const { rows, skipped, fingerprint } = await withTx((tx) =>
-        previewPriceWave(tx, input),
-      );
+      const {
+        rows,
+        skipped,
+        fingerprint,
+        contractCoveredRows,
+        contractCustomers,
+      } = await withTx((tx) => previewPriceWave(tx, input));
       return {
         rows,
         skipped,
         fingerprint,
+        contractCoveredRows,
+        contractCustomers,
         totalRows: rows.length,
         belowCostCount: rows.filter((r) => r.belowCost).length,
         roundedCount: rows.filter((r) => r.rounded).length,
@@ -256,6 +264,15 @@ export const priceWavesRouter = router({
     .input(z.object({ waveId: z.number().int().positive() }))
     .query(async ({ input }) => {
       return withTx(async (tx) => {
+        // رأس الموجة يُرجَع مع تفاصيلها لا يُلتمَس من قائمة الخمسين الأخيرة: رابطٌ عميق
+        // (`?wave=N` من سجلّ سعر الوحدة) قد يستهدف موجةً أقدم من القائمة، فتُفتَح تفاصيلها
+        // بلا اسمٍ وبلا زرّ تراجع — أي أنّ الرابط يُوصِل إلى نصف شاشة.
+        const [header] = await tx
+          .select()
+          .from(priceUpdateWaves)
+          .where(eq(priceUpdateWaves.id, input.waveId))
+          .limit(1);
+        const revertedBy = await findRevertedWaveIds(tx, [input.waveId]);
         const rows = await tx
           .select()
           .from(priceChangeLog)
@@ -268,7 +285,15 @@ export const priceWavesRouter = router({
           tx,
           rows.map((r) => ({ productUnitId: Number(r.productUnitId) })),
         );
-        return rows.map((r) => ({
+        // هوامش التفاصيل تُحسب بتكلفة **الوحدة الحاليّة** (الأساس × المعامل، والبكج من وصفته):
+        // المعاينة تعرض الهامش، فكان غيابه هنا يجعل التفاصيل أفقر من الشاشة التي أنتجتها.
+        // ⚠️ التكلفة **حاليّة لا تاريخية** — لا نخزّن لقطة تكلفة في `priceChangeLog`، فالهامش
+        // المعروض هو «ماذا يعني هذا السعر اليوم» لا «ماذا كان يعنيه لحظة الموجة».
+        const costs = await loadUnitCostsFor(
+          tx,
+          rows.map((r) => Number(r.productUnitId)),
+        );
+        const mapped = rows.map((r) => ({
           ...r,
           id: Number(r.id),
           productUnitId: Number(r.productUnitId),
@@ -278,7 +303,35 @@ export const priceWavesRouter = router({
             enrichment.get(Number(r.productUnitId))?.productName ?? null,
           unitName: enrichment.get(Number(r.productUnitId))?.unitName ?? null,
           sku: enrichment.get(Number(r.productUnitId))?.sku ?? null,
+          productId: enrichment.get(Number(r.productUnitId))?.productId ?? null,
+          unitCost: costs.get(Number(r.productUnitId)) ?? null,
+          oldMarginPct:
+            r.oldPrice == null
+              ? null
+              : marginPct(
+                  r.oldPrice,
+                  costs.get(Number(r.productUnitId)) ?? null,
+                ),
+          newMarginPct: marginPct(
+            r.newPrice,
+            costs.get(Number(r.productUnitId)) ?? null,
+          ),
         }));
+        return {
+          rows: mapped,
+          wave: header
+            ? {
+                ...header,
+                id: Number(header.id),
+                appliedBy: Number(header.appliedBy),
+                revertsWaveId:
+                  header.revertsWaveId == null
+                    ? null
+                    : Number(header.revertsWaveId),
+                isReverted: revertedBy.has(Number(header.id)),
+              }
+            : null,
+        };
       });
     }),
 });
