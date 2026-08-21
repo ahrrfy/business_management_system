@@ -1,6 +1,7 @@
 export type VoucherUiRecord = {
   direction?: string | null;
   approvalStatus?: string | null;
+  status?: string | null;
   paymentMethod?: string | null;
   cashBucket?: string | null;
   shiftId?: number | null;
@@ -117,7 +118,7 @@ export function canShowVoucherRejectAction(input: {
 
 /** لا تُطبع وثيقة مالية رسمية قبل أن يصبح السند معتمداً فعلاً. */
 export function canPrintOfficialVoucher(row: VoucherUiRecord): boolean {
-  return row.approvalStatus === "APPROVED";
+  return row.approvalStatus === "APPROVED" && row.status === "COMPLETED";
 }
 
 export function voucherCashUiPolicy(input: {

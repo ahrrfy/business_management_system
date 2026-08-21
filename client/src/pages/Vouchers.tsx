@@ -33,15 +33,21 @@ import {
   printVoucherA4,
   type VoucherPrintData,
 } from "@/lib/printing/voucherPrint";
+import {
+  releaseReservedPrintWindow,
+  reservePrintWindow,
+} from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import {
   moduleAccessAllowed,
   type PermissionMap,
   type RoleKey,
 } from "@shared/permissions";
+import type { PrintOpenResult } from "@shared/printAudit";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import {
@@ -115,6 +121,7 @@ function isPurchaseSupplierPaymentReference(
 
 export default function Vouchers() {
   const utils = trpc.useUtils();
+  const printAudit = usePrintAudit();
   const me = trpc.auth.me.useQuery();
   const canManage =
     !!me.data &&
@@ -544,6 +551,12 @@ export default function Vouchers() {
       );
       return;
     }
+    if (mode === "a4" && !reservePrintWindow()) {
+      notify.err(
+        "تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة",
+      );
+      return;
+    }
     try {
       const v = await utils.vouchers.get.fetch({ receiptId: Number(r.id) });
       if (!v) {
@@ -581,9 +594,29 @@ export default function Vouchers() {
         attachmentUrl: v.attachmentUrl,
         relatedInvoiceNumber: v.invoiceNumber ?? null,
       };
-      if (mode === "a4") await printVoucherA4(payload);
-      else await printVoucherReceipt(payload);
+      const result = await printAudit.run({
+        documentType: "VOUCHER",
+        documentId: Number(r.id),
+        branchId: v.branchId == null ? null : Number(v.branchId),
+        channel: mode === "a4" ? "BROWSER" : "THERMAL",
+        open: (audit): Promise<PrintOpenResult> => {
+          const auditedPayload = {
+            ...payload,
+            printedByName: audit.actorName,
+            printRequestedAt: String(audit.requestedAt),
+          };
+          return mode === "a4"
+            ? printVoucherA4(auditedPayload)
+            : printVoucherReceipt(auditedPayload);
+        },
+      });
+      if (typeof result === "boolean" && !result) {
+        notify.err(
+          "تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.",
+        );
+      }
     } catch (e) {
+      if (mode === "a4") releaseReservedPrintWindow();
       notify.err(e);
     }
   }

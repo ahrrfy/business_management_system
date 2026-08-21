@@ -244,6 +244,8 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       cost: materialsCost,
       profit: round2(salePrice.minus(materialsCost)),
       amount: salePrice,
+      createdBy: sellerUserId,
+      createdByNameSnapshot: salespersonNameSnapshot,
       notes: `تكلفة أمر الشغل التحليلية=${toDbMoney(costTotal)}؛ مواد COGS/WIP=${toDbMoney(materialsCost)}؛ أجور تحليلية غير مرسملة=${toDbMoney(laborCost)} (تظهر في فاتورة/تقرير ربحية الأمر، والأجر الفعلي في قيود الرواتب/المصروف)`,
       postingIntent: createPostingIntent("SALE_SERVICE_FLEX", "SALE", [debitLine("AR", salePrice), creditLine("SALES_FLEX", salePrice), ...(materialsCost.isZero() ? [] : [debitLine("COGS", materialsCost), creditLine("WORK_IN_PROGRESS", materialsCost)]), ...(depositPaid.isZero() ? [] : [debitLine("OTHER_LIABILITY", depositPaid), creditLine("AR", depositPaid)])], { roleDebits: { AR: salePrice, OTHER_LIABILITY: depositPaid, COGS: materialsCost }, roleCredits: { SALES_FLEX: salePrice, WORK_IN_PROGRESS: materialsCost, AR: depositPaid } }),
       postingSourceComponents: { roleDebits: { AR: salePrice, OTHER_LIABILITY: depositPaid, COGS: materialsCost }, roleCredits: { SALES_FLEX: salePrice, WORK_IN_PROGRESS: materialsCost, AR: depositPaid } },

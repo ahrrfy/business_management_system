@@ -75,6 +75,13 @@ async function orderBySeller(hasDelivery: boolean, reqId: string) {
 
 const invoiceOf = async (id: number) =>
   (await db().select().from(s.invoices).where(eq(s.invoices.id, id)))[0];
+const saleEntryOf = async (invoiceId: number) =>
+  (
+    await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, invoiceId))
+  ).find((entry) => entry.entryType === "SALE");
 
 describe("نسبة فاتورة أمر الشغل — البيع لمنشئه لا لمُسلِّمه", () => {
   it("⭐ التسليم المباشر بيد كاشيرٍ آخر: الفاتورة منسوبةٌ للبائع، والقبض على المُسلِّم", async () => {
@@ -90,6 +97,10 @@ describe("نسبة فاتورة أمر الشغل — البيع لمنشئه ل
     // النسبة التجارية: البائع.
     expect(Number(inv.createdBy)).toBe(SELLER.userId);
     expect(inv.salespersonNameSnapshot).toBe("بائع الاستقبال");
+    expect(await saleEntryOf(res.invoiceId)).toMatchObject({
+      createdBy: SELLER.userId,
+      createdByNameSnapshot: "بائع الاستقبال",
+    });
     // والأثر النقديّ: المُسلِّم ووردِيّته (النقد في درجه هو).
     expect(Number(inv.shiftId)).toBe(delivShift.shiftId);
     const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, res.invoiceId)))[0];
@@ -103,6 +114,10 @@ describe("نسبة فاتورة أمر الشغل — البيع لمنشئه ل
     const inv = await invoiceOf(res.invoiceId);
     expect(Number(inv.createdBy)).toBe(SELLER.userId);
     expect(inv.salespersonNameSnapshot).toBe("بائع الاستقبال");
+    expect(await saleEntryOf(res.invoiceId)).toMatchObject({
+      createdBy: SELLER.userId,
+      createdByNameSnapshot: "بائع الاستقبال",
+    });
   });
 
   it("أمرٌ بلا منشئٍ معروف يسقط للفاعل (لا فاتورةَ بلا نسبة)", async () => {

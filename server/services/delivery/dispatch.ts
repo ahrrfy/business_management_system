@@ -344,6 +344,8 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       cost: materialsCost,
       profit: round2(salePrice.minus(materialsCost)),
       amount: salePrice,
+      createdBy: sellerUserId,
+      createdByNameSnapshot: salespersonNameSnapshot,
     });
     if (wo.customerId != null && codAmount.gt(0)) {
       await adjustCustomerBalance(tx, Number(wo.customerId), codAmount);

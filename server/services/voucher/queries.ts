@@ -123,6 +123,18 @@ export async function listVouchers(input: ListVouchersInput = {}) {
   const creator = alias(users, "voucherListCreator");
   const partyCustomer = alias(customers, "voucherListCustomer");
   const partySupplier = alias(suppliers, "voucherListSupplier");
+  // receiptId ليس فريداً بنيوياً في exchangeTransactions. join مباشر يضاعف السند ويشوّه
+  // limit/offset عند وجود أكثر من حركة تاريخية مرتبطة به. نختار أحدث حركة لكل سند داخل
+  // subquery مجمّع، فيبقى الاستعلام واحداً وصفٌ واحدٌ حتماً لكل receipt (بلا N+1).
+  const latestExchangeTxn = db
+    .select({
+      receiptId: exchangeTransactions.receiptId,
+      transactionId: sql<number>`MAX(${exchangeTransactions.id})`.as("transactionId"),
+    })
+    .from(exchangeTransactions)
+    .where(isNotNull(exchangeTransactions.receiptId))
+    .groupBy(exchangeTransactions.receiptId)
+    .as("voucherListLatestExchangeTxn");
   const wheres: any[] = [isNotNull(receipts.voucherNumber)];
   if (input.status) wheres.push(eq(receipts.status, input.status));
   if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
@@ -196,7 +208,8 @@ export async function listVouchers(input: ListVouchersInput = {}) {
     .leftJoin(creator, eq(creator.id, receipts.createdBy))
     .leftJoin(partyCustomer, and(eq(receipts.partyType, "CUSTOMER"), eq(partyCustomer.id, receipts.partyId)))
     .leftJoin(partySupplier, and(eq(receipts.partyType, "SUPPLIER"), eq(partySupplier.id, receipts.partyId)))
-    .leftJoin(exchangeTransactions, eq(exchangeTransactions.receiptId, receipts.id))
+    .leftJoin(latestExchangeTxn, eq(latestExchangeTxn.receiptId, receipts.id))
+    .leftJoin(exchangeTransactions, eq(exchangeTransactions.id, latestExchangeTxn.transactionId))
     .leftJoin(exchangeHouses, eq(exchangeHouses.id, exchangeTransactions.exchangeHouseId))
     .where(and(...wheres))
     .orderBy(desc(receipts.id))

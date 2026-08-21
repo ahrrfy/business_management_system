@@ -49,7 +49,7 @@ export interface ReplayOfflineSaleInput {
 export async function replayOfflineSale(
   input: ReplayOfflineSaleInput,
   actor: Actor,
-  options?: { skipCaptureWindow?: boolean },
+  options?: { skipCaptureWindow?: boolean; attributeToUserId?: number | null },
 ): Promise<CreateSaleResult> {
   // نافذة الالتقاط ونقديّة الدفع — حرّاسٌ مشتركة (captureWindow.ts) لا نسخةٌ محليّة.
   // `skipCaptureWindow` لمسار استرداد المدير وحده (offline/recovery.ts): عمرُ العنصر هو **سببُ**
@@ -78,6 +78,8 @@ export async function replayOfflineSale(
       },
       allowNegativeStock: true,
       priceOverrideApproved: input.priceOverrideApproved ?? false,
+      // يُمرَّر من مسار استرداد المدير فقط، من submittedByUserId الخادمي لا من payload العميل.
+      attributeToUserId: options?.attributeToUserId ?? null,
     },
     actor,
   );
