@@ -152,8 +152,14 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       moneyStatus: deliveryConsignments.moneyStatus,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
-      /** المتبقّي تحصيله على هذا الطرد — التعرّض الفعليّ الظاهر للإدارة لحظةً بلحظة. */
-      codDue: sql<string>`GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)), 0)`,
+      /**
+       * المتبقّي تحصيله على هذا الطرد — التعرّض الفعليّ الظاهر للإدارة لحظةً بلحظة.
+       *
+       * ⚠️ **والمُعلَنُ رجوعُه صفرٌ** (تصويب مراجعة Codex، ٢١/٨): تعرّضُه حُرِّر في الدفتر
+       * بـ`COD_RELEASED` لحظةَ الإعلان، فإبقاؤه هنا يُضخّم «تعرّض التحصيل» في الشاشة
+       * بمبلغٍ لم يعد مطلوباً — وتناقض الشاشةُ الدفترَ ورسالةَ التأكيد نفسها.
+       */
+      codDue: sql<string>`CASE WHEN ${deliveryConsignments.returnDeclaredAt} IS NOT NULL THEN 0 ELSE GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)), 0) END`,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
       // عنوان التسليم يعيش على أمر الشغل (لا عمود له على الإرسالية).
@@ -161,6 +167,12 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       customerName: customers.name,
       dispatchedAt: deliveryConsignments.dispatchedAt,
       failureReason: deliveryConsignments.failureReason,
+      /**
+       * **رجوعٌ مُعلَن** (0246): الشركةُ أعلنت أنّ الطرد راجعٌ ولم يصل بعد. تعرّضُه حُرِّر
+       * سلفاً، وينتظر الاستلامَ والفحص — فيُميَّز في الطابور عن الطرد الذي ما زال يُحاوَل.
+       */
+      returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
+      returnDeclaredReason: deliveryConsignments.returnDeclaredReason,
       /** عمر الطرد بالساعات — أساس «أعمار الطرود» وتحديد المتعثّر بلا تقريرٍ منفصل. */
       ageHours: sql<number>`TIMESTAMPDIFF(HOUR, ${deliveryConsignments.dispatchedAt}, NOW())`,
     })

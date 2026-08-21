@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { assertNotReturnDeclared } from "./declaredReturn";
 import { eq } from "drizzle-orm";
 import { deliveryConsignments } from "../../../drizzle/schema";
 import {
@@ -127,6 +128,9 @@ export async function cancelDeliveryAssignment(
       };
     }
 
+    // رجوعٌ مُعلَن: تعرّضُه حُرِّر سلفاً، وإلغاءُ الإسناد يكتب `COD_RELEASED` ثانياً ⇒ تحريرٌ
+    // مزدوج (ولا فهرسَ فريد على `eventKey` يمنعه). المخرجُ الوحيد: الاسترجاع بعد الاستلام.
+    assertNotReturnDeclared(cn, "cancel");
     if (cn.parcelStatus !== "ASSIGNED" && cn.parcelStatus !== "FAILED") {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",

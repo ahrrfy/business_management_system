@@ -1625,6 +1625,13 @@
       "when": 1788052296000,
       "tag": "0245_purchase_order_settlement_type",
       "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "5",
+      "when": 1788052297000,
+      "tag": "0246_declared_return",
+      "breakpoints": true
     }
   ]
 }

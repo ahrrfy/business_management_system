@@ -11,6 +11,7 @@
 // الهوية: تُحل العضوية من deliveryPartyMembers مع توافق الربط القديم؛ السائق لا يرى إلا ما
 // أُسند إليه أو ما ينتظر ادعاء سائق داخل شركته، والمدير يرى إرساليات الجهة وفق صلاحيات عضويته.
 import { TRPCError } from "@trpc/server";
+import { assertNotReturnDeclared } from "./declaredReturn";
 import Decimal from "decimal.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -663,6 +664,10 @@ export async function confirmConsignmentDelivery(
     // الشركة سجّلت أيّ خطوةٍ وسيطة في نظامنا أصلاً — فاشتراطُ `OUT_FOR_DELIVERY` عليه يعني
     // رفض الدليل المستنديّ الذي أقرّه المالك. يبقى الحارس الحقيقيّ قائماً: الطرد **خارجٌ
     // فعلاً** (الحالة نهائيةٌ ⇒ مردودةٌ أعلاه، والملغاة/المرتجعة خارج نطاق الكشف).
+    // رجوعٌ مُعلَن: الطردُ راجعٌ إلينا وتعرّضُه حُرِّر — ختمُ تسليمِه (من البوّابة أو من
+    // كشف الشركة) يُسجّل تحصيلاً عليه ⇒ متبقٍّ سالب، ويصير استرجاعُه الفعليّ متعذّراً لأنّ
+    // مالاً قُبض. يشمل هذا الحارسُ **مسار الكشف** أيضاً (`statementWitness`) عمداً.
+    assertNotReturnDeclared(cn, "deliver");
     const parcelOut = cn.parcelStatus === "ASSIGNED"
       || cn.parcelStatus === "ACCEPTED"
       || cn.parcelStatus === "PICKED_UP"
