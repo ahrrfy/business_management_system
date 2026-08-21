@@ -10,22 +10,40 @@ vi.mock("../../logger", () => ({ logger: { error: (...args: unknown[]) => errorS
 
 const { failOpaque, rootCauseFields } = await import("../opaqueFailure");
 
+const UNKNOWN_COLUMN = "Unknown column 'purchaseReturnSettlement' in 'field list'";
+const QUERY = "insert into `purchaseReturns` (`purchaseReturnSettlement`) values (?)";
+
 /** خطأ mysql2 حقيقيّ الشكل — هو ما ضاع في الحادثة. */
 function mysqlError() {
-  return Object.assign(new Error("Unknown column 'purchaseReturnSettlement' in 'field list'"), {
+  return Object.assign(new Error(UNKNOWN_COLUMN), {
     code: "ER_BAD_FIELD_ERROR",
     errno: 1054,
     sqlState: "42S22",
-    sqlMessage: "Unknown column 'purchaseReturnSettlement' in 'field list'",
+    sqlMessage: UNKNOWN_COLUMN,
     sql: "insert into `purchaseReturns` (`purchaseReturnSettlement`) values ('CREDIT')",
   });
 }
 
+/**
+ * الشكل الذي يصل الراوتر فعلاً: drizzle 0.45 يلفّ خطأ mysql2 في `DrizzleQueryError`،
+ * فتكون حقولُ mysql2 على `cause` ورسالةُ الغلاف `Failed query: …\nparams: …`.
+ * (نُحاكيه بدل استيراد drizzle كي يبقى الاختبار وحدوياً بلا قاعدة.)
+ */
+function drizzleWrapped(inner: unknown = mysqlError(), params = "['CREDIT']") {
+  return Object.assign(new Error(`Failed query: ${QUERY}\nparams: ${params}`), {
+    name: "DrizzleQueryError",
+    query: QUERY,
+    params,
+    cause: inner,
+  });
+}
+
 describe("failOpaque", () => {
+  // الخطأ المُمرَّر هنا بالشكل الملفوف — هو ما يصل الراوتر فعلاً من drizzle، لا خطأ mysql2 عارياً.
   it("يرمي رسالةً عامّة للمستخدم ويُسجّل السبب الجذريّ كاملاً", () => {
     errorSpy.mockClear();
     expect(() =>
-      failOpaque(mysqlError(), {
+      failOpaque(drizzleWrapped(), {
         op: "purchaseReturns.create",
         userMessage: "تعذّر إتمام مرتجع الشراء",
         context: { userId: 7, branchId: 1 },
@@ -33,7 +51,7 @@ describe("failOpaque", () => {
     ).toThrow(TRPCError);
 
     try {
-      failOpaque(mysqlError(), { op: "purchaseReturns.create", userMessage: "تعذّر إتمام مرتجع الشراء" });
+      failOpaque(drizzleWrapped(), { op: "purchaseReturns.create", userMessage: "تعذّر إتمام مرتجع الشراء" });
     } catch (thrown) {
       const e = thrown as TRPCError;
       expect(e.code).toBe("INTERNAL_SERVER_ERROR");
@@ -54,11 +72,43 @@ describe("failOpaque", () => {
     expect(payload.err.sql).toContain("insert into");
   });
 
-  it("يقتطع الاستعلام الضخم ويُعلن الاقتطاع بدل إغراق السجلّ صامتاً", () => {
-    const huge = Object.assign(new Error("boom"), { sql: "x".repeat(5000) });
+  it("ينفذ إلى خطأ mysql2 الملفوف في DrizzleQueryError — لا يقرأ الإطار الأعلى وحده", () => {
+    // الشكل الحقيقيّ في الإنتاج: `code`/`errno`/`sqlMessage` كلّها undefined في الأعلى.
+    const wrapped = drizzleWrapped();
+    expect((wrapped as any).code).toBeUndefined();
+    expect((wrapped as any).sqlMessage).toBeUndefined();
+
+    const fields = rootCauseFields(wrapped);
+    expect(fields.code).toBe("ER_BAD_FIELD_ERROR");
+    expect(fields.errno).toBe(1054);
+    expect(fields.sqlState).toBe("42S22");
+    expect(fields.sqlMessage).toContain("purchaseReturnSettlement");
+    expect(fields.causeDepth).toBe(1);
+    expect(fields.name).toBe("DrizzleQueryError");
+  });
+
+  it("يبلغ خطأ mysql2 عبر أكثر من غلاف، ولا يدور إلى ما لا نهاية على سلسلةٍ دائرية", () => {
+    expect(rootCauseFields(drizzleWrapped(drizzleWrapped())).causeDepth).toBe(2);
+
+    const a = new Error("غلاف أ") as Error & { cause?: unknown };
+    const b = new Error("غلاف ب") as Error & { cause?: unknown };
+    a.cause = b;
+    b.cause = a;
+    const fields = rootCauseFields(a);
+    expect(fields.causeDepth).toBeUndefined();  // لا خطأ قاعدة في السلسلة
+    expect(fields.message).toBe("غلاف أ");
+  });
+
+  it("يقتطع الاستعلام ورسالةَ الغلاف الضخمة ويُعلن الاقتطاع بدل إغراق السجلّ صامتاً", () => {
+    const huge = Object.assign(new Error("boom"), { sql: "x".repeat(5000), errno: 1064 });
     const fields = rootCauseFields(huge);
     expect((fields.sql as string).length).toBe(2000);
     expect(fields.sqlTruncated).toBe(5000);
+
+    // رسالة DrizzleQueryError تحمل الاستعلام **والقيم** كاملةً ⇒ تُقتطع هي الأخرى.
+    const fat = rootCauseFields(drizzleWrapped(mysqlError(), "y".repeat(9000)));
+    expect((fat.message as string).length).toBe(2000);
+    expect(fat.messageTruncated).toBeGreaterThan(9000);
   });
 
   it("يتحمّل ما ليس كائنَ خطأ (throw لنصّ أو null) بلا أن يرمي هو نفسه", () => {

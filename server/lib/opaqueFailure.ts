@@ -22,31 +22,77 @@
 import { TRPCError } from "@trpc/server";
 import { logger } from "../logger";
 
-/** أطول نصٍّ نحتفظ به من الاستعلام — يكفي للتشخيص ولا يُغرق السجلّ بحمولةٍ كاملة. */
-const MAX_SQL_CHARS = 2000;
+/** أطول نصٍّ نحتفظ به من أيّ حقلٍ نصّيّ — يكفي للتشخيص ولا يُغرق السجلّ بحمولةٍ كاملة. */
+const MAX_TEXT_CHARS = 2000;
+/** عمق سلسلة `cause` الذي نمشيه — نفس حدّ `mysqlCodeFrom` في `shared/errorMap.ar.ts`. */
+const MAX_CAUSE_DEPTH = 5;
+
+type ErrorLike = {
+  message?: unknown; name?: unknown; code?: unknown; errno?: unknown;
+  sqlState?: unknown; sqlMessage?: unknown; sql?: unknown;
+  query?: unknown; cause?: unknown;
+};
+
+const clip = (value: unknown): string | undefined =>
+  typeof value === "string" ? value.slice(0, MAX_TEXT_CHARS) : undefined;
+const clippedLength = (value: unknown): number | undefined =>
+  typeof value === "string" && value.length > MAX_TEXT_CHARS ? value.length : undefined;
+
+/** هل يحمل هذا الإطار علامات خطأ mysql2 الحقيقيّة؟ */
+function looksLikeMysqlError(e: ErrorLike): boolean {
+  return typeof e.sqlMessage === "string"
+    || typeof e.errno === "number"
+    || (typeof e.code === "string" && /^ER_|^E[A-Z]+$/.test(e.code));
+}
 
 /**
  * حقول الخطأ التي تكشف السبب فعلاً. خطأ `mysql2` يحمل `code`/`errno`/`sqlMessage`/`sql`
  * (مثلاً `ER_BAD_FIELD_ERROR` + «Unknown column …»)، وهي بالضبط ما ضاع في حادثة ٢١/٨.
  * نمرّرها ككائنٍ صريح لا نرمي الخطأ كما هو: `logger` يُعقّم بالمفاتيح، والكائنُ الخام قد
  * يجرّ حمولةً ضخمة أو مراجعَ دائرية.
+ *
+ * ⚠️ **الإطار الأعلى ليس خطأ mysql2** (مراجعة Codex على PR #695): drizzle 0.45 يلفّ خطأ
+ * القاعدة داخل `DrizzleQueryError`، فتكون `code`/`errno`/`sqlMessage` على `cause` (أو أعمق)
+ * و`undefined` في الأعلى — وهو نفس الفخّ الموثَّق في `isDupEntry` بـ`shared/errorMap.ar.ts`.
+ * قراءةُ الأعلى وحده كانت ستُبقي العطبَ الذي وُلد هذا المُساعد لأجله بلا تشخيص. لذلك نمشي
+ * سلسلةَ `cause` بعمقٍ محدود (وبحارس دورةٍ) ونأخذ حقول mysql2 من أوّل إطارٍ يحملها.
+ *
+ * ونحتفظ برسالة الغلاف أيضاً — لكن **مقتطَعة**: رسالة `DrizzleQueryError` هي
+ * `Failed query: <الاستعلام كاملاً>\nparams: <القيم>` ⇒ بلا اقتطاعٍ تُغرق السجلّ.
  */
 export function rootCauseFields(error: unknown): Record<string, unknown> {
-  const e = error as {
-    message?: unknown; name?: unknown; code?: unknown; errno?: unknown;
-    sqlState?: unknown; sqlMessage?: unknown; sql?: unknown;
-  } | null | undefined;
-  if (e == null || typeof e !== "object") return { message: String(error) };
-  const sql = typeof e.sql === "string" ? e.sql.slice(0, MAX_SQL_CHARS) : undefined;
+  if (error == null || typeof error !== "object") return { message: String(error) };
+  const top = error as ErrorLike;
+
+  let mysql: ErrorLike | undefined;
+  let causeDepth: number | undefined;
+  const seen = new Set<object>();
+  let frame: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && frame != null; depth++) {
+    if (typeof frame !== "object" || seen.has(frame)) break;  // حارس الدورة
+    seen.add(frame);
+    if (looksLikeMysqlError(frame as ErrorLike)) {
+      mysql = frame as ErrorLike;
+      causeDepth = depth;
+      break;
+    }
+    frame = (frame as ErrorLike).cause;
+  }
+
+  // نصّ الاستعلام: من خطأ mysql2 إن وُجد، وإلّا من `DrizzleQueryError.query`.
+  const sqlSource = mysql?.sql ?? top.query;
   return {
-    name: typeof e.name === "string" ? e.name : undefined,
-    message: typeof e.message === "string" ? e.message : undefined,
-    code: e.code,
-    errno: e.errno,
-    sqlState: e.sqlState,
-    sqlMessage: e.sqlMessage,
-    sql,
-    sqlTruncated: typeof e.sql === "string" && e.sql.length > MAX_SQL_CHARS ? e.sql.length : undefined,
+    name: typeof top.name === "string" ? top.name : undefined,
+    message: clip(top.message),
+    messageTruncated: clippedLength(top.message),
+    code: mysql?.code,
+    errno: mysql?.errno,
+    sqlState: mysql?.sqlState,
+    sqlMessage: clip(mysql?.sqlMessage),
+    sql: clip(sqlSource),
+    sqlTruncated: clippedLength(sqlSource),
+    // 0 = الخطأ نفسه، 1+ = كان ملفوفاً (DrizzleQueryError)، undefined = ليس خطأ قاعدة.
+    causeDepth,
   };
 }
 
