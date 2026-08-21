@@ -122,7 +122,7 @@ export const storefrontRouter = router({
     .query(({ input }) => storefrontRelated(input.productId)),
 
   /** توصيات السلة التي ضبطها المدير؛ لا تعيد التكلفة أو كمية المخزون. */
-  cartRecommendations: publicProcedure
+  cartRecommendations: storefrontPublicReadProcedure
     .input(z.object({ productIds: z.array(z.number().int().positive()).min(1).max(24) }))
     .query(({ input }) => storefrontCartRecommendations(input.productIds)),
 
