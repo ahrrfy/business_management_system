@@ -5,6 +5,7 @@
  * كل المسارات مدير فأعلى (الوحدة إشرافية)؛ تدقيق على كل كتابة.
  */
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { and, desc, eq, exists, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { branches, productVariants, productionLines, productionOrders, products } from "../../drizzle/schema";
@@ -241,7 +242,11 @@ export const productionRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء مستند الإنتاج" });
+          failOpaque(e, {
+            op: "production.create",
+            userMessage: "تعذّر إنشاء مستند الإنتاج",
+            context: { userId: ctx.user.id },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء مستند الإنتاج" });

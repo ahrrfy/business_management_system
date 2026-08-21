@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
@@ -1151,7 +1152,11 @@ export const workOrderRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء طلب الخدمة" });
+          failOpaque(e, {
+            op: "workOrders.create",
+            userMessage: "تعذّر إنشاء طلب الخدمة",
+            context: { userId: ctx.user.id },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء طلب الخدمة" });
@@ -1424,7 +1429,11 @@ export const workOrderRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تسليم طلب الخدمة" });
+          failOpaque(e, {
+            op: "workOrders.deliver",
+            userMessage: "تعذّر تسليم طلب الخدمة",
+            context: { userId: ctx.user.id, workOrderId: input.workOrderId },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });

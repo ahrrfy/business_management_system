@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
@@ -317,7 +318,11 @@ export const purchaseRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام الاستلام" });
+          failOpaque(e, {
+            op: "purchases.receive",
+            userMessage: "تعذّر إتمام الاستلام",
+            context: { userId: ctx.user.id, purchaseOrderId: input.purchaseOrderId },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الاستلام (تكرار)" });
