@@ -1,14 +1,14 @@
 {
   "summary": {
     "generatedFrom": "static scan (read-only)",
-    "trpcTotal": 1045,
+    "trpcTotal": 1047,
     "byKind": {
       "mutation": 552,
-      "query": 493
+      "query": 495
     },
     "byAuthority": {
       "module-gate": 498,
-      "module-map": 324,
+      "module-map": 326,
       "admin": 67,
       "raw-role": 55,
       "none": 53,
@@ -21,7 +21,7 @@
       "device-bootstrap": 1
     },
     "bySensitivity": {
-      "LOW": 491,
+      "LOW": 493,
       "MEDIUM": 403,
       "HIGH": 151
     },
@@ -36,8 +36,8 @@
       "inventory": 51,
       "workorders": 37,
       "productStudio": 35,
+      "campaigns": 30,
       "crm": 29,
-      "campaigns": 28,
       "sales": 28,
       "assets": 21,
       "purchases": 19,
@@ -77,7 +77,7 @@
     "expressMounts": 11,
     "jobs": 21,
     "routerFiles": 95,
-    "proposedPermissions": 881,
+    "proposedPermissions": 883,
     "proposedDomains": {
       "hr": 106,
       "treasury": 88,
@@ -92,7 +92,7 @@
       "purchasing": 34,
       "crm": 33,
       "productstudio": 31,
-      "marketing": 28,
+      "marketing": 30,
       "storefront": 22,
       "assets": 21,
       "digitalcards/sales": 18,
@@ -3658,7 +3658,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:104"
+      "loc": "server/routers/crmRouter.ts:111"
     },
     {
       "surface": "trpc",
@@ -3675,7 +3675,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:99"
+      "loc": "server/routers/crmRouter.ts:106"
     },
     {
       "surface": "trpc",
@@ -3692,7 +3692,24 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:129"
+      "loc": "server/routers/crmRouter.ts:136"
+    },
+    {
+      "surface": "trpc",
+      "router": "crmRouter",
+      "proposedPermission": "marketing.coupons.batches",
+      "name": "coupons.batches",
+      "kind": "query",
+      "procedure": "campaignsReadProcedure",
+      "authority": "module-map",
+      "module": "campaigns",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/crmRouter.ts:340"
     },
     {
       "surface": "trpc",
@@ -3709,7 +3726,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:221"
+      "loc": "server/routers/crmRouter.ts:246"
     },
     {
       "surface": "trpc",
@@ -3726,7 +3743,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:285"
+      "loc": "server/routers/crmRouter.ts:310"
     },
     {
       "surface": "trpc",
@@ -3743,7 +3760,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:312"
+      "loc": "server/routers/crmRouter.ts:376"
     },
     {
       "surface": "trpc",
@@ -3760,7 +3777,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:150"
+      "loc": "server/routers/crmRouter.ts:157"
     },
     {
       "surface": "trpc",
@@ -3777,7 +3794,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:197"
+      "loc": "server/routers/crmRouter.ts:204"
     },
     {
       "surface": "trpc",
@@ -3794,7 +3811,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:259"
+      "loc": "server/routers/crmRouter.ts:284"
     },
     {
       "surface": "trpc",
@@ -3811,7 +3828,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: void",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/crmRouter.ts:343"
+      "loc": "server/routers/crmRouter.ts:423"
     },
     {
       "surface": "trpc",
@@ -3828,7 +3845,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/crmRouter.ts:80"
+      "loc": "server/routers/crmRouter.ts:87"
     },
     {
       "surface": "trpc",
@@ -11410,7 +11427,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/promotionsV2Router.ts:249"
+      "loc": "server/routers/promotionsV2Router.ts:263"
     },
     {
       "surface": "trpc",
@@ -11427,7 +11444,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/promotionsV2Router.ts:69"
+      "loc": "server/routers/promotionsV2Router.ts:83"
     },
     {
       "surface": "trpc",
@@ -11444,7 +11461,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/promotionsV2Router.ts:138"
+      "loc": "server/routers/promotionsV2Router.ts:152"
     },
     {
       "surface": "trpc",
@@ -11461,7 +11478,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/promotionsV2Router.ts:57"
+      "loc": "server/routers/promotionsV2Router.ts:71"
     },
     {
       "surface": "trpc",
@@ -11478,7 +11495,24 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/promotionsV2Router.ts:35"
+      "loc": "server/routers/promotionsV2Router.ts:36"
+    },
+    {
+      "surface": "trpc",
+      "router": "promotionsV2Router",
+      "proposedPermission": "marketing.promotions_v2.performance",
+      "name": "performance",
+      "kind": "query",
+      "procedure": "campaignsReadProcedure",
+      "authority": "module-map",
+      "module": "campaigns",
+      "level": "READ",
+      "roles": "",
+      "branch": "scoped",
+      "sensitivity": "LOW",
+      "sensitivityWhy": "قراءة",
+      "flags": "",
+      "loc": "server/routers/promotionsV2Router.ts:59"
     },
     {
       "surface": "trpc",
@@ -11495,7 +11529,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/promotionsV2Router.ts:156"
+      "loc": "server/routers/promotionsV2Router.ts:170"
     },
     {
       "surface": "trpc",
@@ -11512,7 +11546,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/promotionsV2Router.ts:179"
+      "loc": "server/routers/promotionsV2Router.ts:193"
     },
     {
       "surface": "trpc",
