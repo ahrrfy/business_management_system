@@ -629,6 +629,7 @@ export async function reconcileSupplierBalances(): Promise<ReconcileResult[]> {
     .select({
       supplierId: accountingEntries.supplierId,
       ap: sql<string>`COALESCE(SUM(CASE
+        WHEN ${accountingEntries.purchaseLiabilityAccount} = 'CASH_CLEARING' THEN 0
         WHEN ${accountingEntries.entryType} = 'PURCHASE'    THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))

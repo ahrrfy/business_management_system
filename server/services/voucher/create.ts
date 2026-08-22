@@ -175,6 +175,8 @@ export type SystemPaymentRequest =
       requestToken: string;
       expectedAmount: string;
       sourceTotal: string;
+      /** غياب الحقل = طلب تاريخي استعمل AP؛ القيمة الجديدة تجمّد حساب التسوية عند الإنشاء. */
+      liabilityAccount?: "AP" | "CASH_CLEARING";
     }
   | PurchaseSupplierUsdSystemPaymentRequest
   | ({
@@ -335,6 +337,9 @@ export function isCanonicalSystemPaymentRequest(
       return (
         isPositiveSafeInteger(request.purchaseOrderId) &&
         !!request.requestToken &&
+        (request.liabilityAccount == null ||
+          request.liabilityAccount === "AP" ||
+          request.liabilityAccount === "CASH_CLEARING") &&
         reference.endsWith(`-${request.requestToken}`) &&
         reference.startsWith("PO-PAY-")
       );

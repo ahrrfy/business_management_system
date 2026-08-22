@@ -34,6 +34,41 @@ export async function purchaseOrderPayableBalanceTx(tx: Tx, purchaseOrderId: num
   return money(row?.balance ?? "0");
 }
 
+/**
+ * يجمّد مسار حساب أمر CASH عبر عمره كله. الطلبات القديمة رحّلت PURCHASE إلى AP؛
+ * إبقاؤها على AP يمنع أن يُعتمد طلب قديم على clearing جديد. الأمر الجديد (لا قيود بعد)
+ * أو الذي بدأ فعلاً بملف clearing يستعمل OTHER_LIABILITY ولا يمسّ ذمة المورد.
+ */
+export async function purchaseCashSettlementUsesClearingTx(
+  tx: Tx,
+  purchaseOrderId: number,
+): Promise<boolean> {
+  const rows = await tx
+    .select({ liabilityAccount: accountingEntries.purchaseLiabilityAccount })
+    .from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.purchaseOrderId, purchaseOrderId),
+        eq(accountingEntries.entryType, "PURCHASE"),
+      ),
+    );
+  if (rows.length === 0) return true;
+  const hasCashClearing = rows.some(
+    (row) => row.liabilityAccount === "CASH_CLEARING",
+  );
+  const hasLegacyAp = rows.some(
+    (row) => row.liabilityAccount !== "CASH_CLEARING",
+  );
+  if (hasCashClearing && hasLegacyAp) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message:
+        "أمر الشراء النقدي يجمع قيود AP وتسوية نقدية؛ أوقف الحركة وراجع التدقيق المالي",
+    });
+  }
+  return hasCashClearing;
+}
+
 /** مبالغ طلبات صرف المورد المعلّقة المحجوزة لنفس الأمر، ولا أثر نقدي لها بعد. */
 export async function pendingPurchaseSupplierPaymentsTx(tx: Tx, poNumber: string): Promise<Decimal> {
   const [row] = await tx

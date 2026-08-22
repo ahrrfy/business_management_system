@@ -350,6 +350,68 @@ describe("معاينة افتتاح دورة الدفتر المزدوج", () =>
     expect(report.lines.some((line) => line.netDebit === "891.00")).toBe(false);
   });
 
+  it("يرحّل تسوية الشراء النقدي المعلّقة كالتزام مستقل ولا يخلطها بذمة المورد", async () => {
+    await seedOperationalBalances();
+    await db()
+      .insert(s.accountingEntries)
+      .values([
+        {
+          entryType: "PURCHASE",
+          branchId: 1,
+          supplierId: 1,
+          purchaseLiabilityAccount: "CASH_CLEARING",
+          revenue: "0.00",
+          cost: "1000.00",
+          profit: "0.00",
+          amount: "1000.00",
+          entryDate: new Date(),
+        },
+        {
+          entryType: "PAYMENT_OUT",
+          branchId: 1,
+          supplierId: 1,
+          purchaseLiabilityAccount: "CASH_CLEARING",
+          revenue: "0.00",
+          cost: "0.00",
+          profit: "0.00",
+          amount: "400.00",
+          entryDate: new Date(),
+        },
+        {
+          entryType: "RETURN",
+          branchId: 1,
+          supplierId: 1,
+          purchaseLiabilityAccount: "CASH_CLEARING",
+          revenue: "0.00",
+          cost: "-100.00",
+          profit: "0.00",
+          amount: "-100.00",
+          entryDate: new Date(),
+        },
+        {
+          entryType: "PAYMENT_IN",
+          branchId: 1,
+          supplierId: 1,
+          purchaseLiabilityAccount: "CASH_CLEARING",
+          revenue: "0.00",
+          cost: "0.00",
+          profit: "0.00",
+          amount: "25.00",
+          entryDate: new Date(),
+        },
+      ]);
+
+    const report = await previewShadowOpening({ cycleId: "cycle-opening-1" });
+
+    expect(roleLine(report, "AP", null)?.netDebit).toBe("-40.00");
+    expect(roleLine(report, "OTHER_LIABILITY", 1)).toMatchObject({
+      netDebit: "-525.00",
+      debit: "0.00",
+      credit: "525.00",
+      sources: ["accountingEntries.purchaseLiabilityAccount.CASH_CLEARING"],
+    });
+  });
+
   it("يحجب الرصيد غير المنسوب ثم يعتمد تخصيصاً يدوياً متوازناً بلا OPENING_EQUITY", async () => {
     await seedOperationalBalances();
     const draft = await previewShadowOpening({ cycleId: "cycle-opening-1" });

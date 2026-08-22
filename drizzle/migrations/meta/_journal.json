@@ -1639,6 +1639,13 @@
       "when": 1788052298000,
       "tag": "0247_product_related_products",
       "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "5",
+      "when": 1788052299000,
+      "tag": "0248_cash_purchase_clearing",
+      "breakpoints": true
     }
   ]
 }

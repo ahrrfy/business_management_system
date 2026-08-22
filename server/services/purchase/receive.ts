@@ -1,5 +1,5 @@
 // استلام أمر الشراء (جزئي/كامل): WAVG بسعر المورّد وحده، تراكم الضريبة،
-// قيد PURCHASE + AP، واستحقاق شحن عند الاستلام، وطلبات تسوية معلّقة لا تُنفَّذ إلا بعد اعتماد المالك.
+// قيد PURCHASE + AP للآجل أو clearing للنقدي، واستحقاق شحن عند الاستلام، وطلبات تسوية معلّقة لا تُنفَّذ إلا بعد اعتماد المالك.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
@@ -17,6 +17,7 @@ import { createSystemPaymentRequestTx } from "../voucher/create";
 import {
   assertPurchaseBranch,
   pendingPurchaseSupplierPaymentsTx,
+  purchaseCashSettlementUsesClearingTx,
   purchaseOrderPayableBalanceTx,
 } from "./internal";
 import type { ReceivePurchaseInput } from "./types";
@@ -477,20 +478,29 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     )[0];
     const priorTax = money(priorTaxRow?.v ?? "0");
     const receivedTax = cumulativePurchaseTax(String(po.taxAmount), priorTax.toFixed(2), receivedNet, rate, fullyReceived);
-    // ذمّة المورّد = البضاعة + الضريبة، في الدينارية والدولارية سواء (كان الاستثناء مقصوراً على
-    // الدولارية بحجّة «الشحن المحلي ليس ديناً على المورد الأجنبي» — قرار المالك عمّم المبدأ).
+    // الأمر الآجل يثبت ذمّة المورد. أمّا الأمر النقدي فيثبت التزام تسوية نقدية مستقلّاً:
+    // البضاعة وصلت لكن النقد لا يخرج قبل اعتماد الشخص الثاني، ولا يجوز أن تظهر هذه المهلة
+    // التشغيلية ديناً على حساب المورد أو في تقارير AP.
     const receivedTotal = round2(receivedNet.plus(receivedTax));
     const supplierIqd = receivedTotal;
+    const automaticCashSettlement = po.settlementType === "CASH";
+    const useCashClearing =
+      automaticCashSettlement &&
+      (await purchaseCashSettlementUsesClearingTx(tx, input.purchaseOrderId));
+    const purchaseSettlementRole = useCashClearing
+      ? ("OTHER_LIABILITY" as const)
+      : ("AP" as const);
     const purchasePostingSource = {
       roleDebits: { INVENTORY: receivedNet, TAX_PAYABLE: receivedTax },
-      roleCredits: { AP: supplierIqd },
+      roleCredits: { [purchaseSettlementRole]: supplierIqd },
     };
     await tx
       .update(purchaseOrders)
       .set({ status: fullyReceived ? "RECEIVED" : "CONFIRMED" })
       .where(eq(purchaseOrders.id, input.purchaseOrderId));
 
-    // PURCHASE ledger entry + AP. cost = قيمة البضاعة وحدها (بلا شحن/كمرك — قرار المالك ٥/٨/٢٦)،
+    // PURCHASE ledger entry + AP للآجل أو clearing للنقدي. cost = قيمة البضاعة وحدها
+    // (بلا شحن/كمرك — قرار المالك ٥/٨/٢٦)،
     // وهي نفسها التي دخلت WAVG أعلاه ⇒ قيمة المخزون وقيد الشراء متطابقان. قيود PURCHASE لا تدخل
     // حساب الربح (reportsFinancialService يجمع cost لـSALE/RETURN فقط) والاعتراف بتكلفة البضاعة
     // يقع مرّةً واحدةً عند البيع؛ أمّا دفع الشحن النقدي فيبقى طلباً معلّقاً حتى اعتماد المالك أدناه.
@@ -501,16 +511,32 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       branchId: Number(po.branchId),
       createdBy: actor.userId,
       purchaseOrderId: input.purchaseOrderId,
+      purchaseLiabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
       supplierId: Number(po.supplierId),
       cost: round2(receivedNet),
       taxAmount: receivedTax,
       amount: supplierIqd,
-      postingIntent: createPostingIntent("PURCHASE_INVENTORY", "PURCHASE", [debitLine("INVENTORY", receivedNet), ...(receivedTax.isZero() ? [] : [debitLine("TAX_PAYABLE", receivedTax)]), creditLine("AP", supplierIqd)], purchasePostingSource),
+      postingIntent: createPostingIntent(
+        useCashClearing
+          ? "PURCHASE_INVENTORY_CASH_CLEARING"
+          : "PURCHASE_INVENTORY",
+        "PURCHASE",
+        [
+          debitLine("INVENTORY", receivedNet),
+          ...(receivedTax.isZero()
+            ? []
+            : [debitLine("TAX_PAYABLE", receivedTax)]),
+          creditLine(purchaseSettlementRole, supplierIqd),
+        ],
+        purchasePostingSource,
+      ),
       postingSourceComponents: purchasePostingSource,
     });
-    await adjustSupplierBalance(tx, Number(po.supplierId), supplierIqd);
-    if (po.agreedCurrency === "USD") {
-      await adjustSupplierBalanceUsd(tx, Number(po.supplierId), receivedUsd);
+    if (!useCashClearing) {
+      await adjustSupplierBalance(tx, Number(po.supplierId), supplierIqd);
+      if (po.agreedCurrency === "USD") {
+        await adjustSupplierBalanceUsd(tx, Number(po.supplierId), receivedUsd);
+      }
     }
 
     // ═══ الشحن/الكمرك: طلب مصروف شركة مرتبط بالاستلام (قرار المالك ٥/٨/٢٦) ═══
@@ -657,10 +683,9 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
 
     // تسوية المورد: أمر CASH يطلب تلقائياً كامل قيمة **هذا الاستلام**، فلا يتحول اختيار
     // «نقدي» الظاهر في أمر الشراء إلى ذمّة صامتة. الطلب يبقى معلّقاً حتى اعتماد مالك آخر
-    // (فصل المهام)، وعند الاعتماد فقط يخرج النقد وتُطفأ AP ويزيد paidAmount.
+    // (فصل المهام)، وعند الاعتماد فقط يخرج النقد ويُطفأ AP/حساب التسوية ويزيد paidAmount.
     let supplierPaymentRequestReceiptId: number | null = null;
     const explicitPaidNow = money(input.payment?.amount ?? "0");
-    const automaticCashSettlement = po.settlementType === "CASH";
     if (automaticCashSettlement && input.payment && !explicitPaidNow.eq(receivedTotal)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
@@ -677,11 +702,13 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         });
       }
       // PROC-05 (تدقيق ٢/٧): السقف الأوّل — رصيد المورد الفعلي (منع AP سالبة على مستوى المورد).
-      const supAfter = money(
-        (await tx.select({ b: suppliers.currentBalance }).from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).limit(1))[0]?.b ?? "0",
-      );
-      if (paidNow.gt(supAfter)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})` });
+      if (!useCashClearing) {
+        const supAfter = money(
+          (await tx.select({ b: suppliers.currentBalance }).from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).limit(1))[0]?.b ?? "0",
+        );
+        if (paidNow.gt(supAfter)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})` });
+        }
       }
       // السقف الحقيقي = رصيد GL المعترف به لهذا PO ناقص طلباته المعلّقة، لا إجمالي الأمر الاسمي.
       // يمنع دفع قيمة غير مستلمة، كما يمنع حجز المبلغ مرتين قبل الاعتماد.
@@ -713,6 +740,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           requestToken: paymentRequestToken,
           expectedAmount: toDbMoney(paidNow),
           sourceTotal: toDbMoney(po.total),
+          liabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
         });
         supplierPaymentRequestReceiptId = paymentRequest.receiptId;
       } else {
@@ -737,7 +765,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         const receiptId = extractInsertId(receiptRes);
         const supplierPaymentAssetRole = paymentAssetRole(input.payment!.method, null, "OUT");
         const supplierPaymentPostingSource = {
-          roleDebits: { AP: paidNow },
+          roleDebits: { [purchaseSettlementRole]: paidNow },
           roleCredits: { [supplierPaymentAssetRole]: paidNow },
         };
         await postEntry(tx, {
@@ -745,13 +773,26 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           branchId: Number(po.branchId),
           createdBy: actor.userId,
           purchaseOrderId: input.purchaseOrderId,
+          purchaseLiabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
           supplierId: Number(po.supplierId),
           receiptId,
           amount: paidNow,
-          postingIntent: createPostingIntent("PAYMENT_OUT_SUPPLIER", "PAYMENT_OUT", [debitLine("AP", paidNow), creditLine(supplierPaymentAssetRole, paidNow)], supplierPaymentPostingSource),
+          postingIntent: createPostingIntent(
+            useCashClearing
+              ? "PAYMENT_OUT_PURCHASE_CASH_CLEARING"
+              : "PAYMENT_OUT_SUPPLIER",
+            "PAYMENT_OUT",
+            [
+              debitLine(purchaseSettlementRole, paidNow),
+              creditLine(supplierPaymentAssetRole, paidNow),
+            ],
+            supplierPaymentPostingSource,
+          ),
           postingSourceComponents: supplierPaymentPostingSource,
         });
-        await adjustSupplierBalance(tx, Number(po.supplierId), paidNow.neg());
+        if (!useCashClearing) {
+          await adjustSupplierBalance(tx, Number(po.supplierId), paidNow.neg());
+        }
         await tx
           .update(purchaseOrders)
           .set({ paidAmount: toDbMoney(money(po.paidAmount).plus(paidNow)) })

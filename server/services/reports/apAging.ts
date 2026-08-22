@@ -36,6 +36,7 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
     ? sql`LEFT JOIN (
         SELECT ae.supplierId,
           COALESCE(SUM(CASE
+            WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
             WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','OPENING') THEN ae.amount
             WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
             ELSE 0 END), 0) AS balance
@@ -75,6 +76,7 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
       SELECT ae.purchaseOrderId,
         MIN(CASE WHEN ae.entryType = 'PURCHASE' THEN ae.entryDate END) AS recognitionDate,
         COALESCE(SUM(CASE
+          WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
           WHEN ae.entryType = 'PURCHASE' THEN ae.amount
           WHEN ae.entryType = 'RETURN' THEN ae.amount
           WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount
@@ -186,6 +188,7 @@ async function supplierOpeningBalance(supplierId: number, from?: string, branchI
   const entriesRow = await db
     .select({
       v: sql<string>`COALESCE(SUM(CASE
+        WHEN ${accountingEntries.purchaseLiabilityAccount} = 'CASH_CLEARING' THEN 0
         WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT'     THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'RETURN'          THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
@@ -231,6 +234,12 @@ export async function getSupplierStatement(
   // وreconcileSupplierBalances. كان يُدرج DRAFT/SENT/CANCELLED بكامل قيمتها في totalPurchases ودفتر الحركات
   // فلا يتّزن الكشف مع currentBalance بمجرّد وجود أمر ملغى أو مسودّة.
   poConds.push(inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]));
+  poConds.push(sql`NOT EXISTS (
+    SELECT 1 FROM ${accountingEntries} cashPurchaseEntry
+    WHERE cashPurchaseEntry.purchaseOrderId = ${purchaseOrders.id}
+      AND cashPurchaseEntry.purchaseLiabilityAccount = 'CASH_CLEARING'
+      AND cashPurchaseEntry.entryType = 'PURCHASE'
+  )`);
   if (branchId) poConds.push(eq(purchaseOrders.branchId, branchId));
   const poActor = alias(users, "supplierStatementPoActor");
   const pos = await db
@@ -317,6 +326,7 @@ export async function getSupplierStatement(
   const payConds = [
     sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL)${openingMoveSql})`,
     eq(accountingEntries.supplierId, supplierId),
+    sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} <> 'CASH_CLEARING')`,
   ];
   if (branchId) payConds.push(eq(accountingEntries.branchId, branchId));
   if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);

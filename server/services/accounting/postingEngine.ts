@@ -87,12 +87,14 @@ export type PostingProfile =
   | "SALE_CONSIGNMENT"
   | "SALE_MIXED"
   | "PURCHASE_INVENTORY"
+  | "PURCHASE_INVENTORY_CASH_CLEARING"
   | "PURCHASE_FIXED_ASSET"
   | "PURCHASE_DIGITAL"
   | "PURCHASE_CONSIGNMENT"
   | "PURCHASE_CONSIGNMENT_SHORTAGE"
   | "PAYMENT_IN_CUSTOMER"
   | "PAYMENT_IN_SUPPLIER_REFUND"
+  | "PAYMENT_IN_PURCHASE_CASH_CLEARING"
   | "PAYMENT_IN_OTHER"
   | "PAYMENT_IN_CATEGORY"
   | "PAYMENT_IN_CATEGORY_REVERSAL"
@@ -103,6 +105,7 @@ export type PostingProfile =
   | "PAYMENT_IN_PAYROLL_SS_RETURN"
   | "PAYMENT_IN_EMPLOYEE_ADVANCE_REPAYMENT"
   | "PAYMENT_OUT_SUPPLIER"
+  | "PAYMENT_OUT_PURCHASE_CASH_CLEARING"
   | "PAYMENT_OUT_CUSTOMER_REFUND"
   | "PAYMENT_OUT_DIGITAL_REFUND"
   | "PAYMENT_OUT_EXPENSE"
@@ -128,6 +131,7 @@ export type PostingProfile =
   | "RETURN_SALE_CONSIGNMENT"
   | "RETURN_SALE_MIXED"
   | "RETURN_PURCHASE_INVENTORY"
+  | "RETURN_PURCHASE_INVENTORY_CASH_CLEARING"
   | "RETURN_PURCHASE_FIXED_ASSET"
   | "RETURN_PURCHASE_DIGITAL"
   | "RETURN_PURCHASE_CONSIGNMENT"
@@ -238,6 +242,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
   ],
   PURCHASE: [
     "PURCHASE_INVENTORY",
+    "PURCHASE_INVENTORY_CASH_CLEARING",
     "PURCHASE_FIXED_ASSET",
     "PURCHASE_DIGITAL",
     "PURCHASE_CONSIGNMENT",
@@ -246,6 +251,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
   PAYMENT_IN: [
     "PAYMENT_IN_CUSTOMER",
     "PAYMENT_IN_SUPPLIER_REFUND",
+    "PAYMENT_IN_PURCHASE_CASH_CLEARING",
     "PAYMENT_IN_OTHER",
     "PAYMENT_IN_CATEGORY",
     "PAYMENT_IN_CATEGORY_REVERSAL",
@@ -258,6 +264,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
   ],
   PAYMENT_OUT: [
     "PAYMENT_OUT_SUPPLIER",
+    "PAYMENT_OUT_PURCHASE_CASH_CLEARING",
     "PAYMENT_OUT_CUSTOMER_REFUND",
     "PAYMENT_OUT_DIGITAL_REFUND",
     "PAYMENT_OUT_EXPENSE",
@@ -285,6 +292,7 @@ export const ENTRY_TYPE_PROFILES = freezeProfileRegistry({
     "RETURN_SALE_CONSIGNMENT",
     "RETURN_SALE_MIXED",
     "RETURN_PURCHASE_INVENTORY",
+    "RETURN_PURCHASE_INVENTORY_CASH_CLEARING",
     "RETURN_PURCHASE_FIXED_ASSET",
     "RETURN_PURCHASE_DIGITAL",
     "RETURN_PURCHASE_CONSIGNMENT",
@@ -833,6 +841,23 @@ export const PROFILE_POLICIES = Object.freeze({
       requireRoleComponents: ["INVENTORY", "TAX_PAYABLE", "AP"],
     },
   ),
+  PURCHASE_INVENTORY_CASH_CLEARING: profilePolicy(
+    "PURCHASE",
+    ["INVENTORY", "TAX_PAYABLE"],
+    ["OTHER_LIABILITY"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", [
+          "OTHER_LIABILITY",
+        ]),
+      ],
+      requireRoleComponents: [
+        "INVENTORY",
+        "TAX_PAYABLE",
+        "OTHER_LIABILITY",
+      ],
+    },
+  ),
   PURCHASE_FIXED_ASSET: profilePolicy("PURCHASE", ["FIXED_ASSETS"], ["AP"], {
     sourceAssertions: [sourceAssertion("amount", "CREDIT_MINUS_DEBIT", ["AP"])],
   }),
@@ -883,6 +908,17 @@ export const PROFILE_POLICIES = Object.freeze({
     ],
     requireRoleComponents: [...CASH_ASSETS, "AP"],
   }),
+  PAYMENT_IN_PURCHASE_CASH_CLEARING: profilePolicy(
+    "PAYMENT_IN",
+    CASH_ASSETS,
+    ["OTHER_LIABILITY"],
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "DEBIT_MINUS_CREDIT", CASH_ASSETS),
+      ],
+      requireRoleComponents: [...CASH_ASSETS, "OTHER_LIABILITY"],
+    },
+  ),
   PAYMENT_IN_OTHER: profilePolicy(
     "PAYMENT_IN",
     [...CASH_ASSETS, "ACCUMULATED_DEPRECIATION"],
@@ -1021,6 +1057,17 @@ export const PROFILE_POLICIES = Object.freeze({
     ],
     requireRoleComponents: ["AP", ...CASH_ASSETS],
   }),
+  PAYMENT_OUT_PURCHASE_CASH_CLEARING: profilePolicy(
+    "PAYMENT_OUT",
+    ["OTHER_LIABILITY"],
+    CASH_ASSETS,
+    {
+      sourceAssertions: [
+        sourceAssertion("amount", "CREDIT_MINUS_DEBIT", CASH_ASSETS),
+      ],
+      requireRoleComponents: ["OTHER_LIABILITY", ...CASH_ASSETS],
+    },
+  ),
   PAYMENT_OUT_CUSTOMER_REFUND: profilePolicy(
     "PAYMENT_OUT",
     ["AR"],
@@ -1408,6 +1455,21 @@ export const PROFILE_POLICIES = Object.freeze({
       requiredCreditRoles: ["INVENTORY", "TAX_PAYABLE"],
       requireRoleComponents: [
         "AP",
+        "INVENTORY",
+        "TAX_PAYABLE",
+        "PURCHASE_PRICE_VARIANCE",
+      ],
+    },
+  ),
+  RETURN_PURCHASE_INVENTORY_CASH_CLEARING: profilePolicy(
+    "RETURN",
+    ["OTHER_LIABILITY", "PURCHASE_PRICE_VARIANCE"],
+    ["INVENTORY", "TAX_PAYABLE", "PURCHASE_PRICE_VARIANCE"],
+    {
+      requiredDebitRoles: ["OTHER_LIABILITY"],
+      requiredCreditRoles: ["INVENTORY", "TAX_PAYABLE"],
+      requireRoleComponents: [
+        "OTHER_LIABILITY",
         "INVENTORY",
         "TAX_PAYABLE",
         "PURCHASE_PRICE_VARIANCE",
@@ -2343,6 +2405,10 @@ export const PROFILE_POLICIES = Object.freeze({
  * 30-day observation window happened not to exercise that path.
  */
 export const ACTIVATION_REQUIRED_POSTING_PROFILES = Object.freeze([
+  "PURCHASE_INVENTORY_CASH_CLEARING",
+  "PAYMENT_OUT_PURCHASE_CASH_CLEARING",
+  "PAYMENT_IN_PURCHASE_CASH_CLEARING",
+  "RETURN_PURCHASE_INVENTORY_CASH_CLEARING",
   "PAYMENT_IN_CATEGORY",
   "PAYMENT_IN_CATEGORY_REVERSAL",
   "PAYMENT_OUT_CATEGORY",
@@ -2373,6 +2439,7 @@ export const ACTIVATION_REQUIRED_POSTING_PROFILES = Object.freeze([
 ] as const satisfies readonly PostingProfile[]);
 
 export const ACTIVATION_REQUIRED_ACCOUNT_ROLES = Object.freeze([
+  "OTHER_LIABILITY",
   "PAYROLL_TAX_PAYABLE",
   "SOCIAL_SECURITY_PAYABLE",
   "EOS_PROVISION",

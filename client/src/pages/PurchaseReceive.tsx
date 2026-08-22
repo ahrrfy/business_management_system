@@ -134,16 +134,21 @@ export default function PurchaseReceive() {
   );
   const receive = trpc.purchases.receive.useMutation({
     onSuccess: async (r) => {
+      const cashPurchase = po.data?.settlementType === "CASH";
       const recognized = r.fullyReceived
-        ? "تم الاستلام الكامل وإثبات المخزون واستحقاق المورد."
-        : "تم الاستلام الجزئي وإثبات المخزون واستحقاق المورد.";
+        ? cashPurchase
+          ? "تم الاستلام الكامل وإثبات المخزون بلا إنشاء ذمة مورد."
+          : "تم الاستلام الكامل وإثبات المخزون واستحقاق المورد."
+        : cashPurchase
+          ? "تم الاستلام الجزئي وإثبات المخزون بلا إنشاء ذمة مورد."
+          : "تم الاستلام الجزئي وإثبات المخزون واستحقاق المورد.";
       const pending: string[] = [];
       if (r.shippingPaymentRequestReceiptId)
         pending.push(
           "أُثبت مصروف الشحن والتزامه، وتسويته معلّقة لاعتماد مالكٍ آخر",
         );
       if (r.supplierPaymentRequestReceiptId)
-        pending.push("دفعة المورّد النقدية معلّقة لاعتماد مالكٍ آخر");
+        pending.push("تسوية الشراء النقدي معلّقة لاعتماد مالكٍ آخر دون رفع ذمة المورد");
       setDone([recognized, ...pending].join(" "));
       await Promise.all([
         utils.purchases.get.invalidate({ purchaseOrderId }),
@@ -327,7 +332,7 @@ export default function PurchaseReceive() {
         title: `استلام أمر الشراء ${data.poNumber}`,
         description:
           data.settlementType === "CASH"
-            ? "سيُضاف المخزون ويُثبت استحقاق المورد، ثم يُنشأ طلب صرف نقدي تلقائياً بكامل قيمة هذا الاستلام لاعتماده من شخص آخر. تأكيد؟"
+            ? "سيُضاف المخزون ويُثبت التزام تسوية نقدية مستقل بلا ذمة مورد، ثم يُنشأ طلب صرف بكامل قيمة هذا الاستلام لاعتماده من شخص آخر. تأكيد؟"
             : "سيُضاف المخزون وتُثبت القيمة ذمةً على المورد. تأكيد؟",
         confirmText: "استلام",
       }))
@@ -502,7 +507,7 @@ export default function PurchaseReceive() {
             <div className="text-muted-foreground text-xs">نوع التسوية</div>
             <div>
               {data.settlementType === "CASH"
-                ? "نقدي — طلب صرف تلقائي"
+                ? "نقدي — طلب صرف تلقائي بلا ذمة"
                 : "آجل — ذمة مورد"}
             </div>
           </div>
@@ -801,7 +806,8 @@ export default function PurchaseReceive() {
               <p className="text-sm text-muted-foreground">
                 عند الاستلام ينشئ النظام تلقائياً طلب صرف نقدي من الخزينة بكامل
                 قيمة الكميات المستلمة. يبقى الطلب معلّقاً حتى يعتمدَه شخص آخر؛
-                عندها فقط ينخفض رصيد المورد ويُسجّل خروج النقد.
+                ويُثبت قبله في حساب تسوية مستقل لا يرفع ذمة المورد. عند الاعتماد
+                يُسجّل خروج النقد ويُصفّر حساب التسوية.
               </p>
             </CardContent>
           </Card>
@@ -836,7 +842,9 @@ export default function PurchaseReceive() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base">
-                طلب سداد ذمة مرتبطة بالأمر
+                {data.settlementType === "CASH"
+                  ? "طلب تسوية نقدية مرتبطة بالأمر"
+                  : "طلب سداد ذمة مرتبطة بالأمر"}
               </CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">

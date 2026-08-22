@@ -52,6 +52,7 @@ export default function BalanceSheet() {
       { label: "رصيدنا لدى الصرّافين", v: p.exchangeDebit },
       { label: "الذمم المدينة (عملاء)", v: p.arDebit },
       { label: "سُلف للموردين", v: p.apDebit },
+      { label: "تسوية مشتريات نقدية لنا", v: p.cashPurchaseClearingDebit },
       { label: "المخزون (بالتكلفة)", v: p.inventory },
       { label: "الأصول الثابتة (بالتكلفة)", v: p.fixedAssets },
       { label: "سلف مستحقة على الموظفين", v: p.employeeAdvanceReceivable },
@@ -59,6 +60,7 @@ export default function BalanceSheet() {
     ].filter((r) => D(r.v).gt(0));
     const liabilities = [
       { label: "الذمم الدائنة (موردون)", v: p.apCredit },
+      { label: "تسوية مشتريات نقدية معلّقة", v: p.cashPurchaseClearingCredit },
       { label: "سُلف العملاء", v: p.arCredit },
       // FIN-05: عرابين طلبات خدمة العملاء غير المُسلَّمة — التزامٌ يقابل النقد الداخل (الخدمة لم تُنجَز بعد).
       // مراجعة PR #495: يشمل عرابين الطلبات المحفوظة المفتوحة (تُفصَّل في السطر التالي).

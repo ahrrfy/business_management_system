@@ -110,6 +110,7 @@ export async function getArApAgingDetail(opts: {
             SELECT ae.purchaseOrderId,
               MIN(CASE WHEN ae.entryType = 'PURCHASE' THEN ae.entryDate END) AS recognitionDate,
               COALESCE(SUM(CASE
+                WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
                 WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount
                 WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
                 ELSE 0 END), 0) AS balance

@@ -30,6 +30,7 @@ import { createSystemPaymentRequestTx } from "../voucher/create";
 import {
   assertPurchaseBranch,
   pendingPurchaseSupplierPaymentsTx,
+  purchaseCashSettlementUsesClearingTx,
   purchaseOrderPayableBalanceTx,
 } from "./internal";
 
@@ -98,6 +99,9 @@ export async function payPurchaseOrder(
         message: "أمر الشراء بالدولار يُسدَّد من «تسديد مباشر بالدولار» (سعر التثبيت وفرق الصرف)",
       });
     }
+    const useCashClearing =
+      po.settlementType === "CASH" &&
+      (await purchaseCashSettlementUsesClearingTx(tx, input.purchaseOrderId));
 
     // عقد الاعتماد يقبل رمز مصدر canonical من 16 خانة hex فقط؛ المفتاح الخام كان ينشئ
     // طلباً يبدو ناجحاً ثم يستحيل اعتماده. تبقى idempotency مربوطة بالمفتاح الخام أدناه.
@@ -131,6 +135,7 @@ export async function payPurchaseOrder(
           requestToken,
           expectedAmount: toDbMoney(amount),
           sourceTotal: toDbMoney(money(po.total)),
+          liabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
         },
       );
       return {
@@ -162,7 +167,10 @@ export async function payPurchaseOrder(
     if (!sup.isActive) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الصرف لمورد مُعطَّل" });
     }
-    if (amount.gt(money(sup.currentBalance))) {
+    if (
+      !useCashClearing &&
+      amount.gt(money(sup.currentBalance))
+    ) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الدفعة تتجاوز رصيد المورد الجاري" });
     }
 
@@ -186,6 +194,7 @@ export async function payPurchaseOrder(
         requestToken,
         expectedAmount: toDbMoney(amount),
         sourceTotal: toDbMoney(money(po.total)),
+        liabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
       },
     );
 

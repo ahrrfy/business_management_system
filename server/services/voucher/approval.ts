@@ -96,6 +96,7 @@ import {
 import { withMysqlDeadlockRetry } from "./deadlockRetry";
 import {
   pendingPurchaseSupplierPaymentsTx,
+  purchaseCashSettlementUsesClearingTx,
   purchaseOrderPayableBalanceTx,
 } from "../purchase/internal";
 import {
@@ -322,6 +323,7 @@ function approvedVoucherPostingPlan(args: {
   categoryPostingRole?: VoucherCategoryPostingRole | null;
   categoryReversalOfDirection?: "IN" | "OUT" | null;
   originalDirectionForCancellation?: "IN" | "OUT" | null;
+  purchaseCashClearing: boolean;
 }): VoucherPostingPlan | null {
   const assetRole = voucherPaymentAssetRole(
     args.paymentMethod,
@@ -343,19 +345,26 @@ function approvedVoucherPostingPlan(args: {
     return fixedAssetAccrualSettlement(assetRole, args.amount);
   }
   if (args.systemKind === "PURCHASE_SUPPLIER") {
+    const liabilityRole = args.purchaseCashClearing
+      ? ("OTHER_LIABILITY" as const)
+      : ("AP" as const);
     return args.direction === "OUT"
       ? twoRolePostingPlan(
-          "PAYMENT_OUT_SUPPLIER",
+          args.purchaseCashClearing
+            ? "PAYMENT_OUT_PURCHASE_CASH_CLEARING"
+            : "PAYMENT_OUT_SUPPLIER",
           "PAYMENT_OUT",
-          "AP",
+          liabilityRole,
           assetRole,
           args.amount,
         )
       : twoRolePostingPlan(
-          "PAYMENT_IN_SUPPLIER_REFUND",
+          args.purchaseCashClearing
+            ? "PAYMENT_IN_PURCHASE_CASH_CLEARING"
+            : "PAYMENT_IN_SUPPLIER_REFUND",
           "PAYMENT_IN",
           assetRole,
-          "AP",
+          liabilityRole,
           args.amount,
         );
   }
@@ -1461,12 +1470,32 @@ export async function approveVoucher(
           typeof systemRequest.sourceTotal !== "string" ||
           !money(systemPurchaseOrder.total).eq(
             money(systemRequest.sourceTotal),
-          ))
+          ) ||
+          (systemRequest.liabilityAccount === "CASH_CLEARING" &&
+            systemPurchaseOrder.settlementType !== "CASH"))
       ) {
         throw new TRPCError({
           code: "CONFLICT",
           message: "مورد طلب الدفع لا يطابق أمر الشراء",
         });
+      }
+      if (systemRequest.kind === "PURCHASE_SUPPLIER") {
+        const expectedCashClearing =
+          systemPurchaseOrder.settlementType === "CASH" &&
+          (await purchaseCashSettlementUsesClearingTx(
+            tx,
+            Number(systemPurchaseOrder.id),
+          ));
+        if (
+          (systemRequest.liabilityAccount === "CASH_CLEARING") !==
+          expectedCashClearing
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message:
+              "حساب تسوية طلب دفع أمر الشراء لا يطابق قيده المثبت",
+          });
+        }
       }
       if (
         systemRequest.kind === "PURCHASE_SHIPPING" &&
@@ -1537,13 +1566,20 @@ export async function approveVoucher(
       }
     }
 
+    const purchaseCashClearing =
+      (systemRequest?.kind === "PURCHASE_SUPPLIER" &&
+        systemRequest.liabilityAccount === "CASH_CLEARING") ||
+      (cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER" &&
+        cancellationSourceRequest.liabilityAccount === "CASH_CLEARING");
+
     // كل دفعة مورد تعيد فحص AP الحالي تحت القفل؛ مرتجع أو دفعة أخرى بين الطلب
     // والاعتماد قد تخفض المستحق لأي مورد، لا المودِع فقط.
     if (
       partyType === "SUPPLIER" &&
       partyId != null &&
       direction === "OUT" &&
-      systemRequest?.kind !== "PURCHASE_SUPPLIER_USD"
+      systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
+      !purchaseCashClearing
     ) {
       const [sup] = await tx
         .select({ kind: suppliers.supplierKind, bal: suppliers.currentBalance })
@@ -1645,6 +1681,7 @@ export async function approveVoucher(
             cancellationOriginal?.direction === "OUT"
               ? cancellationOriginal.direction
               : null,
+          purchaseCashClearing,
         });
     if (!specializedAssetMovement && !standardPosting) {
       throw new TRPCError({
@@ -1875,6 +1912,13 @@ export async function approveVoucher(
           : cancellationPurchaseOrder
             ? Number(cancellationPurchaseOrder.id)
             : null,
+        purchaseLiabilityAccount:
+          systemRequest?.kind === "PURCHASE_SUPPLIER" ||
+          cancellationSourceRequest?.kind === "PURCHASE_SUPPLIER"
+            ? purchaseCashClearing
+              ? "CASH_CLEARING"
+              : "AP"
+            : null,
         amount,
         paymentMethod,
         postingIntent: standardPosting.intent,
@@ -1962,7 +2006,8 @@ export async function approveVoucher(
       partyType === "SUPPLIER" &&
       partyId &&
       systemRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
-      cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD"
+      cancellationSourceRequest?.kind !== "PURCHASE_SUPPLIER_USD" &&
+      !purchaseCashClearing
     ) {
       await adjustSupplierBalance(
         tx,
@@ -2643,21 +2688,23 @@ export async function resubmitRejectedExpensePayment(
               message: `لم يعد على أمر الشراء رصيد متاح كافٍ لإعادة الطلب (${available.toFixed(2)})`,
             });
           }
-          const [supplier] = await tx
-            .select({ currentBalance: suppliers.currentBalance })
-            .from(suppliers)
-            .where(eq(suppliers.id, Number(rejected.partyId)))
-            .for("update")
-            .limit(1);
-          if (
-            !supplier ||
-            money(rejected.amount).gt(money(supplier.currentBalance ?? "0"))
-          ) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message:
-                "لم يعد رصيد المورد الحالي كافياً لإعادة طلب الدفع — راجع الكشف",
-            });
+          if (request.liabilityAccount !== "CASH_CLEARING") {
+            const [supplier] = await tx
+              .select({ currentBalance: suppliers.currentBalance })
+              .from(suppliers)
+              .where(eq(suppliers.id, Number(rejected.partyId)))
+              .for("update")
+              .limit(1);
+            if (
+              !supplier ||
+              money(rejected.amount).gt(money(supplier.currentBalance ?? "0"))
+            ) {
+              throw new TRPCError({
+                code: "BAD_REQUEST",
+                message:
+                  "لم يعد رصيد المورد الحالي كافياً لإعادة طلب الدفع — راجع الكشف",
+              });
+            }
           }
         }
         const replacement = await createSystemPaymentRequestTx(

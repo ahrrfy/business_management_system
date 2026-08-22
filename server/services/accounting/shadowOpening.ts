@@ -535,6 +535,7 @@ export async function readOperationalBalanceSnapshot(
   const [
     customerRows,
     supplierRows,
+    cashPurchaseClearingRows,
     stockRows,
     receiptRows,
     shiftRows,
@@ -566,6 +567,23 @@ export async function readOperationalBalanceSnapshot(
         kind: suppliers.supplierKind,
       })
       .from(suppliers),
+    db
+      .select({
+        branchId: accountingEntries.branchId,
+        balance: sql<string>`CAST(COALESCE(SUM(CASE
+          WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT'
+            THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+          ELSE CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        END), 0) AS CHAR)`,
+      })
+      .from(accountingEntries)
+      .where(
+        and(
+          eq(accountingEntries.purchaseLiabilityAccount, "CASH_CLEARING"),
+          sql`${accountingEntries.entryDate} <= ${asOf}`,
+        ),
+      )
+      .groupBy(accountingEntries.branchId),
     db
       .select({
         branchId: branchStock.branchId,
@@ -889,6 +907,14 @@ export async function readOperationalBalanceSnapshot(
       null,
       money(row.balance).negated(),
       "suppliers.currentBalance",
+    );
+  }
+  for (const row of cashPurchaseClearingRows) {
+    add(
+      "OTHER_LIABILITY",
+      row.branchId,
+      money(row.balance).negated(),
+      "accountingEntries.purchaseLiabilityAccount.CASH_CLEARING",
     );
   }
   for (const row of stockRows) {
