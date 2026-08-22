@@ -534,7 +534,9 @@ export default function StocktakeReview() {
               ? `${nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ`
               : barriers.undecidedOverThreshold > 0
                 ? `${nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ بلا قرار`
-                : barriers.countedPendingReview > 0
+                : barriers.overThresholdNeedingRecount > 0
+                  ? `${nf(barriers.overThresholdNeedingRecount)} فرق يتجاوز الحدّ يلزمه إعادة عدّ فعلية`
+                  : barriers.countedPendingReview > 0
                   ? `${nf(barriers.countedPendingReview)} منتج يحتاج اعتماداً مرحلياً صالحاً`
                   : barriers.reviewerFinalSeparationBlocked
                     ? "راجعتَ فرقاً عالي القيمة مرحلياً — الاعتماد النهائي لمسؤول آخر"
@@ -1232,6 +1234,24 @@ export default function StocktakeReview() {
               </>
             )}
           </p>
+          {s.requireRecountOverThreshold && (
+            <p
+              className={`inline-flex items-center gap-1.5 ${barriers.overThresholdNeedingRecount === 0 ? "text-money-positive" : "text-money-negative"}`}
+            >
+              {barriers.overThresholdNeedingRecount === 0 ? (
+                <>
+                  <Check aria-hidden className="size-3.5" /> كل ما يتجاوز الحدّ
+                  أُعيد عدّه
+                </>
+              ) : (
+                <>
+                  <X aria-hidden className="size-3.5" />{" "}
+                  {nf(barriers.overThresholdNeedingRecount)} فرق يتجاوز الحدّ يلزمه
+                  إعادة عدّ فعلية
+                </>
+              )}
+            </p>
+          )}
           {isOpening && (
             <p
               className={`inline-flex items-center gap-1.5 ${

@@ -10,6 +10,7 @@ import {
   stocktakeDecisions,
   stocktakeSessions,
 } from "../../../drizzle/schema";
+import { isScanEntry, type CountEntryMethod } from "../../../shared/stocktakeCountMethod";
 import { utcTodayStart } from "../businessDay";
 import { money, toDbMoney } from "../money";
 import { requireDb } from "../tx";
@@ -121,6 +122,88 @@ export async function getCycleSuggestions(opts: { branchId?: number | null } = {
   // الأكثر تأخراً أولاً؛ «لم يُجرد قط» في الصدارة.
   out.sort((a, b) => (b.daysOver ?? Number.MAX_SAFE_INTEGER) - (a.daysOver ?? Number.MAX_SAFE_INTEGER));
   return out;
+}
+
+export interface CounterQualityRow {
+  name: string;
+  total: number;
+  scan: number;
+  manual: number;
+  searchPick: number;
+  /** legacy/موبايل: عدّات بلا وسم طريقة إدخال (entryMethod = NULL). */
+  untagged: number;
+  /** نسبة المسح من العدّات الموسومة بطريقة (لا تُحتسب untagged في المقام). */
+  scanPct: number | null;
+}
+
+export interface CounterQualityResult {
+  /** نافذة القياس بالأيام (آخر N يوماً على العدّات، جلسات NORMAL). */
+  windowDays: number;
+  workers: CounterQualityRow[];
+}
+
+/**
+ * جودة العدّاد — انضباط المسح لكل عامل (م٥، وثيقة «الجرد بالباركود»). يقيس **سلوك** الإدخال لا الدقة:
+ * كم من عدّات العامل كانت مسحاً حقيقياً (SCAN_HID/CAMERA) مقابل إدخالٍ يدويّ مُخوَّل (MANUAL_AUTHORIZED)
+ * أو اختيارٍ من القائمة (SEARCH_PICK). العدّات بلا وسم (موبايل/إرث) تُعزل في `untagged` ولا تُلوّث النسبة.
+ * النافذة: آخر ٩٠ يوماً على `countedAt`، جلسات NORMAL فقط (الافتتاحية ليست عدّاً ميدانياً)، مع عزل الفرع.
+ */
+export async function getCounterQualityStats(
+  restrictBranchId?: number | null,
+): Promise<CounterQualityResult> {
+  const db = requireDb();
+  const windowDays = 90;
+  const since = new Date(Date.now() - windowDays * 86_400_000);
+
+  const conds = [
+    gte(stocktakeCounts.countedAt, since),
+    eq(stocktakeSessions.sessionType, "NORMAL"),
+  ];
+  if (restrictBranchId != null) conds.push(eq(stocktakeSessions.branchId, restrictBranchId));
+
+  const rows = await db
+    .select({
+      name: stocktakeCounts.countedByName,
+      entryMethod: stocktakeCounts.entryMethod,
+      n: sql<string>`COUNT(*)`,
+    })
+    .from(stocktakeCounts)
+    .innerJoin(stocktakeSessions, eq(stocktakeCounts.sessionId, stocktakeSessions.id))
+    .where(and(...conds))
+    .groupBy(stocktakeCounts.countedByName, stocktakeCounts.entryMethod);
+
+  const byWorker = new Map<string, CounterQualityRow>();
+  for (const r of rows) {
+    const name = r.name ?? "—";
+    let w = byWorker.get(name);
+    if (!w) {
+      w = { name, total: 0, scan: 0, manual: 0, searchPick: 0, untagged: 0, scanPct: null };
+      byWorker.set(name, w);
+    }
+    const n = Number(r.n ?? 0);
+    w.total += n;
+    const em = r.entryMethod as CountEntryMethod | null;
+    if (em == null) w.untagged += n;
+    else if (isScanEntry(em)) w.scan += n;
+    else if (em === "MANUAL_AUTHORIZED") w.manual += n;
+    else w.searchPick += n; // SEARCH_PICK
+  }
+
+  const workers = Array.from(byWorker.values()).map((w) => {
+    const tagged = w.scan + w.manual + w.searchPick;
+    return {
+      ...w,
+      scanPct: tagged > 0 ? money(w.scan).div(tagged).times(100).toDecimalPlaces(1).toNumber() : null,
+    };
+  });
+  // الأدنى انضباطاً أولاً (يستحقّ انتباه المدير)؛ من لا نسبة له في الذيل.
+  workers.sort((a, b) => {
+    if (a.scanPct == null) return 1;
+    if (b.scanPct == null) return -1;
+    return a.scanPct - b.scanPct;
+  });
+
+  return { windowDays, workers };
 }
 
 export interface IraStatsResult {

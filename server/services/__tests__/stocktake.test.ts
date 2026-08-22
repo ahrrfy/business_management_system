@@ -732,6 +732,51 @@ describe("معادلات المراجعة", () => {
   });
 });
 
+describe("حوكمة م٥: إلزام إعادة العدّ فوق الحدّ", () => {
+  it("العَلَم مطفأ (الافتراض) ⇒ لا حاجز إعادة عدّ فوق الحدّ", async () => {
+    await setStockRow(3, 100); // تكلفة 10000
+    const r = await mkSession({ variantIds: [3] }); // requireRecountOverThreshold غير مُرسَل ⇒ false
+    await insertCount(r.sessionId, 3, r.assignments[0].assignmentId, 97); // ‎−3 ⇒ 30000 > 25000 ⇒ فوق الحدّ
+    const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
+    expect(rv.session.requireRecountOverThreshold).toBe(false);
+    expect(rv.rows[0].overThreshold).toBe(true);
+    expect(rv.barriers.overThresholdNeedingRecount).toBe(0);
+  });
+
+  it("العَلَم مفعَّل + فرق فوق الحدّ بعدّة FIRST فقط ⇒ يُحصى في الحاجز ويمنع الاعتماد", async () => {
+    await setStockRow(3, 100);
+    const r = await mkSession({ variantIds: [3], requireRecountOverThreshold: true });
+    await insertCount(r.sessionId, 3, r.assignments[0].assignmentId, 97);
+    const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
+    expect(rv.session.requireRecountOverThreshold).toBe(true);
+    expect(rv.rows[0].overThreshold).toBe(true);
+    expect(rv.rows[0].kindUsed).toBe("FIRST");
+    expect(rv.barriers.overThresholdNeedingRecount).toBe(1);
+    expect(rv.barriers.canApprove).toBe(false);
+  });
+
+  it("بعد إعادة عدّ فعلية (RECOUNT) يسقط الحاجز حتى لو بقي الفرق فوق الحدّ", async () => {
+    await setStockRow(3, 100);
+    const r = await mkSession({ variantIds: [3], requireRecountOverThreshold: true });
+    const aid = r.assignments[0].assignmentId;
+    await insertCount(r.sessionId, 3, aid, 97, { kind: "FIRST", at: new Date(Date.now() - 10_000) });
+    await insertCount(r.sessionId, 3, aid, 96, { kind: "RECOUNT", at: new Date(Date.now() - 5_000) }); // ‎−4 ⇒ 40000 لا يزال فوق الحدّ
+    const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
+    expect(rv.rows[0].kindUsed).toBe("RECOUNT");
+    expect(rv.rows[0].overThreshold).toBe(true);
+    expect(rv.barriers.overThresholdNeedingRecount).toBe(0);
+  });
+
+  it("فرق ضمن الحدّ لا يُحصى في الحاجز ولو كان العَلَم مفعَّلاً", async () => {
+    await setStockRow(1, 100); // تكلفة 100
+    const r = await mkSession({ variantIds: [1], requireRecountOverThreshold: true });
+    await insertCount(r.sessionId, 1, r.assignments[0].assignmentId, 102); // ‎+2 ⇒ 2% و200 ⇒ ضمن الحدّ
+    const rv = await computeStocktakeReview(r.sessionId, { viewerId: 1 });
+    expect(rv.rows[0].overThreshold).toBe(false);
+    expect(rv.barriers.overThresholdNeedingRecount).toBe(0);
+  });
+});
+
 describe("حارس بصمة إدخال الباركود القديمة — الاعتماد والتوقيع والترحيل", () => {
   async function enableOpeningForIntegrityTest() {
     await db()

@@ -18,6 +18,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar, RowActions } from "@/components/list";
+import { SplitCandidatesPanel } from "@/components/stocktake/SplitCandidatesPanel";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt } from "@/lib/money";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -178,6 +179,7 @@ export default function Stocktakes() {
     { enabled: canCreate }
   );
   const iraQ = trpc.stocktakes.ira.useQuery(undefined, { enabled: isManagerPlus });
+  const cqQ = trpc.stocktakes.counterQuality.useQuery(undefined, { enabled: isManagerPlus });
   // فحص التوافق المالي — adminProcedure؛ لغير المدير لا نستدعيه (نعرض الإحالة فقط).
   const reconQ = trpc.reports.reconcile.useQuery(undefined, { enabled: isAdmin });
 
@@ -265,6 +267,9 @@ export default function Stocktakes() {
           sub="حسب تصنيف ABC ودوريّاته"
         />
       </div>
+
+      {/* فصل البدائل المدمجة (م٤) — للمدير */}
+      {isManagerPlus && <SplitCandidatesPanel canManage={isManagerPlus} />}
 
       {/* جدول الجلسات */}
       <Card>
@@ -471,6 +476,7 @@ export default function Stocktakes() {
         />
         <div className="space-y-4">
           {isManagerPlus && <IraCard data={(iraQ.data ?? null) as IraData | null} loading={iraQ.isLoading} />}
+          {isManagerPlus && <CounterQualityCard data={cqQ.data ?? null} loading={cqQ.isLoading} />}
           {isManagerPlus && (
             <ReconDriftCard
               isAdmin={isAdmin}
@@ -706,6 +712,65 @@ function IraCard({ data, loading }: { data: IraData | null; loading: boolean }) 
               ))}
             </div>
           </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ─────────── جودة العدّاد: انضباط المسح (م٥، مدير+) ─────────── */
+
+type CounterQualityData = RouterOutputs["stocktakes"]["counterQuality"];
+
+function CounterQualityCard({ data, loading }: { data: CounterQualityData | null; loading: boolean }) {
+  const workers = data?.workers ?? [];
+  const windowDays = data?.windowDays ?? 90;
+  return (
+    <Card>
+      <CardHeader>
+        <p className="text-base font-semibold">جودة العدّ: انضباط المسح</p>
+        <p className="text-xs text-muted-foreground">
+          نسبة العدّات التي تمّت بمسحٍ فعليّ للباركود مقابل الإدخال اليدويّ المُخوَّل — آخر {fmtInt(windowDays)} يوماً.
+          العدّاد الأدنى انضباطاً يستحقّ المتابعة.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0">
+        {loading && <LoadingState />}
+        {!loading && workers.length === 0 && (
+          <p className="py-4 text-center text-sm text-muted-foreground">
+            لا عدّات موسومة بطريقة إدخال بعد.
+          </p>
+        )}
+        {workers.map((w) => {
+          const good = w.scanPct != null && w.scanPct >= 90;
+          return (
+            <div key={w.name} className="flex items-center gap-2 text-sm">
+              <span
+                className="w-32 truncate"
+                title={`${fmtInt(w.total)} عدّة · يدويّ ${fmtInt(w.manual)} · قائمة ${fmtInt(w.searchPick)}${
+                  w.untagged ? ` · بلا وسم ${fmtInt(w.untagged)}` : ""
+                }`}
+              >
+                {w.name}
+              </span>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                <div
+                  className={`h-full rounded-full ${good ? "bg-[var(--status-active)]" : "bg-[var(--stock-low)]"}`}
+                  style={{ width: `${Math.max(0, Math.min(100, w.scanPct ?? 0))}%` }}
+                />
+              </div>
+              <span className="w-12 text-start text-xs font-bold tabular-nums">
+                {w.scanPct == null
+                  ? "—"
+                  : `${w.scanPct.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 })}٪`}
+              </span>
+            </div>
+          );
+        })}
+        {workers.some((w) => w.untagged > 0) && (
+          <p className="pt-1 text-[11px] text-muted-foreground">
+            «بلا وسم» = عدّات موبايل/إرث لا تُحتسب في النسبة.
+          </p>
         )}
       </CardContent>
     </Card>
