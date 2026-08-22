@@ -14,13 +14,13 @@ import { toArabicDigits } from "@/lib/variants";
 import { CategoryOptionList } from "@/lib/categoryTree";
 
 /**
- * ServiceForm — تعريف «خِدمة» (لا مخزون) من شاشة إضافة المنتج وتوجيهها لنقطة بيع الطباعة.
+ * ServiceForm — تعريف بند خدمة وتوجيهه لنقطة بيع الطباعة.
  *
  * شريحة print-catalog: المالك يختار «خِدمة» بدل «سلعة»، فيُعرَّف بَند خِدمي أحاديّ المتغيّر
  * (اسم + وحدة + أسعار الفئات) مع:
  *  - توجيه العرض: نقطة بيع الطباعة (productType=PRINT_SERVICE) ⇒ يَظهر فوراً في شبكة الطباعة.
- *  - تكلفة الخدمة: كلفة مباشرة اختيارية + كلفة المواد الخام المُستهلَكة (الوصفة) = COGS عند البيع.
- *  - استهلاك المواد الخام: وصفة (ورق/حبر…) تَخصمها printSaleService ذرّياً عند كل بيع.
+ *  - بند بلا مخزون: تُستهلك وصفته عند البيع.
+ *  - ناتج مخزني: يمكن شراؤه أو إنتاجه؛ تُستهلك الوصفة في الإنتاج ويُخصم الناتج عند البيع.
  *
  * يُرسِل إلى `catalog.createProduct` بمتغيّر واحد + الراية printService + recipe[].
  */
@@ -140,6 +140,7 @@ export default function ServiceForm() {
   const [wholesale, setWholesale] = useState("");
   const [government, setGovernment] = useState("");
   const [directCost, setDirectCost] = useState("");
+  const [isStockedOutput, setIsStockedOutput] = useState(false);
   const [showInPrintPos, setShowInPrintPos] = useState(true);
   const [showInReception, setShowInReception] = useState(false);
   const [consumesMaterials, setConsumesMaterials] = useState(false);
@@ -164,6 +165,7 @@ export default function ServiceForm() {
       await Promise.all([
         utils.catalog.posList.invalidate(),
         utils.catalog.adminList.invalidate(),
+        utils.catalog.forPurchase.invalidate(),
         utils.printPos.services.invalidate(),
       ]);
       navigate("/products");
@@ -217,9 +219,8 @@ export default function ServiceForm() {
           .filter((l) => l.variantId !== "" && parseFloat(l.qty) > 0)
           .map((l) => ({ inputVariantId: l.variantId as number, qtyPerOutputBase: l.qty.trim() }))
       : undefined;
-    // التكلفة على المتغيّر: التكلفة المباشرة يدوياً إن أُدخلت؛ وإلا نُثبّت لقطة كلفة المواد المُقدَّرة
-    // كي تظهر للمدير في قوائم المنتجات/الوصفة قبل أول بيع. عند البيع الفعلي COGS الحقيقيّ يُحسب
-    // من الوصفة بأسعار المواد الحيّة (printSaleService) — هذه القيمة عرضٌ إداريّ لا فرضٌ ماليّ.
+    // قيمة ابتدائية للكلفة. للناتج المخزني ستتحدّث لاحقاً بالمتوسط المرجّح عند الشراء أو الإنتاج؛
+    // وللبند بلا مخزون تُحسب كلفة البيع من مواد الوصفة الفعلية.
     const variantCost = directCost.trim()
       ? directCost.trim()
       : materialsCost > 0
@@ -228,7 +229,7 @@ export default function ServiceForm() {
     create.mutate({
       name: name.trim(),
       categoryId: categoryId === "" ? undefined : Number(categoryId),
-      isService: true,
+      isService: !isStockedOutput,
       printService: showInPrintPos,
       showInReception,
       recipe,
@@ -250,9 +251,11 @@ export default function ServiceForm() {
       {/* ── بيانات الخدمة ── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">بيانات الخدمة</CardTitle>
+          <CardTitle className="text-base">بيانات المنتج أو الخدمة</CardTitle>
           <p className="text-xs text-muted-foreground mt-1">
-            خِدمة بلا مخزون (تصوير، تجليد، تصميم…). تُعرَض ويُحاسَب عليها كوحدة واحدة بأسعار الفئات.
+            {isStockedOutput
+              ? "ناتج واحد يمكن شراؤه جاهزاً من مورد أو إنتاجه داخلياً، ثم بيعه من الرصيد نفسه."
+              : "خدمة فورية بلا مخزون (تصوير، تجليد، تصميم…) تُحاسَب عليها كوحدة واحدة."}
           </p>
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -283,6 +286,17 @@ export default function ServiceForm() {
         <CardHeader><CardTitle className="text-base">توجيه العرض (أين تُباع الخدمة؟)</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
+            <Switch checked={isStockedOutput} onCheckedChange={setIsStockedOutput} className="mt-0.5" />
+            <span className="text-sm">
+              <b>ناتج مخزني قابل للشراء والإنتاج</b>
+              <span className="block text-xs text-muted-foreground">
+                {isStockedOutput
+                  ? "الشراء والإنتاج يزيدان رصيد المنتج نفسه، والبيع يخصم منه. الوصفة تُنفّذ عند الإنتاج فقط."
+                  : "خدمة فورية بلا رصيد؛ إن كانت لها وصفة فتُستهلك موادها عند البيع."}
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
             <Switch checked={showInPrintPos} onCheckedChange={setShowInPrintPos} className="mt-0.5" />
             <span className="flex items-center gap-2 text-sm">
               <Printer aria-hidden className="size-4 text-[var(--sem-info)]" />
@@ -290,8 +304,8 @@ export default function ServiceForm() {
                 <b>نقطة بيع الطباعة والاستنساخ</b>
                 <span className="block text-xs text-muted-foreground">
                   {showInPrintPos
-                    ? "تَظهر هذه الخدمة في شبكة «خدمات طباعة» وتُباع عبر كاشير الطباعة."
-                    : "خِدمة عامّة بلا مخزون — لن تَظهر في شبكة خدمات الطباعة."}
+                    ? "يَظهر هذا البند في شبكة «خدمات طباعة» ويُباع عبر كاشير الطباعة."
+                    : "لن يَظهر في شبكة خدمات الطباعة."}
                 </span>
               </span>
             </span>
@@ -304,15 +318,18 @@ export default function ServiceForm() {
                 <b>خدمة العملاء (الاستقبال)</b>
                 <span className="block text-xs text-muted-foreground">
                   {showInReception
-                    ? "تَظهر أيضاً في كاشير الاستقبال وتُباع عبره — تُخصَم موادها كما في الطباعة تماماً."
-                    : "لن تَظهر في كاشير الاستقبال."}
+                    ? isStockedOutput
+                      ? "يَظهر أيضاً في كاشير الاستقبال ويُخصم من رصيد الناتج."
+                      : "يَظهر أيضاً في كاشير الاستقبال وتُستهلك وصفته عند البيع."
+                    : "لن يَظهر في كاشير الاستقبال."}
                 </span>
               </span>
             </span>
           </label>
           <div className="rounded-md border border-emerald-300/40 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
-            الخِدمة تظهر أيضاً في «فاتورة بيع متقدّمة» (١٢/٨/٢٦) — يمكن جمعها مع سلع في نفس الفاتورة الرسمية،
-            وخصم موادها الخام يجري ذرّياً مع حساب COGS من الوصفة (مثل مسار كاشير الطباعة تماماً).
+            {isStockedOutput
+              ? "في البيع المتقدّم يُخصم الناتج المخزني نفسه وتُحتسب كلفته بالمتوسط المرجّح."
+              : "في البيع المتقدّم يمكن جمع الخدمة مع السلع، وتُستهلك مواد الوصفة ذرّياً عند البيع."}
           </div>
         </CardContent>
       </Card>
@@ -337,9 +354,11 @@ export default function ServiceForm() {
           <Field
             label="تكلفة مباشرة (اختياري)"
             hint={
-              consumesMaterials && materialsCost > 0 && !directCost.trim()
-                ? `متروك فارغاً ⇒ ستُحفَظ كلفة المواد تلقائياً (${toArabicDigits(Math.round(materialsCost))} د.ع).`
-                : "كلفة لا تأتي من مادة مخزنية (عمالة/تشغيل)."
+              isStockedOutput
+                ? "قيمة ابتدائية فقط؛ تتحدّث بالكلفة الفعلية عند الشراء أو الإنتاج."
+                : consumesMaterials && materialsCost > 0 && !directCost.trim()
+                  ? `متروك فارغاً ⇒ ستُحفَظ كلفة المواد تلقائياً (${toArabicDigits(Math.round(materialsCost))} د.ع).`
+                  : "كلفة لا تأتي من مادة مخزنية (عمالة/تشغيل)."
             }
           >
             <MoneyInput value={directCost} onChange={setDirectCost} placeholder="0" ariaLabel="تكلفة مباشرة" />
@@ -356,9 +375,11 @@ export default function ServiceForm() {
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-2">
           <div>
-            <CardTitle className="text-base">المواد الخام المُستهلَكة</CardTitle>
+            <CardTitle className="text-base">وصفة المواد الخام</CardTitle>
             <p className="text-xs text-muted-foreground mt-1">
-              هل تَستهلك هذه الخدمة موادّ من المخزون (ورق/حبر…)؟ تُخصَم تلقائياً عند كل بيع وتُحتسَب كلفتها.
+              {isStockedOutput
+                ? "مواد الإنتاج الداخلي فقط؛ لا تُستهلك عند شراء المنتج جاهزاً ولا عند بيعه."
+                : "مواد تُخصم تلقائياً عند كل بيع للخدمة وتُحتسب كلفتها."}
             </p>
           </div>
           <div className="flex items-center gap-2 h-9 shrink-0">
@@ -424,7 +445,8 @@ export default function ServiceForm() {
       {/* ── شريط الحفظ ── */}
       <div className="flex items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
         <div className="text-xs text-muted-foreground hidden sm:flex items-center gap-2">
-          ستُحفظ خِدمة واحدة
+          سيُحفظ بند واحد
+          {isStockedOutput && <Badge variant="secondary">مخزني: شراء أو إنتاج</Badge>}
           {showInPrintPos && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">نقطة الطباعة</Badge>}
           {consumesMaterials && anyMaterialPicked && (
             <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700">
@@ -433,7 +455,7 @@ export default function ServiceForm() {
           )}
         </div>
         <Button type="button" size="sm" onClick={save} disabled={create.isPending}>
-          {create.isPending ? "جارٍ الحفظ…" : "حفظ الخدمة"}
+          {create.isPending ? "جارٍ الحفظ…" : "حفظ البند"}
         </Button>
       </div>
     </div>

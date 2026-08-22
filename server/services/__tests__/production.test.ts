@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { createProduct } from "../catalogService";
 import { money, sumMoney } from "../money";
 import { cancelProduction, computeRunCosts, createProduction, getProduction, runPreview, spoilageSplit } from "../productionService";
 import { createRecipe, getRecipe, recipePreview } from "../recipeService";
@@ -235,6 +236,31 @@ describe("الإنتاج: idempotency وحارس التحويل الذاتي", (
     await expect(createProduction({ branchId: 1, inputs: [{ variantId: 1, baseQuantity: 100 }], outputs: [{ variantId: 6, baseQuantity: 10 }] }, actor)).rejects.toThrow();
     expect(await db().select().from(s.productionOrders)).toHaveLength(0);
     expect(await stock(1)).toBe(100000);
+  });
+
+  it("خدمة طباعة ذات ناتج مخزني تُنشأ كبطاقة واحدة ويمكن إنتاجها بوصفها", async () => {
+    const created = await createProduct({
+      name: "كروت شخصية 500 نسخة",
+      isService: false,
+      printService: true,
+      recipe: [{ inputVariantId: 1, qtyPerOutputBase: "10" }],
+      variants: [{
+        sku: "CARD-500",
+        costPrice: "0",
+        units: [{ unitName: "دفعة", conversionFactor: "1", isBaseUnit: true }],
+      }],
+    }, actor);
+    const [product] = await db().select().from(s.products).where(eq(s.products.id, created.productId));
+    expect(product.productType).toBe("PRINT_SERVICE");
+    expect(product.isService).toBe(false);
+
+    const [variant] = await db().select().from(s.productVariants).where(eq(s.productVariants.productId, created.productId));
+    const [recipe] = await db().select().from(s.productionRecipes).where(eq(s.productionRecipes.outputVariantId, variant.id));
+    await createProduction({ branchId: 1, run: { recipeId: Number(recipe.id), batchQty: 5 } }, actor);
+
+    expect(await stock(Number(variant.id))).toBe(5);
+    expect(await stock(1)).toBe(100000 - 50);
+    expect(await cost(Number(variant.id))).toBe("10.00");
   });
 });
 

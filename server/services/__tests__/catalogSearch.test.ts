@@ -129,6 +129,26 @@ describe("البحث الذكي — أمان الأنماط وحواف", () => {
     expect(rows.map((r) => r.productName)).toContain("قلم جاف أزرق فاخر");
   });
 
+  it("جانب الشراء يعرض ناتج الطباعة المخزني ويستبعد خدمة الطباعة غير المخزنية", async () => {
+    const d = db();
+    await d.insert(s.products).values([
+      { id: 10, name: "كروت توريد جاهزة", productType: "PRINT_SERVICE", isService: false },
+      { id: 11, name: "خدمة توريد إلكترونية", productType: "PRINT_SERVICE", isService: true },
+    ]);
+    await d.insert(s.productVariants).values([
+      { id: 10, productId: 10, sku: "PRINT-STOCK", costPrice: "1000.00" },
+      { id: 11, productId: 11, sku: "PRINT-NONSTOCK", costPrice: "0.00" },
+    ]);
+    await d.insert(s.productUnits).values([
+      { id: 10, variantId: 10, unitName: "دفعة", conversionFactor: "1", isBaseUnit: true },
+      { id: 11, variantId: 11, unitName: "خدمة", conversionFactor: "1", isBaseUnit: true },
+    ]);
+
+    const rows = await listForPurchase(1, "توريد");
+    expect(rows.map((r) => r.productName)).toContain("كروت توريد جاهزة");
+    expect(rows.map((r) => r.productName)).not.toContain("خدمة توريد إلكترونية");
+  });
+
   it("lookupByBarcode يقصّ الفراغات الطرفية (لصق/ماسحات تذيّل بمسافة)", async () => {
     const row = await lookupByBarcode(" 6291041500213 ", 1, "RETAIL");
     expect(row?.productName).toBe("قلم جاف أزرق فاخر");
