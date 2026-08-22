@@ -4,6 +4,8 @@
   "procedures": [
     "storefront.claimFirebaseCustomer",
     "storefront.customerBenefits",
+    "storefront.createWishlistShare",
+    "storefront.getWishlistShare",
     "storefront.productReviews",
     "storefront.submitProductReview",
     "storefront.registerPushDevice",
