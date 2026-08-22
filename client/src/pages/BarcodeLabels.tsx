@@ -358,6 +358,51 @@ export default function BarcodeLabels() {
     return fresh.length;
   }
 
+  // تسليم «اطبع ملصقات الناقص» من معالج الجرد (م٢): يقرأ وحدات الأصناف بلا باركود من
+  // sessionStorage مرّةً، يجلبها عبر byUnitIds ويضيفها للقائمة كي تُحفَظ باركوداتها وتُطبَع.
+  const prefillDone = useRef(false);
+  useEffect(() => {
+    if (prefillDone.current || branchId == null) return;
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem("barcodeLabelsPrefillUnitIds");
+    } catch {
+      /* وضع خاص — نتجاوز */
+    }
+    if (!raw) return; // لا تسليم — لا تُقفل المحاولة (قد يصل branchId لاحقاً)
+    prefillDone.current = true;
+    try {
+      sessionStorage.removeItem("barcodeLabelsPrefillUnitIds");
+    } catch {
+      /* تجاهل */
+    }
+    let ids: number[] = [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        ids = parsed.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 300);
+      }
+    } catch {
+      /* حمولة غير صالحة */
+    }
+    if (!ids.length) return;
+    const bId = branchId;
+    void (async () => {
+      try {
+        const rows = await utils.catalog.byUnitIds.fetch({ branchId: bId, tier, productUnitIds: ids });
+        const added = addRows(rows, tier);
+        setInfo(
+          added > 0
+            ? `أُضيف ${added} صنفاً بلا باركود من جلسة الجرد — احفظ باركوداتها (أو اطبع مباشرةً فيُحفَظ تلقائياً).`
+            : "أصناف الجرد الناقصة مضافةٌ سلفاً في القائمة.",
+        );
+      } catch {
+        setError("تعذّر جلب الأصناف الناقصة من جلسة الجرد — ابحث وأضِفها يدوياً.");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchId, tier]);
+
   /**
    * بذرةٌ واردة من شاشةٍ أخرى (موجات الأسعار): «هذه الأصناف تغيّرت أسعارها ⇒ ملصقات رفّها تكذب الآن».
    * نجلب صفوفها **حيّةً** بمسار التسعير نفسه ثم نمرّرها على `addRows` — لا مسار بناءٍ ثانٍ لعنصر
@@ -532,6 +577,23 @@ export default function BarcodeLabels() {
     // حاجز الصحّة: لا نطبع وبعض الأصناف ما زالت بسعر الفئة السابقة (إعادة تسعيرٍ جارية) —
     // وإلّا خرج ملصقٌ بسعرٍ لا يطابق الكاشير. الأثر أعلاه يُنهي التسعير فيرفع الحظر.
     if (isRepricing) { setError("جارٍ تحديث الأسعار للفئة المختارة — انتظر لحظةً ثم اطبع."); return; }
+    // م٢ (فجوة ALR): لا يخرج ملصقٌ بباركودٍ غير محفوظ — فمسحه لاحقاً يفشل. نحفظ كل باركودٍ غير
+    // محفوظ (ومنه الداخليّ ALR المولَّد) عبر assignBarcode قبل الطباعة؛ فإن تعذّر الحفظ لا نطبع
+    // ملصقاً غير قابل للمسح.
+    const unsaved = queue.filter((q) => !q.saved && !!q.barcode);
+    if (unsaved.length) {
+      try {
+        for (const u of unsaved) {
+          await assign.mutateAsync({ productUnitId: u.productUnitId, barcode: u.barcode });
+          patch(u.key, { saved: true, primaryBarcode: u.barcode });
+        }
+      } catch {
+        setError(
+          "تعذّر حفظ باركودٍ قبل الطباعة — لا تُطبع ملصقات غير قابلة للمسح. راجع صلاحيتك أو تعارض الباركود ثم أعد المحاولة.",
+        );
+        return;
+      }
+    }
     const expanded = queue.flatMap((item) => {
       const rendered = renderItemFor(item, tier);
       return Array.from({ length: item.count }, () => rendered);

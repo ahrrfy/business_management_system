@@ -38,7 +38,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { Check, AlertTriangle, Printer } from "lucide-react";
+import { Check, AlertTriangle, Printer, ScanBarcode, CheckCircle2 } from "lucide-react";
 
 /* ───────────────────────── ثوابت ───────────────────────── */
 
@@ -247,6 +247,15 @@ export default function StocktakeNew() {
     },
   );
   const previewCount = previewCountQ.data ?? null;
+
+  // تغطية الباركود لنطاق MANUAL (متغيّرات مختارة صراحةً) — نطاقات FULL/MOVING/CATEGORY
+  // تأتي تغطيتها ضمن previewCount.coverage. بوّابة جاهزية م٢.
+  const manualCoverageQ = trpc.stocktakes.barcodeCoverage.useQuery(
+    { variantIds: manualIds },
+    { enabled: scopeType === "MANUAL" && manualIds.length > 0 },
+  );
+  const coverage =
+    scopeType === "MANUAL" ? (manualCoverageQ.data ?? null) : (previewCount?.coverage ?? null);
 
   const scopeCount: number | null =
     scopeType === "MANUAL"
@@ -658,6 +667,58 @@ export default function StocktakeNew() {
                   {previewCount.excludedBundle > 0 && previewCount.excludedConsignment > 0 ? " · " : ""}
                   {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} منتج أمانة (يُفتتَح بسند إيداع)` : ""}.
                 </p>
+              )}
+
+              {/* بوّابة جاهزية التغطية (م٢): المسح الإلزامي ينجح بقدر ما تكون البضاعة ملصَّقة. */}
+              {coverage && coverage.total > 0 && (
+                <div
+                  className={`mt-1 rounded-lg border p-3 text-sm ${
+                    coverage.missing === 0 ? "badge-status-done" : "badge-status-pending"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-bold">
+                      <ScanBarcode aria-hidden className="size-4" />
+                      تغطية الباركود: {nf(coverage.coveragePct)}٪
+                    </span>
+                    {coverage.missing === 0 ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold">
+                        <CheckCircle2 aria-hidden className="size-3.5" /> كل الأصناف قابلة للمسح
+                      </span>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5 text-xs"
+                        onClick={() => {
+                          if (!coverage.missingUnitIds.length) return;
+                          try {
+                            sessionStorage.setItem(
+                              "barcodeLabelsPrefillUnitIds",
+                              JSON.stringify(coverage.missingUnitIds),
+                            );
+                          } catch {
+                            /* وضع خاص/امتلاء — نتابع للتنقّل على أي حال */
+                          }
+                          navigate("/inventory?tab=barcodes");
+                        }}
+                      >
+                        <Printer aria-hidden className="size-3.5" /> اطبع ملصقات الناقص ({nf(coverage.missing)})
+                      </Button>
+                    )}
+                  </div>
+                  {coverage.missing > 0 && (
+                    <p className="mt-1.5 text-xs">
+                      {nf(coverage.missing)} صنفاً بلا باركود قابل للمسح. في جلسة المسح الإلزامي لن
+                      يُفتح عدّها إلا بمسح — اطبع ملصقاتها الآن أو استعمل «إدخال يدويّ بإذن» ميدانياً.
+                      {coverage.missingSample.length > 0 && (
+                        <> مثال: {coverage.missingSample.slice(0, 3).map((m) => m.productName).join("، ")}
+                        {coverage.missing > 3 ? "…" : ""}</>
+                      )}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           </CardContent>

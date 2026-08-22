@@ -40,6 +40,7 @@ import {
   resolveStocktakeConflict,
   listUnknownScans,
   resolveUnknownScan,
+  computeBarcodeCoverage,
 } from "../services/stocktakeService";
 import {
   adminProcedure,
@@ -211,6 +212,11 @@ export const stocktakeRouter = router({
         categoryIds: input.categoryIds,
       });
     }),
+
+  /** تغطية الباركود لمتغيّرات مختارة صراحةً (نطاق MANUAL في المعالج) — بوّابة جاهزية م٢. */
+  barcodeCoverage: inventoryReadProcedure
+    .input(z.object({ variantIds: z.array(idNum).max(10_000) }))
+    .query(async ({ input }) => computeBarcodeCoverage(input.variantIds)),
 
   /* ─────────── القراءة ─────────── */
   list: warehouseProcedure
