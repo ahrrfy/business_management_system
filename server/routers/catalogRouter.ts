@@ -3,9 +3,35 @@ import { TRPCError } from "@trpc/server";
 import { asc, eq, sql } from "drizzle-orm";
 import { categories, productVariants } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listByProductIds, listByUnitIds, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, listStockByUnitIds, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
-import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
-import { addUnitBarcodeAlias, listUnitBarcodes, listUnitBarcodesMany, removeUnitBarcodeAlias, resolveProductUnitId } from "../services/catalog/barcodeAliases";
+import {
+  assignBarcode,
+  checkBarcodesTaken,
+  createProduct,
+  deleteProduct,
+  getProductForEdit,
+  listByProductIds,
+  listByUnitIds,
+  listForPos,
+  listForPurchase,
+  listMaterialsForRecipe,
+  listProductImages,
+  listProductsAdmin,
+  listStockByUnitIds,
+  lookupByBarcode,
+  setProductActive,
+  updateProduct,
+} from "../services/catalogService";
+import {
+  getProductForVariantEdit,
+  updateProductWithVariants,
+} from "../services/productEditService";
+import {
+  addUnitBarcodeAlias,
+  listUnitBarcodes,
+  listUnitBarcodesMany,
+  removeUnitBarcodeAlias,
+  resolveProductUnitId,
+} from "../services/catalog/barcodeAliases";
 import { findSimilarProductNames } from "../services/catalog/similarNames";
 import {
   createCategory,
@@ -18,9 +44,25 @@ import {
 import { logAudit } from "../services/auditService";
 import { getProductUsage } from "../services/entityUsage";
 import { syncActiveFullStocktakeScopes } from "../services/stocktakeService";
-import { canSeeCostForUser, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
+import {
+  canSeeCostForUser,
+  productsManagerProcedure,
+  productsPurchaseProcedure,
+  productsReadProcedure,
+  router,
+} from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
-import { checkVariantSanity, classifySeverity, type UnitPricing } from "../../shared/priceSanity";
+import {
+  checkVariantSanity,
+  classifySeverity,
+  type UnitPricing,
+} from "../../shared/priceSanity";
+import { generateProductContentDraft } from "../services/productContentAiService";
+import {
+  aiProductDraftSchema,
+  productFactsSchema,
+  validateAiProductDraft,
+} from "../../shared/productContentAi";
 import {
   getProductCustomizationTemplate,
   saveProductCustomizationTemplate,
@@ -32,13 +74,19 @@ const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
 // IDOR (تدقيق ٢/٧): posList/adminList/byBarcode كانت تثق بـbranchId العميل ⇒ أي مستخدم مصادَق
 // يقرأ مخزون أي فرع بتمرير معرّفه. عزل مدير الفرع (قرار المالك ١٢/٨): غير العابر (كاشير/مخزن/مدير)
 // يُقيَّد بفرعه المُسنَد؛ المالك/الأدمن وحدهما يعبُران. المنتجات/الأسعار مشتركة؛ المحجوب كمية مخزون الفرع.
-function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
+function scopeBranch(
+  ctx: { user: { role: string; branchId?: number | null } },
+  requested: number,
+): number {
   const elevated = ctx.user.role === "admin";
   if (elevated) return requested;
   // عزل صارم (تدقيق ١٧/٧): غير المرتفع بلا فرع مُسنَد كان يقرأ مخزون الفرع المطلوب من العميل ⇒ تسريب
   // كميات أي فرع عبر posList/adminList/byBarcode. نرفض بدل الوثوق بمدخل العميل (اتفاقية scopedBranch).
   if (ctx.user.branchId == null) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "لا فرع مُسنَد لهذا المستخدم",
+    });
   }
   return Number(ctx.user.branchId);
 }
@@ -49,22 +97,38 @@ function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, 
  * البحث الموحَّد؛ الحجب هنا في نقطة الخروج (نمط `redact.ts`) فلا تتسرّب عبر شبكة tRPC إلى
  * الكاشير. `canSeeCostForUser` يحترم القوالب والمنح الصريحة على السواء (`server/trpc.ts:190`).
  */
-function redactPosCost<T extends { costPriceBase?: string | null }>(rows: T[], user: { role: string; permissionsOverride?: unknown }): T[] {
+function redactPosCost<T extends { costPriceBase?: string | null }>(
+  rows: T[],
+  user: { role: string; permissionsOverride?: unknown },
+): T[] {
   if (canSeeCostForUser(user)) return rows;
   return rows.map((r) => ({ ...r, costPriceBase: null }));
 }
-function redactPosCostOne<T extends { costPriceBase?: string | null }>(row: T | null, user: { role: string; permissionsOverride?: unknown }): T | null {
+function redactPosCostOne<T extends { costPriceBase?: string | null }>(
+  row: T | null,
+  user: { role: string; permissionsOverride?: unknown },
+): T | null {
   if (row == null) return row;
   if (canSeeCostForUser(user)) return row;
   return { ...row, costPriceBase: null };
 }
 
-const priceSchema = z.object({ priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]), price: z.string() });
-const customizationOptionSchema = z.object({ value: z.string().min(1).max(120), label: z.string().min(1).max(160), priceDelta: z.string().max(32).optional() });
+const priceSchema = z.object({
+  priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]),
+  price: z.string(),
+});
+const customizationOptionSchema = z.object({
+  value: z.string().min(1).max(120),
+  label: z.string().min(1).max(160),
+  priceDelta: z.string().max(32).optional(),
+});
 const customizationDependencySchema = z.object({
   fieldKey: z.string().min(1).max(80),
   operator: z.enum(["equals", "notEquals"]),
-  value: z.union([z.string().min(1).max(120), z.array(z.string().min(1).max(120)).min(1).max(50)]),
+  value: z.union([
+    z.string().min(1).max(120),
+    z.array(z.string().min(1).max(120)).min(1).max(50),
+  ]),
 });
 const customizationFieldSchema = z.object({
   id: z.number().int().positive().optional(),
@@ -106,7 +170,10 @@ const variantSchema = z.object({
   variantName: z.string().optional(),
   color: z.string().optional(),
   // بنك الألوان: لون العرض الحقيقي «#RRGGBB» (اختيار صريح؛ إن غاب يُستنتَج من الاسم).
-  colorHex: z.string().regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح").nullish(),
+  colorHex: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح")
+    .nullish(),
   size: z.string().optional(),
   costPrice: z.string(),
   // v3-add-screens.
@@ -117,7 +184,12 @@ const variantSchema = z.object({
   isActive: z.boolean().optional(),
   // product-variants: رصيد افتتاحي مستقل لكل فرع (يحلّ محلّ openingStock أحاديّ الفرع حين يُمرَّر).
   openingStockByBranch: z
-    .array(z.object({ branchId: z.number().int().positive(), qty: z.number().int().min(0).max(100_000_000) }))
+    .array(
+      z.object({
+        branchId: z.number().int().positive(),
+        qty: z.number().int().min(0).max(100_000_000),
+      }),
+    )
     .optional(),
   // توافق قديم فقط: الخدمة ترفض قيمةً جديدة؛ الصور تُنشَر عبر Product Studio/R2.
   image: z.string().max(5_000_000).optional(),
@@ -137,7 +209,10 @@ const editVariantSchema = z.object({
   sku: z.string().min(1),
   color: z.string().nullish(),
   // بنك الألوان: لون العرض الحقيقي «#RRGGBB» (اختيار صريح؛ إن غاب يُستنتَج من الاسم).
-  colorHex: z.string().regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح").nullish(),
+  colorHex: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح")
+    .nullish(),
   size: z.string().nullish(),
   costPrice: z.string(),
   // priceSanity L1.7: سبب تغيير التكلفة (يُفرَض إن الشذوذ blocker/catastrophic خادمياً).
@@ -152,7 +227,9 @@ const editVariantSchema = z.object({
   // توسعة بدائل الباركود من شاشة التعديل (٣/٨): بمفتاح اسم الوحدة، القائمة الكاملة المرغوبة لكل
   // وحدة — تُوفَّق بعد نجاح الحفظ الرئيسي (انظر reconcileEditBarcodeAliases). اختياري تماماً؛
   // غيابه = لا مسّ للبدائل القائمة (توافق عكسي كامل مع الحمولة الحالية).
-  barcodeAliases: z.record(z.string(), z.array(barcodeAliasSchema).max(20)).optional(),
+  barcodeAliases: z
+    .record(z.string(), z.array(barcodeAliasSchema).max(20))
+    .optional(),
 });
 
 // توافق حمولة الإنشاء القديمة: url يبقى في العقد لإرجاع خطأ واضح، لكن الخدمة ترفض النشر المباشر.
@@ -181,11 +258,18 @@ const editImageSchema = z.object({
  *   assertVariantSanityOrThrow(variantLabel, costPriceStr, unitsForCheck);
  *   حيث unitsForCheck: صفيف {unitName, conversionFactor:number, retail?, wholesale?, government?}
  */
-function assertVariantSanityOrThrow(variantLabel: string, costPrice: string, units: UnitPricing[]): void {
+function assertVariantSanityOrThrow(
+  variantLabel: string,
+  costPrice: string,
+  units: UnitPricing[],
+): void {
   const issues = checkVariantSanity(costPrice, units);
   const blocker = issues.find((i) => i.level === "blocker");
   if (blocker) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: `[${variantLabel}] ${blocker.message}` });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `[${variantLabel}] ${blocker.message}`,
+    });
   }
 }
 
@@ -194,7 +278,12 @@ function assertVariantSanityOrThrow(variantLabel: string, costPrice: string, uni
  * السابقة (blocker حسب `classifySeverity`)، يجب أن يمرَّر `costChangeReason` بمحارف ≥ ١٠.
  * يمنع تغييرات صامتة كارثيّة (حالة SINARLINE) من الاستيراد أو استعادات المسودّات.
  */
-function assertCostChangeReasonOrThrow(variantLabel: string, oldCost: string | number | null | undefined, newCost: string | number, reason: string | null | undefined): void {
+function assertCostChangeReasonOrThrow(
+  variantLabel: string,
+  oldCost: string | number | null | undefined,
+  newCost: string | number,
+  reason: string | null | undefined,
+): void {
   const sev = classifySeverity(newCost, { oldCost: oldCost ?? null });
   if (sev === "blocker" || sev === "catastrophic") {
     const r = (reason ?? "").trim();
@@ -218,10 +307,18 @@ function assertCostChangeReasonOrThrow(variantLabel: string, oldCost: string | n
  */
 async function reconcileEditBarcodeAliases(
   productId: number,
-  variants: Array<{ sku: string; barcodeAliases?: Record<string, Array<{ barcode: string; note?: string | null }>> }>,
+  variants: Array<{
+    sku: string;
+    barcodeAliases?: Record<
+      string,
+      Array<{ barcode: string; note?: string | null }>
+    >;
+  }>,
   actorUserId: number,
 ): Promise<string[]> {
-  const withAliases = variants.filter((v) => v.barcodeAliases && Object.keys(v.barcodeAliases).length > 0);
+  const withAliases = variants.filter(
+    (v) => v.barcodeAliases && Object.keys(v.barcodeAliases).length > 0,
+  );
   if (!withAliases.length) return [];
   const db = getDb();
   if (!db) return [];
@@ -233,20 +330,31 @@ async function reconcileEditBarcodeAliases(
   for (const v of withAliases) {
     const variantRow = current.find((c) => c.sku === v.sku.trim());
     if (!variantRow) {
-      warnings.push(`تعذّر تحديد المتغيّر «${v.sku}» لتوفيق بدائله — لم يُعثر عليه بعد الحفظ.`);
+      warnings.push(
+        `تعذّر تحديد المتغيّر «${v.sku}» لتوفيق بدائله — لم يُعثر عليه بعد الحفظ.`,
+      );
       continue;
     }
     for (const [unitName, desired] of Object.entries(v.barcodeAliases ?? {})) {
-      const productUnitId = await resolveProductUnitId(Number(variantRow.id), unitName);
+      const productUnitId = await resolveProductUnitId(
+        Number(variantRow.id),
+        unitName,
+      );
       if (!productUnitId) continue; // وحدة غير موجودة (اسمٌ لم يعد في القالب) — لا بدائل لها أصلاً.
       const { aliases: existing } = await listUnitBarcodes(productUnitId);
-      const desiredCodes = new Set(desired.map((d) => d.barcode.trim()).filter(Boolean));
+      const desiredCodes = new Set(
+        desired.map((d) => d.barcode.trim()).filter(Boolean),
+      );
       for (const ex of existing) {
         if (desiredCodes.has(ex.barcode)) continue;
         try {
           await removeUnitBarcodeAlias(ex.id);
         } catch (e) {
-          warnings.push(e instanceof TRPCError ? e.message : `تعذّر حذف البديل ${ex.barcode}`);
+          warnings.push(
+            e instanceof TRPCError
+              ? e.message
+              : `تعذّر حذف البديل ${ex.barcode}`,
+          );
         }
       }
       const existingCodes = new Set(existing.map((e) => e.barcode));
@@ -254,9 +362,16 @@ async function reconcileEditBarcodeAliases(
         const code = d.barcode.trim();
         if (!code || existingCodes.has(code)) continue;
         try {
-          await addUnitBarcodeAlias(productUnitId, code, d.note ?? null, actorUserId);
+          await addUnitBarcodeAlias(
+            productUnitId,
+            code,
+            d.note ?? null,
+            actorUserId,
+          );
         } catch (e) {
-          warnings.push(e instanceof TRPCError ? e.message : `تعذّر إضافة البديل ${code}`);
+          warnings.push(
+            e instanceof TRPCError ? e.message : `تعذّر إضافة البديل ${code}`,
+          );
         }
       }
     }
@@ -269,9 +384,29 @@ export const catalogRouter = router({
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
     // includeAllServices (١٢/٨/٢٦): شاشة فاتورة البيع المتقدّمة تحتاج كل خدمات الطباعة (بلا شرط
     // showInReception). createSale يتعامل مع الخدمة بتوسيع وصفتها لخصم المواد وحساب COGS.
-    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().int().positive().max(1000).default(200), includeReceptionServices: z.boolean().optional(), includeAllServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        tier,
+        query: z.string().optional(),
+        limit: z.number().int().positive().max(1000).default(200),
+        includeReceptionServices: z.boolean().optional(),
+        includeAllServices: z.boolean().optional(),
+        customerId: z.number().int().positive().nullish(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
-      const rows = await listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, includeAllServices: input.includeAllServices, customerId: input.customerId ?? undefined });
+      const rows = await listForPos(
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+        input.query,
+        input.limit,
+        {
+          includeReceptionServices: input.includeReceptionServices,
+          includeAllServices: input.includeAllServices,
+          customerId: input.customerId ?? undefined,
+        },
+      );
       return redactPosCost(rows, ctx.user);
     }),
 
@@ -286,7 +421,10 @@ export const catalogRouter = router({
     )
     .query(async ({ input, ctx }) => {
       const branchId = scopeBranch(ctx, input.branchId);
-      return { branchId, rows: await listStockByUnitIds(input.productUnitIds, branchId) };
+      return {
+        branchId,
+        rows: await listStockByUnitIds(input.productUnitIds, branchId),
+      };
     }),
 
   // شاشة الملصقات (١٦/٧): إعادة تسعير قائمة الطباعة عند تبديل فئة السعر — استعلامٌ واحد
@@ -297,10 +435,14 @@ export const catalogRouter = router({
         branchId: z.number().int().positive(),
         tier,
         productUnitIds: z.array(z.number().int().positive()).max(500),
-      })
+      }),
     )
     .query(async ({ input, ctx }) => {
-      const rows = await listByUnitIds(input.productUnitIds, scopeBranch(ctx, input.branchId), input.tier);
+      const rows = await listByUnitIds(
+        input.productUnitIds,
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+      );
       return redactPosCost(rows, ctx.user);
     }),
 
@@ -311,10 +453,14 @@ export const catalogRouter = router({
         branchId: z.number().int().positive(),
         tier,
         productIds: z.array(z.number().int().positive()).max(50),
-      })
+      }),
     )
     .query(async ({ input, ctx }) => {
-      const rows = await listByProductIds(input.productIds, scopeBranch(ctx, input.branchId), input.tier);
+      const rows = await listByProductIds(
+        input.productIds,
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+      );
       return redactPosCost(rows, ctx.user);
     }),
 
@@ -330,22 +476,33 @@ export const catalogRouter = router({
         categoryId: z.number().int().min(0).optional(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
-      })
+      }),
     )
     .query(({ input, ctx }) =>
       listProductsAdmin(
         { ...input, branchId: scopeBranch(ctx, input.branchId) },
         // قرار المالك: هذان الحقلان لهذه القائمة حصراً للمالك (admin) ومدير الفرع.
         // لا نعتمد على إخفاء الواجهة؛ الخدمة تعيد null لكل دور آخر.
-        { includeSensitivePrices: ctx.user.role === "admin" || ctx.user.role === "manager" },
-      )
+        {
+          includeSensitivePrices:
+            ctx.user.role === "admin" || ctx.user.role === "manager",
+        },
+      ),
     ),
 
   // تفعيل/تعطيل منتج — مدير فأعلى (يغيّر ما يراه الكاشير في البيع).
   setProductActive: productsManagerProcedure
-    .input(z.object({ productId: z.number().int().positive(), isActive: z.boolean() }))
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        isActive: z.boolean(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const res = await setProductActive(input.productId, input.isActive, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await setProductActive(input.productId, input.isActive, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       await logAudit(ctx, {
         action: input.isActive ? "product.activate" : "product.deactivate",
         entityType: "product",
@@ -356,7 +513,9 @@ export const catalogRouter = router({
     }),
 
   // ملخّص ارتباطات المنتج (نشاط + سبب منع الحذف النهائي إن وُجد ارتباط).
-  usage: productsReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ input }) => getProductUsage(input.productId)),
+  usage: productsReadProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => getProductUsage(input.productId)),
 
   // حذف نهائي — للمنتج «النظيف» فقط (يُمنع مع رسالة عربية تسرد الارتباطات إن وُجدت). مدير فأعلى —
   // نفس مستوى setProductActive (تغيير جذري في الكتالوج).
@@ -364,14 +523,30 @@ export const catalogRouter = router({
     .input(z.object({ productId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await deleteProduct(input.productId);
-      await logAudit(ctx, { action: "product.delete", entityType: "product", entityId: input.productId });
+      await logAudit(ctx, {
+        action: "product.delete",
+        entityType: "product",
+        entityId: input.productId,
+      });
       return res;
     }),
 
   byBarcode: productsReadProcedure
-    .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier, customerId: z.number().int().positive().nullish() }))
+    .input(
+      z.object({
+        barcode: z.string().min(1),
+        branchId: z.number().int().positive(),
+        tier,
+        customerId: z.number().int().positive().nullish(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
-      const row = await lookupByBarcode(input.barcode, scopeBranch(ctx, input.branchId), input.tier, input.customerId ?? undefined);
+      const row = await lookupByBarcode(
+        input.barcode,
+        scopeBranch(ctx, input.branchId),
+        input.tier,
+        input.customerId ?? undefined,
+      );
       return redactPosCostOne(row, ctx.user);
     }),
 
@@ -382,6 +557,25 @@ export const catalogRouter = router({
     .input(z.object({ codes: z.array(z.string().min(1)).max(2000) }))
     .query(({ input }) => checkBarcodesTaken(input.codes)),
 
+  // product-content-ai: يولّد مسودة محتوى فقط من حقائق مرسلة ومتحقق منها؛ لا يكتب المنتجات مباشرة.
+  generateContentDraft: productsManagerProcedure
+    .input(
+      z.object({
+        facts: productFactsSchema,
+        forceRefresh: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      generateProductContentDraft(input.facts, {
+        forceRefresh: input.forceRefresh,
+        actor: { userId: ctx.user.id, branchId: ctx.user.branchId ?? null },
+      }),
+    ),
+
+  validateContentDraft: productsManagerProcedure
+    .input(z.object({ facts: productFactsSchema, draft: aiProductDraftSchema }))
+    .mutation(({ input }) => validateAiProductDraft(input.draft, input.facts)),
+
   // name-assistant: مشابهات اسم حيّة أثناء إضافة/تعديل منتج — تمنع ازدواج الكتالوج عند المصدر
   // (٩٤٠٠+ صنف مستورد بأسماء غير منضبطة). نفس بوّابة الشاشة (مدير فأعلى)، لا تكشف تكلفة.
   similarNames: productsManagerProcedure
@@ -390,16 +584,33 @@ export const catalogRouter = router({
         name: z.string().min(2).max(255),
         excludeProductId: z.number().int().positive().optional(),
         limit: z.number().int().positive().max(20).default(8),
-      })
+      }),
     )
-    .query(({ input }) => findSimilarProductNames(input.name, { excludeProductId: input.excludeProductId, limit: input.limit })),
+    .query(({ input }) =>
+      findSimilarProductNames(input.name, {
+        excludeProductId: input.excludeProductId,
+        limit: input.limit,
+      }),
+    ),
 
   // Purchase-side product search: carries COST (not a sell price). أدوار الشراء (مدير/أمين
   // مخزن/مسؤول مشتريات) — تحتاجه لإضافة سطور أمر الشراء الذي تُخوَّل إنشاءه؛ محصور بها فلا
   // تتسرّب التكلفة للكاشير/المندوب.
   forPurchase: productsPurchaseProcedure
-    .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().int().positive().max(500).default(50) }))
-    .query(({ input, ctx }) => listForPurchase(scopeBranch(ctx, input.branchId), input.query, input.limit)),
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        query: z.string().optional(),
+        limit: z.number().int().positive().max(500).default(50),
+      }),
+    )
+    .query(({ input, ctx }) =>
+      listForPurchase(
+        scopeBranch(ctx, input.branchId),
+        input.query,
+        input.limit,
+      ),
+    ),
 
   createProduct: productsManagerProcedure
     .input(
@@ -417,7 +628,12 @@ export const catalogRouter = router({
         printService: z.boolean().optional(),
         showInReception: z.boolean().optional(),
         recipe: z
-          .array(z.object({ inputVariantId: z.number().int().positive(), qtyPerOutputBase: z.string() }))
+          .array(
+            z.object({
+              inputVariantId: z.number().int().positive(),
+              qtyPerOutputBase: z.string(),
+            }),
+          )
           .max(50)
           .optional(),
         // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب variants.length=1 + وحدة أساس واحدة + bundleComponents ≥1.
@@ -439,33 +655,55 @@ export const catalogRouter = router({
         consignorId: z.number().int().positive().nullish(),
         variants: z.array(variantSchema).min(1),
         images: z.array(imageSchema).max(10).optional(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
-      for (const v of input.variants) assertValidImageDataUrl(v.image, 2_000_000, true);
-      for (const img of input.images ?? []) assertValidImageDataUrl(img.url, 2_000_000, true);
+      for (const v of input.variants)
+        assertValidImageDataUrl(v.image, 2_000_000, true);
+      for (const img of input.images ?? [])
+        assertValidImageDataUrl(img.url, 2_000_000, true);
       // priceSanity (٣٠/٧): كل متغيّر يمرّ بحرّاس التكلفة/السعر/المعامل — يمنع القيم الفلكية (تكلفة
       // > سعر البيع بـ٥×) خادمياً حتى لو تجاوزها العميل. البكج/الأمانة لا يُستثنيان (نفس البوّابة).
       for (const v of input.variants) {
         const pricings: UnitPricing[] = v.units.map((u) => ({
           unitName: u.unitName,
           conversionFactor: u.isBaseUnit ? 1 : Number(u.conversionFactor) || 0,
-          retail: u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
-          wholesale: u.prices?.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
-          government: u.prices?.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
+          retail:
+            u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
+          wholesale:
+            u.prices?.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
+          government:
+            u.prices?.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
         }));
         assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
       }
-      const res = await createProduct({ ...input, name: input.name ?? "" } as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await createProduct(
+        { ...input, name: input.name ?? "" } as any,
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 },
+      );
       // الجرد الشامل الحي: ألحق الصنف الجديد بأي جلسة FULL ما زالت قيد العد.
       await syncActiveFullStocktakeScopes();
-      await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
+      await logAudit(ctx, {
+        action: "product.create",
+        entityType: "product",
+        entityId: (res as { productId?: number })?.productId,
+        newValue: {
+          name: input.name,
+          brand: input.brand ?? null,
+          modelName: input.modelName ?? null,
+        },
+      });
       return res;
     }),
 
   // print-catalog: مواد خام لمنتقي وصفة الخدمة (يكشف الكلفة ⇒ مدير فأعلى).
   materialsForRecipe: productsManagerProcedure
-    .input(z.object({ query: z.string().optional(), limit: z.number().int().positive().max(200).default(100) }))
+    .input(
+      z.object({
+        query: z.string().optional(),
+        limit: z.number().int().positive().max(200).default(100),
+      }),
+    )
     .query(({ input }) => listMaterialsForRecipe(input.query, input.limit)),
 
   /** v3-add-screens: صور منتج للعرض. */
@@ -509,13 +747,13 @@ export const catalogRouter = router({
                     isBaseUnit: z.boolean().optional(),
                     isStoreSaleUnit: z.boolean().optional(),
                     prices: z.array(priceSchema).optional(),
-                  })
+                  }),
                 )
                 .min(1),
-            })
+            }),
           )
           .min(1),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       // priceSanity (٣٠/٧): حرّاس تكلفة/سعر/معامل قبل الحفظ — انظر تعريف assertVariantSanityOrThrow.
@@ -523,9 +761,12 @@ export const catalogRouter = router({
         const pricings: UnitPricing[] = v.units.map((u) => ({
           unitName: u.unitName,
           conversionFactor: u.isBaseUnit ? 1 : Number(u.conversionFactor) || 0,
-          retail: u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
-          wholesale: u.prices?.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
-          government: u.prices?.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
+          retail:
+            u.prices?.find((p) => p.priceTier === "RETAIL")?.price ?? null,
+          wholesale:
+            u.prices?.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
+          government:
+            u.prices?.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
         }));
         assertVariantSanityOrThrow(v.color || v.sku, v.costPrice, pricings);
       }
@@ -539,30 +780,43 @@ export const catalogRouter = router({
       for (const v of input.variants) {
         const oldVariant = before?.variants.find((ov) => ov.id === v.id);
         if (oldVariant) {
-          assertCostChangeReasonOrThrow(v.color || v.sku, oldVariant.costPrice, v.costPrice, v.costChangeReason);
+          assertCostChangeReasonOrThrow(
+            v.color || v.sku,
+            oldVariant.costPrice,
+            v.costPrice,
+            v.costChangeReason,
+          );
         }
       }
-      const oldVariantsSummary = before?.variants.map((v) => ({
-        id: v.id,
-        sku: v.sku,
-        costPrice: v.costPrice,
-        units: v.units.map((u) => ({
-          id: u.id,
-          unitName: u.unitName,
-          conversionFactor: u.conversionFactor,
-          isBaseUnit: u.isBaseUnit,
-          isStoreSaleUnit: u.isStoreSaleUnit,
-          barcode: u.barcode,
-          prices: u.prices, // priceTier+price لكل وحدة (RETAIL/WHOLESALE/GOVERNMENT)
-        })),
-      })) ?? [];
-      const res = await updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const oldVariantsSummary =
+        before?.variants.map((v) => ({
+          id: v.id,
+          sku: v.sku,
+          costPrice: v.costPrice,
+          units: v.units.map((u) => ({
+            id: u.id,
+            unitName: u.unitName,
+            conversionFactor: u.conversionFactor,
+            isBaseUnit: u.isBaseUnit,
+            isStoreSaleUnit: u.isStoreSaleUnit,
+            barcode: u.barcode,
+            prices: u.prices, // priceTier+price لكل وحدة (RETAIL/WHOLESALE/GOVERNMENT)
+          })),
+        })) ?? [];
+      const res = await updateProduct(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       await syncActiveFullStocktakeScopes();
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",
         entityId: input.productId,
-        oldValue: { name: before?.name, isActive: before?.isActive, variants: oldVariantsSummary },
+        oldValue: {
+          name: before?.name,
+          isActive: before?.isActive,
+          variants: oldVariantsSummary,
+        },
         newValue: {
           name: input.name,
           isActive: input.isActive,
@@ -605,22 +859,37 @@ export const catalogRouter = router({
         action: "product.customizationTemplate.save",
         entityType: "productCustomizationTemplate",
         entityId: result.id,
-        newValue: { productId: input.productId, kind: input.kind, fieldCount: input.fields.length },
+        newValue: {
+          productId: input.productId,
+          kind: input.kind,
+          fieldCount: input.fields.length,
+        },
       });
       return result;
     }),
 
   /** إيقاف/تفعيل قالب التخصيص دون حذف تاريخه. */
   setCustomizationTemplateActive: productsManagerProcedure
-    .input(z.object({ productId: z.number().int().positive(), isActive: z.boolean() }))
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        isActive: z.boolean(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const result = await setProductCustomizationTemplateActive(input.productId, input.isActive, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
-        role: ctx.user.role,
-      });
+      const result = await setProductCustomizationTemplateActive(
+        input.productId,
+        input.isActive,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId ?? 1,
+          role: ctx.user.role,
+        },
+      );
       await logAudit(ctx, {
-        action: input.isActive ? "product.customizationTemplate.activate" : "product.customizationTemplate.deactivate",
+        action: input.isActive
+          ? "product.customizationTemplate.activate"
+          : "product.customizationTemplate.deactivate",
         entityType: "productCustomizationTemplate",
         entityId: input.productId,
         newValue: { isActive: input.isActive },
@@ -652,23 +921,30 @@ export const catalogRouter = router({
         variants: z.array(editVariantSchema).min(1),
         // product-image-edit: صور المنتج العامّة (variantId=NULL). غياب الحقل ⇒ لا تُمَسّ؛ مصفوفة ⇒ توفيق.
         images: z.array(editImageSchema).max(10).optional(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
-      for (const v of input.variants) if (v.image?.startsWith("data:")) assertValidImageDataUrl(v.image, 2_000_000, true);
+      for (const v of input.variants)
+        if (v.image?.startsWith("data:"))
+          assertValidImageDataUrl(v.image, 2_000_000, true);
       // URL قديم مطابق للمخزَّن يمر لتعديل metadata؛ الخدمة ترفض أيّ إضافة/استبدال خارج Product Studio.
       // Data URL وحدها تحتاج فحص البايتات هنا قبل وصولها إلى حارس الخدمة fail-closed.
-      for (const img of input.images ?? []) if (img.url?.startsWith("data:")) assertValidImageDataUrl(img.url, 2_000_000, true);
+      for (const img of input.images ?? [])
+        if (img.url?.startsWith("data:"))
+          assertValidImageDataUrl(img.url, 2_000_000, true);
       // priceSanity (٣٠/٧): كل متغيّر يمرّ بحرّاس التكلفة/السعر/المعامل من قالب الوحدات المشترك
       // (baseRetail يمرَّر عبر السطر ⇒ يتقدّم على المشترك للوحدة الأساس). المصدر: shared/priceSanity.
       for (const v of input.variants) {
         const pricings: UnitPricing[] = input.unitTemplate.map((u) => {
           const priceOf = (tier: "RETAIL" | "WHOLESALE" | "GOVERNMENT") =>
             u.prices.find((p) => p.priceTier === tier)?.price ?? null;
-          const retail = u.isBaseUnit && v.baseRetail ? v.baseRetail : priceOf("RETAIL");
+          const retail =
+            u.isBaseUnit && v.baseRetail ? v.baseRetail : priceOf("RETAIL");
           return {
             unitName: u.unitName,
-            conversionFactor: u.isBaseUnit ? 1 : Number(u.conversionFactor) || 0,
+            conversionFactor: u.isBaseUnit
+              ? 1
+              : Number(u.conversionFactor) || 0,
             retail,
             wholesale: priceOf("WHOLESALE"),
             government: priceOf("GOVERNMENT"),
@@ -681,14 +957,26 @@ export const catalogRouter = router({
       for (const v of input.variants) {
         const oldVariant = before?.variants.find((ov) => ov.id === v.id);
         if (oldVariant) {
-          assertCostChangeReasonOrThrow(v.color || v.sku, oldVariant.costPrice, v.costPrice, v.costChangeReason);
+          assertCostChangeReasonOrThrow(
+            v.color || v.sku,
+            oldVariant.costPrice,
+            v.costPrice,
+            v.costChangeReason,
+          );
         }
       }
-      const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await updateProductWithVariants(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       // يغطي إضافة متغيّر جديد إلى منتج قائم أيضاً.
       await syncActiveFullStocktakeScopes();
       // بدائل الباركود (توسعة ٣/٨): بعد نجاح الحفظ الرئيسي — انظر تعليق reconcileEditBarcodeAliases.
-      const aliasWarnings = await reconcileEditBarcodeAliases(input.productId, input.variants, ctx.user.id);
+      const aliasWarnings = await reconcileEditBarcodeAliases(
+        input.productId,
+        input.variants,
+        ctx.user.id,
+      );
       await logAudit(ctx, {
         action: "product.update",
         entityType: "product",
@@ -702,26 +990,38 @@ export const catalogRouter = router({
           name: before?.name,
           variants:
             before?.variants.map((v) => ({
-              id: v.id, sku: v.sku, isActive: v.isActive,
-              costPrice: v.costPrice, baseRetail: v.baseRetail,
+              id: v.id,
+              sku: v.sku,
+              isActive: v.isActive,
+              costPrice: v.costPrice,
+              baseRetail: v.baseRetail,
             })) ?? [],
           unitPrices:
             before?.unitTemplate.map((u) => ({
-              unitName: u.unitName, retail: u.retail, wholesale: u.wholesale, government: u.government,
+              unitName: u.unitName,
+              retail: u.retail,
+              wholesale: u.wholesale,
+              government: u.government,
             })) ?? [],
         },
         newValue: {
           name: input.name,
           added: (res as { added?: number }).added ?? 0,
           variants: input.variants.map((v) => ({
-            id: v.id ?? null, sku: v.sku, isActive: v.isActive,
-            costPrice: v.costPrice, baseRetail: v.baseRetail ?? null,
+            id: v.id ?? null,
+            sku: v.sku,
+            isActive: v.isActive,
+            costPrice: v.costPrice,
+            baseRetail: v.baseRetail ?? null,
           })),
           unitPrices: input.unitTemplate.map((u) => ({
             unitName: u.unitName,
-            retail: u.prices.find((p) => p.priceTier === "RETAIL")?.price ?? null,
-            wholesale: u.prices.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
-            government: u.prices.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
+            retail:
+              u.prices.find((p) => p.priceTier === "RETAIL")?.price ?? null,
+            wholesale:
+              u.prices.find((p) => p.priceTier === "WHOLESALE")?.price ?? null,
+            government:
+              u.prices.find((p) => p.priceTier === "GOVERNMENT")?.price ?? null,
           })),
         },
       });
@@ -729,10 +1029,20 @@ export const catalogRouter = router({
     }),
 
   assignBarcode: productsManagerProcedure
-    .input(z.object({ productUnitId: z.number().int().positive(), barcode: z.string().min(1) }))
+    .input(
+      z.object({
+        productUnitId: z.number().int().positive(),
+        barcode: z.string().min(1),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       const res = await assignBarcode(input.productUnitId, input.barcode);
-      await logAudit(ctx, { action: "product.assignBarcode", entityType: "productUnit", entityId: input.productUnitId, newValue: { barcode: input.barcode } });
+      await logAudit(ctx, {
+        action: "product.assignBarcode",
+        entityType: "productUnit",
+        entityId: input.productUnitId,
+        newValue: { barcode: input.barcode },
+      });
       return res;
     }),
 
@@ -748,22 +1058,27 @@ export const catalogRouter = router({
         brand: z.string().max(80).nullish(),
         productType: z.string().max(80).nullish(),
         excludeProductId: z.number().int().positive().optional(),
-      })
+      }),
     )
     .query(async ({ input }) => {
       const d = getDb();
       if (!d) return { n: 0, minCost: null, maxCost: null, medianCost: null };
       // فلترة اختيارية: brand أو productType يضيفان دقّةً حين تكون الفئة عريضة.
       const cats = [
-        input.categoryId != null ? sql`p.categoryId = ${input.categoryId}` : sql`p.categoryId IS NULL`,
+        input.categoryId != null
+          ? sql`p.categoryId = ${input.categoryId}`
+          : sql`p.categoryId IS NULL`,
         sql`COALESCE(p.isActive, TRUE) = TRUE`,
         sql`COALESCE(p.isConsignment, FALSE) = FALSE`,
         sql`COALESCE(v.isActive, TRUE) = TRUE`,
         sql`v.costPrice > 0`,
       ];
-      if (input.excludeProductId) cats.push(sql`p.id <> ${input.excludeProductId}`);
-      if (input.brand && input.brand.trim()) cats.push(sql`p.brand = ${input.brand.trim()}`);
-      if (input.productType && input.productType.trim()) cats.push(sql`p.productType = ${input.productType.trim()}`);
+      if (input.excludeProductId)
+        cats.push(sql`p.id <> ${input.excludeProductId}`);
+      if (input.brand && input.brand.trim())
+        cats.push(sql`p.brand = ${input.brand.trim()}`);
+      if (input.productType && input.productType.trim())
+        cats.push(sql`p.productType = ${input.productType.trim()}`);
       const whereClause = sql.join(cats, sql` AND `);
       // MySQL 8: نستعمل SUBSTRING_INDEX + GROUP_CONCAT للوسيط الرياضي، أو نأخذ العدد ونحسبه بـTS.
       const rows = await d.execute(sql`
@@ -774,15 +1089,19 @@ export const catalogRouter = router({
         ORDER BY v.costPrice ASC
       `);
       // rows = [[{c: '150.00'}, ...], fields]
-      const list = (rows as unknown as [Array<{ c: string | number }>, unknown])[0]
+      const list = (
+        rows as unknown as [Array<{ c: string | number }>, unknown]
+      )[0]
         .map((r) => Number(r.c))
         .filter((n) => Number.isFinite(n) && n > 0);
       const n = list.length;
-      if (n === 0) return { n: 0, minCost: null, maxCost: null, medianCost: null };
+      if (n === 0)
+        return { n: 0, minCost: null, maxCost: null, medianCost: null };
       const minCost = list[0];
       const maxCost = list[n - 1];
       const mid = Math.floor(n / 2);
-      const medianCost = n % 2 === 0 ? (list[mid - 1] + list[mid]) / 2 : list[mid];
+      const medianCost =
+        n % 2 === 0 ? (list[mid - 1] + list[mid]) / 2 : list[mid];
       return { n, minCost, maxCost, medianCost };
     }),
 
@@ -804,15 +1123,27 @@ export const catalogRouter = router({
         ORDER BY poi.createdAt DESC
         LIMIT 1
       `);
-      const row = (rows as unknown as [Array<{ total: string | number; baseQty: number; at: Date; poId: number }>, unknown])[0][0];
+      const row = (
+        rows as unknown as [
+          Array<{
+            total: string | number;
+            baseQty: number;
+            at: Date;
+            poId: number;
+          }>,
+          unknown,
+        ]
+      )[0][0];
       if (!row) return null;
       const total = Number(row.total);
       const baseQty = Number(row.baseQty);
-      if (!Number.isFinite(total) || !Number.isFinite(baseQty) || baseQty <= 0) return null;
+      if (!Number.isFinite(total) || !Number.isFinite(baseQty) || baseQty <= 0)
+        return null;
       const unitCost = Math.round((total / baseQty) * 100) / 100;
       return {
         unitCost: String(unitCost),
-        receivedAt: row.at instanceof Date ? row.at.toISOString() : String(row.at),
+        receivedAt:
+          row.at instanceof Date ? row.at.toISOString() : String(row.at),
         purchaseOrderId: Number(row.poId),
       };
     }),
@@ -824,13 +1155,24 @@ export const catalogRouter = router({
 
   /** بدائل عدّة وحدات دفعةً واحدة — منتقي «أيّ باركود يُطبع؟» في شاشة الملصقات (بلا N+1). */
   listUnitBarcodesMany: productsReadProcedure
-    .input(z.object({ productUnitIds: z.array(z.number().int().positive()).max(500) }))
+    .input(
+      z.object({
+        productUnitIds: z.array(z.number().int().positive()).max(500),
+      }),
+    )
     .query(({ input }) => listUnitBarcodesMany(input.productUnitIds)),
 
   /** يحلّ (variantId + unitName) إلى productUnitId — يُستعمَل من الواجهة لفتح شاشة البدائل. */
   resolveProductUnitId: productsReadProcedure
-    .input(z.object({ variantId: z.number().int().positive(), unitName: z.string().min(1).max(40) }))
-    .query(({ input }) => resolveProductUnitId(input.variantId, input.unitName)),
+    .input(
+      z.object({
+        variantId: z.number().int().positive(),
+        unitName: z.string().min(1).max(40),
+      }),
+    )
+    .query(({ input }) =>
+      resolveProductUnitId(input.variantId, input.unitName),
+    ),
 
   addUnitBarcodeAlias: productsManagerProcedure
     .input(
@@ -873,7 +1215,11 @@ export const catalogRouter = router({
     const db = getDb();
     if (!db) return [];
     return db
-      .select({ id: categories.id, name: categories.name, parentId: categories.parentId })
+      .select({
+        id: categories.id,
+        name: categories.name,
+        parentId: categories.parentId,
+      })
       .from(categories)
       .orderBy(asc(categories.sortOrder), asc(categories.name));
   }),
@@ -890,11 +1236,19 @@ export const catalogRouter = router({
         description: z.string().max(1000).nullish(),
         // أقسام فرعية (٢٩/٧): parentId اختياري — إن حُدِّد يجب أن يكون فئة رئيسية (لا فئة فرعية أخرى).
         parentId: z.number().int().positive().nullish(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "category.create", entityType: "category", entityId: res.id, newValue: { name: res.name, parentId: input.parentId ?? null } });
+      const res = await createCategory(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
+      await logAudit(ctx, {
+        action: "category.create",
+        entityType: "category",
+        entityId: res.id,
+        newValue: { name: res.name, parentId: input.parentId ?? null },
+      });
       return res;
     }),
 
@@ -907,56 +1261,99 @@ export const catalogRouter = router({
         isActive: z.boolean().optional(),
         // أقسام فرعية: undefined=بلا تغيير، null=ترقية لفئة رئيسية، رقم=نقل تحت تلك الفئة الرئيسية.
         parentId: z.number().int().positive().nullish(),
-      })
+      }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await updateCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await updateCategory(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       await logAudit(ctx, {
         action: "category.update",
         entityType: "category",
         entityId: input.id,
-        newValue: { name: input.name, description: input.description, isActive: input.isActive, parentId: input.parentId },
+        newValue: {
+          name: input.name,
+          description: input.description,
+          isActive: input.isActive,
+          parentId: input.parentId,
+        },
       });
       return res;
     }),
 
   deleteCategory: productsManagerProcedure
-    .input(z.object({ id: z.number().int().positive(), reassignToId: z.number().int().positive().nullish() }))
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        reassignToId: z.number().int().positive().nullish(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const res = await deleteCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await deleteCategory(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       await logAudit(ctx, {
         action: "category.delete",
         entityType: "category",
         entityId: input.id,
-        newValue: { reassigned: res.reassigned, reassignedTo: res.reassignedTo },
+        newValue: {
+          reassigned: res.reassigned,
+          reassignedTo: res.reassignedTo,
+        },
       });
       return res;
     }),
 
   mergeCategories: productsManagerProcedure
-    .input(z.object({ sourceIds: z.array(z.number().int().positive()).min(1), targetId: z.number().int().positive() }))
+    .input(
+      z.object({
+        sourceIds: z.array(z.number().int().positive()).min(1),
+        targetId: z.number().int().positive(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const res = await mergeCategories(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await mergeCategories(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       await logAudit(ctx, {
         action: "category.merge",
         entityType: "category",
         entityId: input.targetId,
         oldValue: { sourceIds: input.sourceIds },
-        newValue: { moved: res.moved, deleted: res.deleted, targetId: res.targetId },
+        newValue: {
+          moved: res.moved,
+          deleted: res.deleted,
+          targetId: res.targetId,
+        },
       });
       return res;
     }),
 
   /** نقل منتجات محدّدة إلى فئة (categoryId=null ⇒ بلا فئة) — للنقل الجماعي من قائمة المنتجات. */
   reassignProducts: productsManagerProcedure
-    .input(z.object({ productIds: z.array(z.number().int().positive()).min(1).max(2000), categoryId: z.number().int().positive().nullable() }))
+    .input(
+      z.object({
+        productIds: z.array(z.number().int().positive()).min(1).max(2000),
+        categoryId: z.number().int().positive().nullable(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
-      const res = await reassignProducts(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await reassignProducts(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
       await logAudit(ctx, {
         action: "product.reassignCategory",
         entityType: "product",
         entityId: input.productIds[0] ?? null,
-        newValue: { productIds: input.productIds, categoryId: input.categoryId, moved: res.moved },
+        newValue: {
+          productIds: input.productIds,
+          categoryId: input.categoryId,
+          moved: res.moved,
+        },
       });
       return res;
     }),

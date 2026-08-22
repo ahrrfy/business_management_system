@@ -17,6 +17,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBarcodeAliases";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
@@ -124,6 +125,17 @@ export default function SimpleProductForm() {
     [productType, brand, modelName]
   );
   const finalName = name.trim() || composedName;
+  const aiProductFacts = useMemo(() => ({
+    category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
+    productType: productType.trim() || null,
+    brand: brand.trim() || null,
+    modelName: modelName.trim() || null,
+    attributes: {},
+    variants: [{ color: null, size: null }],
+    saleUnits: units.filter((u) => u.name.trim()).map((u) => ({ name: u.name.trim(), conversionFactor: u.isBase ? "1" : u.factor.trim() || "1" })),
+    verifiedClaims: [],
+    audience: null,
+  }), [brand, categoriesQ.data, categoryId, modelName, productType, units]);
   const baseUnit = units.find((u) => u.isBase);
   const baseBarcode = baseUnit?.barcode.trim() ?? "";
   const baseUnitName = baseUnit?.name.trim() || "قطعة";
@@ -368,6 +380,13 @@ export default function SimpleProductForm() {
             </div>
             {/* السلعة البسيطة بلا متغيّرات ⇒ اللون في الاسم مشروع — لا warnColors هنا. */}
             <NameAssistant name={finalName} onApply={setName} />
+            <AiProductContentAssistant
+              facts={aiProductFacts}
+              onApply={(draft) => {
+                setName(draft.seoTitle);
+                setDescription(draft.description);
+              }}
+            />
           </Field>
           <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً.">
             <Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="كتاب مدرسي" dir="auto" />
