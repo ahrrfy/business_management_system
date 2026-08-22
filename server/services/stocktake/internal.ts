@@ -45,6 +45,7 @@ async function loadSessionHeader(db: DbLike, sessionId: number) {
       thresholdValue: stocktakeSessions.thresholdValue,
       dualThreshold: stocktakeSessions.dualThreshold,
       directUnderThreshold: stocktakeSessions.directUnderThreshold,
+      requireRecountOverThreshold: stocktakeSessions.requireRecountOverThreshold,
       waNotify: stocktakeSessions.waNotify,
       dupPolicy: stocktakeSessions.dupPolicy,
       notes: stocktakeSessions.notes,

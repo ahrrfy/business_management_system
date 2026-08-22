@@ -690,6 +690,12 @@ function buildBarriers(
     if (r.recount?.status === "PENDING" || r.openConflict) return false; // محسوبة في حاجزها
     return r.overThreshold || !directUnderThreshold;
   }).length;
+  // حوكمة م٥: إن فُعِّل إلزام إعادة العدّ فوق الحدّ، فأيّ صنفٍ يتجاوز الحدّ ولم يُعَد عدّه فعلياً
+  // (kindUsed ليس RECOUNT) يمنع الاعتماد — قرار المدير وحده لا يكفي فوق الحدّ. صفرٌ حين العَلَم مطفأ
+  // (الافتراض) أو حين لا صنفَ فوق الحدّ ⇒ لا أثرَ على الجلسات القائمة.
+  const overThresholdNeedingRecount = s.requireRecountOverThreshold
+    ? rows.filter((r) => r.overThreshold && r.kindUsed !== "RECOUNT").length
+    : 0;
   // افتتاحي: التوقيعان إلزاميان دائماً على مستوى الجلسة (حتى لو تطابق كل عدٍّ مع الدفتر —
   // الاعتماد يختم openedAt ويؤسّس الأرصدة بلا أي قيد دفتري، فهو أخفى قناة تحتاج أربع عيون).
   const requiresDualSign =
@@ -712,6 +718,7 @@ function buildBarriers(
     pendingRecounts === 0 &&
     openConflicts === 0 &&
     undecidedOverThreshold === 0 &&
+    overThresholdNeedingRecount === 0 &&
     countedPendingReview === 0;
   const canFinalApprove =
     canApprove &&
@@ -729,6 +736,7 @@ function buildBarriers(
     pendingRecounts,
     openConflicts,
     undecidedOverThreshold,
+    overThresholdNeedingRecount,
     requiresDualSign,
     firstSigned,
     reviewerFinalSeparationBlocked,
@@ -754,6 +762,7 @@ function buildReviewSession(s: Awaited<ReturnType<typeof loadSessionHeader>>) {
     thresholdValue: String(s.thresholdValue),
     dualThreshold: String(s.dualThreshold),
     directUnderThreshold: !!s.directUnderThreshold,
+    requireRecountOverThreshold: !!s.requireRecountOverThreshold,
     dupPolicy: s.dupPolicy,
     createdAt: s.createdAt,
     createdByName: s.createdByName ?? "—",
