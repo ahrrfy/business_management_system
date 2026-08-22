@@ -2755,12 +2755,11 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
                   // القبول الصارم: لا نمسح المحارف الممنوعة بصمت. `-` أو أيّ رمزٍ غير مسموح يُرَدّ
                   // إلى القيمة السابقة (لا تحويل صامت لسالبٍ إلى موجب). الفاصلةُ العربية/الأوروبية `،/,`
                   // تُطبَّع إلى نقطةٍ (نفس معنى الفاصل العشريّ)، ولا نقطتان.
+                  // ٢٣/٨ — Codex P1: نمنع `.` منفرداً كي لا يمرّ لـD() فيرمي.
                   const src = e.target.value;
                   if (src === "") { setInvoiceDiscountPct(""); return; }
-                  // طبِّع الفواصل العشريّة إلى نقطة، **قبل** الفحص الصارم.
                   const norm = src.replace(/[،,]/g, ".");
-                  // بعد التطبيع لا نقبل إلّا الأرقام ونقطةً واحدةً بحدٍّ أقصى. أيّ محرفٍ آخر ⇒ رَدٌّ صامت.
-                  if (!/^\d*\.?\d*$/.test(norm)) return;
+                  if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(norm)) return;
                   const n = Number(norm);
                   if (!Number.isFinite(n) || n < 0) return;
                   if (n > effectiveHeaderCapPct) {
@@ -2837,9 +2836,14 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
                 inputMode="decimal"
                 value={payInput}
                 onChange={(e) => {
+                  // ٢٣/٨ — Codex P1: `D(".")` و `D("-")` و `D("-.")` كلّها ترمي RangeError من
+                  // decimal.js. الحلّ: نطلب رقماً واحداً على الأقل، ونتحقّق أنّ Number يعطي عدداً
+                  // منتهياً (Number("+") و Number(".") و Number("-") كلّها NaN فتُرفَض هنا).
                   const raw = e.target.value.replace(/[،,]/g, ".");
                   if (raw === "") { setPayInput(""); return; }
-                  if (!/^-?\d*\.?\d*$/.test(raw)) return;
+                  // نقبل بادئة السالب (الكاشير قد يكتب مبلغاً سالباً لتصحيحٍ ما) لكن نمنع "-" وحده.
+                  if (!/^-?\d+\.?\d*$|^-?\d*\.\d+$/.test(raw)) return;
+                  if (!Number.isFinite(Number(raw))) return;
                   setPayInput(raw);
                 }}
                 placeholder="—"

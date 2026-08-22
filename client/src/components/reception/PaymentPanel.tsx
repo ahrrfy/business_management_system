@@ -175,11 +175,12 @@ export function PaymentPanel({
               inputMode="decimal"
               value={invoiceDiscountPct}
               onChange={(e) => {
+                // ٢٣/٨ — Codex P1: `.` منفرداً (بلا أرقام) كان يُخزَّن ثم يمرَّر لـD("") فيرمي.
+                // الحلّ: نطلب رقماً على الأقلّ في السلسلة قبل التخزين (فحصٌ إضافيّ فوق regex الصيغة).
                 const src = e.target.value;
                 if (src === "") { setInvoiceDiscountPct(""); return; }
-                // طبِّع الفواصل العربية/الأوروبية إلى نقطة قبل الفحص الصارم — لا نمسح رموزاً بصمت.
                 const norm = src.replace(/[،,]/g, ".");
-                if (!/^\d*\.?\d*$/.test(norm)) return;
+                if (!/^\d+\.?\d*$|^\d*\.\d+$/.test(norm)) return;
                 const n = Number(norm);
                 if (!Number.isFinite(n) || n < 0) return;
                 if (n > invoiceDiscountMaxPct) {
