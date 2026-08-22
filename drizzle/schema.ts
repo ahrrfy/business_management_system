@@ -4058,6 +4058,50 @@ export const onlineOrderItems = mysqlTable(
 export type OnlineOrderItem = typeof onlineOrderItems.$inferSelect;
 export type InsertOnlineOrderItem = typeof onlineOrderItems.$inferInsert;
 
+/** مراجعة المنتج من عميل استلم طلباً يحتويه؛ تبقى معلّقة إلى اعتماد المتجر. */
+export const storefrontProductReviews = mysqlTable(
+  "storefrontProductReviews",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id, { onDelete: "cascade" }),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id, { onDelete: "cascade" }),
+    onlineOrderId: bigint("onlineOrderId", { mode: "number" }).notNull().references(() => onlineOrders.id, { onDelete: "cascade" }),
+    rating: int("rating").notNull(),
+    comment: varchar("comment", { length: 1000 }).notNull(),
+    status: mysqlEnum("storefrontProductReviewStatus", ["PENDING", "APPROVED", "REJECTED"]).default("PENDING").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    moderatedAt: timestamp("moderatedAt"),
+  },
+  (table) => ({
+    productStatusCreatedIdx: index("idx_storefront_review_product_status_created").on(table.productId, table.status, table.createdAt),
+    customerIdx: index("idx_storefront_review_customer").on(table.customerId),
+    orderProductUq: unique("uq_storefront_review_order_product").on(table.onlineOrderId, table.productId),
+  }),
+);
+
+export type StorefrontProductReview = typeof storefrontProductReviews.$inferSelect;
+export type InsertStorefrontProductReview = typeof storefrontProductReviews.$inferInsert;
+
+/** رابط عام عابر لقائمة رغبات. لا يحمل أي بيانات عميل ويحتفظ بمعرّفات منتجات فقط. */
+export const storefrontWishlistShares = mysqlTable(
+  "storefrontWishlistShares",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** 144-bit URL-safe server token؛ لا يشتق من العميل ولا من أرقام المنتجات. */
+    token: varchar("token", { length: 32 }).notNull(),
+    productIds: json("productIds").$type<number[]>().notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    tokenUq: unique("uq_storefront_wishlist_share_token").on(table.token),
+    expiryIdx: index("idx_storefront_wishlist_share_expiry").on(table.expiresAt),
+  }),
+);
+
+export type StorefrontWishlistShare = typeof storefrontWishlistShares.$inferSelect;
+export type InsertStorefrontWishlistShare = typeof storefrontWishlistShares.$inferInsert;
+
 // ═══════════════════════ إدارة المتجر (لوحة hPanel): بنرات + إعدادات ═══════════════════════
 /**
  * storeBanners — بنرات ترويجية **يديرها الموظف** من لوحة المتجر (عنوان/وصف/صورة/زرّ/ترتيب/نافذة

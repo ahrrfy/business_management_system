@@ -4,6 +4,8 @@
   "procedures": [
     "storefront.claimFirebaseCustomer",
     "storefront.customerBenefits",
+    "storefront.productReviews",
+    "storefront.submitProductReview",
     "storefront.registerPushDevice",
     "storefront.trackPushInteraction"
   ]

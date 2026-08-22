@@ -607,8 +607,13 @@ async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: nu
       });
       if (res) {
         const eff = price.minus(money(res.discountForUnit));
-        p.salePrice = toDbMoney(eff.lt(0) ? money(0) : eff);
-        p.promotionName = res.promotionName;
+        // بطاقة المتجر ليست قناة للهدايا المجانية: لا ننشر سعراً مخفّضاً إلا إذا كان
+        // موجباً وأقل فعلاً من سعر التجزئة. يمنع هذا عرض 100% بسبب قواعد خصم مهيأة
+        // خطأ أو خصم يتجاوز سعر الوحدة، فيما تبقى قواعد POS محكومة عند إنشاء الطلب.
+        if (eff.gt(0) && eff.lt(price)) {
+          p.salePrice = toDbMoney(eff);
+          p.promotionName = res.promotionName;
+        }
       }
     }
   });

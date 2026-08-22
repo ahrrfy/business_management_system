@@ -1,5 +1,8 @@
 import type { Express, Request, Response } from "express";
 
+const STOREFRONT_ANDROID_PACKAGE = "online.alarabiya.customerstore";
+const STOREFRONT_EAS_DEVELOPMENT_SHA256 = "24:6B:73:BE:E1:B5:B7:7F:22:E4:E2:9B:59:67:B6:2C:70:C1:60:CC:EB:69:49:68:84:E3:FF:F7:6F:A5:DA:23";
+
 /**
  * Digital Asset Links لـTWA (Trusted Web Activity) — تغليف الـPWA كتطبيق أندرويد على Google Play.
  *
@@ -24,25 +27,37 @@ export function registerWellKnown(app: Express): void {
       .split(",")
       .map((s) => s.trim().toUpperCase())
       .filter(Boolean);
+    const storefrontPkg = process.env.STOREFRONT_ANDROID_PACKAGE?.trim() || STOREFRONT_ANDROID_PACKAGE;
+    const storefrontFingerprints = (process.env.STOREFRONT_ANDROID_SHA256_CERT_FINGERPRINTS ?? STOREFRONT_EAS_DEVELOPMENT_SHA256)
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
 
-    if (!pkg || fingerprints.length === 0) {
+    if ((!pkg || fingerprints.length === 0) && (!storefrontPkg || storefrontFingerprints.length === 0)) {
       res
         .status(404)
         .type("application/json")
-        .send(JSON.stringify({ error: "assetlinks غير مُعدّ — اضبط TWA_ANDROID_PACKAGE و TWA_SHA256_CERT_FINGERPRINTS" }));
+        .send(JSON.stringify({ error: "assetlinks غير مُعدّ — اضبط مفاتيح TWA أو STOREFRONT Android وبصمات SHA-256" }));
       return;
     }
 
-    const body = [
-      {
+    const body = [];
+    if (pkg && fingerprints.length > 0) body.push({
         relation: ["delegate_permission/common.handle_all_urls"],
         target: {
           namespace: "android_app",
           package_name: pkg,
           sha256_cert_fingerprints: fingerprints,
         },
+      });
+    if (storefrontPkg && storefrontFingerprints.length > 0) body.push({
+      relation: ["delegate_permission/common.handle_all_urls"],
+      target: {
+        namespace: "android_app",
+        package_name: storefrontPkg,
+        sha256_cert_fingerprints: storefrontFingerprints,
       },
-    ];
+    });
     // تخبئة قصيرة: أداة التحقّق من Google تعيد الجلب، والتحديث النادر (تغيّر بصمة) يجب أن يصل بسرعة.
     res.status(200).type("application/json").set("Cache-Control", "public, max-age=300").send(JSON.stringify(body));
   });
