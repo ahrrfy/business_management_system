@@ -24,6 +24,7 @@ import {
   forceStocktakeReview,
   getCycleSuggestions,
   getIraStats,
+  getCounterQualityStats,
   getStocktakeCountSheets,
   getStocktakeRemainingItems,
   getStocktakeReport,
@@ -41,6 +42,8 @@ import {
   listUnknownScans,
   resolveUnknownScan,
   computeBarcodeCoverage,
+  listSplitCandidates,
+  splitAliasToAlternative,
 } from "../services/stocktakeService";
 import {
   adminProcedure,
@@ -121,6 +124,8 @@ export const stocktakeRouter = router({
         thresholdValue: moneyStr.optional(),
         dualThreshold: moneyStr.optional(),
         directUnderThreshold: z.boolean().optional(),
+        // حوكمة م٥: إلزام إعادة العدّ فعلياً لكل صنفٍ فوق الحدّ قبل الاعتماد (الافتراض false).
+        requireRecountOverThreshold: z.boolean().optional(),
         waNotify: z.boolean().optional(),
         dupPolicy: z.enum(["VERIFY", "BLOCK"]).optional(),
         // أسلوب العدّ — «الحر» محصورٌ بمدير+ (تفرضه الخدمة)؛ الافتراض SCAN_REQUIRED.
@@ -151,6 +156,11 @@ export const stocktakeRouter = router({
         delete effective.thresholdValue;
         delete effective.dualThreshold;
       }
+      // الحوكمة (إلزام إعادة العدّ فوق الحدّ) صلاحية مدير فأعلى — تُطابق بوّابة الواجهة isManagerPlus.
+      // ⚠️ لا تُجرَّد داخل كتلة restricted: مديرُ الفرع مُقيَّدٌ بفرعه (restrictedBranchOf ≠ null) لكنه
+      // يملك الحوكمة (Codex P2: تجريدها هناك كان يجعل الميزة تعمل للأدمن فقط). تُجرَّد عمّن دونه فقط.
+      const canGovern = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!canGovern) delete effective.requireRecountOverThreshold;
       const res = await createStocktakeSession(effective, {
         userId: ctx.user.id,
         role: ctx.user.role,
@@ -217,6 +227,41 @@ export const stocktakeRouter = router({
   barcodeCoverage: inventoryReadProcedure
     .input(z.object({ variantIds: z.array(idNum).max(10_000) }))
     .query(async ({ input }) => computeBarcodeCoverage(input.variantIds)),
+
+  /** مرشّحو فصل البدائل المدمجة (م٤): وحداتٌ تحمل باركوداً بديلاً — كتالوج عامّ. */
+  splitCandidates: inventoryReadProcedure.query(async () => listSplitCandidates()),
+
+  /** فصل باركودٍ بديل إلى متغيّرٍ مستقلّ (م٤) — بصلاحية إدارة المخزون. */
+  splitAlternative: inventoryManagerProcedure
+    .input(
+      z.object({
+        productUnitId: idNum,
+        aliasBarcode: z.string().trim().min(1).max(64),
+        name: z.string().trim().min(1, "اسم البديل مطلوب").max(255),
+        cost: moneyStr.optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await splitAliasToAlternative({
+        productUnitId: input.productUnitId,
+        aliasBarcode: input.aliasBarcode,
+        name: input.name,
+        cost: input.cost ?? null,
+      });
+      await logAudit(ctx, {
+        action: "stocktake.splitAlternative",
+        entityType: "productVariant",
+        entityId: res.newVariantId,
+        newValue: {
+          sourceVariantId: res.sourceVariantId,
+          newVariantId: res.newVariantId,
+          sku: res.sku,
+          aliasBarcode: input.aliasBarcode,
+          name: input.name,
+        },
+      });
+      return res;
+    }),
 
   /* ─────────── القراءة ─────────── */
   list: warehouseProcedure
@@ -690,6 +735,11 @@ export const stocktakeRouter = router({
     }),
 
   ira: managerProcedure.query(async ({ ctx }) => getIraStats(restrictedBranchOf(ctx))),
+
+  /** جودة العدّاد (م٥): انضباط المسح لكل عامل — بوّابة وحدة المخزون (مدير)، معزولٌ بالفرع. */
+  counterQuality: inventoryManagerProcedure.query(async ({ ctx }) =>
+    getCounterQualityStats(restrictedBranchOf(ctx)),
+  ),
 
   stats: warehouseProcedure.query(async ({ ctx }) => {
     return getStocktakeStats({ restrictBranchId: restrictedBranchOf(ctx) });

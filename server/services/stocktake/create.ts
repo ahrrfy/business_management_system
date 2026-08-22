@@ -89,6 +89,8 @@ export interface CreateStocktakeInput {
   thresholdValue?: string;
   dualThreshold?: string;
   directUnderThreshold?: boolean;
+  /** حوكمة م٥: إلزام إعادة العدّ فعلياً لكل صنفٍ فوق الحدّ قبل الاعتماد. الافتراض false. */
+  requireRecountOverThreshold?: boolean;
   waNotify?: boolean;
   dupPolicy?: "VERIFY" | "BLOCK";
   notes?: string;
@@ -471,6 +473,9 @@ async function insertSession(
   if (input.thresholdValue !== undefined) sessionValues.thresholdValue = toDbMoney(input.thresholdValue);
   if (input.dualThreshold !== undefined) sessionValues.dualThreshold = toDbMoney(input.dualThreshold);
   if (input.directUnderThreshold !== undefined) sessionValues.directUnderThreshold = input.directUnderThreshold;
+  // يُكتب صراحةً فقط حين يُرسله المستدعي؛ الحذف يترك افتراض القاعدة false (توافق كامل).
+  if (input.requireRecountOverThreshold !== undefined)
+    sessionValues.requireRecountOverThreshold = input.requireRecountOverThreshold;
   if (input.waNotify !== undefined) sessionValues.waNotify = input.waNotify;
   if (input.dupPolicy !== undefined) sessionValues.dupPolicy = input.dupPolicy;
   const sRes = await tx.insert(stocktakeSessions).values(sessionValues);

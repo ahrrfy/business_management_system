@@ -4994,6 +4994,12 @@ export const stocktakeSessions = mysqlTable(
     countMethod: mysqlEnum("countMethod", ["SCAN_REQUIRED", "FREE"])
       .default("FREE")
       .notNull(),
+    // حوكمة (م٥، وثيقة «الجرد بالباركود» ٢٢/٨): إن كانت true، لا تُعتمد الجلسة ما دام صنفٌ يتجاوز
+    // الحدّ لم يُعَد عدّه فعلياً (RECOUNT) — قرار المدير وحده لا يكفي فوق الحدّ. الافتراض false
+    // (توافق الجلسات القائمة والسلوك القديم). راجع reviewCore.buildBarriers.
+    requireRecountOverThreshold: boolean("requireRecountOverThreshold")
+      .default(false)
+      .notNull(),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
     submittedAt: timestamp("submittedAt"),
