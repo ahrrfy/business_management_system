@@ -24,6 +24,7 @@ import { money } from "../money";
 import { withTx } from "../tx";
 import { decodeDataUrl, productImageUrl } from "../../imageRoute";
 import { onlineOrderLabelToken } from "../barcodeService";
+import { awardDeliveredOnlineOrderPoints } from "./loyaltyService";
 
 export type OnlineOrderStatus = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -262,6 +263,25 @@ export async function setOnlineOrderStatus(
     if (!ALLOWED_TRANSITIONS[from].includes(input.status)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `انتقال غير مسموح: ${from} ← ${input.status}` });
     }
+    if (from === "PENDING" && input.status === "CONFIRMED") {
+      // صف الطلب مقفول أعلاه؛ ساعة MySQL نفسها تمنع سباق التأكيد مع عامل الانتهاء.
+      const expiry = (
+        await tx
+          .select({
+            reservationExpiresAt: sql<Date>`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))`,
+            expired: sql<number>`COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR)) <= CURRENT_TIMESTAMP(3)`,
+          })
+          .from(onlineOrders)
+          .where(eq(onlineOrders.id, input.id))
+          .limit(1)
+      )[0];
+      if (expiry && Number(expiry.expired) === 1) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "انتهت مهلة حجز مخزون هذا الطلب — اطلب من الزبون إعادة الطلب حسب التوفر الحالي",
+        });
+      }
+    }
     // ⛔ حارس تسريب COD (مراجعة عدائية ١٢/٧): «تم التسليم» هنا تغييرُ حالةٍ بلا أثر مالي. لو كان الطلب
     // مُسنَداً لمندوب وفاتورته ما تزال بها مبلغٌ مستحقّ (COD غير محصَّل)، فإنهاؤه «مُسلَّم» يُخفي التحصيل
     // إلى الأبد (DELIVERED نهائيّة) ⇒ نقدٌ بيد المندوب خارج الدفتر. يُسلَّم ويُحصَّل حصراً عبر «توصيلاتي»
@@ -292,6 +312,13 @@ export async function setOnlineOrderStatus(
         ? { status: input.status, cancelReason: input.cancelReason?.trim() ? input.cancelReason.trim().slice(0, 500) : null }
         : { status: input.status };
     await tx.update(onlineOrders).set(patch).where(eq(onlineOrders.id, input.id));
+    if (input.status === "DELIVERED") {
+      await awardDeliveredOnlineOrderPoints(tx, {
+        onlineOrderId: input.id,
+        customerId: Number(order.customerId),
+        total: String(order.total),
+      });
+    }
     return { id: input.id, from, to: input.status };
   });
 }

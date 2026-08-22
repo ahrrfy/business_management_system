@@ -8,7 +8,6 @@ import { getDb } from "../../db";
 import { createPrintSale } from "../printSaleService";
 import { getShiftReport } from "../shiftService";
 import { withTx } from "../tx";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
@@ -123,6 +122,8 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
     expect(sale.revenue).toBe("1250.00");
     expect(sale.cost).toBe("275.00");
     expect(sale.profit).toBe("975.00");
+    expect(sale.createdBy).toBe(actor.userId);
+    expect(sale.createdByNameSnapshot).toBe("admin");
     expect(es.some((e: any) => e.entryType === "PAYMENT_IN" && e.amount === "1250.00")).toBe(true);
     // إيصال منسوب للوردية (تسوية الصندوق).
     const rec = (await db().select().from(s.receipts))[0];
@@ -183,12 +184,25 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
 });
 
 describe("بيع الطباعة: التقريب النقدي + الذمم + idempotency", () => {
-  it("دفع البطاقة يُرفض قبل إنشاء فاتورة أو إيصال", async () => {
-    await expect(createPrintSale({
+  it("دفع البطاقة بمرجعٍ يُسجَّل إيصالاً خارج درج النقد", async () => {
+    const r = await createPrintSale({
       branchId: 1, shiftId: 1,
       lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
       payment: { amount: "250", method: "CARD", reference: "POS-CARD-7788" },
-    }, actor)).rejects.toThrow(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    }, actor);
+    const [receipt] = await db().select().from(s.receipts).where(eq(s.receipts.invoiceId, r.invoiceId));
+    expect(receipt.paymentMethod).toBe("CARD");
+    expect(receipt.referenceNumber).toBe("POS-CARD-7788");
+    // §٥: غير النقد لا يَمسّ الدرج ⇒ لا دلوَ نقديّ.
+    expect(receipt.cashBucket).toBeNull();
+  });
+
+  it("دفع غير نقديّ بلا مرجع يُرفض قبل إنشاء فاتورة أو إيصال", async () => {
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CARD" },
+    }, actor)).rejects.toThrow();
     expect(await db().select().from(s.receipts)).toHaveLength(0);
     expect(await db().select().from(s.invoices)).toHaveLength(0);
   });

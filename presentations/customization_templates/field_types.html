@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;500;700;800&display=swap" rel="stylesheet" />
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet" />
+  <style>
+    *{box-sizing:border-box;margin:0}
+    .slide-container{width:1280px;min-height:720px;background:#F8F9FA;font-family:Cairo,Arial,sans-serif;color:#2B2D42;padding-top:56px}
+    .wrap{width:1080px;margin:auto}
+    .eyebrow{font-size:15px;font-weight:700;color:#457B9D}
+    .title{font-size:42px;font-weight:800;margin-top:8px}
+    .subtitle{font-size:18px;font-weight:300;color:#657080;margin-top:9px}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:43px}
+    .field{min-height:178px;background:#FFFFFF;border:1px solid #D7E2E8;border-radius:8px;padding:23px 24px}
+    .top{display:flex;align-items:center;justify-content:space-between;gap:14px}
+    .badge{font-family:monospace;font-size:15px;font-weight:700;color:#457B9D;background:#E8F2F6;border-radius:6px;padding:5px 9px;direction:ltr}
+    .icon{width:38px;height:38px;border-radius:50%;background:#2B2D42;color:#F8F9FA;display:flex;align-items:center;justify-content:center;font-size:16px}
+    .field h2{font-size:19px;font-weight:800;margin-top:18px}
+    .field p{font-size:14px;line-height:1.7;color:#657080;margin-top:7px}
+    .footer{margin-top:30px;border-top:1px solid #D7E2E8;padding-top:19px;display:flex;align-items:center;gap:12px;color:#455565;font-size:17px}
+    .footer i{color:#457B9D;font-size:20px}
+    .footer strong{color:#2B2D42}
+  </style>
+</head>
+<body>
+  <div class="slide-container">
+    <main class="wrap">
+      <div class="eyebrow">لغة القالب</div>
+      <h1 class="title">أنواع الحقول المدعومة</h1>
+      <p class="subtitle">كل حقل يحدد شكل الإدخال والتحقق والتبعية، من دون بناء نموذج جديد لكل منتج.</p>
+      <section class="grid" aria-label="أنواع حقول التخصيص">
+        <article class="field"><div class="top"><span class="badge">TEXT</span><span class="icon"><i class="fa-solid fa-i-cursor"></i></span></div><h2>نص قصير</h2><p>اسم المستلم، عبارة الطباعة، أو رقم مرجعي.</p></article>
+        <article class="field"><div class="top"><span class="badge">TEXTAREA</span><span class="icon"><i class="fa-solid fa-align-right"></i></span></div><h2>نص طويل</h2><p>رسالة إهداء أو تعليمات تنفيذ مفصلة.</p></article>
+        <article class="field"><div class="top"><span class="badge">SELECT</span><span class="icon"><i class="fa-solid fa-list"></i></span></div><h2>قائمة اختيار</h2><p>نوع الورق، الخدمة، أو خيار التغليف.</p></article>
+        <article class="field"><div class="top"><span class="badge">SWATCH</span><span class="icon"><i class="fa-solid fa-palette"></i></span></div><h2>اختيارات مرئية</h2><p>لون، خامة، أو تشطيب يسهل مقارنته بصرياً.</p></article>
+        <article class="field"><div class="top"><span class="badge">FILE</span><span class="icon"><i class="fa-solid fa-file-arrow-up"></i></span></div><h2>مرجع ملف</h2><p>اسم أو مرجع تصميم العميل قبل تسليم الملف الفعلي.</p></article>
+        <article class="field"><div class="top"><span class="badge">NUMBER</span><span class="icon"><i class="fa-solid fa-hashtag"></i></span></div><h2>قيمة رقمية</h2><p>قياس، عدد نسخ، أو كمية إضافية قابلة للتحقق.</p></article>
+      </section>
+      <div class="footer"><i class="fa-solid fa-code-branch"></i><span><strong>التبعيات تعمل فوق هذه الأنواع:</strong> إظهار ملف التصميم فقط عند اختيار نوع التنفيذ الذي يحتاجه.</span></div>
+    </main>
+  </div>
+</body>
+</html>

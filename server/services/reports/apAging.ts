@@ -1,9 +1,10 @@
 // شيخوخة الذمم الدائنة (AP) + كشف حساب مورد.
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
-import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
+import { alias } from "drizzle-orm/mysql-core";
+import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
-import { nextDayStr, type StatementPeriod } from "./shared";
+import type { StatementPeriod } from "./shared";
 
 export interface APAgingRow {
   supplierId: number;
@@ -30,6 +31,20 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
   const db = getDb();
   if (!db) return [];
   const branchFilter = opts.branchId ? sql`AND po.branchId = ${opts.branchId}` : sql``;
+  const currentBalanceExpr = opts.branchId ? sql`MAX(COALESCE(sb.balance, 0))` : sql`MAX(s.currentBalance)`;
+  const branchBalanceJoin = opts.branchId
+    ? sql`LEFT JOIN (
+        SELECT ae.supplierId,
+          COALESCE(SUM(CASE
+            WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
+            WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','OPENING') THEN ae.amount
+            WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
+            ELSE 0 END), 0) AS balance
+        FROM accountingEntries ae
+        WHERE ae.supplierId IS NOT NULL AND ae.branchId = ${opts.branchId}
+        GROUP BY ae.supplierId
+      ) sb ON sb.supplierId = s.id`
+    : sql``;
   // G13: نفس حارس LIMIT في AR aging — يمنع OOM عند نمو الموردين.
   const limit = Math.max(1, Math.min(opts.limit ?? 5000, 10000));
   // REP-03: مرساة «اليوم» = UTC_DATE() لا CURDATE() (نفس علّة AR aging أعلاه). orderDate عمود
@@ -44,21 +59,24 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
       s.id AS supplierId,
       s.name AS supplierName,
       s.phone,
-      CAST(s.currentBalance AS CHAR) AS currentBalance,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) <= 30 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 31 AND 60 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 61 AND 90 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) > 90 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(${currentBalanceExpr} AS CHAR) AS currentBalance,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(gl.recognitionDate)) <= 30 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(gl.recognitionDate)) BETWEEN 31 AND 60 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(gl.recognitionDate)) BETWEEN 61 AND 90 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(gl.recognitionDate)) > 90 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d91p,
       CAST(COALESCE(SUM(GREATEST(COALESCE(gl.balance, 0), 0)), 0) AS CHAR) AS unpaidTotal,
-      DATE_FORMAT(MIN(CASE WHEN COALESCE(gl.balance, 0) > 0 THEN po.orderDate END), '%Y-%m-%d') AS oldestPoDate
+      DATE_FORMAT(MIN(CASE WHEN COALESCE(gl.balance, 0) > 0 THEN gl.recognitionDate END), '%Y-%m-%d') AS oldestPoDate
     FROM suppliers s
+    ${branchBalanceJoin}
     LEFT JOIN purchaseOrders po
       ON po.supplierId = s.id
       AND po.poStatus IN ('CONFIRMED', 'RECEIVED')
       ${branchFilter}
     LEFT JOIN (
       SELECT ae.purchaseOrderId,
+        MIN(CASE WHEN ae.entryType = 'PURCHASE' THEN ae.entryDate END) AS recognitionDate,
         COALESCE(SUM(CASE
+          WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
           WHEN ae.entryType = 'PURCHASE' THEN ae.amount
           WHEN ae.entryType = 'RETURN' THEN ae.amount
           WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount
@@ -70,11 +88,11 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
       GROUP BY ae.purchaseOrderId
     ) gl ON gl.purchaseOrderId = po.id
     WHERE s.isActive = TRUE
-    GROUP BY s.id, s.name, s.phone, s.currentBalance
+    GROUP BY s.id, s.name, s.phone
     -- currentBalance <> 0 (لا > 0): يُظهر أيضاً الرصيد المدين للمورّد (دفعة مقدّمة «لنا عليه»/رصيد
     -- افتتاحيّ) فلا يختفي أيّ طرفٍ له رصيدٌ غير صفريّ من «الذمم». الموجب دائن، السالب مدين (unbucketed موقَّع).
-    HAVING unpaidTotal > 0 OR s.currentBalance <> 0
-    ORDER BY unpaidTotal DESC, s.currentBalance DESC
+    HAVING unpaidTotal > 0 OR currentBalance <> 0
+    ORDER BY unpaidTotal DESC, currentBalance DESC
     LIMIT ${limit}
   `);
   const data = (rows as any)[0] ?? rows;
@@ -95,6 +113,8 @@ export interface SupplierStatementPO {
   total: string;
   paidAmount: string;
   status: string;
+  createdBy: number | null;
+  createdByName: string | null;
 }
 
 export interface SupplierStatementPayment {
@@ -111,10 +131,12 @@ export interface SupplierStatementPayment {
   referenceNumber: string | null;
   exchangeHouseId: number | null;
   exchangeHouseName: string | null;
+  createdBy: number | null;
+  createdByName: string | null;
 }
 
 export interface SupplierStatementResult {
-  supplier: typeof suppliers.$inferSelect;
+  supplier: Pick<typeof suppliers.$inferSelect, "id" | "name" | "phone" | "city" | "paymentTerms" | "currentBalance" | "currentBalanceUsd">;
   purchaseOrders: SupplierStatementPO[];
   payments: SupplierStatementPayment[];
   summary: {
@@ -136,10 +158,20 @@ export interface SupplierStatementResult {
 async function supplierOpeningBalance(supplierId: number, from?: string, branchId?: number) {
   const db = getDb()!;
   const branchCond = branchId ? eq(accountingEntries.branchId, branchId) : undefined;
+  // ب-١ (١٦/٨): نظير العميل — «الافتتاحيّ كما في تاريخ س» = مجموع قيود OPENING **حتى س**،
+  // لأنّ التصحيح صار قيد فرقٍ مؤرَّخاً لا تعديلاً للأصل.
+  const openFromTs = from ? `${from} 00:00:00` : null;
   const openRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
-    .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.supplierId, supplierId), branchCond));
+    .where(
+      and(
+        eq(accountingEntries.entryType, "OPENING"),
+        eq(accountingEntries.supplierId, supplierId),
+        branchCond,
+        openFromTs ? sql`${accountingEntries.entryDate} < ${openFromTs}` : undefined,
+      ),
+    );
   let opening = money(openRow[0]?.v ?? 0);
   if (!from) return opening;
 
@@ -156,6 +188,7 @@ async function supplierOpeningBalance(supplierId: number, from?: string, branchI
   const entriesRow = await db
     .select({
       v: sql<string>`COALESCE(SUM(CASE
+        WHEN ${accountingEntries.purchaseLiabilityAccount} = 'CASH_CLEARING' THEN 0
         WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT'     THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'RETURN'          THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
@@ -184,7 +217,15 @@ export async function getSupplierStatement(
 ): Promise<SupplierStatementResult | null> {
   const db = getDb();
   if (!db) return null;
-  const s = (await db.select().from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0];
+  const s = (await db.select({
+    id: suppliers.id,
+    name: suppliers.name,
+    phone: suppliers.phone,
+    city: suppliers.city,
+    paymentTerms: suppliers.paymentTerms,
+    currentBalance: suppliers.currentBalance,
+    currentBalanceUsd: suppliers.currentBalanceUsd,
+  }).from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0];
   if (!s) return null;
   const { from, to, branchId } = period;
 
@@ -193,9 +234,14 @@ export async function getSupplierStatement(
   // وreconcileSupplierBalances. كان يُدرج DRAFT/SENT/CANCELLED بكامل قيمتها في totalPurchases ودفتر الحركات
   // فلا يتّزن الكشف مع currentBalance بمجرّد وجود أمر ملغى أو مسودّة.
   poConds.push(inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]));
-  if (from) poConds.push(sql`${purchaseOrders.orderDate} >= ${`${from} 00:00:00`}`);
-  if (to) poConds.push(sql`${purchaseOrders.orderDate} < ${`${nextDayStr(to)} 00:00:00`}`);
+  poConds.push(sql`NOT EXISTS (
+    SELECT 1 FROM ${accountingEntries} cashPurchaseEntry
+    WHERE cashPurchaseEntry.purchaseOrderId = ${purchaseOrders.id}
+      AND cashPurchaseEntry.purchaseLiabilityAccount = 'CASH_CLEARING'
+      AND cashPurchaseEntry.entryType = 'PURCHASE'
+  )`);
   if (branchId) poConds.push(eq(purchaseOrders.branchId, branchId));
+  const poActor = alias(users, "supplierStatementPoActor");
   const pos = await db
     .select({
       id: purchaseOrders.id,
@@ -209,36 +255,60 @@ export async function getSupplierStatement(
       // paidAmount هو الحقل التراكمي المرجعي للأمر (والاسترداد يظهر كحركة PAYMENT_IN مستقلة).
       paidAmount: purchaseOrders.paidAmount,
       status: purchaseOrders.status,
+      createdBy: purchaseOrders.createdBy,
+      createdByName: sql<string | null>`COALESCE(${poActor.name}, ${poActor.username})`,
     })
     .from(purchaseOrders)
+    .leftJoin(poActor, eq(poActor.id, purchaseOrders.createdBy))
     .where(and(...poConds))
     .orderBy(desc(purchaseOrders.orderDate));
 
   // نجمع مشتريات كل أمر من GL باستعلام مستقل. الاستعلام الفرعي المرتبط أعاد صفراً
   // في MySQL/Drizzle في بعض الخطط، بينما التجميع الصريح يثبت أن المصدر هو PURCHASE
   // الموثّق ويمنع الرجوع إلى purchaseOrders.total الاسمي.
+  const periodPurchasePredicate = sql`
+    ${accountingEntries.entryType} = 'PURCHASE'
+    ${from ? sql`AND ${accountingEntries.entryDate} >= ${from}` : sql``}
+    ${to ? sql`AND ${accountingEntries.entryDate} <= ${to}` : sql``}
+  `;
   const purchaseTotals = pos.length
     ? await db
         .select({
           purchaseOrderId: accountingEntries.purchaseOrderId,
-          total: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)`,
+          total: sql<string>`COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PURCHASE' THEN ${accountingEntries.amount} ELSE 0 END), 0)`,
+          periodTotal: sql<string>`COALESCE(SUM(CASE WHEN ${periodPurchasePredicate} THEN ${accountingEntries.amount} ELSE 0 END), 0)`,
+          balance: sql<string>`COALESCE(SUM(CASE
+            WHEN ${accountingEntries.entryType} IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ${accountingEntries.amount}
+            WHEN ${accountingEntries.entryType} IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -${accountingEntries.amount}
+            ELSE 0 END), 0)`,
+          recognitionDate: sql<Date | null>`MIN(CASE WHEN ${accountingEntries.entryType} = 'PURCHASE' THEN ${accountingEntries.entryDate} END)`,
         })
         .from(accountingEntries)
         .where(
           and(
-            eq(accountingEntries.entryType, "PURCHASE"),
+            inArray(accountingEntries.entryType, ["PURCHASE", "RETURN", "PAYMENT_IN", "PAYMENT_OUT", "EXCHANGE_SETTLE"]),
             inArray(accountingEntries.purchaseOrderId, pos.map((p) => Number(p.id))),
           ),
         )
         .groupBy(accountingEntries.purchaseOrderId)
     : [];
   const totalByPurchaseOrder = new Map(
-    purchaseTotals.map((row) => [Number(row.purchaseOrderId), String(row.total)]),
+    purchaseTotals.map((row) => [Number(row.purchaseOrderId), row]),
   );
-  const posWithTotals = pos.map((po) => ({
-    ...po,
-    total: totalByPurchaseOrder.get(Number(po.id)) ?? "0.00",
-  }));
+  const posWithTotals = pos.flatMap((po) => {
+    const gl = totalByPurchaseOrder.get(Number(po.id));
+    if (!gl || !gl.recognitionDate) return [];
+    if ((from || to) && money(gl.periodTotal).isZero()) return [];
+    const total = money(gl.total);
+    const openBalance = money(gl.balance).isPositive() ? money(gl.balance) : money(0);
+    return [{
+      ...po,
+      total: toDbMoney(total),
+      periodTotal: toDbMoney(gl.periodTotal),
+      // «مسدّد/مخفّض» = إجمالي PURCHASE ناقص رصيد GL المفتوح؛ يشمل المرتجع والإلغاء الصحيحين.
+      paidAmount: toDbMoney(total.minus(openBalance)),
+    }];
+  });
 
   // كل حركات الدفتر المؤثّرة على AP المورد ضمن الفترة (PAYMENT_OUT/PAYMENT_IN/RETURN).
   // كان السابق PAYMENT_OUT فقط ⇒ استرداد المورد ومرتجع الشراء يغيبان عن الكشف فلا يتّزن
@@ -247,13 +317,21 @@ export async function getSupplierStatement(
   // FI-01: تشمل الحركة شراء الأصول اليتيم (PURCHASE بلا purchaseOrderId) ليَظهر في الكشف ويتّزن
   // الرصيد مع currentBalance؛ شراء PO يُعرَض من purchaseOrders أعلاه ⇒ نَستثنيه هنا (لا ازدواج).
   // EXCHANGE-SETTLE (تدقيق ٢/٧): تسديد الصيرفة يظهر ضمن حركة الفترة أيضاً (متماثلاً مع المُرحَّل).
+  // ب-١ (١٦/٨): OPENING يدخل الحركة **مع وجود فترة فقط** — المُرحَّل صار مقصوراً على ما قبل
+  // `from`، فتصحيحٌ داخل الفترة يجب أن يُعرَض حركةً وإلّا اختلّ اتزان الكشف. بلا فترة يبقى
+  // مستبعَداً لأنّ المُرحَّل يشمله كاملاً (وإلّا احتُسب مرّتين).
+  const openingMoveSql = from
+    ? sql` OR ${accountingEntries.entryType} = 'OPENING'`
+    : sql``;
   const payConds = [
-    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
+    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL)${openingMoveSql})`,
     eq(accountingEntries.supplierId, supplierId),
+    sql`(${accountingEntries.purchaseLiabilityAccount} IS NULL OR ${accountingEntries.purchaseLiabilityAccount} <> 'CASH_CLEARING')`,
   ];
   if (branchId) payConds.push(eq(accountingEntries.branchId, branchId));
   if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
   if (to) payConds.push(sql`${accountingEntries.entryDate} <= ${to}`);
+  const paymentActor = alias(users, "supplierStatementPaymentActor");
   const payments = await db
     .select({
       id: accountingEntries.id,
@@ -268,18 +346,21 @@ export async function getSupplierStatement(
       referenceNumber: receipts.referenceNumber,
       exchangeHouseId: exchangeTransactions.exchangeHouseId,
       exchangeHouseName: exchangeHouses.name,
+      createdBy: sql<number | null>`COALESCE(${accountingEntries.createdBy}, ${receipts.createdBy})`,
+      createdByName: sql<string | null>`COALESCE(${accountingEntries.createdByNameSnapshot}, ${paymentActor.name}, ${paymentActor.username})`,
     })
     .from(accountingEntries)
     .leftJoin(receipts, eq(receipts.id, accountingEntries.receiptId))
     .leftJoin(exchangeTransactions, eq(exchangeTransactions.receiptId, receipts.id))
     .leftJoin(exchangeHouses, eq(exchangeHouses.id, exchangeTransactions.exchangeHouseId))
+    .leftJoin(paymentActor, eq(paymentActor.id, sql`COALESCE(${accountingEntries.createdBy}, ${receipts.createdBy})`))
     .where(and(...payConds))
     .orderBy(asc(accountingEntries.entryDate), asc(accountingEntries.id));
 
   const openingBalance = await supplierOpeningBalance(supplierId, from, branchId);
 
   // أموال بدقّة decimal.js (§٥).
-  const totalPurchases = sumMoney(posWithTotals.map((p) => p.total ?? 0));
+  const totalPurchases = sumMoney(posWithTotals.map((p) => p.periodTotal ?? 0));
   const totalPaid = sumMoney(posWithTotals.map((p) => p.paidAmount ?? 0));
   const periodEntryEffect = payments.reduce((acc, p) => {
     const amount = money(p.amount);
@@ -299,6 +380,8 @@ export async function getSupplierStatement(
       total: String(p.total),
       paidAmount: String(p.paidAmount),
       status: p.status,
+      createdBy: p.createdBy ? Number(p.createdBy) : null,
+      createdByName: p.createdByName,
     })),
     payments: payments.map((p) => ({
       id: Number(p.id),
@@ -315,6 +398,8 @@ export async function getSupplierStatement(
       referenceNumber: p.referenceNumber,
       exchangeHouseId: p.exchangeHouseId ? Number(p.exchangeHouseId) : null,
       exchangeHouseName: p.exchangeHouseName,
+      createdBy: p.createdBy ? Number(p.createdBy) : null,
+      createdByName: p.createdByName,
     })),
     summary: {
       totalPurchases: toDbMoney(totalPurchases),

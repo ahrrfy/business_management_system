@@ -8,17 +8,21 @@
 //   types         — عقد الشراء (PurchaseLineInput/CreatePurchaseOrderInput/SettlePurchaseUsdDirectInput/
 //                    ReceiveLineInput/ReceivePurchaseInput).
 //   internal      — أدوات مشتركة خاصة (حارس عزل الفرع assertPurchaseBranch) — غير مُصدَّرة من هذا البرميل.
-//   order         — createPurchaseOrder + cancelPurchaseOrder: دورة حياة أمر الشراء قبل الاستلام.
+//   order         — createPurchaseOrder + updatePurchaseOrder + cancelPurchaseOrder: دورة حياة أمر
+//                    الشراء قبل الاستلام (الحساب مشترك في computePurchaseDocument فلا ينجرف مسارٌ عن آخر).
 //   receive       — receivePurchase + assertUniqueReceiveLines + cumulativePurchaseTax: الاستلام
 //                    الجزئي/الكامل بتكلفة WAVG المُرسمَلة (landed cost: الشحن/الكمرك) وقيد AP.
 //   usdSettlement — settlePurchaseUsdDirect: تسديد فاتورة مورد دولارية مباشرةً (بطاقة/تحويل/محفظة).
 export type {
   PurchaseLineInput,
+  PurchaseDocumentInput,
   CreatePurchaseOrderInput,
+  UpdatePurchaseOrderInput,
   SettlePurchaseUsdDirectInput,
   ReceiveLineInput,
   ReceivePurchaseInput,
+  PurchaseSettlementType,
 } from "./purchase/types";
-export { createPurchaseOrder, cancelPurchaseOrder } from "./purchase/order";
+export { createPurchaseOrder, updatePurchaseOrder, confirmPurchaseOrder, cancelPurchaseOrder } from "./purchase/order";
 export { assertUniqueReceiveLines, cumulativePurchaseTax, receivePurchase } from "./purchase/receive";
 export { settlePurchaseUsdDirect } from "./purchase/usdSettlement";

@@ -48,8 +48,8 @@ async function seedBase() {
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0.00" });
 }
 
-async function openShift(branchId = 1, userId = 1): Promise<number> {
-  const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN" });
+async function openShift(branchId = 1, userId = 1, shiftType: "RETAIL" | "RECEPTION" = "RETAIL"): Promise<number> {
+  const r = await db().insert(s.shifts).values({ branchId, userId, openingBalance: "0", status: "OPEN", shiftType });
   return insertId(r);
 }
 
@@ -64,7 +64,7 @@ beforeEach(async () => {
 
 describe("قفل الفترة — السندات (تدقيق ١٧/٧)", () => {
   it("إنشاء سند بتاريخ رجعيّ داخل فترة مُقفَلة يُرفض FORBIDDEN", async () => {
-    await openShift();
+    await openShift(1, 1, "RECEPTION");
     await lock("2020-12-31");
     await expect(
       createVoucher(
@@ -79,7 +79,7 @@ describe("قفل الفترة — السندات (تدقيق ١٧/٧)", () => {
   });
 
   it("سند بتاريخ اليوم (فترة مفتوحة) يمرّ رغم قفلٍ قديم — الإصلاح موجَّه لا يكسر التشغيل", async () => {
-    await openShift();
+    await openShift(1, 1, "RECEPTION");
     await lock("2020-12-31");
     const r = await createVoucher(
       {
@@ -144,7 +144,7 @@ describe("إهلاك الأصول — صمّام الشهر المستقبليّ
 
 describe("أمر الشغل — العربون لا يتجاوز سعر البيع (تدقيق ١٧/٧)", () => {
   it("عربون أكبر من سعر البيع الإجمالي يُرفض عند الإنشاء", async () => {
-    await openShift();
+    await openShift(1, 1, "RECEPTION");
     await expect(
       createWorkOrder(
         { branchId: 1, title: "طباعة", quantity: 1, salePrice: "100.00", deposit: "150.00", paymentMethod: "CASH" } as any,
@@ -154,7 +154,7 @@ describe("أمر الشغل — العربون لا يتجاوز سعر البي
   });
 
   it("عربون ضمن سعر البيع يُقبل", async () => {
-    await openShift();
+    await openShift(1, 1, "RECEPTION");
     const r = await createWorkOrder(
       { branchId: 1, title: "طباعة", quantity: 1, salePrice: "100.00", deposit: "40.00", paymentMethod: "CASH" } as any,
       admin,

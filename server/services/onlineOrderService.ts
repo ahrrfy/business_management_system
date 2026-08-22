@@ -55,6 +55,88 @@ export interface OnlineOrderLineInput {
   expectedUnitPrice?: string | null;
 }
 
+export const MAX_ONLINE_ORDER_DISTINCT_UNITS = 30;
+export const MAX_ONLINE_ORDER_QUANTITY_PER_UNIT = 999;
+export const MAX_ONLINE_ORDER_TOTAL_QUANTITY = 10_000;
+
+function normalizeExpectedUnitPrice(value: string | null | undefined): string | null | undefined {
+  if (value == null) return value;
+  try {
+    if (!/^\d{1,15}(?:\.\d{1,2})?$/.test(value)) throw new Error("invalid price shape");
+    const parsed = money(value);
+    if (!parsed.isFinite() || parsed.lt(0) || parsed.decimalPlaces() > 2) throw new Error("invalid price");
+    return toDbMoney(parsed);
+  } catch {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "السعر المتوقع لأحد المنتجات غير صحيح" });
+  }
+}
+
+/**
+ * عقد سلة علني موحّد للـquote والإنشاء: يدمج تكرار productUnitId قبل أي SQL، ويبقي كل لون
+ * (وحدة/متغيّر مختلف) سطراً مستقلاً. الحدود تُطبّق بعد الدمج كي لا تتجاوزها دفعات مكررة.
+ */
+export function normalizeOnlineOrderLines(
+  lines: ReadonlyArray<Pick<OnlineOrderLineInput, "productUnitId" | "quantity" | "expectedUnitPrice">>,
+): OnlineOrderLineInput[] {
+  if (!lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "السلة فارغة" });
+  const normalized: OnlineOrderLineInput[] = [];
+  const byUnit = new Map<number, OnlineOrderLineInput>();
+  let totalQuantity = 0;
+
+  for (const line of lines) {
+    const productUnitId = line.productUnitId;
+    const quantity = line.quantity;
+    if (
+      !Number.isSafeInteger(productUnitId) || productUnitId <= 0 ||
+      !Number.isSafeInteger(quantity) || quantity <= 0
+    ) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية أو منتج غير صحيح" });
+    }
+    const expectedUnitPrice = normalizeExpectedUnitPrice(line.expectedUnitPrice);
+    const current = byUnit.get(productUnitId);
+    if (!current) {
+      if (byUnit.size >= MAX_ONLINE_ORDER_DISTINCT_UNITS) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `السلة تقبل ${MAX_ONLINE_ORDER_DISTINCT_UNITS} وحدة بيع مختلفة كحد أقصى`,
+        });
+      }
+      const added = { productUnitId, quantity, expectedUnitPrice };
+      byUnit.set(productUnitId, added);
+      normalized.push(added);
+    } else {
+      if (
+        current.expectedUnitPrice != null && expectedUnitPrice != null &&
+        !money(current.expectedUnitPrice).eq(money(expectedUnitPrice))
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "السعر المتوقع متضارب لنفس المنتج — حدّث السلة",
+        });
+      }
+      current.quantity += quantity;
+      if (current.expectedUnitPrice == null && expectedUnitPrice != null) {
+        current.expectedUnitPrice = expectedUnitPrice;
+      }
+    }
+    const mergedQuantity = byUnit.get(productUnitId)!.quantity;
+    if (mergedQuantity > MAX_ONLINE_ORDER_QUANTITY_PER_UNIT) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الحد الأقصى لكمية المنتج الواحد ${MAX_ONLINE_ORDER_QUANTITY_PER_UNIT}`,
+      });
+    }
+    totalQuantity += quantity;
+    if (totalQuantity > MAX_ONLINE_ORDER_TOTAL_QUANTITY) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الحد الأقصى لمجموع كميات السلة ${MAX_ONLINE_ORDER_TOTAL_QUANTITY}`,
+      });
+    }
+  }
+  return normalized;
+}
+
 export interface CreateOnlineOrderInput {
   branchId?: number | null;
   customerName: string;
@@ -73,6 +155,8 @@ export interface CreateOnlineOrderInput {
 export interface CreateOnlineOrderResult {
   orderId: number;
   orderNumber: string;
+  /** لقطة انتهاء حجز المخزون، تُحسب مرةً واحدة بساعة قاعدة البيانات. */
+  reservationExpiresAt: Date;
   /** The server-resolved storefront branch; never supplied by the browser. */
   branchId: number;
   subtotal: string;
@@ -122,6 +206,7 @@ async function loadOwnedReplay(
       total: onlineOrders.total,
       governorate: onlineOrders.governorate,
       shippingAddress: onlineOrders.shippingAddress,
+      reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(COALESCE(\`onlineOrders\`.\`reservationExpiresAt\`, DATE_ADD(\`onlineOrders\`.\`orderDate\`, INTERVAL 24 HOUR))) * 1000)`,
     })
     .from(onlineOrders)
     .where(eq(onlineOrders.clientRequestId, input.clientRequestId))
@@ -190,6 +275,9 @@ async function loadOwnedReplay(
   return {
     orderId: Number(existing.id),
     orderNumber: existing.orderNumber,
+    reservationExpiresAt: existing.reservationExpiryMs != null ? new Date(Number(existing.reservationExpiryMs)) : (() => {
+      throw new Error("Existing online order is missing its reservation expiry snapshot");
+    })(),
     branchId: Number(existing.branchId),
     subtotal: String(existing.subtotal),
     deliveryFee: String(existing.shippingCost),
@@ -381,13 +469,13 @@ function totalOnlineOrderQuote(
 }
 
 export async function quoteOnlineOrder(input: OnlineOrderQuoteInput): Promise<OnlineOrderQuoteResult> {
-  if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أضف صنفاً واحداً على الأقل" });
+  const normalizedLines = normalizeOnlineOrderLines(input.lines);
   if (!governorateById(input.governorate)) throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير صحيحة" });
   return withTx(async (tx) => {
     const context = await requireStorefrontContext(tx, { requireOpen: true });
     const settings = (await tx.select({ freeShippingThreshold: storeSettingsTable.freeShippingThreshold })
       .from(storeSettingsTable).where(eq(storeSettingsTable.id, 1)).limit(1))[0];
-    const items = await priceOnlineOrderLines(tx, context.branchId, input.lines, { lock: false });
+    const items = await priceOnlineOrderLines(tx, context.branchId, normalizedLines, { lock: false });
     const totals = totalOnlineOrderQuote(items, input.governorate, settings?.freeShippingThreshold);
     return {
       lines: items.map((item) => ({
@@ -410,17 +498,14 @@ export async function createOnlineOrder(
   return retryOnDup(() => createOnlineOrderAttempt(input));
 }
 
-async function createOnlineOrderAttempt(
-  input: CreateOnlineOrderInput,
-): Promise<CreateOnlineOrderResult> {
+function normalizeOwnedReplayIdentity(input: CreateOnlineOrderInput) {
+  const normalizedLines = normalizeOnlineOrderLines(input.lines);
   const gov = governorateById(input.governorate);
   if (!gov)
     throw new TRPCError({
       code: "BAD_REQUEST",
       message: "المحافظة غير معروفة",
     });
-  if (!input.lines.length)
-    throw new TRPCError({ code: "BAD_REQUEST", message: "السلة فارغة" });
   const name = input.customerName.trim();
   const phone = normalizeStorePhone(input.customerPhone);
   if (!name)
@@ -431,27 +516,50 @@ async function createOnlineOrderAttempt(
   if (!address)
     throw new TRPCError({ code: "BAD_REQUEST", message: "العنوان مطلوب" });
   const requestedLineQuantities = new Map<number, number>();
-  for (const line of input.lines) {
-    const qty = Math.floor(line.quantity);
-    if (
-      !Number.isSafeInteger(line.productUnitId) ||
-      !Number.isFinite(qty) ||
-      qty <= 0
-    ) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "كمية أو منتج غير صحيح",
-      });
-    }
-    requestedLineQuantities.set(
-      line.productUnitId,
-      (requestedLineQuantities.get(line.productUnitId) ?? 0) + qty,
-    );
+  for (const line of normalizedLines) {
+    requestedLineQuantities.set(line.productUnitId, line.quantity);
   }
   const requestedShippingAddress =
     input.notes && input.notes.trim()
       ? `${address}\nملاحظة: ${input.notes.trim()}`
       : address;
+  return {
+    normalizedLines,
+    name,
+    phone,
+    requestedLineQuantities,
+    requestedShippingAddress,
+  };
+}
+
+/**
+ * فحص replay علني ضيق يسبق Turnstile أحادي الاستعمال. يعيد نجاحاً فقط بعد مطابقة الهاتف
+ * والمحافظة والعنوان والبنود؛ اصطدام مفتاح لطرف آخر يفشل بلا كشف أي حقل من طلبه.
+ */
+export async function findOwnedOnlineOrderReplay(
+  input: CreateOnlineOrderInput,
+): Promise<CreateOnlineOrderResult | null> {
+  if (!input.clientRequestId) return null;
+  const identity = normalizeOwnedReplayIdentity(input);
+  return withTx((tx) => loadOwnedReplay(
+    tx,
+    input,
+    identity.phone,
+    identity.requestedShippingAddress,
+    identity.requestedLineQuantities,
+  ));
+}
+
+async function createOnlineOrderAttempt(
+  input: CreateOnlineOrderInput,
+): Promise<CreateOnlineOrderResult> {
+  const {
+    normalizedLines,
+    name,
+    phone,
+    requestedLineQuantities,
+    requestedShippingAddress,
+  } = normalizeOwnedReplayIdentity(input);
   return withTx(async (tx) => {
     // ① replay يسبق حالة المتجر/الفرع: نجاحٌ مُلتزَم سابقاً يبقى قابلاً للإعادة حتى
     // لو أُغلق المتجر أو تغيّر فرع التنفيذ بعده. الاستعلام معزول بهاتف صاحب الطلب؛
@@ -486,7 +594,7 @@ async function createOnlineOrderAttempt(
 
     // ② لقطة تسعير أولية لبناء متطلبات الأقفال. التثبيت المالي الوحيد أدناه يعيد
     // تشغيل المحرك نفسه بقراءة current مقفلة بعد قفل العميل والوحدات.
-    const items = await priceOnlineOrderLines(tx, branchId, input.lines, { lock: false });
+    const items = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: false });
     const requestedBaseByVariant = new Map<number, number>();
 
     // أول قفل أعمال مشترك بعد تسعير السلة: العميل، اتساقاً مع POS/createSale.
@@ -498,7 +606,7 @@ async function createOnlineOrderAttempt(
     const unitIds = Array.from(new Set(items.map((item) => item.productUnitId))).sort((a, b) => a - b);
     const currentUnits = await lockProductUnitsForOnlineAllocation(tx, unitIds);
     const currentFactorByUnit = new Map(currentUnits.map((unit) => [unit.id, unit.conversionFactor]));
-    const currentItems = await priceOnlineOrderLines(tx, branchId, input.lines, { lock: true });
+    const currentItems = await priceOnlineOrderLines(tx, branchId, normalizedLines, { lock: true });
     requestedBaseByVariant.clear();
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
@@ -527,7 +635,7 @@ async function createOnlineOrderAttempt(
       requestedBaseByVariant.set(current.variantId, requestedBase);
     }
     for (let index = 0; index < items.length; index++) {
-      const expected = input.lines[index]?.expectedUnitPrice;
+      const expected = normalizedLines[index]?.expectedUnitPrice;
       if (expected != null && !round2(expected).eq(items[index].unitPrice)) {
         throw new TRPCError({
           code: "CONFLICT",
@@ -670,10 +778,29 @@ async function createOnlineOrderAttempt(
     });
     const orderId = extractInsertId(insOrder);
     const orderNumber = `ORD-${100000 + orderId}`;
+    // تُثبَّت داخل معاملة الإنشاء بساعة MySQL؛ لا يظهر طلب جديد بلا مهلة.
+    await tx.execute(sql`
+      UPDATE onlineOrders
+      SET reservationExpiresAt = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)
+      WHERE id = ${orderId}
+    `);
     await tx
       .update(onlineOrders)
       .set({ orderNumber })
       .where(eq(onlineOrders.id, orderId));
+    const persistedExpiry = (
+      await tx
+        .select({
+          reservationExpiryMs: sql<number | null>`ROUND(UNIX_TIMESTAMP(\`onlineOrders\`.\`reservationExpiresAt\`) * 1000)`,
+        })
+        .from(onlineOrders)
+        .where(eq(onlineOrders.id, orderId))
+        .limit(1)
+    )[0]?.reservationExpiryMs;
+    if (persistedExpiry == null) {
+      throw new Error("Online order reservation expiry snapshot was not persisted");
+    }
+    const reservationExpiresAt = new Date(Number(persistedExpiry));
 
     // ⑤ بنود الطلب (لقطة السعر الخادمي).
     for (const it of items) {
@@ -691,6 +818,7 @@ async function createOnlineOrderAttempt(
     return {
       orderId,
       orderNumber,
+      reservationExpiresAt,
       branchId,
       subtotal: toDbMoney(subtotal),
       deliveryFee: toDbMoney(deliveryFee),

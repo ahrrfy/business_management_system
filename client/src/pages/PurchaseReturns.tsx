@@ -70,7 +70,7 @@ export default function PurchaseReturns() {
   const total = list.data?.total ?? 0;
 
   // amount مخزَّن سالباً (اتفاقية RETURN) ⇒ القيمة المُرتجَعة = القيمة المطلقة، عبر decimal.js (لا parseFloat).
-  const returned = (amount: string) => D(amount).neg().toFixed(2);
+  const returned = (amount: string) => D(amount).abs().toFixed(2);
   // notes قد يكون مفتاح idempotency تقنيّاً (purchaseReturn:...) لا ملاحظة مستخدم ⇒ يُخفى.
   const noteText = (n: string | null | undefined) =>
     n && !n.startsWith("purchaseReturn:") ? n : "—";
@@ -90,7 +90,7 @@ export default function PurchaseReturns() {
   function printReturn(r: (typeof visibleRows)[number]) {
     const ok = printReportDoc({
       title: "مستند مرتجع شراء",
-      docNum: `#${r.id}`,
+      docNum: r.returnNumber ?? `#${r.id}`,
       docDate: fmtDate(r.entryDate),
       headerExtra: [
         { label: "المورد", value: supplierName(r.supplierId) },
@@ -101,6 +101,7 @@ export default function PurchaseReturns() {
           title: "تفاصيل المرتجع",
           fields: [
             { label: "أمر الشراء المرجعي", value: r.purchaseOrderId ? `#${r.purchaseOrderId}` : "بلا مرجع" },
+            { label: "المنفّذ", value: r.createdByName ?? (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق") },
             { label: "الملاحظات", value: noteText(r.notes) },
           ],
         },
@@ -175,11 +176,13 @@ export default function PurchaseReturns() {
                 ),
               columns: [
                 { key: "id", header: "رقم القيد" },
+                { key: "returnNumber", header: "رقم المرتجع", map: (r) => r.returnNumber ?? `#${r.id}` },
                 { key: "entryDate", header: "التاريخ" },
                 { key: "supplier", header: "المورد", map: (r) => supplierName(r.supplierId) },
                 { key: "branch", header: "الفرع", map: (r) => branchName(r.branchId) },
                 { key: "purchaseOrderId", header: "أمر الشراء", map: (r) => r.purchaseOrderId ?? "" },
                 { key: "returned", header: "القيمة المرتجعة", map: (r) => Number(returned(r.amount)) },
+                { key: "createdByName", header: "المنفذ", map: (r) => r.createdByName ?? (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق") },
                 { key: "notes", header: "ملاحظات", map: (r) => noteText(r.notes) },
               ],
             }}
@@ -191,12 +194,13 @@ export default function PurchaseReturns() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
-                <th className="p-2">رقم القيد</th>
+                <th className="p-2">رقم المرتجع</th>
                 <th className="p-2">التاريخ</th>
                 <th className="p-2">المورد</th>
                 <th className="p-2">الفرع</th>
                 <th className="p-2 text-center">أمر الشراء</th>
                 <th className="p-2 text-right">القيمة المرتجعة</th>
+                <th className="p-2">المنفّذ</th>
                 <th className="p-2">ملاحظات</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -204,7 +208,9 @@ export default function PurchaseReturns() {
             <tbody>
               {visibleRows.map((r) => (
                 <tr key={r.id} className="border-t">
-                  <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
+                  <td className="p-2 tabular-nums" dir="ltr">
+                    {r.purchaseReturnId ? <Link className="font-semibold text-primary hover:underline" href={`/purchase-returns/${r.purchaseReturnId}`}>{r.returnNumber}</Link> : `#${r.id}`}
+                  </td>
                   <td className="p-2 text-xs" dir="ltr">
                     {/* entryDate حقل تاريخ بلا وقت ⇒ نعرض التاريخ فقط (لا timeStyle مُختلَق). */}
                     {fmtDate(r.entryDate)}
@@ -213,6 +219,7 @@ export default function PurchaseReturns() {
                   <td className="p-2">{branchName(r.branchId)}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{r.purchaseOrderId ? `#${r.purchaseOrderId}` : "—"}</td>
                   <td className="p-2 text-right font-semibold tabular-nums" dir="ltr">{fmt(returned(r.amount))}</td>
+                  <td className="p-2 text-xs">{r.createdByName ?? (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق")}</td>
                   <td className="p-2 text-xs text-muted-foreground">{noteText(r.notes)}</td>
                   <td className="p-2 text-center">
                     <RowActions
@@ -242,8 +249,8 @@ export default function PurchaseReturns() {
                         {
                           key: "po",
                           kind: "view",
-                          label: "فتح أمر الشراء",
-                          href: `/purchases/${r.purchaseOrderId}/receive`,
+                          href: r.purchaseReturnId ? `/purchase-returns/${r.purchaseReturnId}` : `/purchases/${r.purchaseOrderId}/receive`,
+                          label: r.purchaseReturnId ? "فتح مستند المرتجع" : "فتح أمر الشراء",
                           hidden: r.purchaseOrderId == null,
                           gate: { module: "purchases", level: "READ" },
                         },
@@ -263,14 +270,14 @@ export default function PurchaseReturns() {
               {/* 403/فشل الخادم ⇒ خطأ صريح (نمط Vouchers) لا رسالة «لا مرتجعات» مضلِّلة. */}
               {list.isError && !list.isLoading && (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
                   </td>
                 </tr>
               )}
               {!list.isLoading && !list.isError && visibleRows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={9} className="p-6 text-center text-muted-foreground">
                     {total === 0 && !f.supplierId && !f.branchId && !f.from && !f.to && !dq.trim()
                       ? "لا مرتجعات مشتريات بعد."
                       : "لا مرتجعات مطابقة. غيّر البحث أو الفلتر."}
@@ -279,7 +286,7 @@ export default function PurchaseReturns() {
               )}
               {list.isLoading && (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td>
+                  <td colSpan={9} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td>
                 </tr>
               )}
             </tbody>

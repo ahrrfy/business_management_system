@@ -20,7 +20,11 @@ import { Link, useLocation, useSearch } from "wouter";
 import { Search, X as XIcon } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
-import { invoiceStatusLabel, priceTierLabel, sourceTypeLabel } from "@/lib/labels";
+import { priceTierLabel, sourceTypeLabel } from "@/lib/labels";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
+import { notify } from "@/lib/notify";
+import { reservePrintWindow, releaseReservedPrintWindow } from "@/lib/printing/brand";
+import { usePrintAudit } from "@/hooks/usePrintAudit";
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
 const ymd = (d: Date) =>
@@ -48,14 +52,8 @@ const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string }
   { label: "الكل", range: () => ({ from: "", to: "" }) },
 ];
 
-const STATUS_LABEL: Record<string, string> = {
-  PENDING: "معلّقة",
-  PARTIALLY_PAID: "مدفوعة جزئياً",
-  PAID: "مدفوعة",
-  CANCELLED: "ملغاة",
-  RETURNED: "مرتجعة",
-  CONFIRMED: "مؤكّدة",
-};
+// تعريب حالة الفاتورة من `@shared/invoiceStatus` وحده — كان قاموساً محلّياً بلا `SUPERSEDED`
+// يسبق `invoiceStatusLabel` في السلسلة، فيَحجب المصدر المركزيّ ويُخالف مسرده (PENDING).
 /** حالة سند القبض/الصرف كما يعيدها كشف الحساب (COMPLETED/REVERSED فقط بعد فلترة الخادم). */
 const RECEIPT_STATUS_LABEL: Record<string, string> = {
   COMPLETED: "مكتملة",
@@ -71,6 +69,7 @@ const STATUS_CLS: Record<string, string> = {
 };
 const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
+  COD: "تحصيل مندوب", RETURN: "مرتجع", OPENING_ADJ: "تصحيح افتتاحي",
 };
 
 export default function CustomerStatement() {
@@ -102,6 +101,7 @@ export default function CustomerStatement() {
     { customerId: customerId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!customerId }
   );
+  const printAudit = usePrintAudit();
   const shownInvoices = useMemo(() => (stmt.data?.invoices ?? []).filter((i) => {
     const remaining = D(i.total).minus(D(i.paidAmount)).minus(D(i.returnedTotal ?? "0"));
     const active = i.status !== "CANCELLED" && i.status !== "RETURNED";
@@ -119,15 +119,22 @@ export default function CustomerStatement() {
       t: new Date(i.invoiceDate).getTime(),
       date: fmtDate(i.invoiceDate),
       ref: i.invoiceNumber, description: "فاتورة مبيعات",
+      actor: i.createdByName ?? (i.createdBy ? `مستخدم #${i.createdBy}` : "غير موثق"),
       debit: i.total as string | null, credit: null as string | null,
     }));
     const payTxs = d.payments.map((p) => ({
       t: new Date(p.createdAt).getTime(),
       date: fmtDate(p.createdAt),
       ref: p.voucherNumber ?? "دفعة",
-      description: p.isStandalone
+      description:
+        // ب-١: قيد تصحيح الرصيد الافتتاحيّ يظهر حركةً داخل فترته (isStandalone صحيح لكنه ليس
+        // سنداً) — بلا هذا الفرع يُعرَض «سند صرف مستقل» فيبحث المحاسب عن سندٍ لا وجود له.
+        p.paymentMethod === "OPENING_ADJ"
+        ? "تصحيح رصيد افتتاحي"
+        : p.isStandalone
         ? (p.direction === "IN" ? "سند قبض مستقل" : "سند صرف مستقل")
         : (p.direction === "IN" ? "دفعة وارد" : "استرداد"),
+      actor: p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق"),
       // الاتجاه المحاسبي: IN ينقص ذمة العميل (دائن)، OUT (استرداد/صرف له) يزيدها (مدين).
       debit: p.direction === "OUT" ? (p.amount as string | null) : null,
       credit: p.direction === "IN" ? (p.amount as string | null) : null,
@@ -173,11 +180,12 @@ export default function CustomerStatement() {
       asOfDate: to || undefined,
     });
     const tsv = formatTableAsTSV(
-      ["التاريخ", "المرجع", "البيان", "مدين", "دائن", "الرصيد"],
+      ["التاريخ", "المرجع", "البيان", "المنفذ", "مدين", "دائن", "الرصيد"],
       ledger.txs.map((r) => ({
         "التاريخ": r.date,
         "المرجع": r.ref,
         "البيان": r.description,
+        "المنفذ": r.actor,
         "مدين": r.debit == null ? "" : r.debit,
         "دائن": r.credit == null ? "" : r.credit,
         "الرصيد": r.balance,
@@ -187,22 +195,33 @@ export default function CustomerStatement() {
   }, [stmt.data, ledger, from, to]);
 
   // يفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF») اعتماداً على دفتر الحركات المُجمَّع.
-  const printStatement = () => {
+  const printStatement = async () => {
     if (!stmt.data || !ledger) return;
+    if (!reservePrintWindow()) return notify.err("تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة");
     const d = stmt.data;
     const { txs, totDebit, totCredit, closingBalance } = ledger;
-    printCustomerStmt({
-      customerName: d.customer.name, customerPhone: d.customer.phone ?? undefined,
-      fromDate: from ? fmtDate(new Date(`${from}T00:00:00`)) : undefined,
-      toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
-      transactions: txs,
-      // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
-      totalDebit: totDebit, totalCredit: totCredit,
-      openingBalance: from ? d.summary.openingBalance : undefined,
-      currentBalance: d.summary.currentBalance,
-      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
-      closingBalance: from ? closingBalance : d.summary.currentBalance,
-    });
+    try {
+      await printAudit.run({
+        documentType: "CUSTOMER_STATEMENT",
+        documentId: Number(d.customer.id),
+        channel: "PDF",
+        open: (audit) => printCustomerStmt({
+          customerName: d.customer.name, customerPhone: d.customer.phone ?? undefined,
+          fromDate: from ? fmtDate(new Date(`${from}T00:00:00`)) : undefined,
+          toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
+          transactions: txs,
+          totalDebit: totDebit, totalCredit: totCredit,
+          openingBalance: from ? d.summary.openingBalance : undefined,
+          currentBalance: d.summary.currentBalance,
+          closingBalance: from ? closingBalance : d.summary.currentBalance,
+          printedByName: audit.actorName,
+          printRequestedAt: fmtDateTime(audit.requestedAt),
+        }),
+      });
+    } catch (error) {
+      releaseReservedPrintWindow();
+      notify.err(error instanceof Error ? error.message : "تعذّر تسجيل طلب الطباعة");
+    }
   };
 
   return (
@@ -214,7 +233,7 @@ export default function CustomerStatement() {
         actions={
           <>
             {stmt.data && (
-              <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
+              <Button variant="outline" size="sm" disabled={printAudit.pending} onClick={() => void printStatement()}>طباعة / PDF الكشف</Button>
             )}
             {stmt.data && (
               <Button
@@ -228,6 +247,7 @@ export default function CustomerStatement() {
                       { key: "date", header: "التاريخ" },
                       { key: "ref", header: "المرجع" },
                       { key: "description", header: "البيان" },
+                      { key: "actor", header: "المنفذ" },
                       { key: "debit", header: "مدين", map: (r) => (r.debit == null ? 0 : Number(r.debit)) },
                       { key: "credit", header: "دائن", map: (r) => (r.credit == null ? 0 : Number(r.credit)) },
                       { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
@@ -373,6 +393,7 @@ export default function CustomerStatement() {
                     <th className="p-2 text-right">مُرتجَع</th>
                     <th className="p-2 text-right">المتبقّي</th>
                     <th className="p-2">الحالة</th>
+                    <th className="p-2">المنفذ</th>
                     <th className="p-2 text-center">فتح</th>
                   </tr>
                 </thead>
@@ -384,7 +405,7 @@ export default function CustomerStatement() {
                       <td className="p-2 text-xs" dir="ltr">{from}</td>
                       <td className="p-2 text-xs text-muted-foreground" colSpan={5}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
                       <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
-                      <td className="p-2" colSpan={2} />
+                      <td className="p-2" colSpan={3} />
                     </tr>
                   )}
                   {shownInvoices.map((i) => {
@@ -407,10 +428,11 @@ export default function CustomerStatement() {
                         <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
                         <td className="p-2">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[i.status] ?? "bg-muted"}`}>
-                            {STATUS_LABEL[i.status] ?? invoiceStatusLabel(i.status)}
+                            {invoiceStatusLabel(i.status)}
                           </span>
                           {depositDue && <span className="mt-1 block w-fit rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — الباقي مستحق</span>}
                         </td>
+                        <td className="p-2 text-xs">{i.createdByName ?? (i.createdBy ? `مستخدم #${i.createdBy}` : "غير موثق")}</td>
                         <td className="p-2 text-center">
                           <Link href={`/invoices/${i.id}`}>
                             <Button variant="outline" size="sm">فتح</Button>
@@ -420,7 +442,7 @@ export default function CustomerStatement() {
                     );
                   })}
                   {shownInvoices.length === 0 && (
-                    <TableEmptyRow colSpan={10} message="لا فواتير مطابقة لهذا الفلتر." />
+                    <TableEmptyRow colSpan={11} message="لا فواتير مطابقة لهذا الفلتر." />
                   )}
                 </tbody>
               </table>
@@ -445,6 +467,7 @@ export default function CustomerStatement() {
                     <th className="p-2">طريقة الدفع</th>
                     <th className="p-2 text-right">المبلغ</th>
                     <th className="p-2">الحالة</th>
+                    <th className="p-2">المنفذ</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -471,10 +494,11 @@ export default function CustomerStatement() {
                       <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
                       {/* حالة السند (receipts.status): COMPLETED/REVERSED — ليست حالة فاتورة فلا تصلح invoiceStatusLabel. */}
                       <td className="p-2 text-xs">{RECEIPT_STATUS_LABEL[p.status] ?? p.status}</td>
+                      <td className="p-2 text-xs">{p.createdByName ?? (p.createdBy ? `مستخدم #${p.createdBy}` : "غير موثق")}</td>
                     </tr>
                   ))}
                   {stmt.data.payments.length === 0 && (
-                    <TableEmptyRow colSpan={6} message="لا دفعات." />
+                    <TableEmptyRow colSpan={7} message="لا دفعات." />
                   )}
                 </tbody>
               </table>

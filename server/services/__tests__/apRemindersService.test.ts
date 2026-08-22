@@ -14,6 +14,7 @@ import {
   logReminderSent,
   logReminderSkipped,
 } from "../apRemindersService";
+import { money, toDbMoney } from "../money";
 
 function db() {
   const d = getDb();
@@ -33,7 +34,8 @@ async function makeSupplierWithOverduePO(opts: {
   total: string;
   paid?: string;
   /** الرصيد الجاري إن اختلف عن total — لمحاكاة تسديد مستقلّ (يخفّض الرصيد لا paidAmount)
-   *  أو رصيد افتتاحي مدين (المورد يدين لنا). الافتراضي = total. */
+   *  أو رصيد افتتاحي مدين (المورد يدين لنا). يُثبت أيضاً بقيدٍ فرعي لأن تقارير الفرع لا تعتمد
+   *  cache المورد العالمي. الافتراضي = total. */
   currentBalance?: string;
 }): Promise<void> {
   const d = db();
@@ -79,6 +81,19 @@ async function makeSupplierWithOverduePO(opts: {
       dedupeKey: `TEST:AP-REMINDER:PAYMENT:${opts.poId}`,
     });
   }
+  const linkedBalance = money(opts.total).minus(opts.paid ?? "0");
+  const desiredBalance = money(opts.currentBalance ?? opts.total);
+  const balanceAdjustment = desiredBalance.minus(linkedBalance);
+  if (!balanceAdjustment.isZero()) {
+    await d.insert(s.accountingEntries).values({
+      entryType: balanceAdjustment.isPositive() ? "OPENING" : "PAYMENT_OUT",
+      branchId,
+      supplierId: opts.supplierId,
+      amount: toDbMoney(balanceAdjustment.abs()),
+      entryDate: opts.orderDate,
+      dedupeKey: `TEST:AP-REMINDER:BALANCE:${opts.poId}`,
+    });
+  }
 }
 
 /** تاريخ منذ N يوماً (YYYY-MM-DD)، UTC. */
@@ -106,8 +121,22 @@ beforeEach(async () => {
     { id: 2, name: "فرع مبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "u1", name: "المدير", role: "manager", loginMethod: "local", branchId: 1 },
-    { id: 2, openId: "u2", name: "مدير-٢", role: "manager", loginMethod: "local", branchId: 2 },
+    {
+      id: 1,
+      openId: "u1",
+      name: "المدير",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 1,
+    },
+    {
+      id: 2,
+      openId: "u2",
+      name: "مدير-٢",
+      role: "manager",
+      loginMethod: "local",
+      branchId: 2,
+    },
   ]);
 });
 
@@ -222,7 +251,9 @@ describe("apRemindersService - getReminderQueue", () => {
     // داخل نافذة التبريد ⇒ مستبعَد.
     expect(await getReminderQueue({ branchId: 1 })).toEqual([]);
     // ادفع التذكير إلى الوراء ٨ أيام (تجاوز REMINDER_COOLDOWN_DAYS=7) ⇒ يجب أن يعود.
-    await db().execute(sql`UPDATE apReminders SET createdAt = DATE_SUB(NOW(), INTERVAL 8 DAY)`);
+    await db().execute(
+      sql`UPDATE apReminders SET createdAt = DATE_SUB(NOW(), INTERVAL 8 DAY)`,
+    );
     const queue = await getReminderQueue({ branchId: 1 });
     expect(queue.map((r) => r.supplierId)).toEqual([125]);
     expect(queue[0].lastReminderStatus).toBe("SENT");
@@ -603,11 +634,23 @@ describe("apRemindersService - logReminderSent / logReminderSkipped", () => {
 
   it("سجلّ التاريخ يُعيد التذكيرات مع اسم المورد بترتيب الأحدث أولاً", async () => {
     await logReminderSent(
-      { supplierId: 200, totalUnpaidSnapshot: "100000", oldestPoDate: daysAgo(15), daysOverdue: 15, messageBody: "أوّل" },
+      {
+        supplierId: 200,
+        totalUnpaidSnapshot: "100000",
+        oldestPoDate: daysAgo(15),
+        daysOverdue: 15,
+        messageBody: "أوّل",
+      },
       { userId: 1, branchId: 1 },
     );
     await logReminderSkipped(
-      { supplierId: 200, totalUnpaidSnapshot: "100000", oldestPoDate: daysAgo(15), daysOverdue: 15, skipReason: "لاحقاً" },
+      {
+        supplierId: 200,
+        totalUnpaidSnapshot: "100000",
+        oldestPoDate: daysAgo(15),
+        daysOverdue: 15,
+        skipReason: "لاحقاً",
+      },
       { userId: 1, branchId: 1 },
     );
     const history = await getReminderHistory({ branchId: 1 });

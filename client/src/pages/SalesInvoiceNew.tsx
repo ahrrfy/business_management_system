@@ -25,11 +25,14 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { D, round2, toBase, fmt } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { copyInvoiceItems, hasInvoiceTransfer, takeInvoiceItems } from "@/lib/invoiceTransfer";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
+import { getDeviceCode } from "@/lib/offline/outbox";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,9 +62,13 @@ import {
   calcTotals,
   calcLineTotal,
   allocateLineTax,
+  derivePaymentTerms,
   INVOICE_TYPES,
+  PAYMENT_METHODS,
   type InvoiceActionKind,
   type InvoiceLine,
+  type PaymentMethod,
+  type PaymentTerm,
   type PriceTier,
 } from "@/components/invoice";
 
@@ -107,6 +114,27 @@ export default function SalesInvoiceNew() {
   const originalPaid = useMemo(() => D(original.data?.paidAmount ?? "0"), [original.data?.paidAmount]);
   const [reason, setReason] = useState("");
   const [overpayHandling, setOverpayHandling] = useState<"CREDIT" | "CASH_REFUND">("CASH_REFUND");
+  // درج ردّ الفائض — يُجلب مع وضع التصحيح فقط، ويُختار درج المنفّذ افتراضاً (نمط ReturnComposer).
+  const [overpayShiftId, setOverpayShiftId] = useState<number | null>(null);
+  const correctionShiftsQ = trpc.treasury.getOpenShifts.useQuery(
+    { branchId: original.data?.branchId ?? defaultBranchId },
+    { enabled: isCorrection && !!original.data, retry: false },
+  );
+  const correctionOpenShifts = useMemo(
+    () => (correctionShiftsQ.data ?? []).map((s) => ({
+      shiftId: s.shiftId,
+      userName: s.userName,
+      expectedCash: s.expectedCash,
+      isMine: Number(s.userId) === Number(me.data?.id ?? -1),
+    })),
+    [correctionShiftsQ.data, me.data?.id],
+  );
+  // الافتراضي: درج المنفّذ نفسه إن كان مفتوحاً، وإلّا الوحيد المفتوح — فلا يقرّر الموظف ما لا يعرفه.
+  useEffect(() => {
+    if (overpayShiftId != null || correctionOpenShifts.length === 0) return;
+    const mine = correctionOpenShifts.find((s) => s.isMine);
+    setOverpayShiftId(mine ? mine.shiftId : correctionOpenShifts.length === 1 ? correctionOpenShifts[0].shiftId : null);
+  }, [correctionOpenShifts, overpayShiftId]);
   const [collectNow, setCollectNow] = useState("");
   const correctionHydratedRef = useRef(false);
   // مُعرَّف هنا (لا لاحقاً) كي تتمكّن هيدرة التصحيح من تثبيته ⇒ لا تطمس تهيئةُ الضريبة الافتراضية ضريبةَ الأصل.
@@ -118,6 +146,13 @@ export default function SalesInvoiceNew() {
     const catalogByUnit = new Map((correctionCatalog.data ?? []).map((row) => [row.productUnitId, row]));
     if (d.customerId) dispatch({ type: "SET_ENTITY", id: d.customerId });
     if (d.priceTier) dispatch({ type: "SET_FIELD", field: "tier", value: d.priceTier as PriceTier });
+    // شروط الدفع وطريقته من الأصل — لا تُترَك على افتراضيّ «نقدي». الشروط تُظهر حقل تاريخ
+    // الاستحقاق للفاتورة الآجلة (كان يُرسَل مخفيّاً فلا يستطيع الموظّف تصحيحه)، والطريقة هي
+    // التي يُقبَض بها «المُحصَّل الآن» فلا تُفترَض نقداً على فاتورةٍ قُبِضت بالبطاقة.
+    dispatch({ type: "SET_FIELD", field: "paymentTerms", value: derivePaymentTerms(d) });
+    if (d.paymentMethod && isPosPaymentMethodEnabled(d.paymentMethod as PaymentMethod)) {
+      dispatch({ type: "SET_FIELD", field: "paymentMethod", value: d.paymentMethod as PaymentMethod });
+    }
     // خصمٌ إجماليّ (كمبلغ صريح — الأصل يخزّنه مبلغاً لا نسبة).
     if (D(d.discountAmount ?? "0").gt(0)) {
       dispatch({ type: "SET_FIELD", field: "globalDiscountType", value: "amount" });
@@ -182,10 +217,14 @@ export default function SalesInvoiceNew() {
       const seed = JSON.parse(raw) as {
         customerId?: number | null;
         tier?: PriceTier;
+        paymentTerms?: PaymentTerm;
         items?: InvoiceLine[];
       };
       if (seed.customerId) dispatch({ type: "SET_ENTITY", id: seed.customerId });
       if (seed.tier) dispatch({ type: "SET_FIELD", field: "tier", value: seed.tier });
+      // شروط الدفع من الأصل: بدونها تبقى الشاشة على «نقدي» الافتراضيّ، فيصير نسخُ فاتورةٍ
+      // آجلة بيعاً «مسدَّداً بالكامل نقداً» عند الحفظ (computePaidStr) — قبضٌ لم يقع.
+      if (seed.paymentTerms) dispatch({ type: "SET_FIELD", field: "paymentTerms", value: seed.paymentTerms });
       if (Array.isArray(seed.items) && seed.items.length) {
         dispatch({ type: "ADD_ITEMS", items: seed.items });
         dispatch({ type: "MARK_STOCK_STALE" });
@@ -310,6 +349,62 @@ export default function SalesInvoiceNew() {
     [state.taxEnabled, state.items, totals.totalTax, totals.afterDiscount],
   );
 
+  /* ─── إثبات الدفع غير النقديّ ────────────────────────────────────
+   * نفس بوّابة الكاشير حرفاً بحرف: محاولةٌ خادمية INITIATED ⇒ CONFIRMED تُستهلَك مرّةً
+   * واحدة مع الفاتورة. هذه الشاشة بيعٌ على الكاونتر كالكاشير، فلا يجوز أن يكون معيار
+   * إثباتها أضعف. (مسار التصحيح يمرّ بـ`reissue` الذي يقبل مرجعاً نصّياً بعقده الخاصّ.)
+   */
+  const [paymentRef, setPaymentRef] = useState("");
+  const [externalAttempt, setExternalAttempt] = useState<
+    { attemptId: number | null; requestId: string; deviceId: string; fingerprint: string; confirmed: boolean } | null
+  >(null);
+  /** مبلغ الإثبات = ما يُرسَل فعلاً: `collectNow` في التصحيح، ومدفوع الفاتورة في الإنشاء. */
+  const externalAmountD = isCorrection ? D(collectNow.trim() || "0") : D(computePaidStr());
+  const externalAmount = round2(externalAmountD).toFixed(2);
+  const externalNeeded = state.paymentMethod !== "CASH" && externalAmountD.gt(0);
+  const externalFingerprint = `${state.branchId}|${state.paymentMethod}|${externalAmount}|${paymentRef.trim()}`;
+  const externalConfirmed =
+    !externalNeeded || (externalAttempt?.confirmed === true && externalAttempt.fingerprint === externalFingerprint);
+
+  const initiateExternal = trpc.sales.initiateExternalPayment.useMutation();
+  const confirmExternal = trpc.sales.confirmExternalPayment.useMutation();
+
+  async function confirmExternalPayment() {
+    const reference = paymentRef.trim();
+    if (!reference) return notify.err("أدخل مرجع العملية أولاً.");
+    if (!externalAmountD.gt(0)) return notify.err("أدخل مبلغ الدفعة قبل تأكيد العملية الخارجية.");
+    // فرع **الفاتورة** لا فرع المستخدم: المحاولة والفاتورة يجب أن يتّفقا وإلا رُفض الاستهلاك.
+    const branchId = state.branchId;
+    if (!branchId) return notify.err("حدّد فرع الفاتورة قبل تأكيد الدفع الخارجي.");
+    try {
+      // إعادة استعمال المحاولة السابقة مشروطةٌ ببقاء بصمتها؛ وإلا فمعرّف طلبٍ جديد —
+      // فالمفتاح نفسه ببياناتٍ مختلفة يُردّ بتعارضٍ حتميّ.
+      const prior = externalAttempt?.fingerprint === externalFingerprint ? externalAttempt : null;
+      const deviceId = prior?.deviceId ?? (await getDeviceCode());
+      const requestId = prior?.requestId ?? crypto.randomUUID();
+      let attemptId = prior?.attemptId ?? null;
+      if (attemptId == null) {
+        const initiated = await initiateExternal.mutateAsync({
+          branchId: Number(branchId),
+          method: state.paymentMethod as "CARD" | "TRANSFER" | "WALLET",
+          amount: externalAmount,
+          reference,
+          requestId,
+          deviceId,
+        });
+        attemptId = initiated.attemptId;
+        // تُحفَظ **قبل** التأكيد: لو سقط التأكيد، تُعاد المحاولة نفسها بدل توليد مفتاحٍ
+        // جديد لمرجعٍ عالميّ الفرادة (فيُرفض تكراراً ويُحبَس القبض).
+        setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: false });
+      }
+      await confirmExternal.mutateAsync({ branchId: Number(branchId), attemptId, deviceId });
+      setExternalAttempt({ attemptId, requestId, deviceId, fingerprint: externalFingerprint, confirmed: true });
+      notify.ok("تأكّد الدفع الخارجي", `ثُبّت المرجع ${reference} وأصبح جاهزاً للاستهلاك مرّةً واحدة.`);
+    } catch (error) {
+      notify.err(error instanceof Error ? error.message : "تعذّر تثبيت تأكيد الدفع الخارجي");
+    }
+  }
+
   /* ─── mutation ─────────────────────────────────────────────────── */
   const create = trpc.sales.create.useMutation({
     onSuccess: (r) => {
@@ -420,7 +515,19 @@ export default function SalesInvoiceNew() {
       // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
       // صراحةً من «تطبيق ضريبة» في ملخّص المبالغ (لعملاء/دوائر تتطلّب فاتورة ضريبية).
       taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
-      payment: hasPayment ? { amount: paidStr, method: state.paymentMethod } : undefined,
+      payment: hasPayment
+        ? {
+            amount: paidStr,
+            method: state.paymentMethod,
+            ...(state.paymentMethod === "CASH"
+              ? {}
+              : { externalPaymentAttemptId: externalAttempt?.attemptId ?? undefined }),
+          }
+        : undefined,
+      // يجب أن يطابق جهاز المحاولة المؤكَّدة، وإلا رُفض استهلاكها.
+      ...(hasPayment && state.paymentMethod !== "CASH" && externalAttempt?.deviceId
+        ? { deviceId: externalAttempt.deviceId }
+        : {}),
       // تاريخ الاستحقاق للبيع الآجل/الأقساط فقط (يُحفظ على invoices.dueDate ⇒ أعمار الذمم
       // تُعمِّر من موعد الاستحقاق لا تاريخ الفاتورة). الحقل يظهر في الترويسة لهذين النوعين فقط.
       dueDate:
@@ -456,9 +563,23 @@ export default function SalesInvoiceNew() {
       reason: reason.trim(),
       clientRequestId,
       ...(diff.gt(0) && collect.gt(0)
-        ? { additionalPayment: { amount: round2(collect).toFixed(2), method: state.paymentMethod } }
+        ? {
+            additionalPayment: {
+              amount: round2(collect).toFixed(2),
+              method: state.paymentMethod,
+              ...(state.paymentMethod === "CASH" ? {} : { reference: paymentRef.trim() }),
+            },
+          }
         : {}),
-      ...(diff.lt(0) ? { overpayHandling } : {}),
+      ...(diff.lt(0)
+        ? {
+            overpayHandling,
+            // الدرج مورد فرعٍ لا مستخدم — يُمرَّر صراحةً كي لا يرفض الخادم عند تعدّد الأدراج.
+            ...(overpayHandling === "CASH_REFUND" && overpayShiftId != null
+              ? { overpayRefundShiftId: overpayShiftId }
+              : {}),
+          }
+        : {}),
       ...(approval ? { managerApproval: approval } : {}),
     };
   }
@@ -473,12 +594,16 @@ export default function SalesInvoiceNew() {
       if (diff.minus(collect).gt(0) && !state.entityId) return "المتبقّي بعد المُحصَّل الآن ذمّة — اختر عميلاً أو حصّل الفرق كاملاً.";
     }
     if (diff.lt(0) && overpayHandling === "CREDIT" && !state.entityId) return "الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو اختر استرداداً نقدياً.";
+    if (diff.lt(0) && overpayHandling === "CASH_REFUND") {
+      if (correctionOpenShifts.length === 0) return "لا توجد وردية مفتوحة بالفرع لاسترداد الفائض نقداً — افتح وردية أو اختر رصيداً دائناً.";
+      if (overpayShiftId == null) return "حدّد الدرج الذي سيخرج منه الفائض نقداً.";
+    }
     return null;
   }
 
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
-    if (!isPosPaymentMethodEnabled(state.paymentMethod)) return POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE;
+    if (!isPosPaymentMethodEnabled(state.paymentMethod)) return posPaymentRejectionMessage(state.paymentMethod);
     if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     // قرار المالك (٦/٨/٢٦): «مجاني» يلزمه مقدار الأجرة — يُطبَع للزبون ويُحصى في التقارير.
     // الخادم يمنعه أيضاً؛ هذا الحارس ليوفّر على الموظّف رحلةَ ذهابٍ وإياب.
@@ -494,6 +619,14 @@ export default function SalesInvoiceNew() {
     }
     // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
     // في وضع التصحيح: الدفع محمولٌ خادمياً وتحقّقه في validateCorrection ⇒ نتخطّى منطق الدفع هنا.
+    // لا يُفتَح الحفظ لدفعٍ غير نقديّ قبل تثبيت إثباته (محاولةٌ مؤكَّدة للإنشاء، مرجعٌ للتصحيح).
+    if (externalNeeded) {
+      if (isCorrection) {
+        if (!paymentRef.trim()) return "أدخِل مرجع العملية للدفع غير النقديّ.";
+      } else if (!externalConfirmed || externalAttempt?.attemptId == null) {
+        return "ثبّت تأكيد الدفع غير النقديّ قبل حفظ الفاتورة.";
+      }
+    }
     if (!isCorrection) {
       const paid = D(computePaidStr());
       const remaining = D(totals.grandTotal).minus(paid);
@@ -808,6 +941,10 @@ export default function SalesInvoiceNew() {
               قيد SALE إيراداً بلا تكلفة، ويعكسها المرتجع الكامل) ⇒ أُظهرت مع مفتاح «مجاني».
               «مصاريف أخرى» تبقى مخفيّة: الخادم لا يحفظها، وإظهارها يُضخّم الإجمالي المعروض
               و«ادفع الكل» بمبلغٍ لا يُحفَظ (خسارة مالية صامتة). */}
+          {/* في التصحيح تُخفى لوحة الدفع: `buildCorrectionPayload` يتجاهل `base.payment` كلياً،
+              فحقلا «المدفوع» و«الكل» كانا يقبلان مبلغاً يُهمَل صامتاً (الموظّف يكتب ما قبضه
+              فوق لوحة التصحيح مباشرةً فلا يُسجَّل إيصالٌ ولا يُخصَم من الذمّة). المسار الوحيد
+              للمال هنا هو «المُحصَّل الآن»، وطريقتُه صارت بجواره في CorrectionPanel. */}
           <TotalsPanel
             shippingLabel="أجرة التوصيل"
             allowFreeShipping
@@ -817,8 +954,27 @@ export default function SalesInvoiceNew() {
             showShipping
             showOtherExpenses={false}
             showTaxToggle
-            cashOnlyPayment
+            showPayment={!isCorrection}
           />
+          {/* بوّابة الإثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح الحفظ — مطابقة لبوّابة الكاشير.
+              في التصحيح يكفي المرجع النصّي (عقد `sales.reissue` يحمله بنفسه). */}
+          {externalNeeded && (
+            <div className="rounded-xl border bg-card p-3">
+              <PaymentReferenceField
+                value={paymentRef}
+                onChange={(v) => { setPaymentRef(v); setExternalAttempt(null); }}
+                method={state.paymentMethod}
+                confirmed={isCorrection ? paymentRef.trim().length > 0 : externalConfirmed}
+                confirming={initiateExternal.isPending || confirmExternal.isPending}
+                onConfirm={confirmExternalPayment}
+                inputId="sales-invoice-payment-reference"
+                colors={{
+                  border: "var(--border)", muted: "var(--muted)", mutedFg: "var(--muted-foreground)",
+                  fg: "var(--foreground)", amber: "var(--sem-warn)", success: "var(--sem-ok)",
+                }}
+              />
+            </div>
+          )}
           {isCorrection && (
             <CorrectionPanel
               original={original.data ?? null}
@@ -828,9 +984,14 @@ export default function SalesInvoiceNew() {
               setReason={setReason}
               collectNow={collectNow}
               setCollectNow={setCollectNow}
+              paymentMethod={state.paymentMethod}
+              setPaymentMethod={(m) => dispatch({ type: "SET_FIELD", field: "paymentMethod", value: m })}
               overpayHandling={overpayHandling}
               setOverpayHandling={setOverpayHandling}
               hasCustomer={state.entityId != null}
+              openShifts={correctionOpenShifts}
+              overpayShiftId={overpayShiftId}
+              setOverpayShiftId={setOverpayShiftId}
             />
           )}
           <ActionButtons
@@ -926,9 +1087,16 @@ interface CorrectionPanelProps {
   setReason: (v: string) => void;
   collectNow: string;
   setCollectNow: (v: string) => void;
+  /** طريقة قبض «المُحصَّل الآن» — هنا لا في TotalsPanel: لوحة الدفع مخفيّة في التصحيح. */
+  paymentMethod: PaymentMethod;
+  setPaymentMethod: (v: PaymentMethod) => void;
   overpayHandling: "CREDIT" | "CASH_REFUND";
   setOverpayHandling: (v: "CREDIT" | "CASH_REFUND") => void;
   hasCustomer: boolean;
+  /** أدراج الفرع المفتوحة — الخادم يفرض اختياراً صريحاً حين تتعدّد. */
+  openShifts: Array<{ shiftId: number; userName: string; expectedCash: string; isMine: boolean }>;
+  overpayShiftId: number | null;
+  setOverpayShiftId: (v: number | null) => void;
 }
 
 /**
@@ -946,9 +1114,14 @@ function CorrectionPanel({
   setReason,
   collectNow,
   setCollectNow,
+  paymentMethod,
+  setPaymentMethod,
   overpayHandling,
   setOverpayHandling,
   hasCustomer,
+  openShifts,
+  overpayShiftId,
+  setOverpayShiftId,
 }: CorrectionPanelProps) {
   const diff = D(grandTotal).minus(originalPaid); // موجب=نقص يُحصَّل، سالب=فائض يُردّ/يُرصَّد
   const isShort = diff.gt(0);
@@ -996,6 +1169,35 @@ function CorrectionPanel({
         <div className="space-y-1">
           <Label className="text-xs font-semibold">المُحصَّل الآن</Label>
           <MoneyInput value={collectNow} onChange={setCollectNow} placeholder="0" ariaLabel="المبلغ المُحصَّل الآن" />
+          {/* الطرق تُشتقّ من السياسة المركزية (لا نصّ ثابت) — المعطَّلة لا تُعرَض أصلاً هنا
+              لأنّ هذا منتقٍ مضغوط لا لوحة دفعٍ كاملة. */}
+          {collect.gt(0) && (
+            <div className="space-y-1 pt-1">
+              <Label className="text-xs font-semibold">طريقة القبض</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {PAYMENT_METHODS.filter((m) => isPosPaymentMethodEnabled(m.value)).map((m) => {
+                  const MIcon = m.icon;
+                  const active = paymentMethod === m.value;
+                  return (
+                    <button
+                      key={m.value}
+                      type="button"
+                      onClick={() => setPaymentMethod(m.value)}
+                      aria-pressed={active}
+                      className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        active
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-input bg-card text-foreground hover:bg-muted"
+                      }`}
+                    >
+                      <MIcon aria-hidden className="size-4" />
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {remainingCredit.gt(0) && (
             <p className={`text-xs ${hasCustomer ? "text-muted-foreground" : "text-destructive"}`}>
               {hasCustomer
@@ -1023,6 +1225,34 @@ function CorrectionPanel({
           </RadioGroup>
           {overpayHandling === "CREDIT" && !hasCustomer && (
             <p className="text-xs text-destructive">الرصيد الدائن يتطلّب عميلاً — اختر عميلاً أو استرداداً نقدياً.</p>
+          )}
+          {/* الدرج مورد فرعٍ لا مستخدم: حين يتعدّد الدرج المفتوح يفرض الخادم اختياراً صريحاً
+              (resolveBranchCashShiftTx). بلا هذا المنتقي كان الموظف يملأ كل شيء ثمّ يُرفض —
+              نفس العلّة التي عولجت في شاشة المرتجعات. */}
+          {overpayHandling === "CASH_REFUND" && (
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold">من أيّ درج يخرج النقد؟</Label>
+              {openShifts.length === 0 ? (
+                <p className="text-xs text-destructive">
+                  لا توجد وردية مفتوحة في هذا الفرع — افتح وردية أو اختر رصيداً دائناً.
+                </p>
+              ) : (
+                <AppSelect
+                  size="sm"
+                  className="text-xs"
+                  aria-label="درج استرداد الفائض"
+                  value={overpayShiftId != null ? String(overpayShiftId) : ""}
+                  onValueChange={(v: string) => setOverpayShiftId(v ? Number(v) : null)}
+                  placeholder="اختر الدرج…"
+                >
+                  {openShifts.map((s) => (
+                    <option key={s.shiftId} value={String(s.shiftId)}>
+                      {s.isMine ? "درجي — " : ""}{s.userName} (نقد {fmt(s.expectedCash)})
+                    </option>
+                  ))}
+                </AppSelect>
+              )}
+            </div>
           )}
         </div>
       )}

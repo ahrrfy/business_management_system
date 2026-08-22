@@ -1,13 +1,24 @@
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import type Decimal from "decimal.js";
 import { z } from "zod";
-import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, receipts, users } from "../../drizzle/schema";
+import { accountingEntries, customers, invoiceItems, invoices, productUnits, productVariants, products, users } from "../../drizzle/schema";
 import { money } from "../services/money";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { returnSale } from "../services/returnService";
-import { router, salesManagerProcedure } from "../trpc";
+import { returnSale, returnSaleInTx } from "../services/returnService";
+import { withTx } from "../services/tx";
+import { loadRefundCaps, SURFACED_REFUND_METHODS } from "../services/returns/refundCaps";
+import { getOpenShifts } from "../services/treasury/openShifts";
+import { router, salesManagerProcedure, workordersCashierProcedure, workordersExecProcedure } from "../trpc";
+import {
+  createReturnRequest,
+  listReturnRequests,
+  loadApprovableRequest,
+  loadApprovableRequestTx,
+  markRequestApprovedTx,
+  rejectReturnRequest,
+} from "../services/returns/requests";
 import { nonNegMoneyString } from "../lib/schemas";
 import { escLike } from "../lib/sqlLike";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -26,7 +37,13 @@ export const returnRouter = router({
         lines: z.array(z.object({ invoiceItemId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).min(1),
         // shiftId اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx
         // يرمي طالباً التحديد حينها) — يختار المستخدم أيّ درجٍ خرج منه النقد فعلياً.
-        refund: z.object({ amount: nonNegMoneyString, method, shiftId: z.number().int().positive().optional() }).optional(),
+        refund: z.object({
+          amount: nonNegMoneyString,
+          method,
+          shiftId: z.number().int().positive().optional(),
+          // مرجع عملية جهاز الدفع — إلزاميّ للردّ بالبطاقة (تفرضه الخدمة، لا مجرّد تزيين واجهة).
+          reference: z.string().trim().min(1).max(100).optional(),
+        }).optional(),
         restock: z.boolean().optional(),
         // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
@@ -50,10 +67,126 @@ export const returnRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue; // سباق نفس المفتاح ⇒ أعد المحاولة فيُرى المرتجع الأول replay
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام المرتجع" });
+          failOpaque(e, {
+            op: "returns.create",
+            userMessage: "تعذّر إتمام المرتجع",
+            context: { userId: ctx.user.id, invoiceId: input.invoiceId, lines: input.lines.length },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام المرتجع (تكرار)" });
+    }),
+
+  // ════════ طلبات الإرجاع من المحطة (١٩/٨ — قرار المالك: طلب موظف + اعتماد مدير) ════════
+  // البلاغ: رفضُ الزبون وإرجاعُ المندوب حدثٌ يوميّ، والمرتجع محصورٌ بالمدير — فالعمل يتوقّف
+  // حتى يحضر، أو يُحفَظ بحسابه فتضيع نسبةُ الفاعل ويسقط فصلُ المهام. الطلب مستند نيّةٍ لا مال.
+
+  /** موظّف المحطة يطلب إرجاعاً — بلا أيّ أثرٍ ماليّ أو مخزنيّ حتى الاعتماد. */
+  request: workordersCashierProcedure
+    .input(z.object({
+      invoiceId: z.number().int().positive(),
+      lines: z.array(z.object({
+        invoiceItemId: z.number().int().positive(),
+        baseQuantity: z.number().int().positive(),
+      })).min(1),
+      reason: z.string().trim().min(3).max(500),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await createReturnRequest(input, {
+        userId: ctx.user.id, branchId: Number(ctx.user.branchId), role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "return.request", entityType: "invoice", entityId: input.invoiceId,
+        newValue: { requestId: res.requestId, reason: input.reason, lines: input.lines.length },
+      });
+      return res;
+    }),
+
+  /** قائمة الطلبات: المدير يرى طلبات فرعه، والموظّف يتابع طلباته وحدها. */
+  requests: workordersExecProcedure
+    .input(z.object({
+      status: z.enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional(),
+      mine: z.boolean().optional(),
+    }).optional())
+    .query(async ({ input, ctx }) => {
+      // مَن لا يملك سلطة الاعتماد يرى طلباته وحدها — لا نافذةَ على مرتجعات غيره.
+      const canApprove = ctx.user.role === "admin" || ctx.user.role === "manager";
+      return listReturnRequests({
+        branchId: ctx.user.role === "admin" ? null : Number(ctx.user.branchId ?? 0),
+        status: input?.status,
+        createdBy: !canApprove || input?.mine ? ctx.user.id : null,
+      });
+    }),
+
+  /**
+   * المدير يعتمد الطلب فيُنفَّذ المرتجع **بالمسار القائم نفسه** — لا نسخةَ منطقٍ ماليّ ثانية.
+   * الرافد والدرج والمرجع يقرّرها المدير لحظة الاعتماد كما يفعل في المرتجع المباشر.
+   */
+  approveRequest: salesManagerProcedure
+    .input(z.object({
+      requestId: z.number().int().positive(),
+      refund: z.object({
+        amount: nonNegMoneyString,
+        method,
+        shiftId: z.number().int().positive().optional(),
+        reference: z.string().trim().min(1).max(100).optional(),
+      }).optional(),
+      restock: z.boolean().optional(),
+      clientRequestId: z.string().min(1).max(80).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      // ٢٠/٨ (تصويب مراجعة Codex): الأدمن **عابرُ فروعٍ بحكم التصميم** وقد يكون
+      // `branchId = null`؛ وكان يُرفَض هنا **قبل قراءة الطلب** فيرى الطلبات المعلّقة
+      // ولا يستطيع اعتماد أيٍّ منها. الفرعُ يُشتقّ من الطلب نفسه له، ويبقى الإسنادُ
+      // شرطاً لغير الأدمن.
+      const isAdmin = ctx.user.role === "admin";
+      if (ctx.user.branchId == null && !isAdmin) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      // ⚛️ **وحدةٌ ذرّية**: قفلُ الطلب ثمّ التنفيذ ثمّ الختم في معاملةٍ واحدة. كانت ثلاثاً
+      // منفصلة ⇒ فشلُ الختم يترك مرتجعاً منفَّذاً وطلباً معلَّقاً لا تُعاد محاولته (الحارس
+      // التفاؤليّ يرفضه)، ومعتمدان متزامنان يُنفّذان المرتجع مرّتين.
+      const res = await retryOnDeadlock(() => withTx(async (tx) => {
+        const probe = { userId: ctx.user.id, branchId: ctx.user.branchId ?? null, role: ctx.user.role } as never;
+        const { request, lines, invoiceId } = await loadApprovableRequestTx(tx, input.requestId, probe);
+        // الفاعلُ الماليّ يحمل فرعَ **الطلب** — لا فرعاً مفقوداً ولا فرعَ المعتمِد.
+        const actor = { userId: ctx.user.id, branchId: Number(request.branchId), role: ctx.user.role };
+        const out = await returnSaleInTx(tx, {
+          invoiceId,
+          lines,
+          refund: input.refund,
+          restock: input.restock,
+          clientRequestId: input.clientRequestId ?? `retreq-${input.requestId}`,
+        }, actor);
+        await markRequestApprovedTx(tx, input.requestId, ctx.user.id, invoiceId);
+        return { ...out, invoiceId };
+      }));
+      const invoiceId = res.invoiceId;
+      await logAudit(ctx, {
+        action: "return.approveRequest", entityType: "invoice", entityId: invoiceId,
+        newValue: { requestId: input.requestId, refund: input.refund?.amount ?? null },
+      });
+      return { ...res, requestId: input.requestId };
+    }),
+
+  /** رفضٌ بسببٍ إلزاميّ — الموظّف يرى لماذا بدل صمتٍ يُعيد الطلب نفسه. */
+  rejectRequest: salesManagerProcedure
+    .input(z.object({
+      requestId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await rejectReturnRequest(input.requestId, input.reason, {
+        userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "return.rejectRequest", entityType: "returnRequest", entityId: input.requestId,
+        newValue: { reason: input.reason },
+      });
+      return res;
     }),
 
   /** سجلّ مرتجعات البيع (قيود RETURN ذات فاتورة بلا مورد) — فلاتر عميل/فرع/فترة/رقم فاتورة/منفّذ
@@ -97,6 +230,13 @@ export const returnRouter = router({
         // مرتجع البيع: مرتبط بفاتورة ولا مورد له — عكس مرتجع الشراء (supplierId NOT NULL).
         isNull(accountingEntries.supplierId),
         isNotNull(accountingEntries.invoiceId),
+        // تصحيحُ الفاتورة يعكسها عبر `returnSaleInTx` فينتج قيد RETURN **بنفس شكل المرتجع
+        // الحقيقيّ تماماً** ⇒ كان كلّ تصحيحٍ يُحصى مرتجعَ بيعٍ باسم العميل وبقيمته الكاملة في
+        // السجلّ والتصدير وعدّاد المرتجعات: عميلٌ لم يُرجِع شيئاً يظهر بمرتجعٍ كامل.
+        // حالةُ الأصل هي الفاصل الحاسم: التصحيح يتركه SUPERSEDED دائماً، والمرتجع الحقيقيّ
+        // لا يُنتجها أبداً — ولا تلتبس الحالتان لأنّ `correctSale` يرفض فاتورةً عليها مرتجعٌ
+        // سابق، و`returnSale` يرفض المستبدَلة.
+        sql`${invoices.status} <> 'SUPERSEDED'`,
       ];
       if (input?.customerId) where.push(eq(accountingEntries.customerId, input.customerId));
       if (branchId) where.push(eq(accountingEntries.branchId, branchId));
@@ -198,6 +338,7 @@ export const returnRouter = router({
           taxAmount: invoices.taxAmount,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
+          returnedTotal: invoices.returnedTotal,
           paymentMethod: invoices.paymentMethod,
         })
         .from(invoices)
@@ -253,49 +394,53 @@ export const returnRouter = router({
       };
     });
 
-    // تبسيط المرتجعات (طلب مالك ٦/٨): «بمَ دُفعت هذه الفاتورة فعلاً؟» — الشاشة كانت عمياء
-    // فيختار الموظف «نقدي» لفاتورة بطاقةٍ ويُرفض بعد ملء كل شيء. الصافي لكل طريقة =
-    // Σ(IN) − Σ(OUT) للإيصالات المختومة + حصص العرابين المطبَّقة غير المختومة (نفس منطق
-    // سقف returnService حرفياً، مجموعاً بالطريقة). رصيد زين يُطوى في سقف النقد (قرار ٦/٨).
-    const pmRows = await db
-      .select({
-        method: receipts.paymentMethod,
-        net: sql<string>`CAST(COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE -${receipts.amount} END), 0) AS CHAR)`,
-      })
-      .from(receipts)
-      .where(and(eq(receipts.invoiceId, input.invoiceId), eq(receipts.status, "COMPLETED")))
-      .groupBy(receipts.paymentMethod);
-    const appRes = await db.execute(sql`
-      SELECT coll.orderPayMethod AS method, CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS net
-      FROM orderPayments app
-      JOIN orderPayments coll ON coll.id = app.parentPaymentId
-      LEFT JOIN receipts pr ON pr.id = coll.receiptId
-      WHERE app.orderPayKind = 'APPLICATION'
-        AND (
-          (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId = ${input.invoiceId})
-          OR (app.orderPayAppliedKind = 'WORKORDER' AND app.appliedId IN (
-            SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
-          ))
-        )
-        AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
-      GROUP BY coll.orderPayMethod
-    `);
-    const appData = (appRes as unknown as [Array<{ method: string; net: string }>])[0] ?? appRes;
-    const paidMap = new Map<string, Decimal>();
-    for (const r of pmRows) {
-      if (!r.method) continue;
-      paidMap.set(r.method, (paidMap.get(r.method) ?? money(0)).plus(money(r.net)));
-    }
-    for (const r of (Array.isArray(appData) ? appData : []) as Array<{ method: string; net: string }>) {
-      if (!r.method) continue;
-      paidMap.set(r.method, (paidMap.get(r.method) ?? money(0)).plus(money(r.net)));
-    }
+    // سقوف الاسترداد — **نفس دالّة الخادم التي ستحكم على الطلب** (`loadRefundCaps`) لا نسخةٌ
+    // مقارِبة. كانت الشاشة تحسبها بنفسها فتعرض خياراً يرفضه الخادم بعد ملء كل شيء (بلاغ المالك
+    // ١٧/٨). الآن: ما تعرضه الشاشة = ما يقبله الخادم، بالتعريف.
+    const caps = await loadRefundCaps(db, input.invoiceId);
     const paidByMethod: Array<{ method: string; amount: string }> = [];
-    paidMap.forEach((v, m) => {
+    caps.netByMethod.forEach((v, m) => {
       if (v.gt(0)) paidByMethod.push({ method: m, amount: v.toFixed(2) });
     });
+    // سقفٌ خامّ لكل طريقة (قبل قصّه بقيمة المرتجع الذي لم تُحدَّد كمّياته بعد) — الشاشة تقصّه
+    // لحظياً بقيمة ما اختاره الموظف، فيبقى الطرفان على معادلةٍ واحدة.
+    // رافدا الردّ وحدهما (قرار المالك ١٧/٨: نقدٌ أو بطاقة) — لا تُعرَض طريقةٌ لا يريدها العمل.
+    const refundOptions = SURFACED_REFUND_METHODS.map((m) => ({
+      method: m,
+      cap: (caps.capByMethod.get(m) ?? money(0)).toFixed(2),
+      /** صافي المقبوض بهذا الرافد (زين مطويٌّ في النقد) — إفصاحٌ يشرح للموظف مصدر المال. */
+      paid: (caps.netByMethod.get(m) ?? money(0)).toFixed(2),
+      // الحجب يعني «لا يمكن **ردّ نقدٍ** بهذا الرافد» لا «لا يمكن تسجيل مرتجع». النصّ السابق
+      // كان يُقرأ منعاً للمرتجع كلّه على فاتورةٍ لم تُقبض (بلاغ المالك ١٨/٨) — والمرتجع بلا ردّ
+      // مقبولٌ خادمياً أصلاً: يُخصَم من المتبقّي ومن ذمّة العميل.
+      blockedReason: (caps.capByMethod.get(m) ?? money(0)).lte(0)
+        ? "لا يوجد متبقٍّ من المقبوض على هذه الفاتورة — يبقى المرتجع بلا ردّ نقديّ متاحاً (يُخصَم من المتبقّي/الذمّة)"
+        : null,
+    }));
+
+    // أدراج الفرع المفتوحة — تُجلب هنا مع التفاصيل لا بطلبٍ ثانٍ مشروط، كي لا تُبنى الشاشة
+    // على حالةٍ ناقصة («جارٍ فحص الورديات…» ثمّ رفضٌ عند الحفظ). قرار المالك (١٧/٨): الاسترداد
+    // من **وردية منفّذ المرتجع المفتوحة** افتراضاً، أو يختار وردية أخرى مفتوحة صراحةً.
+    // النطاق = فرع الفاتورة دائماً (لا فرع الفاعل) — الدرج مورد فرعٍ لا مستخدم.
+    const openShifts = await getOpenShifts(
+      {},
+      { scopedBranchId: Number(inv.branchId), role: ctx.user.role, userId: ctx.user.id },
+    );
+    const refundShifts = openShifts.map((s) => ({
+      shiftId: s.shiftId,
+      userId: s.userId,
+      userName: s.userName,
+      shiftType: s.shiftType,
+      expectedCash: s.expectedCash,
+      /** درج المنفّذ نفسه — تختاره الشاشة افتراضاً فلا يقرّر الموظف ما لا يعرفه. */
+      isMine: Number(s.userId) === Number(ctx.user.id),
+    }));
 
     return {
+      /** الوعاء المتبقّي من المقبوض على الفاتورة بكل الطرق — سقف الردّ الأقصى بأيّ رافد. */
+      refundPool: caps.pool.toFixed(2),
+      refundOptions,
+      refundShifts,
       id: Number(inv.id),
       invoiceNumber: inv.invoiceNumber,
       status: inv.status,
@@ -307,6 +452,8 @@ export const returnRouter = router({
       taxAmount: inv.taxAmount,
       total: inv.total,
       paidAmount: inv.paidAmount,
+      /** ما أُرجِع سابقاً — تحتاجه الشاشة لتحسب «المستحقّ للزبون» فلا تُعبّئ ردّاً لمدين. */
+      returnedTotal: inv.returnedTotal ?? "0",
       paymentMethod: inv.paymentMethod,
       paidByMethod,
       items,

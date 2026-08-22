@@ -10,7 +10,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
 import { type ImageItem } from "@/components/form/ImageUploader";
-import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
@@ -119,6 +119,7 @@ export default function SimpleProductEditForm({
   const [minStock, setMinStock] = useState("0");
   const [reorderPoint, setReorderPoint] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
+  const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isActive, setIsActive] = useState(true);
   // صور المنتج العامّة (مشتركة) — تُحمَّل من الخادم وتُحفَظ بمطابقة المعرّف (lib/productImages).
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -149,6 +150,7 @@ export default function SimpleProductEditForm({
     setDescription(d.description ?? "");
     setCategoryId(d.categoryId ?? "");
     setIsCustomizable(d.isCustomizable);
+    setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsActive(d.isActive);
     if (v) {
       variantId.current = v.id;
@@ -189,8 +191,8 @@ export default function SimpleProductEditForm({
   );
   // ── كشف «تعديلات غير محفوظة»: نقارن توقيع النموذج بلقطة الأساس المُلتقَطة بعد التعبئة ──
   const formSig = useMemo(
-    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, isActive, units, imagesSig }),
-    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, isActive, units, imagesSig]
+    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, units, imagesSig }),
+    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, units, imagesSig]
   );
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;
@@ -325,6 +327,7 @@ export default function SimpleProductEditForm({
       isConsignment: consignment.isConsignment,
       consignorId: consignment.consignorId,
       isCustomizable,
+      allowAutoCartRecommendations,
       isActive,
       unitTemplate,
       variants: [
@@ -341,7 +344,7 @@ export default function SimpleProductEditForm({
           unitBarcodes,
         },
       ],
-      // صور المنتج العامّة: تُرسَل دائماً (ولو فارغة) ⇒ الحذف يُوفَّق؛ غير المتغيّرة بمعرّفها بلا بايتات.
+      // صور المنتج العامّة: معرّفات وmetadata فقط؛ الفارغة توفّق الحذف ولا تمرّر بايتات.
       images: buildProductImagesPayload(images),
     });
   }
@@ -409,9 +412,7 @@ export default function SimpleProductEditForm({
           <Field label="رمز المنتج (SKU)" required className="md:col-span-2">
             <Input id="simpleedit-sku" value={sku} onChange={(e) => setSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PR-BOOK-ARB" />
           </Field>
-          <Field label="الوصف" className="md:col-span-3">
-            <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="خصائص/ملاحظات…" />
-          </Field>
+          <Field label="التوصيات الآلية" hint="يكمل العلاقات اليدوية بمنتجات متاحة من نفس التصنيف."><div className="flex items-center gap-2 h-9"><Switch checked={allowAutoCartRecommendations} onCheckedChange={setAllowAutoCartRecommendations} /><span className="text-xs text-muted-foreground">{allowAutoCartRecommendations ? "مسموح" : "متوقف"}</span></div></Field>
         </CardContent>
       </Card>
 
@@ -602,18 +603,13 @@ export default function SimpleProductEditForm({
         </CardContent>
       </Card>
 
-      {/* ── صور المنتج (مشتركة) ── */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">صور المنتج (اختياري)</CardTitle></CardHeader>
-        <CardContent>
-          <ImageStudioUploader
-            value={images}
-            onChange={setImages}
-            maxItems={10}
-            hint="حتى 10 صور للمنتج (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً."
-          />
-        </CardContent>
-      </Card>
+      <ProductMediaContentSection
+        description={description}
+        onDescriptionChange={setDescription}
+        images={images}
+        onImagesChange={setImages}
+        productExists
+      />
 
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

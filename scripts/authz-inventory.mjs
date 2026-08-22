@@ -48,6 +48,13 @@ const PROCEDURES = {
     roles: [],
     branch: false,
   },
+  storefrontPublicWriteProcedure: {
+    authority: "public",
+    module: "storefront",
+    level: "WRITE",
+    roles: [],
+    branch: false,
+  },
   passwordResetTokenProcedure: {
     authority: "token",
     module: "users",
@@ -189,6 +196,16 @@ const PROCEDURES = {
     authority: "module-map",
     module: "sales|workorders",
     level: "READ|FULL",
+    roles: [],
+    branch: "scoped",
+  },
+  // بوابة **قوائم** الفواتير (١٨/٨): نفس سلطة المستند المفرد موسَّعةً بنطاق كاشير الطباعة
+  // (pos=FULL)، والنطاق يقصّ القناة داخل الاستعلام (RECEPTION/PRINT_SERVICES) مع عزل الفرع
+  // وعزل الموظف. تُسجَّل كسلطة مركبة كي لا تُصنَّف نقاطها «مجهولة الإجراء».
+  invoiceListProcedure: {
+    authority: "module-map",
+    module: "sales|workorders|pos",
+    level: "READ|FULL|FULL",
     roles: [],
     branch: "scoped",
   },
@@ -464,6 +481,37 @@ const PROCEDURES = {
     roles: ["manager", "warehouse", "purchasing"],
     branch: "required",
   },
+  productStudioReadProcedure: {
+    authority: "module-map",
+    module: "productStudio",
+    level: "READ",
+    roles: [],
+    branch: "scoped",
+  },
+  productStudioWriteProcedure: {
+    authority: "module-map",
+    module: "productStudio",
+    level: "FULL",
+    roles: [],
+    branch: "scoped",
+  },
+  // managerProcedure + requireModule؛ الخدمة تعيد قفل المهمة وتفرض branchId لكل فعل إشرافي.
+  productStudioManagerProcedure: {
+    authority: "module-gate",
+    module: "productStudio",
+    level: "FULL",
+    roles: ["manager"],
+    branch: "asserted",
+  },
+  // إعدادات مزوّد الصور المدفوع: بوّابة الوحدة ثمّ admin — نظير inventoryAdminProcedure.
+  // بلا فرع: العملية شركةٌ لا فرع (تضبط حصص كل الفروع معاً).
+  productStudioAdminProcedure: {
+    authority: "module-gate",
+    module: "productStudio",
+    level: "FULL",
+    roles: ["admin"],
+    branch: false,
+  },
   expensesReadProcedure: {
     authority: "module-map",
     module: "expenses",
@@ -533,6 +581,39 @@ const PROCEDURES = {
     level: "READ",
     roles: [],
     branch: "scoped",
+  },
+  // بيانات مرجعية عامّة للخزينة (فئات السندات): نفس بوّابة الوحدة تماماً، و`branch: "none"`
+  // لأنّ `voucherCategories` بلا عمود branchId ⇒ لا عزل فرعٍ ممكن ولا مطلوب. لا تُستعمل لأي
+  // إجراء يمسّ `receipts` (تلك تبقى على treasuryManagerProcedure بـbranch: "required").
+  treasuryGlobalProcedure: {
+    authority: "module-gate",
+    module: "treasury",
+    level: "FULL",
+    roles: ["manager", "accountant"],
+    branch: "none",
+  },
+  // فئات المصروفات: بيانات مرجعية عامّة بلا branchId. القراءة بخريطة الوحدة (كل من يُنشئ
+  // مصروفاً يحتاج المنتقي)، والكتابة بقائمة الإدارة. المصروف نفسه يبقى مقصوراً بالفرع.
+  expensesGlobalReadProcedure: {
+    authority: "module-map",
+    module: "expenses",
+    level: "READ",
+    roles: [],
+    branch: "none",
+  },
+  expensesGlobalProcedure: {
+    authority: "module-gate",
+    module: "expenses",
+    level: "FULL",
+    roles: ["manager", "accountant"],
+    branch: "none",
+  },
+  treasuryGlobalReadProcedure: {
+    authority: "module-gate",
+    module: "treasury",
+    level: "READ",
+    roles: ["manager", "accountant"],
+    branch: "none",
   },
   treasuryCashierProcedure: {
     authority: "module-gate",

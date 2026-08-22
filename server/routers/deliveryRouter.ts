@@ -16,6 +16,8 @@ import {
   listCourierAccounts,
   listDeliveryPartyMembers,
   listDeliveryParties,
+  listInTransitConsignments,
+  recordCompanyStatement,
   listOpenConsignments,
   listPartyRemittances,
   listReadyForDispatch,
@@ -30,6 +32,7 @@ import {
   updateDeliveryParty,
   writeOffDeliveryShortfall,
 } from "../services/deliveryService";
+import { declareConsignmentReturn } from "../services/delivery/declaredReturn";
 import { cancelDeliveryAssignment } from "../services/delivery/cancellation";
 import { logAudit } from "../services/auditService";
 
@@ -231,6 +234,15 @@ export const deliveryRouter = router({
   // ─── قراءات الشاشة ───
   readyForDispatch: deliveryReadProcedure.query(({ ctx }) => listReadyForDispatch(ctx.scopedBranchId)),
 
+  /**
+   * **قيد التوصيل** — كل الطرود الخارجة التي لم تُغلق بعد، أياً كانت حالة الطرد (بلاغ المالك
+   * ١٨/٨). هي الشاشة المفقودة بين «جاهز للإرسال» و«تسوية المناديب»: الطرد الذي قبله المندوب
+   * أو خرج به كان يختفي من كليهما فلا يعرف أحدٌ أين هو ولا كم على المندوب أن يُحاسَب عنه.
+   */
+  inTransit: deliveryReadProcedure
+    .input(z.object({ partyId: z.number().int().positive().optional() }).optional())
+    .query(({ input, ctx }) => listInTransitConsignments(ctx.scopedBranchId, input?.partyId ?? null)),
+
   openConsignments: deliveryReadProcedure
     .input(z.object({ partyId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
@@ -287,6 +299,8 @@ export const deliveryRouter = router({
         deliveryAddress: z.string().max(1000).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
         assignedUserId: z.number().int().positive().nullish(),
+        /** إقرارُ إخراج جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
+        partialDispatchConfirmed: z.boolean().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -316,6 +330,8 @@ export const deliveryRouter = router({
         deliveryAddress: z.string().max(1000).nullish(),
         clientRequestId: z.string().trim().min(8).max(64),
         assignedUserId: z.number().int().positive().nullish(),
+        /** إقرارُ إرسال جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
+        partialDispatchConfirmed: z.boolean().optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -325,7 +341,10 @@ export const deliveryRouter = router({
         action: "delivery.dispatchInvoice",
         entityType: "deliveryConsignment",
         entityId: res.consignmentId,
-        newValue: { invoiceId: input.invoiceId, partyId: input.partyId, codAmount: res.codAmount, deliveryFee: res.deliveryFee },
+        newValue: {
+          invoiceId: input.invoiceId, partyId: input.partyId, codAmount: res.codAmount, deliveryFee: res.deliveryFee,
+          partialDispatchConfirmed: input.partialDispatchConfirmed === true,
+        },
       });
       return res;
     }),
@@ -368,6 +387,78 @@ export const deliveryRouter = router({
       return res;
     }),
 
+  /**
+   * **تسجيل كشف شركة التوصيل** (١٩/٨) — مستند التسوية الموحّد: سطرُه يُثبِت التسليم ثمّ
+   * التحصيل ثمّ التوريد. هو المسار اليوميّ للشركات التي لا تملك بوابة مندوب (وهي الغالبة)،
+   * وكان مالُها يعلق بلا مخرجٍ لأنّ ختم التسليم حصريٌّ ببوّابةٍ لا يملكونها.
+   *
+   * البوّابة `deliveryCashierProcedure` = **بوّابة وحدة** (`store:FULL` بأدوار كاشير/مدير)
+   * لا دورٌ خام: نفس أدوار `recordRemittance` مع إلزام مفتاح الوحدة صراحةً — فلا تُضاف نقطة
+   * سلطةٍ بدورٍ خامّ جديدة (حارس `check:authz`). النقد يدخل درج المستلم فعلاً فتُشترط
+   * ورديّته (أو الخزينة للمدير)، وعزل الفرع بـ`assertPartyInScope` كنظيره.
+   */
+  recordCompanyStatement: deliveryCashierProcedure
+    .input(
+      z.object({
+        partyId: z.number().int().positive(),
+        branchId: z.number().int().positive().nullish(),
+        shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
+        statementNumber: z.string().trim().min(2).max(64),
+        statementDate: z.string().trim().min(8).max(10).nullish(),
+        attachmentUrl: z.string().trim().max(2000).nullish(),
+        deductionsTotal: moneyStr.nullish(),
+        notes: z.string().trim().max(500).nullish(),
+        lines: z
+          .array(z.object({ consignmentId: z.number().int().positive(), collectedAmount: moneyStr }))
+          .min(1)
+          .superRefine((lines, ctx) => {
+            const seen = new Set<number>();
+            lines.forEach((line, index) => {
+              if (seen.has(line.consignmentId)) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: [index, "consignmentId"],
+                  message: "الإرسالية مكررة داخل الكشف",
+                });
+              }
+              seen.add(line.consignmentId);
+            });
+          }),
+        countedCash: moneyStr,
+        clientRequestId: z.string().trim().min(8).max(64),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
+      const branchId = effectiveBranch(ctx, input.branchId);
+      const res = await retryOnDeadlock(() => recordCompanyStatement({
+        branchId,
+        partyId: input.partyId,
+        statementNumber: input.statementNumber,
+        statementDate: input.statementDate ?? null,
+        attachmentUrl: input.attachmentUrl ?? null,
+        deductionsTotal: input.deductionsTotal ?? null,
+        notes: input.notes ?? null,
+        lines: input.lines,
+        countedCash: input.countedCash,
+        shiftType: input.shiftType,
+        clientRequestId: input.clientRequestId,
+      }, actorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.companyStatement",
+        entityType: "deliveryRemittance",
+        entityId: res.remittanceId,
+        newValue: {
+          partyId: input.partyId,
+          statementNumber: res.statementNumber,
+          deliveriesConfirmed: res.deliveriesConfirmed,
+          collectedTotal: res.collectedTotal,
+          netRemitted: res.netRemitted,
+        },
+      });
+      return res;
+    }),
+
   // إرجاع إرسالية (عكس بيع + مخزون + عهدة + ذمّة العميل).
   // قرار المالك (٦/٨/٢٦): **موظّف التسوية يُنفّذها** لا المدير وحده — هذه ليست «مرتجع زبون»
   // (م٧) بل بضاعةٌ لم تُسلَّم أصلاً وعادت مع المندوب، وحصرُها بالمدير كان يوقف التسوية حتى
@@ -389,6 +480,9 @@ export const deliveryRouter = router({
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه ردّ العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
+      // ١٨/٨: سبب رجوع الطرد — تفرضه الخدمة حين يكون الطرد بيد السائق (يُوسَم متعذّراً قبل
+      // إرجاعه في نفس المعاملة)، وهو ما يفصل «رفض العميل» عن «عنوان خاطئ» في المتابعة.
+      returnReason: z.string().trim().min(2).max(255).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       // ٩/٨: ترتيب أقفال الإرجاع (إرسالية←جهة) يعاكس التوريد/الشطب (جهة←إرسالية) — تنافسٌ
@@ -397,8 +491,39 @@ export const deliveryRouter = router({
         ...actorOf(ctx),
         clientRequestId: input.clientRequestId,
         refundShiftId: input.refundShiftId ?? null,
+        returnReason: input.returnReason ?? null,
       }));
       await logAudit(ctx, { action: "delivery.return", entityType: "deliveryConsignment", entityId: input.consignmentId, newValue: { invoiceId: (res as { invoiceId?: number }).invoiceId } });
+      return res;
+    }),
+
+  /**
+   * **إعلانُ رجوع طرد** — الشركةُ تقول «راجعٌ إليكم» قبل أن يصل (0246).
+   *
+   * `storeFulfillProcedure` كنظيره `returnConsignment`: كلاهما يمسّ تعرّضَ جهة التوصيل.
+   * لكنّ هذا **لا يمسّ مخزوناً ولا فاتورةً ولا نقداً** — فلا يلزمه درجٌ ولا وردية.
+   */
+  declareReturn: storeFulfillProcedure
+    .input(z.object({
+      consignmentId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+      /** رقمُ كشف الشركة الذي أُعلن فيه الرجوع — توثيقيّ. */
+      statementNumber: z.string().trim().max(64).optional(),
+      clientRequestId: z.string().trim().min(8).max(64).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await retryOnDeadlock(() => declareConsignmentReturn({
+        consignmentId: input.consignmentId,
+        reason: input.reason,
+        statementNumber: input.statementNumber ?? null,
+        clientRequestId: input.clientRequestId ?? null,
+      }, actorOf(ctx)));
+      await logAudit(ctx, {
+        action: "delivery.declareReturn",
+        entityType: "deliveryConsignment",
+        entityId: input.consignmentId,
+        newValue: { reason: input.reason, statementNumber: input.statementNumber ?? null },
+      });
       return res;
     }),
 

@@ -137,6 +137,65 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  uq_custom_template_product: { msg: "قالب التخصيص لهذا المنتج موجود مسبقاً." },
+  uq_custom_field_template_key: { msg: "مفتاح حقل التخصيص مستخدم مسبقاً داخل هذا القالب." },
+  uq_prod_related_pair: { msg: "هذا المنتج مرتبط مسبقاً بهذا المنتج المكمل — عدّل العلاقة الموجودة بدل تكرارها." },
+  uq_loyalty_program_customer: { msg: "حساب الولاء لهذا العميل في هذا البرنامج موجود مسبقاً." },
+  uq_loyalty_order_earn: { msg: "نقاط الولاء لهذا الطلب مُنحت مسبقاً." },
+  uq_storefront_push_token_hash: { msg: "هذا الجهاز مسجّل مسبقاً لإشعارات المتجر." },
+  uq_storefront_push_delivery: { msg: "تم إنشاء تسليم هذه الحملة لهذا الجهاز مسبقاً." },
+  // ── موجات الأسعار (0226) ──
+  // يُصاب حين يضغط مديران «تراجع» على الموجة نفسها في اللحظة ذاتها: الخدمة تفحص أوّلاً
+  // وتردّ برسالةٍ واضحة، لكنّ السباق قد يبلغ القيدَ نفسه ⇒ هذه رسالتُه بدل خطأ MySQL خامّ.
+  uq_wave_reverts: { msg: "سبق التراجع عن هذه الموجة — حدّث الصفحة لترى موجة التراجع المسجَّلة." },
+  uq_image_studio_usage_daily_service: { msg: "سجلّ حصة خدمة الاستوديو لهذا اليوم موجود مسبقاً." },
+  uq_pijob_product_active: {
+    msg: "توجد مهمة استوديو نشطة لهذا المنتج بالفعل — افتح المهمة الحالية بدلاً من إنشاء مهمة مكرّرة.",
+  },
+  uq_pssq_user_day: { msg: "سجلّ سقف إرسال الاستوديو لهذا الموظف اليوم موجود مسبقاً." },
+  uq_pscp_campaign_product: { msg: "هذا المنتج مُدرَجٌ في نطاق الحملة بالفعل." },
+  uq_psca_campaign_user: { msg: "هذا الموظف من مصوّري الحملة بالفعل." },
+  // ── الرواتب/الإقفال/الاستحقاقات (0185–0194) ──
+  uq_payroll_obligation_source: { msg: "التزام الرواتب لهذا المصدر مسجّل مسبقاً." },
+  uq_payroll_obligation_revision: { msg: "مراجعة التزام الرواتب مسجّلة مسبقاً." },
+  uq_payroll_remittance_source: { msg: "طلب التحويل القانوني لهذا المصدر مسجّل مسبقاً." },
+  uq_payroll_remittance_receipt: { msg: "هذا الإيصال مرتبط بتحويل قانوني آخر." },
+  uq_payroll_accounting_event_source: { msg: "حدث الرواتب المحاسبي لهذا المصدر مسجّل مسبقاً." },
+  uq_payroll_accounting_event_entry: { msg: "هذا القيد مرتبط بحدث رواتب آخر." },
+  uq_payroll_allocation_source: { msg: "تخصيص الرواتب لهذا المصدر مسجّل مسبقاً." },
+  uq_payroll_allocation_event: { msg: "حدث تخصيص الرواتب مسجّل مسبقاً." },
+  uq_advsettle_source: { msg: "تسوية السلفة لهذا المصدر مسجّلة مسبقاً." },
+  uq_payroll_event_reversal_once: { msg: "حدث الرواتب معكوس مسبقاً." },
+  uq_payroll_allocation_reversal_once: { msg: "تخصيص الرواتب معكوس مسبقاً." },
+  uq_period_close_revision: { msg: "مراجعة إقفال هذه الفترة مسجّلة مسبقاً." },
+  uq_year_scope_revision: { msg: "مراجعة إقفال هذه السنة مسجّلة مسبقاً." },
+  uq_month_close_certificate_number: { msg: "رقم شهادة الإقفال الشهري مستخدم مسبقاً." },
+  uq_month_close_certificate_request: { msg: "طلب الإقفال مرتبط بشهادة أخرى." },
+  uq_month_close_certificate_period: { msg: "شهادة مراجعة هذه الفترة مسجّلة مسبقاً." },
+  uq_month_close_certificate_hash: { msg: "بصمة شهادة الإقفال مسجّلة مسبقاً." },
+  uq_month_close_certificate_revision: { msg: "مراجعة شهادة الإقفال مسجّلة مسبقاً." },
+  uq_month_close_event_key: { msg: "حدث الإقفال بهذا المفتاح مسجّل مسبقاً." },
+  uq_month_close_event_hash: { msg: "بصمة حدث الإقفال مسجّلة مسبقاً." },
+  uq_termadv_source: { msg: "استرداد السلفة في التسوية النهائية مسجّل مسبقاً." },
+  uq_termadv_reversal: { msg: "استرداد سلفة التسوية النهائية معكوس مسبقاً." },
+  uq_advsettle_reversal_once: { msg: "تسوية السلفة معكوسة مسبقاً." },
+  uq_advrep_req_source: { msg: "طلب سداد السلفة لهذا المصدر مسجّل مسبقاً." },
+  uq_advrep_req_external_ref: { msg: "مرجع سداد السلفة مستخدم مسبقاً." },
+  uq_advrep_req_receipt: { msg: "إيصال سداد السلفة مرتبط بطلب آخر." },
+  uq_advrep_req_entry: { msg: "قيد سداد السلفة مرتبط بطلب آخر." },
+  uq_advrep_alloc_source: { msg: "تخصيص سداد السلفة لهذا المصدر مسجّل مسبقاً." },
+  uq_advrep_alloc_reversal: { msg: "تخصيص سداد السلفة معكوس مسبقاً." },
+  uq_asset_client_req: { msg: "طلب إنشاء الأصل مسجّل مسبقاً." },
+  uq_maint_client_req: { msg: "طلب صيانة الأصل مسجّل مسبقاً." },
+  uq_accrual_obligation_source: { msg: "التزام الاستحقاق لهذا المصدر مسجّل مسبقاً." },
+  uq_accrual_obligation_request: { msg: "طلب إنشاء التزام الاستحقاق مسجّل مسبقاً." },
+  uq_accrual_event_dedupe: { msg: "حدث الاستحقاق مسجّل مسبقاً." },
+  uq_accrual_event_entry: { msg: "قيد الاستحقاق مرتبط بحدث آخر." },
+  uq_accrual_correction_request: { msg: "طلب تصحيح الاستحقاق مسجّل مسبقاً." },
+  uq_yerr_client_request: { msg: "طلب إعادة فتح السنة مسجّل مسبقاً." },
+  uq_yerr_pending_snapshot: { msg: "يوجد طلب إعادة فتح معلّق لهذه اللقطة." },
+  uq_yerr_reversal_entry: { msg: "قيد عكس إقفال السنة مستخدم مسبقاً." },
+  uq_yerr_reopen_event: { msg: "حدث إعادة فتح السنة مسجّل مسبقاً." },
   // محاولات الدفع الخارجية (0183): المرجع أحادي الاستعمال عالمياً، والربط أحادي.
   uq_extpay_reference: { msg: "مرجع الدفع الخارجي مستخدَم في محاولة أخرى — لا يمكن تسجيل القبض مرتين." },
   uq_extpay_request: { msg: "طلب محاولة الدفع هذا سُجّل مسبقاً — أعد تحميل حالته ولا تنشئ محاولة ثانية." },
@@ -188,6 +247,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_account_code: { field: "رمز الحساب", entity: "شجرة الحسابات", hint: "رمز الحساب مستعمل لحسابٍ آخر — اختر رمزاً فريداً." },
   uq_account_system_role: { field: "الدور النظاميّ للحساب", entity: "شجرة الحسابات", hint: "هذا الدور النظاميّ مرتبطٌ بحسابٍ آخر — كل دورٍ نظاميّ لحسابٍ واحد فقط." },
   uq_journal_entry: { msg: "قيدٌ مزدوجٌ مكرّرٌ لنفس الحدث المالي — الحدث مُرحَّلٌ مسبقاً في دفتر القيود (حماية من الازدواج)." },
+  uq_journal_source_key: { msg: "مصدر يومية الدفتر مسجّل مسبقاً — لم يُكرّر الرصيد الافتتاحي." },
   uq_month_close_pending: { msg: "يوجد طلب إقفالٍ معلَّقٌ لهذا الشهر — اعتمِده أو ارفُضه قبل تقديم طلبٍ جديد." },
   // ── الكتالوج ──
   productUnits_barcode_unique: {
@@ -248,7 +308,6 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_shift_funding_link_request: { msg: "طلب تمويل الوردية مرتبط بمصدر نقدي مسبقاً — حدّث القائمة ولا تُعد إرسال الطلب." },
   uq_shift_funding_link_active_source: { msg: "مصدر النقد المحدد محجوز أو استُهلك في طلب تمويل آخر — اختر مصدراً متاحاً." },
   uq_shift_funding_link_active_target: { msg: "توجد معاملة تمويل إضافي معلّقة لهذه الوردية — أكملها أو ألغها قبل إنشاء طلب جديد." },
-  uq_year_branch: { msg: "السنة المالية مفتوحة مسبقاً لهذا الفرع — راجع شاشة الفترات المالية." },
   uq_kiosk_token_hash: { msg: "رمز الكشك مستعمل مسبقاً — ولّد رمزاً جديداً." },
   pushSubscriptions_endpoint_unique: { msg: "اشتراك الإشعارات مسجّل مسبقاً لهذا المتصفح — لا حاجة لإعادة التفعيل." },
 
@@ -257,6 +316,10 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   quotations_quoteNumber_unique: { field: "رقم عرض السعر", entity: "عروض الأسعار", hint: "تصادم ترقيم لحظي — أعد المحاولة." },
   receipts_voucherNumber_unique: { field: "رقم السند", entity: "السندات", hint: "تصادم ترقيم لحظي — أعد المحاولة." },
   purchaseOrders_poNumber_unique: { field: "رقم أمر الشراء", entity: "أوامر الشراء", hint: "تصادم ترقيم لحظي — أعد المحاولة." },
+  purchaseReturns_returnNumber_unique: { field: "رقم مرتجع الشراء", entity: "مرتجعات الشراء", hint: "تصادم ترقيم لحظي — أعد المحاولة." },
+  purchaseReturns_clientRequestId_unique: { msg: "طلب مرتجع الشراء هذا مسجّل مسبقاً — أعد تحميل المستند بدل تكرار العملية." },
+  purchaseReturns_accountingEntryId_unique: { msg: "قيد مرتجع الشراء مرتبط بمستند مرتجع آخر — راجع المستند المسجّل." },
+  uq_print_event_request_outcome: { msg: "نتيجة طلب الطباعة هذه مسجّلة مسبقاً — لم يُكرّر سجل التدقيق." },
   workOrders_orderNumber_unique: { field: "رقم أمر الشغل", entity: "أوامر الشغل", hint: "تصادم ترقيم لحظي — أعد المحاولة." },
   onlineOrders_orderNumber_unique: { field: "رقم طلب المتجر", entity: "طلبات المتجر", hint: "تصادم ترقيم لحظي — أعد المحاولة." },
   cashTransfers_transferNumber_unique: { field: "رقم التحويل النقدي", entity: "التحويلات النقدية", hint: "تصادم ترقيم لحظي — أعد المحاولة." },
@@ -272,7 +335,17 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_invoice_source: { msg: "هذه العملية نُفِّذت مسبقاً (حماية من الازدواج) — تحقّق من وجود الفاتورة في القائمة بدل إعادة الإرسال." },
   uq_idempotency_op_key: { msg: "هذه العملية نُفِّذت مسبقاً (حماية من الازدواج) — تحقّق من نتيجتها في القوائم بدل إعادة الإرسال." },
   uq_online_order_client_req: { msg: "الطلب مُسجَّل مسبقاً (حماية من الازدواج) — لا حاجة لإعادة الإرسال." },
+  // 0185 (المسار أ): تفرّد رقم السحب النقديّ لكل (رقم × اتجاه). اصطدامه يعني محاولة تسجيل
+  // ساقٍ ثانية لسحبٍ قائم — لا خطأ إدخال، بل حمايةٌ من عهدةٍ مزدوجة.
+  uq_receipt_cash_drop: {
+    msg: "رقم السحب النقديّ مُسجَّل سلفاً بهذا الاتجاه — راجع سند السحب بدل إعادة تسجيله.",
+  },
   uq_entry_dedupe: { msg: "قيد محاسبي مكرّر لنفس العملية — العملية مسجّلة مسبقاً في الدفتر (حماية من الازدواج)." },
+  // 0186 (و-٤): العنصر المرفوض يُلتقط مرّةً واحدة مهما أعاد الجهاز المحاولة ⇒ الطابور يعكس
+  // عدد العمليات لا عدد المحاولات. اصطدامه ليس خطأ مستخدم بل تأكيدُ أنّ الالتقاط تمّ سلفاً.
+  uq_offline_recovery_request: {
+    msg: "هذه العملية الأوفلاينية مُسجَّلة سلفاً في طابور الاسترداد — راجعها من تقرير المبيعات الأوفلاين.",
+  },
   uq_stkcount_request: { msg: "طلب العدّ نُفِّذ مسبقاً (حماية من الازدواج) — لا حاجة لإعادة الإرسال." },
 
   // ── قيود «سجلّ واحد لكل …» المركّبة ──
@@ -285,6 +358,7 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
   uq_consignment_invoice: { msg: "لهذه الفاتورة إرسالية توصيل مسبقاً — راجع شاشة التوصيل." },
   uq_consignment_source: { msg: "لهذا الطلب إرسالية توصيل مسبقاً — راجع شاشة التوصيل بدل إنشاء إرسالية ثانية." },
   uq_delivery_remittance_line: { msg: "هذه الإرسالية مدرجة مسبقاً في سند التوريد نفسه — عدّل السطر الموجود." },
+  uq_remittance_party_statement: { msg: "كشف الشركة بهذا الرقم مُسجَّلٌ سلفاً لهذه الجهة — راجع سند التوريد الصادر عنه بدل إدخاله مرّةً ثانية." },
   uq_delivery_ledger_event: { msg: "قيد حركة التوصيل لهذه العملية مسجّل مسبقاً (حماية من الازدواج)." },
   uq_delivery_event_key: { msg: "حدث التوصيل لهذه العملية مسجّل مسبقاً (حماية من الازدواج)." },
   uq_payroll_period: { msg: "يوجد مسيّر رواتب لنفس الفترة — افتح المسيّر الموجود أو احذفه (إن كان مسودة) قبل إنشاء جديد." },
@@ -319,6 +393,15 @@ export const UNIQUE_AR: Record<string, UniqueInfo> = {
 
   // ── السندات ──
   uq_vchcat_name: { field: "اسم الفئة", entity: "فئات السندات" },
+
+  // ── فئات المصروفات المُدارة (هجرة 0203) ──
+  // الخدمة تفحص الاسم مسبقاً برسالة ودّية، وهذا القيد هو الحارس الأخير: طلبان متزامنان
+  // بنفس الاسم يمرّان الفحص معاً ويصطدم أحدهما بالقيد ⇒ يلزمه ترجمةٌ عربية لا خطأ خام.
+  uq_expcat_name: {
+    field: "اسم الفئة",
+    entity: "فئات المصروفات",
+    hint: "قد تكون الفئة موجودة معطّلة — فعّلها من «الخزينة ← فئات المصروفات» بدل إنشاء نسخة ثانية.",
+  },
 
   // ── الكوبونات (هجرة 0078) ──
   uq_coupon_code: { field: "رمز الكوبون", entity: "الكوبونات", hint: "كوبون آخر يحمل نفس الرمز — ولّد رمزاً مختلفاً." },

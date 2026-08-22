@@ -29,7 +29,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { paymentMethodLabel } from "@/lib/paymentMethod";
-import { invoiceStatusLabel } from "@/lib/labels";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
 import {
   Check,
   CircleDollarSign,

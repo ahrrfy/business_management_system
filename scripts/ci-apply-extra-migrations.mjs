@@ -117,6 +117,37 @@ const EXTRA_MIGRATIONS = [
   // immutable allocations, operational ledger, events and outbox. This runs
   // after the reception repair because it builds on those consignment fields.
   "drizzle/migrations/extras/0178_delivery_phase2_state_and_ledgers.sql",
+  // 18/8/2026: db:push creates storeSettings but can miss the fulfillment
+  // branch index/FK. Replay the idempotent migration before schema verification.
+  "drizzle/migrations/0181_store_fulfillment_branch.sql",
+  // 0185 المسار أ: عمود مولَّد STORED + فهرس فريد يمنع تكرار رقم السحب النقديّ لنفس الاتجاه
+  //   (db:push لا يُنشئ الأعمدة المولَّدة ⇒ لولا هذا السطر لَمَرّ الاختبار خضراءَ زوراً في CI).
+  "drizzle/migrations/0185_cash_drop_reference_uniqueness.sql",
+  // 15/8/2026: db:push represents the month-close tables and CHECKs but cannot create triggers.
+  // This idempotent repair keeps fresh CI/test databases identical to migration-built production.
+  "drizzle/migrations/extras/0192_0197_month_close_triggers.sql",
+  // ١٧/٨/٢٦: كتالوج فئات السندات. البذر بيانات لا بنية ⇒ `db:push` لا يُنتجه أبداً، فقاعدة
+  // CI/الاختبار كانت تحصل على فئات 0036 (المطبَّقة أعلاه) **بلا حساب مقابل** فتُخالف الإنتاج.
+  // 0202 idempotent (INSERT مشروط + UPDATE على NULL) ويجب أن تبقى بعد 0036 في الترتيب.
+  "drizzle/migrations/0202_voucher_category_defaults.sql",
+  // ١٧/٨/٢٦: فئات المصروفات المُدارة. الجدول يفهمه db:push، لكن **بذر الكتالوج والردم الرجعيّ
+  // وقيد الـFK** بيانات/قيود لا يُنتجها push ⇒ قاعدة CI تبقى بلا فئةٍ واحدة وبلا فئةٍ احتياطية
+  // لكل دلو، فيسقط حلّ الفئة في إنشاء المصروف. idempotent وآمن للتكرار.
+  "drizzle/migrations/0203_managed_expense_categories.sql",
+  // ١٨/٨/٢٦: db:push يمثل لقطة انتهاء حجز طلب المتجر وفهرسها لكنه لا يمثل BEFORE UPDATE trigger.
+  // repair مستقل idempotent يستبدل final تحت pre-trigger ثم يزيل المؤقت، فيطابق قواعد CI/الاختبار
+  // مسار migrator الحاكم في 0208 بلا نافذة حماية.
+  "drizzle/migrations/extras/0208_online_order_reservation_guard.sql",
+  // ٢٠/٨/٢٦: db:push قد يترك فهرس FK افتراضياً لمحفظة البطاقات الرقمية بدلاً من الاسم التعاقدي
+  // idx_dwt_wallet؛ الإصلاح idempotent ويحافظ على فهرس قراءات المحفظة واختبار الحماية.
+  "drizzle/migrations/extras/0212_repair_digital_wallet_index.sql",
+  // ٢٠/٨/٢٦: موجة **التراجع** عن موجة تسعير. سببان لوجودها هنا لا في مسار migrator وحده:
+  //   ١) `db:push` لا يوسّع enum موثوقاً على MySQL 8 (قيمة `REVERT`).
+  //   ٢) والأهمّ: قيدا CHECK للموجات يُنشئهما `extras/0057_0060_bundle_check_constraints.sql`
+  //      أعلاه **بصيغتهما القديمة** التي ترفض `changeValue = 0` ⇒ لولا هذا السطر لبَنت قاعدةُ
+  //      CI/الاختبار القيدَ القديم فيسقط كل تراجعٍ بـER_CHECK_CONSTRAINT_VIOLATED بينما الإنتاج
+  //      (مسار migrator) يعمل. **يجب أن يبقى بعد 0057_0060 في الترتيب.** idempotent وآمن للتكرار.
+  "drizzle/migrations/0226_price_wave_revert.sql",
 ];
 
 // Production deploys may need one narrowly-scoped, idempotent repair without

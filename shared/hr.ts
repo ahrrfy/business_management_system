@@ -75,6 +75,20 @@ export const PAYROLL_STATUSES = [
 export type PayrollStatus = (typeof PAYROLL_STATUSES)[number]["key"];
 export const payrollStatusLabel = (k: string): string => PAYROLL_STATUSES.find((s) => s.key === k)?.label ?? k;
 
+/**
+ * وسمُ بندِ مسيّرٍ يحتاج انتباهاً قبل الاعتماد (اليوم المفتوح: دخولٌ بلا انصراف).
+ *
+ * العقد: `payroll/generate.ts` يصدّر به `payrollItems.note`، وشاشة الرواتب تكتشفه به —
+ * فالثابت هنا هو **الأثر الدائم** للوسم (يبقى بعد إعادة تحميل الصفحة)، بخلاف
+ * `attendanceFlagged` الذي يرافق نتيجة التوليد لحظةً واحدة.
+ * ⚠️ نصٌّ عربيّ لا رمز: حارس `check:emoji` يرفض الإيموجي في `client/**`، والأثر البصريّ
+ * مكانه أيقونة `lucide-react` في الشاشة لا محرفٌ في البيانات.
+ */
+export const PAYROLL_ITEM_ATTENTION_PREFIX = "تنبيه:";
+/** هل يحمل بندُ المسيّر وسمَ الانتباه؟ (مصدرُه ملاحظةُ البند وحدها — لا حقل مخزَّن). */
+export const payrollItemNeedsAttention = (note: string | null | undefined): boolean =>
+  typeof note === "string" && note.startsWith(PAYROLL_ITEM_ATTENTION_PREFIX);
+
 /* ===== الإجازات ===== أنواعها وما إن كانت مدفوعة (السنوية/المرضية/الأمومة مدفوعة؛ بدون راتب غير مدفوعة) */
 export const LEAVE_TYPES = [
   { key: "سنوية", paid: true },

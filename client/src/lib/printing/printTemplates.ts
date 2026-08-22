@@ -6,6 +6,7 @@
  * receipts، shift، barcode labels) خارج نطاق التسليم وتُبقى بتصميمها السابق (يستفيد كل الطباعة من ألوان
  * وخطّ التذييل الجديدة عبر brand.ts + docHtml.ts).
  */
+import { workOrderStatusLabel, workOrderStatusPrintColor } from "@shared/workOrderStatus";
 import { BRAND as B, CO, RECEIPT_PHONES, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
 import { fmtDate, fmtDateTime } from '../date';
 import {
@@ -341,20 +342,12 @@ export interface WorkOrderPrintData {
   total: string | number;
 }
 
-const WO_STATUS_COLOR: Record<string, string> = {
-  RECEIVED: '#1A9B78', IN_PROGRESS: '#CC7E3F', READY: '#3B82F6',
-  DELIVERED: '#059669', CANCELLED: '#DC2626',
-};
-const WO_STATUS_AR: Record<string, string> = {
-  RECEIVED: 'مُستلَم', IN_PROGRESS: 'قيد التنفيذ', READY: 'جاهز للتسليم',
-  DELIVERED: 'مُسلَّم', CANCELLED: 'ملغى',
-};
 
 export function printWorkOrder(d: WorkOrderPrintData): void {
   // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printWorkOrderV2 بالتصميم المرجعي (بلا عمود ضريبة، توقيعا الفني والعميل،
   // شارة الحالة الملوّنة أعلى الترويسة). notes القديم = ملاحظات التشغيل الجديدة.
-  const statusLabel = WO_STATUS_AR[d.status ?? ''] ?? (d.status ?? '');
-  const statusColor = WO_STATUS_COLOR[d.status ?? ''] ?? '#92400E';
+  const statusLabel = workOrderStatusLabel(d.status);
+  const statusColor = workOrderStatusPrintColor(d.status);
   printWorkOrderV2({
     woNumber: d.woNumber,
     woDate: d.woDate,
@@ -390,6 +383,8 @@ export interface CustomerStmtPrintData {
   customerAddress?: string | null;
   fromDate?: string | null;
   toDate?: string | null;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
   transactions: {
     date: string;
     ref: string;
@@ -397,6 +392,7 @@ export interface CustomerStmtPrintData {
     debit?: string | number | null;
     credit?: string | number | null;
     balance: string | number;
+    actor?: string | null;
   }[];
   totalDebit: string | number;
   totalCredit: string | number;
@@ -405,15 +401,17 @@ export interface CustomerStmtPrintData {
   closingBalance: string | number;
 }
 
-export function printCustomerStmt(d: CustomerStmtPrintData): void {
+export function printCustomerStmt(d: CustomerStmtPrintData): boolean {
   // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (كشف مفصّل). صف تفاصيل تحت كل حركة يشرح
   // محتوى الفاتورة/السند. النوع = "customer".
   const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
-  printStatementV2({
+  return printStatementV2({
     partyKind: 'customer',
     partyName: d.customerName,
     partyPhone: d.customerPhone,
     periodLabel,
+    printedByName: d.printedByName,
+    printRequestedAt: d.printRequestedAt,
     openingBalance: d.openingBalance ?? 0,
     currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
@@ -429,6 +427,7 @@ export function printCustomerStmt(d: CustomerStmtPrintData): void {
         typeLabel: label,
         typeColor: color,
         details: t.description,
+        actor: t.actor,
       };
     }),
     totalDebit: d.totalDebit,
@@ -509,6 +508,8 @@ export interface SupplierStmtPrintData {
   supplierAddress?: string | null;
   fromDate?: string | null;
   toDate?: string | null;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
   transactions: {
     date: string;
     ref: string;
@@ -516,6 +517,7 @@ export interface SupplierStmtPrintData {
     debit?: string | number | null;
     credit?: string | number | null;
     balance: string | number;
+    actor?: string | null;
   }[];
   totalDebit: string | number;
   totalCredit: string | number;
@@ -524,7 +526,7 @@ export interface SupplierStmtPrintData {
   closingBalance: string | number;
 }
 
-export function printSupplierStmt(d: SupplierStmtPrintData): void {
+export function printSupplierStmt(d: SupplierStmtPrintData): boolean {
   // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (النوع = "supplier").
   // ⚠️ الرصيد المُمرَّر هنا (openingBalance/balance/closingBalance) موقَّع فعلاً بنفس اصطلاح
   // suppliers.currentBalance (موجب="علينا له")، مطابقاً لبناء ledger في SupplierStatement.tsx
@@ -532,11 +534,13 @@ export function printSupplierStmt(d: SupplierStmtPrintData): void {
   // الاتجاه (لنا/علينا) من الإشارة نفسها ويَعرض القيمة المطلقة بجانبه، فتُحفَظ دلالة رصيد
   // دائن/تسديد زائد للمورّد (سالب ⇒ «لنا») بدل ابتلاعها بقيمة مطلقة صامتة.
   const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
-  printStatementV2({
+  return printStatementV2({
     partyKind: 'supplier',
     partyName: d.supplierName,
     partyPhone: d.supplierPhone,
     periodLabel,
+    printedByName: d.printedByName,
+    printRequestedAt: d.printRequestedAt,
     openingBalance: Number(d.openingBalance ?? 0),
     currentBalance: d.currentBalance ?? null,
     transactionsCount: d.transactions.length,
@@ -554,6 +558,7 @@ export function printSupplierStmt(d: SupplierStmtPrintData): void {
         typeLabel: label,
         typeColor: color,
         details: t.description,
+        actor: t.actor,
       };
     }),
     totalDebit: d.totalDebit,
@@ -863,6 +868,8 @@ export interface ReceiptBrowserData {
   /** خصم الفاتورة الكلي، إن وُجد. */
   discount?: string | number | null;
   tax?: string | number | null;
+  /** تعديلُ التقريب النقديّ (± د.ع، النقد الكامل فقط) — يُطبع صريحاً كي يطابق حساب الإيصال إجماليه. */
+  cashRounding?: string | number | null;
   total: string | number;
   paid?: string | number | null;
   change?: string | number | null;
@@ -978,6 +985,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     <div style="display:flex;justify-content:space-between;"><span>المجموع:</span><span>${fmt(d.subtotal)}</span></div>
     ${Number(d.discount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الخصم:</span><span>-${fmt(d.discount)}</span></div>` : ''}
     ${Number(d.tax ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الضريبة:</span><span>${fmt(d.tax)}</span></div>` : ''}
+    ${d.cashRounding != null && Number(d.cashRounding) !== 0 ? `<div style="display:flex;justify-content:space-between;"><span>تقريب نقديّ:</span><span>${Number(d.cashRounding) > 0 ? '+' : ''}${fmt(d.cashRounding)}</span></div>` : ''}
     <div style="display:flex;justify-content:space-between;font-weight:900;font-size:14px;margin:1.5mm 0;
       padding:1.5mm 0;border-top:1px solid #000;border-bottom:1px solid #000;">
       <span>الإجمالي:</span><span>${fmt(d.total)} د.ع</span>
@@ -1020,10 +1028,6 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
 
 import type { WorkOrderReceiptData } from './workOrderRaster';
 
-const WO_STATUS_HTML: Record<string, string> = {
-  RECEIVED: 'مُستلَم', IN_PROGRESS: 'قيد التنفيذ', READY: 'جاهز للتسليم',
-  DELIVERED: 'مُسلَّم', CANCELLED: 'ملغى',
-};
 
 export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   const logo = logoUrl();
@@ -1034,7 +1038,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
     barSvg = bc.svg;
   } catch { /* بلا باركود */ }
 
-  const statusLabel = WO_STATUS_HTML[d.status ?? ''] ?? (d.status ?? '');
+  const statusLabel = workOrderStatusLabel(d.status);
 
   const infoRows = [
     ['رقم الأمر', esc(d.orderNumber)],

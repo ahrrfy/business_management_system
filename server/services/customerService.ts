@@ -28,7 +28,13 @@ import { money, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { canonicalIraqiMobile, normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
-import { signedOpeningBalance, postOpeningEntry, upsertOpeningEntry, type OpeningDirection } from "./openingBalance";
+import {
+  assertLegacyOpeningMutable,
+  signedOpeningBalance,
+  postOpeningEntry,
+  upsertOpeningEntry,
+  type OpeningDirection,
+} from "./openingBalance";
 import { assertPeriodOpen } from "./periodLockService";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -198,7 +204,16 @@ export type ReceptionCustomerResolution = {
   phone: string;
   defaultPriceTier: PriceTier;
   created: boolean;
-  /** الاستقبال يعدّ الهوية مكتملة فقط برقم موبايل عراقي صارم وعميل فعّال. */
+  /**
+   * حدّ ائتمان العميل كما هو: `null` = بلا حدّ · `"0"` = نقديٌّ فقط · موجب = سقفٌ يُفحَص.
+   * تعرضه الشاشة كي لا تَعِد بما يرفضه `assertCreditLimit`.
+   */
+  creditLimit: string | null;
+  /**
+   * أهليّة **البيع الآجل** فعلياً: هويةٌ مكتملة (موبايل عراقي صارم وعميل فعّال) **و**
+   * حدُّ ائتمانٍ يسمح (ليس صفراً). كانت تُعلَن `true` ثابتةً لكل عميلٍ مرتبط — فتَعِد
+   * الشاشة بالآجل ويرفضه الخادم (بلاغ المالك الحيّ ١٩/٨).
+   */
   deferredEligible: boolean;
 };
 
@@ -232,6 +247,10 @@ export async function resolveReceptionCustomerByPhone(
           phone: customers.phone,
           defaultPriceTier: customers.defaultPriceTier,
           isActive: customers.isActive,
+          // ١٩/٨ (بلاغ حيّ): الشاشة كانت تَعِد بـ«البيع بدون عربون متاح» لكل عميلٍ مرتبط
+          // نصّاً ثابتاً، ثم يرفض الخادم لأنّ حدّه صفر (وهو **افتراضي كل عميلٍ جديد** بقرار
+          // المالك). لتقول الشاشة الحقيقة لزمها الحدّ نفسه — لا استنتاجٌ من كون العميل مرتبطاً.
+          creditLimit: customers.creditLimit,
         })
         .from(customers)
         .where(or(
@@ -260,7 +279,10 @@ export async function resolveReceptionCustomerByPhone(
       phone,
       defaultPriceTier: existing.defaultPriceTier as PriceTier,
       created: false,
-      deferredEligible: true,
+      // `null` = بلا حدّ (سماحٌ كامل) · `"0"` = نقديٌّ فقط · موجب = سقفٌ يُفحَص عند البيع.
+      creditLimit: existing.creditLimit,
+      // أهليّةُ الآجل الحقيقية = مرتبطٌ **و** حدُّه ليس صفراً (مرآةُ `assertCreditLimit`).
+      deferredEligible: existing.creditLimit == null || Number(existing.creditLimit) !== 0,
     };
   }
 
@@ -273,6 +295,7 @@ export async function resolveReceptionCustomerByPhone(
       phone,
       defaultPriceTier: "RETAIL",
       created: false,
+      creditLimit: null,
       deferredEligible: false,
     };
   }
@@ -298,7 +321,11 @@ export async function resolveReceptionCustomerByPhone(
       phone,
       defaultPriceTier: row.defaultPriceTier as PriceTier,
       created: !created.idempotentReplay,
-      deferredEligible: true,
+      creditLimit: row.creditLimit ?? null,
+      // ⚠️ جذر التناقض الذي رآه المالك: العميل يُنشأ هنا بـ`creditLimit: "0"` (نقديّ فقط —
+      // قرار المالك الافتراضيّ) ثمّ يُعلَن `deferredEligible: true` ثابتاً ⇒ الشاشة تَعِد
+      // بالآجل والخادم يرفضه. الأهليّة تُشتقّ الآن من الحدّ نفسه فيتطابق الوعد والتنفيذ.
+      deferredEligible: row.creditLimit == null || Number(row.creditLimit) !== 0,
     };
   } catch (error) {
     // سباق رقم مع عملية قديمة لا تحمل مفتاحنا: أعد قراءة الهاتف بعد التزام الفائز.
@@ -312,7 +339,8 @@ export async function resolveReceptionCustomerByPhone(
           phone,
           defaultPriceTier: won.defaultPriceTier as PriceTier,
           created: false,
-          deferredEligible: true,
+          creditLimit: won.creditLimit,
+          deferredEligible: won.creditLimit == null || Number(won.creditLimit) !== 0,
         };
       }
     }
@@ -491,15 +519,27 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
 
     // قفل الفترة (اتساقاً مع مسار التصحيح upsertOpeningEntry): لا يُحذَف قيد OPENING مؤرَّخ داخل فترة
     // مُقفَلة (يُغيّر أرقامها بأثر رجعيّ) — يُرفض حتى تُفتح الفترة (admin). لا قيد ⇒ لا شيء يُحذَف.
-    const [openingEntry] = await tx
-      .select({ entryDate: accountingEntries.entryDate })
+    // ب-١ (١٦/٨): الطرف قد يملك عدّة قيود OPENING (أصلٌ + فروق تصحيح مؤرَّخة) تمتدّ عبر فترات.
+    // كان الفحص يأخذ **صفّاً واحداً بلا ترتيب** ثمّ يحذف الكلّ ⇒ صفٌّ في فترة مُقفَلة يُمحى
+    // بغطاء صفٍّ مفتوح. نفحص **أقدم** تاريخ: إن كان مقفلاً فلا حذف أصلاً.
+    const [openingAgg] = await tx
+      .select({
+        earliest: sql<string | null>`MIN(${accountingEntries.entryDate})`,
+        count: sql<number>`COUNT(*)`,
+      })
       .from(accountingEntries)
-      .where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")))
-      .limit(1);
-    if (openingEntry) await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
+      .where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
+    const openingEntry =
+      Number(openingAgg?.count ?? 0) > 0 && openingAgg?.earliest
+        ? { entryDate: openingAgg.earliest }
+        : null;
+    if (openingEntry) {
+      await assertLegacyOpeningMutable(tx);
+      await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
+      await tx.delete(accountingEntries).where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
+    }
 
     // إزالة البيانات التابعة الآمنة الوحيدة: القيد الافتتاحيّ + الملاحظات + جهات الاتصال + التذكيرات.
-    await tx.delete(accountingEntries).where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
     await tx.delete(customerNotes).where(eq(customerNotes.customerId, customerId));
     await tx.delete(contactPersons).where(eq(contactPersons.customerId, customerId));
     await tx.delete(arReminders).where(eq(arReminders.customerId, customerId));

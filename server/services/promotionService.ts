@@ -6,20 +6,24 @@
  * المبالغ كلها عبر money.ts (toDbMoney). الكتابات متعددة الأطراف داخل withTx.
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import type { Tx } from "../db";
-import { todayUtcDate } from "./businessDay";
+import { baghdadToday, todayUtcDate } from "./businessDay";
 import {
   employeePromotions,
   employees,
   employeeTerminations,
   hrDeviceUsers,
+  payrollItems,
+  payrollRuns,
   users,
 } from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { money, toDbMoney } from "./money";
+import Decimal from "decimal.js";
+import { money, round2, toDbMoney } from "./money";
+import { getEmployeeStatement } from "./hr/employeeStatement";
 import { createSystemPaymentRequestTx } from "./voucher/create";
 import {
   wageProfileColumns,
@@ -29,6 +33,21 @@ import {
 import { companyBranchScope } from "./companyBranchScope";
 import { assertNotLastActiveAdmin } from "./userService";
 import { assertCanDisablePrivilegedUser } from "./userAdminPolicy";
+import {
+  assertTerminationPaymentMethod,
+  normalizeTerminationBreakdown,
+  recognizeTerminationSettlementTx,
+  reissueTerminationPayment,
+  reverseTerminationPayment,
+  reverseTerminationRecognition,
+  type TerminationBreakdownInput,
+} from "./terminationSettlementService";
+
+export {
+  reissueTerminationPayment,
+  reverseTerminationPayment,
+  reverseTerminationRecognition,
+};
 
 /** يحتفظ بـnull الحقيقي للفرع حتى يفشل غير الأدمن بلا فرع مغلقاً، ولا يسقط صامتاً إلى الفرع 1. */
 export type PromotionActor = Omit<Actor, "branchId"> & {
@@ -392,8 +411,67 @@ async function terminationRows(actor: PromotionActor, id?: number) {
       terminationType: employeeTerminations.terminationType,
       lastDay: employeeTerminations.lastDay,
       settlement: employeeTerminations.settlement,
+      earnedGrossWages: employeeTerminations.earnedGrossWages,
+      wageReductions: employeeTerminations.wageReductions,
+      advanceRecovery: employeeTerminations.advanceRecovery,
+      incomeTax: employeeTerminations.incomeTax,
+      employeeSocialSecurity: employeeTerminations.employeeSocialSecurity,
+      employerSocialSecurity: employeeTerminations.employerSocialSecurity,
+      leaveCompensation: employeeTerminations.leaveCompensation,
+      noticeCompensation: employeeTerminations.noticeCompensation,
+      eosBenefit: employeeTerminations.eosBenefit,
+      otherSettlement: employeeTerminations.otherSettlement,
+      otherSettlementLabel: employeeTerminations.otherSettlementLabel,
+      settlementEvidenceNote: employeeTerminations.settlementEvidenceNote,
+      zeroAmountsAttested: employeeTerminations.zeroAmountsAttested,
+      settlementPaymentMethod: employeeTerminations.settlementPaymentMethod,
+      settlementPaymentReference: employeeTerminations.settlementPaymentReference,
+      settlementSnapshotHash: employeeTerminations.settlementSnapshotHash,
+      eosProvisionAvailable: employeeTerminations.eosProvisionAvailable,
+      eosProvisionConsumed: employeeTerminations.eosProvisionConsumed,
+      eosProvisionReleased: employeeTerminations.eosProvisionReleased,
+      eosExpenseRecognized: employeeTerminations.eosExpenseRecognized,
+      recognizedAt: employeeTerminations.recognizedAt,
+      recognizedBy: employeeTerminations.recognizedBy,
+      recognitionEventId: employeeTerminations.recognitionEventId,
+      remainingAdvanceAtRecognition:
+        employeeTerminations.remainingAdvanceAtRecognition,
+      paymentReversedAt: employeeTerminations.paymentReversedAt,
+      paymentReversalReason: employeeTerminations.paymentReversalReason,
+      recognitionReversedAt: employeeTerminations.recognitionReversedAt,
+      recognitionReversalReason: employeeTerminations.recognitionReversalReason,
+      settlementPaidAt: sql<Date | null>`(
+        SELECT pae.\`occurredAt\`
+        FROM \`payrollAccountingEvents\` pae
+        WHERE pae.\`terminationId\` = ${employeeTerminations.id}
+          AND pae.\`payrollAccountingEventKind\` = 'SALARY_PAYMENT'
+        ORDER BY pae.\`id\` DESC LIMIT 1
+      )`,
+      settlementPaymentReturnedAt: sql<Date | null>`(
+        SELECT pae.\`occurredAt\`
+        FROM \`payrollAccountingEvents\` pae
+        WHERE pae.\`terminationId\` = ${employeeTerminations.id}
+          AND pae.\`payrollAccountingEventKind\` = 'SALARY_PAYMENT_RETURN'
+        ORDER BY pae.\`id\` DESC LIMIT 1
+      )`,
+      latestSettlementPaymentEventKind: sql<
+        "SALARY_PAYMENT" | "SALARY_PAYMENT_RETURN" | null
+      >`(
+        SELECT pae.\`payrollAccountingEventKind\`
+        FROM \`payrollAccountingEvents\` pae
+        WHERE pae.\`terminationId\` = ${employeeTerminations.id}
+          AND pae.\`payrollAccountingEventKind\` IN ('SALARY_PAYMENT', 'SALARY_PAYMENT_RETURN')
+        ORDER BY pae.\`id\` DESC LIMIT 1
+      )`,
+      currentRemainingAdvanceBalance: sql<string>`COALESCE((
+        SELECT SUM(ea.\`remaining\`)
+        FROM \`employeeAdvances\` ea
+        WHERE ea.\`employeeId\` = ${employeeTerminations.employeeId}
+          AND ea.\`advanceStatus\` = 'ACTIVE'
+      ), 0)`,
       reason: employeeTerminations.reason,
       status: employeeTerminations.status,
+      createdBy: employeeTerminations.createdBy,
       createdAt: employeeTerminations.createdAt,
       firstName: employees.firstName,
       fatherName: employees.fatherName,
@@ -425,8 +503,80 @@ export interface TerminationInput {
   employeeId: number;
   terminationType: string;
   lastDay: string;
+  breakdown?: TerminationBreakdownInput;
+  /** Legacy compatibility: zero only. Non-zero totals must be classified. */
   settlement?: string | null;
+  paymentMethod?: "CASH" | "CARD" | "TRANSFER" | "WALLET";
+  paymentReference?: string | null;
+  settlementEvidenceNote: string;
+  zeroAmountsAttested: boolean;
   reason?: string | null;
+  /**
+   * سببُ انحراف الأجر المُدخَل عن اشتقاق محرّك الحضور — إلزاميٌّ عند تجاوز الفارق العتبة
+   * (بند ٤٣). لا يُخزَّن عموداً مستقلّاً: يُلحَق بـ`settlementEvidenceNote` المخزَّن أصلاً
+   * كي يبقى الأثر في مستندٍ واحد، وكي لا تُقحَم هجرةُ مخطّطٍ في شريحةٍ ماليّة.
+   */
+  wageDivergenceReason?: string | null;
+}
+
+/** فارقٌ يُتجاوَز عنه: تقريبُ قسمةٍ لا خلافٌ في الرقم (المحرّك يقسم الراتب على ساعات الشهر). */
+const WAGE_RECONCILE_TOLERANCE_IQD = 1000;
+
+/**
+ * يطابق `earnedGrossWages` المُدخَل يدوياً باشتقاق محرّك الحضور للشهر الأخير (بند ٤٣).
+ *
+ * **متى يُنفَّذ ومتى يُعرَض فقط** — التمييز جوهريّ، وبدونه يصير الحارس ضجيجاً يُتجاوَز:
+ *   • `lastDay` في المستقبل (إنهاءٌ مخطَّط) ⇒ **عرضٌ فقط**: بصمات الأيام الباقية لم تصل بعد،
+ *     فاشتقاق المحرّك ناقصٌ بطبيعته ومقارنتُه تُنتج انحرافاً كاذباً في كل تسويةٍ مسبقة.
+ *   • الموظف خارج مسار الحضور (ساعيّ/مُعفى/الأجر بالحضور معطَّل) ⇒ **عرضٌ فقط**: للكشف
+ *     أساسٌ آخر، والمقارنة به قائمة لكنّ إلزامها ليس من هذه الشريحة.
+ *   • غير ذلك ⇒ **يُنفَّذ**: الفارق فوق العتبة يلزمه سببٌ صريح.
+ */
+async function reconcileTerminationWage(
+  tx: Tx,
+  input: TerminationInput,
+  emp: { id: number; payType?: string | null; attendanceExempt?: boolean | null },
+): Promise<{
+  enforced: boolean;
+  diverged: boolean;
+  entered: string;
+  expected: string;
+  difference: string;
+  basis: string;
+  evidenceSuffix: string | null;
+}> {
+  const entered = money(input.breakdown?.earnedGrossWages ?? 0);
+  const period = input.lastDay.slice(0, 7);
+  const statement = await getEmployeeStatement({
+    employeeId: input.employeeId,
+    period,
+    tx,
+    employmentEndOverride: input.lastDay,
+  });
+  const expected = money(statement?.expectedEarnedGrossWages ?? 0);
+  const difference = expected.minus(entered).abs();
+  const diverged = difference.gt(WAGE_RECONCILE_TOLERANCE_IQD);
+  const plannedAhead = input.lastDay > baghdadToday();
+  const enforced = !plannedAhead && statement?.dueBasis === "attendance";
+
+  const fmt = (d: Decimal) => round2(d).toFixed(2);
+  // الأثر يُكتب متى انحرف الرقم — سواءٌ أُنفِذ الحارس أم عُرض فقط. تسويةٌ مسبقةٌ الدفع تمرّ
+  // بلا إلزام، لكنّ فارقها يبقى مكتوباً في مستندها فيُراجَع لاحقاً بدل أن يختفي.
+  const evidenceSuffix = diverged
+    ? ` [مطابقة الحضور: المحرّك ${fmt(expected)} · المُدخَل ${fmt(entered)} · فارق ${fmt(difference)} د.ع` +
+      `${plannedAhead ? " · إنهاءٌ مخطَّط فالاشتقاق ناقص" : ""}` +
+      `${input.wageDivergenceReason?.trim() ? ` · السبب: ${input.wageDivergenceReason.trim()}` : ""}]`
+    : null;
+
+  return {
+    enforced,
+    diverged,
+    entered: fmt(entered),
+    expected: fmt(expected),
+    difference: fmt(difference),
+    basis: statement?.dueBasis ?? "unknown",
+    evidenceSuffix,
+  };
 }
 
 export async function createTermination(
@@ -434,6 +584,26 @@ export async function createTermination(
   actor: PromotionActor,
 ) {
   const scope = companyBranchScope(actor);
+  if (!input.breakdown && money(input.settlement ?? 0).gt(0)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "لا تُقبل تسوية مجمّعة غير مصنفة. أدخل الأجور والإجازات والإشعار ومكافأة نهاية الخدمة والمستحق الآخر كلّاً على حدة.",
+    });
+  }
+  const breakdown = normalizeTerminationBreakdown(input.breakdown ?? {});
+  const settlementEvidenceNote = input.settlementEvidenceNote.trim();
+  if (!input.zeroAmountsAttested || settlementEvidenceNote.length < 10) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "مرجع المراجعة البشرية وإقرار أن كل قيمة صفرية مقصودة إلزاميان.",
+    });
+  }
+  const payment = assertTerminationPaymentMethod(
+    input.paymentMethod ?? "CASH",
+    input.paymentReference,
+  );
   const newId = await withTx(async (tx) => {
     const [emp] = await tx
       .select()
@@ -450,13 +620,53 @@ export async function createTermination(
       .limit(1);
     if (!emp)
       throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+
+    /*
+     * ⚖️ **مطابقةُ أجر الشهر الأخير بمحرّك الحضور** (بند ٤٣، تدقيق ١٧/٨).
+     *
+     * `earnedGrossWages` كان مُدخَلاً يدوياً محضاً بلا أيّ مقارنة — والمسيّر يعتمده «تغطيةً»
+     * فلا يدفع الشهر مرّتين. أي أن رقماً مكتوباً بالغلط يصير **الأجر النهائيّ** بلا اعتراض،
+     * وهو نقيض ما أقرّته قرارات الحضور الثلاثة (المحرّك مرجعُ الأجر الشهريّ).
+     *
+     * الاشتقاق من الكشف نفسه — لا صيغةً ثالثة — **داخل المعاملة** وبحدّ نهايةٍ صريح، لأنّ
+     * `employees.terminationDate` لا يُضبط إلا في الإكمال لا في الإنشاء.
+     */
+    const wageCheck = await reconcileTerminationWage(tx, input, emp);
+    if (wageCheck.enforced && wageCheck.diverged && !input.wageDivergenceReason?.trim()) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          `الأجر المُدخَل ${wageCheck.entered} د.ع يخالف اشتقاق سجلّ الحضور ${wageCheck.expected} د.ع ` +
+          `(فارق ${wageCheck.difference} د.ع). صحّح الرقم أو أدخل سبب الاختلاف صراحةً.`,
+      });
+    }
+
     const [res] = await tx.insert(employeeTerminations).values({
       employeeId: input.employeeId,
       terminationType: input.terminationType.trim(),
       lastDay: input.lastDay,
-      settlement: toDbMoney(input.settlement ?? "0"),
+      settlement: toDbMoney(breakdown.total),
+      earnedGrossWages: toDbMoney(breakdown.earnedGrossWages),
+      wageReductions: toDbMoney(breakdown.wageReductions),
+      advanceRecovery: toDbMoney(breakdown.advanceRecovery),
+      incomeTax: toDbMoney(breakdown.incomeTax),
+      employeeSocialSecurity: toDbMoney(breakdown.employeeSocialSecurity),
+      employerSocialSecurity: toDbMoney(breakdown.employerSocialSecurity),
+      leaveCompensation: toDbMoney(breakdown.leaveCompensation),
+      noticeCompensation: toDbMoney(breakdown.noticeCompensation),
+      eosBenefit: toDbMoney(breakdown.eosBenefit),
+      otherSettlement: toDbMoney(breakdown.otherSettlement),
+      otherSettlementLabel: breakdown.otherSettlementLabel,
+      // سببُ الانحراف يُلحَق بمستند الإثبات نفسه — أثرٌ واحدٌ مكتفٍ بذاته لا حقلٌ منفصل يُقرأ وحده.
+      settlementEvidenceNote: wageCheck.evidenceSuffix
+        ? `${settlementEvidenceNote}${wageCheck.evidenceSuffix}`.slice(0, 1000)
+        : settlementEvidenceNote,
+      zeroAmountsAttested: input.zeroAmountsAttested,
+      settlementPaymentMethod: payment.method,
+      settlementPaymentReference: payment.referenceNumber,
       reason: input.reason?.trim() || null,
       status: "pending",
+      createdBy: actor.userId,
     });
     return extractInsertId(res);
   });
@@ -473,19 +683,22 @@ async function getTermination(id: number, actor: PromotionActor) {
  */
 export async function completeTermination(id: number, actor: PromotionActor) {
   const scope = companyBranchScope(actor);
+  // Discover the employee outside the accounting transaction. A plain SELECT
+  // inside MySQL's RR transaction would establish a stale snapshot before
+  // waiting for payroll's employee lock. The transaction below therefore
+  // starts with current locking reads and revalidates this preview.
+  const [candidate] = await requireDb()
+    .select({ employeeId: employeeTerminations.employeeId })
+    .from(employeeTerminations)
+    .where(eq(employeeTerminations.id, id))
+    .limit(1);
+  if (!candidate) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "سجل إنهاء الخدمة غير موجود",
+    });
+  }
   return withTx(async (tx) => {
-    const [t] = await tx
-      .select()
-      .from(employeeTerminations)
-      .where(eq(employeeTerminations.id, id))
-      .for("update")
-      .limit(1);
-    if (!t)
-      throw new TRPCError({
-        code: "NOT_FOUND",
-        message: "سجل إنهاء الخدمة غير موجود",
-      });
-
     const [emp] = await tx
       .select({
         branchId: employees.branchId,
@@ -497,7 +710,7 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       .from(employees)
       .where(
         and(
-          eq(employees.id, t.employeeId),
+          eq(employees.id, candidate.employeeId),
           scope.branchId == null
             ? undefined
             : eq(employees.branchId, scope.branchId),
@@ -511,9 +724,107 @@ export async function completeTermination(id: number, actor: PromotionActor) {
         code: "NOT_FOUND",
         message: "سجل إنهاء الخدمة غير موجود",
       });
+    const [t] = await tx
+      .select()
+      .from(employeeTerminations)
+      .where(
+        and(
+          eq(employeeTerminations.id, id),
+          eq(employeeTerminations.employeeId, candidate.employeeId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!t)
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "سجل إنهاء الخدمة غير موجود",
+      });
     if (t.status === "completed") throw new Error("إنهاء الخدمة مكتمل مسبقاً");
     if (emp.employmentStatus === "terminated")
       throw new Error("الموظف منتهي الخدمة مسبقاً");
+
+    // All recognition gates run before disabling the user/device or mutating
+    // employment. The employee row lock is also the cross-flow serialization
+    // point used by payroll approval, closing both race directions.
+    const [recognizer] = await tx
+      .select({ id: users.id, isOwner: users.isOwner, isActive: users.isActive })
+      .from(users)
+      .where(eq(users.id, actor.userId))
+      .for("share")
+      .limit(1);
+    if (!recognizer?.isActive || !recognizer.isOwner) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "إثبات استحقاق نهاية الخدمة يتطلب مالكاً نشطاً.",
+      });
+    }
+    const breakdown = normalizeTerminationBreakdown({
+      earnedGrossWages: t.earnedGrossWages,
+      wageReductions: t.wageReductions,
+      advanceRecovery: t.advanceRecovery,
+      incomeTax: t.incomeTax,
+      employeeSocialSecurity: t.employeeSocialSecurity,
+      employerSocialSecurity: t.employerSocialSecurity,
+      leaveCompensation: t.leaveCompensation,
+      noticeCompensation: t.noticeCompensation,
+      eosBenefit: t.eosBenefit,
+      otherSettlement: t.otherSettlement,
+      otherSettlementLabel: t.otherSettlementLabel,
+    });
+    if (!breakdown.total.eq(money(t.settlement))) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "مجموع تفكيك التسوية لا يطابق الإجمالي المخزن.",
+      });
+    }
+    if (t.createdBy != null && Number(t.createdBy) === Number(actor.userId)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message:
+          "فصل المهام: منشئ إجراء إنهاء الخدمة لا يثبت استحقاقه ولا يكمله بنفسه.",
+      });
+    }
+    if (t.lastDay > baghdadToday()) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          "لا يُكمَل إنهاء الخدمة قبل آخر يوم عمل. يبقى الإجراء معلقاً حتى تاريخه.",
+      });
+    }
+    {
+      const [coveredPayroll] = await tx
+        .select({
+          runId: payrollRuns.id,
+          gross: payrollItems.gross,
+          overtime: payrollItems.overtime,
+        })
+        .from(payrollItems)
+        .innerJoin(payrollRuns, eq(payrollRuns.id, payrollItems.runId))
+        .where(
+          and(
+            eq(payrollItems.employeeId, Number(t.employeeId)),
+            eq(payrollRuns.period, t.lastDay.slice(0, 7)),
+            inArray(payrollRuns.status, ["approved", "paid"]),
+          ),
+        )
+        // Current locking read: if payroll approval held the employee first,
+        // wait for its commit and observe the approved/paid item rather than
+        // an older REPEATABLE READ snapshot.
+        .for("share")
+        .limit(1);
+      if (
+        coveredPayroll &&
+        (money(coveredPayroll.gross).gt(0) ||
+          money(coveredPayroll.overtime).gt(0))
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message:
+            "أجور شهر إنهاء الخدمة مثبتة في مسيّر معتمد/مدفوع. اعكس المسيّر أولاً؛ لا يفسر النظام الصفر المعتمد في التسوية على أنه إذن بإثبات الأجر مرة أخرى.",
+        });
+      }
+    }
 
     let userDisabled = false;
     if (emp.userId != null) {
@@ -523,7 +834,12 @@ export async function completeTermination(id: number, actor: PromotionActor) {
         .where(eq(users.id, emp.userId))
         .for("update")
         .limit(1);
-      if (linkedUser) assertCanDisablePrivilegedUser(actor, linkedUser);
+      if (linkedUser) {
+        assertCanDisablePrivilegedUser(
+          { ...actor, isOwner: recognizer.isOwner },
+          linkedUser,
+        );
+      }
       if (linkedUser?.isActive) {
         if (Number(linkedUser.id) === Number(actor.userId)) {
           throw new TRPCError({
@@ -542,19 +858,19 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       }
     }
 
+    /*
+     * **حدٌّ لا قطع** (0207) — نفس علّة `setEmploymentStatus`، ومسارٌ ثانٍ للإنهاء كان يُبطلها:
+     * إكمالُ التسوية يقع بعد يوم العمل الأخير، فقطعُ الربط هنا يمحو نسبةَ بصمات ذلك اليوم
+     * إن لم تكن طُويت بعد. `t.lastDay` هو يوم العمل الأخير بعينه، وهو الحدّ الصحيح.
+     */
     const deviceRelease = await tx
       .update(hrDeviceUsers)
-      .set({ employeeId: null, effectiveFrom: null })
+      .set({ effectiveTo: t.lastDay })
       .where(eq(hrDeviceUsers.employeeId, t.employeeId));
     const deviceLinksReleased = Number(
       (deviceRelease as unknown as [{ affectedRows?: number }])[0]
         ?.affectedRows ?? 0,
     );
-
-    await tx
-      .update(employeeTerminations)
-      .set({ status: "completed" })
-      .where(eq(employeeTerminations.id, id));
 
     await tx
       .update(employees)
@@ -566,12 +882,28 @@ export async function completeTermination(id: number, actor: PromotionActor) {
       })
       .where(eq(employees.id, t.employeeId));
 
+    const recognition = await recognizeTerminationSettlementTx(tx, {
+      terminationId: id,
+      employeeId: Number(t.employeeId),
+      branchId: Number(emp.branchId),
+      lastDay: t.lastDay,
+      breakdown,
+      evidenceNote: t.settlementEvidenceNote,
+      zeroAmountsAttested: t.zeroAmountsAttested,
+      actorUserId: actor.userId,
+      recognizedAt: new Date(`${t.lastDay}T12:00:00.000Z`),
+    });
+    await tx
+      .update(employeeTerminations)
+      .set({ status: "completed" })
+      .where(eq(employeeTerminations.id, id));
+
     // تسوية المستحقات النهائية = صرفُ نقدٍ لموظف = **عملية حسّاسة** ⇒ فصل مهام إلزاميّ (المخاطرة الجهازية
     // #٦، قرار المالك ١٨/٧: العمليات الحسّاسة تمرّ باعتمادٍ ثنائيّ بلا عتبة). تُصدَر **سند صرف مُعلَّق**
     // (PENDING_APPROVAL، بلا أثرٍ ماليّ) حتى يعتمده مديرٌ آخر عبر approveVoucher (SOD-04: المُعتمِد ≠ المُنشئ)
     // فيُرحَّل حينها PAYMENT_OUT للخزينة. يظهر في طابور اعتماد السندات القائم (voucherNumber != null) بلا واجهةٍ جديدة.
     // كان يُصرَف COMPLETED بفاعلٍ واحد بلا سقف (البند ٩ في «أخطر ١٢»، تدقيق ١٧/٧).
-    const settlement = money(t.settlement ?? 0);
+    const settlement = breakdown.total;
     let settlementVoucher: { receiptId: number; voucherNumber: string } | null =
       null;
     if (settlement.gt(0)) {
@@ -582,21 +914,31 @@ export async function completeTermination(id: number, actor: PromotionActor) {
           message: "لا يمكن إنشاء سند تسوية لموظف بلا فرع مُسنَد",
         });
       }
+      const payment = assertTerminationPaymentMethod(
+        t.settlementPaymentMethod,
+        t.settlementPaymentReference,
+      );
       const request = await createSystemPaymentRequestTx(tx, {
         branchId,
         amount: toDbMoney(settlement),
-        paymentMethod: "CASH",
+        paymentMethod: payment.method,
         partyType: "OTHER",
         counterpartyName: fullEmployeeName(emp),
         description: `تسوية نهاية خدمة — ${t.terminationType}`,
-        referenceNumber: `TERM-SETTLEMENT-${id}`,
-        voucherDate: t.lastDay,
+        referenceNumber: `TERM-SETTLEMENT-${id}-A1`,
+        cardLastFour: payment.method === "CARD" ? payment.referenceNumber : null,
+        voucherDate: baghdadToday(),
         clientRequestId: `termination-settlement-${id}`,
       }, { ...actor, branchId }, {
         kind: "TERMINATION_SETTLEMENT",
         terminationId: id,
         employeeId: t.employeeId,
         expectedAmount: toDbMoney(settlement),
+        attempt: 1,
+        originReturnEventId: null,
+        paymentEvidenceReference: payment.referenceNumber,
+        settlementSnapshotHash: recognition.snapshotHash,
+        obligationId: Number(recognition.obligationId),
       });
       settlementVoucher = {
         receiptId: request.receiptId,
@@ -607,6 +949,7 @@ export async function completeTermination(id: number, actor: PromotionActor) {
     return {
       terminationId: id,
       settlementVoucher,
+      recognition,
       userDisabled,
       deviceLinksReleased,
     };

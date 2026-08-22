@@ -16,14 +16,19 @@ import {
   publicProcedure,
   router,
   storefrontPublicReadProcedure,
+  storefrontPublicWriteProcedure,
 } from "../trpc";
-import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
-import { createOnlineOrder, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
-import { retryOnDup } from "../lib/retryDup";
+import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated, storefrontCartRecommendations } from "../services/storefrontService";
+import { createOnlineOrder, findOwnedOnlineOrderReplay, quoteOnlineOrder, readOnlineOrderLabel, trackOnlineOrder } from "../services/onlineOrderService";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getPublicStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
 import { recordStoreConversionMetric } from "../services/storeAdmin/storeConversionMetricsService";
+import { verifyStorefrontTurnstile } from "../services/storefrontTurnstile";
+import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
+import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
+import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
+import { claimFirebaseStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
 
 const labelSummaryInput = z.object({
   orderNumber: z.string().trim().min(1).max(50),
@@ -73,13 +78,25 @@ export const storefrontRouter = router({
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
   settings: publicProcedure.query(() => getPublicStoreSettings()),
 
-  /** كتالوج المتجر: فلترة فئة + بحث نصّي + سقف. يعيد التوفّر وسعر العرض. */
+  /** يربط Firebase Phone OTP بسجل العميل ويصدر جلسة متجر قصيرة منفصلة عن جلسات الإدارة. */
+  claimFirebaseCustomer: storefrontPublicWriteProcedure
+    .input(z.object({ firebaseIdToken: z.string().trim().min(100).max(8_000), displayName: z.string().trim().min(2).max(120) }))
+    .mutation(({ input }) => claimFirebaseStorefrontCustomer(input)),
+
+  /** رصيد الولاء والقسائم الشخصية بعد تحقق الجلسة الموقعة فقط؛ لا تقبل هاتفاً يرسله التطبيق. */
+  customerBenefits: storefrontPublicReadProcedure
+    .input(z.object({ customerSessionToken: z.string().trim().min(40).max(4_000) }))
+    .query(async ({ input }) => storefrontCustomerBenefits(await verifyStorefrontCustomerSession(input.customerSessionToken))),
+
+  /** كتالوج المتجر: فلترة فئة + بحث نصّي + صفحات متسلسلة بلا اقتطاع صامت. */
   catalog: publicProcedure
     .input(
       z.object({
         categoryId: z.number().int().positive().nullish(),
         search: z.string().max(64).optional(),
         limit: z.number().int().min(1).max(120).default(60),
+        // معرّف آخر منتج في الصفحة السابقة؛ يضيفه useInfiniteQuery فقط بعد الصفحة الأولى.
+        cursor: z.number().int().positive().nullish(),
         // متوافق للخلف: غياب الحقل يبقي السلوك القديم (المتوفر فقط).
         availability: z.enum(["IN_STOCK", "ALL"]).default("IN_STOCK"),
       })
@@ -89,6 +106,7 @@ export const storefrontRouter = router({
         categoryId: input.categoryId ?? null,
         search: input.search,
         limit: input.limit,
+        cursor: input.cursor ?? null,
         availability: input.availability,
       })
     ),
@@ -103,6 +121,11 @@ export const storefrontRouter = router({
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => storefrontRelated(input.productId)),
 
+  /** توصيات السلة التي ضبطها المدير؛ لا تعيد التكلفة أو كمية المخزون. */
+  cartRecommendations: storefrontPublicReadProcedure
+    .input(z.object({ productIds: z.array(z.number().int().positive()).min(1).max(24) }))
+    .query(({ input }) => storefrontCartRecommendations(input.productIds)),
+
   /** إعادة تسعير السلة بكمياتها الفعلية؛ نفس محرك createOrder، بلا أي كتابة. */
   quoteOrder: storefrontPublicReadProcedure
     .input(z.object({
@@ -113,6 +136,22 @@ export const storefrontRouter = router({
       })).min(1).max(100),
     }))
     .query(({ input }) => quoteOnlineOrder(input)),
+
+  /** تسجيل جهاز العميل بعد موافقته الصريحة فقط. الرمز مشفّر خادمياً ولا يرافقه هاتف أو معلومات طلب. */
+  registerPushDevice: storefrontPublicWriteProcedure
+    .input(z.object({
+      expoPushToken: z.string().trim().min(20).max(300),
+      marketingOptIn: z.boolean(),
+      transactionalOptIn: z.boolean(),
+      platform: z.enum(["IOS", "ANDROID"]),
+      appVersion: z.string().trim().min(1).max(64),
+    }))
+    .mutation(({ input }) => registerStorefrontPushDevice(input)),
+
+  /** حدث فتح بلا هوية؛ يُقبل فقط لتسليم موجود من الحملة، ويحافظ على قياس الأداء من الداشبورد. */
+  trackPushInteraction: storefrontPublicWriteProcedure
+    .input(z.object({ deliveryId: z.number().int().positive(), event: z.enum(["OPEN", "CLICK"]) }))
+    .mutation(({ input }) => trackStorefrontPushInteraction(input)),
 
   /**
    * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.
@@ -139,19 +178,26 @@ export const storefrontRouter = router({
           .min(1)
           .max(100),
         expectedGrandTotal: z.string().regex(/^\d{1,18}(?:\.\d{1,2})?$/),
-        clientRequestId: z.string().max(80).optional(),
+        clientRequestId: z.string().trim().min(8).max(80),
+        turnstileToken: z.string().trim().min(1).max(STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH),
       })
     )
-    // retryOnDup: نقرة مزدوجة متزامنة بنفس clientRequestId قد يمرّ فحصُها الاستباقي معاً قبل الالتزام،
-    // فيصطدم الإدراج الثاني بقيد uq_online_order_client_req (ER_DUP_ENTRY). إعادة المحاولة تلتقط الطلب
-    // المُلتزَم فتُعيد replay بدل 500 (مراجعة عدائية ١٢/٧).
     .mutation(async ({ input }) => {
-      const result = await retryOnDup(() =>
-        createOnlineOrder({
-          ...input,
-          latitude: input.latitude ?? null,
-          longitude: input.longitude ?? null,
-        })
+      const { turnstileToken, ...rawOrderInput } = input;
+      const orderInput = {
+        ...rawOrderInput,
+        latitude: rawOrderInput.latitude ?? null,
+        longitude: rawOrderInput.longitude ?? null,
+      };
+      const result = await createVerifiedStorefrontOrder(
+        orderInput,
+        turnstileToken,
+        {
+          // يسبق token كي يستعيد الرد الضائع المملوك بلا استهلاك تحقق جديد.
+          findOwnedReplay: findOwnedOnlineOrderReplay,
+          verifyTurnstile: verifyStorefrontTurnstile,
+          createOrder: createOnlineOrder,
+        },
       );
       // نجاح إنشاء الطلب هو المصدر الموثوق لهذا الحدث؛ لا نأخذه من متصفح العميل.
       // الخدمة أفضل-جهد ولا تلمس بيانات الطلب أو العميل.

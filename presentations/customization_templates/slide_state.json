@@ -1,0 +1,114 @@
+{
+  "project_info": {
+    "title": "قوالب التخصيص المنظمة",
+    "created": 1787177190.986,
+    "last_updated": 1787177313.879,
+    "total_slides": 10
+  },
+  "slides": [
+    {
+      "id": "cover",
+      "state": "edited",
+      "pageNum": 1
+    },
+    {
+      "id": "why",
+      "state": "edited",
+      "pageNum": 2
+    },
+    {
+      "id": "truth_flow",
+      "state": "edited",
+      "pageNum": 3
+    },
+    {
+      "id": "schema",
+      "state": "edited",
+      "pageNum": 4
+    },
+    {
+      "id": "field_types",
+      "state": "edited",
+      "pageNum": 5
+    },
+    {
+      "id": "admin",
+      "state": "edited",
+      "pageNum": 6
+    },
+    {
+      "id": "storefront",
+      "state": "edited",
+      "pageNum": 7
+    },
+    {
+      "id": "cart",
+      "state": "edited",
+      "pageNum": 8
+    },
+    {
+      "id": "validation",
+      "state": "edited",
+      "pageNum": 9
+    },
+    {
+      "id": "closing",
+      "state": "edited",
+      "pageNum": 10
+    }
+  ],
+  "outline": [
+    {
+      "id": "cover",
+      "title": "قوالب التخصيص المنظمة",
+      "summary": "عنوان العرض وفرعيته: من قاعدة البيانات إلى تجربة شراء مرنة."
+    },
+    {
+      "id": "why",
+      "title": "لماذا احتجنا قالباً منظماً؟",
+      "summary": "يوضح الفرق بين منتج مخصص معلّم صراحةً ونموذج ثابت أو استدلالي."
+    },
+    {
+      "id": "truth_flow",
+      "title": "مصدر الحقيقة من الخادم إلى المتجر",
+      "summary": "مسار isCustomizable والقالب من الإدارة عبر الخدمة والراوتر إلى Storefront."
+    },
+    {
+      "id": "schema",
+      "title": "مخطط قاعدة البيانات",
+      "summary": "الجداول والعلاقات الرئيسة: products وtemplates وfields."
+    },
+    {
+      "id": "field_types",
+      "title": "أنواع الحقول المدعومة",
+      "summary": "TEXT وTEXTAREA وSELECT وSWATCH وFILE وNUMBER واستخداماتها."
+    },
+    {
+      "id": "admin",
+      "title": "واجهة إدارة قابلة للتشغيل",
+      "summary": "محرر القالب في ProductEdit وإدارة الحقول والخيارات والتبعيات."
+    },
+    {
+      "id": "storefront",
+      "title": "Storefront ديناميكي",
+      "summary": "الرسم حسب fieldType وإظهار الحقول التابعة والتحقق قبل الإضافة.",
+      "image_plan": "/home/ubuntu/upload/pasted_file_nh3PbZ_image.png - Slide 6 showcases the store interface showing product variants and options selector dialog"
+    },
+    {
+      "id": "cart",
+      "title": "السلة تحفظ نية الشراء",
+      "summary": "cartKey والتخصيصات المختلفة والسعر والتحقق الخادمي."
+    },
+    {
+      "id": "validation",
+      "title": "التحقق والتشغيل التالي",
+      "summary": "نتائج الاختبارات وخطوات تطبيق الهجرة والنشر والإدارة.",
+      "image_plan": "/home/ubuntu/upload/pasted_file_9HqiVq_image.png - Slide 8 shows error handling / server log / dev test output"
+    },
+    {
+      "id": "closing",
+      "title": "النتيجة",
+      "summary": "خاتمة تلخص القابلية للإدارة والدقة وتجربة الشراء المرنة."
+    }
+  ]
+}

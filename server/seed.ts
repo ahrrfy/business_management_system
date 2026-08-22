@@ -7,6 +7,8 @@ import { hashPassword } from "./auth/password";
 import { assertSeedPolicy } from "./config/seedPolicy";
 import { getDb } from "./db";
 import { createProduct } from "./services/catalogService";
+import { ensureDefaultVoucherCategories } from "./services/voucher/defaults";
+import { ensureDefaultExpenseCategories } from "./services/expenseCategoryService";
 import { setStock } from "./services/inventoryService";
 import { withTx } from "./services/tx";
 import { extractInsertId } from "./lib/insertId";
@@ -173,6 +175,40 @@ async function seed() {
       await db.insert(serviceTypes).values(st);
       console.log(`✓ seeded service type ${st.name}`);
     }
+  }
+
+  // فئات سندات القبض/الصرف — **إنتاجاً وتطويراً معاً** (قبل مخرج isProd): فئة السند إلزامية
+  // لسندات «أخرى» لأنّها تحدّد الحساب المقابل، وقاعدةٌ تُبنى بـ`db:push` لا تنال أي فئة (البذر
+  // التاريخيّ يعيش في SQL الهجرة 0036 وحدها) ⇒ حقلٌ إلزاميّ بقائمةٍ فارغة = سندٌ يتعذّر إتمامه.
+  // idempotent بالاسم ولا يمسّ ما عيّنه المالك (server/services/voucher/defaults.ts).
+  const voucherCats = await ensureDefaultVoucherCategories();
+  if (voucherCats.inserted.length || voucherCats.mapped.length) {
+    console.log(
+      `✓ seeded voucher categories: +${voucherCats.inserted.length} جديدة، ${voucherCats.mapped.length} عُيّن حسابها (الإجمالي ${voucherCats.total})`,
+    );
+  } else {
+    console.log(`• voucher categories already complete (${voucherCats.total})`);
+  }
+  if (voucherCats.skipped.length) {
+    console.log(
+      `⚠ فئات بلا حساب مقابل واتجاهها يخالف الكتالوج — تُترك لقرار المالك: ${voucherCats.skipped.join("، ")}`,
+    );
+  }
+
+  // فئات المصروفات المُدارة — إنتاجاً وتطويراً أيضاً: منتقي المصروف يقرأ منها، وكل دلو محاسبيّ
+  // يلزمه فئةٌ احتياطية مفعَّلة وإلّا هبط المصروف القديم بلا تصنيف مُدار.
+  const expenseCats = await ensureDefaultExpenseCategories();
+  if (expenseCats.inserted.length || expenseCats.defaultsRepaired.length) {
+    console.log(
+      `✓ seeded expense categories: +${expenseCats.inserted.length} جديدة، ${expenseCats.defaultsRepaired.length} دلواً رُمِّمت احتياطيته (الإجمالي ${expenseCats.total})`,
+    );
+  } else {
+    console.log(`• expense categories already complete (${expenseCats.total})`);
+  }
+  if (expenseCats.bucketMismatch.length) {
+    console.log(
+      `⚠ فئات مصروفات باسم الكتالوج ودلوٍ مختلف — تُترك لقرار المالك: ${expenseCats.bucketMismatch.join("، ")}`,
+    );
   }
 
   if (isProd) {

@@ -232,6 +232,35 @@ async function computeLockedCashReceiptsBalance(
   );
 }
 
+/**
+ * **الشروط الوحيدة** التي تجعل إيصالاً «نقداً فعلياً في درج وردية» (المسار ز، ١٦/٨).
+ *
+ * كانت مكرّرةً نصّياً في ثلاثة مواضع بتعليقاتٍ تدّعي التطابق — والقياس أثبت أنّها تفترق:
+ * على وردية بأربعة إيصالات أعطى الحارس ١٤٠٬٠٠٠ وتقرير إقفال اليوم ٢٢٣٬٠٠٠ وبطاقة الوردية
+ * ٢٤٨٬٠٠٠ (فرق ١٠٨٬٠٠٠ د.ع)، لأنّ الأخيرَين يُغفلان الحالة والاعتماد، والبطاقةُ تُغفل شرط
+ * النقد أيضاً. الثمن العمليّ: تقريرٌ يتّهم كاشيراً بعجزٍ لا وجود له أو يُبرّئه من عجزٍ حقيقيّ.
+ *
+ * ⇒ الاتّساق صار **بالبناء لا بالتعليق**: كل قارئٍ لنقد الدرج يستدعي هذه، ولا يُعيد كتابتها.
+ */
+export function materializedDrawerCashConditions() {
+  return [
+    eq(receipts.cashBucket, "DRAWER"),
+    eq(receipts.paymentMethod, "CASH"),
+    // PENDING/FAILED لم يتحوّلا نقداً بعد؛ وREVERSED حدثٌ تاريخيّ يرافقه تعويضيّ معاكس.
+    inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
+    eq(receipts.approvalStatus, "APPROVED"),
+  ];
+}
+
+/**
+ * نظيرها لمستهلكي SQL الخام (بطاقات الورديات المفتوحة) — بأسماء الأعمدة **الفعلية** في
+ * القاعدة (`receiptStatus`/`receiptApprovalStatus`) لا بأسماء drizzle، وبادئة الجدول `r`.
+ */
+export const MATERIALIZED_DRAWER_CASH_RAW_SQL = sql.raw(
+  "r.cashBucket = 'DRAWER' AND r.paymentMethod = 'CASH' " +
+    "AND r.receiptStatus IN ('COMPLETED','REVERSED') AND r.receiptApprovalStatus = 'APPROVED'",
+);
+
 /** الصيغة الوحيدة لرصيد درج الوردية؛ يستعملها الحارس وإقفال الوردية معاً. */
 export async function computeDrawerCashBalance(
   tx: Tx,
@@ -240,11 +269,7 @@ export async function computeDrawerCashBalance(
 ): Promise<Decimal> {
   const receiptBalance = await computeLockedCashReceiptsBalance(
     tx,
-    and(
-      eq(receipts.shiftId, shiftId),
-      eq(receipts.cashBucket, "DRAWER"),
-      eq(receipts.paymentMethod, "CASH"),
-    ),
+    and(eq(receipts.shiftId, shiftId), ...materializedDrawerCashConditions()),
   );
   return money(openingBalance).plus(receiptBalance);
 }

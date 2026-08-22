@@ -153,6 +153,13 @@ const requireStorefrontPublicPath = t.middleware(({ path, next }) => {
 export const storefrontPublicReadProcedure = t.procedure.use(requireStorefrontPublicPath);
 
 /**
+ * كتابة المتجر العامة المنخفضة المخاطر فقط: الحماية الإلزامية تبقى داخل كل معالج
+ * (Firebase ID token، Turnstile أحادي الاستخدام، أو رمز جهاز Expo مضبوط) مع حد المعدل
+ * الشامل لمسار storefront في index.ts. لا تُستعمل للبيانات الإدارية أو التسعير أو البيع المالي.
+ */
+export const storefrontPublicWriteProcedure = t.procedure.use(requireStorefrontPublicPath);
+
+/**
  * Self-service boundary for the mobile workspace. Handlers using this
  * procedure must derive the subject from ctx.user and must not accept a
  * caller-supplied user or employee identifier.
@@ -402,14 +409,45 @@ export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL
 // فلتر الفرع داخل الاستعلام يُرجِع null لفاتورة فرعٍ آخر ⇒ لا IDOR). دورٌ-محايد: يعمل لأيّ دور استقبال.
 export function invoiceViewScopeForUser(
   user: { role: string; permissionsOverride?: unknown },
-): "sales" | "reception" | null {
+): InvoiceScope | null {
   if (user.role === "admin") return "sales";
   const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
   const map = resolvePermissions(user.role as RoleKey, override);
   if (map.sales === "FULL" || map.sales === "READ") return "sales";
   if (map.workorders === "FULL") return "reception";
+  // ١٨/٨: كاشير الطباعة (`pos:FULL`, `sales:NONE`) لم يكن يفتح **حتى فاتورته المفردة** — نطاقه
+  // كان null. نطاقٌ ثالثٌ يحصره في فواتير وردية PRINT_SERVICES: يرى ما أصدره، ولا يُفتَح له
+  // بابٌ على مبيعات التجزئة ولا على عروض الأسعار (تبقى على salesReadProcedure).
+  if (map.pos === "FULL") return "print";
   return null;
 }
+
+/**
+ * نطاق رؤية الفواتير — ثلاثة أوجه لبابٍ واحد:
+ *  · `sales`     — وحدة المبيعات (مدير/محاسب/كاشير تجزئة/موظف استقبال بعد 0148): بلا حصر قناة.
+ *  · `reception` — صلاحية الاستقبال (`workorders:FULL`): فواتير وردية RECEPTION وحدها.
+ *  · `print`     — كاشير الطباعة (`pos:FULL`): فواتير وردية PRINT_SERVICES وحدها.
+ */
+export type InvoiceScope = "sales" | "reception" | "print";
+
+/**
+ * بوّابة **قوائم** الفواتير (١٨/٨) — كانت البوّابة المزدوجة مُطبَّقةً على المستند المفرد
+ * (`invoiceViewProcedure`) ولم تُطبَّق قطّ على قائمة: `sales.list` على `salesReadProcedure`
+ * وحده ⇒ فنّي المطبعة وكاشير الطباعة (`sales:NONE`) يتلقّون ٤٠٣، وموظف الاستقبال يمرّ بحكم
+ * منحةٍ لاحقة (هجرة 0148) لا بحكم التصميم. الآن القائمة والمستند على **نفس المفردة**، ونطاقُ
+ * القائمة يُحقن في السياق فتُقصّه شروط الاستعلام (مرآة `sales.get` حرفياً).
+ *
+ * البديل المرفوض: منح `sales:READ` لأدوار الطباعة عبر هجرةٍ كـ0148 — يفتح **عروض الأسعار**
+ * (`quotationRouter` جالسٌ على `salesReadProcedure`) وهو تسريبٌ أُغلق عمداً.
+ */
+export const invoiceListProcedure = branchScopedProcedure.use(
+  t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const invoiceListScope = invoiceViewScopeForUser(ctx.user);
+    if (!invoiceListScope) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    return next({ ctx: { ...ctx, user: ctx.user, invoiceListScope } });
+  }),
+);
 
 export const invoiceViewProcedure = branchScopedProcedure.use(
   t.middleware(async ({ ctx, next }) => {
@@ -555,10 +593,38 @@ export const productsManagerProcedure = moduleProcedure(["manager"], "products",
 // رغم تخويلها إنشاءه (purchasesManagerProcedure)/استلامه (purchasesWarehouseProcedure). قراءة فقط،
 // ومحصور بأدوار الشراء + المدير ⇒ لا تتسرّب التكلفة للكاشير/المندوب/المستخدم العام.
 export const productsPurchaseProcedure = moduleProcedure(["manager", "warehouse", "purchasing"], "products", "READ");
+// استوديو المنتجات وحدة مستقلة: العامل يقرأ/يكتب الصور والمحتوى المقترح فقط، ولا يعبر بوابة
+// products التي تكشف السعر/التكلفة/المخزون. المدير يملك الإسناد والاعتماد النهائي.
+export const productStudioReadProcedure = branchScopedProcedure.use(requireModule("productStudio", "READ"));
+export const productStudioWriteProcedure = branchScopedProcedure.use(requireModule("productStudio", "FULL"));
+// الاعتماد/الرفض/الإسناد سلطة إشرافية فعلية: منح FULL لموظف يفتح أدوات التنفيذ فقط ولا يحوّله
+// إلى مدير. خدمة الاستوديو تعيد الفحص أيضاً؛ هذه البوابة تمنع حتى بلوغها وتوحّد عقد الواجهة.
+export const productStudioManagerProcedure = managerProcedure.use(requireModule("productStudio", "FULL"));
+/**
+ * إعدادات مزوّد الصور المدفوع (حصص الفروع): بوّابة `productStudio:FULL` **ثمّ** admin —
+ * نظيرُ `inventoryAdminProcedure`. لماذا لا `adminProcedure` عارياً: سلطةٌ بلا بوّابة وحدة
+ * لا تظهر في خريطة الصلاحيات ولا يمكن سحبُها بمنحٍ صريح، ويرفضها حارس CI التفاضليّ.
+ *
+ * وبلا `requireOwnBranch`: العملية **شركةٌ لا فرع** (تضبط حصص كل الفروع معاً)، فإلزامُ
+ * فرعٍ مُسنَد يرفض مديراً عاماً بلا فرع — نفس علّة الإقفال الشهريّ ونفس علاجها.
+ */
+export const productStudioAdminProcedure = protectedProcedure
+  .use(requireModuleGate(["manager"], "productStudio", "FULL"))
+  .use(requireAdmin);
 // expenses — «محاسب» قالبه expenses=FULL ⇒ يدخل بوّابة الإدخال (الإلغاء يبقى مديرياً).
 export const expensesReadProcedure = branchScopedProcedure.use(requireModule("expenses", "READ"));
 export const expensesCashierProcedure = moduleProcedure(["cashier", "manager", "accountant"], "expenses", "FULL");
 export const expensesManagerProcedure = moduleProcedure(["manager"], "expenses", "FULL");
+/**
+ * فئات المصروفات — بياناتٌ مرجعية عامّة (الجدول بلا `branchId`)، فلا معنى لاشتراط فرعٍ مُسنَد
+ * ولا لعزلٍ فرعيّ. القراءة بخريطة الوحدة وحدها كي يراها **كل من يُنشئ مصروفاً** (الكاشير منهم،
+ * وقالبه expenses=FULL) وإلّا ظهر له منتقٍ فارغ؛ والكتابة بقائمة الإدارة (مدير/محاسب) + المنح
+ * الصريح. نظير `treasuryGlobal*` لفئات السندات — راجع تعليقها لسبب فصل «العامّ» عن المقصور بالفرع.
+ */
+export const expensesGlobalReadProcedure = protectedProcedure.use(requireModule("expenses", "READ"));
+export const expensesGlobalProcedure = t.procedure.use(
+  requireModuleGate(["manager", "accountant"], "expenses", "FULL"),
+);
 // workorders (خدمة العملاء)
 export const workordersReadProcedure = branchScopedProcedure.use(requireModule("workorders", "READ"));
 export const workordersCashierProcedure = moduleProcedure(["cashier", "manager"], "workorders", "FULL");
@@ -572,6 +638,23 @@ export const treasuryManagerProcedure = moduleProcedure(["manager", "accountant"
 export const treasuryManagerReadProcedure = moduleProcedure(["manager", "accountant"], "treasury", "READ");
 export const treasuryReadProcedure = branchScopedProcedure.use(requireModule("treasury", "READ"));
 export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], "treasury", "READ");
+/**
+ * بيانات مرجعية عامّة للخزينة (فئات السندات) — **بلا اشتراط فرعٍ مُسنَد**.
+ *
+ * `moduleProcedure` يُلحق `requireOwnBranch` بكل إجراءاته، وهو الصواب لكل ما يمسّ صندوق فرعٍ
+ * أو سنداً. لكن `voucherCategories` جدولٌ عالميّ بلا عمود `branchId` أصلاً؛ فربطُ إدارته
+ * بالفرع كان يمنع محاسب الإدارة (بلا فرعٍ مُسنَد — وهو وضعٌ مشروع: يخدم الفرعين) من إنشاء
+ * فئةٍ أو تعديلها برسالة «لا فرع مُسنَد لهذا المستخدم»، بينما نفس الحساب يقرأ/يكتب في وحدة
+ * الخزينة. البوّابة الأمنية نفسها (treasury FULL/READ لـmanager/accountant + منح صريح) بلا
+ * تخفيف — الفارق الوحيد إسقاطُ شرطٍ لا معنى له لبيانات غير مقصورة بفرع.
+ * ⚠️ لا تستعملها لأيّ إجراءٍ يقرأ/يكتب `receipts` (المعالجة التاريخية والدمج يبقيان مقصورين).
+ */
+export const treasuryGlobalProcedure = t.procedure.use(
+  requireModuleGate(["manager", "accountant"], "treasury", "FULL"),
+);
+export const treasuryGlobalReadProcedure = t.procedure.use(
+  requireModuleGate(["manager", "accountant"], "treasury", "READ"),
+);
 
 // ─── الأهداف والعمولات «commissions» — خطط/أهداف شهرية/تشغيلات عمولات البائعين ───
 // الكتابة (خطط/إسناد/أهداف/احتساب/اعتماد) مديرية بقالبها + منح صريح عبر البوّابة

@@ -18,6 +18,7 @@ import { lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx } from "../tx";
 import { consignmentBackedBalance } from "./guards";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
+import { deliveryCustomerCollectionIntent, deliveryRemitIntent, deliveryWriteoffIntent, paymentAccountRole } from "./posting";
 import type { DeliveryTxActor } from "./types";
 
 /** تسوية عهدة: الجهة تدفع نقداً لخفض رصيدها (عجز توريدٍ سابق أو عهدة تحصيلات متجر). */
@@ -118,6 +119,11 @@ export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryT
     });
     await postEntry(tx, {
       entryType: "DELIVERY_REMIT", dedupeKey: `DELIVERY_SETTLE:${receiptId}`,
+      postingIntent: deliveryRemitIntent(amount, resolvedCash.cashBucket),
+      postingSourceComponents: {
+        roleDebits: { [paymentAccountRole("CASH", resolvedCash.cashBucket)]: amount },
+        roleCredits: { DELIVERY_FLOAT: amount },
+      },
       branchId: input.branchId, deliveryPartyId: input.partyId, receiptId, amount, notes: "تسوية عهدة جهة توصيل",
     });
     if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.settle", input.clientRequestId, receiptId, payloadHash);
@@ -200,9 +206,11 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
           paidAmount: toDbMoney(newPaid),
           status: computeInvoiceStatus(String(inv.total), toDbMoney(newPaid), String(inv.returnedTotal ?? "0")),
           paymentDate: new Date(),
+          paymentMethod: sql`COALESCE(${invoices.paymentMethod}, 'CASH')`,
         }).where(eq(invoices.id, invoiceId));
         await postEntry(tx, {
           entryType: "PAYMENT_IN", dedupeKey: `PAYMENT_IN:WRITEOFF:CN:${cn.id}`,
+          postingIntent: deliveryCustomerCollectionIntent(realPart),
           branchId: input.branchId, invoiceId,
           customerId: inv.customerId != null ? Number(inv.customerId) : null,
           deliveryPartyId: input.partyId,
@@ -242,6 +250,7 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       });
       await postEntry(tx, {
         entryType: "DELIVERY_WRITEOFF",
+        postingIntent: deliveryWriteoffIntent(amount),
         dedupeKey: `DELIVERY_WRITEOFF:CN:${input.consignmentId}`,
         branchId: input.branchId, deliveryPartyId: input.partyId, invoiceId,
         amount, cost: amount, profit: amount.neg(),
@@ -275,6 +284,7 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
     });
     await postEntry(tx, {
       entryType: "DELIVERY_WRITEOFF",
+      postingIntent: deliveryWriteoffIntent(amount),
       branchId: input.branchId, deliveryPartyId: input.partyId, invoiceId,
       amount, cost: amount, profit: amount.neg(), notes: `شطب عهدة: ${input.reason.trim()}`,
     });
@@ -381,12 +391,18 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
     // قيدان متعاكسان على العهدة (عكس شطب + توريد) — الرصيد صافيه صفر والصيغة متوازنة.
     await postEntry(tx, {
       entryType: "DELIVERY_WRITEOFF", dedupeKey: `DELIVERY_WRITEOFF_RECOVER:${receiptId}`,
+      postingIntent: deliveryWriteoffIntent(amount.neg()),
       branchId: input.branchId, deliveryPartyId: input.partyId, receiptId,
       amount: amount.neg(), cost: amount.neg(), profit: amount,
       notes: `عكس شطب — استرداد نقدي${input.notes ? `: ${input.notes}` : ""}`,
     });
     await postEntry(tx, {
       entryType: "DELIVERY_REMIT", dedupeKey: `DELIVERY_RECOVER_SETTLE:${receiptId}`,
+      postingIntent: deliveryRemitIntent(amount, resolvedCash.cashBucket),
+      postingSourceComponents: {
+        roleDebits: { [paymentAccountRole("CASH", resolvedCash.cashBucket)]: amount },
+        roleCredits: { DELIVERY_FLOAT: amount },
+      },
       branchId: input.branchId, deliveryPartyId: input.partyId, receiptId,
       amount, notes: "تسوية استرداد عجز مشطوب",
     });

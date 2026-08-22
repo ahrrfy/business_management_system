@@ -3,6 +3,7 @@ import { suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { normalizeSearchText } from "../../shared/searchNormalize";
 import { phoneSuffix10 } from "../lib/phone";
+import { escLike } from "../lib/sqlLike";
 
 export interface SupplierSummaryInput {
   q?: string;
@@ -26,10 +27,6 @@ export interface SupplierSummary {
   highestPayable: { supplierId: number; supplierName: string; amount: string } | null;
 }
 
-function esc(value: string): string {
-  return value.replace(/[\\%_]/g, (m) => `\\${m}`);
-}
-
 function n(value: unknown): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -47,21 +44,26 @@ function conditions(input: SupplierSummaryInput): SQL[] {
   if (input.kind) conds.push(sql`${suppliers.supplierKind} = ${input.kind}`);
   if (input.q?.trim()) {
     const raw = input.q.trim();
-    const likeRaw = `%${esc(raw)}%`;
-    const likeFolded = `%${esc(normalizeSearchText(raw))}%`;
+    const likeRaw = `%${escLike(raw)}%`;
+    const likeFolded = `%${escLike(normalizeSearchText(raw))}%`;
     const suffix = phoneSuffix10(raw);
+    // ⚠️ حرف الهروب `!` لا الشرطة المائلة. كان هنا `ESCAPE '\\'` في القالب النصّي، وهو يُنتج
+    // في SQL `ESCAPE '\'` — ونصٌّ غير منتهٍ عند MySQL (`\'` هروبُ اقتباس) ⇒ **خطأ نحويّ يُسقط
+    // كلّ استعلام بحثٍ عن مورّد**، وظلّ ساقطاً من ١٧/٨ إلى ٢١/٨ بلا أن يمسكه اختبار.
+    // النظير `customerOperationsService` وُلد صحيحاً بـ`escLike` + `ESCAPE '!'`، وهو اصطلاح
+    // المستودع كلّه لأنّه لا يعتمد على `sql_mode` (راجع `server/lib/sqlLike.ts`).
     conds.push(sql`(
-      COALESCE(${suppliers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '\\'
-      OR ${suppliers.phone} LIKE ${likeRaw} ESCAPE '\\'
-      OR ${suppliers.phone2} LIKE ${likeRaw} ESCAPE '\\'
-      OR ${suppliers.phone3} LIKE ${likeRaw} ESCAPE '\\'
-      OR ${suppliers.city} LIKE ${likeRaw} ESCAPE '\\'
-      OR ${suppliers.supplierCategory} LIKE ${likeRaw} ESCAPE '\\'
-      OR ${suppliers.legacyCode} LIKE ${likeRaw} ESCAPE '\\'
-      ${suffix ? sql`OR ${suppliers.phone} LIKE ${`%${esc(suffix)}`} ESCAPE '\\'
-        OR ${suppliers.phone2} LIKE ${`%${esc(suffix)}`} ESCAPE '\\'
-        OR ${suppliers.phone3} LIKE ${`%${esc(suffix)}`} ESCAPE '\\'
-        OR ${suppliers.whatsapp} LIKE ${`%${esc(suffix)}`} ESCAPE '\\'` : sql``}
+      COALESCE(${suppliers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'
+      OR ${suppliers.phone} LIKE ${likeRaw} ESCAPE '!'
+      OR ${suppliers.phone2} LIKE ${likeRaw} ESCAPE '!'
+      OR ${suppliers.phone3} LIKE ${likeRaw} ESCAPE '!'
+      OR ${suppliers.city} LIKE ${likeRaw} ESCAPE '!'
+      OR ${suppliers.supplierCategory} LIKE ${likeRaw} ESCAPE '!'
+      OR ${suppliers.legacyCode} LIKE ${likeRaw} ESCAPE '!'
+      ${suffix ? sql`OR ${suppliers.phone} LIKE ${`%${escLike(suffix)}`} ESCAPE '!'
+        OR ${suppliers.phone2} LIKE ${`%${escLike(suffix)}`} ESCAPE '!'
+        OR ${suppliers.phone3} LIKE ${`%${escLike(suffix)}`} ESCAPE '!'
+        OR ${suppliers.whatsapp} LIKE ${`%${escLike(suffix)}`} ESCAPE '!'` : sql``}
     )`);
   }
   return conds;

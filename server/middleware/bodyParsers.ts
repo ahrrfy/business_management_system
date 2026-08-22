@@ -45,7 +45,12 @@ export function applyBodyParsers(app: Express): void {
     // استوديو صور المنتجات: proCutout يرسل صورة المنتج data-URL لقصّها عبر remove.bg (حتى ٢م.ب خام
     // ⇒ ~٢.٧م.ب نصاً). استثناء ٤mb (نمط vouchers.create أعلاه). راجع server/routers/imageStudioRouter.ts.
     // aiStudioTransform: يرسل صورة المنتج data-URL (وضع EDIT) لإعادة تصميمها عبر مزوّد الذكاء الاصطناعي — نفس الحجم.
-    if (req.path.includes("imageStudio.proCutout") || req.path.includes("imageStudio.aiStudioTransform")) {
+    if (
+      req.path.includes("imageStudio.proCutout") ||
+      req.path.includes("imageStudio.aiStudioTransform") ||
+      req.path.includes("productStudio.bindProcessingProof") ||
+      req.path.includes("productStudio.submitCandidate")
+    ) {
       return express.json({ limit: "4mb" })(req, res, next);
     }
     // CV upload: at most 2MB decoded (~2.8MB base64) plus a small applicant

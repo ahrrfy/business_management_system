@@ -4,6 +4,7 @@
 // workorders=FULL) — نفس بوّابة الالتزام receptionCheckout والطابور القديم بالضبط، فلا مدخل
 // جديد في authz-inventory. (workordersReadProcedure مرفوضة هنا عمداً — V9: بوّابة خريطةٍ بلا
 // قائمة أدوار تفتح الطابور لـwarehouse/user/auditor.)
+import { WORK_ORDER_CHANNELS } from "@shared/receptionChannel";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -35,13 +36,12 @@ function effectiveBranch(ctx: { user: { role?: string | null; branchId?: number 
   return ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
 }
 
-// التاريخية تبقى قابلةً للقراءة/التصفية؛ أمّا القبض الجديد فنقدي فقط حتى
-// يوجد مزوّد دفع وتسوية مستقلة موثوقان.
+// ش٥: TELECOM (رصيد زين) يبقى في **فلتر القراءة** فقط — قبضُه على الفاتورة مرفوض بنيوياً
+// (مساره شاشة البطاقات الرقمية). أمّا البطاقة/التحويل/المحفظة فمقبوضة بمرجع العملية.
 const payMethodEnum = z.enum(["CASH", "CARD", "TRANSFER", "WALLET", "TELECOM"]);
-const cashPaymentMethod = z
-  .enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET", "TELECOM"])
-  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE })
-  .transform((value) => value as "CASH");
+// المحطة لا تقبض بالصكوك (قرار المالك ٢٢/٧) فلا CHECK هنا؛ والـrefine يبقى حارساً على TELECOM.
+const inboundPaymentMethod = payMethodEnum
+  .refine(isPosPaymentMethodEnabled, { message: POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE });
 
 // ش٢ — عقود المسوّدة (§٦): بوّابة **exec** (كاشير/مدير/فنّي طباعة — المسوّدة بلا مالٍ فتُحرَّر
 // بأوسع أدوار المحطة)؛ التثبيت والمال يبقيان خلف بوّابة الكاشير (ش٣/ش٤).
@@ -69,7 +69,12 @@ const draftHeaderSchema = z.object({
   contactName: z.string().trim().max(255).nullish(),
   contactPhone: z.string().trim().max(32).nullish(),
   priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).nullish(),
-  channel: z.string().trim().max(20).nullish(),
+  // القناة من القاموس الحاكم لا نصّاً حرّاً (١٩/٨): كان `z.string().max(20)` يقبل أيّ شيءٍ
+  // ثمّ يصُبّه `commit.ts` بـ`as never` إلى عمود enum يرفضه ⤇ خطأ قاعدةٍ عند التثبيت
+  // لا عند الإدخال، بعد أن أتمّ الموظّف السلّة كلّها.
+  channel: z.enum(WORK_ORDER_CHANNELS).nullish(),
+  channelHandle: z.string().trim().max(120).nullish(),
+  conversationId: z.number().int().positive().nullish(),
   notes: z.string().max(2000).nullish(),
   dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
 });
@@ -121,7 +126,7 @@ export const receptionRouter = router({
       z.object({
         invoiceId: z.number().int().positive(),
         amount: positiveMoneyString,
-        method: cashPaymentMethod,
+        method: inboundPaymentMethod,
         reference: z.string().trim().max(100).nullish(),
         clientRequestId: z.string().min(1).max(60),
       }),
@@ -155,7 +160,7 @@ export const receptionRouter = router({
       z.object({
         draftId: z.number().int().positive(),
         amount: positiveMoneyString,
-        method: cashPaymentMethod,
+        method: inboundPaymentMethod,
         reference: z.string().trim().max(64).nullish(),
         /** ش٥ — هاتف مُرسِل رصيد زين (اختياريّ؛ يُطبَّع خادمياً E.164). */
         telecomSenderPhone: z.string().trim().max(32).nullish(),
@@ -345,7 +350,7 @@ export const receptionRouter = router({
       shiftId: z.number().int().positive(),
       collectNow: z.object({
         amount: positiveMoneyString,
-        method: cashPaymentMethod,
+        method: inboundPaymentMethod,
         reference: z.string().trim().max(100).nullish(),
       }).nullish(),
       cashRoundIQD: z.boolean().optional(),

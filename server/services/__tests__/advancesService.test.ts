@@ -15,6 +15,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { baghdadToday } from "../businessDay";
 import {
   cancelAdvance,
   employeeBalance,
@@ -24,12 +25,13 @@ import {
   type GrantAdvanceInput,
 } from "../advancesService";
 import { createEmployee } from "../employeeService";
-import { approveRun, cancelRun, generatePayroll, payRun, updateItem } from "../payrollService";
+import { approveRun, cancelRun, generatePayroll, payRun, returnSalaryPayment, updateItem } from "../payrollService";
 import { approveVoucher } from "../voucherService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" };
 // SOD: المُعتمِد/الدافع يجب أن يختلف عن المُولِّد.
 const APPROVER = { userId: 2, branchId: 1, role: "manager" };
+const RETURN_APPROVER = { userId: 3, branchId: 1, role: "manager" };
 let requestSeq = 0;
 async function grantAdvance(
   input: Omit<GrantAdvanceInput, "clientRequestId"> & { clientRequestId?: string },
@@ -81,6 +83,7 @@ async function seedBase() {
   await d.insert(s.users).values([
     { id: 1, openId: "t-admin", name: "مدير", role: "admin", branchId: 1 },
     { id: 2, openId: "t-approver", name: "مدقّق", role: "manager", branchId: 1, isOwner: true },
+    { id: 3, openId: "t-return-approver", name: "مالك مستقل للإعادة", role: "manager", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.receipts).values({
     branchId: 1, shiftId: null, cashBucket: "TREASURY", direction: "IN",
@@ -104,6 +107,27 @@ async function fullPayCycle(period: string) {
   const run = await generatePayroll(period, ACTOR);
   await approveRun(run!.id, APPROVER);
   return payRun(run!.id, APPROVER);
+}
+
+async function returnPaidSalary(runId: number) {
+  const [payment] = await db()
+    .select({ id: s.payrollAccountingEvents.id })
+    .from(s.payrollAccountingEvents)
+    .where(
+      and(
+        eq(s.payrollAccountingEvents.runId, runId),
+        eq(s.payrollAccountingEvents.eventKind, "SALARY_PAYMENT"),
+      ),
+    );
+  if (!payment) throw new Error("salary payment fixture was not materialized");
+  await returnSalaryPayment(
+    {
+      accountingEventId: Number(payment.id),
+      returnedAt: baghdadToday(),
+      reason: "إعادة راتب مثبتة لاختبار دورة السلفة",
+    },
+    RETURN_APPROVER,
+  );
 }
 
 describe("advancesService — المنح", () => {
@@ -277,17 +301,35 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
     let [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
     expect(Number(row.remaining)).toBe(200000);
 
-    await cancelRun(run!.id, ACTOR); // عكس الدفع ⇒ approved (لا إرجاع لأرصدة السلف — قرار موثَّق)
+    await returnPaidSalary(run!.id);
+    await cancelRun(run!.id, APPROVER); // إعادة الفتح تعكس استحقاق السلفة append-only.
     [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
-    expect(Number(row.remaining)).toBe(200000);
+    expect(Number(row.remaining)).toBe(300000);
 
-    await payRun(run!.id, APPROVER); // إعادة الدفع (:r1) — لا تسوية ثانية
+    await approveRun(run!.id, APPROVER);
+    await payRun(run!.id, APPROVER, {
+      paymentMethod: "CASH",
+      paymentDate: baghdadToday(),
+    });
     [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
     expect(Number(row.remaining)).toBe(200000);
     expect(row.status).toBe("ACTIVE");
+    const salaryPaymentKeys = await db()
+      .select({ dedupeKey: s.accountingEntries.dedupeKey })
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(
+      salaryPaymentKeys
+        .map((entry) => entry.dedupeKey)
+        .filter((key): key is string => key?.startsWith(`PAYROLL:${run!.id}:${emp.id}`) === true)
+        .sort(),
+    ).toEqual([
+      `PAYROLL:${run!.id}:${emp.id}`,
+      `PAYROLL:${run!.id}:${emp.id}:r1`,
+    ]);
   });
 
-  it("حذف مسيّر مدفوع يستعيد رصيد السلفة ⇒ إعادة التوليد لا تخصم مضاعفاً (تدقيق ١٧/٧)", async () => {
+  it("إعادة فتح مسيّر مدفوع تستعيد رصيد السلفة وتحفظ تاريخ التسوية append-only", async () => {
     const emp = await seedEmployee();
     const adv = await grantAdvance({ employeeId: emp.id, branchId: 1, amount: "300000", monthlyDeduction: "100000", attachmentUrl: "https://files.example/receipt.jpg" }, ACTOR);
     // دفع مسيّر يونيو ⇒ خُصمت ١٠٠ألف (المتبقّي ٢٠٠ألف)، وسُجِّلت تسوية مربوطة بالمسيّر.
@@ -298,19 +340,20 @@ describe("advancesService — دمج الرواتب (توليد → دفع → �
     expect(Number(row.remaining)).toBe(200000);
     expect(await db().select().from(s.advanceSettlements)).toHaveLength(1);
 
-    // حذف المسيّر عبر حالاته: paid → approved → draft → deleted. الحذف النهائيّ يستعيد الرصيد.
-    await cancelRun(run1!.id, ACTOR); // paid → approved (عكسٌ، لا استعادة)
-    await cancelRun(run1!.id, ACTOR); // approved → draft
-    await cancelRun(run1!.id, ACTOR); // draft → deleted (استعادة)
+    await returnPaidSalary(run1!.id);
+    await cancelRun(run1!.id, APPROVER); // approved → draft مع عكس الاستحقاق والتسوية.
     [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
     expect(Number(row.remaining)).toBe(300000); // استُعيد كاملاً
     expect(row.status).toBe("ACTIVE");
-    expect(await db().select().from(s.advanceSettlements)).toHaveLength(0); // أُزيلت سجلّات التسوية
+    expect(await db().select().from(s.advanceSettlements)).toHaveLength(2); // APPLY + REVERSE بلا حذف تاريخي.
+    await expect(cancelRun(run1!.id, APPROVER)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
-    // إعادة توليد يونيو (المسيّر السابق مُزال) ودفعه ⇒ خصمٌ واحد فقط (٣٠٠ألف − ١٠٠ألف)، لا مضاعفة.
-    const run2 = await generatePayroll("2026-06", ACTOR);
-    await approveRun(run2!.id, APPROVER);
-    await payRun(run2!.id, APPROVER);
+    // إعادة اعتماد المسيّر نفسه تخصم مرةً واحدة في المراجعة الجديدة، بلا مضاعفة.
+    await approveRun(run1!.id, APPROVER);
+    await payRun(run1!.id, APPROVER, {
+      paymentMethod: "CASH",
+      paymentDate: baghdadToday(),
+    });
     [row] = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.id, Number(adv.id)));
     expect(Number(row.remaining)).toBe(200000);
   });
@@ -424,8 +467,7 @@ describe("advancesService — الإلغاء وتعدّد السلف", () => {
     // الإلغاء يشترط عكس السند أولاً (النقد يعود ثم يسقط الالتزام).
     await db().update(s.receipts).set({ status: "REVERSED" }).where(eq(s.receipts.id, Number(adv.receiptId)));
     await cancelAdvance({ advanceId: Number(adv.id) }, ACTOR);
-    await approveRun(run!.id, APPROVER);
-    await expect(payRun(run!.id, APPROVER)).rejects.toThrow(/أرصدة السلف/);
+    await expect(approveRun(run!.id, APPROVER)).rejects.toMatchObject({ code: "CONFLICT" });
   });
 
   it("تعدّد السلف: الأقدم أولاً واحدة تلو الأخرى", async () => {

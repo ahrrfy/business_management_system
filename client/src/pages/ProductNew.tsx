@@ -7,12 +7,12 @@ import { NumberInput } from "@/components/form/NumberInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { type ImageItem } from "@/components/form/ImageUploader";
-import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { AlertCircle, Boxes, Layers, Package, Wrench, X } from "lucide-react";
 import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import BundleForm from "@/components/product/BundleForm";
 import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
@@ -127,9 +127,6 @@ export default function ProductNew() {
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
   const [variants, setVariants] = useState<ClientVariant[]>([]);
 
-  // ── الصور المشتركة على مستوى المنتج ──
-  const [images, setImages] = useState<ImageItem[]>([]);
-
   // ── الفرع المختار (لعمود المخزون) ──
   const branches = useMemo(
     () => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })),
@@ -150,7 +147,17 @@ export default function ProductNew() {
     [productType, brand, modelName]
   );
   const baseRetail = units.find((u) => u.isBase)?.retail.trim() ?? "";
-  const primaryImage = images.find((i) => i.isPrimary) ?? images[0];
+  const aiProductFacts = useMemo(() => ({
+    category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
+    productType: productType.trim() || null,
+    brand: brand.trim() || null,
+    modelName: modelName.trim() || null,
+    attributes: {},
+    variants: variants.map((v) => ({ color: v.color.trim() || null, size: v.size.trim() || null })),
+    saleUnits: units.filter((u) => u.name.trim()).map((u) => ({ name: u.name.trim(), conversionFactor: u.isBase ? "1" : u.factor.trim() || "1" })),
+    verifiedClaims: [],
+    audience: null,
+  }), [brand, categoriesQ.data, categoryId, modelName, productType, units, variants]);
 
   const includedCount = colors.length
     ? sizes.length
@@ -395,7 +402,6 @@ export default function ProductNew() {
           minStock: clampInt(v.minStock),
           reorderPoint: clampInt(v.reorderPoint),
           isActive: v.isActive,
-          image: v.image || undefined,
           openingStockByBranch: branches
             .map((b) => ({ branchId: b.id, qty: clampInt(v.stockByBranch[b.id] || "0") }))
             .filter((x) => x.qty > 0),
@@ -423,9 +429,6 @@ export default function ProductNew() {
           }),
         };
       }),
-      images: images.length
-        ? images.map((i, idx) => ({ url: i.dataUrl, isPrimary: !!i.isPrimary, sortOrder: idx }))
-        : undefined,
     };
   }
 
@@ -576,6 +579,13 @@ export default function ProductNew() {
                 )}
               </div>
               <NameAssistant name={productName.trim() || composedName} onApply={setProductName} warnColors />
+              <AiProductContentAssistant
+                facts={aiProductFacts}
+                onApply={(draft) => {
+                  setProductName(draft.seoTitle);
+                  setDescription(draft.description);
+                }}
+              />
             </Field>
             <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً.">
               <Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" />
@@ -599,9 +609,6 @@ export default function ProductNew() {
             <Field label="رمز المنتج (SKU الأساس)" hint="تُشتقّ منه أكواد المتغيّرات تلقائياً." className="md:col-span-2">
               <Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" />
             </Field>
-            <Field label="الوصف" className="md:col-span-3">
-              <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="خصائص/ملاحظات…" />
-            </Field>
           </CardContent>
         </Card>
 
@@ -612,11 +619,7 @@ export default function ProductNew() {
           <CardContent>
             <div className="rounded-lg border bg-muted/30 overflow-hidden">
               <div className="aspect-[4/3] bg-card flex items-center justify-center text-muted-foreground text-xs">
-                {primaryImage ? (
-                  <img src={primaryImage.dataUrl || primaryImage.url} alt={productName.trim() || composedName} className="w-full h-full object-cover" />
-                ) : (
-                  <span className="font-mono text-[11px]">— لا صورة —</span>
-                )}
+                <span className="px-3 text-center font-mono text-[11px]">— تُضاف الصورة بعد الحفظ عبر الاستوديو —</span>
               </div>
               <div className="p-3 space-y-2">
                 <div className="text-sm font-semibold">
@@ -792,18 +795,10 @@ export default function ProductNew() {
         </CardContent>
       </Card>
 
-      {/* ── الصور المشتركة على مستوى المنتج ── */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">صور المنتج (مشتركة)</CardTitle></CardHeader>
-        <CardContent>
-          <ImageStudioUploader
-            value={images}
-            onChange={setImages}
-            maxItems={10}
-            hint="حتى 10 صور للمنتج عامّةً (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً. ولكل لون صورته المستقلّة في صفّ المتغيّر بالأسفل."
-          />
-        </CardContent>
-      </Card>
+      <ProductMediaContentSection
+        description={description}
+        onDescriptionChange={setDescription}
+      />
 
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

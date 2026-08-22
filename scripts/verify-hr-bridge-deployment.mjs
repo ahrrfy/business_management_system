@@ -16,6 +16,18 @@ const fixtureRoot = fs.mkdtempSync(
 );
 const sentinel = "deployment-selftest-secret-canary";
 
+const pm2SystemdGuard = spawnSync(
+  process.execPath,
+  [path.join(path.dirname(fileURLToPath(import.meta.url)), "pm2-systemd-start.test.mjs")],
+  { encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024 },
+);
+assert.equal(
+  pm2SystemdGuard.status,
+  0,
+  `PM2/systemd PID-file guard failed: ${pm2SystemdGuard.stderr || pm2SystemdGuard.stdout}`,
+);
+process.stdout.write(pm2SystemdGuard.stdout);
+
 function writeFixtureSources(marker) {
   fs.mkdirSync(path.join(fixtureRoot, "scripts"), { recursive: true });
   fs.mkdirSync(path.join(fixtureRoot, "dist"), { recursive: true });
@@ -84,10 +96,11 @@ async function verifyConcurrentIntentLock(namespace) {
     );
     const gate = path.join(root, "gate");
     const winner = path.join(root, "winner");
+    const blocked = path.join(root, "blocked");
     const childSource = String.raw`
 const fs = require("node:fs");
 const tools = require(process.argv[1]);
-const [root, namespace, gate, winner] = process.argv.slice(2);
+const [root, namespace, gate, winner, blocked] = process.argv.slice(2);
 const wait = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 fs.writeFileSync(gate + "." + process.pid + ".ready", "ready\n", { flag: "wx" });
 while (!fs.existsSync(gate)) wait(10);
@@ -95,14 +108,19 @@ try {
   const unlock = tools.acquireRuntimeIntentLock(root, namespace);
   try {
     fs.writeFileSync(winner, String(process.pid), { flag: "wx" });
+    const deadline = Date.now() + 10_000;
+    while (!fs.existsSync(blocked)) {
+      if (Date.now() >= deadline) throw new Error("LOCK_RACE_BLOCKED_TIMEOUT");
+      wait(10);
+    }
     process.stdout.write("WINNER\n");
-    wait(750);
   } finally { unlock(); }
 } catch (error) {
   const expected = namespace === "sync"
     ? "HR_BRIDGE_DEPLOY_SYNC_ALREADY_RUNNING"
     : "HR_BRIDGE_DEPLOY_ALREADY_RUNNING";
   if (error?.message !== expected) throw error;
+  fs.writeFileSync(blocked, String(process.pid), { flag: "wx" });
   process.stdout.write("BLOCKED\n");
 }`;
     const children = [0, 1].map(() =>
@@ -116,6 +134,7 @@ try {
           namespace,
           gate,
           winner,
+          blocked,
         ],
         { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
       ),
@@ -141,6 +160,21 @@ try {
           }),
       ),
     );
+    // ٢٠/٨ — **أظهِر ما جمعتَه قبل أن تسقط.** كان stderr الأطفال يُجمَع ثمّ يُبتلع، فيسقط
+    // النشر برسالة `[1,1] ≠ [0,0]` **بلا أيّ دليل**: ثلاثةُ تحقيقاتٍ متتالية عملت عمياء،
+    // وكلُّها استنتجت آليةً مختلفة. الخطأ الحقيقيّ كان في stderr طوال الوقت.
+    const failed = results.some((r) => r.status !== 0)
+      || results.filter((r) => /WINNER/.test(r.stdout)).length !== 1
+      || results.filter((r) => /BLOCKED/.test(r.stdout)).length !== 1;
+    if (failed) {
+      console.error(`\n✗ سباق قفل «${namespace}» — تشخيصُ الأطفال:`);
+      results.forEach((r, index) => {
+        console.error(`  طفل ${index}: exit=${r.status} stdout=${JSON.stringify(r.stdout.trim())}`);
+        const lines = String(r.stderr).split("\n").filter(Boolean).slice(0, 8);
+        console.error(lines.length ? lines.map((l) => `      ${l}`).join("\n") : "      (بلا stderr)");
+      });
+      console.error("");
+    }
     assert.deepEqual(results.map((result) => result.status), [0, 0]);
     assert.equal(results.filter((result) => /WINNER/.test(result.stdout)).length, 1);
     assert.equal(results.filter((result) => /BLOCKED/.test(result.stdout)).length, 1);
@@ -753,7 +787,7 @@ try {
   const syncLockSelftest = spawnSync(
     process.execPath,
     [path.join(path.dirname(fileURLToPath(import.meta.url)), "deploy.mjs"), "--selftest-sync-lock"],
-    { encoding: "utf8", timeout: 30_000 },
+    { encoding: "utf8", timeout: 60_000 },
   );
   assert.equal(syncLockSelftest.status, 0, syncLockSelftest.stderr);
   assert.match(syncLockSelftest.stdout, /fenced stale race passed/);

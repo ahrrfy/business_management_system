@@ -21,6 +21,10 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { openShift } from "../shiftService";
 import { createWorkOrder } from "../workOrderService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
+import { postEntry } from "../ledgerService";
+import { money } from "../money";
+import { withTx } from "../tx";
 import {
   confirmConsignmentDelivery,
   createDeliveryParty,
@@ -28,11 +32,13 @@ import {
   listOpenConsignments,
   payDeliveryFee,
   recordDeliveryRemittance,
+  returnConsignment,
   transitionConsignmentParcel,
 } from "../deliveryService";
 import { reconcileDeliveryFloat, reconcileLedgerProfit } from "../reconcileService";
 
 const TABLES = [
+  "journalLines", "journalEntries", "doubleEntrySettings",
   "idempotencyKeys", "accountingEntries", "receipts",
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
   "deliveryConsignments", "deliveryRemittances", "deliveryParties",
@@ -65,6 +71,11 @@ async function seed() {
     { id: 2, openId: "local_cashier", name: "كاشير", email: "c@t.test", role: "cashier", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_courier", name: "مندوب", email: "d@t.test", role: "courier", loginMethod: "local", branchId: 1 },
   ]);
+  await d.insert(s.doubleEntrySettings).values({
+    id: 1,
+    mode: "SHADOW",
+    shadowCycleId: "delivery-fee-accrual-test",
+  });
   await d.insert(s.customers).values([{ id: 1, name: "عميل", phone: "+9647700000000" }]);
   await d.insert(s.products).values([{ id: 1, name: "كتاب" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "BK-1", costPrice: "0.00" }]);
@@ -87,6 +98,24 @@ async function drawerNet(shiftId: number): Promise<number> {
 }
 async function entries(type: string) {
   return db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, type as never));
+}
+async function courierPayableNet(): Promise<number> {
+  const row = (await db()
+    .select({
+      net: sql<string>`COALESCE(SUM(${s.journalLines.credit} - ${s.journalLines.debit}), 0)`,
+    })
+    .from(s.journalLines)
+    .where(eq(s.journalLines.role, "COURIER_PAYABLE")))[0];
+  return Number(row?.net ?? 0);
+}
+async function roleNetDebit(role: string): Promise<number> {
+  const row = (await db()
+    .select({
+      net: sql<string>`COALESCE(SUM(${s.journalLines.debit} - ${s.journalLines.credit}), 0)`,
+    })
+    .from(s.journalLines)
+    .where(eq(s.journalLines.role, role)))[0];
+  return Number(row?.net ?? 0);
 }
 async function makeOrder(opts: {
   deposit: string;
@@ -166,6 +195,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     const held = await entries("DELIVERY_FEE_HELD");
     expect(held).toHaveLength(1);
     expect(held[0].amount).toBe("1500.00");
+    expect(await courierPayableNet()).toBe(1500);
     expect(Number(held[0].cost ?? 0)).toBe(0); // تمرير: لا مصروف ولا ربح
 
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
@@ -181,6 +211,7 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
       CASHIER,
     );
     expect(await drawerNet(shift.shiftId)).toBe(2000);
+    expect(await courierPayableNet()).toBe(0);
     expect(await entries("DELIVERY_FEE_HELD")).toHaveLength(2); // قبض + دفع بعد النجاح
 
     // I4 — لا تُخصَم ثانيةً من التوريد.
@@ -224,7 +255,9 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
     const woId = await makeOrder({ deposit: "2000", fee: "1500", feeCollection: "SHOP" });
     const disp = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "1500" }, CASHIER);
 
+    expect(await courierPayableNet()).toBe(0);
     await deliver(disp.consignmentId);
+    expect(await courierPayableNet()).toBe(1500);
     const rem = await recordDeliveryRemittance(
       { branchId: 1, partyId, countedCash: "8000", lines: [{ consignmentId: disp.consignmentId, collectedAmount: "8000" }] },
       CASHIER,
@@ -236,8 +269,56 @@ describe("٥/٨ — أجرة التوصيل تمريرٌ لا إيراد", () =>
       CASHIER,
     );
     const fee = await entries("DELIVERY_FEE");
-    expect(fee).toHaveLength(1);
+    expect(fee).toHaveLength(2);
+    expect(await courierPayableNet()).toBe(0);
+    expect(fee.reduce((sum, entry) => sum + Number(entry.cost), 0)).toBe(1500);
+    const profiles = (await db().select({ profile: s.journalEntries.postingProfile }).from(s.journalEntries))
+      .map((row) => row.profile);
+    expect(profiles.filter((profile) => profile === "DELIVERY_FEE_ACCRUAL")).toHaveLength(1);
+    expect(profiles.filter((profile) => profile === "DELIVERY_FEE_SETTLEMENT")).toHaveLength(1);
     expect(fee[0].cost).toBe("1500.00"); // مصروفٌ حقيقيّ (تتحمّله المكتبة)
     expect(await reconcileLedgerProfit()).toEqual([]);
+  });
+
+  it("releases work-order materials from WIP once and keeps them as COGS when a delivery return cancels the job", async () => {
+    const { partyId } = await seed();
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, { userId: 2, branchId: 1 });
+    const woId = await makeOrder({ deposit: "0", fee: "0", feeCollection: "COURIER" });
+    await db().update(s.workOrders).set({ materialsCost: "4500.00", laborCost: "500.00" }).where(eq(s.workOrders.id, woId));
+    await withTx(async (tx) => {
+      const materialsCost = money("4500.00");
+      const postingSourceComponents = {
+        roleDebits: { WORK_IN_PROGRESS: materialsCost },
+        roleCredits: { INVENTORY: materialsCost },
+      } as const;
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId: 1,
+        amount: materialsCost,
+        postingIntent: createPostingIntent("ADJUST_WIP_CONSUME", "ADJUST", [
+          debitLine("WORK_IN_PROGRESS", materialsCost),
+          creditLine("INVENTORY", materialsCost),
+        ], postingSourceComponents),
+        postingSourceComponents,
+      });
+    });
+    expect(await roleNetDebit("WORK_IN_PROGRESS")).toBe(4500);
+
+    const dispatched = await dispatchToDelivery({ workOrderId: woId, partyId, deliveryFee: "0" }, CASHIER);
+    expect(await roleNetDebit("WORK_IN_PROGRESS")).toBe(0);
+    expect(await roleNetDebit("COGS")).toBe(4500);
+
+    await returnConsignment(dispatched.consignmentId, {
+      ...MANAGER,
+      clientRequestId: "return-cancelled-work-order-wip",
+    });
+    expect(await roleNetDebit("WORK_IN_PROGRESS")).toBe(0);
+    expect(await roleNetDebit("COGS")).toBe(4500);
+    const entriesForInvoice = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.invoiceId, dispatched.invoiceId));
+    expect(entriesForInvoice.find((entry) => entry.entryType === "SALE")?.cost).toBe("4500.00");
+    expect(entriesForInvoice.find((entry) => entry.entryType === "RETURN")?.cost).toBe("0.00");
+    expect(entriesForInvoice.reduce((sum, entry) => sum + Number(entry.profit), 0)).toBe(-4500);
+    expect((await db().select().from(s.workOrders).where(eq(s.workOrders.id, woId)))[0].status).toBe("CANCELLED");
   });
 });

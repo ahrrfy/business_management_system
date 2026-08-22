@@ -8,7 +8,8 @@ import { getDb } from "../../db";
 import { getProductUsage, isFkBlocked, usageBlockMessage } from "../entityUsage";
 import { type Actor, withTx } from "../tx";
 import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
-import { loadVariantAvailability } from "./variantAvailability";
+import { loadBundleUnitCosts } from "../bundleService";
+import { loadVariantAvailability, type BundleCapacity } from "./variantAvailability";
 
 /**
  * صفّ شاشة إدارة المنتجات: حبيبة (متغيّر × وحدة) لكن عبر LEFT JOIN —
@@ -77,6 +78,8 @@ export interface AdminProductRow {
   availableBase: number;
   /** الباركودات البديلة للوحدة (productUnitBarcodes) — تظهر في التصدير وبجوار الباركود الأساسي. */
   barcodeAliases: string[];
+  /** للبكج وحده: تفسير طاقته (من يحدّها وهل يمنع البيع). `null` لغير البكج. */
+  bundleCapacity: BundleCapacity | null;
 }
 
 export interface ListProductsAdminInput {
@@ -231,10 +234,13 @@ export async function listProductsAdmin(
     if (list) list.push(a.barcode);
     else aliasesByUnit.set(k, [a.barcode]);
   }
-  const availability = await loadVariantAvailability(
+  const pageVariantIds = rows.flatMap((row) => row.variantId == null ? [] : [Number(row.variantId)]);
+  const availability = await loadVariantAvailability(db, input.branchId, pageVariantIds);
+  // تكلفة البكج تُشتق من وصفته — `productVariants.costPrice` له صفرٌ بحكم التصميم (§bundleService).
+  // بدونها كانت الشاشة تعرض «تكلفة ٠» وهامشاً ١٠٠٪ كاذباً لكل بكج.
+  const bundleCosts = await loadBundleUnitCosts(
     db,
-    input.branchId,
-    rows.flatMap((row) => row.variantId == null ? [] : [Number(row.variantId)]),
+    rows.flatMap((row) => row.isBundle && row.variantId != null ? [Number(row.variantId)] : []),
   );
 
   // العدّ الإجمالي بنفس FROM/WHERE لكن بلا جوينات الأسعار/المخزون (كلاهما 1:0..1 لا يغيّر عدد الصفوف).
@@ -246,6 +252,12 @@ export async function listProductsAdmin(
       .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
       .where(where)
   )[0];
+
+  /** البكج بلا تكلفة مخزَّنة — تكلفته مجموع وصفته الحيّ. */
+  const effectiveBaseCost = (r: { isBundle: unknown; variantId: unknown; baseCostPrice: unknown }): string | null =>
+    r.isBundle && r.variantId != null
+      ? (bundleCosts.get(Number(r.variantId)) ?? null)
+      : (r.baseCostPrice == null ? null : String(r.baseCostPrice));
 
   return {
     rows: rows.map((r) => ({
@@ -293,10 +305,10 @@ export async function listProductsAdmin(
       unitIsActive: r.unitIsActive != null ? !!r.unitIsActive : null,
       unitCreatedAt: r.unitCreatedAt ?? null,
       price: r.price ?? null,
-      baseCostPrice: includeSensitivePrices ? (r.baseCostPrice ?? null) : null,
+      baseCostPrice: includeSensitivePrices ? (effectiveBaseCost(r) ?? null) : null,
       costPrice:
-        includeSensitivePrices && r.baseCostPrice != null && r.conversionFactor != null
-          ? new Decimal(r.baseCostPrice).times(new Decimal(r.conversionFactor)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)
+        includeSensitivePrices && effectiveBaseCost(r) != null && r.conversionFactor != null
+          ? new Decimal(effectiveBaseCost(r)!).times(new Decimal(r.conversionFactor)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2)
           : null,
       wholesalePrice: includeSensitivePrices ? (r.wholesalePrice ?? null) : null,
       governmentPrice: includeSensitivePrices ? (r.governmentPrice ?? null) : null,
@@ -310,6 +322,9 @@ export async function listProductsAdmin(
         ? (availability.get(Number(r.variantId))?.availableBase ?? 0)
         : 0,
       barcodeAliases: r.productUnitId != null ? (aliasesByUnit.get(Number(r.productUnitId)) ?? []) : [],
+      bundleCapacity: r.isBundle && r.variantId != null
+        ? (availability.get(Number(r.variantId))?.bundleCapacity ?? null)
+        : null,
     })),
     total: Number(totalRow?.n ?? 0),
     branchId: input.branchId,

@@ -1,6 +1,7 @@
 // شاشة إدارة المنتجات — قائمة خادمية كاملة (بحث ذكي + تقسيم صفحات + إظهار المعطّل)
 // على نمط Customers.tsx. تستبدل posList (INNER JOIN يخفي الناقص + حدّ 500) بـadminList
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
+import { AlertTriangle } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { FilterField, ListToolbar, RowActions } from "@/components/list";
@@ -36,6 +37,43 @@ import { CategoryOptionList } from "@/lib/categoryTree";
 import { useEffect, useState } from "react";
 
 type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
+
+/**
+ * البكج بلا رصيدٍ خاصّ — رقمه مشتقٌّ من أضعف مكوّن. الصفر بلا تفسير كان يُقرأ «النظام معطوب»،
+ * فنُظهر السبب والعلاج: أضِف الوصفة، أو فعّل المكوّن، أو اشترِ الصنف الذي يحدّ الطاقة.
+ */
+function BundleCapacityNote({ capacity }: { capacity: NonNullable<Row["bundleCapacity"]> }) {
+  const limiting = capacity.limiting;
+  const name = limiting ? `${limiting.productName}${limiting.sku ? ` — ${limiting.sku}` : ""}` : null;
+  const text =
+    capacity.status === "NO_RECIPE"
+      ? "بكج بلا مكوّنات — أضِف وصفته"
+      : capacity.status === "COMPONENT_INACTIVE"
+        ? `مكوّن معطَّل: ${name ?? "—"}`
+        : capacity.status === "COMPONENT_UNRESOLVED"
+          ? "وصفة غير صالحة — راجع مكوّناته"
+          : capacity.status === "COMPONENT_OUT_OF_STOCK"
+            ? `نفد المكوّن: ${name ?? "—"}`
+            : name
+              ? `محدود بالمكوّن: ${name}`
+              : null;
+  if (!text) return null;
+  const blocking = capacity.status !== "OK";
+  return (
+    <div
+      dir="rtl"
+      title={
+        limiting
+          ? `يحتاج البكج ${limiting.requiredPerBundle} من «${limiting.productName}» — المتاح ${limiting.componentAvailableBase}`
+          : undefined
+      }
+      className={`mt-0.5 flex items-center justify-end gap-1 text-[10px] font-semibold leading-tight ${blocking ? "text-[var(--sem-warn)]" : "text-muted-foreground"}`}
+    >
+      <AlertTriangle aria-hidden className="size-3 shrink-0" />
+      <span className="truncate max-w-[13rem]">{text}</span>
+    </div>
+  );
+}
 
 const limit = 50;
 const yesNo = (v: boolean | null | undefined) => (v == null ? "" : v ? "نعم" : "لا");
@@ -479,7 +517,10 @@ export default function Products() {
                     )}
                     <td className="p-2 text-right tabular-nums" dir="ltr">{r.stockBase}</td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">{r.reservedBase}</td>
-                    <td className="p-2 text-right tabular-nums font-medium" dir="ltr">{r.availableBase}</td>
+                    <td className="p-2 text-right tabular-nums font-medium" dir="ltr">
+                      {r.availableBase}
+                      {r.bundleCapacity && <BundleCapacityNote capacity={r.bundleCapacity} />}
+                    </td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "badge-status-active" : "badge-stock-out"}`}>
                         {r.productIsActive ? "مفعّل" : "معطّل"}

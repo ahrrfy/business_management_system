@@ -40,8 +40,12 @@ export { recordDeliveryRemittance } from "./delivery/remittance";
 export { returnConsignment } from "./delivery/returns";
 export type { SettleInput, WriteOffInput, RecoverWriteOffInput } from "./delivery/settle";
 export { settleDeliveryBalance, writeOffDeliveryShortfall, recoverDeliveryWriteOff } from "./delivery/settle";
+// كشف شركة التوصيل (١٩/٨): مستند التسوية الموحّد — يقود التسليم والتحصيل والتوريد معاً.
+export { recordCompanyStatement } from "./delivery/companyStatement";
+export type { CompanyStatementInput, CompanyStatementResult } from "./delivery/companyStatement";
 export {
   listReadyForDispatch,
+  listInTransitConsignments,
   listOpenConsignments,
   listConsignmentsForParty,
   listPartyRemittances,

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link } from "wouter";
-import { ChevronLeft } from "lucide-react";
+import { ArrowRight, ChevronRight, Home } from "lucide-react";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -31,6 +31,8 @@ type PageHeaderProps = {
   backHref?: string;
   /** نصّ رابط الرجوع (افتراضي «رجوع»). */
   backLabel?: React.ReactNode;
+  /** وجهةُ «الرئيسية» — الافتراضي `/`. مرّر `null` لإخفائها (شاشةٌ هي الرئيسية نفسها). */
+  homeHref?: string | null;
   className?: string;
 };
 
@@ -47,19 +49,35 @@ type PageHeaderProps = {
  * @example شاشة تفصيلية بمسار تنقّل:
  * <PageHeader title="كشف حساب — أحمد" breadcrumbs={[{label:"العملاء", href:"/customers"}, {label:"كشف حساب"}]} />
  */
-export function PageHeader({ title, description, actions, icon, breadcrumbs, backHref, backLabel, className }: PageHeaderProps) {
+export function PageHeader({ title, description, actions, icon, breadcrumbs, backHref, backLabel, homeHref, className }: PageHeaderProps) {
   const headerRow = (
     <div className={cn("flex items-start justify-between gap-3 flex-wrap", className)}>
       <div className="min-w-0 space-y-1">
-        {backHref && (
-          <Link
-            href={backHref}
-            className="inline-flex items-center gap-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
-          >
-            <span aria-hidden>←</span>
-            {backLabel ?? "رجوع"}
-          </Link>
-        )}
+        {/* ١٩/٨ (طلب المالك): **رجوعٌ ورئيسيّة في كل شاشة**. الرئيسيّة تظهر دائماً — محطّة
+            الاستقبال تُركَّب بلا شريطٍ جانبيّ، وموظّفُها كان بلا مخرجٍ إلّا كتابة العنوان
+            يدوياً. والرجوعُ يظهر حين يكون للشاشة أصلٌ معروف. */}
+        <div className="flex items-center gap-2">
+          {backHref && (
+            <Link
+              href={backHref}
+              className="inline-flex items-center gap-0.5 text-2xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+            >
+              {/* ١٩/٨: كان محرفًا خامّاً `←` — وهو يشير **إلى الأمام** في RTL لا إلى الخلف. */}
+              <ArrowRight aria-hidden className="size-3.5" />
+              {backLabel ?? "رجوع"}
+            </Link>
+          )}
+          {homeHref !== null && (
+            <Link
+              href={homeHref ?? "/"}
+              className="inline-flex items-center gap-1 text-2xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+              title="الصفحة الرئيسية"
+            >
+              <Home aria-hidden className="size-3.5" />
+              الرئيسية
+            </Link>
+          )}
+        </div>
         <h1 className="flex items-center gap-2 text-2xl font-bold leading-tight">
           {icon}
           <span className="truncate">{title}</span>
@@ -95,7 +113,9 @@ export function PageHeader({ title, description, actions, icon, breadcrumbs, bac
                 </BreadcrumbItem>
                 {!isLast && (
                   <BreadcrumbSeparator>
-                    <ChevronLeft className="size-3.5" />
+                    {/* ١٩/٨: `ChevronLeft` مع `rtl:rotate-180` في `breadcrumb.tsx:75` = قلبان
+                        يتعاندان ⤇ الفاصل يشير عكس تدفّق القراءة العربيّ. */}
+                    <ChevronRight className="size-3.5" />
                   </BreadcrumbSeparator>
                 )}
               </React.Fragment>

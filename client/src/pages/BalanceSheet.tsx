@@ -10,6 +10,7 @@ import { fmtAr, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { toExcelMoney } from "@/lib/payrollAccrual";
 
 /** اليوم YYYY-MM-DD محلياً — لا toISOString (ينزاح قرب منتصف الليل ببغداد UTC+3). */
 function todayYmd(): string {
@@ -51,11 +52,15 @@ export default function BalanceSheet() {
       { label: "رصيدنا لدى الصرّافين", v: p.exchangeDebit },
       { label: "الذمم المدينة (عملاء)", v: p.arDebit },
       { label: "سُلف للموردين", v: p.apDebit },
+      { label: "تسوية مشتريات نقدية لنا", v: p.cashPurchaseClearingDebit },
       { label: "المخزون (بالتكلفة)", v: p.inventory },
       { label: "الأصول الثابتة (بالتكلفة)", v: p.fixedAssets },
+      { label: "سلف مستحقة على الموظفين", v: p.employeeAdvanceReceivable },
+      { label: "مستحق لنا على الفروع الأخرى", v: p.dueFromBranches },
     ].filter((r) => D(r.v).gt(0));
     const liabilities = [
       { label: "الذمم الدائنة (موردون)", v: p.apCredit },
+      { label: "تسوية مشتريات نقدية معلّقة", v: p.cashPurchaseClearingCredit },
       { label: "سُلف العملاء", v: p.arCredit },
       // FIN-05: عرابين طلبات خدمة العملاء غير المُسلَّمة — التزامٌ يقابل النقد الداخل (الخدمة لم تُنجَز بعد).
       // مراجعة PR #495: يشمل عرابين الطلبات المحفوظة المفتوحة (تُفصَّل في السطر التالي).
@@ -64,7 +69,12 @@ export default function BalanceSheet() {
       // ١٠/٨ — أجرة توصيل قُبضت في الدرج أمانةً للمندوب ولم تُصرف له بعد (نقدها ضمن «النقد»).
       { label: "أمانات أجور توصيل معلّقة", v: p.deliveryFeeHeldLiability },
       { label: "أجور توصيل مكتسبة غير مدفوعة", v: p.deliveryFeeDueLiability },
-    ].filter((r) => D(r.v).gt(0));
+      { label: "صافي رواتب مستحق للموظفين", v: p.accruedSalaryLiability },
+      { label: "ضريبة رواتب مستحقة التحويل", v: p.payrollTaxPayable },
+      { label: "ضمان اجتماعي مستحق التحويل", v: p.socialSecurityPayable },
+      { label: "مخصص نهاية الخدمة", v: p.eosProvision },
+      { label: "مستحق علينا للفروع الأخرى", v: p.dueToBranches },
+    ].filter((r) => !D(r.v).isZero());
     return { assets, liabilities };
   }, [p]);
 
@@ -80,7 +90,7 @@ export default function BalanceSheet() {
           : "",
       ].filter(Boolean).join(" ")
     : "";
-  const fullNote = [NOTE, disclosure, p?.historicalNote ?? ""].filter(Boolean).join(" ");
+  const fullNote = [NOTE, disclosure, p?.historicalNote ?? "", p?.interbranchNote ?? ""].filter(Boolean).join(" ");
 
   const kpis: KpiItem[] = p
     ? [
@@ -110,7 +120,7 @@ export default function BalanceSheet() {
       filename: "الميزانية-العمومية",
       columns: [
         { key: "label", header: "البند" },
-        { key: "amount", header: "القيمة", map: (r) => (r.amount === "" ? "" : Number(r.amount)) },
+        { key: "amount", header: "القيمة", map: (r) => (r.amount === "" ? "" : toExcelMoney(r.amount)) },
       ],
     });
   }

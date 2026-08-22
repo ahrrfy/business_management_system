@@ -2,6 +2,7 @@
  * تقرير WIP (Work-in-Progress) — قيمة المواد المُستهلَكة في طلبات خدمة قيد التنفيذ.
  * managerBranchScopedProcedure.
  */
+import { workOrderStatusLabel } from "@shared/workOrderStatus";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { trpc } from "@/lib/trpc";
 import { fmtDate } from "@/lib/date";
@@ -14,10 +15,6 @@ import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { useState } from "react";
 
-const STATUS_LABEL: Record<string, string> = {
-  IN_PROGRESS: "قيد التنفيذ",
-  READY: "جاهز للتسليم",
-};
 
 export default function WIPReportPage() {
   const branches = trpc.branches.list.useQuery();
@@ -44,7 +41,7 @@ export default function WIPReportPage() {
       columns: [
         { key: "orderNumber", header: "رقم الأمر" },
         { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "—" },
-        { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+        { key: "status", header: "الحالة", map: (r) => workOrderStatusLabel(r.status) },
         { key: "materialsCost", header: "قيمة المواد", money: true, map: (r) => Number(r.materialsCost) },
         { key: "createdAt", header: "تاريخ الإنشاء", map: (r) => fmtDate(r.createdAt) },
       ],
@@ -65,7 +62,7 @@ export default function WIPReportPage() {
       rows: rows.map((r) => ({
         orderNumber: r.orderNumber,
         customerName: r.customerName ?? "—",
-        status: STATUS_LABEL[r.status] ?? r.status,
+        status: workOrderStatusLabel(r.status),
         materialsCost: fmtAr(r.materialsCost),
         createdAt: fmtDate(r.createdAt),
       })),
@@ -122,7 +119,7 @@ export default function WIPReportPage() {
                   <tr key={r.workOrderId} className="hover:bg-accent/40">
                     <td className="p-2 border font-mono">{r.orderNumber}</td>
                     <td className="p-2 border">{r.customerName ?? "—"}</td>
-                    <td className="p-2 border">{STATUS_LABEL[r.status] ?? r.status}</td>
+                    <td className="p-2 border">{workOrderStatusLabel(r.status)}</td>
                     <td className="p-2 border font-semibold">{formatIqd(r.materialsCost)}</td>
                     <td className="p-2 border text-muted-foreground">{fmtDate(r.createdAt)}</td>
                   </tr>

@@ -1,6 +1,13 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, gte, inArray, lt } from "drizzle-orm";
-import { accountingEntries, branches, expenses, receipts, shifts, users } from "../../../drizzle/schema";
+import {
+  accountingEntries,
+  branches,
+  expenses,
+  receipts,
+  shifts,
+  users,
+} from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { utcDayStart, utcNextDayStart } from "../businessDay";
 import { money, toDbMoney } from "../money";
@@ -38,9 +45,12 @@ export async function getCashRemediationDryRun(
         gte(shifts.openedAt, utcDayStart(filters.from)),
         lt(shifts.openedAt, utcNextDayStart(filters.to)),
       ];
-      if (filters.branchId != null) conditions.push(eq(shifts.branchId, filters.branchId));
-      if (filters.shiftIds?.length) conditions.push(inArray(shifts.id, filters.shiftIds));
-      if (filters.userIds?.length) conditions.push(inArray(shifts.userId, filters.userIds));
+      if (filters.branchId != null)
+        conditions.push(eq(shifts.branchId, filters.branchId));
+      if (filters.shiftIds?.length)
+        conditions.push(inArray(shifts.id, filters.shiftIds));
+      if (filters.userIds?.length)
+        conditions.push(inArray(shifts.userId, filters.userIds));
 
       const shiftRows = await db
         .select({
@@ -76,7 +86,11 @@ export async function getCashRemediationDryRun(
 
       const shiftIds = shiftRows.map((row) => Number(row.id));
       if (shiftIds.length === 0) {
-        return analyzeCashRemediation({ shifts: [], receipts: [] }, filters, snapshotStartedAt);
+        return analyzeCashRemediation(
+          { shifts: [], receipts: [] },
+          filters,
+          snapshotStartedAt,
+        );
       }
 
       const receiptRows = await db
@@ -160,7 +174,10 @@ export async function getCashRemediationDryRun(
         });
       }
 
-      const entriesByReceipt = new Map<number, Array<{ id: number; entryType: string }>>();
+      const entriesByReceipt = new Map<
+        number,
+        Array<{ id: number; entryType: string }>
+      >();
       for (const row of entryRows) {
         if (row.receiptId == null) continue;
         const key = Number(row.receiptId);
@@ -170,12 +187,21 @@ export async function getCashRemediationDryRun(
       }
 
       const actorIds = Array.from(
-        new Set(receiptRows.map((row) => row.createdBy).filter((id): id is number => id != null)),
+        new Set(
+          receiptRows
+            .map((row) => row.createdBy)
+            .filter((id): id is number => id != null),
+        ),
       );
       const actorRows = actorIds.length
-        ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, actorIds))
+        ? await db
+            .select({ id: users.id, name: users.name })
+            .from(users)
+            .where(inArray(users.id, actorIds))
         : [];
-      const actorNameById = new Map(actorRows.map((row) => [Number(row.id), row.name]));
+      const actorNameById = new Map(
+        actorRows.map((row) => [Number(row.id), row.name]),
+      );
 
       // إثبات النقل الداخلي مطابق لتقرير الوردية: بادئة CH/CD وحدها لا تكفي، بل يلزم
       // إيصال IN نقد/خزينة مطابق في الفرع والمرجع والمبلغ، ومطابقة واحد-لواحد.
@@ -221,6 +247,28 @@ export async function getCashRemediationDryRun(
             )
             .orderBy(asc(receipts.id))
         : [];
+      const pairReceiptIds = pairRows.map((row) => Number(row.id));
+      const pairEntryRows = pairReceiptIds.length
+        ? await db
+            .select({
+              id: accountingEntries.id,
+              receiptId: accountingEntries.receiptId,
+              entryType: accountingEntries.entryType,
+            })
+            .from(accountingEntries)
+            .where(inArray(accountingEntries.receiptId, pairReceiptIds))
+        : [];
+      const pairedEntriesByReceipt = new Map<
+        number,
+        Array<{ id: number; entryType: string }>
+      >();
+      for (const entry of pairEntryRows) {
+        if (entry.receiptId == null) continue;
+        const receiptId = Number(entry.receiptId);
+        const current = pairedEntriesByReceipt.get(receiptId) ?? [];
+        current.push({ id: Number(entry.id), entryType: entry.entryType });
+        pairedEntriesByReceipt.set(receiptId, current);
+      }
       const pairQueues = new Map<string, typeof pairRows>();
       for (const pair of pairRows) {
         if (pair.branchId == null || !pair.referenceNumber) continue;
@@ -237,42 +285,58 @@ export async function getCashRemediationDryRun(
         if (pair) pairByReceipt.set(Number(candidate.id), pair);
       }
 
-      const normalizedReceipts: RawRemediationReceipt[] = receiptRows.map((row) => {
-        const id = Number(row.id);
-        const entries = entriesByReceipt.get(id) ?? [];
-        const pair = pairByReceipt.get(id);
-        return {
-          id,
-          shiftId: Number(row.shiftId),
-          branchId: row.branchId == null ? null : Number(row.branchId),
-          direction: row.direction,
-          amount: row.amount,
-          paymentMethod: row.paymentMethod,
-          cashBucket: row.cashBucket,
-          referenceNumber: row.referenceNumber,
-          voucherNumber: row.voucherNumber,
-          invoiceId: row.invoiceId == null ? null : Number(row.invoiceId),
-          workOrderId: row.workOrderId == null ? null : Number(row.workOrderId),
-          reservationId: row.reservationId == null ? null : Number(row.reservationId),
-          partyType: row.partyType,
-          partyId: row.partyId == null ? null : Number(row.partyId),
-          counterpartyName: row.counterpartyName,
-          description: row.description,
-          attachmentUrl: row.attachmentUrl,
-          status: row.status,
-          approvalStatus: row.approvalStatus,
-          createdBy: row.createdBy,
-          createdByName: row.createdBy == null ? null : (actorNameById.get(row.createdBy) ?? null),
-          createdAt: row.createdAt,
-          expense: expenseByReceipt.get(id) ?? null,
-          linkedExpenseIds: expenseIdsByReceipt.get(id) ?? [],
-          ledgerEntryIds: entries.map((entry) => entry.id),
-          ledgerEntryTypes: entries.map((entry) => entry.entryType),
-          pairedTreasuryReceiptId: pair ? Number(pair.id) : null,
-          pairedTreasuryReceiptStatus: pair?.status ?? null,
-          pairedTreasuryApprovalStatus: pair?.approvalStatus ?? null,
-        };
-      });
+      const normalizedReceipts: RawRemediationReceipt[] = receiptRows.map(
+        (row) => {
+          const id = Number(row.id);
+          const entries = entriesByReceipt.get(id) ?? [];
+          const pair = pairByReceipt.get(id);
+          const pairedEntries = pair
+            ? (pairedEntriesByReceipt.get(Number(pair.id)) ?? [])
+            : [];
+          return {
+            id,
+            shiftId: Number(row.shiftId),
+            branchId: row.branchId == null ? null : Number(row.branchId),
+            direction: row.direction,
+            amount: row.amount,
+            paymentMethod: row.paymentMethod,
+            cashBucket: row.cashBucket,
+            referenceNumber: row.referenceNumber,
+            voucherNumber: row.voucherNumber,
+            invoiceId: row.invoiceId == null ? null : Number(row.invoiceId),
+            workOrderId:
+              row.workOrderId == null ? null : Number(row.workOrderId),
+            reservationId:
+              row.reservationId == null ? null : Number(row.reservationId),
+            partyType: row.partyType,
+            partyId: row.partyId == null ? null : Number(row.partyId),
+            counterpartyName: row.counterpartyName,
+            description: row.description,
+            attachmentUrl: row.attachmentUrl,
+            status: row.status,
+            approvalStatus: row.approvalStatus,
+            createdBy: row.createdBy,
+            createdByName:
+              row.createdBy == null
+                ? null
+                : (actorNameById.get(row.createdBy) ?? null),
+            createdAt: row.createdAt,
+            expense: expenseByReceipt.get(id) ?? null,
+            linkedExpenseIds: expenseIdsByReceipt.get(id) ?? [],
+            ledgerEntryIds: entries.map((entry) => entry.id),
+            ledgerEntryTypes: entries.map((entry) => entry.entryType),
+            pairedTreasuryReceiptId: pair ? Number(pair.id) : null,
+            pairedTreasuryReceiptStatus: pair?.status ?? null,
+            pairedTreasuryApprovalStatus: pair?.approvalStatus ?? null,
+            pairedTreasuryLedgerEntryIds: pairedEntries.map(
+              (entry) => entry.id,
+            ),
+            pairedTreasuryLedgerEntryTypes: pairedEntries.map(
+              (entry) => entry.entryType,
+            ),
+          };
+        },
+      );
 
       return analyzeCashRemediation(
         {

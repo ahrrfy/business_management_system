@@ -1,10 +1,72 @@
 export type VoucherUiRecord = {
   direction?: string | null;
   approvalStatus?: string | null;
+  status?: string | null;
   paymentMethod?: string | null;
   cashBucket?: string | null;
   shiftId?: number | null;
 };
+
+const RESUBMITTABLE_SYSTEM_PREFIXES = [
+  "SHIP-",
+  "ASSET-MAINT-",
+  "ASSET-ACQ-",
+] as const;
+
+export function isAccrualPaymentReference(referenceNumber?: string | null): boolean {
+  return !!referenceNumber && RESUBMITTABLE_SYSTEM_PREFIXES.some((prefix) =>
+    referenceNumber.startsWith(prefix),
+  );
+}
+
+export function canShowAccrualPaymentResubmit(input: {
+  referenceNumber?: string | null;
+  approvalStatus?: string | null;
+  resubmitLineageStatus?: "NONE" | "VALID" | "BROKEN" | null;
+  canManage: boolean;
+}): boolean {
+  return input.canManage &&
+    input.approvalStatus === "REJECTED" &&
+    input.resubmitLineageStatus !== "BROKEN" &&
+    isAccrualPaymentReference(input.referenceNumber);
+}
+
+export function validAccrualReissueReason(value: string): boolean {
+  const reason = value.trim();
+  return reason.length >= 5 && reason.length <= 500;
+}
+
+export function accrualPaymentResubmitPayload(input: {
+  receiptId: number;
+  reissueReason: string;
+  attachmentUrl?: string | null;
+  note?: string | null;
+}) {
+  const reissueReason = input.reissueReason.trim();
+  if (!Number.isSafeInteger(input.receiptId) || input.receiptId <= 0 || !validAccrualReissueReason(reissueReason)) {
+    throw new Error("بيانات إعادة إصدار طلب الدفع غير صالحة");
+  }
+  return {
+    receiptId: input.receiptId,
+    priorReceiptId: input.receiptId,
+    reissueReason,
+    attachmentUrl: input.attachmentUrl?.trim() || null,
+    note: input.note?.trim() || null,
+  };
+}
+
+export function accrualPaymentAttemptLabel(input: {
+  attempt?: number | null;
+  rootReceiptId?: number | null;
+  priorReceiptId?: number | null;
+}): string | null {
+  if (
+    input.attempt == null || input.attempt < 1 ||
+    input.rootReceiptId == null || input.rootReceiptId < 1 ||
+    input.priorReceiptId == null || input.priorReceiptId < 1
+  ) return null;
+  return `المحاولة A${input.attempt} · الأصل #${input.rootReceiptId} · السابقة #${input.priorReceiptId}`;
+}
 
 const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي",
@@ -41,9 +103,7 @@ export function canShowVoucherApprovalAction(input: {
   canManageLegacyReceipt: boolean;
 }): boolean {
   if (input.approvalStatus !== "PENDING_APPROVAL") return false;
-  return input.direction === "OUT"
-    ? input.isOwner
-    : input.canManageLegacyReceipt;
+  return input.isOwner;
 }
 
 /** نفس ملكية قرار الاعتماد لرفض طلب الصرف؛ سند القبض القديم يحتفظ بمساره. */
@@ -58,7 +118,7 @@ export function canShowVoucherRejectAction(input: {
 
 /** لا تُطبع وثيقة مالية رسمية قبل أن يصبح السند معتمداً فعلاً. */
 export function canPrintOfficialVoucher(row: VoucherUiRecord): boolean {
-  return row.approvalStatus === "APPROVED";
+  return row.approvalStatus === "APPROVED" && row.status === "COMPLETED";
 }
 
 export function voucherCashUiPolicy(input: {
@@ -108,6 +168,6 @@ export function voucherCreateSuccessMessage(input: {
     return `أُرسل طلب الصرف ${input.voucherNumber} — بانتظار اعتماد وصرف المالك.`;
   }
   return input.approvalStatus === "PENDING_APPROVAL"
-    ? `أُنشئ السند ${input.voucherNumber} — بانتظار اعتماد مدير ثانٍ (Maker-Checker).`
+    ? `أُنشئ السند ${input.voucherNumber} — بانتظار اعتماد مالك نشط آخر (Maker-Checker).`
     : `تَمّ إنشاء سند القبض ${input.voucherNumber}`;
 }

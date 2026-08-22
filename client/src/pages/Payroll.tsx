@@ -13,6 +13,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { PayrollAccrualOperations, PayrollRemittanceRequestPanel } from "@/components/hr/PayrollAccrualOperations";
+import { PayrollPaymentDialog } from "@/components/hr/PayrollPaymentDialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -23,9 +25,10 @@ import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { D, round2 } from "@/lib/money";
-import { PAY_TYPES, payrollStatusLabel, payTypeLabel } from "@shared/hr";
+import { PAY_TYPES, payTypeLabel, payrollItemNeedsAttention } from "@shared/hr";
 import { printPayslip } from "@/lib/printing/printPayslip";
-import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, Wallet, X } from "lucide-react";
+import { payrollStatusLabel as accrualStatusLabel, toExcelMoney } from "@/lib/payrollAccrual";
+import { AlarmClock, Banknote, Check, FileSpreadsheet, FileText, Minus, Plus, Printer, TriangleAlert, Wallet, X } from "lucide-react";
 import { useMemo, useState } from "react";
 
 const selectCls =
@@ -35,12 +38,13 @@ const STATUS_CLS: Record<string, string> = {
   draft: "badge-stock-low",
   approved: "badge-status-pending",
   paid: "badge-status-active",
+  cancelled: "badge-status-cancelled",
 };
 
 function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`inline-block rounded-full px-2 py-0.5 text-xs whitespace-nowrap ${STATUS_CLS[status] ?? "bg-muted text-muted-foreground"}`}>
-      {payrollStatusLabel(status)}
+      {accrualStatusLabel(status)}
     </span>
   );
 }
@@ -61,44 +65,77 @@ function StatCard({ label, value, sub, accent, icon }: { label: string; value: s
 }
 
 /** الشهر الحالي بصيغة YYYY-MM (افتراضي حقل توليد مسيّر جديد). */
-const thisMonth = () => new Date().toISOString().slice(0, 7);
+const thisMonth = () => {
+  const parts = new Intl.DateTimeFormat("en", { timeZone: "Asia/Baghdad", year: "numeric", month: "2-digit" }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  return `${year}-${month}`;
+};
+
+const PAYMENT_METHOD_AR: Record<string, string> = {
+  CASH: "نقداً", CARD: "بطاقة/حساب مصرفي", TRANSFER: "تحويل مصرفي", WALLET: "محفظة دفع",
+};
+
+function paymentYmd(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
 
 type RunItem = NonNullable<ReturnType<typeof useRunQuery>["data"]>["items"][number];
 
-function useRunQuery(id: number | null) {
-  return trpc.payroll.get.useQuery({ id: id ?? 0 }, { enabled: id != null && Number.isFinite(id) });
+function useRunQuery(id: number | null, enabled: boolean) {
+  return trpc.payroll.get.useQuery({ id: id ?? 0 }, { enabled: enabled && id != null && Number.isFinite(id) });
 }
 
 export default function Payroll() {
   const utils = trpc.useUtils();
-  const runsQ = trpc.payroll.list.useQuery();
+  const me = trpc.auth.me.useQuery();
+  const ownerAccess = me.data?.isOwner === true;
+  const runsQ = trpc.payroll.list.useQuery(undefined, { enabled: ownerAccess });
   const runs = runsQ.data ?? [];
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
   // المسيّر المعروض: المُختار صراحةً، أو الأحدث (أول عنصر — مرتّب بالأحدث).
   const effectiveId = selectedId ?? (runs.length ? Number(runs[0].id) : null);
-  const runQ = useRunQuery(effectiveId);
+  const runQ = useRunQuery(effectiveId, ownerAccess);
   const run = runQ.data ?? null;
 
   const [slip, setSlip] = useState<RunItem | null>(null);
   const [editItem, setEditItem] = useState<RunItem | null>(null);
   const [genOpen, setGenOpen] = useState(false);
   const [genPeriod, setGenPeriod] = useState(thisMonth());
+  const [payOpen, setPayOpen] = useState(false);
 
   const refresh = async () => {
     await Promise.all([utils.payroll.list.invalidate(), utils.payroll.get.invalidate()]);
   };
 
   const generate = trpc.payroll.generate.useMutation({
-    onSuccess: async (r) => { notify.ok("تم توليد المسيّر"); setGenOpen(false); if (r?.id) setSelectedId(Number(r.id)); await refresh(); },
+    onSuccess: async (r) => {
+      /*
+       * الموسومون بيومٍ مفتوح (دخولٌ بلا انصراف): لا يُستبعد أحد — بندُه يُنشأ بساعاته
+       * المؤكَّدة وحدها — لكنّ الوسم يجب أن **يُرى** فوراً وإلّا اعتُمد نقصٌ صامت. التنبيه
+       * هنا لحظيّ، ولوحةُ الانتباه أدناه أثرُه الدائم (تُشتقّ من ملاحظات البنود).
+       */
+      const openCount = r?.attendanceFlagged?.length ?? 0;
+      if (openCount > 0) {
+        notify.warn(
+          `تم توليد المسيّر — ${openCount} موظف بأيام بلا انصراف`,
+          "ساعات تلك الأيام غير محتسَبة. صحّحها قبل الاعتماد (التفصيل أعلى الجدول).",
+        );
+      } else {
+        notify.ok("تم توليد المسيّر");
+      }
+      setGenOpen(false);
+      if (r?.id) setSelectedId(Number(r.id));
+      await refresh();
+    },
     onError: (e) => notify.err(e),
   });
   const approve = trpc.payroll.approve.useMutation({
     onSuccess: async () => { notify.ok("تم اعتماد المسيّر"); await refresh(); },
-    onError: (e) => notify.err(e),
-  });
-  const pay = trpc.payroll.pay.useMutation({
-    onSuccess: async () => { notify.ok("تم دفع المسيّر وقيد الرواتب"); await refresh(); },
     onError: (e) => notify.err(e),
   });
   const cancel = trpc.payroll.cancel.useMutation({
@@ -118,15 +155,52 @@ export default function Payroll() {
   const isDraft = run?.status === "draft";
   const isApproved = run?.status === "approved";
   const isPaid = run?.status === "paid";
-  const busy = generate.isPending || approve.isPending || pay.isPending || cancel.isPending;
+  const busy = generate.isPending || approve.isPending || cancel.isPending;
+  const isOwner = me.data?.isOwner === true;
+  const independentOwner = isOwner && Number(me.data?.id ?? 0) !== Number(run?.createdBy ?? 0);
+  const openSalaryObligations = (run?.obligations ?? []).filter((obligation) =>
+    obligation.kind === "SALARY_NET" &&
+    Number(obligation.revisionNo) === Number(run?.revisionNo ?? -1) &&
+    (obligation.status === "OPEN" || obligation.status === "PARTIAL") &&
+    D(obligation.remainingAmount).gt(0),
+  );
+  let openSalaryTotal = D(0);
+  for (const obligation of openSalaryObligations) {
+    openSalaryTotal = openSalaryTotal.plus(D(obligation.remainingAmount));
+  }
+  const openSalaryAmount = round2(openSalaryTotal).toFixed(2);
+  const canPayOpenSalary = isApproved || (isPaid && D(openSalaryAmount).gt(0));
 
   // اسم فرع كل موظف — payroll.get لا يحمل الفرع، فنشتقّه من قائمة الموظفين (نفس بوّابة hr/READ)
   // لتمريره لقسيمة الراتب المطبوعة (كان يُطبع «—» دائماً بسبب branchName: null الثابتة).
-  const employeesQ = trpc.employees.list.useQuery({ includeInactive: true, limit: 200 });
+  const employeesQ = trpc.employees.list.useQuery({ includeInactive: true, limit: 200 }, { enabled: ownerAccess });
+  const branchesQ = trpc.branches.list.useQuery(undefined, { enabled: ownerAccess });
   const empBranch = useMemo(
     () => new Map((employeesQ.data?.rows ?? []).map((e) => [Number(e.id), e.branchName ?? null])),
     [employeesQ.data],
   );
+  const branchName = useMemo(
+    () => new Map((branchesQ.data ?? []).map((branch) => [Number(branch.id), branch.name])),
+    [branchesQ.data],
+  );
+  const activePaymentByEmployee = useMemo(() => {
+    const result = new Map<number, NonNullable<typeof run>["employeePaymentSnapshots"][number]>();
+    for (const payment of run?.employeePaymentSnapshots ?? []) {
+      if (!payment.active || Number(payment.revisionNo) !== Number(run?.revisionNo) || payment.employeeId == null) continue;
+      const employeeId = Number(payment.employeeId);
+      const previous = result.get(employeeId);
+      if (!previous || Number(payment.eventId) > Number(previous.eventId)) result.set(employeeId, payment);
+    }
+    return result;
+  }, [run]);
+  const slipPayment = slip ? activePaymentByEmployee.get(Number(slip.employeeId)) ?? null : null;
+  const slipStatusLabel = !slip
+    ? "مسوّدة"
+    : slipPayment
+      ? "مدفوع"
+      : D(slip.net).isZero() && (run?.status === "approved" || run?.status === "paid")
+        ? "مسدد بلا حركة نقدية"
+        : run?.status === "draft" ? "مسوّدة" : "مستحق غير مدفوع";
 
   // بحث/فلترة محلية في جدول البنود (اسم الموظف / نوع الأجر) — البيانات كلها محمَّلة مع المسيّر.
   const [itemQ, setItemQ] = useState("");
@@ -141,14 +215,24 @@ export default function Payroll() {
   }, [items, itemQ, payTypeF]);
   const itemsFiltered = Boolean(itemQ.trim() || payTypeF);
 
+  /*
+   * بنودٌ تحتاج انتباهاً قبل الاعتماد (اليوم المفتوح: دخولٌ بلا انصراف ⇒ ساعاتٌ غير محتسَبة).
+   * تُشتقّ من **ملاحظة البند نفسها** لا من نتيجة التوليد: فتظهر أيضاً عند فتح المسوّدة لاحقاً
+   * أو بعد إعادة تحميل الصفحة، لا في اللحظة التي وُلِّد فيها المسيّر وحدها.
+   * وتتجاهل الفلترة المحلية عمداً — إخفاءُ نقصٍ ماليّ خلف بحثٍ باسمٍ هو بالضبط ما تمنعه هذه اللوحة.
+   */
+  const attentionItems = useMemo(() => items.filter((p) => payrollItemNeedsAttention(p.note)), [items]);
+
   /** تصدير بنود المسيّر المعروضة (بعد الفلترة المحلية) إلى Excel. */
   const onExportItems = () => {
     if (!run || visibleItems.length === 0) return;
     exportRows(visibleItems, {
       filename: `مسير-الرواتب-${run.period}`,
-      title: `مسيّر رواتب ${run.period} — ${payrollStatusLabel(run.status)}`,
+      title: `مسيّر رواتب ${run.period} — ${accrualStatusLabel(run.status)}`,
       columns: [
         { key: "employeeName", header: "الموظف" },
+        { key: "branch", header: "لقطة الفرع", map: (p) => p.branchIdSnapshot ? (branchName.get(Number(p.branchIdSnapshot)) ?? `فرع #${p.branchIdSnapshot}`) : "عام للشركة" },
+        { key: "revisionNo", header: "المراجعة", map: (p) => Number(p.revisionNo) },
         { key: "position", header: "المنصب", map: (p) => p.position ?? "" },
         { key: "department", header: "القسم", map: (p) => p.department ?? "" },
         { key: "payType", header: "نوع الأجر", map: (p) => payTypeLabel(p.payType) },
@@ -157,15 +241,21 @@ export default function Payroll() {
           header: "الأساسي / أجر الساعات",
           money: true,
           // الأساسي للشهري = الإجمالي − البدلات (gross = أساسي + بدلات)؛ للساعيّ = أجر الساعات كاملاً.
-          map: (p) => (p.payType === "monthly" ? round2(D(p.gross).minus(D(p.allowances))).toNumber() : D(p.gross).toNumber()),
+          map: (p) => (p.payType === "monthly" ? toExcelMoney(round2(D(p.gross).minus(D(p.allowances))).toFixed(2)) : toExcelMoney(p.gross)),
         },
         { key: "hours", header: "الساعات", map: (p) => (p.payType === "hourly" ? (p.hours ?? "0") : "") },
-        { key: "allowances", header: "البدلات", money: true, map: (p) => (p.payType === "monthly" ? D(p.allowances).toNumber() : null) },
-        { key: "overtime", header: "الإضافي", money: true, map: (p) => D(p.overtime).toNumber() },
-        { key: "commission", header: "العمولة", money: true, map: (p) => D(p.commission).toNumber() },
-        { key: "deductions", header: "الاستقطاع", money: true, map: (p) => D(p.deductions).toNumber() },
-        { key: "advanceDeduction", header: "منه سلفة", money: true, map: (p) => D(p.advanceDeduction || 0).toNumber() },
-        { key: "net", header: "الصافي", money: true, map: (p) => D(p.net).toNumber() },
+        { key: "allowances", header: "البدلات", money: true, map: (p) => (p.payType === "monthly" ? toExcelMoney(p.allowances) : null) },
+        { key: "overtime", header: "الإضافي", money: true, map: (p) => toExcelMoney(p.overtime) },
+        { key: "commission", header: "العمولة", money: true, map: (p) => toExcelMoney(p.commission) },
+        { key: "wageReduction", header: "تخفيض الأجر المصنف", money: true, map: (p) => toExcelMoney(p.wageReduction) },
+        { key: "deductions", header: "إجمالي الاستقطاع", money: true, map: (p) => toExcelMoney(p.deductions) },
+        { key: "advanceDeduction", header: "منه سلفة", money: true, map: (p) => toExcelMoney(p.advanceDeduction) },
+        { key: "incomeTax", header: "منه ضريبة دخل", money: true, map: (p) => toExcelMoney(p.incomeTax) },
+        { key: "socialSecurityEmployee", header: "ضمان الموظف", money: true, map: (p) => toExcelMoney(p.socialSecurityEmployee) },
+        { key: "socialSecurityEmployer", header: "ضمان رب العمل", money: true, map: (p) => toExcelMoney(p.socialSecurityEmployer) },
+        { key: "endOfServiceAccrual", header: "استحقاق نهاية الخدمة", money: true, map: (p) => toExcelMoney(p.endOfServiceAccrual) },
+        { key: "net", header: "الصافي المستحق", money: true, map: (p) => toExcelMoney(p.net) },
+        { key: "snapshotHash", header: "بصمة البند", map: (p) => p.snapshotHash ?? "" },
         { key: "note", header: "ملاحظة", map: (p) => p.note ?? "" },
       ],
     });
@@ -183,11 +273,19 @@ export default function Payroll() {
     [run],
   );
 
+  if (!me.isLoading && !ownerAccess) {
+    return <div className="space-y-4">
+      <PageHeader title="طلبات تحويل استقطاعات الرواتب" description="إنشاء طلب تحويل مقيد بفرعك دون الاطلاع على مسيرات الرواتب السرية." />
+      <PayrollRemittanceRequestPanel />
+      <Card><CardContent className="p-4 text-center text-xs text-muted-foreground">تفاصيل المسيرات ودفعات الموظفين محصورة بجلسة المالك.</CardContent></Card>
+    </div>;
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
         title="الرواتب"
-        description="مسيّر الرواتب الشهري — يجمع الراتب الثابت وأجر الساعات والإضافي ويخصم السلف والغياب."
+        description="مسيّر استحقاقي شهري: الاعتماد يثبت تكلفة العمل والتزاماتها، ثم تُسوّى الرواتب والضريبة والضمان بمسارات دفع مستقلة."
         actions={
           <div className="flex items-center gap-2 flex-wrap">
             <select
@@ -199,7 +297,7 @@ export default function Payroll() {
               {runs.length === 0 && <option value="">لا مسيّرات</option>}
               {runs.map((r) => (
                 <option key={r.id} value={String(r.id)}>
-                  مسيّر {r.period} — {payrollStatusLabel(r.status)}
+                  مسيّر {r.period} — {accrualStatusLabel(r.status)}
                 </option>
               ))}
             </select>
@@ -212,7 +310,7 @@ export default function Payroll() {
 
       {/* المؤشّرات */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="الإجمالي قبل الاستقطاع" value={iqd(totals.gross)} sub="د.ع" icon={<Banknote className="size-4" />} />
+        <StatCard label="الأجر الأساس والمخصصات" value={iqd(totals.gross)} sub="قبل الإضافي والعمولة" icon={<Banknote className="size-4" />} />
         <StatCard label="العمل الإضافي" value={iqd(totals.overtime)} sub="د.ع" accent="var(--status-done, #059669)" icon={<AlarmClock className="size-4" />} />
         <StatCard label="الاستقطاعات" value={iqd(totals.deductions)} sub="سلف وغياب" accent="var(--money-negative, #dc2626)" icon={<Minus className="size-4" />} />
         <StatCard label="الصافي المستحق" value={iqd(totals.net)} sub={run ? `د.ع — مسيّر ${run.period}` : "د.ع"} accent="var(--status-active, #2563eb)" icon={<Wallet className="size-4" />} />
@@ -226,30 +324,54 @@ export default function Payroll() {
           <div className="flex-1" />
           {isDraft && (
             <>
-              <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد مسيّر رواتب ${run.period}`, description: "اعتماد المسيّر يقفل تعديل البنود. متابعة؟", confirmText: "اعتماد" }))) return; approve.mutate({ id: Number(run.id) }); }} disabled={busy}>
-                <Check className="size-4" /> اعتماد المسيّر
+              <Button variant="outline" size="sm" title={!independentOwner ? "الاعتماد محصور بمالك نشط مستقل عن منشئ المسيّر" : undefined} onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد استحقاق رواتب ${run.period}`, description: "سيُثبّت مصروف الفترة والتزامات الصافي والضريبة والضمان ونهاية الخدمة بتاريخ نهاية الشهر، بلا حركة نقدية. تُقفل البنود وتُحفظ بصمات السياسة واللقطة.", confirmText: "اعتماد الاستحقاق" }))) return; approve.mutate({ id: Number(run.id) }); }} disabled={busy || !independentOwner}>
+                <Check className="size-4" /> اعتماد الاستحقاق
               </Button>
               <Button variant="outline" size="sm" className="text-destructive" onClick={async () => { if (!(await confirmDelete({ description: `حذف مسوّدة رواتب ${run.period} وكل بنودها (${run.employeeCount} موظف) نهائياً؟` }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
                 <X className="size-4" /> حذف المسوّدة
               </Button>
             </>
           )}
-          {isApproved && (
+          {canPayOpenSalary && (
             <>
-              <Button size="sm" onClick={async () => { if (!(await confirm({ variant: "danger", title: `دفع مسيّر رواتب ${run.period}`, description: `سيُصرَف صافي ${iqd(totals.net)} د.ع لـ${run.employeeCount} موظف ويُقيَّد من الخزينة. صرف الرواتب من الخزينة لا يُعكَس بسهولة.`, confirmText: "دفع المسيّر", requireText: "دفع" }))) return; pay.mutate({ id: Number(run.id) }); }} disabled={busy}>
-                <Wallet className="size-4" /> دفع المسيّر
+              <Button size="sm" onClick={() => setPayOpen(true)} disabled={busy}>
+                <Wallet className="size-4" /> {isPaid ? "إعادة دفع الالتزامات المفتوحة" : "صرف صافي الرواتب"}
               </Button>
-              <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: `إعادة مسيّر رواتب ${run.period} إلى مسوّدة`, description: "إعادة المسيّر إلى مسوّدة لإعادة التعديل؟", confirmText: "إعادة" }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
+              {isApproved && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: `إعادة مسيّر رواتب ${run.period} إلى مسوّدة`, description: "سيُنشئ النظام عكساً استحقاقياً كاملاً، يعكس تسويات السلف، ويرفع رقم المراجعة قبل السماح بالتعديل. لا توجد حركة نقدية في هذه الخطوة.", confirmText: "عكس الاستحقاق وإعادة" }))) return; cancel.mutate({ id: Number(run.id), reason: "إعادة للمسودة من شاشة الرواتب" }); }} disabled={busy}>
                 إعادة لمسوّدة
-              </Button>
+              </Button>}
             </>
           )}
-          {isPaid && (
-            <Button variant="outline" size="sm" className="text-destructive" onClick={async () => { if (!(await confirm({ variant: "danger", title: `عكس دفع مسيّر رواتب ${run.period}`, description: `عكس الدفع يقيّد قيوداً معاكسة بقيمة ${iqd(totals.net)} د.ع ويعيد المسيّر إلى «معتمد».`, confirmText: "عكس الدفع", requireText: "عكس" }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
-              <X className="size-4" /> عكس الدفع
-            </Button>
-          )}
+          {isPaid && <span className="text-xs text-muted-foreground">{D(openSalaryAmount).gt(0) ? `أُعيد جزء من الصرف: متبقٍ لإعادة الدفع ${iqd(openSalaryAmount)} د.ع على ${openSalaryObligations.length} موظف.` : "لإعادة المسيّر: أثبت أولاً إعادة كل دفعة راتب فعلياً من سجل الدفعات أدناه، ثم أعده إلى المسوّدة."}</span>}
         </div>
+      )}
+
+      {/* لوحة الانتباه — أيامٌ بلا انصراف: ساعاتٌ غير محتسَبة في بنودٍ قائمة (لا استبعاد) */}
+      {attentionItems.length > 0 && (
+        <Card className="border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)]">
+          <CardContent className="p-3 space-y-2">
+            <div className="flex items-start gap-2">
+              <TriangleAlert aria-hidden className="size-4 mt-0.5 shrink-0 text-[var(--sem-warn)]" />
+              <div className="text-xs leading-relaxed">
+                <span className="font-medium text-[var(--sem-warn)]">
+                  {attentionItems.length} موظف بأيام بلا بصمة انصراف
+                </span>{" "}
+                — ساعات تلك الأيام <b>غير محتسَبة</b> في أجورهم، وبقيّة أيامهم محتسَبة كاملةً.
+                {isDraft
+                  ? " الحسم قبل الاعتماد: صحّح البصمة من كشف الموظف، ثم احذف هذه المسوّدة وأعد التوليد."
+                  : " المسيّر لم يعد مسوّدة — أعِده إلى مسوّدة أولاً إن أردت استرداد هذه الساعات."}
+              </div>
+            </div>
+            <ul className="space-y-1 ps-6">
+              {attentionItems.map((p) => (
+                <li key={p.id} className="text-[11px]">
+                  <span className="font-medium">{p.employeeName}</span>
+                  <span className="text-muted-foreground"> — {p.note}</span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
       )}
 
       {/* جدول البنود */}
@@ -295,6 +417,7 @@ export default function Payroll() {
               <thead className="bg-muted/50">
                 <tr>
                   <th className="p-2.5">الموظف</th>
+                  <th className="p-2.5 text-right">لقطة الفرع</th>
                   <th className="p-2.5 text-center">نوع الأجر</th>
                   <th className="p-2.5 text-right">الأساسي / الساعات</th>
                   <th className="p-2.5 text-right">البدلات</th>
@@ -311,16 +434,29 @@ export default function Payroll() {
                   const monthly = p.payType === "monthly";
                   // الأساسي للشهري = الإجمالي − البدلات (gross = أساسي + بدلات).
                   const baseDisplay = monthly ? round2(D(p.gross).minus(D(p.allowances))).toFixed(2) : p.gross;
+                  // بندٌ ناقص الساعات (يوم بلا انصراف): يُوسَم في صفّه أيضاً لا في اللوحة وحدها،
+                  // كي لا يمرّ في تصفّحٍ سريع للجدول أو بعد فلترةٍ باسم الموظف.
+                  const needsAttention = payrollItemNeedsAttention(p.note);
                   return (
-                    <tr key={p.id} className="border-t hover:bg-accent/40">
+                    <tr key={p.id} className={`border-t hover:bg-accent/40 ${needsAttention ? "bg-[var(--sem-warn-bg)]/60" : ""}`}>
                       <td className="p-2.5">
                         <div className="flex items-center gap-2.5">
                           <EmpAvatar name={p.employeeName} color={p.colorTag} photoUrl={p.photoUrl} sizePx={32} />
                           <div>
                             <div className="font-medium text-[13px]">{p.employeeName}</div>
                             {p.position && <div className="text-[11px] text-muted-foreground">{p.position}</div>}
+                            {needsAttention && (
+                              <div className="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--sem-warn)]" title={p.note ?? undefined}>
+                                <TriangleAlert aria-hidden className="size-3 shrink-0" />
+                                <span>ساعات غير محتسَبة</span>
+                              </div>
+                            )}
                           </div>
                         </div>
+                      </td>
+                      <td className="p-2.5 text-xs">
+                        {p.branchIdSnapshot ? (branchName.get(Number(p.branchIdSnapshot)) ?? `فرع #${p.branchIdSnapshot}`) : "عام للشركة"}
+                        <div className="text-[10px] text-muted-foreground" dir="ltr">R{p.revisionNo}</div>
                       </td>
                       <td className="p-2.5 text-center">
                         <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${monthly ? "bg-primary/10 text-primary" : "badge-stock-low"}`}>
@@ -360,7 +496,7 @@ export default function Payroll() {
                     بأنه مجموع الصفوف المعروضة وحدها. */}
                 {visibleItems.length > 0 && !itemsFiltered && (
                   <tr className="border-t-2 bg-muted/40 font-bold">
-                    <td className="p-2.5" colSpan={2}>الإجمالي</td>
+                    <td className="p-2.5" colSpan={3}>الإجمالي</td>
                     <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totals.gross)}</td>
                     <td></td>
                     <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">+{iqd(totals.overtime)}</td>
@@ -372,7 +508,7 @@ export default function Payroll() {
                 )}
                 {!runQ.isLoading && visibleItems.length === 0 && (
                   <TableEmptyRow
-                    colSpan={10}
+                    colSpan={11}
                     message={
                       runs.length === 0
                         ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء."
@@ -387,6 +523,20 @@ export default function Payroll() {
           </ScrollTableShell>
         </CardContent>
       </Card>
+
+      {run && <PayrollAccrualOperations run={run} onChanged={refresh} />}
+
+      <PayrollPaymentDialog
+        open={payOpen}
+        run={run ? {
+          id: Number(run.id), period: run.period,
+          totalNet: isPaid ? openSalaryAmount : run.totalNet,
+          employeeCount: isPaid ? openSalaryObligations.length : run.employeeCount,
+          createdBy: run.createdBy,
+        } : null}
+        onClose={() => setPayOpen(false)}
+        onPaid={refresh}
+      />
 
       {/* حوار توليد مسيّر */}
       <Dialog open={genOpen} onOpenChange={(o) => !o && setGenOpen(false)}>
@@ -467,6 +617,10 @@ export default function Payroll() {
                 <span className="font-bold">الصافي المستحق</span>
                 <span className="text-xl font-bold text-money-positive tabular-nums" dir="ltr">{iqd(slip.net)}</span>
               </div>
+              <div className="flex flex-wrap justify-between gap-2 text-xs">
+                <span className="text-muted-foreground">حالة الصرف الفردي</span>
+                <span className="font-medium">{slipStatusLabel}{slipPayment ? ` · REC-${slipPayment.receiptId} · ${paymentYmd(slipPayment.paymentDate) ?? "—"}` : ""}</span>
+              </div>
               {/* التزامات على الشركة (البند ④) — لا تُخصَم من الموظف ولا تؤثّر على الصافي؛ تظهر عند التفعيل فقط. */}
               {(D(slip.socialSecurityEmployer || 0).gt(0) || D(slip.endOfServiceAccrual || 0).gt(0)) && (
                 <div className="pt-2 space-y-1.5 text-xs border-t">
@@ -484,16 +638,26 @@ export default function Payroll() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setSlip(null)}>إغلاق</Button>
             <Button onClick={() => slip && run && printPayslip({
-              runId: run.id, period: run.period, statusLabel: payrollStatusLabel(run.status),
+              runId: run.id, period: run.period, statusLabel: slipStatusLabel,
               employeeName: slip.employeeName, employeeId: Number(slip.employeeId),
-              // اسم الفرع الفعلي من قائمة الموظفين (كان null ثابتة فتُطبع القسيمة بفرع «—» دائماً).
-              position: slip.position, department: slip.department, branchName: empBranch.get(Number(slip.employeeId)) ?? null,
+              // لقطة الفرع المثبتة في البند مقدَّمة على فرع الموظف الحالي؛ النقل اللاحق لا يعيد كتابة القسيمة.
+              position: slip.position, department: slip.department,
+              branchName: slip.branchIdSnapshot ? (branchName.get(Number(slip.branchIdSnapshot)) ?? `فرع #${slip.branchIdSnapshot}`) : (empBranch.get(Number(slip.employeeId)) ?? null),
+              revisionNo: Number(slip.revisionNo), accrualDate: run.accrualDate,
+              legalPolicyHash: run.legalPolicyHash, approvalSnapshotHash: run.approvalSnapshotHash,
+              itemSnapshotHash: slip.snapshotHash,
               payTypeLabel: payTypeLabel(slip.payType),
               baseSalary: slip.payType === "monthly" ? round2(D(slip.gross).minus(D(slip.allowances))).toFixed(2) : null,
               hours: slip.hours, gross: slip.gross, overtime: slip.overtime, commission: slip.commission,
               deductions: slip.deductions, advanceDeduction: slip.advanceDeduction,
               socialSecurityEmployee: slip.socialSecurityEmployee, incomeTax: slip.incomeTax,
-              net: slip.net, note: slip.note, paidAt: run.paidAt ? String(run.paidAt).slice(0, 10) : null,
+              socialSecurityEmployer: slip.socialSecurityEmployer, endOfServiceAccrual: slip.endOfServiceAccrual,
+              net: slip.net, note: slip.note,
+              paidAt: paymentYmd(slipPayment?.paymentDate),
+              paidAmount: slipPayment?.amount ?? null,
+              paymentMethod: slipPayment ? (PAYMENT_METHOD_AR[slipPayment.paymentMethod] ?? slipPayment.paymentMethod) : null,
+              paymentReference: slipPayment?.referenceNumber ?? null,
+              receiptId: slipPayment?.receiptId ?? null,
             })}><Printer className="size-4" /> طباعة كشف الراتب</Button>
           </DialogFooter>
         </DialogContent>

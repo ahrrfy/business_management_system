@@ -14,12 +14,16 @@ import {
   approvePromotion,
   completeTermination,
   createPromotion,
-  createTermination,
+  createTermination as createTerminationRaw,
   listPromotions,
   listTerminations,
 } from "../promotionService";
+import { isLinkEffectiveOn } from "../hrDevices/punchStore";
 import { approveVoucher } from "../voucher/approval";
 import { withTx } from "../tx";
+import { approveRun } from "../payroll/lifecycle";
+import { PAYROLL_LEGAL_DEFAULTS } from "../payrollLegalService";
+import { buildPayrollLegalPolicyEvidence } from "../payroll/legalSnapshot";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" };
 // مُنشئ ومدقّق مالك لاختبار فصل المهام (SOD-04): المُنشئ ≠ المالك المُعتمِد.
@@ -27,7 +31,39 @@ const MANAGER_A = { userId: 2, branchId: 1, role: "manager" };
 const MANAGER_B = { userId: 3, branchId: 1, role: "manager" };
 const MANAGER_BRANCH_2 = { userId: 4, branchId: 2, role: "manager" };
 
+type TestTerminationInput = Omit<
+  Parameters<typeof createTerminationRaw>[0],
+  "settlementEvidenceNote" | "zeroAmountsAttested"
+> &
+  Partial<
+    Pick<
+      Parameters<typeof createTerminationRaw>[0],
+      "settlementEvidenceNote" | "zeroAmountsAttested"
+    >
+  >;
+const createTermination = (
+  input: TestTerminationInput,
+  actor: Parameters<typeof createTerminationRaw>[1],
+) =>
+  createTerminationRaw(
+    {
+      ...input,
+      settlementEvidenceNote:
+        input.settlementEvidenceNote ?? "مراجعة بشرية موثقة للاختبار",
+      zeroAmountsAttested: input.zeroAmountsAttested ?? true,
+    },
+    actor,
+  );
+
 const TABLES = [
+  "terminationAdvanceAllocations",
+  "payrollObligationAllocations",
+  "payrollAccountingEvents",
+  "payrollObligations",
+  "payrollItems",
+  "payrollRuns",
+  "journalLines",
+  "journalEntries",
   "accountingEntries",
   "receipts",
   "hrDeviceUsers",
@@ -58,13 +94,21 @@ async function seedBase() {
     { id: 2, name: "الفرع الثاني", code: "B2", type: "SALES" },
   ]);
   await d.insert(s.users).values([
-    { id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1 },
+    {
+      id: 1,
+      openId: "test-admin",
+      name: "مدير",
+      role: "admin",
+      branchId: 1,
+      isOwner: true,
+    },
     {
       id: 2,
       openId: "test-mgr-a",
       name: "مدير أ",
       role: "manager",
       branchId: 1,
+      isOwner: true,
     },
     {
       id: 3,
@@ -141,7 +185,7 @@ describe("promotionService — الترقيات", () => {
       },
       ACTOR,
     );
-    await completeTermination(t!.id, ACTOR);
+    await completeTermination(t!.id, MANAGER_A);
     const p = await createPromotion(
       {
         employeeId: emp!.id,
@@ -355,7 +399,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         employeeId: emp!.id,
         terminationType: "استقالة",
         lastDay: "2026-06-30",
-        settlement: "1500000",
+        breakdown: { otherSettlement: "1500000", otherSettlementLabel: "مكافأة تعاقدية" },
       },
       ACTOR,
     );
@@ -425,7 +469,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         employeeId: emp!.id,
         terminationType: "فصل",
         lastDay: "2026-06-30",
-        settlement: "500000",
+        breakdown: { otherSettlement: "500000", otherSettlementLabel: "مكافأة تعاقدية" },
       },
       ACTOR,
     );
@@ -490,7 +534,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         employeeId: emp!.id,
         terminationType: "استقالة",
         lastDay: "2026-07-15",
-        settlement: "100000",
+        breakdown: { otherSettlement: "100000", otherSettlementLabel: "مكافأة تعاقدية" },
       },
       ACTOR,
     );
@@ -598,9 +642,9 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         employeeId: employee!.id,
         terminationType: "استقالة",
         lastDay: "2026-06-30",
-        settlement: "250000",
+        breakdown: { otherSettlement: "250000", otherSettlementLabel: "مكافأة تعاقدية" },
       },
-      MANAGER_A,
+      ACTOR,
     );
 
     const result = await completeTermination(termination!.id, MANAGER_A);
@@ -630,8 +674,18 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
     expect(new Date(userAfter.sessionsValidFrom).getTime()).toBeGreaterThan(
       new Date(beforeUser.sessionsValidFrom).getTime(),
     );
-    expect(linkAfter.employeeId).toBeNull();
-    expect(linkAfter.effectiveFrom).toBeNull();
+    /*
+     * الربط يُحَدُّ ولا يُقطَع (بند ٢١): كان الإكمال يُصفّر `employeeId`/`effectiveFrom` فوراً،
+     * ويومُ الإنهاء نفسه يومُ عملٍ وقع فعلاً ⇒ بصماتُه تصل بلا صاحبٍ فتُسجَّل صفر ساعات.
+     * فالتأكيد هنا انتقل من **آليّة** القطع إلى **الخاصّيّة** التي كان القطع يخدمها.
+     */
+    expect(linkAfter.effectiveTo).toBe("2026-06-30");
+    expect(linkAfter.employeeId).toBe(employee!.id);
+    expect(linkAfter.effectiveFrom).toBe("2026-01-01");
+    // وخاصّيّة SEC-03 نفسها ما زالت محروسة: ما بعد يوم الإنهاء لا يُنسَب إليه أبداً،
+    // ويومُ الإنهاء يبقى منسوباً — وهو بالضبط ما جاء العمود لينقذه.
+    expect(isLinkEffectiveOn(linkAfter, "2026-06-30")).toBe(true);
+    expect(isLinkEffectiveOn(linkAfter, "2026-07-01")).toBe(false);
     expect(terminationAfter.status).toBe("completed");
   });
 
@@ -669,7 +723,7 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
         employeeId: employee!.id,
         terminationType: "فصل",
         lastDay: "2026-06-30",
-        settlement: "100000",
+        breakdown: { otherSettlement: "100000", otherSettlementLabel: "مكافأة تعاقدية" },
       },
       MANAGER_A,
     );
@@ -758,9 +812,6 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
     );
     await expect(
       completeTermination(adminTermination!.id, MANAGER_A),
-    ).rejects.toThrow(/غير المدير أو المالك/);
-    await expect(
-      completeTermination(adminTermination!.id, { ...ACTOR, userId: 99 }),
     ).rejects.toThrow(/آخر مدير/);
 
     await db().insert(s.users).values({
@@ -792,8 +843,12 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       ACTOR,
     );
     await expect(
-      completeTermination(ownerTermination!.id, ACTOR),
-    ).rejects.toThrow(/غير المالك/);
+      completeTermination(ownerTermination!.id, {
+        userId: 6,
+        branchId: 1,
+        role: "manager",
+      }),
+    ).rejects.toThrow(/سجلّك الشخصيّ/);
 
     const [selfAfter] = await db()
       .select()
@@ -900,8 +955,8 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
       .where(eq(s.users.id, 1));
 
     const outcomes = await Promise.allSettled([
-      completeTermination(firstTermination!.id, ACTOR),
-      completeTermination(secondTermination!.id, ACTOR),
+      completeTermination(firstTermination!.id, MANAGER_B),
+      completeTermination(secondTermination!.id, MANAGER_B),
     ]);
     expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
@@ -918,5 +973,210 @@ describe("promotionService — إنهاء الخدمة (تسوية بفصل مه
     expect(employeeRows.filter((e) => e.status === "terminated")).toHaveLength(
       1,
     );
+  });
+
+  it("يفرض مالكاً مستقلاً ويرفض الإكمال قبل آخر يوم عمل بلا أي أثر", async () => {
+    const sameMakerEmployee = await createEmployee({
+      firstName: "فصل",
+      lastName: "مهام",
+      payType: "monthly",
+      branchId: 1,
+    });
+    const sameMakerTermination = await createTermination(
+      {
+        employeeId: sameMakerEmployee!.id,
+        terminationType: "استقالة",
+        lastDay: "2026-06-30",
+        settlement: "0",
+      },
+      ACTOR,
+    );
+    await expect(
+      completeTermination(sameMakerTermination!.id, ACTOR),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const futureEmployee = await createEmployee({
+      firstName: "تاريخ",
+      lastName: "مستقبلي",
+      payType: "monthly",
+      branchId: 1,
+    });
+    const futureTermination = await createTermination(
+      {
+        employeeId: futureEmployee!.id,
+        terminationType: "استقالة",
+        lastDay: "2099-12-31",
+        settlement: "0",
+      },
+      ACTOR,
+    );
+    await expect(
+      completeTermination(futureTermination!.id, MANAGER_A),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const untouchedEmployees = await db()
+      .select({ employmentStatus: s.employees.employmentStatus })
+      .from(s.employees)
+      .where(
+        sql`${s.employees.id} IN (${sameMakerEmployee!.id}, ${futureEmployee!.id})`,
+      );
+    expect(untouchedEmployees).toHaveLength(2);
+    expect(
+      untouchedEmployees.every((row) => row.employmentStatus === "active"),
+    ).toBe(true);
+    expect(await db().select().from(s.payrollAccountingEvents)).toHaveLength(0);
+  });
+
+  it("يمنع تكرار أجر مسيّر مع تسوية صفرية ويسمح ببند العمولة وحده", async () => {
+    const wageEmployee = await createEmployee({
+      firstName: "أجر",
+      lastName: "مثبت",
+      payType: "monthly",
+      branchId: 1,
+    });
+    const commissionEmployee = await createEmployee({
+      firstName: "عمولة",
+      lastName: "فقط",
+      payType: "monthly",
+      branchId: 1,
+    });
+    await db().insert(s.payrollRuns).values({
+      id: 90,
+      period: "2026-06",
+      status: "approved",
+      revisionNo: 0,
+      approvedBy: 3,
+      approvedAt: new Date("2026-06-30T12:00:00.000Z"),
+    });
+    await db().insert(s.payrollItems).values([
+      {
+        id: 901,
+        runId: 90,
+        employeeId: wageEmployee!.id,
+        branchIdSnapshot: 1,
+        revisionNo: 0,
+        payType: "monthly",
+        gross: "500.00",
+        overtime: "0.00",
+        commission: "0.00",
+        net: "500.00",
+      },
+      {
+        id: 902,
+        runId: 90,
+        employeeId: commissionEmployee!.id,
+        branchIdSnapshot: 1,
+        revisionNo: 0,
+        payType: "monthly",
+        gross: "0.00",
+        overtime: "0.00",
+        commission: "200.00",
+        net: "200.00",
+      },
+    ]);
+    const wageTermination = await createTermination(
+      {
+        employeeId: wageEmployee!.id,
+        terminationType: "استقالة",
+        lastDay: "2026-06-30",
+        breakdown: { earnedGrossWages: "0" },
+      },
+      ACTOR,
+    );
+    const commissionTermination = await createTermination(
+      {
+        employeeId: commissionEmployee!.id,
+        terminationType: "استقالة",
+        lastDay: "2026-06-30",
+        breakdown: { earnedGrossWages: "0" },
+      },
+      ACTOR,
+    );
+
+    await expect(
+      completeTermination(wageTermination!.id, MANAGER_A),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    const commissionResult = await completeTermination(
+      commissionTermination!.id,
+      MANAGER_A,
+    );
+    expect(commissionResult.settlementVoucher).toBeNull();
+
+    const [wageAfter] = await db()
+      .select({ status: s.employees.employmentStatus })
+      .from(s.employees)
+      .where(eq(s.employees.id, wageEmployee!.id));
+    const [commissionAfter] = await db()
+      .select({ status: s.employees.employmentStatus })
+      .from(s.employees)
+      .where(eq(s.employees.id, commissionEmployee!.id));
+    expect(wageAfter.status).toBe("active");
+    expect(commissionAfter.status).toBe("terminated");
+  });
+
+  it("يسلسل سباق اعتماد المسيّر وإثبات الإنهاء بلا deadlock وينجح مسار واحد فقط", async () => {
+    const employee = await createEmployee({
+      firstName: "سباق",
+      lastName: "راتب وإنهاء",
+      payType: "monthly",
+      branchId: 1,
+    });
+    const termination = await createTermination(
+      {
+        employeeId: employee!.id,
+        terminationType: "استقالة",
+        lastDay: "2026-06-30",
+        breakdown: { earnedGrossWages: "500.00" },
+      },
+      ACTOR,
+    );
+    const legalPolicy = buildPayrollLegalPolicyEvidence(PAYROLL_LEGAL_DEFAULTS);
+    await db().insert(s.payrollRuns).values({
+      id: 93,
+      period: "2026-06",
+      branchId: 1,
+      status: "draft",
+      revisionNo: 0,
+      employeeCount: 1,
+      totalGross: "500.00",
+      totalNet: "500.00",
+      legalPolicySnapshot: legalPolicy.snapshot,
+      legalPolicyHash: legalPolicy.hash,
+      createdBy: 4,
+    });
+    await db().insert(s.payrollItems).values({
+      id: 931,
+      runId: 93,
+      employeeId: employee!.id,
+      branchIdSnapshot: 1,
+      revisionNo: 0,
+      payType: "monthly",
+      gross: "500.00",
+      net: "500.00",
+    });
+
+    const outcomes = await Promise.allSettled([
+      approveRun(93, MANAGER_B),
+      completeTermination(termination!.id, MANAGER_A),
+    ]);
+    expect(outcomes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const rejected = outcomes.find((result) => result.status === "rejected");
+    expect(String(rejected && "reason" in rejected ? rejected.reason : "")).not.toMatch(
+      /ER_LOCK_DEADLOCK|Deadlock found/i,
+    );
+
+    const [runAfter] = await db()
+      .select({ status: s.payrollRuns.status })
+      .from(s.payrollRuns)
+      .where(eq(s.payrollRuns.id, 93));
+    const [terminationAfter] = await db()
+      .select({ status: s.employeeTerminations.status })
+      .from(s.employeeTerminations)
+      .where(eq(s.employeeTerminations.id, termination!.id));
+    expect(
+      Number(runAfter.status === "approved") +
+        Number(terminationAfter.status === "completed"),
+    ).toBe(1);
   });
 });

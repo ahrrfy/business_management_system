@@ -8,41 +8,63 @@
 // تطبيق "erp-provision-worker" — env مختلف تماماً عن "erp-server"، لا تُدمج البيئتين أبداً).
 //
 // الاستخدام:
-//   CONTROL_DATABASE_URL=... DB_CONTAINER=... DB_ROOT_PW=... INTEGRATIONS_ENCRYPTION_KEY=... \
+//   CONTROL_DATABASE_URL=... DB_HOST=... DB_PORT=... DB_CONTAINER=... DB_ROOT_PW=... INTEGRATIONS_ENCRYPTION_KEY=... \
 //     node scripts/company-provision-worker.mjs
-import "dotenv/config";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { hostPortFromUrl, parseEnvFile, provisionCompany } from "./lib/provisionCompany.mjs";
+import { provisionCompany } from "./lib/provisionCompany.mjs";
+import provisionRuntimePolicy from "./provision-worker-runtime-policy.cjs";
+
+const { buildWorkerEnvironment, buildControlStepEnvironment } =
+  provisionRuntimePolicy;
+
+// دفاع مستقل عن حالة PM2 القديمة: حتى قبل إعادة إنشاء تعريف العملية، لا يحتفظ العامل
+// إلا بقائمة السماح. إزالة dotenv/config مقصودة أيضاً كي لا يعيد ملء الأسرار المحذوفة.
+const safeWorkerEnvironment = buildWorkerEnvironment(process.env);
+for (const key of Object.keys(process.env)) delete process.env[key];
+Object.assign(process.env, safeWorkerEnvironment);
 
 const MAX_PER_RUN = 10; // حاجز أمان — يمنع حلقة لا نهائية لو تعطّل claim-next بشكل غير متوقّع.
 
-function log(msg) { console.log(msg); }
-function fail(msg) { console.error("✗", msg); process.exit(1); }
+function log(msg) {
+  console.log(msg);
+}
+function fail(msg) {
+  console.error("✗", msg);
+  process.exit(1);
+}
 
 const controlUrl = process.env.CONTROL_DATABASE_URL;
-if (!controlUrl) fail("CONTROL_DATABASE_URL غير مضبوط لهذا العامل — لا معنى لتشغيله بدونه.");
-if (!process.env.INTEGRATIONS_ENCRYPTION_KEY) fail("INTEGRATIONS_ENCRYPTION_KEY غير مضبوط — لازم لفكّ تشفير كلمات المرور المؤقّتة.");
+if (!controlUrl)
+  fail("CONTROL_DATABASE_URL غير مضبوط لهذا العامل — لا معنى لتشغيله بدونه.");
+if (!process.env.INTEGRATIONS_ENCRYPTION_KEY)
+  fail(
+    "INTEGRATIONS_ENCRYPTION_KEY غير مضبوط — لازم لفكّ تشفير كلمات المرور المؤقّتة.",
+  );
 
 const root = process.cwd();
-const rootEnvFile = path.join(root, ".env");
-const rootEnv = existsSync(rootEnvFile) ? parseEnvFile(readFileSync(rootEnvFile, "utf8")) : new Map();
-const baseHostPort = hostPortFromUrl(rootEnv.get("DATABASE_URL") || "mysql://root:erp_root_pw@127.0.0.1:3306/erp");
-
 const dbContainer = process.env.DB_CONTAINER || "erp-mysql";
 const rootPw = process.env.DB_ROOT_PW || "erp_root_pw";
-const dbHost = process.env.DB_HOST || baseHostPort.host;
-const dbPort = Number(process.env.DB_PORT || baseHostPort.port);
+const dbHost = process.env.DB_HOST || "127.0.0.1";
+const dbPort = Number(process.env.DB_PORT || 3306);
 
 function runStep(command, payload) {
-  const args = ["exec", "tsx", "server/tenancy/cli/provisionWorkerStep.ts", command];
+  const args = [
+    "exec",
+    "tsx",
+    "server/tenancy/cli/provisionWorkerStep.ts",
+    command,
+  ];
   let payloadFile;
   if (payload) {
-    payloadFile = path.join(os.tmpdir(), `erp-provision-step-${randomBytes(6).toString("hex")}.json`);
-    writeFileSync(payloadFile, JSON.stringify(payload));
+    payloadFile = path.join(
+      os.tmpdir(),
+      `erp-provision-step-${randomBytes(6).toString("hex")}.json`,
+    );
+    writeFileSync(payloadFile, JSON.stringify(payload), { mode: 0o600 });
     args.push(payloadFile);
   }
   try {
@@ -50,10 +72,16 @@ function runStep(command, payload) {
       cwd: root,
       encoding: "utf8",
       shell: process.platform === "win32",
-      env: { ...process.env, CONTROL_DATABASE_URL: controlUrl },
+      env: buildControlStepEnvironment(process.env, command),
     });
   } finally {
-    if (payloadFile) { try { unlinkSync(payloadFile); } catch { /* تجاهل */ } }
+    if (payloadFile) {
+      try {
+        unlinkSync(payloadFile);
+      } catch {
+        /* تجاهل */
+      }
+    }
   }
 }
 
@@ -65,7 +93,9 @@ for (let i = 0; i < MAX_PER_RUN; i++) {
   const claimed = lastLine ? JSON.parse(lastLine) : null;
   if (!claimed) break;
 
-  log(`\n• طلب #${claimed.id}: توفير شركة "${claimed.name}" (رمز: ${claimed.code})…`);
+  log(
+    `\n• طلب #${claimed.id}: توفير شركة "${claimed.name}" (رمز: ${claimed.code})…`,
+  );
   try {
     const { companyId } = await provisionCompany({
       root,
@@ -81,6 +111,7 @@ for (let i = 0; i < MAX_PER_RUN; i++) {
       dbHost,
       dbPort,
       controlUrl,
+      integrationsEncryptionKey: process.env.INTEGRATIONS_ENCRYPTION_KEY,
       log,
     });
     runStep("mark-done", { id: claimed.id, companyId });
@@ -92,11 +123,16 @@ for (let i = 0; i < MAX_PER_RUN; i++) {
     try {
       runStep("mark-failed", { id: claimed.id, errorMessage });
     } catch (e2) {
-      console.error(`✗ فشل أيضاً تسجيل الفشل لطلب #${claimed.id}:`, e2?.message ?? e2);
+      console.error(
+        `✗ فشل أيضاً تسجيل الفشل لطلب #${claimed.id}:`,
+        e2?.message ?? e2,
+      );
     }
     failed++;
   }
 }
 
-log(`\nانتهى: ${processed} نجح، ${failed} فشل${processed + failed === 0 ? " — لا طلبات معلَّقة." : "."}`);
+log(
+  `\nانتهى: ${processed} نجح، ${failed} فشل${processed + failed === 0 ? " — لا طلبات معلَّقة." : "."}`,
+);
 if (failed > 0) process.exitCode = 1;

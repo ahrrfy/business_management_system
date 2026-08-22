@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  accrualPaymentAttemptLabel,
+  accrualPaymentResubmitPayload,
+  canShowAccrualPaymentResubmit,
   canPrintOfficialVoucher,
   canShowVoucherApprovalAction,
   canShowVoucherRejectAction,
@@ -8,6 +11,7 @@ import {
   voucherCashUiPolicy,
   voucherCreateActionLabel,
   voucherCreateSuccessMessage,
+  validAccrualReissueReason,
 } from "./voucherUiPolicy";
 
 describe("voucher owner-disbursement UI policy", () => {
@@ -26,7 +30,7 @@ describe("voucher owner-disbursement UI policy", () => {
     ).toBe("مُعتمَد");
   });
 
-  it("shows OUT approval only to owner accounts while preserving legacy IN management", () => {
+  it("shows every approval and rejection only to owner accounts", () => {
     const pendingOut = { direction: "OUT", approvalStatus: "PENDING_APPROVAL" };
     expect(
       canShowVoucherApprovalAction({
@@ -63,15 +67,42 @@ describe("voucher owner-disbursement UI policy", () => {
         isOwner: false,
         canManageLegacyReceipt: true,
       }),
+    ).toBe(false);
+    expect(
+      canShowVoucherApprovalAction({
+        direction: "IN",
+        approvalStatus: "PENDING_APPROVAL",
+        isOwner: true,
+        canManageLegacyReceipt: false,
+      }),
     ).toBe(true);
   });
 
   it("blocks official printing until approval", () => {
     expect(
-      canPrintOfficialVoucher({ approvalStatus: "PENDING_APPROVAL" }),
+      canPrintOfficialVoucher({
+        approvalStatus: "PENDING_APPROVAL",
+        status: "COMPLETED",
+      }),
     ).toBe(false);
-    expect(canPrintOfficialVoucher({ approvalStatus: "REJECTED" })).toBe(false);
-    expect(canPrintOfficialVoucher({ approvalStatus: "APPROVED" })).toBe(true);
+    expect(
+      canPrintOfficialVoucher({
+        approvalStatus: "REJECTED",
+        status: "COMPLETED",
+      }),
+    ).toBe(false);
+    expect(
+      canPrintOfficialVoucher({
+        approvalStatus: "APPROVED",
+        status: "REVERSED",
+      }),
+    ).toBe(false);
+    expect(
+      canPrintOfficialVoucher({
+        approvalStatus: "APPROVED",
+        status: "COMPLETED",
+      }),
+    ).toBe(true);
   });
 
   it("never requires the OUT maker's drawer and keeps the IN shift rule", () => {
@@ -114,7 +145,7 @@ describe("voucher owner-disbursement UI policy", () => {
         voucherNumber: "RV-13",
         approvalStatus: "PENDING_APPROVAL",
       }),
-    ).toContain("بانتظار اعتماد مدير ثانٍ");
+    ).toContain("بانتظار اعتماد مالك نشط آخر");
   });
 
   it("describes the expected source without inventing an unavailable balance", () => {
@@ -130,5 +161,59 @@ describe("voucher owner-disbursement UI policy", () => {
     expect(expectedVoucherSourceLabel({ paymentMethod: "TRANSFER" })).toBe(
       "تحويل مصرفي",
     );
+  });
+
+  it("opens reissue only for a rejected accrued payment and requires a real reason", () => {
+    expect(canShowAccrualPaymentResubmit({
+      referenceNumber: "SHIP-19",
+      approvalStatus: "REJECTED",
+      canManage: true,
+    })).toBe(true);
+    expect(canShowAccrualPaymentResubmit({
+      referenceNumber: "SHIP-19",
+      approvalStatus: "PENDING_APPROVAL",
+      canManage: true,
+    })).toBe(false);
+    expect(canShowAccrualPaymentResubmit({
+      referenceNumber: "SHIP-19",
+      approvalStatus: "REJECTED",
+      resubmitLineageStatus: "BROKEN",
+      canManage: true,
+    })).toBe(false);
+    expect(canShowAccrualPaymentResubmit({
+      referenceNumber: "TERM-SETTLEMENT-19-A1",
+      approvalStatus: "REJECTED",
+      canManage: true,
+    })).toBe(false);
+    expect(validAccrualReissueReason("قصير")).toBe(false);
+    expect(validAccrualReissueReason("  أُرفقت فاتورة النقل المصححة  ")).toBe(true);
+  });
+
+  it("shows immutable attempt lineage without guessing incomplete links", () => {
+    expect(accrualPaymentAttemptLabel({
+      attempt: 2,
+      rootReceiptId: 41,
+      priorReceiptId: 57,
+    })).toBe("المحاولة A2 · الأصل #41 · السابقة #57");
+    expect(accrualPaymentAttemptLabel({ attempt: 2, rootReceiptId: 41 })).toBeNull();
+  });
+
+  it("sends the selected rejected receipt with explicit evidence and never invents attachment inheritance", () => {
+    expect(accrualPaymentResubmitPayload({
+      receiptId: 41,
+      reissueReason: "  صُحّح مستند الناقل  ",
+      attachmentUrl: " data:image/png;base64,QUJD ",
+      note: "  راجعه المحاسب  ",
+    })).toEqual({
+      receiptId: 41,
+      priorReceiptId: 41,
+      reissueReason: "صُحّح مستند الناقل",
+      attachmentUrl: "data:image/png;base64,QUJD",
+      note: "راجعه المحاسب",
+    });
+    expect(accrualPaymentResubmitPayload({
+      receiptId: 41,
+      reissueReason: "سبب مثبت",
+    })).toMatchObject({ attachmentUrl: null, note: null });
   });
 });

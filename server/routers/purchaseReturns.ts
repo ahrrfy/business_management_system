@@ -1,8 +1,15 @@
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
-import { createPurchaseReturn, listPurchaseReturns } from "../services/purchaseReturnsService";
-import { nonNegMoneyString, positiveQtyString } from "../lib/schemas";
+import {
+  createPurchaseReturn,
+  getPurchaseReturn,
+  listEligiblePurchaseOrders,
+  listPurchaseReturns,
+  resolveReturnablePurchaseOrder,
+} from "../services/purchaseReturnsService";
+import { positiveQtyString } from "../lib/schemas";
 import { purchasesManagerProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -21,18 +28,15 @@ export const purchaseReturnsRouter = router({
   create: purchasesManagerProcedure
     .input(
       z.object({
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(64),
         supplierId: z.number().int().positive(),
         branchId: z.number().int().positive(),
-        purchaseOrderRefId: z.number().int().positive().optional(),
+        purchaseOrderRefId: z.number().int().positive(),
         items: z
           .array(
             z.object({
-              variantId: z.number().int().positive(),
-              productUnitId: z.number().int().positive(),
-              // PROC-02: سعر/كمية إرجاع الشراء على حدّ الثقة — كانا z.string() بلا قيد إشارة.
+              purchaseOrderItemId: z.number().int().positive(),
               quantity: positiveQtyString,
-              unitPrice: nonNegMoneyString,
             })
           )
           .min(1),
@@ -58,11 +62,12 @@ export const purchaseReturnsRouter = router({
           const res = await createPurchaseReturn(effInput, {
             userId: ctx.user.id,
             branchId,
+            role: ctx.user.role,
           });
           await logAudit(ctx, {
             action: "purchaseReturn.create",
             entityType: "purchaseReturn",
-            entityId: res.purchaseReturnEntryId,
+            entityId: res.purchaseReturnId,
             newValue: {
               supplierId: input.supplierId,
               items: input.items.length,
@@ -74,7 +79,11 @@ export const purchaseReturnsRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام مرتجع الشراء" });
+          failOpaque(e, {
+            op: "purchaseReturns.create",
+            userMessage: "تعذّر إتمام مرتجع الشراء",
+            context: { userId: ctx.user.id, branchId, supplierId: input.supplierId, purchaseOrderRefId: input.purchaseOrderRefId, items: input.items.length },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام مرتجع الشراء (تكرار)" });
@@ -106,5 +115,29 @@ export const purchaseReturnsRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
       return listPurchaseReturns({ ...(input ?? {}), branchId });
+    }),
+
+  eligibleOrders: purchasesManagerProcedure
+    .input(z.object({ branchId: z.number().int().positive(), q: z.string().trim().max(80).optional(), limit: z.number().int().positive().max(50).optional() }))
+    .query(({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? input.branchId : Number(ctx.user.branchId);
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      return listEligiblePurchaseOrders({ ...input, branchId });
+    }),
+
+  resolveOrder: purchasesManagerProcedure
+    .input(z.object({ branchId: z.number().int().positive(), reference: z.string().trim().min(1).max(80) }))
+    .query(({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? input.branchId : Number(ctx.user.branchId);
+      if (!branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      return resolveReturnablePurchaseOrder({ ...input, branchId });
+    }),
+
+  get: purchasesManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? undefined : Number(ctx.user.branchId);
+      if (ctx.user.role !== "admin" && !branchId) throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      return getPurchaseReturn(input.id, branchId);
     }),
 });

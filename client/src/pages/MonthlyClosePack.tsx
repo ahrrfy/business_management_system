@@ -1,6 +1,7 @@
 // بند 11 (٧/٧): شاشة «الإقفال الشهري» — صورة الشهر المالية الموحّدة بنقرة (تبويب في محور
 // الإقفال والرقابة): مبيعات/ربح إجمالي/مشتريات/مصاريف/خزينة/لقطة ذمم/أوامر مُسلَّمة + طباعة A4.
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
@@ -9,17 +10,77 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
-import { exportRows } from "@/lib/export";
+import { exportRows, type ExportColumn } from "@/lib/export";
 import { notify } from "@/lib/notify";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { Printer, FileSpreadsheet, TrendingUp, ShoppingCart, Wallet, ReceiptText, Scale, Wrench, CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
+import { toExcelMoney } from "@/lib/payrollAccrual";
+import {
+  Printer,
+  FileSpreadsheet,
+  TrendingUp,
+  ShoppingCart,
+  Wallet,
+  ReceiptText,
+  Scale,
+  Wrench,
+  CircleAlert,
+  CircleCheck,
+  TriangleAlert,
+} from "lucide-react";
+import { moduleAccessAllowed, type PermissionMap } from "@shared/permissions";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-/** الشهر الحالي YYYY-MM. */
-function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7);
+/** الشهر المدني الحالي في بغداد YYYY-MM — لا شهر UTC الذي يتأخر ثلاث ساعات عند حدّ الشهر. */
+export function currentBaghdadMonth(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Baghdad",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(now);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  if (!year || !month) throw new Error("تعذّر تحديد الشهر المدني في بغداد");
+  return `${year}-${month}`;
+}
+
+/** ديسمبر في ACTIVE لا يُعتمد كإقفال شهري؛ يستهلك YearEnd الطلب نفسه بعد قيد الترحيل. */
+export function monthCloseUsesYearEnd(
+  month: string,
+  doubleEntryMode: "OFF" | "SHADOW" | "ACTIVE" | null | undefined,
+): boolean {
+  return month.endsWith("-12") && doubleEntryMode === "ACTIVE";
+}
+
+/** Preserve the selected December year and maker-checker request on the handoff. */
+export function yearEndCloseHref(month: string, requestId: number): string {
+  const year = month.slice(0, 4);
+  const params = new URLSearchParams({
+    tab: "yearend",
+    year,
+    requestId: String(requestId),
+  });
+  return `/closing?${params.toString()}`;
+}
+
+/** fail-closed لزر الاعتماد: غياب قرار جاهزية حيّ أو تعذّره يعطّل الفعل. */
+export function monthCloseApprovalDisabled(input: {
+  busy: boolean;
+  readinessLoading: boolean;
+  readinessError: boolean;
+  readinessBlocked: boolean | undefined;
+  routeLoading?: boolean;
+  routeError?: boolean;
+}): boolean {
+  return (
+    input.busy ||
+    input.readinessLoading ||
+    input.readinessError ||
+    input.readinessBlocked !== false ||
+    !!input.routeLoading ||
+    !!input.routeError
+  );
 }
 
 /** الشهر السابق لشهرٍ بصيغة YYYY-MM. */
@@ -36,55 +97,147 @@ function deltaPct(curr: string, prev: string): string | null {
   return D(curr).sub(p).div(p).times(100).toDecimalPlaces(1).toString();
 }
 
-type ClosePack = RouterOutputs["reports"]["monthlyClosePack"];
-/** ذمم مبنيّة من الدفتر حتى نهاية الشهر (reports.financialPosition.asOf) — بديل «لقطة الآن». */
-type HistoricalAR = { ar: string; ap: string } | null;
+export type ClosePack = RouterOutputs["reports"]["monthlyClosePack"];
+/** ذمم مبنيّة من الدفتر حتى نهاية الشهر (reports.financialPosition.asOf). */
+type HistoricalAR = { ar: string; ap: string };
+
+export function monthlyAccountingBasisLabel(
+  basis: ClosePack["accountingBasis"],
+): string {
+  return basis === "DOUBLE_ENTRY_ACTIVE"
+    ? "الدفتر المزدوج المعتمد"
+    : "تقرير تشغيلي مشتق (OFF/SHADOW)";
+}
 
 /** صفوف حزمة الشهر المسطّحة — مصدر واحد يُشارَك بين الطباعة والتصدير.
- *  hist: إن توفّرت لقطة الذمم كما في نهاية الشهر (asOf) تحلّ محلّ لقطة الآن الافتراضية. */
-function closePackRows(d: ClosePack, hist: HistoricalAR): { section: string; value: string }[] {
+ *  لا تقبل لقطة «الآن»: فشل as-of يوقف الإخراج التاريخي بدلاً من تبديل معناه بصمت. */
+function closePackRows(
+  d: ClosePack,
+  hist: HistoricalAR,
+): { section: string; value: string }[] {
   return [
     { section: "عدد فواتير المبيعات", value: String(d.sales.invoiceCount) },
     { section: "المبيعات (صافٍ قبل الضريبة)", value: fmtAr(d.sales.subtotal) },
     { section: "الضريبة", value: fmtAr(d.sales.tax) },
     { section: "إجمالي المبيعات", value: fmtAr(d.sales.total) },
     { section: "المرتجعات", value: fmtAr(d.sales.returnedTotal) },
-    { section: "صافي المبيعات بعد المرتجعات", value: fmtAr(d.sales.netAfterReturns) },
+    {
+      section: "صافي المبيعات بعد المرتجعات",
+      value: fmtAr(d.sales.netAfterReturns),
+    },
     { section: "تكلفة البضاعة المباعة", value: fmtAr(d.profit.cost) },
     { section: "الربح الإجمالي", value: fmtAr(d.profit.profit) },
-    { section: "المشتريات (عدد الأوامر)", value: String(d.purchases.orderCount) },
+    {
+      section: "المشتريات (عدد الأوامر)",
+      value: String(d.purchases.orderCount),
+    },
     { section: "قيمة المشتريات", value: fmtAr(d.purchases.total) },
     { section: "المصروفات", value: fmtAr(d.expenses.total) },
+    { section: "صافي الربح", value: fmtAr(d.profit.netProfit) },
     { section: "مقبوضات الخزينة", value: fmtAr(d.treasury.totalIn) },
     { section: "مدفوعات الخزينة", value: fmtAr(d.treasury.totalOut) },
     { section: "صافي حركة الخزينة", value: fmtAr(d.treasury.net) },
-    {
-      section: hist ? "ذمم العملاء (كما في نهاية الشهر)" : "ذمم العملاء الحالية (لقطة الآن)",
-      value: fmtAr(hist ? hist.ar : d.receivablesSnapshot.arTotal),
-    },
-    {
-      section: hist ? "ذمم الموردين (كما في نهاية الشهر)" : "ذمم الموردين الحالية (لقطة الآن)",
-      value: fmtAr(hist ? hist.ap : d.receivablesSnapshot.apTotal),
-    },
+    { section: "ذمم العملاء (كما في نهاية الشهر)", value: fmtAr(hist.ar) },
+    { section: "ذمم الموردين (كما في نهاية الشهر)", value: fmtAr(hist.ap) },
     { section: "أوامر شغل مُسلَّمة", value: String(d.workOrdersDelivered) },
   ];
 }
 
+export type MonthlyCloseExportRow = { section: string; value: number };
+
+export const MONTHLY_CLOSE_EXPORT_COLUMNS: ExportColumn<MonthlyCloseExportRow>[] =
+  [
+    { key: "section", header: "البند" },
+    { key: "value", header: "القيمة (IQD / عدد)", money: true },
+  ];
+
+/** صفوف Excel بأرقام حقيقية؛ التنسيق البصري يُطبَّق عبر numFmt لا بتحويل الرقم إلى نص. */
+export function monthlyCloseExportRows(
+  d: ClosePack,
+  hist: HistoricalAR,
+): MonthlyCloseExportRow[] {
+  return [
+    { section: "عدد فواتير المبيعات", value: d.sales.invoiceCount },
+    {
+      section: "المبيعات (صافٍ قبل الضريبة)",
+      value: toExcelMoney(d.sales.subtotal),
+    },
+    { section: "الضريبة", value: toExcelMoney(d.sales.tax) },
+    { section: "إجمالي المبيعات", value: toExcelMoney(d.sales.total) },
+    { section: "المرتجعات", value: toExcelMoney(d.sales.returnedTotal) },
+    {
+      section: "صافي المبيعات بعد المرتجعات",
+      value: toExcelMoney(d.sales.netAfterReturns),
+    },
+    { section: "تكلفة البضاعة المباعة", value: toExcelMoney(d.profit.cost) },
+    { section: "الربح الإجمالي", value: toExcelMoney(d.profit.profit) },
+    { section: "المشتريات (عدد الأوامر)", value: d.purchases.orderCount },
+    { section: "قيمة المشتريات", value: toExcelMoney(d.purchases.total) },
+    { section: "المصروفات", value: toExcelMoney(d.expenses.total) },
+    { section: "صافي الربح", value: toExcelMoney(d.profit.netProfit) },
+    { section: "مقبوضات الخزينة", value: toExcelMoney(d.treasury.totalIn) },
+    { section: "مدفوعات الخزينة", value: toExcelMoney(d.treasury.totalOut) },
+    { section: "صافي حركة الخزينة", value: toExcelMoney(d.treasury.net) },
+    {
+      section: "ذمم العملاء (كما في نهاية الشهر)",
+      value: toExcelMoney(hist.ar),
+    },
+    {
+      section: "ذمم الموردين (كما في نهاية الشهر)",
+      value: toExcelMoney(hist.ap),
+    },
+    { section: "أوامر شغل مُسلَّمة", value: d.workOrdersDelivered },
+  ];
+}
+
+export function monthlyCloseExportMeta(
+  d: ClosePack,
+  branchLabel: string,
+  readinessLabel: string,
+  requestLabel: string,
+): Array<{ label: string; value: string }> {
+  return [
+    { label: "الفترة", value: `${d.period.from} — ${d.period.to}` },
+    { label: "الفرع", value: branchLabel },
+    { label: "الجاهزية", value: readinessLabel },
+    { label: "طلب الإقفال", value: requestLabel },
+    { label: "الأساس المحاسبي", value: monthlyAccountingBasisLabel(d.accountingBasis) },
+    { label: "الذمم", value: `لقطة دفترية كما في ${d.period.to}` },
+  ];
+}
+
 /** بنود المقارنة بالشهر السابق — رباعية (مفتاح/تسمية/هذا الشهر/الشهر السابق). */
-const COMPARE_METRICS: { key: string; label: string; pick: (d: ClosePack) => string }[] = [
-  { key: "netSales", label: "صافي المبيعات", pick: (d) => d.sales.netAfterReturns },
+const COMPARE_METRICS: {
+  key: string;
+  label: string;
+  pick: (d: ClosePack) => string;
+}[] = [
+  {
+    key: "netSales",
+    label: "صافي المبيعات",
+    pick: (d) => d.sales.netAfterReturns,
+  },
   { key: "profit", label: "الربح الإجمالي", pick: (d) => d.profit.profit },
+  { key: "netProfit", label: "صافي الربح", pick: (d) => d.profit.netProfit },
   { key: "purchases", label: "المشتريات", pick: (d) => d.purchases.total },
   { key: "expenses", label: "المصروفات", pick: (d) => d.expenses.total },
-  { key: "treasuryNet", label: "صافي حركة الخزينة", pick: (d) => d.treasury.net },
+  {
+    key: "treasuryNet",
+    label: "صافي حركة الخزينة",
+    pick: (d) => d.treasury.net,
+  },
 ];
 
 export default function MonthlyClosePack() {
-  const [month, setMonth] = useState<string>(currentMonth());
+  const [month, setMonth] = useState<string>(currentBaghdadMonth());
   const [branchId, setBranchId] = useState<number | "">("");
+  const [, navigate] = useLocation();
 
+  const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
+  const permissionsOverride = (me.data?.permissionsOverride ??
+    null) as PermissionMap | null;
   const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
 
   const q = trpc.reports.monthlyClosePack.useQuery({
@@ -102,27 +255,73 @@ export default function MonthlyClosePack() {
 
   // ش٥ب: طلب الإقفال واعتماده (Maker-Checker). الطابور محصورٌ بمديرٍ فأعلى ⇒ لا يُطلَب لغيرهم
   // (الشاشة نفسها مرئيّةٌ للمحاسب/المدقّق عبر بوّابة التقارير).
-  const canRequest = isAdmin || me.data?.role === "manager";
-  const requests = trpc.periodLock.closeRequests.useQuery(undefined, { enabled: canRequest });
-  const pendingForMonth = requests.data?.find((r) => r.month === month && r.status === "PENDING_APPROVAL");
-  const approvedForMonth = requests.data?.find((r) => r.month === month && r.status === "APPROVED");
+  const canRequest =
+    !!me.data &&
+    moduleAccessAllowed(me.data.role, permissionsOverride, "reports", "FULL", [
+      "manager",
+    ]) &&
+    (me.data.role === "admin" ||
+      me.data.role === "manager" ||
+      me.data.branchId != null);
+  const requests = trpc.periodLock.closeRequests.useQuery(undefined, {
+    enabled: canRequest,
+  });
+  const actionReadiness = trpc.periodLock.closeActionReadiness.useQuery(
+    { month },
+    { enabled: canRequest },
+  );
+  const actionRd = actionReadiness.data;
+  const isDecember = month.endsWith("-12");
+  const doubleEntryAvailability =
+    trpc.reports.doubleEntryReportAvailability.useQuery(undefined, {
+      enabled: canRequest && isDecember,
+    });
+  const useYearEnd = monthCloseUsesYearEnd(
+    month,
+    doubleEntryAvailability.data?.mode,
+  );
+  const decemberRouteUnavailable =
+    isDecember &&
+    (!!doubleEntryAvailability.error ||
+      (!doubleEntryAvailability.isLoading && !doubleEntryAvailability.data));
+  const pendingForMonth = requests.data?.find(
+    (r) => r.month === month && r.status === "PENDING_APPROVAL",
+  );
+  const lockedApprovalForMonth = requests.data?.find(
+    (r) => r.month === month && r.status === "APPROVED" && r.locked,
+  );
+  const historicalApprovalForMonth = requests.data?.find(
+    (r) => r.month === month && r.status === "APPROVED",
+  );
   const [rejectReason, setRejectReason] = useState("");
 
   const afterDecision = () => {
-    void requests.refetch();
     void readiness.refetch();
+    void utils.periodLock.status.invalidate();
+    void utils.periodLock.history.invalidate();
+    void utils.periodLock.closeRequests.invalidate();
+    void utils.periodLock.closeActionReadiness.invalidate();
     setRejectReason("");
   };
   const mRequest = trpc.periodLock.requestClose.useMutation({
-    onSuccess: () => { notify.ok("أُرسل طلب الإقفال — بانتظار اعتماد الإدارة."); afterDecision(); },
+    onSuccess: () => {
+      notify.ok("أُرسل طلب الإقفال — بانتظار اعتماد الإدارة.");
+      afterDecision();
+    },
     onError: (e) => notify.err(e),
   });
   const mApprove = trpc.periodLock.approveClose.useMutation({
-    onSuccess: (r) => { notify.ok(`أُقفل شهر ${r.month}.`); afterDecision(); },
+    onSuccess: (r) => {
+      notify.ok(`أُقفل شهر ${r.month}.`);
+      afterDecision();
+    },
     onError: (e) => notify.err(e),
   });
   const mReject = trpc.periodLock.rejectClose.useMutation({
-    onSuccess: () => { notify.ok("رُفض الطلب."); afterDecision(); },
+    onSuccess: () => {
+      notify.ok("رُفض الطلب.");
+      afterDecision();
+    },
     onError: (e) => notify.err(e),
   });
   const busy = mRequest.isPending || mApprove.isPending || mReject.isPending;
@@ -146,32 +345,62 @@ export default function MonthlyClosePack() {
   const dPrev = qPrev.data;
 
   const branchLabel = branchId
-    ? branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)
+    ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId))
     : "كل الفروع";
 
+  const readinessLabel = rd
+    ? rd.blocked
+      ? "غير جاهز — توجد بنود حاجزة"
+      : "جاهز للإقفال"
+    : "تعذّر تحديد الجاهزية";
+  const requestLabel = !canRequest
+    ? "قراءة فقط — لا صلاحية لطلب الإقفال"
+    : lockedApprovalForMonth
+      ? `مقفل — الطلب #${lockedApprovalForMonth.id}`
+      : pendingForMonth
+        ? `بانتظار الاعتماد — الطلب #${pendingForMonth.id}`
+        : historicalApprovalForMonth
+          ? `فُتح بعد اعتماد الطلب #${historicalApprovalForMonth.id} — متاح لطلب جديد`
+          : "لا يوجد طلب";
+  const exportReady =
+    !!d &&
+    !!hist &&
+    !!rd &&
+    (!canRequest || (!requests.isLoading && !requests.error));
+
   function onExport() {
-    if (!d) return;
-    exportRows(closePackRows(d, hist), {
+    if (!d || !hist || !rd) {
+      notify.err(
+        "لا يمكن تصدير حزمة تاريخية ناقصة؛ أعد تحميل الجاهزية ولقطة نهاية الشهر.",
+      );
+      return;
+    }
+    exportRows(monthlyCloseExportRows(d, hist), {
       filename: `حزمة-الإقفال-الشهري-${month}`,
       title: `حزمة الإقفال الشهري — ${month}`,
-      meta: [
-        { label: "الفترة", value: `${d.period.from} — ${d.period.to}` },
-        { label: "الفرع", value: branchLabel },
-      ],
-      columns: [
-        { key: "section", header: "البند" },
-        { key: "value", header: "القيمة" },
-      ],
+      meta: monthlyCloseExportMeta(
+        d,
+        branchLabel,
+        readinessLabel,
+        requestLabel,
+      ),
+      columns: MONTHLY_CLOSE_EXPORT_COLUMNS,
     });
   }
 
   function onPrint() {
-    if (!d) return;
+    if (!d || !hist) {
+      notify.err(
+        "لا يمكن طباعة حزمة تاريخية قبل اكتمال لقطة الذمم في نهاية الشهر.",
+      );
+      return;
+    }
     printReportDoc({
       title: `حزمة الإقفال الشهري — ${month}`,
       headerExtra: [
         { label: "الفترة", value: `${d.period.from} — ${d.period.to}` },
         { label: "الفرع", value: branchLabel },
+        { label: "الأساس المحاسبي", value: monthlyAccountingBasisLabel(d.accountingBasis) },
       ],
       columns: [
         { key: "section", label: "البند" },
@@ -181,7 +410,16 @@ export default function MonthlyClosePack() {
       summary: [
         { label: "المصروفات", value: fmtAr(d.expenses.total) },
         { label: "صافي المبيعات", value: fmtAr(d.sales.netAfterReturns) },
-        { label: "الربح الإجمالي", value: fmtAr(d.profit.profit), large: true, bold: true },
+        {
+          label: "الربح الإجمالي",
+          value: fmtAr(d.profit.profit),
+        },
+        {
+          label: "صافي الربح",
+          value: fmtAr(d.profit.netProfit),
+          large: true,
+          bold: true,
+        },
       ],
     });
   }
@@ -190,14 +428,23 @@ export default function MonthlyClosePack() {
     <div className="space-y-4">
       <PageHeader
         title="الإقفال الشهري"
-        description="صورة الشهر المالية الموحّدة: مبيعات وربح ومشتريات ومصاريف وخزينة وذمم — للمراجعة والطباعة."
+        description="صورة الشهر المالية الموحّدة: مبيعات وربح إجمالي وصافي ومشتريات ومصاريف وخزينة وذمم — للمراجعة والطباعة."
         actions={
           <>
-            <Button variant="outline" onClick={onExport} disabled={!d} className="gap-1.5">
+            <Button
+              variant="outline"
+              onClick={onExport}
+              disabled={!exportReady}
+              className="gap-1.5"
+            >
               <FileSpreadsheet aria-hidden className="size-4" />
               تصدير Excel
             </Button>
-            <Button onClick={onPrint} disabled={!d} className="gap-1.5">
+            <Button
+              onClick={onPrint}
+              disabled={!d || !hist}
+              className="gap-1.5"
+            >
               <Printer aria-hidden className="size-4" />
               طباعة / PDF
             </Button>
@@ -208,18 +455,52 @@ export default function MonthlyClosePack() {
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
           <span className="text-[11px] text-muted-foreground">الشهر</span>
-          <MonthPicker value={month} onChange={setMonth} max={currentMonth()} ariaLabel="شهر الإقفال" />
+          <MonthPicker
+            value={month}
+            onChange={setMonth}
+            max={currentBaghdadMonth()}
+            ariaLabel="شهر الإقفال"
+          />
         </div>
         {isAdmin && (
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-muted-foreground">الفرع</label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+            <select
+              className={selectCls}
+              value={branchId}
+              onChange={(e) =>
+                setBranchId(e.target.value ? Number(e.target.value) : "")
+              }
+            >
               <option value="">كل الفروع</option>
-              {branches.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
+              {branches.data?.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
             </select>
           </div>
         )}
       </div>
+
+      {d && posAsOf.error && (
+        <Card className="border-destructive/50">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+            <span className="flex items-center gap-2 text-destructive">
+              <CircleAlert aria-hidden className="size-4" />
+              تعذّر بناء لقطة الذمم كما في نهاية الشهر؛ حُجب العرض والتصدير
+              التاريخيان لمنع استخدام أرصدة اليوم مكانها.
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => posAsOf.refetch()}
+            >
+              إعادة المحاولة
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {rd && (
         <Card>
@@ -237,17 +518,34 @@ export default function MonthlyClosePack() {
             {rd.items.map((it) => (
               <div key={it.key} className="flex items-start gap-2">
                 {it.status === "BLOCK" ? (
-                  <CircleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
+                  <CircleAlert
+                    aria-hidden
+                    className="mt-0.5 size-4 shrink-0 text-destructive"
+                  />
                 ) : it.status === "WARN" ? (
-                  <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  <TriangleAlert
+                    aria-hidden
+                    className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                  />
                 ) : (
-                  <CircleCheck aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  <CircleCheck
+                    aria-hidden
+                    className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                  />
                 )}
                 <div>
-                  <div className={it.status === "BLOCK" ? "font-medium text-destructive" : "font-medium"}>
+                  <div
+                    className={
+                      it.status === "BLOCK"
+                        ? "font-medium text-destructive"
+                        : "font-medium"
+                    }
+                  >
                     {it.label}
                   </div>
-                  <div className="text-xs text-muted-foreground">{it.detail}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {it.detail}
+                  </div>
                 </div>
               </div>
             ))}
@@ -259,24 +557,49 @@ export default function MonthlyClosePack() {
 
             {canRequest && (
               <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-                {approvedForMonth ? (
+                {lockedApprovalForMonth ? (
                   <span className="text-xs text-muted-foreground">
-                    هذا الشهر مُقفَلٌ باعتماد الطلب رقم {approvedForMonth.id}.
+                    هذا الشهر مُقفَلٌ باعتماد الطلب رقم{" "}
+                    {lockedApprovalForMonth.id}.
                   </span>
                 ) : pendingForMonth ? (
                   <>
                     <span className="text-xs text-muted-foreground">
-                      طلب إقفالٍ معلَّق (طلبه {pendingForMonth.requestedByName}) — بانتظار اعتماد الإدارة.
+                      طلب إقفالٍ معلَّق (طلبه {pendingForMonth.requestedByName})
+                      — بانتظار اعتماد الإدارة.
                     </span>
                     {isAdmin && (
                       <>
-                        <Button
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => mApprove.mutate({ requestId: pendingForMonth.id })}
-                        >
-                          اعتماد الإقفال
-                        </Button>
+                        {useYearEnd ? (
+                          <Button
+                            size="sm"
+                            onClick={() =>
+                              navigate(
+                                yearEndCloseHref(month, pendingForMonth.id),
+                              )
+                            }
+                          >
+                            متابعة الإقفال السنوي
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            disabled={monthCloseApprovalDisabled({
+                              busy,
+                              readinessLoading: actionReadiness.isLoading,
+                              readinessError: !!actionReadiness.error,
+                              readinessBlocked: actionRd?.blocked,
+                              routeLoading:
+                                isDecember && doubleEntryAvailability.isLoading,
+                              routeError: decemberRouteUnavailable,
+                            })}
+                            onClick={() =>
+                              mApprove.mutate({ requestId: pendingForMonth.id })
+                            }
+                          >
+                            اعتماد الإقفال
+                          </Button>
+                        )}
                         <input
                           className={selectCls}
                           placeholder="سبب الرفض"
@@ -288,10 +611,29 @@ export default function MonthlyClosePack() {
                           size="sm"
                           variant="outline"
                           disabled={busy || rejectReason.trim().length < 5}
-                          onClick={() => mReject.mutate({ requestId: pendingForMonth.id, reason: rejectReason.trim() })}
+                          onClick={() =>
+                            mReject.mutate({
+                              requestId: pendingForMonth.id,
+                              reason: rejectReason.trim(),
+                            })
+                          }
                         >
                           رفض
                         </Button>
+                        <span className="text-xs text-muted-foreground">
+                          {useYearEnd
+                            ? "ديسمبر في وضع ACTIVE يُستكمل من الإقفال السنوي بعد ترحيل الأرباح المحتجزة."
+                            : actionReadiness.isLoading ||
+                                (isDecember &&
+                                  doubleEntryAvailability.isLoading)
+                              ? "جارٍ إعادة التحقق الحي من جاهزية الاعتماد…"
+                              : actionReadiness.error ||
+                                  decemberRouteUnavailable
+                                ? "تعذّر التحقق؛ الاعتماد محجوب احترازياً."
+                                : actionRd?.blocked
+                                  ? "الاعتماد محجوب لأن جاهزية الشركة تغيّرت بعد الطلب."
+                                  : "الجاهزية العامة ما زالت مكتملة للاعتماد."}
+                        </span>
                       </>
                     )}
                   </>
@@ -299,15 +641,24 @@ export default function MonthlyClosePack() {
                   <>
                     <Button
                       size="sm"
-                      disabled={busy || rd.blocked}
+                      disabled={
+                        busy ||
+                        actionReadiness.isLoading ||
+                        !!actionReadiness.error ||
+                        actionRd?.blocked !== false
+                      }
                       onClick={() => mRequest.mutate({ month })}
                     >
                       طلب إقفال الشهر
                     </Button>
                     <span className="text-xs text-muted-foreground">
-                      {rd.blocked
-                        ? "مُعطَّل حتى تُعالَج البنود الحاجزة."
-                        : "يُرسَل للإدارة لاعتماده — الطالب لا يعتمد طلبه."}
+                      {actionReadiness.isLoading
+                        ? "جارٍ التحقق من جاهزية الشركة كلها…"
+                        : actionReadiness.error
+                          ? "تعذّر التحقق من الجاهزية العامة؛ الطلب محجوب احترازياً."
+                          : actionRd?.blocked
+                            ? "مُعطَّل لوجود بنود حاجزة في الشركة؛ لا تُعرَض تفاصيل الفروع الأخرى هنا."
+                            : "جاهزية الشركة مكتملة؛ يُرسَل الطلب للإدارة لاعتماده — الطالب لا يعتمد طلبه."}
                     </span>
                   </>
                 )}
@@ -324,33 +675,95 @@ export default function MonthlyClosePack() {
       ) : d ? (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
-            <StatCard label="صافي المبيعات بعد المرتجعات" value={fmtAr(d.sales.netAfterReturns)} sub={`${d.sales.invoiceCount} فاتورة — مرتجعات ${fmtAr(d.sales.returnedTotal)}`} icon={ReceiptText} tone="info" />
-            <StatCard label="الربح الإجمالي" value={fmtAr(d.profit.profit)} sub={`تكلفة ${fmtAr(d.profit.cost)}`} icon={TrendingUp} tone={Number(d.profit.profit) < 0 ? "negative" : "positive"} />
-            <StatCard label="المشتريات" value={fmtAr(d.purchases.total)} sub={`${d.purchases.orderCount} أمراً — متبقٍّ ${fmtAr(d.purchases.unpaid)}`} icon={ShoppingCart} />
-            <StatCard label="المصروفات" value={fmtAr(d.expenses.total)} icon={Wallet} tone="warning" />
-            <StatCard label="صافي حركة الخزينة" value={fmtAr(d.treasury.net)} sub={`دخل ${fmtAr(d.treasury.totalIn)} — خرج ${fmtAr(d.treasury.totalOut)}`} icon={Scale} />
             <StatCard
-              label={hist ? "ذمم العملاء (كما في نهاية الشهر)" : "ذمم العملاء (لقطة الآن)"}
-              value={fmtAr(hist ? hist.ar : d.receivablesSnapshot.arTotal)}
+              label="صافي المبيعات بعد المرتجعات"
+              value={fmtAr(d.sales.netAfterReturns)}
+              sub={`${d.sales.invoiceCount} فاتورة — مرتجعات ${fmtAr(d.sales.returnedTotal)}`}
+              icon={ReceiptText}
+              tone="info"
+            />
+            <StatCard
+              label="الربح الإجمالي"
+              value={fmtAr(d.profit.profit)}
+              sub={`تكلفة ${fmtAr(d.profit.cost)}`}
+              icon={TrendingUp}
+              tone={D(d.profit.profit).lt(0) ? "negative" : "positive"}
+            />
+            <StatCard
+              label="المشتريات"
+              value={fmtAr(d.purchases.total)}
+              sub={`${d.purchases.orderCount} أمراً — متبقٍّ ${fmtAr(d.purchases.unpaid)}`}
+              icon={ShoppingCart}
+            />
+            <StatCard
+              label="المصروفات"
+              value={fmtAr(d.expenses.total)}
+              icon={Wallet}
+              tone="warning"
+            />
+            <StatCard
+              label="صافي الربح"
+              value={fmtAr(d.profit.netProfit)}
+              sub={monthlyAccountingBasisLabel(d.accountingBasis)}
+              icon={TrendingUp}
+              tone={D(d.profit.netProfit).isNegative() ? "negative" : "positive"}
+            />
+            <StatCard
+              label="صافي حركة الخزينة"
+              value={fmtAr(d.treasury.net)}
+              sub={`دخل ${fmtAr(d.treasury.totalIn)} — خرج ${fmtAr(d.treasury.totalOut)}`}
+              icon={Scale}
+            />
+            <StatCard
+              label="ذمم العملاء (كما في نهاية الشهر)"
+              value={hist ? fmtAr(hist.ar) : "غير متاح"}
               icon={ReceiptText}
             />
             <StatCard
-              label={hist ? "ذمم الموردين (كما في نهاية الشهر)" : "ذمم الموردين (لقطة الآن)"}
-              value={fmtAr(hist ? hist.ap : d.receivablesSnapshot.apTotal)}
+              label="ذمم الموردين (كما في نهاية الشهر)"
+              value={hist ? fmtAr(hist.ap) : "غير متاح"}
               icon={ReceiptText}
             />
-            <StatCard label="أوامر شغل مُسلَّمة" value={String(d.workOrdersDelivered)} icon={Wrench} />
+            <StatCard
+              label="أوامر شغل مُسلَّمة"
+              value={String(d.workOrdersDelivered)}
+              icon={Wrench}
+            />
           </div>
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">تفصيل المبيعات والضريبة</CardTitle>
+              <CardTitle className="text-base">
+                تفصيل المبيعات والضريبة
+              </CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-              <div><div className="text-xs text-muted-foreground">صافٍ قبل الضريبة</div><div className="tabular-nums" dir="ltr">{fmtAr(d.sales.subtotal)}</div></div>
-              <div><div className="text-xs text-muted-foreground">الضريبة</div><div className="tabular-nums" dir="ltr">{fmtAr(d.sales.tax)}</div></div>
-              <div><div className="text-xs text-muted-foreground">الإجمالي</div><div className="tabular-nums" dir="ltr">{fmtAr(d.sales.total)}</div></div>
-              <div><div className="text-xs text-muted-foreground">المرتجعات</div><div className="tabular-nums text-money-negative" dir="ltr">{fmtAr(d.sales.returnedTotal)}</div></div>
+              <div>
+                <div className="text-xs text-muted-foreground">
+                  صافٍ قبل الضريبة
+                </div>
+                <div className="tabular-nums" dir="ltr">
+                  {fmtAr(d.sales.subtotal)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">الضريبة</div>
+                <div className="tabular-nums" dir="ltr">
+                  {fmtAr(d.sales.tax)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">الإجمالي</div>
+                <div className="tabular-nums" dir="ltr">
+                  {fmtAr(d.sales.total)}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">المرتجعات</div>
+                <div className="tabular-nums text-money-negative" dir="ltr">
+                  {fmtAr(d.sales.returnedTotal)}
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -361,9 +774,14 @@ export default function MonthlyClosePack() {
               </CardHeader>
               <CardContent className="space-y-1.5 text-sm">
                 {d.expenses.topCategories.map((c) => (
-                  <div key={c.category} className="flex items-center justify-between">
+                  <div
+                    key={c.category}
+                    className="flex items-center justify-between"
+                  >
                     <span>{c.category}</span>
-                    <span className="tabular-nums" dir="ltr">{fmtAr(c.total)}</span>
+                    <span className="tabular-nums" dir="ltr">
+                      {fmtAr(c.total)}
+                    </span>
                   </div>
                 ))}
               </CardContent>
@@ -372,21 +790,29 @@ export default function MonthlyClosePack() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">مقارنة بالشهر السابق ({prevMonth})</CardTitle>
+              <CardTitle className="text-base">
+                مقارنة بالشهر السابق ({prevMonth})
+              </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
               {qPrev.isLoading ? (
                 <LoadingState />
               ) : !dPrev ? (
-                <p className="p-4 text-center text-sm text-muted-foreground">تعذّر تحميل بيانات الشهر السابق للمقارنة.</p>
+                <p className="p-4 text-center text-sm text-muted-foreground">
+                  تعذّر تحميل بيانات الشهر السابق للمقارنة.
+                </p>
               ) : (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-xs text-muted-foreground">
                       <th className="p-2.5 text-end font-medium">البند</th>
                       <th className="p-2.5 text-right font-medium">{month}</th>
-                      <th className="p-2.5 text-right font-medium">{prevMonth}</th>
-                      <th className="p-2.5 text-right font-medium">التغيّر %</th>
+                      <th className="p-2.5 text-right font-medium">
+                        {prevMonth}
+                      </th>
+                      <th className="p-2.5 text-right font-medium">
+                        التغيّر %
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -399,9 +825,22 @@ export default function MonthlyClosePack() {
                       return (
                         <tr key={m.key} className="border-b last:border-0">
                           <td className="p-2.5 text-end">{m.label}</td>
-                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(curr)}</td>
-                          <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(prev)}</td>
-                          <td className={`p-2.5 text-right tabular-nums font-medium ${up ? "text-money-positive" : down ? "text-money-negative" : ""}`} dir="ltr">
+                          <td
+                            className="p-2.5 text-right tabular-nums"
+                            dir="ltr"
+                          >
+                            {fmtAr(curr)}
+                          </td>
+                          <td
+                            className="p-2.5 text-right tabular-nums text-muted-foreground"
+                            dir="ltr"
+                          >
+                            {fmtAr(prev)}
+                          </td>
+                          <td
+                            className={`p-2.5 text-right tabular-nums font-medium ${up ? "text-money-positive" : down ? "text-money-negative" : ""}`}
+                            dir="ltr"
+                          >
                             {pct == null ? "—" : `${up ? "+" : ""}${pct}%`}
                           </td>
                         </tr>
@@ -418,8 +857,9 @@ export default function MonthlyClosePack() {
               ? "ذمم العملاء/الموردين أعلاه مبنيّة من الدفتر حتى نهاية الشهر المختار (لا الآن)."
               : posAsOf.isLoading
                 ? "جارٍ بناء لقطة الذمم كما في نهاية الشهر…"
-                : "تعذّر بناء لقطة الذمم كما في نهاية الشهر — تُعرض الأرصدة الحالية لحظة توليد التقرير مؤقّتاً."}{" "}
-            أقسام الشهر (مبيعات/ربح/مشتريات/مصاريف/خزينة) محسوبة على نطاق {d.period.from} إلى {d.period.to}.
+                : "لقطة الذمم التاريخية غير متاحة؛ لم تُستبدل بأرصدة اليوم، والتصدير والطباعة محجوبان حتى نجاح إعادة التحميل."}{" "}
+            أقسام الشهر (مبيعات/ربح/مشتريات/مصاريف/خزينة) محسوبة على نطاق{" "}
+            {d.period.from} إلى {d.period.to} على أساس {monthlyAccountingBasisLabel(d.accountingBasis)}.
           </p>
         </>
       ) : null}

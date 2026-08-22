@@ -18,8 +18,10 @@ import { todayUtcDate } from "../businessDay";
 const actor1 = { userId: 1, branchId: 1 }; // أدمن
 const actor2 = { userId: 2, branchId: 1 }; // مدير
 const actor2b2 = { userId: 2, branchId: 2 };
+const actor4 = { userId: 4, branchId: 1 };
 
 const TABLES = [
+  "voucherCategories",
   "idempotencyKeys",
   "consignmentNoteLines",
   "consignmentNotes",
@@ -65,7 +67,9 @@ async function seedBase() {
     { id: 1, openId: "local_admin", name: "المدير", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
     { id: 2, openId: "local_mgr", name: "منال", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_cashier", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 4, openId: "local_owner2", name: "مالك مستقل", role: "manager", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
+  await d.insert(s.voucherCategories).values({ id: 10, name: "مصروف اختبار الشذوذ", direction: "OUT", postingRole: "OTHER_EXPENSE" });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([
@@ -236,6 +240,7 @@ describe("D5 — عكس السندات", () => {
         amount: "50.00",
         paymentMethod: "CASH",
         partyType: "OTHER",
+        voucherCategoryId: 10,
         counterpartyName: "طرف الاختبار",
         description: "اختبار عكس",
         clientRequestId: "anomaly-reversed-voucher-1",
@@ -243,7 +248,8 @@ describe("D5 — عكس السندات", () => {
       { ...actor2, role: "manager" } as any,
     );
     await approveVoucher(v.receiptId, { ...actor1, role: "admin" } as any);
-    await cancelVoucher(v.receiptId, { ...actor1, role: "admin" } as any);
+    const cancellation = await cancelVoucher(v.receiptId, { ...actor1, role: "admin" } as any);
+    await approveVoucher(Number(cancellation.approvalReceiptId), { ...actor4, role: "manager" } as any);
 
     const aw = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
     expect(aw.kpis.reversedVouchers).toBe(1);
@@ -278,9 +284,15 @@ describe("D6 — سلامة تسلسل الترقيم (كاشف عبث)", () => 
 
     const after = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
     expect(after.sequenceGaps.rows).toHaveLength(1);
-    expect(after.sequenceGaps.rows[0].branchId).toBe(1);
+    // ٢٠/٨ (تصويب مراجعة Codex): العدّادُ الرقميّ **عالميّ** لا يُعاد لكلّ فرعٍ ويوم، فنسبةُ
+    // فجوته إلى فرعٍ بعينه **نسبةٌ كاذبة** — وهي التي كانت تُنتج فجواتٍ وهمية من التداخل
+    // الطبيعيّ بين الفروع. الصفُّ يُعنوَن «كل الفروع» (branchId = 0) صراحةً.
+    expect(after.sequenceGaps.rows[0].branchId).toBe(0);
+    expect(after.sequenceGaps.rows[0].branchName).toContain("كل الفروع");
     expect(after.sequenceGaps.rows[0].actualCount).toBe(2);
-    expect(after.sequenceGaps.rows[0].maxSeq).toBe(3);
+    // ١٨/٨: العدّاد عالميّ فلا يبدأ كل يومٍ من الواحد — الدلالة صارت **المدى** لا القيمة
+    // المطلقة: ثلاثة أرقام متتالية حُذف أوسطها ⇒ مدىً طوله ٣ فيه صفّان ⇒ مفقودٌ واحد.
+    expect(after.sequenceGaps.rows[0].maxSeq - after.sequenceGaps.rows[0].minSeq).toBe(2);
     expect(after.sequenceGaps.rows[0].missing).toBe(1);
     expect(after.kpis.sequenceGapDays).toBe(1);
   });

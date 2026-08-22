@@ -30,6 +30,8 @@ export interface ExchangeSlipData {
   housePhone?: string | null;
   branchName?: string | null;
   createdByName?: string | null;
+  printedByName?: string | null;
+  printRequestedAt?: string | null;
   iqdAmount: string;
   usdAmount: string;
   exchangeRate?: string | null;
@@ -82,6 +84,8 @@ function detailFields(d: ExchangeSlipData): { label: string; value: string }[] {
   }
   if (d.notes) f.push({ label: "ملاحظات", value: d.notes });
   if (d.createdByName) f.push({ label: "المُنشئ", value: d.createdByName });
+  if (d.printedByName) f.push({ label: "طالب الطباعة", value: d.printedByName });
+  if (d.printRequestedAt) f.push({ label: "وقت طلب الطباعة", value: d.printRequestedAt });
   return f;
 }
 

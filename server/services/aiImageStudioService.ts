@@ -27,6 +27,8 @@ export type AiImageErrorKind =
   | "BAD_INPUT" // طلب غير صالح (400 غير المصادقة)
   | "BLOCKED" // حجب أمان من المزوّد (المحتوى/السلامة)
   | "NO_IMAGE" // نجح النداء لكن بلا صورة في الردّ (رفض النموذج/نصّ فقط)
+  | "TIMEOUT" // انتهت مهلة الاتصال بالمزوّد
+  | "RESPONSE_TOO_LARGE" // تجاوز ردّ المزوّد حدّ ذاكرة الخادم
   | "SERVICE" // 5xx أو غير متوقّع
   | "NETWORK"; // تعذّر الوصول للخدمة أصلاً
 
@@ -66,6 +68,48 @@ export interface AiImageCallOptions {
   fetchImpl?: typeof fetch;
   /** تضمين imageConfig (aspectRatio 1:1) — الافتراضي true (النموذج الافتراضي يدعمه). */
   includeImageConfig?: boolean;
+  /** مهلة الاتصال الخارجي؛ تمنع طلباً واحداً من احتجاز العامل بلا حد. */
+  timeoutMs?: number;
+  /** سقف بايتات JSON من المزوّد قبل التحليل. */
+  maxResponseBytes?: number;
+}
+
+const DEFAULT_TIMEOUT_MS = 20_000;
+const DEFAULT_MAX_RESPONSE_BYTES = 12 * 1024 * 1024;
+const MAX_OUTPUT_BASE64_CHARS = Math.ceil((8 * 1024 * 1024 * 4) / 3) + 4;
+const ALLOWED_OUTPUT_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+function isTimeout(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : "";
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/** يقرأ JSON المزوّد بتدفّق محدود، فلا يحمّل ردّاً خبيثاً/خاطئاً كاملاً إلى الذاكرة. */
+async function readBoundedText(res: Response, maxBytes: number): Promise<string> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new AiImageError("RESPONSE_TOO_LARGE", res.status, "استجابة الذكاء الاصطناعي أكبر من الحد الآمن");
+  }
+  if (!res.body) return "";
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new AiImageError("RESPONSE_TOO_LARGE", res.status, "استجابة الذكاء الاصطناعي أكبر من الحد الآمن");
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
 }
 
 /** أسباب الحجب الأمنيّ من finishReason (candidate) — تُصنَّف BLOCKED لا NO_IMAGE. */
@@ -109,6 +153,8 @@ export async function generateStudioImage(
   opts: AiImageCallOptions = {},
 ): Promise<GenerateStudioImageResult> {
   const doFetch = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const model = (params.model && params.model.trim()) || DEFAULT_GEMINI_IMAGE_MODEL;
   const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
 
@@ -135,18 +181,24 @@ export async function generateStudioImage(
         Accept: "application/json",
       },
       body: JSON.stringify({ contents: [{ parts }], generationConfig }),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e: any) {
+    if (isTimeout(e)) {
+      throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
+    }
     throw new AiImageError("NETWORK", 0, `تعذّر الوصول لمزوّد الذكاء الاصطناعي: ${e?.message ?? "خطأ شبكة"}`);
   }
 
   if (!res.ok) {
     let detail = "";
     try {
-      const j = (await res.json()) as { error?: { message?: string; status?: string } };
+      const j = JSON.parse(await readBoundedText(res, Math.min(maxResponseBytes, 256 * 1024))) as {
+        error?: { message?: string; status?: string };
+      };
       detail = j?.error?.message ?? j?.error?.status ?? "";
     } catch {
-      detail = await res.text().catch(() => "");
+      detail = "";
     }
     detail = String(detail).slice(0, 300);
     throw new AiImageError(classifyHttpError(res.status, detail), res.status, detail || `HTTP ${res.status}`);
@@ -154,8 +206,9 @@ export async function generateStudioImage(
 
   let json: any;
   try {
-    json = await res.json();
+    json = JSON.parse(await readBoundedText(res, maxResponseBytes));
   } catch (e: any) {
+    if (e instanceof AiImageError) throw e;
     throw new AiImageError("SERVICE", res.status, `ردّ غير صالح من المزوّد: ${e?.message ?? ""}`);
   }
 
@@ -169,6 +222,13 @@ export async function generateStudioImage(
   const img = extractImagePart(json);
   if (!img) {
     throw new AiImageError("NO_IMAGE", res.status, "لم يُعِد المزوّد صورةً (قد يكون رفض التعديل).");
+  }
+  if (
+    !ALLOWED_OUTPUT_MIME_TYPES.has(img.mime.toLowerCase()) ||
+    img.data.length > MAX_OUTPUT_BASE64_CHARS ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(img.data)
+  ) {
+    throw new AiImageError("SERVICE", res.status, "ردّ صورة غير صالح من المزوّد.");
   }
   return { imageBase64: img.data, mimeType: img.mime };
 }
@@ -186,6 +246,10 @@ export function aiImageErrorMessageAr(kind: AiImageErrorKind): string {
       return "حَجَب المزوّد الطلب لأسباب سلامة المحتوى — جرّب صورةً/برومتاً آخر.";
     case "NO_IMAGE":
       return "لم يُعِد المزوّد صورةً — جرّب مجدّداً أو بصياغة برومت أوضح.";
+    case "TIMEOUT":
+      return "تأخر مزوّد الذكاء الاصطناعي في الردّ؛ أعد المحاولة لاحقاً.";
+    case "RESPONSE_TOO_LARGE":
+      return "أعاد مزوّد الذكاء الاصطناعي نتيجةً أكبر من الحد الآمن للخادم.";
     case "NETWORK":
       return "تعذّر الوصول لمزوّد الذكاء الاصطناعي.";
     case "SERVICE":
@@ -214,21 +278,28 @@ export async function verifyGeminiKey(apiKey: string, fetchImpl?: typeof fetch):
     res = await doFetch(`${GEMINI_API_BASE}/models`, {
       method: "GET",
       headers: { "x-goog-api-key": apiKey, Accept: "application/json" },
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     });
   } catch (e: any) {
+    if (isTimeout(e)) throw new AiImageError("TIMEOUT", 0, "انتهت مهلة مزوّد الذكاء الاصطناعي");
     throw new AiImageError("NETWORK", 0, `تعذّر الوصول لمزوّد الذكاء الاصطناعي: ${e?.message ?? "خطأ شبكة"}`);
   }
   if (!res.ok) {
     let detail = "";
     try {
-      const j = (await res.json()) as { error?: { message?: string; status?: string } };
+      const j = JSON.parse(await readBoundedText(res, 256 * 1024)) as { error?: { message?: string; status?: string } };
       detail = j?.error?.message ?? j?.error?.status ?? "";
     } catch {
       detail = "";
     }
     throw new AiImageError(classifyHttpError(res.status, String(detail)), res.status, String(detail) || `HTTP ${res.status}`);
   }
-  const j = (await res.json().catch(() => ({}))) as { models?: Array<{ name?: string }> };
+  let j: { models?: Array<{ name?: string }> } = {};
+  try {
+    j = JSON.parse(await readBoundedText(res, 256 * 1024));
+  } catch (e) {
+    if (e instanceof AiImageError) throw e;
+  }
   const models = Array.isArray(j?.models)
     ? j.models.map((m) => String(m?.name ?? "").replace(/^models\//, "")).filter(Boolean)
     : [];

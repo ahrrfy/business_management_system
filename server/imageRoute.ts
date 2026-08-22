@@ -20,23 +20,60 @@
  */
 import { Router } from "express";
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { productImages, products, storeBanners } from "../drizzle/schema";
 import { getSessionContext } from "./auth/session";
-import { getDb } from "./db";
+import { getDb, isMultiTenantModeActive } from "./db";
+import {
+  getImageStore,
+  ImageStoreClientAbortError,
+  isCurrentTenantCandidateKey,
+  isImageStoreClientAbortError,
+  isImageStoreUnavailableError,
+  MAX_PUBLISHED_PRODUCT_IMAGE_BYTES,
+  recordImageStorePublicFallback,
+  shortHash,
+} from "./lib/imageStore";
 import { logger } from "./logger";
 import { resolveKioskDevice } from "./services/kioskDeviceService";
+import { inspectStorefrontContext } from "./services/storefrontContextService";
 import type { Request, Response } from "express";
+import type { Readable } from "node:stream";
+import { companyCodeTenancyMiddleware } from "./tenancy/expressMiddleware";
+import { getCurrentCompanyId } from "./tenancy/context";
 
 /** سنة كاملة — آمنة لأن الرابط يحمل بصمة المحتوى (تغيّر المحتوى ⇒ تغيّر الرابط). */
 const ONE_YEAR = 60 * 60 * 24 * 365;
 
 /** أنواع الصور المسموح خدمتها — قائمة بيضاء صريحة (لا نثق ببادئة data URL القادمة من DB). */
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"]);
+/** المصغّرة شبكة عرض فقط؛ حدها يمنع تحويل عمود DB إلى مسار بديل لصور كاملة كبيرة. */
+const MAX_FALLBACK_THUMB_BYTES = 256 * 1024;
+/** سقف مشتق العرض العام = عقد submit نفسه؛ أسوأ buffer افتراضي لكل worker = 4 × 900kB = 3.6MB. */
+const MAX_PUBLIC_STORED_IMAGE_BYTES = MAX_PUBLISHED_PRODUCT_IMAGE_BYTES;
+const MAX_PRIVATE_STORED_IMAGE_BYTES = 25 * 1024 * 1024;
 
 export interface DecodedImage {
   mime: string;
   bytes: Buffer;
+}
+
+function todayYmdBaghdad(): string {
+  return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * يطابق سياق المتجر العام من دون استيراد storefrontService: ذلك الاستيراد يصنع دورة مع imageRoute.
+ * لا fallback: المتجر نفسه يرفض فرعاً مفقوداً/معطلاً، ومورد الصورة يجب أن يغلق مثله لا أن يكشف
+ * بنرات فرع افتراضي بالخطأ.
+ */
+async function resolvePublicStorefrontBranchId(): Promise<number | null> {
+  const db = getDb();
+  if (!db) return null;
+  const context = await inspectStorefrontContext(db);
+  return context.configured && context.branchActive && context.branchId != null
+    ? context.branchId
+    : null;
 }
 
 /**
@@ -127,8 +164,249 @@ function sendImage(req: Request, res: Response, dataUrl: string | null, visibili
   res.setHeader("Content-Type", img.mime);
   // الصورة ليست مستنداً: نمنع أيّ محاولة تفسيرٍ كـHTML مهما كان المحتوى.
   res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   res.setHeader("Content-Length", String(img.bytes.length));
   return res.end(img.bytes);
+}
+
+type StoredProductImage = {
+  objectKey: string | null;
+  contentHash: string | null;
+  mime: string | null;
+  bytes: number | null;
+  thumbDataUrl?: string | null;
+};
+
+/**
+ * سقوط عرضي عام فقط عند تعثّر R2. لا ETag ولا immutable: لا يجوز تثبيت المصغّرة سنةً مكان
+ * المشتق المعتمد. المصدر الوحيد هو thumbDataUrl المنشور في نفس صف الصورة المعتمدة، لا url ولا الأصل.
+ */
+function sendPublicThumbnailFallback(res: Response, dataUrl: string | null | undefined): Response | null {
+  const img = decodeDataUrl(dataUrl);
+  if (!img || img.bytes.length > MAX_FALLBACK_THUMB_BYTES) return null;
+  res.removeHeader("ETag");
+  res.removeHeader("Content-Length");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Content-Type", img.mime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("X-Image-Fallback", "thumbnail");
+  res.setHeader("Content-Length", String(img.bytes.length));
+  return res.end(img.bytes);
+}
+
+function preventCachingStoredImageFailure(res: Response): void {
+  res.removeHeader("ETag");
+  res.removeHeader("Content-Length");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+}
+
+/**
+ * يربط دورة حياة بثّ الكشك باتصال العميل. قطع downstream قبل finish يدمر upstream بلا error
+ * فيراه runStream إلغاءً محايداً ويحرر permit؛ النجاح الطبيعي لا يدمر الجسم مبكراً. كل مسار
+ * terminal ينظف listeners مرة واحدة حتى لا تتراكم على keep-alive.
+ */
+export function bindStoredStreamLifecycle(
+  req: Request,
+  res: Response,
+  stream: Readable,
+  signal?: AbortSignal,
+): boolean {
+  let completed = false;
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    req.off("aborted", onClientAbort);
+    res.off("close", onResponseClose);
+    res.off("finish", onResponseFinish);
+    stream.off("end", onStreamEnd);
+    stream.off("error", onStreamError);
+    stream.off("close", onStreamClose);
+    signal?.removeEventListener("abort", onSignalAbort);
+  };
+  const cancelUpstream = () => {
+    if (completed) return;
+    if (stream.destroyed) {
+      cleanup();
+      return;
+    }
+    stream.destroy(new ImageStoreClientAbortError());
+  };
+  const onClientAbort = () => cancelUpstream();
+  const onSignalAbort = () => cancelUpstream();
+  const onResponseClose = () => {
+    if (!completed) {
+      // destroy(error) يطلق error لاحقاً؛ أبقِ listener حتى يستهلك علامة الإلغاء ثم ينظف.
+      cancelUpstream();
+      return;
+    }
+    cleanup();
+  };
+  const onResponseFinish = () => {
+    completed = true;
+    cleanup();
+  };
+  const onStreamEnd = () => {
+    completed = true;
+    cleanup();
+  };
+  const onStreamError = (error: Error) => {
+    cleanup();
+    if (isImageStoreClientAbortError(error)) return;
+    logger.error({ err: error }, "img: object stream failed");
+    if (!res.destroyed) res.destroy(error);
+  };
+  const onStreamClose = () => {
+    cleanup();
+    if (!completed && !res.destroyed) {
+      const error = Object.assign(new Error("img: object stream closed before end"), { code: "ECONNRESET" });
+      logger.error({ err: error }, "img: object stream failed");
+      res.destroy(error);
+    }
+  };
+
+  req.once("aborted", onClientAbort);
+  res.once("close", onResponseClose);
+  res.once("finish", onResponseFinish);
+  stream.once("end", onStreamEnd);
+  stream.once("error", onStreamError);
+  stream.once("close", onStreamClose);
+  signal?.addEventListener("abort", onSignalAbort, { once: true });
+
+  // يغلق سباق disconnect بين بدء GET وربط دورة حياة stream؛ لا pipe إلى response ميتة.
+  if (signal?.aborted || req.aborted || res.destroyed) {
+    cancelUpstream();
+    return false;
+  }
+  return true;
+}
+
+/**
+ * يبثّ **المشتق المعتمد فقط** من المخزن الخاص. مفتاح المرشّح لا يصل للعميل ولا توجد نقطة للأصل:
+ * صف productImages هو بوابة النشر، ومفتاحه المقبول مقصور دفاعياً على نطاق الشركة وstudio/candidate/. كما تُطابق
+ * بصمة الرابط محتوى الصف قبل فتح R2 كي لا يصبح immutable صحيحاً لرابطٍ خاطئ.
+ */
+async function sendStoredProductImage(
+  req: Request,
+  res: Response,
+  image: StoredProductImage,
+  visibility: "public" | "private",
+): Promise<Response> {
+  const { objectKey, contentHash, mime, bytes } = image;
+  if (
+    !objectKey || !isCurrentTenantCandidateKey(objectKey) ||
+    !contentHash || !/^[0-9a-f]{64}$/i.test(contentHash) ||
+    !mime || !ALLOWED_MIME.has(mime.toLowerCase()) ||
+    !Number.isSafeInteger(bytes) || bytes == null || bytes <= 0 || bytes > MAX_PRIVATE_STORED_IMAGE_BYTES
+  ) return res.status(404).end();
+
+  const version = shortHash(contentHash);
+  if (typeof req.query.v !== "string" || req.query.v !== version) return res.status(404).end();
+  const etag = `"${version}"`;
+  if (req.headers["if-none-match"] === etag) {
+    res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
+    if (visibility === "private") res.setHeader("Vary", "Cookie");
+    res.setHeader("ETag", etag);
+    return res.status(304).end();
+  }
+
+  if (visibility === "public") {
+    if (bytes > MAX_PUBLIC_STORED_IMAGE_BYTES) {
+      preventCachingStoredImageFailure(res);
+      return res.status(500).end();
+    }
+    let body: Buffer | null;
+    const abortController = new AbortController();
+    const abortRead = () => abortController.abort();
+    const abortOnEarlyClose = () => {
+      if (!res.writableEnded) abortController.abort();
+    };
+    req.once("aborted", abortRead);
+    res.once("close", abortOnEarlyClose);
+    try {
+      // لا ترويسة 200 ولا pipe قبل اكتمال الجسم داخل semaphore والقاطع.
+      body = await getImageStore().getBuffer(objectKey, bytes, { signal: abortController.signal });
+    } catch (error) {
+      if (isImageStoreClientAbortError(error)) {
+        preventCachingStoredImageFailure(res);
+        return res;
+      }
+      if (!isImageStoreUnavailableError(error)) {
+        preventCachingStoredImageFailure(res);
+        throw error;
+      }
+      const fallback = sendPublicThumbnailFallback(res, image.thumbDataUrl);
+      if (fallback) {
+        recordImageStorePublicFallback();
+        logger.warn({ component: "r2_image_store", reason: error.reason }, "img: serving approved thumbnail fallback");
+        return fallback;
+      }
+      preventCachingStoredImageFailure(res);
+      return res.status(503).end();
+    } finally {
+      req.off("aborted", abortRead);
+      res.off("close", abortOnEarlyClose);
+    }
+    if (!body) {
+      preventCachingStoredImageFailure(res);
+      return res.status(404).end();
+    }
+    if (body.length !== bytes || createHash("sha256").update(body).digest("hex") !== contentHash.toLowerCase()) {
+      preventCachingStoredImageFailure(res);
+      return res.status(500).end();
+    }
+    res.setHeader("Cache-Control", `public, max-age=${ONE_YEAR}, immutable`);
+    res.setHeader("ETag", etag);
+    res.setHeader("Content-Type", mime.toLowerCase());
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    res.setHeader("Content-Length", String(body.length));
+    return res.end(body);
+  }
+
+  const abortController = new AbortController();
+  const abortRead = () => abortController.abort();
+  const abortOnEarlyClose = () => {
+    if (!res.writableEnded) abortController.abort();
+  };
+  req.once("aborted", abortRead);
+  res.once("close", abortOnEarlyClose);
+  try {
+    const stream = await getImageStore().getStream(objectKey, { signal: abortController.signal });
+    if (abortController.signal.aborted || req.aborted || res.destroyed) {
+      stream?.destroy(new ImageStoreClientAbortError());
+      return res;
+    }
+    if (!stream) {
+      preventCachingStoredImageFailure(res);
+      return res.status(404).end();
+    }
+    if (!bindStoredStreamLifecycle(req, res, stream, abortController.signal)) return res;
+
+    res.setHeader("Cache-Control", `private, max-age=${ONE_YEAR}, immutable`);
+    res.setHeader("Vary", "Cookie");
+    res.setHeader("ETag", etag);
+    res.setHeader("Content-Type", mime.toLowerCase());
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+    if (bytes != null && Number.isSafeInteger(bytes) && bytes > 0) res.setHeader("Content-Length", String(bytes));
+    stream.pipe(res);
+    return res;
+  } catch (error) {
+    if (isImageStoreClientAbortError(error)) return res;
+    if (!isImageStoreUnavailableError(error)) {
+      preventCachingStoredImageFailure(res);
+      throw error;
+    }
+    preventCachingStoredImageFailure(res);
+    return res.status(503).end();
+  } finally {
+    req.off("aborted", abortRead);
+    res.off("close", abortOnEarlyClose);
+  }
 }
 
 /**
@@ -148,8 +426,10 @@ async function kioskViewerAllowed(req: Request): Promise<boolean> {
   return (await resolveKioskDevice(req)) != null;
 }
 
-/** يختار الـdata URL المطلوب من صفّ البنر حسب الفتحة (main-<i> أو mobile). */
-function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUrl: string | null }, slot: string): string | null {
+type BannerImageSlot = { url: string; sortOrder?: number; isActive?: boolean; effectiveFrom?: string | null; effectiveTo?: string | null };
+
+/** يختار الـdata URL المنشور المطلوب من صفّ البنر حسب الفتحة (main-<i> أو mobile). */
+function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUrl: string | null }, slot: string, today: string): string | null {
   if (slot === "mobile") return row.mobileImageUrl;
   const m = /^main-(\d+)$/.exec(slot);
   if (!m) return null;
@@ -159,7 +439,11 @@ function pickSlot(row: { imageUrl: string | null; images: unknown; mobileImageUr
   // مُهيّأة فالصورة الأحادية القديمة (imageUrl) عند الفهرس 0 حصراً.
   if (list.length) {
     const sorted = [...list]
-      .filter((x): x is { url: string; sortOrder?: number } => !!x && typeof (x as any).url === "string")
+      .filter((x): x is BannerImageSlot => {
+        if (!x || typeof x !== "object" || typeof (x as BannerImageSlot).url !== "string") return false;
+        const image = x as BannerImageSlot;
+        return image.isActive !== false && (!image.effectiveFrom || image.effectiveFrom <= today) && (!image.effectiveTo || image.effectiveTo >= today);
+      })
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     return sorted[idx]?.url ?? null;
   }
@@ -176,16 +460,25 @@ export function imageRouter(): Router {
     if (!db) return res.status(503).end();
 
     try {
+      const today = todayYmdBaghdad();
+      const branchId = await resolvePublicStorefrontBranchId();
+      if (branchId == null) return res.status(404).end();
       const row = (
         await db
           .select({ imageUrl: storeBanners.imageUrl, images: storeBanners.images, mobileImageUrl: storeBanners.mobileImageUrl })
           .from(storeBanners)
-          .where(eq(storeBanners.id, id))
+          .where(and(
+            eq(storeBanners.id, id),
+            eq(storeBanners.isActive, true),
+            or(isNull(storeBanners.effectiveFrom), sql`${storeBanners.effectiveFrom} <= ${today}`)!,
+            or(isNull(storeBanners.effectiveTo), sql`${storeBanners.effectiveTo} >= ${today}`)!,
+            or(isNull(storeBanners.branchId), eq(storeBanners.branchId, branchId))!,
+          ))
           .limit(1)
       )[0];
       if (!row) return res.status(404).end();
 
-      return sendImage(req, res, pickSlot(row, String(req.params.slot)), "public");
+      return sendImage(req, res, pickSlot(row, String(req.params.slot), today), "public");
     } catch (e) {
       logger.error({ err: e, bannerId: id }, "img: banner fetch failed");
       return res.status(500).end();
@@ -195,7 +488,8 @@ export function imageRouter(): Router {
   /**
    * صورة منتج — النقطة **علنية ومجهولة الهوية**، لذا الشرط أدناه ليس تجميلاً:
    *
-   * **البوّابة = رؤية المتجر على مستوى المنتج بالضبط** (`isActive && !isService && showInStore`)
+   * **البوّابة = رؤية المتجر على مستوى المنتج والصورة بالضبط**
+   * (`isActive && !isService && showInStore && reviewStatus=APPROVED`)
    * ⇒ صفر توسيعٍ لسطح الكشف: لا تُخدَم إلا صورةُ منتجٍ يعرضه `storefront` أصلاً لكل زائر.
    * `showInStore=false` قرارُ إخفاءٍ صريحٌ من المالك (لوحة hPanel) ⇒ تخطّيه هنا يجعل تخمين
    * عددٍ صحيحٍ كافياً لسحب صور ما أخفاه عمداً.
@@ -211,36 +505,54 @@ export function imageRouter(): Router {
    * وهو خلف مصادقة (مستخدم أو كوكي جهاز) بينما هذه النقطة مجهولة ⇒ جمهورٌ مختلف يستحقّ
    * نقطةً واعيةً بمصادقته، لا بوّابةً مُوسَّعة. يبقى الكشك على data URL حتى تُبنى تلك (راجع تقرير الجلسة).
    */
-  r.get("/product/:id", async (req, res) => {
+  const servePublicProduct = async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
+    // الرابط غير المسند لشركة متاح فقط في النشر الأحادي أو داخل جلسة شركة؛ المجهول في multi يستخدم /company/:code/.
+    if (isMultiTenantModeActive() && getCurrentCompanyId() == null) return res.status(404).end();
     const db = getDb();
     if (!db) return res.status(503).end();
 
     try {
       const row = (
         await db
-          .select({ url: productImages.url })
+          .select({
+            url: productImages.url,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            mime: productImages.mime,
+            bytes: productImages.bytes,
+            thumbDataUrl: productImages.thumbDataUrl,
+          })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))
           .where(
             and(
               eq(productImages.id, id),
+              eq(productImages.reviewStatus, "APPROVED"),
               eq(products.isActive, true),
               eq(products.isService, false),
-              eq(products.showInStore, true)
+              eq(products.showInStore, true),
+              eq(productImages.reviewStatus, "APPROVED")
             )
           )
           .limit(1)
       )[0];
       if (!row) return res.status(404).end();
 
+      if (row.objectKey) return await sendStoredProductImage(req, res, row, "public");
       return sendImage(req, res, row.url, "public");
     } catch (e) {
       logger.error({ err: e, productImageId: id }, "img: product image fetch failed");
       return res.status(500).end();
     }
-  });
+  };
+
+  // في تعدد الشركات يحمل الرابط العام رمز الشركة نفسه، لأن الزائر المجهول لا يملك session
+  // يمكن اشتقاق المستأجر منها. الوسيط يحجز اتصال الشركة ويغلف القراءة وسلسلة R2 في ALS.
+  r.get("/company/:companyCode/product/:id", companyCodeTenancyMiddleware(), servePublicProduct);
+  // توافق أحادي الشركة وروابط الإرث؛ في multi-tenant يفشل getDb مغلقاً بلا سياق ولا يتسرب مستأجر آخر.
+  r.get("/product/:id", servePublicProduct);
 
   /**
    * صورة منتجٍ لكشك المعرض — **خلف مصادقة** (مستخدم نظام أو كوكي جهاز)، بخلاف النقطة العلنية.
@@ -262,14 +574,26 @@ export function imageRouter(): Router {
 
       const row = (
         await db
-          .select({ url: productImages.url })
+          .select({
+            url: productImages.url,
+            objectKey: productImages.objectKey,
+            contentHash: productImages.contentHash,
+            mime: productImages.mime,
+            bytes: productImages.bytes,
+          })
           .from(productImages)
           .innerJoin(products, eq(products.id, productImages.productId))
-          .where(and(eq(productImages.id, id), eq(products.isActive, true), eq(products.isService, false)))
+          .where(and(
+            eq(productImages.id, id),
+            eq(productImages.reviewStatus, "APPROVED"),
+            eq(products.isActive, true),
+            eq(products.isService, false),
+          ))
           .limit(1)
       )[0];
       if (!row) return res.status(404).end();
 
+      if (row.objectKey) return await sendStoredProductImage(req, res, row, "private");
       return sendImage(req, res, row.url, "private");
     } catch (e) {
       logger.error({ err: e, productImageId: id }, "img: kiosk product image fetch failed");

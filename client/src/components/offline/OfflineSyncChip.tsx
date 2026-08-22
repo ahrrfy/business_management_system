@@ -37,7 +37,9 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
   // ش٥ — إعدادات الجهاز: مفتاح التجربة + PIN + التخزين الدائم + كود الجهاز.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [deviceCode, setDeviceCode] = useState("");
-  const [saleEnabled, setSaleEnabled] = useState(false);
+  // الافتراضي مفعَّل (قرار مالك ١٦/٨) — الحالة الأولية تعكسه قبل القراءة من الجهاز كي لا
+  // تومض الشارة «معطَّل» للحظة على جهازٍ يعمل فعلاً.
+  const [saleEnabled, setSaleEnabled] = useState(true);
   const [persisted, setPersisted] = useState<string | null>(null);
   const [profile, setProfile] = useState<OfflineProfile | null>(null);
   const [pinInput, setPinInput] = useState("");
@@ -213,14 +215,15 @@ export function OfflineSyncChip({ userRole }: { userRole?: string | null }) {
                 <span className="font-mono font-bold">{deviceCode || "—"}</span>
               </div>
 
-              {/* مفتاح التجربة — قرار إداري لكل جهاز (افتراضياً معطَّل). القراءة/التصفح دائماً متاحان. */}
+              {/* مفعَّلٌ تلقائياً على كل جهاز (قرار مالك ١٦/٨) — المفتاح استثناءٌ للتعطيل لا شرطٌ
+                  للتفعيل. القراءة/التصفح كانا وما زالا دائمَين. */}
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <p className="font-bold">البيع النقدي دون اتصال</p>
                   <p className="text-[10px] text-muted-foreground">
                     {elevated
-                      ? "تفعيل التجربة على هذا الجهاز (قرار المالك: جهاز واحد أولاً)"
-                      : "التفعيل قرار إداري — يبدّله المدير من حسابه على هذا الجهاز"}
+                      ? "مفعَّل تلقائياً على كل جهاز — عطّله هنا إن أردت استبعاد هذا الجهاز وحده"
+                      : "مفعَّل تلقائياً — تعطيله لهذا الجهاز قرار إداري يبدّله المدير من حسابه"}
                   </p>
                 </div>
                 <button

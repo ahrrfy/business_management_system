@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { priceDecimalsFor, type PriceCurrency } from "@shared/moneyPrecision";
 
 /** Client-side money helpers for display/preview only. The server recomputes authoritatively
  *  (server/services/money.ts). We still use decimal.js here to avoid float drift in previews
@@ -9,6 +10,20 @@ export const D = (v: string | number | null | undefined) => new Decimal(v == nul
 
 /** Round to 2 dp, HALF_UP. */
 export const round2 = (v: Decimal) => v.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+/**
+ * تسلسل **سعر وحدةٍ** بدقّة عملته (`shared/moneyPrecision`): الدينار منزلتان والدولار أربع.
+ *
+ * ⛔ لا تستعمل `round2()` لسعر الوحدة في حمولات الشراء: كانت الشاشات تُرسل
+ * `round2(D(price)).toFixed(2)` فتحوّل سعر الدولار 3.4566 إلى 3.46 **صامتاً** — قصٌّ يُنقص ذمّة
+ * المورّد بحجم الكمية ويُسمّم تكلفة الصنف (WAVG). الحقل نفسه يحدّ المنازل أثناء الكتابة، فهذه
+ * الدالّة تسلسلةٌ بلا فقدٍ لما دخل فعلاً (والخادم يرفض ما تجاوز دقّة العملة بدل تقريبه).
+ * المبالغُ الأخرى (إجماليات/دفعات/خصومات) تبقى `round2` — أعمدتها `decimal(15,2)`.
+ */
+export const toUnitPriceStr = (v: string | number | null | undefined, currency: PriceCurrency) => {
+  const dp = priceDecimalsFor(currency);
+  return D(v).toDecimalPlaces(dp, Decimal.ROUND_HALF_UP).toFixed(dp);
+};
 
 /** unitPrice × quantity → 2dp string. */
 export const lineTotal = (unitPrice: string | number, quantity: string | number) =>

@@ -12,6 +12,12 @@ import { getDb } from "../../db";
 import { postEntry } from "../ledgerService";
 import { money } from "../money";
 import { postOpeningEntry, upsertOpeningEntry } from "../openingBalance";
+import {
+  POSTING_POLICY_HASH,
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "../accounting/postingEngine";
 import { withTx } from "../tx";
 import { truncateTables } from "./__testUtils__";
 
@@ -35,9 +41,42 @@ async function reset() {
 
 async function seedBase(mode: "OFF" | "SHADOW" | "ACTIVE") {
   const d = db();
-  await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.customers).values({ id: 1, name: "عميل اختبار", defaultPriceTier: "RETAIL", currentBalance: "0" });
-  await d.insert(s.doubleEntrySettings).values({ id: 1, mode });
+  await d
+    .insert(s.branches)
+    .values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
+  await d.insert(s.users).values({
+    id: 1,
+    openId: "shadow-hook-admin",
+    name: "مدير الاختبار",
+    role: "admin",
+    loginMethod: "local",
+    branchId: 1,
+  });
+  await d
+    .insert(s.customers)
+    .values({
+      id: 1,
+      name: "عميل اختبار",
+      defaultPriceTier: "RETAIL",
+      currentBalance: "0",
+    });
+  await d.insert(s.doubleEntrySettings).values({
+    id: 1,
+    mode,
+    shadowCycleId: mode === "OFF" ? null : "shadow-hook-cycle",
+    ...(mode === "ACTIVE"
+      ? {
+          shadowOpeningHash: "a".repeat(64),
+          policyApprovalReference: "SHADOW-HOOK-POLICY",
+          policyApprovalPolicyHash: POSTING_POLICY_HASH,
+          policyApprovalCycleId: "shadow-hook-cycle",
+          policyApprovalOpeningHash: "a".repeat(64),
+          policyAccountantName: "محاسب الاختبار",
+          policyApprovedAt: new Date("2026-08-01T00:00:00.000Z"),
+          policyApprovedBy: 1,
+        }
+      : {}),
+  });
 }
 
 /** كل القيود المزدوجة مع أسطرها، بترتيب الإدراج. */
@@ -46,10 +85,16 @@ async function journals() {
   const lines = await db().select().from(s.journalLines);
   return heads.map((h) => ({
     status: h.status,
+    cycleId: h.cycleId,
+    postingProfile: h.postingProfile,
     reason: h.unmappedReason,
     lines: lines
       .filter((l) => Number(l.journalId) === Number(h.id))
-      .map((l) => ({ role: l.role, debit: Number(l.debit), credit: Number(l.credit) })),
+      .map((l) => ({
+        role: l.role,
+        debit: Number(l.debit),
+        credit: Number(l.credit),
+      })),
   }));
 }
 
@@ -77,7 +122,7 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
     expect(entries).toHaveLength(1);
   });
 
-  it("٢) SHADOW ⇒ بيعٌ يُنتج قيداً متوازناً (AR / مبيعات / COGS / مخزون)", async () => {
+  it("٢) SHADOW ⇒ SALE بلا intent canonical يحفظ المصدر ويسجّل فجوة", async () => {
     await seedBase("SHADOW");
     await withTx(async (tx) => {
       await postEntry(tx, {
@@ -91,17 +136,18 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
     });
 
     const [j] = await journals();
-    expect(j.status).toBe("POSTED");
-    const dr = j.lines.reduce((a, l) => a + l.debit, 0);
-    const cr = j.lines.reduce((a, l) => a + l.credit, 0);
-    expect(dr).toBe(cr);
-    expect(dr).toBe(160); // AR 100 + COGS 60
-    expect(j.lines.find((l) => l.role === "AR")?.debit).toBe(100);
-    expect(j.lines.find((l) => l.role === "SALES_STATIONERY")?.credit).toBe(100);
-    expect(j.lines.find((l) => l.role === "INVENTORY")?.credit).toBe(60);
+    expect(j.status).toBe("UNMAPPED");
+    expect(j.reason).toContain("canonical");
+    const [source] = await db().select().from(s.accountingEntries);
+    expect(source).toMatchObject({
+      postingCycleId: "shadow-hook-cycle",
+      postingProfile: null,
+      postingIntentJson: null,
+      postingIntentHash: null,
+    });
   });
 
-  it("٣) قبضٌ بالبطاقة ⇒ CARD_BANK لا CASH (وإلّا ضُخّمت الخزينة وصُفِّر البنك)", async () => {
+  it("٣) SHADOW ⇒ PAYMENT_IN بلا intent canonical فجوة ولو كانت طريقة الدفع معروفة", async () => {
     await seedBase("SHADOW");
     await withTx(async (tx) => {
       await postEntry(tx, {
@@ -114,10 +160,9 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
     });
 
     const [j] = await journals();
-    expect(j.status).toBe("POSTED");
-    expect(j.lines.find((l) => l.role === "CARD_BANK")?.debit).toBe(75);
-    expect(j.lines.some((l) => l.role === "CASH")).toBe(false);
-    expect(j.lines.find((l) => l.role === "AR")?.credit).toBe(75);
+    expect(j.status).toBe("UNMAPPED");
+    expect(j.reason).toContain("canonical");
+    expect(j.lines).toHaveLength(0);
   });
 
   it("٤) رصيد اتصالات (TELECOM) ⇒ فجوةٌ موسومة لا تخمين — ليس نقداً ولا بنكاً", async () => {
@@ -134,19 +179,24 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
 
     const [j] = await journals();
     expect(j.status).toBe("UNMAPPED");
-    expect(j.reason).toContain("TELECOM");
+    expect(j.reason).toContain("canonical");
     expect(j.lines).toHaveLength(0);
   });
 
   it("٥) قبضٌ بلا طريقةِ دفعٍ ⇒ فجوة، لا افتراضَ نقدٍ صامت", async () => {
     await seedBase("SHADOW");
     await withTx(async (tx) => {
-      await postEntry(tx, { entryType: "PAYMENT_IN", branchId: 1, customerId: 1, amount: money("30.00") });
+      await postEntry(tx, {
+        entryType: "PAYMENT_IN",
+        branchId: 1,
+        customerId: 1,
+        amount: money("30.00"),
+      });
     });
 
     const [j] = await journals();
     expect(j.status).toBe("UNMAPPED");
-    expect(j.reason).toContain("غير مُمرَّرة");
+    expect(j.reason).toContain("canonical");
   });
 
   it("٦) نوعٌ غير مُخطَّط (GIFT_OUT) ⇒ العملية تنجح والفجوة تُسجَّل (س٣ — الاختبار الحاسم)", async () => {
@@ -167,7 +217,196 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
     expect(j.reason).toContain("GIFT_OUT");
   });
 
-  it("٧) تراجُع المعاملة يتراجع معه القيد المزدوج ⇒ لا قيدَ يتيم (س٤)", async () => {
+  it("٧) ACTIVE ⇒ نقص الخريطة يفشل مغلقاً ويرجع القيد المبسّط داخل المعاملة", async () => {
+    await seedBase("ACTIVE");
+    await expect(
+      withTx(async (tx) => {
+        await postEntry(tx, {
+          entryType: "GIFT_OUT",
+          branchId: 1,
+          cost: money("20.00"),
+          profit: money("-20.00"),
+        });
+      }),
+    ).rejects.toThrow();
+
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await journals()).toEqual([]);
+  });
+
+  it("٨) ACTIVE ⇒ بيانات دلو النقد الناقصة تفشل مغلقاً ولا تتحول إلى فجوة", async () => {
+    await seedBase("ACTIVE");
+    await expect(
+      withTx(async (tx) => {
+        await postEntry(tx, {
+          entryType: "PAYMENT_IN",
+          branchId: 1,
+          customerId: 1,
+          amount: money("30.00"),
+        });
+      }),
+    ).rejects.toThrow();
+
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await journals()).toEqual([]);
+  });
+
+  it("٨ مكرر) ACTIVE يرفض اعتماد سياسة قديم قبل إدراج المصدر", async () => {
+    await seedBase("ACTIVE");
+    await db()
+      .update(s.doubleEntrySettings)
+      .set({ policyApprovalPolicyHash: "f".repeat(64) })
+      .where(eq(s.doubleEntrySettings.id, 1));
+
+    await expect(
+      withTx(async (tx) => {
+        await postEntry(tx, {
+          entryType: "GIFT_OUT",
+          branchId: 1,
+          cost: money("20.00"),
+          profit: money("-20.00"),
+          postingIntent: createPostingIntent("GIFT_OUT_PROMO", "GIFT_OUT", [
+            debitLine("GIFTS_PROMO", "20.00"),
+            creditLine("INVENTORY", "20.00"),
+          ]),
+        });
+      }),
+    ).rejects.toThrow("اعتماد المحاسب");
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await journals()).toEqual([]);
+  });
+
+  it.each([
+    ["دورة أخرى", { policyApprovalCycleId: "other-cycle" }],
+    ["بصمة افتتاح أخرى", { policyApprovalOpeningHash: "b".repeat(64) }],
+  ] as const)(
+    "٨ مكرر) ACTIVE يرفض اعتماد %s قبل إدراج المصدر",
+    async (_label, patch) => {
+      await seedBase("ACTIVE");
+      await db()
+        .update(s.doubleEntrySettings)
+        .set(patch)
+        .where(eq(s.doubleEntrySettings.id, 1));
+      await expect(
+        withTx(async (tx) => {
+          await postEntry(tx, {
+            entryType: "GIFT_OUT",
+            branchId: 1,
+            cost: money("20.00"),
+            profit: money("-20.00"),
+            postingIntent: createPostingIntent("GIFT_OUT_PROMO", "GIFT_OUT", [
+              debitLine("GIFTS_PROMO", "20.00"),
+              creditLine("INVENTORY", "20.00"),
+            ]),
+          });
+        }),
+      ).rejects.toThrow("اعتماد المحاسب");
+      expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    },
+  );
+
+  it("٩) SHADOW ⇒ غياب الدليل يبقى أفضل جهد ويسجّل فجوةً مرئية", async () => {
+    await seedBase("SHADOW");
+    await withTx(async (tx) => {
+      await postEntry(tx, {
+        entryType: "SALE",
+        branchId: 1,
+        customerId: 1,
+        revenue: money("-10.00"),
+        amount: money("-10.00"),
+      });
+    });
+
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(1);
+    const [journal] = await journals();
+    expect(journal.status).toBe("UNMAPPED");
+    expect(journal.reason).toContain("canonical");
+  });
+
+  it("١٠) PostingIntent يغلب الاشتقاق القديم ويحفظ profile وcycleId", async () => {
+    await seedBase("SHADOW");
+    await withTx(async (tx) => {
+      await postEntry(tx, {
+        entryType: "GIFT_OUT",
+        branchId: 1,
+        cost: money("20.00"),
+        profit: money("-20.00"),
+        postingIntent: createPostingIntent("GIFT_OUT_PROMO", "GIFT_OUT", [
+          debitLine("GIFTS_PROMO", "20.00"),
+          creditLine("INVENTORY", "20.00"),
+        ]),
+      });
+    });
+
+    const [journal] = await journals();
+    expect(journal.status).toBe("POSTED");
+    expect(journal.cycleId).toBe("shadow-hook-cycle");
+    expect(journal.postingProfile).toBe("GIFT_OUT_PROMO");
+    expect(journal.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "GIFTS_PROMO", debit: 20 }),
+        expect.objectContaining({ role: "INVENTORY", credit: 20 }),
+      ]),
+    );
+  });
+
+  it("١١) intent القبض الصريح للمحفظة لا يمر بتخمين cashRole القديم", async () => {
+    await seedBase("SHADOW");
+    const sourceComponents = {
+      roleDebits: { PAYMENT_WALLET: "30.00" },
+      roleCredits: { AR: "30.00" },
+    } as const;
+    await withTx(async (tx) => {
+      await postEntry(tx, {
+        entryType: "PAYMENT_IN",
+        branchId: 1,
+        customerId: 1,
+        amount: money("30.00"),
+        paymentMethod: "WALLET",
+        postingIntent: createPostingIntent(
+          "PAYMENT_IN_CUSTOMER",
+          "PAYMENT_IN",
+          [
+            debitLine("PAYMENT_WALLET", "30.00"),
+            creditLine("AR", "30.00"),
+          ],
+          sourceComponents,
+        ),
+        postingSourceComponents: sourceComponents,
+      });
+    });
+
+    const [journal] = await journals();
+    expect(journal.status).toBe("POSTED");
+    expect(journal.lines.find((line) => line.role === "PAYMENT_WALLET")?.debit).toBe(30);
+    const [source] = await db().select().from(s.accountingEntries);
+    expect(source.postingProfile).toBe("PAYMENT_IN_CUSTOMER");
+    expect(source.postingIntentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(source.postingCycleId).toBe("shadow-hook-cycle");
+  });
+
+  it("١٢) DELIVERY_DISPATCH_COD يكتب رأس MEMO مرتبطاً بلا أسطر", async () => {
+    await seedBase("SHADOW");
+    await withTx(async (tx) => {
+      await postEntry(tx, {
+        entryType: "DELIVERY_DISPATCH",
+        branchId: 1,
+        amount: money("75.00"),
+        postingIntent: createPostingIntent(
+          "DELIVERY_DISPATCH_COD",
+          "DELIVERY_DISPATCH",
+          [],
+        ),
+      });
+    });
+
+    const [journal] = await journals();
+    expect(journal.status).toBe("MEMO");
+    expect(journal.postingProfile).toBe("DELIVERY_DISPATCH_COD");
+    expect(journal.lines).toEqual([]);
+  });
+
+  it("١٣) تراجُع المعاملة يتراجع معه القيد المزدوج ⇒ لا قيدَ يتيم (س٤)", async () => {
     await seedBase("SHADOW");
     await expect(
       withTx(async (tx) => {
@@ -186,42 +425,66 @@ describe("shadowHook — خطّاف الدفتر المزدوج (ش١)", () => {
     expect(await journals()).toEqual([]);
   });
 
-  it("٨) الرصيد الافتتاحيّ يُنتج قيداً مزدوجاً (يُثبت مرورَه عبر postEntry — ش٠)", async () => {
+  it("١٤) يمنع إنشاء مصدر OPENING جديد بعد بدء SHADOW", async () => {
     await seedBase("SHADOW");
-    await withTx(async (tx) => {
-      await postOpeningEntry(tx, "CUSTOMER", 1, "500.00");
-    });
-
-    const [j] = await journals();
-    expect(j.status).toBe("POSTED");
-    expect(j.lines.find((l) => l.role === "AR")?.debit).toBe(500);
-    expect(j.lines.find((l) => l.role === "OPENING_EQUITY")?.credit).toBe(500);
-  });
-
-  it("٩) تعديل مبلغ الرصيد الافتتاحيّ يعيد بناء القيد ⇒ لا قيدَ بائتٌ يخالف الدفتر", async () => {
-    await seedBase("SHADOW");
-    await withTx(async (tx) => {
-      await postOpeningEntry(tx, "CUSTOMER", 1, "500.00");
-    });
-    await withTx(async (tx) => {
-      await upsertOpeningEntry(tx, "CUSTOMER", 1, "800.00");
-    });
-
-    const all = await journals();
-    expect(all).toHaveLength(1); // لا ازدواج
-    expect(all[0].lines.find((l) => l.role === "AR")?.debit).toBe(800);
-  });
-
-  it("١٠) حذف الرصيد الافتتاحيّ (تصفيره) يجرف قيده المزدوج", async () => {
-    await seedBase("SHADOW");
-    await withTx(async (tx) => {
-      await postOpeningEntry(tx, "CUSTOMER", 1, "500.00");
-    });
-    await withTx(async (tx) => {
-      await upsertOpeningEntry(tx, "CUSTOMER", 1, "0.00");
-    });
+    await expect(
+      withTx(async (tx) => {
+        await postOpeningEntry(tx, "CUSTOMER", 1, "500.00");
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    expect(await journals()).toEqual([]);
+  });
+
+  it("١٥) يمنع تعديل مصدر OPENING تاريخي في SHADOW ويبقي قيمته", async () => {
+    await seedBase("OFF");
+    await withTx(async (tx) => {
+      await postOpeningEntry(tx, "CUSTOMER", 1, "500.00");
+    });
+    await db()
+      .update(s.doubleEntrySettings)
+      .set({ mode: "SHADOW", shadowCycleId: "shadow-hook-cycle" })
+      .where(eq(s.doubleEntrySettings.id, 1));
+    await expect(
+      withTx(async (tx) => {
+        await upsertOpeningEntry(tx, "CUSTOMER", 1, "800.00");
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const [source] = await db().select().from(s.accountingEntries);
+    expect(source.amount).toBe("500.00");
+    expect(await journals()).toEqual([]);
+  });
+
+  it("١٦) يمنع حذف مصدر OPENING تاريخي في ACTIVE ويبقي قيمته", async () => {
+    await seedBase("OFF");
+    await withTx(async (tx) => {
+      await postOpeningEntry(tx, "CUSTOMER", 1, "500.00");
+    });
+    await db()
+      .update(s.doubleEntrySettings)
+      .set({
+        mode: "ACTIVE",
+        shadowCycleId: "shadow-hook-cycle",
+        shadowOpeningHash: "a".repeat(64),
+        policyApprovalReference: "SHADOW-HOOK-POLICY",
+        policyApprovalPolicyHash: POSTING_POLICY_HASH,
+        policyApprovalCycleId: "shadow-hook-cycle",
+        policyApprovalOpeningHash: "a".repeat(64),
+        policyAccountantName: "محاسب الاختبار",
+        policyApprovedAt: new Date("2026-08-01T00:00:00.000Z"),
+        policyApprovedBy: 1,
+      })
+      .where(eq(s.doubleEntrySettings.id, 1));
+    await expect(
+      withTx(async (tx) => {
+        await upsertOpeningEntry(tx, "CUSTOMER", 1, "0.00");
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    const [source] = await db().select().from(s.accountingEntries);
+    expect(source.amount).toBe("500.00");
     expect(await journals()).toEqual([]);
   });
 });

@@ -47,10 +47,13 @@ export async function assertCreditLimit(
   const limit = money(rawLimit);
 
   // 0 صريح ⇒ حظر كامل للبيع الآجل لهذا العميل.
+  // ١٩/٨ (بلاغ حيّ من المالك): كانت الرسالة «تجاوز حدّ الائتمان» — وهي **خاطئة دلالياً**
+  // في هذه الحالة: لا تجاوزَ هنا، بل العميل غير مصرَّحٍ له بالآجل أصلاً (وهذا هو الافتراضي
+  // لكل عميلٍ جديد بقرار المالك). فيقف الموظّف أمام رفضٍ لا يفهم سببه ولا مخرجه.
   if (limit.isZero()) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "تجاوز حدّ الائتمان",
+      message: "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
     });
   }
 
@@ -58,9 +61,12 @@ export async function assertCreditLimit(
   const balance = money(rows[0].currentBalance ?? "0");
   const projected = balance.plus(add);
   if (projected.gt(limit)) {
+    // الرسالة تحمل الأرقام الثلاثة: ما عليه الآن، وما يضيفه هذا البيع، وسقفه — فيقرّر
+    // الموظّف فوراً (يحصّل الفرق أم يستأذن المدير) بدل رفضٍ صامت يعيد المحاولة نفسها.
+    const available = limit.minus(balance);
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "تجاوز حدّ الائتمان",
+      message: `تجاوز حدّ الائتمان: على العميل ${balance.toFixed(2)} وهذا البيع يضيف ${add.toFixed(2)}، وسقفه ${limit.toFixed(2)} — المتاح ${available.lte(0) ? "0.00" : available.toFixed(2)}. حصّل الفرق أو ارفع الحدّ من ملف العميل`,
     });
   }
 }

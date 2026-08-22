@@ -5,11 +5,8 @@ import { type ImageItem } from "@/components/form/ImageUploader";
  * بمطابقةٍ بالمعرّف كي يبقى الحفظ اقتصاديّاً وآمناً:
  *   • القراءة (hydrate): كلّ صورة خادم ⇒ عنصر رافع؛ `dataUrl=url` (data URL يُعرَض مباشرةً في الرافع)،
  *     و`id` موسومٌ ببادئة القاعدة ليُطابَق لاحقاً عند الحفظ. وجود `url` = علامةُ «قائمة غير متغيّرة».
- *   • الكتابة (build payload): الصورة غير المتغيّرة تُرسَل **بمعرّفها فقط** (بلا بايتات ⇒ لا تكرار للشبكة)،
- *     والجديدة/المستبدَلة تُرسَل ببايتاتها (`dataUrl`). الترتيب = ترتيب المصفوفة.
- *
- * الاستوديو (ImageStudioUploader.accept) يمسح `url` ويستبدل `dataUrl` عند المعالجة ⇒ تُرسَل بايتاتها الجديدة
- * وتُحدَّث في المكان (يصون `productImages.id`). يشترك فيه محرّرا المنتج (المتغيّرات + السلعة البسيطة).
+ *   • الكتابة (build payload): صور القاعدة غير المتغيّرة فقط تُرسَل **بمعرّفها وmetadata بلا بايتات**.
+ *     أي عنصر جديد/مستبدَل يُستبعَد fail-closed؛ النشر الجديد حصراً عبر Product Studio/R2.
  */
 
 /** بادئة معرّف صورةٍ قائمةٍ في القاعدة داخل حالة الرافع — تمييزها عن الصور المرفوعة حديثاً (img_…). */
@@ -23,7 +20,7 @@ export interface ServerProductImage {
   sortOrder: number;
 }
 
-/** عنصر حمولة صورة منتج للتعديل — يطابق editImageSchema الخادميّ (id مملوك ⇒ يُبقى؛ url ⇒ بايتات جديدة). */
+/** عنصر حمولة صورة منتج للتعديل — id مملوك وmetadata فقط؛ لا بايتات خارج Product Studio. */
 export interface ProductImagePayloadItem {
   id?: number;
   url?: string;
@@ -42,20 +39,19 @@ export function hydrateProductImages(images: ServerProductImage[] | undefined): 
 }
 
 /**
- * يبني حمولة الصور بمطابقة المعرّف. القائمة غير المتغيّرة (لها معرّف قاعدة و`url` باقٍ) تُرسَل بمعرّفها بلا
- * بايتات؛ الجديدة أو المستبدَلة (استوديو مسح `url`) تُرسَل ببايتاتها (`dataUrl`). المعرّف المُشوَّه يُعامَل جديداً.
+ * يبني حمولة metadata بمطابقة المعرّف. لا تدخل الحمولة إلا صورة قاعدة ذات URL أصلي باقٍ؛
+ * الجديدة والمستبدَلة والمعرّفات المشوّهة تُستبعَد، فلا يستطيع نموذج الكتالوج تسريب data URL.
  */
 export function buildProductImagesPayload(items: ImageItem[]): ProductImagePayloadItem[] {
-  return items.map((it, idx) => {
+  return items.flatMap((it) => {
     const raw = it.id.startsWith(DB_IMG_PREFIX) ? Number(it.id.slice(DB_IMG_PREFIX.length)) : NaN;
     const dbId = Number.isInteger(raw) && raw > 0 ? raw : undefined;
-    // url باقٍ ⇒ لم تُستبدَل بايتاتها (الاستوديو يمسح url عند الاستبدال، والرفع الجديد بلا url) ⇒ نرسل المعرّف فقط.
-    const unchanged = dbId != null && !!it.url;
-    return {
+    if (dbId == null || !it.url) return [];
+    return [{
       id: dbId,
-      url: unchanged ? undefined : it.dataUrl,
+      url: undefined,
       isPrimary: it.isPrimary,
-      sortOrder: idx,
-    };
-  });
+      sortOrder: 0,
+    }];
+  }).map((item, sortOrder) => ({ ...item, sortOrder }));
 }

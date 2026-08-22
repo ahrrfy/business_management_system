@@ -1,15 +1,21 @@
 import { TRPCError } from "@trpc/server";
+import { failOpaque } from "../lib/opaqueFailure";
 import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import {
   auditLogs,
   customers,
+  invoices,
   deliveryConsignments,
   deliveryParties,
   productVariants,
   products,
   users,
+  receptionDrafts,
+  serviceTypes,
+  shifts,
+  tasks,
   workOrderImages,
   workOrderMaterials,
   workOrders,
@@ -17,17 +23,28 @@ import {
 import { getDb } from "../db";
 import {
   cancelWorkOrder,
+  reverseServiceInvoice,
   claimWorkOrder,
   createWorkOrder,
   deliverWorkOrder,
   markWorkOrderReady,
+  setWorkOrderMaterials,
   startWorkOrder,
   updateWorkOrder,
   updateWorkOrderDeliveryMethod,
 } from "../services/workOrderService";
+import {
+  approveWorkOrderCancellationRefund,
+  getWorkOrderCancellationRefundStatus,
+  listPendingWorkOrderCancellationRefunds,
+} from "../services/workOrder/cancel";
+import { reverseWorkOrderDelivery } from "../services/workOrder/reverseDelivery";
 import { logAudit } from "../services/auditService";
 import { verifyManagerApproval } from "./saleRouter";
-import { canSeeCostForUser, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
+import { reassignWorkOrder, releaseWorkOrder } from "../services/workOrder/lifecycle";
+import { requestDesignApproval } from "../services/workOrder/approval";
+import { setWorkOrderDesign } from "../services/workOrder/design";
+import { canSeeCostForUser, ownerProcedure, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { hasModuleAccess } from "@shared/permissions";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
@@ -44,6 +61,8 @@ import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
 
 const workOrderCreatorUser = alias(users, "workOrderCreatorUser");
+/** محرّر البنود الأخير (0199) — اسمٌ يُعرَض بجانب وسم «مُعدَّل» فيُعرَف من غيّر ماذا. */
+const materialsEditorUser = alias(users, "materialsEditorUser");
 const workOrderCreatorDisplayName = sql<string | null>`COALESCE(
   NULLIF(TRIM(${workOrderCreatorUser.name}), ''),
   NULLIF(TRIM(${workOrderCreatorUser.username}), ''),
@@ -96,7 +115,9 @@ const receptionCheckoutSchema = z.object({
   branchId: z.number().int().positive(),
   shiftId: z.number().int().positive(),
   customerId: z.number().int().positive().nullish(),
-  paymentMethod: receptionPaymentMethod,
+  // صدق طريقة الدفع (١٨/٨): تلزم فقط حين يُقبض مالٌ الآن (حارس superRefine أدناه). سلّةٌ
+  // آجلة/COD/مموَّلة بعربون محتجَز تمرّ بلا طريقة فتُختَم الفاتورة NULL = «آجل» بالاشتقاق.
+  paymentMethod: receptionPaymentMethod.nullish(),
   paymentReference: z.string().trim().max(100).nullish(),
   paidAmount: nonNegMoneyString.nullish(),
   clientRequestId: z.string().min(1).max(60),
@@ -169,9 +190,18 @@ const receptionCheckoutSchema = z.object({
       message: "أوامر الشغل تتطلب عميلاً محفوظاً مع اسم ورقم هاتف",
     });
   }
+  // صدق طريقة الدفع: قبضٌ موجب بلا طريقة = إدخالٌ ناقص (والعكس — طريقةٌ بلا قبض — تُهمَل
+  // في الخدمة بدل أن تُختَم كذباً على الفاتورة).
+  if (money(input.paidAmount ?? "0").gt(0) && !input.paymentMethod) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["paymentMethod"],
+      message: "حدّد طريقة القبض للمبلغ المستلم",
+    });
+  }
   for (let index = 0; index < input.workOrders.length; index += 1) {
     const order = input.workOrders[index];
-    if (money(order.deposit ?? "0").gt(0) && order.paymentMethod !== input.paymentMethod) {
+    if (money(order.deposit ?? "0").gt(0) && (order.paymentMethod ?? null) !== (input.paymentMethod ?? null)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workOrders", index, "paymentMethod"], message: "طريقة دفع العربون لا تطابق طريقة دفع العملية" });
     }
   }
@@ -251,10 +281,18 @@ const woListFilters = {
   deliveredTo: z.string().optional(),
   /** فلتر الفنّي المسؤول — لا يوسّع النطاق: عزل الفرع/الموظف القائم يبقى حاكماً فوقه. */
   assignedTo: z.number().int().positive().optional(),
+  /**
+   * **«لم يحضر أصحابها»** (ش٤): أوامرُ `READY` مضى على **جاهزيّتها** كذا يوماً بلا تسليم.
+   *
+   * ولحظةُ الجاهزية **مشتقّة** لا عمود: `workStartedAt + workSeconds` — صحيحةٌ لأنّ
+   * `markWorkOrderReady` هو الكاتبُ الوحيد لـ`workSeconds` (يحسبه `TIMESTAMPDIFF` من البدء
+   * حتى لحظته). فلا عمودَ رابعَ يُضاف ولا كاتبَ جديدَ ينجرف.
+   */
+  awaitingPickupDays: z.number().int().min(1).max(365).optional(),
 };
 
 /** يحوّل فلاتر q/from/to/deliveredFrom/deliveredTo/assignedTo إلى شروط SQL — q على رقم الأمر/العنوان/اسم العميل (join العملاء قائم). */
-function buildWoFilterConds(input: { q?: string; from?: string; to?: string; deliveredFrom?: string; deliveredTo?: string; assignedTo?: number } | undefined): SQL[] {
+function buildWoFilterConds(input: { q?: string; from?: string; to?: string; deliveredFrom?: string; deliveredTo?: string; assignedTo?: number; awaitingPickupDays?: number } | undefined): SQL[] {
   const conds: SQL[] = [];
   const search = input?.q?.trim();
   if (search) {
@@ -287,6 +325,16 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
     }
   }
   if (input?.assignedTo != null) conds.push(eq(workOrders.assignedTo, input.assignedTo));
+  if (input?.awaitingPickupDays != null) {
+    // الأمرُ جاهزٌ فعلاً، ولحظةُ جاهزيّته أقدمُ من العتبة. `workSeconds IS NULL` تُستبعَد صراحةً:
+    // جاهزيّةٌ بلا مؤقّت (بياناتٌ قديمة) لا يُعرف عمرُها ⇒ ادّعاؤها «متأخّرة» كذبٌ، وادّعاؤها
+    // «حديثة» كذبٌ آخر — إخراجُها من الفلتر هو الصادق، وتبقى مرئيّةً في القائمة بلا فلتر.
+    conds.push(
+      sql`${workOrders.status} = 'READY' AND ${workOrders.workStartedAt} IS NOT NULL AND ${workOrders.workSeconds} IS NOT NULL
+          AND DATE_ADD(${workOrders.workStartedAt}, INTERVAL ${workOrders.workSeconds} SECOND)
+              < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ${input.awaitingPickupDays} DAY)`,
+    );
+  }
   return conds;
 }
 
@@ -297,7 +345,25 @@ function buildWoFilterConds(input: { q?: string; from?: string; to?: string; del
  */
 function canSeeDeliveryForUser(user: { role: string; permissionsOverride?: unknown }): boolean {
   if (user.role === "admin") return true;
-  return hasModuleAccess(user.role, (user.permissionsOverride as any) ?? null, "store", "READ");
+  const override = (user.permissionsOverride as any) ?? null;
+  if (hasModuleAccess(user.role, override, "store", "READ")) return true;
+  // ١٨/٨ (بلاغ المالك: «لا تظهر… ولا حتى لفنّي المطبعة»): **مشغّل المحطة** (`workorders:FULL`)
+  // هو من يُسنِد الطلب للمندوب فعلاً؛ إخفاءُ حالةِ ما أسنده عنه ليس تشديداً بل عمًى تشغيليّ —
+  // يرى الأمر «جاهز» ولا يعلم أنّه خرج، فيسحبه في الكانبان أو يحاول إسناده ثانيةً.
+  // النطاق هنا **معلومةٌ مضمّنة** (حالة/جهة/رقم الإرسالية) لا شاشةُ DeliveryHub وتسوياتها؛
+  // فتحُها لمن يشغّل الإسناد يوافق الحاجة بلا توسيع وحدة المتجر. قالب `print_operator` بلا
+  // مفتاح `store` إطلاقاً وكان يسقط إلى NONE صامتاً.
+  return hasModuleAccess(user.role, override, "workorders", "FULL");
+}
+
+/**
+ * مشغّلُ المحطّة فعلاً (`workorders:FULL`) — بوّابةُ «طابور الفرع». دالّةٌ مستقلّة عن
+ * `canSeeDeliveryForUser` عمداً رغم تطابقهما اليوم: هذه تُجيب «هل يعمل في المحطّة؟»
+ * وتلك تُجيب «هل يرى حالة التوصيل؟» — ودمجُهما يجعل توسيعَ إحداهما يفتح الأخرى صامتاً.
+ */
+function workOrdersFullAccess(user: { role: string; permissionsOverride?: unknown }): boolean {
+  if (user.role === "admin") return true;
+  return hasModuleAccess(user.role, (user.permissionsOverride as never) ?? null, "workorders", "FULL");
 }
 
 export const workOrderRouter = router({
@@ -319,6 +385,16 @@ export const workOrderRouter = router({
           assignedToMe: z.boolean().optional(),
           /** أوامر غير مُسنَدة لأحد (الطابور العام المشترك). */
           unassignedOnly: z.boolean().optional(),
+          /**
+           * **طابور الفرع** (قرار المالك ١٩/٨): الشاشات التشغيلية — الكانبان وطابور المحطّة —
+           * تعرض أوامر الفرع كلّها لا ما أنشأه الموظّف وحده. موظّفةُ استقبالٍ لا ترى طلبات
+           * زميلتها كانت تعجز عن الردّ على زبونٍ سألها عن طلبٍ استقبلته الوردية السابقة.
+           *
+           * يُسقط **عزل الموظّف وحده**؛ وعزلُ الفرع يبقى حاكماً دائماً (`scopedBranchId`).
+           * وبوّابته `workorders:FULL` — أي مَن يعمل في المحطّة فعلاً، لا كل من يقرأ الوحدة.
+           * والعزل الماليّ (فواتيره/مبيعاته/تقاريره) **لا يتأثّر**: مسارُه `sales` لا هذا.
+           */
+          branchQueue: z.boolean().optional(),
           ...woListFilters,
           // keyset للتصدير الكامل: id < cursor مع الحفاظ على الشكل المُعاد مصفوفةً صرفة
           // (WorkOrderStation وشاشات أخرى تعتمد RouterOutputs["workOrders"]["list"] مصفوفة).
@@ -344,8 +420,10 @@ export const workOrderRouter = router({
       // حين unassignedOnly=true ⇒ لا يكشف سجلَّ أيّ موظفٍ آخر (الأمر بلا مالك بحكم التعريف).
       // سياسة عزل سجلّات الموظف (٢٤/٦) تبقى كما هي لكل ما عداه.
       const sharedQueue = input?.unassignedOnly === true;
+      // طابور الفرع: يلزمه `workorders:FULL` صراحةً — لا يكفي أن يطلبه العميل.
+      const branchQueue = input?.branchQueue === true && workOrdersFullAccess(ctx.user);
       const ownerCond =
-        ctx.scopedOwnerId != null && !sharedQueue
+        ctx.scopedOwnerId != null && !sharedQueue && !branchQueue
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
       const extra = [
@@ -388,6 +466,9 @@ export const workOrderRouter = router({
           // ⇐ مُرسَل لجهة X). NULL طبيعي لأغلب الصفوف (لم تُرسَل بعد). تُحجب أدناه بحسب canSeeDeliveryForUser.
           consignmentId: deliveryConsignments.id,
           consignmentStatus: deliveryConsignments.status,
+          // ١٨/٨: حالةُ **الطرد** — بها وحدها يُعرَف «مُسنَد لم يخرج» من «بالطريق» من «تعذّر»
+          // (`deriveWoDeliveryState`). كانت الشاشة ترى حالة الإغلاق فقط فتقول «مُرسَل» لكلّها.
+          parcelStatus: deliveryConsignments.parcelStatus,
           consignmentNumber: deliveryConsignments.consignmentNumber,
           courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
           deliveryPartyId: deliveryConsignments.partyId,
@@ -411,7 +492,15 @@ export const workOrderRouter = router({
           .select({ workOrderId: workOrderImages.workOrderId, url: workOrderImages.url })
           .from(workOrderImages)
           .where(inArray(workOrderImages.workOrderId, ids))
-          .orderBy(asc(workOrderImages.workOrderId), asc(workOrderImages.sortOrder), asc(workOrderImages.id));
+          .orderBy(
+            asc(workOrderImages.workOrderId),
+            // ش٢ (0236): **النسخةُ العليا أوّلاً** — وليس تخفيفاً للحجم بل **صحّةَ عرض**:
+            // بلا هذا الترتيب تعرض بطاقةُ الأمر تصميماً **مهجوراً** أبطلته نسخةٌ أحدث،
+            // فيبني الفنّيّ على صورةٍ لم يوافق عليها العميل.
+            desc(workOrderImages.revision),
+            asc(workOrderImages.sortOrder),
+            asc(workOrderImages.id),
+          );
         for (const im of imgs) {
           const k = Number(im.workOrderId);
           if (!thumbs.has(k)) thumbs.set(k, im.url);
@@ -424,6 +513,7 @@ export const workOrderRouter = router({
         thumbnailUrl: thumbs.get(Number(r.id)) ?? null,
         consignmentId: seeDelivery ? r.consignmentId : null,
         consignmentStatus: seeDelivery ? r.consignmentStatus : null,
+        parcelStatus: seeDelivery ? r.parcelStatus : null,
         consignmentNumber: seeDelivery ? r.consignmentNumber : null,
         courierDeliveredAt: seeDelivery ? r.courierDeliveredAt : null,
         deliveryPartyId: seeDelivery ? r.deliveryPartyId : null,
@@ -441,6 +531,8 @@ export const workOrderRouter = router({
       z
         .object({
           branchId: z.number().int().positive().optional(),
+          /** مرآةُ `list.branchQueue` — وإلّا كذبت العدّادات على الشاشة التي تعرض الصفوف. */
+          branchQueue: z.boolean().optional(),
           ...woListFilters,
         })
         .optional()
@@ -452,7 +544,7 @@ export const workOrderRouter = router({
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
       const branchCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
       const ownerCond =
-        ctx.scopedOwnerId != null
+        ctx.scopedOwnerId != null && !(input?.branchQueue === true && workOrdersFullAccess(ctx.user))
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
       const allConds = [branchCond, ownerCond, ...buildWoFilterConds(input)].filter(Boolean) as SQL[];
@@ -491,6 +583,8 @@ export const workOrderRouter = router({
         .select({
           id: workOrders.id,
           orderNumber: workOrders.orderNumber,
+          // ش٥ (0238): المسوّدة الجامعة — تُغذّي «ضمن الطلب D-… (٣ بنود)».
+          draftId: workOrders.draftId,
           title: workOrders.title,
           customizationText: workOrders.customizationText,
           quantity: workOrders.quantity,
@@ -515,6 +609,12 @@ export const workOrderRouter = router({
           paymentReceiptUrl: workOrders.paymentReceiptUrl,
           dueDate: workOrders.dueDate,
           invoiceId: workOrders.invoiceId,
+          // ٢٠/٨ (أمسكته الجولة البصرية): حوارُ الاسترجاع كان يعرض **`deposit`** بوصفه
+          // «المقبوض فعلاً» — وهو صفرٌ حين يُدفع المبلغ **عند التسليم** لا عربوناً، فيَعِد
+          // الحوارُ بردّ صفرٍ بينما يخرج من الدرج ٤٠ ألفاً. المقبوضُ الحقيقيّ على الفاتورة.
+          invoicePaidAmount: invoices.paidAmount,
+          invoiceTotal: invoices.total,
+          invoiceReturnedTotal: invoices.returnedTotal,
           hasDelivery: workOrders.hasDelivery,
           deliveryAddress: workOrders.deliveryAddress,
           deliveryPhone: workOrders.deliveryPhone,
@@ -529,9 +629,17 @@ export const workOrderRouter = router({
           deliveredAt: workOrders.deliveredAt,
           createdAt: workOrders.createdAt,
           updatedAt: workOrders.updatedAt,
+          // وسم «عُدِّلت بنوده» (0199) — التمييز البصريّ الذي طلبه المالك. مستقلٌّ عن
+          // `updatedAt` عمداً: ذاك يتحرّك مع كل كتابة فيفقد الوسم معناه.
+          materialsEditedAt: workOrders.materialsEditedAt,
+          materialsEditCount: workOrders.materialsEditCount,
+          materialsEditedByName: materialsEditorUser.name,
           // اِستقبال (٤/٨): حالة الإرسالية إن وُجدت — تُحجب أدناه بحسب canSeeDeliveryForUser.
           consignmentId: deliveryConsignments.id,
           consignmentStatus: deliveryConsignments.status,
+          // ١٨/٨: حالةُ **الطرد** — بها وحدها يُعرَف «مُسنَد لم يخرج» من «بالطريق» من «تعذّر»
+          // (`deriveWoDeliveryState`). كانت الشاشة ترى حالة الإغلاق فقط فتقول «مُرسَل» لكلّها.
+          parcelStatus: deliveryConsignments.parcelStatus,
           consignmentNumber: deliveryConsignments.consignmentNumber,
           courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
           deliveryPartyId: deliveryConsignments.partyId,
@@ -543,6 +651,8 @@ export const workOrderRouter = router({
         .leftJoin(users, eq(workOrders.assignedTo, users.id))
         .leftJoin(deliveryConsignments, eq(deliveryConsignments.workOrderId, workOrders.id))
         .leftJoin(deliveryParties, eq(deliveryConsignments.partyId, deliveryParties.id))
+        .leftJoin(materialsEditorUser, eq(workOrders.materialsEditedBy, materialsEditorUser.id))
+        .leftJoin(invoices, eq(workOrders.invoiceId, invoices.id))
         .where(eq(workOrders.id, input.workOrderId))
         .limit(1)
     )[0];
@@ -577,10 +687,76 @@ export const workOrderRouter = router({
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
     // صور نموذج العمل (مرفقات) — للوحة التفاصيل.
     const images = await db
-      .select({ id: workOrderImages.id, url: workOrderImages.url, caption: workOrderImages.caption })
+      .select({
+        id: workOrderImages.id,
+        url: workOrderImages.url,
+        caption: workOrderImages.caption,
+        // ش٢ (0236): النسخة — تُغذّي شارة «نسخة ٣ من ٣» ومبدّل النسخ السابقة.
+        revision: workOrderImages.revision,
+      })
       .from(workOrderImages)
       .where(eq(workOrderImages.workOrderId, input.workOrderId))
-      .orderBy(asc(workOrderImages.sortOrder), asc(workOrderImages.id));
+      .orderBy(desc(workOrderImages.revision), asc(workOrderImages.sortOrder), asc(workOrderImages.id));
+    /**
+     * ش٢ — **الأمر يقول حالة حجزه بنفسه**: مهمّةٌ مفتوحةٌ نوعُها حاجز. استعلامٌ واحد بدل
+     * إجراءٍ جديد أو فلترةٍ في الواجهة، والحالةُ مشتقّةٌ من الواقع فلا تكذب البطاقة حين
+     * تُفتَح نسخةٌ جديدة (تعود «بانتظار الموافقة» تلقائياً).
+     */
+    const blockingRows = await db
+      .select({
+        id: tasks.id,
+        taskNumber: tasks.taskNumber,
+        title: tasks.title,
+        status: tasks.taskStatus,
+        dueAt: tasks.dueAt,
+      })
+      .from(tasks)
+      .innerJoin(serviceTypes, eq(serviceTypes.id, tasks.serviceTypeId))
+      .where(
+        and(
+          eq(tasks.linkedWorkOrderId, input.workOrderId),
+          inArray(tasks.taskStatus, ["NEW", "IN_PROGRESS", "WAITING_CUSTOMER"]),
+          eq(serviceTypes.blocksExecution, true),
+        ),
+      )
+      .limit(1);
+    const blockingTask = blockingRows[0] ?? null;
+    /**
+     * ش٥ (0238) — **إخوةُ الطلب**: الزبون يرى طلباً واحداً، وأوامرُ السلّة الواحدة كانت لا
+     * يعرف بعضُها بعضاً. استعلامٌ مفهرسٌ واحد (`idx_wo_draft`) بدل مسحِ `idempotencyKeys`
+     * الذي كان الاشتقاق الوحيد الممكن وهو **أحاديُّ الاتجاه** و**بلا فهرس على `refId`**.
+     *
+     * قراءةٌ محضة — الحارسُ الذي يرفض الشحن الجزئيّ الصامت يأتي في نفس الشريحة لاحقاً،
+     * فيقرأ هذه الحقيقة بدل أن يخترعها.
+     */
+    const siblings = wo.draftId == null
+      ? null
+      : await (async () => {
+          const rows = await db
+            .select({
+              id: workOrders.id,
+              orderNumber: workOrders.orderNumber,
+              title: workOrders.title,
+              status: workOrders.status,
+            })
+            .from(workOrders)
+            .where(eq(workOrders.draftId, Number(wo.draftId)))
+            .orderBy(asc(workOrders.id));
+          const draft = (
+            await db
+              .select({ draftNumber: receptionDrafts.draftNumber })
+              .from(receptionDrafts)
+              .where(eq(receptionDrafts.id, Number(wo.draftId)))
+              .limit(1)
+          )[0];
+          return {
+            draftId: Number(wo.draftId),
+            draftNumber: draft?.draftNumber ?? null,
+            total: rows.length,
+            ready: rows.filter((r) => r.status === "READY" || r.status === "DELIVERED").length,
+            items: rows,
+          };
+        })();
     const qrPayload = workOrderBarcodeSet({
       orderNumber: wo.orderNumber,
       createdAt: wo.createdAt instanceof Date ? wo.createdAt : new Date(wo.createdAt),
@@ -597,10 +773,12 @@ export const workOrderRouter = router({
         laborCost: null as unknown as string,
         materials: safeMaterials,
         images,
+        blockingTask,
+        siblings,
         qrPayload,
       };
     }
-    return { ...wo, ...deliveryInfo, materials, images, qrPayload };
+    return { ...wo, ...deliveryInfo, materials, images, blockingTask, siblings, qrPayload };
   }),
 
   /**
@@ -621,56 +799,102 @@ export const workOrderRouter = router({
     const branchCondition = targetBranch == null
       ? undefined
       : or(eq(users.branchId, targetBranch), isNull(users.branchId));
-    return db
-      .select({ id: users.id, name: users.name, role: users.role })
+    /**
+     * ش٣ (١٩/٨) — **إسنادٌ مستنير**: كانت القائمة اسماً ودوراً فقط، فيُسنِد المديرُ على العمياء
+     * لفنّيٍّ عليه عشرة أوامر متأخّرة أو غائبٍ اليوم. والحقائق الثلاث **كلّها مشتقّة، بلا عمود**:
+     *   · `openLoad`/`overdueLoad` — تجميعٌ على `workOrders` نفسها.
+     *   · `onShift` — من `shifts` المفتوحة لنفس الفرع؛ **مصدرٌ جاهزٌ لم يُستعمَل في أيّ مسار
+     *     إسناد قطّ** رغم أنّه يقول من هو على رأس العمل الآن.
+     *
+     * ⚠️ **تصويبٌ (١٩/٨، أمسكه `rbacTightening`)**: وسّعتُ الأهليّة أوّلاً إلى «كلّ من يملك
+     * `workorders:FULL`» ظنّاً أنّ فنّيّاً بدورٍ مخصّص كان محجوباً — **وهو ظنٌّ خاطئ**: الدور
+     * المخصّص يحمل `baseRole` الأساس (كما `reception_clerk` أساسُه `cashier`)، ففنّيٌّ مخصّص
+     * يبقى `print_operator`. والتوسيعُ فتح **الأدمن والمدير والكاشير منفّذين** — وهم يملكون
+     * الوحدة لأنّهم *يديرون* أوامر الشغل لا لأنّهم *ينفّذونها*.
+     * فالدورُ يبقى المرشِّح، والوحدةُ **تشديدٌ فوقه**: فنّيٌّ سُحبت وحدتُه لا يُسنَد إليه.
+     */
+    const now = new Date();
+    const rows = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        role: users.role,
+        permissionsOverride: users.permissionsOverride,
+        openLoad: sql<number>`(
+          SELECT COUNT(*) FROM ${workOrders} wo
+          WHERE wo.assignedTo = ${users.id}
+            AND wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS')
+        )`,
+        overdueLoad: sql<number>`(
+          SELECT COUNT(*) FROM ${workOrders} wo
+          WHERE wo.assignedTo = ${users.id}
+            AND wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS')
+            AND wo.dueDate IS NOT NULL AND wo.dueDate < ${now}
+        )`,
+        onShift: sql<number>`(
+          SELECT COUNT(*) FROM ${shifts} sh
+          WHERE sh.userId = ${users.id} AND sh.shiftStatus = 'OPEN'
+        )`,
+      })
       .from(users)
-      .where(and(
-        eq(users.isActive, true),
-        eq(users.role, "print_operator"),
-        branchCondition,
-      ))
+      .where(and(eq(users.isActive, true), eq(users.role, "print_operator"), branchCondition))
       .orderBy(asc(users.name));
+
+    return rows
+      .filter((u) => hasModuleAccess(u.role, (u.permissionsOverride as never) ?? null, "workorders", "FULL"))
+      .map((u) => ({
+        id: u.id,
+        name: u.name,
+        role: u.role,
+        openLoad: Number(u.openLoad ?? 0),
+        overdueLoad: Number(u.overdueLoad ?? 0),
+        onShift: Number(u.onShift ?? 0) > 0,
+      }))
+      // الأقلّ حملاً أوّلاً ⇒ **القرارُ الصحيح أوّلُ خيار** بدل ترتيبٍ أبجديٍّ لا يقول شيئاً.
+      .sort((a, b) =>
+        Number(b.onShift) - Number(a.onShift)
+        || a.overdueLoad - b.overdueLoad
+        || a.openLoad - b.openLoad
+        || (a.name ?? "").localeCompare(b.name ?? "", "ar"),
+      );
   }),
 
   /** إسناد/إعادة إسناد المنفّذ المسؤول عن طلب الخدمة (null = إلغاء الإسناد). مدير فأعلى + تدقيق. */
+  /**
+   * ش٣ (١٩/٨): الجسمُ نُقل إلى `reassignWorkOrder` — كان `db.update` عارياً **خارج أيّ معاملة**،
+   * ويشترط `role === "print_operator"` حرفياً بينما الأدوار تُحلّ عبر `permissionsOverride`،
+   * وبلا سببٍ عند النقل بعد بدء التنفيذ، وبلا `oldValue` فلا يُعرف مِمَّن نُقل الأمر.
+   */
   assign: workordersManagerProcedure
-    .input(z.object({ workOrderId: z.number().int().positive(), assignedTo: z.number().int().positive().nullable() }))
-    .mutation(async ({ input, ctx }) => {
-      const db = getDb();
-      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-      const wo = (
-        await db.select({ id: workOrders.id, branchId: workOrders.branchId, status: workOrders.status }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
-      )[0];
-      if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
-      // عزل مدير الفرع (قرار المالك ١٢/٨): لا يُسنِد مديرٌ طلبَ فرعٍ آخر (المالك/الأدمن يعبُران الفروع).
-      if (ctx.user.role !== "admin" && Number(wo.branchId) !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
-      }
-      if (wo.status === "DELIVERED" || wo.status === "CANCELLED") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تغيير فني أمر منتهٍ" });
-      }
-      if (input.assignedTo != null) {
-        const u = (
-          await db.select({ id: users.id, isActive: users.isActive, branchId: users.branchId, role: users.role }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
-        )[0];
-        if (!u || !u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
-        if (u.role !== "print_operator") {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "إسناد أمر الشغل مخصص لفني تنفيذ بدور «فني طباعة»" });
-        }
-        // منع إسناد الطلب لموظفٍ من فرعٍ آخر لا يستطيع تنفيذه (تدقيق ٢٥/٧). الموظف بلا فرع (مشترك) مسموح.
-        if (u.branchId != null && Number(u.branchId) !== Number(wo.branchId)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد الطلب لموظفٍ من فرعٍ آخر" });
-        }
-      }
-      await db.update(workOrders).set({ assignedTo: input.assignedTo }).where(eq(workOrders.id, input.workOrderId));
-      await logAudit(ctx, {
-        action: "workOrder.assign",
-        entityType: "workOrder",
-        entityId: input.workOrderId,
-        newValue: { assignedTo: input.assignedTo },
-      });
-      return { ok: true };
-    }),
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        assignedTo: z.number().int().positive().nullable(),
+        reason: z.string().trim().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) =>
+      reassignWorkOrder(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+      }),
+    ),
+
+  /**
+   * ش٣ — **طريقُ خروجِ الفنّي**: يُعيد أمراً سحبه ولم يبدأه إلى الطابور بنفسه بلا انتظار مدير.
+   * `Exec` لا `Manager`: صاحبُ الأمر يتصرّف في إسناد نفسه، والخدمةُ تحرس ألّا يمسّ إسناد غيره.
+   */
+  release: workordersExecProcedure
+    .input(z.object({ workOrderId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) =>
+      releaseWorkOrder(input.workOrderId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      }),
+    ),
 
   /**
    * الخط الزمني للأمر — أحداث حقيقية من سجلّ التدقيق (استلام/بدء/جاهز/تسليم/إلغاء/إسناد).
@@ -928,7 +1152,11 @@ export const workOrderRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء طلب الخدمة" });
+          failOpaque(e, {
+            op: "workOrders.create",
+            userMessage: "تعذّر إنشاء طلب الخدمة",
+            context: { userId: ctx.user.id },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء طلب الخدمة" });
@@ -1001,6 +1229,56 @@ export const workOrderRouter = router({
    * تغييرها بعد بدء التنفيذ يستلزم عكس حركة مخزون. الخدمة ترفض تحت DELIVERED/CANCELLED وتمنع
    * خفض السعر دون العربون المقبوض سلفاً.
    */
+  /**
+   * تحرير **بنود** أمر الشغل (إضافة/حذف/تغيير كمّية) — الفجوة التي اشتكاها المالك (١٧/٨/٢٦):
+   * «الكاشير لا يستطيع أن يضيف إليها منتجات أو يحذف منها ويحفظها ويعتمدها».
+   *
+   * الصلاحية `workordersCashierProcedure` بقرار المالك: التعديل روتينٌ يوميّ («الزبائن مزاجهم
+   * متقلّب ويطلبون مرتجع كثيراً أو يعدّلون طلباتهم») فلا يُعقَل أن يستدعي مديراً في كل مرّة.
+   * الحرّاس الحقيقية في الخدمة لا في الدور: الفرع مُلزِم، والأمر المُسلَّم/الملغى مرفوض،
+   * وبعد بدء التنفيذ يقابل كلَّ فرقٍ حركةُ مخزونٍ وقيدُ WIP مُكمِّل (لا تعديل صامت).
+   *
+   * العقد **تصريحيّ**: تُرسَل القائمة المطلوبة كاملةً ⇒ idempotent بطبيعته (إعادة الإرسال
+   * تُنتج فرقاً صفراً). لذلك لا يحتاج `clientRequestId`.
+   */
+  setMaterials: workordersCashierProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        materials: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              baseQuantity: z.number().int().positive(),
+            }),
+          )
+          .max(200),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await setWorkOrderMaterials(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : 0,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "workOrder.setMaterials",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: {
+          added: res.added,
+          removed: res.removed,
+          changed: res.changed,
+          stockAdjusted: res.stockAdjusted,
+          materialsCost: res.materialsCost,
+        },
+      });
+      return res;
+    }),
+
   update: workordersManagerProcedure
     .input(
       z.object({
@@ -1037,6 +1315,65 @@ export const workOrderRouter = router({
    * السحب الذاتي للفني (محطة التنفيذ): يُسنِد الأمر الوارد لنفسه ليظهر في «أوامري».
    * workOrderExecProcedure = كاشير/مدير/فني مطبعة + فرع مُسنَد. الخدمة تمنع سحب أمر زميل.
    */
+  /**
+   * ش٢ — طلبُ موافقة العميل على التصميم. `workordersExecProcedure`: **مَن ينفّذ هو من يطلب**
+   * (رأى التصميم وعرف أنّه يحتاج إقراراً)، والتسجيلُ والإغلاق يبقيان في شاشة المهام بمفرداتها.
+   */
+  requestDesignApproval: workordersExecProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        note: z.string().trim().max(2000).nullish(),
+        assignedTo: z.number().int().positive().nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await requestDesignApproval(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "workOrder.requestDesignApproval",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { taskNumber: res.taskNumber, created: res.created },
+      });
+      return res;
+    }),
+
+  /**
+   * ش٢ — حفظُ نسخةِ تصميم. `workordersCashierProcedure` لا `Manager`: **الكاشير الذي كتب
+   * المواصفة هو من يصحّحها** (اليوم `update` مديريّ حصراً، فالتصحيح يمرّ بالمدير بلا سبب).
+   * والعقد تصريحيّ: القائمة الكاملة تُرسَل ويُشتقّ الفرق.
+   */
+  setDesign: workordersCashierProcedure
+    .input(
+      z.object({
+        workOrderId: z.number().int().positive(),
+        images: z
+          .array(
+            z.object({
+              url: z.string().min(1),
+              caption: z.string().trim().max(255).nullish(),
+              sortOrder: z.number().int().min(0).max(99).nullish(),
+            }),
+          )
+          .max(10),
+        customizationText: z.string().max(5000).nullish(),
+        note: z.string().trim().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await setWorkOrderDesign(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      // سجلُّ التدقيق يُكتب داخل المعاملة (`design.ts`) — لا تكرار هنا.
+      return res;
+    }),
+
   claim: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
@@ -1078,6 +1415,8 @@ export const workOrderRouter = router({
           reference: z.string().trim().max(100).nullish(),
         }).optional(),
         clientRequestId: z.string().optional().nullable(),
+        /** إقرارُ تسليم جزءٍ من طلبٍ إخوتُه لم يجهزوا (ش٥) — يفشل مغلقاً بدونه. */
+        partialDispatchConfirmed: z.boolean().optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -1090,27 +1429,146 @@ export const workOrderRouter = router({
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تسليم طلب الخدمة" });
+          failOpaque(e, {
+            op: "workOrders.deliver",
+            userMessage: "تعذّر تسليم طلب الخدمة",
+            context: { userId: ctx.user.id, workOrderId: input.workOrderId },
+          });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
     }),
 
   // الإلغاء يعكس مخزوناً/قيوداً ⇒ مدير فأعلى.
+  /**
+   * **عكس فاتورة خدمةٍ صفريّة البنود** (١٩/٨) — المخرج الأخير الناقص.
+   *
+   * أمرُ تخصيصٍ خالصٍ بلا منتجٍ كتالوجيّ تُنشأ فاتورتُه بصفر بنود (قيد FK)، فتُرفَض من
+   * المرتجع (يشترط أسطراً) ومن التصحيح (يشترط بنوداً) ومن الإلغاء (يرفض منشأ WORKORDER)
+   * ⇒ فاتورةٌ حيّةٌ بلا فعلٍ واحد. الخدمة تحصر نفسها بنيوياً في هذه الحالة وحدها.
+   */
+  reverseServiceInvoice: workordersManagerProcedure
+    .input(z.object({
+      workOrderId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+      clientRequestId: z.string().trim().min(1).max(100).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await reverseServiceInvoice(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "workOrder.reverseServiceInvoice",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { reason: input.reason, invoiceId: (res as { invoiceId?: number }).invoiceId },
+      });
+      return res;
+    }),
+
   cancel: workordersManagerProcedure
     .input(z.object({
       workOrderId: z.number().int().positive(),
       // اختياري: يُلزَم فقط حين يتعدّد الدرج المفتوح بالفرع (resolveBranchCashShiftTx يرمي طالباً
       // التحديد حينها) — يختار المستخدم أيّ درجٍ سيخرج منه استرداد العربون فعلياً.
       refundShiftId: z.number().int().positive().optional(),
+      clientRequestId: z.string().trim().min(1).max(100).optional(),
+      /** سببُ الإلغاء — يُكتب على الأمر (0237) فيصير قابلاً للقراءة والتقرير لا حبيسَ التدقيق. */
+      reason: z.string().trim().min(3).max(500).optional(),
+      /**
+       * مصيرُ كلّ خامة مستهلَكة. **حذفُه = رجوعٌ كامل** (السلوك القائم حرفياً)، ووجودُه
+       * يلزمه تغطيةُ كلّ الأسطر بمجموعٍ يساوي المستهلَك بالضبط — تتحقّق منه الخدمة.
+       */
+      materials: z.array(z.object({
+        workOrderMaterialId: z.number().int().positive(),
+        returnBase: z.number().int().min(0),
+        wasteBase: z.number().int().min(0),
+      })).max(200).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       const res = await cancelWorkOrder(
         input.workOrderId,
         { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
-        { refundShiftId: input.refundShiftId ?? null },
+        {
+          refundShiftId: input.refundShiftId ?? null,
+          clientRequestId: input.clientRequestId ?? null,
+          reason: input.reason ?? null,
+          materials: input.materials ?? null,
+        },
       );
-      await logAudit(ctx, { action: "workOrder.cancel", entityType: "workOrder", entityId: input.workOrderId });
+      await logAudit(ctx, {
+        action: "workOrder.cancel",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { reason: input.reason ?? null, wastedLines: (input.materials ?? []).filter((m) => m.wasteBase > 0).length },
+      });
       return res;
     }),
+
+  /**
+   * **استرجاعُ أمر شغلٍ مُسلَّم** (٢٠/٨) — البابُ الذي لم يكن موجوداً.
+   *
+   * سلطتُه سلطةُ الإلغاء نفسها (`workordersManagerProcedure`): أثرٌ ماليٌّ عاكسٌ يستحقّ
+   * نفس مستوى الثقة. والخدمةُ تفرض الحرّاس كلَّها (مُسلَّم فقط · لا إرسالية حيّة · فاتورةٌ
+   * غير ميتة · ردُّ كلّ ما قُبض).
+   */
+  reverseDelivery: workordersManagerProcedure
+    .input(z.object({
+      workOrderId: z.number().int().positive(),
+      reason: z.string().trim().min(3).max(500),
+      /** يعيده للطابور جاهزاً لإعادة تسليمٍ مصحَّح بدل إغلاقه ملغىً. */
+      reopen: z.boolean().optional(),
+      refundShiftId: z.number().int().positive().optional(),
+      clientRequestId: z.string().trim().min(1).max(100).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await reverseWorkOrderDelivery(
+        {
+          workOrderId: input.workOrderId,
+          reason: input.reason,
+          reopen: input.reopen === true,
+          refundShiftId: input.refundShiftId ?? null,
+          clientRequestId: input.clientRequestId ?? null,
+        },
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+      );
+      // ⛔ لا `logAudit` هنا: الخدمةُ تكتب `workOrder.reverseDelivery` **داخل المعاملة**
+      // بمبالغها الحقيقية (المعكوس والمردود). تكرارُه هنا يُنتج صفَّي تدقيقٍ لعمليةٍ واحدة
+      // ⇒ حدثان في الخطّ الزمنيّ للأمر الواحد، أحدهما أفقرُ بياناً — والقارئُ لا يعرف
+      // أوقعت العمليةُ مرّتين أم لا. (النمط نفسه في `cancel.ts`: خدمتُه تُدقّق فعلاً
+      // مغايراً — `workOrder.refund.approve` — فلا تكرار هناك.)
+      return res;
+    }),
+
+  approveCancellationRefund: ownerProcedure
+    .input(z.object({
+      receiptId: z.number().int().positive(),
+      confirmationReference: z.string().trim().min(3).max(100),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await approveWorkOrderCancellationRefund(input.receiptId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+        isOwner: ctx.user.isOwner,
+      }, input.confirmationReference, ctx);
+      return res;
+    }),
+
+  pendingCancellationRefunds: ownerProcedure.query(({ ctx }) =>
+    listPendingWorkOrderCancellationRefunds({
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId ?? 1,
+      role: ctx.user.role,
+      isOwner: ctx.user.isOwner,
+    })),
+
+  cancellationRefundStatus: workordersReadProcedure
+    .input(z.object({ workOrderId: z.number().int().positive() }))
+    .query(({ input, ctx }) => getWorkOrderCancellationRefundStatus(
+      input.workOrderId,
+      { branchId: ctx.scopedBranchId, ownerId: ctx.scopedOwnerId },
+    )),
 });

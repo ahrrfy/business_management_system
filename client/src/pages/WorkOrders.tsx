@@ -1,10 +1,18 @@
+import {
+  type WorkOrderStatus,
+  WO_NEXT_STATUS,
+  WO_STAGE_INDEX,
+  workOrderStatusHue,
+  workOrderStatusLabel,
+  workOrderTimelineLabel,
+} from "@shared/workOrderStatus";
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronRight, FileText, Home, LayoutGrid, Package, Pencil, Printer, Receipt, Rows3, Search, Timer, Truck, Wrench, X } from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
@@ -20,7 +28,10 @@ import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shipp
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { RowActions, type RowAction } from "@/components/list";
 import { DataTable } from "@/components/data-table/DataTable";
+import { MobileDataCard } from "@/components/ui/MobileDataCard";
 import { WhatsAppIcon, WhatsAppShare } from "@/components/WhatsAppShare";
+import { ChannelBadge, ChannelMark } from "@/components/ChannelBadge";
+import { WORK_ORDER_CHANNELS, receptionChannelLabel, receptionChannelOptions } from "@shared/receptionChannel";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -30,7 +41,11 @@ import { Textarea } from "@/components/ui/textarea";
 import CustomerPicker from "@/components/CustomerPicker";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { Contact360Panel } from "@/components/contacts/Contact360Panel";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { deriveWoDeliveryState, woDeliveryStateLabel } from "@shared/workOrderDeliveryState";
+import { WorkOrderRefundApprovals } from "@/components/workOrders/WorkOrderRefundApprovals";
+import { newClientRequestId } from "@/lib/countQueue";
+import { canCancelWorkOrder, cancellationRefundNotice } from "@/lib/workOrderRefundPolicy";
 import {
   Dialog,
   DialogContent,
@@ -45,11 +60,17 @@ type Detail = NonNullable<RouterOutputs["workOrders"]["get"]>;
 type Status = "RECEIVED" | "IN_PROGRESS" | "READY" | "DELIVERED";
 type DeliverTarget = { id: number; orderNumber: string; title: string; salePrice: string; deposit: string };
 
-function workOrderStatusLabel(o: Pick<WO, "status" | "consignmentId" | "courierDeliveredAt">): string {
+function workOrderCardLabel(
+  o: Pick<WO, "status" | "consignmentId" | "courierDeliveredAt" | "consignmentStatus" | "parcelStatus">,
+): string {
   if (o.status === "DELIVERED" && o.consignmentId) {
     return o.courierDeliveredAt ? "وصل للعميل" : "مُرسل للتوصيل";
   }
-  return STATUS_LABEL[o.status] ?? o.status;
+  // ١٨/٨: الأمر يبقى READY طوال رحلة المندوب (الإسناد لا يمسّ حالته عمداً) — فكانت البطاقة
+  // تقول «جاهز للتسليم» لطردٍ خرج من المكتبة. الحالة المشتقّة تقول أين هو فعلاً.
+  const st = deriveWoDeliveryState(o.consignmentStatus, o.parcelStatus);
+  if (o.status === "READY" && st !== "NONE") return woDeliveryStateLabel(st)!;
+  return workOrderStatusLabel(o.status);
 }
 
 // ── المراحل (أعمدة الكانبان) — مطابقة لحالات النظام الحقيقية ──
@@ -59,12 +80,6 @@ const STATUSES: { key: Status; label: string; hint: string; hue: number }[] = [
   { key: "READY", label: "جاهز للتسليم", hint: "جاهز — بانتظار العميل", hue: 293 },
   { key: "DELIVERED", label: "مُغلق/مُرسل", hint: "فاتورة أو إرسالية توصيل", hue: 155 },
 ];
-const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "مُستلَم", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
-};
-const STATUS_HUE: Record<string, number> = { RECEIVED: 72, IN_PROGRESS: 250, READY: 293, DELIVERED: 155 };
-const STAGE_INDEX: Record<string, number> = { RECEIVED: 0, IN_PROGRESS: 1, READY: 2, DELIVERED: 3 };
-const NEXT: Record<string, Status> = { RECEIVED: "IN_PROGRESS", IN_PROGRESS: "READY", READY: "DELIVERED" };
 const ADV_LABEL: Record<string, React.ReactNode> = {
   IN_PROGRESS: (<><ChevronRight aria-hidden className="size-4 inline-block align-text-bottom me-1" /> بدء التنفيذ (خصم المواد)</>),
   READY: (<><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> وضع علامة: جاهز</>),
@@ -85,39 +100,16 @@ const COLUMNS: { key: ColKey; label: string; hint: string; hue: number; status: 
   { key: "DELIVERED", label: "مُغلق/مُرسل", hint: "استلام مباشر أو خرج للتوصيل — يُعرض الأحدث", hue: 155, status: "DELIVERED", match: (o) => o.status === "DELIVERED" },
 ];
 
-const CHANNELS: Record<string, { label: string; icon: string }> = {
-  WHATSAPP: { label: "واتساب", icon: "💬" },
-  INSTAGRAM: { label: "انستغرام", icon: "📷" },
-  TIKTOK: { label: "تيك توك", icon: "🎵" },
-  PHONE: { label: "اتصال", icon: "📞" },
-  WALK_IN: { label: "عميل نقدي", icon: "🏪" },
-  OTHER: { label: "أخرى", icon: "✳️" },
-};
 const PRIORITIES: Record<string, { label: string; cls: string; rank: number }> = {
   URGENT: { label: "عاجل", cls: "wob-urgent", rank: 3 },
   NORMAL: { label: "عادي", cls: "wob-normal", rank: 2 },
   LOW: { label: "منخفض", cls: "wob-low", rank: 1 },
 };
-function WorkOrderChannelMark({ channel, className = "size-3.5" }: { channel: string | null | undefined; className?: string }) {
-  if (channel === "WHATSAPP") {
-    return <WhatsAppIcon className={`${className} text-[var(--brand-whatsapp)]`} />;
-  }
-  const ch = CHANNELS[channel ?? "WALK_IN"] ?? CHANNELS.OTHER;
-  return <span aria-hidden>{ch.icon}</span>;
-}
 const PAYMENT_METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي",
   CARD: "بطاقة",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
-};
-const TL_LABEL: Record<string, string> = {
-  "workOrder.create": "استُلم الطلب",
-  "workOrder.start": "بدأ التنفيذ — خُصمت المواد",
-  "workOrder.markReady": "جاهز للتسليم",
-  "workOrder.deliver": "سُلّم وصدرت الفاتورة",
-  "workOrder.cancel": "أُلغي الأمر",
-  "workOrder.assign": "أُعيد الإسناد",
 };
 
 function colVars(hue: number): React.CSSProperties {
@@ -152,7 +144,7 @@ function dueInfo(o: { status: string; dueDate: unknown }): { state: "done" | "ok
   if (days === 1) return { state: "soon", text: "غداً" };
   return { state: "ok", text: `باقٍ ${days} يوم` };
 }
-function progressOf(status: string) { const i = STAGE_INDEX[status] ?? 0; return { idx: i, pct: Math.round((i / 3) * 100) }; }
+function progressOf(status: string) { const i = Math.max(WO_STAGE_INDEX[status as WorkOrderStatus] ?? 0, 0); return { idx: i, pct: Math.round((i / 3) * 100) }; }
 function workOrderContactMessage(o: {
   orderNumber: string;
   title: string;
@@ -249,15 +241,15 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
   /** عند توفّره: تظهر شريط الإسناد inline في عَمود «طابور وارد» (مَدير فَقط). */
   inboxAssign?: (orderId: number, staffId: number) => void;
   /** بَيانات الفنّيين من `assignableStaff` (name قد يَكون null في DB ⇒ يُعرَض «بلا اسم»). */
-  staff?: { id: number; name: string | null; role: string }[];
+  staff?: { id: number; name: string | null; role: string; openLoad?: number; overdueLoad?: number; onShift?: boolean }[];
   assignPending?: boolean;
   onOpenCustomer?: (customerId: number) => void;
 }) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
-  const ch = CHANNELS[o.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
+  const chLabel = receptionChannelLabel(o.receptionChannel);
   const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
-  const hue = STATUS_HUE[o.status] ?? 255;
+  const hue = workOrderStatusHue(o.status);
   const late = di.state === "late";
   const cls = ["wob-card", late ? "wob-late" : "", dragging ? "wob-dragging" : "", ghost ? "wob-ghost" : ""].filter(Boolean).join(" ");
   // حالة محلّية لاختيار الفنّي في شريط الإسناد — لكل بطاقة على حِدة.
@@ -278,9 +270,9 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
           </span>
         )}
         {/* شارة قَناة المَصدر — مَوضوعة في رأس البطاقة per README §5.2 (لإبراز جانب المبيعات). */}
-        <span className="wob-ch-chip" title={`القناة: ${ch.label}`}>
-          <WorkOrderChannelMark channel={o.receptionChannel} />
-          <span className="wob-ch-chip-l">{ch.label}</span>
+        <span className="wob-ch-chip" title={`القناة: ${chLabel}`}>
+          <ChannelMark channel={o.receptionChannel} />
+          <span className="wob-ch-chip-l">{chLabel}</span>
         </span>
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
         {!ghost && (
@@ -383,9 +375,17 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
             disabled={assignPending}
             aria-label={`إسناد ${o.orderNumber} لفنّي`}
           >
-            <option value="">— اختر فنّياً —</option>
+            {/* ش٣: القائمة الفارغة تُفسَّر صراحةً بدل منتقٍ صامتٍ لا يقول لماذا. */}
+            <option value="">{staff.length === 0 ? "— لا فنّيّ مؤهَّل في هذا الفرع —" : "— اختر فنّياً —"}</option>
             {staff.map((s) => (
-              <option key={s.id} value={s.id}>{s.name ?? "بلا اسم"}{s.role ? ` — ${s.role}` : ""}</option>
+              // ش٣ — **إسنادٌ مستنير**: الحملُ والتأخّرُ والمداومة في السطر نفسه، فيقع القرار
+              // على حقيقةٍ لا على اسم. والترتيب خادميّ بالأقلّ حملاً ⇒ الصوابُ أوّلُ خيار.
+              <option key={s.id} value={s.id}>
+                {s.name ?? "بلا اسم"}
+                {typeof s.openLoad === "number" ? ` · ${s.openLoad} مفتوحة` : ""}
+                {s.overdueLoad ? ` · ${s.overdueLoad} متأخّرة` : ""}
+                {s.onShift === false ? " · خارج الوردية" : s.onShift ? " · على رأس العمل" : ""}
+              </option>
             ))}
           </select>
           <button
@@ -411,31 +411,6 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
 // ─────────────── الإحصاءات ───────────────
 // من عدّ الخادم (workOrders.counts) لا من صفوف الشاشة: القائمة تجلب النشطة كاملةً لكن «مُسلَّم»
 // محدودة بالأحدث، فالعدّ من الصفوف كان سيَعرض نافذة العرض لا الحقيقة.
-function Stats({ counts }: { counts?: RouterOutputs["workOrders"]["counts"] }) {
-  const active = (counts?.received ?? 0) + (counts?.inProgress ?? 0) + (counts?.ready ?? 0);
-  const late = counts?.late ?? 0;
-  const inProg = counts?.inProgress ?? 0;
-  const ready = counts?.ready ?? 0;
-  const delivered = counts?.delivered ?? 0;
-  const cards: { c: string; label: React.ReactNode; val: number; sub: string }[] = [
-    { c: "var(--primary)", label: (<><Receipt aria-hidden className="size-4 inline-block align-text-bottom me-1" /> أوامر نشطة</>), val: active, sub: "قيد المعالجة الآن" },
-    { c: "oklch(0.577 0.245 27.325)", label: (<><Timer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> متأخرة عن الاستحقاق</>), val: late, sub: "تحتاج تدخّلاً فورياً" },
-    { c: "oklch(0.60 0.16 250)", label: (<><Wrench aria-hidden className="size-4 inline-block align-text-bottom me-1" /> قيد التنفيذ</>), val: inProg, sub: "تحت الإنتاج" },
-    { c: "oklch(0.58 0.22 293)", label: (<><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> جاهز للتسليم</>), val: ready, sub: "بانتظار العميل" },
-    { c: "oklch(0.62 0.16 155)", label: (<><Package aria-hidden className="size-4 inline-block align-text-bottom me-1" /> مُسلَّم</>), val: delivered, sub: "اكتمل وصدرت الفاتورة" },
-  ];
-  return (
-    <div className="wob-stats">
-      {cards.map((s, i) => (
-        <div className="wob-stat" key={i} style={{ ["--stat-c" as string]: s.c } as React.CSSProperties}>
-          <div className="wob-stat-label">{s.label}</div>
-          <div className="wob-stat-val">{fmtInt(s.val)}</div>
-          <div className="wob-stat-sub">{s.sub}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // ─────────────── حوار التسليم (مالي — تأكيد صريح) ───────────────
 const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -487,11 +462,10 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
             <label className="text-sm font-medium">طريقة الدفع</label>
             <select className={dlgInput} value={methodV} onChange={(e) => setMethodV(e.target.value as typeof methodV)}>
               <option value="CASH">نقدي</option>
-              <option value="CARD" disabled>بطاقة</option>
-              <option value="TRANSFER" disabled>تحويل</option>
-              <option value="WALLET" disabled>محفظة</option>
+              <option value="CARD" disabled={!isPosPaymentMethodEnabled("CARD")}>بطاقة</option>
+              <option value="TRANSFER" disabled={!isPosPaymentMethodEnabled("TRANSFER")}>تحويل</option>
+              <option value="WALLET" disabled={!isPosPaymentMethodEnabled("WALLET")}>محفظة</option>
             </select>
-            <p className="text-xs text-muted-foreground">{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</p>
           </div>
         </div>
         <DialogFooter>
@@ -499,7 +473,9 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
           <button className="wob-btn wob-btn-primary" disabled={pending || !isPosPaymentMethodEnabled(methodV) || (amtD.gt(0) && methodV !== "CASH" && !reference.trim())}
             onClick={() => {
               if (!isPosPaymentMethodEnabled(methodV)) return;
-              onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV, reference: undefined } : undefined);
+              onConfirm(amtD.gt(0)
+                ? { amount: round2(amtD).toFixed(2), method: methodV, reference: methodV === "CASH" ? undefined : reference.trim() }
+                : undefined);
             }}>
             {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
           </button>
@@ -628,7 +604,7 @@ function EditWorkOrderDialog({ workOrderId, onClose, onSaved }: { workOrderId: n
                 <div className="space-y-1">
                   <Label>قناة الاستلام</Label>
                   <select className={dlgInput} value={form.receptionChannel} onChange={(e) => setForm({ ...form, receptionChannel: e.target.value as EditForm["receptionChannel"] })}>
-                    {Object.entries(CHANNELS).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+                    {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                   </select>
                 </div>
               </div>
@@ -685,16 +661,15 @@ function Drawer({
 
   const d = detail.data ?? null;
   const di = d ? dueInfo(d) : null;
-  const ch = d ? (CHANNELS[d.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER) : null;
   const pri = d ? (PRIORITIES[d.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL) : null;
-  const next = d ? NEXT[d.status] : undefined;
-  const hue = d ? (STATUS_HUE[d.status] ?? 255) : 255;
-  const cur = d ? (STAGE_INDEX[d.status] ?? 0) : 0;
+  const next = d ? WO_NEXT_STATUS[d.status as WorkOrderStatus] : undefined;
+  const hue = workOrderStatusHue(d?.status);
+  const cur = d ? Math.max(WO_STAGE_INDEX[d.status as WorkOrderStatus] ?? 0, 0) : 0;
 
   // أحداث الخط الزمني: من سجلّ التدقيق إن توفّر، وإلا اشتقاق صادق من الطوابع.
   const tlRows = timeline.data ?? [];
   const tlItems = tlRows.length
-    ? tlRows.map((r) => ({ ev: TL_LABEL[r.action] ?? r.action, at: r.createdAt, by: r.userName as string | null }))
+    ? tlRows.map((r) => ({ ev: workOrderTimelineLabel(r.action), at: r.createdAt, by: r.userName as string | null }))
     : d ? [
         { ev: "استُلم الطلب", at: d.createdAt, by: null as string | null },
         ...(d.deliveredAt ? [{ ev: "سُلّم وصدرت الفاتورة", at: d.deliveredAt, by: null as string | null }] : []),
@@ -722,7 +697,7 @@ function Drawer({
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", alignItems: "center" }}>
-                <span className="wob-meta-pill" style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})`, display: "inline-flex", alignItems: "center", gap: 6 }}><span className="inline-block size-2 rounded-full" style={{ background: `oklch(0.45 0.17 ${hue})` }} />{workOrderStatusLabel(d)}</span>
+                <span className="wob-meta-pill" style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})`, display: "inline-flex", alignItems: "center", gap: 6 }}><span className="inline-block size-2 rounded-full" style={{ background: `oklch(0.45 0.17 ${hue})` }} />{workOrderCardLabel(d)}</span>
                 {pri && <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>}
                 {di && <span className={`wob-due wob-${di.state}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{di.state === "late" ? <Timer aria-hidden className="size-3.5" /> : <Calendar aria-hidden className="size-3.5" />} {di.text}</span>}
               </div>
@@ -742,7 +717,7 @@ function Drawer({
                     </div>
                   </div>
                   {d.customerPhone && <div><div className="wob-k">هاتف العميل</div><div className="wob-v" dir="ltr">{d.customerPhone}</div></div>}
-                  <div><div className="wob-k">قناة الاستلام</div><div className="wob-v inline-flex items-center gap-1"><WorkOrderChannelMark channel={d.receptionChannel} /> {ch?.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</div></div>
+                  <div><div className="wob-k">قناة الاستلام</div><div className="wob-v inline-flex items-center gap-1"><ChannelBadge channel={d.receptionChannel} handle={d.channelHandle} /></div></div>
                   <div><div className="wob-k">الكمية</div><div className="wob-v">{fmtInt(d.quantity)}</div></div>
                   <div><div className="wob-k">سعر البيع</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.salePrice)} د.ع</div></div>
                   {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">العربون</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.deposit)} د.ع</div></div>}
@@ -820,7 +795,7 @@ function Drawer({
                   date: d.createdAt,
                   customer: d.customerName,
                   description: d.customizationText,
-                  status: STATUS_LABEL[d.status] ?? d.status,
+                  status: workOrderStatusLabel(d.status),
                   items: [{ name: d.title, qty: d.quantity, unit: "نُسخة" }],
                   deposit: d.deposit,
                   total: d.salePrice,
@@ -831,7 +806,7 @@ function Drawer({
                   date: d.createdAt,
                   customer: d.customerName,
                   description: d.customizationText,
-                  status: STATUS_LABEL[d.status] ?? d.status,
+                  status: workOrderStatusLabel(d.status),
                   items: [{ name: d.title, qty: d.quantity, unit: "نُسخة" }],
                   deposit: d.deposit,
                   total: d.salePrice,
@@ -965,13 +940,13 @@ function OrdersTable({
       header: "الحالة",
       cell: ({ row }) => {
         const o = row.original;
-        const hue = STATUS_HUE[o.status] ?? 255;
+        const hue = workOrderStatusHue(o.status);
         return (
           <span
             className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
             style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})` }}
           >
-            {workOrderStatusLabel(o)}
+            {workOrderCardLabel(o)}
           </span>
         );
       },
@@ -1015,8 +990,7 @@ function OrdersTable({
       id: "channel",
       header: "القناة",
       cell: ({ row }) => {
-        const ch = CHANNELS[row.original.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
-        return <span title={ch.label}>{ch.icon} {ch.label}</span>;
+        return <ChannelBadge channel={row.original.receptionChannel} />;
       },
     },
     {
@@ -1050,7 +1024,7 @@ function OrdersTable({
       cell: ({ row }) => {
         const o = row.original;
         const isFinal = o.status === "DELIVERED" || o.status === "CANCELLED";
-        const next = NEXT[o.status as Status];
+        const next = WO_NEXT_STATUS[o.status as WorkOrderStatus];
         const actions: RowAction[] = [
           { key: "open", kind: "view", label: "فتح التفاصيل", onSelect: () => onOpen(o.id) },
           { key: "edit", kind: "edit", label: "تعديل", icon: Pencil, hidden: isFinal, onSelect: () => onEdit(o.id), gate: { managerOnly: true } },
@@ -1093,6 +1067,43 @@ function OrdersTable({
       viewKey="work-orders-list"
       getRowId={(r) => String(r.id)}
       pageSize={50}
+      mobileCardRenderer={(o) => {
+        const pri = PRIORITIES[o.priority ?? "NORMAL"] ?? PRIORITIES.NORMAL;
+        const due = positiveDiff(o.salePrice, o.deposit ?? 0);
+        const next = WO_NEXT_STATUS[o.status as WorkOrderStatus];
+        return (
+          <MobileDataCard
+            key={o.id}
+            title={o.title}
+            subtitle={`${o.orderNumber} · ${o.customerName ?? "عميل نقدي"}`}
+            badge={{
+              label: workOrderCardLabel(o),
+              variant: o.status === "DELIVERED" ? "success" : o.status === "READY" ? "default" : o.status === "IN_PROGRESS" ? "warning" : "secondary",
+            }}
+            amount={{
+              value: fmtAr(o.salePrice),
+              label: due.gt(0) && o.status !== "DELIVERED" && o.status !== "CANCELLED" ? `المتبقي: ${fmtAr(due.toFixed(2))}` : undefined,
+              positive: o.status === "DELIVERED",
+            }}
+            metadata={[
+              { label: "الكمية", value: `${fmtInt(o.quantity)} نسخة` },
+              { label: "الأولوية", value: pri.label },
+              { label: "الاستحقاق", value: fmtDate(o.dueDate), icon: Calendar },
+              { label: "الفني", value: o.assigneeName ?? "غير مُسنَد" },
+            ]}
+            onClick={() => onOpen(o.id)}
+            primaryAction={
+              next && (next !== "DELIVERED" || canDeliver)
+                ? {
+                    label: next === "IN_PROGRESS" ? "بدء التنفيذ" : next === "READY" ? "جاهز" : "تسليم",
+                    icon: next === "READY" ? CheckCircle2 : next === "DELIVERED" ? Package : ChevronRight,
+                    onClick: () => onAdvance(o, next),
+                  }
+                : undefined
+            }
+          />
+        );
+      }}
     />
   );
 }
@@ -1107,8 +1118,15 @@ export default function WorkOrders() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
-  const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  // مرآة workordersManagerProcedure حرفياً: roles=[manager] + workorders/FULL، مع admin
+  // والمنح الصريح حسب moduleAccessAllowed. لا مقارنة أدوار خام قد تحجب دوراً مخصّصاً أو
+  // تُظهر زرّاً سيرفضه الخادم بسبب override مُقيِّد.
+  const canCancel = canCancelWorkOrder(me.data?.role, me.data?.permissionsOverride ?? null);
+  const isManager = canCancel;
+  const isOwner = me.data?.isOwner === true;
   const canCrossBranches = me.data?.role === "admin";
+  // المشرف (أدمن/مالك/مدير) نطاقُه كلُّ الفرع بحكم `scopedOwnerId=null` — فالرقاقة بلا أثرٍ له.
+  const isSupervisor = me.data?.role === "admin" || me.data?.role === "manager" || !!me.data?.isOwner;
   // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
   // فنّي المطبعة (workordersExecProcedure) يقدّم المراحل لكن التسليم/الفوترة مال ونقد (كاشير/مدير أو منح صريح).
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
@@ -1125,7 +1143,7 @@ export default function WorkOrders() {
 
   // الفلاتر في querystring — تنجو من فتح التفاصيل والرجوع وتُشارَك رابطاً.
   // pri/ch/branch/tech بقيمة "all" (لا "") لأن AppSelect يعامل "" كـplaceholder غير قابل لإعادة الاختيار.
-  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all" });
+  const [f, setF, resetF] = useUrlFilters({ q: "", pri: "all", ch: "all", branch: "all", from: "", to: "", tech: "all", scope: "branch", stale: "" });
   const dq = useDebouncedValue(f.q, 250);
   const [sel, setSel] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<number | null>(null);
@@ -1140,10 +1158,13 @@ export default function WorkOrders() {
   }, [view]);
   const [customerContextId, setCustomerContextId] = useState<number | null>(null);
   const [deliverOrder, setDeliverOrder] = useState<DeliverTarget | null>(null);
+  const [cancelNotice, setCancelNotice] = useState<{ title: string; description: string; awaitingOwner: boolean } | null>(null);
+  const [cancelRetryWorkOrderId, setCancelRetryWorkOrderId] = useState<number | null>(null);
   const [drag, setDrag] = useState<{ order: WO; x: number; y: number; overCol: string | null } | null>(null);
 
   const colRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const dragRef = useRef<{ order: WO; startX: number; startY: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const cancelRequestIdsRef = useRef(new Map<number, string>());
 
   // فلاتر خادمية مشتركة بين القائمتين والعدّادات والتصدير — بناء واحد فلا تنحرف الأرقام عن الجدول.
   const serverFilters = {
@@ -1152,6 +1173,13 @@ export default function WorkOrders() {
     to: f.to || undefined,
     assignedTo: f.tech !== "all" ? Number(f.tech) : undefined,
     branchId: canCrossBranches && f.branch !== "all" ? Number(f.branch) : undefined,
+    // قرار المالك (١٩/٨): الشاشات التشغيلية تعرض **أوامر الفرع كلّها** افتراضياً. موظّفةٌ لا ترى
+    // طلبات زميلتها كانت تعجز عن الردّ على زبونٍ سأل عن طلبٍ استقبلته الوردية السابقة.
+    // الخادم يشترط `workorders:FULL` ويُبقي عزل الفرع حاكماً؛ ورقاقة «طلباتي» تعيد التضييق.
+    branchQueue: f.scope !== "mine",
+    // ش٦: «لم يحضر أصحابها» — جاهزٌ منذ ٧ أيّامٍ فأكثر. لحظةُ الجاهزية مشتقّة خادمياً
+    // (`workStartedAt + workSeconds`) فلا عمودَ جديد ولا كاتبَ ينجرف.
+    awaitingPickupDays: f.stale === "1" ? 7 : undefined,
   };
   // العلة الجوهرية سابقاً: list({limit:200}) واحدة desc(id) — «مُسلَّم» المتراكمة بلا سقف كانت تملأ
   // النافذة فيسقط عملٌ نشط من اللوحة بصمت. الحل (نمط WorkOrderStation المُصلَح): استعلامان منفصلان —
@@ -1168,6 +1196,8 @@ export default function WorkOrders() {
     utils.workOrders.counts.invalidate(),
     utils.workOrders.get.invalidate(),
     utils.workOrders.timeline.invalidate(),
+    utils.workOrders.pendingCancellationRefunds.invalidate(),
+    utils.workOrders.cancellationRefundStatus.invalidate(),
     utils.inventory.movements.invalidate(),
     utils.delivery.readyForDispatch.invalidate(),
   ]);
@@ -1188,8 +1218,25 @@ export default function WorkOrders() {
     onError: (e) => { notify.err(e); invalidateAll(); },
   });
   const cancel = trpc.workOrders.cancel.useMutation({
-    onSuccess: () => { notify.ok("أُلغي الأمر", "أُعيدت المواد للمخزون إن وُجدت."); setSel(null); invalidateAll(); },
-    onError: (e) => { notify.err(e); invalidateAll(); },
+    onSuccess: (result, variables) => {
+      const notice = cancellationRefundNotice(result.pendingRefundReceiptIds, result.replayed);
+      setCancelNotice(notice);
+      if (notice.awaitingOwner) notify.warn(notice.title, notice.description);
+      else notify.ok(notice.title, notice.description);
+      cancelRequestIdsRef.current.delete(variables.workOrderId);
+      setCancelRetryWorkOrderId(null);
+      setSel(null);
+      invalidateAll();
+    },
+    onError: (error, variables) => {
+      notify.err(error, "لم نتأكد من نتيجة الإلغاء؛ يمكنك إعادة المحاولة بالمعرّف نفسه دون تكرار الأثر.");
+      setCancelRetryWorkOrderId(variables.workOrderId);
+      setCancelNotice({
+        title: "تعذّر التحقق من نتيجة الإلغاء",
+        description: "لم تُنشأ محاولة جديدة تلقائياً. أعد التحقق والمحاولة الآمنة بالمعرّف نفسه؛ إن كان الإلغاء نُفّذ فسيعيد الخادم النتيجة بلا تكرار.",
+        awaitingOwner: true,
+      });
+    },
   });
   const assign = trpc.workOrders.assign.useMutation({
     onSuccess: () => { notify.ok("تم تحديث الإسناد"); invalidateAll(); },
@@ -1257,7 +1304,7 @@ export default function WorkOrders() {
 
   // ── الانتقال بين المراحل (الخطوة التالية فقط — التسليم خلف تأكيد مالي) ──
   async function attemptMove(order: WO, to: Status) {
-    if (NEXT[order.status] !== to) {
+    if (WO_NEXT_STATUS[order.status as WorkOrderStatus] !== to) {
       notify.warn("انتقال غير مسموح", "اتبع التسلسل: مُستلَم ← قيد التنفيذ ← جاهز ← مُسلَّم.");
       return;
     }
@@ -1273,8 +1320,20 @@ export default function WorkOrders() {
       // مرآة الخادم: deliver محصور بالكاشير/المدير (أو منح workorders=FULL صريح) — لا نفتح حوار تسليم سيفشل بـ403.
       if (!canDeliver) { notify.warn("التسليم من صلاحية الكاشير/المدير", "تقديم الأمر إلى «مُسلَّم» يُصدر فاتورة نهائية — يتولّاه الكاشير أو المدير."); return; }
       if (order.hasDelivery) {
-        notify.warn("هذا طلب توصيل", "يجب إنشاء إرسالية واختيار الجهة من إدارة التوصيل.");
-        navigate("/delivery");
+        // ١٨/٨ (بلاغ المالك): كانت الرسالة واحدةً لكل الحالات والتنقّل يقذف إلى شاشةٍ **لا أثر
+        // للطلب فيها** (الطرد المُسنَد كان خارج كل تبويباتها). الآن: رسالةٌ بحالته الحقيقية،
+        // والتنقّل إلى التبويب الذي يعرضه فعلاً.
+        const st = deriveWoDeliveryState(order.consignmentStatus, order.parcelStatus);
+        if (st === "NONE") {
+          notify.warn("هذا طلب توصيل", "أنشئ الإرسالية واختر الجهة من «جاهز للإرسال» في إدارة التوصيل.");
+          navigate("/delivery");
+        } else {
+          notify.warn(
+            `الطلب ${woDeliveryStateLabel(st)}`,
+            `${order.deliveryPartyName ? `مع ${order.deliveryPartyName}. ` : ""}يُغلَق بإثبات التسليم من تبويب «قيد التوصيل».`,
+          );
+          navigate("/delivery?tab=transit");
+        }
         return;
       }
       setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice, deposit: order.deposit ?? "0" });
@@ -1320,10 +1379,12 @@ export default function WorkOrders() {
 
   async function onCancelOrder(d: Pick<Detail, "id" | "title" | "orderNumber">) {
     if (!(await confirm({ variant: "danger", title: "إلغاء طلب الخدمة", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الطلب", cancelText: "تراجع" }))) return;
-    cancel.mutate({ workOrderId: d.id });
+    const clientRequestId = cancelRequestIdsRef.current.get(d.id) ?? newClientRequestId();
+    cancelRequestIdsRef.current.set(d.id, clientRequestId);
+    cancel.mutate({ workOrderId: d.id, clientRequestId });
   }
 
-  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all";
+  const anyFilter = f.q || f.pri !== "all" || f.ch !== "all" || f.branch !== "all" || f.from || f.to || f.tech !== "all" || f.stale === "1" || (f.scope || "branch") !== "branch";
   const boardEmpty = filtered.length === 0;
   const boardLoading = activeQ.isLoading || deliveredQ.isLoading;
 
@@ -1331,6 +1392,17 @@ export default function WorkOrders() {
     <div className="wob">
       <div className="wob-topbar">
         <div>
+          {/* ١٩/٨ (طلب المالك): مخرجا الشاشة — محطّة العمل والرئيسيّة. اللوحة تُفتَح من بطاقة
+              «لوحة الإنتاج» في الرئيسيّة ومن رأس المحطّة، وكانت بلا طريقِ عودةٍ إلى أيٍّ منهما. */}
+          <div className="mb-1 flex items-center gap-3">
+            <a href="/pos?mode=RECEPTION" className="inline-flex items-center gap-1 text-2xs font-bold text-muted-foreground hover:text-foreground hover:underline">
+              <ArrowRight aria-hidden className="size-3.5" /> محطة خدمة العملاء
+            </a>
+            <span aria-hidden className="text-muted-foreground/40">·</span>
+            <a href="/" className="inline-flex items-center gap-1 text-2xs font-bold text-muted-foreground hover:text-foreground hover:underline">
+              <Home aria-hidden className="size-3.5" /> الرئيسية
+            </a>
+          </div>
           <div className="wob-title">أوامر الشغل</div>
           <div className="wob-sub">من الاستلام إلى التسليم — اسحب البطاقة بين المراحل. فاتورة تلقائية عند التسليم.</div>
         </div>
@@ -1361,18 +1433,91 @@ export default function WorkOrders() {
                 { key: "salePrice", header: "السعر", map: (r) => Number(r.salePrice ?? 0) },
                 { key: "dueDate", header: "الاستحقاق", map: (r) => (r.dueDate ? String(r.dueDate).slice(0, 10) : "") },
                 { key: "priority", header: "الأولوية", map: (r) => PRIORITIES[r.priority ?? "NORMAL"]?.label ?? "" },
-                { key: "receptionChannel", header: "القناة", map: (r) => CHANNELS[r.receptionChannel ?? "WALK_IN"]?.label ?? "" },
+                { key: "receptionChannel", header: "القناة", map: (r) => receptionChannelLabel(r.receptionChannel) },
                 { key: "assigneeName", header: "المسؤول", map: (r) => r.assigneeName ?? "" },
-                { key: "status", header: "الحالة", map: (r) => workOrderStatusLabel(r) },
+                { key: "status", header: "الحالة", map: (r) => workOrderCardLabel(r) },
               ],
             })}><FileText aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تصدير Excel</button>
           <Link href="/pos?mode=RECEPTION" className="wob-btn wob-btn-primary">شاشة الاستقبال الموحدة</Link>
         </div>
       </div>
 
-      <Stats counts={serverCounts} />
+      <WorkOrderRefundApprovals isOwner={isOwner} currentUserId={me.data?.id} />
+
+      {cancelNotice && (
+        <div
+          role="status"
+          className={cancelNotice.awaitingOwner
+            ? "rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-3 text-sm text-[var(--sem-warn)]"
+            : "rounded-md border border-[var(--sem-pos)]/30 bg-[var(--sem-pos-bg)] p-3 text-sm text-[var(--sem-pos)]"}
+        >
+          <div className="font-bold">{cancelNotice.title}</div>
+          <div>{cancelNotice.description}</div>
+          {cancelRetryWorkOrderId != null && canCancel && (
+            <button
+              type="button"
+              className="mt-2 rounded-md border border-current px-3 py-1.5 text-xs font-bold disabled:opacity-50"
+              disabled={cancel.isPending}
+              onClick={() => {
+                const clientRequestId = cancelRequestIdsRef.current.get(cancelRetryWorkOrderId);
+                if (!clientRequestId) {
+                  notify.err("تعذّر العثور على معرّف المحاولة السابقة؛ افتح أمر الشغل للتحقق من حالته.");
+                  return;
+                }
+                cancel.mutate({ workOrderId: cancelRetryWorkOrderId, clientRequestId });
+              }}
+            >
+              {cancel.isPending ? "جارٍ التحقق…" : "إعادة التحقق والمحاولة الآمنة"}
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="wob-toolbar">
+        {/* رقاقة النطاق (قرار المالك ١٩/٨) — «كل طلبات الفرع» هو الافتراضيّ، و«طلباتي» تضييقٌ
+            اختياريّ. لا تُعرَض للمشرفين: نطاقُهم كلُّ الفرع أصلاً فتكون الرقاقة بلا أثر. */}
+        {!isSupervisor && (
+          <div className="wob-scope" role="group" aria-label="نطاق العرض">
+            {([
+              { v: "branch", label: "كل طلبات الفرع" },
+              { v: "mine", label: "طلباتي" },
+            ] as const).map((o) => (
+              <button
+                key={o.v}
+                type="button"
+                aria-pressed={(f.scope || "branch") === o.v}
+                onClick={() => setF({ scope: o.v })}
+                className={`wob-scope-btn${(f.scope || "branch") === o.v ? " is-on" : ""}`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* ش٦: رقاقةُ «لم يحضر أصحابها» بجوار النطاق — طابورٌ ثالثٌ لا يقوله أيّ عمود:
+            الأمرُ جاهزٌ (فليس متأخّراً في التنفيذ) ولا أحد يستلمه. */}
+        <button
+          type="button"
+          aria-pressed={f.stale === "1"}
+          onClick={() => setF({ stale: f.stale === "1" ? "" : "1" })}
+          className={`wob-scope-btn${f.stale === "1" ? " is-on" : ""}`}
+          title="طلبات جاهزة منذ أكثر من ٧ أيّام ولم يستلمها أصحابها"
+        >
+          لم يحضر أصحابها
+        </button>
+        {/* ١٩/٨ (طلب المالك: «استثمار رأس الشاشة») — شريطُ الإحصاءات الخمس زال: أربعةٌ منه
+            كانت تكرّر عدّادات الأعمدة حرفياً (نشطة/قيد التنفيذ/جاهز/مُسلَّم) فتأكل صفّاً
+            كاملاً من ارتفاع اللوحة بلا خبر. بقي **المتأخّر** وحده لأنّه الوحيد الذي لا
+            يقوله عمودٌ — ويُخفى عند الصفر. */}
+        {(serverCounts?.late ?? 0) > 0 && (
+          <span
+            className="inline-flex flex-none items-center gap-1.5 rounded-lg border border-[var(--sem-neg)] bg-[var(--sem-neg-bg)] px-2.5 py-1.5 text-xs font-extrabold text-[var(--sem-neg)]"
+            title="أوامر تجاوزت تاريخ استحقاقها"
+          >
+            <Timer aria-hidden className="size-3.5" />
+            {fmtInt(serverCounts?.late ?? 0)} متأخّر
+          </span>
+        )}
         <div className="wob-search">
           <span className="wob-si"><Search aria-hidden className="size-4" /></span>
           <input value={f.q} onChange={(e) => setF({ q: e.target.value })} placeholder="بحث (رقم / عنوان / عميل)" />
@@ -1396,7 +1541,7 @@ export default function WorkOrders() {
         </AppSelect>
         <AppSelect value={f.ch} onValueChange={(v) => setF({ ch: v })} className="w-auto min-w-32" aria-label="فلتر القناة">
           <option value="all">كل القنوات</option>
-          {Object.entries(CHANNELS).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
+          {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </AppSelect>
         {isManager && (assignableStaff.data?.length ?? 0) > 0 && (
           <AppSelect value={f.tech} onValueChange={(v) => setF({ tech: v })} className="w-auto min-w-32" aria-label="فلتر الفنّي">
@@ -1450,7 +1595,7 @@ export default function WorkOrders() {
           <div className="wob-board">
             {COLUMNS.map((s) => {
               const list = byCol[s.key] ?? [];
-              const isOver = drag && drag.overCol === s.key && NEXT[drag.order.status] === s.status;
+              const isOver = drag && drag.overCol === s.key && WO_NEXT_STATUS[drag.order.status as WorkOrderStatus] === s.status;
               return (
                 <div className="wob-col" style={colVars(s.hue)} key={s.key}>
                   <div className="wob-col-head">

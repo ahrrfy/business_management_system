@@ -19,6 +19,7 @@ export const NGINX_MANAGED_FILES = Object.freeze(
       "snippets/alroya-cloudflare-realip.conf",
     ],
     ["deploy/nginx-proxy-common.conf", "snippets/alroya-proxy-common.conf"],
+    ["deploy/nginx-spa-location.conf", "snippets/alroya-spa-location.conf"],
     ["deploy/nginx-app-locations.conf", "snippets/alroya-app-locations.conf"],
     ["deploy/nginx-erp.conf", "sites-available/alroya-erp"],
     ["deploy/nginx-public.conf", "sites-available/alroya-public"],
@@ -69,29 +70,48 @@ function fingerprintsMatch(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function readInternalProxySecretFromEnv(file) {
+export function readInternalProxySecretsFromEnv(file) {
   assertPlainFile(file, "NGINX_APP_ENV_INVALID");
-  const matches = [];
+  const matches = { current: [], previous: [] };
   for (const rawLine of fs.readFileSync(file, "utf8").split(/\r?\n/u)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) continue;
-    const match = /^(?:export\s+)?INTERNAL_PROXY_SECRET\s*=\s*(.*)$/u.exec(
-      line,
-    );
+    const match =
+      /^(?:export\s+)?(INTERNAL_PROXY_SECRET|INTERNAL_PROXY_SECRET_PREVIOUS)\s*=\s*(.*)$/u.exec(
+        line,
+      );
     if (!match) continue;
-    let value = match[1].trim();
+    let value = match[2].trim();
     if (
       (value.startsWith('"') && value.endsWith('"')) ||
       (value.startsWith("'") && value.endsWith("'"))
     ) {
       value = value.slice(1, -1);
     }
-    matches.push(value);
+    matches[
+      match[1] === "INTERNAL_PROXY_SECRET" ? "current" : "previous"
+    ].push(value);
   }
-  if (matches.length !== 1 || !INTERNAL_PROXY_SECRET_PATTERN.test(matches[0])) {
+  if (
+    matches.current.length !== 1 ||
+    !INTERNAL_PROXY_SECRET_PATTERN.test(matches.current[0]) ||
+    matches.previous.length > 1 ||
+    (matches.previous.length === 1 &&
+      (!INTERNAL_PROXY_SECRET_PATTERN.test(matches.previous[0]) ||
+        fingerprintsMatch(matches.current[0], matches.previous[0])))
+  ) {
     throw contractError("NGINX_APP_SECRET_INVALID");
   }
-  return matches[0];
+  return Object.freeze({
+    current: matches.current[0],
+    ...(matches.previous.length === 1
+      ? { previous: matches.previous[0] }
+      : {}),
+  });
+}
+
+export function readInternalProxySecretFromEnv(file) {
+  return readInternalProxySecretsFromEnv(file).current;
 }
 
 export function createSecretAttestation(secret, secretStat) {
@@ -208,6 +228,64 @@ export function verifyRenderedNginxTopology(rendered, options = {}) {
   });
 }
 
+/**
+ * المجلّدات الأمّ التي **لا** يُسجَّل توقيت تعديلها في البصمة.
+ *
+ * `snippets/` مستثنىً أصلاً لأنّ التثبيت نفسه يكتب فيه فيغيّر توقيته. ويُضاف إليه مجلّدا
+ * اعتماديات TLS (`/etc/letsencrypt` وما تحته) لأنّ **certbot** يملكهما ويحدّث توقيتهما في كل
+ * دورة تجديدٍ روتينية — حدثٌ نظاميّ مشروع خارج سيطرة العقد. إدراجه كان يُسقِط النشر بإنذارٍ
+ * كاذب («عبثٌ بالإعداد») بلا أن يتغيّر ملفٌّ واحد (حادثة ١٦/٨/٢٦: توقيت `/etc/letsencrypt`
+ * وحده تغيّر بينما الملفّات الثلاثة عشر كلّها سليمة، فتوقّف نشرٌ مشروع).
+ *
+ * ⚠️ الاستثناء يقتصر على **توقيت المجلّد**؛ بصمة كل ملفٍّ (النوع، وجهة الرابط، الأذونات،
+ * المالك، الحجم، وتوقيته هو) تبقى محسوبةً ومقارَنةً كما كانت — فلا تضعف قدرة العقد على كشف
+ * أيّ تبديلٍ حقيقيّ في الشهادات أو الإعداد.
+ */
+/**
+ * المجلّدات التي **لا يُقارَن توقيتُ تعديلها** — لأنّها ليست ملكاً لنا وحدنا،
+ * **ولأنّ nginx لا يُحمّلها بالتعميم** فلا يصير ما يظهر فيها إعداداً حيّاً.
+ *
+ * توقيت المجلّد يتغيّر بإنشاء **أيّ** ملفٍّ فيه أو حذفه، ولو لم يُمَسّ ملفٌّ واحدٌ من ملفّاتنا.
+ * وهذا الخادم **مشترَك**: خدمة `siraj-auto-deploy` (نشرُ سراج القرآن التلقائيّ من GitHub)
+ * تكتب في `/etc/nginx` و`sites-available` كلّما تحدّث فرعُها، وcertbot يكتب عند التجديد.
+ * فكان نشرُنا يسقط بـ`NGINX_LIVE_TOPOLOGY_DRIFT` لأنّ **الجار** نشر، لا لأنّ شيئاً من
+ * إعدادنا تغيّر (تشخيصٌ ميدانيّ ٢١/٨: الملفّات الأربعة عشر متطابقةٌ في المحتوى والحجم
+ * والصلاحيات والمالك، والفرق الوحيد `parentMtimeMs`).
+ *
+ * ⛔ **`sites-enabled` و`conf.d` تبقيان مقارَنتَين عمداً**: nginx يُحمّل `sites-enabled/*`
+ * و`conf.d/*.conf` بالتعميم، فملفٌّ يُدسّ فيهما يصير **إعداداً حيّاً** قد يخطف نطاقاً. توقيتُ
+ * المجلّد هو ما يكشف ظهورَه، ويحرسه اختبارٌ صريح. أسقطتُهما في محاولةٍ أولى فسقط الاختبار
+ * محقّاً — والتضييق الصحيح يقتصر على ما لا يُحمَّل بالتعميم.
+ *
+ * و`parentMode` و`parentUid` و`parentGid` تبقى مقارَنةً في كل الحالات — فتغيُّرُ صلاحيات
+ * المجلّد أو مالكه يُمسَك كما كان.
+ *
+ * وحارسٌ يُنذر كذباً يُتجاوَز بـ`--no-verify` فيصير مسرحياً — وهذا أسوأ من غيابه.
+ */
+function topologyIgnoredParents(options = {}) {
+  const nginxRoot = path.resolve(options.nginxRoot ?? "/etc/nginx");
+  const tlsDependencies = options.tlsDependencies ?? NGINX_TLS_DEPENDENCIES;
+  return new Set([
+    // جذر `/etc/nginx` و`sites-available`: **لا يُحمّلهما nginx بالتعميم**، فملفٌّ يظهر فيهما
+    // يبقى خاملاً حتى يُربَط صراحةً — ومن ثمّ توقيتهما ليس إشارةَ أمانٍ بل ضجيجُ جيران.
+    nginxRoot,
+    path.join(nginxRoot, "snippets"),
+    path.join(nginxRoot, "sites-available"),
+    ...tlsDependencies.map((file) => path.resolve(path.dirname(file))),
+  ]);
+}
+
+/**
+ * يُصفّر توقيت المجلّد الأمّ للسجلّات المستثناة على **الطرفين** قبل المقارنة.
+ * التطبيق على الطرفين مقصود: يجعل البصمات المكتوبة قبل هذا الإصلاح (وفيها توقيتٌ حقيقيّ
+ * لمجلّد certbot) تُقارَن بنجاح بلا حاجة لإعادة توثيقٍ بصلاحيات root على الخادم.
+ */
+function normalizeTopologyRecord(record, ignoredParents) {
+  if (!record || typeof record.path !== "string") return record;
+  if (!ignoredParents.has(path.resolve(path.dirname(record.path)))) return record;
+  return { ...record, parentMtimeMs: null };
+}
+
 function topologyFileRecord(file, ignoredParent = null) {
   let lstat;
   let stat;
@@ -249,12 +327,9 @@ function topologyFileRecord(file, ignoredParent = null) {
 
 export function createNginxTopologyAttestation(rendered, options = {}) {
   const topology = verifyRenderedNginxTopology(rendered, options);
-  const ignoredParent = path.join(
-    path.resolve(options.nginxRoot ?? "/etc/nginx"),
-    "snippets",
-  );
+  const ignoredParents = topologyIgnoredParents(options);
   const files = topology.files
-    .map((file) => topologyFileRecord(file, ignoredParent))
+    .map((file) => normalizeTopologyRecord(topologyFileRecord(file), ignoredParents))
     .sort((left, right) => left.path.localeCompare(right.path));
   return `${JSON.stringify({ version: 1, files })}\n`;
 }
@@ -393,13 +468,16 @@ function inspectSecretAttestation(contract, secretStat, options, issues) {
     !/^[a-f0-9]{64}$/u.test(attestation?.secretSha256 ?? "") ||
     !Number.isFinite(attestation?.secretSize) ||
     !Number.isFinite(attestation?.secretMtimeMs) ||
-    !Number.isFinite(attestation?.secretCtimeMs) ||
     !Number.isFinite(attestation?.secretDevice) ||
     !Number.isFinite(attestation?.secretInode) ||
     !secretStat ||
     attestation.secretSize !== secretStat.size ||
     attestation.secretMtimeMs !== secretStat.mtimeMs ||
-    attestation.secretCtimeMs !== secretStat.ctimeMs ||
+    // ⛔ `ctime` **لا يُقارَن**: يتغيّر بأيّ لمسةٍ لبيانات الملفّ الوصفية (chmod/chown/إعادة
+    // ربط) ولو لم يتغيّر بايتٌ واحد. أسقطَ نشرَنا في ٢١/٨ بعد أن مسّه certbot ليل ٢٠/٨:
+    // `sha256` و`size` و`mtime` و`inode` و`device` كلّها مطابقةٌ تماماً، و`ctime` وحده مختلف.
+    // وما يحميه ctime مغطّىً بأقوى منه وأدقّ: **بصمة المحتوى** تُفحص أدناه، والصلاحياتُ
+    // والمالك يُفحصان صراحةً. فإبقاؤه ضجيجٌ يُسقِط النشر بلا خطرٍ يقابله.
     attestation.secretDevice !== secretStat.dev ||
     attestation.secretInode !== secretStat.ino
   ) {
@@ -508,12 +586,17 @@ function inspectTopologyAttestation(contract, options, issues) {
     issues.push("NGINX_LIVE_TOPOLOGY_ATTESTATION_INVALID");
     return;
   }
-  for (const expected of attestation.files) {
+  const ignoredParents = topologyIgnoredParents({
+    nginxRoot: contract.nginxRoot,
+    tlsDependencies: options.tlsDependencies,
+  });
+  for (const expectedRaw of attestation.files) {
+    const expected = normalizeTopologyRecord(expectedRaw, ignoredParents);
     let actual;
     try {
-      actual = topologyFileRecord(
-        path.resolve(expected?.path ?? ""),
-        path.dirname(contract.topologyAttestationPath),
+      actual = normalizeTopologyRecord(
+        topologyFileRecord(path.resolve(expectedRaw?.path ?? "")),
+        ignoredParents,
       );
     } catch {
       issues.push("NGINX_LIVE_TOPOLOGY_DRIFT");
@@ -533,9 +616,13 @@ export function verifyLiveNginxContract(options = {}) {
     strictOwnership: options.strictOwnership ?? process.platform !== "win32",
     expectedUid: options.expectedUid ?? 0,
     expectedGid: options.expectedGid ?? 0,
+    // يُمرَّر كما هو (قد يكون `[]` في الاختبارات) كي يُحسب استثناء المجلّدات الأمّ بنفس
+    // مدخلات التوليد — ولا يسقط الفحص على القائمة الحقيقية داخل بيئة اختبارٍ معزولة.
+    tlsDependencies: options.tlsDependencies,
     appEnvPath: path.resolve(
       options.appEnvPath ?? path.join(contract.projectRoot, ".env"),
     ),
+    expectedFileHashes: options.expectedFileHashes,
   };
   const issues = [];
   inspectContractDirectories(contract, normalized, issues);
@@ -562,7 +649,13 @@ export function verifyLiveNginxContract(options = {}) {
     ) {
       issues.push(`NGINX_LIVE_FILE_OWNER_INVALID:${entry.target}`);
     }
-    const expectedHash = sha256(fs.readFileSync(entry.source));
+    const expectedHash =
+      normalized.expectedFileHashes?.[entry.target] ??
+      sha256(fs.readFileSync(entry.source));
+    if (!/^[a-f0-9]{64}$/u.test(expectedHash)) {
+      issues.push(`NGINX_LIVE_FILE_EXPECTATION_INVALID:${entry.target}`);
+      continue;
+    }
     const actualHash = sha256(fs.readFileSync(entry.target));
     if (expectedHash !== actualHash) {
       issues.push(`NGINX_LIVE_FILE_DRIFT:${entry.target}`);
@@ -624,7 +717,7 @@ if (
     console.error(`nginx live contract: FAILED: ${code}`);
     for (const issue of error?.details ?? []) console.error(`- ${issue}`);
     console.error(
-      'repair: sudo "$(command -v node)" scripts/install-nginx-contract.mjs',
+      "repair: sudo /usr/bin/node /usr/local/libexec/erp/nginx/install-nginx-contract.mjs install",
     );
     process.exitCode = 1;
   }

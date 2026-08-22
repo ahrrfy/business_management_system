@@ -360,9 +360,11 @@ export async function createConfirmedPosSaleInTx(
 ): Promise<CreateSaleResult> {
   const payment = input.payment;
   if (payment) assertPosPaymentMethodEnabled(payment.method);
-  if (!input.requireExternalPaymentAttempt || !payment) {
+  if (!payment) {
     return createSaleInTx(tx, coreSaleInput(input), actor, capability);
   }
+  // اشتراط المحاولة يُشتق من **الدفع نفسه** لا من علامةٍ يرسلها المستدعي: علامةٌ منسيّةٌ
+  // (أو مستدعٍ جديد) كانت تكفي لتثبيت قبضٍ غير نقديّ بلا أيّ إثبات. النقد وحده يعبُر بلا محاولة.
   if (payment.method === "CASH") {
     if (payment.externalPaymentAttemptId != null) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الدفع النقدي لا يحمل محاولة دفع خارجية" });

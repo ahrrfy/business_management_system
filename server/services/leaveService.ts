@@ -35,12 +35,22 @@ export interface LeaveFilters {
   employeeId?: number;
   status?: "pending" | "approved" | "rejected";
   type?: string;
+  /**
+   * عزل الفرع (قرار المالك ١٢/٨): `null` = عبورٌ (أدمن/مالك)، ورقمٌ = فرعُه المُسنَد وحده.
+   * يُحقَن من `ctx.scopedBranchId`، ولا تشتقّه الخدمة من `ctx`.
+   *
+   * كانت وحدة الإجازات — كأختها الحضور — بلا أيّ حاجز فرع (تدقيق ١٧/٨). والإجازة **كتابةٌ
+   * ماليّة**: المدفوعة يومُ دوامٍ كامل وغيرُ المدفوعة خصمٌ، وكلتاهما تدخلان `computeAttendancePay`.
+   */
+  scopedBranchId?: number | null;
 }
 
 /** قائمة طلبات الإجازة مع اسم الموظف، الأحدث طلباً أولاً. */
 export async function listLeaves(filters?: LeaveFilters) {
   const db = requireDb();
   const conds = [];
+  // عزل الفرع: الاستعلام يضمّ `employees` أصلاً، وفرعُ الموظف هو الحاجز.
+  if (filters?.scopedBranchId != null) conds.push(eq(employees.branchId, filters.scopedBranchId));
   if (filters?.employeeId)
     conds.push(eq(leaveRequests.employeeId, filters.employeeId));
   if (filters?.status) conds.push(eq(leaveRequests.status, filters.status));
@@ -68,6 +78,8 @@ export async function listLeaves(filters?: LeaveFilters) {
 
 export interface LeaveInput {
   employeeId: number;
+  /** عزل الفرع: رقمٌ = يُرفَض موظفُ فرعٍ آخر؛ null/غياب = عبورٌ (أدمن/مالك). */
+  scopedBranchId?: number | null;
   leaveType: string;
   fromDate: string;
   toDate: string;
@@ -89,12 +101,17 @@ export async function createLeave(input: LeaveInput) {
     // الأول فيرى تداخله ⇒ يُرفض. (employees.id FK من leaveRequests فهو موجود قطعاً عند
     // أي طلب صالح؛ نقفله مع تأكيد الوجود.)
     const [emp] = await tx
-      .select({ id: employees.id })
+      .select({ id: employees.id, branchId: employees.branchId })
       .from(employees)
       .where(eq(employees.id, input.employeeId))
       .for("update")
       .limit(1);
     if (!emp) throw new Error("الموظف غير موجود");
+    // عزل الفرع على الكتابة: طلبُ إجازةٍ لموظف فرعٍ آخر يخصم رصيده ويغيّر أجره في مسيّرٍ
+    // لا يملكه الفاعل. يُفحص **بعد** القفل فلا يتغيّر فرعُه بين الفحص والكتابة.
+    if (input.scopedBranchId != null && Number(emp.branchId) !== Number(input.scopedBranchId)) {
+      throw new Error("لا يمكن تسجيل إجازة لموظف من فرعٍ آخر");
+    }
 
     // منع التداخل: لا طلب آخر (قيد الموافقة أو موافق عليه) يتقاطع مع هذه الفترة لنفس الموظف
     // ⇒ يمنع الخصم المزدوج من رصيد الإجازات وحجزاً مكرّراً لنفس الأيام. ضمن نفس tx بعد القفل.
@@ -192,7 +209,7 @@ async function assertNoLockedPayroll(
 export async function decideLeave(
   id: number,
   decision: "approved" | "rejected",
-  actor: { userId: number },
+  actor: { userId: number; scopedBranchId?: number | null },
 ) {
   return withTx(async (tx) => {
     const [lv] = await tx
@@ -211,10 +228,15 @@ export async function decideLeave(
     // HR-PAY-03 (فصل المهام): لا يجوز للمستخدم البتّ في إجازة موظفٍ مرتبطٍ بحسابه (موافقة ذاتية)
     // — يَكسر منح إجازةٍ مدفوعة لنفسه وخصم رصيده ذاتياً بلا مُقرِّر مستقلّ.
     const [reqEmp] = await tx
-      .select({ userId: employees.userId })
+      .select({ userId: employees.userId, branchId: employees.branchId })
       .from(employees)
       .where(eq(employees.id, lv.employeeId))
       .limit(1);
+    // عزل الفرع: البتّ يُغيّر أجرَ الموظف في مسيّر فرعه — لا يبتّ فيه من هو خارج ذلك الفرع.
+    // الطلب يُطلَب بمعرّفه، فالرفض صريحٌ لا صامت كي تظهر المحاولة.
+    if (actor.scopedBranchId != null && Number(reqEmp?.branchId) !== Number(actor.scopedBranchId)) {
+      throw new Error("طلب الإجازة يخصّ موظفاً من فرعٍ آخر — لا صلاحية لك عليه");
+    }
     if (reqEmp?.userId != null && Number(reqEmp.userId) === actor.userId) {
       throw new Error(
         "لا يجوز البتّ في إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).",
@@ -271,7 +293,7 @@ export async function decideLeave(
  * رصيد الموظف المناسب. لأنّ خصم الموافقة دقيق (بحارس كفاية، بلا قصّ) فالاسترداد = days بالضبط.
  * الأمومة/بدون راتب لم تُخصَم فلا تُستردّ. القفل على صفّ الإجازة يمنع الإلغاء المزدوج.
  */
-export async function cancelLeave(id: number, actor: { userId: number }) {
+export async function cancelLeave(id: number, actor: { userId: number; scopedBranchId?: number | null }) {
   return withTx(async (tx) => {
     const [lv] = await tx
       .select()
@@ -289,10 +311,15 @@ export async function cancelLeave(id: number, actor: { userId: number }) {
      * العودة فيستردّ رصيدها ويُسقط خصمها من الراتب — إجازةٌ أُخذت ولم تُحتسب.
      */
     const [reqEmp] = await tx
-      .select({ userId: employees.userId })
+      .select({ userId: employees.userId, branchId: employees.branchId })
       .from(employees)
       .where(eq(employees.id, lv.employeeId))
       .limit(1);
+    // عزل الفرع: البتّ يُغيّر أجرَ الموظف في مسيّر فرعه — لا يبتّ فيه من هو خارج ذلك الفرع.
+    // الطلب يُطلَب بمعرّفه، فالرفض صريحٌ لا صامت كي تظهر المحاولة.
+    if (actor.scopedBranchId != null && Number(reqEmp?.branchId) !== Number(actor.scopedBranchId)) {
+      throw new Error("طلب الإجازة يخصّ موظفاً من فرعٍ آخر — لا صلاحية لك عليه");
+    }
     if (reqEmp?.userId != null && Number(reqEmp.userId) === actor.userId) {
       throw new Error(
         "لا يجوز إلغاء إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).",
@@ -350,7 +377,7 @@ export async function withdrawPendingLeave(id: number, employeeId: number) {
 }
 
 /** أرصدة الإجازات لكل موظف على رأس العمل: {id, name, annualLeaveBalance, sickLeaveBalance, department}. */
-export async function balances() {
+export async function balances(scopedBranchId?: number | null) {
   const db = requireDb();
   const rows = await db
     .select({
@@ -366,7 +393,13 @@ export async function balances() {
       sickLeaveBalance: employees.sickLeaveBalance,
     })
     .from(employees)
-    .where(eq(employees.isActive, true))
+    // عزل الفرع: هذه القائمة تعرض أرصدة الموظفين وتغذّي شاشة الإجازات وتقريرها.
+    .where(
+      and(
+        eq(employees.isActive, true),
+        scopedBranchId != null ? eq(employees.branchId, scopedBranchId) : undefined,
+      ),
+    )
     .orderBy(employees.firstName);
 
   return rows.map((r) => ({

@@ -491,7 +491,15 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  // ── D6: فجوات تسلسل INV-{فرع}-{YYYYMMDD}-{seq5} لكل (فرع×يوم) ──
+  // ── D6: فجوات تسلسل الفواتير ──
+  //
+  // ⚠️ صيغتان تتعايشان (١٨/٨): التاريخية `INV-{فرع}-{YYYYMMDD}-{seq5}` تسلسلُها **لكل فرعٍ
+  // ويوم**؛ والجديدة رقمٌ عالميّ متسلسل من عدّادٍ ذرّيّ (هجرة 0211). الكاشف كان مقصوراً على
+  // `LIKE 'INV-%'` ⇒ مع الصيغة الجديدة يعيد صفر صفوف ويعمى **صامتاً** (لا خطأ ولا نتيجة) —
+  // أسوأ من الانهيار. الآن فرعان صريحان يجمعهما UNION، كلٌّ بدلالة تسلسله.
+  //
+  // في الصيغة الجديدة `ymd` هو تاريخُ الفاتورة لا جزءٌ من الرقم، والفجوة تُقاس على المدى
+  // (max−min+1) لا على البدء من ١: العدّاد عالميّ فلا يبدأ كلّ يومٍ من الواحد.
   const gapsP = safe(
     db.execute(sql`
       SELECT t.branchId, b.name AS branchName, t.ymd,
@@ -499,7 +507,8 @@ export async function getAnomalyWatch(opts: {
       FROM (
         SELECT i.branchId,
           SUBSTRING_INDEX(SUBSTRING_INDEX(i.invoiceNumber, '-', 3), '-', -1) AS ymd,
-          CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', -1) AS UNSIGNED) AS seq
+          CAST(SUBSTRING_INDEX(i.invoiceNumber, '-', -1) AS UNSIGNED) AS seq,
+          0 AS isSequential
         FROM invoices i
         WHERE i.invoiceNumber LIKE 'INV-%'
           AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
@@ -508,7 +517,27 @@ export async function getAnomalyWatch(opts: {
       LEFT JOIN branches b ON b.id = t.branchId
       GROUP BY t.branchId, b.name, t.ymd
       HAVING MAX(t.seq) <> COUNT(*) OR MIN(t.seq) <> 1
-      ORDER BY t.ymd DESC
+
+      UNION ALL
+
+      -- ٢٠/٨ (تصويب مراجعة Codex): الترقيمُ الجديد **عدّادٌ عالميّ** لا يُعاد لكلّ فرعٍ
+      -- ويوم. فتجزئتُه بـ(فرع×يوم) تُعلن فجواتٍ كاذبةً من التداخل الطبيعيّ: الفرع ١ يأخذ
+      -- 10001 والفرع ٢ يأخذ 10002 والفرع ١ يأخذ 10003 ⇒ مجموعةُ الفرع ١ تُبلّغ عن «10002
+      -- مفقود» وهو فاتورةٌ صحيحةٌ في فرعٍ آخر. وحدُّ اليوم يفعل الشيء نفسه عند منتصف الليل.
+      -- ⇒ يُفحَص المدى **عالمياً** بلا تجميع. ويُسكَت الفحصُ كلّياً حين يكون النطاق مقيَّداً
+      -- بفرع، إذ لا معنى لاتّصال عدّادٍ عالميّ داخل شريحةِ فرعٍ واحد.
+      SELECT NULL AS branchId, NULL AS branchName, NULL AS ymd,
+        COUNT(*) AS actualCount, MAX(t.seq) AS maxSeq, MIN(t.seq) AS minSeq
+      FROM (
+        SELECT CAST(i.invoiceNumber AS UNSIGNED) AS seq
+        FROM invoices i
+        WHERE i.invoiceNumber REGEXP '^[0-9]+$'
+          AND i.invoiceDate >= ${fromTs} AND i.invoiceDate < ${toTs}
+      ) t
+      -- ولا يُقيَّد بفرع **إطلاقاً**: الفجوةُ في عدّادٍ عالميّ حقيقةٌ عالميّة، وتصفيتُها
+      -- بفرعٍ هي بعينها ما كان يُنتج الكذب. الصفُّ يُعنوَن «كل الفروع» كي لا يُنسَب لفرع.
+      HAVING COUNT(*) > 0 AND MAX(t.seq) - MIN(t.seq) + 1 <> COUNT(*)
+      ORDER BY ymd DESC
     `),
     null,
   );
@@ -837,15 +866,20 @@ export async function getAnomalyWatch(opts: {
     const actual = Number(r.actualCount ?? 0);
     const maxSeq = Number(r.maxSeq ?? 0);
     const minSeq = Number(r.minSeq ?? 0);
+    // الصفُّ العالميّ (عدّاد الترقيم الجديد) يصل بـ`branchId = NULL` — لا يُصبّ رقماً
+    // كاذباً (`Number(null) = 0` كان سيُظهر «فرع #0»).
+    const isGlobal = r.branchId == null;
     return {
-      branchId: Number(r.branchId),
-      branchName: r.branchName ?? String(r.branchId),
+      branchId: isGlobal ? 0 : Number(r.branchId),
+      branchName: isGlobal ? "كل الفروع (تسلسل عامّ)" : (r.branchName ?? String(r.branchId)),
       day: String(r.ymd ?? ""),
       actualCount: actual,
       maxSeq,
       minSeq,
-      // المتوقع 1..maxSeq (التسلسل يبدأ من 1) ⇒ المفقود = maxSeq − الموجود (HAVING يضمن ≥ 1).
-      missing: Math.max(maxSeq - actual, 1),
+      // المفقود = طولُ المدى المرصود ناقصَ الموجود فيه. الصيغة التاريخية تبدأ من ١ لكل
+      // (فرع×يوم) فيؤول هذا إلى `maxSeq − actual`؛ والجديدة عدّادٌ عالميّ لا يبدأ من ١، ولو
+      // طُبّقت عليها المعادلة القديمة لأعلنت آلاف المفقودات زوراً في أوّل يوم. (HAVING يضمن ≥١.)
+      missing: Math.max(maxSeq - minSeq + 1 - actual, 1),
     };
   });
 

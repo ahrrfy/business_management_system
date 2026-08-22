@@ -27,7 +27,8 @@ function db() {
 }
 
 const TABLES = [
-  "idempotencyKeys", "accountingEntries", "expenses", "receipts", "inventoryMovements",
+  "documentPrintEvents", "purchaseReturnItems", "purchaseReturns", "idempotencyKeys",
+  "accountingEntries", "expenses", "receipts", "inventoryMovements",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices",
   "productUnits", "productVariants", "products", "auditLogs", "suppliers", "branches", "users",
 ];
@@ -87,7 +88,7 @@ async function transportExpenses() {
 
 /** أمرٌ ببضاعة ٤٬٠٠٠ وشحن ٤٠٠، مُستلَمٌ بالكامل. `payNow` يسدّد للمورّد عند الاستلام (يلزم
  *  للاسترداد النقديّ: لا يُستردّ نقدٌ لم يُدفَع). يعيد معرّف الأمر. */
-async function orderedAndReceived(payNow?: string): Promise<number> {
+async function orderedAndReceived(payNow?: string): Promise<{ poId: number; itemIds: number[] }> {
   const po = await createPurchaseOrder(
     {
       supplierId: 1, branchId: 1, taxRatePercent: "0",
@@ -105,6 +106,8 @@ async function orderedAndReceived(payNow?: string): Promise<number> {
     {
       purchaseOrderId: po.purchaseOrderId,
       lines: items.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: i.baseQuantity })),
+      shippingEvidenceReference: `SHIP-RET-${po.purchaseOrderId}`,
+      shippingBeneficiaryName: "شركة الرافدين للنقل الاختبارية",
       ...(payNow ? { payment: { amount: payNow, method: "CASH" as const } } : {}),
     },
     actor,
@@ -116,20 +119,20 @@ async function orderedAndReceived(payNow?: string): Promise<number> {
       role: "manager",
     });
   }
-  return po.purchaseOrderId;
+  return { poId: po.purchaseOrderId, itemIds: items.map((item) => Number(item.id)) };
 }
 
 describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل الشحن إلى المصروفات", () => {
   it("(١+٢) إرجاع كامل آجل ⇒ رصيد المورّد صفر تماماً، وبلا قيد خسارة شحن", async () => {
-    const poId = await orderedAndReceived();
+    const { poId, itemIds } = await orderedAndReceived();
     expect(await supplierBalance()).toBe("4000.00"); // البضاعة وحدها ارتفعت في الذمّة
 
     await createPurchaseReturn(
       {
-        supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
+        clientRequestId: "landed-credit-full", supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
-          { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },
+          { purchaseOrderItemId: itemIds[0], quantity: "10" },
+          { purchaseOrderItemId: itemIds[1], quantity: "5" },
         ],
       },
       actor,
@@ -141,15 +144,15 @@ describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل ال�
   });
 
   it("(٣) مصروف النقل المُسجَّل عند الاستلام لا يُعكَس بالإرجاع", async () => {
-    const poId = await orderedAndReceived();
+    const { poId, itemIds } = await orderedAndReceived();
     const before = await transportExpenses();
     expect(before).toHaveLength(1);
     expect(before[0].amount).toBe("400.00");
 
     await createPurchaseReturn(
       {
-        supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
-        items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" }],
+        clientRequestId: "landed-credit-transport", supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
+        items: [{ purchaseOrderItemId: itemIds[0], quantity: "10" }],
       },
       actor,
     );
@@ -161,11 +164,11 @@ describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل ال�
   });
 
   it("إرجاع جزئيّ ⇒ عكسٌ متناسب للبضاعة وحدها، بلا أثر شحن", async () => {
-    const poId = await orderedAndReceived();
+    const { poId, itemIds } = await orderedAndReceived();
     await createPurchaseReturn(
       {
-        supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
-        items: [{ variantId: 2, productUnitId: 2, quantity: "2", unitPrice: "600.00" }], // 1,200
+        clientRequestId: "landed-credit-partial", supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CREDIT",
+        items: [{ purchaseOrderItemId: itemIds[1], quantity: "2" }], // 1,200
       },
       actor,
     );
@@ -176,13 +179,13 @@ describe("مرتجع الشراء — لا منطق شحنٍ بعد نقل ال�
   it("(٤) إرجاع كامل نقديّ ⇒ AP محايد وبلا خسارة شحن، والمطابقة خالية", async () => {
     // سُدِّدت البضاعة نقداً عند الاستلام (٤٬٠٠٠) — شرطُ الاسترداد النقديّ. لاحظ أنّ المسدَّد قيمة
     // البضاعة وحدها: الشحن خرج نقداً في مصروفٍ مستقلٍّ لا يمرّ بالمورّد أصلاً.
-    const poId = await orderedAndReceived("4000.00");
+    const { poId, itemIds } = await orderedAndReceived("4000.00");
     await createPurchaseReturn(
       {
-        supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CASH",
+        clientRequestId: "landed-cash-full", supplierId: 1, branchId: 1, purchaseOrderRefId: poId, settlement: "CASH",
         items: [
-          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "100.00" },
-          { variantId: 2, productUnitId: 2, quantity: "5", unitPrice: "600.00" },
+          { purchaseOrderItemId: itemIds[0], quantity: "10" },
+          { purchaseOrderItemId: itemIds[1], quantity: "5" },
         ],
       },
       actor,

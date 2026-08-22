@@ -88,6 +88,61 @@ describe("بناة رسائل الواتساب خالية من الإيموجي"
     expect(m).toContain("• دفتر");
   });
 
+  /**
+   * لا تُطالِب رسالةٌ بمالٍ لا يُستحقّ — علّتان أُغلِقتا معاً في `buildInvoiceMessage`:
+   * `status` كان مُعرَّفاً ولا يُقرأ، ومسار الاحتياط كان يتجاهل المرتجَع.
+   */
+  describe("buildInvoiceMessage — المتبقّي لا يُطالِب بما لا يُستحقّ", () => {
+    it("يطرح المرتجَع في مسار الاحتياط (بلا remaining صريح)", () => {
+      const m = buildInvoiceMessage({
+        invoiceNumber: "INV-2",
+        total: 12000,
+        paidAmount: 2000,
+        returnedTotal: 10000,
+      });
+      // 12000 − 10000 − 2000 = 0 ⇒ لا مطالبة، بل «مدفوعة بالكامل».
+      expect(m).not.toContain("*المتبقّي:*");
+      expect(m).toContain("*مدفوعة بالكامل*");
+    });
+
+    it("يحجب سطر المتبقّي على المستند الميت (ملغاة/مرتجعة/مستبدلة)", () => {
+      for (const status of ["CANCELLED", "RETURNED", "SUPERSEDED"]) {
+        const m = buildInvoiceMessage({
+          invoiceNumber: "INV-3",
+          total: 50000,
+          paidAmount: 0,
+          status,
+        });
+        expect(m, status).not.toContain("*المتبقّي:*");
+        expect(m, status).toContain("لا مبلغ مستحقّاً عليها");
+      }
+    });
+
+    it("`SUPERSEDED` تحديداً: `returnedTotal` مُصفَّر و`total` كامل ⇒ تبدو مستحقّةً بالكامل", () => {
+      const m = buildInvoiceMessage({
+        invoiceNumber: "INV-4",
+        total: 75000,
+        paidAmount: 0,
+        returnedTotal: 0,
+        status: "SUPERSEDED",
+      });
+      // الإجمالي يبقى مذكوراً (واقعة المستند)؛ الممنوع هو **سطر المطالبة** بكامل القيمة.
+      expect(m).not.toContain("*المتبقّي:*");
+      expect(m).toContain("مستبدلة بفاتورة مصححة");
+    });
+
+    it("الفاتورة الحيّة تُبقي المطالبة كما هي", () => {
+      const m = buildInvoiceMessage({
+        invoiceNumber: "INV-5",
+        total: 12000,
+        paidAmount: 5000,
+        status: "PARTIALLY_PAID",
+      });
+      expect(m).toContain("*المتبقّي:*");
+      expect(m).toContain("7,000");
+    });
+  });
+
   it("buildQuotationMessage", () => {
     const m = buildQuotationMessage({ quoteNumber: "Q-1", total: 9000, validUntil: "2026-07-01" });
     expect(noEmoji(m)).toBe(true);

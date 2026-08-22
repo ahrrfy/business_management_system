@@ -1,20 +1,32 @@
 // استلام أمر الشراء (جزئي/كامل): WAVG بسعر المورّد وحده، تراكم الضريبة،
-// قيد PURCHASE + AP، وطلبات دفع نقدية معلّقة للمورّد/الشحن تُنفَّذ من الخزينة بعد اعتماد المالك.
+// قيد PURCHASE + AP للآجل أو clearing للنقدي، واستحقاق شحن عند الاستلام، وطلبات تسوية معلّقة لا تُنفَّذ إلا بعد اعتماد المالك.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
-import { accountingEntries, branchStock, expenses, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
+import { accountingEntries, branchStock, expenses, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { assertNonPhysicalOutReceipt, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { withTx, type Actor } from "../tx";
 import { createSystemPaymentRequestTx } from "../voucher/create";
-import { assertPurchaseBranch } from "./internal";
+import {
+  assertPurchaseBranch,
+  pendingPurchaseSupplierPaymentsTx,
+  purchaseCashSettlementUsesClearingTx,
+  purchaseOrderPayableBalanceTx,
+} from "./internal";
 import type { ReceivePurchaseInput } from "./types";
+import { paymentAssetRole } from "../sale/paymentPosting";
+import { expenseAccrualRecognition } from "../accounting/accrualPosting";
+import {
+  createAccrualObligationTx,
+  transitionAccrualObligationTx,
+} from "../accounting/accrualObligations";
 
 export function assertUniqueReceiveLines(lines: Array<{ purchaseOrderItemId: number }>): void {
   const seen = new Set<number>();
@@ -69,11 +81,22 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
               }
             : null,
           shippingPaymentMethod: input.shippingPaymentMethod ?? "CASH",
+          shippingPaymentReference: input.shippingPaymentReference?.trim() || null,
+          shippingCardLastFour: input.shippingCardLastFour?.trim() || null,
+          shippingBeneficiarySupplierId: input.shippingBeneficiarySupplierId ?? null,
+          shippingBeneficiaryName: input.shippingBeneficiaryName?.trim() || null,
+          shippingEvidenceReference: input.shippingEvidenceReference?.trim() || null,
         })
       : null;
     const paymentRequestToken = receiveRequestHash?.slice(0, 16) ?? randomUUID().replaceAll("-", "").slice(0, 16);
     if (input.clientRequestId) {
-      const existingRefId = await checkIdempotency(tx, "purchase.receive", input.clientRequestId, receiveRequestHash);
+      const existingRefId = await checkIdempotency(
+        tx,
+        "purchase.receive",
+        input.clientRequestId,
+        receiveRequestHash,
+        { requireStoredHash: true },
+      );
       if (existingRefId != null) {
         if (existingRefId !== input.purchaseOrderId) {
           throw new TRPCError({
@@ -141,22 +164,59 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     if (!poPreview) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
     assertPurchaseBranch(poPreview, actor);
     const shippingMethod = input.shippingPaymentMethod ?? "CASH";
-    const previewTotalLanded = round2(money(poPreview.shippingCost).plus(money(poPreview.customsCost)));
-    const previewItems = previewTotalLanded.gt(0) && shippingMethod === "CASH"
-      ? await tx
-          .select({ id: purchaseOrderItems.id, total: purchaseOrderItems.total })
-          .from(purchaseOrderItems)
-          .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId))
-      : [];
-    const requestedItemIds = new Set(input.lines.map((line) => line.purchaseOrderItemId));
-    const mayPayShippingCash =
-      shippingMethod === "CASH" &&
-      previewTotalLanded.gt(0) &&
-      previewItems.some((item) => requestedItemIds.has(Number(item.id)) && money(item.total).gt(0));
+    const shippingPaymentReference = input.shippingPaymentReference?.trim() ?? "";
+    const shippingCardLastFour = input.shippingCardLastFour?.trim() ?? "";
+    if (shippingPaymentReference.length > 50) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "مرجع تسوية الشحن يجب ألا يتجاوز 50 محرفاً",
+      });
+    }
+    if (
+      (shippingMethod === "TRANSFER" || shippingMethod === "CHECK") &&
+      !shippingPaymentReference
+    ) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          shippingMethod === "CHECK"
+            ? "رقم الصك إلزامي لتسوية مصروف الشحن"
+            : "مرجع التحويل إلزامي لتسوية مصروف الشحن",
+      });
+    }
+    if (shippingMethod === "CARD" && !/^\d{4}$/.test(shippingCardLastFour)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "آخر أربعة أرقام للبطاقة إلزامية لتسوية مصروف الشحن",
+      });
+    }
+    const shippingBeneficiarySupplierId = input.shippingBeneficiarySupplierId ?? null;
+    // قرار المالك (١٧/٨/٢٦): **الناقل ومستند الشحن اختياريّان — لا يحجبان الاستلام.**
+    // كانا إلزامَين صلبَين (#604) بينما لا حقلَ لهما أصلاً في شاشة الاستلام ⇒ كلّ أمرٍ عليه
+    // شحن/كمرك كان يُرفَض حتماً برسالة «رقم فاتورة/وصل الشحن … إلزامي» بلا مسارِ خلاصٍ في
+    // الواجهة: ميزةٌ مقفلةٌ كلّياً لا حارسٌ. الخمسةُ التي يوجبها المبدأ المالي تبقى قائمة —
+    // إيصالٌ وقيدٌ مصنَّف وأثرٌ نقديّ وطرفٌ منسوبٌ إليه وتقريرٌ يُظهره — لكنّ الطرف والمستند
+    // يُملآن بقيمةٍ **صريحة الجهالة** حين لا يعرفهما أمين المخزن لحظة الاستلام، فيبقى المبلغ
+    // ظاهراً وقابلاً للتصحيح لاحقاً بدل أن يُمنَع إثباتُه أصلاً (مصروفٌ حقيقيٌّ بلا قيد = المال
+    // الذي «يضيع بصمت»، وهو الضرر الأكبر). طبقةُ الالتزامات (`accrualObligations`) تظلّ تُلزِم
+    // نصّاً غير فارغ ⇒ نضمن ذلك هنا بالبدائل لا بتليينها (تخدم مساراتٍ أخرى محكومة).
+    const rawShippingBeneficiary = input.shippingBeneficiaryName?.trim() ?? "";
+    const rawShippingEvidence = input.shippingEvidenceReference?.trim() ?? "";
+    // نائبات «لا شيء» تُعامَل كفراغٍ فتأخذ البديل الصريح بدل أن تُرفَض برسالة خطأ.
+    const placeholders = new Set(["-", "—", "لا يوجد", "بدون", "none", "n/a", "na"]);
+    const isPlaceholder = (value: string) => placeholders.has(value.toLocaleLowerCase("ar-IQ"));
+    const freeShippingBeneficiary =
+      !rawShippingBeneficiary || isPlaceholder(rawShippingBeneficiary) ? "" : rawShippingBeneficiary;
+    // البديل: رقم أمر الشراء نفسه — مستندٌ داخليٌّ حقيقيّ يربط الاستحقاق بمصدره، لا حشوٌ فارغ.
+    const shippingEvidenceReference =
+      !rawShippingEvidence || isPlaceholder(rawShippingEvidence)
+        ? `أمر الشراء ${poPreview.poNumber}`
+        : rawShippingEvidence;
     const mayPaySupplierCash =
-      input.payment?.method === "CASH" && money(input.payment.amount).gt(0);
+      poPreview.settlementType === "CASH" ||
+      (input.payment?.method === "CASH" && money(input.payment.amount).gt(0));
     let treasuryPrelocked = false;
-    if (mayPayShippingCash || mayPaySupplierCash) {
+    if (mayPaySupplierCash) {
       await lockCashSourceForUpdate(tx, {
         branchId: Number(poPreview.branchId),
         cashBucket: "TREASURY",
@@ -252,22 +312,23 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     });
     work.sort((a, b) => Number(a.item.variantId) - Number(b.item.variantId));
 
-    // Batch-load all required data before the loop (eliminates N×3 queries → 3 queries total).
+    // Batch-load all required data before the loop.
     const variantIds = work.map(({ item }) => Number(item.variantId));
-    const unitIds = work.map(({ item }) => Number(item.productUnitId));
 
-    const unitRows = await tx
-      .select({ id: productUnits.id, factor: productUnits.conversionFactor })
-      .from(productUnits)
-      .where(inArray(productUnits.id, unitIds));
-    const unitFactorMap = new Map(unitRows.map((u) => [Number(u.id), u.factor]));
-
-    // INV-004: التحقّق من قابلية الكمية المستلَمة للقسمة على معامل الوحدة (conversionFactor > 1).
-    // مثال: وحدة «درزن» factor=12 ⇒ receivedBaseQuantity يجب أن يكون مضاعفاً لـ12.
+    // معامل الوحدة لقطة ثابتة مشتقة من baseQuantity/quantity المخزنين في سطر الأمر.
+    // إعادة قراءة productUnits هنا كانت تجعل تعديل الوحدة بعد إنشاء PO يغيّر تكلفة الاستلام أو يعطله.
+    const unitFactorMap = new Map<number, Decimal>();
     for (const { line, item } of work) {
-      const factor = Number(unitFactorMap.get(Number(item.productUnitId)) ?? 1);
-      if (factor > 1 && line.receivedBaseQuantity % factor !== 0) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `الكمية المستلَمة (${line.receivedBaseQuantity}) غير قابلة للقسمة على معامل الوحدة (${factor})` });
+      const orderedQty = new Decimal(item.quantity);
+      const factor = orderedQty.gt(0)
+        ? new Decimal(item.baseQuantity).dividedBy(orderedQty)
+        : new Decimal(1);
+      if (factor.lte(0)) {
+        throw new TRPCError({ code: "CONFLICT", message: `معامل الوحدة المخزّن لبند الشراء ${item.id} غير صالح` });
+      }
+      unitFactorMap.set(Number(item.id), factor);
+      if (factor.gt(1) && !new Decimal(line.receivedBaseQuantity).modulo(factor).isZero()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `الكمية المستلَمة (${line.receivedBaseQuantity}) غير قابلة للقسمة على معامل الوحدة الأصلي (${factor.toString()})` });
       }
     }
 
@@ -305,7 +366,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     let receivedUsd = new Decimal(0);
     let receivedLanded = new Decimal(0);
     for (const { line, item } of work) {
-      const factor = new Decimal(unitFactorMap.get(Number(item.productUnitId)) ?? "1");
+      const factor = unitFactorMap.get(Number(item.id)) ?? new Decimal(1);
       const costPerBase = round2(money(item.unitPrice).dividedBy(factor.lte(0) ? new Decimal(1) : factor));
 
       // قرار المالك (٥/٨/٢٦) — **الشحن/الكمرك لا يُرسمَلان في تكلفة الصنف**: «تكلفة الصنف سعر
@@ -417,16 +478,29 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     )[0];
     const priorTax = money(priorTaxRow?.v ?? "0");
     const receivedTax = cumulativePurchaseTax(String(po.taxAmount), priorTax.toFixed(2), receivedNet, rate, fullyReceived);
-    // ذمّة المورّد = البضاعة + الضريبة، في الدينارية والدولارية سواء (كان الاستثناء مقصوراً على
-    // الدولارية بحجّة «الشحن المحلي ليس ديناً على المورد الأجنبي» — قرار المالك عمّم المبدأ).
+    // الأمر الآجل يثبت ذمّة المورد. أمّا الأمر النقدي فيثبت التزام تسوية نقدية مستقلّاً:
+    // البضاعة وصلت لكن النقد لا يخرج قبل اعتماد الشخص الثاني، ولا يجوز أن تظهر هذه المهلة
+    // التشغيلية ديناً على حساب المورد أو في تقارير AP.
     const receivedTotal = round2(receivedNet.plus(receivedTax));
     const supplierIqd = receivedTotal;
+    const automaticCashSettlement = po.settlementType === "CASH";
+    const useCashClearing =
+      automaticCashSettlement &&
+      (await purchaseCashSettlementUsesClearingTx(tx, input.purchaseOrderId));
+    const purchaseSettlementRole = useCashClearing
+      ? ("OTHER_LIABILITY" as const)
+      : ("AP" as const);
+    const purchasePostingSource = {
+      roleDebits: { INVENTORY: receivedNet, TAX_PAYABLE: receivedTax },
+      roleCredits: { [purchaseSettlementRole]: supplierIqd },
+    };
     await tx
       .update(purchaseOrders)
       .set({ status: fullyReceived ? "RECEIVED" : "CONFIRMED" })
       .where(eq(purchaseOrders.id, input.purchaseOrderId));
 
-    // PURCHASE ledger entry + AP. cost = قيمة البضاعة وحدها (بلا شحن/كمرك — قرار المالك ٥/٨/٢٦)،
+    // PURCHASE ledger entry + AP للآجل أو clearing للنقدي. cost = قيمة البضاعة وحدها
+    // (بلا شحن/كمرك — قرار المالك ٥/٨/٢٦)،
     // وهي نفسها التي دخلت WAVG أعلاه ⇒ قيمة المخزون وقيد الشراء متطابقان. قيود PURCHASE لا تدخل
     // حساب الربح (reportsFinancialService يجمع cost لـSALE/RETURN فقط) والاعتراف بتكلفة البضاعة
     // يقع مرّةً واحدةً عند البيع؛ أمّا دفع الشحن النقدي فيبقى طلباً معلّقاً حتى اعتماد المالك أدناه.
@@ -435,128 +509,191 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     await postEntry(tx, {
       entryType: "PURCHASE",
       branchId: Number(po.branchId),
+      createdBy: actor.userId,
       purchaseOrderId: input.purchaseOrderId,
+      purchaseLiabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
       supplierId: Number(po.supplierId),
       cost: round2(receivedNet),
       taxAmount: receivedTax,
       amount: supplierIqd,
+      postingIntent: createPostingIntent(
+        useCashClearing
+          ? "PURCHASE_INVENTORY_CASH_CLEARING"
+          : "PURCHASE_INVENTORY",
+        "PURCHASE",
+        [
+          debitLine("INVENTORY", receivedNet),
+          ...(receivedTax.isZero()
+            ? []
+            : [debitLine("TAX_PAYABLE", receivedTax)]),
+          creditLine(purchaseSettlementRole, supplierIqd),
+        ],
+        purchasePostingSource,
+      ),
+      postingSourceComponents: purchasePostingSource,
     });
-    await adjustSupplierBalance(tx, Number(po.supplierId), supplierIqd);
-    if (po.agreedCurrency === "USD") {
-      await adjustSupplierBalanceUsd(tx, Number(po.supplierId), receivedUsd);
+    if (!useCashClearing) {
+      await adjustSupplierBalance(tx, Number(po.supplierId), supplierIqd);
+      if (po.agreedCurrency === "USD") {
+        await adjustSupplierBalanceUsd(tx, Number(po.supplierId), receivedUsd);
+      }
     }
 
     // ═══ الشحن/الكمرك: طلب مصروف شركة مرتبط بالاستلام (قرار المالك ٥/٨/٢٦) ═══
     // «الشحن يُسجَّل مصروفاً لحظة الاستلام وتكلفة الصنف سعر المورّد فقط — الشحن مصاريف علينا ولا
     // دخل للمورّد به.» فحصّة هذا الاستلام (`receivedLanded`، تناسبية مع المستلَم فعلاً) تُسجَّل
-    // طلبَ مصروفٍ حقيقياً معلّقاً — وبعد اعتماد مالك آخر ينشأ صف `expenses` (فئة نقل) مع
-    // إيصال الصرف وقيد PAYMENT_OUT داخل المعاملة نفسها، فلا يظهر دفع قبل خروج النقد فعلياً.
+    // مصروفاً والتزاماً حقيقيين فوراً — ويُنشأ طلب تسوية صفري الأثر. اعتماد مالك آخر وحده
+    // يُكمل إيصال الصرف وقيد PAYMENT_OUT، فلا يظهر دفع قبل تنفيذ أداة السداد فعلياً.
     // لا نمرّ بـ`expenseService.createExpense` عمداً: فهو يحصر تسجيل المصروفات بالمدير/الأدمن،
     // والاستلام يقوم به أمين المخزن — والتفويض هنا هو صلاحية الاستلام نفسها، لا صلاحية المصروفات.
-    // النقديّ يُنفّذ حصراً من TREASURY عند الاعتماد؛ لا يحمل استلام أمين المخزن درجاً أو سلطة صرف.
+    // النقديّ يُنفّذ حصراً من TREASURY عند الاعتماد؛ وغير النقدي يُحفظ مع دليله ويُسوّى على حساب أداته.
     let shippingPaymentRequestReceiptId: number | null = null;
     if (receivedLanded.gt(0)) {
       const shipMethod = input.shippingPaymentMethod ?? "CASH";
-      if (shipMethod === "CASH") {
-        if (!treasuryPrelocked) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "تغيّرت بيانات تكلفة الشحن أثناء الاستلام؛ أعد المحاولة",
-          });
+      {
+        const shippingVoucherReference = `SHIP-${po.poNumber}-${paymentRequestToken}`;
+        // الطرف المنسوب إليه المصروف: مورّدٌ مسجَّل إن اختير، وإلّا الاسم الحرّ، وإلّا بديلٌ
+        // **صريح الجهالة** (لا اسمٌ عامّ يوهم بأنّه جهة حقيقية) — يظهر في `expenses.payee`
+        // وفي الالتزام والسند، فيُلتقَط بالبحث ويُصحَّح لاحقاً عند وصول فاتورة الناقل.
+        let beneficiaryName = freeShippingBeneficiary || "ناقل غير محدَّد";
+        if (shippingBeneficiarySupplierId != null) {
+          const [beneficiary] = await tx
+            .select({ id: suppliers.id, name: suppliers.name, isActive: suppliers.isActive })
+            .from(suppliers)
+            .where(eq(suppliers.id, shippingBeneficiarySupplierId))
+            .limit(1);
+          if (!beneficiary || beneficiary.isActive === false) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "جهة الشحن المسجّلة غير موجودة أو غير نشطة" });
+          }
+          beneficiaryName = beneficiary.name.trim();
         }
+        // الاعتراف بالمصروف يقع لحظة الاستلام، مستقلاً عن قرار توقيت السداد. الإيصال
+        // المعلّق هو حساب clearing تشغيلي: لا يدخل النقد حتى الاعتماد، بينما يبقى
+        // expense/ledger قائماً حتى لو رُفضت محاولة الدفع وأُعيد تقديمها.
+        const expenseResult = await tx.insert(expenses).values({
+          branchId: Number(po.branchId),
+          shiftId: null,
+          cashBucket: null,
+          expenseDate: new Date(),
+          category: "TRANSPORT",
+          amount: toDbMoney(receivedLanded),
+          paymentMethod: "ACCRUAL",
+          source: "ACCRUAL",
+          description: `شحن/كمرك أمر الشراء ${po.poNumber}`,
+          referenceNumber: shippingVoucherReference,
+          payee: beneficiaryName,
+          receiptId: null,
+          status: "ACTIVE",
+          createdBy: actor.userId,
+        });
+        const expenseId = extractInsertId(expenseResult);
+        const shippingAccrual = expenseAccrualRecognition(
+          "DELIVERY_EXPENSE",
+          receivedLanded,
+        );
+        const recognitionDedupe = `PURCHASE_SHIPPING_ACCRUAL:${input.purchaseOrderId}:${paymentRequestToken}`;
+        await postEntry(tx, {
+          entryType: "ADJUST",
+          branchId: Number(po.branchId),
+          createdBy: actor.userId,
+          purchaseOrderId: input.purchaseOrderId,
+          // الاعتراف مستقل عن محاولة السداد الحالية؛ expense.receiptId يحمل
+          // رابط الطلب القابل للاستبدال بعد الرفض من دون قيد ثانٍ.
+          receiptId: null,
+          amount: receivedLanded,
+          postingIntent: shippingAccrual.intent,
+          postingSourceComponents: shippingAccrual.sourceComponents,
+          dedupeKey: recognitionDedupe,
+          notes: `استحقاق مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
+        });
+        const [recognitionEntry] = await tx
+          .select({ id: accountingEntries.id })
+          .from(accountingEntries)
+          .where(eq(accountingEntries.dedupeKey, recognitionDedupe))
+          .limit(1);
+        if (!recognitionEntry) throw new Error("قيد الاعتراف بمصروف الشحن مفقود");
+        const obligation = await createAccrualObligationTx(tx, {
+          kind: "PURCHASE_SHIPPING",
+          branchId: Number(po.branchId),
+          expenseId,
+          purchaseOrderId: input.purchaseOrderId,
+          sourceKey: recognitionDedupe,
+          recognizedAmount: toDbMoney(receivedLanded),
+          initialStatus: "ACCRUED_UNPAID",
+          beneficiaryType: shippingBeneficiarySupplierId == null ? "OTHER" : "SUPPLIER",
+          beneficiarySupplierId: shippingBeneficiarySupplierId,
+          beneficiaryName,
+          evidenceReference: shippingEvidenceReference,
+          plannedPaymentMethod: shipMethod,
+          clientRequestId: `purchase-shipping-${paymentRequestToken}`,
+          recognizedBy: actor.userId,
+          recognizedAt: new Date(),
+          recognitionAccountingEntryId: Number(recognitionEntry.id),
+        });
         const request = await createSystemPaymentRequestTx(tx, {
           branchId: Number(po.branchId),
           amount: toDbMoney(receivedLanded),
-          paymentMethod: "CASH",
+          paymentMethod: shipMethod,
+          // المصروف المستحق يقابل ACCRUED_EXPENSES لا AP؛ تصنيف المستفيد المورّد محفوظ
+          // في obligation، بينما يبقى السند OTHER حتى لا يحرّك ذمة المورّد مرتين.
           partyType: "OTHER",
-          counterpartyName: "شركة النقل/الكمرك",
-          description: `مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
-          referenceNumber: `SHIP-${po.poNumber}-${paymentRequestToken}`,
-          clientRequestId: `purchase-shipping-${paymentRequestToken}`,
+          partyId: null,
+          counterpartyName: beneficiaryName,
+          description: `تسوية مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
+          referenceNumber: shippingVoucherReference,
+          checkNumber:
+            shipMethod === "CHECK" || shipMethod === "TRANSFER"
+              ? shippingPaymentReference
+              : null,
+          cardLastFour:
+            shipMethod === "CARD" ? shippingCardLastFour : null,
+          clientRequestId: `purchase-shipping-payment-${paymentRequestToken}`,
         }, actor, {
           kind: "PURCHASE_SHIPPING",
           purchaseOrderId: input.purchaseOrderId,
           requestToken: paymentRequestToken,
           expectedAmount: toDbMoney(receivedLanded),
           sourceShippingTotal: toDbMoney(totalLanded),
+          paymentReference:
+            shipMethod === "CARD"
+              ? shippingCardLastFour
+              : shipMethod === "TRANSFER" || shipMethod === "CHECK"
+                ? shippingPaymentReference
+                : null,
+          obligationId: Number(obligation.id),
+          obligationSourceHash: obligation.sourceHash,
+          beneficiaryType: obligation.beneficiaryType,
+          beneficiaryId: obligation.beneficiarySupplierId == null ? null : Number(obligation.beneficiarySupplierId),
+          beneficiaryNameSnapshot: beneficiaryName,
+          sourceEvidenceReference: obligation.evidenceReference,
         });
         shippingPaymentRequestReceiptId = request.receiptId;
-        // الاعتراف بالمصروف يقع لحظة الاستلام، مستقلاً عن قرار توقيت السداد. الإيصال
-        // المعلّق هو حساب clearing تشغيلي: لا يدخل النقد حتى الاعتماد، بينما يبقى
-        // expense/ledger قائماً حتى لو رُفضت محاولة الدفع وأُعيد تقديمها.
-        await tx.insert(expenses).values({
-          branchId: Number(po.branchId),
-          shiftId: null,
-          cashBucket: "TREASURY",
-          expenseDate: new Date(),
-          category: "TRANSPORT",
-          amount: toDbMoney(receivedLanded),
-          paymentMethod: "CASH",
-          description: `شحن/كمرك أمر الشراء ${po.poNumber}`,
-          referenceNumber: `SHIP-${po.poNumber}-${paymentRequestToken}`,
+        await transitionAccrualObligationTx(tx, {
+          obligationId: Number(obligation.id),
+          expectedStatus: "ACCRUED_UNPAID",
+          nextStatus: "PAYMENT_PENDING",
+          eventType: "PAYMENT_REQUESTED",
+          actorId: actor.userId,
           receiptId: request.receiptId,
-          status: "ACTIVE",
-          createdBy: actor.userId,
-        });
-        await postEntry(tx, {
-          entryType: "PAYMENT_OUT",
-          branchId: Number(po.branchId),
-          purchaseOrderId: input.purchaseOrderId,
-          // الاعتراف مستقل عن محاولة السداد الحالية؛ expense.receiptId يحمل
-          // رابط الطلب القابل للاستبدال بعد الرفض من دون قيد ثانٍ.
-          receiptId: null,
-          amount: receivedLanded,
-          dedupeKey: `PURCHASE_SHIPPING_ACCRUAL:${input.purchaseOrderId}:${paymentRequestToken}`,
-          notes: `استحقاق مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
-        });
-      } else {
-        assertNonPhysicalOutReceipt({
-          classification: "NON_CASH_METHOD",
-          paymentMethod: shipMethod,
-          cashBucket: null,
-          operation: "دفع مصروف الشحن/الكمرك بوسيلة غير نقدية",
-        });
-        const shipReceiptRes = await tx.insert(receipts).values({
-          branchId: Number(po.branchId),
-          shiftId: null,
-          cashBucket: null,
-          direction: "OUT",
-          amount: toDbMoney(receivedLanded),
-          paymentMethod: shipMethod,
-          status: "COMPLETED",
-          approvalStatus: "APPROVED",
-          referenceNumber: `SHIP-${po.poNumber}`,
-          createdBy: actor.userId,
-        });
-        const shipReceiptId = extractInsertId(shipReceiptRes);
-        await tx.insert(expenses).values({
-          branchId: Number(po.branchId),
-          shiftId: null,
-          cashBucket: null,
-          expenseDate: new Date(),
-          category: "TRANSPORT",
-          amount: toDbMoney(receivedLanded),
-          paymentMethod: shipMethod,
-          description: `شحن/كمرك أمر الشراء ${po.poNumber}`,
-          referenceNumber: po.poNumber,
-          receiptId: shipReceiptId,
-          status: "ACTIVE",
-          createdBy: actor.userId,
-        });
-        await postEntry(tx, {
-          entryType: "PAYMENT_OUT",
-          branchId: Number(po.branchId),
-          purchaseOrderId: input.purchaseOrderId,
-          receiptId: shipReceiptId,
-          amount: receivedLanded,
-          notes: `مصروف شحن/كمرك — أمر الشراء ${po.poNumber}`,
+          evidenceReference: shippingEvidenceReference,
+          dedupeKey: `ACCRUAL:PAYMENT_REQUESTED:${obligation.id}:${request.receiptId}`,
         });
       }
     }
 
-    // Optional payment to supplier.
+    // تسوية المورد: أمر CASH يطلب تلقائياً كامل قيمة **هذا الاستلام**، فلا يتحول اختيار
+    // «نقدي» الظاهر في أمر الشراء إلى ذمّة صامتة. الطلب يبقى معلّقاً حتى اعتماد مالك آخر
+    // (فصل المهام)، وعند الاعتماد فقط يخرج النقد ويُطفأ AP/حساب التسوية ويزيد paidAmount.
     let supplierPaymentRequestReceiptId: number | null = null;
-    const paidNow = money(input.payment?.amount ?? "0");
+    const explicitPaidNow = money(input.payment?.amount ?? "0");
+    if (automaticCashSettlement && input.payment && !explicitPaidNow.eq(receivedTotal)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `أمر الشراء نقدي: يجب أن تساوي دفعة هذا الاستلام كامل قيمته (${receivedTotal.toFixed(2)})`,
+      });
+    }
+    const paidNow = automaticCashSettlement ? receivedTotal : explicitPaidNow;
+    const supplierPaymentMethod = input.payment?.method ?? "CASH";
     if (paidNow.gt(0)) {
       if (po.agreedCurrency === "USD") {
         throw new TRPCError({
@@ -565,24 +702,26 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         });
       }
       // PROC-05 (تدقيق ٢/٧): السقف الأوّل — رصيد المورد الفعلي (منع AP سالبة على مستوى المورد).
-      const supAfter = money(
-        (await tx.select({ b: suppliers.currentBalance }).from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).limit(1))[0]?.b ?? "0",
-      );
-      if (paidNow.gt(supAfter)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})` });
+      if (!useCashClearing) {
+        const supAfter = money(
+          (await tx.select({ b: suppliers.currentBalance }).from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).limit(1))[0]?.b ?? "0",
+        );
+        if (paidNow.gt(supAfter)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})` });
+        }
       }
-      // #7 (تدقيق التثبيت): سقف ثانٍ — المتبقّي على أمر الشراء نفسه. كان الدفع الداخلي يُنسب كاملاً
-      // لـpo.paidAmount حتى لو تجاوز po.total، مضخّماً هذا PO ومُلوّثاً كل تقارير AP لكل PO (بمورد
-      // له عدّة أوامر مفتوحة). الدفع الزائد المتعمَّد شأن سند صرف مستقلّ — لا مسار «استلام + دفع
-      // إجمالي > المتبقّي».
-      const poRemaining = money(po.total).minus(money(po.paidAmount));
-      if (paidNow.gt(poRemaining)) {
+      // السقف الحقيقي = رصيد GL المعترف به لهذا PO ناقص طلباته المعلّقة، لا إجمالي الأمر الاسمي.
+      // يمنع دفع قيمة غير مستلمة، كما يمنع حجز المبلغ مرتين قبل الاعتماد.
+      const poPayable = await purchaseOrderPayableBalanceTx(tx, input.purchaseOrderId);
+      const pendingReserved = await pendingPurchaseSupplierPaymentsTx(tx, String(po.poNumber));
+      const poAvailable = Decimal.max(poPayable.minus(pendingReserved), 0);
+      if (paidNow.gt(poAvailable)) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز المتبقّي على أمر الشراء (${poRemaining.toFixed(2)}) — للمبالغ الزائدة استعمل سند صرف مستقلّاً`,
+          message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز المستحق المتاح على أمر الشراء (${poAvailable.toFixed(2)}) بعد الطلبات المعلّقة`,
         });
       }
-      if (input.payment!.method === "CASH") {
+      if (supplierPaymentMethod === "CASH") {
         if (!treasuryPrelocked) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "لم يُقفل مصدر طلب دفعة المورد النقدية" });
         }
@@ -601,6 +740,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           requestToken: paymentRequestToken,
           expectedAmount: toDbMoney(paidNow),
           sourceTotal: toDbMoney(po.total),
+          liabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
         });
         supplierPaymentRequestReceiptId = paymentRequest.receiptId;
       } else {
@@ -623,15 +763,36 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
           createdBy: actor.userId,
         });
         const receiptId = extractInsertId(receiptRes);
+        const supplierPaymentAssetRole = paymentAssetRole(input.payment!.method, null, "OUT");
+        const supplierPaymentPostingSource = {
+          roleDebits: { [purchaseSettlementRole]: paidNow },
+          roleCredits: { [supplierPaymentAssetRole]: paidNow },
+        };
         await postEntry(tx, {
           entryType: "PAYMENT_OUT",
           branchId: Number(po.branchId),
+          createdBy: actor.userId,
           purchaseOrderId: input.purchaseOrderId,
+          purchaseLiabilityAccount: useCashClearing ? "CASH_CLEARING" : "AP",
           supplierId: Number(po.supplierId),
           receiptId,
           amount: paidNow,
+          postingIntent: createPostingIntent(
+            useCashClearing
+              ? "PAYMENT_OUT_PURCHASE_CASH_CLEARING"
+              : "PAYMENT_OUT_SUPPLIER",
+            "PAYMENT_OUT",
+            [
+              debitLine(purchaseSettlementRole, paidNow),
+              creditLine(supplierPaymentAssetRole, paidNow),
+            ],
+            supplierPaymentPostingSource,
+          ),
+          postingSourceComponents: supplierPaymentPostingSource,
         });
-        await adjustSupplierBalance(tx, Number(po.supplierId), paidNow.neg());
+        if (!useCashClearing) {
+          await adjustSupplierBalance(tx, Number(po.supplierId), paidNow.neg());
+        }
         await tx
           .update(purchaseOrders)
           .set({ paidAmount: toDbMoney(money(po.paidAmount).plus(paidNow)) })

@@ -1,3 +1,4 @@
+import { receptionChannelLabel } from "@shared/receptionChannel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +25,7 @@ import {
   User,
   UserPlus,
   X,
+  ClipboardList,
 } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -48,14 +50,15 @@ import { Link, useLocation } from "wouter";
 type Conv = RouterOutputs["conversations"]["list"]["rows"][number];
 type Msg = RouterOutputs["conversations"]["messages"][number];
 
+// التسمية من `@shared/receptionChannel` (المصدر الحاكم) — واللون/الأيقونة عرضٌ خاصٌّ بصندوق الوارد.
 const CHANNEL_META: Record<string, { label: string; Icon: typeof MessageSquare; cls: string }> = {
-  WHATSAPP: { label: "واتساب", Icon: MessageSquare, cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
-  INSTAGRAM: { label: "انستغرام", Icon: User, cls: "bg-pink-500/10 text-pink-700 dark:text-pink-400" },
-  TIKTOK: { label: "تيك توك", Icon: User, cls: "bg-muted text-muted-foreground" },
-  STORE: { label: "المتجر", Icon: ShoppingBag, cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
-  PHONE: { label: "اتصال", Icon: Phone, cls: "bg-amber-500/10 text-amber-700 dark:text-amber-400" },
-  WALK_IN: { label: "حضوري", Icon: Store, cls: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
-  OTHER: { label: "أخرى", Icon: MessageSquare, cls: "bg-muted text-muted-foreground" },
+  WHATSAPP: { label: receptionChannelLabel("WHATSAPP"), Icon: MessageSquare, cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
+  INSTAGRAM: { label: receptionChannelLabel("INSTAGRAM"), Icon: User, cls: "bg-pink-500/10 text-pink-700 dark:text-pink-400" },
+  TIKTOK: { label: receptionChannelLabel("TIKTOK"), Icon: User, cls: "bg-muted text-muted-foreground" },
+  STORE: { label: receptionChannelLabel("STORE"), Icon: ShoppingBag, cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
+  PHONE: { label: receptionChannelLabel("PHONE"), Icon: Phone, cls: "bg-amber-500/10 text-amber-700 dark:text-amber-400" },
+  WALK_IN: { label: receptionChannelLabel("WALK_IN"), Icon: Store, cls: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
+  OTHER: { label: receptionChannelLabel("OTHER"), Icon: MessageSquare, cls: "bg-muted text-muted-foreground" },
 };
 
 /** مفاتيح القنوات بترتيب العرض — تقود فلتر القناة وقائمة «محادثة جديدة» معاً. */
@@ -525,7 +528,7 @@ function CustomerLinkChip({ conv, onLinked }: { conv: Conv; onLinked: () => void
   );
 }
 
-function ConversationDetail({ conv, onChanged }: { conv: Conv; onChanged: () => void }) {
+function ConversationDetail({ conv, onChanged, onStartOrder }: { conv: Conv; onChanged: () => void; onStartOrder?: (v: StartOrderFromConversation) => void }) {
   const id = Number(conv.id);
   const messages = trpc.conversations.messages.useQuery({ conversationId: id });
   const utils = trpc.useUtils();
@@ -560,6 +563,22 @@ function ConversationDetail({ conv, onChanged }: { conv: Conv; onChanged: () => 
           {conv.apiActive && <WindowBadge windowExpiresAt={conv.windowExpiresAt} now={now} />}
         </div>
         <div className="flex gap-1.5">
+          {onStartOrder && (
+            <Button
+              size="sm"
+              onClick={() =>
+                onStartOrder({
+                  conversationId: id,
+                  customerId: conv.customerId != null ? Number(conv.customerId) : null,
+                  channel: String(conv.channel),
+                  channelHandle: String(conv.channelHandle ?? ""),
+                  displayName: conv.displayName ?? null,
+                })
+              }
+            >
+              <ClipboardList aria-hidden className="size-3.5 me-1" /> افتح طلباً من هذه المحادثة
+            </Button>
+          )}
           {conv.status !== "ARCHIVED" && (
             <Button
               size="sm"
@@ -673,7 +692,22 @@ function NewConversationDialog({ onCreated, onClose, branchId }: { onCreated: (i
   );
 }
 
-export default function Inbox() {
+/** ما يحتاجه الاستقبال ليفتح سلّةً مُعبّأة من خيط الرسائل — بلا أن يعرف الوارد شيئاً عن السلّة. */
+export interface StartOrderFromConversation {
+  conversationId: number;
+  customerId: number | null;
+  /** قناة المحادثة كما هي (`WHATSAPP`…) — يطويها المستقبِل إلى قناة أمر شغل. */
+  channel: string;
+  /** رقم الواتساب أو اسم الحساب. */
+  channelHandle: string;
+  displayName: string | null;
+}
+
+/**
+ * `onStartOrder` **اختياريّ** عمداً: الوارد يعيش مستقلّاً في CRM بلا سلّة، وطبقةً داخل
+ * محطّة الاستقبال حيث توجد سلّة. غيابُه يُخفي الزرّ ولا يكسر شيئاً.
+ */
+export default function Inbox({ onStartOrder }: { onStartOrder?: (v: StartOrderFromConversation) => void } = {}) {
   const [filter, setFilter] = useState<"all" | "unread" | "archived" | "closed">("all");
   const [channelF, setChannelF] = useState<"all" | ChannelKey>("all");
   // بحث: فلترة محلية فورية على المحمَّل + q خادمي بعد debounce (يمسح كامل الفرع لا المحمَّل فقط).
@@ -739,10 +773,26 @@ export default function Inbox() {
     [loaded],
   );
 
+  // ١٩/٨: `?conversationId=` من الرابط يفتح المحادثة المقصودة — كان `selId` يبدأ null ثمّ
+  // يُضبط على **أوّل صفّ** فيهبط الزائر في محادثةٍ ليست التي قصدها، ورابطُ TaskDetail
+  // (الذي يعترف تعليقه بأنّه ينتظر هذا) يقود إلى الوارد العامّ لا إلى الخيط.
+  const urlConvId = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const raw = new URLSearchParams(window.location.search).get("conversationId");
+    const n = raw == null ? NaN : Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, []);
+  const urlApplied = useRef(false);
+
   // اختيار أول محادثة للعرض لو لم يُحدّد شيء — عرض فقط، بلا markRead.
   useEffect(() => {
+    if (urlConvId != null && !urlApplied.current) {
+      urlApplied.current = true;
+      setSelId(urlConvId);
+      return;
+    }
     if (selId == null && view.length) setSelId(Number(view[0].id));
-  }, [view, selId]);
+  }, [view, selId, urlConvId]);
 
   const activeConv = useMemo(
     () => (selId == null ? null : loaded.find((c) => Number(c.id) === selId) ?? null),
@@ -851,7 +901,7 @@ export default function Inbox() {
       {/* لوحة المحادثة */}
       <div className="flex-1 min-w-0 border rounded-xl bg-card overflow-hidden">
         {activeConv != null ? (
-          <ConversationDetail conv={activeConv} onChanged={() => list.refetch()} />
+          <ConversationDetail conv={activeConv} onChanged={() => list.refetch()} onStartOrder={onStartOrder} />
         ) : (
           <div className="grid place-items-center h-full text-muted-foreground text-center px-6">
             <div>

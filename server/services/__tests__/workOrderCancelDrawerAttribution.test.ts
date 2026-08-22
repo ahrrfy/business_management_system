@@ -15,14 +15,31 @@ import { extractInsertId } from "../../lib/insertId";
 import { cancelWorkOrder } from "../workOrder/cancel";
 import { createWorkOrder } from "../workOrder/create";
 import { closeShift, openShift } from "../shiftService";
+import { workOrderRouter } from "../../routers/workOrderRouter";
 
 const manager = { userId: 1, branchId: 1, role: "manager" };
 const cashier = { userId: 2, branchId: 1 };
 
+function workOrderCaller(user: { id: number; role: string; isOwner: boolean }, branchId = 1) {
+  return workOrderRouter.createCaller({
+    req: { headers: {} },
+    res: {},
+    sessionId: null,
+    platformAdmin: null,
+    user: {
+      ...user,
+      branchId,
+      permissionsOverride: null,
+      totpEnabledAt: new Date(),
+    },
+  } as never);
+}
+
 const TABLES = [
   "idempotencyKeys",
+  "auditLogs",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
-  "workOrderMaterials", "workOrderImages", "workOrders",
+  "orderPayments", "workOrderMaterials", "workOrderImages", "workOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "customers", "branches", "users",
 ];
@@ -46,6 +63,7 @@ async function seedBase() {
   await d.insert(s.users).values([
     { id: 1, openId: "mgr", name: "مديرة الفرع", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "reception1", name: "موظف استقبال", role: "cashier", loginMethod: "local", branchId: 1 },
+    { id: 3, openId: "owner", name: "مالك معتمد", role: "admin", loginMethod: "local", branchId: 1, isOwner: true },
   ]);
   await d.insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
 }
@@ -61,6 +79,37 @@ async function createWorkOrderWithDeposit() {
     cashier,
   );
   return (wo as { workOrderId: number }).workOrderId;
+}
+
+async function createLegacyCardWorkOrder(suffix: string) {
+  const workOrderId = extractInsertId(await db().insert(s.workOrders).values({
+    orderNumber: `WO-LEGACY-CARD-${suffix}`,
+    branchId: 1,
+    customerId: 1,
+    title: `أمر قديم ببطاقة ${suffix}`,
+    quantity: 1,
+    materialsCost: "0.00",
+    laborCost: "0.00",
+    salePrice: "5000.00",
+    status: "RECEIVED",
+    deposit: "2000.00",
+    paymentMethod: "CARD",
+    paymentReference: `CARD-OLD-${suffix}`,
+    depositReceiptId: null,
+    createdBy: 2,
+  }));
+  const depositReceiptId = extractInsertId(await db().insert(s.receipts).values({
+    branchId: 1,
+    workOrderId,
+    direction: "IN",
+    amount: "2000.00",
+    paymentMethod: "CARD",
+    cashBucket: null,
+    status: "COMPLETED",
+    approvalStatus: "APPROVED",
+    createdBy: 2,
+  }));
+  return { workOrderId, depositReceiptId };
 }
 
 beforeEach(async () => {
@@ -87,12 +136,23 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     expect(refund?.amount).toBe("2000.00");
   });
 
-  it("تعدّد الدرج (وردية المديرة الخاصّة + وردية الاستقبال) بلا تحديد صريح ⇒ يُرفَض", async () => {
-    await openShiftFor(2, "RECEPTION");
-    await openShiftFor(1, "RETAIL");
+  it("وردية RETAIL لا تزاحم درج RECEPTION الوحيد في قبض العربون أو ردّه", async () => {
+    const receptionShift = await openShiftFor(2, "RECEPTION");
+    const retailShift = await openShiftFor(1, "RETAIL");
     const workOrderId = await createWorkOrderWithDeposit();
 
-    await expect(cancelWorkOrder(workOrderId, manager)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    const first = await cancelWorkOrder(workOrderId, manager, { clientRequestId: "wo-cancel-cash-1" });
+    expect(first.replayed).toBe(false);
+    await expect(cancelWorkOrder(workOrderId, manager, { clientRequestId: "wo-cancel-cash-1" }))
+      .resolves.toMatchObject({ replayed: true, pendingRefundReceiptIds: [] });
+    await expect(cancelWorkOrder(workOrderId, manager, {
+      clientRequestId: "wo-cancel-cash-1",
+      refundShiftId: 999,
+    })).rejects.toMatchObject({ code: "CONFLICT" });
+    const refund = (await db().select({ shiftId: s.receipts.shiftId }).from(s.receipts)
+      .where(and(eq(s.receipts.workOrderId, workOrderId), eq(s.receipts.direction, "OUT"))))[0];
+    expect(refund?.shiftId).toBe(receptionShift.shiftId);
+    expect(refund?.shiftId).not.toBe(retailShift.shiftId);
   });
 
   it("تعدّد الدرج + refundShiftId صريح لوردية الاستقبال ⇒ ينجح وينتسب لها لا لوردية المديرة", async () => {
@@ -130,5 +190,104 @@ describe("cancelWorkOrder — إسناد استرداد العربون لدرج 
     await closeShift({ shiftId: shift.shiftId, countedCash: "2000.00" }, { userId: 2, branchId: 1, role: "cashier" });
 
     await expect(cancelWorkOrder(workOrderId, manager)).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+  });
+
+  it("قبض عربون CASH مع وردية RETAIL فقط يُرفَض ذرياً بلا DRAWER مجهول", async () => {
+    await openShiftFor(2, "RETAIL");
+
+    await expect(createWorkOrderWithDeposit()).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.workOrders)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
+  });
+
+  it("استرداد CARD القديم يبقى صفري الأثر ثم materializes عبر اعتماد مالك مخصص", async () => {
+    const { workOrderId, depositReceiptId } = await createLegacyCardWorkOrder("1");
+
+    await cancelWorkOrder(workOrderId, manager);
+
+    const pending = (await db().select().from(s.receipts)
+      .where(and(eq(s.receipts.workOrderId, workOrderId), eq(s.receipts.direction, "OUT"))))[0]!;
+    expect(pending.paymentMethod).toBe("CARD");
+    expect(pending.status).toBe("PENDING");
+    expect(pending.approvalStatus).toBe("PENDING_APPROVAL");
+    expect(pending.cashBucket).toBeNull();
+    expect(pending.voucherNumber).toBeNull();
+    expect(pending.referenceNumber).toBeNull();
+    expect(pending.internalNote).toBe(`WORK_ORDER_CUSTOMER_REFUND:DIRECT:${workOrderId}:${depositReceiptId}`);
+    await expect(workOrderCaller({ id: 2, role: "cashier", isOwner: false })
+      .cancellationRefundStatus({ workOrderId }))
+      .resolves.toEqual({ workOrderId, status: "PENDING", amount: "2000.00" });
+    await expect(workOrderCaller({ id: 2, role: "cashier", isOwner: false }, 2)
+      .cancellationRefundStatus({ workOrderId }))
+      .resolves.toBeNull();
+    // Simulate a pending row created by the previous contract: approval must fall
+    // back safely when depositReceiptId and the encoded source are both absent.
+    await db().update(s.receipts)
+      .set({ internalNote: `WORK_ORDER_CUSTOMER_REFUND:DIRECT:${workOrderId}` })
+      .where(eq(s.receipts.id, Number(pending.id)));
+    expect(await db().select({ id: s.accountingEntries.id }).from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"))).toHaveLength(0);
+
+    await expect(workOrderCaller({ id: 1, role: "manager", isOwner: false })
+      .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    const approved = await workOrderCaller({ id: 3, role: "admin", isOwner: true })
+      .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" });
+    expect(approved.replayed).toBe(false);
+    await expect(workOrderCaller({ id: 3, role: "admin", isOwner: true })
+      .approveCancellationRefund({ receiptId: Number(pending.id), confirmationReference: "CARD-REFUND-77" }))
+      .resolves.toMatchObject({ replayed: true });
+    const materialized = (await db().select().from(s.receipts)
+      .where(eq(s.receipts.id, Number(pending.id))))[0]!;
+    expect(materialized.status).toBe("COMPLETED");
+    expect(materialized.approvalStatus).toBe("APPROVED");
+    expect(materialized.referenceNumber).toBe("CARD-REFUND-77");
+    await expect(workOrderCaller({ id: 2, role: "cashier", isOwner: false })
+      .cancellationRefundStatus({ workOrderId }))
+      .resolves.toEqual({ workOrderId, status: "APPROVED", amount: "2000.00" });
+    const audit = (await db().select({
+      action: s.auditLogs.action,
+      entityId: s.auditLogs.entityId,
+      newValue: s.auditLogs.newValue,
+    }).from(s.auditLogs).where(and(
+      eq(s.auditLogs.action, "workOrder.refund.approve"),
+      eq(s.auditLogs.entityId, String(pending.id)),
+    )))[0];
+    expect(audit?.action).toBe("workOrder.refund.approve");
+    expect(JSON.stringify(audit?.newValue)).toContain("CARD-REFUND-77");
+    const paymentOut = await db().select({
+      id: s.accountingEntries.id,
+      receiptId: s.accountingEntries.receiptId,
+    }).from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(paymentOut).toHaveLength(1);
+    expect(paymentOut[0]?.receiptId).toBe(Number(pending.id));
+  });
+
+  it("يحجز confirmationReference ذرياً: اعتمادان متزامنان بالطريقة نفسها ينجح أحدهما فقط", async () => {
+    const first = await createLegacyCardWorkOrder("RACE-A");
+    const second = await createLegacyCardWorkOrder("RACE-B");
+    await cancelWorkOrder(first.workOrderId, manager);
+    await cancelWorkOrder(second.workOrderId, manager);
+    const pending = await db().select({ id: s.receipts.id }).from(s.receipts)
+      .where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.status, "PENDING")));
+    expect(pending).toHaveLength(2);
+
+    const owner = workOrderCaller({ id: 3, role: "admin", isOwner: true });
+    const results = await Promise.allSettled(pending.map((row) =>
+      owner.approveCancellationRefund({
+        receiptId: Number(row.id),
+        confirmationReference: "CARD-RACE-SAME-REF",
+      })));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected", reason: { code: "CONFLICT" } });
+
+    const materialized = await db().select({ status: s.receipts.status }).from(s.receipts)
+      .where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.workOrderId, first.workOrderId)));
+    const materializedSecond = await db().select({ status: s.receipts.status }).from(s.receipts)
+      .where(and(eq(s.receipts.direction, "OUT"), eq(s.receipts.workOrderId, second.workOrderId)));
+    expect([...materialized, ...materializedSecond].filter((row) => row.status === "COMPLETED")).toHaveLength(1);
+    expect([...materialized, ...materializedSecond].filter((row) => row.status === "PENDING")).toHaveLength(1);
   });
 });

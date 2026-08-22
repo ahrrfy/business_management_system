@@ -15,7 +15,7 @@ function db() {
 beforeEach(async () => {
   const connection = db();
   await connection.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const table of ["idempotencyKeys", "accountingEntries", "receipts", "branches", "users"]) {
+  for (const table of ["idempotencyKeys", "accountingEntries", "receipts", "voucherCategories", "branches", "users"]) {
     await connection.execute(sql.raw(`TRUNCATE TABLE \`${table}\``));
   }
   await connection.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -28,6 +28,12 @@ beforeEach(async () => {
     loginMethod: "local",
     branchId: 1,
   });
+  await connection.insert(s.voucherCategories).values({
+    id: 11,
+    name: "إيرادات إدارية اختبارية",
+    direction: "IN",
+    postingRole: "OTHER_REVENUE",
+  });
 });
 
 describe("الضوابط الإدارية لمصدر النقد", () => {
@@ -38,6 +44,7 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
       amount: "750000",
       paymentMethod: "CASH",
       partyType: "OTHER",
+      voucherCategoryId: 11,
       counterpartyName: "تمويل موثق من المالك",
       referenceNumber: "OWNER-FUND-2026-001",
       description: "تمويل خزينة خارج المبيعات",
@@ -62,6 +69,7 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
       amount: "750000",
       paymentMethod: "CASH",
       partyType: "OTHER",
+      voucherCategoryId: 11,
       counterpartyName: "طرف غير معروف",
       description: "تمويل غير موثق",
       clientRequestId: "financial-admin-receipt-002",
@@ -81,6 +89,7 @@ describe("الضوابط الإدارية لمصدر النقد", () => {
       amount: "1000",
       paymentMethod: "CASH",
       partyType: "OTHER",
+      voucherCategoryId: 11,
       counterpartyName: "مالك المنشأة",
       referenceNumber: "OWNER-FUND-FUTURE",
       description: "تاريخ غير مسموح",

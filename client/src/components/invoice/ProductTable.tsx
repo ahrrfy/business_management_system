@@ -10,11 +10,12 @@
  */
 import type { Dispatch } from "react";
 import { AlertTriangle, Gift, Package, ShoppingCart, X } from "lucide-react";
+import { priceDecimalsFor } from "@shared/moneyPrecision";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
-import { D, round2 } from "@/lib/money";
 import { calcLineTotal, calcMargin, calcUnitCost, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
 import { getLineStockState } from "./stockAvailability";
@@ -54,40 +55,50 @@ export interface ProductTableProps {
   onNotify?: (msg: string, kind: "error" | "info") => void;
 }
 
+/**
+ * خليّة رقميّة داخل جدول الفاتورة (سعر البند/نسبة الخصم) — **تفويضٌ كامل لـ`MoneyInput`**.
+ *
+ * **الجذر (بلاغ المالك ١٧/٨/٢٦: «السعر لا يمكن أن يكون 1,450.99»):** كانت هذه الخليّة تُحلّل
+ * المدخل بـ`Number(v)` مباشرةً وتُسقط أيّ ضغطةٍ تُنتج `NaN` **بلا أيّ إشعار**. فالفاصلة الألفية
+ * («1,450.99» — وهي الشكل الذي تعرضه بقيّة حقول النظام)، والأرقام الهندية («١٤٥٠٫٩٩»)، ورمز
+ * العملة الملتصق، واللصق من Excel: كلّها تُبتلَع صامتةً فيبدو الحقل «مرفوضاً/متجمّداً». وكانت
+ * تقبل منازل عشرية بلا سقف ثمّ تُقصّ صامتاً عند الحفظ ⇒ المعروض ≠ المحفوظ.
+ *
+ * `MoneyInput` يحلّ الثلاثة معاً بمنطقٍ واحدٍ مُختبَر: تطبيعُ اللصق عبر `toNormalizedNumber`،
+ * وفواصلُ آلافٍ حيّة في العرض بينما القيمة الخام (بلا فواصل) هي ما يُرسَل، وسقفُ منازلٍ صريح.
+ */
 function InlineNumberInput({
   value,
   onChange,
   width = "w-20",
   max,
   suffix,
-  onBlur,
+  decimals = 2,
+  ariaLabel,
 }: {
   value: string | number;
   onChange: (v: string) => void;
   width?: string;
+  /** سقفٌ أعلى للقيمة (نسبة الخصم = ١٠٠). يُقصّ التجاوز فقط — لا يمسّ القيم الوسيطة أثناء الكتابة. */
   max?: number;
   suffix?: string;
-  /** يُستدعى عند مغادرة الحقل — لتطبيع القيمة (مثل قصّ سعر الدولار إلى منزلتين/سنتين). */
-  onBlur?: () => void;
+  /** أقصى منازل عشرية — يُشتقّ من عملة المستند عبر `priceDecimalsFor` لحقول السعر. */
+  decimals?: number;
+  ariaLabel?: string;
 }) {
   return (
     <div className="flex items-center justify-center gap-1">
-      <Input
-        dir="ltr"
+      <MoneyInput
         value={String(value ?? "")}
-        onChange={(e) => {
-          const v = e.target.value;
-          if (v === "" || v === "-" || v === ".") {
-            onChange(v);
-            return;
-          }
-          const n = Number(v);
-          if (Number.isFinite(n)) {
-            if (max != null) onChange(String(Math.min(max, Math.max(0, n))));
-            else onChange(v);
-          }
+        decimals={decimals}
+        ariaLabel={ariaLabel}
+        onChange={(raw) => {
+          if (max == null || raw === "" || raw === ".") return onChange(raw);
+          // القصّ عند التجاوز فقط: تمريرُ `String(Number(raw))` دائماً كان يمسح النقطة أثناء
+          // كتابة كسر («12.» ⇒ «12») فيتعذّر إدخال خصمٍ كسريّ.
+          const n = Number(raw);
+          onChange(Number.isFinite(n) && n > max ? String(max) : raw);
         }}
-        onBlur={onBlur}
         className={cn("h-8 text-center text-sm font-bold", width)}
       />
       {suffix && <span className="text-[11px] text-muted-foreground">{suffix}</span>}
@@ -152,15 +163,18 @@ export function ProductTable({
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   // مرتجع البيع: السعر والخصم يُعرَضان للقراءة فقط — الخادم يتجاهل تسعير المحرّر ويحسب الاسترداد
   // تناسبياً من إجماليّات بنود الفاتورة المصدر المخزَّنة، فتحريرهما وهمٌ يضلّل الموظّف.
-  const readOnlyPricing = invoiceType === "SALE_RETURN";
+  const readOnlyPricing = invoiceType === "SALE_RETURN" || invoiceType === "PURCHASE_RETURN";
+  const sourceLocked = invoiceType === "PURCHASE_RETURN";
   const showCostCol = showCost && !isPurchase;
   // خصم البند مخفيّ في الشراء: خدمة الشراء (`createPurchaseOrder`) تتجاهله تماماً (التكلفة = سعر
   // الوحدة كاملاً) ⇒ إظهاره يوهم بأثرٍ لا يقع ويجعل الإجمالي المعروض ≠ المحفوظ. البيع يُبقيه.
   const showDiscountCol = !isPurchase;
   const showIqdEquivalent = isPurchase && purchaseCurrency === "USD" && Number(purchaseRate) > 0;
-  // سعر الشراء بالدولار = سنتات (منزلتان). نطبّعه عند مغادرة الحقل كي يطابق ما يُرسَل للخادم
-  // (`nonNegMoneyString` يقصّه لمنزلتين) فيصير المعروض = المخزَّن (لا فرق تقريبٍ صامت).
-  const normalizeUsdPurchasePrice = isPurchase && purchaseCurrency === "USD";
+  // دقّة سعر البند = دقّة **عملة المستند** (`shared/moneyPrecision`): الدينار منزلتان والدولار
+  // أربع (سعر الوحدة الدولاريّ يُشتقّ بالقسمة: 41.48 ÷ 12 = 3.4566). الحقل يُطبّق السقف أثناء
+  // الكتابة ⇒ المعروض = المُرسَل = المخزَّن، فلا حاجة لقصٍّ صامتٍ عند مغادرة الحقل (كان يُحوّل
+  // 3.4566 إلى 3.46 بلا إشعار). البيع/عرض السعر بالدينار دائماً.
+  const linePriceDecimals = priceDecimalsFor(isPurchase ? purchaseCurrency : "IQD");
   // عمود «حصة الضريبة» يظهر فقط حين يمرِّر الأبُ حصصاً بطول items وفيها قيمة موجبة واحدة على
   // الأقلّ (لا نُظهر عموداً كامل الأصفار حين تكون الضريبة غير مفعَّلة أو صفريّة).
   const showTaxCol =
@@ -215,15 +229,17 @@ export function ProductTable({
 
   return (
     <section className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden rounded-xl border bg-card print:overflow-visible">
-      <div className="shrink-0 border-b px-3.5 py-3">
-        <ProductSearchBar
-          invoiceType={invoiceType}
-          branchId={branchId}
-          tier={tier}
-          onAddProduct={(line) => dispatch({ type: "ADD_ITEM", item: line })}
-          onNotify={onNotify}
-        />
-      </div>
+      {!sourceLocked && (
+        <div className="shrink-0 border-b px-3.5 py-3">
+          <ProductSearchBar
+            invoiceType={invoiceType}
+            branchId={branchId}
+            tier={tier}
+            onAddProduct={(line) => dispatch({ type: "ADD_ITEM", item: line })}
+            onNotify={onNotify}
+          />
+        </div>
+      )}
 
       <div className="flex shrink-0 items-center justify-between border-b bg-muted px-3.5 py-1.5">
         <div className="flex items-center gap-2">
@@ -237,15 +253,17 @@ export function ProductTable({
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-7 border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
-            onClick={onOpenBulkPicker}
-          >
-            <Package aria-hidden className="size-4" /> إضافة متعددة
-          </Button>
+          {!sourceLocked && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
+              onClick={onOpenBulkPicker}
+            >
+              <Package aria-hidden className="size-4" /> إضافة متعددة
+            </Button>
+          )}
           {items.length > 0 && (
             <Button
               type="button"
@@ -445,6 +463,8 @@ export function ProductTable({
                       <InlineNumberInput
                         value={isPurchase ? item.costBase || item.price : item.price}
                         width="w-20"
+                        decimals={linePriceDecimals}
+                        ariaLabel={`سعر ${item.name}`}
                         onChange={(v) => {
                           if (isPurchase) {
                             dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: v });
@@ -453,24 +473,6 @@ export function ProductTable({
                             dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
                           }
                         }}
-                        onBlur={
-                          normalizeUsdPurchasePrice
-                            ? () => {
-                                // سعر الدولار = سنتات: نقصّه لمنزلتين عند المغادرة فيطابق ما يُرسَل ويُخزَّن
-                                // (لا يبقى 4.1666 يُعرَض بينما يُحفظ 4.17). القيم الوسيطة («.») ⇒ تجاهُل آمن.
-                                const raw = item.costBase || item.price || "0";
-                                let rounded: string;
-                                try {
-                                  rounded = round2(D(raw)).toFixed(2);
-                                } catch {
-                                  return;
-                                }
-                                if (rounded === raw) return;
-                                dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: rounded });
-                                dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: rounded });
-                              }
-                            : undefined
-                        }
                       />
                     )}
                   </td>
@@ -493,6 +495,7 @@ export function ProductTable({
                           width="w-14"
                           max={100}
                           suffix="%"
+                          ariaLabel={`خصم ${item.name} بالنسبة المئوية`}
                           onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "discount", value: v })}
                         />
                       )}

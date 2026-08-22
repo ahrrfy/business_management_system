@@ -5,13 +5,16 @@ import { eq } from "drizzle-orm";
 import { exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
-import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
+import { adjustExchangeBalanceIqd, adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDateStr, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { computeSignature, nextVoucherNumber } from "../voucher/helpers";
 import { assertNonPhysicalOutReceipt } from "../cash/cashAvailability";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
+import { calculateSignedUsdMovement, persistSignedUsdControl } from "./reverse";
+import { postExchangeControlReclassification } from "./controlClassification";
 
 export interface SettleSupplierInput {
   exchangeHouseId: number;
@@ -98,22 +101,57 @@ export async function settleSupplierViaExchange(
     }
 
     const house = await lockHouse(tx, input.exchangeHouseId);
-    const usdRate = money(house.usdCostRate);
+    const usdRate = money(house.usdCostRate); // عرض فقط؛ الحركة تستخدم carrying الموقّع أدناه.
+    const controlBeforeIqd = input.currency === "USD"
+      ? money(house.balanceUsdCarryingIqd)
+      : money(house.balanceIqd);
+    let controlAfterIqd = controlBeforeIqd;
 
     let walletCostIqd: Decimal;
     let commissionIqd: Decimal;
     let usdAmountCol = new Decimal(0);
     let iqdAmountCol = settledIqd;
+    let finalUsdMovement: ReturnType<typeof calculateSignedUsdMovement> | null = null;
+    let settlementFxDiff = new Decimal(0);
 
     if (input.currency === "USD") {
       if (purchaseOrder && !walletAmount.eq(settledUsd)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "عند الدفع من محفظة الدولار يجب أن يساوي المسحوب مبلغ الدولار الواصل للمورد" });
       }
-      if (usdRate.lte(0)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد رصيد دولاري بكلفة معروفة — اشترِ دولاراً أولاً" });
+      const oldUsd = money(house.balanceUsd);
+      const oldCarrying = money(house.balanceUsdCarryingIqd);
+      const sourceRate = input.exchangeRate
+        ? money(input.exchangeRate)
+        : oldUsd.isZero()
+          ? settledIqd.div(walletAmount)
+          : oldCarrying.abs().div(oldUsd.abs());
+      if (sourceRate.lte(0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "يلزم سعر مصدر موجب للتسديد الدولاري" });
       }
-      walletCostIqd = round2(walletAmount.times(usdRate));
-      commissionIqd = round2(commission.times(usdRate));
+      const principalMovement = calculateSignedUsdMovement(
+        oldUsd,
+        oldCarrying,
+        walletAmount.negated(),
+        round2(walletAmount.times(sourceRate)),
+      );
+      walletCostIqd = round2(principalMovement.balanceCarryingIqd.minus(oldCarrying).abs());
+      commissionIqd = commission.isZero() ? new Decimal(0) : round2(commission.times(sourceRate));
+      finalUsdMovement = commission.isZero()
+        ? principalMovement
+        : calculateSignedUsdMovement(
+          principalMovement.balanceUsd,
+          principalMovement.balanceCarryingIqd,
+          commission.negated(),
+          commissionIqd,
+        );
+      // The supplier liability is extinguished at settledIqd, while the house
+      // control moves at its exact signed carrying basis.  The FX line is the
+      // balancing difference; commission remains a separate expense line.
+      settlementFxDiff = round2(
+        settledIqd
+          .plus(commissionIqd)
+          .plus(finalUsdMovement.balanceCarryingIqd.minus(oldCarrying)),
+      );
       const totalUsdOut = walletAmount.plus(commission);
       const availUsd = money(house.balanceUsd);
       // يُطلَب التأكيد فقط عند أوّل عبورٍ من رصيدٍ غير سالب إلى سالب — لا عند تعميق دَينٍ قائم أصلاً.
@@ -123,7 +161,8 @@ export async function settleSupplierViaExchange(
           message: `التسديد سيجعل رصيد الدولار لدى الصيرفة سالباً (${availUsd.toFixed(2)}$ متاح مقابل ${totalUsdOut.toFixed(2)}$ مطلوب). أرسل confirmNegative=true للتجاوز.`,
         });
       }
-      await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, totalUsdOut.negated());
+      await persistSignedUsdControl(tx, input.exchangeHouseId, finalUsdMovement);
+      controlAfterIqd = finalUsdMovement.balanceCarryingIqd;
       usdAmountCol = walletAmount;
     } else {
       // لفاتورة USD المسحوب هو الدينار الفعلي، بينما settledIqd قيمة الدين الدفترية بسعر التثبيت.
@@ -142,11 +181,14 @@ export async function settleSupplierViaExchange(
         });
       }
       await adjustExchangeBalanceIqd(tx, input.exchangeHouseId, totalIqdOut.negated());
+      controlAfterIqd = availIqd.minus(totalIqdOut);
       iqdAmountCol = walletAmount;
     }
 
     // فرق الصرف المحقَّق = الدين المُطفأ − كلفة ما خرج من المحفظة (بلا العمولة).
-    const fxDiff = settledIqd.minus(walletCostIqd);
+    const fxDiff = input.currency === "USD"
+      ? settlementFxDiff
+      : settledIqd.minus(walletCostIqd);
 
     // إطفاء دين المورد (التسديد الفعلي — هنا فقط).
     await adjustSupplierBalance(tx, input.supplierId, settledIqd.negated());
@@ -215,11 +257,17 @@ export async function settleSupplierViaExchange(
     });
     await tx.update(receipts).set({ signatureHash }).where(eq(receipts.id, receiptId));
     await tx.update(exchangeTransactions).set({ receiptId }).where(eq(exchangeTransactions.id, txnId));
+    const exchangeWalletRole = input.currency === "USD" ? "EXCHANGE_WALLET_USD" as const : "EXCHANGE_WALLET_IQD" as const;
+    const settleComponents = {
+      roleDebits: { AP: settledIqd },
+      roleCredits: { [exchangeWalletRole]: settledIqd },
+    } as const;
 
     // قيد التسديد (حركة إطفاء ذمّة، مُستثناة من الإيراد) مربوط بالسند.
     await postEntry(tx, {
       entryType: "EXCHANGE_SETTLE",
       branchId: input.branchId,
+      createdBy: actor.userId,
       receiptId,
       purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
       exchangeHouseId: input.exchangeHouseId,
@@ -227,27 +275,58 @@ export async function settleSupplierViaExchange(
       amount: settledIqd,
       dedupeKey: `EXSET:${txnNumber}`,
       notes: description,
+      postingSourceComponents: settleComponents,
+      postingIntent: createPostingIntent(
+        "EXCHANGE_SETTLE_SUPPLIER",
+        "EXCHANGE_SETTLE",
+        [debitLine("AP", settledIqd), creditLine(exchangeWalletRole, settledIqd)],
+        settleComponents,
+      ),
     });
 
     // فرق الصرف المحقَّق (amount موقَّع، معزول عن إيراد البيع).
     if (!fxDiff.isZero()) {
+      const fxAmount = fxDiff.abs();
+      const fxComponents = fxDiff.isPositive()
+        ? { roleDebits: { [exchangeWalletRole]: fxAmount }, roleCredits: { FX_GAIN: fxAmount } }
+        : { roleDebits: { FX_LOSS: fxAmount }, roleCredits: { [exchangeWalletRole]: fxAmount } };
       await postEntry(tx, {
         entryType: "EXCHANGE_FX_DIFF",
         branchId: input.branchId,
+        createdBy: actor.userId,
         purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
         exchangeHouseId: input.exchangeHouseId,
         supplierId: input.supplierId,
         amount: fxDiff,
         dedupeKey: `EXFX:${txnNumber}`,
         notes: fxDiff.isPositive() ? "مكسب صرف محقَّق" : "خسارة صرف محقَّقة",
+        postingSourceComponents: fxComponents,
+        postingIntent: fxDiff.isPositive()
+          ? createPostingIntent(
+            "EXCHANGE_FX_GAIN",
+            "EXCHANGE_FX_DIFF",
+            [debitLine(exchangeWalletRole, fxDiff), creditLine("FX_GAIN", fxDiff)],
+            fxComponents,
+          )
+          : createPostingIntent(
+            "EXCHANGE_FX_LOSS",
+            "EXCHANGE_FX_DIFF",
+            [debitLine("FX_LOSS", fxDiff.abs()), creditLine(exchangeWalletRole, fxDiff.abs())],
+            fxComponents,
+          ),
       });
     }
 
     // العمولة مصروف (cost=amount، profit سالب) — تظهر في P&L والكشف.
     if (commissionIqd.gt(0)) {
+      const feeComponents = {
+        roleDebits: { OPERATING_EXPENSE: commissionIqd },
+        roleCredits: { [exchangeWalletRole]: commissionIqd },
+      } as const;
       await postEntry(tx, {
         entryType: "EXCHANGE_FEE",
         branchId: input.branchId,
+        createdBy: actor.userId,
         purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
         exchangeHouseId: input.exchangeHouseId,
         supplierId: input.supplierId,
@@ -256,8 +335,25 @@ export async function settleSupplierViaExchange(
         profit: commissionIqd.negated(),
         dedupeKey: `EXFEE:${txnNumber}`,
         notes: "عمولة صيرفة",
+        postingSourceComponents: feeComponents,
+        postingIntent: createPostingIntent(
+          "EXCHANGE_FEE_EXPENSE",
+          "EXCHANGE_FEE",
+          [debitLine("OPERATING_EXPENSE", commissionIqd), creditLine(exchangeWalletRole, commissionIqd)],
+          feeComponents,
+        ),
       });
     }
+
+    await postExchangeControlReclassification(tx, {
+      exchangeHouseId: input.exchangeHouseId,
+      currency: input.currency,
+      beforeSignedIqd: controlBeforeIqd,
+      afterSignedIqd: controlAfterIqd,
+      sourceKey: txnNumber,
+      notes: `تصنيف ذمة الصيرفة لتسوية المورد ${txnNumber}`,
+      createdBy: actor.userId,
+    });
 
     if (input.clientRequestId) {
       await recordIdempotencyKey(tx, "exchange.settle", input.clientRequestId, txnId);

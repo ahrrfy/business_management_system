@@ -63,7 +63,11 @@ function kioskSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
     .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     // الصورة الرئيسية فقط (1:0..1) — لا تكرار صفوف.
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
 }
 
 /**

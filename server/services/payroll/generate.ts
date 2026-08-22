@@ -3,13 +3,14 @@
 // استقطاع السلفة المقترح، وخصم الإجازة بلا راتب (أو نموذج الأجر بالحضور عند تفعيله).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { fullEmployeeName } from "@shared/hr";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { PAYROLL_ITEM_ATTENTION_PREFIX, fullEmployeeName } from "@shared/hr";
 import {
   attendance,
   commissionRunLines,
   commissionRuns,
   employees,
+  employeeTerminations,
   hrAttendanceSettings,
   leaveRequests,
   payrollItems,
@@ -22,14 +23,22 @@ import { money, round2, toDbMoney } from "../money";
 import { computeLegalComponents, getPayrollLegalSettings } from "../payrollLegalService";
 import { applyDuePromotions } from "../promotionService";
 import { type Actor, withTx } from "../tx";
+import { baghdadToday } from "../businessDay";
 import { assertPeriod, computeNet, countDaysWithin, expandSpans, recomputeRunTotals } from "./helpers";
 import { getRun } from "./queries";
+import { encodeTerminationWageCoverage } from "./terminationCoverage";
+import { buildPayrollLegalPolicyEvidence } from "./legalSnapshot";
 
 export async function generatePayroll(period: string, actor: Actor) {
   const p = assertPeriod(period);
   return withTx(async (tx) => {
     // رفض التكرار: مسيّر واحد لكل شهر (القاعدة تفرض UNIQUE أيضاً، نتحقّق مبكراً برسالة عربية).
-    const [exists] = await tx.select({ id: payrollRuns.id }).from(payrollRuns).where(eq(payrollRuns.period, p)).limit(1);
+    const [exists] = await tx
+      .select({ id: payrollRuns.id })
+      .from(payrollRuns)
+      .where(eq(payrollRuns.period, p))
+      .for("update")
+      .limit(1);
     if (exists) throw new TRPCError({ code: "CONFLICT", message: `يوجد مسيّر رواتب لشهر ${p} بالفعل` });
 
     // كنسة الترقيات المستحقّة (تدقيق ١٧/٧): تُطبّق الترقيات المعتمَدة المؤجَّلة (effectiveDate مستقبليّ
@@ -43,19 +52,41 @@ export async function generatePayroll(period: string, actor: Actor) {
      * 2026-08) كان يُقدّم زياداتٍ مؤجَّلةً سنةً كاملة، وحذفُ المسودّة لا يتراجع عنها.
      * الشهر الجاري هو أقصى ما يُولَّد؛ ما بعده لا معنى له تشغيلياً أصلاً.
      */
-    const currentPeriod = new Date().toISOString().slice(0, 7);
+    const currentPeriod = baghdadToday().slice(0, 7);
     if (p > currentPeriod) {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `لا يُولَّد مسيّر لشهر لم يبدأ بعد (${p}). أقصى شهر متاح: ${currentPeriod}.`,
       });
     }
+    const recognizedTerminationWages = await tx
+      .select({
+        terminationId: employeeTerminations.id,
+        employeeId: employeeTerminations.employeeId,
+        settlementSnapshotHash: employeeTerminations.settlementSnapshotHash,
+        earnedGrossWages: employeeTerminations.earnedGrossWages,
+      })
+      .from(employeeTerminations)
+      .where(
+        and(
+          eq(employeeTerminations.status, "completed"),
+          isNotNull(employeeTerminations.recognizedAt),
+          isNull(employeeTerminations.recognitionReversedAt),
+          sql`DATE_FORMAT(${employeeTerminations.lastDay}, '%Y-%m') = ${p}`,
+        ),
+      )
+      .orderBy(employeeTerminations.employeeId, employeeTerminations.id)
+      .for("share");
+    const terminationCoveredEmployeeIds = new Set(
+      recognizedTerminationWages.map((row) => Number(row.employeeId)),
+    );
     await applyDuePromotions(tx, periodEndYmd);
 
     // كل الموظفين غير منتهي الخدمة (نشطون + في إجازة).
-    const emps = await tx
+    const emps = (await tx
       .select({
         id: employees.id,
+        branchId: employees.branchId,
         payType: employees.payType,
         salary: employees.salary,
         allowances: employees.allowances,
@@ -76,7 +107,9 @@ export async function generatePayroll(period: string, actor: Actor) {
           sql`(${employees.employmentStatus} <> 'terminated' OR ${employees.terminationDate} IS NOT NULL)`,
         ),
       )
-      .orderBy(employees.id);
+      .orderBy(employees.id)).filter(
+        (employee) => !terminationCoveredEmployeeIds.has(Number(employee.id)),
+      );
 
     // commissions (٦/٧/٢٦): التقاط تشغيلة العمولات **المعتمدة** لنفس الشهر — بند «عمولة» لكل
     // موظف داخل نفس المعاملة (قفل رأس التشغيلة يمنع سباق إلغاء الاعتماد أثناء التوليد).
@@ -104,11 +137,16 @@ export async function generatePayroll(period: string, actor: Actor) {
     // ببند أجرٍ صفري كي تُصرف عمولته المستحقة مرّة واحدة ولا تضيع.
     const listedIds = new Set(emps.map((e) => Number(e.id)));
     const zeroGrossIds = new Set<number>();
-    const missingIds = Array.from(commissionByEmp.keys()).filter((id) => money(commissionByEmp.get(id) ?? 0).gt(0) && !listedIds.has(id));
+    const missingIds = Array.from(commissionByEmp.keys()).filter(
+      (id) =>
+        money(commissionByEmp.get(id) ?? 0).gt(0) &&
+        !listedIds.has(id),
+    );
     if (missingIds.length > 0) {
       const extra = await tx
         .select({
           id: employees.id,
+          branchId: employees.branchId,
           payType: employees.payType,
           salary: employees.salary,
           allowances: employees.allowances,
@@ -170,16 +208,33 @@ export async function generatePayroll(period: string, actor: Actor) {
 
     // ساعات الحضور لكل (موظف × يوم) — تُستعمل في نموذج الحضور فقط.
     const dailyAttendance = new Map<number, Map<string, Decimal>>();
+    /*
+     * أيامٌ **مفتوحة** (دخولٌ بلا انصراف) لكل موظف. كانت تصل المحرّك بساعاتٍ صفرٍ فيقرأها
+     * غياباً ويدفعها صفراً صامتاً — وهي ليست غياباً بل بصمةٌ ناقصة أو دوامٌ جارٍ (تدقيق ١٧/٨).
+     */
+    const openAttendance = new Map<number, Set<string>>();
     if (attendancePayOn) {
       const rows = await tx
-        .select({ employeeId: attendance.employeeId, date: attendance.attendanceDate, hours: attendance.hours })
+        .select({
+          employeeId: attendance.employeeId,
+          date: attendance.attendanceDate,
+          hours: attendance.hours,
+          checkIn: attendance.checkIn,
+          checkOut: attendance.checkOut,
+        })
         .from(attendance)
         .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE')`);
       for (const r of rows) {
         const k = Number(r.employeeId);
+        const ymd = String(r.date).slice(0, 10);
         const m = dailyAttendance.get(k) ?? new Map<string, Decimal>();
-        m.set(String(r.date).slice(0, 10), money(r.hours ?? 0));
+        m.set(ymd, money(r.hours ?? 0));
         dailyAttendance.set(k, m);
+        if (r.checkIn != null && r.checkOut == null) {
+          const o = openAttendance.get(k) ?? new Set<string>();
+          o.add(ymd);
+          openAttendance.set(k, o);
+        }
       }
     }
 
@@ -239,8 +294,27 @@ export async function generatePayroll(period: string, actor: Actor) {
     // **كل مكوّن معطَّل افتراضياً** ⇒ computeLegalComponents تُعيد صفراً ⇒ صفر أثر على deductions/net
     // (انحدار صفريّ مُثبَت باختبار). النِّسب/الشرائح يضبطها المالك مع محاسبه القانونيّ.
     const legalSettings = await getPayrollLegalSettings(tx);
+    const legalPolicy = buildPayrollLegalPolicyEvidence(legalSettings);
 
     // رأس المسيّر (مسودة) — المجاميع تُحدَّث بعد إدراج البنود.
+    const terminationCoverageNote = encodeTerminationWageCoverage(
+      p,
+      recognizedTerminationWages.map((row) => {
+        if (!row.settlementSnapshotHash) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `لقطة تسوية نهاية الخدمة #${row.terminationId} ناقصة؛ لا يمكن إثبات تغطية أجر الموظف #${row.employeeId}.`,
+          });
+        }
+        return {
+          terminationId: Number(row.terminationId),
+          employeeId: Number(row.employeeId),
+          settlementSnapshotHash: row.settlementSnapshotHash,
+          earnedGrossWages: money(row.earnedGrossWages).toFixed(2),
+          payrollCommission: money(commissionByEmp.get(Number(row.employeeId)) ?? 0).toFixed(2),
+        };
+      }),
+    );
     const runRes = await tx.insert(payrollRuns).values({
       period: p,
       branchId: actor.branchId ?? null,
@@ -250,10 +324,23 @@ export async function generatePayroll(period: string, actor: Actor) {
       totalOvertime: "0",
       totalDeductions: "0",
       totalNet: "0",
+      notes: terminationCoverageNote,
+      legalPolicySnapshot: legalPolicy.snapshot,
+      legalPolicyHash: legalPolicy.hash,
       createdBy: actor.userId,
     });
     const runId = extractInsertId(runRes);
     const attendancePayByEmp = new Map<number, AttendancePayResult>();
+    /**
+     * أيامٌ مفتوحة موسومة (دخولٌ بلا انصراف) — تُرافق نتيجة التوليد فتراها الشاشة.
+     * ليست استبعاداً: أصحابُها لهم بنودٌ بساعاتهم المؤكَّدة، والوسمُ نداءٌ للتصحيح قبل الاعتماد.
+     */
+    const attendanceFlagged: Array<{
+      employeeId: number;
+      employeeName: string;
+      openDays: number;
+      openDates: string[];
+    }> = [];
 
     for (const e of emps) {
       const monthly = e.payType === "monthly";
@@ -296,6 +383,7 @@ export async function generatePayroll(period: string, actor: Actor) {
           // جدول الموظف الخاصّ يتقدّم على العامّ — والجمعة قد تكون قصيرةً لا راحة.
           schedule: e.workSchedule && typeof e.workSchedule === "object" ? (e.workSchedule as WorkSchedule) : defaultSchedule,
           attendedHoursByDate: dailyAttendance.get(Number(e.id)) ?? new Map(),
+          openDates: openAttendance.get(Number(e.id)) ?? new Set(),
           paidLeaveDates: expandSpans(paidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
           unpaidLeaveDates: expandSpans(unpaidLeaveSpans.get(Number(e.id)) ?? [], employmentStart, employmentEnd),
           payFrom,
@@ -316,7 +404,13 @@ export async function generatePayroll(period: string, actor: Actor) {
          * بصماتٌ فعلاً وأجرٌ يُدفع، فليس «بلا جهاز».
          */
         if (
-          Number(pay.payableHours) === 0 &&
+          /*
+           * يُفحص المستحقّ **قبل** تعويض الشهر القصير (تدقيق ١٧/٨): `payableHours` يشمله،
+           * فكان موظفٌ بلا بصمةٍ واحدة في شباط يصير مستحقُّه موجباً (١٦ ساعة) ⇒ يُعمى الحارس
+           * ويُصرف له أجرٌ عن شهرٍ لم يحضره. والنواة صارت لا تمنح التعويض بلا مستحقٍّ أصلاً،
+           * وهذا الطرح دفاعٌ في العمق فلا يعود الحارس أعمى مهما تغيّرت سياسة التعويض.
+           */
+          Number(pay.payableHours) - Number(pay.shortMonthHours) === 0 &&
           Number(pay.restWorkedHours) === 0 &&
           pay.absentDays > 0
         ) {
@@ -325,6 +419,31 @@ export async function generatePayroll(period: string, actor: Actor) {
             message:
               `الموظف «${fullEmployeeName(e as never)}» بلا أي ساعة حضور في ${p} — وهذا غالباً ربطٌ ناقص بجهاز البصمة لا غياباً. ` +
               `اربطه من بطاقته، أو أشّر «راتب ثابت — لا يخضع للحضور» إن كان بلا جهاز (كالمُلّاك)، ثم أعد التوليد.`,
+          });
+        }
+        /*
+         * اليوم المفتوح (دخولٌ بلا انصراف) — **وسمٌ لا استبعاد ولا تجميد** (قرار المالك ١٧/٨):
+         *
+         * مرّ هذا الحارس بثلاث صيغ، وثالثتها وحدها تصمد:
+         *  ١) **قبل التدقيق**: يمرّ غياباً فيُدفع صفراً صامتاً — «دينارٌ يضيع بصمت».
+         *  ٢) **رميٌ يُجمّد الشركة كلَّها** من أجل بصمةٍ واحدة — نقضه المالك: «استبعد الموظف
+         *     وحده لا الشركة».
+         *  ٣) **استبعادُ الموظف** — بدا تنفيذاً حرفياً للقرار، لكنّ فحص الشيفرة أسقطه:
+         *     المسيّر واحدٌ لكل شهر بقيدٍ فريد، ولا واجهة لإضافة بندٍ إلى مسيّرٍ قائم ⇒
+         *     المستبعَد **لا سبيل لصرف أجر شهره أبداً** بعد الاعتماد. أي أن «بصمةً منسيّة»
+         *     كانت ستصير **ضياع أجر شهرٍ كامل** — نقيضَ المقصود.
+         *
+         * فالصيغة الصامدة: يبقى الموظف في المسيّر **بساعاته المؤكَّدة**، ولا يُحتسب اليوم
+         * المفتوح وحده، ويُوسَم البند بسببه وتُجمَع الأسماء في نتيجة التوليد. الشركة تُصرف،
+         * ولا أجر يضيع، والعمولة تُصرف مع بندها (لو استُبعد لضاعت بلا رجعة).
+         * والحسم قبل الاعتماد: تصحيح البصمة من كشف الموظف ثم حذف المسودّة وإعادة التوليد.
+         */
+        if (pay.openDays > 0) {
+          attendanceFlagged.push({
+            employeeId: Number(e.id),
+            employeeName: fullEmployeeName(e as never),
+            openDays: pay.openDays,
+            openDates: pay.openDates,
           });
         }
         attendancePayByEmp.set(Number(e.id), pay);
@@ -376,16 +495,22 @@ export async function generatePayroll(period: string, actor: Actor) {
       // معطَّلة افتراضياً ⇒ كلها صفر ⇒ صفر أثر. لا مكوّنات على تسوية المفصول ذي الأجر الصفريّ (نهاية خدمته
       // تُسوّى عند الفصل — لا ازدواج، ولا خصم ضمان/ضريبة على أجرٍ صفريّ).
       // الوعاء الأساسيّ للشهريّ = الراتب الأساس (بلا مخصّصات)، وللساعيّ = أجر الفترة (gross).
-      const basicForLegal = monthly ? money(e.salary ?? 0) : gross;
+      // الوعاء الأساسي هو الأجر الأساسي المكتسب داخل نافذة العمل الفعلية، لا راتب
+      // الشهر الكامل. هذا يحمي التعيين/الإنهاء منتصف الشهر من ضمان وEOS شهر كامل.
+      const basicForLegal = monthly
+        ? round2(money(e.salary ?? 0).times(employmentRatio))
+        : gross;
       // Codex P2: ضمان/ضريبة على **الأجر المكتسَب فعلاً بعد الإجازة بلا راتب** لا على الإجماليّ الكامل —
       // (١) لا استقطاع على أجرٍ لم يُكتسَب، و(٢) يمنع تجاوز الاستقطاع للأجر ⇒ net سالباً يتعذّر اعتماده
       // (إجازةٌ تستهلك الشهر كان يُنتج net سالباً). الإجازة تخصّ الشهريّ فقط ⇒ للساعيّ leaveDeduction=0
       // فالوعاء = gross بلا تغيير. صفر إجازة ⇒ earnedGross=gross وearnedBasic=basicForLegal ⇒ صفر انحدار.
       const earnedGross = Decimal.max(0, gross.minus(leaveDeduction));
-      const earnedBasic = Decimal.max(0, basicForLegal.minus(leaveDeduction));
+      const earnedBasic = onAttendancePath
+        ? Decimal.max(0, money(attendancePayByEmp.get(Number(e.id))?.basePay ?? 0))
+        : Decimal.max(0, basicForLegal.minus(leaveDeduction));
       // Codex P2: معدّل نهاية الخدمة اليوميّ من وعاء الأجر لا من e.salary — الساعيّ راتبه 0 لكنه يكتسب
-      // gross، فكان استحقاقه يُسجَّل صفراً رغم كسبه. basicForLegal÷٣٠ ⇒ للشهريّ = الراتب÷٣٠ (كما كان)،
-      // وللساعيّ = gross÷٣٠. استحقاق نهاية الخدمة التزامٌ تعاقديّ لا يُنقَص بإجازة شهرٍ ⇒ على الوعاء الكامل.
+      // gross، فكان استحقاقه يُسجَّل صفراً رغم كسبه. للشهريّ يُقسَّط الوعاء بنسبة أيام
+      // العمل في الشهر، وللساعيّ = gross. الإجازة لا تخفض EOS لكن قِصر نافذة العمل يخفضه.
       const eosDailyRate = round2(basicForLegal.div(30));
       const legal = zeroGross
         ? { socialSecurityEmployee: new Decimal(0), socialSecurityEmployer: new Decimal(0), incomeTax: new Decimal(0), endOfServiceAccrual: new Decimal(0) }
@@ -419,9 +544,27 @@ export async function generatePayroll(period: string, actor: Actor) {
           if (ap.absentDays > 0) parts.push(`غياب ${ap.absentDays} يوم`);
           if (ap.unpaidLeaveDays > 0) parts.push(`إجازة بلا راتب ${ap.unpaidLeaveDays} يوم`);
           if (Number(ap.shortHours) > 0) parts.push(`نقص ${ap.shortHours} ساعة`);
+          // اليوم المفتوح **أوّلُ ما يُقرأ** في السطر: ساعاته مجهولة لا صفر، وتصحيحُه قبل
+          // الاعتماد يستردّ أجره. تُسمّى التواريخ لأن «N يوم» وحدها لا تدلّ على ما يُصحَّح.
+          if (ap.openDays > 0) {
+            // التواريخ مقصوصةٌ عند ٦ **بإفصاح** («+N أخرى»): سقفُ ٢٥٥ محرفاً أدناه يقصّ صامتاً،
+            // فقائمةٌ طويلة كانت تبتلع نفسها وتُخفي أنها ابتُلعت. الكاملة في نتيجة التوليد والكشف.
+            const shown = ap.openDates.slice(0, 6);
+            const rest = ap.openDates.length - shown.length;
+            parts.unshift(
+              `${PAYROLL_ITEM_ATTENTION_PREFIX} ${ap.openDays} يوم بلا انصراف (${shown.join("، ")}${rest > 0 ? ` +${rest} أخرى` : ""}) — غير محتسَبة`,
+            );
+          }
           return parts.join(" — ").slice(0, 255);
         })(),
         employeeId: Number(e.id),
+        branchIdSnapshot:
+          e.branchId == null
+            ? actor.branchId > 0
+              ? actor.branchId
+              : null
+            : Number(e.branchId),
+        revisionNo: 0,
         payType: monthly ? "monthly" : "hourly",
         hours,
         gross: toDbMoney(gross),
@@ -430,6 +573,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         overtime: toDbMoney(overtime),
         commission: toDbMoney(commission),
         deductions: toDbMoney(deductions),
+        wageReduction: toDbMoney(leaveDeduction),
         advanceDeduction: toDbMoney(advanceDeduction),
         // المكوّنات القانونية (البند ④، لقطة): حصّتا الموظف (ضمان+ضريبة) مُتضمَّنتان في deductions أعلاه؛
         // حصّة رب العمل واستحقاق نهاية الخدمة عرضٌ/التزامٌ فقط (خارج deductions/net). كلها صفر عند التعطيل.
@@ -447,6 +591,11 @@ export async function generatePayroll(period: string, actor: Actor) {
     if (commissionRun) {
       await tx.update(commissionRuns).set({ payrollRunId: runId }).where(eq(commissionRuns.id, Number(commissionRun.id)));
     }
-    return runId;
-  }).then((runId) => getRun(runId));
+    return { runId, attendanceFlagged };
+  }).then(async ({ runId, attendanceFlagged }) => {
+    const run = await getRun(runId);
+    // يُرافق النتيجةَ لا الرأسَ المخزَّن: حالةٌ لحظة التوليد تُعرَض ثم تزول بالتصحيح، ولا
+    // معنى لتخزينها فتشيخ. الشاشة تعرضها فور التوليد، وملاحظةُ البند أثرُها الدائم.
+    return { ...run, attendanceFlagged };
+  });
 }

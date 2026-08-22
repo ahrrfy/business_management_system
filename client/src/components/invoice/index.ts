@@ -28,6 +28,7 @@ export {
 } from "./types";
 
 export { invoiceReducer, createInitialState } from "./reducer";
+export { derivePaymentTerms } from "./paymentTerms";
 export { calcTotals, calcLineTotal, calcMargin, allocateLineTax, fmtMoney, fmtNum, type InvoiceTotals } from "./totals";
 
 export { InvoiceTypeTabs, type InvoiceTypeTabsProps } from "./InvoiceTypeTabs";
@@ -40,3 +41,20 @@ export { TotalsPanel, type TotalsPanelProps } from "./TotalsPanel";
 export { ActionButtons, type ActionButtonsProps, type InvoiceActionKind } from "./ActionButtons";
 export { TermsAndNotes, type TermsAndNotesProps } from "./TermsAndNotes";
 export { ShortcutsBar, type ShortcutsBarProps } from "./ShortcutsBar";
+// ⚠️ اسم ملف المنطق `supplierInvoiceMatching.ts` يتعمّد الاختلاف عن مكوّن
+// `SupplierInvoiceMatch.tsx` بأكثر من حالة الأحرف: كانا `supplierInvoiceMatch.ts` و
+// `SupplierInvoiceMatch.tsx`، فعلى ويندوز/ماك (نظام ملفات غير حسّاس للحالة) يراهما TypeScript
+// ملفاً واحداً ⇒ TS1261/TS1149، ويُحلّ `./SupplierInvoiceMatch` إلى ملف المنطق فيسقط تصدير
+// المكوّن (TS2305) وتفقد صفحات الشراء أنواع خصائصه (TS7006). و**CI على لينكس أخضر** لأنّ
+// نظام ملفاته حسّاس للحالة ⇒ عطلٌ يراه كل مطوّر ويندوز ولا يراه الفحص. لا تُعِد التصادم.
+export { SupplierInvoiceMatch, type SupplierInvoiceMatchProps } from "./SupplierInvoiceMatch";
+export {
+  matchSupplierInvoice,
+  deriveDocumentTotal,
+  distributeToSubtotal,
+  subtotalForInvoiceTotal,
+  type MatchLine,
+  type MatchResult,
+  type MatchVerdict,
+  type DistributeResult,
+} from "./supplierInvoiceMatching";

@@ -311,3 +311,229 @@ describe("العمل في يوم الراحة (قرار المالك ٣١/٧: س
     expect(r.restWorkedHours).toBe("12.00");
   });
 });
+
+/*
+ * س٨) اليوم **المفتوح** (دخولٌ بلا انصراف) ليس غياباً — تدقيق ١٧/٨.
+ * كان يصل المحرّك بساعاتٍ صفرٍ فيقرأه غياباً ويدفعه صفراً صامتاً، ويضخّم «غياب N يوم»
+ * في ملاحظة المسيّر بأيامٍ لم يغبها الموظف. الفرق بين الحالتين أجرُ يومٍ كامل.
+ */
+describe("اليوم المفتوح — دخولٌ بلا انصراف (س٨)", () => {
+  const openDay = "2026-07-06"; // اثنين — يوم دوام
+
+  it("يُميَّز بحالة open ولا يُحتسب غياباً", () => {
+    const att = fullAttendance();
+    att.set(openDay, D(0)); // ساعاته صفرٌ لأنها لا تُخمَّن
+    const r = base({ attendedHoursByDate: att, openDates: new Set([openDay]) });
+
+    expect(r.openDays).toBe(1);
+    expect(r.openDates).toEqual([openDay]);
+    expect(r.absentDays).toBe(0); // ← جوهر الإصلاح: لم يعد يُعدّ غياباً
+    expect(r.days.find((x) => x.date === openDay)?.state).toBe("open");
+  });
+
+  it("بلا openDates يبقى السلوك السابق كما هو — غياب (صفر انحدار)", () => {
+    const att = fullAttendance();
+    att.set(openDay, D(0));
+    const r = base({ attendedHoursByDate: att });
+
+    expect(r.openDays).toBe(0);
+    expect(r.absentDays).toBe(1);
+    expect(r.days.find((x) => x.date === openDay)?.state).toBe("absent");
+  });
+
+  it("لا يُدفع أجرُه (ساعاته مجهولة لا صفر) — ولا يُخمَّن", () => {
+    const att = fullAttendance();
+    att.set(openDay, D(0));
+    const r = base({ attendedHoursByDate: att, openDates: new Set([openDay]) });
+    const day = r.days.find((x) => x.date === openDay)!;
+
+    expect(day.amount).toBe("0.00");
+    expect(day.totalAmount).toBe("0.00");
+  });
+
+  /*
+   * الثابت الذي يقوم عليه قرار «يبقى في المسيّر موسوماً» (١٧/٨): اليوم المفتوح يخصم **ساعاته
+   * وحدها** من المستحقّ ويبقى في المقرَّر — فبقيّة أيام الشهر تُصرف كاملةً بلا مسٍّ.
+   * لو ابتلع المفتوحُ المقرَّرَ لصار الأجر صحيحاً ظاهرياً ولاختفى أثرُ النقص من الملاحظة.
+   */
+  it("يخصم ساعاته وحدها: المستحقّ = المقرَّر − ساعات ذلك اليوم، والبقيّة كاملة", () => {
+    const att = fullAttendance();
+    att.set(openDay, D(0));
+    const r = base({ attendedHoursByDate: att, openDates: new Set([openDay]) });
+
+    expect(r.scheduledHours).toBe("208.00"); // تموز: ٢٦ يوم دوام × ٨ — المفتوح يبقى مقرَّراً
+    expect(r.payableHours).toBe("200.00"); // 208 − 8 (اليوم المفتوح وحده)
+    expect(r.absentDays).toBe(0);
+    // ٩٠٠٬٠٠٠ ÷ ٢٠٨ × ٢٠٠ — لا تعويض شهرٍ قصير يُخفي النقص.
+    expect(Number(r.basePay)).toBeCloseTo(865384.62, 1);
+  });
+});
+
+/*
+ * س٩) سقف اليوم الواحد يُطبَّق في مسار **يوم الدوام** لا في الطيّ ومسار الراحة وحدهما.
+ * كان المسار الأكثر استعمالاً يستهلك الساعات خامّاً، فيمرّ يومٌ مُدخَلٌ يدوياً بعشرين ساعة.
+ */
+describe("سقف اليوم الواحد في مسار يوم الدوام (س٩)", () => {
+  const day = "2026-07-06";
+
+  it("يقصّ الساعات عند السقف قبل تقسيمها أساساً وإضافياً", () => {
+    const att = new Map([[day, D(20)]]);
+    const r = base({ attendedHoursByDate: att, maxDailyHours: 12 });
+    const row = r.days.find((x) => x.date === day)!;
+
+    expect(row.countedHours).toBe("8.00"); // المقرَّر
+    expect(row.overtimeHours).toBe("4.00"); // 12 − 8 لا 20 − 8
+    expect(row.attendedHours).toBe("20.00"); // الخام يبقى ظاهراً للشفافية
+  });
+
+  it("لا يمسّ يوماً دون السقف — صفر انحدار على بيانات الطيّ", () => {
+    const att = new Map([[day, D(10)]]);
+    const r = base({ attendedHoursByDate: att, maxDailyHours: 12 });
+    const row = r.days.find((x) => x.date === day)!;
+
+    expect(row.countedHours).toBe("8.00");
+    expect(row.overtimeHours).toBe("2.00");
+  });
+});
+
+/*
+ * س١٠) تفصيل أجر اليوم: الأساس والإضافي والإجمالي. عمود «أجر اليوم» كان يعرض `amount`
+ * وحده (الأساس المقصوص عند المقرَّر) فيبدو الإضافي ضائعاً لمن يقرأ العمود.
+ */
+describe("تفصيل أجر اليوم — أساس + إضافي = إجمالي (س١٠)", () => {
+  const day = "2026-07-06";
+
+  it("الإجمالي يساوي مجموع الشقّين، والإضافي = السعر × الساعات الزائدة", () => {
+    const r = base({ attendedHoursByDate: new Map([[day, D(12)]]), maxDailyHours: 12 });
+    const row = r.days.find((x) => x.date === day)!;
+    const rate = Number(row.rate);
+
+    expect(Number(row.overtimeAmount)).toBeCloseTo(rate * 4, 0);
+    expect(Number(row.totalAmount)).toBeCloseTo(Number(row.amount) + Number(row.overtimeAmount), 2);
+  });
+
+  it("يومٌ بلا إضافي: الإجمالي = الأساس", () => {
+    const r = base({ attendedHoursByDate: new Map([[day, D(8)]]) });
+    const row = r.days.find((x) => x.date === day)!;
+
+    expect(row.overtimeAmount).toBe("0.00");
+    expect(row.totalAmount).toBe(row.amount);
+  });
+
+  it("مجموع أيام الشهر يطابق basePay وovertimePay", () => {
+    const att = fullAttendance();
+    att.set(day, D(12)); // يومٌ فيه أربع ساعات إضافية
+    const r = base({ attendedHoursByDate: att, maxDailyHours: 12 });
+    const sum = (k: "amount" | "overtimeAmount") =>
+      r.days.reduce((a, x) => a + Number(x[k]), 0);
+
+    expect(sum("amount")).toBeCloseTo(Number(r.basePay), 0);
+    expect(sum("overtimeAmount")).toBeCloseTo(Number(r.overtimePay), 0);
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * الموجة ١ (١٧/٨/٢٦) — أربعة إصلاحاتٍ نجت من التفنيد العدائي.
+ * كلُّ حالةٍ هنا تحرس **الاتجاهين**: أن العطب لم يعد يقع، وأن السليم لم ينكسر.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+describe("الإجازة بلا راتب تسبق تاريخ السريان (س١٧)", () => {
+  it("إجازةٌ بلا راتب واقعة قبل السريان لم تعد تُدفع", () => {
+    // السريان من ١٥ تموز، وإجازةٌ بلا راتب ٦-٧ تموز (اثنان وثلاثاء = يوما دوام).
+    const r = base({ payFrom: "2026-07-15", unpaidLeaveDates: new Set(["2026-07-06", "2026-07-07"]) });
+    expect(r.unpaidLeaveDays).toBe(2);
+    expect(r.days.find((d) => d.date === "2026-07-06")?.state).toBe("unpaidLeave");
+  });
+
+  it("صفر انحدار: بقيّة أيام ما قبل السريان تبقى مدفوعة كاملةً", () => {
+    const r = base({ payFrom: "2026-07-15", unpaidLeaveDates: new Set(["2026-07-06"]) });
+    expect(r.days.find((d) => d.date === "2026-07-07")?.state).toBe("beforeStart");
+    expect(r.days.find((d) => d.date === "2026-07-07")?.countedHours).toBe("8.00");
+  });
+});
+
+describe("السعر الصريح يُحترَم في يوم الراحة والتعويض (س١٨)", () => {
+  it("عملُ يوم الراحة يُدفع بالسعر الصريح لا بالمُشتقّ", () => {
+    // الجمعة راحة بسعرٍ صريح ٤٥٠٠، وعُمل فيها ٨ ساعات (٣ جُمَعٍ في نافذةٍ مقصوصة).
+    const sc = sched({ الجمعة: 0 }) as Record<string, { hours: number; rate?: number }>;
+    sc["الجمعة"] = { hours: 0, rate: 4500 };
+    const r = computeAttendancePay({
+      salary: D(900000), employmentStart: "2026-07-03", employmentEnd: "2026-07-03",
+      schedule: sc as never, attendedHoursByDate: new Map([["2026-07-03", D(8)]]),
+      paidLeaveDates: new Set(), unpaidLeaveDates: new Set(), payFrom: "2026-07-01",
+    });
+    const row = r.days.find((d) => d.state === "restWorked")!;
+    expect(row.rate).toBe("4500.00");
+    expect(Number(row.amount)).toBeCloseTo(36000, 0);
+  });
+
+  it("صفر انحدار: بلا سعرٍ صريح يبقى المُشتقّ كما كان", () => {
+    const r = computeAttendancePay({
+      salary: D(900000), employmentStart: "2026-07-03", employmentEnd: "2026-07-03",
+      schedule: sched(), attendedHoursByDate: new Map([["2026-07-03", D(8)]]),
+      paidLeaveDates: new Set(), unpaidLeaveDates: new Set(), payFrom: "2026-07-01",
+    });
+    const row = r.days.find((d) => d.state === "restWorked")!;
+    expect(Number(row.rate)).toBeCloseTo(Number(r.hourlyRate), 2);
+  });
+});
+
+describe("تعويض الشهر القصير لا يُمنح بلا مستحقّ (س١٩)", () => {
+  const feb = (over = {}) =>
+    computeAttendancePay({
+      salary: D(900000), employmentStart: "2026-02-01", employmentEnd: "2026-02-28",
+      schedule: sched(), attendedHoursByDate: new Map(), paidLeaveDates: new Set(),
+      unpaidLeaveDates: new Set(), payFrom: "2026-02-01",
+      monthStart: "2026-02-01", monthEnd: "2026-02-28", ...over,
+    });
+
+  it("شباط بلا بصمةٍ واحدة ⇒ صفر تعويضٍ وصفر مستحقّ (فلا يُعمى حارس المسيّر)", () => {
+    const r = feb();
+    expect(r.shortMonthHours).toBe("0.00");
+    expect(r.payableHours).toBe("0.00");
+    expect(Number(r.basePay)).toBe(0);
+  });
+
+  it("صفر انحدار: شباط بحضورٍ كامل يُعوَّض ويُدفع الراتب كاملاً", () => {
+    const att = new Map<string, ReturnType<typeof D>>();
+    for (const d of daysBetween("2026-02-01", "2026-02-28")) {
+      if (dayNameOf(d) !== "الجمعة") att.set(d, D(8));
+    }
+    const r = feb({ attendedHoursByDate: att });
+    expect(Number(r.shortMonthHours)).toBeGreaterThan(0);
+    expect(Number(r.basePay)).toBeCloseTo(900000, 0);
+  });
+
+  it("الغياب الجزئيّ لا يُلغي التعويض — المقصود الصفر المطلق وحده", () => {
+    const att = new Map<string, ReturnType<typeof D>>();
+    let n = 0;
+    for (const d of daysBetween("2026-02-01", "2026-02-28")) {
+      if (dayNameOf(d) !== "الجمعة" && n++ < 5) att.set(d, D(8));
+    }
+    const r = feb({ attendedHoursByDate: att });
+    expect(Number(r.shortMonthHours)).toBeGreaterThan(0);
+  });
+});
+
+describe("الساعات غير المستحقّة تُقاس على نافذة العمل (س٢٠)", () => {
+  it("المعيَّن منتصف الشهر لا يُحمَّل ساعات ما قبل تعيينه", () => {
+    const att = new Map<string, ReturnType<typeof D>>();
+    for (const d of daysBetween("2026-07-16", "2026-07-31")) {
+      if (dayNameOf(d) !== "الجمعة") att.set(d, D(8));
+    }
+    const r = base({ employmentStart: "2026-07-16", attendedHoursByDate: att, monthStart: "2026-07-01", monthEnd: "2026-07-31" });
+    expect(r.unpaidHours).toBe("0.00");
+  });
+
+  it("صفر انحدار: الشهر الكامل بغياب يومين ⇒ ١٦ ساعة غير مستحقّة", () => {
+    const att = new Map<string, ReturnType<typeof D>>();
+    let skipped = 0;
+    for (const d of daysBetween("2026-07-01", "2026-07-31")) {
+      if (dayNameOf(d) === "الجمعة") continue;
+      if (skipped++ < 2) continue; // يوما غياب
+      att.set(d, D(8));
+    }
+    const r = base({ attendedHoursByDate: att, monthStart: "2026-07-01", monthEnd: "2026-07-31" });
+    expect(r.unpaidHours).toBe("16.00");
+  });
+});

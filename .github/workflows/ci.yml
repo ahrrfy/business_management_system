@@ -17,11 +17,94 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check-test-build:
+  # Vitest يشغّل ملفات التكامل تسلسلياً عمداً (fileParallelism:false) لأنّ كل ملف ينظّف
+  # قاعدة الاختبار. بعد #626 تجاوزت الحزمة الواحدة ٨٣:٥٤ ولم تكتمل ضمن سقف ٩٠ دقيقة.
+  # نقسم *الملفات* عبر مشغّلين، لكلّ واحد MySQL مستقلة؛ يبقى التنفيذ داخل كل قاعدة
+  # تسلسلياً، واتحاد الشريحتين هو الحزمة الكاملة بلا تداخل وفق عقد Vitest --shard.
+  test-shards:
+    name: test-shard-${{ matrix.shard }}-of-2
     runs-on: ubuntu-latest
-    # سقفٌ زمنيّ: بلغت الاختبارات الكاملة في main نحو ٤٤ دقيقة، وقد تتجاوز المهمّة ٦٠ دقيقة
-    # مع تذبذب سرعة المشغّل. يبقي ٩٠ دقيقة كل البوابات إلزامية ويمنع التشغيل العالق طويلاً.
-    timeout-minutes: 90
+    # ⏱️ ١٥٠ لا ٩٠ — يُعايَر على **أبطأ** مشغّل لا الوسيط. مسألةٌ مستقلّة عن التجزئة أدناه:
+    # تلك تُنقص العمل، وهذه تُحصّن من تفاوت المشغّلات. الدليل من تشغيلات PR #634:
+    #   • قبل إصلاح التجزئة: الشريحتان تُنفّذان العمل نفسه بالضبط (٥٤٧ ملفاً لكلٍّ)، فأنهت
+    #     الأولى في ٥٢ دقيقة ولم تُنهِ الثانية في ٩٠ ⇒ ١.٧×+ فرقاً على عملٍ متطابق.
+    #   • **بعد** إصلاح التجزئة: الشريحة ٢ (~٢٧٥ ملفاً) قُتلت عند ٩٠ **بلا فشل اختبارٍ واحد**
+    #     ولا ملفٍّ بزمنٍ شاذّ — كلُّ ملفٍّ أبطأ بمضاعفات (٢٤ اختبار دوالّ نصّية في ١٧ث).
+    #   • وفي التشغيلة التالية أنهت الشريحة نفسها في ٢٣ دقيقة ⇒ تفاوتٌ ~٤× بين مشغّلٍ وآخر.
+    # وسقفٌ ضيّق لا يكشف بطئاً بل يُحمّر PR سليماً ويُخفي نتيجته — «فشلٌ» لا يدلّ على شيء.
+    # لا كلفة على التشغيل السليم: المهلة سقفٌ لا حجز، والوظيفة تنتهي في ~٢٥ دقيقة كالمعتاد.
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          # خدمة محلية مؤقتة داخل runner معزول؛ لا اعتماد ثابت كي لا يدخل سرٌ تاريخ Git.
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: erp_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      DATABASE_URL: mysql://root@127.0.0.1:3306/erp_test
+      TEST_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_test
+      ALLOW_TEST_DB_PORT_3306: "1"
+      TEST_CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: توليد سر JWT مؤقت لتشغيل الاختبارات
+        run: echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - name: تهيئة مخطّط قاعدة الاختبار
+        run: pnpm db:push
+      - name: تَطبيق هَجرات يَدوية إضافية (GENERATED columns إلخ)
+        run: node scripts/ci-apply-extra-migrations.mjs
+      - name: تهيئة قاعدة التحكّم (تعدّد الشركات)
+        run: node scripts/bootstrap-control-db.mjs
+        env:
+          CONTROL_DATABASE_URL: mysql://root@127.0.0.1:3306/erp_control_test
+      - name: الاختبارات — الشريحة ${{ matrix.shard }}/2
+        # ⚠️ pnpm يبتلع الخيارات **بالصيغتين**: `pnpm test --shard=…` يطبع نسخة pnpm نفسها،
+        # و`pnpm run test -- --shard=…` لا يُمرّرها أيضاً (مثبَّت: `pnpm run test -- --version`
+        # يشغّل الحزمة كاملةً بدل طباعة النسخة). فكانت **كلتا الشريحتين تشغّلان الحزمة كاملة**
+        # (٥٤٧ ملفاً لكلٍّ منهما بدل ~٢٧٤): تجزئةٌ بلا أثر، وكلفة CI مضاعفة، وزمن الجدار كما هو.
+        # `pnpm exec` يُمرّر الخيارات فعلاً (`pnpm exec cross-env TZ=UTC vitest --version` ⇒ vitest/3.2.7)،
+        # وهي الصيغة الموثَّقة في CLAUDE.md §٣ لتشغيل اختبارٍ واحد.
+        run: |
+          set -o pipefail
+          total="$(git ls-files "*.test.ts" | grep -cE "^(server|client/src|shared)/")"
+          pnpm exec cross-env TZ=UTC vitest run --shard=${{ matrix.shard }}/2 2>&1 | tee /tmp/shard.log
+          # ⚠️ مخرَج vitest ملوَّن: سطر النتيجة مسبوقٌ برموز ANSI، فمرساةُ "^ *Test Files" لا
+          # تطابقه ويَخرج $ran فارغاً فتسقط الوظيفة **رغم خضرة الاختبارات** (وقع فعلاً هنا).
+          line="$(grep -aE "Test Files" /tmp/shard.log | tail -1)"
+          ran="$(printf "%s" "$line" | grep -oE "[(][0-9]+[)]" | tail -1 | tr -d "()")"
+          if [ -z "$ran" ]; then echo "تعذّر استخراج عدد الملفات من مخرَج vitest" >&2; exit 1; fi
+          echo "الشريحة ${{ matrix.shard }}/2 شغّلت $ran ملفاً من أصل $total"
+          # حارسٌ ضدّ عودة العطل صامتاً: التجزئة الفعّالة تُشغّل ~نصف الملفات؛ تجاوز ٧٠٪ يعني
+          # أنّ `--shard` لم يصل vitest. لا نقارن بالإجمالي مباشرةً لأنّ المجموعة المُجمَّعة
+          # أقلّ قليلاً من الملفات المتعقَّبة (٥٤٧ مقابل ٥٥٠) فتمرّ المقارنة الصارمة كاذبةً.
+          test "$((ran * 10))" -lt "$((total * 7))"
+
+  check-test-build:
+    needs: test-shards
+    # يبقى اسم الفحص المطلوب ثابتاً، ويصدر فشلاً صريحاً بدل skipped إن فشلت/أُلغيت شريحة.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    # الاختبارات أصبحت في وظيفتَي الشطر أعلاه؛ هذه الوظيفة للعقود/الحرّاس/البناء فقط.
+    timeout-minutes: 45
     services:
       mysql:
         image: mysql:8.0
@@ -43,6 +126,8 @@ jobs:
       TEST_CONTROL_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_control_test
       JWT_SECRET: ci_test_secret_change_me_0123456789abcdef
     steps:
+      - name: تأكيد نجاح جميع شرائح الاختبار
+        run: test '${{ needs.test-shards.result }}' = 'success'
       # fetch-depth: 0 — يلزم لحارس «تصادم ترقيم الهجرات مع origin/main» داخل check:migrations
       # (يقارن `_journal.json` بالجانب الآخر). بعمق ١ لا يوجد مرجع origin/main فيتخطّى الحارس
       # صامتاً — و«حارسٌ لا يُشغَّل آلياً ليس حارساً» (درس CI موثَّق في هذا الملف أدناه).
@@ -57,6 +142,31 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: نشر بصمات العقود الجذرية للإصدار
+        run: |
+          release_sha="$(git rev-parse HEAD)"
+          helper_sha256="$(sha256sum deploy/systemd/pm2-systemd-start.mjs | cut -d ' ' -f 1)"
+          dropin_sha256="$(sha256sum deploy/systemd/pm2-deploy.service.d/20-pidfile-reconcile.conf | cut -d ' ' -f 1)"
+          nginx_installer_sha256="$(sha256sum scripts/install-nginx-contract.mjs | cut -d ' ' -f 1)"
+          nginx_contract_sha256="$(sha256sum scripts/nginx-contract.mjs | cut -d ' ' -f 1)"
+          nginx_verifier_sha256="$(sha256sum scripts/verify-nginx-abuse-controls.mjs | cut -d ' ' -f 1)"
+          nginx_manifest_sha256="$(sha256sum deploy/nginx-release-manifest.json | cut -d ' ' -f 1)"
+          printf 'RELEASE_SHA=%s\nRELEASE_PM2_HELPER_SHA256=%s\nRELEASE_PM2_DROPIN_SHA256=%s\nRELEASE_NGINX_INSTALLER_SHA256=%s\nRELEASE_NGINX_CONTRACT_SHA256=%s\nRELEASE_NGINX_VERIFIER_SHA256=%s\nRELEASE_NGINX_MANIFEST_SHA256=%s\n' "$release_sha" "$helper_sha256" "$dropin_sha256" "$nginx_installer_sha256" "$nginx_contract_sha256" "$nginx_verifier_sha256" "$nginx_manifest_sha256"
+          {
+            printf '### Root-owned release contracts\n\n'
+            printf -- '- `RELEASE_SHA=%s`\n' "$release_sha"
+            printf -- '- `RELEASE_PM2_HELPER_SHA256=%s`\n' "$helper_sha256"
+            printf -- '- `RELEASE_PM2_DROPIN_SHA256=%s`\n' "$dropin_sha256"
+            printf -- '- `RELEASE_NGINX_INSTALLER_SHA256=%s`\n' "$nginx_installer_sha256"
+            printf -- '- `RELEASE_NGINX_CONTRACT_SHA256=%s`\n' "$nginx_contract_sha256"
+            printf -- '- `RELEASE_NGINX_VERIFIER_SHA256=%s`\n' "$nginx_verifier_sha256"
+            printf -- '- `RELEASE_NGINX_MANIFEST_SHA256=%s`\n' "$nginx_manifest_sha256"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: عقد PM2/systemd الحقيقي (daemon قائم + إقلاع نظيف)
+        run: |
+          sudo /usr/bin/install -o root -g root -m 0755 "$(command -v node)" /usr/bin/node
+          sudo "$(command -v npm)" install --global --prefix /usr pm2@7.0.3
+          sudo /usr/bin/bash scripts/pm2-systemd-linux.test.sh
       # Dependency vulnerability audit lives in its own workflow now (security.yml, via
       # OSV-Scanner) — it runs on the same push/PR triggers, so coverage is unchanged and
       # the build/test job no longer blocks on a separate, redundant audit step.
@@ -72,6 +182,8 @@ jobs:
           CONTROL_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_control_test
       - name: فحص الأنواع
         run: pnpm check
+      - name: حارس تشخيص فشل CI الآمن
+        run: pnpm exec vitest run --config vitest.unit.config.ts scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts
       - name: حارس عقد إصدار تطبيق Android الأصلي
         run: pnpm check:mobile-release
       - name: حارِس الإيموجي UI
@@ -82,6 +194,10 @@ jobs:
         run: pnpm check:branch
       - name: حارِس سجل الهجرات وترقيمها
         run: pnpm check:migrations
+      # قاعدةُ الاختبار تُبنى بـdb:push من schema.ts، وملفّاتُ SQL لا تُنفَّذ قطّ قبل الإنتاج
+      # (CLAUDE.md §٤-ج) ⇒ اسمُ عمودٍ يخالف ما أنشأته الهجرة يمرّ أخضرَ ويسقط على الإنتاج وحده.
+      - name: حارِس انحراف أسماء الأعمدة بين schema.ts والهجرات
+        run: pnpm check:schema-drift
       - name: حارِس الإجراءات اليتيمة (DoD)
         run: pnpm check:orphans
       - name: حارِس حدود اليوم المحلية (TZ #٧)
@@ -95,10 +211,10 @@ jobs:
         run: pnpm check:form-inputs
       - name: حارِس حدود nginx المشتركة خلف PM2 وCloudflare
         run: pnpm check:nginx-abuse
+      - name: حارِس صلاحية Docker Compose
+        run: pnpm check:compose
       - name: اختبار مدقّق سلامة البطاقات الرقمية (قراءة فقط)
         run: node scripts/verify-digital-cards-integrity.mjs --selftest
-      - name: الاختبارات
-        run: pnpm test
       - name: بناء الإنتاج
         run: pnpm build
 

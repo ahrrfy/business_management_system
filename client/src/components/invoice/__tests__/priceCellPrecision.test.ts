@@ -1,0 +1,126 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+
+/**
+ * عقدُ **خليّة السعر** في محرّر الفواتير (بلاغ المالك ١٧/٨/٢٦).
+ *
+ * البلاغ: «سعر الشراء لا يمكن أن يكون 1,450.99، وبالدولار لا يقبل 3.4566 ⇒ لا يمكن إتمام الشراء
+ * أو البيع، ويحدث في الفاتورة الآجلة أو الذمم». والشاشات المعنيّة كلّها تشترك في `ProductTable`
+ * (شراء/تعديل شراء/مرتجع شراء/عرض سعر/فاتورة البيع الآجلة) — لذا يُثبَّت العقد على المكوّن نفسه.
+ *
+ * اختبارُ مصدرٍ لا رسمٍ: الحزمة تعمل في بيئة node بلا DOM (نمط `auditedUxContracts.test.ts`)،
+ * والمقصود هنا منعُ **عودة** المُحلّل الخام لا محاكاةُ الكتابة.
+ */
+const read = (rel: string) =>
+  readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n?/gu, "\n");
+
+describe("invoice price cell — precision & input normalization contract", () => {
+  const productTable = read("../ProductTable.tsx");
+
+  it("لا يعود المُحلّل الخام الذي كان يبتلع «1,450.99» صامتاً", () => {
+    // الجذر: `Number(v)` على نصّ فيه فاصلة ألوف/أرقام هندية ⇒ NaN ⇒ الضغطة تُهمَل بلا إشعار،
+    // فيبدو الحقل مرفوضاً. لا `<Input>` خام في خليّة الأرقام، ولا فحص isFinite بديلاً عن التطبيع.
+    expect(productTable).toContain("<MoneyInput");
+    expect(productTable).not.toContain("if (Number.isFinite(n)) {");
+    expect(productTable).not.toContain("String(Math.min(max, Math.max(0, n)))");
+  });
+
+  it("دقّة السعر تُشتقّ من عملة المستند لا من ثابتٍ محلّي", () => {
+    expect(productTable).toContain('import { priceDecimalsFor } from "@shared/moneyPrecision"');
+    expect(productTable).toContain("const linePriceDecimals = priceDecimalsFor(isPurchase ? purchaseCurrency : \"IQD\")");
+    expect(productTable).toContain("decimals={linePriceDecimals}");
+  });
+
+  it("لا قصّ صامت لسعر الدولار عند مغادرة الحقل (كان يحوّل 3.4566 إلى 3.46)", () => {
+    expect(productTable).not.toContain("normalizeUsdPurchasePrice");
+    expect(productTable).not.toContain("onBlur={");
+  });
+
+  it("سقف نسبة الخصم يُقصّ عند التجاوز فقط فيبقى الكسر قابلاً للكتابة", () => {
+    // `String(Number(raw))` عند كل ضغطة كان يمسح النقطة («12.» ⇒ «12») فيتعذّر خصمٌ كسريّ.
+    expect(productTable).toContain("Number.isFinite(n) && n > max ? String(max) : raw");
+  });
+
+  it("نسبة ضريبة الفاتورة تمرّ بالحقل الموحّد لا بحقلٍ خام", () => {
+    const totals = read("../TotalsPanel.tsx");
+    expect(totals).toContain('ariaLabel="نسبة الضريبة"');
+    expect(totals).not.toContain('import { Input } from "@/components/ui/input"');
+  });
+});
+
+describe("supplier invoice reconciliation — الشاشتان تحملان الضابط كاملاً", () => {
+  for (const page of ["PurchaseNew.tsx", "PurchaseEdit.tsx"]) {
+    it(`${page}: لوحةُ مطابقةٍ + إرسالُ القيمة + منعُ الحفظ عند الاختلاف`, () => {
+      const source = read(`../../../pages/${page}`);
+      // (١) اللوحة موجودة ومربوطة بحالة المحرّر — لا حقلَ يتيمٍ بلا أثر.
+      expect(source).toContain("<SupplierInvoiceMatch");
+      expect(source).toContain('field: "supplierInvoiceTotal"');
+      // (٢) القيمة تُرسَل فعلاً (كانت الشاشتان تمتنعان عن إرسال usdTotal ⇒ الضابط مُعطَّل عملياً).
+      expect(source).toContain("supplierInvoiceTotal: state.supplierInvoiceTotal.trim()");
+      // (٣) المقارنة بعملة الأمر: الدولاريّ بإجماليه الدولاريّ والدينارّي بالدينارّي.
+      expect(source).toContain('derivedTotal={state.currency === "USD" ? docTotals.total : landed.grand.toFixed(2)}');
+      // (٣-ب) الإجماليّ مشتقٌّ بترتيب تقريب الخادم (سطراً سطراً) لا من `calcTotals` التي تجمع
+      //       غير المقرَّب — وإلّا اختلف حكمُ اللوحة عن حكم الخادم بفلسٍ على أسعار الدولار.
+      expect(source).toContain("deriveDocumentTotal(state.items");
+      expect(source).not.toContain("? totals.grandTotal :");
+      // (٤) الحفظ يُمنع عند الاختلاف برسالة الحكم نفسها (مرآة حارس الخادم).
+      expect(source).toContain('if (invoiceMatch.verdict !== "UNSET" && invoiceMatch.verdict !== "MATCH")');
+      // (٥) التوزيع يمرّ بالدالّة النقيّة المُختبَرة لا بحسابٍ مكرَّر في الصفحة.
+      expect(source).toContain("distributeToSubtotal(state.items, target, state.currency)");
+    });
+  }
+
+  it("الحقل يُرسَل باسم العقد الخادميّ ولا يبقى أثرٌ لاسم الحالة القديم usdTotal", () => {
+    const state = read("../types.ts");
+    expect(state).toContain("supplierInvoiceTotal: string;");
+    expect(state).not.toContain("usdTotal: string;");
+  });
+});
+
+describe("purchase payload — سعر الوحدة يُرسَل بدقّة عملته", () => {
+  for (const page of ["PurchaseNew.tsx", "PurchaseEdit.tsx"]) {
+    it(`${page}: يستعمل toUnitPriceStr ولا يقصّ السعر بـround2`, () => {
+      const source = read(`../../../pages/${page}`);
+      expect(source).toContain("unitPrice: toUnitPriceStr(l.price, state.currency)");
+      expect(source).not.toContain("unitPrice: round2(D(l.price)).toFixed(2)");
+      // مرآة حارس الخادم على الشاشة: رسالةٌ صريحة بدل قصٍّ صامت أو رحلة ذهابٍ وإياب.
+      expect(source).toContain("isWithinPriceDecimals(l.price, state.currency)");
+      expect(source).toContain("priceDecimalsMessage(state.currency, l.name, l.price)");
+    });
+  }
+});
+
+describe("purchase invoice discount (0204) — الشريحة موصولة في الشاشتين", () => {
+  for (const page of ["PurchaseNew.tsx", "PurchaseEdit.tsx"]) {
+    it(`${page}: محرّرُ خصمٍ + إرسالٌ بعملة الأمر + زرُّ «سجّل الفرق خصماً»`, () => {
+      const source = read(`../../../pages/${page}`);
+      // (١) محرّر الخصم ظاهرٌ في لوحة المبالغ (كان `showDiscount={false}` لأنّ الخدمة تتجاهله).
+      expect(source).toContain("showDiscount\n");
+      expect(source).not.toContain("showDiscount={false}");
+      // (٢) المبلغ يُشتقّ من قيمة البضاعة **بترتيب تقريب الخادم** ثمّ يُرسَل.
+      expect(source).toContain("const invoiceDiscountAmount = useMemo(");
+      expect(source).toContain("invoiceDiscount: invoiceDiscountAmount.gt(0)");
+      // (٣) المسار الطبيعيّ للفرق حين تكون ورقة المورّد أقلّ: يُسجَّل خصماً لا يُعاد التسعير.
+      expect(source).toContain("function applyDifferenceAsDiscount()");
+      expect(source).toContain("onApplyAsDiscount={applyDifferenceAsDiscount}");
+      // (٤) توزيعُ الفرق يستهدف **ما قبل الخصم** وإلّا وُزّع الفرق مرّتين.
+      expect(source).toContain("round2(D(neededNet).plus(invoiceDiscountAmount)).toFixed(2)");
+    });
+  }
+
+  it("محرّر التعديل يُعيد تحميل السعر **قبل** الخصم والخصمَ في حقله (لا خصمٌ مرّتين)", () => {
+    const source = read("../../../pages/PurchaseEdit.tsx");
+    expect(source).toContain("it.usdListUnitPrice ?? it.usdUnitPrice");
+    expect(source).toContain("it.listUnitPrice ?? it.unitPrice");
+    expect(source).toContain("isUsd ? order.usdInvoiceDiscount : order.invoiceDiscount");
+    expect(source).toContain('globalDiscountType: "amount"');
+  });
+
+  it("الخصم وسعرُ ما قبله محجوبان عمّن لا يرى التكلفة", () => {
+    const router = readFileSync(
+      new URL("../../../../../server/routers/purchaseRouter.ts", import.meta.url), "utf8",
+    );
+    expect(router).toContain("invoiceDiscount: null, usdInvoiceDiscount: null");
+    expect(router).toContain("listUnitPrice: null, usdListUnitPrice: null");
+  });
+});

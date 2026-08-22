@@ -4,7 +4,6 @@
  */
 import { useEffect, type Dispatch } from "react";
 import { Calculator, CreditCard, Gift, Lock, Package, Percent, Truck } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -27,6 +26,12 @@ export interface TotalsPanelProps {
   showDiscount?: boolean;
   /** false = hide the payment block (method + paid amount) — screens that persist payment elsewhere (purchase receive) or via a dedicated control (return settlement). Default true. */
   showPayment?: boolean;
+  /**
+   * مبلغ الخصم المعروض (2dp) — يُمرَّر حين يشتقّه الأب بترتيب تقريبٍ مختلف عن `calcTotals`.
+   * الشراء يشتقّه بترتيب الخادم (سطراً سطراً) فقد يفترق عن اشتقاق `calcTotals` بفلسٍ على
+   * أسعار الدولار ذات الأربع منازل ⇒ يُعرض ما **يُرسَل فعلاً** لا رقماً موازياً («المعروض = المحفوظ»).
+   */
+  overrideDiscountAmount?: string;
   /** override the displayed/driving grand total (2dp string). SALE_RETURN passes the server-equivalent
    *  proportional refund so the panel's total, paid-placeholder and «الكل» button reflect what the server
    *  actually refunds — not the editor-derived value (which ignores the invoice-level discount/tax). */
@@ -50,6 +55,7 @@ export function TotalsPanel({
   showDiscount = true,
   showPayment = true,
   overrideGrandTotal,
+  overrideDiscountAmount,
   shippingLabel = "مصاريف شحن",
   allowFreeShipping = false,
   cashOnlyPayment = false,
@@ -126,8 +132,10 @@ export function TotalsPanel({
               {state.globalDiscountType === "percent" ? "%" : "#"}
             </Button>
           </div>
-          {Number(t.globalDiscAmt) > 0 && (
-            <span className={cn(valueCls, "text-rose-600")} dir="ltr">−{fmtNum(t.globalDiscAmt)}</span>
+          {Number(overrideDiscountAmount ?? t.globalDiscAmt) > 0 && (
+            <span className={cn(valueCls, "text-rose-600")} dir="ltr">
+              −{fmtNum(overrideDiscountAmount ?? t.globalDiscAmt)}
+            </span>
           )}
         </div>
         )}
@@ -147,12 +155,19 @@ export function TotalsPanel({
             </div>
             {state.taxEnabled && (
               <div className="flex items-center gap-1">
-                <Input
-                  dir="ltr"
+                {/* حقلٌ خام سابقاً: كان يقبل «5%» أو حروفاً أو نسبةً > ١٠٠ فيرمي `D()` عند الحفظ
+                    برسالة «قيمة مالية غير صالحة» لا تدلّ على الحقل — وهي إحدى الطرق التي كان
+                    يتعذّر بها إتمام الفاتورة الآجلة. الآن: تطبيعٌ موحَّد + منزلتان + سقف ١٠٠
+                    (مرآة `percentString` خادمياً). */}
+                <MoneyInput
                   value={state.taxRatePercent}
-                  onChange={(e) => dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: e.target.value })}
+                  onChange={(raw) => {
+                    const n = Number(raw);
+                    const value = raw !== "" && raw !== "." && Number.isFinite(n) && n > 100 ? "100" : raw;
+                    dispatch({ type: "SET_FIELD", field: "taxRatePercent", value });
+                  }}
                   className="h-7 w-14 text-center text-xs font-bold"
-                  aria-label="نسبة الضريبة"
+                  ariaLabel="نسبة الضريبة"
                 />
                 <span className="text-xs font-bold text-muted-foreground">%</span>
               </div>

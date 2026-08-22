@@ -1,4 +1,7 @@
-﻿import { CopyInline } from "@/components/CopyButton";
+import FilterPanel from "@/components/FilterPanel";
+import { deriveInvoiceChannel, invoiceChannelLabel, invoiceChannelOptions } from "@shared/invoiceChannel";
+import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
+import { CopyInline } from "@/components/CopyButton";
 import { DataTable } from "@/components/data-table/DataTable";
 import { ListToolbar, RowActions, SelectionBar, useRowSelection } from "@/components/list";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -17,7 +20,7 @@ import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { printReceipt } from "@/lib/printing/print";
 import { invoiceToReceipt } from "@/lib/printing/invoiceReceipt";
-import { allocateLineTax } from "@/components/invoice";
+import { allocateLineTax, derivePaymentTerms } from "@/components/invoice";
 import { round2 } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -26,10 +29,12 @@ import { useLocation } from "wouter";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type PaymentMethod } from "@/lib/paymentMethod";
-import { invoiceStatusLabel, sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
+import { paymentMethodLabel, paymentMethodClass, POS_METHODS, type InvoiceFilterMethod } from "@/lib/paymentMethod";
+import { sourceTypeLabel, SOURCE_TYPE_AR } from "@/lib/labels";
+import { INVOICE_STATUSES, invoiceStatusLabel } from "@shared/invoiceStatus";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { FileWarning, Truck, X } from "lucide-react";
+import { MobileDataCard } from "@/components/ui/MobileDataCard";
+import { Calendar, CreditCard, FileWarning, Printer, Truck, User, X } from "lucide-react";
 import { InvoiceDispatchDialog } from "@/components/delivery/InvoiceDispatchDialog";
 import { CancelDeliveryAssignmentDialog } from "@/components/delivery/CancelDeliveryAssignmentDialog";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
@@ -40,13 +45,13 @@ type Row = RouterOutputs["sales"]["list"][number];
 /** حجم صفحة القائمة — الخادم يُرقّم، والمعروض هو المُحمَّل. */
 const PAGE_SIZE = 50;
 
-const STATUS: Record<string, string> = {
-  PENDING: "معلّقة", PARTIALLY_PAID: "مدفوعة جزئياً", PAID: "مدفوعة",
-  CONFIRMED: "مؤكّدة", CANCELLED: "ملغاة", RETURNED: "مرتجعة", SUPERSEDED: "مستبدلة بفاتورة مصححة",
-};
+// التعريب من `@shared/invoiceStatus` وحده (مصدر الحقيقة) — النسخة المحلّية هنا كانت قد صُحِّحت
+// يدوياً فوافقت المشترك، لكن بقاءها يُعيد الانجراف عند أوّل قيمةٍ جديدة في الـenum.
+// PENDING شارةٌ معلوماتية (أزرق) لا شارةُ مستندٍ ميت: كانت `badge-status-cancelled` — نفس رمادي
+// «ملغاة/مستبدلة» تماماً — فذمّةٌ حيّة قابلة للتحصيل تبدو كورقةٍ انتهت. التوكن مُعرَّف وغير مستعمَل.
 const STATUS_CLS: Record<string, string> = {
   PAID: "badge-status-active", PARTIALLY_PAID: "badge-stock-low",
-  PENDING: "badge-status-cancelled", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out", SUPERSEDED: "badge-status-cancelled",
+  PENDING: "badge-status-pending", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out", SUPERSEDED: "badge-status-cancelled",
 };
 const BALANCE_FILTER = {
   DEPOSIT_DUE: "عربون — متبقّي للتحصيل",
@@ -78,9 +83,9 @@ function isDepositDue(row: Pick<Row, "sourceType" | "total" | "paidAmount" | "re
   return D(row.paidAmount).gt(0) && D(row.total).minus(D(row.paidAmount)).minus(D(row.returnedTotal ?? "0")).gt(0);
 }
 
-// تعريب التصدير موحّد عبر قاموس labels المركزي؛ CONFIRMED غائبة عنه (ملف مشترك لا يُعدَّل هنا)
-// فتُستكمل محلياً كي لا يتسرّب الكود الخام للتصدير. عرض الشاشة يبقى على STATUS المحلي (أغنى صياغة).
-const exportStatusLabel = (s: string) => (s === "CONFIRMED" ? "مؤكّدة" : invoiceStatusLabel(s));
+// تعريب التصدير موحّد عبر قاموس labels المركزي — صار يغطّي CONFIRMED وSUPERSEDED معاً، فسقط
+// الترقيع المحلّي الذي كان يستكمل CONFIRMED (رمزٌ ميت) ويترك SUPERSEDED (حيّة) تتسرّب خاماً.
+const exportStatusLabel = (s: string) => invoiceStatusLabel(s);
 // فاتورة بلا عميل مسجَّل = بيع نقدي مباشر — المصطلح المعتمد «عميل نقدي» (لا شرطة غامضة).
 const custName = (n: string | null | undefined) => n ?? "عميل نقدي";
 // خلية التوصيل للتصدير/النسخ: «بالطريق — فلان (CN-…/ORD-…)» أو فارغة لغير الموصَّلة.
@@ -187,7 +192,7 @@ export default function Invoices() {
   // تعيش مع فتح التفاصيل والرجوع وتُشارَك رابطاً. كل القيم نصوص (تُحوَّل عند حدود الـAPI).
   const [f, setF, resetF] = useUrlFilters({
     from: "", to: "", preset: "",
-    status: "", sourceType: "", balanceState: "",
+    status: "", sourceType: "", channel: "", balanceState: "",
     salespersonId: "", paymentMethod: "", branchId: "", customerId: "",
     delivery: "", deliveryPartyId: "",
     q: "",
@@ -252,25 +257,59 @@ export default function Invoices() {
       to: f.to || undefined,
       status: (f.status || undefined) as Row["status"] | undefined,
       sourceType: (f.sourceType || undefined) as Row["sourceType"] | undefined,
+      channel: (f.channel || undefined) as "RETAIL" | "RECEPTION" | "PRINT" | "STORE" | "OTHER" | undefined,
       balanceState: (f.balanceState || undefined) as keyof typeof BALANCE_FILTER | undefined,
       salespersonId: f.salespersonId ? Number(f.salespersonId) : undefined,
-      paymentMethod: (f.paymentMethod || undefined) as PaymentMethod | undefined,
+      // "NONE" = آجل (IS NULL خادمياً) — قيمةٌ إضافية على قائمة الفلترة لا عضوٌ في `PaymentMethod`.
+      paymentMethod: (f.paymentMethod || undefined) as InvoiceFilterMethod | "NONE" | undefined,
       branchId: f.branchId ? Number(f.branchId) : undefined,
       customerId: f.customerId ? Number(f.customerId) : undefined,
       delivery: (f.delivery || undefined) as keyof typeof DELIVERY_FILTER | undefined,
       deliveryPartyId: f.deliveryPartyId ? Number(f.deliveryPartyId) : undefined,
       q: qDebounced || undefined,
     }),
-    [f.from, f.to, f.status, f.sourceType, f.balanceState, f.salespersonId, f.paymentMethod, f.branchId, f.customerId, f.delivery, f.deliveryPartyId, qDebounced],
+    [f.from, f.to, f.status, f.sourceType, f.channel, f.balanceState, f.salespersonId, f.paymentMethod, f.branchId, f.customerId, f.delivery, f.deliveryPartyId, qDebounced],
   );
 
   // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
   const activeFilterCount = [
-    f.from || f.to, f.status, f.sourceType, f.balanceState,
+    f.from || f.to, f.status, f.sourceType, f.channel, f.balanceState,
     f.salespersonId, f.paymentMethod, f.customerId,
     f.delivery, f.deliveryPartyId,
     isElevated ? f.branchId : "",
   ].filter(Boolean).length;
+
+  /**
+   * رقاقاتُ الفلاتر المفعَّلة (١٩/٨) — بديلُ تسعةِ منتقياتٍ مفتوحةٍ دائماً. كلٌّ تقول
+   * **الحقل وقيمته المقروءة** وتُزال بنقرة، فيعرف الموظّف لماذا نتيجتُه هذه.
+   */
+  const filterChips = useMemo(() => {
+    const out: { key: string; field: string; value: string; onClear: () => void }[] = [];
+    const add = (key: string, field: string, value: string | undefined, clear: () => void) => {
+      if (value) out.push({ key, field, value, onClear: clear });
+    };
+    add("status", "الحالة", f.status ? invoiceStatusLabel(f.status) : "", () => setF({ status: "" }));
+    add("channel", "القناة", f.channel ? (invoiceChannelOptions().find((c) => c.value === f.channel)?.label ?? f.channel) : "", () => setF({ channel: "" }));
+    add("source", "نوع العملية", f.sourceType ? sourceTypeLabel(f.sourceType) : "", () => setF({ sourceType: "" }));
+    add("method", "طريقة الدفع", f.paymentMethod ? (f.paymentMethod === "NONE" ? "آجل (بلا قبض)" : paymentMethodLabel(f.paymentMethod)) : "", () => setF({ paymentMethod: "" }));
+    add("balance", "حالة التحصيل", f.balanceState ? (BALANCE_FILTER[f.balanceState as keyof typeof BALANCE_FILTER] ?? f.balanceState) : "", () => setF({ balanceState: "" }));
+    add("delivery", "التوصيل", f.delivery ? (DELIVERY_FILTER[f.delivery as keyof typeof DELIVERY_FILTER] ?? f.delivery) : "", () => setF({ delivery: "", deliveryPartyId: "" }));
+    add("party", "جهة التوصيل", f.deliveryPartyId ? ((deliveryParties.data ?? []).find((dp) => String(dp.id) === f.deliveryPartyId)?.name ?? `#${f.deliveryPartyId}`) : "", () => setF({ deliveryPartyId: "" }));
+    add("seller", "موظف المبيعات", f.salespersonId ? ((salespeople.data ?? []).find((u) => String(u.id) === f.salespersonId)?.name ?? `#${f.salespersonId}`) : "", () => setF({ salespersonId: "" }));
+    add("customer", "العميل", f.customerId ? `#${f.customerId}` : "", () => setF({ customerId: "" }));
+    if (isElevated) {
+      add("branch", "الفرع", f.branchId ? (branchNames.get(Number(f.branchId)) ?? `#${f.branchId}`) : "", () => setF({ branchId: "" }));
+    }
+    if (f.from || f.to) {
+      out.push({
+        key: "period",
+        field: "الفترة",
+        value: [f.from, f.to].filter(Boolean).join(" ← ") || "مخصّصة",
+        onClear: () => setF({ from: "", to: "", preset: "" }),
+      });
+    }
+    return out;
+  }, [f, isElevated, deliveryParties.data, salespeople.data, branchNames, setF]);
 
   // منتقي الفترة السريع — «فارغ» = كل التواريخ (بخلاف التقارير لا نفرض شهراً افتراضياً هنا).
   const periodValue: PeriodValue = { from: f.from, to: f.to, preset: (f.preset || "custom") as PresetKey };
@@ -354,6 +393,12 @@ export default function Invoices() {
   // نسخ لفاتورة جديدة: نجلب التفاصيل ونزرعها في sessionStorage (تُقرأ مرة واحدة في /sales/new).
   // ننسخ الكمية الأصلية كاملة (الفاتورة الجديدة تعيد بيع السلّة — المرتجعات لا تنقصها)،
   // وشكل كل سطر يطابق InvoiceLine في محرّر الفواتير حرفياً.
+  //
+  // ⚠️ `paymentTerms` جزءٌ إلزاميّ من البذرة: بدونه تسقط الشاشة على افتراضيّ «نقدي»، و«نقدي»
+  // مع حقل المدفوع الفارغ تعني في `computePaidStr()` سداداً كاملاً ⇒ نسخُ فاتورةٍ آجلة كان
+  // يُنتج فاتورةً «مسدَّدة نقداً» بإيصال درج لمالٍ لم يُقبض (عجزٌ عند Z + ذمّةٌ تبخّرت).
+  // تاريخ الاستحقاق **لا يُنسخ** عمداً: النسخة بيعٌ جديد، واستحقاق الأصل قد يكون ماضياً
+  // فيُعمِّر ذمّةً وليدةً متأخّرةً فوراً — يضبطه الموظّف من حقلٍ يظهر لأنّ الشروط صارت آجلة.
   async function duplicateInvoice(invoiceId: number) {
     try {
       const d = await utils.sales.get.fetch({ invoiceId });
@@ -363,6 +408,7 @@ export default function Invoices() {
         JSON.stringify({
           customerId: d.customerId,
           tier: d.priceTier,
+          paymentTerms: derivePaymentTerms(d),
           items: d.items.map((it) => ({
             productId: it.productId ?? 0,
             variantId: it.variantId,
@@ -410,6 +456,8 @@ export default function Invoices() {
           { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
           { key: "customerName", header: "العميل", map: (r) => custName(r.customerName) },
           { key: "sourceType", header: "المصدر", map: (r) => sourceTypeLabel(r.sourceType) },
+          { key: "channel", header: "القناة", map: (r) => invoiceChannelLabel(deriveInvoiceChannel(r)) },
+          { key: "workOrderNumber", header: "رقم أمر الشغل", map: (r) => r.workOrderNumber ?? "" },
           { key: "consignmentStatus", header: "التوصيل", map: (r) => deliveryCell(r) },
           { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
           { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
@@ -428,7 +476,30 @@ export default function Invoices() {
   }
 
   const columns = useMemo<ColumnDef<Row, unknown>[]>(() => [
-    { accessorKey: "invoiceNumber", header: "رقم الفاتورة", cell: (c) => <CopyInline value={c.getValue() as string} /> },
+    {
+      accessorKey: "invoiceNumber",
+      header: "رقم الفاتورة",
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <div className="flex min-w-0 flex-col items-start gap-0.5">
+            <CopyInline value={r.invoiceNumber} />
+            {/* نسب التصحيح (0168): كانت تُكتَب ويقرؤها `get` وحده ⤇ فاتورةٌ
+                مُستبدَلة تبدو في القائمة كأيّ غيرها (طلب المالك ١٧/٨). */}
+            {r.correctedByInvoiceId != null && (
+              <span className="rounded bg-[var(--sem-warn-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-warn)]">
+                مُستبدَلة — لها تصحيح
+              </span>
+            )}
+            {r.correctionOfInvoiceId != null && (
+              <span className="rounded bg-[var(--sem-info-bg)] px-1 py-px text-[10px] font-bold text-[var(--sem-info)]">
+                تصحيحٌ لفاتورة سابقة
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
     { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => fmtDate(c.getValue() as string) },
     { accessorKey: "customerName", header: "العميل", cell: (c) => custName(c.getValue() as string | null) },
     // عمود «الفرع» — للمرتفعين حين الفلتر «كل الفروع» فقط (سطر واحد لكل فرع لا معنى لتمييزه).
@@ -439,7 +510,29 @@ export default function Invoices() {
           cell: ({ row }) => branchNames.get(row.original.branchId) ?? `#${row.original.branchId}`,
         } as ColumnDef<Row, unknown>]
       : []),
-    { accessorKey: "sourceType", header: "المصدر", cell: (c) => sourceTypeLabel(c.getValue() as string) },
+    {
+      id: "channel",
+      header: "القناة",
+      cell: ({ row }) => {
+        const r = row.original;
+        return (
+          <div className="flex min-w-0 flex-col items-start gap-0.5">
+            <InvoiceChannelBadge row={r} />
+            {r.workOrderNumber ? (
+              <button
+                type="button"
+                onClick={() => navigate(`/work-orders/${r.workOrderId}`)}
+                className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+                dir="ltr"
+                title="فتح أمر الشغل"
+              >
+                {r.workOrderNumber}
+              </button>
+            ) : null}
+          </div>
+        );
+      },
+    },
     {
       id: "delivery",
       header: "التوصيل",
@@ -500,7 +593,7 @@ export default function Invoices() {
         const depositDue = isDepositDue(c.row.original);
         return (
           <div className="flex flex-col items-start gap-1">
-            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>{STATUS[s] ?? s}</span>
+            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>{invoiceStatusLabel(s)}</span>
             {depositDue && <span className="inline-block rounded-full px-2 py-0.5 text-[11px] font-bold badge-stock-low">عربون — يحتاج تحصيل الباقي</span>}
           </div>
         );
@@ -525,6 +618,8 @@ export default function Invoices() {
                 customerName: r.customerName,
                 total: r.total,
                 paidAmount: r.paidAmount,
+                // المرتجَع يُطرح من «المتبقّي» في الرسالة — بدونه تُطالِب برسالةٍ بمالٍ رُدَّ فعلاً.
+                returnedTotal: r.returnedTotal,
                 status: r.status,
               }),
               disabledReason: "لا يوجد رقم واتساب مرتبط بهذه الفاتورة",
@@ -632,6 +727,8 @@ export default function Invoices() {
       "التاريخ": fmtDate(r.invoiceDate),
       "العميل": custName(r.customerName),
       "المصدر": sourceTypeLabel(r.sourceType),
+      "القناة": invoiceChannelLabel(deriveInvoiceChannel(r)),
+      "رقم أمر الشغل": r.workOrderNumber ?? "",
       "التوصيل": deliveryCell(r),
       "موظف المبيعات": r.salespersonName ?? "",
       "الوردية": r.shiftId ?? "",
@@ -673,22 +770,27 @@ export default function Invoices() {
         description="قائمة الفواتير المباعة — ابحث عن الفاتورة ثم أعد طباعتها على طابعة الكاشير الحرارية عند الحاجة."
       />
 
-      <Card>
-        <CardContent className="space-y-3 pt-6">
-          {/* «مسح الفلاتر» + عدّاد الفلاتر المفعّلة — البحث يبقى في شريط الجدول (DataTable). */}
-          <ListToolbar title="الفلاتر" activeFilterCount={activeFilterCount} onResetFilters={resetF} />
+      {/* ١٩/٨ (بلاغ المالك: «الفلاتر فوضوية») — تسعةُ منتقياتٍ كانت مفتوحةً دائماً تأكل الشاشة
+          قبل أن يظهر صفٌّ واحد، وثمانيةٌ منها فارغةٌ غالباً. صارت **مطويّةً برقاقاتِ المفعَّل**
+          على نمط Odoo: يرى الموظّف ما يُصفّي نتائجه في سطر، ويفتح اللوحة حين يضيف فلتراً. */}
+      <FilterPanel
+        chips={filterChips}
+        onResetAll={resetF}
+        quickSlot={
           <PeriodFilter
             value={periodValue}
             onChange={(v) => setF({ from: v.from, to: v.to, preset: v.preset === "custom" ? "" : v.preset })}
           />
+        }
+      >
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-4">
             <div className="space-y-1">
               <Label htmlFor="inv-f-status" className="text-xs">الحالة</Label>
               {/* قيمة «ALL» الحارسة: Radix يرفض بند القيمة الفارغة، فتبقى الحالة "" في الـURL نظيفة. */}
               <AppSelect id="inv-f-status" value={f.status || "ALL"} onValueChange={(v) => setF({ status: v === "ALL" ? "" : v })}>
                 <option value="ALL">— كل الحالات —</option>
-                {Object.entries(STATUS).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
+                {INVOICE_STATUSES.map((k) => (
+                  <option key={k} value={k}>{invoiceStatusLabel(k)}</option>
                 ))}
               </AppSelect>
             </div>
@@ -699,6 +801,10 @@ export default function Invoices() {
                 {POS_METHODS.map((m) => (
                   <option key={m.v} value={m.v}>{m.label}</option>
                 ))}
+                {/* «آجل» = `invoices.paymentMethod IS NULL` (بيعٌ نافذ بلا طريقة قبضٍ مسجَّلة).
+                    مرآةُ فلتر تقرير المبيعات — كان تمييز الآجل مستحيلاً من هذه الشاشة رغم أنّ
+                    العمود يعرضه «—»، فلا سبيل لحصر الذمم من حيث تُدار الفواتير. */}
+                <option value="NONE">آجل (بلا طريقة مسجَّلة)</option>
               </AppSelect>
             </div>
             <div className="space-y-1">
@@ -708,6 +814,13 @@ export default function Invoices() {
                 {(salespeople.data ?? []).map((u) => u.id != null ? (
                   <option key={u.id} value={String(u.id)}>{u.name}</option>
                 ) : null)}
+              </AppSelect>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="inv-f-channel" className="text-xs">القناة</Label>
+              <AppSelect id="inv-f-channel" value={f.channel || "ALL"} onValueChange={(v) => setF({ channel: v === "ALL" ? "" : v })}>
+                <option value="ALL">— كل القنوات —</option>
+                {invoiceChannelOptions().map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
               </AppSelect>
             </div>
             <div className="space-y-1">
@@ -759,21 +872,71 @@ export default function Invoices() {
               />
             </div>
           </div>
-        </CardContent>
-      </Card>
+      </FilterPanel>
 
       <DataTable
         columns={columns}
         data={data}
-        searchPlaceholder="بحث برقم الفاتورة أو اسم العميل…"
+        // ١٨/٨: البحث صار يشمل رقم أمر الشغل — وهو الرقم الذي بيد الزبون وعلى باركود التذكرة.
+        searchPlaceholder="بحث برقم الفاتورة أو أمر الشغل أو اسم العميل…"
         barcodeSearch
         loading={rows.isLoading}
+        // صدق الخطأ: الرفض ٤٠٣/انقطاع الشبكة كان يُعرَض «لا فواتير مطابقة» فيُقرأ «لا فواتير لي».
+        errorState={{ isError: rows.isError, message: rows.error?.message, onRetry: () => void rows.refetch() }}
         emptyText="لا فواتير مطابقة."
         selection={sel}
         getRowId={(r) => r.id}
         getRowClassName={(r) => isDepositDue(r) ? "bg-[var(--sem-warn-bg)] shadow-[inset_-3px_0_0_var(--sem-warn)]" : undefined}
         serverSearch={{ value: f.q, onChange: (v) => setF({ q: v }) }}
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
+        mobileCardRenderer={(r) => {
+          const stLabel = invoiceStatusLabel(r.status);
+          const badgeVariant = r.status === "PAID"
+            ? "success"
+            : r.status === "PARTIALLY_PAID"
+              ? "warning"
+              : r.status === "CANCELLED" || r.status === "RETURNED"
+                ? "destructive"
+                : "secondary";
+
+          const due = D(r.total).minus(D(r.paidAmount)).minus(D(r.returnedTotal ?? "0"));
+          const hasDue = due.gt(0) && r.status !== "CANCELLED" && r.status !== "RETURNED";
+
+          return (
+            <MobileDataCard
+              key={r.id}
+              title={r.invoiceNumber}
+              subtitle={custName(r.customerName) + (r.salespersonName ? ` · ${r.salespersonName}` : "")}
+              badge={{
+                label: stLabel,
+                variant: badgeVariant,
+              }}
+              amount={{
+                value: fmt(r.total),
+                label: hasDue ? `متبقٍ: ${fmt(due.toString())}` : undefined,
+                positive: r.status === "PAID",
+                negative: r.status === "RETURNED" || r.status === "CANCELLED",
+              }}
+              metadata={[
+                { label: "التاريخ", value: fmtDate(r.invoiceDate), icon: Calendar },
+                { label: "الدفع", value: paymentLabel(r), icon: CreditCard },
+                { label: "النوع", value: sourceTypeLabel(r.sourceType) },
+                ...(r.consignmentStatus ? [{
+                  label: "التوصيل",
+                  value: CONSIGNMENT_STATUS[r.consignmentStatus]?.label ?? r.consignmentStatus,
+                  icon: Truck,
+                }] : []),
+              ]}
+              onClick={() => navigate(`/invoices/${r.id}`)}
+              primaryAction={{
+                label: "وصل",
+                icon: Printer,
+                disabled: printingReceiptId === r.id,
+                onClick: () => void reprintThermal(r.id),
+              }}
+            />
+          );
+        }}
         toolbar={
           <>
             {/* «+ فاتورة جديدة» — مدخل مرئي لشاشة `/sales/new` (الفاتورة المتقدّمة: آجل/أقساط/خصم إجماليّ/ضريبة).

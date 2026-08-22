@@ -25,7 +25,7 @@ import {
 import { requireDb } from "../tx";
 import { logger } from "../../logger";
 import { recordAttendance } from "../attendanceService";
-import { computeDayHours, DEFAULT_MAX_DAILY_HOURS } from "./dayHours";
+import { computeDayHours, DEFAULT_MAX_DAILY_HOURS, DEFAULT_NIGHT_CUTOFF_HOUR, type NightShiftOptions } from "./dayHours";
 import { DEFAULT_WORK_SCHEDULE, hoursForDay } from "../hr/attendancePay";
 import { createAppNotification } from "../appNotificationService";
 import {
@@ -40,6 +40,11 @@ function baghdadDate(): string {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
+}
+
+/** اليوم التالي لـ"YYYY-MM-DD" بتقويم UTC ثابت (توقيت حائط لا لحظة عالمية). */
+function nextYmd(date: string): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 }
 
 /** بصمات (موظف × يوم) مرتّبة — مصدر واحد يستعمله اليوم وجاراه في الوردية الليلية. */
@@ -88,12 +93,18 @@ function includeAttendanceWorkplace(): boolean {
 }
 
 /** إعدادات الاحتساب (صفّ مفرد) — الغياب = الافتراضي المعطَّل، فلا تفشل الوحدة قبل الهجرة/البذر. */
-async function loadFoldSettings(): Promise<{ maxDailyHours: number }> {
+async function loadFoldSettings(): Promise<{ maxDailyHours: number; night: NightShiftOptions }> {
   try {
     const [row] = await requireDb().select().from(hrAttendanceSettings).where(eq(hrAttendanceSettings.id, 1)).limit(1);
-    return { maxDailyHours: Number(row?.maxDailyHours ?? DEFAULT_MAX_DAILY_HOURS) };
+    return {
+      maxDailyHours: Number(row?.maxDailyHours ?? DEFAULT_MAX_DAILY_HOURS),
+      night: {
+        enabled: !!row?.nightShiftEnabled,
+        cutoffHour: Number(row?.nightShiftCutoffHour ?? DEFAULT_NIGHT_CUTOFF_HOUR),
+      },
+    };
   } catch {
-    return { maxDailyHours: DEFAULT_MAX_DAILY_HOURS };
+    return { maxDailyHours: DEFAULT_MAX_DAILY_HOURS, night: { enabled: false, cutoffHour: DEFAULT_NIGHT_CUTOFF_HOUR } };
   }
 }
 
@@ -112,19 +123,48 @@ function safeFoldErrorCode(error: unknown): string {
     .slice(0, 48) || "FOLD_FAILED";
 }
 
+/** عدّاد الإخفاقات المتتالية — يُصفَّر عند أوّل دورةٍ بلا خطأ عابر. */
+let foldRetryStreak = 0;
+
+/** ١٥ث ثمّ تضاعفٌ حتى سقف ١٠ دقائق. الأولى تبقى ١٥ث بالضبط (لا انحدار على الاختبار القائم). */
+function foldRetryDelayMs(): number {
+  return Math.min(15_000 * 2 ** foldRetryStreak, 600_000);
+}
+
+/*
+ * تراجعٌ أُسّيّ بدل ١٥ ثانية أبداً (تدقيق ١٧/٨): خطأٌ دائم — كقفل المسيّر قبل وسمه — كان
+ * يُنتج ٥٧٦٠ دورة مسحٍ يومياً على أسخن استعلامٍ في الوحدة بلا أن يتقدّم شيء.
+ */
 function scheduleFoldRetry(): void {
   if (!foldRequestsAccepting || retryTimer) return;
+  const delay = foldRetryDelayMs();
+  foldRetryStreak += 1; // بعد الحساب ⇒ أوّل إعادةٍ ١٥ث
   retryTimer = setTimeout(() => {
     retryTimer = null;
     foldSoon();
-  }, 15_000);
+  }, delay);
   retryTimer.unref();
 }
 
 /** علامات أخطاء recordAttendance النهائية (يوسَم بها المعالَج نهائياً) — أيّ خطأ آخر عابر يُعاد. */
 function isTerminalFoldError(msg: string): boolean {
-  return msg.includes("منتهي الخدمة") || msg.includes("غير موجود") || msg.includes("سالبة");
+  return (
+    msg.includes("منتهي الخدمة") ||
+    msg.includes("غير موجود") ||
+    msg.includes("سالبة") ||
+    // شهرٌ مسيّرُه معتمد/مدفوع (تدقيق ١٧/٨): كان **عابراً** فتبقى البصمة processedAt=NULL
+    // بلا وسمٍ ولا سبب — «بالانتظار» صامتةً تضيع فعلياً — ومعها إعادةُ محاولةٍ أبدية كل ١٥ث.
+    // نهائيٌّ **موسوم**: المدير يراه ويستأنفه بإلغاء اعتماد المسيّر ثم إعادة الطيّ.
+    msg.includes("مسيّر رواتب")
+  );
 }
+
+/*
+ * ⚠️ لا تُوسَّع هذه القائمة بأنماطٍ يُنتجها المسار السليم: مراجعةٌ عدائية (١٧/٨) أمسكت
+ * محاولةً لإضافة «بعد وقت الدخول» — وهي رسالةُ حارس الاتّساق التي يُطلقها **الطيّ نفسه**
+ * كلّما عبرت وردية منتصف الليل ⇒ ليلةُ عملٍ كاملة تُختم وتُحذف بلا رجعة. أيّ نمطٍ جديد
+ * يلزمه إثباتٌ بتشغيلٍ فعليّ أن المسار السليم لا يُنتجه.
+ */
 
 /** طيّ دفعة واحدة (≤٥٠٠٠ بصمة معلَّقة مربوطة). يُعيد days/parked/processedAny للتحكّم بالحلقة. */
 async function foldOneBatch(): Promise<{ days: number; parked: number; processedAny: boolean }> {
@@ -140,7 +180,7 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
     .orderBy(asc(hrAttendancePunches.punchAt))
     .limit(5000);
   if (pending.length === 0) return { days: 0, parked: 0, processedAny: false };
-  const { maxDailyHours } = await loadFoldSettings();
+  const { maxDailyHours, night } = await loadFoldSettings();
 
   // تجميع (موظف × يوم) — punchAt نص "YYYY-MM-DD HH:MM:SS" فاليوم = أول ١٠ خانات.
   const groups = new Map<string, { employeeId: number; date: string; ids: number[] }>();
@@ -191,7 +231,12 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         ? empRow.workSchedule
         : DEFAULT_WORK_SCHEDULE) as Record<string, { hours?: number } | number>;
       const schedHours = hoursForDay(sched as never, g.date).toNumber();
-      const day = computeDayHours(times, maxDailyHours, schedHours);
+      /*
+       * جوارُ اليوم حين تُفعَّل الوردية الليلية: بصماتُ فجر الغد هي التي تُغلق وردية اليوم.
+       * الإسناد يُشتقّ من الجيران لا من حالةٍ مخزَّنة ⇒ إعادةُ الطيّ تعطي النتيجة نفسها.
+       */
+      const nextPunches = night.enabled ? await punchTimesOf(g.employeeId, nextYmd(g.date)) : [];
+      const day = computeDayHours(times, maxDailyHours, schedHours, { ...night, nextDayPunches: nextPunches });
     if (day.usedCount === 0) {
       // كل بصمات اليوم مملوكة لوردية أمس ⇒ لا يوم هنا. توسَم معالَجةً كي لا تدور أبداً.
       await db
@@ -208,6 +253,8 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         hours: day.hours,
         checkIn: day.checkIn,
         checkOut: day.checkOut,
+        // وردية عبرت منتصف الليل ⇒ الانصراف على تاريخ الغد لا على تاريخ الوردية.
+        checkOutDate: day.checkOutNextDay ? nextYmd(g.date) : undefined,
         status: "PRESENT",
         source: "fingerprint",
         notes: null,
@@ -263,6 +310,8 @@ async function foldOneBatch(): Promise<{ days: number; parked: number; processed
         .set({ processedAt: sql`CURRENT_TIMESTAMP`, processNote: null })
         .where(inArray(hrAttendancePunches.id, g.ids));
       days++;
+      // يومٌ طُوي بنجاح ⇒ العطب العابر زال، فيعود التأخير إلى ١٥ث ولا يبقى متضخّماً.
+      foldRetryStreak = 0;
     } catch (e) {
       const note = e instanceof Error ? e.message.slice(0, 200) : "تعذر الطي";
       if (isTerminalFoldError(note)) {

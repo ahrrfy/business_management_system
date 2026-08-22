@@ -156,6 +156,181 @@ export interface ResolveLineInput {
   lockForUpdate?: boolean;
 }
 
+export interface PromotionRuleSnapshotInput {
+  branchId: number;
+  customerTier: PriceTier;
+  todayYmd: string;
+  includeStoreManaged?: boolean;
+  requiredApplicationMode?: "AUTO" | "COUPON";
+}
+
+export interface PromotionRuleSnapshot {
+  readonly branchId: number;
+  readonly customerTier: PriceTier;
+  readonly todayYmd: string;
+  readonly includeStoreManaged: boolean;
+  readonly requiredApplicationMode: "AUTO" | "COUPON";
+  readonly rules: ReadonlyArray<{
+    readonly id: number;
+    readonly name: string;
+    readonly type: SalesPromotionType;
+    readonly discountPercent: string;
+    readonly discountAmount: string;
+    readonly scope: SalesPromotionScope;
+    readonly priority: number;
+    readonly minLineAmount: string;
+    readonly targets: ReadonlyArray<{
+      readonly categoryId: number | null;
+      readonly productId: number | null;
+      readonly variantId: number | null;
+    }>;
+  }>;
+}
+
+/**
+ * لقطة قراءة واحدة لعرض كتالوج المتجر: استعلام قواعد + استعلام أهداف، بصرف النظر عن عدد المنتجات.
+ * لا تُستعمل عند تثبيت الطلب؛ ذلك المسار يبقى على resolvePromotionForLine مع FOR UPDATE.
+ */
+export async function loadPromotionRuleSnapshot(
+  tx: Tx,
+  input: PromotionRuleSnapshotInput,
+): Promise<PromotionRuleSnapshot> {
+  const candidateRows = await tx
+    .select({
+      id: promotions.id,
+      name: promotions.name,
+      type: promotions.type,
+      discountPercent: promotions.discountPercent,
+      discountAmount: promotions.discountAmount,
+      scope: promotions.scope,
+      priority: promotions.priority,
+      minLineAmount: promotions.minLineAmount,
+    })
+    .from(promotions)
+    .where(
+      and(
+        eq(promotions.isActive, true),
+        eq(promotions.applicationMode, input.requiredApplicationMode ?? "AUTO"),
+        sql`${promotions.effectiveFrom} <= DATE(${input.todayYmd})`,
+        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${input.todayYmd})`)!,
+        or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId))!,
+        or(isNull(promotions.customerTier), eq(promotions.customerTier, input.customerTier))!,
+        input.includeStoreManaged ? undefined : eq(promotions.isStoreManaged, false),
+      ),
+    )
+    .orderBy(asc(promotions.id));
+
+  const ids = candidateRows.map((row) => Number(row.id));
+  const targetRows = ids.length
+    ? await tx
+        .select({
+          promotionId: promotionTargets.promotionId,
+          categoryId: promotionTargets.categoryId,
+          productId: promotionTargets.productId,
+          variantId: promotionTargets.variantId,
+        })
+        .from(promotionTargets)
+        .where(inArray(promotionTargets.promotionId, ids))
+        .orderBy(asc(promotionTargets.promotionId), asc(promotionTargets.id))
+    : [];
+  const targetsByPromotion = new Map<number, Array<{
+    categoryId: number | null;
+    productId: number | null;
+    variantId: number | null;
+  }>>();
+  for (const target of targetRows) {
+    const promotionId = Number(target.promotionId);
+    const current = targetsByPromotion.get(promotionId) ?? [];
+    current.push({
+      categoryId: target.categoryId == null ? null : Number(target.categoryId),
+      productId: target.productId == null ? null : Number(target.productId),
+      variantId: target.variantId == null ? null : Number(target.variantId),
+    });
+    targetsByPromotion.set(promotionId, current);
+  }
+
+  return {
+    branchId: input.branchId,
+    customerTier: input.customerTier,
+    todayYmd: input.todayYmd,
+    includeStoreManaged: input.includeStoreManaged === true,
+    requiredApplicationMode: input.requiredApplicationMode ?? "AUTO",
+    rules: candidateRows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      type: row.type,
+      discountPercent: String(row.discountPercent),
+      discountAmount: String(row.discountAmount),
+      scope: row.scope,
+      priority: Number(row.priority ?? 0),
+      minLineAmount: String(row.minLineAmount ?? "0"),
+      targets: targetsByPromotion.get(Number(row.id)) ?? [],
+    })),
+  };
+}
+
+/** حلّ نقي من snapshot محمّلة مسبقاً؛ لا ينفّذ SQL ويمكن استدعاؤه لكل بطاقات الصفحة. */
+export function resolvePromotionFromSnapshot(
+  snapshot: PromotionRuleSnapshot,
+  input: ResolveLineInput,
+): ResolvedPromotion | null {
+  if (
+    input.hasContractPrice ||
+    input.branchId !== snapshot.branchId ||
+    input.customerTier !== snapshot.customerTier ||
+    input.todayYmd !== snapshot.todayYmd ||
+    (input.requiredApplicationMode ?? "AUTO") !== snapshot.requiredApplicationMode ||
+    Boolean(input.includeStoreManaged) !== snapshot.includeStoreManaged
+  ) {
+    return null;
+  }
+
+  const unitPrice = money(input.unitPrice);
+  const lineAmount = money(input.lineAmount);
+  if (unitPrice.lte(0)) return null;
+
+  const scored: Array<{
+    id: number;
+    name: string;
+    priority: number;
+    discountForUnit: Decimal;
+  }> = [];
+  for (const rule of snapshot.rules) {
+    if (money(rule.minLineAmount).gt(lineAmount)) continue;
+    if (rule.scope !== "ALL") {
+      const targetMatches = rule.targets.some((target) =>
+        (target.variantId != null && target.variantId === input.variantId) ||
+        (target.productId != null && target.productId === input.productId) ||
+        (target.categoryId != null && input.categoryId != null && target.categoryId === input.categoryId),
+      );
+      if (!targetMatches) continue;
+    }
+    let discount = rule.type === "PERCENT"
+      ? unitPrice.mul(money(rule.discountPercent)).dividedBy(100)
+      : money(rule.discountAmount);
+    if (discount.gt(unitPrice)) discount = unitPrice;
+    if (discount.lte(0)) continue;
+    scored.push({
+      id: rule.id,
+      name: rule.name,
+      priority: rule.priority,
+      discountForUnit: discount,
+    });
+  }
+  if (!scored.length) return null;
+  scored.sort((a, b) => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    const discountOrder = b.discountForUnit.comparedTo(a.discountForUnit);
+    return discountOrder !== 0 ? discountOrder : a.id - b.id;
+  });
+  const winner = scored[0];
+  return {
+    promotionId: winner.id,
+    promotionName: winner.name,
+    discountForUnit: toDbMoney(winner.discountForUnit),
+  };
+}
+
 /**
  * حلّ العرض الأنسب على سطر بيع. يعود null لو لا عرض ينطبق.
  *

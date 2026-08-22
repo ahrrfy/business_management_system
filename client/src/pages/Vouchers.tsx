@@ -13,9 +13,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { AppSelect } from "@/components/ui/AppSelect";
 import { PageHeader } from "@/components/PageHeader";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import {
+  LoadingState,
+  ErrorState,
+  TableEmptyRow,
+} from "@/components/PageState";
 import { FilterField, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
@@ -23,19 +28,45 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { printVoucherReceipt, printVoucherA4, type VoucherPrintData } from "@/lib/printing/voucherPrint";
+import {
+  printVoucherReceipt,
+  printVoucherA4,
+  type VoucherPrintData,
+} from "@/lib/printing/voucherPrint";
+import {
+  releaseReservedPrintWindow,
+  reservePrintWindow,
+} from "@/lib/printing/brand";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { usePrintAudit } from "@/hooks/usePrintAudit";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  moduleAccessAllowed,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
+import type { PrintOpenResult } from "@shared/printAudit";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { CheckCircle2, XCircle, Paperclip, ShieldQuestion, Link2, X } from "lucide-react";
 import {
+  CheckCircle2,
+  XCircle,
+  Paperclip,
+  ShieldQuestion,
+  Link2,
+  X,
+} from "lucide-react";
+import {
+  accrualPaymentAttemptLabel,
+  accrualPaymentResubmitPayload,
+  canShowAccrualPaymentResubmit,
   canPrintOfficialVoucher,
   canShowVoucherApprovalAction,
   canShowVoucherRejectAction,
   expectedVoucherSourceLabel,
+  validAccrualReissueReason,
   voucherApprovalLabel,
 } from "@/components/vouchers/voucherUiPolicy";
 
@@ -46,24 +77,75 @@ const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const TYPE_LABEL: Record<string, string> = { IN: "قبض", OUT: "صرف" };
-const PARTY_LABEL: Record<string, string> = { CUSTOMER: "عميل", SUPPLIER: "مورّد", OTHER: "أخرى" };
-const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "صكّ", TRANSFER: "تحويل", WALLET: "محفظة", EXCHANGE: "صيرفة", TELECOM: "رصيد زين",
+const PARTY_LABEL: Record<string, string> = {
+  CUSTOMER: "عميل",
+  SUPPLIER: "مورّد",
+  OTHER: "أخرى",
 };
+// التسمية من `@/lib/paymentMethod` (مصدر واحد مع POS والفواتير وحوار الوردية) — كانت نسخةً
+// محلّية سابقة للمركزيّ بـ«صيرفة»، فبقيت EXCHANGE ناقصةً هناك وظهرت خاماً في شاشة الخزينة.
 function shortHash(h?: string | null): string {
   return h ? String(h).slice(0, 8).toUpperCase() : "—";
 }
 
+const SYSTEM_PAYMENT_PREFIXES = [
+  "ASSET-ACQ-",
+  "ASSET-REACQ-",
+  "ASSET-MAINT-",
+  "ASSET-SUP-SETTLE-",
+  "PO-PAY-",
+  "PO-USD-PAY-",
+  "SHIP-",
+  "EXCHANGE-IQD-DEP-",
+  "DIGITAL-WALLET-DEP-",
+  "CANCEL-VCH-",
+  "TERM-SETTLEMENT-",
+  "ACCRUAL-REFUND-",
+] as const;
+
+function isSystemPaymentReference(reference?: string | null): boolean {
+  return (
+    !!reference &&
+    SYSTEM_PAYMENT_PREFIXES.some((prefix) => reference.startsWith(prefix))
+  );
+}
+
+function isPurchaseSupplierPaymentReference(
+  reference?: string | null,
+): boolean {
+  return (
+    !!reference &&
+    (reference.startsWith("PO-PAY-") || reference.startsWith("PO-USD-PAY-"))
+  );
+}
+
 export default function Vouchers() {
   const utils = trpc.useUtils();
+  const printAudit = usePrintAudit();
   const me = trpc.auth.me.useQuery();
-  const canManage = !!me.data &&
-    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "treasury", "FULL", ["manager", "accountant"]);
+  const canManage =
+    !!me.data &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "treasury",
+      "FULL",
+      ["manager", "accountant"],
+    );
   // عرضٌ إرشادي فقط؛ approve على الخادم ملزم بإعادة قراءة isOwner النشط وفصل المنشئ عن المعتمد.
   const isOwner = me.data?.isOwner === true;
   // الفلاتر تعيش في querystring — تبقى مع فتح التفاصيل والرجوع، وتُشارَك رابطاً.
   const [f, setF, resetF] = useUrlFilters({
-    type: "", party: "", method: "", approval: "", cat: "", branch: "", status: "", from: "", to: "", q: "",
+    type: "",
+    party: "",
+    method: "",
+    approval: "",
+    cat: "",
+    branch: "",
+    status: "",
+    from: "",
+    to: "",
+    q: "",
   });
   const debouncedQ = useDebouncedValue(f.q.trim(), 250);
   const [page, setPage] = useState(0);
@@ -76,17 +158,35 @@ export default function Vouchers() {
     setPage(0);
   }
 
-  const categories = trpc.voucherCategories.list.useQuery({ includeInactive: true });
+  const categories = trpc.voucherCategories.list.useQuery({
+    includeInactive: true,
+  });
   const branches = trpc.branches.list.useQuery();
   // فلتر الفرع فعّال للأدمن/مدير بلا فرع مُسنَد فقط — الخادم يفرض فرع البقية أياً كان المُرسَل.
-  const canFilterBranch = me.data != null && (me.data.role === "admin" || me.data.branchId == null);
+  const canFilterBranch =
+    me.data != null && (me.data.role === "admin" || me.data.branchId == null);
 
   const filterInput = useMemo(
     () => ({
       voucherType: (f.type || undefined) as "RECEIPT" | "PAYMENT" | undefined,
-      partyType: (f.party || undefined) as "CUSTOMER" | "SUPPLIER" | "OTHER" | undefined,
-      paymentMethod: (f.method || undefined) as "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "EXCHANGE" | undefined,
-      approvalStatus: (f.approval || undefined) as "APPROVED" | "PENDING_APPROVAL" | "REJECTED" | undefined,
+      partyType: (f.party || undefined) as
+        | "CUSTOMER"
+        | "SUPPLIER"
+        | "OTHER"
+        | undefined,
+      paymentMethod: (f.method || undefined) as
+        | "CASH"
+        | "CARD"
+        | "CHECK"
+        | "TRANSFER"
+        | "WALLET"
+        | "EXCHANGE"
+        | undefined,
+      approvalStatus: (f.approval || undefined) as
+        | "APPROVED"
+        | "PENDING_APPROVAL"
+        | "REJECTED"
+        | undefined,
       status: (f.status || undefined) as "COMPLETED" | "REVERSED" | undefined,
       branchId: f.branch ? Number(f.branch) : undefined,
       voucherCategoryId: f.cat ? Number(f.cat) : undefined,
@@ -108,16 +208,28 @@ export default function Vouchers() {
 
   const cancelMut = trpc.vouchers.cancel.useMutation({
     onSuccess: async (res) => {
-      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
-      notify.ok(`أُلغي السند ${res.voucherNumber} وعُكست آثاره المالية`);
+      await Promise.all([
+        utils.vouchers.list.invalidate(),
+        utils.vouchers.aggregate.invalidate(),
+      ]);
+      notify.ok(
+        res.status === "PENDING_APPROVAL"
+          ? `أُرسل طلب إلغاء السند ${res.voucherNumber} — يبقى أثره نافذاً حتى اعتماد مالك نشط آخر.`
+          : `أُلغي الطلب غير المادي ${res.voucherNumber} بلا أثر مالي`,
+      );
     },
     onError: (e) => notify.err(e),
   });
 
   const approveMut = trpc.vouchers.approve.useMutation({
     onSuccess: async (res, variables) => {
-      const approvedDirection = all.find((row) => Number(row.id) === variables.receiptId)?.direction;
-      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
+      const approvedDirection = all.find(
+        (row) => Number(row.id) === variables.receiptId,
+      )?.direction;
+      await Promise.all([
+        utils.vouchers.list.invalidate(),
+        utils.vouchers.aggregate.invalidate(),
+      ]);
       notify.ok(
         approvedDirection === "OUT"
           ? `اعتُمد وصُرف السند ${res.voucherNumber} — بَصمة ${shortHash(res.signatureHash)}`
@@ -130,74 +242,104 @@ export default function Vouchers() {
   // حوار سبب الرفض (بديل window.prompt — نمط حوارات النظام).
   const [rejectTarget, setRejectTarget] = useState<VoucherRow | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [resubmitTarget, setResubmitTarget] = useState<VoucherRow | null>(null);
+  const [reissueReason, setReissueReason] = useState("");
+  const [resubmitNote, setResubmitNote] = useState("");
+  const [resubmitAttachmentImages, setResubmitAttachmentImages] = useState<
+    ImageItem[]
+  >([]);
 
   const rejectMut = trpc.vouchers.reject.useMutation({
     onSuccess: async (res) => {
       setRejectTarget(null);
-      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
+      await Promise.all([
+        utils.vouchers.list.invalidate(),
+        utils.vouchers.aggregate.invalidate(),
+      ]);
       notify.ok(`رُفض السند ${res.voucherNumber}`);
     },
     onError: (e) => notify.err(e),
   });
 
-  const resubmitSystemPaymentMut = trpc.vouchers.resubmitExpensePayment.useMutation({
-    onSuccess: async (res) => {
-      await Promise.all([utils.vouchers.list.invalidate(), utils.vouchers.aggregate.invalidate()]);
-      notify.ok(`أُعيد تقديم طلب الدفع النظامي بالسند ${res.voucherNumber} بلا تكرارٍ للمصدر أو أثرٍ مالي`);
-    },
-    onError: (e) => notify.err(e),
-  });
+  const resubmitSystemPaymentMut =
+    trpc.vouchers.resubmitExpensePayment.useMutation({
+      onSuccess: async (res) => {
+        setResubmitTarget(null);
+        setReissueReason("");
+        setResubmitNote("");
+        setResubmitAttachmentImages([]);
+        await Promise.all([
+          utils.vouchers.list.invalidate(),
+          utils.vouchers.aggregate.invalidate(),
+        ]);
+        notify.ok(
+          res.replayed
+            ? `استُرجعت المحاولة A${res.attempt} بالسند ${res.voucherNumber} بلا إنشاء أو أثرٍ مكرر`
+            : `أُنشئت المحاولة A${res.attempt} بالسند ${res.voucherNumber} مرتبطة بالمحاولة #${res.priorReceiptId} بلا تكرارٍ للمصدر أو أثرٍ مالي`,
+        );
+      },
+      onError: (e) => notify.err(e),
+    });
 
   async function approveVoucher(r: VoucherRow) {
     // لا يُعد هذا حارس صلاحية؛ هو منع UX فقط، والإنفاذ الحاسم في الإجراء الخادمي.
-    if (r.direction === "OUT" && !isOwner) {
-      notify.err("اعتماد وصرف سندات الصرف متاح لحساب مالك نشط فقط.");
+    if (!isOwner) {
+      notify.err("اعتماد السندات متاح لحساب مالك نشط فقط.");
       return;
     }
-    const partyLabel = r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
+    const partyLabel =
+      r.counterpartyName?.trim() || PARTY_LABEL[r.partyType ?? "OTHER"] || "—";
     const isPayment = r.direction === "OUT";
     const expectedSource = expectedVoucherSourceLabel(r);
-    const isRecognizedExpense =
+    const isAccruedSystemPayment =
       r.referenceNumber?.startsWith("SHIP-") === true ||
-      r.referenceNumber?.startsWith("ASSET-MAINT-") === true;
+      r.referenceNumber?.startsWith("ASSET-MAINT-") === true ||
+      r.referenceNumber?.startsWith("ASSET-ACQ-") === true;
     const ok = await confirm({
       variant: "info",
-      title: isPayment ? "اعتماد وصرف السند" : "اعتماد السند",
+      title: isPayment ? "اعتماد المالك وصرف السند" : "اعتماد المالك للسند",
       description: isPayment
-        ? isRecognizedExpense
-          ? `المصروف وقيد استحقاقه مُثبتان مسبقاً. سيُعيد الخادم فحص المصدر والرصيد ثم يُخرج اعتماد السند ${r.voucherNumber ?? ""} مبلغ ${fmt(r.amount)} د.ع من ${expectedSource} مرةً واحدة فقط، بلا مصروف أو قيد استحقاق ثانٍ. عند أي فشل يبقى طلب الدفع بلا أثر نقدي. هل تتابع؟`
+        ? isAccruedSystemPayment
+          ? `الأصل أو المصروف وقيد استحقاقه مُثبتان مسبقاً. سيُعيد الخادم فحص المصدر والرصيد ثم يسوّي الالتزام بالسند ${r.voucherNumber ?? ""} بمبلغ ${fmt(r.amount)} د.ع من ${expectedSource} مرةً واحدة فقط، بلا اعتراف أو استحقاق ثانٍ. عند أي فشل يبقى الطلب بلا أثر نقدي. هل تتابع؟`
           : `سيُتحقق الخادم من الرصيد ثم يعتمد ويصرف السند ${r.voucherNumber ?? ""} في عملية واحدة بلا مرحلة وسيطة. المبلغ: ${fmt(r.amount)} د.ع · الطرف: ${partyLabel} · المصدر المتوقع لحظة التأكيد: ${expectedSource}. يُعاد فحص المصدر والرصيد داخل المعاملة؛ عند أي فشل لن يُسجَّل إيصال أو قيد أو تغيير ذمة. هل تتابع؟`
         : `سَيُصبح السند ${r.voucherNumber ?? ""} مُعتمَداً ويُسجَّل قيد الدفتر ويُؤثّر على ${
-            r.partyType === "CUSTOMER" ? "ذمة العميل" : r.partyType === "SUPPLIER" ? "ذمة المورّد" : "الصندوق"
+            r.partyType === "CUSTOMER"
+              ? "ذمة العميل"
+              : r.partyType === "SUPPLIER"
+                ? "ذمة المورّد"
+                : "الصندوق"
           } بمبلغ ${fmt(r.amount)} د.ع. هل تتابع؟`,
-      confirmText: isPayment ? "اعتماد وصرف" : "اعتماد",
+      confirmText: isPayment ? "اعتماد المالك وصرف" : "اعتماد المالك",
       cancelText: "تراجع",
     });
     if (!ok) return;
     approveMut.mutate({ receiptId: Number(r.id) });
   }
 
-  async function resubmitSystemPayment(r: VoucherRow) {
-    const isTerminationSettlement = r.referenceNumber?.startsWith("TERM-SETTLEMENT-") === true;
-    const ok = await confirm({
-      variant: "info",
-      title: isTerminationSettlement
-        ? "إعادة تقديم تسوية نهاية الخدمة"
-        : "إعادة تقديم طلب دفع المصروف",
-      description: isTerminationSettlement
-        ? `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بسجل إنهاء الخدمة ومبلغه المعتمد نفسه بلا تغيير حالة الموظف أو أثر مالي مسبق. هل تتابع؟`
-        : `سيبقى السند المرفوض ${r.voucherNumber ?? ""} في سجل التدقيق، ويُنشأ طلب دفع جديد مرتبط بالمصروف المثبت نفسه بلا مصروف أو قيد دفتر إضافي. هل تتابع؟`,
-      confirmText: "إعادة تقديم",
-      cancelText: "تراجع",
-    });
-    if (!ok) return;
-    resubmitSystemPaymentMut.mutate({ receiptId: Number(r.id) });
+  function openResubmitSystemPayment(r: VoucherRow) {
+    setReissueReason("");
+    setResubmitNote("");
+    setResubmitAttachmentImages([]);
+    setResubmitTarget(r);
+  }
+
+  function submitResubmitSystemPayment() {
+    if (!resubmitTarget || resubmitSystemPaymentMut.isPending) return;
+    if (!validAccrualReissueReason(reissueReason)) return;
+    resubmitSystemPaymentMut.mutate(
+      accrualPaymentResubmitPayload({
+        receiptId: Number(resubmitTarget.id),
+        reissueReason,
+        attachmentUrl: resubmitAttachmentImages[0]?.dataUrl ?? null,
+        note: resubmitNote,
+      }),
+    );
   }
 
   function openReject(r: VoucherRow) {
     // إخفاء/منع UX فقط؛ الخادم القادم يفرض isOwner النشط وفصل الواجبات.
-    if (r.direction === "OUT" && !isOwner) {
-      notify.err("رفض طلبات الصرف متاح لحساب مالك نشط فقط.");
+    if (!isOwner) {
+      notify.err("رفض طلبات السندات متاح لحساب مالك نشط فقط.");
       return;
     }
     setRejectReason("");
@@ -212,11 +354,15 @@ export default function Vouchers() {
 
   async function cancelVoucher(r: VoucherRow) {
     const partyLabel = PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—";
+    const materialized =
+      r.status === "COMPLETED" && r.approvalStatus === "APPROVED";
     const ok = await confirm({
       variant: "danger",
-      title: "إلغاء السند",
-      description: `سيُعلَّم السند ${r.voucherNumber ?? ""} «مُلغى» ويُعكس مبلغ ${fmt(r.amount)} د.ع (الطرف: ${partyLabel}) في الصندوق والدفتر ورصيد الطرف. هل تتابع؟`,
-      confirmText: "إلغاء السند",
+      title: materialized ? "طلب إلغاء السند" : "إلغاء الطلب غير المادي",
+      description: materialized
+        ? `سيُنشأ طلب إلغاء معلّق للسند ${r.voucherNumber ?? ""} بمبلغ ${fmt(r.amount)} د.ع (الطرف: ${partyLabel}). يبقى السند وأثره المالي نافذين بلا تغيير حتى يعتمد مالك نشط آخر مختلف عن طالب الإلغاء ومنشئ الأصل؛ عند الاعتماد فقط يُعكس الصندوق والدفتر والذمة ذرياً. هل تتابع؟`
+        : `الطلب ${r.voucherNumber ?? ""} لم يُعتمد ولم يُنشئ أثراً مالياً؛ سيُعلّم ملغى بلا قيد أو حركة نقد. هل تتابع؟`,
+      confirmText: materialized ? "إرسال طلب الإلغاء" : "إلغاء الطلب",
       cancelText: "تراجع",
     });
     if (!ok) return;
@@ -230,11 +376,16 @@ export default function Vouchers() {
   // والمعلّق بلا أَثَر مالي بَعد. الصافي بdecimal لا Number (أموال).
   const totalIn = agg.data?.totalIn ?? "0";
   const totalOut = agg.data?.totalOut ?? "0";
-  const netTotal = useMemo(() => D(totalIn).minus(D(totalOut)), [totalIn, totalOut]);
+  const netTotal = useMemo(
+    () => D(totalIn).minus(D(totalOut)),
+    [totalIn, totalOut],
+  );
   const totalCount = agg.data?.count;
-  const pageCount = totalCount != null ? Math.max(1, Math.ceil(totalCount / limit)) : null;
+  const pageCount =
+    totalCount != null ? Math.max(1, Math.ceil(totalCount / limit)) : null;
   // «التالي» بcount الخادمي؛ وقبل وصول aggregate نتحفّظ بقاعدة «صفحة ممتلئة = قد يوجد تالٍ».
-  const hasNext = totalCount != null ? (page + 1) * limit < totalCount : all.length >= limit;
+  const hasNext =
+    totalCount != null ? (page + 1) * limit < totalCount : all.length >= limit;
 
   const categoryMap = useMemo(() => {
     const m = new Map<number, string>();
@@ -263,31 +414,126 @@ export default function Vouchers() {
         filename: "السندات",
         columns: [
           { key: "voucherNumber", header: "رقم السند" },
-          { key: "voucherDate", header: "تاريخ السند", map: (r) => fmtDate(r.voucherDate as any) },
-          { key: "createdAt", header: "تاريخ الإدخال", map: (r) => fmtDate(r.createdAt as any) },
-          { key: "branchId", header: "الفرع", map: (r) => (r.branchId != null ? (branchMap.get(Number(r.branchId)) ?? String(r.branchId)) : "—") },
-          { key: "direction", header: "النوع", map: (r) => TYPE_LABEL[r.direction] ?? r.direction },
-          { key: "partyType", header: "نوع الطرف", map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—" },
-          { key: "counterpartyName", header: "اسم المُستفيد" },
+          {
+            key: "voucherDate",
+            header: "تاريخ السند",
+            map: (r) => fmtDate(r.voucherDate),
+          },
+          {
+            key: "createdAt",
+            header: "تاريخ الإدخال",
+            map: (r) => fmtDate(r.createdAt),
+          },
+          {
+            key: "branchId",
+            header: "الفرع",
+            map: (r) =>
+              r.branchId != null
+                ? (branchMap.get(Number(r.branchId)) ?? String(r.branchId))
+                : "—",
+          },
+          {
+            key: "direction",
+            header: "النوع",
+            map: (r) => TYPE_LABEL[r.direction] ?? r.direction,
+          },
+          {
+            key: "partyType",
+            header: "نوع الطرف",
+            map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—",
+          },
+          {
+            key: "partyName",
+            header: "اسم الطرف",
+            map: (r) => r.partyName ?? r.counterpartyName ?? "",
+          },
+          {
+            key: "createdByName",
+            header: "المنفذ",
+            map: (r) =>
+              r.createdByName ??
+              (r.createdBy ? `مستخدم #${r.createdBy}` : "غير موثق"),
+          },
           {
             key: "voucherCategoryId",
             header: "الفئة",
-            map: (r) => (r.voucherCategoryId ? (categoryMap.get(Number(r.voucherCategoryId)) ?? "—") : "—"),
+            map: (r) =>
+              r.voucherCategoryId
+                ? (categoryMap.get(Number(r.voucherCategoryId)) ?? "—")
+                : "—",
           },
           { key: "description", header: "الوصف" },
-          { key: "amount", header: "المبلغ", map: (r) => Number(r.amount ?? 0) },
-          { key: "paymentMethod", header: "الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
+          {
+            key: "amount",
+            header: "المبلغ",
+            map: (r) => fmt(r.amount ?? "0"),
+          },
+          {
+            key: "paymentMethod",
+            header: "الدفع",
+            map: (r) => paymentMethodLabel(r.paymentMethod),
+          },
           { key: "referenceNumber", header: "الرقم المرجعي" },
-          { key: "checkNumber", header: "رقم الصكّ" },
+          { key: "checkNumber", header: "مرجع التحويل/الصكّ" },
           { key: "cardLastFour", header: "آخر ٤ بطاقة" },
-          { key: "approvalStatus", header: "حالة الاعتماد", map: (r) => voucherApprovalLabel(r) },
-          { key: "status", header: "الحالة", map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل") },
+          {
+            key: "approvalStatus",
+            header: "حالة الاعتماد",
+            map: (r) => voucherApprovalLabel(r),
+          },
+          {
+            key: "status",
+            header: "الحالة",
+            map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل"),
+          },
           // attachment-upload (٥/٧): المُرفق أصبح data URL صورة (~٩٣٣ك حرفاً) — تصديره خاماً يُفسد
           // الخلية (حدّ Excel ~٣٢،٧٦٧ حرفاً) ⇒ نعم/لا فقط؛ المُلَفّ نفسه يُفتَح من الشاشة مباشرةً.
-          { key: "attachmentUrl", header: "مُرفَق؟", map: (r) => (r.attachmentUrl ? "نعم" : "لا") },
-          { key: "invoiceNumber", header: "الفاتورة المرتبطة", map: (r) => r.invoiceNumber ?? "—" },
-          { key: "signatureHash", header: "بَصمة", map: (r) => shortHash(r.signatureHash) },
-          { key: "cashBucket", header: "نوع النَقد", map: (r) => (r.cashBucket === "DRAWER" ? "درج كاشير" : r.cashBucket === "TREASURY" ? "خزينة إدارية" : "—") },
+          {
+            key: "attachmentUrl",
+            header: "مُرفَق؟",
+            map: (r) => (r.attachmentUrl ? "نعم" : "لا"),
+          },
+          {
+            key: "invoiceNumber",
+            header: "الفاتورة المرتبطة",
+            map: (r) => r.invoiceNumber ?? "—",
+          },
+          {
+            key: "signatureHash",
+            header: "بَصمة",
+            map: (r) => shortHash(r.signatureHash),
+          },
+          {
+            key: "cashBucket",
+            header: "نوع النَقد",
+            map: (r) =>
+              r.cashBucket === "DRAWER"
+                ? "درج كاشير"
+                : r.cashBucket === "TREASURY"
+                  ? "خزينة إدارية"
+                  : "—",
+          },
+          {
+            key: "resubmitAttempt",
+            header: "محاولة إعادة الإصدار",
+            map: (r) =>
+              r.resubmitAttempt == null ? "—" : `A${r.resubmitAttempt}`,
+          },
+          {
+            key: "resubmitRootReceiptId",
+            header: "سند أصل السلسلة",
+            map: (r) => r.resubmitRootReceiptId ?? "—",
+          },
+          {
+            key: "resubmitPriorReceiptId",
+            header: "السند السابق",
+            map: (r) => r.resubmitPriorReceiptId ?? "—",
+          },
+          {
+            key: "resubmitReason",
+            header: "سبب إعادة الإصدار",
+            map: (r) => r.resubmitReason ?? "—",
+          },
         ],
       });
     } catch (e) {
@@ -300,32 +546,46 @@ export default function Vouchers() {
   // طباعة السند: نَطلب السند الكامل من السيرفر (يَتضمَّن createdByName/approvedByName/categoryName/partyName).
   async function printVoucher(r: VoucherRow, mode: "thermal" | "a4") {
     if (!canPrintOfficialVoucher(r)) {
-      notify.err("لا تتاح الطباعة الرسمية قبل اعتماد السند وتنفيذ أثره المالي.");
+      notify.err(
+        "لا تتاح الطباعة الرسمية قبل اعتماد السند وتنفيذ أثره المالي.",
+      );
+      return;
+    }
+    if (mode === "a4" && !reservePrintWindow()) {
+      notify.err(
+        "تعذّر فتح نافذة الطباعة — تحقّق من مانع النوافذ المنبثقة",
+      );
       return;
     }
     try {
       const v = await utils.vouchers.get.fetch({ receiptId: Number(r.id) });
-      if (!v) { notify.err("تعذّر جَلب تفاصيل السند"); return; }
+      if (!v) {
+        notify.err("تعذّر جَلب تفاصيل السند");
+        return;
+      }
       const branchName = null; // يُمكن إضافة branches.list هنا لاحقاً إذا لَزِم
       const payload: VoucherPrintData = {
         voucherNumber: v.voucherNumber ?? "",
         direction: v.direction as "IN" | "OUT",
-        voucherDate: String(v.voucherDate ?? fmtDate(v.createdAt as any)).slice(0, 10),
+        voucherDate: String(v.voucherDate ?? fmtDate(v.createdAt)).slice(0, 10),
         createdAt: String(v.createdAt),
         branchName,
         amount: fmt(v.amount),
         paymentMethod: v.paymentMethod,
-        paymentMethodLabel: METHOD_LABEL[v.paymentMethod] ?? v.paymentMethod,
+        paymentMethodLabel: paymentMethodLabel(v.paymentMethod),
         referenceNumber: v.referenceNumber,
         checkNumber: v.checkNumber,
         cardLastFour: v.cardLastFour,
         partyTypeLabel: PARTY_LABEL[v.partyType ?? "OTHER"] ?? "—",
-        partyName: v.partyName ?? (v.counterpartyName ?? "—"),
+        partyName: v.partyName ?? v.counterpartyName ?? "—",
         partyBalance: null,
         categoryName: v.categoryName,
         description: v.description ?? "",
         counterpartyName: v.counterpartyName,
-        approvalStatus: v.approvalStatus as "APPROVED" | "PENDING_APPROVAL" | "REJECTED",
+        approvalStatus: v.approvalStatus as
+          | "APPROVED"
+          | "PENDING_APPROVAL"
+          | "REJECTED",
         approvedByName: v.approvedByName,
         approvedAt: v.approvedAt ? String(v.approvedAt) : null,
         createdByName: v.createdByName,
@@ -334,15 +594,37 @@ export default function Vouchers() {
         attachmentUrl: v.attachmentUrl,
         relatedInvoiceNumber: v.invoiceNumber ?? null,
       };
-      if (mode === "a4") await printVoucherA4(payload);
-      else await printVoucherReceipt(payload);
+      const result = await printAudit.run({
+        documentType: "VOUCHER",
+        documentId: Number(r.id),
+        branchId: v.branchId == null ? null : Number(v.branchId),
+        channel: mode === "a4" ? "BROWSER" : "THERMAL",
+        open: (audit): Promise<PrintOpenResult> => {
+          const auditedPayload = {
+            ...payload,
+            printedByName: audit.actorName,
+            printRequestedAt: String(audit.requestedAt),
+          };
+          return mode === "a4"
+            ? printVoucherA4(auditedPayload)
+            : printVoucherReceipt(auditedPayload);
+        },
+      });
+      if (typeof result === "boolean" && !result) {
+        notify.err(
+          "تعذّر فتح نافذة الطباعة — تأكّد من السماح بالنوافذ المنبثقة.",
+        );
+      }
     } catch (e) {
+      if (mode === "a4") releaseReservedPrintWindow();
       notify.err(e);
     }
   }
 
   const statementHref = (r: VoucherRow) =>
-    r.partyType === "CUSTOMER" ? `/customers-statement?id=${r.partyId}` : `/suppliers-statement?id=${r.partyId}`;
+    r.partyType === "CUSTOMER"
+      ? `/customers-statement?id=${r.partyId}`
+      : `/suppliers-statement?id=${r.partyId}`;
 
   const activeFilterCount = [
     f.type,
@@ -369,13 +651,19 @@ export default function Vouchers() {
         actions={
           <div className="flex flex-wrap gap-2">
             <Link href="/voucher-categories">
-              <Button variant="outline" size="sm">إدارة الفئات</Button>
+              <Button variant="outline" size="sm">
+                إدارة الفئات
+              </Button>
             </Link>
             <Link href="/vouchers/receipt/new">
-              <Button className="bg-emerald-600 hover:bg-emerald-700">+ سند قبض</Button>
+              <Button className="bg-[var(--sem-pos)] text-white hover:opacity-90">
+                + سند قبض
+              </Button>
             </Link>
             <Link href="/vouchers/payment/new">
-              <Button className="bg-rose-600 hover:bg-rose-700">+ طلب صرف</Button>
+              <Button className="bg-[var(--sem-neg)] text-white hover:opacity-90">
+                + طلب صرف
+              </Button>
             </Link>
           </div>
         }
@@ -392,7 +680,12 @@ export default function Vouchers() {
             )}
           </div>
           {(activeFilterCount > 0 || f.q.trim()) && (
-            <Button variant="ghost" size="sm" onClick={resetFilters} className="text-muted-foreground">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={resetFilters}
+              className="text-muted-foreground"
+            >
               <X aria-hidden className="size-4" />
               مسح الفلاتر
             </Button>
@@ -400,14 +693,22 @@ export default function Vouchers() {
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
           <FilterField label="النوع">
-            <select className={selectCls} value={f.type} onChange={(e) => applyFilter({ type: e.target.value })}>
+            <select
+              className={selectCls}
+              value={f.type}
+              onChange={(e) => applyFilter({ type: e.target.value })}
+            >
               <option value="">الكل</option>
               <option value="RECEIPT">قبض</option>
               <option value="PAYMENT">صرف</option>
             </select>
           </FilterField>
           <FilterField label="الطرف">
-            <select className={selectCls} value={f.party} onChange={(e) => applyFilter({ party: e.target.value })}>
+            <select
+              className={selectCls}
+              value={f.party}
+              onChange={(e) => applyFilter({ party: e.target.value })}
+            >
               <option value="">الكل</option>
               <option value="CUSTOMER">عميل</option>
               <option value="SUPPLIER">مورّد</option>
@@ -415,7 +716,11 @@ export default function Vouchers() {
             </select>
           </FilterField>
           <FilterField label="طريقة الدفع">
-            <select className={selectCls} value={f.method} onChange={(e) => applyFilter({ method: e.target.value })}>
+            <select
+              className={selectCls}
+              value={f.method}
+              onChange={(e) => applyFilter({ method: e.target.value })}
+            >
               <option value="">الكل</option>
               <option value="CASH">نقدي</option>
               <option value="CARD">بطاقة</option>
@@ -427,13 +732,25 @@ export default function Vouchers() {
             </select>
           </FilterField>
           <FilterField label="الاعتماد">
-            <select className={selectCls} value={f.approval} onChange={(e) => applyFilter({ approval: e.target.value })}>
+            <select
+              className={selectCls}
+              value={f.approval}
+              onChange={(e) => applyFilter({ approval: e.target.value })}
+            >
               <option value="">الكل</option>
               <option value="APPROVED">
-                {f.type === "PAYMENT" ? "معتمد ومصروف" : f.type === "RECEIPT" ? "مُعتمَد" : "مُعتمَد / مصروف"}
+                {f.type === "PAYMENT"
+                  ? "معتمد ومصروف"
+                  : f.type === "RECEIPT"
+                    ? "مُعتمَد"
+                    : "مُعتمَد / مصروف"}
               </option>
               <option value="PENDING_APPROVAL">
-                {f.type === "PAYMENT" ? "بانتظار الاعتماد والصرف" : f.type === "RECEIPT" ? "بانتظار الاعتماد" : "بانتظار الاعتماد / الصرف"}
+                {f.type === "PAYMENT"
+                  ? "بانتظار الاعتماد والصرف"
+                  : f.type === "RECEIPT"
+                    ? "بانتظار الاعتماد"
+                    : "بانتظار الاعتماد / الصرف"}
               </option>
               <option value="REJECTED">مَرفوض</option>
             </select>
@@ -441,7 +758,9 @@ export default function Vouchers() {
           <FilterField label="حالة السند">
             <AppSelect
               value={f.status || "all"}
-              onValueChange={(v) => applyFilter({ status: v === "all" ? "" : v })}
+              onValueChange={(v) =>
+                applyFilter({ status: v === "all" ? "" : v })
+              }
               aria-label="فلتر حالة السند"
             >
               <option value="all">الكل</option>
@@ -453,29 +772,49 @@ export default function Vouchers() {
             <FilterField label="الفرع">
               <AppSelect
                 value={f.branch || "all"}
-                onValueChange={(v) => applyFilter({ branch: v === "all" ? "" : v })}
+                onValueChange={(v) =>
+                  applyFilter({ branch: v === "all" ? "" : v })
+                }
                 aria-label="فلتر الفرع"
               >
                 <option value="all">الكل</option>
                 {(branches.data ?? []).map((b) => (
-                  <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>
+                  <option key={Number(b.id)} value={String(b.id)}>
+                    {b.name}
+                  </option>
                 ))}
               </AppSelect>
             </FilterField>
           )}
           <FilterField label="الفئة">
-            <select className={selectCls} value={f.cat} onChange={(e) => applyFilter({ cat: e.target.value })}>
+            <select
+              className={selectCls}
+              value={f.cat}
+              onChange={(e) => applyFilter({ cat: e.target.value })}
+            >
               <option value="">الكل</option>
               {(categories.data ?? []).map((c) => (
-                <option key={Number(c.id)} value={String(c.id)}>{c.name}</option>
+                <option key={Number(c.id)} value={String(c.id)}>
+                  {c.name}
+                </option>
               ))}
             </select>
           </FilterField>
           <FilterField label="من تاريخ">
-            <Input type="date" dir="ltr" value={f.from} onChange={(e) => applyFilter({ from: e.target.value })} />
+            <Input
+              type="date"
+              dir="ltr"
+              value={f.from}
+              onChange={(e) => applyFilter({ from: e.target.value })}
+            />
           </FilterField>
           <FilterField label="إلى تاريخ">
-            <Input type="date" dir="ltr" value={f.to} onChange={(e) => applyFilter({ to: e.target.value })} />
+            <Input
+              type="date"
+              dir="ltr"
+              value={f.to}
+              onChange={(e) => applyFilter({ to: e.target.value })}
+            />
           </FilterField>
           <FilterField label="بحث (رقم/وصف/اسم مُستفيد)" className="md:col-span-3 lg:col-span-5">
             <Input
@@ -492,25 +831,45 @@ export default function Vouchers() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
         <Card>
           <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">إجمالي القبض (مُعتمَد)</div>
-            <div className="text-xl font-bold text-money-positive tabular-nums" dir="ltr">{fmt(totalIn)}</div>
+            <div className="text-xs text-muted-foreground">
+              إجمالي القبض (مُعتمَد)
+            </div>
+            <div
+              className="text-xl font-bold text-money-positive tabular-nums"
+              dir="ltr"
+            >
+              {fmt(totalIn)}
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground">إجمالي الصرف (معتمد ومصروف)</div>
-            <div className="text-xl font-bold text-money-negative tabular-nums" dir="ltr">{fmt(totalOut)}</div>
+            <div className="text-xs text-muted-foreground">
+              إجمالي الصرف (معتمد ومصروف)
+            </div>
+            <div
+              className="text-xl font-bold text-money-negative tabular-nums"
+              dir="ltr"
+            >
+              {fmt(totalOut)}
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground">الصافي</div>
-            <div className={`text-xl font-bold tabular-nums ${netTotal.gte(0) ? "text-money-positive" : "text-money-negative"}`} dir="ltr">
+            <div
+              className={`text-xl font-bold tabular-nums ${netTotal.gte(0) ? "text-money-positive" : "text-money-negative"}`}
+              dir="ltr"
+            >
               {fmt(netTotal.toFixed(2))}
             </div>
             {(agg.data?.reversedCount ?? 0) > 0 && (
               <div className="text-[11px] text-muted-foreground mt-0.5">
-                {(agg.data?.reversedCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} سند مُلغى في النطاق
+                {(agg.data?.reversedCount ?? 0).toLocaleString(
+                  "ar-IQ-u-nu-latn",
+                )}{" "}
+                سند مُلغى في النطاق
               </div>
             )}
           </CardContent>
@@ -525,9 +884,15 @@ export default function Vouchers() {
                   ? "بانتظار اعتماد (بلا أَثَر)"
                   : "بانتظار اعتماد / صرف (بلا أَثَر)"}
             </div>
-            <div className="text-xl font-bold text-amber-700 tabular-nums" dir="ltr">{fmt(agg.data?.pendingTotal ?? "0")}</div>
+            <div
+              className="text-xl font-bold text-[var(--sem-warn)] tabular-nums"
+              dir="ltr"
+            >
+              {fmt(agg.data?.pendingTotal ?? "0")}
+            </div>
             <div className="text-[11px] text-muted-foreground mt-0.5">
-              {(agg.data?.pendingCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")} سند معلّق
+              {(agg.data?.pendingCount ?? 0).toLocaleString("ar-IQ-u-nu-latn")}{" "}
+              سند معلّق
             </div>
           </CardContent>
         </Card>
@@ -575,84 +940,175 @@ export default function Vouchers() {
               </thead>
               <tbody>
                 {list.isLoading && (
-                  <tr><td colSpan={12}><LoadingState /></td></tr>
+                  <tr>
+                    <td colSpan={12}>
+                      <LoadingState />
+                    </td>
+                  </tr>
                 )}
                 {list.isError && !list.isLoading && (
                   <tr>
                     <td colSpan={12}>
-                      <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
+                      <ErrorState
+                        message={list.error?.message}
+                        onRetry={() => void list.refetch()}
+                      />
                     </td>
                   </tr>
                 )}
                 {rows.map((r) => {
-                  const partyDisplay = r.partyType === "OTHER"
-                    ? (r.counterpartyName ?? "—")
-                    : (PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—");
+                  const partyDisplay =
+                    r.partyName?.trim() ||
+                    r.counterpartyName?.trim() ||
+                    PARTY_LABEL[r.partyType ?? "OTHER"] ||
+                    "—";
                   const isPending = r.approvalStatus === "PENDING_APPROVAL";
                   const isRejected = r.approvalStatus === "REJECTED";
                   return (
                     <tr
                       key={Number(r.id)}
-                      className={`border-t ${r.status === "REVERSED" ? "opacity-60" : ""} ${isPending ? "bg-amber-50/60 dark:bg-amber-950/20" : ""} ${isRejected ? "bg-rose-50/60 dark:bg-rose-950/20" : ""}`}
+                      className={`border-t ${r.status === "REVERSED" ? "opacity-60" : ""} ${isPending ? "bg-[var(--sem-warn-bg)]" : ""} ${isRejected ? "bg-[var(--sem-neg-bg)]" : ""}`}
                     >
                       <td className="p-2 font-mono text-xs">
                         <CopyInline value={String(r.voucherNumber ?? "—")} />
                         {r.signatureHash && (
-                          <div className="text-[10px] text-muted-foreground" title={`بَصمة كاملة: ${r.signatureHash}`}>
+                          <div
+                            className="text-[10px] text-muted-foreground"
+                            title={`بَصمة كاملة: ${r.signatureHash}`}
+                          >
                             #{shortHash(r.signatureHash)}
                           </div>
                         )}
-                      </td>
-                      <td className="p-2 text-xs">
-                        {fmtDate(r.voucherDate as any)}
-                        {r.voucherDate && r.createdAt && (
-                          <div className="text-[10px] text-muted-foreground">
-                            أُدخل: {fmtDate(r.createdAt as any)}
+                        {accrualPaymentAttemptLabel({
+                          attempt: r.resubmitAttempt,
+                          rootReceiptId: r.resubmitRootReceiptId,
+                          priorReceiptId: r.resubmitPriorReceiptId,
+                        }) && (
+                          <div
+                            className="mt-1 text-[10px] text-muted-foreground font-sans"
+                            dir="rtl"
+                          >
+                            {accrualPaymentAttemptLabel({
+                              attempt: r.resubmitAttempt,
+                              rootReceiptId: r.resubmitRootReceiptId,
+                              priorReceiptId: r.resubmitPriorReceiptId,
+                            })}
+                          </div>
+                        )}
+                        {r.resubmitReason && (
+                          <div
+                            className="mt-0.5 max-w-52 truncate text-[10px] text-muted-foreground font-sans"
+                            title={r.resubmitReason}
+                            dir="rtl"
+                          >
+                            سبب إعادة الإصدار: {r.resubmitReason}
+                          </div>
+                        )}
+                        {r.resubmitLineageStatus === "BROKEN" && (
+                          <div
+                            className="mt-1 text-[10px] text-[var(--sem-neg)] font-sans"
+                            dir="rtl"
+                          >
+                            سلسلة إعادة الإصدار غير مكتملة — يلزم تدقيق
                           </div>
                         )}
                       </td>
                       <td className="p-2 text-xs">
-                        {r.branchId != null ? (branchMap.get(Number(r.branchId)) ?? `فرع ${r.branchId}`) : "—"}
+                        {fmtDate(r.voucherDate)}
+                        {r.voucherDate && r.createdAt && (
+                          <div className="text-[10px] text-muted-foreground">
+                            أُدخل: {fmtDate(r.createdAt)}
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-2 text-xs">
+                        {r.branchId != null
+                          ? (branchMap.get(Number(r.branchId)) ??
+                            `فرع ${r.branchId}`)
+                          : "—"}
                       </td>
                       <td className="p-2 text-center">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
+                        <span
+                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}
+                        >
                           {TYPE_LABEL[r.direction]}
                         </span>
                       </td>
                       <td className="p-2 text-xs">
                         {partyDisplay}
-                        {r.partyType !== "OTHER" && r.counterpartyName && (
-                          <div className="text-[10px] text-muted-foreground">{r.counterpartyName}</div>
-                        )}
+                        {r.partyType !== "OTHER" &&
+                          r.counterpartyName &&
+                          r.counterpartyName !== partyDisplay && (
+                            <div className="text-[10px] text-muted-foreground">
+                              {r.counterpartyName}
+                            </div>
+                          )}
+                        <div className="text-[11px] text-muted-foreground">
+                          نفّذ:{" "}
+                          {r.createdByName ??
+                            (r.createdBy
+                              ? `مستخدم #${r.createdBy}`
+                              : "غير موثق")}
+                        </div>
                         {r.invoiceNumber && (
-                          <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1"><Link2 aria-hidden className="size-3" /> فاتورة #{r.invoiceNumber}</div>
+                          <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                            <Link2 aria-hidden className="size-3" /> فاتورة #
+                            {r.invoiceNumber}
+                          </div>
                         )}
                       </td>
                       <td className="p-2 text-xs">
-                        {r.voucherCategoryId ? (categoryMap.get(Number(r.voucherCategoryId)) ?? "—") : "—"}
+                        {r.voucherCategoryId
+                          ? (categoryMap.get(Number(r.voucherCategoryId)) ??
+                            "—")
+                          : "—"}
                       </td>
                       <td className="p-2">{r.description ?? "—"}</td>
-                      <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.amount)}</td>
-                      <td className="p-2 text-center text-xs">{METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}</td>
+                      <td className="p-2 text-right tabular-nums" dir="ltr">
+                        {fmt(r.amount)}
+                      </td>
+                      <td className="p-2 text-center text-xs">
+                        {paymentMethodLabel(r.paymentMethod)}
+                      </td>
                       <td className="p-2 text-center">
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
-                          isPending ? "bg-amber-100 text-amber-800"
-                          : isRejected ? "bg-rose-100 text-rose-800"
-                          : "bg-emerald-100 text-emerald-800"
-                        }`}>
-                          {isPending && <ShieldQuestion aria-hidden className="size-3" />}
-                          {isRejected && <XCircle aria-hidden className="size-3" />}
-                          {!isPending && !isRejected && <CheckCircle2 aria-hidden className="size-3" />}
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${
+                            isPending
+                              ? "badge-status-pending"
+                              : isRejected
+                                ? "badge-status-cancelled"
+                                : "badge-status-active"
+                          }`}
+                        >
+                          {isPending && (
+                            <ShieldQuestion aria-hidden className="size-3" />
+                          )}
+                          {isRejected && (
+                            <XCircle aria-hidden className="size-3" />
+                          )}
+                          {!isPending && !isRejected && (
+                            <CheckCircle2 aria-hidden className="size-3" />
+                          )}
                           {voucherApprovalLabel(r)}
                         </span>
                       </td>
                       <td className="p-2 text-center">
                         {r.attachmentUrl ? (
-                          <a href={r.attachmentUrl} target="_blank" rel="noreferrer" title="فتح المُرفق">
-                            <Paperclip aria-hidden className="size-4 text-emerald-700 inline" />
+                          <a
+                            href={r.attachmentUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="فتح المُرفق"
+                          >
+                            <Paperclip
+                              aria-hidden
+                              className="size-4 text-[var(--sem-pos)] inline"
+                            />
                           </a>
                         ) : (
-                          <span className="text-muted-foreground text-xs">—</span>
+                          <span className="text-muted-foreground text-xs">
+                            —
+                          </span>
                         )}
                       </td>
                       <td className="p-2 text-center">
@@ -665,7 +1121,11 @@ export default function Vouchers() {
                               label: "طباعة حرارية",
                               hidden: !canPrintOfficialVoucher(r),
                               onSelect: () => void printVoucher(r, "thermal"),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" },
+                              gate: {
+                                roles: ["manager", "accountant"],
+                                module: "treasury",
+                                level: "READ",
+                              },
                             },
                             {
                               key: "print-a4",
@@ -673,12 +1133,19 @@ export default function Vouchers() {
                               label: "طباعة A4 (PDF)",
                               hidden: !canPrintOfficialVoucher(r),
                               onSelect: () => void printVoucher(r, "a4"),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" },
+                              gate: {
+                                roles: ["manager", "accountant"],
+                                module: "treasury",
+                                level: "READ",
+                              },
                             },
                             {
                               key: "approve",
                               kind: "approve",
-                              label: r.direction === "OUT" ? "اعتماد وصرف" : "اعتماد السند",
+                              label:
+                                r.direction === "OUT"
+                                  ? "اعتماد المالك وصرف"
+                                  : "اعتماد المالك",
                               hidden: !canShowVoucherApprovalAction({
                                 direction: r.direction,
                                 approvalStatus: r.approvalStatus,
@@ -686,14 +1153,18 @@ export default function Vouchers() {
                                 canManageLegacyReceipt: canManage,
                               }),
                               disabled: approveMut.isPending,
-                              disabledReason: "توجد عملية اعتماد وصرف قيد التنفيذ",
+                              disabledReason:
+                                "توجد عملية اعتماد وصرف قيد التنفيذ",
                               onSelect: () => void approveVoucher(r),
                               gate: { module: "treasury", level: "FULL" },
                             },
                             {
                               key: "reject",
                               kind: "reverse",
-                              label: r.direction === "OUT" ? "رفض طلب الصرف" : "رفض السند",
+                              label:
+                                r.direction === "OUT"
+                                  ? "رفض المالك لطلب الصرف"
+                                  : "رفض المالك للسند",
                               variant: "destructive",
                               hidden: !canShowVoucherRejectAction({
                                 direction: r.direction,
@@ -704,40 +1175,89 @@ export default function Vouchers() {
                               disabled: rejectMut.isPending,
                               disabledReason: "توجد عملية رفض قيد التنفيذ",
                               onSelect: () => openReject(r),
-                              gate: r.direction === "OUT"
-                                ? { module: "treasury", level: "FULL" }
-                                : { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                              gate: { module: "treasury", level: "FULL" },
                             },
                             {
                               key: "resubmit-system-payment",
                               kind: "create",
-                              label: r.referenceNumber?.startsWith("TERM-SETTLEMENT-")
+                              label: r.referenceNumber?.startsWith(
+                                "TERM-SETTLEMENT-",
+                              )
                                 ? "إعادة تقديم تسوية نهاية الخدمة"
-                                : "إعادة تقديم دفع المصروف",
-                              hidden: !canManage || r.approvalStatus !== "REJECTED" || !r.referenceNumber || (!r.referenceNumber.startsWith("SHIP-") && !r.referenceNumber.startsWith("ASSET-MAINT-") && !r.referenceNumber.startsWith("TERM-SETTLEMENT-")),
+                                : isPurchaseSupplierPaymentReference(
+                                      r.referenceNumber,
+                                    )
+                                  ? r.referenceNumber?.startsWith("PO-USD-PAY-")
+                                    ? "إعادة تقديم تسديد USD"
+                                    : "إعادة تقديم دفعة المورد"
+                                  : r.referenceNumber?.startsWith("ASSET-ACQ-")
+                                    ? "إعادة تقديم تسوية اقتناء الأصل"
+                                    : "إعادة تقديم دفع المصروف",
+                              hidden:
+                                !canShowAccrualPaymentResubmit({
+                                  referenceNumber: r.referenceNumber,
+                                  approvalStatus: r.approvalStatus,
+                                  resubmitLineageStatus:
+                                    r.resubmitLineageStatus,
+                                  canManage,
+                                }) &&
+                                !(
+                                  canManage &&
+                                  r.approvalStatus === "REJECTED" &&
+                                  r.resubmitLineageStatus !== "BROKEN" &&
+                                  isPurchaseSupplierPaymentReference(
+                                    r.referenceNumber,
+                                  )
+                                ),
                               disabled: resubmitSystemPaymentMut.isPending,
                               disabledReason: "توجد إعادة تقديم قيد التنفيذ",
-                              onSelect: () => void resubmitSystemPayment(r),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                              onSelect: () => openResubmitSystemPayment(r),
+                              gate: {
+                                roles: ["manager", "accountant"],
+                                module: "treasury",
+                                level: "FULL",
+                              },
                             },
                             {
                               key: "stmt",
                               kind: "view",
                               label: "كشف حساب الطرف",
                               href: statementHref(r),
-                              hidden: r.partyType === "OTHER" || r.partyType == null || r.partyId == null,
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" },
+                              hidden:
+                                r.partyType === "OTHER" ||
+                                r.partyType == null ||
+                                r.partyId == null,
+                              gate: {
+                                roles: ["manager", "accountant"],
+                                module: "treasury",
+                                level: "READ",
+                              },
                             },
                             {
                               key: "cancel",
                               kind: "reverse",
-                              label: "إلغاء السند",
+                              label:
+                                r.status === "COMPLETED" &&
+                                r.approvalStatus === "APPROVED"
+                                  ? "طلب إلغاء السند"
+                                  : "إلغاء الطلب",
                               variant: "destructive",
-                              hidden: !canManage || r.status === "REVERSED" || r.paymentMethod === "EXCHANGE",
+                              hidden:
+                                !canManage ||
+                                r.status === "REVERSED" ||
+                                r.paymentMethod === "EXCHANGE" ||
+                                (isSystemPaymentReference(r.referenceNumber) &&
+                                  !isPurchaseSupplierPaymentReference(
+                                    r.referenceNumber,
+                                  )),
                               disabled: cancelMut.isPending,
                               disabledReason: "توجد عملية إلغاء قيد التنفيذ",
                               onSelect: () => void cancelVoucher(r),
-                              gate: { roles: ["manager", "accountant"], module: "treasury", level: "FULL" },
+                              gate: {
+                                roles: ["manager", "accountant"],
+                                module: "treasury",
+                                level: "FULL",
+                              },
                             },
                           ]}
                         />
@@ -746,7 +1266,10 @@ export default function Vouchers() {
                   );
                 })}
                 {!list.isLoading && !list.isError && rows.length === 0 && (
-                  <TableEmptyRow colSpan={12} message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً." />
+                  <TableEmptyRow
+                    colSpan={12}
+                    message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً."
+                  />
                 )}
               </tbody>
             </table>
@@ -757,26 +1280,59 @@ export default function Vouchers() {
       {/* الترقيم: «التالي» يُعطَّل على آخر صفحة اعتماداً على count الخادمي (كان يقفز لصفحة فارغة). */}
       {(page > 0 || hasNext) && (
         <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page <= 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            ← السابق
+          </Button>
           <div className="text-muted-foreground">
             صفحة {(page + 1).toLocaleString("ar-IQ-u-nu-latn")}
-            {pageCount != null ? ` من ${pageCount.toLocaleString("ar-IQ-u-nu-latn")}` : ""}
+            {pageCount != null
+              ? ` من ${pageCount.toLocaleString("ar-IQ-u-nu-latn")}`
+              : ""}
           </div>
-          <Button variant="outline" size="sm" disabled={!hasNext} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasNext}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            التالي →
+          </Button>
         </div>
       )}
 
       {/* حوار سبب الرفض — بديل window.prompt (سجل تَدقيقي إلزامي). */}
-      <Dialog open={rejectTarget != null} onOpenChange={(open) => { if (!open && !rejectMut.isPending) setRejectTarget(null); }}>
+      <Dialog
+        open={rejectTarget != null}
+        onOpenChange={(open) => {
+          if (!open && !rejectMut.isPending) setRejectTarget(null);
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>رفض السند {rejectTarget?.voucherNumber ?? ""}</DialogTitle>
+            <DialogTitle>
+              رفض السند {rejectTarget?.voucherNumber ?? ""}
+            </DialogTitle>
             <DialogDescription>
               {rejectTarget?.referenceNumber?.startsWith("TERM-SETTLEMENT-")
                 ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى إنهاء الخدمة مثبتاً وتبقى التسوية غير مدفوعة، ويمكن إعادة تقديمها صراحةً من السجل بلا تكرار."
-                : rejectTarget?.referenceNumber && (rejectTarget.referenceNumber.startsWith("SHIP-") || rejectTarget.referenceNumber.startsWith("ASSET-MAINT-"))
-                  ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
-                  : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
+                : isPurchaseSupplierPaymentReference(
+                      rejectTarget?.referenceNumber,
+                    )
+                  ? "سبب الرفض إلزامي. لا تتغير ذمة المورد أو أمر الشراء، ويمكن إعادة تقديم الطلب مرتبطاً بالأمر نفسه بعد التصحيح."
+                  : rejectTarget?.referenceNumber?.startsWith("ASSET-ACQ-")
+                    ? "سبب الرفض إلزامي. يُرفض طلب التسوية فقط؛ يبقى الأصل والتزام اقتنائه مثبتين، ويمكن إعادة تقديم الدفع صراحةً بلا تكرار الأصل أو القيد."
+                    : rejectTarget?.referenceNumber &&
+                        (rejectTarget.referenceNumber.startsWith("SHIP-") ||
+                          rejectTarget.referenceNumber.startsWith(
+                            "ASSET-MAINT-",
+                          ))
+                      ? "سبب الرفض إلزامي. يُرفض طلب الدفع فقط؛ يبقى المصروف وقيد استحقاقه مثبتين، ولا يُنشأ طلب بديل حتى إعادة تقديمه صراحةً."
+                      : "سبب الرفض إلزامي للسجل التَدقيقي — يَبقى السند في السجل بلا أي أَثَر مالي."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-1">
@@ -792,7 +1348,11 @@ export default function Vouchers() {
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRejectTarget(null)} disabled={rejectMut.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => setRejectTarget(null)}
+              disabled={rejectMut.isPending}
+            >
               تراجع
             </Button>
             <Button
@@ -801,6 +1361,129 @@ export default function Vouchers() {
               disabled={!rejectReason.trim() || rejectMut.isPending}
             >
               {rejectMut.isPending ? "جارٍ الرفض…" : "رفض السند"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={resubmitTarget != null}
+        onOpenChange={(open) => {
+          if (!open && !resubmitSystemPaymentMut.isPending) {
+            setResubmitTarget(null);
+            setReissueReason("");
+            setResubmitNote("");
+            setResubmitAttachmentImages([]);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {isPurchaseSupplierPaymentReference(
+                resubmitTarget?.referenceNumber,
+              )
+                ? resubmitTarget?.referenceNumber?.startsWith("PO-USD-PAY-")
+                  ? "إعادة إصدار تسديد USD"
+                  : "إعادة إصدار دفعة المورد"
+                : "إعادة إصدار طلب الدفع"}{" "}
+              {resubmitTarget?.voucherNumber ?? ""}
+            </DialogTitle>
+            <DialogDescription>
+              {isPurchaseSupplierPaymentReference(
+                resubmitTarget?.referenceNumber,
+              ) ? (
+                <>
+                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
+                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
+                  {resubmitTarget?.id ?? "—"} وبأمر الشراء نفسه، بعد إعادة فحص
+                  رصيده الدفتري، بلا تغيير ذمة المورد أو أثر نقدي قبل اعتماد
+                  المالك.
+                </>
+              ) : (
+                <>
+                  يبقى السند المرفوض محفوظاً. تُنشأ محاولة A
+                  {(resubmitTarget?.resubmitAttempt ?? 0) + 1} مرتبطة بالسند #
+                  {resubmitTarget?.id ?? "—"}، بلا تكرار للمصروف أو الأصل أو قيد
+                  الاعتراف وبلا أثر نقدي قبل اعتماد المالك.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <Label htmlFor="voucher-reissue-reason">سبب إعادة الإصدار *</Label>
+            <Textarea
+              id="voucher-reissue-reason"
+              value={reissueReason}
+              onChange={(event) => setReissueReason(event.target.value)}
+              placeholder="مثلاً: أُرفقت فاتورة النقل المصححة"
+              rows={3}
+              minLength={5}
+              maxLength={500}
+              autoFocus
+            />
+            <div className="text-[11px] text-muted-foreground">
+              السبب جزء ثابت من سلسلة التدقيق ولا يمكن استبداله بعد إنشاء
+              المحاولة.
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label>المستند المصحح (اختياري)</Label>
+            <ImageUploader
+              value={resubmitAttachmentImages}
+              onChange={setResubmitAttachmentImages}
+              maxItems={1}
+              maxSizeMB={2}
+              singlePrimary={false}
+              hint="اختر مستند المحاولة الجديدة. مرفق السند المرفوض لا يُنقل تلقائياً."
+            />
+            {resubmitTarget?.attachmentUrl && (
+              <a
+                href={resubmitTarget.attachmentUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs underline text-muted-foreground"
+              >
+                فتح مرفق المحاولة المرفوضة للمراجعة فقط
+              </a>
+            )}
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="voucher-reissue-note">
+              ملاحظة المحاولة (اختيارية)
+            </Label>
+            <Textarea
+              id="voucher-reissue-note"
+              value={resubmitNote}
+              onChange={(event) => setResubmitNote(event.target.value)}
+              placeholder="ملاحظة تشغيلية تضاف إلى وصف المحاولة الجديدة"
+              rows={2}
+              maxLength={500}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setResubmitTarget(null);
+                setReissueReason("");
+                setResubmitNote("");
+                setResubmitAttachmentImages([]);
+              }}
+              disabled={resubmitSystemPaymentMut.isPending}
+            >
+              تراجع
+            </Button>
+            <Button
+              onClick={submitResubmitSystemPayment}
+              disabled={
+                !validAccrualReissueReason(reissueReason) ||
+                resubmitSystemPaymentMut.isPending
+              }
+            >
+              {resubmitSystemPaymentMut.isPending
+                ? "جارٍ إنشاء المحاولة…"
+                : "إنشاء محاولة مرتبطة"}
             </Button>
           </DialogFooter>
         </DialogContent>

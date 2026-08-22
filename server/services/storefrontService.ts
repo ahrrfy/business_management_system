@@ -6,16 +6,19 @@
  * **توفّر** (inStock: نعم/لا، لا الكمية) + **سعر العرض** بعد الخصم إن وُجد.
  *
  * 🔗 مزامنة حقيقية مع النظام (لا بيانات منفصلة): يقرأ نفس جداول `products/productPrices/branchStock`
- * ويطبّق **نفس محرّك العروض** (`resolvePromotionForLine`) المستعمل في نقطة البيع — فالسعر المعروض
+ * ويطبّق **قواعد محرّك العروض نفسها** عبر snapshot مجمّعة — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
 import {
   bundleComponents,
   categories,
   invoiceItems,
   productImages,
+  productCustomizationFields,
+  productCustomizationTemplates,
   productPrices,
+  productRelatedProducts,
   productUnits,
   productVariants,
   products,
@@ -26,7 +29,7 @@ import { escLike } from "../lib/sqlLike";
 import { decodeDataUrl, productImageUrl } from "../imageRoute";
 import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
-import { getProductCategoryIds, resolvePromotionForLine } from "./salesPromotionService";
+import { loadPromotionRuleSnapshot, resolvePromotionFromSnapshot } from "./salesPromotionService";
 import { resolveColorHex, normalizeHex } from "@shared/colorBank";
 import { requireActiveBranch, requireStorefrontContext } from "./storefrontContextService";
 import {
@@ -52,6 +55,27 @@ export async function resolveStorefrontBranchId(explicit?: number | null): Promi
   return (await requireStorefrontContext()).branchId;
 }
 
+export interface StorefrontCustomizationField {
+  id: number;
+  fieldKey: string;
+  label: string;
+  fieldType: "TEXT" | "TEXTAREA" | "SELECT" | "FILE" | "NUMBER" | "SWATCH";
+  isRequired: boolean;
+  sortOrder: number;
+  maxLength: number | null;
+  options: { value: string; label: string; priceDelta: string }[];
+  dependency: { fieldKey: string; operator: "equals" | "notEquals"; value: string | string[] } | null;
+  priceDelta: string;
+}
+
+export interface StorefrontCustomizationTemplate {
+  id: number;
+  kind: "PRINT" | "GIFT" | "GENERAL";
+  title: string;
+  description: string | null;
+  fields: StorefrontCustomizationField[];
+}
+
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون ولا أسعار جملة/حكومي. */
 export interface StorefrontProduct {
   productId: number;
@@ -72,8 +96,22 @@ export interface StorefrontProduct {
   /** متوفّر: رصيد الفرع بالأساس يغطي معامل وحدة البيع — نعم/لا فقط، لا نكشف الرصيد الكامل. */
   inStock: boolean;
   imageUrl: string | null;
+  /** المنتج معلّم صراحةً من النظام كقابل للتخصيص؛ لا يُستنتج من الاسم أو الفئة. */
+  isCustomizable: boolean;
+  /** نوع التخصيص الذي حدده الخادم؛ null للمنتجات العادية. */
+  customizationKind: "PRINT" | "GIFT" | null;
+  /** قالب الحقول المنظم؛ لا يُعاد للمنتجات غير القابلة للتخصيص. */
+  customizationTemplate: StorefrontCustomizationTemplate | null;
   /** بكج (مجموعة مُجمّعة) — يُعرَض بشارة «بكج» ومحتوياته في التفاصيل. */
   isBundle: boolean;
+  /**
+   * صور المكوّنات المنشورة للبكج، بالترتيب الوصفي وبحدّ أربع صور.
+   *
+   * لا تُنشأ لها ملفات أو صفوف صور جديدة: هي مراجع إلى صور المنتجات المفردة. لا تُملأ إن كانت
+   * للبكج صورة خاصة منشورة؛ فتلك الصورة التسويقية هي المرجع البصري المقصود. الواجهة تستطيع
+   * رسمها كشبكة 2×2، بينما `imageUrl` يهبط إلى أولها لتبقى الشاشات الأقدم نافعة.
+   */
+  bundleImageUrls?: string[];
   /** محتويات البكج (اسم + كمية) — تُملأ في صفحة المنتج فقط للبكجات. */
   bundleItems?: { name: string; quantity: number }[];
   /** الندرة: المتبقّي بالمخزون — يُكشَف فقط حين ينخفض (≤ عتبة) كإشارة تسويقية؛ null إن وفير. */
@@ -114,6 +152,65 @@ export interface StorefrontVariantOption {
   units: StorefrontUnitOption[];
 }
 
+async function loadStorefrontCustomizationTemplate(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  productId: number,
+): Promise<StorefrontCustomizationTemplate | null> {
+  const template = (await db
+    .select({
+      id: productCustomizationTemplates.id,
+      kind: productCustomizationTemplates.kind,
+      title: productCustomizationTemplates.title,
+      description: productCustomizationTemplates.description,
+    })
+    .from(productCustomizationTemplates)
+    .where(and(eq(productCustomizationTemplates.productId, productId), eq(productCustomizationTemplates.isActive, true)))
+    .limit(1))[0];
+  if (!template) return null;
+
+  const fieldRows = await db
+    .select({
+      id: productCustomizationFields.id,
+      fieldKey: productCustomizationFields.fieldKey,
+      label: productCustomizationFields.label,
+      fieldType: productCustomizationFields.fieldType,
+      isRequired: productCustomizationFields.isRequired,
+      sortOrder: productCustomizationFields.sortOrder,
+      maxLength: productCustomizationFields.maxLength,
+      optionsJson: productCustomizationFields.optionsJson,
+      dependencyJson: productCustomizationFields.dependencyJson,
+      priceDelta: productCustomizationFields.priceDelta,
+    })
+    .from(productCustomizationFields)
+    .where(and(eq(productCustomizationFields.templateId, Number(template.id)), eq(productCustomizationFields.isActive, true)))
+    .orderBy(asc(productCustomizationFields.sortOrder), asc(productCustomizationFields.id));
+
+  return {
+    id: Number(template.id),
+    kind: template.kind,
+    title: template.title,
+    description: template.description ?? null,
+    fields: fieldRows.map((field) => ({
+      id: Number(field.id),
+      fieldKey: field.fieldKey,
+      label: field.label,
+      fieldType: field.fieldType,
+      isRequired: field.isRequired,
+      sortOrder: Number(field.sortOrder ?? 0),
+      maxLength: field.maxLength == null ? null : Number(field.maxLength),
+      options: Array.isArray(field.optionsJson)
+        ? field.optionsJson.map((option) => ({
+            value: String(option.value),
+            label: String(option.label),
+            priceDelta: String(option.priceDelta ?? "0"),
+          }))
+        : [],
+      dependency: field.dependencyJson ?? null,
+      priceDelta: String(field.priceDelta ?? "0"),
+    })),
+  };
+}
+
 /** عتبة «كمية محدودة» — الكمية تُكشَف للزبون فقط عندها فأقلّ (ندرة، لا تسريب مخزون كامل). */
 const LOW_STOCK_THRESHOLD = 5;
 
@@ -127,6 +224,13 @@ export interface StorefrontCategory {
 }
 
 export type StorefrontAvailability = "IN_STOCK" | "ALL";
+
+/** صفحة كتالوج علني: مؤشر الاستكمال هو معرّف آخر منتج في ترتيب الكتالوج الحتمي. */
+export interface StorefrontCatalogPage {
+  items: StorefrontProduct[];
+  hasMore: boolean;
+  nextCursor: number | null;
+}
 
 /** SELECT موحّد بالحقول الآمنة + كمية الفرع (داخلياً لحساب inStock فقط، لا تُصدَّر). */
 function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
@@ -148,6 +252,8 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       price: productPrices.price,
       imageId: productImages.id,
       imageUrl: productImages.url,
+      productType: products.productType,
+      isCustomizable: products.isCustomizable,
       isBundle: products.isBundle,
     })
     .from(productUnits)
@@ -155,7 +261,11 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
 }
 
 /** مرحلة ترشيح ضيقة: لا تحمل URL/data الصور ولا الحقول التسويقية الثقيلة قبل حسم product-level limit. */
@@ -174,7 +284,11 @@ function availabilityCandidateSelect(db: NonNullable<ReturnType<typeof getDb>>) 
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
-    .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
+    .leftJoin(productImages, and(
+      eq(productImages.productId, products.id),
+      eq(productImages.isPrimary, true),
+      eq(productImages.reviewStatus, "APPROVED"),
+    ));
 }
 
 function chooseCandidateProductIds(
@@ -266,7 +380,7 @@ function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
   variantName: string | null; color: string | null; colorHex: string | null; size: string | null;
   category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
-  imageId?: number | null; imageUrl: string | null; isBundle: boolean | null;
+  imageId?: number | null; imageUrl: string | null; productType: string | null; isCustomizable: boolean | null; isBundle: boolean | null;
   stockQty: number; reservedQty: number; availableQty: number; hasStockRow: boolean;
 }): StorefrontProduct {
   const factor = Math.max(1, Number(r.conversionFactor) || 1);
@@ -285,10 +399,97 @@ function toStorefront(r: {
     promotionName: null,
     inStock: availableUnits > 0,
     imageUrl: toPublicProductImage(r.imageId, r.imageUrl ?? null),
+    isCustomizable: r.isCustomizable === true,
+    customizationKind: r.isCustomizable === true ? (r.productType === "PRINT_SERVICE" ? "PRINT" : "GIFT") : null,
+    customizationTemplate: null,
     isBundle: !!r.isBundle,
     stockLeft: availableUnits > 0 && availableUnits <= LOW_STOCK_THRESHOLD ? availableUnits : null,
     soldCount: 0,
   };
+}
+
+/**
+ * يربط البكج بصور مكوّناته **بالمرجع فقط**؛ لا يولّد collage ولا ينسخ base64 إلى صفّ البكج.
+ *
+ * ترتيب الاختيار لكل مكوّن: صورة المتغيّر نفسه (لون/قياس) ثم الصورة الرئيسية على مستوى المنتج.
+ * لا تدخل إلا الصور APPROVED، والسقف أربع بلاطات كي يبقى ردّ الكتالوج ثابتاً وخفيفاً. إذا وضع
+ * الموظف صورة خاصة للبكج فلا نخلطها بصور المكوّنات ولا نعيد هذه الخاصية أصلاً.
+ */
+async function attachBundleComponentImages(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  items: StorefrontProduct[],
+): Promise<void> {
+  const targets = items.filter((item) => item.isBundle && !item.imageUrl);
+  if (!targets.length) return;
+
+  const bundleVariantIds = Array.from(new Set(targets.map((item) => item.variantId)));
+  const components = await db
+    .select({
+      bundleVariantId: bundleComponents.bundleVariantId,
+      componentVariantId: bundleComponents.componentVariantId,
+      componentProductId: productVariants.productId,
+      sortOrder: bundleComponents.sortOrder,
+    })
+    .from(bundleComponents)
+    .innerJoin(productVariants, eq(bundleComponents.componentVariantId, productVariants.id))
+    .where(inArray(bundleComponents.bundleVariantId, bundleVariantIds))
+    .orderBy(asc(bundleComponents.bundleVariantId), asc(bundleComponents.sortOrder), asc(bundleComponents.id));
+  if (!components.length) return;
+
+  const componentVariantIds = Array.from(new Set(components.map((row) => Number(row.componentVariantId))));
+  const componentProductIds = Array.from(new Set(components.map((row) => Number(row.componentProductId))));
+  // استعلامان مجمّعان بدلاً من N+1 لكل مكوّن/بكج. الصورة الخاصة بالمتغيّر تتقدّم حتى لو لم
+  // تكن primary (هي بالضبط صورة اللون)، ثم fallback لصورة المنتج الرئيسية.
+  const [variantImages, productPrimaryImages] = await Promise.all([
+    db
+      .select({ id: productImages.id, variantId: productImages.variantId, url: productImages.url, sortOrder: productImages.sortOrder })
+      .from(productImages)
+      .where(and(inArray(productImages.variantId, componentVariantIds), eq(productImages.reviewStatus, "APPROVED")))
+      .orderBy(asc(productImages.sortOrder), asc(productImages.id)),
+    db
+      .select({ id: productImages.id, productId: productImages.productId, url: productImages.url, sortOrder: productImages.sortOrder })
+      .from(productImages)
+      .where(and(
+        inArray(productImages.productId, componentProductIds),
+        isNull(productImages.variantId),
+        eq(productImages.isPrimary, true),
+        eq(productImages.reviewStatus, "APPROVED"),
+      ))
+      .orderBy(asc(productImages.sortOrder), asc(productImages.id)),
+  ]);
+
+  const firstVariantImage = new Map<number, { id: number; url: string }>();
+  for (const image of variantImages) {
+    const variantId = Number(image.variantId);
+    if (!firstVariantImage.has(variantId)) firstVariantImage.set(variantId, { id: Number(image.id), url: image.url });
+  }
+  const firstProductImage = new Map<number, { id: number; url: string }>();
+  for (const image of productPrimaryImages) {
+    const productId = Number(image.productId);
+    if (!firstProductImage.has(productId)) firstProductImage.set(productId, { id: Number(image.id), url: image.url });
+  }
+
+  const componentImagesByBundle = new Map<number, string[]>();
+  for (const component of components) {
+    const bundleVariantId = Number(component.bundleVariantId);
+    const urls = componentImagesByBundle.get(bundleVariantId) ?? [];
+    if (urls.length >= 4) continue;
+    const image = firstVariantImage.get(Number(component.componentVariantId))
+      ?? firstProductImage.get(Number(component.componentProductId));
+    if (!image) continue;
+    const publicUrl = toPublicProductImage(image.id, image.url);
+    // قد تشير صورتان إلى نفس كائن R2/المسار؛ لا نعرض البلاطة ذاتها مرتين.
+    if (publicUrl && !urls.includes(publicUrl)) urls.push(publicUrl);
+    componentImagesByBundle.set(bundleVariantId, urls);
+  }
+
+  for (const item of targets) {
+    const urls = componentImagesByBundle.get(item.variantId) ?? [];
+    if (!urls.length) continue;
+    item.bundleImageUrls = urls;
+    // توافق أمامي: كل مستهلك لا يعرف الشبكة يعرض على الأقل أول مكوّن بدل مساحة فارغة.
+    item.imageUrl = urls[0];
+  }
 }
 
 /** الدليل الاجتماعي: يُرفق عدد مرّات بيع كل منتج (COUNT فواتير مميّزة) — استعلام مجمَّع واحد. */
@@ -376,41 +577,28 @@ async function attachVariantColors(
 }
 
 /**
- * يطبّق العروض على قائمة منتجات (نفس محرّك POS ⇒ العرض = الفرض). حارس أداء: إن لا عرض
- * فعّال اليوم ⇒ يعود بلا مسح لكل منتج (استعلام واحد رخيص). وإلّا يحلّ العرض الأنسب لكلٍّ.
+ * يطبّق العروض على قائمة منتجات بقواعد محرّك POS نفسها. تُحمَّل القواعد والأهداف مرة واحدة
+ * للصفحة، ثم يكون الحلّ لكل بطاقة نقياً في الذاكرة؛ لا استعلامات تتناسب مع عدد المنتجات.
  */
 async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: number): Promise<void> {
   const eligible = list.filter((p) => p.price != null);
   if (!eligible.length) return;
-  const db = getDb();
-  if (!db) return;
   const todayYmd = todayYmdBaghdad();
-  // حارس: هل يوجد أيّ عرض فعّال اليوم على هذا الفرع/فئة المفرد؟ (لا ⇒ تخطّي كامل.)
-  const anyActive = await db
-    .select({ id: promotions.id })
-    .from(promotions)
-    .where(
-      and(
-        eq(promotions.isActive, true),
-        sql`${promotions.effectiveFrom} <= DATE(${todayYmd})`,
-        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${todayYmd})`)!,
-        or(isNull(promotions.branchId), eq(promotions.branchId, branchId))!,
-        or(isNull(promotions.customerTier), eq(promotions.customerTier, RETAIL))!
-      )
-    )
-    .limit(1);
-  if (!anyActive.length) return;
-
   await withTx(async (tx) => {
-    const catByProduct = await getProductCategoryIds(tx, Array.from(new Set(eligible.map((p) => p.productId))));
+    const snapshot = await loadPromotionRuleSnapshot(tx, {
+      branchId,
+      customerTier: RETAIL,
+      todayYmd,
+      includeStoreManaged: true,
+    });
     for (const p of eligible) {
       const price = money(p.price!);
-      const res = await resolvePromotionForLine(tx, {
+      const res = resolvePromotionFromSnapshot(snapshot, {
         branchId,
         customerTier: RETAIL,
         productId: p.productId,
         variantId: p.variantId,
-        categoryId: catByProduct.get(p.productId) ?? p.categoryId ?? null,
+        categoryId: p.categoryId ?? null,
         unitPrice: price.toFixed(2),
         lineAmount: price.toFixed(2),
         hasContractPrice: false,
@@ -432,10 +620,12 @@ export async function storefrontCatalog(opts: {
   categoryId?: number | null;
   search?: string | null;
   limit?: number;
+  /** آخر productId رآه الزائر في نفس المرشحات؛ null/undefined = الصفحة الأولى. */
+  cursor?: number | null;
   availability?: StorefrontAvailability;
-}): Promise<{ items: StorefrontProduct[] }> {
+}): Promise<StorefrontCatalogPage> {
   const db = getDb();
-  if (!db) return { items: [] };
+  if (!db) return { items: [], hasMore: false, nextCursor: null };
   const branchId = await resolveStorefrontBranchId(opts.branchId);
   const cap = Math.min(Math.max(opts.limit ?? 60, 1), 120);
   const availabilityFilter = opts.availability ?? "IN_STOCK";
@@ -456,8 +646,26 @@ export async function storefrontCatalog(opts: {
   }
   const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
   const hydratedCandidates = await attachAvailability(db, branchId, candidateRows);
-  const selectedIds = chooseCandidateProductIds(hydratedCandidates, cap, availabilityFilter);
-  if (!selectedIds.length) return { items: [] };
+  // نرتّب على مستوى المنتج أولاً (بعد حساب ATP)، ثم نأخذ الصفحة. لا نطبّق limit على صفوف
+  // variant×unit كي لا يبتلع متغيّر واحد الصفحة كلها. cursor هو آخر منتج من هذا الترتيب لا
+  // إزاحة رقمية؛ لذلك لا يكرر بطاقات الصفحة السابقة عند التحميل التدريجي.
+  const orderedIds = chooseCandidateProductIds(
+    hydratedCandidates,
+    Number.MAX_SAFE_INTEGER,
+    availabilityFilter,
+  );
+  const cursor = opts.cursor ?? null;
+  const cursorIndex = cursor == null ? -1 : orderedIds.indexOf(cursor);
+  // مؤشر قديم بعد إخفاء المنتج/نفاده لا يعود إلى أول القائمة فيكرر ما رآه الزائر؛ ينتهي بأمان
+  // ويستعيد العميل الصفحة الأولى عند تحديث مرشحاته.
+  const remainingIds = cursor == null
+    ? orderedIds
+    : cursorIndex >= 0
+      ? orderedIds.slice(cursorIndex + 1)
+      : [];
+  const hasMore = remainingIds.length > cap;
+  const selectedIds = remainingIds.slice(0, cap);
+  if (!selectedIds.length) return { items: [], hasMore: false, nextCursor: null };
   const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
   const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
   const rows = (await attachAvailability(db, branchId, rawRows))
@@ -481,7 +689,13 @@ export async function storefrontCatalog(opts: {
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
   await attachVariantColors(db, items, branchId);
-  return { items };
+  await attachBundleComponentImages(db, items);
+  const last = items[items.length - 1];
+  return {
+    items,
+    hasMore: hasMore && last != null,
+    nextCursor: hasMore && last != null ? last.productId : null,
+  };
 }
 
 /** فئات المتجر: لا تختفي لمجرد نفاد المخزون؛ تُعيد المنشور والمتاح كلّاً على حدة. */
@@ -604,9 +818,13 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   const primaryVariant = byVariant.get(item.variantId)!;
   item.storeUnits = primaryVariant.units;
   item.variants = Array.from(byVariant.values());
+  if (item.isCustomizable) {
+    item.customizationTemplate = await loadStorefrontCustomizationTemplate(db, item.productId);
+  }
   await attachSoldCounts(db, [item]);
   await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
+  await attachBundleComponentImages(db, [item]);
   return item;
 }
 
@@ -624,6 +842,125 @@ async function getBundleItems(
     .orderBy(asc(bundleComponents.sortOrder))
     .limit(30);
   return rows.map((r) => ({ name: r.name, quantity: Number(r.qty) }));
+}
+
+/**
+ * توصيات «أكمل تجهيزك» للسلة: تبدأ بالعلاقات التي ضبطها المدير، ثم تملأ الأماكن المتبقية من نفس
+ * تصنيف منتجات السلة عندما يسمح المنتج المصدر بالتوصيات الآلية.
+ */
+export async function storefrontCartRecommendations(
+  productIds: number[],
+  branchIdInput?: number,
+  limit = 4,
+): Promise<StorefrontProduct[]> {
+  const db = getDb();
+  if (!db) return [];
+  const sourceIds = Array.from(new Set(productIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))).slice(0, 24);
+  if (!sourceIds.length) return [];
+  const branchId = await resolveStorefrontBranchId(branchIdInput);
+  const cap = Math.min(Math.max(limit, 1), 8);
+  const relationRows = await db
+    .select({
+      sourceProductId: productRelatedProducts.sourceProductId,
+      relatedProductId: productRelatedProducts.relatedProductId,
+      relationType: productRelatedProducts.relationType,
+      sortOrder: productRelatedProducts.sortOrder,
+      relationId: productRelatedProducts.id,
+    })
+    .from(productRelatedProducts)
+    .where(and(inArray(productRelatedProducts.sourceProductId, sourceIds), eq(productRelatedProducts.isActive, true)))
+    .orderBy(asc(productRelatedProducts.sortOrder), asc(productRelatedProducts.id));
+
+  const sourceSet = new Set(sourceIds);
+  const ranked = new Map<number, { score: number; relationId: number }>();
+  const relationWeight: Record<string, number> = { COMPATIBLE: 0, COMPLETE_KIT: 1, SAME_THEME: 2, UPSELL: 3 };
+  for (const row of relationRows) {
+    const target = Number(row.relatedProductId);
+    if (sourceSet.has(target)) continue;
+    const score = Number(row.sortOrder ?? 0) * 10 + (relationWeight[String(row.relationType)] ?? 9);
+    const previous = ranked.get(target);
+    if (!previous || score < previous.score) ranked.set(target, { score, relationId: Number(row.relationId) });
+  }
+  const manualIds = Array.from(ranked.entries())
+    .sort((a, b) => a[1].score - b[1].score || a[1].relationId - b[1].relationId)
+    .slice(0, cap)
+    .map(([id]) => id);
+
+  const sourceRows = await db
+    .select({ categoryId: products.categoryId, allowAutoCartRecommendations: products.allowAutoCartRecommendations })
+    .from(products)
+    .where(inArray(products.id, sourceIds));
+  const autoCategoryIds = Array.from(new Set(
+    sourceRows
+      .filter((row) => row.allowAutoCartRecommendations !== false && row.categoryId != null)
+      .map((row) => Number(row.categoryId))
+      .filter((id) => Number.isSafeInteger(id) && id > 0),
+  ));
+
+  const manualItems: StorefrontProduct[] = [];
+  if (manualIds.length) {
+    const conds = [storefrontPublishableCondition(), inArray(products.id, manualIds)];
+    const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+    const availableIds = chooseCandidateProductIds(await attachAvailability(db, branchId, candidateRows), cap, "IN_STOCK");
+    const selectedOrder = new Map(manualIds.map((id, index) => [id, index]));
+    const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, availableIds)));
+    const rows = (await attachAvailability(db, branchId, rawRows))
+      .filter((row) => row.availableQty >= Number(row.conversionFactor))
+      .sort((a, b) => (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap));
+    const seen = new Set<number>();
+    for (const row of rows) {
+      const pid = Number(row.productId);
+      if (seen.has(pid) || sourceSet.has(pid)) continue;
+      seen.add(pid);
+      manualItems.push(toStorefront(row));
+      if (manualItems.length >= cap) break;
+    }
+  }
+
+  const excludedIds = [...sourceIds, ...manualIds];
+  const autoItems = manualItems.length >= cap || !autoCategoryIds.length
+    ? []
+    : await storefrontCategoryRecommendations(db, branchId, autoCategoryIds, excludedIds, cap - manualItems.length);
+  const items = [...manualItems, ...autoItems].slice(0, cap);
+  await applyStorefrontPromotions(items, branchId);
+  await attachSoldCounts(db, items);
+  await attachVariantColors(db, items, branchId);
+  return items;
+}
+
+/** توصيات آلية من تصنيفات منتجات السلة مع استبعاد المنتجات الموجودة والعلاقات اليدوية. */
+async function storefrontCategoryRecommendations(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  branchId: number,
+  categoryIds: number[],
+  excludedProductIds: number[],
+  limit: number,
+): Promise<StorefrontProduct[]> {
+  if (!categoryIds.length || limit <= 0) return [];
+  const cap = Math.min(Math.max(limit, 1), 8);
+  const conds = [storefrontPublishableCondition(), inArray(products.categoryId, categoryIds)];
+  if (excludedProductIds.length) conds.push(not(inArray(products.id, excludedProductIds)));
+  const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+  const selectedIds = chooseCandidateProductIds(await attachAvailability(db, branchId, candidateRows), cap, "IN_STOCK");
+  if (!selectedIds.length) return [];
+  const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
+  const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
+  const rows = (await attachAvailability(db, branchId, rawRows))
+    .filter((row) => row.availableQty >= Number(row.conversionFactor))
+    .sort((a, b) =>
+      (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap)
+      || Number(a.variantId) - Number(b.variantId)
+      || Number(a.productUnitId) - Number(b.productUnitId));
+  const seen = new Set<number>();
+  const items: StorefrontProduct[] = [];
+  for (const row of rows) {
+    const pid = Number(row.productId);
+    if (seen.has(pid) || excludedProductIds.includes(pid)) continue;
+    seen.add(pid);
+    items.push(toStorefront(row));
+    if (items.length >= cap) break;
+  }
+  return items;
 }
 
 /**

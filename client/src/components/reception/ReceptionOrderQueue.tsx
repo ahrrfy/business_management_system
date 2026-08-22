@@ -1,3 +1,4 @@
+import { workOrderStatusBadgeCls, workOrderStatusLabel } from "@shared/workOrderStatus";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Check, Package, Store, Truck, type LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -18,24 +19,11 @@ import { preopenShippingLabelWindow } from "@/lib/printing/shippingLabel";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterInputs, type RouterOutputs } from "@/lib/trpc";
+import { deriveWoDeliveryState, woDeliveryStateLabel, WO_DELIVERY_STATE_CLS } from "@shared/workOrderDeliveryState";
 import { cn } from "@/lib/utils";
 
 type QueueRow = RouterOutputs["workOrders"]["list"][number];
 
-const STATUS_LABEL: Record<string, string> = {
-  RECEIVED: "مُستلَم",
-  IN_PROGRESS: "قيد التنفيذ",
-  READY: "جاهز",
-  DELIVERED: "مُسلَّم",
-  CANCELLED: "ملغى",
-};
-const STATUS_CLS: Record<string, string> = {
-  RECEIVED: "bg-muted text-foreground/70",
-  IN_PROGRESS: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
-  READY: "bg-amber-100 text-amber-700",
-  DELIVERED: "bg-emerald-100 text-emerald-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
-};
 // مرآة بوّابتي الخادم بالضبط (لا مفتاح وحدة صلاحيات منفصل لـ"delivery" — راجع server/trpc.ts):
 //   workOrders.deliver / workOrders.setDeliveryMethod ⇐ workordersCashierProcedure (كاشير/مدير + وحدة workorders=FULL).
 //   delivery.dispatch ⇐ cashierProcedure الخام (كاشير/مدير بلا مفتاح وحدة).
@@ -261,8 +249,13 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
 }) {
   const isReady = r.status === "READY";
   const isFinal = r.status === "DELIVERED" || r.status === "CANCELLED";
+  // ١٨/٨: حالة التوصيل المشتقّة — مصدرها المشترك، فلا تُعاد تسميتها هنا.
+  const deliveryState = deriveWoDeliveryState(r.consignmentStatus, r.parcelStatus);
+  const hasLiveConsignment = deliveryState !== "NONE";
   const actions: RowAction[] = [];
-  if (isReady && r.hasDelivery && onDispatch) {
+  // زرّ الإسناد كان يظهر لأيّ READY+توصيل **بلا فحص إرسالية قائمة** ⇒ النقر على طلبٍ مُسنَد
+  // أصلاً يصطدم بقيدٍ فريد برسالةٍ غامضة. الآن تحلّ محلّه شارةُ حالته (أدناه).
+  if (isReady && r.hasDelivery && !hasLiveConsignment && onDispatch) {
     actions.push({ key: "dispatch", kind: "approve", label: "إسناد لمندوب", icon: Truck, hidden: !canFulfill, onSelect: () => onDispatch(r), gate: DISPATCH_GATE });
   }
   if (isReady && !r.hasDelivery && onPickup) {
@@ -277,7 +270,7 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
     <li className="flex flex-wrap items-center gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-bold", STATUS_CLS[r.status] ?? "bg-muted")}>{STATUS_LABEL[r.status] ?? r.status}</span>
+          <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-bold", workOrderStatusBadgeCls(r.status))}>{workOrderStatusLabel(r.status)}</span>
           {r.hasDelivery ? (
             <span className="inline-flex items-center gap-1 rounded bg-[var(--sem-info-bg)] px-1.5 py-0.5 text-[11px] font-bold text-[var(--sem-info)]">
               <Truck aria-hidden className="size-3" /> توصيل
@@ -287,11 +280,21 @@ function QueueRowItem({ row: r, canFulfill, onDispatch, onPickup, onReclassify }
               <Store aria-hidden className="size-3" /> استلام مباشر
             </span>
           )}
-          {r.consignmentNumber && (
+          {/* حالة الطرد صراحةً بدل «قيد التوصيل» العامّة: «مُسنَد لم يخرج» ≠ «بالطريق» ≠ «تعذّر». */}
+          {hasLiveConsignment ? (
+            <a
+              href="/delivery?tab=transit"
+              className={cn("rounded border px-1.5 py-0.5 text-[11px] font-extrabold", WO_DELIVERY_STATE_CLS[deliveryState])}
+              title="افتح تبويب «قيد التوصيل» لمتابعة الطرد"
+            >
+              {woDeliveryStateLabel(deliveryState)}{r.deliveryPartyName ? ` · ${r.deliveryPartyName}` : ""}
+            </a>
+          ) : r.consignmentNumber ? (
             <span className="text-[11px] text-muted-foreground">
-              {r.deliveryPartyName ? `⇐ ${r.deliveryPartyName}` : ""} ({r.consignmentStatus === "DISPATCHED" ? "قيد التوصيل" : r.consignmentStatus === "DELIVERED" ? "سُلِّمت" : r.consignmentStatus})
+              {r.deliveryPartyName ? `${r.deliveryPartyName} — ` : ""}
+              {r.consignmentStatus === "DELIVERED" ? "سُلِّمت" : r.consignmentStatus === "RETURNED" ? "أُرجعت" : "أُلغي الإسناد"}
             </span>
-          )}
+          ) : null}
           <span className="font-bold">{r.orderNumber}</span>
         </div>
         <p className="mt-0.5 truncate text-sm">{r.title}</p>

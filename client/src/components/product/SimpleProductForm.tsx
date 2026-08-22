@@ -10,14 +10,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { MoneyCoach } from "@/components/form/MoneyCoach";
 import { NumberInput } from "@/components/form/NumberInput";
-import { type ImageItem } from "@/components/form/ImageUploader";
-import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeInfo, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBarcodeAliases";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { cn } from "@/lib/utils";
 import { CategoryOptionList } from "@/lib/categoryTree";
@@ -110,7 +110,6 @@ export default function SimpleProductForm() {
   const [reorderPoint, setReorderPoint] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [isActive, setIsActive] = useState(true);
-  const [images, setImages] = useState<ImageItem[]>([]);
   // بضاعة الأمانة (٢٠/٧): وسم السلعة البسيطة + مودِعها (الحصة في costPrice).
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
@@ -126,6 +125,17 @@ export default function SimpleProductForm() {
     [productType, brand, modelName]
   );
   const finalName = name.trim() || composedName;
+  const aiProductFacts = useMemo(() => ({
+    category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
+    productType: productType.trim() || null,
+    brand: brand.trim() || null,
+    modelName: modelName.trim() || null,
+    attributes: {},
+    variants: [{ color: null, size: null }],
+    saleUnits: units.filter((u) => u.name.trim()).map((u) => ({ name: u.name.trim(), conversionFactor: u.isBase ? "1" : u.factor.trim() || "1" })),
+    verifiedClaims: [],
+    audience: null,
+  }), [brand, categoriesQ.data, categoryId, modelName, productType, units]);
   const baseUnit = units.find((u) => u.isBase);
   const baseBarcode = baseUnit?.barcode.trim() ?? "";
   const baseUnitName = baseUnit?.name.trim() || "قطعة";
@@ -329,9 +339,6 @@ export default function SimpleProductForm() {
           units: unitsPayload,
         },
       ],
-      images: images.length
-        ? images.map((i, idx) => ({ url: i.dataUrl, isPrimary: !!i.isPrimary, sortOrder: idx }))
-        : undefined,
     });
   }
 
@@ -373,6 +380,13 @@ export default function SimpleProductForm() {
             </div>
             {/* السلعة البسيطة بلا متغيّرات ⇒ اللون في الاسم مشروع — لا warnColors هنا. */}
             <NameAssistant name={finalName} onApply={setName} />
+            <AiProductContentAssistant
+              facts={aiProductFacts}
+              onApply={(draft) => {
+                setName(draft.seoTitle);
+                setDescription(draft.description);
+              }}
+            />
           </Field>
           <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً.">
             <Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="كتاب مدرسي" dir="auto" />
@@ -395,9 +409,6 @@ export default function SimpleProductForm() {
           </Field>
           <Field label="رمز المنتج (SKU)" hint="يُولَّد تلقائياً وفريداً إن تُرك فارغاً." className="md:col-span-2">
             <Input id="simple-sku" value={sku} onChange={(e) => setSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PR-BOOK-ARB" />
-          </Field>
-          <Field label="الوصف" className="md:col-span-3">
-            <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="خصائص/ملاحظات…" />
           </Field>
         </CardContent>
       </Card>
@@ -615,18 +626,10 @@ export default function SimpleProductForm() {
         </CardContent>
       </Card>
 
-      {/* ── صور المنتج ── */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">صور المنتج (اختياري)</CardTitle></CardHeader>
-        <CardContent>
-          <ImageStudioUploader
-            value={images}
-            onChange={setImages}
-            maxItems={10}
-            hint="حتى 10 صور للمنتج (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً."
-          />
-        </CardContent>
-      </Card>
+      <ProductMediaContentSection
+        description={description}
+        onDescriptionChange={setDescription}
+      />
 
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

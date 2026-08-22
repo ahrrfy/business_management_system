@@ -22,11 +22,15 @@ import compression from "compression";
 import rateLimit from "express-rate-limit";
 import { pinoHttp } from "pino-http";
 import { nanoid } from "nanoid";
-import { timingSafeEqual } from "node:crypto";
 import { createServer } from "http";
 import net from "net";
 import { createContext } from "./context";
-import { getDb, closeDb, isMultiTenantModeActive, validateTenantConnectionBudget } from "./db";
+import {
+  getDb,
+  closeDb,
+  isMultiTenantModeActive,
+  validateTenantConnectionBudget,
+} from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
@@ -34,14 +38,20 @@ import { registerWellKnown } from "./wellKnown";
 import { applyBodyParsers } from "./middleware/bodyParsers";
 import { csrfGuard } from "./middleware/csrf";
 import {
+  matchesInternalProxySecret,
+  readInternalProxySecrets,
+} from "./security/internalProxySecret";
+import {
   isTrpcSurface,
   sendTrpcError,
   trpcAwareRateLimitHandler,
 } from "./middleware/trpcError";
 import {
-  isBackgroundJobRunner,
-  isClustered,
-} from "./lib/clusterRole";
+  hasOverfilledPublicSensitiveBatch,
+  parseCanonicalTrpcProcedures,
+} from "./middleware/publicSensitiveBatch";
+import { publicStorefrontHostBoundary } from "./middleware/publicStorefrontHost";
+import { isBackgroundJobRunner, isClustered } from "./lib/clusterRole";
 import {
   createOverloadGuard,
   startLagMonitor,
@@ -60,6 +70,9 @@ import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 import { closeControlDb, getControlDb } from "./tenancy/controlDb";
 import { assertMobileProductionReadiness } from "./services/mobileProductionReadiness";
 import { sweepStaleRestoreArtifacts } from "./services/maintenanceService";
+import { assertImageStoreStartupConfiguration } from "./lib/imageStore";
+import { assertStorefrontOrderingReadiness } from "./services/storefrontTurnstile";
+import { STOREFRONT_TURNSTILE_SCRIPT_ORIGIN } from "@shared/storefrontTurnstile";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -92,6 +105,15 @@ async function startServer() {
     process.exit(1);
   }
 
+  // لا نُفعّل R2 ضمنياً أثناء بقاء الصور القديمة في MySQL، لكن إذا فُعّل السائق صراحةً
+  // فيجب أن يكون عقده كاملاً قبل فتح منفذ HTTP لا عند أول طلب صورة.
+  assertImageStoreStartupConfiguration();
+
+  // الطلب العام سطح كتابة مجهول: تفعيله بلا Siteverify كامل ممنوع قبل فتح منفذ HTTP.
+  assertStorefrontOrderingReadiness();
+  const storefrontOrderingEnabled =
+    process.env.STOREFRONT_ORDERING_ENABLED === "1";
+
   const isDev = process.env.NODE_ENV === "development";
   // إنتاج آمن افتراضياً: غياب HOST أو الربط العام العرضي يوقف الإقلاع قبل فتح المنفذ.
   // النشر المقصود على LAN/واجهة عامة يتطلب ALLOW_PUBLIC_BIND=1 صراحةً مع جدار ناري.
@@ -104,17 +126,26 @@ async function startServer() {
   // Validate the complete tenant/control connection budget before opening the HTTP port.
   if (isMultiTenantModeActive()) validateTenantConnectionBudget();
   void sweepStaleRestoreArtifacts()
-    .then((removed) => removed > 0 && logger.warn({ removed }, "restore.stale_artifacts.removed"))
-    .catch((err) => logger.warn({ err }, "restore.stale_artifacts.sweep_failed"));
+    .then(
+      (removed) =>
+        removed > 0 &&
+        logger.warn({ removed }, "restore.stale_artifacts.removed"),
+    )
+    .catch((err) =>
+      logger.warn({ err }, "restore.stale_artifacts.sweep_failed"),
+    );
 
   // نشر التطبيق الأصلي يعلن اعتماده على FCM و2FA وجسر جهاز الحضور. عند تفعيل العلم
   // الصريح في الإنتاج نفشل قبل فتح المنفذ إذا كانت أي حلقة ناقصة، لا بعد دخول الموظفين.
   assertMobileProductionReadiness();
 
   const app = express();
-  // توحيد حساسية المسار مع Nginx: Express غير حساس للحالة افتراضياً، ما يسمح لمسار
-  // /API/TRPC بتجاوز locations الدقيقة/حدودها ثم الوصول للراوتر نفسه.
+  // يجب ضبطه قبل أول app.use: Express ينشئ الراوتر الداخلي عند أول middleware
+  // ويجمّد قيمة caseSensitive حينها؛ الضبط اللاحق لا يغيّر الراوتر القائم.
   app.set("case sensitive routing", true);
+  // alarabiya.online سطح العملاء فقط؛ لا يكفي تحويل React لأن API يظل قابلاً للوصول مباشرةً.
+  // يُركَّب قبل محللات الجسم وtRPC كي يُرفض API الداخلي مبكراً وبلا عمل قاعدة بيانات.
+  app.use(publicStorefrontHostBoundary);
   const server = createServer(app);
   // trust proxy مشروط: لا نثق برؤوس X-Forwarded-* إلا عند صحّة الإطار:
   //   - HOST=127.0.0.1 ⇒ خلف nginx/reverse-proxy موثوق (وضع الإنتاج على VPS).
@@ -128,27 +159,35 @@ async function startServer() {
   // express-rate-limit يفهرس بـreq.ip. مع `1` يُطابق nginx واحداً ⇒ req.ip = IP العميل الحقيقي
   // كما يسجّله البروكسي ويُتجاهَل أي XFF محقون. (كانت 1 ثم صارت true بالخطأ في b757623.)
   const trustProxy =
-    process.env.TRUST_PROXY === "1" || isLoopbackHost(host)
-      ? 1
-      : false;
+    process.env.TRUST_PROXY === "1" || isLoopbackHost(host) ? 1 : false;
   app.set("trust proxy", trustProxy);
+  const workerInstanceId = nanoid(16);
 
   // على VPS مشترك لا يكفي loopback وحده: أي عملية محلية تستطيع الاتصال بـ:3000 وتزوير
   // XFF متجاوزةً عدادات nginx. سرّ hop داخلي يثبت أن الطلب مرّ فعلاً عبر nginx.
   // حتى healthz يمرّ بالسر؛ nginx هو عميل الإنتاج الوحيد، وفحوص PM2 تستعمل النطاق العام.
-  if (process.env.NODE_ENV === "production" && process.env.REQUIRE_INTERNAL_PROXY_SECRET === "1") {
+  if (
+    process.env.NODE_ENV === "production" &&
+    process.env.REQUIRE_INTERNAL_PROXY_SECRET === "1"
+  ) {
     if (!isLoopbackHost(host)) {
-      throw new Error("REQUIRE_INTERNAL_PROXY_SECRET=1 يتطلب HOST=127.0.0.1 خلف reverse proxy.");
+      throw new Error(
+        "REQUIRE_INTERNAL_PROXY_SECRET=1 يتطلب HOST=127.0.0.1 خلف reverse proxy.",
+      );
     }
-    const proxySecret = process.env.INTERNAL_PROXY_SECRET?.trim();
-    if (!proxySecret || !/^[a-f0-9]{64}$/i.test(proxySecret)) {
-      throw new Error("INTERNAL_PROXY_SECRET يجب أن يكون 64 خانة hex عشوائية (openssl rand -hex 32) خلف nginx في الإنتاج.");
-    }
+    const proxySecrets = readInternalProxySecrets(process.env);
     app.use((req, res, next) => {
       const supplied = req.get("x-internal-proxy-secret") ?? "";
-      const expected = Buffer.from(proxySecret);
-      const actual = Buffer.from(supplied);
-      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      if (
+        req.path === "/healthz" &&
+        req.get("x-alroya-worker-probe") === "1" &&
+        ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
+          req.socket.remoteAddress ?? "",
+        )
+      ) {
+        res.setHeader("x-alroya-worker-instance", workerInstanceId);
+      }
+      if (!matchesInternalProxySecret(supplied, proxySecrets)) {
         return res.status(403).send("forbidden");
       }
       next();
@@ -179,13 +218,46 @@ async function startServer() {
         directives: {
           defaultSrc: ["'self'"],
           scriptSrc: isDev
-            ? ["'self'", "'unsafe-inline'", "'unsafe-eval'"]
-            : ["'self'"],
+            ? [
+                "'self'",
+                "'unsafe-inline'",
+                "'unsafe-eval'",
+                ...(storefrontOrderingEnabled
+                  ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+                  : []),
+              ]
+            : [
+                "'self'",
+                ...(storefrontOrderingEnabled
+                  ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+                  : []),
+              ],
+          // ⚠️ `worker-src` **يجب** أن يُصرَّح: بغيابه يسقط إلى `script-src` الذي لا يسمح
+          // بـ`blob:` ⇒ المتصفّح يحجب عامل عزل الخلفية (@imgly يعمل بـproxyToWorker)،
+          // فيتدهور مسار القصّ المجّانيّ (CUT) بصمتٍ إلى FLATTEN — «معالجةٌ» لا تقصّ شيئاً.
+          // أمسكه فحصٌ بصريّ لسجلّ المتصفّح، ولم تكشفه أيّ اختبارات (لا متصفّح فيها).
+          // `blob:` هنا لا يُوسّع `script-src`: العمّال معزولون ولا يصلون DOM.
+          workerSrc: ["'self'", "blob:"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", "data:", "blob:"],
           connectSrc: isDev
-            ? ["'self'", "ws://localhost:*", "wss://localhost:*"]
-            : ["'self'"],
+            ? [
+                "'self'",
+                "ws://localhost:*",
+                "wss://localhost:*",
+                ...(storefrontOrderingEnabled
+                  ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+                  : []),
+              ]
+            : [
+                "'self'",
+                ...(storefrontOrderingEnabled
+                  ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+                  : []),
+              ],
+          frameSrc: storefrontOrderingEnabled
+            ? [STOREFRONT_TURNSTILE_SCRIPT_ORIGIN]
+            : ["'none'"],
           fontSrc: ["'self'", "data:"], // خط Cairo مستضاف محلياً (@fontsource) ⇒ لا حاجة لـgstatic.
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
@@ -310,6 +382,16 @@ async function startServer() {
       logger.error({ err: e }, "healthz failed");
       res.status(503).json({ ok: false, db: "down" });
     }
+  });
+
+  // افحص المسار الخام قبل محددات المعدّل وقبل أن يفكّ tRPC percent-encoding. قبول `%2C` هنا
+  // يجعل دفعة إجراءات تبدو طلباً واحداً للمحدد ثم تتحول إلى batch لاحقاً؛ لذلك أي ترميز أو
+  // slash/حبيبة غير معيارية يُرفض fail-closed ولا يصل إلى أي عمل قاعدة أو عدّاد.
+  app.use("/api/trpc", (req, res, next) => {
+    if (!parseCanonicalTrpcProcedures(req.path || "")) {
+      return res.status(404).json({ error: "non-canonical tRPC path" });
+    }
+    next();
   });
 
   // حدّ صارم على تسجيل الدخول (حماية من تخمين كلمات المرور).
@@ -471,36 +553,14 @@ async function startServer() {
   // ضمن طلب واحد قبل اصطدامه بحدّ المعدّل. الحدّ التالي للنقاط العامة الحرجة لا يسمح بأكثر من
   // نداء واحد لكلّ طلب HTTP، فحدّ المعدّل القائم يعمل بدقّته الحقيقية بلا تمييع.
   app.use("/api/trpc", (req, res, next) => {
-    const PUBLIC_SENSITIVE = [
-      "auth.login",
-      "auth.twoFactorVerify",
-      "auth.resetPasswordWithToken",
-      "count.auth",
-      "kiosk.deviceLogin",
-      "recruitment.submit",
-      "platformAdmin.login",
-      // أحداث القياس كتابة علنية؛ نمنع حشو عشرات العدادات في دفعة HTTP واحدة.
-      "storefront.trackBanner",
-      "storefront.trackConversion",
-      // تتبّع الطلب: قابل للتعداد (رقم متسلسل) ⇒ نمنع حشو عشرات المحاولات في دفعة واحدة تتجاوز حدّه.
-      "storefront.trackOrder",
-    ];
-    // مسار البَتش يبدأ بـ"/api/trpc/x," مع فاصلة بين أسماء الإجراءات الموحَّدة.
     const path = req.path || "";
-    if (path.includes(",")) {
-      const procs = path.split("/").pop()?.split(",") ?? [];
-      let count = 0;
-      for (const p of procs) {
-        if (PUBLIC_SENSITIVE.some((s) => p.includes(s))) count++;
-      }
-      if (count > 1) {
-        sendTrpcError(res, {
-          httpStatus: 429,
-          code: "TOO_MANY_REQUESTS",
-          message: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة.",
-        });
-        return;
-      }
+    if (hasOverfilledPublicSensitiveBatch(path)) {
+      sendTrpcError(res, {
+        httpStatus: 429,
+        code: "TOO_MANY_REQUESTS",
+        message: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة.",
+      });
+      return;
     }
     next();
   });
@@ -513,16 +573,6 @@ async function startServer() {
   const tenancy = tenancyMiddleware();
 
   app.use("/api/trpc", tenancy);
-  // The adapter otherwise resolves the final segment, so `/x/auth.login` and
-  // `//auth.login` could reach auth while bypassing Nginx's exact abuse-control zone.
-  app.use("/api/trpc", (req, res, next) => {
-    // Inspect the original mounted path before normalization: exactly one leading
-    // slash followed by a single procedure/batch segment is canonical.
-    if (!/^\/[^/]+$/.test(req.path)) {
-      return res.status(404).json({ error: "non-canonical tRPC path" });
-    }
-    next();
-  });
   // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
   // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
   app.use(
@@ -555,7 +605,9 @@ async function startServer() {
       limit: Number(process.env.RESTORE_UPLOAD_RATE_LIMIT_MAX ?? 3),
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      handler: rateLimitHandler("محاولات استعادة كثيرة؛ انتظر قبل المحاولة التالية."),
+      handler: rateLimitHandler(
+        "محاولات استعادة كثيرة؛ انتظر قبل المحاولة التالية.",
+      ),
     }),
   );
   app.use("/api/backups", tenancy, csrfGuard, backupRouter());
@@ -630,20 +682,23 @@ async function startServer() {
   // في العامل رقم 0 فقط (أو العملية الوحيدة في fork) — راجع lib/clusterRole.ts. تُرفَع مقابض
   // الإيقاف للنطاق الخارجيّ ليستدعيها الإغلاق الرشيق بأمان أياً كان العامل.
   let stopNativePushOutboxWorker: (() => void) | null = null;
+  let stopStorefrontPushCampaignWorker: (() => void) | null = null;
   let stopDeliveryOutboxWorker: (() => void) | null = null;
+  let stopProductStudioStagingWorker: (() => void) | null = null;
+  let stopProductStudioNotificationWorker: (() => void) | null = null;
+  let stopOnlineOrderExpirySweeper: (() => void) | null = null;
+  let stopPurchaseIntegrityMonitor: (() => void) | null = null;
   if (isBackgroundJobRunner()) {
     // جدولة إشعار «برنامج اليوم» الصباحي (Web Push) — تُفعَّل فقط حين VAPID keys مُهيّأة في .env.
     // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
-    const { startMorningPushCron } = await import(
-      "./services/morningPushScheduler"
-    );
+    const { startMorningPushCron } =
+      await import("./services/morningPushScheduler");
     startMorningPushCron();
 
     // كنّاس صندوق واتساب الصادر (waOutbox) — إرسال فعلي + إعادة محاولة بتراجع أسّي + إعادة محاولة
     // أحداث webhook الفاشلة (سباق ترتيب). لا cron في بيئة الاختبار (NODE_ENV=test).
-    const { startWaOutboxSweeper } = await import(
-      "./services/whatsapp/outboxSweeper"
-    );
+    const { startWaOutboxSweeper } =
+      await import("./services/whatsapp/outboxSweeper");
     startWaOutboxSweeper();
 
     // إشعارات Android الأصلية: عامل صندوق موثوق يعيد المحاولة ولا يعمل دون إعداد FCM.
@@ -651,10 +706,33 @@ async function startServer() {
     nativePush.startNativePushOutboxWorker();
     stopNativePushOutboxWorker = nativePush.stopNativePushOutboxWorker;
 
+    // حملات متجر العملاء: صندوق Expo Push منفصل عن تطبيق الموظفين، مع موافقة العميل وحدود دفعات ثابتة.
+    const storefrontPush =
+      await import("./services/storeAdmin/storefrontPushCampaignService");
+    storefrontPush.startStorefrontPushCampaignWorker();
+    stopStorefrontPushCampaignWorker =
+      storefrontPush.stopStorefrontPushCampaignWorker;
+
     // أحداث التوصيل: إشعارات أعضاء الشركة/السائقين من outbox ذرّي قابل لإعادة المحاولة.
-    const { startDeliveryOutboxWorker, stopDeliveryOutboxWorker: stopDeliveryWorker } = await import("./services/delivery/outboxWorker");
+    const {
+      startDeliveryOutboxWorker,
+      stopDeliveryOutboxWorker: stopDeliveryWorker,
+    } = await import("./services/delivery/outboxWorker");
     startDeliveryOutboxWorker();
     stopDeliveryOutboxWorker = stopDeliveryWorker;
+
+    // كنس كائنات رفع الاستوديو غير المرتبطة عبر جميع الشركات، على عامل الخلفية الوحيد.
+    const studioStaging = await import("./services/productStudioStagingWorker");
+    studioStaging.startProductStudioStagingWorker();
+    stopProductStudioStagingWorker =
+      studioStaging.stopProductStudioStagingWorker;
+
+    // تنبيهات مواعيد الاستوديو: عامل 0 فقط، كل خمس دقائق، ومفاتيح الحدث تمنع التكرار.
+    const studioNotifications =
+      await import("./services/productStudioNotificationWorker");
+    studioNotifications.startProductStudioNotificationWorker();
+    stopProductStudioNotificationWorker =
+      studioNotifications.stopProductStudioNotificationWorker;
 
     // ش٢ (ق٤): كنّاس مسوّدات المحطة — يطوي الفارغة المنقضية (٢٤س بلا نشاط) ليلاً وعلى الإقلاع؛
     // **لا يمسّ المموّلة أبداً** (المال في receipts — I14). لا cron في بيئة الاختبار.
@@ -674,8 +752,24 @@ async function startServer() {
     // كنّاس الحجوزات المنتهية (١٢/٨) — كلّ ٥ دقائق UTC. الفحص الكسول في list/get لا يكفي:
     // لو لم يفتح أحدٌ شاشة الحجوزات لأيّام، تبقى المنتهية ACTIVE وتحبس مخزوناً بلا داعٍ.
     // شكوى المالك «الحجز يبقى نشطاً بعد الانقضاء» تُغلَق فقط بالكنس المستقلّ عن المستخدم.
-    const { startReservationsSweeper } = await import("./services/reservations/sweeper");
+    const { startReservationsSweeper } =
+      await import("./services/reservations/sweeper");
     startReservationsSweeper();
+
+    // انتهاء حجز طلبات المتجر PENDING: العامل 0 وحده يلغي المستحقّ دورياً وبشكل idempotent.
+    const onlineOrderExpiry =
+      await import("./services/onlineOrderExpirySweeper");
+    onlineOrderExpiry.startOnlineOrderExpirySweeper();
+    stopOnlineOrderExpirySweeper =
+      onlineOrderExpiry.stopOnlineOrderExpirySweeper;
+
+    // تدقيق جنائي يومي للمشتريات: قراءة GL فقط، فرعاً فرعاً، ويصدر ملخصاً منظماً في سجل
+    // العامل. لا يصحح cache ولا يرحّل سنداً/قيداً، والعامل 0 يمنع تكراره في وضع cluster.
+    const purchaseIntegrity =
+      await import("./services/purchase/purchaseIntegrityMonitor");
+    purchaseIntegrity.startPurchaseIntegrityMonitor();
+    stopPurchaseIntegrityMonitor =
+      purchaseIntegrity.stopPurchaseIntegrityMonitor;
 
     logger.info(
       `الوظائف الخلفيّة بدأت على العامل ${process.env.NODE_APP_INSTANCE ?? "الوحيد"}.`,
@@ -699,7 +793,12 @@ async function startServer() {
     }, 10_000);
     try {
       stopNativePushOutboxWorker?.();
+      stopStorefrontPushCampaignWorker?.();
       stopDeliveryOutboxWorker?.();
+      stopProductStudioStagingWorker?.();
+      stopProductStudioNotificationWorker?.();
+      stopOnlineOrderExpirySweeper?.();
+      stopPurchaseIntegrityMonitor?.();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await closeDb();
       await closeControlDb();

@@ -39,7 +39,7 @@ import { loadPosTabsDraft, posTabsDraftKey, savePosTabsDraft, type PosDraftScope
 import { paymentMethodLabel } from "@/lib/paymentMethod";
 import { ROLE_LABEL } from "@/lib/roles";
 import { normalizeSearchText } from "@shared/searchNormalize";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
+import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -392,7 +392,10 @@ export default function PrintPOS() {
         });
         return;
       }
-      if (code === "PRECONDITION_FAILED") setCreditPrompt(e.message);
+      // بوّابات الاعتماد على هذه القناة ترمي FORBIDDEN لا PRECONDITION_FAILED (بيعٌ تحت التكلفة،
+      // وانحرافُ السعر اليدويّ H6) ⇒ مطابقةُ الرمز وحدها كانت تُظهر خطأً جامداً بلا حوارِ موافقة،
+      // فيعجز كاشير الطباعة عن إتمام بيعٍ مشروعٍ باعتماد مدير. نطابق العبارة الجامعة كما في POS.
+      if (code === "PRECONDITION_FAILED" || (e.message && e.message.includes("موافقة مدير"))) setCreditPrompt(e.message);
       else setMessage({ kind: "err", text: e.message });
     },
   });
@@ -467,7 +470,7 @@ export default function PrintPOS() {
     if (!(await isOfflineSaleEnabled())) {
       setMessage({
         kind: "err",
-        text: "البيع دون اتصال غير مفعَّل على هذا الجهاز — تفعيله قرار إداريّ من «إعدادات الجهاز» في شارة المزامنة.",
+        text: "البيع دون اتصال مُعطَّل على هذا الجهاز — أعِد تفعيله من «إعدادات الجهاز» في شارة المزامنة (الافتراضي مفعَّل).",
       });
       return false;
     }
@@ -1161,8 +1164,8 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
   );
   const Method = ({ m, Icon, label, disabled = false }: { m: PaymentMethod; Icon: React.ComponentType<{ "aria-hidden"?: boolean; size?: number }>; label: string; disabled?: boolean }) => (
     <button onClick={disabled ? undefined : () => setMethod(m)} disabled={disabled}
-      aria-describedby={disabled ? "print-pos-external-payment-disabled" : undefined}
-      title={disabled ? POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE : undefined}
+      aria-describedby={disabled ? "print-pos-external-payment-proof" : undefined}
+      title={disabled ? POS_EXTERNAL_PAYMENT_PROOF_HINT : label}
       style={{ flex: 1, minHeight: fluid(44, 5.6, 50), display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `2px solid ${method === m ? C.primary : C.border}`, borderRadius: 10, background: method === m ? C.primary : C.card, color: method === m ? C.primaryFg : C.fg, fontWeight: 800, fontSize: 13.5, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.55 : 1, fontFamily: "inherit", touchAction: "manipulation" }}>
       <Icon aria-hidden size={19} />{label}
     </button>
@@ -1197,13 +1200,15 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, paym
         </div>
         <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
           <Method m="CASH" Icon={Banknote} label="نقدي" />
-          <Method m="CARD" Icon={CreditCard} label="بطاقة" disabled />
-          <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" disabled />
+          <Method m="CARD" Icon={CreditCard} label="بطاقة" />
+          <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />
         </div>
-        <div id="print-pos-external-payment-disabled" role="status" style={{ marginBottom: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.amber, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
-          <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
-          <span>{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</span>
-        </div>
+        {method !== "CASH" && (
+          <div id="print-pos-external-payment-proof" role="status" style={{ marginBottom: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.mutedFg, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
+            <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+            <span>{POS_EXTERNAL_PAYMENT_PROOF_HINT}</span>
+          </div>
+        )}
         {/* مرجع ومحاولة الدفع غير النقدي — CONFIRMED قبل إنشاء الفاتورة. */}
         <PaymentReferenceField
           value={paymentRef}

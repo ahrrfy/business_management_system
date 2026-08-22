@@ -3,7 +3,6 @@
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
 import {
-  productImages,
   productPrices,
   productUnits,
   productUnitBarcodes,
@@ -24,6 +23,7 @@ import { toDbMoney } from "../money";
 import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
 import { type Actor, withTx } from "../tx";
+import { assertCreateHasNoLegacyMedia } from "./mediaWriteGuard";
 
 export interface CreateProductInput {
   name: string;
@@ -68,7 +68,7 @@ export interface CreateProductInput {
     reorderPoint?: number;
     isActive?: boolean;
     openingStockByBranch?: Array<{ branchId: number; qty: number }>;
-    // product-variants: صورة مستقلّة لهذا اللون (data URL) — تُخزَّن في productImages بـvariantId.
+    // حقل توافق قديم فقط: أي قيمة غير فارغة تُرفض؛ النشر الجديد عبر Product Studio/R2.
     image?: string | null;
     units: Array<{
       unitName: string;
@@ -81,7 +81,7 @@ export interface CreateProductInput {
       barcodeAliases?: Array<{ barcode: string; note?: string | null }>;
     }>;
   }>;
-  // v3-add-screens: صور المنتج. أوّل isPrimary=true يُعتمد، وإلا أوّل صورة.
+  // حقل توافق قديم فقط: أي URL غير فارغ يُرفض؛ النشر الجديد عبر Product Studio/R2.
   images?: Array<{ url: string; isPrimary?: boolean; sortOrder?: number }>;
 }
 
@@ -185,6 +185,9 @@ export async function assertConsignmentValid(
 
 /** Create a product with its variants, units and prices in one transaction. */
 export async function createProduct(input: CreateProductInput, actor: Actor) {
+  // لا ينشر كاتب الكتالوج القديم صوراً MANUAL+APPROVED. الصور الجديدة تمر حصراً بمهمة
+  // Product Studio ثم R2 والمراجعة؛ الحارس في الخدمة كي يشمل الراوتر وكل مستدعٍ داخلي.
+  assertCreateHasNoLegacyMedia(input);
   if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
   // bundles: قيود إنشاء البكج تُفرض قبل فتح المعاملة كي تعطي رسائل واضحة قبل أي إدراج.
   const isBundle = !!input.isBundle;
@@ -316,26 +319,6 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         }
       }
 
-      // product-variants: صورة هذا اللون — تُخزَّن في productImages موسومة بـvariantId.
-      const vImage = (v.image ?? "").trim();
-      if (vImage) {
-        await tx.insert(productImages).values({ productId, variantId, url: vImage, isPrimary: false, sortOrder: 0 });
-      }
-    }
-
-    // v3-add-screens: صور المنتج. الأولى = الرئيسية إن لم يحدّد أيٌّ منها ذلك.
-    if (input.images && input.images.length) {
-      const imgs = input.images.filter((i) => i.url?.trim()).slice(0, 10);
-      const anyPrimary = imgs.some((i) => i.isPrimary);
-      for (let i = 0; i < imgs.length; i++) {
-        const img = imgs[i];
-        await tx.insert(productImages).values({
-          productId,
-          url: img.url.trim(),
-          isPrimary: anyPrimary ? !!img.isPrimary : i === 0,
-          sortOrder: img.sortOrder ?? i,
-        });
-      }
     }
 
     // print-catalog: وصفة المواد الخام للخدمة — تُربَط بمتغيّر البَند الأوّل ووحدته الأساس.

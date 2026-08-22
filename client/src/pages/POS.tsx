@@ -43,7 +43,7 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { PaymentReferenceField } from "@/components/pos/PaymentReferenceField";
 import { normalizeBarcodeScannerInput } from "@/lib/barcodeScannerInput";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
+import { POS_EXTERNAL_PAYMENT_PROOF_HINT } from "@shared/posPaymentPolicy";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,6 +111,9 @@ type POSTab = {
   externalPayment: ExternalPaymentDraft | null;
   /** تاريخ استحقاق البيع الآجل (YYYY-MM-DD، اختياري) — يصحّح أعمار الذمم والتذكيرات. */
   dueDate: string;
+  /** خصم على رأس الفاتورة كنسبة مئوية (٠–١٥). سلطة الكاشير مقصورة على هذا السقف؛ ما فوقه
+   *  بوّابة مدير خادمياً (`invoiceDiscountExceedsThreshold`). فارغ ⇒ لا خصم. */
+  invoiceDiscountPct: string;
 };
 
 type Receipt = {
@@ -125,6 +128,12 @@ type Receipt = {
   /** G3 (١١/٨): رقم الوردية — يُطبع في ترويسة الإيصال لتوثيق أصل المعاملة (invoices.shiftId). */
   shiftId?: number | null;
   lines: { name: string; unit: string; qty: number; price: number; disc?: number; total: number }[];
+  /** المجموع قبل خصم رأس الفاتورة. مساوٍ لـ`total` عند غياب الخصم. */
+  subtotal?: number;
+  /** مبلغ خصم رأس الفاتورة، إن وُجد. */
+  invoiceDiscount?: number;
+  /** تعديل التقريب النقديّ IQD (± د.ع، النقد الكامل فقط) — يطابق `cashRoundingAdj` الخادميّ. */
+  cashRounding?: number;
   total: number;
   received: number;
   change: number;
@@ -227,7 +236,12 @@ const createTab = (id: number, label?: string): POSTab => ({
   clientRequestId: newClientRequestId(),
   couponInput: "", couponCode: null, couponLabel: null,
   paymentRef: "", externalPayment: null, dueDate: "",
+  invoiceDiscountPct: "",
 });
+
+/** السقف الأعلى لخصم رأس الفاتورة اليدويّ عند الكاشير (قرار المالك). فوقه يستلزم اعتماد مدير
+ *  خادمياً؛ الشاشة تُقصّه هنا لتجنّب رفضٍ متأخّر أمام العميل. */
+const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
 
 // ─── useSmartScanInput ────────────────────────────────────────────────────────
 
@@ -305,6 +319,8 @@ function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
 
 /** تحويل إيصال الكاشير لبيانات الإيصال المُعلَّم — يُطبع بالتصميم المعتمد نفسه على كل النواقل. */
 function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
+  const subtotalForPrint = r.subtotal ?? r.total;
+  const discountForPrint = r.invoiceDiscount != null && r.invoiceDiscount > 0 ? r.invoiceDiscount : null;
   return {
     receiptNumber: r.invoiceNumber,
     date: r.printDate ?? r.date,
@@ -318,7 +334,9 @@ function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
       price: l.price,
       total: l.total,
     })),
-    subtotal: r.total,
+    subtotal: subtotalForPrint,
+    discount: discountForPrint,
+    cashRounding: r.cashRounding != null && r.cashRounding !== 0 ? r.cashRounding : null,
     total: r.total,
     paid: r.received,
     // «الباقي» يُطبع فقط حين يكون موجباً (فكّة فعلية) — كحارس الشاشة. الدفع المطابق/السريع
@@ -621,31 +639,85 @@ export default function POS() {
 
   // §٥: حساب الإجمالي/المدفوع/الباقي/الفكّة بدقّة Decimal (لا JS Number) — يصون المبالغ
   // على المطبوعات (إيصال + شاشة) ويلغي انجراف 0.1+0.2=0.30000000000000004.
-  const totalD  = cart.reduce((s, c) => s.plus(D(itemTotal(c))), D(0));
+  const subtotalD = cart.reduce((s, c) => s.plus(D(itemTotal(c))), D(0));
+  // البطاقات الرقميّة (§٧) — لا يُطبَّق خصم رأس فاتورة على سلّة كروتٍ أصلاً:
+  // مسار `startDigitalFulfillment` يمرّ عبر `digitalCards.sales.finalize` الذي **لا يعرف
+  // `invoiceDiscount`** — لو مرّرناه محلياً لأعرض الكاشير 2,520 وينفَّذ 2,800 (درج ناقص + رفض
+  // مطابقة `expectedTotal` على البطاقات المدفوعة). البوّابة تفصل الحالتين قبل الإرسال.
+  const cartHasDigital = cart.some((c) => c.digital);
+  const cartAllDigital = cart.length > 0 && cart.every((c) => c.digital);
+  const invoiceDiscountAllowed = !cartAllDigital && !cartHasDigital;
+  // خصم رأس الفاتورة (٢٢/٨) — نسبة يُدخلها الكاشير، مقصوصة إلى [0, CASHIER_INVOICE_DISCOUNT_MAX_PCT].
+  // قصٌّ محلّي أمام العين (ما فوق ١٥٪ يُرفض خادمياً بلا اعتماد مدير) + قصّ ثانٍ إلى subtotal
+  // كي لا يُنشئ صافياً سالباً لو أُدخلت نسبة كبيرة على سلة تتبدّل. مساوٍ لعقد الخادم
+  // (`computeInvoiceTotals` يقصّ الخصم إلى `[0, subtotal]` ويرفض السالب صراحةً).
+  // كذلك — نطرح **الانحرافَ الأصليّ للأسطر** من سقفنا: بوّابة الخادم `invoiceDiscountExceedsThreshold`
+  // تقيس (refGross − invoiceNet)/refGross مقابل ١٥٪، وترى انحراف السطر (عرض/خصم يدويّ) والرأس معاً.
+  // لولا هذا: سلّةٌ عليها عرضٌ ١٠٪ + خصمُ رأسٍ ١٠٪ = انحراف ١٩٪ ⇒ رفضٌ خادميّ يُفاجأ به الكاشير.
+  const referenceGrossD = cart.reduce((s, c) => {
+    // بدون خصم يدويّ = سعرُ القائمة (سعر السطر الأصل) × الكمية. البطاقات الرقمية مستثناةٌ من الحساب
+    // مثلها في الخادم (بوابةُ الرأس تتخطّى `digital` أصلاً — التسعير عقدٌ خارجيّ لا انحرافٌ يدويّ).
+    if (c.digital) return s;
+    const refUnit = D((c.row as any).contractUnitPrice ?? c.row.price ?? 0);
+    return s.plus(refUnit.times(c.qty));
+  }, D(0));
+  const rawInvoiceDiscountPctD = D(activeTab.invoiceDiscountPct || 0);
+  const clampedByFieldD = rawInvoiceDiscountPctD.lt(0)
+    ? D(0)
+    : rawInvoiceDiscountPctD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      : rawInvoiceDiscountPctD;
+  // **السقف الفعّال المتبقّي**: عتبةُ الخادم ١٥٪ تُقاس على المرجع، فإن كان في السلّة انحرافٌ سطريّ
+  // مسبق (`refGross − subtotal`)، فسلطةُ الكاشير على الرأس = ١٥٪ − (نسبةُ الانحراف المسبقة)،
+  // مقيسةً على الصافي الحاليّ (subtotal). قيمةٌ سالبةٌ ⇒ صفرٌ (لا سلطة).
+  const priorDeviationRatioD = referenceGrossD.gt(0)
+    ? referenceGrossD.minus(subtotalD).div(referenceGrossD)
+    : D(0);
+  const remainingHeaderAuthorityFractionD = D(0.15).minus(priorDeviationRatioD);
+  const remainingHeaderPctOnSubtotalD = (subtotalD.gt(0) && referenceGrossD.gt(0))
+    ? remainingHeaderAuthorityFractionD.times(referenceGrossD).div(subtotalD).times(100)
+    : D(CASHIER_INVOICE_DISCOUNT_MAX_PCT);
+  const effectiveHeaderCapPctD = (remainingHeaderPctOnSubtotalD.lt(0)
+    ? D(0)
+    : remainingHeaderPctOnSubtotalD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+      : remainingHeaderPctOnSubtotalD).toDecimalPlaces(2, 1 /* ROUND_DOWN */);
+  const invoiceDiscountPctD = invoiceDiscountAllowed
+    ? (clampedByFieldD.gt(effectiveHeaderCapPctD) ? effectiveHeaderCapPctD : clampedByFieldD)
+    : D(0);
+  const invoiceDiscountAmountD = round2(subtotalD.times(invoiceDiscountPctD).div(100));
+  const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
+  const subtotal = round2(subtotalD).toNumber();
+  // netAfterHeaderD = ما تفرضه محاسبة الفاتورة (يُخزَّن `discountAmount` و`total` بهذا). قد لا
+  // يكون مضاعفاً للـ٢٥٠ ⇒ التقريب النقديّ يعمل عليه لاحقاً لِـcashFull.
+  const netAfterHeaderD = subtotalD.minus(invoiceDiscountAmountD);
   const paidD   = D(activeTab.payInput || 0);
-  const changeD = paidD.minus(totalD);
-  const creditD = totalD.minus(paidD);
-  const total   = round2(totalD).toNumber();
+  // §٩ IQD denomination rounding: البيع النقديّ الكامل يُقرَّب على أقرب ٢٥٠ د.ع (سياسة المالك).
+  // effectiveTotalD = ما **يقبضه الكاشير فعلياً** (ما تظهره الشاشة، ما يُرسَل payment.amount).
+  // الفرق `netAfterHeaderD − effectiveTotalD` قيدُ ADJUST_ROUNDING خادمياً (§ ٥ من دليل النظام).
+  const cashRoundedTotalD = activeTab.method === "CASH"
+    ? roundCashIQD(netAfterHeaderD.toFixed(2))
+    : netAfterHeaderD;
+  const cashRoundedPaidD = activeTab.method === "CASH" ? roundCashIQD(paidD.toFixed(2)) : paidD;
+  const cashRoundedTotal = cashRoundedTotalD.toNumber();
+  const cashRoundedPaid = cashRoundedPaidD.toNumber();
+  // isCredit يُقاس على **الإجمالي الفعّال** (المقرَّب حين النقد الكامل) — مطابقاً لحساب الخادم.
+  // قبل الآن كان يُقاس على غير المقرَّب، فمبلغٌ يغطّي المقرَّب لكنّه دون غير المقرَّب صار «آجلاً» صامتاً.
+  const isCredit = paidD.gt(0) && paidD.lt(cashRoundedTotalD);
+  const isChange = paidD.gt(0) && paidD.gte(cashRoundedTotalD);
+  // effectiveTotalD = ما **يعرضه الكاشير للعميل**. للنقد الكامل: المقرَّب. غير ذلك: غير المقرَّب.
+  const effectiveTotalD = (activeTab.method === "CASH" && !isCredit) ? cashRoundedTotalD : netAfterHeaderD;
+  const total   = round2(effectiveTotalD).toNumber();
   const paid    = round2(paidD).toNumber();
-  const change  = round2(changeD).toNumber();
-  const credit  = round2(creditD).toNumber();
-  const isCredit = paidD.gt(0) && paidD.lt(totalD);
-  const isChange = paidD.gt(0) && paidD.gte(totalD);
+  const change  = round2(paidD.minus(effectiveTotalD)).toNumber();
+  const credit  = round2(effectiveTotalD.minus(paidD)).toNumber();
+  const cashRoundingDelta = activeTab.method === "CASH" ? cashRoundedTotalD.minus(netAfterHeaderD).toNumber() : 0;
   const externalPaymentAmount = money(isCredit ? paid : total);
   const externalPaymentFingerprint = `${activeTab.method}|${externalPaymentAmount}|${(activeTab.paymentRef ?? "").trim().toUpperCase()}`;
   const externalPaymentConfirmed = activeTab.method === "CASH"
     || (activeTab.externalPayment?.state === "CONFIRMED"
       && activeTab.externalPayment.fingerprint === externalPaymentFingerprint
       && activeTab.externalPayment.attemptId != null);
-
-  // §٩ IQD denomination rounding: مبلغ نقدي يُرسل إلى الخادم بعد التقريب لأقرب ٢٥٠ د.ع.
-  // الكاشير يرى المبلغ الفعلي الذي سيُسجَّل (شارة أسفل لوحة المفاتيح).
-  // غير النقدي (CARD/TRANSFER/CHECK/WALLET) لا يُقرَّب — التحويلات قد تكون كسرية.
-  const cashRoundedPaidD = activeTab.method === "CASH" ? roundCashIQD(paidD.toFixed(2)) : paidD;
-  const cashRoundedTotalD = activeTab.method === "CASH" ? roundCashIQD(totalD.toFixed(2)) : totalD;
-  const cashRoundedPaid = cashRoundedPaidD.toNumber();
-  const cashRoundedTotal = cashRoundedTotalD.toNumber();
-  const cashRoundingDelta = activeTab.method === "CASH" ? cashRoundedTotalD.minus(totalD).toNumber() : 0;
 
   // ── Search ────────────────────────────────────────────────────────────────
   // بحث ذكي: تأجيل ١٨٠ms (طلب واحد بعد استقرار الكتابة لا مع كل حرف) + إبقاء النتائج
@@ -774,7 +846,7 @@ export default function POS() {
       setSelId(null);
       setPayInput("");
       // مفتاح جديد للتبويب: الفاتورة التالية عمليةٌ مستقلّة (نفس اصطلاح البيع العادي).
-      patchActive({ clientRequestId: crypto.randomUUID(), couponCode: null, couponLabel: null, paymentRef: "", externalPayment: null });
+      patchActive({ clientRequestId: crypto.randomUUID(), couponCode: null, couponLabel: null, paymentRef: "", externalPayment: null, invoiceDiscountPct: "" });
       setReceipt(rec);
       notify.ok(`تمّت الفاتورة ${r.invoiceNumber}`, `الإجمالي ${r.total} د.ع — سُجِّلت الكروت وتسوية المزوّد.`);
       void utils.shifts.current.invalidate();
@@ -974,6 +1046,9 @@ export default function POS() {
   const saleCtxRef = useRef<{
     tabId: number;
     lines: Receipt["lines"];
+    subtotal: number;
+    invoiceDiscount: number;
+    cashRounding: number;
     total: number; received: number; change: number; credit: number;
     isCredit: boolean; method: string; methodCode?: string;
     customerName?: string; cashierName?: string;
@@ -996,6 +1071,9 @@ export default function POS() {
         // Codex P2: تفضيل shiftId من الفاتورة المُثبَّتة (idempotent replay بعد إغلاق وردية).
         shiftId: (r as { shiftId?: number | null }).shiftId ?? shift?.id ?? null,
         lines: ctx.lines,
+        subtotal: ctx.subtotal,
+        invoiceDiscount: ctx.invoiceDiscount,
+        cashRounding: ctx.cashRounding,
         total: ctx.total, received: ctx.received, change: ctx.change,
         credit: ctx.credit, isCredit: ctx.isCredit,
         method: ctx.method, methodCode: ctx.methodCode,
@@ -1009,7 +1087,7 @@ export default function POS() {
       setLastInv({ num: r.invoiceNumber, total: serverTotal });
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
-      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "" });
+      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "" });
 
       const printed = await printReceipt(buildBrandedReceipt(alignedRec));
       if (printed.via === "server") {
@@ -1165,7 +1243,8 @@ export default function POS() {
     // الخادم — كان الإيصال يعرض total غير مقرَّب فينجرف صندوق Z-report بالفرق (~٥٠ د.ع لكل بيعة
     // غير مضاعف ٢٥٠) ويُلام عليه الكاشير. roundCashIQD نفس الدالة المُطبَّقة خادمياً ⇒ اتّفاق حتميّ.
     const cashFull = activeTab.method === "CASH" && !isCredit;
-    const displayTotalD = cashFull ? cashRoundedTotalD : totalD;
+    // effectiveTotalD = ما يعرضه الكاشير للعميل. حين النقد الكامل هو المقرَّب (مطابقاً لِـcaptureSaleCtx القديم).
+    const displayTotalD = effectiveTotalD;
     const displayPaidD = cashFull ? cashRoundedPaidD : paidD;
     const finalReceivedD = isCredit ? displayPaidD : displayTotalD;
     const finalChangeD   = isCredit ? D(0)  : displayPaidD.minus(displayTotalD);
@@ -1177,6 +1256,9 @@ export default function POS() {
         qty: c.qty, price: effectivePrice(c),
         disc: c.disc, total: itemTotal(c),
       })),
+      subtotal: subtotal,
+      invoiceDiscount: invoiceDiscountAmount,
+      cashRounding: cashRoundingDelta,
       total: round2(displayTotalD).toNumber(),
       received: round2(finalReceivedD).toNumber(),
       change:   round2(finalChangeD).toNumber(),
@@ -1201,11 +1283,12 @@ export default function POS() {
       notify.errBig("لا بيع رقميّ دون اتصال", "الكروت والاشتراكات تحتاج الخادم للتحقّق من السعر والتنفيذ. أزِلها من السلة.");
       return;
     }
-    // ش٥ — بوابة التجربة (قرار مالك): الالتقاط معطَّل افتراضياً ويُفعَّل لكل جهاز على حدة.
+    // الالتقاط مفعَّلٌ تلقائياً على كل جهاز (قرار مالك ١٦/٨). لا يصل هنا إلّا جهازٌ **عُطِّل
+    // صراحةً** من إعدادات الجهاز — فالرسالة تشرح ذلك بدل مطالبة الكاشير بتفعيلٍ مسبق.
     if (!(await isOfflineSaleEnabled())) {
       notify.errBig(
-        "البيع دون اتصال غير مفعَّل على هذا الجهاز",
-        "التصفح والاستعلام متاحان. تفعيل الالتقاط قرار إداري من «إعدادات الجهاز» في شارة المزامنة أسفل الشاشة.",
+        "البيع دون اتصال مُعطَّل على هذا الجهاز",
+        "عُطِّل يدوياً من «إعدادات الجهاز» في شارة المزامنة أسفل الشاشة — أعِد تفعيله ليقبل النقد أثناء الانقطاع.",
       );
       return;
     }
@@ -1233,7 +1316,9 @@ export default function POS() {
         priceTier: effectiveTier,
         // promotionId يُسقَط عمداً — العروض معطّلة أوفلاين (الخادم يرفض غير المعروف في مخططه).
         lines: cart.map(buildSaleLine).map(({ promotionId: _p, ...rest }) => rest),
-        payment: { amount: money(total), method: "CASH" },
+        ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
+        // نفس منطق submitSale: نرسل المقرَّب لأنّه ما قبضه الكاشير فعلياً (الأوفلاين نقديّ كامل بحكم القرار).
+        payment: { amount: money(cashRoundedTotal), method: "CASH" },
         clientRequestId: activeTab.clientRequestId,
         cashRoundIQD: true,
       },
@@ -1255,6 +1340,8 @@ export default function POS() {
       customerName: ctx.customerName,
       shiftId: shift?.id ?? null,
       lines: ctx.lines,
+      subtotal: ctx.subtotal,
+      invoiceDiscount: ctx.invoiceDiscount,
       total: ctx.total, received: ctx.received, change: ctx.change,
       credit: ctx.credit, isCredit: ctx.isCredit,
       method: ctx.method, methodCode: ctx.methodCode,
@@ -1262,7 +1349,7 @@ export default function POS() {
     setReceipt(rec);
     setLastInv({ num: receiptNumber, total: ctx.total });
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
-    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "" });
+    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId(), paymentRef: "", externalPayment: null, dueDate: "", invoiceDiscountPct: "" });
     const printed = await printReceipt(buildBrandedReceipt(rec));
     if (printed.via === "browser") {
       notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة للإيصال المؤقت");
@@ -1305,25 +1392,38 @@ export default function POS() {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
       return;
     }
+    // الحدّ قبل الوعد (١٩/٨): الشاشة كانت تفحص **وجود** العميل وحده ثمّ ترسل،
+    // فيردّ الخادم بـFORBIDDEN بعد أن أتمّ الموظّف السلة والزبون واقفٌ أمامه. وحدُّ
+    // صفرٍ هو **الافتراضي** لكلّ عميلٍ يُنشأ من الكاشير ⤇ الحالة الغالبة لا النادرة.
+    if (isCredit && selectedCustomer != null && Number(selectedCustomer.creditLimit ?? 0) === 0
+        && selectedCustomer.creditLimit != null) {
+      notify.errBig(
+        "هذا العميل نقديٌّ فقط (حدّ ائتمانه صفر) — حصّل كامل المبلغ، أو اطلب من المدير رفع حدّه من ملف العميل",
+      );
+      return;
+    }
     // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل.
     if (offline) {
       void captureOfflineSale();
       return;
     }
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
-    // نرسل المبلغ غير المقرّب؛ الخادم يقرّبه ويُسجّل النقد المستلم = الإجمالي المقرّب.
+    // نرسل **المبلغ المقرَّب** كتَسليم (ما يقبضه الكاشير فعلياً من الزبون، وما تُظهره الشاشة كصافي).
+    // كان يُرسَل غير المقرَّب، فأيّ إجمالٍ يُقرَّب صعوداً (2,380 ⇒ 2,500) يجعل الخادم يرى القبضَ ناقصاً
+    // فيرفضه كبيعٍ آجلٍ بلا عميل. الخادم يحسب `cashRoundingAdj` من فرق الإجمالي/المقرَّب ⇒ الفارق موثَّق.
     saleCtxRef.current = captureSaleCtx();
     const deviceId = activeTab.method === "CASH"
       ? await getDeviceCode().catch(() => undefined)
       : activeTab.externalPayment?.deviceId;
     const cashFull = activeTab.method === "CASH" && !isCredit;
-    const payAmount = isCredit ? money(paid) : money(total);
+    const payAmount = isCredit ? money(paid) : (cashFull ? money(cashRoundedTotal) : money(total));
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
+      ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
       payment: {
         amount: payAmount,
         method: activeTab.method,
@@ -1364,18 +1464,19 @@ export default function POS() {
       notify.err("المبلغ المقبوض لا يكون سالباً — صحّح المبلغ أو امسح الحقل للدفع الكامل.");
       return;
     }
-    // الدفع السريع كامل؛ التقريب لفئة IQD يخص النقد وحده.
+    // الدفع السريع كامل؛ التقريب لفئة IQD يخص النقد وحده (نفس منطق submitSale أعلاه).
     saleCtxRef.current = captureSaleCtx();
     const deviceId = activeTab.method === "CASH"
       ? await getDeviceCode().catch(() => undefined)
       : activeTab.externalPayment?.deviceId;
-    const payAmount = money(total);
+    const payAmount = activeTab.method === "CASH" ? money(cashRoundedTotal) : money(total);
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       deviceId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
+      ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
       // Quick pay means full payment; it must not silently replace CARD/TRANSFER/WALLET with CASH.
       payment: {
         amount: payAmount,
@@ -1437,7 +1538,7 @@ export default function POS() {
                 description: "ستُفقد كل المنتجات المُضافة في هذه السلّة. هل تتابع؟",
                 confirmText: "تفريغ",
               }))) return;
-              setCart([]); setPayInput(""); setSelId(null);
+              setCart([]); setPayInput(""); setSelId(null); patchActive({ invoiceDiscountPct: "" });
             })();
           }
           break;
@@ -1694,6 +1795,13 @@ export default function POS() {
           C={C}
           stacked={stacked}
           total={total}
+          subtotal={subtotal}
+          invoiceDiscountAmount={invoiceDiscountAmount}
+          invoiceDiscountPct={activeTab.invoiceDiscountPct ?? ""}
+          setInvoiceDiscountPct={(v) => patchActive({ invoiceDiscountPct: v })}
+          invoiceDiscountAllowed={invoiceDiscountAllowed}
+          effectiveHeaderCapPct={effectiveHeaderCapPctD.toNumber()}
+          cashRoundingDelta={cashRoundingDelta}
           payInput={activeTab.payInput}
           setPayInput={setPayInput}
           paid={paid} change={change} credit={credit}
@@ -1750,7 +1858,7 @@ export default function POS() {
               description: "ستُفقد كل المنتجات المُضافة في هذه السلّة. هل تتابع؟",
               confirmText: "تفريغ",
             }))) return;
-            setCart([]); setSelId(null); setPayInput("");
+            setCart([]); setSelId(null); setPayInput(""); patchActive({ invoiceDiscountPct: "" });
           })()}
         />
       </div>
@@ -2195,6 +2303,12 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
                   onCustomerChange={(id) => { setCustId(id); setShowCustPicker(false); }}
                   balance={selectedCustomer?.currentBalance ?? null}
                 />
+                {selectedCustomer != null && selectedCustomer.creditLimit != null
+                  && Number(selectedCustomer.creditLimit) === 0 && (
+                  <div style={{ marginTop: 8, fontSize: 11, fontWeight: 700, color: C.mutedFg, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 6px" }}>
+                    نقديٌّ فقط — لا يقبل الآجل (حدّ ائتمانه صفر)
+                  </div>
+                )}
                 <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <label style={{ fontSize: 12, color: C.mutedFg }}>فئة السعر:</label>
@@ -2429,6 +2543,19 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
 interface PaymentPanelProps {
   C: C;
   total: number; payInput: string;
+  /** المجموع قبل خصم رأس الفاتورة (subtotal). = total إن كان الخصم صفراً. */
+  subtotal: number;
+  /** مبلغ خصم رأس الفاتورة المُحتسَب من النسبة، للعرض والتحقّق البصريّ. */
+  invoiceDiscountAmount: number;
+  /** نصّ نسبة خصم رأس الفاتورة (٠–١٥) — سلسلة كي تقبل حالة «فارغ = صفر». */
+  invoiceDiscountPct: string;
+  setInvoiceDiscountPct: (value: string) => void;
+  /** false ⇒ الحقل غير مسموحٍ (مثلاً سلّة كرت رقميّ) — يُعطَّل بصرياً وتبطل قيمته الفعلية. */
+  invoiceDiscountAllowed: boolean;
+  /** السقفُ الفعّال المتبقّي بالنقاط المئوية (يُقصّ سلطةَ الكاشير حين توجد خصوماتُ سطرٍ مسبقة). */
+  effectiveHeaderCapPct: number;
+  /** فرقُ التقريب النقديّ الحاليّ (± د.ع) — يُعرض إفصاحاً حين لا يكون صفراً. */
+  cashRoundingDelta: number;
   setPayInput: (updater: string | ((s: string) => string)) => void;
   paid: number; change: number; credit: number;
   isChange: boolean; isOwing: boolean;
@@ -2448,7 +2575,7 @@ interface PaymentPanelProps {
   couponPending: boolean;
 }
 
-function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
+function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAllowed, effectiveHeaderCapPct, cashRoundingDelta, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, paymentRef, setPaymentRef, externalPaymentConfirmed, externalPaymentPending, onConfirmExternalPayment, dueDate, setDueDate, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
 
   // ── الاحتواء الديناميكي: تركيبٌ متكيّف قبل المقياس ───────────────────────────
   // شاشات الكاشير الفيزيائية صغيرة، والمطلوب وضوحٌ وكِبَرٌ لا انكماش. لذلك عند ضيق
@@ -2534,8 +2661,101 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
 
       {/* Total */}
       <div style={{ padding: ultra ? "4px 13px" : "8px 13px", background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+        {/* المجموع قبل الخصم — يُعرض فقط عند تطبيق خصم رأس فاتورة، ليتحقّق الكاشير من الفرق أمام العميل. */}
+        {invoiceDiscountAmount > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+            <span style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 600 }}>المجموع قبل الخصم</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+              <span style={{ fontSize: 13.5, fontWeight: 700, direction: "ltr", color: C.mutedFg, textDecoration: "line-through" }}>{fmt(subtotal)}</span>
+              <span style={{ fontSize: 11, color: C.mutedFg }}>د.ع</span>
+            </div>
+          </div>
+        )}
+        {/* خصم على الفاتورة (٢٢/٨) — سلطة الكاشير مقصورة على ١٥٪ (قرار المالك)؛ فوقه بوّابة مدير خادمياً.
+            العرض دائم كي يعرف الكاشير أن الحقل موجود؛ لا حاجة لطيّه (سطر واحد فقط).
+            سقفٌ فعّال ديناميّ: حين تحمل السلّة انحرافاً مسبقاً (عرض/خصم يدويّ)، السلطةُ على الرأس
+            = ١٥٪ − نسبة الانحراف المسبق. الحقلُ يُقصّ نفسه إلى الفعّال، والملصق يعرض السقف الحاليّ. */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3, gap: 8 }}>
+          <span style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 600, flexShrink: 0 }}>
+            خصم على الفاتورة {invoiceDiscountAllowed ? (
+              <span style={{ color: C.mutedFg, fontWeight: 500 }}>
+                (٠–{Number.isInteger(effectiveHeaderCapPct) ? effectiveHeaderCapPct : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "")}٪)
+              </span>
+            ) : (
+              <span style={{ color: C.mutedFg, fontWeight: 500 }}>(غير متاحٍ لسلّة الكروت)</span>
+            )}
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {invoiceDiscountAmount > 0 && (
+              <span style={{ fontSize: 11.5, color: C.amber, fontWeight: 800, direction: "ltr" }}>
+                −{fmt(invoiceDiscountAmount)}
+              </span>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 2, border: `1.5px solid ${invoiceDiscountAmount > 0 ? C.amber : C.border}`, borderRadius: 7, background: C.card, height: 28, padding: "0 6px" }}>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={invoiceDiscountPct}
+                onChange={(e) => {
+                  // القبول الصارم: لا نمسح المحارف الممنوعة بصمت. `-` أو أيّ رمزٍ غير مسموح يُرَدّ
+                  // إلى القيمة السابقة (لا تحويل صامت لسالبٍ إلى موجب). الفاصلةُ العربية/الأوروبية `،/,`
+                  // تُطبَّع إلى نقطةٍ (نفس معنى الفاصل العشريّ)، ولا نقطتان.
+                  const src = e.target.value;
+                  if (src === "") { setInvoiceDiscountPct(""); return; }
+                  // طبِّع الفواصل العشريّة إلى نقطة، **قبل** الفحص الصارم.
+                  const norm = src.replace(/[،,]/g, ".");
+                  // بعد التطبيع لا نقبل إلّا الأرقام ونقطةً واحدةً بحدٍّ أقصى. أيّ محرفٍ آخر ⇒ رَدٌّ صامت.
+                  if (!/^\d*\.?\d*$/.test(norm)) return;
+                  const n = Number(norm);
+                  if (!Number.isFinite(n) || n < 0) return;
+                  if (n > effectiveHeaderCapPct) {
+                    const capStr = Number.isInteger(effectiveHeaderCapPct)
+                      ? String(effectiveHeaderCapPct)
+                      : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "");
+                    setInvoiceDiscountPct(capStr);
+                    return;
+                  }
+                  setInvoiceDiscountPct(norm);
+                }}
+                onBlur={(e) => {
+                  // تنظيف على الترك: قصّ الأصفار الرائدة وتوحيد التمثيل.
+                  const raw = e.target.value.trim();
+                  if (raw === "" || raw === "0" || raw === "0.") { setInvoiceDiscountPct(""); return; }
+                  const n = Number(raw);
+                  if (!Number.isFinite(n) || n <= 0) { setInvoiceDiscountPct(""); return; }
+                }}
+                placeholder="0"
+                aria-label="نسبة خصم الفاتورة"
+                disabled={!invoiceDiscountAllowed}
+                style={{
+                  width: 42, height: 24, border: "none", outline: "none",
+                  background: "transparent", color: C.fg,
+                  fontSize: 13.5, fontWeight: 800, textAlign: "center",
+                  direction: "ltr", fontFamily: "inherit",
+                }}
+              />
+              <span style={{ fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>%</span>
+            </div>
+          </div>
+        </div>
+        {/* تقريبٌ نقديٌّ IQD — يظهر حين يجعل الصافيَ غير مضاعفٍ لـ٢٥٠ (النقد الكامل فقط، سياسة المالك).
+            الإفصاحُ يجعل حسابَ الشاشة يطابق ما يُطبع على الإيصال (subtotal − discount ± rounding = total). */}
+        {cashRoundingDelta !== 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+            <span style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 600 }}>تقريب نقديّ IQD</span>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+              <span style={{ fontSize: 13.5, fontWeight: 700, direction: "ltr", color: C.mutedFg }}>
+                {cashRoundingDelta > 0 ? "+" : ""}{fmt(cashRoundingDelta)}
+              </span>
+              <span style={{ fontSize: 11, color: C.mutedFg }}>د.ع</span>
+            </div>
+          </div>
+        )}
+        {/* الصافي — الرقم الكبير هو ما يقبضه الكاشير فعلياً من الزبون (بعد التقريب النقديّ). */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 12.5, color: C.mutedFg, fontWeight: 600 }}>إجمالي الفاتورة</span>
+          <span style={{ fontSize: 12.5, color: C.mutedFg, fontWeight: 600 }}>
+            {invoiceDiscountAmount > 0 || cashRoundingDelta !== 0 ? "الصافي المستحقّ" : "إجمالي الفاتورة"}
+          </span>
           <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
             <span style={{ fontSize: fluid(24, 3.6, 32), fontWeight: 900, direction: "ltr", letterSpacing: "-1px", color: C.fg }}>{fmt(total)}</span>
             <span style={{ fontSize: 12.5, color: C.mutedFg }}>د.ع</span>
@@ -2655,20 +2875,23 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
           <button style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
             <Banknote aria-hidden size={22} />نقدي
           </button>
-          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
+          <button style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
             <CreditCard aria-hidden size={22} />بطاقة
           </button>
-          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
+          <button style={payMethodStyle(method === "TRANSFER")} onClick={() => setMethod("TRANSFER")}>
             <Send aria-hidden size={22} />تحويل
           </button>
-          <button disabled aria-describedby="pos-external-payment-disabled" title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE} style={payMethodStyle(false, true)}>
+          <button style={payMethodStyle(method === "WALLET")}   onClick={() => setMethod("WALLET")}>
             <Wallet aria-hidden size={22} />محفظة
           </button>
         </div>
-        <div id="pos-external-payment-disabled" role="status" style={{ marginTop: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.amber, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
-          <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
-          <span>{POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}</span>
-        </div>
+        {method !== "CASH" && (
+          // البوّابة ليست إقفالاً بل إثبات: مرجعٌ + تأكيدٌ خادميّ قبل فتح زرّ الإتمام.
+          <div id="pos-external-payment-proof" role="status" style={{ marginTop: 6, display: "flex", alignItems: "flex-start", gap: 5, color: C.mutedFg, fontSize: 11.5, fontWeight: 700, lineHeight: 1.5 }}>
+            <AlertTriangle aria-hidden size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+            <span>{POS_EXTERNAL_PAYMENT_PROOF_HINT}</span>
+          </div>
+        )}
       </div>
 
       {/* مرجع ومحاولة الدفع غير النقدي — لا يُفتح الإتمام قبل CONFIRMED خادمية. */}

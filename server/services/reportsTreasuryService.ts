@@ -16,10 +16,19 @@ function rowsOf(res: unknown): any[] {
   return Array.isArray(data) ? data : [];
 }
 
+// طلب maker-checker يتحقق نقدياً عند اعتماد شخصٍ آخر؛ الحركة الفورية تبقى بتاريخ إنشائها.
+const RECEIPT_CASH_EVENT_AT_SQL = sql`CASE
+  WHEN r.approvedBy IS NOT NULL AND r.approvedBy <> r.createdBy AND r.approvedAt IS NOT NULL
+    THEN r.approvedAt
+  ELSE r.createdAt
+END`;
+
 const PAY_METHOD_AR: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة", TELECOM: "رصيد زين",
 };
 
+// تسمياتٌ خاصّة بهذا التقرير (تشرح السياق: «رواتب (مُسجَّلة كمصروف)» ≠ مسير الأجور).
+// تسمية الواجهة العامة للدلو في shared/expenseCategories.ts — لا تُوحَّدا: هذه تحمل معنىً إضافياً.
 const EXPENSE_CATEGORY_AR: Record<string, string> = {
   RENT: "الإيجار",
   UTILITIES: "الخدمات",
@@ -99,7 +108,8 @@ export async function getTreasurySummary(opts: {
       FROM receipts r
       WHERE r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND r.receiptApprovalStatus = 'APPROVED'
-        AND DATE(r.createdAt) >= ${opts.from} AND DATE(r.createdAt) <= ${opts.to}
+        AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) >= ${opts.from}
+        AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) <= ${opts.to}
         -- العهدة الوسيطة: استبعاد الحركة الداخلية وإلغاء التحويل فقط؛ CANCEL-VCH/EXP أثر تعويضي خارجي.
         -- (نقلٌ بين الدلاء/الفروع أو رأس مال، لا قبض/صرف تشغيليّ ⇒ يمنع ازدواج نقد المبيعات).
         AND COALESCE(r.referenceNumber, '') NOT REGEXP '^(CH|CD|SF|CT|TF)-|^CANCEL-CT-'
@@ -418,7 +428,7 @@ export async function getCashOrphansReport(opts: {
         r.voucherPartyType AS partyType,
         r.partyId AS partyId,
         e.id AS expenseId,
-        r.createdAt AS createdAt,
+        ${RECEIPT_CASH_EVENT_AT_SQL} AS createdAt,
         r.createdBy AS createdById,
         u.name AS createdByName,
         u.role AS createdByRole
@@ -430,8 +440,8 @@ export async function getCashOrphansReport(opts: {
         AND r.paymentMethod = 'CASH'
         AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
         AND r.receiptApprovalStatus = 'APPROVED'
-        ${opts.from ? sql`AND DATE(r.createdAt) >= ${opts.from}` : sql``}
-        ${opts.to ? sql`AND DATE(r.createdAt) <= ${opts.to}` : sql``}
+        ${opts.from ? sql`AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) >= ${opts.from}` : sql``}
+        ${opts.to ? sql`AND DATE(${RECEIPT_CASH_EVENT_AT_SQL}) <= ${opts.to}` : sql``}
         ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
         ${opts.category === "TREASURY" ? sql`AND r.cashBucket = 'TREASURY'` : sql``}
         ${opts.category === "TRUE_ORPHAN" ? sql`AND (r.cashBucket IS NULL OR r.cashBucket = 'DRAWER')` : sql``}

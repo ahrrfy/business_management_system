@@ -3,7 +3,7 @@
 //  - getCustomerStatement: كشف حساب عميل (فواتير + دفعات + ملخّص).
 import { and, asc, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
-import { accountingEntries, customers, invoices, orderPayments, receipts } from "../../../drizzle/schema";
+import { accountingEntries, customers, invoices, orderPayments, receipts, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
 import { isPreInvoiceHoldReceiptCond } from "../reception/holdReceipts";
@@ -120,6 +120,8 @@ export interface CustomerStatementInvoice {
   returnedTotal: string;
   status: string;
   sourceType: string;
+  createdBy: number | null;
+  createdByName: string | null;
 }
 
 export interface CustomerStatementPayment {
@@ -134,10 +136,12 @@ export interface CustomerStatementPayment {
   isStandalone: boolean;
   voucherNumber: string | null;
   description: string | null;
+  createdBy: number | null;
+  createdByName: string | null;
 }
 
 export interface CustomerStatementResult {
-  customer: typeof customers.$inferSelect;
+  customer: Pick<typeof customers.$inferSelect, "id" | "name" | "phone" | "customerType" | "creditLimit" | "defaultPriceTier" | "currentBalance">;
   invoices: CustomerStatementInvoice[];
   payments: CustomerStatementPayment[];
   summary: {
@@ -188,14 +192,22 @@ function customerPaymentLink(customerId: number) {
  */
 async function customerOpeningBalance(customerId: number, from?: string) {
   const db = getDb()!;
+  // ب-١ (١٦/٨): تصحيح الرصيد الافتتاحيّ صار **قيد فرقٍ مؤرَّخاً** لا تعديلاً للأصل. لذا
+  // «الافتتاحيّ كما في تاريخ س» = مجموع قيود OPENING **حتى س** لا مجموعها كلّها: تصحيحٌ وقع
+  // اليوم لا يجوز أن يدخل رصيد كشفٍ بدأ الشهر الماضي — وإلّا تغيّر كشفٌ ماضٍ بلا حركةٍ تفسّره.
+  const fromTs = from ? `${from} 00:00:00` : null;
   const openRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
-    .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.customerId, customerId)));
+    .where(
+      and(
+        eq(accountingEntries.entryType, "OPENING"),
+        eq(accountingEntries.customerId, customerId),
+        fromTs ? sql`${accountingEntries.entryDate} < ${fromTs}` : undefined,
+      ),
+    );
   let opening = money(openRow[0]?.v ?? 0);
-  if (!from) return opening;
-
-  const fromTs = `${from} 00:00:00`;
+  if (!fromTs) return opening;
   const invRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS DECIMAL(15,2))), 0)` })
     .from(invoices)
@@ -277,7 +289,15 @@ export async function getCustomerStatement(
 ): Promise<CustomerStatementResult | null> {
   const db = getDb();
   if (!db) return null;
-  const c = (await db.select().from(customers).where(eq(customers.id, customerId)).limit(1))[0];
+  const c = (await db.select({
+    id: customers.id,
+    name: customers.name,
+    phone: customers.phone,
+    customerType: customers.customerType,
+    creditLimit: customers.creditLimit,
+    defaultPriceTier: customers.defaultPriceTier,
+    currentBalance: customers.currentBalance,
+  }).from(customers).where(eq(customers.id, customerId)).limit(1))[0];
   if (!c) return null;
   const { from, to, branchId } = period;
 
@@ -285,6 +305,7 @@ export async function getCustomerStatement(
   if (from) invConds.push(sql`${invoices.invoiceDate} >= ${`${from} 00:00:00`}`);
   if (to) invConds.push(sql`${invoices.invoiceDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   if (branchId) invConds.push(eq(invoices.branchId, branchId));
+  const invoiceActor = alias(users, "customerStatementInvoiceActor");
   const invs = await db
     .select({
       id: invoices.id,
@@ -296,8 +317,11 @@ export async function getCustomerStatement(
       returnedTotal: invoices.returnedTotal,
       status: invoices.status,
       sourceType: invoices.sourceType,
+      createdBy: invoices.createdBy,
+      createdByName: sql<string | null>`COALESCE(${invoiceActor.name}, ${invoiceActor.username})`,
     })
     .from(invoices)
+    .leftJoin(invoiceActor, eq(invoiceActor.id, invoices.createdBy))
     .where(and(...invConds))
     .orderBy(desc(invoices.invoiceDate));
 
@@ -310,6 +334,7 @@ export async function getCustomerStatement(
   payConds.push(sql`${receipts.status} IN ('COMPLETED', 'REVERSED')`);
   if (from) payConds.push(sql`${receipts.createdAt} >= ${`${from} 00:00:00`}`);
   if (to) payConds.push(sql`${receipts.createdAt} < ${`${nextDayStr(to)} 00:00:00`}`);
+  const receiptActor = alias(users, "customerStatementReceiptActor");
   const payments = await db
     .select({
       id: receipts.id,
@@ -321,9 +346,12 @@ export async function getCustomerStatement(
       createdAt: receipts.createdAt,
       voucherNumber: receipts.voucherNumber,
       description: receipts.description,
+      createdBy: receipts.createdBy,
+      createdByName: sql<string | null>`COALESCE(${receiptActor.name}, ${receiptActor.username})`,
     })
     .from(receipts)
     .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+    .leftJoin(receiptActor, eq(receiptActor.id, receipts.createdBy))
     .where(and(...payConds))
     .orderBy(asc(receipts.createdAt), asc(receipts.id));
 
@@ -341,7 +369,7 @@ export async function getCustomerStatement(
   if (from) codPayConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
   if (to) codPayConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   const codPayments = await db
-    .select({ id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount, createdAt: accountingEntries.entryDate, notes: accountingEntries.notes })
+    .select({ id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount, createdAt: accountingEntries.entryDate, notes: accountingEntries.notes, createdBy: accountingEntries.createdBy, createdByName: accountingEntries.createdByNameSnapshot })
     .from(accountingEntries)
     .leftJoin(codStmtReceipts, eq(accountingEntries.receiptId, codStmtReceipts.id))
     .where(and(...codPayConds));
@@ -363,9 +391,35 @@ export async function getCustomerStatement(
       amount: accountingEntries.amount,
       createdAt: accountingEntries.entryDate,
       notes: accountingEntries.notes,
+      createdBy: accountingEntries.createdBy,
+      createdByName: accountingEntries.createdByNameSnapshot,
     })
     .from(accountingEntries)
     .where(and(...returnConds));
+
+  // ب-١ (١٦/٨): قيود تصحيح الرصيد الافتتاحيّ **الواقعة داخل الفترة** حركةٌ في الكشف لا رصيدٌ
+  // مُرحَّل (المُرحَّل صار مقصوراً على ما قبل `from`). بدون هذا السطر يفقد الكشف اتزانه:
+  // المُرحَّل يستبعدها والحركة لا تعرضها ⇒ الختاميّ ≠ الرصيد الجاري بمقدار التصحيح.
+  const openingMoveConds = [
+    eq(accountingEntries.entryType, "OPENING"),
+    eq(accountingEntries.customerId, customerId),
+  ];
+  if (from) openingMoveConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
+  if (to) openingMoveConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
+  // بلا فترة: المُرحَّل يشمل كلّ القيود أصلاً ⇒ لا نُكرّرها حركةً.
+  const openingAdjustments = from
+    ? await db
+        .select({
+          id: accountingEntries.id,
+          amount: accountingEntries.amount,
+          createdAt: accountingEntries.entryDate,
+          notes: accountingEntries.notes,
+          createdBy: accountingEntries.createdBy,
+          createdByName: accountingEntries.createdByNameSnapshot,
+        })
+        .from(accountingEntries)
+        .where(and(...openingMoveConds))
+    : [];
 
   const openingBalance = await customerOpeningBalance(customerId, from);
 
@@ -426,6 +480,8 @@ export async function getCustomerStatement(
       returnedTotal: String(i.returnedTotal ?? "0"),
       status: i.status,
       sourceType: i.sourceType,
+      createdBy: i.createdBy ? Number(i.createdBy) : null,
+      createdByName: i.createdByName,
     })),
     payments: [
       ...payments.map((p) => ({
@@ -439,6 +495,8 @@ export async function getCustomerStatement(
         isStandalone: p.invoiceId == null,
         voucherNumber: p.voucherNumber ? String(p.voucherNumber) : null,
         description: p.description ? String(p.description) : null,
+        createdBy: p.createdBy ? Number(p.createdBy) : null,
+        createdByName: p.createdByName,
       })),
       ...codPayments.map((e) => ({
         id: -Number(e.id),
@@ -451,6 +509,8 @@ export async function getCustomerStatement(
         isStandalone: false,
         voucherNumber: null,
         description: e.notes ? String(e.notes) : "تحصيل مندوب التوصيل",
+        createdBy: e.createdBy ? Number(e.createdBy) : null,
+        createdByName: e.createdByName,
       })),
       ...returnPayments.map((e) => ({
         id: -1_000_000_000 - Number(e.id),
@@ -463,6 +523,24 @@ export async function getCustomerStatement(
         isStandalone: false,
         voucherNumber: null,
         description: e.notes ? String(e.notes) : "مرتجع مبيعات",
+        createdBy: e.createdBy ? Number(e.createdBy) : null,
+        createdByName: e.createdByName,
+      })),
+      // تصحيح رصيد افتتاحيّ داخل الفترة: الإشارة بدلالة أعمار AR نفسها (موجب يزيد ما علينا
+      // تحصيله = أثر PAYMENT_OUT، وسالب يخفّضه = أثر PAYMENT_IN) فيتّسق الرصيد الجاري للكشف.
+      ...openingAdjustments.map((e) => ({
+        id: -2_000_000_000 - Number(e.id),
+        invoiceId: null as number | null,
+        direction: (money(e.amount).isNegative() ? "IN" : "OUT") as "IN" | "OUT",
+        amount: money(e.amount).abs().toFixed(2),
+        paymentMethod: "OPENING_ADJ",
+        status: "COMPLETED",
+        createdAt: e.createdAt,
+        isStandalone: true,
+        voucherNumber: null,
+        description: e.notes ? String(e.notes) : "تصحيح رصيد افتتاحي",
+        createdBy: e.createdBy ? Number(e.createdBy) : null,
+        createdByName: e.createdByName,
       })),
     ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     summary: {

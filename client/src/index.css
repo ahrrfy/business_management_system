@@ -43,6 +43,11 @@
   --font-sans: "Cairo", system-ui, -apple-system, sans-serif;
 
   /* Larger, heavier type tokens for clear Arabic text across every screen. */
+  /* الأرضيّة العملية (١٩/٨): الشاشات تهرب من `--text-xs` **٦٣٣ مرّة** إلى أرقامٍ حرفية
+     (416× 11px · 168× 10px · 20× 9px) — وCairo تحت 12px يفقد تمييز النقاط والهمزات على
+     شاشة لمس. هذه الدرجة تُنهي الهروب بأرضيّةٍ مقروءة. */
+  --text-2xs: 0.75rem;
+  --text-2xs--line-height: 1.125rem;
   --text-xs: 0.8125rem;
   --text-xs--line-height: 1.25rem;
   --text-sm: 0.9375rem;
@@ -59,8 +64,15 @@
   --text-3xl--line-height: 2.5rem;
   --text-4xl: 2.375rem;
   --text-4xl--line-height: 2.75rem;
-  --font-weight-normal: 600;
-  --font-weight-medium: 700;
+  /* سلّم الأوزان (مُصلَح ١٩/٨) — كان **مكسوراً من جهتين**، وهو أحد جذرَي «التصميم غير المرتّب»:
+     ① `medium` و`semibold` كانا **٧٠٠ حرفياً كلاهما** ⇒ `font-medium` و`font-semibold` لا
+        يفترقان بصرياً، فتضيع رتبةُ هرمٍ كاملة ويستوي الثانويّ بالأساسيّ في كل شاشة.
+     ② `normal: 600` هنا بينما `body { font-weight: 500 }` في `comfort.css:36` **خارج أيّ
+        طبقة** فيغلب بحكم Cascade Layers ⇒ المتن يُرسَم بوزنٍ ليس على السلّم أصلاً، وأيّ
+        `font-normal` يقفز إلى ٦٠٠ بلا سببٍ ظاهر.
+     الأربعة محمَّلةٌ فعلاً من الخطّ (`main.tsx` يستورد 400/500/600/700/800). */
+  --font-weight-normal: 500;
+  --font-weight-medium: 600;
   --font-weight-semibold: 700;
   --font-weight-bold: 800;
 }
@@ -306,35 +318,70 @@ option:disabled {
 }
 
 @layer components {
-  /* Storefront only: a deliberately small marketing palette.  Green carries trust,
-     while gold is reserved for a customer action that moves the order forward. */
+  /* Storefront only: a joyful stationery palette anchored by a calm navy. */
   .storefront {
-    --store-brand: #087e6b;
-    --store-brand-strong: #056455;
-    --store-accent: #e99b00;
-    --store-accent-strong: #bd7600;
-    --store-canvas: #f5fbf8;
-    --store-ink: #15312c;
-    --store-muted: #637873;
-    --store-sale: #c23a2b;
+    --store-brand: #25406f;
+    --store-brand-strong: #1b3158;
+    --store-accent: #ef6a5b;
+    --store-accent-strong: #d95245;
+    --store-sun: #f4c84d;
+    --store-mint: #dff4ee;
+    --store-lilac: #eee6f6;
+    --store-peach: #ffe5d5;
+    --store-canvas: #fbf8f2;
+    --store-ink: #20252a;
+    --store-muted: #727b80;
+    --store-sale: #d95245;
     background-color: var(--store-canvas);
     color: var(--store-ink);
+    background-image: radial-gradient(circle at 10px 10px, rgb(37 64 111 / 7%) 1.25px, transparent 1.5px);
+    background-size: 24px 24px;
   }
 
   .storefront .store-product-card {
-    border: 1px solid color-mix(in srgb, var(--store-brand) 9%, white);
-    box-shadow: 0 1px 2px rgb(21 49 44 / 5%);
+    border: 1px solid #e8e0d8;
+    box-shadow: 0 2px 8px rgb(27 27 27 / 6%);
   }
+
+  .storefront .store-category-grid > button {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1rem;
+  }
+
+  .storefront .store-category-grid > button::after {
+    position: absolute;
+    inset: auto -18px -24px auto;
+    width: 72px;
+    height: 72px;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 42%);
+    content: "";
+    pointer-events: none;
+  }
+
+  .storefront .store-category-grid > button:nth-child(3n + 1) { background: #fff8df; border-color: #f0d991; }
+  .storefront .store-category-grid > button:nth-child(3n + 2) { background: #e9f7f2; border-color: #c5e8dc; }
+  .storefront .store-category-grid > button:nth-child(3n) { background: #f3ebf8; border-color: #dfcdea; }
+  .storefront .store-category-grid > button:hover { transform: translateY(-2px); }
+  .storefront .store-category-grid > button:nth-child(3n + 1) > span:first-child { background: #f4c84d; color: #25406f; }
+  .storefront .store-category-grid > button:nth-child(3n + 2) > span:first-child { background: #8ed8c3; color: #25406f; }
+  .storefront .store-category-grid > button:nth-child(3n) > span:first-child { background: #d7b4e8; color: #5e3e6e; }
 
   .storefront .store-product-card:hover {
     border-color: color-mix(in srgb, var(--store-brand) 32%, white);
-    box-shadow: 0 12px 24px rgb(21 49 44 / 10%);
-    transform: translateY(-2px);
+    box-shadow: 0 6px 14px rgb(27 27 27 / 10%);
+    transform: translateY(-1px);
   }
 
   .storefront .store-product-media {
-    background: radial-gradient(circle at 50% 28%, #fff 0, #edf8f3 62%, #d7eee4 100%);
+    background: #f1ece4;
   }
+
+  .storefront .store-product-card:nth-child(4n + 1) .store-product-media { background: #fff8df; }
+  .storefront .store-product-card:nth-child(4n + 2) .store-product-media { background: #e9f7f2; }
+  .storefront .store-product-card:nth-child(4n + 3) .store-product-media { background: #f3ebf8; }
+  .storefront .store-product-card:nth-child(4n) .store-product-media { background: #ffe9dd; }
 
   .storefront .store-product-image {
     transition: transform 180ms ease;
@@ -345,19 +392,19 @@ option:disabled {
   }
 
   .storefront .store-product-image-placeholder {
-    background: linear-gradient(145deg, #effaf5, #d9f1e6);
+    background: #f1ece4;
     color: var(--store-brand);
   }
 
   .storefront .store-primary-action {
     background-color: var(--store-accent);
     color: #fff;
-    box-shadow: 0 6px 14px rgb(233 155 0 / 20%);
+    box-shadow: 0 8px 0 rgb(37 64 111 / 10%);
   }
 
   .storefront .store-primary-action:hover:not(:disabled) {
     background-color: var(--store-accent-strong);
-    box-shadow: 0 8px 18px rgb(189 118 0 / 24%);
+    box-shadow: 0 5px 0 rgb(37 64 111 / 12%);
   }
 
   .storefront .store-primary-action:disabled {
@@ -367,6 +414,10 @@ option:disabled {
   /* Thumb-friendly CTAs: purchase controls stay comfortably tappable without
      expanding desktop cards unnecessarily. */
   @media (max-width: 639px) {
+    .storefront {
+      background-image: none;
+    }
+
     .storefront .store-mobile-action {
       min-height: 44px;
     }
@@ -384,9 +435,22 @@ option:disabled {
     }
   }
 
+  .storefront .bg-emerald-600 { background-color: var(--store-brand) !important; }
+  .storefront .hover\:bg-emerald-700:hover { background-color: var(--store-brand-strong) !important; }
+  .storefront .bg-emerald-50 { background-color: #f1ebe4 !important; }
+  .storefront .text-emerald-600, .storefront .text-emerald-700, .storefront .text-emerald-500 { color: var(--store-brand) !important; }
+  .storefront .bg-amber-500 { background-color: var(--store-accent) !important; }
+  .storefront .hover\:bg-amber-600:hover { background-color: var(--store-accent-strong) !important; }
+  .storefront .bg-amber-100 { background-color: #f3e3d2 !important; }
+  .storefront .text-amber-700 { color: #9a5b2b !important; }
+  .storefront .border-emerald-100, .storefront .border-emerald-100\/70 { border-color: #e8e0d8 !important; }
+  .storefront .ring-emerald-100\/80 { --tw-ring-color: #e8e0d8 !important; }
+  .storefront .focus\:ring-emerald-400:focus { --tw-ring-color: var(--store-accent) !important; }
+
   .dark .storefront {
-    --store-canvas: #0b1714;
-    --store-ink: #edf7f2;
+    --store-canvas: #202532;
+    --store-ink: #fbf8f2;
+    background-image: radial-gradient(circle at 10px 10px, rgb(255 255 255 / 6%) 1.25px, transparent 1.5px);
   }
 
   .dark .storefront .store-product-card {
@@ -400,11 +464,11 @@ option:disabled {
   }
 
   .dark .storefront .store-product-media {
-    background: radial-gradient(circle at 50% 28%, #1f3831 0, #152821 62%, #0f1d19 100%);
+    background: #2d2a27;
   }
 
   .dark .storefront .store-product-image-placeholder {
-    background: linear-gradient(145deg, #19362c, #10251e);
+    background: #2d2a27;
   }
 
   .container {

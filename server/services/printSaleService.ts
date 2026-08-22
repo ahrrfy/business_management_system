@@ -26,16 +26,25 @@ import {
   receipts,
   shifts,
 } from "../../drizzle/schema";
-import { computeInvoiceCost, computeInvoiceTotals, computeLineTotal, isInvoiceBelowCost } from "./billing";
+import {
+  MANUAL_DISCOUNT_APPROVAL_THRESHOLD,
+  computeInvoiceCost,
+  computeInvoiceTotals,
+  computeLineTotal,
+  isInvoiceBelowCost,
+  lineDiscountExceedsThreshold,
+} from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
+import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "./accounting/postingEngine";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
 import { nextInvoiceNumber } from "./numbering";
-import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
+import { getUnitPrice, resolveTier, tryGetUnitPrice, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
+import { paymentAssetRole } from "./sale/paymentPosting";
 import type { Tx } from "../db";
 import {
   assertExternalPaymentReplay,
@@ -44,6 +53,7 @@ import {
   type LockedExternalPaymentAttempt,
 } from "./posExternalPayment";
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 
 /** علامة عرض ومسار بيع لبنود الطباعة، سواء كانت بلا مخزون أم نواتج مخزنية. */
 export const PRINT_SERVICE_TYPE = "PRINT_SERVICE";
@@ -131,14 +141,27 @@ interface MaterialConsumption {
 }
 
 export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, actor: Actor): Promise<CreatePrintSaleResult> {
+    const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // حارس النواة لا وسم الراوتر: الاستقبال وتثبيت المسوّدة يستدعيان
     // هذه الخدمة مباشرةً بلا requireExternalPaymentAttempt؛ لذلك يُرفض غير النقدي قبل
     // idempotency أو أي قراءة/كتابة مالية أو مخزنية.
     if (input.payment) {
       assertPosPaymentMethodEnabled(input.payment.method);
+      // ثابت «لا قبضَ بلا أثرٍ قابلٍ للمطابقة»: نظير الحارس في `sale/payment.ts`. كانت هذه
+      // القناة تُنشئ إيصالها بنفسها، فمرّ قبضٌ غير نقديّ بلا مرجعٍ حين تُستدعى الخدمة مباشرةً.
+      // المرجع الحاكم إمّا محاولةٌ مؤكَّدة (قناة PrintPOS تُرسل معرّفها ويُقرأ مرجعها تحت القفل)
+      // أو نصٌّ يدخله الموظّف (قناة الاستقبال). أحدهما إلزاميّ: لا قبضَ بلا أثرٍ قابلٍ للمطابقة.
+      if (
+        input.payment.method !== "CASH"
+        && !(input.payment.reference ?? "").trim()
+        && input.payment.externalPaymentAttemptId == null
+      ) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة/التحويل مطلوب" });
+      }
     }
     // ١. Idempotency: أعِد الفاتورة القائمة لنفس clientRequestId (نقرة مزدوجة/إعادة إرسال).
     if (input.clientRequestId) {
+      await checkIdempotency(tx, "printSale.create", input.clientRequestId, requestFingerprint);
       const existing = await tx
         .select()
         .from(invoices)
@@ -312,16 +335,26 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     }> = [];
     const materialAgg = new Map<number, { baseQuantity: number; unitCost: Decimal }>();
     const stockedAgg = new Map<number, number>();
+    // H6 (انجراف القناتين): كانت قناة الطباعة تحرس **تحت التكلفة** وحدها، بينما مسار البيع يحرس
+    // الانحراف عن السعر المرجعيّ أيضاً ⇒ سياستان مختلفتان لنفس القرار الماليّ على شاشتين. توحيدُهما
+    // هنا يُغلق الباب الخلفيّ: تنازلٌ سعريّ كبيرٌ فوق التكلفة كان يمرّ بلا اعتمادٍ ولا وسمٍ تدقيقيّ.
+    let manualDiscountGateTriggered = false;
 
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
+      // H6: مرجعُ القياس هو سعر القائمة (غير رامٍ) — القناة تُسعَّر يدوياً بطبيعتها، لكنّ وجود
+      // مرجعٍ يجعل الانحراف قابلاً للقياس. بلا مرجع ⇒ لا بوّابة (تلك حالة H7 لا H6).
+      const listRef = await tryGetUnitPrice(tx, l.productUnitId, tier);
       const unitPrice =
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)
-          : await getUnitPrice(tx, l.productUnitId, tier);
+          : (listRef ?? (await getUnitPrice(tx, l.productUnitId, tier)));
       const lineRes = computeLineTotal({ unitPrice, quantity: money(l.quantity) });
       const variant = varMap.get(l.variantId)!;
       const isStocked = variant.isService !== true;
+      if (lineDiscountExceedsThreshold(listRef ?? money(0), money(l.quantity), lineRes.total)) {
+        manualDiscountGateTriggered = true;
+      }
 
       let unitCost = round2(money(variant.costPrice));
       if (isStocked) {
@@ -366,10 +399,12 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     //     المنطق مشترك في billing.isInvoiceBelowCost (نفس سياسة saleService)؛ خدمات بلا وصفة (تكلفة=صفر)
     //     تَبقى مسموحة بأي سعر.
     const belowCost = isInvoiceBelowCost(computed, totals.subtotal, totals.discountAmount, costTotal);
-    if (belowCost && !input.priceOverrideApproved) {
+    if ((belowCost || manualDiscountGateTriggered) && !input.priceOverrideApproved) {
       throw new TRPCError({
         code: "FORBIDDEN",
-        message: "بيع خدمة بأقل من تكلفة موادها يتطلب موافقة مدير.",
+        message: belowCost
+          ? "بيع خدمة بأقل من تكلفة موادها يتطلب موافقة مدير."
+          : `خصمٌ يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن السعر المرجعيّ يتطلب موافقة مدير.`,
       });
     }
 
@@ -567,7 +602,11 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
 
     // ١٢. قيد البيع (revenue = صافٍ قبل الضريبة، cost = كلفة المواد المستهلكة).
     const revenue = money(totals.subtotal).minus(money(totals.discountAmount));
-    await postEntry(tx, {
+  const salePostingSource = {
+    roleDebits: { AR: money(totals.total), OTHER_LIABILITY: preCollectedD, COGS: costTotal },
+    roleCredits: { AR: preCollectedD, SALES_PRINT: revenue, TAX_PAYABLE: money(totals.taxAmount), INVENTORY: costTotal },
+  };
+  await postEntry(tx, {
       entryType: "SALE",
       dedupeKey: `SALE:${invoiceId}`,
       branchId: input.branchId,
@@ -578,7 +617,11 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       profit: revenue.minus(costTotal),
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
-    });
+      createdBy: actor.userId,
+      createdByNameSnapshot: salespersonNameSnapshot,
+    postingIntent: createPostingIntent("SALE_SERVICE", "SALE", [debitLine("AR", money(totals.total)), creditLine("SALES_PRINT", revenue), ...(money(totals.taxAmount).isZero() ? [] : [creditLine("TAX_PAYABLE", money(totals.taxAmount))]), ...(costTotal.isZero() ? [] : [debitLine("COGS", costTotal), creditLine("INVENTORY", costTotal)]), ...(preCollectedD.isZero() ? [] : [debitLine("OTHER_LIABILITY", preCollectedD), creditLine("AR", preCollectedD)])], salePostingSource),
+    postingSourceComponents: salePostingSource,
+  });
 
     // ١٢.b تسوية التقريب النقدي.
     // G15 (١٩/٦/٢٦): dedupeKey حارس ضدّ تكرار ADJUST لو حدثت إعادة محاولة بعد ER_DUP_ENTRY
@@ -594,7 +637,8 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         profit: cashRoundingAdj,
         amount: cashRoundingAdj,
         notes: "تقريب نقدي IQD",
-      });
+      postingIntent: createPostingIntent("ADJUST_ROUNDING", "ADJUST", signedPostingLines("AR", "ROUNDING_DIFF", cashRoundingAdj)),
+    });
     }
 
     // ١٣. الدفع + الذمم — ش٤ (I5): الإيصال والقيد للجزء الجديد وحده (مرآة sale/create).
@@ -612,12 +656,18 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         paymentMethod: input.payment!.method,
         referenceNumber: externalPaymentAttempt?.externalReference ?? (input.payment!.reference?.trim() || null),
         status: "COMPLETED",
+        approvalStatus: "APPROVED",
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(rRes);
       if (externalPaymentAttempt) {
         await bindExternalPaymentAttempt(tx, Number(externalPaymentAttempt.id), invoiceId, receiptId);
       }
+      const paymentRole = paymentAssetRole(input.payment!.method, input.payment!.method === "CASH" ? "DRAWER" : null, "IN");
+      const paymentPostingSource = {
+        roleDebits: { [paymentRole]: newMoneyD },
+        roleCredits: { AR: newMoneyD },
+      };
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
@@ -626,7 +676,9 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         customerId: input.customerId ?? null,
         amount: newMoneyD,
         paymentMethod: input.payment!.method, // دلو النقد للدفتر المزدوج (لا يُخزَّن)
-      });
+      postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(paymentRole, newMoneyD), creditLine("AR", newMoneyD)], paymentPostingSource),
+      postingSourceComponents: paymentPostingSource,
+    });
     }
     for (const preReceiptId of input.preCollected?.receiptIds ?? []) {
       await tx
@@ -637,8 +689,12 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     if (input.customerId) {
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
     }
+    if (input.clientRequestId && requestFingerprint) {
+      await recordIdempotencyKey(tx, "printSale.create", input.clientRequestId, invoiceId, requestFingerprint);
+    }
 
-    return { invoiceId, invoiceNumber, shiftId: input.shiftId ?? null, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost };
+    // الوسم يشمل التنازل فوق التكلفة أيضاً (مرآة saleService) — وإلّا بقي تنازلٌ معتمَدٌ بلا أثرٍ رقابيّ.
+    return { invoiceId, invoiceNumber, shiftId: input.shiftId ?? null, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost || manualDiscountGateTriggered };
 }
 
 /** Public wrapper for callers that need a standalone atomic print sale. */

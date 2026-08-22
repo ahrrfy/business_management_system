@@ -32,6 +32,7 @@ import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { assertCashOutAvailable, assertTreasuryOutException, lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { createPostingIntent, creditLine, debitLine, signedPostingLines } from "../accounting/postingEngine";
 import { money, sumMoney, toDbMoney } from "../money";
 import type { Actor } from "../tx";
 import { redactAuditValue } from "../auditService";
@@ -192,6 +193,16 @@ async function refundAndPostReturn(
   //   • خسارة ⇒ −sell + 0       = −sell    (الإيراد يزول والحصة تبقى تكلفةً محمَّلة)
   const revenue = opts.sell.neg();
   const cost = opts.reversedCost.neg();
+  const returnSourceComponents = {
+    roleDebits: {
+      OTHER_REVENUE: opts.sell,
+      INVENTORY: opts.reversedCost,
+    },
+    roleCredits: {
+      AR: opts.sell,
+      COGS: opts.reversedCost,
+    },
+  };
   await postEntry(tx, {
     entryType: "RETURN",
     branchId: opts.branchId,
@@ -205,6 +216,41 @@ async function refundAndPostReturn(
     dedupeKey: `DIGITAL:REV:${opts.invoiceId}:${opts.kind}:${actor.userId}:${receiptId}`,
     notes: opts.kind === "REVERSED" ? "عكس بيع كروت" : "ردّ خسارة كروت",
     createdBy: actor.userId,
+    postingSourceComponents: returnSourceComponents,
+    postingIntent: createPostingIntent(
+      "RETURN_SALE_DIGITAL",
+      "RETURN",
+      [
+        debitLine("OTHER_REVENUE", opts.sell),
+        creditLine("AR", opts.sell),
+        ...(opts.reversedCost.isZero()
+          ? []
+          : [debitLine("INVENTORY", opts.reversedCost), creditLine("COGS", opts.reversedCost)]),
+      ],
+      returnSourceComponents,
+    ),
+  });
+  const refundSourceComponents = {
+    roleDebits: { AR: opts.sell },
+    roleCredits: { TREASURY_CASH: opts.sell },
+  };
+  await postEntry(tx, {
+    entryType: "PAYMENT_OUT",
+    branchId: opts.branchId,
+    invoiceId: opts.invoiceId,
+    customerId: opts.customerId ?? null,
+    receiptId,
+    amount: opts.sell,
+    dedupeKey: `DIGITAL:REFUND:${opts.invoiceId}:${opts.kind}:${receiptId}`,
+    notes: opts.kind === "REVERSED" ? "دفع استرداد عكس بيع كروت" : "دفع ردّ خسارة كروت",
+    createdBy: actor.userId,
+    postingSourceComponents: refundSourceComponents,
+    postingIntent: createPostingIntent(
+      "PAYMENT_OUT_CUSTOMER_REFUND",
+      "PAYMENT_OUT",
+      [debitLine("AR", opts.sell), creditLine("TREASURY_CASH", opts.sell)],
+      refundSourceComponents,
+    ),
   });
   return receiptId;
 }
@@ -322,6 +368,19 @@ export async function approveReversal(
       dedupeKey: `DIGITAL:WREV:${input.invoiceId}:${walletId}:${receiptId}`,
       notes: "إعادة رصيد محفظة بعكس بيع",
       createdBy: actor.userId,
+      postingSourceComponents: {
+        roleDebits: { DIGITAL_WALLET: amount },
+        roleCredits: { INVENTORY: amount },
+      },
+      postingIntent: createPostingIntent(
+        "DIGITAL_WALLET_REVERSAL_SALE",
+        "DIGITAL_WALLET_REVERSAL",
+        [debitLine("DIGITAL_WALLET", amount), creditLine("INVENTORY", amount)],
+        {
+          roleDebits: { DIGITAL_WALLET: amount },
+          roleCredits: { INVENTORY: amount },
+        },
+      ),
     });
   }
 
@@ -348,6 +407,19 @@ export async function approveReversal(
       dedupeKey: `DIGITAL:APREV:${input.invoiceId}:${providerId}:${receiptId}`,
       notes: "عكس استحقاق مزوّد كروت",
       createdBy: actor.userId,
+      postingSourceComponents: {
+        roleDebits: { AP: amount },
+        roleCredits: { INVENTORY: amount },
+      },
+      postingIntent: createPostingIntent(
+        "PURCHASE_DIGITAL",
+        "PURCHASE",
+        signedPostingLines("INVENTORY", "AP", amount.neg()),
+        {
+          roleDebits: { AP: amount },
+          roleCredits: { INVENTORY: amount },
+        },
+      ),
     });
     await adjustSupplierBalance(tx, supplierId, amount.neg());
   }

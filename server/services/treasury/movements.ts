@@ -26,6 +26,9 @@ export interface MovementRow {
   shiftOwnerName: string | null;
   createdBy: number | null;
   createdByName: string | null;
+  partyType: string | null;
+  partyId: number | null;
+  partyName: string | null;
   approvedBy: number | null;
   approvedByName: string | null;
   referenceNumber: string | null;
@@ -66,12 +69,18 @@ export async function getRecentMovements(
     effectiveBranch != null ? sql`AND r.branchId = ${effectiveBranch}` : sql``;
   const branchFilterE =
     effectiveBranch != null ? sql`AND e.branchId = ${effectiveBranch}` : sql``;
-  // مدى تاريخ اختياري (createdAt) — to شامل ليومه كاملاً (نمط getCardMovements: < بداية اليوم التالي).
+  // زمن الحركة النقدية = approvedAt لطلبات اعتماد فصل المهام، وcreatedAt للحركات الفورية.
+  // طلب D1 اعتُمِد D2 يجب أن يظهر في D2، لا بأثر رجعي في يوم إنشائه.
+  const receiptCashEventAtSql = sql`CASE
+    WHEN r.approvedBy IS NOT NULL AND r.approvedBy <> r.createdBy AND r.approvedAt IS NOT NULL
+      THEN r.approvedAt
+    ELSE r.createdAt
+  END`;
   const fromFilterR = input.from
-    ? sql`AND r.createdAt >= ${input.from}`
+    ? sql`AND ${receiptCashEventAtSql} >= ${input.from}`
     : sql``;
   const toFilterR = input.to
-    ? sql`AND r.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)`
+    ? sql`AND ${receiptCashEventAtSql} < DATE_ADD(${input.to}, INTERVAL 1 DAY)`
     : sql``;
   const fromFilterE = input.from
     ? sql`AND e.createdAt >= ${input.from}`
@@ -120,6 +129,13 @@ export async function getRecentMovements(
           su.name AS shiftOwnerName,
           r.createdBy AS createdBy,
           cu.name AS createdByName,
+          r.voucherPartyType AS partyType,
+          r.partyId AS partyId,
+          CASE
+            WHEN r.voucherPartyType = 'CUSTOMER' THEN cust.name
+            WHEN r.voucherPartyType = 'SUPPLIER' THEN supp.name
+            ELSE r.counterpartyName
+          END AS partyName,
           r.approvedBy AS approvedBy,
           au.name AS approvedByName,
           COALESCE(ex.referenceNumber, r.referenceNumber) AS referenceNumber,
@@ -132,11 +148,13 @@ export async function getRecentMovements(
           ex.costCenter AS costCenter,
           (SELECT ae.id FROM accountingEntries ae WHERE ae.receiptId = r.id ORDER BY ae.id DESC LIMIT 1) AS ledgerEntryId,
           COALESCE(ex.expenseDate, r.voucherDate, DATE(r.createdAt)) AS documentDate,
-          r.createdAt AS createdAt
+          ${receiptCashEventAtSql} AS createdAt
         FROM receipts r
         LEFT JOIN branches b ON b.id = r.branchId
         LEFT JOIN expenses ex ON ex.receiptId = r.id
         LEFT JOIN users cu ON cu.id = r.createdBy
+        LEFT JOIN customers cust ON r.voucherPartyType = 'CUSTOMER' AND cust.id = r.partyId
+        LEFT JOIN suppliers supp ON r.voucherPartyType = 'SUPPLIER' AND supp.id = r.partyId
         LEFT JOIN users au ON au.id = r.approvedBy
         LEFT JOIN shifts s ON s.id = r.shiftId
         LEFT JOIN users su ON su.id = s.userId
@@ -170,6 +188,9 @@ export async function getRecentMovements(
           su.name AS shiftOwnerName,
           e.createdBy AS createdBy,
           cu.name AS createdByName,
+          'OTHER' AS partyType,
+          NULL AS partyId,
+          e.payee AS partyName,
           NULL AS approvedBy,
           NULL AS approvedByName,
           e.referenceNumber AS referenceNumber,
@@ -257,6 +278,9 @@ export async function getRecentMovements(
         r.shiftOwnerName == null ? null : String(r.shiftOwnerName),
       createdBy: asId(r.createdBy),
       createdByName: r.createdByName == null ? null : String(r.createdByName),
+      partyType: r.partyType == null ? null : String(r.partyType),
+      partyId: asId(r.partyId),
+      partyName: r.partyName == null ? null : String(r.partyName),
       approvedBy: asId(r.approvedBy),
       approvedByName:
         r.approvedByName == null ? null : String(r.approvedByName),

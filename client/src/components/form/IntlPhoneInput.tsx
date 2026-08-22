@@ -1,7 +1,7 @@
 import { Input } from "@/components/ui/input";
 import { DEFAULT_DIAL, DIAL_CODES, normalizeNational, parseE164, toE164 } from "@/lib/intlPhone";
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 /**
  * هاتف دولي بصيغة E.164 (مثل +9647701234567).

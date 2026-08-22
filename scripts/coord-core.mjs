@@ -245,3 +245,120 @@ export function buildClaimRecord({ slice, title, sessionKey, sessionId, branch, 
     host: os.hostname(),
   };
 }
+
+// ═══════════════════ حجز رقم الهجرة الذرّي (٢٠/٨/٢٦) ═══════════════════
+//
+// **الجذر:** الرقم كان يُحجَز **بالنيّة لا بقفل**. `_journal.json` ملفٌّ ساخنٌ يملكه
+// `_integration`، لكنّ *الرقم* نفسه لم يكن مورداً مقفولاً — فلا شيء يمنع فرعَين من اختياره.
+// النتيجة تكرّرت أربع مرّات في ثلاثة أيام: `0204` لثلاثة فروع (١٨/٨)، ثمّ `0216` لفرعَين
+// و`0226` لفرعَين (٢٠/٨). والخرائط المكتوبة في التوثيق («ابدأ من كذا») تشيخ خلال دقائق.
+//
+// **لماذا لا يكفي `check:migrations`:** يقارن بـ`origin/main` فيمسك التصادم مع المدموج فقط —
+// وهو **أعمى تماماً** عن فرعٍ متوازٍ لم يُدمج بعد، وهناك يقع التصادم فعلاً.
+//
+// **الأرضية `origin/main` لا قاعدة الإنتاج:** الإنتاج يُنشَر من `main` ⇒ `max(when)` على `main`
+// ≥ ما طبّقته القاعدة دائماً. فالحجز فوق أرضية `main` يُحقّق شرط الإنتاج تلقائياً وبلا اتصالٍ
+// بقاعدةٍ قد لا تكون متاحة. (القاعدة الموثَّقة في CLAUDE.md §٧-٤ب تبقى مرجع التحقّق البشريّ.)
+//
+// **لا استرجاع تلقائيّ بالمهلة** — بخلاف أقفال الشرائح. رقمٌ يُعاد تدويره بينما فرعٌ غير مدموج
+// يحمله يُعيد إنتاج العلّة نفسها. الأرقام رخيصة والفجوات مسموحة؛ التحرير صريحٌ أو عند الدمج.
+
+export const migrationsResDir = (coordRoot) => path.join(coordRoot, "migrations");
+
+/** الفارق الثابت بين طوابع الهجرات المتتالية (نمط المستودع: +1000ms لكل رقم). */
+export const MIGRATION_WHEN_STEP = 1000;
+
+/** أكبر (idx, when) في سجلّ `origin/main` — أرضية الحجز. يُرجع null إن تعذّر (يفشل مفتوحاً). */
+export function mainJournalCeiling(cwd = process.cwd()) {
+  try {
+    const raw = git(["show", "origin/main:drizzle/migrations/meta/_journal.json"], cwd);
+    const entries = JSON.parse(raw).entries ?? [];
+    if (!entries.length) return null;
+    return {
+      idx: Math.max(...entries.map((e) => Number(e.idx))),
+      when: Math.max(...entries.map((e) => Number(e.when))),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function readAllMigrationReservations(coordRoot) {
+  const dir = migrationsResDir(coordRoot);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => /^\d{4}\.json$/.test(f))
+    .map((f) => readJson(path.join(dir, f)))
+    .filter(Boolean)
+    .sort((a, b) => Number(a.idx) - Number(b.idx));
+}
+
+/**
+ * حجزٌ ذرّيّ لرقمٍ واحد: `O_EXCL` على `migrations/<idx>.json` — نفس مِفتاح `claimAtomic`.
+ * كاتبٌ واحد يفوز والباقون `EEXIST`، فلا سباق ممكن حتى عند انطلاقٍ متزامن.
+ */
+export function reserveMigrationAtomic(coordRoot, idx, record) {
+  mkdirSync(migrationsResDir(coordRoot), { recursive: true });
+  const file = path.join(migrationsResDir(coordRoot), `${String(idx).padStart(4, "0")}.json`);
+  try {
+    const fd = openSync(file, "wx");
+    try { writeSync(fd, JSON.stringify(record, null, 2)); } finally { closeSync(fd); }
+    return { ok: true, file, idx };
+  } catch (e) {
+    if (e && e.code === "EEXIST") return { ok: false, code: "EEXIST", file, idx, existing: readJson(file) };
+    return { ok: false, code: e?.code ?? "ERR", file, idx, err: e?.message ?? String(e) };
+  }
+}
+
+/**
+ * يحجز أوّل رقمٍ حرّ فوق الأرضية، بمحاولةٍ ذرّية متكرّرة: كلّ `EEXIST` يعني أنّ فرعاً آخر سبقنا
+ * إلى ذلك الرقم ⇒ ننتقل للتالي. النتيجة: رقمان مختلفان حتماً لعمليتَين متزامنتَين.
+ */
+export function reserveNextMigration(coordRoot, meta, opts = {}) {
+  const ceiling = opts.ceiling ?? mainJournalCeiling(opts.cwd);
+  const reservations = readAllMigrationReservations(coordRoot);
+  const floorIdx = Math.max(
+    Number(ceiling?.idx ?? 0),
+    ...reservations.map((r) => Number(r.idx)),
+    0,
+  );
+  const floorWhen = Math.max(
+    Number(ceiling?.when ?? 0),
+    ...reservations.map((r) => Number(r.when)),
+    0,
+  );
+  const maxTries = Number(opts.maxTries ?? 200);
+  for (let n = 1; n <= maxTries; n++) {
+    const idx = floorIdx + n;
+    const when = floorWhen + n * MIGRATION_WHEN_STEP;
+    const tag = `${String(idx).padStart(4, "0")}_${meta.slug}`;
+    const rec = {
+      schemaVersion: SCHEMA_VERSION,
+      idx, when, tag,
+      slug: meta.slug,
+      branch: meta.branch ?? null,
+      worktree: meta.worktree ?? null,
+      sessionKey: meta.sessionKey ?? null,
+      host: hostname(),
+      reservedAt: new Date(meta.now ?? Date.now()).toISOString(),
+      ceilingIdx: ceiling?.idx ?? null,
+      ceilingWhen: ceiling?.when ?? null,
+    };
+    const res = reserveMigrationAtomic(coordRoot, idx, rec);
+    if (res.ok) return { ok: true, record: rec, file: res.file, attempts: n };
+    if (res.code !== "EEXIST") return { ok: false, code: res.code, err: res.err, idx };
+  }
+  return { ok: false, code: "EXHAUSTED", err: `لم يُعثر على رقمٍ حرّ خلال ${maxTries} محاولة` };
+}
+
+/** يُرجع الحجوزات التي تحقّقت فعلاً (وسمها موجودٌ في سجلّ `origin/main`) ⇒ قابلة للتنظيف. */
+export function fulfilledReservations(coordRoot, cwd = process.cwd()) {
+  let mainTags = new Set();
+  try {
+    const raw = git(["show", "origin/main:drizzle/migrations/meta/_journal.json"], cwd);
+    mainTags = new Set((JSON.parse(raw).entries ?? []).map((e) => String(e.tag)));
+  } catch {
+    return [];
+  }
+  return readAllMigrationReservations(coordRoot).filter((r) => mainTags.has(String(r.tag)));
+}

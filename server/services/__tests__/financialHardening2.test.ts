@@ -18,6 +18,7 @@ const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie()
 const caller = () => appRouter.createCaller(adminCtx);
 
 const TABLES = [
+  "voucherCategories", "purchaseReturnItems", "purchaseReturns",
   "idempotencyKeys", "accountingEntries", "receipts", "expenses", "inventoryMovements", "invoiceItems", "invoices",
   "purchaseOrderItems", "purchaseOrders", "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "workOrderImages", "workOrderItems", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
@@ -36,6 +37,7 @@ async function seedBase() {
     { id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local", isOwner: false },
     { id: 2, openId: "local_owner", name: "owner", role: "manager", loginMethod: "local", isOwner: true },
   ]);
+  await d.insert(s.voucherCategories).values({ id: 10, name: "إيجار اختباري", direction: "OUT", postingRole: "RENT" });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -83,7 +85,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }] }, actor);
     // M5/M8: الدفع النقدي يَستوجب وردية مفتوحة.
-    await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
     const input = { invoiceId: sale.invoiceId, amount: "10.00", method: "CASH" as const, clientRequestId: "pay-key-1" };
     await caller().sales.pay(input);
     await caller().sales.pay(input);
@@ -107,7 +109,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
   it("vouchers.create: نفس clientRequestId ⇒ سند واحد", async () => {
     await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate-cash: السند النقدي يَستوجب وردية.
     await fundCash("TREASURY", "100.00");
-    const input = { voucherType: "PAYMENT" as const, branchId: 1, amount: "30.00", paymentMethod: "CASH" as const, partyType: "OTHER" as const, counterpartyName: "المؤجر", description: "إيجار", clientRequestId: "vch-key-1" };
+    const input = { voucherType: "PAYMENT" as const, branchId: 1, amount: "30.00", paymentMethod: "CASH" as const, partyType: "OTHER" as const, voucherCategoryId: 10, counterpartyName: "المؤجر", description: "إيجار", clientRequestId: "vch-key-1" };
     const r1 = await caller().vouchers.create(input);
     const r2 = await caller().vouchers.create(input);
     expect(r2.receiptId).toBe(r1.receiptId); // نفس السند (replay)
@@ -123,7 +125,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
 describe("#2 عربون أمر الشغل يدخل الصندوق/الدفتر ويُحتسَب عند التسليم", () => {
   it("العربون ⇒ receipt(IN)+shiftId+PAYMENT_IN عند الإنشاء، ويُضمّ لمدفوع الفاتورة عند التسليم", async () => {
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
-    await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
     const wo = await createWorkOrder({ branchId: 1, customerId: 1, baseVariantId: 1, title: "لوحة", salePrice: "20.00", deposit: "5.00", paymentMethod: "CASH" }, actor);
     // إيصال العربون + قيد PAYMENT_IN موجودان وبشيفت.
     const depRcpt = (await db().select().from(s.receipts)).find((r) => Number(r.workOrderId) === wo.workOrderId && r.direction === "IN");
@@ -165,14 +167,35 @@ describe("#3 تقريب IQD النقدي على الخادم", () => {
   });
 });
 
-describe("#4 سقف مرتجع الشراء (لا تضخيم قيمة)", () => {
-  it("سعر إرجاع وحدة يتجاوز التكلفة المسجّلة ⇒ يُرفض", async () => {
-    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "100.00" });
-    await setStock(1, 1, 10); // مخزون كافٍ للإخراج
-    // costPrice=4.00؛ نحاول الإرجاع بسعر 10.00 (>التكلفة) ⇒ رفض.
-    await expect(createPurchaseReturn({ supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "10.00" }] }, actor)).rejects.toThrow();
-    // بسعر ≤ التكلفة (4.00) ⇒ يُقبل.
-    await expect(createPurchaseReturn({ supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "4.00" }] }, actor)).resolves.toBeTruthy();
+describe("#4 سعر مرتجع الشراء مشتق من أمر الشراء", () => {
+  it("يتجاهل سعر إدخال مزور ويعيد بسعر بند الأمر المثبت", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0.00" });
+    const po = await createPurchaseOrder({
+      supplierId: 1,
+      branchId: 1,
+      taxRatePercent: "0",
+      status: "CONFIRMED",
+      items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "4.00" }],
+    }, actor);
+    const poItem = (await db().select().from(s.purchaseOrderItems)
+      .where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+    await receivePurchase({
+      purchaseOrderId: po.purchaseOrderId,
+      lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 10 }],
+    }, actor);
+
+    const result = await createPurchaseReturn({
+      clientRequestId: "purchase-return-price-source",
+      supplierId: 1,
+      branchId: 1,
+      purchaseOrderRefId: po.purchaseOrderId,
+      settlement: "CREDIT",
+      items: [{ purchaseOrderItemId: Number(poItem.id), quantity: "1", unitPrice: "10.00" }],
+    } as any, actor);
+
+    expect(result.returnedTotal).toBe("4.00");
+    const [document] = await db().select().from(s.purchaseReturns);
+    expect(document.totalAmount).toBe("4.00");
   });
 });
 
@@ -192,7 +215,7 @@ describe("#5 ذرّية فتح الوردية", () => {
 describe("#2ب استرداد العربون عند إلغاء أمر الشغل (لا نقد عالق)", () => {
   it("إلغاء أمر بعربون مقبوض ⇒ receipt(OUT)+PAYMENT_OUT يعكس PAYMENT_IN (صافي الدفتر صفر)", async () => {
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
-    await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
     const wo = await createWorkOrder({ branchId: 1, customerId: 1, baseVariantId: 1, title: "لوحة", salePrice: "20.00", deposit: "5.00", paymentMethod: "CASH" }, actor);
     // ألغِ عبر الراوتر (managerProcedure ⇒ admin مسموح).
     await caller().workOrders.cancel({ workOrderId: wo.workOrderId });
@@ -246,7 +269,7 @@ describe("#1ب idempotency للمصروف وإنشاء أمر الشغل (الن
   });
   it("workOrders.create: نفس clientRequestId ⇒ أمر/عربون واحد", async () => {
     await db().insert(s.customers).values({ id: 1, name: "عميل", phone: "+9647700000001", defaultPriceTier: "RETAIL", currentBalance: "0" });
-    await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    await openShift({ branchId: 1, openingBalance: "0", shiftType: "RECEPTION" }, actor);
     const input = { branchId: 1, customerId: 1, baseVariantId: 1, title: "لوحة", salePrice: "20.00", deposit: "5.00", paymentMethod: "CASH" as const, clientRequestId: "wo-key-1" };
     const r1 = await caller().workOrders.create(input as any);
     const r2 = await caller().workOrders.create(input as any);

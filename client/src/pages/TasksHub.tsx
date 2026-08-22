@@ -313,7 +313,7 @@ function ListTab({
   // تقرأ الـURL الحالي عند التركيب) بلا حاجة لقراءة يدوية منفصلة كما كان سابقاً.
   const [f, setF, resetF] = useUrlFilters({
     status: "", kind: "", priority: "", assignedTo: "", branchId: "",
-    overdue: "", from: "", to: "", q: "",
+    overdue: "", unassigned: "", from: "", to: "", q: "",
   });
   const [qDebounced, setQDebounced] = useState(f.q);
   useEffect(() => {
@@ -332,11 +332,14 @@ function ListTab({
       assignedTo: f.assignedTo ? Number(f.assignedTo) : undefined,
       branchId: f.branchId ? Number(f.branchId) : undefined,
       overdue: f.overdue === "1" || undefined,
+      // ش٦: «بلا منفّذ» — الطابور اليتيم لا يُرى بـ`assignedTo` (يُجيب عن فلان) ولا بغيابه
+      // (يُجيب عن الكلّ)، فيبقى مبثوثاً حتى يتأخّر.
+      unassigned: f.unassigned === "1" || undefined,
       from: f.from || undefined,
       to: f.to || undefined,
       q: qDebounced.trim() || undefined,
     }),
-    [f.status, f.kind, f.priority, f.assignedTo, f.branchId, f.overdue, f.from, f.to, qDebounced],
+    [f.status, f.kind, f.priority, f.assignedTo, f.branchId, f.overdue, f.unassigned, f.from, f.to, qDebounced],
   );
 
   const list = trpc.tasks.list.useInfiniteQuery(
@@ -347,7 +350,7 @@ function ListTab({
 
   // عدّاد الفلاتر المفعّلة (بلا حقل البحث — اتفاقية ListToolbar) لزرّ «مسح الفلاتر».
   const activeFilterCount = [
-    f.status, f.kind, f.priority, f.assignedTo, isElevated ? f.branchId : "", f.overdue, f.from || f.to,
+    f.status, f.kind, f.priority, f.assignedTo, isElevated ? f.branchId : "", f.overdue, f.unassigned, f.from || f.to,
   ].filter(Boolean).length;
 
   // تصدير «الكل»: القائمة مُرقَّمة keyset (صفحات ٥٠) ⇒ نمشي بالمؤشّر حتى نضب الصفحات، بنفس فلاتر
@@ -431,6 +434,10 @@ function ListTab({
             <label className="inline-flex h-9 items-center gap-1.5 text-xs text-muted-foreground self-end">
               <input type="checkbox" checked={f.overdue === "1"} onChange={(e) => setF({ overdue: e.target.checked ? "1" : "" })} />
               متأخرة فقط
+            </label>
+            <label className="inline-flex h-9 items-center gap-1.5 text-xs text-muted-foreground self-end">
+              <input type="checkbox" checked={f.unassigned === "1"} onChange={(e) => setF({ unassigned: e.target.checked ? "1" : "" })} />
+              بلا منفّذ
             </label>
             <FilterField label="من تاريخ الإنشاء">
               <Input

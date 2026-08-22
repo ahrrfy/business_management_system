@@ -19,7 +19,8 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { fmtInt } from "@/lib/money";
+import { D, fmt, fmtInt } from "@/lib/money";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { notify } from "@/lib/notify";
@@ -27,7 +28,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { groupCategoriesTree } from "@/lib/categoryTree";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUrlFilters } from "@/hooks/useUrlFilters";
-import { CheckCircle2, ExternalLink, XCircle } from "lucide-react";
+import { CheckCircle2, ExternalLink, Scale, XCircle } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
 
@@ -148,6 +149,84 @@ export default function Inventory() {
   function rejectFlow(id: number) {
     setRejectReason("");
     setRejectTarget(id);
+  }
+
+  /* ── إعادة تقييم التكلفة (حوكمة التكلفة — تدقيق ٢٧/٧) ────────────────────────────────
+   * تعديل التكلفة من محرّر المنتج مُغلقٌ بنيوياً على صنفٍ له رصيد (يحرّك أصل المخزون بلا قيد).
+   * هنا مسارُه المحكوم: طلبٌ بغرضٍ وسببٍ يعتمده مديرٌ ثانٍ فيُرحَّل القيد لكل فرعٍ له رصيد.
+   */
+  const [revalFor, setRevalFor] = useState<{ variantId: number; label: string } | null>(null);
+  const [revalCost, setRevalCost] = useState("");
+  const [revalPurpose, setRevalPurpose] = useState<"CORRECTION" | "IMPAIRMENT">("CORRECTION");
+  const [revalReason, setRevalReason] = useState("");
+  const revalPreview = trpc.inventory.costRevaluationPreview.useQuery(
+    { variantId: revalFor?.variantId ?? 0 },
+    { enabled: revalFor != null },
+  );
+  const [revalTab, setRevalTab] = useState<"PENDING_APPROVAL" | "APPROVED" | "REJECTED">("PENDING_APPROVAL");
+  const pendingRevals = trpc.inventory.costRevaluations.useQuery(
+    { status: revalTab },
+    { enabled: canApprove && me.data != null },
+  );
+  const revalRows = pendingRevals.data ?? [];
+  const requestReval = trpc.inventory.requestCostRevaluation.useMutation({
+    onSuccess: async () => {
+      notify.ok("سُجِّل طلب إعادة تقييم معلَّق — يعتمده مديرٌ آخر (فصل مهام).");
+      setRevalFor(null);
+      await utils.inventory.costRevaluations.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const approveReval = trpc.inventory.approveCostRevaluation.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(`اعتُمدت إعادة التقييم — ${fmtInt(res.postedEntries)} قيداً بأثرٍ إجماليّ ${fmt(res.totalValueDelta)}.`);
+      await Promise.all([
+        utils.inventory.costRevaluations.invalidate(),
+        utils.inventory.onHand.invalidate(),
+      ]);
+    },
+    onError: (e) => notify.err(e),
+  });
+  const [revalRejectTarget, setRevalRejectTarget] = useState<number | null>(null);
+  const [revalRejectReason, setRevalRejectReason] = useState("");
+  const rejectReval = trpc.inventory.rejectCostRevaluation.useMutation({
+    onSuccess: async () => {
+      notify.ok("رُفض طلب إعادة التقييم.");
+      setRevalRejectTarget(null);
+      await utils.inventory.costRevaluations.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  // أثر القيمة يُحسب في الشاشة قبل الإرسال بنفس معادلة الخادم (Δالتكلفة × إجمالي الكمية).
+  const revalDelta =
+    revalPreview.data && revalCost.trim() !== ""
+      ? D(revalCost).minus(D(revalPreview.data.costPrice)).times(revalPreview.data.totalQuantity)
+      : null;
+  const revalReasonOk = revalReason.trim().length >= 10;
+  const revalCostOk =
+    revalCost.trim() !== "" &&
+    revalPreview.data != null &&
+    !D(revalCost).isNegative() &&
+    !D(revalCost).equals(D(revalPreview.data.costPrice)) &&
+    (revalPurpose !== "IMPAIRMENT" || D(revalCost).lt(D(revalPreview.data.costPrice)));
+
+  function startReval(r: { variantId: number; productName: string; sku: string }) {
+    setRevalCost("");
+    setRevalPurpose("CORRECTION");
+    setRevalReason("");
+    setRevalFor({ variantId: r.variantId, label: `${r.productName} — ${r.sku}` });
+  }
+  async function approveRevalFlow(id: number, delta: string) {
+    if (
+      !(await confirm({
+        variant: "danger",
+        title: "اعتماد إعادة التقييم",
+        description: `ستُحدَّث تكلفة الصنف ويُرحَّل قيد ADJUST بأثرٍ قدره ${fmt(delta)} على أصل المخزون. متابعة؟`,
+        confirmText: "اعتماد",
+      }))
+    )
+      return;
+    approveReval.mutate({ id });
   }
 
   function startAdjust(r: { variantId: number; quantity: number }) {
@@ -288,12 +367,100 @@ export default function Inventory() {
                         <td className="p-2 text-muted-foreground">{r.notes || "—"}</td>
                         <td className="p-2">{r.createdByName ?? "—"}</td>
                         <td className="p-2 text-center">
-                          {mine ? (
+                          {r.status !== "PENDING_APPROVAL" ? (
+                            <span className="text-xs text-muted-foreground">
+                              {r.status === "APPROVED" ? "اعتُمد" : "رُفض"}
+                              {r.approvedAt ? ` — ${fmtDate(r.approvedAt)}` : ""}
+                              {r.rejectionReason ? ` (${r.rejectionReason})` : ""}
+                            </span>
+                          ) : mine ? (
                             <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>
                           ) : (
                             <div className="flex items-center justify-center gap-2">
                               <Button size="sm" onClick={() => approveFlow(r.id)} disabled={approveAdj.isPending}><CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد</Button>
                               <Button size="sm" variant="outline" onClick={() => rejectFlow(r.id)} disabled={rejectAdj.isPending}><XCircle aria-hidden className="size-4 ml-1" /> رفض</Button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </ScrollTableShell>
+          </CardContent>
+        </Card>
+      )}
+
+      {canApprove && (revalRows.length > 0 || revalTab !== "PENDING_APPROVAL") && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle className="text-base">
+              إعادة تقييم التكلفة ({fmtInt(revalRows.length)})
+            </CardTitle>
+            {/* المعتمَد لا يختفي: حركةُ قيمةٍ بلا نقد يلزمها سجلٌّ يُظهرها بمستندها وفاعلها. */}
+            <div className="w-56">
+              <AppSelect
+                value={revalTab}
+                onValueChange={(v) => setRevalTab(v as "PENDING_APPROVAL" | "APPROVED" | "REJECTED")}
+                size="sm"
+                aria-label="حالة طلبات إعادة التقييم"
+              >
+                <option value="PENDING_APPROVAL">معلَّقة</option>
+                <option value="APPROVED">معتمَدة</option>
+                <option value="REJECTED">مرفوضة</option>
+              </AppSelect>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <ScrollTableShell bordered={false}>
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="p-2 text-start">المنتج</th>
+                    <th className="p-2 text-center">التكلفة</th>
+                    <th className="p-2 text-center">الكمية</th>
+                    <th className="p-2 text-center">أثر القيمة</th>
+                    <th className="p-2 text-start">الغرض والسبب</th>
+                    <th className="p-2 text-start">طلبها</th>
+                    <th className="p-2 text-center">{revalTab === "PENDING_APPROVAL" ? "إجراء" : "الحسم"}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {revalRows.length === 0 && (
+                    <TableEmptyRow colSpan={7} message="لا طلبات في هذه الحالة." />
+                  )}
+                  {revalRows.map((r) => {
+                    const mine = Number(r.createdBy) === Number(me.data?.id);
+                    const negative = D(r.expectedValueDelta).isNegative();
+                    return (
+                      <tr key={r.id} className="border-t">
+                        <td className="p-2">{r.productName} — {r.variantLabel}</td>
+                        <td className="p-2 text-center tabular-nums">{fmt(r.oldCost)} ← {fmt(r.newCost)}</td>
+                        <td className="p-2 text-center tabular-nums">{fmtInt(r.expectedQuantity)}</td>
+                        <td className={`p-2 text-center tabular-nums ${negative ? "text-money-negative" : "text-money-positive"}`}>
+                          {fmt(r.expectedValueDelta)}
+                        </td>
+                        <td className="p-2 text-muted-foreground">
+                          {r.purpose === "IMPAIRMENT" ? "هبوط قيمة" : "تصحيح تكلفة"} — {r.reason}
+                        </td>
+                        <td className="p-2">{r.createdByName ?? "—"}</td>
+                        <td className="p-2 text-center">
+                          {mine ? (
+                            <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>
+                          ) : (
+                            <div className="flex items-center justify-center gap-2">
+                              <Button size="sm" onClick={() => approveRevalFlow(r.id, r.expectedValueDelta)} disabled={approveReval.isPending}>
+                                <CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => { setRevalRejectReason(""); setRevalRejectTarget(r.id); }}
+                                disabled={rejectReval.isPending}
+                              >
+                                <XCircle aria-hidden className="size-4 ml-1" /> رفض
+                              </Button>
                             </div>
                           )}
                         </td>
@@ -428,6 +595,14 @@ export default function Inventory() {
                               gate: { roles: ["manager"], module: "inventory", level: "FULL" },
                             },
                             {
+                              key: "revalue",
+                              kind: "edit",
+                              label: "إعادة تقييم التكلفة",
+                              hidden: !canInlineAdjust,
+                              onSelect: () => startReval(r),
+                              gate: { roles: ["manager"], module: "inventory", level: "FULL" },
+                            },
+                            {
                               key: "transfer",
                               kind: "create",
                               label: "تحويل بين الفروع",
@@ -533,6 +708,138 @@ export default function Inventory() {
               onClick={() => {
                 if (rejectTarget == null || !rejectReason.trim()) return;
                 rejectAdj.mutate({ id: rejectTarget, reason: rejectReason.trim() });
+              }}
+            >
+              <XCircle aria-hidden className="size-4 ml-1" /> رفض الطلب
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* طلب إعادة تقييم التكلفة — أثر القيمة يُعرَض قبل الإرسال، ولا يقع شيء حتى يعتمده مديرٌ ثانٍ. */}
+      <Dialog open={revalFor != null} onOpenChange={(o) => { if (!o) setRevalFor(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>إعادة تقييم التكلفة — {revalFor?.label}</DialogTitle>
+            <DialogDescription>
+              تغيير التكلفة يحرّك قيمة المخزون في الميزانية، فيلزمه غرضٌ محاسبيّ وسببٌ مكتوب واعتماد مديرٍ آخر.
+              يُرحَّل عند الاعتماد قيدٌ بقيمة فرق التكلفة × الكمية لكل فرعٍ له رصيد.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1">
+            {revalPreview.isLoading && <p className="text-sm text-muted-foreground">جارٍ قراءة التكلفة والأرصدة…</p>}
+            {revalPreview.data && (
+              <>
+                <div className="rounded-md border p-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">التكلفة الحالية</span>
+                    <span className="tabular-nums">{fmt(revalPreview.data.costPrice)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">إجمالي الكمية المملوكة</span>
+                    <span className="tabular-nums">{fmtInt(revalPreview.data.totalQuantity)}</span>
+                  </div>
+                  {revalPreview.data.branches.length > 1 && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      موزّعة على: {revalPreview.data.branches.map((b) => `${b.branchName ?? `#${b.branchId}`} (${fmtInt(b.quantity)})`).join(" · ")}
+                    </p>
+                  )}
+                  {revalPreview.data.totalQuantity === 0 && (
+                    <p className="mt-1 text-xs text-muted-foreground">لا رصيد لهذا الصنف — تُصحَّح التكلفة بلا قيدٍ محاسبيّ.</p>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="reval-cost">التكلفة الجديدة</Label>
+                    <MoneyInput id="reval-cost" value={revalCost} onChange={setRevalCost} placeholder="0" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="reval-purpose">الغرض المحاسبيّ</Label>
+                    <AppSelect
+                      id="reval-purpose"
+                      value={revalPurpose}
+                      onValueChange={(v) => setRevalPurpose(v as "CORRECTION" | "IMPAIRMENT")}
+                    >
+                      <option value="CORRECTION">تصحيح تكلفة خاطئة</option>
+                      <option value="IMPAIRMENT">هبوط قيمة / تقادم (نزولاً فقط)</option>
+                    </AppSelect>
+                  </div>
+                </div>
+
+                {revalDelta != null && !revalDelta.isZero() && (
+                  <p className="text-sm">
+                    أثر القيمة على المخزون:{" "}
+                    <span className={`tabular-nums ${revalDelta.isNegative() ? "text-money-negative" : "text-money-positive"}`}>
+                      {fmt(revalDelta.toFixed(2))}
+                    </span>
+                  </p>
+                )}
+                {revalPurpose === "IMPAIRMENT" && revalCost.trim() !== "" && D(revalCost).gte(D(revalPreview.data.costPrice)) && (
+                  <p className="text-sm text-destructive">هبوط القيمة لا يرفع التكلفة — اختر «تصحيح تكلفة خاطئة» إن كان رفعاً مقصوداً.</p>
+                )}
+
+                <div className="space-y-1">
+                  <Label htmlFor="reval-reason">سبب إعادة التقييم (١٠ محارف على الأقلّ)</Label>
+                  <Textarea
+                    id="reval-reason"
+                    value={revalReason}
+                    onChange={(e) => setRevalReason(e.target.value)}
+                    placeholder="مثال: أُدخلت تكلفة الكرتون بدل تكلفة القطعة عند الاستلام"
+                    rows={3}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRevalFor(null)} disabled={requestReval.isPending}>إلغاء</Button>
+            <Button
+              disabled={requestReval.isPending || !revalCostOk || !revalReasonOk}
+              onClick={() => {
+                if (revalFor == null) return;
+                requestReval.mutate({
+                  variantId: revalFor.variantId,
+                  newCost: D(revalCost).toFixed(2),
+                  purpose: revalPurpose,
+                  reason: revalReason.trim(),
+                });
+              }}
+            >
+              <Scale aria-hidden className="size-4 ml-1" /> إرسال الطلب للاعتماد
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* رفض طلب إعادة التقييم — سببٌ إلزاميّ يظهر لمُنشئ الطلب. */}
+      <Dialog open={revalRejectTarget != null} onOpenChange={(o) => { if (!o) setRevalRejectTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>رفض طلب إعادة التقييم</DialogTitle>
+            <DialogDescription>اذكر سبب الرفض — يُسجَّل ويظهر لمُنشئ الطلب.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1 py-1">
+            <Label htmlFor="reval-reject-reason">سبب الرفض</Label>
+            <Textarea
+              id="reval-reject-reason"
+              value={revalRejectReason}
+              onChange={(e) => setRevalRejectReason(e.target.value)}
+              placeholder="مثال: التكلفة الحالية مطابقة لفاتورة المورّد"
+              rows={3}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRevalRejectTarget(null)} disabled={rejectReval.isPending}>إلغاء</Button>
+            <Button
+              variant="destructive"
+              disabled={rejectReval.isPending || !revalRejectReason.trim()}
+              onClick={() => {
+                if (revalRejectTarget == null || !revalRejectReason.trim()) return;
+                rejectReval.mutate({ id: revalRejectTarget, reason: revalRejectReason.trim() });
               }}
             >
               <XCircle aria-hidden className="size-4 ml-1" /> رفض الطلب

@@ -31,11 +31,13 @@ import { VariantsTable } from "@/components/product/VariantsTable";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { type ImageItem } from "@/components/form/ImageUploader";
-import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
 import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import BundleRecipeCard from "@/components/product/BundleRecipeCard";
+import { ProductCustomizationTemplateEditor } from "@/components/product/ProductCustomizationTemplateEditor";
+import { ProductRelatedProductsEditor } from "@/components/product/ProductRelatedProductsEditor";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import {
@@ -133,6 +135,7 @@ export default function ProductEdit() {
   const [baseSku, setBaseSku] = useState("");
   const [costPrice, setCostPrice] = useState("");
   const [isCustomizable, setIsCustomizable] = useState(false);
+  const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isService, setIsService] = useState(false);
   const [isActive, setIsActive] = useState(true);
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
@@ -174,7 +177,7 @@ export default function ProductEdit() {
   }, [
     hydrated, costPrice, units, variants, images, colors, sizes, categoryId,
     originalName, productType, brand, modelName, description,
-    isCustomizable, isService, isActive, consignment, baseSku,
+    isCustomizable, allowAutoCartRecommendations, isService, isActive, consignment, baseSku,
   ]);
   useUnsavedGuard(touched);
 
@@ -189,6 +192,7 @@ export default function ProductEdit() {
     setDescription(d.description ?? "");
     setCategoryId(d.categoryId ?? "");
     setIsCustomizable(d.isCustomizable);
+    setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsService(d.isService);
     setIsActive(d.isActive);
     setConsignment({ isConsignment: d.isConsignment, consignorId: d.consignorId, consignorName: d.consignorName });
@@ -452,6 +456,7 @@ export default function ProductEdit() {
       description: description.trim() || null,
       categoryId: categoryId === "" ? null : Number(categoryId),
       isCustomizable,
+      allowAutoCartRecommendations,
       isService,
       isActive,
       isConsignment: consignment.isConsignment,
@@ -474,11 +479,12 @@ export default function ProductEdit() {
           minStock: clampInt(v.minStock),
           reorderPoint: clampInt(v.reorderPoint),
           isActive: v.isActive,
-          image: v.image, // string ⇒ تُعيَّن، null ⇒ تُزال (يُعاد التوفيق دائماً)
+          // لا نعيد إرسال URL/data URL الإرثي في كل حفظ؛ null فقط إشارة إزالة صريحة.
+          image: v.image === null ? null : undefined,
           unitBarcodes,
         };
       }),
-      // صور المنتج العامّة: تُرسَل دائماً (ولو فارغة) ⇒ الحذف يُوفَّق أيضاً؛ غير المتغيّرة بمعرّفها بلا بايتات.
+      // صور المنتج العامّة: معرّفات وmetadata فقط؛ الفارغة توفّق الحذف ولا تمرّر بايتات.
       images: buildProductImagesPayload(images),
     };
   }
@@ -610,7 +616,6 @@ export default function ProductEdit() {
               </select>
             </Field>
             <Field label="بادئة SKU (للمتغيّرات الجديدة)" className="md:col-span-2"><Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" /></Field>
-            <Field label="الوصف" className="md:col-span-3"><Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="خصائص/ملاحظات…" /></Field>
           </CardContent>
         </Card>
         <Card>
@@ -647,9 +652,18 @@ export default function ProductEdit() {
           </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
+          <Field label="التوصيات الآلية" hint="يكمل العلاقات اليدوية بمنتجات متاحة من نفس التصنيف."><div className="flex items-center gap-2 h-9"><Switch checked={allowAutoCartRecommendations} onCheckedChange={setAllowAutoCartRecommendations} /><span className="text-xs text-muted-foreground">{allowAutoCartRecommendations ? "مسموح" : "متوقف"}</span></div></Field>
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span></div></Field>
         </CardContent>
       </Card>
+
+      <div className="mt-4">
+        <ProductCustomizationTemplateEditor productId={productId} enabled={isCustomizable} />
+      </div>
+
+      <div className="mt-4">
+        <ProductRelatedProductsEditor productId={productId} />
+      </div>
 
       {/* قالب الوحدات */}
       <Card>
@@ -781,19 +795,13 @@ export default function ProductEdit() {
         />
       )}
 
-      {/* صور المنتج المشتركة (على مستوى المنتج) — تُعرَض في المتجر/الكشك والمعاينة. لكل لون صورته المستقلّة
-          في صفّ المتغيّر أعلاه؛ هذه صور عامّة للمنتج كاملاً. */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">صور المنتج (مشتركة)</CardTitle></CardHeader>
-        <CardContent>
-          <ImageStudioUploader
-            value={images}
-            onChange={setImages}
-            maxItems={10}
-            hint="حتى 10 صور للمنتج عامّةً (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً. ولكل لون صورته المستقلّة في صفّ المتغيّر أعلاه."
-          />
-        </CardContent>
-      </Card>
+      <ProductMediaContentSection
+        description={description}
+        onDescriptionChange={setDescription}
+        images={images}
+        onImagesChange={setImages}
+        productExists
+      />
 
       {/* gstack B12 (٧/٧/٢٦): تبويب وصفة البكج — يُعرض فقط لو المنتج بكج. المتغيّر الأول هو الأب حصراً
           (قيد الإنشاء + التعديل). previewImpact + setComponents يستهلكان في المكوّن. */}

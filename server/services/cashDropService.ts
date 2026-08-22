@@ -2,8 +2,8 @@
 // الوردية لتقليل مخاطرة تكدّس النقد (يوم مبيعاتٍ كبير). البند التالي من «ضبط دورة النقد اليومية»
 // (docs/functional-audit-2026-07-17.md §٥).
 //
-// نمطٌ مطابقٌ لـcashHandoverService.createHandover (نقل DRAWER→TREASURY بلا مسّ AR/AP، القيد
-// CASH_HANDOVER محايدٌ للربح) لكن:
+// نمطٌ قريب من cashHandoverService.createHandover بلا مسّ AR/AP، لكن النقد يمرّ بعهدة
+// CASH_IN_TRANSIT حتى يقبله المستلم؛ فلا تُعترف الخزينة قبل اكتمال الحيازة الثنائية.
 //  • قائمٌ بذاته (لا يُستدعى من closeShift) وقابلٌ للتكرار عدّة مرّات في الوردية الواحدة.
 //  • على وردية **مفتوحة** فقط.
 //  • رقم سند «CD-فرع-تاريخ-تسلسل» (يميّزه عن تسليم الإغلاق CH-…).
@@ -16,9 +16,19 @@
 //   اليوم يصنّفه في دلو `cashDrops` (ضمن الخارج التشغيليّ الذي يُنقِص المتوقَّع).
 import { TRPCError } from "@trpc/server";
 import { and, eq, like, sql } from "drizzle-orm";
-import { accountingEntries, receipts, shifts, users } from "../../drizzle/schema";
+import {
+  accountingEntries,
+  receipts,
+  shifts,
+  users,
+} from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import {
+  createPostingIntent,
+  creditLine,
+  debitLine,
+} from "./accounting/postingEngine";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import {
@@ -43,7 +53,7 @@ export interface CashDropResult {
   outReceiptId: number;
   inReceiptId: number;
   drawerBefore: string; // النقد في الدرج قبل السحب
-  drawerAfter: string;  // بعده (= before − amount)
+  drawerAfter: string; // بعده (= before − amount)
   /** true ⇒ إعادةُ تشغيلٍ لمفتاح idempotency موجود (لم يُنشأ سحبٌ جديد). */
   idempotent?: boolean;
 }
@@ -53,8 +63,12 @@ async function nextDropNumber(tx: Tx, branchId: number): Promise<string> {
   const ymd = toDateStr().replace(/-/g, "");
   const prefix = `CD-${branchId}-${ymd}-`;
   const lockName = `cash_drop:${branchId}:${ymd}`;
-  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
-  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
+  const lockRes: any = await tx.execute(
+    sql`SELECT GET_LOCK(${lockName}, 5) AS locked`,
+  );
+  const lockedRow = Array.isArray(lockRes)
+    ? lockRes[0]?.[0]
+    : lockRes?.rows?.[0];
   if (!lockedRow || Number(lockedRow.locked) !== 1) {
     throw new Error(`cash drop numbering lock timeout for ${lockName}`);
   }
@@ -83,7 +97,11 @@ async function nextDropNumber(tx: Tx, branchId: number): Promise<string> {
  * النقد الحاليّ في درج الوردية = الرصيد الافتتاحيّ + Σ(IN نقد درج) − Σ(OUT نقد درج).
  * بلا فلتر حالة (مطابقةً لـshiftService.computeExpectedCash — العكوس تُصافَر بإيصالٍ تعويضيّ).
  */
-async function currentDrawerCash(tx: Tx, shiftId: number, openingBalance: string) {
+async function currentDrawerCash(
+  tx: Tx,
+  shiftId: number,
+  openingBalance: string,
+) {
   return computeDrawerCashBalance(tx, shiftId, openingBalance);
 }
 
@@ -100,10 +118,22 @@ export async function createCashDrop(
   return outerTx ? run(outerTx) : withTx(run);
 }
 
-async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: string }): Promise<CashDropResult> {
+async function cashDropTx(
+  tx: Tx,
+  input: CashDropInput,
+  actor: Actor & { role?: string },
+): Promise<CashDropResult> {
   // 1. الوردية: موجودة (تحت القفل — يمنع سحباً بالتزامن مع الإغلاق).
-  const sh = (await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1))[0];
-  if (!sh) throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
+  const sh = (
+    await tx
+      .select()
+      .from(shifts)
+      .where(eq(shifts.id, input.shiftId))
+      .for("update")
+      .limit(1)
+  )[0];
+  if (!sh)
+    throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
 
   // 1b. Idempotency: أعِد تشغيل السحب الموجود لنفس المفتاح (فقدُ ردٍّ/نقرٌ مزدوج) — **قبل** فحص الفتح
   //   والحدّ كي ينجح الاستعلام حتى لو أُغلقت الوردية بعده (النقد غادر مرّة واحدة فعلاً). مرآةٌ لمسار البيع.
@@ -111,27 +141,58 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
   //   التزامن (الخاسر يرتدّ بـER_DUP_ENTRY ⇒ retryOnDup يعيد المحاولة فيلتقط هذا الفرع).
   if (input.clientRequestId) {
     const dedupeKey = `CASH_DROP:${input.clientRequestId}`;
-    const prior = (await tx.select().from(accountingEntries).where(eq(accountingEntries.dedupeKey, dedupeKey)).limit(1))[0];
+    const prior = (
+      await tx
+        .select()
+        .from(accountingEntries)
+        .where(eq(accountingEntries.dedupeKey, dedupeKey))
+        .limit(1)
+    )[0];
     if (prior && prior.receiptId != null) {
-      const out = (await tx.select().from(receipts).where(eq(receipts.id, Number(prior.receiptId))).limit(1))[0];
+      const out = (
+        await tx
+          .select()
+          .from(receipts)
+          .where(eq(receipts.id, Number(prior.receiptId)))
+          .limit(1)
+      )[0];
       if (!out || Number(out.shiftId) !== input.shiftId) {
-        throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لسحبٍ مختلف" });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "مفتاح idempotency مستعمَل لسحبٍ مختلف",
+        });
       }
-      const inn = (await tx.select().from(receipts).where(and(
-        eq(receipts.referenceNumber, String(out.referenceNumber)),
-        eq(receipts.direction, "IN"),
-        eq(receipts.cashBucket, "TREASURY"),
-      )).limit(1))[0];
+      const inn = (
+        await tx
+          .select()
+          .from(receipts)
+          .where(
+            and(
+              eq(receipts.referenceNumber, String(out.referenceNumber)),
+              eq(receipts.direction, "IN"),
+              eq(receipts.cashBucket, "TREASURY"),
+            ),
+          )
+          .limit(1)
+      )[0];
       // إعادة التشغيل لا تكون آمنة إلا للعملية نفسها. كان فحص الوردية فقط
       // يعيد نجاحاً زائفاً إذا أُعيد استعمال المفتاح بمبلغ أو مستلم مختلف؛
       // فيظن الكاشير أن السحب الثاني تمّ بينما لا تغادر النقود الدرج.
       if (
         money(out.amount).toFixed(2) !== money(input.amount).toFixed(2) ||
-        (inn?.createdBy == null ? null : Number(inn.createdBy)) !== (input.dropTo ?? null)
+        (inn?.createdBy == null ? null : Number(inn.createdBy)) !==
+          (input.dropTo ?? null)
       ) {
-        throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لسحبٍ بمبلغ أو مستلِم مختلف" });
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "مفتاح idempotency مستعمَل لسحبٍ بمبلغ أو مستلِم مختلف",
+        });
       }
-      const drawerNow = await currentDrawerCash(tx, input.shiftId, sh.openingBalance);
+      const drawerNow = await currentDrawerCash(
+        tx,
+        input.shiftId,
+        sh.openingBalance,
+      );
       return {
         dropNumber: String(out.referenceNumber),
         outReceiptId: Number(out.id),
@@ -144,7 +205,10 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
   }
 
   if (sh.status !== "OPEN") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية مغلقة — لا يمكن السحب منها" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "الوردية مغلقة — لا يمكن السحب منها",
+    });
   }
 
   // 2. الحوكمة (مرآة closeShift/createHandover): admin مرور حرّ؛ manager فرعه؛ الكاشير وردية نفسه في فرعه.
@@ -154,21 +218,33 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
     // مرور حرّ
   } else if (role === "manager") {
     if (Number(actor.branchId) !== branchId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك السحب من وردية فرع آخر" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يمكنك السحب من وردية فرع آخر",
+      });
     }
   } else {
     if (Number(sh.userId) !== actor.userId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك السحب من وردية موظّف آخر" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يمكنك السحب من وردية موظّف آخر",
+      });
     }
     if (Number(actor.branchId) !== branchId) {
-      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك السحب من وردية فرع آخر" });
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يمكنك السحب من وردية فرع آخر",
+      });
     }
   }
 
   // 3. المبلغ موجب.
   const amount = money(input.amount);
   if (amount.isZero() || amount.isNegative()) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "المبلغ يجب أن يكون موجباً",
+    });
   }
 
   // 4. نقل داخلي DRAWER→TREASURY: حارس المصدر المركزي يمنع السحب فوق المتاح.
@@ -186,20 +262,37 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
   let recipientId: number | null = null;
   let recipientName: string | null = null;
   if (input.dropTo == null) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "يجب تحديد مدير مستلم للنقد" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "يجب تحديد مدير مستلم للنقد",
+    });
   }
-  const recipient = (await tx.select().from(users).where(eq(users.id, input.dropTo)).limit(1))[0];
+  const recipient = (
+    await tx.select().from(users).where(eq(users.id, input.dropTo)).limit(1)
+  )[0];
   if (!recipient || !recipient.isActive) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "المستلِم غير موجود أو معطّل" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "المستلِم غير موجود أو معطّل",
+    });
   }
   if (recipient.role !== "admin" && recipient.role !== "manager") {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون مديراً أو إدارياً (admin/manager)" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "مستلِم النقد يجب أن يكون مديراً أو إدارياً (admin/manager)",
+    });
   }
   if (Number(recipient.id) === Number(actor.userId)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يجوز أن يكون مُسلِّم النقد هو المستلم نفسه" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يجوز أن يكون مُسلِّم النقد هو المستلم نفسه",
+    });
   }
   if (recipient.branchId == null || Number(recipient.branchId) !== branchId) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون من فرع الوردية نفسه" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "مستلِم النقد يجب أن يكون من فرع الوردية نفسه",
+    });
   }
   recipientId = Number(recipient.id);
   recipientName = recipient.name ?? `#${recipient.id}`;
@@ -241,14 +334,21 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
   });
   const inReceiptId = extractInsertId(inRes);
 
-  // 9. قيد CASH_HANDOVER (نقلٌ بين دلوَين، revenue/cost=0). dedupeKey = مفتاح العميل (idempotency
-  //   الحقيقيّ عبر uq_entry_dedupe) بلاحقة CASH_DROP تميّزه عن التسليم؛ null إن غاب المفتاح (بلا ضمان).
+  // 9. خروج النقد من الدرج إلى عهدة الطريق. الخزينة لا تُثبت هنا لأن إيصالها ما زال PENDING؛
+  // قبول المستلم يكتب المرحلة الثانية TREASURY_CASH ← CASH_IN_TRANSIT ذرياً.
   await postEntry(tx, {
-    entryType: "CASH_HANDOVER",
+    entryType: "CASH_TRANSFER_OUT",
+    postingIntent: createPostingIntent(
+      "CASH_DROP_TO_TRANSIT",
+      "CASH_TRANSFER_OUT",
+      [debitLine("CASH_IN_TRANSIT", amount), creditLine("CASH", amount)],
+    ),
     branchId,
     receiptId: outReceiptId,
     amount,
-    dedupeKey: input.clientRequestId ? `CASH_DROP:${input.clientRequestId}` : null,
+    dedupeKey: input.clientRequestId
+      ? `CASH_DROP:${input.clientRequestId}`
+      : null,
     notes: input.notes ?? undefined,
   });
 

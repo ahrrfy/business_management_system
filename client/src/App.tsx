@@ -11,7 +11,7 @@
 // حَدّ Suspense واحد حَول `Switch` (لا حَول كل Route) ⇒ تَنقّل المَسارات يُظهر fallback
 // مَرّة واحدة فَقط أثناء جَلب chunk الوِجهة، والـAppLayout (الشَريط الجانبي/الترويسة) يَبقى
 // مَرسوماً. fallback نَفس نَصّ `Protected` ⇒ تَتابع بصري سَلِس.
-import { Suspense, useCallback, useEffect } from "react";
+import { Suspense, useCallback, useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OfflineBootGate, OnlineGate } from "@/components/offline/OfflineGate";
@@ -20,6 +20,13 @@ import { RequireRole } from "@/components/RequireRole";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { RouteFallback } from "@/components/RouteFallback";
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import {
+  getOfflineUnlockedProfile,
+  isOfflineUnlocked,
+  subscribeOfflineUnlock,
+} from "@/lib/offline/pinLock";
+import { isColdOfflineStudioRoute } from "@/lib/productStudio/coldOfflinePolicy";
 import { trpc } from "@/lib/trpc";
 import Login from "@/pages/Login";
 import { Redirect, Route, Switch, useLocation } from "wouter";
@@ -44,10 +51,16 @@ const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
 const CardAccount = lazy(() => import("@/pages/CardAccount"));
 const ExchangeHub = lazy(() => import("@/pages/ExchangeHub"));
 const SalesHub = lazy(() => import("@/pages/SalesHub"));
+const MyWork = lazy(() => import("@/pages/MyWork"));
+const ReceptionOrdersPage = lazy(() => import("@/pages/reception/ReceptionOrdersPage"));
+const ReceptionInvoicesPage = lazy(() => import("@/pages/reception/ReceptionInvoicesPage"));
+const ReservationsHub = lazy(() => import("@/pages/ReservationsHub"));
+
 const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
 const PrintHub = lazy(() => import("@/pages/PrintHub"));
 const AssetsHub = lazy(() => import("@/pages/AssetsHub"));
 const HrHub = lazy(() => import("@/pages/HrHub"));
+const EmployeeOffboarding = lazy(() => import("@/pages/EmployeeOffboarding"));
 const DeliveryCenter = lazy(() => import("@/pages/DeliveryCenter"));
 const MyDeliveries = lazy(() => import("@/pages/MyDeliveries"));
 const ClosingHub = lazy(() => import("@/pages/ClosingHub"));
@@ -58,22 +71,28 @@ const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
 const VoucherPaymentNew = lazy(() => import("@/pages/VoucherPaymentNew"));
 const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
 const VoucherCategories = lazy(() => import("@/pages/VoucherCategories"));
+const ExpenseCategories = lazy(() => import("@/pages/ExpenseCategories"));
 const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
 const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
 const Storefront = lazy(() => import("@/pages/Storefront"));
+const MobileTurnstile = lazy(() => import("@/pages/MobileTurnstile"));
 const StoreHub = lazy(() => import("@/pages/StoreHub"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
+const ProductImageStudio = lazy(() => import("@/pages/ProductImageStudio"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
+const PurchaseEdit = lazy(() => import("@/pages/PurchaseEdit"));
+const PurchaseOrderDetail = lazy(() => import("@/pages/PurchaseOrderDetail"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
 const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
 const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
+const PurchaseReturnDetail = lazy(() => import("@/pages/PurchaseReturnDetail"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
 const TasksHub = lazy(() => import("@/pages/TasksHub"));
@@ -142,10 +161,18 @@ const MyStocktakes = lazy(() => import("@/pages/MyStocktakes"));
 const MyStocktakeWorkspace = lazy(() => import("@/pages/MyStocktakeWorkspace"));
 
 function Protected({ children }: { children: React.ReactNode }) {
-  const me = trpc.auth.me.useQuery();
+  const [loc] = useLocation();
+  const connectivity = useConnectivity();
+  const coldOfflineStudio =
+    isColdOfflineStudioRoute(loc) &&
+    (isDisconnected(connectivity) ||
+      (typeof navigator !== "undefined" && !navigator.onLine));
+  const me = trpc.auth.me.useQuery(undefined, { enabled: !coldOfflineStudio });
   const retry = useCallback(() => {
     void me.refetch();
   }, [me.refetch]);
+  if (coldOfflineStudio)
+    return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
   // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.
   if (me.data) {
     // إلزام 2FA (قرار المالك ٢٣/٧): الأدمن/المدير بلا 2FA يُحجَبون على شاشة التفعيل حتى يُفعّلوها.
@@ -169,22 +196,58 @@ function Protected({ children }: { children: React.ReactNode }) {
   return <Redirect to="/login" />;
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({
+  children,
+  allowColdOffline = false,
+}: {
+  children: React.ReactNode;
+  allowColdOffline?: boolean;
+}) {
   return (
     <Protected>
       <AppLayout>
         {/* حدّ خطأ لكل صفحة: عطل شاشة واحدة لا يُعطّل التنقّل/الشريط الجانبي. */}
         {/* OnlineGate: من فتح الشاشة والاتصال مقطوع يرى رسالة صادقة بدل استعلامات تفشل (ش١ أوفلاين). */}
         <RouteErrorBoundary>
-          <OnlineGate>{children}</OnlineGate>
+          <OnlineGate allowColdOffline={allowColdOffline}>{children}</OnlineGate>
         </RouteErrorBoundary>
       </AppLayout>
     </Protected>
   );
 }
 
+function StudioRouteAccess({ children }: { children: React.ReactNode }) {
+  const connectivity = useConnectivity();
+  const offline =
+    isDisconnected(connectivity) ||
+    (typeof navigator !== "undefined" && !navigator.onLine);
+  const unlocked = useSyncExternalStore(
+    subscribeOfflineUnlock,
+    isOfflineUnlocked,
+    isOfflineUnlocked,
+  );
+  const localProfile = unlocked ? getOfflineUnlockedProfile() : null;
+  return (
+    <RequireRole
+      roles={["admin", "manager", "print_operator", "auditor"]}
+      module="productStudio"
+      level="READ"
+      localOfflineActor={offline ? localProfile : undefined}
+    >
+      {children}
+    </RequireRole>
+  );
+}
+
 function NotFound() {
   return <div className="p-10 text-center text-muted-foreground">404 — الصفحة غير موجودة</div>;
+}
+
+/** مرآة واجهة لـownerProcedure: اسم الدور admin وحده لا يمنح الاطلاع على رواتب الشركة. */
+function RequireOwner({ children }: { children: ReactNode }) {
+  const me = trpc.auth.me.useQuery();
+  if (me.isLoading) return <RouteFallback />;
+  return me.data?.isOwner === true ? <>{children}</> : <Redirect to="/reports" />;
 }
 
 /** هل نحن على الدومين العام (متجر/وظائف)؟ — السياسة كاملةً في `@/lib/siteHosts`. */
@@ -262,6 +325,8 @@ export default function App() {
       <Route path="/kiosk" component={Kiosk} />
       {/* متجر الزبون (B2C) — صفحة علنية بملء الشاشة، نقطة دخول تطبيق الجوال. بلا جلسة وبلا AppLayout. */}
       <Route path="/store" component={Storefront} />
+      {/* تحقق ضيق لتطبيق الهاتف: يعيد رمز Turnstile فقط، ولا يعرض المتجر أو بيانات العميل. */}
+      <Route path="/store/mobile-turnstile" component={MobileTurnstile} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       <Route path="/my-stocktake/:code"><Shell><MyStocktakeWorkspace /></Shell></Route>
@@ -274,6 +339,7 @@ export default function App() {
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
+      <Route path="/catalog/image-studio"><Shell allowColdOffline><StudioRouteAccess><ProductImageStudio /></StudioRouteAccess></Shell></Route>
       {/* gstack B10 (٧/٧/٢٦): موجات الأسعار — تبويب داخل InventoryHub. المسار المستقلّ يبقى للحفاظ على الروابط. */}
       <Route path="/price-waves"><Redirect to="/inventory?tab=price-waves" /></Route>
       {/* العروض والحملات والكوبونات مملوكة لوحدة CRM؛ الرابط القديم محفوظ. */}
@@ -300,10 +366,14 @@ export default function App() {
       <Route path="/sales-returns/new"><Shell><SalesReturnNew /></Shell></Route>
       <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
       <Route path="/purchase-returns/new"><Shell><PurchaseReturnNew /></Shell></Route>
+      <Route path="/purchase-returns/:id"><Shell><PurchaseReturnDetail /></Shell></Route>
       <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
       <Route path="/purchases"><Shell><PurchasesHub /></Shell></Route>
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>
       <Route path="/purchases/:id/receive"><Shell><PurchaseReceive /></Shell></Route>
+      <Route path="/purchases/:id/edit"><Shell><PurchaseEdit /></Shell></Route>
+      {/* بعد /purchases/new و/:id/receive و/:id/edit عمداً: مسارٌ عامّ لا يبتلع الأخصّ منه. */}
+      <Route path="/purchases/:id"><Shell><PurchaseOrderDetail /></Shell></Route>
       <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
       <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
       <Route path="/stocktakes/new"><Shell><StocktakeNew /></Shell></Route>
@@ -339,8 +409,18 @@ export default function App() {
           </RequireRole>
         </Shell>
       </Route>
-      {/* الحجوزات نُقلت إلى مساحة خدمة العملاء داخل غلاف الاستقبال؛ لا صفحة تشغيل مستقلة بعد الآن. */}
-      <Route path="/reservations"><Redirect to="/pos?mode=RECEPTION&workspace=reservations" /></Route>
+      {/* ١٩/٨ (طلب المالك): **لكل مفهومٍ شاشةٌ واحدة**. كان `/reservations` يُحوَّل إلى طبقةٍ فوق
+          شاشة الكاشير — فلا شاشةَ للحجوزات أصلاً، والبطاقةُ في الرئيسية تعيدك إلى الشاشة نفسها
+          المزدحمة. استعادت شاشتَها (المكوّن يدعم الوضعين: `embedded` وغير المضمَّن). */}
+      <Route path="/reservations"><Shell><ReservationsHub /></Shell></Route>
+      {/* شاشتا المحطّة المفقودتان — كانتا لوحتين داخل السلّة بلا مسارٍ خاصّ بهما. */}
+      {/* ش٦ — «مطلوب منّي الآن». **على مسارٍ مسمّى لا على `/mobile`** (نقطةُ نقدٍ مُعتمَدة):
+          `safeInternalRoute` يُرجع `"/mobile"` **سقوطاً احتياطياً** لأيّ مسارٍ فاسد، فتسجيلُ
+          شاشةٍ عليه يجعل كلّ إشعارٍ بوجهةٍ مكسورة يهبط على شاشةٍ تبدو صحيحة ⇒ خطأُ الوجهة
+          **غير قابلٍ للاكتشاف**. */}
+      <Route path="/my-work"><Shell><MyWork /></Shell></Route>
+      <Route path="/reception/orders"><Shell><ReceptionOrdersPage /></Shell></Route>
+      <Route path="/reception/invoices"><Shell><ReceptionInvoicesPage /></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
@@ -357,6 +437,8 @@ export default function App() {
       <Route path="/hr/employees/new"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
       <Route path="/hr/employees/:id/edit"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
       <Route path="/hr/employees/:id"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeDetail /></RequireRole></Shell></Route>
+      {/* تصفية خروج الموظف — قراءةٌ فقط تجمع ذمّته عبر ستّ وحدات قبل إنهاء الخدمة. */}
+      <Route path="/hr/offboarding"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeOffboarding /></RequireRole></Shell></Route>
       <Route path="/hr/attendance"><Redirect to="/hr?tab=attendance" /></Route>
       <Route path="/hr/payroll"><Redirect to="/hr?tab=payroll" /></Route>
       <Route path="/hr/leaves"><Redirect to="/hr?tab=leaves" /></Route>
@@ -369,7 +451,10 @@ export default function App() {
       <Route path="/vouchers"><Redirect to="/treasury?tab=vouchers" /></Route>
       <Route path="/vouchers/receipt/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherReceiptNew /></RequireRole></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherPaymentNew /></RequireRole></Shell></Route>
-      <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
+      {/* «محاسب» ينشئ السندات (المسارات أعلاه) وبوّابةُ الخادم لفئاتها تشمله (treasuryGlobalProcedure)،
+          لكن حارس المسار كان يُسقطه ⇒ «لا تملك صلاحية» على الشاشة الوحيدة التي تُنشئ الفئة الإلزامية. */}
+      <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
+      <Route path="/expense-categories"><Shell><RequireRole roles={["admin","manager","accountant"]} module="expenses" level="FULL"><ExpenseCategories /></RequireRole></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
       <Route path="/card-account"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CardAccount /></RequireRole></Shell></Route>
@@ -425,7 +510,7 @@ export default function App() {
           فتُبوَّب بوحدة hr كي يفتحها مَن مُنح الموارد البشرية لا مَن مُنح التقارير (مراجعة Codex).
           قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة
           الخادم التي بلا قائمة أدوار. */}
-      <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><PayrollReport /></RequireRole></Shell></Route>
+      <Route path="/reports/payroll"><Shell><RequireOwner><PayrollReport /></RequireOwner></Shell></Route>
       <Route path="/reports/attendance-monthly"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><MonthlyAttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
@@ -464,7 +549,7 @@ export default function App() {
       <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
       <Route path="/audit"><Redirect to="/settings?tab=audit" /></Route>
-      <Route path="/closing"><Shell><RequireRole roles={["admin","manager"]}><ClosingHub /></RequireRole></Shell></Route>
+      <Route path="/closing"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports" level="READ"><ClosingHub /></RequireRole></Shell></Route>
       <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>
       <Route path="/credit-approvals"><Redirect to="/closing?tab=credit" /></Route>
       <Route path="/year-end"><Redirect to="/closing?tab=yearend" /></Route>

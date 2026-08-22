@@ -67,10 +67,18 @@ export async function getDashboard(
         b.name AS branchName,
         COUNT(DISTINCT s.id) AS openShiftsCount,
         CAST(COALESCE(SUM(s.openingBalance), 0) AS CHAR) AS totalOpening,
+        /* تعريف النقد هنا يجب أن يطابق materializedDrawerCashConditions و
+           computeTreasuryCashBalance في cash/cashAvailability.ts حرفياً: الدلو + paymentMethod
+           نقديّ + receiptStatus مُثبَّتة + APPROVED. كان الشرطان الأوّلان غائبَين هنا ⇒ المدير
+           يقرأ رقماً والنظام يعمل برقمٍ آخر: شيك قسطٍ مرتدّ (installment/bounce.ts يكتب دلو
+           TREASURY بطريقة CHECK) كان يُنقص الرصيد المعروض بينما assertCashOutAvailable لا يراه
+           فيسمح بالصرف. */
         CAST(COALESCE((
           SELECT SUM(r.amount)
           FROM receipts r
           WHERE r.cashBucket = 'DRAWER'
+            AND r.paymentMethod = 'CASH'
+            AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
             AND r.receiptApprovalStatus = 'APPROVED'
             AND r.direction = 'IN'
             AND r.shiftId IN (
@@ -82,6 +90,8 @@ export async function getDashboard(
           SELECT SUM(r.amount)
           FROM receipts r
           WHERE r.cashBucket = 'DRAWER'
+            AND r.paymentMethod = 'CASH'
+            AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
             AND r.receiptApprovalStatus = 'APPROVED'
             AND r.direction = 'OUT'
             AND r.shiftId IN (
@@ -123,6 +133,7 @@ export async function getDashboard(
         FROM branches b
         LEFT JOIN receipts r ON r.branchId = b.id
           AND r.cashBucket = 'TREASURY'
+          AND r.paymentMethod = 'CASH'
           AND r.receiptStatus ${MATERIALIZED_RECEIPT_STATUS_SQL}
           AND r.receiptApprovalStatus = 'APPROVED'
         WHERE b.isActive = TRUE

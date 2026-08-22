@@ -62,19 +62,23 @@ describe("بضاعة الأمانة ش٣ — الالتقاط عند البيع"
     const shiftId = await openShift();
     const sale = await createSale({ branchId: 1, shiftId, priceTier: "RETAIL", sourceType: "POS",
       lines: [{ variantId, productUnitId, quantity: "3" }], payment: { amount: "15000", method: "CASH" } }, actor);
-    // قيد SALE لم يُمسّ: revenue كامل، الربح = الهامش (15000 − 12000 = 3000).
+    // قيد SALE يصرّح فقط بـCOGS المملوك (هنا صفر). حصة المودِع تُصرّح في PURCHASE
+    // المستقل كي يطابق source.cost خطوط Dr COGS/Cr CONSIGNMENT_PAYABLE بلا ادعاء مخزون مملوك.
     const saleE = (await entries("SALE"))[0];
     expect(saleE.revenue).toBe("15000.00");
-    expect(saleE.cost).toBe("12000.00");
-    expect(saleE.profit).toBe("3000.00");
-    // استحقاق الأمانة: PURCHASE يتيم بـinvoiceId + supplierId + amount=الحصة، صفر P&L.
+    expect(saleE.cost).toBe("0.00");
+    expect(saleE.profit).toBe("15000.00");
+    // الاستحقاق يحمل إفصاح P&L المبسّط للحصة؛ مجموع القيدين يبقى هامش العملية 3000.
     const pe = await entries("PURCHASE");
     expect(pe).toHaveLength(1);
     expect(pe[0].amount).toBe("12000.00");
     expect(Number(pe[0].invoiceId)).toBe(sale.invoiceId);
     expect(Number(pe[0].supplierId)).toBe(cid);
     expect(pe[0].revenue).toBe("0.00");
+    expect(pe[0].cost).toBe("12000.00");
+    expect(pe[0].profit).toBe("-12000.00");
     expect(pe[0].dedupeKey).toBe(`CONSIG:${sale.invoiceId}:${cid}`);
+    expect(Number(saleE.profit) + Number(pe[0].profit)).toBe(3000);
     expect(await balance(cid)).toBe("12000.00");
   });
 
@@ -95,6 +99,13 @@ describe("بضاعة الأمانة ش٣ — الالتقاط عند البيع"
     expect(b.sales.toFixed(2)).toBe("6850.00");
     expect(b.consigDeduction.toFixed(2)).toBe("4000.00");
     expect(b.sales.minus(b.returns).minus(b.consigDeduction).toFixed(2)).toBe("2850.00");
+    const saleEntry = (await entries("SALE"))[0]!;
+    const consignmentEntry = (await entries("PURCHASE"))[0]!;
+    expect(saleEntry.cost).toBe("900.00"); // مملوك فقط: لا تُعامل حصة الأمانة كـINVENTORY.
+    expect(saleEntry.profit).toBe("5950.00");
+    expect(consignmentEntry.cost).toBe("4000.00");
+    expect(consignmentEntry.profit).toBe("-4000.00");
+    expect(Number(saleEntry.profit) + Number(consignmentEntry.profit)).toBe(1950);
   });
 });
 
@@ -110,6 +121,13 @@ describe("بضاعة الأمانة ش٣ — عكس المرتجع", () => {
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 2 }], refund: { amount: "10000", method: "CASH" }, restock: true }, actor);
     expect(await balance(cid)).toBe("0.00"); // الالتزام عُكس بالكامل
+    const ret = (await entries("RETURN"))[0]!;
+    expect(ret.cost).toBe("0.00"); // بضاعة الأمانة ليست INVENTORY للمكتبة فلا عكس COGS هنا.
+    const purchaseEntries = await entries("PURCHASE");
+    expect(purchaseEntries.map((entry) => entry.cost).sort()).toEqual(["-8000.00", "8000.00"]);
+    const storyProfit = [...(await entries("SALE")), ...purchaseEntries, ret]
+      .reduce((sum, entry) => sum + Number(entry.profit), 0);
+    expect(storyProfit).toBe(0);
     const pool = await computeNetSalesByUser(db(), period());
     const b = pool.get(1)!;
     // صافي وعاء البائع = sales − returns − consigDeduction = 10000 − 10000 − (8000−8000) = 0.
@@ -149,6 +167,35 @@ describe("بضاعة الأمانة ش٣ — idempotency", () => {
     await createSale(input, actor); // replay
     expect(await entries("PURCHASE")).toHaveLength(1); // استحقاق واحد
     expect(await balance(cid)).toBe("8000.00");
+  });
+
+  it("إعادة استعمال clientRequestId بحمولة بيع مختلفة تُرفض ببصمة idempotency", async () => {
+    const cid = await mkConsignor();
+    const { variantId, productUnitId } = await mkConsignProduct(cid, "4000", "5000");
+    await deposit(cid, variantId, productUnitId, "10");
+    const shiftId = await openShift();
+    const clientRequestId = "rep-fingerprint-1";
+    await createSale({
+      branchId: 1,
+      shiftId,
+      sourceType: "POS",
+      priceTier: "RETAIL",
+      clientRequestId,
+      lines: [{ variantId, productUnitId, quantity: "1" }],
+      payment: { amount: "5000", method: "CASH" },
+    }, actor);
+
+    await expect(createSale({
+      branchId: 1,
+      shiftId,
+      sourceType: "POS",
+      priceTier: "RETAIL",
+      clientRequestId,
+      lines: [{ variantId, productUnitId, quantity: "2" }],
+      payment: { amount: "10000", method: "CASH" },
+    }, actor)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await entries("SALE")).toHaveLength(1);
+    expect(await entries("PURCHASE")).toHaveLength(1);
   });
 });
 

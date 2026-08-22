@@ -1,3 +1,5 @@
+import { ChannelMark } from "@/components/ChannelBadge";
+import { WORK_ORDER_CHANNELS, receptionChannelHandleInput, receptionChannelLabel, receptionChannelOptions } from "@shared/receptionChannel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -22,7 +24,7 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 
 /**
  * طلب خدمة جديد — v3 add-screens (شاشة احترافية متكاملة).
@@ -41,14 +43,6 @@ import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from
  * عند تحرير الجلسة المالكة، يمكن نقل المفاتيح إلى أعمدة DB المضافة في `drizzle/schema.ts`.
  */
 
-const CHANNELS: { v: string; label: string; icon: string; placeholder: string; dir: "ltr" | "rtl" }[] = [
-  { v: "WHATSAPP",  label: "واتساب",       icon: "💬", placeholder: "+9647701234567", dir: "ltr" },
-  { v: "INSTAGRAM", label: "انستغرام",     icon: "📷", placeholder: "@username",       dir: "ltr" },
-  { v: "TIKTOK",    label: "تيك توك",       icon: "🎵", placeholder: "@username",       dir: "ltr" },
-  { v: "PHONE",     label: "اتصال هاتفي",   icon: "📞", placeholder: "+9647701234567", dir: "ltr" },
-  { v: "WALK_IN",   label: "عميل نقدي",    icon: "🏪", placeholder: "—",               dir: "rtl" },
-  { v: "OTHER",     label: "أخرى",          icon: "📩", placeholder: "—",               dir: "rtl" },
-];
 
 const PRIORITIES: { v: "LOW" | "NORMAL" | "URGENT"; label: string; cls: string }[] = [
   { v: "LOW",     label: "منخفض",   cls: "badge-status-active" },
@@ -298,7 +292,7 @@ export default function WorkOrderNew() {
 
   async function handleSave(opts: { print: boolean }) {
     setError("");
-    if (!isPosPaymentMethodEnabled(paymentMethod)) return setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    if (!isPosPaymentMethodEnabled(paymentMethod)) return setError(posPaymentRejectionMessage(paymentMethod));
     if (!effectiveBranch) return setError("اختر الفرع أولاً.");
     if (!hasCart && !hasCustom) return setError("أضف منتجاً جاهزاً للسلّة أو أدخل خدمة تخصيص بسعر.");
     if (hasCustom && !salePrice.trim()) return setError("سعر بيع خدمة التخصيص مطلوب.");
@@ -419,7 +413,7 @@ export default function WorkOrderNew() {
       </head><body>
       <h1>طلب خدمة — معاينة</h1>
       <p class="muted">العميل: ${esc(customerSel.name || "—")} ${customerSel.isNew ? "(جديد)" : ""}</p>
-      <p class="muted">القناة: ${esc(CHANNELS.find((c) => c.v === channel)?.label || "—")} ${channelHandle ? `· <bdi>${esc(channelHandle)}</bdi>` : ""}</p>
+      <p class="muted">القناة: ${esc(receptionChannelLabel(channel))} ${channelHandle ? `· <bdi>${esc(channelHandle)}</bdi>` : ""}</p>
       <p class="muted">الأولوية: ${esc(PRIORITIES.find((p) => p.v === priority)?.label || "عادي")}</p>
       <table><thead><tr><th>المنتج</th><th>الوحدة</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">لا منتجات</td></tr>`}</tbody></table>
       ${title ? `<p><b>خدمة التخصيص:</b> ${esc(title)}</p>` : ""}
@@ -450,7 +444,7 @@ export default function WorkOrderNew() {
       salePrice.trim() !== "",
   );
 
-  const channelDef = CHANNELS.find((c) => c.v === channel)!;
+  const channelDef = receptionChannelHandleInput(channel);
   const customerNeedsPhone = customerSel.isNew && !customerSel.phone;
 
   return (
@@ -505,17 +499,17 @@ export default function WorkOrderNew() {
           <CardHeader><CardTitle className="text-base">قناة الاستلام</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-wrap gap-2">
-              {CHANNELS.map((c) => (
+              {receptionChannelOptions(WORK_ORDER_CHANNELS).map((c) => (
                 <button
-                  key={c.v}
+                  key={c.value}
                   type="button"
-                  onClick={() => setChannel(c.v)}
+                  onClick={() => setChannel(c.value)}
                   className={cn(
                     "h-9 px-3 rounded-md border text-sm flex items-center gap-1.5 transition-colors",
-                    channel === c.v ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent"
+                    channel === c.value ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent"
                   )}
                 >
-                  <span>{c.icon}</span>
+                  <ChannelMark channel={c.value} />
                   <span>{c.label}</span>
                 </button>
               ))}
@@ -846,18 +840,12 @@ export default function WorkOrderNew() {
             </button>
             <button
               type="button"
-              onClick={() => undefined}
-              disabled
-              aria-describedby="work-order-external-payment-disabled"
-              title={POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-              className="flex h-10 cursor-not-allowed items-center gap-1.5 rounded-md border bg-muted/40 px-4 text-sm text-muted-foreground/45"
+              onClick={() => setPaymentMethod("CARD")}
+              className={cn("h-10 px-4 rounded-md border text-sm flex items-center gap-1.5", paymentMethod === "CARD" ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent")}
             >
               <CreditCard aria-hidden className="size-4" /> بطاقة (ماستر/فيزا)
             </button>
           </div>
-          <p id="work-order-external-payment-disabled" className="text-[11px] text-muted-foreground">
-            {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-          </p>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">

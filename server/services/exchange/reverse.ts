@@ -7,11 +7,188 @@ import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts, suppliers } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
-import { money, round2, toDbMoney } from "../money";
+import {
+  createPostingIntent,
+  signedPostingLines,
+  type AccountRole,
+  type PostingIntent,
+  type PostingSourceComponents,
+} from "../accounting/postingEngine";
+import { money, round2, toDbMoney, type DecimalInput } from "../money";
 import { withTx, type Actor } from "../tx";
 import { assertCashOutAvailable, assertNonPhysicalOutReceipt, assertTreasuryOutException, lockCashSourceForUpdate } from "../cash/cashAvailability";
 import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, toDbRate } from "./helpers";
+import { postExchangeControlReclassification } from "./controlClassification";
+
+function signedSourceComponents(
+  debitRole: AccountRole,
+  creditRole: AccountRole,
+  signedAmount: DecimalInput,
+): PostingSourceComponents {
+  const amount = round2(signedAmount);
+  return amount.isPositive()
+    ? { roleDebits: { [debitRole]: amount }, roleCredits: { [creditRole]: amount } }
+    : { roleDebits: { [creditRole]: amount.abs() }, roleCredits: { [debitRole]: amount.abs() } };
+}
+
+export interface ForeignCashUsdPosition {
+  quantityUsd: Decimal;
+  carryingIqd: Decimal;
+  wavgRate: Decimal;
+}
+
+export interface SignedUsdMovement {
+  balanceUsd: Decimal;
+  balanceCarryingIqd: Decimal;
+  usdCostRate: Decimal;
+  walletDeltaIqd: Decimal;
+  fxGainIqd: Decimal;
+}
+
+/** Persist quantity, authoritative carrying and display WAVG in one CHECK-safe statement. */
+export async function persistSignedUsdControl(
+  tx: Tx,
+  houseId: number,
+  movement: Pick<SignedUsdMovement, "balanceUsd" | "balanceCarryingIqd" | "usdCostRate">,
+): Promise<void> {
+  await tx.update(exchangeHouses).set({
+    balanceUsd: toDbMoney(movement.balanceUsd),
+    balanceUsdCarryingIqd: toDbMoney(movement.balanceCarryingIqd),
+    usdCostRate: toDbRate(movement.usdCostRate),
+  }).where(eq(exchangeHouses.id, houseId));
+}
+
+function assertSignedUsdControl(balance: Decimal, carrying: Decimal, context: string): void {
+  if (balance.isZero() !== carrying.isZero()) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `${context}: كمية الدولار وقيمتها الدفترية لا تُصفّران معاً`,
+    });
+  }
+  if (!balance.isZero() && balance.isPositive() !== carrying.isPositive()) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `${context}: إشارة قيمة الدولار الدفترية لا تطابق إشارة الكمية`,
+    });
+  }
+}
+
+/** Allocate an authoritative cent carrying value without going through the 4-decimal display WAVG. */
+export function allocateCarryingIqd(
+  totalCarryingInput: DecimalInput,
+  quantityInput: DecimalInput,
+  totalQuantityInput: DecimalInput,
+): Decimal {
+  const totalCarrying = round2(totalCarryingInput);
+  const quantity = money(quantityInput);
+  const totalQuantity = money(totalQuantityInput);
+  if (totalCarrying.lte(0) || quantity.lte(0) || totalQuantity.lte(0) || quantity.gt(totalQuantity)) {
+    throw new TRPCError({ code: "CONFLICT", message: "تعذر توزيع القيمة الدفترية للدولار على كمية غير صالحة" });
+  }
+  return quantity.eq(totalQuantity)
+    ? totalCarrying
+    : round2(totalCarrying.times(quantity).div(totalQuantity));
+}
+
+/**
+ * Move the signed house USD control without mixing its receivable/liability basis
+ * with the separately-derived physical USD asset.  A crossing closes the old
+ * side at its own carrying rate and opens the other side at the movement rate.
+ */
+export function calculateSignedUsdMovement(
+  oldBalanceInput: DecimalInput,
+  oldSignedCarryingInput: DecimalInput,
+  deltaUsdInput: DecimalInput,
+  movementCarryingInput: DecimalInput,
+): SignedUsdMovement {
+  const oldBalance = money(oldBalanceInput);
+  const oldSignedCarrying = round2(oldSignedCarryingInput);
+  const deltaUsd = money(deltaUsdInput);
+  const movementCarrying = round2(movementCarryingInput);
+  if (deltaUsd.isZero() || movementCarrying.lte(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "حركة الدولار وقيمتها الدفترية يجب أن تكونا موجبتين" });
+  }
+  assertSignedUsdControl(oldBalance, oldSignedCarrying, "رصيد الصيرفة الدولاري قبل الحركة");
+
+  const sameSide = oldBalance.isZero() || oldBalance.isPositive() === deltaUsd.isPositive();
+  let walletDeltaMagnitude: Decimal;
+  if (sameSide) {
+    walletDeltaMagnitude = movementCarrying;
+  } else {
+    const closeQty = Decimal.min(oldBalance.abs(), deltaUsd.abs());
+    const remainderQty = deltaUsd.abs().minus(closeQty);
+    const closeBasis = allocateCarryingIqd(oldSignedCarrying.abs(), closeQty, oldBalance.abs());
+    const remainderBasis = remainderQty.isZero()
+      ? new Decimal(0)
+      : allocateCarryingIqd(movementCarrying, remainderQty, deltaUsd.abs());
+    walletDeltaMagnitude = closeBasis.plus(remainderBasis);
+  }
+  const walletDeltaIqd = round2(walletDeltaMagnitude).times(deltaUsd.isNegative() ? -1 : 1);
+  const balanceUsd = round2(oldBalance.plus(deltaUsd));
+  const newSignedBasis = round2(oldSignedCarrying.plus(walletDeltaIqd));
+  assertSignedUsdControl(balanceUsd, newSignedBasis, "رصيد الصيرفة الدولاري بعد الحركة");
+  const usdCostRate = balanceUsd.isZero() ? new Decimal(0) : newSignedBasis.abs().div(balanceUsd.abs());
+  const mainWalletDelta = movementCarrying.times(deltaUsd.isNegative() ? -1 : 1);
+  return {
+    balanceUsd,
+    balanceCarryingIqd: newSignedBasis,
+    usdCostRate,
+    walletDeltaIqd,
+    fxGainIqd: round2(walletDeltaIqd.minus(mainWalletDelta)),
+  };
+}
+
+/** Physical USD is an operationally-derived asset; signed house USD remains a separate control balance. */
+export async function deriveForeignCashUsdPosition(
+  tx: Tx,
+  houseId: number,
+  branchId: number,
+  excludeTxnId?: number,
+): Promise<ForeignCashUsdPosition> {
+  const txns = await tx
+    .select()
+    .from(exchangeTransactions)
+    .where(and(
+      eq(exchangeTransactions.exchangeHouseId, houseId),
+      eq(exchangeTransactions.branchId, branchId),
+      eq(exchangeTransactions.status, "ACTIVE"),
+    ))
+    .orderBy(asc(exchangeTransactions.createdAt), asc(exchangeTransactions.id))
+    .for("update");
+  let quantityUsd = new Decimal(0);
+  let carryingIqd = new Decimal(0);
+  for (const txn of txns) {
+    if (excludeTxnId != null && Number(txn.id) === excludeTxnId) continue;
+    if (txn.currency !== "USD" || !["FX_BUY", "WITHDRAW", "DEPOSIT"].includes(txn.type)) continue;
+    const quantity = money(txn.usdAmount);
+    const carrying = round2(txn.iqdAmount);
+    if (quantity.lte(0) || carrying.lte(0)) {
+      throw new TRPCError({ code: "CONFLICT", message: `عملية ${txn.txnNumber} لا تحمل كمية/قيمة دفترية صالحة لحيازة الدولار` });
+    }
+    const isInflow = txn.type === "FX_BUY" || txn.type === "WITHDRAW";
+    if (isInflow) {
+      quantityUsd = quantityUsd.plus(quantity);
+      carryingIqd = carryingIqd.plus(carrying);
+    } else {
+      quantityUsd = quantityUsd.minus(quantity);
+      carryingIqd = carryingIqd.minus(carrying);
+    }
+  }
+  quantityUsd = round2(quantityUsd);
+  carryingIqd = round2(carryingIqd);
+  if (quantityUsd.isNegative() || carryingIqd.isNegative()) {
+    throw new TRPCError({ code: "CONFLICT", message: "حيازة الدولار الفعلية سالبة" });
+  }
+  if (quantityUsd.isZero() !== carryingIqd.isZero()) {
+    throw new TRPCError({ code: "CONFLICT", message: "حيازة الدولار صفر لكن قيمتها الدفترية غير صفر (أو العكس)" });
+  }
+  return {
+    quantityUsd,
+    carryingIqd,
+    wavgRate: quantityUsd.isZero() ? new Decimal(0) : carryingIqd.div(quantityUsd),
+  };
+}
 
 /**
  * يُعيد اشتقاق (balanceIqd, balanceUsd, usdCostRate) للمحفظة من كل عملياتها **النشطة** بالترتيب —
@@ -31,12 +208,7 @@ export async function recomputeHouseFromLog(tx: Tx, houseId: number): Promise<vo
 
   let iqd = new Decimal(0);
   let usd = new Decimal(0);
-  let basis = new Decimal(0); // كلفة الدولار المملوك بالدينار (basis/usd = WAVG)
-  const disposeUsd = (amt: Decimal) => {
-    const r = usd.isZero() ? new Decimal(0) : basis.div(usd);
-    basis = basis.minus(amt.times(r));
-    usd = usd.minus(amt);
-  };
+  let usdCarrying = new Decimal(0);
   for (const t of txns) {
     const iqdAmt = money(t.iqdAmount);
     const usdAmt = money(t.usdAmount);
@@ -46,40 +218,51 @@ export async function recomputeHouseFromLog(tx: Tx, houseId: number): Promise<vo
     switch (t.type) {
       case "OPENING":
         iqd = iqd.plus(iqdAmt);
-        if (usdAmt.gt(0)) {
-          basis = basis.plus(usdAmt.times(rate));
+        if (!usdAmt.isZero()) {
           usd = usd.plus(usdAmt);
+          usdCarrying = usdCarrying.plus(round2(usdAmt.times(rate)));
         }
         break;
       case "DEPOSIT":
         if (t.currency === "USD") {
-          basis = basis.plus(usdAmt.times(rate));
+          if (iqdAmt.lte(0)) throw new TRPCError({ code: "CONFLICT", message: `الإيداع ${t.txnNumber} بلا قيمة دفترية authoritative` });
           usd = usd.plus(usdAmt);
+          usdCarrying = usdCarrying.plus(iqdAmt).plus(round2(t.fxDiff));
         } else iqd = iqd.plus(iqdAmt);
         break;
       case "WITHDRAW":
-        if (t.currency === "USD") disposeUsd(usdAmt);
+        if (t.currency === "USD") {
+          if (iqdAmt.lte(0)) throw new TRPCError({ code: "CONFLICT", message: `السحب ${t.txnNumber} بلا قيمة دفترية authoritative` });
+          usd = usd.minus(usdAmt);
+          usdCarrying = usdCarrying.minus(iqdAmt).plus(round2(t.fxDiff));
+        }
         else iqd = iqd.minus(iqdAmt);
         break;
       case "FX_BUY":
         // نموذج الدَّين (قرار مالك ٣/٨): الصيرفة تُسلِّم الدولار فوراً نقداً ⇒ لا يُمسّ الدينار إطلاقاً؛
         // يتعمّق الدَّين الدولاري (usd سالب أكثر) بمتوسط كلفةٍ يشمل سعر نشوء هذا الدَّين تحديداً.
-        basis = basis.minus(iqdAmt);
         usd = usd.minus(usdAmt);
+        usdCarrying = usdCarrying.minus(iqdAmt).plus(round2(t.fxDiff));
         break;
       case "SETTLE":
-        if (t.currency === "USD") disposeUsd(usdAmt.plus(comm)); // مبدأ + عمولة بالدولار
+        if (t.currency === "USD") {
+          usd = usd.minus(usdAmt).minus(comm);
+          usdCarrying = usdCarrying.minus(iqdAmt).minus(commIqd).plus(round2(t.fxDiff));
+        }
         else iqd = iqd.minus(iqdAmt.plus(commIqd)); // مبدأ + عمولة بالدينار
         break;
     }
   }
-  const finalRate = usd.isZero() ? new Decimal(0) : basis.div(usd);
+  usd = round2(usd);
+  usdCarrying = round2(usdCarrying);
+  assertSignedUsdControl(usd, usdCarrying, "إعادة بناء رصيد الصيرفة الدولاري");
   await tx
     .update(exchangeHouses)
     .set({
       balanceIqd: toDbMoney(round2(iqd)),
       balanceUsd: toDbMoney(round2(usd)),
-      usdCostRate: toDbRate(finalRate),
+      balanceUsdCarryingIqd: toDbMoney(round2(usdCarrying)),
+      usdCostRate: toDbRate(usd.isZero() ? new Decimal(0) : usdCarrying.abs().div(usd.abs())),
     })
     .where(eq(exchangeHouses.id, houseId));
 }
@@ -140,7 +323,7 @@ export async function reverseExchangeTransaction(
         if (!po) throw new TRPCError({ code: "CONFLICT", message: "فاتورة تسوية الصيرفة غير موجودة" });
       }
     }
-    if (previewTxn) await lockHouse(tx, Number(previewTxn.exchangeHouseId));
+    const lockedHouse = previewTxn ? await lockHouse(tx, Number(previewTxn.exchangeHouseId)) : null;
     const [txn] = await tx.select().from(exchangeTransactions).where(eq(exchangeTransactions.id, txnId)).for("update").limit(1);
     if (!txn) throw new TRPCError({ code: "NOT_FOUND", message: "عملية الصيرفة غير موجودة" });
     if (txn.status === "REVERSED") throw new TRPCError({ code: "BAD_REQUEST", message: "العملية معكوسة سابقاً" });
@@ -172,12 +355,17 @@ export async function reverseExchangeTransaction(
       });
     }
     const houseId = Number(txn.exchangeHouseId);
+    if (!lockedHouse) throw new TRPCError({ code: "CONFLICT", message: "تعذر قفل حساب الصيرفة للعكس" });
+    const controlBeforeIqd = txn.currency === "USD"
+      ? money(lockedHouse.balanceUsdCarryingIqd)
+      : money(lockedHouse.balanceIqd);
 
     // حارس اتساق فرق الصرف (تدقيق ٢٥/٧): عكس اقتناءِ دولارٍ (FX_BUY أو DEPOSIT-USD) استهلكته عمليةٌ
     // لاحقة (تسوية/سحب دولار) يترك فرق الصرف المحقَّق لتلك العملية محسوباً على متوسط كلفةٍ بطَل بعد
     // إعادة الاشتقاق (recompute يصحّح الأرصدة لا القيود المُرحَّلة سابقاً) ⇒ انحراف P&L صامت دائم.
     // نمنعه: تُعكَس العمليات اللاحقة المستهلِكة للدولار أوّلاً (id تصاعديّ = ترتيب الإدراج، لا الساعة).
-    if (txn.type === "FX_BUY" || (txn.type === "DEPOSIT" && txn.currency === "USD")) {
+    if (txn.currency === "USD") {
+      const laterSensitiveTypes = ["DEPOSIT", "SETTLE", "WITHDRAW", "FX_BUY"] as const;
       const [laterDisposal] = await tx
         .select({ txnNumber: exchangeTransactions.txnNumber })
         .from(exchangeTransactions)
@@ -186,7 +374,7 @@ export async function reverseExchangeTransaction(
             eq(exchangeTransactions.exchangeHouseId, houseId),
             eq(exchangeTransactions.status, "ACTIVE"),
             eq(exchangeTransactions.currency, "USD"),
-            inArray(exchangeTransactions.type, ["SETTLE", "WITHDRAW"]),
+            inArray(exchangeTransactions.type, laterSensitiveTypes),
             gt(exchangeTransactions.id, txnId),
           ),
         )
@@ -194,9 +382,16 @@ export async function reverseExchangeTransaction(
       if (laterDisposal) {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: `لا يمكن عكس هذا الاقتناء الدولاريّ: عمليةٌ لاحقة (${laterDisposal.txnNumber}) استهلكت دولاره ⇒ عكسه يترك فرق الصرف المحقَّق لتلك العملية على قيمةٍ خاطئة. اعكس العمليات اللاحقة المستهلِكة للدولار أوّلاً.`,
+          message: `لا يمكن عكس حركة الدولار قبل العملية اللاحقة ${laterDisposal.txnNumber}؛ اعكس الحركات الدولارية بترتيب عكسي أوّلاً.`,
         });
       }
+    }
+
+    if (txn.currency === "USD" && (txn.type === "FX_BUY" || txn.type === "WITHDRAW")) {
+      if (txn.branchId == null) {
+        throw new TRPCError({ code: "CONFLICT", message: "حركة حيازة الدولار بلا فرع موثّق" });
+      }
+      await deriveForeignCashUsdPosition(tx, houseId, Number(txn.branchId), txnId);
     }
 
     // ١) علّم العملية REVERSED (recompute أدناه يعتمد الحالة النشطة فيستثنيها).
@@ -272,24 +467,133 @@ export async function reverseExchangeTransaction(
       .from(accountingEntries)
       .where(and(eq(accountingEntries.exchangeHouseId, houseId), sql`${accountingEntries.dedupeKey} LIKE ${`%:${txn.txnNumber}`}`));
     for (const e of entries) {
+      if (e.entryType === "ADJUST" && e.dedupeKey?.startsWith("EXCTRL:")) continue;
+      const reversedAmount = money(e.amount).negated();
+      const exchangeWalletRole = txn.currency === "USD" ? "EXCHANGE_WALLET_USD" as const : "EXCHANGE_WALLET_IQD" as const;
+      let postingIntent: PostingIntent | undefined;
+      let postingSourceComponents: PostingSourceComponents | undefined;
+      switch (e.entryType) {
+        case "EXCHANGE_DEPOSIT":
+          postingSourceComponents = txn.currency === "USD"
+            ? signedSourceComponents("EXCHANGE_WALLET_USD", "FOREIGN_CASH_USD", reversedAmount)
+            : signedSourceComponents("EXCHANGE_WALLET_IQD", "TREASURY_CASH", reversedAmount);
+          postingIntent = createPostingIntent(
+            txn.currency === "USD" ? "EXCHANGE_DEPOSIT_USD_CASH" : "EXCHANGE_DEPOSIT_IQD",
+            "EXCHANGE_DEPOSIT",
+            txn.currency === "USD"
+              ? signedPostingLines("EXCHANGE_WALLET_USD", "FOREIGN_CASH_USD", reversedAmount)
+              : signedPostingLines("EXCHANGE_WALLET_IQD", "TREASURY_CASH", reversedAmount),
+            postingSourceComponents,
+          );
+          break;
+        case "EXCHANGE_WITHDRAW":
+          postingSourceComponents = txn.currency === "USD"
+            ? signedSourceComponents("FOREIGN_CASH_USD", "EXCHANGE_WALLET_USD", reversedAmount)
+            : signedSourceComponents("TREASURY_CASH", "EXCHANGE_WALLET_IQD", reversedAmount);
+          postingIntent = createPostingIntent(
+            txn.currency === "USD" ? "EXCHANGE_WITHDRAW_USD_CASH" : "EXCHANGE_WITHDRAW_IQD",
+            "EXCHANGE_WITHDRAW",
+            txn.currency === "USD"
+              ? signedPostingLines("FOREIGN_CASH_USD", "EXCHANGE_WALLET_USD", reversedAmount)
+              : signedPostingLines("TREASURY_CASH", "EXCHANGE_WALLET_IQD", reversedAmount),
+            postingSourceComponents,
+          );
+          break;
+        case "EXCHANGE_FX_BUY":
+          postingSourceComponents = signedSourceComponents("FOREIGN_CASH_USD", "EXCHANGE_WALLET_USD", reversedAmount);
+          postingIntent = createPostingIntent(
+            "EXCHANGE_FX_BUY",
+            "EXCHANGE_FX_BUY",
+            signedPostingLines("FOREIGN_CASH_USD", "EXCHANGE_WALLET_USD", reversedAmount),
+            postingSourceComponents,
+          );
+          break;
+        case "EXCHANGE_SETTLE":
+          postingSourceComponents = signedSourceComponents("AP", exchangeWalletRole, reversedAmount);
+          postingIntent = createPostingIntent(
+            "EXCHANGE_SETTLE_SUPPLIER",
+            "EXCHANGE_SETTLE",
+            signedPostingLines("AP", exchangeWalletRole, reversedAmount),
+            postingSourceComponents,
+          );
+          break;
+        case "EXCHANGE_FEE":
+          postingSourceComponents = signedSourceComponents("OPERATING_EXPENSE", exchangeWalletRole, reversedAmount);
+          postingIntent = createPostingIntent(
+            "EXCHANGE_FEE_EXPENSE",
+            "EXCHANGE_FEE",
+            signedPostingLines("OPERATING_EXPENSE", exchangeWalletRole, reversedAmount),
+            postingSourceComponents,
+          );
+          break;
+        case "EXCHANGE_FX_DIFF": {
+          const originalAmount = money(e.amount);
+          postingSourceComponents = originalAmount.isPositive()
+            ? signedSourceComponents(exchangeWalletRole, "FX_GAIN", reversedAmount)
+            : signedSourceComponents(exchangeWalletRole, "FX_LOSS", reversedAmount);
+          postingIntent = originalAmount.isPositive()
+            ? createPostingIntent(
+              "EXCHANGE_FX_GAIN",
+              "EXCHANGE_FX_DIFF",
+              signedPostingLines(exchangeWalletRole, "FX_GAIN", reversedAmount),
+              postingSourceComponents,
+            )
+            : createPostingIntent(
+              "EXCHANGE_FX_LOSS",
+              "EXCHANGE_FX_DIFF",
+              signedPostingLines(exchangeWalletRole, "FX_LOSS", reversedAmount),
+              postingSourceComponents,
+            );
+          break;
+        }
+      }
+      if (!postingIntent || !postingSourceComponents) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: `قيد الصيرفة ${e.entryType} غير مدعوم في العكس الآمن`,
+        });
+      }
       await postEntry(tx, {
         entryType: e.entryType as never,
         branchId: e.branchId != null ? Number(e.branchId) : null,
+        createdBy: actor.userId,
         purchaseOrderId: e.purchaseOrderId != null ? Number(e.purchaseOrderId) : null,
         exchangeHouseId: houseId,
         supplierId: e.supplierId != null ? Number(e.supplierId) : null,
-        amount: money(e.amount).negated(),
+        amount: reversedAmount,
         cost: money(e.cost).negated(),
         profit: money(e.profit).negated(),
         revenue: money(e.revenue).negated(),
         entryDate: new Date(),
         dedupeKey: `EXREV:${e.dedupeKey}`,
         notes: `عكس — ${e.notes ?? txn.txnNumber}`,
+        postingIntent,
+        postingSourceComponents,
       });
     }
 
     // ٥) إعادة اشتقاق أرصدة المحفظة وWAVG من العمليات النشطة (بعد استثناء المعكوسة).
     await recomputeHouseFromLog(tx, houseId);
+    const [recomputedHouse] = await tx
+      .select({
+        balanceIqd: exchangeHouses.balanceIqd,
+        balanceUsdCarryingIqd: exchangeHouses.balanceUsdCarryingIqd,
+      })
+      .from(exchangeHouses)
+      .where(eq(exchangeHouses.id, houseId))
+      .limit(1);
+    if (!recomputedHouse) throw new TRPCError({ code: "CONFLICT", message: "تعذر قراءة رصيد الصيرفة بعد العكس" });
+    await postExchangeControlReclassification(tx, {
+      exchangeHouseId: houseId,
+      currency: txn.currency,
+      beforeSignedIqd: controlBeforeIqd,
+      afterSignedIqd: txn.currency === "USD"
+        ? recomputedHouse.balanceUsdCarryingIqd
+        : recomputedHouse.balanceIqd,
+      sourceKey: `REV:${txn.txnNumber}`,
+      notes: `إعادة تصنيف ذمة الصيرفة بعد عكس ${txn.txnNumber}`,
+      createdBy: actor.userId,
+    });
 
     return { txnId, txnNumber: txn.txnNumber, status: "REVERSED" as const };
   });

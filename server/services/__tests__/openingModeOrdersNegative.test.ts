@@ -20,6 +20,7 @@ const TABLES = [
   "productUnits",
   "productVariants",
   "products",
+  "suppliers",
   "users",
   "branches",
 ];
@@ -39,13 +40,16 @@ async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.suppliers).values({ id: 9, name: "مودِع مواد", supplierKind: "CONSIGNOR" });
   await d.insert(s.products).values([
     { id: 1, name: "ورق" },
     { id: 2, name: "مادة بلا تكلفة" },
+    { id: 3, name: "مادة أمانة", isConsignment: true, consignorId: 9 },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "PAPER-1", costPrice: "4.00" },
     { id: 2, productId: 2, sku: "NOCST-1", costPrice: "0.00" },
+    { id: 3, productId: 3, sku: "CONSIGN-1", costPrice: "6.00" },
   ]);
 }
 beforeEach(async () => {
@@ -112,6 +116,20 @@ describe("توسعة وضع الافتتاح — بدء أمر الشغل بال
     expect(err?.code).toBe("CONFLICT");
     expect(err?.message).toMatch(/تكلفة مُدخلة للمادة/);
     expect(await stockOf(2)).toBe(0);
+  });
+
+  it("مادة أمانة مرفوضة من أمر الشغل حتى مع رصيد موجب، بلا حركة أو WIP", async () => {
+    await db().insert(s.branchStock).values({ variantId: 3, branchId: 1, quantity: 5 });
+    await seedWorkOrder([{ variantId: 3, baseQuantity: 2 }]);
+    const err = await expectStart(1);
+    expect(err?.code).toBe("BAD_REQUEST");
+    expect(err?.message).toMatch(/الأمانة/);
+    expect(await stockOf(3)).toBe(5);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
+    const [wo] = await db().select().from(s.workOrders).where(eq(s.workOrders.id, 1));
+    expect(wo.status).toBe("RECEIVED");
+    const [material] = await db().select().from(s.workOrderMaterials).where(eq(s.workOrderMaterials.workOrderId, 1));
+    expect(material.unitCost).toBe("0.00");
   });
 
   it("مادة مُفتتَحة (مجرودة) تُرفض بالسالب برسالة «مجرودة» — رصيدها مثبّت", async () => {

@@ -25,6 +25,7 @@ import { getDeliveryFinancialSummary } from "../delivery/lifecycle";
 import { getFinancialPosition } from "../reportsFinancialService";
 import { getCustomerStatement } from "../reports/arAging";
 import { returnSale } from "../returnService";
+import { loadRefundCaps } from "../returns/refundCaps";
 
 const TABLES = [
   "deliveryOutbox", "deliveryEvents", "deliveryLedgerEntries", "deliveryRemittanceLines", "deliveryPartyMembers",
@@ -225,14 +226,18 @@ describe("M3 — الأمانة ليست دفعةً من العميل", () => {
     expect(paySum).toBe(10000);
     expect(Number(st!.summary.totalPaid)).toBe(10000);
 
-    // (ب) سقف الاسترداد: الفاتورة دُفعت بالبطاقة ⇒ الاسترداد النقديّ ممنوع رغم أمانةٍ نقديّة بالدرج.
-    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, invoiceId)))[0];
-    await expect(returnSale({
-      invoiceId,
-      lines: [{ invoiceItemId: Number(item.id), baseQuantity: 10 }],
-      refund: { amount: "5000.00", method: "CASH" },
-      restock: true,
-    }, MANAGER)).rejects.toThrowError(/يتجاوز المسموح/);
+    // (ب) سقف الاسترداد: **الأمانة لا ترفعه**. الفاتورة قُبض عليها 10,000 (بطاقة) وبالدرج
+    // أمانةُ توصيلٍ نقديّة 5,000 لا تخصّنا. لولا استبعادها لصار الوعاء 15,000 ⇒ يُستردّ من
+    // أمانة المندوب. نؤكّد الرقم مباشرةً على مصدر الحقيقة بدل الاستدلال بالرفض (أدقّ وأصرح).
+    //
+    // ⚠️ تغيّرت السياسة (قرار المالك ١٧/٨/٢٦): الاسترداد النقديّ لم يعد ممنوعاً لفاتورة
+    // البطاقة — رافدا الردّ نقدٌ أو بطاقة مهما كان رافد القبض. الثابت الباقي هنا هو **حجم
+    // الوعاء** لا منعُ الرافد: مالُ الطرف الثالث خارجه دائماً.
+    const caps = await loadRefundCaps(db(), invoiceId);
+    expect(caps.pool.toFixed(2)).toBe("10000.00");
+    // سقف كِلا رافدَي الردّ = الوعاء نفسه (لا 15,000، ولا صفرٌ لأنّ القبض كان بطاقةً).
+    expect(caps.capByMethod.get("CASH")!.toFixed(2)).toBe("10000.00");
+    expect(caps.capByMethod.get("CARD")!.toFixed(2)).toBe("10000.00");
     void shift;
   });
 });

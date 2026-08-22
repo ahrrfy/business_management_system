@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   CreditCard,
+  Landmark,
   Printer,
   Smartphone,
   Ticket,
@@ -15,7 +16,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { INBOUND_TELECOM_DISABLED_MESSAGE } from "@shared/inboundPaymentPolicy";
 import { PAY_METHOD_LABEL, type PayMethod } from "./cartMath";
 
 /**
@@ -86,6 +88,13 @@ export function PaymentPanel({
       setPaymentReference("");
     }
   }, [method, setMethod, setPaymentReference]);
+
+  /**
+   * صدق طريقة الدفع (١٨/٨) — «لا قبض الآن»: لا مبلغ مُدخَل (أو «بدون عربون» صراحةً). عندئذٍ
+   * لا تُرسَل طريقةٌ للخادم فتُختَم الفاتورة `paymentMethod = NULL` = «آجل» بالاشتقاق، ولا
+   * تُعرَض طريقةٌ في الواجهة كي لا تُقرأ العملية مدفوعةً وهي ليست كذلك (بلاغ المالك).
+   */
+  const noCollectionNow = !deferred && !(paid > 0);
 
   return (
     <div
@@ -161,11 +170,13 @@ export function PaymentPanel({
         )}
         <span className={cn(
           "rounded-md border px-1.5 py-0.5 text-[10px] font-extrabold",
-          deferred
+          deferred || noCollectionNow
             ? "border-[var(--sem-warn)]/50 bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
             : method === "CASH" ? "text-muted-foreground" : "border-[var(--sem-info)]/50 bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
         )}>
-          {deferred ? "بدون عربون" : PAY_METHOD_LABEL[method]}
+          {/* صدق طريقة الدفع (١٨/٨): بلا قبضٍ الآن لا تُسمّى طريقة — كانت تُعرض «نقدي» فتُقرأ
+              العملية مدفوعةً وهي آجلة، وهو نفس الكذب الذي كان يُختَم على الفاتورة. */}
+          {deferred ? "بدون عربون" : noCollectionNow ? "بلا قبض الآن" : PAY_METHOD_LABEL[method]}
         </span>
       </div>
 
@@ -254,7 +265,18 @@ export function PaymentPanel({
 
         <div className="mx-1 h-8 w-px shrink-0 bg-border" aria-hidden />
 
-        {/* طريقة الدفع — أزرار أيقونة مدمجة أفقياً بدل شبكة قائمة. */}
+        {/* طريقة الدفع — أزرار أيقونة مدمجة أفقياً بدل شبكة قائمة.
+            صدق طريقة الدفع (١٨/٨): بلا مبلغٍ مقبوضٍ الآن لا معنى لاختيار طريقة — يحلّ محلّها
+            إفصاحٌ صريح بنفس المساحة (بلا قفزة تخطيط) ولا تُرسَل طريقةٌ للخادم أصلاً. */}
+        {noCollectionNow ? (
+          <div
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg border-2 border-[var(--sem-warn)]/45 bg-[var(--sem-warn-bg)] px-3 text-[11px] font-extrabold text-[var(--sem-warn)]"
+            role="status"
+          >
+            <Landmark aria-hidden className="size-4" />
+            <span>آجل — لا قبض الآن · تظهر «غير مدفوعة»</span>
+          </div>
+        ) : (
         <div className="flex items-center gap-1">
           {(
             [
@@ -270,7 +292,7 @@ export function PaymentPanel({
               onClick={() => { if (isPosPaymentMethodEnabled(p.v)) setMethod(p.v); }}
               disabled={!isPosPaymentMethodEnabled(p.v)}
               aria-describedby={!isPosPaymentMethodEnabled(p.v) ? "reception-external-payment-disabled" : undefined}
-              title={isPosPaymentMethodEnabled(p.v) ? p.label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+              title={isPosPaymentMethodEnabled(p.v) ? p.label : posPaymentRejectionMessage(p.v)}
               aria-pressed={method === p.v}
               className={cn(
                 "inline-flex h-10 items-center gap-1.5 rounded-lg border-2 px-2.5 text-xs font-extrabold transition-colors",
@@ -286,10 +308,13 @@ export function PaymentPanel({
             </button>
           ))}
         </div>
-        <span id="reception-external-payment-disabled" className="max-w-48 text-[9px] leading-tight text-muted-foreground">
-          {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-        </span>
-        {needPaymentRef && (
+        )}
+        {!noCollectionNow && (
+          <span id="reception-external-payment-disabled" className="max-w-48 text-[9px] leading-tight text-muted-foreground">
+            {INBOUND_TELECOM_DISABLED_MESSAGE}
+          </span>
+        )}
+        {needPaymentRef && !noCollectionNow && (
           <Input
             value={paymentReference}
             onChange={(e) => setPaymentReference(e.target.value)}

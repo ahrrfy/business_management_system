@@ -29,7 +29,9 @@ async function rowCounts() {
 describe("getCashRemediationDryRun — DB read-only", () => {
   it("يجلب المصدر والقيد ويثبت أن التقرير والمحاكاة لا تغير أي صف", async () => {
     const d = db();
-    await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+    await d
+      .insert(s.branches)
+      .values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
     await d.insert(s.users).values({
       id: 7,
       openId: "u_taghreed",
@@ -124,9 +126,99 @@ describe("getCashRemediationDryRun — DB read-only", () => {
     expect(report.safeguards.sourceRowsChanged).toBe(0);
   });
 
+  it("loads both receipt-linked CD stages before verifying the internal transfer", async () => {
+    const d = db();
+    await d.insert(s.branches).values({
+      id: 1,
+      name: "Main",
+      code: "MAIN",
+      type: "MAIN",
+    });
+    await d.insert(s.users).values({
+      id: 7,
+      openId: "u_cash_drop_audit",
+      name: "Cashier",
+      role: "cashier",
+      branchId: 1,
+    });
+    await d.insert(s.shifts).values({
+      id: 13,
+      branchId: 1,
+      userId: 7,
+      openingBalance: "100.00",
+      status: "CLOSED",
+      openedAt: new Date("2026-04-01T08:00:00.000Z"),
+      closedAt: new Date("2026-04-01T16:00:00.000Z"),
+    });
+    await d.insert(s.receipts).values([
+      {
+        id: 61,
+        shiftId: 13,
+        branchId: 1,
+        direction: "OUT",
+        amount: "60.00",
+        paymentMethod: "CASH",
+        cashBucket: "DRAWER",
+        referenceNumber: "CD-1-20260401-1",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        createdBy: 7,
+      },
+      {
+        id: 62,
+        shiftId: null,
+        branchId: 1,
+        direction: "IN",
+        amount: "60.00",
+        paymentMethod: "CASH",
+        cashBucket: "TREASURY",
+        referenceNumber: "CD-1-20260401-1",
+        status: "COMPLETED",
+        approvalStatus: "APPROVED",
+        createdBy: 7,
+      },
+    ]);
+    await d.insert(s.accountingEntries).values([
+      {
+        id: 71,
+        entryType: "CASH_TRANSFER_OUT",
+        branchId: 1,
+        receiptId: 61,
+        amount: "60.00",
+        entryDate: "2026-04-01",
+        createdBy: 7,
+      },
+      {
+        id: 72,
+        entryType: "CASH_TRANSFER_IN",
+        branchId: 1,
+        receiptId: 62,
+        amount: "60.00",
+        entryDate: "2026-04-01",
+        createdBy: 7,
+      },
+    ]);
+
+    const report = await getCashRemediationDryRun({
+      from: "2026-04-01",
+      to: "2026-04-01",
+      branchId: 1,
+    });
+
+    expect(report.shifts[0].outflows[0]).toMatchObject({
+      receiptId: 61,
+      pairedTreasuryReceiptId: 62,
+      suggestedClassification: "VERIFIED_INTERNAL_TRANSFER",
+      confidence: "HIGH",
+      evidenceMissing: [],
+    });
+  });
+
   it("يثبت لقطة واحدة: إدخال متزامن بعد أول SELECT لا يتسرب إلى بقية dataset", async () => {
     const d = db();
-    await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
+    await d
+      .insert(s.branches)
+      .values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
     await d.insert(s.users).values({
       id: 7,
       openId: "u_snapshot",
@@ -161,7 +253,9 @@ describe("getCashRemediationDryRun — DB read-only", () => {
       { from: "2026-03-01", to: "2026-03-01", branchId: 1 },
       {
         afterShiftRead: async () => {
-          const connection = await mysql.createConnection(process.env.DATABASE_URL!);
+          const connection = await mysql.createConnection(
+            process.env.DATABASE_URL!,
+          );
           try {
             await connection.execute(
               "INSERT INTO receipts " +
@@ -187,7 +281,10 @@ describe("getCashRemediationDryRun — DB read-only", () => {
 
 describe("cashRemediationRouter", () => {
   it("يعرض query واحدة فقط ولا يعرّف أي mutation", () => {
-    const procedures = cashRemediationRouter._def.procedures as Record<string, { _def: { type: string } }>;
+    const procedures = cashRemediationRouter._def.procedures as Record<
+      string,
+      { _def: { type: string } }
+    >;
     expect(Object.keys(procedures)).toEqual(["dryRun"]);
     expect(procedures.dryRun._def.type).toBe("query");
   });
@@ -215,7 +312,9 @@ describe("cashRemediationRouter", () => {
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     const unassignedCaller = cashRemediationRouter.createCaller(context(null));
-    await expect(unassignedCaller.dryRun({ from: "2026-01-01", to: "2026-01-01" })).rejects.toMatchObject({
+    await expect(
+      unassignedCaller.dryRun({ from: "2026-01-01", to: "2026-01-01" }),
+    ).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
   });

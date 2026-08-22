@@ -41,7 +41,7 @@ export const PUBLIC_HOSTS: string[] = PUBLIC_HOST ? [PUBLIC_HOST, `www.${PUBLIC_
 export const INTERNAL_HOSTS: string[] = INTERNAL_HOST ? [INTERNAL_HOST] : [];
 
 /** الصفحات العامة (بيتها الدومين العام) — تُحوَّل إليه إن فُتحت على دومين الشركة. */
-export const PUBLIC_PATHS = ["/store", "/apply"] as const;
+export const PUBLIC_PATHS = ["/store", "/store/mobile-turnstile", "/apply"] as const;
 
 /**
  * مسارات **مشتركة**: مسموحة على المضيفَين ولا تُحوَّل أبداً — لأن **تطبيق المناديب على Play (TWA)

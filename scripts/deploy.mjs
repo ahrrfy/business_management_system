@@ -1489,7 +1489,8 @@ async function runSyncLockSelftest() {
     );
     const gate = path.join(directory, "race-gate");
     const winner = path.join(directory, "race-winner");
-    const racers = [0, 1].map(() =>
+    const blocked = path.join(directory, "race-blocked");
+    const racers = [0, 3_500].map((delayMs) =>
       spawn(
         process.execPath,
         [
@@ -1498,6 +1499,8 @@ async function runSyncLockSelftest() {
           path.join(directory, "race"),
           gate,
           winner,
+          blocked,
+          String(delayMs),
         ],
         {
           cwd: PROJECT_ROOT,
@@ -1712,15 +1715,27 @@ function readBridgeDeploymentEnvironment(policy, dotenvConfig) {
 
 function readWebHealthEnvironment(dotenvConfig) {
   const parsed = readDeploymentEnvironmentFile(dotenvConfig);
+  return normalizeWebHealthEnvironment(parsed);
+}
+
+export function normalizeWebHealthEnvironment(parsed) {
   const port = Number(parsed.PORT || 3000);
   const requireSecret =
     parsed.REQUIRE_INTERNAL_PROXY_SECRET === "1" ? "1" : "0";
   const secret = parsed.INTERNAL_PROXY_SECRET?.trim() ?? "";
+  const previousSecret =
+    parsed.INTERNAL_PROXY_SECRET_PREVIOUS?.trim() ?? "";
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw codedError("WEB_HEALTH_PORT_INVALID");
   }
   if (requireSecret === "1" && !/^[a-f0-9]{64}$/i.test(secret)) {
     throw codedError("WEB_HEALTH_PROXY_SECRET_INVALID");
+  }
+  if (
+    previousSecret &&
+    (!/^[a-f0-9]{64}$/i.test(previousSecret) || previousSecret === secret)
+  ) {
+    throw codedError("WEB_HEALTH_PROXY_PREVIOUS_SECRET_INVALID");
   }
   return {
     PORT: String(port),
@@ -2351,8 +2366,18 @@ async function dispatch() {
     throw new Error("HR_BRIDGE_SYNC_LOCK_SELFTEST_CONTENDER_NOT_BLOCKED");
   }
   if (mode === "--sync-lock-race-contender") {
-    const [gate, winner, ...extra] = rest;
-    if (!directory || !gate || !winner || extra.length > 0) {
+    const [gate, winner, blocked, delayRaw, ...extra] = rest;
+    const delayMs = Number(delayRaw);
+    if (
+      !directory ||
+      !gate ||
+      !winner ||
+      !blocked ||
+      !Number.isSafeInteger(delayMs) ||
+      delayMs < 0 ||
+      delayMs > 5_000 ||
+      extra.length > 0
+    ) {
       throw new Error("HR_BRIDGE_SYNC_LOCK_SELFTEST_ARGUMENTS_INVALID");
     }
     const ready = path.join(
@@ -2367,17 +2392,25 @@ async function dispatch() {
       }
       sleep(10);
     }
+    if (delayMs > 0) sleep(delayMs);
     try {
       const lock = acquirePrePullLock(directory);
       try {
         fs.writeFileSync(winner, `${process.pid}\n`, { flag: "wx" });
+        const blockedDeadline = Date.now() + 10_000;
+        while (!fs.existsSync(blocked)) {
+          if (Date.now() >= blockedDeadline) {
+            throw new Error("HR_BRIDGE_SYNC_LOCK_SELFTEST_BLOCKED_TIMEOUT");
+          }
+          sleep(10);
+        }
         process.stdout.write("RACE_WINNER\n");
-        sleep(1_000);
       } finally {
         lock.release();
       }
     } catch (error) {
       if (error?.message === "HR_BRIDGE_DEPLOY_SYNC_ALREADY_RUNNING") {
+        fs.writeFileSync(blocked, `${process.pid}\n`, { flag: "wx" });
         process.stdout.write("RACE_BLOCKED\n");
         return;
       }
@@ -2405,7 +2438,7 @@ function reportDeploymentFailure(error) {
       "   أُوقف النشر قبل البناء والهجرات لأن إعداد Nginx الحي لا يطابق العقد الملتزم.",
     );
     console.error(
-      '   أصلحه كـ root فقط: cd /home/deploy/erp && sudo "$(command -v node)" scripts/install-nginx-contract.mjs',
+      "   أصلحه بالمثبت root-owned: sudo /usr/bin/node /usr/local/libexec/erp/nginx/install-nginx-contract.mjs install",
     );
   }
   if (code === "HR_BRIDGE_ACTIVATION_FAILED_ROLLBACK_OK") {

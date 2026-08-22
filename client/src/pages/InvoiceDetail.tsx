@@ -1,3 +1,5 @@
+import InvoiceChannelBadge from "@/components/InvoiceChannelBadge";
+import { shiftTypeLabel, sourceTypeLabel } from "@/lib/labels";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -57,6 +59,7 @@ import {
   Paperclip,
   Pencil,
   Printer,
+  RotateCcw,
   Truck,
 } from "lucide-react";
 import { notify } from "@/lib/notify";
@@ -65,19 +68,13 @@ import {
   paymentMethodClass,
   paymentMethodLabel,
 } from "@/lib/paymentMethod";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
 
-const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => method.v === "CASH");
+const ENABLED_COLLECTION_METHODS = METHODS.filter((method) => isPosPaymentMethodEnabled(method.v));
 
-const STATUS: Record<string, string> = {
-  PENDING: "معلّقة",
-  PARTIALLY_PAID: "مدفوعة جزئياً",
-  PAID: "مدفوعة",
-  CONFIRMED: "مؤكّدة",
-  CANCELLED: "ملغاة",
-  RETURNED: "مرتجعة",
-  SUPERSEDED: "مستبدلة بفاتورة مصححة",
-};
+// التعريب من `@shared/invoiceStatus` وحده (مصدر الحقيقة) — كانت نسخةً محلّية سابعة تنجرف
+// عن الـenum عند كل قيمةٍ جديدة. خريطة الأصناف اللونية تبقى محلّية: نطاقها العرض لا التعريب.
 const STATUS_CLS: Record<string, string> = {
   PAID: "bg-emerald-100 text-emerald-700",
   PARTIALLY_PAID: "bg-amber-100 text-amber-700",
@@ -85,12 +82,6 @@ const STATUS_CLS: Record<string, string> = {
   RETURNED: "bg-rose-100 text-rose-700",
   CANCELLED: "bg-rose-100 text-rose-700",
   SUPERSEDED: "badge-status-cancelled",
-};
-const SOURCE: Record<string, string> = {
-  POS: "نقطة بيع",
-  ONLINE: "أونلاين",
-  ORDER: "طلب",
-  WORKORDER: "طلب خدمة",
 };
 // METHOD_LABEL / METHODS → مستوردة من lib/paymentMethod.ts (مصدر واحد مع POS + Invoices + حوار الوردية).
 const PAY_STATUS: Record<string, string> = {
@@ -163,6 +154,7 @@ export default function InvoiceDetail() {
   const taxSettings = trpc.system.getTaxSettings.useQuery();
 
   const [payAmount, setPayAmount] = useState("");
+  const [payReference, setPayReference] = useState("");
   const [payMethod, setPayMethod] =
     useState<(typeof METHODS)[number]["v"]>("CASH");
   const [error, setError] = useState("");
@@ -195,7 +187,7 @@ export default function InvoiceDetail() {
 
   const pay = trpc.sales.pay.useMutation({
     onSuccess: async (r) => {
-      setDone(`تم تسجيل الدفعة. الحالة: ${STATUS[r.status] ?? r.status}.`);
+      setDone(`تم تسجيل الدفعة. الحالة: ${invoiceStatusLabel(r.status)}.`);
       setError("");
       await Promise.all([
         utils.sales.get.invalidate({ invoiceId }),
@@ -252,6 +244,21 @@ export default function InvoiceDetail() {
   const [correctionReason, setCorrectionReason] = useState("");
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [cancelDeliveryOpen, setCancelDeliveryOpen] = useState(false);
+  // عكس فاتورة الخدمة الصفريّة (١٩/٨) — المقبوض يبقى أمانةً يردّها سند صرفٍ موثَّق.
+  const reverseService = trpc.workOrders.reverseServiceInvoice.useMutation({
+    onSuccess: (r) => {
+      const refundable = Number((r as { refundableAmount?: string }).refundableAmount ?? 0);
+      notify.ok(
+        "عُكس التسليم",
+        refundable > 0
+          ? `الفاتورة مرتجعة. المقبوض ${refundable.toLocaleString()} د.ع يبقى أمانةً — اصرفه للزبون بسند صرفٍ موثَّق.`
+          : "الفاتورة مرتجعة وأمر الشغل مُلغى.",
+      );
+      void utils.sales.get.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
   const correctInvoice = trpc.sales.correct.useMutation({
     onSuccess: async () => {
       setCorrectionOpen(false);
@@ -355,17 +362,48 @@ export default function InvoiceDetail() {
     data.status !== "CANCELLED" &&
     data.status !== "RETURNED" &&
     data.sourceType !== "WORKORDER";
+  /**
+   * فاتورة أمر شغلٍ حيّة: مخرجها الوحيد هو المرتجع الموثَّق (الإلغاء والتصحيح يرفضهما الخادم
+   * لهذا المنشأ). البوّابة مرآةُ `returns.create` = مدير + `sales:FULL`. التوصيلُ النشط يُستثنى:
+   * الطرد بيد المندوب ⇒ المخرج هناك «استرجاع الإرسالية» لا مرتجعٌ من هنا.
+   */
+  /**
+   * ١٩/٨ — الفاتورة الصفريّة البنود (أمرُ تخصيصٍ خالصٍ بلا منتجٍ كتالوجيّ) لا يقبلها
+   * المرتجع (يشترط أسطراً) ⇒ مخرجها عكسٌ رأسيّ مخصّص. وذاتُ البنود مخرجها المرتجع المُختبَر.
+   */
+  const isZeroItemServiceInvoice = data.sourceType === "WORKORDER" && data.items.length === 0;
+  /** مُعرّف أمر الشغل مشتقٌّ من `sourceId` (`WO-{id}`) — الحقل الرابط الوحيد على الفاتورة. */
+  const linkedWorkOrderId = (() => {
+    const m = /^WO-(\d+)$/.exec(String(data.sourceId ?? ""));
+    return m ? Number(m[1]) : null;
+  })();
+  const canReverseWorkOrderInvoice =
+    data.sourceType === "WORKORDER" &&
+    data.status !== "CANCELLED" &&
+    data.status !== "RETURNED" &&
+    data.status !== "SUPERSEDED" &&
+    !data.consignmentNumber &&
+    !!me.data?.role &&
+    moduleAccessAllowed(
+      me.data.role as RoleKey,
+      (me.data.permissionsOverride ?? null) as PermissionMap | null,
+      "sales",
+      "FULL",
+      ["manager"],
+    );
   const paidAmountForRefund = round2(D(data.paidAmount ?? "0"));
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
   // «تصحيح كامل» (عكس وإعادة إصدار، 0168) — أضيق من «تعديل البيانات»: يُقصَر على فاتورة بيعٍ
   // حيّة بلا مرتجعات ولا توصيلٍ نشط ولا أمر شغل (الخادم يرفض البقية برسالةٍ واضحة؛ هذا فلترٌ
   // بصريّ يمنع رحلةً تنتهي برفض). المُصحَّحة سابقاً (SUPERSEDED) والملغاة مستبعَدتان.
+  // ⭐ قرار المالك (١٧/٨/٢٦): رُفع شرط `paidAmount == 0`. كان مرآةً لحظر الخادم، وأثرُه أنّ
+  //    **كل فاتورة استقبالٍ عليها عربون لا يظهر لها زرّ تصحيحٍ إطلاقاً** — وهو جوهر الشكوى.
+  //    الآن المقبوض يُنقل للمصحّحة كما هو، والفرق الزائد يُردّ نقداً أو يُرصَّد (correct.ts خطوة ⑨).
   const canFullCorrect =
     canCorrectInvoice &&
     data.status !== "CANCELLED" &&
     data.status !== "SUPERSEDED" &&
-    D(data.paidAmount ?? "0").isZero() &&
     D(data.returnedTotal ?? "0").isZero() &&
     data.sourceType !== "WORKORDER" &&
     !data.consignmentNumber;
@@ -420,8 +458,11 @@ export default function InvoiceDetail() {
   async function submit() {
     setError("");
     setDone("");
-    if (payMethod !== "CASH") return setError(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+    if (!isPosPaymentMethodEnabled(payMethod)) return setError(posPaymentRejectionMessage(payMethod));
     const amt = D(payAmount || "0");
+    if (payMethod !== "CASH" && !payReference.trim()) {
+      return setError("مرجع عملية البطاقة/التحويل مطلوب — لا يُسجَّل قبضٌ بلا أثرٍ قابلٍ للمطابقة.");
+    }
     if (amt.lte(0)) return setError("أدخل مبلغاً موجباً.");
     if (amt.gt(remaining))
       return setError(`المبلغ يتجاوز المتبقّي (${fmt(remaining.toFixed(2))}).`);
@@ -439,6 +480,7 @@ export default function InvoiceDetail() {
       invoiceId,
       amount: amt.toFixed(2),
       method: payMethod,
+      reference: payMethod === "CASH" ? undefined : payReference.trim(),
       clientRequestId,
     });
   }
@@ -529,7 +571,10 @@ export default function InvoiceDetail() {
               })),
               total: data.total,
               paidAmount: data.paidAmount,
+              returnedTotal: data.returnedTotal,
               remaining: remaining.toFixed(2),
+              // بلا الحالة كانت الفاتورة الملغاة/المرتجعة/المستبدلة تُرسِل «المتبقّي» كمطالبة.
+              status: data.status,
             })}
           />
           <CopyAsMenu
@@ -628,6 +673,39 @@ export default function InvoiceDetail() {
               إلغاء الفاتورة
             </Button>
           )}
+          {/* ١٨/٨ — مخرج فاتورة أمر الشغل (بلاغ المالك: «لا نستطيع إلغاءها أو التعديل عليها»).
+              كانت أزرارُ الإلغاء والتصحيح تُخفى لها **بلا أيّ بديلٍ معروض**: الخادم يرفض
+              `sales.cancel` لمنشأ WORKORDER ويحيل إلى إلغاء أمر الشغل، وذاك يرفض المُسلَّم ⇒
+              الفاتورة بلا مخرجٍ ظاهر البتّة. المسار المشروع الوحيد هو **المرتجع الموثَّق**
+              (returnService يعرف WORKORDER: لا يعيدها للمخزون — منتَجٌ مخصّص لا يُباع لغيره)،
+              فنعرضه صراحةً بدل تركِ الموظف أمام شاشةٍ بلا أفعال. */}
+          {canReverseWorkOrderInvoice && (isZeroItemServiceInvoice ? (
+            <Button
+              variant="destructive"
+              size="sm"
+              title="فاتورة خدمةٍ بلا بنود — تُعكَس رأسياً (لا مخزون لها)"
+              disabled={reverseService.isPending || linkedWorkOrderId == null}
+              onClick={() => {
+                const reason = window.prompt("سبب عكس التسليم (يُوثَّق في الفاتورة وسجلّ التدقيق):")?.trim();
+                if (!reason || reason.length < 3) return;
+                reverseService.mutate({
+                  workOrderId: Number(linkedWorkOrderId),
+                  reason,
+                  clientRequestId: crypto.randomUUID(),
+                });
+              }}
+            >
+              <RotateCcw aria-hidden className="size-4" />
+              عكس التسليم (خدمة)
+            </Button>
+          ) : (
+            <Button variant="destructive" size="sm" asChild title="المسار الموثَّق لعكس تسليم أمر شغل">
+              <Link href={`/returns?invoiceId=${data.id}`}>
+                <RotateCcw aria-hidden className="size-4" />
+                إرجاع / عكس التسليم
+              </Link>
+            </Button>
+          ))}
           <Link
             href="/invoices"
             className="text-sm text-muted-foreground hover:text-foreground"
@@ -662,10 +740,21 @@ export default function InvoiceDetail() {
                   {paymentMethodLabel(data.paymentMethod)}
                 </span>
               )}
+              {/* التمييز البصريّ «مُعدَّلة» (طلب المالك ١٧/٨): هذه الفاتورة صدرت تصحيحاً
+                  لفاتورةٍ سابقة. `correctionOfInvoiceId` كان يُكتَب ولا يُقرأ من أيّ استعلام. */}
+              {data.correctionOfInvoiceId != null && (
+                <Link
+                  href={`/invoices/${data.correctionOfInvoiceId}`}
+                  className="rounded-full bg-[var(--sem-warn-bg)] px-2.5 py-0.5 text-xs font-medium text-[var(--sem-warn)]"
+                  title="فاتورةٌ مُعدَّلة — اضغط لعرض الأصل المُستبدَل"
+                >
+                  مُعدَّلة
+                </Link>
+              )}
               <span
                 className={`text-xs rounded-full px-2.5 py-0.5 font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}
               >
-                {STATUS[data.status] ?? data.status}
+                {invoiceStatusLabel(data.status)}
               </span>
             </div>
           </CardTitle>
@@ -674,14 +763,17 @@ export default function InvoiceDetail() {
           <div className="grid gap-5 md:grid-cols-3">
             {/* البيانات الوصفية */}
             <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
-              <Field label="المصدر">
-                {SOURCE[data.sourceType] ?? data.sourceType}
+              <Field label="القناة">
+                <span className="inline-flex items-center gap-1.5">
+                  <InvoiceChannelBadge row={data} />
+                  <span className="text-xs text-muted-foreground">{sourceTypeLabel(data.sourceType)}</span>
+                </span>
               </Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
               <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
               <Field label="الوردية">
                 {data.shiftId
-                  ? `#${data.shiftId} — ${data.shiftType ?? "—"}`
+                  ? `#${data.shiftId} — ${shiftTypeLabel(data.shiftType)}`
                   : "—"}
               </Field>
               <Field label="محطة البيع">
@@ -1068,10 +1160,25 @@ export default function InvoiceDetail() {
                   </option>
                 ))}
               </select>
-              <p className="text-xs font-medium text-muted-foreground">
-                {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-              </p>
             </div>
+            {payMethod !== "CASH" && (
+              <div className="space-y-1">
+                <Label htmlFor="invoice-pay-reference">
+                  مرجع العملية <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="invoice-pay-reference"
+                  dir="ltr"
+                  value={payReference}
+                  onChange={(e) => setPayReference(e.target.value)}
+                  maxLength={100}
+                  placeholder="رقم إشعار الجهاز أو رقم التحويل"
+                />
+                <p className="text-xs text-muted-foreground">
+                  لا تُسجَّل دفعة إلكترونية بلا مرجع قابل للمطابقة مع كشف المزوّد.
+                </p>
+              </div>
+            )}
             <Button onClick={submit} disabled={pay.isPending}>
               {pay.isPending ? "جارٍ…" : "تسجيل الدفعة"}
             </Button>
@@ -1119,12 +1226,14 @@ export default function InvoiceDetail() {
                 </p>
               )}
             {(corrections.data ?? []).map((entry) => {
+              // ⛔ لا `paymentMethod`/`receipts` (تجريد ١٩/٨): كان `sales.correct` يكتبهما
+              // **متطابقَين** في طرفَي التدقيق ولا يمسّهما، وهذه الشاشة ترسم لهما سطر
+              // «طريقة الدفع: كذا ← كذا» لا يظهر أبداً ⤇ وعدٌ بقدرةٍ لا وجود لها. الصفوف
+              // التاريخية قد تحمل المفتاحَين وتُتجاهَلان بلا ضرر (متطابقان فيها أصلاً).
               const oldFields =
                 (entry.oldValue as {
                   notes?: string | null;
                   dueDate?: string | null;
-                  paymentMethod?: string | null;
-                  receipts?: { receiptId: number; method: string }[];
                 } | null) ?? {};
               const newValue =
                 (entry.newValue as {
@@ -1215,25 +1324,6 @@ export default function InvoiceDetail() {
                         </span>
                       </p>
                     )}
-                    {(newFields.receipts ?? []).map((receipt) => {
-                      const oldReceipt = oldFields.receipts?.find(
-                        (old) => old.receiptId === receipt.receiptId,
-                      );
-                      if (!oldReceipt || oldReceipt.method === receipt.method)
-                        return null;
-                      return (
-                        <p key={receipt.receiptId}>
-                          طريقة الدفع:{" "}
-                          <span className="line-through">
-                            {paymentMethodLabel(oldReceipt.method)}
-                          </span>{" "}
-                          ←{" "}
-                          <span className="text-foreground">
-                            {paymentMethodLabel(receipt.method)}
-                          </span>
-                        </p>
-                      );
-                    })}
                   </div>
                 </div>
               );
@@ -1245,10 +1335,12 @@ export default function InvoiceDetail() {
       <Dialog open={correctionOpen} onOpenChange={setCorrectionOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>تصحيح الفاتورة</DialogTitle>
+            <DialogTitle>تعديل بيانات الفاتورة</DialogTitle>
             <DialogDescription>
-              متاح للمدير والمالك فقط. يُسجَّل السبب والقيم قبل وبعد التعديل
-              باسمك.
+              الملاحظات وتاريخ الاستحقاق فقط — لا يمسّ البنود ولا المبالغ ولا
+              طريقة الدفع. لتغيير البنود أو الأسعار استعمل «تصحيح الفاتورة»
+              (عكسٌ وإعادةُ إصدار). متاح للمدير والمالك وحدهما، ويُسجّل السبب
+              والقيم قبل وبعد باسمك.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -1323,7 +1415,7 @@ export default function InvoiceDetail() {
               </div>
               {data.status !== "PENDING" && (
                 <div className="rounded-md border border-[var(--sem-warn)]/40 bg-[var(--sem-warn-bg)] p-2 text-xs text-[var(--sem-warn)]">
-                  حالة الفاتورة حالياً: <strong>{STATUS[data.status] ?? data.status}</strong> — يُلغى ما تبقّى غير مُرتجَع.
+                  حالة الفاتورة حالياً: <strong>{invoiceStatusLabel(data.status)}</strong> — يُلغى ما تبقّى غير مُرتجَع.
                 </div>
               )}
             </DialogDescription>

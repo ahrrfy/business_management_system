@@ -1,7 +1,7 @@
 // سداد قسط عبر سند قبض حقيقي (createVoucher) — Maker-Checker + idempotency instpay-<lineId>.
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, like, or, sql } from "drizzle-orm";
-import { installmentLines, installmentPlans, invoices, voucherCategories } from "../../../drizzle/schema";
+import { idempotencyKeys, installmentLines, installmentPlans, invoices, receipts, voucherCategories } from "../../../drizzle/schema";
 import { toDbMoney } from "../money";
 import { assertInboundPaymentMethodEnabled } from "../inboundPaymentPolicy";
 import { type Actor, requireDb, withTx } from "../tx";
@@ -85,6 +85,72 @@ export async function payLine(
       : "";
   const description = `تحصيل القسط رقم ${line.seq} من خطة الأقساط #${plan.id}${scheduledCheckInfo}`;
 
+  const legacyAttemptKey = `instpay-${Number(line.id)}`;
+  const attemptPrefix = `${legacyAttemptKey}-A`;
+  const attemptRows = await db
+    .select({
+      id: idempotencyKeys.id,
+      clientRequestId: idempotencyKeys.clientRequestId,
+      refId: idempotencyKeys.refId,
+    })
+    .from(idempotencyKeys)
+    .where(
+      and(
+        eq(idempotencyKeys.operation, "voucher.create"),
+        or(
+          eq(idempotencyKeys.clientRequestId, legacyAttemptKey),
+          like(idempotencyKeys.clientRequestId, `${attemptPrefix}%`),
+        ),
+      ),
+    )
+    .orderBy(idempotencyKeys.id);
+  const priorAttempt = attemptRows.at(-1) ?? null;
+  const [priorReceipt] = priorAttempt
+    ? await db
+        .select()
+        .from(receipts)
+        .where(eq(receipts.id, Number(priorAttempt.refId)))
+        .limit(1)
+    : [];
+  if (priorAttempt && !priorReceipt) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "مفتاح محاولة تحصيل القسط مرتبط بسند مفقود",
+    });
+  }
+  const priorIsDead =
+    priorReceipt?.status === "REVERSED" ||
+    priorReceipt?.status === "FAILED" ||
+    priorReceipt?.approvalStatus === "REJECTED";
+  const needsReissue =
+    priorAttempt != null && (line.status === "BOUNCED" || priorIsDead);
+  const attempt =
+    priorAttempt == null
+      ? 1
+      : needsReissue
+        ? attemptRows.length + 1
+        : attemptRows.length;
+  const clientRequestId =
+    priorAttempt != null && !needsReissue
+      ? priorAttempt.clientRequestId
+      : `${attemptPrefix}${attempt}`;
+  const reissueReason = !needsReissue
+    ? null
+    : line.status === "BOUNCED"
+      ? "إعادة إصدار بعد ارتداد التحصيل السابق"
+      : "إعادة إصدار بعد رفض سند التحصيل السابق";
+  const attemptMetadata = {
+    kind: "INSTALLMENT_PAYMENT_ATTEMPT",
+    lineId: Number(line.id),
+    attempt,
+    priorReceiptId: needsReissue ? Number(priorReceipt!.id) : null,
+    reissueReason,
+    operatorNote: input.note?.trim() || null,
+  };
+  const attemptDescription = reissueReason
+    ? `${description} — المحاولة A${attempt} — ${reissueReason} (السند السابق #${priorReceipt!.id})`
+    : description;
+
   const voucher = await createVoucher(
     {
       voucherType: "RECEIPT",
@@ -93,13 +159,17 @@ export async function payLine(
       paymentMethod: method,
       partyType: "CUSTOMER",
       partyId: Number(plan.customerId),
-      description,
+      description: attemptDescription,
+      // إثبات القبض غير النقديّ يُمرَّر كما أدخله المحصِّل؛ `createVoucher` هو من يفرض
+      // إلزاميّتهما (مرجعٌ للتحويل/المحفظة، وآخر ٤ أرقام للبطاقة) فلا نُكرّر الحارس هنا.
+      referenceNumber: input.referenceNumber?.trim() || null,
+      cardLastFour: input.cardLastFour?.trim() || null,
       checkNumber: undefined,
       voucherCategoryId: cat?.id != null ? Number(cat.id) : null,
       invoiceId: voucherInvoiceId,
       attachmentUrl: input.attachmentUrl ?? null,
-      internalNote: input.note?.trim() || null,
-      clientRequestId: `instpay-${Number(line.id)}`,
+      internalNote: JSON.stringify(attemptMetadata),
+      clientRequestId,
     },
     actor,
   );

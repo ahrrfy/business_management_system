@@ -343,13 +343,29 @@ export async function createAppNotification(
   return { created: true };
 }
 
-export async function listUserNotifications(userId: number, limit = 40) {
+/**
+ * ش٦ (١٩/٨) — مرشّحان صريحان بدل ترشيحٍ في الواجهة: صندوقُ عشرين إشعاراً يُقتطع بـ`limit`
+ * **قبل** أن تراه الشاشة، فترشيحُه هناك يُخفي ما لم يصل أصلاً ويكذب العدّاد. `unreadOnly`
+ * لصندوقٍ يُقرأ، و`requiresActionOnly` لما وُسِم عند إنشائه مطلوباً فعلاً.
+ *
+ * ⚠️ **حدٌّ قائمٌ لا يُخفى:** `requiresAction` **لا يُبطَل** حين ينفّذ الإجراءَ شخصٌ آخر (لا مسار
+ * كتابةٍ له بعد الإنشاء) ⇒ هذا المرشّح **يضيّق سجلّاً** ولا يصنع طابور فعلٍ صادقاً. الطابور
+ * الحيّ هو `approvalInbox` الذي يقرأ الحالة الحقيقية.
+ */
+export async function listUserNotifications(
+  userId: number,
+  limit = 40,
+  opts: { unreadOnly?: boolean; requiresActionOnly?: boolean } = {},
+) {
   const db = requireDb();
+  const filters = [eq(appNotifications.userId, userId)];
+  if (opts.unreadOnly) filters.push(isNull(appNotifications.readAt));
+  if (opts.requiresActionOnly) filters.push(eq(appNotifications.requiresAction, true));
   const [rows, countRows] = await Promise.all([
     db
       .select()
       .from(appNotifications)
-      .where(eq(appNotifications.userId, userId))
+      .where(and(...filters))
       .orderBy(desc(appNotifications.createdAt), desc(appNotifications.id))
       .limit(Math.min(Math.max(limit, 1), 100)),
     db

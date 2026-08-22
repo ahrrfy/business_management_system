@@ -9,6 +9,7 @@
   --ui-space-2: 0.5rem;
   --ui-space-3: 0.75rem;
   --ui-space-4: 1rem;
+  --ui-space-5: 1.25rem;   /* الدرجة الناقصة — كان السلّم يقفز 16 ⇐ 24 */
   --ui-space-6: 1.5rem;
   --ui-space-8: 2rem;
 

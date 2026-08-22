@@ -100,20 +100,17 @@ export async function getArApAgingDetail(opts: {
             po.id AS id,
             po.poNumber AS number,
             s.name AS partyName,
-            DATE_FORMAT(po.orderDate, '%Y-%m-%d') AS date,
+            DATE_FORMAT(gl.recognitionDate, '%Y-%m-%d') AS date,
             NULL AS dueDate,
-            DATEDIFF(UTC_DATE(), DATE(po.orderDate)) AS daysOverdue,
-            CAST(
-              CASE WHEN po.poCurrency = 'USD'
-                THEN GREATEST(COALESCE(gl.balance, 0), 0)
-                ELSE GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0)
-              END
-            AS CHAR) AS unpaid
+            DATEDIFF(UTC_DATE(), DATE(gl.recognitionDate)) AS daysOverdue,
+            CAST(GREATEST(COALESCE(gl.balance, 0), 0) AS CHAR) AS unpaid
           FROM purchaseOrders po
           LEFT JOIN suppliers s ON s.id = po.supplierId
           LEFT JOIN (
             SELECT ae.purchaseOrderId,
+              MIN(CASE WHEN ae.entryType = 'PURCHASE' THEN ae.entryDate END) AS recognitionDate,
               COALESCE(SUM(CASE
+                WHEN ae.purchaseLiabilityAccount = 'CASH_CLEARING' THEN 0
                 WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount
                 WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
                 ELSE 0 END), 0) AS balance
@@ -123,22 +120,8 @@ export async function getArApAgingDetail(opts: {
               AND ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE')
             GROUP BY ae.purchaseOrderId
           ) gl ON gl.purchaseOrderId = po.id
-          LEFT JOIN (
-            SELECT ae.purchaseOrderId,
-              COALESCE(SUM(CASE WHEN ae.entryType = 'RETURN' THEN -ae.amount ELSE 0 END), 0)
-              - COALESCE(SUM(CASE WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount ELSE 0 END), 0)
-              AS creditReturned
-            FROM accountingEntries ae
-            WHERE ae.purchaseOrderId IS NOT NULL
-              AND ae.supplierId IS NOT NULL
-              AND ae.entryType IN ('RETURN', 'PAYMENT_IN')
-            GROUP BY ae.purchaseOrderId
-          ) ret ON ret.purchaseOrderId = po.id
           WHERE po.poStatus IN ('CONFIRMED', 'RECEIVED')
-            AND CASE WHEN po.poCurrency = 'USD'
-              THEN GREATEST(COALESCE(gl.balance, 0), 0)
-              ELSE GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0)
-            END > 0
+            AND GREATEST(COALESCE(gl.balance, 0), 0) > 0
             ${branchId ? sql`AND po.branchId = ${branchId}` : sql``}
           ORDER BY daysOverdue DESC, po.id DESC
         `),

@@ -4,29 +4,29 @@ import { eq } from "drizzle-orm";
 import { exchangeTransactions, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
-import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, postEntry } from "../ledgerService";
+import { adjustExchangeBalanceIqd, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
+import { lockBranchMonthCloseGate } from "../reports/monthCloseGate";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
+import { allocateCarryingIqd, calculateSignedUsdMovement, persistSignedUsdControl } from "./reverse";
+import { postExchangeControlReclassification } from "./controlClassification";
 
 export interface WithdrawInput {
   exchangeHouseId: number;
   branchId: number;
   amount: string; // بعملة `currency`
-  /** IQD (افتراضي) = نقد دينار يعود لخزينة الفرع. USD = سحب دولار مباشر (بلا receipt، بلا أثر
-   *  على الدينار — محفظتان معزولتان تماماً). متوسط الكلفة WAVG لا يتغيّر عند السحب.
-   *  السحب علاقة دَينٍ متجدّد (قرار مالك ٣/٨): يجوز أن يتجاوز الرصيد المتاح فيصبح دَيناً
-   *  «علينا للصيرفة» — بتحذير قابل للتجاوز عند **أوّل عبورٍ** من رصيدٍ غير سالب، لا عند كل عملية. */
+  /** IQD (افتراضي) = نقد دينار يعود لخزينة الفرع. USD = استلام دولار مادي من control موجب
+   *  بكلفته WAVG (بلا receipt ديناري). لا يعبر USD صفراً لأن المدخل لا يحمل سعر نشوء التزام جديد. */
   currency?: "IQD" | "USD";
   notes?: string | null;
   clientRequestId?: string | null;
   confirmNegative?: boolean;
 }
 
-/** سحب نقد (دينار) من محفظة الصيرفة → خزينة الفرع، أو سحب دولار مباشر من محفظتها الدولارية
- *  (عكس الإيداع بكلتا العملتين، كلٌّ بمعزل عن الآخر). يجوز أن يتجاوز الرصيد المتاح (دَينٌ متجدّد
- *  علينا للصيرفة) بتأكيد صريح — يُطلَب مرّةً واحدة عند أوّل عبورٍ للسالب فقط. */
+/** سحب IQD إلى الخزينة، أو استلام USD مادي من control الصيرفة ضمن الرصيد ذي الكلفة المحفوظة. */
 export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): Promise<{ txnId: number; txnNumber: string }> {
   return withTx(async (tx) => {
     if (input.clientRequestId) {
@@ -38,6 +38,7 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
     }
     const amount = round2(input.amount);
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
+    await lockBranchMonthCloseGate(tx, input.branchId);
 
     // IQD creates a physical TREASURY IN. Reversal of another withdrawal takes the
     // branch source before the house, so a new withdrawal must use the same order;
@@ -49,16 +50,21 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
 
     if (input.currency === "USD") {
       const availUsd = money(house.balanceUsd);
-      if (amount.gt(availUsd) && availUsd.gte(0) && !input.confirmNegative) {
+      // Direct custody withdrawal carries no user-supplied rate.  It can only
+      // release an existing receivable at its saved WAVG; opening a liability
+      // would otherwise invent its source rate.
+      if (availUsd.lte(0) || amount.gt(availUsd)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `السحب سيجعل رصيد الدولار لدى الصيرفة سالباً (${availUsd.toFixed(2)}$ متاح مقابل ${amount.toFixed(2)}$ مطلوب) — أي دَيناً لكم عليها. أرسل confirmNegative=true للتجاوز.`,
+          message: `السحب المباشر لا يجوز أن يعبر رصيد الصيرفة الدولاري صفراً بلا سعر مصدر صريح (${availUsd.toFixed(2)}$ متاح مقابل ${amount.toFixed(2)}$ مطلوب)`,
         });
       }
 
-      await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, amount.negated());
-      const balUsdAfter = availUsd.minus(amount);
-      const rate = money(house.usdCostRate);
+      const oldCarrying = money(house.balanceUsdCarryingIqd);
+      const carryingIqd = allocateCarryingIqd(oldCarrying, amount, availUsd);
+      const rate = oldCarrying.abs().div(availUsd.abs());
+      const movement = calculateSignedUsdMovement(availUsd, oldCarrying, amount.negated(), carryingIqd);
+      await persistSignedUsdControl(tx, input.exchangeHouseId, movement);
 
       const txnNumber = await nextTxnNumber(tx, input.branchId);
       const txRes = await tx.insert(exchangeTransactions).values({
@@ -67,10 +73,11 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
         branchId: input.branchId,
         type: "WITHDRAW",
         currency: "USD",
+        iqdAmount: toDbMoney(carryingIqd),
         usdAmount: toDbMoney(amount),
         exchangeRate: toDbRate(rate),
         balanceIqdAfter: toDbMoney(money(house.balanceIqd)),
-        balanceUsdAfter: toDbMoney(balUsdAfter),
+        balanceUsdAfter: toDbMoney(movement.balanceUsd),
         status: "ACTIVE",
         notes: input.notes ?? null,
         createdBy: actor.userId,
@@ -80,10 +87,30 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
       await postEntry(tx, {
         entryType: "EXCHANGE_WITHDRAW",
         branchId: input.branchId,
+        createdBy: actor.userId,
         exchangeHouseId: input.exchangeHouseId,
-        amount: round2(amount.times(rate)),
+        amount: carryingIqd,
         dedupeKey: `EXWD:${txnNumber}`,
         notes: input.notes ?? "سحب دولار مباشر",
+        postingIntent: createPostingIntent(
+          "EXCHANGE_WITHDRAW_USD_CASH",
+          "EXCHANGE_WITHDRAW",
+          [debitLine("FOREIGN_CASH_USD", carryingIqd), creditLine("EXCHANGE_WALLET_USD", carryingIqd)],
+        ),
+        postingSourceComponents: {
+          roleDebits: { FOREIGN_CASH_USD: carryingIqd },
+          roleCredits: { EXCHANGE_WALLET_USD: carryingIqd },
+        },
+      });
+
+      await postExchangeControlReclassification(tx, {
+        exchangeHouseId: input.exchangeHouseId,
+        currency: "USD",
+        beforeSignedIqd: oldCarrying,
+        afterSignedIqd: movement.balanceCarryingIqd,
+        sourceKey: txnNumber,
+        notes: `تصنيف ذمة الصيرفة لسحب الدولار ${txnNumber}`,
+        createdBy: actor.userId,
       });
 
       if (input.clientRequestId) {
@@ -135,15 +162,37 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
       createdBy: actor.userId,
     });
     const txnId = extractInsertId(txRes);
+    const postingSourceComponents = {
+      roleDebits: { TREASURY_CASH: amount },
+      roleCredits: { EXCHANGE_WALLET_IQD: amount },
+    } as const;
 
     await postEntry(tx, {
       entryType: "EXCHANGE_WITHDRAW",
       branchId: input.branchId,
+      createdBy: actor.userId,
       exchangeHouseId: input.exchangeHouseId,
       receiptId,
       amount,
       dedupeKey: `EXWD:${txnNumber}`,
       notes: input.notes ?? undefined,
+      postingIntent: createPostingIntent(
+        "EXCHANGE_WITHDRAW_IQD",
+        "EXCHANGE_WITHDRAW",
+        [debitLine("TREASURY_CASH", amount), creditLine("EXCHANGE_WALLET_IQD", amount)],
+        postingSourceComponents,
+      ),
+      postingSourceComponents,
+    });
+
+    await postExchangeControlReclassification(tx, {
+      exchangeHouseId: input.exchangeHouseId,
+      currency: "IQD",
+      beforeSignedIqd: availIqd,
+      afterSignedIqd: balIqdAfter,
+      sourceKey: txnNumber,
+      notes: `تصنيف ذمة الصيرفة لسحب الدينار ${txnNumber}`,
+      createdBy: actor.userId,
     });
 
     if (input.clientRequestId) {

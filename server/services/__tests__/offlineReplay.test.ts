@@ -106,7 +106,9 @@ beforeEach(async () => { await reset(); await seed(); });
 describe("replayOfflineSale — الترحيل السعيد والوسم", () => {
   it("يُصدر فاتورة رسمية INV موسومة originatedOffline بالرقم المؤقّت وcapturedAt وPAID", async () => {
     const res = await replayOfflineSale(baseInput(), cashier1);
-    expect(res.invoiceNumber.startsWith("INV-1-")).toBe(true);
+    // ١٨/٨: رقم الفاتورة الرسميّ صار تسلسلياً قصيراً (عدّاد ذرّيّ) — الرقم **الأوفلاينيّ**
+    // المؤقّت يبقى بصيغته `OFF-…` كما هو (يُفحَص أدناه)، فلا التباس بين الترقيمَين.
+    expect(res.invoiceNumber).toMatch(/^\d+$/);
     expect(res.status).toBe("PAID");
     expect(res.idempotentReplay).toBeUndefined();
 

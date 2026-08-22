@@ -12,6 +12,7 @@ import {
   fixedAssets,
   productVariants,
   products,
+  purchaseOrderItems,
   purchaseOrders,
   suppliers,
   tasks,
@@ -23,7 +24,13 @@ import { money, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
-import { signedOpeningBalance, postOpeningEntry, upsertOpeningEntry, type OpeningDirection } from "./openingBalance";
+import {
+  assertLegacyOpeningMutable,
+  signedOpeningBalance,
+  postOpeningEntry,
+  upsertOpeningEntry,
+  type OpeningDirection,
+} from "./openingBalance";
 import { assertPeriodOpen } from "./periodLockService";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -351,15 +358,26 @@ export async function deleteSupplier(supplierId: number, _actor: Actor) {
 
     // قفل الفترة (اتساقاً مع مسار التصحيح upsertOpeningEntry): لا يُحذَف قيد OPENING مؤرَّخ داخل فترة
     // مُقفَلة (يُغيّر أرقامها بأثر رجعيّ) — يُرفض حتى تُفتح الفترة (admin). لا قيد ⇒ لا شيء يُحذَف.
-    const [openingEntry] = await tx
-      .select({ entryDate: accountingEntries.entryDate })
+    // ب-١ (١٦/٨): نظير العميل — عدّة قيود OPENING (أصلٌ + فروق مؤرَّخة). نفحص **أقدمها**،
+    // فالحذف يطال الكلّ ولا يجوز أن يمرّ صفٌّ في فترة مُقفَلة بغطاء صفٍّ مفتوح.
+    const [openingAgg] = await tx
+      .select({
+        earliest: sql<string | null>`MIN(${accountingEntries.entryDate})`,
+        count: sql<number>`COUNT(*)`,
+      })
       .from(accountingEntries)
-      .where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")))
-      .limit(1);
-    if (openingEntry) await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
+      .where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")));
+    const openingEntry =
+      Number(openingAgg?.count ?? 0) > 0 && openingAgg?.earliest
+        ? { entryDate: openingAgg.earliest }
+        : null;
+    if (openingEntry) {
+      await assertLegacyOpeningMutable(tx);
+      await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
+      await tx.delete(accountingEntries).where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")));
+    }
 
     // إزالة البيانات التابعة الوحيدة الآمنة: القيد الافتتاحيّ + جهات الاتصال + التذكيرات.
-    await tx.delete(accountingEntries).where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")));
     await tx.delete(contactPersons).where(eq(contactPersons.supplierId, supplierId));
     await tx.delete(apReminders).where(eq(apReminders.supplierId, supplierId));
     await tx.delete(suppliers).where(eq(suppliers.id, supplierId));
@@ -388,8 +406,21 @@ export async function deactivateSupplier(supplierId: number, _actor: Actor) {
         .where(and(
           eq(purchaseOrders.supplierId, supplierId),
           sql`${purchaseOrders.status} IN ('CONFIRMED','RECEIVED') AND (
-            (${purchaseOrders.agreedCurrency} = 'USD' AND ${purchaseOrders.paidUsd} + ${purchaseOrders.returnedUsd} < ${purchaseOrders.usdTotal})
-            OR (${purchaseOrders.agreedCurrency} <> 'USD' AND ${purchaseOrders.paidAmount} < ${purchaseOrders.total})
+            EXISTS (
+              SELECT 1 FROM ${purchaseOrderItems} poi
+              WHERE poi.purchaseOrderId = ${purchaseOrders.id}
+                AND poi.receivedBaseQuantity < poi.baseQuantity
+            )
+            OR EXISTS (
+              SELECT 1 FROM ${accountingEntries} ae
+              WHERE ae.purchaseOrderId = ${purchaseOrders.id}
+                AND ae.supplierId = ${supplierId}
+              GROUP BY ae.purchaseOrderId
+              HAVING ABS(SUM(CASE
+                WHEN ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN') THEN ae.amount
+                WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
+                ELSE 0 END)) > 0.004
+            )
           )`,
         ))
         .limit(1)

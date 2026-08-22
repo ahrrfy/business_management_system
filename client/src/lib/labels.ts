@@ -4,18 +4,13 @@
  * طرق الدفع في lib/paymentMethod.ts والأدوار في lib/roles.ts — لا تكرّرها هنا.
  */
 
-/** حالة فاتورة البيع (invoices.status). PENDING = «معلّقة» بقرار المسرد (لا «غير مدفوعة»). */
-export const INVOICE_STATUS_AR: Record<string, string> = {
-  PAID: "مدفوعة",
-  PARTIALLY_PAID: "جزئية",
-  PENDING: "معلّقة",
-  RETURNED: "مُرتجَعة",
-  CANCELLED: "ملغاة",
-};
-export function invoiceStatusLabel(s: string | null | undefined): string {
-  if (!s) return "—";
-  return INVOICE_STATUS_AR[s] ?? s;
-}
+/**
+ * ⛔ حالة فاتورة البيع **ليست هنا** — مصدرها الوحيد `@shared/invoiceStatus`
+ * (`INVOICE_STATUS_AR` · `invoiceStatusLabel` · `isDeadInvoiceStatus` · `INVOICE_STATUSES`).
+ * كانت نسخةٌ محلّية هنا فانجرفت عن الخادم: أُضيفت `SUPERSEDED` إلى enum المخطّط (هجرة 0168)
+ * ولم تصل هذا القاموس ⇒ تسرّب الرمز الإنجليزيّ الخام إلى ٦ شاشاتٍ وملفات Excel والطباعة.
+ * الخادم يحتاج المفهوم نفسه في استعلاماته، فمكانُه `shared/` لا هنا. **لا تُعِد تعريفه.**
+ */
 
 /** مصدر الفاتورة (invoices.sourceType). */
 export const SOURCE_TYPE_AR: Record<string, string> = {
@@ -27,6 +22,18 @@ export const SOURCE_TYPE_AR: Record<string, string> = {
 export function sourceTypeLabel(s: string | null | undefined): string {
   if (!s) return "—";
   return SOURCE_TYPE_AR[s] ?? s;
+}
+
+/** نوع الوردية (`shifts.shiftType`) — كانت الدالّة مكرّرة حرفيّاً في ملفَّين،
+ *  وثالثٌ (تفاصيل الفاتورة) كان يعرض قيمة الـenum الإنجليزيّة خامّاً للموظّف. */
+export const SHIFT_TYPE_AR: Record<string, string> = {
+  RETAIL: "تجزئة",
+  RECEPTION: "استقبال",
+  PRINT_SERVICES: "خدمات طباعة",
+};
+export function shiftTypeLabel(t: string | null | undefined): string {
+  if (!t) return "—";
+  return SHIFT_TYPE_AR[t] ?? "تجزئة";
 }
 
 /** فئة السعر (productPrices.tier / customers.defaultPriceTier). */

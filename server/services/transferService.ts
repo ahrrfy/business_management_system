@@ -4,17 +4,18 @@
 // يُكتب TRANSFER_IN إلا عند الاستلام وبالكمية المستلَمة فقط ⇒ ما هو «بالطريق» لا يظهر في
 // رصيد أي فرع (لا يُباع مرّتين ولا يُجرَد وهماً). العجز (المرسَل − المستلَم) يبقى موثَّقاً
 // على سطر السند مع ملاحظة إلزامية — مجموع مخزون النظام ينقص به فعلاً (خسارة نقل حقيقية).
-// بلا قيد محاسبي (نفس قرار التحويل الفوري السابق — القيمة لم تغادر الشركة).
+// عجز المملوك: خسائر مقابل INVENTORY. عجز الأمانة: خسائر مقابل التزام المودِع بلا لمس INVENTORY.
 //
 // الإلغاء (سند بالطريق فقط): يعيد الكمية كاملة للمصدر بحركة TRANSFER_IN عكسية ويغلق السند.
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
-import { branches, branchStock, inventoryMovements, productVariants, products, stockTransferLines, stockTransfers, users } from "../../drizzle/schema";
+import { branches, branchStock, inventoryMovements, productVariants, products, stockTransferLines, stockTransfers, suppliers, users } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { getDb } from "../db";
 import { applyMovement } from "./inventoryService";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
-import { postEntry } from "./ledgerService";
+import { adjustSupplierBalance, postEntry } from "./ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "./accounting/postingEngine";
 import { money } from "./money";
 import { extractInsertId } from "../lib/insertId";
 
@@ -57,6 +58,37 @@ export interface CreateTransferArgs {
  * إنشاء سند تحويل + خصم المصدر (TRANSFER_OUT لكل سطر) داخل معاملة واحدة — إمّا يخرج السند
  * كاملاً «بالطريق» أو لا شيء (نقص مخزون بأي سطر = ROLLBACK للكل).
  */
+/**
+ * قفل أرصدة أصناف السند **في فرعَي التحويل وحدهما**، مرتَّباً تصاعدياً بالمتغيّر.
+ *
+ * المسار هـ-٢ (١٧/٨) — نظير هـ-١ في مسار الهدايا: كان القفل `WHERE variantId IN (…)` **بلا شرط
+ * فرع** ⇒ يقفل صفوف **كلّ الفروع** لتلك الأصناف، فتُسلسَل مبيعات فرعٍ ثالثٍ لا علاقة له بالتحويل
+ * خلفه (اختناقٌ صامت لا خطأ يظهر). ولا يشتري ذلك أمانَ WAVG: لقطة التكلفة تُقرأ من
+ * `productVariants.costPrice` (عالميّة) وتُقفَل بصفّها مباشرةً بعد هذا القفل — وكمّيات الفروع
+ * الأخرى لا تدخل حساب هذا السند إطلاقاً.
+ *
+ * الترتيب التصاعديّ يبقى إلزامياً (لا يُمَسّ): هو ما يمنع `ER_LOCK_DEADLOCK` بين سندين
+ * متزامنين يمسكان الأصناف نفسها، ويحفظ تسلسل «الرصيد ثمّ صفّ التكلفة» المتّبع في الشراء والإنتاج.
+ */
+async function lockTransferBranchStock(
+  tx: Tx,
+  sortedVariantIds: number[],
+  branchIds: number[],
+): Promise<void> {
+  if (!sortedVariantIds.length) return;
+  await tx
+    .select({ id: branchStock.id })
+    .from(branchStock)
+    .where(
+      and(
+        inArray(branchStock.variantId, sortedVariantIds),
+        inArray(branchStock.branchId, Array.from(new Set(branchIds)).sort((x, y) => x - y)),
+      ),
+    )
+    .orderBy(asc(branchStock.variantId))
+    .for("update");
+}
+
 export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   if (a.fromBranchId === a.toBranchId) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التحويل لنفس الفرع" });
@@ -123,12 +155,7 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
   const sortedVariantIds = sorted.map((it) => it.variantId);
   // نفس ترتيب أقفال WAVG في الشراء/الإنتاج: أرصدة الصنف عالمياً ثم صف التكلفة.
   // بذلك تكون لقطة الإرسال هي التكلفة الفعلية لحظة خروج البضاعة، لا قراءة سبقت استلاماً متزامناً.
-  await tx
-    .select({ id: branchStock.id })
-    .from(branchStock)
-    .where(inArray(branchStock.variantId, sortedVariantIds))
-    .orderBy(asc(branchStock.variantId))
-    .for("update");
+  await lockTransferBranchStock(tx, sortedVariantIds, [a.fromBranchId, a.toBranchId]);
   const costRows = await tx
     .select({ id: productVariants.id, costPrice: productVariants.costPrice })
     .from(productVariants)
@@ -304,17 +331,117 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
         });
       }
     }
-    const lossValue = shortages.reduce((acc, s) => acc.plus(money(costOf.get(s.variantId) ?? "0").times(s.qty)), money(0));
-    if (!lossValue.isZero()) {
+    // لقطة القيمة نفسها من الإرسال، لكن الملكية تُحسم تحت قفل بعد أقفال branchStock التي أخذتها
+    // حركات الاستلام. هذا يحافظ على ترتيب WAVG (stock ثم variant) ويمنع تبديل وسم الأمانة أثناء القيد.
+    const ownershipRows = await tx
+      .select({
+        variantId: productVariants.id,
+        isConsignment: products.isConsignment,
+        consignorId: products.consignorId,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.id, ids))
+      .orderBy(asc(productVariants.id))
+      .for("update");
+    const ownershipByVariant = new Map(ownershipRows.map((row) => [Number(row.variantId), row]));
+    let ownedLossValue = money(0);
+    const consignmentLossByConsignor = new Map<number, ReturnType<typeof money>>();
+    for (const shortage of shortages) {
+      const ownership = ownershipByVariant.get(shortage.variantId);
+      if (!ownership) {
+        throw new TRPCError({ code: "NOT_FOUND", message: `الصنف #${shortage.variantId} غير موجود` });
+      }
+      const value = money(costOf.get(shortage.variantId) ?? "0").times(shortage.qty);
+      if (!ownership.isConsignment) {
+        ownedLossValue = ownedLossValue.plus(value);
+        continue;
+      }
+      if (ownership.consignorId == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `صنف الأمانة #${shortage.variantId} بلا مودِع منسوب — لا يمكن إثبات عجز التحويل`,
+        });
+      }
+      const consignorId = Number(ownership.consignorId);
+      consignmentLossByConsignor.set(
+        consignorId,
+        (consignmentLossByConsignor.get(consignorId) ?? money(0)).plus(value),
+      );
+    }
+
+    if (!ownedLossValue.isZero()) {
+      const postingSourceComponents = {
+        roleDebits: { LOSSES: ownedLossValue },
+        roleCredits: { INVENTORY: ownedLossValue },
+      };
       await postEntry(tx, {
         entryType: "ADJUST",
         branchId: Number(doc.fromBranchId),
-        cost: lossValue,
-        profit: lossValue.neg(),
+        cost: ownedLossValue,
+        profit: ownedLossValue.neg(),
         amount: money(0),
         dedupeKey: `TRANSFER_LOSS:${a.transferId}`,
         notes: `عجز نقل — سند ${doc.transferNumber} (${shortages.reduce((s, x) => s + x.qty, 0)} وحدة)`,
+        postingIntent: createPostingIntent(
+          "ADJUST_INVENTORY_LOSS",
+          "ADJUST",
+          [debitLine("LOSSES", ownedLossValue), creditLine("INVENTORY", ownedLossValue)],
+          {
+            roleDebits: { LOSSES: ownedLossValue },
+            roleCredits: { INVENTORY: ownedLossValue },
+          },
+        ),
+        postingSourceComponents,
       });
+    }
+
+    // عجز الأمانة لا يخفض INVENTORY محاسبياً لأنها ليست أصلاً للمكتبة: Dr LOSSES / Cr التزام
+    // المودِع، مع رفع ذمته. نقفل المودعين تصاعدياً قبل أي تحديثٍ لمنع deadlock في سند متعدد المودعين.
+    const consignorIds = Array.from(consignmentLossByConsignor.keys()).sort((a, b) => a - b);
+    if (consignorIds.length) {
+      const lockedConsignors = await tx
+        .select({ id: suppliers.id })
+        .from(suppliers)
+        .where(inArray(suppliers.id, consignorIds))
+        .orderBy(asc(suppliers.id))
+        .for("update");
+      if (lockedConsignors.length !== consignorIds.length) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "تعذّر إثبات عجز الأمانة: أحد المودعين غير موجود",
+        });
+      }
+    }
+    for (const consignorId of consignorIds) {
+      const amount = consignmentLossByConsignor.get(consignorId)!;
+      if (amount.lte(0)) continue;
+      const postingSourceComponents = {
+        roleDebits: { LOSSES: amount },
+        roleCredits: { CONSIGNMENT_PAYABLE: amount },
+      };
+      await postEntry(tx, {
+        entryType: "PURCHASE",
+        supplierId: consignorId,
+        invoiceId: null,
+        branchId: Number(doc.fromBranchId),
+        amount,
+        cost: amount,
+        profit: amount.neg(),
+        dedupeKey: `CONSIG:TRANSFER_SHORT:${a.transferId}:${consignorId}`,
+        notes: `عجز نقل أمانة — سند ${doc.transferNumber}`,
+        postingIntent: createPostingIntent(
+          "PURCHASE_CONSIGNMENT_SHORTAGE",
+          "PURCHASE",
+          [debitLine("LOSSES", amount), creditLine("CONSIGNMENT_PAYABLE", amount)],
+          {
+            roleDebits: { LOSSES: amount },
+            roleCredits: { CONSIGNMENT_PAYABLE: amount },
+          },
+        ),
+        postingSourceComponents,
+      });
+      await adjustSupplierBalance(tx, consignorId, amount);
     }
   }
 

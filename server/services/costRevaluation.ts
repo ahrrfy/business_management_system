@@ -1,28 +1,24 @@
 import Decimal from "decimal.js";
+import { TRPCError } from "@trpc/server";
 import { and, eq, ne } from "drizzle-orm";
 import { auditLogs, branchStock, productVariants, products } from "../../drizzle/schema";
 import type { Tx } from "../db";
-import { postEntry } from "./ledgerService";
 import { money } from "./money";
 
 /**
- * قيد إعادة تقييم المخزون عند تعديل التكلفة يدوياً لصنفٍ له رصيد (تدقيق ٢٧/٧ — H3).
+ * Manual catalog cost edits are not a documented inventory-revaluation source.
  *
- * **المشكلة:** أصل المخزون في الميزانية = SUM(quantity × costPrice) يُقرأ **حيّاً**، وحقوق الملكية
- * مشتقّة (أصول − خصوم). فتعديل التكلفة يدوياً يُحرّك حقوق الملكية بمقدار Δتكلفة×كمية **بلا سطرٍ
- * يفسّره في قائمة الدخل** ⇒ ينكسر ثابت المحاسبة «تغيّر حقوق الملكية = صافي الدخل»، وتتحرّك الحقوق
- * بصمتٍ بلا أثرٍ ولا قيد.
+ * - Receipt/WAVG changes are accounted for by the purchase-receipt path.
+ * - Approved stocktake changes are accounted for by the stocktake path.
+ * - Consignment share edits and edits with no owned stock are audit-only.
+ * - An owned item with non-zero stock fails closed here: free `reason` text is not an
+ *   accounting purpose and must never manufacture generic revenue or loss. The governed
+ *   path is `inventory/costRevaluationRequest.ts` — an explicit document (purpose +
+ *   counter-account + second approver) that posts `Δcost × qty` per branch, and therefore
+ *   inherits the period lock through `postEntry`.
  *
- * **الحل:** لكل فرعٍ له رصيدٌ غير صفريّ لهذا الصنف، أصدر قيد `ADJUST` بمفتاح `REVAL:%` وبمقدار
- * الفرق في حقل `profit` (موجب = التكلفة ارتفعت = مكسب إعادة تقييم، سالب = انخفضت = خسارة). فيَظهر
- * أثرُه في قائمة الدخل (سطر «إعادة تقييم المخزون» عبر بوّابة P&L في reportsFinancialService)، ويمرّ
- * على `assertPeriodOpen` داخل `postEntry` (حارس الفترة تلقائياً)، ويُترَك أثرٌ دائمٌ قابل للتدقيق.
- *
- * **idempotent طبيعياً:** الفرق يُحسب من التكلفة المخزَّنة الحاليّة المُمرَّرة (oldCost)؛ فبعد الالتزام
- * تصبح التكلفة الجديدة هي المخزَّنة، وإعادة تشغيلٍ بنفس القيمة ترى Δ=0 ⇒ لا قيد مزدوج.
- *
- * **النطاق:** يُستدعى فقط من مساري التعديل اليدويّ للمنتج — لا من تحديث WAVG الآليّ عند استلام الشراء
- * (ذاك يقيّد PURCHASE بذاته). يجب استدعاؤه **داخل نفس المعاملة** (Tx) لضمان الذرّية.
+ * The caller invokes this inside the same transaction as the catalog update, so a
+ * rejection rolls back both the attempted cost change and this audit event.
  */
 export async function postCostRevaluation(
   tx: Tx,
@@ -36,7 +32,7 @@ export async function postCostRevaluation(
   if (delta.isZero()) return;
 
   // تدقيق ٢٧/٧ (تكملة H3/H4 تحت WAVG): أثرٌ **مُدقَّقٌ مُهيكَل** لتغيير التكلفة اليدويّ (قبل/بعد) على
-  // حقلٍ ماليٍّ حسّاس — مكمِّلٌ لقيد إعادة التقييم أدناه. يُكتَب **داخل المعاملة** فيرتدّ التعديلُ إن فشل
+  // حقلٍ ماليٍّ حسّاس. يُكتَب **داخل المعاملة** فيرتدّ التعديلُ إن فشل
   // السجلّ (ضابطٌ حاكمٌ لا يجوز نجاحه بلا أثر)، ويسبق فحص الأمانة كي يُدقَّق تعديلُ «حصّة المودِع» أيضاً
   // (وإن استُثني من قيد إعادة التقييم). الاستدعاء محصورٌ بمساري التعديل اليدويّ لا بتحديث WAVG الآليّ.
   //  • branchId: فرعُ الفاعل — كي تظهر هذه السجلّات تحت فلتر الفرع في auditRouter.list (Codex).
@@ -64,24 +60,23 @@ export async function postCostRevaluation(
   )[0];
   if (!pv || pv.isConsignment) return;
 
-  // رصيد كل فرعٍ لهذا الصنف (غير الصفريّ فقط) — أثر إعادة التقييم على الفرع = Δ × كميته.
+  // وجود أي رصيد غير صفري يعني أن تعديل التكلفة سيغيّر أصل المخزون بلا مستند محاسبي مصنّف.
   const rows = await tx
-    .select({ branchId: branchStock.branchId, qty: branchStock.quantity })
+    .select({ id: branchStock.id })
     .from(branchStock)
     .where(and(eq(branchStock.variantId, variantId), ne(branchStock.quantity, 0)));
 
-  for (const r of rows) {
-    const qty = new Decimal(Number(r.qty));
-    if (qty.isZero()) continue;
-    const gain = delta.times(qty); // موجب = مكسب إعادة تقييم (التكلفة ارتفعت)
-    await postEntry(tx, {
-      entryType: "ADJUST",
-      branchId: Number(r.branchId),
-      profit: gain,
-      notes: `إعادة تقييم مخزون (تعديل تكلفة يدويّ): صنف #${variantId}، فرع ${r.branchId}، Δ=${delta.toFixed(2)}×${qty.toFixed(0)} — بواسطة #${actor.userId}`,
-      // مفتاح فريد يحمل بادئة REVAL: (لبوّابة P&L) — الفرادة تُرضي قيد uq_entry_dedupe فتُتاح
-      // إعاداتُ تقييمٍ متعدّدة للصنف نفسه؛ الحماية من الازدواج مصدرُها منطق Δ لا هذا المفتاح.
-      dedupeKey: `REVAL:${variantId}:${r.branchId}:${Date.now()}`,
+  if (rows.length > 0) {
+    // `reason` is free audit text, not an accounting purpose or a controlled
+    // counter-account. Treating every upward edit as revenue and every downward
+    // edit as loss manufactures P&L without source evidence. Receipt/WAVG and
+    // stocktake approval retain their own documented posting paths; the manual editor
+    // stays fail-closed — and now names the governed alternative instead of dead-ending
+    // (there was previously no way at all to correct a wrong cost on a stocked item).
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message:
+        "لا تُعدَّل تكلفة صنفٍ مملوك له رصيد من هنا: تغييرها يحرّك أصل المخزون بلا قيدٍ مقابل. استعمل «إعادة تقييم التكلفة» من شاشة المخزون (غرضٌ محاسبيّ + سببٌ مكتوب + اعتماد مديرٍ ثانٍ)، أو استلامَ شراءٍ إن كانت التكلفة تتغيّر بشراءٍ فعليّ.",
     });
   }
 }

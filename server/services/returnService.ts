@@ -1,23 +1,29 @@
 import { TRPCError } from "@trpc/server";
+import { isDeadInvoiceStatus } from "@shared/invoiceStatus";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryParties, digitalSaleDetails, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
-import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
+import { createPostingIntent, creditLine, debitLine, signedPostingLines, type AccountRole, type PostingProfile } from "./accounting/postingEngine";
 import { money, round2, toDbMoney } from "./money";
 import { resolveBranchCashShiftTx } from "./shiftService";
 import {
   assertCashOutAvailable,
+  assertNonPhysicalOutReceipt,
   lockCashSourceForUpdate,
-  MATERIALIZED_RECEIPT_STATUSES,
 } from "./cash/cashAvailability";
+import { effectiveRefundCap, isSurfacedRefundMethod, loadRefundCaps } from "./returns/refundCaps";
 import { withTx, type Actor } from "./tx";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
+import { classifyGiftPosting } from "./sale/giftPosting";
+import { paymentAssetRole } from "./sale/paymentPosting";
+import { nextVoucherNumber } from "./voucher/helpers";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -28,20 +34,29 @@ export interface ReturnLineInput {
 export interface ReturnSaleInput {
   invoiceId: number;
   lines: ReturnLineInput[];
-  refund?: { amount: string; method: PaymentMethod; shiftId?: number | null } | null;
+  /** `reference` = مرجع عملية جهاز الدفع، إلزاميّ للردّ بالبطاقة (إثباتٌ لا إقفال). */
+  refund?: { amount: string; method: PaymentMethod; shiftId?: number | null; reference?: string | null } | null;
   restock?: boolean;
   /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة المرتجع الأول (لا استرداد/إرجاع مزدوج). */
   clientRequestId?: string | null;
+  /**
+   * **تفويضٌ داخليّ حصراً — لا يقبله أيّ راوتر.** عكسُ `correctSale` الكامل قبل إعادة الإصدار.
+   * يُعفي من حارس «الزبون العابر يجب أن يُردّ له»: المال هنا لا يُحتجَز بلا طرف، بل يُنقل
+   * إلى الفاتورة المصحّحة عبر `preCollected` في نفس المعاملة. بدون هذا الاستثناء كان تصحيح
+   * أيّ فاتورةٍ نقديّةٍ لزبونٍ عابر يُرفَض كلّياً.
+   */
+  internalCorrectionReversal?: boolean;
 }
 
 /** جسم عكس المرتجع داخل معاملةٍ قائمة — يُعاد استعماله من correctSale (تصحيح الفاتورة)
  *  لعكسٍ كاملٍ ذرّيّ بلا فتح معاملةٍ ثانية. الغلاف العام returnSale يبقى بلا تغيير سلوكيّ. */
 export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Actor) {
+    const requestFingerprint = input.clientRequestId ? idempotencyHash(input) : null;
     // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة المرتجع الأول بلا استرداد مكرّر.
     // قبل أي replay نتحقّق أنّ المفتاح يخصّ نفس الفاتورة والفرع وبنفس بصمة المرتجع
     // (لا يصحّ أن يُرجع مفتاحٌ مُستعمَلٌ لفاتورة مغايرة نجاحاً صامتاً بـreturnedTotal=0).
     if (input.clientRequestId) {
-      const existingRefId = await findIdempotentRefId(tx, "sale.return", input.clientRequestId);
+      const existingRefId = await checkIdempotency(tx, "sale.return", input.clientRequestId, requestFingerprint);
       if (existingRefId != null) {
         if (Number(existingRefId) !== Number(input.invoiceId)) {
           throw new TRPCError({
@@ -96,10 +111,30 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         const fullyReturnedReplay =
           replayInv.status === "RETURNED" ||
           replayItems.every((r) => (r.returnedBaseQuantity ?? 0) >= r.baseQuantity);
+        // رافدا الردّ الفوريّ (نقد/بطاقة) لا يُنشئان سنداً معلَّقاً ⇒ لا مرجعَ معلَّقاً يُبحَث عنه.
+        const pendingReference = input.refund && !isSurfacedRefundMethod(input.refund.method)
+          ? `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12)}`
+          : null;
+        const replayRefund = pendingReference
+          ? (await tx.select({
+              amount: receipts.amount,
+              status: receipts.status,
+              approvalStatus: receipts.approvalStatus,
+              voucherNumber: receipts.voucherNumber,
+            }).from(receipts).where(and(
+              eq(receipts.invoiceId, input.invoiceId),
+              eq(receipts.referenceNumber, pendingReference),
+              eq(receipts.direction, "OUT"),
+            )).orderBy(sql`${receipts.id} DESC`).limit(1))[0]
+          : undefined;
         return {
           invoiceId: input.invoiceId,
           returnedTotal: expectedTotal.toFixed(2),
           fullyReturned: fullyReturnedReplay,
+          pendingRefundAmount: replayRefund?.status === "PENDING" && replayRefund.approvalStatus === "PENDING_APPROVAL"
+            ? money(replayRefund.amount).toFixed(2)
+            : "0.00",
+          pendingRefundVoucherNumber: replayRefund?.voucherNumber ?? null,
           idempotentReplay: true as const,
         };
       }
@@ -176,8 +211,17 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     if (Number(inv.branchId) !== Number(invPreview.branchId)) {
       throw new TRPCError({ code: "CONFLICT", message: "تغيّر فرع الفاتورة أثناء المرتجع؛ أعد المحاولة" });
     }
-    if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة ملغاة أو مرتجعة بالكامل" });
+    // المُستبدَلة كانت محجوبةً **بالمصادفة** لا بالتصميم: التصحيح يعكس كل الأسطر فيصير المتبقّي
+    // صفراً، فيسقط الطلب برسالة «كمية الإرجاع تتجاوز المتبقّي للبند ####» — رحلةٌ تنتهي بخطأ
+    // تقنيّ غامض بدل توجيهٍ صريح. ولو أُضيف بندٌ بعد التصحيح لتغيّر الحساب وسقط الدفاع.
+    if (isDeadInvoiceStatus(inv.status)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message:
+          inv.status === "SUPERSEDED"
+            ? "الفاتورة مستبدَلة بفاتورة مصحّحة — أرجِع من الفاتورة المصحّحة"
+            : "الفاتورة ملغاة أو مرتجعة بالكامل",
+      });
     }
     // G8 (١٩/٦/٢٦): فحص ملكية الفرع — managerProcedure يسمح بالمدير والأدمن، لكن مدير فرع لا
     // يجوز له إصدار مرتجع على فاتورة فرع آخر (يخرج نقد من صندوقه لفاتورة لا تخصّه).
@@ -263,7 +307,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     // البيع بدل `bundleComponents` الحيّة — تعديل الوصفة بين البيع والإرجاع لا يُلوّث المرتجع.
     // اللقطة موجودة لكل invoiceItem بكج (يفرضه sale/create.ts). للفواتير القديمة (قبل هجرة 0060)
     // اللقطة غائبة ⇒ نرفض المرتجع الآلي برسالة صريحة (لا نسقط بصمت للوصفة الحيّة، دفاع صريح).
-    const returnedVariantIds = Array.from(new Set(work.map((w) => Number(w.item.variantId))));
+    const returnedVariantIds = Array.from(new Set(items.map((item) => Number(item.variantId))));
     const kindByVariant = await classifyVariants(tx, returnedVariantIds);
     // خريطة (invoiceItemId ⇒ صفوف المكوّنات المحفوظة) — قراءة واحدة بلا N+1.
     const bundleItemIds = work
@@ -321,6 +365,11 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
               baseQuantity: c.componentBaseQuantity * line.baseQuantity,
             });
           }
+        } else if (kind === "SERVICE") {
+          // ١٨/٨: **الخدمة لا تعود للمخزون** — لا رصيد لها أصلاً (طباعة، تجليد، تصميم). كانت
+          // تُكتب لها حركة RETURN ورصيدٌ في `branchStock` من العدم: مخزونٌ وهميّ يتضخّم مع كل
+          // مرتجع فاتورة طباعة، ويسمّم WAVG وتقارير المخزون. لا شيء يُضاف لـstockOps.
+          // (الإيراد والذمّة والقيد تُعكَس كالمعتاد — العكس ماليٌّ لا مخزنيّ.)
         } else {
           stockOps.push({ variantId: itemVariantId, baseQuantity: line.baseQuantity });
         }
@@ -411,77 +460,184 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     const reversedGiftCost = restock ? returnedGiftCost : new Decimal(0);
 
     // RETURN ledger entry: negative values + منفّذ مستقلّ عن بائع الفاتورة.
-    const returnOperatorName = await userNameSnapshot(tx, actor.userId);
+    const consignByVariant = new Map<number, number>();
+  const digitalVariants = new Set<number>();
+  const returnVariantIds = Array.from(new Set(work.map((w) => Number(w.item.variantId))));
+  if (returnVariantIds.length) {
+        const crows = await tx
+          .select({ vid: productVariants.id, isConsign: products.isConsignment, cId: products.consignorId,
+        productType: products.productType,
+      })
+          .from(productVariants).innerJoin(products, eq(productVariants.productId, products.id))
+          .where(inArray(productVariants.id, returnVariantIds));
+        for (const row of crows) {
+      if (row.isConsign && row.cId != null) consignByVariant.set(Number(row.vid), Number(row.cId));
+      if (row.productType === "DIGITAL_CARD") digitalVariants.add(Number(row.vid));
+    }
+  }
+  const byConsignor = new Map<number, { paid: Decimal; gift: Decimal }>();
+  let returnedServicePaidCost = new Decimal(0);
+  let returnedServiceGiftCost = new Decimal(0);
+        for (const { line, item } of work) {
+          const share = round2(money(item.unitCost).times(line.baseQuantity));
+    const cId = consignByVariant.get(Number(item.variantId));
+          if (cId != null) {
+      const current = byConsignor.get(cId) ?? {
+        paid: new Decimal(0),
+        gift: new Decimal(0),
+      };
+      if (item.isGift) current.gift = current.gift.plus(share);
+      else current.paid = current.paid.plus(share);
+      byConsignor.set(cId, current);
+    } else if (kindByVariant.get(Number(item.variantId)) === "SERVICE") {
+      if (item.isGift) returnedServiceGiftCost = returnedServiceGiftCost.plus(share);
+      else returnedServicePaidCost = returnedServicePaidCost.plus(share);
+    }
+  }
+  const consignmentPaidShare = round2(Array.from(byConsignor.values()).reduce((sum, split) => sum.plus(split.paid), new Decimal(0)));
+  const consignmentGiftShare = round2(Array.from(byConsignor.values()).reduce((sum, split) => sum.plus(split.gift), new Decimal(0)));
+  const ownedReversedCost = restock ? round2(Decimal.max(new Decimal(0), reversedCost.minus(consignmentPaidShare).minus(returnedServicePaidCost))) : new Decimal(0);
+  const ownedReversedGiftCost = restock ? round2(Decimal.max(new Decimal(0), reversedGiftCost.minus(consignmentGiftShare).minus(returnedServiceGiftCost))) : new Decimal(0);
+  // الخدمة لا تعود مخزوناً عند restock؛ لا نعكس هديتها لأن موادها المستهلكة لم تعد للرف.
+  const financiallyReversedGiftCost = restock ? round2(Decimal.max(new Decimal(0), reversedGiftCost.minus(returnedServiceGiftCost))) : new Decimal(0);
+
+  // RETURN ledger entry: negative values + منفّذ مستقلّ عن بائع الفاتورة.
+  const returnOperatorName = await userNameSnapshot(tx, actor.userId);
+  const deliveryRevenueReversal = fullyReturned ? round2(money(inv.deliveryFee ?? "0")) : new Decimal(0);
+  const sectorRevenueReversal = round2(returnedRevenue.minus(deliveryRevenueReversal));
+  const returnAccountingAmount = round2(returnedRevenue.plus(returnedTax));
+  const invoiceMerchandiseRevenue = round2(money(inv.subtotal).minus(money(inv.discountAmount)));
+  const revenueItems = items.filter((item) => !item.isGift && money(item.total).gt(0)).sort((a, b) => Number(a.id) - Number(b.id));
+  const itemRevenueBasis = revenueItems.reduce((sum, item) => sum.plus(money(item.total)), money(0));
+  const netRevenueByItem = new Map<number, Decimal>();
+  let allocatedInvoiceRevenue = money(0);
+  for (let index = 0; index < revenueItems.length; index++) {
+    const item = revenueItems[index]!;
+    const lineRevenue = index === revenueItems.length - 1 ? round2(invoiceMerchandiseRevenue.minus(allocatedInvoiceRevenue)) : round2(invoiceMerchandiseRevenue.times(money(item.total)).div(itemRevenueBasis));
+    allocatedInvoiceRevenue = allocatedInvoiceRevenue.plus(lineRevenue);
+    netRevenueByItem.set(Number(item.id), lineRevenue);
+  }
+
+  const returnRevenueByRole = new Map<AccountRole, Decimal>();
+  const returnClasses = new Set<"DIGITAL" | "SERVICE" | "CONSIGNMENT" | "INVENTORY">();
+  let allocatedReturnRevenue = money(0);
+  let balancingRole: AccountRole | null = null;
+  for (const { line, item } of work) {
+    const lineRevenue = netRevenueByItem.get(Number(item.id)) ?? money(0);
+    if (lineRevenue.isZero()) continue;
+    const kind = kindByVariant.get(Number(item.variantId)) ?? "STOCKED";
+    const returnClass = digitalVariants.has(Number(item.variantId)) ? "DIGITAL" : kind === "SERVICE" ? "SERVICE" : consignByVariant.has(Number(item.variantId)) ? "CONSIGNMENT" : "INVENTORY";
+    returnClasses.add(returnClass);
+    const role: AccountRole = inv.sourceType === "WORKORDER" ? "SALES_FLEX" : digitalVariants.has(Number(item.variantId)) ? "OTHER_REVENUE" : kind === "SERVICE" ? "SALES_PRINT" : "SALES_STATIONERY";
+    const beforeQuantity = item.returnedBaseQuantity ?? 0;
+    const afterQuantity = beforeQuantity + line.baseQuantity;
+    const cumulativeRevenue = (quantity: number) => (quantity >= item.baseQuantity ? lineRevenue : round2(lineRevenue.times(quantity).div(item.baseQuantity)));
+    const currentRevenue = round2(cumulativeRevenue(afterQuantity).minus(cumulativeRevenue(beforeQuantity)));
+    allocatedReturnRevenue = allocatedReturnRevenue.plus(currentRevenue);
+    returnRevenueByRole.set(role, round2((returnRevenueByRole.get(role) ?? money(0)).plus(currentRevenue)));
+    balancingRole = role;
+  }
+  const sectorDelta = round2(sectorRevenueReversal.minus(allocatedReturnRevenue));
+  if (!sectorDelta.isZero() && balancingRole) {
+    returnRevenueByRole.set(balancingRole, round2((returnRevenueByRole.get(balancingRole) ?? money(0)).plus(sectorDelta)));
+  }
+  const returnProfile: PostingProfile = inv.sourceType === "WORKORDER" ? "RETURN_SALE_FLEX" : returnClasses.size > 1 ? "RETURN_SALE_MIXED" : returnClasses.has("DIGITAL") ? "RETURN_SALE_DIGITAL" : returnClasses.has("SERVICE") ? "RETURN_SALE_SERVICE" : returnClasses.has("CONSIGNMENT") ? "RETURN_SALE_CONSIGNMENT" : "RETURN_SALE_INVENTORY";
+  const returnPostingLines = [
+    ...Array.from(returnRevenueByRole.entries())
+      .filter(([, amount]) => !amount.isZero())
+      .map(([role, amount]) => debitLine(role, amount)),
+    ...(deliveryRevenueReversal.isZero() ? [] : [debitLine("DELIVERY_REVENUE", deliveryRevenueReversal)]),
+    ...(returnedTax.isZero() ? [] : [debitLine("TAX_PAYABLE", returnedTax)]),
+    ...(returnAccountingAmount.isZero() ? [] : [creditLine("AR", returnAccountingAmount)]),
+    ...(ownedReversedCost.isZero() ? [] : [debitLine("INVENTORY", ownedReversedCost), creditLine("COGS", ownedReversedCost)]),
+  ];
+  const returnPostingSource = {
+    roleDebits: {
+      SALES_STATIONERY: returnRevenueByRole.get("SALES_STATIONERY") ?? money(0),
+      SALES_PRINT: returnRevenueByRole.get("SALES_PRINT") ?? money(0),
+      SALES_FLEX: returnRevenueByRole.get("SALES_FLEX") ?? money(0),
+      OTHER_REVENUE: returnRevenueByRole.get("OTHER_REVENUE") ?? money(0),
+      DELIVERY_REVENUE: deliveryRevenueReversal,
+      TAX_PAYABLE: returnedTax,
+      INVENTORY: ownedReversedCost,
+    },
+    roleCredits: { AR: returnAccountingAmount, COGS: ownedReversedCost },
+  };
+  const returnPostingIntent = returnPostingLines.length ? createPostingIntent(returnProfile, "RETURN", returnPostingLines, returnPostingSource) : null;
+  // مرتجع هدية صِرفة لا يعكس SALE/AR؛ أثره المالي الوحيد عكس GIFT_OUT عند عودتها.
+  if (returnPostingIntent) {
     await postEntry(tx, {
       entryType: "RETURN",
       branchId: Number(inv.branchId),
       invoiceId: input.invoiceId,
       customerId: inv.customerId,
       revenue: returnedRevenue.neg(),
-      cost: reversedCost.neg(),
-      profit: returnedRevenue.minus(reversedCost).neg(),
+      // Source cost is the exact owned COGS reversal. Service materials were consumed and
+      // consignment is not our inventory; neither may be manufactured into an INVENTORY return.
+      cost: ownedReversedCost.neg(),
+      profit: returnedRevenue.minus(ownedReversedCost).neg(),
       taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
       createdBy: actor.userId,
       createdByNameSnapshot: returnOperatorName,
+      notes: `عكس كلفة تحليلية=${toDbMoney(reversedCost)}؛ عكس COGS مملوك=${toDbMoney(ownedReversedCost)}؛ خدمة غير معادة=${toDbMoney(returnedServicePaidCost)}؛ أمانة مستقلة=${toDbMoney(consignmentPaidShare)}`,
+      postingIntent: returnPostingIntent,
+      postingSourceComponents: returnPostingSource,
     });
+  }
 
-    // هدايا الفاتورة (0149): عكسُ مصروف الهدية بقيد GIFT_OUT سالبٍ (تكلفة سالبة ⇒ ربحٌ موجب يُلغي
-    // الخصمَ الأصليّ) — نظير عكس النثرية/التلف في `expenseService.cancelExpense`. بلا `dedupeKey`:
-    // المرتجعات الجزئية المتعدّدة على الفاتورة نفسها مشروعة، وكلٌّ يعكس حصّته.
-    if (reversedGiftCost.gt(0)) {
-      await postEntry(tx, {
-        entryType: "GIFT_OUT",
-        branchId: Number(inv.branchId),
-        invoiceId: input.invoiceId,
-        customerId: inv.customerId,
-        revenue: new Decimal(0),
-        cost: reversedGiftCost.neg(),
-        profit: reversedGiftCost,
-        amount: reversedGiftCost.neg(),
-        createdBy: actor.userId,
-        createdByNameSnapshot: returnOperatorName,
-        notes: "عكس هدايا ضمن مرتجع بيع",
-      });
-    }
+  // هدايا الفاتورة (0149): عكسُ مصروف الهدية بقيد GIFT_OUT سالبٍ (تكلفة سالبة ⇒ ربحٌ موجب يُلغي
+  // الخصمَ الأصليّ) — نظير عكس النثرية/التلف في `expenseService.cancelExpense`. بلا `dedupeKey`:
+  // المرتجعات الجزئية المتعدّدة على الفاتورة نفسها مشروعة، وكلٌّ يعكس حصّته.
+  if (financiallyReversedGiftCost.gt(0)) {
+    const giftPosting = classifyGiftPosting(financiallyReversedGiftCost, ownedReversedGiftCost, -1);
+    await postEntry(tx, {
+      entryType: "GIFT_OUT",
+      branchId: Number(inv.branchId),
+      invoiceId: input.invoiceId,
+      customerId: inv.customerId,
+      revenue: new Decimal(0),
+      cost: financiallyReversedGiftCost.neg(),
+      profit: financiallyReversedGiftCost,
+      amount: financiallyReversedGiftCost.neg(),
+      createdBy: actor.userId,
+      createdByNameSnapshot: returnOperatorName,
+      notes: `عكس هدايا ضمن مرتجع بيع؛ consignmentRemainder=${toDbMoney(giftPosting.consignmentRemainder)}`,
+      postingIntent: giftPosting.intent,
+      postingSourceComponents: giftPosting.sourceComponents,
+    });
+  }
 
-    // بضاعة الأمانة (ش٣): عكس التزام المودِع — **دائماً** (restock أو تالف)، بقيدٍ PURCHASE سالب بنفس
-    // invoiceId ⇒ يدخل فلتر خصم العمولة فيستردّ حصّة البائع (صافي وعائه = 0). §٥ حاصرة ١.
-    // إن كان تالفاً (restock=false): إعادة استحقاق يتيمة (بلا invoiceId) ⇒ AP صافٍ = 0 (يبقى مستحقاً)
-    // والمكتبة تتحمّل الخسارة (COGS غير معكوس). القيد اليتيم خارج فلتر العمولة (لا يمسّ البائع).
-    {
-      const rvids = Array.from(new Set(work.map((w) => Number(w.item.variantId))));
-      const consignByVariant = new Map<number, number>();
-      if (rvids.length) {
-        const crows = await tx
-          .select({ vid: productVariants.id, isConsign: products.isConsignment, cId: products.consignorId })
-          .from(productVariants).innerJoin(products, eq(productVariants.productId, products.id))
-          .where(inArray(productVariants.id, rvids));
-        for (const r of crows) if (r.isConsign && r.cId != null) consignByVariant.set(Number(r.vid), Number(r.cId));
-      }
-      if (consignByVariant.size) {
-        const byConsignor = new Map<number, Decimal>();
-        for (const { line, item } of work) {
-          const cId = consignByVariant.get(Number(item.variantId));
-          if (cId == null) continue;
-          const share = round2(money(item.unitCost).times(line.baseQuantity)); // مرآة returnedCost الخطية.
-          byConsignor.set(cId, (byConsignor.get(cId) ?? new Decimal(0)).plus(share));
-        }
-        for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
-          const share = byConsignor.get(cId)!;
-          if (share.lte(0)) continue;
+  // بضاعة الأمانة (ش٣): عكس التزام المودِع — **دائماً** (restock أو تالف)، بقيدٍ PURCHASE سالب بنفس
+  // invoiceId ⇒ يدخل فلتر خصم العمولة فيستردّ حصّة البائع (صافي وعائه = 0). §٥ حاصرة ١.
+  // إن كان تالفاً (restock=false): إعادة استحقاق يتيمة (بلا invoiceId) ⇒ AP صافٍ = 0 (يبقى مستحقاً)
+  // والمكتبة تتحمّل الخسارة (COGS غير معكوس). القيد اليتيم خارج فلتر العمولة (لا يمسّ البائع).
+  {
+    if (consignByVariant.size) {
+      for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
+          const split = byConsignor.get(cId)!;
+        const paidShare = round2(split.paid);
+        const giftShare = round2(split.gift);
+        const share = round2(paidShare.plus(giftShare));
+        if (share.lte(0)) continue;
           // عكس دائماً (بنفس invoiceId — يدخل فلتر العمولة).
           await postEntry(tx, {
             entryType: "PURCHASE", supplierId: cId, invoiceId: input.invoiceId, branchId: Number(inv.branchId),
-            amount: share.neg(), notes: "عكس استحقاق أمانة — مرتجع",
-          });
+            amount: share.neg(), cost: paidShare.neg(), profit: paidShare,
+            notes: `عكس استحقاق أمانة — مرتجع؛ COGS مبسّط=${toDbMoney(paidShare.neg())}`,
+          postingIntent: createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [...signedPostingLines("COGS", "CONSIGNMENT_PAYABLE", paidShare.neg()), ...signedPostingLines("GIFTS_PROMO", "CONSIGNMENT_PAYABLE", giftShare.neg())], { roleDebits: { CONSIGNMENT_PAYABLE: share }, roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare } }),
+          postingSourceComponents: { roleDebits: { CONSIGNMENT_PAYABLE: share }, roleCredits: { COGS: paidShare, GIFTS_PROMO: giftShare } },
+        });
           await adjustSupplierBalance(tx, cId, share.neg());
           if (!restock) {
             // تالف: إعادة استحقاق يتيمة (بلا invoiceId) ⇒ الالتزام يبقى، والبائع لا يتأثّر.
             await postEntry(tx, {
               entryType: "PURCHASE", supplierId: cId, invoiceId: null, branchId: Number(inv.branchId),
-              amount: share, notes: "استحقاق تلف مرتجع أمانة",
-            });
+              amount: share, cost: paidShare, profit: paidShare.neg(),
+              notes: `استحقاق تلف مرتجع أمانة؛ COGS مبسّط=${toDbMoney(paidShare)}`,
+            postingIntent: createPostingIntent("PURCHASE_CONSIGNMENT", "PURCHASE", [...signedPostingLines("COGS", "CONSIGNMENT_PAYABLE", paidShare), ...signedPostingLines("GIFTS_PROMO", "CONSIGNMENT_PAYABLE", giftShare)], { roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare }, roleCredits: { CONSIGNMENT_PAYABLE: share } }),
+            postingSourceComponents: { roleDebits: { COGS: paidShare, GIFTS_PROMO: giftShare }, roleCredits: { CONSIGNMENT_PAYABLE: share } },
+          });
             await adjustSupplierBalance(tx, cId, share);
           }
         }
@@ -503,7 +659,8 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         profit: cashRoundOriginal.neg(),
         amount: cashRoundOriginal.neg(),
         notes: "عكس تقريب نقدي IQD — مرتجع كامل",
-      });
+      postingIntent: createPostingIntent("ADJUST_ROUNDING", "ADJUST", signedPostingLines("AR", "ROUNDING_DIFF", cashRoundOriginal.neg())),
+    });
     }
 
     // Cash refund capped to min(returnedTotal, amount actually paid). Reject overage.
@@ -511,97 +668,67 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
     if (requestedRefund.lt(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الاسترداد لا يصحّ أن يكون سالباً" });
     }
-    // سقف الاسترداد بالطريقة نفسها: المتاح = Σ(IN بهذه الطريقة) − Σ(OUT بهذه الطريقة)،
-    // فلا يُسترَدّ نقداً ما دُفع بطاقةً (يُفرّغ الصندوق) ولا يتجاوز المقبوض فعلاً بتلك الطريقة.
-    // ش٥ (قرار مالك ٦/٨): المقبوض **رصيد زين** يُستردّ **نقداً** — TELECOM ليست طريقة استرداد
-    // (لا سكّة ردٍّ لرصيدٍ شُحن؛ OUT بزين يُنقص الحساب المشتقّ زوراً)، فبِلا هذا الضمّ كانت
-    // فاتورة زينٍ خالصة مرتجعُها بلا أيّ مسار استردادٍ بنيوياً (سقف كل طريقةٍ صفر). حصص زين
-    // تدخل سقف النقد وحده، وOUT النقدية السابقة تُنقصه فلا استهلاك مزدوج. مرآة سياسة ردّ
-    // العربون في reception/deposits.ts. المرتجع أصلاً مديريّ (م٧) وحدّ الدرج أدناه قائم.
+    // سقف الاسترداد — **الحساب موحَّدٌ مع الشاشة حرفياً** في `returns/refundCaps.ts` (مصدر حقيقة
+    // واحد). كان مكرَّراً هنا بمنطقٍ يخالف ما تعرضه الشاشة، فيبني الموظف طلباً مرفوضاً حتماً.
+    // ⭐ قرار المالك (١٧/٨/٢٦): الاسترداد **النقديّ** متاحٌ من الوعاء كلّه مهما كان رافد القبض
+    // (زبونُ البطاقة العابر كان بلا أيّ مسار استرداد — علّة INV-1-20260816-00118)؛ وغيرُ النقد
+    // يبقى محدوداً برافده **وبالوعاء معاً** فلا استرداد مزدوج. التفصيل والثابت المحروس هناك.
     const refundMethod = input.refund?.method;
-    const capMethods: string[] = refundMethod === "CASH" ? ["CASH", "TELECOM"] : refundMethod ? [refundMethod] : [];
-    let methodAvailable = new Decimal(0);
+    let refundCap = new Decimal(0);
     if (refundMethod) {
-      const methodReceipts = await tx
-        .select({ direction: receipts.direction, amount: receipts.amount })
-        .from(receipts)
-        .where(
-          and(
-            eq(receipts.invoiceId, input.invoiceId),
-            inArray(receipts.paymentMethod, capMethods as never),
-            inArray(receipts.status, [...MATERIALIZED_RECEIPT_STATUSES]),
-            eq(receipts.approvalStatus, "APPROVED"),
-            // تدقيق ٦/٨ (ث٣/ث٥/ث١٢): إيصال **أمانة أجرة التوصيل** مختومٌ بالفاتورة تشغيلياً
-            // لكنّه مالُ طرفٍ ثالث (لم يمسّ paidAmount) — احتسابُه «مقبوضاً نقداً على الفاتورة»
-            // كان يفتح رداً نقدياً على فاتورةٍ لم يُدفَع منها دينارٌ نقداً (مدفوعة بالبطاقة مثلاً)
-            // ويستهلك أمانة المندوب استرداداً. البصمة البنيوية: له قيد DELIVERY_FEE_HELD.
-            sql`NOT EXISTS (
-              SELECT 1 FROM accountingEntries ae
-              WHERE ae.receiptId = ${receipts.id} AND ae.entryType = 'DELIVERY_FEE_HELD'
-            )`,
-          ),
-        )
-        // current read بعد source lock: لا نعتمد snapshot المعاينة السابق للانتظار.
-        .for("update");
-      methodAvailable = methodReceipts.reduce(
-        (sum, receipt) => receipt.direction === "IN"
-          ? sum.plus(money(receipt.amount))
-          : sum.minus(money(receipt.amount)),
-        money(0),
+      // `lock: true` إلزاميّ هنا: current read بعد قفل المصدر — لا نعتمد لقطةً قد يستهلكها
+      // استردادٌ متزامنٌ على الفاتورة نفسها بين القراءة والكتابة.
+      const caps = await loadRefundCaps(tx, input.invoiceId, { lock: true });
+      refundCap = effectiveRefundCap(caps, refundMethod, returnedTotal);
+    }
+    // ⭐ الزبون العابر (بلا حساب): ما لا يُردّ لا يجد أين يُقيَّد.
+    //
+    // العميل المسجَّل يستوعب الفارق في ذمّته (`adjustCustomerBalance` أدناه)، أمّا الزبون
+    // العابر فـ`customerId = NULL` ⇒ لا ذمّة ولا رصيد دائن. فمرتجعٌ بلا استرداد كان يُعيد
+    // البضاعة للرفّ ويعكس الإيراد **ويُبقي ماله في الدرج بلا التزامٍ مقابل ولا طرفٍ منسوبٍ
+    // إليه** — نقضٌ مزدوج للمبدأ الحاكم (طرفٌ منسوب + مسار خروجٍ ممكن دائماً). والشاشة كانت
+    // تُطمئن الموظف بنصٍّ كاذب: «تُخصَم من ذمّة العميل فقط» — ولا ذمّة أصلاً.
+    //
+    // المستحقّ له = ما دفعه فوق ما يبقى عليه بعد المرتجع. يُفرَض ردُّه كاملاً أو لا يُحفظ المرتجع.
+    if (inv.customerId == null && !input.internalCorrectionReversal) {
+      const netAfterReturn = money(inv.total).minus(
+        money(inv.returnedTotal ?? "0").plus(returnedTotal),
       );
-      // ش٤ (مراجعة عدائية): حصص العرابين المُطبَّقة على هذه الفاتورة (orderPayments APPLICATION)
-      // تدخل paidAmount بينما إيصال أمّها **غير مختوم** بالفاتورة (مُشظّى بين هدفين، أو مشوبٌ
-      // بردٍّ جزئيّ) فلا يراه inSum ⇒ فاتورةٌ PAID كان مرتجعُها غير قابلٍ للاسترداد بنيوياً
-      // (refundCap=0) ومال الزبون العابر يُحتجز بلا مسار. تُضمّ الحصّة بطريقة قبض أمّها، مع
-      // استبعاد ما إيصال أمّه مختومٌ بهذه الفاتورة (محسوبٌ في inSum سلفاً — لا ازدواج).
-      // outSum القائم (إيصالات OUT المختومة) يظلّ يُنقص السقف بعد كل استرداد فلا استهلاك مزدوج.
-      const appRes = await tx.execute(sql`
-        SELECT CAST(COALESCE(SUM(app.amount), 0) AS CHAR) AS v
-        FROM orderPayments app
-        JOIN orderPayments coll ON coll.id = app.parentPaymentId
-        LEFT JOIN receipts pr ON pr.id = coll.receiptId
-        WHERE app.orderPayKind = 'APPLICATION'
-          AND (
-            (app.orderPayAppliedKind = 'INVOICE' AND app.appliedId = ${input.invoiceId})
-            OR (app.orderPayAppliedKind = 'WORKORDER' AND app.appliedId IN (
-              SELECT wo.id FROM workOrders wo WHERE wo.invoiceId = ${input.invoiceId}
-            ))
-          )
-          AND coll.orderPayMethod IN (${sql.join(capMethods.map((m) => sql`${m}`), sql`, `)})
-          AND (pr.id IS NULL OR pr.invoiceId IS NULL OR pr.invoiceId <> ${input.invoiceId})
-      `);
-      const appData = (appRes as unknown as [Array<{ v: string }>])[0] ?? appRes;
-      const appRow = Array.isArray(appData) ? appData[0] : undefined;
-      methodAvailable = methodAvailable.plus(money(appRow?.v ?? "0"));
-
-      // قرار المالك (٦/٨/٢٦) — **ما حصّله المندوب وورّده مالٌ نقديّ وصلنا فعلاً**: إيصال
-      // التوريد مجمَّعٌ لعدّة فواتير بلا invoiceId، فكان المُحصَّل عبر المندوب غير مرئيٍّ
-      // لسقف الاسترداد ⇒ زبونٌ عابر دفع للمندوب وأعاد البضاعة **لا يستطيع استرداد ديناره
-      // من الشاشة إطلاقاً** (سقفه صفر). نضمّ هنا حصّة هذه الفاتورة من الإرسالية المُحصَّلة
-      // (collectedAmount) للسقف النقديّ — بحدّ ما تبقّى منها فعلاً بعد أيّ استردادٍ سابق
-      // (outSum أعلاه يُنقصه، فلا استهلاك مزدوج).
-      if (refundMethod === "CASH") {
-        const cnRes = await tx.execute(sql`
-          SELECT CAST(COALESCE(SUM(cn.collectedAmount), 0) AS CHAR) AS v
-          FROM deliveryConsignments cn
-          WHERE cn.invoiceId = ${input.invoiceId}
-            AND cn.consignmentStatus IN ('DELIVERED','PARTIAL')
-        `);
-        const cnData = (cnRes as unknown as [Array<{ v: string }>])[0] ?? cnRes;
-        const cnRow = Array.isArray(cnData) ? cnData[0] : undefined;
-        methodAvailable = methodAvailable.plus(money(cnRow?.v ?? "0"));
+      const owedToCustomer = Decimal.max(
+        new Decimal(0),
+        money(inv.paidAmount).minus(netAfterReturn),
+      );
+      if (owedToCustomer.gt(requestedRefund)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            `زبونٌ عابر بلا حساب: يجب ردّ ${owedToCustomer.toFixed(2)} كاملةً ` +
+            `(لا ذمّة تستوعب الفارق). افتح وردية للردّ النقديّ، أو سجّل العميل أوّلاً ليُقيَّد له رصيدٌ دائن.`,
+        });
       }
     }
-    const refundCap = Decimal.min(returnedTotal, methodAvailable);
     if (requestedRefund.gt(refundCap)) {
+      const poolNote = refundMethod === "CASH"
+        ? "الأقل من قيمة المرتجع والمتبقّي من المقبوض على الفاتورة بكل الطرق"
+        : "الأقل من قيمة المرتجع والمقبوض بهذه الطريقة والمتبقّي من المقبوض إجمالاً";
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة${refundMethod === "CASH" ? " — المقبوض رصيدَ زين يُستردّ نقداً ويدخل هذا السقف" : ""})`,
+        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = ${poolNote})`,
       });
     }
-    const cashRefund = requestedRefund;
+    const refundRequest = requestedRefund;
+    // ⭐ قرار المالك (١٧/٨/٢٦): **رافدا الردّ الفوريّ نقدٌ أو بطاقة**. الردّ بالبطاقة يُنفَّذ على
+    // جهاز الدفع فعلياً ثمّ يُوثَّق بمرجعه هنا ⇒ مالٌ خرج حقيقةً، فيجب أن **يتجسّد** (يُنقص
+    // `paidAmount` ويُرحَّل PAYMENT_OUT على CARD_BANK). تسجيلُه «معلَّقاً» كان يكذب على الواقع:
+    // الزبون استلم مالَه والدفتر يقول إنّ سنداً ينتظر الاعتماد. وهو مرآةٌ للسياسة الواردة —
+    // «البوّابة إثباتٌ لا إقفال» ([[inbound-payment-policy-2026-08-16]]): مرجع الجهاز إلزاميّ.
+    // الطرق الأخرى (تحويل/صك/محفظة) غير معروضةٍ في الشاشة وتبقى على مسار السند المعلَّق.
+    const isImmediateRefundRail = refundMethod != null && isSurfacedRefundMethod(refundMethod);
+    const refundReference = input.refund?.reference?.trim() || null;
+    const materializedRefund = isImmediateRefundRail ? refundRequest : money(0);
+    let pendingRefundVoucherNumber: string | null = null;
 
-    if (cashRefund.gt(0)) {
+    if (refundRequest.gt(0)) {
       // انسب الاسترداد إلى وردية الدرج الذي خرج منه النقد فعلياً — لا وردية الفاعل بالضرورة.
       // المرتجعات salesManagerProcedure ⇒ مُنفِّذ الاسترداد غالباً مديرٌ قد يختلف عن الكاشير الذي
       // يُشغّل الدرج الحقيقيّ؛ ربطه بوردية الفاعل (لو خلَت، G9 ١٩/٦/٢٦) كان يُخفي الاسترداد عن
@@ -622,38 +749,104 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
         // فعلياً في درجه أثناء العمل، لا أن يُكتشَف الخلل لاحقاً عند الإغلاق فقط.
         await assertCashOutAvailable(tx, {
           branchId: Number(inv.branchId), cashBucket: "DRAWER", shiftId,
-          amount: cashRefund, operation: "استرداد مرتجع البيع نقداً",
+          amount: materializedRefund, operation: "استرداد مرتجع البيع نقداً",
         });
+      } else if (isImmediateRefundRail) {
+        // الردّ بالبطاقة: **إثباتٌ لا إقفال**. المرجع (رقم عملية/كود موافقة الجهاز) إلزاميّ —
+        // هو الأثر الوحيد الذي يربط ديناراً خرج من حسابنا البنكيّ بمستنده، مطابقةً للمبدأ
+        // المالي الحاكم (خمسة: إيصال + قيدٌ مصنَّف + أثر تسوية + طرفٌ منسوب + تقريرٌ يُظهره).
+        // لا يشترط عميلاً مسجَّلاً: البطاقة نفسها هي الطرف (زبونٌ عابر يستردّ على بطاقته).
+        if (!refundReference) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "الاسترداد بالبطاقة يحتاج مرجع العملية من جهاز الدفع (رقم العملية/كود الموافقة) — نفّذ الاسترداد على الجهاز ثمّ أدخِل مرجعه",
+          });
+        }
+        // لا يمسّ درجاً (cashBucket=NULL) ⇒ لا أثر على expectedCash ولا على Z-report النقديّ.
+        assertNonPhysicalOutReceipt({
+          classification: "NON_CASH_METHOD",
+          paymentMethod: input.refund!.method,
+          cashBucket: null,
+          approvalStatus: "APPROVED",
+          operation: "استرداد مرتجع بيع على البطاقة",
+        });
+      } else {
+        if (inv.customerId == null) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "الاسترداد غير النقدي يحتاج عميلاً مرتبطاً بالفاتورة كي يمرّ بسند صرف واعتماد مالك",
+          });
+        }
+        assertNonPhysicalOutReceipt({
+          classification: "DEFERRED_APPROVAL",
+          paymentMethod: input.refund!.method,
+          cashBucket: null,
+          approvalStatus: "PENDING_APPROVAL",
+          operation: "طلب استرداد مرتجع بيع غير نقدي",
+        });
+        pendingRefundVoucherNumber = await nextVoucherNumber(tx, "PAYMENT", Number(inv.branchId));
       }
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,
         branchId: Number(inv.branchId),
         shiftId,
         // cashBucket=DRAWER للنقد (يَخرج من الدُرج بمرتجع نقدي ويظهر في Z-report).
-        // غير النقد ⇒ NULL (لا يَمسّ صندوقاً). مرآة لنمط saleService/voucherService.
+        // البطاقة وغيرها ⇒ NULL (لا يَمسّ صندوقاً). مرآة لنمط saleService/voucherService.
         cashBucket: input.refund!.method === "CASH" ? "DRAWER" : null,
         direction: "OUT",
-        amount: toDbMoney(cashRefund),
+        amount: toDbMoney(refundRequest),
         paymentMethod: input.refund!.method,
-        status: "COMPLETED",
+        status: isImmediateRefundRail ? "COMPLETED" : "PENDING",
+        approvalStatus: isImmediateRefundRail ? "APPROVED" : "PENDING_APPROVAL",
+        referenceNumber: input.refund!.method === "CASH"
+          ? null
+          : isImmediateRefundRail
+            ? refundReference
+            : `SALE-RETURN-PENDING-${input.invoiceId}-${requestFingerprint?.slice(0, 12) ?? "LEGACY"}`,
+        description: input.refund!.method === "CASH"
+          ? `استرداد مرتجع فاتورة ${inv.invoiceNumber}`
+          : isImmediateRefundRail
+            ? `استرداد مرتجع فاتورة ${inv.invoiceNumber} على البطاقة — مرجع الجهاز ${refundReference}`
+            : `طلب استرداد غير نقدي معلّق لفاتورة ${inv.invoiceNumber} — بلا أثر حتى الاعتماد والتنفيذ`,
+        voucherNumber: pendingRefundVoucherNumber,
+        partyType: inv.customerId ? "CUSTOMER" : "OTHER",
+        partyId: inv.customerId ?? null,
+        internalNote: pendingRefundVoucherNumber
+          ? `SALE_CUSTOMER_REFUND:RETURN:${input.invoiceId}`
+          : null,
         createdBy: actor.userId,
       });
       const receiptId = extractInsertId(rRes);
-      await postEntry(tx, {
-        entryType: "PAYMENT_OUT",
-        branchId: Number(inv.branchId),
-        invoiceId: input.invoiceId,
-        receiptId,
-        customerId: inv.customerId,
-        amount: cashRefund,
-      });
+      if (materializedRefund.gt(0)) {
+        // الدلو يُمرَّر بحسب الرافد فعلاً: النقد من الدرج (CASH)، والبطاقة من الحساب البنكيّ
+        // (CARD_BANK) — تمرير "DRAWER" ثابتاً كان يُرحّل ردّ البطاقة على حساب النقد.
+        const refundAssetRole = paymentAssetRole(
+          input.refund!.method,
+          input.refund!.method === "CASH" ? "DRAWER" : null,
+          "OUT",
+        );
+        const refundPostingSource = {
+          roleDebits: { AR: materializedRefund },
+          roleCredits: { [refundAssetRole]: materializedRefund },
+        };
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: Number(inv.branchId),
+          invoiceId: input.invoiceId,
+          receiptId,
+          customerId: inv.customerId,
+          amount: materializedRefund,
+          postingIntent: createPostingIntent("PAYMENT_OUT_CUSTOMER_REFUND", "PAYMENT_OUT", [debitLine("AR", materializedRefund), creditLine(refundAssetRole, materializedRefund)], refundPostingSource),
+          postingSourceComponents: refundPostingSource,
+        });
+      }
     }
 
     // paidAmount tracks Σ(IN) − Σ(OUT); recompute status.
     // returnedTotal تراكمي عبر مرتجعات جزئية ⇒ يمنع انحراف AR في reconcile/aging.
     // G7 (١٩/٦/٢٦): clamp ≥ 0 — refundCap نظرياً يضمن `cashRefund ≤ paidAmount`، لكن لو
     // انحرف الحساب لأي سبب (مرتجع قديم مُسجَّل بطريقة مختلفة، حالة حدّية) نمنع paidAmount السالب.
-    const paidMinusRefund = money(inv.paidAmount).minus(cashRefund);
+    const paidMinusRefund = money(inv.paidAmount).minus(materializedRefund);
     const newPaid = paidMinusRefund.lt(0) ? money(0) : paidMinusRefund;
     const newReturnedTotal = money(inv.returnedTotal ?? "0").plus(returnedTotal);
     // INVOICE-STATUS (تدقيق ٢/٧): الحالة على الصافي بعد المرتجعات ⇒ فاتورة مُرتجَعة جزئياً وسُدّد
@@ -672,7 +865,7 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
 
     // AR: the portion not refunded in cash is dropped from the customer's balance.
     if (inv.customerId) {
-      await adjustCustomerBalance(tx, Number(inv.customerId), returnedTotal.minus(cashRefund).neg());
+      await adjustCustomerBalance(tx, Number(inv.customerId), returnedTotal.minus(materializedRefund).neg());
     }
 
     // قرار المالك (٦/٨/٢٦) — **مرتجعٌ لفاتورةٍ بيد مندوب: تُخصَم عهدته بقيمة ما عاد**.
@@ -710,13 +903,16 @@ export async function returnSaleInTx(tx: Tx, input: ReturnSaleInput, actor: Acto
 
     // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = الفاتورة).
     if (input.clientRequestId) {
-      await recordIdempotencyKey(tx, "sale.return", input.clientRequestId, input.invoiceId);
+      await recordIdempotencyKey(tx, "sale.return", input.clientRequestId, input.invoiceId, requestFingerprint);
     }
 
     return {
       invoiceId: input.invoiceId,
       returnedTotal: returnedTotal.toFixed(2),
       fullyReturned,
+      // «معلَّق» = ما لم يخرج فعلاً بعد. رافدا الردّ الفوريّ (نقد/بطاقة) خرجا حقيقةً ⇒ صفر معلَّق.
+      pendingRefundAmount: isImmediateRefundRail ? "0.00" : refundRequest.toFixed(2),
+      pendingRefundVoucherNumber,
     };
 }
 

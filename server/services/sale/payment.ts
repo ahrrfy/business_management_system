@@ -5,6 +5,7 @@ import { invoices, receipts, shifts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { createPostingIntent, creditLine, debitLine } from "../accounting/postingEngine";
 import { money, toDbMoney } from "../money";
 import { openShiftIdTx } from "../shiftService";
 import { lockCashSourceForUpdate } from "../cash/cashAvailability";
@@ -12,6 +13,7 @@ import { type Actor, withTx } from "../tx";
 import type { Tx } from "../../db";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import type { PaymentMethod } from "./types";
+import { paymentAssetRole } from "./paymentPosting";
 
 export interface ProcessPaymentInput {
   invoiceId: number;
@@ -196,9 +198,23 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     const status = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
     await tx
       .update(invoices)
-      .set({ paidAmount: toDbMoney(newPaid), status, paymentDate: new Date(), paymentMethod: input.method })
+      .set({
+        paidAmount: toDbMoney(newPaid),
+        status,
+        paymentDate: new Date(),
+        // «آخر دفعة تفوز» كان يكذب على الفاتورة المختلطة: ٤٩٠٬٠٠٠ نقداً ثمّ ١٠٬٠٠٠ تحويلاً
+        // تُخزَّن «تحويل» فتسقط من فلتر «نقدي» كلياً، وفاتورةُ بطاقةٍ يليها فكٌّ نقديّ تخرج من
+        // قائمة CARD ⇒ تنهار مطابقة يوم البطاقات وهي الحاجة التشغيلية المعلَنة للفلتر نفسه.
+        // القيمة الصادقة عند الاختلاف هي MIXED؛ ومصدر الحقيقة التفصيليّ يبقى `receipts`.
+        paymentMethod: mixedAwarePaymentMethod(inv.paymentMethod, input.method),
+      })
       .where(eq(invoices.id, input.invoiceId));
 
+    const paymentRole = paymentAssetRole(input.method, input.method === "CASH" ? "DRAWER" : null, "IN");
+    const paymentPostingSource = {
+      roleDebits: { [paymentRole]: amount },
+      roleCredits: { AR: amount },
+    };
     await postEntry(tx, {
       entryType: "PAYMENT_IN",
       branchId: Number(inv.branchId),
@@ -206,6 +222,8 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       receiptId,
       customerId: inv.customerId,
       amount,
+      postingIntent: createPostingIntent("PAYMENT_IN_CUSTOMER", "PAYMENT_IN", [debitLine(paymentRole, amount), creditLine("AR", amount)], paymentPostingSource),
+      postingSourceComponents: paymentPostingSource,
     });
     if (inv.customerId) {
       await adjustCustomerBalance(tx, Number(inv.customerId), amount.neg());
@@ -213,4 +231,18 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
 
     return { invoiceId: input.invoiceId, paidAmount: toDbMoney(newPaid), status };
   });
+}
+
+/**
+ * طريقة الدفع المعروضة على الفاتورة بعد دفعةٍ جديدة.
+ *
+ * فارغة ⇒ الطريقة الجديدة · مطابقة ⇒ كما هي · مختلفة ⇒ `MIXED`.
+ * لا تُستعمَل قطّ في حسابٍ ماليّ — العَرض والفلترة فقط؛ التفصيل الحاكم في `receipts`.
+ */
+export function mixedAwarePaymentMethod(
+  current: string | null | undefined,
+  incoming: string,
+): string {
+  if (!current) return incoming;
+  return current === incoming ? current : "MIXED";
 }

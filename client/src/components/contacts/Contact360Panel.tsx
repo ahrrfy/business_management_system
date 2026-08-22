@@ -5,6 +5,7 @@
 // بلا شاشة مستقلة/route جديد — يُفتح كلوحة جانبية (Sheet) من ContactsBank.tsx. الحجب المالي
 // (رصيد/حدّ ائتمان) يُطبَّق خادمياً (maskCustomerSensitive/maskSupplierSensitive) — نعرض القيمة
 // كما وصلت بلا افتراض وجود حقول إضافية.
+import { receptionChannelLabel } from "@shared/receptionChannel";
 import { useState } from "react";
 import { Link } from "wouter";
 import {
@@ -28,6 +29,7 @@ import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { invoiceStatusLabel } from "@shared/invoiceStatus";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -61,14 +63,8 @@ const CRM_WRITE_ROLES = ["cashier", "manager", "sales_rep"] as const;
 const SUPPLIER_WRITE_ROLES = ["manager", "warehouse", "purchasing"] as const;
 
 const TIER_LABEL: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
-const INVOICE_STATUS_LABEL: Record<string, string> = {
-  PENDING: "معلّقة",
-  CONFIRMED: "مؤكّدة",
-  PAID: "مدفوعة",
-  PARTIALLY_PAID: "مدفوعة جزئياً",
-  CANCELLED: "ملغاة",
-  RETURNED: "مرتجعة",
-};
+// تعريب حالة الفاتورة من `@shared/invoiceStatus` — كان قاموساً محلّياً بلا `SUPERSEDED` ⇒
+// فاتورةُ العميل المُصحَّحة تظهر في بطاقته شارةً إنجليزية خاماً.
 const WA_CONSENT_META: Record<WaConsentValue, { label: string; variant: "neutral" | "success" | "danger" }> = {
   UNKNOWN: { label: "غير معروف", variant: "neutral" },
   OPTED_IN: { label: "موافِق", variant: "success" },
@@ -267,7 +263,7 @@ function InvoicesCard({ invoices }: { invoices: Extract<Contact360Data, { kind: 
                 <span className="font-mono text-xs shrink-0" dir="ltr">{inv.invoiceNumber}</span>
                 <span className="text-xs text-muted-foreground shrink-0">{fmtDate(inv.invoiceDate)}</span>
                 <span className="tabular-nums shrink-0" dir="ltr">{fmt(inv.total)}</span>
-                <Badge variant="neutral" className="shrink-0">{INVOICE_STATUS_LABEL[inv.status] ?? inv.status}</Badge>
+                <Badge variant="neutral" className="shrink-0">{invoiceStatusLabel(inv.status)}</Badge>
               </Link>
             </li>
           ))}
@@ -306,15 +302,6 @@ function OpenTasksCard({ tasks }: { tasks: Extract<Contact360Data, { kind: "cust
 
 /* ═══════════ المحادثات ═══════════ */
 
-const CHANNEL_LABEL: Record<string, string> = {
-  WHATSAPP: "واتساب",
-  INSTAGRAM: "انستغرام",
-  TIKTOK: "تيك توك",
-  STORE: "المتجر",
-  PHONE: "اتصال",
-  WALK_IN: "حُضوري",
-  OTHER: "أخرى",
-};
 
 function ConversationsCard({ conversations }: { conversations: Contact360Data["conversations"] }) {
   return (
@@ -329,7 +316,7 @@ function ConversationsCard({ conversations }: { conversations: Contact360Data["c
                 href="/crm?tab=inbox"
                 className="flex items-center justify-between gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-accent"
               >
-                <span className="shrink-0">{CHANNEL_LABEL[c.channel] ?? c.channel}</span>
+                <span className="shrink-0">{receptionChannelLabel(c.channel)}</span>
                 <span className="truncate flex-1 text-xs text-muted-foreground">{c.lastMessagePreview ?? "—"}</span>
                 <span className="text-xs text-muted-foreground shrink-0" dir="ltr">{fmtDateTime(c.lastMessageAt)}</span>
                 {c.unreadCount > 0 && (

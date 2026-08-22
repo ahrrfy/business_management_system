@@ -23,3 +23,7 @@ export type { UpdateWorkOrderDeliveryMethodInput } from "./workOrder/fulfillment
 export { updateWorkOrderDeliveryMethod } from "./workOrder/fulfillment";
 export type { UpdateWorkOrderInput } from "./workOrder/update";
 export { updateWorkOrder } from "./workOrder/update";
+// تحرير بنود الأمر (١٧/٨/٢٦) — عقدٌ تصريحيّ: تُرسَل القائمة كاملةً وتُشتقّ الفروق.
+export type { SetWorkOrderMaterialsInput, SetWorkOrderMaterialsResult } from "./workOrder/materials";
+export { setWorkOrderMaterials } from "./workOrder/materials";
+export { reverseServiceInvoice } from "./workOrder/reverseServiceInvoice";

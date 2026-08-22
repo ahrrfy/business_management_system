@@ -5,11 +5,13 @@
 
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { AppSelect } from "@/components/ui/AppSelect";
+import { Button } from "@/components/ui/button";
 import { FilterField } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtDateTime as formatDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { AlertTriangle, CloudUpload } from "lucide-react";
 import { useState } from "react";
@@ -36,6 +38,32 @@ export default function OfflineSalesReport() {
   });
   const rows = report.data?.rows ?? [];
   const totals = report.data?.totals;
+
+  // و-٤ (ورقة الإصلاحات ١٦/٨): مبيعاتٌ نقدية قُبض ثمنها وخرجت بضاعتها، رفضها الخادم لأنّ
+  // ورديتها أُغلقت ⇒ خارج الدفتر تماماً. هذا الطابور هو مسار إعادتها إليه.
+  const utils = trpc.useUtils();
+  const recovery = trpc.offline.recoveryQueue.useQuery(undefined, { refetchInterval: 60_000 });
+  const openShifts = trpc.treasury.getOpenShifts.useQuery(undefined, { refetchInterval: 60_000 });
+  // الإهمال مسارٌ نادرٌ وخطِر (إسقاط بيعٍ مدفوع) ⇒ لا زرَّ فوريّاً: يُفتح حقلُ سببٍ إلزاميّ أولاً.
+  const [discardFor, setDiscardFor] = useState<number | null>(null);
+  const [discardReason, setDiscardReason] = useState("");
+  const discardRecovery = trpc.offline.discardRecoveryItem.useMutation({
+    onSuccess: () => {
+      notify.ok("أُهمل العنصر", "سُجِّل السبب في سجلّ التدقيق");
+      setDiscardFor(null);
+      setDiscardReason("");
+      void utils.offline.recoveryQueue.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const postRecovery = trpc.offline.postRecoveryItem.useMutation({
+    onSuccess: (r) => {
+      notify.ok("رُحِّل البيع المحتجَز", `فاتورة #${r.invoiceId} — ${r.offlineReceiptNumber}`);
+      void utils.offline.recoveryQueue.invalidate();
+      void utils.offline.salesReport.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const branchName = (id: number) =>
     branches.data?.find((b) => Number(b.id) === id)?.name ?? `فرع #${id}`;
@@ -109,7 +137,107 @@ export default function OfflineSalesReport() {
     });
   }
 
+  const recoveryPanel = (recovery.data?.length ?? 0) > 0 && (
+    <section className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden />
+        <div>
+          <h2 className="text-sm font-bold">مبيعات محتجَزة خارج الدفتر — تحتاج ترحيلاً</h2>
+          <p className="text-xs text-muted-foreground">
+            زبائن دفعوا نقداً وخرجت بضاعتهم، ورفض الخادم ترحيل البيع لأنّ ورديته أُغلقت.
+            رحّلها إلى وردية مفتوحة لتدخل الدفتر — الرقم المطبوع للزبون يبقى مربوطاً بالفاتورة.
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-2">
+        {recovery.data?.map((item) => (
+          <div key={item.id} className="flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold tabular-nums" dir="ltr">{item.offlineReceiptNumber}</span>
+                {item.ageDays >= 1 && (
+                  <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
+                    محتجَز منذ {item.ageDays} يوماً
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {item.lineCount} صنفاً · {branchName(item.branchId)}
+                {item.deviceId ? <> · جهاز {item.deviceId}</> : null} · {item.rejectReason ?? item.rejectCode}
+              </div>
+            </div>
+            <div className="text-base font-bold tabular-nums" dir="ltr">{fmtIQD(item.amount)} د.ع</div>
+            <AppSelect
+              value=""
+              onValueChange={(v: string) => {
+                if (v) postRecovery.mutate({ id: item.id, targetShiftId: Number(v) });
+              }}
+              disabled={postRecovery.isPending}
+              placeholder="رحّل إلى وردية…"
+              className="w-52"
+              aria-label={`ترحيل ${item.offlineReceiptNumber}`}
+            >
+              {(openShifts.data ?? [])
+                // وردية التجزئة وحدها: ترحيل بيعٍ إلى درج استقبال/طباعة يُفسد نقده المتوقَّع
+                // وZ-report الخاصّ بنوعه (والحدّ يرفضه أيضاً).
+                .filter((sh) => Number(sh.branchId) === item.branchId && sh.shiftType === "RETAIL")
+                .map((sh) => (
+                  <option key={sh.shiftId} value={String(sh.shiftId)}>
+                    وردية #{sh.shiftId} — {sh.userName ?? ""}
+                  </option>
+                ))}
+            </AppSelect>
+            {discardFor === item.id ? (
+              <div className="flex w-full items-center gap-2">
+                <input
+                  className="h-9 flex-1 rounded-md border border-input bg-transparent px-3 text-sm"
+                  placeholder="سبب الإهمال (إلزاميّ) — يُسجَّل في التدقيق"
+                  value={discardReason}
+                  onChange={(e) => setDiscardReason(e.target.value)}
+                  aria-label="سبب الإهمال"
+                />
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={discardReason.trim().length < 5 || discardRecovery.isPending}
+                  onClick={() => discardRecovery.mutate({ id: item.id, reason: discardReason })}
+                >
+                  تأكيد الإهمال
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setDiscardReason("");
+                    setDiscardFor(null);
+                  }}
+                >
+                  إلغاء
+                </Button>
+              </div>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  // تصفير السبب عند تبديل الصفّ: نصٌّ كُتب لعنصرٍ آخر كان يبقى ظاهراً وزرّ
+                  // التأكيد مُفعَّلاً ⇒ إهمال بيعٍ مدفوع بسببٍ لا يخصّه.
+                  setDiscardReason("");
+                  setDiscardFor(item.id);
+                }}
+              >
+                إهمال
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+
   return (
+    <>
+    {recoveryPanel}
     <ReportShell
       title="المبيعات الأوفلاين"
       description="الفواتير الملتقطة دون اتصال وترحيلها — عين الإدارة على تجربة العمل ثنائي الاتجاه"
@@ -188,5 +316,6 @@ export default function OfflineSalesReport() {
         </table>
       </ScrollTableShell>
     </ReportShell>
+  </>
   );
 }

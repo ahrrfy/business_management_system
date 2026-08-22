@@ -1,6 +1,7 @@
 // الحجوزات — واجهة R-م٣ (النواة). قائمة الحجوزات + حوار حجز جديد (استعلام منتج + بنود) + إلغاء/تمديد.
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
+import { receptionChannelLabel } from "@shared/receptionChannel";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeftRight, ArrowRight, Banknote, CalendarClock, Clock, CreditCard, Download, Eye, FilterX, Plus, Printer, Search, ShoppingCart, Trash2, TriangleAlert, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -10,7 +11,7 @@ import { fmt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE, isPosPaymentMethodEnabled } from "@shared/posPaymentPolicy";
+import { isPosPaymentMethodEnabled, posPaymentRejectionMessage } from "@shared/posPaymentPolicy";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { AppSelect } from "@/components/ui/AppSelect";
@@ -74,7 +75,12 @@ const STATUS_VARIANT: Record<ReservationStatus, "default" | "secondary" | "destr
   CANCELLED: "destructive",
   RELEASED: "secondary",
 };
-const CHANNEL_LABEL: Record<Channel, string> = { PHONE: "هاتف", WALK_IN: "حضور", WHATSAPP: "واتساب", STORE: "متجر" };
+const CHANNEL_LABEL: Record<Channel, string> = {
+  PHONE: receptionChannelLabel("PHONE"),
+  WALK_IN: receptionChannelLabel("WALK_IN"),
+  WHATSAPP: receptionChannelLabel("WHATSAPP"),
+  STORE: receptionChannelLabel("STORE"),
+};
 const CHANNELS = Object.keys(CHANNEL_LABEL) as Channel[];
 const CLOSEABLE: ReservationStatus[] = ["ACTIVE", "PARTIALLY_FULFILLED"];
 
@@ -245,7 +251,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
   async function submitConversion() {
     if (!convertTarget) return;
     if (!isPosPaymentMethodEnabled(convertMethod)) {
-      notify.err(POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE);
+      notify.err(posPaymentRejectionMessage(convertMethod));
       return;
     }
     const amount = convertAmount.trim();
@@ -709,7 +715,7 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                       type="button"
                       disabled={isConversionBusy || convert.isPending || !isPosPaymentMethodEnabled(value)}
                       aria-describedby={!isPosPaymentMethodEnabled(value) ? "reservation-external-payment-disabled" : undefined}
-                      title={isPosPaymentMethodEnabled(value) ? label : POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
+                      title={isPosPaymentMethodEnabled(value) ? label : posPaymentRejectionMessage(value)}
                       onClick={() => {
                         if (!isPosPaymentMethodEnabled(value)) return;
                         setConvertMethod(value);
@@ -724,9 +730,6 @@ export default function ReservationsHub({ embedded = false, fixedBranchId, curre
                     </button>
                   ))}
                 </div>
-                <p id="reservation-external-payment-disabled" className="text-[10px] leading-relaxed text-muted-foreground">
-                  {POS_EXTERNAL_PAYMENT_DISABLED_MESSAGE}
-                </p>
               </div>
             ) : null}
 

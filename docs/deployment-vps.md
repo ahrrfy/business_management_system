@@ -67,6 +67,7 @@ chmod 600 /home/deploy/erp/.env    # إلزامي: لا تترك أسرار ال
 | `ALLOW_PUBLIC_BIND`                       | `0`                                         | ارفعه إلى `1` فقط إذا كان `HOST` العام/LAN مقصوداً ومعه جدار ناري؛ وإلا يفشل الإقلاع مغلقاً                    |
 | `PORT`                                    | `3000`                                      | يستمع داخلياً؛ nginx يُمرّر إليه                                                                               |
 | `INTERNAL_PROXY_SECRET`                   | `openssl rand -hex 32`                      | يطابق قيمة ملف nginx المحمي `/etc/nginx/snippets/alroya-proxy-secret.conf` ويمنع تجاوز البروكسي من عملية محلية |
+| `INTERNAL_PROXY_SECRET_PREVIOUS`          | فارغ عادةً                                  | نافذة تدوير مؤقتة فقط؛ إن وُجد فهو 64 hex مختلف، ويُحذف بعد `retire` الناجح                                    |
 | `DATABASE_URL`                            | `mysql://erp_app:<قوية>@127.0.0.1:3307/erp` | حساب التطبيق محصور بقاعدة `erp`؛ لا تشغّل الويب بـroot                                                         |
 | `DB_APP_USER` / `DB_APP_PW`               | `erp_app` / `openssl rand -hex 24`          | حساب الويب الأقل امتيازاً؛ كلمة مختلفة عن root                                                                 |
 | `DB_ROOT_PW` / `DB_NAME` / `DB_CONTAINER` | `<قوية>` / `erp` / `erp-mysql`              | root للصيانة/التعافي وcompose فقط، ولا يبقى في بيئة عامل الويب                                                 |
@@ -107,14 +108,27 @@ exit                                                # العودة إلى جلس
 sudo mkdir -p /etc/systemd/system/pm2-deploy.service.d
 sudo cp /home/deploy/erp/deploy/systemd/pm2-deploy.service.d/wait-mysql.conf /etc/systemd/system/pm2-deploy.service.d/
 sudo chmod +x /home/deploy/erp/deploy/wait-mysql-healthy.sh   # دفاع ثانٍ (الـdrop-in يستدعيه عبر /bin/bash أصلاً)
-sudo systemctl daemon-reload
+# لا تنفّذ JavaScript من /home/deploy بصلاحية root. ثبّت عقد PID بالكتلة الذرية الموثقة في §٧.
+# يجب أخذ القيم الثلاث من summary تشغيل CI الأخضر على push إلى main للإصدار نفسه.
+# لا تحسب القيم المتوقعة من الشجرة القابلة للكتابة لـdeploy ثم تعاملها كإثبات.
 systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدرع ظاهر في الوحدة
+systemctl show pm2-deploy.service -p ExecStart --value | grep pm2-systemd-start.mjs
 ```
 
 > ⚠️ لا تنفّذ `pm2 save` كـroot، ولا تُنشئ startup لمستخدم root. الاستثناء المقصود الوحيد هو تنفيذ
 > أمر `sudo ... pm2 startup systemd -u deploy --hp /home/deploy` الذي طبعه PM2؛ فهو يثبّت وحدة systemd
 > المستهدفة للمستخدم `deploy`. إن وُجد دايمون PM2 جذري لنظام آخر فإن `pm2 save` كـroot يكتب فوق قائمة
 > إحيائه ويُسقط تطبيق غيرك من الإقلاع. دايموننا معزول تحت deploy.
+>
+> **عقد PID الخاص بـType=forking:** يحذف systemd ملف `PIDFile` القديم قبل `ExecStart`. إذا كان
+> daemon ‏PM2 قائماً، فإن `pm2 resurrect` يتصل به ولا يعيد إنشاء `pm2.pid`؛ كانت النتيجة
+> `protocol`/وحدة `failed` مع بقاء التطبيقات سليمة لكن خارج إشراف systemd. كما يرفض systemd تبنّي
+> PID خارج cgroup إذا كان PIDFile تحت ملكية `deploy`. الـdrop-in يشغّل بعلامة `+` **النسخة المثبّتة
+> root:root فقط** من helper ذاتي الاكتفاء؛ فتتحقق من مساراتها وهوية deploy، ثم تُسقط PM2 إلى UID/GID
+> الصحيحين عبر `setpriv --clear-groups` وبيئة ثابتة. وبعد resurrect تثبت daemon الوحيد بدلالة
+> UID+PPID+عنوان العملية+وقت البدء، وتكتب `/run/erp-pm2/pm2-deploy.pid` ذرياً `root:root 0644`.
+> لا يُنفّذ root أي كود من الشجرة القابلة للكتابة لـdeploy، ولا يحدث kill/restart. وعلى إقلاع نظيف
+> ينشئ PM2 الـdaemon داخل cgroup الخدمة؛ وعند وجوده تتبناه الوحدة دون تغيير PID. الغموض = فشل مغلق.
 
 ## ٤. nginx + HTTPS (إلزامي)
 
@@ -122,7 +136,8 @@ systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدر�
 > (لأنّ `trust proxy` مُفعَّل). لذا **يجب** تمرير هذه الترويسة وإلّا فشل تسجيل الدخول.
 >
 > قالبا المضيفين ملتزمان في **`deploy/nginx-erp.conf`** (النظام الداخلي) و
-> **`deploy/nginx-public.conf`** (المتجر العام)، ويشتركان في مجموعة locations واحدة وعقد proxy واحد.
+> **`deploy/nginx-public.conf`** (المتجر العام). يشتركان في عقد proxy وموقع SPA، أمّا مواقع API
+> الكاملة فتبقى في المضيف الداخلي فقط؛ العام يملك قائمة سماح مستقلة وحاجب `/api/` صريحاً.
 > الملفان يملكان تحويل HTTP وTLS صراحةً؛ لا يُسمح بنسخة عدّلها certbot أو المشغّل خارج المستودع.
 >
 > **طبقة حدود المعدّل + Cloudflare (٢٠/٧):** القالب صار يتضمّن `limit_req`/`limit_conn`
@@ -136,19 +151,60 @@ systemctl cat pm2-deploy.service | grep -A2 wait-mysql   # تحقّق: الدر�
 `sudoedit`؛ لا تمرّره وسيطاً ولا تنسخ المثال الوهمي. بعد إصدار الشهادات، التجديد المسموح هو
 `certbot renew`؛ لا تشغّل أمراً يعيد كتابة vhost الملتزم.
 
-**الأمر الوحيد لتثبيت أو إصلاح عقد Nginx** (بما فيه علاج 403 للمضيف العام):
+**ثبّت مُثبّت Nginx الموثوق مرة لكل إصدار تغيّرت فيه ملفاته.** لا تشغّل JavaScript من
+`/home/deploy/erp` بصلاحية root. استعمل فقط SHA-256 المنشورين في summary تشغيل
+`check-test-build` الأخضر على push إلى `main` للإصدار نفسه. تشمل الحزمة المثبّت والعقد والمدقق
+والـmanifest الذي يثبت بصمات كل مدخل إعداد سيُنسخ إلى Nginx:
+الـmanifest بإصدار 3 يخزن كل بصمة SHA-256 كمصفوفة من 32 بايتاً عشرياً ثم يعيد المدقق تركيبها؛ هذه
+بصمات سلامة عامة وليست أسراراً، والتقسيم يمنع أدوات كشف الأسرار من تصنيفها كمفاتيح عالية العشوائية.
 
 ```bash
-cd /home/deploy/erp && sudo "$(command -v node)" scripts/install-nginx-contract.mjs
+cd /home/deploy/erp
+release_sha='<CI_GREEN_RELEASE_SHA>'
+installer_sha256='<RELEASE_NGINX_INSTALLER_SHA256>'
+contract_sha256='<RELEASE_NGINX_CONTRACT_SHA256>'
+verifier_sha256='<RELEASE_NGINX_VERIFIER_SHA256>'
+manifest_sha256='<RELEASE_NGINX_MANIFEST_SHA256>'
+test "$(git rev-parse HEAD)" = "$release_sha"
+case "$release_sha$installer_sha256$contract_sha256$verifier_sha256$manifest_sha256" in *'<'*|'') exit 1;; esac
+sudo /usr/bin/install -d -o root -g root -m 0755 /usr/local/libexec/erp/nginx
+installer_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.install-nginx-contract.mjs.XXXXXX)"
+contract_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.nginx-contract.mjs.XXXXXX)"
+verifier_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.verify-nginx-abuse-controls.mjs.XXXXXX)"
+manifest_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/nginx/.nginx-release-manifest.json.XXXXXX)"
+trap 'sudo /usr/bin/rm -f -- "$installer_tmp" "$contract_tmp" "$verifier_tmp" "$manifest_tmp"' EXIT HUP INT TERM
+sudo /usr/bin/install -o root -g root -m 0555 scripts/install-nginx-contract.mjs "$installer_tmp"
+sudo /usr/bin/install -o root -g root -m 0555 scripts/nginx-contract.mjs "$contract_tmp"
+sudo /usr/bin/install -o root -g root -m 0555 scripts/verify-nginx-abuse-controls.mjs "$verifier_tmp"
+sudo /usr/bin/install -o root -g root -m 0444 deploy/nginx-release-manifest.json "$manifest_tmp"
+printf '%s  %s\n' "$installer_sha256" "$installer_tmp" | sudo /usr/bin/sha256sum -c -
+printf '%s  %s\n' "$contract_sha256" "$contract_tmp" | sudo /usr/bin/sha256sum -c -
+printf '%s  %s\n' "$verifier_sha256" "$verifier_tmp" | sudo /usr/bin/sha256sum -c -
+printf '%s  %s\n' "$manifest_sha256" "$manifest_tmp" | sudo /usr/bin/sha256sum -c -
+sudo /usr/bin/mv -Tf -- "$manifest_tmp" /usr/local/libexec/erp/nginx/nginx-release-manifest.json
+sudo /usr/bin/mv -Tf -- "$verifier_tmp" /usr/local/libexec/erp/nginx/verify-nginx-abuse-controls.mjs
+sudo /usr/bin/mv -Tf -- "$contract_tmp" /usr/local/libexec/erp/nginx/nginx-contract.mjs
+sudo /usr/bin/mv -Tf -- "$installer_tmp" /usr/local/libexec/erp/nginx/install-nginx-contract.mjs
+trap - EXIT HUP INT TERM
+test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/nginx/install-nginx-contract.mjs)" = root:root:555
+test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/nginx/verify-nginx-abuse-controls.mjs)" = root:root:555
+test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/nginx/nginx-release-manifest.json)" = root:root:444
+
+# الأمر الوحيد لتثبيت أو إصلاح العقد:
+sudo /usr/bin/node /usr/local/libexec/erp/nginx/install-nginx-contract.mjs install
 ```
 
-هذا المُثبّت root-operated ولا يستعمل `sudo` داخلياً. يفحص مسبقاً الهوية، وأن مجلدات Nginx
+هذا المُثبّت root-operated ولا يستعمل `sudo` داخلياً. ينفّذ كل عملية داخل قفل kernel حصري
+`/run/erp-nginx-contract.operation.lock` عبر `/usr/bin/flock`؛ فيتحرر القفل تلقائياً عند الانقطاع
+ولا توجد معالجة stale قابلة للسباق. يفحص مسبقاً الهوية، وأن مجلدات Nginx
 `root:root` وغير قابلة لكتابة المجموعة/العالم، والشهادات، وملكية/وضع ملف السر ومطابقته الصامتة
 مع `.env`. ويكتب attestation عامة تحوي بصمة SHA-256 وinode/ctime وmetadata فقط، كي يستطيع نشر
 `deploy` إثبات بقاء السرّين متطابقين من دون صلاحية قراءة ملف السر أو طباعة قيمته، بينما يعيد
 المثبّت المخوّل نفسه حساب بصمة المحتوى الفعلي. كما يفحص ناتج `nginx -T`: لكل اسم مدار كتلتان
-فقط (تحويل 80 + موقع 443)، وأي vhost قديم/متعارض خارج الرابطين المدارين يوقف العملية ولا يُحذف
-تلقائياً على الخادم المشترك. ثم يجهّز الملفات الستة والرابطين بجوار أهدافها، ويحفظ الحالة السابقة
+فقط (تحويل 80 + موقع 443)، ويعيد فحص بصمة النسخ المرحلية نفسها بعد النسخ وقبل rename، ثم يشغّل
+المدقق المثبّت root-owned على هذه البايتات عينها. لذلك لا يسمح تبديل ملف من checkout بين الفحص
+والنسخ بتشغيل أو تركيب محتوى آخر. وأي vhost قديم/متعارض خارج الرابطين المدارين يوقف العملية ولا يُحذف
+تلقائياً على الخادم المشترك. ثم يجهّز الملفات السبعة والرابطين بجوار أهدافها، ويحفظ الحالة السابقة
 كاملةً في `/var/backups/alroya-nginx/<معرّف>`، ويكتب `pending.json` متيناً قبل أول تبديل، وينفذ
 `nginx -t` ثم `systemctl reload nginx` ثم `/healthz` خارجياً عبر المضيفين. هذا الفحص يثبت TLS
 والتوجيه وسر القفزة من دون اشتراط أن يكون كتالوج الإصدار القديم غير فارغ (فتظل معالجة المتجر
@@ -160,6 +216,41 @@ cd /home/deploy/erp && sudo "$(command -v node)" scripts/install-nginx-contract.
 انقطعت العملية أو الكهرباء بين التبديلات، فالتشغيل الجذري التالي يستعيد journal بصورة idempotent
 قبل أي تثبيت جديد. فشل الرجوع يخرج بالرمز 2 ويُبقي النسخة وjournal للتدخل. لا تُنسخ قيمة السر
 إلى النسخة ولا تُطبع في السجل.
+
+### تدوير سرّ القفزة بلا نافذة 403
+
+المُثبّت يولّد السر الجديد داخلياً ولا يضعه في argv أو stdout. يحتفظ أثناء العملية فقط بالقديم
+والجديد والـjournal داخل `/var/lib/alroya-nginx/rotation-active` بوضع `0700/0600`، ولا ينسخ `.env`
+ولا بقية أسرار النظام. هذه الحالة persistent فتُستأنف بعد reboot، ويُنظّف المجلد بصورة resumable
+ومؤكدة بعد نجاح retire أو rollback. قبل أي تغيير في `prepare` و`switch`
+و`retire` و`rollback` يرسل فحص `/healthz` خارجي بعلامة غير حساسة وBearer اصطناعي، ثم يقرأ فقط
+الإضافة الجديدة إلى `logs/erp-out.log`: تبدل inode أو غياب العلامة أو ظهور السر/Bearer يوقف التدوير
+بلا طباعة أي قيمة. نفّذ المراحل بالترتيب؛ بعد كل `prod:deploy`
+يختبر helper الأصل مباشرةً، ومرحلة `switch` تختبر أيضاً المسار الخارجي عبر Nginx:
+
+```bash
+helper=/usr/local/libexec/erp/nginx/install-nginx-contract.mjs
+
+# 1) prime: القرص old/current + new/previous؛ Nginx يبقى old.
+sudo /usr/bin/node "$helper" prepare
+sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
+
+# 2) switch: يثبت قبول old+new، ثم يجعل القرص new/current + old/previous
+# ويبدّل Nginx إلى new ذرياً مع nginx -t/reload/smoke.
+sudo /usr/bin/node "$helper" switch
+sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
+
+# 3) retire: النداء الأول يحذف previous من .env؛ النشر يحمّل steady state؛
+# النداء الثاني يثبت current=200 وold=403 ثم يمحو journal.
+sudo /usr/bin/node "$helper" retire
+sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
+sudo /usr/bin/node "$helper" retire
+```
+
+للرجوع من أي مرحلة: نفّذ `rollback` ثم `prod:deploy` ثم كررهما مرةً ثانية، وبعدها نداء
+`rollback` أخير للتأكيد. النداء الأول يعيد نافذة القبول المزدوج بحسب سر Nginx الحي، والثاني
+يعيد Nginx و`.env` إلى القديم، والثالث لا يمحو journal إلا بعد canary يثبت القديم ويرفض الجديد.
+إعادة أي نداء بعد انقطاع آمنة؛ لا تعدّل `.env` أو ملف السر يدوياً أثناء وجود journal.
 
 ```bash
 # شهادة لا تتجدد = موقع يسقط بعد 90 يوماً:
@@ -262,6 +353,79 @@ sudo -iu deploy bash -lc 'cd /home/deploy/erp && pnpm prod:deploy'
 
 > **PM2 خاص بكل مستخدم.** السكربت يرفض `root` أو `HOME/PM2_HOME` غير المطابق لـ`deploy`، كي لا يُنشئ daemon ثانياً يبدو فارغاً أو ينازع الخدمة الحقيقية على المنفذ.
 
+**مرة واحدة بعد إدخال عقد PID أعلاه أو عند تغيّر helper/drop-in:** بعد نجاح `prod:deploy` ثبّت
+الملفين في مسارين root-owned. ⛔ لا تشغّل `sudo node /home/deploy/erp/...`؛ فهذا يحوّل تعديل
+ملفات deploy إلى تنفيذ root. مصدر النسخ قابل للكتابة لـdeploy، لذلك لا يكفي `install source final`:
+ثبّت أولاً في ملف مؤقت root-owned على filesystem الهدف، قارنه بقيمة SHA-256 المنشورة في
+summary وظيفة `check-test-build` الخضراء على **push إلى main** للإصدار نفسه، ثم استخدم `mv -T`
+الذري. لا تأخذ القيم من تشغيل PR ذي merge ref ولا من checkout الخادم. هذه الأوامر لا تستدعي
+start/stop/restart:
+
+```bash
+cd /home/deploy/erp
+release_sha='<CI_GREEN_RELEASE_SHA>'
+helper_sha256='<RELEASE_PM2_HELPER_SHA256>'
+dropin_sha256='<RELEASE_PM2_DROPIN_SHA256>'
+test "$(git rev-parse HEAD)" = "$release_sha"
+case "$release_sha$helper_sha256$dropin_sha256" in *'<'*|'') echo 'release hashes are not pinned' >&2; exit 1;; esac
+
+sudo /usr/bin/install -d -o root -g root -m 0755 /usr/local/libexec/erp
+sudo /usr/bin/install -d -o root -g root -m 0755 /etc/systemd/system/pm2-deploy.service.d
+sudo /usr/bin/install -d -o root -g root -m 0700 /var/backups/erp-systemd
+backup_dir="$(sudo /usr/bin/mktemp -d "/var/backups/erp-systemd/${release_sha}.XXXXXX")"
+if sudo test -e /usr/local/libexec/erp/pm2-systemd-start.mjs; then
+  sudo /usr/bin/cp -a /usr/local/libexec/erp/pm2-systemd-start.mjs "$backup_dir/helper.previous"
+else
+  sudo /usr/bin/touch "$backup_dir/helper.absent"
+fi
+if sudo test -e /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf; then
+  sudo /usr/bin/cp -a /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf "$backup_dir/dropin.previous"
+else
+  sudo /usr/bin/touch "$backup_dir/dropin.absent"
+fi
+
+helper_tmp="$(sudo /usr/bin/mktemp /usr/local/libexec/erp/.pm2-systemd-start.mjs.XXXXXX)"
+dropin_tmp="$(sudo /usr/bin/mktemp /etc/systemd/system/pm2-deploy.service.d/.20-pidfile-reconcile.conf.XXXXXX)"
+cleanup_pm2_contract_tmp() { sudo /usr/bin/rm -f -- "$helper_tmp" "$dropin_tmp"; }
+trap cleanup_pm2_contract_tmp EXIT HUP INT TERM
+sudo /usr/bin/install -o root -g root -m 0755 deploy/systemd/pm2-systemd-start.mjs "$helper_tmp"
+sudo /usr/bin/install -o root -g root -m 0644 deploy/systemd/pm2-deploy.service.d/20-pidfile-reconcile.conf "$dropin_tmp"
+printf '%s  %s\n' "$helper_sha256" "$helper_tmp" | sudo /usr/bin/sha256sum -c -
+printf '%s  %s\n' "$dropin_sha256" "$dropin_tmp" | sudo /usr/bin/sha256sum -c -
+sudo /usr/bin/mv -Tf -- "$helper_tmp" /usr/local/libexec/erp/pm2-systemd-start.mjs
+sudo /usr/bin/mv -Tf -- "$dropin_tmp" /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf
+trap - EXIT HUP INT TERM
+sudo /usr/bin/systemctl daemon-reload
+sudo /usr/bin/systemd-analyze verify pm2-deploy.service
+test "$(stat -c '%U:%G:%a' /usr/local/libexec/erp/pm2-systemd-start.mjs)" = root:root:755
+test "$(stat -c '%U:%G:%a' /etc/systemd/system/pm2-deploy.service.d/20-pidfile-reconcile.conf)" = root:root:644
+
+# إن كان daemon يعمل والوحدة failed/inactive: inspect الموثوق يقرأ /proc فقط ولا ينشئ daemon.
+before="$(sudo /usr/bin/node /usr/local/libexec/erp/pm2-systemd-start.mjs --inspect)"
+before_pid="${before%% *}"
+before_start="${before#* }"
+sudo systemctl start pm2-deploy.service
+after="$(systemctl show pm2-deploy.service -p MainPID --value)"
+test "$before_pid" = "$after"
+after_stat="$(cat "/proc/$after/stat")"
+after_tail="${after_stat##*) }"
+read -r -a after_fields <<< "$after_tail"
+test "$before_start" = "${after_fields[19]}"
+systemctl is-active --quiet pm2-deploy.service
+test "$(stat -c '%U:%G:%a' /run/erp-pm2/pm2-deploy.pid)" = root:root:644
+sudo -iu deploy pm2 status
+```
+
+كل محاولة تنشئ `$backup_dir` جديداً بـ`mktemp -d` ولا تعيد استعمال backup سابقاً. إذا فشل
+`systemd-analyze verify` أو أي تحقق **قبل** `systemctl start`، أعد النسختين السابقتين ذرياً من
+ذلك المسار الفريد (أو احذف الهدف الذي يحمل marker ‏`*.absent`)، ثم نفّذ
+`systemctl daemon-reload` و`systemd-analyze verify` مجدداً. لا تنفّذ rollback بعد نجاح
+`start` وثبات PID إلا إذا ثبت انحراف العقد؛ فالعملية الحية لم تُقتل أو تُستبدل أصلاً.
+
+⛔ لا تستعمل `systemctl restart/stop` ولا `pm2 kill/update` لهذا الإصلاح؛ تلك الأوامر تغيّر
+العمليات الحيّة بينما المطلوب تبنّي الـdaemon القائم فقط. عند الإقلاع النظيف لا يوجد `before`
+وتبدأ الوحدة تلقائياً بالمسار نفسه من `WantedBy=multi-user.target`.
+
 قبل أي خطوة متحوّلة، يرفض السكربت الفرع غير `main` أو الشجرة غير النظيفة، يجلب `origin/main` بـfast-forward، ثم **يعيد تشغيل نفسه من الكود المسحوب** إن تغيّر SHA. كما يثبت أن CLI وحزمة وdaemon ‏PM2 كلها `7.0.3`؛ تثبيت npm وحده لا يكفي من دون `pm2 update`.
 
 بعد ذلك ينفّذ **١٢ مرحلة (٠–١١)** تحت قفل نشر حصري. إذا وجد journal من نشر انقطع، يعيد أولاً آخر إصدار ملتزم ويتحقق منه ويحفظه قبل بدء نشر جديد. `prod:deploy` يعمل بهوية `deploy` ولا يستدعي `sudo`: إن كان Nginx الحي منحرفاً يتوقف قبل install/build/DB بالرمز `NGINX_LIVE_CONTRACT_DRIFT` ويطلب أمر الإصلاح الجذري أعلاه:
@@ -305,10 +469,46 @@ rolling reload. لذلك فحتى انقطاع العملية عند حدّ ال
 > عامل الجسر يبدأ دائماً fresh لأن `startOrReload --update-env` يدمج المفاتيح القديمة. تعريف الإصدار يصفّر البيئة الموروثة ثم يعيد allowlist فقط، والـbootstrap يحذف أي مفتاح زائد **قبل** تحميل كود العامل. البوابة تدقق `pm2_env.env` الفعلية من دون طباعة الأسماء أو القيم.
 
 **بعد النجاح — تحقّق حيّ فوريّ:** بوابة المرحلة ١٠ تكون قد أثبتت أن كلا المضيفين يعيدان صفحة
-المتجر وإعداداته وفئاته ومنتجاته بأعداد غير صفرية. لفحص حالة الطباعة أيضاً:
+المتجر وإعداداته وفئاته ومنتجاته بأعداد غير صفرية. افصل فحص الصحة العام عن فحص جسر الطباعة
+المحمي بالجلسة:
 
 ```bash
-curl -sf https://srv1548487.hstgr.cloud/api/print/status || pm2 logs erp-server --lines 20
+(
+  set -euo pipefail
+  erp_origin='https://srv1548487.hstgr.cloud'
+
+  # الصحة العامة: يجب أن تنجح بلا جلسة.
+  curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+    "$erp_origin/healthz"
+
+  # حائط المصادقة: 401 بلا كوكي هو السلوك الأمني الصحيح، وليس نجاحاً للطباعة.
+  unauth_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 5 --max-time 15 "$erp_origin/api/print/status")"
+  test "$unauth_code" = '401' || {
+    printf 'expected 401 without a session, got %s\n' "$unauth_code" >&2
+    exit 1
+  }
+
+  # المتغير يحمل مسار ملف cookie-jar فقط؛ جهّزه من جلسة مسجّلة عبر قناة آمنة.
+  # لا تضع قيمة app_session_id في الأمر أو history، ولا تحفظ الملف داخل المستودع.
+  : "${PRINT_SESSION_COOKIE_JAR:?set it to a private cookie-jar path}"
+  test -f "$PRINT_SESSION_COOKIE_JAR" && test ! -L "$PRINT_SESSION_COOKIE_JAR"
+  test "$(stat -c '%u' -- "$PRINT_SESSION_COOKIE_JAR")" = "$(id -u)"
+  test "$(stat -c '%a' -- "$PRINT_SESSION_COOKIE_JAR")" = '600'
+
+  # هذا هو فحص حالة الجسر الفعلي: يجب أن يعيد 200 وJSON الجسر من جلسة صالحة.
+  curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+    --cookie "$PRINT_SESSION_COOKIE_JAR" "$erp_origin/api/print/status"
+)
+```
+
+اجعل ملف الـcookie-jar مؤقتاً تحت مجلد المستخدم الخاص (مثل `/run/user/$(id -u)`) وبوضع `0600`،
+ثم احذفه بعد الفحص. نجاح `status` يثبت قراءة إعداد الجسر ولا يرسل ورقة اختبار. وإن تعذّر تجهيز
+جلسة، افحص آخر السجل للـERP فقط كبديل تشخيصي محدود وغير متدفق؛ لا تعدّه بديلاً عن فحص الحالة
+الموثق ولا دليلاً على طباعة فعلية:
+
+```bash
+pm2 logs erp-server --lines 20 --nostream
 ```
 
 > ⚠️ **خادمٌ مشترك (سراج/أودو خطّ أحمر):** `prod:deploy` لا يمسّ إلّا حزمة ERP وقاعدتها؛ لا `reboot` ولا `ufw` ولا تغيير توقيتٍ بلا موافقة المالك (§٦ + ذاكرة قيود VPS).
@@ -355,7 +555,7 @@ BASH
 - [ ] فتح الموقع عبر `http://` يُحوَّل تلقائياً إلى `https://` (certbot).
 - [ ] `docker compose ps` تُظهر `healthy`، و`pm2 status` تُظهر `online`.
 - [ ] `ss -tlnp | grep 3307` يُظهر `127.0.0.1:3307` فقط (لا `0.0.0.0`) — القاعدة محجوبة بالربط المحلي. (بند ufw فقط على خادم مخصّص.)
-- [ ] `systemctl cat pm2-deploy.service | grep wait-mysql` يُظهر درع ترتيب الإقلاع (G10) مثبَّتاً.
+- [ ] `systemctl cat pm2-deploy.service | grep wait-mysql` يُظهر درع ترتيب الإقلاع (G10)، و`ExecStart` يشير إلى helper ‏root-owned تحت `/usr/local/libexec/erp`؛ الوحدة `active` و`MainPID` يساوي `/run/erp-pm2/pm2-deploy.pid` المملوك `root:root 0644`.
 - [ ] `pnpm db:backup` يُنتج ملفاً > 2KB في `backups/` (+ مرافق `.sql.gpg` إن ضُبط التشفير)، ومهمّة cron الليلية مُسجَّلة (`crontab -l`).
 - [ ] أُجريت نسخة خارجية أولى (`pnpm backup:pull-vps` من جهاز المتجر) **وفُكَّ تشفيرها هناك بنجاح** بالعبارة المحفوظة خارج الخادم — عبارة خاطئة تُكتشف اليوم لا يوم الكارثة.
 - [ ] اختبار التعافي: `docker restart erp-mysql` ثم `pm2 restart erp-server` ثم قتل العملية (`pm2 pid` + `kill`) ⇒ كلّها تعود تلقائياً و`/healthz` يردّ 200. (⚠️ `sudo reboot` يُسقط كل أنظمة الخادم المشترك — فقط في نافذة صيانة يقرّها المالك؛ عندها يثبت الإقلاع الكامل.)

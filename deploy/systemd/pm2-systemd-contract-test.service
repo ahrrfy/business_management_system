@@ -1,0 +1,14 @@
+[Unit]
+Description=ERP PM2 systemd PID contract integration test
+
+[Service]
+Type=forking
+User=deploy
+Environment=PM2_HOME=/home/deploy/.pm2
+Environment=PM2_SYSTEMD_ATTACK=must-not-reach-daemon
+Environment=NODE_OPTIONS=--require=/home/deploy/pm2-systemd-root-attack.cjs
+PIDFile=/home/deploy/.pm2/pm2.pid
+ExecStart=/usr/bin/node /usr/lib/node_modules/pm2/bin/pm2 resurrect
+ExecStop=/usr/bin/node /usr/lib/node_modules/pm2/bin/pm2 kill
+TimeoutStartSec=30
+TimeoutStopSec=30

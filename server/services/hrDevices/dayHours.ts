@@ -38,6 +38,26 @@ export const DEFAULT_MAX_DAILY_HOURS = 12;
  */
 export const MIN_SPAN_MINUTES = 5;
 
+/**
+ * الوردية الليلية العابرة منتصف الليل — **معطَّلة افتراضياً** (قرار المالك: نادرة في المطبعة).
+ *
+ * بلا تفعيلها تُسجَّل وردية 22:00→06:00 يومين ببصمةٍ واحدة لكلٍّ ⇒ **صفر ساعات وصفر أجر
+ * لليلة عملٍ كاملة**، ويومان موسومان «ينقص انصراف». ومع تفعيلها تُغلق بصمةُ الفجر وردية أمس.
+ *
+ * **قاعدة الإسناد (حتميّة، بلا حالةٍ مخزَّنة):** بصمةٌ ساعتُها < `cutoffHour` تخصّ وردية اليوم
+ * السابق. فوردية يوم D = بصمات D التي ساعتها ≥ الفصل + بصمات D+1 التي ساعتها < الفصل.
+ * ولأنها تُشتقّ من الجيران لا من حالةٍ محفوظة، يعطي إعادةُ الطيّ النتيجةَ نفسها مهما تكرّرت.
+ */
+export interface NightShiftOptions {
+  enabled: boolean;
+  /** ساعةُ الفصل (0-23): ما قبلها من اليوم التالي يُغلق وردية اليوم. الافتراضي ٨. */
+  cutoffHour: number;
+  /** بصمات اليوم التالي — منها تُلتقط بصمةُ الفجر وحدها (ما قبل الفصل). */
+  nextDayPunches?: string[];
+}
+
+export const DEFAULT_NIGHT_CUTOFF_HOUR = 8;
+
 export interface DayHoursResult {
   /** مجموع الفترات المكتملة بالساعات (منزلتان). */
   hours: string;
@@ -45,6 +65,11 @@ export interface DayHoursResult {
   checkIn: string | null;
   /** "HH:MM" لآخر خروج مُزاوَج، وnull إن لم يكتمل زوج. */
   checkOut: string | null;
+  /**
+   * الخروج وقع في **اليوم التالي** (وردية ليلية). يستعمله الطيّ ليخزّن طابع الانصراف على
+   * تاريخه الصحيح — وإلّا بُني على تاريخ الوردية فصار الانصراف قبل الدخول في العمود نفسه.
+   */
+  checkOutNextDay: boolean;
   /** يومٌ ينقصه إغلاق ⇒ يُعرَض للمدير ولا يُخمَّن أجره. */
   needsReview: boolean;
   reviewReason: string | null;
@@ -67,7 +92,21 @@ export function computeDayHours(
   maxDailyHours: number = DEFAULT_MAX_DAILY_HOURS,
   /** ساعات اليوم المقرَّرة في جدول الموظف — تُفعّل حارس «أقلّ من النصف». */
   scheduledHours?: number,
+  /** الوردية الليلية — غيابها/تعطيلها = السلوك السابق حرفياً (صفر انحدار). */
+  night?: NightShiftOptions,
 ): DayHoursResult {
+  /*
+   * (أ) إسناد الوردية الليلية — **قبل** كل شيء، فما يليه يعمل على بصمات الوردية لا اليوم.
+   * بصمات هذا اليوم التي ساعتها < الفصل تخصّ وردية أمس ⇒ تُستبعَد هنا وتُحتسب هناك.
+   * وبصمات الفجر من اليوم التالي تُضمّ **بشرط أن يكون لهذا اليوم افتتاحٌ فعليّ** — وإلا
+   * لَجرَّ يومٌ بلا دوامٍ انصرافَ غيره إليه.
+   */
+  if (night?.enabled) {
+    const cutoff = Number.isFinite(night.cutoffHour) ? night.cutoffHour : DEFAULT_NIGHT_CUTOFF_HOUR;
+    const own = dayPunches.filter((t) => hourOf(t) >= cutoff);
+    const dawn = own.length > 0 ? (night.nextDayPunches ?? []).filter((t) => hourOf(t) < cutoff) : [];
+    dayPunches = [...own, ...dawn];
+  }
   /*
    * اضطرابُ ترتيبٍ في الوارد (Codex P2): الفرز يُخفيه، فيُكتشف **قبله**. مصدرُه قفزةُ
    * ساعةٍ في الجهاز أو دفعةٌ مختلطة — والفرز يحوّل الخروج المبكّر إلى «دخول» ظاهريّ
@@ -93,7 +132,7 @@ export function computeDayHours(
   }
 
   if (seq.length === 0) {
-    return { hours: "0.00", checkIn: null, checkOut: null, needsReview: false, reviewReason: null, usedCount: 0 };
+    return { hours: "0.00", checkIn: null, checkOut: null, checkOutNextDay: false, needsReview: false, reviewReason: null, usedCount: 0 };
   }
 
   // (ج) المزاوجة: (دخول←خروج) لكل زوج متتالٍ، وتُجمع الفترات ⇒ الاستراحات مطروحة ضمناً.
@@ -130,6 +169,8 @@ export function computeDayHours(
     hours: round2Str(hours),
     checkIn: seq[0].slice(11, 16),
     checkOut: lastPairedOut ? lastPairedOut.slice(11, 16) : null,
+    // الانصراف على تاريخٍ يخالف تاريخ الدخول ⇒ عبَرَ منتصف الليل.
+    checkOutNextDay: !!lastPairedOut && lastPairedOut.slice(0, 10) !== seq[0].slice(0, 10),
     needsReview: reasons.length > 0,
     reviewReason: reasons.length ? reasons.join(" · ") : null,
     usedCount: seq.length,
