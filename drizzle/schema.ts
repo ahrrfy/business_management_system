@@ -4068,7 +4068,7 @@ export const storefrontProductReviews = mysqlTable(
     onlineOrderId: bigint("onlineOrderId", { mode: "number" }).notNull().references(() => onlineOrders.id, { onDelete: "cascade" }),
     rating: int("rating").notNull(),
     comment: varchar("comment", { length: 1000 }).notNull(),
-    status: mysqlEnum("storefrontProductReviewStatus", ["PENDING", "APPROVED", "REJECTED"]).default("PENDING").notNull(),
+    status: mysqlEnum("status", ["PENDING", "APPROVED", "REJECTED"]).default("PENDING").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     moderatedAt: timestamp("moderatedAt"),
   },
