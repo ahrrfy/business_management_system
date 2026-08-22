@@ -110,6 +110,31 @@ describe("crm.coupons.listIssued — ترقيم + عدّ نشطة خادميّ",
     await expect(caller().crm.coupons.listIssued({ programId, limit: 999999 })).rejects.toThrow();
   });
 
+  it("البحث والحالة يُطبَّقان خادمياً مع إجمالي صحيح", async () => {
+    const searched = await caller().crm.coupons.listIssued({ programId, q: "0001", limit: 50 });
+    expect(searched.total).toBe(1);
+    expect(searched.rows[0].code).toBe("CRM-0001");
+
+    const active = await caller().crm.coupons.listIssued({ programId, status: "ACTIVE", limit: 50 });
+    expect(active.total).toBe(5);
+    expect(active.rows.every((coupon) => coupon.status === "ACTIVE")).toBe(true);
+    // العداد التشغيلي يبقى للبرنامج كله حتى مع فلتر القائمة.
+    expect(active.activeCount).toBe(5);
+  });
+
+  it("الإصدار ينشئ مرجع دفعة ذرياً قابلاً للتدقيق بلا تخزين الرموز في سجل التدقيق", async () => {
+    const issued = await caller().crm.coupons.issue({ programId, count: 3 });
+    expect(issued.codes).toHaveLength(3);
+    expect(issued.batchReference).toMatch(new RegExp(`^CP-${programId}-`));
+
+    const batches = await caller().crm.coupons.batches({ programId, limit: 10 });
+    expect(batches[0]).toMatchObject({ batchReference: issued.batchReference, count: 3, issuedBy: "admin" });
+    const programs = await caller().crm.coupons.programs();
+    expect(programs.find((program) => program.id === programId)).toMatchObject({ issued: 123, activeCoupons: 8, redeemed: 0 });
+    const audits = await db().select().from(s.auditLogs);
+    expect(JSON.stringify(audits)).not.toContain(issued.codes[0]);
+  });
+
   it("برنامج غير موجود ⇒ NOT_FOUND (الحارس القائم لم ينكسر)", async () => {
     await expect(caller().crm.coupons.listIssued({ programId: 999999 })).rejects.toThrow();
   });
