@@ -79,6 +79,7 @@ export interface ProductForVariantEdit {
   description: string | null;
   categoryId: number | null;
   isCustomizable: boolean;
+  allowAutoCartRecommendations: boolean;
   isService: boolean;
   /** gstack B12 (٧/٧/٢٦): علم البكج — يُشغّل تبويب وصفة المكوّنات في ProductEdit. */
   isBundle: boolean;
@@ -154,6 +155,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       description: p.description,
       categoryId: p.categoryId != null ? Number(p.categoryId) : null,
       isCustomizable: !!p.isCustomizable,
+      allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
       isService: !!p.isService,
       isBundle: !!p.isBundle,
       isActive: !!p.isActive,
@@ -226,6 +228,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     description: p.description,
     categoryId: p.categoryId != null ? Number(p.categoryId) : null,
     isCustomizable: !!p.isCustomizable,
+    allowAutoCartRecommendations: p.allowAutoCartRecommendations !== false,
     isService: !!p.isService,
     isBundle: !!p.isBundle,
     isActive: !!p.isActive,
@@ -284,6 +287,7 @@ export interface UpdateProductVariantsInput {
   description?: string | null;
   categoryId?: number | null;
   isCustomizable?: boolean;
+  allowAutoCartRecommendations?: boolean;
   isService?: boolean;
   isActive?: boolean;
   isConsignment?: boolean;
@@ -545,6 +549,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         description: input.description?.trim() || null,
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
+        allowAutoCartRecommendations: input.allowAutoCartRecommendations ?? p.allowAutoCartRecommendations !== false,
         isService: input.isService ?? !!p.isService,
         ...(input.isActive != null ? { isActive: input.isActive } : {}),
         ...(wantConsign !== undefined ? { isConsignment: wantConsign } : {}),

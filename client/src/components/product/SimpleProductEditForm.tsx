@@ -119,6 +119,7 @@ export default function SimpleProductEditForm({
   const [minStock, setMinStock] = useState("0");
   const [reorderPoint, setReorderPoint] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
+  const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isActive, setIsActive] = useState(true);
   // صور المنتج العامّة (مشتركة) — تُحمَّل من الخادم وتُحفَظ بمطابقة المعرّف (lib/productImages).
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -149,6 +150,7 @@ export default function SimpleProductEditForm({
     setDescription(d.description ?? "");
     setCategoryId(d.categoryId ?? "");
     setIsCustomizable(d.isCustomizable);
+    setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsActive(d.isActive);
     if (v) {
       variantId.current = v.id;
@@ -189,8 +191,8 @@ export default function SimpleProductEditForm({
   );
   // ── كشف «تعديلات غير محفوظة»: نقارن توقيع النموذج بلقطة الأساس المُلتقَطة بعد التعبئة ──
   const formSig = useMemo(
-    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, isActive, units, imagesSig }),
-    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, isActive, units, imagesSig]
+    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, units, imagesSig }),
+    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, allowAutoCartRecommendations, isActive, units, imagesSig]
   );
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;
@@ -325,6 +327,7 @@ export default function SimpleProductEditForm({
       isConsignment: consignment.isConsignment,
       consignorId: consignment.consignorId,
       isCustomizable,
+      allowAutoCartRecommendations,
       isActive,
       unitTemplate,
       variants: [
@@ -409,6 +412,7 @@ export default function SimpleProductEditForm({
           <Field label="رمز المنتج (SKU)" required className="md:col-span-2">
             <Input id="simpleedit-sku" value={sku} onChange={(e) => setSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PR-BOOK-ARB" />
           </Field>
+          <Field label="التوصيات الآلية" hint="يكمل العلاقات اليدوية بمنتجات متاحة من نفس التصنيف."><div className="flex items-center gap-2 h-9"><Switch checked={allowAutoCartRecommendations} onCheckedChange={setAllowAutoCartRecommendations} /><span className="text-xs text-muted-foreground">{allowAutoCartRecommendations ? "مسموح" : "متوقف"}</span></div></Field>
         </CardContent>
       </Card>
 

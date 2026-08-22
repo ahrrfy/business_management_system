@@ -1646,6 +1646,13 @@
       "when": 1788052299000,
       "tag": "0248_cash_purchase_clearing",
       "breakpoints": true
+    },
+    {
+      "idx": 249,
+      "version": "5",
+      "when": 1788052300000,
+      "tag": "0249_0249_product_auto_cart_recommendations",
+      "breakpoints": true
     }
   ]
 }
