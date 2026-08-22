@@ -293,6 +293,13 @@ export async function receiptToCanvas(
   totRow("المجموع:", fmt(d.subtotal));
   if (Number(d.discount ?? 0) > 0) totRow("الخصم:", `-${fmt(d.discount)}`);
   if (Number(d.tax ?? 0) > 0) totRow("الضريبة:", fmt(d.tax));
+  // تقريب نقديّ IQD (٢٢/٨) — إفصاحٌ عن تعديل التقريب كي يطابق حساب الإيصال إجماليه المطبوع:
+  // (المجموع − الخصم + الضريبة ± التقريب = الإجمالي). قبل هذا كان المطبوع 2,800 − 280 = 2,500
+  // بينما الحساب 2,520، والفارقُ −20 مخفيّ. يظهر بإشارته (+/−) صراحةً.
+  if (d.cashRounding != null && Number(d.cashRounding) !== 0) {
+    const val = Number(d.cashRounding);
+    totRow("تقريب نقديّ:", `${val > 0 ? "+" : ""}${fmt(d.cashRounding)}`);
+  }
 
   y += 2;
   solidLine(ctx, y, 2);
