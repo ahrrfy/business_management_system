@@ -146,7 +146,7 @@ function normalizeClaimText(value: string): string {
     .normalize("NFKC")
     .replace(/[\u064B-\u065F\u0670]/g, "")
     .toLocaleLowerCase("ar")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/[^\w\u0600-\u06FF]+/g, " ")
     .trim();
 }
 
@@ -175,16 +175,16 @@ export function validateAiProductDraft(
   const blockers: string[] = [];
   const warnings = [...draft.warnings];
 
-  for (const [index, claim] of draft.claims.entries()) {
+  draft.claims.forEach((claim, index) => {
     const evidenceValues: string[] = [];
-    for (const key of claim.evidenceKeys) {
+    claim.evidenceKeys.forEach((key) => {
       const evidence = factMap.get(key);
       if (!evidence)
         blockers.push(
           `الادعاء رقم ${index + 1} يستخدم دليلاً غير موجود: ${key}`,
         );
       else evidenceValues.push(evidence);
-    }
+    });
     if (
       evidenceValues.length > 0 &&
       !claimIsGrounded(claim.text, evidenceValues)
@@ -193,7 +193,7 @@ export function validateAiProductDraft(
         `الادعاء رقم ${index + 1} لا يتطابق نصياً مع القيم التي استند إليها`,
       );
     }
-  }
+  });
 
   const allText = [
     draft.seoTitle,

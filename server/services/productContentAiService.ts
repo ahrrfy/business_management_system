@@ -30,15 +30,16 @@ const MAX_CACHE_ENTRIES = 200;
 
 function pruneDraftCache() {
   const now = Date.now();
-  for (const [key, value] of draftCache) {
+  draftCache.forEach((value, key) => {
     if (value.expiresAt <= now) draftCache.delete(key);
-  }
+  });
   if (draftCache.size <= MAX_CACHE_ENTRIES) return;
-  const oldest = [...draftCache.entries()].sort(
+  const oldest = Array.from(draftCache.entries()).sort(
     (a, b) => a[1].expiresAt - b[1].expiresAt,
   );
-  for (const [key] of oldest.slice(0, draftCache.size - MAX_CACHE_ENTRIES))
-    draftCache.delete(key);
+  oldest
+    .slice(0, draftCache.size - MAX_CACHE_ENTRIES)
+    .forEach(([key]) => draftCache.delete(key));
 }
 
 const SYSTEM_PROMPT = `أنت محرر محتوى كتالوج عربي يعمل داخل نظام مبيعات ومخزون.
