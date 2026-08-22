@@ -8322,6 +8322,12 @@ export const deliveryConsignments = mysqlTable(
     collectedAmount: decimal("collectedAmount", { precision: 15, scale: 2 })
       .default("0")
       .notNull(),
+    // ٢٢/٨ (0249) — ما سدّده الزبون **بالكاونتر** بعد ثبوت التسليم (كشف شركةٍ جزئيّ ثم جاء
+    // الزبون للمحل): يُنقص المتبقّي المتوقَّع من الجهة بلا رفع عهدتها — النقد لم يمرّ بيدها.
+    // المتبقّي الحيّ للإرسالية = codAmount − collectedAmount − counterSettledAmount.
+    counterSettledAmount: decimal("counterSettledAmount", { precision: 15, scale: 2 })
+      .default("0")
+      .notNull(),
     deliveryFee: decimal("deliveryFee", { precision: 15, scale: 2 })
       .default("0")
       .notNull(), // أجرة ثابتة لكل طلب (D7)

@@ -11,6 +11,7 @@ import { eq } from "drizzle-orm";
 import { invoices, shifts } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { retryOnDeadlock } from "../../lib/retryDeadlock";
+import { registerCounterCollectionTx } from "../delivery/counterCollection";
 import { assertNoInTransitConsignment } from "../delivery/guards";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { processPayment } from "../sale/payment";
@@ -89,6 +90,14 @@ export async function collectOnReceptionInvoice(
       // خارج المعاملة = نافذة سباقٍ بين القراءة وقفل الفاتورة).
       preInsertCheck: async (tx) => {
         await assertNoInTransitConsignment(tx, input.invoiceId);
+        // ٢٢/٨ — القبض على فاتورة إرساليةٍ **مُسلَّمة** يُدوَّن عليها في نفس المعاملة (يخفض
+        // المتوقَّع توريدُه من الجهة). refKey = مفتاح idempotency القبض القائم في هذا المسار.
+        await registerCounterCollectionTx(tx, {
+          invoiceId: input.invoiceId,
+          amount: input.amount,
+          actorUserId: actor.userId,
+          refKey: input.clientRequestId,
+        });
         if (input.method === "TELECOM") {
           await assertTelecomCollectAllowed(tx, {
             userId: actor.userId,

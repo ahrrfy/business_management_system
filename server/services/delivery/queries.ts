@@ -3,10 +3,29 @@
 // عزل الفرع: الجهة المشتركة مرئية للفروع، لكن سند التوريد ونقد الدرج يخصان فرعاً واحداً حتماً؛
 // لذلك قائمة «المفتوح للتوريد» تقبل branchId وتعرض فقط طرود ذلك الفرع. أما السجل الإداري العام
 // للجهة فيبقى عابراً للفروع لمن يملك صلاحية رؤيتها، وتبقى كل حركة موسومة بفرعها.
-import { and, desc, eq, gte, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import { accountingEntries, customers, deliveryConsignments, deliveryEvents, deliveryLedgerEntries, deliveryParties, deliveryRemittanceLines, deliveryRemittances, invoices, onlineOrders, users, workOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { money } from "../money";
 import { getDeliveryFinancialSummary } from "./lifecycle";
+
+/**
+ * هل للجهة بوّابة؟ عضويةٌ نشطة في deliveryPartyMembers أو ربطُ الحساب القديم
+ * (deliveryParties.userId). القرار الذي يبنيه: مَن صاحبُ **الفعل التالي** للطرد — الجهةُ عبر
+ * بوّابتها أم الموظّفُ عبر كشف الشركة (قلبُ قاموس `deriveConsignmentView` المشترك؛ الخلطُ
+ * بينهما هو الذي ترك ٧٩ طرداً «مُسنَداً» جامداً بلا صاحبِ فعلٍ واضح). مرتبطٌ بعمود
+ * partyId على الإرسالية فيصلح لكل استعلامٍ جذرُه deliveryConsignments.
+ */
+const partyHasPortalSql = sql<number>`(
+  EXISTS (
+    SELECT 1 FROM deliveryPartyMembers dpm
+    WHERE dpm.partyId = ${deliveryConsignments.partyId} AND dpm.isActive = 1
+  )
+  OR EXISTS (
+    SELECT 1 FROM deliveryParties dpp
+    WHERE dpp.id = ${deliveryConsignments.partyId} AND dpp.userId IS NOT NULL
+  )
+)`;
 
 /** أوامر الشغل الجاهزة (READY) القابلة للإرسال عبر مندوب — تبويب «جاهز للإرسال». */
 export async function listReadyForDispatch(branchId: number | null) {
@@ -86,6 +105,8 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       invoiceNumber: invoices.invoiceNumber,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
+      /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — الشاشة تعرض به المتبقّي الحيّ. */
+      counterSettledAmount: deliveryConsignments.counterSettledAmount,
       deliveryFee: deliveryConsignments.deliveryFee,
       feeDue,
       feeCollection: deliveryConsignments.feeCollection,
@@ -98,6 +119,8 @@ export async function listOpenConsignments(partyId: number, branchId?: number | 
       customerName: customers.name,
       recipientName: deliveryConsignments.recipientName,
       dispatchedAt: deliveryConsignments.dispatchedAt,
+      /** للجهة بوّابة؟ — القاموس المشترك يميّز به «مُسنَد» عن «بانتظار كشف الشركة». */
+      partyHasPortal: partyHasPortalSql,
     })
     .from(deliveryConsignments)
     .leftJoin(invoices, eq(deliveryConsignments.invoiceId, invoices.id))
@@ -152,18 +175,31 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       moneyStatus: deliveryConsignments.moneyStatus,
       codAmount: deliveryConsignments.codAmount,
       collectedAmount: deliveryConsignments.collectedAmount,
+      /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — يُنقص المتبقّي بلا مساس بالعهدة. */
+      counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      /** أجرة التوصيل — يستعملها محضر التسليم (Codex P2 #7 — ٢٢/٨). */
+      deliveryFee: deliveryConsignments.deliveryFee,
+      /** صافي مستند البيع للشاشة (الإجماليّ والمرتجع) — يُشتقّ منهما صافي الفاتورة بلا نداء ثانٍ. */
+      invoiceTotal: invoices.total,
+      invoiceReturnedTotal: invoices.returnedTotal,
       /**
-       * المتبقّي تحصيله على هذا الطرد — التعرّض الفعليّ الظاهر للإدارة لحظةً بلحظة.
+       * المتبقّي تحصيله على هذا الطرد — التعرّض الفعليّ الظاهر للإدارة لحظةً بلحظة، بالصيغة
+       * الحاكمة للمتبقّي الحيّ: codAmount − collectedAmount − counterSettledAmount (ما غطّاه
+       * الكاونتر ليس بيد الجهة فلا يُعرَض تعرّضاً عليها).
        *
        * ⚠️ **والمُعلَنُ رجوعُه صفرٌ** (تصويب مراجعة Codex، ٢١/٨): تعرّضُه حُرِّر في الدفتر
        * بـ`COD_RELEASED` لحظةَ الإعلان، فإبقاؤه هنا يُضخّم «تعرّض التحصيل» في الشاشة
        * بمبلغٍ لم يعد مطلوباً — وتناقض الشاشةُ الدفترَ ورسالةَ التأكيد نفسها.
        */
-      codDue: sql<string>`CASE WHEN ${deliveryConsignments.returnDeclaredAt} IS NOT NULL THEN 0 ELSE GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)), 0) END`,
+      codDue: sql<string>`CASE WHEN ${deliveryConsignments.returnDeclaredAt} IS NOT NULL THEN 0 ELSE GREATEST(CAST(${deliveryConsignments.codAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.collectedAmount} AS DECIMAL(15,2)) - CAST(${deliveryConsignments.counterSettledAmount} AS DECIMAL(15,2)), 0) END`,
       recipientName: deliveryConsignments.recipientName,
       recipientPhone: deliveryConsignments.recipientPhone,
-      // عنوان التسليم يعيش على أمر الشغل (لا عمود له على الإرسالية).
-      address: workOrders.deliveryAddress,
+      // العنوان على الإرسالية أوّلاً (يُلقَط لحظة الإرسال وقد يُعدَّل عليها)، وأمرُ الشغل
+      // احتياطٌ للصفوف القديمة التي أُنشئت قبل نسخه — لا العكس: التعليق السابق («لا عمود له
+      // على الإرسالية») كان كاذباً منذ أُضيف العمود، فبقيت طرودُ المتجر والفواتير بلا عنوان.
+      address: sql<string | null>`COALESCE(${deliveryConsignments.deliveryAddress}, ${workOrders.deliveryAddress})`,
+      /** للجهة بوّابة؟ — يقرّر عرضَ الصفّ «مُسنَد» أم «بانتظار كشف الشركة» (فعلُ موظّف). */
+      partyHasPortal: partyHasPortalSql,
       customerName: customers.name,
       dispatchedAt: deliveryConsignments.dispatchedAt,
       failureReason: deliveryConsignments.failureReason,
@@ -270,7 +306,20 @@ export async function getPartyStoreInTransit(partyId: number) {
       })
       .from(onlineOrders)
       .leftJoin(invoices, eq(onlineOrders.invoiceId, invoices.id))
-      .where(and(eq(onlineOrders.deliveryPartyId, partyId), eq(onlineOrders.status, "SHIPPED")))
+      .where(and(
+        eq(onlineOrders.deliveryPartyId, partyId),
+        eq(onlineOrders.status, "SHIPPED"),
+        // ازدواجُ التعرّض (٢٢/٨): طلبُ متجرٍ أُسندت فاتورتُه إرساليةً **حيّة** يُعرَض تعرّضُه
+        // في قوائم الإرساليات نفسها — فعدُّه هنا ثانيةً يضخّم «مع المندوب» بضعف القيمة.
+        // مرآةُ `legacyOnlineScope` في courier.ts مع تقييد الحياة (نمط listReadyForDispatch):
+        // الإرسالية الملغاة/المرتجعة تُعيد الطلبَ لهذه العدسة كي لا يسقط من العدّادات كلّها.
+        sql`NOT EXISTS (
+          SELECT 1 FROM deliveryConsignments dc
+          WHERE dc.sourceType = 'ONLINE_ORDER'
+            AND dc.sourceId = ${onlineOrders.id}
+            AND dc.consignmentStatus NOT IN ('CANCELLED', 'RETURNED')
+        )`,
+      ))
   )[0];
   return { count: Number(row?.count ?? 0), value: String(row?.value ?? "0.00") };
 }
@@ -368,6 +417,212 @@ export async function getDeliveryPartyFinancials(partyId: number) {
       .orderBy(desc(deliveryEvents.id)).limit(300),
   ]);
   return { party, summary, ledger, allocations, events };
+}
+
+/**
+ * **الخطّ الزمنيّ الكامل لإرسالية** (٢٢/٨) — شاشة «قصّة الطرد»: الصفُّ المفصّل + أحداثُه
+ * بترتيب وقوعها + قيودُ دفتر التوصيل الخاصّة به، بنداءٍ واحد.
+ *
+ * لماذا: تشخيصُ طردٍ جامد («مُسنَد منذ ١٢ يوماً — ماذا جرى له؟») كان يتطلّب مطاردة أربعة
+ * جداول يدوياً، فلا أحد يفعلها. وكلُّ حدثٍ هنا يحمل اسم فاعله وpayload بمصدر سلطته
+ * (بوّابة مندوب / كشف شركة / فعل موظّف) — وهو الأثر الذي يُراجَع عند أيّ خلاف.
+ */
+export async function getConsignmentTimeline(consignmentId: number) {
+  const db = getDb();
+  if (!db) return null;
+  const consignment = (
+    await db
+      .select({
+        id: deliveryConsignments.id,
+        consignmentNumber: deliveryConsignments.consignmentNumber,
+        branchId: deliveryConsignments.branchId,
+        partyId: deliveryConsignments.partyId,
+        partyName: deliveryParties.name,
+        partyType: deliveryParties.partyType,
+        partyHasPortal: partyHasPortalSql,
+        assignedUserId: deliveryConsignments.assignedUserId,
+        driverName: users.name,
+        // الحالات الثلاث معاً — الإغلاق والطرد والمال مستقلّة ولا يُشتقّ بعضها من بعض.
+        status: deliveryConsignments.status,
+        parcelStatus: deliveryConsignments.parcelStatus,
+        moneyStatus: deliveryConsignments.moneyStatus,
+        codAmount: deliveryConsignments.codAmount,
+        collectedAmount: deliveryConsignments.collectedAmount,
+        counterSettledAmount: deliveryConsignments.counterSettledAmount,
+        deliveryFee: deliveryConsignments.deliveryFee,
+        feeCollection: deliveryConsignments.feeCollection,
+        feeSettledAt: deliveryConsignments.feeSettledAt,
+        address: sql<string | null>`COALESCE(${deliveryConsignments.deliveryAddress}, ${workOrders.deliveryAddress})`,
+        recipientName: deliveryConsignments.recipientName,
+        recipientPhone: deliveryConsignments.recipientPhone,
+        customerName: customers.name,
+        dispatchedAt: deliveryConsignments.dispatchedAt,
+        courierDeliveredAt: deliveryConsignments.courierDeliveredAt,
+        settledAt: deliveryConsignments.settledAt,
+        sourceType: deliveryConsignments.sourceType,
+        sourceId: deliveryConsignments.sourceId,
+        invoiceId: deliveryConsignments.invoiceId,
+        invoiceNumber: invoices.invoiceNumber,
+        workOrderId: deliveryConsignments.workOrderId,
+        orderNumber: workOrders.orderNumber,
+        failureReason: deliveryConsignments.failureReason,
+        returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
+        returnDeclaredBy: deliveryConsignments.returnDeclaredBy,
+        returnDeclaredReason: deliveryConsignments.returnDeclaredReason,
+        remittanceId: deliveryConsignments.remittanceId,
+        remittanceNumber: deliveryRemittances.remittanceNumber,
+      })
+      .from(deliveryConsignments)
+      .leftJoin(deliveryParties, eq(deliveryParties.id, deliveryConsignments.partyId))
+      .leftJoin(users, eq(users.id, deliveryConsignments.assignedUserId))
+      .leftJoin(invoices, eq(invoices.id, deliveryConsignments.invoiceId))
+      .leftJoin(workOrders, eq(workOrders.id, deliveryConsignments.workOrderId))
+      .leftJoin(customers, eq(customers.id, deliveryConsignments.endCustomerId))
+      .leftJoin(deliveryRemittances, eq(deliveryRemittances.id, deliveryConsignments.remittanceId))
+      .where(eq(deliveryConsignments.id, consignmentId))
+      .limit(1)
+  )[0];
+  if (!consignment) return null;
+  const [events, ledger] = await Promise.all([
+    db
+      .select({
+        id: deliveryEvents.id,
+        eventType: deliveryEvents.eventType,
+        fromParcelStatus: deliveryEvents.fromParcelStatus,
+        toParcelStatus: deliveryEvents.toParcelStatus,
+        fromMoneyStatus: deliveryEvents.fromMoneyStatus,
+        toMoneyStatus: deliveryEvents.toMoneyStatus,
+        payload: deliveryEvents.payload,
+        actorUserId: deliveryEvents.actorUserId,
+        actorName: users.name,
+        occurredAt: deliveryEvents.occurredAt,
+      })
+      .from(deliveryEvents)
+      .leftJoin(users, eq(users.id, deliveryEvents.actorUserId))
+      .where(eq(deliveryEvents.consignmentId, consignmentId))
+      // تصاعدياً بوقت الوقوع (والمعرّف يفصل التعادل داخل الثانية الواحدة) — قراءة قصّةٍ لا سجلّ.
+      .orderBy(deliveryEvents.occurredAt, deliveryEvents.id),
+    db
+      .select({
+        id: deliveryLedgerEntries.id,
+        eventKey: deliveryLedgerEntries.eventKey,
+        entryType: deliveryLedgerEntries.entryType,
+        amount: deliveryLedgerEntries.amount,
+        remittanceId: deliveryLedgerEntries.remittanceId,
+        branchId: deliveryLedgerEntries.branchId,
+        notes: deliveryLedgerEntries.notes,
+        occurredAt: deliveryLedgerEntries.occurredAt,
+      })
+      .from(deliveryLedgerEntries)
+      .where(eq(deliveryLedgerEntries.consignmentId, consignmentId))
+      .orderBy(deliveryLedgerEntries.occurredAt, deliveryLedgerEntries.id),
+  ]);
+  return { consignment, events, ledger };
+}
+
+/**
+ * **كشف التزامات الجهات** (٢٢/٨) — صفٌّ لكل جهةٍ نشطة عليها التزامٌ قائم: إرساليات مفتوحة،
+ * أو تعرّض تحصيلٍ حيّ، أو أجور مستحقّة، أو عهدة نقدية لم تُورَّد.
+ *
+ * لماذا: المتابعة كانت تتطلّب فتح كل جهةٍ على حدة، فلا أحد يرى أنّ جهةً بعينها تراكم عليها
+ * ٧٩ طرداً منذ أسبوعين. هنا لوحة المطاردة: الأقدمُ التزاماً أولاً، وhasPortal يحدّد أسلوب
+ * المطالبة (ننتظر بوّابتها أم ندخل كشفها بأنفسنا).
+ *
+ * عزل الفرع على **الإرساليات والتوريدات** (الجهة المشتركة branchId=NULL تظهر لكل فرعٍ
+ * بالتزامات فرعه وحدها)؛ أمّا `currentBalance` فرصيدُ الجهة الكلّي — عهدةُ النقد لا تتجزّأ
+ * فرعياً في العمود المخزَّن، وقصُّها هنا كان سيُخفي عهدةً حقيقية عن كل الشاشات الفرعية.
+ */
+export async function listPartyObligations(branchId: number | null) {
+  const db = getDb();
+  if (!db) return [];
+  const cnBranch = branchId == null ? sql`` : sql` AND dc.branchId = ${branchId}`;
+  const rmBranch = branchId == null ? sql`` : sql` AND dr.branchId = ${branchId}`;
+  const openScope = sql`FROM deliveryConsignments dc
+    WHERE dc.partyId = ${deliveryParties.id}
+      AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL')${cnBranch}`;
+  const rows = await db
+    .select({
+      partyId: deliveryParties.id,
+      name: deliveryParties.name,
+      partyType: deliveryParties.partyType,
+      currentBalance: deliveryParties.currentBalance,
+      /** إرساليات الإغلاق المفتوح (DISPATCHED/PARTIAL) — عدّاد المطاردة الرئيس. */
+      openCount: sql<number>`(SELECT COUNT(*) ${openScope})`,
+      /**
+       * Σ المتبقّي الحيّ (codAmount − collectedAmount − counterSettledAmount مقصوصاً عند
+       * صفر)، مستثنىً منه المُعلَنُ رجوعُه — نفس صيغة codDue في «قيد التوصيل» صفّاً صفّاً،
+       * كي لا تتناقض اللوحتان على نفس الطرد.
+       */
+      codDueTotal: sql<string>`(SELECT COALESCE(SUM(CASE WHEN dc.returnDeclaredAt IS NOT NULL THEN 0
+        ELSE GREATEST(CAST(dc.codAmount AS DECIMAL(15,2))
+          - CAST(dc.collectedAmount AS DECIMAL(15,2))
+          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0) END), 0) ${openScope})`,
+      /** عمر أقدم إرسالية مفتوحة بالساعات — محور «الأقدم أولاً». NULL = لا مفتوح. */
+      oldestOpenAgeHours: sql<number | null>`(SELECT TIMESTAMPDIFF(HOUR, MIN(dc.dispatchedAt), NOW()) ${openScope})`,
+      /**
+       * Σ الأجور المستحقّة من دفتر التوصيل — نفس صيغة `feeDue` في listOpenConsignments
+       * (FEE_EARNED − FEE_REFUNDED − FEE_PAID − FEE_OFFSET، مقصوصةً عند صفر لكل إرسالية
+       * DELIVERED) كي يطابق المجموعُ هنا مجموعَ الصفوف هناك.
+       */
+      feeDueTotal: sql<string>`(SELECT COALESCE(SUM(GREATEST((
+          SELECT COALESCE(SUM(CASE
+            WHEN dle.entryType = 'FEE_EARNED' THEN dle.amount
+            WHEN dle.entryType = 'FEE_REFUNDED' THEN -dle.amount
+            WHEN dle.entryType IN ('FEE_PAID', 'FEE_OFFSET') THEN -dle.amount
+            ELSE 0 END), 0)
+          FROM deliveryLedgerEntries dle WHERE dle.consignmentId = dc.id
+        ), 0)), 0)
+        FROM deliveryConsignments dc
+        WHERE dc.partyId = ${deliveryParties.id}
+          AND dc.parcelStatus = 'DELIVERED'${cnBranch})`,
+      lastRemittanceAt: sql<Date | null>`(SELECT MAX(dr.receivedAt) FROM deliveryRemittances dr
+        WHERE dr.partyId = ${deliveryParties.id}${rmBranch})`,
+      hasPortal: sql<number>`(
+        EXISTS (SELECT 1 FROM deliveryPartyMembers dpm
+          WHERE dpm.partyId = ${deliveryParties.id} AND dpm.isActive = 1)
+        OR ${deliveryParties.userId} IS NOT NULL
+      )`,
+    })
+    .from(deliveryParties)
+    .where(and(
+      // ٢٢/٨ (Codex P2 #5): جهةٌ عُطِّلت وعليها التزامٌ ماليّ حيّ (أجور مستحقة/عهدة/طرود مفتوحة)
+      // كانت تختفي من هذه القائمة — وهي **الواجهة الوحيدة** لصرف الأجور المجمّع والتسوية،
+      // فالالتزامُ يبقى بلا مسارٍ للأداء. نُبقيها إن كان `isActive=1` **أو** عليها التزامٌ حيّ.
+      // (الحارس التشغيليّ يمنع الإسناد لجهةٍ معطَّلة أصلاً، فلا خطرَ نمو الالتزامات هنا.)
+      or(
+        eq(deliveryParties.isActive, true),
+        sql`EXISTS (SELECT 1 FROM deliveryConsignments dc
+          WHERE dc.partyId = ${deliveryParties.id}
+            AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL'))`,
+        sql`CAST(${deliveryParties.currentBalance} AS DECIMAL(15,2)) > 0`,
+      ),
+      // رؤية الجهة نفسها كرؤية بقية الوحدة: المملوكة لفرعٍ تظهر في فرعها وحده، والمشتركة
+      // (branchId=NULL) تظهر لكل فرعٍ — بالتزامات ذلك الفرع (الشروط المترابطة أعلاه).
+      branchId == null
+        ? undefined
+        : or(isNull(deliveryParties.branchId), eq(deliveryParties.branchId, branchId)),
+    ));
+  // «عليها التزام» = إرسالية مفتوحة أو أجرة مستحقّة أو عهدة قائمة. الفلترة والفرز في الذاكرة
+  // عمداً: جهات التوصيل بالعشرات، وHAVING كان سيكرّر الاستعلامات المترابطة الثلاثة حرفياً.
+  return rows
+    .filter((r) =>
+      Number(r.openCount) > 0
+      || money(r.feeDueTotal ?? "0").gt(0)
+      || money(r.currentBalance ?? "0").gt(0),
+    )
+    .sort((a, b) => Number(b.oldestOpenAgeHours ?? -1) - Number(a.oldestOpenAgeHours ?? -1))
+    .map((r) => ({
+      partyId: Number(r.partyId),
+      name: r.name,
+      partyType: r.partyType,
+      currentBalance: String(r.currentBalance ?? "0.00"),
+      openCount: Number(r.openCount ?? 0),
+      codDueTotal: String(r.codDueTotal ?? "0.00"),
+      oldestOpenAgeHours: r.oldestOpenAgeHours == null ? null : Number(r.oldestOpenAgeHours),
+      feeDueTotal: String(r.feeDueTotal ?? "0.00"),
+      lastRemittanceAt: r.lastRemittanceAt ?? null,
+      hasPortal: Number(r.hasPortal ?? 0) > 0,
+    }));
 }
 
 // ش١ (٥/٨): listReceptionInvoiceQueue انتقلت إلى server/services/reception/queries.ts
