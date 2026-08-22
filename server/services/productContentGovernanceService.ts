@@ -1,5 +1,4 @@
 import { TRPCError } from "@trpc/server";
-import { TRPCError } from "@trpc/server";
 import { and, desc, eq } from "drizzle-orm";
 import {
   auditLogs,
@@ -31,8 +30,8 @@ export type SaveProductContentDraftInput = {
 
 export type ProductContentDecision = "APPROVED" | "REJECTED";
 
-function auditPayload(content: ProductChannelContentInput): ProductChannelContentInput {
-  return redactAuditValue(content) as ProductChannelContentInput;
+function auditPayload<T>(value: T): T {
+  return redactAuditValue(value) as T;
 }
 
 /** حفظ مسودة جديدة، وإبطال المسودات المفتوحة السابقة للمنتج داخل معاملة واحدة. */
