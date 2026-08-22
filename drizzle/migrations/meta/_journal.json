@@ -1646,6 +1646,20 @@
       "when": 1788052299000,
       "tag": "0248_cash_purchase_clearing",
       "breakpoints": true
+    },
+    {
+      "idx": 249,
+      "version": "5",
+      "when": 1788052300000,
+      "tag": "0249_storefront_reviews_and_wishlist_shares_1",
+      "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "5",
+      "when": 1788052301000,
+      "tag": "0250_storefront_reviews_and_wishlist_shares_2",
+      "breakpoints": true
     }
   ]
 }
