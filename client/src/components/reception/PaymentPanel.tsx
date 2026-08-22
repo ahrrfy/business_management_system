@@ -6,11 +6,13 @@ import {
   ChevronDown,
   CreditCard,
   Landmark,
+  Percent,
   Printer,
   Smartphone,
   Ticket,
   Truck,
   Wallet,
+  X,
   Zap,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -39,6 +41,15 @@ export interface PaymentPanelProps {
   needPaymentRef: boolean;
   grandTotal: number; expectedNow: number; cashRoundingDelta: number;
   sumDirect: number; sumCustom: number; heldDelivery: number; cashDueNow: number;
+  /** ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (سلطة الكاشير ٠–١٥٪): نسبةٌ يُدخلها الكاشير،
+   *  والمبلغ يُحسَب على البيع الخالص وحده (لا يمسّ printSale ولا workOrders). فوق السقف يلزم
+   *  اعتمادُ مدير خادميّ (invoiceDiscountExceedsThreshold على الإجماليّ). سلسلةٌ فارغة = لا خصم. */
+  invoiceDiscountPct: string;
+  setInvoiceDiscountPct: (v: string) => void;
+  invoiceDiscountAmount: number;
+  /** false = لا سلطة على الرأس (سلّةٌ بلا بيعٍ مباشرٍ، مثلاً طباعة/تخصيص فقط). يُعطَّل الحقلُ بصرياً. */
+  invoiceDiscountAllowed: boolean;
+  invoiceDiscountMaxPct: number;
   /** ٨/٨ — شفافية أجرة التوصيل: تُعرض دائماً مهما كان القابض (كانت تختفي لـCOURIER/SHOP).
    *  COURIER = المندوب يقبضها من الزبون (خارج فاتورة المكتبة، لكن الزبون يدفعها) ⇒ نُظهر
    *  «إجمالي ما يدفعه الزبون». SHOP = على المكتبة. COUNTER يُعرض عبر heldDelivery أعلاه. */
@@ -68,6 +79,7 @@ export function PaymentPanel({
   paymentReference, setPaymentReference,
   needPaymentRef,
   grandTotal, expectedNow, cashRoundingDelta,
+  invoiceDiscountPct, setInvoiceDiscountPct, invoiceDiscountAmount, invoiceDiscountAllowed, invoiceDiscountMaxPct,
   sumDirect, sumCustom, heldDelivery, cashDueNow, orderDelivery, heldDeposit,
   paid, change, remaining, isChange, isOwing,
   hasCustom,
@@ -137,6 +149,74 @@ export function PaymentPanel({
             <Ticket aria-hidden className="size-3" /> {couponLabel ?? couponCode}
             <button type="button" onClick={clearCoupon} className="font-semibold underline">إزالة</button>
           </span>
+        )}
+
+        {/* ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر: بلاغ المالك «الخصم غير ظاهر». الحقلُ ظاهرٌ
+            في صفّ المعلومات نفسه بلونٍ كهرمانيٍّ متيقّظ حين يكون له قيمة، وحدٍّ متقطّعٍ خفيف حين
+            يكون فارغاً — إعلانٌ صريحٌ أنّه قابلٌ للتعبئة عند الحاجة. القبول: أرقامٌ ونقطةٌ عشريّة،
+            مقصوصٌ لسلطة الكاشير (١٥٪ بقرار المالك) بلا رفضٍ صامت.
+            invoiceDiscountAllowed=false ⇒ سلّةٌ بلا بيعٍ مباشر (طباعة/تخصيص فقط) فيُخفى الحقل. */}
+        {invoiceDiscountAllowed && (
+          <div
+            role="group"
+            aria-label="خصم على الفاتورة"
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md border-[1.5px] px-2 py-0.5 transition-colors",
+              invoiceDiscountAmount > 0
+                ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] text-[var(--sem-warn)]"
+                : "border-dashed border-primary/40 bg-card text-foreground",
+            )}
+            title={`خصمٌ على البيع المباشر (٠–${invoiceDiscountMaxPct}٪) — فوق السقف يلزم اعتماد مدير`}
+          >
+            <Percent aria-hidden className="size-3" strokeWidth={2.5} />
+            <span className="text-[10px] font-bold">خصم فاتورة</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={invoiceDiscountPct}
+              onChange={(e) => {
+                const src = e.target.value;
+                if (src === "") { setInvoiceDiscountPct(""); return; }
+                // طبِّع الفواصل العربية/الأوروبية إلى نقطة قبل الفحص الصارم — لا نمسح رموزاً بصمت.
+                const norm = src.replace(/[،,]/g, ".");
+                if (!/^\d*\.?\d*$/.test(norm)) return;
+                const n = Number(norm);
+                if (!Number.isFinite(n) || n < 0) return;
+                if (n > invoiceDiscountMaxPct) {
+                  const capStr = Number.isInteger(invoiceDiscountMaxPct)
+                    ? String(invoiceDiscountMaxPct)
+                    : invoiceDiscountMaxPct.toFixed(2).replace(/\.?0+$/, "");
+                  setInvoiceDiscountPct(capStr);
+                  return;
+                }
+                setInvoiceDiscountPct(norm);
+              }}
+              onBlur={(e) => {
+                const raw = e.target.value.trim();
+                if (raw === "" || raw === "0" || raw === "0.") { setInvoiceDiscountPct(""); return; }
+                const n = Number(raw);
+                if (!Number.isFinite(n) || n <= 0) { setInvoiceDiscountPct(""); return; }
+              }}
+              placeholder="0"
+              aria-label="نسبة خصم الفاتورة"
+              dir="ltr"
+              className="w-10 min-w-0 bg-transparent text-center text-sm font-black tabular-nums outline-none"
+            />
+            <span className="text-xs font-bold">%</span>
+            {invoiceDiscountAmount > 0 && (
+              <>
+                <span className="text-xs font-black tabular-nums" dir="ltr">−{fmt(invoiceDiscountAmount)}</span>
+                <button
+                  type="button"
+                  onClick={() => setInvoiceDiscountPct("")}
+                  aria-label="إزالة خصم الفاتورة"
+                  className="inline-flex size-4 items-center justify-center rounded hover:bg-[var(--sem-warn)]/20"
+                >
+                  <X aria-hidden className="size-3" strokeWidth={2.5} />
+                </button>
+              </>
+            )}
+          </div>
         )}
 
         <div className="ms-auto flex items-baseline gap-1.5">

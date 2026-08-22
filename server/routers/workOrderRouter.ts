@@ -168,6 +168,11 @@ const receptionCheckoutSchema = z.object({
       promotionId: z.number().int().positive().nullish(),
     })).min(1),
     amount: positiveMoneyString,
+    // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر (سلطةُ كاشيرٍ إلى ١٥٪، فوقه اعتمادُ مدير):
+    // مبلغٌ مطلق (لا نسبة) يمرَّر لـcreateSaleInTx كما في POS.tsx تماماً، فيدخل computeInvoiceTotals
+    // ويحرسه invoiceDiscountExceedsThreshold على الإجماليّ. المتّجهةُ الوحيدة لخصم فاتورةٍ في
+    // الاستقبال — كوبون/سطر يظلّان مسارَي خصمٍ مستقلَّين.
+    invoiceDiscount: nonNegMoneyString.optional(),
   }).nullish(),
   printSale: z.object({
     lines: z.array(z.object({

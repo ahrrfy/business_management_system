@@ -36,7 +36,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, Send, Wallet } from "lucide-react";
+import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, Zap, ChevronDown, ChevronUp, Send, Wallet, Percent, Calculator } from "lucide-react";
 import { paymentMethodLabel, paymentMethodClass } from "@/lib/paymentMethod";
 import { markPosTabsStockStale, reconcilePosTabsStock } from "@/lib/posStockRefresh";
 import { CopyButton } from "@/components/CopyButton";
@@ -2590,6 +2590,31 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
   const [couponOpen, setCouponOpen] = useState(false);
   // الكوبون يظهر دائماً وهو مُطبَّق (لا يُخفى خصمٌ سارٍ)، أو عند طلبه صراحةً.
   const showCoupon = !dense || !!couponCode || couponOpen;
+  // ٢٣/٨ — طيّ لوحة الأرقام: الشاشات القصيرة (dense) كانت تُخفي طرقَ الدفع تحت التمرير لأنّ
+  // اللوحةَ داخل منطقة تمرير مشتركة. الطيّ يُعيد ~٢٠٠px عمودياً فتظهر الأزرارُ كلّها بلا تمرير.
+  // الافتراضي: مطويّة على dense، مفتوحة على الشاشات الطويلة. القرارُ محفوظٌ في localStorage
+  // فيبقى تفضيلُ الكاشير بين الجلسات. حقلُ المبلغ يقبل الكتابةَ المباشرة بلوحة المفاتيح (بلا حاجة
+  // إلى النمباد أصلاً على أجهزة الديسك)، والأزرارُ الثلاثة (كمية/%/مبلغ) تُبقي اللمس ممكناً
+  // بفتح اللوحة تلقائياً عند اختيار وضعِ كميةٍ أو خصم.
+  const [numpadOpen, setNumpadOpen] = useState<boolean>(() => {
+    try {
+      const stored = typeof window !== "undefined" ? window.localStorage.getItem("pos.numpadOpen") : null;
+      if (stored === "1") return true;
+      if (stored === "0") return false;
+    } catch { /* localStorage may be blocked */ }
+    return !dense;
+  });
+  const persistNumpad = (open: boolean) => {
+    setNumpadOpen(open);
+    try { window.localStorage.setItem("pos.numpadOpen", open ? "1" : "0"); } catch { /* ignore */ }
+  };
+  // فتحٌ تلقائيّ عند اختيار وضع «الكمية» أو «%»: بلا نمباد لا سبيل لتعديلهما هنا (مجهود لمس)،
+  // فيُفتح تلقائياً كي لا يعمى الكاشير عن مدخلٍ لا يراه. وضعُ «المبلغ» يبقى قابلاً للطيّ لأنّ
+  // الحقل نفسه صار `<input>` يقبل الكتابة المباشرة.
+  const setNumModeAndReveal = (m: NumMode) => {
+    setNumMode(m);
+    if ((m === "QTY" || m === "DISC") && !numpadOpen) persistNumpad(true);
+  };
   const showQuickPay = !hasCustomer && !isOwing;
   // حشوة الكتل الداخلية تضيق في أضيق مستوى — آخر ما يُقتطع بعد حذف الثانويّ،
   // ولا يمسّ مقاسات الأزرار نفسها (تبقى ≥44px).
@@ -2674,26 +2699,54 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           </div>
         )}
         {/* خصم على الفاتورة (٢٢/٨) — سلطة الكاشير مقصورة على ١٥٪ (قرار المالك)؛ فوقه بوّابة مدير خادمياً.
-            العرض دائم كي يعرف الكاشير أن الحقل موجود؛ لا حاجة لطيّه (سطر واحد فقط).
-            سقفٌ فعّال ديناميّ: حين تحمل السلّة انحرافاً مسبقاً (عرض/خصم يدويّ)، السلطةُ على الرأس
-            = ١٥٪ − نسبة الانحراف المسبق. الحقلُ يُقصّ نفسه إلى الفعّال، والملصق يعرض السقف الحاليّ. */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3, gap: 8 }}>
-          <span style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 600, flexShrink: 0 }}>
-            خصم على الفاتورة {invoiceDiscountAllowed ? (
-              <span style={{ color: C.mutedFg, fontWeight: 500 }}>
+            صار (٢٣/٨) بارزاً بصرياً: بلاغُ المالك «الخصم غير ظاهر» — الحقلُ كان ١١٫٥px بعرضٍ ٤٢px
+            يبتلعه رأس الإجمالي. أعِيدَ تصميمُه بأيقونةٍ ولوحةٍ صريحة و`title` تصف السقف، فيراه
+            الكاشير عند كلّ حساب. سقفٌ فعّال ديناميّ يقصّ الانحرافَ المسبق (عرض/خصم يدويّ). */}
+        <div
+          role="group"
+          aria-label="خصم على الفاتورة"
+          title={invoiceDiscountAllowed
+            ? `اكتب نسبة الخصم (٠ إلى ${Number.isInteger(effectiveHeaderCapPct) ? effectiveHeaderCapPct : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "")}٪) — فوق السقف يلزم اعتماد مدير`
+            : "خصم رأس الفاتورة غير متاح لسلّة الكروت الرقمية"}
+          style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            marginBottom: 4, gap: 8,
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: `${invoiceDiscountAmount > 0 ? 2 : 1.5}px ${invoiceDiscountAmount > 0 ? "solid" : "dashed"} ${invoiceDiscountAmount > 0 ? C.amber : C.border}`,
+            background: invoiceDiscountAmount > 0 ? `oklch(0.94 0.10 85 / .35)` : C.card,
+            transition: "border-color .12s, background .12s",
+          }}
+        >
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 13, color: invoiceDiscountAmount > 0 ? C.amber : C.fg, fontWeight: 800, flexShrink: 0 }}>
+            <Percent aria-hidden size={14} strokeWidth={2.5} />
+            خصم على الفاتورة
+            {invoiceDiscountAllowed ? (
+              <span style={{ color: C.mutedFg, fontWeight: 600, fontSize: 11 }}>
                 (٠–{Number.isInteger(effectiveHeaderCapPct) ? effectiveHeaderCapPct : effectiveHeaderCapPct.toFixed(2).replace(/\.?0+$/, "")}٪)
               </span>
             ) : (
-              <span style={{ color: C.mutedFg, fontWeight: 500 }}>(غير متاحٍ لسلّة الكروت)</span>
+              <span style={{ color: C.mutedFg, fontWeight: 500, fontSize: 11 }}>(غير متاحٍ للكروت)</span>
             )}
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {invoiceDiscountAmount > 0 && (
-              <span style={{ fontSize: 11.5, color: C.amber, fontWeight: 800, direction: "ltr" }}>
-                −{fmt(invoiceDiscountAmount)}
-              </span>
+              <>
+                <span style={{ fontSize: 12.5, color: C.amber, fontWeight: 900, direction: "ltr" }}>
+                  −{fmt(invoiceDiscountAmount)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setInvoiceDiscountPct("")}
+                  aria-label="إزالة خصم الفاتورة"
+                  title="إزالة الخصم"
+                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, border: "none", background: "transparent", color: C.amber, cursor: "pointer", padding: 0, borderRadius: 4 }}
+                >
+                  <X aria-hidden size={14} strokeWidth={2.5} />
+                </button>
+              </>
             )}
-            <div style={{ display: "flex", alignItems: "center", gap: 2, border: `1.5px solid ${invoiceDiscountAmount > 0 ? C.amber : C.border}`, borderRadius: 7, background: C.card, height: 28, padding: "0 6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 2, border: `2px solid ${invoiceDiscountAmount > 0 ? C.amber : C.primary}`, borderRadius: 8, background: C.card, height: 32, padding: "0 6px", boxShadow: invoiceDiscountAmount > 0 ? `0 0 0 3px oklch(0.94 0.10 85 / .35)` : "none" }}>
               <input
                 type="text"
                 inputMode="decimal"
@@ -2730,13 +2783,13 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
                 aria-label="نسبة خصم الفاتورة"
                 disabled={!invoiceDiscountAllowed}
                 style={{
-                  width: 42, height: 24, border: "none", outline: "none",
+                  width: 52, height: 28, border: "none", outline: "none",
                   background: "transparent", color: C.fg,
-                  fontSize: 13.5, fontWeight: 800, textAlign: "center",
+                  fontSize: 15, fontWeight: 900, textAlign: "center",
                   direction: "ltr", fontFamily: "inherit",
                 }}
               />
-              <span style={{ fontSize: 12, color: C.mutedFg, fontWeight: 700 }}>%</span>
+              <span style={{ fontSize: 13.5, color: invoiceDiscountAmount > 0 ? C.amber : C.mutedFg, fontWeight: 800 }}>%</span>
             </div>
           </div>
         </div>
@@ -2770,13 +2823,58 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
           الدفع تحتها ظاهرَين دائماً. بلا هذا كان الفائض يُقصّ بصمت بلا شريط تمرير. */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain" }}>
 
-      {/* Amount display */}
+      {/* Amount display — ٢٣/٨: صار `<input>` حقيقياً في وضع «المبلغ» فيقبل الكتابة المباشرة
+          من لوحة المفاتيح دون الحاجة إلى النمباد. زرّ الطيّ إلى جواره يُخفي النمباد لتظهر
+          طرقُ الدفع بلا تمرير. القبولُ الصارم: أرقامٌ ونقطةٌ واحدة، تُطبَّع الفواصلُ العربية
+          والأوروبية إلى نقطة. */}
       <div style={{ padding: blockPad, flexShrink: 0 }}>
-        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 9, padding: "5px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: fluid(ultra ? 36 : 40, 5.6, 50) }}>
-          <span style={{ fontSize: 12.5, color: C.mutedFg }}>{modeLabel}</span>
-          <span style={{ fontSize: fluid(20, 3, 26), fontWeight: 900, direction: "ltr", marginRight: 6, color: numMode === "PAY" && payInput ? (isOwing ? C.amber : C.primary) : C.fg }}>
-            {numMode === "PAY" ? (payInput ? Number(payInput).toLocaleString("en-US") : "—") : "—"}
-          </span>
+        <div style={{ background: C.muted, border: `1.5px solid ${C.border}`, borderRadius: 9, padding: "3px 8px 3px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, minHeight: fluid(ultra ? 36 : 40, 5.6, 50) }}>
+          <span style={{ fontSize: 12.5, color: C.mutedFg, flexShrink: 0 }}>{modeLabel}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, flex: 1, justifyContent: "flex-end" }}>
+            {numMode === "PAY" ? (
+              <input
+                type="text"
+                inputMode="decimal"
+                value={payInput}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/[،,]/g, ".");
+                  if (raw === "") { setPayInput(""); return; }
+                  if (!/^-?\d*\.?\d*$/.test(raw)) return;
+                  setPayInput(raw);
+                }}
+                placeholder="—"
+                aria-label="المبلغ المستلم من الزبون"
+                style={{
+                  flex: 1, minWidth: 0, maxWidth: 200,
+                  border: "none", outline: "none", background: "transparent",
+                  fontSize: fluid(20, 3, 26), fontWeight: 900, direction: "ltr",
+                  textAlign: "left", fontFamily: "inherit",
+                  color: payInput ? (isOwing ? C.amber : C.primary) : C.fg,
+                }}
+              />
+            ) : (
+              <span style={{ fontSize: fluid(20, 3, 26), fontWeight: 900, direction: "ltr", marginRight: 6, color: C.mutedFg }}>—</span>
+            )}
+            <button
+              type="button"
+              onClick={() => persistNumpad(!numpadOpen)}
+              aria-label={numpadOpen ? "إخفاء لوحة الأرقام" : "إظهار لوحة الأرقام"}
+              title={numpadOpen ? "إخفاء لوحة الأرقام لتوسيع طرق الدفع" : "إظهار لوحة الأرقام للكاشير اللمسيّ"}
+              style={{
+                display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 4,
+                height: 30, padding: "0 8px",
+                border: `1.5px solid ${numpadOpen ? C.primary : C.border}`,
+                borderRadius: 7,
+                background: numpadOpen ? C.primary : C.card,
+                color: numpadOpen ? C.primaryFg : C.mutedFg,
+                fontFamily: "inherit", fontSize: 11.5, fontWeight: 800, cursor: "pointer",
+                flexShrink: 0,
+              }}
+            >
+              <Calculator aria-hidden size={13} />
+              {numpadOpen ? <ChevronUp aria-hidden size={13} /> : <ChevronDown aria-hidden size={13} />}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -2799,31 +2897,46 @@ function PaymentPanel({ C, total, subtotal, invoiceDiscountAmount, invoiceDiscou
         </div>
       )}
 
-      {/* Odoo 19 Numpad — RTL: mode buttons on right visually */}
-      {/* Grid: [mode | 3 | 2 | 1] / [mode | 6 | 5 | 4] / [mode | 9 | 8 | 7] / [⌫ | . | 0 | +/-] */}
-      <div style={{ padding: blockPad, flexShrink: 0 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr", gap: ultra ? 3 : 4, direction: "rtl" }}>
-          <button style={modeStyle(numMode === "QTY")}  onClick={() => setNumMode("QTY")}>الكمية</button>
-          <button style={numKeyStyle()} onClick={() => numPress("3")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>3</button>
-          <button style={numKeyStyle()} onClick={() => numPress("2")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>2</button>
-          <button style={numKeyStyle()} onClick={() => numPress("1")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>1</button>
+      {/* Odoo 19 Numpad — RTL: mode buttons on right visually.
+          ٢٣/٨: صار قابلاً للطيّ. مفتوحاً افتراضياً على الشاشات الطويلة، مطويّاً على القصيرة
+          (dense) كي لا تُخفي الأزرارَ التالية تحت التمرير. أزرار الوضع (كمية/%/مبلغ) تبقى
+          مرئيّةً في صفٍّ مضغوط حتى وهي مطويّة كي يعرف الكاشير أنّ اللوحة قابلةٌ للاستدعاء
+          — وبعضُها (كميّة/خصم) يفتحها تلقائياً لأنّ لا سبيلَ للمس دونها. */}
+      {numpadOpen ? (
+        <div style={{ padding: blockPad, flexShrink: 0 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "auto 1fr 1fr 1fr", gap: ultra ? 3 : 4, direction: "rtl" }}>
+            <button style={modeStyle(numMode === "QTY")}  onClick={() => setNumModeAndReveal("QTY")}>الكمية</button>
+            <button style={numKeyStyle()} onClick={() => numPress("3")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>3</button>
+            <button style={numKeyStyle()} onClick={() => numPress("2")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>2</button>
+            <button style={numKeyStyle()} onClick={() => numPress("1")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>1</button>
 
-          <button style={modeStyle(numMode === "DISC")} onClick={() => setNumMode("DISC")}>%</button>
-          <button style={numKeyStyle()} onClick={() => numPress("6")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>6</button>
-          <button style={numKeyStyle()} onClick={() => numPress("5")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>5</button>
-          <button style={numKeyStyle()} onClick={() => numPress("4")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>4</button>
+            <button style={modeStyle(numMode === "DISC")} onClick={() => setNumModeAndReveal("DISC")}>%</button>
+            <button style={numKeyStyle()} onClick={() => numPress("6")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>6</button>
+            <button style={numKeyStyle()} onClick={() => numPress("5")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>5</button>
+            <button style={numKeyStyle()} onClick={() => numPress("4")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>4</button>
 
-          <button style={modeStyle(numMode === "PAY")}  onClick={() => setNumMode("PAY")}>المبلغ</button>
-          <button style={numKeyStyle()} onClick={() => numPress("9")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>9</button>
-          <button style={numKeyStyle()} onClick={() => numPress("8")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>8</button>
-          <button style={numKeyStyle()} onClick={() => numPress("7")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>7</button>
+            <button style={modeStyle(numMode === "PAY")}  onClick={() => setNumModeAndReveal("PAY")}>المبلغ</button>
+            <button style={numKeyStyle()} onClick={() => numPress("9")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>9</button>
+            <button style={numKeyStyle()} onClick={() => numPress("8")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>8</button>
+            <button style={numKeyStyle()} onClick={() => numPress("7")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>7</button>
 
-          <button style={numKeyStyle(true)} onClick={() => numPress("⌫")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>⌫</button>
-          <button style={numKeyStyle()}     onClick={() => numPress(".")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>.</button>
-          <button style={numKeyStyle()}     onClick={() => numPress("0")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>0</button>
-          <button style={{ ...numKeyStyle(), fontSize: 13 }} onClick={() => numPress("+/-")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>+/-</button>
+            <button style={numKeyStyle(true)} onClick={() => numPress("⌫")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>⌫</button>
+            <button style={numKeyStyle()}     onClick={() => numPress(".")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>.</button>
+            <button style={numKeyStyle()}     onClick={() => numPress("0")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>0</button>
+            <button style={{ ...numKeyStyle(), fontSize: 13 }} onClick={() => numPress("+/-")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>+/-</button>
+          </div>
         </div>
-      </div>
+      ) : (
+        // شريطُ الأوضاع المضغوط — يظهر مكانَ اللوحة المطويّة كي تبقى الأوضاع قابلةً للتبديل
+        // بلا استرداد اللوحة. اختيارُ «الكمية» أو «%» يعيد فتحها تلقائياً (لا مدخل لمس بديل).
+        <div style={{ padding: blockPad, flexShrink: 0 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4 }}>
+            <button style={{ ...modeStyle(numMode === "QTY"), height: 34, fontSize: 12 }} onClick={() => setNumModeAndReveal("QTY")}>الكمية</button>
+            <button style={{ ...modeStyle(numMode === "DISC"), height: 34, fontSize: 12 }} onClick={() => setNumModeAndReveal("DISC")}>خصم %</button>
+            <button style={{ ...modeStyle(numMode === "PAY"), height: 34, fontSize: 12 }} onClick={() => setNumModeAndReveal("PAY")}>المبلغ</button>
+          </div>
+        </div>
+      )}
 
       {/* كوبون CRM — تحقق خادمي ثم إعادة تحقق ذرّية عند البيع.
           عند ضيق الارتفاع يُطوى خلف زرٍّ (نادر الاستعمال ⇒ تشتيتٌ دائم بلا داعٍ)،

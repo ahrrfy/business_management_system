@@ -229,7 +229,11 @@ export function CartTable({
                     </td>
                     <td className="px-1 py-2.5 text-center text-xs text-muted-foreground">{l.row.unitName}</td>
                     <td className="px-1 py-2.5 text-center text-xs tabular-nums" dir="ltr">
-                      {/* م٤ (§٨.٤): خلية السعر زرٌّ يفتح خصم الصفّ — لا حقل خصمٍ دائمٍ يُنقَر سهواً. */}
+                      {/* م٤ (§٨.٤): خلية السعر زرٌّ يفتح خصم الصفّ — لا حقل خصمٍ دائمٍ يُنقَر سهواً.
+                          ٢٣/٨: كان الزرّ بلا حدودٍ (border-transparent) فيبدو للكاشير نصّاً غير قابلٍ للنقر
+                          — بلاغ المالك «الخصم غير ظاهر». صار له حدٌّ متقطّعٌ خفيف + أيقونةُ % صغيرة يعرف
+                          بها الكاشير أنّها بابُ الخصم قبل تجربتها. الحالة النشطة (l.disc) تبقى بحدّ صلبٍ
+                          كهرمانيٍّ لتمييز البند المُخصَّم عن غيره. */}
                       {isCustom ? (
                         <span>{fmt(effectivePrice(l))}</span>
                       ) : (
@@ -238,13 +242,20 @@ export function CartTable({
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setDiscountFor(discountFor === l.key ? null : l.key); }}
                             className={cn(
-                              "min-h-[32px] rounded-md border px-1.5 tabular-nums hover:bg-muted",
-                              l.disc ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] font-bold text-[var(--sem-warn)]" : "border-transparent",
+                              "inline-flex min-h-[32px] items-center gap-1 rounded-md border px-1.5 tabular-nums transition-colors hover:bg-muted",
+                              l.disc
+                                ? "border-[var(--sem-warn)] bg-[var(--sem-warn-bg)] font-bold text-[var(--sem-warn)]"
+                                : "border-dashed border-primary/40 text-foreground hover:border-primary",
                             )}
-                            aria-label={`سعر السطر ${fmt(effectivePrice(l))} — افتح خصم الصفّ`}
+                            title={l.disc ? "تعديل خصم السطر" : "انقر لإضافة خصم على هذا البند"}
+                            aria-label={`سعر السطر ${fmt(effectivePrice(l))} — ${l.disc ? "تعديل خصم" : "أضِف خصماً"}`}
                           >
-                            {fmt(effectivePrice(l))}
-                            {l.disc ? <div className="text-[10px] text-[var(--sem-warn)]">−{l.disc}%</div> : null}
+                            <span>{fmt(effectivePrice(l))}</span>
+                            {l.disc ? (
+                              <span className="text-[10px] font-bold text-[var(--sem-warn)]">−{l.disc}%</span>
+                            ) : (
+                              <Percent aria-hidden className="size-2.5 text-primary/70" strokeWidth={2.5} />
+                            )}
                           </button>
                           {discountFor === l.key && (
                             <LineDiscountPopover

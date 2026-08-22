@@ -354,6 +354,9 @@ export default function Reception() {
   const [couponInput, setCouponInput] = useState("");
   // الكوبون مطويّ افتراضياً في الدرجات الضيّقة؛ هذه الراية تفتحه بطلب الموظّف.
   const [couponOpen, setCouponOpen] = useState(false);
+  // ٢٣/٨ — خصمُ رأس الفاتورة على البيع المباشر: يقبل الكاشير ٠–١٥٪ (سلطته الافتراضية بقرار المالك،
+  // مرآةً لـPOS)، وفوقه اعتمادُ مدير خادميّ عبر invoiceDiscountExceedsThreshold. سلسلةٌ فارغة = لا خصم.
+  const [invoiceDiscountPct, setInvoiceDiscountPct] = useState("");
   const [couponCode, setCouponCode] = useState<string | null>(null);
   const [couponLabel, setCouponLabel] = useState<string | null>(null);
   // النوعُ من القاموس المشترك لا اتّحاداً مكتوباً بيد: كان يُسقِط `OTHER` فتُصبّ عليه
@@ -517,8 +520,27 @@ export default function Reception() {
   // ───── حسابات هجينة ───────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
   const sumDirectD = cart.filter((c) => !isCustomKind(c)).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
+  // ٢٣/٨ — البيع الخالص (لا طباعة ولا تخصيص) هو وحده وعاء خصم رأس الفاتورة: عقد الخادم
+  // (workOrderRouter.receptionCheckout.regularSale.invoiceDiscount) يمرّره لـcreateSaleInTx
+  // الذي يحسبه على فاتورة البيع فقط. `printSale` فاتورةٌ مستقلّة و«التخصيص» أمرُ شغلٍ (workOrder).
+  const regularSumRawD = cart.filter((c) => !isCustomKind(c) && !c.row.isPrintService).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
   const sumCustomD = cart.filter((c) => isCustomKind(c)).reduce((s, c) => s.plus(D(customLineGrand(c))), D(0));
-  const grandTotalD = sumDirectD.plus(sumCustomD);
+  // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪ كما في POS): يُطبَّق **قبل** حساب grandTotal
+  // ⇒ التقريب النقديّ والعربون المحتجَز والمقبوض النقديّ كلّها تُقاس على الصافي بعد الخصم بلا مسّ
+  // أيّ حاسوبٍ خلفيّ. `regularSale.invoiceDiscount` يُبعث للخادم مبلغاً مطلقاً لينفّذ الحماية نفسها
+  // على invoice.discountAmount (invoiceDiscountExceedsThreshold على الإجماليّ).
+  const CASHIER_INVOICE_DISCOUNT_MAX_PCT = 15;
+  const rawInvoiceDiscountPctD = D(invoiceDiscountPct || 0);
+  const clampedInvoiceDiscountPctD = rawInvoiceDiscountPctD.gt(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+    ? D(CASHIER_INVOICE_DISCOUNT_MAX_PCT)
+    : (rawInvoiceDiscountPctD.lt(0) ? D(0) : rawInvoiceDiscountPctD);
+  const invoiceDiscountAllowed = regularSumRawD.gt(0);
+  const invoiceDiscountAmountD = invoiceDiscountAllowed
+    ? round2(regularSumRawD.times(clampedInvoiceDiscountPctD).div(100))
+    : D(0);
+  const invoiceDiscountAmount = invoiceDiscountAmountD.toNumber();
+  const regularSumNetD = regularSumRawD.minus(invoiceDiscountAmountD);
+  const grandTotalD = sumDirectD.minus(invoiceDiscountAmountD).plus(sumCustomD);
   const grandTotal = round2(grandTotalD).toNumber();
   const sumDirect = round2(sumDirectD).toNumber();
   const sumCustom = round2(sumCustomD).toNumber();
@@ -759,6 +781,8 @@ export default function Reception() {
     setSelKey(null);
     setPayInput("");
     setDeferred(false);
+    // ٢٣/٨ — تفريغ خصم رأس الفاتورة مع تفريغ السلّة كي لا يُطبَّق سهواً على سلّةٍ جديدةٍ لعميلٍ آخر.
+    setInvoiceDiscountPct("");
   }
 
   // ───── الباركود ───────────────────────────────────────────────────────────
@@ -1379,10 +1403,13 @@ export default function Reception() {
       // التقريب بنفس الدالة فيتطابقان، ويقيّد الفرق ADJUST. السلة الخالصة ⇒ مجموع الأسطر = الإجمالي.
       // ش٦: عند التقريب المختلط يُبيَّت فرق السلّة كلّها في مبلغ الفاتورة الحاملة، ويُسمّى
       // للخادم بـcashRoundingOverride فيقيّد الفرق ADJUST عليها.
+      // ٢٣/٨: مبلغُ البيع = صافي أسطر البيع بعد خصم رأس الفاتورة (regularSumRawD − invoiceDiscountAmountD)
+      // + فرق التقريب إن وُجد. الخادم يستقبل الخصمَ مطلقاً في `regularSale.invoiceDiscount` ويعيد
+      // computeInvoiceTotals، فينتج نفس الرقم بالضبط ⇒ توزيعُ المدفوع لا يُخطئ التخصيص.
       const saleAmount = cashRoundActive
         ? round2(effectiveGrandD).toFixed(2)
         : round2(
-            regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))
+            regularSumRawD.minus(invoiceDiscountAmountD)
               .plus(mixedRoundApplied && mixedCarrier === "SALE" ? mixedDeltaAppliedD : D(0)),
           ).toFixed(2);
       const printAmount = round2(
@@ -1539,6 +1566,10 @@ export default function Reception() {
         couponCode: couponCode ?? undefined,
         regularSale: regularLines.length > 0 ? {
           amount: saleAmount,
+          // ٢٣/٨ — خصمُ رأس الفاتورة (سلطة الكاشير ٠–١٥٪): يمرَّر مطلقاً لـcreateSaleInTx على البيع
+          // المباشر فقط (لا يمسّ printSale ولا workOrders). فوقَ الحدّ يرفضه الخادم بـmanualGate إلّا
+          // باعتمادِ مديرٍ (POS.tsx يفعل نفس الشيء). صفر ⇒ حذفٌ من الحمولة.
+          ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
           lines: regularLines.map((c) => {
             // كوبون/عرض: سعر قائمة صحيح الدينار + خصمٌ صريح (نمط POS.tsx buildSaleLine) — الخادم
             // يتحقّق منه مقابل العرض الفعلي بلا رفضٍ لو تغيّر بين المعاينة والحفظ.
@@ -1775,6 +1806,8 @@ export default function Reception() {
       setPayInput("");
       setPaymentReference("");
       setDeferred(false);
+      // ٢٣/٨ — تفريغ خصم رأس الفاتورة بعد البيع الناجح كي لا يمرَّ سهواً إلى العميل التالي.
+      setInvoiceDiscountPct("");
       setCustomer({ customerId: null, name: "", phone: null, isNew: false });
       setReceptionPhone("");
       setChannel("WALK_IN");
@@ -1930,7 +1963,10 @@ export default function Reception() {
           quantity: String(c.qty),
           unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
         })),
-        amount: round2(regularLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0))).toFixed(2),
+        // ٢٣/٨ — الصافي = الأسطر الخام − خصمُ رأس الفاتورة الملتقَط. الخادم يعيد الحساب بنفس المدخلات
+        // عند الترحيل (replayOfflineReception → checkoutReception → createSaleInTx) فينتج نفس الرقم.
+        amount: round2(regularLines.reduce((sum, c) => sum.plus(D(lineTotal(c))), D(0)).minus(invoiceDiscountAmountD)).toFixed(2),
+        ...(invoiceDiscountAmountD.gt(0) ? { invoiceDiscount: invoiceDiscountAmountD.toFixed(2) } : {}),
       } : null,
       printSale: printLines.length > 0 ? {
         lines: printLines.map((c) => ({
@@ -2747,6 +2783,11 @@ export default function Reception() {
         orderDelivery={deliveryDisclosure}
         heldDeposit={round2(heldD).toNumber()}
         paid={paid}
+        invoiceDiscountPct={invoiceDiscountPct}
+        setInvoiceDiscountPct={setInvoiceDiscountPct}
+        invoiceDiscountAmount={invoiceDiscountAmount}
+        invoiceDiscountAllowed={invoiceDiscountAllowed}
+        invoiceDiscountMaxPct={CASHIER_INVOICE_DISCOUNT_MAX_PCT}
         change={change}
         remaining={remaining}
         isChange={isChange}
