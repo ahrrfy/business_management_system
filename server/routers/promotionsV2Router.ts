@@ -15,6 +15,7 @@ import {
   createPromotion,
   deactivatePromotion,
   getPromotionWithTargets,
+  loadPromotionPerformance,
 } from "../services/salesPromotionService";
 import { getDb } from "../db";
 import { withTx } from "../services/tx";
@@ -53,6 +54,19 @@ export const promotionsV2Router = router({
         createdBy: r.createdBy == null ? null : Number(r.createdBy),
       }));
     }),
+
+  /** مؤشرات ربحية تشغيلية من مستندات البيع المجمّدة، مع عزل الفرع نفسه للقائمة. */
+  performance: campaignsReadProcedure.query(async ({ ctx }) => {
+    const branchId = ctx.user.role === "admin"
+      ? null
+      : ctx.user.branchId == null
+        ? null
+        : Number(ctx.user.branchId);
+    if (ctx.user.role !== "admin" && branchId == null) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد" });
+    }
+    return withTx((tx) => loadPromotionPerformance(tx, branchId));
+  }),
 
   getById: campaignsReadProcedure
     .input(z.object({ promotionId: z.number().int().positive() }))

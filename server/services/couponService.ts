@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
 import { TRPCError } from "@trpc/server";
-import { and, eq, sql } from "drizzle-orm";
-import { couponPrograms, couponRedemptions, coupons, promotions } from "../../drizzle/schema";
+import { and, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import {
+  couponPrograms,
+  couponRedemptions,
+  coupons,
+  customers,
+  invoices,
+  promotions,
+} from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { money, toDbMoney } from "./money";
 
@@ -111,4 +118,159 @@ export async function consumeCoupon(
     redemptionCount: sql`${coupons.redemptionCount} + 1`,
     status: sql`CASE WHEN ${coupons.redemptionCount} + 1 >= ${coupon.perCouponLimit} THEN 'REDEEMED' ELSE 'ACTIVE' END`,
   }).where(and(eq(coupons.id, coupon.couponId), eq(coupons.status, "ACTIVE")));
+}
+
+export interface CouponProgramPerformance {
+  programId: number;
+  issuedCoupons: number;
+  activeCoupons: number;
+  voidedCoupons: number;
+  invoiceCount: number;
+  redeemedDiscount: string;
+  linkedNetSales: string;
+  linkedGrossProfit: string;
+  lastRedeemedAt: Date | null;
+}
+
+/** ملخص البرامج من الإصدارات والاستردادات الفعلية؛ الفواتير الملغاة/المصححة لا تُعدّ أداءً. */
+export async function loadCouponProgramPerformance(
+  tx: Tx,
+  branchId: number | null,
+): Promise<Map<number, CouponProgramPerformance>> {
+  const couponCounts = await tx
+    .select({
+      programId: coupons.programId,
+      issuedCoupons: sql<number>`COUNT(*)`,
+      activeCoupons: sql<number>`SUM(CASE WHEN ${coupons.status} = 'ACTIVE' THEN 1 ELSE 0 END)`,
+      voidedCoupons: sql<number>`SUM(CASE WHEN ${coupons.status} = 'VOID' THEN 1 ELSE 0 END)`,
+    })
+    .from(coupons)
+    .innerJoin(couponPrograms, eq(couponPrograms.id, coupons.programId))
+    .where(branchId == null ? undefined : or(isNull(couponPrograms.branchId), eq(couponPrograms.branchId, branchId)))
+    .groupBy(coupons.programId);
+
+  const redemptionRows = await tx
+    .select({
+      programId: couponRedemptions.programId,
+      invoiceCount: sql<number>`COUNT(DISTINCT ${couponRedemptions.invoiceId})`,
+      redeemedDiscount: sql<string>`COALESCE(SUM(${couponRedemptions.discountAmount}), 0)`,
+      linkedNetSales: sql<string>`COALESCE(SUM(GREATEST(${invoices.total} - ${invoices.returnedTotal}, 0)), 0)`,
+      // محافظ عمداً في المرتجع الجزئي: costTotal لا يُخفّض هنا، فلا نعرض ربحاً متفائلاً كاذباً.
+      linkedGrossProfit: sql<string>`COALESCE(SUM(GREATEST(${invoices.total} - ${invoices.returnedTotal}, 0) - ${invoices.costTotal}), 0)`,
+      lastRedeemedAt: sql<Date | null>`MAX(${couponRedemptions.redeemedAt})`,
+    })
+    .from(couponRedemptions)
+    .innerJoin(invoices, eq(invoices.id, couponRedemptions.invoiceId))
+    .where(
+      and(
+        branchId == null ? undefined : eq(couponRedemptions.branchId, branchId),
+        notInArray(invoices.status, ["CANCELLED", "RETURNED", "SUPERSEDED"]),
+      ),
+    )
+    .groupBy(couponRedemptions.programId);
+
+  const result = new Map<number, CouponProgramPerformance>();
+  for (const row of couponCounts) {
+    const programId = Number(row.programId);
+    result.set(programId, {
+      programId,
+      issuedCoupons: Number(row.issuedCoupons ?? 0),
+      activeCoupons: Number(row.activeCoupons ?? 0),
+      voidedCoupons: Number(row.voidedCoupons ?? 0),
+      invoiceCount: 0,
+      redeemedDiscount: "0.00",
+      linkedNetSales: "0.00",
+      linkedGrossProfit: "0.00",
+      lastRedeemedAt: null,
+    });
+  }
+  for (const row of redemptionRows) {
+    const programId = Number(row.programId);
+    const current = result.get(programId) ?? {
+      programId,
+      issuedCoupons: 0,
+      activeCoupons: 0,
+      voidedCoupons: 0,
+      invoiceCount: 0,
+      redeemedDiscount: "0.00",
+      linkedNetSales: "0.00",
+      linkedGrossProfit: "0.00",
+      lastRedeemedAt: null,
+    };
+    result.set(programId, {
+      ...current,
+      invoiceCount: Number(row.invoiceCount ?? 0),
+      redeemedDiscount: toDbMoney(row.redeemedDiscount),
+      linkedNetSales: toDbMoney(row.linkedNetSales),
+      linkedGrossProfit: toDbMoney(row.linkedGrossProfit),
+      lastRedeemedAt: row.lastRedeemedAt == null ? null : new Date(row.lastRedeemedAt),
+    });
+  }
+  return result;
+}
+
+export interface IssuedCouponDetail {
+  assignedCustomerName: string | null;
+  redeemedDiscount: string;
+  lastInvoiceId: number | null;
+  lastInvoiceNumber: string | null;
+  lastInvoiceTotal: string | null;
+  lastInvoiceStatus: string | null;
+  lastRedeemedAt: Date | null;
+}
+
+/** تفاصيل صفحة إصدار واحدة بلا N+1: أسماء المخصص لهم + أحدث فاتورة + مجموع الاستردادات. */
+export async function loadIssuedCouponDetails(
+  tx: Tx,
+  rows: Array<{ id: number; customerId: number | null }>,
+): Promise<Map<number, IssuedCouponDetail>> {
+  const couponIds = rows.map((row) => row.id);
+  if (!couponIds.length) return new Map();
+  const customerIds = Array.from(new Set(rows.flatMap((row) => row.customerId == null ? [] : [row.customerId])));
+  const customerRows = customerIds.length
+    ? await tx.select({ id: customers.id, name: customers.name }).from(customers).where(inArray(customers.id, customerIds))
+    : [];
+  const customerNames = new Map(customerRows.map((row) => [Number(row.id), row.name]));
+  const redemptions = await tx
+    .select({
+      couponId: couponRedemptions.couponId,
+      discountAmount: couponRedemptions.discountAmount,
+      redeemedAt: couponRedemptions.redeemedAt,
+      invoiceId: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      invoiceTotal: invoices.total,
+      invoiceStatus: invoices.status,
+    })
+    .from(couponRedemptions)
+    .innerJoin(invoices, eq(invoices.id, couponRedemptions.invoiceId))
+    .where(inArray(couponRedemptions.couponId, couponIds))
+    .orderBy(desc(couponRedemptions.redeemedAt), desc(couponRedemptions.id));
+
+  const result = new Map<number, IssuedCouponDetail>();
+  for (const row of rows) {
+    result.set(row.id, {
+      assignedCustomerName: row.customerId == null ? null : customerNames.get(row.customerId) ?? null,
+      redeemedDiscount: "0.00",
+      lastInvoiceId: null,
+      lastInvoiceNumber: null,
+      lastInvoiceTotal: null,
+      lastInvoiceStatus: null,
+      lastRedeemedAt: null,
+    });
+  }
+  for (const redemption of redemptions) {
+    const couponId = Number(redemption.couponId);
+    const current = result.get(couponId)!;
+    const first = current.lastInvoiceId == null;
+    result.set(couponId, {
+      ...current,
+      redeemedDiscount: toDbMoney(money(current.redeemedDiscount).plus(redemption.discountAmount)),
+      lastInvoiceId: first ? Number(redemption.invoiceId) : current.lastInvoiceId,
+      lastInvoiceNumber: first ? redemption.invoiceNumber : current.lastInvoiceNumber,
+      lastInvoiceTotal: first ? String(redemption.invoiceTotal) : current.lastInvoiceTotal,
+      lastInvoiceStatus: first ? redemption.invoiceStatus : current.lastInvoiceStatus,
+      lastRedeemedAt: first ? new Date(redemption.redeemedAt) : current.lastRedeemedAt,
+    });
+  }
+  return result;
 }
