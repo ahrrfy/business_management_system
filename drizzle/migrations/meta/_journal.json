@@ -1653,6 +1653,20 @@
       "when": 1788052300000,
       "tag": "0249_0249_product_auto_cart_recommendations",
       "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "5",
+      "when": 1788052301000,
+      "tag": "0250_product_content_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 251,
+      "version": "5",
+      "when": 1788052302000,
+      "tag": "0251_invoice_item_name_snapshot",
+      "breakpoints": true
     }
   ]
 }

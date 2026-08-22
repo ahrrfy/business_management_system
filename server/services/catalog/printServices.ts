@@ -4,6 +4,7 @@ import { categories, productPrices, productUnits, productVariants, products } fr
 import { getDb } from "../../db";
 import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
+import { titleForChannel } from "@shared/productChannelTitles";
 
 /** خدمة طباعة قابلة للبيع: (متغيّر الخدمة × وحدة الأساس) بسعر الفئة + فئتها. لا تحمل كلفة/مواد
  *  (شأن إداري لا يراه الكاشير). price=null ⇒ سعر يدوي يُدخله الكاشير. */
@@ -27,6 +28,8 @@ export async function listPrintServices(tier: PriceTier): Promise<PrintServiceRo
     .select({
       productId: products.id,
       productName: products.name,
+      invoiceLabel: products.invoiceLabel,
+      shortTitle: products.shortTitle,
       variantId: productVariants.id,
       sku: productVariants.sku,
       productUnitId: productUnits.id,
@@ -52,7 +55,7 @@ export async function listPrintServices(tier: PriceTier): Promise<PrintServiceRo
     .orderBy(asc(products.categoryId), asc(products.id));
   return rows.map((r) => ({
     productId: Number(r.productId),
-    productName: r.productName,
+    productName: titleForChannel({ name: r.productName, invoiceLabel: r.invoiceLabel, shortTitle: r.shortTitle }, "invoice"),
     variantId: Number(r.variantId),
     sku: r.sku,
     productUnitId: Number(r.productUnitId),

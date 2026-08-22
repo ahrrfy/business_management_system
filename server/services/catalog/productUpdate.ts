@@ -39,6 +39,13 @@ export interface UpdateProductVariantInput {
 export interface UpdateProductInput {
   productId: number;
   name: string;
+  internalName?: string | null;
+  storeTitle?: string | null;
+  seoTitle?: string | null;
+  shortTitle?: string | null;
+  posLabel?: string | null;
+  invoiceLabel?: string | null;
+  marketingCopy?: string | null;
   categoryId?: number | null;
   isCustomizable?: boolean;
   isActive?: boolean;
@@ -97,6 +104,13 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
       .update(products)
       .set({
         name: input.name.trim(),
+        ...(input.internalName !== undefined ? { internalName: input.internalName?.trim() || null } : {}),
+        ...(input.storeTitle !== undefined ? { storeTitle: input.storeTitle?.trim() || null } : {}),
+        ...(input.seoTitle !== undefined ? { seoTitle: input.seoTitle?.trim() || null } : {}),
+        ...(input.shortTitle !== undefined ? { shortTitle: input.shortTitle?.trim() || null } : {}),
+        ...(input.posLabel !== undefined ? { posLabel: input.posLabel?.trim() || null } : {}),
+        ...(input.invoiceLabel !== undefined ? { invoiceLabel: input.invoiceLabel?.trim() || null } : {}),
+        ...(input.marketingCopy !== undefined ? { marketingCopy: input.marketingCopy?.trim() || null } : {}),
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
         ...(input.isActive != null ? { isActive: input.isActive } : {}),

@@ -15,6 +15,7 @@
     "check:migrations": "node scripts/check-migration-journal.mjs",
     "check:schema-drift": "node scripts/check-migration-schema-drift.mjs --selftest && node scripts/check-migration-schema-drift.mjs",
     "check:orphans": "node scripts/check-orphan-endpoints.mjs",
+    "catalog:report-name-issues": "node scripts/report-product-name-issues.mjs",
     "check:date-boundaries": "node scripts/check-date-boundaries.mjs --selftest && node scripts/check-date-boundaries.mjs",
     "check:colors": "node scripts/check-no-raw-status-colors.mjs",
     "audit:filters": "node scripts/audit-list-filters.mjs",

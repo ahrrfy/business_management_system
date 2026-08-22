@@ -29,6 +29,7 @@ import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { AiProductContentAssistant } from "@/components/product/AiProductContentAssistant";
 import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { type ImageItem } from "@/components/form/ImageUploader";
 import { ProductMediaContentSection } from "@/components/product/ProductMediaContentSection";
@@ -538,6 +539,17 @@ export default function ProductEdit() {
   }
 
   const activeCount = variants.filter((v) => v.isActive).length;
+  const aiProductFacts = {
+    category: categoryId === "" ? null : categoriesQ.data?.find((c) => Number(c.id) === Number(categoryId))?.name ?? null,
+    productType: productType.trim() || null,
+    brand: brand.trim() || null,
+    modelName: modelName.trim() || null,
+    attributes: {},
+    variants: variants.map((v) => ({ color: v.color?.trim() || null, size: v.size?.trim() || null })),
+    saleUnits: units.filter((u) => u.name.trim()).map((u) => ({ name: u.name.trim(), conversionFactor: u.factor.trim() || "1" })),
+    verifiedClaims: [],
+    audience: null,
+  };
 
   return (
     <div className="max-w-6xl mx-auto space-y-4 pb-28">
@@ -562,6 +574,12 @@ export default function ProductEdit() {
             <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
           </div>
         }
+      />
+
+      <AiProductContentAssistant
+        productId={productId}
+        facts={aiProductFacts}
+        onApply={(draft) => setDescription(draft.description)}
       />
 
       {/* بضاعة الأمانة: مفتاح تفعيل — مقفل إن كان الرصيد غير صفري. */}

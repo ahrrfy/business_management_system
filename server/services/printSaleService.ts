@@ -47,6 +47,7 @@ import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
 import { paymentAssetRole } from "./sale/paymentPosting";
 import type { Tx } from "../db";
+import { titleForChannel } from "@shared/productChannelTitles";
 import {
   assertExternalPaymentReplay,
   bindExternalPaymentAttempt,
@@ -275,6 +276,9 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         id: productVariants.id,
         isActive: productVariants.isActive,
         productType: products.productType,
+        productName: products.name,
+        invoiceLabel: products.invoiceLabel,
+        shortTitle: products.shortTitle,
       })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
@@ -330,6 +334,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       quantity: string;
       total: string;
       unitCost: string; // كلفة الوحدة (للعرض) = كلفة مواد السطر ÷ baseQuantity
+      invoiceName: string;
     }> = [];
     const materialAgg = new Map<number, { baseQuantity: number; unitCost: Decimal }>();
     // H6 (انجراف القناتين): كانت قناة الطباعة تحرس **تحت التكلفة** وحدها، بينما مسار البيع يحرس
@@ -377,6 +382,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         quantity: lineRes.quantity,
         total: lineRes.total,
         unitCost: unitCost.toFixed(2),
+        invoiceName: titleForChannel({ name: v.productName, invoiceLabel: v.invoiceLabel, shortTitle: v.shortTitle }, "invoice"),
       });
     }
 
@@ -555,6 +561,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         unitPrice: c.unitPrice,
         unitCost: c.unitCost,
         total: c.total,
+        itemNameSnapshot: c.invoiceName,
       });
     }
 
