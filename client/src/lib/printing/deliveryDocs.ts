@@ -48,6 +48,54 @@ export function printDeliverySlip(
   });
 }
 
+/**
+ * **محضر تسليم دفعة لجهة توصيل** (٢٢/٨) — المستند الذي يوقّعه مستلم الشركة لحظة تسلّم الطرود.
+ *
+ * لماذا: كشف الشركة يصل بعد أسبوع، وبلا خطّ أساس موقَّع لأيّ خلاف على «كم طرداً استلمناه»
+ * تصير المطابقة كلامَ رجال. البيانات كلّها موجودة (listInTransitConsignments يقبل partyId)،
+ * فالفجوة عرضٌ فحسب — نجمع الأسطر في مستندٍ واحدٍ برقم كل إرسالية وCOD المتوقّع منها.
+ */
+export function printDeliveryManifest(
+  party: { name: string; phone?: string | null },
+  parcels: Array<{
+    consignmentNumber: string | null;
+    invoiceNumber: string | null;
+    orderNumber?: string | null;
+    recipientName?: string | null;
+    recipientPhone?: string | null;
+    address?: string | null;
+    codAmount?: string | null;
+    deliveryFee?: string | null;
+  }>,
+  branchName?: string | null,
+) {
+  const totalCod = parcels.reduce((s, p) => s + Number(p.codAmount ?? 0), 0);
+  const totalFee = parcels.reduce((s, p) => s + Number(p.deliveryFee ?? 0), 0);
+  const now = new Date();
+  void printDoc({
+    kind: "zreport",
+    title: "محضر تسليم طرود للتوصيل",
+    subtitle: `${party.name} · ${parcels.length} طرداً`,
+    meta: [
+      branchName ? `الفرع: ${branchName}` : "",
+      `التاريخ: ${now.toLocaleDateString("ar-IQ")}  ${now.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}`,
+      party.phone ? `الجهة: ${party.name} — ${party.phone}` : `الجهة: ${party.name}`,
+    ].filter(Boolean),
+    // سطر لكل طرد داخل الجدول (يستخدم totals كصفوف مفتاح/قيمة عريضة كي يبقى ضمن قالب zreport العام).
+    totals: [
+      ...parcels.map((p) => ({
+        label: `${p.consignmentNumber ?? "—"} · ${p.recipientName ?? "—"}${p.address ? " · " + p.address : ""}`,
+        value: `${fmt(p.codAmount ?? "0")} د.ع`,
+      })),
+      { label: "مجموع COD المتوقَّع", value: `${fmt(String(totalCod))} د.ع` },
+      { label: "مجموع الأجور", value: `${fmt(String(totalFee))} د.ع` },
+    ],
+    footer:
+      "أُقرّ باستلامي الطرود المذكورة أعلاه بعددها ومبالغها للتوصيل والتحصيل.\n"
+      + "الاسم: ______________________  التوقيع: ______________________  التاريخ: ______________",
+  });
+}
+
 /** ملصق شحن للطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم): قبل الإرسال برقم الأمر، وبعده
  *  برقم الإرسالية واسم الجهة (نفس ملصق طلبات المتجر — تكامل وظيفي واحد). */
 export async function printReadyOrderLabel(

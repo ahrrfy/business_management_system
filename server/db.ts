@@ -86,7 +86,11 @@ function createDb(url: string) {
     keepAliveInitialDelay: 10_000,
     connectTimeout: 10_000,
     waitForConnections: true,
-    queueLimit: 50,
+    // ٢٢/٨: رُفع من 50 إلى 100 — بعد إضافة ٣ استعلامات تنبيهات جديدة في `reportsAlertsService`
+    // (delivery-stuck/return-pending/fees-due) صار الاستدعاء المتزامن لـ`getManagementAlerts` من
+    // ثلاث زوايا (فرع ١، فرع ٢، Company view) يبلغ ~45 استعلاماً + الاسترجاعات المتعدّدة الفرعية
+    // في `reconciliation` ⇒ يصطدم بسقف 50 صامتاً في اختبارات pulse. الرفع رخيصٌ (مجرّد سقف طابور).
+    queueLimit: 100,
   });
   return { pool, db: drizzle(pool, { schema, mode: "default" }) };
 }

@@ -701,9 +701,10 @@ describe("cash-nonnegative-core — عقد أبواب CASH OUT", () => {
     "workOrder/create.ts", // قبض عربون
     "workOrder/deliver.ts", // قبض تسليم
   ].sort();
-  // استثناء بنيوي ذاتي الإبطال: الكاتب القديم يحمل OUT خلف ثابت false. لا نعدّه باباً
-  // مادياً، لكن العقد يفشل فور إزالة الثابت كي يُربط بالحارس قبل أن يصبح قابلاً للوصول.
-  const unreachableOutWriters = ["delivery/remittance.ts"];
+  // ٢٢/٨ — حُذف الفرع الميت `feeStillOwed = false` من delivery/remittance.ts (جراحة surgical).
+  // إيصال OUT الوحيد الباقي (استقطاع كشف الشركة) صار محروساً بـassertCashOutAvailable كباقي
+  // كتّاب OUT ⇒ يُفحَص تلقائياً في الحلقة العامّة أدناه بلا استثناء.
+  const unreachableOutWriters: readonly string[] = [];
 
   it("كل كاتب receipts مصنّف fail-closed: OUT محروس أو IN-only مفسّر", () => {
     const root = path.resolve(process.cwd(), "server/services");

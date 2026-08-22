@@ -1683,6 +1683,13 @@
 			"breakpoints": true
 		},
 		{
+			"idx": 255,
+			"version": "5",
+			"when": 1788052306000,
+			"tag": "0255_delivery_counter_settled",
+			"breakpoints": true
+		},
+		{
 			"idx": 256,
 			"version": "5",
 			"when": 1788052307000,
