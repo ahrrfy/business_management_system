@@ -6,7 +6,9 @@ import { Link } from "wouter";
 import { CopyButton } from "@/components/CopyButton";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
+import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { Banknote, CalendarDays, MapPin, ReceiptText, ShoppingCart } from "lucide-react";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -455,7 +457,6 @@ function Shape({ id, sec, isPos = false, size = 76 }: { id: string; sec: number;
     </svg>
   );
 }
-
 /* ═══════════ METRICS BAR ═══════════ */
 
 const TrendIco = ({ color }: { color: string }) => (
@@ -478,9 +479,77 @@ const ShiftIco = ({ color }: { color: string }) => (
   </svg>
 );
 
+/* ═══════════ CONTEXT HEADER ═══════════
+   رأسٌ عمليّ للصفحة: مَن يعمل؟ في أي نطاق؟ وما أقصر المسارات اليومية؟
+   الأزرار تُفلتر بنفس canSeeGate المستعمل في بطاقات الوحدات، فلا نصنع طريقاً بصرياً إلى 403. */
+
+function DashboardHeader() {
+  const T = useT();
+  const me = trpc.auth.me.useQuery();
+  const role = me.data?.role;
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: Boolean(me.data) });
+  const assignedBranch = branches.data?.find((branch) => branch.id === me.data?.branchId);
+  const branchLabel = me.data?.branchId == null ? "كل الفروع" : (assignedBranch?.name ?? "الفرع المعيّن");
+  const roleLabel = me.data?.isOwner ? "مالك النظام" : (me.data?.customRoleLabel ?? (role ? ROLE_LABEL[role] : undefined) ?? "مستخدم النظام");
+  const dateLabel = new Intl.DateTimeFormat("ar-IQ", { weekday: "long", day: "numeric", month: "long", year: "numeric", numberingSystem: "latn" }).format(new Date());
+
+  const salesModule = MODULES.find((module) => module.id === "sales")!;
+  const treasuryModule = MODULES.find((module) => module.id === "treasury")!;
+  const quickActions = [
+    { href: "/pos", label: "نقطة البيع", icon: ShoppingCart, visible: true, primary: true },
+    { href: "/sales/new", label: "فاتورة جديدة", icon: ReceiptText, visible: canSeeGate(salesModule, role, override), primary: false },
+    { href: "/vouchers/receipt/new", label: "سند قبض", icon: Banknote, visible: canSeeGate(treasuryModule, role, override), primary: false },
+  ].filter((action) => action.visible);
+
+  return (
+    <header style={{ background: T.cardBg, borderBottom: `1px solid ${T.cardBord}`, padding: "22px 24px 18px" }}>
+      <div style={{ maxWidth: 1600, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 18, flexWrap: "wrap" }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.secLabel, marginBottom: 5 }}>الشاشة الرئيسية</div>
+          <h1 style={{ margin: 0, fontSize: 24, lineHeight: 1.35, fontWeight: 900, color: T.text }}>أهلاً {me.data?.name ?? "بك"}</h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 9, color: T.sub, fontSize: 11.5 }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <CalendarDays aria-hidden size={14} />
+              {dateLabel}
+            </span>
+            <span aria-hidden style={{ color: T.cardBord }}>
+              •
+            </span>
+            <span style={{ fontWeight: 700 }}>{roleLabel}</span>
+            <span aria-hidden style={{ color: T.cardBord }}>
+              •
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <MapPin aria-hidden size={13} />
+              {branchLabel}
+            </span>
+          </div>
+        </div>
+
+        <nav aria-label="إجراءات يومية سريعة" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {quickActions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <Link key={action.href} href={action.href} style={{ minHeight: 42, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 13px", borderRadius: 9, border: `1px solid ${action.primary ? "var(--dash-pos-chip)" : T.cardBord}`, background: action.primary ? "var(--dash-pos-chip)" : T.statBg, color: action.primary ? "var(--dash-pos-glyph)" : T.text, fontSize: 12, fontWeight: 800, textDecoration: "none", boxShadow: action.primary ? "0 2px 6px oklch(0 0 0 / 0.10)" : "none" }}>
+                <Icon aria-hidden size={16} />
+                {action.label}
+              </Link>
+            );
+          })}
+        </nav>
+      </div>
+    </header>
+  );
+}
+
 function MetricsBar() {
   const T = useT();
   const me = trpc.auth.me.useQuery();
+  const isXNarrow = useMediaQuery("(max-width: 640px)");
+  const isNarrow = useMediaQuery("(max-width: 1023px)");
+  const isCompactDesktop = useMediaQuery("(max-width: 1359px)");
+  const metricCols = isXNarrow ? 2 : isNarrow ? 3 : isCompactDesktop ? 4 : 6;
   const role = me.data?.role ?? "";
   // الأدمن يرى الإجمالي؛ مدير الفرع وغيره يقيّدهم الخادم بفرع الحساب.
   const elevated = role === "admin" || role === "manager";
@@ -646,97 +715,48 @@ function MetricsBar() {
   ];
 
   return (
-    <div
-      style={{
-        background: T.metricsBg,
-        borderBottom: `1px solid ${T.metricsBord}`,
-        padding: "10px 0",
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 12,
-      }}
-    >
-      {stats.map((s, i) => {
-        // بطاقة تنبيه في «صَفا»: تِنت خفيف بلون حالتها (كل تنبيه بلونه لا أحمر موحّد) + حدّ ملوّن رقيق.
-        const abg = s.isAlert ? `color-mix(in oklch, ${s.iBg} 62%, var(--dash-card-bg))` : T.statBg;
-        const abd = s.isAlert ? `color-mix(in oklch, ${s.alertC} 42%, ${T.statBord})` : T.statBord;
-        const card = (
-          <div
-            key={i}
-            className="group"
-            style={{
-              flex: 1,
-              minWidth: 150,
-              height: 50,
-              borderRadius: 11,
-              padding: "0 14px",
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              background: abg,
-              border: `1px solid ${abd}`,
-              boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)",
-              cursor: s.href ? "pointer" : "default",
-              textDecoration: "none",
-            }}
-          >
-            <div
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                flexShrink: 0,
-                background: s.iBg,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              {s.ico}
-            </div>
-            <div>
-              <div
-                style={{
-                  fontSize: 14.5,
-                  fontWeight: 800,
-                  lineHeight: 1.25,
-                  color: s.isAlert ? s.alertC : T.text,
-                }}
-              >
-                {s.value}
+    <section aria-label="مؤشرات اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "16px 24px 4px" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 9 }}>
+        <h2 style={{ margin: 0, color: T.text, fontSize: 14, fontWeight: 900 }}>مؤشرات اليوم</h2>
+        <span style={{ color: T.muted, fontSize: 10.5 }}>تتحدث تلقائياً حسب صلاحياتك ونطاق فرعك</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${metricCols}, minmax(0, 1fr))`, gap: 10 }}>
+        {stats.map((s, i) => {
+          // بطاقة تنبيه في «صَفا»: تِنت خفيف بلون حالتها (كل تنبيه بلونه لا أحمر موحّد) + حدّ ملوّن رقيق.
+          const abg = s.isAlert ? `color-mix(in oklch, ${s.iBg} 62%, var(--dash-card-bg))` : T.statBg;
+          const abd = s.isAlert ? `color-mix(in oklch, ${s.alertC} 42%, ${T.statBord})` : T.statBord;
+          const card = (
+            <div key={i} className="group" style={{ minWidth: 0, minHeight: 74, borderRadius: 11, padding: "11px 12px", display: "flex", alignItems: "center", gap: 10, background: abg, border: `1px solid ${abd}`, boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)", cursor: s.href ? "pointer" : "default", textDecoration: "none" }}>
+              <div style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0, background: s.iBg, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.ico}</div>
+              <div>
+                <div style={{ fontSize: 17, fontWeight: 800, lineHeight: 1.25, color: s.isAlert ? s.alertC : T.text }}>{s.value}</div>
+                <div style={{ fontSize: 10.5, color: T.muted, lineHeight: 1.3, marginTop: 2 }}>{s.label}</div>
               </div>
-              <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.2 }}>{s.label}</div>
-            </div>
-            {s.unit && (
-              <div style={{ marginRight: "auto", fontSize: 9.5, color: T.muted }}>{s.unit}</div>
-            )}
-            {/* زِرّ نَسخ يَظهَر عِند الـhover — يَنسَخ «التَسمية: القيمة الوحدة»
+              {s.unit && <div style={{ marginRight: "auto", fontSize: 10, color: T.muted, textAlign: "left" }}>{s.unit}</div>}
+              {/* زِرّ نَسخ يَظهَر عِند الـhover — يَنسَخ «التَسمية: القيمة الوحدة»
                 stopPropagation/preventDefault لمَنع تَفعيل رابط البِطاقة (href). */}
-            <div
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-              }}
-              className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
-              style={{ marginInlineStart: s.unit ? 4 : "auto", flexShrink: 0 }}
-            >
-              <CopyButton
-                value={s.copyText}
-                title={`نسخ ${s.label}`}
-                successMessage={`نُسخت ${s.label}`}
-              />
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+                className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+                style={{ marginInlineStart: s.unit ? 4 : "auto", flexShrink: 0 }}
+              >
+                <CopyButton value={s.copyText} title={`نسخ ${s.label}`} successMessage={`نُسخت ${s.label}`} />
+              </div>
             </div>
-          </div>
-        );
-        return s.href ? (
-          <Link key={i} href={s.href} style={{ flex: 1, display: "flex", textDecoration: "none" }}>
-            {card}
-          </Link>
-        ) : (
-          card
-        );
-      })}
-    </div>
+          );
+          return s.href ? (
+            <Link key={i} href={s.href} style={{ display: "block", minWidth: 0, textDecoration: "none" }}>
+              {card}
+            </Link>
+          ) : (
+            card
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -807,10 +827,10 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
   return (
     <div
       style={{
-        // minHeight ٢٤٠ + minWidth:0 (بِلا aspect-ratio) لِتَوحيد ارتِفاع الصَفّ ومَنع تَمَدُّد
+        // minHeight + minWidth:0 (بِلا aspect-ratio) لِتَوحيد ارتِفاع الصَفّ ومَنع تَمَدُّد
         // العَرض فَوق مَسار 1fr الضَيّق ⇒ تَراكُب (شَكوى المالك ١٢/٧).
         minWidth: 0,
-        minHeight: 150,
+        minHeight: 136,
         borderRadius: 16,
         overflow: "hidden",
         display: "flex",
@@ -844,17 +864,17 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          gap: 7,
-          padding: "12px 10px 8px",
+          gap: 6,
+          padding: "10px 9px 7px",
           textAlign: "center",
           textDecoration: "none",
         }}
       >
-        <Shape id={m.id} sec={m.sec} isPos={m.id === "pos"} size={50} />
+        <Shape id={m.id} sec={m.sec} isPos={m.id === "pos"} size={44} />
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <div
             style={{
-              fontSize: 13,
+              fontSize: 12.5,
               fontWeight: 700,
               lineHeight: 1.3,
               color: T.text,
@@ -863,7 +883,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           >
             {m.name}
           </div>
-          <div style={{ fontSize: 10.5, color: T.sub, lineHeight: 1.4, fontWeight: 500 }}>
+          <div style={{ fontSize: 10, color: T.sub, lineHeight: 1.4, fontWeight: 500 }}>
             {m.desc}
           </div>
         </div>
@@ -875,7 +895,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           style={{
             display: "flex",
             alignItems: "stretch",
-            height: 44,
+            height: 38,
             flexShrink: 0,
             borderTop: `1px solid ${T.cardBord}`,
           }}
@@ -899,17 +919,14 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
   // عدد الأعمدة متجاوب — كَسر ذَكي يَحفَظ نِسبة البِطاقة قَريبة من المُربَّع:
   //   ≤640px      ⇒ 2 (مَوبايل)
   //   641-1023px  ⇒ 3 (لَوحي)
-  //   1024-1280px ⇒ 4 (تَكبير ١٥٠٪ على شاشة 1920 يُعطي ١٢٨٠ بِالضَبط — يَجِب شُموله)
-  //   1281-1600px ⇒ 5 (تَكبير ١٢٥٪ على 1920 يُعطي ١٥٣٦، شاشات وَسَط ١٤٤٠/١٦٠٠)
-  //   ≥1601px     ⇒ 6 (دِسكتوب كامِل ≥ FHD)
-  // كان 6 ثابتاً ≥1024 يَنتُج بِطاقات ١٤٠×٢٤٠ (مُستَطيلات طَويلة قَبيحة) على ١٥٠٪ زوم.
-  // الحَدَّان 1280/1600 شامِلان (Codex: 1920÷1.5=1280 بِالضَبط لازِم يَدخُل ٤ أَعمِدة).
+  //   1024-1359px ⇒ 4 (تَكبير ١٥٠٪ على FHD = ١٢٨٠؛ يمنع البطاقات الضيقة)
+  //   ≥1360px     ⇒ 6 (ومنها ١٤٤٠ الشائعة؛ يمنع صف ٥+١ اليتيم في قسم المبيعات)
+  // نتعمّد إسقاط حالة ٥ أعمدة: معظم الأقسام تضم ٦/٩ وحدات، فتنتظم ٦ أو ٤ أفضل بصرياً.
   // (تُستدعى الـhooks قبل أي عودة مبكرة — قاعدة Hooks.)
   const isXNarrow = useMediaQuery("(max-width: 640px)");
   const isNarrow = useMediaQuery("(max-width: 1023px)");
-  const isMidNarrow = useMediaQuery("(max-width: 1280px)");
-  const isMidWide = useMediaQuery("(max-width: 1600px)");
-  const cols = isXNarrow ? 2 : isNarrow ? 3 : isMidNarrow ? 4 : isMidWide ? 5 : 6;
+  const isCompactDesktop = useMediaQuery("(max-width: 1359px)");
+  const cols = isXNarrow ? 2 : isNarrow ? 3 : isCompactDesktop ? 4 : 6;
   // نفس بوابة الشريط الجانبي: الدور القالبي + المنح الفردي/الدور المخصّص + مستوى الوحدة.
   // هكذا لا تظهر بطاقة تقود المستخدم إلى 403، وتظهر تلقائياً عند منحه الوحدة صراحةً.
   const mods = MODULES.filter((m) => m.sec === sec.id && canSeeGate(m, role, override));
@@ -920,12 +937,30 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <div style={{ width: 3, height: 14, borderRadius: 2, background: sec.accent, flexShrink: 0 }} />
-        <span style={{ fontSize: 11, fontWeight: 700, color: T.secLabel, letterSpacing: "0.06em" }}>
+        <span style={{ fontSize: 11, fontWeight: 800, color: T.secLabel, letterSpacing: "0.04em" }}>
           {sec.name}
+        </span>
+        <span
+          style={{
+            minWidth: 22,
+            height: 20,
+            padding: "0 6px",
+            borderRadius: 10,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: T.statBg,
+            border: `1px solid ${T.statBord}`,
+            color: T.muted,
+            fontSize: 9.5,
+            fontWeight: 800,
+          }}
+        >
+          {fmtAr(mods.length)}
         </span>
         <div style={{ flex: 1, height: 1, background: T.secLine, opacity: 0.35 }} />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap: 12 }}>
         {mods.map((m) => (
           <ModuleCard key={m.id} m={m} />
         ))}
@@ -1037,6 +1072,8 @@ function MorningBrief() {
   return (
     <section
       style={{
+        maxWidth: 1648,
+        margin: "0 auto",
         padding: "16px 24px 4px",
         display: "flex",
         flexDirection: "column",
@@ -1174,7 +1211,10 @@ function TasksBrief() {
   if (myOpenTasks === 0 && overdueTasks === 0) return null;
 
   return (
-    <section style={{ padding: "8px 24px 4px", display: "flex", flexDirection: "column", gap: 10 }} aria-label="المهام والتذاكر">
+    <section
+      style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", display: "flex", flexDirection: "column", gap: 10 }}
+      aria-label="المهام والتذاكر"
+    >
       <h2 style={{ fontSize: 13, fontWeight: 800, color: T.text, margin: 0, letterSpacing: "0.01em" }}>
         المهام والتذاكر
       </h2>
@@ -1438,26 +1478,16 @@ export default function Dashboard() {
   // فئة الكاشير (القالبي + المخصّص المشتق «كاشير تجزئة/طباعة») ⇒ محطة عمل مركّزة لا شبكة الوحدات.
   if (me.data?.role === "cashier") return <CashierHome />;
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: T.bg,
-        direction: "rtl",
-        fontFamily: "'Cairo', sans-serif",
-        margin: "-24px",
-      }}
-    >
+    <div style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
+      <DashboardHeader />
       <MetricsBar />
       <MorningBrief />
       <TasksBrief />
-      <div
-        style={{
-          padding: "18px 24px 32px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 20,
-        }}
-      >
+      <div style={{ maxWidth: 1648, margin: "0 auto", padding: "18px 24px 32px", display: "flex", flexDirection: "column", gap: 20 }}>
+        <header>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 900, color: T.text }}>وحدات النظام</h2>
+          <p style={{ margin: "3px 0 0", fontSize: 11, color: T.muted }}>اختر الوحدة المطلوبة، أو استخدم الإجراءات المباشرة أسفل كل بطاقة.</p>
+        </header>
         {SECTIONS.map((sec) => (
           <SectionRow key={sec.id} sec={sec} />
         ))}
