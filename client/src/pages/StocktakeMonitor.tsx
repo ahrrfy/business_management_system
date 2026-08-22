@@ -46,6 +46,9 @@ import {
   ListChecks,
   UserPlus,
   UserMinus,
+  ScanBarcode,
+  PackagePlus,
+  Ban,
 } from "lucide-react";
 
 /* ───────── ثوابت العرض ───────── */
@@ -169,6 +172,29 @@ export default function StocktakeMonitor() {
   );
   const assignableUsers = trpc.stocktakes.assignableUsers.useQuery(undefined, {
     enabled: idOk && isManager,
+  });
+  // طابور الباركود المجهول (ب-٤) — باركوداتٌ مُسِحت خارج نطاق الجلسة، للعرض لأمين المخزن+.
+  const unknownScans = trpc.stocktakes.unknownScans.useQuery(
+    { sessionId },
+    { enabled: idOk && canView, refetchInterval: 5000 },
+  );
+  const resolveUnknown = trpc.stocktakes.resolveUnknownScan.useMutation({
+    onSuccess: async (res) => {
+      notify.ok(
+        res.action === "ADD_TO_SCOPE"
+          ? res.alreadyInScope
+            ? "الصنف مُدرَجٌ في الجلسة سلفاً — أُغلق الباركود"
+            : "أُضيف الصنف لنطاق الجرد"
+          : "أُغلق الباركود المجهول",
+      );
+      await Promise.all([
+        utils.stocktakes.unknownScans.invalidate(),
+        utils.stocktakes.monitor.invalidate(),
+        utils.stocktakes.remaining.invalidate(),
+        utils.count.mine.invalidate(),
+      ]);
+    },
+    onError: (e) => notify.err(e),
   });
 
   /* ───── حالة الحوارات ───── */
@@ -516,6 +542,103 @@ export default function StocktakeMonitor() {
               {r.variantLabel} — السبب: {r.reason} (طلبها {r.requestedByName})
             </p>
           ))}
+        </div>
+      )}
+
+      {/* طابور الباركود المجهول (ب-٤): باركوداتٌ مُسِحت خارج نطاق الجلسة */}
+      {(unknownScans.data?.length ?? 0) > 0 && (
+        <div className="space-y-2 rounded-lg border px-4 py-3 text-sm badge-status-pending">
+          <p className="inline-flex items-center gap-1.5 font-bold">
+            <ScanBarcode aria-hidden className="size-4" /> {nf(unknownScans.data!.length)} باركود
+            مُسِح خارج نطاق الجلسة — راجعها: أضِف الصنف للنطاق أو تجاهل
+          </p>
+          <div className="space-y-1.5">
+            {unknownScans.data!.map((u) => (
+              <div
+                key={u.barcode}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-background/60 px-3 py-2"
+              >
+                <span className="font-mono text-xs font-bold" dir="ltr">
+                  {u.barcode}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {u.resolvedName
+                    ? `صنف معروف: ${u.resolvedName}${u.alreadyInScope ? " (مُدرَج سلفاً)" : ""}`
+                    : "غير معروف في الكتالوج"}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {nf(u.occurrences)}× · آخر مسح: {u.lastScannedBy || "—"}
+                </span>
+                {isManager && (
+                  <span className="ms-auto flex items-center gap-2">
+                    {u.resolvable && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1 text-xs"
+                        disabled={resolveUnknown.isPending}
+                        onClick={async () => {
+                          const ok = await confirm({
+                            title: "إضافة الصنف لنطاق الجرد",
+                            description: `سيُضاف «${u.resolvedName}» إلى هذه الجلسة ليُعدّ. متابعة؟`,
+                            confirmText: "أضِف للنطاق",
+                          });
+                          if (!ok) return;
+                          resolveUnknown.mutate({
+                            sessionId,
+                            barcode: u.barcode,
+                            action: "ADD_TO_SCOPE",
+                          });
+                        }}
+                      >
+                        <PackagePlus aria-hidden className="size-3.5" /> أضِف للنطاق
+                      </Button>
+                    )}
+                    {u.alreadyInScope && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1 text-xs"
+                        disabled={resolveUnknown.isPending}
+                        onClick={() =>
+                          resolveUnknown.mutate({
+                            sessionId,
+                            barcode: u.barcode,
+                            action: "ADD_TO_SCOPE",
+                          })
+                        }
+                      >
+                        <PackagePlus aria-hidden className="size-3.5" /> أغلِق (مُدرَج)
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 gap-1 text-xs"
+                      disabled={resolveUnknown.isPending}
+                      onClick={async () => {
+                        const ok = await confirm({
+                          variant: "warning",
+                          title: "تجاهل الباركود المجهول",
+                          description:
+                            "سيُغلق هذا الباركود بلا إضافته للنطاق (يبقى في السجل). متابعة؟",
+                          confirmText: "تجاهل",
+                        });
+                        if (!ok) return;
+                        resolveUnknown.mutate({
+                          sessionId,
+                          barcode: u.barcode,
+                          action: "DISMISS",
+                        });
+                      }}
+                    >
+                      <Ban aria-hidden className="size-3.5" /> تجاهل
+                    </Button>
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

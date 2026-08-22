@@ -42,6 +42,7 @@ import {
   ChevronDown,
   Hand,
   ScanLine,
+  ListPlus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
@@ -125,6 +126,10 @@ export default function CountPortal() {
   }>({ method: "SEARCH_PICK", scannedBarcode: null });
   const [cameraOpen, setCameraOpen] = useState(false);
   const [flashId, setFlashId] = useState<number | null>(null);
+  // وضع التجميع (ب-٥، لكل جهاز): كل مسحة تزيد الوحدة الممسوحة +١ في البطاقة المفتوحة —
+  // لأرفف القطع الكثيرة. bump يبلّغ QtySheet بزيادةٍ عبر token تصاعديّ.
+  const [tallyMode, setTallyMode] = useState(false);
+  const [bump, setBump] = useState<{ unit: string; token: number } | null>(null);
   const [showOthers, setShowOthers] = useState(false);
   const [finished, setFinished] = useState<{ sessionMovedToReview: boolean } | null>(null);
   const [showListAfterSubmit, setShowListAfterSubmit] = useState(false);
@@ -398,14 +403,44 @@ export default function CountPortal() {
       if (!scanned) return;
       const hit = items.find((i) => i.units.some((u) => unitHasBarcode(u, scanned)));
       if (!hit) {
-        notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
+        // باركودٌ خارج الجلسة (ب-٤): لا يضيع — يُلتقط للمشرف (أفضل جهد، لا يعطّل العدّ).
+        notify.warn(
+          "الباركود غير موجود ضمن منتجات هذه الجلسة — أُبلِغ المشرف لمراجعته",
+          scanned,
+        );
+        if (canCount) {
+          void utils.client.count.submit
+            .mutate({
+              sessionCode: code,
+              unknownBarcode: scanned,
+              clientRequestId: newClientRequestId(),
+            })
+            .catch(() => {});
+        }
+        return;
+      }
+      const unitName =
+        hit.units.find((u) => unitHasBarcode(u, scanned))?.unitName ??
+        baseUnitName(hit);
+      // وضع التجميع: مسحٌ متكرّر للبطاقة المفتوحة يزيد وحدته +١؛ وصنفٌ آخر يلزمه حفظ الحالي أولاً.
+      if (tallyMode && openVariantId != null) {
+        if (openVariantId === hit.variantId) {
+          setBump((b) => ({ unit: unitName, token: (b?.token ?? 0) + 1 }));
+        } else {
+          notify.info(
+            "احفظ العدّة الحالية قبل الانتقال لصنفٍ آخر",
+            "في وضع التجميع اعدّ صنفاً واحداً حتى تحفظه ثم امسح التالي.",
+          );
+        }
         return;
       }
       setFlashId(hit.variantId);
       window.setTimeout(() => setFlashId(null), 600);
       openCard(hit, { method: source, scannedBarcode: scanned });
+      // فتحُ بطاقةٍ في وضع التجميع يبدأ الوحدة الممسوحة عند ١ (عدٌّ طازج بالمسح).
+      if (tallyMode) setBump({ unit: unitName, token: 1 });
     },
-    [items, openCard],
+    [items, openCard, canCount, code, utils, tallyMode, openVariantId],
   );
   const barcodeInput = useBarcodeInput((code) => {
     setQ("");
@@ -413,7 +448,11 @@ export default function CountPortal() {
   });
 
   useBarcodeScanner((raw) => handleBarcode(raw, "SCAN_HID"), {
-    enabled: phase === "counting" && openVariantId == null && canCount,
+    // في وضع التجميع يبقى القارئ حيّاً والبطاقة مفتوحة (كل مسحة +١)؛ وإلا يُعطَّل أثناء الفتح.
+    enabled:
+      phase === "counting" &&
+      canCount &&
+      (openVariantId == null || tallyMode),
   });
 
   /** Enter في حقل البحث: تطابق حرفي مع باركود/SKU ⇒ افتح البطاقة (اختيار يدويّ لا مسح). */
@@ -897,6 +936,21 @@ export default function CountPortal() {
         >
           <Camera aria-hidden className="size-4" /> مسح
         </button>
+        {/* وضع التجميع (ب-٥): كل مسحة +١ في البطاقة المفتوحة — لأرفف القطع الكثيرة. */}
+        <button
+          type="button"
+          onClick={() => setTallyMode((v) => !v)}
+          aria-pressed={tallyMode}
+          className={cn(
+            "flex h-11 w-full shrink-0 items-center justify-center gap-1.5 rounded-xl border px-4 text-sm font-bold transition-colors active:scale-95 sm:w-auto",
+            tallyMode
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border bg-background text-muted-foreground",
+          )}
+        >
+          <ListPlus aria-hidden className="size-4" />
+          {tallyMode ? "التجميع مُفعَّل" : "تجميع"}
+        </button>
       </div>
 
       {/* القائمة */}
@@ -1124,7 +1178,15 @@ export default function CountPortal() {
       {/* بطاقة العدّ (bottom sheet) */}
       {openItem && (
         <div className="absolute inset-0 z-40">
-          <button type="button" aria-label="إغلاق" className="absolute inset-0 bg-black/40" onClick={() => setOpenVariantId(null)} />
+          <button
+            type="button"
+            aria-label="إغلاق"
+            className="absolute inset-0 bg-black/40"
+            onClick={() => {
+              setOpenVariantId(null);
+              setBump(null);
+            }}
+          />
           <div className="absolute inset-x-0 bottom-0 max-h-[88%] overflow-y-auto rounded-t-2xl bg-background p-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl">
             <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-border" />
             <QtySheet
@@ -1134,7 +1196,12 @@ export default function CountPortal() {
               recountReason={openRecountReason}
               queued={queuedByVariant.get(openItem.variantId)}
               saving={submitMut.isPending}
-              onCancel={() => setOpenVariantId(null)}
+              tally={tallyMode}
+              bump={bump}
+              onCancel={() => {
+                setOpenVariantId(null);
+                setBump(null);
+              }}
               onSave={(qty, breakdown) => saveCount(openItem, openMode, qty, breakdown)}
             />
           </div>
@@ -1160,6 +1227,8 @@ function QtySheet({
   recountReason,
   queued,
   saving,
+  tally = false,
+  bump = null,
   onCancel,
   onSave,
 }: {
@@ -1168,6 +1237,10 @@ function QtySheet({
   recountReason?: string;
   queued?: QueuedCount;
   saving: boolean;
+  /** وضع التجميع: عدٌّ طازجٌ بالمسح (بلا تعبئة مسبقة)، وكل مسحة تزيد وحدتها +١. */
+  tally?: boolean;
+  /** إشارة زيادةٍ من الأب عند كل مسحة (token تصاعديّ) — تزيد الوحدة المذكورة +١. */
+  bump?: { unit: string; token: number } | null;
   onCancel: () => void;
   onSave: (qty: number, unitBreakdown: string | undefined) => void;
 }) {
@@ -1180,8 +1253,9 @@ function QtySheet({
   const baseUnit = baseUnitName(item);
 
   const [vals, setVals] = useState<Record<string, string>>(() => {
-    // تعبئة مسبقة عند تعديل عدّي السابق فقط — إعادة العدّ/التحقّقي عدّ جديد أعمى من الصفر.
-    if (mode === "FIRST") {
+    // في وضع التجميع نبدأ فارغين دائماً (عدٌّ طازجٌ يتراكم بالمسح).
+    // وإلا: تعبئة مسبقة عند تعديل عدّي السابق فقط — إعادة العدّ/التحقّقي عدٌّ جديد أعمى من الصفر.
+    if (!tally && mode === "FIRST") {
       const src = queued?.unitBreakdown ?? item.myCount?.unitBreakdown ?? null;
       if (src) {
         try {
@@ -1199,6 +1273,17 @@ function QtySheet({
     }
     return {};
   });
+
+  // وضع التجميع: كل زيادةٍ من الأب (token جديد) تضيف ١ للوحدة الممسوحة.
+  const lastBump = useRef(0);
+  useEffect(() => {
+    if (!bump || bump.token <= lastBump.current) return;
+    lastBump.current = bump.token;
+    setVals((v) => {
+      const cur = parseInt(v[bump.unit] || "0", 10) || 0;
+      return { ...v, [bump.unit]: String(Math.min(cur + 1, 9_999_999)) };
+    });
+  }, [bump]);
 
   const setVal = (unitName: string, raw: string) => {
     setVals((v) => ({ ...v, [unitName]: raw.replace(/\D/g, "").slice(0, 7) }));
@@ -1236,6 +1321,12 @@ function QtySheet({
         → رجوع للقائمة
       </button>
 
+      {tally && (
+        <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-primary/10 px-3 py-2 text-xs font-semibold leading-relaxed text-primary">
+          <ListPlus aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+          <span>وضع التجميع: كل مسحةٍ لهذا الصنف تزيد وحدتها +١. احفظ عند الانتهاء ثم امسح الصنف التالي.</span>
+        </div>
+      )}
       {isRecount && (
         <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
           <RefreshCw aria-hidden className="mt-0.5 size-3.5 shrink-0" />

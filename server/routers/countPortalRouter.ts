@@ -23,6 +23,7 @@ import {
   getPortalCatalog,
   getPortalDynamic,
   getPortalPulse,
+  recordUnknownScan,
   resolvePortalIdentity,
   submitCount,
 } from "../services/countPortalService";
@@ -182,18 +183,25 @@ export const countPortalRouter = router({
       return { v, cv, changed: true as const, catalog: catalog?.items ?? null, dynamic };
     }),
 
-  /** تسجيل عدّة (idempotent عبر clientRequestId — آمن لمزامنة طابور الأوفلاين). */
+  /**
+   * تسجيل عدّة (idempotent عبر clientRequestId — آمن لمزامنة طابور الأوفلاين).
+   *
+   * يطوي أيضاً **التقاط الباركود المجهول** (ب-٤): إن حُدِّد `unknownBarcode` (بلا variantId)
+   * سُجِّل في طابور الجلسة بدل عدٍّ — عمداً في هذا الإجراء لا إجراءٍ جديد، لأنّ أيّ publicProcedure
+   * جديد = انتهاءُ سلطةٍ يرفضه حارس الصلاحيات (سلطته none). النتيجة موحّدة بحقل `kind`.
+   */
   submit: publicProcedure
     .input(
       z.object({
         sessionCode,
-        variantId: z.number().int().positive(),
+        variantId: z.number().int().positive().optional(),
         // الكمية بالوحدة الأساس (التحويل من كرتون/درزن يتم في الواجهة قبل الإرسال).
         qty: z
           .number()
           .int("الكمية بالوحدة الأساس يجب أن تكون عدداً صحيحاً")
           .min(0, "الكمية لا تكون سالبة")
-          .max(99_999_999, "الكمية أكبر من المعقول — راجع الإدخال"),
+          .max(99_999_999, "الكمية أكبر من المعقول — راجع الإدخال")
+          .optional(),
         unitBreakdown: z.string().max(500).optional(),
         scannerGuardOverride: z.boolean().optional(),
         // نسب العدّة إلى مصدرها؛ الإثبات النهائي (إعادة حلّ الباركود) خادميّ في submitCount.
@@ -201,11 +209,48 @@ export const countPortalRouter = router({
           .enum(["SCAN_HID", "SCAN_CAMERA", "MANUAL_AUTHORIZED", "SEARCH_PICK"])
           .optional(),
         scannedBarcode: z.string().trim().max(64).optional(),
+        // مسار الباركود المجهول: باركودٌ مُسِح ولم يُحلّ داخل الجلسة (يُلتقط للمشرف، لا يُعدّ).
+        unknownBarcode: z.string().trim().min(1).max(64).optional(),
         clientRequestId: z.string().uuid(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       const identity = await resolvePortalIdentity(ctx, input.sessionCode);
+
+      // مسار الباركود المجهول (ب-٤): يُلتقط بدل أن يضيع، ولا يُعدّ.
+      if (input.unknownBarcode) {
+        const res = await recordUnknownScan(identity, {
+          barcode: input.unknownBarcode,
+          clientRequestId: input.clientRequestId,
+        });
+        if (!res.idempotent && res.recorded) {
+          await logAudit(ctx, {
+            action: "stocktake.unknownScan",
+            entityType: "stocktake",
+            entityId: identity.session.id,
+            newValue: {
+              barcode: input.unknownBarcode,
+              countedByName: identity.countedByName,
+              assignmentId: identity.assignment.id,
+              clientRequestId: input.clientRequestId,
+            },
+          });
+        }
+        return {
+          ok: true as const,
+          kind: "UNKNOWN" as const,
+          verifyMatch: null,
+          idempotent: res.idempotent,
+        };
+      }
+
+      // مسار العدّ العاديّ — يلزمه المتغيّر والكمية.
+      if (input.variantId == null || input.qty == null) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "العدّة تحتاج تحديد الصنف والكمية.",
+        });
+      }
       const res = await submitCount(identity, {
         variantId: input.variantId,
         qty: input.qty,

@@ -300,7 +300,20 @@ export default function MyStocktakeWorkspace() {
         (item) => matchesBarcode(item, value) || item.sku === value,
       );
       if (!found) {
-        notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", value);
+        // باركودٌ خارج الجلسة (ب-٤): يُلتقط للمشرف بدل أن يضيع (أفضل جهد).
+        notify.warn(
+          "الباركود غير موجود ضمن منتجات هذه الجلسة — أُبلِغ المشرف لمراجعته",
+          value,
+        );
+        if (st?.session.status === "COUNTING" && st.assignment.status === "ACTIVE") {
+          void utils.client.count.submit
+            .mutate({
+              sessionCode: code,
+              unknownBarcode: value,
+              clientRequestId: newClientRequestId(),
+            })
+            .catch(() => {});
+        }
         return;
       }
       // باركود وحدة أكبر (كرتون/درزن) ⇒ افتح الكمية على وحدته لا على وحدة الأساس.
@@ -309,7 +322,7 @@ export default function MyStocktakeWorkspace() {
         scannedBarcode: value,
       });
     },
-    [items, openItem],
+    [items, openItem, st, code, utils],
   );
   const barcodeInput = useBarcodeInput((code) => {
     setQuery("");
