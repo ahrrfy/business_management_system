@@ -250,11 +250,12 @@ describe("P2/Sh2 — treasury and delivery posting contracts", () => {
         "deliveryFeeAccrualIntent",
       ],
       "delivery/dispatch.ts": ["deliveryWorkOrderSaleIntent"],
+      // ٢٢/٨: الأجور لم تعد تُدفع من `recordDeliveryRemittance` — انتقلت لسندٍ مستقلّ في
+      // `fees.ts` (surgical worker حذف الفرع الميت `feeStillOwed = false`). صافي التوريد =
+      // المُحصَّل − الاستقطاع فقط. عقدُ استقطاع الكشف OUT صار محروساً بـ`assertCashOutAvailable`.
       "delivery/remittance.ts": [
         "deliveryCustomerCollectionIntent",
         "deliveryRemitIntent",
-        "deliveryFeeSettlementIntent",
-        "deliveryFeeHeldPayoutIntent",
       ],
       "delivery/fees.ts": [
         "deliveryFeeSettlementIntent",
