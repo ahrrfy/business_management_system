@@ -14096,7 +14096,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:346"
+      "loc": "server/routers/stocktakeRouter.ts:349"
     },
     {
       "surface": "trpc",
@@ -14113,7 +14113,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "RAW_ROLE_GATE|SENSITIVE_ACTION",
-      "loc": "server/routers/stocktakeRouter.ts:646"
+      "loc": "server/routers/stocktakeRouter.ts:649"
     },
     {
       "surface": "trpc",
@@ -14130,7 +14130,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: approve",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/stocktakeRouter.ts:549"
+      "loc": "server/routers/stocktakeRouter.ts:552"
     },
     {
       "surface": "trpc",
@@ -14147,7 +14147,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:327"
+      "loc": "server/routers/stocktakeRouter.ts:330"
     },
     {
       "surface": "trpc",
@@ -14164,7 +14164,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:224"
+      "loc": "server/routers/stocktakeRouter.ts:227"
     },
     {
       "surface": "trpc",
@@ -14181,7 +14181,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: cancel",
       "flags": "ADMIN_ONLY|SENSITIVE_ACTION",
-      "loc": "server/routers/stocktakeRouter.ts:687"
+      "loc": "server/routers/stocktakeRouter.ts:690"
     },
     {
       "surface": "trpc",
@@ -14198,7 +14198,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:737"
+      "loc": "server/routers/stocktakeRouter.ts:740"
     },
     {
       "surface": "trpc",
@@ -14215,7 +14215,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:753"
+      "loc": "server/routers/stocktakeRouter.ts:756"
     },
     {
       "surface": "trpc",
@@ -14249,7 +14249,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:722"
+      "loc": "server/routers/stocktakeRouter.ts:725"
     },
     {
       "surface": "trpc",
@@ -14266,7 +14266,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:521"
+      "loc": "server/routers/stocktakeRouter.ts:524"
     },
     {
       "surface": "trpc",
@@ -14283,7 +14283,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:627"
+      "loc": "server/routers/stocktakeRouter.ts:630"
     },
     {
       "surface": "trpc",
@@ -14300,7 +14300,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:671"
+      "loc": "server/routers/stocktakeRouter.ts:674"
     },
     {
       "surface": "trpc",
@@ -14317,7 +14317,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:285"
+      "loc": "server/routers/stocktakeRouter.ts:288"
     },
     {
       "surface": "trpc",
@@ -14334,7 +14334,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:734"
+      "loc": "server/routers/stocktakeRouter.ts:737"
     },
     {
       "surface": "trpc",
@@ -14351,7 +14351,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:264"
+      "loc": "server/routers/stocktakeRouter.ts:267"
     },
     {
       "surface": "trpc",
@@ -14368,7 +14368,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:762"
+      "loc": "server/routers/stocktakeRouter.ts:765"
     },
     {
       "surface": "trpc",
@@ -14385,7 +14385,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:294"
+      "loc": "server/routers/stocktakeRouter.ts:297"
     },
     {
       "surface": "trpc",
@@ -14402,7 +14402,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:202"
+      "loc": "server/routers/stocktakeRouter.ts:205"
     },
     {
       "surface": "trpc",
@@ -14419,7 +14419,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:578"
+      "loc": "server/routers/stocktakeRouter.ts:581"
     },
     {
       "surface": "trpc",
@@ -14436,7 +14436,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:705"
+      "loc": "server/routers/stocktakeRouter.ts:708"
     },
     {
       "surface": "trpc",
@@ -14453,7 +14453,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:306"
+      "loc": "server/routers/stocktakeRouter.ts:309"
     },
     {
       "surface": "trpc",
@@ -14470,7 +14470,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: remove",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/stocktakeRouter.ts:378"
+      "loc": "server/routers/stocktakeRouter.ts:381"
     },
     {
       "surface": "trpc",
@@ -14487,7 +14487,7 @@
       "sensitivity": "HIGH",
       "sensitivityWhy": "فعل حسّاس: reopen",
       "flags": "SENSITIVE_ACTION",
-      "loc": "server/routers/stocktakeRouter.ts:601"
+      "loc": "server/routers/stocktakeRouter.ts:604"
     },
     {
       "surface": "trpc",
@@ -14504,7 +14504,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:746"
+      "loc": "server/routers/stocktakeRouter.ts:749"
     },
     {
       "surface": "trpc",
@@ -14521,7 +14521,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:472"
+      "loc": "server/routers/stocktakeRouter.ts:475"
     },
     {
       "surface": "trpc",
@@ -14538,7 +14538,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:499"
+      "loc": "server/routers/stocktakeRouter.ts:502"
     },
     {
       "surface": "trpc",
@@ -14555,7 +14555,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:421"
+      "loc": "server/routers/stocktakeRouter.ts:424"
     },
     {
       "surface": "trpc",
@@ -14572,7 +14572,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:459"
+      "loc": "server/routers/stocktakeRouter.ts:462"
     },
     {
       "surface": "trpc",
@@ -14589,7 +14589,7 @@
       "sensitivity": "MEDIUM",
       "sensitivityWhy": "كتابة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:232"
+      "loc": "server/routers/stocktakeRouter.ts:235"
     },
     {
       "surface": "trpc",
@@ -14606,7 +14606,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:229"
+      "loc": "server/routers/stocktakeRouter.ts:232"
     },
     {
       "surface": "trpc",
@@ -14623,7 +14623,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "RAW_ROLE_GATE",
-      "loc": "server/routers/stocktakeRouter.ts:741"
+      "loc": "server/routers/stocktakeRouter.ts:744"
     },
     {
       "surface": "trpc",
@@ -14640,7 +14640,7 @@
       "sensitivity": "LOW",
       "sensitivityWhy": "قراءة",
       "flags": "",
-      "loc": "server/routers/stocktakeRouter.ts:412"
+      "loc": "server/routers/stocktakeRouter.ts:415"
     },
     {
       "surface": "trpc",

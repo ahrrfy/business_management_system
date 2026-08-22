@@ -12,6 +12,7 @@ const TABLES = [
   "stocktakeSessions",
   "productVariants",
   "products",
+  "users",
   "branches",
 ];
 
@@ -37,6 +38,11 @@ async function seed() {
     { id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "المبيعات", code: "SALES", type: "SALES" },
   ]);
+  await d.insert(s.users).values([
+    { id: 1, openId: "u1", name: "ليلى", role: "warehouse", loginMethod: "local" },
+    // موظّفٌ آخر بنفس الاسم المعروض ⇒ يجب ألّا يُدمَج مع الأول (التمييز بالهويّة لا الاسم).
+    { id: 2, openId: "u2", name: "ليلى", role: "warehouse", loginMethod: "local" },
+  ]);
   await d.insert(s.products).values([{ id: 1, name: "قلم" }]);
   await d.insert(s.productVariants).values([{ id: 1, productId: 1, sku: "V1", costPrice: "0" }]);
   await d.insert(s.stocktakeSessions).values([
@@ -56,6 +62,7 @@ async function seed() {
     by: string;
     em: "SCAN_HID" | "SCAN_CAMERA" | "MANUAL_AUTHORIZED" | "SEARCH_PICK" | null;
     at?: Date;
+    userId?: number;
   }) => ({
     sessionId: o.sessionId,
     variantId: 1,
@@ -63,6 +70,7 @@ async function seed() {
     kind: "FIRST" as const,
     qty: 1,
     countedByName: o.by,
+    countedByUserId: o.userId ?? null,
     countedAt: o.at ?? recent(),
     entryMethod: o.em,
     clientRequestId: randomUUID(),
@@ -79,6 +87,10 @@ async function seed() {
     c({ sessionId: 1, assignmentId: 1, by: "حسن", em: "SEARCH_PICK" }),
     // «علي»: كلّه بلا وسم (موبايل/إرث) ⇒ scanPct = null.
     c({ sessionId: 1, assignmentId: 1, by: "علي", em: null }),
+    // موظّفان بالاسم «ليلى» بهويّتَين مختلفتَين ⇒ صفّان منفصلان (تمييزٌ بالهويّة لا الاسم).
+    c({ sessionId: 1, assignmentId: 1, by: "ليلى", em: "SCAN_HID", userId: 1 }),
+    c({ sessionId: 1, assignmentId: 1, by: "ليلى", em: "SCAN_HID", userId: 1 }),
+    c({ sessionId: 1, assignmentId: 1, by: "ليلى", em: "MANUAL_AUTHORIZED", userId: 2 }),
     // مُستبعَدات: جلسة افتتاحية، جلسة فرع آخر (تظهر فقط بلا حصر فرع)، وعدّة قديمة خارج النافذة.
     c({ sessionId: 2, assignmentId: 2, by: "سالم", em: "MANUAL_AUTHORIZED" }),
     c({ sessionId: 3, assignmentId: 3, by: "زيد", em: "SCAN_HID" }),
@@ -115,9 +127,17 @@ describe("getCounterQualityStats (م٥)", () => {
     // «زيد» في فرع آخر يظهر بلا حصر فرع.
     expect(byName.has("زيد")).toBe(true);
 
-    // الترتيب: الأدنى انضباطاً أولاً، ومن بلا نسبة في الذيل.
-    expect(res.workers[0].name).toBe("حسن"); // 0٪
+    // الترتيب: الأدنى انضباطاً أولاً (0٪)، ومن بلا نسبة في الذيل.
+    expect(res.workers[0].scanPct).toBe(0);
     expect(res.workers[res.workers.length - 1].scanPct).toBeNull();
+  });
+
+  it("يميّز موظّفَين بنفس الاسم بهويّتَين مختلفتَين (لا يدمجهما)", async () => {
+    const res = await getCounterQualityStats(null);
+    const laylas = res.workers.filter((w) => w.name === "ليلى");
+    expect(laylas).toHaveLength(2);
+    const pcts = laylas.map((w) => w.scanPct).sort((a, b) => (a ?? 0) - (b ?? 0));
+    expect(pcts).toEqual([0, 100]); // هويّةٌ كلّها مسح، وأخرى كلّها يدويّ
   });
 
   it("عزل الفرع: تمرير فرعٍ يحصر النتيجة به", async () => {

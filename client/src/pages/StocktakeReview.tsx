@@ -1776,7 +1776,7 @@ export default function StocktakeReview() {
                                   : `بقرار ${r.decision.decidedByName}`}
                               </p>
                               {isOperational && !r.reviewApproved && (
-                                <div className="flex gap-1">
+                                <div className="flex flex-wrap justify-center gap-1">
                                   <Button
                                     size="sm"
                                     variant="ghost"
@@ -1796,6 +1796,23 @@ export default function StocktakeReview() {
                                       ? "حوّل لإبقاء"
                                       : "حوّل لتسوية"}
                                   </Button>
+                                  {/* حوكمة م٥: صفٌّ فوق الحدّ لم يُعَد عدّه بعدُ يبقى حاجزاً حتى لو
+                                      اتُّخذ قراره ⇒ نُبقي زرّ إعادة العدّ ظاهراً كي لا تُقفَل الجلسة
+                                      (Codex P1: كان الزرّ يختفي على الصفّ المقرَّر فيتعذّر رفع الحاجز). */}
+                                  {s.requireRecountOverThreshold &&
+                                    r.overThreshold &&
+                                    r.kindUsed !== "RECOUNT" && (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 px-2 text-[11px] text-violet-700"
+                                        title="طلب إعادة عدّ (سبب إلزامي) — إلزاميّ فوق الحدّ"
+                                        onClick={() => openRecount(r)}
+                                      >
+                                        <RefreshCw aria-hidden className="size-3" />{" "}
+                                        إعادة عدّ
+                                      </Button>
+                                    )}
                                 </div>
                               )}
                             </>

@@ -155,9 +155,12 @@ export const stocktakeRouter = router({
         delete effective.thresholdPct;
         delete effective.thresholdValue;
         delete effective.dualThreshold;
-        // الحوكمة (إلزام إعادة العدّ فوق الحدّ) صلاحية مدير فأعلى ⇒ يُتجاهَل لدور المخزن.
-        delete effective.requireRecountOverThreshold;
       }
+      // الحوكمة (إلزام إعادة العدّ فوق الحدّ) صلاحية مدير فأعلى — تُطابق بوّابة الواجهة isManagerPlus.
+      // ⚠️ لا تُجرَّد داخل كتلة restricted: مديرُ الفرع مُقيَّدٌ بفرعه (restrictedBranchOf ≠ null) لكنه
+      // يملك الحوكمة (Codex P2: تجريدها هناك كان يجعل الميزة تعمل للأدمن فقط). تُجرَّد عمّن دونه فقط.
+      const canGovern = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!canGovern) delete effective.requireRecountOverThreshold;
       const res = await createStocktakeSession(effective, {
         userId: ctx.user.id,
         role: ctx.user.role,

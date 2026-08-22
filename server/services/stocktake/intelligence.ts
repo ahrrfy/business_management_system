@@ -163,6 +163,7 @@ export async function getCounterQualityStats(
 
   const rows = await db
     .select({
+      userId: stocktakeCounts.countedByUserId,
       name: stocktakeCounts.countedByName,
       entryMethod: stocktakeCounts.entryMethod,
       n: sql<string>`COUNT(*)`,
@@ -170,15 +171,20 @@ export async function getCounterQualityStats(
     .from(stocktakeCounts)
     .innerJoin(stocktakeSessions, eq(stocktakeCounts.sessionId, stocktakeSessions.id))
     .where(and(...conds))
-    .groupBy(stocktakeCounts.countedByName, stocktakeCounts.entryMethod);
+    .groupBy(stocktakeCounts.countedByUserId, stocktakeCounts.countedByName, stocktakeCounts.entryMethod);
 
+  // المفتاح هويّة العامل الثابتة (countedByUserId) لا الاسم المتغيّر (Codex P2): موظّفان باسمٍ واحد
+  // لا يُدمجان، وإعادةُ تسمية موظّفٍ لا تُشتّت تاريخه. العدّات بلا مستخدم (تكليف PIN) تُجمَّع بالاسم.
   const byWorker = new Map<string, CounterQualityRow>();
   for (const r of rows) {
     const name = r.name ?? "—";
-    let w = byWorker.get(name);
+    const key = r.userId != null ? `u:${Number(r.userId)}` : `n:${name}`;
+    let w = byWorker.get(key);
     if (!w) {
       w = { name, total: 0, scan: 0, manual: 0, searchPick: 0, untagged: 0, scanPct: null };
-      byWorker.set(name, w);
+      byWorker.set(key, w);
+    } else if (r.userId != null) {
+      w.name = name; // آخر اسمٍ معروفٍ لهذا المستخدم (بعد إعادة تسمية محتملة)
     }
     const n = Number(r.n ?? 0);
     w.total += n;

@@ -775,6 +775,33 @@ describe("حوكمة م٥: إلزام إعادة العدّ فوق الحدّ", 
     expect(rv.rows[0].overThreshold).toBe(false);
     expect(rv.barriers.overThresholdNeedingRecount).toBe(0);
   });
+
+  it("الإنفاذ الذرّي: approveStocktake نفسه يرفض جلسةً موسومةً بفرقٍ فوق الحدّ لم يُعَد عدّه (لا الحاجز وحده)", async () => {
+    await setStockRow(3, 100); // تكلفة 10000
+    const r = await mkSession({ variantIds: [3], requireRecountOverThreshold: true });
+    await insertCount(r.sessionId, 3, r.assignments[0].assignmentId, 97); // ‎−3 ⇒ 30000 فوق الحدّ
+    await forceStocktakeReview(r.sessionId, actor);
+    // قرارٌ صريح (تسوية) يرفع حاجز «فوق الحدّ بلا قرار» — لكن الحوكمة تُلزم إعادة العدّ الفعلية.
+    await decideStocktakeItem(
+      { sessionId: r.sessionId, variantId: 3, action: "ADJUST", reason: "ENTRY_ERROR" },
+      actor,
+    );
+    // استدعاءٌ مباشرٌ للإنهاء (تجاوز الواجهة) يجب أن يُرفض بمسار المعاملة نفسه.
+    await expectTrpc(approveStocktake(r.sessionId, actor2), "PRECONDITION_FAILED", /إعادة عدٍّ فعلية/);
+
+    // بعد إعادة عدٍّ فعلية، يسقط حاجز الإلزام (يبقى حاجزٌ آخر — الاعتماد المرحلي — فتتغيّر الرسالة).
+    await insertCount(r.sessionId, 3, r.assignments[0].assignmentId, 96, {
+      kind: "RECOUNT",
+      at: new Date(),
+    });
+    let msg = "";
+    try {
+      await approveStocktake(r.sessionId, actor2);
+    } catch (e) {
+      msg = (e as TRPCError).message;
+    }
+    expect(msg).not.toMatch(/إعادة عدٍّ فعلية/);
+  });
 });
 
 describe("حارس بصمة إدخال الباركود القديمة — الاعتماد والتوقيع والترحيل", () => {

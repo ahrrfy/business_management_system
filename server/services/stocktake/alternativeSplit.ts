@@ -49,8 +49,11 @@ export async function listSplitCandidates(): Promise<SplitCandidate[]> {
       unitName: productUnits.unitName,
       variantId: productUnits.variantId,
       isActive: productUnits.isActive,
+      isBaseUnit: productUnits.isBaseUnit,
       productId: products.id,
       productName: products.name,
+      isBundle: products.isBundle,
+      isService: products.isService,
       sku: productVariants.sku,
       variantKind: productVariants.variantKind,
     })
@@ -65,8 +68,13 @@ export async function listSplitCandidates(): Promise<SplitCandidate[]> {
     const uid = Number(a.productUnitId);
     const u = unitById.get(uid);
     if (!u || u.isActive === false) continue; // وحدةٌ متقاعدة لا تُفصَل
+    // فصلُ وحدةٍ غير أساس يُنتج بديلاً بوحدةِ أساسٍ معاملُها 1 وتكلفةٍ للقطعة على «كرتون» ⇒ يفسد
+    // التقييم وCOGS (مراجعة Codex P1). نقصر الفصل على باركود **وحدة الأساس** فقط.
+    if (u.isBaseUnit !== true) continue;
     // البديل الأصليّ (ALTERNATIVE) لا يُعاد فصله؛ الأداة للوحدات المدمجة (VARIANT) فقط.
     if (u.variantKind === "ALTERNATIVE") continue;
+    // البكج بلا تكلفة شراء ووصفتُه لا تُنسخ هنا، والخدمة لا تُجرَد ⇒ يُستبعدان (مراجعة Codex P2).
+    if (u.isBundle === true || u.isService === true) continue;
     let c = byUnit.get(uid);
     if (!c) {
       c = {
@@ -113,6 +121,8 @@ export async function splitAliasToAlternative(
           id: productUnits.id,
           unitName: productUnits.unitName,
           isStoreSaleUnit: productUnits.isStoreSaleUnit,
+          isBaseUnit: productUnits.isBaseUnit,
+          isActive: productUnits.isActive,
           variantId: productUnits.variantId,
         })
         .from(productUnits)
@@ -121,6 +131,11 @@ export async function splitAliasToAlternative(
         .limit(1)
     )[0];
     if (!srcUnit) throw new TRPCError({ code: "NOT_FOUND", message: "وحدة المنتج غير موجودة." });
+    // فصلُ غير وحدة الأساس يُفسد التقييم/COGS (Codex P1) ⇒ يُرفض؛ والوحدة المتقاعدة لا تُفصَل.
+    if (srcUnit.isBaseUnit !== true)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الفصل مقصورٌ على باركود وحدة الأساس." });
+    if (srcUnit.isActive === false)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "وحدةٌ متقاعدة لا تُفصَل." });
 
     const srcVariant = (
       await tx
@@ -129,12 +144,34 @@ export async function splitAliasToAlternative(
           productId: productVariants.productId,
           sku: productVariants.sku,
           costPrice: productVariants.costPrice,
+          variantKind: productVariants.variantKind,
+          isActive: productVariants.isActive,
         })
         .from(productVariants)
         .where(eq(productVariants.id, srcUnit.variantId))
         .limit(1)
     )[0];
     if (!srcVariant) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر المصدر غير موجود." });
+    // المصدر يجب أن يكون متغيّراً مدمجاً فعّالاً (VARIANT) — لا يُبنى بديلٌ فوق بديل (Codex P2).
+    if (srcVariant.variantKind === "ALTERNATIVE")
+      throw new TRPCError({ code: "BAD_REQUEST", message: "المصدر بديلٌ أصليّ — لا يُعاد فصله." });
+    if (srcVariant.isActive === false)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "متغيّرٌ متقاعد لا يُفصَل." });
+
+    // قفلُ صفّ المنتج الأمّ **قبل** فحص تفرّد الاسم يُسلسِل الفصول المتزامنة على وحداتٍ مختلفة من
+    // المنتج نفسه (Codex P2: بلا قفلٍ يقرأ الطلبان نفس البدائل فيُنشئان اسماً/SKU مكرّراً). ويستبعد
+    // البكج (بلا وصفةٍ تُنسخ) والخدمة (لا تُجرَد).
+    const srcProduct = (
+      await tx
+        .select({ id: products.id, isBundle: products.isBundle, isService: products.isService })
+        .from(products)
+        .where(eq(products.id, srcVariant.productId))
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!srcProduct) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج الأمّ غير موجود." });
+    if (srcProduct.isBundle === true || srcProduct.isService === true)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "البكج والخدمة لا يُفصَل منهما بديل." });
 
     // (٢) الباركود بديلٌ فعليّ لهذه الوحدة.
     const aliasRow = (
@@ -171,9 +208,13 @@ export async function splitAliasToAlternative(
       throw new TRPCError({ code: "BAD_REQUEST", message: `يوجد بديلٌ بالاسم «${name}» لهذا المنتج.` });
     }
 
-    // (٤) SKU مشتقّ فريدٌ عملياً: sku المصدر + ALT + ترتيب البديل.
+    // (٤) SKU مشتقّ فريدٌ عملياً: sku المصدر + ALT + ترتيب البديل، **مقيَّدٌ بحدّ العمود ٦٠ محرفاً**
+    // (Codex P2: sku مصدرٍ طويلٍ + اللاحقة يتجاوز العمود فيسقط الإدراج بخطأ اقتطاع). قفلُ المنتج
+    // أعلاه يُسلسِل الترقيم فيبقى altCount فريداً ضمن المنتج.
+    const SKU_MAX = 60;
     const altCount = siblings.length + 1;
-    const newSku = `${srcVariant.sku}-ALT${altCount}`;
+    const suffix = `-ALT${altCount}`;
+    const newSku = `${srcVariant.sku.slice(0, SKU_MAX - suffix.length)}${suffix}`;
 
     // (٥) المتغيّر الجديد (بديل مستقلّ).
     const vRes = await tx.insert(productVariants).values({

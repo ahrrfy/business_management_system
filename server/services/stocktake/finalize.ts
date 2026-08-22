@@ -214,6 +214,20 @@ export async function approveStocktake(
         message: `${undecided.length} فرقاً يحتاج قراراً صريحاً (تسوية/إبقاء) قبل الاعتماد`,
       });
     }
+    // حوكمة م٥: إلزام إعادة العدّ فوق الحدّ يُفرَض هنا في مسار الإنهاء الذرّي — لا في buildBarriers
+    // وحده (Codex P1: استدعاءٌ مباشرٌ لـapproveStocktake كان يتجاوز الحاجز ويُنهي جلسةً موسومةً
+    // بفروقٍ فوق الحدّ لم تُعَد عدّها). قرار المشرف وحده لا يكفي فوق الحدّ ما دام العَلَم مفعَّلاً.
+    if (s.requireRecountOverThreshold) {
+      const needRecount = rows.filter(
+        (r) => r.overThreshold && r.kindUsed !== "RECOUNT",
+      );
+      if (needRecount.length) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `${needRecount.length} فرقاً يتجاوز الحدّ يلزمه إعادة عدٍّ فعلية قبل الاعتماد`,
+        });
+      }
+    }
     const unapprovedReviewRows = rows.filter(
       (r) => !r.reviewApproved?.isCurrent,
     );
