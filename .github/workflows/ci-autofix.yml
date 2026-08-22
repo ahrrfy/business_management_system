@@ -1,0 +1,105 @@
+name: CI Auto-Fix
+
+on:
+  # لا يعمل تلقائياً على كل فشل؛ يحتاج وسم ci-autofix صريحاً على Pull Request.
+  # pull_request_target مستخدم فقط للوصول إلى GITHUB_TOKEN، مع حارس يمنع فروع المستودعات الخارجية.
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "اسم فرع داخل هذا المستودع لتطبيق الإصلاحات عليه"
+        required: true
+        type: string
+      base_ref:
+        description: "الفرع المرجعي للمقارنة"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ci-autofix-${{ github.event.pull_request.number || github.event.inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  autofix:
+    name: Apply deterministic CI fixes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request_target' &&
+       github.event.label.name == 'ci-autofix' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PR_HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.inputs.ref }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      BASE_REF: ${{ github.event.pull_request.base.ref || github.event.inputs.base_ref || 'main' }}
+    steps:
+      - name: Checkout the requested same-repository branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PR_HEAD_SHA }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Determine changed source files
+        id: changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${BASE_REF}" --depth=1
+          git diff --name-only "origin/${BASE_REF}...HEAD" -- \
+            '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' \
+            ':!dist/**' ':!node_modules/**' \
+            > /tmp/ci-autofix-files.txt
+          if [ -s /tmp/ci-autofix-files.txt ]; then
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+            cat /tmp/ci-autofix-files.txt
+          else
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+            echo "لا توجد ملفات مصدر قابلة للإصلاح التلقائي."
+          fi
+
+      - name: Apply formatting-only fixes
+        if: steps.changed.outputs.has_files == 'true'
+        run: xargs -r pnpm exec prettier --write < /tmp/ci-autofix-files.txt
+
+      - name: Verify the generated patch
+        if: steps.changed.outputs.has_files == 'true'
+        run: |
+          set -euo pipefail
+          git diff --check
+          pnpm check:emoji
+          if git diff --quiet; then
+            echo "لم ينتج Prettier أي تغيير."
+          else
+            echo "تغييرات الإصلاح التلقائي:"
+            git diff --stat
+          fi
+
+      - name: Commit and push to the Pull Request branch only
+        if: steps.changed.outputs.has_files == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs'
+          git commit -m "chore(ci): apply deterministic formatting fixes"
+          git push origin "HEAD:refs/heads/${PR_HEAD_REF}"

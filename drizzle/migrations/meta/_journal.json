@@ -1651,14 +1651,21 @@
       "idx": 249,
       "version": "5",
       "when": 1788052300000,
-      "tag": "0249_storefront_reviews_and_wishlist_shares_1",
+      "tag": "0249_0249_product_auto_cart_recommendations",
       "breakpoints": true
     },
     {
       "idx": 250,
       "version": "5",
       "when": 1788052301000,
-      "tag": "0250_storefront_reviews_and_wishlist_shares_2",
+      "tag": "0250_storefront_reviews_and_wishlist_shares_1",
+      "breakpoints": true
+    },
+    {
+      "idx": 251,
+      "version": "5",
+      "when": 1788052302000,
+      "tag": "0251_storefront_reviews_and_wishlist_shares_2",
       "breakpoints": true
     }
   ]
