@@ -391,6 +391,9 @@ export default function CountPortal() {
         );
         return;
       }
+      // كل فتحٍ يبدأ بـ bump نظيف؛ مسار مسح التجميع وحده يُعيد ضبطه بعد هذا (منع +١ وهميّ
+      // من token قديم عند الفتح بالنقر/البحث أثناء تفعيل التجميع).
+      setBump(null);
       setOpenEntry(entry);
       setOpenVariantId(i.variantId);
     },
@@ -1275,15 +1278,17 @@ function QtySheet({
   });
 
   // وضع التجميع: كل زيادةٍ من الأب (token جديد) تضيف ١ للوحدة الممسوحة.
+  // ⚠️ الشرط `tally` إلزاميّ: قد تُفتح بطاقةٌ في الوضع العاديّ و`bump` ما زال يحمل قيمةً قديمة من
+  // جلسة تجميعٍ سابقة (لا يُصفَّر إلا عند الإغلاق)، فبدونه يُطبَّق +١ وهميّ عند التركيب.
   const lastBump = useRef(0);
   useEffect(() => {
-    if (!bump || bump.token <= lastBump.current) return;
+    if (!tally || !bump || bump.token <= lastBump.current) return;
     lastBump.current = bump.token;
     setVals((v) => {
       const cur = parseInt(v[bump.unit] || "0", 10) || 0;
       return { ...v, [bump.unit]: String(Math.min(cur + 1, 9_999_999)) };
     });
-  }, [bump]);
+  }, [bump, tally]);
 
   const setVal = (unitName: string, raw: string) => {
     setVals((v) => ({ ...v, [unitName]: raw.replace(/\D/g, "").slice(0, 7) }));
