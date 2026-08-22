@@ -15,4 +15,3 @@ WHERE `allowAutoCartRecommendations` IS NULL;
 
 ALTER TABLE `products`
   MODIFY COLUMN `allowAutoCartRecommendations` tinyint(1) NOT NULL DEFAULT 1;
---> statement-breakpoint
