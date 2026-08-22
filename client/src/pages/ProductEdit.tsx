@@ -135,6 +135,7 @@ export default function ProductEdit() {
   const [baseSku, setBaseSku] = useState("");
   const [costPrice, setCostPrice] = useState("");
   const [isCustomizable, setIsCustomizable] = useState(false);
+  const [allowAutoCartRecommendations, setAllowAutoCartRecommendations] = useState(true);
   const [isService, setIsService] = useState(false);
   const [isActive, setIsActive] = useState(true);
   const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
@@ -176,7 +177,7 @@ export default function ProductEdit() {
   }, [
     hydrated, costPrice, units, variants, images, colors, sizes, categoryId,
     originalName, productType, brand, modelName, description,
-    isCustomizable, isService, isActive, consignment, baseSku,
+    isCustomizable, allowAutoCartRecommendations, isService, isActive, consignment, baseSku,
   ]);
   useUnsavedGuard(touched);
 
@@ -191,6 +192,7 @@ export default function ProductEdit() {
     setDescription(d.description ?? "");
     setCategoryId(d.categoryId ?? "");
     setIsCustomizable(d.isCustomizable);
+    setAllowAutoCartRecommendations(d.allowAutoCartRecommendations);
     setIsService(d.isService);
     setIsActive(d.isActive);
     setConsignment({ isConsignment: d.isConsignment, consignorId: d.consignorId, consignorName: d.consignorName });
@@ -454,6 +456,7 @@ export default function ProductEdit() {
       description: description.trim() || null,
       categoryId: categoryId === "" ? null : Number(categoryId),
       isCustomizable,
+      allowAutoCartRecommendations,
       isService,
       isActive,
       isConsignment: consignment.isConsignment,
@@ -649,6 +652,7 @@ export default function ProductEdit() {
           </Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
+          <Field label="التوصيات الآلية" hint="يكمل العلاقات اليدوية بمنتجات متاحة من نفس التصنيف."><div className="flex items-center gap-2 h-9"><Switch checked={allowAutoCartRecommendations} onCheckedChange={setAllowAutoCartRecommendations} /><span className="text-xs text-muted-foreground">{allowAutoCartRecommendations ? "مسموح" : "متوقف"}</span></div></Field>
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "معطّل"}</span></div></Field>
         </CardContent>
       </Card>

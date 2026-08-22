@@ -63,6 +63,7 @@ export default defineConfig({
       "client/src/lib/productStudio/studioBoardLabels.test.ts",
       "client/src/lib/offline/sessionBoundary.test.ts",
       "shared/moneyPrecision.test.ts",
+      "shared/productContentAi.test.ts",
       "shared/__tests__/workOrderDeliveryState.test.ts",
       "shared/__tests__/documentNumber.test.ts",
       "shared/receptionChannel.test.ts",
@@ -140,6 +141,7 @@ export default defineConfig({
       "scripts/__tests__/auditPayrollReadOnly.test.ts",
       "scripts/provision-worker-runtime-policy.test.ts",
       "scripts/__tests__/hrBridgeIntentLock.test.ts",
+      "scripts/__tests__/ciFailureDiagnosticsWorkflow.test.ts",
     ],
   },
 });
