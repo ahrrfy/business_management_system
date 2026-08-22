@@ -24,10 +24,7 @@ import { extractInsertId } from "../../lib/insertId";
 import type { StkActor } from "./types";
 import { chunk } from "./internal";
 import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
-import {
-  DEFAULT_COUNT_METHOD,
-  type CountMethod,
-} from "../../../shared/stocktakeCountMethod";
+import type { CountMethod } from "../../../shared/stocktakeCountMethod";
 
 /** PIN رباعي عشوائي مشفّر التوليد (crypto) فريد ضمن المجموعة المُمرَّرة. */
 function generateUniquePin(used: Set<string>): string {
@@ -471,12 +468,13 @@ async function insertSession(
     sessionType: input.sessionType ?? "NORMAL",
     scopeDetail: JSON.stringify({ ...scope.detail, label: scope.label }),
     status: "COUNTING",
-    // الجلسة الجديدة تبدأ بأسلوب المسح الإلزامي ما لم يُطلب «الحر» صراحةً (قرار المالك ٢٢/٨).
-    // القاعدة تفترض FREE للتوافق مع الجلسات القائمة، فنكتب الافتراض هنا صراحةً لكل جلسةٍ جديدة.
-    countMethod: input.countMethod ?? DEFAULT_COUNT_METHOD,
     createdBy: actor.userId,
     notes: input.notes ?? null,
   };
+  // أسلوب العدّ يُكتب صراحةً فقط حين تُرسله الواجهة (تُرسله دائماً: SCAN_REQUIRED أو FREE)؛
+  // والحذف يترك افتراض القاعدة FREE — فالمستدعي البرمجيّ/القديم لا ينكسر، والمستخدم يحصل على
+  // المسح الإلزامي لأنّ StocktakeNew يرسله صراحةً (قرار المالك ٢٢/٨).
+  if (input.countMethod !== undefined) sessionValues.countMethod = input.countMethod;
   if (input.blind !== undefined) sessionValues.blind = input.blind;
   if (input.thresholdPct !== undefined) sessionValues.thresholdPct = toDbMoney(input.thresholdPct);
   if (input.thresholdValue !== undefined) sessionValues.thresholdValue = toDbMoney(input.thresholdValue);
