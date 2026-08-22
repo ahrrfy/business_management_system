@@ -1,14 +1,16 @@
 import { trpc } from "@/lib/trpc";
-import { D, fmtAr } from "@/lib/money";
+import { fmtAr } from "@/lib/money";
 import { fmtDate, fmtTime } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
+import { useState } from "react";
 import { CopyButton } from "@/components/CopyButton";
+import { AppSelect } from "@/components/ui/AppSelect";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { dashboardActionBranchId } from "@/lib/dashboardActionScope";
 import { ROLE_LABEL } from "@/lib/roles";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
-import { Banknote, CalendarDays, MapPin, ReceiptText, ShoppingCart } from "lucide-react";
+import { Banknote, CalendarDays, MapPin, ReceiptText, RefreshCw, ShoppingCart } from "lucide-react";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -483,14 +485,22 @@ const ShiftIco = ({ color }: { color: string }) => (
    رأسٌ عمليّ للصفحة: مَن يعمل؟ في أي نطاق؟ وما أقصر المسارات اليومية؟
    الأزرار تُفلتر بنفس canSeeGate المستعمل في بطاقات الوحدات، فلا نصنع طريقاً بصرياً إلى 403. */
 
-function DashboardHeader() {
+function DashboardHeader({
+  branchScope,
+  isAdmin,
+  onBranchScopeChange,
+}: {
+  branchScope: number | undefined;
+  isAdmin: boolean;
+  onBranchScopeChange: (branchId: number | undefined) => void;
+}) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role;
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   const branches = trpc.branches.list.useQuery(undefined, { enabled: Boolean(me.data) });
-  const assignedBranch = branches.data?.find((branch) => branch.id === me.data?.branchId);
-  const branchLabel = me.data?.branchId == null ? "كل الفروع" : (assignedBranch?.name ?? "الفرع المعيّن");
+  const selectedBranch = branches.data?.find((branch) => branch.id === branchScope);
+  const branchLabel = branchScope == null ? "كل الفروع" : (selectedBranch?.name ?? "الفرع المعيّن");
   const roleLabel = me.data?.isOwner ? "مالك النظام" : (me.data?.customRoleLabel ?? (role ? ROLE_LABEL[role] : undefined) ?? "مستخدم النظام");
   const dateLabel = new Intl.DateTimeFormat("ar-IQ", { weekday: "long", day: "numeric", month: "long", year: "numeric", numberingSystem: "latn" }).format(new Date());
 
@@ -527,23 +537,40 @@ function DashboardHeader() {
           </div>
         </div>
 
-        <nav aria-label="إجراءات يومية سريعة" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {quickActions.map((action) => {
-            const Icon = action.icon;
-            return (
-              <Link key={action.href} href={action.href} style={{ minHeight: 42, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 13px", borderRadius: 9, border: `1px solid ${action.primary ? "var(--dash-pos-chip)" : T.cardBord}`, background: action.primary ? "var(--dash-pos-chip)" : T.statBg, color: action.primary ? "var(--dash-pos-glyph)" : T.text, fontSize: 12, fontWeight: 800, textDecoration: "none", boxShadow: action.primary ? "0 2px 6px oklch(0 0 0 / 0.10)" : "none" }}>
-                <Icon aria-hidden size={16} />
-                {action.label}
-              </Link>
-            );
-          })}
-        </nav>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {isAdmin && (
+            <div className="w-full sm:w-44">
+              <AppSelect
+                aria-label="نطاق فرع الشاشة الرئيسية"
+                className="h-[42px] bg-background text-xs font-bold"
+                value={branchScope == null ? "all" : String(branchScope)}
+                onValueChange={(value) => onBranchScopeChange(value === "all" ? undefined : Number(value))}
+              >
+                <option value="all">كل الفروع</option>
+                {(branches.data ?? []).map((branch) => (
+                  <option key={branch.id} value={String(branch.id)}>{branch.name}</option>
+                ))}
+              </AppSelect>
+            </div>
+          )}
+          <nav aria-label="إجراءات يومية سريعة" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {quickActions.map((action) => {
+              const Icon = action.icon;
+              return (
+                <Link key={action.href} href={action.href} style={{ minHeight: 42, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "9px 13px", borderRadius: 9, border: `1px solid ${action.primary ? "var(--dash-pos-chip)" : T.cardBord}`, background: action.primary ? "var(--dash-pos-chip)" : T.statBg, color: action.primary ? "var(--dash-pos-glyph)" : T.text, fontSize: 12, fontWeight: 800, textDecoration: "none", boxShadow: action.primary ? "0 2px 6px oklch(0 0 0 / 0.10)" : "none" }}>
+                  <Icon aria-hidden size={16} />
+                  {action.label}
+                </Link>
+              );
+            })}
+          </nav>
+        </div>
       </div>
     </header>
   );
 }
 
-function MetricsBar() {
+function MetricsBar({ branchScope }: { branchScope: number | undefined }) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const isXNarrow = useMediaQuery("(max-width: 640px)");
@@ -551,8 +578,6 @@ function MetricsBar() {
   const isCompactDesktop = useMediaQuery("(max-width: 1359px)");
   const metricCols = isXNarrow ? 2 : isNarrow ? 3 : isCompactDesktop ? 4 : 6;
   const role = me.data?.role ?? "";
-  // الأدمن يرى الإجمالي؛ مدير الفرع وغيره يقيّدهم الخادم بفرع الحساب.
-  const elevated = role === "admin" || role === "manager";
   // رؤية الأرقام المالية (ذمم متأخّرة/نبض المبيعات) — نفس بوّابة reportViewerProcedure/الخادم عبر
   // moduleAccessAllowed (لا قائمة أدوار حرفية ⇒ لا تباعُد). الخادم يُصفّر هذه الحقول لغير المخوّل؛
   // هنا نُخفي البطاقة كي لا تُعرَض «٠ ذمم متأخّرة» مضلِّلة لكاشير/مخزن (تدقيق تسريب dashboardMetrics).
@@ -565,45 +590,61 @@ function MetricsBar() {
       "READ",
       ["manager", "accountant", "auditor"],
     );
-  const myBranch = me.data?.branchId ?? 1;
-  const branchScope = elevated ? undefined : myBranch;
-  const sales = trpc.sales.list.useQuery({ limit: 500 });
-  const shift = trpc.shifts.current.useQuery({ branchId: myBranch });
+  const scopeReady = role === "admin" || branchScope !== undefined;
+  const shift = trpc.shifts.current.useQuery(
+    { branchId: branchScope ?? 0 },
+    { enabled: branchScope !== undefined },
+  );
   // مقاييس لوحة التحكم: مخزون منخفض + ذمم متأخّرة (الخلفية تُطبّق عزل الفرع).
-  const metrics = trpc.reports.dashboardMetrics.useQuery({ branchId: branchScope });
+  const metrics = trpc.reports.dashboardMetrics.useQuery(
+    { branchId: branchScope, includeTodaySales: true },
+    { enabled: Boolean(role) && scopeReady },
+  );
   // جلسات جرد بانتظار المراجعة — للأدوار المخوّلة فقط (الخادم warehouseProcedure).
   const canSeeStocktakes = role === "admin" || role === "manager" || role === "warehouse";
   const stk = trpc.stocktakes.stats.useQuery(undefined, { enabled: canSeeStocktakes });
 
-  const list = sales.data ?? [];
-  // التوقيت المحلّي (en-CA = YYYY-MM-DD محلّياً) — لا UTC حتى لا تنتقل فواتير المساء لليوم التالي.
-  const today = new Date().toLocaleDateString("en-CA");
-  const todays = list.filter((i) => new Date(i.invoiceDate).toLocaleDateString("en-CA") === today);
-  // جمع الأموال عبر decimal.js (قاعدة §٥: ممنوع parseFloat/Number على الأموال).
-  const todaysTotalD = todays.reduce((acc, i) => acc.add(String(i.total)), D(0));
-  const todaysTotal = todaysTotalD.toNumber();
-
   const shiftLabel = shift.data ? "مفتوحة" : "لا وردية";
   const shiftSince = shift.data ? `منذ ${fmtTime(shift.data.openedAt)}` : "";
 
-  // قيم بطاقتَي التنبيه — "..." أثناء التحميل، الأرقام بعد النجاح.
+  const sourceErrors = metrics.data?.health.sourceErrors ?? [];
+  const metricsUnavailable = metrics.isError;
+  const todaySalesUnavailable = metricsUnavailable || sourceErrors.includes("todaySales");
+  const pulseUnavailable = metricsUnavailable || sourceErrors.includes("salesPulse");
+  const todaySales = metrics.data?.todaySales;
+  const todaySalesValue = metrics.isLoading
+    ? "—"
+    : todaySalesUnavailable
+      ? "غير متاح"
+      : fmtAr(todaySales?.total ?? 0);
+  const todayInvoicesValue = metrics.isLoading
+    ? "—"
+    : todaySalesUnavailable
+      ? "غير متاح"
+      : fmtAr(todaySales?.invoiceCount ?? 0);
+
+  // قيم بطاقتَي التنبيه — حالة صريحة أثناء التحميل/التعذّر، والأرقام بعد النجاح.
   const lowStockValue = metrics.isLoading
-    ? "..."
-    : fmtAr(metrics.data?.lowStockCount ?? 0);
+    ? "—"
+    : metricsUnavailable
+      ? "غير متاح"
+      : fmtAr(metrics.data?.lowStockCount ?? 0);
   const overdueCount = metrics.data?.overdueAR.count ?? 0;
-  const overdueValue = metrics.isLoading ? "..." : fmtAr(overdueCount);
+  const overdueValue = metrics.isLoading ? "—" : metricsUnavailable ? "غير متاح" : fmtAr(overdueCount);
   // إجمالٌ مختصر بالدينار (بلا كسور — IQD).
   const overdueTotalShort = metrics.data
     ? fmtAr(Number(metrics.data.overdueAR.total))
     : "";
   const overdueUnit = metrics.isLoading
-    ? "> 30 يوم"
+    ? "جارٍ التحديث"
+    : metricsUnavailable
+      ? "حاول مجدداً"
     : overdueCount > 0
       ? `${overdueTotalShort} د.ع`
       : "> 30 يوم";
 
   // نص النسخ موحَّد: «التسمية: القيمة الوحدة» — يفيد المالك عند لصق رقم في واتساب/مراسلة.
-  // أثناء التحميل ("...") أو الحالات النصّية بلا قيمة (مثل «لا وردية») = لا نسخ (CopyButton يُعطَّل تلقائياً على الفارغ).
+  // أثناء التحميل أو التعذّر والحالات النصّية بلا قيمة = لا نسخ (CopyButton يُعطَّل تلقائياً على الفارغ).
   // نبض المبيعات (خلفية) — مبيعات أمس مقابل معدّل ٧ أيام + اتجاه بلون/سهم.
   const pulse = metrics.data?.salesPulse;
   const pulseColor =
@@ -614,33 +655,43 @@ function MetricsBar() {
   const hasBaseline = !!pulse && Number(pulse.avg7d) > 0;
 
   const stats = [
-    {
-      label: "مبيعات اليوم",
-      value: fmtAr(todaysTotal),
-      unit: "د.ع",
-      copyText: `مبيعات اليوم: ${fmtAr(todaysTotal)} د.ع`,
-      ico: <TrendIco color="var(--sem-pos)" />,
-      iBg: "var(--sem-pos-bg)",
-    },
-    {
-      label: "فواتير اليوم",
-      value: String(todays.length),
-      unit: "فاتورة",
-      copyText: `فواتير اليوم: ${todays.length} فاتورة`,
-      ico: <TrendIco color="var(--sem-pos)" />,
-      iBg: "var(--sem-pos-bg)",
-    },
+    ...(canViewReports
+      ? [
+          {
+            label: "مبيعات اليوم",
+            value: todaySalesValue,
+            unit: metrics.isLoading ? "جارٍ التحديث" : todaySalesUnavailable ? "حاول مجدداً" : "د.ع",
+            copyText: metrics.isLoading || todaySalesUnavailable
+              ? ""
+              : `مبيعات اليوم: ${fmtAr(todaySales?.total ?? 0)} د.ع`,
+            ico: <TrendIco color="var(--sem-pos)" />,
+            iBg: "var(--sem-pos-bg)",
+          },
+          {
+            label: "فواتير اليوم",
+            value: todayInvoicesValue,
+            unit: metrics.isLoading ? "جارٍ التحديث" : todaySalesUnavailable ? "حاول مجدداً" : "فاتورة",
+            copyText: metrics.isLoading || todaySalesUnavailable
+              ? ""
+              : `فواتير اليوم: ${fmtAr(todaySales?.invoiceCount ?? 0)} فاتورة`,
+            ico: <TrendIco color="var(--sem-pos)" />,
+            iBg: "var(--sem-pos-bg)",
+          },
+        ]
+      : []),
     // بطاقة نبض المبيعات: بلا معدّل ٧ أيام (لا مبيعات سابقة) = لا نص حشو — تُخفى كاملاً
     // (تدقيق الفجوات ٥/٧، بند ١٢) — نفس اصطلاح إخفاء بطاقة الجرد أدناه عبر spread شرطي.
-    ...(metrics.isLoading || hasBaseline
+    ...(metrics.isLoading || pulseUnavailable || hasBaseline
       ? [
           {
             label: "مبيعات أمس مقابل المعدّل",
-            value: metrics.isLoading ? "..." : fmtAr(Number(pulse?.yesterday ?? 0)),
+            value: metrics.isLoading ? "—" : pulseUnavailable ? "غير متاح" : fmtAr(Number(pulse?.yesterday ?? 0)),
             unit: metrics.isLoading
-              ? "د.ع"
+              ? "جارٍ التحديث"
+              : pulseUnavailable
+                ? "حاول مجدداً"
               : `${pulseArrow} ${fmtAr(Math.abs(pulse!.changePct))}٪ عن المعدّل`,
-            copyText: metrics.isLoading || !pulse
+            copyText: metrics.isLoading || pulseUnavailable || !pulse
               ? ""
               : `مبيعات أمس: ${fmtAr(Number(pulse.yesterday))} د.ع (${pulseArrow}${fmtAr(Math.abs(pulse.changePct))}٪ عن معدّل ٧ أيام = ${fmtAr(Number(pulse.avg7d))} د.ع)`,
             ico: <TrendIco color={pulseColor} />,
@@ -648,21 +699,25 @@ function MetricsBar() {
           },
         ]
       : []),
-    {
-      label: "الوردية الحالية",
-      value: shiftLabel,
-      unit: shiftSince,
-      copyText: shift.data
-        ? `الوردية الحالية: مفتوحة ${shiftSince}`.trim()
-        : "الوردية الحالية: لا وردية",
-      ico: <ShiftIco color="var(--sem-info)" />,
-      iBg: "var(--sem-info-bg)",
-    },
+    ...(branchScope !== undefined
+      ? [{
+          label: "الوردية الحالية",
+          value: shift.isLoading ? "—" : shift.isError ? "غير متاح" : shiftLabel,
+          unit: shift.isLoading ? "جارٍ التحديث" : shift.isError ? "حاول مجدداً" : shiftSince,
+          copyText: shift.isLoading || shift.isError
+            ? ""
+            : shift.data
+              ? `الوردية الحالية: مفتوحة ${shiftSince}`.trim()
+              : "الوردية الحالية: لا وردية",
+          ico: <ShiftIco color="var(--sem-info)" />,
+          iBg: "var(--sem-info-bg)",
+        }]
+      : []),
     {
       label: "مخزون منخفض",
       value: lowStockValue,
-      unit: "منتج",
-      copyText: metrics.isLoading
+      unit: metrics.isLoading ? "جارٍ التحديث" : metricsUnavailable ? "حاول مجدداً" : "منتج",
+      copyText: metrics.isLoading || metricsUnavailable
         ? ""
         : `مخزون منخفض: ${fmtAr(metrics.data?.lowStockCount ?? 0)} منتج`,
       ico: <WarnIco color="var(--sem-warn)" />,
@@ -679,7 +734,7 @@ function MetricsBar() {
             label: "ذمم متأخّرة",
             value: overdueValue,
             unit: overdueUnit,
-            copyText: metrics.isLoading
+            copyText: metrics.isLoading || metricsUnavailable
               ? ""
               : overdueCount > 0
                 ? `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل — ${overdueTotalShort} د.ع`
@@ -697,9 +752,9 @@ function MetricsBar() {
       ? [
           {
             label: "جرد بانتظار المراجعة",
-            value: stk.isLoading ? "..." : fmtAr(stk.data?.review ?? 0),
-            unit: stk.data?.counting ? `${fmtAr(stk.data.counting)} قيد العدّ` : "جلسة",
-            copyText: stk.isLoading
+            value: stk.isLoading ? "—" : stk.isError ? "غير متاح" : fmtAr(stk.data?.review ?? 0),
+            unit: stk.isLoading ? "جارٍ التحديث" : stk.isError ? "حاول مجدداً" : stk.data?.counting ? `${fmtAr(stk.data.counting)} قيد العدّ` : "جلسة",
+            copyText: stk.isLoading || stk.isError
               ? ""
               : `جرد بانتظار المراجعة: ${fmtAr(stk.data?.review ?? 0)} جلسة${
                   stk.data?.counting ? ` — ${fmtAr(stk.data.counting)} قيد العدّ` : ""
@@ -713,6 +768,7 @@ function MetricsBar() {
         ]
       : []),
   ];
+  const hasRefreshIssue = metrics.isError || metrics.data?.health.status === "degraded" || (canSeeStocktakes && stk.isError);
 
   return (
     <section aria-label="مؤشرات اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "16px 24px 4px" }}>
@@ -720,6 +776,15 @@ function MetricsBar() {
         <h2 style={{ margin: 0, color: T.text, fontSize: 14, fontWeight: 900 }}>مؤشرات اليوم</h2>
         <span style={{ color: T.muted, fontSize: 10.5 }}>تتحدث تلقائياً حسب صلاحياتك ونطاق فرعك</span>
       </div>
+      {hasRefreshIssue && (
+        <div role="status" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10, padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: 11.5 }}>
+          <span>تعذّر تحديث بعض المؤشرات؛ القيم المتاحة ما زالت معروضة.</span>
+          <button type="button" onClick={() => { void metrics.refetch(); if (canSeeStocktakes) void stk.refetch(); }} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
+            <RefreshCw aria-hidden size={13} />
+            إعادة المحاولة
+          </button>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: `repeat(${metricCols}, minmax(0, 1fr))`, gap: 10 }}>
         {stats.map((s, i) => {
           // بطاقة تنبيه في «صَفا»: تِنت خفيف بلون حالتها (كل تنبيه بلونه لا أحمر موحّد) + حدّ ملوّن رقيق.
@@ -1039,32 +1104,56 @@ function BriefCard({
   );
 }
 
-function MorningBrief() {
+function MorningBrief({ branchScope, isAdmin }: { branchScope: number | undefined; isAdmin: boolean }) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const elevated = role === "admin" || role === "manager";
-  const accountBranchId = dashboardActionBranchId(me.data?.branchId);
-  // بطاقات «برنامج اليوم» تقود إلى قوائم تنفيذ فرعيّة؛ لذا يجب أن يأتي العدّ من الفرع نفسه.
-  // الأدمن غير المرتبط بفرع يبدأ بأول فرع ظاهر في شاشة التذكيرات، أمّا المدير بلا فرع فلا نعرض
-  // له عدّاداً مجمّعاً لا يستطيع تنفيذه.
-  const branches = trpc.branches.list.useQuery(undefined, {
-    enabled: role === "admin" && accountBranchId === undefined,
-  });
-  const branchScope = accountBranchId ?? (role === "admin" ? branches.data?.[0]?.id : undefined);
+  // برنامج اليوم تنفيذيّ لا تجميعيّ: لا نختار أول فرع صامتاً للأدمن. المنتقي أعلى الشاشة هو
+  // المصدر الواحد، والروابط تحمل الفرع نفسه إلى قائمة المتابعة.
   const metrics = trpc.reports.dashboardMetrics.useQuery(
-    { branchId: branchScope },
+    { branchId: branchScope, includeTodaySales: true },
     { enabled: elevated && branchScope !== undefined },
   );
 
   // القسم للمدير/الأدمن حصراً — الموظّف الميداني لا يحتاج نظرة إشرافية.
   if (!elevated) return null;
-  if (metrics.isLoading || !metrics.data) return null;
+  if (isAdmin && branchScope === undefined) {
+    return (
+      <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", border: `1px solid ${T.cardBord}`, borderRadius: 9, background: T.statBg, color: T.sub, fontSize: 11.5 }}>
+          <MapPin aria-hidden size={14} />
+          اختر فرعاً من أعلى الشاشة لعرض برنامج اليوم القابل للتنفيذ.
+        </div>
+      </section>
+    );
+  }
+  if (metrics.isLoading) {
+    return (
+      <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px", color: T.muted, fontSize: 11.5 }}>
+        جارٍ تجهيز برنامج اليوم…
+      </section>
+    );
+  }
+  if (metrics.isError || !metrics.data) {
+    return (
+      <section aria-label="برنامج اليوم" style={{ maxWidth: 1648, margin: "0 auto", padding: "12px 24px 4px" }}>
+        <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: 11.5 }}>
+          <span>تعذّر تحميل برنامج اليوم.</span>
+          <button type="button" onClick={() => void metrics.refetch()} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
+            <RefreshCw aria-hidden size={13} />
+            إعادة المحاولة
+          </button>
+        </div>
+      </section>
+    );
+  }
   const brief = metrics.data.morningBrief;
+  const remindersDegraded = metrics.data.health.sourceErrors.includes("receivableReminders");
   // promisedToday مجموعة جزئية من arRemindersDue؛ لا نعدّها مرّتين في إجمالي البنود.
   const total = brief.arRemindersDue + brief.overdueWorkOrders;
   // كل الأصفار ⇒ لا حاجة لبانر «برنامج اليوم» — تنظيف بصريّ حين لا شيء يستحقّ الفعل.
-  if (total === 0) return null;
+  if (total === 0 && !remindersDegraded) return null;
 
   const dt = new Date();
   const dateLabel = fmtDate(dt);
@@ -1092,6 +1181,11 @@ function MorningBrief() {
         </div>
         <span style={{ fontSize: 12, color: T.sub }}>{dateLabel} — {fmtAr(total)} بند{total === 1 ? "" : "ود"} للمتابعة</span>
       </header>
+      {remindersDegraded && (
+        <div role="status" style={{ padding: "9px 11px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: 11.5 }}>
+          تعذّر تحديث تذكيرات الذمم؛ بنود التشغيل الأخرى ما زالت معروضة.
+        </div>
+      )}
       <div
         style={{
           display: "grid",
@@ -1101,7 +1195,7 @@ function MorningBrief() {
       >
         {brief.promisedToday > 0 && (
           <BriefCard
-            href="/reports/ar-reminders"
+            href={`/reports/ar-reminders?branch=${branchScope}`}
             label="عملاء موعودون اليوم"
             count={brief.promisedToday}
             sub="راجع الوعود المستحقّة قبل نهاية اليوم"
@@ -1112,7 +1206,7 @@ function MorningBrief() {
         )}
         {brief.arRemindersDue > 0 && (
           <BriefCard
-            href="/reports/ar-reminders"
+            href={`/reports/ar-reminders?branch=${branchScope}`}
             label="تذكيرات ذمم مستحقّة"
             count={brief.arRemindersDue}
             sub="افتح قائمة العملاء ثم أرسل أو سجّل قرار المتابعة"
@@ -1175,18 +1269,12 @@ const TasksIco = ({ color }: { color: string }) => (
    (تشغيليّ — نطاق فرع المستخدم نفسه المُستعمَل في MetricsBar/MorningBrief). يظهر لأي دور يملك
    tasks≥READ (أوسع من MorningBrief المُقتصر على المدير/الأدمن — طابور شخصي يهمّ الكاشير/الفنّي
    أيضاً)، ويختفي كلياً عند صفرَين (لا بانر فارغ).
-   myOpenTasks الحيّة تُحسب هنا عبر tasks.list (لا عبر dashboardMetrics.morningBrief.myOpenTasks —
-   ذلك الحقل محسوبٌ خادمياً فعلاً لكن الراوتر الحيّ reports.dashboardMetrics خارج نطاق هذا التكليف
-   فلا يمرّر هويّة المستخدم إليه؛ الحقل يبقى صحيحاً ومُستهلَكاً فعلياً عبر morningPushScheduler.ts). */
-function TasksBrief() {
+   myOpenTasks يُحسب خادمياً بلا حدّ صفحات، والراوتر يمرّر هوية المستخدم المصادَق حصراً. */
+function TasksBrief({ branchScope }: { branchScope: number | undefined }) {
   const T = useT();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role ?? "";
   const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
-  const elevated = role === "admin" || role === "manager";
-  const myBranch = me.data?.branchId ?? 1;
-  const branchScope = elevated ? undefined : myBranch;
-  const myId = me.data?.id != null ? Number(me.data.id) : undefined;
 
   // بوّابة رؤية — مرآة hasModuleAccess (القالب فقط، بلا استثناء أدوار خارج القائمة) مطابقةً تماماً
   // لبوّابة الخادم tasksReadProcedure (requireModule("tasks","READ")، بلا قائمة أدوار صريحة هناك أيضاً).
@@ -1194,20 +1282,34 @@ function TasksBrief() {
 
   // overdueTasks تشغيليّ — نفس مفتاح استعلام dashboardMetrics المُستهلَك أصلاً في MetricsBar/
   // MorningBrief (branchId مطابق) ⇒ react-query يُدَدِّب الطلب، لا شبكة إضافية.
-  const metrics = trpc.reports.dashboardMetrics.useQuery({ branchId: branchScope }, { enabled: canSeeTasks });
-  const overdueTasks = metrics.data?.morningBrief.overdueTasks ?? 0;
-
-  // myOpenTasks — نفس استعلام تبويب «مهامي» في TasksHub (limit=200 يغطّي أي طابور شخصي واقعي).
-  const mine = trpc.tasks.list.useQuery(
-    { assignedTo: myId, limit: 200 },
-    { enabled: canSeeTasks && myId != null },
+  const metrics = trpc.reports.dashboardMetrics.useQuery(
+    { branchId: branchScope, includeTodaySales: true },
+    { enabled: canSeeTasks },
   );
-  const myOpenTasks = (mine.data?.rows ?? []).filter(
-    (t) => t.taskStatus !== "RESOLVED" && t.taskStatus !== "CANCELLED",
-  ).length;
+  const overdueTasks = metrics.data?.morningBrief.overdueTasks ?? 0;
+  const myOpenTasks = metrics.data?.morningBrief.myOpenTasks ?? 0;
 
   if (!canSeeTasks) return null;
-  if (metrics.isLoading || mine.isLoading) return null;
+  if (metrics.isLoading) {
+    return (
+      <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px", color: T.muted, fontSize: 11.5 }}>
+        جارٍ تحديث المهام…
+      </section>
+    );
+  }
+  if (metrics.isError) {
+    return (
+      <section aria-label="المهام والتذاكر" style={{ maxWidth: 1648, margin: "0 auto", padding: "8px 24px 4px" }}>
+        <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 12px", border: "1px solid var(--sem-warn)", borderRadius: 9, background: "var(--sem-warn-bg)", color: T.text, fontSize: 11.5 }}>
+          <span>تعذّر تحديث المهام.</span>
+          <button type="button" onClick={() => void metrics.refetch()} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${T.cardBord}`, borderRadius: 7, background: T.cardBg, color: T.text, padding: "6px 9px", font: "inherit", fontWeight: 800, cursor: "pointer" }}>
+            <RefreshCw aria-hidden size={13} />
+            إعادة المحاولة
+          </button>
+        </div>
+      </section>
+    );
+  }
   if (myOpenTasks === 0 && overdueTasks === 0) return null;
 
   return (
@@ -1389,7 +1491,7 @@ function CashierHome() {
 
       {/* طابور مهامه الشخصي (إن وُجد وسمحت صلاحيته) — نفس مكوّن اللوحة العامة */}
       <div style={{ width: "100%", maxWidth: 1180 }}>
-        <TasksBrief />
+        <TasksBrief branchScope={dashboardActionBranchId(me.data?.branchId)} />
       </div>
     </div>
   );
@@ -1475,14 +1577,19 @@ function TileGroup({
 
 export default function Dashboard() {
   const me = trpc.auth.me.useQuery();
+  const [adminBranchScope, setAdminBranchScope] = useState<number | undefined>(undefined);
   // فئة الكاشير (القالبي + المخصّص المشتق «كاشير تجزئة/طباعة») ⇒ محطة عمل مركّزة لا شبكة الوحدات.
   if (me.data?.role === "cashier") return <CashierHome />;
+  const isAdmin = me.data?.role === "admin";
+  const branchScope = isAdmin
+    ? adminBranchScope
+    : dashboardActionBranchId(me.data?.branchId);
   return (
     <div style={{ minHeight: "100vh", background: T.bg, direction: "rtl", fontFamily: "'Cairo', sans-serif", margin: "-24px" }}>
-      <DashboardHeader />
-      <MetricsBar />
-      <MorningBrief />
-      <TasksBrief />
+      <DashboardHeader branchScope={branchScope} isAdmin={isAdmin} onBranchScopeChange={setAdminBranchScope} />
+      <MetricsBar branchScope={branchScope} />
+      <MorningBrief branchScope={branchScope} isAdmin={isAdmin} />
+      <TasksBrief branchScope={branchScope} />
       <div style={{ maxWidth: 1648, margin: "0 auto", padding: "18px 24px 32px", display: "flex", flexDirection: "column", gap: 20 }}>
         <header>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 900, color: T.text }}>وحدات النظام</h2>

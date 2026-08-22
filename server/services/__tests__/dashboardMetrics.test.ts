@@ -113,6 +113,33 @@ describe("getDashboardMetrics", () => {
     expect(m.lowStockCount).toBe(2);
   });
 
+  it("يجمع مبيعات اليوم خادمياً بلا حدّ 500 ويطبّق صافي المرتجعات وعزل الفرع", async () => {
+    const d = db();
+    const active = Array.from({ length: 501 }, (_, index) => ({
+      invoiceNumber: `INV-TODAY-${index + 1}`,
+      sourceType: "ORDER" as const,
+      sourceId: `today-${index + 1}`,
+      branchId: 1,
+      priceTier: "RETAIL" as const,
+      subtotal: "10.00",
+      total: "10.00",
+      returnedTotal: index === 0 ? "4.00" : "0.00",
+      status: "PAID" as const,
+      invoiceDate: new Date(),
+    }));
+    await d.insert(s.invoices).values(active);
+    await d.insert(s.invoices).values([
+      { invoiceNumber: "INV-TODAY-CANCELLED", sourceType: "ORDER", sourceId: "today-cancelled", branchId: 1, priceTier: "RETAIL", subtotal: "999.00", total: "999.00", status: "CANCELLED", invoiceDate: new Date() },
+      { invoiceNumber: "INV-TODAY-BRANCH-2", sourceType: "ORDER", sourceId: "today-branch-2", branchId: 2, priceTier: "RETAIL", subtotal: "888.00", total: "888.00", status: "PAID", invoiceDate: new Date() },
+    ]);
+
+    const branchOne = await getDashboardMetrics({ branchId: 1, includeTodaySales: true });
+    expect(branchOne.todaySales).toEqual({ total: "5006.00", invoiceCount: 501 });
+
+    const allBranches = await getDashboardMetrics({ includeTodaySales: true });
+    expect(allBranches.todaySales).toEqual({ total: "5894.00", invoiceCount: 502 });
+  });
+
   it("(ب) overdueAR.count=1 ومجموع المتبقّي صحيح لفاتورة عمرها ٤٥ يوماً", async () => {
     const d = db();
     // مخزون كافٍ لإتمام البيع.
@@ -420,6 +447,8 @@ describe("getDashboardMetrics — بوّابة includeFinancials (حجب الم�
       { id: 801, invoiceNumber: "INV-OVR", sourceType: "ORDER", sourceId: "t-801", branchId: 1, customerId: 1, priceTier: "RETAIL", subtotal: "240000", total: "240000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(45), dueDate: past15 },
       // (ماليّ) مبيعات أمس ⇒ salesPulse.
       { id: 802, invoiceNumber: "INV-YDAY", sourceType: "ORDER", sourceId: "t-802", branchId: 1, priceTier: "RETAIL", subtotal: "300000", total: "300000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(1) },
+      // (ماليّ) مبيعات اليوم ⇒ لا تُحسب إلا حين يطلب المستدعي includeTodaySales صراحةً.
+      { id: 803, invoiceNumber: "INV-TODAY", sourceType: "ORDER", sourceId: "t-803", branchId: 1, priceTier: "RETAIL", subtotal: "150000", total: "150000", paidAmount: "150000", status: "PAID", invoiceDate: new Date() },
     ]);
     // نبض المبيعات مصدره الدفتر لا مجرد لقطة الفاتورة: الفاتورة بلا SALE موثق
     // لا يجوز أن تظهر كإيراد، خصوصاً بعد أن صار تاريخ RETURN هو تاريخ أثره المالي الحقيقي.
@@ -437,9 +466,10 @@ describe("getDashboardMetrics — بوّابة includeFinancials (حجب الم�
 
   it("(ل) includeFinancials:false ⇒ overdueAR/salesPulse/عدّادا AR أصفار، وlowStock+أوامر متأخّرة محفوظة", async () => {
     await seedFinancialScenario();
-    const gated = await getDashboardMetrics({ branchId: 1, includeFinancials: false });
+    const gated = await getDashboardMetrics({ branchId: 1, includeFinancials: false, includeTodaySales: true });
     // المالي محجوب (صفر محايد لا الرقم الحقيقي).
     expect(gated.overdueAR).toEqual({ count: 0, total: "0.00" });
+    expect(gated.todaySales).toEqual({ total: "0.00", invoiceCount: 0 });
     expect(gated.salesPulse.yesterday).toBe("0.00");
     expect(gated.salesPulse.direction).toBe("flat");
     expect(gated.morningBrief.arRemindersDue).toBe(0);
@@ -455,6 +485,7 @@ describe("getDashboardMetrics — بوّابة includeFinancials (حجب الم�
     expect(shown.overdueAR.count).toBe(1);
     expect(shown.overdueAR.total).toBe("240000.00");
     expect(shown.salesPulse.yesterday).toBe("300000.00");
+    expect(shown.todaySales).toEqual({ total: "0.00", invoiceCount: 0 });
     expect(shown.morningBrief.arRemindersDue).toBe(1);
     // نفس النتيجة عند حذف العلَم (الافتراضي true للمستدعين المُتحقَّق منهم: المجدول/التنفيذيّة).
     const dflt = await getDashboardMetrics({ branchId: 1 });
@@ -469,14 +500,16 @@ describe("getDashboardMetrics — بوّابة includeFinancials (حجب الم�
   // هذا هو الحاجز الأمنيّ الفعليّ للتسريب (الواجهة إخفاءٌ تجميليّ فوقه).
   it("(ن) الراوتر: كاشير (reports=NONE) يتلقّى overdueAR مُصفّراً بينما المدير يراه — مع بقاء lowStock للاثنين", async () => {
     await seedFinancialScenario();
-    const mgr = await caller("manager", 1).reports.dashboardMetrics({ branchId: 1 });
-    const csh = await caller("cashier", 1).reports.dashboardMetrics({ branchId: 1 });
+    const mgr = await caller("manager", 1).reports.dashboardMetrics({ branchId: 1, includeTodaySales: true });
+    const csh = await caller("cashier", 1).reports.dashboardMetrics({ branchId: 1, includeTodaySales: true });
     // المدير يرى الرقم الحقيقيّ.
     expect(mgr.overdueAR).toEqual({ count: 1, total: "240000.00" });
     expect(mgr.salesPulse.yesterday).toBe("300000.00");
+    expect(mgr.todaySales).toEqual({ total: "150000.00", invoiceCount: 1 });
     // الكاشير محجوب — صفر محايد لا الرقم.
     expect(csh.overdueAR).toEqual({ count: 0, total: "0.00" });
     expect(csh.salesPulse.yesterday).toBe("0.00");
+    expect(csh.todaySales).toEqual({ total: "0.00", invoiceCount: 0 });
     expect(csh.morningBrief.arRemindersDue).toBe(0);
     // lowStock تشغيليّ ⇒ يراه الاثنان (اللوحة تبقى متاحة للكاشير بلا تسريب ماليّ).
     expect(csh.lowStockCount).toBe(1);

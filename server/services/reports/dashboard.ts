@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { getReminderQueue } from "../arRemindersService";
+import { getTodayNetSales } from "./todaySales";
 
 /** شرط SQL خام لمهمة متأخّرة — مرآة `overdueSqlCond` في `server/services/tasks/list.ts`
  *  (لا استيراد مباشر: تلك الدالة تستعمل أعمدة drizzle مكتوبة `tasks.dueAt`، وهذا الملف يبني
@@ -58,6 +59,8 @@ export interface DashboardMetricsResult {
     sourceErrors: string[];
   };
   lowStockCount: number;
+  /** مبيعات اليوم الصافية وعدد فواتيرها ضمن يوم بغداد ونطاق الفرع. */
+  todaySales: { total: string; invoiceCount: number };
   overdueAR: { count: number; total: string };
   /** نبض المبيعات: مبيعات أمس مقابل معدّل آخر ٧ أيام + اتجاه (بطاقة شريط المقاييس، ٥/٧). */
   salesPulse: {
@@ -107,18 +110,22 @@ export async function getDashboardMetrics(
      *  dashboardMetrics). الافتراضي `true` للتوافق مع المستدعين المُتحقَّق منهم (المجدول/التنفيذيّة).
      *  lowStockCount وoverdueWorkOrders تشغيليّان ⇒ يُحسبان دائماً بلا تقييد. */
     includeFinancials?: boolean;
-    /** مستخدم الطلب — يُستعمل حصراً لحساب `morningBrief.myOpenTasks` الشخصي. غيابه (المستدعيان
-     *  الحاليّان اللذان لا يحملان هوية مستخدم واحدة ذات صلة: الراوتر الحيّ خارج نطاق هذا التكليف
-     *  والمسار المُجمَّع) يُبقيه صفراً بلا كسر أي مستدعٍ قائم. */
+    /** احسب تجميع مبيعات اليوم عند طلب سطحٍ يستهلكه فعلاً. يبقى false افتراضياً حتى لا نضيف
+     *  استعلاماً إلى مستدعي الإشعارات/التنفيذيّة اللذين يملكان مسارهما المخصّص. */
+    includeTodaySales?: boolean;
+    /** مستخدم الطلب — يُستعمل حصراً لحساب `morningBrief.myOpenTasks` الشخصي. الراوتر الحيّ
+     *  والتنفيذيّة يمرّرانه؛ غيابه عند المستدعي المجدول يُبقي الرقم صفراً. */
     userId?: number | null;
   } = {}
 ): Promise<DashboardMetricsResult> {
   const includeFinancials = opts.includeFinancials ?? true;
+  const includeTodaySales = opts.includeTodaySales ?? false;
   const db = getDb();
   if (!db) {
     return {
       health: { status: "degraded", sourceErrors: ["database"] },
       lowStockCount: 0,
+      todaySales: { total: toDbMoney(money(0)), invoiceCount: 0 },
       overdueAR: { count: 0, total: toDbMoney(money(0)) },
       salesPulse: { yesterday: toDbMoney(money(0)), avg7d: toDbMoney(money(0)), direction: "flat", changePct: 0 },
       morningBrief: { arRemindersDue: 0, promisedToday: 0, overdueWorkOrders: 0, myOpenTasks: 0, overdueTasks: 0 },
@@ -131,6 +138,19 @@ export async function getDashboardMetrics(
   const branchFilterAe = branchId == null ? sql`` : sql`AND ae.branchId = ${branchId}`;
   const branchFilterWo = branchId == null ? sql`` : sql`AND wo.branchId = ${branchId}`;
   const branchFilterTasks = branchId == null ? sql`` : sql`AND t.branchId = ${branchId}`;
+
+  // مبيعات اليوم من التعريف التشغيلي الحاكم نفسه المستعمل في المسارات التنفيذية والموبايل.
+  // التجميع خادميّ بلا limit، وحدود اليوم هي يوم بغداد المدني لا تاريخ جهاز المستخدم.
+  let todaySales: DashboardMetricsResult["todaySales"] = {
+    total: toDbMoney(money(0)),
+    invoiceCount: 0,
+  };
+  if (includeFinancials && includeTodaySales) try {
+    const current = await getTodayNetSales(branchId ?? undefined);
+    todaySales = { total: current.total, invoiceCount: current.invoiceCount };
+  } catch {
+    sourceErrors.push("todaySales");
+  }
 
   const lowRows = await db.execute(sql`
     SELECT COUNT(*) AS c
@@ -260,6 +280,7 @@ export async function getDashboardMetrics(
   return {
     health: { status: sourceErrors.length ? "degraded" : "ok", sourceErrors },
     lowStockCount,
+    todaySales,
     overdueAR: {
       count: Number(arRow?.c ?? 0),
       total: toDbMoney(money(arRow?.t ?? 0)),

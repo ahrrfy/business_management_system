@@ -548,7 +548,10 @@ export const reportsRouter = router({
    */
   dashboardMetrics: protectedProcedure
     .input(
-      z.object({ branchId: z.number().int().positive().optional() }).optional(),
+      z.object({
+        branchId: z.number().int().positive().optional(),
+        includeTodaySales: z.boolean().optional(),
+      }).optional(),
     )
     .query(async ({ input, ctx }) => {
       // عزل الفرع (قرار المالك ١٢/٨: عزل مدير الفرع): المالك/الأدمن وحدهما يعبُران الفروع (branchId
@@ -578,6 +581,8 @@ export const reportsRouter = router({
         branchId: effectiveBranchId,
         includeOpeningBalance: ctx.user.role === "admin",
         includeFinancials: canViewReports(ctx.user),
+        includeTodaySales: input?.includeTodaySales === true,
+        userId: ctx.user.id,
       });
     }),
 
