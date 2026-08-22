@@ -1063,7 +1063,7 @@
 "express-mount","(express)","MOUNT /api/hr/applicant-cv","","mount","MOUNT","mount","","","","","","نقطة تركيب (tenancy/csrf middleware)","EXPRESS_SURFACE","server/index.ts:621"
 "express-mount","(express)","MOUNT /api/webhooks","","mount","MOUNT","mount","","","","","","نقطة تركيب (tenancy/csrf middleware)","EXPRESS_SURFACE","server/index.ts:645"
 "express-mount","(express)","MOUNT /api/webhooks/company/:companyCode","","mount","MOUNT","mount","","","","","","نقطة تركيب (tenancy/csrf middleware)","EXPRESS_SURFACE","server/index.ts:646"
-"job","(scheduled)","interval","","interval","interval","none","","","","","","","JOB_NO_PRINCIPAL","server/db.ts:177"
+"job","(scheduled)","interval","","interval","interval","none","","","","","","","JOB_NO_PRINCIPAL","server/db.ts:181"
 "job","(scheduled)","interval","","interval","interval","none","","","","","","","JOB_NO_PRINCIPAL","server/hr-bridge-worker.ts:144"
 "job","(scheduled)","cron","","cron","cron","none","","","","","","","JOB_NO_PRINCIPAL","server/index.ts:745"
 "job","(scheduled)","interval","","interval","interval","none","","","","","","","JOB_NO_PRINCIPAL","server/middleware/overloadGuard.ts:27"

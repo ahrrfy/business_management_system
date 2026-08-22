@@ -286,9 +286,12 @@ describe("P2/Sh2 — treasury and delivery posting contracts", () => {
       new URL("../delivery/courier.ts", import.meta.url),
       "utf8",
     );
-    expect(courier.match(/entryType: "DELIVERY_DISPATCH"/g)).toHaveLength(2);
+    // ٢٢/٨: صار ٣ بعد إضافة `recordSupplementaryStatementCollection` — كشفٌ متمِّم لطردٍ
+    // سبق ختمُه (Codex P1 #3) يكتب DELIVERY_DISPATCH بدلتا التحصيل بنفس عقد نظيره في
+    // `confirmConsignmentDelivery` (نفس intent، dedupeKey مغاير لكل كشف).
+    expect(courier.match(/entryType: "DELIVERY_DISPATCH"/g)).toHaveLength(3);
     expect(
       courier.match(/postingIntent: deliveryDispatchMemoIntent\(\)/g),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 });
