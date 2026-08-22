@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
 import { getAiStudioRuntime } from "./imageStudioSettingsService";
+import { runGuardedImageStudioCall } from "./imageStudioUsageGuard";
 import {
   aiProductDraftSchema,
   canonicalJson,
@@ -10,7 +11,10 @@ import {
   type ProductFacts,
 } from "../../shared/productContentAi";
 
-const GEMINI_API_BASE = (process.env.GEMINI_API_BASE ?? "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
+const GEMINI_API_BASE = (
+  process.env.GEMINI_API_BASE ??
+  "https://generativelanguage.googleapis.com/v1beta"
+).replace(/\/+$/, "");
 const DEFAULT_TEXT_MODEL = "gemini-2.5-flash";
 const PROMPT_VERSION = "product-content-ar-v1";
 const MAX_RESPONSE_BYTES = 512 * 1024;
@@ -22,6 +26,20 @@ type TextFetch = typeof fetch;
 type CachedDraft = { result: ProductContentDraftResult; expiresAt: number };
 const draftCache = new Map<string, CachedDraft>();
 const inFlightDrafts = new Map<string, Promise<ProductContentDraftResult>>();
+const MAX_CACHE_ENTRIES = 200;
+
+function pruneDraftCache() {
+  const now = Date.now();
+  for (const [key, value] of draftCache) {
+    if (value.expiresAt <= now) draftCache.delete(key);
+  }
+  if (draftCache.size <= MAX_CACHE_ENTRIES) return;
+  const oldest = [...draftCache.entries()].sort(
+    (a, b) => a[1].expiresAt - b[1].expiresAt,
+  );
+  for (const [key] of oldest.slice(0, draftCache.size - MAX_CACHE_ENTRIES))
+    draftCache.delete(key);
+}
 
 const SYSTEM_PROMPT = `أنت محرر محتوى كتالوج عربي يعمل داخل نظام مبيعات ومخزون.
 مصدر الحقيقة الوحيد هو VERIFIED_PRODUCT_FACTS الموجود في الطلب.
@@ -38,7 +56,19 @@ const SYSTEM_PROMPT = `أنت محرر محتوى كتالوج عربي يعمل
 const OUTPUT_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["seoTitle", "shortTitle", "posLabel", "invoiceLabel", "marketingCopy", "description", "keywords", "claims", "unsupportedClaims", "warnings", "confidence"],
+  required: [
+    "seoTitle",
+    "shortTitle",
+    "posLabel",
+    "invoiceLabel",
+    "marketingCopy",
+    "description",
+    "keywords",
+    "claims",
+    "unsupportedClaims",
+    "warnings",
+    "confidence",
+  ],
   properties: {
     seoTitle: { type: "string", maxLength: 160 },
     shortTitle: { type: "string", maxLength: 100 },
@@ -46,7 +76,11 @@ const OUTPUT_JSON_SCHEMA = {
     invoiceLabel: { type: "string", maxLength: 160 },
     marketingCopy: { type: "string", maxLength: 300 },
     description: { type: "string", maxLength: 2_000 },
-    keywords: { type: "array", maxItems: 20, items: { type: "string", maxLength: 80 } },
+    keywords: {
+      type: "array",
+      maxItems: 20,
+      items: { type: "string", maxLength: 80 },
+    },
     claims: {
       type: "array",
       maxItems: 10,
@@ -56,7 +90,12 @@ const OUTPUT_JSON_SCHEMA = {
         required: ["text", "evidenceKeys"],
         properties: {
           text: { type: "string", maxLength: 300 },
-          evidenceKeys: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", maxLength: 120 } },
+          evidenceKeys: {
+            type: "array",
+            minItems: 1,
+            maxItems: 10,
+            items: { type: "string", maxLength: 120 },
+          },
         },
       },
     },
@@ -67,10 +106,17 @@ const OUTPUT_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         required: ["text", "reason"],
-        properties: { text: { type: "string", maxLength: 300 }, reason: { type: "string", maxLength: 300 } },
+        properties: {
+          text: { type: "string", maxLength: 300 },
+          reason: { type: "string", maxLength: 300 },
+        },
       },
     },
-    warnings: { type: "array", maxItems: 20, items: { type: "string", maxLength: 300 } },
+    warnings: {
+      type: "array",
+      maxItems: 20,
+      items: { type: "string", maxLength: 300 },
+    },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
   },
 } as const;
@@ -78,12 +124,19 @@ const OUTPUT_JSON_SCHEMA = {
 function textFromGeminiResponse(body: any): string {
   const parts = body?.candidates?.[0]?.content?.parts;
   if (!Array.isArray(parts)) return "";
-  return parts.map((part) => typeof part?.text === "string" ? part.text : "").join("\n").trim();
+  return parts
+    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .join("\n")
+    .trim();
 }
 
-async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+async function readBoundedText(
+  response: Response,
+  maxBytes: number,
+): Promise<string> {
   const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) throw new Error("AI response too large");
+  if (Number.isFinite(declared) && declared > maxBytes)
+    throw new Error("AI response too large");
   if (!response.body) return "";
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -102,13 +155,19 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
   } finally {
     reader.releaseLock();
   }
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
+  return Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk)),
+    total,
+  ).toString("utf8");
 }
 
 function stripCodeFence(value: string): string {
   const trimmed = value.trim();
   if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
-    return trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+    return trimmed
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
   }
   return trimmed;
 }
@@ -122,103 +181,189 @@ export type ProductContentDraftResult = {
   cacheHit: boolean;
 };
 
-export function productContentCacheKey(facts: ProductFacts, model: string): string {
+export function productContentCacheKey(
+  facts: ProductFacts,
+  model: string,
+): string {
   return createHash("sha256")
-    .update(canonicalJson({ facts, model, promptVersion: PROMPT_VERSION }), "utf8")
+    .update(
+      canonicalJson({ facts, model, promptVersion: PROMPT_VERSION }),
+      "utf8",
+    )
     .digest("hex");
 }
 
 export async function generateProductContentDraft(
   rawFacts: unknown,
-  opts: { fetchImpl?: TextFetch; timeoutMs?: number; forceRefresh?: boolean } = {},
+  opts: {
+    fetchImpl?: TextFetch;
+    timeoutMs?: number;
+    forceRefresh?: boolean;
+    actor?: { userId: number; branchId?: number | null };
+  } = {},
 ): Promise<ProductContentDraftResult> {
   const facts = productFactsSchema.parse(rawFacts);
   const runtime = await getAiStudioRuntime();
   if (!runtime) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: "مسار الذكاء الاصطناعي غير مفعّل أو لا يوجد مفتاح صالح في إعدادات الاستوديو.",
+      message:
+        "مسار الذكاء الاصطناعي غير مفعّل أو لا يوجد مفتاح صالح في إعدادات الاستوديو.",
     });
   }
   if (runtime.provider !== "GEMINI") {
-    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "مزود محتوى المنتج غير مدعوم حالياً." });
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "مزود محتوى المنتج غير مدعوم حالياً.",
+    });
+  }
+  if (
+    !opts.actor ||
+    !Number.isSafeInteger(opts.actor.userId) ||
+    opts.actor.userId <= 0
+  ) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "تعذر تحديد مستخدم طلب توليد المحتوى.",
+    });
   }
 
-  const model = runtime.model.includes("image") ? DEFAULT_TEXT_MODEL : runtime.model;
+  const model = runtime.model.includes("image")
+    ? DEFAULT_TEXT_MODEL
+    : runtime.model;
   const cacheKey = productContentCacheKey(facts, model);
+  pruneDraftCache();
   if (!opts.forceRefresh) {
     const cached = draftCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now()) return { ...cached.result, cacheHit: true };
+    if (cached && cached.expiresAt > Date.now())
+      return { ...cached.result, cacheHit: true };
     if (cached) draftCache.delete(cacheKey);
     const pending = inFlightDrafts.get(cacheKey);
     if (pending) return { ...(await pending), cacheHit: true };
   }
 
   const generate = async (): Promise<ProductContentDraftResult> => {
-  const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? TIMEOUT_MS);
+    const url = `${GEMINI_API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      opts.timeoutMs ?? TIMEOUT_MS,
+    );
 
-  const payload = {
-    contents: [{ role: "user", parts: [{ text: `${SYSTEM_PROMPT}\n\nVERIFIED_PRODUCT_FACTS:\n${JSON.stringify(facts)}\n\nأعد مسودة المنتج الآن.` }] }],
-    generationConfig: {
-      temperature: 0.15,
-      responseMimeType: "application/json",
-      responseSchema: OUTPUT_JSON_SCHEMA,
-    },
-  };
+    const payload = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `${SYSTEM_PROMPT}\n\nVERIFIED_PRODUCT_FACTS:\n${JSON.stringify(facts)}\n\nأعد مسودة المنتج الآن.`,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.15,
+        responseMimeType: "application/json",
+        responseSchema: OUTPUT_JSON_SCHEMA,
+      },
+    };
 
-  let response: Response;
-  try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: { "x-goog-api-key": runtime.apiKey, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-  } catch (error: any) {
-    if (error?.name === "AbortError") throw new TRPCError({ code: "TIMEOUT", message: "تأخر مزود الذكاء الاصطناعي؛ أعد المحاولة لاحقاً." });
-    throw new TRPCError({ code: "TIMEOUT", message: "تعذر الوصول إلى مزود الذكاء الاصطناعي." });
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  if (!response.ok) {
-    let detail = "";
+    let response: Response;
     try {
-      const body = JSON.parse(await readBoundedText(response, 32 * 1024));
-      detail = String(body?.error?.message ?? "").slice(0, 250);
-    } catch {
-      detail = "";
+      response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": runtime.apiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (error: any) {
+      clearTimeout(timeout);
+      if (error?.name === "AbortError")
+        throw new TRPCError({
+          code: "TIMEOUT",
+          message: "تأخر مزود الذكاء الاصطناعي؛ أعد المحاولة لاحقاً.",
+        });
+      throw new TRPCError({
+        code: "TIMEOUT",
+        message: "تعذر الوصول إلى مزود الذكاء الاصطناعي.",
+      });
     }
-    const code = response.status === 429 ? "TOO_MANY_REQUESTS" : response.status === 401 || response.status === 403 ? "UNAUTHORIZED" : "BAD_REQUEST";
-    throw new TRPCError({ code, message: detail || "فشل توليد مسودة محتوى المنتج." });
-  }
 
-  let body: any;
-  try {
-    body = JSON.parse(await readBoundedText(response, MAX_RESPONSE_BYTES));
-  } catch {
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "ردّ مزود الذكاء الاصطناعي غير صالح." });
-  }
+    try {
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const body = JSON.parse(await readBoundedText(response, 32 * 1024));
+          detail = String(body?.error?.message ?? "").slice(0, 250);
+        } catch {
+          detail = "";
+        }
+        if (response.status === 401 || response.status === 403) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "مفتاح مزود الذكاء الاصطناعي غير صالح أو بلا صلاحية.",
+          });
+        }
+        const code =
+          response.status === 429 ? "TOO_MANY_REQUESTS" : "BAD_REQUEST";
+        throw new TRPCError({
+          code,
+          message: detail || "فشل توليد مسودة محتوى المنتج.",
+        });
+      }
 
-  let draft: AiProductDraft;
-  try {
-    draft = aiProductDraftSchema.parse(JSON.parse(stripCodeFence(textFromGeminiResponse(body))));
-  } catch {
-    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "مسودة الذكاء الاصطناعي لا تطابق مخطط المحتوى المطلوب." });
-  }
+      let body: any;
+      try {
+        body = JSON.parse(await readBoundedText(response, MAX_RESPONSE_BYTES));
+      } catch {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "ردّ مزود الذكاء الاصطناعي غير صالح.",
+        });
+      }
 
-  const validation = validateAiProductDraft(draft, facts);
-  return { draft, validation, cacheKey, model, promptVersion: PROMPT_VERSION, cacheHit: false };
+      let draft: AiProductDraft;
+      try {
+        draft = aiProductDraftSchema.parse(
+          JSON.parse(stripCodeFence(textFromGeminiResponse(body))),
+        );
+      } catch {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "مسودة الذكاء الاصطناعي لا تطابق مخطط المحتوى المطلوب.",
+        });
+      }
+
+      const validation = validateAiProductDraft(draft, facts);
+      return {
+        draft,
+        validation,
+        cacheKey,
+        model,
+        promptVersion: PROMPT_VERSION,
+        cacheHit: false,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
   };
 
-  const pending = generate();
+  const pending = runGuardedImageStudioCall({
+    service: "AI",
+    userId: opts.actor.userId,
+    branchId: opts.actor.branchId ?? null,
+    run: generate,
+  });
   inFlightDrafts.set(cacheKey, pending);
   try {
     const result = await pending;
     draftCache.set(cacheKey, { result, expiresAt: Date.now() + CACHE_TTL_MS });
+    pruneDraftCache();
     return result;
   } finally {
     inFlightDrafts.delete(cacheKey);

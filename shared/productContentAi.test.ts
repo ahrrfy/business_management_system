@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { aiProductDraftSchema, productFactsSchema, validateAiProductDraft } from "./productContentAi";
+import {
+  aiProductDraftSchema,
+  productFactsSchema,
+  validateAiProductDraft,
+} from "./productContentAi";
 
 const facts = productFactsSchema.parse({
   category: "قرطاسية",
@@ -40,11 +44,27 @@ describe("productContentAi", () => {
   it("blocks unknown evidence keys", () => {
     const draft = aiProductDraftSchema.parse({
       ...validDraft,
-      claims: [{ text: "مقاوم للماء", evidenceKeys: ["attributes.waterproof"] }],
+      claims: [
+        { text: "مقاوم للماء", evidenceKeys: ["attributes.waterproof"] },
+      ],
     });
     const result = validateAiProductDraft(draft, facts);
     expect(result.ok).toBe(false);
-    expect(result.blockers.some((item) => item.includes("attributes.waterproof"))).toBe(true);
+    expect(
+      result.blockers.some((item) => item.includes("attributes.waterproof")),
+    ).toBe(true);
+  });
+
+  it("blocks a claim that cites an existing fact but is not grounded in its value", () => {
+    const draft = aiProductDraftSchema.parse({
+      ...validDraft,
+      claims: [{ text: "يدعم الشحن اللاسلكي", evidenceKeys: ["brand"] }],
+    });
+    const result = validateAiProductDraft(draft, facts);
+    expect(result.ok).toBe(false);
+    expect(
+      result.blockers.some((item) => item.includes("لا يتطابق نصياً")),
+    ).toBe(true);
   });
 
   it("blocks numeric tokens that are not in verified facts", () => {
