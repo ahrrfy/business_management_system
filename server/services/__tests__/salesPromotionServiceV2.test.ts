@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
-import { createPromotion, deactivatePromotion, resolvePromotionForLine } from "../salesPromotionService";
+import { createPromotion, deactivatePromotion, loadPromotionPerformance, resolvePromotionForLine } from "../salesPromotionService";
 import { createSale } from "../saleService";
 import { withTx } from "../tx";
 
@@ -168,6 +168,31 @@ describe("resolvePromotionForLine — قواعد الحلّ", () => {
 });
 
 describe("دمج مسار البيع — idempotent verification", () => {
+  it("مؤشرات الأداء تُشتق من لقطة الفاتورة: المبيعات والخصم والتكلفة والربح", async () => {
+    await setStock(1, 1, 100);
+    const pid = await withTx((tx) => createPromotion(tx, { name: "خصم 10%", type: "PERCENT", discountPercent: "10", scope: "ALL", effectiveFrom: "2026-01-01" }, 1));
+    const shiftId = await openShift();
+    await createSale(
+      {
+        branchId: 1, shiftId, sourceType: "POS", priceTier: "RETAIL",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPriceOverride: "10.00", discountAmount: "5.00", promotionId: pid }],
+        payment: { amount: "45.00", method: "CASH" },
+      } as any,
+      actor,
+    );
+
+    const performance = await withTx((tx) => loadPromotionPerformance(tx, 1));
+    expect(performance.rows).toEqual([{
+      promotionId: pid,
+      invoiceCount: 1,
+      netSales: "45.00",
+      discount: "5.00",
+      cost: "20.00",
+      grossProfit: "25.00",
+    }]);
+    expect(performance.summary).toMatchObject({ invoiceCount: 1, netSales: "45.00", discount: "5.00", grossProfit: "25.00" });
+  });
+
   it("promotionId يُسجَّل + promotionDiscount يُخزَّن + الخصم في discountAmount", async () => {
     await setStock(1, 1, 100);
     const pid = await withTx((tx) => createPromotion(tx, { name: "خصم 10%", type: "PERCENT", discountPercent: "10", scope: "ALL", effectiveFrom: "2026-01-01" }, 1));
