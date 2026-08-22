@@ -344,7 +344,7 @@ export default function Products() {
                 { key: "parentProductId", header: "معرّف المنتج الأب", map: (r) => r.parentProductId ?? "" },
                 { key: "parentProductName", header: "المنتج الأب" },
                 { key: "isCustomizable", header: "قابل للتخصيص", map: (r) => yesNo(r.isCustomizable) },
-                { key: "isService", header: "منتج خدمي", map: (r) => yesNo(r.isService) },
+                { key: "isService", header: "بلا مخزون", map: (r) => yesNo(r.isService) },
                 { key: "showInReception", header: "يظهر في الاستقبال", map: (r) => yesNo(r.showInReception) },
                 { key: "isBundle", header: "بكج/حزمة", map: (r) => yesNo(r.isBundle) },
                 { key: "isConsignment", header: "بضاعة أمانة", map: (r) => yesNo(r.isConsignment) },

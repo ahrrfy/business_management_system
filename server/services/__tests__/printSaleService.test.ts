@@ -46,34 +46,43 @@ async function seed() {
   await d.insert(s.products).values([
     { id: 1, name: "ورق A4" },
     { id: 2, name: "حبر أسود" },
-    { id: 10, name: "تصوير A4 أبيض/أسود", productType: "PRINT_SERVICE" },
-    { id: 11, name: "تقديم استمارة إلكترونية", productType: "PRINT_SERVICE" },
+    { id: 10, name: "تصوير A4 أبيض/أسود", productType: "PRINT_SERVICE", isService: true },
+    { id: 11, name: "تقديم استمارة إلكترونية", productType: "PRINT_SERVICE", isService: true },
+    { id: 12, name: "كروت شخصية جاهزة", productType: "PRINT_SERVICE", isService: false },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "MAT-A4", costPrice: "35.00" },
     { id: 2, productId: 2, sku: "MAT-INK", costPrice: "20.00" },
     { id: 10, productId: 10, sku: "SVC-COPY", costPrice: "0.00" },
     { id: 11, productId: 11, sku: "SVC-ESERV", costPrice: "0.00" },
+    { id: 12, productId: 12, sku: "CARD-READY", costPrice: "1000.00" },
   ]);
   await d.insert(s.productUnits).values([
     { id: 1, variantId: 1, unitName: "ورقة", conversionFactor: "1", isBaseUnit: true },
     { id: 2, variantId: 2, unitName: "وحدة", conversionFactor: "1", isBaseUnit: true },
     { id: 10, variantId: 10, unitName: "ورقة", conversionFactor: "1", isBaseUnit: true },
     { id: 11, variantId: 11, unitName: "خدمة", conversionFactor: "1", isBaseUnit: true },
+    { id: 12, variantId: 12, unitName: "دفعة", conversionFactor: "1", isBaseUnit: true },
   ]);
   await d.insert(s.productPrices).values([
     { productUnitId: 10, priceTier: "RETAIL", price: "250.00" },
     { productUnitId: 11, priceTier: "RETAIL", price: "5000.00" },
+    { productUnitId: 12, priceTier: "RETAIL", price: "2000.00" },
   ]);
   await d.insert(s.branchStock).values([
     { variantId: 1, branchId: 1, quantity: 100 },
     { variantId: 2, branchId: 1, quantity: 100 },
+    { variantId: 12, branchId: 1, quantity: 10 },
   ]);
   // وصفة الخدمة 10: ورقة + حبر لكل وحدة خدمة.
-  await d.insert(s.productionRecipes).values({ id: 1, name: "[طباعة] تصوير A4 ب/أ", outputVariantId: 10, outputProductUnitId: 10, laborPerOutputBase: "0", wasteStdPct: "0", isActive: true });
+  await d.insert(s.productionRecipes).values([
+    { id: 1, name: "[طباعة] تصوير A4 ب/أ", outputVariantId: 10, outputProductUnitId: 10, laborPerOutputBase: "0", wasteStdPct: "0", isActive: true },
+    { id: 2, name: "[إنتاج] كروت شخصية", outputVariantId: 12, outputProductUnitId: 12, laborPerOutputBase: "0", wasteStdPct: "0", isActive: true },
+  ]);
   await d.insert(s.productionRecipeLines).values([
     { recipeId: 1, inputVariantId: 1, qtyPerOutputBase: "1.0000" },
     { recipeId: 1, inputVariantId: 2, qtyPerOutputBase: "1.0000" },
+    { recipeId: 2, inputVariantId: 1, qtyPerOutputBase: "5.0000" },
   ]);
   // وردية مفتوحة على الفرع 1.
   await d.insert(s.shifts).values({ id: 1, branchId: 1, userId: 1, openingBalance: "100000", status: "OPEN", openGuard: "1:1" });
@@ -132,6 +141,30 @@ describe("بيع الطباعة: الإيراد + كلفة المواد + خصم
     expect(r.total).toBe("5000.00");
     expect((await invoice(r.invoiceId)).costTotal).toBe("0.00");
     expect(await movements()).toHaveLength(0);
+  });
+
+  it("بيع ناتج طباعة مخزني يخصم الناتج بتكلفة WAVG ولا يستهلك الوصفة", async () => {
+    const beforePaper = await stock(1);
+    const result = await createPrintSale({
+      branchId: 1,
+      shiftId: 1,
+      lines: [{ variantId: 12, productUnitId: 12, quantity: "2" }],
+      payment: { amount: "4000", method: "CASH" },
+      clientRequestId: "ps-stocked-1",
+    }, actor);
+
+    const [invoice] = await db().select().from(s.invoices).where(eq(s.invoices.id, result.invoiceId));
+    expect(invoice.costTotal).toBe("2000.00");
+    expect(await stock(12)).toBe(8);
+    expect(await stock(1)).toBe(beforePaper);
+
+    const [item] = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, result.invoiceId));
+    expect(item.unitCost).toBe("1000.00");
+
+    const moves = await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.referenceId, result.invoiceId));
+    expect(moves).toHaveLength(1);
+    expect(Number(moves[0].variantId)).toBe(12);
+    expect(moves[0].movementType).toBe("OUT");
   });
 
   it("الخدمة لا تُرفَض عند نفاد المادة (allowNegative) لكن الاستهلاك يُتعقَّب", async () => {

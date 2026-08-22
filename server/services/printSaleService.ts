@@ -1,17 +1,16 @@
 /**
  * printSaleService — بيع خدمات قسم الطباعة والاستنساخ (نقطة بيع الخدمات).
  *
- * يختلف عن البيع العادي (saleService): المبيع **خدمة** (نسخة/طباعة/تصميم) لا بضاعة مخزنية،
- * فلا يُخصم مخزون الخدمة نفسها. بدلاً من ذلك تُربط كل خدمة بـ**وصفة إنتاج**
- * (productionRecipes.outputVariantId = متغيّر الخدمة) فتُخصم موادها الأولية (ورق/حبر) **بصمت**
- * عند البيع، وتُحتسَب كلفتها كـCOGS — تماماً كنموذج الورق المعتمد (الكلفة شأن إداري لا يراه الكاشير).
+ * يدعم بند الطباعة بصورتين تحت بطاقة واحدة:
+ * - بند بلا مخزون: تُخصم مواد وصفته عند البيع وتُحتسب كلفتها كـCOGS.
+ * - ناتج مخزني: يُخصم رصيد الناتج وتُحتسب كلفة المتوسط المرجّح؛ وصفته تعمل عند الإنتاج فقط.
  *
  * يحافظ حرفياً على كل ثوابت المحرّك المالي المُدقّق (saleService): ذرّية withTx، قيد SALE
  * (revenue صافٍ، cost = كلفة المواد)، تقريب نقدي IQD + قيد ADJUST، PAYMENT_IN + إيصال + ذمم AR،
  * idempotency عبر invoices.sourceId، قفل الوردية/العميل، وفحص حدّ الائتمان.
  *
- * سلامة المخزون: استهلاك المواد عبر applyMovement (حركة OUT مُسجّلة لكل مادة) مع allowNegative —
- * فلا تُرفَض خدمة لأنّ النظام يُظهر نفاد الورق، والاستهلاك يبقى مُتعقَّباً بالكامل (رصيد سالب = إشارة تزويد).
+ * سلامة المخزون: النواتج المخزنية تُباع بحركة OUT صارمة، أمّا مواد البنود بلا مخزون فتُستهلك
+ * عبر applyMovement مع allowNegative كي يبقى استهلاكها مُتعقَّباً بالكامل.
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
@@ -46,8 +45,7 @@ import {
 } from "./posExternalPayment";
 import { assertPosPaymentMethodEnabled } from "./posPaymentPolicy";
 
-/** علامة نوع المنتج لخدمات الطباعة: لا مخزون ذاتي، والاستهلاك عبر وصفة المواد فقط.
- *  (مخزّنة في products.productType — لا تحتاج تغيير مخطّط.) */
+/** علامة عرض ومسار بيع لبنود الطباعة، سواء كانت بلا مخزون أم نواتج مخزنية. */
 export const PRINT_SERVICE_TYPE = "PRINT_SERVICE";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" | "TELECOM";
@@ -244,14 +242,15 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
 
-    // ٤. تحقّق أنّ كل سطر خدمةُ طباعة (productType=PRINT_SERVICE) — يمنع تمرير بضاعة مخزنية عبر
-    //    مسار «بلا خصم مخزون ذاتي» (تسريب مخزون). يحمّل الكلفة/التفعيل من نفس الانضمام.
+    // ٤. تحقّق أنّ كل سطر بندُ طباعة، وحمّل نوعه المخزني وكلفة متوسطه المرجّح.
     const lineVarIds = Array.from(new Set(input.lines.map((l) => l.variantId)));
     const varRows = await tx
       .select({
         id: productVariants.id,
         isActive: productVariants.isActive,
+        costPrice: productVariants.costPrice,
         productType: products.productType,
+        isService: products.isService,
       })
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
@@ -266,12 +265,15 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       }
     }
 
-    // ٥. وصفات الخدمات (المواد المستهلكة) — استعلام مُجمَّع: وصفة فعّالة واحدة لكل خدمة.
-    const recipeHeads = await tx
-      .select({ id: productionRecipes.id, outputVariantId: productionRecipes.outputVariantId })
-      .from(productionRecipes)
-      .where(and(inArray(productionRecipes.outputVariantId, lineVarIds), eq(productionRecipes.isActive, true)))
-      .orderBy(desc(productionRecipes.id)); // اختيار حتمي: الأحدث يفوز (لا اعتماد على ترتيب القاعدة)
+    // ٥. الوصفة عند البيع تخص البنود بلا مخزون فقط. وصفة الناتج المخزني ينفذها أمر الإنتاج.
+    const nonStockVariantIds = varRows.filter((v) => v.isService === true).map((v) => Number(v.id));
+    const recipeHeads = nonStockVariantIds.length
+      ? await tx
+          .select({ id: productionRecipes.id, outputVariantId: productionRecipes.outputVariantId })
+          .from(productionRecipes)
+          .where(and(inArray(productionRecipes.outputVariantId, nonStockVariantIds), eq(productionRecipes.isActive, true)))
+          .orderBy(desc(productionRecipes.id)) // اختيار حتمي: الأحدث يفوز (لا اعتماد على ترتيب القاعدة)
+      : [];
     const recipeByOutput = new Map<number, number>(); // outputVariantId → recipeId (الأحدث = الأول بعد desc)
     for (const r of recipeHeads) if (!recipeByOutput.has(Number(r.outputVariantId))) recipeByOutput.set(Number(r.outputVariantId), Number(r.id));
     const recipeIds = Array.from(new Set(recipeByOutput.values()));
@@ -306,9 +308,10 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       unitPrice: string;
       quantity: string;
       total: string;
-      unitCost: string; // كلفة الوحدة (للعرض) = كلفة مواد السطر ÷ baseQuantity
+      unitCost: string; // لقطة كلفة الوحدة الأساس وقت البيع
     }> = [];
     const materialAgg = new Map<number, { baseQuantity: number; unitCost: Decimal }>();
+    const stockedAgg = new Map<number, number>();
 
     for (const l of input.lines) {
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
@@ -317,25 +320,31 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
           ? money(l.unitPriceOverride)
           : await getUnitPrice(tx, l.productUnitId, tier);
       const lineRes = computeLineTotal({ unitPrice, quantity: money(l.quantity) });
+      const variant = varMap.get(l.variantId)!;
+      const isStocked = variant.isService !== true;
 
-      // كلفة المواد: وسّع وصفة الخدمة (إن وُجدت).
-      let lineCost = new Decimal(0);
-      const recipeId = recipeByOutput.get(l.variantId);
-      if (recipeId != null) {
-        for (const rl of linesByRecipe.get(recipeId) ?? []) {
-          // الاستهلاك = qtyPerOutputBase × كمية الخدمة الأساس، يُدوَّر لأقرب عدد صحيح (وحدات مخزون صحيحة).
-          // سياسة نقطة البيع المتعمَّدة: لا تُرفَض خدمةٌ بسبب وصفة كسرية — بخلاف مسار الإنتاج الذي يرفض الكسر.
-          const consumed = Math.max(0, Math.round(money(rl.qtyPerOutputBase).times(baseQuantity).toNumber()));
-          if (consumed <= 0) continue;
-          const unitCost = round2(matCostMap.get(rl.inputVariantId) ?? new Decimal(0));
-          lineCost = lineCost.plus(round2(unitCost.times(consumed)));
-          const agg = materialAgg.get(rl.inputVariantId) ?? { baseQuantity: 0, unitCost };
-          agg.baseQuantity += consumed;
-          materialAgg.set(rl.inputVariantId, agg);
+      let unitCost = round2(money(variant.costPrice));
+      if (isStocked) {
+        stockedAgg.set(l.variantId, (stockedAgg.get(l.variantId) ?? 0) + baseQuantity);
+      } else {
+        // للبند بلا مخزون: وسّع وصفته واحسب كلفة مواده الفعلية.
+        let lineCost = new Decimal(0);
+        const recipeId = recipeByOutput.get(l.variantId);
+        if (recipeId != null) {
+          for (const rl of linesByRecipe.get(recipeId) ?? []) {
+            // الاستهلاك = qtyPerOutputBase × كمية الخدمة الأساس، ويُدوَّر لوحدة مخزون صحيحة.
+            const consumed = Math.max(0, Math.round(money(rl.qtyPerOutputBase).times(baseQuantity).toNumber()));
+            if (consumed <= 0) continue;
+            const materialUnitCost = round2(matCostMap.get(rl.inputVariantId) ?? new Decimal(0));
+            lineCost = lineCost.plus(round2(materialUnitCost.times(consumed)));
+            const agg = materialAgg.get(rl.inputVariantId) ?? { baseQuantity: 0, unitCost: materialUnitCost };
+            agg.baseQuantity += consumed;
+            materialAgg.set(rl.inputVariantId, agg);
+          }
         }
+        lineCost = round2(lineCost);
+        unitCost = baseQuantity > 0 ? round2(lineCost.div(baseQuantity)) : new Decimal(0);
       }
-      lineCost = round2(lineCost);
-      const unitCost = baseQuantity > 0 ? round2(lineCost.div(baseQuantity)) : new Decimal(0);
       computed.push({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -509,7 +518,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       await consumeApproval(tx, effectivePrintApprovalId, invoiceId);
     }
 
-    // ١٠. الأصناف (الخدمات). لا خصم مخزون ذاتي للخدمة (متغيّر الخدمة بلا رصيد).
+    // ١٠. أصناف الفاتورة بلقطة كلفتها وقت البيع.
     for (const c of computed) {
       await tx.insert(invoiceItems).values({
         invoiceId,
@@ -523,7 +532,21 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       });
     }
 
-    // ١١. خصم المواد الأولية (ورق/حبر) بصمت — حركة OUT واحدة لكل مادة، بترتيب variantId حتمي،
+    // النواتج المخزنية: خصم الناتج نفسه. لا تُنفّذ الوصفة هنا؛ الوصفة تخص أمر الإنتاج فقط.
+    for (const [variantId, baseQuantity] of Array.from(stockedAgg.entries()).sort((a, b) => a[0] - b[0])) {
+      if (baseQuantity <= 0) continue;
+      await applyMovement(tx, {
+        variantId,
+        branchId: input.branchId,
+        baseQuantity,
+        movementType: "OUT",
+        referenceType: "PRINT_SALE",
+        referenceId: invoiceId,
+        createdBy: actor.userId,
+      });
+    }
+
+    // ١١. خصم مواد البنود بلا مخزون — حركة OUT واحدة لكل مادة، بترتيب variantId حتمي،
     //     مع allowNegative (لا تُرفَض الخدمة عند نفاد المادة؛ الاستهلاك يبقى مُتعقَّباً).
     const materials: MaterialConsumption[] = Array.from(materialAgg.entries())
       .map(([variantId, m]) => ({ variantId, baseQuantity: m.baseQuantity, unitCost: m.unitCost }))
