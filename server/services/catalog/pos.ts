@@ -12,6 +12,7 @@ import { resolveBarcodeOwner } from "./barcodeAliases";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility } from "./search";
 import { loadBundleUnitCosts } from "../bundleService";
 import { loadVariantAvailability } from "./variantAvailability";
+import { titleForChannel } from "@shared/productChannelTitles";
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
 export interface PosRow {
@@ -87,6 +88,8 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
     .select({
       productId: products.id,
       productName: products.name,
+      posLabel: products.posLabel,
+      shortTitle: products.shortTitle,
       variantId: productVariants.id,
       variantName: productVariants.variantName,
       color: productVariants.color,
@@ -132,6 +135,7 @@ function normalize(rows: any[], branchId: number): PosRow[] {
   return rows.map((r) => ({
     ...r,
     branchId,
+    productName: titleForChannel({ name: r.productName, posLabel: r.posLabel, shortTitle: r.shortTitle }, "pos"),
     productId: Number(r.productId),
     variantId: Number(r.variantId),
     productUnitId: Number(r.productUnitId),

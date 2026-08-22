@@ -32,6 +32,13 @@ export interface CreateProductInput {
   brand?: string | null;
   modelName?: string | null;
   description?: string | null;
+  internalName?: string | null;
+  storeTitle?: string | null;
+  seoTitle?: string | null;
+  shortTitle?: string | null;
+  posLabel?: string | null;
+  invoiceLabel?: string | null;
+  marketingCopy?: string | null;
   categoryId?: number | null;
   isCustomizable?: boolean;
   // بند بلا مخزون: البيع لا يُحرّك branchStock، ورصيد افتتاحي يُتجاهَل.
@@ -228,6 +235,13 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       brand: input.brand?.trim() || null,
       modelName: input.modelName?.trim() || null,
       description: input.description?.trim() || null,
+      internalName: input.internalName?.trim() || composedName,
+      storeTitle: input.storeTitle?.trim() || composedName,
+      seoTitle: input.seoTitle?.trim() || composedName,
+      shortTitle: input.shortTitle?.trim() || composedName.slice(0, 160),
+      posLabel: input.posLabel?.trim() || composedName.slice(0, 120),
+      invoiceLabel: input.invoiceLabel?.trim() || composedName,
+      marketingCopy: input.marketingCopy?.trim() || null,
       categoryId: input.categoryId ?? null,
       isCustomizable: input.isCustomizable ?? false,
       isService,

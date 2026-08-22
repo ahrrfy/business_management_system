@@ -46,6 +46,7 @@ import { extractInsertId } from "../lib/insertId";
 import { userNameSnapshot } from "./userSnapshot";
 import { paymentAssetRole } from "./sale/paymentPosting";
 import type { Tx } from "../db";
+import { titleForChannel } from "@shared/productChannelTitles";
 import {
   assertExternalPaymentReplay,
   bindExternalPaymentAttempt,
@@ -273,6 +274,9 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         isActive: productVariants.isActive,
         costPrice: productVariants.costPrice,
         productType: products.productType,
+        productName: products.name,
+        invoiceLabel: products.invoiceLabel,
+        shortTitle: products.shortTitle,
         isService: products.isService,
       })
       .from(productVariants)
@@ -332,6 +336,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
       quantity: string;
       total: string;
       unitCost: string; // لقطة كلفة الوحدة الأساس وقت البيع
+      invoiceName: string;
     }> = [];
     const materialAgg = new Map<number, { baseQuantity: number; unitCost: Decimal }>();
     const stockedAgg = new Map<number, number>();
@@ -386,6 +391,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         quantity: lineRes.quantity,
         total: lineRes.total,
         unitCost: unitCost.toFixed(2),
+        invoiceName: titleForChannel({ name: variant.productName, invoiceLabel: variant.invoiceLabel, shortTitle: variant.shortTitle }, "invoice"),
       });
     }
 
@@ -564,6 +570,7 @@ export async function createPrintSaleInTx(tx: Tx, input: CreatePrintSaleInput, a
         unitPrice: c.unitPrice,
         unitCost: c.unitCost,
         total: c.total,
+        itemNameSnapshot: c.invoiceName,
       });
     }
 

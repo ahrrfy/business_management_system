@@ -1667,6 +1667,20 @@
       "when": 1788052303000,
       "tag": "0252_variant_kind_alternative",
       "breakpoints": true
+    },
+    {
+      "idx": 253,
+      "version": "5",
+      "when": 1788052304000,
+      "tag": "0253_product_content_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 254,
+      "version": "5",
+      "when": 1788052305000,
+      "tag": "0254_invoice_item_name_snapshot",
+      "breakpoints": true
     }
   ]
 }

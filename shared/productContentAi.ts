@@ -40,6 +40,19 @@ export const productFactsSchema = z
 
 export type ProductFacts = z.infer<typeof productFactsSchema>;
 
+export const productChannelContentSchema = z.object({
+  internalName: z.string().trim().max(255).nullable().optional(),
+  storeTitle: z.string().trim().max(255).nullable().optional(),
+  seoTitle: z.string().trim().max(255).nullable().optional(),
+  shortTitle: z.string().trim().max(160).nullable().optional(),
+  posLabel: z.string().trim().max(120).nullable().optional(),
+  invoiceLabel: z.string().trim().max(255).nullable().optional(),
+  marketingCopy: z.string().trim().max(10_000).nullable().optional(),
+  description: z.string().trim().max(20_000).nullable().optional(),
+}).strict();
+
+export type ProductChannelContentInput = z.infer<typeof productChannelContentSchema>;
+
 const evidenceKey = z
   .string()
   .regex(
@@ -86,6 +99,8 @@ export type DraftValidation = {
   warnings: string[];
   ok: boolean;
 };
+
+export type ProductContentValidationSnapshot = DraftValidation;
 
 const UNSUPPORTED_MARKETING_TERMS = [
   "الأفضل",

@@ -10,6 +10,8 @@ import {
   invoiceItems,
   invoices,
   productUnits,
+  productVariants,
+  products,
   receipts,
   shifts as shiftsTable,
   workOrders,
@@ -29,6 +31,7 @@ import type { DeliveryTxActor } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { appendDeliveryEvent, appendDeliveryLedgerEntry } from "./lifecycle";
 import { deliveryWorkOrderSaleIntent } from "./posting";
+import { titleForChannel } from "@shared/productChannelTitles";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -299,6 +302,13 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     // البنود والقيد والذمّة تُكتب **مرّةً واحدة** مع الفاتورة؛ إعادة التنشيط تتخطّاها كلّها.
     if (!reusingInvoice && wo.baseVariantId != null) {
+      const productNameRow = (await tx
+        .select({ name: products.name, invoiceLabel: products.invoiceLabel, shortTitle: products.shortTitle })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(eq(productVariants.id, Number(wo.baseVariantId)))
+        .limit(1))[0];
+      const itemNameSnapshot = productNameRow ? titleForChannel(productNameRow, "invoice") : null;
       const baseUnit = (await tx.select({ id: productUnits.id }).from(productUnits).where(eq(productUnits.variantId, Number(wo.baseVariantId))).limit(1))[0];
       const unitPrice = round2(salePrice.dividedBy(quantity));
       await tx.insert(invoiceItems).values({
@@ -312,6 +322,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
         unitCost: round2(costTotal.dividedBy(quantity)).toFixed(2),
         discountAmount: "0",
         total: salePrice.toFixed(2),
+        itemNameSnapshot,
       });
     }
 

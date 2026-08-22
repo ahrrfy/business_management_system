@@ -64,6 +64,7 @@ export default defineConfig({
       "client/src/lib/offline/sessionBoundary.test.ts",
       "shared/moneyPrecision.test.ts",
       "shared/productContentAi.test.ts",
+      "shared/productChannelTitles.test.ts",
       "shared/__tests__/workOrderDeliveryState.test.ts",
       "shared/__tests__/documentNumber.test.ts",
       "shared/receptionChannel.test.ts",

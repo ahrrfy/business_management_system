@@ -94,6 +94,7 @@ export async function loadOfficialDocumentSnapshot(
     const items = await db
       .select({
         productName: products.name,
+        itemNameSnapshot: invoiceItems.itemNameSnapshot,
         variantName: productVariants.variantName,
         unitName: productUnits.unitName,
         quantity: invoiceItems.quantity,
@@ -126,7 +127,7 @@ export async function loadOfficialDocumentSnapshot(
         paidAmount: row.paidAmount,
         notes: row.notes,
         items: items.map((item) => ({
-          productName: item.productName ?? "",
+          productName: item.itemNameSnapshot ?? item.productName ?? "",
           variantName: item.variantName,
           unitName: item.unitName,
           quantity: item.quantity,

@@ -48,6 +48,7 @@ import { userNameSnapshot } from "../userSnapshot";
 import { assertPosPaymentMethodEnabled } from "../posPaymentPolicy";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
+import { titleForChannel } from "@shared/productChannelTitles";
 
 // قنوات الاستقبال/التنفيذ المشمولة بإعفاء الائتمان في «وضع الافتتاح» (قرار المالك ١٠/٨):
 // البيع المباشر (POS) والطلبات (ORDER) وأوامر الشغل (WORKORDER). ONLINE (المتجر) خارج النطاق.
@@ -247,6 +248,9 @@ export async function createSaleInTx(
         costPrice: productVariants.costPrice,
         isActive: productVariants.isActive,
         productType: products.productType,
+        productName: products.name,
+        invoiceLabel: products.invoiceLabel,
+        shortTitle: products.shortTitle,
         // تدقيق ١١/٨ (H4): تعطيل المنتج نفسه يجب أن يمنع البيع أيضاً — كان الحارس يفحص المتغيّر فقط،
         // فمنتجٌ عطّله المالك بمتغيّراتٍ نشطة يظلّ يُباع خادمياً عبر API/سلة قديمة/إعادة تشغيل أوفلاين.
         productActive: products.isActive,
@@ -254,13 +258,16 @@ export async function createSaleInTx(
       .from(productVariants)
       .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productVariants.id, uniqueVariantIds));
-    const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null; productActive: boolean | null }>();
+    const variantById = new Map<number, { costPrice: string; isActive: boolean | null; productType: string | null; productActive: boolean | null; productName: string; invoiceLabel: string | null; shortTitle: string | null }>();
     for (const r of variantRows) {
       variantById.set(Number(r.id), {
         costPrice: String(r.costPrice),
         isActive: r.isActive,
         productType: r.productType ?? null,
         productActive: r.productActive,
+        productName: r.productName,
+        invoiceLabel: r.invoiceLabel ?? null,
+        shortTitle: r.shortTitle ?? null,
       });
     }
     const containsDigitalCard = Array.from(variantById.values()).some((v) => v.productType === "DIGITAL_CARD");
@@ -536,6 +543,7 @@ export async function createSaleInTx(
         promotionId: recordedPromotionId,
         promotionDiscount: recordedPromoDiscount,
         internalLineToken: l.internalLineToken?.trim() || null,
+        invoiceName: titleForChannel({ name: v.productName, invoiceLabel: v.invoiceLabel, shortTitle: v.shortTitle }, "invoice"),
       });
     }
 
@@ -821,6 +829,7 @@ export async function createSaleInTx(
         // هدايا الفاتورة (0149): وسمُ السطر المُهدى. `unitCost` أعلاه يحمل تكلفته الحقيقية كاملةً
         // (لقطة WAVG) — مصدرُ مصروف الهدية ومصدرُ عكسِه عند الإرجاع.
         isGift: c.isGift,
+        itemNameSnapshot: c.invoiceName,
       });
       const insertedInvoiceItemId = extractInsertId(itemInsRes);
       if (c.internalLineToken) {

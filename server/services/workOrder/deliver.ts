@@ -1,7 +1,7 @@
 // READY → DELIVERED: إنشاء فاتورة (sourceType=WORKORDER) + دفعة اختيارية + قيد SALE + تسوية الذمم.
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, isNull, notLike, or } from "drizzle-orm";
-import { invoiceItems, invoices, productUnits, receipts, shifts, workOrders } from "../../../drizzle/schema";
+import { invoiceItems, invoices, productUnits, productVariants, products, receipts, shifts, workOrders } from "../../../drizzle/schema";
 import { assertCreditLimit } from "../../lib/credit";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
@@ -17,6 +17,7 @@ import { assertSiblingsReady } from "./siblings";
 import type { PaymentMethod } from "./types";
 import { userNameSnapshot } from "../userSnapshot";
 import { paymentAssetRole } from "../sale/paymentPosting";
+import { titleForChannel } from "@shared/productChannelTitles";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -217,7 +218,15 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       createdBy: sellerUserId,
     });
     const invoiceId = extractInsertId(invRes);
-
+    const productNameRow = hasBaseVariant
+      ? (await tx
+          .select({ name: products.name, invoiceLabel: products.invoiceLabel, shortTitle: products.shortTitle })
+          .from(productVariants)
+          .innerJoin(products, eq(productVariants.productId, products.id))
+          .where(eq(productVariants.id, Number(wo.baseVariantId)))
+          .limit(1))[0]
+      : null;
+    const itemNameSnapshot = productNameRow ? titleForChannel(productNameRow, "invoice") : null;
     if (hasBaseVariant) {
       await tx.insert(invoiceItems).values({
         invoiceId,
@@ -230,6 +239,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         unitCost: round2(costTotal.dividedBy(quantity)).toFixed(2),
         discountAmount: "0",
         total: salePrice.toFixed(2),
+        itemNameSnapshot,
       });
     }
 

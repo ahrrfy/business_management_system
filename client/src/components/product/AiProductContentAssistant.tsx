@@ -25,6 +25,7 @@ type DraftField = keyof Pick<
 type Props = {
   facts: ProductFacts;
   onApply: (draft: AiProductDraft) => void;
+  productId?: number;
 };
 
 const FIELD_LABELS: Record<DraftField, string> = {
@@ -54,11 +55,12 @@ const FIELD_ORDER: DraftField[] = [
   "description",
 ];
 
-export function AiProductContentAssistant({ facts, onApply }: Props) {
+export function AiProductContentAssistant({ facts, onApply, productId }: Props) {
   const [draft, setDraft] = useState<AiProductDraft | null>(null);
   const [validation, setValidation] = useState<DraftValidation | null>(null);
   const [needsValidation, setNeedsValidation] = useState(false);
   const [cacheHit, setCacheHit] = useState(false);
+  const [savedDraftId, setSavedDraftId] = useState<number | null>(null);
   const [sourceFingerprint, setSourceFingerprint] = useState<string | null>(
     null,
   );
@@ -73,6 +75,20 @@ export function AiProductContentAssistant({ facts, onApply }: Props) {
       setNeedsValidation(true);
     }
   }, [factsFingerprint, sourceFingerprint]);
+  const draftsQuery = trpc.catalog.listContentDrafts.useQuery(
+    { productId: productId ?? 0, limit: 10 },
+    { enabled: !!productId },
+  );
+  const decideDraft = trpc.catalog.decideContentDraft.useMutation({
+    onSuccess: () => draftsQuery.refetch(),
+  });
+  const saveDraft = trpc.catalog.saveContentDraft.useMutation({
+    onSuccess: (result) => {
+      setSavedDraftId(result.draftId);
+      void draftsQuery.refetch();
+    },
+  });
+
   const generate = trpc.catalog.generateContentDraft.useMutation({
     onSuccess: (result) => {
       setDraft(result.draft);
@@ -80,7 +96,27 @@ export function AiProductContentAssistant({ facts, onApply }: Props) {
       setNeedsValidation(false);
       setSourceFingerprint(factsFingerprint);
       setCacheHit(result.cacheHit);
+      setSavedDraftId(null);
       setEdited({});
+      if (productId) {
+        saveDraft.mutate({
+          productId,
+          sourceFacts: facts,
+          sourceFactsHash: result.cacheKey,
+          content: {
+            storeTitle: result.draft.seoTitle,
+            seoTitle: result.draft.seoTitle,
+            shortTitle: result.draft.shortTitle,
+            posLabel: result.draft.posLabel,
+            invoiceLabel: result.draft.invoiceLabel,
+            marketingCopy: result.draft.marketingCopy,
+            description: result.draft.description,
+          },
+          validation: result.validation,
+          promptVersion: result.promptVersion,
+          model: result.model,
+        });
+      }
     },
   });
 
@@ -181,6 +217,7 @@ export function AiProductContentAssistant({ facts, onApply }: Props) {
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge variant="outline">مسودة غير منشورة</Badge>
               {cacheHit && <Badge variant="secondary">من Cache</Badge>}
+              {savedDraftId && <Badge variant="secondary">مسودة محفوظة #{savedDraftId}</Badge>}
               <span>المحتوى يحتاج مراجعة قبل التطبيق.</span>
             </div>
 
@@ -243,6 +280,29 @@ export function AiProductContentAssistant({ facts, onApply }: Props) {
                 );
               })}
             </div>
+
+            {productId && (draftsQuery.data?.length ?? 0) > 0 && (
+              <div className="rounded-md border bg-background/80 p-3">
+                <p className="mb-2 text-sm font-semibold">تاريخ المسودات</p>
+                <div className="space-y-2">
+                  {draftsQuery.data?.map((saved) => (
+                    <div key={saved.id} className="flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant={saved.status === "APPROVED" ? "default" : "outline"}>{saved.status}</Badge>
+                        <span>#{saved.id}</span>
+                        <span className="text-muted-foreground">{saved.validation.ok ? "اجتازت التحقق" : "تحتاج مراجعة"}</span>
+                      </div>
+                      {saved.status === "DRAFT" && (
+                        <div className="flex gap-1">
+                          <Button type="button" size="sm" variant="outline" disabled={decideDraft.isPending} onClick={() => decideDraft.mutate({ draftId: Number(saved.id), decision: "REJECTED", note: "رُفضت من شاشة مراجعة المنتج." })}>رفض</Button>
+                          <Button type="button" size="sm" disabled={decideDraft.isPending || !saved.validation.ok} onClick={() => decideDraft.mutate({ draftId: Number(saved.id), decision: "APPROVED", note: "اعتماد مسودة من شاشة مراجعة المنتج." })}>اعتماد</Button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {visibleDraft.keywords.length > 0 && (
               <div className="rounded-md border bg-background/80 p-3">
