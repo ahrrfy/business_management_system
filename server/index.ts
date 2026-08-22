@@ -35,6 +35,7 @@ import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
 import { registerWellKnown } from "./wellKnown";
+import { registerStorefrontWishlistFallback } from "./storefrontWishlistFallback";
 import { applyBodyParsers } from "./middleware/bodyParsers";
 import { csrfGuard } from "./middleware/csrf";
 import {
@@ -816,6 +817,7 @@ async function startServer() {
   // Digital Asset Links لـTWA — يُسجَّل **قبل** catch-all الـSPA (setupVite/serveStatic) كي يعيد
   // JSON لا index.html على /.well-known/assetlinks.json (تغليف أندرويد على Play).
   registerWellKnown(app);
+  registerStorefrontWishlistFallback(app);
 
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
