@@ -323,6 +323,10 @@ export interface ClientUnit {
 /** متغيّر واحد = منتج مخزنيّ مستقل (لون/قياس) بباركود لكل وحدة ورصيد لكل فرع. */
 export interface ClientVariant {
   id: string;
+  /** نوع المتغيّر (م٣): "VARIANT" تنويعة لون/قياس، "ALTERNATIVE" بديلٌ مستقلّ يلزمه اسمٌ وباركود. */
+  variantKind?: "VARIANT" | "ALTERNATIVE";
+  /** اسم البديل (للبدائل) — يظهر في العرض الموحّد. */
+  variantName?: string | null;
   color: string;
   /**
    * لون العرض الحقيقي «#RRGGBB» — اختيار صريح من منتقي اللون. إن غاب (null/undefined)

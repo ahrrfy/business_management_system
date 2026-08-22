@@ -34,10 +34,11 @@ export interface CreateProductInput {
   description?: string | null;
   categoryId?: number | null;
   isCustomizable?: boolean;
-  // مُنتج خِدمي (لا مَخزون): البَيع/الشِراء لا يُحرّك branchStock، رَصيد افتتاحي يُتجاهَل.
+  // بند بلا مخزون: البيع لا يُحرّك branchStock، ورصيد افتتاحي يُتجاهَل.
+  // false صريحة تعني ناتجاً مخزنياً يمكن شراؤه أو إنتاجه حتى لو عُرض في نقطة الطباعة.
   isService?: boolean;
-  // print-catalog: توجيه البَند لنقطة بَيع الطباعة (productType=PRINT_SERVICE) ⇒ يَظهر في شاشة
-  // خدمات الطباعة ويُباع عبر printSaleService (لا مخزون ذاتي؛ يَخصم المواد عبر الوصفة أدناه).
+  // print-catalog: توجيه البَند لنقطة بَيع الطباعة (productType=PRINT_SERVICE).
+  // هذه راية عرض ومسار بيع، ولا تفرض كونه بلا مخزون عند تمرير isService=false صراحةً.
   printService?: boolean;
   // توجيه الخدمة لكاشير خدمة العملاء (الاستقبال) أيضاً — يَظهر هناك ويُباع عبر createPrintSale.
   showInReception?: boolean;
@@ -51,8 +52,8 @@ export interface CreateProductInput {
   // ولا خدمة/بكج. راجع docs/consignment-design-2026-07-20.md §٥-ط.
   isConsignment?: boolean;
   consignorId?: number | null;
-  // print-catalog: وصفة المواد الخام التي تَستهلكها الخدمة (ورق/حبر…). تُربَط بمتغيّر البَند الأوّل
-  // (الخدمات أحاديّة المتغيّر). اختيارية: خدمة بلا مواد (إلكترونية/تصميم) تُترَك بلا وصفة.
+  // print-catalog: وصفة المواد الخام المرتبطة بمتغيّر البَند الأوّل.
+  // للبند بلا مخزون تُستهلك عند البيع؛ وللناتج المخزني تُستهلك عند أمر الإنتاج فقط.
   recipe?: Array<{ inputVariantId: number; qtyPerOutputBase: string }>;
   variants: Array<{
     sku: string;
@@ -217,9 +218,10 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل)" });
     await assertCatalogUniqueness(tx, input);
     await assertConsignmentValid(tx, input, input.variants.map((v) => v.costPrice));
-    // print-catalog: التَوجيه لنقطة الطباعة يَفرض الراية PRINT_SERVICE (تَجُبّ «النوع» الوصفي)
-    // ويُلزم isService (خدمة بلا مخزون). غير ذلك ⇒ النوع الوصفي كَما هو.
-    const isService = !!(input.isService || input.printService);
+    // print-catalog: التوجيه لنقطة الطباعة يفرض النوع التشغيلي PRINT_SERVICE فقط.
+    // نحترم false الصريحة حتى يكون البند نفسه ناتجاً مخزنياً قابلاً للشراء أو الإنتاج.
+    // عند غياب isService نحافظ على التوافق السابق: بند الطباعة يكون بلا مخزون افتراضياً.
+    const isService = input.isService ?? !!input.printService;
     const pRes = await tx.insert(products).values({
       name: composedName,
       productType: input.printService ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,

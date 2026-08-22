@@ -1,13 +1,20 @@
 // قراءات شاشة الشراء.
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { branchStock, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
+import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
 
 // Codex #163 P2 (Filter bundles out before stock movements): البكج بلا مخزون ذاتي ⇒ إضافته إلى
 // أمر شراء تفشل عند الاستلام في `applyMovement` (يرفض تحريك مخزون البكج مباشرةً). نستبعده هنا
 // كي لا يظهر في المنتقيات أصلاً بدل التعثّر متأخّراً بعد جهد إدخال. لا يمسّ منطق الشراء نفسه.
-const notBundle = eq(products.isBundle, false);
+const purchasableActive = and(
+  eq(products.isActive, true),
+  eq(productVariants.isActive, true),
+  eq(productUnits.isActive, true),
+  eq(products.isService, false),
+  eq(products.isBundle, false),
+  sql`(${products.productType} IS NULL OR ${products.productType} <> 'DIGITAL_CARD')`,
+);
 
 /** One purchasable line: a (variant × unit) with the variant's last cost (per base) and branch stock.
  *  Distinct from {@link PosRow}: it carries COST, never a sell price, so it must never feed the cashier UI. */
@@ -32,7 +39,7 @@ export async function listForPurchase(branchId: number, query?: string, limit = 
   const db = getDb();
   if (!db) return [];
   const search = buildCatalogSearchWhere(query);
-  const where = search ? and(activeOnly, notBundle, search) : and(activeOnly, notBundle);
+  const where = search ? and(purchasableActive, search) : purchasableActive;
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await db
     .select({

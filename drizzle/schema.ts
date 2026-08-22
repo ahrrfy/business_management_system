@@ -739,6 +739,13 @@ export const productVariants = mysqlTable(
       .references(() => products.id, { onDelete: "cascade" }),
     sku: varchar("sku", { length: 60 }).notNull(),
     variantName: varchar("variantName", { length: 255 }),
+    // نوع المتغيّر (وثيقة «الجرد بالباركود» ٢٢/٨، م٣): VARIANT = تنويعة لون/قياس من نفس المنتج؛
+    // ALTERNATIVE = منتجٌ حقيقيٌّ مستقل (ماركة/منشأ مختلف) يُباع تحت الاسم الجامع نفسه لكن له
+    // مخزونه وتكلفته وباركوده وسعره كاملاً. الافتراض VARIANT (توافق: كل القائم تنويعات).
+    // اسمُ البديل يُحمَل في variantName (إلزاميّ للبدائل)، ولا بديلَ بلا باركود (يُفرَض في الكتابة).
+    variantKind: mysqlEnum("variantKind", ["VARIANT", "ALTERNATIVE"])
+      .default("VARIANT")
+      .notNull(),
     color: varchar("color", { length: 60 }),
     // بنك الألوان (colorHex): لون العرض الحقيقي «#RRGGBB» — اختيار صريح من المستخدم؛ إن null
     // يُستنتَج تلقائياً من اسم اللون عبر @shared/colorBank. هجرة 0080. (9 خانات تتّسع لـ#RRGGBBAA مستقبلاً.)
@@ -4570,6 +4577,13 @@ export const stocktakeSessions = mysqlTable(
     dupPolicy: mysqlEnum("dupPolicy", ["VERIFY", "BLOCK"])
       .default("VERIFY")
       .notNull(),
+    // أسلوب العدّ (وثيقة «الجرد بالباركود» ٢٢/٨): SCAN_REQUIRED = لا تُفتح بطاقة عدٍّ إلا بمسحٍ
+    // فعليّ أو استثناء يدويّ محكوم؛ FREE = النقر الحر يفتح البطاقة (السلوك القديم). الافتراض في
+    // القاعدة FREE للتوافق مع الجلسات القائمة قبل الميزة؛ والجلسة الجديدة تُنشأ SCAN_REQUIRED من
+    // create.ts (قرار المالك) — راجع shared/stocktakeCountMethod.ts.
+    countMethod: mysqlEnum("countMethod", ["SCAN_REQUIRED", "FREE"])
+      .default("FREE")
+      .notNull(),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
     submittedAt: timestamp("submittedAt"),
@@ -4721,6 +4735,17 @@ export const stocktakeCounts = mysqlTable(
     qty: int("qty").notNull(),
     // تفصيل الإدخال متعدد الوحدات (JSON): {"كرتون":2,"قطعة":5} — للتدقيق.
     unitBreakdown: text("unitBreakdown"),
+    // نسب العدّة إلى مصدرها (وثيقة «الجرد بالباركود» ٢٢/٨): مسح قارئ/كاميرا، أو استثناء يدويّ
+    // محكوم، أو اختيار حر (FREE فقط). NULL للعدّات السابقة لهذه الميزة. التسمية والقواعد في
+    // shared/stocktakeCountMethod.ts؛ الإثبات (إعادة حلّ الباركود) في submit.ts.
+    entryMethod: mysqlEnum("entryMethod", [
+      "SCAN_HID",
+      "SCAN_CAMERA",
+      "MANUAL_AUTHORIZED",
+      "SEARCH_PICK",
+    ]),
+    // الباركود الممسوح فعلاً (كما وصل) — للتدقيق ولإثبات المطابقة الخادمية. NULL للإدخال اليدوي.
+    scannedBarcode: varchar("scannedBarcode", { length: 64 }),
     countedByName: varchar("countedByName", { length: 120 }).notNull(),
     countedByUserId: int("countedByUserId").references(() => users.id),
     countedAt: timestamp("countedAt").defaultNow().notNull(),
@@ -4778,6 +4803,14 @@ export const stocktakeCountOperations = mysqlTable(
       "VERIFY",
     ]).notNull(),
     resultVerifyMatch: boolean("resultVerifyMatch"),
+    // نسب الطلب المقبول إلى مصدره — مرآة stocktakeCounts (سجل الإعادة الوحيد). NULL لما قبل الميزة.
+    entryMethod: mysqlEnum("entryMethod", [
+      "SCAN_HID",
+      "SCAN_CAMERA",
+      "MANUAL_AUTHORIZED",
+      "SEARCH_PICK",
+    ]),
+    scannedBarcode: varchar("scannedBarcode", { length: 64 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -4796,6 +4829,54 @@ export type StocktakeCountOperation =
   typeof stocktakeCountOperations.$inferSelect;
 export type InsertStocktakeCountOperation =
   typeof stocktakeCountOperations.$inferInsert;
+
+/**
+ * باركود مُسِح في الميدان ولم يُحلّ داخل نطاق الجلسة (وثيقة «الجرد بالباركود» ٢٢/٨).
+ * أثمن ما يلتقطه الجرد: بضاعة على الرف لا يعرفها النظام أو صنفٌ خارج النطاق. append-only —
+ * يُلتقط أوفلاين عبر الطابور القائم، ويعالجه المشرف: RESOLVED (أُضيف للنطاق/سُجّل) أو DISMISSED.
+ */
+export const stocktakeUnknownScans = mysqlTable(
+  "stocktakeUnknownScans",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sessionId: bigint("sessionId", { mode: "number" })
+      .notNull()
+      .references(() => stocktakeSessions.id, { onDelete: "cascade" }),
+    assignmentId: bigint("assignmentId", { mode: "number" })
+      .notNull()
+      .references(() => stocktakeAssignments.id),
+    barcode: varchar("barcode", { length: 64 }).notNull(),
+    scannedByName: varchar("scannedByName", { length: 120 }).notNull(),
+    scannedByUserId: int("scannedByUserId").references(() => users.id),
+    status: mysqlEnum("unknownScanStatus", ["PENDING", "RESOLVED", "DISMISSED"])
+      .default("PENDING")
+      .notNull(),
+    // إن حُلّ بإضافته للنطاق: المتغيّر الذي أُلحق (وإلا NULL — سُجّل كصنف غير مسجّل).
+    resolvedVariantId: bigint("resolvedVariantId", { mode: "number" }).references(
+      () => productVariants.id,
+    ),
+    resolvedBy: int("resolvedBy").references(() => users.id),
+    resolvedAt: timestamp("resolvedAt"),
+    resolutionNote: varchar("resolutionNote", { length: 255 }),
+    // idempotency لمزامنة طابور الأوفلاين — نفس المسح لا يُكرَّر صفّاً.
+    clientRequestId: varchar("clientRequestId", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    sessionStatusIdx: index("idx_stkunknown_session_status").on(
+      table.sessionId,
+      table.status,
+    ),
+    requestUq: unique("uq_stkunknown_request").on(
+      table.sessionId,
+      table.clientRequestId,
+    ),
+  }),
+);
+
+export type StocktakeUnknownScan = typeof stocktakeUnknownScans.$inferSelect;
+export type InsertStocktakeUnknownScan =
+  typeof stocktakeUnknownScans.$inferInsert;
 
 /** سجل ذري append-only لكل اعتماد مرحلي أو إعادة فتح. */
 export const stocktakeItemReviewEvents = mysqlTable(

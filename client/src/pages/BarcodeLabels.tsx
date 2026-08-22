@@ -358,6 +358,62 @@ export default function BarcodeLabels() {
     return fresh.length;
   }
 
+  // تسليم «اطبع ملصقات الناقص» من معالج الجرد (م٢): يقرأ وحدات الأصناف بلا باركود من
+  // sessionStorage مرّةً، يجلبها عبر byUnitIds ويضيفها للقائمة كي تُحفَظ باركوداتها وتُطبَع.
+  const prefillDone = useRef(false);
+  useEffect(() => {
+    if (prefillDone.current || branchId == null) return;
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem("barcodeLabelsPrefill");
+    } catch {
+      /* وضع خاص — نتجاوز */
+    }
+    if (!raw) return; // لا تسليم — لا تُقفل المحاولة (قد يصل branchId لاحقاً)
+    prefillDone.current = true;
+    try {
+      sessionStorage.removeItem("barcodeLabelsPrefill");
+    } catch {
+      /* تجاهل */
+    }
+    let ids: number[] = [];
+    let srcBranch: number | null = null;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && Array.isArray((parsed as { unitIds?: unknown }).unitIds)) {
+        const p = parsed as { unitIds: unknown[]; branchId?: unknown };
+        // مراجعة Codex #8: كلّ المعرّفات بلا اقتطاع صامت.
+        ids = p.unitIds.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+        if (Number.isInteger(p.branchId) && Number(p.branchId) > 0) srcBranch = Number(p.branchId);
+      }
+    } catch {
+      /* حمولة غير صالحة */
+    }
+    if (!ids.length) return;
+    // مراجعة Codex #3: نطبع بفرع الجرد — للمدير نختاره صراحةً؛ غير المدير مُجبَرٌ على فرعه أصلاً.
+    if (srcBranch != null && canPickBranch && srcBranch !== branchId) setPickedBranch(srcBranch);
+    const bId = srcBranch != null && canPickBranch ? srcBranch : branchId;
+    void (async () => {
+      try {
+        // دفعاتٌ من ٢٠٠ كي تُضاف كل الأصناف مهما كثرت (بلا حدٍّ صامتٍ على استعلامٍ واحد).
+        let total = 0;
+        for (let i = 0; i < ids.length; i += 200) {
+          const part = ids.slice(i, i + 200);
+          const rows = await utils.catalog.byUnitIds.fetch({ branchId: bId, tier, productUnitIds: part });
+          total += addRows(rows, tier);
+        }
+        setInfo(
+          total > 0
+            ? `أُضيف ${total} صنفاً بلا باركود من جلسة الجرد — احفظ باركوداتها (أو اطبع مباشرةً فيُحفَظ تلقائياً).`
+            : "أصناف الجرد الناقصة مضافةٌ سلفاً في القائمة.",
+        );
+      } catch {
+        setError("تعذّر جلب الأصناف الناقصة من جلسة الجرد — ابحث وأضِفها يدوياً.");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchId, tier]);
+
   /**
    * بذرةٌ واردة من شاشةٍ أخرى (موجات الأسعار): «هذه الأصناف تغيّرت أسعارها ⇒ ملصقات رفّها تكذب الآن».
    * نجلب صفوفها **حيّةً** بمسار التسعير نفسه ثم نمرّرها على `addRows` — لا مسار بناءٍ ثانٍ لعنصر
@@ -532,6 +588,27 @@ export default function BarcodeLabels() {
     // حاجز الصحّة: لا نطبع وبعض الأصناف ما زالت بسعر الفئة السابقة (إعادة تسعيرٍ جارية) —
     // وإلّا خرج ملصقٌ بسعرٍ لا يطابق الكاشير. الأثر أعلاه يُنهي التسعير فيرفع الحظر.
     if (isRepricing) { setError("جارٍ تحديث الأسعار للفئة المختارة — انتظر لحظةً ثم اطبع."); return; }
+    // م٢ (فجوة ALR): لا يخرج ملصقٌ بباركودٍ غير محفوظ — فمسحه لاحقاً يفشل. نحفظ كل باركودٍ غير
+    // محفوظ (ومنه الداخليّ ALR المولَّد) عبر assignBarcode قبل الطباعة؛ فإن تعذّر الحفظ لا نطبع
+    // ملصقاً غير قابل للمسح.
+    const unsaved = queue.filter((q) => !q.saved && !!q.barcode);
+    if (unsaved.length) {
+      try {
+        for (const u of unsaved) {
+          await assign.mutateAsync({ productUnitId: u.productUnitId, barcode: u.barcode });
+          patch(u.key, { saved: true, primaryBarcode: u.barcode });
+        }
+      } catch (e) {
+        // مراجعة Codex #5: حفظ الباركود صلاحيةُ مدير المنتجات؛ مستخدمُ المخزن يحتاج مديراً لإسناده.
+        const code = (e as { data?: { code?: string } | null })?.data?.code;
+        setError(
+          code === "FORBIDDEN" || code === "UNAUTHORIZED"
+            ? "حفظ الباركود يحتاج صلاحية مدير المنتجات — اطلب من مديرٍ حفظَ باركودات هذه الأصناف ثم اطبع (لا تُطبع ملصقات غير قابلة للمسح)."
+            : "تعذّر حفظ باركودٍ قبل الطباعة — لا تُطبع ملصقات غير قابلة للمسح. راجع تعارض الباركود ثم أعد المحاولة.",
+        );
+        return;
+      }
+    }
     const expanded = queue.flatMap((item) => {
       const rendered = renderItemFor(item, tier);
       return Array.from({ length: item.count }, () => rendered);

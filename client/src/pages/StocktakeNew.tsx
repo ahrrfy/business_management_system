@@ -38,7 +38,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { Check, AlertTriangle, Printer } from "lucide-react";
+import { Check, AlertTriangle, Printer, ScanBarcode, CheckCircle2 } from "lucide-react";
 
 /* ───────────────────────── ثوابت ───────────────────────── */
 
@@ -172,6 +172,9 @@ export default function StocktakeNew() {
   const [directUnderThreshold, setDirectUnderThreshold] = useState(true);
   const [waNotify, setWaNotify] = useState(true);
   const [dupPolicy, setDupPolicy] = useState<DupPolicy>("VERIFY");
+  // المسح الإلزامي اختياريّ (يُفعّله المدير) حتى تحديث تطبيق أندرويد ليُرسل دليل المسح — إذ لا
+  // يستطيع عمّاله عدّ جلسة SCAN_REQUIRED بعد (مراجعة Codex #4). الافتراض FREE = سلوك اليوم بلا كسر.
+  const [scanRequired, setScanRequired] = useState(false);
   const [notes, setNotes] = useState("");
 
   /* «جرد افتتاحي» (الافتتاح التدريجي ١٨/٧): متاح لمدير فأعلى وضمن نافذة وضع الافتتاح الفعّالة فقط —
@@ -245,6 +248,15 @@ export default function StocktakeNew() {
     },
   );
   const previewCount = previewCountQ.data ?? null;
+
+  // تغطية الباركود لنطاق MANUAL (متغيّرات مختارة صراحةً) — نطاقات FULL/MOVING/CATEGORY
+  // تأتي تغطيتها ضمن previewCount.coverage. بوّابة جاهزية م٢.
+  const manualCoverageQ = trpc.stocktakes.barcodeCoverage.useQuery(
+    { variantIds: manualIds },
+    { enabled: scopeType === "MANUAL" && manualIds.length > 0 },
+  );
+  const coverage =
+    scopeType === "MANUAL" ? (manualCoverageQ.data ?? null) : (previewCount?.coverage ?? null);
 
   const scopeCount: number | null =
     scopeType === "MANUAL"
@@ -346,6 +358,8 @@ export default function StocktakeNew() {
       directUnderThreshold,
       waNotify,
       dupPolicy,
+      // المسح الإلزامي حين يفعّله المدير صراحةً؛ وإلا FREE (الافتراض الآمن حتى تحديث أندرويد).
+      countMethod: isManagerPlus && scanRequired ? "SCAN_REQUIRED" : "FREE",
       notes: notes.trim() || undefined,
       assignments,
     });
@@ -655,6 +669,63 @@ export default function StocktakeNew() {
                   {previewCount.excludedConsignment > 0 ? `${nf(previewCount.excludedConsignment)} منتج أمانة (يُفتتَح بسند إيداع)` : ""}.
                 </p>
               )}
+
+              {/* بوّابة جاهزية التغطية (م٢): المسح الإلزامي ينجح بقدر ما تكون البضاعة ملصَّقة. */}
+              {coverage && coverage.total > 0 && (
+                <div
+                  className={`mt-1 rounded-lg border p-3 text-sm ${
+                    coverage.missing === 0 ? "badge-status-done" : "badge-status-pending"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-bold">
+                      <ScanBarcode aria-hidden className="size-4" />
+                      تغطية الباركود: {nf(coverage.coveragePct)}٪
+                    </span>
+                    {coverage.missing === 0 ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold">
+                        <CheckCircle2 aria-hidden className="size-3.5" /> كل الأصناف قابلة للمسح
+                      </span>
+                    ) : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5 text-xs"
+                        onClick={() => {
+                          if (!coverage.missingUnitIds.length) return;
+                          try {
+                            // مراجعة Codex #3: نحمل فرعَ الجرد مع التسليم كي تطبع شاشةُ الملصقات
+                            // أسعار/عروض هذا الفرع لا فرعها الحاليّ. و#8: كلّ المعرّفات بلا اقتطاع.
+                            sessionStorage.setItem(
+                              "barcodeLabelsPrefill",
+                              JSON.stringify({
+                                branchId: effectiveBranchId,
+                                unitIds: coverage.missingUnitIds,
+                              }),
+                            );
+                          } catch {
+                            /* وضع خاص/امتلاء — نتابع للتنقّل على أي حال */
+                          }
+                          navigate("/inventory?tab=barcodes");
+                        }}
+                      >
+                        <Printer aria-hidden className="size-3.5" /> اطبع ملصقات الناقص ({nf(coverage.missing)})
+                      </Button>
+                    )}
+                  </div>
+                  {coverage.missing > 0 && (
+                    <p className="mt-1.5 text-xs">
+                      {nf(coverage.missing)} صنفاً بلا باركود قابل للمسح. في جلسة المسح الإلزامي لن
+                      يُفتح عدّها إلا بمسح — اطبع ملصقاتها الآن أو استعمل «إدخال يدويّ بإذن» ميدانياً.
+                      {coverage.missingSample.length > 0 && (
+                        <> مثال: {coverage.missingSample.slice(0, 3).map((m) => m.productName).join("، ")}
+                        {coverage.missing > 3 ? "…" : ""}</>
+                      )}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -810,6 +881,34 @@ export default function StocktakeNew() {
                   <Switch checked disabled aria-label="جرد أعمى" />
                 </div>
 
+                {/* المسح الإلزامي — لا يُفتح العدّ إلا بمسح باركود الصنف (قرار المالك ٢٢/٨).
+                    «الحر» استثناءٌ محصورٌ بمدير فأعلى، ويفرض الخادم القيد بأي حال. */}
+                {isManagerPlus && (
+                  <div className="flex flex-col gap-2 rounded-lg border p-3">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-bold">المسح الإلزامي (اختياريّ)</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          لا تُفتح بطاقة العدّ إلا بمسح باركود الصنف (قارئ أو كاميرا) — يمنع اختيار
+                          أي منتج وكتابة رقم اعتباطي. الإدخال اليدويّ يبقى استثناءً بإذن مسؤول.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={scanRequired}
+                        onCheckedChange={setScanRequired}
+                        aria-label="المسح الإلزامي"
+                      />
+                    </div>
+                    {scanRequired && (
+                      <p className="inline-flex items-start gap-1.5 rounded-md badge-status-pending px-2.5 py-1.5 text-[11px] font-semibold leading-relaxed">
+                        <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+                        عمّال تطبيق أندرويد لا يستطيعون عدّ جلسة المسح الإلزامي حتى تحديث التطبيق —
+                        استعمل بوابة العدّ (الويب) لهذه الجلسة، أو أبقِها عدّاً حرّاً.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
                   <div>
                     <p className="text-sm font-bold">تسوية مباشرة للفروقات ضمن الحدّ</p>
@@ -962,6 +1061,10 @@ export default function StocktakeNew() {
                 />
                 <SummaryRow k="عمّال الجرد" v={validWorkers.map((w) => w.name.trim()).join("، ") || "—"} />
                 <SummaryRow k="الجرد الأعمى" v="مُفعَّل (مُثبَّت)" />
+                <SummaryRow
+                  k="أسلوب العدّ"
+                  v={isManagerPlus && scanRequired ? "مسح إلزامي" : "عدّ حر (بالنقر)"}
+                />
                 <SummaryRow
                   k="الاعتماد المباشر"
                   v={

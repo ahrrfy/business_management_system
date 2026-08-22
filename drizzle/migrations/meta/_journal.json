@@ -1655,10 +1655,24 @@
       "breakpoints": true
     },
     {
-      "idx": 251,
+      "idx": 250,
       "version": "5",
-      "when": 1788052302000,
-      "tag": "0251_delivery_counter_settled",
+      "when": 1788052301000,
+      "tag": "0250_stocktake_barcode_count_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "5",
+      "when": 1788052303000,
+      "tag": "0252_variant_kind_alternative",
+      "breakpoints": true
+    },
+    {
+      "idx": 253,
+      "version": "5",
+      "when": 1788052304000,
+      "tag": "0253_delivery_counter_settled",
       "breakpoints": true
     }
   ]

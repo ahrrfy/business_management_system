@@ -18,6 +18,10 @@ export interface QueuedCount {
   qty: number;
   /** تفصيل الوحدات JSON مثل {"كرتون":2,"قطعة":5} — للتدقيق (≤ 500 حرف). */
   unitBreakdown?: string;
+  /** طريقة إدخال العدّة (نسبٌ يُدقَّق) — تُحفظ لحظة العدّ فتصمد المزامنة الأوفلاينية. */
+  entryMethod?: "SCAN_HID" | "SCAN_CAMERA" | "MANUAL_AUTHORIZED" | "SEARCH_PICK";
+  /** الباركود الممسوح فعلاً (لطرق المسح) — يعيد الخادمُ حلّه ويطابقه بالمتغيّر. */
+  scannedBarcode?: string | null;
   /** وقت الحفظ المحلي (ISO). */
   queuedAt: string;
 }
@@ -34,6 +38,10 @@ function isQueuedCount(v: unknown): v is QueuedCount {
     typeof o.qty === "number" &&
     Number.isFinite(o.qty) &&
     (o.unitBreakdown === undefined || typeof o.unitBreakdown === "string") &&
+    (o.entryMethod === undefined || typeof o.entryMethod === "string") &&
+    (o.scannedBarcode === undefined ||
+      o.scannedBarcode === null ||
+      typeof o.scannedBarcode === "string") &&
     typeof o.queuedAt === "string"
   );
 }
@@ -87,6 +95,64 @@ export function remove(sessionCode: string, clientRequestId: string): void {
 /** عدد العدّات المعلّقة بانتظار المزامنة. */
 export function size(sessionCode: string): number {
   return safeRead(sessionCode).length;
+}
+
+/* ── طابور «الباركود المجهول» (ب-٤/مراجعة Codex #2) — لا يضيع عند الانقطاع ── */
+
+export interface QueuedUnknownScan {
+  clientRequestId: string;
+  barcode: string;
+  queuedAt: string;
+}
+
+const uKeyFor = (sessionCode: string) => `countq_unknown_${sessionCode}`;
+
+function isQueuedUnknown(v: unknown): v is QueuedUnknownScan {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.clientRequestId === "string" &&
+    typeof o.barcode === "string" &&
+    typeof o.queuedAt === "string"
+  );
+}
+
+function safeReadUnknown(sessionCode: string): QueuedUnknownScan[] {
+  try {
+    const raw = localStorage.getItem(uKeyFor(sessionCode));
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isQueuedUnknown) : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeWriteUnknown(sessionCode: string, items: QueuedUnknownScan[]): boolean {
+  try {
+    if (items.length === 0) localStorage.removeItem(uKeyFor(sessionCode));
+    else localStorage.setItem(uKeyFor(sessionCode), JSON.stringify(items.slice(0, 500)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** يضيف مسحاً مجهولاً للطابور (إزالة تكرار بالباركود — نفس الكود لا يُكرَّر صفّاً). */
+export function enqueueUnknown(sessionCode: string, item: QueuedUnknownScan): boolean {
+  const items = safeReadUnknown(sessionCode).filter((q) => q.barcode !== item.barcode);
+  items.push(item);
+  return safeWriteUnknown(sessionCode, items);
+}
+
+export function peekUnknown(sessionCode: string): QueuedUnknownScan[] {
+  return safeReadUnknown(sessionCode);
+}
+
+export function removeUnknown(sessionCode: string, clientRequestId: string): void {
+  const items = safeReadUnknown(sessionCode);
+  const next = items.filter((q) => q.clientRequestId !== clientRequestId);
+  if (next.length !== items.length) safeWriteUnknown(sessionCode, next);
 }
 
 /**

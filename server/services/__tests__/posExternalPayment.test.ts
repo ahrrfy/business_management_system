@@ -38,7 +38,7 @@ async function seed() {
   ]);
   await d.insert(s.products).values([
     { id: 1, name: "Stock item" },
-    { id: 2, name: "Print service", productType: "PRINT_SERVICE" },
+    { id: 2, name: "Print service", productType: "PRINT_SERVICE", isService: true },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "STOCK-FAILCLOSED", costPrice: "10.00" },
