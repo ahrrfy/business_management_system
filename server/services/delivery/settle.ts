@@ -7,8 +7,9 @@
 // الفاتورة وذمّة العميل — لأنّ دلالته «المندوب حصّل من الزبون وضيّع النقد»: الزبون بريء،
 // والخسارة على المكتبة، ولا إرسالية زومبي تبقى في شاشة التوريد تقبل توريداً يقلب الرصيد سالباً.
 import { TRPCError } from "@trpc/server";
+import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
-import { accountingEntries, deliveryConsignments, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
+import { accountingEntries, deliveryConsignments, deliveryLedgerEntries, deliveryParties, invoices, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
@@ -31,8 +32,24 @@ export interface SettleInput {
   clientRequestId?: string | null;
 }
 
+/**
+ * حارس الفرع الصفري (٢٢/٨): مديرٌ بلا فرعٍ مُسنَد كان يمرّر `branchId=0` (افتراض واجهةٍ صامت)
+ * فتُكتب الإيصالات والقيود على فرعٍ لا وجود له — خارج كل تقرير وتسوية درجٍ ومطابقة مفرَّعة.
+ * المال لا يُقيَّد على فرعٍ وهميّ: الرفض هنا أرخص من مطاردة قيودٍ يتيمة لاحقاً.
+ */
+function assertBranchAssigned(branchId: unknown, operation: string): void {
+  const n = Number(branchId);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `لا فرع مسند لعملية ${operation} — اختر الفرع صراحةً قبل تنفيذها`,
+    });
+  }
+}
+
 export async function settleDeliveryBalance(input: SettleInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
+    assertBranchAssigned(input.branchId, "تسوية العهدة");
     const amount = round2(money(input.amount));
     const payloadHash = idempotencyHash({
       branchId: Number(input.branchId),
@@ -144,6 +161,7 @@ export interface WriteOffInput {
 
 export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
+    assertBranchAssigned(input.branchId, "شطب العجز");
     const amount = round2(money(input.amount));
     // ٩/٨ — payloadHash (كان findIdempotentRefId بلا hash): إعادة نفس المفتاح بمبلغ/سبب مختلف
     // كانت تعود «نجاحاً» صامتاً دون تطبيق — المدير يظنّ العجز الجديد مشطوباً وهو قائم.
@@ -199,7 +217,6 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       // أصلاً). بدونه: paidAmount > الصافي، ذمّة العميل تنقلب سالبة، وخسارةٌ عن دينارٍ لم يوجد.
       const invRemaining = round2(money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount)));
       const realPart = amount.lte(invRemaining) ? amount : (invRemaining.gt(0) ? invRemaining : round2(money("0")));
-      const phantomPart = round2(amount.minus(realPart));
       if (realPart.gt(0)) {
         const newPaid = round2(money(inv.paidAmount).plus(realPart));
         await tx.update(invoices).set({
@@ -224,8 +241,30 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
         moneyStatus: "WRITTEN_OFF",
         settledAt: new Date(),
       }).where(eq(deliveryConsignments.id, Number(cn.id)));
-      // الخسارة الحقيقية = الجزء المستحق فعلاً؛ قيد WRITEOFF بكامل المبلغ (صيغة مطابقة العهدة
-      // DISPATCH−REMIT−WRITEOFF تتطلبه) مع cost/profit على الجزء الحقيقي وحده.
+      // **الخسارة الحقيقية = ما كان مالاً فعلاً** (٢٢/٨ — كان القيد يمرّر cost=amount كاملاً
+      // فيضخّم P&L بالجزء الوهمي، وسقفُ recoverDeliveryWriteOff — المبنيُّ على Σcost — يسمح
+      // تبعاً باسترداد نقدٍ لم يوجد). مكوّناها:
+      //   ① realPart: ذمّةٌ حيّة تُبرَّأ الآن (الزبون دفع للمندوب) — إسقاطُها خسارة.
+      //   ② custodyHeld: نقدٌ مثبتُ التحصيل بدليل دفتر التوصيل (Σ COD_COLLECTED − Σ COD_REMITTED
+      //      لهذه الإرسالية) ضاع بيد المندوب — خسارةُ نقدٍ حقيقيّ ولو كانت الفاتورة مسدَّدةً
+      //      سلفاً لحظةَ التسليم (المسار الحديث: realPart=0 هناك دائماً والخسارةُ واقعة).
+      // وما زاد عنهما انحرافُ codAmount عن الواقع (مرتجع/تسديد سبق الإسناد بلا علم الإرسالية)
+      // — يُصفّى بلا خسارةٍ ولا استرداد. وقيد WRITEOFF يبقى بكامل المبلغ (صيغة مطابقة العهدة
+      // DISPATCH−REMIT−WRITEOFF في reconcileDeliveryFloat تتطلبه) وcost/profit على الحقيقي وحده.
+      const custodyRow = (
+        await tx
+          .select({
+            v: sql<string>`COALESCE(SUM(CASE
+              WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount}
+              WHEN ${deliveryLedgerEntries.entryType} = 'COD_REMITTED' THEN -${deliveryLedgerEntries.amount}
+              ELSE 0 END), 0)`,
+          })
+          .from(deliveryLedgerEntries)
+          .where(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)))
+      )[0];
+      const custodyHeld = round2(Decimal.max(money(custodyRow?.v ?? "0"), 0));
+      const realLoss = round2(Decimal.min(amount, realPart.plus(custodyHeld)));
+      const phantomCleared = round2(amount.minus(realLoss));
       await adjustDeliveryBalance(tx, input.partyId, amount.neg());
       await appendDeliveryLedgerEntry(tx, {
         eventKey: `CN:${cn.id}:COD_WRITTEN_OFF`,
@@ -253,8 +292,8 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
         postingIntent: deliveryWriteoffIntent(amount),
         dedupeKey: `DELIVERY_WRITEOFF:CN:${input.consignmentId}`,
         branchId: input.branchId, deliveryPartyId: input.partyId, invoiceId,
-        amount, cost: amount, profit: amount.neg(),
-        notes: `شطب عهدة: ${input.reason.trim()}${phantomPart.gt(0) ? ` (منها ${phantomPart.toFixed(2)} تصفية عهدة زائدة عن متبقّي الفاتورة — بلا خسارة)` : ""}`,
+        amount, cost: realLoss, profit: realLoss.neg(),
+        notes: `شطب عهدة: ${input.reason.trim()}${phantomCleared.gt(0) ? ` (منها ${phantomCleared.toFixed(2)} تصفية عهدة زائدة عن الحقيقي — بلا خسارة)` : ""}`,
       });
       if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.writeoff", input.clientRequestId, input.partyId, payloadHash);
       return { partyId: input.partyId, partyBalanceAfter: round2(money(party.currentBalance).minus(amount)).toFixed(2) };
@@ -312,6 +351,7 @@ export interface RecoverWriteOffInput {
  */
 export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
+    assertBranchAssigned(input.branchId, "استرداد العجز المشطوب");
     const amount = round2(money(input.amount));
     const payloadHash = idempotencyHash({
       branchId: Number(input.branchId),
@@ -349,11 +389,12 @@ export async function recoverDeliveryWriteOff(input: RecoverWriteOffInput, actor
     // مشتركة branchId=NULL شُطبت على الرئيسي واستُردّت من فرع المبيعات = أرباح الفرعين تكذب
     // بالاتجاهين رغم اتزان مستوى الشركة).
     //
-    // ⚠️ السقف بـ`cost` لا `amount` (مراجعة نهائية ١٠/٨): الشطب الموجَّه يقيّد `amount` بكامل
-    // متبقّي العهدة لكنّ `cost` (الخسارة الفعلية) = الجزء المدعوم بمتبقّي الفاتورة الحيّ فقط
-    // (`realPart`)، والفائض «عهدة زائدة بلا خسارة». الاسترداد يعكس خسارةً + يُدخل نقداً؛ سقفُه
-    // بـ`amount` كان يسمح باسترداد نقدٍ/عكسِ ربحٍ يفوق ما خُسِر فعلاً (نقدٌ وهميّ في الدرج + P&L
-    // منتفخ). بـ`cost` يُسقَف بالخسارة الحقيقية المتبقّية (الشطب المجمّع cost=amount ⇒ بلا تغيير).
+    // ⚠️ السقف بـ`cost` لا `amount` (١٠/٨، واكتمل إنفاذه ٢٢/٨): الشطب الموجَّه يقيّد `amount`
+    // بكامل متبقّي العهدة لكنّ `cost` (الخسارة الفعلية) = الذمّةُ الحيّة المُبرَّأة (`realPart`)
+    // + النقدُ مثبتُ التحصيل بدفتر التوصيل (`custodyHeld`) — والفائضُ «عهدة زائدة بلا خسارة».
+    // الاسترداد يعكس خسارةً + يُدخل نقداً؛ سقفُه بـ`amount` كان يسمح باسترداد نقدٍ/عكسِ ربحٍ
+    // يفوق ما خُسِر فعلاً (نقدٌ وهميّ في الدرج + P&L منتفخ). بـ`cost` يُسقَف بالخسارة الحقيقية
+    // المتبقّية (الشطب المجمّع cost=amount ⇒ بلا تغيير).
     const woRow = (
       await tx
         .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.cost} AS DECIMAL(15,2))), 0)` })

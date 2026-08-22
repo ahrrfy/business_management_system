@@ -1,14 +1,19 @@
 import cron, { type ScheduledTask } from "node-cron";
-import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryEvents, deliveryOutbox, deliveryPartyMembers } from "../../../drizzle/schema";
+import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { deliveryConsignments, deliveryEvents, deliveryOutbox, deliveryPartyMembers, users } from "../../../drizzle/schema";
 import { getDb, isMultiTenantModeActive } from "../../db";
 import { logger } from "../../logger";
 import { getCurrentCompanyId } from "../../tenancy/context";
 import { runAcrossActiveTenants } from "../../tenancy/backgroundTenants";
 import { createAppNotification } from "../appNotificationService";
 import { withTx } from "../tx";
+import { STALE_ESCALATED_EVENT, sweepStaleConsignments } from "./staleSweep";
 
 const BATCH_SIZE = 40;
+
+/** وجهتا الإشعار: بوّابة المندوب لمن يملكها، وشاشة «قيد التوصيل» لموظّفي المكتبة. */
+const PORTAL_ROUTE = "/my-deliveries";
+const TRANSIT_ROUTE = "/delivery?tab=transit";
 
 async function claimBatch(): Promise<number[]> {
   return withTx(async (tx) => {
@@ -27,12 +32,41 @@ async function claimBatch(): Promise<number[]> {
   });
 }
 
-async function recipientsFor(row: { topic: string; partyId: number; assignedUserId: number | null }): Promise<number[]> {
-  if (row.assignedUserId != null && (row.topic === "delivery.assigned" || row.topic === "delivery.reassigned")) {
-    return [row.assignedUserId];
-  }
+/**
+ * مديرو فرع الإرسالية — مستقبِلو الحقيقة حين لا بوّابة للجهة. نفس نمط جلب المعتمِدين في
+ * `inventoryRouter` (نشط + مدير الفرع نفسه)، مع الرجوع إلى admin **فقط** إن خلا الفرع من
+ * مدير — الغاية منعُ تبخّر الإشعار لا نسخُه لكل إداريّ.
+ */
+async function branchManagerIds(branchId: number): Promise<number[]> {
   const db = getDb();
   if (!db) return [];
+  const managers = await db.select({ id: users.id }).from(users)
+    .where(and(eq(users.isActive, true), eq(users.role, "manager"), eq(users.branchId, branchId)));
+  if (managers.length) return Array.from(new Set(managers.map((m) => Number(m.id))));
+  const admins = await db.select({ id: users.id }).from(users)
+    .where(and(eq(users.isActive, true), or(eq(users.role, "admin"), eq(users.isOwner, true))));
+  return Array.from(new Set(admins.map((m) => Number(m.id))));
+}
+
+type RecipientPlan = { userIds: number[]; route: string };
+
+async function recipientsFor(row: {
+  topic: string;
+  eventType: string;
+  partyId: number;
+  assignedUserId: number | null;
+  branchId: number;
+}): Promise<RecipientPlan> {
+  // تصعيد الجمود يذهب لمديري الفرع **دائماً**: جوهره «الجهة صامتة» — فإشعار أعضائها الصامتين
+  // أنفسِهم (إن وُجدوا) لا يُحرّك شيئاً، والحسم فعلُ موظّفٍ من شاشة «قيد التوصيل».
+  if (row.eventType === STALE_ESCALATED_EVENT) {
+    return { userIds: await branchManagerIds(row.branchId), route: TRANSIT_ROUTE };
+  }
+  if (row.assignedUserId != null && (row.topic === "delivery.assigned" || row.topic === "delivery.reassigned")) {
+    return { userIds: [row.assignedUserId], route: PORTAL_ROUTE };
+  }
+  const db = getDb();
+  if (!db) return { userIds: [], route: PORTAL_ROUTE };
   const roles = row.topic === "delivery.assigned" || row.topic === "delivery.reassigned"
     ? ["DRIVER" as const]
     : row.topic === "delivery.failed"
@@ -40,14 +74,19 @@ async function recipientsFor(row: { topic: string; partyId: number; assignedUser
       : row.topic.includes("money") || row.topic === "delivery.delivered"
         ? ["MANAGER" as const, "ACCOUNTANT" as const]
         : [];
-  if (!roles.length) return [];
+  if (!roles.length) return { userIds: [], route: PORTAL_ROUTE };
   const members = await db.select({ userId: deliveryPartyMembers.userId }).from(deliveryPartyMembers)
     .where(and(
       eq(deliveryPartyMembers.partyId, row.partyId),
       eq(deliveryPartyMembers.isActive, true),
       inArray(deliveryPartyMembers.memberRole, roles),
     ));
-  return Array.from(new Set(members.map((m) => Number(m.userId))));
+  const memberIds = Array.from(new Set(members.map((m) => Number(m.userId))));
+  if (memberIds.length) return { userIds: memberIds, route: PORTAL_ROUTE };
+  // ٢٢/٨ — سدّ تبخّر الإشعارات: جهةٌ بلا أعضاء بوّابة كانت تُرجع قائمةً فارغة فيُختم الصفّ
+  // processed **وكأنّ أحداً أُبلغ** — تعذّرُ تسليمٍ أو تسليمٌ بلا توريدٍ يمرّ بصمتٍ تامّ.
+  // الحقيقة تتحوّل لمديري فرع الإرسالية، ووجهتُهم شاشةُ المتابعة لا بوّابة مندوبٍ لا يملكونها.
+  return { userIds: await branchManagerIds(row.branchId), route: TRANSIT_ROUTE };
 }
 
 async function processRow(id: number): Promise<void> {
@@ -61,6 +100,7 @@ async function processRow(id: number): Promise<void> {
       consignmentId: deliveryEvents.consignmentId,
       eventType: deliveryEvents.eventType,
       partyId: deliveryConsignments.partyId,
+      branchId: deliveryConsignments.branchId,
       assignedUserId: deliveryConsignments.assignedUserId,
       consignmentNumber: deliveryConsignments.consignmentNumber,
     }).from(deliveryOutbox)
@@ -68,23 +108,28 @@ async function processRow(id: number): Promise<void> {
       .innerJoin(deliveryConsignments, eq(deliveryConsignments.id, deliveryEvents.consignmentId))
       .where(and(eq(deliveryOutbox.id, id), isNull(deliveryOutbox.processedAt))).limit(1))[0];
     if (!row) return;
-    const recipients = await recipientsFor({
+    const plan = await recipientsFor({
       topic: row.topic,
+      eventType: row.eventType,
       partyId: Number(row.partyId),
       assignedUserId: row.assignedUserId != null ? Number(row.assignedUserId) : null,
+      branchId: Number(row.branchId),
     });
-    const title = row.topic === "delivery.failed" ? "تعذر توصيل طرد" : row.topic === "delivery.delivered" ? "تم تسليم طرد" : "تحديث طرد توصيل";
-    for (const userId of recipients) {
+    const isStale = row.eventType === STALE_ESCALATED_EVENT;
+    const title = isStale
+      ? "طرد توصيل جامد يحتاج متابعة"
+      : row.topic === "delivery.failed" ? "تعذر توصيل طرد" : row.topic === "delivery.delivered" ? "تم تسليم طرد" : "تحديث طرد توصيل";
+    for (const userId of plan.userIds) {
       await createAppNotification({
         userId,
-        kind: row.topic === "delivery.failed" ? "APPROVAL_REQUIRED" : "TASK_ASSIGNED",
+        kind: row.topic === "delivery.failed" || isStale ? "APPROVAL_REQUIRED" : "TASK_ASSIGNED",
         title,
         body: `${row.consignmentNumber} — ${row.eventType}`,
-        route: "/my-deliveries",
+        route: plan.route,
         eventKey: `delivery-outbox:${row.eventId}:user:${userId}`,
         entityType: "deliveryConsignment",
         entityId: Number(row.consignmentId),
-        requiresAction: row.topic === "delivery.failed" || row.topic === "delivery.assigned" || row.topic === "delivery.reassigned",
+        requiresAction: row.topic === "delivery.failed" || row.topic === "delivery.assigned" || row.topic === "delivery.reassigned" || isStale,
         push: true,
       });
     }
@@ -110,6 +155,10 @@ export async function sweepDeliveryOutboxOnce(): Promise<{ claimed: number }> {
 
 let task: ScheduledTask | null = null;
 let running = false;
+/** ختم آخر تشغيلٍ للكنّاس (بالذاكرة): دورة الـcron دقيقيّة والكنّاس ساعيّ على الأكثر. */
+let lastStaleSweepAtMs = 0;
+
+const STALE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 export function startDeliveryOutboxWorker(): void {
   if (process.env.NODE_ENV === "test") return;
@@ -118,7 +167,19 @@ export function startDeliveryOutboxWorker(): void {
   task = cron.schedule("* * * * *", async () => {
     if (running) return;
     running = true;
-    try { await sweepDeliveryOutboxOnce(); } finally { running = false; }
+    try {
+      await sweepDeliveryOutboxOnce();
+      // كنّاس الجمود يركب نفس الدورة (لا cron ثانٍ يُدار): الختم يُقدَّم قبل التنفيذ عمداً —
+      // فشلُه لا يتحوّل إعادةَ محاولةٍ كلّ دقيقة، والإيقاع «مرّة كل ساعة على الأكثر» يصمد.
+      if (Date.now() - lastStaleSweepAtMs >= STALE_SWEEP_INTERVAL_MS) {
+        lastStaleSweepAtMs = Date.now();
+        try {
+          await sweepStaleConsignments();
+        } catch (error) {
+          logger.error({ err: error }, "delivery stale sweep failed");
+        }
+      }
+    } finally { running = false; }
   }, { timezone: "UTC" });
 }
 

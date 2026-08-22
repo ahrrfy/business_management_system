@@ -72,6 +72,8 @@ export default defineConfig({
       "client/src/lib/__tests__/invoiceNavGate.test.ts",
       "client/src/lib/__tests__/cashierNavReachability.test.ts",
       "shared/priceWaveRule.test.ts",
+      "shared/deliveryAging.test.ts",
+      "shared/consignmentView.test.ts",
       "server/lib/__tests__/moneySchemas.test.ts",
       "server/lib/__tests__/opaqueFailure.test.ts",
       "client/src/pages/__tests__/invoiceEditorPaymentTermsContract.test.ts",

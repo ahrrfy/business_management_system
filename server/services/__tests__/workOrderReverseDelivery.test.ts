@@ -13,6 +13,9 @@
  *  (د) ما ليس مُسلَّماً ⇒ رفض. وإرساليةٌ حيّة ⇒ رفض.
  *  (هـ) عكسٌ مكرَّرٌ بنفس المفتاح ⇒ لا قيدَ ثانٍ ولا ردَّ ثانٍ.
  *  (و) صفرُ حركة مخزون في كلّ ما سبق.
+ *  (ز) بلا `reopen` ⇒ WIP المُعادُ فتحُه بالعكس يُفرَّغ **خسارةً معلنة** (`ADJUST_WIP_WASTE`
+ *      بمفتاح `WO-REVERSE-WASTE:`) فيصفر صافي WIP للأمر عند إقفاله CANCELLED — ومع
+ *      `reopen` لا هدرَ: الخامةُ قيدَ تنفيذٍ حيٍّ يُقفله التسليمُ الثاني.
  */
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -95,6 +98,33 @@ const woOf = async (id: number) =>
   (await db().select().from(s.workOrders).where(eq(s.workOrders.id, id)))[0];
 const invOf = async (id: number) =>
   (await db().select().from(s.invoices).where(eq(s.invoices.id, id)))[0];
+
+/**
+ * صافي WIP للأمر من القيود **المخزَّنة فعلاً** — أربعُ محطّات تمرّ بها كلفةُ الموادّ:
+ * CONSUME يفتحه (+amount)، وSALE يُقفله إلى COGS عند التسليم (−cost)، وRETURN يعيد فتحه
+ * عند العكس (`cost` مخزَّنٌ سالباً بحكم §٥ ⇒ −cost)، وWASTE يُفرغه خسارةً (−amount).
+ *
+ * ⚠️ التمييزُ بـ`dedupeKey`/`entryType` لا بـ`postingProfile` — الأخير لا يُملأ إلّا مع
+ * الدفتر المزدوج (OFF افتراضياً) ⇒ التأكيدُ عليه أخضرُ كاذبٌ لا يمسك شيئاً.
+ */
+async function wipNetForOrder(woId: number, invId: number) {
+  const rows = await db().select({
+    type: s.accountingEntries.entryType,
+    key: s.accountingEntries.dedupeKey,
+    invoiceId: s.accountingEntries.invoiceId,
+    cost: s.accountingEntries.cost,
+    amount: s.accountingEntries.amount,
+  }).from(s.accountingEntries);
+  let net = money(0);
+  for (const r of rows) {
+    const k = r.key ?? "";
+    if (k === `WO-WIP-CONSUME:${woId}`) net = net.plus(money(r.amount ?? "0"));
+    if (r.type === "SALE" && Number(r.invoiceId) === invId) net = net.minus(money(r.cost ?? "0"));
+    if (k === `WO-REVERSE:${woId}`) net = net.minus(money(r.cost ?? "0"));
+    if (k === `WO-REVERSE-WASTE:${woId}`) net = net.minus(money(r.amount ?? "0"));
+  }
+  return round2(net);
+}
 
 /** ميزانُ الأدوار من مكوّنات القيود: يجب أن يصفر بين البيع وعكسه. */
 async function roleNet() {
@@ -214,6 +244,39 @@ describe("استرجاع أمر شغل مُسلَّم", () => {
     const after = Number((await db().select().from(s.branchStock)
       .where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0].quantity);
     expect(after).toBe(before);
+  });
+
+  it("⭐ (ز) استرجاعٌ بلا reopen: قيدُ هدرٍ بكامل كلفة الموادّ وصافي WIP للأمر يصفر", async () => {
+    const woId = await deliveredServiceOrder("rv-9");
+    const invId = Number((await woOf(woId)).invoiceId);
+
+    await reverseWorkOrderDelivery({ workOrderId: woId, reason: "رفض نهائيّ — الخامة هدر" }, MANAGER);
+
+    // ٤ قطع × ٥٠٠ تكلفةً = ٢٠٠٠: قبل الإصلاح كان العكسُ يعيدها من COGS إلى WIP ثمّ يقفل
+    // الأمرَ CANCELLED **بلا قيد هدر** ⇒ خامةٌ استُهلكت فيزيائياً وكلفتُها تتبخّر من P&L
+    // وWIP يحمل رصيداً ميتاً إلى الأبد — خرقُ «لا دينار يضيع بصمت».
+    const waste = (await db().select().from(s.accountingEntries))
+      .filter((e) => e.dedupeKey === `WO-REVERSE-WASTE:${woId}`);
+    expect(waste).toHaveLength(1);
+    expect(waste[0].entryType).toBe("ADJUST");
+    expect(round2(money(waste[0].amount ?? "0")).toFixed(2)).toBe("2000.00");
+    expect(round2(money(waste[0].cost ?? "0")).toFixed(2)).toBe("2000.00");
+
+    // الثابت: CONSUME − SALE + RETURN − WASTE = 0 — لا رصيدَ WIP خلف حالةٍ نهائية.
+    expect((await wipNetForOrder(woId, invId)).toFixed(2)).toBe("0.00");
+
+    // ⛔ الهدرُ قيدٌ فقط: الخامة خُصمت من المخزون عند البدء — لا حركةَ مصروفِ مخزونٍ ثانية.
+    const wasteMoves = await db().select({ n: sql<number>`COUNT(*)` }).from(s.inventoryMovements)
+      .where(eq(s.inventoryMovements.referenceType, "STOCK_EXPENSE"));
+    expect(Number(wasteMoves[0].n)).toBe(0);
+  });
+
+  it("⭐ (ز) مع reopen لا قيدَ هدر: الخامةُ عادت قيدَ التنفيذ وWIP حيٌّ يُقفله التسليمُ الثاني", async () => {
+    const woId = await deliveredServiceOrder("rv-10");
+    await reverseWorkOrderDelivery({ workOrderId: woId, reason: "خطأ تسليم — يُعاد", reopen: true }, MANAGER);
+    const waste = (await db().select().from(s.accountingEntries))
+      .filter((e) => (e.dedupeKey ?? "").startsWith("WO-REVERSE-WASTE:"));
+    expect(waste).toHaveLength(0);
   });
 
   it("⭐ عربونٌ **ودفعةُ تسليم** معاً: كلُّ شقٍّ يُبرئ حسابَه — لا أمانةَ سالبة", async () => {

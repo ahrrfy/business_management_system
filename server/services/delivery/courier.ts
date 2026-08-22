@@ -552,6 +552,13 @@ export async function confirmConsignmentDelivery(
       statementNumber: string;
       /** ما تُعلن الشركةُ أنّها حصّلته على هذا الطرد — قد يقلّ عن COD (تحصيلٌ جزئيّ). */
       collectedAmount?: string;
+      /**
+       * نوعُ الدليل (٢١/٨): `COMPANY_STATEMENT` (الافتراضيّ) = كشفُ الشركة المستنديّ؛
+       * `MANUAL_PROOF` = الإثبات اليدويّ الاستثنائيّ (نصّ المالك: «يحتاج دليلاً وموافقة
+       * مدير» — بوّابةُ المدير تُفرَض في الراوتر). أثرُه الوحيد **توثيقُ مصدر السلطة في
+       * حدث التسليم** — المسار الماليّ واحدٌ بالحرف كي لا تنجرف نسخةٌ ثانية عن الأولى.
+       */
+      kind?: "COMPANY_STATEMENT" | "MANUAL_PROOF";
     };
   },
   actor: { userId: number },
@@ -731,10 +738,14 @@ export async function confirmConsignmentDelivery(
       fromMoneyStatus: cn.moneyStatus,
       toMoneyStatus: cn.moneyStatus,
       actorUserId: actor.userId,
-      // مصدر السلطة يُدوَّن دائماً: بوّابةُ المندوب أم كشفُ الشركة (وبأيّ رقم كشف) — هو
-      // الأثر الذي يُراجَع عند أيّ خلافٍ على تسليمٍ لم يعترف به الزبون.
+      // مصدر السلطة يُدوَّن دائماً: بوّابةُ المندوب أم كشفُ الشركة (وبأيّ رقم كشف) أم
+      // إثباتٌ يدويّ استثنائيّ — هو الأثر الذي يُراجَع عند أيّ خلافٍ على تسليمٍ لم
+      // يعترف به الزبون.
       payload: input.statementWitness
-        ? { source: "COMPANY_STATEMENT", statementNumber: input.statementWitness.statementNumber }
+        ? {
+            source: input.statementWitness.kind ?? "COMPANY_STATEMENT",
+            statementNumber: input.statementWitness.statementNumber,
+          }
         : { source: "COURIER_PORTAL" },
     });
 
