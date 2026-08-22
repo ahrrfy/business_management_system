@@ -29,6 +29,8 @@ import { createVerifiedStorefrontOrder } from "../services/storefrontOrderGate";
 import { STOREFRONT_TURNSTILE_TOKEN_MAX_LENGTH } from "@shared/storefrontTurnstile";
 import { registerStorefrontPushDevice, trackStorefrontPushInteraction } from "../services/storeAdmin/storefrontPushCampaignService";
 import { claimFirebaseStorefrontCustomer, storefrontCustomerBenefits, verifyStorefrontCustomerSession } from "../services/storefrontCustomerIdentityService";
+import { listStorefrontProductReviews, submitStorefrontProductReview } from "../services/storefrontProductReviewService";
+import { createStorefrontWishlistShare, resolveStorefrontWishlistShare } from "../services/storefrontWishlistShareService";
 
 const labelSummaryInput = z.object({
   orderNumber: z.string().trim().min(1).max(50),
@@ -115,6 +117,36 @@ export const storefrontRouter = router({
   product: publicProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => storefrontProduct(input.productId)),
+
+  /** مراجعات معتمدة فقط؛ لا تكشف هوية العملاء أو المراجعات المعلّقة. */
+  productReviews: storefrontPublicReadProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => listStorefrontProductReviews(input.productId)),
+
+  /** يكتب مالك جلسة الهاتف مراجعة واحدة للمنتج بعد تسليم طلب اشتراه. */
+  submitProductReview: storefrontPublicWriteProcedure
+    .input(z.object({
+      customerSessionToken: z.string().trim().min(40).max(4_000),
+      productId: z.number().int().positive(),
+      rating: z.number().int().min(1).max(5),
+      comment: z.string().trim().min(8).max(1_000),
+    }))
+    .mutation(async ({ input }) => submitStorefrontProductReview({
+      customerId: (await verifyStorefrontCustomerSession(input.customerSessionToken)).customerId,
+      productId: input.productId,
+      rating: input.rating,
+      comment: input.comment,
+    })),
+
+  /** ينشئ رابطاً عشوائياً قصير العمر لمعرّفات منتجات علنية فقط؛ الكتابة محمية بالحدود العامة. */
+  createWishlistShare: storefrontPublicWriteProcedure
+    .input(z.object({ productIds: z.array(z.number().int().positive()).min(1).max(60) }))
+    .mutation(({ input }) => createStorefrontWishlistShare(input.productIds)),
+
+  /** يسترجع قائمة عامة بمفتاح غير قابل للتخمين؛ البيانات تنتهي بعد سبعة أيام. */
+  getWishlistShare: storefrontPublicReadProcedure
+    .input(z.object({ token: z.string().trim().regex(/^[A-Za-z0-9_-]{20,32}$/) }))
+    .query(({ input }) => resolveStorefrontWishlistShare(input.token)),
 
   /** منتجات ذات صلة (cross-sell «يُشترى معه») — نفس الفئة، متوفّرة. */
   related: publicProcedure
