@@ -100,6 +100,8 @@ export type DraftValidation = {
   ok: boolean;
 };
 
+export type ProductContentValidationSnapshot = DraftValidation;
+
 const UNSUPPORTED_MARKETING_TERMS = [
   "الأفضل",
   "أفضل",
