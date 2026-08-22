@@ -24,6 +24,11 @@ import {
   IDENTITY_EXPIRED_MSG,
   COUNTING_ENDED_MSG,
 } from "./shared";
+import {
+  isScanEntry,
+  type CountEntryMethod,
+  type CountMethod,
+} from "../../../shared/stocktakeCountMethod";
 
 function scannerPrefix(code: string | null | undefined): number | null {
   const digits = String(code ?? "").replace(/\D/g, "");
@@ -62,6 +67,14 @@ export type SubmitCountInput = {
   unitBreakdown?: string | null;
   /** إقرار صريح من مسؤول USER مكلّف بعد إعادة عدّ الكمية المشتبه بها يدوياً. */
   scannerGuardOverride?: boolean;
+  /**
+   * طريقة إدخال العدّة (نسبٌ يُدقَّق). في جلسة SCAN_REQUIRED يُلزم الخادمُ مسحاً فعلياً
+   * (SCAN_HID/SCAN_CAMERA مع scannedBarcode يعيد الحلّ إلى نفس المتغيّر) أو استثناءً يدوياً
+   * محكوماً بمشرف (MANUAL_AUTHORIZED)؛ ويرفض الاختيار الحر (SEARCH_PICK). غيابه = SEARCH_PICK.
+   */
+  entryMethod?: CountEntryMethod;
+  /** الباركود الممسوح فعلاً (لإثبات المطابقة الخادمية) — يلزم لطرق المسح في SCAN_REQUIRED. */
+  scannedBarcode?: string | null;
   /** مفتاح idempotency لمزامنة طابور الأوفلاين (uuid). */
   clientRequestId: string;
 };
@@ -237,6 +250,89 @@ export async function submitCount(
         .where(
           eq(productUnits.variantId, input.variantId),
         );
+      // ── إثبات المصدر (وثيقة «الجرد بالباركود» ٢٢/٨) ──
+      // مشرفٌ مُصرِّح: تكليف USER لحسابٍ رتبته manager/admin — مصدر واحد لتجاوز حارس الماسح
+      // وللاستثناء اليدويّ المحكوم في جلسة المسح الإلزامي. مُذكَّر: استعلام users مرّةً واحدة.
+      let supervisorResolved = false;
+      let supervisorUserId: number | null = null;
+      const getSupervisorUserId = async (): Promise<number | null> => {
+        if (supervisorResolved) return supervisorUserId;
+        supervisorResolved = true;
+        if (
+          identity.mode === "USER" &&
+          identity.countedByUserId != null &&
+          asg.method === "USER" &&
+          asg.userId != null &&
+          Number(asg.userId) === Number(identity.countedByUserId)
+        ) {
+          const supervisor = (
+            await tx
+              .select({ role: users.role })
+              .from(users)
+              .where(eq(users.id, Number(asg.userId)))
+              .limit(1)
+          )[0];
+          if (supervisor?.role === "manager" || supervisor?.role === "admin") {
+            supervisorUserId = Number(asg.userId);
+          }
+        }
+        return supervisorUserId;
+      };
+
+      // أسلوب الجلسة يقرّر ما إذا كان المسح إلزامياً. غياب entryMethod = SEARCH_PICK (عميل قديم):
+      // مقبول في FREE، مرفوض في SCAN_REQUIRED — فلا تمرّ عدّةٌ حرّة عبر واجهةٍ متجاوِزة.
+      const sessionMethod = session.countMethod as CountMethod;
+      const entryMethod: CountEntryMethod = input.entryMethod ?? "SEARCH_PICK";
+      const scannedBarcode = input.scannedBarcode?.trim() || null;
+
+      if (sessionMethod === "SCAN_REQUIRED") {
+        if (isScanEntry(entryMethod)) {
+          // مسحٌ فعليّ ⇒ الباركود الممسوح يجب أن يعيد الحلّ إلى **هذا** المتغيّر خادمياً
+          // (لا ثقة بالواجهة): يطابق باركود وحدةٍ نشطة أو باركوداً بديلاً لنفس المتغيّر.
+          const variantCodes = new Set<string>();
+          for (const u of units)
+            if (u.barcode) variantCodes.add(String(u.barcode).trim());
+          for (const a of aliases)
+            if (a.barcode) variantCodes.add(String(a.barcode).trim());
+          if (!scannedBarcode) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "هذه الجلسة بأسلوب المسح الإلزامي — امسح باركود الصنف لفتح بطاقة العدّ.",
+            });
+          }
+          if (!variantCodes.has(scannedBarcode)) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message:
+                "الباركود الممسوح لا يخصّ هذا الصنف — امسح باركود الصنف الصحيح، أو أبلغ مسؤول الجرد إن كان الباركود مفقوداً.",
+            });
+          }
+        } else if (entryMethod === "MANUAL_AUTHORIZED") {
+          // استثناء يدويّ محكوم: يلزمه إذن مشرف (باركود تالف/بلا ملصق/قارئ معطّل).
+          const authorizedBy = await getSupervisorUserId();
+          if (authorizedBy == null) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message:
+                "الإدخال اليدويّ في جلسة المسح الإلزامي يتطلّب إذن مسؤول الجرد من حساب USER مكلّف برتبة manager أو admin.",
+            });
+          }
+        } else {
+          // SEARCH_PICK أو غيره ⇒ اختيارٌ حرّ ممنوع في المسح الإلزامي.
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message:
+              "هذه الجلسة بأسلوب المسح الإلزامي — لا يُفتح العدّ بالاختيار من القائمة، امسح باركود الصنف.",
+          });
+        }
+      }
+      // القيمتان المخزَّنتان: الباركود يُحفظ لطرق المسح فقط (يدويّ/حر بلا باركود).
+      const storedEntryMethod: CountEntryMethod = entryMethod;
+      const storedScannedBarcode = isScanEntry(entryMethod)
+        ? scannedBarcode
+        : null;
+
       const breakdown = parseUnitBreakdown(input.unitBreakdown);
       const candidates = [
         ...units.map((unit) => ({
@@ -264,25 +360,8 @@ export async function submitCount(
         );
       });
       let scannerOverrideByUserId: number | null = null;
-      if (
-        scannerLike &&
-        input.scannerGuardOverride === true &&
-        identity.mode === "USER" &&
-        identity.countedByUserId != null &&
-        asg.method === "USER" &&
-        asg.userId != null &&
-        Number(asg.userId) === Number(identity.countedByUserId)
-      ) {
-        const supervisor = (
-          await tx
-            .select({ role: users.role })
-            .from(users)
-            .where(eq(users.id, Number(asg.userId)))
-            .limit(1)
-        )[0];
-        if (supervisor?.role === "manager" || supervisor?.role === "admin") {
-          scannerOverrideByUserId = Number(asg.userId);
-        }
+      if (scannerLike && input.scannerGuardOverride === true) {
+        scannerOverrideByUserId = await getSupervisorUserId();
       }
       if (scannerLike && scannerOverrideByUserId == null) {
         throw new TRPCError({
@@ -358,6 +437,8 @@ export async function submitCount(
           kind: "RECOUNT",
           qty: input.qty,
           unitBreakdown: guardedUnitBreakdown,
+          entryMethod: storedEntryMethod,
+          scannedBarcode: storedScannedBarcode,
           countedByName: identity.countedByName,
           countedByUserId: identity.countedByUserId,
           countedAt: now,
@@ -405,6 +486,8 @@ export async function submitCount(
             .set({
               qty: input.qty,
               unitBreakdown: guardedUnitBreakdown,
+              entryMethod: storedEntryMethod,
+              scannedBarcode: storedScannedBarcode,
               countedAt: now,
             })
             .where(eq(stocktakeCounts.id, myOwn.id));
@@ -435,6 +518,8 @@ export async function submitCount(
             kind: "FIRST",
             qty: input.qty,
             unitBreakdown: guardedUnitBreakdown,
+            entryMethod: storedEntryMethod,
+            scannedBarcode: storedScannedBarcode,
             countedByName: identity.countedByName,
             countedByUserId: identity.countedByUserId,
             countedAt: now,
@@ -461,6 +546,8 @@ export async function submitCount(
               .set({
                 qty: input.qty,
                 unitBreakdown: guardedUnitBreakdown,
+                entryMethod: storedEntryMethod,
+                scannedBarcode: storedScannedBarcode,
                 countedAt: now,
                 isConflict: !match,
                 // تعديل العدّ التحقّقي يُلغي حسماً سابقاً مبنياً على قيمة قديمة.
@@ -477,6 +564,8 @@ export async function submitCount(
               kind: "VERIFY",
               qty: input.qty,
               unitBreakdown: guardedUnitBreakdown,
+              entryMethod: storedEntryMethod,
+              scannedBarcode: storedScannedBarcode,
               countedByName: identity.countedByName,
               countedByUserId: identity.countedByUserId,
               countedAt: now,
@@ -506,6 +595,8 @@ export async function submitCount(
         clientRequestId: input.clientRequestId,
         requestQty: input.qty,
         requestUnitBreakdown: guardedUnitBreakdown,
+        entryMethod: storedEntryMethod,
+        scannedBarcode: storedScannedBarcode,
         resultKind: kind,
         resultVerifyMatch: verifyMatch,
       });

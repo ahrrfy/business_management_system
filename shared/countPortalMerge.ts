@@ -54,6 +54,8 @@ export type PortalDynamic = {
     status: string;
     dupPolicy: string;
     blind: boolean;
+    /** أسلوب العدّ: SCAN_REQUIRED تُلزم الواجهةَ فتحَ البطاقة بمسحٍ فقط؛ FREE = النقر الحر. */
+    countMethod: string;
   };
   assignment: { id: number; name: string; zone: string | null; status: string };
   progress: { mine: { counted: number; total: number }; session: { counted: number; total: number } };

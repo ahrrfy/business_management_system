@@ -196,6 +196,11 @@ export const countPortalRouter = router({
           .max(99_999_999, "الكمية أكبر من المعقول — راجع الإدخال"),
         unitBreakdown: z.string().max(500).optional(),
         scannerGuardOverride: z.boolean().optional(),
+        // نسب العدّة إلى مصدرها؛ الإثبات النهائي (إعادة حلّ الباركود) خادميّ في submitCount.
+        entryMethod: z
+          .enum(["SCAN_HID", "SCAN_CAMERA", "MANUAL_AUTHORIZED", "SEARCH_PICK"])
+          .optional(),
+        scannedBarcode: z.string().trim().max(64).optional(),
         clientRequestId: z.string().uuid(),
       })
     )
@@ -206,6 +211,8 @@ export const countPortalRouter = router({
         qty: input.qty,
         unitBreakdown: input.unitBreakdown ?? null,
         scannerGuardOverride: input.scannerGuardOverride,
+        entryMethod: input.entryMethod,
+        scannedBarcode: input.scannedBarcode ?? null,
         clientRequestId: input.clientRequestId,
       });
       // لا نكرّر سطر التدقيق عند إعادة مزامنة نفس العدّة (idempotent replay).
@@ -219,6 +226,8 @@ export const countPortalRouter = router({
             qty: input.qty,
             kind: res.kind,
             verifyMatch: res.verifyMatch,
+            entryMethod: input.entryMethod ?? null,
+            scannedBarcode: input.scannedBarcode ?? null,
             scannerGuardOverrideRequested:
               input.scannerGuardOverride === true,
             countedByName: identity.countedByName,

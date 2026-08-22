@@ -24,6 +24,10 @@ import { extractInsertId } from "../../lib/insertId";
 import type { StkActor } from "./types";
 import { chunk } from "./internal";
 import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
+import {
+  DEFAULT_COUNT_METHOD,
+  type CountMethod,
+} from "../../../shared/stocktakeCountMethod";
 
 /** PIN رباعي عشوائي مشفّر التوليد (crypto) فريد ضمن المجموعة المُمرَّرة. */
 function generateUniquePin(used: Set<string>): string {
@@ -82,6 +86,8 @@ export interface CreateStocktakeInput {
   categoryIds?: number[];
   variantIds?: number[];
   blind?: boolean;
+  /** أسلوب العدّ — الافتراضي SCAN_REQUIRED لكل جلسةٍ جديدة (قرار المالك ٢٢/٨). */
+  countMethod?: CountMethod;
   thresholdPct?: string;
   thresholdValue?: string;
   dualThreshold?: string;
@@ -452,6 +458,9 @@ async function insertSession(
     sessionType: input.sessionType ?? "NORMAL",
     scopeDetail: JSON.stringify({ ...scope.detail, label: scope.label }),
     status: "COUNTING",
+    // الجلسة الجديدة تبدأ بأسلوب المسح الإلزامي ما لم يُطلب «الحر» صراحةً (قرار المالك ٢٢/٨).
+    // القاعدة تفترض FREE للتوافق مع الجلسات القائمة، فنكتب الافتراض هنا صراحةً لكل جلسةٍ جديدة.
+    countMethod: input.countMethod ?? DEFAULT_COUNT_METHOD,
     createdBy: actor.userId,
     notes: input.notes ?? null,
   };

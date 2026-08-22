@@ -1646,6 +1646,13 @@
       "when": 1788052299000,
       "tag": "0248_cash_purchase_clearing",
       "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "5",
+      "when": 1788052301000,
+      "tag": "0250_stocktake_barcode_count_method",
+      "breakpoints": true
     }
   ]
 }
