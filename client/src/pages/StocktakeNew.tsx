@@ -175,6 +175,9 @@ export default function StocktakeNew() {
   // المسح الإلزامي اختياريّ (يُفعّله المدير) حتى تحديث تطبيق أندرويد ليُرسل دليل المسح — إذ لا
   // يستطيع عمّاله عدّ جلسة SCAN_REQUIRED بعد (مراجعة Codex #4). الافتراض FREE = سلوك اليوم بلا كسر.
   const [scanRequired, setScanRequired] = useState(false);
+  // حوكمة م٥: إلزام إعادة العدّ فعلياً لكل صنفٍ فوق الحدّ قبل الاعتماد (قرار المدير وحده لا يكفي).
+  // الافتراض false = سلوك اليوم بلا كسر.
+  const [requireRecountOverThreshold, setRequireRecountOverThreshold] = useState(false);
   const [notes, setNotes] = useState("");
 
   /* «جرد افتتاحي» (الافتتاح التدريجي ١٨/٧): متاح لمدير فأعلى وضمن نافذة وضع الافتتاح الفعّالة فقط —
@@ -356,6 +359,8 @@ export default function StocktakeNew() {
           }
         : {}),
       directUnderThreshold,
+      // حوكمة م٥: يُرسَل للمدير+ فقط (الخادم يتجاهله لدور المخزن).
+      ...(isManagerPlus ? { requireRecountOverThreshold } : {}),
       waNotify,
       dupPolicy,
       // المسح الإلزامي حين يفعّله المدير صراحةً؛ وإلا FREE (الافتراض الآمن حتى تحديث أندرويد).
@@ -919,6 +924,23 @@ export default function StocktakeNew() {
                   <Switch checked={directUnderThreshold} onCheckedChange={setDirectUnderThreshold} />
                 </div>
 
+                {isManagerPlus && (
+                  <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                    <div>
+                      <p className="text-sm font-bold">إلزام إعادة العدّ فوق الحدّ (اختياريّ)</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        أيّ صنفٍ يتجاوز حدّ الفرق لا تُعتمد الجلسة حتى يُعاد عدّه فعلياً — قرار المشرف
+                        وحده لا يكفي فوق الحدّ. يقطع «التمرير الأعمى» لفروقاتٍ كبيرة بلا تحقّق ميدانيّ.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={requireRecountOverThreshold}
+                      onCheckedChange={setRequireRecountOverThreshold}
+                      aria-label="إلزام إعادة العدّ فوق الحدّ"
+                    />
+                  </div>
+                )}
+
                 <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
                   <div>
                     <p className="text-sm font-bold">إشعارات واتساب</p>
@@ -1076,6 +1098,9 @@ export default function StocktakeNew() {
                   }
                 />
                 <SummaryRow k="توقيعان فوق" v={isManagerPlus ? fmtMoneyLabel(dualThreshold) : "الحدّ الافتراضي (150,000 د.ع)"} />
+                {isManagerPlus && requireRecountOverThreshold && (
+                  <SummaryRow k="فوق الحدّ" v="إعادة عدّ إلزامية" />
+                )}
                 <SummaryRow k="العدّ المكرر" v={dupPolicy === "VERIFY" ? "عدّ تحقّقي" : "منع تام"} />
                 <SummaryRow k="إشعارات واتساب" v={waNotify ? "مُفعَّلة" : "متوقفة"} />
               </dl>
