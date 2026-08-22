@@ -120,6 +120,8 @@ export const stocktakeRouter = router({
         directUnderThreshold: z.boolean().optional(),
         waNotify: z.boolean().optional(),
         dupPolicy: z.enum(["VERIFY", "BLOCK"]).optional(),
+        // أسلوب العدّ — «الحر» محصورٌ بمدير+ (تفرضه الخدمة)؛ الافتراض SCAN_REQUIRED.
+        countMethod: z.enum(["SCAN_REQUIRED", "FREE"]).optional(),
         notes: z.string().max(2000).optional(),
         assignments: z
           .array(

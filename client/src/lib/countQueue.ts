@@ -18,6 +18,10 @@ export interface QueuedCount {
   qty: number;
   /** تفصيل الوحدات JSON مثل {"كرتون":2,"قطعة":5} — للتدقيق (≤ 500 حرف). */
   unitBreakdown?: string;
+  /** طريقة إدخال العدّة (نسبٌ يُدقَّق) — تُحفظ لحظة العدّ فتصمد المزامنة الأوفلاينية. */
+  entryMethod?: "SCAN_HID" | "SCAN_CAMERA" | "MANUAL_AUTHORIZED" | "SEARCH_PICK";
+  /** الباركود الممسوح فعلاً (لطرق المسح) — يعيد الخادمُ حلّه ويطابقه بالمتغيّر. */
+  scannedBarcode?: string | null;
   /** وقت الحفظ المحلي (ISO). */
   queuedAt: string;
 }
@@ -34,6 +38,10 @@ function isQueuedCount(v: unknown): v is QueuedCount {
     typeof o.qty === "number" &&
     Number.isFinite(o.qty) &&
     (o.unitBreakdown === undefined || typeof o.unitBreakdown === "string") &&
+    (o.entryMethod === undefined || typeof o.entryMethod === "string") &&
+    (o.scannedBarcode === undefined ||
+      o.scannedBarcode === null ||
+      typeof o.scannedBarcode === "string") &&
     typeof o.queuedAt === "string"
   );
 }

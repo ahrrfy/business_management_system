@@ -262,6 +262,19 @@ type StkScope = Awaited<ReturnType<typeof resolveScope>>;
 async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: StkActor): Promise<CreateStocktakeResult> {
   const sessionType = input.sessionType ?? "NORMAL";
 
+  // أسلوب العدّ الحر (إلغاء المسح الإلزامي) قرارٌ حوكميّ محصورٌ بمدير فأعلى (قرار المالك ٢٢/٨):
+  // لا يُترك لأمين المخزن وإن كان إنشاء الجرد من صلاحياته — وإلا سقط المسح الإلزامي بابَ استسهال.
+  if (
+    input.countMethod === "FREE" &&
+    actor.role !== "admin" &&
+    actor.role !== "manager"
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "أسلوب العدّ الحر محصور بمدير فأعلى — المسح إلزاميّ لبقية المستخدمين.",
+    });
+  }
+
   // الفرع موجود — FOR UPDATE يسلسل إنشاء الجلسات لنفس الفرع ⇒ حارس الحصر المتبادل أدناه بلا سباق
   // (إنشاءان متزامنان لولا القفل يمرّان كلاهما من فحص «لا جلسة نشطة»).
   const br = (

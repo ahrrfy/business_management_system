@@ -25,6 +25,7 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
+import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { cn } from "@/lib/utils";
 import {
@@ -40,6 +41,7 @@ import {
   ChevronUp,
   ChevronDown,
   Hand,
+  ScanLine,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
@@ -116,6 +118,11 @@ export default function CountPortal() {
 
   const [q, setQ] = useState("");
   const [openVariantId, setOpenVariantId] = useState<number | null>(null);
+  // كيف فُتحت البطاقة (نسبُ العدّة): مسحٌ فعليّ يحمل باركوده، أو اختيار حرّ/يدويّ.
+  const [openEntry, setOpenEntry] = useState<{
+    method: CountEntryMethod;
+    scannedBarcode: string | null;
+  }>({ method: "SEARCH_PICK", scannedBarcode: null });
   const [cameraOpen, setCameraOpen] = useState(false);
   const [flashId, setFlashId] = useState<number | null>(null);
   const [showOthers, setShowOthers] = useState(false);
@@ -235,6 +242,8 @@ export default function CountPortal() {
             variantId: it.variantId,
             qty: it.qty,
             unitBreakdown: it.unitBreakdown,
+            entryMethod: it.entryMethod,
+            scannedBarcode: it.scannedBarcode ?? undefined,
             clientRequestId: it.clientRequestId,
           });
           removeQueued(code, it.clientRequestId);
@@ -343,10 +352,19 @@ export default function CountPortal() {
   const submittedAssignment = finished != null || st?.assignment.status === "SUBMITTED";
   const canCount = phase === "counting" && sessionStatus === "COUNTING" && !submittedAssignment;
   const dupBlocked = st?.session.dupPolicy === "BLOCK";
+  // أسلوب الجلسة: المسح الإلزامي يمنع فتح البطاقة بالنقر — لا يُفتح العدّ إلا بمسحٍ فعليّ.
+  // الإنفاذ النهائيّ خادميّ (submit يعيد حلّ الباركود)؛ هذا يمنع الاستسهال في الواجهة.
+  const scanRequired = st?.session.countMethod === "SCAN_REQUIRED";
 
   /* ── فتح بطاقة العدّ ── */
   const openCard = useCallback(
-    (i: CountItem) => {
+    (
+      i: CountItem,
+      entry: { method: CountEntryMethod; scannedBarcode: string | null } = {
+        method: "SEARCH_PICK",
+        scannedBarcode: null,
+      },
+    ) => {
       if (!canCount) return;
       if (dupBlocked && i.colleagueCounted && !i.myCount) {
         notify.info(
@@ -356,13 +374,26 @@ export default function CountPortal() {
         );
         return;
       }
+      // المسح الإلزامي: النقر/الاختيار الحر لا يفتح البطاقة — امسح باركود الصنف.
+      if (
+        scanRequired &&
+        entry.method !== "SCAN_HID" &&
+        entry.method !== "SCAN_CAMERA"
+      ) {
+        notify.info(
+          "هذه الجلسة بأسلوب المسح الإلزامي",
+          "امسح باركود الصنف (قارئ أو كاميرا) لفتح بطاقة العدّ.",
+        );
+        return;
+      }
+      setOpenEntry(entry);
       setOpenVariantId(i.variantId);
     },
-    [canCount, dupBlocked],
+    [canCount, dupBlocked, scanRequired],
   );
 
   const handleBarcode = useCallback(
-    (raw: string) => {
+    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
       const scanned = raw.trim();
       if (!scanned) return;
       const hit = items.find((i) => i.units.some((u) => unitHasBarcode(u, scanned)));
@@ -372,20 +403,20 @@ export default function CountPortal() {
       }
       setFlashId(hit.variantId);
       window.setTimeout(() => setFlashId(null), 600);
-      openCard(hit);
+      openCard(hit, { method: source, scannedBarcode: scanned });
     },
     [items, openCard],
   );
   const barcodeInput = useBarcodeInput((code) => {
     setQ("");
-    handleBarcode(code);
+    handleBarcode(code, "SCAN_HID");
   });
 
-  useBarcodeScanner((raw) => handleBarcode(raw), {
+  useBarcodeScanner((raw) => handleBarcode(raw, "SCAN_HID"), {
     enabled: phase === "counting" && openVariantId == null && canCount,
   });
 
-  /** Enter في حقل البحث: تطابق حرفي مع باركود/SKU ⇒ افتح البطاقة مباشرة. */
+  /** Enter في حقل البحث: تطابق حرفي مع باركود/SKU ⇒ افتح البطاقة (اختيار يدويّ لا مسح). */
   const tryOpenByQuery = useCallback(() => {
     const exact = q.trim();
     if (!exact) return;
@@ -396,7 +427,7 @@ export default function CountPortal() {
       setQ("");
       setFlashId(hit.variantId);
       window.setTimeout(() => setFlashId(null), 600);
-      openCard(hit);
+      openCard(hit, { method: "SEARCH_PICK", scannedBarcode: null });
     }
   }, [q, items, openCard]);
 
@@ -419,8 +450,19 @@ export default function CountPortal() {
   const saveCount = useCallback(
     (item: CountItem, mode: CountMode, qty: number, unitBreakdown: string | undefined) => {
       const clientRequestId = newClientRequestId();
+      // نسبُ العدّة كما فُتحت البطاقة — الخادم يعيد حلّ الباركود ويطابقه في المسح الإلزامي.
+      const entryMethod = openEntry.method;
+      const scannedBarcode = openEntry.scannedBarcode;
       submitMut.mutate(
-        { sessionCode: code, variantId: item.variantId, qty, unitBreakdown, clientRequestId },
+        {
+          sessionCode: code,
+          variantId: item.variantId,
+          qty,
+          unitBreakdown,
+          entryMethod,
+          scannedBarcode: scannedBarcode ?? undefined,
+          clientRequestId,
+        },
         {
           onSuccess: (res) => {
             // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
@@ -450,6 +492,8 @@ export default function CountPortal() {
                 variantId: item.variantId,
                 qty,
                 unitBreakdown,
+                entryMethod,
+                scannedBarcode,
                 queuedAt: new Date().toISOString(),
               });
               setQueueCount(queueSize(code));
@@ -467,7 +511,7 @@ export default function CountPortal() {
         },
       );
     },
-    [code, submitMut, utils],
+    [code, submitMut, utils, openEntry],
   );
 
   /* ── التسليم النهائي ── */
@@ -857,6 +901,15 @@ export default function CountPortal() {
 
       {/* القائمة */}
       <main className="flex-1 overflow-y-auto px-4 pb-32">
+        {scanRequired && (
+          <div className="mt-1 mb-3 flex items-start gap-2 rounded-xl bg-primary/5 px-3 py-2.5 text-xs font-semibold leading-relaxed text-primary">
+            <ScanLine aria-hidden className="mt-0.5 size-4 shrink-0" />
+            <span>
+              المسح إلزاميّ — امسح باركود الصنف (قارئ أو كاميرا) لفتح بطاقة العدّ. النقر على
+              المنتج لا يفتحه؛ القائمة لمتابعة ما تبقّى عليك.
+            </span>
+          </div>
+        )}
         {myFiltered.length === 0 && needle !== "" && otherFiltered.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">لا نتائج للبحث «{q.trim()}»</p>
         )}
@@ -1092,7 +1145,7 @@ export default function CountPortal() {
         onClose={() => setCameraOpen(false)}
         onDetect={(raw) => {
           setCameraOpen(false);
-          handleBarcode(raw);
+          handleBarcode(raw, "SCAN_CAMERA");
         }}
       />
     </>,

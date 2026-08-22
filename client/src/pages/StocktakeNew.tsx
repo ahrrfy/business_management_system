@@ -172,6 +172,8 @@ export default function StocktakeNew() {
   const [directUnderThreshold, setDirectUnderThreshold] = useState(true);
   const [waNotify, setWaNotify] = useState(true);
   const [dupPolicy, setDupPolicy] = useState<DupPolicy>("VERIFY");
+  // المسح الإلزامي افتراضاً (قرار المالك ٢٢/٨)؛ «الحر» استثناءٌ محصورٌ بمدير فأعلى (يفرضه الخادم).
+  const [scanRequired, setScanRequired] = useState(true);
   const [notes, setNotes] = useState("");
 
   /* «جرد افتتاحي» (الافتتاح التدريجي ١٨/٧): متاح لمدير فأعلى وضمن نافذة وضع الافتتاح الفعّالة فقط —
@@ -346,6 +348,8 @@ export default function StocktakeNew() {
       directUnderThreshold,
       waNotify,
       dupPolicy,
+      // «الحر» يُرسَل فقط حين يختاره مدير+؛ غيره دائماً المسح الإلزامي (الخادم يفرض القيد أيضاً).
+      countMethod: isManagerPlus && !scanRequired ? "FREE" : "SCAN_REQUIRED",
       notes: notes.trim() || undefined,
       assignments,
     });
@@ -810,6 +814,32 @@ export default function StocktakeNew() {
                   <Switch checked disabled aria-label="جرد أعمى" />
                 </div>
 
+                {/* المسح الإلزامي — لا يُفتح العدّ إلا بمسح باركود الصنف (قرار المالك ٢٢/٨).
+                    «الحر» استثناءٌ محصورٌ بمدير فأعلى، ويفرض الخادم القيد بأي حال. */}
+                <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                  <div>
+                    <p className="text-sm font-bold">
+                      المسح الإلزامي (موصى به){" "}
+                      {!isManagerPlus && (
+                        <span className="mr-1 inline-block rounded-full border bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                          مُثبَّت
+                        </span>
+                      )}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      لا تُفتح بطاقة العدّ إلا بمسح باركود الصنف (قارئ أو كاميرا) — يمنع اختيار أي
+                      منتج وكتابة رقم اعتباطي. الإدخال اليدويّ يبقى استثناءً بإذن مسؤول.
+                      {isManagerPlus ? "" : " (إلغاؤه محصورٌ بمدير فأعلى.)"}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={isManagerPlus ? scanRequired : true}
+                    disabled={!isManagerPlus}
+                    onCheckedChange={setScanRequired}
+                    aria-label="المسح الإلزامي"
+                  />
+                </div>
+
                 <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
                   <div>
                     <p className="text-sm font-bold">تسوية مباشرة للفروقات ضمن الحدّ</p>
@@ -962,6 +992,10 @@ export default function StocktakeNew() {
                 />
                 <SummaryRow k="عمّال الجرد" v={validWorkers.map((w) => w.name.trim()).join("، ") || "—"} />
                 <SummaryRow k="الجرد الأعمى" v="مُفعَّل (مُثبَّت)" />
+                <SummaryRow
+                  k="أسلوب العدّ"
+                  v={isManagerPlus && !scanRequired ? "عدّ حر (بالنقر)" : "مسح إلزامي"}
+                />
                 <SummaryRow
                   k="الاعتماد المباشر"
                   v={
