@@ -2,6 +2,8 @@
   "extends": "./tsconfig.json",
   "include": [
     "server/services/storeAdmin/storefrontPushCampaignService.ts",
+    "server/services/storeAdmin/storefrontProductReviewAdminService.ts",
+    "server/services/storefrontProductReviewService.ts",
     "server/services/storefrontCustomerIdentityService.ts",
     "server/routers/storefrontRouter.ts",
     "server/routers/storeAdminRouter.ts",

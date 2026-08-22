@@ -4,9 +4,11 @@
 // aggregator واحد يجمع إشارات من جداول/خدمات موجودة في استدعاء واحد معزول بالفرع (أداء أفضل من
 // عدّة استعلامات في الواجهة). التنبيهات الصفرية تُحذف، والقائمة تُرتَّب بالخطورة.
 //
-// ⚠️ أسماء أعمدة DB الخام: invoices.invoiceStatus · shifts.shiftStatus · workOrders.workOrderStatus.
+// ⚠️ أسماء أعمدة DB الخام: invoices.invoiceStatus · shifts.shiftStatus · workOrders.workOrderStatus
+// · deliveryConsignments.consignmentStatus (خاصية Drizzle اسمها `status` — راجع [[raw-sql-column-names]]).
 // مرساة «اليوم» UTC_DATE() (نظير بقيّة التقارير). كل الأموال نصّاً decimal (§٥).
 import { sql } from "drizzle-orm";
+import { DELIVERY_AGE_DANGER_HOURS } from "@shared/deliveryAging";
 import { getDb } from "../db";
 import { toDbMoney, money } from "./money";
 import { getStockStatus } from "./reportsInventoryService";
@@ -150,12 +152,22 @@ export async function getManagementAlerts(opts: {
   //     نسيانَه ليس كذلك؛ والعدّاد يُجمّد SLA فلا يظهر في «متأخّرة» أبداً.
   //   · **لم يحضر أصحابها**: جاهزٌ منذ أسبوعٍ فأكثر. لحظةُ الجاهزية **مشتقّة**
   //     (`workStartedAt + workSeconds`) لا عمود — نفس اشتقاق فلتر `awaitingPickupDays`.
+  // ٢٢/٨ — كذبُ «لم يحضر أصحابها»/«متأخّرة»: الأمر يبقى `READY` والطردُ خارجٌ مع مندوب فعلاً
+  // (الإرسالية الحيّة هي الحقيقة — نفس استبعاد `listReadyForDispatch` في delivery/queries.ts):
+  // كان التنبيه يأمر الموظّف «اتّصل بالعميل ليحضر» لطردٍ في الطريق إليه. الاستبعاد بالإرسالية
+  // **الحيّة** وحدها (لا CANCELLED/RETURNED) كي يعود الملغى إسنادُه إلى التنبيه لا يختفي منه.
+  const woLiveCn = sql`NOT EXISTS (
+              SELECT 1 FROM deliveryConsignments dc
+              WHERE dc.workOrderId = wo.id
+                AND dc.consignmentStatus NOT IN ('CANCELLED','RETURNED')
+            )`;
   const woP = safe(
     "workOrders",
     db.execute(sql`
       SELECT
         SUM(CASE WHEN wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS','READY')
-                  AND wo.dueDate IS NOT NULL AND wo.dueDate < UTC_DATE() THEN 1 ELSE 0 END) AS cnt,
+                  AND wo.dueDate IS NOT NULL AND wo.dueDate < UTC_DATE()
+                  AND ${woLiveCn} THEN 1 ELSE 0 END) AS cnt,
         SUM(CASE WHEN wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS')
                   AND wo.assignedTo IS NULL THEN 1 ELSE 0 END) AS unassigned,
         SUM(CASE WHEN wo.workOrderStatus IN ('RECEIVED','IN_PROGRESS') AND EXISTS (
@@ -168,10 +180,71 @@ export async function getManagementAlerts(opts: {
         SUM(CASE WHEN wo.workOrderStatus = 'READY'
                   AND wo.workStartedAt IS NOT NULL AND wo.workSeconds IS NOT NULL
                   AND DATE_ADD(wo.workStartedAt, INTERVAL wo.workSeconds SECOND)
-                      < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS awaitingPickup
+                      < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
+                  AND ${woLiveCn} THEN 1 ELSE 0 END) AS awaitingPickup
       FROM workOrders wo
       WHERE wo.workOrderStatus <> 'CANCELLED'
         ${branchWo}
+    `),
+    null,
+  );
+
+  // ── (ي) التوصيل — ثلاثُ إشاراتٍ كانت عمياء كلّياً (٢٢/٨: ٧٩/٨٤ طرداً جامداً ٩-١٣ يوماً
+  //      ولا تنبيهَ واحداً). العتبة من `shared/deliveryAging` — نفسُ سلّم الشاشة والكنّاس. ──
+  const branchCn = branchId ? sql`AND dc.branchId = ${branchId}` : sql``;
+  // متعثّرة: حيّة، لم يُعلَن رجوعُها، وتجاوزت عتبة الخطر. التعرّض = المتبقّي الحيّ للإرسالية
+  // (codAmount − collectedAmount − counterSettledAmount مقصوصاً عند صفر — سداد الكاونتر ليس بيد الجهة).
+  const deliveryStuckP = safe(
+    "deliveryStuck",
+    db.execute(sql`
+      SELECT COUNT(*) AS cnt,
+        CAST(COALESCE(SUM(GREATEST(
+          CAST(dc.codAmount AS DECIMAL(15,2))
+          - CAST(dc.collectedAmount AS DECIMAL(15,2))
+          - CAST(dc.counterSettledAmount AS DECIMAL(15,2)), 0)), 0) AS CHAR) AS total
+      FROM deliveryConsignments dc
+      WHERE dc.consignmentStatus = 'DISPATCHED'
+        AND dc.returnDeclaredAt IS NULL
+        AND TIMESTAMPDIFF(HOUR, dc.dispatchedAt, NOW()) >= ${DELIVERY_AGE_DANGER_HOURS}
+        ${branchCn}
+    `),
+    null,
+  );
+  // مرتجعٌ مُعلَن لم يُستلَم: تعرّضه حُرِّر في الدفتر لحظة الإعلان (COD_RELEASED) لكنّ البضاعة
+  // نفسها ما زالت خارج المخزون — نسيانُها خسارةُ بضاعةٍ صامتة لا خسارةَ نقد.
+  const deliveryReturnPendingP = safe(
+    "deliveryReturnPending",
+    db.execute(sql`
+      SELECT COUNT(*) AS cnt
+      FROM deliveryConsignments dc
+      WHERE dc.consignmentStatus = 'DISPATCHED'
+        AND dc.returnDeclaredAt IS NOT NULL
+        AND dc.returnDeclaredAt <= DATE_SUB(NOW(), INTERVAL 3 DAY)
+        ${branchCn}
+    `),
+    null,
+  );
+  // أجور توصيل مستحقّة غير مدفوعة: رصيد دفتر التوصيل لكل جهة (FEE_EARNED − REFUNDED − PAID/OFFSET)
+  // الموجب. أجرة COURIER تتصفّر لحظتها بقيد FEE_PAID المباشر ⇒ الرصيد الموجب هو ذممُ SHOP فعلياً
+  // (نفس معادلة feeDue في delivery/queries.ts — تجميعٌ واحد لكل الجهات دفعةً). قيود قديمة بلا
+  // branchId تسقط من منظور مدير الفرع عمداً (لا تُنسَب لفرعٍ لا تخصّه).
+  const branchLed = branchId ? sql`AND l.branchId = ${branchId}` : sql``;
+  const deliveryFeesDueP = safe(
+    "deliveryFeesDue",
+    db.execute(sql`
+      SELECT COUNT(*) AS cnt, CAST(COALESCE(SUM(t.due), 0) AS CHAR) AS total
+      FROM (
+        SELECT l.partyId,
+          SUM(CASE
+            WHEN l.entryType = 'FEE_EARNED' THEN l.amount
+            WHEN l.entryType IN ('FEE_PAID','FEE_OFFSET','FEE_REFUNDED') THEN -l.amount
+            ELSE 0 END) AS due
+        FROM deliveryLedgerEntries l
+        WHERE l.entryType IN ('FEE_EARNED','FEE_PAID','FEE_OFFSET','FEE_REFUNDED')
+          ${branchLed}
+        GROUP BY l.partyId
+        HAVING due > 0
+      ) t
     `),
     null,
   );
@@ -238,8 +311,8 @@ export async function getManagementAlerts(opts: {
       )
     : Promise.resolve(null);
 
-  const [arRes, stockRes, creditRes, shiftRes, woRes, apRes, deadRes, reconRes, anomalyRes] = await Promise.all([
-    arP, stockP, creditP, shiftP, woP, apP, deadP, reconP, anomalyP,
+  const [arRes, stockRes, creditRes, shiftRes, woRes, apRes, deadRes, reconRes, anomalyRes, stuckRes, returnPendingRes, feesDueRes] = await Promise.all([
+    arP, stockP, creditP, shiftP, woP, apP, deadP, reconP, anomalyP, deliveryStuckP, deliveryReturnPendingP, deliveryFeesDueP,
   ]);
 
   // (أ) أعمار الذمم — ثلاث شرائح، الأقدم أخطر.
@@ -298,6 +371,44 @@ export async function getManagementAlerts(opts: {
   }
   if (wo && Number(wo.cnt ?? 0) > 0) {
     alerts.push({ key: "wo-late", severity: "warning", title: "أوامر شغل تجاوزت أجل التسليم", count: Number(wo.cnt), amount: null, href: "/reports/work-orders", actionLabel: "أوامر الشغل" });
+  }
+
+  // (ي) التوصيل — متعثّر / مرتجع منتظَر / أجور مستحقّة.
+  const stuck = stuckRes ? rowsOf(stuckRes)[0] : null;
+  if (stuck && Number(stuck.cnt ?? 0) > 0) {
+    alerts.push({
+      key: "delivery-stuck",
+      severity: "critical",
+      title: `طرود توصيل بلا حسم منذ أكثر من ${DELIVERY_AGE_DANGER_HOURS} ساعة — المبلغ تعرّضها المتبقّي`,
+      count: Number(stuck.cnt),
+      amount: toDbMoney(money(stuck.total ?? 0)),
+      href: "/delivery?tab=transit",
+      actionLabel: "قيد التوصيل",
+    });
+  }
+  const retPending = returnPendingRes ? rowsOf(returnPendingRes)[0] : null;
+  if (retPending && Number(retPending.cnt ?? 0) > 0) {
+    alerts.push({
+      key: "delivery-return-pending",
+      severity: "warning",
+      title: "مرتجعات توصيل مُعلَنة لم تُستلَم منذ أكثر من ٣ أيام",
+      count: Number(retPending.cnt),
+      amount: null,
+      href: "/delivery?tab=transit",
+      actionLabel: "استلام المرتجعات",
+    });
+  }
+  const feesDue = feesDueRes ? rowsOf(feesDueRes)[0] : null;
+  if (feesDue && Number(feesDue.cnt ?? 0) > 0) {
+    alerts.push({
+      key: "delivery-fees-due",
+      severity: "info",
+      title: "جهات توصيل لها أجور مستحقّة غير مدفوعة",
+      count: Number(feesDue.cnt),
+      amount: toDbMoney(money(feesDue.total ?? 0)),
+      href: "/delivery?tab=settle",
+      actionLabel: "تسوية المناديب",
+    });
   }
 
   // (ز) مخزون راكد عالي القيمة.

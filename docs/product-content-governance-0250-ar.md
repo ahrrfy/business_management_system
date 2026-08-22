@@ -20,7 +20,7 @@
 
 ## ما تفعله الهجرة 0253
 
-الهجرة `drizzle/migrations/0253_product_content_governance.sql` قابلة لإعادة التشغيل. تضيف الأعمدة والفهارس والجداول عند عدم وجودها، وتسجل نفسها في `drizzle/migrations/meta/_journal.json` بالرقم 0253.
+الهجرة `drizzle/migrations/0256_product_content_governance.sql` قابلة لإعادة التشغيل. تضيف الأعمدة والفهارس والجداول عند عدم وجودها، وتسجل نفسها في `drizzle/migrations/meta/_journal.json` بالرقم 0253.
 
 الـbackfill المدمج محافظ فقط؛ فهو ينسخ `products.name` إلى `internalName` و`storeTitle` و`seoTitle` و`posLabel` و`invoiceLabel` عند فراغها. لا ينشئ نصاً تسويقياً ولا يضيف ادعاءات ولا يستدعي AI، ولذلك يمكن تشغيله بأمان قبل بدء المراجعة البشرية.
 

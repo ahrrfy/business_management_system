@@ -3,17 +3,24 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
+  auditLogs,
   couponPrograms,
   couponRedemptions,
   coupons,
   crmCampaigns,
   promotions,
+  users,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
-import { logAudit } from "../services/auditService";
+import { logAudit, logAuditTx } from "../services/auditService";
 import { getProductCategoryIds, resolveCouponPromotionForLine } from "../services/salesPromotionService";
-import { lockCouponForSale } from "../services/couponService";
+import {
+  loadCouponProgramPerformance,
+  loadIssuedCouponDetails,
+  lockCouponForSale,
+} from "../services/couponService";
+import { escapeLike } from "../lib/sqlLike";
 import { money, toDbMoney } from "../services/money";
 import { requireDb, withTx } from "../services/tx";
 import { campaignsManagerProcedure, campaignsReadProcedure, router } from "../trpc";
@@ -210,12 +217,30 @@ export const crmRouter = router({
         codePrefix: couponPrograms.codePrefix,
         designJson: couponPrograms.designJson,
         createdAt: couponPrograms.createdAt,
-        issued: sql<number>`(select count(*) from ${coupons} c where c.programId = ${couponPrograms.id})`,
-        redeemed: sql<number>`(select count(*) from ${couponRedemptions} r where r.programId = ${couponPrograms.id})`,
       }).from(couponPrograms)
         .where(branchId == null ? undefined : or(isNull(couponPrograms.branchId), eq(couponPrograms.branchId, branchId)))
         .orderBy(desc(couponPrograms.id));
-      return rows.map((row) => ({ ...row, id: Number(row.id), campaignId: row.campaignId == null ? null : Number(row.campaignId), promotionId: Number(row.promotionId), branchId: row.branchId == null ? null : Number(row.branchId), issued: Number(row.issued), redeemed: Number(row.redeemed) }));
+      const performance = await withTx((tx) => loadCouponProgramPerformance(tx, branchId));
+      return rows.map((row) => {
+        const p = performance.get(Number(row.id));
+        return {
+          ...row,
+          id: Number(row.id),
+          campaignId: row.campaignId == null ? null : Number(row.campaignId),
+          promotionId: Number(row.promotionId),
+          branchId: row.branchId == null ? null : Number(row.branchId),
+          issued: p?.issuedCoupons ?? 0,
+          // الاستخدام الصالح فقط؛ فواتير الإلغاء/الإرجاع الكامل لا تُضخّم معدل الاسترداد.
+          redeemed: p?.invoiceCount ?? 0,
+          activeCoupons: p?.activeCoupons ?? 0,
+          voidedCoupons: p?.voidedCoupons ?? 0,
+          invoiceCount: p?.invoiceCount ?? 0,
+          redeemedDiscount: p?.redeemedDiscount ?? "0.00",
+          linkedNetSales: p?.linkedNetSales ?? "0.00",
+          linkedGrossProfit: p?.linkedGrossProfit ?? "0.00",
+          lastRedeemedAt: p?.lastRedeemedAt ?? null,
+        };
+      });
     }),
 
     createProgram: campaignsManagerProcedure.input(z.object({
@@ -287,6 +312,8 @@ export const crmRouter = router({
       count: z.number().int().min(1).max(500),
       customerId: z.number().int().positive().nullish(),
     })).mutation(async ({ input, ctx }) => {
+      const issuedAt = new Date();
+      const batchReference = `CP-${input.programId}-${issuedAt.toISOString().replace(/\D/g, "").slice(0, 14)}-${randomBytes(2).toString("hex").toUpperCase()}`;
       const issued = await withTx(async (tx) => {
         const program = (await tx.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
         if (!program) throw new TRPCError({ code: "NOT_FOUND", message: "برنامج الكوبونات غير موجود" });
@@ -295,14 +322,51 @@ export const crmRouter = router({
         const uniqueCodes = new Set<string>();
         while (uniqueCodes.size < input.count) uniqueCodes.add(makeCode(program.codePrefix));
         const rows = Array.from(uniqueCodes, (code) => {
-          return { programId: input.programId, customerId: input.customerId ?? null, code, codeHash: codeHash(code), status: "ACTIVE" as const };
+          return { programId: input.programId, customerId: input.customerId ?? null, code, codeHash: codeHash(code), status: "ACTIVE" as const, issuedAt };
         });
         await tx.insert(coupons).values(rows);
+        await logAuditTx(tx, ctx, {
+          action: "crm.coupon.issue",
+          entityType: "couponProgram",
+          entityId: input.programId,
+          newValue: { batchReference, count: rows.length, customerId: input.customerId ?? null, issuedAt: issuedAt.toISOString() },
+        });
         return rows.map((row) => row.code);
       });
-      await logAudit(ctx, { action: "crm.coupon.issue", entityType: "couponProgram", entityId: input.programId, newValue: { count: issued.length, customerId: input.customerId ?? null } });
-      return { codes: issued };
+      return { codes: issued, batchReference, issuedAt };
     }),
+
+    /** سجل دفعات الإصدار الذريّ من سجل التدقيق الإلزامي؛ لا يخزن الرموز السرية داخله. */
+    batches: campaignsReadProcedure
+      .input(z.object({ programId: z.number().int().positive(), limit: z.number().int().positive().max(200).default(50) }))
+      .query(async ({ input, ctx }) => {
+        const db = requireDb();
+        const program = (await db.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
+        if (!program) throw new TRPCError({ code: "NOT_FOUND", message: "برنامج الكوبونات غير موجود" });
+        ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
+        const rows = await db
+          .select({ id: auditLogs.id, newValue: auditLogs.newValue, createdAt: auditLogs.createdAt, userId: auditLogs.userId, userName: users.name })
+          .from(auditLogs)
+          .leftJoin(users, eq(users.id, auditLogs.userId))
+          .where(and(
+            eq(auditLogs.action, "crm.coupon.issue"),
+            eq(auditLogs.entityType, "couponProgram"),
+            eq(auditLogs.entityId, String(input.programId)),
+          ))
+          .orderBy(desc(auditLogs.id))
+          .limit(input.limit);
+        return rows.map((row) => {
+          const value = (row.newValue ?? {}) as Record<string, unknown>;
+          return {
+            id: Number(row.id),
+            batchReference: typeof value.batchReference === "string" ? value.batchReference : `CP-HIST-${row.id}`,
+            count: Number(value.count ?? 0),
+            customerId: value.customerId == null ? null : Number(value.customerId),
+            issuedAt: typeof value.issuedAt === "string" ? new Date(value.issuedAt) : row.createdAt,
+            issuedBy: row.userName ?? (row.userId == null ? "مستخدم غير معروف" : `#${row.userId}`),
+          };
+        });
+      }),
 
     /**
      * كوبونات برنامجٍ ما — **مُرقَّمة**. كانت `SELECT *` بلا LIMIT: برنامجٌ يُصدر كوبوناً لكل
@@ -314,14 +378,24 @@ export const crmRouter = router({
         programId: z.number().int().positive(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
+        q: z.string().trim().max(64).optional(),
+        status: z.enum(["ACTIVE", "REDEEMED", "VOID"]).optional(),
       }))
       .query(async ({ input, ctx }) => {
         const db = requireDb();
         const program = (await db.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
         if (!program) throw new TRPCError({ code: "NOT_FOUND", message: "برنامج الكوبونات غير موجود" });
         ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
-        const where = eq(coupons.programId, input.programId);
+        const baseWhere = eq(coupons.programId, input.programId);
+        const q = input.q ? `%${escapeLike(input.q.toUpperCase())}%` : null;
+        const where = and(
+          baseWhere,
+          q == null ? undefined : sql`${coupons.code} LIKE ${q} ESCAPE '!'`,
+          input.status == null ? undefined : eq(coupons.status, input.status),
+        );
         const rows = await db.select().from(coupons).where(where).orderBy(desc(coupons.id)).limit(input.limit).offset(input.offset);
+        const normalizedRows = rows.map((row) => ({ ...row, id: Number(row.id), programId: Number(row.programId), customerId: row.customerId == null ? null : Number(row.customerId) }));
+        const details = await withTx((tx) => loadIssuedCouponDetails(tx, normalizedRows.map((row) => ({ id: row.id, customerId: row.customerId }))));
         const agg = (
           await db
             .select({
@@ -333,10 +407,16 @@ export const crmRouter = router({
             .from(coupons)
             .where(where)
         )[0];
+        const activeAgg = (
+          await db
+            .select({ activeCount: sql<number>`COALESCE(SUM(CASE WHEN ${coupons.status} = 'ACTIVE' THEN 1 ELSE 0 END), 0)` })
+            .from(coupons)
+            .where(baseWhere)
+        )[0];
         return {
-          rows: rows.map((row) => ({ ...row, id: Number(row.id), programId: Number(row.programId), customerId: row.customerId == null ? null : Number(row.customerId) })),
+          rows: normalizedRows.map((row) => ({ ...row, ...details.get(row.id) })),
           total: Number(agg?.total ?? 0),
-          activeCount: Number(agg?.activeCount ?? 0),
+          activeCount: Number(activeAgg?.activeCount ?? 0),
         };
       }),
 

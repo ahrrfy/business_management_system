@@ -1,7 +1,9 @@
-// ترحيل (D8): خصم الأجرة وتوريد الصافي. gross-up: PAYMENT_IN=COD كامل + DELIVERY_FEE=أجرة ⇒ صافي الدرج=المورَّد.
+// ترحيل (D8): توريد COD المُحصَّل كاملاً إلى الدرج. أجورُ الجهة **لا تُخصَم هنا** — تُصرف
+// بسند صرفٍ مستقلّ (payDeliveryFee / payPartyDeliveryFees في fees.ts) كي يبقى لكل دينارٍ
+// خارجٍ إيصالُه وسببُه. netRemitted = المُحصَّل − استقطاع كشف الشركة (إن وُجد).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   deliveryConsignments,
@@ -28,6 +30,7 @@ import {
 import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
 import {
+  assertCashOutAvailable,
   assertTreasuryOutException,
   lockCashSourceForUpdate,
 } from "../cash/cashAvailability";
@@ -35,24 +38,22 @@ import { withTx } from "../tx";
 import { nextRemittanceNumber } from "./numbering";
 import {
   deliveryCustomerCollectionIntent,
-  deliveryFeeHeldPayoutIntent,
-  deliveryFeeSettlementIntent,
   deliveryRemitIntent,
   paymentAccountRole,
 } from "./posting";
 import type { DeliveryTxActor } from "./types";
 
-/** ترحيل (D8): خصم الأجرة وتوريد الصافي. gross-up: PAYMENT_IN=COD كامل + DELIVERY_FEE=أجرة ⇒ صافي الدرج=المورَّد. */
+/** سطر توريد: المُحصَّل لإرسالية واحدة (0..متبقّيها الحيّ). */
 export interface RemittanceLineInput {
   consignmentId: number;
-  collectedAmount: string; // المُحصَّل لهذه الإرسالية (0..المتبقّي)
+  collectedAmount: string; // المُحصَّل لهذه الإرسالية (0..المتبقّي الحيّ)
 }
 
 export interface RemittanceInput {
   branchId: number;
   partyId: number;
   lines: RemittanceLineInput[];
-  /** النقد الذي عدّه المستلم فعلياً؛ يجب أن يطابق صافي التوريد بعد الأجور. */
+  /** النقد الذي عدّه المستلم فعلياً؛ يجب أن يطابق صافي التوريد بعد استقطاع الكشف. */
   countedCash: string;
   shiftType?: "RECEPTION" | "RETAIL";
   clientRequestId?: string | null;
@@ -210,14 +211,14 @@ export async function recordDeliveryRemittance(
       invoiceCredit: Decimal;
       newCollected: Decimal;
       delivered: boolean;
-      fee: Decimal;
       remaining: Decimal;
-      feeCollection: string;
       fromMoneyStatus: "UNSETTLED" | "PARTIAL";
     };
     const work: Work[] = [];
     let collectedTotal = new Decimal(0);
-    let feesTotal = new Decimal(0);
+    // الأجور لا تُخصَم من التوريد بنيوياً (تُصرف بسند مستقل في fees.ts) — الصفر هنا ثابتٌ
+    // لا فرعَ ميّتاً: يُخزَّن في feesTotal للمخطط ويُبقي netRemitted = المُحصَّل − الاستقطاع.
+    const feesTotal = new Decimal(0);
     let expectedTotal = new Decimal(0);
     const sortedLines = [...input.lines].sort(
       (a, b) => a.consignmentId - b.consignmentId,
@@ -272,8 +273,14 @@ export async function recordDeliveryRemittance(
       // («يُرجَع فقط إرسالٌ لم يُحصَّل منه شيء») على بضاعةٍ لم يُحصَّل منها شيء فعلاً.
       // غير المحصَّل ليس توريداً — يبقى DISPATCHED كما هو (يُرجَع أو يُورَّد لاحقاً).
       if (collected.isZero()) continue;
+      // المتبقّي **الحيّ** للإرسالية = codAmount − collectedAmount − counterSettledAmount
+      // (٢٢/٨، عمود 0249): ما سدّده الزبون بالكاونتر بعد ثبوت التسليم لم يمرّ بيد الجهة،
+      // فلا يُطالَب به المندوب ولا يُقبل توريده — سقفُ السطر بدونه كان يقبل نقداً عن مبلغٍ
+      // سُدِّد في الدرج سلفاً ⇒ paidAmount يتجاوز الصافي وتنقلب ذمّة العميل سالبة.
       const remaining = round2(
-        money(cn.codAmount).minus(money(cn.collectedAmount)),
+        money(cn.codAmount)
+          .minus(money(cn.collectedAmount))
+          .minus(money(cn.counterSettledAmount ?? "0")),
       );
       if (collected.gt(remaining))
         throw new TRPCError({
@@ -307,45 +314,48 @@ export async function recordDeliveryRemittance(
       // move the amount to courier custody.  Legacy rows can still have a live
       // invoice remainder, so only that part is credited during remittance.
       //
-      // ⚠️ ١٩/٨ — الشرط الحاسم: **هل سُوّيت ذمّةُ العميل لحظة التسليم لهذه الإرسالية؟**
-      // كان الائتمان `min(المحصَّل, متبقّي الفاتورة)` وحدَه، وهو **صحيحٌ صدفةً** ما دام
-      // التسليم يقبض COD كاملاً (فيصير المتبقّي صفراً والائتمان صفراً). لكن كشف الشركة يُجيز
-      // تحصيلاً **جزئياً**: يُسدَّد ١٢٬٠٠٠ عند التسليم فيبقى ٨٬٠٠٠ حيّاً، فيأتي التوريد
-      // ويعتمدها ⇒ الفاتورة تُسدَّد ٢٠٬٠٠٠ ولم يُقبض إلّا ١٢٬٠٠٠، وذمّةٌ حيّةٌ تُمحى بلا مال.
+      // ⚠️ ٢٢/٨ — الفحص **مبلغيٌّ لا وجوديّ**: كان يكفي وجودُ قيد
+      // `PAYMENT_IN:COURIER_DELIVERY:{cn}` ليُصفَّر ائتمانُ الفاتورة كلّياً. وهو صحيحٌ ما دام
+      // التسليم قبض COD كاملاً، لكنّ كشف الشركة يُجيز تحصيلاً **جزئياً**: كشفٌ يُثبت ١٢٬٠٠٠
+      // من ٢٠٬٠٠٠ يكتب القيد، ثم يأتي توريدُ الـ٨٬٠٠٠ المتمِّم فيجد «القيد موجوداً» ⇒ النقد
+      // يدخل الدرج والفاتورة تبقى ناقصةَ التسديد إلى الأبد — عكسُ العطب القديم تماماً.
       //
-      // الدليل القاطع هو **قيد التسديد المكتوب لحظة التسليم نفسه** (`PAYMENT_IN:COURIER_
-      // DELIVERY:{cn}` في courier.ts) لا `custodyRecognizedAt`: الصفوف الموروثة قد تحمل
-      // اعترافاً بالعهدة **بلا تسوية فاتورة** (نموذج ما قبل المرحلة الثانية — يحرسه اختبار
-      // receptionReviewFixes/F2)، فالعلامة تكذب عليها بينما وجودُ القيد لا يكذب أبداً.
-      // ووجودُه يعني: التوريد **نقلُ عهدةٍ إلى نقدٍ لا تسويةُ عميلٍ ثانية** (نصّ التعليق أعلاه).
-      const settledAtDelivery = (
+      // الميزان الصحيح: **المُحصَّل التراكمي − المقيَّد على الفاتورة سلفاً** من مسارَي هذه
+      // الإرسالية حصراً (قيدُ التسليم `PAYMENT_IN:COURIER_DELIVERY:{cn}` + قيودُ التوريدات
+      // `PAYMENT_IN:REMIT:{cn}:{rm}`). الصفوف الموروثة بلا قيد تسليم (نموذج ما قبل المرحلة
+      // الثانية — يحرسه اختبار receptionReviewFixes/F2) تبقى كما كانت: مقيَّدُها صفر فيُقيَّد
+      // المحصَّلُ كلُّه؛ والمختومة كاملاً عند التسليم يبقى ائتمانُها صفراً. ولا يتجاوز الائتمان
+      // متبقّي الفاتورة الحيّ أبداً (تسديدٌ كاونتريّ موازٍ يخفضه من خارج هذين المفتاحين).
+      const creditedRow = (
         await tx
-          .select({ id: accountingEntries.id })
+          .select({
+            v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)`,
+          })
           .from(accountingEntries)
-          .where(eq(accountingEntries.dedupeKey, `PAYMENT_IN:COURIER_DELIVERY:${Number(cn.id)}`))
-          .limit(1)
-      ).length > 0;
-      const invoiceCredit = settledAtDelivery
-        ? new Decimal(0)
-        : Decimal.min(collected, Decimal.max(invRemaining, 0));
+          .where(and(
+            eq(accountingEntries.entryType, "PAYMENT_IN"),
+            or(
+              eq(accountingEntries.dedupeKey, `PAYMENT_IN:COURIER_DELIVERY:${Number(cn.id)}`),
+              sql`${accountingEntries.dedupeKey} LIKE ${`PAYMENT_IN:REMIT:${Number(cn.id)}:%`}`,
+            ),
+          ))
+      )[0];
+      const alreadyCredited = round2(money(creditedRow?.v ?? "0"));
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
-      const delivered = newCollected.gte(money(cn.codAmount));
-      // ٥/٨ — الأجرة تُخصَم من التوريد فقط إذا كانت **ما زالت مستحقّةً علينا** للمندوب:
-      //   COURIER ⇒ يقبضها من الزبون مباشرةً، خارج دفترنا كلّياً ⇒ لا خصم (كان الخصم هنا يصرفها
-      //             مرّةً ثانيةً بعد أن قبضها بنفسه).
-      //   feeSettledAt ⇒ صُرفت نقداً لحظة الإرسال ⇒ لا خصم (حارس الصرف المزدوج).
-      // وتبقى مستحقّةً عند التسليم الكامل فقط (تسليمٌ جزئيّ لا يستحقّ أجرةً).
-      const feeStillOwed = false;
-      const fee =
-        delivered && feeStillOwed
-          ? round2(money(cn.deliveryFee))
-          : new Decimal(0);
-      if (fee.gt(collected)) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: `أجرة توصيل الإرسالية ${cn.consignmentNumber} تتجاوز النقد المورّد في هذه التسوية`,
-        });
-      }
+      const uncredited = Decimal.max(round2(newCollected.minus(alreadyCredited)), 0);
+      const invoiceCredit = Decimal.min(
+        collected,
+        Decimal.max(invRemaining, 0),
+        uncredited,
+      );
+      // الإغلاق المالي يقيس المتبقّي **الحيّ**: ما غطّاه الكاونتر ليس مطلوباً من الجهة، فتوريدُ
+      // بقيّته يُقفل الإرسالية SETTLED — إبقاؤها PARTIAL كان يتركها زومبي في شاشة التوريد.
+      const delivered = round2(
+        newCollected.plus(money(cn.counterSettledAmount ?? "0")),
+      ).gte(money(cn.codAmount));
+      // الأجرة لا تُخصَم من التوريد إطلاقاً (٢٢/٨ — كان هنا فرعٌ ميّت `feeStillOwed=false`
+      // يصف منطقاً غير موجود): COURIER يقبضها من الزبون مباشرةً، وCOUNTER/SHOP تُصرف بسند
+      // مستقل (payDeliveryFee / payPartyDeliveryFees) بإيصال OUT خاصٍّ بها.
       work.push({
         id: Number(cn.id),
         invoiceId: Number(cn.invoiceId),
@@ -353,13 +363,10 @@ export async function recordDeliveryRemittance(
         invoiceCredit,
         newCollected,
         delivered,
-        fee,
         remaining,
-        feeCollection: String(cn.feeCollection ?? "SHOP"),
         fromMoneyStatus: cn.moneyStatus,
       });
       collectedTotal = collectedTotal.plus(collected);
-      feesTotal = feesTotal.plus(fee);
       expectedTotal = expectedTotal.plus(remaining);
     }
     if (!work.length) {
@@ -370,7 +377,6 @@ export async function recordDeliveryRemittance(
       });
     }
     collectedTotal = round2(collectedTotal);
-    feesTotal = round2(feesTotal);
     const custodyBalance = round2(money(party.currentBalance));
     if (collectedTotal.gt(custodyBalance)) {
       throw new TRPCError({
@@ -445,7 +451,9 @@ export async function recordDeliveryRemittance(
     });
     const remittanceId = extractInsertId(rmRes);
 
-    // إيصال درج IN = COD المُحصَّل كاملاً (سلامة الفاتورة)، وOUT = الأجور (مصروف) ⇒ صافي الدرج = المورَّد.
+    // إيصال درج IN = COD المُحصَّل كاملاً (سلامة الفاتورة). لا إيصال OUT للأجور هنا —
+    // صرفُها بسنده المستقل في fees.ts. أمّا إيصال OUT للاستقطاع فيُربَط بـ`receiptOutId`
+    // كي يُظهر المستندَ صراحةً لا ضمنياً (Codex P2 #6 — ٢٢/٨: نقدٌ خرج بلا حاشيةٍ في صفّ التوريد).
     let receiptInId: number | null = null;
     let receiptOutId: number | null = null;
     if (collectedTotal.gt(0)) {
@@ -464,28 +472,20 @@ export async function recordDeliveryRemittance(
       });
       receiptInId = extractInsertId(rIn);
     }
-    if (feesTotal.gt(0)) {
-      if (cashBucket === "TREASURY")
-        assertTreasuryOutException("DELIVERY_REMITTANCE_CLEARING");
-      const rOut = await tx.insert(receipts).values({
-        branchId: input.branchId,
-        shiftId,
-        direction: "OUT",
-        amount: toDbMoney(feesTotal),
-        paymentMethod: "CASH",
-        cashBucket,
-        status: "COMPLETED",
-        referenceNumber: remittanceNumber,
-        partyType: "OTHER",
-        description: `أجور توصيل ${remittanceNumber}`,
-        createdBy: actor.userId,
-      });
-      receiptOutId = extractInsertId(rOut);
-    }
-    // استقطاعُ الشركة: نقدٌ خرج بحكم أنّه لم يصل — إيصالُ OUT مستقلٌّ عن الأجور كي يبقى
-    // كلُّ مبلغٍ منسوباً إلى سببه في تسوية الدرج وZ-report، ومصروفٌ مصنَّف يظهر في تقريره.
+    // استقطاعُ الشركة: نقدٌ خرج بحكم أنّه لم يصل — إيصالُ OUT مستقلٌّ كي يبقى كلُّ مبلغٍ
+    // منسوباً إلى سببه في تسوية الدرج وZ-report، ومصروفٌ مصنَّف يظهر في تقريره.
     if (deductionsTotal.gt(0)) {
       if (cashBucket === "TREASURY") assertTreasuryOutException("DELIVERY_REMITTANCE_CLEARING");
+      // الحارس المركزي لكل CASH OUT (عقد cashNonnegativeCore): إيصالُ IN بكامل المُحصَّل كُتب
+      // للتوّ في نفس المعاملة والاستقطاع ≤ المُحصَّل ⇒ يمرّ دائماً على درجٍ سليم، ولا يمرّ
+      // على درجٍ سالبٍ موروث — صرفٌ غير مموَّل يُرفض لا يُقيَّد.
+      await assertCashOutAvailable(tx, {
+        branchId: input.branchId,
+        cashBucket,
+        shiftId,
+        amount: deductionsTotal,
+        operation: "استقطاع كشف شركة التوصيل من صافي التوريد",
+      });
       const rDed = await tx.insert(receipts).values({
         branchId: input.branchId,
         shiftId,
@@ -500,6 +500,7 @@ export async function recordDeliveryRemittance(
         createdBy: actor.userId,
       });
       const deductionReceiptId = extractInsertId(rDed);
+      receiptOutId = deductionReceiptId;
       const assetRole = paymentAccountRole("CASH", cashBucket, "OUT");
       const src = {
         roleDebits: { DELIVERY_EXPENSE: deductionsTotal },
@@ -646,38 +647,8 @@ export async function recordDeliveryRemittance(
           amount: w.collected,
         });
       }
-      // الأجرة عند التسليم الكامل (يربط إيصال OUT الدفعة). ٥/٨ — تُصنَّف بحسب مَن تحمّلها:
-      //   COUNTER ⇒ قبضناها من الزبون أمانةً ⇒ تمريرٌ (amount فقط) لا مصروف ⇒ صفر أثرٍ على الربح.
-      //   SHOP    ⇒ المكتبة تحمّلتها فعلاً ⇒ مصروفٌ حقيقيّ (cost-only) كما كان.
-      if (w.fee.gt(0)) {
-        const passThrough = w.feeCollection === "COUNTER";
-        await postEntry(tx, {
-          entryType: passThrough ? "DELIVERY_FEE_HELD" : "DELIVERY_FEE",
-          postingIntent: passThrough
-            ? deliveryFeeHeldPayoutIntent(w.fee.neg(), cashBucket)
-            : deliveryFeeSettlementIntent(w.fee, cashBucket),
-          postingSourceComponents: {
-            roleDebits: { COURIER_PAYABLE: w.fee },
-            roleCredits: {
-              [paymentAccountRole("CASH", cashBucket, "OUT")]: w.fee,
-            },
-          },
-          branchId: input.branchId,
-          invoiceId: w.invoiceId,
-          receiptId: receiptOutId,
-          deliveryPartyId: input.partyId,
-          // إشارة تبرئة الأمانة **سالبة** (٩/٨ — مرآة dispatch.ts وdispatchInvoice.ts حرفياً):
-          // القبض في الدرج +fee والصرف للمندوب −fee ⇒ Σ(DELIVERY_FEE_HELD) للمستند = 0 ⇔ مُبرَّأة.
-          // الفرع شبه ميت (COUNTER تُصرف لحظة الإرسال فيُختم feeSettledAt) لكن أيّ إرسالية قديمة
-          // feeSettledAt=null كانت ستقيّد +fee فوق قيد القبض = ضعف الأجرة التزاماً وهمياً للأبد.
-          amount: passThrough ? w.fee.neg() : w.fee,
-          notes: `أجرة توصيل ${remittanceNumber}`,
-        });
-        await tx
-          .update(deliveryConsignments)
-          .set({ feeSettledAt: new Date() })
-          .where(eq(deliveryConsignments.id, w.id));
-      }
+      // لا قيد أجرةٍ هنا: استحقاقُها يُسجَّل عند التسليم (courier.ts) وصرفُها بسند
+      // payDeliveryFee / payPartyDeliveryFees — التوريد ينقل عهدة COD وحدها.
     }
 
     if (input.clientRequestId)

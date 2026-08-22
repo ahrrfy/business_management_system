@@ -107,6 +107,7 @@ interface SiteverifyResponse {
   success?: boolean;
   action?: string;
   hostname?: string;
+  "error-codes"?: unknown;
 }
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -185,6 +186,17 @@ export async function verifyStorefrontTurnstile(
     typeof outcome.payload.hostname !== "string" ||
     !config.hostnames.has(outcome.payload.hostname.toLowerCase())
   ) {
+    // نحتفظ بسبب الرفض تشغيلياً من دون رمز العميل أو السر، كي يُعالج اختلاف العقد
+    // بين Cloudflare والصفحة المحمولة بدلاً من تكرار 403 مبهم في التطبيق.
+    const reason = outcome.kind !== "verified"
+      ? "siteverify_rejected"
+      : outcome.payload.action !== STOREFRONT_TURNSTILE_ACTION
+        ? "action_mismatch"
+        : "hostname_mismatch";
+    const cloudflareErrors = Array.isArray(outcome.payload["error-codes"])
+      ? outcome.payload["error-codes"].filter((value): value is string => typeof value === "string").slice(0, 4)
+      : [];
+    console.warn("storefront_turnstile_rejected", { reason, action: outcome.payload.action ?? null, hostname: outcome.payload.hostname ?? null, cloudflareErrors });
     throw new TRPCError({ code: "FORBIDDEN", message: "لم يكتمل تحقق الأمان — أعد المحاولة" });
   }
 }

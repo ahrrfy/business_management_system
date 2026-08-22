@@ -41,8 +41,19 @@ export { returnConsignment } from "./delivery/returns";
 export type { SettleInput, WriteOffInput, RecoverWriteOffInput } from "./delivery/settle";
 export { settleDeliveryBalance, writeOffDeliveryShortfall, recoverDeliveryWriteOff } from "./delivery/settle";
 // كشف شركة التوصيل (١٩/٨): مستند التسوية الموحّد — يقود التسليم والتحصيل والتوريد معاً.
-export { recordCompanyStatement } from "./delivery/companyStatement";
-export type { CompanyStatementInput, CompanyStatementResult } from "./delivery/companyStatement";
+export {
+  recordCompanyStatement,
+  // ٢٢/٨ — إثبات تسليم بلا نقد (لا سند توريد) + إثبات يدوي استثنائي بموافقة مدير:
+  recordDeliveryProof,
+  recordManualDeliveryProof,
+} from "./delivery/companyStatement";
+export type {
+  CompanyStatementInput,
+  CompanyStatementResult,
+  DeliveryProofInput,
+  DeliveryProofResult,
+  ManualDeliveryProofInput,
+} from "./delivery/companyStatement";
 export {
   listReadyForDispatch,
   listInTransitConsignments,
@@ -52,11 +63,23 @@ export {
   getDeliveryPartyStatement,
   getDeliveryPartyFinancials,
   getPartyStoreInTransit,
+  // ٢٢/٨ — قراءات جديدة لحملة حياة الطلب:
+  getConsignmentTimeline,
+  listPartyObligations,
 } from "./delivery/queries";
 // ٥/٨: إسناد فاتورةٍ قائمة (بيع مباشر بلا أمر شغل) للتوصيل — كان مستحيلاً بنيوياً.
 export type { DispatchInvoiceInput } from "./delivery/dispatchInvoice";
 export { dispatchInvoiceToDelivery } from "./delivery/dispatchInvoice";
-export { payDeliveryFee } from "./delivery/fees";
+export { payDeliveryFee, payPartyDeliveryFees } from "./delivery/fees";
+export type { PayPartyDeliveryFeesInput, PayPartyDeliveryFeesResult } from "./delivery/fees";
+// ٢٢/٨ — قناة الموظف المستندية لتقدّم الطرد (خروج جماعي + تعذّر بيد الموظف):
+export { staffHandoverConsignments, staffMarkFailed } from "./delivery/staffTransition";
+export type {
+  StaffHandoverInput,
+  StaffHandoverResult,
+  StaffMarkFailedInput,
+  StaffMarkFailedResult,
+} from "./delivery/staffTransition";
 // courier (١٢/٧): شاشة المندوب الذاتية «توصيلاتي» — عزل ذاتي عبر deliveryParties.userId.
 export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult, ConfirmConsignmentResult, FailDeliveryResult } from "./delivery/courier";
 export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery, confirmConsignmentDelivery, transitionConsignmentParcel, failCourierDelivery } from "./delivery/courier";

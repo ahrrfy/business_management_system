@@ -81,9 +81,11 @@ export interface TurnstileWidgetProps {
   siteKey: string;
   resetKey: number;
   onTokenChange: (token: string | null) => void;
+  /** تترك واجهة المتجر الافتراضية إعادة الضبط كما هي، بينما WebView الأصلي يطلب محاولة يدوية فقط. */
+  autoRetry?: boolean;
 }
 
-export function TurnstileWidget({ siteKey, resetKey, onTokenChange }: TurnstileWidgetProps) {
+export function TurnstileWidget({ siteKey, resetKey, onTokenChange, autoRetry = true }: TurnstileWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetIdRef = useRef<string | null>(null);
   const onTokenChangeRef = useRef(onTokenChange);
@@ -112,15 +114,17 @@ export function TurnstileWidget({ siteKey, resetKey, onTokenChange }: TurnstileW
             if (cancelled) return;
             onTokenChangeRef.current(null);
             dispatch("EXPIRED");
-            if (widgetIdRef.current) window.turnstile?.reset(widgetIdRef.current);
+            if (autoRetry && widgetIdRef.current) window.turnstile?.reset(widgetIdRef.current);
           },
           "error-callback": () => {
             if (cancelled) return;
             onTokenChangeRef.current(null);
             dispatch("ERROR");
-            resetTimerRef.current = setTimeout(() => {
-              if (widgetIdRef.current) window.turnstile?.reset(widgetIdRef.current);
-            }, 1_000);
+            if (autoRetry) {
+              resetTimerRef.current = setTimeout(() => {
+                if (widgetIdRef.current) window.turnstile?.reset(widgetIdRef.current);
+              }, 1_000);
+            }
           },
         });
       })
@@ -136,7 +140,7 @@ export function TurnstileWidget({ siteKey, resetKey, onTokenChange }: TurnstileW
       if (widgetIdRef.current) window.turnstile?.remove(widgetIdRef.current);
       widgetIdRef.current = null;
     };
-  }, [siteKey]);
+  }, [autoRetry, siteKey]);
 
   useEffect(() => {
     const widgetId = widgetIdRef.current;

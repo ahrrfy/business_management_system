@@ -45,7 +45,7 @@ export default function MobileTurnstile() {
         {settings.isLoading && <p className="text-sm font-medium text-muted-foreground">جارٍ تجهيز التحقق الآمن…</p>}
         {settings.isError && <p className="rounded-xl bg-[var(--sem-neg-bg)] p-3 text-sm font-bold text-[var(--sem-neg)]">تعذر الاتصال بخدمة الأمان. أعد المحاولة بعد التحقق من الإنترنت.</p>}
         {settings.isSuccess && !enabled && <p className="rounded-xl bg-[var(--sem-warn-bg)] p-3 text-sm font-bold text-[var(--sem-warn)]">إرسال الطلبات غير متاح مؤقتاً. يمكن العودة للتطبيق والمحاولة لاحقاً.</p>}
-        {enabled && !complete && <TurnstileWidget siteKey={siteKey!} resetKey={resetKey} onTokenChange={sendToken} />}
+        {enabled && !complete && <TurnstileWidget autoRetry={false} siteKey={siteKey!} resetKey={resetKey} onTokenChange={sendToken} />}
         {enabled && complete && <div className="rounded-2xl bg-[var(--sem-pos-bg)] p-4 text-center text-sm font-extrabold text-[var(--sem-pos)]">اكتمل التحقق. يمكنك العودة إلى التطبيق لإرسال الطلب.</div>}
         <button type="button" onClick={() => { setComplete(false); setResetKey((value) => value + 1); }} className="mt-4 inline-flex items-center gap-2 text-xs font-bold text-[var(--sem-info)] hover:opacity-80"><RefreshCw className="size-3.5" /> إعادة التحقق</button>
       </section>

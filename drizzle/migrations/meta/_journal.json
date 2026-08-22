@@ -1672,14 +1672,35 @@
       "idx": 253,
       "version": "5",
       "when": 1788052304000,
-      "tag": "0253_product_content_governance",
+      "tag": "0253_storefront_reviews_and_wishlist_shares_1",
       "breakpoints": true
     },
     {
       "idx": 254,
       "version": "5",
       "when": 1788052305000,
-      "tag": "0254_invoice_item_name_snapshot",
+      "tag": "0254_storefront_reviews_and_wishlist_shares_2",
+      "breakpoints": true
+    },
+    {
+      "idx": 255,
+      "version": "5",
+      "when": 1788052306000,
+      "tag": "0255_delivery_counter_settled",
+      "breakpoints": true
+    },
+    {
+      "idx": 256,
+      "version": "5",
+      "when": 1788052307000,
+      "tag": "0256_product_content_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 257,
+      "version": "5",
+      "when": 1788052308000,
+      "tag": "0257_invoice_item_name_snapshot",
       "breakpoints": true
     }
   ]
