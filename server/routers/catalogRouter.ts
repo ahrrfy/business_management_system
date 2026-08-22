@@ -914,6 +914,7 @@ export const catalogRouter = router({
         description: z.string().nullish(),
         categoryId: z.number().int().positive().nullish(),
         isCustomizable: z.boolean().optional(),
+        allowAutoCartRecommendations: z.boolean().optional(),
         isActive: z.boolean().optional(),
         isConsignment: z.boolean().optional(),
         consignorId: z.number().int().positive().nullish(),
