@@ -213,6 +213,9 @@ const updateUnitTemplateSchema = z.object({
 const editVariantSchema = z.object({
   id: z.number().int().positive().optional(),
   sku: z.string().min(1),
+  // م٣ (هوية البدائل): نوع المتغيّر واسمه — البديل يلزمه اسمٌ وباركود (تُفرَض في الخدمة).
+  variantKind: z.enum(["VARIANT", "ALTERNATIVE"]).optional(),
+  variantName: z.string().max(255).nullish(),
   color: z.string().nullish(),
   // بنك الألوان: لون العرض الحقيقي «#RRGGBB» (اختيار صريح؛ إن غاب يُستنتَج من الاسم).
   colorHex: z

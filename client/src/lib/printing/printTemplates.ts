@@ -868,6 +868,8 @@ export interface ReceiptBrowserData {
   /** خصم الفاتورة الكلي، إن وُجد. */
   discount?: string | number | null;
   tax?: string | number | null;
+  /** تعديلُ التقريب النقديّ (± د.ع، النقد الكامل فقط) — يُطبع صريحاً كي يطابق حساب الإيصال إجماليه. */
+  cashRounding?: string | number | null;
   total: string | number;
   paid?: string | number | null;
   change?: string | number | null;
@@ -983,6 +985,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     <div style="display:flex;justify-content:space-between;"><span>المجموع:</span><span>${fmt(d.subtotal)}</span></div>
     ${Number(d.discount ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الخصم:</span><span>-${fmt(d.discount)}</span></div>` : ''}
     ${Number(d.tax ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;"><span>الضريبة:</span><span>${fmt(d.tax)}</span></div>` : ''}
+    ${d.cashRounding != null && Number(d.cashRounding) !== 0 ? `<div style="display:flex;justify-content:space-between;"><span>تقريب نقديّ:</span><span>${Number(d.cashRounding) > 0 ? '+' : ''}${fmt(d.cashRounding)}</span></div>` : ''}
     <div style="display:flex;justify-content:space-between;font-weight:900;font-size:14px;margin:1.5mm 0;
       padding:1.5mm 0;border-top:1px solid #000;border-bottom:1px solid #000;">
       <span>الإجمالي:</span><span>${fmt(d.total)} د.ع</span>

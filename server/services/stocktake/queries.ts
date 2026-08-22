@@ -27,6 +27,7 @@ import {
   type DbLike,
 } from "./internal";
 import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
+import { computeBarcodeCoverage, type BarcodeCoverage } from "./barcodeCoverage";
 
 const SCOPE_FALLBACK_LABEL: Record<string, string> = {
   FULL: "جرد شامل للفرع",
@@ -522,6 +523,8 @@ export interface PreviewScopeResult {
   excludedConsignment: number;
   /** OPENING فقط: عدد الأصناف المستبعَدة لأنّها بكج (تُجرَد عبر مكوّناتها). */
   excludedBundle: number;
+  /** تغطية الباركود لأصناف النطاق (م٢): كم منها قابلٌ للمسح وكم ينقصه ملصق. */
+  coverage: BarcodeCoverage;
 }
 
 /**
@@ -581,6 +584,7 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
         excludedPurchased: 0,
         excludedConsignment: 0,
         excludedBundle: 0,
+        coverage: await computeBarcodeCoverage([]),
       };
     }
     const rows = await db
@@ -679,6 +683,7 @@ export async function previewScope(input: PreviewScopeInput): Promise<PreviewSco
     excludedPurchased,
     excludedConsignment,
     excludedBundle,
+    coverage: await computeBarcodeCoverage(variantIds),
   };
 }
 

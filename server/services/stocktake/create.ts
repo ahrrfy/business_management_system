@@ -24,6 +24,7 @@ import { extractInsertId } from "../../lib/insertId";
 import type { StkActor } from "./types";
 import { chunk } from "./internal";
 import { loadOpeningPurchaseLinkedVariantIds } from "./openingEligibility";
+import type { CountMethod } from "../../../shared/stocktakeCountMethod";
 
 /** PIN رباعي عشوائي مشفّر التوليد (crypto) فريد ضمن المجموعة المُمرَّرة. */
 function generateUniquePin(used: Set<string>): string {
@@ -82,6 +83,8 @@ export interface CreateStocktakeInput {
   categoryIds?: number[];
   variantIds?: number[];
   blind?: boolean;
+  /** أسلوب العدّ — الافتراضي SCAN_REQUIRED لكل جلسةٍ جديدة (قرار المالك ٢٢/٨). */
+  countMethod?: CountMethod;
   thresholdPct?: string;
   thresholdValue?: string;
   dualThreshold?: string;
@@ -255,6 +258,10 @@ type StkScope = Awaited<ReturnType<typeof resolveScope>>;
 
 async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: StkActor): Promise<CreateStocktakeResult> {
   const sessionType = input.sessionType ?? "NORMAL";
+
+  // أسلوب العدّ: الافتراض FREE (سلوك اليوم، وتوافقٌ مع تطبيق أندرويد الذي لا يُرسل دليل المسح بعد —
+  // مراجعة Codex #1/#4). المسح الإلزامي يُفعّله المدير صراحةً من المعالج؛ لا بوّابة على FREE كي لا
+  // يُمنع أمينُ المخزن من إنشاء جلسةٍ عادية. جعلُ SCAN_REQUIRED افتراضاً يلزمه تحديث أندرويد أولاً.
 
   // الفرع موجود — FOR UPDATE يسلسل إنشاء الجلسات لنفس الفرع ⇒ حارس الحصر المتبادل أدناه بلا سباق
   // (إنشاءان متزامنان لولا القفل يمرّان كلاهما من فحص «لا جلسة نشطة»).
@@ -455,6 +462,10 @@ async function insertSession(
     createdBy: actor.userId,
     notes: input.notes ?? null,
   };
+  // أسلوب العدّ يُكتب صراحةً فقط حين تُرسله الواجهة (تُرسله دائماً: SCAN_REQUIRED أو FREE)؛
+  // والحذف يترك افتراض القاعدة FREE — فالمستدعي البرمجيّ/القديم لا ينكسر، والمستخدم يحصل على
+  // المسح الإلزامي لأنّ StocktakeNew يرسله صراحةً (قرار المالك ٢٢/٨).
+  if (input.countMethod !== undefined) sessionValues.countMethod = input.countMethod;
   if (input.blind !== undefined) sessionValues.blind = input.blind;
   if (input.thresholdPct !== undefined) sessionValues.thresholdPct = toDbMoney(input.thresholdPct);
   if (input.thresholdValue !== undefined) sessionValues.thresholdValue = toDbMoney(input.thresholdValue);

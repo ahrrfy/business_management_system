@@ -12,6 +12,7 @@ import {
   Lock,
   PartyPopper,
   RefreshCw,
+  ScanLine,
   Search,
   Send,
   WifiOff,
@@ -22,6 +23,7 @@ import { useBarcodeInput } from "@/hooks/useBarcodeInput";
 import { BarcodeSearchCue, barcodeSearchInputClass } from "@/components/scan/BarcodeSearchCue";
 import { usePulsedCountState } from "@/hooks/usePulsedCountState";
 import type { PortalState } from "@shared/countPortalMerge";
+import type { CountEntryMethod } from "@shared/stocktakeCountMethod";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { confirm } from "@/lib/confirm";
 import { errMsg, notify } from "@/lib/notify";
@@ -33,6 +35,9 @@ import {
   peekAll,
   remove as removeQueued,
   size as queueSize,
+  enqueueUnknown,
+  peekUnknown,
+  removeUnknown,
   type QueuedCount,
 } from "@/lib/countQueue";
 import { cn } from "@/lib/utils";
@@ -103,6 +108,11 @@ export default function MyStocktakeWorkspace() {
   const [selected, setSelected] = useState<CountItem | null>(null);
   /** الوحدة التي طابق باركودُها المسح — يبدأ التركيز عليها في بطاقة الكمية. */
   const [scannedUnit, setScannedUnit] = useState<string | null>(null);
+  /** نسبُ العدّة المفتوحة: مسحٌ فعليّ بباركوده، أو اختيار حر، أو يدويّ محكوم. */
+  const [selectedEntry, setSelectedEntry] = useState<{
+    method: CountEntryMethod;
+    scannedBarcode: string | null;
+  }>({ method: "SEARCH_PICK", scannedBarcode: null });
   const [cameraOpen, setCameraOpen] = useState(false);
   const [online, setOnline] = useState<boolean>(
     () => typeof navigator === "undefined" || navigator.onLine,
@@ -144,7 +154,8 @@ export default function MyStocktakeWorkspace() {
   const flushQueue = useCallback(async () => {
     if (flushing.current || !code) return;
     const pending = peekAll(code);
-    if (pending.length === 0) return;
+    const pendingUnknown = peekUnknown(code);
+    if (pending.length === 0 && pendingUnknown.length === 0) return;
     flushing.current = true;
     let synced = 0;
     try {
@@ -155,6 +166,8 @@ export default function MyStocktakeWorkspace() {
             variantId: it.variantId,
             qty: it.qty,
             unitBreakdown: it.unitBreakdown,
+            entryMethod: it.entryMethod,
+            scannedBarcode: it.scannedBarcode ?? undefined,
             clientRequestId: it.clientRequestId,
           });
           removeQueued(code, it.clientRequestId);
@@ -178,9 +191,26 @@ export default function MyStocktakeWorkspace() {
           }
         }
       }
+      // طابور الباركود المجهول (مراجعة Codex #2): يُزامَن كالعدّات فلا يضيع أوفلاين.
+      for (const u of pendingUnknown) {
+        try {
+          await utils.client.count.submit.mutate({
+            sessionCode: code,
+            unknownBarcode: u.barcode,
+            clientRequestId: u.clientRequestId,
+          });
+          removeUnknown(code, u.clientRequestId);
+        } catch (e) {
+          if (isNetworkError(e)) {
+            setOnline(false);
+            break;
+          }
+          removeUnknown(code, u.clientRequestId);
+        }
+      }
     } finally {
       flushing.current = false;
-      setQueueCount(queueSize(code));
+      setQueueCount(queueSize(code) + peekUnknown(code).length);
       if (synced > 0) {
         setOnline(true);
         notify.ok(`عاد الاتصال — تمت مزامنة ${fmtInt(synced)} عدّة محفوظة محلياً`);
@@ -213,8 +243,19 @@ export default function MyStocktakeWorkspace() {
     // queueCount يتغيّر مع كل حفظ محليّ/مزامنة ⇒ يعيد القراءة.
   }, [code, queueCount]);
 
+  // أسلوب الجلسة: المسح الإلزامي يمنع فتح البطاقة بالنقر — لا يُفتح العدّ إلا بمسحٍ فعليّ
+  // أو باستثناء يدويّ محكوم بمشرف (USER manager/admin). الإنفاذ النهائيّ خادميّ في submit.
+  const scanRequired = st?.session.countMethod === "SCAN_REQUIRED";
+
   const openItem = useCallback(
-    (item: CountItem, unitName?: string) => {
+    (
+      item: CountItem,
+      unitName?: string,
+      entry: { method: CountEntryMethod; scannedBarcode: string | null } = {
+        method: "SEARCH_PICK",
+        scannedBarcode: null,
+      },
+    ) => {
       if (
         st?.session.status !== "COUNTING" ||
         st.assignment.status === "SUBMITTED"
@@ -232,38 +273,96 @@ export default function MyStocktakeWorkspace() {
         notify.info("المنتج معدود من زميلك — سياسة الجلسة تمنع العدّ المكرر");
         return;
       }
+      // المسح الإلزامي: النقر/الاختيار الحر لا يفتح البطاقة — امسح، أو أدخِل يدوياً بإذن مسؤول.
+      if (
+        scanRequired &&
+        entry.method !== "SCAN_HID" &&
+        entry.method !== "SCAN_CAMERA" &&
+        entry.method !== "MANUAL_AUTHORIZED"
+      ) {
+        notify.info(
+          "هذه الجلسة بأسلوب المسح الإلزامي",
+          "امسح باركود الصنف لفتح بطاقة العدّ، أو استعمل «إدخال يدويّ بإذن» عند تعذّر المسح.",
+        );
+        return;
+      }
+      setSelectedEntry(entry);
       setScannedUnit(unitName ?? null);
       setSelected(item);
     },
-    [st],
+    [st, scanRequired],
+  );
+
+  /** الاستثناء اليدويّ المحكوم (باركود تالف/بلا ملصق): يفتح البطاقة بنسب MANUAL_AUTHORIZED؛
+   *  الخادم يقبله فقط من حساب USER مكلّف برتبة manager/admin وإلا يرفضه برسالة صريحة. */
+  const openManualEntry = useCallback(
+    async (item: CountItem) => {
+      const ok = await confirm({
+        variant: "warning",
+        title: "إدخال يدويّ بإذن مسؤول",
+        description:
+          "المسح إلزاميّ في هذه الجلسة. الإدخال اليدويّ استثناءٌ لباركودٍ تالف أو صنفٍ بلا ملصق، ويُقبل فقط من حساب مسؤول جرد (manager/admin) ويُسجَّل باسمك في إثبات الخادم.",
+        confirmText: "متابعة الإدخال اليدويّ",
+      });
+      if (!ok) return;
+      openItem(item, undefined, {
+        method: "MANUAL_AUTHORIZED",
+        scannedBarcode: null,
+      });
+    },
+    [openItem],
   );
 
   const onBarcode = useCallback(
-    (raw: string) => {
+    (raw: string, source: "SCAN_HID" | "SCAN_CAMERA" = "SCAN_HID") => {
       const value = raw.trim();
       if (!value) return;
       const found = items.find(
         (item) => matchesBarcode(item, value) || item.sku === value,
       );
       if (!found) {
-        notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", value);
+        // باركودٌ خارج الجلسة (ب-٤): يُوضَع في طابورٍ يُزامَن فلا يضيع أوفلاين (مراجعة Codex #2).
+        if (st?.session.status === "COUNTING" && st.assignment.status === "ACTIVE") {
+          enqueueUnknown(code, {
+            clientRequestId: newClientRequestId(),
+            barcode: value,
+            queuedAt: new Date().toISOString(),
+          });
+          setQueueCount(queueSize(code) + peekUnknown(code).length);
+          notify.warn(
+            "الباركود غير موجود ضمن منتجات الجلسة — سُجّل للمشرف (يُزامَن تلقائياً)",
+            value,
+          );
+        } else {
+          notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", value);
+        }
         return;
       }
       // باركود وحدة أكبر (كرتون/درزن) ⇒ افتح الكمية على وحدته لا على وحدة الأساس.
-      openItem(found, found.units.find((u) => unitHasBarcode(u, value))?.unitName);
+      // مراجعة Codex #7: مطابقةُ SKU (لا باركود وحدة) ليست مسحاً — الخادم يتحقّق من الباركود
+      // فقط، فإسنادُ SKU كـscannedBarcode يفتح البطاقة ثم يُرفض الحفظ. نعامل مطابقة الباركود
+      // وحدها كمسح؛ ومطابقة SKU كاختيارٍ حرّ (يُحجَب في المسح الإلزامي ويُقبَل في الحرّ).
+      const matchedUnit = found.units.find((u) => unitHasBarcode(u, value));
+      openItem(
+        found,
+        matchedUnit?.unitName,
+        matchedUnit
+          ? { method: source, scannedBarcode: value }
+          : { method: "SEARCH_PICK", scannedBarcode: null },
+      );
     },
-    [items, openItem],
+    [items, openItem, st, code, utils],
   );
   const barcodeInput = useBarcodeInput((code) => {
     setQuery("");
-    onBarcode(code);
+    onBarcode(code, "SCAN_HID");
   });
   // قارئ HID: يُعطَّل أثناء فتح البطاقة أو الكاميرا كي لا يتضاعف الالتقاط.
-  useBarcodeScanner(onBarcode, {
+  useBarcodeScanner((raw) => onBarcode(raw, "SCAN_HID"), {
     enabled: Boolean(st) && selected == null && !cameraOpen,
   });
 
-  /** Enter في حقل البحث: تطابق حرفيّ مع باركود/SKU ⇒ افتح البطاقة مباشرةً (كبوابة العدّ). */
+  /** Enter في حقل البحث: تطابق حرفيّ مع باركود/SKU ⇒ افتح البطاقة (اختيار يدويّ لا مسح). */
   const tryOpenByQuery = useCallback(() => {
     const exact = query.trim();
     if (!exact) return;
@@ -272,7 +371,10 @@ export default function MyStocktakeWorkspace() {
       items.find((i) => i.sku === exact);
     if (!hit) return;
     setQuery("");
-    openItem(hit, hit.units.find((u) => unitHasBarcode(u, exact))?.unitName);
+    openItem(hit, hit.units.find((u) => unitHasBarcode(u, exact))?.unitName, {
+      method: "SEARCH_PICK",
+      scannedBarcode: null,
+    });
   }, [items, openItem, query]);
 
   /** مهام إعادة العدّ المعلّقة — تحدّد نوع العدّة وتُعرض بسببها. */
@@ -300,11 +402,14 @@ export default function MyStocktakeWorkspace() {
     const item = selected;
     const mode = selectedMode;
     const clientRequestId = newClientRequestId();
+    const entry = selectedEntry;
     const payload = {
       sessionCode: code,
       variantId: item.variantId,
       qty,
       unitBreakdown,
+      entryMethod: entry.method,
+      scannedBarcode: entry.scannedBarcode ?? undefined,
       clientRequestId,
     };
     const onAccepted = async (res: SubmitResult) => {
@@ -362,6 +467,8 @@ export default function MyStocktakeWorkspace() {
           variantId: item.variantId,
           qty,
           unitBreakdown,
+          entryMethod: entry.method,
+          scannedBarcode: entry.scannedBarcode,
           queuedAt: new Date().toISOString(),
         });
         setQueueCount(queueSize(code));
@@ -751,6 +858,15 @@ export default function MyStocktakeWorkspace() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          {scanRequired && (
+            <div className="flex items-start gap-2 border-b bg-primary/5 px-4 py-2.5 text-xs font-semibold leading-relaxed text-primary sm:px-5">
+              <ScanLine aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <span>
+                المسح إلزاميّ في هذه الجلسة — امسح باركود الصنف (قارئ أو كاميرا) لفتح بطاقة العدّ.
+                النقر على المنتج لا يفتحه؛ وعند تعذّر المسح استعمل «يدويّ» بإذن مسؤول.
+              </span>
+            </div>
+          )}
           <div className="hidden border-b bg-muted/40 px-5 py-3 text-xs font-bold text-muted-foreground sm:flex sm:items-center sm:gap-3">
             <span className="min-w-0 flex-1">المنتج</span>
             <span className="w-[130px] shrink-0">حالة الجلسة</span>
@@ -762,12 +878,12 @@ export default function MyStocktakeWorkspace() {
               // العدّة المحفوظة محلياً أحدث من المُزامَنة ⇒ هي المعروضة.
               const myQty = queued?.qty ?? item.myCount?.qty ?? null;
               return (
+              <div key={item.variantId} className="flex items-stretch border-b">
               <button
-                key={item.variantId}
                 type="button"
                 onClick={() => openItem(item)}
                 disabled={!canCount || item.reviewApproved}
-                className="flex w-full items-center gap-3 border-b px-4 py-3 text-right transition hover:bg-muted/50 disabled:cursor-default sm:px-5"
+                className="flex flex-1 items-center gap-3 px-4 py-3 text-right transition hover:bg-muted/50 disabled:cursor-default sm:px-5"
               >
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-bold">
@@ -809,6 +925,17 @@ export default function MyStocktakeWorkspace() {
                   )}
                 </span>
               </button>
+              {scanRequired && canCount && !item.reviewApproved && (
+                <button
+                  type="button"
+                  onClick={() => void openManualEntry(item)}
+                  className="shrink-0 border-r px-3 text-xs font-semibold text-muted-foreground transition hover:bg-muted/50 hover:text-foreground"
+                  title="إدخال يدويّ بإذن مسؤول (باركود تالف أو صنف بلا ملصق)"
+                >
+                  يدويّ
+                </button>
+              )}
+              </div>
               );
             })}
             {filtered.length === 0 && (
@@ -861,7 +988,7 @@ export default function MyStocktakeWorkspace() {
         onClose={() => setCameraOpen(false)}
         onDetect={(raw) => {
           setCameraOpen(false);
-          onBarcode(raw);
+          onBarcode(raw, "SCAN_CAMERA");
         }}
       />
     </div>

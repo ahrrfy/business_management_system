@@ -70,7 +70,7 @@ async function seedBase() {
   });
   await d.insert(s.products).values([
     { id: 1, name: "Stock item" },
-    { id: 2, name: "Print service", productType: "PRINT_SERVICE" },
+    { id: 2, name: "Print service", productType: "PRINT_SERVICE", isService: true },
   ]);
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "STOCK-1", costPrice: "10" },

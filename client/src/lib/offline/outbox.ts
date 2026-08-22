@@ -40,6 +40,8 @@ export interface OfflineSalePayload {
   customerId?: number;
   priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT";
   lines: OfflineSaleLine[];
+  /** خصم على رأس الفاتورة (مبلغ، عملة الفرع). الخادم يُطبّقه بعد مجموع الأسطر وقبل الضريبة. */
+  invoiceDiscount?: string;
   payment: { amount: string; method: "CASH" };
   clientRequestId: string;
   cashRoundIQD?: boolean;

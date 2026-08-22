@@ -38,6 +38,9 @@ import {
   removeStocktakeWorker,
   requestStocktakeRecount,
   resolveStocktakeConflict,
+  listUnknownScans,
+  resolveUnknownScan,
+  computeBarcodeCoverage,
 } from "../services/stocktakeService";
 import {
   adminProcedure,
@@ -120,6 +123,8 @@ export const stocktakeRouter = router({
         directUnderThreshold: z.boolean().optional(),
         waNotify: z.boolean().optional(),
         dupPolicy: z.enum(["VERIFY", "BLOCK"]).optional(),
+        // أسلوب العدّ — «الحر» محصورٌ بمدير+ (تفرضه الخدمة)؛ الافتراض SCAN_REQUIRED.
+        countMethod: z.enum(["SCAN_REQUIRED", "FREE"]).optional(),
         notes: z.string().max(2000).optional(),
         assignments: z
           .array(
@@ -207,6 +212,11 @@ export const stocktakeRouter = router({
         categoryIds: input.categoryIds,
       });
     }),
+
+  /** تغطية الباركود لمتغيّرات مختارة صراحةً (نطاق MANUAL في المعالج) — بوّابة جاهزية م٢. */
+  barcodeCoverage: inventoryReadProcedure
+    .input(z.object({ variantIds: z.array(idNum).max(10_000) }))
+    .query(async ({ input }) => computeBarcodeCoverage(input.variantIds)),
 
   /* ─────────── القراءة ─────────── */
   list: warehouseProcedure
@@ -351,6 +361,53 @@ export const stocktakeRouter = router({
           preservedCountRows: res.preservedCountRows,
           routedItemCount: res.routedItemCount,
           alreadyRemoved: res.alreadyRemoved,
+        },
+      });
+      return res;
+    }),
+
+  /** طابور الباركود المجهول (ب-٤): باركوداتٌ مُسِحت خارج نطاق الجلسة — قراءةٌ مبوّبة (كـ remaining). */
+  unknownScans: inventoryReadProcedure
+    .input(z.object({ sessionId: idNum }))
+    .query(async ({ input, ctx }) =>
+      listUnknownScans(input.sessionId, {
+        restrictBranchId: ctx.scopedBranchId ?? restrictedBranchOf(ctx),
+      }),
+    ),
+
+  /** حسم باركودٍ مجهول: إضافةٌ للنطاق (يحلّه إلى متغيّره) أو تجاهل — بصلاحية إدارة المخزون. */
+  resolveUnknownScan: inventoryManagerProcedure
+    .input(
+      z.object({
+        sessionId: idNum,
+        barcode: z.string().trim().min(1).max(64),
+        action: z.enum(["ADD_TO_SCOPE", "DISMISS"]),
+        note: z.string().trim().max(255).optional(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      await assertManagerStocktakeBranch(ctx, input.sessionId);
+      const res = await resolveUnknownScan(
+        {
+          sessionId: input.sessionId,
+          barcode: input.barcode,
+          action: input.action,
+          note: input.note,
+        },
+        { userId: ctx.user.id, role: ctx.user.role },
+        { restrictBranchId: restrictedBranchOf(ctx) },
+      );
+      await logAudit(ctx, {
+        action: "stocktake.resolveUnknownScan",
+        entityType: "stocktake",
+        entityId: input.sessionId,
+        newValue: {
+          barcode: input.barcode,
+          action: input.action,
+          resolvedRows: res.resolvedRows,
+          addedVariantId: res.addedVariantId,
+          alreadyInScope: res.alreadyInScope,
+          note: input.note ?? null,
         },
       });
       return res;

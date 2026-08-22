@@ -227,6 +227,8 @@ export default function ProductEdit() {
       const override = v.costPrice !== sharedCost || (v.baseRetail !== "" && v.baseRetail !== tmplBaseRetail);
       return {
         id: `${DB_PREFIX}${v.id}`,
+        variantKind: v.variantKind ?? "VARIANT",
+        variantName: v.variantName ?? null,
         color: v.color ?? "",
         colorHex: v.colorHex ?? null,
         size: v.size ?? "",
@@ -472,6 +474,8 @@ export default function ProductEdit() {
         return {
           id: v.id.startsWith(DB_PREFIX) ? Number(v.id.slice(DB_PREFIX.length)) : undefined,
           sku: v.sku.trim(),
+          variantKind: v.variantKind ?? "VARIANT",
+          variantName: v.variantName?.trim() || null,
           color: v.color.trim() || null,
           colorHex: v.colorHex || null, // "" أو null ⇒ null (يتّسق مع ProductNew ويجنّب رفض zod للفراغ)
           size: v.size.trim() || null,
