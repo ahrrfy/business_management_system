@@ -50,6 +50,7 @@
     "db:migrate:apply": "node scripts/db-migrate-apply.mjs",
     "db:migrate:extra": "node scripts/ci-apply-extra-migrations.mjs",
     "db:verify": "node scripts/db-verify-schema.mjs",
+    "storefront:wishlist:release": "pnpm check:migrations && pnpm db:backup && pnpm db:migrate:safe && pnpm db:verify",
     "audit:payroll": "node scripts/audit-payroll-decisions.mjs",
     "audit:financial-actors": "node scripts/audit-financial-actor-provenance.mjs",
     "prod:deploy": "node scripts/deploy.mjs",

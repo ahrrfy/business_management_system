@@ -1,6 +1,6 @@
 // Offers.tsx (٨/٧/٢٦): إدارة العروض والخصومات على المبيعات (بعد gstack-review PR #163).
 // RBAC: مدير+ فقط (productsManagerProcedure).
-import { AlertCircle, FileEdit, Plus, RotateCcw, X } from "lucide-react";
+import { AlertCircle, FileEdit, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { AppSelect } from "@/components/ui/AppSelect";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { canSeeGate } from "@/lib/navVisibility";
+import { D, fmtAr, formatIqd } from "@/lib/money";
 
 type PromoType = "PERCENT" | "AMOUNT";
 type PromoScope = "ALL" | "CATEGORIES" | "PRODUCTS";
@@ -46,12 +47,17 @@ function toYmd(v: unknown): string {
 const CHANNEL_LABEL: Record<string, string> = { POS: "نقطة البيع", STORE: "المتجر الإلكتروني" };
 const APPLICATION_LABEL: Record<string, string> = { AUTO: "تلقائي", COUPON: "بكوبون" };
 
+function Kpi({ label, value, note }: { label: string; value: string | number; note?: string }) {
+  return <Card><CardContent className="p-4"><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 text-xl font-bold tabular-nums">{value}</div>{note && <div className="mt-1 text-xs text-muted-foreground">{note}</div>}</CardContent></Card>;
+}
+
 export default function Offers() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const canManage = canSeeGate({ roles: ["manager"], module: "campaigns", level: "FULL" }, me.data?.role, (me.data?.permissionsOverride ?? null) as any);
   const [includeInactive, setIncludeInactive] = useState(false);
   const listQ = trpc.salesPromotions.list.useQuery({ includeInactive });
+  const performanceQ = trpc.salesPromotions.performance.useQuery();
   const campaignsQ = trpc.crm.campaigns.list.useQuery();
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
@@ -59,6 +65,7 @@ export default function Offers() {
   // أعمدة الجدول أصلاً (isStoreManaged/applicationMode/effectiveFrom/effectiveTo).
   const [channelFilter, setChannelFilter] = useState<ChannelFilter>("ALL");
   const [validityFilter, setValidityFilter] = useState<ValidityFilter>("ALL");
+  const [searchQuery, setSearchQuery] = useState("");
   // تعديل عرضٍ قائم — null = نموذج إنشاء جديد.
   const [editingId, setEditingId] = useState<number | null>(null);
 
@@ -122,7 +129,7 @@ export default function Offers() {
     setEffectiveFrom(toYmd(p.effectiveFrom));
     setEffectiveTo(toYmd(p.effectiveTo));
     setCustomerTier((p.customerTier ?? "") as Tier);
-    setMinLineAmount(p.minLineAmount && Number(p.minLineAmount) > 0 ? String(p.minLineAmount) : "");
+    setMinLineAmount(p.minLineAmount && D(p.minLineAmount).isPositive() ? String(p.minLineAmount) : "");
     setPriority(String(p.priority ?? 0));
     setCampaignId(p.campaignId ? String(p.campaignId) : "");
     setApplicationMode(p.applicationMode ?? "AUTO");
@@ -146,11 +153,10 @@ export default function Offers() {
   function validate(): string | null {
     if (!name.trim()) return "اسم العرض مطلوب.";
     if (type === "PERCENT") {
-      const p = parseFloat(discountPercent) || 0;
-      if (p <= 0 || p > 100) return "نسبة الخصم بين 0 و100 (حصريّاً > 0).";
+      const p = D(discountPercent);
+      if (!p.isPositive() || p.gt(100)) return "نسبة الخصم بين 0 و100 (حصريّاً > 0).";
     } else {
-      const a = parseFloat(discountAmount) || 0;
-      if (a <= 0) return "المبلغ الثابت يجب أن يكون أكبر من صفر.";
+      if (!D(discountAmount).isPositive()) return "المبلغ الثابت يجب أن يكون أكبر من صفر.";
     }
     if (!effectiveFrom) return "تاريخ البدء مطلوب.";
     if (effectiveTo && effectiveTo < effectiveFrom) return "تاريخ الانتهاء أقدم من البدء.";
@@ -214,11 +220,28 @@ export default function Offers() {
     deactivateM.mutate({ promotionId: Number(p.id) });
   }
 
+  const performanceById = useMemo(
+    () => new Map((performanceQ.data?.rows ?? []).map((row) => [row.promotionId, row])),
+    [performanceQ.data?.rows],
+  );
+  const operationalSignals = useMemo(() => {
+    const today = todayYmd();
+    const rows = listQ.data ?? [];
+    const activeNow = rows.filter((p) => p.isActive && toYmd(p.effectiveFrom) <= today && (!p.effectiveTo || toYmd(p.effectiveTo) >= today));
+    const scheduled = rows.filter((p) => p.isActive && toYmd(p.effectiveFrom) > today);
+    const expiredActive = rows.filter((p) => p.isActive && p.effectiveTo && toYmd(p.effectiveTo) < today);
+    const unusedActive = activeNow.filter((p) => (performanceById.get(p.id)?.invoiceCount ?? 0) === 0);
+    const negative = rows.filter((p) => D(performanceById.get(p.id)?.grossProfit).isNegative());
+    return { activeNow, scheduled, expiredActive, unusedActive, negative };
+  }, [listQ.data, performanceById]);
+
   const list = useMemo(() => {
     const today = todayYmd();
+    const needle = searchQuery.trim().toLocaleLowerCase("ar");
     return (listQ.data ?? [])
       .map((p: any) => p)
       .filter((p) => {
+        if (needle && !String(p.name ?? "").toLocaleLowerCase("ar").includes(needle) && !String(p.description ?? "").toLocaleLowerCase("ar").includes(needle)) return false;
         if (channelFilter !== "ALL" && (p.isStoreManaged ? "STORE" : "POS") !== channelFilter) return false;
         if (validityFilter !== "ALL") {
           const from = toYmd(p.effectiveFrom);
@@ -231,10 +254,10 @@ export default function Offers() {
         }
         return true;
       });
-  }, [listQ.data, channelFilter, validityFilter]);
+  }, [listQ.data, channelFilter, validityFilter, searchQuery]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-4 pb-8">
+    <div className="max-w-7xl mx-auto space-y-4 pb-8">
       <PageHeader
         title="العروض والخصومات"
         description="محرك موحّد لعروض نقطة البيع والمتجر والكوبونات، مرتبط بالحملة وقابل للتدقيق. السعر التعاقدي يفوز دائماً."
@@ -244,6 +267,27 @@ export default function Offers() {
           </Button> : undefined
         }
       />
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <Kpi label="العروض السارية الآن" value={operationalSignals.activeNow.length} note={`${operationalSignals.scheduled.length} مجدولة`} />
+        <Kpi label="ارتباطات العرض بالفواتير" value={performanceQ.data?.summary.invoiceCount ?? 0} />
+        <Kpi label="مبيعات مرتبطة بالعروض" value={formatIqd(performanceQ.data?.summary.netSales ?? "0")} />
+        <Kpi label="إجمالي الخصومات" value={formatIqd(performanceQ.data?.summary.discount ?? "0")} />
+        <Kpi label="الربح الإجمالي المرتبط" value={formatIqd(performanceQ.data?.summary.grossProfit ?? "0")} note="بعد تكلفة البضاعة والمرتجعات" />
+      </div>
+
+      {(operationalSignals.negative.length > 0 || operationalSignals.unusedActive.length > 0 || operationalSignals.expiredActive.length > 0) && (
+        <Card className="border-[var(--sem-warn)]/40">
+          <CardContent className="flex items-start gap-3 p-4 text-sm">
+            <TriangleAlert className="mt-0.5 size-5 shrink-0 text-[var(--sem-warn)]" />
+            <div><div className="font-medium">تنبيهات تحتاج قراراً</div><div className="mt-1 text-muted-foreground">
+              {operationalSignals.negative.length > 0 && <span>{operationalSignals.negative.length} عروض حققت ربحاً إجمالياً سالباً. </span>}
+              {operationalSignals.unusedActive.length > 0 && <span>{operationalSignals.unusedActive.length} عروض سارية لم تظهر في أي فاتورة. </span>}
+              {operationalSignals.expiredActive.length > 0 && <span>{operationalSignals.expiredActive.length} عروض انتهت تاريخياً وما زالت مفعلة إدارياً.</span>}
+            </div></div>
+          </CardContent>
+        </Card>
+      )}
 
       {showForm && (
         <Card>
@@ -266,7 +310,7 @@ export default function Offers() {
                 <Input type="number" min={1} max={100} step="0.01" value={discountPercent} onChange={(e) => setDiscountPercent(e.target.value)} />
               </Field>
             ) : (
-              <Field label="المبلغ (لكل وحدة)" required>
+              <Field label="المبلغ الثابت" required hint="يُخصم من كل وحدة مؤهلة، وليس مرة واحدة من الفاتورة">
                 <MoneyInput value={discountAmount} onChange={setDiscountAmount} placeholder="500" />
               </Field>
             )}
@@ -308,6 +352,9 @@ export default function Offers() {
             <Field label="الحدّ الأدنى لسعر الوحدة (اختياري)" className="md:col-span-2">
               <MoneyInput value={minLineAmount} onChange={setMinLineAmount} placeholder="0" />
             </Field>
+            <div className="md:col-span-3 rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+              قاعدة الحماية: السعر التعاقدي لا يتأثر، وعند تعارض عروض تلقائية يفوز الأعلى أولوية. راقب الربح الفعلي بعد التشغيل من الجدول أدناه؛ الأثر محسوب من لقطات الفواتير والمرتجعات لا من تعريف العرض.
+            </div>
             {editingId != null ? (
               <Field label="النطاق" className="md:col-span-3" hint="ثابت منذ الإنشاء — أنشئ عرضاً جديداً لتغيير النطاق أو أهدافه">
                 <Badge variant="secondary">{scope === "ALL" ? "جميع المنتجات" : scope === "CATEGORIES" ? "فئات محدَّدة" : "منتجات محدَّدة"}</Badge>
@@ -378,6 +425,10 @@ export default function Offers() {
         <CardHeader className="flex items-center justify-between flex-row">
           <CardTitle className="text-base">العروض ({list.length})</CardTitle>
           <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute right-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input className="h-8 w-48 pr-8" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="بحث بالاسم…" />
+            </div>
             <AppSelect value={channelFilter} onValueChange={(v) => setChannelFilter(v as ChannelFilter)} className="h-8 w-36" size="sm">
               <option value="ALL">كل القنوات</option>
               <option value="POS">نقطة البيع</option>
@@ -400,28 +451,36 @@ export default function Offers() {
             <div className="text-center text-sm text-muted-foreground py-12">لا عروض مطابقة للفلاتر.</div>
           ) : (
             <div className="overflow-x-auto rounded-md border">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[1500px] text-sm">
                 <thead className="bg-muted/50 text-xs text-muted-foreground">
                   <tr>
                     <th className="px-3 py-2 text-right font-medium">الاسم</th>
                     <th className="px-3 py-2 text-right font-medium">النوع</th>
-                    <th className="px-3 py-2 text-right font-medium">الخصم</th>
+                    <th className="px-3 py-2 text-right font-medium">قيمة العرض</th>
                     <th className="px-3 py-2 text-right font-medium">النطاق</th>
                     <th className="px-3 py-2 text-right font-medium">القناة</th>
                     <th className="px-3 py-2 text-right font-medium">التطبيق</th>
                     <th className="px-3 py-2 text-right font-medium">من — إلى</th>
-                    <th className="px-3 py-2 text-right font-medium">أولوية</th>
+                    <th className="px-3 py-2 text-right font-medium">الفواتير</th>
+                    <th className="px-3 py-2 text-right font-medium">المبيعات</th>
+                    <th className="px-3 py-2 text-right font-medium">خصم محقق</th>
+                    <th className="px-3 py-2 text-right font-medium">الربح</th>
+                    <th className="px-3 py-2 text-right font-medium">الهامش</th>
                     <th className="px-3 py-2 text-right font-medium">الحالة</th>
                     <th className="px-3 py-2"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {list.map((p: any) => (
-                    <tr key={p.id} className="border-t">
-                      <td className="px-3 py-2 font-medium">{p.name}</td>
+                  {list.map((p: any) => {
+                    const performance = performanceById.get(p.id);
+                    const margin = D(performance?.netSales).isZero()
+                      ? null
+                      : D(performance?.grossProfit).div(performance?.netSales ?? 1).times(100).toDecimalPlaces(1).toString();
+                    return <tr key={p.id} className="border-t">
+                      <td className="px-3 py-2"><div className="font-medium">{p.name}</div><div className="text-xs text-muted-foreground">أولوية {p.priority}</div></td>
                       <td className="px-3 py-2">{p.type === "PERCENT" ? "نسبة" : "مبلغ ثابت"}</td>
                       <td className="px-3 py-2">
-                        {p.type === "PERCENT" ? `${p.discountPercent}٪` : `${Number(p.discountAmount).toLocaleString("en-US")} د.ع`}
+                        {p.type === "PERCENT" ? `${p.discountPercent}٪` : `${fmtAr(p.discountAmount)} د.ع/وحدة`}
                       </td>
                       <td className="px-3 py-2">{p.scope === "ALL" ? "الكل" : p.scope === "CATEGORIES" ? "فئات" : "منتجات"}</td>
                       <td className="px-3 py-2 text-xs">{CHANNEL_LABEL[p.isStoreManaged ? "STORE" : "POS"]}</td>
@@ -429,7 +488,11 @@ export default function Offers() {
                       <td className="px-3 py-2 text-xs text-muted-foreground" dir="ltr">
                         {toYmd(p.effectiveFrom)} — {p.effectiveTo ? toYmd(p.effectiveTo) : "مستمرّ"}
                       </td>
-                      <td className="px-3 py-2">{p.priority}</td>
+                      <td className="px-3 py-2 tabular-nums">{performance?.invoiceCount ?? 0}</td>
+                      <td className="px-3 py-2 tabular-nums">{formatIqd(performance?.netSales ?? "0")}</td>
+                      <td className="px-3 py-2 tabular-nums">{formatIqd(performance?.discount ?? "0")}</td>
+                      <td className={`px-3 py-2 tabular-nums ${D(performance?.grossProfit).isNegative() ? "text-destructive" : ""}`}>{formatIqd(performance?.grossProfit ?? "0")}</td>
+                      <td className={`px-3 py-2 tabular-nums ${margin != null && D(margin).isNegative() ? "text-destructive" : ""}`}>{margin == null ? "—" : `${margin}٪`}</td>
                       <td className="px-3 py-2">
                         {p.isActive ? <Badge variant="default">نشط</Badge> : <Badge variant="secondary">معطَّل</Badge>}
                       </td>
@@ -453,8 +516,8 @@ export default function Offers() {
                           </div>
                         )}
                       </td>
-                    </tr>
-                  ))}
+                    </tr>;
+                  })}
                 </tbody>
               </table>
             </div>

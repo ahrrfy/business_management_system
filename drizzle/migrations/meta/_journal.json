@@ -1669,10 +1669,24 @@
 			"breakpoints": true
 		},
 		{
+			"idx": 253,
+			"version": "5",
+			"when": 1788052304000,
+			"tag": "0253_storefront_reviews_and_wishlist_shares_1",
+			"breakpoints": true
+		},
+		{
 			"idx": 254,
 			"version": "5",
 			"when": 1788052305000,
-			"tag": "0254_stocktake_require_recount",
+			"tag": "0254_storefront_reviews_and_wishlist_shares_2",
+			"breakpoints": true
+		},
+		{
+			"idx": 256,
+			"version": "5",
+			"when": 1788052307000,
+			"tag": "0256_stocktake_require_recount",
 			"breakpoints": true
 		}
 	]

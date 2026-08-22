@@ -13,8 +13,25 @@
 //   - manager scoping للراوتر (في promotionsRouter): يفرض branchId من ctx للـnon-admin.
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
-import { products, promotionTargets, promotions } from "../../drizzle/schema";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
+import {
+  invoiceItems,
+  invoices,
+  products,
+  promotionTargets,
+  promotions,
+} from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
@@ -467,4 +484,74 @@ export async function getProductCategoryIds(tx: Tx, productIds: number[]): Promi
     .where(inArray(products.id, Array.from(new Set(productIds))));
   for (const r of rows) map.set(Number(r.id), r.categoryId == null ? null : Number(r.categoryId));
   return map;
+}
+
+export interface PromotionPerformanceRow {
+  promotionId: number;
+  invoiceCount: number;
+  netSales: string;
+  discount: string;
+  cost: string;
+  grossProfit: string;
+}
+
+/**
+ * أثر العروض من لقطات أسطر الفواتير، لا من تعريف العرض الحيّ. المرتجعات الجزئية تُنزّل الإيراد
+ * بنسبة الكمية المرتجعة، وتعيد COGS فقط لما عاد فعلياً إلى المخزون. لذلك لا تتضخم الربحية بسبب
+ * فاتورة أُرجعت، ولا تختفي تكلفة بضاعة مرتجعة تالفة لم تُسترد للمخزون.
+ */
+export async function loadPromotionPerformance(
+  tx: Tx,
+  branchId: number | null,
+): Promise<{ rows: PromotionPerformanceRow[]; summary: Omit<PromotionPerformanceRow, "promotionId"> }> {
+  const remainingSaleRatio = sql`CASE
+    WHEN ${invoiceItems.baseQuantity} <= 0 THEN 0
+    ELSE GREATEST(${invoiceItems.baseQuantity} - ${invoiceItems.returnedBaseQuantity}, 0) / ${invoiceItems.baseQuantity}
+  END`;
+  const netSalesExpr = sql`${invoiceItems.total} * (${remainingSaleRatio})`;
+  const discountExpr = sql`${invoiceItems.promotionDiscount} * (${remainingSaleRatio})`;
+  const costExpr = sql`${invoiceItems.unitCost} * GREATEST(${invoiceItems.baseQuantity} - ${invoiceItems.returnedRestockedBaseQuantity}, 0)`;
+
+  const raw = await tx
+    .select({
+      promotionId: invoiceItems.promotionId,
+      invoiceCount: sql<number>`COUNT(DISTINCT CASE WHEN (${remainingSaleRatio}) > 0 THEN ${invoiceItems.invoiceId} END)`,
+      netSales: sql<string>`COALESCE(SUM(${netSalesExpr}), 0)`,
+      discount: sql<string>`COALESCE(SUM(${discountExpr}), 0)`,
+      cost: sql<string>`COALESCE(SUM(${costExpr}), 0)`,
+    })
+    .from(invoiceItems)
+    .innerJoin(invoices, eq(invoices.id, invoiceItems.invoiceId))
+    .where(
+      and(
+        isNotNull(invoiceItems.promotionId),
+        branchId == null ? undefined : eq(invoices.branchId, branchId),
+        notInArray(invoices.status, ["CANCELLED", "RETURNED", "SUPERSEDED"]),
+      ),
+    )
+    .groupBy(invoiceItems.promotionId);
+
+  const rows = raw.map((row) => {
+    const netSales = money(row.netSales);
+    const cost = money(row.cost);
+    return {
+      promotionId: Number(row.promotionId),
+      invoiceCount: Number(row.invoiceCount ?? 0),
+      netSales: toDbMoney(netSales),
+      discount: toDbMoney(row.discount),
+      cost: toDbMoney(cost),
+      grossProfit: toDbMoney(netSales.minus(cost)),
+    };
+  });
+  const summary = rows.reduce(
+    (acc, row) => ({
+      invoiceCount: acc.invoiceCount + row.invoiceCount,
+      netSales: toDbMoney(money(acc.netSales).plus(row.netSales)),
+      discount: toDbMoney(money(acc.discount).plus(row.discount)),
+      cost: toDbMoney(money(acc.cost).plus(row.cost)),
+      grossProfit: toDbMoney(money(acc.grossProfit).plus(row.grossProfit)),
+    }),
+    { invoiceCount: 0, netSales: "0.00", discount: "0.00", cost: "0.00", grossProfit: "0.00" },
+  );
+  return { rows, summary };
 }

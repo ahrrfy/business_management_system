@@ -61,6 +61,7 @@ import {
   listStorefrontPushCampaigns,
   scheduleStorefrontPushCampaign,
 } from "../services/storeAdmin/storefrontPushCampaignService";
+import { listStorefrontProductReviewsForAdmin, moderateStorefrontProductReview } from "../services/storeAdmin/storefrontProductReviewAdminService";
 
 const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]);
 
@@ -507,6 +508,16 @@ const notificationsRouter = router({
   }),
 });
 
+/** اعتماد المراجعات يسبق ظهورها علناً؛ لا يسمح بتعديل أو نشر تلقائي من العميل. */
+const reviewsRouter = router({
+  list: storeManagerProcedure.input(z.object({ status: z.enum(["PENDING", "APPROVED", "REJECTED"]).default("PENDING") })).query(({ input }) => listStorefrontProductReviewsForAdmin(input.status)),
+  moderate: storeManagerProcedure.input(z.object({ reviewId: z.number().int().positive(), status: z.enum(["APPROVED", "REJECTED"]) })).mutation(async ({ input, ctx }) => {
+    const result = await moderateStorefrontProductReview(input);
+    await logAudit(ctx, { action: "store.product_review.moderate", entityType: "storefrontProductReview", entityId: input.reviewId, newValue: { status: input.status } });
+    return result;
+  }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
@@ -518,4 +529,5 @@ export const storeAdminRouter = router({
   customers: customersRouter,
   loyalty: loyaltyRouter,
   notifications: notificationsRouter,
+  reviews: reviewsRouter,
 });
