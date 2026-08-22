@@ -14,6 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
+import type { VariantKind } from "../../shared/variantDisplay";
 import { assertBaseUnitStable } from "./catalog/baseUnitGuard";
 import { assertConsignmentValid } from "./catalog/productCreate";
 import { postCostRevaluation } from "./costRevaluation";
@@ -43,6 +44,10 @@ export interface VariantEditUnit {
 export interface VariantEditRow {
   id: number;
   sku: string;
+  /** نوع المتغيّر (م٣): تنويعة لون/قياس أو بديلٌ مستقلّ. */
+  variantKind: VariantKind;
+  /** اسم البديل (للبدائل) أو الاسم الوصفيّ (اختياريّ للتنويعات). */
+  variantName: string | null;
   color: string | null;
   /** لون العرض الحقيقي «#RRGGBB» (اختيار صريح) أو null ⇒ يُستنتَج من الاسم. */
   colorHex: string | null;
@@ -190,6 +195,8 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     return {
       id: Number(v.id),
       sku: v.sku,
+      variantKind: (v.variantKind as VariantKind) ?? "VARIANT",
+      variantName: v.variantName ?? null,
       color: v.color,
       colorHex: v.colorHex ?? null,
       size: v.size,
@@ -252,6 +259,10 @@ export interface UpdateUnitTemplate {
 export interface UpdateVariantRow {
   id?: number; // موجود ⇒ تحديث؛ غائب ⇒ إضافة
   sku: string;
+  /** نوع المتغيّر (م٣): ALTERNATIVE = بديلٌ مستقلّ يلزمه اسمٌ وباركود. الافتراض VARIANT. */
+  variantKind?: VariantKind;
+  /** اسم البديل (إلزاميّ وفريدٌ داخل المنتج للبدائل) أو اسمٌ وصفيّ للتنويعة. */
+  variantName?: string | null;
   color?: string | null;
   colorHex?: string | null;
   size?: string | null;
@@ -560,9 +571,36 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
     let added = 0;
     // تدقيق ١١/٨ (#2): اسم وحدة الأساس الجديدة (القالب مشترك) — الحارس يفحص كل متغيّرٍ قائمٍ به رصيد/حركة.
     const newBaseName = input.unitTemplate.find((u) => u.isBaseUnit)!.unitName;
+
+    // م٣ (هوية البدائل): أسماء البدائل فريدةٌ داخل المنتج — بديلان بالاسم نفسه يلبسان هويةً واحدة.
+    const altNames = input.variants
+      .filter((v) => v.variantKind === "ALTERNATIVE")
+      .map((v) => (v.variantName ?? "").trim().toLowerCase())
+      .filter(Boolean);
+    if (new Set(altNames).size !== altNames.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "اسم بديلٍ مكرَّر داخل المنتج — لكلّ بديلٍ اسمٌ مميّز." });
+    }
+
     for (const v of input.variants) {
+      const variantKind: VariantKind = v.variantKind === "ALTERNATIVE" ? "ALTERNATIVE" : "VARIANT";
+      const variantName = v.variantName?.trim() || null;
+      // م٣: البديل منتجٌ حقيقيٌّ مستقلّ ⇒ يلزمه اسمٌ مميّز، ولا بديلَ بلا باركود (يُهدم الجرد بالمسح).
+      if (variantKind === "ALTERNATIVE") {
+        if (!variantName) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `البديل «${v.sku}» يلزمه اسمٌ مميّز (الماركة/المنشأ).` });
+        }
+        const hasBarcode = Object.values(v.unitBarcodes ?? {}).some((b) => (b ?? "").trim());
+        if (!hasBarcode) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `لا بديلَ بلا باركود: «${variantName}» — أسنِد باركوداً لوحدةٍ منه قبل الحفظ (يُطبَع من شاشة الملصقات).`,
+          });
+        }
+      }
       const vals = {
         sku: v.sku.trim(),
+        variantKind,
+        variantName,
         color: v.color?.trim() || null,
         size: v.size?.trim() || null,
         costPrice: toDbMoney(v.costPrice),

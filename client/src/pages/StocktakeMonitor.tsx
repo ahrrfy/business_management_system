@@ -10,6 +10,7 @@
  *   pendingRecounts: [{ variantId, variantLabel, reason, requestedByName }]
  *   conflicts: [{ variantId, variantLabel, qty1, by1, qty2, by2 }]
  */
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -151,6 +152,16 @@ export default function StocktakeMonitor() {
   const isAdmin = role === "admin";
   const isManager = isAdmin || role === "manager";
   const canView = isManager || role === "warehouse";
+  // مراجعة Codex #10: طابور الباركود المجهول يُشتقّ بصلاحية الوحدة (كبوّابتَي الخادم:
+  // inventoryReadProcedure للعرض، inventoryManagerProcedure للحسم) لا بالأدوار الخام —
+  // كي يراه/يديره مستخدمٌ مُنِح inventory:READ/FULL صراحةً وإن لم يكن manager/warehouse.
+  const permOverride = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const canViewUnknown =
+    !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, permOverride, "inventory", "READ", ["manager", "warehouse"]);
+  const canManageUnknown =
+    !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, permOverride, "inventory", "FULL", ["manager"]);
 
   // بحث في العدّات — يمرَّر q للخادم ليجد أي منتج معدود (لا آخر ٢٠ فقط)، مع debounce بسيط.
   const [countSearch, setCountSearch] = useState("");
@@ -176,7 +187,7 @@ export default function StocktakeMonitor() {
   // طابور الباركود المجهول (ب-٤) — باركوداتٌ مُسِحت خارج نطاق الجلسة، للعرض لأمين المخزن+.
   const unknownScans = trpc.stocktakes.unknownScans.useQuery(
     { sessionId },
-    { enabled: idOk && canView, refetchInterval: 5000 },
+    { enabled: idOk && canViewUnknown, refetchInterval: 5000 },
   );
   const resolveUnknown = trpc.stocktakes.resolveUnknownScan.useMutation({
     onSuccess: async (res) => {
@@ -569,7 +580,7 @@ export default function StocktakeMonitor() {
                 <span className="text-xs text-muted-foreground">
                   {nf(u.occurrences)}× · آخر مسح: {u.lastScannedBy || "—"}
                 </span>
-                {isManager && (
+                {canManageUnknown && (
                   <span className="ms-auto flex items-center gap-2">
                     {u.resolvable && (
                       <Button

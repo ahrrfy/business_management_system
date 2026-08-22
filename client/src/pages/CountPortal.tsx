@@ -52,6 +52,9 @@ import {
   remove as removeQueued,
   size as queueSize,
   newClientRequestId,
+  enqueueUnknown,
+  peekUnknown,
+  removeUnknown,
   type QueuedCount,
 } from "@/lib/countQueue";
 
@@ -236,7 +239,8 @@ export default function CountPortal() {
   const flushQueue = useCallback(async () => {
     if (flushing.current || !code) return;
     const pending = peekAll(code);
-    if (pending.length === 0) return;
+    const pendingUnknown = peekUnknown(code);
+    if (pending.length === 0 && pendingUnknown.length === 0) return;
     flushing.current = true;
     let synced = 0;
     try {
@@ -272,9 +276,27 @@ export default function CountPortal() {
           }
         }
       }
+      // طابور الباركود المجهول (مراجعة Codex #2): يُزامَن كالعدّات فلا يضيع أوفلاين.
+      for (const u of pendingUnknown) {
+        try {
+          await utils.client.count.submit.mutate({
+            sessionCode: code,
+            unknownBarcode: u.barcode,
+            clientRequestId: u.clientRequestId,
+          });
+          removeUnknown(code, u.clientRequestId);
+        } catch (e) {
+          if (isNetworkError(e)) {
+            setOnline(false);
+            break;
+          }
+          // رفضٌ خادميّ نهائيّ (جلسة لم تعد COUNTING مثلاً) — لا معنى للإبقاء.
+          removeUnknown(code, u.clientRequestId);
+        }
+      }
     } finally {
       flushing.current = false;
-      setQueueCount(queueSize(code));
+      setQueueCount(queueSize(code) + peekUnknown(code).length);
       if (synced > 0) {
         setOnline(true);
         notify.ok(`عاد الاتصال — تمت مزامنة ${fmtInt(synced)} عدّة محفوظة محلياً`);
@@ -406,19 +428,21 @@ export default function CountPortal() {
       if (!scanned) return;
       const hit = items.find((i) => i.units.some((u) => unitHasBarcode(u, scanned)));
       if (!hit) {
-        // باركودٌ خارج الجلسة (ب-٤): لا يضيع — يُلتقط للمشرف (أفضل جهد، لا يعطّل العدّ).
-        notify.warn(
-          "الباركود غير موجود ضمن منتجات هذه الجلسة — أُبلِغ المشرف لمراجعته",
-          scanned,
-        );
+        // باركودٌ خارج الجلسة (ب-٤): لا يضيع — يُوضَع في طابورٍ يُزامَن (كالعدّات) فيصمد الانقطاع
+        // (مراجعة Codex #2: الإرسال-وانسَ كان يفقده أوفلاين رغم إبلاغ العامل بأنّه سُجّل).
         if (canCount) {
-          void utils.client.count.submit
-            .mutate({
-              sessionCode: code,
-              unknownBarcode: scanned,
-              clientRequestId: newClientRequestId(),
-            })
-            .catch(() => {});
+          enqueueUnknown(code, {
+            clientRequestId: newClientRequestId(),
+            barcode: scanned,
+            queuedAt: new Date().toISOString(),
+          });
+          setQueueCount(queueSize(code) + peekUnknown(code).length);
+          notify.warn(
+            "الباركود غير موجود ضمن منتجات الجلسة — سُجّل للمشرف (يُزامَن تلقائياً)",
+            scanned,
+          );
+        } else {
+          notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
         }
         return;
       }

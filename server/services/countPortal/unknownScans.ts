@@ -33,10 +33,13 @@ export async function recordUnknownScan(
   }
   try {
     return await withTx(async (tx) => {
+      // مراجعة Codex #9: نقفل صفّ الجلسة (كـ submit) فيتسلسل التسجيل مع الانتقال إلى REVIEW —
+      // بلا القفل قد تُقرأ حالةٌ قديمة فيُدرَج مسحٌ بعد التحوّل، تاركاً صنفاً معلّقاً لا يُضاف ولا يُعدّ.
       const [session] = await tx
         .select({ status: stocktakeSessions.status })
         .from(stocktakeSessions)
         .where(eq(stocktakeSessions.id, identity.session.id))
+        .for("update")
         .limit(1);
       if (!session || session.status !== "COUNTING") {
         return { ok: true as const, idempotent: false, recorded: false };

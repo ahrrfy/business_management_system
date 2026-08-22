@@ -172,8 +172,9 @@ export default function StocktakeNew() {
   const [directUnderThreshold, setDirectUnderThreshold] = useState(true);
   const [waNotify, setWaNotify] = useState(true);
   const [dupPolicy, setDupPolicy] = useState<DupPolicy>("VERIFY");
-  // المسح الإلزامي افتراضاً (قرار المالك ٢٢/٨)؛ «الحر» استثناءٌ محصورٌ بمدير فأعلى (يفرضه الخادم).
-  const [scanRequired, setScanRequired] = useState(true);
+  // المسح الإلزامي اختياريّ (يُفعّله المدير) حتى تحديث تطبيق أندرويد ليُرسل دليل المسح — إذ لا
+  // يستطيع عمّاله عدّ جلسة SCAN_REQUIRED بعد (مراجعة Codex #4). الافتراض FREE = سلوك اليوم بلا كسر.
+  const [scanRequired, setScanRequired] = useState(false);
   const [notes, setNotes] = useState("");
 
   /* «جرد افتتاحي» (الافتتاح التدريجي ١٨/٧): متاح لمدير فأعلى وضمن نافذة وضع الافتتاح الفعّالة فقط —
@@ -357,8 +358,8 @@ export default function StocktakeNew() {
       directUnderThreshold,
       waNotify,
       dupPolicy,
-      // «الحر» يُرسَل فقط حين يختاره مدير+؛ غيره دائماً المسح الإلزامي (الخادم يفرض القيد أيضاً).
-      countMethod: isManagerPlus && !scanRequired ? "FREE" : "SCAN_REQUIRED",
+      // المسح الإلزامي حين يفعّله المدير صراحةً؛ وإلا FREE (الافتراض الآمن حتى تحديث أندرويد).
+      countMethod: isManagerPlus && scanRequired ? "SCAN_REQUIRED" : "FREE",
       notes: notes.trim() || undefined,
       assignments,
     });
@@ -694,9 +695,14 @@ export default function StocktakeNew() {
                         onClick={() => {
                           if (!coverage.missingUnitIds.length) return;
                           try {
+                            // مراجعة Codex #3: نحمل فرعَ الجرد مع التسليم كي تطبع شاشةُ الملصقات
+                            // أسعار/عروض هذا الفرع لا فرعها الحاليّ. و#8: كلّ المعرّفات بلا اقتطاع.
                             sessionStorage.setItem(
-                              "barcodeLabelsPrefillUnitIds",
-                              JSON.stringify(coverage.missingUnitIds),
+                              "barcodeLabelsPrefill",
+                              JSON.stringify({
+                                branchId: effectiveBranchId,
+                                unitIds: coverage.missingUnitIds,
+                              }),
                             );
                           } catch {
                             /* وضع خاص/امتلاء — نتابع للتنقّل على أي حال */
@@ -877,29 +883,31 @@ export default function StocktakeNew() {
 
                 {/* المسح الإلزامي — لا يُفتح العدّ إلا بمسح باركود الصنف (قرار المالك ٢٢/٨).
                     «الحر» استثناءٌ محصورٌ بمدير فأعلى، ويفرض الخادم القيد بأي حال. */}
-                <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
-                  <div>
-                    <p className="text-sm font-bold">
-                      المسح الإلزامي (موصى به){" "}
-                      {!isManagerPlus && (
-                        <span className="mr-1 inline-block rounded-full border bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
-                          مُثبَّت
-                        </span>
-                      )}
-                    </p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      لا تُفتح بطاقة العدّ إلا بمسح باركود الصنف (قارئ أو كاميرا) — يمنع اختيار أي
-                      منتج وكتابة رقم اعتباطي. الإدخال اليدويّ يبقى استثناءً بإذن مسؤول.
-                      {isManagerPlus ? "" : " (إلغاؤه محصورٌ بمدير فأعلى.)"}
-                    </p>
+                {isManagerPlus && (
+                  <div className="flex flex-col gap-2 rounded-lg border p-3">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-bold">المسح الإلزامي (اختياريّ)</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          لا تُفتح بطاقة العدّ إلا بمسح باركود الصنف (قارئ أو كاميرا) — يمنع اختيار
+                          أي منتج وكتابة رقم اعتباطي. الإدخال اليدويّ يبقى استثناءً بإذن مسؤول.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={scanRequired}
+                        onCheckedChange={setScanRequired}
+                        aria-label="المسح الإلزامي"
+                      />
+                    </div>
+                    {scanRequired && (
+                      <p className="inline-flex items-start gap-1.5 rounded-md badge-status-pending px-2.5 py-1.5 text-[11px] font-semibold leading-relaxed">
+                        <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+                        عمّال تطبيق أندرويد لا يستطيعون عدّ جلسة المسح الإلزامي حتى تحديث التطبيق —
+                        استعمل بوابة العدّ (الويب) لهذه الجلسة، أو أبقِها عدّاً حرّاً.
+                      </p>
+                    )}
                   </div>
-                  <Switch
-                    checked={isManagerPlus ? scanRequired : true}
-                    disabled={!isManagerPlus}
-                    onCheckedChange={setScanRequired}
-                    aria-label="المسح الإلزامي"
-                  />
-                </div>
+                )}
 
                 <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
                   <div>
@@ -1055,7 +1063,7 @@ export default function StocktakeNew() {
                 <SummaryRow k="الجرد الأعمى" v="مُفعَّل (مُثبَّت)" />
                 <SummaryRow
                   k="أسلوب العدّ"
-                  v={isManagerPlus && !scanRequired ? "عدّ حر (بالنقر)" : "مسح إلزامي"}
+                  v={isManagerPlus && scanRequired ? "مسح إلزامي" : "عدّ حر (بالنقر)"}
                 />
                 <SummaryRow
                   k="الاعتماد المباشر"

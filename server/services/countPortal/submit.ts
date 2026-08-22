@@ -235,7 +235,9 @@ export async function submitCount(
           barcode: productUnits.barcode,
         })
         .from(productUnits)
-        .where(eq(productUnits.variantId, input.variantId));
+        // م٢/م٣ (مراجعة Codex #6): الوحدات النشطة فقط دليلَ مسحٍ صالحاً — باركود وحدةٍ متقاعدة
+        // لا تعرضه واجهة العدّ ولا تعدّه التغطية «متاحاً»، فقبولُه إثباتاً يتجاوز حارس الملصق الحيّ.
+        .where(and(eq(productUnits.variantId, input.variantId), eq(productUnits.isActive, true)));
       const aliases = await tx
         .select({
           unitName: productUnits.unitName,
@@ -248,7 +250,7 @@ export async function submitCount(
           eq(productUnitBarcodes.productUnitId, productUnits.id),
         )
         .where(
-          eq(productUnits.variantId, input.variantId),
+          and(eq(productUnits.variantId, input.variantId), eq(productUnits.isActive, true)),
         );
       // ── إثبات المصدر (وثيقة «الجرد بالباركود» ٢٢/٨) ──
       // مشرفٌ مُصرِّح: تكليف USER لحسابٍ رتبته manager/admin — مصدر واحد لتجاوز حارس الماسح

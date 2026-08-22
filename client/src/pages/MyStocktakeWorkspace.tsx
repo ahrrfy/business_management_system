@@ -35,6 +35,9 @@ import {
   peekAll,
   remove as removeQueued,
   size as queueSize,
+  enqueueUnknown,
+  peekUnknown,
+  removeUnknown,
   type QueuedCount,
 } from "@/lib/countQueue";
 import { cn } from "@/lib/utils";
@@ -151,7 +154,8 @@ export default function MyStocktakeWorkspace() {
   const flushQueue = useCallback(async () => {
     if (flushing.current || !code) return;
     const pending = peekAll(code);
-    if (pending.length === 0) return;
+    const pendingUnknown = peekUnknown(code);
+    if (pending.length === 0 && pendingUnknown.length === 0) return;
     flushing.current = true;
     let synced = 0;
     try {
@@ -187,9 +191,26 @@ export default function MyStocktakeWorkspace() {
           }
         }
       }
+      // طابور الباركود المجهول (مراجعة Codex #2): يُزامَن كالعدّات فلا يضيع أوفلاين.
+      for (const u of pendingUnknown) {
+        try {
+          await utils.client.count.submit.mutate({
+            sessionCode: code,
+            unknownBarcode: u.barcode,
+            clientRequestId: u.clientRequestId,
+          });
+          removeUnknown(code, u.clientRequestId);
+        } catch (e) {
+          if (isNetworkError(e)) {
+            setOnline(false);
+            break;
+          }
+          removeUnknown(code, u.clientRequestId);
+        }
+      }
     } finally {
       flushing.current = false;
-      setQueueCount(queueSize(code));
+      setQueueCount(queueSize(code) + peekUnknown(code).length);
       if (synced > 0) {
         setOnline(true);
         notify.ok(`عاد الاتصال — تمت مزامنة ${fmtInt(synced)} عدّة محفوظة محلياً`);
@@ -300,27 +321,35 @@ export default function MyStocktakeWorkspace() {
         (item) => matchesBarcode(item, value) || item.sku === value,
       );
       if (!found) {
-        // باركودٌ خارج الجلسة (ب-٤): يُلتقط للمشرف بدل أن يضيع (أفضل جهد).
-        notify.warn(
-          "الباركود غير موجود ضمن منتجات هذه الجلسة — أُبلِغ المشرف لمراجعته",
-          value,
-        );
+        // باركودٌ خارج الجلسة (ب-٤): يُوضَع في طابورٍ يُزامَن فلا يضيع أوفلاين (مراجعة Codex #2).
         if (st?.session.status === "COUNTING" && st.assignment.status === "ACTIVE") {
-          void utils.client.count.submit
-            .mutate({
-              sessionCode: code,
-              unknownBarcode: value,
-              clientRequestId: newClientRequestId(),
-            })
-            .catch(() => {});
+          enqueueUnknown(code, {
+            clientRequestId: newClientRequestId(),
+            barcode: value,
+            queuedAt: new Date().toISOString(),
+          });
+          setQueueCount(queueSize(code) + peekUnknown(code).length);
+          notify.warn(
+            "الباركود غير موجود ضمن منتجات الجلسة — سُجّل للمشرف (يُزامَن تلقائياً)",
+            value,
+          );
+        } else {
+          notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", value);
         }
         return;
       }
       // باركود وحدة أكبر (كرتون/درزن) ⇒ افتح الكمية على وحدته لا على وحدة الأساس.
-      openItem(found, found.units.find((u) => unitHasBarcode(u, value))?.unitName, {
-        method: source,
-        scannedBarcode: value,
-      });
+      // مراجعة Codex #7: مطابقةُ SKU (لا باركود وحدة) ليست مسحاً — الخادم يتحقّق من الباركود
+      // فقط، فإسنادُ SKU كـscannedBarcode يفتح البطاقة ثم يُرفض الحفظ. نعامل مطابقة الباركود
+      // وحدها كمسح؛ ومطابقة SKU كاختيارٍ حرّ (يُحجَب في المسح الإلزامي ويُقبَل في الحرّ).
+      const matchedUnit = found.units.find((u) => unitHasBarcode(u, value));
+      openItem(
+        found,
+        matchedUnit?.unitName,
+        matchedUnit
+          ? { method: source, scannedBarcode: value }
+          : { method: "SEARCH_PICK", scannedBarcode: null },
+      );
     },
     [items, openItem, st, code, utils],
   );

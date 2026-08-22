@@ -259,18 +259,9 @@ type StkScope = Awaited<ReturnType<typeof resolveScope>>;
 async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: StkActor): Promise<CreateStocktakeResult> {
   const sessionType = input.sessionType ?? "NORMAL";
 
-  // أسلوب العدّ الحر (إلغاء المسح الإلزامي) قرارٌ حوكميّ محصورٌ بمدير فأعلى (قرار المالك ٢٢/٨):
-  // لا يُترك لأمين المخزن وإن كان إنشاء الجرد من صلاحياته — وإلا سقط المسح الإلزامي بابَ استسهال.
-  if (
-    input.countMethod === "FREE" &&
-    actor.role !== "admin" &&
-    actor.role !== "manager"
-  ) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "أسلوب العدّ الحر محصور بمدير فأعلى — المسح إلزاميّ لبقية المستخدمين.",
-    });
-  }
+  // أسلوب العدّ: الافتراض FREE (سلوك اليوم، وتوافقٌ مع تطبيق أندرويد الذي لا يُرسل دليل المسح بعد —
+  // مراجعة Codex #1/#4). المسح الإلزامي يُفعّله المدير صراحةً من المعالج؛ لا بوّابة على FREE كي لا
+  // يُمنع أمينُ المخزن من إنشاء جلسةٍ عادية. جعلُ SCAN_REQUIRED افتراضاً يلزمه تحديث أندرويد أولاً.
 
   // الفرع موجود — FOR UPDATE يسلسل إنشاء الجلسات لنفس الفرع ⇒ حارس الحصر المتبادل أدناه بلا سباق
   // (إنشاءان متزامنان لولا القفل يمرّان كلاهما من فحص «لا جلسة نشطة»).

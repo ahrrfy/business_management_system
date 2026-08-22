@@ -365,35 +365,46 @@ export default function BarcodeLabels() {
     if (prefillDone.current || branchId == null) return;
     let raw: string | null = null;
     try {
-      raw = sessionStorage.getItem("barcodeLabelsPrefillUnitIds");
+      raw = sessionStorage.getItem("barcodeLabelsPrefill");
     } catch {
       /* وضع خاص — نتجاوز */
     }
     if (!raw) return; // لا تسليم — لا تُقفل المحاولة (قد يصل branchId لاحقاً)
     prefillDone.current = true;
     try {
-      sessionStorage.removeItem("barcodeLabelsPrefillUnitIds");
+      sessionStorage.removeItem("barcodeLabelsPrefill");
     } catch {
       /* تجاهل */
     }
     let ids: number[] = [];
+    let srcBranch: number | null = null;
     try {
       const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        ids = parsed.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 300);
+      if (parsed && typeof parsed === "object" && Array.isArray((parsed as { unitIds?: unknown }).unitIds)) {
+        const p = parsed as { unitIds: unknown[]; branchId?: unknown };
+        // مراجعة Codex #8: كلّ المعرّفات بلا اقتطاع صامت.
+        ids = p.unitIds.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+        if (Number.isInteger(p.branchId) && Number(p.branchId) > 0) srcBranch = Number(p.branchId);
       }
     } catch {
       /* حمولة غير صالحة */
     }
     if (!ids.length) return;
-    const bId = branchId;
+    // مراجعة Codex #3: نطبع بفرع الجرد — للمدير نختاره صراحةً؛ غير المدير مُجبَرٌ على فرعه أصلاً.
+    if (srcBranch != null && canPickBranch && srcBranch !== branchId) setPickedBranch(srcBranch);
+    const bId = srcBranch != null && canPickBranch ? srcBranch : branchId;
     void (async () => {
       try {
-        const rows = await utils.catalog.byUnitIds.fetch({ branchId: bId, tier, productUnitIds: ids });
-        const added = addRows(rows, tier);
+        // دفعاتٌ من ٢٠٠ كي تُضاف كل الأصناف مهما كثرت (بلا حدٍّ صامتٍ على استعلامٍ واحد).
+        let total = 0;
+        for (let i = 0; i < ids.length; i += 200) {
+          const part = ids.slice(i, i + 200);
+          const rows = await utils.catalog.byUnitIds.fetch({ branchId: bId, tier, productUnitIds: part });
+          total += addRows(rows, tier);
+        }
         setInfo(
-          added > 0
-            ? `أُضيف ${added} صنفاً بلا باركود من جلسة الجرد — احفظ باركوداتها (أو اطبع مباشرةً فيُحفَظ تلقائياً).`
+          total > 0
+            ? `أُضيف ${total} صنفاً بلا باركود من جلسة الجرد — احفظ باركوداتها (أو اطبع مباشرةً فيُحفَظ تلقائياً).`
             : "أصناف الجرد الناقصة مضافةٌ سلفاً في القائمة.",
         );
       } catch {
@@ -587,9 +598,13 @@ export default function BarcodeLabels() {
           await assign.mutateAsync({ productUnitId: u.productUnitId, barcode: u.barcode });
           patch(u.key, { saved: true, primaryBarcode: u.barcode });
         }
-      } catch {
+      } catch (e) {
+        // مراجعة Codex #5: حفظ الباركود صلاحيةُ مدير المنتجات؛ مستخدمُ المخزن يحتاج مديراً لإسناده.
+        const code = (e as { data?: { code?: string } | null })?.data?.code;
         setError(
-          "تعذّر حفظ باركودٍ قبل الطباعة — لا تُطبع ملصقات غير قابلة للمسح. راجع صلاحيتك أو تعارض الباركود ثم أعد المحاولة.",
+          code === "FORBIDDEN" || code === "UNAUTHORIZED"
+            ? "حفظ الباركود يحتاج صلاحية مدير المنتجات — اطلب من مديرٍ حفظَ باركودات هذه الأصناف ثم اطبع (لا تُطبع ملصقات غير قابلة للمسح)."
+            : "تعذّر حفظ باركودٍ قبل الطباعة — لا تُطبع ملصقات غير قابلة للمسح. راجع تعارض الباركود ثم أعد المحاولة.",
         );
         return;
       }

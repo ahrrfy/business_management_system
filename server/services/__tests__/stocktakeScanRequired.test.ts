@@ -310,21 +310,23 @@ describe("الجرد بالمسح الإلزامي — إنفاذ الخادم",
     expect(res.ok).toBe(true);
   });
 
-  it("إنشاء جلسة FREE من غير مدير مرفوض (قرار المالك)", async () => {
-    await expectTrpc(
-      createStocktakeSession(
-        {
-          name: "جرد حر غير مصرّح",
-          branchId: 1,
-          scopeType: "MANUAL",
-          variantIds: [1],
-          countMethod: "FREE",
-          assignments: [{ name: "عامل PIN", method: "PIN" }],
-        },
-        warehouseActor,
-      ),
-      "FORBIDDEN",
-      /مدير/,
+  it("إنشاء جلسة FREE من أمين المخزن مقبول (الافتراض الآمن؛ لا بوّابة على الحرّ بعد مراجعة Codex #1/#4)", async () => {
+    const res = await createStocktakeSession(
+      {
+        name: "جرد حر من المخزن",
+        branchId: 1,
+        scopeType: "MANUAL",
+        variantIds: [1],
+        countMethod: "FREE",
+        assignments: [{ name: "عامل PIN", method: "PIN" }],
+      },
+      warehouseActor,
     );
+    expect(res.sessionId).toBeGreaterThan(0);
+    const [session] = await db()
+      .select({ countMethod: s.stocktakeSessions.countMethod })
+      .from(s.stocktakeSessions)
+      .where(eq(s.stocktakeSessions.id, res.sessionId));
+    expect(session.countMethod).toBe("FREE");
   });
 });

@@ -739,6 +739,13 @@ export const productVariants = mysqlTable(
       .references(() => products.id, { onDelete: "cascade" }),
     sku: varchar("sku", { length: 60 }).notNull(),
     variantName: varchar("variantName", { length: 255 }),
+    // نوع المتغيّر (وثيقة «الجرد بالباركود» ٢٢/٨، م٣): VARIANT = تنويعة لون/قياس من نفس المنتج؛
+    // ALTERNATIVE = منتجٌ حقيقيٌّ مستقل (ماركة/منشأ مختلف) يُباع تحت الاسم الجامع نفسه لكن له
+    // مخزونه وتكلفته وباركوده وسعره كاملاً. الافتراض VARIANT (توافق: كل القائم تنويعات).
+    // اسمُ البديل يُحمَل في variantName (إلزاميّ للبدائل)، ولا بديلَ بلا باركود (يُفرَض في الكتابة).
+    variantKind: mysqlEnum("variantKind", ["VARIANT", "ALTERNATIVE"])
+      .default("VARIANT")
+      .notNull(),
     color: varchar("color", { length: 60 }),
     // بنك الألوان (colorHex): لون العرض الحقيقي «#RRGGBB» — اختيار صريح من المستخدم؛ إن null
     // يُستنتَج تلقائياً من اسم اللون عبر @shared/colorBank. هجرة 0080. (9 خانات تتّسع لـ#RRGGBBAA مستقبلاً.)

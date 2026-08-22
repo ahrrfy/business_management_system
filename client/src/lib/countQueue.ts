@@ -97,6 +97,64 @@ export function size(sessionCode: string): number {
   return safeRead(sessionCode).length;
 }
 
+/* ── طابور «الباركود المجهول» (ب-٤/مراجعة Codex #2) — لا يضيع عند الانقطاع ── */
+
+export interface QueuedUnknownScan {
+  clientRequestId: string;
+  barcode: string;
+  queuedAt: string;
+}
+
+const uKeyFor = (sessionCode: string) => `countq_unknown_${sessionCode}`;
+
+function isQueuedUnknown(v: unknown): v is QueuedUnknownScan {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.clientRequestId === "string" &&
+    typeof o.barcode === "string" &&
+    typeof o.queuedAt === "string"
+  );
+}
+
+function safeReadUnknown(sessionCode: string): QueuedUnknownScan[] {
+  try {
+    const raw = localStorage.getItem(uKeyFor(sessionCode));
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(isQueuedUnknown) : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeWriteUnknown(sessionCode: string, items: QueuedUnknownScan[]): boolean {
+  try {
+    if (items.length === 0) localStorage.removeItem(uKeyFor(sessionCode));
+    else localStorage.setItem(uKeyFor(sessionCode), JSON.stringify(items.slice(0, 500)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** يضيف مسحاً مجهولاً للطابور (إزالة تكرار بالباركود — نفس الكود لا يُكرَّر صفّاً). */
+export function enqueueUnknown(sessionCode: string, item: QueuedUnknownScan): boolean {
+  const items = safeReadUnknown(sessionCode).filter((q) => q.barcode !== item.barcode);
+  items.push(item);
+  return safeWriteUnknown(sessionCode, items);
+}
+
+export function peekUnknown(sessionCode: string): QueuedUnknownScan[] {
+  return safeReadUnknown(sessionCode);
+}
+
+export function removeUnknown(sessionCode: string, clientRequestId: string): void {
+  const items = safeReadUnknown(sessionCode);
+  const next = items.filter((q) => q.clientRequestId !== clientRequestId);
+  if (next.length !== items.length) safeWriteUnknown(sessionCode, next);
+}
+
 /**
  * مولّد clientRequestId — UUID v4.
  * `crypto.randomUUID` متاح في السياقات الآمنة فقط (https/localhost)؛ داخل شبكة
