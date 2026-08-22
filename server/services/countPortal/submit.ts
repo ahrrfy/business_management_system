@@ -227,31 +227,32 @@ export async function submitCount(
       // حارس تضخم الكمية من قارئ HID: عند فتح بطاقة الكمية يكون قارئ الباركود العام معطلاً
       // والحقل مركزاً، فتدخل أرقام الباركود ثم تقصها الواجهة إلى أول 7 أرقام. نرفض البصمة
       // خادمياً قبل أي كتابة، مع مراعاة معامل الوحدة والباركودات البديلة.
+      // كل الوحدات (نشطةً ومتقاعدة) — حارسُ «الكمية تطابق بادئة باركود» يفحصها جميعاً لأنّ رقم
+      // باركودٍ متقاعدٍ كُتب في حقل العدد يبقى خطأَ ماسحٍ يجب رفضه (يحرسه اختبار البوابة القائم).
+      // ونعلّم isActive كي نبني **دليل المسح** (#6) من النشطة وحدها أدناه.
       const units = await tx
         .select({
           id: productUnits.id,
           unitName: productUnits.unitName,
           factor: productUnits.conversionFactor,
           barcode: productUnits.barcode,
+          isActive: productUnits.isActive,
         })
         .from(productUnits)
-        // م٢/م٣ (مراجعة Codex #6): الوحدات النشطة فقط دليلَ مسحٍ صالحاً — باركود وحدةٍ متقاعدة
-        // لا تعرضه واجهة العدّ ولا تعدّه التغطية «متاحاً»، فقبولُه إثباتاً يتجاوز حارس الملصق الحيّ.
-        .where(and(eq(productUnits.variantId, input.variantId), eq(productUnits.isActive, true)));
+        .where(eq(productUnits.variantId, input.variantId));
       const aliases = await tx
         .select({
           unitName: productUnits.unitName,
           factor: productUnits.conversionFactor,
           barcode: productUnitBarcodes.barcode,
+          isActive: productUnits.isActive,
         })
         .from(productUnitBarcodes)
         .innerJoin(
           productUnits,
           eq(productUnitBarcodes.productUnitId, productUnits.id),
         )
-        .where(
-          and(eq(productUnits.variantId, input.variantId), eq(productUnits.isActive, true)),
-        );
+        .where(eq(productUnits.variantId, input.variantId));
       // ── إثبات المصدر (وثيقة «الجرد بالباركود» ٢٢/٨) ──
       // مشرفٌ مُصرِّح: تكليف USER لحسابٍ رتبته manager/admin — مصدر واحد لتجاوز حارس الماسح
       // وللاستثناء اليدويّ المحكوم في جلسة المسح الإلزامي. مُذكَّر: استعلام users مرّةً واحدة.
@@ -290,12 +291,13 @@ export async function submitCount(
       if (sessionMethod === "SCAN_REQUIRED") {
         if (isScanEntry(entryMethod)) {
           // مسحٌ فعليّ ⇒ الباركود الممسوح يجب أن يعيد الحلّ إلى **هذا** المتغيّر خادمياً
-          // (لا ثقة بالواجهة): يطابق باركود وحدةٍ نشطة أو باركوداً بديلاً لنفس المتغيّر.
+          // (لا ثقة بالواجهة): يطابق باركود وحدةٍ **نشطة** أو بديلَ وحدةٍ نشطة لنفس المتغيّر.
+          // (#6) الوحدة المتقاعدة لا تُقبل دليلاً — لا تعرضها الواجهة ولا تعدّها التغطية «متاحة».
           const variantCodes = new Set<string>();
           for (const u of units)
-            if (u.barcode) variantCodes.add(String(u.barcode).trim());
+            if (u.barcode && u.isActive !== false) variantCodes.add(String(u.barcode).trim());
           for (const a of aliases)
-            if (a.barcode) variantCodes.add(String(a.barcode).trim());
+            if (a.barcode && a.isActive !== false) variantCodes.add(String(a.barcode).trim());
           if (!scannedBarcode) {
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
