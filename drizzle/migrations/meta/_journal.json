@@ -1653,6 +1653,20 @@
       "when": 1788052300000,
       "tag": "0249_0249_product_auto_cart_recommendations",
       "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "5",
+      "when": 1788052301000,
+      "tag": "0250_stocktake_barcode_count_method",
+      "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "5",
+      "when": 1788052303000,
+      "tag": "0252_variant_kind_alternative",
+      "breakpoints": true
     }
   ]
 }

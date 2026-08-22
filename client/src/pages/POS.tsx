@@ -12,6 +12,7 @@ import {
   type PosDraftScope,
 } from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
+import { variantDisplayName } from "@shared/variantDisplay";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -2402,7 +2403,8 @@ function CartPanel({ C, branchId, branchName, cart, total, selId, setSelId, chan
                 >
                   <td style={{ ...TD, color: C.mutedFg, fontWeight: 600, borderInlineStart: `4px solid ${accent}` }}>{i + 1}</td>
                   <td style={{ ...TD, textAlign: "right", fontWeight: 800, fontSize: 19, lineHeight: 1.35, color: C.fg }}>
-                    {c.row.productName}
+                    {/* م٣: الاسم الموحّد يُظهر اللون/القياس أو اسم البديل — كان يعرض اسم المنتج وحده. */}
+                    {variantDisplayName({ productName: c.row.productName, variantName: c.row.variantName, color: c.row.color, size: c.row.size })}
                     <span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 500, marginRight: 5 }}>{c.row.sku}</span>
                     {!c.row.isService && !isKnown && (
                       <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 700, marginRight: 5 }}>

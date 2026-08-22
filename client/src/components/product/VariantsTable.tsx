@@ -23,6 +23,7 @@ import { ColorPickerDot, Field, MarginBadge, MiniBarcode, ScanButton } from "./v
 import { UnitBarcodeAliases } from "./UnitBarcodeAliases";
 import { UnitPriceHistory } from "./UnitPriceHistory";
 import { ChevronLeft, X } from "lucide-react";
+import { variantDisplayName } from "@shared/variantDisplay";
 
 interface Branch {
   id: number;
@@ -206,7 +207,13 @@ function VariantRow({
   const [open, setOpen] = useState(false);
   // لون الصفّ عند بدء التحرير (focus) — لمقارنته عند الإتمام (blur) فنزامن رقائق المصفوفة عند إعادة التسمية.
   const colorAtFocus = useRef("");
-  const fullName = [baseName, v.color, v.size].filter(Boolean).join(" ");
+  const fullName = variantDisplayName({
+    productName: baseName,
+    variantName: v.variantName,
+    color: v.color,
+    size: v.size,
+    variantKind: v.variantKind,
+  });
   const setBc = (uid: number, val: string) => patch({ unitBarcodes: { ...v.unitBarcodes, [uid]: val } });
   const setStock = (bid: number, val: string) => patch({ stockByBranch: { ...v.stockByBranch, [bid]: val } });
   const skuBad = skuDup(v.sku);
@@ -346,6 +353,52 @@ function VariantRow({
           <td />
           <td colSpan={8 + units.length} className="px-3 pb-4 pt-1">
             <div className="rounded-lg border bg-card p-4 grid grid-cols-1 lg:grid-cols-3 gap-5">
+              {/* نوع المتغيّر (م٣): تنويعة لون/قياس أو بديلٌ مستقلّ (منتجٌ حقيقيٌّ تحت الاسم الجامع). */}
+              <div className="lg:col-span-3 border-b pb-3">
+                <p className="text-[11px] font-semibold text-muted-foreground mb-2">نوع المتغيّر</p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="inline-flex overflow-hidden rounded-md border text-xs">
+                    <button
+                      type="button"
+                      onClick={() => patch({ variantKind: "VARIANT" })}
+                      className={cn(
+                        "px-3 py-1.5 transition-colors",
+                        (v.variantKind ?? "VARIANT") === "VARIANT"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-background text-muted-foreground",
+                      )}
+                    >
+                      تنويعة (لون/قياس)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => patch({ variantKind: "ALTERNATIVE" })}
+                      className={cn(
+                        "border-s px-3 py-1.5 transition-colors",
+                        v.variantKind === "ALTERNATIVE"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-background text-muted-foreground",
+                      )}
+                    >
+                      بديل مستقلّ
+                    </button>
+                  </div>
+                  {v.variantKind === "ALTERNATIVE" && (
+                    <Input
+                      value={v.variantName ?? ""}
+                      onChange={(e) => patch({ variantName: e.target.value })}
+                      placeholder="اسم البديل (الماركة/المنشأ)"
+                      className="h-8 w-56 text-xs"
+                      aria-label="اسم البديل"
+                    />
+                  )}
+                </div>
+                {v.variantKind === "ALTERNATIVE" && (
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">
+                    البديل منتجٌ حقيقيٌّ مستقلّ: يلزمه اسمٌ مميّز وباركود، ويُعدّ ويُعرض بمخزونه وتكلفته وباركوده منفصلاً.
+                  </p>
+                )}
+              </div>
               {/* ملصقات الباركود لكل وحدة + الهامش */}
               <div className="lg:col-span-3">
                 <div className="flex items-center justify-between mb-2">

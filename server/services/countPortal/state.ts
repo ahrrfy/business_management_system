@@ -142,6 +142,8 @@ export async function getPortalPulse(identity: PortalIdentity) {
   const raw = [
     session.id,
     session.status,
+    // أسلوب العدّ من الهوية المُحلَّلة (بلا استعلام) — إدراجه يمنع تجمّد الشاشة لو بُدِّل الأسلوب.
+    session.countMethod,
     assignment.id,
     assignment.status,
     Number(c?.maxId ?? 0),
@@ -434,6 +436,7 @@ export async function getPortalDynamic(
       status: session.status,
       dupPolicy: session.dupPolicy,
       blind: session.blind,
+      countMethod: session.countMethod,
     },
     assignment: {
       id: myAssignmentId,

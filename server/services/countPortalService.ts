@@ -39,3 +39,5 @@ export { submitCount } from "./countPortal/submit";
 export type { SubmitCountInput, SubmitCountResult } from "./countPortal/submit";
 export { finishAssignment } from "./countPortal/finish";
 export type { FinishAssignmentResult } from "./countPortal/finish";
+export { recordUnknownScan } from "./countPortal/unknownScans";
+export type { RecordUnknownScanResult } from "./countPortal/unknownScans";
