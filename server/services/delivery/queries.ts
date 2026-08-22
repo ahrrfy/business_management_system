@@ -177,6 +177,8 @@ export async function listInTransitConsignments(branchId: number | null, partyId
       collectedAmount: deliveryConsignments.collectedAmount,
       /** ما سدّده الزبون بالكاونتر بعد ثبوت التسليم (0249) — يُنقص المتبقّي بلا مساس بالعهدة. */
       counterSettledAmount: deliveryConsignments.counterSettledAmount,
+      /** أجرة التوصيل — يستعملها محضر التسليم (Codex P2 #7 — ٢٢/٨). */
+      deliveryFee: deliveryConsignments.deliveryFee,
       /** صافي مستند البيع للشاشة (الإجماليّ والمرتجع) — يُشتقّ منهما صافي الفاتورة بلا نداء ثانٍ. */
       invoiceTotal: invoices.total,
       invoiceReturnedTotal: invoices.returnedTotal,
@@ -583,7 +585,17 @@ export async function listPartyObligations(branchId: number | null) {
     })
     .from(deliveryParties)
     .where(and(
-      eq(deliveryParties.isActive, true),
+      // ٢٢/٨ (Codex P2 #5): جهةٌ عُطِّلت وعليها التزامٌ ماليّ حيّ (أجور مستحقة/عهدة/طرود مفتوحة)
+      // كانت تختفي من هذه القائمة — وهي **الواجهة الوحيدة** لصرف الأجور المجمّع والتسوية،
+      // فالالتزامُ يبقى بلا مسارٍ للأداء. نُبقيها إن كان `isActive=1` **أو** عليها التزامٌ حيّ.
+      // (الحارس التشغيليّ يمنع الإسناد لجهةٍ معطَّلة أصلاً، فلا خطرَ نمو الالتزامات هنا.)
+      or(
+        eq(deliveryParties.isActive, true),
+        sql`EXISTS (SELECT 1 FROM deliveryConsignments dc
+          WHERE dc.partyId = ${deliveryParties.id}
+            AND dc.consignmentStatus IN ('DISPATCHED', 'PARTIAL'))`,
+        sql`CAST(${deliveryParties.currentBalance} AS DECIMAL(15,2)) > 0`,
+      ),
       // رؤية الجهة نفسها كرؤية بقية الوحدة: المملوكة لفرعٍ تظهر في فرعها وحده، والمشتركة
       // (branchId=NULL) تظهر لكل فرعٍ — بالتزامات ذلك الفرع (الشروط المترابطة أعلاه).
       branchId == null

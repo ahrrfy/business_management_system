@@ -42,7 +42,7 @@ import { deliveryConsignments, deliveryRemittances } from "../../../drizzle/sche
 import { getDb } from "../../db";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { money, round2 } from "../money";
-import { confirmConsignmentDelivery, type ConfirmConsignmentResult } from "./courier";
+import { confirmConsignmentDelivery, recordSupplementaryStatementCollection, type ConfirmConsignmentResult } from "./courier";
 import { recordDeliveryRemittance, type RemittanceInput } from "./remittance";
 import type { DeliveryTxActor } from "./types";
 
@@ -126,6 +126,10 @@ async function loadStatementConsignments(input: {
       branchId: deliveryConsignments.branchId,
       parcelStatus: deliveryConsignments.parcelStatus,
       status: deliveryConsignments.status,
+      codAmount: deliveryConsignments.codAmount,
+      collectedAmount: deliveryConsignments.collectedAmount,
+      invoiceId: deliveryConsignments.invoiceId,
+      returnDeclaredAt: deliveryConsignments.returnDeclaredAt,
     })
     .from(deliveryConsignments)
     .where(inArray(deliveryConsignments.id, ids));
@@ -142,6 +146,60 @@ async function loadStatementConsignments(input: {
     }
   }
   return { ids, byId };
+}
+
+/**
+ * **تحقّقٌ مسبقٌ ذرّيّ لأسطر الكشف** (Codex P1 #5 — ٢٢/٨): `confirmConsignmentDelivery` تفتح
+ * معاملتها بنفسها، فحلقةُ الأسطر ليست عمليةً ذرّيّةً واحدة — سطرٌ يفشل بعد سطرٍ نجح يترك حالةً
+ * مقسّمة. `withTx` غير قابلة لإعادة الدخول (رأس الملف)، لذلك نحقّق كل شروط الفشل الشائعة
+ * **قبل** الحلقة بلا كتابة: تجاوز COD، تجاوز متبقّي الفاتورة، رجوعٌ مُعلَن. لا يقضي على
+ * السباقات (فاتورةٌ تُدفع بين التحقّق والكتابة) لكنه يمسك الأخطاء التصريحيّة قبل أن تُنتج
+ * حالةً جزئية. الأسطر المرتدّة `alreadyDelivered` مسموحةٌ (تُصبح تحصيلاً متمِّماً).
+ */
+async function preValidateStatementLines(
+  input: { partyId: number; lines: CompanyStatementLineInput[] },
+  ids: number[],
+  byId: Map<number, {
+    codAmount: string; collectedAmount: string; invoiceId: number | null;
+    parcelStatus: string; returnDeclaredAt: unknown;
+  }>,
+) {
+  const db = getDb();
+  if (!db) return;
+  // 1) تجاوزُ COD أو رجوعٌ مُعلَن لكل سطر — تحقّقٌ محلّيّ من صفوف الإرسالية.
+  for (const l of input.lines) {
+    const cn = byId.get(Number(l.consignmentId));
+    if (!cn) continue;
+    if (cn.returnDeclaredAt != null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `الإرسالية ${l.consignmentId} أُعلن رجوعُها — لا يُثبَت تسليمها من كشف`,
+      });
+    }
+    const declared = round2(money(l.collectedAmount));
+    const codAmount = round2(money(cn.codAmount));
+    const currentCollected = round2(money(cn.collectedAmount ?? "0"));
+    if (declared.gt(codAmount)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الإرسالية ${l.consignmentId}: المُعلَن ${declared.toFixed(2)} أكثر من مبلغ COD (${codAmount.toFixed(2)})`,
+      });
+    }
+    // للأسطر المختومة سلفاً: الدلتا سيقيسها `recordSupplementaryStatementCollection` — نتحقّق
+    // فقط من رفض الانحسار (declared < ما سبق تحصيله في كشفٍ آخر).
+    if (cn.parcelStatus === "DELIVERED" && declared.lt(currentCollected)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الإرسالية ${l.consignmentId}: المُعلَن ${declared.toFixed(2)} أقلّ ممّا سبق تحصيله (${currentCollected.toFixed(2)}) — إلغاءُ تحصيلٍ سابقٍ ممنوع`,
+      });
+    }
+  }
+  // ⚠️ متبقّي الفاتورة يُفحَص داخل `confirmConsignmentDelivery` و`recordSupplementaryStatementCollection`
+  // تحت قفل .for("update") — وهو المرجعُ الحاسمُ. فحصُه هنا استرشادياً بلا قفل يُنتج **إنذاراتٍ
+  // كاذبة** حين تسدَّد الفاتورة بمسارٍ مشروعٍ سابقاً (عربونٌ عند الاستقبال أو دفعةٌ متجرية) فيبقى
+  // `paidAmount>0` عند القراءة قبل الإثبات ⇒ نرفضُ تحصيلاً سيمرّ فعلاً داخل المعاملة (invoiceRemaining
+  // يُحسَب من `collectedAmount + counterSettled + الأصل` لا paidAmount وحده). نتركُ الفحصَ لموقعه
+  // الأصليّ ونكتفي هنا بالسطور المحلّية (رجوعٌ مُعلَن، تجاوز COD، انحسار).
 }
 
 /**
@@ -214,7 +272,10 @@ export async function recordCompanyStatement(
   // سطرُ الإثبات (declared=0) يقبله الخادم أصلاً: يختم الطردَ الصفريّ ويُغلقه، ويُبقي متبقّي
   // طرد COD>0 ذمّةً حيّة على العميل (رأس الملف — قرار المالك).
   const { ids, byId } = await loadStatementConsignments(input);
+  // فحصٌ مسبقٌ لكل شروط الرفض المُنتظَرة قبل أيّ كتابة (Codex P1 #5).
+  await preValidateStatementLines(input, ids, byId);
   const needConfirm = ids.filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED");
+  const alreadyDeliveredIds = ids.filter((id) => byId.get(id)!.parcelStatus === "DELIVERED");
   for (const id of needConfirm) {
     // مفتاحٌ مشتقٌّ من (الكشف × الإرسالية): إعادة إدخال الكشف تُعيد النتيجة نفسها بلا قيدٍ ثانٍ.
     // ويُمرَّر **المُعلَن على الكشف** لا COD كاملاً: تحصيلٌ جزئيّ يُسجَّل كما وقع.
@@ -227,6 +288,26 @@ export async function recordCompanyStatement(
           statementNumber,
           collectedAmount: collectedByLine.get(id),
         },
+      },
+      { userId: actor.userId },
+    );
+  }
+  /**
+   * **تحصيلٌ متمِّم على الطرود المختومة سلفاً** (Codex P1 #3 — ٢٢/٨): كشفٌ لاحقٌ يقول
+   * «حُصِّل الباقي 8k» على طردٍ سبق ختمُه بكشفٍ سابق بـ12k. `confirmConsignmentDelivery`
+   * ترتدّ `alreadyDelivered` بلا مساس ⇒ الفاتورة تبقى مدفوعةً جزئياً والعهدةُ لا ترتفع.
+   * ندعو `recordSupplementaryStatementCollection` بالمُعلَن الجديد؛ الدالّة تقيس الدلتا
+   * وترفض ما لا يزيد. `noChange` صامتٌ — لا يُعدّ في `deliveriesConfirmed`.
+   */
+  for (const id of alreadyDeliveredIds) {
+    const declared = collectedByLine.get(id);
+    if (declared == null) continue;
+    await recordSupplementaryStatementCollection(
+      {
+        consignmentId: id,
+        newCollectedTotal: declared,
+        statementNumber,
+        clientRequestId: `stmt-supp:${input.partyId}:${statementNumber}:${id}`,
       },
       { userId: actor.userId },
     );
@@ -340,6 +421,7 @@ export async function recordDeliveryProof(
   }
   const { collectedByLine } = splitStatementLines(input.lines);
   const { ids, byId } = await loadStatementConsignments(input);
+  await preValidateStatementLines(input, ids, byId);
 
   const needConfirm = ids.filter((id) => byId.get(id)!.parcelStatus !== "DELIVERED");
   let deliveriesConfirmed = 0;
@@ -397,12 +479,23 @@ export async function recordManualDeliveryProof(
   // جهةُ الشاهد هي جهةُ الإرسالية نفسها — تُقرأ لا تُستلَم من المستدعي (لا انتحال جهة).
   const cn = (
     await db
-      .select({ id: deliveryConsignments.id, partyId: deliveryConsignments.partyId })
+      .select({ id: deliveryConsignments.id, partyId: deliveryConsignments.partyId, branchId: deliveryConsignments.branchId })
       .from(deliveryConsignments)
       .where(eq(deliveryConsignments.id, Number(input.consignmentId)))
       .limit(1)
   )[0];
   if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: "الإرسالية غير موجودة" });
+  /**
+   * **عزل الفرع** (Codex P1 #1 — ٢٢/٨): `storeManagerProcedure` يفرض وجود فرعٍ للمستخدم
+   * لكن **لا يقارنه** بفرع الإرسالية — مديرُ فرعٍ يستطيع تمريرَ رقمِ إرساليةٍ لفرعٍ آخر
+   * فيمرّ الطلبُ على `confirmConsignmentDelivery` ويُعدّل فاتورةً وذمّةَ عميلٍ وعهدةَ جهةٍ
+   * ليست فرعَه. الأدمن وحدَه يعبر (`role='admin'` — نمط `deliveryRouter.effectiveBranch`).
+   */
+  const actorBranchId = actor.branchId != null ? Number(actor.branchId) : null;
+  const isAdmin = actor.role === "admin";
+  if (!isAdmin && actorBranchId != null && Number(cn.branchId) !== actorBranchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "الإرسالية تخصّ فرعاً آخر" });
+  }
   // الدليل يُدوَّن مكانَ رقم الكشف بصيغةٍ مميّزة، مقتطعاً لسقف عمود رقم الكشف — يبقى صالحاً
   // للتخزين لو ربطته شاشةٌ لاحقة بسند توريد.
   const statementNumber = `MANUAL:${evidence}`.slice(0, STATEMENT_NUMBER_MAX);

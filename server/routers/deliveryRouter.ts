@@ -20,12 +20,10 @@ import {
   listInTransitConsignments,
   listPartyObligations,
   recordCompanyStatement,
-  recordDeliveryProof,
   recordManualDeliveryProof,
   listOpenConsignments,
   listPartyRemittances,
   listReadyForDispatch,
-  payDeliveryFee,
   payPartyDeliveryFees,
   recordDeliveryRemittance,
   recoverDeliveryWriteOff,
@@ -163,14 +161,9 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  payFee: deliveryCashierProcedure
-    .input(z.object({
-      consignmentId: z.number().int().positive(),
-      shiftId: z.number().int().positive(),
-      amount: moneyStr.nullish(),
-      clientRequestId: z.string().trim().min(8).max(100),
-    }))
-    .mutation(({ input, ctx }) => payDeliveryFee(input, actorOf(ctx))),
+  // ٢٢/٨ (Codex P1 #7): حُذف `payFee` — استبدله بـ`payPartyFees` (المجمّع). الخدمة نفسها
+  // `payDeliveryFee` تبقى مستعملةً داخل `payPartyDeliveryFees` (لكل إرسالية على حدة) وفي
+  // الاختبارات، فلا فقدَ سلوكيّ. إبقاؤه كنقطةٍ راوترية بلا مستهلكٍ كان يوسّع خطّ الأساس بلا داعٍ.
 
   createParty: managerProcedure
     .input(
@@ -534,54 +527,10 @@ export const deliveryRouter = router({
       return res;
     }),
 
-  /**
-   * **إثبات تسليم بلا نقد** (٢٢/٨) — كشفٌ فيه أسطر صفرية فقط: يختم DELIVERED للطرود المدفوعة
-   * سلفاً (COD=0) ويرفع عهدة الجهة للأسطر المُعلَنة التحصيل، بلا فتح سند توريد. النقد يُورَّد
-   * لاحقاً كاملاً بكشفٍ عاديّ يستعمل نفس رقم الكشف.
-   */
-  recordProof: deliveryCashierProcedure
-    .input(z.object({
-      partyId: z.number().int().positive(),
-      branchId: z.number().int().positive().nullish(),
-      statementNumber: z.string().trim().min(2).max(64),
-      statementDate: z.string().trim().min(8).max(10).nullish(),
-      attachmentUrl: z.string().trim().max(2000).nullish(),
-      notes: z.string().trim().max(500).nullish(),
-      lines: z
-        .array(z.object({ consignmentId: z.number().int().positive(), collectedAmount: moneyStr }))
-        .min(1)
-        .superRefine((lines, ctx) => {
-          const seen = new Set<number>();
-          lines.forEach((line, index) => {
-            if (seen.has(line.consignmentId)) {
-              ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, "consignmentId"], message: "الإرسالية مكررة داخل الكشف" });
-            }
-            seen.add(line.consignmentId);
-          });
-        }),
-      clientRequestId: z.string().trim().min(8).max(64),
-    }))
-    .mutation(async ({ input, ctx }) => {
-      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
-      const branchId = effectiveBranch(ctx, input.branchId);
-      const res = await retryOnDeadlock(() => recordDeliveryProof({
-        branchId,
-        partyId: input.partyId,
-        statementNumber: input.statementNumber,
-        statementDate: input.statementDate ?? null,
-        attachmentUrl: input.attachmentUrl ?? null,
-        notes: input.notes ?? null,
-        lines: input.lines,
-        clientRequestId: input.clientRequestId,
-      }, actorOf(ctx)));
-      await logAudit(ctx, {
-        action: "delivery.recordProof",
-        entityType: "deliveryConsignment",
-        entityId: input.lines[0]?.consignmentId ?? 0,
-        newValue: { partyId: input.partyId, statementNumber: res.statementNumber, deliveriesConfirmed: res.deliveriesConfirmed },
-      });
-      return res;
-    }),
+  // ٢٢/٨ (Codex P1 #7): حُذف `recordProof` — استعمال «إثبات محض» يمرّ الآن تلقائياً عبر
+  // `recordCompanyStatement` بأسطرَ صفرية وcountedCash=0 (الخادم يشتق `proofOnly` ويعيد
+  // remittanceId=null). خدمة `recordDeliveryProof` تبقى مصدَّرة كنقطة API داخلية لأيّ مسار
+  // خلفيّ مستقبليّ، فلا فقدَ سلوكيّ وذاكرةُ نقاطٍ يتيمةٍ تنكمش.
 
   /**
    * **الإثبات اليدويّ الاستثنائيّ** (٢٢/٨، نصّ المالك: «يحتاج دليلاً وموافقة مدير») — لطرد

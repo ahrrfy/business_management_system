@@ -11,8 +11,8 @@
 // COD_COLLECTED — النقد دخل الدرج مباشرةً ولم يمرّ بيد الجهة، فالقيد الدفتريّ الصحيح هو
 // COD_RELEASED (تحرير تعرّضٍ متوقَّع، نفس اصطلاح الإلغاء والرجوع المُعلَن).
 import Decimal from "decimal.js";
-import { and, eq, inArray } from "drizzle-orm";
-import { deliveryConsignments, deliveryEvents } from "../../../drizzle/schema";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { deliveryConsignments, deliveryEvents, deliveryLedgerEntries } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { money, round2, toDbMoney } from "../money";
 import { assertNotReturnDeclared } from "./declaredReturn";
@@ -124,13 +124,28 @@ export async function registerCounterCollectionTx(
   const newCounterSettled = round2(money(cn.counterSettledAmount ?? "0").plus(applied));
   const liveRemaining = round2(liveRemainingBefore.minus(applied));
 
-  // الإغلاق النهائيّ فقط حين لا يبقى شيءٌ يُورَّد **ولا** عهدة تحصيلٍ معلّقة: تحصيلٌ
-  // مُحصَّل غير مورَّد (collectedAmount>0 وmoneyStatus ليست SETTLED، أو عهدة مرحّلة
-  // موسومة custodyRecognizedAt) يُبقيها مفتوحةً لمسار التوريد/التسوية — إغلاقها يقطع
-  // طريق نقدٍ حقيقيّ بيد الجهة (نقضٌ للمبدأ الحاكم).
-  const noPendingCustody =
-    (round2(money(cn.collectedAmount ?? "0")).isZero() && cn.custodyRecognizedAt == null) ||
-    cn.moneyStatus === "SETTLED";
+  /**
+   * **عهدةُ التحصيل المعلّقة = مُحصَّلٌ لم يُورَّد بعد** (Codex P2 #8 — ٢٢/٨): كان الشرط يمنع
+   * الإغلاق ما دام `collectedAmount>0` — لكن `collectedAmount` عمودُ **تاريخٍ تراكميّ** لا
+   * يُمحى بعد التوريد الجزئيّ. النتيجة: كشفٌ يُحصّل 12k من 20k ⇒ الشركة تورّد الـ12k ⇒
+   * `collectedAmount` يبقى 12k (تاريخ) والعهدةُ الفعليّة صفرٌ. يأتي الزبونُ ويسدّد الـ8k
+   * بالكاونتر ⇒ الشرطُ القديم يُبقي الطردَ زومبي في طابور التوريد بلا شيءٍ يُورَّد.
+   *
+   * الإصلاح: قياسُ العهدة من الدفتر الذي يكذّبه الواقعُ لا الصفوف التاريخيّة: `COD_COLLECTED − (COD_REMITTED + COD_WRITTEN_OFF)` لهذه الإرسالية = عهدةٌ حيّةٌ بيد الجهة. صفرٌ ⇒ لا شيء يُورَّد ⇒ إغلاقٌ آمن.
+   */
+  const custodyRow = (
+    await tx
+      .select({
+        pending: sql<string>`COALESCE(SUM(CASE
+          WHEN ${deliveryLedgerEntries.entryType} = 'COD_COLLECTED' THEN ${deliveryLedgerEntries.amount}
+          WHEN ${deliveryLedgerEntries.entryType} IN ('COD_REMITTED','COD_WRITTEN_OFF') THEN -${deliveryLedgerEntries.amount}
+          ELSE 0 END), 0)`,
+      })
+      .from(deliveryLedgerEntries)
+      .where(eq(deliveryLedgerEntries.consignmentId, Number(cn.id)))
+  )[0];
+  const pendingCustody = round2(money(custodyRow?.pending ?? "0"));
+  const noPendingCustody = pendingCustody.lte(0);
   const close = liveRemaining.isZero() && noPendingCustody;
 
   await tx

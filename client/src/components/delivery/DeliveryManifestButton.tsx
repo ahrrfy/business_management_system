@@ -32,10 +32,20 @@ export function DeliveryManifestButton({
   className,
 }: DeliveryManifestButtonProps) {
   const q = trpc.delivery.inTransit.useQuery({ partyId }, { refetchInterval: 30_000 });
-  const allRows = q.data ?? [];
+  /**
+   * **فلترة المحضر لطرود التسليم الفعليّ فقط** (Codex P1 #6 — ٢٢/٨): `inTransit` يُعيد كلّ
+   * `consignmentStatus=DISPATCHED` — بما فيها المُسلَّمة (بانتظار التوريد) والمفشولة والمرتجعة
+   * المُعلَنة. المحضرُ مستندٌ يوقّعه المندوبُ باستلامٍ حاليّ للتوصيل، فإدراجُ طرودٍ مُسلَّمةٍ
+   * سلفاً يُنتج إقرارَ عهدةٍ كاذبة. نقصر السطور على الطرود القابلة للتسليم فعلاً
+   * (`ASSIGNED`/`ACCEPTED`/`PICKED_UP`/`OUT_FOR_DELIVERY`) ونستثني ما أُعلن رجوعُه.
+   */
+  const HANDOVER_ELIGIBLE = new Set(["ASSIGNED", "ACCEPTED", "PICKED_UP", "OUT_FOR_DELIVERY"]);
+  const handoverRows = (q.data ?? []).filter((r) =>
+    HANDOVER_ELIGIBLE.has(r.parcelStatus ?? "") && r.returnDeclaredAt == null,
+  );
   const rows = onlyConsignmentIds && onlyConsignmentIds.length > 0
-    ? allRows.filter((r) => onlyConsignmentIds.includes(Number(r.id)))
-    : allRows;
+    ? handoverRows.filter((r) => onlyConsignmentIds.includes(Number(r.id)))
+    : handoverRows;
   const count = rows.length;
 
   const disabled = q.isLoading || count === 0;
@@ -59,7 +69,9 @@ export function DeliveryManifestButton({
             recipientPhone: r.recipientPhone ?? null,
             address: r.address ?? null,
             codAmount: r.codAmount,
-            deliveryFee: null,
+            // Codex P2 #7 (٢٢/٨): كان `null` يطبع «مجموع الأجور 0» على مستندٍ يوقّعه المندوب —
+            // خطُّ أساسٍ ماليٌّ كاذبٌ في نزاعِ التسوية. الآن نُمرِّر الأجرة الفعليّة من الاستعلام.
+            deliveryFee: (r as { deliveryFee?: string | null }).deliveryFee ?? null,
           })),
           branchName ?? null,
         );

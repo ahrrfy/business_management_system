@@ -217,13 +217,31 @@ export default function MyDeliveries() {
                         variant="outline"
                         disabled={busy}
                         onClick={async () => {
+                          /**
+                           * ٢٢/٨ (Codex P2 #3): آلة الحالة الخادميّة تفرض ACCEPTED → PICKED_UP →
+                           * OUT_FOR_DELIVERY (خطوتان لا قفزة). كان الزرّ يقفز مباشرةً فيفشل كل
+                           * الـACCEPTED. الآن كل صفٍّ ACCEPTED يمرّ بخطوتين متتاليتين قبل الخروج.
+                           */
+                          const rowByIdMap = new Map<number, DeliveryRow>();
+                          for (const row of data!.toDeliver) rowByIdMap.set(row.id, row);
+                          const stepFor = (id: number): Array<"PICKED_UP" | "OUT_FOR_DELIVERY"> => {
+                            const st = rowByIdMap.get(id)?.status;
+                            if (st === "ACCEPTED") return ["PICKED_UP", "OUT_FOR_DELIVERY"];
+                            if (st === "PICKED_UP") return ["OUT_FOR_DELIVERY"];
+                            return [];
+                          };
                           const results = await Promise.allSettled(
-                            readyOutIds.map((id) => transitionM.mutateAsync({
-                              consignmentId: id,
-                              toStatus: "OUT_FOR_DELIVERY",
-                              reason: null,
-                              clientRequestId: crypto.randomUUID(),
-                            })),
+                            readyOutIds.map(async (id) => {
+                              const steps = stepFor(id);
+                              for (const to of steps) {
+                                await transitionM.mutateAsync({
+                                  consignmentId: id,
+                                  toStatus: to,
+                                  reason: null,
+                                  clientRequestId: crypto.randomUUID(),
+                                });
+                              }
+                            }),
                           );
                           const ok = results.filter((r) => r.status === "fulfilled").length;
                           const err = results.length - ok;

@@ -9,7 +9,7 @@
  * ويطبّق **قواعد محرّك العروض نفسها** عبر snapshot مجمّعة — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
 import {
   bundleComponents,
   categories,
@@ -845,8 +845,8 @@ async function getBundleItems(
 }
 
 /**
- * توصيات «أكمل تجهيزك» للسلة: تبدأ بالعلاقات التي ضبطها المدير، ثم تهبط إلى نفس الفئة
- * كخطة احتياطية حتى لا تظهر السلة بلا مساعدة قبل أن تتراكم علاقات يدوية.
+ * توصيات «أكمل تجهيزك» للسلة: تبدأ بالعلاقات التي ضبطها المدير، ثم تملأ الأماكن المتبقية من نفس
+ * تصنيف منتجات السلة عندما يسمح المنتج المصدر بالتوصيات الآلية.
  */
 export async function storefrontCartRecommendations(
   productIds: number[],
@@ -886,33 +886,80 @@ export async function storefrontCartRecommendations(
     .slice(0, cap)
     .map(([id]) => id);
 
-  let selectedIds = manualIds;
-  if (!selectedIds.length) {
-    // fallback محافظ: السلوك القديم كان يقترح نفس الفئة، لكنه لا يعرض البدائل الموجودة في السلة.
-    const fallback = await storefrontRelated(sourceIds[0]!, branchId, cap + sourceIds.length);
-    return fallback.filter((item) => !sourceSet.has(item.productId)).slice(0, cap);
+  const sourceRows = await db
+    .select({ categoryId: products.categoryId, allowAutoCartRecommendations: products.allowAutoCartRecommendations })
+    .from(products)
+    .where(inArray(products.id, sourceIds));
+  const autoCategoryIds = Array.from(new Set(
+    sourceRows
+      .filter((row) => row.allowAutoCartRecommendations !== false && row.categoryId != null)
+      .map((row) => Number(row.categoryId))
+      .filter((id) => Number.isSafeInteger(id) && id > 0),
+  ));
+
+  const manualItems: StorefrontProduct[] = [];
+  if (manualIds.length) {
+    const conds = [storefrontPublishableCondition(), inArray(products.id, manualIds)];
+    const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
+    const availableIds = chooseCandidateProductIds(await attachAvailability(db, branchId, candidateRows), cap, "IN_STOCK");
+    const selectedOrder = new Map(manualIds.map((id, index) => [id, index]));
+    const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, availableIds)));
+    const rows = (await attachAvailability(db, branchId, rawRows))
+      .filter((row) => row.availableQty >= Number(row.conversionFactor))
+      .sort((a, b) => (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap));
+    const seen = new Set<number>();
+    for (const row of rows) {
+      const pid = Number(row.productId);
+      if (seen.has(pid) || sourceSet.has(pid)) continue;
+      seen.add(pid);
+      manualItems.push(toStorefront(row));
+      if (manualItems.length >= cap) break;
+    }
   }
 
-  const conds = [storefrontPublishableCondition(), inArray(products.id, selectedIds)];
+  const excludedIds = [...sourceIds, ...manualIds];
+  const autoItems = manualItems.length >= cap || !autoCategoryIds.length
+    ? []
+    : await storefrontCategoryRecommendations(db, branchId, autoCategoryIds, excludedIds, cap - manualItems.length);
+  const items = [...manualItems, ...autoItems].slice(0, cap);
+  await applyStorefrontPromotions(items, branchId);
+  await attachSoldCounts(db, items);
+  await attachVariantColors(db, items, branchId);
+  return items;
+}
+
+/** توصيات آلية من تصنيفات منتجات السلة مع استبعاد المنتجات الموجودة والعلاقات اليدوية. */
+async function storefrontCategoryRecommendations(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  branchId: number,
+  categoryIds: number[],
+  excludedProductIds: number[],
+  limit: number,
+): Promise<StorefrontProduct[]> {
+  if (!categoryIds.length || limit <= 0) return [];
+  const cap = Math.min(Math.max(limit, 1), 8);
+  const conds = [storefrontPublishableCondition(), inArray(products.categoryId, categoryIds)];
+  if (excludedProductIds.length) conds.push(not(inArray(products.id, excludedProductIds)));
   const candidateRows = await availabilityCandidateSelect(db).where(and(...conds));
-  const availableIds = chooseCandidateProductIds(await attachAvailability(db, branchId, candidateRows), cap, "IN_STOCK");
+  const selectedIds = chooseCandidateProductIds(await attachAvailability(db, branchId, candidateRows), cap, "IN_STOCK");
+  if (!selectedIds.length) return [];
   const selectedOrder = new Map(selectedIds.map((id, index) => [id, index]));
-  const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, availableIds)));
+  const rawRows = await safeSelect(db).where(and(...conds, inArray(products.id, selectedIds)));
   const rows = (await attachAvailability(db, branchId, rawRows))
     .filter((row) => row.availableQty >= Number(row.conversionFactor))
-    .sort((a, b) => (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap));
+    .sort((a, b) =>
+      (selectedOrder.get(Number(a.productId)) ?? cap) - (selectedOrder.get(Number(b.productId)) ?? cap)
+      || Number(a.variantId) - Number(b.variantId)
+      || Number(a.productUnitId) - Number(b.productUnitId));
   const seen = new Set<number>();
   const items: StorefrontProduct[] = [];
   for (const row of rows) {
     const pid = Number(row.productId);
-    if (seen.has(pid) || sourceSet.has(pid)) continue;
+    if (seen.has(pid) || excludedProductIds.includes(pid)) continue;
     seen.add(pid);
     items.push(toStorefront(row));
     if (items.length >= cap) break;
   }
-  await applyStorefrontPromotions(items, branchId);
-  await attachSoldCounts(db, items);
-  await attachVariantColors(db, items, branchId);
   return items;
 }
 

@@ -289,6 +289,11 @@ export async function writeOffDeliveryShortfall(input: WriteOffInput, actor: Del
       });
       await postEntry(tx, {
         entryType: "DELIVERY_WRITEOFF",
+        // ٢٢/٨ (Codex P2 #2): الدفتر المزدوج (P2) عمومياً معطَّل الآن (CLAUDE.md §٦)، لكن حين
+        // يُفعَّل ستُنشأ عقيدةُ LOSSES=amount بينما `cost=realLoss` — تناقضٌ بين P&L (realLoss)
+        // والدفتر (amount). الحلّ الصحيح: تقسيمُ القيد لثلاث ساقين (LOSSES=realLoss +
+        // CUSTODY_CLEARING=phantomCleared ⇒ DELIVERY_FLOAT=amount) وإضافة حسابٍ وسيط للتصفية.
+        // مؤجَّلٌ لتذكرةٍ منفصلة تُطلَق مع تفعيل P2؛ اليوم الأثر صفريّ خارج ذلك المسار.
         postingIntent: deliveryWriteoffIntent(amount),
         dedupeKey: `DELIVERY_WRITEOFF:CN:${input.consignmentId}`,
         branchId: input.branchId, deliveryPartyId: input.partyId, invoiceId,

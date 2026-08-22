@@ -452,9 +452,10 @@ export async function recordDeliveryRemittance(
     const remittanceId = extractInsertId(rmRes);
 
     // إيصال درج IN = COD المُحصَّل كاملاً (سلامة الفاتورة). لا إيصال OUT للأجور هنا —
-    // صرفُها بسنده المستقل في fees.ts؛ receiptOutId يبقى NULL بنيوياً في التوريدات الجديدة.
+    // صرفُها بسنده المستقل في fees.ts. أمّا إيصال OUT للاستقطاع فيُربَط بـ`receiptOutId`
+    // كي يُظهر المستندَ صراحةً لا ضمنياً (Codex P2 #6 — ٢٢/٨: نقدٌ خرج بلا حاشيةٍ في صفّ التوريد).
     let receiptInId: number | null = null;
-    const receiptOutId: number | null = null;
+    let receiptOutId: number | null = null;
     if (collectedTotal.gt(0)) {
       const rIn = await tx.insert(receipts).values({
         branchId: input.branchId,
@@ -499,6 +500,7 @@ export async function recordDeliveryRemittance(
         createdBy: actor.userId,
       });
       const deductionReceiptId = extractInsertId(rDed);
+      receiptOutId = deductionReceiptId;
       const assetRole = paymentAccountRole("CASH", cashBucket, "OUT");
       const src = {
         roleDebits: { DELIVERY_EXPENSE: deductionsTotal },

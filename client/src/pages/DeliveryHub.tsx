@@ -636,7 +636,13 @@ function InTransitTab() {
                             <RotateCcw aria-hidden className="size-3" /> {r.returnDeclaredAt != null ? "استلمتُه" : "استرجاع"}
                           </Button>
                         )}
-                        {isManager && r.viewKey === "DELIVERED_AWAITING_REMIT" && (
+                        {/*
+                          ٢٢/٨ (Codex P2 #1): إثبات يدويّ يمرّ عبر `confirmConsignmentDelivery`
+                          الذي يرتدّ `alreadyDelivered` فوراً على أيّ طردٍ سبق ختمُه — فعرضُ
+                          الزرّ على `DELIVERED_AWAITING_REMIT` كان يُنتج «نجاحاً» بلا كتابة أيّ
+                          حدث MANUAL_PROOF. المسار الصحيح: طرودٌ لم يُختَم تسليمها بعد.
+                        */}
+                        {isManager && (r.viewKey === "ASSIGNED" || r.viewKey === "AWAITING_STATEMENT" || r.viewKey === "IN_TRANSIT") && (
                           <Button size="sm" variant="outline" title="سلطةٌ استثنائية للمدير — يُوثَّق في التدقيق" disabled={manualProof.isPending} onClick={() => setManualProofTarget(r)}>
                             <ShieldCheck aria-hidden className="size-3" /> إثبات يدويّ
                           </Button>
@@ -982,8 +988,17 @@ function SettleTab() {
         leftInTransit += 1;
       }
     }
-    return { collected, fees: 0, net: collected, shortfall: expected - collected, expected, leftInTransit, selectedCount };
-  }, [list, rows, statementMode]); // eslint-disable-line react-hooks/exhaustive-deps
+    /**
+     * **صافي التوريد = المُحصَّل − الاستقطاع** (Codex P1 #2 — ٢٢/٨): الخادمُ في وضع الكشف
+     * يفرض `countedCash = collectedTotal - deductionsTotal` (استقطاعُ الشركة نقدٌ لم يدخل
+     * الدرج). كان `net = collected` فقط ⇒ إدخالُ النقد الفعليّ يُعطّل زرّ التوريد
+     * (فرقٌ مع الصافي)، وإدخالُ الإجماليّ يمرّ الشاشة ويرتدّ الخادم — كشفٌ باستقطاعٍ يصير
+     * مستحيلاً بلا استثناء.
+     */
+    const deductions = statementMode ? Math.max(0, statementDeductions || 0) : 0;
+    const net = Math.max(0, collected - deductions);
+    return { collected, fees: 0, net, deductions, shortfall: expected - collected, expected, leftInTransit, selectedCount };
+  }, [list, rows, statementMode, statementDeductions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
     const lines = list
